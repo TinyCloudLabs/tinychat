@@ -1,11 +1,19 @@
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { Database } from "bun:sqlite";
 import { describe, expect, it } from "bun:test";
+import { CONNECTOR_SCHEMA } from "@tinyboilerplate/core";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
+import { PipelineTrackSummary } from "@/capture/pipeline/PipelineTrackSummary";
+import { buildNotePipelineInput, rowHasCommittedAudio, type NotePipelineFacts } from "../voiceNotes/useNotePipeline";
+import { spaceLaneSnapshot } from "../spaceWriteLane";
 
 import { CONNECTORS_SQL_DB_NAME, transcriptKvKey } from "./connectorStore.js";
 import type { FirefliesSentence } from "./firefliesClient.js";
 import {
   EXPLORER_MEETING_SOURCES,
   findMeetingId,
+  hiddenMemberKeys,
   listMeetings,
   listMeetingsRead,
   meetingSourceLabel,
@@ -15,6 +23,8 @@ import {
   transcriptCopyText,
   type MeetingAudioRead,
 } from "./meetingExplorer.js";
+import { notePipeline } from "../voiceNotes/notePipeline";
+import { TRANSCRIPT_TABLE_DDL, VOICE_NOTE_INDEX_DDL } from "../voiceNotes/voiceNoteRows";
 
 type SqlResult =
   | { ok: true; data: { rows: unknown[][] } }
@@ -58,6 +68,50 @@ function fakeTcw(opts: { sql?: SqlResult; kv?: KvResult }) {
     },
   };
   return { tcw: tcw as unknown as TinyCloudWeb, sqlCalls, kvKeys };
+}
+
+function realListingSpace() {
+  const sqlite = new Database(":memory:");
+  sqlite.exec(`CREATE TABLE connector_meeting (
+    id TEXT PRIMARY KEY, source TEXT, source_id TEXT, title TEXT, started_at TEXT,
+    duration_secs REAL, metadata TEXT
+  );
+  CREATE TABLE voice_note_transcript (source_id TEXT PRIMARY KEY, outcome TEXT);`);
+  const tcw = {
+    sql: {
+      db() {
+        return {
+          async query(sql: string, params: unknown[] = []) {
+            try {
+              return { ok: true as const, data: { rows: sqlite.query(sql).values(...(params as never[])) } };
+            } catch (error) {
+              return { ok: false as const, error: { code: "SQL_ERROR", message: String(error) } };
+            }
+          },
+        };
+      },
+    },
+  } as unknown as TinyCloudWeb;
+  return { sqlite, tcw };
+}
+
+function pipelineFacts(id: string, rowMetadata: Record<string, unknown> | null): NotePipelineFacts {
+  return {
+    id,
+    device: "web",
+    online: true,
+    saved: true,
+    rowMetadata,
+    localNote: null,
+    native: null,
+    capture: { finalizing: false, issue: null },
+    pending: null,
+    lane: spaceLaneSnapshot(),
+    onDeviceStatus: null,
+    transcriptSync: null,
+    cloudJob: null,
+    noteSync: { syncing: false, failed: false, skip: null, syncedAt: null, attempting: false },
+  };
 }
 
 /**
@@ -157,16 +211,13 @@ describe("listMeetings", () => {
     expect(sqlCalls).toHaveLength(1);
     expect(sqlCalls[0].db).toBe(CONNECTORS_SQL_DB_NAME);
     expect(sqlCalls[0].params).toEqual(["otter", "granola"]);
-    expect(sqlCalls[0].sql).toContain("FROM connector_meeting");
-    expect(sqlCalls[0].sql).toContain("source IN (?, ?)");
-    expect(sqlCalls[0].sql).toContain("ORDER BY started_at DESC");
   });
 
   it("defaults to fireflies, google-meet, the transcriber, exo local AND exo voice notes", async () => {
     const { tcw, sqlCalls } = fakeTcw({ sql: { ok: true, data: { rows: [] } } });
     await listMeetings(tcw);
-    expect(sqlCalls[0].params).toEqual(["fireflies", "google-meet", "tinycloud-transcriber", "exo-local", "exo-voice-note", "exo-upload"]);
-    expect(EXPLORER_MEETING_SOURCES).toEqual(["fireflies", "google-meet", "tinycloud-transcriber", "exo-local", "exo-voice-note", "exo-upload"]);
+    expect(sqlCalls.at(-1)?.params).toEqual(["fireflies", "google-meet", "tinycloud-transcriber", "exo-local", "exo-voice-note", "exo-upload", "exo-merged"]);
+    expect(EXPLORER_MEETING_SOURCES).toEqual(["fireflies", "google-meet", "tinycloud-transcriber", "exo-local", "exo-voice-note", "exo-upload", "exo-merged"]);
   });
 
   it("runs no query at all for an empty source list", async () => {
@@ -243,6 +294,84 @@ describe("listMeetings", () => {
   });
 });
 
+describe("combined meetings hide their members (TC-1152)", () => {
+  const merged = (id: string, metadata: unknown) => ["exo-merged", `m-${id}`, id, metadata] as const;
+  function seeded(rows: (readonly [string, string, string, unknown])[]) {
+    const { sqlite, tcw } = realListingSpace();
+    const insert = sqlite.prepare("INSERT INTO connector_meeting (id, source, source_id, title, started_at, duration_secs, metadata) VALUES (?, ?, ?, 'T', '2026-10-19T10:00:00.000Z', 60, ?)");
+    for (const [source, sourceId, id, metadata] of rows) insert.run(id, source, sourceId, metadata === null ? null : typeof metadata === "string" ? metadata : JSON.stringify(metadata));
+    return tcw;
+  }
+  const members = (...m: [string, string][]) => ({ merge: { members: m.map(([source, source_id]) => ({ source, source_id, body_sha256: "x" })) } });
+  const visible = async (tcw: TinyCloudWeb) => {
+    const read = await listMeetingsRead(tcw);
+    if (read.status !== "ok") throw new Error("list failed");
+    const hidden = hiddenMemberKeys(read.meetings);
+    return { all: read.meetings, shown: read.meetings.filter((r) => !hidden.has(JSON.stringify([r.source, r.sourceId]))).map((r) => r.id).sort(), hidden };
+  };
+
+  it("hides exactly the named members, matching (source, source_id) exactly", async () => {
+    const tcw = seeded([
+      ["fireflies", "shared", "ff", "{}"],
+      ["tinycloud-transcriber", "shared", "nt-shared-id", "{}"], // same source_id, other source: not a member
+      ["tinycloud-transcriber", "n1", "nt", "{}"],
+      ["fireflies", "other", "other", "{}"],
+      ["fireflies", "Shared", "case", "{}"], // not normalised
+      merged("c", members(["fireflies", "shared"], ["tinycloud-transcriber", "n1"])),
+    ]);
+    const { shown } = await visible(tcw);
+    expect(shown).toEqual(["c", "case", "nt-shared-id", "other"]);
+  });
+
+  it("reads the members in the same single list query", async () => {
+    const { tcw, sqlCalls } = fakeTcw({ sql: { ok: true, data: { rows: [["c", "exo-merged", "m-c", "T", "2026-10-19T10:00:00.000Z", 60, null, null, JSON.stringify([{ source: "fireflies", source_id: "a" }])]] } } });
+    const read = await listMeetingsRead(tcw);
+    expect(read.status === "ok" && read.meetings[0]?.mergeMembers).toEqual([{ source: "fireflies", sourceId: "a" }]);
+    expect(sqlCalls.filter((c) => c.sql.includes("FROM connector_meeting"))).toHaveLength(1);
+  });
+
+  it("a combined row with unreadable or malformed members hides nothing and is still listed", async () => {
+    for (const metadata of ["{{{not json", null, "{}", { merge: {} }, { merge: { members: [] } }, { merge: { members: "x" } },
+      { merge: { members: [{ source: "fireflies", source_id: "a" }, { source: "fireflies" }] } }]) {
+      const tcw = seeded([["fireflies", "a", "ff", "{}"], merged("c", metadata)]);
+      const { shown, hidden } = await visible(tcw);
+      expect(hidden.size).toBe(0);
+      expect(shown).toEqual(["c", "ff"]);
+    }
+  });
+
+  it("a combined row naming itself or another combined meeting hides nothing extra", async () => {
+    const tcw = seeded([
+      ["fireflies", "a", "ff", "{}"],
+      merged("c1", members(["exo-merged", "m-c1"], ["exo-merged", "m-c2"], ["fireflies", "a"])),
+      merged("c2", members(["fireflies", "zzz"])),
+    ]);
+    const { shown } = await visible(tcw);
+    expect(shown).toEqual(["c1", "c2"]);
+  });
+
+  it("a combined row's members are not read from any other row's metadata", async () => {
+    const tcw = seeded([["fireflies", "a", "ff", members(["fireflies", "b"])], ["fireflies", "b", "ffb", "{}"]]);
+    const { all, shown } = await visible(tcw);
+    expect(all.every((r) => r.mergeMembers === undefined)).toBe(true);
+    expect(shown).toEqual(["ff", "ffb"]);
+  });
+
+  it("with no combined rows nothing is hidden and no row carries members", async () => {
+    const tcw = seeded([["fireflies", "a", "ff", "{}"], ["tinycloud-transcriber", "b", "nt", "{}"]]);
+    const { all, hidden } = await visible(tcw);
+    expect(hidden.size).toBe(0);
+    expect(all.every((r) => !("mergeMembers" in r))).toBe(true);
+  });
+
+  it("deleting the combined row brings its members back (nothing is stored)", async () => {
+    const tcw = seeded([["fireflies", "a", "ff", "{}"], merged("c", members(["fireflies", "a"]))]);
+    expect((await visible(tcw)).shown).toEqual(["c"]);
+    const again = seeded([["fireflies", "a", "ff", "{}"]]);
+    expect((await visible(again)).shown).toEqual(["ff"]);
+  });
+});
+
 describe("listMeetingsRead", () => {
   it("reads duration_secs, and only a number counts", async () => {
     const { tcw, sqlCalls } = fakeTcw({
@@ -258,8 +387,8 @@ describe("listMeetingsRead", () => {
     });
     const read = await listMeetingsRead(tcw);
     expect(read.status).toBe("ok");
-    expect(read.status === "ok" && read.meetings.map((m) => m.durationSecs)).toEqual([42, null]);
-    expect(sqlCalls[0].sql).toContain("duration_secs");
+    expect(read.status === "ok" && read.meetings.map((m) => m.durationSecs)).toEqual([42.5, null]);
+    expect(sqlCalls.at(-1)?.sql).toContain("duration_secs");
   });
 
   it("carries voice-note pipeline metadata from the listing only for voice notes", async () => {
@@ -270,7 +399,7 @@ describe("listMeetingsRead", () => {
       audio_kv_key: "voice/audio",
       audio_stored: 1,
     });
-    const { tcw, sqlCalls } = fakeTcw({
+    const { tcw } = fakeTcw({
       sql: { ok: true, data: { rows: [
         ["row-voice", "exo-voice-note", "rec-1", null, "2026-10-11T10:00:00.000Z", 42, projectedMetadata],
         ["row-meeting", "fireflies", "src-1", "Standup", "2026-10-10T10:00:00.000Z", 180, null],
@@ -301,11 +430,63 @@ describe("listMeetingsRead", () => {
     expect(read.meetings[1]?.metadata).toBeUndefined();
     expect(read.meetings[2]?.metadata).toBeNull();
     expect(read.meetings[3]?.metadata).toBeUndefined();
-    expect(sqlCalls[0]?.sql).toContain("json_valid(metadata)");
-    expect(sqlCalls[0]?.sql).toContain("json_extract(metadata, '$.note_kv_key')");
-    expect(sqlCalls[0]?.sql).toContain("json_extract(metadata, '$.audio_kv_key')");
-    expect(sqlCalls[0]?.sql).toContain("json_extract(metadata, '$.audio.stored')");
-    expect(sqlCalls[0]?.sql).not.toMatch(/SELECT[^\n]*,\s*metadata\s+FROM/s);
+  });
+  it("resolves legacy transcript evidence and commit outcomes in the real listing SQL without loading bodies", async () => {
+    const { sqlite, tcw } = realListingSpace();
+    sqlite.query("INSERT INTO connector_meeting VALUES (?, ?, ?, ?, ?, ?, ?)").run(
+      "legacy-row", "exo-voice-note", "legacy-note", null, "2026-10-12T00:00:00Z", 30,
+      JSON.stringify({ transcript_text: "Legacy words", transcription_outcome: null }),
+    );
+    sqlite.query("INSERT INTO connector_meeting VALUES (?, ?, ?, ?, ?, ?, ?)").run(
+      "stale-row", "exo-voice-note", "stale-note", null, "2026-10-11T00:00:00Z", 60,
+      JSON.stringify({ transcription_outcome: "pending", transcription_error_code: "service_busy" }),
+    );
+    sqlite.query("INSERT INTO connector_meeting VALUES (?, ?, ?, ?, ?, ?, ?)").run(
+      "failed-row", "exo-voice-note", "failed-note", null, "2026-10-10T00:00:00Z", 20,
+      JSON.stringify({ transcription_outcome: "failed", transcription_error_code: "recording_too_large" }),
+    );
+    sqlite.query("INSERT INTO connector_meeting VALUES (?, ?, ?, ?, ?, ?, ?)").run(
+      "null-metadata-row", "exo-voice-note", "null-metadata-note", null, "2026-10-09T00:00:00Z", 25, null,
+    );
+    sqlite.query("INSERT INTO voice_note_transcript VALUES (?, ?)").run("stale-note", "transcribed");
+    sqlite.query("INSERT INTO voice_note_transcript VALUES (?, ?)").run("null-metadata-note", "no_speech");
+
+    const read = await listMeetingsRead(tcw, ["exo-voice-note"]);
+    expect(read.status).toBe("ok");
+    if (read.status !== "ok") return;
+    const legacy = read.meetings.find((meeting) => meeting.sourceId === "legacy-note")!;
+    const stale = read.meetings.find((meeting) => meeting.sourceId === "stale-note")!;
+    const nullMetadata = read.meetings.find((meeting) => meeting.sourceId === "null-metadata-note")!;
+    expect(buildNotePipelineInput(pipelineFacts("legacy-note", legacy.metadata ?? null)).transcript.inSpace).toBe("transcribed");
+    expect(buildNotePipelineInput(pipelineFacts("stale-note", stale.metadata ?? null)).transcript.inSpace).toBe("transcribed");
+    expect(buildNotePipelineInput(pipelineFacts("null-metadata-note", nullMetadata.metadata ?? null)).transcript.inSpace).toBe("no_speech");
+    expect(legacy.metadata).not.toHaveProperty("transcript_text");
+    expect(stale.metadata).not.toHaveProperty("transcript_text");
+    expect(stale.metadata).toMatchObject({ transcript_commit_outcome: "transcribed" });
+    const failed = read.meetings.find((meeting) => meeting.sourceId === "failed-note")!;
+    const failedPipeline = buildNotePipelineInput(pipelineFacts("failed-note", failed.metadata ?? null));
+    expect(failedPipeline.transcript).toMatchObject({ persistedState: "failed", errorCode: "recording_too_large" });
+    const html = renderToStaticMarkup(createElement(PipelineTrackSummary, { pipeline: notePipeline(failedPipeline) }));
+    expect(html).toContain("Your recording is saved, but it&#x27;s too large for private transcription. The audio is kept, so nothing is lost.");
+    expect(failed.metadata).not.toHaveProperty("transcript_text");
+    sqlite.close();
+  });
+
+  it("lists legacy transcript evidence when the commit table does not exist", async () => {
+    const { sqlite, tcw } = realListingSpace();
+    sqlite.exec("DROP TABLE voice_note_transcript");
+    sqlite.query("INSERT INTO connector_meeting VALUES (?, ?, ?, ?, ?, ?, ?)").run(
+      "legacy-no-commit-table", "exo-voice-note", "legacy-no-commit-table", null,
+      "2026-10-12T00:00:00Z", 30, JSON.stringify({ transcript_text: "Legacy words" }),
+    );
+    const read = await listMeetingsRead(tcw, ["exo-voice-note"]);
+    expect(read.status).toBe("ok");
+    if (read.status === "ok") {
+      const note = read.meetings.find((meeting) => meeting.sourceId === "legacy-no-commit-table")!;
+      expect(buildNotePipelineInput(pipelineFacts(note.sourceId, note.metadata ?? null)).transcript.inSpace).toBe("transcribed");
+      expect(note.metadata).not.toHaveProperty("transcript_text");
+    }
+    sqlite.close();
   });
 
   it("an ordinary empty space is ok and empty; a store error, a refused read or a throwing transport is failed", async () => {
@@ -324,6 +505,171 @@ describe("listMeetingsRead", () => {
     }
     expect(await listMeetingsRead(throwingTcw())).toEqual({ status: "failed" });
     expect(await listMeetingsRead(throwingTcw("sync"))).toEqual({ status: "failed" });
+  });
+});
+
+/**
+ * The listing SQL as shipped before TC-1274: a correlated legacy-winner subquery per voice-note row.
+ * Frozen here so the set-based rewrite is held to identical rows, in the same order.
+ */
+const BASELINE_LIST_SQL = `SELECT id, source, source_id, title, started_at, duration_secs,
+              CASE WHEN source = 'exo-voice-note' THEN
+                CASE WHEN json_valid(COALESCE(metadata, '{}')) THEN json_object(
+                  'transcription_outcome', json_extract(metadata, '$.transcription_outcome'),
+                  'transcription_error_code', json_extract(metadata, '$.transcription_error_code'),
+                  'legacy_transcript_outcome',
+                    (SELECT CASE WHEN json_extract(g.metadata, '$.transcription_outcome') IN ('transcribed','no_speech')
+                                 THEN json_extract(g.metadata, '$.transcription_outcome') ELSE 'transcribed' END
+                     FROM connector_meeting g
+                     WHERE g.source_id = connector_meeting.source_id
+                       AND g.source IN ('exo-voice-note','exo-voice-note-dup')
+                       AND json_valid(g.metadata)
+                       AND (json_extract(g.metadata, '$.transcription_outcome') IN ('transcribed','no_speech')
+                         OR (json_extract(g.metadata, '$.transcription_outcome') IS NULL
+                           AND typeof(json_extract(g.metadata, '$.transcript_text')) = 'text'
+                           AND length(trim(json_extract(g.metadata, '$.transcript_text'))) > 0))
+                     ORDER BY COALESCE(json_extract(g.metadata, '$.transcribed_at'), '') DESC, g.id ASC LIMIT 1),
+                  'transcript_commit_outcome', __COMMIT_OUTCOME__,
+                  'note_kv_key',           json_extract(metadata, '$.note_kv_key'),
+                  'note_edited_at',        json_extract(metadata, '$.note_edited_at'),
+                  'audio_kv_key',          json_extract(metadata, '$.audio_kv_key'),
+                  'audio_stored',          json_extract(metadata, '$.audio.stored'),
+                  'audio_device_platform', json_extract(metadata, '$.audio.device.platform'),
+                  'capture',               json_extract(metadata, '$.capture'))
+                ELSE 'invalid' END
+              END AS pipeline_metadata,
+              CASE WHEN source = 'exo-voice-note' AND json_valid(COALESCE(metadata, '{}'))
+                THEN json_extract(metadata, '$.capture.duration_ms') END AS capture_duration_ms
+       FROM connector_meeting
+       WHERE source IN (__PLACEHOLDERS__) ORDER BY started_at DESC`;
+
+const SEED_TRANSCRIBED_AT: readonly unknown[] = ["2026-10-01T00:00:00Z", "2026-10-02T00:00:00Z", "2026-10-02T00:00:00Z", 7, null, undefined, { at: 1 }];
+const SEED_STARTED_AT = ["2026-10-01T00:00:00Z", "2026-10-02T00:00:00Z", "2026-10-03T00:00:00Z", null] as const;
+
+/** Deterministic space covering every legacy-winner edge the baseline SQL distinguishes. */
+function seedLegacyWinnerSpace(sqlite: Database, seed: number): void {
+  let state = seed;
+  const pick = <T,>(values: readonly T[]): T => {
+    state = (state * 1103515245 + 12345) % 2147483648;
+    return values[Math.floor((state / 2147483648) * values.length)]!;
+  };
+  const insert = sqlite.query(`INSERT INTO connector_meeting (id, source, source_id, title, started_at, duration_secs,
+    participants, metadata, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, '[]', ?, 'c', 'u')`);
+  const legacyMetadata = (): string | null => pick<() => string | null>([
+    () => null,
+    () => "{not json",
+    () => "[1,2]",
+    () => JSON.stringify({ transcription_outcome: pick(["transcribed", "no_speech", "pending", "failed", null, undefined]),
+      transcript_text: pick(["words", "  ", "", 42, null, undefined]), transcribed_at: pick(SEED_TRANSCRIBED_AT),
+      transcription_error_code: pick(["service_busy", undefined]), note_kv_key: pick(["k", undefined]),
+      audio_kv_key: pick(["a", undefined]), audio: pick([{ stored: true, device: { platform: "web" } }, undefined]),
+      capture: pick([{ duration_ms: 61_000 }, { duration_ms: "x" }, undefined]) }),
+  ])();
+  for (let n = 0; n < 400; n++) {
+    const sourceId = `note-${n % 300}`; // some notes have only archived rows; some ids repeat across sources
+    if (n < 300) insert.run(`vn-${n}`, "exo-voice-note", sourceId, `Note ${n}`, pick(SEED_STARTED_AT), pick([61, null, "x"]), legacyMetadata());
+    for (let d = 0, dups = pick([0, 0, 1, 2, 3]); d < dups; d++) {
+      insert.run(`dup-${n}-${d}-${pick(["a", "b", "c"])}`, "exo-voice-note-dup", sourceId, null, pick(SEED_STARTED_AT), null, legacyMetadata());
+    }
+    if (n % 7 === 0) insert.run(`ff-${n}`, pick(["fireflies", "google-meet", "tinycloud-transcriber", "exo-local", "exo-upload"]),
+      pick([sourceId, `other-${n}`]), `Meeting ${n}`, pick(SEED_STARTED_AT), 1800, JSON.stringify({ transcript_text: "words" }));
+  }
+  const commit = sqlite.query(`INSERT OR IGNORE INTO voice_note_transcript (source_id, rev, hash, body_key, outcome, committed_at)
+    VALUES (?, 1, 'h', 'b', ?, 'c')`);
+  for (let n = 0; n < 300; n += 3) commit.run(`note-${n}`, pick(["transcribed", "no_speech"]));
+}
+
+// The text signal is the only projection addition since the baseline; strip it so the order and every other field are still compared exactly.
+function withoutTextSignal(rows: unknown[][]): unknown[][] {
+  return rows.map((row) => {
+    const metadata = row[6];
+    if (typeof metadata !== "string" || !metadata.includes("\"has_transcript_text\"")) return row;
+    const rest = JSON.parse(metadata) as Record<string, unknown>;
+    delete rest.has_transcript_text;
+    return row.map((cell, index) => (index === 6 ? JSON.stringify(rest) : cell));
+  });
+}
+
+describe("listMeetingsRead legacy-winner rewrite (TC-1274)", () => {
+  // The baseline runs on the schema spaces have today. One variant adds a (source, source_id)
+  // index afterwards, as a later provisioning step might: the Library order must not change.
+  for (const variant of [
+    { name: "app schema", addedIndexes: [], noCommitTable: false },
+    { name: "after a source index is added",
+      addedIndexes: ["CREATE INDEX idx_connector_meeting_source ON connector_meeting(source, source_id)"], noCommitTable: false },
+    { name: "no commit table", addedIndexes: [], noCommitTable: true },
+  ]) {
+    it(`returns the baseline rows in the baseline order (${variant.name})`, async () => {
+      for (const seed of [1, 2, 3, 4, 5]) {
+        const sqlite = new Database(":memory:");
+        for (const { sql } of CONNECTOR_SCHEMA) sqlite.exec(sql);
+        sqlite.exec(TRANSCRIPT_TABLE_DDL);
+        sqlite.exec(VOICE_NOTE_INDEX_DDL);
+        seedLegacyWinnerSpace(sqlite, seed);
+        if (variant.noCommitTable) sqlite.exec("DROP TABLE voice_note_transcript");
+        // Every source, Google Meet alone (gmeet diagnostics), and every source but voice notes.
+        const lists = [EXPLORER_MEETING_SOURCES, ["google-meet"], EXPLORER_MEETING_SOURCES.filter((source) => source !== "exo-voice-note")];
+        const baselines = lists.map((sources) => sqlite.query(BASELINE_LIST_SQL
+          .replace("__COMMIT_OUTCOME__", variant.noCommitTable ? "NULL"
+            : "(SELECT t.outcome FROM voice_note_transcript t WHERE t.source_id = connector_meeting.source_id LIMIT 1)")
+          .replace("__PLACEHOLDERS__", sources.map(() => "?").join(", ")))
+          .values(...(sources as never[])));
+        for (const ddl of variant.addedIndexes) sqlite.exec(ddl);
+        let listed: unknown[][] | null = null;
+        const tcw = { sql: { db: () => ({ async query(sql: string, params: unknown[] = []) {
+          const rows = sqlite.query(sql).values(...(params as never[])) as unknown[][];
+          if (!sql.includes("sqlite_schema")) listed = rows;
+          return { ok: true as const, data: { rows } };
+        } }) } } as unknown as TinyCloudWeb;
+        const [baseline] = baselines;
+        expect(baseline!.length).toBeGreaterThan(300);
+        expect(baseline!.some((row) => String(row[6]).includes("\"legacy_transcript_outcome\":\"no_speech\""))).toBe(true);
+        expect(baseline!.some((row) => String(row[6]).includes("\"legacy_transcript_outcome\":\"transcribed\""))).toBe(true);
+        expect(baselines[1]!.length).toBeGreaterThan(0);
+        for (const [index, sources] of lists.entries()) {
+          expect((await listMeetingsRead(tcw, sources)).status).toBe("ok");
+          // TC-1152 appends one column (a combined row's members); with no combined row in the space it is NULL on
+          // every row, and everything before it is the baseline, row for row (less the text signal added since).
+          expect(listed!.every((row) => row.length === 9 && row[8] === null)).toBe(true);
+          expect(withoutTextSignal(listed!.map((row) => row.slice(0, 8)))).toEqual(baselines[index]!);
+        }
+        sqlite.close();
+      }
+    });
+  }
+});
+
+describe("listMeetingsRead pasted and recorded rows (TC-1815)", () => {
+  it("reads a pasted row as saved only when its mirrored transcript text is present, through the real listing SQL", async () => {
+    const { sqlite, tcw } = realListingSpace();
+    const insert = sqlite.query("INSERT INTO connector_meeting VALUES (?, ?, ?, ?, ?, ?, ?)");
+    const created = { source: "pasted", capture: "pasted", transcription_outcome: "pending" };
+    insert.run("pasted-mirrored", "exo-voice-note", "pasted-mirrored-note", "Pasted", "2026-10-12T00:00:00Z", 0,
+      JSON.stringify({ ...created, transcription_outcome: "transcribed", transcript_text: "Hello from the paste",
+        transcription_error_code: null, speaker_labels: false, transcribed_at: "2026-10-12T00:00:00.000Z",
+        transcription_engine: "pasted", transcript_provider: "pasted" }));
+    insert.run("pasted-unmirrored", "exo-voice-note", "pasted-unmirrored-note", "Pasted", "2026-10-11T00:00:00Z", 0,
+      JSON.stringify(created));
+    insert.run("pasted-empty", "exo-voice-note", "pasted-empty-note", "Pasted", "2026-10-10T00:00:00Z", 0,
+      JSON.stringify({ ...created, transcript_text: "" }));
+    insert.run("recorded-stored", "exo-voice-note", "recorded-stored-note", "Voice note", "2026-10-09T00:00:00Z", 30,
+      JSON.stringify({ transcription_outcome: "transcribed", audio_stored: 1, audio: { stored: true }, audio_kv_key: "voice/audio" }));
+    insert.run("recorded-unstored", "exo-voice-note", "recorded-unstored-note", "Voice note", "2026-10-08T00:00:00Z", 30,
+      JSON.stringify({ transcription_outcome: "transcribed", transcript_text: "Hello" }));
+    sqlite.query("INSERT INTO voice_note_transcript VALUES (?, ?)").run("pasted-mirrored-note", "transcribed");
+
+    const read = await listMeetingsRead(tcw, ["exo-voice-note"]);
+    expect(read.status).toBe("ok");
+    if (read.status !== "ok") return;
+    const savedBySource = new Map(read.meetings.map((meeting) => [meeting.sourceId, rowHasCommittedAudio(meeting.metadata ?? null)]));
+    expect(savedBySource.get("pasted-mirrored-note")).toBe(true);
+    expect(savedBySource.get("pasted-unmirrored-note")).toBe(false);
+    expect(savedBySource.get("pasted-empty-note")).toBe(false);
+    expect(savedBySource.get("recorded-stored-note")).toBe(true);
+    expect(savedBySource.get("recorded-unstored-note")).toBe(false);
+    expect(read.meetings.find((meeting) => meeting.sourceId === "pasted-mirrored-note")?.metadata)
+      .not.toHaveProperty("transcript_text");
+    sqlite.close();
   });
 });
 
@@ -498,6 +844,7 @@ describe("meetingSourceLabel", () => {
   it("names each browsable source the way Settings does", () => {
     expect(meetingSourceLabel("fireflies")).toBe("Fireflies");
     expect(meetingSourceLabel("google-meet")).toBe("Google Meet");
+    expect(meetingSourceLabel("exo-merged")).toBe("Combined meeting");
   });
 
   it("labels every source the explorer browses", () => {

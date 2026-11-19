@@ -16,13 +16,15 @@
 // shows, each its own scroller, so each keeps its scroll. From medium up the
 // list pane (home above the Library) sits beside the detail pane. A resize
 // never re-parents anything: the cohort archive keeps its place.
-import { useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { uploadRunner } from "@/lib/audioUpload";
 import { PlatformContext } from "@/lib/platform";
+import { billingLinksAllowed, openManageStorage } from "@/lib/openManageStorage";
+import { isStorageReadOnly, subscribeStorageReadOnly } from "@/lib/storageStatus";
 import { useSizeClass } from "@/lib/sizeClass";
 import { cn } from "@/lib/utils";
 import { activeMeetings, useMeetingBot } from "@/chat/TranscriberSection";
@@ -39,11 +41,16 @@ import { LazyDesktopCaptureHome } from "./home/desktop/LazyDesktopCaptureHome";
 import { SoftHomeProvider } from "./home/softHome";
 import { useSoftTheme } from "./home/softTheme";
 import { inProgressShown, type InProgressRowsViewProps } from "./InProgressRows";
+import { noteBackTarget } from "./library/combine/combinedView";
 import { LibraryScreen } from "./library/LibraryScreen";
 import { NoteDetail } from "./library/NoteDetail";
 import { RecentNotePendingSheet } from "./library/RecentNotePendingSheet";
 import { VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
 import { useLibrary } from "./library/useLibrary";
+import { chatComplete } from "@/lib/meetingSummary/summaryChat";
+import { createSummaryRunner } from "@/lib/meetingSummary/summaryRunner";
+import type { GenerateDeps } from "@/lib/meetingSummary/generateSummary";
+import { scheduledSpace } from "@/lib/spaceQueue";
 import { combinedModel, useNotePipelines, type NotePipelineView } from "@/lib/voiceNotes/useNotePipeline";
 import { listPipelineEntries } from "./listPipelineEntries";
 import { pipelineActionPriority, type PipelineActionKind } from "@/lib/voiceNotes/notePipeline";
@@ -53,6 +60,11 @@ import { useRecorder } from "./recorder/RecorderProvider";
 import { continuePausedUpload, pausedUpload } from "./upload/pausedUpload";
 import { UploadSheet } from "./upload/UploadSheet";
 import { useUploadDeps } from "./upload/useUploadDeps";
+import { ActivityPanel } from "./activity/ActivityPanel";
+import { FailureNotificationHost } from "./activity/FailureNotificationHost";
+import { sidebarActivityStore } from "./activity/sidebarActivityStore";
+import type { NotePipelineSource } from "@/lib/voiceNotes/useNotePipeline";
+import { RecordingRenameProvider } from "./library/rename/RecordingRename";
 
 export interface CaptureSurfaceProps {
   tcw: TinyCloudWeb;
@@ -64,6 +76,10 @@ export interface CaptureSurfaceProps {
   screen: Screen;
   /** The cohort meetings section App owns (MeetingsSection), shown in the Library. */
   meetingsSlot?: React.ReactNode;
+  /** The model call a combined meeting's summary uses; the chat route unless a harness or test replaces it. */
+  summaryComplete?: GenerateDeps["complete"];
+  /** Runs after a summary run ends, so the parent can re-read billing (a run spends credits). */
+  onSummarySettled?: () => void;
 }
 
 const SCROLLER = "relative h-full overflow-y-auto";
@@ -71,6 +87,19 @@ const SCROLLER = "relative h-full overflow-y-auto";
 const LIST_COLUMN = "w-full px-4";
 
 type Sheet = "upload" | "meeting";
+
+/** Keep progress subscriptions below the surface so capture chrome updates at most four times a second. */
+function PipelineBridge({ entries, onViews }: { entries: readonly { id: string; source: NotePipelineSource }[]; onViews: (views: ReadonlyMap<string, NotePipelineView>) => void }) {
+  const views = useNotePipelines(entries);
+  const latest = useRef(views);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    latest.current = views;
+    if (timer.current === null) timer.current = setTimeout(() => { timer.current = null; onViews(latest.current); }, 250);
+  }, [views, onViews]);
+  useEffect(() => () => { if (timer.current !== null) clearTimeout(timer.current); }, []);
+  return null;
+}
 
 export function CaptureSurface(props: CaptureSurfaceProps) {
   // A compact width has the Soft home (TC-862); medium and up has the desktop home.
@@ -85,8 +114,18 @@ export function CaptureSurface(props: CaptureSurfaceProps) {
   );
 }
 
-function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, meetingsSlot, soft, desktopHome }: CaptureSurfaceProps & { soft: boolean; desktopHome: boolean }) {
+function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, meetingsSlot, summaryComplete, onSummarySettled, soft, desktopHome }: CaptureSurfaceProps & { soft: boolean; desktopHome: boolean }) {
   const navigate = useNavigate();
+  // One summary runner per signed-in space: another account (tcw) or unmount stops every run.
+  // The settle hook is read through a ref so a new parent callback identity does not rebuild the runner.
+  const settledRef = useRef(onSummarySettled);
+  settledRef.current = onSummarySettled;
+  const summaries = useMemo(
+    () => createSummaryRunner({ space: scheduledSpace(tcw), complete: summaryComplete ?? chatComplete(backendUrl, sessionStore), onSettled: () => settledRef.current?.() }),
+    [tcw, backendUrl, sessionStore, summaryComplete],
+  );
+  useEffect(() => () => summaries.cancelAll(), [summaries]);
+  const openActivityNote = useCallback((id: string) => navigate(PATHS.library + "/" + id), [navigate]);
   const location = useLocation();
   const nav = useNavKind();
   const softTheme = useSoftTheme();
@@ -104,6 +143,7 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
   // The notetaker: one per app, for the Meeting sheet and the In progress rows.
   const bot = useMeetingBot({ backendUrl, sessionStore, active: homeShown });
   const paused = useSyncExternalStore(pausedUpload.subscribe, pausedUpload.snapshot, pausedUpload.snapshot);
+  const storageFull = useSyncExternalStore(subscribeStorageReadOnly, isStorageReadOnly, () => false);
   const { deps: uploadDeps } = useUploadDeps(tcw, backendUrl, sessionStore);
   const [sheet, setSheet] = useState<Sheet | null>(null);
   const [recentNoteId, setRecentNoteId] = useState<string | null>(null);
@@ -140,26 +180,30 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
     onPhone: pendingVisible ? (recorder.pending.notes ?? null) : null,
   });
   const pipelineEntries = useMemo(() => listPipelineEntries(library.items, tcw), [library.items, tcw]);
-  const pipelineViews = useNotePipelines(pipelineEntries);
-  const pipelines = useMemo(() => new Map([...pipelineViews].map(([id, view]) => [id, view.pipeline])), [pipelineViews]);
+  const [activityViews, setActivityViews] = useState<ReadonlyMap<string, NotePipelineView>>(() => new Map());
+  const pipelines = useMemo(() => new Map([...activityViews].map(([id, view]) => [id, view.pipeline])), [activityViews]);
   const actionTarget = useMemo(() => {
     let selected: { id: string; view: NotePipelineView; priority: number } | null = null;
     for (const entry of pipelineEntries) {
-      const view = pipelineViews.get(entry.id);
+      const view = activityViews.get(entry.id);
       const pipeline = view?.pipeline;
       const kind = pipeline?.blocker?.action?.kind;
       const priority = pipelineActionPriority(kind);
       if (view && kind && (!selected || priority > selected.priority)) selected = { id: entry.id, view, priority };
     }
     return selected;
-  }, [pipelineEntries, pipelineViews]);
+  }, [pipelineEntries, activityViews]);
   const modelStatus = useSyncExternalStore(onDeviceSttStore.subscribe, onDeviceSttStore.snapshot, onDeviceSttStore.snapshot);
   const model = combinedModel(modelStatus);
   const modelProgress = model === null ? null : { bytes: model.bytes, totalBytes: model.totalBytes };
   // A saved voice note is the note itself: a full page (desktop) or a sheet over the Library (phone).
+  // A pasted transcript is not a recording: it opens as a plain note page; treating it as the saved
+  // note left the detail pane hidden on a phone while the sheet it was routed to never rendered.
   const openNote = (noteScreen || recentNoteId !== null) && library.note.item?.source === VOICE_NOTE_SOURCE ? library.note.item : null;
-  const notePage = desktopHome && noteScreen && openNote !== null;
-  const noteSheet = soft && openNote !== null;
+  const pastedOpenNote = openNote?.metadata?.capture === "pasted" ? openNote : null;
+  const savedOpenNote = openNote !== null && pastedOpenNote === null ? openNote : null;
+  const notePage = desktopHome && noteScreen && savedOpenNote !== null;
+  const noteSheet = soft && savedOpenNote !== null;
   const now = new Date();
 
   // Wide: the Library link and entering the Library bring its half of the list pane into view.
@@ -181,7 +225,9 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
           pendingNotes: pendingVisible ? recorder.pending.notes ?? [] : [],
           lastError: pendingVisible ? recorder.pending.lastError : null,
           limitNotice: recorder.phase === "recording" ? null : recorder.limitNotice,
-          onSaveNow: recorder.retryPending,
+          // Manage storage opens a purchase page, so the iOS and Android apps keep Save now.
+          onSaveNow: storageFull && billingLinksAllowed(platform) ? openManageStorage : recorder.retryPending,
+          storageFull: storageFull && billingLinksAllowed(platform),
         }
       : undefined,
     onOpenUpload: () => setSheet("upload"),
@@ -190,13 +236,34 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
     onEnd: bot.actions.stop,
   };
   const empty = library.status === "ready" && library.items.length === 0 && !inProgressShown(inProgress);
+  const sidebarActivity = platform === "tauri" && nav === "sidebar";
+  const activityOwner = useRef({});
+  const openActivityUpload = useCallback(() => { navigate(PATHS.capture); setSheet("upload"); }, [navigate]);
+  const continueActivityUpload = useCallback(() => continuePausedUpload(uploadDeps), [uploadDeps]);
+  const retryActivityUpload = useCallback(() => uploadRunner.retry(uploadDeps), [uploadDeps]);
+  useEffect(() => {
+    if (platform !== "tauri") { sidebarActivityStore.clear(activityOwner.current); return; }
+    sidebarActivityStore.publish(activityOwner.current, { items: library.items, views: activityViews, upload, paused,
+      onOpenNote: openActivityNote, onOpenUpload: openActivityUpload, onContinueUpload: continueActivityUpload, onRetryUpload: retryActivityUpload });
+  }, [platform, library.items, activityViews, upload, paused, openActivityNote, openActivityUpload, continueActivityUpload, retryActivityUpload]);
+  useEffect(() => () => sidebarActivityStore.clear(activityOwner.current), []);
+  const activityControl = <ActivityPanel items={library.items} views={activityViews} platform={platform} onOpenNote={openActivityNote}
+    upload={upload} paused={paused} onOpenUpload={openActivityUpload} onContinueUpload={continueActivityUpload}
+    onRetryUpload={retryActivityUpload} active={active} />;
+  const visibleNoteId = active ? (noteScreen ? screen.noteId ?? null : recentNoteId !== null && openNote ? openNote.id : null)
+    ?? (recorder.sheetOpen && recorder.lastSaved ? library.items.find((item) => item.sourceId === recorder.lastSaved?.id)?.id ?? null : null) : null;
+  const openNotificationPath = useCallback((path: string) => navigate(path), [navigate]);
 
   return (
+    <RecordingRenameProvider tcw={tcw}>
     <div
       className={wide && !homeOnly && !notePage ? "grid h-full grid-cols-[minmax(0,22.5rem)_minmax(0,1fr)]" : "relative h-full"}
       data-testid="capture-surface"
       data-layout={wide ? "panes" : "stack"}
     >
+      <PipelineBridge entries={pipelineEntries} onViews={setActivityViews} />
+      <FailureNotificationHost accountDid={tcw.did} items={library.items} views={activityViews} platform={platform}
+        visibleNoteId={visibleNoteId} onOpenPath={openNotificationPath} />
       <div
         className={cn(
           homeOnly ? "relative h-full" : notePage ? "hidden" : wide ? `${SCROLLER} border-r border-border` : noteScreen && !noteSheet ? "hidden" : "relative h-full",
@@ -207,7 +274,7 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
         data-scroll-root={wide ? "" : undefined}
       >
         <div
-          className={homeOnly ? "h-full" : desktopHome ? "hidden" : wide ? "flex flex-col" : libraryScreen || noteScreen ? "hidden" : `${SCROLLER} flex flex-col`}
+          className={homeOnly ? "h-full" : desktopHome ? "hidden" : wide ? "flex flex-col" : libraryScreen || noteScreen || pastedOpenNote !== null ? "hidden" : `${SCROLLER} flex flex-col`}
           data-scroll-root={wide || desktopHome ? undefined : ""}
           data-testid="capture-home"
         >
@@ -219,10 +286,12 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
               layout={layoutForNav(nav) === "rail" ? "rail" : "desktop"}
               inProgress={inProgress}
               recent={{ status: library.status, items: library.items }}
+              pipelines={pipelines}
               onRetryRecent={library.retry}
               onUpload={() => setSheet("upload")}
               {...(bot.listStatus === "dark" ? {} : { onMeeting: () => setSheet("meeting") })}
               now={now}
+              activityControl={sidebarActivity ? undefined : activityControl}
             />
           ) : (
             <>
@@ -230,9 +299,9 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
             title="Capture"
             className={column}
             trailing={
-              <Link to={PATHS.library} className="soft-header-link">
+              <div className="flex flex-wrap items-center gap-2">{!sidebarActivity && activityControl}<Link to={PATHS.library} className="soft-header-link">
                 {HOME_COPY.library}
-              </Link>
+              </Link></div>
             }
           />
           <div className={cn(column, "flex flex-1 flex-col gap-6 pt-2 pb-4")}>
@@ -246,7 +315,7 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
               pipelineNotes={library.items}
               modelProgress={modelProgress}
               pipelineActionError={actionTarget?.view.actionError}
-              onPipelineAction={(kind: PipelineActionKind, id: string) => pipelineViews.get(id)?.onAction(kind)}
+              onPipelineAction={(kind: PipelineActionKind, id: string) => activityViews.get(id)?.onAction(kind)}
               onOpenLibrary={() => navigate(PATHS.library)}
               now={now}
             />
@@ -277,11 +346,14 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
             now={now}
             column={column}
             pipelines={pipelines}
+            activityViews={activityViews}
+            platform={platform}
+            activityControl={!sidebarActivity && libraryScreen ? activityControl : undefined}
           />
         </div>
       </div>
       <div
-        className={homeOnly || noteSheet || (soft && recentNoteId !== null) ? "hidden" : notePage ? "h-full overflow-hidden" : wide || noteScreen ? SCROLLER : "hidden"}
+        className={homeOnly || noteSheet || (soft && recentNoteId !== null && pastedOpenNote === null) ? "hidden" : notePage ? "h-full overflow-hidden" : wide || noteScreen || pastedOpenNote !== null ? SCROLLER : "hidden"}
         data-scroll-root=""
         data-testid="capture-detail"
       >
@@ -289,13 +361,18 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
           <NoteDetail
             key={screen.noteId ?? recentNoteId}
             library={library}
+            tcw={tcw}
             pushed={!wide}
             onBack={() => {
               if (recentNoteId !== null) closeRecentNote();
-              else goUp(navigate, notePage ? PATHS.capture : PATHS.library);
+              else goUp(navigate, noteBackTarget(location.state, notePage));
             }}
             transcription={recorder.transcription}
+            activityView={openNote ? activityViews.get(openNote.sourceId) : undefined}
+            platform={platform}
+            activityControl={!sidebarActivity && noteScreen ? activityControl : undefined}
             savedNote={notePage || noteSheet ? { tcw, layout: notePage ? "page" : "sheet" } : undefined}
+            summaries={summaries}
           />
         ) : wide ? (
           empty ? (
@@ -311,5 +388,6 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
         <RecentNotePendingSheet listing={library.listing} failed={library.status === "failed"} onRetry={library.retry} onClose={closeRecentNote} suspended={recorder.sheetOpen} />
       )}
     </div>
+    </RecordingRenameProvider>
   );
 }

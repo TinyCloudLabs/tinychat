@@ -22,13 +22,21 @@ describe("installed node SDK session renewal", () => {
           const address = (await signer.getAddress()).toLowerCase();
           Date.now = () => 1_800_000_000_000; // Exercise renewals in the same millisecond.
 
-          globalThis.fetch = async (input) => {
+          globalThis.fetch = async (input, init) => {
             const url = String(input);
             if (url === "https://offline.invalid/info") {
               return Response.json({ protocol: new NodeWasmBindings().protocolVersion(), features: [] });
             }
             if (url === "https://offline.invalid/delegate") {
               return Response.json({ activated: [], skipped: [] });
+            }
+            const location = new URL(url);
+            const path = decodeURIComponent(location.pathname).toLowerCase();
+            if ((init?.method ?? "GET") === "GET" && location.origin === "https://offline.invalid" && (
+              path === "/v2/locations/" + address ||
+              path === "/v1/locations/did:pkh:eip155:1:" + address
+            )) {
+              return Response.json({ error: "location record not found" }, { status: 404 });
             }
             throw new Error("Unexpected network request in offline session test");
           };
@@ -54,6 +62,8 @@ describe("installed node SDK session renewal", () => {
               domain: "offline.invalid",
               spacePrefix: "ops.tinychat.backend",
               tinycloudHosts: ["https://offline.invalid"],
+              tinycloudRegistryUrl: "https://offline.invalid",
+              newUserHost: "https://offline.invalid",
             });
             if (failFirstPreparation) {
               await assert.rejects(() => auth.signIn(), /offline_prepare_failure/);

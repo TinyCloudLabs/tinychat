@@ -1,13 +1,14 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
 import express from "express";
 import type { AddressInfo } from "node:net";
-import { CalendarAutojoinConnection, GOOGLE_AUTOJOIN_CREDENTIAL_SOURCE, browserTokenPayload } from "../services/calendar-autojoin-connection.js";
+import { CalendarAutojoinConnection, GOOGLE_AUTOJOIN_CREDENTIAL_SOURCE, browserTokenPayload, type CalendarAutojoinConnectionOptions } from "../services/calendar-autojoin-connection.js";
 import { MemoryCalendarAutojoinStore, TenantCoordinator, type CalendarOccurrence } from "../services/calendar-autojoin-store.js";
 import { CredentialStore, InMemoryCredentialRowStore } from "../services/credential-store.js";
 import { GOOGLE_AUTOJOIN_SCOPES, GoogleOAuthError, type GoogleOAuthPort, type GoogleTokenPayload } from "../services/google-oauth.js";
 import { createGoogleOAuthRouter } from "../routes/google-oauth.js";
 import { createCalendarAutojoinRouter } from "../routes/calendar-autojoin.js";
+import { calendarAutojoinOutcomes } from "../services/calendar-autojoin-status-summary.js";
 
 const TENANT = "0x7d033300000000000000000000000000000073f2";
 const OTHER = "0xb1b1b10000000000000000000000000000001111";
@@ -34,8 +35,10 @@ function fixture() {
   };
   const probes: string[] = [];
   const calendar = { async probePrimary(token: string) { probes.push(token); } };
-  const connection = new CalendarAutojoinConnection({ store, credentials, oauth, coordinator: new TenantCoordinator(), calendar, now: () => now });
-  return { store, rows, credentials, oauth, probes, revokes, connection, calendar,
+  const options: CalendarAutojoinConnectionOptions = { store, credentials, oauth, coordinator: new TenantCoordinator(), calendar, now: () => now };
+  const connection = new CalendarAutojoinConnection(options);
+  return { store, rows, credentials, oauth, probes, revokes, connection, calendar, options,
+    async publishOutcomes() { await store.putStatusSummary(TENANT, { version: 1, outcomes: calendarAutojoinOutcomes(await store.listOccurrences(TENANT)) }); },
     setTokens(tokens: Partial<GoogleTokenPayload>) { tokenResponse = { ...tokenResponse, ...tokens }; },
     get exchangeCount() { return exchangeCount; },
     advance(ms: number) { now += ms; },
@@ -60,7 +63,241 @@ function attempt(): CalendarOccurrence {
     generation: 1, updatedAt: 0 };
 }
 
+describe("TC-1100 connector reconnect and off reasons", () => {
+  test("flip repro regression: browserReconnect to the same Google subject preserves enabled custody and last-good status", async () => {
+    const f = fixture(); await f.enable();
+    await f.store.updateConnection(TENANT, row => row && { ...row, lastScanAt: 1_800_000_000_000 });
+    await f.connection.getStatus(TENANT);
+    const before = await f.store.getConnection(TENANT);
+    const custody = await f.credentials.status(source, TENANT);
+    let disabled = 0; f.options.onDisabled = () => { disabled++; };
+    await f.connection.browserReconnect(TENANT, "google-subject");
+    expect(await f.store.getConnection(TENANT)).toEqual(before);
+    expect(await f.credentials.status(source, TENANT)).toEqual(custody);
+    expect(f.connection.getLastGoodStatus(TENANT)?.body).toMatchObject({ enabled: true, offReason: null });
+    expect(await f.connection.getStatus(TENANT)).toMatchObject({ enabled: true, state: "on", offReason: null, lastScanAt: 1_800_000_000_000 });
+    expect(disabled).toBe(0);
+    expect(f.revokes).toHaveLength(0);
+  });
+
+  for (const subject of [undefined, "google-subject", "different-google-subject", "GOOGLE-SUBJECT"] as const) {
+    test(`successful browser exchange ${subject === undefined ? "without legacy identity" : subject === "google-subject" ? "with matching identity" : "with a different identity"} compares subjects after exchange`, async () => {
+      const f = fixture(); await f.enable(); await f.store.putOccurrence(attempt());
+      const before = await f.store.getConnection(TENANT);
+      f.setTokens({ subject });
+      const app = express(); app.use(express.json());
+      app.use((req, _res, next) => { req.user = { address: TENANT } as typeof req.user; next(); });
+      app.use("/oauth", createGoogleOAuthRouter({ oauth: f.oauth, autojoin: f.connection, appOrigin: "https://app.example.test" }));
+      const server = app.listen(0); await new Promise<void>(done => server.once("listening", done));
+      try {
+        const response = await fetch(`http://127.0.0.1:${(server.address() as AddressInfo).port}/oauth/exchange`, {
+          method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ code: "browser-code", verifier: VERIFIER }),
+        });
+        expect(response.status).toBe(200);
+        expect(await response.json()).not.toHaveProperty("subject");
+        const changed = subject !== undefined && subject !== "google-subject";
+        expect(await f.connection.getStatus(TENANT)).toMatchObject({ enabled: !changed,
+          offReason: changed ? "google_account_changed" : null });
+        if (changed) {
+          expect(await f.credentials.status(source, TENANT)).toBeNull();
+          expect(await f.store.getOccurrence(TENANT, "old-attempt")).toMatchObject({ stopRequested: true });
+        } else {
+          // Only the Meet token's grant bookkeeping is added (and only with a verified identity);
+          // policy and credential are untouched.
+          expect(await f.store.getConnection(TENANT)).toEqual(subject === undefined ? before
+            : { ...before, rev: before!.rev! + 1,
+              googleBrowserBinding: { version: 1, subjectHash: expect.stringMatching(/^[a-f0-9]{64}$/), tokenHashes: [expect.any(String), expect.any(String)] } });
+          expect(await f.credentials.status(source, TENANT)).not.toBeNull();
+          expect(f.connection.getLastGoodStatus(TENANT)?.body.enabled).toBe(true);
+        }
+        expect(f.revokes).toHaveLength(0);
+      } finally { await new Promise<void>(done => server.close(() => done())); }
+    });
+  }
+
+  test("a failed browser exchange leaves enabled policy, credential and cached status untouched", async () => {
+    const f = fixture(); await f.enable();
+    const before = await f.store.getConnection(TENANT);
+    f.oauth.exchangeCode = async () => { throw new GoogleOAuthError({ operation: "exchange", status: 400, error: "invalid_grant" }); };
+    const app = express(); app.use(express.json());
+    app.use((req, _res, next) => { req.user = { address: TENANT } as typeof req.user; next(); });
+    app.use("/oauth", createGoogleOAuthRouter({ oauth: f.oauth, autojoin: f.connection, appOrigin: "https://app.example.test" }));
+    const server = app.listen(0); await new Promise<void>(done => server.once("listening", done));
+    try {
+      const response = await fetch(`http://127.0.0.1:${(server.address() as AddressInfo).port}/oauth/exchange`, {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ code: "failed-code", verifier: VERIFIER }),
+      });
+      expect(response.status).toBe(400);
+      expect(await f.store.getConnection(TENANT)).toEqual(before);
+      expect(await f.credentials.status(source, TENANT)).not.toBeNull();
+      expect(f.connection.getLastGoodStatus(TENANT)?.body.enabled).toBe(true);
+    } finally { await new Promise<void>(done => server.close(() => done())); }
+  });
+
+  test("subject comparison reads the binding after acquiring tenant coordination", async () => {
+    const f = fixture(); await f.enable(); f.setTokens({ subject: "other-subject" }); await f.enable();
+    const gate = deferred<void>(); const entered = deferred<void>();
+    const writer = f.options.coordinator.run(TENANT, async () => {
+      entered.resolve(); await gate.promise;
+      await f.store.updateConnection(TENANT, row => row && { ...row, subject: "google-subject" });
+    });
+    await entered.promise;
+    const reconnect = f.connection.browserReconnect(TENANT, "google-subject");
+    await Promise.resolve(); gate.resolve();
+    await Promise.all([writer, reconnect]);
+    expect(await f.connection.getStatus(TENANT)).toMatchObject({ enabled: true, offReason: null });
+    expect(await f.credentials.status(source, TENANT)).not.toBeNull();
+  });
+
+  for (const path of ["disable", "disconnect", "accountChange", "needsReconnect", "invalidGrant", "expiredSetup", "pendingSetup", "neverEnabled"] as const) {
+    test(`off reason records ${path} and a later enable clears it`, async () => {
+      const f = fixture();
+      const reasons = { disable: "user_disabled", disconnect: "disconnected", accountChange: "google_account_changed",
+        needsReconnect: "needs_reconnect", invalidGrant: "invalid_grant", expiredSetup: "setup_expired",
+        pendingSetup: "setup_pending", neverEnabled: "never_enabled" };
+      if (path === "pendingSetup" || path === "expiredSetup") {
+        await f.exchange();
+        if (path === "expiredSetup") { f.advance(11 * 60_000); await f.connection.cleanupEnabling(TENANT); }
+      } else if (path !== "neverEnabled") {
+        await f.enable();
+        if (path === "disable") await f.connection.disable(TENANT);
+        else if (path === "disconnect") await f.connection.disconnect(TENANT);
+        else if (path === "accountChange") await f.connection.browserReconnect(TENANT, "other-subject");
+        else if (path === "needsReconnect") await f.connection.needsReconnect(TENANT, (await f.store.getConnection(TENANT))!.generation);
+        else {
+          f.oauth.refresh = async () => { throw new GoogleOAuthError({ operation: "refresh", status: 400, error: "invalid_grant" }); };
+          await expect(f.connection.accessToken(TENANT, true)).rejects.toMatchObject({ error: "invalid_grant" });
+        }
+      }
+      expect(await f.connection.getStatus(TENANT)).toMatchObject({ enabled: false, offReason: reasons[path] });
+      await f.enable();
+      expect(await f.connection.getStatus(TENANT)).toMatchObject({ enabled: true, offReason: null });
+    });
+  }
+
+  test("a legacy disabled row exposes an honest unknown reason", async () => {
+    const f = fixture();
+    await f.store.putConnection({ tenant: TENANT, subject: "legacy-subject", state: "disabled", generation: 1, scopes: [], nextScanAt: 0, scanComplete: false });
+    expect(await f.connection.getStatus(TENANT)).toMatchObject({ enabled: false, offReason: "unknown" });
+  });
+
+  test("same-account reconnect preserves a deliberate user disable", async () => {
+    const f = fixture(); await f.enable(); await f.connection.disable(TENANT);
+    const before = await f.store.getConnection(TENANT);
+    await f.connection.browserReconnect(TENANT, "google-subject");
+    expect(await f.store.getConnection(TENANT)).toEqual(before);
+    expect(await f.connection.getStatus(TENANT)).toMatchObject({ enabled: false, offReason: "user_disabled" });
+  });
+
+  test("a connector exchange without a bound autojoin account does not create a disabled row", async () => {
+    const f = fixture();
+    await f.connection.browserReconnect(TENANT, "google-subject");
+    expect(await f.store.getConnection(TENANT)).toBeNull();
+    expect(await f.connection.getStatus(TENANT)).toMatchObject({ enabled: false, offReason: "never_enabled" });
+  });
+
+  test("an expired setup is explained even before the worker cleans it up", async () => {
+    const f = fixture(); await f.exchange(); f.advance(11 * 60_000);
+    expect(await f.connection.getStatus(TENANT)).toMatchObject({ enabled: false, offReason: "setup_expired" });
+  });
+
+  for (const cause of ["missingCredential", "scopeLost", "probeRevoked"] as const) {
+    test(`authorization loss from ${cause} records its off reason`, async () => {
+      const f = fixture();
+      if (cause === "probeRevoked") {
+        const setup = await f.exchange();
+        f.calendar.probePrimary = async () => { throw new GoogleOAuthError({ operation: "refresh", status: 400, error: "invalid_grant" }); };
+        await expect(f.connection.enable(TENANT, setup.setupId)).rejects.toThrow();
+      } else {
+        await f.enable();
+        if (cause === "missingCredential") await f.credentials.delete(source, TENANT);
+        else f.oauth.refresh = async () => ({ access_token: "synthetic-access", scope: "openid" });
+        await expect(f.connection.accessToken(TENANT, true)).rejects.toThrow();
+      }
+      expect(await f.connection.getStatus(TENANT)).toMatchObject({ state: "needs_reconnect", enabled: false,
+        offReason: cause === "probeRevoked" ? "invalid_grant" : "needs_reconnect" });
+    });
+  }
+});
+
 describe("Calendar OAuth custody lifecycle", () => {
+  test("TC-1086: exchange and enable immediately reflect policy while retaining summarized history", async () => {
+    const f = fixture(); await f.enable();
+    await f.store.putOccurrence({ ...attempt(), phase: "terminal", disposition: "missed_window" });
+    await f.publishOutcomes();
+    const setup = await f.exchange();
+    expect(await f.connection.getStatus(TENANT)).toMatchObject({ state: "off", enabled: false,
+      outcomes: [{ id: "old-attempt", reason: "missed_window" }] });
+    expect(Object.keys(setup)).toEqual(["setupId"]); // No Google token reaches the browser.
+    expect(await f.connection.enable(TENANT, setup.setupId)).toMatchObject({ state: "on", enabled: true,
+      outcomes: [{ id: "old-attempt", reason: "missed_window" }] });
+  });
+
+  test("enable finishes from the pending setup and server credential alone and records no browser-held token", async () => {
+    const f = fixture();
+    f.setTokens({ scope: "openid email https://www.googleapis.com/auth/calendar.events.owned.readonly" });
+    const setup = await f.exchange();
+    // Nothing reaches the connection from the browser except the setupId.
+    expect(await f.connection.enable(TENANT, setup.setupId)).toMatchObject({ state: "on", enabled: true });
+    const row = (await f.store.getConnection(TENANT))!;
+    expect(row.scopes.sort()).toEqual(["email", "https://www.googleapis.com/auth/calendar.events.owned.readonly", "openid"]);
+    expect(f.probes).toEqual(["access-token"]);
+    // The browser holds none of this token, so no browser binding may describe it.
+    expect(row.googleBrowserBinding).toBeUndefined();
+  });
+
+  for (const operation of ["exchange", "enable", "disable", "disconnect", "browserReconnect"] as const) {
+    test(`TC-1086: user ${operation} invalidates even if the policy fields stay the same`, async () => {
+      const f = fixture(); await f.enable();
+      let setupId = "";
+      if (operation === "enable") { setupId = (await f.exchange()).setupId; await f.connection.getStatus(TENANT); }
+      const before = await f.store.getConnection(TENANT);
+      expect(f.connection.getLastGoodStatus(TENANT)).toBeDefined();
+      // Simulate a settings write with unchanged connection policy, to test the explicit user boundary.
+      const put = spyOn(f.store, "putConnection").mockResolvedValue(undefined);
+      f.options.statusBudgetMs = 0;
+      try {
+        if (operation === "exchange") await f.exchange();
+        else if (operation === "enable") await expect(f.connection.enable(TENANT, setupId)).rejects.toThrow();
+        else if (operation === "disable") await expect(f.connection.disable(TENANT)).rejects.toThrow();
+        else if (operation === "disconnect") await f.connection.disconnect(TENANT);
+        else await f.connection.browserReconnect(TENANT, "different-google-subject");
+        expect(await f.store.getConnection(TENANT)).toEqual(before);
+        expect(f.connection.getLastGoodStatus(TENANT)).toBeUndefined();
+      } finally { put.mockRestore(); }
+    });
+  }
+
+  for (const operation of ["exchange", "enable", "disable", "disconnect", "browserReconnect", "needsReconnect", "cleanupEnabling", "authorizationLost"] as const) {
+    test(`TC-1086: ${operation} invalidates the previous status, including post-write read failure`, async () => {
+      const f = fixture();
+      await f.enable();
+      let setupId = "";
+      if (operation === "enable" || operation === "cleanupEnabling") {
+        setupId = (await f.exchange()).setupId;
+        await f.connection.getStatus(TENANT);
+      }
+      expect(f.connection.getLastGoodStatus(TENANT)).toBeDefined();
+      f.options.statusBudgetMs = 0; // Only status fails: the mutation's own reads/writes still succeed.
+      if (operation === "exchange") await f.exchange();
+      else if (operation === "enable") await expect(f.connection.enable(TENANT, setupId)).rejects.toThrow();
+      else if (operation === "disable") await expect(f.connection.disable(TENANT)).rejects.toThrow();
+      else if (operation === "disconnect") await f.connection.disconnect(TENANT);
+      else if (operation === "browserReconnect") await f.connection.browserReconnect(TENANT, "different-google-subject");
+      else if (operation === "needsReconnect") {
+        await f.connection.needsReconnect(TENANT, (await f.store.getConnection(TENANT))!.generation);
+      } else if (operation === "cleanupEnabling") {
+        f.advance(10 * 60_000 + 1);
+        await f.connection.cleanupEnabling(TENANT);
+      } else {
+        f.oauth.refresh = async () => { throw new GoogleOAuthError({ status: 400, error: "invalid_grant", operation: "refresh" }); };
+        await expect(f.connection.accessToken(TENANT, true)).rejects.toThrow();
+      }
+      expect(f.connection.getLastGoodStatus(TENANT)).toBeUndefined();
+      await expect(f.connection.getStatus(TENANT)).rejects.toThrow();
+    });
+  }
+
   test("browser responses whitelist token fields and never return identity claims", () => {
     const internal = { access_token: "access", refresh_token: "refresh", subject: "google-subject", id_token: "signed-identity", email: "private@example.test" };
     expect(browserTokenPayload(internal)).toEqual({ access_token: "access", refresh_token: "refresh" });
@@ -189,6 +426,7 @@ describe("Calendar OAuth custody lifecycle", () => {
     await f.store.putOccurrence({ ...attempt(), id: "attached", idempotencyKey: undefined, phase: "pending", errorCode: "shared_capture_pending",
       sharedCapture: { ownerTenant: OTHER, ownerOccurrenceId: "owner-occurrence", attachedAt: 0 } });
     await f.store.putOccurrence({ ...attempt(), id: "shared", idempotencyKey: undefined, phase: "terminal", disposition: "shared" });
+    await f.publishOutcomes();
     const status = await f.connection.getStatus(TENANT);
     expect(status.outcomes.map(outcome => outcome.reason).sort()).toEqual(["already_recorded", "shared_capture_pending"]);
     expect(status.outcomes.every(outcome => !("meetingId" in outcome))).toBe(true);
@@ -198,7 +436,7 @@ describe("Calendar OAuth custody lifecycle", () => {
   test("browser-only reconnect ends custody and invalidates an in-flight enabling exchange", async () => {
     const f = fixture(); await f.enable();
     await f.connection.begin(TENANT, { state: STATE, challenge: CHALLENGE, consent: true });
-    await f.connection.browserReconnect(TENANT);
+    await f.connection.browserReconnect(TENANT, "different-google-subject");
     expect(await f.credentials.status(source, TENANT)).toBeNull();
     expect((await f.connection.getStatus(TENANT)).enabled).toBe(false);
     await expect(f.connection.exchange(TENANT, { state: STATE, code: "code", verifier: VERIFIER })).rejects.toThrow();
@@ -261,6 +499,7 @@ describe("Calendar OAuth custody lifecycle", () => {
     await f.enable();
     await f.store.putOccurrence({ ...attempt(), phase: "terminal", disposition: "missed_window" });
     await f.store.putOccurrence({ ...attempt(), id: "uncertain", errorCode: "lookup_identity_mismatch" });
+    await f.publishOutcomes();
     const status = await f.connection.getStatus(TENANT);
     expect(status.outcomes.map(outcome => outcome.reason).sort()).toEqual(["lookup_identity_mismatch", "missed_window"]);
   });
@@ -277,6 +516,7 @@ describe("Calendar OAuth custody lifecycle", () => {
       await f.store.putOccurrence({ ...attempt(), id: disposition, phase: "terminal", disposition });
     }
     await f.store.putOccurrence({ ...attempt(), id: "uncertain", disposition: "not_accepted", errorCode: "lookup_identity_mismatch" });
+    await f.publishOutcomes();
     const status = await f.connection.getStatus(TENANT);
     expect(status.outcomes).toHaveLength(30);
     expect(status.outcomes.slice(0, 4).map(row => row.reason).sort())
@@ -287,6 +527,7 @@ describe("Calendar OAuth custody lifecycle", () => {
       await f.store.putOccurrence({ ...attempt(), id: `failure-${i}`, phase: "terminal", disposition: "failed",
         start: attempt().start - (i + 1) * 60_000 });
     }
+    await f.publishOutcomes();
     const full = await f.connection.getStatus(TENANT);
     expect(full.outcomes).toHaveLength(30);
     expect(full.outcomes.every(row => row.reason !== "not_accepted")).toBe(true);
@@ -296,7 +537,7 @@ describe("Calendar OAuth custody lifecycle", () => {
     const f = fixture();
     let listed = 0;
     f.store.listOccurrences = async () => { listed++; return []; };
-    expect(await f.connection.getStatus(TENANT)).toEqual({ state: "off", enabled: false, lastScanAt: null, lastDispatchLag: null, errorCode: null, outcomes: [] });
+    expect(await f.connection.getStatus(TENANT)).toEqual({ state: "off", enabled: false, offReason: "never_enabled", lastScanAt: null, lastDispatchLag: null, errorCode: null, outcomes: [] });
     expect(listed).toBe(0);
   });
 
@@ -307,8 +548,8 @@ describe("Calendar OAuth custody lifecycle", () => {
     await expect(f.connection.getStatus(TENANT)).rejects.toThrow("kv_unavailable");
     f.store.getConnection = getConnection;
     await f.enable();
-    f.store.listOccurrences = async () => { throw new Error("kv_list_unavailable"); };
-    await expect(f.connection.getStatus(TENANT)).rejects.toThrow("kv_list_unavailable");
+    f.store.getStatusSummaryOrLegacy = async () => { throw new Error("kv_summary_unavailable"); };
+    await expect(f.connection.getStatus(TENANT)).rejects.toThrow("kv_summary_unavailable");
   });
 
   test("a disabled tenant keeps its outcome history", async () => {
@@ -328,9 +569,83 @@ describe("Calendar OAuth custody lifecycle", () => {
     expect(await f.credentials.status(source, TENANT)).toBeNull();
     expect((await f.connection.getStatus(TENANT)).enabled).toBe(false);
   });
+
+  test("disconnect with failing owner Exo teardown still deletes custody, disables, and revokes upstream", async () => {
+    const f = fixture(); await f.enable();
+    f.options.teardownExoOwner = async () => { throw new Error("Synthetic Exo teardown failure"); };
+    const result = await f.connection.disconnect(TENANT);
+    expect(result.status).toBe("disconnected");
+    expect(result.upstreamRevoked).toBe("ok");
+    expect(await f.credentials.status(source, TENANT)).toBeNull();
+    expect((await f.connection.getStatus(TENANT)).enabled).toBe(false);
+  });
+
+  test("disconnect runs owner Exo teardown after custody, enablement, and revocation", async () => {
+    const f = fixture(); await f.enable();
+    const seen: { custody: boolean; enabled: boolean }[] = [];
+    f.options.teardownExoOwner = async () => {
+      seen.push({ custody: (await f.credentials.status(source, TENANT)) !== null, enabled: (await f.connection.getStatus(TENANT)).enabled });
+    };
+    await f.connection.disconnect(TENANT);
+    expect(seen).toEqual([{ custody: false, enabled: false }]);
+  });
+
+  for (const step of ["onDisabled", "listOccurrences", "updateOccurrence", "credentialDelete"] as const) {
+    test(`disconnect revokes its captured token even if post-commit ${step} fails`, async () => {
+      const f = fixture(); await f.enable(); await f.store.putOccurrence(attempt());
+      const fail = async () => { throw new Error("Synthetic post-commit failure"); };
+      if (step === "onDisabled") f.options.onDisabled = () => { throw new Error("Synthetic post-commit failure"); };
+      else if (step === "credentialDelete") f.credentials.delete = fail;
+      else if (step === "listOccurrences") f.store.listOccurrences = fail;
+      else f.store.updateOccurrence = fail;
+      await expect(f.connection.disconnect(TENANT)).rejects.toThrow("Synthetic post-commit failure");
+      expect(f.revokes).toHaveLength(1);
+      expect((await f.store.getConnection(TENANT))?.state).toBe("disabled");
+      expect(f.connection.getLastGoodStatus(TENANT)).toBeUndefined();
+      if (step === "credentialDelete") expect(await f.credentials.status(source, TENANT)).not.toBeNull();
+      else expect(await f.credentials.status(source, TENANT)).toBeNull();
+    });
+  }
 });
 
 describe("authenticated autojoin routes", () => {
+  test("Google OAuth revoke succeeds when optional teardown projection publication fails", async () => {
+    const f = fixture(); await f.enable();
+    const publish = spyOn(f.store, "putStatusSummary").mockRejectedValue(new Error("Synthetic projection failure"));
+    const app = express(); app.use(express.json());
+    app.use((req, _res, next) => { req.user = { address: TENANT } as typeof req.user; next(); });
+    app.use("/oauth", createGoogleOAuthRouter({ oauth: f.oauth, autojoin: f.connection, appOrigin: "https://app.example.test" }));
+    const server = app.listen(0); await new Promise<void>(done => server.once("listening", done));
+    try {
+      const response = await fetch(`http://127.0.0.1:${(server.address() as AddressInfo).port}/oauth/revoke`, {
+        method: "POST", headers: { "content-type": "application/json" }, body: "{}",
+      });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ status: "disconnected", upstreamRevoked: "ok" });
+      expect(f.revokes).toHaveLength(1);
+      expect(await f.credentials.status(source, TENANT)).toBeNull();
+      expect((await f.store.getConnection(TENANT))?.state).toBe("disabled");
+    } finally { publish.mockRestore(); await new Promise<void>(done => server.close(() => done())); }
+  });
+
+  test("TC-1086: Google OAuth revoke clears a cached enabled status before status can time out", async () => {
+    const f = fixture(); await f.enable();
+    expect(f.connection.getLastGoodStatus(TENANT)?.body.enabled).toBe(true);
+    const app = express(); app.use(express.json());
+    app.use((req, _res, next) => { req.user = { address: TENANT } as typeof req.user; next(); });
+    app.use("/oauth", createGoogleOAuthRouter({ oauth: f.oauth, autojoin: f.connection, appOrigin: "https://app.example.test" }));
+    const server = app.listen(0); await new Promise<void>(done => server.once("listening", done));
+    const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}/oauth`;
+    try {
+      f.options.statusBudgetMs = 0;
+      const result = await fetch(`${base}/revoke`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+      expect(result.status).toBe(200);
+      expect((await result.json()).status).toBe("disconnected");
+      expect(f.connection.getLastGoodStatus(TENANT)).toBeUndefined();
+      await expect(f.connection.getStatus(TENANT)).rejects.toThrow();
+    } finally { await new Promise<void>(done => server.close(() => done())); }
+  });
+
   test("ordinary OAuth reconnect disables a rebind completed while its exchange was in flight", async () => {
     const f = fixture(); await f.enable();
     const original = f.oauth.exchangeCode;
@@ -350,8 +665,9 @@ describe("authenticated autojoin routes", () => {
       await started.promise;
       await f.enable();
       expect((await f.connection.getStatus(TENANT)).enabled).toBe(true);
-      response.resolve({ access_token: "ordinary-browser-token" });
+      response.resolve({ access_token: "ordinary-browser-token", subject: "different-google-subject" });
       expect((await pending).status).toBe(200);
+      expect(f.connection.getLastGoodStatus(TENANT)).toBeUndefined();
       expect((await f.connection.getStatus(TENANT)).enabled).toBe(false);
       expect(await f.credentials.status(source, TENANT)).toBeNull();
     } finally { await new Promise<void>(done => server.close(() => done())); }

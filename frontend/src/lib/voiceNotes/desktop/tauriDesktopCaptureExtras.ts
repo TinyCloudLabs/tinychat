@@ -8,7 +8,7 @@ import type { DesktopBridge } from "./desktopVoiceNotes";
 
 const PROGRESS_EVENT = "exo://recorder-model-progress";
 
-/** DesktopCaptureExtras bound to TC-880's `recorder_models_*`, `recorder_system_audio_*` and `recorder_auto_save_to_space_*` commands. */
+/** DesktopCaptureExtras bound to the recorder model and system audio commands. */
 export function createTauriDesktopCaptureExtras(bridge: DesktopBridge): DesktopCaptureExtras {
   const subscribe = (callback: (progress: DownloadProgress) => void) =>
     bridge.listen<DownloadProgress>(PROGRESS_EVENT, callback);
@@ -46,10 +46,6 @@ export function createTauriDesktopCaptureExtras(bridge: DesktopBridge): DesktopC
     systemAudioConsent: {
       get: () => bridge.invoke<boolean>("recorder_system_audio_consent_get"),
       set: (consented) => bridge.invoke<void>("recorder_system_audio_consent_set", { consented }),
-    },
-    autoSaveToSpace: {
-      get: () => bridge.invoke<boolean>("recorder_auto_save_to_space_get"),
-      set: (enabled) => bridge.invoke<void>("recorder_auto_save_to_space_set", { enabled }),
     },
   };
 }

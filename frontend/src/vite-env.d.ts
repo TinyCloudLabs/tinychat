@@ -31,6 +31,13 @@ interface ImportMetaEnv {
    * private transcription, whatever the backend says; the backend never supplies an upload origin.
    */
   readonly VITE_EXO_PTX_UPLOAD_ORIGIN?: string;
+  /** "false" turns web-only local replication OFF for this build (unset or anything else = ON; it also needs a qualified Chromium web browser and is off for any user who opted out). */
+  readonly VITE_EXO_REPLICATION?: string;
+  /**
+   * TC-2862: "true" lets the phone app's native local copy (the TinyCloudReplicaStore plugin) be used once the SDK can
+   * consume it. Unset (off) in every build; the sign-out wipe of that copy runs regardless.
+   */
+  readonly VITE_EXO_NATIVE_REPLICA?: string;
   /**
    * Exo mobile health spike (TC-525): "true" shows the development-only Health card in Connectors → Sources
    * (when the app's native Health plugin exists, i.e. Android and iOS debug builds). Unset in every normal build.
@@ -41,6 +48,8 @@ interface ImportMetaEnv {
    * prototype, and only debug builds of the app have the location permissions it needs.
    */
   readonly VITE_EXO_LOCATION_SPIKE?: string;
+  /** One Apps: "true" opens TinyCloud's own apps framed inside One with a silent scoped delegation. Unset = off (today's Apps page). */
+  readonly VITE_ONE_APPS?: string;
   /** "true" registers the PWA service worker under `vite dev` too (src/lib/pwa.ts); off by default. */
   readonly VITE_PWA_DEV?: string;
 }
@@ -57,3 +66,6 @@ interface ImportMeta {
 declare const __EXO_BUILD_INFO__:
   | { version?: string; commit?: string; build?: string; channel?: string }
   | undefined;
+
+/** One Apps build kind (vite.config.ts; frontend/bunfig.toml for `bun test`). Anything else is treated as production. */
+declare const __ONE_APPS_BUILD_KIND__: string;

@@ -1,7 +1,7 @@
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { CONNECTORS_SQL_DB_NAME } from "@tinyboilerplate/core";
 import type { ConnectorStorePort, PortResult } from "@tinyboilerplate/core";
-import { trackStorageWrites } from "../storageStatus";
+import { storageScopeFor, trackStorageWrites } from "../storageStatus";
 
 type SqlParam = string | number | Uint8Array | null;
 
@@ -11,7 +11,7 @@ function failure(error: { code?: string; message?: string }): PortResult<never> 
 
 /** Browser adapter for the shared, create-only transcript writer. */
 export function webConnectorPort(tcw: TinyCloudWeb): ConnectorStorePort {
-  const db = trackStorageWrites(tcw.sql.db(CONNECTORS_SQL_DB_NAME));
+  const db = trackStorageWrites(tcw.sql.db(CONNECTORS_SQL_DB_NAME), storageScopeFor(tcw));
   return {
     async query(sql, params) {
       const result = await db.query(sql, params as SqlParam[]);
@@ -22,7 +22,7 @@ export function webConnectorPort(tcw: TinyCloudWeb): ConnectorStorePort {
       return result.ok ? { ok: true, data: result.data } : failure(result.error);
     },
     async kvGet(key) {
-      const result = await tcw.kv.get(key);
+      const result = await tcw.kv.get(key, { source: "network" });
       if (result.ok) return { ok: true, data: "present" };
       if (result.error.code === "KV_NOT_FOUND") return { ok: true, data: "missing" };
       return failure(result.error);

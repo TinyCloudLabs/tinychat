@@ -1,3 +1,4 @@
+import { associateStorageAccountClient, storageScopeFor } from "./storageStatus";
 // One queue per TinyCloud space for the reads and writes that share a screen
 // (TC-761): the Library's reads and an upload's storage calls. TinyCloud drops
 // concurrent responses on one space, so they take turns.
@@ -10,6 +11,7 @@
 // own lane (useBackgroundDrain's), and voice-note saves are not queued.
 
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
+import { inForeground } from "./localFirst/requestLanes";
 
 const tails = new Map<string, Promise<void>>();
 const settle = () => undefined;
@@ -45,7 +47,9 @@ function queueCalls<T extends object>(service: T, spaceKey: string, returns: Par
       const wrap = returns[key as keyof typeof returns];
       if (wrap) return (...args: unknown[]) => wrap(method.apply(object, args));
       if (SYNCHRONOUS.has(key)) return method.bind(object);
-      return (...args: unknown[]) => runOnSpace(spaceKey, async () => method.apply(object, args));
+      // Library reads and uploads are the visible screen's work: they count in the
+      // foreground lane, so background copying waits for them.
+      return (...args: unknown[]) => runOnSpace(spaceKey, () => inForeground(async () => method.apply(object, args)));
     },
   });
 }
@@ -59,6 +63,7 @@ const scheduled = new WeakMap<TinyCloudWeb, TinyCloudWeb>();
  * gets the same handle (stable for React dependencies).
  */
 export function scheduledSpace(tcw: TinyCloudWeb): TinyCloudWeb {
+  const scope = storageScopeFor(tcw);
   const cached = scheduled.get(tcw);
   if (cached) return cached;
   const spaceKey = tcw.spaceId ?? tcw.did;
@@ -85,5 +90,6 @@ export function scheduledSpace(tcw: TinyCloudWeb): TinyCloudWeb {
     },
   });
   scheduled.set(tcw, proxy);
+  if (scope) associateStorageAccountClient(proxy, scope);
   return proxy;
 }

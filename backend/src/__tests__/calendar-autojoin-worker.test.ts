@@ -6,6 +6,9 @@ import { calendarOccurrenceIdentity, eligibleCalendarEvent, ExternalOperationLim
 import { MemoryTranscriberIndexStore } from "../services/transcriber-index.js";
 import { computeCreateRequestHash, TranscriptionApiError, type CreateMeetingInput, type TranscriptionApiClient, type TranscriptionMeeting } from "../services/transcription-api.js";
 
+import { KvResultError } from "@tinyboilerplate/server";
+import { BackendStorageLaneTimeout } from "../services/backend-storage-lane.js";
+import { GoogleOAuthError } from "../services/google-oauth.js";
 const TENANT = "0xaaaa";
 const SUBJECT = "google-subject";
 const START = Date.parse("2026-09-25T12:00:00Z");
@@ -120,7 +123,8 @@ describe("TC-988 late joins, RSVP outcomes, and discovery timing", () => {
       await f.worker().tick();
       expect(f.posts).toHaveLength(1);
       expect(await f.row()).toMatchObject({ phase: "sent", firstSeenAt: START + 480_000 });
-      expect(log.mock.calls).toEqual([["[calendar-autojoin] code=dispatch_lag seconds=480 discovered=480"]]);
+      expect(log.mock.calls).toEqual([["[calendar-autojoin] code=dispatch_lag seconds=480 discovered=480"],
+        ["[calendar-autojoin] code=tick_done ms=120000 tenants=1 rows=1 scans=1 timers=0"]]);
       const logged = JSON.stringify(log.mock.calls);
       for (const privateValue of ["Calendar title", "private@example.test", TENANT, SUBJECT, f.id,
         f.current.events[0]!.id, f.current.events[0]!.hangoutLink!]) expect(logged).not.toContain(privateValue);
@@ -1103,6 +1107,32 @@ describe("TC-581 shared capture across tenants", () => {
     expect(await f.index.list(B)).toEqual([]);
   });
 
+  // BOT_IN_CALL is the only gate on B's own POST: a live owner status must make B attach, not send.
+  for (const ptxStatus of ["queued", "joining", "waiting_for_admission", "needs_help", "in_progress"] as const) {
+    test(`an owner in ${ptxStatus} holds the call: B makes zero POSTs and waits as shared_capture_pending`, async () => {
+      const f = await twoTenants();
+      await f.worker().tick();
+      expect(f.posts.map(p => p.tenant)).toEqual([A]);
+      f.meeting().status = ptxStatus;
+      await f.connectB();
+      await f.worker().tick();
+      expect(f.posts.map(p => p.tenant)).toEqual([A]);
+      expect(await f.rowB()).toMatchObject({ phase: "pending", errorCode: "shared_capture_pending" });
+      expect((await f.rowB())?.sharedCapture?.ownerTenant).toBe(A);
+      expect(await f.index.list(B)).toEqual([]);
+    });
+  }
+
+  test("a completed owner does not hold the call: B's own POST goes out", async () => {
+    const f = await twoTenants();
+    await f.worker().tick();
+    f.meeting().status = "completed";
+    await f.connectB();
+    await f.worker().tick();
+    expect(f.posts.map(p => p.tenant)).toEqual([A, B]);
+    expect((await f.rowB())?.sharedCapture).toBeUndefined();
+  });
+
   test("A completes with B accepted: B's index gets A's id and provenance, disposition shared, marker written, rescan keeps it", async () => {
     const f = await twoTenants();
     await f.attach();
@@ -1574,5 +1604,97 @@ describe("TC-581 shared capture across tenants", () => {
     expect(await f.index.list(B)).toEqual(["mtg_1"]);
     expect(Object.keys(await f.index.shares(B))).toEqual(["mtg_1"]);
     expect(await f.rowB()).toMatchObject({ phase: "terminal", disposition: "shared" });
+  });
+});
+
+describe("calendar failure diagnostics", () => {
+  test("a tick queue timeout is classified without payload and the next tick can recover", async () => {
+    const f = await fixture();
+    const worker = f.worker();
+    const failure = spyOn(f.store, "listConnections").mockRejectedValue(
+      new BackendStorageLaneTimeout(`CANARY ${TENANT} private-key private-value`),
+    );
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await worker.tick();
+      expect(warn.mock.calls).toHaveLength(1);
+      expect(String(warn.mock.calls[0]![0])).toMatch(/^\{/);
+      expect(JSON.parse(String(warn.mock.calls[0]![0]))).toEqual({
+        event: "backend_log_error", component: "calendar-autojoin",
+        phase: "tick", error_name: "BackendStorageLaneTimeout", code: "storage_lane_timeout",
+      });
+      failure.mockRestore();
+      await worker.tick();
+      expect(f.posts).toHaveLength(1);
+    } finally { failure.mockRestore(); warn.mockRestore(); }
+  });
+
+  test("a tenant KV failure retains a closed code and HTTP status, not node payloads", async () => {
+    const f = await fixture();
+    const failure = spyOn(f.store, "listOccurrences").mockRejectedValue(new KvResultError({
+      code: "UNAVAILABLE_RETRYABLE", status: 503, message: `CANARY ${TENANT}`,
+      meta: { key: "PRIVATE-KEY", value: "PRIVATE-VALUE" },
+    }));
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await f.worker().tick();
+      expect(warn.mock.calls).toHaveLength(1);
+      expect(String(warn.mock.calls[0]![0])).toMatch(/^\{/);
+      expect(JSON.parse(String(warn.mock.calls[0]![0]))).toEqual({
+        event: "backend_log_error", component: "calendar-autojoin",
+        phase: "tenant_reconcile", error_name: "KvResultError", code: "unavailable_retryable", status: 503,
+      });
+      expect(f.posts).toHaveLength(0);
+    } finally { failure.mockRestore(); warn.mockRestore(); }
+  });
+
+  test("arbitrary error names, codes, statuses and values cannot enter calendar diagnostics", async () => {
+    const f = await fixture();
+    const hostile = Object.assign(new Error(`CANARY ${TENANT} PRIVATE-KEY PRIVATE-VALUE`),
+      { name: "PRIVATE-NAME", code: "PRIVATE-CODE", status: 503 });
+    const failure = spyOn(f.store, "listConnections").mockRejectedValue(hostile);
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await f.worker().tick();
+      expect(warn.mock.calls).toHaveLength(1);
+      expect(String(warn.mock.calls[0]![0])).toMatch(/^\{/);
+      expect(JSON.parse(String(warn.mock.calls[0]![0]))).toEqual({
+        event: "backend_log_error", component: "calendar-autojoin",
+        phase: "tick", error_name: "Error", code: "unexpected_error",
+      });
+    } finally { failure.mockRestore(); warn.mockRestore(); }
+  });
+
+  test("service errors cannot pass unknown or another service's codes through diagnostics", async () => {
+    const cases = [
+      { error: new KvResultError({ code: "PRIVATE_CODE", status: 503, meta: { value: "PRIVATE-VALUE" } }),
+        errorName: "KvResultError", code: "kv_failure", status: 503 },
+      { error: new GoogleCalendarError("invalid_grant", 429),
+        errorName: "GoogleCalendarError", code: "google_calendar_failure", status: 429 },
+      { error: new GoogleOAuthError({ error: "PRIVATE-CODE", status: 0, operation: "PRIVATE-OPERATION" }),
+        errorName: "GoogleOAuthError", code: "google_oauth_failure" },
+      { error: new TranscriptionApiError(600, "PRIVATE-CODE", "PRIVATE-VALUE"),
+        errorName: "TranscriptionApiError", code: "transcription_failure" },
+      { error: new CalendarAutojoinError("PRIVATE-CODE", 409),
+        errorName: "CalendarAutojoinError", code: "autojoin_failure", status: 409 },
+      { error: { name: "KvResultError", code: "UNAVAILABLE_RETRYABLE", status: 503, value: "PRIVATE-VALUE" },
+        errorName: "UnknownError", code: "unexpected_error" },
+    ];
+    const f = await fixture();
+    const failure = spyOn(f.store, "listConnections");
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      for (const entry of cases) {
+        failure.mockRejectedValue(entry.error);
+        warn.mockClear();
+        await f.worker().tick();
+        expect(warn.mock.calls).toHaveLength(1);
+        expect(JSON.parse(String(warn.mock.calls[0]![0]))).toEqual({
+          event: "backend_log_error", component: "calendar-autojoin", phase: "tick",
+          error_name: entry.errorName, code: entry.code,
+          ...(entry.status === undefined ? {} : { status: entry.status }),
+        });
+      }
+    } finally { failure.mockRestore(); warn.mockRestore(); }
   });
 });

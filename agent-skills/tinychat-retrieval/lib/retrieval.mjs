@@ -1,12 +1,13 @@
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdtemp, mkdir, chmod, writeFile, readFile, stat, lstat, open, rm } from 'node:fs/promises';
-import { constants, readFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { accessSync, constants, readFileSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import { join, dirname, isAbsolute, normalize } from 'node:path';
 
 const PACK = JSON.parse(readFileSync(new URL('../pack.json', import.meta.url), 'utf8'));
 export const PACK_VERSION = PACK.version;
+export const SETUP_CLI_VERSION = PACK.cli.setupMinimumVersion;
 
 const parseSemver = version => {
   const match = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.exec(version);
@@ -32,13 +33,22 @@ export function compareSemver(left, right) {
   return Math.sign(a.prerelease.length - b.prerelease.length);
 }
 export const DATABASE = 'xyz.tinycloud.tinychat/connectors';
-const SOURCES = ['fireflies', 'google-meet', 'tinycloud-transcriber', 'exo-local', 'exo-voice-note', 'exo-upload'];
+const SOURCES = ['fireflies', 'google-meet', 'tinycloud-transcriber', 'exo-local', 'exo-voice-note', 'exo-upload', 'exo-merged'];
 const PENDING_SNAPSHOT_KEY = `${DATABASE}/pending-reconcile-snapshot`;
 const PENDING_SNAPSHOT_MAX_BYTES = 1024 * 1024;
 const PENDING_SNAPSHOT_FIELDS = new Set(['version', 'changed_at', 'checked_at', 'count', 'meetings']);
 const PENDING_MEETING_FIELDS = new Set(['id', 'source', 'ts', 'storedAt', 'updatedAt', 'createdAt', 'startedAt', 'endedAt', 'completedAt', 'status', 'reconciled']);
 const PENDING_TIMESTAMP_FIELDS = ['ts', 'storedAt', 'updatedAt', 'createdAt', 'startedAt', 'endedAt', 'completedAt'];
 const COLUMNS = ['id', 'source', 'source_id', 'title', 'started_at', 'organizer_email', 'participants', 'summary_overview', 'summary_action_items', 'metadata', 'updated_at', 'sort_time'];
+// Combined meetings (TC-1152): an `exo-merged` row is one searchable meeting and the captures it lists in
+// metadata.merge.members are not (membership is source + source_id, never row id). A combined row whose metadata
+// is not readable as one (invalid JSON, no non-empty merge.members array, a member without text source and
+// source_id) is itself left out and hides nothing: a capture shown twice is recoverable, a hidden one is not.
+// Mirrors frontend/src/lib/meetingChat/corpus.ts; CASE nests because json_type/json_each raise on malformed JSON.
+const mergedMembersJson = a => `CASE WHEN json_valid(${a}.metadata) THEN CASE WHEN json_type(${a}.metadata, '$.merge.members') = 'array' THEN json_extract(${a}.metadata, '$.merge.members') ELSE '[]' END ELSE '[]' END`;
+const readableMergedRowSql = a => `(json_array_length(${mergedMembersJson(a)}) > 0 AND NOT EXISTS (SELECT 1 FROM json_each(${mergedMembersJson(a)}) b WHERE CASE WHEN b.type = 'object' THEN CASE WHEN coalesce(json_type(b.value, '$.source') = 'text' AND json_type(b.value, '$.source_id') = 'text' AND json_extract(b.value, '$.source') <> '' AND json_extract(b.value, '$.source_id') <> '', 0) THEN 0 ELSE 1 END ELSE 1 END = 1))`;
+const COMBINED_MEMBER_KEYS_SQL = `SELECT json_extract(k.value, '$.source') || '/' || json_extract(k.value, '$.source_id') FROM connector_meeting c, json_each(${mergedMembersJson('c')}) k WHERE c.source = 'exo-merged' AND CASE WHEN ${readableMergedRowSql('c')} THEN 1 ELSE 0 END = 1`;
+const COMBINED_MEETING_SQL = `(connector_meeting.source IS NULL OR connector_meeting.source != 'exo-merged' OR ${readableMergedRowSql('connector_meeting')}) AND (coalesce(connector_meeting.source, '') || '/' || coalesce(connector_meeting.source_id, '')) NOT IN (${COMBINED_MEMBER_KEYS_SQL})`;
 const LEGACY_WINNER_FILTER_SQL = "g.source IN ('exo-voice-note', 'exo-voice-note-dup') AND json_valid(g.metadata) AND json_extract(g.metadata, '$.transcription_outcome') IS NOT NULL";
 const LEGACY_WINNER_ORDER_SQL = "ORDER BY COALESCE(json_extract(g.metadata, '$.transcribed_at'), '') DESC, g.id ASC LIMIT 1";
 // sqlparser-rs rejects SQLite's two-argument TRIM; use this ECMAScript WhiteSpace ∪ LineTerminator set with nested LTRIM/RTRIM (https://tc39.es/ecma262/multipage/text-processing.html#sec-trimstring).
@@ -51,10 +61,10 @@ const MESSAGES = {
   INVALID_INPUT: 'Invalid arguments. Use --help for supported filters and limits.',
   INVALID_RESPONSE: 'The CLI response did not match the supported data contract.',
   INVALID_METADATA: 'The catalog contains unsupported or unsafe source metadata.',
-  AUTH_REQUIRED: 'The selected CLI profile has no usable session. Complete terminal authentication.',
-  AUTH_EXPIRED: 'The selected authorization has expired. Renew it through terminal consent.',
-  AUTH_OR_PERMISSION: 'The server rejected authorization without distinguishing authentication from permission. Inspect the selected profile and requested grant; do not assume a new login is needed.',
-  PERMISSION_DENIED: 'The selected session lacks permission for this read. Inspect its grant.',
+  AUTH_REQUIRED: 'The TinyCloud profile has no usable session. Run onboarding again (https://agents.tinycloud.xyz/onboarding), then retry.',
+  AUTH_EXPIRED: 'The TinyCloud sign-in has expired. Run onboarding again (https://agents.tinycloud.xyz/onboarding), then retry.',
+  AUTH_OR_PERMISSION: 'The server rejected authorization without distinguishing authentication from permission. Run setup.mjs prepare to check the profile; do not assume a new login is needed.',
+  PERMISSION_DENIED: 'The profile lacks permission for this read. Run setup.mjs authorize to ask once for TinyChat access with one OpenKey link.',
   OWNER_MISMATCH: 'The profile owner differs from --owner. Select the same identity as TinyChat.',
   CONTEXT_MISMATCH: 'This reference or continuation belongs to a different profile, host, or space.',
   SOURCE_CHANGED: 'The catalog identity changed. Discover and select the record again.',
@@ -70,8 +80,8 @@ const MESSAGES = {
   OUTPUT_LIMIT: 'This result exceeds the supported byte budget. Narrow the scope or reduce the page size.',
   TIMEOUT: 'The read exceeded its execution deadline.',
   CANCELLED: 'The read was cancelled.',
-  CLI_UNAVAILABLE: 'TinyCloud CLI was not found. Install the supported release or supply --tc.',
-  CLI_VERSION: 'TinyCloud CLI 0.9.0 or later is required. Setup requires 0.10.0 or later.',
+  CLI_UNAVAILABLE: 'TinyCloud CLI not found: run https://agents.tinycloud.xyz/onboarding or set TC_BIN.',
+  CLI_VERSION: `TinyCloud CLI ${PACK.cli.minimumVersion} or later is required; setup needs ${PACK.cli.setupMinimumVersion} or later. https://agents.tinycloud.xyz/onboarding installs it.`,
   CLI_ERROR: 'The CLI read failed. Inspect local diagnostics; raw CLI errors are not returned.',
 };
 export class RetrievalError extends Error {
@@ -108,8 +118,17 @@ function classified(error) {
   return new RetrievalError(code);
 }
 
+/** The TinyCloud CLI to run: TC_BIN if set, else the `tinycloud` that agents.tinycloud.xyz/onboarding installs, else `tinycloud` on PATH. Never `tc`. */
+export function defaultTc() {
+  if (process.env.TC_BIN) return process.env.TC_BIN;
+  const installed = join(homedir(), '.local/share/tinycloud/cli/node_modules/.bin/tinycloud');
+  const onPath = (process.env.PATH || '').split(':').filter(isAbsolute).map(dir => join(dir, 'tinycloud'));
+  for (const candidate of [installed, ...onPath]) { try { accessSync(candidate, constants.X_OK); return candidate; } catch { /* next */ } }
+  return installed; // Missing: running it fails with ENOENT, reported as CLI_UNAVAILABLE.
+}
+
 /** Only a literal executable and argument vector; never a shell or transcript-provided command. */
-export function createTcRunner({ executable = 'tc', timeoutMs = 30000, maxBuffer = 4 * 1024 * 1024 } = {}) {
+export function createTcRunner({ executable = defaultTc(), timeoutMs = 30000, maxBuffer = 4 * 1024 * 1024 } = {}) {
   return (args, { signal, outputFile, maxOutputBytes } = {}) => new Promise((resolve, reject) => {
     let tooLarge = false;
     const child = execFile(executable, args, { encoding: 'utf8', timeout: timeoutMs, maxBuffer, signal, windowsHide: true }, (error, stdout, stderr) => {
@@ -141,7 +160,7 @@ function filters(input, search = false) {
 }
 function validateAfter(after) { if (after !== null && (!object(after) || !safeId(after.id) || !(after.time === null || typeof after.time === 'number' && Number.isFinite(after.time)))) fail('INVALID_INPUT'); }
 function makeQuery(scope, after, limit, bodySearch = false, supportedOnly = false, transcriptOnly = false, voiceNoteCommitTableAvailable = false) {
-  const terms = ["(source IS NULL OR source != 'exo-voice-note-dup')"], params = [];
+  const terms = ["(source IS NULL OR source != 'exo-voice-note-dup')", COMBINED_MEETING_SQL], params = [];
   if (supportedOnly) { terms.push(`source IN (${SOURCES.map(() => '?').join(',')})`); params.push(...SOURCES); }
   if (transcriptOnly) {
     const legacyWinnerId = `(SELECT g.id FROM connector_meeting g WHERE g.source_id = connector_meeting.source_id AND ${LEGACY_WINNER_FILTER_SQL} ${LEGACY_WINNER_ORDER_SQL})`;
@@ -274,7 +293,14 @@ export function createRetrieval({ profile, host, space, owner, tc, runTc = creat
     return data;
   }
   const reference = row => token('reference', { id: row.id, source: row.source, sourceId: row.source_id });
-  const display = row => ({ id: row.id, ref: reference(row), source: row.source, sourceId: row.source_id, title: row.title, startedAt: row.started_at, organizerEmail: row.organizer_email, participants: row.participants, storedSummary: row.summary_overview, contentKind: row.contentKind, metadataMayBeTruncated: true, revision: null, readiness: 'unknown' });
+  const displayValue = value => typeof value === 'string' ? value.slice(0, 160) : null;
+  const provenanceValue = value => typeof value === 'string' ? value : null;
+  async function display(row, provenance) {
+    const voice = row.source === 'exo-voice-note'
+      ? provenance ?? (await voiceNoteBodyKey(row, true)).transcriptProvenance
+      : { engine: null, provider: null, model: null };
+    return { id: row.id, ref: reference(row), source: row.source, sourceId: row.source_id, title: row.title, startedAt: row.started_at, organizerEmail: row.organizer_email, participants: row.participants, storedSummary: row.summary_overview, contentKind: row.contentKind, engine: displayValue(voice.engine), provider: displayValue(voice.provider), model: displayValue(voice.model), metadataMayBeTruncated: true, revision: null, readiness: 'unknown' };
+  }
   async function authorize() {
     const status = parse(await run(['auth', 'status']));
     if (status?.authenticated !== true) fail('AUTH_REQUIRED');
@@ -340,18 +366,20 @@ export function createRetrieval({ profile, host, space, owner, tc, runTc = creat
     if (retained) await writeFile(file, data, { mode: 0o600 });
     return evidence;
   }
-  async function voiceNoteBodyKey(row) {
+  async function voiceNoteBodyKey(row, metadataOnly = false) {
     const legacyKey = `${DATABASE}/${row.source}/transcript/${row.source_id}`;
     if (await voiceNoteCommitTableAvailable()) {
-      const committed = parse(await run(['sql', 'query', 'SELECT body_key, outcome FROM voice_note_transcript WHERE source_id = ? LIMIT 2', '--db', DATABASE, '--space', context.space, '--params', JSON.stringify([row.source_id])]));
-      if (!Array.isArray(committed?.columns) || committed.columns.join(',') !== 'body_key,outcome' || !Array.isArray(committed.rows) || committed.rows.some(r => !Array.isArray(r) || r.length !== 2) || committed.rows.length > 1) fail('INVALID_RESPONSE');
+      const committed = parse(await run(['sql', 'query', 'SELECT body_key, outcome, engine, provider, model FROM voice_note_transcript WHERE source_id = ? LIMIT 2', '--db', DATABASE, '--space', context.space, '--params', JSON.stringify([row.source_id])]));
+      if (!Array.isArray(committed?.columns) || committed.columns.join(',') !== 'body_key,outcome,engine,provider,model' || !Array.isArray(committed.rows) || committed.rows.some(r => !Array.isArray(r) || r.length !== 5) || committed.rows.length > 1) fail('INVALID_RESPONSE');
       if (committed.rows.length) {
-        const [key, outcome] = committed.rows[0];
+        const [key, outcome, engine, provider, model] = committed.rows[0];
+        const transcriptProvenance = { engine: provenanceValue(engine), provider: provenanceValue(provider), model: provenanceValue(model) };
+        if (metadataOnly) return { transcriptProvenance };
         if (outcome === 'no_speech') omitTranscript(row, 'no_speech');
         if (outcome !== 'transcribed' || typeof key !== 'string') fail('INVALID_METADATA');
         const prefix = `${DATABASE}/${row.source}/transcript-rev/${row.source_id}/`;
         if (!key.startsWith(prefix) || !/^[a-f0-9]{32}$/.test(key.slice(prefix.length))) fail('INVALID_METADATA');
-        return { key, expectedText: null, legacy: false, legacyWinner: null };
+        return { key, expectedText: null, legacy: false, legacyWinner: null, transcriptProvenance };
       }
     }
     const winner = parse(await run([
@@ -360,13 +388,18 @@ export function createRetrieval({ profile, host, space, owner, tc, runTc = creat
       '--db', DATABASE, '--space', context.space, '--params', JSON.stringify([row.source_id]),
     ]));
     if (!Array.isArray(winner?.columns) || winner.columns.join(',') !== 'id,metadata' || !Array.isArray(winner.rows) || winner.rows.some(r => !Array.isArray(r) || r.length !== 2) || winner.rows.length > 1) fail('INVALID_RESPONSE');
-    if (!winner.rows.length) omitTranscript(row, 'not_transcribed');
+    if (!winner.rows.length) {
+      if (metadataOnly) return { transcriptProvenance: { engine: null, provider: null, model: null } };
+      omitTranscript(row, 'not_transcribed');
+    }
     const [winnerId, metadataJson] = winner.rows[0];
     if (!safeId(winnerId)) fail('INVALID_METADATA');
     let legacyMetadata;
     try { legacyMetadata = JSON.parse(metadataJson); } catch { fail('INVALID_METADATA'); }
     if (!object(legacyMetadata)) fail('INVALID_METADATA');
     const outcome = legacyMetadata.transcription_outcome;
+    const transcriptProvenance = { engine: provenanceValue(legacyMetadata.transcription_engine), provider: provenanceValue(legacyMetadata.transcript_provider), model: provenanceValue(legacyMetadata.model) };
+    if (metadataOnly) return { transcriptProvenance };
     if (outcome !== 'transcribed') omitTranscript(row, outcome === 'no_speech' ? 'no_speech' : ['pending', 'failed', 'skipped'].includes(outcome) ? outcome : 'not_transcribed');
     const expectedText = legacyMetadata.transcript_text;
     if (typeof expectedText !== 'string' || !expectedText.trim()) omitTranscript(row, 'not_transcribed');
@@ -377,12 +410,12 @@ export function createRetrieval({ profile, host, space, owner, tc, runTc = creat
       transcriptText: expectedText,
       transcriptTextSha256: transcriptTextSha256(expectedText),
     };
-    return { key: legacyKey, expectedText, legacy: true, legacyWinner };
+    return { key: legacyKey, expectedText, legacy: true, legacyWinner, transcriptProvenance };
   }
   async function body(row, expectedHash, retained = false) {
     const resolved = row.source === 'exo-voice-note'
       ? await voiceNoteBodyKey(row)
-      : { key: `${DATABASE}/${row.source}/transcript/${row.source_id}`, expectedText: null, legacy: false, legacyWinner: null };
+      : { key: `${DATABASE}/${row.source}/transcript/${row.source_id}`, expectedText: null, legacy: false, legacyWinner: null, transcriptProvenance: { engine: null, provider: null, model: null } };
     const { key, expectedText, legacy, legacyWinner } = resolved;
     const directory = retained ? acquisitionDir : await mkdtemp(join(tmpdir(), 'tinychat-read-'));
     const file = join(directory, 'body');
@@ -413,7 +446,7 @@ export function createRetrieval({ profile, host, space, owner, tc, runTc = creat
         } else evidence = decoded(data, row, key);
       }
       if (expectedHash !== undefined && evidence.provenance.bodySha256 !== expectedHash) fail('REVISION_CHANGED');
-      return evidence;
+      return { ...evidence, transcriptProvenance: resolved.transcriptProvenance };
     } finally {
       if (attempted) transfers.remoteBodyBytes += observedBytes ?? await lstat(file).then(info => info.isFile() ? info.size : 0).catch(() => 0);
       if (!retained) await rm(directory, { recursive: true, force: true });
@@ -423,7 +456,7 @@ export function createRetrieval({ profile, host, space, owner, tc, runTc = creat
     const row = await exact(ref); readAccess.sqlRead = true;
     const data = await body(row, undefined, true); readAccess.bodyRead = true; readAccess.currentAuthorityVerified = true; readAccess.currentBodyRevisionVerified = true;
     const acquiredAt = new Date().toISOString();
-    const manifest = { v: 1, context, contextHash, binding: acquisitionBinding, ref, row, acquiredAt, ...(data.provenance.bodyOrigin === 'legacy-metadata' ? { bodyOrigin: 'legacy-metadata' } : { kvKey: data.provenance.sourceLocation.kvKey }), ...(data.legacyWinner ? { legacyWinner: data.legacyWinner } : {}), bodySha256: data.provenance.bodySha256 };
+    const manifest = { v: 1, context, contextHash, binding: acquisitionBinding, ref, row, acquiredAt, transcriptProvenance: data.transcriptProvenance, ...(data.provenance.bodyOrigin === 'legacy-metadata' ? { bodyOrigin: 'legacy-metadata' } : { kvKey: data.provenance.sourceLocation.kvKey }), ...(data.legacyWinner ? { legacyWinner: data.legacyWinner } : {}), bodySha256: data.provenance.bodySha256 };
     const raw = JSON.stringify(manifest), manifestLimit = 128 * 1024 + 2 * bodyBytes;
     if (bytes(raw) > manifestLimit) fail('OUTPUT_LIMIT');
     await writeFile(join(acquisitionDir, 'manifest.json'), raw, { flag: 'wx', mode: 0o600 });
@@ -451,7 +484,9 @@ export function createRetrieval({ profile, host, space, owner, tc, runTc = creat
     const revisionPrefix = `${DATABASE}/exo-voice-note/transcript-rev/${row.source_id}/`;
     if (legacyWinner && bodyOrigin === 'kv' && kvKey !== legacyKey) fail('ACQUISITION_INVALID');
     if (bodyOrigin === 'kv' && kvKey !== legacyKey && (row.source !== 'exo-voice-note' || typeof kvKey !== 'string' || !kvKey.startsWith(revisionPrefix) || !/^[a-f0-9]{32}$/.test(kvKey.slice(revisionPrefix.length)))) fail('ACQUISITION_INVALID');
-    const data = decoded(rawBody, row, kvKey, bodyOrigin, legacyWinner);
+    const transcriptProvenance = object(manifest.transcriptProvenance) ? manifest.transcriptProvenance : { engine: null, provider: null, model: null };
+    if (Object.keys(transcriptProvenance).some(key => !['engine', 'provider', 'model'].includes(key)) || ['engine', 'provider', 'model'].some(key => transcriptProvenance[key] !== null && typeof transcriptProvenance[key] !== 'string')) fail('ACQUISITION_INVALID');
+    const data = { ...decoded(rawBody, row, kvKey, bodyOrigin, legacyWinner), transcriptProvenance };
     if (legacyWinner && normalizedTranscript(data.spans) !== normalizedTranscriptText(legacyWinner.transcriptText)) fail('ACQUISITION_INVALID');
     if (bodyOrigin === 'legacy-metadata' && (data.spans.length !== 1 || data.spans[0].text !== legacyWinner.transcriptText)) fail('ACQUISITION_INVALID');
     return { row, data, acquisition: { mode: 'local-historical', binding: acquisitionBinding, acquiredAt: manifest.acquiredAt, manifestSha256: state.acquisition.manifestSha256 } };
@@ -478,9 +513,10 @@ export function createRetrieval({ profile, host, space, owner, tc, runTc = creat
         continue;
       }
       const next = position(row);
-      const candidate = { ...result, records: [...result.records, display(row)], continuation: token('find', { scope, after: next, examined: examined + consumed + 1 }) };
+      const record = await display(row);
+      const candidate = { ...result, records: [...result.records, record], continuation: token('find', { scope, after: next, examined: examined + consumed + 1 }) };
       if (bytes(candidate) > envelopeBytes - 250) { if (!result.records.length) fail('OUTPUT_LIMIT'); break; }
-      result.records.push(display(row));
+      result.records.push(record);
       consumed++; nextAfter = next; lastIndex = i;
     }
     result.coverage.unsupportedSources = [...unsupported];
@@ -510,7 +546,7 @@ export function createRetrieval({ profile, host, space, owner, tc, runTc = creat
     const selected = row !== null && row.sort_time !== null;
     const status = !row ? 'empty' : selected ? 'selected' : 'no-dated-meeting';
     return finish(envelope('latest', {
-      records: selected ? [display(row)] : [],
+      records: selected ? [await display(row)] : [],
       selection: { intent: 'latest', resolved: selected, status, reason: selected ? 'Newest supported dated transcript-eligible catalog record selected. Read this reference; older catalog pages are unnecessary.' : row ? 'No supported transcript-eligible meeting has a usable start date; latest cannot be established.' : 'No transcript-eligible supported meeting exists within these filters.', ordering: 'startedAt instant descending; undated last; id ascending', tieBreak: 'id-ascending', tiedAtNewest: selected && secondSupported?.sort_time === row.sort_time, nextAction: selected ? 'read' : null },
       coverage: coverage({ searchScope: 'metadata', unsupportedSources: [...unsupported], omissions, examinedRecords: all.length, catalogRecordsExamined: all.length, moreCatalogRecords: all.length === 51, completeWithinScope: all.length < 51, unexaminedRecords: all.length === 51 ? 'unknown' : 0, discoveryConsistency: 'bounded observation of catalog order; concurrent changes may alter latest' }),
     }));
@@ -531,7 +567,7 @@ export function createRetrieval({ profile, host, space, owner, tc, runTc = creat
     }
     if (state.recordIndex >= data.spans.length || state.offset > data.spans[state.recordIndex].text.length || boundary(data.spans[state.recordIndex].text, state.offset) !== state.offset) fail('INVALID_INPUT');
     let recordIndex = state.recordIndex, offset = state.offset;
-    const result = envelope('read', { access: readAccess, ...(acquisition ? { acquisition } : {}), record: display(row), provenance: data.provenance, spans: [], coverage: coverage({ searchScope: 'exact-body', fullArtifactDecoded: true, totalRecords: data.spans.length, returnedRecords: 0, pageStartsAt: { recordIndex, offset }, completeWithinScope: false }) });
+    const result = envelope('read', { access: readAccess, ...(acquisition ? { acquisition } : {}), record: await display(row, data.transcriptProvenance), provenance: data.provenance, spans: [], coverage: coverage({ searchScope: 'exact-body', fullArtifactDecoded: true, totalRecords: data.spans.length, returnedRecords: 0, pageStartsAt: { recordIndex, offset }, completeWithinScope: false }) });
     const makeCursor = (i, at) => i < data.spans.length ? token('read', { ref: state.ref, hash: data.provenance.bodySha256, recordIndex: i, offset: at, ...(acquisition ? { acquisition: { binding: acquisition.binding, manifestSha256: acquisition.manifestSha256 } } : {}) }) : null;
     while (recordIndex < data.spans.length) {
       const original = data.spans[recordIndex];
@@ -632,7 +668,7 @@ export function createRetrieval({ profile, host, space, owner, tc, runTc = creat
         const span = data.spans[index]; pattern.lastIndex = offset; let match;
         while ((match = pattern.exec(span.text)) !== null) {
           const start = boundary(span.text, Math.max(0, match.index - 160)), end = boundary(span.text, Math.min(span.text.length, match.index + match[0].length + 160));
-          const item = { record: display(row), provenance: data.provenance, span: { ...span, text: span.text.slice(start, end), start, end, matchStart: match.index, matchEnd: match.index + match[0].length } };
+          const item = { record: await display(row, data.transcriptProvenance), provenance: data.provenance, span: { ...span, text: span.text.slice(start, end), start, end, matchStart: match.index, matchEnd: match.index + match[0].length } };
           state.pending = { ref: rowRef, hash: data.provenance.bodySha256, recordIndex: index, offset: match.index };
           const candidate = { ...result, matches: [...result.matches, item], continuation: continuation() };
           if (result.matches.length >= state.scope.limit || bytes(candidate) > envelopeBytes - 1000) { if (!result.matches.length && !result.omissions.length) fail('OUTPUT_LIMIT'); stopped = true; break; }

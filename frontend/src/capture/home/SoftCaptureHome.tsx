@@ -73,7 +73,7 @@ function InProgress(props: Pick<SoftCaptureHomeProps, "inProgress" | "pipelineNo
       return row.pipeline.current === "space" && space?.state === "waiting";
     });
   // The card replaces the plain pending row; everything else still shows as it does.
-  const rest: InProgressRowsViewProps = voice !== undefined && count > 0
+  const rest: InProgressRowsViewProps = card && voice !== undefined && count > 0
     ? {
         ...props.inProgress,
         voice: { ...voice, listing: { state: "unknown" } },

@@ -1,6 +1,7 @@
 import { browserTokenPayload, type CalendarAutojoinConnection } from "../services/calendar-autojoin-connection.js";
 import { randomBytes } from "node:crypto";
 import { Router } from "express";
+import { HOME_WEB_ORIGIN, TINYCHAT_WEB_ORIGIN, TINYCLOUD_ONE_WEB_ORIGIN, frontendOriginsFromEnv } from "../cors-origins.js";
 import type { NextFunction, Request, Response } from "express";
 
 import {
@@ -8,6 +9,8 @@ import {
   GoogleOAuthError,
   googleOAuthConfigFromEnv,
   googleOAuthNativeReturnEnabled,
+  googleDesktopClientId,
+  validDesktopRedirectUri,
   type GoogleOAuthConfig,
   type GoogleOAuthPort,
 } from "../services/google-oauth.js";
@@ -22,8 +25,8 @@ import {
  *  - `GET /start` and `GET /callback` mount WITHOUT `authMiddleware`. The callback is a top-level
  *    browser navigation from Google and carries no Bearer; global CSRF exempts GET. The
  *    anti-forgery control is the `state` param, minted by and validated in the SPA.
- *  - `POST /exchange|/refresh|/revoke` mount BEHIND `authMiddleware` (global CSRF covers the
- *    unsafe methods automatically).
+ *  - `GET /desktop/start` and `POST /exchange|/refresh|/revoke` mount BEHIND
+ *    `authMiddleware` (global CSRF covers the unsafe methods automatically).
  *
  * Browser-only exchanges never take custody. When autojoin is wired, reconnect first disables
  * unattended access and revocation removes its server credential. Only `{ code, state }`
@@ -80,14 +83,29 @@ function firstQueryValue(value: unknown): unknown {
 // nothing. It is never inferred from a header, a user agent or an Origin. Grammar:
 //
 //   `<nonce>`          — the web SPA (base64url, so it never contains a `.`): the postMessage page,
-//                        byte-for-byte what it has always been.
+//                        byte-for-byte what it has always been, pinned to the web return origin.
 //   `native.<nonce>`   — the Exo native app: a 302 to NATIVE_OAUTH_RETURN_URL.
+//   `tab.<path>.<nonce>` — web popup fallback: a 302 to the web return origin and path.
+//   `home.<nonce>`     — the TinyCloud Home site (HOME_WEB_ORIGIN): the postMessage page, pinned to
+//                        that fixed origin.
+//   `hometab.<path>.<nonce>` — the Home site's same-tab fallback: a 302 to HOME_WEB_ORIGIN and the
+//                        path, validated exactly as `tab.` paths are.
+//   `one.<nonce>`      — the Home app on tinycloud.one (TINYCLOUD_ONE_WEB_ORIGIN): the postMessage
+//                        page, pinned to that fixed origin.
+//   `onetab.<path>.<nonce>` — its same-tab fallback: a 302 to TINYCLOUD_ONE_WEB_ORIGIN and the path.
 //   `<anything>.<…>`   — an unknown tag: refused at /start and at /callback. Never defaulted.
+//
+// The SPA tags every flow it starts on HOME_WEB_ORIGIN or TINYCLOUD_ONE_WEB_ORIGIN, so an untagged or `tab.` flow was started
+// elsewhere. Its WEB RETURN ORIGIN is FRONTEND_URL, except when FRONTEND_URL is HOME_WEB_ORIGIN
+// itself: then it is TINYCHAT_WEB_ORIGIN, where visitors with unsynced local work stay, so their
+// flows still finish on tinycloud.chat. Every return origin must be in the FRONTEND_ORIGINS
+// allowlist (`frontendOriginsFromEnv`); a tag whose origin is not is refused like an unknown tag.
 //
 // The deep-link TARGET is a constant: nothing in the request chooses where the browser goes, only
 // the `code`/`state` values carried there, URL-encoded. It is a private-use scheme (RFC 8252 §7.1,
-// the reverse-DNS of the app id) rather than a claimed https link because App Links / Universal
-// Links need assetlinks.json / AASA published for the app's signing identity, which does not exist
+// the app's original reverse-DNS id; the app id is now xyz.tinycloud.home) rather than a claimed
+// https link because App Links / Universal Links need assetlinks.json / AASA published for the
+// app's signing identity, which does not exist
 // yet. Another app claiming the scheme can receive a code from a flow Exo started but not redeem
 // it (RFC 8252 §8.1): PKCE keeps the verifier inside Exo and the app re-checks the `state` it
 // minted. It does NOT stop a flow the other app STARTS itself (§8.6): that app mints its own state
@@ -98,7 +116,7 @@ function firstQueryValue(value: unknown): unknown {
 // (`GOOGLE_OAUTH_NATIVE_RETURN`, see `googleOAuthNativeReturnEnabled`): with it off, `native.`
 // states are refused at `/start` and `/callback` never sends a code to the deep link.
 
-/** The `state` tag of the Exo native app (Android, iOS; desktop can register the same scheme). */
+/** The `state` tag of the Exo phone app (Android and iOS). */
 export const NATIVE_OAUTH_CLIENT = "native";
 
 /** Where a native-tagged flow returns. Must match `CFBundleURLSchemes` and the Android intent-filter. */
@@ -107,10 +125,16 @@ export const NATIVE_OAUTH_RETURN_URL = "xyz.tinycloud.exo://oauth/google";
 /** The only `error` value a native return carries. Google's own error text is never forwarded. */
 export const NATIVE_OAUTH_NOT_COMPLETED = "not_completed";
 
+/** The `state` tag of the TinyCloud Home site's popup flow. */
+export const HOME_OAUTH_CLIENT = "home";
+
+/** The `state` tag of the tinycloud.one popup flow. */
+export const ONE_OAUTH_CLIENT = "one";
+
 /** The nonce after the tag: base64url, the alphabet the app mints it in. */
 const NATIVE_STATE_NONCE_PATTERN = /^[A-Za-z0-9_-]{16,}$/;
 
-export type OAuthReturnClient = "web" | "native";
+export type OAuthReturnClient = "web" | "native" | "tab" | "home" | "hometab" | "one" | "onetab";
 
 /**
  * The client a (shape-valid) `state` selects, or `null` for a tag no client mints. Callers check
@@ -119,8 +143,25 @@ export type OAuthReturnClient = "web" | "native";
 export function oauthReturnClient(state: string): OAuthReturnClient | null {
   const separator = state.indexOf(".");
   if (separator === -1) return "web";
+  if (state.startsWith("tab.")) return tabReturnPath(state) ? "tab" : null;
+  if (state.startsWith("hometab.")) return tabReturnPath(state) ? "hometab" : null;
+  if (state.startsWith("onetab.")) return tabReturnPath(state) ? "onetab" : null;
+  if (state.slice(0, separator) === ONE_OAUTH_CLIENT) {
+    return NATIVE_STATE_NONCE_PATTERN.test(state.slice(separator + 1)) ? "one" : null;
+  }
+  if (state.slice(0, separator) === HOME_OAUTH_CLIENT) {
+    return NATIVE_STATE_NONCE_PATTERN.test(state.slice(separator + 1)) ? "home" : null;
+  }
   if (state.slice(0, separator) !== NATIVE_OAUTH_CLIENT) return null;
   return NATIVE_STATE_NONCE_PATTERN.test(state.slice(separator + 1)) ? "native" : null;
+}
+
+function tabReturnPath(state: string): string | null {
+  const match = /^(?:home|one)?tab\.([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]{16,})$/.exec(state);
+  if (!match) return null;
+  const path = Buffer.from(match[1], "base64url").toString("utf8");
+  return path.startsWith("/") && !path.startsWith("//") && !/[\\#\p{Cc}]/u.test(path) &&
+    !path.includes("?") && path.length <= 256 ? path : null;
 }
 
 /** The fixed deep link with `{ code, state }` or `{ error, state }` as its only query. */
@@ -195,12 +236,13 @@ function renderCancelledPage(): string {
 }
 
 /**
- * The app origin the callback page pins its `postMessage` to.
- *
- * The web member of the CORS allowlist comes from this same `FRONTEND_URL`, with a localhost
- * fallback that depends on whether local TLS files are present. Exo's fixed Tauri and Capacitor
- * origins are also allowed to call the API, but the callback page postMessages only to this pinned
- * web origin. The Exo apps return through the fixed native deep link instead (`native.` states).
+ * FRONTEND_URL: the web app origin. It picks the web return origin of untagged and `tab.` flows
+ * (see "Native (Exo app) return"); `home.`/`hometab.` flows return to the fixed `HOME_WEB_ORIGIN`, and
+ * `one.`/`onetab.` flows to the fixed `TINYCLOUD_ONE_WEB_ORIGIN`.
+ * Both must be in the FRONTEND_ORIGINS allowlist, which always contains FRONTEND_URL. Exo's fixed
+ * Tauri and Capacitor origins are also allowed to call the API, but the callback page postMessages
+ * only to one of these web origins. The Exo apps return through the fixed native deep link instead
+ * (`native.` states).
  */
 export const APP_ORIGIN_ENV = "FRONTEND_URL";
 
@@ -246,14 +288,18 @@ export interface GoogleOAuthRouterOptions {
   oauth?: GoogleOAuthPort;
   /** Defaults to `googleOAuthConfigFromEnv()` — which throws when armed-but-unregistered. */
   config?: GoogleOAuthConfig;
-  /** Defaults to `googleAppOriginFromEnv()`. Pinned target of the callback `postMessage`. */
+  /** Defaults to `googleAppOriginFromEnv()` (FRONTEND_URL). Picks the untagged/`tab.` return origin. */
   appOrigin?: string;
+  /** Defaults to `frontendOriginsFromEnv(appOrigin)`. Every return origin must be in this list. */
+  frontendOrigins?: readonly string[];
   autojoin?: CalendarAutojoinConnection;
   /**
    * Return `native.` flows to the Exo app's deep link. Defaults to `googleOAuthNativeReturnEnabled()`
    * (off). Off: `native.` states are refused at `/start` and get the no-code page at `/callback`.
    */
   nativeReturn?: boolean;
+  desktopClientId?: string;
+  desktopOAuth?: (redirectUri: string) => GoogleOAuthPort;
 }
 
 export function createGoogleOAuthRouter(
@@ -264,7 +310,21 @@ export function createGoogleOAuthRouter(
   const appOrigin = normalizeAppOrigin(
     options.appOrigin ?? googleAppOriginFromEnv(),
   );
+  const frontendOrigins = options.frontendOrigins ?? frontendOriginsFromEnv(appOrigin);
+  const webOrigin = appOrigin === HOME_WEB_ORIGIN ? TINYCHAT_WEB_ORIGIN : appOrigin;
+  const webReturn = frontendOrigins.includes(webOrigin) ? webOrigin : null;
+  const homeReturn = frontendOrigins.includes(HOME_WEB_ORIGIN) ? HOME_WEB_ORIGIN : null;
+  const oneReturn = frontendOrigins.includes(TINYCLOUD_ONE_WEB_ORIGIN) ? TINYCLOUD_ONE_WEB_ORIGIN : null;
+  /** Where a web-family flow returns, or `null` when that origin is not allowlisted. */
+  const returnOrigins: Record<"web" | "tab" | "home" | "hometab" | "one" | "onetab", string | null> = {
+    web: webReturn, tab: webReturn, home: homeReturn, hometab: homeReturn, one: oneReturn, onetab: oneReturn,
+  };
   const nativeReturn = options.nativeReturn ?? googleOAuthNativeReturnEnabled();
+  const desktopClientId = options.desktopClientId ?? googleDesktopClientId();
+  const desktopOAuth = (redirectUri: string): GoogleOAuthPort =>
+    options.desktopOAuth?.(redirectUri) ?? new GoogleOAuthClient({
+      ...config, clientId: desktopClientId, clientSecret: "", redirectUri,
+    });
 
   const router = Router();
   router.use((_req, res, next) => { res.setHeader("Cache-Control", "no-store"); next(); });
@@ -291,12 +351,15 @@ export function createGoogleOAuthRouter(
   router.get("/start", (req: Request, res: Response) => {
     const state = firstQueryValue(req.query.state);
     const challenge = firstQueryValue(req.query.challenge);
+    const client = isValidOAuthState(state) ? oauthReturnClient(state) : null;
     if (
       !isValidOAuthState(state) ||
       // An unknown client tag would dead-end at /callback AFTER the user consented; refuse it now.
-      oauthReturnClient(state) === null ||
+      client === null ||
       // The native return is off (see "Native (Exo app) return"): refuse before Google is asked.
-      (oauthReturnClient(state) === "native" && !nativeReturn) ||
+      (client === "native" && !nativeReturn) ||
+      // A web flow whose return origin is not allowlisted has nowhere to land.
+      (client !== "native" && returnOrigins[client] === null) ||
       !isValidPkceChallenge(challenge)
     ) {
       logGoogleOAuth("op=start result=invalid_request");
@@ -308,11 +371,24 @@ export function createGoogleOAuthRouter(
     res.redirect(302, oauth.authorizeUrl({ state, challenge }));
   });
 
+  /** Authenticated desktop client: exact loopback URI, ephemeral port, mandatory S256 challenge. */
+  router.get("/desktop/start", (req: Request, res: Response) => {
+    const state = firstQueryValue(req.query.state);
+    const challenge = firstQueryValue(req.query.challenge);
+    const redirectUri = firstQueryValue(req.query.redirectUri);
+    if (!desktopClientId) { res.status(503).json({ error: "desktop_client_unconfigured" }); return; }
+    if (!isValidOAuthState(state) || oauthReturnClient(state) !== "web" ||
+        !isValidPkceChallenge(challenge) || !validDesktopRedirectUri(redirectUri)) {
+      res.status(400).json({ error: "invalid_request" }); return;
+    }
+    res.status(200).json({ authorizationUrl: desktopOAuth(redirectUri).authorizeUrl({ state, challenge }) });
+  });
+
   /**
    * `GET /callback?code=…&state=…` — the popup's landing page. Unauthenticated by necessity
    * (a top-level navigation from Google carries no Bearer) and harmless: it holds no session,
-   * reads no store, and hands the code to exactly one fixed destination: the pinned app origin,
-   * or, for a `native.` state, the constant app deep link.
+   * reads no store, and hands the code to exactly one fixed destination: the allowlisted return
+   * origin the state's tag selects, or, for a `native.` state, the constant app deep link.
    */
   router.get("/callback", (req: Request, res: Response) => {
     const code = firstQueryValue(req.query.code);
@@ -342,11 +418,25 @@ export function createGoogleOAuthRouter(
       return;
     }
 
+    const validState = isValidOAuthState(state) ? state : null;
+    const returnClient = validState === null ? null : oauthReturnClient(validState);
+    const returnOrigin = returnClient === null || returnClient === "native" ? null : returnOrigins[returnClient];
+    if (validState !== null && returnOrigin !== null && (returnClient === "tab" || returnClient === "hometab" || returnClient === "onetab")) {
+      const path = tabReturnPath(validState)!;
+      const params = new URLSearchParams({ state: validState });
+      if (isBoundedString(code, MAX_CODE_LENGTH)) params.set("google_oauth_code", code);
+      else params.set("google_oauth_error", "not_completed");
+      res.setHeader("Content-Security-Policy", "default-src 'none'; sandbox");
+      res.redirect(302, `${returnOrigin}${path}?${params}`);
+      return;
+    }
+
     if (
       !isBoundedString(code, MAX_CODE_LENGTH) ||
       !isValidOAuthState(state) ||
       // A tag no client mints is not "the web": it gets the no-code page, never a postMessage.
-      oauthReturnClient(state) !== "web"
+      (returnClient !== "web" && returnClient !== "home" && returnClient !== "one") ||
+      returnOrigin === null
     ) {
       // A denial (`?error=access_denied`) or a malformed return. NOTHING is postMessaged: the
       // SPA reads a popup that closed without a message as "cancelled", which is what happened.
@@ -363,7 +453,7 @@ export function createGoogleOAuthRouter(
     );
     logGoogleOAuth("op=callback result=posted");
     res.status(200).send(
-      renderCallbackPage({ code, state, appOrigin, nonce }),
+      renderCallbackPage({ code, state, appOrigin: returnOrigin, nonce }),
     );
   });
 
@@ -372,23 +462,24 @@ export function createGoogleOAuthRouter(
     const body = (req.body ?? {}) as Record<string, unknown>;
     const code = body.code;
     const verifier = body.verifier;
+    const desktopRedirectUri = body.desktopRedirectUri;
     if (
       !isBoundedString(code, MAX_CODE_LENGTH) ||
-      !isBoundedString(verifier, MAX_VERIFIER_LENGTH)
+      !isBoundedString(verifier, MAX_VERIFIER_LENGTH) ||
+      !/^[A-Za-z0-9._~-]{43,128}$/.test(verifier) ||
+      (desktopRedirectUri !== undefined && (!desktopClientId || !validDesktopRedirectUri(desktopRedirectUri)))
     ) {
       logGoogleOAuth("op=exchange result=invalid_request");
       res.status(400).json({ error: "invalid_request" });
       return;
     }
     try {
-      if (options.autojoin) {
-        const tenant = req.user?.address;
-        if (!tenant) { res.status(401).json({ error: "unauthorized" }); return; }
-        await options.autojoin.browserReconnect(tenant.toLowerCase());
-      }
-      const payload = await oauth.exchangeCode({ code, verifier });
-      // A concurrent autojoin rebind during the network exchange must not outlive this browser account switch.
-      if (options.autojoin) await options.autojoin.browserReconnect(req.user!.address.toLowerCase());
+      const tenant = req.user?.address;
+      if (options.autojoin && !tenant) { res.status(401).json({ error: "unauthorized" }); return; }
+      const payload = await (desktopRedirectUri ? desktopOAuth(desktopRedirectUri) : oauth).exchangeCode({ code, verifier });
+      // Compare after success against the latest binding, including a rebind during exchange.
+      if (options.autojoin) await options.autojoin.browserReconnect(tenant!.toLowerCase(), payload.subject,
+        [payload.access_token, payload.refresh_token].filter((token): token is string => !!token));
       logGoogleOAuth(
         `op=exchange result=ok refresh_token=${payload.refresh_token === undefined ? "absent" : "present"}`,
       );
@@ -402,13 +493,15 @@ export function createGoogleOAuthRouter(
   router.post("/refresh", async (req: Request, res: Response) => {
     const body = (req.body ?? {}) as Record<string, unknown>;
     const refreshToken = body.refreshToken;
-    if (!isBoundedString(refreshToken, MAX_TOKEN_LENGTH)) {
+    const desktop = body.client === "desktop";
+    if (!isBoundedString(refreshToken, MAX_TOKEN_LENGTH) ||
+        (body.client !== undefined && !desktop) || (desktop && !desktopClientId)) {
       logGoogleOAuth("op=refresh result=invalid_request");
       res.status(400).json({ error: "invalid_request" });
       return;
     }
     try {
-      const payload = await oauth.refresh(refreshToken);
+      const payload = await (desktop ? desktopOAuth("http://127.0.0.1:1/oauth/google") : oauth).refresh(refreshToken);
       logGoogleOAuth("op=refresh result=ok");
       res.status(200).json(browserTokenPayload(payload));
     } catch (error) {

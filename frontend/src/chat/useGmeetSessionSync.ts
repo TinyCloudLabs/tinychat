@@ -36,12 +36,18 @@
 // flight rather than racing it over the same upserts.
 
 import { useEffect } from "react";
+import { startPersistingGmeetRunLog } from "@/lib/connectors/gmeetSyncLogStore";
+import { resolveBuildInfo } from "@/lib/buildInfo";
+import { appPlatform } from "@/lib/platform";
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { CONNECTORS } from "@/lib/connectors/registry";
 import {
   countMeetings,
+  loadGmeetNotesIndex,
+  getDriveProgress,
+  putDriveProgress,
   getDriveCursor,
   putDriveCursor,
   findGmeetNotesAssociation,
@@ -61,7 +67,9 @@ import {
   type SecretsResult,
 } from "@/lib/connectors/connectorSecrets";
 import { GmeetClient } from "@/lib/connectors/gmeetClient";
+import { googleRefreshGrant } from "@/lib/connectors/googleOAuthDesktop";
 import {
+  stopGmeetSyncForAccount,
   syncGoogleMeet,
   type GmeetSyncClient,
   type GmeetSyncOptions,
@@ -150,6 +158,9 @@ const DEFAULT_STORE: GmeetSyncStore = {
   findGmeetNotesAssociation,
   attachGmeetNotes,
   removeGmeetNotes,
+  loadGmeetNotesIndex,
+  getDriveProgress,
+  putDriveProgress,
 };
 
 /**
@@ -180,6 +191,15 @@ let attempted = false;
  */
 let inFlight: Promise<GmeetSessionSyncOutcome> | null = null;
 
+/**
+ * Resolves when the session-start run in flight has finished its foreground part (immediately when none
+ * is running). A press whose own unlock re-armed that run waits here, so it sees the run the unlock
+ * started instead of racing it for the engine's slot. Never rejects.
+ */
+export async function awaitGmeetSessionSync(): Promise<void> {
+  await inFlight?.catch(() => {});
+}
+
 /** True once a real attempt has been made this page load. */
 export function hasGmeetSessionSyncRun(): boolean {
   return attempted;
@@ -191,6 +211,9 @@ export function resetGmeetSessionSyncForTests(): void {
   inFlight = null;
 }
 
+/** Wait before the one retry of a mint whose request never got an answer (a connection the network closed). */
+const MINT_RETRY_DELAY_MS = 750;
+
 /**
  * Mint a Google access token through the authenticated backend proxy.
  *
@@ -200,6 +223,9 @@ export function resetGmeetSessionSyncForTests(): void {
  * (400/401), a 5xx, a transport error, malformed JSON — resolves to null. The
  * session is deliberately NOT cleared on a 401: this is a background lane, and
  * the app shell owns auth state.
+ *
+ * A request that got no answer at all (the network closed the connection) is sent ONCE more after a
+ * short wait; an answer, whatever its status, is final. Stop (the signal) cancels the wait.
  */
 export async function mintGmeetAccessToken(opts: {
   backendUrl: string;
@@ -207,29 +233,42 @@ export async function mintGmeetAccessToken(opts: {
   refreshToken: string;
   signal?: AbortSignal;
   fetchImpl?: typeof fetch;
+  retryDelayMs?: number;
 }): Promise<string | null> {
   const { backendUrl, sessionStore, refreshToken, signal } = opts;
   const bearer = sessionStore.getToken();
   if (!bearer || sessionStore.isExpired()) return null;
   // `fetch` MUST stay bound to the global (see gmeetClient.ts's note).
   const fetchImpl = opts.fetchImpl ?? fetch.bind(globalThis);
+  const send = () => fetchImpl(`${backendUrl}${GOOGLE_OAUTH_REFRESH_PATH}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${bearer}`,
+      [REQUEST_HEADER_NAME]: REQUEST_HEADER_VALUE,
+    },
+    body: JSON.stringify(googleRefreshGrant(refreshToken)),
+    signal,
+  });
 
   let response: Response;
   try {
-    response = await fetchImpl(`${backendUrl}${GOOGLE_OAUTH_REFRESH_PATH}`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${bearer}`,
-        [REQUEST_HEADER_NAME]: REQUEST_HEADER_VALUE,
-      },
-      body: JSON.stringify({ refreshToken }),
-      signal,
-    });
+    response = await send();
   } catch {
     // Not narrated: a transport error can echo the request, and no credential
     // material reaches a log from this module.
-    return null;
+    if (signal?.aborted) return null;
+    await new Promise<void>((resolve) => {
+      const finish = () => { clearTimeout(timer); signal?.removeEventListener("abort", finish); resolve(); };
+      const timer = setTimeout(finish, opts.retryDelayMs ?? MINT_RETRY_DELAY_MS);
+      signal?.addEventListener("abort", finish, { once: true });
+    });
+    if (signal?.aborted) return null;
+    try {
+      response = await send();
+    } catch {
+      return null;
+    }
   }
 
   if (!response.ok) return null;
@@ -345,20 +384,35 @@ async function runGmeetSessionSync(
     return "token-unavailable";
   }
 
+  // The Notes reconcile outlives this run (and the mount that started it), so the client it
+  // runs on must not be cut by the mount's abort once the engine has handed the Notes off.
+  // Until then an unmount still reaches the client, as before.
+  const clientAc = new AbortController();
+  let notesHandedOff = false;
+  const forwardAbort = () => { if (!notesHandedOff) clientAc.abort(); };
+  signal?.addEventListener("abort", forwardAbort, { once: true });
+  if (signal?.aborted) clientAc.abort();
+
   // The client re-mints ONCE on a 401 through the same proxy — the refresh
   // token never leaves this scope.
   const client = (hooks.createClient ?? defaultCreateClient)(
     accessToken,
-    () => mint(refreshToken, signal),
-    signal,
+    () => mint(refreshToken, clientAc.signal),
+    clientAc.signal,
   );
 
+  // Deferred, like the connect dialog: the foreground slot is held for the Meet records
+  // only, and the Notes reconcile (parallel, checkpointed) runs in the background where the
+  // Connectors card shows its progress and a Full rescan can wait for it.
   const result = await (hooks.runSync ?? syncGoogleMeet)({
     client,
     store: hooks.store ?? DEFAULT_STORE,
     tcw,
     signal,
+    deferNotes: true,
   });
+  notesHandedOff = result.ok && result.data.notesDeferred === true;
+  signal?.removeEventListener("abort", forwardAbort);
 
   if (!result.ok) {
     // The KIND only. Google's message can be long and is not ours to narrate
@@ -396,15 +450,28 @@ export function useGmeetSessionSync(options: Omit<GmeetSessionSyncOptions, "sign
       hooks,
       signal: controller.signal,
     };
+    // Every run's log (this lane's, the dialog's, a card press) is kept for this account so
+    // it can be copied after a reload. Mounted here because this shell outlives the card.
+    let build: string | null = null;
+    void resolveBuildInfo(appPlatform()).then((label) => { build = label; }, () => {});
+    const stopLog = startPersistingGmeetRunLog(tcw, { build: () => build });
     void maybeStartGmeetSessionSync(current);
     const off = onSecretsUnlocked(() => {
       void maybeStartGmeetSessionSync(current);
     });
     return () => {
       off();
+      stopLog();
       controller.abort();
     };
   }, [tcw, sessionStore, backendUrl, hooks]);
+
+  // Sign-out or an account change ends this account's background Notes reconcile: it must not keep
+  // writing under A's client, nor into B's session. (A dialog closing or a card unmounting does not.)
+  useEffect(() => {
+    if (!tcw) return;
+    return () => { void stopGmeetSyncForAccount(tcw); };
+  }, [tcw]);
 }
 
 /**

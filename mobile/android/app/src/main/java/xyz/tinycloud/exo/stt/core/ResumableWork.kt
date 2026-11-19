@@ -12,11 +12,25 @@ internal object ResumableWork {
 
     fun owed(note: JSONObject): Boolean {
         val stt = note.optJSONObject("stt") ?: return false
-        if (stt.optString("state") !in UNFINISHED) return false
+        if (stt.optString("state") !in UNFINISHED || !stt.isNull("rerunRev") && stt.has("rerunRev")) return false
         return note.optJSONObject("options")?.optString("transcriber") == "on-device" || stt.optBoolean("requested")
     }
 
-    /** What an explicit enqueue writes: a fresh attempt, and the user's Local choice. */
     fun requested(stt: JSONObject): JSONObject =
         stt.put("state", "queued").put("error", JSONObject.NULL).put("attempts", 0).put("requested", true)
+            .put("rerunRev", JSONObject.NULL).put("rerunBaseRev", JSONObject.NULL).put("rerunBaseHash", JSONObject.NULL)
+
+    /** An explicit rerun is intentionally not resumed after relaunch. */
+    fun rerun(stt: JSONObject, rev: Int, baseRev: Int, baseHash: String): JSONObject =
+        stt.put("state", "queued").put("error", JSONObject.NULL).put("attempts", 0).put("requested", false)
+            .put("rerunRev", rev).put("rerunBaseRev", baseRev).put("rerunBaseHash", baseHash)
+
+    /** Clears an interrupted explicit rerun; callers invoke this only during process startup. */
+    fun cancelInterruptedRerun(stt: JSONObject): Boolean {
+        val state = stt.optString("state")
+        if (stt.isNull("rerunRev") || !stt.has("rerunRev") || state !in UNFINISHED) return false
+        stt.put("state", "cancelled").put("rerunRev", JSONObject.NULL)
+            .put("rerunBaseRev", JSONObject.NULL).put("rerunBaseHash", JSONObject.NULL)
+        return true
+    }
 }

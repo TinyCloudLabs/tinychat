@@ -35,13 +35,20 @@ enum ResumableWork {
     static let unfinished = ["waiting_for_model", "queued", "running"]
 
     static func owed(_ note: [String: Any]) -> Bool {
-        guard let stt = note["stt"] as? [String: Any], let state = stt["state"] as? String, unfinished.contains(state) else { return false }
+        guard let stt = note["stt"] as? [String: Any], (stt["rerunRev"] as? Int) == nil,
+              let state = stt["state"] as? String, unfinished.contains(state) else { return false }
         let committed = (note["options"] as? [String: Any])?["transcriber"] as? String
         return committed == "on-device" || stt["requested"] as? Bool == true
     }
 
-    /// What an explicit enqueue writes: a fresh attempt, and the user's Local choice.
-    static let requested: [String: Any] = ["state": "queued", "error": NSNull(), "attempts": 0, "requested": true]
+    /// What an ordinary explicit enqueue writes: a fresh attempt and a resumable Local choice.
+    static let requested: [String: Any] = ["state": "queued", "error": NSNull(), "attempts": 0, "requested": true,
+        "rerunRev": NSNull(), "rerunBaseRev": NSNull(), "rerunBaseHash": NSNull()]
+
+    static func rerun(rev: Int, baseRev: Int, baseHash: String) -> [String: Any] {
+        ["state": "queued", "error": NSNull(), "attempts": 0, "requested": false,
+         "rerunRev": rev, "rerunBaseRev": baseRev, "rerunBaseHash": baseHash]
+    }
 }
 
 enum TranscriptionQueueError: Error {
@@ -98,18 +105,50 @@ final class TranscriptionCore {
         }
     }
 
-    func enqueue(id: String, accepted: ((Bool) -> Void)? = nil, failed: ((Error) -> Void)? = nil) {
+    /// Cancels reruns interrupted by process death. Called only once from app launch; reruns are
+    /// deliberately not reconciled into the queue.
+    func recoverInterruptedReruns() {
         controlQueue.async { [self] in
-            // Reserve first: a note that is already pending or decoding keeps its own sidecar. The
-            // transcript is read after the reservation, so a note finishing meanwhile is seen.
+            guard let notes = try? library.listCommitted() else { return }
+            for note in notes {
+                guard let id = note["id"] as? String,
+                      let stt = note["stt"] as? [String: Any],
+                      stt["rerunRev"] as? Int != nil,
+                      let status = stt["state"] as? String,
+                      ["queued", "running", "waiting_for_model"].contains(status) else { continue }
+                try? library.updateStt(id, patch: ["state": "cancelled", "rerunRev": NSNull(),
+                    "rerunBaseRev": NSNull(), "rerunBaseHash": NSNull()])
+            }
+        }
+    }
+
+    func enqueue(id: String, accepted: ((Bool) -> Void)? = nil, failed: ((Error) -> Void)? = nil) {
+        enqueue(id: id, rerunRev: nil, baseRev: nil, baseHash: nil, accepted: accepted, failed: failed)
+    }
+
+    func enqueueAgain(id: String, rev: Int, baseRev: Int, baseHash: String,
+                      accepted: ((Bool) -> Void)? = nil, failed: ((Error) -> Void)? = nil) {
+        guard rev > 0, baseRev > 0, !baseHash.isEmpty else { failed?(TranscriptionQueueError.decodeFailed); return }
+        enqueue(id: id, rerunRev: rev, baseRev: baseRev, baseHash: baseHash, accepted: accepted, failed: failed)
+    }
+
+    private func enqueue(id: String, rerunRev: Int?, baseRev: Int?, baseHash: String?,
+                         accepted: ((Bool) -> Void)?, failed: ((Error) -> Void)?) {
+        controlQueue.async { [self] in
             guard state.reserve(id) else { accepted?(true); return }
-            guard (try? library.transcript(id)) == nil else { // already has one
+            if rerunRev == nil, (try? library.transcript(id)) != nil {
                 state.releaseReserved(id)
                 accepted?(false)
                 return
             }
             do {
-                try library.updateStt(id, patch: ResumableWork.requested)
+                let patch: [String: Any]
+                if let rev = rerunRev, let baseRev = baseRev, let baseHash = baseHash {
+                    patch = ResumableWork.rerun(rev: rev, baseRev: baseRev, baseHash: baseHash)
+                } else {
+                    patch = ResumableWork.requested
+                }
+                try library.updateStt(id, patch: patch)
             } catch {
                 state.releaseReserved(id)
                 failed?(error)
@@ -191,8 +230,9 @@ final class TranscriptionCore {
         ) { next in
             guard let id = next else { return } // cancelled between hasNext and next
             defer { state.finishCurrent() }
-            if (try? library.transcript(id)) != nil { return } // finished while it was being re-queued
-            let previousAttempts = ((try? library.readSidecar(id))?["stt"] as? [String: Any])?["attempts"] as? Int ?? 0
+            let sidecarStt = (try? library.readSidecar(id))?["stt"] as? [String: Any]
+            if (try? library.transcript(id)) != nil, sidecarStt?["rerunRev"] as? Int == nil { return } // ordinary committed transcripts stay excluded
+            let previousAttempts = sidecarStt?["attempts"] as? Int ?? 0
             switch AttemptGuard.next(previousAttempts: previousAttempts) {
             case .giveUp:
                 fail(id, code: "too_many_attempts", message: "gave up after \(AttemptGuard.maxAttempts) attempts") { state.finishCurrent() }
@@ -267,7 +307,7 @@ final class TranscriptionCore {
     }
 
     private func process(id: String, session: TranscriptionSession) throws {
-        let transcript = try session.transcribe(
+        var transcript = try session.transcribe(
             id: id,
             checkCapturing: { [self] in
                 if state.isCancelRequested(id) { throw TranscriptionQueueError.cancelled }
@@ -281,6 +321,13 @@ final class TranscriptionCore {
             onSegment: { [self] segmentsDone in
                 try? library.updateStt(id, patch: ["segmentsDone": segmentsDone])
             })
+        // An explicit rerun's revision and base are stored in the non-resumable queue marker before work starts.
+        let rerun = (try? library.readSidecar(id))?["stt"] as? [String: Any]
+        transcript["rev"] = (rerun?["rerunRev"] as? Int) ?? 1
+        if let baseRev = rerun?["rerunBaseRev"] as? Int,
+           let baseHash = rerun?["rerunBaseHash"] as? String {
+            transcript["rerunBase"] = ["rev": baseRev, "hash": baseHash]
+        }
         // The decode's last stretch (final recognition, VAD flush) has no checkpoint: a cancel
         // accepted during it is honoured here, and a cancel after this point is too late.
         guard state.beginCommit() else { throw TranscriptionQueueError.cancelled }

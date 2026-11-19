@@ -202,11 +202,12 @@ describe.serial(`capture settings (${engine.name()})`, () => {
     const selects = async () =>
       (await calls()).filter((call) => call.startsWith("models.select"));
 
-    // Two models are on disk, so two radios; the other five are outside the group, each with a Get.
+    // Two models are on disk, so two radios; the other four are outside the group, each with a Get. Large Turbo is hidden from the picker.
     expect(await group.getByRole("radio").count()).toBe(2);
     expect(await group.getByRole("button").count()).toBe(0);
     const rest = dialog.getByRole("group", { name: "Available to download" });
-    expect(await rest.getByRole("button", { name: /^Get / }).count()).toBe(5);
+    expect(await rest.getByRole("button", { name: /^Get / }).count()).toBe(4);
+    expect(await rest.getByRole("button", { name: /Large Turbo/ }).count()).toBe(0);
     expect(await rest.getByRole("radio").count()).toBe(0);
     await focused(tiny);
     await attr(tiny, "aria-checked", "true");
@@ -416,7 +417,8 @@ describe.serial(`capture settings (${engine.name()})`, () => {
     expect(await modelGroup(dialog).count()).toBe(0);
     expect(await dialog.getByRole("radio", { name: /^Whisper / }).count()).toBe(0);
     const rest = dialog.getByRole("group", { name: "Available to download" });
-    expect(await rest.getByRole("button", { name: /^Get / }).count()).toBe(7);
+    expect(await rest.getByRole("button", { name: /^Get / }).count()).toBe(6);
+    expect(await rest.getByRole("button", { name: /Large Turbo/ }).count()).toBe(0);
 
     // With no model radio, the microphone choice holds the initial focus.
     await focused(dialog.getByTestId("settings-mic").getByRole("radio", { name: "MacBook Pro Microphone" }));
@@ -456,23 +458,18 @@ describe.serial(`capture settings (${engine.name()})`, () => {
     const system = dialog.getByRole("switch", {
       name: "Also record this Mac's audio",
     });
-    const save = dialog.getByRole("switch", {
-      name: "Save to your space automatically",
+    const upload = dialog.getByRole("switch", {
+      name: "Upload audio to TinyCloud",
     });
     await system.waitFor();
     await attr(system, "aria-checked", "false");
-    await attr(save, "aria-checked", "true");
+    await attr(upload, "aria-checked", "false");
 
     await system.click();
     await attr(system, "aria-checked", "true");
-    await save.click();
-    await attr(save, "aria-checked", "false");
-    expect(await calls()).toEqual(
-      expect.arrayContaining([
-        "systemAudio.set:true",
-        "autoSaveToSpace.set:false",
-      ]),
-    );
+    await upload.click();
+    await attr(upload, "aria-checked", "true");
+    expect(await calls()).toContain("systemAudio.set:true");
 
     await script(page, "failNext", "systemAudio.set", "macOS refused");
     await system.click();

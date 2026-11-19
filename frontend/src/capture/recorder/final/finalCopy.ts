@@ -1,4 +1,5 @@
-import type { AppPlatform } from "@/lib/platform";
+import { deviceName, type AppPlatform } from "@/lib/platform";
+import { captureDeviceName } from "@/lib/voiceNotes/captureEngine";
 import type { TranscriptionAvailability } from "@/lib/voiceNotes/voiceNoteTranscription";
 
 const MODE_NAMES = {
@@ -12,13 +13,23 @@ export const PRIVATE_CONSENT_TITLE = "Use Private transcription?";
 export const PRIVATE_CONSENT_ACTION = "Use Private transcription";
 export const POWERFUL_CONSENT_TITLE = "Use Powerful transcription?";
 export const POWERFUL_CONSENT_ACTION = "Use Powerful transcription";
-export const POWERFUL_CONSENT_BODY = "Powerful sends this note's audio through Exo's server to AssemblyAI, a third-party service, for the most accurate transcript with speaker labels. Exo deletes it from AssemblyAI as soon as the transcript is saved.";
-export function privateConsentDevice(platform: AppPlatform): "phone" | "Mac" | "browser" {
-  return platform === "tauri" ? "Mac" : platform === "web" ? "browser" : "phone";
+/** The Powerful provider's name. The ONE place it is written: it appears only in the consent small print and About; change a provider here. */
+export const POWERFUL_PROVIDER_NAME = "AssemblyAI";
+/** The one "not private" line every Powerful explanation uses: recorder mode scale, upload route text, Settings. */
+export const POWERFUL_NOT_PRIVATE_LINE = "Not private: Powerful sends your audio through TinyCloud One's server to an outside transcription service. TinyCloud One deletes the service's copy once the transcript is saved.";
+function powerfulConsentBody(audio: string): string {
+  return `Powerful sends ${audio} through TinyCloud One's server to an outside transcription service, for the most accurate transcript with speaker labels. It isn't private. TinyCloud One deletes the service's copy as soon as the transcript is saved.`;
+}
+export const POWERFUL_CONSENT_BODY = powerfulConsentBody("this note's audio");
+export const POWERFUL_CONSENT_UPLOAD_BODY = powerfulConsentBody("this audio");
+/** Small print under the Powerful consent body. */
+export const POWERFUL_CONSENT_SMALL_PRINT = `Provided by ${POWERFUL_PROVIDER_NAME}.`;
+export function privateConsentDevice(platform: AppPlatform): string {
+  return deviceName(platform).slice("this ".length);
 }
 
-export function privateConsentBody(device: "phone" | "Mac" | "browser"): string {
-  return `Private transcription sends this note's audio from this ${device} to TinyCloud Private Transcription, a sealed hardware enclave. It's deleted there once the transcript is ready. Exo never sees it.`;
+export function privateConsentBody(device: string): string {
+  return `Private transcription sends this note's audio from this ${device} to TinyCloud Private Transcription, a sealed hardware enclave. It's deleted there once the transcript is ready. TinyCloud One never sees it.`;
 }
 
 /** One name per transcription mode, keyed by the provider's transcriber id; every surface that names a mode reads this. */
@@ -31,15 +42,14 @@ export const TRANSCRIBER_NAME = {
 
 /** The first stop of a route diagram: the device the audio starts on. */
 export function routeSourceName(platform: AppPlatform): string {
-  if (platform === "ios" || platform === "android") return "This phone";
-  return platform === "tauri" ? "This Mac" : "This browser";
+  return deviceName(platform).replace(/^t/, "T");
 }
 
 /** Why Private cannot be chosen right now, and whether checking again can change it. */
 export function privateNotOffered(availability: TranscriptionAvailability | undefined, errorCode?: string): { reason: string; canRecheck: boolean } {
   if (availability === "checking") return { reason: "Checking…", canRecheck: false };
   if (availability === "failed" && errorCode === "native_status_failed")
-    return { reason: "Couldn't check this phone's file upload", canRecheck: true };
+    return { reason: `Couldn't check ${deviceName()}'s file upload`, canRecheck: true };
   if (availability === "failed") return { reason: "Couldn't check right now", canRecheck: true };
   return { reason: "Not available right now", canRecheck: false };
 }
@@ -67,6 +77,12 @@ export const FINAL_COPY = {
   micUnavailable:
     "The microphone is unavailable. Choose another input or reconnect it.",
   stalledNeedsUser: "The microphone stopped sending sound.",
+  writerStalled: (action: string) => `The recording stopped responding. Try again, or use ${action} to save what was captured.`,
+  sourceStillRunning: (action: string) => `The microphone may still be running. Try again, or use ${action} to save what was captured.`,
+  sourceUnusable: (action: string) => `The microphone could not be stopped. Try again, or use ${action} to save what was captured.`,
+  snapshotUnavailable: (action: string) => `The recording isn't saved yet. Try again, or use ${action} to finish saving it.`,
+  snapshotEmpty: (action: string) => `Nothing was recorded. Try again to check, or use ${action} to close without saving.`,
+  statusUnknown: "Could not read the microphone state.",
   inputChanged: "The microphone input changed. Waiting for capture to recover.",
   audioServicesReset:
     "Audio services restarted. Waiting for capture to recover.",
@@ -87,8 +103,10 @@ export const FINAL_COPY = {
     "This recording session already exists. Discard this attempt and start a new recording.",
   stopAndSaveRecorded: "Stop and save what's recorded.",
   stopAt: (text: string) => `Stops at ${text}`,
+  stopsIn: (text: string) => `Stops in ${text}`,
+  recordingStopsAt: (clock: string) => `Recording stops at ${clock}`,
   needsApp: "needs the app",
-  onThisPhone: "on this phone",
+  get onThisPhone() { return `on ${captureDeviceName()}`; },
   onThisMac: "on this Mac",
   sealedEnclave: "sealed enclave",
   identifySpeakers: "Identify speakers",
@@ -100,7 +118,7 @@ export const FINAL_COPY = {
   speechGet: "Get speech from iOS",
   speechGetting: "Getting speech from iOS…",
   speechFailed: "Couldn't get speech from iOS",
-  speechNotInstalled: "Speech from iOS isn't on this phone yet",
+  speechNotInstalled: "Speech from iOS isn't on this iPhone yet",
   speechUnsupported: "On-device transcription isn't available on this iPhone",
   speechLocaleUnsupported: "On-device transcription doesn't support this language yet",
   modes: {
@@ -110,24 +128,23 @@ export const FINAL_COPY = {
     powerfulName: MODE_NAMES.powerful,
     noTranscript: "no transcript",
     skipCaption: {
-      phone: "Just the recording, kept on this phone.",
-      desktop: "Just the recording, saved to your space.",
-      web: "Just the recording, saved to your space.",
+      phone: "Just the recording. Audio follows your Upload audio to TinyCloud setting.",
+      desktop: "Just the recording. Audio follows your Upload audio to TinyCloud setting.",
+      web: "Just the recording. Audio follows your Upload audio to TinyCloud setting.",
     },
     skipExplanation:
-      "Only the audio is saved. Transcribe it later if you like.",
+      "Saves the recording without a transcript. Audio follows your Upload audio to TinyCloud setting.",
     localPhoneCaption: "Nothing leaves it; a little slower.",
     localDesktopCaption: "Whisper on this Mac, after you stop.",
-    localPhoneExplanation:
-      "Your phone transcribes it after you stop. Nothing leaves your phone.",
+    get localPhoneExplanation() { return `${captureDeviceName().replace(/^t/, "T")} transcribes it after you stop. Nothing leaves it.`; },
     localDesktopExplanation: (model: string) =>
       `Whisper ${model} transcribes on this Mac after you stop, and nothing leaves the machine. Change the model in ⚙︎ Settings.`,
     localWebExplanation:
-      "Runs on your phone or Mac in the Exo app. Not available in the browser.",
-    privateCaption: "Fast, accurate, and sealed from Exo.",
+      "Runs on your phone or Mac in the TinyCloud One app. Not available in the browser.",
+    privateCaption: "Fast, accurate, and sealed from TinyCloud One.",
     privateExplanation:
-      "Sent to a sealed hardware enclave, transcribed, then deleted. Exo never sees it.",
+      "Sent to a sealed hardware enclave, transcribed, then deleted. TinyCloud One never sees it.",
     powerfulCaption: "Most accurate, with speaker labels.",
-    powerfulExplanation: "Sent through Exo's server to AssemblyAI, then deleted after the transcript is saved.",
+    powerfulExplanation: POWERFUL_NOT_PRIVATE_LINE,
   },
 } as const;

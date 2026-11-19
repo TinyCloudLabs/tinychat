@@ -112,4 +112,15 @@ describe("a saved sync failure is shown when the window is reopened", () => {
     expect(persistedSyncProblem(connection({ status: "disconnected", lastSyncStatus: "error", lastSyncError: "x" }))).toBeNull();
     expect(display(connection({ status: "disconnected", lastSyncStatus: "error", lastSyncError: "x" })).error).toBeNull();
   });
+
+  test("an open connect dialog does not hide a connection that is already saved", () => {
+    const open = (conn: ReturnType<typeof connection> | null) =>
+      sourceRowDisplay({ comingSoon: false, connection: conn, syncing: false, connecting: true, syncError: null, rowNote: null });
+    const kept = open(connection({ lastSyncStatus: "error", lastSyncError: "Finishing Google Meet sync timed out." }));
+    expect(kept.state).toBe("connected");
+    expect(kept.status?.text).toStartWith("Last sync failed · synced");
+    expect(kept.error).toBe("Finishing Google Meet sync timed out.");
+    // Before any row exists the secret alone does not make the card connected.
+    expect(open(null).status?.text).toBe("Connecting…");
+  });
 });

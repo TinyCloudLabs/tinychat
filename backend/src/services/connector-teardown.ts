@@ -61,6 +61,11 @@ export interface TeardownQueue {
   clear(source: string, address: string): Promise<ClearResult>;
 }
 
+/** Exo state for one connector source: the durable ledger rows that read only that source. */
+export interface TeardownExoState {
+  clearSource(source: string, address: string): Promise<void>;
+}
+
 /** The ledger slice — the same three methods the companions' `ConnectorControl` exposes. */
 export interface TeardownControl {
   readLedger(source: string, address: string): Promise<PurgeLedgerRead>;
@@ -77,10 +82,13 @@ export interface TeardownControl {
 }
 
 export interface ConnectorTeardownDeps {
+  notifications: { disable(source: string, address: string): Promise<void> };
   credentials: TeardownCredentialStore;
   content: TeardownContentStore;
   queue: TeardownQueue;
   control: TeardownControl;
+  /** Absent with the exo flag off: the disconnect then has no exo step, as before S4b. */
+  exo?: TeardownExoState;
 }
 
 export interface ConnectorTeardownOptions {
@@ -138,6 +146,9 @@ export class ConnectorTeardownService implements ConnectorTeardown {
     if (!isValidSource(source)) throw new Error("Invalid connector source");
     const addr = normalizeWebhookAddress(address);
 
+    // Close ingress before any credential/content deletion, including cached callback tokens.
+    await this.deps.notifications.disable(source, addr);
+
     // (1) The tombstone, first and durable.
     const tombstonedThrough = await this.recordPurge(source, addr);
 
@@ -151,6 +162,9 @@ export class ConnectorTeardownService implements ConnectorTeardown {
     // earlier (F010): anything enqueued in between would go uncounted and read as "nothing was
     // left behind" when something was.
     const { cleared } = await this.deps.queue.clear(source, addr);
+
+    // (5) Exo state. Last, so an earlier failure leaves the ledger rows in place for the retry.
+    await this.deps.exo?.clearSource(source, addr);
 
     logTeardown(
       `op=teardown result=ok source=${source} aid=${hashed(addr)} ` +
@@ -217,10 +231,15 @@ export class ConnectorTeardownService implements ConnectorTeardown {
       -PURGE_RECENT_ID_CAP,
     );
 
+    const stamp = new Date(this.now()).toISOString();
+    const recentIdsAddedAt = Object.fromEntries(recentIds.map(id => [
+      id, existing?.recentIdsAddedAt?.[id] ?? stamp,
+    ]));
     await this.deps.control.writeLedger(source, address, {
       purgedThrough,
       recentIds,
-      updatedAt: new Date(this.now()).toISOString(),
+      recentIdsAddedAt,
+      updatedAt: stamp,
     });
     return purgedThrough;
   }

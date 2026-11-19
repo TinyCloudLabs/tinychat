@@ -118,7 +118,7 @@ export function nativeGoogleOAuthEnabled(
 
 /**
  * Whether Google OAuth runs in the system browser: inside the Capacitor app
- * only. The web and the Tauri desktop app keep the popup.
+ * only. Tauri uses its separate loopback listener; the web keeps the popup.
  */
 export function usesSystemBrowserOAuth(): boolean {
   return Capacitor.isNativePlatform();
@@ -126,7 +126,8 @@ export function usesSystemBrowserOAuth(): boolean {
 
 /**
  * How the Google connect dialog can sign in here (TC-522): the web and desktop
- * popup, the app's system browser, or not at all. Inside the app while this
+ * popup, the phone app's system browser, or not at all. Tauri's separate
+ * desktop branch opens the system browser with a loopback return. Inside the app while this
  * build keeps native OAuth off, the dialog says so instead of offering
  * "Continue with Google".
  */

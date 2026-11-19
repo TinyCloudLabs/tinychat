@@ -1,6 +1,6 @@
-name: Desktop build (Exo)
+name: Desktop build (TinyCloud One)
 
-# The one Exo build definition, called by desktop.yml (CI) and desktop-release.yml (releases), so the long native
+# The one desktop build definition, called by desktop.yml (CI) and desktop-release.yml (releases), so the long native
 # build is never duplicated. It produces the .dmg and a ditto-zipped .app as one workflow artifact.
 #
 # Info.plist versions: every build passes scripts/release/desktop-bundle-config.mjs's overlay to `tauri build`, so
@@ -13,10 +13,10 @@ name: Desktop build (Exo)
 # invokes always come from the same trusted commit, and re-releasing an older tag never runs that tag's older scripts
 # (exo-desktop@0.2.0-beta.3 failed on an unknown --ad-hoc-sign that way).
 #
-# Cache: the Rust target dir and cargo registry/git (whisper.cpp, MLX, anarlog and ~1,100 crates; SwiftPM build
-# products live in the Rust target dir) share one key across CI and release jobs. Only main's own CI builds write it
-# (pushes and the weekly warm-up in desktop.yml); PRs and release builds only restore it. SwiftPM's repository cache
-# (mlx-swift, speech-swift, WhisperKit clones) is cached separately, keyed on Cargo.lock.
+# Cache: GitHub-owned actions/cache stores Cargo downloads and compiler artifacts keyed by Cargo.lock, rustc version,
+# and the Apple Silicon target. PRs restore; main and tag builds may save. Only compilation directories are cached:
+# Tauri bundles (including ad-hoc-signed .app and .dmg outputs) are excluded. SwiftPM's repository cache
+# (mlx-swift, speech-swift, WhisperKit clones) is separate, keyed on Cargo.lock.
 #
 # Jobs. The Developer ID certificate and the App Store Connect key are never on a runner that runs project or
 # third-party build code (bun install and its postinstall scripts, the Vite build, cargo and every crate's build
@@ -26,9 +26,9 @@ name: Desktop build (Exo)
 #   main, the workflow commit and the release commit on freshly fetched main, an exo-desktop tag at the release commit)
 #   and that every signing secret is present, so a missing one fails in seconds, before any macOS build minute.
 # - build (no environment, no secret, in every mode): compiles (`tauri build --no-bundle`) and bundles
-#   (`tauri bundle`) Exo.app and a DMG, ad-hoc sealed (signingIdentity "-" from the overlay, hardened runtime and
+#   (`tauri bundle`) the app and a DMG, ad-hoc sealed (signingIdentity "-" from the overlay, hardened runtime and
 #   src-tauri/Entitlements.plist), checks Info.plist and the seal (codesign --verify --deep --strict on the app and the
-#   app in the DMG; a linker-only signature without sealed resources makes a downloaded Exo "damaged", with no Open
+#   app in the DMG; a linker-only signature without sealed resources makes a downloaded app "damaged", with no Open
 #   Anyway), and uploads the DMG and the ditto-zipped app (symlinks and permissions preserved). Unsigned builds (CI,
 #   EXO_DESKTOP_SIGNING=unsigned releases) publish exactly this artifact.
 # - sign (sign: true: the `desktop-release` environment; otherwise a dry run with no environment and no secret):
@@ -56,6 +56,10 @@ on:
         required: true
       sign:
         description: Developer ID sign, notarize and verify (release builds from main only)
+        type: boolean
+        default: false
+      smoke:
+        description: Build an isolated recorder-failpoints smoke artifact (CI only)
         type: boolean
         default: false
       ipc-selftest:
@@ -86,7 +90,7 @@ jobs:
     name: Signing preflight (desktop-release)
     if: inputs.sign
     runs-on: ubuntu-latest
-    # Signing secrets live only in this environment (deployment branches: main; no required reviewer).
+    # Signing secrets live only in this environment (deployment branches: main; required reviewer: Sam).
     environment: desktop-release
     timeout-minutes: 5
     steps:
@@ -136,12 +140,14 @@ jobs:
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
       SAVE_CACHE: ${{ github.ref == 'refs/heads/main' && inputs.ref == '' && !inputs.sign }}
+      SAVE_RUST_CACHE: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/') }}
     # Cold builds compile whisper.cpp, MLX and ~1,100 crates on 3 vCPUs.
     timeout-minutes: 150
     outputs:
       version: ${{ steps.bundle.outputs.version }}
       short-version: ${{ steps.bundle.outputs.short-version }}
       bundle-version: ${{ steps.bundle.outputs.bundle-version }}
+      product-name: ${{ steps.bundle.outputs.product-name }}
       app-sha256: ${{ steps.package.outputs.sha256 }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -162,8 +168,36 @@ jobs:
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: "1.3.9"
-
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        if: inputs.ref == '' && !inputs.sign
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+
+      - name: Record Rust compiler version
+        id: rust-version
+        run: echo "version=$(rustc --version | cut -d' ' -f2)" >> "$GITHUB_OUTPUT"
+
+      # Preserve shared-key: exo-desktop-macos-arm64 as the stable CI/release namespace; compiler, target and lockfile extend it.
+      - name: Restore Tauri Rust dependencies
+        id: rust-cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            desktop/src-tauri/target/debug/deps
+            desktop/src-tauri/target/debug/build
+            desktop/src-tauri/target/debug/.fingerprint
+            desktop/src-tauri/target/debug/incremental
+            desktop/src-tauri/target/release/deps
+            desktop/src-tauri/target/release/build
+            desktop/src-tauri/target/release/.fingerprint
+            desktop/src-tauri/target/release/incremental
+          key: rust-tauri-exo-desktop-macos-arm64-${{ runner.os }}-${{ runner.arch }}-aarch64-apple-darwin-${{ steps.rust-version.outputs.version }}-${{ hashFiles('desktop/src-tauri/Cargo.lock') }}
+          restore-keys: |
+            rust-tauri-exo-desktop-macos-arm64-${{ runner.os }}-${{ runner.arch }}-aarch64-apple-darwin-${{ steps.rust-version.outputs.version }}-
 
       - name: Require pinned Xcode
         run: test -d "$DEVELOPER_DIR"
@@ -188,13 +222,6 @@ jobs:
           xcrun --find metal
           df -h /
 
-      # One key for CI and release jobs (the default key includes the job id); written only from main.
-      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          workspaces: desktop/src-tauri
-          shared-key: exo-desktop-macos-arm64
-          save-if: ${{ env.SAVE_CACHE == 'true' }}
-
       - name: Restore SwiftPM repository cache
         id: swiftpm
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
@@ -213,7 +240,12 @@ jobs:
       # commit's script reads the version from the built tree (--root).
       - name: Bundle versions
         id: bundle
-        run: node .release-tooling/scripts/release/desktop-bundle-config.mjs --root "$GITHUB_WORKSPACE" --out "$RUNNER_TEMP/exo-bundle" --ad-hoc-sign
+        env:
+          SMOKE: ${{ inputs.smoke }}
+        run: |
+          smoke_args=()
+          if [ "$SMOKE" = true ]; then smoke_args+=(--smoke); fi
+          node .release-tooling/scripts/release/desktop-bundle-config.mjs --root "$GITHUB_WORKSPACE" --out "$RUNNER_TEMP/exo-bundle" --ad-hoc-sign "${smoke_args[@]}"
 
       - name: Test Rust confinement and desktop library
         working-directory: desktop/src-tauri
@@ -224,17 +256,22 @@ jobs:
       # tauri build runs the frontend production build itself
       # (beforeBuildCommand in desktop/src-tauri/tauri.conf.json).
       # VITE_EXO_BUILD_NUMBER is the CFBundleVersion the overlay stamps
-      # (TC-840: the desktop line's build number); VITE_EXO_CHANNEL its channel.
-      - name: Build Exo desktop app
+      # (TC-840: the desktop line's build number); VITE_EXO_CHANNEL its channel. NODE_OPTIONS: vite build needs
+      # about 2 GB of heap, the default V8 limit on the 7 GB macos-26 runner (TC-2880).
+      - name: Build the desktop app
         env:
           TAURI_BUNDLE_CONFIG: ${{ steps.bundle.outputs.config }}
           VITE_EXO_BUILD_NUMBER: ${{ steps.bundle.outputs.bundle-version }}
           VITE_EXO_CHANNEL: ${{ steps.bundle.outputs.prerelease == 'true' && 'beta' || 'stable' }}
           IPC_SELFTEST: ${{ inputs.ipc-selftest }}
+          SMOKE: ${{ inputs.smoke }}
+          NODE_OPTIONS: --max-old-space-size=4096
         run: |
           features=()
-          if [ "$IPC_SELFTEST" = true ]; then features=(--features ipc-selftest); fi
-          bun run --cwd desktop tauri build --no-bundle --config "$TAURI_BUNDLE_CONFIG" "${features[@]}"
+          if [ "$IPC_SELFTEST" = true ]; then features+=(ipc-selftest); fi
+          if [ "$SMOKE" = true ]; then features+=(recorder-failpoints); fi
+          if [ "${#features[@]}" -gt 0 ]; then feature_args=(--features "$(IFS=,; echo "${features[*]}")"); fi
+          bun run --cwd desktop tauri build --no-bundle --config "$TAURI_BUNDLE_CONFIG" "${feature_args[@]}"
 
       - name: Exercise release webview permissions
         if: inputs.ipc-selftest
@@ -267,8 +304,8 @@ jobs:
             exit 1
           fi
 
-      # Bundles the compiled app into Exo.app and the DMG without compiling anything, ad-hoc sealing the app.
-      - name: Bundle Exo
+      # Bundles the compiled app into <productName>.app and the DMG without compiling anything, ad-hoc sealing the app.
+      - name: Bundle the app
         env:
           TAURI_BUNDLE_CONFIG: ${{ steps.bundle.outputs.config }}
         run: bun run --cwd desktop tauri bundle --config "$TAURI_BUNDLE_CONFIG"
@@ -277,8 +314,10 @@ jobs:
         env:
           SHORT_VERSION: ${{ steps.bundle.outputs.short-version }}
           BUNDLE_VERSION: ${{ steps.bundle.outputs.bundle-version }}
+          PRODUCT_NAME: ${{ steps.bundle.outputs.product-name }}
+          BUNDLE_IDENTIFIER: ${{ steps.bundle.outputs.bundle-identifier }}
         run: |
-          plist=desktop/src-tauri/target/release/bundle/macos/Exo.app/Contents/Info.plist
+          plist="desktop/src-tauri/target/release/bundle/macos/$PRODUCT_NAME.app/Contents/Info.plist"
           check() {
             actual=$(plutil -extract "$1" raw "$plist")
             if [ "$actual" != "$2" ]; then
@@ -289,7 +328,7 @@ jobs:
           }
           check CFBundleShortVersionString "$SHORT_VERSION"
           check CFBundleVersion "$BUNDLE_VERSION"
-          check CFBundleIdentifier xyz.tinycloud.exo
+          check CFBundleIdentifier "$BUNDLE_IDENTIFIER"
           check LSMinimumSystemVersion 14.2
           # The overlay must add to src-tauri/Info.plist, not replace it.
           plutil -extract NSMicrophoneUsageDescription raw "$plist" >/dev/null
@@ -303,7 +342,7 @@ jobs:
           mnt="$RUNNER_TEMP/exo-dmg"
           hdiutil attach -nobrowse -readonly -mountpoint "$mnt" "$dmg"
           trap 'hdiutil detach "$mnt"' EXIT
-          for bundle in desktop/src-tauri/target/release/bundle/macos/Exo.app "$mnt/Exo.app"; do
+          for bundle in "desktop/src-tauri/target/release/bundle/macos/${{ steps.bundle.outputs.product-name }}.app" "$mnt/${{ steps.bundle.outputs.product-name }}.app"; do
             codesign --verify --deep --strict --verbose=2 "$bundle"
             codesign -dv --verbose=2 "$bundle"
           done
@@ -314,8 +353,9 @@ jobs:
         id: package
         run: |
           cd desktop/src-tauri/target/release/bundle/macos
-          ditto -c -k --sequesterRsrc --keepParent Exo.app Exo-macos-arm64.app.zip
-          echo "sha256=$(shasum -a 256 Exo-macos-arm64.app.zip | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          app_name="${{ steps.bundle.outputs.product-name }}"
+          ditto -c -k --sequesterRsrc --keepParent "$app_name.app" "$app_name-macos-arm64.app.zip"
+          echo "sha256=$(shasum -a 256 "$app_name-macos-arm64.app.zip" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
 
       # Ad-hoc sealed, built by this public repository's code, so nothing in it is secret.
       - name: Upload dmg + app
@@ -325,7 +365,7 @@ jobs:
           if-no-files-found: error
           path: |
             desktop/src-tauri/target/release/bundle/dmg/*.dmg
-            desktop/src-tauri/target/release/bundle/macos/Exo-macos-arm64.app.zip
+            desktop/src-tauri/target/release/bundle/macos/*.app.zip
 
       - name: Save SwiftPM repository cache
         if: env.SAVE_CACHE == 'true' && steps.swiftpm.outputs.cache-hit != 'true'
@@ -333,14 +373,30 @@ jobs:
         with:
           path: ~/Library/Caches/org.swift.swiftpm
           key: ${{ steps.swiftpm.outputs.cache-primary-key }}
+      - name: Save Tauri Rust dependencies
+        if: env.SAVE_RUST_CACHE == 'true' && steps.rust-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            desktop/src-tauri/target/debug/deps
+            desktop/src-tauri/target/debug/build
+            desktop/src-tauri/target/debug/.fingerprint
+            desktop/src-tauri/target/debug/incremental
+            desktop/src-tauri/target/release/deps
+            desktop/src-tauri/target/release/build
+            desktop/src-tauri/target/release/.fingerprint
+            desktop/src-tauri/target/release/incremental
+          key: rust-tauri-exo-desktop-macos-arm64-${{ runner.os }}-${{ runner.arch }}-aarch64-apple-darwin-${{ steps.rust-version.outputs.version }}-${{ hashFiles('desktop/src-tauri/Cargo.lock') }}
 
   sign:
     name: ${{ inputs.sign && 'Sign and notarize (desktop-release)' || 'Sign (dry run, ad-hoc, no secrets)' }}
     needs: build
     # Explicit: a skipped preflight would otherwise skip this job too.
-    if: ${{ !cancelled() && needs.build.result == 'success' }}
+    if: ${{ !inputs.smoke && !cancelled() && needs.build.result == 'success' }}
     runs-on: macos-26
-    # Signing secrets live only in this environment (deployment branches: main; no required reviewer). This job checks
+    # Signing secrets live only in this environment (deployment branches: main; required reviewer: Sam). This job checks
     # out nothing but scripts/release and the entitlements at the workflow commit and runs no project code: no bun, no
     # cargo, no tauri, no node_modules binary.
     environment: ${{ inputs.sign && 'desktop-release' || '' }}
@@ -402,21 +458,26 @@ jobs:
 
       # The build job already checked the app; this proves the hand-off kept it intact. Only the app is used: the
       # signed DMG is built here.
+      # The build job's outputs arrive as env, never interpolated into the script; unpack validates the product name
+      # (words of letters and digits) and the versions before they name anything it writes.
       - name: Unpack the app
         env:
           SHA256: ${{ needs.build.outputs.app-sha256 }}
+          PRODUCT_NAME: ${{ needs.build.outputs.product-name }}
           VERSION: ${{ needs.build.outputs.version }}
           SHORT_VERSION: ${{ needs.build.outputs.short-version }}
           BUNDLE_VERSION: ${{ needs.build.outputs.bundle-version }}
         run: |
-          zip="$RUNNER_TEMP/exo-build/macos/Exo-macos-arm64.app.zip"
+          zip="$RUNNER_TEMP/exo-build/macos/$PRODUCT_NAME-macos-arm64.app.zip"
           if [ "$(shasum -a 256 "$zip" | cut -d' ' -f1)" != "$SHA256" ]; then
-            echo "::error::Exo-macos-arm64.app.zip is not the archive the build job packaged"
+            echo "::error::$PRODUCT_NAME-macos-arm64.app.zip is not the archive the build job packaged"
             exit 1
           fi
-          app=$(scripts/release/desktop-signing.sh unpack "$zip" "$RUNNER_TEMP/exo-app" "$VERSION" "$SHORT_VERSION" "$BUNDLE_VERSION")
+          app=$(scripts/release/desktop-signing.sh unpack "$zip" "$RUNNER_TEMP/exo-app" "$PRODUCT_NAME" "$VERSION" "$SHORT_VERSION" "$BUNDLE_VERSION")
+          asset=${PRODUCT_NAME// /-}
           echo "EXO_APP=$app" >> "$GITHUB_ENV"
-          echo "EXO_DMG=$EXO_SIGNED/Exo_${VERSION}_aarch64.dmg" >> "$GITHUB_ENV"
+          echo "EXO_DMG=$EXO_SIGNED/${asset}_${VERSION}_aarch64.dmg" >> "$GITHUB_ENV"
+          echo "EXO_ZIP=$EXO_SIGNED/${asset}-macos-arm64.app.zip" >> "$GITHUB_ENV"
 
       # A throwaway keychain for the Developer ID identity, deleted below whatever happens.
       - name: Import the Developer ID certificate
@@ -430,7 +491,7 @@ jobs:
           echo "EXO_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
 
       # Signed: the Developer ID. Dry run: ad-hoc ("-") through the same codesign path. Never ad-hoc when signing.
-      - name: Sign Exo.app (inside-out)
+      - name: Sign the app (inside-out)
         env:
           IDENTITY: ${{ inputs.sign && secrets.APPLE_SIGNING_IDENTITY || '' }}
         run: |
@@ -488,7 +549,7 @@ jobs:
       # ditto keeps the stapled bundle's symlinks and permissions (upload-artifact would flatten them).
       - name: Package the signed app
         if: inputs.sign
-        run: ditto -c -k --sequesterRsrc --keepParent "$EXO_APP" "$EXO_SIGNED/Exo-macos-arm64.app.zip"
+        run: ditto -c -k --sequesterRsrc --keepParent "$EXO_APP" "$EXO_ZIP"
 
       # Only files that passed verify-desktop-signing.sh.
       - name: Upload the signed dmg + app
@@ -499,4 +560,4 @@ jobs:
           if-no-files-found: error
           path: |
             ${{ runner.temp }}/exo-signed/*.dmg
-            ${{ runner.temp }}/exo-signed/Exo-macos-arm64.app.zip
+            ${{ runner.temp }}/exo-signed/*.app.zip

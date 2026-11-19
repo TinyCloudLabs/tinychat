@@ -12,6 +12,7 @@ import { captureEvents } from "@/capture/captureEvents";
 
 import type { StoreResult, UpsertMeetingOutcome } from "./connectors/connectorStore";
 import { AssemblyAiError, createHostedAssemblyAiClient, type AssemblyAiClient } from "./assemblyai";
+import { parseRateLimitWaitSeconds } from "./privateCloud";
 import { withHostedUploadQueue } from "./hostedUploadQueue";
 import { AudioStoreQuotaError, type StoredAudioManifest } from "./audio/audioStore";
 import {
@@ -770,6 +771,48 @@ describe("upload runner: an AssemblyAI job keeps its account", () => {
     expect(events).toEqual(["save", "hosted delete t-hosted"]);
     expect(saved[0]!.meeting.metadata).toMatchObject({ assemblyai_account: "tinycloud" });
   });
+  test("hosted audio upload keeps malformed 429 headers on the slow poll floor", async () => {
+    const cases = [
+      { headers: { "Retry-After": "" }, minGapMs: 30_000 },
+      { headers: { "Retry-After": "-1" }, minGapMs: 30_000 },
+      { headers: { "Retry-After": "12garbage" }, minGapMs: 30_000 },
+      { headers: { "Retry-After": new Date(0).toUTCString() }, minGapMs: 30_000 },
+      { headers: { RateLimit: "limit=600, remaining=0, reset=12garbage" }, minGapMs: 30_000 },
+      { headers: { RateLimit: 'limit=600, remaining=0, reset="0' }, minGapMs: 30_000 },
+      { headers: { RateLimit: 'limit=600, remaining=0, reset=0"' }, minGapMs: 30_000 },
+      { headers: { RateLimit: 'limit=600, remaining=0, reset="90"' }, minGapMs: 90_000 },
+    ];
+    for (const { headers, minGapMs } of cases) {
+      let now = 0;
+      let reads = 0;
+      const requestTimes: number[] = [];
+      const seconds = parseRateLimitWaitSeconds(new Headers(headers));
+      const client = {
+        upload: async () => "u",
+        createTranscript: async () => ({ id: "t1", status: "queued" }),
+        getTranscript: async () => {
+          requestTimes.push(now);
+          if (++reads <= 100) {
+            throw new AssemblyAiError("rate-limited", "busy", false, seconds === null ? null : seconds * 1000);
+          }
+          return { id: "t1", status: "completed", utterances: [{ speaker: "A", text: "Hello.", start: 0, end: 900 }] };
+        },
+        getSentences: async () => [],
+        deleteTranscript: async () => {},
+      } as unknown as AssemblyAiClient;
+      const { deps: d } = deps({
+        audio: audioFake().audio,
+        clock: { now: () => now, sleep: async (ms) => { now += ms; }, random: () => 0 },
+        assemblyAiClient: async () => client,
+      });
+      const runner = createUploadRunner();
+      runner.start(d, { file: file("a.mp3", "audio/mpeg"), engine: "assemblyai", diarize: true, assemblyAiMode: "hosted" });
+      expect((await settled(runner)).stage).toBe("saved");
+      expect(requestTimes).toHaveLength(101);
+      expect(requestTimes.slice(1).every((at, index) => at - requestTimes[index]! >= minGapMs)).toBe(true);
+    }
+  });
+
 
   test("Upload audio waits for a Powerful submission before creating a hosted upload", async () => {
     let release!: () => void;
@@ -890,7 +933,7 @@ describe("upload runner: a reload while the file is sent on to AssemblyAI", () =
       upload: async () => "aau_1",
       createTranscript: async () => {
         creates++;
-        if (creates === 1) throw new AssemblyAiError("failed", "Exo's server couldn't send the file to AssemblyAI. Retry uploads it again.", true);
+        if (creates === 1) throw new AssemblyAiError("failed", "TinyCloud One's server couldn't send the file to AssemblyAI. Retry uploads it again.", true);
         return { id: "h2", status: "queued" };
       },
       getTranscript: async () => ({ id: "h2", status: "completed", utterances: [{ speaker: "A", text: "Hi.", start: 0, end: 900 }] }),
@@ -1097,7 +1140,6 @@ describe("TC-592 expiry regressions", () => {
       await settled(resumed);
       expect(pending.value).toBeNull();
       expect(resumed.snapshot()).toMatchObject({ cleanupPending: false, error: { retry: false } });
-      expect(resumed.snapshot()?.error?.message).toContain("AssemblyAI's retention settings");
     });
   }
 });

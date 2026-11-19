@@ -17,6 +17,7 @@ export type DebugEvent = {
   durationMs?: number;
   code?: string;
   operation?: string;
+  count?: number;
   chain?: { name?: string; code?: string; status?: number; message?: string }[];
 };
 
@@ -27,6 +28,8 @@ const nativeLog = registerPlugin<{ append(options: { line: string }): Promise<vo
 const recordingIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export function debugLogEnabled(): boolean { return enabled; }
+/** Lets tests exercise the log without depending on the build mode. */
+export function setDebugLogEnabledForTests(on: boolean): void { enabled = on; }
 export function debugEvents(): readonly DebugEvent[] { return events; }
 export function subscribeDebugLog(listener: () => void): () => void {
   listeners.add(listener);
@@ -101,6 +104,11 @@ export function logPipeline(operation: string, sourceId: string, phase: string,
   details: Pick<DebugEvent, "engine" | "destination" | "bodyBytes" | "totalBytes" | "progressPct" | "status"> = {}): void {
   append({ kind: "pipeline", source_id: sourceId, operation, phase, ...details });
 }
+export function logPipelineCount(operation: string, phase: string, count = 1): void {
+  const event = { kind: "pipeline" as const, source_id: null, operation, phase, count };
+  if (enabled) append(event);
+  else console.info(JSON.stringify({ ...event, at: new Date().toISOString() }));
+}
 
 export function logSession(operation: string, phase: string, error?: unknown): void {
   append({ kind: "session", source_id: null, operation, phase,
@@ -133,6 +141,16 @@ function requestPath(url: string): string | null {
     const path = parsed.pathname.split("/").map((segment) => routeWords.has(segment) ? segment : segment ? "<id>" : "").join("/");
     return `${parsed.origin === backend.origin ? "backend" : "tinycloud"}${path}`;
   } catch { return null; }
+}
+
+/** Read only the machine code from auth failures; never retain the response body. */
+export async function authFailureCode(response: Response, path: string): Promise<string | undefined> {
+  if (!/^backend\/api\/auth\/(nonce|verify)$/.test(path) || response.status < 400 || response.status >= 500) return undefined;
+  try {
+    const payload = await response.clone().json() as { error?: unknown };
+    return typeof payload.error === "string" && /^[a-z][a-z0-9_]{0,63}$/.test(payload.error)
+      ? payload.error : undefined;
+  } catch { return undefined; }
 }
 
 function nativeSourceId(plugin: string, options: unknown): string | null {
@@ -192,9 +210,10 @@ export async function installDebugLog(): Promise<void> {
       path, bodyBytes: bodyBytes(init?.body) };
     try {
       const response = await original(input, init);
+      const authCode = await authFailureCode(response, path);
       append({ ...common, status: response.status, durationMs: Math.round(performance.now() - started),
         responseBytes: Number(response.headers.get("content-length")) || undefined,
-        code: response.ok ? undefined : `HTTP_${response.status}` });
+        code: response.ok ? undefined : authCode ?? `HTTP_${response.status}` });
       return response;
     } catch (error) {
       append({ ...common, durationMs: Math.round(performance.now() - started),

@@ -34,22 +34,30 @@ export function ModeIcon({ id, size = 14 }: { id: ModeId; size?: number }) {
     case "skip":
       return (
         <Icon size={size}>
-          <circle cx="12" cy="12" r="8" />
-          <path d="M6.5 17.5l11-11" />
+          <path d="M3.5 12h3l2-4 3.5 8 3.5-8 2 4h3" />
         </Icon>
       );
     case "local":
       return (
         <Icon size={size}>
-          <rect x="7" y="3" width="10" height="18" rx="2.5" />
-          <path d="M11 18h2" />
+          <rect x="5" y="4" width="14" height="16" rx="2" />
+          <path d="M8 12h2l1.5-2.5 2 5 1.5-2.5h1" />
         </Icon>
       );
     case "private":
       return (
         <Icon size={size}>
-          <rect x="5" y="11" width="14" height="9" rx="2.5" />
-          <path d="M8 11V8a4 4 0 0 1 8 0v3" />
+          <rect x="3.5" y="5" width="17" height="14" rx="3" />
+          <path d="M7.2 12h2l1.6-3 2.4 6 1.6-3h2" />
+        </Icon>
+      );
+    case "powerful":
+      return (
+        <Icon size={size}>
+          <circle cx="5" cy="7" r="1.5" fill="currentColor" stroke="none" />
+          <path d="M10 7h10" />
+          <circle cx="5" cy="17" r="1.5" fill="currentColor" stroke="none" />
+          <path d="M10 17h7" />
         </Icon>
       );
   }

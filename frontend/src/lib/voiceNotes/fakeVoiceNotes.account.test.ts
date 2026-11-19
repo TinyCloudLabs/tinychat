@@ -7,18 +7,19 @@ import { advanceAccountGeneration, currentAccountGeneration } from "./accountCon
 import { saveNoteForAccount } from "./recorderSaves";
 
 const did = "did:example:owner";
-test("durable account acknowledgement fails closed and claims only signed-out v2 notes", async () => {
+test("durable account acknowledgement fails closed and keeps the transitioning owner", async () => {
   const fake = createFakeVoiceNotes();
   fake.controls.failNextAccountState();
   await expect(fake.plugin.setAccountState({ status: "signed_in", accountDid: did, transitionGen: 1 })).rejects.toMatchObject({ code: "account_state_write_failed" });
   expect((await fake.plugin.getCaptureDefaults()).status).toBe("signed_out");
   await fake.plugin.setAccountState({ status: "transitioning", accountDid: did, transitionGen: 1 });
   const start = await fake.plugin.start();
-  expect((await fake.plugin.status()).owner).toBeNull();
-  expect((await fake.plugin.stop()).owner).toBeNull();
+  expect((await fake.plugin.status()).owner).toBe(did);
+  expect((await fake.plugin.stop()).owner).toBe(did);
   const claimed = await fake.plugin.setCaptureDefaults({ accountDid: did, transitionGen: 2,
     transcriber: "private-cloud", identifySpeakers: false });
-  expect(claimed.claimed).toEqual([start.id]);
+  expect(claimed.claimed).toEqual([]);
+  expect((await fake.plugin.listPending()).recordings[0]?.id).toBe(start.id);
   expect((await fake.plugin.listPending()).recordings[0]?.owner).toBe(did);
   await expect(fake.plugin.setAccountState({ status: "signed_out", accountDid: null, transitionGen: 1 })).rejects.toMatchObject({ code: "stale_transition" });
 });
@@ -26,13 +27,13 @@ test("durable account acknowledgement fails closed and claims only signed-out v2
 test("a preference write at the current generation keeps the transitioning account closed", async () => {
   const fake = createFakeVoiceNotes();
   await fake.plugin.setAccountState({ status: "transitioning", accountDid: did, transitionGen: 1 });
-  expect((await fake.plugin.getCaptureDefaults()).accountDid).toBeNull();
+  expect((await fake.plugin.getCaptureDefaults()).accountDid).toBe(did);
   await fake.plugin.setCaptureDefaults({ accountDid: null, transitionGen: 1,
     transcriber: "private-cloud", identifySpeakers: true });
   expect(await fake.plugin.getCaptureDefaults()).toMatchObject({ status: "transitioning",
-    accountDid: null, transcriber: "on-device" });
+    accountDid: did, transcriber: "on-device" });
   const { id } = await fake.plugin.start();
-  expect((await fake.plugin.status()).owner).toBeNull();
+  expect((await fake.plugin.status()).owner).toBe(did);
   await fake.plugin.discard();
   await expect(fake.plugin.setCaptureDefaults({ accountDid: did, transitionGen: 1,
     transcriber: "private-cloud", identifySpeakers: true })).rejects.toMatchObject({ code: "stale_transition" });
@@ -121,7 +122,7 @@ test("preference changes retain transitioning and recovery actions report absent
   const fake = createFakeVoiceNotes();
   await fake.plugin.setAccountState({ status: "transitioning", accountDid: did, transitionGen: 1 });
   await fake.plugin.setCaptureDefaults({ accountDid: null, transitionGen: 1, transcriber: "on-device", identifySpeakers: true });
-  expect(await fake.plugin.getCaptureDefaults()).toMatchObject({ status: "transitioning", accountDid: null });
+  expect(await fake.plugin.getCaptureDefaults()).toMatchObject({ status: "transitioning", accountDid: did });
   await expect(fake.plugin.retryRecovery({ id: "missing" })).rejects.toMatchObject({ code: "not_found" });
   await expect(fake.plugin.discardFailedRecording({ id: "missing" })).rejects.toMatchObject({ code: "not_found" });
   const { id } = await fake.plugin.start();
@@ -216,4 +217,111 @@ test("failed recovery has explicit retry and discard actions", async () => {
   await fake.plugin.discardFailedRecording({ id });
   expect((await fake.plugin.listQuarantine()).items).toEqual([]);
   expect((await fake.plugin.listPending()).recordings.some((note) => note.id === id)).toBe(false);
+});
+
+// TC-2785 Naomi test ruling: sign-in never claims unowned notes; user_choice requires the active account.
+test("unowned v2 notes require an explicit claim from the active account", async () => {
+  const { plugin } = createFakeVoiceNotes();
+  const { id } = await plugin.start();
+  await plugin.stop();
+  await expect(plugin.claim({ id, did, evidence: "user_choice" })).rejects.toMatchObject({ code: "owner_mismatch" });
+  await plugin.setCaptureDefaults({ accountDid: did, transitionGen: 1, transcriber: "on-device", identifySpeakers: false });
+  expect((await plugin.listPending()).recordings[0]?.owner).toBeNull();
+  await expect(plugin.claim({ id, did, evidence: "signed_out_v2" })).rejects.toMatchObject({ code: "claim_evidence_invalid" });
+  await expect(plugin.claim({ id, did: "did:example:other", evidence: "user_choice" })).rejects.toMatchObject({ code: "owner_mismatch" });
+  expect(await plugin.claim({ id, did, evidence: "user_choice" })).toEqual({ owner: did });
+});
+
+test("unsynced account audio is unreadable while signed out or under another account and returns to its owner", async () => {
+  const fake = createFakeVoiceNotes();
+  const { plugin } = fake;
+  await plugin.setCaptureDefaults({ accountDid: did, transitionGen: 1, transcriber: "on-device", identifySpeakers: false });
+  const { id } = await plugin.start();
+  await plugin.stop();
+  const transcript = { version: 1, noteId: id, transcriber: "on-device", rev: 1, engine: "parakeet-tdt-0.6b-v3", model: null,
+    language: "en", outcome: "transcribed", diarized: false, segments: [], createdAt: "2026-10-07T00:00:00Z" } as const;
+  await plugin.putTranscript({ id, transcript });
+  fake.controls.quarantine(id, "bad journal", 4);
+  await plugin.beginRemoteOp({ id, did, opId: "held", provider: "assemblyai", mode: "hosted", kind: "hosted_create", fingerprint: "one", startedAt: 10 });
+  await plugin.setAccountState({ status: "signed_out", accountDid: null, transitionGen: 2 });
+  for (const accountDid of [null, "did:example:B"]) {
+    if (accountDid) await plugin.setCaptureDefaults({ accountDid, transitionGen: 3, transcriber: "on-device", identifySpeakers: false });
+    expect((await plugin.listPending()).recordings).toEqual([]);
+    expect((await plugin.listQuarantine()).items).toEqual([]);
+    expect((await plugin.listOutbox({ did })).entries).toEqual([]);
+    for (const read of [() => plugin.localAudioUrl({ id }), () => plugin.localAudioSize({ id }),
+      () => plugin.readAudioChunk({ id, offset: 0, length: 4 }), () => plugin.audioMetadata({ id }),
+      () => plugin.getTranscript({ id }), () => plugin.claim({ id, did: accountDid ?? did, evidence: "user_choice" })]) {
+      await expect(read()).rejects.toMatchObject({ code: "owner_mismatch" });
+    }
+  }
+  await plugin.setCaptureDefaults({ accountDid: did, transitionGen: 4, transcriber: "on-device", identifySpeakers: false });
+  expect((await plugin.listPending()).recordings[0]?.owner).toBe(did);
+  expect((await plugin.localAudioSize({ id })).size).toBeGreaterThan(0);
+  expect(await plugin.getTranscript({ id })).toEqual({ transcript });
+  expect((await plugin.listQuarantine()).items[0]?.id).toBe(id);
+});
+
+test("sign-out deletes verified synced notes and their transcripts but keeps unverified audio", async () => {
+  const { plugin } = createFakeVoiceNotes();
+  await plugin.setCaptureDefaults({ accountDid: did, transitionGen: 1, transcriber: "on-device", identifySpeakers: false });
+  const synced = await plugin.start();
+  await plugin.stop();
+  await plugin.putTranscript({ id: synced.id, transcript: { version: 1, noteId: synced.id, transcriber: "on-device", rev: 1,
+    engine: "parakeet-tdt-0.6b-v3", model: null, language: "en", outcome: "transcribed", diarized: false,
+    segments: [], createdAt: "2026-10-07T00:00:00Z" } });
+  await plugin.updateLedger({ id: synced.id, did, rev: 1, patch: { audio: { state: "saved", rowId: "space-row", at: 1,
+    verifiedInSpace: { sha256: "a".repeat(64), size: 4 } }, transcriptSync: { state: "saved", rev: 1, at: 1 } } });
+  const unverified = await plugin.start();
+  await plugin.stop();
+  await plugin.updateLedger({ id: unverified.id, did, rev: 1, patch: { audio: { state: "saved", rowId: "old-row", at: 1 } } });
+  await plugin.setAccountState({ status: "signed_out", accountDid: null, transitionGen: 2 });
+  await plugin.setCaptureDefaults({ accountDid: did, transitionGen: 3, transcriber: "on-device", identifySpeakers: false });
+  expect((await plugin.listPending()).recordings.map((note) => note.id)).toEqual([unverified.id]);
+  await expect(plugin.localAudioUrl({ id: synced.id })).rejects.toMatchObject({ code: "tombstoned" });
+  await expect(plugin.getTranscript({ id: synced.id })).rejects.toMatchObject({ code: "tombstoned" });
+});
+
+
+test("sign-out finalizes handoff audio for A before clearing session and retained events", async () => {
+  const { plugin, controls } = createFakeVoiceNotes();
+  await plugin.setAccountState({ status: "transitioning", accountDid: did, transitionGen: 1 });
+  const { id } = await plugin.start();
+  controls.tick(1000);
+  expect((await plugin.status()).owner).toBe(did);
+  await plugin.setAccountState({ status: "signed_out", accountDid: null, transitionGen: 2 });
+  expect(await plugin.status()).toMatchObject({ state: "idle", id: null });
+  expect((await plugin.listPending()).recordings).toEqual([]);
+  await plugin.setCaptureDefaults({ accountDid: "did:example:B", transitionGen: 3, transcriber: "on-device", identifySpeakers: false });
+  const committed: string[] = [];
+  const mic: string[] = [];
+  await plugin.addListener("committed", (event) => committed.push(event.id));
+  await plugin.addListener("micState", (event) => { if (event.id) mic.push(event.id); });
+  await Promise.resolve();
+  expect(committed).toEqual([]);
+  expect(mic).toEqual([]);
+  expect((await plugin.listPending()).recordings).toEqual([]);
+  await plugin.setCaptureDefaults({ accountDid: did, transitionGen: 4, transcriber: "on-device", identifySpeakers: false });
+  expect((await plugin.listPending()).recordings).toMatchObject([{ id, owner: did, durationMs: 1000 }]);
+});
+
+test("TC-2785 fake retains mismatched receipts and unsynced local transcripts", async () => {
+  for (const variant of ["pending-transcript", "wrong-rev", "wrong-size", "missing-row", "preparing-audio", "saved-transcript"]) {
+    const { plugin } = createFakeVoiceNotes();
+    await plugin.setCaptureDefaults({ accountDid: did, transitionGen: 1, transcriber: "on-device", identifySpeakers: false });
+    const { id } = await plugin.start();
+    const note = await plugin.stop();
+    await plugin.putTranscript({ id, transcript: { version: 1, noteId: id, transcriber: "on-device", rev: 1,
+      engine: "test", model: null, language: "en", outcome: "transcribed", diarized: false, segments: [], createdAt: "2026-11-11T00:00:00Z" } });
+    await plugin.updateLedger({ id, did, rev: note.rev!, patch: {
+      audio: { state: "saved", rowId: variant === "missing-row" ? null : "row", at: 1,
+        verifiedInSpace: { sha256: "a".repeat(64), size: variant === "wrong-size" ? note.sizeBytes + 1 : note.sizeBytes } },
+      transcriptSync: { state: variant === "pending-transcript" ? "pending" : "saved", rev: variant === "wrong-rev" ? 2 : 1, at: 1 },
+      ...(variant === "preparing-audio" ? { localAudio: { state: "preparing" as const, error: null } } : {}),
+    } });
+    await plugin.setAccountState({ status: "signed_out", accountDid: null, transitionGen: 2 });
+    await plugin.setCaptureDefaults({ accountDid: did, transitionGen: 3, transcriber: "on-device", identifySpeakers: false });
+    expect((await plugin.listPending()).recordings).toHaveLength(variant === "saved-transcript" ? 0 : 1);
+    if (variant !== "saved-transcript") expect((await plugin.getTranscript({ id })).transcript?.rev).toBe(1);
+  }
 });

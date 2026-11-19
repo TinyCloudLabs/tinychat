@@ -6,6 +6,7 @@
 // never in colour alone.
 // T22 adds pipeline status to this row.
 import { ChevronRightIcon, type LucideIcon } from "lucide-react";
+import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 
 import {
@@ -20,7 +21,7 @@ import {
 } from "./captureIssues";
 import { RowBadge } from "../library/RowBadge";
 import { HOME_COPY } from "./homeCopy";
-import { pipelineTrackLabel, PipelineTrackSummary } from "../pipeline/PipelineTrackSummary";
+import { pipelineTrackLabel, pipelineTranscriptStatus, PipelineTrackSummary } from "../pipeline/PipelineTrackSummary";
 import type { NotePipeline } from "@/lib/voiceNotes/notePipeline";
 
 export interface SoftRowProps {
@@ -42,6 +43,11 @@ export interface SoftRowProps {
   testId: string;
   sourceId?: string;
   pipeline?: NotePipeline;
+  activityStatus?: string | null;
+  /** Beside the row, never inside its link: the rename pencil. */
+  trailing?: ReactNode;
+  /** The inline title editor; replaces the row while it is open. */
+  editor?: ReactNode;
 }
 
 /** What sits under the title: the issue's line, except for an informational one, which has a line of its own below. */
@@ -53,12 +59,13 @@ function stateLine(issue: HomeIssue | undefined, meta: string): string {
 export function softRowLabel(
   props: Pick<
     SoftRowProps,
-    "title" | "meta" | "badge" | "durationSecs" | "issue" | "onActivate" | "pipeline"
+    "title" | "meta" | "badge" | "durationSecs" | "issue" | "onActivate" | "pipeline" | "activityStatus"
   >,
 ): string {
   const parts = [props.title];
   if (props.badge) parts.push(props.badge);
-  if (props.pipeline && !props.pipeline.done) parts.push(pipelineTrackLabel(props.pipeline));
+  if (props.activityStatus) parts.push(props.activityStatus);
+  else if (props.pipeline && (!props.pipeline.done || pipelineTranscriptStatus(props.pipeline) !== null)) parts.push(pipelineTrackLabel(props.pipeline));
   parts.push(stateLine(props.issue, props.meta));
   if (props.durationSecs != null)
     parts.push(formatSpokenDuration(props.durationSecs));
@@ -110,7 +117,8 @@ export function SoftRow(props: SoftRowProps) {
           {props.badge && <RowBadge>{props.badge}</RowBadge>}
           {stateLine(issue, props.meta)}
         </span>
-        {props.pipeline && !props.pipeline.done && <PipelineTrackSummary pipeline={props.pipeline} />}
+        {props.activityStatus && <span className={props.activityStatus.startsWith("Needs attention") ? "soft-row-meta text-amber-700 dark:text-amber-300" : "soft-row-meta"} data-testid="library-note-status">{props.activityStatus}</span>}
+        {!props.activityStatus && props.pipeline && (!props.pipeline.done || pipelineTranscriptStatus(props.pipeline) !== null) && <PipelineTrackSummary pipeline={props.pipeline} />}
       </span>
       {(props.durationSecs != null ||
         props.href !== undefined ||
@@ -133,9 +141,13 @@ export function SoftRow(props: SoftRowProps) {
     "aria-label": label,
     "data-selected": props.selected ? "true" : undefined,
   };
+  if (props.editor) {
+    return <li className="soft-row-item" data-testid={props.testId} data-source-id={props.sourceId}>{props.editor}</li>;
+  }
   return (
     <li
       className="soft-row-item"
+      data-renamable={props.trailing ? "true" : undefined}
       data-testid={props.testId}
       data-source-id={props.sourceId}
       data-issue={issue?.kind}
@@ -162,6 +174,7 @@ export function SoftRow(props: SoftRowProps) {
           {body}
         </div>
       )}
+      {props.trailing}
       {notice !== null && props.onDetails && (
         <button
           type="button"

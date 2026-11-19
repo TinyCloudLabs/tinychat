@@ -1,15 +1,10 @@
 import { describe, expect, test } from "bun:test";
+import { stubSdkDomGlobals } from "../../test/sdkDomGlobals";
 
 // `@tinyboilerplate/client` (imported for the header-parity test below) evaluates
-// the TinyCloud web-sdk at module load, which references DOM globals. Stub them
-// BEFORE the dynamic imports so this file loads standalone as well as inside the
-// full `bun test` run — same treatment billingApi.test.ts gives them.
-const g = globalThis as unknown as Record<string, unknown>;
-if (typeof g.HTMLElement === "undefined") g.HTMLElement = class {};
-if (typeof g.customElements === "undefined") {
-  g.customElements = { define() {}, get() {} };
-}
-if (typeof g.window === "undefined") g.window = g;
+// the TinyCloud web-sdk at module load, which references DOM globals. The
+// helper stubs them only when absent and restores them right after the imports.
+const restoreSdkGlobals = stubSdkDomGlobals();
 
 const {
   createConnectorWebhooksClient,
@@ -17,6 +12,8 @@ const {
   CONNECTOR_WEBHOOKS_BASE_PATH,
 } = await import("./webhooksApi");
 const { createApiClient } = await import("@tinyboilerplate/client");
+restoreSdkGlobals();
+const g = globalThis as unknown as Record<string, unknown>;
 
 // ── Harness ──────────────────────────────────────────────────────────
 

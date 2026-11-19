@@ -54,7 +54,7 @@ export const MODE_STOPS: readonly ModeStop[] = [
     transcriber: "on-device",
     shortName: COPY.localName,
     subLabel: {
-      phone: FINAL_COPY.onThisPhone,
+      get phone() { return FINAL_COPY.onThisPhone; },
       desktop: FINAL_COPY.onThisMac,
       web: FINAL_COPY.needsApp,
     },
@@ -64,7 +64,7 @@ export const MODE_STOPS: readonly ModeStop[] = [
       web: FINAL_COPY.needsApp,
     },
     explanations: {
-      phone: explain(COPY.localPhoneExplanation),
+      phone: () => COPY.localPhoneExplanation,
       desktop: ({ modelName }) => COPY.localDesktopExplanation(modelName),
       web: explain(COPY.localWebExplanation),
     },
@@ -97,7 +97,7 @@ export const MODE_STOPS: readonly ModeStop[] = [
     id: "powerful",
     transcriber: "assemblyai",
     shortName: COPY.powerfulName,
-    subLabel: { phone: "via Exo's server", desktop: "via Exo's server", web: "via Exo's server" },
+    subLabel: { phone: "via our server", desktop: "via our server", web: "via our server" },
     captions: { phone: COPY.powerfulCaption, desktop: COPY.powerfulCaption, web: COPY.powerfulCaption },
     explanations: { phone: explain(COPY.powerfulExplanation), desktop: explain(COPY.powerfulExplanation), web: explain(COPY.powerfulExplanation) },
     privacyDots: 1,

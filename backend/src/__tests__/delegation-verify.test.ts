@@ -1,6 +1,6 @@
 import { describe, expect, it, mock } from "bun:test";
 import type { TinyCloudNode } from "@tinycloud/node-sdk";
-import { DelegationStore, verifySIWE } from "@tinyboilerplate/server";
+import { DelegationStore, TRANSCRIPT_WRITER_GRANT_KIND, verifySIWE } from "@tinyboilerplate/server";
 import { APP_ID } from "@tinyboilerplate/core";
 import { makePkhSpaceId } from "@tinycloud/sdk-core";
 import { activateVerifiedDelegation } from "../portable-delegation.js";
@@ -75,6 +75,7 @@ describe("signed transcript grant verifier", () => {
       ownerAddress: original.address.toLowerCase(), chainId: 1,
       spaceId: makePkhSpaceId(original.address, 1, "applications"), sessionDid: original.sessionDid,
       backendDid: original.backendDid, expiresAt: original.expiresAt,
+      policy: "transcript-writer",
       resources: [
         { service: "sql", space: original.spaceId, path: SQL, actions: ["tinycloud.sql/read", "tinycloud.sql/write"] },
         { service: "kv", space: original.spaceId, path: KV, actions: ["tinycloud.kv/get", "tinycloud.kv/put"] },
@@ -214,6 +215,15 @@ describe("signed transcript grant verifier", () => {
     expect(outbound).not.toHaveBeenCalled();
   });
 
+  it("accepts a grant minted under the node's other production name (TC-2923)", async () => {
+    for (const [host, configuredHost] of [["https://tee.node.tinycloud.xyz", "https://node.tinycloud.xyz"], ["https://node.tinycloud.xyz", "https://tee.node.tinycloud.xyz"]]) {
+      const grant = await makeSignedTranscriptGrant({ host });
+      assertSuccess(await verify({ ...grant, configuredHost }));
+    }
+    const foreign = await makeSignedTranscriptGrant({ host: "https://tee.node.tinycloud.xyz" });
+    await expectCode(foreign, "untrusted_host");
+  });
+
   it("persists signed envelope through a fresh store and rejects tampered persisted material", async () => {
     const grant = await makeSignedTranscriptGrant();
     const accepted = assertSuccess(await verify(grant));
@@ -223,9 +233,9 @@ describe("signed transcript grant verifier", () => {
       get: async (key: string) => records.has(key) ? { ok: true, data: { data: records.get(key) } } : { ok: false, error: { code: "KV_NOT_FOUND", service: "kv", message: `Key not found: ${key}` } },
       delete: async (key: string) => { records.delete(key); return { ok: true }; },
     } } as unknown as TinyCloudNode;
-    const first = new DelegationStore(fakeNode);
+    const first = new DelegationStore(fakeNode, TRANSCRIPT_WRITER_GRANT_KIND);
     await first.store(grant.address, grant.envelope, { expiresAt: grant.expiresAt.toISOString(), actions: ["read", "write"], path: SQL });
-    const restarted = new DelegationStore(fakeNode);
+    const restarted = new DelegationStore(fakeNode, TRANSCRIPT_WRITER_GRANT_KIND);
     const stored = await restarted.load(grant.address);
     if (!stored) throw new Error("Expected persisted record");
     const options = { backendDid: grant.backendDid, configuredHost: grant.configuredHost };

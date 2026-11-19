@@ -8,7 +8,6 @@ import {
   FirefliesClient,
   GET_TRANSCRIPT_QUERY,
   GET_USER_QUERY,
-  LIST_TRANSCRIPTS_QUERY,
   resolveFirefliesClientDefaults,
 } from "./firefliesClient";
 
@@ -167,8 +166,8 @@ describe("FirefliesClient.validateKey", () => {
   });
 });
 
-describe("FirefliesClient.listNewTranscriptIds — pagination + early-exit", () => {
-  test("paginates until page smaller than batch, returning ids newest-first", async () => {
+describe("FirefliesClient.listNewTranscriptIds — bounded reconciliation", () => {
+  test("paginates newest-first until the true end of history", async () => {
     const page1 = [transcriptSummary("a"), transcriptSummary("b"), transcriptSummary("c")];
     const page2 = [transcriptSummary("d"), transcriptSummary("e")];
     const { fetchImpl, calls } = mockFetch({
@@ -180,16 +179,17 @@ describe("FirefliesClient.listNewTranscriptIds — pagination + early-exit", () 
     const client = new FirefliesClient({ apiKey: "k", fetchImpl, delayMs: 0 });
     const result = await client.listNewTranscriptIds({ knownIds: [], batchSize: 3 });
     expect(result.ok).toBe(true);
-    if (result.ok) expect(result.data).toEqual(["a", "b", "c", "d", "e"]);
-
-    // Two paginated calls, both with the ListTranscripts query.
-    expect(calls.length).toBe(2);
-    expect(calls[0].body.query).toBe(LIST_TRANSCRIPTS_QUERY);
-    expect(calls[0].body.variables).toEqual({ limit: 3, skip: 0 });
-    expect(calls[1].body.variables).toEqual({ limit: 3, skip: 3 });
+    if (result.ok) {
+      expect(result.data.ids).toEqual(["a", "b", "c", "d", "e"]);
+      expect(result.data.complete).toBe(true);
+    }
+    expect(calls.map((call) => call.body.variables)).toEqual([
+      { limit: 3, skip: 0 },
+      { limit: 3, skip: 3 },
+    ]);
   });
 
-  test("stops on empty page", async () => {
+  test("an empty provider page proves the end of history", async () => {
     const { fetchImpl, calls } = mockFetch({
       responses: [
         () => jsonResponse({ data: { transcripts: [transcriptSummary("a"), transcriptSummary("b")] } }),
@@ -198,56 +198,37 @@ describe("FirefliesClient.listNewTranscriptIds — pagination + early-exit", () 
     });
     const client = new FirefliesClient({ apiKey: "k", fetchImpl, delayMs: 0 });
     const result = await client.listNewTranscriptIds({ knownIds: [], batchSize: 2 });
-    expect(result.ok).toBe(true);
-    if (result.ok) expect(result.data).toEqual(["a", "b"]);
-    expect(calls.length).toBe(2);
+    expect(result.ok && result.data).toEqual({
+      ids: ["a", "b"], complete: true, nextSkip: 2, nextAnchor: "b",
+      nextAnchorDate: 1700000000000, nextPreviousNeighbor: "a",
+    });
+    expect(calls).toHaveLength(2);
   });
 
-  test("early-exit: collects new ids from the page, then stops", async () => {
-    // Page: [x, y, KNOWN, z] — x and y are new, KNOWN triggers stop; z is NOT collected.
-    const page = [
-      transcriptSummary("x"),
-      transcriptSummary("y"),
-      transcriptSummary("KNOWN"),
-      transcriptSummary("z"),
-    ];
-    const { fetchImpl, calls } = mockFetch({
-      responses: [() => jsonResponse({ data: { transcripts: page } })],
-    });
-    const client = new FirefliesClient({ apiKey: "k", fetchImpl, delayMs: 0 });
-    const result = await client.listNewTranscriptIds({
-      knownIds: new Set(["KNOWN"]),
-      batchSize: 25,
-    });
-    expect(result.ok).toBe(true);
-    if (result.ok) expect(result.data).toEqual(["x", "y"]);
-    expect(calls.length).toBe(1);
-  });
-
-  test("early-exit across pages: second page contains a known id", async () => {
-    const page1 = [transcriptSummary("a"), transcriptSummary("b")];
-    const page2 = [transcriptSummary("c"), transcriptSummary("KNOWN")];
-    const shouldNotHit = () => {
-      throw new Error("must not fetch a 3rd page after early-exit");
-    };
+  test("known IDs are skipped rather than treated as a listing boundary", async () => {
     const { fetchImpl, calls } = mockFetch({
       responses: [
-        () => jsonResponse({ data: { transcripts: page1 } }),
-        () => jsonResponse({ data: { transcripts: page2 } }),
-        shouldNotHit,
+        () => jsonResponse({ data: { transcripts: [
+          transcriptSummary("new-1"), transcriptSummary("known"), transcriptSummary("new-2"),
+        ] } }),
+        () => jsonResponse({ data: { transcripts: [] } }),
       ],
     });
     const client = new FirefliesClient({ apiKey: "k", fetchImpl, delayMs: 0 });
     const result = await client.listNewTranscriptIds({
-      knownIds: ["KNOWN"],
-      batchSize: 2,
+      knownIds: ["known"],
+      batchSize: 3,
+      detailCap: 10,
+      pageBudget: 2,
     });
-    expect(result.ok).toBe(true);
-    if (result.ok) expect(result.data).toEqual(["a", "b", "c"]);
-    expect(calls.length).toBe(2);
+    expect(result.ok && result.data).toEqual({
+      ids: ["new-1", "new-2"], complete: true, nextSkip: 3, nextAnchor: "new-2",
+      nextAnchorDate: 1700000000000, nextPreviousNeighbor: "known",
+    });
+    expect(calls).toHaveLength(2);
   });
 
-  test("batchSize is capped at 50", async () => {
+  test("batch size is capped at 50", async () => {
     const { fetchImpl, calls } = mockFetch({
       responses: [() => jsonResponse({ data: { transcripts: [] } })],
     });
@@ -256,28 +237,170 @@ describe("FirefliesClient.listNewTranscriptIds — pagination + early-exit", () 
     expect(calls[0].body.variables).toEqual({ limit: 50, skip: 0 });
   });
 
-  test("onProgress fires after each page with phase=listing", async () => {
-    const page1 = [transcriptSummary("a"), transcriptSummary("b")];
-    const page2 = [transcriptSummary("c")];
+  test("detail cap bounds a listing and marks it incomplete", async () => {
+    const { fetchImpl, calls } = mockFetch({
+      responses: [() => jsonResponse({ data: { transcripts: [
+        transcriptSummary("a"), transcriptSummary("b"), transcriptSummary("c"),
+      ] } })],
+    });
+    const client = new FirefliesClient({ apiKey: "k", fetchImpl, delayMs: 0 });
+    const result = await client.listNewTranscriptIds({
+      knownIds: [], batchSize: 25, detailCap: 2,
+    });
+    expect(result.ok && result.data).toEqual({
+      ids: ["a", "b"], complete: false, nextSkip: 2, nextAnchor: "b",
+      nextAnchorDate: 1700000000000, nextPreviousNeighbor: "a",
+    });
+    expect(calls[0].body.variables).toEqual({ limit: 2, skip: 0 });
+  });
+
+  test("page budget applies without a SQL watermark", async () => {
+    const { fetchImpl, calls } = mockFetch({
+      responses: [() => jsonResponse({ data: { transcripts: [
+        transcriptSummary("known-0"), transcriptSummary("known-1"),
+      ] } })],
+    });
+    const client = new FirefliesClient({ apiKey: "k", fetchImpl, delayMs: 0 });
+    const result = await client.listNewTranscriptIds({
+      knownIds: ["known-0", "known-1"], batchSize: 2, pageBudget: 1,
+    });
+    expect(result.ok && result.data).toEqual({
+      ids: [], complete: false, nextSkip: 2, nextAnchor: "known-1",
+      nextAnchorDate: 1700000000000, nextPreviousNeighbor: "known-0",
+    });
+    expect(calls).toHaveLength(1);
+  });
+
+  test("date boundary completes reconciliation after inclusive-boundary meetings", async () => {
+    const { fetchImpl } = mockFetch({
+      responses: [() => jsonResponse({ data: { transcripts: [
+        transcriptSummary("inside", { date: "2026-10-08T00:00:00.000Z" }),
+        transcriptSummary("boundary", { date: "2026-10-07T00:00:00.000Z" }),
+        transcriptSummary("older", { date: "2026-10-06T00:00:00.000Z" }),
+      ] } })],
+    });
+    const client = new FirefliesClient({ apiKey: "k", fetchImpl, delayMs: 0 });
+    const result = await client.listNewTranscriptIds({
+      knownIds: [],
+      stopBeforeDate: "2026-10-07T00:00:00.000Z",
+    });
+    expect(result.ok && result.data).toEqual({
+      ids: ["inside", "boundary"], complete: true, nextSkip: 2, nextAnchor: "boundary",
+      nextAnchorDate: "2026-10-07T00:00:00.000Z", nextPreviousNeighbor: "inside",
+    });
+  });
+
+  test("onProgress reports each consumed page", async () => {
     const { fetchImpl } = mockFetch({
       responses: [
-        () => jsonResponse({ data: { transcripts: page1 } }),
-        () => jsonResponse({ data: { transcripts: page2 } }),
+        () => jsonResponse({ data: { transcripts: [transcriptSummary("a"), transcriptSummary("b")] } }),
+        () => jsonResponse({ data: { transcripts: [transcriptSummary("c")] } }),
       ],
     });
     const events: Array<{ phase: string; done: number; total: number | null }> = [];
     const client = new FirefliesClient({ apiKey: "k", fetchImpl, delayMs: 0 });
     await client.listNewTranscriptIds({
-      knownIds: [],
-      batchSize: 2,
-      onProgress: (p) => events.push(p),
+      knownIds: [], batchSize: 2, onProgress: (progress) => events.push(progress),
     });
-    expect(events.length).toBe(2);
-    expect(events[0]).toEqual({ phase: "listing", done: 2, total: null });
-    expect(events[1]).toEqual({ phase: "listing", done: 3, total: null });
+    expect(events).toEqual([
+      { phase: "listing", done: 2, total: null },
+      { phase: "listing", done: 3, total: null },
+    ]);
   });
-});
 
+  test("a reduced full page of known IDs advances by consumed rows before later unseen IDs", async () => {
+    const summaries = [
+      ...Array.from({ length: 25 }, (_, index) => transcriptSummary(`new-${index}`)),
+      transcriptSummary("known"),
+      transcriptSummary("late-hole"),
+    ];
+    const { fetchImpl, calls } = mockFetch({
+      responses: [async (call) => {
+        const { limit = 25, skip = 0 } = call.body.variables as { limit?: number; skip?: number };
+        return jsonResponse({ data: { transcripts: summaries.slice(skip, skip + limit) } });
+      }],
+    });
+    const client = new FirefliesClient({ apiKey: "k", fetchImpl, delayMs: 0 });
+    const result = await client.listNewTranscriptIds({
+      knownIds: ["known"], batchSize: 25, detailCap: 26, pageBudget: 5,
+    });
+    expect(result.ok && result.data.ids).toContain("late-hole");
+    expect(calls.map((call) => call.body.variables)).toEqual([
+      { limit: 25, skip: 0 },
+      { limit: 1, skip: 25 },
+      { limit: 1, skip: 26 },
+    ]);
+  });
+  test("returns a resumable listing offset after a page-budget boundary", async () => {
+    const summaries = Array.from({ length: 30 }, (_, index) => transcriptSummary(`tx-${index}`));
+    const { fetchImpl, calls } = mockFetch({
+      responses: [async (call) => {
+        const { limit = 25, skip = 0 } = call.body.variables as { limit?: number; skip?: number };
+        return jsonResponse({ data: { transcripts: summaries.slice(skip, skip + limit) } });
+      }],
+    });
+    const client = new FirefliesClient({ apiKey: "k", fetchImpl, delayMs: 0 });
+    const first = await client.listNewTranscriptIds({
+      knownIds: [], batchSize: 10, detailCap: 50, pageBudget: 1,
+    });
+    expect(first.ok && first.data.nextSkip).toBe(10);
+    expect(first.ok && first.data.nextAnchor).toBe("tx-9");
+    expect(first.ok && first.data.nextAnchorDate).toBe(1700000000000);
+    if (!first.ok) throw new Error("unreachable");
+
+    const storedIds = summaries.slice(0, 10).map((item) => item.id);
+    const second = await client.listNewTranscriptIds({
+      knownIds: storedIds, batchSize: 11, detailCap: 50, pageBudget: 5,
+      startSkip: first.data.nextSkip,
+      startAnchor: first.data.nextAnchor,
+      startAnchorDate: first.data.nextAnchorDate,
+      startPreviousNeighbor: first.data.nextPreviousNeighbor,
+    });
+    expect(second.ok && second.data.ids).toEqual(summaries.slice(10).map((item) => item.id));
+    expect(second.ok && second.data.nextSkip).toBe(30);
+    expect(second.ok && second.data.nextAnchor).toBe("tx-29");
+    expect(second.ok && second.data.complete).toBe(true);
+    expect(calls.map((call) => call.body.variables)).toEqual([
+      { limit: 10, skip: 0 },
+      { limit: 11, skip: 0 },
+      { limit: 11, skip: 0 },
+      { limit: 10, skip: 11 },
+      { limit: 11, skip: 10 },
+      { limit: 11, skip: 21 },
+    ]);
+  });
+  test("a null listed date remains valid cursor evidence", async () => {
+    const summaries = ["a", "b", "c"].map((id) => transcriptSummary(id, { date: null }));
+    const { fetchImpl } = mockFetch({
+      responses: [async (call) => {
+        const { limit = 25, skip = 0 } = call.body.variables as { limit?: number; skip?: number };
+        return jsonResponse({ data: { transcripts: summaries.slice(skip, skip + limit) } });
+      }],
+    });
+    const client = new FirefliesClient({ apiKey: "k", fetchImpl, delayMs: 0 });
+    const first = await client.listNewTranscriptIds({
+      knownIds: [], batchSize: 1, detailCap: 1, pageBudget: 1,
+    });
+    if (!first.ok) throw new Error("unreachable");
+    expect(first.data.nextAnchorDate).toBeNull();
+    expect(first.data.nextPreviousNeighbor).toBeNull();
+
+    const resumed = await client.listNewTranscriptIds({
+      knownIds: ["a"],
+      batchSize: 1,
+      detailCap: 10,
+      pageBudget: 10,
+      startSkip: first.data.nextSkip,
+      startAnchor: first.data.nextAnchor,
+      startAnchorDate: first.data.nextAnchorDate,
+      startPreviousNeighbor: first.data.nextPreviousNeighbor,
+    });
+    expect(resumed.ok && resumed.data.complete).toBe(true);
+    expect(resumed.ok && resumed.data.nextSkip).toBe(3);
+    expect(resumed.ok && resumed.data.ids).toEqual(["b", "c"]);
+  });
+
+});
 describe("FirefliesClient — HTTP 429 rate limit recovery", () => {
   test("retries once after 429 with retry-after header, then succeeds", async () => {
     let attempts = 0;
@@ -335,6 +458,43 @@ describe("FirefliesClient — HTTP 429 rate limit recovery", () => {
       expect(result.error.retryAfterMs).toBe(60_000);
     }
   });
+  test("aborting during retry-after sleep stops before another provider request", async () => {
+    const firstRequest = Promise.withResolvers<void>();
+    const { fetchImpl, calls } = mockFetch({
+      responses: [() => {
+        firstRequest.resolve();
+        return new Response("rate limit", { status: 429, headers: { "retry-after": "2" } });
+      }],
+    });
+    const client = new FirefliesClient({ apiKey: "k", fetchImpl, delayMs: 1 });
+    const controller = new AbortController();
+    const listing = client.listNewTranscriptIds({ knownIds: [], signal: controller.signal });
+    await firstRequest.promise;
+    controller.abort();
+
+    const result = await Promise.race([
+      listing,
+      new Promise<"pending">((resolve) => setTimeout(() => resolve("pending"), 100)),
+    ]);
+    expect(result).not.toBe("pending");
+    expect(calls).toHaveLength(1);
+    await listing;
+  });
+
+  test("Retry-After above one minute ends the run without retrying", async () => {
+    const { fetchImpl, calls } = mockFetch({
+      responses: [() => new Response("rate limit", { status: 429, headers: { "retry-after": "61" } })],
+    });
+    const client = new FirefliesClient({ apiKey: "k", fetchImpl, delayMs: 0 });
+    const result = await client.listNewTranscriptIds({ knownIds: [] });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.kind).toBe("rate-limited");
+      expect(result.error.retryAfterMs).toBe(61_000);
+    }
+    expect(calls).toHaveLength(1);
+  });
 });
 
 describe("FirefliesClient — GraphQL rate limit recovery", () => {
@@ -367,14 +527,15 @@ describe("FirefliesClient — GraphQL rate limit recovery", () => {
     expect(attempts).toBe(2);
   });
 
-  test("GraphQL rate-limit by message text (no extensions.code)", async () => {
+  test("GraphQL rate-limit by message text retries when Retry-After is within one minute", async () => {
     let attempts = 0;
+    const retryAfter = new Date(Date.now() + 1_000).toISOString();
     const { fetchImpl } = mockFetch({
       responses: [
         () => {
           attempts++;
           return jsonResponse({
-            errors: [{ message: "You have hit the rate limit. Retry after 2027-01-01T00:00:00Z" }],
+            errors: [{ message: `You have hit the rate limit. Retry after ${retryAfter}` }],
           });
         },
         () => {
@@ -412,7 +573,7 @@ describe("FirefliesClient — GraphQL rate limit recovery", () => {
       expect(result.error.kind).toBe("rate-limited");
       expect(result.error.retryAfterMs).toBeGreaterThan(0);
     }
-    expect(calls.length).toBe(1 + FIREFLIES_MAX_RATE_LIMIT_RETRIES);
+    expect(calls.length).toBe(1);
   });
 
   test("GraphQL rate-limit with unparseable message falls back to 60s", async () => {
@@ -470,6 +631,44 @@ describe("FirefliesClient.getTranscript", () => {
     const result = await client.getTranscript("nope");
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.kind).toBe("graphql-error");
+  });
+  test("structured GraphQL object_not_found errors carry deletion evidence", async () => {
+    const { fetchImpl } = mockFetch({
+      responses: [() => jsonResponse({
+        errors: [{
+          message: "Transcript not found",
+          extensions: { code: "object_not_found" },
+        }],
+      })],
+    });
+    const client = new FirefliesClient({ apiKey: "k", fetchImpl, delayMs: 0 });
+    const result = await client.getTranscript("deleted");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.kind).toBe("graphql-error");
+      expect(result.error.notFound).toBe(true);
+    }
+  });
+
+  test("message text alone does not carry deletion evidence", async () => {
+    const { fetchImpl } = mockFetch({
+      responses: [() => jsonResponse({ errors: [{ message: "Transcript not found" }] })],
+    });
+    const client = new FirefliesClient({ apiKey: "k", fetchImpl, delayMs: 0 });
+    const result = await client.getTranscript("unknown");
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.notFound).toBeUndefined();
+  });
+  test("structured GraphQL 404 status also carries deletion evidence", async () => {
+    const { fetchImpl } = mockFetch({
+      responses: [() => jsonResponse({
+        errors: [{ message: "Unknown", extensions: { status: 404 } }],
+      })],
+    });
+    const client = new FirefliesClient({ apiKey: "k", fetchImpl, delayMs: 0 });
+    const result = await client.getTranscript("deleted");
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.notFound).toBe(true);
   });
 });
 

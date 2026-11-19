@@ -12,8 +12,8 @@ import {
 // The address the lane signs in as, spelled lowercase on purpose: the SDK reads
 // the owner DID out of the space id, whose address is EIP-55 checksummed, so the
 // helper has to normalize rather than pass the wallet's spelling through.
-const LOWER = "0x7d0333579c19e8fa149c2dbf8405cb6f66c373f2";
-const CHECKSUMMED = "0x7d0333579C19E8fa149C2dbf8405cb6f66c373f2";
+const LOWER = "0x4db6e7be716ba504cd103bc16b9329fe6bbe41f2";
+const CHECKSUMMED = "0x4db6e7Be716bA504Cd103BC16B9329FE6BBE41F2";
 
 function baseManifest(): Manifest {
   return JSON.parse(
@@ -56,6 +56,22 @@ describe("encryptionDecryptGrant", () => {
 });
 
 describe("withEncryptionDecryptGrant", () => {
+  test("a manifest-scoped request retains the declared decrypt grant without account resources", async () => {
+    const { composeManifestRequest } = await import("@tinycloud/sdk-core");
+    const request = composeManifestRequest([withEncryptionDecryptGrant(baseManifest(), LOWER)], {
+      includeAccountRegistryPermissions: false,
+    });
+    expect(request.resources.filter((resource) => resource.space === "account")).toEqual([]);
+    const encryption = request.resources.filter((resource) => resource.service === "tinycloud.encryption");
+    expect(encryption).toHaveLength(1);
+    expect(encryption[0]).toMatchObject({
+      service: "tinycloud.encryption",
+      space: "encryption",
+      path: encryptionNetworkId(LOWER),
+      actions: ["tinycloud.encryption/decrypt"],
+    });
+  });
+
   test("appends the grant without mutating the fetched manifest", () => {
     const manifest = baseManifest();
     const before = (manifest.permissions ?? []).length;
@@ -121,45 +137,5 @@ describe("withEncryptionDecryptGrant", () => {
       (m.permissions ?? []).find((p) => p.service === "tinycloud.encryption")?.path;
     expect(path(mine)).not.toBe(path(theirs));
     expect(path(theirs)).toContain(other);
-  });
-});
-
-// Which call site uses it is the whole point: capabilities are minted at sign-in,
-// so adding this on the restore path would be misleading noise that never
-// changes what a restored session can do. Asserted against the source because
-// the alternative is rendering App with a mock wallet.
-describe("App wiring", () => {
-  const app = readFileSync(new URL("../../App.tsx", import.meta.url), "utf8");
-
-  test("sign-in passes the composed manifest to createAndSignIn", () => {
-    // The config is built once as `signInConfig` (the local-validation path
-    // signs with the same object), so follow that binding to its literal.
-    expect(app).toContain("await createAndSignIn(web3Provider, signInConfig)");
-    const config = app.slice(app.indexOf("const signInConfig = {"));
-    const args = config.slice(0, config.indexOf("};"));
-    expect(args).toContain("tinycloudHosts: TINYCLOUD_HOSTS");
-    expect(args).toContain("manifest: withEncryptionDecryptGrant(manifest, connectedAddress)");
-  });
-
-  test("the restore path passes the plain manifest", () => {
-    const restoreCall = app.slice(app.indexOf("restoreTinyCloudWebSession(storedAddress, {"));
-    const args = restoreCall.slice(0, restoreCall.indexOf("})"));
-    expect(args).toContain("tinycloudHosts: TINYCLOUD_HOSTS");
-    expect(args).toContain("manifest,");
-    expect(args).not.toContain("withEncryptionDecryptGrant");
-  });
-
-  test("the restore path never publishes a manifest-less client during backend startup", () => {
-    const restoreEffect = app.slice(
-      app.indexOf("// Restore an existing session on boot"),
-      app.indexOf("// A1 — keep the policy-input refs"),
-    );
-    expect(restoreEffect).toContain("await fetchConfigWithRetry(");
-    expect(restoreEffect).toMatch(/if \(!manifest\)\s+throw new Error\(/);
-    expect(restoreEffect).not.toContain("() => undefined");
-  });
-
-  test("the workaround has exactly one call site, so removing it is one line", () => {
-    expect(app.split("withEncryptionDecryptGrant(").length - 1).toBe(1);
   });
 });

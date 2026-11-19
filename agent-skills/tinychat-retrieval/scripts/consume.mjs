@@ -2,7 +2,6 @@
 import { createConsumer } from '../lib/consumer.mjs';
 import { createSetup } from '../lib/setup.mjs';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 
 const help = `TinyChat compact evidence consumer
@@ -35,7 +34,7 @@ try {
       if (['session', 'root'].includes(key)) continue;
       input[key === 'new-operation' ? 'newOperation' : key] = numeric.has(key) ? /^[1-9][0-9]*$/.test(value) ? Number(value) : NaN : value;
     }
-    const setup = createSetup({ statePath: join(process.env.XDG_CONFIG_HOME || join(process.env.HOME, '.config'), 'tinychat-retrieval/setup.json'), manifestPath: fileURLToPath(new URL('../assets/permissions.json', import.meta.url)) });
+    const setup = createSetup({ statePath: join(process.env.XDG_CONFIG_HOME || join(process.env.HOME, '.config'), 'tinychat-retrieval/setup.json') });
     const result = await createConsumer({ setup, ...(values.root ? { root: values.root } : {}) }).invoke(positionals[0], input, { sessionID: values.session });
     process.stdout.write(JSON.stringify(result) + '\n');
     if (!result.ok) process.exitCode = result.exitCode || 1;

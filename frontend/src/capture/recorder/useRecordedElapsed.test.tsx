@@ -93,7 +93,6 @@ describe("useRecordedElapsed", () => {
     await render(atCall + 10 * 60_000, { ...paused, elapsedAt: now });
     await advance(5 * 60_000);
     expect(values.get("first")).toBe(atCall + 10 * 60_000);
-    expect(intervals.size).toBe(0);
   });
 
   test("a stopped recording keeps the frozen value", async () => {

@@ -12,12 +12,13 @@
     "mobile"
   ],
   "overrides": {
-    "@tinycloud/sdk-core": "3.2.1",
-    "@tinycloud/sdk-services": "3.2.1",
-    "@tinycloud/web-sdk": "3.2.1",
-    "@tinycloud/node-sdk": "3.2.1",
-    "@tinycloud/node-sdk-wasm": "1.7.7",
-    "@tinycloud/web-sdk-wasm": "1.7.6",
+    "@tinycloud/sdk-core": "3.12.0-beta.24",
+    "@tinycloud/sdk-services": "3.12.0-beta.20",
+    "@tinycloud/web-sdk": "3.12.0-beta.26",
+    "@tinycloud/node-sdk": "3.12.0-beta.26",
+    "@tinycloud/node-sdk-wasm": "1.7.9-beta.0",
+    "@tinycloud/replica": "0.4.5-beta.6",
+    "@tinycloud/web-sdk-wasm": "1.7.8-beta.0",
     "ethers": "6.16.0",
     "react": "19.2.3",
     "react-dom": "19.2.3",
@@ -40,7 +41,6 @@
     "lint:fix": "eslint . --fix",
     "generate-key": "bun run packages/server/scripts/generate-key.ts backend/.env",
     "deploy:frontend": "bunx turbo run build --filter=@tinychat/frontend && CLOUDFLARE_ACCOUNT_ID=${CLOUDFLARE_ACCOUNT_ID:-9959301f03d2db1a5fcf5e004278d467} bunx wrangler pages deploy",
-    "deploy:backend:phala": "phala deploy --cvm-id ${TINYCHAT_CVM_ID:?set TINYCHAT_CVM_ID} -c docker-compose.phala.yml -e .env.prod -e TINYCHAT_BACKEND_IMAGE=${TINYCHAT_BACKEND_IMAGE:-ghcr.io/tinycloudlabs/tinychat-backend:latest} -e TINYCHAT_INGRESS_IMAGE=${TINYCHAT_INGRESS_IMAGE:-ghcr.io/tinycloudlabs/tinychat-backend:ingress-latest} -e TINYCLOUD_HOST=${TINYCLOUD_HOST:-https://tee.node.tinycloud.xyz} -e PORT=3001 -e PHALA_GATEWAY_CNAME=${PHALA_GATEWAY_CNAME:?set PHALA_GATEWAY_CNAME} --wait && curl -fsS https://api.tinycloud.chat/health && curl -fsS https://api.tinycloud.chat/api/server-info",
     "docker:backend:build": "docker buildx build --platform linux/amd64 -f backend/Dockerfile -t ${TINYCHAT_BACKEND_IMAGE:-ghcr.io/tinycloudlabs/tinychat-backend:latest} .",
     "docker:backend:push": "docker buildx build --platform linux/amd64 -f backend/Dockerfile -t ${TINYCHAT_BACKEND_IMAGE:-ghcr.io/tinycloudlabs/tinychat-backend:latest} --push .",
     "postinstall": "node packages/client/scripts/fix-web-wasm-init.mjs && node packages/server/scripts/fix-wasm-esm.mjs",
@@ -53,15 +53,18 @@
   "devDependencies": {
     "@changesets/cli": "3.0.3",
     "@eslint/js": "^10.0.1",
-    "@tinycloud/node-sdk": "3.2.1",
+    "@tinyboilerplate/core": "workspace:*",
+    "@tinycloud/node-sdk": "3.12.0-beta.26",
+    "@tinycloud/sdk-services": "3.12.0-beta.20",
     "eslint": "^10.1.0",
     "husky": "^9.1.7",
     "portless": "^0.13.0",
     "prettier": "^3.8.1",
     "turbo": "^2.0.0",
-    "typescript-eslint": "^8.57.1"
+    "typescript-eslint": "^8.57.1",
+    "zod": "3.25.76"
   },
   "patchedDependencies": {
-    "@tinycloud/node-sdk@3.2.1": "patches/@tinycloud%2Fnode-sdk@3.2.1.patch"
+    "@openkey/sdk-capacitor@0.2.0-beta.0": "patches/@openkey%2Fsdk-capacitor@0.2.0-beta.0.patch"
   }
 }

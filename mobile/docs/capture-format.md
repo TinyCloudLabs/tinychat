@@ -1,4 +1,4 @@
-# Exo capture format and bridge contract
+# TinyCloud One capture format and bridge contract
 
 ## Contract changes since aa9ae19
 
@@ -142,12 +142,17 @@ For `outcome: "unknown"`, a known definitive job or upload handle still uses the
                       "uploadId": null, "uploadUrl": null, "jobId": null, "handleExpiresAt": null,
                       "cleanup": "none" | "pending" | "done" } ]
   },
-  "stt": { "state": "waiting_for_model" | "queued" | "running" | "done" | "failed" | "cancelled", "pack": null, "engine": null, "segmentsDone": 0, "windowsDone": 0, "error": null }
+  "stt": { "state": "waiting_for_model" | "queued" | "running" | "done" | "failed" | "cancelled", "pack": null, "engine": null, "segmentsDone": 0, "windowsDone": 0, "error": null,
+           "rerunRev": 2 | null, "rerunBaseRev": 1 | null, "rerunBaseHash": "32 lowercase hex" | null }
   // "attempts" (Int, TC-836) is added once a note first enters "running": a crash-loop guard
   // persisted before each decode attempt, absent until then; readers default a missing value to 0.
 }
 ```
 `durationMs` in v2 is `a` at the final durable frame, including any written priming or padding access units; `wallMs` is start→stop (or the last durable event in recovery). `pausedMs` is the sum of user-pause intervals within `wallMs`. V1 sidecars keep their wall-clock `durationMs`. A v2 writer emits the full exact key set of `sidecar-v2-ios.json` or `sidecar-v2-android.json` (with platform-specific values), including explicit `null` for unknown nullable fields and empty arrays for no spans or remote handles. Readers remain tolerant of older v2 files that omit newly added fields.
+
+An explicit rerun stores its target `rerunRev` and committed base `(rerunBaseRev, rerunBaseHash)` in the sidecar `stt` state while it is queued, running, or waiting for a model. The local transcript written for that attempt carries `rerunBase: { rev, hash }`. The worker verifies that base before publishing; launch recovery cancels unfinished reruns and clears their markers, while a failed rerun retains its base across relaunch for an explicit retry. These markers never cause a rerun to restart automatically.
+
+Space audio writes are admitted only when `recording.options?.uploadAudio === true`; absent and false values stay local. Private-cloud/PTX and hosted-engine uploads are transcription-service requests, not writes to the user's space.
 
 ### 1.4 Transition contract
 
@@ -178,7 +183,7 @@ The in-memory `paused` value at the start of a Pause call is a private transitio
 
 **Resume notifications.** iOS: when an interruption begins with intent `recording`, schedule `capture.resume.<id>` with `UNTimeIntervalNotificationTrigger(timeInterval: 45)`, `userInfo = { id, gen }`: "Recording paused by a call or Siri. Tap to resume." A successful restart, Pause, Stop and Discard remove it (pending and delivered). On delivery in the foreground (`willPresent`) and on tap (`didReceive`), the app acts **only if** the current session id equals `id`, intent is `recording` and availability isn't `available`. The `gen` in the payload is diagnostic; it is **not** an equality gate because automatic attempts increment it while the same notification remains. A valid tap performs manual Resume; otherwise it just opens the app. Android: `needs_user` posts "Tap to resume" on channel `capture-alerts` (IMPORTANCE_HIGH) with a **Resume** action carrying `{id, gen}` (`getForegroundService`/`getService` by API), validated by `CaptureService` by the same id/intent/availability rule. Pause/Stop/Discard cancel it. The Live Activity (T12) shows the same state and Resume.
 
-**Notification permission.** It is requested at the first recording (iOS in T10; Android's existing POST_NOTIFICATIONS ask). If notifications are denied, iOS relies on the Live Activity; if that is also off, only the in-app state remains. The recording view says once: "Turn on notifications so Exo can tell you when recording pauses."
+**Notification permission.** It is requested at the first recording (iOS in T10; Android's existing POST_NOTIFICATIONS ask). If notifications are denied, iOS relies on the Live Activity; if that is also off, only the in-app state remains. The recording view says once: "Turn on notifications so TinyCloud One can tell you when recording pauses."
 
 **Table tests** (CaptureCore / capture/core): every cell above, plus: buffers captured before Pause but delivered during input stop are retained in the segment; input-stop failure keeps recording on that segment; post-stop release failure resolves paused; a periodic heartbeat due at Stop yields only the final heartbeat; failed automatic restart → manual Resume succeeds; interruption → user Pause → the delayed notification fires → tap → still paused; interruption → Stop → the notification is removed; Stop during backoff → no microphone reactivation (iOS session inactive, Android `AudioRecord` released).
 
@@ -196,7 +201,7 @@ export type MicStateReason = null | "no_signal" | "os_silenced" | "input_muted" 
   | "resume_blocked" | "max_duration" | "disk_full" | "write_failed" | "permission_revoked";
 export type TranscriberId = "on-device" | "private-cloud" | "assemblyai";
 export type CaptureSource = "in_app" | "quick_action" | "app_shortcut" | "intent" | "control" | "tile" | "widget" | "notification";
-export interface CaptureOptions { transcriber: TranscriberId; identifySpeakers: boolean }
+export interface CaptureOptions { transcriber: TranscriberId; identifySpeakers: boolean; uploadAudio?: boolean }
 export interface CaptureDefaults extends CaptureOptions { accountDid: string | null; transitionGen: number }
 export interface AudioInput { id: string; name: string; kind: "built_in" | "wired" | "bluetooth" | "usb" | "car" | "other" }
 export interface OutboxEntry { entryId: string; did: string; provider: "assemblyai" | "ptx"; mode: "hosted" | "own" | null;
@@ -278,7 +283,7 @@ The recovery actions reject `not_found` when the id is absent and `recording_in_
 - **Legacy import** (inside `recoverOnce()`), for every `<id>.m4a` with no sidecar, no session directory and no tombstone. The old plugins stop the recorder before writing the sidecar, so such a file may be complete.
   - Probe it: iOS `AVURLAsset` `load(.tracks, .duration)`, staged outside the lock and published via revalidation; Android `MediaExtractor` (one audio track, `KEY_DURATION` > 0). Playable = an audio track and ≥ 0.5 s.
   - Playable → a v2 sidecar with `legacyImport: true`, `recovered: true`, `ownerUnknown: true`, `owner: null`, the probed duration, and `startedAt` from the file's creation date (iOS `creationDate`, declared as `NSPrivacyAccessedAPICategoryFileTimestamp` `C617.1`; Android `lastModified()`).
-  - Not playable → `quarantine/<id>.m4a` + `quarantine/<id>.json { reason }`, shown in Settings as "Recordings Exo couldn't recover" with Delete.
+  - Not playable → `quarantine/<id>.m4a` + `quarantine/<id>.json { reason }`, shown in Settings as "Recordings TinyCloud One couldn't recover" with Delete.
   - A malformed v1 sidecar moves to `quarantine/<id>.sidecar.json`, and its audio is probed.
 - **Every legacy note is `ownerUnknown`** (v1 sidecars get `ownerUnknown: true` on first read). A legacy note is never auto-claimed, never uploaded and never deleted automatically. Its owner is established only by (a) a row with the same `source_id` in the signing-in account's space (`claim({…, evidence: "space_row", rowId: existingRow.id})`, which sets `ledger.audio = saved` with that exact row id and uploads nothing), or (b) the user choosing **Save to this account** (`evidence: "user_choice"`) under "Notes from an earlier version" (local home and Settings), which also offers **Delete from this phone** *(conditional on Q10)*. The old global `exo.voiceNotes.cloudSaved` marker is never used as evidence.
 - Claim evidence is validated before the same-owner shortcut. `space_row` is valid only for a legacy note, even if that note is already owned by the same DID; a v2 note rejects it with `claim_evidence_invalid` and leaves its ledger and `rev` unchanged. An empty `rowId` rejects with `row_id_required`.

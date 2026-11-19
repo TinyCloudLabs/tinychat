@@ -1,6 +1,6 @@
 import { deserializeDelegation, type TinyCloudNode } from "@tinycloud/node-sdk";
 import type { ServerInfoPermission } from "@tinyboilerplate/core";
-import type { VerifiedTranscriptWriter } from "./delegation-verify.js";
+import { EXO_SYNC_RESOURCES, type VerifiedTranscriptWriter } from "./delegation-verify.js";
 
 type PortableDelegation = Parameters<TinyCloudNode["useDelegation"]>[0];
 export type PortableDelegationSet = PortableDelegation | PortableDelegation[];
@@ -79,7 +79,8 @@ export async function activateVerifiedDelegation(
   verified: VerifiedTranscriptWriter,
   options: { host: string; beforeNodeWrite?: () => Promise<void> },
 ): Promise<DelegatedAccess> {
-  assertSupportedMultiResourceShape(verified.resources);
+  if (verified.policy === "exo-sync") assertExactExoSyncShape(verified.resources);
+  else assertSupportedMultiResourceShape(verified.resources);
   const activated: ActivatedResource[] = [];
   for (const resource of verified.resources) {
     await options.beforeNodeWrite?.();
@@ -242,6 +243,15 @@ function assertSupportedMultiResourceShape(resources: PortableResource[]): void 
   for (const service of ["sql", "duckdb", "hooks"]) {
     if ((counts.get(service) ?? 0) > 1) throw new Error(`Multiple tinycloud.${service} resources are not supported`);
   }
+}
+
+/** An exo sync grant activates exactly its two verified KV prefixes with their abilities, nothing else. */
+function assertExactExoSyncShape(resources: PortableResource[]): void {
+  const exact = resources.length === EXO_SYNC_RESOURCES.length && EXO_SYNC_RESOURCES.every((expected) =>
+    resources.some((resource) => normalizeResourceService(resource.service) === expected.service &&
+      resource.path === expected.path && resource.actions.length === expected.actions.length &&
+      expected.actions.every((action) => resource.actions.includes(action))));
+  if (!exact) throw new Error("Exo sync delegation must activate exactly its two KV prefixes");
 }
 
 function normalizeResourceService(service: string): string {

@@ -6,7 +6,7 @@ import os
 public final class ExoDevLogPlugin: CAPPlugin, CAPBridgedPlugin {
     public let identifier = "ExoDevLogPlugin"
     public let jsName = "ExoDevLog"
-    public let pluginMethods = [CAPPluginMethod(name: "append", returnType: CAPPluginReturnPromise)]
+    public let pluginMethods: [CAPPluginMethod] = [CAPPluginMethod(name: "append", returnType: CAPPluginReturnPromise)]
 
     private static let queue = DispatchQueue(label: "xyz.tinycloud.exo.dev.log")
     private static let logger = Logger(subsystem: "xyz.tinycloud.exo.dev", category: "app")
@@ -14,7 +14,7 @@ public final class ExoDevLogPlugin: CAPPlugin, CAPBridgedPlugin {
 
     @objc public func append(_ call: CAPPluginCall) {
         #if DEBUG
-        guard Bundle.main.bundleIdentifier == "xyz.tinycloud.exo.dev",
+        guard Bundle.main.bundleIdentifier == "xyz.tinycloud.home.dev",
               let line = call.getString("line"), line.utf8.count < 8192,
               let data = line.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],

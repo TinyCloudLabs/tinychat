@@ -1,7 +1,16 @@
 import { useEffect, useState } from "react";
-import { debugEvents, debugLogEnabled, subscribeDebugLog } from "@/lib/debugLog";
+import { debugEvents, debugLogEnabled, subscribeDebugLog, type DebugEvent } from "@/lib/debugLog";
+import { isStorageFullError } from "@/lib/storageStatus";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+
+/** What the log shows. A storage-full entry shows a label, never the raw code or message; the copied log keeps them. */
+export function displayEvent(event: DebugEvent): object {
+  const storageFull = isStorageFullError({ code: event.code }) || (event.chain ?? []).some(isStorageFullError);
+  if (!storageFull) return event;
+  const { code: _code, chain, ...rest } = event;
+  return { ...rest, label: "Storage full", chain: chain?.map(({ name, status }) => ({ name, status, label: "Storage full" })) };
+}
 
 export function DebugLogRow() {
   const [open, setOpen] = useState(false);
@@ -32,7 +41,7 @@ export function DebugLogRow() {
           }}>{copied ? "Copied" : "Copy"}</Button>
         </div>
         <pre className="max-h-[55dvh] overflow-auto whitespace-pre-wrap break-all rounded-md bg-muted p-3 text-xs"
-          aria-label="Debug events">{entries.length ? entries.map((event) => JSON.stringify(event)).join("\n") : "No events yet."}</pre>
+          aria-label="Debug events">{entries.length ? entries.map((event) => JSON.stringify(displayEvent(event))).join("\n") : "No events yet."}</pre>
       </DialogContent>
     </Dialog>
   </>;

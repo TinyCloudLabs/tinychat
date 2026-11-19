@@ -41,7 +41,7 @@ export function PipelineStepper(props: {
         {visible.map((step) => (
           <li key={step.key} data-step={step.key} data-state={step.state} data-current={pipeline.current === step.key ? "" : undefined}>
             <span className="pipeline-stepper-label">{step.label}</span>
-            <span className="pipeline-stepper-status">{step.sublabel ?? statusText(step)}</span>
+            <span className="pipeline-stepper-status" title={step.caption?.includes(" parts done") === true ? "Recordings are transcribed in parts" : undefined}>{step.sublabel ?? statusText(step)}</span>
           </li>
         ))}
       </ul>
@@ -61,11 +61,20 @@ export function PipelineStepper(props: {
           {blocker.action !== undefined && (blocker.chooseProvider === true && props.transcribeAction !== undefined ? (
             props.transcribeAction
           ) : (
-            <span className="soft-pill-hit" data-hit-area="">
-              <button type="button" className="soft-pill" aria-describedby={causeId} onClick={() => onAction(blocker.action!.kind)}>
-                {blocker.action.label}
-              </button>
-            </span>
+            <>
+              <span className="soft-pill-hit" data-hit-area="">
+                <button type="button" className="soft-pill" aria-describedby={causeId} onClick={() => onAction(blocker.action!.kind)}>
+                  {blocker.action.label}
+                </button>
+              </span>
+              {blocker.secondaryAction !== undefined && (
+                <span className="soft-pill-hit" data-hit-area="">
+                  <button type="button" className="soft-pill" aria-describedby={causeId} onClick={() => onAction(blocker.secondaryAction!.kind)}>
+                    {blocker.secondaryAction.label}
+                  </button>
+                </span>
+              )}
+            </>
           ))}
           {props.actionError != null && props.actionError !== "" && (
             <p className="pipeline-stepper-action-error" role="alert" data-pipeline-action-error="">

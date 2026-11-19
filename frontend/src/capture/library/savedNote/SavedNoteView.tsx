@@ -36,10 +36,13 @@ export interface SavedNoteViewProps {
   meta: string;
   /** Where the note is on its way to the space, under the meta line; null once it is all done. */
   stepper: ReactNode;
+  activityControl?: ReactNode;
   /** Reads the recording's audio; null when it has none stored. */
   audio: NoteAudio | null;
+  audioStorage?: ReactNode;
   /** How long the recording is, known before its audio loads; null when it was not recorded. */
   durationSecs: number | null;
+  channels?: 1 | 2;
   /** The transcript section (the Library's own). */
   transcript: ReactNode;
   /** Below the transcript. */
@@ -48,6 +51,8 @@ export interface SavedNoteViewProps {
   partialAudio: boolean;
   /** The page's ← Capture, and what the sheet does once it may close. */
   onBack: () => void;
+  /** Wraps the heading with the rename control. */
+  renameTitle?: (heading: ReactNode) => ReactNode;
 }
 
 function Notes({
@@ -268,9 +273,10 @@ export function SavedNoteBody(
       )}
       {audio && (
         <div className="sn-player">
-          <MeetingAudioPlayer key={recordingId} {...noteAudioPlayerProps(audio)} durationSecs={props.durationSecs} seek={screen.seek} />
+          <MeetingAudioPlayer key={recordingId} {...noteAudioPlayerProps(audio)} durationSecs={props.durationSecs} channels={props.channels} seek={screen.seek} />
         </div>
       )}
+      {props.audioStorage}
       {layout === "page" ? (
         <>
           {notes}
@@ -348,17 +354,19 @@ export function SavedNotePage(props: SavedNoteViewProps) {
       data-note-id={props.id}
     >
       <div className="sn-col" inert={props.screen.draft.confirming !== null}>
-        <button
+        <div className="flex flex-wrap items-center justify-between gap-2"><button
           type="button"
           className="sn-back"
           aria-label={COPY.backLabel}
           onClick={props.onBack}
         >
           <span aria-hidden="true">←</span> {COPY.back}
-        </button>
-        <h1 className="soft-title sn-title" data-testid="note-detail">
-          {props.title}
-        </h1>
+        </button>{props.activityControl}</div>
+        {((heading) => props.renameTitle?.(heading) ?? heading)(
+          <h1 className="soft-title sn-title" data-testid="note-detail">
+            {props.title}
+          </h1>,
+        )}
         <p className="sn-meta">{props.meta}</p>
         {props.stepper}
         <SavedNoteBody {...props} {...refs} toolbarHost={undefined} />
@@ -407,15 +415,18 @@ export function SavedNoteSheet(props: SavedNoteViewProps) {
           <div className="sn-sheet-scroll">
             <div className="sn-sheet-body" inert={confirming}>
               <div className="sn-sheet-head">
-                <Dialog.Title
-                  className="soft-title sn-title"
-                  data-testid="note-detail"
-                >
-                  {props.title}
-                </Dialog.Title>
+                {((heading) => props.renameTitle?.(heading) ?? heading)(
+                  <Dialog.Title
+                    className="soft-title sn-title"
+                    data-testid="note-detail"
+                  >
+                    {props.title}
+                  </Dialog.Title>,
+                )}
                 <Dialog.Close className="sn-x" aria-label={COPY.close}>
                   <span aria-hidden="true">✕</span>
                 </Dialog.Close>
+                {props.activityControl}
               </div>
               <Dialog.Description className="sn-meta">
                 {props.meta}

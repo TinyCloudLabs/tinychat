@@ -37,6 +37,20 @@ export type PrivateCloudJobStatus =
   | "failed"
   | "cancelled";
 
+export interface PrivateCloudTranscriptionStats {
+  tinfoil_calls?: number;
+  tinfoil_audio_seconds?: number;
+  voiced_seconds?: number;
+  dropped_above_floor_pct?: number | null;
+  vad_fallback?: boolean | null;
+  vad_mode?: "primary" | "fallback" | "quiet" | null;
+  noise_floor_dbfs?: number | null;
+  median_dbfs?: number | null;
+  p99_dbfs?: number | null;
+  speech_peak_s?: number | null;
+  dropped_above_noise_pct?: number | null;
+}
+
 export interface PrivateCloudJob {
   id: string;
   status: PrivateCloudJobStatus;
@@ -44,6 +58,7 @@ export interface PrivateCloudJob {
   channel_mode?: "separate" | "mixed" | null;
   channel_labels?: string[] | null;
   duration_seconds?: number | null;
+  stats?: PrivateCloudTranscriptionStats | null;
   created_at?: string;
   updated_at?: string;
   progress?: {
@@ -53,6 +68,8 @@ export interface PrivateCloudJob {
     regions_total?: number | null;
   } | null;
   error?: { type?: string; code: string; message?: string } | null;
+  /** True while PTX holds the job until its speech-to-text provider can take it. Absent (an older PTX) means not delayed. */
+  provider_delayed?: boolean;
 }
 
 export interface PrivateCloudSegment {
@@ -74,6 +91,7 @@ export interface PrivateCloudSpeaker {
 export interface PrivateCloudTranscript {
   language?: string | null;
   duration_seconds?: number | null;
+  stats?: PrivateCloudTranscriptionStats | null;
   provider?: string;
   model?: string;
   channels?: number;
@@ -97,17 +115,24 @@ export class PrivateCloudError extends Error {
   readonly code: string;
   readonly correlationId: string | null;
   readonly retryAfterSeconds: number | null;
+  readonly statusCode: number | null;
   readonly transcriptionId: string | null;
   constructor(
     code: string,
     message: string,
-    extra: { correlationId?: string | null; retryAfterSeconds?: number | null; transcriptionId?: string | null } = {},
+    extra: {
+      correlationId?: string | null;
+      retryAfterSeconds?: number | null;
+      statusCode?: number | null;
+      transcriptionId?: string | null;
+    } = {},
   ) {
     super(message);
     this.name = "PrivateCloudError";
     this.code = code;
     this.correlationId = extra.correlationId ?? null;
     this.retryAfterSeconds = extra.retryAfterSeconds ?? null;
+    this.statusCode = extra.statusCode ?? null;
     this.transcriptionId = extra.transcriptionId ?? null;
   }
 }
@@ -127,13 +152,19 @@ export function isTransientCloudError(err: unknown): boolean {
   return err instanceof PrivateCloudError && TRANSIENT_CODES.has(err.code);
 }
 
-/** User-facing sentence for a code; the backend's own message is fixed text too. */
-export function privateCloudMessage(err: PrivateCloudError): string {
-  switch (err.code) {
+/** Shown when a recording is too long for Private transcription: it is kept, never lost, and there is nothing to retry. */
+export const PRIVATE_TOO_LONG_NOTE = "Your recording is saved, but it's too long for private transcription. The audio is kept, so nothing is lost.";
+/** The same for a recording too large for it. */
+export const PRIVATE_TOO_LARGE_NOTE = "Your recording is saved, but it's too large for private transcription. The audio is kept, so nothing is lost.";
+
+/** User-facing sentence for a known private-cloud code, without the generic fallback. */
+export function privateCloudCodeMessage(code: string): string | undefined {
+  switch (code) {
     case "recording_too_long_for_cloud":
     case "recording_too_long":
+      return PRIVATE_TOO_LONG_NOTE;
     case "recording_too_large":
-      return "Private cloud can't transcribe a recording this long or large.";
+      return PRIVATE_TOO_LARGE_NOTE;
     case "no_speech":
       return "No speech was found in the recording.";
     case "invalid_audio":
@@ -185,8 +216,13 @@ export function privateCloudMessage(err: PrivateCloudError): string {
     case "cancelled":
       return "The upload was cancelled.";
     default:
-      return "Private cloud transcription couldn't complete. Try again.";
+      return undefined;
   }
+}
+
+/** User-facing sentence for a code; the backend's own message is fixed text too. */
+export function privateCloudMessage(err: PrivateCloudError): string {
+  return privateCloudCodeMessage(err.code) ?? "Private cloud transcription couldn't complete. Try again.";
 }
 
 // ── Backend client ─────────────────────────────────────────────────────
@@ -194,6 +230,10 @@ export function privateCloudMessage(err: PrivateCloudError): string {
 export interface PrivateCloudCapabilities {
   max_bytes: number;
   max_duration_seconds?: number;
+  /** Seconds past max_duration_seconds that PTX accepts (optional; absent means 0). Added only to max_duration_seconds, never to accepted_max_duration_seconds. */
+  duration_grace_seconds?: number;
+  /** PTX's inclusive ceiling on measured (container) duration, when advertised. It takes precedence over max_duration_seconds and grace. */
+  accepted_max_duration_seconds?: number;
   admission?: string;
   /** Accepted upload content types (contract C1). */
   content_types?: string[];
@@ -210,14 +250,42 @@ export interface PrivateCloudApi {
   capabilities(): Promise<PrivateCloudCapabilities>;
   /** This account's jobs (tenant-scoped by the backend). */
   list(): Promise<PrivateCloudJob[]>;
-  get(id: string): Promise<PrivateCloudJob>;
-  result(id: string): Promise<PrivateCloudResult>;
+  get(id: string, signal?: AbortSignal): Promise<PrivateCloudJob>;
+  result(id: string, signal?: AbortSignal): Promise<PrivateCloudResult>;
   cancel(id: string): Promise<void>;
   remove(id: string): Promise<void>;
 }
 
 const REQUEST_HEADER_NAME = "X-Requested-With";
 const REQUEST_HEADER_VALUE = "XMLHttpRequest";
+
+const HTTP_DATE_FORMATS = [
+  /^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), \d{2} (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{4} \d{2}:\d{2}:\d{2} GMT$/,
+  /^(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday), \d{2}-(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)-\d{2} \d{2}:\d{2}:\d{2} GMT$/,
+  /^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun) (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) {1,2}\d{1,2} \d{2}:\d{2}:\d{2} \d{4}$/,
+] as const;
+
+/** Parse only complete Retry-After values and complete draft-7 reset tokens. */
+export function parseRateLimitWaitSeconds(headers: Headers, now = Date.now()): number | null {
+  const waits: number[] = [];
+  const retryAfter = headers.get("Retry-After");
+  if (retryAfter !== null) {
+    if (/^\d+$/.test(retryAfter)) {
+      const seconds = Number(retryAfter);
+      if (Number.isFinite(seconds)) waits.push(seconds);
+    } else if (HTTP_DATE_FORMATS.some((format) => format.test(retryAfter))) {
+      const date = Date.parse(retryAfter);
+      if (Number.isFinite(date) && date > now) waits.push((date - now) / 1000);
+    }
+  }
+  const rateLimit = headers.get("RateLimit");
+  const reset = rateLimit?.match(/(?:^|[,;\s])(?:reset|t)\s*=\s*(?:"(\d+)"|(\d+))(?=$|[,;\s])/i);
+  if (reset !== undefined && reset !== null) {
+    const seconds = Number(reset[1] ?? reset[2]);
+    if (Number.isFinite(seconds)) waits.push(seconds);
+  }
+  return waits.length === 0 ? null : Math.max(...waits);
+}
 
 async function readError(response: Response): Promise<PrivateCloudError> {
   let body: unknown = null;
@@ -238,15 +306,15 @@ async function readError(response: Response): Promise<PrivateCloudError> {
         : response.status === 429
           ? "service_busy"
           : `http_${response.status}`;
-  const headerRetry = Number(response.headers.get("Retry-After"));
+  const waits = [parseRateLimitWaitSeconds(response.headers)];
+  if (typeof e.retry_after_seconds === "number" && Number.isFinite(e.retry_after_seconds) && e.retry_after_seconds >= 0) {
+    waits.push(e.retry_after_seconds);
+  }
+  const validWaits = waits.filter((wait): wait is number => wait !== null);
   return new PrivateCloudError(code, typeof e.message === "string" ? e.message : `HTTP ${response.status}`, {
     correlationId: typeof e.correlation_id === "string" ? e.correlation_id : response.headers.get("X-Correlation-Id"),
-    retryAfterSeconds:
-      typeof e.retry_after_seconds === "number"
-        ? e.retry_after_seconds
-        : Number.isFinite(headerRetry) && headerRetry > 0
-          ? headerRetry
-          : null,
+    retryAfterSeconds: validWaits.length === 0 ? null : Math.max(...validWaits),
+    statusCode: response.status,
     transcriptionId: typeof e.id === "string" ? e.id : null,
   });
 }
@@ -264,10 +332,11 @@ export function createPrivateCloudApi(
     return token;
   };
 
-  async function request(path: string, method: "GET" | "POST" | "DELETE"): Promise<Response> {
+  async function request(path: string, method: "GET" | "POST" | "DELETE", callerSignal?: AbortSignal): Promise<Response> {
     const token = bearer();
     if (token === null) throw new PrivateCloudError("unauthenticated", "Not signed in");
-    const signal = AbortSignal.timeout(20_000);
+    const timeout = AbortSignal.timeout(20_000);
+    const signal = callerSignal === undefined ? timeout : AbortSignal.any([callerSignal, timeout]);
     let response: Response;
     try {
       response = await fetchImpl(`${backendUrl}${PRIVATE_CLOUD_BASE_PATH}${path}`, {
@@ -276,7 +345,8 @@ export function createPrivateCloudApi(
         signal,
       });
     } catch {
-      throw new PrivateCloudError(signal.aborted ? "request_timeout" : "offline", "Could not reach the backend");
+      if (callerSignal?.aborted) throw new PrivateCloudError("cancelled", "The transcription poll was cancelled");
+      throw new PrivateCloudError(timeout.aborted ? "request_timeout" : "offline", "Could not reach the backend");
     }
     if (response.status === 401) throw new PrivateCloudError("unauthenticated", "Session expired");
     return response;
@@ -310,15 +380,15 @@ export function createPrivateCloudApi(
       return body.transcriptions as PrivateCloudJob[];
     },
 
-    async get(id) {
-      const response = await request(`/transcriptions/${encodeURIComponent(id)}`, "GET");
+    async get(id, signal) {
+      const response = await request(`/transcriptions/${encodeURIComponent(id)}`, "GET", signal);
       if (response.status === 404) throw new PrivateCloudError("transcription_not_found", "No such transcription");
       if (!response.ok) throw await readError(response);
       return json<PrivateCloudJob>(response);
     },
 
-    async result(id) {
-      const response = await request(`/transcriptions/${encodeURIComponent(id)}/result`, "GET");
+    async result(id, signal) {
+      const response = await request(`/transcriptions/${encodeURIComponent(id)}/result`, "GET", signal);
       if (response.status === 404) throw new PrivateCloudError("transcription_not_found", "No such transcription");
       if (response.status === 202) {
         const body = await json<{ status: PrivateCloudJobStatus }>(response);
@@ -362,7 +432,8 @@ export function createPrivateCloudApi(
 // `channel_labels`, which every client sets at create, so they tell the
 // clients apart without new state anywhere:
 //   - Earlier desktop jobs: separate, ["Speaker 1", "Speaker 2"];
-//   - Voice notes on every platform (lib/voiceNotes): mixed, ["Exo voice note"];
+//   - Mono voice notes: mixed, ["Exo voice note"];
+//   - Stereo Mac notes: separate, ["Me", "Them"];
 //   - Upload audio (lib/audioUpload.ts, every platform): mixed, ["Exo upload"],
 //     with or without diarization (PTX records the labels either way).
 // A job that matches neither (or a relay that does not relay them) is
@@ -370,6 +441,7 @@ export function createPrivateCloudApi(
 
 export const DESKTOP_CHANNEL_LABELS: readonly string[] = ["Speaker 1", "Speaker 2"];
 export const VOICE_NOTE_CHANNEL_LABELS: readonly string[] = ["Exo voice note"];
+export const ME_THEM_CHANNEL_LABELS: readonly string[] = ["Me", "Them"];
 export const UPLOAD_CHANNEL_LABELS: readonly string[] = ["Exo upload"];
 
 export type PrivateCloudJobClient = "exo-desktop" | "exo-voice-note" | "exo-upload" | "unknown";
@@ -380,6 +452,7 @@ const sameLabels = (actual: readonly string[] | null | undefined, expected: read
 export function privateCloudJobClient(job: Pick<PrivateCloudJob, "channel_mode" | "channel_labels">): PrivateCloudJobClient {
   if (job.channel_mode === "separate" && sameLabels(job.channel_labels, DESKTOP_CHANNEL_LABELS)) return "exo-desktop";
   if (job.channel_mode === "mixed" && sameLabels(job.channel_labels, VOICE_NOTE_CHANNEL_LABELS)) return "exo-voice-note";
+  if (job.channel_mode === "separate" && sameLabels(job.channel_labels, ME_THEM_CHANNEL_LABELS)) return "exo-voice-note";
   if (job.channel_mode === "mixed" && sameLabels(job.channel_labels, UPLOAD_CHANNEL_LABELS)) return "exo-upload";
   return "unknown";
 }
@@ -680,13 +753,14 @@ export function putFileToPtx(input: PtxFileUpload): Promise<void> {
 
 // ── Polling ────────────────────────────────────────────────────────────
 
-/** Private cloud polling: 5 s ± 20 %, 30 s after a minute of transient
- *  failures, then "connection lost" (not failed). */
+/** Private-cloud status cadence and transient-failure limits. */
 export interface CloudPolling {
   intervalMs: number;
   slowIntervalMs: number;
   slowAfterMs: number;
   giveUpAfterMs: number;
+  fastPhaseMs: number;
+  maxIntervalMs: number;
 }
 
 export const DEFAULT_CLOUD_POLLING: CloudPolling = {
@@ -694,7 +768,36 @@ export const DEFAULT_CLOUD_POLLING: CloudPolling = {
   slowIntervalMs: 30_000,
   slowAfterMs: 60_000,
   giveUpAfterMs: 10 * 60_000,
+  fastPhaseMs: 30_000,
+  maxIntervalMs: 60_000,
 };
+
+export const MAX_RATE_LIMIT_WAIT_MS = 900_000;
+
+export function cloudStatusIntervalMs(durationSeconds: number | null | undefined, elapsedMs: number, polling: CloudPolling): number {
+  if (elapsedMs < polling.fastPhaseMs) return polling.intervalMs;
+  const expected = typeof durationSeconds === "number" && Number.isFinite(durationSeconds) && durationSeconds > 0
+    ? (durationSeconds * 1000) / 70
+    : polling.slowIntervalMs;
+  return Math.min(polling.maxIntervalMs, Math.max(polling.slowIntervalMs, expected));
+}
+
+export function jitteredCloudIntervalMs(intervalMs: number, random: () => number): number {
+  return Math.round(intervalMs * (1 + 0.2 * random()));
+}
+
+/** Explicit server deadlines are never shortened; unreadable or absent headers use the slow cadence. */
+export function jitteredRateLimitWaitMs(
+  retryAfterSeconds: number | null,
+  fallbackMs: number,
+  random: () => number,
+): number {
+  const requested = retryAfterSeconds !== null && Number.isFinite(retryAfterSeconds) && retryAfterSeconds >= 0
+    ? retryAfterSeconds * 1000
+    : fallbackMs;
+  const base = Math.min(MAX_RATE_LIMIT_WAIT_MS, Math.max(0, requested));
+  return Math.min(MAX_RATE_LIMIT_WAIT_MS, Math.round(base * (1 + 0.2 * random())));
+}
 
 export interface CloudClock {
   now(): number;
@@ -728,27 +831,43 @@ export interface CloudJobPoller {
 
 export function createCloudJobPoller(
   api: Pick<PrivateCloudApi, "get" | "result">,
-  options: { clock?: CloudClock; polling?: Partial<CloudPolling>; connectionLost: () => Error },
+  options: {
+    clock?: CloudClock;
+    polling?: Partial<CloudPolling>;
+    connectionLost: () => Error;
+    durationSeconds?: number | null;
+  },
 ): CloudJobPoller {
   const clock = options.clock ?? REAL_CLOCK;
   const polling: CloudPolling = { ...DEFAULT_CLOUD_POLLING, ...options.polling };
   const sleep = (baseMs: number) => clock.sleep(Math.round(baseMs * (0.8 + 0.4 * clock.random())));
 
-  /** Rides out transient failures: waits and returns while they last under
- *  a bounded interval, backing off after one; then "connection lost". */
-  const transientTolerance = () => {
+  const transientTolerance = (
+    throttledTime: () => number = () => 0,
+    waitFor: (ms: number) => Promise<void> = (ms) => sleep(ms),
+  ) => {
     let failingSince: number | null = null;
+    let throttledAtFailure = 0;
     return {
-      reset: () => {
-        failingSince = null;
+      reset: () => { failingSince = null; throttledAtFailure = throttledTime(); },
+      pause: async (wait: () => Promise<void>) => {
+        const before = clock.now();
+        try {
+          await wait();
+        } finally {
+          if (failingSince !== null) failingSince += Math.max(0, clock.now() - before);
+        }
       },
       rideOut: async (err: unknown) => {
         if (!isTransientCloudError(err)) throw err;
         const now = clock.now();
-        failingSince ??= now;
-        const failingFor = now - failingSince;
+        if (failingSince === null) {
+          failingSince = now;
+          throttledAtFailure = throttledTime();
+        }
+        const failingFor = Math.max(0, now - failingSince - (throttledTime() - throttledAtFailure));
         if (failingFor >= polling.giveUpAfterMs) throw options.connectionLost();
-        await sleep(failingFor >= polling.slowAfterMs ? polling.slowIntervalMs : polling.intervalMs);
+        await waitFor(failingFor >= polling.slowAfterMs ? polling.slowIntervalMs : polling.intervalMs);
       },
     };
   };
@@ -758,40 +877,96 @@ export function createCloudJobPoller(
       const tolerance = transientTolerance();
       for (;;) {
         try {
-          return await api.get(id);
+          const job = await api.get(id);
+          tolerance.reset();
+          return job;
         } catch (err) {
+          if (err instanceof PrivateCloudError && err.statusCode === 429) {
+            const delay = jitteredRateLimitWaitMs(err.retryAfterSeconds, polling.slowIntervalMs, clock.random);
+            await tolerance.pause(() => clock.sleep(delay));
+            continue;
+          }
           await tolerance.rideOut(err);
         }
       }
     },
 
     async pollTranscript(id, onProgress, signal) {
-      const tolerance = transientTolerance();
-      const rideOut = tolerance.rideOut;
       const cancelled = () => new PrivateCloudError("cancelled", "Stopped polling the transcription", { transcriptionId: id });
+      const sleepWithSignal = async (ms: number): Promise<void> => {
+        if (signal === undefined) {
+          await clock.sleep(ms);
+          return;
+        }
+        if (signal.aborted) throw cancelled();
+        let removeAbort = (): void => {};
+        try {
+          await Promise.race([
+            clock.sleep(ms),
+            new Promise<never>((_, reject) => {
+              const onAbort = (): void => reject(cancelled());
+              signal.addEventListener("abort", onAbort, { once: true });
+              removeAbort = () => signal.removeEventListener("abort", onAbort);
+              if (signal.aborted) onAbort();
+            }),
+          ]);
+        } finally {
+          removeAbort();
+        }
+      };
+      const waitWithSignal = (baseMs: number) =>
+        sleepWithSignal(Math.round(baseMs * (0.8 + 0.4 * clock.random())));
+      const startedAt = clock.now();
+      let durationSeconds = options.durationSeconds ?? null;
+      let throttledMs = 0;
+      const throttledTime = () => throttledMs;
+      const waitThrottled = async (ms: number): Promise<void> => {
+        const before = clock.now();
+        try {
+          await sleepWithSignal(ms);
+        } finally {
+          throttledMs += Math.max(0, clock.now() - before);
+        }
+      };
+      const statusTolerance = transientTolerance(throttledTime, waitWithSignal);
+      const resultTolerance = transientTolerance(throttledTime, waitWithSignal);
       for (;;) {
         if (signal?.aborted) throw cancelled();
         let job: PrivateCloudJob;
         try {
-          job = await api.get(id);
+          job = await api.get(id, signal);
+          if (signal?.aborted) throw cancelled();
+          statusTolerance.reset();
         } catch (err) {
-          await rideOut(err);
+          if (signal?.aborted) throw cancelled();
+          if (err instanceof PrivateCloudError && err.statusCode === 429) {
+            await waitThrottled(jitteredRateLimitWaitMs(err.retryAfterSeconds, polling.slowIntervalMs, clock.random));
+            continue;
+          }
+          await statusTolerance.rideOut(err);
           continue;
         }
-        if (signal?.aborted) throw cancelled();
+        if (typeof job.duration_seconds === "number" && Number.isFinite(job.duration_seconds) && job.duration_seconds > 0) {
+          durationSeconds = job.duration_seconds;
+        }
         if (job.status === "completed") {
           let result: PrivateCloudResult;
           try {
-            result = await api.result(id);
+            result = await api.result(id, signal);
+            if (signal?.aborted) throw cancelled();
+            resultTolerance.reset();
           } catch (err) {
-            await rideOut(err);
+            if (signal?.aborted) throw cancelled();
+            if (err instanceof PrivateCloudError && err.statusCode === 429) {
+              await waitThrottled(jitteredRateLimitWaitMs(err.retryAfterSeconds, polling.slowIntervalMs, clock.random));
+              continue;
+            }
+            await resultTolerance.rideOut(err);
             continue;
           }
-          tolerance.reset();
           if (result.status === "completed") return result.transcript;
           if (result.status !== "pending") throw result.error;
         } else {
-          tolerance.reset();
           if (job.status === "failed" || job.status === "cancelled") {
             throw new PrivateCloudError(job.error?.code ?? job.status, job.error?.message ?? `The transcription ${job.status}`, {
               transcriptionId: id,
@@ -808,7 +983,10 @@ export function createCloudJobPoller(
             regionsTotal: job.progress?.regions_total ?? null,
           });
         }
-        await sleep(polling.intervalMs);
+        const elapsed = clock.now() - startedAt;
+        const interval = cloudStatusIntervalMs(durationSeconds, elapsed, polling);
+        const delay = elapsed < polling.fastPhaseMs ? interval : jitteredCloudIntervalMs(interval, clock.random);
+        await sleepWithSignal(delay);
       }
     },
   };

@@ -1,5 +1,8 @@
-/** What the user is told when a note's audio file on this phone cannot be opened; the detail goes to the console. */
-export const PHONE_AUDIO_UNAVAILABLE = "Couldn\u2019t open this note\u2019s audio on this phone.";
+import { deviceName, type AppPlatform } from "@/lib/platform";
+
+/** What the user is told when a note's local audio cannot be opened; the detail goes to the console. */
+export const audioUnavailableMessage = (platform?: AppPlatform): string => `Couldn\u2019t open this note\u2019s audio on ${deviceName(platform)}.`;
+export const PHONE_AUDIO_UNAVAILABLE = audioUnavailableMessage();
 
 /**
  * The length a player shows: the media's own once it reports a real one, else the length the

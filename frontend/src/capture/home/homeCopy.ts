@@ -1,3 +1,7 @@
+// Local recording copy follows the active capture engine when read, after the
+// native, desktop or browser recorder has been installed.
+import { captureDeviceName } from "@/lib/voiceNotes/captureEngine";
+
 const RECOVERY_FAILED = "Couldn't recover this recording";
 const WRITE_FAILED = "Couldn't save all of this recording";
 const PARTIAL_AUDIO = "Part of this recording couldn't be written";
@@ -15,35 +19,36 @@ export const HOME_COPY = {
   retryRecent: "Try again",
   voiceNoteTitle: "Voice note",
   /** A note kept on this device with no row in the space yet; read as "On this phone" in a badge. */
-  onThisPhone: "on this phone",
+  get onThisPhone() { return `on ${captureDeviceName()}`; },
   savingBadge: "Saving…",
   inProgressCount: (count: number) => `${count} in progress`,
-  onPhoneCount: (count: number) => `${count} on this phone`,
-  onPhoneOne: "1 voice note on this phone",
-  onPhoneMany: (count: number) => `${count} voice notes on this phone`,
+  onPhoneCount: (count: number) => `${count} on ${captureDeviceName()}`,
+  get onPhoneOne() { return `1 voice note on ${captureDeviceName()}`; },
+  onPhoneMany: (count: number) => `${count} voice notes on ${captureDeviceName()}`,
   notInSpace: "Not in your space yet",
   savingToSpace: "Saving to your TinyCloud space…",
   saveNow: "Save now",
-  willFinish: "Kept on this phone. Exo will finish it automatically.",
-  willRetry: "Exo will retry when it next opens",
+  manageStorage: "Manage storage",
+  get willFinish() { return `Kept on ${captureDeviceName()}. TinyCloud One will finish it automatically.`; },
+  willRetry: "TinyCloud One will retry when it next opens",
   /** Native has used up its automatic retries on a quarantined recording: no promise to try again. */
   quarantinedCard: "Couldn't recover · audio kept",
-  timedOutMeta: "Saving… · kept on this phone",
+  get timedOutMeta() { return `Saving… · kept on ${captureDeviceName()}`; },
   recoveryFailedMeta: RECOVERY_FAILED,
   quarantinedMeta: `${RECOVERY_FAILED} · audio kept`,
   /** What the recorder's own error line says once native has reported the failure; replaces "Exo will finish it automatically". */
-  recoveryFailedError: `${RECOVERY_FAILED}. Exo will try again when it next opens.`,
+  recoveryFailedError: `${RECOVERY_FAILED}. TinyCloud One will try again when it next opens.`,
   writeFailedError: `${WRITE_FAILED}.`,
   timedOutSheet: {
     title: "Saving this recording",
-    body: "Kept on this phone. Exo will finish it automatically.",
+    get body() { return `Kept on ${captureDeviceName()}. TinyCloud One will finish it automatically.`; },
   },
   writeFailedMeta: WRITE_FAILED,
   /** Shared with the desktop follow-ups: the informational line under a saved recording that is missing some audio. */
   partialAudioMeta: "Saved — part of this recording couldn't be written",
   partialAudioSheet: {
     title: PARTIAL_AUDIO,
-    body: "The recording was saved, but this phone couldn't write all of the audio. The part that couldn't be written is missing.",
+    get body() { return `The recording was saved, but ${captureDeviceName()} couldn't write all of the audio. The part that couldn't be written is missing.`; },
   },
   partialAudioMissing: (formatted: string) => `About ${formatted} is missing`,
   partialAudioMissingBrief: "Less than a second is missing",
@@ -52,7 +57,7 @@ export const HOME_COPY = {
   needsAttention: "Needs attention",
   opensDetails: "Opens details",
   scanFailure:
-    "Exo couldn't check for unfinished recordings. It will try again when it next opens.",
+    "TinyCloud One couldn't check for unfinished recordings. It will try again when it next opens.",
   upload: "Upload",
   recorder: "Recorder",
   meeting: "Meeting",
@@ -66,21 +71,21 @@ export const HOME_COPY = {
   delete: "Delete",
   deleting: "Deleting…",
   keep: "Keep",
-  tryAgainFailed: "Couldn't try again. The recording is still on this phone.",
-  deleteFailed: "Couldn't delete this recording. It is still on this phone.",
+  get tryAgainFailed() { return `Couldn't try again. The recording is still on ${captureDeviceName()}.`; },
+  get deleteFailed() { return `Couldn't delete this recording. It is still on ${captureDeviceName()}.`; },
   deleteConfirm: {
     title: "Delete this recording?",
-    body: "The audio will be deleted from this phone. This can't be undone.",
+    get body() { return `The audio will be deleted from ${captureDeviceName()}. This can't be undone.`; },
   },
   quarantineFailure:
-    "Exo couldn't check for recordings it kept. It will try again when it next opens.",
+    "TinyCloud One couldn't check for recordings it kept. It will try again when it next opens.",
   recoveryFailedSheet: {
     title: RECOVERY_FAILED,
-    body: "Exo couldn't finish saving this recording. It will try again when it next opens.",
+    body: "TinyCloud One couldn't finish saving this recording. It will try again when it next opens.",
   },
   quarantinedSheet: {
     title: RECOVERY_FAILED,
-    body: "Exo tried several times and couldn't finish saving this recording. The audio is kept on this phone.",
+    get body() { return `TinyCloud One tried several times and couldn't finish saving this recording. The audio is kept on ${captureDeviceName()}.`; },
   },
   unplayableSheet: {
     title: RECOVERY_FAILED,
@@ -88,6 +93,6 @@ export const HOME_COPY = {
   },
   writeFailedSheet: {
     title: WRITE_FAILED,
-    body: "This phone stopped saving the recording partway through. What was recorded up to that point is kept; the rest was not recorded.",
+    get body() { return `Saving stopped on ${captureDeviceName()} partway through. What was recorded up to that point is kept; the rest was not recorded.`; },
   },
 } as const;

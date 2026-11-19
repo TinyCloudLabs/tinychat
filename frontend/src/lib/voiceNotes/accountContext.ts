@@ -70,6 +70,11 @@ export function isVoiceNoteAccountMounted(did: string): boolean {
   return mountedAccount?.did === did;
 }
 
+/** The DID of the mounted saver account, or null when no account is signed in. */
+export function mountedVoiceNoteDid(): string | null {
+  return mountedAccount?.did ?? null;
+}
+
 export class StaleAccountContext extends Error {
   constructor() { super("The account changed while this voice note was being saved"); }
 }

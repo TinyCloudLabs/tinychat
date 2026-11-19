@@ -7,7 +7,7 @@ import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { captureEvents } from "@/capture/captureEvents";
 
-import type { VoiceNoteRecording } from "@/lib/voiceNotes/nativeVoiceNotes";
+import type { LevelEvent, VoiceNoteRecording } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { captureEngineAvailable } from "@/lib/voiceNotes/captureEngine";
 import { pendingStore, type PendingSnapshot } from "@/lib/voiceNotes/recorderSaves";
 import { VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
@@ -16,7 +16,7 @@ import type { RecorderState } from "./recorderReducer";
 import { HIDDEN_SNAPSHOT, noSubscription, transcriptionProps, type VoiceNoteTranscriptionProps } from "./transcriptionProps";
 import { createVoiceNoteRecorderController } from "./voiceNoteRecorderController";
 import type { RecorderNote, RecorderNoteStatus, RecorderTranscriberChoice, TranscriberChoiceResult, TranscriberChoiceScope } from "./voiceNoteRecorderController";
-import type { TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
+import type { LimitExtension, TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
 import type { VoiceNotePipeline } from "@/lib/voiceNotes/voiceNotePipeline";
 
 export interface VoiceNoteRecorderOptions {
@@ -52,6 +52,8 @@ export interface VoiceNoteRecorder {
   discard(): void;
   retryPending(): void | Promise<void>;
   openSettings(): Promise<void>;
+  /** Raise the live recording's limit (default one hour: "Keep going"), or drop it ("none"). Undefined where the engine cannot change a running limit. */
+  extendLimit: ((extension?: LimitExtension) => Promise<void>) | undefined;
   dismissShortcutRecovery(): Promise<void>;
   /** The receipt was read. */
   dismissOutcome(): void;
@@ -59,6 +61,7 @@ export interface VoiceNoteRecorder {
   setOnPresent(onPresent: (() => void) | undefined): void;
   /** Input levels (0..1), fanned out without React state. */
   subscribeLevel(listener: (level: number) => void): () => void;
+  subscribeLevels(listener: (levels: LevelEvent) => void): () => void;
 }
 
 /** Default for every mounted recorder, including the app and browser harness. */
@@ -134,11 +137,13 @@ export function useVoiceNoteRecorder({ tcw, enabled = true, backendUrl, sessionS
       discard: () => void controller.discard(),
       retryPending: () => controller.retryPending(),
       openSettings: () => controller.openSettings(),
+      extendLimit: controller.extendLimit,
       dismissShortcutRecovery: () => controller.dismissShortcutRecovery(),
       dismissOutcome: controller.dismissOutcome,
       dismissCaptureIssue: controller.dismissCaptureIssue,
       setOnPresent: controller.setOnPresent,
       subscribeLevel: controller.subscribeLevel,
+      subscribeLevels: controller.subscribeLevels,
     }),
     [available, controller, note, noteStatus, noteSyncError, pending, snapshot, state, transcriber, transcriberChoice],
   );

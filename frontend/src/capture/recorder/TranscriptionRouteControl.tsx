@@ -9,7 +9,7 @@ import { readableError } from "@/lib/readableError";
 // (CaptureEngine) forces on-device regardless of what's requested, so this control must too: only
 // "Local" is ever offered or shown selected — never "Audio only".
 import { useContext, useEffect, useId, useState, useSyncExternalStore } from "react";
-import { PlatformContext } from "@/lib/platform";
+import { PlatformContext, deviceName } from "@/lib/platform";
 
 import { Button } from "@/components/ui/button";
 import { HowItWorksLink } from "@/components/ui/how-it-works-link";
@@ -209,15 +209,15 @@ export function TranscriptionRouteControl(props: {
   let line: string;
   if (askingNow) line = "";
   else if (route === "on-device") {
-    if (isOnDeviceReady(sttStatus)) line = "Transcribed on this phone.";
+    if (isOnDeviceReady(sttStatus)) line = `Transcribed on ${deviceName(platform)}.`;
     else if (isAppleSpeech(sttStatus)) line = modelLine.text;
-    else line = `Transcribed on this phone, once the model finishes downloading. ${modelLine.text}`;
+    else line = `Transcribed on ${deviceName(platform)}, once the model finishes downloading. ${modelLine.text}`;
   }
   else if (offered && consented) line = `${ROUTE_NAME["private-cloud"]} transcribes your notes.`;
   else if (transcription?.availability === "checking" && consented) line = `Checking ${ROUTE_NAME["private-cloud"]}…`;
   else if (transcription?.availability === "failed" && (consented || transcription.checkErrorCode === "native_status_failed"))
     line = transcription.checkErrorCode === "native_status_failed"
-      ? "Couldn't check this phone's file upload."
+      ? `Couldn't check ${deviceName(platform)}'s file upload.`
       : `${ROUTE_NAME["private-cloud"]} isn't available right now.`;
   else line = "Audio only.";
 
@@ -230,7 +230,7 @@ export function TranscriptionRouteControl(props: {
         <InfoTip label="About transcription">Your choice applies to this note and new ones.</InfoTip>
       </div>
       <SegmentedControl<Route> aria-label="Transcription" value={route} onValueChange={choose} options={routeOptions(signedIn, offered)} />
-      <RouteLine nodes={voiceNoteRoute(route)} />
+      <RouteLine nodes={voiceNoteRoute(route, platform)} />
       {askingNow ? (
         <div className="flex flex-col gap-3" data-testid="voice-note-transcription-consent">
           <p className="text-callout text-muted-foreground">
@@ -258,7 +258,7 @@ export function TranscriptionRouteControl(props: {
             {line}
           </p>
           {transcription?.availability === "failed" && transcription.checkErrorCode === "native_status_failed" && route === "on-device" && (
-            <p className="min-w-0 text-callout text-muted-foreground">Couldn&apos;t check this phone&apos;s file upload.</p>
+            <p className="min-w-0 text-callout text-muted-foreground">Couldn&apos;t check {deviceName(platform)}&apos;s file upload.</p>
           )}
           {transcription?.availability === "failed" && (consented || transcription.checkErrorCode === "native_status_failed") && (
             <Button type="button" variant="outline" size="sm" onClick={transcription.onRecheck} data-testid="voice-note-transcription-recheck">

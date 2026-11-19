@@ -1,6 +1,8 @@
 // What the recorder's capture issues become on Capture home (TC-871).
-import { describe, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 
+import { createFakeVoiceNotes } from "@/lib/voiceNotes/fakeVoiceNotes";
+import { __setVoiceNotesForTests } from "@/lib/voiceNotes/nativeVoiceNotes";
 import type { RecorderCaptureIssue } from "../recorder/recorderReducer";
 import type { LibraryItem } from "../library/LibraryRow";
 import { FINALIZATION_PENDING } from "../recorder/recorderCopy";
@@ -25,6 +27,9 @@ import {
 } from "./captureIssues";
 import { HOME_COPY } from "./homeCopy";
 
+beforeEach(() => __setVoiceNotesForTests(createFakeVoiceNotes().plugin, { available: false }));
+afterEach(() => __setVoiceNotesForTests(createFakeVoiceNotes().plugin, { available: null }));
+
 const timedOut: RecorderCaptureIssue = { kind: "finalization_timed_out" };
 const failed: RecorderCaptureIssue = {
   kind: "recoveryFailed",
@@ -48,7 +53,7 @@ const note = (i: number): LibraryItem => ({
 
 describe("issue copy", () => {
   test("each state has its own line, and `detail` is never in any of it", () => {
-    expect(issueMeta(timedOut)).toBe("Saving… · kept on this phone");
+    expect(issueMeta(timedOut)).toBe("Saving… · kept on this browser");
     expect(issueMeta(failed)).toBe("Couldn't recover this recording");
     expect(issueMeta(writeFailed)).toBe("Couldn't save all of this recording");
     const everything = JSON.stringify([
@@ -64,7 +69,7 @@ describe("issue copy", () => {
   test("the recovery sheet says what happens next and offers no action but Close", () => {
     expect(issueSheetCopy(failed)).toEqual({
       title: "Couldn't recover this recording",
-      body: "Exo couldn't finish saving this recording. It will try again when it next opens.",
+      body: "TinyCloud One couldn't finish saving this recording. It will try again when it next opens.",
     });
     expect(HOME_COPY.close).toBe("Close");
     // Try again and Delete wait for TC-868 (native retry and discard).
@@ -76,11 +81,11 @@ describe("issue copy", () => {
     ).not.toMatch(/Try again|Delete/);
   });
 
-  test("a timed-out recording's sheet explains it is kept on this phone and offers no action", () => {
+  test("a timed-out recording's sheet explains it is kept on this browser and offers no action", () => {
     const copy = issueSheetCopy(timedOut);
     expect(copy.title).toBe("Saving this recording");
     expect(copy.body).toBe(
-      "Kept on this phone. Exo will finish it automatically.",
+      "Kept on this browser. TinyCloud One will finish it automatically.",
     );
     expect(JSON.stringify(copy)).not.toMatch(/Try again|Delete/);
   });
@@ -111,7 +116,7 @@ describe("issue copy", () => {
   test("the partial-audio sheet: a title, one honest line, and what is missing only when known", () => {
     expect(issueSheetCopy(partial)).toEqual({
       title: "Part of this recording couldn't be written",
-      body: "The recording was saved, but this phone couldn't write all of the audio. The part that couldn't be written is missing.",
+      body: "The recording was saved, but this browser couldn't write all of the audio. The part that couldn't be written is missing.",
     });
     expect(partialAudioMissingLine({ kind: "partial_audio", missingMs: 12_000 })).toBe("About 0:12 is missing");
     expect(partialAudioMissingLine({ kind: "partial_audio", missingMs: 72_400 })).toBe("About 1:12 is missing");
@@ -128,7 +133,7 @@ describe("issue copy", () => {
     const merged = withQuarantine({ a: partial, b: partial }, [{ id: "a", reason: "corrupt_journal" }], new Set());
     expect(merged.a).toEqual({ kind: "quarantined" });
     expect(merged.b).toBe(partial);
-    expect(cardNote({ a: partial, b: failed }, null)).toBe("Not in your space yet · Exo will retry when it next opens");
+    expect(cardNote({ a: partial, b: failed }, null)).toBe("Not in your space yet · TinyCloud One will retry when it next opens");
   });
 
   test("Dismiss: gone on success; otherwise the failure is logged and a line is returned", () => {
@@ -214,13 +219,13 @@ describe("matching rows", () => {
 });
 
 describe("the on-this-phone card's note", () => {
-  const pending = "Kept on this phone. Exo will finish it automatically.";
-  const retry = "Not in your space yet · Exo will retry when it next opens";
+  const pending = "Kept on this browser. TinyCloud One will finish it automatically.";
+  const retry = "Not in your space yet · TinyCloud One will retry when it next opens";
   const parkedNote = "Not in your space yet · Couldn't recover · audio kept";
   const kept = "Not in your space yet · Couldn't save all of this recording";
   const cases: [string, Record<string, HomeIssue>, string | null, string][] = [
     ["nothing wrong keeps the plain line", {}, null, "Not in your space yet"],
-    ["a timed-out recording says Exo will finish it", { a: timedOut }, null, pending],
+    ["a timed-out recording says TinyCloud One will finish it", { a: timedOut }, null, pending],
     ["recoveryFailed overrides it: never both", { a: timedOut, b: failed }, null, retry],
     ["recoveryFailed alone", { b: failed }, null, retry],
     ["quarantined promises no retry", { b: { kind: "quarantined" } }, null, parkedNote],

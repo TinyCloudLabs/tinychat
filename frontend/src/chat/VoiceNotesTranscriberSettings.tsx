@@ -1,22 +1,29 @@
 import { readableError } from "@/lib/readableError";
-// Settings → Voice notes (plan §2.7): the default transcriber for new recordings. Native-only
-// (mobile voice notes don't exist on web/desktop), and signed-out capture already locks to
-// on-device regardless of this choice (CaptureDefaults.options, CaptureModels.swift/.kt).
-import { useEffect, useState, useSyncExternalStore } from "react";
+// Settings → Voice notes: when recordings stop by themselves and the audio preference are available on every capture
+// surface. Native transcription controls remain available only when their engine is present.
+import { useContext, useEffect, useState, useSyncExternalStore } from "react";
 
+import { homePlace, placeWhere } from "@/capture/home/desktop/desktopCopy";
 import { CHECK_AGAIN, FINAL_COPY, privateNotOffered, TRANSCRIBER_NAME } from "@/capture/recorder/final/finalCopy";
 import { SIGNED_OUT } from "@/capture/recorder/final/useTranscriptionChoice";
 import { useRecorder } from "@/capture/recorder/RecorderProvider";
+import { useRecorderLayout } from "@/capture/recorder/useRecorderLayout";
+import { AUTO_STOP_LABEL, AUTO_STOP_OFF_HINT_PHONE, STOP_AFTER_HINT, STOP_AFTER_LABEL, STOP_AFTER_OPTIONS, autoStopOnHint } from "@/capture/recorder/recorderCopy";
 import { SegmentedControl } from "@/components/ui/segmented-control";
 import { Button } from "@/components/ui/button";
+import { InfoTip } from "@/components/ui/info-tip";
+import { PlatformContext } from "@/lib/platform";
+import { useStorageReadOnly } from "@/lib/useStorageReadOnly";
 import { localModelGuide, modelActionLabel } from "@/capture/recorder/final/localModelGuide";
 import { isAppleSpeech, isOnDeviceReady, isOnDeviceStatusLoaded } from "@/lib/voiceNotes/onDeviceStt";
 import { downloadOnDeviceModel, ensureOnDeviceModel, onDeviceSttStore } from "@/lib/voiceNotes/onDeviceSttStore";
 import { captureCapabilities } from "@/lib/voiceNotes/captureEngine";
 import { nativeVoiceNotesAvailable, type TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
-import { readDefaultTranscriber, setDefaultTranscriber, subscribeTranscriberPreference } from "@/lib/voiceNotes/transcriberPreference";
+import { autoStopEnabled, readAutoStopChoice, readDefaultTranscriber, readStopAfterPreference, readUploadAudioPreference, setAutoStopPreference, setDefaultTranscriber, setStopAfterPreference, setUploadAudioPreference, stopAfterMs, subscribeTranscriberPreference, type StopAfter } from "@/lib/voiceNotes/transcriberPreference";
 
 type Transcription = ReturnType<typeof useRecorder>["transcription"];
+
+const UPLOAD_PAUSED = "Paused: storage full";
 
 /** The same three routes the recorder names; Private is offered only when the recorder would offer it. */
 export function transcriberOptions(signedIn: boolean, transcription: Transcription) {
@@ -52,6 +59,7 @@ export function useDefaultTranscriber() {
   const [value, setValue] = useState<TranscriberId | null>(null);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
+    if (!nativeVoiceNotesAvailable()) return;
     const read = () => {
       readDefaultTranscriber().then(setValue).catch((err: unknown) => {
         console.error("[VoiceNotes] Could not read the default transcriber", err);
@@ -77,6 +85,13 @@ export function useDefaultTranscriber() {
 }
 
 export function VoiceNotesTranscriberSettings() {
+  const platform = useContext(PlatformContext);
+  const uploadAudio = useSyncExternalStore(subscribeTranscriberPreference, readUploadAudioPreference, readUploadAudioPreference);
+  const stopAfter = useSyncExternalStore(subscribeTranscriberPreference, readStopAfterPreference, readStopAfterPreference);
+  const autoStopChoice = useSyncExternalStore(subscribeTranscriberPreference, readAutoStopChoice, readAutoStopChoice);
+  const autoStop = autoStopEnabled(useRecorderLayout() === "phone", autoStopChoice);
+  const storageFull = useStorageReadOnly();
+  const [uploadError, setUploadError] = useState<string | null>(null);
   const { transcription, signedIn } = useRecorder();
   const { value, error, choose } = useDefaultTranscriber();
   const sttStatus = useSyncExternalStore(onDeviceSttStore.subscribe, onDeviceSttStore.snapshot, onDeviceSttStore.snapshot);
@@ -85,13 +100,80 @@ export function VoiceNotesTranscriberSettings() {
   const modelLabel = isAppleSpeech(sttStatus) ? "On-device speech" : "On-device model";
   const modelFailed = modelGuide.action?.label === FINAL_COPY.modelTryAgain;
 
-  if (!nativeVoiceNotesAvailable() || value === null) return null;
+  useEffect(() => {
+    if (platform === "web") void navigator.storage?.persist?.().catch(() => undefined);
+  }, [platform]);
+
+  const where = platform === "ios" || platform === "android" ? "on this phone" : placeWhere(homePlace(platform));
+  const uploadHelp = uploadAudio
+    ? "A copy of the audio is kept in your TinyCloud space. Transcripts and notes sync too. Private transcription still sends audio to be transcribed, then deletes it."
+    : `Audio stays ${where}${platform === "web" ? ", and browsers can delete it" : ""}. Turn this on to keep a copy in TinyCloud. Transcripts and notes still sync to your TinyCloud space. Private transcription still sends audio to be transcribed, then deletes it.`;
+
+  const stopAfterSelect = (
+    <div className="flex flex-col gap-1" data-testid="voice-notes-stop-after">
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+        <label htmlFor="stop-recording-after" className="text-sm">{STOP_AFTER_LABEL}</label>
+        <select
+          id="stop-recording-after"
+          value={stopAfter}
+          onChange={(event) => setStopAfterPreference(event.target.value as StopAfter)}
+          className="min-h-11 max-w-full rounded-md border border-border bg-background px-2 text-base focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring fine:min-h-9 fine:text-sm"
+        >
+          {STOP_AFTER_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+        </select>
+      </div>
+      <p className="text-xs text-muted-foreground">{STOP_AFTER_HINT}</p>
+    </div>
+  );
+  // A device that never chose gets the layout's default: on at the desktop layouts, off at the phone layout.
+  const stopAfterSetting = (
+    <>
+      <div className="flex flex-col gap-1" data-testid="voice-notes-auto-stop">
+        <div className="flex min-h-11 items-center">
+          <label htmlFor="stop-recordings-automatically" className="-ml-3.5 flex size-11 shrink-0 cursor-pointer items-center justify-center">
+            <input id="stop-recordings-automatically" type="checkbox" className="size-4 accent-primary" checked={autoStop}
+              onChange={(event) => setAutoStopPreference(event.target.checked)} />
+          </label>
+          <label htmlFor="stop-recordings-automatically" className="-ml-1.5 cursor-pointer text-sm">{AUTO_STOP_LABEL}</label>
+        </div>
+        <p className="pl-6 text-xs text-muted-foreground" data-testid="voice-notes-auto-stop-hint">
+          {autoStop ? autoStopOnHint(stopAfterMs(stopAfter)) : AUTO_STOP_OFF_HINT_PHONE}
+        </p>
+      </div>
+      {autoStop ? stopAfterSelect : null}
+    </>
+  );
+  const uploadSetting = (
+    <>
+      <div className="flex flex-col gap-1">
+        <div className="flex min-h-11 items-center">
+          {/* A 44 px touch target around the 16 px box; the negative margins pull the visible box to the card's text edge. */}
+          <label htmlFor="upload-audio-to-tinycloud" className="-ml-3.5 flex size-11 shrink-0 cursor-pointer items-center justify-center">
+            <input id="upload-audio-to-tinycloud" type="checkbox" className="size-4 accent-primary" checked={uploadAudio}
+              onChange={(event) => {
+                setUploadError(null);
+                void setUploadAudioPreference(event.target.checked).catch((caught: unknown) => setUploadError(readableError(caught)));
+              }} />
+          </label>
+          <label htmlFor="upload-audio-to-tinycloud" className="-ml-1.5 cursor-pointer text-sm">Upload audio to TinyCloud</label>
+          <InfoTip label="About audio storage" className="-my-3 fine:-my-1">Other devices cannot play or transcribe local-only audio. This device holds the only copy. Local transcription, chat and quota still work. You can upload an individual note later.</InfoTip>
+        </div>
+        <p className="pl-6 text-xs text-muted-foreground" data-testid="voice-notes-upload-help">{uploadHelp}</p>
+        {storageFull && <p role="status" className="pl-6 text-xs text-muted-foreground">{UPLOAD_PAUSED}</p>}
+      </div>
+      {uploadError && <p role="alert" className="text-xs text-destructive">{uploadError}</p>}
+    </>
+  );
+
+  if (!nativeVoiceNotesAvailable() || value === null) return <div className="flex flex-col gap-3">{stopAfterSetting}{uploadSetting}</div>;
 
   const { privateOffered, options } = transcriberOptions(signedIn, transcription);
 
   return (
     <div className="flex flex-col gap-3">
+      {stopAfterSetting}
       <p className="text-xs text-muted-foreground">New recordings are transcribed this way by default. Each recording can still choose a different route.</p>
+      {uploadSetting}
       <SegmentedControl<TranscriberId> aria-label="Default transcriber" value={value} onValueChange={choose} options={options} />
       {!privateOffered && <PrivateUnavailable signedIn={signedIn} transcription={transcription} />}
       {error && <p role="alert" className="text-xs text-destructive">{error}</p>}

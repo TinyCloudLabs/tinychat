@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 
 import { createFakeVoiceNotes } from "./fakeVoiceNotes";
-import { __setVoiceNotesForTests, type VoiceNotesPlugin } from "./nativeVoiceNotes";
+import { __setVoiceNotesForTests, VoiceNotes, type VoiceNotesPlugin } from "./nativeVoiceNotes";
 import { createCoalescedReader, isUnsupported, readQuarantine, rejectionCode } from "./quarantine";
+
+const originalVoiceNotes = VoiceNotes;
 
 const rejecting = (error: unknown): VoiceNotesPlugin =>
   ({
@@ -11,7 +13,7 @@ const rejecting = (error: unknown): VoiceNotesPlugin =>
   }) as VoiceNotesPlugin;
 
 afterEach(() =>
-  __setVoiceNotesForTests(createFakeVoiceNotes().plugin, { available: null }),
+  __setVoiceNotesForTests(originalVoiceNotes, { available: null }),
 );
 
 describe("readQuarantine", () => {

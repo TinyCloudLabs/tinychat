@@ -15,6 +15,7 @@ import { Link } from "react-router-dom";
 import { ChevronLeftIcon, SettingsIcon } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { useStorageReadOnly } from "@/lib/useStorageReadOnly";
 import { PATHS } from "./routes";
 
 /** The header row's height, which the collapse is measured against. */
@@ -86,7 +87,8 @@ export function PageHeader({ title, largeTitle = true, back, leading, trailing, 
             {pushed ? (
               <span
                 className={cn(
-                  "block truncate text-headline transition-opacity duration-150",
+                  // A note's title is the user's own words: wrap to two lines (one on its side) instead of cutting at one.
+                  "block line-clamp-2 text-headline transition-opacity duration-150 [overflow-wrap:anywhere] land:line-clamp-1",
                   "land:font-display land:text-title-2 land:opacity-100",
                   compact ? "opacity-100" : "opacity-0",
                 )}
@@ -141,13 +143,15 @@ export const PAGE_COLUMN = "mx-auto w-full max-w-2xl px-4 medium:px-6 expanded:p
 
 /** Settings from a page header: on a phone held upright, where the navigation has no place for it. */
 export function SettingsGear() {
+  const storageFull = useStorageReadOnly();
   return (
     <Link
       to={PATHS.settings}
       aria-label="Settings"
-      className="tap-transparent flex size-11 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-surface-2 hover:text-foreground active:bg-surface-2"
+      className="tap-transparent relative flex size-11 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-surface-2 hover:text-foreground active:bg-surface-2"
     >
       <SettingsIcon aria-hidden className="size-6" />
+      {storageFull && <span role="img" aria-label="Storage full" className="absolute right-2 top-2 size-2.5 rounded-full bg-destructive ring-2 ring-background" />}
     </Link>
   );
 }

@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { markPrivateConsentPrompted, privateConsentWasPrompted, PRIVATE_CONSENT_PROMPT_KEY } from "./privateConsentPrompt";
-import { accountStorageKey, VOICE_NOTE_CONSENT_VERSION } from "@/lib/voiceNotes/voiceNoteTranscription";
+import { accountStorageKey } from "@/lib/voiceNotes/sourcePins";
+import { VOICE_NOTE_CONSENT_VERSION } from "@/lib/voiceNotes/voiceNoteTranscription";
 
 test("automatic Private disclosure is remembered per account and consent version across launches", () => {
   const values = new Map<string, string>();

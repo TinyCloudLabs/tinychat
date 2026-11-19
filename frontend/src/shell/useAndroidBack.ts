@@ -10,7 +10,7 @@ import type { AppPlatform } from "../lib/platform";
 import { isTextEntry, useSizeClass } from "../lib/sizeClass";
 import { decideBack } from "./backDecision";
 import { historyIndex } from "./navigation";
-import { homeDestination, homePath, type Screen } from "./routes";
+import { HOME_DESTINATION, HOME_PATH, type Screen } from "./routes";
 
 const OVERLAYS = '[role="dialog"][data-state="open"], [role="alertdialog"][data-state="open"], [data-overlay-open="true"]';
 
@@ -42,21 +42,21 @@ export function dismissOverlay(overlay: HTMLElement): void {
 }
 
 /** Back for the current screen, as one stable callback. `onMinimize` runs at home. */
-export function useBack(input: { screen: Screen; platform: AppPlatform; onMinimize: () => void }): () => void {
+export function useBack(input: { screen: Screen; onMinimize: () => void }): () => void {
   const navigate = useNavigate();
   const { size } = useSizeClass();
   const latest = useRef({ ...input, size, navigate });
   latest.current = { ...input, size, navigate };
   return useCallback(() => {
-    const { screen, platform, onMinimize, size: currentSize, navigate: go } = latest.current;
+    const { screen, onMinimize, size: currentSize, navigate: go } = latest.current;
     const overlay = topOverlay();
     const action = decideBack({
       overlay: overlay !== null,
       screen,
       size: currentSize,
       historyIdx: historyIndex(),
-      homeDestination: homeDestination(platform),
-      homePath: homePath(platform),
+      homeDestination: HOME_DESTINATION,
+      homePath: HOME_PATH,
     });
     switch (action.kind) {
       case "dismiss-overlay":
@@ -76,7 +76,7 @@ export function useBack(input: { screen: Screen; platform: AppPlatform; onMinimi
 }
 
 export function useAndroidBack(input: { screen: Screen; platform: AppPlatform }): void {
-  const back = useBack({ ...input, onMinimize: () => void CapacitorApp.minimizeApp() });
+  const back = useBack({ screen: input.screen, onMinimize: () => void CapacitorApp.minimizeApp() });
   useEffect(() => {
     if (input.platform !== "android") return;
     const handle = CapacitorApp.addListener("backButton", () => back());

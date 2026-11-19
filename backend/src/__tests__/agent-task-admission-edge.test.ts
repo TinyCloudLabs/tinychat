@@ -6,7 +6,7 @@ import { createCsrfMiddleware, issueSessionToken } from "@tinyboilerplate/server
 import { createAuthMiddleware } from "../middleware/auth.js";
 import { createAgentRouter } from "../routes/agent.js";
 import type { AgentChatConfig } from "../routes/agent-chat.js";
-import { applyRateLimiters, GLOBAL_LIMIT } from "../rate-limits.js";
+import { applyRateLimiters, SESSION_LIMITS } from "../rate-limits.js";
 import { addressToEntityId, TINYCHAT_AGENT_ID } from "../entity-id.js";
 import { _resetCache, _setStripeClient } from "../billing/stripe.js";
 import { _resetUsage, recordUsage } from "../billing/usage.js";
@@ -78,14 +78,15 @@ async function setup(options: { rateLimit?: boolean; holdTask?: boolean; capabil
     agentId: TINYCHAT_AGENT_ID, entityIdFor: value => addressToEntityId(value, TINYCHAT_AGENT_ID),
     elizaServiceUrl: "http://service.test", elizaServiceSecret: "local-service-fixture",
     redpillApiKey: "local-provider-fixture", redpillBaseUrl: "http://provider.test/v1", defaultModel: () => model,
-    isModelOffered: value => value === model, fetchImpl, elizaTasksEnabled: true,
+    isModelOffered: value => value === model, redpillFetch: fetchImpl, fetchImpl, elizaTasksEnabled: true,
     streamPolicy: { heartbeatMs: 1000, turnTimeoutMs: 3000, drainGraceMs: 100 },
   };
   const app = express();
   app.use(express.json({ limit: "1mb" })); app.use(createCsrfMiddleware());
-  if (options.rateLimit) applyRateLimiters(app);
-  app.get("/api/rate-fixture", (_req, res) => res.json({ ok: true }));
-  app.use("/api/agent", createAgentRouter({ agentDid: "did:key:local-fixture", elizaServiceUrl: cfg.elizaServiceUrl, elizaServiceSecret: cfg.elizaServiceSecret, authMiddleware: createAuthMiddleware(key), chat: cfg }));
+  const limits = options.rateLimit ? applyRateLimiters(app, { sessionKey: key }) : undefined;
+  // Shares the paid-chat bucket with /api/agent/chat, so it can drain it without provider work.
+  app.post("/api/chat", (_req, res) => res.json({ ok: true }));
+  app.use("/api/agent", createAgentRouter({ agentDid: "did:key:local-fixture", elizaServiceUrl: cfg.elizaServiceUrl, elizaServiceSecret: cfg.elizaServiceSecret, authMiddleware: createAuthMiddleware(key), paidLimiter: limits?.paidChatLimiter, chat: cfg }));
   const server = app.listen(0, "127.0.0.1");
   await new Promise<void>(resolve => server.once("listening", resolve));
   const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
@@ -101,12 +102,17 @@ describe("task-enabled backend admission edges", () => {
   test("rate denial at the actual agent route starts zero capability/task/provider work", async () => {
     const run = await setup({ rateLimit: true });
     try {
-      for (let i = 0; i < GLOBAL_LIMIT; i++) {
-        const response = await realFetch(`${run.base}/api/rate-fixture`);
+      for (let i = 0; i < SESSION_LIMITS.paidChat; i++) {
+        const response = await realFetch(`${run.base}/api/chat`, { method: "POST", headers: run.headers });
         expect(response.status).toBe(200); await response.text();
       }
       const response = await run.send();
       expect(response.status).toBe(429); await response.text();
+      // Aliases the real agent router also serves are denied by the same bucket.
+      for (const path of ["/api/agent//chat", "/API/Agent/Chat/"]) {
+        const alias = await realFetch(`${run.base}${path}`, { method: "POST", headers: run.headers, body: run.body });
+        expect([path, alias.status]).toEqual([path, 429]); await alias.text();
+      }
       expect(run.calls).toEqual([]);
     } finally { await run.close(); }
   });

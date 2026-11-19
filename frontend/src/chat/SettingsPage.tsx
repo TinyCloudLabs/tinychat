@@ -1,3 +1,4 @@
+import { useContext, useEffect } from "react";
 import { AgentSetupCard } from "./AgentSetupCard";
 import { useAgentAccess } from "./useAgentEnablement";
 import { AgentAccessControls } from "./AgentEnablementBanner";
@@ -7,20 +8,31 @@ import {
   ChevronRightIcon,
   CreditCardIcon,
   DatabaseIcon,
+  LayoutGridIcon,
   LogOutIcon,
   MicIcon,
   RefreshCwIcon,
   ShieldCheckIcon,
   SunIcon,
+  Trash2Icon,
   UserIcon,
 } from "lucide-react";
-import { Link } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
+import { StorageFullMessage } from "./StorageFullDialog";
+import { billingLinksAllowed, openManageStorage } from "@/lib/openManageStorage";
+import { NATIVE_PLAN_NOTE } from "@/lib/storageStatus";
+import { PlatformContext } from "@/lib/platform";
+import { openOpenKeyAccountDeletion } from "@/lib/openOpenKeyAccountDeletion";
+import { DeleteRecordingsStep } from "./DeleteRecordingsStep";
+import { useStorageReadOnly } from "@/lib/useStorageReadOnly";
+import { useStorageFreePlan } from "@/lib/useStorageFreePlan";
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { Button } from "@/components/ui/button";
-import { BuildInfoLine } from "@/components/BuildInfoLine";
+import { SettingsBuildFooter } from "@/components/PlaybackDiagnosticsSection";
 import { HowItWorksLink } from "@/components/ui/how-it-works-link";
 import { InfoTip } from "@/components/ui/info-tip";
+import { PrivacyPolicyLink } from "@/components/ui/privacy-policy-link";
 import { SectionCard } from "@/components/ui/section-card";
 import { MemoryPanel } from "@/components/MemoryPanel";
 import { AppearanceControl } from "./AppearanceControl";
@@ -32,11 +44,21 @@ import { BackendAttestationDetails } from "./BackendAttestationDetails";
 import { useConversationCanvasFeature } from "./useExperimentalFeatures";
 import { TranscriptionSettings } from "./TranscriptionSettings";
 import { VoiceNotesTranscriberSettings } from "./VoiceNotesTranscriberSettings";
+import { AutomaticSummariesSettings } from "./AutomaticSummariesSettings";
+import { WordFixesSettings } from "./WordFixesSettings";
 import { DebugLogRow } from "./DebugLogRow";
+import { AudioCacheSettings } from "@/capture/AudioCacheSettings";
+import { ReplicationSettings } from "../lib/replication/ReplicationSettings";
 import { nativeVoiceNotesAvailable } from "../lib/voiceNotes/nativeVoiceNotes";
+import { appPlatform } from "../lib/platform";
 import { useSizeClass } from "../lib/sizeClass";
 import { PageHeader } from "../shell/PageHeader";
 import { PATHS } from "../shell/routes";
+import { FirstScreenControl } from "../home/FirstScreenControl";
+import { TinyCloudSettings } from "./TinyCloudSettings";
+import { AppLockSettings } from "./AppLockSettings";
+import { HiddenFeaturesSettings } from "./HiddenFeaturesSettings";
+import { LegacyDataLinks } from "./LegacyDataLinks";
 
 /** An InfoTip beside a card title: a 44 px target on touch that doesn't push the title row taller. */
 const TITLE_TIP = "-my-3 -ml-2 fine:-my-1 fine:-ml-1";
@@ -84,6 +106,7 @@ export function SettingsPage({
   backendUrl,
   sessionStore,
 }: SettingsPageProps) {
+  const { hash } = useLocation();
   const agentAccess = useAgentAccess();
   const conversationCanvas = useConversationCanvasFeature(tcw, billingStatus);
   const compact = useSizeClass().size === "compact";
@@ -93,7 +116,19 @@ export function SettingsPage({
     ? Math.min(100, Math.round((usage.used / usage.limit) * 100))
     : 0;
   const near = pct >= 90;
+  const storageFull = useStorageReadOnly();
+  const canUpgrade = useStorageFreePlan() && paywallEnabled;
+  // The iOS and Android apps show usage only: no Manage storage, Upgrade or Manage plan (App Store 3.1.1, Play Payments).
+  const billingLinks = billingLinksAllowed(useContext(PlatformContext));
   const resetsLabel = usage?.resetsAt ? formatResetsAt(usage.resetsAt) : null;
+  useEffect(() => {
+    if (hash !== "#agent-access") return;
+    const card = document.getElementById("agent-access");
+    const heading = card?.querySelector("h2");
+    if (!card || !heading) return;
+    card.scrollIntoView({ block: "start" });
+    heading.focus({ preventScroll: true });
+  }, [hash]);
   return (
     // `relative`: the containing block for sr-only/absolute descendants, so they
     // scroll and clip with this pane instead of stretching the document (see
@@ -103,6 +138,27 @@ export function SettingsPage({
           navigation on wider screens, so no Back there. */}
       <PageHeader title="Settings" back={compact ? onBack : undefined} className="mx-auto w-full max-w-2xl px-4 sm:px-6" />
       <div className="mx-auto w-full max-w-2xl px-4 pb-[max(1.5rem,env(safe-area-inset-bottom))] pt-2 sm:px-6">
+        {storageFull && (
+          <div role="region" aria-label="Storage full" className="mb-4 rounded-xl border border-border bg-muted p-4 text-sm">
+            <p>
+              <strong>Storage full</strong> <StorageFullMessage detail />
+            </p>
+            {billingLinks ? (
+              <>
+                <Button type="button" variant="outline" size="sm" className="mt-3" onClick={() => void openManageStorage()}>
+                  Manage storage
+                </Button>
+                {canUpgrade && (
+                  <Button type="button" variant="outline" size="sm" className="ml-2 mt-3" onClick={() => void openManageStorage()}>
+                    Upgrade
+                  </Button>
+                )}
+              </>
+            ) : (
+              <p className="mt-3 text-muted-foreground">{NATIVE_PLAN_NOTE}</p>
+            )}
+          </div>
+        )}
         <div className="flex flex-col gap-4">
           <SectionCard icon={UserIcon} title="Account">
             <div className="flex items-center gap-2 text-xs">
@@ -140,8 +196,39 @@ export function SettingsPage({
                 <span>{signingOut ? "Signing out…" : "Sign out"}</span>
               </Button>
             </div>
+            {/* App Store 5.1.1(v): the account lives on OpenKey, so deletion opens OpenKey's own
+                deletion page, which asks for a fresh passkey or email code. Desktop has no
+                fixed-URL opener for it yet, so the row is phone and web only. */}
+            {appPlatform() !== "tauri" && (
+              <div className="mt-4 border-t border-border pt-4">
+                <div className="mb-4">
+                  <DeleteRecordingsStep backendUrl={backendUrl} sessionStore={sessionStore} />
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void openOpenKeyAccountDeletion()}
+                  className="h-auto min-h-[var(--tc-control-height-sm)] max-w-full gap-1.5 whitespace-normal py-1.5 text-left text-destructive"
+                >
+                  <Trash2Icon className="size-4" />
+                  <span>Delete OpenKey account</span>
+                </Button>
+                <p className="mt-2 text-xs text-muted-foreground">
+                  Permanently deletes your OpenKey account and destroys its keys. You'll confirm on openkey.so.
+                </p>
+              </div>
+            )}
+            <div className="mt-4 border-t border-border pt-3 fine:pt-4">
+              <PrivacyPolicyLink />
+            </div>
+          </SectionCard>
+          <AppLockSettings />
+          <HiddenFeaturesSettings />
+          <SectionCard icon={LayoutGridIcon} title="Start screen">
+            <FirstScreenControl tcw={tcw} did={did} />
           </SectionCard>
           <SectionCard
+            id="agent-access"
             icon={ShieldCheckIcon}
             title="Agent access"
             aside={
@@ -162,7 +249,11 @@ export function SettingsPage({
             />
           </SectionCard>
           <TranscriptionSettings tcw={tcw} />
-          {nativeVoiceNotesAvailable() && (
+          <WordFixesSettings tcw={tcw} />
+          <SectionCard icon={BookOpenIcon} title="Meeting summaries">
+            <AutomaticSummariesSettings tcw={tcw} />
+          </SectionCard>
+          {(nativeVoiceNotesAvailable() || appPlatform() === "web" || appPlatform() === "tauri") && (
             <SectionCard icon={MicIcon} title="Voice notes">
               <VoiceNotesTranscriberSettings />
             </SectionCard>
@@ -174,6 +265,10 @@ export function SettingsPage({
             />
           </SectionCard>
           <DebugLogRow />
+          <SectionCard icon={DatabaseIcon} title="Audio storage">
+            <AudioCacheSettings />
+          </SectionCard>
+          <ReplicationSettings tcw={tcw} />
           <SectionCard icon={DatabaseIcon} title="Data">
             <p className="text-xs text-muted-foreground">
               Bring your Claude conversation history into this space.
@@ -181,6 +276,7 @@ export function SettingsPage({
             <div className="mt-3">
               <ImportDialog tcw={tcw} onImported={onImported} />
             </div>
+            <LegacyDataLinks />
           </SectionCard>
           {paywallEnabled && (
             <SectionCard icon={CreditCardIcon} title="Plan & Usage">
@@ -214,15 +310,20 @@ export function SettingsPage({
                   )}
                 </div>
               )}
+              {!billingLinks && (
+                <p className="mt-3 text-xs text-muted-foreground">{NATIVE_PLAN_NOTE}</p>
+              )}
               <div className="mt-4 flex flex-wrap items-center gap-2">
-                <Button
-                  variant="default"
-                  size="sm"
-                  onClick={onManagePlan}
-                  aria-haspopup="dialog"
-                >
-                  Manage plan
-                </Button>
+                {billingLinks && (
+                  <Button
+                    variant="default"
+                    size="sm"
+                    onClick={onManagePlan}
+                    aria-haspopup="dialog"
+                  >
+                    Manage plan
+                  </Button>
+                )}
                 <Button
                   variant="outline"
                   size="sm"
@@ -234,12 +335,13 @@ export function SettingsPage({
               </div>
             </SectionCard>
           )}
+          <TinyCloudSettings tcw={tcw} />
           <SectionCard icon={SunIcon} title="Appearance">
             <AppearanceControl />
           </SectionCard>
           {conversationCanvas.eligible && (
             <SectionCard icon={DatabaseIcon} title="Experimental Features">
-              <div data-testid="canvas-setting-row" className="flex items-center justify-between gap-3">
+                <div data-testid="canvas-setting-row" className="flex items-center justify-between gap-3">
                 <div className="flex min-w-0 flex-1 items-center">
                   <p className="text-sm font-medium">Conversation Canvas</p>
                   <InfoTip label="About Conversation Canvas" className="-my-3 fine:-my-1">
@@ -252,8 +354,8 @@ export function SettingsPage({
                     <span className={`absolute top-1 size-4 rounded-full bg-background transition-transform ${conversationCanvas.enabled ? "left-6" : "left-1"}`} />
                   </span>
                 </button>
-              </div>
-              {conversationCanvas.error && <p role="alert" className="mt-2 text-xs text-destructive">{conversationCanvas.error}</p>}
+                </div>
+                {conversationCanvas.error && <p role="alert" className="mt-2 text-xs text-destructive">{conversationCanvas.error}</p>}
             </SectionCard>
           )}
           <Link
@@ -264,8 +366,8 @@ export function SettingsPage({
             <span className="flex-1">How it works</span>
             <ChevronRightIcon aria-hidden className="size-4 text-muted-foreground" />
           </Link>
-          {/* The build line at the bottom of Settings (TC-840). */}
-          <BuildInfoLine />
+          {/* The build line at the bottom of Settings (TC-840); seven taps reveal playback diagnostics (TC-2857). */}
+          <SettingsBuildFooter />
         </div>
       </div>
     </div>

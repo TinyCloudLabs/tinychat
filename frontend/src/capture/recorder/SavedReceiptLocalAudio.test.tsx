@@ -35,10 +35,10 @@ describe("SavedReceipt phone audio", () => {
         <SavedReceipt outcome="saved" saved={{ id: "rec-1", durationMs: 42_000, at: Date.UTC(2026, 9, 9, 9, 41) }} route={voiceNoteRoute("off")} onDone={() => {}} onSaveNow={() => {}} />,
       ));
       const alert = host.querySelector('[role="alert"]');
-      expect(alert?.textContent).toBe("Couldn’t open this note’s audio on this phone.");
+      expect(alert?.textContent).toBe("Couldn’t open this note’s audio on this browser.");
       expect(host.textContent).not.toContain("Key not found");
       expect(host.textContent).not.toContain("loadVoiceNoteAudio");
-      expect(logged).toHaveBeenCalledWith("[Receipt] Could not open this phone's audio", cause);
+      expect(logged).toHaveBeenCalledWith("[Receipt] Could not open local audio", cause);
     } finally {
       logged.mockRestore();
     }

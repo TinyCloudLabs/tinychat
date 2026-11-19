@@ -4,6 +4,8 @@
 // note's `transcription_engine`) adds the stop that made its text. Nothing
 // the row does not record is drawn: no provider, no middle node.
 import { RefreshCwIcon } from "lucide-react";
+import { Link, useLocation } from "react-router-dom";
+import { EXO_MERGED_SOURCE } from "@tinyboilerplate/core";
 
 import { Button } from "@/components/ui/button";
 import { HowItWorksLink } from "@/components/ui/how-it-works-link";
@@ -16,6 +18,9 @@ import { UPLOAD_MEETING_SOURCE } from "@/lib/audioUpload";
 import { LOCAL_MEETING_SOURCE } from "@/lib/localTranscriber";
 import { TRANSCRIBER_MEETING_SOURCE } from "@/lib/transcriberSave";
 import { VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
+import { transcriptionModelLabel } from "@/lib/transcriptionModelLabel";
+import { displayMembers, type CombinedMemberLine } from "./combine/combinedView";
+import { librarySourceLabel } from "./libraryKinds";
 
 export interface CaptureRoute {
   nodes: RouteNode[];
@@ -31,9 +36,15 @@ function str(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
 }
 
+/** " Transcription model: X." when the transcript records its model; empty otherwise. */
+function modelSentence(metadata: Record<string, unknown> | null): string {
+  const label = transcriptionModelLabel(metadata?.transcription_model);
+  return label ? ` Transcription model: ${label}.` : "";
+}
+
 /** Where a voice note started; one with no recorded platform predates the desktop and web recorders, so it came from a phone. */
 function voiceNoteSource(platform: string | null): string {
-  return routeSourceName(platform === "tauri" || platform === "web" ? platform : "ios");
+  return routeSourceName(platform === "tauri" || platform === "web" || platform === "android" ? platform : "ios");
 }
 
 /**
@@ -56,6 +67,20 @@ const SPACE: RouteNode = { label: "Your space", kind: "destination" };
 
 /** The route for one row, from its source and (once read) its metadata. */
 export function captureRoute(source: string, metadata: Record<string, unknown> | null): CaptureRoute {
+  if (source === VOICE_NOTE_SOURCE && metadata?.capture === "pasted") return {
+    nodes: [{ label: "Pasted transcript", kind: "source" }, SPACE],
+    sentence: "Pasted transcript saved to your TinyCloud space.", privateCloud: false,
+  };
+  if (source === EXO_MERGED_SOURCE) {
+    // Display only: a combined row with unreadable metadata still gets this, without the member names.
+    const from = displayMembers(metadata).map((m) => librarySourceLabel(m.source));
+    const named = from.length > 0 ? `Combined from ${from.join(" + ")}` : "Combined from two of your captures";
+    return {
+      nodes: [{ label: from.length > 0 ? from.join(" + ") : "Two captures", kind: "source" }, { label: "Combined", kind: "processing" }, SPACE],
+      sentence: `${named}, saved to your TinyCloud space. The original captures weren’t changed.`,
+      privateCloud: false,
+    };
+  }
   if (source === "fireflies" || source === GMEET_MEETING_SOURCE) {
     const name = source === "fireflies" ? "Fireflies" : "Google Meet";
     return { nodes: [{ label: name, kind: "source" }, SPACE], sentence: `Synced from ${name} into your TinyCloud space.`, privateCloud: false };
@@ -90,7 +115,7 @@ export function captureRoute(source: string, metadata: Record<string, unknown> |
     const speech = str(metadata?.inference_provider) === "tinfoil" ? "; speech-to-text by Tinfoil" : "";
     return {
       nodes: [{ label: sourceLabel, kind: "source" }, { label: TRANSCRIBER_NAME["private-cloud"], kind: "processing" }, SPACE],
-      sentence: `${saved} ${audioStored ? "A copy was" : "It was"} transcribed by TinyCloud Private Transcription${speech}.`,
+      sentence: `${saved} ${audioStored ? "A copy was" : "It was"} transcribed by TinyCloud Private Transcription${speech}.${modelSentence(metadata)}`,
       privateCloud: true,
     };
   }
@@ -99,15 +124,21 @@ export function captureRoute(source: string, metadata: Record<string, unknown> |
     const whose = account === "tinycloud" ? " with TinyCloud's account" : account === "own" ? " with your key" : "";
     return {
       nodes: [{ label: sourceLabel, kind: "source" }, { label: TRANSCRIBER_NAME.assemblyai, kind: "processing" }, SPACE],
-      sentence: `${saved} ${audioStored ? "A copy was" : "It was"} transcribed by AssemblyAI${whose}.`,
+      sentence: `${saved} ${audioStored ? "A copy was" : "It was"} transcribed by an outside transcription service${whose}.${modelSentence(metadata)}`,
       privateCloud: false,
     };
   }
   return {
     nodes: [{ label: sourceLabel, kind: "source" }, { label: "Whisper on this Mac", kind: "processing" }, SPACE],
-    sentence: "Transcribed by Whisper on this Mac. The transcript was saved to your TinyCloud space; the audio stayed on this Mac.",
+    sentence: `Transcribed by Whisper on this Mac. The transcript was saved to your TinyCloud space; the audio stayed on this Mac.${modelSentence(metadata)}`,
     privateCloud: false,
   };
+}
+
+/** A source of this combined meeting: opens its page, and Back from there returns here, not to the Library list. */
+function MemberLink(props: { href: string; title: string }) {
+  const here = useLocation().pathname;
+  return <Link to={props.href} state={{ backTo: here }} className="inline-flex min-h-11 items-center text-primary underline underline-offset-4 hover:no-underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [overflow-wrap:anywhere]">{props.title}</Link>;
 }
 
 /**
@@ -115,7 +146,7 @@ export function captureRoute(source: string, metadata: Record<string, unknown> |
  * read, and no route at all when the read failed (a route drawn from the
  * source alone would claim a path with no stop in it), with Try again.
  */
-export function HowThisGotHere(props: { source: string; read: MeetingMetadataRead | undefined; onRetry: () => void }) {
+export function HowThisGotHere(props: { source: string; read: MeetingMetadataRead | undefined; onRetry: () => void; /** A combined meeting's originals, with a link where they still exist. */ members?: readonly CombinedMemberLine[] }) {
   const { read } = props;
   const route = read !== undefined && read.status !== "failed" ? captureRoute(props.source, read.status === "ok" ? read.metadata : null) : null;
   return (
@@ -140,6 +171,17 @@ export function HowThisGotHere(props: { source: string; read: MeetingMetadataRea
           <RouteLine nodes={route.nodes} landed className="mt-3" />
           <p className="mt-3 max-w-[68ch] text-callout text-muted-foreground">{route.sentence}</p>
           {route.privateCloud && <HowItWorksLink section="transcription">How private cloud works</HowItWorksLink>}
+          {props.members && props.members.length > 0 && (
+            <ul className="mt-3 flex flex-col gap-1" aria-label="Combined from" data-testid="combined-members">
+              {props.members.map((m) => (
+                <li key={`${m.source}:${m.sourceId}`} className="text-callout" data-testid="combined-member">
+                  <span className="text-muted-foreground">{m.sourceLabel} · </span>
+                  {m.href !== null ? <MemberLink href={m.href} title={m.title ?? "Untitled"} />
+                    : <span className="text-muted-foreground">no longer in your Library</span>}
+                </li>
+              ))}
+            </ul>
+          )}
         </>
       )}
     </section>

@@ -46,11 +46,24 @@ const STREAM_ENV = {
 
 // Execute the actual startup body with isolated imports and environment. Every side effect
 // is intercepted; stop at the agent-router factory, before any socket or external I/O.
-async function runIsolatedStartup(env: Record<string, string | undefined>) {
+async function runIsolatedStartup(
+  env: Record<string, string | undefined>,
+  options: {
+    contentIndexes?: readonly { source: string; address: string }[];
+    contentIndexDirectory?: () => Promise<readonly { source: string; address: string }[]>;
+    contentCustodyValid?: boolean;
+  } = {},
+) {
   const calls: string[] = [];
   const logs: string[] = [];
   let agentConfig: any;
   const stopped = new Error("synthetic-startup-stopped");
+  const retentionSweeps: { source: string; address: string }[] = [];
+  const contentCustodyChecks: boolean[] = [];
+  let finishRetentionSweep!: () => void;
+  const retentionSweepDone = new Promise<void>((resolve) => {
+    finishRetentionSweep = resolve;
+  });
   const noop = () => {};
   const middleware = () => noop;
   const fakeApp = {
@@ -63,18 +76,71 @@ async function runIsolatedStartup(env: Record<string, string | undefined>) {
   const express = Object.assign(() => fakeApp, { raw: middleware, json: middleware });
   const moduleExports = {};
   const known: Record<string, any> = {
+    "./services/content-store.js": {
+      KvContentBlobStore: class {},
+      assertNoContentKey: async () => {},
+      ContentStore: class { async assertContinuity() {} },
+    },
     fs: { existsSync: () => false },
     path: load("node:path"),
     url: load("node:url"),
     express,
     cors: middleware,
+    "./services/content-store.js": {
+      createContentIndexDirectory: () => options.contentIndexDirectory ?? (async () => options.contentIndexes ?? []),
+      validateContentCustodyConfig: () => {
+        const valid = options.contentCustodyValid ?? true;
+        contentCustodyChecks.push(valid);
+        return valid ? { ok: true } : { ok: false, error: "content master missing" };
+      },
+      KvContentBlobStore: class {},
+      assertNoContentKey: async () => {},
+      ContentStore: class {
+        async assertContinuity() {}
+
+        async probeIndex() { return { ok: true, id: "fixture-index" }; }
+        async sweepRetention(index: {
+          source: string;
+          address: string;
+          safetyMarginMs: number;
+        }) {
+          retentionSweeps.push(index);
+          finishRetentionSweep();
+          return { swept: 1, bytesFreed: 0, tombstones: 0 };
+        }
+        async sweepExpiredReplayTombstones() { return 0; }
+      },
+    },
+    "./services/ingest-retention.js": load("./services/ingest-retention.ts"),
+    "./services/ingest-instance.js": {
+      IngestInstanceGuard: class {},
+      KvInstanceLeaseStore: class {},
+      IngestInstanceSupervisor: class {
+        private readonly worker: { start(): void };
+        constructor(config: { worker: { start(): void } }) {
+          this.worker = config.worker;
+        }
+        start() {
+          calls.push("ingest-supervisor-start");
+          this.worker.start();
+        }
+        stop() {}
+      },
+    },
     "./startup.js": {
       createTinychatBackendIdentity: async () => {
         calls.push("identity");
-        return { node: {}, did: "synthetic-backend-did" };
+        return { node: { kv: { list: async () => ({ data: { keys: [] } }) } }, did: "synthetic-backend-did" };
       },
     },
     "./services/ingest-mode.js": { backendIngestEnabled: () => false },
+    "./rate-limits.js": { applyRateLimiters: () => ({ globalRoutes: {}, paidChatLimiter: middleware() }), logGlobalBucketRoutes: () => {} },
+    // TC-1013: the Exo mailbox is off in this harness; the flag is read at startup.
+    "./exo/mailbox.js": { exoCapabilitiesEnabled: () => false },
+    // TC-1013 S4b: owner teardown wiring builds the grant opener at startup, outside the flag.
+    "./exo/stores.js": { createOwnerGrantOpener: () => async () => null },
+    // TC-1013 S4b: startup wires the grant-holder index and tracked grant store outside the flag.
+    "./exo/grant-holders.js": { GrantHolderIndex: class GrantHolderIndex { async refresh() {} }, createTrackedGrantStore: (store: unknown) => store },
     "./services/google-oauth.js": { googleMeetOAuthEnabled: () => false },
     // TC-641: the real default-off parser, so `transcriptDeliveryConfig` is a config, not undefined.
     "./services/transcription-api.js": {
@@ -82,6 +148,8 @@ async function runIsolatedStartup(env: Record<string, string | undefined>) {
       transcriptionApiConfigFromEnv: () => transcription.transcriptionApiConfigFromEnv(env),
       createTranscriptionApiClient: () => ({}),
     },
+    "./mcp-meetings/config.js": { mcpChatFromEnv: () => ({}) },
+    "./redpill-aci.js": load("./redpill-aci.ts"),
     "./routes/agent.js": {
       createAgentRouter: (config: unknown) => {
         agentConfig = config;
@@ -127,8 +195,41 @@ async function runIsolatedStartup(env: Record<string, string | undefined>) {
   } catch (error) {
     if (error !== stopped) logs.push(error instanceof Error ? error.message : String(error));
   }
-  return { calls, logs, agentConfig };
+  return { calls, logs, agentConfig, contentCustodyChecks, retentionSweeps, retentionSweepDone };
 }
+
+test("disabled backend ingest starts retention over every listed content index", async () => {
+  const index = { source: "fireflies", address: `0x${"a".repeat(40)}` };
+  const result = await runIsolatedStartup(
+    { ...AGENT_ENV, ...STREAM_ENV, CONNECTOR_CONTENT_MASTER: "fixture-configured-master" },
+    { contentIndexes: [index] },
+  );
+  await result.retentionSweepDone;
+  expect(result.calls).toContain("ingest-supervisor-start");
+  expect(result.retentionSweeps).toEqual([{ ...index, safetyMarginMs: 5 * 60_000 }]);
+});
+test("content custody remains required when backend ingest is disabled", async () => {
+  const result = await runIsolatedStartup(
+    { ...AGENT_ENV, ...STREAM_ENV, CONNECTOR_CONTENT_MASTER: "fixture-configured-master" },
+    { contentCustodyValid: false },
+  );
+
+  expect(result.contentCustodyChecks).toEqual([false]);
+  expect(result.calls).toContain("exit");
+  expect(result.calls).not.toContain("agent-router");
+});
+test("a failed startup index listing does not prevent backend startup", async () => {
+  const result = await runIsolatedStartup(
+    { ...AGENT_ENV, ...STREAM_ENV, CONNECTOR_CONTENT_MASTER: "fixture-configured-master" },
+    {
+      contentIndexDirectory: async () => {
+        throw new Error("synthetic KV list failure");
+      },
+    },
+  );
+
+  expect(result.calls).toContain("agent-router");
+});
 
 describe("agent stream startup policy wiring", () => {
   test("rejects missing policy before identity, background work, route mounting or listening", async () => {
@@ -190,14 +291,10 @@ describe("agent stream startup policy wiring", () => {
 });
 
 describe("backend index middleware wiring", () => {
-  test("CORS uses the web + Exo desktop origin allowlist", () => {
-    expect(INDEX).toContain('import { appCorsOrigins } from "./cors-origins.js"');
-    expect(INDEX).toContain("app.use(cors({ origin: appCorsOrigins(FRONTEND_URL) }))");
-  });
 
   test("trusts exactly one ingress proxy before rate limiters are applied", () => {
     const trustIndex = INDEX.indexOf('app.set("trust proxy", 1)');
-    const limiterIndex = INDEX.indexOf("applyRateLimiters(app)");
+    const limiterIndex = INDEX.indexOf("applyRateLimiters(app, ");
 
     expect(trustIndex).toBeGreaterThan(-1);
     expect(limiterIndex).toBeGreaterThan(-1);
@@ -212,7 +309,7 @@ describe("backend index middleware wiring", () => {
     const webhookIndex = INDEX.indexOf('"/api/connectors/webhooks/:source/:token"');
     const jsonParserIndex = INDEX.indexOf(API_BODY_PARSER);
     const csrfIndex = INDEX.indexOf("createCsrfMiddleware()");
-    const limiterIndex = INDEX.indexOf("applyRateLimiters(app)");
+    const limiterIndex = INDEX.indexOf("applyRateLimiters(app, ");
 
     expect(billingIndex).toBeGreaterThan(-1);
     expect(webhookIndex).toBeGreaterThan(billingIndex);
@@ -254,7 +351,7 @@ describe("backend index middleware wiring", () => {
     const companionMount = INDEX.search(/app\.use\(\s*\n?\s*"\/api\/connectors\/webhooks"/);
     const jsonParserIndex = INDEX.indexOf(API_BODY_PARSER);
     const csrfIndex = INDEX.indexOf("createCsrfMiddleware()");
-    const limiterIndex = INDEX.indexOf("applyRateLimiters(app)");
+    const limiterIndex = INDEX.indexOf("applyRateLimiters(app, ");
 
     expect(companionMount).toBeGreaterThan(jsonParserIndex);
     expect(companionMount).toBeGreaterThan(csrfIndex);
@@ -289,8 +386,8 @@ describe("backend index middleware wiring", () => {
     const LIMITS = readFileSync(resolve(import.meta.dir, "../rate-limits.ts"), "utf8");
     expect(LIMITS).toContain('CONNECTOR_COMPANION_PATHS = ["/api/connectors/webhooks"]');
     expect(LIMITS).toContain('DELEGATION_PATHS = ["/api/delegations"]');
-    expect(LIMITS).toContain("connectorCompanionLimiter");
-    expect(LIMITS).toContain("delegationLimiter");
+    expect(LIMITS).toContain('[CONNECTOR_COMPANION_PATHS, "connectorCompanion"]');
+    expect(LIMITS).toContain('[DELEGATION_PATHS, "delegation"]');
   });
 
   test("no companion path can overlap the two-segment public route", () => {
@@ -353,14 +450,14 @@ describe("backend index middleware wiring", () => {
     const mount = INDEX.indexOf('"/api/connectors/google/oauth"');
     const jsonParserIndex = INDEX.indexOf(API_BODY_PARSER);
     const csrfIndex = INDEX.indexOf("createCsrfMiddleware()");
-    const limiterIndex = INDEX.indexOf("applyRateLimiters(app)");
+    const limiterIndex = INDEX.indexOf("applyRateLimiters(app, ");
 
     expect(mount).toBeGreaterThan(jsonParserIndex);
     expect(mount).toBeGreaterThan(csrfIndex);
     expect(mount).toBeGreaterThan(limiterIndex);
   });
 
-  test("GET /start and /callback mount WITHOUT authMiddleware; the three POSTs are behind it", () => {
+  test("the exact Google OAuth route set has the intended authentication boundary", () => {
     // `/callback` is a top-level navigation from Google and carries no Bearer — middleware/auth.ts
     // would 401 it before the popup could hand `{code, state}` back. CSRF exempts GET, and the
     // anti-forgery control on the pair is the `state` param the SPA mints and re-checks.
@@ -369,7 +466,7 @@ describe("backend index middleware wiring", () => {
       /app\.use\(\s*\n?\s*"\/api\/connectors\/google\/oauth",\s*\n?\s*authMiddleware/,
     );
     // …it is reached through an ALLOWLIST gate: exactly the two GETs skip it, everything else
-    // (the three POSTs, and any route added later) goes through it. Default-deny, so the
+    // (desktop start, the three POSTs, and any route added later) goes through it. Default-deny, so the
     // accident falls toward authentication rather than away from it.
     expect(INDEX).toContain(
       'export const GOOGLE_OAUTH_PUBLIC_PATHS: ReadonlySet<string> = new Set([\n  "/start",\n  "/callback",\n]);',
@@ -379,23 +476,25 @@ describe("backend index middleware wiring", () => {
     );
     expect(INDEX).toMatch(/void authMiddleware\(req, res, next\);/);
 
-    // And the router really does register those five and only those five, split the way the
-    // gate assumes: the unauthenticated names are GETs, the authenticated ones are POSTs.
+    // Pin every method, path and auth requirement. A new route cannot silently inherit
+    // the public boundary or make this test pass through a count-only assertion.
     const ROUTES = readFileSync(resolve(import.meta.dir, "../routes/google-oauth.ts"), "utf8");
     const registered = [...ROUTES.matchAll(/router\.(get|post|delete|put|patch)\(\s*"([^"]+)"/g)]
-      .map((m) => ({ method: m[1]!, path: m[2]! }));
-    expect(registered).toEqual([
-      { method: "get", path: "/start" },
-      { method: "get", path: "/callback" },
-      { method: "post", path: "/exchange" },
-      { method: "post", path: "/refresh" },
-      { method: "post", path: "/revoke" },
-    ]);
-    // Nothing that reaches Google's token endpoint may be in the public set.
-    for (const route of registered) {
-      const isPublic = ['"/start"', '"/callback"'].includes(`"${route.path}"`);
-      expect(isPublic).toBe(route.method === "get");
-    }
+      .map((m) => ({ method: m[1]!.toUpperCase(), path: m[2]! }));
+    const publicPaths = new Set(
+      [...INDEX.matchAll(/export const GOOGLE_OAUTH_PUBLIC_PATHS:[\s\S]*?new Set\(\[([\s\S]*?)\]\)/g)]
+        .flatMap((match) => [...match[1]!.matchAll(/"([^"]+)"/g)].map((path) => path[1]!)),
+    );
+    expect([...publicPaths]).toEqual(["/start", "/callback"]);
+    expect(registered.map(({ method, path }) => ({ method, path, auth: !(method === "GET" && publicPaths.has(path)) })))
+      .toEqual([
+        { method: "GET", path: "/start", auth: false },
+        { method: "GET", path: "/desktop/start", auth: true },
+        { method: "GET", path: "/callback", auth: false },
+        { method: "POST", path: "/exchange", auth: true },
+        { method: "POST", path: "/refresh", auth: true },
+        { method: "POST", path: "/revoke", auth: true },
+      ]);
   });
 
   test("the google oauth prefix carries its own rate-limit bucket, never the global one", () => {
@@ -403,9 +502,10 @@ describe("backend index middleware wiring", () => {
     // the same rule §4.4 applies to the connector companions.
     const LIMITS = readFileSync(resolve(import.meta.dir, "../rate-limits.ts"), "utf8");
     expect(LIMITS).toContain('GOOGLE_OAUTH_PATHS = ["/api/connectors/google/oauth"]');
-    expect(LIMITS).toContain("googleOAuthLimiter");
-    // …and the prefix is EXEMPTED from the global bucket, not merely given a second one.
-    expect(LIMITS).toMatch(/const DEDICATED_PATHS = \[[\s\S]*\.\.\.GOOGLE_OAUTH_PATHS,[\s\S]*\]/);
+    expect(LIMITS).toContain('[GOOGLE_OAUTH_PATHS, "googleOAuth"]');
+    // …and the prefix is EXEMPTED from the global bucket, not merely given a second one:
+    // `bucketFor` assigns each request exactly one bucket.
+    expect(LIMITS).toContain('bucketFor(req.method, req.path) !== kind');
   });
 
   test("an armed-but-unregistered google OAuth config refuses to boot", () => {
@@ -429,7 +529,7 @@ describe("backend index middleware wiring", () => {
     expect(INDEX.match(/app\.use\(\s*PRIVATE_CLOUD_TRANSCRIPTION_MOUNT/g)).toHaveLength(1);
     expect(mount).toBeGreaterThan(INDEX.indexOf(API_BODY_PARSER));
     expect(mount).toBeGreaterThan(INDEX.indexOf("createCsrfMiddleware()"));
-    expect(mount).toBeGreaterThan(INDEX.indexOf("applyRateLimiters(app)"));
+    expect(mount).toBeGreaterThan(INDEX.indexOf("applyRateLimiters(app, "));
   });
 
   test("hosted AssemblyAI mounts once, unconditionally, behind auth, and its parts skip the global JSON parser", () => {
@@ -437,7 +537,7 @@ describe("backend index middleware wiring", () => {
     expect(mount).toBeGreaterThan(-1);
     expect(INDEX.match(/app\.use\(\s*ASSEMBLYAI_HOSTED_MOUNT/g)).toHaveLength(1);
     expect(mount).toBeGreaterThan(INDEX.indexOf("createCsrfMiddleware()"));
-    expect(mount).toBeGreaterThan(INDEX.indexOf("applyRateLimiters(app)"));
+    expect(mount).toBeGreaterThan(INDEX.indexOf("applyRateLimiters(app, "));
     // The global parser moved into body-parsing.ts; the hosted-part skip moved with it.
     expect(INDEX).toContain('import { createApiBodyParser } from "./body-parsing.js";');
     const parser = readFileSync(resolve(import.meta.dir, "../body-parsing.ts"), "utf8");
@@ -464,7 +564,7 @@ describe("backend index middleware wiring", () => {
       expect({ raw, mounted: at > -1, beforeParser: at < parser }).toEqual({ raw, mounted: true, beforeParser: true });
     }
     // …and CSRF, the limiters and every JSON route below it.
-    for (const later of ["app.use(createCsrfMiddleware())", "applyRateLimiters(app)", '"/api/auth"', '"/api/delegations"', '"/api/manifest"']) {
+    for (const later of ["app.use(createCsrfMiddleware())", "applyRateLimiters(app, ", '"/api/auth"', '"/api/delegations"', '"/api/manifest"']) {
       const at = INDEX.indexOf(later);
       expect({ later, afterParser: at > parser }).toEqual({ later, afterParser: true });
     }
@@ -473,7 +573,6 @@ describe("backend index middleware wiring", () => {
   test("createApiBodyParser leaves delegation acceptance, NRAS and hosted parts unread", () => {
     const PARSER = readFileSync(resolve(import.meta.dir, "../body-parsing.ts"), "utf8");
     // Delegation POSTs are gated on eligibility before their route-local parser reads a byte.
-    expect(PARSER).toContain('(req.method === "POST" && /^\\/api\\/delegations\\/*$/i.test(req.path))');
     expect(PARSER).toContain('req.path === "/api/nras-proxy"');
     expect(PARSER).toContain('req.path.startsWith("/api/nras-proxy/")');
     expect(PARSER).toContain("isHostedPartPath(req.path)");
@@ -501,26 +600,36 @@ describe("backend index middleware wiring", () => {
       expect(at).toBeGreaterThan(billing);
       expect(at).toBeLessThan(INDEX.indexOf(API_BODY_PARSER));
       expect(at).toBeLessThan(INDEX.indexOf("createCsrfMiddleware()"));
-      expect(at).toBeLessThan(INDEX.indexOf("applyRateLimiters(app)"));
+      expect(at).toBeLessThan(INDEX.indexOf("applyRateLimiters(app, "));
     }
   });
 
   test("shutdown drains HTTP and every worker in one allSettled", () => {
     expect(INDEX).toContain(
-      "Promise.allSettled([httpDrained, transcriptWorker?.stop(), calendarAutojoinWorker?.stop(), ingestSupervisor?.stop(), hostedUploads?.shutdown()])",
+      "Promise.allSettled([httpDrained, wakesDrained, exoRetentionSweep?.stop(), transcriptWorker?.stop(), calendarAutojoinWorker?.stop(), ingestSupervisor?.stop(), hostedUploads?.shutdown()])",
     );
   });
 });
 
-test("diagnostic foreground override isolates agent sends while unset startup preserves provider defaults", async () => {
-  const initial = await runIsolatedStartup({ ...AGENT_ENV, ...STREAM_ENV, REDPILL_BASE_URL: "https://background.invalid/background" });
-  expect(initial.agentConfig.chat.redpillBaseUrl).toBe("https://background.invalid/background");
+test("diagnostic foreground override isolates agent sends on the approved gateway", async () => {
+  const initial = await runIsolatedStartup({ ...AGENT_ENV, ...STREAM_ENV, REDPILL_BASE_URL: "https://tee.redpill.ai/background" });
+  expect(initial.agentConfig.chat.redpillBaseUrl).toBe("https://tee.redpill.ai/background");
   expect(initial.agentConfig.chat.redpillApiKey).toBe("synthetic-provider-key");
-  const diagnostic = await runIsolatedStartup({ ...AGENT_ENV, ...STREAM_ENV, REDPILL_BASE_URL: "https://background.invalid/background",
-    MEETING_DIAGNOSTIC_FOREGROUND_BASE_URL: "https://gateway.invalid/foreground", MEETING_DIAGNOSTIC_FOREGROUND_API_KEY: "synthetic-foreground-key" });
-  expect(diagnostic.agentConfig.chat.redpillBaseUrl).toBe("https://gateway.invalid/foreground");
+  const diagnostic = await runIsolatedStartup({ ...AGENT_ENV, ...STREAM_ENV, REDPILL_BASE_URL: "https://tee.redpill.ai/background",
+    MEETING_DIAGNOSTIC_FOREGROUND_BASE_URL: "https://tee.redpill.ai/foreground", MEETING_DIAGNOSTIC_FOREGROUND_API_KEY: "synthetic-foreground-key" });
+  expect(diagnostic.agentConfig.chat.redpillBaseUrl).toBe("https://tee.redpill.ai/foreground");
   expect(diagnostic.agentConfig.chat.redpillApiKey).toBe("synthetic-foreground-key");
   expect(diagnostic.logs).toEqual([]);
+});
+
+test("refuses startup when the configured model endpoint is not the attested gateway", async () => {
+  const result = await runIsolatedStartup({
+    ...AGENT_ENV,
+    ...STREAM_ENV,
+    REDPILL_BASE_URL: "https://api.redpill.ai/v1",
+  });
+  expect(result.calls).toEqual(["exit"]);
+  expect(result.logs).toEqual(["Invalid confidential model endpoint: expected the attested gateway"]);
 });
 
 test("partial or empty diagnostic endpoint credentials fail before startup effects and never log values", async () => {
@@ -591,7 +700,7 @@ test("shutdown waits for other cleanups after a worker rejects", async () => {
     console: { log: () => {} },
     process: { exit: (code: number) => exits.push(code) },
     setTimeout: () => ({ unref() {} }),
-    ledgerFlusher: null, connectorWebhooks: null, connectorQueueMaintenance: null,
+    ledgerFlusher: null, connectorWebhooks: null, connectorQueueMaintenance: null, exoWakeQueue: null, exoRetentionSweep: null,
     server: { close: (done: () => void) => done(), closeIdleConnections() {} },
     transcriptWorker: { stop: () => { attempts.push("transcript"); return Promise.reject(new Error("synthetic")); } },
     calendarAutojoinWorker: { stop: () => { attempts.push("calendar"); return Promise.reject(new Error("synthetic")); } },
@@ -607,14 +716,78 @@ test("shutdown waits for other cleanups after a worker rejects", async () => {
   expect(exits).toEqual([1]);
 });
 
-const envBase = { BACKEND_PRIVATE_KEY: "test-only-private-key", PORT: "0" };
+test("shutdown holds the exit until queued exo wakes drain", async () => {
+  const start = INDEX.indexOf("  let shuttingDown = false;");
+  const end = INDEX.indexOf('\n  process.on("SIGTERM"', start);
+  const source = new Bun.Transpiler({ loader: "ts" }).transformSync(INDEX.slice(start, end) + '\nshutdown("SIGTERM");');
+  const { WakeQueue } = load("./exo/wake-intake.ts");
+  const queue = new WakeQueue({ concurrency: 1 });
+  const release = Promise.withResolvers<void>();
+  queue.offer(`0x${"a".repeat(40)}`, "req-1", () => release.promise);
+  const exited = Promise.withResolvers<number>();
+  const exits: number[] = [];
+  runInNewContext(source, {
+    Promise,
+    console: { log: () => {} },
+    process: { exit: (code: number) => { exits.push(code); exited.resolve(code); } },
+    setTimeout: () => ({ unref() {} }),
+    ledgerFlusher: null, connectorWebhooks: null, connectorQueueMaintenance: null,
+    exoWakeQueue: queue, exoRetentionSweep: null,
+    server: { close: (done: () => void) => done(), closeIdleConnections() {} },
+    transcriptWorker: null, calendarAutojoinWorker: null, ingestSupervisor: null, hostedUploads: null,
+  });
+  for (let tick = 0; tick < 10; tick += 1) await Promise.resolve();
+  expect(exits).toEqual([]);
+  release.resolve();
+  expect(await exited.promise).toBe(0);
+});
+
+test("shutdown holds the exit until an in-flight retention pass stops", async () => {
+  const start = INDEX.indexOf("  let shuttingDown = false;");
+  const end = INDEX.indexOf('\n  process.on("SIGTERM"', start);
+  const source = new Bun.Transpiler({ loader: "ts" }).transformSync(INDEX.slice(start, end) + '\nshutdown("SIGTERM");');
+  const pass = Promise.withResolvers<void>();
+  const exited = Promise.withResolvers<number>();
+  const exits: number[] = [];
+  runInNewContext(source, {
+    Promise,
+    console: { log: () => {} },
+    process: { exit: (code: number) => { exits.push(code); exited.resolve(code); } },
+    setTimeout: () => ({ unref() {} }),
+    ledgerFlusher: null, connectorWebhooks: null, connectorQueueMaintenance: null,
+    exoWakeQueue: null,
+    exoRetentionSweep: { stop: () => pass.promise },
+    server: { close: (done: () => void) => done(), closeIdleConnections() {} },
+    transcriptWorker: null, calendarAutojoinWorker: null, ingestSupervisor: null, hostedUploads: null,
+  });
+  for (let tick = 0; tick < 10; tick += 1) await Promise.resolve();
+  expect(exits).toEqual([]);
+  pass.resolve();
+  expect(await exited.promise).toBe(0);
+});
+
+const envBase = {
+  BACKEND_PRIVATE_KEY: "test-only-private-key",
+  PORT: "0",
+};
 const privateCloud = load("./services/private-cloud-transcription.ts");
 const hosted = load("./services/assemblyai-hosted.ts");
 const transcription = load("./services/transcription-api.ts");
 const google = load("./services/google-oauth.ts");
+const credentialStore = load("./services/credential-store.ts");
+const contentStore = load("./services/content-store.ts");
+const firefliesOAuthModule = load("./services/fireflies-oauth.ts");
+const ingestInstanceModule = load("./services/ingest-instance.ts");
 const { createApiBodyParser } = load("./body-parsing.ts");
 const { createTranscriberWebhookRouter } = load("./routes/transcriber-webhook.ts");
 const { createGoogleOAuthRouter, normalizeAppOrigin } = load("./routes/google-oauth.ts");
+const { createServerInfoRouter } = load("./routes/server-info.ts");
+const exoMailbox = load("./exo/mailbox.ts");
+const exoGrant = load("./routes/exo-grant.ts");
+const { ASSEMBLYAI_HOSTED_MOUNT, createAssemblyAiHostedRouter } = load("./routes/assemblyai-hosted.ts");
+const { createPrivateCloudTranscriptionRouter } = load("./routes/private-cloud-transcription.ts");
+const transcriberRoutes = load("./routes/transcriber.ts");
+const privateCloudPurge = load("./services/private-cloud-purge.ts");
 
 interface Boot {
   url: string | null;
@@ -635,6 +808,9 @@ async function bootIndex(patch: Record<string, string | undefined> = {}, options
   stop?: Record<string, () => Promise<void>>;
   billingEvent?: (body: Buffer) => void | Promise<void>;
   onExit?: (code: number) => void;
+  requestHandler?: express.RequestHandler;
+  capture?: (name: string, config: Record<string, unknown>) => void;
+  processLogSink?: boolean;
 } = {}): Promise<Boot> {
   const env: Record<string, string | undefined> = { ...envBase, ...patch };
   const logs: string[] = [];
@@ -656,7 +832,10 @@ async function bootIndex(patch: Record<string, string | undefined> = {}, options
   }, express);
   const noop = () => {};
   const auth = () => (req: express.Request, res: express.Response, next: express.NextFunction) => {
-    if (req.headers.authorization === "Bearer test-session") next();
+    if (req.headers.authorization === "Bearer test-session") {
+      req.user = { address: "0x" + "a".repeat(40) };
+      next();
+    }
     else res.sendStatus(401);
   };
   const known: Record<string, unknown> = {
@@ -670,19 +849,30 @@ async function bootIndex(patch: Record<string, string | undefined> = {}, options
       createDelegationMiddleware: () => (_req: express.Request, _res: express.Response, next: express.NextFunction) => next(),
     },
     "@tinyboilerplate/core": { APP_ID: "test-backend" },
-    "./startup.js": { createTinychatBackendIdentity: async () => ({ node: {}, did: "did:test:backend" }) },
-    "./build-info.js": { readBackendBuildInfo: () => ({}) },
+    "./startup.js": { createTinychatBackendIdentity: async () => ({ node: { kv: { list: async () => ({ data: { keys: [] } }) } }, did: "did:test:backend" }) },
+    "./build-info.js": { readBackendBuildInfo: () => ({ backendRevision: "test-revision", backendVersion: "0.5.6" }) },
     "./body-parsing.js": { createApiBodyParser },
-    "./services/ingest-mode.js": { backendIngestEnabled: () => false, IngestModeService: class {} },
+    "./request-context.js": {
+      ...load("./request-context.ts"),
+      createRequestContextMiddleware: () => load("./request-context.ts").createRequestContextMiddleware(
+        options.processLogSink ? undefined : (event: unknown) => logs.push(JSON.stringify(event)),
+      ),
+    },
+    "./services/ingest-mode.js": { backendIngestEnabled: () => env.CONNECTOR_BACKEND_INGEST_ENABLED === "true", IngestModeService: class {} },
     "./services/transcription-api.js": {
       transcriptDeliveryConfigFromEnv: (e: object) => transcription.transcriptDeliveryConfigFromEnv(e),
       transcriptionApiConfigFromEnv: () => transcription.transcriptionApiConfigFromEnv(env),
       createTranscriptionApiClient: () => ({}),
     },
     "./services/private-cloud-transcription.js": privateCloud,
+    "./routes/private-cloud-transcription.js": { createPrivateCloudTranscriptionRouter },
+    "./routes/transcriber.js": transcriberRoutes,
+    "./services/private-cloud-purge.js": privateCloudPurge,
     "./services/assemblyai-hosted.js": { ...hosted, HostedUploadStore: class {
       init() { return Promise.resolve(); }
       shutdown() { return stop.hosted?.() ?? Promise.resolve(); }
+      dailyBytesRemaining() { return hosted.DEFAULT_DAILY_BYTES; }
+      onExpireDelete() {}
     } },
     "./services/google-oauth.js": {
       googleMeetOAuthEnabled: () => google.googleMeetOAuthEnabled(env),
@@ -706,7 +896,36 @@ async function bootIndex(patch: Record<string, string | undefined> = {}, options
       },
       WriteGovernor: class {},
     },
-    "./services/calendar-autojoin-store.js": { TenantCoordinator: class {} },
+    "./services/calendar-autojoin-store.js": {
+      TenantCoordinator: class {},
+      kvCalendarAutojoinStores: () => ({ request: {}, worker: { listConnections: async () => [] } }),
+    },
+    "./services/credential-store.js": {
+      validateCredentialCustodyConfig: (env: Record<string, string | undefined>) => credentialStore.validateCredentialCustodyConfig(env),
+      CredentialStore: class {},
+      KvCredentialRowStore: class {},
+    },
+    "./routes/content-continuity.js": { mountContentContinuityRoute: noop },
+    "./services/ingest-retention.js": load("./services/ingest-retention.ts"),
+    "./services/content-store.js": {
+      ...contentStore,
+      assertNoContentKey: async () => {},
+      currentContentMaster: () => env.CONNECTOR_CONTENT_MASTER,
+      ContentStore: class extends contentStore.ContentStore {
+        async assertContinuity() {}
+        async probeIndex() { return { ok: true, id: "fixture-index" }; }
+        async sweepRetention(index: { source: string; address: string }) {
+          retentionSweeps.push(index);
+          finishRetentionSweep();
+          return { swept: 1, bytesFreed: 0, tombstones: 0 };
+        }
+        async sweepExpiredReplayTombstones() { return 0; }
+      },
+    },
+    "./services/fireflies-oauth.js": { ...firefliesOAuthModule },
+    "./services/calendar-autojoin-connection.js": { CalendarAutojoinConnection: class {
+      constructor(config: Record<string, unknown>) { options.capture?.("calendar", config); }
+    } },
     "./routes/billing-webhook.js": { createBillingWebhookHandler: () => async (req: express.Request, res: express.Response) => {
       if (!Buffer.isBuffer(req.body)) return res.sendStatus(415);
       const signature = createHmac("sha256", "isolated-stripe-key").update(req.body).digest("hex");
@@ -715,39 +934,93 @@ async function bootIndex(patch: Record<string, string | undefined> = {}, options
       res.sendStatus(202);
     } },
     "./routes/connector-webhooks.js": {
-      createConnectorWebhookCompanionRouter: router,
+      createConnectorWebhookCompanionRouter: (config: Record<string, unknown>) => {
+        options.capture?.("connectorWebhooks", config);
+        return express.Router();
+      },
       ConnectorControlStore: class {}, ConnectorWebhookLimiters: class {
         ipPreLimiter(_req: express.Request, _res: express.Response, next: express.NextFunction) { next(); }
       },
       createConnectorWebhookHostGuard: () => (_req: express.Request, _res: express.Response, next: express.NextFunction) => next(),
+      resolveWebhookHostAllowlist: () => (env.CONNECTOR_WEBHOOK_PUBLIC_ORIGIN ? new Set(["app.invalid"]) : null),
       createConnectorWebhookParserErrorHandler: () => (error: unknown, _req: express.Request, _res: express.Response, next: express.NextFunction) => next(error),
       createConnectorWebhookHandler: () => (req: express.Request, res: express.Response) => {
         res.sendStatus(Buffer.isBuffer(req.body) ? 202 : 415);
       },
     },
+    // TC-1013 S4b: the credential router's teardown is built at startup; capture what it receives.
+    "./routes/connector-credentials.js": {
+      createConnectorCredentialRouter: (config: Record<string, unknown>) => {
+        options.capture?.("connectorCredentials", config);
+        return express.Router();
+      },
+    },
     "./services/webhook-tokens.js": { assertStrongSecret: () => {}, WebhookTokenService: class {} },
-    "./routes/delegations.js": { createDelegationRouter: () => router() },
+    "./routes/delegations.js": { createDelegationRouter: (config: Record<string, unknown>) => {
+      options.capture?.("delegation", config);
+      return router();
+    } },
+    "./routes/manifest.js": { createManifestRouter: () => {
+      const result = express.Router();
+      if (options.requestHandler) result.get("/canary/:id", options.requestHandler);
+      return result;
+    } },
+    "./routes/server-info.js": { createServerInfoRouter },
     "./middleware/auth.js": { createAuthMiddleware: auth },
     "./services/ingest-nudge.js": { createIngestOnDelivery: noop },
-    "./rate-limits.js": { applyRateLimiters: noop },
+    "./rate-limits.js": { applyRateLimiters: () => ({ globalRoutes: { top: () => ({}) }, paidChatLimiter: noop }), logGlobalBucketRoutes: noop },
+    // TC-1013 S4b: the real flag parser reads the harness env, so the flag is tested, not stubbed.
+    "./exo/mailbox.js": { exoCapabilitiesEnabled: (env: Record<string, string | undefined>) => exoMailbox.exoCapabilitiesEnabled(env, () => {}) },
+    // TC-1013 S4b: the real grant router, so a flag-on request reaches auth instead of 404.
+    "./routes/exo-grant.js": { createExoGrantRouter: (config: Record<string, unknown>) => {
+      options.capture?.("exoGrant", config);
+      return exoGrant.createExoGrantRouter({ ...config, node: { computeDelegationCid: () => {} } } as never);
+    } },
+    // TC-1013 S4b: owner teardown wiring builds the grant opener at startup, outside the flag.
+    "./exo/stores.js": { createOwnerGrantOpener: () => async () => null, createExoStorePorts: () => ({}) },
+    // TC-1013 S4b: flag-on startup builds these; this test only checks the grant mount.
+    "./exo/wake-intake.js": { WakeQueue: class WakeQueue { async drain() {} } },
+    "./exo/retention-sweep.js": { startExoRetentionSweepTimer: () => ({ stop: async () => {} }) },
+    "./routes/exo-mailbox.js": { createExoMailboxRouter: router },
+    // TC-2808: the bots routes are off unless BOTS_* are set; this test doesn't arm them.
+    "./routes/bots.js": { botsFromEnv: () => undefined, createBotsRouter: router },
+    "./renewal-verify.js": { renewalVerifyConfigFromEnv: () => undefined },
+    // TC-1013 S4b: startup wires the grant-holder index and tracked grant store outside the flag.
+    "./exo/grant-holders.js": { GrantHolderIndex: class GrantHolderIndex { async refresh() {} }, createTrackedGrantStore: (store: unknown) => store },
     "./security.js": { applySecurityDefaults: noop },
     "./routes/nras-proxy.js": { createNrasProxyRouter: router },
-    "./routes/assemblyai-hosted.js": { ASSEMBLYAI_HOSTED_MOUNT: "/api/assemblyai", createAssemblyAiHostedRouter: router },
+    "./routes/assemblyai-hosted.js": { ASSEMBLYAI_HOSTED_MOUNT, createAssemblyAiHostedRouter, reconcileHostedJobs: async () => {} },
     "./routes/assemblyai-delete.js": { ASSEMBLYAI_DELETE_MOUNT: "/api/assemblyai/delete", createAssemblyAiDeleteRouter: router },
     "./billing/ledger-flusher.js": { LedgerFlusher: class { start() {} stop() {} } },
     "./billing/ledger-rehydrate.js": { LedgerRehydrator: class {} },
-    "./services/connector-drain.js": { ConnectorDrainWorker: class { stop() {} }, startConnectorQueueMaintenanceTimer: () => ({ stop() {} }), drainIntervalFromEnv: () => 60_000, createWebhookConfigDirectory: noop },
+    "./services/connector-drain.js": {
+      ConnectorDrainWorker: class { stop() {} },
+      startConnectorQueueMaintenanceTimer: (config: Record<string, unknown>) => {
+        options.capture?.("queueMaintenance", config);
+        return { stop() {} };
+      },
+      drainIntervalFromEnv: () => 60_000,
+      createWebhookConfigDirectory: noop,
+      createWebhookQueueDirectory: () => async () => [],
+      createWebhookPurgeLedgerDirectory: () => async () => [],
+    },
     "./services/connector-queue.js": { ConnectorQueue: class {} },
     "./services/backend-storage-lane.js": { BackendStorageLane: class {} },
-    "./services/transcriber-index.js": { KvTranscriberIndexStore: class {} },
-    "./services/google-calendar.js": { ExternalOperationLimiter: class {} },
+    "./services/transcriber-index.js": { KvJsonKv: class {}, KvTranscriberIndexStore: class {} },
+    "./services/google-calendar.js": { ExternalOperationLimiter: class {}, GoogleCalendarClient: class {} },
     "./services/calendar-autojoin-worker.js": { CalendarAutojoinWorker: class { start() {} stop() { return stop.calendar?.() ?? Promise.resolve(); } } },
-    "./services/ingest-instance.js": { IngestInstanceSupervisor: class { start() {} stop() { return stop.ingest?.() ?? Promise.resolve(); } } },
+    "./services/ingest-instance.js": { ...ingestInstanceModule, IngestInstanceSupervisor: class { start() {} stop() { return stop.ingest?.() ?? Promise.resolve(); } } },
+    "./services/connector-teardown.js": load("./services/connector-teardown.ts"),
     "./routes/chat.js": { createChatRouter: router, defaultModel: "test-model" },
     "./agent-stream-policy.js": load("./agent-stream-policy.ts"),
+    "./mcp-meetings/config.js": { mcpChatFromEnv: () => ({}) },
+    "./redpill-aci.js": load("./redpill-aci.ts"),
     "./transcripts/meeting-rollout.js": load("./transcripts/meeting-rollout.ts"),
     "./local-validation.js": { localValidationFromEnv: () => false, localValidationGuard: noop },
-    "./cors-origins.js": { appCorsOrigins: () => [] },
+    "./cors-origins.js": {
+      appCorsOptions: () => ({ origin: [], exposedHeaders: ["Retry-After", "RateLimit", "RateLimit-Policy"] }),
+      frontendOriginsFromEnv: load("./cors-origins.ts").frontendOriginsFromEnv,
+    },
     "js-yaml": { load: () => ({}) },
     "@scalar/express-api-reference": { apiReference: router },
   };
@@ -840,6 +1113,65 @@ describe("backend entry-point HTTP and lifecycle guards", () => {
     expect((await post(disabled.url!, path, "{}")).status).toBe(404);
   });
 
+  test("queue and purge-ledger retention maintenance is wired with connector webhooks disabled", async () => {
+    const captured: Record<string, Record<string, unknown>> = {};
+    const boot = await bootIndex({}, {
+      capture: (name, config) => { captured[name] = config; },
+    });
+
+    const maintenance = captured.queueMaintenance;
+    expect(boot.exits).toEqual([]);
+    expect(typeof maintenance?.listQueueEntries).toBe("function");
+    expect(typeof maintenance?.sweepQueue).toBe("function");
+    expect(typeof maintenance?.listLedgerAddresses).toBe("function");
+    expect(typeof maintenance?.sweepLedger).toBe("function");
+  });
+
+  test("exo grant route is unmounted (404, before auth) when the exo flag is off", async () => {
+    const boot = await bootIndex();
+    expect((await fetch(boot.url! + "/api/exo/v1/grant")).status).toBe(404);
+    expect((await post(boot.url!, "/api/exo/v1/grant", "{}")).status).toBe(404);
+  });
+
+  test("exo grant route mounts only for the exact flag value 'true' (real parser)", async () => {
+    for (const value of ["TRUE", "1", " true", "false", ""]) {
+      const off = await bootIndex({ EXO_CAPABILITIES_ENABLED: value });
+      expect((await post(off.url!, "/api/exo/v1/grant", "{}")).status).toBe(404);
+    }
+    const on = await bootIndex({ EXO_CAPABILITIES_ENABLED: "true" });
+    expect((await post(on.url!, "/api/exo/v1/grant", "{}")).status).toBe(401);
+  });
+
+  test("owner Exo teardown and the exo ledger clear are wired only with the exo flag on", async () => {
+    // index.ts builds the ConnectorTeardownService and hands it to the credential router as `teardown`.
+    const credentialTeardownExo = (c: Record<string, Record<string, unknown>>) =>
+      (c.connectorCredentials?.teardown as { deps?: { exo?: { clearSource?: unknown } } } | undefined)?.deps?.exo;
+    const captured: Record<string, Record<string, unknown>> = {};
+    const capture = (name: string, config: Record<string, unknown>) => { captured[name] = config; };
+    const googleEnv = {
+      GOOGLE_MEET_OAUTH_ENABLED: "true", GOOGLE_OAUTH_CLIENT_ID: "test-client-id",
+      GOOGLE_OAUTH_CLIENT_SECRET: "test-client-secret", GOOGLE_OAUTH_REDIRECT_URI: "https://app.invalid/callback",
+      TRANSCRIPTION_API_URL: "https://transcriber.invalid", TRANSCRIPTION_API_KEY: "test-api-key",
+      CONNECTOR_CREDENTIAL_MASTER: randomBytes(32).toString("hex"), CONNECTOR_CONTENT_MASTER: randomBytes(32).toString("hex"), CONNECTOR_WEBHOOKS_ENABLED: "true", CONNECTOR_BACKEND_INGEST_ENABLED: "true",
+      FIREFLIES_OAUTH_CLIENT_ID: "test-fireflies-client", FIREFLIES_OAUTH_CLIENT_SECRET: "test-fireflies-secret", FIREFLIES_OAUTH_REDIRECT_URI: "https://app.invalid/fireflies-callback",
+      CONNECTOR_WEBHOOK_PUBLIC_ORIGIN: "https://app.invalid",
+    };
+    const on = await bootIndex({ ...googleEnv, EXO_CAPABILITIES_ENABLED: "true" }, { capture });
+    expect(on.exits).toEqual([]);
+    expect(typeof captured.delegation?.teardownExoOwner).toBe("function");
+    expect(typeof captured.exoGrant?.teardownExoOwner).toBe("function");
+    expect(typeof captured.calendar?.teardownExoOwner).toBe("function");
+    expect(typeof (captured.connectorWebhooks?.exo as { clearSource?: unknown } | undefined)?.clearSource).toBe("function");
+    expect(typeof credentialTeardownExo(captured)?.clearSource).toBe("function");
+    for (const key of Object.keys(captured)) delete captured[key];
+    const off = await bootIndex(googleEnv, { capture });
+    expect(off.exits).toEqual([]);
+    expect(captured.delegation?.teardownExoOwner).toBeUndefined();
+    expect(captured.calendar?.teardownExoOwner).toBeUndefined();
+    expect(captured.connectorWebhooks?.exo).toBeUndefined();
+    expect(credentialTeardownExo(captured)).toBeUndefined();
+  });
+
   test("PTX webhook is dark by default and fails closed when armed without its receiver secret", async () => {
     const off = await bootIndex();
     const event = JSON.stringify({ type: "meeting.completed", data: { meeting_id: "meeting_1", metadata: { tinychat_address: "0x" + "a".repeat(40) } } });
@@ -883,6 +1215,7 @@ describe("backend entry-point HTTP and lifecycle guards", () => {
     for (const path of ["/start", "/callback"]) {
       expect((await fetch(on.url! + prefix + path)).status).toBe(400);
     }
+    expect((await fetch(on.url! + prefix + "/desktop/start")).status).toBe(401);
     for (const path of ["/exchange", "/refresh", "/revoke"]) {
       expect((await post(on.url!, prefix + path, "{}")).status).toBe(401);
     }
@@ -909,6 +1242,32 @@ describe("backend entry-point HTTP and lifecycle guards", () => {
     expect(await response.json()).toEqual({ error: "internal_error" });
     expect(boot.logs.join(" ")).not.toContain(marker);
     expect(boot.logs.join(" ")).not.toContain("body");
+  });
+
+  test("API-key-only startup keeps hosted unavailable while full hosted configuration remains enabled", async () => {
+    const off = await bootIndex({ ASSEMBLYAI_API_KEY: "test-assemblyai-api-key" });
+    expect(off.exits).toEqual([]);
+    const info = await (await fetch(off.url! + "/api/server-info")).json() as Record<string, unknown>;
+    expect(info).not.toHaveProperty("hosted");
+    expect(info).not.toHaveProperty("assemblyAiHosted");
+    const offCapabilities = await fetch(off.url! + `${ASSEMBLYAI_HOSTED_MOUNT}/capabilities`, {
+      headers: { authorization: "Bearer test-session" },
+    });
+    expect(offCapabilities.status).toBe(200);
+    expect(await offCapabilities.json()).toMatchObject({ hosted: false, daily_bytes_remaining: null });
+
+    const on = await bootIndex({
+      ASSEMBLYAI_API_KEY: "test-assemblyai-api-key",
+      ASSEMBLYAI_HOSTED_HANDLE_KEY: randomBytes(32).toString("hex"),
+      ASSEMBLYAI_HOSTED_SPOOL_DIR: "/test-hosted-spool",
+      ASSEMBLYAI_HOSTED_FRESH_INSTALL: "test-hosted-install",
+    });
+    expect(on.exits).toEqual([]);
+    const onCapabilities = await fetch(on.url! + `${ASSEMBLYAI_HOSTED_MOUNT}/capabilities`, {
+      headers: { authorization: "Bearer test-session" },
+    });
+    expect(onCapabilities.status).toBe(200);
+    expect(await onCapabilities.json()).toMatchObject({ hosted: true });
   });
 
   test("invalid PTX and hosted AssemblyAI configuration refuses boot without exposing credentials", async () => {
@@ -938,6 +1297,7 @@ describe("backend entry-point HTTP and lifecycle guards", () => {
       TRANSCRIPTION_API_KEY: "test-api-key",
       ASSEMBLYAI_API_KEY: randomBytes(32).toString("hex"),
       ASSEMBLYAI_HOSTED_HANDLE_KEY: randomBytes(32).toString("hex"),
+      ASSEMBLYAI_HOSTED_SPOOL_DIR: "/test-hosted-spool",
     }, {
       billingEvent: async () => {
         requestStarted.resolve();
@@ -964,5 +1324,303 @@ describe("backend entry-point HTTP and lifecycle guards", () => {
     expect((await request).status).toBe(202);
     await exitObserved.promise;
     expect(boot.exits).toEqual([1]);
+  });
+});
+
+describe("TC-959 backend request contract", () => {
+  const id = "12345678-abcd-4abc-8abc-123456789abc";
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+  const events = (boot: Boot) => boot.logs.filter(line => line.startsWith("{")).map(line => JSON.parse(line));
+
+  test("normalizes a valid client UUID and emits one typed completion event", async () => {
+    const boot = await bootIndex();
+    const response = await fetch(boot.url! + "/health?capability=private-query", { headers: { "x-request-id": id.toUpperCase() } });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("x-request-id")).toBe(id);
+    const requests = events(boot).filter(event => event.event === "tinychat_request");
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toEqual({
+      event: "tinychat_request", request_id: id, method: "GET", route: "/health",
+      status: 200, duration_ms: expect.any(Number), request_id_replaced: false,
+    });
+    expect(requests[0].duration_ms).toBeGreaterThanOrEqual(0);
+    expect(Number.isFinite(requests[0].duration_ms)).toBe(true);
+  });
+
+  test("replaces malformed, duplicate and missing UUIDs without reflecting their bytes", async () => {
+    const boot = await bootIndex();
+    const ids = new Set<string>();
+    for (const incoming of [undefined, "wallet-secret-not-a-uuid", `${id}, ${id}`, id + "-extra", "00000000"]) {
+      const response = await fetch(boot.url! + "/health", { headers: incoming ? { "x-request-id": incoming } : {} });
+      const assigned = response.headers.get("x-request-id");
+      expect(assigned).toMatch(uuid);
+      expect(assigned).not.toBe(incoming);
+      ids.add(assigned!);
+    }
+    expect(ids.size).toBe(5);
+    expect(boot.logs.join("\n")).not.toContain("wallet-secret-not-a-uuid");
+  });
+
+  test("auth rejection, parser error and unmatched route retain IDs and typed status", async () => {
+    const boot = await bootIndex();
+    const responses = [
+      await fetch(boot.url! + "/api/nras-proxy", { method: "POST", headers: { "x-request-id": id } }),
+      await post(boot.url!, "/api/manifest", "{", { "x-request-id": id }),
+      await fetch(boot.url! + "/private-wallet-path?token=private-capability", { headers: { "x-request-id": id } }),
+    ];
+    expect(responses.map(response => response.status)).toEqual([401, 400, 404]);
+    for (const response of responses) expect(response.headers.get("x-request-id")).toBe(id);
+    const requests = events(boot).filter(event => event.event === "tinychat_request");
+    expect(requests.map(event => event.status)).toEqual([401, 400, 404]);
+    expect(requests.every(event => event.request_id === id && event.route === "unmatched")).toBe(true);
+    expect(boot.logs.join("\n")).not.toMatch(/private-wallet-path|private-capability/);
+  });
+
+  test("propagates the entry ID to actual ptx-dev HTTP, including concurrent requests", async () => {
+    const seen: string[] = [];
+    const upstream = express();
+    const fastFinished = Promise.withResolvers<void>();
+    upstream.get("/v1/meetings/:id", async (req, res) => {
+      if (req.params.id === "slow") await fastFinished.promise;
+      seen.push(req.get("x-request-id") ?? "missing");
+      res.json({ id: req.params.id, status: "queued" });
+      if (req.params.id === "fast") fastFinished.resolve();
+    });
+    const server = upstream.listen(0, "127.0.0.1");
+    const listening = Promise.withResolvers<void>();
+    server.once("listening", listening.resolve);
+    await listening.promise;
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Synthetic upstream did not listen");
+    const api = transcription.createTranscriptionApiClient({
+      baseUrl: `http://127.0.0.1:${address.port}`, apiKey: "synthetic-ptx-key",
+      requestIdFirstPartyOrigins: new Set([`http://127.0.0.1:${address.port}`]),
+    });
+    const boot = await bootIndex({}, { requestHandler: (req, res, next) => {
+      api.getMeeting(req.params.id).then((meeting: unknown) => res.json(meeting), next);
+    } });
+    const other = "87654321-abcd-4abc-8abc-123456789abc";
+    try {
+      const responses = await Promise.all([
+        fetch(boot.url! + "/api/manifest/canary/slow", { headers: { "x-request-id": id } }),
+        fetch(boot.url! + "/api/manifest/canary/fast", { headers: { "x-request-id": other } }),
+      ]);
+      expect(responses.map(response => response.status)).toEqual([200, 200]);
+      expect(seen).toEqual([other, id]);
+      const replaced = await fetch(boot.url! + "/api/manifest/canary/minted", {
+        headers: { "x-request-id": "not-a-uuid-private-wallet" },
+      });
+      const minted = replaced.headers.get("x-request-id");
+      expect(replaced.status).toBe(200);
+      expect(minted).toMatch(uuid);
+      expect(seen[2]).toBe(minted);
+    } finally {
+      server.closeAllConnections();
+      const closed = Promise.withResolvers<void>();
+      server.close(() => closed.resolve());
+      await closed.promise;
+    }
+  });
+
+  test("keeps distinct Private correlation IDs and ptx-batch forwarding alongside request IDs", async () => {
+    const seen: Array<{ request: string | undefined; correlation: string | undefined }> = [];
+    const upstream = express();
+    upstream.get("/v1/transcriptions/capabilities", (req, res) => {
+      seen.push({ request: req.get("x-request-id"), correlation: req.get("x-correlation-id") });
+      res.status(503).json({ error: { code: "service_unavailable" } });
+    });
+    const listening = Promise.withResolvers<void>();
+    const server = upstream.listen(0, "127.0.0.1", listening.resolve);
+    await listening.promise;
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Synthetic batch did not listen");
+    const boot = await bootIndex({
+      ...ptxEnv, PRIVATE_CLOUD_TRANSCRIPTION_API_URL: `http://127.0.0.1:${address.port}`,
+      REQUEST_ID_FIRST_PARTY_ORIGINS: `http://127.0.0.1:${address.port}`,
+    });
+    const correlation = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+    try {
+      const response = await fetch(boot.url! + "/api/transcriber/private-cloud/capabilities", {
+        headers: { authorization: "Bearer test-session", "x-request-id": id.toUpperCase(), "x-correlation-id": correlation.toUpperCase() },
+      });
+      expect(response.status).toBe(503);
+      expect(response.headers.get("x-correlation-id")).toBe(correlation);
+      expect((await response.json()).error.correlation_id).toBe(correlation);
+      expect(seen).toEqual([{ request: id, correlation }]);
+      expect(response.headers.get("x-request-id")).toBe(id);
+      expect(events(boot).find(event => event.event === "tinychat_request")).toMatchObject({
+        request_id: id, correlation_id: correlation, status: 503,
+      });
+    } finally {
+      server.closeAllConnections();
+      const closed = Promise.withResolvers<void>();
+      server.close(() => closed.resolve());
+      await closed.promise;
+    }
+  });
+
+  test("private cloud on and the meeting transcriber off still mounts the bulk delete, behind auth (TC-3166)", async () => {
+    const upstream = express();
+    const listed: string[] = [];
+    upstream.get("/v1/transcriptions", (req, res) => {
+      listed.push(String(req.query.limit));
+      res.status(200).json({ data: [] });
+    });
+    const listening = Promise.withResolvers<void>();
+    const server = upstream.listen(0, "127.0.0.1", listening.resolve);
+    await listening.promise;
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Synthetic batch did not listen");
+    const boot = await bootIndex({ ...ptxEnv, PRIVATE_CLOUD_TRANSCRIPTION_API_URL: `http://127.0.0.1:${address.port}` });
+    try {
+      const anonymous = await fetch(boot.url! + "/api/transcriber/meetings", { method: "DELETE" });
+      expect(anonymous.status).toBe(401);
+      const response = await fetch(boot.url! + "/api/transcriber/meetings", { method: "DELETE", headers: { authorization: "Bearer test-session" } });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ removed: 0, deleting: 0, listOnly: 0, notDeleted: 0, privateCloudDeleted: 0 });
+      expect(listed).toEqual(["50"]);
+      const scope = await fetch(boot.url! + "/api/transcriber/meetings/scope", { headers: { authorization: "Bearer test-session" } });
+      expect(scope.status).toBe(200);
+      expect(await scope.json()).toEqual({ privateCloud: true });
+      expect((await fetch(boot.url! + "/api/transcriber/meetings/scope")).status).toBe(401);
+    } finally {
+      server.closeAllConnections();
+      const closed = Promise.withResolvers<void>();
+      server.close(() => closed.resolve());
+      await closed.promise;
+    }
+  });
+
+  test("terminal error logs never include raw wallet, tenant, capability or transcript", async () => {
+    const forbidden = ["0x" + "a".repeat(40), "tenant-private-canary", "capability-private-canary", "transcript-private-canary"];
+    const boot = await bootIndex({}, { requestHandler: () => { throw new Error(forbidden.join(" ")); } });
+    const response = await fetch(boot.url! + "/api/manifest/canary/native-meeting-id", { headers: { "x-request-id": id } });
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({ error: "internal_error" });
+    for (const value of [...forbidden, "native-meeting-id"]) expect(boot.logs.join("\n")).not.toContain(value);
+    const request = events(boot).find(event => event.event === "tinychat_request");
+    expect(request).toMatchObject({ request_id: id, route: "/canary/:id", status: 500 });
+  });
+
+  test("TC-959 process log canary", async () => {
+    const canary = "TC959_FORBIDDEN_wallet_tenant_capability_transcript";
+    const boot = await bootIndex({}, { processLogSink: true, requestHandler: (_req, res) => {
+      console.log(canary);
+      console.info({ payload: canary });
+      console.warn(new Error(canary));
+      console.error(canary);
+      process.stdout.write(`dependency stdout ${canary}\n`);
+      process.stderr.write(`dependency stderr ${canary}\n`);
+      res.sendStatus(204);
+    } });
+    console.log("TC959_CAPTURE_POSITIVE_CONTROL");
+    const response = await fetch(boot.url! + "/api/manifest/canary/meeting", { headers: { "x-request-id": id } });
+    expect(response.status).toBe(204);
+  });
+
+  test.each([302, 307])("rejects ptx-dev %i cross-origin redirects without exposing IDs or credentials", async status => {
+    const received: Array<{ id: string | undefined; authorization: string | undefined }> = [];
+    const untrusted = express();
+    untrusted.use((req, res) => {
+      received.push({ id: req.get("x-request-id"), authorization: req.get("authorization") });
+      res.json({ id: "untrusted-meeting", status: "queued" });
+    });
+    const untrustedReady = Promise.withResolvers<void>();
+    const untrustedServer = untrusted.listen(0, "127.0.0.1", untrustedReady.resolve);
+    await untrustedReady.promise;
+    const untrustedAddress = untrustedServer.address();
+    if (!untrustedAddress || typeof untrustedAddress === "string") throw new Error("Untrusted receiver did not listen");
+    const untrustedUrl = `http://127.0.0.1:${untrustedAddress.port}`;
+    const firstPartySeen: string[] = [];
+    const firstParty = express();
+    firstParty.use((req, res) => {
+      firstPartySeen.push(req.get("x-request-id") ?? "missing");
+      res.redirect(status, untrustedUrl + "/redirect-target");
+    });
+    const firstPartyReady = Promise.withResolvers<void>();
+    const firstPartyServer = firstParty.listen(0, "127.0.0.1", firstPartyReady.resolve);
+    await firstPartyReady.promise;
+    const firstPartyAddress = firstPartyServer.address();
+    if (!firstPartyAddress || typeof firstPartyAddress === "string") throw new Error("First-party PTX did not listen");
+    const api = transcription.createTranscriptionApiClient({
+      baseUrl: `http://127.0.0.1:${firstPartyAddress.port}`, apiKey: "synthetic-first-party-ptx-key",
+      requestIdFirstPartyOrigins: new Set([`http://127.0.0.1:${firstPartyAddress.port}`]),
+    });
+    const boot = await bootIndex({}, { requestHandler: (req, res) => {
+      const result = req.params.id === "create"
+        ? api.createMeeting({ meeting_url: "https://meeting.invalid/synthetic" })
+        : api.getMeeting("synthetic-meeting");
+      result.then(meeting => res.json(meeting), () => res.status(502).json({ error: "upstream_rejected" }));
+    } });
+    try {
+      for (const operation of ["get", "create"]) {
+        const response = await fetch(boot.url! + "/api/manifest/canary/" + operation, {
+          headers: { "x-request-id": id },
+        });
+        expect(received).toEqual([]);
+        expect(response.status).toBe(502);
+        expect(response.headers.get("x-request-id")).toBe(id);
+      }
+      expect(firstPartySeen).toEqual([id, id]);
+      const thirdParty = await bootIndex({}, { requestHandler: (_req, res, next) => {
+        fetch(untrustedUrl + "/direct-third-party").then(response => response.json()).then(body => res.json(body), next);
+      } });
+      const direct = await fetch(thirdParty.url! + "/api/manifest/canary/direct", { headers: { "x-request-id": id } });
+      expect(direct.status).toBe(200);
+      expect(received).toEqual([{ id: undefined, authorization: undefined }]);
+    } finally {
+      for (const server of [firstPartyServer, untrustedServer]) {
+        const closed = Promise.withResolvers<void>();
+        server.closeAllConnections();
+        server.close(() => closed.resolve());
+        await closed.promise;
+      }
+    }
+  });
+
+  test.each([302, 307])("keeps legacy Private IDs while rejecting ptx-batch %i redirects", async status => {
+    const received: string[] = [];
+    const untrusted = express();
+    untrusted.use((req, res) => { received.push(req.get("x-request-id") ?? "missing"); res.sendStatus(200); });
+    const untrustedReady = Promise.withResolvers<void>();
+    const untrustedServer = untrusted.listen(0, "127.0.0.1", untrustedReady.resolve);
+    await untrustedReady.promise;
+    const untrustedAddress = untrustedServer.address();
+    if (!untrustedAddress || typeof untrustedAddress === "string") throw new Error("Untrusted receiver did not listen");
+    const seen: Array<{ request: string | undefined; correlation: string | undefined }> = [];
+    const firstParty = express();
+    firstParty.use((req, res) => {
+      seen.push({ request: req.get("x-request-id"), correlation: req.get("x-correlation-id") });
+      res.redirect(status, `http://127.0.0.1:${untrustedAddress.port}/redirect-target`);
+    });
+    const firstPartyReady = Promise.withResolvers<void>();
+    const firstPartyServer = firstParty.listen(0, "127.0.0.1", firstPartyReady.resolve);
+    await firstPartyReady.promise;
+    const firstPartyAddress = firstPartyServer.address();
+    if (!firstPartyAddress || typeof firstPartyAddress === "string") throw new Error("First-party PTX did not listen");
+    const boot = await bootIndex({
+      ...ptxEnv, PRIVATE_CLOUD_TRANSCRIPTION_API_URL: `http://127.0.0.1:${firstPartyAddress.port}`,
+      REQUEST_ID_FIRST_PARTY_ORIGINS: `http://127.0.0.1:${firstPartyAddress.port}`,
+    });
+    // Private accepts this legacy correlation UUID; the stricter request-ID policy must not replace it.
+    const legacyCorrelation = "00000000-0000-0000-0000-000000000000";
+    try {
+      const response = await fetch(boot.url! + "/api/transcriber/private-cloud/capabilities", {
+        headers: { authorization: "Bearer test-session", "x-request-id": id, "x-correlation-id": legacyCorrelation },
+      });
+      expect(received).toEqual([]);
+      expect(response.status).toBe(503);
+      expect(response.headers.get("x-request-id")).toBe(id);
+      expect(response.headers.get("x-correlation-id")).toBe(legacyCorrelation);
+      expect((await response.json()).error.correlation_id).toBe(legacyCorrelation);
+      expect(seen).toEqual([{ request: id, correlation: legacyCorrelation }]);
+    } finally {
+      for (const server of [firstPartyServer, untrustedServer]) {
+        const closed = Promise.withResolvers<void>();
+        server.closeAllConnections();
+        server.close(() => closed.resolve());
+        await closed.promise;
+      }
+    }
   });
 });

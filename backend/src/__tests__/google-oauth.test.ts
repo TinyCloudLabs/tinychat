@@ -16,10 +16,12 @@ import {
   GoogleOAuthError,
   googleMeetOAuthEnabled,
   googleOAuthConfigFromEnv,
+  validDesktopRedirectUri,
   type GoogleOAuthConfig,
   type GoogleOAuthPort,
   type GoogleTokenPayload,
 } from "../services/google-oauth.js";
+import { frontendOriginsFromEnv, HOME_WEB_ORIGIN, TINYCHAT_WEB_ORIGIN, TINYCLOUD_ONE_WEB_ORIGIN } from "../cors-origins.js";
 import {
   createGoogleOAuthRouter,
   encodeForScript,
@@ -115,15 +117,15 @@ describe("authorizeUrl", () => {
     expect(url.searchParams.get("code_challenge_method")).toBe("S256");
   });
 
-  test("requests the Meet, Drive metadata, and Docs read scopes", () => {
+  test("requests Meet/Drive/Docs scopes and OpenID account identity", () => {
     const scope = url.searchParams.get("scope") ?? "";
     expect(scope).toBe(
       "https://www.googleapis.com/auth/meetings.space.readonly " +
         "https://www.googleapis.com/auth/meetings.space.settings " +
         "https://www.googleapis.com/auth/drive.metadata.readonly " +
-        "https://www.googleapis.com/auth/documents.readonly",
+        "https://www.googleapis.com/auth/documents.readonly openid",
     );
-    expect(scope.split(" ")).toHaveLength(4);
+    expect(scope.split(" ")).toHaveLength(5);
     expect(scope).not.toContain("calendar");
   });
 
@@ -179,12 +181,37 @@ describe("exchangeCode", () => {
         id_token: "fake.id.token",
       }),
     );
-    const client = new GoogleOAuthClient(TEST_CONFIG, { fetchImpl: impl });
+    const client = new GoogleOAuthClient(TEST_CONFIG, { fetchImpl: impl, verifyIdToken: async () => ({ sub: "verified-subject" }) });
     const payload = await client.exchangeCode({
       code: "fake-auth-code",
       verifier: VERIFIER,
     });
-    expect(Object.keys(payload)).toEqual(["access_token"]);
+    expect(payload).toEqual({ access_token: "fake-access-token", subject: "verified-subject" });
+    expect(payload).not.toHaveProperty("id_token");
+  });
+});
+
+describe("TC-1100 verified connector identity", () => {
+  test("a non-autojoin exchange verifies OIDC identity with its client audience", async () => {
+    const upstream = recordingFetch(() => jsonResponse(200, { access_token: "synthetic-access", id_token: "synthetic-id-token" }));
+    const calls: string[][] = [];
+    const client = new GoogleOAuthClient(TEST_CONFIG, { fetchImpl: upstream.impl, verifyIdToken: async (...args) => {
+      calls.push(args); return { sub: "verified-google-subject" };
+    } });
+    expect(await client.exchangeCode({ code: "code", verifier: VERIFIER })).toEqual({ access_token: "synthetic-access", subject: "verified-google-subject" });
+    expect(calls).toEqual([["synthetic-id-token", CLIENT_ID]]);
+  });
+
+  test("a legacy exchange without an ID token cannot invent a subject", async () => {
+    const upstream = recordingFetch(() => jsonResponse(200, { access_token: "synthetic-access", subject: "unverified-subject" }));
+    const client = new GoogleOAuthClient(TEST_CONFIG, { fetchImpl: upstream.impl });
+    expect(await client.exchangeCode({ code: "code", verifier: VERIFIER })).toEqual({ access_token: "synthetic-access" });
+  });
+
+  test("an unverifiable connector ID token succeeds with an unknown subject", async () => {
+    const upstream = recordingFetch(() => jsonResponse(200, { access_token: "synthetic-access", id_token: "synthetic-id-token" }));
+    const client = new GoogleOAuthClient(TEST_CONFIG, { fetchImpl: upstream.impl, verifyIdToken: async () => { throw new Error("Synthetic verification failure"); } });
+    expect(await client.exchangeCode({ code: "code", verifier: VERIFIER })).toEqual({ access_token: "synthetic-access" });
   });
 });
 
@@ -491,6 +518,87 @@ afterEach(async () => {
   await new Promise<void>((resolve) => server.close(() => resolve()));
 });
 
+describe("desktop loopback OAuth", () => {
+  test("Desktop token exchange sends PKCE and the exact loopback URI without a web client secret", async () => {
+    let posted: URLSearchParams | null = null;
+    const client = new GoogleOAuthClient({ ...TEST_CONFIG, clientId: "desktop-client.apps.googleusercontent.com",
+      clientSecret: "", redirectUri: "http://127.0.0.1:49152/oauth/google" }, {
+      fetchImpl: (async (_url, init) => {
+        posted = new URLSearchParams(init?.body as string);
+        return new Response(JSON.stringify({ access_token: "fake-access-token", refresh_token: "fake-refresh-token" }),
+          { status: 200, headers: { "Content-Type": "application/json" } });
+      }) as typeof fetch,
+    });
+    await client.exchangeCode({ code: "fake-code", verifier: VERIFIER });
+    expect(posted?.get("code_verifier")).toBe(VERIFIER);
+    expect(posted?.get("redirect_uri")).toBe("http://127.0.0.1:49152/oauth/google");
+    expect(posted?.has("client_secret")).toBe(false);
+  });
+
+  test("accepts only exact ephemeral 127.0.0.1 callback URLs", () => {
+    expect(validDesktopRedirectUri("http://127.0.0.1:49152/oauth/google")).toBe(true);
+    for (const uri of ["http://localhost:49152/oauth/google", "http://127.0.0.2:49152/oauth/google",
+      "http://127.0.0.1:49152/other", "http://127.0.0.1:49152/oauth/google?x=1",
+      "https://127.0.0.1:49152/oauth/google", "http://127.0.0.1/oauth/google"]) {
+      expect(validDesktopRedirectUri(uri)).toBe(false);
+    }
+  });
+
+  test("uses the Desktop client and exact redirect URI for start and exchange", async () => {
+    const desktop = new FakeOAuthPort();
+    const uris: string[] = [];
+    const app = express(); app.use(express.json());
+    app.use("/oauth", createGoogleOAuthRouter({ oauth: port, config: TEST_CONFIG, appOrigin: APP_ORIGIN,
+      desktopClientId: "desktop-client.apps.googleusercontent.com",
+      desktopOAuth: (uri) => { uris.push(uri); return desktop; },
+    }));
+    const listener = app.listen(0);
+    await new Promise<void>((resolve) => listener.once("listening", resolve));
+    const local = `http://127.0.0.1:${(listener.address() as AddressInfo).port}/oauth`;
+    const redirectUri = "http://127.0.0.1:49152/oauth/google";
+    try {
+      const started = await fetch(`${local}/desktop/start?${new URLSearchParams({ state: STATE, challenge: CHALLENGE, redirectUri })}`);
+      expect(started.status).toBe(200);
+      expect(desktop.authorizeCalls).toEqual([{ state: STATE, challenge: CHALLENGE }]);
+      const bad = await fetch(`${local}/desktop/start?${new URLSearchParams({ state: STATE, challenge: CHALLENGE, redirectUri: "http://evil.test/oauth/google" })}`);
+      expect(bad.status).toBe(400);
+      for (const tagged of ["home.abcdefghijklmnopqrstuvwx", `hometab.${Buffer.from("/chat").toString("base64url")}.abcdefghijklmnopqrstuvwx`]) {
+        const refused = await fetch(`${local}/desktop/start?${new URLSearchParams({ state: tagged, challenge: CHALLENGE, redirectUri })}`);
+        expect(refused.status).toBe(400);
+      }
+      const exchanged = await fetch(`${local}/exchange`, { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code: "fake-code", verifier: VERIFIER, desktopRedirectUri: redirectUri }) });
+      expect(exchanged.status).toBe(200);
+      expect(desktop.exchangeCalls).toEqual([{ code: "fake-code", verifier: VERIFIER }]);
+      expect(uris).toEqual([redirectUri, redirectUri]);
+      expect(port.exchangeCalls).toEqual([]);
+      const badVerifier = await fetch(`${local}/exchange`, { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code: "fake-code", verifier: "short", desktopRedirectUri: redirectUri }) });
+      expect(badVerifier.status).toBe(400);
+      const refreshed = await fetch(`${local}/refresh`, { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ refreshToken: "desktop-refresh", client: "desktop" }) });
+      expect(refreshed.status).toBe(200);
+      expect(desktop.refreshCalls).toEqual(["desktop-refresh"]);
+      expect(port.refreshCalls).toEqual([]);
+    } finally { await new Promise<void>((resolve) => listener.close(() => resolve())); }
+  });
+});
+
+describe("same-tab browser return", () => {
+  test("redirects only to the pinned app origin and path", async () => {
+    const state = `tab.${Buffer.from("/connectors").toString("base64url")}.abcdefghijklmnopqrstuvwx`;
+    const started = await fetch(`${base}/start?${new URLSearchParams({ state, challenge: CHALLENGE })}`, { redirect: "manual" });
+    expect(started.status).toBe(302);
+    const returned = await fetch(`${base}/callback?${new URLSearchParams({ state, code: "fake-code" })}`, { redirect: "manual" });
+    expect(returned.status).toBe(302);
+    const target = new URL(returned.headers.get("location")!);
+    expect(target.origin).toBe(APP_ORIGIN);
+    expect(target.pathname).toBe("/connectors");
+    expect(target.searchParams.get("google_oauth_code")).toBe("fake-code");
+    expect(target.searchParams.get("state")).toBe(state);
+  });
+});
+
 describe("GET /start", () => {
   test("302s to Google with the minted params", async () => {
     const response = await fetch(
@@ -675,6 +783,216 @@ describe("oauthReturnClient", () => {
       expect(oauthReturnClient(state)).toBeNull();
     });
   }
+});
+
+describe("Home site return", () => {
+  const NONCE = "abcdefghijklmnopqrstuvwx";
+  const homeState = `home.${NONCE}`;
+  const homeTabState = (path: string) => `hometab.${Buffer.from(path).toString("base64url")}.${NONCE}`;
+  const start = (state: string) =>
+    fetch(`${base}/start?${new URLSearchParams({ state, challenge: CHALLENGE })}`, { redirect: "manual" });
+  const callback = (state: string, extra: Record<string, string> = { code: "fake-code" }) =>
+    fetch(`${base}/callback?${new URLSearchParams({ state, ...extra })}`, { redirect: "manual" });
+
+  test("a `home.` popup return postMessages the Home origin only", async () => {
+    expect((await start(homeState)).status).toBe(302);
+    const response = await callback(homeState);
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    expect(html).toContain(`"${HOME_WEB_ORIGIN}"`);
+    expect(html).not.toContain(APP_ORIGIN);
+    expect(html).toContain(`"state":"${homeState}"`);
+    expect(html).toContain('"code":"fake-code"');
+  });
+
+  test("a `home.` return without a code postMessages nothing", async () => {
+    const response = await callback(homeState, { error: "access_denied" });
+    expect(response.status).toBe(400);
+    const html = await response.text();
+    expect(html).not.toContain("postMessage");
+    expect(html).not.toContain(HOME_WEB_ORIGIN);
+  });
+
+  test("a `hometab.` return redirects to the Home origin and the signed path", async () => {
+    const state = homeTabState("/chat/connectors");
+    expect((await start(state)).status).toBe(302);
+    const returned = await callback(state);
+    expect(returned.status).toBe(302);
+    const target = new URL(returned.headers.get("location")!);
+    expect(target.origin).toBe(HOME_WEB_ORIGIN);
+    expect(target.pathname).toBe("/chat/connectors");
+    expect(target.searchParams.get("google_oauth_code")).toBe("fake-code");
+    expect(target.searchParams.get("state")).toBe(state);
+  });
+
+  test("a denied `hometab.` return carries the constant error back to the Home origin", async () => {
+    const state = homeTabState("/chat/connectors");
+    const returned = await callback(state, { error: "access_denied" });
+    expect(returned.status).toBe(302);
+    const target = new URL(returned.headers.get("location")!);
+    expect(target.origin).toBe(HOME_WEB_ORIGIN);
+    expect(target.searchParams.get("google_oauth_error")).toBe("not_completed");
+    expect(target.searchParams.has("google_oauth_code")).toBe(false);
+  });
+
+  for (const [label, state] of [
+    ["a protocol-relative path", homeTabState("//evil.example/x")],
+    ["a path without a leading slash", homeTabState("chat")],
+    ["a path with a query", homeTabState("/chat?x=1")],
+    ["a path with a fragment", homeTabState("/chat#x")],
+    ["a path with a backslash", homeTabState("/\\evil.example")],
+    ["an over-long path", homeTabState(`/${"a".repeat(256)}`)],
+    ["a path with a header-injection newline", homeTabState("/chat\r\nSet-Cookie:x")],
+    ["a path with a trailing newline", homeTabState("/chat\n")],
+    ["a short nonce", `hometab.${Buffer.from("/chat").toString("base64url")}.abc`],
+    ["a short home nonce", "home.abc"],
+    ["a home nonce outside base64url", `home.${NONCE}~`],
+    ["a doubled home tag", `home.home.${NONCE}`],
+    ["a look-alike tag", `Home.${NONCE}`],
+    ["a prefixed tag", `xhome.${NONCE}`],
+  ] as const) {
+    test(`refuses ${label}`, async () => {
+      // State is shape-valid (pattern allows `.`, `~`), so only the tag grammar can refuse it.
+      expect(oauthReturnClient(state)).toBeNull();
+      expect((await start(state)).status).toBe(400);
+      const returned = await callback(state);
+      expect(returned.status).toBe(400);
+      expect(returned.headers.get("location")).toBeNull();
+    });
+  }
+
+  test("untagged and `tab.` flows keep the configured app origin", async () => {
+    const untagged = await (await callback(STATE)).text();
+    expect(untagged).toContain(`"${APP_ORIGIN}"`);
+    expect(untagged).not.toContain(HOME_WEB_ORIGIN);
+    const tab = await callback(`tab.${Buffer.from("/connectors").toString("base64url")}.${NONCE}`);
+    expect(new URL(tab.headers.get("location")!).origin).toBe(APP_ORIGIN);
+  });
+});
+
+describe("both web origins (FRONTEND_URL on either site)", () => {
+  const NONCE = "abcdefghijklmnopqrstuvwx";
+  const tabState = (tag: "tab" | "hometab" | "onetab", path: string) => `${tag}.${Buffer.from(path).toString("base64url")}.${NONCE}`;
+
+  async function withRouter(
+    frontendUrl: string,
+    env: NodeJS.ProcessEnv,
+    run: (flow: {
+      start: (state: string) => Promise<Response>;
+      callback: (state: string, extra?: Record<string, string>) => Promise<Response>;
+    }) => Promise<void>,
+  ): Promise<void> {
+    const app = express();
+    app.use("/oauth", createGoogleOAuthRouter({
+      oauth: new FakeOAuthPort(), config: TEST_CONFIG, appOrigin: frontendUrl,
+      frontendOrigins: frontendOriginsFromEnv(frontendUrl, env),
+    }));
+    const listener = app.listen(0);
+    await new Promise<void>((resolve) => listener.once("listening", resolve));
+    const url = `http://127.0.0.1:${(listener.address() as AddressInfo).port}/oauth`;
+    try {
+      await run({
+        start: (state) => fetch(`${url}/start?${new URLSearchParams({ state, challenge: CHALLENGE })}`, { redirect: "manual" }),
+        callback: (state, extra = { code: "fake-code" }) =>
+          fetch(`${url}/callback?${new URLSearchParams({ state, ...extra })}`, { redirect: "manual" }),
+      });
+    } finally {
+      await new Promise<void>((resolve) => listener.close(() => resolve()));
+    }
+  }
+
+  for (const frontendUrl of [TINYCHAT_WEB_ORIGIN, HOME_WEB_ORIGIN]) {
+    test(`with FRONTEND_URL=${frontendUrl}, a tinycloud.chat flow returns to tinycloud.chat`, async () => {
+      await withRouter(frontendUrl, {}, async ({ start, callback }) => {
+        expect((await start(NONCE)).status).toBe(302);
+        const popup = await callback(NONCE);
+        expect(popup.status).toBe(200);
+        const html = await popup.text();
+        expect(html).toContain(`postMessage(payload, "${TINYCHAT_WEB_ORIGIN}")`);
+        expect(html).not.toContain(HOME_WEB_ORIGIN);
+        const state = tabState("tab", "/chat/connectors");
+        expect((await start(state)).status).toBe(302);
+        const tab = new URL((await callback(state)).headers.get("location")!);
+        expect(tab.origin).toBe(TINYCHAT_WEB_ORIGIN);
+        expect(tab.pathname).toBe("/chat/connectors");
+        expect(tab.searchParams.get("google_oauth_code")).toBe("fake-code");
+      });
+    });
+
+    test(`with FRONTEND_URL=${frontendUrl}, a home.tinycloud.xyz flow returns to home.tinycloud.xyz`, async () => {
+      await withRouter(frontendUrl, {}, async ({ start, callback }) => {
+        expect((await start(`home.${NONCE}`)).status).toBe(302);
+        const html = await (await callback(`home.${NONCE}`)).text();
+        expect(html).toContain(`postMessage(payload, "${HOME_WEB_ORIGIN}")`);
+        expect(html).not.toContain(TINYCHAT_WEB_ORIGIN);
+        const state = tabState("hometab", "/chat/connectors");
+        expect((await start(state)).status).toBe(302);
+        expect(new URL((await callback(state)).headers.get("location")!).origin).toBe(HOME_WEB_ORIGIN);
+      });
+    });
+  }
+
+  for (const frontendUrl of [TINYCHAT_WEB_ORIGIN, HOME_WEB_ORIGIN, TINYCLOUD_ONE_WEB_ORIGIN]) {
+    test(`with FRONTEND_URL=${frontendUrl}, a tinycloud.one flow returns to tinycloud.one`, async () => {
+      await withRouter(frontendUrl, {}, async ({ start, callback }) => {
+        expect((await start(`one.${NONCE}`)).status).toBe(302);
+        const html = await (await callback(`one.${NONCE}`)).text();
+        expect(html).toContain(`postMessage(payload, "${TINYCLOUD_ONE_WEB_ORIGIN}")`);
+        expect(html).not.toContain(HOME_WEB_ORIGIN);
+        expect(html).not.toContain(TINYCHAT_WEB_ORIGIN);
+        const state = tabState("onetab", "/chat/connectors");
+        expect((await start(state)).status).toBe(302);
+        const tab = new URL((await callback(state)).headers.get("location")!);
+        expect(tab.origin).toBe(TINYCLOUD_ONE_WEB_ORIGIN);
+        expect(tab.pathname).toBe("/chat/connectors");
+        expect(tab.searchParams.get("google_oauth_code")).toBe("fake-code");
+      });
+    });
+  }
+
+  test("a tinycloud.one flow is refused when its origin is not allowlisted, and malformed one tags are refused", async () => {
+    await withRouter(HOME_WEB_ORIGIN, { FRONTEND_ORIGINS: HOME_WEB_ORIGIN }, async ({ start, callback }) => {
+      for (const state of [`one.${NONCE}`, tabState("onetab", "/chat")]) {
+        expect((await start(state)).status).toBe(400);
+        const returned = await callback(state);
+        expect(returned.status).toBe(400);
+        expect(returned.headers.get("location")).toBeNull();
+        expect(await returned.text()).not.toContain("postMessage");
+      }
+    });
+    await withRouter(TINYCHAT_WEB_ORIGIN, {}, async ({ start, callback }) => {
+      for (const state of ["one.short", `onetab.${Buffer.from("//evil.example").toString("base64url")}.${NONCE}`, `onetab.${Buffer.from("/chat?x=1").toString("base64url")}.${NONCE}`, `oneX.${NONCE}`]) {
+        expect((await start(state)).status).toBe(400);
+        const returned = await callback(state);
+        expect(returned.status).toBe(400);
+        expect(returned.headers.get("location")).toBeNull();
+        expect(await returned.text()).not.toContain("postMessage");
+      }
+    });
+  });
+
+  test("an origin left out of FRONTEND_ORIGINS gets no flow and no code", async () => {
+    await withRouter(HOME_WEB_ORIGIN, { FRONTEND_ORIGINS: HOME_WEB_ORIGIN }, async ({ start, callback }) => {
+      for (const state of [NONCE, tabState("tab", "/chat")]) {
+        expect((await start(state)).status).toBe(400);
+        const returned = await callback(state);
+        expect(returned.status).toBe(400);
+        expect(returned.headers.get("location")).toBeNull();
+        expect(await returned.text()).not.toContain("postMessage");
+      }
+      expect((await start(`home.${NONCE}`)).status).toBe(302);
+    });
+    await withRouter(TINYCHAT_WEB_ORIGIN, { FRONTEND_ORIGINS: TINYCHAT_WEB_ORIGIN }, async ({ start, callback }) => {
+      for (const state of [`home.${NONCE}`, tabState("hometab", "/chat")]) {
+        expect((await start(state)).status).toBe(400);
+        const returned = await callback(state);
+        expect(returned.status).toBe(400);
+        expect(returned.headers.get("location")).toBeNull();
+        expect(await returned.text()).not.toContain("postMessage");
+      }
+      expect((await start(NONCE)).status).toBe(302);
+    });
+  });
 });
 
 describe("GET /start (native)", () => {
@@ -1105,7 +1423,7 @@ describe("no persistence", () => {
   test("the allowlist is exactly what these two modules may import", () => {
     expect(importSpecifiers("services/google-oauth.ts")).toEqual(["google-auth-library"]);
     expect(new Set(importSpecifiers("routes/google-oauth.ts"))).toEqual(
-      new Set(["node:crypto", "express", "../services/google-oauth.js", "../services/calendar-autojoin-connection.js"]),
+      new Set(["node:crypto", "express", "../cors-origins.js", "../services/google-oauth.js", "../services/calendar-autojoin-connection.js"]),
     );
   });
 
@@ -1144,13 +1462,23 @@ afterAll(() => {
 
 
 describe("autojoin OIDC exchange", () => {
-  test("only autojoin adds Calendar, openid, incremental authorization and transaction nonce", () => {
+  test("autojoin asks for exactly Calendar events, openid and email, and never include_granted_scopes", () => {
     const client = new GoogleOAuthClient(TEST_CONFIG);
     const url = new URL(client.authorizeUrl({ state: STATE, challenge: CHALLENGE, purpose: "autojoin", nonce: "transaction-nonce" }));
-    expect(url.searchParams.get("scope")).toBe(GOOGLE_AUTOJOIN_SCOPES);
-    expect(url.searchParams.get("include_granted_scopes")).toBe("true");
+    expect(url.searchParams.get("scope")!.split(" ").sort()).toEqual([
+      "email", "https://www.googleapis.com/auth/calendar.events.owned.readonly", "openid",
+    ]);
+    // With it Google returns the union of every earlier grant, so the held token would carry Meet/Drive/Docs.
+    expect(url.searchParams.has("include_granted_scopes")).toBe(false);
     expect(url.searchParams.get("nonce")).toBe("transaction-nonce");
-    expect(new URL(client.authorizeUrl({ state: STATE, challenge: CHALLENGE })).searchParams.has("nonce")).toBe(false);
+  });
+
+  test("the Meet authorize URL is unchanged: Meet scopes plus openid, no nonce, no incremental authorization", () => {
+    const client = new GoogleOAuthClient(TEST_CONFIG);
+    const url = new URL(client.authorizeUrl({ state: STATE, challenge: CHALLENGE }));
+    expect(url.searchParams.get("scope")).toBe(`${GOOGLE_MEET_SCOPES} openid`);
+    expect(url.searchParams.has("nonce")).toBe(false);
+    expect(url.searchParams.has("include_granted_scopes")).toBe(false);
   });
 
   test("validates identity against configured audience and returns only the verified subject internally", async () => {

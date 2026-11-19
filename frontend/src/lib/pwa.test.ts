@@ -59,18 +59,28 @@ describe("serviceWorkerDecision", () => {
 describe("PWA build config", () => {
   const config = readFileSync(path.join(import.meta.dir, "../../vite.config.ts"), "utf8");
 
-  test("the worker caches only the notes renderer's WASM at runtime: API and cross-origin traffic stays network-only", () => {
+  test("the worker caches only same-origin content-hashed chunks at runtime (notes WASM, replication chunks): API and cross-origin traffic stays network-only", () => {
     const rules = config.match(/runtimeCaching: \[([\s\S]*?)\n {8}\],/)![1];
-    expect(rules.match(/urlPattern/g)).toHaveLength(1);
-    expect(rules).toContain("sameOrigin &&");
+    expect(rules.match(/urlPattern/g)).toHaveLength(2);
+    expect(rules.match(/sameOrigin &&/g)).toHaveLength(2);
     expect(rules).toContain("franken_markdown_bg");
+    expect(rules).toContain("kv-storage|replica|profile-gate");
     expect(rules).toContain('handler: "CacheFirst"');
     expect(config).toContain('navigateFallback: "index.html"');
     expect(config).toContain("navigateFallbackDenylist: [/^\\/agents(?:\\/|$)/, /^\\/api(?:\\/|$)/]");
   });
 
+  test("the replication chunks (2.2 MB worker) are not precached: a flag-OFF install never downloads them", () => {
+    expect(config).toMatch(/globIgnores: \[[^\]]*"assets\/kv-storage\*\.js"[^\]]*"assets\/replica-\*\.js"[^\]]*"assets\/profile-gate-\*\.js"[^\]]*\]/);
+  });
+
   test("the 7.7 MB notes renderer WASM is not precached: it is fetched on first Preview, never at install", () => {
     expect(config).toMatch(/globIgnores: \[[^\]]*"\*\*\/franken_markdown_bg\*\.wasm"[^\]]*\]/);
+  });
+
+  test("the TinyCloud SDK's WASM (a separate asset, TC-2882) is precached: an offline launch can't start the SDK without it", () => {
+    expect(config).toMatch(/globPatterns: \[[^\]]*wasm[^\]]*\]/);
+    expect(config.match(/globIgnores: \[([^\]]*)\]/)![1]).not.toContain("tinycloud_web_sdk_rs_bg");
   });
 
   test("an update waits for the user instead of swapping the shell under the page", () => {

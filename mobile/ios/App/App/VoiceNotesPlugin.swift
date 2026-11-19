@@ -11,9 +11,9 @@ public final class VoiceNotesPlugin: CAPPlugin, CAPBridgedPlugin, URLSessionData
     public let identifier = "VoiceNotesPlugin"
     public let jsName = "VoiceNotes"
     public let pluginMethods: [CAPPluginMethod] = [
-        "start", "stop", "status", "readAudioChunk", "deleteAudio", "listPending",
+        "start", "stop", "status", "readAudioChunk", "deleteAudio", "evictCachedAudio", "listPending",
         "pause", "resume", "discard", "setRecordingOptions", "getCaptureDefaults",
-        "setCaptureDefaults", "claim", "updateLedger", "localAudioUrl", "audioMetadata", "uploadAudio", "cancelAudioUpload", "putTranscript",
+        "setCaptureDefaults", "claim", "updateLedger", "localAudioUrl", "localAudioSize", "audioMetadata", "uploadAudio", "cancelAudioUpload", "putTranscript",
         "getTranscript", "listInputs", "selectInput", "listQuarantine",
         "deleteQuarantined", "listOutbox", "completeOutbox", "setAccountState",
         "beginRemoteOp", "recordRemoteResult", "retryRecovery", "discardFailedRecording",
@@ -55,9 +55,10 @@ public final class VoiceNotesPlugin: CAPPlugin, CAPBridgedPlugin, URLSessionData
                 guard let self else { call.reject("Capture plugin was released", "native_error"); return }
                 guard granted else { call.reject("Microphone permission denied", "permission_denied"); return }
                 let current = self.capture.defaults().options
-                let override = call.getString("transcriber") != nil || call.getBool("identifySpeakers") != nil
+                let override = call.getString("transcriber") != nil || call.getBool("identifySpeakers") != nil || call.getBool("uploadAudio") != nil
                     ? CaptureOptions(transcriber: call.getString("transcriber") ?? current.transcriber,
-                                     identifySpeakers: call.getBool("identifySpeakers") ?? current.identifySpeakers) : nil
+                                     identifySpeakers: call.getBool("identifySpeakers") ?? current.identifySpeakers,
+                                     uploadAudio: call.getBool("uploadAudio") ?? false) : nil
                 do { call.resolve(try self.capture.start(requestedLimitMs: requestedLimit.map(Int64.init),
                                                          override: override)) }
                 catch { self.reject(call, error) }
@@ -149,6 +150,17 @@ public final class VoiceNotesPlugin: CAPPlugin, CAPBridgedPlugin, URLSessionData
         }
     }
 
+    // Cache clear affects downloaded playback blobs only; RecordingLibrary rejects local-source eviction.
+    @objc func evictCachedAudio(_ call: CAPPluginCall) {
+        guard let id = call.getString("id"), RecordingLibrary.validID(id) else {
+            call.reject("A valid id is required", "invalid_argument"); return
+        }
+        DispatchQueue.global(qos: .userInitiated).async {
+            do { try self.capture.library.evictCachedAudio(id); call.resolve() }
+            catch { self.reject(call, error) }
+        }
+    }
+
     @objc func listPending(_ call: CAPPluginCall) {
         DispatchQueue.global(qos: .userInitiated).async {
             do {
@@ -163,7 +175,8 @@ public final class VoiceNotesPlugin: CAPPlugin, CAPBridgedPlugin, URLSessionData
         DispatchQueue.main.async {
             let old = self.capture.status()["options"] as? [String: Any] ?? [:]
             let changed = CaptureOptions(transcriber: call.getString("transcriber") ?? old["transcriber"] as? String ?? "on-device",
-                                         identifySpeakers: call.getBool("identifySpeakers") ?? old["identifySpeakers"] as? Bool ?? false)
+                                         identifySpeakers: call.getBool("identifySpeakers") ?? old["identifySpeakers"] as? Bool ?? false,
+                                         uploadAudio: old["uploadAudio"] as? Bool)
             do { try self.capture.setRecordingOptions(changed); call.resolve() }
             catch { self.reject(call, error) }
         }
@@ -174,7 +187,8 @@ public final class VoiceNotesPlugin: CAPPlugin, CAPBridgedPlugin, URLSessionData
             let state = try capture.accountState()
             call.resolve(["status": state.status, "accountDid": state.accountDid as Any? ?? NSNull(),
                           "transitionGen": state.transitionGen, "transcriber": state.options.transcriber,
-                          "identifySpeakers": state.options.identifySpeakers])
+                          "identifySpeakers": state.options.identifySpeakers,
+                          "uploadAudio": state.options.uploadAudio ?? false])
         } catch { reject(call, error) }
     }
 
@@ -244,7 +258,8 @@ public final class VoiceNotesPlugin: CAPPlugin, CAPBridgedPlugin, URLSessionData
                 let current = self.capture.defaults()
                 let next = CaptureDefaults(accountDid: call.getString("accountDid"), transitionGen: Int64(gen),
                                            transcriber: call.getString("transcriber") ?? current.transcriber,
-                                           identifySpeakers: call.getBool("identifySpeakers") ?? current.identifySpeakers)
+                                           identifySpeakers: call.getBool("identifySpeakers") ?? current.identifySpeakers,
+                                           uploadAudio: call.getBool("uploadAudio") ?? current.uploadAudio ?? false)
                 call.resolve(["claimed": try self.capture.setDefaults(next)])
             } catch { self.reject(call, error) }
         }
@@ -279,6 +294,20 @@ public final class VoiceNotesPlugin: CAPPlugin, CAPBridgedPlugin, URLSessionData
         }
         do { call.resolve(["url": try capture.library.localAudioURL(id).absoluteString]) }
         catch { reject(call, error) }
+    }
+
+    @objc func localAudioSize(_ call: CAPPluginCall) {
+        guard let id = call.getString("id"), RecordingLibrary.validID(id) else {
+            call.reject("A valid id is required", "invalid_argument"); return
+        }
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let url = try self.capture.library.localAudioURL(id)
+                let size = (try FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.intValue ?? 0
+                call.resolve(["size": size])
+            } catch CaptureError.notFound { call.resolve(["size": 0]) }
+            catch { self.reject(call, error) }
+        }
     }
 
     @objc func audioMetadata(_ call: CAPPluginCall) {

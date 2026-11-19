@@ -1,6 +1,6 @@
 # Retrieval contract v1
 
-Invoke the helper relative to this installed skill. Each command requires the same four context flags: `--profile NAME --host URL --space NAME_OR_URI --owner did:pkh:eip155:CHAIN:ADDRESS`. `--tc PATH` selects a literal executable; otherwise the helper resolves `tc` through PATH. The helper canonicalizes a short space name to the explicitly selected owner's full space URI and validates CLI status before remote reads. Operation-local historical continuation validates saved evidence and binding instead; it is not a current remote access check. There is no default profile, host or owner fallback.
+Invoke the helper relative to this installed skill. Each command requires the same four context flags: `--profile NAME --host URL --space NAME_OR_URI --owner did:pkh:eip155:CHAIN:ADDRESS`. `--tc PATH` selects a literal executable; otherwise the helper runs `TC_BIN` if set, else the `tinycloud` that https://agents.tinycloud.xyz/onboarding installs in `~/.local/share/tinycloud/cli`, else `tinycloud` on the PATH, and never `tc`. With none of them it stops with `CLI_UNAVAILABLE`. The helper canonicalizes a short space name to the explicitly selected owner's full space URI and validates CLI status before remote reads. Operation-local historical continuation validates saved evidence and binding instead; it is not a current remote access check. There is no default profile, host or owner fallback.
 
 ## Commands
 
@@ -25,13 +25,19 @@ Follow a non-null `nextAction` by copying `{action:"next",operation:"recap",chun
 
 Cite delivered refs directly, for example `[recap/r7:120-196]`, checking each substantive point against its supporting text. Named attribution must match the speaker in every supporting span. Preserve unknown speakers; split named claims by speaker and identify multi-speaker synthesis. Questions, offers, preferences, proposals, agreements and commitments differ. Structurally valid refs do not establish semantic support. A narrow answer may use sufficient delivered spans while retaining partial coverage; a complete recap needs all chunks delivered intact.
 
+Lettered and numbered speaker labels apply within one note only. AssemblyAI's `Speaker A`/`Speaker B` (`provider` `assemblyai`) are assigned per note, so the same letter in another note may be a different person. A single-channel on-device voice note names its one speaker `Speaker 1`, an anonymous label that identifies no one, including the account owner. Such notes saved by earlier versions may show `You` or no speaker instead; neither identifies the account owner. Never link speakers across notes by such a label.
+
 The portable CLI is `node <pack>/scripts/consume.mjs`; use `--help` for matching actions and `--chunk`. There are no model-entered delivery receipts or citation-review commands. `status` is optional diagnostic inspection. If the client truncates a response, repair the loaded adapter/configuration and repeat that chunk; saved evidence is not a substitute for delivered text. Raw `retrieve.mjs` still supports specialized search and explicit diagnostics with verified context. If directly scripting those helpers, parse exact refs/cursors from saved JSON and pass literal subprocess argument arrays; never rebuild opaque values. That lower-level read path has a 24,000-byte adapter envelope and may split original records. It is not the normal installed workflow.
 
 ## Storage and source formats
 
-The database is `xyz.tinycloud.tinychat/connectors`, table `connector_meeting`. Legacy transcript bodies live at `xyz.tinycloud.tinychat/connectors/SOURCE/transcript/SOURCE_ID`. Supported sources are `fireflies`, `google-meet`, `tinycloud-transcriber`, `exo-local`, `exo-voice-note`, and `exo-upload`. Archived `exo-voice-note-dup` rows are storage duplicates: catalog queries filter them rather than report them as unsupported.
+The database is `xyz.tinycloud.tinychat/connectors`, table `connector_meeting`. Legacy transcript bodies live at `xyz.tinycloud.tinychat/connectors/SOURCE/transcript/SOURCE_ID`. Supported sources are `fireflies`, `google-meet`, `tinycloud-transcriber`, `exo-local`, `exo-voice-note`, `exo-upload`, and `exo-merged`. Archived `exo-voice-note-dup` rows are storage duplicates: catalog queries filter them rather than report them as unsupported.
+
+`exo-merged` is a combined meeting: one stitched transcript of two captures of the same meeting, with the same body format as any other source (speaker, `start_time` seconds, text). Its segments also carry `sources[]` naming the captures each line came from; the pack keeps the original `text`, speaker and timestamp and ignores that field. Cite it like any meeting. The captures a combined meeting was built from (listed in its `metadata.merge.members` as `source` + `source_id`) are not returned by `find`, `latest` or `search`, so one meeting is one record. A combined row whose metadata cannot be read as a combined meeting is itself left out and hides nothing. `read` of a reference obtained earlier still reads that exact record.
 
 For voice notes, `connector_meeting.source_id` is the canonical recording ID. A `voice_note_transcript` row is authoritative: use its CAS-winning `body_key` (ordered by revision, then hash) only for `outcome = transcribed`; `no_speech` means no transcript, even though its pointer names a stored `[]` body. Ignore the metadata mirrors `transcription_outcome` and `transcript_text` whenever a commit row exists. Never fall back to the plain key when the index row exists.
+
+Displayed `record` objects include nullable `engine`, `provider`, and `model`. For `exo-voice-note`, committed fields come from the same authoritative `voice_note_transcript` row that selects the CAS-winning body key. If there is no commit row, fields come from the selected legacy metadata winner's `transcription_engine`, `transcript_provider`, and `model`; unknown values are `null`. Non-voice-note records always report `null`. Provider values describe the processing boundary, not a provider guarantee: `tinycloud-private-transcription` indicates TinyCloud private-cloud transcription, `assemblyai` indicates third-party processing, and `on-device` indicates local processing. Engine/model values are identifiers supplied by the transcription path; don't infer privacy or quality from the model name alone.
 
 With no commit row or table, choose the legacy winner across live `exo-voice-note` and `exo-voice-note-dup` candidates satisfying `json_valid(metadata) AND transcription_outcome IS NOT NULL`, ordered by `transcribed_at DESC, id ASC`. TC-976's `pending`, `failed`, and `skipped` are stored outcomes, not transcripts; they still participate in winner ordering, so a newer failed row hides an older transcribed duplicate. `none` is the locator's synthetic no-commit result, not a stored outcome. Only a winner with `transcription_outcome = transcribed` is eligible. The metadata mirrors are written after a verified commit but remain non-authoritative.
 
@@ -72,8 +78,8 @@ The normal recap has one selected-body acquisition and no diagnostics probe. Exp
 
 | Code | Response |
 | --- | --- |
-| `AUTH_REQUIRED`, `AUTH_EXPIRED` | Complete or renew terminal consent for this existing identity. |
-| `PERMISSION_DENIED` | Inspect the selected grant's actual authority. |
+| `AUTH_REQUIRED`, `AUTH_EXPIRED` | Run onboarding again (https://agents.tinycloud.xyz/onboarding), then retry. |
+| `PERMISSION_DENIED` | Ask once for the missing access: run `setup.mjs authorize` and send the owner its OpenKey link. |
 | `AUTH_OR_PERMISSION` | Older CLI did not distinguish auth failure from denial; inspect both without assuming relogin. |
 | `OWNER_MISMATCH`, `CONTEXT_MISMATCH` | Stop and select the intended account/context; do not switch corpus silently. |
 | `SPACE_NOT_HOSTED` | Verify the explicit host and intended space. |

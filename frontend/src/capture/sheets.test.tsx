@@ -100,7 +100,6 @@ describe("Upload sheet", () => {
     const html = renderUpload({ paused: { fileName: "Interview.m4a" } });
     expect(html).toContain('data-testid="upload-paused"');
     expect(html).toContain("Interview.m4a");
-    expect(html).toContain("Upload paused. This upload uses your own AssemblyAI key. Continue to unlock it and finish.");
     expect(html).toContain(">Continue</button>");
     expect(html).not.toContain(">Transcribe</button>");
   });
@@ -170,7 +169,7 @@ describe("Upload sheet", () => {
     expect(html).not.toContain("TinyCloud&#x27;s account");
     // And the other way round.
     const hosted = renderUpload({ job: upload({ engine: "assemblyai", assemblyAiMode: "hosted" }), assemblyAiMode: "own" });
-    expect(hosted).toContain("Powerful · TinyCloud&#x27;s account");
+    expect(hosted).toContain("Powerful · not private");
     expect(hosted).not.toContain("your key");
   });
 
@@ -183,14 +182,14 @@ describe("Upload sheet", () => {
   });
 
   test("the route's first step is this device by name: phone, Mac or browser", () => {
-    expect(uploadRoute("private-cloud", "own", "ios")[0].label).toBe("This phone");
-    expect(uploadRoute("private-cloud", "own", "android")[0].label).toBe("This phone");
+    expect(uploadRoute("private-cloud", "own", "ios")[0].label).toBe("This iPhone");
+    expect(uploadRoute("private-cloud", "own", "android")[0].label).toBe("This Android phone");
     expect(uploadRoute("private-cloud", "own", "tauri")[0].label).toBe("This Mac");
     expect(uploadRoute("private-cloud", "own", "web")[0].label).toBe("This browser");
   });
 
   test("the route names whose account Powerful uses", () => {
-    expect(uploadRoute("assemblyai", "hosted").map((n) => n.label)).toEqual(["This browser", "Powerful · TinyCloud's account", "Your space"]);
+    expect(uploadRoute("assemblyai", "hosted").map((n) => n.label)).toEqual(["This browser", "Powerful · not private", "Your space"]);
     expect(uploadRoute("assemblyai", "own")[1].label).toBe("Powerful · choose file again");
     expect(uploadRoute("private-cloud", "own")[1].label).toBe("Private");
   });

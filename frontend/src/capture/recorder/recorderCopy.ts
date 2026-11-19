@@ -3,6 +3,7 @@
 // notes card has always used (`micStatusText`), moved here with it.
 
 import type { MicState, MicStateReason } from "@/lib/voiceNotes/nativeVoiceNotes";
+import { deviceName } from "@/lib/platform";
 import type { RecorderPhase } from "./recorderReducer";
 
 export function formatDuration(ms: number): string {
@@ -19,6 +20,41 @@ export function formatLimit(ms: number): string {
   if (ms >= 3_600_000 && ms % 3_600_000 === 0) return `${ms / 3_600_000}-hour`;
   return ms >= 60_000 && ms % 60_000 === 0 ? `${ms / 60_000}-minute` : `${Math.round(ms / 1000)}-second`;
 }
+
+/** "3 hours", "1 hour", "15 minutes": a limit as a duration in a sentence ("Recordings stop after 3 hours."). */
+export function formatLimitDuration(ms: number): string {
+  const plural = (count: number, unit: string) => `${count} ${unit}${count === 1 ? "" : "s"}`;
+  if (ms >= 3_600_000 && ms % 3_600_000 === 0) return plural(ms / 3_600_000, "hour");
+  return ms >= 60_000 && ms % 60_000 === 0 ? plural(ms / 60_000, "minute") : plural(Math.round(ms / 1000), "second");
+}
+
+export const AUTO_STOP_LABEL = "Stop recordings automatically";
+export const autoStopOnHint = (limitMs: number) => `Recordings stop after ${formatLimitDuration(limitMs)}.`;
+export const STOP_AFTER_LABEL = "Stop recording after";
+/** "Off" keeps only the 3-hour limit every recorder enforces, so it says so. */
+export const STOP_AFTER_OPTIONS: readonly { value: "15" | "30" | "60" | "120" | "off"; label: string }[] = [
+  { value: "15", label: "15 min" },
+  { value: "30", label: "30 min" },
+  { value: "60", label: "1 h" },
+  { value: "120", label: "2 h" },
+  { value: "off", label: "Off (3-hour limit)" },
+];
+export const STOP_AFTER_HINT = "New recordings stop by themselves after this long. A recording you extend while it's running can last up to 8 hours.";
+
+/** The time-limit controls under "Stops at …" while recording. */
+export const LIMIT_CONTROLS_LABEL = "Recording time limit";
+export const ADD_15_MIN = "+15 min";
+export const ADD_30_MIN = "+30 min";
+export const NO_LIMIT = "Up to 8 h";
+export const NO_LIMIT_HINT = "Removes the stop time for this recording. It runs until you stop it, for up to 8 hours.";
+export const LIMIT_CHANGE_FAILED = "The time limit could not be changed. The recording still stops at the time shown.";
+export const AUTO_STOP_OFF_HINT_PHONE = "The recording runs until you stop it, for up to 8 hours.";
+
+export const KEEP_RECORDING_TITLE = "Keep recording?";
+export const keepRecordingBody = (stopAt: string) => `This recording stops at ${stopAt} unless you keep going.`;
+export const KEEP_GOING = "Keep going";
+export const STOP_NOW = "Stop now";
+export const recordingContinuesUntil = (stopAt: string) => `Recording continues until ${stopAt}.`;
 
 export function limitNoticeText(maxDurationMs: number): string {
   return `Stopped at the ${formatLimit(maxDurationMs)} limit.`;
@@ -71,7 +107,7 @@ export function micStatusText(
   maxDurationMs?: number,
 ): string {
   if (phase === "starting") return "Starting the microphone…";
-  if (phase === "stopping" || phase === "saving") return "Saving on this phone…";
+  if (phase === "stopping" || phase === "saving") return `Saving on ${deviceName()}…`;
   if (phase !== "recording") return "Not recording. The microphone is off.";
   if (mic.state === "paused") return `Paused at ${formatDuration(elapsedMs)}. The microphone is off.`;
   if (mic.state === "interrupted") return interruptionText(mic.reason);
@@ -102,7 +138,7 @@ export function recorderStatusText(
   _savePercent: number | null,
 ): string {
   if (phase === "starting") return "Starting the microphone…";
-  if (phase === "stopping" || phase === "saving") return "Saving on this phone…";
+  if (phase === "stopping" || phase === "saving") return `Saving on ${deviceName()}…`;
   if (phase === "discarding") return "Discarding…";
   if (phase !== "recording") return "Not recording";
   if (mic.state === "paused") return "Paused · mic off";
@@ -140,11 +176,11 @@ export function clockTime(at: number): string {
   return new Date(at).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
 }
 
-export const RECEIPT_KEPT = "Kept on this phone";
+export const RECEIPT_KEPT = `Kept on ${deviceName()}`;
 export const FINALIZATION_PENDING =
-  "Kept on this phone. Exo will finish it automatically.";
-export const ISLAND_SAVED = "Saved on this phone";
-export const ISLAND_KEPT = "Kept on this phone";
+  `Kept on ${deviceName()}. TinyCloud One will finish it automatically.`;
+export const ISLAND_SAVED = `Saved on ${deviceName()}`;
+export const ISLAND_KEPT = `Kept on ${deviceName()}`;
 export const DISCARD_PROMPT = "Discard?";
 /** The question as a screen reader hears it. */
 export const DISCARD_PROMPT_SPOKEN = "Discard this recording?";

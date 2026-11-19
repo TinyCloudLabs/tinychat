@@ -15,16 +15,12 @@
 //      404 on one meeting is that meeting being gone, not the feature.
 
 import { describe, expect, test } from "bun:test";
+import { stubSdkDomGlobals } from "../../test/sdkDomGlobals";
 
 // `@tinyboilerplate/client` evaluates the TinyCloud web-sdk at module load,
-// which references DOM globals — stubbed before the dynamic import exactly as
-// webhooksApi.test.ts and billingApi.test.ts do.
-const g = globalThis as unknown as Record<string, unknown>;
-if (typeof g.HTMLElement === "undefined") g.HTMLElement = class {};
-if (typeof g.customElements === "undefined") {
-  g.customElements = { define() {}, get() {} };
-}
-if (typeof g.window === "undefined") g.window = g;
+// which references DOM globals. The helper stubs them only when absent and
+// restores them right after the imports below.
+const restoreSdkGlobals = stubSdkDomGlobals();
 
 const {
   CONNECTOR_MEETINGS_BASE_PATH,
@@ -35,6 +31,7 @@ const {
   initialMeetingsViewState,
   mergeMeetings,
 } = await import("./meetingsView");
+restoreSdkGlobals();
 
 type ConnectorMeetingMeta = import("./meetingsApi").ConnectorMeetingMeta;
 type ConnectorMeetingList = import("./meetingsApi").ConnectorMeetingList;

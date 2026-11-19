@@ -1,0 +1,86 @@
+import type { FeedCardState, FeedResponse, FeedResponseHandling, FeedResponsePayload } from "@tinycloud/sdk-services/feed";
+import { cardGroup, emptySitrepOwnerData, ownerThreadResponseKey, parseSitrepCardPayload, mergeSitrepStates, validateState, type GroupPriority, type SitrepOwnerData } from "@tinyboilerplate/core/feed/sitrep";
+import { addCanonicalOwnerEvent, combineOwnerData } from "./sitrepOwnerStore";
+import { homeGroupScope, ownerCardKey } from "./feedIdentity";
+import type { AgentRead } from "./feedRead";
+import type { HomeFeedEntry } from "./feedStoreTypes";
+import type { OwnerArchiveProjection } from "./sitrepArchiveStore";
+
+const TYPED_PAYLOADS = new Set(["sitrep.answer", "sitrep.claim", "sitrep.state", "sitrep.thread", "sitrep.note", "sitrep.hold-notice"]);
+/** A plain card's private payloads Home reads back: a post's answers. */
+const PLAIN_PAYLOADS = new Set(["feed.page"]);
+
+/**
+ * The agent's handling of each response, by responseId, from its agent's read. The card's newest answer or
+ * follow-up reuses the handling its state already holds. A response the agent has not handled yet has no key.
+ */
+function handlingOf(read: Pick<AgentRead, "handling">, state: FeedCardState, responses: readonly FeedResponse[]): Record<string, FeedResponseHandling> {
+  const handling: Record<string, FeedResponseHandling> = {};
+  for (const response of responses) {
+    if (state.response?.responseId === response.responseId && state.response.sequence === response.sequence) {
+      if (state.acknowledgement || state.outcome) handling[response.responseId] = { acknowledgement: state.acknowledgement, outcome: state.outcome };
+      continue;
+    }
+    const receipt = read.handling(response);
+    if (receipt) handling[response.responseId] = receipt;
+  }
+  return handling;
+}
+
+/**
+ * A card's owner history, from the payloads and handling its agent's read already holds. A plain card gets what
+ * the agent did with each response ("Received") and a post's answers; a typed card its full owner history.
+ */
+export function enrichTypedEntry(entry: HomeFeedEntry, read: Pick<AgentRead, "payload" | "handling">, history: readonly FeedResponse[], privateOwners: Record<string, SitrepOwnerData>, archives: OwnerArchiveProjection, groupPriorities: ReadonlyMap<string, GroupPriority>): HomeFeedEntry {
+  const typed = parseSitrepCardPayload(entry.state.card.payload?.sitrep);
+  if (!typed || typed.record.kind !== entry.state.card.kind) {
+    const responsePayloads: Record<string, FeedResponsePayload> = {};
+    for (const response of history) {
+      if (!PLAIN_PAYLOADS.has(response.payloadType ?? "")) continue;
+      const payload = read.payload(response);
+      if (payload) responsePayloads[response.responseId] = payload;
+    }
+    return { ...entry, responseHandling: handlingOf(read, entry.state, history), ...(Object.keys(responsePayloads).length ? { responsePayloads } : {}) };
+  }
+  const key = ownerCardKey(entry.source.sourceId, entry.state.card);
+  const privateOwner = privateOwners[key];
+  if (privateOwner?.states.some((state) => state.kind !== typed.record.kind || state.id !== typed.record.id) || (privateOwner?.groupPriority && Object.keys(privateOwner.groupPriority.groups).some((group) => group !== cardGroup(typed.record)))) throw new Error("Private owner state does not address its canonical typed card");
+  const archivedOwner = archives.owners.get(key);
+  const owner = combineOwnerData([archivedOwner ?? emptySitrepOwnerData(), privateOwner ?? emptySitrepOwnerData()]);
+  const relevant = history.filter((response) => response.cardId === entry.state.card.cardId && response.revision === entry.state.card.revision && response.issuanceId === entry.state.card.issuanceId);
+  const threadRoutes: NonNullable<HomeFeedEntry["threadRoutes"]> = { ...archives.threadRoutes.get(key) };
+  for (const response of relevant) {
+    if (TYPED_PAYLOADS.has(response.payloadType ?? "")) {
+      const payload = read.payload(response);
+      if (!payload) throw new Error("Typed response metadata has no durable private payload");
+      const decoded = addCanonicalOwnerEvent(owner, entry, response, payload);
+      if (decoded) {
+        const messageKey = ownerThreadResponseKey(decoded.message);
+        if (!Object.hasOwn(threadRoutes, messageKey)) {
+          if (!decoded.delivery) threadRoutes[messageKey] = { kind: "publisher" };
+          else {
+            const approved = archives.routes.get(key)?.receiptRecipients ?? [];
+            const unresolved = decoded.delivery.targets.filter((target) => !approved.some((recipient) => recipient.recipientKey === target.recipientKey && recipient.runtimeTarget?.agentId === target.agentId && recipient.runtimeTarget.provider === target.provider)).map((target) => target.recipientKey);
+            threadRoutes[messageKey] = unresolved.length ? { kind: "held", unresolved } : { kind: "recipients", delivery: decoded.delivery };
+          }
+        }
+      }
+    }
+  }
+  const handling = handlingOf(read, entry.state, relevant);
+  owner.states = mergeSitrepStates(owner.states, "provided");
+  const previous = owner.states.find((state) => state.kind === typed.record.kind && state.id === typed.record.id);
+  const snoozes = [...(previous?.snoozes ?? []), ...(entry.viewEvents ?? []).flatMap((event) => event.kind === "snoozed" && event.snoozedUntil ? [{ at: event.createdAt, until: event.snoozedUntil }] : [])];
+  const uniqueSnoozes = [...new Map(snoozes.map((snooze) => [`${snooze.at}:${snooze.until}`, snooze])).values()].sort((a, b) => a.at.localeCompare(b.at)).slice(-20);
+  const hasLiveSnooze = entry.viewEvents?.some((event) => event.kind === "snoozed");
+  if (previous || entry.view.seenAt || hasLiveSnooze) {
+    const state = validateState({ kind: typed.record.kind, id: typed.record.id, steps: {}, ...previous, ...(entry.view.seenAt ? { seenAt: entry.view.seenAt } : {}), ...(hasLiveSnooze ? { snoozedUntil: entry.view.snoozedUntil ?? null } : {}), ...(uniqueSnoozes.length ? { snoozes: uniqueSnoozes } : {}), updatedAt: previous?.updatedAt ?? entry.view.seenAt ?? entry.state.card.createdAt });
+    if (!state.ok) throw new Error("Invalid typed owner view history");
+    owner.states = [...owner.states.filter((old) => old.kind !== typed.record.kind || old.id !== typed.record.id), state.value];
+  }
+  const completeOwner = combineOwnerData([owner]);
+  const privateGroupPriority = groupPriorities.get(homeGroupScope(entry.source.sourceId, archives.scopes.get(key)));
+  const groupPriority = privateGroupPriority ?? archivedOwner?.groupPriority;
+  if (groupPriority) completeOwner.groupPriority = { groups: { ...archivedOwner?.groupPriority?.groups, ...privateGroupPriority?.groups }, updatedAt: groupPriority.updatedAt };
+  return { ...entry, responses: [...relevant], owner: completeOwner, responseHandling: handling, threadRoutes, historicalCommands: archives.historicalCommands.get(key) ?? [], ...(archives.scopes.has(key) ? { modelScope: archives.scopes.get(key) } : {}), ...(archives.routes.has(key) ? { recipientRoute: archives.routes.get(key) } : {}) };
+}

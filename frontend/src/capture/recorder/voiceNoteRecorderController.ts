@@ -1,4 +1,6 @@
 import { readableError } from "@/lib/readableError";
+import { captureEvents } from "../captureEvents";
+import { pruneDeletedFailureNotification } from "../activity/failureNotifications";
 // The voice-note recorder's controller, without React: the old Voice notes
 // card's controller moved onto recorderReducer, without the notes list and
 // playback (the Library and a note's detail, capture/library) or the
@@ -19,10 +21,14 @@ import { Capacitor } from "@capacitor/core";
 import {
   VoiceNotes,
   voiceNoteMaxDurationMs,
+  VOICE_NOTE_EXTENSION_MS,
+  type LimitExtension,
+  VOICE_NOTE_SAFETY_CAP_MS,
   type VoiceNoteAutoStopEvent,
   type VoiceNoteRecording,
   type CaptureStatus,
   type MicStateEvent,
+  type LevelEvent,
   type CaptureOptions,
   type TranscriberId,
 } from "@/lib/voiceNotes/nativeVoiceNotes";
@@ -32,9 +38,10 @@ import { isOnDeviceReady } from "@/lib/voiceNotes/onDeviceStt";
 import { isLegacyNote } from "@/lib/voiceNotes/legacyMigration";
 import { setQuarantineAccount } from "@/lib/voiceNotes/quarantine";
 import { ensureAppleSpeechAssets, ensureOnDeviceModel, onDeviceSttStore } from "@/lib/voiceNotes/onDeviceSttStore";
-import { effectiveCaptureOptions, readTranscriberPreference,
+import { autoStopEnabled, effectiveCaptureOptions, readTranscriberPreference, readUploadAudioPreference, recordingLimitMs,
   setDefaultIdentifySpeakers, setDefaultTranscriber, settleDefaults, subscribeTranscriberPreference, writeAccountDefaults,
   } from "@/lib/voiceNotes/transcriberPreference";
+import { recorderLayout } from "./final/shellCapabilities";
 import {
   clearDiscarded,
   unmarkDiscarded,
@@ -43,13 +50,14 @@ import {
   markDiscarded,
   messageOf,
   pendingStore,
+  pendingSaveMessage,
   saveRecording,
   savePendingRecordings,
   TINYCLOUD_NETWORK_FAILURE_MESSAGE,
 } from "@/lib/voiceNotes/recorderSaves";
 import { transcribeSavedNote, type VoiceNoteTranscriber } from "@/lib/voiceNotes/voiceNoteTranscription";
 import { saveDeferredForAccountTransition, type VoiceNotePipeline } from "@/lib/voiceNotes/voiceNotePipeline";
-import { adoptNote, deleteNote, loadNote, parseMomentLines, saveNote, type RecordingMoment } from "@/lib/voiceNotes/recordingNotes";
+import { adoptNote, deleteNote, loadNote, parseMomentLines, recordingNoteOwner, saveNote, type RecordingMoment } from "@/lib/voiceNotes/recordingNotes";
 import { readRecordingNoteFromSpace, recordingNoteSyncError, reportRecordingNoteSyncError,
   subscribeRecordingNoteSync, syncRecordingNote, type NoteSyncErrorCode } from "@/lib/voiceNotes/voiceNoteStore";
 import { assertCurrent, currentAccountGeneration } from "@/lib/voiceNotes/accountContext";
@@ -57,6 +65,7 @@ import { withCaptureDeadline } from "@/lib/voiceNotes/accountHandoff";
 import { autoStopNoticeText, FINALIZATION_PENDING } from "./recorderCopy";
 import { autoStopIsCurrent, initialRecorderState, recorderReducer, type RecorderCaptureIssue, type RecorderEvent, type RecorderMic, type RecorderState } from "./recorderReducer";
 import { recordedElapsedAt } from "./recordedElapsed";
+import { admitHomeWork, holdHomeWork } from "@/lib/homeReauthorizing";
 import { clearPartialAudioIssue, dismissPartialAudioIssue, partialAudioDismissed, partialAudioScope,
   pendingAudioLossIds, prunePartialAudioIssues, savedPartialAudioIssues, savePartialAudioIssue,
   savePendingAudioLoss } from "./partialAudioIssues";
@@ -78,11 +87,7 @@ function partialFromSidecar(recording: VoiceNoteRecording): Extract<RecorderCapt
 const micFromStatus = (status: CaptureStatus | MicStateEvent): RecorderMic =>
   ({ state: status.state, reason: status.reason, input: status.input ?? null });
 
-function saveFailureCopy(message: string): string {
-  return message === TINYCLOUD_NETWORK_FAILURE_MESSAGE
-    ? message
-    : `Saved on this phone, but uploading to your space failed: ${message}`;
-}
+const recorderDevice = () => captureEngineKind() === "tauri" ? "Mac" : "phone";
 
 export interface VoiceNoteRecorderControllerOptions {
   tcw: TinyCloudWeb | null;
@@ -141,6 +146,8 @@ export interface VoiceNoteRecorderController {
   discard(): Promise<void>;
   retryPending(): Promise<void>;
   openSettings(): Promise<void>;
+  /** Raise the live recording's limit by `extension` (default one hour: "Keep going"), or drop it ("none"); absent where the engine fixes the limit at start. */
+  extendLimit?(extension?: LimitExtension): Promise<void>;
   dismissShortcutRecovery(): Promise<void>;
   /** The receipt was read. */
   dismissOutcome(): void;
@@ -148,6 +155,34 @@ export interface VoiceNoteRecorderController {
   dismissCaptureIssue(id: string): boolean;
   /** Input levels (0..1), fanned out without React state. */
   subscribeLevel(listener: (level: number) => void): () => void;
+  /** Source-aware levels for the Mac's separate Them trace. */
+  subscribeLevels(listener: (levels: LevelEvent) => void): () => void;
+}
+
+// Waits between the engine reads of a closed recorder's held place (the last repeats).
+const ENGINE_IDLE_POLL_MS: readonly number[] = [1_000, 2_000, 5_000, 30_000];
+let engineIdleSleep = (ms: number) => new Promise<void>((resolve) => { setTimeout(resolve, ms); });
+/** Test seam: how the closed recorder's poll sleeps between reads (null: the real timer). */
+export function __setEngineIdlePollForTests(sleep: ((ms: number) => Promise<void>) | null) {
+  engineIdleSleep = sleep ?? ((ms) => new Promise<void>((resolve) => { setTimeout(resolve, ms); }));
+}
+
+/** A closed recorder's place at the Home work boundary, for something it started or was recording: let go only once
+ * the engine's own status reads idle. One status read at a time, with backoff; a read that fails is tried again on the
+ * next turn, and one that never answers keeps the place. It reads the engine it began on, and stops (keeping the
+ * place) if the app replaces that engine. */
+async function holdUntilEngineIdle(release: () => void) {
+  const engine = VoiceNotes;
+  for (let turn = 0; ; turn += 1) {
+    await engineIdleSleep(ENGINE_IDLE_POLL_MS[Math.min(turn, ENGINE_IDLE_POLL_MS.length - 1)]);
+    if (VoiceNotes !== engine) return;
+    let status: CaptureStatus;
+    try { status = await engine.status(); } catch { continue; }
+    if (status.state === "idle") {
+      release();
+      return;
+    }
+  }
 }
 
 export function createVoiceNoteRecorderController({ tcw, available, transcriber, pipeline, onDeviceReady,
@@ -156,6 +191,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     return () => clearTimeout(timer);
   } }: VoiceNoteRecorderControllerOptions): VoiceNoteRecorderController {
   let state = initialRecorderState;
+  let nativeStopPending = false;
   let preference = readTranscriberPreference();
   let nativeOptions: CaptureOptions | null = null;
   const signedIn = tcw?.did != null;
@@ -204,6 +240,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
   };
   const listeners = new Set<() => void>();
   const levelListeners = new Set<(level: number) => void>();
+  const levelsListeners = new Set<(levels: LevelEvent) => void>();
   // Resolve only after mount. An invalid SDK identity is logged, while the
   // recorder remains usable and never writes notices into another account.
   let issueScope: string | null | undefined;
@@ -264,21 +301,26 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       if (noteAttached && noteId === id && version === noteLoadVersion) beginNoteLoad(id);
     });
   }
+  let noteOwner: string | null | undefined;
+  let liveNoteOwner: string | null | undefined;
   function beginNoteLoad(id: string): void {
     const version = ++noteLoadVersion;
     void (async () => {
-      let stored = await noteLoader(id);
+      const liveRecording = state.phase !== "idle" && state.recordingId === id;
+      const owner = await recordingNoteOwner(id, liveRecording && liveNoteOwner !== undefined ? liveNoteOwner : noteAccount?.did ?? null);
+      let stored = await noteLoader(id, owner, liveRecording);
       if (!stored && noteClient && state.phase === "idle" && state.outcome === "saved") {
         checkNoteAccount();
         const remote = await readRecordingNoteFromSpace(noteClient, id);
         checkNoteAccount();
         if (version !== noteLoadVersion || noteId !== id) return;
-        if (remote) stored = await adoptNote(remote);
+        if (remote) stored = await adoptNote(remote, owner);
       }
       if (version !== noteLoadVersion || noteId !== id) return;
       clearNoteRetry();
       noteRetryAttempts = 0;
       noteLoadError = null;
+      noteOwner = owner;
       note = stored ? { md: stored.md, moments: stored.moments } : null;
       noteStatus = "ready";
       notify();
@@ -325,18 +367,34 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     return true;
   };
   const acceptNativeOptions = (status: CaptureStatus | MicStateEvent) => {
-    if (!status.options || (status.id && state.recordingId && status.id !== state.recordingId)) return;
+    if (status.id && "owner" in status) liveNoteOwner = status.owner ?? null;
+    if (closed || !status.options || (status.id && state.recordingId && status.id !== state.recordingId)) return;
     nativeOptions = status.options;
     if (refreshChoice()) notify();
   };
 
+  // A recording holds its place at the Home work boundary (lib/homeReauthorizing.ts) from the moment it starts
+  // (before the microphone is even asked) until the recorder is idle again, so a session swap never cuts it off.
+  let homeWork: (() => void) | null = null;
+  // A detached recorder (signed out, unmounted) takes no new place, whatever late events it still hears.
+  let homeWorkDetached = false;
+  // Closed (detached): this recorder writes no state and makes no engine control call (no start, stop or discard).
+  let closed = false;
+  // The start in progress (waiting on the defaults or the microphone). Detach cancels it and hands it the place.
+  interface PendingStart { cancelled: boolean; release: (() => void) | null }
+  let pendingStart: PendingStart | null = null;
+
   // The reducer runs synchronously, so a second tap sees the phase the first one
   // set (Stop must never call stop() twice).
   const send = (event: RecorderEvent) => {
+    if (closed) return;
     const before = state;
     const next = recorderReducer(state, event);
     if (next === state) return;
     state = next;
+    // A recording the recorder picks up (one already running) holds its place too; idle releases it.
+    if (next.phase !== "idle" && homeWork === null && !homeWorkDetached) homeWork = holdHomeWork("recording");
+    if (next.phase === "idle" && homeWork !== null) { homeWork(); homeWork = null; }
     setCapturePlaybackBlocked(next.phase === "starting" || next.phase === "stopping" || next.phase === "discarding" ||
       (next.phase === "recording" && (next.controlPending === "resume" ||
         (next.mic.state !== "paused" && next.mic.state !== "interrupted" && next.mic.state !== "needs_user"))));
@@ -346,15 +404,19 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
   };
 
   const sendMicState = (status: CaptureStatus | MicStateEvent) => {
-    const event = { type: "MIC_STATE" as const, mic: micFromStatus(status), audioMs: status.audioMs };
+    const event = { type: "MIC_STATE" as const, mic: micFromStatus(status), audioMs: status.audioMs,
+      captureSourceUnconfirmed: status.captureSourceUnconfirmed };
     send(status.elapsedMs === undefined ? event : { ...event, elapsedMs: status.elapsedMs, elapsedAt: Date.now() });
   };
 
-  const activePickup = (status: Awaited<ReturnType<typeof VoiceNotes.status>>): Extract<RecorderEvent, { type: "PICKED_UP" }> => {
+  /** Whether this device stops recordings by itself now: its choice, else the layout's default (off at the phone layout). */
+  const autoStopNow = () => autoStopEnabled(typeof window !== "undefined" && Number.isFinite(window.innerWidth) && recorderLayout(window.innerWidth) === "phone");
+
+  const activePickup = (status: CaptureStatus): Extract<RecorderEvent, { type: "PICKED_UP" }> => {
     if (!status.id || status.startedAt === null) throw new Error("Native recording status has no active id or start time");
     return { type: "PICKED_UP", id: status.id, startedAt: status.startedAt,
       maxDurationMs: status.maxDurationMs, audioMs: status.audioMs, elapsedMs: status.elapsedMs, elapsedAt: Date.now(),
-      mic: micFromStatus(status) };
+      mic: micFromStatus(status), autoStop: autoStopNow() && status.maxDurationMs < VOICE_NOTE_SAFETY_CAP_MS };
   };
 
   const reconcileFailedStop = async (error: string | null, id?: string | null) => {
@@ -366,15 +428,16 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         void pendingStore.refresh();
       } else if (status.id === state.recordingId) {
         acceptNativeOptions(status);
-        send({ type: "STOP_FAILED", status: "active", error, id,
+        const statusError = status.reason === "snapshot_unavailable" || status.reason === "snapshot_empty" ? null : error;
+        send({ type: "STOP_FAILED", status: "active", error: statusError, id,
           mic: micFromStatus(status), audioMs: status.audioMs, elapsedMs: status.elapsedMs, elapsedAt: Date.now() });
       } else {
-        send({ type: "STOP_FAILED", status: "idle", error: error ?? "Another recording is active on this phone.", id });
+        send({ type: "STOP_FAILED", status: "idle", error: error ?? `Another recording is active on this ${recorderDevice()}.`, id });
         acceptNativeOptions(status);
         send(activePickup(status));
       }
     } catch (caught) {
-      send({ type: "STOP_FAILED", status: "unknown", error: `Could not check whether this phone stopped recording: ${messageOf(caught)}`, id });
+      send({ type: "STOP_FAILED", status: "unknown", error: `Could not check whether this ${recorderDevice()} stopped recording: ${messageOf(caught)}`, id });
     }
   };
 
@@ -384,7 +447,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       if (state.phase !== "discarding") return;
       if (status.state === "idle") {
         send({ type: "DISCARD_FAILED", id: shown, committed: true,
-          error: `${error} The recording ended; its audio remains on this phone.` });
+          error: `${error} The recording ended; its audio remains on this ${recorderDevice()}.` });
         void pendingStore.refresh();
       } else if (status.id === shown) {
         acceptNativeOptions(status);
@@ -401,6 +464,74 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     }
   };
 
+  /** One deadline covers the native control and every status reconciliation read. */
+  const CONTROL_TIMEOUT_MS = 45_000;
+  let controlOperationId = 0;
+  const controlStillCurrent = (operationId: number, recordingId: string | null) =>
+    operationId === controlOperationId && state.phase === "recording" && state.recordingId === recordingId;
+
+  const uncertainControlError = (control: "pause" | "resume") => control === "pause"
+    ? "Could not confirm that recording paused. Recording may still be running. Try again or stop."
+    : "Could not confirm that recording resumed. Try again or stop.";
+
+  const runControl = async (control: "pause" | "resume"): Promise<void> => {
+    const operationId = ++controlOperationId;
+    const recordingId = state.recordingId;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const operation = (async () => {
+      let error: string | null = null;
+      try {
+        await (control === "pause" ? VoiceNotes.pause() : VoiceNotes.resume());
+      } catch (caught) {
+        error = `${control === "pause" ? "Could not pause" : "Could not resume"}: ${messageOf(caught)}`;
+      }
+      if (!controlStillCurrent(operationId, recordingId)) return;
+
+      let status: CaptureStatus | undefined;
+      try {
+        status = await VoiceNotes.status();
+      } catch (caught) {
+        console.warn(`[VoiceNotes] Could not read status after ${control}`, caught);
+      }
+      if (!controlStillCurrent(operationId, recordingId)) return;
+
+      if (!status) {
+        send(control === "pause"
+          ? { type: "PAUSE_FAILED", error: uncertainControlError(control) }
+          : { type: "RESUME_FAILED", error: uncertainControlError(control) });
+        send({ type: "MIC_STATE", mic: { state: "needs_user", reason: "status_unknown" } });
+        return;
+      }
+
+      acceptNativeOptions(status);
+      if (error) {
+        send(control === "pause" ? { type: "PAUSE_FAILED", error } : { type: "RESUME_FAILED", error });
+      } else {
+        send(control === "pause" ? { type: "PAUSE_CONFIRMED" } : { type: "RESUME_CONFIRMED" });
+      }
+      // Native state is authoritative when a bridge call fails after making progress.
+      sendMicState(status);
+    })();
+    const deadline = new Promise<void>((resolve) => {
+      timer = setTimeout(() => {
+        if (controlStillCurrent(operationId, recordingId)) {
+          send(control === "pause"
+            ? { type: "PAUSE_FAILED", error: uncertainControlError(control) }
+            : { type: "RESUME_FAILED", error: uncertainControlError(control) });
+          send({ type: "MIC_STATE", mic: { state: "needs_user", reason: "status_unknown" } });
+          // The timeout ends this operation; neither its native call nor a late status may mutate state.
+          ++controlOperationId;
+        }
+        resolve();
+      }, CONTROL_TIMEOUT_MS);
+    });
+    try {
+      await Promise.race([operation, deadline]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  };
+
   /** `generation` is the account generation when the save began: a save finishing after an account change never transcribes. */
   const landed = (generation: number, recording: VoiceNoteRecording, audio?: Parameters<VoiceNoteTranscriber["noteSaved"]>[1]) => {
     if (transcriber) {
@@ -412,8 +543,42 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
   /** A native commit is enough for the receipt; cloud work follows independently. */
   const saveStopped = async (recording: VoiceNoteRecording) => {
     const generation = currentAccountGeneration();
-    send({ type: "LOCAL_COMMITTED", id: recording.id, durationMs: recording.durationMs, at: Date.now() });
+    const accountCurrent = () => generation === currentAccountGeneration();
+    // Admission can run as soon as the local file is committed. The row
+    // callback below supplies the cloud identity before the PTX job starts.
+    const privateCheck = recording.options?.transcriber === "private-cloud" && transcriber && tcw
+      ? Promise.resolve().then(() => transcriber.check({ automatic: true, current: accountCurrent }))
+        .then(() => true, (error: unknown) => {
+          console.warn("[VoiceNotes] Private transcription admission failed", error);
+          return false;
+        }) : null;
+    let privateStarted = false;
+    const startPrivate = () => {
+      if (privateStarted || recording.options?.transcriber !== "private-cloud" || !transcriber) return;
+      privateStarted = true;
+      void privateCheck?.then((ready) => { if (ready && accountCurrent()) transcriber.noteSaved(recording); });
+    };
+    const completeSaved = (saved: VoiceNoteRecording) => {
+      if (!accountCurrent()) return;
+      send({ type: "SAVED", id: saved.id, durationMs: saved.durationMs, channels: saved.channels, at: Date.now() });
+      if (privateStarted) onSaved?.(saved);
+      else landed(generation, saved);
+    };
+    send({ type: "LOCAL_COMMITTED", id: recording.id, durationMs: recording.durationMs, channels: recording.channels, at: Date.now() });
     void pendingStore.refresh();
+    // The Mac receipt is backed by durable stopped sources. Readers and all
+    // downstream work wait for the imported playable file before proceeding.
+    if (recording.ledger?.localAudio?.state === "preparing") {
+      try { await VoiceNotes.awaitAudioReady?.(recording.id); }
+      catch (error) {
+        send({ type: "SAVE_FAILED", error: `Recording saved. Couldn't prepare audio: ${messageOf(error)}`,
+          recording: { id: recording.id, durationMs: recording.durationMs } });
+        return;
+      }
+    }
+    // Closed while the audio was being prepared: the committed recording is saved by the pending saves, not admitted
+    // by a closed recorder (work already admitted runs on).
+    if (closed) return;
     if (recording.options?.transcriber === "assemblyai" && transcriber && generation === currentAccountGeneration()) {
       transcriber.noteSaved(recording);
     }
@@ -432,14 +597,13 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       try {
         const finish = pendingStore.beginAutomaticSave();
         try {
-          const result = await pipeline.process({ did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() }, recording.id);
-          if (result === "owned-by-another-run") {
+          const result = await pipeline.process({ did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() }, recording.id, "stop", startPrivate, completeSaved);
+          if (result === "owned-by-another-run" || result === "retry-scheduled") {
             send({ type: "LOCAL_UPLOAD_IN_FLIGHT", id: recording.id });
             void pendingStore.refresh();
             return;
           }
-          send({ type: "SAVED", id: recording.id, durationMs: recording.durationMs, at: Date.now() });
-          landed(generation, recording);
+          completeSaved(recording);
         } finally { finish(); }
       } catch (caught) {
         if (!pipeline.isAccepting() || saveDeferredForAccountTransition(caught)) {
@@ -449,7 +613,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
           return;
         }
         const failure = messageOf(caught);
-        send({ type: "SAVE_FAILED", error: saveFailureCopy(failure),
+        send({ type: "SAVE_FAILED", error: failure === TINYCLOUD_NETWORK_FAILURE_MESSAGE ? "Waiting for a connection · syncs by itself" : "Couldn't sync to your TinyCloud space.",
           recording: { id: recording.id, durationMs: recording.durationMs } });
         pendingStore.reportNoteFailure(recording.id, caught);
         void pendingStore.refresh();
@@ -461,26 +625,27 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     send({ type: "SAVE_PROGRESS", percent: null });
     const outcome = await saveRecording(tcw, recording, (stored, total) => {
       if (total > 0) send({ type: "SAVE_PROGRESS", percent: Math.floor((stored / total) * 100) });
-    });
+    }, startPrivate);
     switch (outcome.kind) {
       case "saved":
         reportSavedNoteSyncError(recording.id, outcome.noteSyncError);
-        send({ type: "SAVED", id: recording.id, durationMs: recording.durationMs, at: Date.now() });
-        landed(generation, recording, outcome.audio ?? undefined);
+        send({ type: "SAVED", id: recording.id, durationMs: recording.durationMs, channels: recording.channels, at: Date.now() });
+        if (privateStarted) onSaved?.(recording);
+        else landed(generation, recording, outcome.audio ?? undefined);
         void pendingStore.refresh(outcome.cleanupError);
         return;
       case "failed":
         // The committed audio stays on the device and is playable.
         send({
           type: "SAVE_FAILED",
-          error: saveFailureCopy(outcome.failure),
+          error: outcome.failure === TINYCLOUD_NETWORK_FAILURE_MESSAGE ? "Waiting for a connection · syncs by itself" : "Couldn't sync to your TinyCloud space.",
           recording: { id: recording.id, durationMs: recording.durationMs },
         });
         pendingStore.reportNoteFailure(recording.id, { message: outcome.failure, failureKind: outcome.failureKind, cause: outcome.failureCause });
         void pendingStore.refresh();
         return;
       case "already-saved":
-        send({ type: "SAVED", id: recording.id, durationMs: recording.durationMs, at: Date.now() });
+        send({ type: "SAVED", id: recording.id, durationMs: recording.durationMs, channels: recording.channels, at: Date.now() });
         void pendingStore.refresh(outcome.cleanupError);
         return;
       case "discarded":
@@ -511,8 +676,9 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       if (recording.owner === tcw.did && tcw.did && tcw.spaceId) {
         const finish = pendingStore.beginAutomaticSave();
         try {
-          const result = await pipeline.process({ did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() }, recording.id, "background");
-          if (result === "owned-by-another-run") {
+          const result = await pipeline.process({ did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() }, recording.id, "background", undefined,
+            (saved) => landed(generation, saved));
+          if (result === "owned-by-another-run" || result === "retry-scheduled") {
             send({ type: "LOCAL_UPLOAD_IN_FLIGHT", id: recording.id });
             return;
           }
@@ -539,7 +705,10 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     else if (outcome.kind === "held") void pendingStore.refresh();
   };
 
+  // Retained by the engine and replayed to a listener that may already be closing (attached and detached in one task):
+  // a closed recorder saves, deletes and admits nothing from it.
   const onAutoStopped = (event: VoiceNoteAutoStopEvent) => {
+    if (closed) return;
     const recording = event.recording;
     if (recording) captureCommitted(recording.id, recording);
     if (!recording && event.error === "finalization_timed_out") {
@@ -554,7 +723,8 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       ? Math.max(0, recording.wallMs - recording.pausedMs) : undefined;
     send({ type: "AUTO_STOPPED", id: recording?.id ?? null, notice: autoStopNoticeText(event.reason, event.maxDurationMs),
       captured: recording !== null, at: Date.now(), elapsedMs: finalElapsed, error: event.error,
-      pendingId: event.error === "finalization_timed_out" ? event.id ?? state.recordingId : null });
+      pendingId: event.error === "finalization_timed_out" ? event.id ?? state.recordingId : null,
+      ...(event.reason === "max_duration" ? { limitMs: event.maxDurationMs } : {}) });
     if (!recording) return;
     void saveStopped(recording).catch((caught: unknown) =>
       send({ type: "SAVE_FAILED", error: messageOf(caught), recording: { id: recording.id, durationMs: recording.durationMs } }),
@@ -581,7 +751,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       note = { md, moments: parseMomentLines(md) };
       notify();
       try {
-        const saved = await saveNote(id, md);
+        const saved = await saveNote(id, md, { owner: noteOwner });
         if (noteId === id && version === noteLoadVersion) {
           note = { md: saved.md, moments: saved.moments };
           notify();
@@ -597,10 +767,12 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       return Math.floor(recordedElapsedAt(state));
     },
     async setTranscriber(id, { scope }) {
-      if (!available) return "unavailable";
+      // Closed (detached): a stale callback changes nothing, now or after any wait below.
+      if (closed || !available) return "unavailable";
       if (id === "on-device" && captureEngineKind() === "tauri") {
         try { await (await import("@/lib/voiceNotes/desktop/desktopVoiceNotes")).refreshDesktopWhisperCapability(); }
         catch { return "unavailable"; }
+        if (closed) return "unavailable";
       }
       if (id === "on-device" && !onDeviceTranscriptionAvailable()) return "unavailable";
       if (!signedIn && id !== "on-device") return "locked_signed_out";
@@ -620,16 +792,17 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         await VoiceNotes.setRecordingOptions({ transcriber: id, identifySpeakers });
         acceptNativeOptions(await VoiceNotes.status());
       } else {
-        await setDefaultTranscriber(id);
+        // Checked again inside the default-write lane, after its read and before its write.
+        if (!await setDefaultTranscriber(id, () => !closed)) return "unavailable";
         preference = readTranscriberPreference();
         if (refreshChoice()) notify();
       }
       // Choosing Local again is also the way to retry a download that failed.
-      if (id === "on-device") ensureLocalModel(true);
+      if (id === "on-device" && !closed) ensureLocalModel(true);
       return "ok";
     },
     async setIdentifySpeakers(on, scope) {
-      if (!available) return "unavailable";
+      if (closed || !available) return "unavailable";
       const id = scope === "recording" ? choice.id : effectiveCaptureOptions(preference, signedIn).transcriber;
       if (scope === "recording" && (state.phase !== "recording" || choice.source !== "recording")) return "unavailable";
       if (id !== "private-cloud" && id !== "assemblyai") return "unavailable";
@@ -638,7 +811,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         await VoiceNotes.setRecordingOptions({ identifySpeakers: on });
         acceptNativeOptions(await VoiceNotes.status());
       } else {
-        await setDefaultIdentifySpeakers(on);
+        if (!await setDefaultIdentifySpeakers(on, () => !closed)) return "unavailable";
         preference = readTranscriberPreference();
         if (refreshChoice()) notify();
       }
@@ -662,6 +835,8 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       if (!available) return () => {};
       setQuarantineAccount(tcw?.did ?? null);
       let attached = true;
+      homeWorkDetached = false;
+      closed = false;
       noteAttached = true;
       if (noteId && noteStatus === "error" && !cancelNoteRetry) scheduleNoteRetry(noteId, noteLoadVersion);
       const unsubscribeNoteSync = subscribeRecordingNoteSync(notify);
@@ -716,7 +891,8 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         VoiceNotes.addListener("level", (event) => {
           // Every capture engine emits linear RMS. Convert once at the boundary to the
           // perceptual 0..1 level shared by the halo, bars, trace, and activity gate.
-          for (const listener of levelListeners) listener(levelFromAmplitude(event.level));
+          for (const listener of levelListeners) listener(levelFromAmplitude(event.sources?.mic.level ?? event.level));
+          for (const listener of levelsListeners) listener(event);
         }),
         // Retained by the shell until heard, so a reload mid-recording still saves the note.
         VoiceNotes.addListener("autoStopped", onAutoStopped),
@@ -730,6 +906,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
             issue: { kind: "recoveryFailed", detail: event.reason ?? event.error ?? "recovery_failed" } });
         }),
         VoiceNotes.addListener("writeFailure", (event) => {
+          if (closed) return;
           if (dismissed(event.id)) return;
           lostAudioIds.add(event.id);
           const key = scope();
@@ -740,12 +917,15 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
           const issue = state.captureIssues[event.id];
           if (key !== null && issue?.kind === "partial_audio") savePartialAudioIssue(key, event.id, issue);
         }),
+        // Once closed, neither re-persists a notice the closed state still holds (one deleted since would come back).
         VoiceNotes.addListener("recovered", (event) => {
+          if (closed) return;
           const id = event.id ?? event.recording?.id;
           captureCommitted(id, event.recording);
           if (!event.recording) inspectSidecar(id);
         }),
         VoiceNotes.addListener("committed", (event) => {
+          if (closed) return;
           const id = event.id ?? event.recording?.id;
           captureCommitted(id, event.recording);
           if (!event.recording) inspectSidecar(id);
@@ -799,6 +979,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
               void VoiceNotes.consumeShortcutRecord().catch((caught: unknown) =>
                 console.warn("[VoiceNotes] Could not consume the shortcut Record offer", caught));
             }
+            sendMicState(status);
             if (status.state === "idle") return;
             acceptNativeOptions(status);
             send(activePickup(status));
@@ -826,6 +1007,19 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       }).catch((caught: unknown) => console.warn("[VoiceNotes] Could not attach capture scan", caught));
       return () => {
         attached = false;
+        // Detached (signed out or unmounted): this recorder writes no more state and calls no engine control. What it
+        // was starting or recording is left to run, and keeps its place at the Home work boundary until the engine
+        // itself reads idle (holdUntilEngineIdle): a start still waiting hands its place over once it has settled.
+        closed = true;
+        homeWorkDetached = true;
+        const held = homeWork;
+        homeWork = null;
+        if (pendingStart) {
+          pendingStart.cancelled = true;
+          pendingStart.release = held;
+        } else if (held) {
+          if (state.phase === "idle") held(); else void holdUntilEngineIdle(held);
+        }
         setCapturePlaybackBlocked(false);
         noteAttached = false;
         clearNoteRetry();
@@ -844,16 +1038,32 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     },
     async record() {
       // Never before the recorder is reconciled, over a recording, or over a receipt still being shown.
-      if (!available || !state.ready || state.phase !== "idle" || state.outcome !== null) return;
+      if (closed || !available || !state.ready || nativeStopPending || state.phase !== "idle" || state.outcome !== null) return;
+      // Refused while a Home re-authorise is in progress; admitted, it is reserved before anything awaits.
+      const admitted = admitHomeWork("recording");
+      if (!admitted) return;
+      homeWork?.();
+      homeWork = admitted;
+      const attempt: PendingStart = { cancelled: false, release: null };
+      pendingStart = attempt;
       stopAllPlayback();
       send({ type: "START_REQUESTED" });
       if (choice.id === "on-device") ensureLocalModel(true);
-      const requested = voiceNoteMaxDurationMs();
+      // Settings' Stop recordings automatically: on, Stop recording after (never above the test override or the 3-hour limit); off, the silent 8-hour cap.
+      const autoStop = autoStopNow();
+      const requested = recordingLimitMs(autoStop, voiceNoteMaxDurationMs());
       try {
         // The recording starts from the engine's default: wait for any default write in flight, and refuse to start on one that could not be put right.
         await settleDefaults();
+        if (attempt.cancelled) return;
+        if (captureEngineKind() === "web" && typeof navigator !== "undefined")
+          void navigator.storage?.persist?.().catch(() => undefined);
         const started = await VoiceNotes.start({ maxDurationMs: requested,
+          uploadAudio: readUploadAudioPreference(),
           ...(!privateDiarization() ? { identifySpeakers: false } : {}) });
+        // Closed while the microphone was being asked: the recording is left running, never acted on; its place is
+        // kept until the engine reads idle (below).
+        if (attempt.cancelled) return;
         const elapsedAt = Date.now();
         nativeOptions = null;
         try {
@@ -862,39 +1072,63 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         } catch (caught) {
           console.warn("[VoiceNotes] Started, but recording options could not be read", caught);
         }
+        if (attempt.cancelled) return;
         send({
           type: "STARTED",
           id: started.id,
           startedAt: started.startedAt,
           elapsedAt,
           maxDurationMs: typeof started.maxDurationMs === "number" ? started.maxDurationMs : requested,
+          autoStop,
         });
       } catch (caught) {
+        if (attempt.cancelled) return;
         send({ type: "START_FAILED", error: messageOf(caught) });
         if (errorCode(caught) === "permission_denied") {
           send({ type: "PERMISSION_DENIED" });
           present();
         }
+      } finally {
+        if (pendingStart === attempt) pendingStart = null;
+        // A cancelled start's place is let go only once the engine reads idle.
+        if (attempt.release) void holdUntilEngineIdle(attempt.release);
       }
     },
     async openSettings() {
+      if (closed) return;
       if (!captureCapabilities().openSettings) throw Object.assign(new Error("This shell cannot open settings"), { code: "unsupported" });
       await VoiceNotes.openSettings();
     },
+    /** Present only where the engine can change a running recording's limit (web and desktop); native mobile fixes it at start. */
+    get extendLimit() {
+      if (typeof VoiceNotes.setMaxDuration !== "function") return undefined;
+      return async (extension: LimitExtension = VOICE_NOTE_EXTENSION_MS) => {
+        if (closed || state.phase !== "recording" || !state.autoStop) return;
+        const noLimit = extension === "none";
+        const target = noLimit ? VOICE_NOTE_SAFETY_CAP_MS : Math.min(VOICE_NOTE_SAFETY_CAP_MS, state.maxDurationMs + extension);
+        const applied = await VoiceNotes.setMaxDuration!({ maxDurationMs: target });
+        send({ type: "LIMIT_EXTENDED", maxDurationMs: applied.maxDurationMs, ...(noLimit && applied.maxDurationMs >= VOICE_NOTE_SAFETY_CAP_MS ? { noLimit: true } : {}) });
+      };
+    },
     async dismissShortcutRecovery() {
+      if (closed) return;
       if (captureCapabilities().nativeShortcuts) {
         const status = await VoiceNotes.status();
+        if (closed) return;
         if (status.micDeniedPresentation !== undefined) await VoiceNotes.dismissShortcutRecovery();
       }
       send({ type: "PERMISSION_GRANTED" });
     },
     async stop() {
       // Stop waits for STARTED: the plugin cannot cancel a start in flight.
+      if (closed) return;
       if (state.phase === "stopping" && state.error) {
         await reconcileFailedStop(state.error, state.finalizationPendingId);
         return;
       }
       if (state.phase !== "recording") return;
+      ++controlOperationId;
+      nativeStopPending = true;
       send({ type: "STOP_REQUESTED", at: Date.now() });
       let recording: VoiceNoteRecording;
       try {
@@ -905,57 +1139,36 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         if (code === "finalization_timed_out") {
           send({ type: "CAPTURE_ISSUE", id: state.recordingId, issue: { kind: "finalization_timed_out" } });
         }
-        await reconcileFailedStop(code === "not_recording" ? null
+        const handledByNativeStatus = code === "not_recording" || code === "capture_snapshot_unavailable" || code === "no_audio_captured";
+        await reconcileFailedStop(handledByNativeStatus ? null
           : code === "finalization_timed_out" ? FINALIZATION_PENDING
           : `Could not stop: ${messageOf(caught)}`, code === "finalization_timed_out" ? state.recordingId : null);
         return;
+      } finally {
+        nativeStopPending = false;
       }
+      // Closed while the engine stopped it: the recording is committed on the device, and saved from there by the
+      // pending saves (never by a closed recorder).
+      if (closed) return;
       captureCommitted(recording.id, recording);
       void saveStopped(recording).catch((caught: unknown) =>
         send({ type: "SAVE_FAILED", error: messageOf(caught), recording: { id: recording.id, durationMs: recording.durationMs } }),
       );
     },
     async pause() {
-      if (state.phase !== "recording" || state.controlPending || (state.mic.state !== "recording" && state.mic.state !== "silenced")) return;
+      if (closed || state.phase !== "recording" || state.controlPending || (state.mic.state !== "recording" && state.mic.state !== "silenced")) return;
       send({ type: "PAUSE_REQUESTED" });
-      try {
-        await VoiceNotes.pause();
-      } catch (caught) {
-        send({ type: "PAUSE_FAILED", error: `Could not pause: ${messageOf(caught)}` });
-        return;
-      }
-      try {
-        const status = await VoiceNotes.status();
-        acceptNativeOptions(status);
-        sendMicState(status);
-      } catch (caught) {
-        console.warn("[VoiceNotes] Pause succeeded, but status could not be read", caught);
-        send({ type: "MIC_STATE", mic: { state: "paused", reason: "user" } });
-      }
-      send({ type: "PAUSE_CONFIRMED" });
+      await runControl("pause");
     },
     async resume() {
-      if (state.phase !== "recording" || state.controlPending || (state.mic.state !== "paused" && state.mic.state !== "interrupted" && state.mic.state !== "needs_user")) return;
+      if (closed || state.phase !== "recording" || state.controlPending || (state.mic.state !== "paused" && state.mic.state !== "interrupted" && state.mic.state !== "needs_user")) return;
       setCapturePlaybackBlocked(true);
       stopAllPlayback();
       send({ type: "RESUME_REQUESTED" });
-      try {
-        await VoiceNotes.resume();
-      } catch (caught) {
-        send({ type: "RESUME_FAILED", error: `Could not resume: ${messageOf(caught)}` });
-        return;
-      }
-      try {
-        const status = await VoiceNotes.status();
-        acceptNativeOptions(status);
-        sendMicState(status);
-      } catch (caught) {
-        console.warn("[VoiceNotes] Resume succeeded, but status could not be read", caught);
-        send({ type: "MIC_STATE", mic: { state: "recording", reason: null } });
-      }
-      send({ type: "RESUME_CONFIRMED" });
+      await runControl("resume");
     },
     async discard() {
+      if (closed) return;
       if (state.phase === "discarding" && state.error) {
         await reconcileDiscardFailure(state.recordingId, state.error);
         return;
@@ -970,20 +1183,24 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       if (shown) markDiscarded(shown);
       let id = shown;
       let needDeleteCommitted = false;
+      // Closed while the engine answered (either way): nothing more here, the discard intent (its mark) stays intact,
+      // so the pending saves and the next launch delete the recording, not this recorder.
       try {
         const discarded = await VoiceNotes.discard();
+        if (closed) return;
         if (discarded.id && discarded.id !== id) {
           if (shown) unmarkDiscarded(shown);
           id = discarded.id;
           markDiscarded(id);
         }
       } catch (caught) {
+        if (closed) return;
         // not_recording: the limit stopped it first, and its save meets the mark.
         // no_audio_captured: the phone kept nothing.
         const code = errorCode(caught);
         if (code === "already_committed") {
           if (shown) unmarkDiscarded(shown);
-          await reconcileDiscardFailure(shown, "Already saved on this phone. The note is still available.");
+          await reconcileDiscardFailure(shown, `Already saved on this ${recorderDevice()}. The note is still available.`);
           return;
         }
         if (code !== "not_recording" && code !== "no_audio_captured") {
@@ -1007,7 +1224,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
           return;
         }
       } else {
-        try { await deleteNote(id); }
+        try { await deleteNote(id, noteOwner); }
         catch (caught) {
           send({ type: "DISCARD_FAILED", id: shown, error: `Could not delete the recording note: ${messageOf(caught)}`, committed: true });
           return;
@@ -1017,6 +1234,8 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       }
       send({ type: "DISCARDED", id: shown });
       if (id) {
+        if (tcw?.did) pruneDeletedFailureNotification(tcw.did, id);
+        captureEvents.emit("note-deleted", { source: "exo-voice-note", sourceId: id });
         send({ type: "CAPTURE_RESOLVED", id });
         const key = scope();
         if (key !== null) clearPartialAudioIssue(key, id);
@@ -1026,7 +1245,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     retryPending() {
       if (retryPendingInFlight) return retryPendingInFlight;
       const run = async () => {
-        if (!available) return;
+        if (closed || !available) return;
         if (!tcw?.did || !tcw.spaceId) {
           pendingStore.reportError("Your account space is not ready to save this note. Try again after sign-in finishes.");
           return;
@@ -1037,11 +1256,13 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
           const generation = currentAccountGeneration();
           try {
             // The same generation can claim a v2 note left unowned during sign-in.
+            // Checked again inside the default-write lane, after its read and before its write.
             const claimed = await withCaptureDeadline(writeAccountDefaults((native) =>
               native.status === "signed_in" && native.accountDid === tcw.did
-                ? { accountDid: native.accountDid, transitionGen: native.transitionGen } : null));
+                ? { accountDid: native.accountDid, transitionGen: native.transitionGen } : null, () => !closed));
+            if (closed) return;
             if (!claimed) {
-              account.reportError("This phone's recording account is not ready. Try again shortly.");
+              account.reportError(`This ${recorderDevice()}'s recording account is not ready. Try again shortly.`);
               return;
             }
             if (generation !== currentAccountGeneration()) {
@@ -1055,7 +1276,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
             });
             await account.refresh(null);
           } catch (caught) {
-            account.reportError(`Could not save notes on this phone: ${messageOf(caught)}`);
+            account.reportError(pendingSaveMessage(caught));
           } finally { finishSaving(); }
           return;
         }
@@ -1065,14 +1286,16 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         try {
           savedRun = await savePendingRecordings(tcw);
         } catch (caught) {
-          account.reportError(`Could not save notes on this phone: ${messageOf(caught)}`);
+          account.reportError(pendingSaveMessage(caught));
           return;
         }
         for (const recording of savedRun.saved) landed(generation, recording);
         // The note behind a "Kept on this phone" receipt is in the space now: the receipt says so.
         const failed = state.failedRecording;
-        if (failed && state.outcome === "failed" && savedRun.saved.some((recording) => recording.id === failed.id)) {
-          send({ type: "SAVED", id: failed.id, durationMs: failed.durationMs, at: Date.now() });
+        const saved = failed && state.outcome === "failed"
+          ? savedRun.saved.find((recording) => recording.id === failed.id) : undefined;
+        if (saved) {
+          send({ type: "SAVED", id: saved.id, durationMs: saved.durationMs, channels: saved.channels, at: Date.now() });
         }
       };
       const inFlight = run().finally(() => { if (retryPendingInFlight === inFlight) retryPendingInFlight = null; });
@@ -1083,7 +1306,8 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       send({ type: "DISMISSED" });
     },
     dismissCaptureIssue(id) {
-      if (state.captureIssues[id]?.kind !== "partial_audio") return false;
+      // A closed recorder shows no notice: a dismissal from it applies to nothing (the next recorder shows the notice).
+      if (closed || state.captureIssues[id]?.kind !== "partial_audio") return false;
       const key = scope();
       if (key === null || !dismissPartialAudioIssue(key, id)) return false;
       send({ type: "CAPTURE_DISMISSED", id });
@@ -1094,6 +1318,10 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       return () => {
         levelListeners.delete(listener);
       };
+    },
+    subscribeLevels(listener) {
+      levelsListeners.add(listener);
+      return () => { levelsListeners.delete(listener); };
     },
   };
 }

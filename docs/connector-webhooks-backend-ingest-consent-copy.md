@@ -129,7 +129,7 @@ reconcile = `retain`; cohort = operator-only dark cohort (`D5-cohort`).
 
 ## Transcript-writer variant (TC-641) — not covered by the approval above
 
-**Status: NOT APPROVED.** `BACKEND_INGEST_TRANSCRIPT_CONSENT_COPY` renders in place of the text
+**Status: APPROVED 2026-10-15 (Sam).** `BACKEND_INGEST_TRANSCRIPT_CONSENT_COPY` renders in place of the text
 above only while TC-641 transcript delivery is active, or its status is unknown, for the signed-in
 address. It is the approved text with **bullet 4 and the disconnect note replaced** by the two
 paragraphs below. Bullet 4 discloses the Private Notetaker transcript-writer grant as it really

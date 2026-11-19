@@ -79,7 +79,16 @@ function heading(meeting: PackedMeeting): string {
   const date = meeting.meeting.startedAt ? ` — ${meeting.meeting.startedAt.replace(/[\r\n]/g, " ")}` : " — date unknown";
   return `### ${escapeMarkdown(title.replace(/[\r\n]/g, " "))}${escapeMarkdown(date)} [${meeting.id}]`;
 }
-function citationText(ids: string[]): string { return ids.map((id) => `[${id}]`).join(" "); }
+const clock = (secs: number) => [Math.floor(secs / 3600), Math.floor(secs % 3600 / 60), Math.floor(secs % 60)].map((part) => String(part).padStart(2, "0")).join(":");
+/** `[M1:E3, Speaker, hh:mm:ss]` when the cited passage records a speaker or start time (the form tool results supply); otherwise `[M1:E3]`. */
+function citationText(ids: string[], evidenceById?: Map<string, MeetingEvidence>): string {
+  return ids.map((id) => {
+    const evidence = evidenceById?.get(id);
+    const speaker = evidence?.speaker?.replace(/[[\]]/g, "").replace(/\s+/g, " ").trim();
+    const attribution = [speaker ? escapeMarkdown(speaker) : undefined, evidence?.startSecs === undefined ? undefined : clock(evidence.startSecs)].filter(Boolean);
+    return `[${id}${attribution.length ? `, ${attribution.join(", ")}` : ""}]`;
+  }).join(" ");
+}
 
 function meetingLimitations(meeting: PackedMeeting, request: MeetingEvidenceRequest): string[] {
   const lines: string[] = [];
@@ -156,11 +165,12 @@ function coverageText(packed: PackedMeetingEvidence, request: MeetingEvidenceReq
 function render(draft: MeetingDraft | null, packed: PackedMeetingEvidence, request: MeetingEvidenceRequest): string {
   if (packed.limit) return packed.limit.message;
   const sections: string[] = [];
+  const evidenceById = new Map(packed.meetings.flatMap((meeting) => meeting.evidence.map((evidence) => [evidence.id, evidence] as const)));
   if (draft === null && hasUsableMeetingEvidence(packed, request)) sections.push("Available meeting evidence:");
   for (const meeting of packed.meetings) {
     const lines = [heading(meeting)];
     if (draft) {
-      for (const claim of draft.claims.filter((claim) => claim.meetingIds.length === 1 && claim.meetingIds[0] === meeting.id)) lines.push(`${escapeMarkdown(claim.text)} ${citationText(claim.evidenceIds)}`);
+      for (const claim of draft.claims.filter((claim) => claim.meetingIds.length === 1 && claim.meetingIds[0] === meeting.id)) lines.push(`${escapeMarkdown(claim.text)} ${citationText(claim.evidenceIds, evidenceById)}`);
     } else {
       for (const evidence of meeting.evidence) {
         if (!packed.citations[evidence.id]) continue;
@@ -182,7 +192,7 @@ function render(draft: MeetingDraft | null, packed: PackedMeetingEvidence, reque
     sections.push(lines.join("\n\n"));
   }
   const crossMeeting = draft?.claims.filter((claim) => claim.meetingIds.length > 1) ?? [];
-  if (crossMeeting.length) sections.push(`### Across meetings\n\n${crossMeeting.map((claim) => `${escapeMarkdown(claim.text)} ${citationText(claim.evidenceIds)}`).join("\n\n")}`);
+  if (crossMeeting.length) sections.push(`### Across meetings\n\n${crossMeeting.map((claim) => `${escapeMarkdown(claim.text)} ${citationText(claim.evidenceIds, evidenceById)}`).join("\n\n")}`);
   const coverage = coverageText(packed, request);
   if (coverage) sections.push(coverage);
   return sections.join("\n\n");

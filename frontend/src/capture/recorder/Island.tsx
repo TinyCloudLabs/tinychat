@@ -4,8 +4,12 @@
 // when the save failed. Tapping it opens the recorder again.
 import { AlertCircleIcon, CheckIcon, Loader2Icon, PlayIcon, SquareIcon } from "lucide-react";
 
+import { useContext } from "react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { billingLinksAllowed, openManageStorage } from "@/lib/openManageStorage";
+import { PlatformContext } from "@/lib/platform";
+import { useStorageReadOnly } from "@/lib/useStorageReadOnly";
 import { LevelTrace } from "./LevelTrace";
 import { islandShown, useRecorder, type RecorderValue } from "./RecorderProvider";
 import { ISLAND_KEPT, ISLAND_SAVED, micWarning } from "./recorderCopy";
@@ -21,6 +25,8 @@ export function islandState(value: Pick<RecorderValue, "phase" | "outcome">): Is
 
 export function IslandView(props: { recorder: RecorderValue; onOpenNote?: (id: string) => void; className?: string }) {
   const { recorder } = props;
+  // Manage storage opens a purchase page, so the iOS and Android apps keep Save now instead.
+  const manageStorage = useStorageReadOnly() && billingLinksAllowed(useContext(PlatformContext));
   const state = islandState(recorder);
   const warning = recorder.phase === "recording" && micWarning(recorder.mic) !== null;
   const paused = recorder.phase === "recording" && (recorder.mic.state === "paused" || recorder.mic.state === "interrupted" || recorder.mic.state === "needs_user");
@@ -81,6 +87,9 @@ export function IslandView(props: { recorder: RecorderValue; onOpenNote?: (id: s
         className="tap-transparent flex min-h-11 min-w-0 flex-1 flex-wrap items-center gap-2.5 rounded-full pl-3 pr-2 text-left transition-opacity active:opacity-70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
       >
         {summary}
+        {state !== "live" && recorder.limitNotice && (
+          <span data-testid="island-limit" className="basis-full break-normal text-meta text-warning [overflow-wrap:break-word]">{recorder.limitNotice}</span>
+        )}
       </button>
       {state === "live" && (
         <Button
@@ -115,11 +124,11 @@ export function IslandView(props: { recorder: RecorderValue; onOpenNote?: (id: s
           type="button"
           variant="ghost"
           className="h-11 min-w-11 shrink-0 rounded-full px-4"
-          onClick={recorder.retryPending}
+          onClick={manageStorage ? openManageStorage : recorder.retryPending}
           disabled={recorder.pending.running}
           data-testid="island-save-now"
         >
-          Save now
+          {manageStorage ? "Manage storage" : "Save now"}
         </Button>
       )}
     </div>

@@ -1,14 +1,23 @@
 import fs from "fs";
 import { execFileSync } from "node:child_process";
+import { createRequire } from "node:module";
 import path from "path";
 import { fileURLToPath } from "url";
-import { defineConfig, loadEnv } from "vite";
+import { defineConfig, loadEnv, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import { nodePolyfills } from "vite-plugin-node-polyfills";
 import { VitePWA } from "vite-plugin-pwa";
 import { firstNonEmpty } from "./src/lib/buildEnv";
+import { extractInlinedSdkWasm } from "./src/lib/sdkWasmAsset";
+import { stablelibBrowserCrypto } from "./src/lib/stablelibBrowserCrypto";
 
 const rootDir = path.dirname(fileURLToPath(import.meta.url));
+const requireFromApp = createRequire(import.meta.url);
+
+/** A polyfill shim's file: the ESM build under `vite dev`, the CommonJS build (as before) for `vite build`. */
+function resolveShim(id: string, command: "serve" | "build"): string {
+  return command === "serve" ? fileURLToPath(import.meta.resolve(id)) : requireFromApp.resolve(id);
+}
 
 // The build line's baseline (TC-840): the shared web/desktop/mobile version
 // frontend/package.json owns, the commit being built, and the channel
@@ -52,6 +61,11 @@ export default defineConfig(({ command, mode }) => {
   return ({
   define: {
     __EXO_BUILD_INFO__: JSON.stringify({ ...exoBuildInfo, channel: exoBuildInfo.channel ?? (command === "serve" ? "dev" : undefined) }),
+    // One Apps origin lists (src/apps/registry.ts). Fail-closed: production unless `vite dev`, or a Cloudflare Pages
+    // build of exactly the feat/one-apps branch (its alias is the one preview origin the apps accept).
+    __ONE_APPS_BUILD_KIND__: JSON.stringify(
+      command === "serve" ? "dev" : process.env.CF_PAGES_BRANCH === "feat/one-apps" ? "preview" : "production",
+    ),
   },
   // The client-side TEE verifier (@redpill-ai/verifier + @peculiar/x509) is
   // Node-oriented and uses `Buffer` for base64↔bytes and ASN.1/cert parsing.
@@ -67,6 +81,61 @@ export default defineConfig(({ command, mode }) => {
         }
       },
     },
+    {
+      // tinycloud.chat moves a visitor to home.tinycloud.xyz only once this file there names the commit the
+      // visitor's bundle was built from (src/lib/originMove.ts `canonicalServesThisBuild`).
+      name: "tinychat-version-json",
+      apply: "build",
+      generateBundle() {
+        this.emitFile({ type: "asset", fileName: "version.json", source: `${JSON.stringify({ commit: exoBuildInfo.commit ?? null })}\n` });
+      },
+    },
+    (() => {
+      // The TinyCloud SDK's WASM as its own file (assets/tinycloud_web_sdk_rs_bg-*.wasm) instead of 1.9 MB of base64
+      // in the entry chunk that is decoded at module evaluation (TC-2882, src/lib/sdkWasmAsset.ts). index.html
+      // preloads it, so it arrives while the entry chunk is still parsing, and wasm-bindgen then fetches it. The web
+      // precaches it (globPatterns); the Capacitor and Tauri shells serve it from the app bundle, as they do
+      // franken-markdown's WASM. `vite dev` keeps it inline.
+      const wasmName = "tinycloud_web_sdk_rs_bg.wasm";
+      return {
+        name: "tinycloud-sdk-wasm-asset",
+        apply: "build",
+        enforce: "pre",
+        transform(code, id) {
+          if (!/[\\/]@tinycloud[\\/]web-sdk[\\/]dist[\\/]index\.mjs$/.test(id)) return null;
+          const extracted = extractInlinedSdkWasm(code, (base64) =>
+            `import.meta.ROLLUP_FILE_URL_${this.emitFile({ type: "asset", name: wasmName, source: Buffer.from(base64, "base64") })}`);
+          return extracted && { code: extracted.code, map: null };
+        },
+        transformIndexHtml: {
+          order: "post",
+          handler(_html, { bundle }) {
+            const wasm = Object.values(bundle ?? {}).find((file) => file.type === "asset" && file.names.includes(wasmName));
+            // Same mode and credentials as wasm-bindgen's fetch(), so the preloaded response is reused.
+            return wasm && [{ tag: "link", attrs: { rel: "preload", href: `/${wasm.fileName}`, as: "fetch", crossorigin: "anonymous" }, injectTo: "head" }];
+          },
+        },
+      } satisfies Plugin;
+    })(),
+    {
+      // Open the connections to the TinyCloud node and the backend while the bundle loads, so the
+      // first request after sign-in restore does not also pay DNS, TCP and TLS (two round trips to
+      // the node's gateway). Only origins this build is configured with; dev without them adds none.
+      name: "tinychat-preconnect",
+      transformIndexHtml() {
+        const env = loadEnv(mode, rootDir, "VITE_");
+        const origins = [env.VITE_TINYCLOUD_HOST, env.VITE_BACKEND_URL].flatMap((value) => {
+          try { return value ? [new URL(value).origin] : []; } catch { return []; }
+        });
+        // The SDK's fetches are CORS without credentials: `crossorigin` makes the preconnected socket the one they use.
+        return [...new Set(origins)].flatMap((href) => [
+          { tag: "link", attrs: { rel: "preconnect", href, crossorigin: "" }, injectTo: "head-prepend" as const },
+          { tag: "link", attrs: { rel: "dns-prefetch", href }, injectTo: "head-prepend" as const },
+        ]);
+      },
+    },
+    // @stablelib/random's browser field keeps crypto-browserify out of the entry chunk (src/lib/stablelibBrowserCrypto.ts).
+    stablelibBrowserCrypto(),
     nodePolyfills({ globals: { Buffer: true, process: true, global: true } }),
     react(),
     // Installable web app (PWA). Builds dist/manifest.webmanifest (linked from index.html) and a Workbox
@@ -79,12 +148,13 @@ export default defineConfig(({ command, mode }) => {
       // `vite dev` serves no worker unless VITE_PWA_DEV=true (src/lib/pwa.ts checks the same flag).
       devOptions: { enabled: process.env.VITE_PWA_DEV === "true" },
       manifest: {
-        id: "/chat",
-        // The product is Exo; the in-app UI still says "TinyCloud Chat" until the rename (TC-526).
-        name: "Exo",
-        short_name: "Exo",
-        description: "Private chat and meeting memory on TinyCloud.",
-        start_url: "/chat",
+        // home.tinycloud.xyz's installed-app id since TC-2387, so existing Home installs stay one app.
+        id: "/chat/feed",
+        name: "TinyCloud One",
+        short_name: "TinyCloud One",
+        description: "Your feed, chat, recordings and apps, in your TinyCloud space.",
+        // `/` opens the first screen the user chose (Feed unless they picked Apps).
+        start_url: "/",
         scope: "/",
         display: "standalone",
         // A manifest takes one color: Day's --background (lib/theme.ts THEME_COLOR). index.html's
@@ -110,20 +180,35 @@ export default defineConfig(({ command, mode }) => {
         // The desktop-only window API chunk (see build.rollupOptions): a web install can never reach it.
         // The notes renderer's WASM (7.7 MB, lazy: first Preview) is cached at runtime below, so a
         // first visit never downloads it.
-        globIgnores: ["agents/**", "assets/tauri-window-*.js", "**/franken_markdown_bg*.wasm"],
-        // The main chunk carries the TinyCloud SDK's inlined WASM (~7.4 MB today); Workbox skips
-        // anything over its 2 MiB default, which would leave the shell unable to boot offline.
+        // The local-replication chunks (kv-storage + its 2.2 MB worker, replica, profile-gate) are only
+        // fetched when the replication flag is ON (lazy import in lib/replication); runtime-cached below.
+        globIgnores: [
+          "agents/**", "assets/tauri-window-*.js", "**/franken_markdown_bg*.wasm",
+          "assets/kv-storage*.js", "assets/replica-*.js", "assets/profile-gate-*.js",
+        ],
+        // The main chunk (~7.4 MB, most of it the TinyCloud SDK) and the SDK's WASM (1.4 MB) are needed to boot;
+        // Workbox skips anything over its 2 MiB default, which would leave the shell unable to boot offline.
         maximumFileSizeToCacheInBytes: 24 * 1024 * 1024,
         // App routes (/, /chat/*) are client-side: serve the precached index.html for navigations.
         navigateFallback: "index.html",
         // ...except the static /agents docs (and /api, should one ever be same-origin). Precached files
         // still win: their route is registered first. Mirrors public/_redirects.
         navigateFallbackDenylist: [/^\/agents(?:\/|$)/, /^\/api(?:\/|$)/],
-        // The only runtime cache is the notes renderer's own WASM, same-origin and content-hashed.
+        // The runtime caches are the notes renderer's WASM and the replication chunks, same-origin and content-hashed.
         // Everything else outside the precache is not intercepted, so API and cross-origin traffic
         // (api.tinycloud.chat, the TinyCloud nodes, OpenKey, RedPill, Google, Fireflies …) always goes
         // straight to the network, never to a cache.
         runtimeCaching: [
+          {
+            urlPattern: ({ sameOrigin, url }) =>
+              sameOrigin && /\/assets\/(?:kv-storage|replica|profile-gate)[^/]*\.js$/.test(url.pathname),
+            handler: "CacheFirst",
+            options: {
+              cacheName: "exo-replication-chunks",
+              cacheableResponse: { statuses: [200] },
+              expiration: { maxEntries: 8 },
+            },
+          },
           {
             urlPattern: ({ sameOrigin, url }) =>
               sameOrigin && /\/franken_markdown_bg[^/]*\.wasm$/.test(url.pathname),
@@ -145,6 +230,16 @@ export default defineConfig(({ command, mode }) => {
   ],
   resolve: {
     alias: {
+      // Linked SDK modules still need the app's installed browser-global polyfills. `vite dev` takes the ESM build
+      // (`import` condition): it pre-bundles the CommonJS one with the plugin's own shim-import banner, which imports
+      // itself and throws "Cannot access '__vite__cjsImport0_vitePluginNodePolyfills_shims_buffer' before
+      // initialization" on load. Builds keep the CommonJS one: the ESM one adds a third Buffer copy to the entry chunk.
+      "vite-plugin-node-polyfills/shims/buffer": resolveShim("vite-plugin-node-polyfills/shims/buffer", command),
+      "vite-plugin-node-polyfills/shims/global": resolveShim("vite-plugin-node-polyfills/shims/global", command),
+      "vite-plugin-node-polyfills/shims/process": resolveShim("vite-plugin-node-polyfills/shims/process", command),
+      // @tinycloud/replica/profile-gate (pulled in by web-sdk/replica) imports Node's fs/promises at
+      // top level; the polyfill plugin only shims `fs`, which breaks the build. See the stub.
+      "fs/promises": path.resolve(rootDir, "./src/lib/replication/nodeFsPromisesStub.ts"),
       // Redirect @tinycloud/node-sdk/core → @tinycloud/web-sdk in the browser
       // bundle. agentDelegation.ts imports serializeDelegation from node-sdk/core
       // (to avoid web-sdk's HTMLElement at test load time), but node-sdk/core

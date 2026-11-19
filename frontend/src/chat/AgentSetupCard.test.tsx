@@ -2,7 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { AgentSetupCard } from './AgentSetupCard';
 
-const prompt = 'How did my last meeting go? Check TinyCloud: https://raw.githubusercontent.com/TinyCloudLabs/prompts/refs/heads/docs/initial-setup-split/apps/tinychat/setup.md';
+const prompt = 'How did my last meeting go? Check TinyCloud: https://agents.tinycloud.xyz/chat';
 
 describe('external agent prompt', () => {
   it('shows the exact one-line production prompt without setup details', () => {
@@ -16,7 +16,7 @@ describe('external agent prompt', () => {
   it('links to public setup without claiming to include the signed-in identity', () => {
     const html = renderToStaticMarkup(<AgentSetupCard />);
     expect(html).toContain('href="https://tinycloud.chat/agents/"');
-    expect(html).toContain('Sign in with your TinyChat account');
+    expect(html).toContain('Sign in with your TinyCloud One account');
     expect(html).not.toContain('account is included');
     expect(html).not.toContain('settings are included');
   });

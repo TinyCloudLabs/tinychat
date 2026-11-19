@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-recorder-audio-envelope"
+description = "Enables the recorder_audio_envelope command without any pre-configured scope."
+commands.allow = ["recorder_audio_envelope"]
+
+[[permission]]
+identifier = "deny-recorder-audio-envelope"
+description = "Denies the recorder_audio_envelope command without any pre-configured scope."
+commands.deny = ["recorder_audio_envelope"]

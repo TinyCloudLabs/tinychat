@@ -1,12 +1,18 @@
-name: Desktop (Exo)
+name: Desktop (TinyCloud One)
 
-# CI build of the Exo desktop app (unsigned workflow artifact only; releases are desktop-release.yml). The build
+# CI build of the TinyCloud One desktop app (unsigned workflow artifact only; releases are desktop-release.yml). The build
 # itself lives in desktop-build.yml: its build job (no secrets) and a dry run of its sign job (ad-hoc, no environment),
 # so the release signing path runs on every desktop change. Pushes to main and the weekly run also refresh the shared
 # build cache, which GitHub evicts after 7 days unused.
 
 on:
   workflow_dispatch:
+    inputs:
+      smoke:
+        description: Build the recorder-failpoints smoke artifact
+        type: boolean
+        default: false
+        required: false
   schedule:
     - cron: "17 5 * * 1"
   pull_request:
@@ -29,9 +35,10 @@ on:
       - "scripts/release/desktop-*"
       - "scripts/release/verify-desktop-signing.sh"
 
+# A newer push cancels the older runs of the same PR or feature branch; main, release/* and tag runs are never cancelled and never share a group, so none is dropped while pending either.
 concurrency:
-  group: desktop-ci-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ${{ github.workflow }}-${{ (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/') || startsWith(github.ref, 'refs/tags/')) && github.run_id || github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || (github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/heads/release/') && !startsWith(github.ref, 'refs/tags/')) }}
 
 permissions:
   contents: read
@@ -41,5 +48,6 @@ jobs:
     name: Build
     uses: ./.github/workflows/desktop-build.yml
     with:
-      artifact-name: exo-macos-arm64-${{ github.sha }}
+      artifact-name: ${{ inputs.smoke && format('exo-smoke-macos-arm64-{0}', github.sha) || format('exo-macos-arm64-{0}', github.sha) }}
+      smoke: ${{ inputs.smoke || false }}
       ipc-selftest: true

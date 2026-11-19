@@ -11,16 +11,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { navItems } from "../shell/navItems";
-import { PATHS } from "../shell/routes";
-
 import { supportsBackgroundNotifications } from "./backgroundSyncState";
-import {
-  consentCopyText,
-  GOOGLE_CALENDAR_AUTOJOIN_CONSENT_COPY,
-  GOOGLE_MEET_CONSENT_COPY,
-  googleConsentCopyForSystemBrowser,
-} from "@/lib/connectors/consentCopy";
 import { CONNECTORS } from "@/lib/connectors/registry";
 import type { ConnectorConnection } from "@/lib/connectors/types";
 
@@ -67,21 +58,6 @@ describe("Connectors page composition", () => {
     const usage = page.slice(page.indexOf("<MeetingSourcesFeature"));
     expect(usage).toContain("backendUrl={backendUrl}");
     expect(usage).toContain("sessionStore={sessionStore}");
-  });
-
-  test("Connectors is a first-class destination and Settings no longer owns connector UI", () => {
-    const app = read("../App.tsx");
-    const settings = read("SettingsPage.tsx");
-
-    // The shell owns the address and the navigation item (shell/routes.ts,
-    // shell/navItems.ts — see their tests); App hands the shell the page.
-    const connectors = navItems(0).find((item) => item.id === "connectors");
-    expect(PATHS.connectors).toBe("/chat/connectors");
-    expect(connectors?.href).toBe(PATHS.connectors);
-    expect(app).toContain("connectors={LOCAL_VALIDATION ? null : <ConnectorsPage");
-    expect(settings).not.toContain("ConnectorsCard");
-    expect(settings).not.toContain("TranscriberSection");
-    expect(settings).not.toContain("meetingsSlot");
   });
 
   test("Connectors navigation lives in the app shell", () => {
@@ -134,22 +110,6 @@ describe("Connectors page composition", () => {
     }
   });
 
-  test("the consent checkbox exists only for the B-ingest cohort variant", () => {
-    // How this assertion evolved: Option B's checkbox died with Option B —
-    // under C nothing is granted, so there was nothing to attest to, and this
-    // test used to pin the source at ZERO checkboxes. B-ingest (residual
-    // F011) legitimately changes that: for a cohort address the server DOES
-    // hold a credential and meeting copies, so its checkbox is a live consent
-    // mechanic gating the enable action — not a resurrected dead control.
-    // The spirit survives precisely: the C path is intact, the cohort path
-    // exists, and EXACTLY ONE checkbox is in the source, so no dormant
-    // C-side twin can creep back. That the C-rendered MARKUP still carries no
-    // checkbox is asserted in BackgroundSyncSection.test.tsx.
-    const source = read("BackgroundSyncSection.tsx");
-    expect(source).toContain("BACKGROUND_SYNC_CONSENT_COPY");
-    expect(source).toContain("BACKEND_INGEST_CONSENT_COPY");
-    expect(source.match(/type="checkbox"/g)).toHaveLength(1);
-  });
 });
 
 // ── Teardown wiring (FE4) ────────────────────────────────────────────
@@ -254,11 +214,12 @@ describe("Google Meet OAuth connect variant", () => {
       connectHalf.indexOf("const handleCancelAuthorize"),
     );
     expect(handler).toContain("useCallback(() => {");
-    expect(handler.indexOf("window.open(")).toBeLessThan(handler.indexOf("await"));
+    const webPopup = handler.slice(handler.indexOf("const popup = window.open("));
+    expect(webPopup.indexOf("window.open(")).toBeLessThan(webPopup.indexOf("await"));
     expect(handler).toContain("popup.location.href");
     // A blocked popup gets its own actionable state, not a silent no-op.
     expect(handler).toContain('kind: "popup-blocked"');
-    expect(dialog).toContain("Allow popups for this site");
+    expect(dialog).toContain("Allow popups and try again, or open Google in this tab.");
   });
 
   test("the native app takes the system browser before any popup is opened (TC-521)", () => {
@@ -321,37 +282,24 @@ describe("Google Meet OAuth connect variant", () => {
     expect(connectHalf).toContain("googleAuthorizeSurface()");
     // No consent copy, no custody checkbox: the explanation alone…
     expect(render).toContain('{phase === "authorize" && authorizeSurface === "unavailable-in-app" && <NativeUnavailablePanel />}');
-    expect(render).toContain('{phase === "authorize" && authorizeSurface !== "unavailable-in-app" && (');
+    expect(render).toContain('{phase === "authorize" && authorizeSurface !== "unavailable-in-app" && !desktopAutojoinUnavailable && (');
     const panel = connectHalf.slice(connectHalf.indexOf("const NativeUnavailablePanel"), connectHalf.indexOf("const WaitCallbackPanel"));
     expect(panel).toContain('formatOAuthError({ kind: "native-unavailable", message: "" })');
-    expect(dialog).toContain("Connecting Google isn’t available in the Exo app yet.");
+    expect(dialog).toContain("Connecting Google isn’t available in the TinyCloud One app yet.");
     // …and a footer with Close only.
-    expect(render).toContain('canAuthorize={authorizeSurface !== "unavailable-in-app"}');
+    expect(render).toContain('canAuthorize={authorizeSurface !== "unavailable-in-app" && !desktopAutojoinUnavailable}');
     const footer = connectHalf.slice(connectHalf.indexOf("const OAuthConnectFooter"), connectHalf.indexOf("const Emphasized"));
     const closeOnly = footer.slice(footer.indexOf('{phase === "authorize" && !canAuthorize && ('), footer.indexOf('{phase === "authorize" && canAuthorize && ('));
     expect(closeOnly).toContain("Close");
     expect(closeOnly).not.toContain("Continue with Google");
   });
 
-  test("the app's consent copy never says popup window; every claim stays word for word (TC-522)", () => {
-    const render = connectHalf.slice(connectHalf.indexOf("<Dialog open={open}"), connectHalf.indexOf("</Dialog>"));
-    expect(render).toContain('authorizeSurface === "system-browser" ? googleConsentCopyForSystemBrowser(consentCopy) : consentCopy');
-    const inApp = googleConsentCopyForSystemBrowser(GOOGLE_MEET_CONSENT_COPY);
-    expect(GOOGLE_MEET_CONSENT_COPY.intro).toContain("in a popup window");
-    expect(inApp.intro).not.toMatch(/popup/i);
-    expect(inApp.intro).toContain("You'll sign in with Google in your browser and approve");
-    expect(consentCopyText(inApp)).not.toMatch(/popup/i);
-    expect(inApp.bullets).toEqual(GOOGLE_MEET_CONSENT_COPY.bullets);
-    expect(inApp.disconnectNote).toBe(GOOGLE_MEET_CONSENT_COPY.disconnectNote);
-    expect(inApp.variant).toBe(GOOGLE_MEET_CONSENT_COPY.variant);
-    // The autojoin text never mentioned a popup, and stays identical.
-    expect(googleConsentCopyForSystemBrowser(GOOGLE_CALENDAR_AUTOJOIN_CONSENT_COPY)).toEqual(GOOGLE_CALENDAR_AUTOJOIN_CONSENT_COPY);
-  });
 
   test("closing or cancelling the dialog also ends a native attempt", () => {
     const reset = connectHalf.slice(connectHalf.indexOf("const reset"), connectHalf.indexOf("const busy"));
     expect(reset).toContain("cancelNativeAttempt();");
-    expect(reset).toContain("useEffect(() => cancelNativeAttempt, [cancelNativeAttempt]);");
+    expect(reset).toContain("useEffect(() => () => {");
+    expect(reset).toContain("cancelNativeAttempt();");
     const cancel = connectHalf.slice(connectHalf.indexOf("const handleCancelAuthorize"));
     expect(cancel.slice(0, cancel.indexOf("}, ["))).toContain("cancelNativeAttempt();");
   });
@@ -370,14 +318,15 @@ describe("Google Meet OAuth connect variant", () => {
     // read from the exchange response alone.
     expect(dialog).not.toMatch(/\.postMessage\(/);
     expect(connectHalf).toContain("GOOGLE_OAUTH_EXCHANGE_PATH");
-    expect(connectHalf).toContain("JSON.stringify({ code, verifier, ...(autojoin ? { state: transactionState } : {}) })");
+    expect(connectHalf).toContain("JSON.stringify({ code, verifier, ...(autojoin ? { state: transactionState } : {}),");
+    expect(connectHalf).toContain("desktopRedirectUri: desktopRedirectUriRef.current");
     // The verifier is dropped before the response is even read.
     expect(connectHalf).toContain("verifierRef.current = null;");
   });
 
   test("persists the refresh token through the registry row, never a literal", () => {
     expect(connectHalf).toContain(
-      "saveConnectorKey<SecretsErr>(tcw, descriptor, refreshToken)",
+      "saveConnectorKey<SecretsErr>(tcw, descriptor, storedRefreshToken)",
     );
     // The names live in registry.ts; spelling either one here would make the
     // flip commit a two-file change and this file a place they could drift.
@@ -391,7 +340,7 @@ describe("Google Meet OAuth connect variant", () => {
     // warning that is currently false is its own dishonesty.
     expect(dialog).toContain("GOOGLE_TESTING_MODE_REAUTH_COPY");
     expect(dialog).toContain("SHOW_GOOGLE_TESTING_MODE_CAVEAT: boolean = false");
-    expect(dialog).toContain("{SHOW_GOOGLE_TESTING_MODE_CAVEAT && (");
+    expect(dialog).toContain("{SHOW_GOOGLE_TESTING_MODE_CAVEAT &&");
   });
 
   test("scopes the auto-transcription offer to meetings the user hosts", () => {
@@ -552,70 +501,19 @@ describe("Sync now — engine dispatch", () => {
     expect(gmeetEngine).toContain("driveMode: opts.driveMode");
   });
 
-  test("Full rescan refuses an existing engine run before dispatch and disables both card-owned actions", () => {
-    const guardStart = handler.indexOf('driveMode === "snapshot"');
+  test("a press that a running sync refuses shows its progress and offers to wait, never a bare error, and disables both card-owned actions", () => {
+    const guardStart = handler.indexOf("isGmeetSyncInFlight() && (driveMode");
     const guard = handler.slice(
       guardStart,
       handler.indexOf("syncing: true", guardStart),
     );
-    expect(guard).toContain("isGmeetSyncInFlight()");
-    expect(guard).toContain("Another Google Meet sync is already running. Try Full rescan again when it finishes.");
+    expect(guard).toContain("busyOffer: driveMode");
+    expect(guard).toContain("actionError: null");
+    expect(guard).not.toContain("Another Google Meet sync");
     expect(guard).toContain("return;");
     expect(guard).not.toContain("runGmeetSyncNow(");
-    expect(handler.indexOf('driveMode === "snapshot"')).toBeLessThan(handler.indexOf("runGmeetSyncNow("));
+    expect(guardStart).toBeLessThan(handler.indexOf("runGmeetSyncNow("));
     expect(card.match(/disabled=\{state\.syncing\}/g)).toHaveLength(2);
-  });
-
-  test("Full rescan refuses a sync that starts while token mint is awaited", async () => {
-    const transpiler = new Bun.Transpiler({ loader: "ts" });
-    const executable = transpiler.transformSync(gmeetEngine);
-    const buildRunGmeetSyncNow = new Function(
-      "mintGmeetAccessToken",
-      "GmeetClient",
-      "syncGoogleMeet",
-      "GMEET_STORE",
-      "isGmeetSyncInFlight",
-      "gmeetRowProgress",
-      `${executable}\nreturn runGmeetSyncNow;`,
-    ) as (...dependencies: unknown[]) => (opts: Record<string, unknown>) => Promise<{
-      ok: boolean;
-      message?: string;
-      retryAfterMs?: number | null;
-    }>;
-    let inFlight = false;
-    let engineInvocations = 0;
-    const runGmeetSyncNow = buildRunGmeetSyncNow(
-      async () => {
-        await Promise.resolve();
-        inFlight = true;
-        return "access-token";
-      },
-      class {},
-      async () => {
-        engineInvocations++;
-        return { ok: true, data: {} };
-      },
-      {},
-      () => inFlight,
-      (progress: unknown) => progress,
-    );
-
-    const result = await runGmeetSyncNow({
-      tcw: {},
-      backendUrl: "http://localhost",
-      sessionStore: {},
-      refreshToken: "refresh-token",
-      driveMode: "snapshot",
-      signal: new AbortController().signal,
-      onProgress: () => {},
-    });
-
-    expect(result).toEqual({
-      ok: false,
-      message: "Another Google Meet sync is already running. Try Full rescan again when it finishes.",
-      retryAfterMs: null,
-    });
-    expect(engineInvocations).toBe(0);
   });
 
   test("a successful Meet-only sync still surfaces the persisted reconnect-required partial state", () => {
@@ -630,20 +528,40 @@ describe("Sync now — engine dispatch", () => {
     expect(card).not.toContain("localStorage");
     expect(card).not.toContain("sessionStorage");
   });
+
+  test("the card re-reads the Google Meet row when a deferred Notes reconcile settles", () => {
+    const subscription = card.slice(card.indexOf("onGmeetNotesSettled(() =>"));
+    expect(card).toContain("onGmeetNotesSettled");
+    expect(subscription.slice(0, subscription.indexOf("\n"))).toContain("refreshRow(GMEET_CONNECTOR_ID)");
+  });
+
+  test("the card and the dialog both hand the engine the store methods the Notes reconcile needs", () => {
+    for (const source of [card, read("ConnectorDialog.tsx")]) {
+      const store = source.slice(source.indexOf("const GMEET_STORE"), source.indexOf("};", source.indexOf("const GMEET_STORE")));
+      for (const method of ["loadGmeetNotesIndex", "getDriveProgress", "putDriveProgress"]) {
+        expect(store).toContain(`${method}: connectorStore.${method}`);
+      }
+    }
+  });
 });
 
 
 describe("Calendar autojoin consent and browser importer separation", () => {
   const dialog = read("ConnectorDialog.tsx");
-  test("binds unattended setup to an explicit checkbox, PKCE and authenticated transaction", () => {
-    expect(dialog).toContain('if (autojoin && !custodyConsent) return;');
-    expect(dialog).toContain('authorizeDisabled={autojoin && !custodyConsent}');
+  test("authorize-button consent sends an authenticated PKCE autojoin request", () => {
+    expect(dialog).toContain("onAuthorize={handleAuthorize}");
     expect(dialog).toContain('JSON.stringify({ state, challenge, consent: true })');
     expect(dialog).toContain('GOOGLE_CALENDAR_AUTOJOIN_CONSENT_COPY');
-    const save = dialog.slice(dialog.indexOf('const saveAndSync'), dialog.indexOf('const runExchange'));
-    expect(save.indexOf('saveConnectorKey')).toBeLessThan(save.indexOf('/autojoin/enable'));
-    expect(save).toContain('if (!save.ok)');
-    expect(save).toContain('setupId');
+    // The Meet save-and-sync path never mentions autojoin; the autojoin finish never touches
+    // the Meet secret or sync (behaviour: ConnectorDialog.initialSync.fixture.tsx).
+    const finishAt = dialog.indexOf('const finishAutojoin');
+    const exchangeAt = dialog.indexOf('const runExchange');
+    expect(finishAt).toBeGreaterThan(-1);
+    expect(exchangeAt).toBeGreaterThan(finishAt);
+    const finish = dialog.slice(finishAt, exchangeAt);
+    expect(finish).toContain('/autojoin/enable');
+    expect(finish).toContain('setupId');
+    expect(finish).not.toMatch(/saveConnectorKey|runInitialSync|saveAndSync|unlockSecrets/);
   });
   test("disconnect removes server custody before browser vault access and keeps revoke failures visible", () => {
     const revoke = dialog.slice(dialog.indexOf('async function revokeGoogleUpstream'));

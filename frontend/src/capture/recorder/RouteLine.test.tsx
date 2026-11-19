@@ -17,14 +17,14 @@ describe("RouteLine", () => {
 
   test("off: this phone straight to your space", () => {
     expect(items(renderToStaticMarkup(<RouteLine nodes={voiceNoteRoute("off")} />))).toEqual([
-      ["source", "This phone"],
+      ["source", "This iPhone"],
       ["destination", "Your space"],
     ]);
   });
 
   test("private cloud: through private cloud, which is a processing stop", () => {
     expect(items(renderToStaticMarkup(<RouteLine nodes={voiceNoteRoute("private-cloud")} />))).toEqual([
-      ["source", "This phone"],
+      ["source", "This iPhone"],
       ["processing", "Private"],
       ["destination", "Your space"],
     ]);
@@ -32,7 +32,7 @@ describe("RouteLine", () => {
 
   test("on-device: transcribed on this phone before it ever leaves", () => {
     expect(items(renderToStaticMarkup(<RouteLine nodes={voiceNoteRoute("on-device")} />))).toEqual([
-      ["source", "This phone (transcribed here)"],
+      ["source", "This iPhone (transcribed here)"],
       ["destination", "Your space"],
     ]);
   });

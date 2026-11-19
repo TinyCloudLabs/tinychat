@@ -1,3 +1,7 @@
+import { deviceName } from "@/lib/platform";
+
+export const saveSlowMessage = (): string => `Saving to your TinyCloud space is slow. The note is safe on ${deviceName()}. Try again.`;
+
 /** A single voice-note network/native operation gets its own bounded wait. */
 export const VOICE_NOTE_CALL_MIN_DEADLINE_MS = 90_000;
 const MIN_UPLOAD_RATE_BYTES_PER_SECOND = 8_000;
@@ -6,7 +10,7 @@ let testDeadlineMs: number | null = null;
 export class VoiceNoteSaveTimeout extends Error {
   readonly code = "VOICE_NOTE_OPERATION_TIMEOUT";
   constructor(readonly operation: string, readonly timeoutMs: number, message =
-    "This note is still on your phone, but saving it is taking too long. Check your connection and try again.") {
+    saveSlowMessage()) {
     super(message);
     this.name = "VoiceNoteSaveTimeout";
   }

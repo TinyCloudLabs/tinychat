@@ -310,6 +310,12 @@ describe("locked vault", () => {
     const source = readFileSync(join(import.meta.dir, "useGmeetSessionSync.ts"), "utf8");
     expect(source).not.toContain("unlockSecrets");
   });
+
+  test("the session-start store gives the engine the preloaded association index and the snapshot checkpoint", () => {
+    const source = readFileSync(join(import.meta.dir, "useGmeetSessionSync.ts"), "utf8");
+    const store = source.slice(source.indexOf("const DEFAULT_STORE"), source.indexOf("};", source.indexOf("const DEFAULT_STORE")));
+    for (const method of ["loadGmeetNotesIndex", "getDriveProgress", "putDriveProgress"]) expect(store).toContain(`  ${method},`);
+  });
 });
 
 // ── 4. Abort ─────────────────────────────────────────────────────────
@@ -352,6 +358,52 @@ describe("abort", () => {
     });
     expect(await maybeStartGmeetSessionSync(h.options)).toBe("aborted");
     expect(h.syncs()).toHaveLength(0);
+  });
+});
+
+describe("deferred Notes (the foreground slot is held for the Meet records only)", () => {
+  /** A harness that records the signal each client was built with. */
+  function withClientSignals(overrides: Parameters<typeof harness>[0] = {}) {
+    const clientSignals: Array<AbortSignal | undefined> = [];
+    const h = harness({
+      ...overrides,
+      hooks: { ...overrides.hooks, createClient: (_token, _refresh, signal) => { clientSignals.push(signal); return {} as never; } },
+    });
+    return { h, clientSignals };
+  }
+
+  test("the session-start sync asks the engine to reconcile Notes in the background", async () => {
+    const h = harness();
+    await maybeStartGmeetSessionSync(h.options);
+    expect(h.syncs()[0]?.deferNotes).toBe(true);
+  });
+
+  test("once the Notes are handed to the background, unmounting no longer cuts the client they run on", async () => {
+    const controller = new AbortController();
+    const { h, clientSignals } = withClientSignals({
+      signal: controller.signal,
+      syncResult: syncOk({ notesDeferred: true }),
+    });
+    expect(await maybeStartGmeetSessionSync(h.options)).toBe("synced");
+    controller.abort();
+    expect(clientSignals[0]?.aborted).toBe(false);
+    // The engine still sees the mount's signal for the foreground part.
+    expect(h.syncs()[0]?.signal).toBe(controller.signal);
+  });
+
+  test("until the hand-off, unmounting still stops the client", async () => {
+    const controller = new AbortController();
+    const release = Promise.withResolvers<void>();
+    const { h, clientSignals } = withClientSignals({
+      signal: controller.signal,
+      syncResult: async () => { await release.promise; return syncOk({ notesDeferred: true }); },
+    });
+    const run = maybeStartGmeetSessionSync(h.options);
+    for (let i = 0; i < 50 && clientSignals.length === 0; i++) await Promise.resolve();
+    controller.abort();
+    expect(clientSignals[0]?.aborted).toBe(true);
+    release.resolve();
+    await run;
   });
 });
 
@@ -462,6 +514,7 @@ describe("mintGmeetAccessToken", () => {
         sessionStore: SESSION,
         refreshToken: REFRESH_TOKEN,
         fetchImpl: boom.impl,
+        retryDelayMs: 0,
       }),
     ).toBeNull();
 
@@ -474,6 +527,52 @@ describe("mintGmeetAccessToken", () => {
         fetchImpl: garbage.impl,
       }),
     ).toBeNull();
+  });
+
+  test("a request the network closed is sent once more, and a token from the second try is returned", async () => {
+    let attempt = 0;
+    const stub = fetchStub(() => {
+      if (++attempt === 1) throw new TypeError("Failed to fetch");
+      return new Response(JSON.stringify({ access_token: ACCESS_TOKEN }), { status: 200 });
+    });
+    const token = await mintGmeetAccessToken({
+      backendUrl: BACKEND, sessionStore: SESSION, refreshToken: REFRESH_TOKEN, fetchImpl: stub.impl, retryDelayMs: 0,
+    });
+    expect(token).toBe(ACCESS_TOKEN);
+    expect(stub.calls).toHaveLength(2);
+  });
+
+  test("the retry is bounded: two closed connections in a row give up with null", async () => {
+    const stub = fetchStub(() => {
+      throw new TypeError("Failed to fetch");
+    });
+    expect(await mintGmeetAccessToken({
+      backendUrl: BACKEND, sessionStore: SESSION, refreshToken: REFRESH_TOKEN, fetchImpl: stub.impl, retryDelayMs: 0,
+    })).toBeNull();
+    expect(stub.calls).toHaveLength(2);
+  });
+
+  test("an answer is final: a 4xx or 5xx is never retried", async () => {
+    for (const status of [400, 401, 404, 503]) {
+      const stub = fetchStub(() => new Response("{}", { status }));
+      expect(await mintGmeetAccessToken({
+        backendUrl: BACKEND, sessionStore: SESSION, refreshToken: REFRESH_TOKEN, fetchImpl: stub.impl, retryDelayMs: 0,
+      })).toBeNull();
+      expect(stub.calls).toHaveLength(1);
+    }
+  });
+
+  test("Stop during the wait before the retry sends nothing more", async () => {
+    const controller = new AbortController();
+    const stub = fetchStub(() => {
+      queueMicrotask(() => controller.abort());
+      throw new TypeError("Failed to fetch");
+    });
+    expect(await mintGmeetAccessToken({
+      backendUrl: BACKEND, sessionStore: SESSION, refreshToken: REFRESH_TOKEN, fetchImpl: stub.impl,
+      signal: controller.signal, retryDelayMs: 60_000,
+    })).toBeNull();
+    expect(stub.calls).toHaveLength(1);
   });
 
   test("a signed-out session sends no request at all", async () => {
@@ -535,6 +634,12 @@ describe("quiet by contract", () => {
     const at = source.indexOf("return () => {");
     expect(at).toBeGreaterThan(0);
     expect(source.slice(at, at + 120)).toContain("controller.abort()");
+  });
+
+  test("sign-out and an account change (a tcw-keyed cleanup) stop that account's background reconcile", () => {
+    const at = source.indexOf("stopGmeetSyncForAccount(tcw)");
+    expect(at).toBeGreaterThan(0);
+    expect(source.slice(at, at + 80)).toContain("}, [tcw]);");
   });
 });
 

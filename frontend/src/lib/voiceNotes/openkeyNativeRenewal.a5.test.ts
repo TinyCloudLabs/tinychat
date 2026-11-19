@@ -9,6 +9,7 @@ test("the real voice-note save runs after the a4 renewal fixture", async () => {
   const note: VoiceNoteRecording = {
     id: "after-a4", startedAt: 1, durationMs: 1000, mimeType: "audio/mp4",
     sizeBytes: 1, silencedMs: 0, silencedEvents: 0, noSignalMs: 0,
+    options: { transcriber: "on-device", identifySpeakers: false, uploadAudio: true },
   };
   const source = { mimeType: "audio/mp4", size: 1, readPart: async () => new Uint8Array([1]) };
   const result = await saveVoiceNote({} as TinyCloudWeb, note, source, "android", {

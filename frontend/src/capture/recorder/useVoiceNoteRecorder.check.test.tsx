@@ -6,6 +6,7 @@ import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { createFakeVoiceNotes } from "@/lib/voiceNotes/fakeVoiceNotes";
+import { memoryHoldStore } from "@/harness/memoryHoldStore";
 import { __setVoiceNotesForTests, VoiceNotes } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { createVoiceNoteTranscriber, voiceNoteTranscriberFor, type VoiceNoteCloud } from "@/lib/voiceNotes/voiceNoteTranscription";
 import { useVoiceNoteRecorder } from "./useVoiceNoteRecorder";
@@ -118,6 +119,7 @@ test("a completed account-A check does not resume A's work after the hook switch
       tcw: () => a,
       cloud: { capabilities: () => new Promise((resolve) => { finish = resolve; }), pendingSourceIds: () => ["a-note"] } as unknown as VoiceNoteCloud,
       consent: { get: () => true, set() {} },
+      holds: memoryHoldStore(),
       runNote: async (args) => {
         resumed.push(args.sourceId);
         return "no_speech";
@@ -144,6 +146,7 @@ test("rapid foreground returns reuse a fresh settled availability result", async
     tcw: () => account,
     cloud: { capabilities: async () => { requests += 1; throw new Error("offline"); }, pendingSourceIds: () => [] } as unknown as VoiceNoteCloud,
     consent: { get: () => false, set() {} },
+    holds: memoryHoldStore(),
   });
   voiceNoteTranscriberFor(account, backendUrl, sessionStore)!.check = real.check;
   root = createRoot(container);

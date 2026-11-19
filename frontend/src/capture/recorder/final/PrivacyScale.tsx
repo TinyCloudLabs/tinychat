@@ -100,7 +100,7 @@ export function PrivacyScale({
       className="pr-scale"
       role="slider"
       tabIndex={0}
-      aria-label="Transcription privacy"
+      aria-label="Transcription mode"
       aria-orientation="horizontal"
       aria-valuemin={0}
       aria-valuemax={count - 1}

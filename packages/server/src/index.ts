@@ -12,6 +12,9 @@ export {
 
 export {
   DelegationStore,
+  EXO_SYNC_GRANT_KIND,
+  TRANSCRIPT_WRITER_GRANT_KIND,
+  type DelegationGrantKind,
   type DelegationMetadata,
 } from "./delegation-store.js";
 

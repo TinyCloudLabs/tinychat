@@ -1,4 +1,4 @@
-name: iOS build (Exo)
+name: iOS build (TinyCloud One)
 
 # The one Exo iOS release build, called by mobile.yml (CI: an unsigned dry run on every iOS change) and
 # ios-testflight.yml (signed, checked and uploaded to TestFlight), so CI exercises the release path even before any
@@ -8,8 +8,9 @@ name: iOS build (Exo)
 # - archive (no environment, no secret, ever): the production frontend (`bun run build:frontend`, .env.production)
 #   bundled by `cap sync ios` with EXO_DEV_SERVER_URL unset, archived unsigned (CODE_SIGNING_ALLOWED=NO, no team). The
 #   archive check refuses a capacitor.config.json with a server URL, a missing public/index.html or privacy manifest,
-#   the wrong bundle id or versions, the Debug-only smoke probe, and any trace of the Debug-only location spike
-#   (TC-524: location usage strings, the location background mode, its code or CoreLocation). The checked .xcarchive
+#   the wrong bundle id or versions, the Debug-only smoke probe, the Debug-only health spike (TC-525: HealthKit or
+#   its usage strings) and any trace of the Debug-only location spike (TC-524: location usage strings, the location
+#   background mode, its code or CoreLocation). The checked .xcarchive
 #   (ditto-zipped, so the executable bits survive) is handed to the sign job as a short-lived artifact; archive.log is
 #   uploaded for debugging.
 # - sign (sign: true: the `ios-release` environment; otherwise a dry run with no environment): checks out only
@@ -88,7 +89,11 @@ jobs:
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: "1.3.9"
-
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        if: ${{ !inputs.sign }}
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
       - name: Require pinned Xcode
         run: |
           test -d "$DEVELOPER_DIR"
@@ -102,7 +107,10 @@ jobs:
 
       # VITE_EXO_CHANNEL tells the bundled frontend its channel (TC-840): the archive strips
       # "-beta.N" from CFBundleShortVersionString, so App.getInfo() alone would call a beta "stable".
+      # vite build needs about 2 GB of heap, the default V8 limit on the 7 GB macos-26 runner (TC-2880).
       - name: Build workspace packages and the production frontend
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
         run: |
           version=$(node -p 'require("./frontend/package.json").version')
           case "$version" in
@@ -148,13 +156,13 @@ jobs:
           plist="$app/Info.plist"
           fail() { echo "::error::$1"; exit 1; }
           value() { /usr/libexec/PlistBuddy -c "Print :$1" "$plist" 2>/dev/null; }
-          [ "$(value CFBundleIdentifier)" = xyz.tinycloud.exo ] || fail "CFBundleIdentifier is $(value CFBundleIdentifier)"
+          [ "$(value CFBundleIdentifier)" = xyz.tinycloud.home ] || fail "CFBundleIdentifier is $(value CFBundleIdentifier)"
           [ "$(value CFBundleShortVersionString)" = "$SHORT_VERSION" ] || fail "CFBundleShortVersionString is $(value CFBundleShortVersionString), expected $SHORT_VERSION"
           [ "$(value CFBundleVersion)" = "$BUILD_NUMBER" ] || fail "CFBundleVersion is $(value CFBundleVersion), expected $BUILD_NUMBER"
           appex="$app/PlugIns/ExoWidgets.appex"
           [ -d "$appex" ] || fail "ExoWidgets.appex is missing"
           widget_plist="$appex/Info.plist"
-          [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$widget_plist")" = xyz.tinycloud.exo.widgets ] || fail "ExoWidgets has the wrong bundle ID"
+          [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$widget_plist")" = xyz.tinycloud.home.widgets ] || fail "ExoWidgets has the wrong bundle ID"
           [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$widget_plist")" = "$BUILD_NUMBER" ] || fail "ExoWidgets has the wrong build number"
           [ "$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$widget_plist")" = com.apple.widgetkit-extension ] || fail "ExoWidgets is not a WidgetKit extension"
           [ "$(value NSSupportsLiveActivities)" = true ] || fail "NSSupportsLiveActivities is not true"
@@ -169,6 +177,9 @@ jobs:
           if grep -a -q EXO_SMOKE "$app/App"; then fail "the Release binary contains the Debug-only smoke probe"; fi
           # Health spike (TC-525): HealthKit code and entitlements are Debug-only until the App ID has the capability.
           if otool -L "$app/App" | grep -q HealthKit; then fail "the Release binary links HealthKit (mobile/docs/health-spike.md)"; fi
+          for key in NSHealthShareUsageDescription NSHealthUpdateUsageDescription; do
+            if value "$key" >/dev/null; then fail "the Release Info.plist has $key (the health spike is Debug-only)"; fi
+          done
           # TC-524: the location spike is Debug-only. A Release with location keys or code needs App Review's
           # location justification and new privacy answers first (mobile/docs/location-spike.md).
           for key in NSLocationWhenInUseUsageDescription NSLocationAlwaysAndWhenInUseUsageDescription NSLocationAlwaysUsageDescription; do
@@ -285,7 +296,7 @@ jobs:
           ditto -x -k "$RUNNER_TEMP/xcarchive-download/Exo.xcarchive.zip" "$RUNNER_TEMP"
           app="$ARCHIVE/Products/Applications/App.app"
           plist="$app/Info.plist"
-          [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$plist")" = xyz.tinycloud.exo ] || fail "the archive is not xyz.tinycloud.exo"
+          [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$plist")" = xyz.tinycloud.home ] || fail "the archive is not xyz.tinycloud.home"
           [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$plist")" = "$SHORT_VERSION" ] || fail "the archive is not version $SHORT_VERSION"
           [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$plist")" = "$BUILD_NUMBER" ] || fail "the archive is not build $BUILD_NUMBER"
           test -x "$app/App" || fail "App.app/App lost its executable bit in the hand-off"

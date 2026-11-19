@@ -23,16 +23,14 @@
 //    the one place a new connector must be registered to be browsable.
 //
 //  - SEQUENTIAL storage calls only. TinyCloud drops concurrent responses on one
-//    space, so these never Promise.all over sql/kv calls.
-//
-//  - Paths come from connectorStore (CONNECTORS_SQL_DB_NAME, transcriptKvKey).
-//    The session is authorized against the full `${APP_ID}/connectors` string;
-//    a hand-built db name or key fails AUTH_UNAUTHORIZED.
+//    space. Voice-note lists first check whether the optional commit table exists,
+//    then read the projected list; no transcript bodies are fetched.
 
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { CONNECTORS_SQL_DB_NAME, transcriptKvKey } from "./connectorStore";
 import { normalizeTranscriptText } from "../voiceNotes/voiceNoteCommits";
+import { EXO_MERGED_SOURCE } from "@tinyboilerplate/core";
 import type { FirefliesSentence } from "./firefliesClient";
 import { GMEET_MEETING_SOURCE } from "./gmeetNormalize";
 import {
@@ -44,8 +42,12 @@ import {
   LOCAL_MEETING_SOURCE_LABEL,
 } from "../localTranscriber";
 import { VOICE_NOTE_SOURCE, VOICE_NOTE_SOURCE_LABEL } from "../voiceNotes/voiceNoteStore";
+import { preciseDurationSeconds } from "../voiceNotes/noteDuration";
 import { UPLOAD_MEETING_SOURCE, UPLOAD_MEETING_SOURCE_LABEL } from "../audioUpload";
 import { CONNECTORS } from "./registry";
+
+/** Chip text for a meeting combined from two partial captures. */
+export const EXO_MERGED_SOURCE_LABEL = "Combined meeting";
 
 /**
  * Every source the explorer browses, merged into ONE newest-first list.
@@ -62,6 +64,7 @@ export const EXPLORER_MEETING_SOURCES: readonly string[] = [
   LOCAL_MEETING_SOURCE,
   VOICE_NOTE_SOURCE,
   UPLOAD_MEETING_SOURCE,
+  EXO_MERGED_SOURCE,
 ];
 
 /**
@@ -75,6 +78,7 @@ export function meetingSourceLabel(source: string): string {
   if (source === LOCAL_MEETING_SOURCE) return LOCAL_MEETING_SOURCE_LABEL;
   if (source === VOICE_NOTE_SOURCE) return VOICE_NOTE_SOURCE_LABEL;
   if (source === UPLOAD_MEETING_SOURCE) return UPLOAD_MEETING_SOURCE_LABEL;
+  if (source === EXO_MERGED_SOURCE) return EXO_MERGED_SOURCE_LABEL;
   return CONNECTORS.find((c) => c.source === source)?.name ?? source;
 }
 
@@ -90,6 +94,47 @@ export interface MeetingListItem {
   durationSecs: number | null;
   /** Voice-note row metadata needed to derive the list pipeline after a relaunch. */
   metadata?: Record<string, unknown> | null;
+  /**
+   * A combined (`exo-merged`) row's members, from `metadata.merge.members`, read in this same list
+   * query. Present only when EVERY member entry is well formed (the combined store's own strictness);
+   * absent for every other row and for a combined row whose record is unreadable.
+   */
+  mergeMembers?: readonly { source: string; sourceId: string }[];
+}
+
+/** Exact identity of a capture, `(source, source_id)`, never normalised: the key hiding and Feed share. */
+export const memberKey = (source: string, sourceId: string): string => JSON.stringify([source, sourceId]);
+
+/** `metadata.merge.members` as the list query returned it (JSON text), or undefined when not readable as members. */
+function parseMergeMembers(raw: string | null): { source: string; sourceId: string }[] | undefined {
+  if (raw === null) return undefined;
+  let parsed: unknown;
+  try { parsed = JSON.parse(raw); } catch { return undefined; }
+  if (!Array.isArray(parsed) || parsed.length === 0) return undefined;
+  const out: { source: string; sourceId: string }[] = [];
+  for (const m of parsed as unknown[]) {
+    const entry = m as { source?: unknown; source_id?: unknown } | null;
+    if (entry === null || typeof entry !== "object" || typeof entry.source !== "string" || typeof entry.source_id !== "string" || !entry.source || !entry.source_id) return undefined;
+    out.push({ source: entry.source, sourceId: entry.source_id });
+  }
+  return out;
+}
+
+/**
+ * The captures a combined meeting stands in for: every member named by a combined row, so the Library
+ * lists the combined meeting alone. Derived on each read from the combined rows themselves; nothing is
+ * stored, so deleting the combined row brings its members back.
+ *
+ * Fail direction: a combined row whose members are unreadable contributes nothing (its sources stay
+ * listed). A member that is itself combined is never hidden. Exact `(source, source_id)` match.
+ */
+export function hiddenMemberKeys(meetings: readonly MeetingListItem[]): Set<string> {
+  const hidden = new Set<string>();
+  for (const row of meetings) {
+    if (row.source !== EXO_MERGED_SOURCE) continue;
+    for (const m of row.mergeMembers ?? []) if (m.source !== EXO_MERGED_SOURCE) hidden.add(memberKey(m.source, m.sourceId));
+  }
+  return hidden;
 }
 
 /**
@@ -151,20 +196,75 @@ export async function listMeetingsRead(
 ): Promise<MeetingListRead> {
   if (sources.length === 0) return { status: "ok", meetings: [] };
   const placeholders = sources.map(() => "?").join(", ");
+  let hasCommitTable = false;
+  const listsVoiceNotes = sources.includes(VOICE_NOTE_SOURCE);
+  if (listsVoiceNotes) {
+    const schema = await tolerate(() => tcw.sql.db(CONNECTORS_SQL_DB_NAME).query(
+      "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'voice_note_transcript'",
+      [],
+    ));
+    if (!schema) return { status: "failed" };
+    if (!schema.ok) return notStoredYet(schema) ? { status: "ok", meetings: [] } : { status: "failed" };
+    hasCommitTable = Array.isArray(schema.data?.rows) && schema.data.rows.length > 0;
+  }
+  const commitOutcome = hasCommitTable
+    ? "(SELECT t.outcome FROM voice_note_transcript t WHERE t.source_id = c.source_id LIMIT 1)"
+    : "NULL";
+  // The legacy transcript winner for each voice note is computed once for the whole
+  // set (TC-1274): a per-row correlated subquery rescanned the table for every note.
+  // The winner is the eligible row with the latest transcribed_at, then the lowest id.
+  // The node authorizer allows no window functions, so this uses MAX/MIN groupings;
+  // `winner` takes `outcome` from its MIN(id) row (SQLite's bare-column rule).
+  // `LIMIT -1 OFFSET 0` makes SQLite materialize `legacy` once instead of inlining it
+  // into both readers, so each row's JSON is parsed once (the node's SQL parser rejects
+  // `AS MATERIALIZED`). A list without voice notes never reads the winner, so it skips
+  // the step. The outer `+c.source` keeps the full-table read a sequential scan in rowid
+  // order even if a source index is added later: every listed source is read, and the
+  // scan order decides the order of rows with equal started_at.
+  const legacyWinner = listsVoiceNotes ? `WITH legacy AS (
+         SELECT source_id, id,
+                COALESCE(json_extract(metadata, '$.transcribed_at'), '') AS transcribed_at,
+                CASE WHEN json_extract(metadata, '$.transcription_outcome') IN ('transcribed','no_speech')
+                     THEN json_extract(metadata, '$.transcription_outcome') ELSE 'transcribed' END AS outcome
+         FROM connector_meeting
+         WHERE source IN ('exo-voice-note','exo-voice-note-dup')
+           AND json_valid(metadata)
+           AND (json_extract(metadata, '$.transcription_outcome') IN ('transcribed','no_speech')
+             OR (json_extract(metadata, '$.transcription_outcome') IS NULL
+               AND typeof(json_extract(metadata, '$.transcript_text')) = 'text'
+               AND length(trim(json_extract(metadata, '$.transcript_text'))) > 0))
+         LIMIT -1 OFFSET 0),
+       latest AS (SELECT source_id, MAX(transcribed_at) AS transcribed_at FROM legacy GROUP BY source_id),
+       winner AS (
+         SELECT l.source_id, MIN(l.id) AS id, l.outcome FROM legacy l
+         JOIN latest m ON m.source_id = l.source_id AND m.transcribed_at = l.transcribed_at
+         GROUP BY l.source_id)
+       ` : "";
   const res = await tolerate(() =>
     tcw.sql.db(CONNECTORS_SQL_DB_NAME).query(
-      `SELECT id, source, source_id, title, started_at, duration_secs,
-              CASE WHEN source = 'exo-voice-note' AND metadata IS NOT NULL THEN
-                CASE WHEN json_valid(metadata) THEN json_object(
-                  'transcription_outcome', json_extract(metadata, '$.transcription_outcome'),
-                  'note_kv_key',           json_extract(metadata, '$.note_kv_key'),
-                  'note_edited_at',        json_extract(metadata, '$.note_edited_at'),
-                  'audio_kv_key',          json_extract(metadata, '$.audio_kv_key'),
-                  'audio_stored',          json_extract(metadata, '$.audio.stored'))
+      `${legacyWinner}SELECT c.id, c.source, c.source_id, c.title, c.started_at, c.duration_secs,
+              CASE WHEN c.source = 'exo-voice-note' THEN
+                CASE WHEN json_valid(COALESCE(c.metadata, '{}')) THEN json_object(
+                  'transcription_outcome', json_extract(c.metadata, '$.transcription_outcome'),
+                  'transcription_error_code', json_extract(c.metadata, '$.transcription_error_code'),
+                  'legacy_transcript_outcome', ${listsVoiceNotes ? "w.outcome" : "NULL"},
+                  'transcript_commit_outcome', ${commitOutcome},
+                  'has_transcript_text',   (typeof(json_extract(c.metadata, '$.transcript_text')) = 'text'
+                    AND length(trim(json_extract(c.metadata, '$.transcript_text'))) > 0),
+                  'note_kv_key',           json_extract(c.metadata, '$.note_kv_key'),
+                  'note_edited_at',        json_extract(c.metadata, '$.note_edited_at'),
+                  'audio_kv_key',          json_extract(c.metadata, '$.audio_kv_key'),
+                  'audio_stored',          json_extract(c.metadata, '$.audio.stored'),
+                  'audio_device_platform', json_extract(c.metadata, '$.audio.device.platform'),
+                  'capture',               json_extract(c.metadata, '$.capture'))
                 ELSE 'invalid' END
-              END AS pipeline_metadata
-       FROM connector_meeting
-       WHERE source IN (${placeholders}) ORDER BY started_at DESC`,
+              END AS pipeline_metadata,
+              CASE WHEN c.source = 'exo-voice-note' AND json_valid(COALESCE(c.metadata, '{}'))
+                THEN json_extract(c.metadata, '$.capture.duration_ms') END AS capture_duration_ms,
+              CASE WHEN c.source = '${EXO_MERGED_SOURCE}' AND json_valid(COALESCE(c.metadata, '{}'))
+                THEN json_extract(c.metadata, '$.merge.members') END AS merge_members
+       FROM connector_meeting c${listsVoiceNotes ? " LEFT JOIN winner w ON w.source_id = c.source_id" : ""}
+       WHERE +c.source IN (${placeholders}) ORDER BY c.started_at DESC`,
       [...sources],
     ),
   );
@@ -189,7 +289,7 @@ export async function listMeetingsRead(
       sourceId,
       title: cellStr(row, 3),
       startedAt: cellStr(row, 4),
-      durationSecs: cellNum(row, 5),
+      durationSecs: source === VOICE_NOTE_SOURCE ? preciseDurationSeconds(cellNum(row, 5), row[7]) : cellNum(row, 5),
     };
     if (source === VOICE_NOTE_SOURCE) {
       const rawPipelineMetadata = cellStr(row, 6);
@@ -212,6 +312,10 @@ export async function listMeetingsRead(
           console.warn(`Meeting explorer: voice-note row ${id} has invalid metadata JSON; its pipeline will batch-read metadata`);
         }
       }
+    }
+    if (source === EXO_MERGED_SOURCE) {
+      const members = parseMergeMembers(cellStr(row, 8));
+      if (members) item.mergeMembers = members;
     }
     meetings.push(item);
   }
@@ -342,7 +446,7 @@ export async function readTranscript(
  * sentence. Deliberately unlike `meetingsView.transcriptText`, which drops
  * speakers — a pasted transcript without "who said it" is far less useful.
  */
-export function transcriptCopyText(sentences: FirefliesSentence[]): string {
+export function transcriptCopyText(sentences: readonly FirefliesSentence[]): string {
   return sentences
     .map((s) => (s.speaker_name ? `${s.speaker_name}: ${s.text}` : s.text))
     .join("\n");

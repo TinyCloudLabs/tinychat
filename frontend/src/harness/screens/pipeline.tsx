@@ -29,7 +29,7 @@ const CASES: [string, Partial<NotePipelineInput>][] = [
   ["Offline", { online: false }],
   ["Upload failed", { space: unsaved({ failed: { kind: "timeout", message: "deadline" } }) }],
   ["Audio too large (info only)", { space: unsaved({ failed: { kind: "source", message: "Audio file is too large to read" } }) }],
-  ["Private: transcribing 4 of 9", { space: SAVED, transcript: { inSpace: null, onDevice: null, cloud: { kind: "active", status: { kind: "processing", completed: 4, total: 9 } } } }],
+  ["Private: transcribing 4 of 9 parts done", { space: SAVED, transcript: { inSpace: null, onDevice: null, cloud: { kind: "active", status: { kind: "processing", completed: 4, total: 9 } } } }],
   ["Private unavailable", { space: SAVED, transcript: { inSpace: null, onDevice: null, cloud: { kind: "blocked", reason: "unavailable" } } }],
   ["Local: downloading the model", { route: "on-device", space: SAVED, transcript: { inSpace: null, cloud: null, onDevice: onDevice({ model: { state: "downloading", bytes: 268, totalBytes: 640, error: null }, download: "running" }) } }],
   ["Transcript ready on this phone, audio waiting 2nd", { route: "on-device", space: unsaved({ waitingBehind: 1 }, { busy: true, depth: 2 }), transcript: { inSpace: null, cloud: null, onDevice: onDevice({ stt: { state: "done", error: null } }) } }],

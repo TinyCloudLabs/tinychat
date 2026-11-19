@@ -1,3 +1,4 @@
+import { HIDDEN_FROM_PICKER } from "@/lib/localTranscriber";
 import type {
   WhisperModelId,
   WhisperModelInfo,
@@ -70,6 +71,21 @@ export function downloadsReducer(
 
 export function progressPercent(fraction: number): number {
   return Math.round(clamp01(fraction) * 100);
+}
+
+/** The models the picker offers. A hidden model stays offered while it is selected, downloading, or on disk. */
+export function pickerModels(
+  models: readonly WhisperModelInfo[],
+  selected: WhisperModelId | null,
+): WhisperModelInfo[] {
+  return models.filter(
+    (m) =>
+      HIDDEN_FROM_PICKER[m.id] !== true ||
+      m.id === selected ||
+      m.selected ||
+      m.downloaded ||
+      m.downloading,
+  );
 }
 
 /** The picker's two halves: models on disk are the radiogroup, the rest are plain rows with Get. */

@@ -1,6 +1,6 @@
 // The Library's row (P1-8): a voice note is titled by its own words, "Voice note" without any, and its line is
 // "7:16 PM · 0:14" inside a day (with "Today" outside one), so notes minutes apart tell apart; a note not yet in the
-// space says "On this phone" or "Saving…". The same on the phone's Soft rows and the plain list.
+// space says "On this browser" or "Saving…". The same on the phone's Soft rows and the plain list.
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
@@ -18,8 +18,8 @@ const meeting: LibraryItem = {
   id: "row-2", source: "fireflies", sourceId: "mtg-2", title: "Weekly sync", startedAt: new Date(2026, 9, 10, 14, 0).toISOString(), durationSecs: 1880,
 };
 
-function render(item: LibraryItem, options: { grouped?: boolean; soft?: boolean; pipeline?: NotePipeline } = {}) {
-  const row = <LibraryRow item={item} now={NOW} grouped={options.grouped ?? false} pipeline={options.pipeline} />;
+function render(item: LibraryItem, options: { grouped?: boolean; soft?: boolean; pipeline?: NotePipeline; onRecentOpen?: (id: string) => void } = {}) {
+  const row = <LibraryRow item={item} now={NOW} grouped={options.grouped ?? false} pipeline={options.pipeline} onRecentOpen={options.onRecentOpen} />;
   return renderToStaticMarkup(
     <MemoryRouter>
       {options.soft === false ? <ul>{row}</ul> : <SoftHomeProvider enabled issues={{}} onDismissIssue={() => true}>{row}</SoftHomeProvider>}
@@ -69,11 +69,11 @@ describe("a voice note's row", () => {
 });
 
 describe("a note not yet settled in the space", () => {
-  test("says where it is: On this phone, or Saving…, as a badge in the row's name too", () => {
-    expect(libraryRowBadge(voice({ onPhone: true }))).toBe("On this phone");
+  test("says where a local note is without a stale Saving badge", () => {
+    expect(libraryRowBadge(voice({ onPhone: true }))).toBe("On this browser");
     expect(libraryRowBadge(voice({ onPhone: true }), "on this Mac")).toBe("On this Mac");
     expect(libraryRowBadge(voice({ onPhone: true }), "in this browser")).toBe("In this browser");
-    expect(libraryRowBadge(voice({ saving: true }))).toBe("Saving…");
+    expect(libraryRowBadge(voice({ saving: true }))).toBeNull();
     expect(libraryRowBadge(voice())).toBeNull();
     expect(libraryRowBadge(meeting)).toBeNull();
   });
@@ -81,7 +81,7 @@ describe("a note not yet settled in the space", () => {
   test("shows track statuses on Soft rows and keeps the old badge in the plain list", () => {
     const onPhone = voice({ id: "on-phone:rec-1", onPhone: true, title: null });
     const active: NotePipeline = { steps: [
-      { key: "phone", label: "On this phone", state: "done" },
+      { key: "phone", label: "On this browser", state: "done" },
       { key: "space", label: "In your space", state: "waiting", caption: "Waiting to upload" },
       { key: "transcript", label: "Transcript", state: "upcoming" },
       { key: "notes", label: "Notes", state: "skipped" },
@@ -93,7 +93,7 @@ describe("a note not yet settled in the space", () => {
     expect(html).toContain("Audio: Waiting to upload");
     expect(html).not.toContain("row-badge");
     const done: NotePipeline = { steps: [
-      { key: "phone", label: "On this phone", state: "done" },
+      { key: "phone", label: "On this browser", state: "done" },
       { key: "space", label: "In your space", state: "done" },
       { key: "transcript", label: "Transcript", state: "skipped" },
       { key: "notes", label: "Notes", state: "skipped" },
@@ -102,5 +102,47 @@ describe("a note not yet settled in the space", () => {
     expect(render(onPhone, { soft: false })).toContain('data-testid="row-badge"');
     expect(render(voice({ saving: true }))).not.toContain("Saving…");
     expect(render(voice())).not.toContain("row-badge");
+  });
+  test("Recent and Library distinguish durable pending, failed and skipped transcript states", () => {
+    const pipeline = (state: "pending" | "failed" | "skipped"): NotePipeline => ({
+      steps: [
+        { key: "phone", label: "On this phone", state: "done" },
+        { key: "space", label: "In your space", state: "done" },
+        { key: "transcript", label: "Transcript", state: "skipped" },
+        { key: "notes", label: "Notes", state: "skipped" },
+      ],
+      current: null,
+      done: true,
+      transcriptionState: state,
+      ...(state === "failed" ? { transcriptionErrorCode: "recording_too_large" } : {}),
+    });
+    for (const [state, label] of [
+      ["pending", "Pending"],
+      ["failed", "Failed"],
+      ["skipped", "Not transcribed"],
+    ] as const) {
+      expect(render(voice(), { pipeline: pipeline(state) })).toContain(`Transcript ${label}`);
+      expect(render(voice(), { pipeline: pipeline(state), soft: false })).toContain(`Transcript ${label}`);
+    }
+    expect(render(voice(), { pipeline: pipeline("failed") })).toContain("Your recording is saved, but it&#x27;s too large for private transcription. The audio is kept, so nothing is lost.");
+  });
+});
+
+describe("a pasted transcript's row", () => {
+  const pasted = () => voice({ id: "row-pasted", sourceId: "paste-1", title: "Pasted", durationSecs: null,
+    metadata: { source: "pasted", capture: "pasted" } });
+
+  // It is a Library page, never the saved recording's sheet: the detail view never renders
+  // SavedNote for it, so Recent must link to the note route like every other kind does.
+  test("opens as a note page from Recent, not the saved-note sheet", () => {
+    const html = render(pasted(), { onRecentOpen: () => undefined });
+    expect(html).toContain('href="/chat/capture/library/row-pasted"');
+    const recorded = render(voice(), { onRecentOpen: () => undefined });
+    expect(recorded).not.toContain('href="/chat/capture/library/row-1"');
+  });
+
+  test("titled by its own title with the pasted source in its line", () => {
+    expect(libraryRowTitle(pasted())).toBe("Pasted");
+    expect(libraryRowMeta(pasted(), NOW, false)).toContain("Pasted transcript");
   });
 });

@@ -41,7 +41,7 @@ function exitCode(state, outer) {
 }
 function classify(native, value, exit) {
   if ((exit !== undefined && exit !== 0) || value.ok === false || value.error || native === 'error' || native === 'failed' || value.status === 'restart-required') return 'failed';
-  if (['pending', 'running', 'awaiting-approval', 'verifying', 'login-required'].includes(native) || ['awaiting-approval', 'verifying', 'login-required', 'in-progress'].includes(value.status)) return 'pending';
+  if (['pending', 'running', 'awaiting-approval', 'verifying', 'login-required'].includes(native) || ['awaiting-approval', 'verifying', 'login-required', 'onboarding-required', 'access-required', 'in-progress'].includes(value.status)) return 'pending';
   return native === 'completed' || value.ok === true || value.status === 'ready' ? 'completed' : 'unavailable';
 }
 function details(value) {
@@ -51,9 +51,9 @@ function details(value) {
     if (v !== undefined) result.push(`${field}=${v}`);
   }
   for (const field of ['inputBytes', 'captureMs', 'loginMs']) if (number(value[field])) result.push(`${field}=${value[field]}`);
-  if (['ready', 'login-required', 'awaiting-approval', 'login-failed', 'in-progress', 'visible-complete', 'restart-required'].includes(value.status)) result.push(`status=${value.status}`);
+  if (['ready', 'login-required', 'onboarding-required', 'access-required', 'awaiting-approval', 'login-failed', 'in-progress', 'visible-complete', 'restart-required'].includes(value.status)) result.push(`status=${value.status}`);
   const context = value.context ?? value;
-  if (typeof context.profile === 'string' && /^tinychat-agent(?:-\d+)?$/.test(context.profile)) result.push(`profile=${context.profile}`);
+  if (typeof context.profile === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(context.profile)) result.push(`profile=${context.profile}`);
   if (id(context.space)) result.push(`space=${context.space}`);
   if (value.status && object(value.access)) result.push('accessEvidence=historical');
   if (value.access === 'not-tested') result.push('access=not-tested');
@@ -168,7 +168,7 @@ export function buildSessionHandoff({ sessionID, messages = [], receipt, observa
   const complete = !revisionChanged && (latestCoverage?.value.coverage?.visibleComplete ?? latestCoverage?.value.progress?.visibleComplete ?? latestCoverage?.value.visibleComplete);
   const latestAuth = reverse.find(event => event.stage === 'auth');
   const hasTraversal = events.some(event => event.stage === 'retrieval' && id(event.value.operation));
-  const defaultNextAction = nodeUnavailable ? 'Restore Node.js 20 or later on the client PATH, then retry the same saved operation; keep the selected TinyCloud profile and authorization.'
+  const defaultNextAction = nodeUnavailable ? 'Restore Node.js 22.20 or later on the client PATH, then retry the same saved operation; keep the selected TinyCloud profile and authorization.'
     : revisionChanged ? 'Start an explicit clean traversal of the same intended meeting after REVISION_CHANGED; do not combine body revisions.'
     : !hasTraversal && latestAuth?.status === 'pending' ? 'Complete the existing pending sign-in, then select and acquire the intended meeting to verify actual SQL/body access.'
       : !hasTraversal && latestAuth?.status === 'failed' ? 'Resolve the recorded sign-in failure for the selected profile, then acquire the intended meeting to verify actual SQL/body access.'

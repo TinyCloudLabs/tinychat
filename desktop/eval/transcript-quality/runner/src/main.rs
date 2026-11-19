@@ -43,6 +43,7 @@ fn import_mono(source: &Path, scratch: &Path, system_audio: bool) -> Result<Path
         "rec-eval-smoke",
         &staged,
         system_audio,
+        1,
     )
     .map_err(|error| format!("production mono import failed: {error}"))?;
     Ok(notes.join("eval-smoke.mp3"))

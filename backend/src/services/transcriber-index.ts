@@ -1,7 +1,7 @@
 import type { TinyCloudNode } from "@tinycloud/node-sdk";
 import { assertKvResult, isKvMissingKeyResult, withSessionRefresh } from "@tinyboilerplate/server";
 import type { BackendStorageLane } from "./backend-storage-lane.js";
-import { BackendStorageLane as StorageLane } from "./backend-storage-lane.js";
+import { BackendStorageLane as StorageLane, REQUEST_LANE_WAIT_MS } from "./backend-storage-lane.js";
 import { TranscriptionApiError, type IdempotencyLookup, type TranscriptionApiClient } from "./transcription-api.js";
 
 export const TRANSCRIBER_INDEX_KEY_PREFIX = "transcriber/index/";
@@ -30,11 +30,26 @@ export interface PendingTranscriberCreate {
   createdAt: number;
 }
 
+/** A removal whose provider-side purge is not yet confirmed (TC-3136). `nextAt` is epoch ms. */
+export interface PurgeState { since: number; attempts: number; nextAt: number }
+
+export interface TranscriberIndexEntries {
+  ids: string[];
+  shared: Record<string, ShareProvenance>;
+  /** Present only while a removal's provider-side purge is unconfirmed. */
+  purging?: Record<string, PurgeState>;
+}
+
+function pendingPurges(row: IndexRecord): { purging?: Record<string, PurgeState> } {
+  return row.purging && Object.keys(row.purging).length > 0 ? { purging: row.purging } : {};
+}
+
 /** The stored document. A legacy `{ ids }` document has no shares and no pending creates. */
 interface IndexRecord {
   ids: string[];
   shared?: Record<string, ShareProvenance>;
   pending?: PendingTranscriberCreate[];
+  purging?: Record<string, PurgeState>;
 }
 
 /**
@@ -54,9 +69,18 @@ export interface TranscriberIndexStore {
   /** Shared meeting ids for this address, with their provenance. */
   shares(address: string): Promise<Record<string, ShareProvenance>>;
   /** Ids and shares from ONE read of the document, so ownership and sharing can never disagree. */
-  entries(address: string): Promise<{ ids: string[]; shared: Record<string, ShareProvenance> }>;
+  entries(address: string): Promise<TranscriberIndexEntries>;
+  /**
+   * TC-3136: the owner removed this recording but the capture provider's copy is not yet confirmed
+   * gone. The entry stays in the list as "deleting" and the purge sweeper retries it; nothing
+   * drops it until the provider read-back says not-found. Idempotent.
+   */
+  markPurging(address: string, meetingId: string): Promise<void>;
+  /** Records one failed purge attempt and when the sweeper may try again. */
+  notePurgeAttempt(address: string, meetingId: string, nextAt: number): Promise<void>;
   listAddresses(): Promise<string[]>;
-  beginCreate(address: string, intent: PendingTranscriberCreate): Promise<void>;
+  /** Adds the durable intent and returns ownership from the same lane read/write. */
+  beginCreate(address: string, intent: PendingTranscriberCreate): Promise<TranscriberIndexEntries>;
   completeCreate(address: string, key: string, meetingId: string): Promise<void>;
   abandonCreate(address: string, key: string): Promise<void>;
   listPending(address: string): Promise<PendingTranscriberCreate[]>;
@@ -65,6 +89,13 @@ export interface TranscriberIndexStore {
 export class TooManyPendingCreatesError extends Error {
   constructor() {
     super("too_many_pending_creates");
+  }
+}
+
+export class DuplicateCreateIntentError extends Error {
+  constructor() {
+    super("duplicate_create_intent");
+    this.name = "DuplicateCreateIntentError";
   }
 }
 
@@ -97,6 +128,16 @@ export class KvJsonKv implements JsonKv {
   async put(key: string, value: unknown): Promise<void> {
     await withSessionRefresh(this.node, async () => {
       assertKvResult(await this.node.kv.put(key, value));
+    });
+  }
+
+  /** Atomically enroll a new durable marker. An existing marker is never overwritten. */
+  async putIfAbsent(key: string, value: unknown): Promise<boolean> {
+    return withSessionRefresh(this.node, async () => {
+      const result = await this.node.kv.put(key, value, { ifNoneMatch: "*" });
+      if (!result.ok && result.error.code === "KV_PRECONDITION_FAILED") return false;
+      assertKvResult(result);
+      return true;
     });
   }
 
@@ -152,12 +193,21 @@ function parseRecord(value: unknown): IndexRecord {
   if (shared !== undefined && (shared === null || typeof shared !== "object" || Array.isArray(shared))) {
     throw new Error("transcriber_index_invalid");
   }
+  const purging = "purging" in value ? value.purging : undefined;
+  if (purging !== undefined && (purging === null || typeof purging !== "object" || Array.isArray(purging)
+    || !Object.values(purging).every(state => state && typeof state === "object"
+      && "since" in state && typeof state.since === "number"
+      && "attempts" in state && typeof state.attempts === "number"
+      && "nextAt" in state && typeof state.nextAt === "number"))) {
+    throw new Error("transcriber_index_invalid");
+  }
   return {
     ids: [...value.ids],
     ...(shared === undefined ? {} : {
       shared: Object.fromEntries(Object.entries(shared).map(([id, raw]) => [id, sanitizeProvenance(raw)])),
     }),
     ...(pending === undefined ? {} : { pending: [...pending] }),
+    ...(purging === undefined ? {} : { purging: structuredClone(purging) as Record<string, PurgeState> }),
   };
 }
 
@@ -170,6 +220,10 @@ function withoutId(row: IndexRecord, meetingId: string): IndexRecord {
   if (row.shared && meetingId in row.shared) {
     const { [meetingId]: _removed, ...rest } = row.shared;
     next.shared = rest;
+  }
+  if (row.purging && meetingId in row.purging) {
+    const { [meetingId]: _removed, ...rest } = row.purging;
+    next.purging = rest;
   }
   return next;
 }
@@ -190,17 +244,35 @@ export class JsonTranscriberIndexStore implements TranscriberIndexStore {
     if (this.cache.size > CACHE_LIMIT) this.cache.delete(this.cache.keys().next().value!);
   }
 
-  private async read(key: string): Promise<IndexRecord> {
+  private fresh(key: string): IndexRecord | undefined {
     const cached = this.cache.get(key);
-    if (cached && cached.until > Date.now()) {
-      this.cache.delete(key);
-      this.cache.set(key, cached);
-      return cached.row;
-    }
-    if (cached) this.cache.delete(key);
+    if (!cached) return undefined;
+    this.cache.delete(key);
+    if (cached.until <= Date.now()) return undefined;
+    this.cache.set(key, cached);
+    return cached.row;
+  }
+
+  private async read(key: string): Promise<IndexRecord> {
+    const cached = this.fresh(key);
+    if (cached) return cached;
     const row = parseRecord(await this.json.get<IndexRecord>(key));
     this.remember(key, row);
     return row;
+  }
+
+  /**
+   * Request-path reads (TC-1006). A fresh cached document is answered without queueing on the
+   * shared storage lane: the cache is only filled and replaced inside lane jobs after a committed
+   * read or write, so a hit is what a queued read would have returned for every write this caller
+   * has awaited. A miss waits at most REQUEST_LANE_WAIT_MS to start, then rejects (the routes
+   * answer 503) instead of outwaiting the client.
+   */
+  private view<T>(address: string, project: (row: IndexRecord) => T): Promise<T> {
+    const key = indexKey(address);
+    const cached = this.fresh(key);
+    if (cached) return Promise.resolve(project(cached));
+    return this.lane.run(async () => project(await this.read(key)), { waitTimeoutMs: REQUEST_LANE_WAIT_MS });
   }
 
   private async update(address: string, change: (current: IndexRecord) => IndexRecord): Promise<void> {
@@ -213,21 +285,33 @@ export class JsonTranscriberIndexStore implements TranscriberIndexStore {
   }
 
   list(address: string): Promise<string[]> {
-    return this.lane.run(async () => [...(await this.read(indexKey(address))).ids]);
+    return this.view(address, row => [...row.ids]);
   }
 
   listPending(address: string): Promise<PendingTranscriberCreate[]> {
-    return this.lane.run(async () => (await this.read(indexKey(address))).pending?.map(intent => ({ ...intent })) ?? []);
+    return this.view(address, row => row.pending?.map(intent => ({ ...intent })) ?? []);
   }
 
   shares(address: string): Promise<Record<string, ShareProvenance>> {
-    return this.lane.run(async () => structuredClone((await this.read(indexKey(address))).shared ?? {}));
+    return this.view(address, row => structuredClone(row.shared ?? {}));
   }
 
-  entries(address: string): Promise<{ ids: string[]; shared: Record<string, ShareProvenance> }> {
-    return this.lane.run(async () => {
-      const row = await this.read(indexKey(address));
-      return structuredClone({ ids: row.ids, shared: row.shared ?? {} });
+  entries(address: string): Promise<TranscriberIndexEntries> {
+    return this.view(address, row => structuredClone({ ids: row.ids, shared: row.shared ?? {}, ...pendingPurges(row) }));
+  }
+
+  markPurging(address: string, meetingId: string): Promise<void> {
+    return this.update(address, row => {
+      if (!row.ids.includes(meetingId) || row.purging?.[meetingId]) return row;
+      return { ...row, purging: { ...row.purging, [meetingId]: { since: Date.now(), attempts: 0, nextAt: 0 } } };
+    });
+  }
+
+  notePurgeAttempt(address: string, meetingId: string, nextAt: number): Promise<void> {
+    return this.update(address, row => {
+      const state = row.purging?.[meetingId];
+      if (!state) return row;
+      return { ...row, purging: { ...row.purging, [meetingId]: { ...state, attempts: state.attempts + 1, nextAt } } };
     });
   }
 
@@ -249,11 +333,19 @@ export class JsonTranscriberIndexStore implements TranscriberIndexStore {
     return this.update(address, row => withShare(row, meetingId, provenance));
   }
 
-  beginCreate(address: string, intent: PendingTranscriberCreate): Promise<void> {
-    return this.update(address, row => {
-      if ((row.pending?.length ?? 0) >= MAX_PENDING) throw new TooManyPendingCreatesError();
-      if (row.pending?.some(existing => existing.key === intent.key)) throw new Error("duplicate_create_intent");
-      return { ...row, pending: [...(row.pending ?? []), { ...intent }] };
+  beginCreate(address: string, intent: PendingTranscriberCreate): Promise<TranscriberIndexEntries> {
+    const key = indexKey(address);
+    return this.lane.run(async () => {
+      const row = await this.read(key);
+      const existing = row.pending?.find(candidate => candidate.key === intent.key);
+      if (existing && existing.hash !== intent.hash) throw new DuplicateCreateIntentError();
+      if (!existing && (row.pending?.length ?? 0) >= MAX_PENDING) throw new TooManyPendingCreatesError();
+      const next = existing ? row : { ...row, pending: [...(row.pending ?? []), { ...intent }] };
+      if (!existing) {
+        await this.json.put(key, next);
+        this.remember(key, next);
+      }
+      return structuredClone({ ids: next.ids, shared: next.shared ?? {}, ...pendingPurges(next) });
     });
   }
 

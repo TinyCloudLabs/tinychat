@@ -77,6 +77,12 @@ afterEach(() => {
 });
 
 describe("createTinyCloudWeb", () => {
+  test("requests only manifest permissions on fresh sign-in", () => {
+    createTinyCloudWeb({ request: async () => null } as any);
+    expect(lastTinyCloudConfig.includeAccountRegistryPermissions).toBe(false);
+    expect("domain" in lastTinyCloudConfig).toBe(false);
+  });
+
   test("uses the current provider option and stores composed request manifests", () => {
     const manifests = [
       {
@@ -129,9 +135,26 @@ describe("createTinyCloudWeb", () => {
 
     expect(lastTinyCloudConfig.manifest).toBe(explicitManifest);
   });
+
+  test("adds the replication option only when supplied (flag OFF keeps the config key-for-key)", () => {
+    const provider = { request: async () => null } as any;
+    createTinyCloudWeb(provider, { tinycloudHosts: ["https://node.example"] });
+    expect("replication" in lastTinyCloudConfig).toBe(false);
+    const withoutKeys = Object.keys(lastTinyCloudConfig).sort();
+
+    const replication = { enabled: true, prefixes: ["app/x/"], storage: {} } as any;
+    createTinyCloudWeb(provider, { tinycloudHosts: ["https://node.example"], replication });
+    expect(lastTinyCloudConfig.replication).toBe(replication);
+    expect(Object.keys(lastTinyCloudConfig).sort()).toEqual([...withoutKeys, "replication"].sort());
+  });
 });
 
 describe("createAndSignIn", () => {
+  test("passes a desktop development SIWE domain to the SDK", async () => {
+    await createAndSignIn({ request: async () => null } as any, { domain: "localhost" });
+    expect(lastTinyCloudConfig.domain).toBe("localhost");
+  });
+
   test("forces a fresh SIWE message when a backend nonce is supplied", async () => {
     lastClearPersistedSessionAddress = undefined;
     lastSignInOptions = undefined;
@@ -155,8 +178,21 @@ describe("createAndSignIn", () => {
 });
 
 describe("restoreTinyCloudWebSession", () => {
+  test("restores with account registry permissions disabled", async () => {
+    restoreResult = { status: "restored", session: { address: "0xabc" } };
+    await restoreTinyCloudWebSession("0xabc");
+    expect(lastTinyCloudConfig.includeAccountRegistryPermissions).toBe(false);
+  });
+
+  test("a restore never sets up an account, even when given a provider", async () => {
+    restoreResult = { status: "restored", session: { address: "0xabc" } };
+    await restoreTinyCloudWebSession("0xabc", { provider: { request: async () => [] } as never });
+    expect(lastTinyCloudConfig.autoBootstrapAccount).toBe(false);
+  });
+
   test("restores a session-only TinyCloudWeb without a provider", async () => {
     restoreResult = { status: "restored", session: { address: "0xabc" } };
+    persistedSession = { signature: "stored-session-signature", tinycloudSession: { spaceId: "space-from-sdk" } };
     lastRestoreAddress = undefined;
     lastCleanupCalled = false;
 
@@ -173,6 +209,16 @@ describe("restoreTinyCloudWebSession", () => {
     expect(lastTinyCloudConfig.autoCreateSpace).toBe(false);
     expect(lastTinyCloudConfig.tinycloudHosts).toEqual(["https://node.example"]);
     expect(lastTinyCloudConfig.sessionStorage.constructor.name).toBe("BrowserSessionStorage");
+  });
+
+  test("passes replication only when supplied; otherwise the SDK config has no such key", async () => {
+    restoreResult = { status: "restored", session: { address: "0xabc" } };
+    await restoreTinyCloudWebSession("0xabc", { tinycloudHosts: ["https://node.example"] });
+    expect("replication" in lastTinyCloudConfig).toBe(false);
+
+    const replication = { enabled: true, prefixes: ["app/x/"], storage: {} } as any;
+    await restoreTinyCloudWebSession("0xabc", { replication });
+    expect(lastTinyCloudConfig.replication).toBe(replication);
   });
 
   test("keeps the SDK's spaceId when it provides one", async () => {

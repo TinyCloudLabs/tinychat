@@ -17,8 +17,14 @@ import { MemoryRouter } from "react-router-dom";
 
 import {
   TranscriberView,
+  activeMeetingForUrl,
+  clearSendIntentKey,
+  clearSendIntentsForOwner,
   describeFailure,
+  getOrCreateSendIntent,
+  isActiveStatus,
   meetingTitle,
+  normalizeMeetingUrl,
   statusLabel,
   type TranscriberViewProps,
 } from "./TranscriberSection";
@@ -67,6 +73,91 @@ function render(patch: Partial<TranscriberViewProps> = {}): string {
 }
 
 describe("TranscriberView", () => {
+  test("an ambiguous send stays disabled while checking and while the normalized URL has an active bot", () => {
+    const checking = render({ form: { url: "https://meet.jit.si/room", botName: "", submitting: false,
+      checking: true, error: null } });
+    expect(checking).toContain("Checking whether the notetaker joined…");
+    expect(checking).toMatch(/<button[^>]*disabled=""[^>]*aria-label="Send notetaker to meeting"/);
+    expect(checking).not.toMatch(/id="transcriber-meeting-url"[^>]*disabled=""/);
+    const active = render({ form: { url: "https://meet.jit.si/room", botName: "", submitting: false,
+      active: true, error: null } });
+    expect(active).toContain("already joining this meeting");
+    expect(active).toMatch(/<button[^>]*disabled=""[^>]*aria-label="Send notetaker to meeting"/);
+  });
+
+  test("a failed send reloads its stable key and request fields, then an explicit clear replaces it", () => {
+    const values = new Map<string, string>();
+    const storage = {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => { values.set(key, value); },
+      removeItem: (key: string) => { values.delete(key); },
+    };
+    const url = "https://meet.jit.si/room";
+    const first = getOrCreateSendIntent(url, { meeting_url: `${url}#capability`, bot_name: "First" }, undefined, storage);
+    const reloaded = getOrCreateSendIntent(url, { meeting_url: url, bot_name: "Edited" }, undefined, storage);
+    expect(reloaded).toEqual(first);
+    expect(getOrCreateSendIntent("https://meet.jit.si/other", { meeting_url: "https://meet.jit.si/other" }, undefined, storage).key)
+      .not.toBe(first.key);
+    clearSendIntentKey(url, storage);
+    expect(getOrCreateSendIntent(url, { meeting_url: url }, undefined, storage).key).not.toBe(first.key);
+  });
+
+  test("send intent storage failures fall back to a usable in-memory intent", () => {
+    const storage = {
+      getItem: () => { throw new Error("blocked"); },
+      setItem: () => { throw new Error("blocked"); },
+      removeItem: () => { throw new Error("blocked"); },
+    };
+    const intent = getOrCreateSendIntent("https://meet.jit.si/room", { meeting_url: "https://meet.jit.si/room" }, undefined, storage);
+    const retry = getOrCreateSendIntent("https://meet.jit.si/room", { meeting_url: "https://meet.jit.si/room" }, undefined, storage);
+    expect(intent.key).toMatch(/^manual-v1-[0-9a-f-]{36}$/);
+    expect(retry.key).toBe(intent.key);
+    expect(() => clearSendIntentKey("https://meet.jit.si/room", storage)).not.toThrow();
+  });
+
+  test("a tampered stored send intent is replaced instead of replayed as a bad key", () => {
+    const values = new Map<string, string>();
+    const storage = {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => { values.set(key, value); },
+      removeItem: (key: string) => { values.delete(key); },
+    };
+    const url = "https://meet.jit.si/tampered";
+    const owner = "0xtamper";
+    const minted = getOrCreateSendIntent(url, { meeting_url: url }, undefined, storage, owner);
+    const storageKey = [...values.keys()][0]!;
+    for (const tampered of ['{"key":"not-a-send-key","input":{"meeting_url":"https://meet.jit.si/tampered"}}',
+      '{"key":"manual-v1-11111111-1111-4111-8111-111111111111","input":{"meeting_url":""}}',
+      "manual-v1-11111111-1111-4111-8111-111111111111", "{not json"]) {
+      // Only storage holds the tampered row: a live component would have no memory entry either.
+      clearSendIntentKey(url, storage, owner);
+      values.set(storageKey, tampered);
+      const replacement = getOrCreateSendIntent(url, { meeting_url: url }, undefined, storage, owner);
+      expect(replacement.key).toMatch(/^manual-v1-[0-9a-f-]{36}$/);
+      expect(replacement.key).not.toBe(minted.key);
+      expect(replacement.input.meeting_url).toBe(url);
+      expect(JSON.parse(values.get(storageKey)!)).toMatchObject({ key: replacement.key });
+    }
+  });
+
+  test("send intents are account-scoped and sign-out clears only that account", () => {
+    const values = new Map<string, string>();
+    const storage = {
+      get length() { return values.size; },
+      key: (index: number) => [...values.keys()][index] ?? null,
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => { values.set(key, value); },
+      removeItem: (key: string) => { values.delete(key); },
+    } as Storage;
+    const url = "https://meet.jit.si/account-room";
+    const a = getOrCreateSendIntent(url, { meeting_url: url }, undefined, storage, "0xAAA");
+    const b = getOrCreateSendIntent(url, { meeting_url: url }, undefined, storage, "0xBBB");
+    expect(a.key).not.toBe(b.key);
+    clearSendIntentsForOwner("0xAAA", storage);
+    expect(getOrCreateSendIntent(url, { meeting_url: url }, undefined, storage, "0xAAA").key).not.toBe(a.key);
+    expect(getOrCreateSendIntent(url, { meeting_url: url }, undefined, storage, "0xBBB").key).toBe(b.key);
+  });
+
   test("TC-988: not_accepted shows the invite acceptance copy in calendar outcomes", () => {
     const html = render({ calendarOutcomes: [{ id: "unaccepted", title: "Calendar invite", start: 1_800_000_000_000,
       reason: "not_accepted" }] });
@@ -155,6 +246,38 @@ describe("TranscriberView", () => {
     expect(failed).toContain(">Remove<");
   });
 
+  test("a stuck-joining notetaker is still active, labelled, and ends the same way as a joining one", () => {
+    const stuck = render({ meetings: [meeting({ status: "needs_help" })] });
+    expect(stuck).toContain("Stuck joining");
+    expect(stuck).toContain('aria-label="End meeting and transcribe now"');
+    expect(stuck).not.toContain(">Remove<");
+    expect(stuck).not.toContain(">Transcript<");
+  });
+
+  test("an unrecognised status is labelled Working and stays active, so it can still be ended", () => {
+    const unknownStatus = "some_future_state" as string as TranscriberMeetingStatus;
+    const future = meeting({ status: unknownStatus });
+    expect(statusLabel(unknownStatus)).toBe("Working");
+    expect(isActiveStatus(unknownStatus)).toBe(true);
+    const html = render({ meetings: [future] });
+    expect(html).toContain("Working");
+    expect(html).toContain('aria-label="End meeting and transcribe now"');
+    expect(activeMeetingForUrl([future], normalizeMeetingUrl(future.meeting_url)!)).toBe(future);
+  });
+
+  test("only completed, failed and cancelled end a meeting", () => {
+    expect(["completed", "failed", "cancelled"].map(status => isActiveStatus(status))).toEqual([false, false, false]);
+    expect(["queued", "joining", "waiting_for_admission", "needs_help", "in_progress", "processing"]
+      .every(status => isActiveStatus(status))).toBe(true);
+  });
+
+  test("a stuck-joining meeting blocks a repeat send to its link like a joining one", () => {
+    for (const status of ["joining", "needs_help"] as const) {
+      const row = meeting({ status });
+      expect(activeMeetingForUrl([row], normalizeMeetingUrl(row.meeting_url)!)).toBe(row);
+    }
+  });
+
   test("TC-581: a recording shared from another account says so and only removes it from this list", () => {
     const shared = render({ meetings: [meeting({ status: "completed", metadata: { source: "google-calendar-autojoin",
       calendar_title: "Team sync", scheduled_start: "2026-09-25T12:00:00.000Z", shared: true } })] });
@@ -191,6 +314,22 @@ describe("TranscriberView", () => {
     expect(html).toContain("mtg_x");
     expect(html).toContain("Could not be read");
     expect(html).toContain(">Remove<");
+  });
+
+  test("a recording whose delete is not confirmed yet says it is being deleted, never that it is gone", () => {
+    const html = render({ meetings: [{ id: "mtg_x", unavailable: true, deleting: true }] });
+    expect(html).toContain("Being deleted. We keep trying until it&#x27;s gone.");
+    expect(html).toContain(">Retry now<");
+    expect(html).not.toContain(">Try again<");
+    expect(html).not.toContain("Could not be read");
+  });
+
+  test("a removed recording whose copy remains says so on its own row, with no Remove button", () => {
+    const html = render({ meetings: [{ id: "mtg_x", unavailable: true, kept: true }] });
+    expect(html).toContain("Removed from your list but still with the notetaker service. To have it deleted, email team@tinycloud.xyz.");
+    expect(html).not.toContain(">Remove<");
+    expect(html).not.toContain("Could not be read");
+    expect(html).not.toContain("Being deleted");
   });
 
   test("an open transcript renders speaker-attributed segments with timestamps", () => {
@@ -291,6 +430,7 @@ describe("TranscriberView", () => {
       "queued",
       "joining",
       "waiting_for_admission",
+      "needs_help",
       "in_progress",
       "processing",
       "completed",
@@ -300,17 +440,32 @@ describe("TranscriberView", () => {
     for (const s of all) expect(statusLabel(s).length).toBeGreaterThan(0);
   });
 
-  test("failures map to plain copy", () => {
-    expect(describeFailure({ status: "rejected", httpStatus: 400, code: "invalid_meeting_url", message: null })).toContain(
-      "meeting link",
+  test("invalid meeting URL errors use fixed lookup guidance only for Meet lookup paths", () => {
+    const result = {
+      status: "rejected" as const,
+      httpStatus: 400,
+      code: "invalid_meeting_url",
+      message: "server text must not be shown",
+    };
+    expect(describeFailure(result, "https://meet.google.com/lookup/c2dhdn5hqs")).toBe(
+      "Paste the meet.google.com/abc-defg-hij link for this meeting",
     );
-    expect(describeFailure({ status: "rejected", httpStatus: 400, code: "unsupported_platform", message: null })).toContain(
-      "platform",
+    for (const url of [
+      "https://meet.google.com/abc-defg-hij",
+      "https://meet.google.com.evil.example/lookup/c2dhdn5hqs",
+    ]) {
+      expect(describeFailure(result, url)).toBe("That doesn't look like a meeting link.");
+    }
+  });
+
+  test("other failure codes keep their current messages", () => {
+    expect(describeFailure({ status: "rejected", httpStatus: 400, code: "unsupported_platform", message: null })).toBe(
+      "That meeting platform isn't supported yet.",
     );
-    expect(describeFailure({ status: "retryable", httpStatus: 503, code: "transcriber_unavailable" })).toContain(
-      "temporarily unavailable",
+    expect(describeFailure({ status: "retryable", httpStatus: 503, code: "transcriber_unavailable" })).toBe(
+      "The transcriber is temporarily unavailable. Try again in a moment.",
     );
-    expect(describeFailure({ status: "feature-dark" })).toContain("configured");
+    expect(describeFailure({ status: "feature-dark" })).toBe("Transcription isn't configured on this backend.");
   });
 
   test("TC-907: a capacity refusal shows ptx's busy message, not the generic outage copy", () => {
@@ -318,6 +473,17 @@ describe("TranscriberView", () => {
     expect(describeFailure({ status: "retryable", httpStatus: 429, code: "capacity_exhausted", message })).toBe(message);
     expect(describeFailure({ status: "retryable", httpStatus: 429, code: "capacity_exhausted" })).toContain("notetakers are busy");
     expect(describeFailure({ status: "retryable", httpStatus: 429, code: "upstream_rate_limited" })).toContain("temporarily unavailable");
+  });
+});
+
+describe("pasted meeting links", () => {
+  test("loosely pasted forms of one Meet link share the dedupe key of the link ptx joins", () => {
+    const key = normalizeMeetingUrl("https://meet.google.com/ofj-ahew-paa");
+    expect(key).toBe("https://meet.google.com/ofj-ahew-paa");
+    for (const pasted of ["https://google.com/meet/ofj-ahew-paa", "meet.google.com/ofj-ahew-paa", "ofj-ahew-paa", "Join: meet.google.com/ofj-ahew-paa"]) {
+      expect(normalizeMeetingUrl(pasted)).toBe(key);
+    }
+    expect(normalizeMeetingUrl("not a meeting link")).toBeNull();
   });
 });
 
@@ -367,6 +533,63 @@ describe("transcriber client", () => {
     const client = createTranscriberClient("https://api.example", { sessionStore: session(), fetchImpl });
     expect(await client.get("mtg_1")).toEqual({ status: "not-found" });
     expect(await client.remove("mtg_1")).toEqual({ status: "not-found" });
+  });
+
+  test("remove tells a confirmed delete (204), one still being retried (202) and one whose copy remains (200 not_deleted)", async () => {
+    const answers = [
+      new Response(null, { status: 204 }),
+      new Response(JSON.stringify({ id: "mtg_1", status: "deleting" }), { status: 202 }),
+      new Response(JSON.stringify({ id: "mtg_1", status: "not_deleted" }), { status: 200 }),
+    ];
+    const fetchImpl = (async () => answers.shift()!) as typeof fetch;
+    const client = createTranscriberClient("https://api.example", { sessionStore: session(), fetchImpl });
+    expect(await client.remove("mtg_1")).toEqual({ status: "ok", value: { deleting: false, notDeleted: false } });
+    expect(await client.remove("mtg_1")).toEqual({ status: "ok", value: { deleting: true, notDeleted: false } });
+    expect(await client.remove("mtg_1")).toEqual({ status: "ok", value: { deleting: false, notDeleted: true } });
+  });
+
+  test("removeAll sends DELETE to the collection and reports what is still deleting", async () => {
+    const seen: { url: string; method?: string }[] = [];
+    const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+      seen.push({ url: String(url), method: init?.method });
+      return new Response(JSON.stringify({ removed: 3, deleting: 1, listOnly: 1, notDeleted: 1, privateCloudDeleted: 2 }), { status: 202 });
+    }) as typeof fetch;
+    const client = createTranscriberClient("https://api.example", { sessionStore: session(), fetchImpl });
+    expect(await client.removeAll()).toEqual({ status: "ok", value: { removed: 3, deleting: 1, listOnly: 1, notDeleted: 1, privateCloudDeleted: 2 } });
+    expect(seen).toEqual([{ url: "https://api.example/api/transcriber/meetings", method: "DELETE" }]);
+  });
+
+  test("removeAll from a backend that cannot say what was really deleted is rejected, never guessed", async () => {
+    // An older backend answers { removed, deleting } only, or has no private cloud count: what was really deleted is unknown.
+    const fetchImpl = (async () => new Response(JSON.stringify({ removed: 3, deleting: 0, listOnly: 0, notDeleted: 0 }), { status: 200 })) as typeof fetch;
+    const client = createTranscriberClient("https://api.example", { sessionStore: session(), fetchImpl });
+    expect(await client.removeAll()).toMatchObject({ status: "rejected" });
+  });
+
+  test("removeAll accepts a null private cloud count (service not used) but rejects an absent one", async () => {
+    const answer = (body: object) => (async () => new Response(JSON.stringify(body), { status: 200 })) as typeof fetch;
+    const base = { removed: 1, deleting: 0, listOnly: 0, notDeleted: 0 };
+    const used = createTranscriberClient("https://api.example", { sessionStore: session(), fetchImpl: answer({ ...base, privateCloudDeleted: null }) });
+    expect(await used.removeAll()).toEqual({ status: "ok", value: { ...base, privateCloudDeleted: null } });
+    const absent = createTranscriberClient("https://api.example", { sessionStore: session(), fetchImpl: answer(base) });
+    expect(await absent.removeAll()).toMatchObject({ status: "rejected" });
+  });
+
+  test("scope reads a boolean, calls the scope path, and a 404 is feature-dark", async () => {
+    const urls: string[] = [];
+    const answer = (status: number, body: object) => (async (url: string | URL | Request) => {
+      urls.push(String(url));
+      return new Response(JSON.stringify(body), { status });
+    }) as typeof fetch;
+    const on = createTranscriberClient("https://api.example", { sessionStore: session(), fetchImpl: answer(200, { privateCloud: true }) });
+    expect(await on.scope()).toEqual({ status: "ok", value: { privateCloud: true } });
+    expect(urls).toEqual(["https://api.example/api/transcriber/meetings/scope"]);
+    const off = createTranscriberClient("https://api.example", { sessionStore: session(), fetchImpl: answer(200, { privateCloud: false }) });
+    expect(await off.scope()).toEqual({ status: "ok", value: { privateCloud: false } });
+    const dark = createTranscriberClient("https://api.example", { sessionStore: session(), fetchImpl: answer(404, { error: "not_found" }) });
+    expect(await dark.scope()).toEqual({ status: "feature-dark" });
+    const unreadable = createTranscriberClient("https://api.example", { sessionStore: session(), fetchImpl: answer(200, { privateCloud: "yes" }) });
+    expect(await unreadable.scope()).toMatchObject({ status: "rejected" });
   });
 
   test("create posts JSON; a 400 comes back rejected with its code", async () => {

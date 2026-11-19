@@ -8,7 +8,7 @@ import type { BatchResponse } from "./anarlog/transcription.gen";
 
 /** Source of local transcripts saved in the Meetings store. */
 export const LOCAL_MEETING_SOURCE = "exo-local";
-export const LOCAL_MEETING_SOURCE_LABEL = "Exo Local";
+export const LOCAL_MEETING_SOURCE_LABEL = "TinyCloud One Local";
 
 export type WhisperModel =
   | "QuantizedTinyEn"
@@ -39,6 +39,10 @@ export const LOCAL_WHISPER_MODELS: readonly LocalWhisperModel[] = [
   { id: "QuantizedSmall", label: "Whisper Small (multilingual)", englishOnly: false, approxSizeMb: 264 },
   { id: "QuantizedLargeTurbo", label: "Whisper Large Turbo", englishOnly: false, approxSizeMb: 874 },
 ];
+
+/** Catalog models the model picker does not offer, unless the user has the model selected, downloading, or on disk.
+ *  They stay in the catalog: evals, CI, and existing selections still resolve them. */
+export const HIDDEN_FROM_PICKER: Partial<Record<WhisperModel, true>> = { QuantizedLargeTurbo: true };
 
 /** A transcript made on this Mac by whisper.cpp. */
 export interface OnDeviceTranscriptResult {

@@ -16,5 +16,15 @@ export function appPlatform(): AppPlatform {
   return "web";
 }
 
+/** The TinyCloud SDK panel's layout: "native" for the phone and desktop apps, "web" for a browser. */
+export function sdkUiPlatform(platform: AppPlatform = appPlatform()): "native" | "web" {
+  return platform === "web" ? "web" : "native";
+}
+
+/** The device named in local recording and recovery copy. */
+export function deviceName(platform: AppPlatform = appPlatform()): string {
+  return platform === "tauri" ? "this Mac" : platform === "ios" ? "this iPhone" : platform === "android" ? "this Android phone" : "this browser";
+}
+
 /** The platform screens render for: appPlatform() unless a provider says otherwise (the screenshot harness does, per capture). */
 export const PlatformContext = createContext<AppPlatform>(appPlatform());

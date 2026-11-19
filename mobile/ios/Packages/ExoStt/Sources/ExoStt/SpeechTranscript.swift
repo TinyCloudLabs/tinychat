@@ -12,12 +12,27 @@ enum SpeechTranscript {
     /// Milliseconds, not fractional seconds: CanonicalJSON only accepts whole-integer NSNumbers (TC-836 —
     /// the only type every other timestamp in this schema already uses). Phrases without any words are dropped.
     static func segments(_ phrases: [SpeechPhrase]) -> [[String: Any]] {
-        phrases.compactMap { phrase in
+        phrases.flatMap { phrase -> [[String: Any]] in
             let text = phrase.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !text.isEmpty else { return nil }
+            guard !text.isEmpty else { return [] }
             let start = Int((phrase.startSeconds * 1000).rounded())
             let end = max(start, Int((phrase.endSeconds * 1000).rounded()))
-            return ["start": start, "end": end, "text": text, "speaker": NSNull()]
+            let words = text.split(whereSeparator: \.isWhitespace)
+            let needed = max(1, Int(ceil(Double(end - start) / 30_000)))
+            let count = min(words.count, needed)
+            let nsText = text as NSString
+            let whitespace = try! NSRegularExpression(pattern: "\\s+")
+            let boundaries = whitespace.matches(in: text, range: NSRange(location: 0, length: nsText.length))
+                .map { NSMaxRange($0.range) }
+            return (0..<count).map { index in
+                let from = index == 0 ? 0 : boundaries[index * words.count / count - 1]
+                let to = index == count - 1 ? nsText.length : boundaries[(index + 1) * words.count / count - 1]
+                let pieceStart = start + (end - start) * index / count
+                let pieceEnd = start + (end - start) * (index + 1) / count
+                return ["start": pieceStart, "end": pieceEnd,
+                        "text": nsText.substring(with: NSRange(location: from, length: to - from)), "speaker": NSNull(),
+                        "timing": needed == 1 ? "engine" : "coarse"]
+            }
         }
     }
 

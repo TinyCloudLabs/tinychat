@@ -96,7 +96,7 @@ class VoiceNotesPlugin : Plugin(), CaptureEngine.Listener {
         val commandId = UUID.randomUUID().toString()
         pendingStart = commandId to call
         val max = (call.data.opt("maxDurationMs") as? Number)?.toLong()?.coerceIn(1000, MAX_DURATION_MS) ?: MAX_DURATION_MS
-        try { CaptureService.startFromPlugin(context, max, commandId, call.data.optJSONObject("options")) }
+        try { CaptureService.startFromPlugin(context, max, commandId, call.data.optJSONObject("options") ?: call.data) }
         catch (e: Exception) { pendingStart = null; call.reject(e.message ?: "start_failed", e.message ?: "start_failed") }
     }
     @PermissionCallback private fun afterNotification(call: PluginCall) { startReady(call) }
@@ -151,6 +151,11 @@ class VoiceNotesPlugin : Plugin(), CaptureEngine.Listener {
         val id = call.getString("id") ?: throw IllegalArgumentException("invalid_argument")
         if (engine.status().optString("id") == id) throw IllegalStateException("recording_in_progress")
         engine.library.delete(id); null
+    }
+    // Cache clear affects downloaded playback blobs only; RecordingLibrary rejects local-source eviction.
+    @PluginMethod fun evictCachedAudio(call: PluginCall) = async(call) {
+        val id = call.getString("id") ?: throw IllegalArgumentException("invalid_argument")
+        engine.library.evictCachedAudio(id); null
     }
     @PluginMethod fun readAudioChunk(call: PluginCall) = async(call) {
         val id = call.getString("id") ?: throw IllegalArgumentException("invalid_argument")
@@ -280,6 +285,11 @@ class VoiceNotesPlugin : Plugin(), CaptureEngine.Listener {
         val file = engine.library.audio(id)
         if (!file.isFile) throw IllegalStateException("not_found")
         JSONObject().put("url", android.net.Uri.fromFile(file).toString())
+    }
+    @PluginMethod fun localAudioSize(call: PluginCall) = async(call) {
+        val id = call.getString("id") ?: throw IllegalArgumentException("invalid_argument")
+        engine.library.requireId(id)
+        JSONObject().put("size", engine.library.audio(id).takeIf { it.isFile }?.length() ?: 0L)
     }
     @PluginMethod fun putTranscript(call: PluginCall) = async(call) {
         engine.library.putTranscript(call.getString("id") ?: "", call.data.optJSONObject("transcript") ?: JSONObject())

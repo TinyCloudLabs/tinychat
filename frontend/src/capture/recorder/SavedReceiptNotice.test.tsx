@@ -37,14 +37,14 @@ describe("SavedReceipt notice", () => {
     expect(html).toContain("Saved — part of this recording couldn&#x27;t be written");
     expect(html).not.toContain('role="alert"');
     expect(html).not.toContain("destructive");
-    expect(html).toContain("Saved on this phone");
+    expect(html).toContain("Saved on this browser");
   });
 
   test("no notice for a whole recording", () => {
     expect(receipt({ issues: {} })).not.toContain("voice-note-partial-audio");
   });
 
-  test("never beside 'Exo will finish it automatically'", () => {
+  test("never beside 'TinyCloud One will finish it automatically'", () => {
     const html = receipt({ error: FINALIZATION_PENDING, pendingId: "rec-1" });
     expect(html).toContain("automatically");
     expect(html).not.toContain("voice-note-partial-audio");

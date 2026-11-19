@@ -4,12 +4,13 @@
  * `checked_at` is the observation time of the last persisted source check.
  * Backend-ingest persists each newer completed pass on the existing mount and
  * unlock triggers only (no timer; it can age indefinitely without a trigger).
- * Transcriber uses its existing 30-second pass while active and unlocked; its
- * `checked_at` can lag the latest read by up to one hour because unchanged
- * projections are throttled. Its consumer freshness threshold must exceed
- * one hour plus the 30-second pass interval. Transcriber can also age
- * indefinitely without a pass. Consumers treat missing, stale, or future
- * `checked_at` as unknown. Any stored-field addition requires a version bump.
+ * Transcriber uses its existing 30-second pass while active and unlocked,
+ * refreshing unchanged projections every 50 minutes. With successful passes
+ * of ≤ 60 seconds and timely timer execution, `checked_at` lag is
+ * ≤ H + 2D + I = 50 min + 2×60 s + 30 s = 52 min 30 s < 1h30s.
+ * Transcriber can age indefinitely without a pass. Consumers treat missing,
+ * stale, or future `checked_at` as unknown.
+ * Any stored-field addition requires a version bump.
  */
 
 import { CONNECTORS_KV_PREFIX } from "./connectorStore";
@@ -49,7 +50,7 @@ export interface PendingSnapshotKv {
 }
 
 const timestampFields = ["ts", "storedAt", "updatedAt", "createdAt", "startedAt", "endedAt", "completedAt"] as const;
-const SNAPSHOT_HEARTBEAT_MS = 60 * 60 * 1000;
+const TRANSCRIBER_SNAPSHOT_HEARTBEAT_MS = 50 * 60 * 1000;
 
 export function backendPendingRows(source: string, rows: readonly ConnectorMeetingMeta[]): PendingReconcileMeeting[] {
   return rows.map<PendingReconcileMeeting>((row) => ({
@@ -188,7 +189,7 @@ export async function writePendingReconcileSnapshot(
     }
     if (source === "transcriber" && sameProjection && !future) {
       const checkedAge = observedMs - checkedMs;
-      if (Number.isFinite(checkedAge) && checkedAge < SNAPSHOT_HEARTBEAT_MS) {
+      if (Number.isFinite(checkedAge) && checkedAge < TRANSCRIBER_SNAPSHOT_HEARTBEAT_MS) {
         return { ok: true, changed: false };
       }
     }

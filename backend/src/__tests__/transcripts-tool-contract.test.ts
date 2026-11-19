@@ -36,11 +36,11 @@ test("v2 tool schemas expose only bounded reader and discovery additions", () =>
   expect(TINYCLOUD_LIST_MEETING_ACTIONS_TOOL.function.parameters.properties.includeBody.type).toBe("boolean");
 });
 
-test("every source-filtering tool offers Exo local recordings", () => {
+test("every source-filtering tool offers Exo local recordings and combined meetings", () => {
   const filtering = TINYCLOUD_MEETING_TOOLS.filter((tool) => "source" in tool.function.parameters.properties);
   expect(filtering.map((tool) => tool.function.name)).toContain("tinycloud_find_meetings");
   for (const tool of filtering) {
     const source = (tool.function.parameters.properties as Record<string, { enum?: readonly string[] }>).source;
-    expect(source.enum).toEqual(["fireflies", "google-meet", "tinycloud-transcriber", "exo-local"]);
+    expect(source.enum).toEqual(["fireflies", "google-meet", "tinycloud-transcriber", "exo-local", "exo-merged"]);
   }
 });

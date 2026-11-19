@@ -1,5 +1,5 @@
 import { Router } from "express";
-import type { Request, Response } from "express";
+import type { Request, RequestHandler, Response } from "express";
 import {
   TIERS,
   isModelAllowed,
@@ -41,12 +41,14 @@ import {
 } from "../billing/credits.js";
 import { DEFAULT_CHAT_MODEL } from "@tinyboilerplate/core";
 import { selectChatModel } from "../modelSelection.js";
+import { noteRequestRecord, recordAfterHandler } from "../request-context.js";
+import { DEFAULT_RED_PILL_BASE_URL, PRIVATE_RESPONSE_UNVERIFIED_MESSAGE, RECEIPT_AUDIT_TIMEOUT_MS, STREAMED_RESPONSE_UNVERIFIED_MESSAGE, RedPillAciError, RedPillAttestationError, RedPillResponseLimitError, redPillAciFetch } from "../redpill-aci.js";
 
 // ── RedPill config ───────────────────────────────────────────────────────────
 // REDPILL_API_KEY is required at call time. Missing key returns 500 per-request
 // so the server boots cleanly even without a key configured.
 
-const REDPILL_BASE_URL = process.env.REDPILL_BASE_URL ?? "https://api.redpill.ai/v1";
+const REDPILL_BASE_URL = process.env.REDPILL_BASE_URL ?? DEFAULT_RED_PILL_BASE_URL;
 
 // Reactive context-overflow classifier (§C.12): matches an upstream 400/413 body
 // that reads like a context-window / token-length failure. Kept as a single
@@ -196,12 +198,18 @@ function gateAnnotation(
 export interface ChatRouterOptions {
   flusher?: LedgerFlusher;
   rehydrator?: LedgerRehydrator;
+  /** Verified RedPill fetch; override is for isolated tests only. */
+  redpillFetch?: typeof fetch;
+  /** The paid-chat rate limiter (`applyRateLimiters`), run before the send handler. */
+  paidLimiter?: RequestHandler;
 }
 
 export function createChatRouter(options?: ChatRouterOptions) {
   const flusher = options?.flusher;
   const rehydrator = options?.rehydrator;
+  const redpillFetch = options?.redpillFetch ?? redPillAciFetch(REDPILL_BASE_URL, RECEIPT_AUDIT_TIMEOUT_MS);
   const router = Router();
+  const paidLimiter: RequestHandler = options?.paidLimiter ?? ((_req, _res, next) => next());
 
   router.get("/model-selection", async (_req: Request, res: Response) => {
     res.setHeader("Cache-Control", "no-store");
@@ -218,7 +226,7 @@ export function createChatRouter(options?: ChatRouterOptions) {
    * tier: the model must be allowed for the tier and the tier's credit budget
    * must not be exhausted. Actual credit usage is recorded after the stream.
    */
-  router.post("/", async (req: Request, res: Response) => {
+  router.post("/", paidLimiter, recordAfterHandler(async (req: Request, res: Response) => {
     const apiKey = process.env.REDPILL_API_KEY;
     if (!apiKey) {
       res
@@ -227,9 +235,10 @@ export function createChatRouter(options?: ChatRouterOptions) {
       return;
     }
 
-    const { model, messages } = req.body as {
+    const { model, messages, max_output_tokens } = req.body as {
       model?: unknown;
       messages?: unknown;
+      max_output_tokens?: unknown;
     };
 
     // Validate messages
@@ -237,6 +246,22 @@ export function createChatRouter(options?: ChatRouterOptions) {
       res.status(400).json({
         error: "invalid_body",
         message: "messages must be a non-empty array of {role, content} objects.",
+      });
+      return;
+    }
+
+    // Optional output cap, forwarded upstream as max_tokens. Absent or null = uncapped.
+    const maxOutputTokens = max_output_tokens ?? undefined;
+    if (
+      maxOutputTokens !== undefined &&
+      (typeof maxOutputTokens !== "number" ||
+        !Number.isInteger(maxOutputTokens) ||
+        maxOutputTokens < 1 ||
+        maxOutputTokens > 4096)
+    ) {
+      res.status(400).json({
+        error: "invalid_body",
+        message: "max_output_tokens must be an integer from 1 to 4096.",
       });
       return;
     }
@@ -409,7 +434,7 @@ export function createChatRouter(options?: ChatRouterOptions) {
 
     let upstreamRes: globalThis.Response;
     try {
-      upstreamRes = await fetch(`${REDPILL_BASE_URL}/chat/completions`, {
+      upstreamRes = await redpillFetch(`${REDPILL_BASE_URL}/chat/completions`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -417,41 +442,66 @@ export function createChatRouter(options?: ChatRouterOptions) {
         },
         body: JSON.stringify({
           model: resolvedModel,
+          provider: { aci_verified: true },
           messages,
           stream: true,
           stream_options: { include_usage: true },
+          ...(maxOutputTokens === undefined ? {} : { max_tokens: maxOutputTokens }),
         }),
         signal: controller.signal,
       });
     } catch (error: unknown) {
-      if (error instanceof Error && error.name === "AbortError") return; // client left
+      if (error instanceof Error && error.name === "AbortError") { // client left
+        noteRequestRecord(res, { stream: "aborted" });
+        return;
+      }
+      if (error instanceof RedPillAttestationError) {
+        console.warn("[chat] RedPill reply receipt was not verified");
+        res.status(502).json({
+          error: { code: error.code, message: PRIVATE_RESPONSE_UNVERIFIED_MESSAGE },
+        });
+        return;
+      }
+      if (error instanceof RedPillAciError) {
+        console.warn("[chat] model service request failed");
+        res.status(502).json({
+          error: { code: error.code, message: "The model service could not complete this request. Try again later." },
+        });
+        return;
+      }
+      if (error instanceof RedPillResponseLimitError) {
+        console.warn("[chat] verified model response exceeded size limit");
+        res.status(502).json({
+          error: { code: error.code, message: "The response was too large to process safely. Try a smaller request." },
+        });
+        return;
+      }
       handleRouteError(res, error, "reach RedPill API");
       return;
     }
 
-    // Handle non-2xx before touching stream headers
     if (!upstreamRes.ok) {
+      // Provider error text is used only for internal context-overflow
+      // classification. Never send upstream error bodies to the browser.
       const errBody = await upstreamRes.text().catch(() => "");
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(errBody);
-      } catch {
-        parsed = { error: "upstream_error", message: errBody || upstreamRes.statusText };
-      }
-      // Context-overflow classification (§C.12): a 400/413 whose body reads like a
-      // context/token-length failure becomes a typed 413 context_overflow so the
-      // client can compact-and-retry instead of surfacing a raw 502. ALL OTHER
-      // upstream errors keep the baseline 502 passthrough shape byte-for-byte (§F.11).
       if (
         (upstreamRes.status === 400 || upstreamRes.status === 413) &&
         CONTEXT_OVERFLOW_BODY_RE.test(errBody)
       ) {
         res.status(413).json({
-          error: { code: "context_overflow", message: errBody || upstreamRes.statusText },
+          error: {
+            code: "context_overflow",
+            message: "This request exceeds the model context limit. Try a smaller request.",
+          },
         });
         return;
       }
-      res.status(502).json(parsed);
+      res.status(502).json({
+        error: {
+          code: "upstream_failed",
+          message: "The model service could not complete this request. Try again later.",
+        },
+      });
       return;
     }
 
@@ -469,11 +519,14 @@ export function createChatRouter(options?: ChatRouterOptions) {
     res.flushHeaders();
 
     if (!upstreamRes.body) {
+      noteRequestRecord(res, { stream: "error", code: "upstream_incomplete" });
       res.end();
       return;
     }
 
     const scanner = new UsageScanner();
+    let streamFailed = false;
+    let receiptFailed = false;
     try {
       // Bun's fetch body is async-iterable. Forward every chunk byte-for-byte
       // while tee-ing a copy through the usage scanner.
@@ -486,10 +539,22 @@ export function createChatRouter(options?: ChatRouterOptions) {
       if (error instanceof Error && error.name === "AbortError") {
         // Client disconnected — clean exit
       } else {
-        console.error("[chat] stream error:", error);
+        streamFailed = true;
+        receiptFailed = error instanceof RedPillAttestationError;
+        console.error("[chat] stream error:", receiptFailed ? "receipt verification failed" : error);
       }
     } finally {
-      res.end();
+      noteRequestRecord(res, controller.signal.aborted
+        ? { stream: "aborted" }
+        : receiptFailed ? { stream: "error", code: "private_response_unverified" }
+        : streamFailed ? { stream: "error", code: "upstream_failed" } : { stream: "done" });
+      if (!controller.signal.aborted) {
+        if (receiptFailed) {
+          res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: `\n\n${STREAMED_RESPONSE_UNVERIFIED_MESSAGE}` } }] })}\n\n`);
+          res.write("data: [DONE]\n\n");
+        }
+        res.end();
+      }
     }
 
     // ── Record usage (best effort; only when gating is active) ────────────────
@@ -510,6 +575,7 @@ export function createChatRouter(options?: ChatRouterOptions) {
               scanner.completionText,
             );
         recordUsage(address, TIERS[gatedTier], credits, anchor);
+        noteRequestRecord(res, { credits });
         // §E.6 — shadow-push to ledger (async, never blocks serving)
         if (flusher && credits > 0) {
           const now = Date.now();
@@ -545,6 +611,7 @@ export function createChatRouter(options?: ChatRouterOptions) {
                 scanner.completionText,
               );
           recordUsage(address, TIERS[gatedTier], credits, anchor);
+          noteRequestRecord(res, { credits });
           if (flusher && credits > 0) {
             const now = Date.now();
             const tierCfg = TIERS[gatedTier];
@@ -569,7 +636,7 @@ export function createChatRouter(options?: ChatRouterOptions) {
         }
       }
     }
-  });
+  }));
 
   /**
    * GET /models

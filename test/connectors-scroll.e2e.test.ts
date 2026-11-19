@@ -140,9 +140,9 @@ describe.serial(`App pane scroll containment (${name}, 1280x800)`, () => {
     await wheelBoth(page);
 
     for (const [action, field] of [
-      ["Upload audio", "Choose an audio file"],
+      ["Upload audio", "Paste a transcript"],
       ["Send a notetaker to a meeting", "Meeting link"],
-      ["Upload audio", "Choose an audio file"],
+      ["Upload audio", "Paste a transcript"],
       ["Send a notetaker to a meeting", "Meeting link"],
     ] as const) {
       const target = page.getByRole("button", { name: action });

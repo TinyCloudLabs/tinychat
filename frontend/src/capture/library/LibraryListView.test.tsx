@@ -30,6 +30,17 @@ function render(patch: Partial<LibraryListViewProps> = {}) {
 }
 
 describe("LibraryListView", () => {
+  test("a combined meeting (exo-merged) row renders as a meeting with its own label and opens its detail route", () => {
+    const merged: LibraryItem = { id: "row-m", source: "exo-merged", sourceId: "merged-1", title: "Planning", startedAt: new Date(2026, 9, 6, 9, 0).toISOString(), durationSecs: 3600 };
+    const html = render({ items: [merged] });
+    expect(html).toContain('data-testid="library-item"');
+    expect(html).toContain('href="/chat/capture/library/row-m"');
+    expect(html).toContain("Combined meeting · ");
+    expect(html).toContain("Planning");
+    expect(render({ items: [merged], filter: "meeting" })).toContain('href="/chat/capture/library/row-m"');
+    expect(render({ items: [merged], filter: "upload" })).not.toContain('href="/chat/capture/library/row-m"');
+  });
+
   test("loading: skeleton rows and a status for assistive tech", () => {
     const html = render({ status: "loading", items: [] });
     expect(html).toContain('data-state="loading"');

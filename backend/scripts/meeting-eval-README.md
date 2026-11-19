@@ -13,7 +13,7 @@ bun test backend/scripts/meeting-eval.test.ts
 bun --no-env-file backend/scripts/meeting-eval.ts --output=artifacts/meeting-evaluation.json
 ```
 
-The second command is an offline dry run. It records the matrix size and missing prerequisites and makes no requests. A live `--run` requires explicit `--min-idle-ms` and `--max-model-requests`; neither has an implicit default. To execute a deliberately planned batch, also supply `REDPILL_API_KEY` through the existing local environment and set `AGENT_STREAM_TURN_TIMEOUT_MS` to the actual configured deployment deadline. `REDPILL_BASE_URL` is optional and defaults to the existing RedPill endpoint. The harness inventories `/models` at runtime and intersects it with `packages/core/src/chatModels.ts`; missing offered models hold release readiness.
+The second command is an offline dry run. It records the matrix size and missing prerequisites and makes no requests. A live `--run` requires explicit `--min-idle-ms` and `--max-model-requests`; neither has an implicit default. To execute a deliberately planned batch, also supply `REDPILL_API_KEY` through the existing local environment and set `AGENT_STREAM_TURN_TIMEOUT_MS` to the actual configured deployment deadline. `REDPILL_BASE_URL` is optional and defaults to `https://tee.redpill.ai/v1`; any other endpoint is rejected before a report or request is created. The harness inventories `/models` at runtime and intersects it with `packages/core/src/chatModels.ts`; missing offered models hold release readiness.
 
 | Control | Accepted values and default |
 | --- | --- |

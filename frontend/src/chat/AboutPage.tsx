@@ -8,7 +8,8 @@ import { useEffect, useRef, type ReactNode } from "react";
 import { useLocation } from "react-router-dom";
 
 import { HowItWorksLink } from "@/components/ui/how-it-works-link";
-import { FINAL_COPY } from "@/capture/recorder/final/finalCopy";
+import { PrivacyPolicyLink } from "@/components/ui/privacy-policy-link";
+import { FINAL_COPY, POWERFUL_PROVIDER_NAME } from "@/capture/recorder/final/finalCopy";
 import { ABOUT_SECTIONS, type AboutSectionId } from "@/lib/about";
 import { VOICE_NOTE_MAX_DURATION_MS } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { PAGE_COLUMN, PageHeader } from "@/shell/PageHeader";
@@ -37,11 +38,11 @@ const VOICE_NOTE_MAX_HOURS = VOICE_NOTE_MAX_DURATION_MS / (60 * 60 * 1000);
 export const ABOUT_BODY: Readonly<Record<AboutSectionId, ReactNode>> = {
   capture: (
     <>
-      <p>Exo records audio in two ways.</p>
+      <p>TinyCloud One records audio in two ways.</p>
       <List>
         <li>
           <strong className="font-semibold">Voice notes</strong>, in the phone app. A note can run up to {VOICE_NOTE_MAX_HOURS} hours; the
-          recorder stops at the limit. It is saved to your TinyCloud space and shows up in Library. While Exo records,
+          recorder stops at the limit. It is saved to your TinyCloud space and shows up in Library. While TinyCloud One records,
           your phone shows its microphone indicator and a notification.
         </li>
         <li>
@@ -75,7 +76,7 @@ export const ABOUT_BODY: Readonly<Record<AboutSectionId, ReactNode>> = {
         </li>
         <li>It receives an anonymous account identifier, not your wallet address.</li>
         <li>
-          TinyChat’s server authorizes the upload and relays status and the transcript text back to this app. It never
+          TinyCloud One’s server authorizes the upload and relays status and the transcript text back to this app. It never
           receives your audio.
         </li>
       </List>
@@ -85,14 +86,14 @@ export const ABOUT_BODY: Readonly<Record<AboutSectionId, ReactNode>> = {
         The desktop app can transcribe a local recording on-device with Whisper instead. Nothing leaves the machine until
         the transcript is saved to your space. Whisper runs after you stop, not live.
       </p>
-      <Sub>Powerful · AssemblyAI</Sub>
+      <Sub>Powerful · {POWERFUL_PROVIDER_NAME}</Sub>
       <List>
         <li>
-          For Powerful voice notes and uploads, your audio goes to Exo’s server (a
-          confidential VM on Phala Cloud), which sends it to AssemblyAI under TinyCloud’s account and AssemblyAI’s
-          terms. Exo deletes it at AssemblyAI after saving the transcript to your TinyCloud space.
+          Powerful transcription, for voice notes and uploads, sends your audio through TinyCloud One’s server (a confidential VM on
+          Phala Cloud) to {POWERFUL_PROVIDER_NAME}, under TinyCloud’s account and {POWERFUL_PROVIDER_NAME}’s terms.{" "}
+          {POWERFUL_PROVIDER_NAME} isn’t part of TinyCloud’s private transcription. TinyCloud One deletes {POWERFUL_PROVIDER_NAME}’s
+          copy once the transcript is saved.
         </li>
-        <li>AssemblyAI is not part of TinyCloud’s private transcription.</li>
       </List>
       <Sub>The original audio</Sub>
       <p>
@@ -121,7 +122,7 @@ export const ABOUT_BODY: Readonly<Record<AboutSectionId, ReactNode>> = {
         TinyCloud space and show up in Library.
       </p>
       <p>
-        Private transcription and TinyCloud’s AssemblyAI account take MP3, WAV, OGG, M4A/MP4, WebM or FLAC audio, up to
+        Private transcription and TinyCloud’s {POWERFUL_PROVIDER_NAME} account take MP3, WAV, OGG, M4A/MP4, WebM or FLAC audio, up to
         2 hours. Where the
         file goes depends on the engine you choose.
       </p>
@@ -157,13 +158,7 @@ export const ABOUT_BODY: Readonly<Record<AboutSectionId, ReactNode>> = {
       </p>
       <Sub>Calendar autojoin</Sub>
       <p>
-        A notetaker joins confirmed Google Meet events on your primary calendar when you organize or accept them, from
-        one minute before start until five minutes after start or the event ends. The host still needs to admit it.
-      </p>
-      <p>
-        It works while TinyChat is closed. Recordings import when you return and unlock your space. Turning it off
-        removes the server’s saved Google token and requests stops for active autojoined bots; Google’s granted
-        permissions and your browser importer remain.
+        A notetaker joins Google Meet events on your main calendar that you organize or have accepted, even while TinyCloud One is closed; the host still admits it. Recordings reach your space the next time you open TinyCloud One. Turning it off deletes our server&apos;s copy of your Google sign-in.
       </p>
     </>
   ),
@@ -178,7 +173,7 @@ export const ABOUT_BODY: Readonly<Record<AboutSectionId, ReactNode>> = {
         any time in Settings.
       </p>
       <p>
-        To use your space from your own agent, copy the prompt in Settings into it and sign in with your TinyChat account
+        To use your space from your own agent, copy the prompt in Settings into it and sign in with your TinyCloud One account
         when prompted.
       </p>
     </>
@@ -195,6 +190,7 @@ export const ABOUT_BODY: Readonly<Record<AboutSectionId, ReactNode>> = {
         or resetting it cannot be undone.
       </p>
       <p>You can also bring your Claude conversation history into your space, from Settings.</p>
+      <PrivacyPolicyLink className="-my-2 fine:my-0" />
     </>
   ),
   verification: (
@@ -202,21 +198,22 @@ export const ABOUT_BODY: Readonly<Record<AboutSectionId, ReactNode>> = {
       <p>Each reply carries one of three verification badges.</p>
       <List>
         <li>
-          <strong className="font-semibold">Response verified</strong>: the model’s Intel TDX quote is verified on-chain,
-          and the reply carries a valid signature that binds it to the enclave.
+          <strong className="font-semibold">Response verified</strong>: the gateway that serves the model runs in an
+          Intel TDX enclave whose quote is verified on-chain, and this reply is signed by that enclave.
         </li>
         <li>
-          <strong className="font-semibold">Enclave attested</strong>: the endpoint is a genuine Intel TDX enclave, but the
-          model does not sign individual responses, so the reply is not cryptographically bound to the enclave.
+          <strong className="font-semibold">Enclave attested</strong>: the gateway runs in a verified Intel TDX enclave,
+          but it doesn't sign individual replies, so this reply isn't tied to the enclave.
         </li>
         <li>
-          <strong className="font-semibold">Not verifiable</strong>: the model didn’t return a verifiable on-chain
-          attestation. Confidential models that publish an Intel TDX quote can be verified.
+          <strong className="font-semibold">Not verifiable</strong>: the gateway didn't return an attestation that can be
+          checked. Confidential models whose gateway publishes an Intel TDX quote can be verified.
         </li>
       </List>
+      <p>This verifies the gateway and its enclave, not the model's own code.</p>
       <Sub>The backend</Sub>
       <p>
-        Settings checks TinyChat’s own backend from your browser. It verifies the TDX quote (relayed via Phala and
+        Settings checks TinyCloud One’s own backend from your browser. It verifies the TDX quote (relayed via Phala and
         anchored trustlessly on-chain), binds the backend identity to a fresh nonce, and replays the served code
         measurement. The status turns Backend attested only when all three legs pass. Today the compose leg can’t fully
         bind (the backend doesn’t serve the app-compose file yet), so it stays at Quote issued until that deploy lands.

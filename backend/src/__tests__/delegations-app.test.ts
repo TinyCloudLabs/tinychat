@@ -24,6 +24,8 @@ async function withServer<T>(app: express.Express, run: (base: string) => Promis
   }
 }
 
+const SESSION_KEY = "synthetic-session-signing-key";
+
 function appWithEligibility(eligibility: (address: string) => boolean) {
   const app = express();
   const bodiesBeforeCsrf: unknown[] = [];
@@ -39,7 +41,7 @@ function appWithEligibility(eligibility: (address: string) => boolean) {
     next();
   });
   app.use(createCsrfMiddleware());
-  applyRateLimiters(app);
+  applyRateLimiters(app, { sessionKey: SESSION_KEY });
   app.use("/api/delegations", createDelegationRouter({
     backendDid: `did:pkh:eip155:1:${ADDRESS}`,
     configuredHost: "https://node.tinycloud.xyz",
@@ -145,5 +147,81 @@ describe("delegation app parser ordering", () => {
     expect(fixture.bodiesBeforeCsrf).toHaveLength(DELEGATION_LIMIT + 1);
     expect(fixture.bodiesBeforeCsrf.at(-1)).toBeUndefined();
     expect(fixture.calls).toEqual({ verify: 0, activate: 0, store: 0, load: DELEGATION_LIMIT });
+  });
+});
+
+const MIXED_ADDRESS = "0x7D033300000000000000000000000000000073F2";
+
+function appForRevoke(teardown?: (address: string) => Promise<void>) {
+  const app = express();
+  const calls = { order: [] as string[], removed: [] as string[] };
+  app.use(createApiBodyParser());
+  app.use(createCsrfMiddleware());
+  applyRateLimiters(app, { sessionKey: SESSION_KEY });
+  app.use("/api/delegations", createDelegationRouter({
+    backendDid: `did:pkh:eip155:1:${ADDRESS}`,
+    configuredHost: "https://node.tinycloud.xyz",
+    eligibility: () => true,
+    store: {
+      load: async () => null,
+      store: async () => {},
+      remove: async (address: string) => { calls.order.push("remove"); calls.removed.push(address); },
+    },
+    cache: { get: () => null, set: () => {}, evict: () => {} },
+    node: {
+      computeDelegationCid: () => { throw new Error("verification must not run on revoke"); },
+      useDelegation: async () => { throw new Error("activation must not run on revoke"); },
+    } as unknown as TinyCloudNode,
+    authMiddleware: (req: Request, _res: Response, next: NextFunction) => {
+      req.user = { address: MIXED_ADDRESS };
+      next();
+    },
+    ...(teardown ? {
+      teardownExoOwner: async (address: string) => {
+        calls.order.push("teardown");
+        await teardown(address);
+      },
+    } : {}),
+  }));
+  return { app, calls };
+}
+
+describe("delegation revoke clears owner Exo state", () => {
+  it("removes the delegation first, then tears down owner Exo state, using the normalized address", async () => {
+    const fixture = appForRevoke(async () => {});
+    await withServer(fixture.app, async (base) => {
+      const response = await fetch(`${base}/api/delegations`, {
+        method: "DELETE", headers: { "x-requested-with": "XMLHttpRequest" },
+      });
+      expect(response.status).toBe(200);
+    });
+    expect(fixture.calls.order).toEqual(["remove", "teardown"]);
+    expect(fixture.calls.removed).toEqual([ADDRESS]);
+  });
+
+  it("with the exo flag off (no teardown wired) removes the delegation and makes no exo call", async () => {
+    const fixture = appForRevoke();
+    await withServer(fixture.app, async (base) => {
+      const response = await fetch(`${base}/api/delegations`, {
+        method: "DELETE", headers: { "x-requested-with": "XMLHttpRequest" },
+      });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ status: "none", expiresAt: null });
+    });
+    expect(fixture.calls.order).toEqual(["remove"]);
+    expect(fixture.calls.removed).toEqual([ADDRESS]);
+  });
+
+  it("returns 200 and keeps the removal when owner Exo teardown fails", async () => {
+    const fixture = appForRevoke(async () => { throw new Error("teardown failed"); });
+    await withServer(fixture.app, async (base) => {
+      const response = await fetch(`${base}/api/delegations`, {
+        method: "DELETE", headers: { "x-requested-with": "XMLHttpRequest" },
+      });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ status: "none", expiresAt: null });
+    });
+    expect(fixture.calls.order).toEqual(["remove", "teardown"]);
+    expect(fixture.calls.removed).toEqual([ADDRESS]);
   });
 });

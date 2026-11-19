@@ -51,7 +51,7 @@ describe("Settings → Voice notes names and offers", () => {
   test("a native status failure says what could not be checked and offers Check again", () => {
     const html = renderToStaticMarkup(<PrivateUnavailable signedIn
       transcription={{ ...transcription("failed"), checkErrorCode: "native_status_failed" }} />);
-    expect(html).toContain("Couldn&#x27;t check this phone&#x27;s file upload");
+    expect(html).toContain("Couldn&#x27;t check this browser&#x27;s file upload");
     expect(html).toContain(">Check again<");
   });
 

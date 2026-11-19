@@ -17,6 +17,8 @@
   ],
   "exclude": [
     "src/**/*.test.ts",
-    "src/**/*.test.tsx"
+    "src/**/*.test.tsx",
+    "src/**/*.fixture.ts",
+    "src/feed/sitrep.conformance.ts"
   ]
 }

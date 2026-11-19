@@ -1,0 +1,8 @@
+{
+  "name": "tinychat-bot-rootfs",
+  "private": true,
+  "description": "The agent installed into every bot sandbox. Installed with bun install --frozen-lockfile so no dependency floats.",
+  "dependencies": {
+    "@oh-my-pi/pi-coding-agent": "18.18.6"
+  }
+}

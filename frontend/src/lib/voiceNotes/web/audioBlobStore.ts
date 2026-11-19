@@ -1,4 +1,6 @@
 import { failure, request, STORES, transact, type IdbEnv } from "./idb";
+import { sha256 } from "@noble/hashes/sha256";
+import { bytesToHex } from "@noble/hashes/utils";
 
 /**
  * Where a recording's bytes live. webStore never assumes IndexedDB: the Tauri
@@ -23,6 +25,8 @@ export interface AudioBlobStore {
     /** Every object store `appendIn` writes. */
     readonly stores: readonly string[];
     appendIn(tx: IDBTransaction, id: string, chunk: Uint8Array): Promise<number>;
+    deleteIn(tx: IDBTransaction, id: string): void;
+    hashIn(tx: IDBTransaction, id: string): Promise<{ sha256: string; size: number }>;
   };
   /** Appends to the end of the recording's bytes; resolves with the new total size once durable. */
   append(id: string, chunk: Uint8Array): Promise<number>;
@@ -51,8 +55,30 @@ export function createIdbAudioBlobStore(db: IDBDatabase, env: IdbEnv): AudioBlob
     tx.objectStore(STORES.audioMeta).put({ id, size, finalized: false } satisfies MetaRow);
     return size;
   };
+  const deleteIn = (tx: IDBTransaction, id: string) => {
+    tx.objectStore(STORES.audioChunks).delete(env.keyRange.bound([id, 0], [id, Number.MAX_SAFE_INTEGER]));
+    tx.objectStore(STORES.audioMeta).delete(id);
+  };
+  const hashIn = (tx: IDBTransaction, id: string): Promise<{ sha256: string; size: number }> => new Promise((resolve, reject) => {
+    const hash = sha256.create();
+    let size = 0;
+    let expectedOffset = 0;
+    const cursor = tx.objectStore(STORES.audioChunks).openCursor(env.keyRange.bound([id, 0], [id, Number.MAX_SAFE_INTEGER]));
+    cursor.onsuccess = () => {
+      const current = cursor.result;
+      if (!current) return resolve({ sha256: bytesToHex(hash.digest()), size });
+      const row = current.value as ChunkRow;
+      if (row.offset !== expectedOffset) return reject(failure("audio_corrupt"));
+      const bytes = new Uint8Array(row.bytes);
+      hash.update(bytes);
+      size += bytes.byteLength;
+      expectedOffset = size;
+      current.continue();
+    };
+    cursor.onerror = () => reject(cursor.error);
+  });
   return {
-    transactional: { stores: names, appendIn },
+    transactional: { stores: names, appendIn, deleteIn, hashIn },
     append: (id, chunk) => transact(db, names, "readwrite", (tx) => appendIn(tx, id, chunk)),
 
     size: (id) =>
@@ -103,10 +129,6 @@ export function createIdbAudioBlobStore(db: IDBDatabase, env: IdbEnv): AudioBlob
         return meta.size;
       }),
 
-    delete: (id) =>
-      transact(db, names, "readwrite", async (tx) => {
-        tx.objectStore(STORES.audioChunks).delete(env.keyRange.bound([id, 0], [id, Number.MAX_SAFE_INTEGER]));
-        tx.objectStore(STORES.audioMeta).delete(id);
-      }),
+    delete: (id) => transact(db, names, "readwrite", (tx) => deleteIn(tx, id)),
   };
 }

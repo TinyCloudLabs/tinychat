@@ -5,6 +5,7 @@ import {
   SERVER_DISCOVERY_MAX_MEETINGS,
   SERVER_DISCOVERY_PAGE_SIZE,
   SQL_DISCOVERY_MAX_MEETINGS,
+  SQL_COMBINED_MEMBER_KEYS_QUERY,
   SQL_MEETING_METADATA_QUERY,
   SQL_MEETING_METADATA_LEGACY_QUERY,
   SUPPORTED_MEETING_SOURCES,
@@ -24,6 +25,7 @@ import type {
   ConnectorMeetingsClient,
   ConnectorMeetingsResult,
 } from "../connectors/meetingsApi";
+import { detectMeetingIntent, selectMeeting } from "./retriever";
 import type { MeetingCandidate } from "./types";
 
 type QueryResult =
@@ -249,7 +251,7 @@ describe("SQL meeting metadata discovery", () => {
     unsupported[1] = "granola";
     const result = await discoverSqlMeetings(fakeTcw(async () => ({ ok: true, data: { rows: [unsupported] } })));
     expect(SQL_MEETING_METADATA_QUERY).toContain(
-      "source IN ('fireflies', 'google-meet', 'tinycloud-transcriber', 'exo-local', 'exo-voice-note', 'exo-upload')",
+      "source IN ('fireflies', 'google-meet', 'tinycloud-transcriber', 'exo-local', 'exo-voice-note', 'exo-upload', 'exo-merged')",
     );
     // The browser-local capture sources are named by their writers' own constants.
     expect(SUPPORTED_MEETING_SOURCES).toEqual(expect.arrayContaining([LOCAL_MEETING_SOURCE, VOICE_NOTE_SOURCE]));
@@ -855,5 +857,221 @@ describe("exact-identity meeting corpus merge", () => {
     });
     expect(result.partial).toBe(false);
     expect(result.lanes.server).toEqual({ state: "feature-dark" });
+  });
+});
+
+describe("combined meetings in the corpus (TC-1152)", () => {
+  const MERGED_ID = "merged-1";
+
+  function combinedMetadata(members: unknown): string {
+    return JSON.stringify({ merge: { v: 1, members } });
+  }
+
+  function seedDb(withCommitTable: boolean, rows: Array<{
+    id: string; source: string; sourceId: string; metadata?: string | null; startedAt?: string;
+  }>): Database {
+    const db = new Database(":memory:");
+    db.exec(`CREATE TABLE connector_meeting (
+      id TEXT, source TEXT, source_id TEXT, title TEXT, started_at TEXT, organizer_email TEXT,
+      participants TEXT, summary_overview TEXT, summary_action_items TEXT, created_at TEXT, updated_at TEXT, metadata TEXT
+    )`);
+    if (withCommitTable) db.exec("CREATE TABLE voice_note_transcript (source_id TEXT, outcome TEXT, participants TEXT)");
+    const insert = db.prepare(
+      "INSERT INTO connector_meeting (id, source, source_id, title, started_at, participants, created_at, updated_at, metadata) VALUES (?, ?, ?, ?, ?, '[]', ?, ?, ?)",
+    );
+    for (const row of rows) {
+      insert.run(row.id, row.source, row.sourceId, `Title ${row.id}`, row.startedAt ?? "2026-08-24T09:00:00.000Z",
+        "2026-08-24T08:00:00.000Z", "2026-08-24T09:30:00.000Z", row.metadata ?? null);
+    }
+    return db;
+  }
+
+  function sqliteTcw(db: Database, queries: string[] = [], extra: Record<string, unknown> = {}): TinyCloudWeb {
+    return {
+      sql: { db: () => ({ query: async (sql: string) => {
+        queries.push(sql);
+        try {
+          return { ok: true, data: { rows: db.prepare(sql).values() } };
+        } catch (error) {
+          return { ok: false, error: { code: "SQL_ERROR", message: String(error) } };
+        }
+      } }) },
+      ...extra,
+    } as unknown as TinyCloudWeb;
+  }
+
+  const MEMBERS = [
+    { source: "fireflies", source_id: "ff-1" },
+    { source: "google-meet", source_id: "gm-1" },
+  ];
+  const baseRows = [
+    { id: "r-ff", source: "fireflies", sourceId: "ff-1" },
+    { id: "r-gm", source: "google-meet", sourceId: "gm-1" },
+    { id: "r-other", source: "fireflies", sourceId: "ff-other" },
+    { id: "r-local", source: "exo-local", sourceId: "local-1" },
+  ];
+  const combinedRow = { id: "r-merged", source: "exo-merged", sourceId: MERGED_ID, metadata: combinedMetadata(MEMBERS) };
+
+  const ids = async (db: Database) => {
+    const result = await discoverSqlMeetings(sqliteTcw(db));
+    return { ids: result.candidates.map((c) => c.sourceId).sort(), lane: result.lane };
+  };
+
+  for (const withCommitTable of [false, true]) {
+    const label = withCommitTable ? "commit-table query" : "legacy query";
+
+    describe(label, () => {
+      test("lists the combined meeting and neither of its members; other meetings are unaffected", async () => {
+        const db = seedDb(withCommitTable, [...baseRows, combinedRow]);
+        try {
+          expect(await ids(db)).toEqual({ ids: [MERGED_ID, "ff-other", "local-1"].sort(), lane: { state: "healthy" } });
+        } finally { db.close(); }
+      });
+
+      test("with no combined rows the result is exactly the pre-combined list", async () => {
+        const db = seedDb(withCommitTable, baseRows);
+        try {
+          expect((await ids(db)).ids).toEqual(["ff-1", "ff-other", "gm-1", "local-1"]);
+        } finally { db.close(); }
+      });
+
+      test("membership is by source AND source_id: a same-id row of another source is not a member", async () => {
+        const db = seedDb(withCommitTable, [
+          { id: "r-a", source: "fireflies", sourceId: "shared" },
+          { id: "r-b", source: "google-meet", sourceId: "shared" },
+          { id: "r-merged", source: "exo-merged", sourceId: MERGED_ID, metadata: combinedMetadata([{ source: "fireflies", source_id: "shared" }]) },
+        ]);
+        try {
+          const result = await discoverSqlMeetings(sqliteTcw(db));
+          expect(result.candidates.map((c) => `${c.source}/${c.sourceId}`).sort()).toEqual([
+            "exo-merged/merged-1", "google-meet/shared",
+          ]);
+        } finally { db.close(); }
+      });
+
+      const unreadable: Array<[string, string | null]> = [
+        ["metadata is not JSON", "{not json"],
+        ["metadata is NULL", null],
+        ["metadata is a JSON array", "[1,2]"],
+        ["metadata has no merge record", JSON.stringify({ transcript_text: "x" })],
+        ["merge.members is empty", combinedMetadata([])],
+        ["merge.members is not an array", JSON.stringify({ merge: { members: "ff-1" } })],
+        ["a member lacks source_id", combinedMetadata([MEMBERS[0], { source: "google-meet" }])],
+        ["a member has an empty source", combinedMetadata([{ source: "", source_id: "x" }, MEMBERS[1]])],
+        ["a member is not an object", combinedMetadata([MEMBERS[0], 5])],
+        ["a member is a bare string", combinedMetadata([MEMBERS[0], "gm-1"])],
+      ];
+      for (const [name, metadata] of unreadable) {
+        test(`FAIL CLOSED: a combined row whose ${name} is itself excluded and hides nothing`, async () => {
+          const db = seedDb(withCommitTable, [...baseRows, { ...combinedRow, metadata }]);
+          try {
+            expect(await ids(db)).toEqual({ ids: ["ff-1", "ff-other", "gm-1", "local-1"], lane: { state: "healthy" } });
+          } finally { db.close(); }
+        });
+      }
+
+      test("an unreadable combined row does not disturb a readable one next to it", async () => {
+        const db = seedDb(withCommitTable, [
+          ...baseRows,
+          combinedRow,
+          { id: "r-bad", source: "exo-merged", sourceId: "bad-1", metadata: "{oops" },
+          { id: "r-bad2", source: "exo-merged", sourceId: "bad-2", metadata: combinedMetadata([{ source: "fireflies", source_id: "ff-other" }, 7]) },
+        ]);
+        try {
+          // ff-other is named only by the unreadable bad-2 row: still listed.
+          expect((await ids(db)).ids).toEqual([MERGED_ID, "ff-other", "local-1"].sort());
+        } finally { db.close(); }
+      });
+    });
+  }
+
+  describe("discoverMeetingCorpus", () => {
+    const keysUnder = (store: Record<string, string[]>) => ({
+      list: async ({ path }: { path: string }) => ({ ok: true, data: { keys: (store[path] ?? []).map((id) => `${path}${id}`) } }),
+    });
+    const prefix = (source: string, kind: "meeting" | "transcript") => `${CONNECTORS_KV_PREFIX}/${source}/${kind}/`;
+    const kvStore = {
+      [prefix("fireflies", "transcript")]: ["ff-1", "ff-other"],
+      [prefix("google-meet", "transcript")]: ["gm-1"],
+      [prefix("exo-merged", "transcript")]: [MERGED_ID],
+    };
+    const serverList = (sourceIds: string[]) => ({
+      list: async () => ({ status: "ok" as const, value: serverPage({ meetings: sourceIds.map((sourceId) => serverMeta({ sourceId })) }) }),
+    });
+
+    test("one combined meeting; members vanish from the SQL, KV and server lanes; the combined body is read from its own KV key", async () => {
+      const db = seedDb(true, [...baseRows, combinedRow]);
+      try {
+        const corpus = await discoverMeetingCorpus(
+          sqliteTcw(db, [], { kv: keysUnder(kvStore) }),
+          serverList(["ff-1", "ff-other"]),
+        );
+        const refs = corpus.candidates.map((c) => `${c.source}/${c.sourceId}`);
+        expect(refs).toEqual(["exo-local/local-1", "exo-merged/merged-1", "fireflies/ff-other"]);
+        const merged = corpus.candidates.find((c) => c.source === "exo-merged")!;
+        expect(merged.hasLocalTranscript).toBe(true);
+        expect(merged.localRowId).toBe("r-merged");
+        // The default KV key of a body is the one a combined body is written under.
+        expect(`${CONNECTORS_KV_PREFIX}/exo-merged/transcript/${MERGED_ID}`).toBe(`${prefix("exo-merged", "transcript")}${MERGED_ID}`);
+      } finally { db.close(); }
+    });
+
+    test("a member's id can no longer be selected, not even as an already-selected thread meeting", async () => {
+      const db = seedDb(true, [...baseRows, combinedRow]);
+      try {
+        const selected = { source: "fireflies", sourceId: "ff-1" };
+        const corpus = await discoverMeetingCorpus(
+          sqliteTcw(db, [], { kv: keysUnder(kvStore) }), serverList(["ff-1"]), undefined, undefined, selected,
+        );
+        expect(corpus.candidates.some((c) => c.sourceId === "ff-1" || c.sourceId === "gm-1")).toBe(false);
+        const followUp = detectMeetingIntent("what did we decide in this meeting?", { now: new Date("2026-08-25T00:00:00.000Z") });
+        expect(followUp).not.toBeNull();
+        const selection = selectMeeting(followUp!, corpus, { selected });
+        expect(selection.status === "selected" && selection.meeting.sourceId === "ff-1").toBe(false);
+        // A fresh title search resolves to the combined meeting, never the member row.
+        const byTitle = detectMeetingIntent("meeting called Title r-merged", { now: new Date("2026-08-25T00:00:00.000Z") });
+        const found = selectMeeting(byTitle!, corpus);
+        expect(found).toEqual(expect.objectContaining({ status: "selected", meeting: expect.objectContaining({ source: "exo-merged", sourceId: MERGED_ID }) }));
+      } finally { db.close(); }
+    });
+
+    test("with no combined meeting no member lookup runs and nothing is hidden", async () => {
+      const db = seedDb(true, baseRows);
+      const queries: string[] = [];
+      try {
+        const corpus = await discoverMeetingCorpus(sqliteTcw(db, queries, { kv: keysUnder(kvStore) }), serverList(["ff-1"]));
+        expect(queries).not.toContain(SQL_COMBINED_MEMBER_KEYS_QUERY);
+        expect(corpus.candidates.map((c) => c.sourceId).sort()).toEqual(["ff-1", "ff-other", "gm-1", "local-1"]);
+      } finally { db.close(); }
+    });
+
+    test("an unreadable combined row is not a candidate even if its body key exists, and hides no member", async () => {
+      const db = seedDb(true, [...baseRows, { ...combinedRow, metadata: "{oops" }]);
+      try {
+        const corpus = await discoverMeetingCorpus(sqliteTcw(db, [], { kv: keysUnder(kvStore) }), serverList(["ff-1"]));
+        const refs = corpus.candidates.map((c) => `${c.source}/${c.sourceId}`);
+        expect(refs).toEqual(expect.arrayContaining(["fireflies/ff-1", "google-meet/gm-1"]));
+        // Orphan body key only: opaque, so selection (which drops opaque KV-only identities) can never pick it.
+        const orphan = corpus.candidates.find((c) => c.source === "exo-merged");
+        expect(orphan === undefined || (orphan.localRowId === null && orphan.title === null)).toBe(true);
+      } finally { db.close(); }
+    });
+
+    test("if the member lookup fails the members stay visible: never hide a meeting on an error", async () => {
+      const db = seedDb(true, [...baseRows, combinedRow]);
+      try {
+        const real = sqliteTcw(db, [], { kv: keysUnder(kvStore) });
+        const flaky = {
+          ...real,
+          sql: { db: () => ({ query: async (sql: string, ...rest: unknown[]) => (
+            sql === SQL_COMBINED_MEMBER_KEYS_QUERY
+              ? { ok: false, error: { code: "SQL_ERROR" } }
+              : (real.sql.db("x") as unknown as { query: (s: string, ...r: unknown[]) => Promise<unknown> }).query(sql, ...rest)
+          ) }) },
+        } as unknown as TinyCloudWeb;
+        const corpus = await discoverMeetingCorpus(flaky, serverList(["ff-1"]));
+        expect(corpus.candidates.find((c) => c.sourceId === "ff-1")).toBeDefined();
+      } finally { db.close(); }
+    });
   });
 });

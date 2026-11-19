@@ -161,6 +161,27 @@
     "removeIn": "n/a"
   },
   {
+    "screen": "meeting-sources-gmeet-sync-now-before",
+    "selector": ".ms-soon",
+    "check": "text-size",
+    "reason": "The design's Coming soon badge is 10.5px uppercase.",
+    "removeIn": "n/a"
+  },
+  {
+    "screen": "meeting-sources-gmeet-sync-now-running",
+    "selector": ".ms-soon",
+    "check": "text-size",
+    "reason": "The design's Coming soon badge is 10.5px uppercase.",
+    "removeIn": "n/a"
+  },
+  {
+    "screen": "meeting-sources-gmeet-sync-now-finished",
+    "selector": ".ms-soon",
+    "check": "text-size",
+    "reason": "The design's Coming soon badge is 10.5px uppercase.",
+    "removeIn": "n/a"
+  },
+  {
     "screen": "meeting-sources-not-connected",
     "selector": ".ms-window .ms-btn1, .ms-window .ms-btn2, .ms-window .ms-close, .ms-window .ms-switch, .ms-window .ms-link, .ms-window .ms-icon-btn, .ms-window .ms-check input",
     "check": "touch-target",
@@ -243,5 +264,33 @@
     "check": "text-size",
     "reason": "The design's Coming soon badge is 10.5px uppercase.",
     "removeIn": "n/a"
+  },
+  {
+    "screen": "bots-home",
+    "selector": "[data-surface=\"feed\"] a[href=\"/chat\"], [data-surface=\"feed\"] a[target=\"_blank\"]",
+    "check": "touch-target",
+    "reason": "Home's existing empty feed (HomeFeedEntries): the Open Chat button is min-h-10 and How agents post is an inline link. Not tiny bots UI; these screens are the first to render that empty state. #610 replaces it.",
+    "removeIn": "#610"
+  },
+  {
+    "screen": "bots-main-reply",
+    "selector": "[data-surface=\"feed\"] a[href=\"/chat\"], [data-surface=\"feed\"] a[target=\"_blank\"]",
+    "check": "touch-target",
+    "reason": "Home's existing empty feed under Main's chat, as on bots-home. #610 replaces it.",
+    "removeIn": "#610"
+  },
+  {
+    "screen": "bots-history-expiry",
+    "selector": "[data-surface=\"feed\"] a[href=\"/chat\"], [data-surface=\"feed\"] a[target=\"_blank\"]",
+    "check": "touch-target",
+    "reason": "Home's existing empty feed under Main's chat, as on bots-home. #610 replaces it.",
+    "removeIn": "#610"
+  },
+  {
+    "screen": "bots-history-expiry-pending",
+    "selector": "[data-surface=\"feed\"] a[href=\"/chat\"], [data-surface=\"feed\"] a[target=\"_blank\"]",
+    "check": "touch-target",
+    "reason": "Home's existing empty feed under Main's chat, as on bots-home. #610 replaces it.",
+    "removeIn": "#610"
   }
 ]

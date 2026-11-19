@@ -85,6 +85,10 @@ function num(value: unknown, min = 0): number {
   check(typeof value === "number" && Number.isFinite(value) && value >= min);
   return value as number;
 }
+/** New VAD diagnostics are advisory: invalid values are omitted without rejecting a transcript. */
+function diagnosticNum(value: unknown, min = -Infinity, max = Infinity): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= min && value <= max ? value : undefined;
+}
 
 function str(value: unknown, re: RegExp): string {
   check(typeof value === "string" && re.test(value));
@@ -104,6 +108,12 @@ function iso(value: unknown): string {
 function bool(value: unknown): boolean {
   check(typeof value === "boolean");
   return value as boolean;
+}
+
+function percentage(value: unknown): number {
+  const result = num(value);
+  check(result <= 100);
+  return result;
 }
 
 function oneOf<T extends string>(value: unknown, allowed: readonly T[]): T {
@@ -199,6 +209,17 @@ function lastChanged(o: JsonObject): string {
   return latest;
 }
 
+/**
+ * `provider_delayed`: PTX is holding the job until its speech-to-text provider can take it. Relayed
+ * only while the job is still open and only when it is exactly `true`; an absent or malformed field
+ * (a PTX that predates it) means "not delayed" and leaves the response unchanged.
+ */
+function providerDelayed(o: JsonObject, status: TranscriptionStatus): { provider_delayed: true } | Record<string, never> {
+  return o.provider_delayed === true && status !== "completed" && status !== "failed" && status !== "cancelled"
+    ? { provider_delayed: true }
+    : {};
+}
+
 function job(value: unknown, expectedId?: string) {
   const o = obj(value);
   const id = str(o.id, TRANSCRIPTION_ID_RE);
@@ -217,6 +238,7 @@ function job(value: unknown, expectedId?: string) {
     error: statusError(status, o.error),
     created_at: iso(o.created_at),
     updated_at: lastChanged(o),
+    ...providerDelayed(o, status),
   };
 }
 
@@ -230,9 +252,14 @@ export function parseCapabilities(body: unknown) {
     check(Array.isArray(o.content_types) && o.content_types.length > 0);
     const contentTypes = (o.content_types as unknown[]).map((v) => oneOf(v, CONTENT_TYPES));
     check(new Set(contentTypes).size === contentTypes.length);
+    // PTX's optional limits: relayed only when valid (finite, in range); absent or malformed means not advertised. accepted_max_duration_seconds is PTX's inclusive measured ceiling and takes precedence over max + grace.
+    const accepted = diagnosticNum(o.accepted_max_duration_seconds, Number.MIN_VALUE);
+    const grace = diagnosticNum(o.duration_grace_seconds, 0);
     return {
       max_bytes: int(o.max_bytes, 1),
       max_duration_seconds: int(o.max_duration_seconds, 1),
+      ...(accepted === undefined ? {} : { accepted_max_duration_seconds: accepted }),
+      ...(grace === undefined ? {} : { duration_grace_seconds: grace }),
       max_channels: int(o.max_channels, 1, 2),
       content_types: contentTypes,
       transcript_ttl_seconds: int(o.transcript_ttl_seconds, 1),
@@ -347,6 +374,12 @@ export function parseResult(body: unknown, expectedId: string) {
       };
     });
     const stats = obj(o.stats);
+    const vadMode = stats.vad_mode;
+    const noiseFloor = diagnosticNum(stats.noise_floor_dbfs);
+    const median = diagnosticNum(stats.median_dbfs);
+    const p99 = diagnosticNum(stats.p99_dbfs);
+    const speechPeak = diagnosticNum(stats.speech_peak_s, 0);
+    const droppedAboveNoise = diagnosticNum(stats.dropped_above_noise_pct, 0, 100);
     return {
       id: expectedId,
       status: "completed" as const,
@@ -360,7 +393,19 @@ export function parseResult(body: unknown, expectedId: string) {
       speakers,
       segments,
       text: text(o.text, 4_000_000),
-      stats: { tinfoil_calls: int(stats.tinfoil_calls, 0), tinfoil_audio_seconds: num(stats.tinfoil_audio_seconds) },
+      stats: {
+        tinfoil_calls: int(stats.tinfoil_calls, 0),
+        tinfoil_audio_seconds: num(stats.tinfoil_audio_seconds),
+        ...(stats.voiced_seconds == null ? {} : { voiced_seconds: num(stats.voiced_seconds) }),
+        ...(stats.dropped_above_floor_pct == null ? {} : { dropped_above_floor_pct: percentage(stats.dropped_above_floor_pct) }),
+        ...(stats.vad_fallback == null ? {} : { vad_fallback: bool(stats.vad_fallback) }),
+        ...(vadMode === "primary" || vadMode === "fallback" || vadMode === "quiet" ? { vad_mode: vadMode } : {}),
+        ...(noiseFloor === undefined ? {} : { noise_floor_dbfs: noiseFloor }),
+        ...(median === undefined ? {} : { median_dbfs: median }),
+        ...(p99 === undefined ? {} : { p99_dbfs: p99 }),
+        ...(speechPeak === undefined ? {} : { speech_peak_s: speechPeak }),
+        ...(droppedAboveNoise === undefined ? {} : { dropped_above_noise_pct: droppedAboveNoise }),
+      },
     };
   });
 }

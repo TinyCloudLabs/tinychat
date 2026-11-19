@@ -1,13 +1,12 @@
 // Targeted queued-id ingest — the browser half of the Option-C webhook path.
-// See docs/connectors-spec.md §8 for the v1 sync this deliberately does NOT
-// reuse, and the webhook handoff's "targeted queued-id ingest and durable
-// acknowledgement" section for the contract implemented here.
+// See docs/connectors-spec.md §8 and the webhook handoff's targeted queued-id
+// ingest and durable acknowledgement contract.
 //
-// WHY A SECOND ENGINE. `syncFireflies()` lists newest-first and stops at the
-// first id it already has. That is right for a manual catch-up and wrong for a
-// queue: a webhook hands us EXACT ids, and a `meeting.summarized` event is an
-// event about a meeting we usually already stored — the v1 engine would skip it
-// forever. So this engine never lists; it fetches the ids it was given.
+// WHY A SECOND ENGINE. A webhook names exact meeting IDs; this path fetches
+// those IDs and upserts their current contents. Reconciliation instead lists
+// newest-first, skips known rows with complete bodies, and advances the SQL
+// success watermark only after a complete listing. Targeted ingest never
+// updates `connector_state.last_synced_at` or the Fireflies attempt record.
 //
 // OPTION C, RESTATED IN CODE. The backend queues `(meetingId, kind)` pairs and
 // nothing else. The Fireflies key is read HERE, in the browser, through the
@@ -368,7 +367,7 @@ export async function ingestQueuedMeetings(
     connectorId: descriptor.id,
     status: "connected",
     lastSyncedAt: new Date().toISOString(),
-    lastSyncStatus: failed ? "error" : "ok",
+    lastSyncStatus: failed ? "error" : descriptor.id === "fireflies" ? "partial" : "ok",
     // Counts only — a meeting id has no business in a persisted status string.
     lastSyncError: terminal
       ? terminal.message
@@ -376,6 +375,7 @@ export async function ingestQueuedMeetings(
         ? `${failures.length} queued item(s) failed`
         : null,
     itemCount,
+    preserveLastSyncedAt: descriptor.id === "fireflies" || failed,
   });
   if (!updateRes.ok && !terminal) {
     terminal = fromStore(updateRes.error, "updateSyncState");

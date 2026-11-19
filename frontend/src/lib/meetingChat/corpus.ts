@@ -7,6 +7,7 @@
  */
 
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
+import { EXO_MERGED_SOURCE } from "@tinyboilerplate/core";
 
 import { CONNECTORS_KV_PREFIX, CONNECTORS_SQL_DB_NAME } from "../connectors/connectorStore";
 import type {
@@ -33,6 +34,7 @@ export const SUPPORTED_MEETING_SOURCES = [
   "exo-local",
   "exo-voice-note",
   "exo-upload",
+  "exo-merged",
 ] as const;
 
 function isSupportedMeetingSource(source: string): boolean {
@@ -41,6 +43,50 @@ function isSupportedMeetingSource(source: string): boolean {
 
 /** SQL literal list for the allowlist; the entries are fixed constants, never input. */
 const SUPPORTED_MEETING_SOURCES_SQL = SUPPORTED_MEETING_SOURCES.map((source) => `'${source}'`).join(", ");
+
+/**
+ * Combined meetings (TC-1152): `exo-merged` rows are searchable meetings in their own right, and
+ * the captures a combined row lists in `metadata.merge.members` are NOT: one meeting is one
+ * candidate. Membership is `{source, source_id}` pairs, never row ids (see combinedMeetingStore).
+ *
+ * FAIL-CLOSED DIRECTION (decided): a combined row whose metadata cannot be read as a combined row
+ * (invalid JSON, no non-empty `merge.members` array, or any member without a non-empty string
+ * `source` and `source_id`) is itself left out of the corpus AND hides nothing. Showing a capture
+ * twice is recoverable; hiding a meeting nobody provably combined is not. With no combined rows
+ * every statement below reduces to the pre-combined behaviour.
+ *
+ * Each CASE nests rather than ANDs on purpose: json_type/json_each raise on malformed JSON, and only
+ * CASE branches are guaranteed to evaluate lazily and in order.
+ */
+const MERGED_SOURCE_SQL = `'${EXO_MERGED_SOURCE}'`;
+
+/** `metadata.merge.members` of combined row alias `a` as JSON array text; `'[]'` when it is not readable JSON with an array there. */
+function mergedMembersJson(a: string): string {
+  return `CASE WHEN json_valid(${a}.metadata) THEN CASE WHEN json_type(${a}.metadata, '$.merge.members') = 'array' `
+    + `THEN json_extract(${a}.metadata, '$.merge.members') ELSE '[]' END ELSE '[]' END`;
+}
+
+/** True for a readable combined row alias `a`: a non-empty member list in which every member names a text source and source_id. */
+function readableMergedRowSql(a: string): string {
+  const members = mergedMembersJson(a);
+  return `(json_array_length(${members}) > 0 AND NOT EXISTS (SELECT 1 FROM json_each(${members}) b WHERE `
+    + `CASE WHEN b.type = 'object' THEN CASE WHEN coalesce(json_type(b.value, '$.source') = 'text' `
+    + `AND json_type(b.value, '$.source_id') = 'text' AND json_extract(b.value, '$.source') <> '' `
+    + `AND json_extract(b.value, '$.source_id') <> '', 0) THEN 0 ELSE 1 END ELSE 1 END = 1))`;
+}
+
+/**
+ * One column, `source/source_id`, for every member of every readable combined row. A source never
+ * contains `/`, so the first `/` splits the key. The WHERE guarantees text, non-empty parts, so the
+ * list has no NULL (a NULL in a NOT IN list would hide every row).
+ */
+export const SQL_COMBINED_MEMBER_KEYS_QUERY = `SELECT json_extract(k.value, '$.source') || '/' || json_extract(k.value, '$.source_id')
+FROM connector_meeting c, json_each(${mergedMembersJson("c")}) k
+WHERE c.source = ${MERGED_SOURCE_SQL} AND CASE WHEN ${readableMergedRowSql("c")} THEN 1 ELSE 0 END = 1`;
+
+/** Admission for outer row alias `m`: a combined row must be readable, and no row may be a member of one. */
+const COMBINED_MEETING_PREDICATE_SQL = `AND (m.source IS NULL OR m.source <> ${MERGED_SOURCE_SQL} OR ${readableMergedRowSql("m")})
+  AND (coalesce(m.source, '') || '/' || coalesce(m.source_id, '')) NOT IN (${SQL_COMBINED_MEMBER_KEYS_QUERY})`;
 
 /**
  * Sources whose rows exist before they have anything to read: a voice note is
@@ -84,6 +130,7 @@ export const SQL_MEETING_METADATA_QUERY = `SELECT
   updated_at
 FROM connector_meeting m
 WHERE m.source IN (${SUPPORTED_MEETING_SOURCES_SQL})
+  ${COMBINED_MEETING_PREDICATE_SQL}
   AND CASE
     WHEN m.source NOT IN (${TRANSCRIBED_ONLY_SOURCES_SQL}) THEN 1
     WHEN EXISTS (SELECT 1 FROM voice_note_transcript t WHERE t.source_id = m.source_id) THEN
@@ -110,8 +157,9 @@ export const SQL_MEETING_METADATA_LEGACY_QUERY = `SELECT
   id, source, source_id, title, started_at, organizer_email, participants,
   CASE WHEN summary_overview IS NOT NULL OR summary_action_items IS NOT NULL THEN 1 ELSE 0 END AS has_sql_summary,
   created_at, updated_at
-FROM connector_meeting
-WHERE source IN (${SUPPORTED_MEETING_SOURCES_SQL})
+FROM connector_meeting m
+WHERE m.source IN (${SUPPORTED_MEETING_SOURCES_SQL})
+  ${COMBINED_MEETING_PREDICATE_SQL}
   AND CASE
     WHEN source NOT IN (${TRANSCRIBED_ONLY_SOURCES_SQL}) THEN 1
     WHEN json_valid(metadata) THEN coalesce(
@@ -348,8 +396,18 @@ export async function discoverMeetingCorpus(
   selected?: MeetingRef | null,
 ): Promise<MeetingCorpus> {
   const sql = await discoverSqlMeetings(tcw, signal);
+  // Known limit: if the combined row is past SQL_DISCOVERY_MAX_MEETINGS it is not in the SQL lane, so its
+  // members' server/KV records stay visible (a duplicate, never a hidden meeting).
+  // The SQL lane already excludes combined members. The server and KV lanes know nothing of
+  // combining, so a member's own server record or KV key would bring it back: drop those by
+  // identity. The extra read runs only when a combined meeting is in the corpus.
+  const members = sql.candidates.some((candidate) => candidate.source === EXO_MERGED_SOURCE)
+    ? await discoverCombinedMemberKeys(tcw, signal)
+    : new Set<string>();
+  const notMember = (candidate: MeetingCandidate) => !members.has(`${candidate.source}/${candidate.sourceId}`);
   if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
-  const server = await discoverServerMeetings(meetings, source, signal);
+  const serverAll = await discoverServerMeetings(meetings, source, signal);
+  const server: ServerMeetingDiscovery = { ...serverAll, candidates: serverAll.candidates.filter(notMember) };
   if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
   // SQL is the authoritative metadata lane for every connector.  Walk each
   // discovered source's local identities so transcript-only Google Meet and
@@ -363,10 +421,35 @@ export async function discoverMeetingCorpus(
     kvDiscoveries.push(await discoverKvMeetings(tcw, kvSource, signal));
   }
   const kv: KvMeetingDiscovery = {
-    candidates: kvDiscoveries.flatMap((discovery) => discovery.candidates),
+    candidates: kvDiscoveries.flatMap((discovery) => discovery.candidates).filter(notMember),
     lane: combineKvLanes(kvDiscoveries.map((discovery) => discovery.lane)),
   };
   return mergeMeetingCorpus({ sql, server, kv });
+}
+
+/**
+ * `source/source_id` of every member of every readable combined row. Any failure returns the empty
+ * set: members then stay visible (a duplicate, never a hidden meeting; see COMBINED_MEETING_PREDICATE_SQL).
+ */
+export async function discoverCombinedMemberKeys(
+  tcw: Pick<TinyCloudWeb, "sql">,
+  signal?: AbortSignal,
+): Promise<ReadonlySet<string>> {
+  try {
+    const result = await tcw.sql.db(CONNECTORS_SQL_DB_NAME).query(SQL_COMBINED_MEMBER_KEYS_QUERY, [], { signal }) as SqlQueryResult;
+    if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+    const rows = result?.ok === true ? result.data?.rows : null;
+    if (!Array.isArray(rows)) return new Set();
+    const keys = new Set<string>();
+    for (const row of rows) {
+      const key = Array.isArray(row) ? row[0] : undefined;
+      if (typeof key === "string" && key.includes("/")) keys.add(key);
+    }
+    return keys;
+  } catch {
+    if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+    return new Set();
+  }
 }
 
 function combineKvLanes(lanes: readonly MeetingLaneHealth[]): MeetingLaneHealth {

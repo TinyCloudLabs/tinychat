@@ -23,7 +23,47 @@ export function createCalendarAutojoinRouter(options: { connection: CalendarAuto
       res.status(503).json({ error: "calendar_autojoin_unavailable" });
     }
   };
-  router.get("/status", wrap(async (tenant, _req, res) => { res.json(await connection.getStatus(tenant)); }));
+  router.get("/status", async (req: Request, res: Response) => {
+    const started = performance.now();
+    const metrics = { reads: 0 };
+    const finish = (outcome: "ok" | "stale" | "unavailable") => {
+      const ms = Math.max(0, Math.round(performance.now() - started));
+      res.setHeader("Server-Timing", `status;dur=${ms};desc="reads=${metrics.reads}"`);
+      console.log(`[calendar-autojoin] code=status_read outcome=${outcome} ms=${ms} reads=${metrics.reads}`);
+    };
+    res.setHeader("Cache-Control", "no-store");
+    const address = req.user?.address;
+    if (typeof address !== "string" || !address) {
+      finish("unavailable");
+      res.status(401).json({ error: "unauthorized" });
+      return;
+    }
+    const tenant = address.toLowerCase();
+    try {
+      const status = await connection.getStatus(tenant, metrics);
+      finish("ok");
+      res.json(status);
+    } catch (error) {
+      // Preserve explicit domain/authorization errors and corrupt-state behaviour. Never log errors.
+      const domainError = error instanceof CalendarAutojoinError || error instanceof GoogleOAuthError;
+      const invalidState = error instanceof Error
+        && ["calendar_state_invalid", "calendar_listing_invalid"].includes(error.message);
+      const cached = !domainError && !invalidState ? connection.getLastGoodStatus(tenant) : undefined;
+      if (cached) {
+        finish("stale");
+        res.json({ ...cached.body, stale: true, asOf: cached.asOf });
+        return;
+      }
+      finish("unavailable");
+      if (error instanceof CalendarAutojoinError) { res.status(error.status).json({ error: error.code }); return; }
+      if (error instanceof GoogleOAuthError) {
+        const permanent = ["invalid_grant", "invalid_identity", "access_denied", "invalid_scope"].includes(error.error);
+        res.status(permanent ? 400 : 503).json({ error: permanent ? error.error : "google_unavailable" }); return;
+      }
+      res.setHeader("Retry-After", "5");
+      res.status(503).json({ error: "calendar_autojoin_unavailable" });
+    }
+  });
   router.post("/begin", wrap(async (tenant, req, res) => {
     const { state, challenge, consent } = req.body ?? {};
     if (typeof state !== "string" || typeof challenge !== "string" || consent !== true

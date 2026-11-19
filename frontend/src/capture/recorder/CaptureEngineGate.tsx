@@ -10,7 +10,6 @@ import { captureEngineInstallPending, installCaptureEngine } from "@/lib/voiceNo
 export function CaptureEngineGate({ children }: { children: ReactNode }) {
   const [pending, setPending] = useState(captureEngineInstallPending);
   useEffect(() => {
-    if (!pending) return;
     let active = true;
     installCaptureEngine().then(
       () => { if (active) setPending(false); },
@@ -20,6 +19,6 @@ export function CaptureEngineGate({ children }: { children: ReactNode }) {
       },
     );
     return () => { active = false; };
-  }, [pending]);
+  }, []);
   return pending ? null : <>{children}</>;
 }

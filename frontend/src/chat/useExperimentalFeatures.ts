@@ -4,9 +4,9 @@ import { getCanvasEnabled, setCanvasEnabled } from "../lib/conversationCanvasSto
 import type { BillingStatus } from "../lib/billingApi";
 
 const CACHE_KEY = "tinychat:experimental:conversation-canvas";
-const CONVERSATION_CANVAS_AVAILABLE = false;
+const CONVERSATION_CANVAS_AVAILABLE = true;
 
-/** Product kill switch. Keep persisted opt-ins dormant while the feature is paused. */
+/** Product switch for Conversation Canvas. Canvas is off for each user until they opt in under Settings > Experimental. */
 export function isConversationCanvasEligible(_billingStatus: BillingStatus | null): boolean {
   return CONVERSATION_CANVAS_AVAILABLE;
 }

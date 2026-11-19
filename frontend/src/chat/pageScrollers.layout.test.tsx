@@ -6,7 +6,7 @@
 // scroller must stay `relative` (Capture's two panes included).
 // test/connectors-scroll.e2e.test.ts checks the rendered geometry.
 
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
@@ -17,7 +17,14 @@ import { CaptureSurface } from "../capture/CaptureSurface";
 import { StaticRecorderProvider } from "../capture/recorder/RecorderProvider";
 import { screenFor } from "../shell/routes";
 import { ConnectorsPage } from "./ConnectorsPage";
+import { installDom } from "@/test/dom";
 
+
+// Each test gets its own happy-dom window (with `location`), restored afterwards,
+// so this file never reads a `window` another test file left behind.
+let restoreDom: (() => void) | undefined;
+beforeEach(() => { restoreDom = installDom(); });
+afterEach(() => { restoreDom?.(); restoreDom = undefined; });
 const tcw = { did: "did:pkh:eip155:1:0x00000000000000000000000000000000000000a1" } as unknown as TinyCloudWeb;
 const sessionStore = {} as unknown as SessionStore;
 

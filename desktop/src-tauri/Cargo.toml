@@ -1,6 +1,6 @@
 [package]
 name = "exo-desktop"
-version = "0.7.1-beta.2"
+version = "0.15.0-beta.7"
 description = "Exo — TinyCloud chat desktop app (exo.tinycloud.xyz)"
 edition = "2021"
 publish = false
@@ -17,11 +17,23 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+url = "2"
+recorder-state = { path = "../recorder-state" }
+wav-snapshot = { path = "../wav-snapshot" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 exo-local-transcription = { path = "../local-transcription", optional = true }
+
+# Start a recording from outside the window: a global shortcut and a menu-bar
+# item (src/record_launch.rs). Registered from Rust; no capability grants the
+# plugin's or the tray's commands to the webview.
+[dependencies.tauri-plugin-global-shortcut]
+# ~2.3: 2.4 requires tauri 2.12, and this crate's lock pins tauri 2.11.
+version = "~2.3"
+optional = true
 
 # --- Transcription (anarlog, MIT layer) -------------------------------------
 # Desktop recording + on-device Whisper, reused from fastrepl/anarlog's
@@ -102,7 +114,6 @@ optional = true
 [dependencies.tokio]
 version = "1"
 features = ["time", "sync"]
-optional = true
 
 [dependencies.rustix]
 version = "1"
@@ -156,6 +167,7 @@ model-downloader = { path = "../vendor/anarlog-model-downloader" }
 local-model = { path = "../vendor/anarlog-local-model" }
 file = { path = "../vendor/anarlog-file" }
 audio-chunking = { path = "../vendor/anarlog-audio-chunking" }
+listener-core = { path = "../vendor/anarlog-listener-core" }
 
 # The yujonglee swift-rs fork runs `swift build` with SwiftPM's default build
 # system. Xcode 27's default (`swiftbuild`) prelinks targets and hides the
@@ -175,7 +187,6 @@ transcription = [
     "dep:exo-local-transcription",
     "dep:hound",
     "dep:tauri-plugin-settings",
-    "dep:tokio",
     "dep:rustix",
     "dep:sha2",
     "dep:hex",
@@ -185,8 +196,15 @@ transcription = [
     "dep:anlg-transcription-core",
     "dep:reqwest",
     "dep:parking_lot",
+    # Record shortcut and menu-bar item (src/record_launch.rs). The tray is
+    # created in code, not tauri.conf.json, so its tauri features are enabled
+    # here rather than in the CLI-managed `tauri` feature list.
+    "dep:tauri-plugin-global-shortcut",
+    "tauri/tray-icon",
+    "tauri/image-png",
 ]
 ipc-selftest = ["transcription"]
+recorder-failpoints = []
 
 [dev-dependencies]
 ractor = "0.15"

@@ -104,8 +104,8 @@ interface ConnectorDescriptor {
 interface ConnectorConnection {
   connectorId: ConnectorId;
   status: "connected" | "disconnected";
-  lastSyncedAt: string | null; // ISO
-  lastSyncStatus: "ok" | "error" | null;
+  lastSyncedAt: string | null; // ISO; Fireflies stores last complete listing success
+  lastSyncStatus: "ok" | "partial" | "error" | null;
   lastSyncError: string | null;
   itemCount: number;
 }
@@ -200,23 +200,22 @@ query GetTranscript($id: String!) {
 
 - `validateKey()` → runs `GetUser`; distinguishes `invalid-key` (GraphQL auth error /
   401/403) from `network-error` — the connect dialog shows different messages.
-- `listNewTranscriptIds({ knownIds, batchSize = 25, onProgress })` — pages
-  `ListTranscripts` newest-first with `limit/skip`; **early-exit** as soon as a page
-  contains an already-known id (collect the new ones from that page first). Batch size
-  cap 50. Sleep `delayMs` (default 800) between pages.
+- `listNewTranscriptIds(...)` lists newest-first, skips known IDs rather than
+  stopping at the first known row, and reports whether the date boundary or true
+  end of history was reached. Every run uses the same behavior. The listing is
+  bounded by 20 provider pages and at most 50 detail fetches; the exclusive date
+  boundary is `last_synced_at - 24 h`. With no watermark, only those budgets bound
+  the initial listing.
 - `getTranscript(id)` — full detail fetch. The sync engine sleeps `delayMs` **between
   detail fetches too** (listen bug: it only slept in the list loop and could burst-hit
   rate limits on backfill).
 
-Rate limiting — handle **both** transport layers (listen handles both; fireflies-sync
-only handles one — copy listen's approach here):
+Rate limiting:
 
-- HTTP 429 → read `retry-after` header (seconds), wait, retry (max 3).
-- GraphQL error with `code === "too_many_requests"` (or message matching
-  `/rate limit|too many requests|retry after/i`) → parse "retry after <date>" from the
-  message, wait until then (fallback 60s), retry (max 3).
-- On exhaustion return a typed `rate-limited` error carrying `retryAfterMs` so the UI
-  can say "Fireflies rate limit — try again in N minutes".
+- HTTP 429 and GraphQL rate-limit responses retry at most 3 times. Retry-After
+  waits are abortable; delays above 60 seconds stop the run as partial rather
+  than holding a sync or disconnect open indefinitely.
+- On exhaustion return a typed `rate-limited` error carrying `retryAfterMs`.
 
 ## 6. Storage (`connectorStore.ts`)
 
@@ -245,6 +244,7 @@ CREATE TABLE IF NOT EXISTS connector_state (
   item_count INTEGER NOT NULL DEFAULT 0,
   updated_at TEXT NOT NULL
 );
+
 CREATE TABLE IF NOT EXISTS connector_meeting (
   id TEXT PRIMARY KEY,             -- crypto.randomUUID(); Fireflies id lives in source_id
   source TEXT NOT NULL,            -- 'fireflies'
@@ -264,6 +264,29 @@ CREATE TABLE IF NOT EXISTS connector_meeting (
 );
 ```
 
+For Fireflies, `connector_state.last_synced_at` is the authoritative last-success
+watermark; UI staleness is derived from it at read time (24 hours). Failed, partial,
+aborted, truncated, and targeted webhook-ingest runs never advance it. Attempt metadata
+is advisory KV at `${APP_ID}/connectors/fireflies/sync-attempt`, written only by the
+Fireflies sync engine as a JSON string, for example:
+`{"v":1,"last_attempt_at":"2026-10-13T12:00:00.000Z","last_attempt_status":"partial","listing_skip":50,"listing_started_at":"2026-10-13T10:00:00.000Z","listing_anchor":"transcript-49","listing_anchor_date":1791892800000,"listing_previous_neighbor":"transcript-48","pending_ids":["failed-transcript"],"suspect_ids":["failed-transcript"],"suspect_seen_ids":[],"suspect_proof_ids":["failed-transcript"],"suspect_proof_at":"2026-10-13T11:00:00.000Z"}`.
+Readers accept JSON strings and SDK-decoded objects. `pending_ids` is capped at 50;
+each run retries up to half the detail budget (maximum 25, minimum 1 for a positive
+budget), rotating failures so listing retains its budget. Pending IDs keep the SQL
+watermark from advancing until empty. A `running` record older than 15 minutes is
+abandoned and no longer paces catch-up. SQL `last_synced_at` remains authoritative;
+this KV record is only advisory pacing and bounded-list continuation.
+Existing SQL rows need no migration.
+
+The Connectors UI shows “Stale since <date>” when the SQL watermark is older than
+24 hours. A stale Fireflies connector gets a bounded full-listing reconcile (at most
+50 unseen transcript details) on mount or successful unlock, including when the
+webhook route is dark. It is paced at one attempt per 15 minutes per account and
+does not run on focus. Catch-up skips known IDs but continues paging past them until
+it reaches the watermark minus a 24-hour lag buffer, subject to the 50-item cap.
+Webhook-targeted ingest preserves `last_synced_at`; only a complete full-listing
+reconcile advances it.
+
 Transcript bodies (sentences array) go to KV, **not** SQL:
 `tcw.kv` key `xyz.tinycloud.tinychat/connectors/fireflies/transcript/<source_id>` → JSON
 string of the sentences array. KV keys are sent verbatim just like SQL db names, so the
@@ -273,11 +296,12 @@ one place (`CONNECTORS_KV_PREFIX`).
 
 Store API (all take `tcw` as first arg, mirror `threadStore` style):
 `ensureSchema`, `getConnection(connectorId)`, `listKnownSourceIds(source)`,
-`insertMeeting(normalized)` (skip if `(source, source_id)` already present — app-level
-dedup, SELECT-before-INSERT is fine since writes are sequential),
+`listTranscriptBodyIds(source)`, `insertMeeting(normalized)` (skip if `(source, source_id)`
+already present — app-level dedup, SELECT-before-INSERT is fine since writes are sequential),
 `putTranscriptBody(sourceId, sentences)`, `updateSyncState(...)`,
-`purgeConnector(source)` (delete meetings rows + KV transcript keys + state row),
-`countMeetings(source)`.
+`getFirefliesAttempt()`, `recordFirefliesAttempt(...)`, `clearFirefliesAttempt()`,
+`purgeConnector(source)` (delete meeting rows + KV meeting/transcript keys + Drive cursor +
+Fireflies `sync-attempt` + state row), `countMeetings(source)`.
 
 **Sequential writes only** — TinyCloud drops concurrent responses (known platform
 gotcha; ImportDialog imports sequentially for the same reason).
@@ -358,21 +382,103 @@ do not work around it in product code.
 
 ## 8. Sync engine (`firefliesSync.ts`)
 
-`syncFireflies({ client, store, tcw, onProgress, signal })` → `Promise<Result<SyncResult>>`:
+`syncFireflies({ client, store, tcw, onProgress, signal })` uses one listing
+algorithm for Connect, Sync now, the background catch-up, and Meeting sources:
 
-1. `store.ensureSchema(tcw)`; `knownIds = store.listKnownSourceIds("fireflies")`.
-2. `client.listNewTranscriptIds({ knownIds, onProgress })` (newest-first early-exit).
-3. For each new id (oldest-first so a mid-sync abort leaves a contiguous history tail):
-   `client.getTranscript(id)` → normalize → `store.insertMeeting` +
-   `store.putTranscriptBody` → sleep `delayMs`. Check `signal?.aborted` between items;
-   abort is graceful (everything stored so far stays; state records partial sync).
-4. `store.updateSyncState` with `ok`/`error`, `itemCount = countMeetings`, timestamp.
-5. Per-item errors: skip the item, record in `SyncResult.errors`, continue the run
-   (one bad transcript must not kill the sync); auth/rate-limit errors abort the run
-   with the typed error.
-
-The engine imports nothing from React and touches no globals — everything injected, so
-e2e drivers run it under bun against the mock upstream + fake tcw.
+1. Read SQL `connector_state.last_synced_at` as the authoritative last-success
+   watermark. List newest-first, skip known IDs (a SQL row whose KV body is
+   missing is not complete), and stop at the exclusive date boundary
+   `last_synced_at - 24 h`. With a NULL watermark, there is no date boundary.
+2. Every run is bounded by 20 provider pages and at most 50 transcript details.
+   A listing is complete only after reaching the date boundary or true end of
+   history. Exhausting either budget is partial, not success.
+3. Fetch details outside the shared space lane. At each item boundary, write the
+   SQL row and KV body together inside the lane; after the item starts, finish
+   both writes before honoring abort. Recheck account generation inside queued
+   callbacks and before state writes.
+4. Only a complete listing with no item errors, abort, or terminal error advances
+   `last_synced_at`. Incomplete/error/aborted runs preserve it, including NULL on
+   the first failed or partial insert. Targeted webhook ingest writes no success
+   watermark; its successful Fireflies status is `partial` until a listing
+   reconcile completes.
+5. One single-flight is shared by Connect/reconnect, Sync now, and catch-up in a
+   tab. Disconnect aborts the catch-up and waits for the active item boundary
+   before purge/teardown. Connect explicitly authorizes reactivating a retained
+   disconnected row; ordinary runs cannot write `connected` over disconnect or
+   purge.
+6. The per-space KV attempt record is
+   `${APP_ID}/connectors/fireflies/sync-attempt`, version `v: 1`, with
+   `listing_skip`, `listing_started_at`, `listing_anchor`,
+   `listing_anchor_date`, `listing_previous_neighbor`, `pending_ids`,
+   `suspect_ids`, `suspect_seen_ids`, `suspect_proof_ids`, `suspect_proof_at`,
+   and `suspect_proof_at_by_id`. Attempt writes are best-effort and written only by the
+   sync engine. Their failure does not change sync or ingest outcomes and cannot
+   make an unpersisted cursor resumable. Connect's stale-record clear is also
+   best-effort. Keep-data Disconnect has a separate, explicit continuation-clear
+   step; its failure is retryable and may defer disconnect completion. A
+   `running` record older than 15 minutes is abandoned.
+   `pending_ids` is capped at 50. Each run retries at most
+   `max(1, min(25, floor(detailCap / 2)))` pending IDs when `detailCap >= 1`,
+   rotating failed IDs to the end so listing retains its budget. If adding another
+   failure would exceed the cap, or a failure cannot otherwise be recorded, the
+   old cursor remains unchanged. A detail error never proves deletion: a pending
+   null transcript, HTTP 404, or GraphQL error with
+   `extensions.code === "object_not_found"` or `extensions.status === 404` is
+   not-found evidence; arbitrary error-message text is not.
+   A pending not-found retry becomes suspect. Its proof listing uses the same
+   bounded continuation and budgets but has no date cutoff, so only reaching the
+   true end of history proves absence. A complete proof drops suspects absent
+   from its summaries and restarts the listing at zero while retaining
+   `listing_started_at`. Suspects seen during a completed proof are demoted to
+   plain pending and their seen state is cleared; they can start a fresh proof if
+   a later retry is not-found. `suspect_proof_at_by_id` stores the completion time
+   of the last proof that observed each pending ID, with at most 50 entries. An
+   ID without a proof in the preceding 24 hours may trigger a new proof. When a
+   due ID starts a proof, every not-found retry from that invocation joins its
+   fixed membership, including IDs still cooling down; later arrivals wait for a
+   subsequent skip-zero generation. Completion updates each observed member's
+   timestamp without resetting other IDs' cooldowns. On legacy records missing
+   the map, valid `suspect_proof_at` seeds it, otherwise valid `last_attempt_at`;
+   if neither is valid, there is no inherited cooldown. Every attempt write
+   prunes the map to current `pending_ids`. Invalid map data drops the
+   continuation cursor but preserves pending IDs. These additive `v: 1` fields
+   allow older records to remain readable. The SQL watermark never advances while
+   `pending_ids` is non-empty.
+   `listing_started_at` is recorded at skip zero and becomes `last_synced_at` only
+   after the whole ordinary chain reaches the date boundary or true end of history
+   without item errors, abort, budget exhaustion, or pending IDs.
+   The cursor binds `listing_skip - 1` to its ID, listed date, and immediately
+   preceding neighbor. On mismatch the client searches a bounded window at least
+   one page in each direction; it rebases only when all three match at exactly one
+   position. Missing, duplicate, or mismatched evidence restarts from zero. If the
+   KV record is lost, the next run restarts at the newest page and remains bounded.
+   Connect over a missing/disconnected row and keep-data Disconnect clear the
+   continuation and per-ID proof history; purge deletes `sync-attempt`. SQL
+   `last_synced_at` remains authoritative; the KV record is advisory only.
+7. Same-tab single-flight does not prevent cross-tab Sync now overlap. Cross-tab
+   deduplication is out of scope: TinyCloud user SQL does not support a unique
+   index, so this build does not claim cross-tab serialization. Cross-tab purge
+   resurrection is part of this same limitation.
+8. A background catch-up starts only on mount or unlock when Fireflies is
+   connected, secrets are already unlocked, and SQL success is older than 24 h.
+   Focus only drains queued webhook IDs. In the default route-dark deployment,
+   stale mount/unlock reconciliation still runs; webhook probing/draining is
+   dark. Connect, Sync now, and Meeting sources sync also run the same listing
+   reconcile when explicitly invoked. Server-side ingest without an open tab is
+   out of scope (TC-641).
+9. `last_synced_at` is a trustworthy success watermark only after all clients
+   have upgraded to this build; older clients may have written it on targeted
+   webhook attempts. The 24 h lag bound intentionally revisits recent history
+   to reconcile webhook holes. Holes older than `W − 24 h` that predate upgrade
+   are never reconciled, and transcripts appearing later with dates older than
+   the boundary are skipped permanently. Reconnecting a kept row under a
+   different Fireflies account reuses its prior watermark; use Disconnect with
+   delete-data before switching accounts. Keep-data Disconnect retains rows,
+   transcript bodies, and the SQL success watermark, but clears the continuation
+   so reconnect starts a bounded reconcile from the current listing top.
+   A persistently failing transcript remains in `pending_ids`, keeps the run partial and the
+   connector stale, while pending retries rotate and the listing continues through older
+   history. Once stored, a later run clears the pending entry and may complete the reconcile.
 
 ## 9. UI
 
@@ -385,11 +491,10 @@ e2e drivers run it under bun against the mock upstream + fake tcw.
 - One row/card per registry entry: icon, name, description.
   - `coming-soon` → greyed, "Coming soon" badge, non-interactive.
   - `available` + disconnected → "Connect" button → opens `ConnectorDialog`.
-  - connected → status line ("Last synced 5 min ago · 42 meetings" — relative time,
-    absolute on hover), `Sync now` button (spinner + inline progress "Syncing 3/12…"
-    while running, driven by `onProgress`), overflow/secondary action "Disconnect".
-  - last sync error → subdued error line with the typed message (rate-limit shows
-    retry-in time).
+  - connected → status line ("Last synced 5 min ago · 42 meetings" or
+    "Stale since <date> · 42 meetings"), `Sync now` button (spinner + inline
+    progress "Syncing 3/12…" while running, driven by `onProgress`), overflow/
+    secondary action "Disconnect".
 - Connection state loaded from `connectorStore.getConnection` on mount (no secrets
   unlock needed just to render — never trigger a wallet popup on page load).
 

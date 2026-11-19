@@ -8,8 +8,8 @@ import { activateVerifiedDelegation, DelegationActivationError, normalizeDid } f
 import { TenantCoordinator } from "../services/calendar-autojoin-store.js";
 
 export const MAX_SERIALIZED_DELEGATION_BYTES = 64 * 1024;
-const MAX_SIWE_BYTES = 16 * 1024;
-const MAX_SIGNATURE_BYTES = 1024;
+export const MAX_SIWE_BYTES = 16 * 1024;
+export const MAX_SIGNATURE_BYTES = 1024;
 
 interface DelegationRoutesConfig {
   backendDid: string;
@@ -21,6 +21,8 @@ interface DelegationRoutesConfig {
   node: TinyCloudNode;
   coordinator?: TenantCoordinator;
   onGrantChanged?: (address: string, previousEnvelope?: string) => void;
+  /** Clears the owner's Exo rows and removes the owner's exo grant record before this delegation is removed (index.ts teardownExoOwner). */
+  teardownExoOwner?: (owner: string) => Promise<unknown>;
 }
 
 export function createDelegationRouter(config: DelegationRoutesConfig) {
@@ -160,13 +162,20 @@ export function createDelegationRouter(config: DelegationRoutesConfig) {
         await config.store.remove(address);
         invalidateGrant(address, stored?.serialized);
       });
-      res.json({ status: "none", expiresAt: null });
-    } catch { res.status(503).json({ error: "unavailable" }); }
+    } catch { res.status(503).json({ error: "unavailable" }); return; }
+    // Exo owner cleanup after the delegation is revoked, outside the coordinator lock. Best-effort: a failure
+    // is logged and the exo grant stays for the owner's DELETE retry.
+    if (config.teardownExoOwner) {
+      try { await config.teardownExoOwner(address); } catch (error) {
+        console.log(`[delegations] code=exo_teardown outcome=failed error=${error instanceof Error ? error.message : "unknown"}`);
+      }
+    }
+    res.json({ status: "none", expiresAt: null });
   });
   return router;
 }
 
-function storedDelegationMatchesBackend(
+export function storedDelegationMatchesBackend(
   stored: { policyHash?: string; delegateDid?: string },
   backendDid: string,
 ): boolean {
@@ -178,7 +187,7 @@ function storedDelegationMatchesBackend(
 }
 
 
-function requireUser(req: Request, res: Response): { address: string } | null {
+export function requireUser(req: Request, res: Response): { address: string } | null {
   if (!req.user) {
     res
       .status(401)

@@ -1,5 +1,7 @@
 import "./types/index.js";
 
+import { mountContentContinuityRoute } from "./routes/content-continuity.js";
+
 import { existsSync, readFileSync } from "fs";
 import { createServer as createHttpsServer } from "https";
 import { dirname, resolve } from "path";
@@ -11,19 +13,27 @@ import { load as loadYaml } from "js-yaml";
 import {
   DelegationCache,
   DelegationStore,
+  EXO_SYNC_GRANT_KIND,
+  TRANSCRIPT_WRITER_GRANT_KIND,
   createCsrfMiddleware,
   createNonceStore,
 } from "@tinyboilerplate/server";
 import { APP_ID } from "@tinyboilerplate/core";
 import { applySecurityDefaults } from "./security.js";
-import { applyRateLimiters } from "./rate-limits.js";
+import { applyRateLimiters, logGlobalBucketRoutes } from "./rate-limits.js";
 import { createAuthMiddleware } from "./middleware/auth.js";
 import { createAuthRouter } from "./routes/auth.js";
+import { mcpChatFromEnv } from "./mcp-meetings/config.js";
+import { BotHistory } from "./bot-history.js";
+import { createBotHistoryRouter, startBotHistoryDrain } from "./routes/bot-history.js";
+import { botsFromEnv, createBotsRouter } from "./routes/bots.js";
 import { createDelegationRouter } from "./routes/delegations.js";
+import { createExoGrantRouter } from "./routes/exo-grant.js";
 import { createAgentRouter } from "./routes/agent.js";
 import { meetingRolloutFromEnv } from "./transcripts/meeting-rollout.js";
 import { createManifestRouter } from "./routes/manifest.js";
 import { createChatRouter, defaultModel } from "./routes/chat.js";
+import { DEFAULT_RED_PILL_BASE_URL, RECEIPT_AUDIT_TIMEOUT_MS, redPillAciFetch, validateRedPillBaseUrl } from "./redpill-aci.js";
 import { LedgerFlusher } from "./billing/ledger-flusher.js";
 import { LedgerRehydrator } from "./billing/ledger-rehydrate.js";
 import { isOfferedModel } from "./billing/catalog.js";
@@ -50,11 +60,20 @@ import {
 import { createConnectorCredentialRouter } from "./routes/connector-credentials.js";
 import { createConnectorMeetingsRouter } from "./routes/connector-meetings.js";
 import { createGoogleOAuthRouter, normalizeAppOrigin } from "./routes/google-oauth.js";
-import { createTranscriberRouter } from "./routes/transcriber.js";
+import { createPrivateCloudOnlyBulkDeleteRouter, createTranscriberRouter } from "./routes/transcriber.js";
 import { createTranscriberWebhookRouter } from "./routes/transcriber-webhook.js";
-import { ASSEMBLYAI_HOSTED_MOUNT, createAssemblyAiHostedRouter } from "./routes/assemblyai-hosted.js";
+import { createExoMailboxRouter } from "./routes/exo-mailbox.js";
+import { WakeQueue } from "./exo/wake-intake.js";
+import { createTrackedGrantStore, GrantHolderIndex } from "./exo/grant-holders.js";
+import { createExoStorePorts, createOwnerGrantOpener, type ExoBackendKv } from "./exo/stores.js";
+import { startExoRetentionSweepTimer, type ExoRetentionSweepTimer } from "./exo/retention-sweep.js";
+import { clearExoOwnerState, clearExoSourceState } from "./exo/teardown.js";
+import { exoCapabilitiesEnabled } from "./exo/mailbox.js";
+import { ASSEMBLYAI_HOSTED_MOUNT, createAssemblyAiHostedRouter, reconcileHostedJobs } from "./routes/assemblyai-hosted.js";
 import {
   DEFAULT_MAX_CONCURRENT_UPLOADS,
+  HEARTBEAT_INTERVAL_MS,
+  HostedProviderMonitor,
   HostedUploadStore,
   assemblyAiHostedConfigFromEnv,
   type AssemblyAiHostedConfig,
@@ -62,7 +81,7 @@ import {
 import { createPrivateCloudTranscriptionRouter } from "./routes/private-cloud-transcription.js";
 import { createCalendarAutojoinRouter } from "./routes/calendar-autojoin.js";
 import { CalendarAutojoinConnection } from "./services/calendar-autojoin-connection.js";
-import { KvCalendarAutojoinStore, TenantCoordinator } from "./services/calendar-autojoin-store.js";
+import { kvCalendarAutojoinStores, TenantCoordinator } from "./services/calendar-autojoin-store.js";
 import { CalendarAutojoinWorker } from "./services/calendar-autojoin-worker.js";
 import { ExternalOperationLimiter, GoogleCalendarClient } from "./services/google-calendar.js";
 import {
@@ -70,7 +89,8 @@ import {
   transcriptionApiConfigFromEnv,
   transcriptDeliveryConfigFromEnv,
 } from "./services/transcription-api.js";
-import { KvTranscriberIndexStore } from "./services/transcriber-index.js";
+import { KvJsonKv, KvTranscriberIndexStore } from "./services/transcriber-index.js";
+import { PurgeSweeper } from "./services/transcriber-purge.js";
 import { TranscriptDeliveryWorker, WriteGovernor } from "./services/transcript-delivery.js";
 import {
   PRIVATE_CLOUD_TRANSCRIPTION_MOUNT,
@@ -78,13 +98,17 @@ import {
   privateCloudTranscriptionConfigFromEnv,
   type PrivateCloudTranscriptionConfig,
 } from "./services/private-cloud-transcription.js";
+import { createPrivateCloudPurger } from "./services/private-cloud-purge.js";
 import { BackendStorageLane } from "./services/backend-storage-lane.js";
 import { runInWriteLane } from "./services/write-lane.js";
 import { ConnectorQueue } from "./services/connector-queue.js";
 import { ConnectorTeardownService } from "./services/connector-teardown.js";
 import {
   ContentStore,
+  currentContentMaster,
+  assertNoContentKey,
   KvContentBlobStore,
+  createContentIndexDirectory,
   validateContentCustodyConfig,
 } from "./services/content-store.js";
 import {
@@ -92,6 +116,9 @@ import {
   KvCredentialRowStore,
   validateCredentialCustodyConfig,
 } from "./services/credential-store.js";
+import { CREDENTIAL_COUNT_ADMIN_KEY_ENV, mountCredentialCountRoute } from "./routes/credential-count.js";
+import { createAssemblyAiStatusRouter } from "./routes/assemblyai-status.js";
+import { CREDENTIAL_ROW_COUNT_ENV, logCredentialRowCounts } from "./services/credential-row-count.js";
 import {
   createRefreshingCredentialLookup,
   FirefliesOAuthClient,
@@ -104,7 +131,7 @@ import {
 } from "./services/google-oauth.js";
 import { ConnectorFetchWorker } from "./services/fetch-worker.js";
 import { FirefliesMeetingFetcher } from "./services/fireflies-fetch.js";
-import { backendIngestEnabled, IngestModeService } from "./services/ingest-mode.js";
+import { backendIngestEnabled as ingestFlagEnabled, IngestModeService } from "./services/ingest-mode.js";
 import {
   IngestInstanceGuard,
   IngestInstanceSupervisor,
@@ -115,16 +142,19 @@ import { IngestRetentionSweeper } from "./services/ingest-retention.js";
 import { IngestObservabilityReporter } from "./services/ingest-observability.js";
 import {
   ConnectorDrainWorker,
-  createWebhookConfigDirectory,
+  createWebhookQueueDirectory,
+  createWebhookPurgeLedgerDirectory,
   drainIntervalFromEnv,
   startConnectorQueueMaintenanceTimer,
 } from "./services/connector-drain.js";
 import { assertStrongSecret, WebhookTokenService } from "./services/webhook-tokens.js";
 import { createTinychatBackendIdentity } from "./startup.js";
-import { appCorsOrigins } from "./cors-origins.js";
+import { appCorsOptions, frontendOriginsFromEnv } from "./cors-origins.js";
 import { agentStreamPolicyFromEnv, type AgentStreamPolicy } from "./agent-stream-policy.js";
 import { localValidationFromEnv, localValidationGuard } from "./local-validation.js";
 import { createApiBodyParser } from "./body-parsing.js";
+import { configureRequestLogAccountHash, createRequestContextMiddleware, installRequestLogBoundary, parseRequestIdFirstPartyOrigins, recordMountTemplates } from "./request-context.js";
+import { renewalVerifyConfigFromEnv } from "./renewal-verify.js";
 
 const BACKEND_PRIVATE_KEY = process.env.BACKEND_PRIVATE_KEY;
 const TINYCLOUD_HOST = process.env.TINYCLOUD_HOST ?? "https://tee.node.tinycloud.xyz";
@@ -229,6 +259,17 @@ export function validateConnectorWebhookSecrets(env: NodeJS.ProcessEnv): {
   }
 }
 
+/** TC-2537: key for the request record's account_hash. Missing or weak only drops that field; it never stops a boot. */
+function requestLogHmacKey(value: string | undefined): string | undefined {
+  try {
+    assertStrongSecret("REQUEST_LOG_HMAC_KEY", value);
+    return value;
+  } catch {
+    console.warn("[startup] REQUEST_LOG_HMAC_KEY is missing or too weak; request records omit account_hash");
+    return undefined;
+  }
+}
+
 export function validateLedgerStartupConfig(
   env: LedgerStartupEnv,
 ): { ok: true } | { ok: false; error: string } {
@@ -258,7 +299,13 @@ export function validateLedgerStartupConfig(
 }
 
 async function main() {
+  const hasContentMaster = Boolean(process.env.CONNECTOR_CONTENT_MASTER?.trim());
+  const backendIngestEnabled = () => ingestFlagEnabled() && hasContentMaster;
   const localValidation = localValidationFromEnv(process.env);
+  const requestIdFirstPartyOrigins = parseRequestIdFirstPartyOrigins(process.env.REQUEST_ID_FIRST_PARTY_ORIGINS);
+  // CORS, SIWE domains and Google OAuth returns: FRONTEND_URL plus FRONTEND_ORIGINS (default: both
+  // production sites), so moving FRONTEND_URL to home.tinycloud.xyz keeps tinycloud.chat working.
+  const frontendOrigins = frontendOriginsFromEnv(FRONTEND_URL, process.env);
   let transcriptDeliveryConfig;
   try {
     transcriptDeliveryConfig = transcriptDeliveryConfigFromEnv(process.env);
@@ -271,6 +318,15 @@ async function main() {
   const diagnosticKey = process.env.MEETING_DIAGNOSTIC_FOREGROUND_API_KEY;
   if ((diagnosticUrl !== undefined || diagnosticKey !== undefined) && (!diagnosticUrl?.trim() || !diagnosticKey?.trim())) {
     console.error("Invalid meeting diagnostic foreground configuration: set both endpoint and API key, or neither");
+    process.exit(1);
+    return;
+  }
+  let redpillBaseUrl: string;
+  try {
+    redpillBaseUrl = validateRedPillBaseUrl(process.env.REDPILL_BASE_URL ?? DEFAULT_RED_PILL_BASE_URL);
+    if (diagnosticUrl) validateRedPillBaseUrl(diagnosticUrl);
+  } catch {
+    console.error("Invalid confidential model endpoint: expected the attested gateway");
     process.exit(1);
     return;
   }
@@ -347,8 +403,8 @@ async function main() {
         if (!custody.ok) throw new Error(custody.error);
       }
       // The callback page's `postMessage` target, validated at boot rather than at the first
-      // consent. This web origin is also one member of the CORS allowlist; Exo's fixed app origins
-      // are the others. The callback page stays pinned to the web origin: the Exo apps never use it,
+      // consent. This web origin is also in the FRONTEND_ORIGINS allowlist (CORS, SIWE, OAuth
+      // returns). The callback page only targets allowlisted web origins: the Exo apps never use it,
       // they return through the router's fixed native deep link (`native.` states, TC-521).
       // A bare host or `*` throws here.
       normalizeAppOrigin(FRONTEND_URL);
@@ -359,6 +415,15 @@ async function main() {
     }
   }
 
+  // W4 — retained indexes still need their content-envelope master after ingest is disabled,
+  // so maintenance can decrypt and remove every server-held meeting at its retention boundary.
+  const contentCustody = validateContentCustodyConfig(process.env);
+  if (hasContentMaster && !contentCustody.ok) {
+    console.error(contentCustody.error);
+    process.exit(1);
+    return;
+  }
+
   // W2 — the credential-custody master (backend-ingest plan §6.2). Gated on the DARK ingest flag,
   // so a deployment that never enables backend ingestion needs none of this; armed, it gets the
   // same refuse-boot-on-weak-master posture WEBHOOK_HMAC_MASTER has, because from that moment the
@@ -367,15 +432,6 @@ async function main() {
     const custody = validateCredentialCustodyConfig(process.env);
     if (!custody.ok) {
       console.error(custody.error);
-      process.exit(1);
-      return;
-    }
-    // W4 — the content-envelope master (backend-ingest plan §8.1 W4 / DECISIONS D3). Same gate,
-    // same reason, one invariant further: armed, the backend also holds a copy of the meeting
-    // itself. It must SURVIVE redeploys — a deploy that drops it orphans every stored meeting.
-    const contentCustody = validateContentCustodyConfig(process.env);
-    if (!contentCustody.ok) {
-      console.error(contentCustody.error);
       process.exit(1);
       return;
     }
@@ -436,6 +492,11 @@ async function main() {
     localValidation,
   });
 
+  if (!hasContentMaster) {
+    const noKeyBlobs = new KvContentBlobStore(node);
+    await assertNoContentKey(noKeyBlobs);
+  }
+
   // §E.6/E.7 — construct and start the ledger flusher + rehydrator when configured.
   let ledgerFlusher: LedgerFlusher | undefined;
   let ledgerRehydrator: LedgerRehydrator | undefined;
@@ -450,7 +511,9 @@ async function main() {
         "ledger shadow-push + rehydration disabled.",
     );
   }
-  const delegationStore = new DelegationStore(node);
+  const delegationStore = new DelegationStore(node, TRANSCRIPT_WRITER_GRANT_KIND);
+  const exoGrantStore = new DelegationStore(node, EXO_SYNC_GRANT_KIND);
+  const exoGrantHolders = new GrantHolderIndex({ list: (prefix) => node.kv.list({ prefix }) });
   const delegationCache = new DelegationCache();
   const nonceStore = createNonceStore();
   const authMiddleware = createAuthMiddleware(backendPrivateKey);
@@ -461,10 +524,14 @@ async function main() {
   // on the delegation cache built at startup for no reader.
 
   const app = express();
+  installRequestLogBoundary();
+  configureRequestLogAccountHash(requestLogHmacKey(process.env.REQUEST_LOG_HMAC_KEY));
+  app.use(createRequestContextMiddleware());
+  recordMountTemplates(app);
   if (localValidation) app.use(localValidationGuard);
   app.set("trust proxy", 1);
   applySecurityDefaults(app);
-  app.use(cors({ origin: appCorsOrigins(FRONTEND_URL) }));
+  app.use(cors(appCorsOptions(frontendOrigins)));
 
   // Stripe webhook MUST be mounted before the JSON body parser and CSRF
   // middleware: it needs the raw request bytes for signature verification, and
@@ -475,6 +542,41 @@ async function main() {
     createBillingWebhookHandler(),
   );
 
+  // §9.3 — one shared lane for every component that writes to the backend space (connector
+  // queue, content store, credential store, exo job mirror). TinyCloud drops concurrent responses
+  // on one space, so cross-component writes MUST funnel through the same lane; two lanes are no lane.
+  const backendStorageLane = new BackendStorageLane();
+
+  // TC-1013 S4b: owner teardown exists only when the exo flag is on. With the flag off, the DELETE
+  // routes and connector disconnect make no exo calls; they behave as before this stage.
+  const exoBackendKv: ExoBackendKv = {
+    get: (key, options) => node.kv.get(key, options),
+    put: (key, value, options) => backendStorageLane.run(() => node.kv.put(key, value, options)),
+    delete: (key) => backendStorageLane.run(() => node.kv.delete(key)),
+    list: (prefix) => node.kv.list({ prefix }),
+  };
+  const openOwnerGrant = createOwnerGrantOpener({
+    node,
+    backendDid: did,
+    configuredHost: TINYCLOUD_HOST,
+    grantStore: exoGrantStore,
+  });
+  const exoGrantTracked = createTrackedGrantStore(exoGrantStore, exoGrantHolders);
+  const teardownExoOwner: ((owner: string) => Promise<void>) | undefined = exoCapabilitiesEnabled(process.env)
+    ? async (owner: string): Promise<void> => {
+        // Clear owner rows first, then remove the grant: a failed clear keeps the grant so the retry still has it.
+        await clearExoOwnerState({ kv: exoBackendKv, openOwnerGrant }, owner);
+        await exoGrantTracked.remove(owner);
+      }
+    : undefined;
+
+  // Share these stores with the optional routes, but keep retention maintenance alive even when
+  // the connector webhook feature is disabled.
+  const connectorControl = new ConnectorControlStore(node);
+  const connectorQueue = new ConnectorQueue(node, {
+    storageLane: backendStorageLane,
+    isDisabled: async address => (await connectorControl.readDisabled(address)) !== null,
+  });
   // ONE set of instances shared by BOTH connector mounts, the public one below and the
   // authenticated companions further down (§3.6/§4.4): the companions' teardown must evict the
   // very token cache the public route reads, and `GET …/webhooks/pending` must see the queue
@@ -482,17 +584,20 @@ async function main() {
   const connectorWebhooks = connectorWebhooksEnabled()
     ? (() => {
         const tokens = new WebhookTokenService(node);
-        // §9.3 — one shared lane for every component that writes to the backend space (queue,
-        // content store, credential store). TinyCloud drops concurrent responses on one space,
-        // so cross-component writes MUST funnel through the same lane; two lanes are no lane.
-        const backendStorageLane = new BackendStorageLane();
-        const queue = new ConnectorQueue(node, { storageLane: backendStorageLane });
-        const control = new ConnectorControlStore(node);
+        const queue = connectorQueue;
+        const control = connectorControl;
         // W1 — ONE ingest-mode service for both mounts, for the same reason the token cache and
         // the queue are shared: the delivery path's "is this address the worker's?" and the
         // companions' "may this browser drain?" must never disagree. Dark by default
         // (CONNECTOR_BACKEND_INGEST_ENABLED); with the flag off it makes no node call at all.
-        const modes = new IngestModeService(node);
+        const credentialRows = new KvCredentialRowStore(node, backendStorageLane);
+        const modes = new IngestModeService(node, {
+          enabled: backendIngestEnabled,
+          hasOAuthCredential: async (source, address) => {
+            const row = await credentialRows.read(source, address);
+            return row?.kind === "oauth" && !row.revokedAt;
+          },
+        });
         return {
           limiters: new ConnectorWebhookLimiters(),
           tokens,
@@ -518,8 +623,10 @@ async function main() {
     : null;
   const transcriptionConfig = transcriptionApiConfigFromEnv();
   const transcriberStorageLane = connectorWebhooks?.backendStorageLane ?? new BackendStorageLane();
-  const transcriberApi = transcriptionConfig ? createTranscriptionApiClient(transcriptionConfig) : null;
+  const transcriberApi = transcriptionConfig ? createTranscriptionApiClient({ ...transcriptionConfig, requestIdFirstPartyOrigins }) : null;
   const transcriberIndex = new KvTranscriberIndexStore(node, transcriberStorageLane);
+  // TC-3136: retries recording removals whose provider-side purge is not yet confirmed.
+  const transcriberPurgeSweeper = transcriberApi ? new PurgeSweeper(transcriberApi, transcriberIndex) : null;
   const transcriptCoordinator = new TenantCoordinator();
   const transcriptEligibility = (address: string) =>
     transcriptDeliveryConfig.enabled &&
@@ -550,11 +657,35 @@ async function main() {
     // An unmounted webhook must remain 404 even before the global CSRF gate.
     app.post("/api/transcriber/webhooks/ptx", (_req, res) => res.sendStatus(404));
   }
+  // TC-1013 S4b: Exo capability mailbox. Mounted only when the flag is exactly "true".
+  // Stores are the owner's activated grant (S4a) plus a backend-space job mirror on the shared
+  // storage lane. No executor is registered yet, so a verified wake settles `unavailable`.
+  // The wake queue is owned here so shutdown can drain it after HTTP has closed.
+  let exoWakeQueue: WakeQueue | null = null;
+  let exoRetentionSweep: ExoRetentionSweepTimer | null = null;
+  if (exoCapabilitiesEnabled(process.env)) {
+    exoWakeQueue = new WakeQueue();
+    // The index starts empty. Load it before the router mounts, so a wake for an existing holder is not
+    // answered as an unknown owner after a restart.
+    await exoGrantHolders.refresh();
+    const exoPorts = createExoStorePorts({
+      backendKv: exoBackendKv,
+      openOwnerGrant,
+      webhooks: new WebhookTokenService(node),
+      controls: new ConnectorControlStore(node),
+      grantHolders: exoGrantHolders,
+      frontendOrigin: process.env.FRONTEND_URL ?? "https://localhost:5186",
+    });
+    app.use("/api/exo/v1", createExoMailboxRouter(exoPorts, exoGrantHolders, { queue: exoWakeQueue }));
+    exoRetentionSweep = startExoRetentionSweepTimer({ kv: exoBackendKv, ports: exoPorts });
+  }
 
   // W9 / D4 — the process that actually CONSUMES the cohort queues, or nothing at all. Assigned
   // below only when the dark flag is armed; `shutdown` releases its lease so a rolling deploy
   // hands the seat over instead of idling out the TTL.
   let ingestSupervisor: IngestInstanceSupervisor | null = null;
+  let connectorContent: ContentStore | null = null;
+  const contentIndexDirectory = createContentIndexDirectory(node);
 
   // The connectors webhook MUST be mounted before the JSON body parser and CSRF middleware:
   // the HMAC is computed over the exact bytes Fireflies signed, and Fireflies does not send
@@ -606,12 +737,6 @@ async function main() {
       // every other increment lives inside the handler below. 4-arity, so it only ever sees a
       // parser error, and it re-throws unless a bucket is already tripped.
       createConnectorWebhookParserErrorHandler(connectorWebhookLimiters),
-      // §5.4 trigger 1, W1's version. OPTION C retired the post-ack DRAIN kick and that stays
-      // retired: it ran a full drain pass — config, disabled-marker, queue and purge-ledger
-      // reads — after EVERY delivery and handed the ids to a promise nobody consumed. What is
-      // wired here instead is the ingest NUDGE: for a cohort address (dark flag + operator
-      // allowlist) it tells W3's fetch worker an item just landed; for everyone else it returns
-      // immediately and the browser still picks the id up on its next visit (trigger 3).
       // Strictly after the 202 — the ack waits on the durable enqueue and nothing else.
       createConnectorWebhookHandler({
         tokens: connectorWebhooks.tokens,
@@ -633,18 +758,41 @@ async function main() {
   app.use(createCsrfMiddleware());
   // ST5 — global 120/15min limiter plus a separate, larger bucket for the
   // verification proxies so badge traffic can't 429 /api/chat (see rate-limits.ts).
-  applyRateLimiters(app);
+  const { globalRoutes, paidChatLimiter } = applyRateLimiters(app, { sessionKey: backendPrivateKey });
+  // What the global bucket is charged for, per route, until the log shipper (TC-959) lands.
+  logGlobalBucketRoutes(globalRoutes);
 
+  if (!hasContentMaster) {
+    mountContentContinuityRoute(app, process.env, "", did, async () => ({ ok: false, id: null }));
+  }
   app.get("/health", (_req, res) => {
-    res.json({ ok: true, app: APP_ID });
+    // TEMPORARY: aggregate route templates and counts only, our one view of the global bucket
+    // until the tinychat log shipper (TC-959) is live. Remove this field then.
+    res.json({ ok: true, app: APP_ID, globalBucketRoutes: globalRoutes.top(10) });
   });
   app.use("/api/manifest", createManifestRouter());
   app.use("/api/server-info", createServerInfoRouter(did, readBackendBuildInfo()));
+  // Operator view of hosted AssemblyAI: the events, the heartbeat and the status route read this one monitor.
+  const assemblyAiMonitor = new HostedProviderMonitor();
+  // TC-1964: optional authenticated count of stored credential rows. Not registered (404) unless
+  // CREDENTIAL_COUNT_ADMIN_KEY is set; no session, the admin key is the only credential.
+  if (process.env[CREDENTIAL_COUNT_ADMIN_KEY_ENV]?.trim()) {
+    mountCredentialCountRoute(
+      app,
+      process.env,
+      () => new KvCredentialRowStore(node, transcriberStorageLane, { priority: "background" }),
+    );
+  }
+  // Its read-only status for the operator probe: the same key and gating, so no routes (404) unless that key is set.
+  app.use(createAssemblyAiStatusRouter(process.env, assemblyAiMonitor));
   app.use(
     "/api/auth",
     createAuthRouter({
       nonceStore,
       privateKey: backendPrivateKey,
+      frontendOrigins,
+      nativeSiweDomain: process.env.OPENKEY_SIWE_DOMAIN,
+      renewal: renewalVerifyConfigFromEnv(process.env, TINYCLOUD_HOST),
     }),
   );
   app.use(
@@ -656,11 +804,25 @@ async function main() {
       authMiddleware,
       configuredHost: TINYCLOUD_HOST,
       eligibility: transcriptEligibility,
+      teardownExoOwner,
       schemaMissing: (address) => transcriptWorker?.hasSchemaMissing(address) ?? false,
       coordinator: transcriptCoordinator,
       onGrantChanged: (address, previousEnvelope) => transcriptWorker?.invalidateGrant(address, previousEnvelope),
     }),
   );
+
+  // TC-1013 S4a: exo sync grant. Session auth and CSRF match the connector grant. Mounted only
+  // when the exo flag is exactly "true"; otherwise the path falls through to 404.
+  if (exoCapabilitiesEnabled(process.env)) {
+    app.use("/api/exo/v1/grant", createExoGrantRouter({
+      node,
+      backendDid: did,
+      configuredHost: TINYCLOUD_HOST,
+      store: createTrackedGrantStore(exoGrantStore, exoGrantHolders),
+      teardownExoOwner,
+      authMiddleware,
+    }));
+  }
 
   // The AUTHENTICATED companions (§2.2 consequence 2): the normal window, behind the global
   // JSON parser, CSRF, `applyRateLimiters`' dedicated companion bucket and `authMiddleware`.
@@ -672,6 +834,11 @@ async function main() {
       "/api/connectors/webhooks",
       authMiddleware,
       createConnectorWebhookCompanionRouter({
+        deleteReconciled: async (source, address) => {
+          if (!hasContentMaster) return;
+          if (!connectorContent) throw new Error("content cleanup unavailable");
+          return connectorContent.deleteReconciled(source, address);
+        },
         tokens: connectorWebhooks.tokens,
         queue: connectorWebhooks.queue,
         control: connectorWebhooks.control,
@@ -686,6 +853,11 @@ async function main() {
         // construction, rather than at the first mint.
         ...(process.env.CONNECTOR_WEBHOOK_PUBLIC_ORIGIN
           ? { publicOrigin: process.env.CONNECTOR_WEBHOOK_PUBLIC_ORIGIN }
+          : {}),
+        // DELETE /config disconnects every source, so each source's exo ledger rows are cleared
+        // best-effort. Wired only with the exo flag on: a flag-off disconnect makes no exo call.
+        ...(exoCapabilitiesEnabled(process.env)
+          ? { exo: { clearSource: (source: string, address: string) => clearExoSourceState(exoBackendKv, address, source) } }
           : {}),
         // OPTION C — no `delegations` collaborator: `DELETE /config` tears down the connector's
         // own state only. It must not remove or evict the app's unrelated backend delegation.
@@ -711,9 +883,18 @@ async function main() {
       // disconnect (or a user purge) that writes the watermark also stops a replayed delivery
       // from re-creating rows the user tore down. Same `control` the drain and `POST …/purged`
       // use: one ledger, one rule, two consumers.
-      const contentStore = new ContentStore(
-        new KvContentBlobStore(node, connectorWebhooks.backendStorageLane),
-        { purgeLedger: connectorWebhooks.control },
+      const contentBlobs = new KvContentBlobStore(node, connectorWebhooks.backendStorageLane);
+      const contentMaster = currentContentMaster();
+      const ingestGuard = new IngestInstanceGuard(new KvInstanceLeaseStore(node));
+      const contentStore = new ContentStore(contentBlobs, {
+        purgeLedger: connectorWebhooks.control,
+        master: () => contentMaster,
+        mutationGuard: ingestGuard,
+      });
+      connectorContent = contentStore;
+      await contentStore.assertContinuity(contentBlobs, process.env, ingestGuard);
+      mountContentContinuityRoute(app, process.env, contentMaster, did, async () =>
+        contentStore.probeIndex(await contentBlobs.findIndex()),
       );
       const credentialStore = new CredentialStore(
         new KvCredentialRowStore(node, connectorWebhooks.backendStorageLane),
@@ -729,10 +910,20 @@ async function main() {
           // upstream revoke), every content row, the queue. A disconnect that left the server's
           // copy of the meetings behind is §9 anti-pattern 8.
           teardown: new ConnectorTeardownService({
+            notifications: {
+              disable: async (source, address) => {
+                connectorDrainAbort.abort(address);
+                await connectorWebhooks.control.markDisabled(address, source);
+                await connectorWebhooks.tokens.revoke(address);
+              },
+            },
             credentials: credentialStore,
             content: contentStore,
             queue: connectorWebhooks.queue,
             control: connectorWebhooks.control,
+            ...(exoCapabilitiesEnabled(process.env)
+              ? { exo: { clearSource: (source: string, address: string) => clearExoSourceState(exoBackendKv, address, source) } }
+              : {}),
           }),
           oauth: {
             authorizeUrl: ({ state, challenge }) =>
@@ -756,13 +947,13 @@ async function main() {
         "/api/connectors/meetings",
         authMiddleware,
         createConnectorMeetingsRouter({
+          isDisabled: async address => (await connectorControl.readDisabled(address)) !== null,
+          deleteReconciled: (source, address) => contentStore.deleteReconciled(source, address),
           content: contentStore,
           modes: connectorWebhooks.modes,
         }),
       );
 
-      // W3 + W9 — the fetch worker, behind D4's SINGLE-INSTANCE seat. Two boundaries, both
-      // required: `ConnectorFetchWorker` keeps one worker per PROCESS, and the lease below keeps
       // one worker per DEPLOYMENT, because the queue's mutual exclusion is a per-address
       // in-process mutex over a per-instance storage lane — neither crosses a process boundary, so
       // a second instance is not throughput, it is interleaved read-modify-writes on one array
@@ -771,7 +962,7 @@ async function main() {
       // must never resolve to "nobody does". Constraint and its exit:
       // `docs/connector-webhooks-single-instance.md`.
       const supervisor = new IngestInstanceSupervisor({
-        guard: new IngestInstanceGuard(new KvInstanceLeaseStore(node)),
+        guard: ingestGuard,
         worker: new ConnectorFetchWorker({
           queue: connectorWebhooks.queue,
           modes: connectorWebhooks.modes,
@@ -783,19 +974,15 @@ async function main() {
             store: credentialStore,
             client: () => firefliesOAuth(),
           }),
-          // Refetch BY ID with the user's own credential; the fetcher never sees a stored link.
           fetcher: new FirefliesMeetingFetcher(),
           content: contentStore,
           // W4's retention + purge tombstones: a swept or purged id is never re-stored by a
           // replayed delivery.
           retention: contentStore,
         }),
-        // W4/D2a — the retention window is enforced by the instance that HOLDS the seat, so the
-        // 90-day bound is a running sweep rather than a documented intention.
         retention: new IngestRetentionSweeper({
           content: contentStore,
-          cohort: () => connectorWebhooks.modes.cohort(),
-          sources: [DEFAULT_CONNECTOR_SOURCE],
+          indexes: contentIndexDirectory,
         }),
       });
       ingestSupervisor = supervisor;
@@ -823,6 +1010,35 @@ async function main() {
       ).start();
     }
   }
+  // Retention runs independently of ingest flags and cohort membership. The sweeper owns index
+  // enumeration inside each guarded pass so a KV list failure is logged and retried next interval,
+  // never a reason to prevent backend startup.
+  if (ingestSupervisor === null && hasContentMaster) {
+    const retentionBlobs = new KvContentBlobStore(node, backendStorageLane);
+    const retentionGuard = new IngestInstanceGuard(
+      new KvInstanceLeaseStore(node),
+    );
+    const retentionContent = new ContentStore(retentionBlobs, {
+      purgeLedger: connectorControl,
+      mutationGuard: retentionGuard,
+    });
+    connectorContent = retentionContent;
+    await retentionContent.assertContinuity(
+      retentionBlobs,
+      process.env,
+      retentionGuard,
+    );
+    const retention = new IngestRetentionSweeper({
+      content: retentionContent,
+      indexes: contentIndexDirectory,
+    });
+    const supervisor = new IngestInstanceSupervisor({
+      guard: retentionGuard,
+      worker: retention,
+    });
+    ingestSupervisor = supervisor;
+    ingestSupervisor.start();
+  }
 
   let calendarAutojoin: CalendarAutojoinConnection | undefined;
   let calendarAutojoinWorker: CalendarAutojoinWorker | undefined;
@@ -832,18 +1048,24 @@ async function main() {
       fetchImpl: ((...args: Parameters<typeof fetch>) => limiter.run(() => fetch(...args))) as typeof fetch,
     });
     const calendar = new GoogleCalendarClient({ limiter });
-    const credentials = new CredentialStore(new KvCredentialRowStore(node, transcriberStorageLane), {
-      upstreamRevoker: async secret => {
-        if (secret.kind === "oauth") await google.revoke(secret.refreshToken ?? secret.accessToken);
-      },
-    });
-    const store = new KvCalendarAutojoinStore(node, transcriberStorageLane);
+    // Google revocation is exclusively through the connection service's shared-grant guard.
+    const credentials = new CredentialStore(new KvCredentialRowStore(node, transcriberStorageLane));
+    const backfillCredentials = new CredentialStore(new KvCredentialRowStore(node, transcriberStorageLane, { priority: "background" }));
+    // Same lane; see kvCalendarAutojoinStores for the priorities and the shared row cache. The
+    // worker shares the one connection service (it single-flights token refreshes); the reads of
+    // its per-tick calls through it (cleanupEnabling, accessToken) use the worker's cached store.
+    const stores = kvCalendarAutojoinStores(node, transcriberStorageLane);
     // Fail boot rather than claiming unattended recovery on a KV without prefix listing.
-    await store.listConnections();
+    await stores.worker.listConnections();
     const coordinator = new TenantCoordinator();
-    calendarAutojoin = new CalendarAutojoinConnection({ store, credentials, oauth: google, coordinator, calendar });
+    calendarAutojoin = new CalendarAutojoinConnection({
+      store: stores.request, workerStore: stores.worker, credentials, backfillCredentials, oauth: google, coordinator, calendar,
+      teardownExoOwner,
+      // TC-1047: disable, disconnect and needs_reconnect cancel the tenant's due-time timers.
+      onDisabled: tenant => calendarAutojoinWorker?.cancelTenant(tenant),
+    });
     calendarAutojoinWorker = new CalendarAutojoinWorker({
-      store, coordinator, calendar, connection: calendarAutojoin, api: transcriberApi,
+      store: stores.worker, dispatchStore: stores.dispatch, coordinator, calendar, connection: calendarAutojoin, api: transcriberApi,
       index: transcriberIndex, limiter, botName: process.env.TRANSCRIPTION_BOT_NAME || undefined,
       // TC-581: one capture per Meet across tenants. The flag gates only sharing the transcript.
       meetingCoordinator: new TenantCoordinator(),
@@ -874,8 +1096,8 @@ async function main() {
   //    and re-checks. Neither reads a session, a store or a credential — `/callback` renders one
   //    nonce'd page that postMessages `{code, state}` to the pinned app origin and nothing else
   //    (or, for the Exo app's `native.` states, 302s them to one constant deep link).
-  //  - Everything else — the three POSTs that actually reach Google's token endpoint — goes
-  //    through `authMiddleware`, with global CSRF already covering the unsafe methods.
+  //  - Everything else — desktop start and the three POSTs that reach Google's token endpoint
+  //    or revoke a token — goes through `authMiddleware`. Global CSRF covers unsafe methods.
   if (googleMeetOAuthEnabled()) {
     app.use(
       "/api/connectors/google/oauth",
@@ -891,14 +1113,31 @@ async function main() {
         // Explicit, and deliberately NOT the router's `googleAppOriginFromEnv()` default: this
         // process already resolved the web app origin once, with the localhost/TLS fallback a bare
         // env read does not have. CORS also accepts Exo's fixed app origins, but the callback page
-        // stays pinned to this web origin; the Exo apps return through the fixed native deep link.
+        // only returns to an allowlisted web origin (FRONTEND_URL, tinycloud.chat once FRONTEND_URL
+        // is the Home site, or the fixed Home origin for `home.`/`hometab.` states); the Exo apps
+        // return through the fixed native deep link.
         appOrigin: FRONTEND_URL,
+        frontendOrigins,
       }),
     );
   }
 
-  if (AGENT_DID && ELIZA_SERVICE_URL && ELIZA_SERVICE_SECRET) {
-    const elizaServiceUrl = ELIZA_SERVICE_URL.replace(/\/$/, "");
+  // Tiny bots (BOTS_ENABLED): Main bot chat proxied to the bots service for listed accounts; status always answers.
+  const botsConfig = botsFromEnv(process.env);
+  if (botsConfig && process.env.BOTS_HISTORY_ENABLED === "true") {
+    const history = new BotHistory(node, backendPrivateKey as `0x${string}`, TINYCLOUD_HOST);
+    app.use("/api/bots/history", createBotHistoryRouter(history, botsConfig, authMiddleware));
+    const historyDrain = startBotHistoryDrain(history, botsConfig);
+    botsConfig.onTurnFinished = () => { void historyDrain.drain(); };
+    process.once("SIGTERM", historyDrain.stop);
+    process.once("SIGINT", historyDrain.stop);
+  }
+  app.use("/api/bots", createBotsRouter({ config: botsConfig, authMiddleware, paidLimiter: paidChatLimiter }));
+
+  // MCP chat (MCP_CHAT_ENABLED) serves its listed accounts without eliza-service; every other account keeps the eliza path.
+  const mcpChat = mcpChatFromEnv(process.env);
+  if ((AGENT_DID && ELIZA_SERVICE_URL && ELIZA_SERVICE_SECRET) || mcpChat.mcpMeetings) {
+    const elizaServiceUrl = ELIZA_SERVICE_URL?.replace(/\/$/, "");
     const meetingRollout = meetingRolloutFromEnv(process.env);
     app.use(
       "/api/agent",
@@ -906,7 +1145,9 @@ async function main() {
         agentDid: AGENT_DID,
         elizaServiceUrl,
         elizaServiceSecret: ELIZA_SERVICE_SECRET,
+        mcp: mcpChat,
         authMiddleware,
+        paidLimiter: paidChatLimiter,
         // Mount POST /api/agent/chat (tool-calling orchestration) only when RedPill
         // is configured; reuse the canonical offered-model allowlist so the agent
         // tool path accepts only the curated picker models (same gate as the relay).
@@ -919,16 +1160,20 @@ async function main() {
                   const accounts = (process.env.ELIZA_TASKS_TEST_ACCOUNTS ?? "").split(",").map(value => value.trim().toLowerCase()).filter(Boolean);
                   return accounts.length === 0 || accounts.includes(address.toLowerCase());
                 },
+                ...mcpChat,
                 meetingContentRetrievalEnabled: meetingRollout.enabled,
                 meetingContentAccountAllowed: meetingRollout.accountAllowed,
                 meetingContentModelAllowed: meetingRollout.modelAllowed,
+                meetingContentMcpAccountAllowed: meetingRollout.mcpAccountAllowed,
+                meetingContentMcpModelAllowed: meetingRollout.mcpModelAllowed,
                 backendRevision: process.env.BUILD_REVISION ?? process.env.GIT_SHA ?? "unknown",
                 agentId: TINYCHAT_AGENT_ID,
                 entityIdFor: (address: string) => addressToEntityId(address, TINYCHAT_AGENT_ID),
-                elizaServiceUrl,
-                elizaServiceSecret: ELIZA_SERVICE_SECRET,
+                elizaServiceUrl: elizaServiceUrl ?? "",
+                elizaServiceSecret: ELIZA_SERVICE_SECRET ?? "",
                 redpillApiKey: diagnosticKey ?? redpillApiKey,
-                redpillBaseUrl: diagnosticUrl ?? process.env.REDPILL_BASE_URL ?? "https://api.redpill.ai/v1",
+                redpillBaseUrl: diagnosticUrl ?? redpillBaseUrl,
+                redpillFetch: redPillAciFetch(diagnosticUrl ?? redpillBaseUrl, RECEIPT_AUDIT_TIMEOUT_MS),
                 defaultModel,
                 isModelOffered: (m: string) => isOfferedModel(m),
                 flusher: ledgerFlusher,
@@ -947,7 +1192,12 @@ async function main() {
   app.use(
     "/api/chat",
     authMiddleware,
-    createChatRouter({ flusher: ledgerFlusher, rehydrator: ledgerRehydrator }),
+    createChatRouter({
+      flusher: ledgerFlusher,
+      rehydrator: ledgerRehydrator,
+      redpillFetch: redPillAciFetch(redpillBaseUrl, RECEIPT_AUDIT_TIMEOUT_MS),
+      paidLimiter: paidChatLimiter,
+    }),
   );
   app.use("/api/signature", authMiddleware, createSignatureRouter());
   app.use("/api/nras-proxy", authMiddleware, express.json({ limit: "4mb" }), createNrasProxyRouter());
@@ -960,7 +1210,12 @@ async function main() {
       did,
     }),
   );
-  app.use("/api/billing", createBillingRouter({ authMiddleware }));
+  app.use("/api/billing", createBillingRouter({ authMiddleware, rehydrator: ledgerRehydrator }));
+
+  // One PTX client serves the private cloud relay below and the account-deletion purge (TC-3166).
+  const privateCloudPtxClient = privateCloudTranscription.enabled
+    ? createPtxClient({ ...privateCloudTranscription, requestIdFirstPartyOrigins })
+    : null;
 
   // The TRANSCRIBER surface (routes/transcriber.ts): send a bot to a meeting URL through the
   // TinyCloud Private Transcription API and read the speaker-attributed transcript back. Mounted
@@ -975,6 +1230,10 @@ async function main() {
       createTranscriberRouter({
         api: transcriberApi!,
         index: transcriberIndex,
+        purger: transcriberPurgeSweeper ?? undefined,
+        ...(privateCloudPtxClient && privateCloudTranscription.enabled
+          ? { privateCloud: createPrivateCloudPurger(privateCloudPtxClient, privateCloudTranscription.tenantKey) }
+          : {}),
         webhookUrl: transcriptDeliveryConfig.enabled ? transcriptDeliveryConfig.webhookUrl : undefined,
         onObservedCompletion: transcriptWorker
           ? async (address, meetingId) => { await transcriptWorker.wake(address, meetingId, "observed"); }
@@ -988,22 +1247,35 @@ async function main() {
     console.warn(
       "[startup] TRANSCRIPTION_API_URL / TRANSCRIPTION_API_KEY not set — /api/transcriber is disabled.",
     );
+    // Private cloud transcription can be on without the meeting transcriber: account deletion still has to
+    // clear its jobs, so the bulk DELETE alone is mounted (TC-3166). Otherwise it would 404 as "dark".
+    if (privateCloudPtxClient && privateCloudTranscription.enabled) {
+      app.use(
+        "/api/transcriber/meetings",
+        authMiddleware,
+        createPrivateCloudOnlyBulkDeleteRouter(createPrivateCloudPurger(privateCloudPtxClient, privateCloudTranscription.tenantKey)),
+      );
+    }
   }
 
   // Hosted AssemblyAI (routes/assemblyai-hosted.ts): the same mount, always, so the frontend can
   // tell "off" (capabilities `hosted: false`) from "dark". Uploads live in this process only: the
-  // spool is emptied at start and a minute sweep drops uploads past their hour.
+  // The persistent spool admits one writer under flock. Startup recovery completes before mount.
   let hostedUploads: HostedUploadStore | null = null;
   if (assemblyAiHosted.hosted) {
-    hostedUploads = new HostedUploadStore(assemblyAiHosted.spoolDir, assemblyAiHosted.dailyBytes, DEFAULT_MAX_CONCURRENT_UPLOADS);
+    hostedUploads = new HostedUploadStore(assemblyAiHosted.spoolDir, assemblyAiHosted.dailyBytes, DEFAULT_MAX_CONCURRENT_UPLOADS,
+      undefined, undefined, undefined, new KvJsonKv(node));
     await hostedUploads.init();
+    await reconcileHostedJobs(assemblyAiHosted, hostedUploads);
+    assemblyAiMonitor.attach(hostedUploads);
     const sweeper = hostedUploads;
     setInterval(() => {
       sweeper.sweep(Date.now()).catch(() => console.error("[assemblyai-hosted] sweep failed alert=true"));
     }, 60_000).unref();
+    setInterval(() => assemblyAiMonitor.heartbeat(), HEARTBEAT_INTERVAL_MS).unref();
     console.log("[startup] hosted AssemblyAI enabled.");
   }
-  app.use(ASSEMBLYAI_HOSTED_MOUNT, authMiddleware, createAssemblyAiHostedRouter({ config: assemblyAiHosted, store: hostedUploads }));
+  app.use(ASSEMBLYAI_HOSTED_MOUNT, authMiddleware, createAssemblyAiHostedRouter({ config: assemblyAiHosted, store: hostedUploads, monitor: assemblyAiMonitor }));
 
   // Exo private cloud transcription (routes/private-cloud-transcription.ts). A different PTX
   // deployment (`ptx-batch`) and key from the meeting transcriber above.
@@ -1011,7 +1283,7 @@ async function main() {
     PRIVATE_CLOUD_TRANSCRIPTION_MOUNT,
     authMiddleware,
     createPrivateCloudTranscriptionRouter({
-      client: privateCloudTranscription.enabled ? createPtxClient(privateCloudTranscription) : null,
+      client: privateCloudPtxClient,
       tenantKey: privateCloudTranscription.enabled ? privateCloudTranscription.tenantKey : null,
     }),
   );
@@ -1032,24 +1304,12 @@ async function main() {
       next(err);
       return;
     }
-    const detail = (err ?? {}) as { status?: unknown; name?: unknown; message?: unknown; type?: unknown };
-    const status = typeof detail.status === "number" ? detail.status : 500;
-    // A PROJECTION, never the error object (§6.3: public_logs=true on the CVM). body-parser
-    // attaches the raw request body to an `entity.parse.failed` error as `err.body`, and
-    // inspecting an Error prints its own enumerable properties — so logging `err` here prints
-    // attacker-chosen bytes from an unauthenticated route, including the two connector bodies
-    // that matter (a serialized delegation bundle, raw meeting ids). Fields only.
-    // `message` is dropped for body-parser's own errors (the ones carrying `type`): a
-    // `entity.parse.failed` message is the JSON parser's, and that echoes a fragment of the
-    // body it choked on. `type` + `status` say everything an operator needs about those.
-    const parserError = typeof detail.type === "string";
-    console.error("[express] route error", {
-      name: typeof detail.name === "string" ? detail.name : "unknown",
-      message: parserError ? "<omitted: parser error>" : typeof detail.message === "string" ? detail.message : "unknown",
-      status,
-      type: parserError ? detail.type : undefined,
-    });
-    res.status(status >= 400 && status < 600 ? status : 500).json({ error: "internal_error" });
+    const errorStatus = typeof err === "object" && err !== null && "status" in err ? err.status : undefined;
+    const status = typeof errorStatus === "number" && Number.isInteger(errorStatus) && errorStatus >= 400 && errorStatus < 600
+      ? errorStatus : 500;
+    // Error names/messages/properties may contain raw request or dependency payloads.
+    console.error("[express] route error", { status });
+    res.status(status).json({ error: "internal_error" });
   });
 
   const tlsConfig = loadTlsConfig();
@@ -1062,28 +1322,46 @@ async function main() {
         console.log(`TinyChat backend ready: http://localhost:${PORT}`);
       });
 
-  // §5.4 trigger 2, RE-SCOPED under Option C — bounded queue maintenance, never a background
-  // drain. Started ONLY when the flag is on, `unref()`'d inside so it never hangs a test or a
-  // shutdown. A timed drain would have surfaced ids to nobody; the TTL / dead-letter sweep is
-  // the part that still earns its cost, because an abandoned connector's queue is otherwise
-  // swept only when a delivery or a user visit happens to touch it — and the 14-day TTL is a
-  // retention promise. `sweep` reports counts only, so nothing is surfaced here.
-  const connectorQueueMaintenance = connectorWebhooks
-    ? startConnectorQueueMaintenanceTimer({
-        listAddresses: createWebhookConfigDirectory(node),
-        intervalMs: drainIntervalFromEnv(process.env),
-        sweep: async (address) => {
-          // Sequential, one address at a time (§9.3). The config read supplies the source the
-          // queue key needs; a config that is gone took its queue with it (§4.8 teardown).
-          const config = await connectorWebhooks.tokens.config(address);
-          if (config === null) return;
-          await connectorWebhooks.queue.sweep(config.source, address);
-        },
-      })
-    : null;
+  // Queue and purge-ledger retention is not an ingestion feature: disconnected records must
+  // expire even while webhook routes are disabled. This timer only deletes expired state and
+  // reports counts; it never drains or surfaces meeting IDs.
+  const connectorQueueMaintenance = startConnectorQueueMaintenanceTimer({
+    listQueueEntries: createWebhookQueueDirectory(node),
+    listLedgerAddresses: createWebhookPurgeLedgerDirectory(node),
+    sweepLedger: async ({ source, address }, safetyMarginMs) => {
+      await connectorControl.clearQuarantinedLedger(source, address);
+      const read = await connectorControl.readLedger(
+        source,
+        address,
+        safetyMarginMs,
+      );
+      if (read.status === "unparseable") {
+        await connectorControl.repairUnreadableLedger(source, address);
+      }
+    },
+    sweepQueue: ({ source, address }, safetyMarginMs) =>
+      connectorQueue.sweep(source, address, safetyMarginMs),
+    intervalMs: drainIntervalFromEnv(process.env),
+  });
 
   calendarAutojoinWorker?.start();
   transcriptWorker?.start();
+  transcriberPurgeSweeper?.start();
+  // TC-1964: optional one-time, log-only count of stored credential rows. Unset = nothing runs.
+  // Fired after boot, never awaited, and it cannot throw; it lists through the shared KV lane.
+  if (process.env[CREDENTIAL_ROW_COUNT_ENV]?.trim()) {
+    void logCredentialRowCounts(
+      process.env[CREDENTIAL_ROW_COUNT_ENV],
+      () => new KvCredentialRowStore(node, transcriberStorageLane, { priority: "background" }),
+    );
+  }
+  // Bun can leave a request that finishes during shutdown on a keep-alive connection.
+  // Retry idle-connection closure after it has left the active-request set.
+  server.on("request", (_req, res) => {
+    res.once("finish", () => {
+      if (shuttingDown) setTimeout(() => server.closeIdleConnections(), 0).unref();
+    });
+  });
   let shuttingDown = false;
   const shutdown = (signal: string) => {
     if (shuttingDown) return;
@@ -1098,7 +1376,10 @@ async function main() {
     const httpDrained = new Promise<void>(resolve => server.close(() => resolve()));
     server.closeIdleConnections();
     // Hosted AssemblyAI submits in flight are aborted; each deletes its own spool as it settles.
-    void Promise.allSettled([httpDrained, transcriptWorker?.stop(), calendarAutojoinWorker?.stop(), ingestSupervisor?.stop(), hostedUploads?.shutdown()])
+    // Wakes are acknowledged with 202 before their job record is written. Drain them only after HTTP has closed,
+    // so no new wake can enqueue; past the bound, the drain rejects and the process exits non-zero.
+    const wakesDrained = httpDrained.then(() => exoWakeQueue?.drain());
+    void Promise.allSettled([httpDrained, wakesDrained, exoRetentionSweep?.stop(), transcriptWorker?.stop(), calendarAutojoinWorker?.stop(), ingestSupervisor?.stop(), hostedUploads?.shutdown()])
       .then((results) => process.exit(results.some((result) => result.status === "rejected") ? 1 : 0));
     setTimeout(() => process.exit(1), 120_000).unref();
   };

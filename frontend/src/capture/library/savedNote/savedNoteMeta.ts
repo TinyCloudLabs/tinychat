@@ -1,6 +1,7 @@
 import { VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
 import type { AppPlatform } from "@/lib/platform";
 import { TRANSCRIBER_NAME } from "@/capture/recorder/final/finalCopy";
+import { transcriptionModelLabel } from "@/lib/transcriptionModelLabel";
 import { detailWhen, formatSpokenDuration } from "../formatters";
 import type { LibraryItem } from "../LibraryRow";
 import { SAVED_NOTE_COPY } from "./savedNoteCopy";
@@ -63,6 +64,7 @@ export function savedNoteMeta(
     item.durationSecs !== null ? formatSpokenDuration(item.durationSecs) : null,
     item.source === VOICE_NOTE_SOURCE ? recordedOn(metadata, platform) : null,
     transcriptRoute(item.source, metadata),
+    transcriptRoute(item.source, metadata) ? transcriptionModelLabel(metadata?.transcription_model) : null,
     settled ? SAVED_NOTE_COPY.savedToSpace : null,
   ]
     .filter((part): part is string => !!part)

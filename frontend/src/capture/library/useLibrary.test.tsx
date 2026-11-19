@@ -10,7 +10,12 @@ import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
+import { IDBFactory } from "fake-indexeddb";
+import { sha256 } from "@noble/hashes/sha256";
+import { bytesToHex } from "@noble/hashes/utils";
 
+import { beginStorageAccountSession, endStorageAccountSession } from "@/lib/storageStatus";
+import { resetLanesForTests } from "@/lib/localFirst/requestLanes";
 import { saveNote } from "@/lib/voiceNotes/recordingNotes";
 import { VoiceNotes, __setVoiceNotesForTests, type VoiceNotesPlugin } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { clearDiscarded, markDiscarded, unmarkDiscarded, type PendingNote } from "@/lib/voiceNotes/recorderSaves";
@@ -18,6 +23,12 @@ import { syncTranscriberLibrary } from "@/chat/useTranscriberLibrarySync";
 import type { TranscriberClient } from "@/lib/transcriberApi";
 import { captureEvents } from "../captureEvents";
 import { RELIST_AFTER_MS, useLibrary, type Library } from "./useLibrary";
+import { PHONE_AUDIO_UNAVAILABLE } from "@/chat/audioPlayback";
+import { renderToStaticMarkup } from "react-dom/server";
+import { MemoryRouter } from "react-router-dom";
+import { NoteDetail } from "./NoteDetail";
+import type { VoiceNoteTranscriptionProps } from "@/capture/recorder/transcriptionProps";
+import { hasPrivateCloudTimingProvenance, transcriptMarkdown, transcriptWithTimestamps } from "./transcriptSegments";
 
 const saved = { window: (globalThis as { window?: unknown }).window, act: (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT };
 beforeAll(() => {
@@ -35,10 +46,17 @@ const row = (id: string): Row => [id, SOURCE, `rec-${id}`, `Recording ${id}`, "2
 
 let spaces = 0;
 /** A space whose reads wait for the test; `kinds` is the order they went out in. */
-function fakeSpace(options: { voiceCommit?: boolean; previews?: [string, string][] } = {}) {
+function fakeSpace(options: {
+  voiceCommit?: boolean;
+  previews?: [string, string][];
+  commitProvenance?: [string | null, string | null];
+  commitModel?: string | null;
+  commitReads?: { rev: number; engine: string | null; provider: string | null }[];
+} = {}) {
   const previews = options.previews ?? [];
   const out: Array<{ kind: string; answer: (value: unknown) => void }> = [];
   const kinds: string[] = [];
+  let commitReadCount = 0;
   const transcriptKeys: string[] = [];
   let inFlight = 0;
   let most = 0;
@@ -61,18 +79,27 @@ function fakeSpace(options: { voiceCommit?: boolean; previews?: [string, string]
     spaceId: `library-${spaces}`,
     sql: { db: () => ({ query: (sql: string) => {
       if (sql.includes("sqlite_schema")) return Promise.resolve({ ok: true, data: { rows: options.voiceCommit || previews.length > 0 ? [[1]] : [] } });
+      if (sql.includes("WHERE source IN")) return call("list");
+      if (sql.includes("SELECT metadata FROM connector_meeting WHERE id = ?")) return call("metadata");
       if (sql.includes("SELECT source_id, preview FROM voice_note_transcript")) return Promise.resolve({ ok: true, data: { rows: previews } });
-      if (sql.includes("FROM voice_note_transcript")) return Promise.resolve({ ok: true, data: { rows: [
-        ["rec-a", 1, "hash", "committed/transcript", "transcribed", "Preview", null, null, null, null, null, null, null],
-      ] } });
+      if (sql.includes("FROM voice_note_transcript")) {
+        const selected = options.commitReads?.[Math.min(commitReadCount++, options.commitReads.length - 1)];
+        const [engine, provider] = selected ? [selected.engine, selected.provider] : options.commitProvenance ?? [null, null];
+        const rev = selected?.rev ?? 1;
+        const bodyKey = selected ? `committed/transcript/${rev}` : "committed/transcript";
+        return Promise.resolve({ ok: true, data: { rows: [
+          ["rec-a", rev, "hash", bodyKey, "transcribed", "Preview", engine, provider, options.commitModel ?? null, null, null, null, null],
+        ] } });
+      }
       if (sql.includes("FROM connector_meeting g")) return Promise.resolve({ ok: true, data: { rows: [] } });
-      return call(sql.includes("WHERE source IN") ? "list" : "metadata");
+      return call("metadata");
     } }) },
     kv: { get: (key: string) => {
       transcriptKeys.push(key);
       return call("transcript");
     } },
   } as unknown as TinyCloudWeb;
+  beginStorageAccountSession(tcw, tcw.did ?? null, tcw.spaceId ?? null);
   return {
     tcw,
     kinds,
@@ -101,6 +128,8 @@ let root: Root | null = null;
 afterEach(async () => {
   if (root) await act(async () => root!.unmount());
   root = null;
+  endStorageAccountSession();
+  resetLanesForTests();
 });
 async function render(props: Parameters<typeof Probe>[0]) {
   root ??= createRoot(container);
@@ -199,7 +228,7 @@ describe("useLibrary, mounted", () => {
     await space.answer("metadata", { ok: true, data: { rows: [[JSON.stringify({ capture: { platform: "ios" } })]] } });
     await space.answer("transcript", { ok: false, error: { code: "KV_NOT_FOUND", message: "none" } });
     expect(seen.at(-1)!.note.reads.metadata?.status).toBe("ok");
-    expect(seen.at(-1)!.note.reads.transcript?.status).toBe("absent");
+    expect(seen.at(-1)!.note.reads.transcript?.transcript.status).toBe("absent");
     expect(space.most()).toBe(1);
   });
 
@@ -241,7 +270,7 @@ describe("useLibrary, mounted", () => {
     await space.answer("metadata", { ok: true, data: { rows: [["{}"]] } });
     await space.answer("transcript", { ok: true, data: { data: JSON.stringify([{ text: "Saved during read" }]) } });
     expect(seen.at(-1)!.note.reads.transcript).toMatchObject({
-      status: "ok", sentences: [{ text: "Saved during read" }],
+      transcript: { status: "ok", sentences: [{ text: "Saved during read" }] },
     });
     expect(space.outstanding()).toBe(0);
   });
@@ -259,7 +288,7 @@ describe("useLibrary, mounted", () => {
     expect(space.kinds).toEqual(["list", "metadata", "transcript", "list", "metadata"]);
     await space.answer("metadata", { ok: true, data: { rows: [["{}"]] } });
     await space.answer("transcript", { ok: true, data: { data: JSON.stringify([{ text: "New" }]) } });
-    expect(seen.at(-1)!.note.reads.transcript).toMatchObject({ status: "ok", sentences: [{ text: "New" }] });
+    expect(seen.at(-1)!.note.reads.transcript).toMatchObject({ transcript: { status: "ok", sentences: [{ text: "New" }] } });
     expect(space.outstanding()).toBe(0);
   });
 
@@ -270,13 +299,13 @@ describe("useLibrary, mounted", () => {
     await space.answer("list", listed("a"));
     await space.answer("metadata", { ok: true, data: { rows: [["{}"]] } });
     await space.answer("transcript", { ok: false, error: { code: "KV_NOT_FOUND", message: "none" } });
-    expect(seen.at(-1)!.note.reads.transcript?.status).toBe("absent");
+    expect(seen.at(-1)!.note.reads.transcript?.transcript.status).toBe("absent");
 
     await act(async () => captureEvents.emit("library-changed", { source: SOURCE, sourceId: "rec-a" }));
     await space.answer("list", listed("a"));
     await space.answer("metadata", { ok: true, data: { rows: [["{}"]] } });
     await space.answer("transcript", { ok: true, data: { data: JSON.stringify([{ text: "New transcript" }]) } });
-    expect(seen.at(-1)!.note.reads.transcript).toMatchObject({ status: "ok", sentences: [{ text: "New transcript" }] });
+    expect(seen.at(-1)!.note.reads.transcript).toMatchObject({ transcript: { status: "ok", sentences: [{ text: "New transcript" }] } });
     expect(space.kinds).toEqual(["list", "metadata", "transcript", "list", "metadata", "transcript"]);
   });
 
@@ -301,7 +330,178 @@ describe("useLibrary, mounted", () => {
     await space.answer("metadata", { ok: true, data: { rows: [["{}"]] } });
     await space.answer("transcript", { ok: true, data: { data: JSON.stringify([{ text: "Committed" }]) } });
     expect(space.transcriptKeys).toEqual(["committed/transcript", "committed/transcript"]);
-    expect(seen.at(-1)!.note.reads.transcript).toMatchObject({ status: "ok", sentences: [{ text: "Committed" }] });
+    expect(seen.at(-1)!.note.reads.transcript).toMatchObject({ transcript: { status: "ok", sentences: [{ text: "Committed" }] } });
+  });
+  test("a post-commit body miss is re-read instead of reported as a missing transcript", async () => {
+    const space = fakeSpace({ voiceCommit: true, commitReads: [
+      { rev: 1, engine: null, provider: null },
+      { rev: 2, engine: null, provider: null },
+    ] });
+    const seen: Library[] = [];
+    await render({ tcw: space.tcw, visible: true, noteId: "a", now: () => 0, seen });
+    await space.answer("list", listedVoice("a"));
+    await space.answer("metadata", { ok: true, data: { rows: [["{}"]] } });
+
+    await act(async () => captureEvents.emit("library-changed", { source: "exo-voice-note", sourceId: "rec-a" }));
+    await space.answer("transcript", { ok: false, error: { code: "NOT_FOUND", message: "missing" } });
+    await space.answer("list", listedVoice("a"));
+    await space.answer("metadata", { ok: true, data: { rows: [["{}"]] } });
+    await space.answer("transcript", { ok: true, data: { data: JSON.stringify([{ text: "Synthetic committed body" }]) } });
+
+    expect(space.transcriptKeys).toEqual(["committed/transcript/1", "committed/transcript/2"]);
+    expect(seen.at(-1)!.note.reads.transcript).toMatchObject({
+      transcript: { status: "ok", sentences: [{ text: "Synthetic committed body" }] },
+    });
+    const html = renderToStaticMarkup(<MemoryRouter><NoteDetail
+      library={seen.at(-1)!}
+      tcw={space.tcw}
+      pushed
+      onBack={() => {}}
+      transcription={undefined}
+    /></MemoryRouter>);
+    expect(html).not.toContain("Couldn’t load this note’s full transcript.");
+  });
+
+  test("a committed transcript's provenance overrides stale row markers", async () => {
+    const space = fakeSpace({ voiceCommit: true, commitProvenance: ["whispercpp", "whispercpp"] });
+    const seen: Library[] = [];
+    await render({ tcw: space.tcw, visible: true, noteId: "a", now: () => 0, seen });
+    await space.answer("list", listedVoice("a"));
+    await space.answer("metadata", { ok: true, data: { rows: [[JSON.stringify({
+      transcription_engine: "private-cloud", transcript_provider: "tinycloud-private-transcription",
+    })]] } });
+    await space.answer("transcript", { ok: true, data: { data: JSON.stringify([{ text: "Committed local body" }]) } });
+    expect(seen.at(-1)!.note.reads.transcript?.provenance).toEqual({
+      engine: "whispercpp", provider: "whispercpp", model: null,
+    });
+    expect(seen.at(-1)!.note.reads.metadata).toMatchObject({
+      status: "ok",
+      metadata: { transcription_engine: "whispercpp", transcript_provider: "whispercpp" },
+    });
+  });
+
+  test("a committed transcript's recorded model is carried into the note's metadata", async () => {
+    const space = fakeSpace({ voiceCommit: true, commitProvenance: ["whispercpp", "whispercpp"], commitModel: "QuantizedTinyEn" });
+    const seen: Library[] = [];
+    await render({ tcw: space.tcw, visible: true, noteId: "a", now: () => 0, seen });
+    await space.answer("list", listedVoice("a"));
+    await space.answer("metadata", { ok: true, data: { rows: [[JSON.stringify({})]] } });
+    await space.answer("transcript", { ok: true, data: { data: JSON.stringify([{ text: "Committed local body" }]) } });
+    expect(seen.at(-1)!.note.reads.metadata).toMatchObject({
+      status: "ok",
+      metadata: { transcription_model: "QuantizedTinyEn" },
+    });
+  });
+
+  test("a committed transcript with no recorded model carries no model into the note's metadata", async () => {
+    const space = fakeSpace({ voiceCommit: true, commitProvenance: ["whispercpp", "whispercpp"] });
+    const seen: Library[] = [];
+    await render({ tcw: space.tcw, visible: true, noteId: "a", now: () => 0, seen });
+    await space.answer("list", listedVoice("a"));
+    await space.answer("metadata", { ok: true, data: { rows: [[JSON.stringify({})]] } });
+    await space.answer("transcript", { ok: true, data: { data: JSON.stringify([{ text: "Committed local body" }]) } });
+    expect(seen.at(-1)!.note.reads.metadata).toMatchObject({
+      status: "ok",
+      metadata: { transcription_model: null },
+    });
+  });
+  test("cached body provenance survives metadata flip, failed retry, and close/reopen", async () => {
+    const sentences = [
+      { index: 0, speaker_name: "You", text: "Synthetic first.", start_time: 0, end_time: 45 },
+      { index: 1, speaker_name: "You", text: "Synthetic second.", start_time: 60, end_time: 105 },
+    ];
+    const voiceList = listedVoice("a");
+    const voiceMetadata = (privateCloud: boolean) => ({
+      ok: true,
+      data: { rows: [[JSON.stringify({
+        audio: { stored: true, base: "audio/a" },
+        transcription_engine: privateCloud ? "private-cloud" : "whispercpp",
+        transcript_provider: privateCloud ? "tinycloud-private-transcription" : "whispercpp",
+      })]] },
+    });
+    const failure = { ok: false, error: { code: "NETWORK", message: "offline" } };
+
+    async function scenario(initiallyPrivate: boolean) {
+      const first = initiallyPrivate
+        ? { rev: 4, engine: "private-cloud", provider: "tinycloud-private-transcription" }
+        : { rev: 4, engine: "whispercpp", provider: "whispercpp" };
+      const flipped = initiallyPrivate
+        ? { rev: 5, engine: "whispercpp", provider: "whispercpp" }
+        : { rev: 5, engine: "private-cloud", provider: "tinycloud-private-transcription" };
+      const space = fakeSpace({ voiceCommit: true, commitReads: [first, flipped, flipped, flipped] });
+      const seen: Library[] = [];
+      const props = { tcw: space.tcw, visible: true, noteId: "a", now: () => 0, seen };
+      await render(props);
+      await space.answer("list", voiceList);
+      expect(seen.at(-1)!.note.item).toMatchObject({ source: "exo-voice-note", sourceId: "rec-a" });
+      expect(seen.at(-1)!.note.item?.onPhone).not.toBe(true);
+      expect(space.kinds).toEqual(["list", "metadata"]);
+      await space.answer("metadata", voiceMetadata(initiallyPrivate));
+      await space.answer("transcript", { ok: true, data: { data: JSON.stringify(sentences) } });
+
+      const assertSelectedBody = (expectedPrivate: boolean) => {
+        const library = seen.at(-1)!;
+        const transcript = library.note.reads.transcript;
+        const body = transcript?.transcript.status === "ok" ? transcript.transcript.sentences : [];
+        const metadata = library.note.reads.metadata?.status === "ok" ? library.note.reads.metadata.metadata : null;
+        const privateCloud = hasPrivateCloudTimingProvenance(metadata, transcript?.provenance);
+        const html = renderToStaticMarkup(<MemoryRouter><NoteDetail
+          library={library}
+          tcw={space.tcw}
+          pushed
+          onBack={() => {}}
+          transcription={undefined}
+        /></MemoryRouter>);
+        const timestampCopy = transcriptWithTimestamps(body, privateCloud);
+        const markdown = transcriptMarkdown("Synthetic", null, body, privateCloud);
+        expect(privateCloud).toBe(expectedPrivate);
+        expect(html.includes('aria-label="Play from 1:00"')).toBe(expectedPrivate);
+        expect(html.match(/aria-label="Play from /g)?.length ?? 0).toBe(expectedPrivate ? 2 : 0);
+        expect(html.includes("Copy with timestamps")).toBe(expectedPrivate);
+        expect(timestampCopy.includes("[01:00]")).toBe(expectedPrivate);
+        expect(markdown.includes("[01:00]")).toBe(expectedPrivate);
+      };
+
+      assertSelectedBody(initiallyPrivate);
+      await act(async () => captureEvents.emit("library-changed", { source: "exo-voice-note", sourceId: "rec-a" }));
+      await space.answer("list", voiceList);
+      await space.answer("metadata", voiceMetadata(!initiallyPrivate));
+      await space.answer("transcript", failure);
+      assertSelectedBody(initiallyPrivate);
+
+      await act(async () => seen.at(-1)!.retry());
+      await space.answer("transcript", failure);
+      assertSelectedBody(initiallyPrivate);
+
+      await render({ ...props, noteId: null });
+      await render(props);
+      await space.answer("transcript", failure);
+      assertSelectedBody(initiallyPrivate);
+      expect(space.outstanding()).toBe(0);
+    }
+
+    await scenario(false);
+    await act(async () => root!.unmount());
+    root = null;
+    await scenario(true);
+  });
+
+  test("a pasted transcript has no audio loader: it never had a recording", async () => {
+    const space = fakeSpace({ voiceCommit: true });
+    const seen: Library[] = [];
+    await render({ tcw: space.tcw, visible: true, noteId: "row-pasted", now: () => 0, seen });
+    await space.answer("list", { ok: true, data: { rows: [[
+      "row-pasted", "exo-voice-note", "rec-paste-1", "Pasted", "2026-10-06T09:28:00.000Z", null,
+      JSON.stringify({ capture: "pasted", transcription_outcome: "transcribed", has_transcript_text: 1 }), null,
+    ]] } });
+    expect(seen.at(-1)!.note.item?.sourceId).toBe("rec-paste-1");
+    await space.answer("metadata", { ok: true, data: { rows: [[JSON.stringify({
+      capture: "pasted", transcription_outcome: "transcribed", transcript_text: "Hello world",
+    })]] } });
+    await space.answer("transcript", { ok: true, data: { data: JSON.stringify([{ text: "Hello world" }]) } });
+    const note = seen.at(-1)!.note;
+    expect(note.audio).toBeNull();
+    expect(note.reads.transcript?.transcript.status).toBe("ok");
   });
 
   test("an unrelated or list-only save keeps open audio and transcript mounted", async () => {
@@ -346,7 +546,7 @@ describe("useLibrary, mounted", () => {
     await space.answer("metadata", { ok: true, data: { rows: [[JSON.stringify({ audio: { stored: true, base: "audio/a" } })]] } });
     expect(seen.at(-1)!.note.audio).toBe(before.audio);
     await space.answer("transcript", { ok: true, data: { data: JSON.stringify([{ text: "Updated" }]) } });
-    expect(seen.at(-1)!.note.reads.transcript).toMatchObject({ status: "ok", sentences: [{ text: "Updated" }] });
+    expect(seen.at(-1)!.note.reads.transcript).toMatchObject({ transcript: { status: "ok", sentences: [{ text: "Updated" }] } });
     expect(seen.at(-1)!.note.audio).toBe(before.audio);
   });
 
@@ -374,7 +574,7 @@ describe("useLibrary, mounted", () => {
     await space.answer("metadata", { ok: true, data: { rows: [[JSON.stringify({ audio: { stored: true, base: "audio/a" } })]] } });
     await space.answer("transcript", { ok: true, data: { data: JSON.stringify([{ text: "Recovered" }]) } });
     expect(seen.at(-1)!.note.reads.transcript).toMatchObject({
-      status: "ok", sentences: [{ text: "Recovered" }],
+      transcript: { status: "ok", sentences: [{ text: "Recovered" }] },
     });
     expect(seen.at(-1)!.note.audio).toBe(before.audio);
     expect(space.outstanding()).toBe(0);
@@ -432,7 +632,7 @@ describe("useLibrary, mounted", () => {
     expect(space.kinds).toEqual(["list", "metadata", "transcript", "list", "metadata", "transcript", "transcript"]);
     await space.answer("transcript", { ok: true, data: { data: JSON.stringify([{ text: "New" }]) } });
     expect(seen.at(-1)!.note.reads.metadata).toBe(newMeta);
-    expect(seen.at(-1)!.note.reads.transcript).toMatchObject({ status: "ok", sentences: [{ text: "New" }] });
+    expect(seen.at(-1)!.note.reads.transcript).toMatchObject({ transcript: { status: "ok", sentences: [{ text: "New" }] } });
     expect(seen.at(-1)!.note.audio).toMatchObject({ load: expect.any(Function) });
     expect(space.outstanding()).toBe(0);
 
@@ -447,13 +647,13 @@ describe("useLibrary, mounted", () => {
     await space.answer("metadata", { ok: true, data: { rows: [["{}"]] } });
     await space.answer("transcript", { ok: true, data: { data: JSON.stringify([{ text: "Old" }]) } });
     expect(seen.at(-1)!.note.item?.id).toBe("a");
-    expect(seen.at(-1)!.note.reads.transcript).toMatchObject({ status: "ok", sentences: [{ text: "Old" }] });
+    expect(seen.at(-1)!.note.reads.transcript).toMatchObject({ transcript: { status: "ok", sentences: [{ text: "Old" }] } });
 
     await act(async () => captureEvents.emit("library-changed", { source: "exo-voice-note", sourceId: "rec-a" }));
     await space.answer("list", { ok: false, error: { code: "NETWORK", message: "offline" } });
     await space.answer("metadata", { ok: true, data: { rows: [["{}"]] } });
     await space.answer("transcript", { ok: true, data: { data: JSON.stringify([{ text: "New" }]) } });
-    expect(seen.at(-1)!.note.reads.transcript).toMatchObject({ status: "ok", sentences: [{ text: "New" }] });
+    expect(seen.at(-1)!.note.reads.transcript).toMatchObject({ transcript: { status: "ok", sentences: [{ text: "New" }] } });
     expect(seen.at(-1)!.note.item?.id).toBe("a");
   });
 
@@ -472,12 +672,12 @@ describe("useLibrary, mounted", () => {
     await render({ ...props, noteId: "a" });
     await space.answer("metadata", { ok: true, data: { rows: [["{}"]] } });
     await space.answer("transcript", { ok: true, data: { data: JSON.stringify([{ text: "Arrived" }]) } });
-    expect(seen.at(-1)!.note.reads.transcript).toMatchObject({ status: "ok", sentences: [{ text: "Arrived" }] });
+    expect(seen.at(-1)!.note.reads.transcript).toMatchObject({ transcript: { status: "ok", sentences: [{ text: "Arrived" }] } });
     expect(space.kinds).toEqual(["list", "metadata", "transcript", "list", "metadata", "transcript"]);
   });
 });
 
-describe("useLibrary, notes still on this phone", () => {
+describe("useLibrary, notes still on this browser", () => {
   const phoneNote = (id: string, startedAt = "2026-10-06T10:00:00.000Z"): PendingNote => ({ id, startedAt: Date.parse(startedAt), durationMs: 14_000 });
   const props = (space: ReturnType<typeof fakeSpace>, seen: Library[], extra: Partial<Parameters<typeof Probe>[0]> = {}) =>
     ({ tcw: space.tcw, visible: true, noteId: null, now: () => 0, seen, ...extra });
@@ -492,8 +692,11 @@ describe("useLibrary, notes still on this phone", () => {
     expect(library.items.map((item) => item.id)).toEqual(["on-phone:rec-p1", "a"]);
     expect(library.items[0]).toMatchObject({ onPhone: true, sourceId: "rec-p1", durationSecs: 14 });
     expect(library.note.item?.id).toBe("on-phone:rec-p1");
-    expect(library.note.reads).toEqual({ metadata: { status: "ok", metadata: {} }, transcript: { status: "absent" } });
-    expect(library.note.audio).toHaveProperty("localUrl");
+    expect(library.note.reads).toEqual({
+      metadata: { status: "ok", metadata: {} },
+      transcript: { transcript: { status: "absent" }, provenance: null },
+    });
+    expect(library.note.audio).toMatchObject({ onPhone: true });
     expect(space.kinds).toEqual(["list"]);
   });
 
@@ -541,9 +744,9 @@ describe("useLibrary, notes still on this phone", () => {
     expect(space.kinds).toEqual(["list"]);
   });
 
-  test("a row is titled by its first moment on this phone, else its transcript preview", async () => {
-    await saveNote("rec-p1", "- **0:01**\n- **0:03** Call the landlord\n- **0:09** second");
+  test("a row is titled by its first moment on this browser, else its transcript preview", async () => {
     const space = fakeSpace({ previews: [["rec-a", "  The quarterly numbers look   good this time and we should send them to everyone before the end of the day tomorrow  "]] });
+    await saveNote("rec-p1", "- **0:01**\n- **0:03** Call the landlord\n- **0:09** second", { owner: space.tcw.did });
     const seen: Library[] = [];
     await render(props(space, seen, { onPhone: [phoneNote("rec-p1")] }));
     await space.answer("list", listedVoice("a", "b"));
@@ -618,8 +821,8 @@ describe("useLibrary, notes still on this phone", () => {
   });
 
   test("closing a saved row re-reads its first moment: an edited one retitles it, a removed one drops the title", async () => {
-    await saveNote("rec-ed", "- **0:01** Original words");
     const space = fakeSpace();
+    await saveNote("rec-ed", "- **0:01** Original words", { owner: space.tcw.did });
     const seen: Library[] = [];
     const base = props(space, seen);
     await render({ ...base, noteId: null });
@@ -627,11 +830,11 @@ describe("useLibrary, notes still on this phone", () => {
     expect(seen.at(-1)!.items[0].snippet).toBe("Original words");
     await render({ ...base, noteId: "ed" });
     await space.answer("metadata", { ok: true, data: { rows: [["{}"]] } });
-    await saveNote("rec-ed", "- **0:01** Updated words", { savedEdit: true });
+    await saveNote("rec-ed", "- **0:01** Updated words", { savedEdit: true, owner: space.tcw.did });
     await render({ ...base, noteId: null });
     expect(seen.at(-1)!.items[0].snippet).toBe("Updated words");
     await render({ ...base, noteId: "ed" });
-    await saveNote("rec-ed", "just a note, no moments", { savedEdit: true });
+    await saveNote("rec-ed", "just a note, no moments", { savedEdit: true, owner: space.tcw.did });
     await render({ ...base, noteId: null });
     expect(seen.at(-1)!.items[0].snippet).toBeUndefined();
   });
@@ -639,7 +842,9 @@ describe("useLibrary, notes still on this phone", () => {
 
 describe("useLibrary, which audio a note on the phone plays", () => {
   const phoneNote: PendingNote = { id: "rec-play", startedAt: Date.parse("2026-10-06T10:00:00.000Z"), durationMs: 14_000 };
-  async function withLocalAudio(run: (counts: { local: () => number; remote: () => number; fetches: () => number }, space: ReturnType<typeof fakeSpace>) => Promise<void>) {
+  async function withLocalAudio(run: (counts: { local: () => number; remote: () => number; fetches: () => number; replace: () => void; failDownload: () => void; offline: () => void; setAvailable: (available: boolean) => void; land: () => void; evictFile: () => void; unlist: () => void }, space: ReturnType<typeof fakeSpace>) => Promise<void>, savedIdentity = false) {
+    const previousIdb = globalThis.indexedDB;
+    globalThis.indexedDB = new IDBFactory() as unknown as IDBFactory;
     const space = fakeSpace();
     let remoteReads = 0;
     let localReads = 0;
@@ -647,25 +852,62 @@ describe("useLibrary, which audio a note on the phone plays", () => {
     const realFetch = globalThis.fetch;
     // The WKWebView scheme handler answers a fetch of a local file with status 0; nothing here may fetch it.
     globalThis.fetch = (async () => { fetches++; return new Response(null, { status: 0 as never }); }) as unknown as typeof fetch;
-    space.tcw.kv.get = (async () => {
+    let remoteBytes = new TextEncoder().encode("local bytes");
+    let offline = false;
+    let failDownload = false;
+    let fileGone = false;
+    let stored = savedIdentity;
+    const originalHash = bytesToHex(sha256(remoteBytes));
+    space.tcw.kv.get = (async (key: string) => {
       remoteReads++;
+      if (offline) return { ok: false, error: { code: "NETWORK_ERROR", message: "offline" } };
+      if (stored) {
+        if (key.endsWith("/manifest")) return { ok: true, data: { data: {
+          v: 1, mimeType: "audio/mp4", fileName: "audio.mp4", size: remoteBytes.length,
+          partSize: remoteBytes.length, parts: [{ size: remoteBytes.length, sha256: bytesToHex(sha256(remoteBytes)), etag: null }],
+          sha256: bytesToHex(sha256(remoteBytes)), createdAt: "2026-10-06T10:00:00Z",
+        } } };
+        if (key.endsWith("/p/000000")) return failDownload
+          ? { ok: false, error: { code: "KV_ERROR", message: "download failed" } }
+          : { ok: true, data: { data: remoteBytes } };
+      }
       return { ok: false, error: { code: "KV_NOT_FOUND", message: "Upload is not finished" } };
     }) as typeof space.tcw.kv.get;
     const localUrl = URL.createObjectURL(new Blob(["local bytes"], { type: "audio/mp4" }));
+    let localAvailable = true;
+    let listed = true;
     const original = VoiceNotes;
-    __setVoiceNotesForTests({ localAudioUrl: async () => { localReads++; return { url: localUrl }; } } as VoiceNotesPlugin, { available: true });
+    __setVoiceNotesForTests({
+      localAudioSize: async () => ({ size: localAvailable && !fileGone ? 11 : 0 }),
+      localAudioUrl: async () => {
+        if (!localAvailable || fileGone) throw Object.assign(new Error("not_found"), { code: "not_found" });
+        localReads++;
+        return { url: localUrl };
+      },
+      listPending: async () => ({ recordings: localAvailable && listed ? [{ id: "rec-play", owner: space.tcw.did,
+        ledger: { audio: stored
+          ? { state: "saved", verifiedInSpace: { sha256: originalHash, size: 11 } }
+          : { state: "pending" } } }] : [] }),
+    } as VoiceNotesPlugin, { available: true });
     try {
-      await run({ local: () => localReads, remote: () => remoteReads, fetches: () => fetches }, space);
+      await run({ local: () => localReads, remote: () => remoteReads, fetches: () => fetches, land: () => { stored = true; },
+        replace: () => { remoteBytes = new TextEncoder().encode("newer bytes"); },
+        failDownload: () => { failDownload = true; }, offline: () => { offline = true; },
+        setAvailable: (available) => { localAvailable = available; }, evictFile: () => { fileGone = true; }, unlist: () => { listed = false; } }, space);
     } finally {
+      globalThis.indexedDB = previousIdb;
       globalThis.fetch = realFetch;
       __setVoiceNotesForTests(original, { available: null });
       URL.revokeObjectURL(localUrl);
     }
   }
-  const localUrlOf = (library: Library) => {
+  // The player's view of a phone note: the phone file's URL, or the space's bytes as the object URL the player would own.
+  const localUrlOf = async (library: Library) => {
     const audio = library.note.audio;
-    if (!audio || !("localUrl" in audio)) throw new Error("expected the phone's own audio");
-    return audio.localUrl();
+    if (!audio || !("load" in audio) || audio.onPhone !== true) throw new Error("expected the phone's own audio");
+    const got = await audio.load(new AbortController().signal, () => {});
+    if (got === null) throw new Error("expected audio bytes");
+    return typeof got === "string" ? got : URL.createObjectURL(got);
   };
   const playFromSpace = (library: Library) => {
     const audio = library.note.audio;
@@ -687,6 +929,82 @@ describe("useLibrary, which audio a note on the phone plays", () => {
       await space.answer("metadata", { ok: true, data: { rows: [["{}"]] } });
       expect(await localUrlOf(seen.at(-1)!)).toMatch(/^blob:/);
       expect({ local: counts.local() - before.local, remote: counts.remote() - before.remote, fetched: counts.fetches() }).toEqual({ local: 2, remote: 0, fetched: 0 });
+      await render({ ...base, onPhone: [], noteId: "play" });
+      expect(seen.at(-1)!.note.item?.hasLocalAudio).toBe(true);
+      expect(await localUrlOf(seen.at(-1)!)).toMatch(/^blob:/);
+    });
+  });
+
+  const provenanceCases: { id: string; owner?: string; ledger: unknown; claims: boolean; recordings?: boolean }[] = [
+    { id: "ready", ledger: { audio: { state: "pending", rowId: null, at: null }, localAudio: { state: "ready" } }, claims: true },
+    { id: "preparing", ledger: { audio: { state: "pending", rowId: null, at: null }, localAudio: { state: "preparing" } }, claims: false },
+    { id: "failed-missing", ledger: { audio: { state: "pending", rowId: null, at: null }, localAudio: { state: "failed" } }, claims: false },
+    { id: "absent-ledger", ledger: undefined, claims: false },
+    { id: "not-owned", owner: "did:key:someone-else", ledger: { audio: { state: "pending", rowId: null, at: null }, localAudio: { state: "ready" } }, claims: false },
+    { id: "no-owned-note", ledger: undefined, claims: false, recordings: false },
+  ];
+  const storageFullTranscription: VoiceNoteTranscriptionProps = {
+    availability: "ready",
+    consented: true,
+    maxSeconds: 7200,
+    jobs: new Map([["rec-provenance", { kind: "failed", code: "storage_full", message: "Your TinyCloud storage is full.", retryable: false, reference: null }]]),
+    onTranscribe: () => {},
+    onTranscribePrivately: () => null,
+    onTranscribeAgain: () => null,
+    onConsent: () => {},
+    onTurnOff: () => {},
+    onRecheck: () => {},
+  };
+  for (const c of provenanceCases) {
+    test(`mounted note detail claims local audio only when the owned native ledger is ready (${c.id})`, async () => {
+      await withLocalAudio(async (_counts, space) => {
+        __setVoiceNotesForTests({
+          listPending: async () => ({ recordings: c.recordings === false ? [] : [{ id: "rec-provenance", owner: c.owner ?? space.tcw.did, ledger: c.ledger }] }),
+        } as unknown as VoiceNotesPlugin, { available: true });
+        const seen: Library[] = [];
+        await render({ tcw: space.tcw, visible: true, now: () => 0, seen, onPhone: [], noteId: "provenance" });
+        await space.answer("list", listedVoice("provenance"));
+        await space.answer("metadata", { ok: true, data: { rows: [[JSON.stringify({
+          transcription_outcome: "failed", transcription_error_code: "storage_full",
+        })]] } });
+        const html = renderToStaticMarkup(<MemoryRouter><NoteDetail
+          library={seen.at(-1)!}
+          tcw={space.tcw}
+          pushed
+          onBack={() => {}}
+          transcription={storageFullTranscription}
+        /></MemoryRouter>);
+        expect(html.includes("Your recording is safe on this device.")).toBe(c.claims);
+      });
+    });
+  }
+  test("a receipt that lands before the phone's copy is evicted plays the space's copy at Play time", async () => {
+    await withLocalAudio(async (counts, space) => {
+      const seen: Library[] = [];
+      await render({ tcw: space.tcw, visible: true, now: () => 0, seen, onPhone: [phoneNote], noteId: "on-phone:rec-play" });
+      await space.answer("list", listedVoice("play"));
+      await space.answer("metadata", { ok: true, data: { rows: [["{\"title\":\"x\"}"]] } });
+      expect(await localUrlOf(seen.at(-1)!)).toMatch(/^blob:/);
+      counts.land();
+      counts.evictFile();
+      const before = { remote: counts.remote(), fetched: counts.fetches() };
+      expect(await localUrlOf(seen.at(-1)!)).toMatch(/^blob:/);
+      expect({ remote: counts.remote() > before.remote, fetched: counts.fetches() - before.fetched }).toEqual({ remote: true, fetched: 0 });
+    });
+  });
+
+  test("a phone copy that is gone and still unverified is not replaced by a space read", async () => {
+    await withLocalAudio(async (counts, space) => {
+      const seen: Library[] = [];
+      await render({ tcw: space.tcw, visible: true, now: () => 0, seen, onPhone: [phoneNote], noteId: "on-phone:rec-play" });
+      await space.answer("list", listedVoice("play"));
+      await space.answer("metadata", { ok: true, data: { rows: [["{\"title\":\"x\"}"]] } });
+      counts.evictFile();
+      const before = { remote: counts.remote(), fetched: counts.fetches() };
+      const error = await localUrlOf(seen.at(-1)!).catch((caught: unknown) => caught);
+      expect((error as Error).message).toBe(PHONE_AUDIO_UNAVAILABLE);
+      expect(((error as Error).cause as Error).message).toBe("Audio is no longer on this device");
+      expect({ remote: counts.remote() - before.remote, fetched: counts.fetches() - before.fetched }).toEqual({ remote: 0, fetched: 0 });
     });
   });
 
@@ -703,18 +1021,21 @@ describe("useLibrary, which audio a note on the phone plays", () => {
   test("a phone copy that cannot be opened rejects with the real reason, never the space", async () => {
     const space = fakeSpace();
     const original = VoiceNotes;
-    __setVoiceNotesForTests({ localAudioUrl: async () => { throw new Error("no such recording"); } } as unknown as VoiceNotesPlugin, { available: true });
+    __setVoiceNotesForTests({ listPending: async () => ({ recordings: [] }),
+      localAudioUrl: async () => { throw new Error("no such recording"); } } as unknown as VoiceNotesPlugin, { available: true });
     try {
       const seen: Library[] = [];
       await render({ tcw: space.tcw, visible: true, now: () => 0, seen, onPhone: [phoneNote], noteId: "on-phone:rec-play" });
-      await expect(localUrlOf(seen.at(-1)!)).rejects.toThrow("Could not open this phone's audio: no such recording");
+      const error = await localUrlOf(seen.at(-1)!).catch((caught: unknown) => caught);
+      expect((error as Error).message).toBe(PHONE_AUDIO_UNAVAILABLE);
+      expect(((error as Error).cause as Error).message).toBe("no such recording");
       expect(space.kinds).not.toContain("audio");
     } finally {
       __setVoiceNotesForTests(original, { available: null });
     }
   });
 
-  test("once the phone no longer lists the note, its row plays from the space", async () => {
+  test("after upload the row still plays from the device with zero space audio reads", async () => {
     await withLocalAudio(async (counts, space) => {
       const seen: Library[] = [];
       const base = { tcw: space.tcw, visible: true, now: () => 0, seen, noteId: "play" };
@@ -726,7 +1047,327 @@ describe("useLibrary, which audio a note on the phone plays", () => {
       expect(seen.at(-1)!.note.item?.saving).toBeUndefined();
       const localBefore = counts.local();
       await playFromSpace(seen.at(-1)!).catch(() => null);
+      expect({ local: counts.local() - localBefore, remoteReads: counts.remote() }).toEqual({ local: 1, remoteReads: 1 });
+    }, true);
+  });
+
+  test("once the local file is gone, its row plays from the space", async () => {
+    await withLocalAudio(async (counts, space) => {
+      const seen: Library[] = [];
+      const base = { tcw: space.tcw, visible: true, now: () => 0, seen, noteId: "play" };
+      await render({ ...base, onPhone: [phoneNote] });
+      await space.answer("list", listedVoice("play"));
+      await space.answer("metadata", { ok: true, data: { rows: [["{\"audio\":{\"stored\":true}}"]] } });
+      counts.setAvailable(false);
+      await render({ ...base, onPhone: [] });
+      await space.answer("list", listedVoice("play"));
+      expect(seen.at(-1)!.note.item?.saving).toBeUndefined();
+      const localBefore = counts.local();
+      await playFromSpace(seen.at(-1)!).catch(() => null);
       expect({ local: counts.local() - localBefore, remoteAsked: counts.remote() > 0 }).toEqual({ local: 0, remoteAsked: true });
+    });
+  });
+
+  test("a replacement under the same source id plays space bytes and leaves the old local file alone", async () => {
+    await withLocalAudio(async (counts, space) => {
+      const seen: Library[] = [];
+      const base = { tcw: space.tcw, visible: true, now: () => 0, seen, noteId: "play", onPhone: [phoneNote] };
+      await render(base);
+      await space.answer("list", listedVoice("play"));
+      await space.answer("metadata", { ok: true, data: { rows: [["{}"]] } });
+      counts.replace();
+      const blob = await playFromSpace(seen.at(-1)!);
+      expect(await blob?.text()).toBe("newer bytes");
+      expect(counts.local()).toBe(0);
+    }, true);
+  });
+
+  test("a receipt that lands while the phone's file is still there plays the space's copy at Play", async () => {
+    await withLocalAudio(async (counts, space) => {
+      const seen: Library[] = [];
+      await render({ tcw: space.tcw, visible: true, now: () => 0, seen, noteId: "play", onPhone: [phoneNote] });
+      await space.answer("list", listedVoice("play"));
+      await space.answer("metadata", { ok: true, data: { rows: [["{}"]] } });
+      counts.land();
+      counts.replace();
+      const localBefore = counts.local();
+      expect(await (await playFromSpace(seen.at(-1)!))?.text()).toBe("newer bytes");
+      expect(counts.local() - localBefore).toBe(0);
+    });
+  });
+
+  test("a receipt that lands after the list was read stops playing the phone's copy", async () => {
+    await withLocalAudio(async (counts, space) => {
+      const seen: Library[] = [];
+      const base = { tcw: space.tcw, visible: true, now: () => 0, seen, noteId: "play" };
+      await render({ ...base, onPhone: [phoneNote] });
+      await space.answer("list", listedVoice("play"));
+      await space.answer("metadata", { ok: true, data: { rows: [["{}"]] } });
+      await render({ ...base, onPhone: [] });
+      await space.answer("list", listedVoice("play"));
+      expect(await localUrlOf(seen.at(-1)!)).toMatch(/^blob:/);
+      // The upgrade writes the receipt, the space's audio is replaced, and the row now records it as stored.
+      counts.land();
+      counts.replace();
+      await act(async () => captureEvents.emit("library-changed", { source: "exo-voice-note", sourceId: "rec-play" }));
+      await space.answer("list", listedVoice("play"));
+      await space.answer("metadata", { ok: true, data: { rows: [["{\"audio\":{\"stored\":true,\"base\":\"audio/play\"}}"]] } });
+      const localBefore = counts.local();
+      expect(await (await playFromSpace(seen.at(-1)!))?.text()).toBe("newer bytes");
+      expect(counts.local() - localBefore).toBe(0);
+    });
+  });
+
+  test("a receipt that lands while the list is held stops the phone's copy at Play", async () => {
+    await withLocalAudio(async (counts, space) => {
+      const seen: Library[] = [];
+      await render({ tcw: space.tcw, visible: true, now: () => 0, seen, noteId: "play", onPhone: [phoneNote] });
+      await space.answer("list", listedVoice("play"));
+      await space.answer("metadata", { ok: true, data: { rows: [["{\"audio\":{\"stored\":true,\"base\":\"audio/play\"}}"]] } });
+      // The list is not read again: the upgrade lands and the space's audio is replaced underneath it.
+      counts.land();
+      counts.replace();
+      const localBefore = counts.local();
+      expect(await (await playFromSpace(seen.at(-1)!))?.text()).toBe("newer bytes");
+      expect(counts.local() - localBefore).toBe(0);
+    });
+  });
+
+  test("a receipt that lands while a local-only note's list is held plays the space's copy at Play", async () => {
+    await withLocalAudio(async (counts, space) => {
+      const seen: Library[] = [];
+      await render({ tcw: space.tcw, visible: true, now: () => 0, seen, noteId: "play", onPhone: [] });
+      await space.answer("list", listedVoice("play"));
+      await space.answer("metadata", { ok: true, data: { rows: [["{\"title\":\"Note\",\"audio\":{\"stored\":false}}"]] } });
+      // The cached metadata says the note is local-only; the receipt lands and the space's audio is replaced underneath.
+      counts.land();
+      counts.replace();
+      const before = { local: counts.local(), remote: counts.remote() };
+      expect(await (await playFromSpace(seen.at(-1)!))?.text()).toBe("newer bytes");
+      expect({ local: counts.local() - before.local, remote: counts.remote() > before.remote }).toEqual({ local: 0, remote: true });
+    });
+  });
+
+  test("a local-only note whose phone copy is gone and unverified makes no space read", async () => {
+    await withLocalAudio(async (counts, space) => {
+      const seen: Library[] = [];
+      await render({ tcw: space.tcw, visible: true, now: () => 0, seen, noteId: "play", onPhone: [] });
+      await space.answer("list", listedVoice("play"));
+      await space.answer("metadata", { ok: true, data: { rows: [["{\"title\":\"Note\",\"audio\":{\"stored\":false}}"]] } });
+      counts.setAvailable(false);
+      const before = { remote: counts.remote(), fetched: counts.fetches() };
+      const error = await playFromSpace(seen.at(-1)!).catch((caught: unknown) => caught);
+      expect((error as Error).message).toBe(PHONE_AUDIO_UNAVAILABLE);
+      expect({ remote: counts.remote() - before.remote, fetched: counts.fetches() - before.fetched }).toEqual({ remote: 0, fetched: 0 });
+    });
+  });
+
+  test("a local-only note the pending list no longer carries plays the file on this device when it is there", async () => {
+    await withLocalAudio(async (counts, space) => {
+      counts.unlist();
+      const seen: Library[] = [];
+      await render({ tcw: space.tcw, visible: true, now: () => 0, seen, noteId: "play", onPhone: [] });
+      await space.answer("list", listedVoice("play"));
+      await space.answer("metadata", { ok: true, data: { rows: [["{\"title\":\"Note\",\"audio\":{\"stored\":false}}"]] } });
+      expect(seen.at(-1)!.note.audio).not.toBeNull();
+      const before = { remote: counts.remote(), fetched: counts.fetches() };
+      expect(await localUrlOf(seen.at(-1)!)).toMatch(/^blob:/);
+      expect({ remote: counts.remote() - before.remote, fetched: counts.fetches() - before.fetched }).toEqual({ remote: 0, fetched: 0 });
+    });
+  });
+
+  test("a local-only note with no file on this device has no player to offer", async () => {
+    await withLocalAudio(async (counts, space) => {
+      counts.unlist();
+      counts.evictFile();
+      const seen: Library[] = [];
+      await render({ tcw: space.tcw, visible: true, now: () => 0, seen, noteId: "play", onPhone: [] });
+      await space.answer("list", listedVoice("play"));
+      await space.answer("metadata", { ok: true, data: { rows: [["{\"title\":\"Note\",\"audio\":{\"stored\":false}}"]] } });
+      expect(seen.at(-1)!.note.audio).toBeNull();
+    });
+  });
+
+  test("once the phone's copy is evicted, a held list plays the space's copy", async () => {
+    await withLocalAudio(async (counts, space) => {
+      const seen: Library[] = [];
+      await render({ tcw: space.tcw, visible: true, now: () => 0, seen, noteId: "play", onPhone: [phoneNote] });
+      await space.answer("list", listedVoice("play"));
+      await space.answer("metadata", { ok: true, data: { rows: [["{\"audio\":{\"stored\":true,\"base\":\"audio/play\"}}"]] } });
+      counts.land();
+      counts.replace();
+      counts.setAvailable(false);
+      const localBefore = counts.local();
+      expect(await (await playFromSpace(seen.at(-1)!))?.text()).toBe("newer bytes");
+      expect(counts.local() - localBefore).toBe(0);
+    });
+  });
+
+  test("a receipt for a note that is not open reaches that note's next play", async () => {
+    await withLocalAudio(async (counts, space) => {
+      const seen: Library[] = [];
+      const base = { tcw: space.tcw, visible: true, now: () => 0, seen, onPhone: [] };
+      await render({ ...base, noteId: "other" });
+      await space.answer("list", listedVoice("play", "other"));
+      await space.answer("metadata", { ok: true, data: { rows: [["{}"]] } });
+      // The phone's copy is listed as pending; the receipt then lands for a note nobody has open.
+      counts.land();
+      counts.replace();
+      await act(async () => captureEvents.emit("library-changed", { source: "exo-voice-note", sourceId: "rec-play" }));
+      await space.answer("list", listedVoice("play", "other"));
+      await render({ ...base, noteId: "play" });
+      await space.answer("metadata", { ok: true, data: { rows: [["{}"]] } });
+      const localBefore = counts.local();
+      expect(await (await playFromSpace(seen.at(-1)!))?.text()).toBe("newer bytes");
+      expect(counts.local() - localBefore).toBe(0);
+    });
+  });
+
+  test("a local-only stereo note keeps its channel count when the on-phone list has no row for it", async () => {
+    const space = fakeSpace();
+    const seen: Library[] = [];
+    const original = VoiceNotes;
+    __setVoiceNotesForTests({
+      listPending: async () => ({ recordings: [{ id: "rec-play", owner: space.tcw.did, channels: 2, ledger: { audio: { state: "pending" } } }] }),
+    } as VoiceNotesPlugin, { available: true });
+    try {
+      await render({ tcw: space.tcw, visible: true, now: () => 0, seen, noteId: "play", onPhone: [] });
+      await space.answer("list", listedVoice("play"));
+      await space.answer("metadata", { ok: true, data: { rows: [["{}"]] } });
+      expect(seen.at(-1)!.note.audio).toMatchObject({ onPhone: true, channels: 2 });
+    } finally {
+      __setVoiceNotesForTests(original, { available: null });
+    }
+  });
+
+  test("offline saved note plays its last verified local copy", async () => {
+    await withLocalAudio(async (counts, space) => {
+      const seen: Library[] = [];
+      await render({ tcw: space.tcw, visible: true, now: () => 0, seen, noteId: "play", onPhone: [] });
+      await space.answer("list", listedVoice("play"));
+      await space.answer("metadata", { ok: true, data: { rows: [["{}"]] } });
+      counts.offline();
+      expect(await playFromSpace(seen.at(-1)!)).toMatch(/^blob:/);
+      expect(counts.local()).toBe(1);
+    }, true);
+  });
+
+  test("after seeing a replacement, offline playback refuses the old local file across a new player", async () => {
+    await withLocalAudio(async (counts, space) => {
+      const seen: Library[] = [];
+      const base = { tcw: space.tcw, visible: true, now: () => 0, seen, noteId: "play", onPhone: [] };
+      await render(base);
+      await space.answer("list", listedVoice("play"));
+      await space.answer("metadata", { ok: true, data: { rows: [["{}"]] } });
+      counts.replace();
+      expect(await (await playFromSpace(seen.at(-1)!))?.text()).toBe("newer bytes");
+      await act(async () => root!.unmount());
+      root = null;
+      await render(base); // Simulate a fresh hook/player while IndexedDB remains.
+      await space.answer("list", listedVoice("play"));
+      await space.answer("metadata", { ok: true, data: { rows: [["{}"]] } });
+      counts.offline();
+      expect(await (await playFromSpace(seen.at(-1)!))?.text()).toBe("newer bytes");
+      expect(counts.local()).toBe(0);
+    }, true);
+  });
+
+  test("a failed replacement download leaves the old local bytes intact but refuses them offline", async () => {
+    await withLocalAudio(async (counts, space) => {
+      const seen: Library[] = [];
+      await render({ tcw: space.tcw, visible: true, now: () => 0, seen, noteId: "play", onPhone: [] });
+      await space.answer("list", listedVoice("play"));
+      await space.answer("metadata", { ok: true, data: { rows: [["{}"]] } });
+      counts.replace();
+      counts.failDownload();
+      // Let IndexedDB callbacks settle before Bun polls the rejection matcher.
+      const failedDownload = await playFromSpace(seen.at(-1)!).then(
+        () => { throw new Error("Expected the replacement download to fail"); }, (error: unknown) => error,
+      );
+      await expect(Promise.reject(failedDownload)).rejects.toThrow();
+      counts.offline();
+      const offlineFailure = await playFromSpace(seen.at(-1)!).then(
+        () => { throw new Error("Expected offline playback to refuse the old audio"); }, (error: unknown) => error,
+      );
+      await expect(Promise.reject(offlineFailure)).rejects.toThrow("This audio changed; reconnect to play the latest version");
+      expect(counts.local()).toBe(0);
+    }, true);
+  });
+
+  test("an old row without device audio reads its space copy", async () => {
+    const previousIdb = globalThis.indexedDB;
+    globalThis.indexedDB = new IDBFactory() as unknown as IDBFactory;
+    const space = fakeSpace();
+    let reads = 0;
+    space.tcw.kv.get = (async () => {
+      reads++;
+      return { ok: false, error: { code: "KV_NOT_FOUND", message: "missing" } };
+    }) as typeof space.tcw.kv.get;
+    const original = VoiceNotes;
+    __setVoiceNotesForTests({ localAudioUrl: async () => { throw Object.assign(new Error("not_found"), { code: "not_found" }); } } as VoiceNotesPlugin, { available: true });
+    try {
+      const seen: Library[] = [];
+      await render({ tcw: space.tcw, visible: true, now: () => 0, seen, onPhone: [], noteId: "play" });
+      await space.answer("list", listedVoice("play"));
+      await space.answer("metadata", { ok: true, data: { rows: [["{}"]] } });
+      await playFromSpace(seen.at(-1)!).catch(() => null);
+      expect(reads).toBeGreaterThan(0);
+    } finally {
+      __setVoiceNotesForTests(original, { available: null });
+      globalThis.indexedDB = previousIdb;
+    }
+  });
+
+  test("another device downloads once and plays its cached copy next time", async () => {
+    const previousIdb = globalThis.indexedDB;
+    globalThis.indexedDB = new IDBFactory() as unknown as IDBFactory;
+    const space = fakeSpace();
+    let audioReads = 0;
+    let revision = 1;
+    let offline = false;
+    space.tcw.kv.get = (async (key: string) => {
+      if (offline) return { ok: false, error: { code: "TIMEOUT", message: "timed out" } };
+      if (key.endsWith("/manifest")) {
+        audioReads++;
+        return { ok: true, data: { data: JSON.stringify({ v: 1, mimeType: "audio/mp4", fileName: "note.m4a",
+          size: 4, partSize: 4, parts: [{ size: 4, etag: null }], sha256: null, createdAt: `rev-${revision}` }) } };
+      }
+      if (key.includes("/p/")) { audioReads++; return { ok: true, data: { data: new Uint8Array([revision, 2, 3, 4]) } }; }
+      return { ok: false, error: { code: "KV_NOT_FOUND", message: "missing" } };
+    }) as typeof space.tcw.kv.get;
+    const original = VoiceNotes;
+    __setVoiceNotesForTests({ localAudioUrl: async () => { throw Object.assign(new Error("not_found"), { code: "not_found" }); },
+      listPending: async () => ({ recordings: [] }) } as VoiceNotesPlugin, { available: true });
+    try {
+      const seen: Library[] = [];
+      await render({ tcw: space.tcw, visible: true, now: () => 0, seen, onPhone: [], noteId: "play" });
+      await space.answer("list", listedVoice("play"));
+      await space.answer("metadata", { ok: true, data: { rows: [["{}"]] } });
+      expect((await playFromSpace(seen.at(-1)!))?.size).toBe(4);
+      expect((await playFromSpace(seen.at(-1)!))?.size).toBe(4);
+      expect(audioReads).toBe(5); // manifest checked before and after download; bytes downloaded once
+      offline = true;
+      expect((await playFromSpace(seen.at(-1)!))?.size).toBe(4);
+      offline = false;
+      revision = 2;
+      const replaced = await playFromSpace(seen.at(-1)!);
+      expect(replaced instanceof Blob ? [...new Uint8Array(await replaced.arrayBuffer())] : null).toEqual([2, 2, 3, 4]);
+      expect(audioReads).toBe(9);
+    } finally {
+      __setVoiceNotesForTests(original, { available: null });
+      globalThis.indexedDB = previousIdb;
+    }
+  });
+
+  test("a local-only row on another device has no player", async () => {
+    await withLocalAudio(async (counts, space) => {
+      counts.setAvailable(false);
+      const seen: Library[] = [];
+      await render({ tcw: space.tcw, visible: true, now: () => 0, seen, onPhone: [], noteId: "play" });
+      await space.answer("list", listedVoice("play"));
+      await space.answer("metadata", { ok: true, data: { rows: [["{\"audio\":{\"stored\":false}}"]] } });
+      expect(seen.at(-1)!.note.audio).toBeNull();
+      expect(counts.remote()).toBe(0);
     });
   });
 });

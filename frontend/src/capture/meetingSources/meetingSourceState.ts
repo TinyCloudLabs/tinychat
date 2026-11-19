@@ -40,7 +40,7 @@ export function persistedSyncProblem(
 export function meetingSourceStatus(
   state: MeetingSourceState,
   syncedAgoText?: string | null,
-  count = 0,
+  count: number | null = 0,
   problem: PersistedSyncProblem | null = null,
 ): MeetingSourceStatus {
   switch (state) {
@@ -53,7 +53,7 @@ export function meetingSourceStatus(
             : "Connected";
       return {
         tone: "on",
-        text: `${lead} · synced ${syncedAgoText ?? "never"} · ${meetingCount(count)}`,
+        text: `${lead} · synced ${syncedAgoText ?? "never"}${count === null ? "" : ` · ${meetingCount(count)}`}`,
       };
     }
     case "syncing":
@@ -71,12 +71,15 @@ export function meetingSourceActionBusy(state: MeetingSourceState): boolean {
 
 /** The Capture entry's second line: which sources are connected and how many meetings they hold. */
 export function meetingSourcesSummary(
-  sources: readonly { name: string; connected: boolean; count: number }[],
+  sources: readonly { name: string; connected: boolean; count: number | null }[],
 ): string {
   const connected = sources.filter((source) => source.connected);
   if (connected.length === 0) return "Nothing connected yet";
-  const total = connected.reduce((sum, source) => sum + source.count, 0);
-  return `${connected.map((source) => source.name).join(" and ")} connected · ${meetingCount(total)}`;
+  const names = connected.map((source) => source.name).join(" and ");
+  // A count that has not been read yet is left out rather than shown as 0.
+  if (connected.some((source) => source.count === null)) return `${names} connected`;
+  const total = connected.reduce((sum, source) => sum + (source.count ?? 0), 0);
+  return `${names} connected · ${meetingCount(total)}`;
 }
 
 /** What one source row shows: its state, its status line, and the one error to put under it. */
@@ -89,6 +92,14 @@ export function sourceRowDisplay(input: {
     lastSyncError: string | null;
     itemCount: number;
   } | null;
+  /** Overrides the stored count: Google Meet's is the live count of saved meetings, null until read. */
+  itemCount?: number | null;
+  /**
+   * How this page load's latest run ended (Google Meet). It wins over the stored row, which holds the
+   * sync watermark and is re-read only after a run settles: until then it can still carry an earlier
+   * failure, or the time the run began.
+   */
+  lastRun?: { syncedAt: string | null; status: "ok" | "partial" | "error"; error: string | null } | null;
   syncing: boolean;
   connecting: boolean;
   /** This window's own sync failure for the row, if the last attempt failed. */
@@ -98,20 +109,25 @@ export function sourceRowDisplay(input: {
 }): { state: MeetingSourceState; status: MeetingSourceStatus | null; error: string | null } {
   const { connection } = input;
   const connected = connection?.status === "connected";
+  // "Connecting" only until the connection row exists: once it is written (even with a
+  // sync error) the row is connected, whatever the open connect dialog still shows.
   const state: MeetingSourceState = input.syncing
     ? "syncing"
-    : input.connecting
+    : input.connecting && !connected
       ? "connecting"
       : connected
         ? "connected"
         : "disconnected";
-  const problem = persistedSyncProblem(connection);
+  const run = connected ? (input.lastRun ?? null) : null;
+  const problem = run
+    ? run.status === "ok" ? null : { kind: run.status, message: run.error }
+    : persistedSyncProblem(connection);
   const status = input.comingSoon
     ? null
     : meetingSourceStatus(
         state,
-        syncedAgo(connection?.lastSyncedAt),
-        connection?.itemCount ?? 0,
+        syncedAgo(run?.syncedAt ?? connection?.lastSyncedAt),
+        input.itemCount !== undefined ? input.itemCount : (connection?.itemCount ?? 0),
         problem?.kind ?? null,
       );
   // The current attempt's failure wins over what the last finished sync saved.

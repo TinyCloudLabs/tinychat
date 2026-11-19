@@ -15,6 +15,8 @@ name: Mobile release (Android)
 #   refusing a keystore whose certificate is not vars.ANDROID_UPLOAD_CERT_SHA256 (pinned on its own, never derived
 #   from the keystore secret). scripts/release/verify-android-release.sh then checks both files against that variable
 #   before the verified AAB, APK and SHA256SUMS.txt are uploaded as the artifact exo-android-<versionName>-<versionCode>.
+#   Releases then upload the verified AAB to Google Play's internal testing track with a pinned
+#   r0adkll/upload-google-play, authenticated by the Play publisher service account in PLAY_SERVICE_ACCOUNT_JSON.
 #
 # - workflow_dispatch, from main only: `gh workflow run mobile-release-android.yml --ref main`. Every secret and
 #   variable reference is gated on workflow_dispatch, so no other event can read one.
@@ -27,11 +29,8 @@ name: Mobile release (Android)
 # upload, and the run number grows with every run whatever the product version does (betas share a version across many
 # merges). A re-run keeps its run number, so it rebuilds the same versionCode; dispatch a new run for a new upload.
 #
-# TODO(play, once the Play Console app exists and its first AAB was uploaded by hand): upload the verified AAB to the
-# internal testing track from the sign job, after "Verify the signed AAB and APK", with a pinned
-# r0adkll/upload-google-play (packageName xyz.tinycloud.exo, track internal, status draft until the first review) and a
-# PLAY_SERVICE_ACCOUNT_JSON secret in the android-release environment. Until then, upload the artifact's .aab in Play
-# Console by hand.
+# Play: the service account in PLAY_SERVICE_ACCOUNT_JSON can release to testing tracks of xyz.tinycloud.home only, not
+# production. Each dispatch rolls its build out to internal testers (status completed); promote it in Play Console.
 
 on:
   workflow_dispatch:
@@ -88,6 +87,15 @@ jobs:
           ANDROID_UPLOAD_CERT_SHA256: ${{ github.event_name == 'workflow_dispatch' && vars.ANDROID_UPLOAD_CERT_SHA256 || '' }}
         run: scripts/release/android-signing.sh check
 
+      - name: Check the Play service account
+        env:
+          PLAY_SERVICE_ACCOUNT_JSON: ${{ github.event_name == 'workflow_dispatch' && secrets.PLAY_SERVICE_ACCOUNT_JSON || '' }}
+        run: |
+          if [ -z "$PLAY_SERVICE_ACCOUNT_JSON" ]; then
+            echo "::error::the android-release environment is missing PLAY_SERVICE_ACCOUNT_JSON (mobile/README.md, Android release)"
+            exit 1
+          fi
+
   build:
     name: Build (unsigned AAB + APK, no secrets)
     needs: plan
@@ -111,11 +119,16 @@ jobs:
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: "1.3.9"
-
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        if: github.event_name == 'pull_request'
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
       - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
         with:
           distribution: temurin
           java-version: "21"
+          cache: ${{ github.event_name == 'pull_request' && 'gradle' || '' }}
 
       - name: Install JS deps
         run: bun install --frozen-lockfile
@@ -298,4 +311,19 @@ jobs:
         with:
           name: exo-android-${{ steps.version.outputs.name }}-${{ steps.version.outputs.code }}
           if-no-files-found: error
+          # A re-run of this job (after a failed Play upload) replaces the artifact instead of failing on its name.
+          overwrite: true
           path: dist/*
+
+      # The AAB the verify step accepted, to the internal track. The upload key signed it; Play re-signs it with the
+      # app signing key (Play App Signing).
+      - name: Upload the AAB to Google Play (internal testing)
+        if: env.RELEASE == 'true'
+        uses: r0adkll/upload-google-play@e738b9dd8f2476ea806d921b64aacd24f34515a5 # v1.1.5
+        with:
+          serviceAccountJsonPlainText: ${{ github.event_name == 'workflow_dispatch' && secrets.PLAY_SERVICE_ACCOUNT_JSON || '' }}
+          packageName: xyz.tinycloud.home
+          releaseFiles: ${{ runner.temp }}/signed/app-release.aab
+          releaseName: ${{ steps.version.outputs.name }} (${{ steps.version.outputs.code }})
+          tracks: internal
+          status: completed

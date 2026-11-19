@@ -127,6 +127,7 @@ describe("disconnect + purge e2e (spec §10 driver 4)", () => {
       client,
       store: connectorStore,
       tcw: fake.tcw,
+      allowMissingConnection: true,
     });
     expect(first.ok).toBe(true);
     if (first.ok) expect(first.data.added).toBe(SEED_COUNT);
@@ -135,7 +136,7 @@ describe("disconnect + purge e2e (spec §10 driver 4)", () => {
     // non-zero BEFORE the disconnect for the after-check to prove anything.
     expect(fake.sql.meetings.size).toBe(SEED_COUNT);
     expect(fake.sql.meetings.size).toBeGreaterThan(0);
-    expect(fake.kv.entries.size).toBe(SEED_COUNT);
+    expect(Array.from(fake.kv.entries.keys()).filter((key) => key.startsWith(`${connectorStore.CONNECTORS_KV_PREFIX}/fireflies/transcript/`))).toHaveLength(SEED_COUNT);
     expect(fake.sql.states.get("fireflies")).toBeDefined();
 
     // Snapshot every SQL row + KV body so we can assert byte-for-byte equality.
@@ -227,13 +228,14 @@ describe("disconnect + purge e2e (spec §10 driver 4)", () => {
       client,
       store: connectorStore,
       tcw: fake.tcw,
+      allowMissingConnection: true,
     });
     expect(synced.ok).toBe(true);
     if (synced.ok) expect(synced.data.added).toBe(SEED_COUNT);
 
     // Vacuity guard: baseline must be non-zero for "removes" to mean anything.
     expect(fake.sql.meetings.size).toBe(SEED_COUNT);
-    expect(fake.kv.entries.size).toBe(SEED_COUNT);
+    expect(Array.from(fake.kv.entries.keys()).filter((key) => key.startsWith(`${connectorStore.CONNECTORS_KV_PREFIX}/fireflies/transcript/`))).toHaveLength(SEED_COUNT);
     expect(fake.sql.states.get("fireflies")).toBeDefined();
     expect(fake.secrets.has(FIREFLIES.secretScope, FIREFLIES.secretName)).toBe(
       true,
@@ -315,6 +317,7 @@ describe("disconnect + purge e2e (spec §10 driver 4)", () => {
       client,
       store: connectorStore,
       tcw: fake.tcw,
+      allowMissingConnection: true,
     });
     expect(first.ok).toBe(true);
     if (first.ok) expect(first.data.added).toBe(SEED_COUNT);
@@ -343,6 +346,7 @@ describe("disconnect + purge e2e (spec §10 driver 4)", () => {
       client,
       store: connectorStore,
       tcw: fake.tcw,
+      allowMissingConnection: true,
     });
     expect(second.ok).toBe(true);
     if (second.ok) {
@@ -356,7 +360,7 @@ describe("disconnect + purge e2e (spec §10 driver 4)", () => {
 
     // Row + KV counts back to the initial-sync baseline exactly.
     expect(fake.sql.meetings.size).toBe(SEED_COUNT);
-    expect(fake.kv.entries.size).toBe(SEED_COUNT);
+    expect(Array.from(fake.kv.entries.keys()).filter((key) => key.startsWith(`${connectorStore.CONNECTORS_KV_PREFIX}/fireflies/transcript/`))).toHaveLength(SEED_COUNT);
 
     // KV transcript keys are the SEED_COUNT expected keys, one per source id.
     const seed = buildSeed() as { id: string }[];

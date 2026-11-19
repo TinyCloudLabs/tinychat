@@ -130,6 +130,32 @@ export const LIBRARY_ROWS: FixtureRow[] = [
   },
 ];
 
+/** A two-sided note (Me / Them, as a Mac recording of both sides carries it) and the Library rows, for the speaker-name screens (TC-2189). */
+export const SPEAKER_ROWS: FixtureRow[] = [
+  ...LIBRARY_ROWS,
+  {
+    id: "note-me-them",
+    source: "exo-upload",
+    sourceId: "upload-offsite",
+    title: "Offsite planning call",
+    startedAt: at(10, 6, 10, 15),
+    durationSecs: 2160,
+    metadata: {
+      ...stored("exo-upload", "upload-offsite"),
+      capture: "upload",
+      transcription_engine: "private-cloud",
+      transcript_provider: "tinycloud-private-transcription",
+      inference_provider: "tinfoil",
+    },
+    sentences: [
+      { index: 0, speaker_name: "Me", text: "Thanks for making time. I wanted to walk through the offsite plan.", start_time: 0, end_time: 9 },
+      { index: 1, speaker_name: "Them", text: "Happy to. The venue is booked and the agenda goes out Friday.", start_time: 10, end_time: 19 },
+      { index: 2, speaker_name: "Me", text: "Good, then we only need the catering quote.", start_time: 20, end_time: 27 },
+      { index: 3, speaker_name: "Them", text: "I'll chase it tomorrow morning.", start_time: 28, end_time: 33 },
+    ],
+  },
+];
+
 /**
  * The harness space with `rows` stored. `hang` leaves the list read pending
  * (the Library's loading state).
@@ -159,11 +185,30 @@ export function libraryTcw(options: { rows?: readonly FixtureRow[]; hang?: boole
     }
     return { ok: true, data: { rows: [] } };
   };
+  // The speaker-name writes (TC-2189), as the SQL applies them: one label merged into the row's `speaker_names`
+  // (a null name clears it), then the map dropped once it is empty.
+  const execute = async (sql: string, params: unknown[] = []) => {
+    if (!sql.includes("speaker_names")) return { ok: true, data: { changes: 0 } };
+    if (sql.includes("json_patch")) {
+      const [label, shown, , rowId] = params as [string, string | null, string, string];
+      const row = rows.find((r) => r.id === rowId);
+      if (!row) return { ok: true, data: { changes: 0 } };
+      const names = { ...((row.metadata.speaker_names as Record<string, string> | undefined) ?? {}) };
+      if (shown === null) delete names[label];
+      else names[label] = shown;
+      row.metadata.speaker_names = names;
+      return { ok: true, data: { changes: 1 } };
+    }
+    const row = rows.find((r) => r.id === params[0]);
+    const names = row?.metadata.speaker_names as Record<string, string> | undefined;
+    if (row && names && Object.keys(names).length === 0) delete row.metadata.speaker_names;
+    return { ok: true, data: { changes: row ? 1 : 0 } };
+  };
   const get = async (key: string) => {
     const row = rows.find((r) => transcriptKvKey(r.source, r.sourceId) === key);
     return row ? { ok: true, data: { data: row.sentences, headers: {} } } : { ok: false, error: { code: "KV_NOT_FOUND", message: "harness: nothing stored" } };
   };
-  const sql = { db: () => ({ query }) };
+  const sql = { db: () => ({ query, execute }) };
   const kv = new Proxy({ get } as Record<string, unknown>, {
     get: (target, key) => (key in target ? target[key as string] : (harnessTcw.kv as unknown as Record<string | symbol, unknown>)[key]),
   });

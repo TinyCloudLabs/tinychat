@@ -140,7 +140,6 @@ const LARGE_TURBO: FakeDesktopCaptureExtrasOptions = {
   downloaded: ["QuantizedLargeTurbo"],
   selected: "QuantizedLargeTurbo",
   systemAudio: true,
-  autoSaveToSpace: true,
 };
 
 function screen(
@@ -154,7 +153,7 @@ function screen(
     layout: "pane",
     displayTitle: false,
     minViewportWidth: RAIL_MIN_WIDTH,
-    readyWhen: ".cs-row[data-testid=settings-mic]",
+    readyWhen: "[data-testid=settings-mic]",
     ...options,
     render,
   };
@@ -164,7 +163,7 @@ export const captureSettingsScreens: HarnessScreen[] = [
   screen("app-none", () => (
     <Settings
       variant="app"
-      fake={{ downloaded: [], selected: null, autoSaveToSpace: true }}
+      fake={{ downloaded: [], selected: null }}
     />
   )),
   screen("app-downloading", () => (

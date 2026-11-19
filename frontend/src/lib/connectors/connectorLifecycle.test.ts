@@ -174,6 +174,10 @@ function harness(
           ? { ok: false, error: { code: "KV", message: fail.purgeLocal } }
           : { ok: true, data: undefined };
       },
+      clearFirefliesAttempt: async () => {
+        rec.ops.push("clear-sync-continuation");
+        return { ok: true, data: undefined };
+      },
       getConnection: async () => {
         rec.ops.push("get-connection");
         return fail.getConnection
@@ -205,6 +209,7 @@ describe("disconnect plans", () => {
     expect(DISCONNECT_PLANS["keep-data"]).toEqual([
       "disable-webhooks",
       "delete-key",
+      "clear-sync-continuation",
       "mark-disconnected",
     ]);
   });
@@ -234,18 +239,15 @@ describe("disconnect plans", () => {
 // ── Flow 2: disconnect, keep data ────────────────────────────────────
 
 describe("disconnect, keep data", () => {
-  test("runs disable → delete key → mark disconnected, in that order", async () => {
+  test("runs disable → delete key → clear continuation → mark disconnected in order", async () => {
     const h = harness({ mode: "keep-data" });
     const result = await runDisconnect(h.deps, h.emit);
 
     expect(result.done).toBe(true);
     expect(result.failure).toBeNull();
-    expect(h.rec.ops.indexOf("disable-webhooks")).toBeLessThan(
-      h.rec.ops.indexOf("delete-key"),
-    );
-    expect(h.rec.ops.indexOf("delete-key")).toBeLessThan(
-      h.rec.ops.indexOf("mark-disconnected"),
-    );
+    expect(h.rec.ops.indexOf("disable-webhooks")).toBeLessThan(h.rec.ops.indexOf("delete-key"));
+    expect(h.rec.ops.indexOf("delete-key")).toBeLessThan(h.rec.ops.indexOf("clear-sync-continuation"));
+    expect(h.rec.ops.indexOf("clear-sync-continuation")).toBeLessThan(h.rec.ops.indexOf("mark-disconnected"));
   });
 
   test("keeps the meetings: no purge tombstone, no local purge", async () => {

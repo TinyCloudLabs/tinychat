@@ -45,10 +45,13 @@ function resolveManifestPath(path: string): string {
     : `${MANIFEST_PREFIX}/${path}`;
 }
 
-function grantedPaths(service: string): string[] {
+function grantedPermissions(service: string): Array<{ path: string; actions: string[] }> {
   return (MANIFEST.permissions ?? [])
     .filter((p) => p.service === service)
-    .map((p) => resolveManifestPath(p.path));
+    .map((p) => ({
+      path: resolveManifestPath(p.path),
+      actions: Array.isArray(p.actions) ? p.actions : [],
+    }));
 }
 
 /** Path containment per spec: trailing "/" grants a prefix match, else exact. */
@@ -65,14 +68,15 @@ function pathContains(granted: string, requested: string): boolean {
 function authorize(
   service: string,
   requested: string,
+  action: string,
 ): { code: string; message: string } | null {
-  const granted = grantedPaths(service);
-  if (granted.some((g) => pathContains(g, requested))) return null;
+  const granted = grantedPermissions(service);
+  if (granted.some((g) => g.actions.includes(action) && pathContains(g.path, requested))) return null;
   return {
     code: "AUTH_UNAUTHORIZED",
     message:
-      `Unauthorized Action: ${requested} / ${service}` +
-      ` — no grant matches (manifest grants: ${granted.join(", ") || "none"})`,
+      `Unauthorized Action: ${action} ${requested} / ${service}` +
+      ` — no grant matches (manifest grants: ${granted.map((g) => `${g.actions.join(",")}:${g.path}`).join(", ") || "none"})`,
   };
 }
 
@@ -127,8 +131,60 @@ export class FakeSqlDb {
    * Scoped to meeting writes so `connector_state` bookkeeping still behaves normally.
    */
   nextMeetingWriteError: { code: string; message: string } | null = null;
+  /** Every statement issued, in order (query, execute and each batch member). */
+  readonly log: { sql: string; params: unknown[] }[] = [];
+  /** Runs before a statement is applied; tests use it to land a racing write between two statements. */
+  beforeStatement: ((sql: string, params: unknown[]) => void) | null = null;
+  /** Voice-note transcript commits (source_id -> committed body key, or an explicit body_key/outcome), answered for `voice_note_transcript` lookups. */
+  voiceNoteCommits = new Map<string, string | { bodyKey: string | null; outcome: string }>();
 
   async query(sql: string, params: unknown[] = []): Promise<SqlResult> {
+    this.log.push({ sql: sql.trim(), params });
+    this.beforeStatement?.(sql, params);
+    if (/FROM\s+sqlite_schema/i.test(sql)) return ok(this.voiceNoteCommits.size > 0 ? [[1]] : []);
+    if (/FROM\s+voice_note_transcript\s+WHERE\s+source_id\s*=\s*\?/i.test(sql)) {
+      const commit = this.voiceNoteCommits.get(String(params[0]));
+      if (commit === undefined) return ok([]);
+      const { bodyKey, outcome } = typeof commit === "string" ? { bodyKey: commit, outcome: "transcribed" } : commit;
+      return ok([[String(params[0]), 1, "hash", bodyKey, outcome, null, null, null, null, null, null, null, null, null]]);
+    }
+
+    // Combined-meeting (exo-merged) statements, matched before the generic shapes below.
+    {
+      const t = sql.trim();
+      if (/^SELECT\s+title,\s*started_at,\s*duration_secs,\s*participants,\s*metadata\s+FROM\s+connector_meeting/i.test(t)) {
+        const ids = [...this.meetings.values()]
+          .filter((r) => r.source === String(params[0]) && r.source_id === String(params[1]))
+          .sort((a, b) => (a.id < b.id ? -1 : 1));
+        const r = ids[0];
+        return ok(r ? [[r.title, r.started_at, r.duration_secs, r.participants, r.metadata]] : []);
+      }
+      if (/^SELECT\s+id,\s*metadata\s+FROM\s+connector_meeting\s+WHERE\s+source\s*=\s*'exo-merged'\s+AND\s+source_id\s*=\s*\?\s+ORDER\s+BY\s+id/i.test(t)) {
+        return ok([...this.meetings.values()]
+          .filter((r) => r.source === "exo-merged" && r.source_id === String(params[0]))
+          .sort((a, b) => (a.id < b.id ? -1 : 1))
+          .map((r) => [r.id, r.metadata]));
+      }
+      if (/^SELECT\s+id,\s*source_id,\s*metadata\s+FROM\s+connector_meeting\s+WHERE\s+source\s*=\s*'exo-merged'/i.test(t)) {
+        return ok([...this.meetings.values()].filter((r) => r.source === "exo-merged").map((r) => [r.id, r.source_id, r.metadata]));
+      }
+      if (/^SELECT\s+title,\s*metadata\s+FROM\s+connector_meeting\s+WHERE\s+id\s*=\s*\?\s+AND\s+source\s*=\s*'exo-merged'/i.test(t)) {
+        const r = this.meetings.get(String(params[0]));
+        return ok(r && r.source === "exo-merged" ? [[r.title, r.metadata]] : []);
+      }
+      if (/^SELECT\s+source_id,\s*metadata\s+FROM\s+connector_meeting\s+WHERE\s+id\s*=\s*\?\s+AND\s+source\s*=\s*'exo-merged'/i.test(t)) {
+        const r = this.meetings.get(String(params[0]));
+        return ok(r && r.source === "exo-merged" ? [[r.source_id, r.metadata]] : []);
+      }
+      if (/^SELECT\s+source_id,\s*summary_overview,\s*summary_action_items\s+FROM\s+connector_meeting\s+WHERE\s+id\s*=\s*\?\s+AND\s+source\s*=\s*'exo-merged'/i.test(t)) {
+        const r = this.meetings.get(String(params[0]));
+        return ok(r && r.source === "exo-merged" ? [[r.source_id, r.summary_overview, r.summary_action_items]] : []);
+      }
+      if (/^SELECT\s+source_id\s+FROM\s+connector_meeting\s+WHERE\s+id\s*=\s*\?\s+AND\s+source\s*=\s*'exo-merged'/i.test(t)) {
+        const r = this.meetings.get(String(params[0]));
+        return ok(r && r.source === "exo-merged" ? [[r.source_id]] : []);
+      }
+    }
     const s = sql.trim();
 
     // Schema-probe fallback used by ensureSchema when CREATE TABLE errors.
@@ -238,6 +294,34 @@ export class FakeSqlDb {
 
   private applyOne(sql: string, params: unknown[] = []): SqlResult | null {
     const s = sql.trim();
+    this.log.push({ sql: s, params });
+    this.beforeStatement?.(sql, params);
+
+    // Combined-meeting (exo-merged) writes, matched before the generic shapes below.
+    if (/^UPDATE\s+connector_meeting\s+SET\s+title\s*=\s*\?,\s*started_at\s*=\s*\?,\s*duration_secs\s*=\s*\?,\s*participants\s*=\s*\?,\s*metadata\s*=\s*\?,\s*updated_at\s*=\s*\?\s+WHERE\s+id\s*=\s*\?\s+AND\s+source\s*=\s*'exo-merged'/i.test(s)) {
+      const injected = this.takeMeetingWriteError();
+      if (injected) return injected;
+      const [title, started_at, duration_secs, participants, metadata, updated_at, id, onlyIfMetadata] = params as [string | null, string | null, number | null, string, string, string, string, string | undefined];
+      const existing = this.meetings.get(id);
+      // `AND COALESCE(metadata, '') = ?`: the write applies only to the metadata it was built from.
+      if (existing && existing.source === "exo-merged" && (onlyIfMetadata === undefined || (existing.metadata ?? "") === onlyIfMetadata)) {
+        this.meetings.set(id, { ...existing, title, started_at, duration_secs, participants, metadata, updated_at });
+      }
+      return ok([]);
+    }
+    if (/^UPDATE\s+connector_meeting\s+SET\s+summary_overview\s*=\s*\?,\s*summary_action_items\s*=\s*\?\s+WHERE\s+id\s*=\s*\?\s+AND\s+source\s*=\s*'exo-merged'/i.test(s)) {
+      const injected = this.takeMeetingWriteError();
+      if (injected) return injected;
+      const [summary_overview, summary_action_items, id] = params as [string | null, string | null, string];
+      const existing = this.meetings.get(id);
+      if (existing && existing.source === "exo-merged") this.meetings.set(id, { ...existing, summary_overview, summary_action_items });
+      return ok([]);
+    }
+    if (/^DELETE\s+FROM\s+connector_meeting\s+WHERE\s+id\s*=\s*\?\s+AND\s+source\s*=\s*'exo-merged'/i.test(s)) {
+      const existing = this.meetings.get(String(params[0]));
+      if (existing && existing.source === "exo-merged") this.meetings.delete(existing.id);
+      return ok([]);
+    }
 
     const create = s.match(/^CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+(\w+)/i);
     if (create) {
@@ -286,6 +370,8 @@ export class FakeSqlDb {
         string,
         string,
       ];
+      // `id TEXT PRIMARY KEY`: SQLite rejects a second row with the same id, it never replaces.
+      if (this.meetings.has(id)) return { ok: false, error: { code: "SQL_CONSTRAINT", message: "UNIQUE constraint failed: connector_meeting.id" } };
       this.meetings.set(id, {
         id,
         source,
@@ -367,6 +453,7 @@ export class FakeSqlDb {
         last_sync_error,
         item_count,
         updated_at,
+        preserveLastSyncedAt,
       ] = params as [
         string,
         string,
@@ -375,11 +462,15 @@ export class FakeSqlDb {
         string | null,
         number,
         string,
+        number | undefined,
       ];
+      const existing = this.states.get(connector_id);
       this.states.set(connector_id, {
         connector_id,
         status,
-        last_synced_at,
+        last_synced_at: preserveLastSyncedAt === 1 && existing
+          ? existing.last_synced_at
+          : last_synced_at,
         last_sync_status,
         last_sync_error,
         item_count,
@@ -413,21 +504,33 @@ export class FakeSqlDb {
 // ── KV fake ─────────────────────────────────────────────────────────────
 
 export class FakeKv {
+  /** Every KV call issued, in order. */
+  readonly log: { method: "get" | "put" | "list" | "delete" | "head"; key: string; source?: string }[] = [];
+  /** Reads of a key fail with the given error (a read that did not land, as opposed to a missing key). */
+  getErrors = new Map<string, KvErr>();
   entries = new Map<string, string>();
   /** Every key rejected by the authorizer — drivers can assert on the shape. */
   readonly unauthorized: string[] = [];
+  putHook: ((key: string, value: unknown) => Promise<void>) | null = null;
+  deleteErrors = new Map<string, KvErr>();
+  /** Puts to a key (or "prefix/") fail with the given error until the entry is removed. */
+  putErrors = new Map<string, KvErr>();
 
   /** Authorization runs before any storage effect, exactly like the node. */
-  private deny(key: string): KvErr | null {
-    const error = authorize("tinycloud.kv", key);
-    if (error) this.unauthorized.push(key);
+  private deny(key: string, action: string): KvErr | null {
+    const error = authorize("tinycloud.kv", key, action);
+    if (error) this.unauthorized.push(`${action}:${key}`);
     return error;
   }
 
   async get(
     key: string,
+    options?: { source?: string },
   ): Promise<OkErr<{ data: unknown; headers: Record<string, string> }, KvErr>> {
-    const denied = this.deny(key);
+    this.log.push({ method: "get", key, source: options?.source });
+    const getError = this.getErrors.get(key);
+    if (getError) return { ok: false, error: getError };
+    const denied = this.deny(key, "get");
     if (denied) return { ok: false, error: denied };
     if (!this.entries.has(key)) {
       return {
@@ -438,12 +541,27 @@ export class FakeKv {
     return { ok: true, data: { data: this.entries.get(key), headers: {} } };
   }
 
+  async head(key: string): Promise<OkErr<{ data: void; headers: Record<string, string> }, KvErr>> {
+    this.log.push({ method: "head", key });
+    const denied = this.deny(key, "metadata");
+    if (denied) return { ok: false, error: denied };
+    if (!this.entries.has(key)) {
+      return { ok: false, error: { code: "KV_NOT_FOUND", message: `no key ${key}` } };
+    }
+    return { ok: true, data: { data: undefined as unknown as void, headers: {} } };
+  }
+
   async put(
     key: string,
     value: unknown,
   ): Promise<OkErr<{ data: void; headers: Record<string, string> }, KvErr>> {
-    const denied = this.deny(key);
+    this.log.push({ method: "put", key });
+    const denied = this.deny(key, "put");
     if (denied) return { ok: false, error: denied };
+    for (const [prefix, error] of this.putErrors) {
+      if (key === prefix || (prefix.endsWith("/") && key.startsWith(prefix))) return { ok: false, error };
+    }
+    await this.putHook?.(key, value);
     const stored = typeof value === "string" ? value : JSON.stringify(value);
     this.entries.set(key, stored);
     return {
@@ -460,7 +578,8 @@ export class FakeKv {
   async list(
     options: { path: string; cursor?: string },
   ): Promise<OkErr<{ keys: string[]; cursor?: string }, KvErr>> {
-    const denied = this.deny(options.path);
+    this.log.push({ method: "list", key: options.path });
+    const denied = this.deny(options.path, "list");
     if (denied) return { ok: false, error: denied };
     return {
       ok: true,
@@ -473,7 +592,10 @@ export class FakeKv {
   }
 
   async delete(key: string): Promise<OkErr<void, KvErr>> {
-    const denied = this.deny(key);
+    this.log.push({ method: "delete", key });
+    const forcedError = this.deleteErrors.get(key);
+    if (forcedError) return { ok: false, error: forcedError };
+    const denied = this.deny(key, "del");
     if (denied) return { ok: false, error: denied };
     if (!this.entries.has(key)) {
       return {
@@ -586,7 +708,7 @@ export function makeFakeTinyCloud(opts: MakeFakeOptions = {}): FakeTinyCloud {
     sql: {
       db: (name: string) => {
         dbNamesRequested.push(name);
-        const denied = authorize("tinycloud.sql", name);
+        const denied = authorize("tinycloud.sql", name, "read");
         if (denied) {
           unauthorizedDbNames.push(name);
           return unauthorizedDb(denied);

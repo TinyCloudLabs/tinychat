@@ -9,6 +9,10 @@ name: Backend
 # The backend suite also reads the Phala deploy workflow, compose file and
 # deploy scripts, so changes to those run it too.
 #
+# The Home mirror (scripts/home-feed, TC-2204) runs here too: it is owner-side
+# tooling over the shared packages, and no other workflow runs its tests
+# (TC-2921).
+#
 # Lint stays out: the repo-wide `bun run lint` still has errors in backend/
 # and artifacts/.
 
@@ -22,10 +26,13 @@ on:
       - "bun.lock"
       - "turbo.json"
       - "docker-compose*.yml"
+      - "log-shipper/**"
       - ".github/scripts/**"
       - ".github/deploy-tools/**"
       - ".github/workflows/deploy-backend-phala.yml"
       - ".github/workflows/backend.yml"
+      - "scripts/home-feed/**"
+      - "scripts/agent-sync/**"
 
 permissions:
   contents: read
@@ -47,15 +54,44 @@ jobs:
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version-file: package.json
-
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
       - name: Install JS deps
         run: bun install --frozen-lockfile
 
       - name: Build workspace packages
         run: bun run build:packages
+      - name: Typecheck backend
+        run: bun run --cwd backend build
 
       - name: Package tests (core, client, server incl. node-sdk renewal)
         run: bun run test:packages
 
+      - name: Home mirror tests (scripts/home-feed)
+        run: bun test scripts/home-feed
+
+      - name: Install checksum-pinned Vector (same release as the log-shipper image)
+        run: |
+          set -euo pipefail
+          curl --fail --location --silent --show-error https://github.com/vectordotdev/vector/releases/download/v0.59.0/vector-0.59.0-x86_64-unknown-linux-gnu.tar.gz --output "$RUNNER_TEMP/vector.tar.gz"
+          printf '%s\n' "fb15878d1cd68445e0658792a8fa7ccf02ae8a353c6cc5d6fe867b171993e19f  $RUNNER_TEMP/vector.tar.gz" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/vector.tar.gz" -C "$RUNNER_TEMP"
+
       - name: Backend tests
+        # VECTOR_BIN runs the request-record test through the real shipper pipeline (TC-2537).
+        env:
+          VECTOR_BIN: ${{ runner.temp }}/vector-x86_64-unknown-linux-gnu/bin/vector
         run: bun run --cwd backend test
+
+      - name: Vector config (log-shipper, pinned image)
+        run: |
+          set -euo pipefail
+          image="$(grep -o 'timberio/vector:[^"[:space:]]*@sha256:[0-9a-f]*' docker-compose.phala.yml | head -n 1)"
+          secrets="$(mktemp -d)"
+          printf 'ci-placeholder' > "$secrets/betterstack_source_token"
+          docker run --rm -v "$PWD/log-shipper:/ls:ro" -v "$secrets:/run/vector-secrets:ro" "$image" \
+            validate --no-environment --skip-healthchecks /ls/vector.yaml
+          docker run --rm -v "$PWD/log-shipper:/ls:ro" -v "$secrets:/run/vector-secrets:ro" "$image" \
+            test /ls/vector.yaml /ls/vector.tests.yaml

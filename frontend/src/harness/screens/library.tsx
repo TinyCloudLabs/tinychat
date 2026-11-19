@@ -84,7 +84,7 @@ export const libraryScreens: HarnessScreen[] = [
     ...NOTE,
     id: "note-voice-untranscribed",
     path: note("note-untranscribed"),
-    readyWhen: '[data-testid="voice-note-transcribe"]',
+    readyWhen: READ,
     render: () => <CaptureShell library recorder={TRANSCRIBES} />,
   },
   { ...NOTE, id: "note-meeting", path: note("meeting-weekly"), readyWhen: READ, render: () => <CaptureShell library /> },

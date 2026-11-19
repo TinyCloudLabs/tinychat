@@ -5,6 +5,7 @@ export {
   CONNECTORS_KV_PREFIX,
   CONNECTOR_SCHEMA,
   TRANSCRIBER_MEETING_SOURCE,
+  EXO_MERGED_SOURCE,
   TRANSCRIPT_WRITER_POLICY,
   TRANSCRIPT_WRITER_PERMISSIONS,
   transcriptKvKey,
@@ -25,9 +26,56 @@ export {
   type WrittenTranscriberMeeting,
 } from "./connector-meeting.js";
 
+// ── Sign-in manifest bundle (revision "2") ───────────────────────────
+
+export {
+  SIGN_IN_BUNDLE_ENTRIES,
+  manifestCarriesBundle,
+  type RequiredManifestEntry,
+} from "./manifest-bundle.js";
+
+// ── Meeting Storage ──────────────────────────────────────────────────
+
+export {
+  MEETING_DB_SCHEMA_VERSION,
+  MEETING_DB_DETAILS,
+  MEETING_DB_SUMMARIES,
+  MEETING_DB_TRANSCRIPTS,
+  DETAILS_SCHEMA,
+  SUMMARIES_SCHEMA,
+  TRANSCRIPTS_SCHEMA,
+  MEETING_DB_PATHS,
+  DEFAULT_PRIVACY_LEVEL,
+  databasesForLevel,
+  assertExactMeetingDbPath,
+  MeetingDbRowError,
+  parseDetailsRow,
+  parseParticipantRow,
+  parseKeywordRow,
+  parseSourceRefRow,
+  parseConnectorStateRow,
+  parseSummaryRow,
+  parseActionItemRow,
+  parseTranscriptRow,
+  parseTranscriptSegmentRow,
+  type MeetingDbPath,
+  type PrivacyLevel,
+  type MeetingDetailsRow,
+  type MeetingParticipantRow,
+  type MeetingKeywordRow,
+  type MeetingSourceRefRow,
+  type ConnectorStateRow,
+  type MeetingSummaryRow,
+  type MeetingActionItemRow,
+  type MeetingTranscriptRow,
+  type TranscriptSegmentRow,
+} from "./meeting-db/index.js";
+
 export type DelegationStatus = "active" | "expired" | "none" | "stale";
 
 export interface StoredDelegation {
+  /** Grant kind this record was written for. Absent on records written before kinds existed. */
+  kind?: string;
   serialized: string;
   grantedAt: string;
   expiresAt: string;
@@ -173,3 +221,37 @@ export function deriveApiHost(host: string): string {
     return host;
   }
 }
+
+export {
+  STITCH_ALGORITHM,
+  MERGED_SOURCE,
+  StitchInputError,
+  stitchMeetings,
+  stitchedSourceId,
+  memberRef,
+  STITCH_TIME_PAD_S,
+  STITCH_MIN_ANCHORS_PER_MIN,
+  STITCH_SPAN_CAP_S,
+  STITCH_SPAN_FRACTION,
+  STITCH_MIN_CAPTURE_S,
+  type MeetingSnapshot,
+  type SqlMeetingRow,
+  type KvMeetingRecord,
+  type StitchSegment,
+  type StitchedSegment,
+  type StitchedMeeting,
+  type StitchResult,
+  type StitchOptions,
+  type StitchEvidence,
+  type StitchRelation,
+  type StitchMemberResult,
+  type StitchSpeakerMapEntry,
+  type StitchSeam,
+  type SourceRef,
+} from "./meeting-stitch.js";
+
+// ── Notetaker meeting links ──────────────────────────────────────────
+export { meetingLinkFromInput } from "./meeting-link.js";
+
+// ── TinyCloud node hosts ─────────────────────────────────────────────
+export { sameTinyCloudNode } from "./tinycloud-node.js";

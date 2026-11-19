@@ -19,13 +19,13 @@
 //
 // All exported functions return Result-style objects (spec §4). Callers
 // branch on `.ok`; nothing throws across the module boundary.
-
-import { reportStorageError, reportStorageWriteSucceeded, storageSaveMessage, trackStorageWrites } from "../storageStatus";
+import { reportStorageError, reportStorageWriteSucceeded, storageScopeFor, storageSaveMessage, trackStorageWrites } from "../storageStatus";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import {
   CONNECTORS_SQL_DB_NAME,
   CONNECTORS_KV_PREFIX,
+  EXO_MERGED_SOURCE,
   CONNECTOR_SCHEMA,
   transcriptKvKey,
   type NormalizedMeeting,
@@ -40,8 +40,264 @@ import type {
   FirefliesSentence,
   FirefliesTranscript,
 } from "./firefliesClient";
+import { deleteCombinedReferencing } from "./combinedMeetingStore";
 import type { ConnectorConnection, ConnectorId } from "./types";
+import { keepUserTitle } from "../recordingTitleMeta";
 
+
+/** Fireflies attempt metadata; SQL `last_synced_at` remains the success clock. */
+export function firefliesAttemptKvKey(): string {
+  return `${CONNECTORS_KV_PREFIX}/fireflies/sync-attempt`;
+}
+
+export const FIREFLIES_MAX_PENDING_IDS = 50;
+
+export interface FirefliesAttempt {
+  v: 1;
+  lastAttemptAt: string;
+  lastAttemptStatus: "running" | "ok" | "partial" | "error";
+  /** Provider listing offset to resume after every consumed row is stored. */
+  listingSkip?: number | null;
+  /** Timestamp at skip zero; the SQL watermark commits this chain start. */
+  listingStartedAt?: string | null;
+  /** Summary ID at listingSkip - 1, binding the offset to provider history. */
+  listingAnchor?: string | null;
+  listingAnchorDate?: number | string | null;
+  listingPreviousNeighbor?: string | null;
+  /** Failed IDs are retried on every run; capped to keep the record small. */
+  pendingIds?: string[];
+  /** Pending not-found retries; absence must be proven by a complete listing. */
+  suspectIds?: string[];
+  /** Suspect IDs observed during their complete-listing proof chain. */
+  suspectSeenIds?: string[];
+  /** IDs in the most recent proof generation; bounds the 24-hour re-proof pace. */
+  suspectProofIds?: string[];
+  /** Start time of the most recent suspect proof generation. */
+  suspectProofAt?: string | null;
+  /** Last completed proof time per still-pending ID. */
+  suspectProofAtById?: Record<string, string>;
+}
+export async function getFirefliesAttempt(
+  tcw: TinyCloudWeb,
+): Promise<StoreResult<FirefliesAttempt | null>> {
+  const res = await tcw.kv.get(firefliesAttemptKvKey());
+  if (!res.ok) return fail(res.error, "getFirefliesAttempt", storageScopeFor(tcw));
+  const raw = res.data.data;
+  let value: unknown = raw;
+  if (typeof raw === "string") {
+    try {
+      value = JSON.parse(raw);
+    } catch {
+      return { ok: true, data: null };
+    }
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { ok: true, data: null };
+  }
+  const row = value as Record<string, unknown>;
+  if (row.v !== 1
+    || typeof row.last_attempt_at !== "string"
+    || (row.last_attempt_status !== "running" && row.last_attempt_status !== "ok"
+      && row.last_attempt_status !== "partial" && row.last_attempt_status !== "error")) {
+    return { ok: true, data: null };
+  }
+  const skip = row.listing_skip;
+  const startedAt = row.listing_started_at;
+  const anchor = row.listing_anchor;
+  const anchorDate = row.listing_anchor_date;
+  const previousNeighbor = row.listing_previous_neighbor;
+  const hasAnchorDate = Object.hasOwn(row, "listing_anchor_date");
+  const hasPreviousNeighbor = Object.hasOwn(row, "listing_previous_neighbor");
+  const hasCursor = skip !== undefined || startedAt !== undefined || anchor !== undefined
+    || hasAnchorDate || hasPreviousNeighbor;
+  const rawPending = row.pending_ids;
+  const pendingPresent = Object.hasOwn(row, "pending_ids");
+  const pendingArray = Array.isArray(rawPending) ? rawPending : null;
+  const pendingInvalid = pendingPresent && (!pendingArray
+    || pendingArray.length > FIREFLIES_MAX_PENDING_IDS
+    || !pendingArray.every((id) => typeof id === "string" && id.length > 0));
+  const rawSuspects = row.suspect_ids;
+  const rawSeen = row.suspect_seen_ids;
+  const suspectPresent = Object.hasOwn(row, "suspect_ids") || Object.hasOwn(row, "suspect_seen_ids");
+  const suspectArray = Array.isArray(rawSuspects) ? rawSuspects : null;
+  const seenArray = Array.isArray(rawSeen) ? rawSeen : null;
+  const suspectInvalid = suspectPresent && (!suspectArray || !seenArray
+    || suspectArray.length > FIREFLIES_MAX_PENDING_IDS
+    || seenArray.length > FIREFLIES_MAX_PENDING_IDS
+    || !suspectArray.every((id) => typeof id === "string" && id.length > 0)
+    || !seenArray.every((id) => typeof id === "string" && id.length > 0)
+    || seenArray.some((id) => !suspectArray.includes(id)));
+  const rawProofIds = row.suspect_proof_ids;
+  const proofIdsPresent = Object.hasOwn(row, "suspect_proof_ids");
+  const proofIdsArray = Array.isArray(rawProofIds) ? rawProofIds : null;
+  const proofIdsInvalid = proofIdsPresent && (!proofIdsArray
+    || proofIdsArray.length > FIREFLIES_MAX_PENDING_IDS
+    || !proofIdsArray.every((id) => typeof id === "string" && id.length > 0));
+  const rawProofAt = row.suspect_proof_at;
+  const proofAtValid = rawProofAt === undefined || rawProofAt === null
+    || (typeof rawProofAt === "string" && Number.isFinite(Date.parse(rawProofAt)));
+  const rawProofAtById = row.suspect_proof_at_by_id;
+  const proofAtByIdPresent = Object.hasOwn(row, "suspect_proof_at_by_id");
+  const proofAtByIdRecord = rawProofAtById && typeof rawProofAtById === "object"
+    && !Array.isArray(rawProofAtById)
+    ? rawProofAtById as Record<string, unknown>
+    : null;
+  const proofAtByIdEntries = proofAtByIdRecord ? Object.entries(proofAtByIdRecord) : [];
+  const proofAtByIdInvalid = proofAtByIdPresent && (!proofAtByIdRecord
+    || proofAtByIdEntries.length > FIREFLIES_MAX_PENDING_IDS
+    || proofAtByIdEntries.some(([id, at]) => !id
+      || typeof at !== "string"
+      || !Number.isFinite(Date.parse(at))));
+  const validAnchorDate = anchorDate === null
+    || (typeof anchorDate === "number" && Number.isFinite(anchorDate))
+    || (typeof anchorDate === "string" && Number.isFinite(Date.parse(anchorDate)));
+  const cursorValid = !pendingInvalid && !suspectInvalid && !proofIdsInvalid && !proofAtByIdInvalid && proofAtValid
+    && Number.isSafeInteger(skip)
+    && (skip as number) >= 0
+    && typeof startedAt === "string"
+    && Number.isFinite(Date.parse(startedAt))
+    && ((skip as number) === 0
+      ? anchor == null && (anchorDate === undefined || anchorDate === null)
+        && (previousNeighbor === undefined || previousNeighbor === null)
+      : typeof anchor === "string" && anchor.length > 0
+        && hasAnchorDate && validAnchorDate
+        && hasPreviousNeighbor
+        && ((skip as number) === 1
+          ? previousNeighbor === null
+          : typeof previousNeighbor === "string" && previousNeighbor.length > 0));
+  const pendingIds = pendingArray
+    ? [...new Set(pendingArray.filter((id): id is string => typeof id === "string" && id.length > 0))]
+        .slice(0, FIREFLIES_MAX_PENDING_IDS)
+    : [];
+  const pendingIdSet = new Set(pendingIds);
+  const suspectProofAtById = proofAtByIdInvalid
+    ? {}
+    : Object.fromEntries(proofAtByIdEntries.filter(([id]) => pendingIdSet.has(id))
+      .map(([id, at]) => [id, at as string]));
+  const suspectIds = !suspectInvalid && suspectArray
+    ? [...new Set(suspectArray as string[])]
+    : [];
+  const suspectSeenIds = !suspectInvalid && seenArray
+    ? [...new Set(seenArray as string[])]
+    : [];
+  const suspectProofIds = !proofIdsInvalid && proofIdsArray
+    ? [...new Set(proofIdsArray as string[])].slice(0, FIREFLIES_MAX_PENDING_IDS)
+    : [];
+  const includeSuspects = !suspectInvalid && suspectPresent;
+  const includeProofIds = !proofIdsInvalid && proofIdsPresent;
+  return {
+    ok: true,
+    data: {
+      v: 1,
+      lastAttemptAt: row.last_attempt_at,
+      lastAttemptStatus: row.last_attempt_status,
+      ...(hasCursor
+        ? cursorValid
+          ? {
+              listingSkip: skip as number,
+              listingStartedAt: startedAt as string,
+              listingAnchor: typeof anchor === "string" ? anchor : null,
+              listingAnchorDate: anchorDate as number | string | null,
+              listingPreviousNeighbor: typeof previousNeighbor === "string" ? previousNeighbor : null,
+            }
+          : {
+              listingSkip: null,
+              listingStartedAt: null,
+              listingAnchor: null,
+              listingAnchorDate: null,
+              listingPreviousNeighbor: null,
+            }
+        : {}),
+      ...(pendingIds.length > 0 ? { pendingIds } : {}),
+      ...(includeSuspects ? { suspectIds, suspectSeenIds } : {}),
+      ...(includeProofIds ? { suspectProofIds } : {}),
+      ...(proofAtByIdPresent ? { suspectProofAtById } : {}),
+      ...(proofAtValid && typeof rawProofAt === "string" ? { suspectProofAt: rawProofAt } : {}),
+    },
+  };
+}
+
+export async function recordFirefliesAttempt(
+  tcw: TinyCloudWeb,
+  attempt: FirefliesAttempt,
+): Promise<StoreResult<void>> {
+  const dedupedPending = attempt.pendingIds === undefined
+    ? undefined
+    : [...new Set(attempt.pendingIds.filter((id) => typeof id === "string" && id.length > 0))];
+  const dedupedSuspects = attempt.suspectIds === undefined
+    ? undefined
+    : [...new Set(attempt.suspectIds.filter((id) => typeof id === "string" && id.length > 0))];
+  const dedupedSeen = attempt.suspectSeenIds === undefined
+    ? undefined
+    : [...new Set(attempt.suspectSeenIds.filter((id) => typeof id === "string" && id.length > 0))];
+  const dedupedProofIds = attempt.suspectProofIds === undefined
+    ? undefined
+    : [...new Set(attempt.suspectProofIds.filter((id) => typeof id === "string" && id.length > 0))];
+  const pendingIdsForRecord = dedupedPending?.slice(0, FIREFLIES_MAX_PENDING_IDS);
+  const pendingIdSet = new Set(pendingIdsForRecord ?? []);
+  const rawProofAtById = attempt.suspectProofAtById;
+  const proofAtByIdRecord = rawProofAtById && typeof rawProofAtById === "object"
+    && !Array.isArray(rawProofAtById)
+    ? rawProofAtById as Record<string, unknown>
+    : null;
+  const proofAtByIdEntries = proofAtByIdRecord ? Object.entries(proofAtByIdRecord) : [];
+  const pendingProofEntries = proofAtByIdEntries.filter(([id]) => pendingIdSet.has(id));
+  const proofAtByIdInvalid = rawProofAtById !== undefined && (!proofAtByIdRecord
+    || pendingProofEntries.length > FIREFLIES_MAX_PENDING_IDS
+    || proofAtByIdEntries.some(([id, at]) => !id
+      || typeof at !== "string"
+      || !Number.isFinite(Date.parse(at))));
+  const proofAtByIdForRecord = rawProofAtById === undefined
+    ? undefined
+    : proofAtByIdInvalid
+      ? {}
+      : Object.fromEntries(pendingProofEntries.map(([id, at]) => [id, at as string]));
+  const hasCursor = attempt.listingSkip !== undefined
+    || attempt.listingStartedAt !== undefined
+    || attempt.listingAnchor !== undefined;
+  const cursorOverflow = ((dedupedPending?.length ?? 0) > FIREFLIES_MAX_PENDING_IDS
+    || (dedupedSuspects?.length ?? 0) > FIREFLIES_MAX_PENDING_IDS
+    || (dedupedSeen?.length ?? 0) > FIREFLIES_MAX_PENDING_IDS
+    || (dedupedProofIds?.length ?? 0) > FIREFLIES_MAX_PENDING_IDS
+    || proofAtByIdInvalid) && hasCursor;
+  const listingSkip = cursorOverflow ? null : attempt.listingSkip;
+  const listingStartedAt = cursorOverflow ? null : attempt.listingStartedAt;
+  const listingAnchor = cursorOverflow ? null : attempt.listingAnchor;
+  const listingAnchorDate = cursorOverflow ? null : attempt.listingAnchorDate;
+  const listingPreviousNeighbor = cursorOverflow ? null : attempt.listingPreviousNeighbor;
+  const res = await tcw.kv.put(firefliesAttemptKvKey(), JSON.stringify({
+    v: 1,
+    last_attempt_at: attempt.lastAttemptAt,
+    last_attempt_status: attempt.lastAttemptStatus,
+    ...(listingSkip === undefined ? {} : { listing_skip: listingSkip }),
+    ...(listingStartedAt === undefined ? {} : { listing_started_at: listingStartedAt }),
+    ...(listingAnchor === undefined ? {} : { listing_anchor: listingAnchor }),
+    ...(listingAnchorDate === undefined ? {} : { listing_anchor_date: listingAnchorDate }),
+    ...(listingPreviousNeighbor === undefined
+      ? {}
+      : { listing_previous_neighbor: listingPreviousNeighbor }),
+    ...(pendingIdsForRecord === undefined
+      ? {}
+      : { pending_ids: pendingIdsForRecord }),
+    ...(dedupedSuspects === undefined
+      ? {}
+      : { suspect_ids: dedupedSuspects.slice(0, FIREFLIES_MAX_PENDING_IDS) }),
+    ...(dedupedSeen === undefined
+      ? {}
+      : { suspect_seen_ids: dedupedSeen.slice(0, FIREFLIES_MAX_PENDING_IDS) }),
+    ...(dedupedProofIds === undefined
+      ? {}
+      : { suspect_proof_ids: dedupedProofIds.slice(0, FIREFLIES_MAX_PENDING_IDS) }),
+    ...(attempt.suspectProofAt === undefined
+      ? {}
+      : { suspect_proof_at: attempt.suspectProofAt }),
+    ...(proofAtByIdForRecord === undefined
+      ? {}
+      : { suspect_proof_at_by_id: proofAtByIdForRecord }),
+  }));
+  if (!res.ok) return fail(res.error, "recordFirefliesAttempt", storageScopeFor(tcw));
+  return { ok: true, data: undefined };
+}
 
 /** Connector-scoped Drive Changes cursor; it is not the UI sync timestamp. */
 export function driveCursorKvKey(source: string): string {
@@ -66,6 +322,8 @@ export interface StoreError {
   message: string;
   /** Raw underlying error object; it may contain credential-bearing URLs. Never log this directly. */
   cause?: unknown;
+  /** Known size of the stored audio when an upload cap rejected its manifest. */
+  sizeBytes?: number;
 }
 
 export type StoreResult<T> =
@@ -74,15 +332,15 @@ export type StoreResult<T> =
 
 type UnderlyingError = { code?: string; message?: string };
 
-function fail(err: UnderlyingError, context: string): { ok: false; error: StoreError } {
+function fail(err: UnderlyingError, context: string, scope: ReturnType<typeof storageScopeFor>): { ok: false; error: StoreError } {
   const code = typeof err.code === "string" && err.code.length > 0 ? err.code : "STORE_ERROR";
   const msg = typeof err.message === "string" && err.message.length > 0 ? err.message : "unknown";
-  reportStorageError(err);
+  reportStorageError(err, scope);
   return { ok: false, error: { code, message: storageSaveMessage(err) ?? `${context}: [${code}] ${msg}` } };
 }
 
 function store(tcw: TinyCloudWeb) {
-  return trackStorageWrites(tcw.sql.db(CONNECTORS_SQL_DB_NAME));
+  return trackStorageWrites(tcw.sql.db(CONNECTORS_SQL_DB_NAME), storageScopeFor(tcw));
 }
 
 function cellStr(row: unknown[], idx: number, fallback: string | null): string | null {
@@ -143,14 +401,14 @@ export async function ensureSchema(tcw: TinyCloudWeb, checkpoint: () => void = (
       `SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (${tables.map(() => "?").join(", ")})`,
       tables,
     );
-    if (!existingResult.ok) return fail(existingResult.error, "ensureSchema probe");
+    if (!existingResult.ok) return fail(existingResult.error, "ensureSchema probe", storageScopeFor(tcw));
     const existingRows = existingResult.data.rows as unknown as unknown[][];
     const existing = new Set(existingRows.map((row) => row[0]).filter((name): name is string => typeof name === "string"));
     for (const { sql, table } of CONNECTOR_SCHEMA) {
       if (existing.has(table)) continue;
       checkCallers();
       const created = await db.execute(sql);
-      if (!created.ok) return fail(created.error, `ensureSchema(${table})`);
+      if (!created.ok) return fail(created.error, `ensureSchema(${table})`, storageScopeFor(tcw));
     }
     checkCallers();
     if (memoKey) schemaReadySpaces.add(memoKey);
@@ -196,7 +454,7 @@ export async function getConnection(
       || msg.includes("not authorized")
       || msg.includes("no such table");
     if (notReadable) return { ok: true, data: null };
-    return fail(res.error, "getConnection");
+    return fail(res.error, "getConnection", storageScopeFor(tcw));
   }
   if (res.data.rows.length === 0) return { ok: true, data: null };
   const row = res.data.rows[0];
@@ -220,8 +478,9 @@ export interface UpdateSyncStateInput {
   lastSyncStatus: "ok" | "partial" | "error" | null;
   lastSyncError: string | null;
   itemCount: number;
+  /** Fireflies failures update status but must not move its last-success clock. */
+  preserveLastSyncedAt?: boolean;
 }
-
 export async function updateSyncState(
   tcw: TinyCloudWeb,
   input: UpdateSyncStateInput,
@@ -229,13 +488,14 @@ export async function updateSyncState(
   const schema = await ensureSchema(tcw);
   if (!schema.ok) return schema;
   const now = new Date().toISOString();
+  const preserve = input.connectorId === "fireflies" && input.preserveLastSyncedAt === true;
   const res = await store(tcw).execute(
     `INSERT INTO connector_state
       (connector_id, status, last_synced_at, last_sync_status, last_sync_error, item_count, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(connector_id) DO UPDATE SET
        status = excluded.status,
-       last_synced_at = excluded.last_synced_at,
+       last_synced_at = CASE WHEN ? = 1 THEN connector_state.last_synced_at ELSE excluded.last_synced_at END,
        last_sync_status = excluded.last_sync_status,
        last_sync_error = excluded.last_sync_error,
        item_count = excluded.item_count,
@@ -243,14 +503,15 @@ export async function updateSyncState(
     [
       input.connectorId,
       input.status,
-      input.lastSyncedAt,
+      preserve ? null : input.lastSyncedAt,
       input.lastSyncStatus,
       input.lastSyncError,
       input.itemCount,
       now,
+      preserve ? 1 : 0,
     ],
   );
-  if (!res.ok) return fail(res.error, "updateSyncState");
+  if (!res.ok) return fail(res.error, "updateSyncState", storageScopeFor(tcw));
   return { ok: true, data: undefined };
 }
 
@@ -267,7 +528,7 @@ export async function listKnownSourceIds(
     "SELECT source_id FROM connector_meeting WHERE source = ?",
     [source],
   );
-  if (!res.ok) return fail(res.error, "listKnownSourceIds");
+  if (!res.ok) return fail(res.error, "listKnownSourceIds", storageScopeFor(tcw));
   const ids: string[] = [];
   for (const row of res.data.rows) {
     const v = row[0];
@@ -286,7 +547,7 @@ export async function countMeetings(
     "SELECT COUNT(*) FROM connector_meeting WHERE source = ?",
     [source],
   );
-  if (!res.ok) return fail(res.error, "countMeetings");
+  if (!res.ok) return fail(res.error, "countMeetings", storageScopeFor(tcw));
   const row = res.data.rows[0];
   if (!row) return { ok: true, data: 0 };
   const n = row[0];
@@ -310,7 +571,7 @@ export async function insertMeeting(
     "SELECT id FROM connector_meeting WHERE source = ? AND source_id = ? LIMIT 1",
     [meeting.source, meeting.sourceId],
   );
-  if (!existing.ok) return fail(existing.error, "insertMeeting(dedupSelect)");
+  if (!existing.ok) return fail(existing.error, "insertMeeting(dedupSelect)", storageScopeFor(tcw));
   if (existing.data.rows.length > 0) return { ok: true, data: false };
 
   const now = new Date().toISOString();
@@ -350,7 +611,7 @@ async function insertMeetingRow(
       now,
     ],
   );
-  if (!res.ok) return fail(res.error, context);
+  if (!res.ok) return fail(res.error, context, storageScopeFor(tcw));
   return { ok: true, data: undefined };
 }
 
@@ -386,7 +647,7 @@ export async function getMeetingDatetimeStats(
     "SELECT source_id, started_at, metadata FROM connector_meeting WHERE source = ?",
     [source],
   );
-  if (!res.ok) return fail(res.error, "getMeetingDatetimeStats");
+  if (!res.ok) return fail(res.error, "getMeetingDatetimeStats", storageScopeFor(tcw));
   const stats: MeetingDatetimeStats = {
     rows: res.data.rows.length, dated: 0, sourceMeet: 0, sourceDocs: 0,
     sourceDriveCreatedApprox: 0, sourceUnavailable: 0,
@@ -488,7 +749,7 @@ export async function upsertMeeting(
      WHERE source = ? AND source_id = ? LIMIT 1`,
     [meeting.source, meeting.sourceId],
   );
-  if (!existing.ok) return fail(existing.error, "upsertMeeting(lookup)");
+  if (!existing.ok) return fail(existing.error, "upsertMeeting(lookup)", storageScopeFor(tcw));
 
   const now = new Date().toISOString();
   const row = existing.data.rows[0];
@@ -538,8 +799,10 @@ export async function upsertMeeting(
     }
   }
 
+  // A title the user typed is not replaced by the provider's.
+  const keptTitle = keepUserTitle({ title: cellStr(row, 2, null), metadata: existingMetadata }, { title: meeting.title, metadata: mergedMetadata });
   const updateValues = [
-    options.preserveExistingTitle ? cellStr(row, 2, meeting.title) : keepStr(meeting.title, 2),
+    options.preserveExistingTitle ? cellStr(row, 2, meeting.title) : keptTitle.title ?? keepStr(meeting.title, 2),
     acceptsIncomingDatetime ? meeting.startedAt : existingStartedAt,
     meeting.durationSecs !== null ? meeting.durationSecs : cellNum(row, 4, null),
     keepStr(meeting.organizerEmail, 5),
@@ -554,7 +817,7 @@ export async function upsertMeeting(
       : keepStr(meeting.summaryActionItems, 8),
     meeting.keywords !== null ? JSON.stringify(meeting.keywords) : cellStr(row, 9, null),
     keepStr(meeting.meetingType, 10),
-    JSON.stringify(mergedMetadata),
+    JSON.stringify(keptTitle.metadata),
   ];
   const currentValues = [
     cellStr(row, 2, null),
@@ -577,7 +840,7 @@ export async function upsertMeeting(
        WHERE id = ?`,
       [...updateValues, now, existingId],
     );
-    if (!upd.ok) return fail(upd.error, "upsertMeeting(update)");
+    if (!upd.ok) return fail(upd.error, "upsertMeeting(update)", storageScopeFor(tcw));
   }
 
   if (sentences.length > 0 || options.preserveTranscriptBody) {
@@ -594,10 +857,58 @@ export async function upsertMeeting(
 async function putMissingTranscriptBody(
   tcw: TinyCloudWeb, source: string, sourceId: string, sentences: FirefliesSentence[],
 ): Promise<StoreResult<void>> {
-  const existing = await tcw.kv.get(transcriptKvKey(source, sourceId));
+  const existing = await tcw.kv.get(transcriptKvKey(source, sourceId), { source: "network" });
   if (existing.ok) return { ok: true, data: undefined };
-  if (!/NOT_FOUND/i.test(existing.error.code ?? "")) return fail(existing.error, "putMissingTranscriptBody");
+  if (!/NOT_FOUND/i.test(existing.error.code ?? "")) return fail(existing.error, "putMissingTranscriptBody", storageScopeFor(tcw));
   return putTranscriptBody(tcw, source, sourceId, sentences);
+}
+export async function listTranscriptBodyIds(
+  tcw: TinyCloudWeb,
+  source: string,
+): Promise<StoreResult<Set<string>>> {
+  const prefix = `${CONNECTORS_KV_PREFIX}/${source}/transcript/`;
+  const ids = new Set<string>();
+  const cursors = new Set<string>();
+  let cursor: string | undefined;
+  try {
+    for (;;) {
+      const page = await tcw.kv.list({ path: prefix, source: "network", ...(cursor === undefined ? {} : { cursor }) });
+      if (!page.ok) return fail(page.error, "listTranscriptBodyIds", storageScopeFor(tcw));
+      if (!page.data || !Array.isArray(page.data.keys)) {
+        return fail({ code: "KV_LIST_MALFORMED", message: "invalid transcript listing" }, "listTranscriptBodyIds", storageScopeFor(tcw));
+      }
+      for (const key of page.data.keys) {
+        if (typeof key !== "string" || !key.startsWith(prefix)) {
+          return fail({ code: "KV_LIST_MALFORMED", message: "unexpected transcript key" }, "listTranscriptBodyIds", storageScopeFor(tcw));
+        }
+        ids.add(key.slice(prefix.length));
+      }
+      const metadata = page.data as typeof page.data & {
+        cursor?: unknown;
+        nextCursor?: unknown;
+        truncated?: unknown;
+      };
+      const next = metadata.nextCursor ?? metadata.cursor;
+      const more = metadata.truncated === true || typeof next === "string";
+      if (!more) return { ok: true, data: ids };
+      if (typeof next !== "string" || next.length === 0 || cursors.has(next)) {
+        return fail({ code: "KV_LIST_MALFORMED", message: "invalid transcript listing cursor" }, "listTranscriptBodyIds", storageScopeFor(tcw));
+      }
+      cursors.add(next);
+      cursor = next;
+    }
+  } catch {
+    return fail({ code: "KV_LIST_TRANSPORT", message: "listing rejected" }, "listTranscriptBodyIds", storageScopeFor(tcw));
+  }
+}
+
+/** Clear advisory continuation metadata without writing an attempt from disconnect. */
+export async function clearFirefliesAttempt(tcw: TinyCloudWeb): Promise<StoreResult<void>> {
+  const res = await tcw.kv.delete(firefliesAttemptKvKey());
+  if (!res.ok && !/NOT_FOUND/i.test(res.error.code ?? "")) {
+    return fail(res.error, "clearFirefliesAttempt", storageScopeFor(tcw));
+  }
+  return { ok: true, data: undefined };
 }
 
 export async function putTranscriptBody(
@@ -608,8 +919,8 @@ export async function putTranscriptBody(
 ): Promise<StoreResult<void>> {
   const key = transcriptKvKey(source, sourceId);
   const res = await tcw.kv.put(key, JSON.stringify(sentences));
-  if (!res.ok) return fail(res.error, "putTranscriptBody");
-  reportStorageWriteSucceeded();
+  if (!res.ok) return fail(res.error, "putTranscriptBody", storageScopeFor(tcw));
+  reportStorageWriteSucceeded(storageScopeFor(tcw));
   return { ok: true, data: undefined };
 }
 
@@ -620,7 +931,7 @@ export async function getDriveCursor(
   const res = await tcw.kv.get(driveCursorKvKey(source));
   if (!res.ok) {
     if (res.error?.code === "KV_NOT_FOUND") return { ok: true, data: null };
-    return fail(res.error, "getDriveCursor");
+    return fail(res.error, "getDriveCursor", storageScopeFor(tcw));
   }
   const value = res.data.data;
   if (typeof value !== "string" || value.length === 0) {
@@ -636,9 +947,132 @@ export async function putDriveCursor(
 ): Promise<StoreResult<void>> {
   if (!cursor) return { ok: false, error: { code: "STORE_INVALID_CURSOR", message: "putDriveCursor: cursor is required" } };
   const res = await tcw.kv.put(driveCursorKvKey(source), cursor);
-  if (!res.ok) return fail(res.error, "putDriveCursor");
-  reportStorageWriteSucceeded();
+  if (!res.ok) return fail(res.error, "putDriveCursor", storageScopeFor(tcw));
+  reportStorageWriteSucceeded(storageScopeFor(tcw));
   return { ok: true, data: undefined };
+}
+
+/** Resumable Drive snapshot checkpoint: the start token and the files already reconciled. */
+export interface GmeetDriveProgress {
+  startToken: string;
+  doneIds: string[];
+  /** ISO time of the last checkpoint; a stale one is ignored rather than resumed. */
+  savedAt: string;
+  /** Notes the reconcile had to go through; absent on a checkpoint an earlier build wrote. */
+  total?: number;
+}
+
+export function driveProgressKvKey(source: string): string {
+  return `${CONNECTORS_KV_PREFIX}/${source}/drive-snapshot-progress`;
+}
+
+export async function getDriveProgress(
+  tcw: TinyCloudWeb,
+  source: string,
+): Promise<StoreResult<GmeetDriveProgress | null>> {
+  const res = await tcw.kv.get(driveProgressKvKey(source));
+  if (!res.ok) {
+    if (res.error?.code === "KV_NOT_FOUND") return { ok: true, data: null };
+    return fail(res.error, "getDriveProgress", storageScopeFor(tcw));
+  }
+  const raw = res.data.data;
+  let parsed: unknown = raw;
+  if (typeof raw === "string") {
+    try { parsed = JSON.parse(raw); } catch { parsed = null; }
+  }
+  const value = parsed as Partial<GmeetDriveProgress> | null;
+  // A checkpoint is only an optimisation: anything unreadable restarts the snapshot.
+  if (!value || typeof value.startToken !== "string" || value.startToken.length === 0
+    || !Array.isArray(value.doneIds) || typeof value.savedAt !== "string") {
+    return { ok: true, data: null };
+  }
+  return {
+    ok: true,
+    data: {
+      startToken: value.startToken,
+      savedAt: value.savedAt,
+      doneIds: value.doneIds.filter((id): id is string => typeof id === "string"),
+      ...(typeof value.total === "number" && Number.isFinite(value.total) ? { total: value.total } : {}),
+    },
+  };
+}
+
+/** `null` clears the checkpoint (a snapshot that committed its cursor). */
+export async function putDriveProgress(
+  tcw: TinyCloudWeb,
+  source: string,
+  progress: GmeetDriveProgress | null,
+): Promise<StoreResult<void>> {
+  if (progress === null) {
+    const del = await tcw.kv.delete(driveProgressKvKey(source));
+    if (!del.ok && del.error?.code !== "KV_NOT_FOUND") return fail(del.error, "putDriveProgress(clear)", storageScopeFor(tcw));
+    return { ok: true, data: undefined };
+  }
+  const res = await tcw.kv.put(driveProgressKvKey(source), JSON.stringify(progress));
+  if (!res.ok) return fail(res.error, "putDriveProgress", storageScopeFor(tcw));
+  reportStorageWriteSucceeded(storageScopeFor(tcw));
+  return { ok: true, data: undefined };
+}
+
+/** Id-only Notes association lookup over rows read once; `size` is the row count. */
+export interface GmeetNotesIndex {
+  size: number;
+  find(fileId: string): GmeetNotesAssociation | null;
+}
+
+/**
+ * Every stored row of a source, read with ONE query, for in-memory Notes
+ * association matching. Replaces a LIKE scan per Drive document.
+ */
+export async function loadGmeetNotesIndex(
+  tcw: TinyCloudWeb,
+  source: string,
+): Promise<StoreResult<GmeetNotesIndex>> {
+  const schema = await ensureSchema(tcw);
+  if (!schema.ok) return schema;
+  // Identity and metadata only: a hit is re-read by findGmeetNotesAssociation before any
+  // write, so the (large) summary columns never need to travel.
+  const res = await store(tcw).query(
+    `SELECT id, source_id, metadata FROM connector_meeting
+     WHERE source = ?`,
+    [source],
+  );
+  if (!res.ok) return fail(res.error, "loadGmeetNotesIndex", storageScopeFor(tcw));
+  const rows = res.data.rows.flatMap((row): GmeetNotesAssociation[] => {
+    const id = cellStr(row, 0, null);
+    const sourceId = cellStr(row, 1, null);
+    if (id === null || sourceId === null) return [];
+    return [{ id, sourceId, title: null, startedAt: null, summaryOverview: null, summaryActionItems: null, metadata: parseJsonObject(row[2]) }];
+  });
+  return { ok: true, data: { size: rows.length, find: buildGmeetNotesIndex(rows) } };
+}
+
+/**
+ * Id-only association lookup over preloaded rows, with exactly the precedence of
+ * `findGmeetNotesAssociation(…, title = null, startedAt = null)`: the standalone
+ * source id, then `drive_file_id`, then a unique export-URI match.
+ */
+export function buildGmeetNotesIndex(rows: readonly GmeetNotesAssociation[]): (fileId: string) => GmeetNotesAssociation | null {
+  const bySource = new Map<string, GmeetNotesAssociation>();
+  const byDriveId = new Map<string, GmeetNotesAssociation>();
+  const byExport = new Map<string, GmeetNotesAssociation[]>();
+  for (const row of rows) {
+    if (!bySource.has(row.sourceId)) bySource.set(row.sourceId, row);
+    const driveId = row.metadata.drive_file_id;
+    if (typeof driveId === "string" && !byDriveId.has(driveId)) byDriveId.set(driveId, row);
+    if (!Array.isArray(row.metadata.docs_export_uris)) continue;
+    for (const uri of row.metadata.docs_export_uris) {
+      const id = typeof uri === "string" ? extractDriveFileId(uri) : null;
+      if (id === null) continue;
+      const list = byExport.get(id) ?? [];
+      if (!list.includes(row)) list.push(row);
+      byExport.set(id, list);
+    }
+  }
+  return (fileId) => {
+    const exportMatches = byExport.get(fileId);
+    return bySource.get(fileId) ?? byDriveId.get(fileId) ?? (exportMatches?.length === 1 ? exportMatches[0]! : null);
+  };
 }
 
 export interface GmeetNotesAssociation {
@@ -676,7 +1110,7 @@ export async function findGmeetNotesAssociation(
      WHERE source = ? AND (${terms.join(" OR ")})`,
     params,
   );
-  if (!res.ok) return fail(res.error, "findGmeetNotesAssociation");
+  if (!res.ok) return fail(res.error, "findGmeetNotesAssociation", storageScopeFor(tcw));
   const rows = res.data.rows.map((row) => ({
     id: cellStr(row, 0, null), sourceId: cellStr(row, 1, null), title: cellStr(row, 2, null),
     startedAt: cellStr(row, 3, null), summaryOverview: cellStr(row, 4, null),
@@ -727,7 +1161,7 @@ export async function attachGmeetNotes(
       acceptsIncomingDatetime ? notes.startedAt : row.startedAt,
       JSON.stringify(metadata), new Date().toISOString(), row.id],
   );
-  if (!res.ok) return fail(res.error, "attachGmeetNotes");
+  if (!res.ok) return fail(res.error, "attachGmeetNotes", storageScopeFor(tcw));
   return { ok: true, data: undefined };
 }
 
@@ -743,9 +1177,9 @@ export async function removeGmeetNotes(
   const row = found.data;
   if (row.sourceId === fileId) {
     const kv = await tcw.kv.delete(transcriptKvKey(source, fileId));
-    if (!kv.ok && kv.error?.code !== "KV_NOT_FOUND") return fail(kv.error, "removeGmeetNotes(kv)");
+    if (!kv.ok && kv.error?.code !== "KV_NOT_FOUND") return fail(kv.error, "removeGmeetNotes(kv)", storageScopeFor(tcw));
     const del = await store(tcw).execute("DELETE FROM connector_meeting WHERE id = ?", [row.id]);
-    if (!del.ok) return fail(del.error, "removeGmeetNotes(row)");
+    if (!del.ok) return fail(del.error, "removeGmeetNotes(row)", storageScopeFor(tcw));
     return { ok: true, data: "deleted" };
   }
   const owned = row.metadata.notes_owned_fields;
@@ -763,55 +1197,60 @@ export async function removeGmeetNotes(
     "UPDATE connector_meeting SET summary_overview = NULL, summary_action_items = NULL, metadata = ?, updated_at = ? WHERE id = ?",
     [JSON.stringify(metadata), new Date().toISOString(), row.id],
   );
-  if (!clear.ok) return fail(clear.error, "removeGmeetNotes(clear)");
+  if (!clear.ok) return fail(clear.error, "removeGmeetNotes(clear)", storageScopeFor(tcw));
   return { ok: true, data: "cleared" };
 }
 
 // ── Purge ───────────────────────────────────────────────────────────────
 
-/** List one SDK-defined complete prefix response, failing closed before mutation. */
+/** List and validate every SDK page before purge mutates any stored data. */
 async function listKvPrefix(
   tcw: TinyCloudWeb,
   path: string,
 ): Promise<StoreResult<string[]>> {
-  let page: Awaited<ReturnType<typeof tcw.kv.list>>;
-  try {
-    page = await tcw.kv.list({ path });
-  } catch {
-    return fail({ code: "KV_LIST_TRANSPORT", message: "listing rejected" }, `purgeConnector(list:${path})`);
-  }
-  if (!page || page.ok !== true) return fail(page?.error, `purgeConnector(list:${path})`);
-  if (!page.data || typeof page.data !== "object" || Array.isArray(page.data) || !Array.isArray(page.data.keys)) {
-    return fail({ code: "KV_LIST_MALFORMED", message: "invalid list envelope" }, `purgeConnector(list:${path})`);
-  }
-  // Purge intentionally makes one bounded list request per complete source
-  // prefix. A continuation cursor means the complete set is unknown, so fail
-  // before deleting any key rather than report a partial purge as success.
-  const cursor = (page.data as { cursor?: unknown }).cursor;
-  if (cursor !== undefined && cursor !== null) {
-    return fail({ code: "KV_LIST_MALFORMED", message: "unexpected list cursor" }, `purgeConnector(list:${path})`);
-  }
   const keys: string[] = [];
-  for (const key of page.data.keys) {
-    if (typeof key !== "string" || !key.startsWith(path)) {
-      return fail({ code: "KV_LIST_MALFORMED", message: "unexpected listed key" }, `purgeConnector(list:${path})`);
+  const seenCursors = new Set<string>();
+  let cursor: string | undefined;
+  while (true) {
+    let page: Awaited<ReturnType<typeof tcw.kv.list>>;
+    try {
+      page = await tcw.kv.list({ path, source: "network", ...(cursor ? { cursor } : {}) });
+    } catch {
+      return fail({ code: "KV_LIST_TRANSPORT", message: "listing rejected" }, `purgeConnector(list:${path})`, storageScopeFor(tcw));
     }
-    keys.push(key);
+    if (!page || page.ok !== true) return fail(page?.error, `purgeConnector(list:${path})`, storageScopeFor(tcw));
+    if (!page.data || typeof page.data !== "object" || Array.isArray(page.data) || !Array.isArray(page.data.keys)) {
+      return fail({ code: "KV_LIST_MALFORMED", message: "invalid list envelope" }, `purgeConnector(list:${path})`, storageScopeFor(tcw));
+    }
+    for (const key of page.data.keys) {
+      if (typeof key !== "string" || !key.startsWith(path)) {
+        return fail({ code: "KV_LIST_MALFORMED", message: "unexpected listed key" }, `purgeConnector(list:${path})`, storageScopeFor(tcw));
+      }
+      keys.push(key);
+    }
+    const metadata = page.data as { cursor?: unknown; nextCursor?: unknown; truncated?: unknown };
+    const next = metadata.nextCursor ?? metadata.cursor;
+    const more = metadata.truncated === true || typeof next === "string";
+    if (!more) return { ok: true, data: keys };
+    if (typeof next !== "string" || next.length === 0 || seenCursors.has(next)) {
+      return fail({ code: "KV_LIST_MALFORMED", message: "invalid list cursor" }, `purgeConnector(list:${path})`, storageScopeFor(tcw));
+    }
+    seenCursors.add(next);
+    cursor = next;
   }
-  return { ok: true, data: keys };
 }
 
 /**
- * Delete every source-scoped reconciled meeting and transcript KV record,
- * then the Drive cursor, SQL rows, and state row. Listing and deletion stay
- * sequential because TinyCloud drops concurrent responses on one space.
+ * Delete every source-scoped meeting and transcript KV record, Drive cursor,
+ * Fireflies sync-attempt record, SQL rows, and state row. Listing and deletion
+ * stay sequential because TinyCloud drops concurrent responses on one space.
  */
 export async function purgeConnector(
   tcw: TinyCloudWeb,
   source: string,
 ): Promise<StoreResult<void>> {
   if (source.length === 0 || source.includes("/")) {
-    return fail({ code: "KV_LIST_MALFORMED", message: "invalid connector source" }, "purgeConnector(source)");
+    return fail({ code: "KV_LIST_MALFORMED", message: "invalid connector source" }, "purgeConnector(source)", storageScopeFor(tcw));
   }
   const schema = await ensureSchema(tcw);
   if (!schema.ok) return schema;
@@ -824,6 +1263,22 @@ export async function purgeConnector(
   const transcriptKeys = await listKvPrefix(tcw, `${CONNECTORS_KV_PREFIX}/${source}/transcript/`);
   if (!transcriptKeys.ok) return transcriptKeys;
 
+  // TC-1152: a combined (exo-merged) meeting quotes the text of the originals it lists, so it
+  // must not outlive them. Runs BEFORE any original is touched and FAILS CLOSED: if the cascade
+  // fails the purge stops here with the originals intact, and a retry finds the same combined rows.
+  // A combined row whose members cannot be determined might quote this source, so it also stops
+  // the purge (COMBINED_MEMBERS_UNKNOWN); the user clears it by deleting that combined meeting.
+  // Purging exo-merged itself needs no cascade (a combined meeting is never a member) and deletes
+  // every combined row below anyway, so an unreadable one must not block it.
+  const cascade = source === EXO_MERGED_SOURCE ? null : await deleteCombinedReferencing(tcw, source);
+  if (cascade && !cascade.ok) return fail(cascade.error, "purgeConnector(combined)", storageScopeFor(tcw));
+  if (cascade?.ok && cascade.data.unverifiedIds.length > 0) {
+    return fail({
+      code: "COMBINED_MEMBERS_UNKNOWN",
+      message: `a combined meeting's members cannot be determined, so it may quote this source; delete it, then purge again (ids: ${cascade.data.unverifiedIds.join(", ")})`,
+    }, "purgeConnector(combined)", storageScopeFor(tcw));
+  }
+
   for (const key of [...meetingKeys.data, ...transcriptKeys.data]) {
     const del = await tcw.kv.delete(key);
     if (!del.ok) {
@@ -831,17 +1286,35 @@ export async function purgeConnector(
       // failure and must surface.
       const code = del.error?.code ?? "";
       if (code !== "KV_NOT_FOUND") {
-        return fail(del.error, `purgeConnector(kv:${key})`);
+        return fail(del.error, `purgeConnector(kv:${key})`, storageScopeFor(tcw));
       }
     }
   }
   const cursor = await tcw.kv.delete(driveCursorKvKey(source));
-  if (!cursor.ok && cursor.error?.code !== "KV_NOT_FOUND") return fail(cursor.error, "purgeConnector(cursor)");
+  if (!cursor.ok && cursor.error?.code !== "KV_NOT_FOUND") return fail(cursor.error, "purgeConnector(cursor)", storageScopeFor(tcw));
+  const progress = await tcw.kv.delete(driveProgressKvKey(source));
+  if (!progress.ok && progress.error?.code !== "KV_NOT_FOUND") return fail(progress.error, "purgeConnector(progress)", storageScopeFor(tcw));
+  if (source === "fireflies") {
+    const attempt = await tcw.kv.delete(firefliesAttemptKvKey());
+    if (!attempt.ok && attempt.error?.code !== "KV_NOT_FOUND") {
+      return fail(attempt.error, "purgeConnector(firefliesAttempt)", storageScopeFor(tcw));
+    }
+  }
   const res = await store(tcw).batch([
     { sql: "DELETE FROM connector_meeting WHERE source = ?", params: [source] },
     { sql: "DELETE FROM connector_state WHERE connector_id = ?", params: [source] },
   ]);
-  if (!res.ok) return fail(res.error, "purgeConnector(sql)");
+  if (!res.ok) return fail(res.error, "purgeConnector(sql)", storageScopeFor(tcw));
+  // A combine in another tab or device may have read a member before the purge and written after
+  // the first cascade. Its members are now gone, so a second (idempotent) pass removes it.
+  const late = source === EXO_MERGED_SOURCE ? null : await deleteCombinedReferencing(tcw, source);
+  if (late && !late.ok) return fail(late.error, "purgeConnector(combined-late)", storageScopeFor(tcw));
+  if (late?.ok && late.data.unverifiedIds.length > 0) {
+    return fail({
+      code: "COMBINED_MEMBERS_UNKNOWN",
+      message: `a combined meeting written during the purge has unknown members; delete it, then purge again (ids: ${late.data.unverifiedIds.join(", ")})`,
+    }, "purgeConnector(combined-late)", storageScopeFor(tcw));
+  }
   return { ok: true, data: undefined };
 }
 

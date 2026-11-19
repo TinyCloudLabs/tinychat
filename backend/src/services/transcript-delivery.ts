@@ -4,6 +4,7 @@ import { normalizeTranscriberTranscript, transcriberMeetingInSpace, writeTranscr
 import { DelegationCache, type DelegationStore } from "@tinyboilerplate/server";
 import { evictStoredGrantVerification, parseStoredGrant, verificationCacheKey, type VerifiedTranscriptWriter } from "../delegation-verify.js";
 import { activateVerifiedDelegation, DelegationActivationError } from "../portable-delegation.js";
+import { currentRequestId, runWithRequestId } from "../request-context.js";
 import { BackendStorageLane } from "./backend-storage-lane.js";
 import { TenantCoordinator } from "./calendar-autojoin-store.js";
 import { ExternalOperationLimiter } from "./google-calendar.js";
@@ -113,7 +114,8 @@ type WakeKind = "completed" | "observed";
  * (a full queue, a stopping worker): a webhook must answer retryably so ptx delivers it again.
  */
 export type WakeResult = "queued" | "ignored" | "dropped";
-type Item = { address: string; id: string; kind?: WakeKind };
+// Origin attribution lives only on the volatile wake queue, never in delivery/recovery state.
+type Item = { address: string; id: string; kind?: WakeKind; requestId?: string };
 type SweepAction = Item | { kind: "intent" };
 interface SweepCursor { addresses: string[]; ai: number; idOffset: number; pendingOffset: number; scanned: number; calls: number; }
 export interface TranscriptDeliveryOptions {
@@ -208,7 +210,7 @@ export class TranscriptDeliveryWorker {
     clearTimeout(this.timer);
     this.timer = undefined;
     await this.running;
-    await this.flush();
+    await runWithRequestId(undefined, () => this.flush());
     this.finishSweep();
   }
   async hasSchemaMissing(address: string): Promise<boolean> {
@@ -228,7 +230,7 @@ export class TranscriptDeliveryWorker {
   private schedule(delay: number): void {
     if (this.stopped) return;
     clearTimeout(this.timer);
-    this.timer = setTimeout(() => { this.timer = undefined; void this.sweep(); }, delay);
+    this.timer = runWithRequestId(undefined, () => setTimeout(() => { this.timer = undefined; void this.sweep(); }, delay));
     this.timer.unref?.();
   }
 
@@ -237,6 +239,7 @@ export class TranscriptDeliveryWorker {
    * index or delivery state, which a webhook also treats as work not recorded.
    */
   async wake(address: string, id: string, kind: WakeKind): Promise<WakeResult> {
+    const requestId = currentRequestId();
     address = address.toLowerCase();
     if (!this.options.eligibility(address)) return "ignored";
     if (!(await this.ownedIds(address)).includes(id)) return "ignored";
@@ -248,20 +251,21 @@ export class TranscriptDeliveryWorker {
     if (this.stopped) return "dropped";
     if (this.queue.length >= 1000) { this.overflow.dropped++; return "dropped"; }
     this.queued.add(key);
-    this.queue.push({ address, id, kind });
+    this.queue.push({ address, id, kind, requestId });
     this.pump();
     return "queued";
   }
 
   private pump(): void {
     if (this.running || this.stopped) return;
-    this.running = this.drain().catch(() => {
+    // The shared lifecycle must not retain the HTTP context that happened to start the drain.
+    this.running = runWithRequestId(undefined, () => this.drain().catch(() => {
       console.warn("[transcript-delivery] op=drain result=error");
       this.finishSweep();
     }).finally(() => {
       this.running = undefined;
       if (!this.stopped && (this.queue.length || this.sweepActive)) this.pump();
-    });
+    }));
   }
   private async drain(): Promise<void> {
     let wakeProcessed = 0;
@@ -269,6 +273,7 @@ export class TranscriptDeliveryWorker {
       while (!this.stopped && (this.queue.length || this.sweepActive)) {
         const useSweep = this.sweepActive && (this.queue.length === 0 || this.turn === "sweep");
         if (useSweep) {
+          // Recovery/sweep records have no origin ID; keep the pump's unattributed scope.
           const item = await this.nextSweepItem();
           if (!item) { await this.flush(); this.finishSweep(); continue; }
           this.turn = "wake";
@@ -277,7 +282,7 @@ export class TranscriptDeliveryWorker {
         }
         const item = this.queue.shift()!;
         this.turn = "sweep";
-        try { await this.process(item); }
+        try { await runWithRequestId(item.requestId, () => this.process(item)); }
         finally { this.queued.delete(`${item.address}:${item.id}`); }
         if (++wakeProcessed === 1000) {
           await this.flush();

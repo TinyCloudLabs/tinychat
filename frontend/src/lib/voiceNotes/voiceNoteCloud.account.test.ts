@@ -3,6 +3,7 @@
 import { describe, expect, test } from "bun:test";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
+import { memoryHoldStore } from "@/harness/memoryHoldStore";
 import { createPrivateCloudApi } from "../privateCloud";
 import { VoiceNoteAudioError } from "./voiceNoteAudio";
 import type { SessionStore } from "../session";
@@ -57,6 +58,7 @@ function setup(switchOn: "first-get" | "first-result", opts: { notFound?: boolea
     tcw: () => ({ did: "A" }) as TinyCloudWeb,
     cloud,
     consent: { get: () => true, set() {} },
+    holds: memoryHoldStore(),
     runNote: async (args) => {
       try {
         await cloud.transcribe({ sourceId: args.sourceId, capabilities: args.capabilities, allowed: args.allowed, loadAudio: async () => { throw new Error("unexpected audio read"); } }, args.report);

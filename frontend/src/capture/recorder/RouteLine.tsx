@@ -8,6 +8,7 @@ import type { CSSProperties } from "react";
 import { cn } from "@/lib/utils";
 import "./RouteLine.css";
 import { routeSourceName, TRANSCRIBER_NAME } from "./final/finalCopy";
+import type { AppPlatform } from "@/lib/platform";
 
 export interface RouteNode {
   label: string;
@@ -16,11 +17,11 @@ export interface RouteNode {
 
 /** A voice note from the phone app: straight to the space, through private cloud for its
  * transcript, or transcribed on this phone before either ever leaves it. */
-export function voiceNoteRoute(route: "off" | "on-device" | "private-cloud" | "assemblyai"): RouteNode[] {
-  const phone = routeSourceName("ios");
+export function voiceNoteRoute(route: "off" | "on-device" | "private-cloud" | "assemblyai", platform: AppPlatform = "ios"): RouteNode[] {
+  const phone = routeSourceName(platform);
   if (route === "assemblyai") return [
     { label: phone, kind: "source" },
-    { label: "Exo's server", kind: "processing" },
+    { label: "TinyCloud One's server", kind: "processing" },
     { label: TRANSCRIBER_NAME.assemblyai, kind: "processing" },
     { label: "Your space", kind: "destination" },
   ];
