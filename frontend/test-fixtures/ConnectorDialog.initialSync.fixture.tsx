@@ -417,6 +417,15 @@ afterEach(async () => {
 });
 afterAll(() => restoreImportDom());
 
+test("Meet reconnect finishes without purge-ledger or webhook-config requests", async () => {
+  await authorize();
+  await expectDone();
+  await until(() => !isGmeetNotesSyncInFlight(), "expected background Meet work to settle");
+  expect(memory.exchangeCalls).toBe(1);
+  expect(connectedCalls).toBe(1);
+  expect(memory.requests.filter(({ url }) => new URL(url).pathname.startsWith("/api/connectors/webhooks/"))).toEqual([]);
+});
+
 test("N/N remains visibly Finishing through the final count and state awaits before Done, and a stalled Drive never gates Done", async () => {
   const drive = memory.hold("drive-fetch");
   const count = memory.hold("count");

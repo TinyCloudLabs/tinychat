@@ -3,6 +3,7 @@ import express from "express";
 import {
   ConnectorWebhookLimiters,
   createConnectorWebhookCompanionRouter,
+  createConnectorPurgeRouter,
   respondToConnectorPurgeCheck,
   type ConnectorControl,
   type DisabledMarker,
@@ -52,7 +53,7 @@ class FakeControl implements ConnectorControl {
   async clearQuarantinedLedger(): Promise<void> {}
 }
 
-function createApp() {
+function createApp(webhooksEnabled = true) {
   const control = new FakeControl();
   const ops = control.ops;
   const tokens = { config: async () => null, mint: async () => { throw new Error("unused"); }, rotate: async () => { throw new Error("unused"); }, revoke: async () => {} };
@@ -69,6 +70,8 @@ function createApp() {
     next();
   });
   app.post("/api/connectors/webhooks/purge-check", (req, res) => respondToConnectorPurgeCheck(control, req, res));
+  app.use("/api/connectors/webhooks", createConnectorPurgeRouter({ control }));
+  if (webhooksEnabled) {
   app.use(
     "/api/connectors/webhooks",
     createConnectorWebhookCompanionRouter({
@@ -78,6 +81,7 @@ function createApp() {
       limiters: new ConnectorWebhookLimiters({ ipLimit: 0, tokenSuccessLimit: 0 }),
     }),
   );
+  }
   return { app, control };
 }
 
@@ -182,5 +186,18 @@ describe("sources that are still unknown", () => {
       expect(res.status).toBe(400);
       expect(await res.json()).toEqual({ error: "unknown_source" });
     });
+  });
+});
+
+test("Granola deletion and explicit restoration work with webhook delivery disabled", async () => {
+  const { app, control } = createApp(false);
+  await withServer(app, async (base) => {
+    expect((await send(base, "/purged", "POST", { source: "granola", ids: ["not_abc123"] })).status).toBe(204);
+    const blocked = await send(base, "/purge-check", "POST", { source: "granola", meetingId: "not_abc123", sourceTimestamp: BEFORE });
+    expect(await blocked.json()).toEqual({ blocked: true });
+    expect((await send(base, "/purged", "DELETE", { source: "granola" })).status).toBe(204);
+    const allowed = await send(base, "/purge-check", "POST", { source: "granola", meetingId: "not_abc123", sourceTimestamp: BEFORE });
+    expect(await allowed.json()).toEqual({ blocked: false });
+    expect(control.ops).not.toContain("read-disabled");
   });
 });

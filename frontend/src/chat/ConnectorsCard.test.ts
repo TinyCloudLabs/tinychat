@@ -364,17 +364,6 @@ describe("Google Meet OAuth connect variant", () => {
       expect(usage).toContain("sessionStore={sessionStore}");
     }
   });
-
-  test("reconnecting does not touch the purge ledger or the webhook config", () => {
-    const dialog = read("ConnectorDialog.tsx");
-    const connectHalf = dialog.slice(
-      dialog.indexOf("ConnectorConnectDialog"),
-      dialog.indexOf("ConnectorDisconnectDialogProps"),
-    );
-    expect(connectHalf).not.toContain("clearPurgeLedger");
-    expect(connectHalf).not.toContain("recordPurge");
-    expect(connectHalf).not.toContain("webhooks.");
-  });
 });
 
 // ── "Sync now" engine dispatch (WP-C) ────────────────────────────────
