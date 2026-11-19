@@ -194,6 +194,7 @@ import { setSignedIn } from "./lib/signedIn";
 import { NativeSignIn } from "./shell/NativeSignIn";
 import { useNativeSignIn } from "./shell/useNativeSignIn";
 import { lazyTab } from "./shell/lazyTab";
+import { closeAllEmbeds } from "./apps/liveEmbeds";
 
 // Every screen but Feed loads from its own chunk (TC-2882): the entry chunk carries boot and Feed only.
 const ChatWorkspace = lazyTab("Chat", () => import("./chat/ChatWorkspace").then((m) => m.ChatWorkspace));
@@ -206,6 +207,9 @@ const CaptureSurface = lazyTab("Recording", () => import("./capture/CaptureSurfa
 const MeetingsSection = lazyTab("Meetings", () => import("./chat/MeetingsSection").then((m) => m.MeetingsSection));
 const ConnectorsPage = lazyTab("Connectors", () => import("./chat/ConnectorsPage").then((m) => m.ConnectorsPage));
 const AppsPage = lazyTab("Apps", () => import("./home/AppsPage").then((m) => m.AppsPage));
+// One Apps: on only when VITE_ONE_APPS is exactly "true"; off is exactly the old Apps page.
+const ONE_APPS_ENABLED = import.meta.env.VITE_ONE_APPS === "true";
+const FramedAppScreen = lazyTab("Apps", () => import("./apps/FramedAppScreen").then((m) => m.FramedAppScreen));
 const SettingsPage = lazyTab("Settings", () => import("./chat/SettingsPage").then((m) => m.SettingsPage));
 const AboutPage = lazyTab("How it works", () => import("./chat/AboutPage").then((m) => m.AboutPage));
 const LAZY_SCREENS = [ChatWorkspace, CaptureSurface, MeetingsSection, ConnectorsPage, AppsPage, SettingsPage, AboutPage];
@@ -1337,6 +1341,8 @@ export function App() {
       }
       // Home answers held from a closed page get one bounded try while the session still works.
       if (tcw) await settleHeldAnswersForSignOut(tcw);
+      // Framed apps' grants are revoked while One's session can still sign the revocations (bounded).
+      if (ONE_APPS_ENABLED) await closeAllEmbeds();
       const openKeyClient = !nativeSession && !options.terminal ? openkeyRef.current : null;
       completeLocalSignOut(nativeFenceStored ? options.terminal ?? null : NATIVE_SIGN_OUT_WARNING,
         Boolean(options.terminal), webFenceToken);
@@ -1583,6 +1589,7 @@ export function App() {
               screen={screen}
               platform={platform}
               pendingMeetings={pendingMeetings}
+              accountDid={did}
               chat={
                 <ChatSlot account={LOCAL_VALIDATION ? null : did} tcw={tcw} active={screen.destination === "chat"} onReconnect={authAction} classic={
                 <ChatWorkspace
@@ -1630,7 +1637,9 @@ export function App() {
                 sessionStore={sessionStoreRef.current}
               /></HomeFeatureGate>}
               feed={LOCAL_VALIDATION ? null : <FeedView tcw={tcw} onReconnect={authAction} />}
-              apps={LOCAL_VALIDATION ? null : <AppsPage />}
+              apps={LOCAL_VALIDATION ? null : ONE_APPS_ENABLED && screen.appId
+                ? <FramedAppScreen appId={screen.appId} tcw={tcw} fallback={<AppsPage accountDid={did} pendingMeetings={pendingMeetings} />} />
+                : <AppsPage accountDid={did} pendingMeetings={pendingMeetings} />}
               settings={LOCAL_VALIDATION ? null : <SettingsPage
                 address={address}
                 did={did}

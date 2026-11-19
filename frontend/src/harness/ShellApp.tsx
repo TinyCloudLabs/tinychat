@@ -104,6 +104,7 @@ export function ShellApp({ platform, shim, state, probe = (_id, node) => node, c
       screen={screen}
       platform={platform}
       pendingMeetings={0}
+      accountDid={HARNESS_DID}
       chat={probe(
         "chat",
         <ChatSlot account={HARNESS_DID} tcw={shim.tcw} active={screen.destination === "chat"} classic={
@@ -155,7 +156,7 @@ export function ShellApp({ platform, shim, state, probe = (_id, node) => node, c
         <ConnectorsPage tcw={harnessTcw} backendUrl={backendUrl} sessionStore={harnessSessionStore} />,
       )}
       feed={probe("feed", <div className="grid h-full place-items-center text-body text-muted-foreground">Feed (harness placeholder)</div>)}
-      apps={probe("apps", <AppsPage />)}
+      apps={probe("apps", <AppsPage accountDid={HARNESS_DID} />)}
       settings={probe(
         "settings",
         <SettingsPage
