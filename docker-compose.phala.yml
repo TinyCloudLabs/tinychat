@@ -37,6 +37,7 @@ services:
       MCP_CHAT_GRANT_EXPIRED_ERROR: ${MCP_CHAT_GRANT_EXPIRED_ERROR:-}
       MCP_CHAT_GRANT_REJECTED_ERROR: ${MCP_CHAT_GRANT_REJECTED_ERROR:-}
       TAVILY_API_KEY: ${TAVILY_API_KEY:-}
+      GRANOLA_PROXY_ENABLED: ${GRANOLA_PROXY_ENABLED:-false}
       # Tiny bots (Home Main bot chat); off unless enabled, configured, and the account is listed.
       BOTS_ENABLED: ${BOTS_ENABLED:-false}
       BOTS_TEST_ACCOUNTS: ${BOTS_TEST_ACCOUNTS:-}
