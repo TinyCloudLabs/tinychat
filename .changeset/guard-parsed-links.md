@@ -3,4 +3,6 @@
 "@tinychat/backend": patch
 ---
 
-The secret guard now reads a one-tap approval link the way a browser opens it, so it refuses the link however it's written.
+The secret guard reads a one-tap approval link the way a browser opens it.
+
+Details: TC-3242
