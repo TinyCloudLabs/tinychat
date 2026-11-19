@@ -26,3 +26,21 @@ export type BotsErrorCode = keyof typeof BOTS_STRINGS.errors;
 // Monica, TC-2808, 2026-11-12. Keep the disclosure in one constant for copy review.
 export const HISTORY_EXPIRY_NOTICE = "Your TinyCloud permission expired on {expiryDate}. Main's chat history on our server will be deleted on {deletionDate}. Reconnect TinyCloud before then to save it to your space.";
 export const HISTORY_RECONNECT_LABEL = "Reconnect TinyCloud";
+
+// The bot view in the Chat slot (TC-3325). The same sentences as Main's chat above, with the bot's own name, so
+// for Main they read exactly as they do today.
+export const BOT_VIEW_STRINGS = {
+  messageBot: (name: string) => `Message ${name}`,
+  sendToBot: (name: string) => `Send to ${name}`,
+  historyFailed: (name: string) => `Couldn't load your earlier messages with ${name}.`,
+  errors: {
+    bot_unavailable: (name: string) => `${name} couldn't start.`,
+    model_unavailable: (name: string) => `${name}'s model isn't answering. Try again later.`,
+    busy: (name: string) => `${name} is still working on your last message. Send this one when it replies.`,
+    invalid: (name: string) => `That message is too long for ${name}. Shorten it to 8,000 characters or fewer.`,
+    signed_out: (name: string) => `Your session expired. Sign in again to talk to ${name}.`,
+    failed: (name: string) => `${name}'s reply didn't come through.`,
+  } satisfies Record<BotsErrorCode, (name: string) => string>,
+  /** For a bot other than Main: HISTORY_EXPIRY_NOTICE with the bot's name. */
+  historyExpiryNotice: (name: string) => HISTORY_EXPIRY_NOTICE.replace("Main's chat history", `${name}'s chat history`),
+} as const;
