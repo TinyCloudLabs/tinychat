@@ -56,6 +56,11 @@ export default defineConfig(({ command, mode }) => {
   return ({
   define: {
     __EXO_BUILD_INFO__: JSON.stringify({ ...exoBuildInfo, channel: exoBuildInfo.channel ?? (command === "serve" ? "dev" : undefined) }),
+    // One Apps origin lists (src/apps/registry.ts). Fail-closed: production unless `vite dev`, or a Cloudflare Pages
+    // build of exactly the feat/one-apps branch (its alias is the one preview origin the apps accept).
+    __ONE_APPS_BUILD_KIND__: JSON.stringify(
+      command === "serve" ? "dev" : process.env.CF_PAGES_BRANCH === "feat/one-apps" ? "preview" : "production",
+    ),
   },
   // The client-side TEE verifier (@redpill-ai/verifier + @peculiar/x509) is
   // Node-oriented and uses `Buffer` for base64↔bytes and ASN.1/cert parsing.
