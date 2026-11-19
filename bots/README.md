@@ -328,4 +328,4 @@ through `.github/workflows/deploy-backend-phala.yml`. `BOTS_ENABLED` defaults to
 
 ### Deploy order
 
-Deploy the bots service first, then the backend. Set `BOTS_ACCEPT_LEGACY_OWNER_HEADER=0` after both are deployed.
+Set `BOTS_ACCEPT_LEGACY_OWNER_HEADER=1`, deploy the bots service, then the backend, then set it to `0` and deploy the bots service again.
