@@ -8,7 +8,7 @@ import { SettingsIcon } from "lucide-react";
 import { CaptureDot } from "@/capture/recorder/final/CaptureDot";
 import { cn } from "@/lib/utils";
 import { useStorageReadOnly } from "@/lib/useStorageReadOnly";
-import { RailBotAvatars } from "@/bots/BotNav";
+import { RailBotAvatars } from "@/bots/lazyBotNav";
 import { NavBadge } from "./NavBadge";
 import { tabTarget } from "./navigation";
 import { PATHS } from "./routes";
