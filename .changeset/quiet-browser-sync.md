@@ -2,4 +2,6 @@
 "@tinychat/frontend": patch
 ---
 
-Stop local replica sync for a session after the SDK rejects its grant as non-compact UCAN; close the controller and avoid retries, while preserving other replica errors. The first prefix must finish syncing before the remaining fill starts, adding startup latency to ensure a session-wide grant refusal cannot fan out. Avoid querying missing connector-state tables during read-only settings checks on fresh spaces.
+If your sign-in method can't support this device's sync, sync now stops quietly for that session instead of retrying. Syncing everything to this device after sign-in can take a little longer to finish. A new account no longer logs connector errors on its first sign-in.
+
+Details: TC-2685
