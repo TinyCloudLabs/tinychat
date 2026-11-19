@@ -12,6 +12,7 @@ mock.module("../components/ui/responsive-sheet", () => ({
   ResponsiveSheet: (props: { open: boolean; title: ReactNode; children?: ReactNode; footer?: ReactNode }) =>
     props.open ? <div role="dialog"><h2>{props.title}</h2>{props.children}<div>{props.footer}</div></div> : null,
   ResponsiveSheetBody: (props: { children?: ReactNode }) => <div>{props.children}</div>,
+  ResponsiveSheetFooter: (props: { children?: ReactNode }) => <div>{props.children}</div>,
 }));
 const { MainChat } = await import("./MainChat");
 
