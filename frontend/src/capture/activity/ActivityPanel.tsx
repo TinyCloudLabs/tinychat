@@ -91,7 +91,7 @@ export function ActivityPanel(props: { items: readonly LibraryItem[]; views: Rea
           <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
             {notes.length === 0 ? <p className="py-8 text-callout text-muted-foreground">Nothing in progress. Everything is saved.</p> : grouped.map((group: { state: ActivityState; notes: ActivityNote[] }) => <section key={group.state} aria-label={group.state === "needs-attention" ? "Needs attention" : group.state === "running" ? "In progress" : group.state === "retrying" ? "Retrying" : "Waiting"}><h2 className="text-callout font-semibold text-muted-foreground">{group.state === "needs-attention" ? "Needs attention" : group.state === "running" ? "In progress" : group.state === "retrying" ? "Retrying" : "Waiting"} · {group.notes.reduce((sum, note) => sum + note.jobs.length, 0)}</h2>{group.notes.map(({ item, jobs, openLabel }) => <ActivityNoteSection key={`${group.state}:${item.sourceId}`} item={item} jobs={jobs} openLabel={openLabel} onOpenNote={openNote} onClose={close} />)}</section>)}
           </div>
-          {(props.platform === "ios" || props.platform === "android") && <p className="border-t border-border px-4 py-3 text-callout text-muted-foreground">Uploads continue while TinyCloud Home is open.</p>}
+          {(props.platform === "ios" || props.platform === "android") && <p className="border-t border-border px-4 py-3 text-callout text-muted-foreground">Uploads continue while TinyCloud One is open.</p>}
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>

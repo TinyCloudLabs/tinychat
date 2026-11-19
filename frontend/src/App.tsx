@@ -37,11 +37,15 @@ import { HomeFeatureAccessContext, HomeFeatureGate, useHomeFeatureAccessState, t
 import { deferOriginMove } from "./lib/originMove";
 import { enableWebCaptureEngine } from "./lib/voiceNotes/web/registerWebEngine";
 import { replicationConfigPatch, startReplicationFill, stopReplicationFill } from "./lib/replication/replicationClient";
-import { rememberReplicationPrincipal } from "./lib/replication/replicationCopyMarker";
+import { rememberReplicationPrincipal, replicationCopyMayExist } from "./lib/replication/replicationCopyMarker";
+import { isReplicationBindPaused } from "./lib/replication/replicationFlag";
 import { purgeReplicaCopyWhenOffOnce } from "./lib/replication/replicationOffPurge";
 import { replicationRestorePatch } from "./lib/replication/replicationRestore";
+import { readOnlyAccountProvider } from "./lib/replication/readOnlyAccountProvider";
 import { replicationPrincipalFor } from "./lib/replication/replicationOptIn";
-import { clientHasReplication, signOutReplicaAware } from "./lib/replication/replicationSignOut";
+import { clientHasReplication, REPLICA_PURGE_FAILED_WARNING, signOutReplicaAware } from "./lib/replication/replicationSignOut";
+import { wipeNativeReplicaOnSignOut } from "./lib/replication/nativeReplicaStore";
+import { removeLocalCopyNow } from "./lib/replication/replicationSwitch";
 import { clearAccountSignOutStorage } from "./lib/accountSignOutStorage";
 import { uploadRunner } from "./lib/audioUpload";
 import {
@@ -53,7 +57,6 @@ import {
 import { openkeyPasskeysSupported } from "./lib/openkeyPasskeys";
 import { useVisualViewportFit } from "./lib/useVisualViewport";
 import { createWebSignInPrefetch, WEB_APP_MANIFEST, type WebSignInPrefetch } from "./lib/webSignInPrefetch";
-import { ChatWorkspace } from "./chat/ChatWorkspace";
 import { ModelPicker, type ModelOption } from "./chat/ModelPicker";
 import { UsageIndicator } from "./chat/UsageIndicator";
 import { AgentAccessProvider } from "./chat/useAgentEnablement";
@@ -84,6 +87,7 @@ import { DEFAULT_CONTEXT_TOKENS } from "./chat/compaction";
 import { loadSharedThreadFromToken, readShareTokenFromLocation } from "./lib/tinychatShareLinks";
 import { bindSharedWithMe } from "./lib/sharedWithMe";
 import { historyPrefetch } from "./lib/historyPrefetch";
+import { noteScreen } from "./lib/localFirst/requestLanes";
 import {
   createBillingClient,
   type BillingClient,
@@ -102,16 +106,12 @@ import {
   type RefetchTrigger,
 } from "./lib/billingConfigPolicy";
 import { Button } from "@/components/ui/button";
-import { SettingsPage } from "./chat/SettingsPage";
-import { AboutPage } from "./chat/AboutPage";
-import { ConnectorsPage } from "./chat/ConnectorsPage";
 import { FeedView } from "./feed/FeedView";
-import { clearHeldAnswers } from "./feed/answerOutbox";
+import { clearAllHeldAnswers, clearHeldAnswers } from "./feed/answerOutbox";
+import { clearAllPostDrafts, clearPostDrafts } from "./feed/postAnswers";
 import { settleHeldAnswersForSignOut } from "./feed/feedStore";
-import { AppsPage } from "./home/AppsPage";
 import { HomeEntryGate } from "./home/HomeEntryGate";
 import { readCachedFirstScreen, readFirstScreen } from "./home/firstScreenStore";
-import { CaptureSurface } from "./capture/CaptureSurface";
 import { HeaderLiveChip } from "./capture/recorder/HeaderLiveChip";
 import { RecorderProvider } from "./capture/recorder/RecorderProvider";
 import { MicDeniedRecovery } from "./capture/recorder/MicDeniedRecovery";
@@ -128,13 +128,7 @@ import {
 } from "./shell/routes";
 import { appPlatform, PlatformContext, sdkUiPlatform } from "./lib/platform";
 import { useSizeClass } from "./lib/sizeClass";
-// W5 — the cohort meetings view. It renders NOTHING unless the backend's read
-// API answers for this address (dark flag / non-cohort = 404 = invisible), and
-// it needs neither the vault nor a connector key: a session is the whole
-// requirement, which is what makes the meetings readable on a device that has
-// never opened the app.
-import { MeetingsSection } from "./chat/MeetingsSection";
-// …and W6's headless counterpart: the same meetings copied into the user's OWN
+// …and W6's headless counterpart of MeetingsSection: the same meetings copied into the user's OWN
 // space whenever a session with an unlocked vault happens to be open. Separate
 // from the view on purpose — the view must keep working with no vault at all.
 import { BackendReconciler } from "./chat/BackendReconciler";
@@ -196,14 +190,30 @@ import { APP_NAME } from "./lib/homeSite";
 import { setSignedIn } from "./lib/signedIn";
 import { NativeSignIn } from "./shell/NativeSignIn";
 import { useNativeSignIn } from "./shell/useNativeSignIn";
+import { lazyTab } from "./shell/lazyTab";
+
+// Every screen but Feed loads from its own chunk (TC-2882): the entry chunk carries boot and Feed only.
+const ChatWorkspace = lazyTab("Chat", () => import("./chat/ChatWorkspace").then((m) => m.ChatWorkspace));
+const CaptureSurface = lazyTab("Recording", () => import("./capture/CaptureSurface").then((m) => m.CaptureSurface));
+// W5 — the cohort meetings view. It renders NOTHING unless the backend's read
+// API answers for this address (dark flag / non-cohort = 404 = invisible), and
+// it needs neither the vault nor a connector key: a session is the whole
+// requirement, which is what makes the meetings readable on a device that has
+// never opened the app.
+const MeetingsSection = lazyTab("Meetings", () => import("./chat/MeetingsSection").then((m) => m.MeetingsSection));
+const ConnectorsPage = lazyTab("Connectors", () => import("./chat/ConnectorsPage").then((m) => m.ConnectorsPage));
+const AppsPage = lazyTab("Apps", () => import("./home/AppsPage").then((m) => m.AppsPage));
+const SettingsPage = lazyTab("Settings", () => import("./chat/SettingsPage").then((m) => m.SettingsPage));
+const AboutPage = lazyTab("How it works", () => import("./chat/AboutPage").then((m) => m.AboutPage));
+const LAZY_SCREENS = [ChatWorkspace, CaptureSurface, MeetingsSection, ConnectorsPage, AppsPage, SettingsPage, AboutPage];
 
 // AppState and stateLabel live in lib/appState; re-exported for imports from App.
 export { stateLabel, type AppState } from "./lib/appState";
 
 const OPENKEY_SIGN_OUT_UNPROVEN_NOTE =
-  "You're signed out of TinyChat, but still signed in to OpenKey on this device. To use another account, sign out at openkey.so first.";
+  "You're signed out of TinyCloud One, but still signed in to OpenKey on this device. To use another account, sign out at openkey.so first.";
 const WEB_SIGN_OUT_RECOVERY_WARNING =
-  "You're signed out of TinyChat, but this device didn't finish clearing your session. Sign in again, then sign out.";
+  "You're signed out of TinyCloud One, but this device didn't finish clearing your session. Sign in again, then sign out.";
 const WEB_SIGN_OUT_ABORT_WARNING =
   "You're still signed in on this tab. If you reload or close it, you'll need to sign in again.";
 const OPENKEY_HOST = import.meta.env.VITE_OPENKEY_HOST || "https://openkey.so";
@@ -417,9 +427,15 @@ export function App() {
     voiceNotePipeline?.cancelAll();
     endStorageAccountSession();
     const accountSpace = tcw?.spaceId ?? spaceId;
-    if (accountSpace) clearHeldAnswers(accountSpace);
+    // The page-close outbox and post drafts hold the owner's words in this device's storage; both go with the account.
+    // A sign-out that finds no client and no space (a restart with a sign-out still pending) clears the answers device-wide.
+    if (accountSpace) { clearHeldAnswers(accountSpace); clearPostDrafts(accountSpace); } else { clearAllHeldAnswers(); clearAllPostDrafts(); }
     if (storedAddress) clearPersistedSession(storedAddress);
     if (accountDid && storedAddress) clearAccountSignOutStorage(accountDid, storedAddress);
+    // TC-2862: the phone app's native local copy goes with the account, whether or not this build uses it.
+    void wipeNativeReplicaOnSignOut(accountDid).then((result) => {
+      if (!result.ok) console.warn("[Replica] Could not delete the native local copy at sign-out", result.code);
+    });
     sessionStoreRef.current.clear();
     if (storedAddress) clearSendIntentsForOwner(storedAddress);
     clearTranscriptDelegationSchedule(storedAddress);
@@ -433,6 +449,14 @@ export function App() {
     if (tcw) {
       const cleanup = () => { try { tcw.cleanup(); } catch { /* Continue local cleanup. */ } };
       const localSignOut = signOutReplicaAware(tcw);
+      // Binding paused: this client never bound the saved copy, so its signOut cannot erase it. Erase it
+      // now instead of at the next page load (replicationOffPurge.ts); a failure warns like a bound
+      // sign-out's and leaves the retry markers for the next load.
+      if (!clientHasReplication(tcw) && isReplicationBindPaused() && replicationCopyMayExist()) {
+        void removeLocalCopyNow(tcw, undefined).then((outcome) => {
+          if (outcome.status === "failed") setError((current) => (current?.includes(REPLICA_PURGE_FAILED_WARNING) ? current : REPLICA_PURGE_FAILED_WARNING));
+        });
+      }
       void localSignOut
         .then((result) => {
           if (result && !result.ok) setError((current) => (current?.includes(result.message) ? current : result.message));
@@ -649,7 +673,8 @@ export function App() {
           logSession("restore", "done");
           restoreRetryAfterRef.current = 0;
           if (boot.verified) sessionStoreRef.current.setSession(boot.verified.token, boot.verified.expiresIn, boot.verified.address);
-          setNativeSessionActive(true);
+          // Restored, not signed in: the app lock applies as on any cold launch.
+          setNativeSessionActive(true, true);
           const nativeTcw = await startNativeRenewal(boot.tcw, boot.session, boot.openkey, boot.renewAt);
           if (!mayCommitRestore()) {
             nativeRenewalRef.current?.stop();
@@ -683,7 +708,7 @@ export function App() {
         if (boot.kind === "unavailable") {
           logSession("restore", "unavailable");
           restoreRetryAfterRef.current = Date.now() + 15_000;
-          setError("TinyCloud Home can't connect right now. Your recordings stay on this phone.");
+          setError(`${APP_NAME} can't connect right now. Your recordings stay on this phone.`);
           setState("offline");
           return;
         }
@@ -764,8 +789,10 @@ export function App() {
             uiPlatform: sdkUiPlatform(),
             // Restore the base request. Any previously signed connector grants remain in the saved session.
             manifest: appPlatform() === "web" ? webSignInManifest(manifest, [], storedAddress) : manifest,
-            // ON: the replication option plus a read-only account provider (so the restore has a signer
-            // to ask); OFF: {} (no provider, exactly as without replication). See replicationRestore.ts.
+            // A restored session needs a signer for `tcw.session()` to exist (Main's history and the transcript
+            // writer read it); this one answers the stored account and never signs. Details: TC-3019
+            provider: readOnlyAccountProvider(storedAddress),
+            // Local copy ON adds the replication option (and the same provider). See replicationRestore.ts.
             ...(LOCAL_VALIDATION ? {} : await replicationRestorePatch(storedAddress)),
           }),
       });
@@ -1343,6 +1370,12 @@ export function App() {
   const isReady = state === "ready" && tcw !== null;
   useEffect(() => { setSignedIn(isReady); }, [isReady]);
   useEffect(() => { void bindSharedWithMe(isReady && !LOCAL_VALIDATION ? tcw : null); }, [isReady, tcw]);
+  // The other screens' chunks load once the signed-in shell has shown Feed, so opening one doesn't wait. A failed
+  // load is reported by the screen itself when it is opened: it loads again, or offers a reload when the browser may
+  // have kept the failed chunk (src/shell/lazyTab.tsx).
+  useEffect(() => {
+    if (isReady) for (const screen of LAZY_SCREENS) screen.preload().catch(() => {});
+  }, [isReady]);
   // The offline state still HOLDS a session, so its "Try again" re-runs the
   // restore. Only a settled signed-out state (no restorable session) starts the
   // full OpenKey sign-in.
@@ -1365,6 +1398,11 @@ export function App() {
   // /chat/*: the shell toggles surfaces, so the chat runtime, drafts and
   // streams survive every move between them.
   const screen = useMemo(() => screenFor(location.pathname), [location.pathname]);
+  // An open that lands on the Feed holds the other startup reads until the
+  // Feed's first network load renders; any other screen releases them
+  // (requestLanes.ts, Feed first).
+  const onFeed = !LOCAL_VALIDATION && !shareToken && screen.destination === "feed";
+  useEffect(() => { noteScreen(onFeed); }, [onFeed]);
   const showSettings = !LOCAL_VALIDATION && screen.id === "settings";
   // Retired addresses (/chat/meetings, /chat/connectors/library) still resolve:
   // they are replaced with their new home below.
@@ -1632,7 +1670,7 @@ export function App() {
       {/* Face ID / passcode over everything in the phone app (TC-2738); the app keeps loading underneath. */}
       <AppLockGate />
       {captureFailClosed && <div role="alert" className="fixed inset-x-4 bottom-4 z-[60] rounded-xl border bg-card p-4 shadow-lg">
-        Recordings are being kept unassigned until TinyCloud Home can update this phone.
+        Recordings are being kept unassigned until TinyCloud One can update this phone.
         <button type="button" className="ml-3 underline" onClick={() => void signOut()}>Retry</button>
       </div>}
       <MicDeniedRecovery enabled={platform === "android" && voiceNotesInApp && capabilities.micDeniedPresentation && !LOCAL_VALIDATION && (authSettledSignedOut || state === "offline")} onContinue={nativeSignInFlow.micRecoveryContinue} />
@@ -1793,7 +1831,7 @@ function SharedThreadSurface(props: { token: string; onClose: () => void }) {
         <div className="min-w-0">
           <div className="text-xs font-medium text-muted-foreground">Shared chat</div>
           <h1 className="truncate text-sm font-semibold text-foreground">
-            {thread?.title ?? "TinyCloud Home"}
+            {thread?.title ?? APP_NAME}
           </h1>
         </div>
         <Button type="button" variant="outline" size="sm" onClick={props.onClose}>
@@ -1855,7 +1893,7 @@ function SharedMessage({ item }: { item: StoredMessageItem }) {
         <span className="flex size-5 items-center justify-center rounded-full bg-primary text-[10px] font-semibold text-primary-foreground">
           T
         </span>
-        <span>TinyCloud Home</span>
+        <span>TinyCloud One</span>
       </div>
       <div className="whitespace-pre-wrap break-words pl-7 text-sm leading-relaxed text-foreground">
         {text}

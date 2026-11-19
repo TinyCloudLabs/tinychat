@@ -23,6 +23,8 @@ import {
 } from "./model";
 import { NextRequestRail } from "./NextRequestRail";
 import { resetRequestAttempt } from "./requestContext";
+import { useOriginMoveDeferral } from "@/shell/OriginMoveNotice";
+import { canvasDraftHoldsMove } from "@/shell/unsavedWork";
 
 interface ConversationCanvasProps {
   tcw: TinyCloudWeb;
@@ -38,7 +40,7 @@ interface ConversationCanvasProps {
  */
 export const CANVAS_SWITCH_WARNING =
   "Canvas keeps this chat's other branches and pinned documents in your TinyCloud space. "
-  + "When you continue from an earlier message, the chat itself changes to that branch everywhere: here, on your other devices, in other TinyCloud Home app versions and in share links. "
+  + "When you continue from an earlier message, the chat itself changes to that branch everywhere: here, on your other devices, in other TinyCloud One app versions and in share links. "
   + "The other branches stay in Canvas. Pinned documents are sent with your next messages but never become part of the chat or its share links.";
 
 export function ConversationCanvas({ tcw, threadId, editingDisabled = false, onSwitchToChat, onCanvasChange }: ConversationCanvasProps) {
@@ -48,6 +50,8 @@ export function ConversationCanvas({ tcw, threadId, editingDisabled = false, onS
   const [switching, setSwitching] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
+  // A document written here and not yet saved lives only in this page: a held tinycloud.chat page does not move under it.
+  useOriginMoveDeferral(canvasDraftHoldsMove(draft));
   const [documentTitle, setDocumentTitle] = useState("Canvas note");
   const [flowNodes, setFlowNodes] = useState<Node[]>([]);
 

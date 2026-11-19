@@ -12,6 +12,14 @@
  * A background request already running is not cancelled; a foreground request
  * therefore waits behind at most one background request at the node (the node
  * serves only a few SQL connections at once: TC-2016).
+ *
+ * Feed first: an open that lands on the Feed holds the other startup reads
+ * (`afterFeedFirst`) and the whole background lane until the Feed's first
+ * network load has rendered (`markFeedFresh`), the user is no longer on the
+ * Feed (`noteScreen`), or `FEED_FIRST_MAX_MS` after the first held work. The
+ * node serves about 4 SQL calls per account at once, so startup reads issued
+ * beside the Feed's queue the Feed behind them. Released work runs in the lane
+ * it asks for, as before.
  */
 
 export type Lane = "foreground" | "background";
@@ -21,6 +29,8 @@ export const FOREGROUND_QUIET_MS = 400;
 const BACKGROUND_CONCURRENCY = 1;
 /** A foreground call stops holding background work after this long, answered or not. */
 export const FOREGROUND_COUNT_MAX_MS = 20_000;
+/** The longest startup work waits for the Feed's first network load. */
+export const FEED_FIRST_MAX_MS = 3_000;
 
 interface QueuedWork {
   work: () => Promise<unknown>;
@@ -35,6 +45,55 @@ let pumpTimer: ReturnType<typeof setTimeout> | undefined;
 const backgroundQueue: QueuedWork[] = [];
 const idleWaiters = new Set<() => void>();
 let visibilityHooked = false;
+/** undecided until App names the first screen; holding while a Feed landing waits; then released for good. */
+let feedFirst: "undecided" | "holding" | "released" = "undecided";
+let feedFirstCap: ReturnType<typeof setTimeout> | undefined;
+const feedFirstWaiters: Array<() => void> = [];
+
+/** The first held work starts the cap, so nothing waits on a Feed that never reports. */
+function armFeedFirstCap(): void {
+  feedFirstCap ??= setTimeout(releaseFeedFirst, FEED_FIRST_MAX_MS);
+}
+
+function releaseFeedFirst(): void {
+  if (feedFirst === "released") return;
+  feedFirst = "released";
+  clearTimeout(feedFirstCap);
+  feedFirstCap = undefined;
+  const held = feedFirstWaiters.splice(0);
+  for (const resolve of held) resolve();
+  // The released reads start a microtask later: open a quiet gap now so
+  // background work cannot start ahead of them. With nothing released there
+  // is nothing to wait for.
+  if (held.length > 0) lastForegroundEnd = Date.now();
+  pump();
+}
+
+/**
+ * App: the screen the user is looking at, on every change. The first call
+ * decides whether this open lands on the Feed; any later screen other than the
+ * Feed releases held work, since what the user looks at never waits.
+ */
+export function noteScreen(onFeed: boolean): void {
+  if (feedFirst === "undecided" && onFeed) feedFirst = "holding";
+  else if (!onFeed) releaseFeedFirst();
+}
+
+/** The Feed's first network load rendered (or failed): held startup work goes now. Idempotent. */
+export function markFeedFresh(): void {
+  releaseFeedFirst();
+}
+
+/**
+ * Startup work that must not compete with the Feed's first load: runs `work`
+ * at once unless this open landed on the Feed and the Feed has not reported
+ * yet, else once it does (or the user leaves the Feed, or the cap passes).
+ */
+export function afterFeedFirst<T>(work: () => Promise<T>): Promise<T> {
+  if (feedFirst !== "holding") return work();
+  armFeedFirstCap();
+  return new Promise<void>((resolve) => { feedFirstWaiters.push(resolve); }).then(work);
+}
 
 function pump(): void {
   if (!visibilityHooked && typeof document !== "undefined") {
@@ -44,6 +103,10 @@ function pump(): void {
   clearTimeout(pumpTimer);
   pumpTimer = undefined;
   if (typeof document !== "undefined" && document.visibilityState === "hidden") return; // visibilitychange pumps again
+  if (feedFirst === "holding") {
+    if (backgroundQueue.length > 0 || idleWaiters.size > 0) armFeedFirstCap();
+    return; // releaseFeedFirst pumps again
+  }
   if (foregroundActive > 0) return; // the last foreground request pumps again
   const wait = lastForegroundEnd + FOREGROUND_QUIET_MS - Date.now();
   if (wait > 0) {
@@ -137,4 +200,8 @@ export function resetLanesForTests(): void {
   backgroundQueue.length = 0;
   idleWaiters.clear();
   visibilityHooked = false;
+  feedFirst = "undecided";
+  clearTimeout(feedFirstCap);
+  feedFirstCap = undefined;
+  feedFirstWaiters.length = 0;
 }

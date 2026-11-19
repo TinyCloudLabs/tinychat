@@ -158,11 +158,20 @@ async function stored(responses: FeedDatabase): Promise<FeedResponse[]> {
 /** A first visit creates the space's registry; the agent registers; then the owner opens Home and sees the card. */
 async function firstVisit(context: BrowserContext, space: string, agent: Awaited<ReturnType<typeof seed>>) {
   const setup = await open(context, space);
-  await setup.getByText("Updates and decisions from your agents.").or(setup.getByText("No cards yet")).first().waitFor();
+  // The heading's line shows while loading too; the empty card shows once the store has loaded.
+  await setup.locator("#home-empty-title").waitFor();
+  // The page reads before it creates: on a new space the registry exists once its first read has failed and the batch has run.
+  const registry = database(space, HOME_FEED_RESOURCE);
+  for (let attempt = 0; attempt < 200 && !registry.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'feed_agents'").get(); attempt++) await Bun.sleep(50);
   agent.register();
   await setup.close();
   const page = await open(context, space);
-  await page.getByRole("button", { name: /^Go/ }).waitFor();
+  // Needs you opens its first card (TC-2941); a card shown as a row opens with a tap.
+  const go = page.getByRole("button", { name: /^Go/ });
+  const row = page.getByRole("button", { name: /Book the Thursday flight\?/ });
+  await Promise.race([go.waitFor(), row.waitFor()]);
+  if (!(await go.isVisible())) await row.click();
+  await go.waitFor();
   return page;
 }
 
@@ -204,10 +213,11 @@ describe("Home's page-close outbox in Chromium", () => {
 
       await reopened.evaluate(() => window.harness.mount());
       await until(reopened, () => Object.keys(window.harness.outbox()).length === 0, "the outbox to empty");
-      // An answered card leaves "Needs you": it is under All.
-      await reopened.getByRole("button", { name: "All", exact: true }).click();
+      // An answered card leaves "Needs action": it is under All, short until tapped open.
+      await reopened.getByRole("radio", { name: "All", exact: true }).check();
+      await reopened.getByRole("button", { name: /Book the Thursday flight\?/ }).click();
       await reopened.getByText("You chose Go.").waitFor();
-      await reopened.getByText("Sent when you opened Home again.").waitFor();
+      await reopened.getByText("Sent when you opened TinyCloud One again.").waitFor();
       const rows = await stored(agent.responses);
       console.log(`[${when}] stored after reopening: ${JSON.stringify(rows.map((row) => [row.responseId, row.kind, row.choiceId]))}`);
       expect(rows.map((row) => [row.responseId, row.kind, row.choiceId])).toEqual([[entry.responseId, "answer", "go"]]);

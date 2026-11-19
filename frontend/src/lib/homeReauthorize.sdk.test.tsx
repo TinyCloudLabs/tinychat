@@ -18,16 +18,24 @@ const account = privateKeyToAccount("0x59c6995e998f97a5a0044966f0945389dc9e86dae
 const ADDRESS = account.address;
 const HOST = "http://127.0.0.1:9";
 const base = WEB_APP_MANIFEST;
-const config = { autoCreateSpace: false, includeAccountRegistryPermissions: false as const, tinycloudHosts: [HOST] };
+const config = { autoCreateSpace: false, includeAccountRegistryPermissions: false as const, tinycloudHosts: [HOST], tinycloudRegistryUrl: HOST, newUserHost: HOST };
 
 let restoreDom: () => void;
 let data: Map<string, string>;
 const realFetch = globalThis.fetch;
 beforeAll(() => {
-  globalThis.fetch = (async (input: RequestInfo | URL) => new Response(
-    String(input).endsWith("/info") ? JSON.stringify({ protocol: 1, version: "test" }) : "{}",
-    { status: 200, headers: { "content-type": "application/json" } },
-  )) as typeof fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(typeof input === "string" || input instanceof URL ? String(input) : input.url);
+    const path = decodeURIComponent(url.pathname).toLowerCase();
+    if ((init?.method ?? "GET") === "GET" && url.origin === HOST && (
+      path === "/v2/locations/" + ADDRESS.toLowerCase() ||
+      path === "/v1/locations/did:pkh:eip155:1:" + ADDRESS.toLowerCase()
+    )) return Response.json({ error: "location record not found" }, { status: 404 });
+    return new Response(
+      String(input).endsWith("/info") ? JSON.stringify({ protocol: 1, version: "test", nodeId: "did:key:z6MkvSbonMn1Xgewrb4EsbjTmvMT8T9Y3PTb5PcnQcQUbzjc" }) : "{}",
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+  }) as typeof fetch;
 });
 afterAll(() => { globalThis.fetch = realFetch; });
 beforeEach(() => {

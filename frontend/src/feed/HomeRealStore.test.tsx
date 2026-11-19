@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, setSystemTime, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, setSystemTime, spyOn, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import { act } from "react";
@@ -12,6 +12,7 @@ import { prepareSitrepImport, type PrepareSitrepImportInput } from "@tinyboilerp
 import { installDom } from "@/test/dom";
 import { installFakeClock, type FakeClock } from "@/test/fakeClock.fixture";
 import { useLocalThreadStorage } from "../lib/threadStore";
+import { resetLanesForTests } from "../lib/localFirst/requestLanes";
 import { clearHeldAnswers, HELD_ANSWER_TTL_MS, heldAnswerKey, type HeldAnswer } from "./answerOutbox";
 import { ANSWER_FAILED_COPY, ANSWER_HELD_COPY, HELD_ANSWER_COPY, NOT_SENT_COPY } from "./cardKit";
 import { createHomeFeedSource, HOME_FEED_RESOURCE, SIGN_OUT_FLUSH_MS, settleHeldAnswersForSignOut } from "./feedStore";
@@ -19,6 +20,8 @@ import { FeedViewEntries } from "./FeedView";
 import { archivePreparedOwnerBundle } from "./sitrepArchiveStore";
 import { SITREP_NOW, syntheticRecord } from "./sitrep.fixtures";
 import type { HomeFeedSnapshot, HomeFeedSource } from "./feedStoreTypes";
+import { plainConversation } from "./CardConversation";
+import { storedRevisionEntry } from "./replyOnlyRevision";
 
 // Every interaction below runs through the real Home store (createHomeFeedSource) over SQLite,
 // with only the browser SDK transport substituted, as in HomeReview.test.tsx.
@@ -31,6 +34,8 @@ let restoreDom: (() => void) | undefined;
 let clock: FakeClock;
 beforeEach(() => {
   restoreDom = installDom();
+  // Opening a card scrolls it into view, which asks the browser's bare matchMedia about reduced motion.
+  Object.assign(globalThis, { matchMedia: window.matchMedia.bind(window) });
   clock = installFakeClock();
   setSystemTime(new Date(SITREP_NOW));
 });
@@ -40,8 +45,10 @@ afterEach(async () => {
   window.localStorage.clear();
   clock.restore();
   restoreDom?.(); restoreDom = undefined;
+  Reflect.deleteProperty(globalThis, "matchMedia");
   for (const database of databases.splice(0)) database.close();
   setSystemTime();
+  resetLanesForTests();
 });
 
 function value<T>(result: { ok: boolean; data?: T; error?: { message?: string } }): T {
@@ -170,25 +177,46 @@ function typedCard(record: Record<string, unknown>, cardId = "typed-card"): Feed
   return { cardId, revision: 1, issuanceId: `${cardId}-issuance`, kind: String(record.kind), needsResponse: true, title: String(record.title), body: String(record.body), urgency: 2, createdAt: String(record.createdAt), payload: { sitrep: { version: 1, record } } };
 }
 
-async function mount(transport: ReturnType<typeof observedSource>) {
+/** Mounts Home and, unless `open` is false, taps every card open. */
+async function mount(transport: ReturnType<typeof observedSource>, { open = true } = {}) {
   const host = document.createElement("div"); document.body.append(host);
   const root = createRoot(host); roots.add(root);
   await act(async () => root.render(<FeedViewEntries realEntries={[]} source={transport.source} />));
   await transport.settle();
+  if (open) await openCards(host);
   return { host, async unmount() { await act(async () => root.unmount()); roots.delete(root); host.remove(); } };
+}
+/**
+ * Opens every short card in place, as the owner taps a card before answering it (cards are compact by default).
+ * Answered cards still waiting or done sit in the Pending card at the end (Sam, 11-13): it is opened first.
+ */
+async function openCards(host: HTMLElement) {
+  const pending = host.querySelector<HTMLButtonElement>('section[aria-label="Pending"] > button[aria-expanded="false"]');
+  if (pending) await act(async () => pending.click());
+  for (const item of host.querySelectorAll<HTMLElement>("li[data-card-key]")) {
+    if (item.querySelector("article")) continue;
+    const toggle = item.querySelector<HTMLButtonElement>('button[aria-expanded="false"]');
+    if (toggle) await act(async () => toggle.click());
+  }
 }
 function button(scope: ParentNode, label: string): HTMLButtonElement {
   const found = [...scope.querySelectorAll<HTMLButtonElement>("button")].find((candidate) => candidate.textContent?.trim() === label);
   if (!found) throw new Error(`Expected visible action: ${label}`);
   return found;
 }
+/** A question's options (AnswerOptions): a fieldset whose legend is "Choose an option". */
+function answers(scope: ParentNode): HTMLFieldSetElement | undefined {
+  return [...scope.querySelectorAll<HTMLFieldSetElement>("fieldset")].find((node) => node.querySelector("legend")?.textContent === "Choose an option");
+}
+/** An option row's button (never the Undo laid over a waiting row). */
 function option(scope: ParentNode, label: string): HTMLButtonElement {
-  const found = [...scope.querySelectorAll<HTMLButtonElement>('[role="group"][aria-label="Answers"] button')].find((candidate) => candidate.textContent?.includes(label));
+  const found = [...answers(scope)?.querySelectorAll<HTMLButtonElement>("button[aria-pressed]") ?? []].find((candidate) => candidate.textContent?.includes(label));
   if (!found) throw new Error(`Expected option: ${label}`);
   return found;
 }
+/** An open card, by the title it shows. */
 function card(scope: ParentNode, title: string): HTMLElement {
-  const found = scope.querySelector<HTMLElement>(`article[aria-label="${title}"]`);
+  const found = [...scope.querySelectorAll<HTMLElement>("article")].find((node) => [...node.children].some((child) => child.tagName === "H2" && child.textContent === title));
   if (!found) throw new Error(`Expected card: ${title}`);
   return found;
 }
@@ -292,9 +320,9 @@ test("a written answer is the response text on a plain card", async () => {
   const owner = await ownerFixture(); const agent = await owner.agent("written-plain");
   value(await publishFeedCard(agent.output, plainCard()));
   const transport = owner.fresh(); const view = await mount(transport);
-  await act(async () => button(view.host, "Answer in your own words").click());
-  await enter(view.host, "Your answer", "Only if the aisle seat is free");
-  await act(async () => button(view.host, "Send answer").click());
+  await act(async () => option(view.host, "Your own answer").click());
+  await enter(view.host, "Your own answer", "Only if the aisle seat is free");
+  await act(async () => button(view.host, "Send").click());
   await countdown(transport);
   const rows = await stored(agent);
   expect(rows).toHaveLength(1);
@@ -305,9 +333,9 @@ test("a written answer is sitrep.answer text on a typed card", async () => {
   const owner = await ownerFixture(); const agent = await owner.agent("written-typed");
   value(await publishFeedCard(agent.output, typedCard(syntheticRecord("ask"))));
   const transport = owner.fresh(); const view = await mount(transport);
-  await act(async () => button(view.host, "Answer in your own words").click());
-  await enter(view.host, "Your answer", "Neither: wait for the review");
-  await act(async () => button(view.host, "Send answer").click());
+  await act(async () => option(view.host, "Your own answer").click());
+  await enter(view.host, "Your own answer", "Neither: wait for the review");
+  await act(async () => button(view.host, "Send").click());
   await countdown(transport);
   const rows = await stored(agent);
   expect(rows).toHaveLength(1);
@@ -320,12 +348,15 @@ test("a comment on a plain card is a message to the publishing agent and doesn't
   const owner = await ownerFixture(); const agent = await owner.agent("comment-plain");
   value(await publishFeedCard(agent.output, plainCard()));
   const transport = owner.fresh(); const view = await mount(transport);
-  await act(async () => button(view.host, "Comment").click());
-  await enter(view.host, "Tell Test agent something", "Window seat, please");
+  await act(async () => button(view.host, "Leave a comment for Test agent").click());
+  await enter(view.host, "Leave a comment for Test agent", "Window seat, please");
   await click(transport, button(view.host, "Send"));
+  // A comment waits out the same 5 s undo as an answer before it is written.
+  expect(await stored(agent)).toEqual([]);
+  await countdown(transport);
   const rows = await stored(agent);
   expect(rows).toHaveLength(1);
-  expect(header(rows[0]!)).toEqual({ responseId: rows[0]!.responseId, cardId: "plain-card", revision: 1, issuanceId: "plain-issuance-1", kind: "message", text: "Window seat, please", createdAt: SITREP_NOW });
+  expect(header(rows[0]!)).toEqual({ responseId: rows[0]!.responseId, cardId: "plain-card", revision: 1, issuanceId: "plain-issuance-1", kind: "message", text: "Window seat, please", createdAt: COMMITTED });
   expect(option(view.host, "Go").disabled).toBe(false);
   expect(view.host.textContent).toContain("1 needs you.");
 });
@@ -334,9 +365,10 @@ test("a comment on a typed card without an owner route is a sitrep thread messag
   const owner = await ownerFixture(); const agent = await owner.agent("comment-typed");
   value(await publishFeedCard(agent.output, typedCard(syntheticRecord("ask"))));
   const transport = owner.fresh(); const view = await mount(transport);
-  await act(async () => button(view.host, "Comment").click());
-  await enter(view.host, "Tell Test agent something", "Which one is cheaper?");
+  await act(async () => button(view.host, "Leave a comment for Test agent").click());
+  await enter(view.host, "Leave a comment for Test agent", "Which one is cheaper?");
   await click(transport, button(view.host, "Send"));
+  await countdown(transport);
   const rows = await stored(agent);
   expect(rows.map((row) => row.kind)).toEqual(["message"]);
   const payload = value(await readFeedResponsePayload(agent.responses, rows[0]!));
@@ -350,9 +382,10 @@ test("a comment on an owner-routed card goes only to its approved, connected rec
     { recipientKey: "known-owner", legacyName: "SyntheticOwner", runtimeTarget: { agentId: "00000000-0000-4000-8000-000000000001", provider: "omp" } },
   ]);
   const transport = owner.fresh(); const view = await mount(transport);
-  await act(async () => button(view.host, "Comment").click());
-  await enter(view.host, "Tell SyntheticOwner something", "Go ahead after lunch.");
+  await act(async () => button(view.host, "Leave a comment for SyntheticOwner").click());
+  await enter(view.host, "Leave a comment for SyntheticOwner", "Go ahead after lunch.");
   await click(transport, button(view.host, "Send"));
+  await countdown(transport);
   const rows = await stored(agent);
   expect(rows.map((row) => row.kind)).toEqual(["message"]);
   expect(value(await readFeedResponsePayload(agent.responses, rows[0]!))).toMatchObject({ type: "sitrep.thread", data: { text: "Go ahead after lunch.",
@@ -363,9 +396,10 @@ test("a comment for a recipient that isn't connected yet is held privately and s
   const owner = await ownerFixture(); const agent = await owner.agent("comment-held");
   await routedCard(owner, agent, { ...syntheticRecord("ask"), owner: "MissingOfficer" }, [{ recipientKey: "missing-officer", legacyName: "MissingOfficer" }]);
   const transport = owner.fresh(); const view = await mount(transport);
-  await act(async () => button(view.host, "Comment").click());
-  await enter(view.host, "Write a comment", "Keep this until MissingOfficer connects.");
+  await act(async () => button(view.host, "Leave a comment for MissingOfficer").click());
+  await enter(view.host, "Leave a comment for MissingOfficer", "Keep this until MissingOfficer connects.");
   await click(transport, button(view.host, "Send"));
+  await countdown(transport);
   expect(await stored(agent)).toEqual([]);
   const reloaded = await owner.fresh().source.load();
   expect(reloaded.entries[0]?.owner?.heldNotes).toEqual([expect.objectContaining({ intendedRecipient: "MissingOfficer", text: "Keep this until MissingOfficer connects." })]);
@@ -400,11 +434,15 @@ test("a plain card's agent replies are read across stored revisions, each timed 
   const snapshot: HomeFeedSnapshot = await transport.source.load();
   expect(snapshot.entries.map((entry) => entry.state.card.revision)).toEqual([3]);
   expect(snapshot.historicalEntries ?? []).toEqual([]);
+  // Each reply is timed by the revision that first carried it (the chat draws them as one run under the first time).
+  const entry = snapshot.entries[0]!;
+  expect(plainConversation(entry, (entry.earlierRevisions ?? []).map((earlier) => storedRevisionEntry(entry.source, earlier))).map((line) => [line.at, line.text]))
+    .toEqual([[T2, "Two seats held."], [T3, "Aisle is free too."]]);
   const view = await mount(transport);
-  await act(async () => view.host.querySelector<HTMLButtonElement>('button[aria-label="2 comments. Open comments"]')!.click());
-  const comments = [...card(view.host, "Book the Thursday flight?").querySelectorAll('section[aria-label="Comments"] li')]
-    .map((item) => [item.querySelector("time")?.getAttribute("datetime"), item.textContent?.includes("Two seats held.") ? "first" : "second"]);
-  expect(comments).toEqual([[T2, "first"], [T3, "second"]]);
+  // Opened (mount taps the card), its conversation shows both replies in order, timed from the first.
+  const thread = card(view.host, "Book the Thursday flight?").querySelector('section[aria-label="Comments"]')!;
+  expect(thread.querySelector("time")?.getAttribute("datetime")).toBe(T2);
+  expect([...thread.querySelectorAll("li p")].map((node) => node.textContent).filter((text) => text === "Two seats held." || text === "Aisle is free too.")).toEqual(["Two seats held.", "Aisle is free too."]);
 });
 
 test("a countdown on an untouched revision 1 re-targets to a reply-only revision 2 the store returns alone", async () => {
@@ -449,6 +487,150 @@ test("any other revision during the countdown refuses the commit: nothing is wri
   expect(view.host.textContent).toContain("This card changed. Answer the newer version.");
 });
 
+/** A tap as a pointer makes it: pointerdown, then click. */
+async function tap(element: HTMLElement) {
+  await act(async () => { element.dispatchEvent(new window.PointerEvent("pointerdown", { bubbles: true })); element.click(); });
+}
+
+test("Needs you's first card, open without a tap: any other revision during the countdown refuses the commit too, nothing is written", async () => {
+  const owner = await ownerFixture(); const agent = await owner.agent("stale-full");
+  value(await publishFeedCard(agent.output, plainCard()));
+  // Not tapped open first (that alone binds the card): Needs you shows its first card open, and the tap on Go must bind it.
+  const transport = owner.fresh(); const view = await mount(transport, { open: false });
+  await act(async () => view.host.querySelector<HTMLInputElement>('[role="radiogroup"][aria-label="Feed view"] input[value="needs-action"]')!.click());
+  await tap(option(card(view.host, "Book the Thursday flight?"), "Go"));
+  await clock.advance(2000);
+  value(await publishFeedCard(agent.output, plainCard({ revision: 2, issuanceId: "plain-issuance-2", body: "Only the 11:40 is left." })));
+  await transport.notify();
+  await countdown(transport, 3000);
+  expect(await stored(agent)).toEqual([]);
+  expect(outboxKeys()).toEqual([]);
+  expect(view.host.textContent).toContain("This card changed. Answer the newer version.");
+});
+
+/** The bottom bar a card's Drop, Acknowledge or later time shows while it counts, by what it says. */
+function undoBar(host: HTMLElement, text: string): HTMLElement | undefined {
+  return [...host.querySelectorAll<HTMLElement>('p[role="status"]')].find((node) => node.querySelector("button")?.textContent === "Undo" && node.textContent?.startsWith(`${text} · `));
+}
+
+test("Drop this card writes one feed.drop message once the bar's 5 s pass, held in the outbox until it lands, and the card is in History as Dropped", async () => {
+  const owner = await ownerFixture(); const agent = await owner.agent("drop");
+  value(await publishFeedCard(agent.output, plainCard()));
+  const transport = owner.fresh(); const view = await mount(transport);
+  const gate = Promise.withResolvers<void>();
+  owner.faults.writeGate = gate.promise;
+  await act(async () => button(card(view.host, "Book the Thursday flight?"), "Drop this card").click());
+  // Gone at once, with the bar counting; nothing is written or held yet.
+  expect(view.host.textContent).not.toContain("Book the Thursday flight?");
+  expect(undoBar(view.host, "Dropped")?.textContent).toBe("Dropped · 5sUndo");
+  await countdown(transport, 4750);
+  expect(outboxKeys()).toEqual([]);
+  expect(await stored(agent)).toEqual([]);
+  await countdown(transport, 250);
+  expect(undoBar(view.host, "Dropped")).toBeUndefined();
+  // The count ended: the drop is held while its write is in flight.
+  expect(outboxKeys()).toHaveLength(1);
+  expect(JSON.parse(window.localStorage.getItem(outboxKeys()[0]!)!)).toMatchObject({ sourceId: "drop", cardId: "plain-card", revision: 1, issuanceId: "plain-issuance-1", ownerAction: { type: "feed.drop" } });
+  expect(await stored(agent)).toEqual([]);
+  gate.resolve();
+  await transport.settle();
+  const rows = await stored(agent);
+  expect(rows.map((row) => [row.kind, row.text, row.payloadType])).toEqual([["message", "Dropped", "feed.drop"]]);
+  expect(header(rows[0]!)).toEqual({ responseId: rows[0]!.responseId, cardId: "plain-card", revision: 1, issuanceId: "plain-issuance-1", kind: "message", text: "Dropped", createdAt: COMMITTED });
+  expect(value(await readFeedResponsePayload(agent.responses, rows[0]!))).toEqual({ type: "feed.drop", version: 1, data: {} });
+  expect(outboxKeys()).toEqual([]);
+  // Out of Needs you and Updates, a row under All's Done today, and in History marked Dropped.
+  await transport.notify();
+  const done = view.host.querySelector<HTMLElement>('section[aria-label="Done today"]');
+  expect(done?.textContent).toContain("Book the Thursday flight?");
+  expect(done?.querySelector("article")).toBeNull();
+  for (const section of ["Needs you", "Updates"]) expect(view.host.querySelector(`section[aria-label="${section}"]`)?.textContent ?? "").not.toContain("Book the Thursday flight?");
+  await click(transport, view.host.querySelector<HTMLInputElement>('[role="radiogroup"][aria-label="Feed view"] input[value="history"]')!);
+  const history = view.host.querySelector<HTMLElement>('section[aria-label="History"]');
+  const item = [...history?.querySelectorAll<HTMLElement>("li[data-card-key]") ?? []].find((node) => node.textContent?.includes("Book the Thursday flight?"));
+  expect(item?.textContent).toContain("Dropped");
+});
+
+test("Acknowledge on a plain update: the card stays away while its write is in flight after the bar's 5 s, then is acknowledged in History (it came back as an open row in production)", async () => {
+  const owner = await ownerFixture(); const agent = await owner.agent("ack");
+  value(await publishFeedCard(agent.output, plainCard({ kind: "update", needsResponse: false, title: "The 09:10 flight was rebooked", body: "Seat 14C, no change to the fare.", choices: [] })));
+  const transport = owner.fresh(); const view = await mount(transport);
+  const listed = () => ["Needs you", "Updates"].some((section) => (view.host.querySelector(`section[aria-label="${section}"]`)?.textContent ?? "").includes("The 09:10 flight was rebooked"));
+  // The write is slow, as it is over a real node: the bar's count ends while it is still in flight.
+  const gate = Promise.withResolvers<void>();
+  owner.faults.writeGate = gate.promise;
+  await act(async () => button(card(view.host, "The 09:10 flight was rebooked"), "Acknowledge").click());
+  expect(view.host.textContent).not.toContain("The 09:10 flight was rebooked");
+  expect(undoBar(view.host, "Acknowledged")?.textContent).toBe("Acknowledged · 5sUndo");
+  await countdown(transport, 5000);
+  expect(undoBar(view.host, "Acknowledged")).toBeUndefined();
+  expect(await stored(agent)).toEqual([]);
+  // The bar is gone and nothing is saved yet: the card must not be back among the open ones.
+  expect(listed()).toBe(false);
+  await countdown(transport, 1500);
+  expect(listed()).toBe(false);
+  gate.resolve();
+  await transport.settle();
+  const rows = await stored(agent);
+  expect(rows.map((row) => [row.kind, row.text, row.payloadType])).toEqual([["message", "Acknowledged", "feed.acknowledge"]]);
+  // Saved: still away from the live list, and in History marked Acknowledged.
+  await transport.notify();
+  await countdown(transport, 2000);
+  expect(listed()).toBe(false);
+  await click(transport, view.host.querySelector<HTMLInputElement>('[role="radiogroup"][aria-label="Feed view"] input[value="history"]')!);
+  const history = view.host.querySelector<HTMLElement>('section[aria-label="History"]');
+  const item = [...history?.querySelectorAll<HTMLElement>("li[data-card-key]") ?? []].find((node) => node.textContent?.includes("The 09:10 flight was rebooked"));
+  expect(item?.textContent).toContain("Acknowledged");
+});
+
+test("Drop this card on a plain card stays away while its write is in flight after the bar's 5 s", async () => {
+  const owner = await ownerFixture(); const agent = await owner.agent("drop-flight");
+  value(await publishFeedCard(agent.output, plainCard()));
+  const transport = owner.fresh(); const view = await mount(transport);
+  const gate = Promise.withResolvers<void>();
+  owner.faults.writeGate = gate.promise;
+  await act(async () => button(card(view.host, "Book the Thursday flight?"), "Drop this card").click());
+  await countdown(transport, 5000);
+  await countdown(transport, 1500);
+  expect(undoBar(view.host, "Dropped")).toBeUndefined();
+  expect(view.host.textContent).not.toContain("Book the Thursday flight?");
+  gate.resolve();
+  await transport.settle();
+  expect((await stored(agent)).map((row) => row.payloadType)).toEqual(["feed.drop"]);
+  expect(view.host.textContent).not.toContain("That didn't reach the agent.");
+});
+
+test("Acknowledge whose write is refused brings the card back with the sentence that it didn't reach the agent", async () => {
+  const owner = await ownerFixture(); const agent = await owner.agent("ack-refused");
+  value(await publishFeedCard(agent.output, plainCard({ kind: "update", needsResponse: false, title: "The 09:10 flight was rebooked", body: "Seat 14C, no change to the fare.", choices: [] })));
+  const transport = owner.fresh(); const view = await mount(transport);
+  owner.faults.refuseResponseWrites = true;
+  await act(async () => button(card(view.host, "The 09:10 flight was rebooked"), "Acknowledge").click());
+  await countdown(transport, 5000);
+  await transport.settle();
+  expect(await stored(agent)).toEqual([]);
+  expect(view.host.textContent).toContain("That didn't reach the agent.");
+  expect(view.host.textContent).toContain("The 09:10 flight was rebooked");
+  owner.faults.refuseResponseWrites = false;
+});
+
+test("Undo on the Drop bar writes nothing, holds nothing, and puts the card back", async () => {
+  const owner = await ownerFixture(); const agent = await owner.agent("drop-undo");
+  value(await publishFeedCard(agent.output, plainCard()));
+  const transport = owner.fresh(); const view = await mount(transport);
+  await act(async () => button(card(view.host, "Book the Thursday flight?"), "Drop this card").click());
+  await countdown(transport, 2000);
+  await click(transport, button(undoBar(view.host, "Dropped")!, "Undo"));
+  expect(undoBar(view.host, "Dropped")).toBeUndefined();
+  expect(option(card(view.host, "Book the Thursday flight?"), "Go").disabled).toBe(false);
+  // Past the bar's time, and past a page close that sends whatever still counts: nothing.
+  await countdown(transport, 10_000);
+  expect(await closePage(transport)).toEqual([]);
+  expect(await stored(agent)).toEqual([]);
+  expect(outboxKeys()).toEqual([]);
+  expect(view.host.textContent).toContain("1 needs you.");
+});
+
 test("closing the page mid-countdown sends at once and holds only the pending answer until the write is confirmed", async () => {
   const owner = await ownerFixture(); const agent = await owner.agent("close-send");
   value(await publishFeedCard(agent.output, plainCard()));
@@ -458,7 +640,8 @@ test("closing the page mid-countdown sends at once and holds only the pending an
   const held = await closePage(transport);
   expect(held).toHaveLength(1);
   const entry = JSON.parse(held[0]!) as Record<string, unknown>;
-  expect(entry).toEqual({ sourceId: "close-send", cardId: "plain-card", revision: 1, issuanceId: "plain-issuance-1", responseId: entry.responseId, choiceId: "go", at: "2026-10-29T12:00:02.000Z" });
+  // The agent's name and the option's label are kept beside the answer: a "Not sent" notice needs them once no card is left.
+  expect(entry).toEqual({ sourceId: "close-send", cardId: "plain-card", revision: 1, issuanceId: "plain-issuance-1", responseId: entry.responseId, choiceId: "go", agent: expect.any(String), choiceLabel: "Go", at: "2026-10-29T12:00:02.000Z" });
   expect(outboxKeys()).toEqual([]);
   const rows = await stored(agent);
   expect(rows.map((row) => [row.responseId, row.choiceId])).toEqual([[entry.responseId, "go"]]);
@@ -506,6 +689,7 @@ test("a held answer whose card was replaced is not sent at the next launch: the 
   expect(answered.textContent).toContain(`Not sent: Go. ${NOT_SENT_COPY.changed}`);
   expect(option(answered, "Go").disabled).toBe(true);
   await click(next, button(answered, "Show the newer version"));
+  await openCards(relaunched.host);
   const newer = card(relaunched.host, "Book the Friday flight?");
   expect(newer.textContent).not.toContain("Not sent");
   expect(option(newer, "Go").disabled).toBe(false);
@@ -531,10 +715,200 @@ test("a held answer whose request the agent closed is not sent: the closed card 
   const closed = card(relaunched.host, String(record.title));
   const line = closed.querySelector('[role="alert"]')?.textContent;
   expect(line).toBe("Not sent: Quick option.");
-  expect(closed.textContent).toContain("Closed");
-  expect(closed.querySelector('[role="group"][aria-label="Answers"]')).toBeNull();
-  expect(closed.querySelector('textarea[aria-label="Your answer"]')).toBeNull();
-  expect([...closed.querySelectorAll("button")].some((node) => ["Fine, go ahead", "Answer in your own words", "Send answer"].includes(node.textContent?.trim() ?? ""))).toBe(false);
+  expect(closed.textContent).toContain("Expired");
+  expect(answers(closed)).toBeUndefined();
+  expect(closed.querySelector('textarea[aria-label="Your own answer"]')).toBeNull();
+  expect([...closed.querySelectorAll("button")].some((node) => ["Fine, go ahead", "Your own answer", "Send"].includes(node.textContent?.trim() ?? ""))).toBe(false);
+});
+
+/** A page whose held-answer flush starts only after `before` opens, and hands its result over only after `after` opens (a slow node). */
+function withSlowFlush(transport: ReturnType<typeof observedSource>, { before, after }: { before?: Promise<void>; after?: Promise<void> }) {
+  return { ...transport, source: { ...transport.source, flushHeldAnswers: async () => { await before; const outcomes = await transport.source.flushHeldAnswers!(); await after; return outcomes; } } };
+}
+
+test("a held answer whose card the agent closed while the answered card was open on screen still says Not sent (production: it said nothing)", async () => {
+  const owner = await ownerFixture(); const agent = await owner.agent("lost-retained");
+  const record = syntheticRecord("ask");
+  const asked = typedCard(record);
+  value(await publishFeedCard(agent.output, asked));
+  const first = owner.fresh(); const view = await mount(first);
+  await act(async () => option(view.host, "Quick option").click());
+  owner.faults.refuseResponseWrites = true;
+  await closePage(first);
+  await view.unmount();
+  owner.faults.refuseResponseWrites = false;
+
+  // The reopened page paints the card as the owner left it, and the owner has it open before the flush has read the
+  // revision the agent has since closed: that card stays on screen as the answered one.
+  const next = owner.fresh();
+  const flushStarts = Promise.withResolvers<void>();
+  const relaunched = await mount(withSlowFlush(next, { before: flushStarts.promise }));
+  await act(async () => option(card(relaunched.host, String(record.title)), "Quick option").dispatchEvent(new FocusEvent("focusin", { bubbles: true })));
+  value(await publishFeedCard(agent.output, { ...asked, revision: 2, issuanceId: "typed-card-closed", payload: { sitrep: { version: 1, record: { ...record, status: "expired", expiredAt: SITREP_NOW } } } }));
+  await next.notify();
+  expect(relaunched.host.textContent).toContain("A newer version of this card arrived");
+  flushStarts.resolve();
+  await next.settle();
+  expect(await stored(agent)).toEqual([]);
+  expect(outboxKeys()).toEqual([]);
+  expect([...relaunched.host.querySelectorAll('[role="alert"]')].some((node) => node.textContent?.startsWith("Not sent: Quick option."))).toBe(true);
+});
+
+const LONG_WORDS = "Only if the aisle seat is free, the flight is not after nine, and the fare stays under the budget we agreed last week";
+for (const [name, words, line, full] of [
+  ["says what the owner wrote, so they can say it again", "Only if the aisle seat is free", "Not sent: “Only if the aisle seat is free”.", undefined],
+  ["drops its own full stop when the owner's words already end in one", "Is the aisle seat free?", "Not sent: “Is the aisle seat free?”", undefined],
+  ["shows the first 80 characters of a long answer, the whole of it in the title", LONG_WORDS, `Not sent: “${LONG_WORDS.slice(0, 80).trimEnd()}…”.`, LONG_WORDS],
+] as const) {
+  test(`an answer in words that was not sent ${name}`, async () => {
+    const owner = await ownerFixture(); const agent = await owner.agent("lost-words");
+    value(await publishFeedCard(agent.output, plainCard()));
+    const first = owner.fresh(); const view = await mount(first);
+    await act(async () => option(view.host, "Your own answer").click());
+    await enter(view.host, "Your own answer", words);
+    await act(async () => button(view.host, "Send").click());
+    await countdown(first, 1200);
+    owner.faults.refuseResponseWrites = true;
+    await closePage(first);
+    await view.unmount();
+    owner.faults.refuseResponseWrites = false;
+    value(await publishFeedCard(agent.output, plainCard({ revision: 2, issuanceId: "plain-issuance-2", title: "Book the Friday flight?" })));
+    const next = owner.fresh(); const relaunched = await mount(next);
+    await next.settle();
+    expect(await stored(agent)).toEqual([]);
+    const article = card(relaunched.host, "Book the Thursday flight?");
+    expect(article.textContent).toContain(`${line} ${NOT_SENT_COPY.changed}`);
+    const quoted = [...article.querySelectorAll<HTMLElement>("b, button[aria-expanded]")].find((node) => node.textContent?.startsWith("“"));
+    expect(quoted?.getAttribute("title") ?? undefined).toBe(full);
+    expect(quoted?.getAttribute("aria-label") ?? undefined).toBe(full ? `“${full}”` : undefined);
+    if (full) {
+      // On a phone no title shows: tapping the clipped quote reads the whole answer, tapping again folds it back.
+      expect(quoted?.tagName).toBe("BUTTON");
+      expect(quoted?.getAttribute("aria-expanded")).toBe("false");
+      await click(next, quoted!);
+      expect(quoted?.textContent).toBe(`“${full}”`);
+      expect(quoted?.getAttribute("aria-expanded")).toBe("true");
+      expect(quoted?.getAttribute("aria-label")).toBe(`“${full}”`);
+      await click(next, quoted!);
+      expect(quoted?.textContent).toBe(`“${full.slice(0, 80).trimEnd()}…”`);
+      expect(quoted?.getAttribute("aria-expanded")).toBe("false");
+    } else expect(quoted?.tagName).toBe("B");
+  });
+}
+
+test("a held answer whose outcome the page never got (it went away while the flush finished) is told at the next launch, until the owner has seen it", async () => {
+  const owner = await ownerFixture(); const agent = await owner.agent("lost-gone");
+  value(await publishFeedCard(agent.output, plainCard()));
+  const first = owner.fresh(); const view = await mount(first);
+  await act(async () => option(view.host, "Go").click());
+  await countdown(first, 1200);
+  owner.faults.refuseResponseWrites = true;
+  await closePage(first);
+  await view.unmount();
+  owner.faults.refuseResponseWrites = false;
+  value(await publishFeedCard(agent.output, plainCard({ revision: 2, issuanceId: "plain-issuance-2", title: "Book the Friday flight?" })));
+
+  // A launch whose page goes away before the flush's result arrives: the held entry is already released.
+  const gate = Promise.withResolvers<void>();
+  const gone = owner.fresh(); const goneView = await mount(withSlowFlush(gone, { after: gate.promise }));
+  await goneView.unmount();
+  gate.resolve();
+  await gone.settle();
+  expect(outboxKeys()).toEqual([]);
+  expect(await stored(agent)).toEqual([]);
+
+  const next = owner.fresh(); const relaunched = await mount(next);
+  await next.settle();
+  expect(relaunched.host.textContent).toContain(`Not sent: Go. ${NOT_SENT_COPY.changed}`);
+  // On screen for as long as an undo lasts: the owner has seen it, and the next launch does not repeat it.
+  await countdown(next, 5000);
+  await relaunched.unmount();
+  const again = owner.fresh(); const reopened = await mount(again);
+  await again.settle();
+  expect(reopened.host.textContent).not.toContain("Not sent");
+});
+
+test("an answer whose agent is no longer connected is told in a notice of its own, with the owner's words, until they dismiss it (it was released silently)", async () => {
+  const owner = await ownerFixture();
+  // Another agent stays connected, so the feed has cards; the answer's own agent never registered.
+  const other = await owner.agent("still-here");
+  value(await publishFeedCard(other.output, plainCard()));
+  hold(owner.spaceId, { sourceId: "gone-agent", cardId: "plain-card", revision: 1, issuanceId: "plain-issuance-1", responseId: "held-gone-agent", text: "Only if the aisle seat is free", at: SITREP_NOW });
+  const first = await relaunch(owner);
+  expect(outboxKeys()).toEqual([]);
+  expect(first.view.host.textContent).toContain(`Not sent: “Only if the aisle seat is free”. ${NOT_SENT_COPY.disconnected}`);
+  // Left unseen, it is there at the next launch too.
+  await first.view.unmount();
+  const second = await relaunch(owner);
+  expect(second.view.host.textContent).toContain(`Not sent: “Only if the aisle seat is free”. ${NOT_SENT_COPY.disconnected}`);
+  await click(second.next, button(second.view.host, "Dismiss"));
+  expect(second.view.host.textContent).not.toContain("Not sent");
+  await second.view.unmount();
+  const third = await relaunch(owner);
+  expect(third.view.host.textContent).not.toContain("Not sent");
+});
+
+for (const [name, answer, line] of [
+  ["the option's label", { choiceId: "go", choiceLabel: "Go" }, "Not sent to Rocinante: Go. Rocinante isn't connected any more."],
+  ["the owner's words, with no full stop of its own after a question", { text: "Is the aisle seat free?" }, "Not sent to Rocinante: “Is the aisle seat free?” Rocinante isn't connected any more."],
+] as const) {
+  test(`the notice for an answer whose agent is gone names the agent and says ${name}`, async () => {
+    const owner = await ownerFixture();
+    const other = await owner.agent("still-here-named");
+    value(await publishFeedCard(other.output, plainCard()));
+    hold(owner.spaceId, { sourceId: "gone-named", cardId: "plain-card", revision: 1, issuanceId: "plain-issuance-1", responseId: "held-gone-named", agent: "Rocinante", ...answer, at: SITREP_NOW });
+    const { view } = await relaunch(owner);
+    expect(view.host.textContent).toContain(line);
+  });
+}
+
+test("a held answer records what the owner saw (the agent's name, the option's label), so a notice can say it when no card is left", async () => {
+  const owner = await ownerFixture(); const agent = await owner.agent("records-label");
+  value(await publishFeedCard(agent.output, plainCard()));
+  const first = owner.fresh(); const view = await mount(first);
+  await act(async () => option(view.host, "Go").click());
+  owner.faults.refuseResponseWrites = true;
+  const [held] = await closePage(first);
+  await view.unmount();
+  owner.faults.refuseResponseWrites = false;
+  const entry = JSON.parse(held!) as { agent?: string; choiceLabel?: string };
+  expect(entry.choiceLabel).toBe("Go");
+  expect(typeof entry.agent === "string" && entry.agent.length > 0).toBe(true);
+});
+
+test("an answer the node could not be reached for stays held and says it is not sent yet, with the owner's words, then goes at the next launch (it said nothing)", async () => {
+  const owner = await ownerFixture(); const agent = await owner.agent("flush-down");
+  value(await publishFeedCard(agent.output, plainCard()));
+  const first = owner.fresh(); const view = await mount(first);
+  await act(async () => option(view.host, "Your own answer").click());
+  await enter(view.host, "Your own answer", "Only if the aisle seat is free");
+  await act(async () => button(view.host, "Send").click());
+  await countdown(first, 1200);
+  owner.faults.refuseResponseWrites = true;
+  await closePage(first);
+  await view.unmount();
+  owner.faults.refuseResponseWrites = false;
+
+  // The reopened page loads, then the node stops answering just as the flush reads.
+  const next = owner.fresh();
+  const flushStarts = Promise.withResolvers<void>();
+  const relaunched = await mount(withSlowFlush(next, { before: flushStarts.promise }));
+  owner.faults.failReads = true;
+  flushStarts.resolve();
+  // The reload the page starts after the flush fails as well while the node is down.
+  await next.settle().catch(() => {});
+  owner.faults.failReads = false;
+  expect(outboxKeys()).toHaveLength(1);
+  expect(await stored(agent)).toEqual([]);
+  expect(relaunched.host.textContent).toContain("Your answer isn't sent yet.");
+  expect(relaunched.host.textContent).toContain("“Only if the aisle seat is free”");
+  await relaunched.unmount();
+
+  // The next launch reaches the node: the same answer goes, once.
+  const again = await relaunch(owner);
+  expect((await stored(agent)).map((row) => row.text)).toEqual(["Only if the aisle seat is free"]);
+  expect(outboxKeys()).toEqual([]);
+  expect(again.view.host.textContent).toContain(HELD_ANSWER_COPY.sent);
 });
 
 for (const kind of ["Change answer", "Fine, go ahead"] as const) {
@@ -868,11 +1242,11 @@ for (const typed of [false, true]) {
     expect(view.host.querySelector('[role="alert"]')).not.toBeNull();
     expect(outboxKeys()).toHaveLength(1);
     expect(await stored(agent)).toEqual([]);
-    // Every option is enabled, and the written answer is one tap away.
-    const options = [...view.host.querySelectorAll<HTMLButtonElement>('[role="group"][aria-label="Answers"] button')];
-    expect(options.length).toBeGreaterThan(1);
+    // Every option is enabled, the written answer ("Your own answer") among them.
+    const options = [...answers(view.host)?.querySelectorAll<HTMLButtonElement>("button[aria-pressed]") ?? []];
+    expect(options.length).toBeGreaterThan(2);
     expect(options.every((node) => !node.disabled)).toBe(true);
-    expect(button(view.host, "Answer in your own words").disabled).toBe(false);
+    expect(option(view.host, "Your own answer").disabled).toBe(false);
     // A second tap sends again and, once the node takes it, is stored and no longer held.
     owner.faults.refuseResponseWrites = false;
     await act(async () => option(view.host, choice).click());
@@ -882,22 +1256,33 @@ for (const typed of [false, true]) {
   });
 }
 
-test("after a failed written answer the box keeps its text and Send answer is live", async () => {
+test("after a failed written answer the box keeps its text and its Send is live as Retry", async () => {
   const owner = await ownerFixture(); const agent = await owner.agent("live-written");
   value(await publishFeedCard(agent.output, plainCard()));
-  const transport = owner.fresh(); const view = await mount(transport);
-  await act(async () => button(view.host, "Answer in your own words").click());
-  await enter(view.host, "Your answer", "Only if the aisle seat is free");
+  const transport = owner.fresh();
+  // In this test DOM the send button's exit animation never completes, so its leaving words stay inside it, and a tap
+  // that swaps them again cancels that animation: happy-dom rejects its `finished`, and motion doesn't observe it.
+  const animate = window.Element.prototype.animate;
+  const animations = spyOn(window.Element.prototype, "animate").mockImplementation(function (this: Element, ...args: Parameters<Element["animate"]>) {
+    const animation = animate.apply(this, args);
+    animation.finished.catch(() => {});
+    return animation;
+  });
+  const view = await mount(transport);
+  await act(async () => option(view.host, "Your own answer").click());
+  await enter(view.host, "Your own answer", "Only if the aisle seat is free");
   owner.faults.refuseResponseWrites = true;
-  await act(async () => button(view.host, "Send answer").click());
+  await act(async () => button(view.host, "Send").click());
   await countdown(transport);
   expect(view.host.querySelector('[role="alert"]')).not.toBeNull();
-  expect(view.host.querySelector<HTMLTextAreaElement>('textarea[aria-label="Your answer"]')?.value).toBe("Only if the aisle seat is free");
-  expect(button(view.host, "Send answer").disabled).toBe(false);
-  owner.faults.refuseResponseWrites = false;
-  await act(async () => button(view.host, "Send answer").click());
-  await countdown(transport);
-  expect((await stored(agent)).map((row) => row.text)).toEqual(["Only if the aisle seat is free"]);
+  expect(view.host.querySelector<HTMLTextAreaElement>('textarea[aria-label="Your own answer"]')?.value).toBe("Only if the aisle seat is free");
+  const retry = [...view.host.querySelectorAll<HTMLButtonElement>("button")].find((node) => node.textContent?.endsWith("Couldn't send · Retry"))!;
+  try {
+    expect(retry.disabled).toBe(false);
+    owner.faults.refuseResponseWrites = false;
+    await click(transport, retry);
+    expect((await stored(agent)).map((row) => row.text)).toEqual(["Only if the aisle seat is free"]);
+  } finally { animations.mockRestore(); }
 });
 
 test("a sign-out bound that lands during a held answer's reads stops its write: only the re-check right before the write can", async () => {

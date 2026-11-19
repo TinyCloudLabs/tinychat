@@ -16,10 +16,10 @@ afterEach(() => {
   restore = undefined;
 });
 
-function api(status: () => Promise<{ enabled: boolean }>): BotsApi {
+function api(status: () => Promise<{ enabled: boolean }>, messages: BotsApi["listMainMessages"] = async () => []): BotsApi {
   return {
     getBotsStatus: status,
-    listMainMessages: async () => [],
+    listMainMessages: messages,
     sendToMain: async () => {},
   };
 }
@@ -47,4 +47,9 @@ test("an enabled account sees the ask box with Main's chip", async () => {
   const host = await render(api(async () => ({ enabled: true })));
   expect(host.querySelector("textarea")?.getAttribute("placeholder")).toBe("What do you want done?");
   expect(host.querySelector('button[aria-label="Open Main\'s chat"]')).not.toBeNull();
+});
+
+test("an enabled account whose Main chat does not answer sees no ask box", async () => {
+  const host = await render(api(async () => ({ enabled: true }), async () => { throw new Error("bot_unavailable"); }));
+  expect(host.innerHTML).toBe("");
 });

@@ -43,7 +43,7 @@ describe("Fireflies Manage panel", () => {
   test("an enabled connection says what it is and offers Rotate, Bring back and Disconnect", () => {
     const html = render(enabled);
     expect(html).toContain(">On<");
-    expect(html).not.toContain("Enabled in TinyChat");
+    expect(html).not.toContain("Enabled in TinyCloud One");
     expect(html).toContain("Rotate the webhook secret");
     expect(html).toContain("Bring back deleted meetings");
     expect(html).toContain("Disconnect Fireflies");

@@ -61,7 +61,7 @@ public final class AppLockPlugin: CAPPlugin, CAPBridgedPlugin {
     /// Resolves `{ result }`: "success", "cancelled" (the user, the system or another app dismissed it),
     /// "failed", or "unavailable" (no passcode, so nothing can be asked).
     @objc func authenticate(_ call: CAPPluginCall) {
-        let reason = call.getString("reason") ?? "Unlock TinyCloud Home"
+        let reason = call.getString("reason") ?? "Unlock TinyCloud One"
         DispatchQueue.main.async {
             guard !self.authenticating else { call.resolve(["result": "cancelled"]); return }
             let context = LAContext()

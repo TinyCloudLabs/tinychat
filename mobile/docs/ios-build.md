@@ -1,6 +1,6 @@
 # iOS builds and device installs
 
-TinyCloud Home (the iOS app; formerly Exo) requires iOS 26 or newer (Apple's on-device speech) and Capacitor CLI requires Node.js 22 or newer.
+TinyCloud One (the iOS app; formerly TinyCloud Home and Exo) requires iOS 26 or newer (Apple's on-device speech) and Capacitor CLI requires Node.js 22 or newer.
 Capacitor generates `CapApp-SPM/Package.swift`
 with Swift tools 6.2 from `mobile/capacitor.config.ts`. Run sync after building
 the web app, and commit any intentional generated manifest change. A repeat sync

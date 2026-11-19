@@ -50,11 +50,11 @@ describe("LazyPhoneRecorder", () => {
     expect(isPhoneRecorderPreloadError(new Event("vite:preloadError"))).toBe(false);
   });
 
-  test("Reload TinyCloud Home on the web asks first while a recording runs, because the reload would stop it", () => {
+  test("Reload TinyCloud One on the web asks first while a recording runs, because the reload would stop it", () => {
     const html = renderToStaticMarkup(
       <PlatformContext.Provider value="web">
         <StaticRecorderProvider value={{ phase: "recording" }}>
-          <LoadFailed label="Reload TinyCloud Home" onRetry={() => {}} defaultConfirming />
+          <LoadFailed label="Reload TinyCloud One" onRetry={() => {}} defaultConfirming />
         </StaticRecorderProvider>
       </PlatformContext.Provider>,
     );
@@ -63,7 +63,7 @@ describe("LazyPhoneRecorder", () => {
     const phone = renderToStaticMarkup(
       <PlatformContext.Provider value="ios">
         <StaticRecorderProvider value={{ phase: "recording" }}>
-          <LoadFailed label="Reload TinyCloud Home" onRetry={() => {}} defaultConfirming />
+          <LoadFailed label="Reload TinyCloud One" onRetry={() => {}} defaultConfirming />
         </StaticRecorderProvider>
       </PlatformContext.Provider>,
     );
@@ -78,7 +78,7 @@ describe("LazyPhoneRecorder", () => {
     );
     const failed = renderToStaticMarkup(
       <StaticRecorderProvider value={{ phase: "recording" }}>
-        <LoadFailed label="Reload TinyCloud Home" onRetry={() => {}} />
+        <LoadFailed label="Reload TinyCloud One" onRetry={() => {}} />
       </StaticRecorderProvider>,
     );
     for (const html of [pending, failed])

@@ -106,3 +106,15 @@ test("corrupt notice acknowledgment cannot authorize deleting uncopied history",
   writeFileSync(path, JSON.stringify(value));
   expect(() => new HistoryJournal(layout, options)).toThrow("invalid_history_notice");
 });
+test("a receipt signed under the node's other production name stays valid after the host switch (TC-2923)", async () => {
+  const root = mkdtempSync(join(tmp, "case-"));
+  const layout = botLayout(botIdFor(owner), { dataRoot: join(root, "data"), runRoot: join(root, "run"), egressRoot: join(root, "egress") });
+  const tee = new HistoryJournal(layout, { ...options, host: "https://tee.node.tinycloud.xyz" });
+  tee.begin(owner, 1000); tee.append({ type: "user", text: "hello" });
+  await tee.accept(await receipt(tee, { host: "https://tee.node.tinycloud.xyz" }));
+  const switched = new HistoryJournal(layout, { ...options, host: "https://node.tinycloud.xyz" });
+  expect(await switched.verifyCoverage()).toBe(true);
+  switched.append({ type: "user", text: "again" });
+  await switched.accept(await receipt(switched, { host: "https://tee.node.tinycloud.xyz" }));
+  expect(await switched.verifyCoverage()).toBe(true);
+});

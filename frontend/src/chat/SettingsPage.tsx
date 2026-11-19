@@ -23,12 +23,13 @@ import { billingLinksAllowed, openManageStorage } from "@/lib/openManageStorage"
 import { NATIVE_PLAN_NOTE } from "@/lib/storageStatus";
 import { PlatformContext } from "@/lib/platform";
 import { openOpenKeyAccountDeletion } from "@/lib/openOpenKeyAccountDeletion";
+import { DeleteRecordingsStep } from "./DeleteRecordingsStep";
 import { useStorageReadOnly } from "@/lib/useStorageReadOnly";
 import { useStorageFreePlan } from "@/lib/useStorageFreePlan";
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { Button } from "@/components/ui/button";
-import { BuildInfoLine } from "@/components/BuildInfoLine";
+import { SettingsBuildFooter } from "@/components/PlaybackDiagnosticsSection";
 import { HowItWorksLink } from "@/components/ui/how-it-works-link";
 import { InfoTip } from "@/components/ui/info-tip";
 import { PrivacyPolicyLink } from "@/components/ui/privacy-policy-link";
@@ -56,6 +57,8 @@ import { PATHS } from "../shell/routes";
 import { FirstScreenControl } from "../home/FirstScreenControl";
 import { TinyCloudSettings } from "./TinyCloudSettings";
 import { AppLockSettings } from "./AppLockSettings";
+import { HiddenFeaturesSettings } from "./HiddenFeaturesSettings";
+import { LegacyDataLinks } from "./LegacyDataLinks";
 
 /** An InfoTip beside a card title: a 44 px target on touch that doesn't push the title row taller. */
 const TITLE_TIP = "-my-3 -ml-2 fine:-my-1 fine:-ml-1";
@@ -198,6 +201,9 @@ export function SettingsPage({
                 fixed-URL opener for it yet, so the row is phone and web only. */}
             {appPlatform() !== "tauri" && (
               <div className="mt-4 border-t border-border pt-4">
+                <div className="mb-4">
+                  <DeleteRecordingsStep backendUrl={backendUrl} sessionStore={sessionStore} />
+                </div>
                 <Button
                   variant="outline"
                   size="sm"
@@ -217,7 +223,8 @@ export function SettingsPage({
             </div>
           </SectionCard>
           <AppLockSettings />
-          <SectionCard icon={LayoutGridIcon} title="Home">
+          <HiddenFeaturesSettings />
+          <SectionCard icon={LayoutGridIcon} title="Start screen">
             <FirstScreenControl tcw={tcw} did={did} />
           </SectionCard>
           <SectionCard
@@ -269,6 +276,7 @@ export function SettingsPage({
             <div className="mt-3">
               <ImportDialog tcw={tcw} onImported={onImported} />
             </div>
+            <LegacyDataLinks />
           </SectionCard>
           {paywallEnabled && (
             <SectionCard icon={CreditCardIcon} title="Plan & Usage">
@@ -358,8 +366,8 @@ export function SettingsPage({
             <span className="flex-1">How it works</span>
             <ChevronRightIcon aria-hidden className="size-4 text-muted-foreground" />
           </Link>
-          {/* The build line at the bottom of Settings (TC-840). */}
-          <BuildInfoLine />
+          {/* The build line at the bottom of Settings (TC-840); seven taps reveal playback diagnostics (TC-2857). */}
+          <SettingsBuildFooter />
         </div>
       </div>
     </div>

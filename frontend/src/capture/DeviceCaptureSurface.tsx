@@ -110,7 +110,7 @@ export function DeviceCaptureSurface({ did, offline, error, resign = false, onSi
   const soft = compact;
   const activity = <ActivityPanel items={activityItems} views={activityViews} platform={platform} onOpenNote={(id) => navigate(PATHS.library + "/" + id)} />;
   const notice = <div className="rounded-xl border border-border bg-surface-2 px-4 py-3 text-callout">
-    <p>{offline ? `You're offline. Recordings stay on ${deviceName(platform)} until TinyCloud Home reconnects.` : did === null ? `Recordings stay on ${deviceName(platform)} until you sign in.` : `Recordings stay on ${deviceName(platform)} while TinyCloud Home checks your TinyCloud connection.`}</p>
+    <p>{offline ? `You're offline. Recordings stay on ${deviceName(platform)} until TinyCloud One reconnects.` : did === null ? `Recordings stay on ${deviceName(platform)} until you sign in.` : `Recordings stay on ${deviceName(platform)} while TinyCloud One checks your TinyCloud connection.`}</p>
     {resign && !offline && did === null && <p role="status" className="mt-1">{MANIFEST_RESIGN_NOTICE}</p>}
     {error && !offline && !(resign && did === null) && <p role="alert" className="mt-1 text-destructive">{did === null ? "Couldn't sign in. Try again." : "Couldn't check your TinyCloud connection. Try again."}</p>}
     <div className="mt-2 flex flex-wrap gap-2">
@@ -183,7 +183,7 @@ export function DeviceCaptureSettings({ onBack, onSignIn, offline = false }: { o
   return <div className="h-full overflow-y-auto" data-scroll-root>
     <PageHeader title="Settings" back={onBack} className="mx-auto w-full max-w-2xl px-4" />
     <div className="mx-auto w-full max-w-2xl space-y-4 px-4 pb-8 pt-2">
-      <SectionCard icon={UserIcon} title="Account"><p className="text-callout text-muted-foreground">{offline ? "TinyCloud Home will sync when it reconnects." : "Sign in to sync your recordings."}</p><Button className="mt-3" onClick={onSignIn}>{offline ? "Try again" : "Sign in"}</Button><div className="mt-3"><PrivacyPolicyLink /></div></SectionCard>
+      <SectionCard icon={UserIcon} title="Account"><p className="text-callout text-muted-foreground">{offline ? "TinyCloud One will sync when it reconnects." : "Sign in to sync your recordings."}</p><Button className="mt-3" onClick={onSignIn}>{offline ? "Try again" : "Sign in"}</Button><div className="mt-3"><PrivacyPolicyLink /></div></SectionCard>
       <SectionCard icon={MicIcon} title="Voice notes"><VoiceNotesTranscriberSettings /></SectionCard>
       <SectionCard icon={MicIcon} title="Storage"><AudioCacheSettings /></SectionCard>
     </div>

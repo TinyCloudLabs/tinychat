@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Developer ID signing for desktop (TinyCloud Home) releases. desktop-build.yml's preflight and sign jobs run it from the workflow
+# Developer ID signing for desktop (TinyCloud One) releases. desktop-build.yml's preflight and sign jobs run it from the workflow
 # commit's scripts/release, never from the built tree, on runners that never run project code: only Apple's tools touch
 # the app (codesign, security, hdiutil, notarytool, stapler). In CI (sign: false) the sign job runs unpack, sign and
 # dmg with the ad-hoc identity "-" as a dry run, so every desktop PR exercises the hand-off and the signing commands.
@@ -29,7 +29,7 @@
 #       submit to notarytool and wait (an app goes as a ditto zip), print Apple's log unless Accepted, staple the file
 set -euo pipefail
 
-# The bundle id stays xyz.tinycloud.exo after the rename to TinyCloud Home: macOS keys the app's data, keychain items
+# The bundle id stays xyz.tinycloud.exo after the renames to TinyCloud Home and TinyCloud One: macOS keys the app's data, keychain items
 # and permissions (microphone, screen recording) to it, and the updater path depends on it.
 BUNDLE_ID=xyz.tinycloud.exo
 # tauri.conf.json's productName, as scripts/release/lib.mjs DESKTOP_PRODUCT_NAME allows: words of letters and digits.
