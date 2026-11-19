@@ -3,7 +3,7 @@ import express from "express";
 import { createCsrfMiddleware, issueSessionToken } from "@tinyboilerplate/server";
 import { createAuthMiddleware } from "../middleware/auth.js";
 import { BotsRegistry } from "../bots-registry.js";
-import { botsFromEnv, createBotsRouter } from "../routes/bots.js";
+import { botsFromEnv, createBotsRouter, type BotsConfig } from "../routes/bots.js";
 import { fakeRegistryStore, type FakeRegistryStore } from "./helpers/fake-registry-store.js";
 
 const sessionKey = `0x${"03".repeat(32)}`;
@@ -16,7 +16,7 @@ interface UpstreamCall { method: string; url: string; headers: Headers; body: st
 type Upstream = (call: UpstreamCall) => Response | Promise<Response>;
 
 /** The real router on a local port, with real session tokens, a registry over a fake store, and a recording stand-in for the bots service. */
-async function setup(upstream: Upstream = () => Response.json({})) {
+async function setup(upstream: Upstream = () => Response.json({}), extra: Partial<BotsConfig> = {}) {
   const seen: UpstreamCall[] = [];
   const fetchImpl = (async (input, init) => {
     const call = { method: init?.method ?? "GET", url: String(input), headers: new Headers(init?.headers), body: typeof init?.body === "string" ? init.body : undefined };
@@ -29,7 +29,7 @@ async function setup(upstream: Upstream = () => Response.json({})) {
   const registry = new BotsRegistry(kv, { now: () => T0, newKey: () => (++next).toString(16).repeat(32) });
   const app = express();
   app.use(express.json()); app.use(createCsrfMiddleware());
-  app.use("/api/bots", createBotsRouter({ config: { ...config, fetchImpl }, authMiddleware: createAuthMiddleware(sessionKey), registry }));
+  app.use("/api/bots", createBotsRouter({ config: { ...config, ...extra, fetchImpl }, authMiddleware: createAuthMiddleware(sessionKey), registry }));
   const server = app.listen(0, "127.0.0.1");
   await new Promise<void>(resolve => server.once("listening", resolve));
   const address = server.address();
@@ -310,6 +310,46 @@ describe("a bot the record says is active but the service does not know", () => 
       const response = await fetch(`${run.base}/main/messages`, { headers: await run.headersFor(owner) });
       expect(response.status).toBe(502);
       expect(calls(run.seen)).toEqual(["GET /v1/bots/main/messages"]);
+    } finally { await run.close(); }
+  });
+});
+
+describe("the bots a turn may message", () => {
+  const KEY = "1".repeat(32);
+  const OTHER = "2".repeat(32);
+  const sse = () => new Response('event: done\ndata: {"messageId":"m1"}\n\n', { headers: { "content-type": "text/event-stream" } });
+  const service: Upstream = call => (call.method === "PUT" ? Response.json({ state: "active" }) : sse());
+  const sent = (seen: UpstreamCall[]): unknown[] => seen.filter(call => call.method === "POST").map(call => JSON.parse(call.body ?? "null"));
+
+  test("are listed by the backend in what it sends the service, for Main and for any other bot", async () => {
+    const asked: Array<[ownerDid: string, sourceKey: string]> = [];
+    const run = await setup(service, { listForTurn: async (ownerDid, sourceKey) => { asked.push([ownerDid, sourceKey]); return sourceKey === "main" ? [KEY] : ["main"]; } });
+    try {
+      const headers = await run.headersFor(owner);
+      expect((await fetch(run.base, { method: "POST", headers, body: JSON.stringify({ name: "Research", shape: "sprout", colour: "teal" }) })).status).toBe(201);
+      await (await fetch(`${run.base}/main/messages`, { method: "POST", headers, body: JSON.stringify({ text: "to main" }) })).text();
+      await (await fetch(`${run.base}/${KEY}/messages`, { method: "POST", headers, body: JSON.stringify({ text: "to research" }) })).text();
+      const did = `did:pkh:eip155:1:${owner.toLowerCase()}`;
+      expect(asked).toEqual([[did, "main"], [did, KEY]]);
+      expect(sent(run.seen)).toEqual([{ text: "to main", messageableBotKeys: [KEY] }, { text: "to research", messageableBotKeys: ["main"] }]);
+    } finally { await run.close(); }
+  });
+
+  test("cannot be named by the browser: a list in the request is not passed on", async () => {
+    const run = await setup(service, { listForTurn: async () => [] });
+    try {
+      const headers = await run.headersFor(owner);
+      await (await fetch(`${run.base}/main/messages`, { method: "POST", headers, body: JSON.stringify({ text: "hi", messageableBotKeys: [OTHER], owner: stranger }) })).text();
+      expect(sent(run.seen)).toEqual([{ text: "hi" }]);
+    } finally { await run.close(); }
+  });
+
+  test("are left out, and the message still goes, when the list cannot be made", async () => {
+    const run = await setup(service, { listForTurn: async () => { throw new Error("record unreadable"); } });
+    try {
+      const response = await fetch(`${run.base}/main/messages`, { method: "POST", headers: await run.headersFor(owner), body: JSON.stringify({ text: "hi" }) });
+      expect(await response.text()).toContain("event: done");
+      expect(sent(run.seen)).toEqual([{ text: "hi" }]);
     } finally { await run.close(); }
   });
 });

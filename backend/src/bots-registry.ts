@@ -214,3 +214,21 @@ export function admission(row: OwnerBots, sourceKey: string, targetKey: string, 
 export function orderedBots(row: OwnerBots): Bot[] {
   return [...row.bots].sort((a, b) => (a.key === MAIN_BOT_KEY ? -1 : b.key === MAIN_BOT_KEY ? 1 : a.createdAt.localeCompare(b.createdAt) || a.key.localeCompare(b.key)));
 }
+
+/**
+ * The address inside an owner's DID, lower-case, or undefined. Only the one canonical form is taken:
+ * did:pkh:eip155:1:<lower-case address>.
+ */
+export function addressFromOwnerDid(ownerDid: string): string | undefined {
+  return /^did:pkh:eip155:1:(0x[0-9a-f]{40})$/.exec(ownerDid)?.[1];
+}
+
+/**
+ * The list of bots a turn may message, for a caller that knows an owner by its DID. Empty for anything malformed.
+ */
+export function turnListHook(registry: BotsRegistry): (ownerDid: string, sourceKey: string) => Promise<string[]> {
+  return async (ownerDid, sourceKey) => {
+    const address = addressFromOwnerDid(ownerDid);
+    return address === undefined ? [] : registry.listForTurn(address, sourceKey);
+  };
+}

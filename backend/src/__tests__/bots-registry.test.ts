@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { admission, BotsRegistry, parseOwnerBots, type AdmissionRefusal, type BotEnvironment, type RegistryKv } from "../bots-registry.js";
+import { addressFromOwnerDid, admission, BotsRegistry, parseOwnerBots, turnListHook, type AdmissionRefusal, type BotEnvironment, type RegistryKv } from "../bots-registry.js";
 
 const ADDRESS = `0x${"Ab".repeat(20)}`;
 const KEY = `bots/registry/${ADDRESS.toLowerCase()}`;
@@ -306,5 +306,22 @@ describe("may one bot message another", () => {
     for (const [kv, address] of [[down, ADDRESS], [damaged, ADDRESS], [store(), "0x22"]] as const) {
       expect(await new BotsRegistry(kv, { now: () => T0 }).listForTurn(address, "main")).toEqual([]);
     }
+  });
+
+  test("an owner's DID gives its address only in the one canonical form", () => {
+    const did = `did:pkh:eip155:1:${ADDRESS.toLowerCase()}`;
+    expect(addressFromOwnerDid(did)).toBe(ADDRESS.toLowerCase());
+    for (const bad of [ADDRESS, `did:pkh:eip155:1:${ADDRESS}`, `did:pkh:eip155:137:${ADDRESS.toLowerCase()}`, `${did}/x`, `${did}\n`, ` ${did}`, "did:key:z6Mk", ""]) {
+      expect([bad, addressFromOwnerDid(bad)]).toEqual([bad, undefined]);
+    }
+  });
+
+  test("the list a turn is given can be asked for by the owner's DID, and a malformed DID gives an empty list", async () => {
+    const registry = new BotsRegistry(store(), { now: () => T0, newKey: () => A });
+    await registry.create(ADDRESS, { name: "A", shape: "sprout", colour: "teal" }, 3);
+    const hook = turnListHook(registry);
+    expect(await hook(`did:pkh:eip155:1:${ADDRESS.toLowerCase()}`, "main")).toEqual([A]);
+    expect(await hook(`did:pkh:eip155:1:${ADDRESS}`, "main")).toEqual([]);
+    expect(await hook(ADDRESS, "main")).toEqual([]);
   });
 });

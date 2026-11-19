@@ -17,6 +17,8 @@ export interface BotsConfig {
   postTimeoutMs: number;
   fetchImpl?: typeof fetch;
   onTurnFinished?: () => void;
+  /** The bots a turn of `sourceKey` may message, asked for by the owner's DID. Absent means none. */
+  listForTurn?: (ownerDid: string, sourceKey: string) => Promise<string[]>;
 }
 
 const MAX_TEXT = 8000;
@@ -54,6 +56,18 @@ export function botsFromEnv(env: Record<string, string | undefined>): BotsConfig
  * Headers for one call to the bots service at `url`. Every call this router makes to the service goes through here,
  * so how a call is authenticated is decided in one place.
  */
+/**
+ * What the service is sent for one turn. The bots the turn may message come from `listForTurn` alone: nothing the
+ * browser sent is in it except the text the route has checked.
+ */
+export async function botTurnBody(config: BotsConfig, address: string, sourceKey: string, text: string) {
+  try {
+    const messageableBotKeys = await config.listForTurn?.(botOwnerDid(address), sourceKey);
+    if (messageableBotKeys?.length) return { text, messageableBotKeys };
+  } catch { /* A registry read failure leaves the turn without messaging. */ }
+  return { text };
+}
+
 export function botsServiceHeaders(config: BotsConfig, ownerDid: string, _method: string, _url: string, body?: string): Record<string, string> {
   const headers = { authorization: `Bearer ${config.serviceSecret}`, "x-tinycloud-owner": ownerDid };
   return body === undefined ? headers : { ...headers, "content-type": "application/json" };
@@ -213,7 +227,7 @@ export function createBotsRouter(opts: { config?: BotsConfig; authMiddleware: Re
 
     try {
       const url = `${config!.serviceUrl}/v1/bots/${key}/messages`;
-      const body = JSON.stringify({ text });
+      const body = JSON.stringify(await botTurnBody(config!, address, key, text));
       const upstream = await callBot(address, key, seq, () => (config!.fetchImpl ?? fetch)(url, {
         method: "POST",
         headers: botsServiceHeaders(config!, botOwnerDid(address), "POST", url, body),
