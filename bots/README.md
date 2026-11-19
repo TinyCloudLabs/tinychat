@@ -17,9 +17,9 @@ Treat every sandbox as hostile: OMP has a shell, so each owner can run any code 
 
 ## Internal API
 
-All requests except `/healthz` need `Authorization: Bearer <BOTS_SERVICE_SECRET>` (constant-time compare) and
-`X-TinyCloud-Owner: did:pkh:eip155:1:0x<40 lowercase hex>`, and the owner's address must be on this service's own
-`BOTS_TEST_ACCOUNTS`. Anything else gets an empty 401.
+All requests except `/healthz` are signed by the backend (`src/signed-call.ts`; the backend's copy is
+`backend/src/bots-signed-call.ts`), and the owner's address must be on this service's own `BOTS_TEST_ACCOUNTS`.
+Anything else gets an empty 401.
 
 - `POST /v1/bots/main/messages` `{ "text": "..." }` (1 to 8000 characters) streams `text/event-stream`:
   `status` (`starting` on a cold start, then `working`, repeated every 15 s while waiting), `delta` (assistant
@@ -211,6 +211,7 @@ Supervisor (`bots-supervisor`):
 | Var | Default | |
 | --- | --- | --- |
 | `BOTS_SERVICE_SECRET` | required | unique 256-bit secret (at least 43 characters); `openssl rand -hex 32` |
+| `BOTS_ACCEPT_LEGACY_OWNER_HEADER` | `0` | see [Deploy order](#deploy-order) |
 | `BOTS_TEST_ACCOUNTS` | empty (nobody) | comma-separated addresses, or `*` |
 | `BOTS_MODEL` | `z-ai/glm-5.2` | the backend's `REDPILL_DEFAULT_MODEL` default |
 | `BOTS_IDLE_MS` | `600000` | idle time after `session_settled` before a sandbox stops |
@@ -324,3 +325,7 @@ in the job summary).
 The backend picks up `BOTS_ENABLED`, `BOTS_TEST_ACCOUNTS`, `BOTS_SERVICE_URL=https://<BOTS_INGRESS_DOMAIN>` and
 `BOTS_POST_TIMEOUT_MS` from `production-api` variables and `BOTS_SERVICE_SECRET` from a `production-api` secret,
 through `.github/workflows/deploy-backend-phala.yml`. `BOTS_ENABLED` defaults to `false`.
+
+### Deploy order
+
+Set `BOTS_ACCEPT_LEGACY_OWNER_HEADER=1`, deploy the bots service, then the backend, then set it to `0` and deploy the bots service again.

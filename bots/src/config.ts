@@ -41,11 +41,19 @@ export interface SandboxLimits {
   stateMb: number;
 }
 
+/** BOTS_ACCEPT_LEGACY_OWNER_HEADER: `0` (the default) or `1`; anything else is refused. See README, "Deploy order". */
+export function legacyOwnerHeaderAccepted(env: Env): boolean {
+  const raw = env.BOTS_ACCEPT_LEGACY_OWNER_HEADER?.trim() ?? "";
+  if (raw !== "" && raw !== "0" && raw !== "1") throw new Error("BOTS_ACCEPT_LEGACY_OWNER_HEADER must be 0 or 1");
+  return raw === "1";
+}
+
 export interface SupervisorConfig {
   port: number;
   serviceSecret: string;
   /** Lowercased addresses, or "*" for every account. Empty admits nobody. */
   accounts: Set<string> | "*";
+  acceptLegacyOwnerHeader: boolean;
   model: string;
   idleMs: number;
   dataRoot: string;
@@ -102,6 +110,7 @@ export function supervisorConfig(env: Env): SupervisorConfig {
     port: int(env, "PORT", 8080),
     serviceSecret,
     accounts: list.includes("*") ? "*" : new Set(list),
+    acceptLegacyOwnerHeader: legacyOwnerHeaderAccepted(env),
     model: env.BOTS_MODEL?.trim() || DEFAULT_MODEL,
     idleMs: int(env, "BOTS_IDLE_MS", 10 * 60_000, 1000),
     dataRoot: env.BOTS_DATA_ROOT ?? "/data/bots",

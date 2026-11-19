@@ -50,8 +50,9 @@ function CreateBotForm({ onOpenChange, roster, onCreate, onCreated }: Omit<Creat
     try {
       bot = await onCreate({ name: trimmed, shape, colour });
     } catch (cause) {
-      if (cause instanceof BotHistoryApprovalNeeded) setServerError(copy.approvalNeeded);
-      else if (cause instanceof BotRosterError && cause.code === "bot_limit" && max !== undefined) setServerError(capCopy.refused(max, hasOtherBot));
+      // Keep the draft open and restore the form controls in finally.
+      if (cause instanceof BotHistoryApprovalNeeded) return;
+      if (cause instanceof BotRosterError && cause.code === "bot_limit" && max !== undefined) setServerError(capCopy.refused(max, hasOtherBot));
       else if (cause instanceof BotRosterError && cause.code === "name_taken") setServerError(copy.duplicate);
       else if (cause instanceof BotRosterError && cause.code === "invalid_name") setServerError(copy.invalidName);
       else setServerError(copy.failed);
