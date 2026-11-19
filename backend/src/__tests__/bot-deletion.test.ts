@@ -197,14 +197,16 @@ describe("running deletions", () => {
     expect(await run.deletions.run("not an address", K1)).toBe("failed");
   });
 
-  test("a pass runs every outstanding deletion of every owner and every revocation still owed, and nothing else", async () => {
+  test("a pass runs every outstanding deletion of every owner, and nothing else", async () => {
     const run = owners({
       [A]: { bots: [main, bot(K1, "deleting"), bot(K2, "active")] },
       [B]: { bots: [main, bot(K3, "suspended")], deleted: [{ key: K1, name: "Gone" }, { key: K2, name: "Owed", revoke: { cid: "cid-7" } }] },
       [C]: { bots: [main] },
     });
-    expect(await run.deletions.sweep()).toEqual({ listed: true, ran: 2, skipped: 0 });
-    expect(run.asked.sort()).toEqual([`forget ${B} ${K2}`, "revoke cid-7", `service ${A} ${K1}`].sort());
+    expect(await run.deletions.sweep()).toEqual({ listed: true, ran: 1, skipped: 0 });
+    // A revocation still owed for a deleted bot is not tried again here. A node refuses one from the backend, which
+    // only holds the grant (403, seen against a real node): the id stays in the record for the owner, who can.
+    expect(run.asked).toEqual([`service ${A} ${K1}`]);
   });
 
   test("an owner whose record cannot be read is skipped, and the others are still done", async () => {

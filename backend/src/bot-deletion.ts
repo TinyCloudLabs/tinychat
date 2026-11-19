@@ -105,7 +105,11 @@ export class BotDeletions {
     }
   }
 
-  /** One pass over every owner: each bot that is being deleted, and each deleted bot whose revocation is still owed. */
+  /**
+   * One pass over every owner: each bot that is being deleted. A revocation still owed for a bot that is already
+   * deleted is not tried again: a node refuses one from the backend, which only holds the grant. Its id stays in the
+   * record.
+   */
   async sweep(): Promise<SweepResult> {
     let owners: string[];
     try {
@@ -119,7 +123,7 @@ export class BotDeletions {
       let keys: string[];
       try {
         const row = await this.#ports.registry.read(address);
-        keys = [...row.bots.filter(bot => bot.state === "deleting").map(bot => bot.key), ...row.deleted.filter(entry => entry.revoke).map(entry => entry.key)];
+        keys = row.bots.filter(bot => bot.state === "deleting").map(bot => bot.key);
       } catch {
         // One owner's unreadable record does not hold up the others. It is tried again on the next pass.
         skipped += 1;
