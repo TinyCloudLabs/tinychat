@@ -40,6 +40,15 @@ export const APPS_OPEN_IN_SHARE = "Open in Share";
 export const APPS_OPENS_NEW_TAB = "opens in a new tab";
 export const APPS_EMPTY = "No apps to show yet.";
 
+/** The TinyCloud apps launcher (One Apps; Monica's words). */
+export const APPS_LAUNCHER_TITLE = "TinyCloud apps";
+export const APPS_PIN_HINT = "Pin an app to keep it one tap away.";
+export const APPS_PIN = "Pin";
+export const APPS_UNPIN = "Unpin";
+export const appPinnedToast = (name: string) => `${name} pinned`;
+export const appUnpinnedToast = (name: string) => `${name} unpinned`;
+export const APPS_CONNECTORS_DESCRIPTION = "Connect Fireflies or Google Meet to bring in your meetings.";
+
 /** A plain link on the signed-out sign-in surface to the product page. */
 export const LANDING_LINK_LABEL = `About ${APP_NAME}`;
 

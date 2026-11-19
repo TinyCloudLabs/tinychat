@@ -6,14 +6,13 @@ import { Link, useLocation } from "react-router-dom";
 
 import { cn } from "@/lib/utils";
 import { NavBadge } from "./NavBadge";
-import type { NavItem } from "./navItems";
-import { tabTarget } from "./navigation";
+import { navTarget, type NavItem, type NavItemId } from "./navItems";
 import type { Destination } from "./routes";
 
 export interface NavProps {
   items: NavItem[];
-  /** The current destination; null on Settings. */
-  current: Destination | null;
+  /** The current item; null on Settings. */
+  current: NavItemId | null;
   /** Tab switches replace the address in the phone app (history holds only pushed screens). */
   replace: boolean;
   /** The current item was tapped again at its root: scroll it to the top. */
@@ -35,14 +34,14 @@ export function TabBar({ items, current, replace, onReselect }: NavProps) {
           return (
             <li key={item.id} className="flex min-w-fit flex-1">
               <Link
-                to={tabTarget(item.id, active)}
+                to={navTarget(item, active)}
                 replace={replace}
                 aria-current={active ? "page" : undefined}
                 aria-label={item.ariaLabel}
                 onClick={(event: MouseEvent) => {
                   if (!active || pathname !== item.href) return;
                   event.preventDefault();
-                  onReselect(item.id);
+                  onReselect(item.destination);
                 }}
                 className="tap-transparent group flex min-w-0 flex-1 flex-col items-center justify-center gap-1"
               >
