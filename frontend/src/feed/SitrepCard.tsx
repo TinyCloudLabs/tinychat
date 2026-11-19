@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
-import { ExternalLinkIcon } from "lucide-react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { CheckIcon, ChevronDownIcon, ExternalLinkIcon } from "lucide-react";
 import type { FeedResponse, FeedResponsePayload, NewFeedMessage, NewFeedResponse } from "@tinycloud/sdk-services/feed";
 import { cardPriority, claimDecisionHistory, compactStamp, depGraph, depTitle, expiryHint, isClosed, jsonValue, linkCaption, linkify, nextClaimDecisionAt, ownerThreadResponseKey, parseSitrepCardPayload, partSteps, projectSitrepCard, safeSitrepActionSummary, snoozePresets, steerState, stepState, threadOwner, validateSitrepAction, validateState, type Answer, type Approval, type BoardRecord, type SamState, type SitrepMessageDelivery, type SitrepOwnerData, type SitrepProjection, type StepState, type ThreadMessage, type SitrepHeldNote } from "@tinyboilerplate/core/feed/sitrep";
 import { AnsweredPanel, ANSWER_FAILED_COPY, AnswerFailedLine, ErrorLine, fieldClass as inputClass, NOT_SENT_COPY, PendingAnswer, UNDO_SECONDS, usePendingSend, fineClass, focusRing, kindWord, optionText, pillClass as buttonClass, quietClass } from "./cardKit";
@@ -12,7 +12,12 @@ import { HomeCardThread } from "./HomeCardThread";
 import { HistoryTimeline, type HistoryItem } from "./HistoryTimeline";
 import { shortTime } from "./ShortTime";
 
-function prose(text: string, repo?: string) { return linkify(text, repo).map((part, index) => "href" in part ? <a key={index} href={part.href} target="_blank" rel="noopener noreferrer" className="break-words underline underline-offset-[3px]">{part.label}</a> : part.text); }
+/** Text with its links: URLs and GitHub refs underlined; a Linear ticket (TC-1234) in the link colour with a dotted underline, as the design mock's inline references. */
+function prose(text: string, repo?: string) {
+  return linkify(text, repo).map((part, index) => "href" in part
+    ? <a key={index} href={part.href} target="_blank" rel="noopener noreferrer" className={part.kind === "linear" ? "whitespace-nowrap font-mono text-[0.9em] text-blue-700 underline decoration-dotted decoration-1 underline-offset-[3px] hover:decoration-solid dark:text-blue-400" : "break-words underline underline-offset-[3px]"}>{part.label}</a>
+    : part.text);
+}
 const MEDIUM_MONTH = new Intl.DateTimeFormat("en-GB", { month: "short" });
 /** A typed card's times, in the feed's medium style: "13 Nov, 09:00", with the year when it isn't this one. */
 function stamp(at: string) {
@@ -28,6 +33,12 @@ const APPROVAL_WORDS: Record<string, string> = { go: "Go-ahead", openkey: "Appro
 function approvalWords(type: string, kind?: string): string | undefined {
   return type === "go" && kind && GO_WORDS[kind] ? GO_WORDS[kind] : APPROVAL_WORDS[type];
 }
+/** "1h" → "1 hour", "12h" → "12 hours", "7d" → "7 days": the access length an approval states, in plain words. */
+function lifetimeWords(value: string): string {
+  const count = Number.parseInt(value, 10);
+  const unit = value.endsWith("d") ? "day" : "hour";
+  return `${count} ${unit}${count === 1 ? "" : "s"}`;
+}
 function id() { return crypto.randomUUID().replace(/-/g, ""); }
 /** The countdown label of an ask's "Drop this card": it shows as "Dropping in Ns", and a refusal names the button. */
 const DROP_LABEL = "Drop this card";
@@ -37,6 +48,40 @@ const STEP_WORDS: Record<StepState, string> = { pending: "Waiting for you", done
 /** "A", "A and B", "A, B and C". */
 function names(list: readonly string[]): string {
   return list.length <= 2 ? list.join(" and ") : `${list.slice(0, -1).join(", ")} and ${list.at(-1)}`;
+}
+
+/** The card's width from which its brief and answers sit in two columns and "Known so far" is open (design mock, 11-17). */
+const WIDE_CARD_PX = 520;
+/**
+ * "Known so far": the facts behind the question, folded on a phone and open once the card is wide enough to show them
+ * without pushing the answers away. It decides once, when it first shows; after that it is the owner's to open or fold.
+ */
+function KnownFold({ facts, children }: { facts: number; children: ReactNode }) {
+  const fold = useRef<HTMLDetailsElement>(null);
+  useLayoutEffect(() => { const node = fold.current; if (node && node.getBoundingClientRect().width >= WIDE_CARD_PX) node.open = true; }, []);
+  return <details ref={fold} className="group mt-1.5">
+    <summary className="-mx-1.5 flex min-h-11 cursor-pointer list-none items-center gap-2 rounded-[10px] px-1.5 text-[13px] font-semibold hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring fine:min-h-9 [&::-webkit-details-marker]:hidden">
+      Known so far<span className="font-normal text-muted-foreground">{facts} {facts === 1 ? "fact" : "facts"}</span>
+      <ChevronDownIcon aria-hidden className="ml-auto size-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-180" />
+    </summary>
+    {children}
+  </details>;
+}
+function hostOf(url: string): string { try { return new URL(url).hostname.replace(/^www\./, ""); } catch { return ""; } }
+/**
+ * A card's links under its brief (design mock, 11-17): compact one-line chips, "label · host ↗", small mono in the link
+ * colour with a thin edge and a small radius, side by side and wrapping onto new lines. A long label or host is cut
+ * off inside its chip (the full address is its tooltip), so a chip never runs past the card's column.
+ */
+function LinkChips({ links, tight = false }: { links: readonly { url: string; label?: string }[]; tight?: boolean }) {
+  return <nav aria-label="Card reports and sources" className={`${tight ? "mt-1.5" : "mt-3"} flex min-w-0 flex-wrap gap-x-1.5 gap-y-2.5`}>{links.map((link) => {
+    const host = hostOf(link.url);
+    return <a key={link.url} href={link.url} title={link.url} target="_blank" rel="noopener noreferrer" className={`relative inline-flex h-[26px] min-w-0 max-w-full items-center gap-[5px] whitespace-nowrap rounded border border-blue-700/35 px-[7px] font-mono text-xs leading-none text-blue-700 transition-colors after:absolute after:-inset-x-0.5 after:-inset-y-[5px] after:content-[''] hover:border-blue-700 hover:bg-blue-700/[0.06] dark:border-blue-400/40 dark:text-blue-400 dark:hover:border-blue-400 dark:hover:bg-blue-400/10 ${focusRing}`}>
+      <span className="min-w-0 shrink overflow-hidden text-ellipsis font-semibold">{linkCaption(link as Parameters<typeof linkCaption>[0]).split(" · ")[0]}</span>
+      {host && <><span aria-hidden className="shrink-0 opacity-50">·</span><span className="min-w-0 shrink-[2] overflow-hidden text-ellipsis">{host}</span></>}
+      <ExternalLinkIcon aria-hidden className="size-3 shrink-0" />
+    </a>;
+  })}</nav>;
 }
 
 interface Props {
@@ -285,6 +330,10 @@ export function SitrepCard(props: Props) {
     ? [record.deadline && `Due ${shortTime(record.deadline, now)}`, projection.expiryAt && `Expires ${shortTime(new Date(projection.expiryAt).toISOString(), now)}`, hint?.replace(/^expires in (\d+)h$/, "in $1 h")].filter(Boolean).join(" · ")
     : "";
   const receipt = projection.answer && answerReceipt(entry, owner, projection.answer);
+  // The card's source line left its face for Details (design mock, 11-17): "Rocinante board · <where it is stored>".
+  const sourcePayload = entry.state.card.payload?.source;
+  const sourceRecord = sourcePayload && typeof sourcePayload === "object" ? sourcePayload as Record<string, unknown> : undefined;
+  const sourceLine = sourceRecord && typeof sourceRecord.label === "string" ? `${sourceRecord.label}${typeof sourceRecord.ref === "string" && sourceRecord.ref ? ` · ${sourceRecord.ref}` : ""}` : undefined;
   const options: AnswerOption[] = record.kind === "ask" ? record.options.map((option) => ({ id: option.id, label: option.label, ...(option.detail ? { detail: option.detail } : {}), ...(option.cost ? { cost: option.cost } : {}) })) : [];
   const steer = record.kind === "ask" && record.mode === "proceeding" ? steerState(record, now, answers) : undefined;
   const optionLabel = (optionId?: string) => { const option = record.kind === "ask" ? record.options.find((candidate) => candidate.id === optionId) : undefined; return option && optionText(option.label); };
@@ -316,16 +365,28 @@ export function SitrepCard(props: Props) {
   const failed = failedAnswer !== null;
 
   return <div className="text-[15px]" aria-label={`${kindWord(record.kind)} details`}>
-    {/* The agent's context in a shaded panel, ahead of what it asks of you. */}
-    {"context" in record && <div className="mt-4 space-y-2 rounded-xl bg-muted/30 p-4 text-sm"><p>{prose(record.context.background, record.repo)}</p>{record.context.whyNow && <p><strong className="font-semibold">Why now: </strong>{prose(record.context.whyNow, record.repo)}</p>}{record.context.ifNoAnswer && <p><strong className="font-semibold">If no answer: </strong>{prose(record.context.ifNoAnswer, record.repo)}</p>}{!!record.context.known.length && <ul className="list-disc space-y-1 pl-5">{record.context.known.map((known, index) => <li key={index}>{prose(known, record.repo)}</li>)}</ul>}{!!record.context.related.length && <p>Earlier questions: {record.context.related.join(", ")}</p>}</div>}
-    {timing && <p className="mt-3 text-xs text-muted-foreground">{timing}</p>}
+    {/* The brief (design mock, 11-17): what it is, then why now and what happens if you don't answer as two labelled
+        cells, then the facts behind it folded, then the links as chips. */}
+    {"context" in record && <div className="mt-3">
+      <p>{prose(record.context.background, record.repo)}</p>
+      {(record.context.whyNow || record.context.ifNoAnswer) && <div className="mt-3.5 grid gap-0.5 overflow-hidden rounded-xl cq:grid-cols-2 [&>:only-child]:col-span-full">
+        {record.context.whyNow && <div className="bg-muted px-3.5 pb-3 pt-[11px] text-sm leading-[1.45]"><span className="mb-[3px] block text-xs font-semibold leading-4 text-muted-foreground">Why now</span>{prose(record.context.whyNow, record.repo)}</div>}
+        {record.context.ifNoAnswer && <div className="bg-muted px-3.5 pb-3 pt-[11px] text-sm leading-[1.45]"><span className="mb-[3px] block text-xs font-semibold leading-4 text-muted-foreground">If you don’t answer</span>{prose(record.context.ifNoAnswer, record.repo)}</div>}
+      </div>}
+      {!!record.context.known.length && <KnownFold facts={record.context.known.length}><ul className="mb-1.5 mt-0.5 grid list-disc gap-1.5 pl-5 text-sm leading-[1.45] marker:text-muted-foreground">{record.context.known.map((known, index) => <li key={index}>{prose(known, record.repo)}</li>)}</ul></KnownFold>}
+      {!!record.context.related.length && <p className="mt-2 text-sm">Earlier questions: {record.context.related.join(", ")}</p>}
+    </div>}
+    {/* An update's face is one line: its outcome, then what moved. The ship record itself is in Details. */}
+    {record.kind === "ship" && <p className="mt-2.5 text-[13px] leading-6 tabular-nums text-muted-foreground"><span className="mr-2 inline-flex h-6 items-center gap-1 whitespace-nowrap rounded-full bg-muted px-2.5 align-middle text-[12.5px] font-semibold text-foreground"><CheckIcon aria-hidden className="size-[13px]" />{record.status.charAt(0).toUpperCase() + record.status.slice(1)}</span><span className="whitespace-nowrap">{record.component} {record.prevVersion ? `${record.prevVersion} → ` : ""}{record.version}</span> · <span className="whitespace-nowrap">{shortTime(record.at, now)}</span></p>}
+    {!!record.links.length && <LinkChips links={record.links} tight={"context" in record && !!record.context.known.length} />}
+    {timing && !(record.kind === "ask" && asking) && <p className="mt-3 text-xs text-muted-foreground">{timing}</p>}
     {record.kind !== "ask" && record.kind !== "task" && hint && <p className="mt-2 text-[13px] font-medium text-warning">{hint.replace(/^expires/, "Expires")}</p>}
 
     {record.kind === "ask" && <>
       {pendingLine}
       {!countdown.pending && !asking && <TypedAnswerStatus entry={entry} owner={owner} answer={projection.answer} record={record} focusOnMount={justSaved} />}
       {!countdown.pending && asking && followup && <p className="mt-3.5 text-[13px] text-muted-foreground">A new answer replaces your earlier one. It can't undo what {agent} already did.</p>}
-      {asking && <div className="mt-3.5"><AnswerOptions options={options} suggested={record.recommend} disabled={stale}
+      {asking && <div className="mt-4"><AnswerOptions options={options} suggested={record.recommend} disabled={stale} note={timing}
         pending={countdown.pending && chosen ? { choiceId: chosen, seconds: countdown.pending.seconds } : null}
         saving={busy ? chosen : undefined} chosen={failed ? chosen : undefined}
         onChoose={choose} onUndo={() => { countdown.undo(); setChosen(undefined); }}
@@ -392,7 +453,7 @@ export function SitrepCard(props: Props) {
       {record.blocks && <p className="text-sm"><strong className="font-semibold">Holds up: </strong>{record.blocks}</p>}
       {record.kind === "incident" && <dl className="space-y-2 text-sm"><div><dt className="font-semibold">Impact · {record.severity ?? "Unrated"}</dt><dd>{record.impact}</dd></div><div><dt className="font-semibold">Started</dt><dd>{stamp(record.startedAt)}{record.resolvedAt && ` · Resolved ${stamp(record.resolvedAt)}`}</dd></div></dl>}
       {record.kind === "work" && <div className="space-y-2 text-sm"><p><strong className="font-semibold">Next: </strong>{record.next ?? "Not reported"}</p>{record.waitsOn && <p><strong className="font-semibold">Waiting on: </strong>{record.waitsOn}</p>}{!!record.askIds.length && <p>Answer its questions on their own cards.</p>}</div>}
-      {record.kind === "ship" && <div className="text-sm"><p className="font-semibold">{record.component} · {record.version}</p>{record.prevVersion && <p>Previous: {record.prevVersion}</p>}<p>{record.status} · {stamp(record.at)}</p></div>}
+      {/* An update's record (the ship's component and versions) is on its face and in Details. */}
       {record.kind === "order" && <div className="space-y-2 text-sm"><blockquote className="whitespace-pre-wrap border-l border-border pl-4">{record.verbatim}</blockquote><p>{record.source} · {stamp(record.at)}</p>{record.appliesTo && <p>Applies to: {record.appliesTo}</p>}</div>}
       {record.kind === "claim" && <div className="space-y-2 text-sm">
         <p><a href={record.url} target="_blank" rel="noopener noreferrer" className="underline underline-offset-[3px]">{record.site}</a> · {record.location} · {record.severity}</p>
@@ -407,7 +468,7 @@ export function SitrepCard(props: Props) {
         {record.liftedAt && <p>Lifted {stamp(record.liftedAt)} · {record.liftReason}</p>}
       </div>}
       {record.kind === "progress" && <div className="space-y-2 text-sm"><p className="tabular-nums text-muted-foreground">Step {record.currentStep + 1} of {record.steps.length} · {prose(record.ticket)}</p><ol className="list-decimal space-y-1 pl-5">{record.steps.map((step, index) => <li key={`${index}:${step.name}`} aria-current={index === record.currentStep ? "step" : undefined}>{step.name} · {step.state}</li>)}</ol>{record.note && <p>{record.note}</p>}{record.eta && <p>Expected {stamp(record.eta)}</p>}<p className="text-muted-foreground">Updated by {record.updatedBy ?? record.owner} · {stamp(record.updatedAt)}</p></div>}
-      {!!record.links.length && <nav aria-label="Card reports and sources" className="flex flex-wrap gap-x-4">{record.links.map((link) => <a key={link.url} href={link.url} target="_blank" rel="noopener noreferrer" className={`inline-flex min-h-11 items-center break-all text-sm underline underline-offset-[3px] ${focusRing}`}>{linkCaption(link)}</a>)}</nav>}
+      {/* The card's links are chips under its brief, above. */}
       {owner.commands?.map((command) => { const handling = entry.responseHandling?.[command.eventId]; return <p key={command.eventId} role="status" className={fineClass}>Request saved{handling?.acknowledgement && ` · ${agent} got it`}{handling?.outcome && ` · ${handling.outcome.phase === "succeeded" ? "done" : handling.outcome.phase}`}</p>; })}
       {!!entry.historicalCommands?.length && <section aria-label="Historical owner commands" className="space-y-2 text-sm">
         <h4 className="text-[13px] font-semibold">Earlier requests</h4>
@@ -433,14 +494,16 @@ export function SitrepCard(props: Props) {
     {!waiting && (projection.request || expanded) && <div className="mt-3 border-t border-border pt-1">
       {/* On an ask, "Drop this card" is an answer: it waits out the undo, then tells the agent to drop the question, so
           the agent hears it (a plain close would only hide the card here). */}
-      <CardDetails card={entry.state.card} typed={{ record }} agent={agent} close={record.kind === "ask" && props.close?.kind === "drop" ? { kind: "drop", onTap: () => afterUndo(DROP_LABEL, () => askAnswer("drop", undefined, true), true) } : props.close} actions={props.extra ?? (projection.needsAction && !snoozed && <button type="button" className={footActionClass} disabled={busy} aria-expanded={later} onClick={() => setLater(!later)}>Ask me later</button>)}>
+      <CardDetails card={entry.state.card} typed={{ record }} agent={agent} publisher={entry.source} close={record.kind === "ask" && props.close?.kind === "drop" ? { kind: "drop", onTap: () => afterUndo(DROP_LABEL, () => askAnswer("drop", undefined, true), true) } : props.close} actions={props.extra ?? (projection.needsAction && !snoozed && <button type="button" className={footActionClass} disabled={busy} aria-expanded={later} onClick={() => setLater(!later)}>Ask me later</button>)}>
         <dl>{([
+          ...(sourceLine ? [["Source", sourceLine] as [string, ReactNode]] : []),
           ["Agent", record.from !== agent ? `${record.from} (through ${agent})` : agent],
           ["Agent ID", <code className="block truncate select-all text-xs">{entry.source.agentDid}</code>],
           ["Type", `${kindWord(record.kind)} · ${record.status}${pinned ? ` · Priority (${pinned.reason})` : ""}`],
           ...(typeof entry.state.card.payload?.project === "string" && entry.state.card.payload.project ? [["Project", entry.state.card.payload.project] as [string, ReactNode]] : []),
           ["Reference", <code className="block truncate select-all text-xs">{record.id}</code>],
         ] as [string, ReactNode][]).map(([term, value]) => <div key={term} className="flex items-baseline justify-between gap-4 border-t border-border py-2 first:border-t-0 first:pt-0"><dt className="shrink-0 text-muted-foreground">{term}</dt><dd className="min-w-0 text-right">{value}</dd></div>)}</dl>
+        {record.kind === "ship" && entry.state.card.body && <section aria-label="Ship record" className="mt-2"><p className="mb-1 text-xs font-medium text-muted-foreground">Ship record</p><p className="whitespace-pre-wrap">{prose(entry.state.card.body, record.repo)}</p></section>}
         {receipt && <p>{receipt.header ? "Your answer is saved here." : "This answer is from your archive."}</p>}
         {routeReady && <p className="text-[12.5px] leading-[1.4] text-muted-foreground">Messages on this card go to: {destinations.map((recipient) => <span key={recipient.recipientKey} className="block break-all font-mono">{recipient.legacyName} · {recipient.runtimeTarget.agentId}</span>)}</p>}
         {!!state?.notes?.length && <div aria-label="Your private notes" className="space-y-1"><p className={fineClass}>Your private notes. Only you can see them; they aren't sent to the agent.</p>{state.notes.map((note) => <p key={note.id} className="whitespace-pre-wrap">{note.text} <time className={fineClass} dateTime={note.at}>{stamp(note.at)}</time></p>)}</div>}
@@ -566,7 +629,7 @@ function ApprovalActions({ entry: incomingEntry, approval: incomingApproval, sou
   return <div className="mt-3.5 space-y-3 text-sm" onFocusCapture={() => { engagedOnce.current = true; }}>
     {superseded && <div role="status" className="space-y-2 rounded-xl bg-muted px-3 py-2.5"><p>This request was replaced. Use the new one below; a code for this one won't work there.</p><button type="button" className={`${buttonClass} bg-background`} disabled={busy} onClick={() => void openCurrent()}>Open the new request</button></div>}
     {showStatus && <TypedAnswerStatus entry={entry} owner={own} answer={answer} record={approval} />}
-    <p>{[approvalWords(approval.approvalType, approval.approvalKind), expired && "Expired", `Issued ${stamp(approval.issuedAt)}`, approval.expiresAt && `Expires ${stamp(approval.expiresAt)}`].filter(Boolean).join(" · ")}</p>
+    <p>{[approvalWords(approval.approvalType, approval.approvalKind), expired && "Expired", `Issued ${stamp(approval.issuedAt)}`, approval.expiresAt && `Expires ${stamp(approval.expiresAt)}`, approval.redeemedAt && `Used ${stamp(approval.redeemedAt)}`, approval.grantLifetime && `Access lasts ${lifetimeWords(approval.grantLifetime)}`].filter(Boolean).join(" · ")}</p>
     {approval.permissions && <p><strong className="font-semibold">Permissions: </strong>{approval.permissions}</p>}{approval.profile && <p>Profile: {approval.profile}</p>}{approval.target && <p>Target: {approval.target}</p>}{approval.scope && <p>Scope: {approval.scope}{approval.scopeGrant && " · Whole-scope grant"}</p>}
     {approval.names && <p>Names: {approval.names.join(", ")}</p>}{approval.copiedNames && <p>Already copied: {approval.copiedNames.join(", ")}</p>}{approval.keepNames && <p>Also retained: {approval.keepNames.join(", ")}</p>}{approval.warning && <p className="font-medium text-destructive">{approval.warning}</p>}{approval.nameWhy?.map((entry) => <p key={entry.name}>{entry.name}: {entry.why}</p>)}
     {approval.steps && <ol className="list-decimal space-y-1 pl-5">{approval.steps.map((step, index) => <li key={index}>{step}</li>)}</ol>}

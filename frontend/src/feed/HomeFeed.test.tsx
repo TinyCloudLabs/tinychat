@@ -5,6 +5,8 @@ import { createRoot, type Root } from "react-dom/client";
 import type { FeedHandling, FeedResponse, FeedSelector, NewFeedResponse } from "@tinycloud/sdk-services/feed";
 import { installDom } from "@/test/dom";
 import { installFakeClock, type FakeClock } from "@/test/fakeClock.fixture";
+import { HIDDEN_FEATURES_KEY, resetHiddenFeaturesForTest } from "@/lib/hiddenFeatures";
+import { isOriginMoveDeferred } from "@/lib/originMove";
 import { FeedViewEntries } from "./FeedView";
 import type { HomeFeedEntriesProps, HomeFeedEntry, HomeFeedSnapshot, HomeFeedSource } from "./feedStoreTypes";
 
@@ -107,6 +109,7 @@ afterEach(async () => {
   delete (globalThis as { matchMedia?: unknown }).matchMedia;
   MotionGlobalConfig.skipAnimations = false;
   clock?.restore(); clock = undefined;
+  globalThis.localStorage?.removeItem(HIDDEN_FEATURES_KEY); resetHiddenFeaturesForTest();
   restore?.(); restore = undefined;
 });
 async function mount(source: HomeFeedSource) {
@@ -635,10 +638,10 @@ test("an answer waits 5 seconds: nothing is written before, exactly one write at
   const undo = undoButton(view.host);
   expect(undo).not.toBeNull();
   expect(document.activeElement === undo).toBe(true);
-  expect(answers(view.host)!.textContent).toContain("Sending · 5s");
-  expect(view.host.textContent).toContain("Sending Hold in 5 seconds. Undo is available until then.");
+  expect(answers(view.host)!.textContent).toContain("Sends in 5s");
+  expect(view.host.textContent).toContain("Your answer, Hold, sends in 5 seconds. Undo is available until then.");
   await clock!.advance(2000);
-  expect(answers(view.host)!.textContent).toContain("Sending · 3s");
+  expect(answers(view.host)!.textContent).toContain("Sends in 3s");
   await clock!.advance(2900);
   expect(store.responses).toEqual([]);
   await clock!.advance(100);
@@ -841,7 +844,7 @@ test("a reply-only revision during the countdown re-targets the unanswered answe
   store.reply("plain-one", "Noted.", "2026-10-28T12:10:00Z");
   await act(async () => store.notify());
   expect(view.host.textContent).not.toContain(BANNER);
-  expect(answers(view.host)!.textContent).toContain("Sending · 3s");
+  expect(answers(view.host)!.textContent).toContain("Sends in 3s");
   await clock!.advance(3000);
   expect(store.responses).toHaveLength(1);
   expect(store.responses[0]).toMatchObject({ revision: 2, issuanceId: "issuance-2", choiceId: "hold" });
@@ -1082,6 +1085,8 @@ test("the top row is Needs you · All · History and a Filter icon; Filter shows
 
 test("the Agents pill opens every agent; an agent's page lists its cards and a card opens back in the feed", async () => {
   const store = persistence([decision("open-one"), answered("waiting-one", false)]);
+  restore ??= installDom({});
+  localStorage.setItem(HIDDEN_FEATURES_KEY, "1");
   const view = await mount(store.source());
   await act(async () => view.host.querySelector<HTMLButtonElement>('header button[aria-label^="Agents"]')!.click());
   const list = view.host.querySelector<HTMLElement>('section[aria-label="Your agents"]')!;
@@ -1099,4 +1104,84 @@ test("the Agents pill opens every agent; an agent's page lists its cards and a c
   await act(async () => button(card(view.host, "Question waiting-one"), "Test agent").click());
   await act(async () => button(view.host, "Open conversation").click());
   expect(view.host.querySelector('section[aria-label="Conversation with Test agent"]')).not.toBeNull();
+});
+
+/** Home with the ask box slot filled by a marker, so the test reads whether Home shows it. */
+async function mountWithAsk(source: HomeFeedSource) {
+  restore ??= installDom({});
+  clock ??= installFakeClock();
+  globalThis.fetch = (async () => new Response(null, { status: 404 })) as typeof fetch;
+  globalThis.matchMedia = window.matchMedia.bind(window);
+  MotionGlobalConfig.skipAnimations = true;
+  const host = document.createElement("div");
+  document.body.append(host);
+  const root = createRoot(host);
+  roots.add(root);
+  await act(async () => root.render(<FeedViewEntries realEntries={[]} source={source} ask={<form data-bots-ask="" />} />));
+  return host;
+}
+
+test("Home hides the ask box and the Agents pill until Show hidden features is on", async () => {
+  restore ??= installDom({});
+  const store = persistence([decision("open-one")]);
+  const host = await mountWithAsk(store.source());
+  expect(host.querySelector("[data-bots-ask]")).toBeNull();
+  expect(host.querySelector('header button[aria-label^="Agents"]')).toBeNull();
+  // The rest of Home is unchanged: the card is still listed.
+  expect(host.textContent).toContain("Question open-one");
+});
+
+test("Home shows the ask box and the Agents pill while Show hidden features is on, and drops them when it is turned off", async () => {
+  restore ??= installDom({});
+  const store = persistence([decision("open-one")]);
+  localStorage.setItem(HIDDEN_FEATURES_KEY, "1");
+  const host = await mountWithAsk(store.source());
+  expect(host.querySelector("[data-bots-ask]")).not.toBeNull();
+  expect(host.querySelector('header button[aria-label^="Agents"]')).not.toBeNull();
+  await act(async () => { const { setShowHiddenFeatures } = await import("@/lib/hiddenFeatures"); setShowHiddenFeatures(false); });
+  expect(host.querySelector("[data-bots-ask]")).toBeNull();
+  expect(host.querySelector('header button[aria-label^="Agents"]')).toBeNull();
+});
+
+test("a page waiting to move to tinycloud.one stays while an undo-bar action counts, and goes on after Undo or once it is sent", async () => {
+  const store = persistence([decision("open-one"), answered("done-one", true)], { defaultSelector: "both" });
+  const view = await mount(store.source());
+  expect(isOriginMoveDeferred()).toBe(false);
+  await act(async () => pendingToggle(view.host)!.click());
+  await act(async () => button(item(view.host, "Question done-one")!, "Acknowledge").click());
+  expect(isOriginMoveDeferred()).toBe(true);
+  await act(async () => undoButton(view.host)!.click());
+  expect(isOriginMoveDeferred()).toBe(false);
+  await act(async () => button(item(view.host, "Question done-one")!, "Acknowledge").click());
+  expect(isOriginMoveDeferred()).toBe(true);
+  await clock!.advance(5000);
+  await act(async () => {});
+  expect(isOriginMoveDeferred()).toBe(false);
+});
+
+test("a typed own answer keeps a page waiting to move to tinycloud.one here even after Show less, until it is cleared", async () => {
+  const store = persistence([decision()]);
+  const view = await mount(store.source());
+  await open(view.host);
+  await openNote(view.host);
+  expect(isOriginMoveDeferred()).toBe(false);
+  await typeAnswer(view.host, "Draft kept while folded");
+  expect(isOriginMoveDeferred()).toBe(true);
+  await act(async () => item(view.host, "Question decision-one")!.querySelector<HTMLButtonElement>('button[aria-label="Show less"]')!.click());
+  expect(hasAnswerBox(view.host)).toBe(false);
+  expect(isOriginMoveDeferred()).toBe(true);
+  await open(view.host);
+  await typeAnswer(view.host, "");
+  expect(isOriginMoveDeferred()).toBe(false);
+});
+
+test("leaving the feed lets go of a held own-answer draft", async () => {
+  const store = persistence([decision()]);
+  const view = await mount(store.source());
+  await open(view.host);
+  await openNote(view.host);
+  await typeAnswer(view.host, "Words that go with the page");
+  expect(isOriginMoveDeferred()).toBe(true);
+  await view.unmount();
+  expect(isOriginMoveDeferred()).toBe(false);
 });

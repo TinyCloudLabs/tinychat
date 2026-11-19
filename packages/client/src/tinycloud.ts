@@ -46,6 +46,11 @@ export interface TinyCloudWebConfig {
    * Only the web flag in frontend/src/lib/replication sets it.
    */
   replication?: TinyCloudWebSdkConfig["replication"];
+  /**
+   * Sign in through OpenKey's `authorizeTinyCloud` instead of the provider's `personal_sign`. The SIWE nonce then
+   * comes from `nonce` alone: the SDK refuses per-call SIWE overrides on this path.
+   */
+  openkey?: TinyCloudWebSdkConfig["openkey"];
 }
 
 export interface RestoreTinyCloudWebSessionResult {
@@ -82,6 +87,7 @@ export function createTinyCloudWeb(
     // The app owns the floating button (Settings toggle); the SDK default shows it.
     ui: { button: false, platform: config?.uiPlatform ?? "web" },
     ...(config?.replication ? { replication: config.replication } : {}),
+    ...(config?.openkey ? { openkey: config.openkey } : {}),
     autoBootstrapAccount: false,
   };
 
@@ -107,7 +113,7 @@ export async function createAndSignIn(
   if (config?.nonce) {
     await tcw.clearPersistedSession(config.address);
   }
-  const session = await tcw.signIn(config?.nonce ? { nonce: config.nonce } : undefined);
+  const session = await tcw.signIn(config?.nonce && !config.openkey ? { nonce: config.nonce } : undefined);
   return { tcw, session };
 }
 

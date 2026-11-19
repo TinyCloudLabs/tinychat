@@ -1,3 +1,5 @@
+import type { FeedSource } from "@tinycloud/sdk-services/feed";
+
 export type FeedCard = {
   key: string;
   at: string;
@@ -10,7 +12,81 @@ export type FeedCard = {
   body?: string;
   url?: string;
   source?: { label: string; url?: string; ref?: string };
+  /** What kind of task the card is (`payload.type`); absent when the card names none or one this app doesn't know. */
+  type?: CardType;
+  /**
+   * A message another team sent over Courier, drawn as the Courier mark: on a Home card, set only by courierMessage, so
+   * only when the card's verified publisher is Courier. `from` is its sender (`payload.source.label`).
+   */
+  courier?: { from?: string };
 };
+
+/**
+ * The task types a card can name in `payload.type`, in precedence order: when two fit, the earlier one wins. The first
+ * ten need a tap; News and Alert need none.
+ */
+export const CARD_TYPES = [
+  { id: "spend", label: "Spend" },
+  { id: "publish", label: "Publish" },
+  { id: "send", label: "Send" },
+  { id: "access", label: "Access" },
+  { id: "rule", label: "Rule" },
+  { id: "ship", label: "Ship" },
+  { id: "do", label: "Do" },
+  { id: "review", label: "Review" },
+  { id: "direction", label: "Direction" },
+  { id: "answer", label: "Answer" },
+  { id: "news", label: "News" },
+  { id: "alert", label: "Alert" },
+] as const;
+export type CardType = (typeof CARD_TYPES)[number]["id"];
+/** The types whose tap makes something leave the building: money, a public post, words to someone, access. */
+export const OUTBOUND_TYPES: ReadonlySet<CardType> = new Set(["spend", "publish", "send", "access"]);
+export const cardTypeLabel = (type: CardType): string => CARD_TYPES.find((entry) => entry.id === type)!.label;
+
+/** `payload.type` when it is one of CARD_TYPES; anything else is ignored, never an error. */
+export function parseCardType(value: unknown): CardType | undefined {
+  return CARD_TYPES.find((entry) => entry.id === value)?.id;
+}
+
+/**
+ * The registry token of the owner's Courier connection: the `agent_id` of its row in the owner's `feed_agents`, which
+ * the store hands on as its FeedSource's `sourceId`. Only cards read through that source carry the Courier mark.
+ */
+export const COURIER_SOURCE_ID = "courier";
+/**
+ * The output database the store reads that connection's cards from: feedResourceNames("xyz.tinycloud.tinychat/feed",
+ * COURIER_SOURCE_ID).outputResource, as feedStore readFeed builds and checks it (a test pins the two together).
+ */
+export const COURIER_OUTPUT_DATABASE = `xyz.tinycloud.tinychat/feed/feed_output_${COURIER_SOURCE_ID}`;
+
+/**
+ * Whether a card's verified publisher is Courier: the registered source the store read it through is Courier's on both
+ * counts the owner's registry holds, its `agent_id` and the output database the card was read from. The owner sets the
+ * token when they connect the agent, the registry binds it to one agent DID, and only that agent's grant writes that
+ * database. Never the source's label, which is presentation only, and never anything a card says about itself.
+ */
+export function isCourierPublisher(source: Pick<FeedSource, "sourceId" | "output">): boolean {
+  return source.sourceId === COURIER_SOURCE_ID && source.output.database === COURIER_OUTPUT_DATABASE;
+}
+
+/**
+ * `payload.channel: "courier"`, with its sender from `payload.source.label` when there is one; any other channel is
+ * ignored. This is only what the card says: any agent can write it. The Courier mark comes from courierMessage.
+ */
+export function parseCourier(payload: unknown): FeedCard["courier"] {
+  if (!record(payload) || payload.channel !== "courier") return undefined;
+  const from = record(payload.source) && text(payload.source.label) ? payload.source.label.trim() : undefined;
+  return from ? { from } : {};
+}
+
+/**
+ * A Home card's Courier mark and sender: only when its verified publisher is Courier (isCourierPublisher) and the card
+ * says `channel: "courier"`. From any other source `payload.channel` is ignored, so the card shows as its own agent's.
+ */
+export function courierMessage(source: Pick<FeedSource, "sourceId" | "output">, payload: unknown): FeedCard["courier"] {
+  return isCourierPublisher(source) ? parseCourier(payload) : undefined;
+}
 
 type RecordValue = Record<string, unknown>;
 const record = (value: unknown): value is RecordValue =>
@@ -54,6 +130,9 @@ function parseCard(key: string, value: unknown, profiles: Map<string, FeedCard["
   if (render === "link" && text(value.url)) card.url = value.url;
   const source = parseSource(value.source);
   if (source) card.source = source;
+  const type = parseCardType(value.type);
+  if (type) card.type = type;
+  // The sample feed's cards have no registered source to verify, so they never carry a Courier mark or sender.
   return card;
 }
 
