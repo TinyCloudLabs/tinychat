@@ -11,6 +11,7 @@ import { OwnerManifests } from "../manifest";
 import { botIdFor } from "../owner";
 import { type Frame, RpcChannel } from "../rpc";
 import { createApp } from "../server";
+import { signedCallHeader } from "../signed-call";
 
 const owner = `did:pkh:eip155:1:0x${"11".repeat(20)}`;
 const otherOwner = `did:pkh:eip155:1:0x${"22".repeat(20)}`;
@@ -115,15 +116,19 @@ function setup(onLaunch?: (layout: BotLayout) => void) {
     return registryState === "allowed" ? { admitted: true } : { admitted: false, reason: statusRefusals[registryState] };
   };
   let admit = admission;
-  const app = createApp({ bots, secret, accounts: "*", manifest, admit: (...args) => admit(...args) });
-  const headers = { authorization: `Bearer ${secret}`, "x-tinycloud-owner": owner, "content-type": "application/json" };
-  const url = (key: string, rest = "/messages") => `http://fixture.test/v1/bots/${key}${rest}`;
-  const turn = async (key: string, messageableBotKeys?: unknown) => app(new Request(url(key), {
-    method: "POST", headers, body: JSON.stringify({ text: "owner turn", messageableBotKeys }),
-  }));
-  const announce = async (state: string, seq: number) => app(new Request(url(sibling, ""), {
-    method: "PUT", headers, body: JSON.stringify({ state, seq }),
-  }));
+  const app = createApp({ bots, secret, accounts: "*", manifest, acceptLegacyOwnerHeader: true, admit: (...args) => admit(...args) });
+  const send = (key: string, suffix: string, method: string, payload: unknown, legacy = false) => {
+    const path = `/v1/bots/${key}${suffix}`;
+    const body = JSON.stringify(payload);
+    const authorization = legacy ? `Bearer ${secret}` : signedCallHeader(secret, {
+      direction: "to-service", environment: "private", owner, bot: key, method, path, body,
+    });
+    const headers = { authorization, "x-tinycloud-owner": owner, "content-type": "application/json" };
+    return app(new Request(`http://fixture.test${path}`, { method, headers, body }));
+  };
+  const turn = (key: string, messageableBotKeys?: unknown, legacy?: boolean) =>
+    send(key, "/messages", "POST", { text: "owner turn", messageableBotKeys }, legacy);
+  const announce = (state: string, seq: number) => send(sibling, "", "PUT", { state, seq });
   const close = async () => {
     await bots.stopAll();
     rmSync(root, { recursive: true, force: true });
@@ -225,6 +230,12 @@ test("a malformed roster disables the whole tool and a busy sibling returns a to
     expect(run.source.seen("set_host_tools")).toBe(0);
     run.source.finish(malformedPrompt, "finished");
     await malformed.text();
+
+    const legacy = await run.turn("main", [sibling], true);
+    const legacyPrompt = await run.source.take("prompt");
+    expect(run.source.seen("set_host_tools")).toBe(0);
+    run.source.finish(legacyPrompt, "finished");
+    expect(await legacy.text()).toContain("event: done");
 
     const target = await run.turn(sibling);
     const targetPrompt = await run.target.take("prompt");

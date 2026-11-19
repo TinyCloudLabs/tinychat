@@ -5,6 +5,7 @@ import type { TinyCloudNode } from "@tinycloud/node-sdk";
 import { makePkhSpaceId } from "@tinycloud/sdk-core";
 import { privateKeyToAccount } from "viem/accounts";
 import { BotHistory, checkedBatch, HISTORY_PREFIX, historyBotId, historyHash, historyOwner } from "../bot-history";
+import { NonceGuard, verifyCall } from "../bots-signed-call";
 import { createBotsRouter } from "../routes/bots";
 import { computeDelegationCid, makeSignedTranscriptGrant } from "./helpers/transcript-grant";
 
@@ -17,6 +18,8 @@ test("the messages route sends only the registry roster for its session owner an
   const address = `0x${"Ab".repeat(20)}`;
   const calls: string[][] = [];
   const bodies: unknown[] = [];
+  const owners: unknown[] = [];
+  const nonces = new NonceGuard();
   let available = true;
   const app = express();
   app.use(express.json());
@@ -29,7 +32,12 @@ test("the messages route sends only the registry roster for its session owner an
         return [key];
       },
       fetchImpl: (async (_url, init) => {
-        bodies.push(JSON.parse(init?.body as string));
+        const body = init?.body as string;
+        const claims = verifyCall(new Headers(init?.headers).get("authorization"), {
+          method: "POST", path: "/v1/bots/main/messages", body,
+        }, { secret: "fixture", direction: "to-service", environment: "private", nonces });
+        owners.push(claims?.owner);
+        bodies.push(JSON.parse(body));
         return new Response('event: done\ndata: {"messageId":"fixture"}\n\n');
       }) as typeof fetch,
     },
@@ -47,6 +55,7 @@ test("the messages route sends only the registry roster for its session owner an
     expect(await (await send()).text()).toContain("event: done");
     expect(bodies).toEqual([{ text: "hello", messageableBotKeys: [key] }, { text: "hello" }]);
     expect(calls).toEqual([[historyOwner(address), "main"], [historyOwner(address), "main"]]);
+    expect(owners).toEqual([historyOwner(address), historyOwner(address)]);
   } finally {
     await new Promise<void>(resolve => server.close(() => resolve()));
   }

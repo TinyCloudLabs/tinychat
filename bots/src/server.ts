@@ -4,12 +4,14 @@
 import type { ActivityRecord, StagedHistory } from "./history";
 import type { BotAdmission } from "./bot-admission";
 import { type BotMessenger, type ErrorCode, ERROR_MESSAGES, type ListedMessage, MAX_TEXT, type TurnSink } from "./bot";
+import { legacyOwnerHeaderAccepted } from "./config";
 import { isRecord } from "./guards";
 import { ANNOUNCED_STATES, type AnnouncedState, type BotState } from "./manifest";
 import { MESSAGING_STRINGS } from "./messaging-strings";
-import { authorizedOwner, isBotKey, MAIN_KEY } from "./owner";
+import { authorizedOwner, isBotKey, MAIN_KEY, ownerAllowed } from "./owner";
 import type { DeleteSkip } from "./retention";
 import type { HostToolReply } from "./rpc";
+import { type Environment, NonceGuard, SIGNED_SCHEME, verifyCall } from "./signed-call";
 
 /** `/v1/bots/<key>` and what follows it. The key is checked before anything is built from it. */
 const BOT_PATH = /^\/v1\/bots\/([^/]+)(\/.*)?$/;
@@ -43,9 +45,14 @@ export interface BotApi {
 }
 
 export interface AppOptions {
+  /** This service's secret: the HMAC key of the backend's signed calls (and the legacy bearer while it is accepted). */
   secret: string;
   accounts: Set<string> | "*";
   admit?: BotAdmission;
+  /** The environment this service runs; a call signed for another is refused. Default `private`. */
+  environment?: Environment;
+  /** Also accept the legacy bearer plus `x-tinycloud-owner`. Unset: from BOTS_ACCEPT_LEGACY_OWNER_HEADER. */
+  acceptLegacyOwnerHeader?: boolean;
   bots: {
     forOwner(ownerDid: string): BotApi;
     /** A sibling by key. Without it the service has only Main. */
@@ -184,12 +191,30 @@ async function remove(options: AppOptions, owner: string, key: string): Promise<
 }
 
 export function createApp(options: AppOptions): (req: Request) => Promise<Response> {
-  return async req => {
-    const path = new URL(req.url).pathname;
-    if (req.method === "GET" && path === "/healthz") return new Response("ok");
-    const owner = authorizedOwner(req, options.secret, options.accounts);
-    if (!owner) return new Response(null, { status: 401 });
+  const environment = options.environment ?? "private";
+  const acceptLegacy = options.acceptLegacyOwnerHeader ?? legacyOwnerHeaderAccepted(process.env);
+  const nonces = new NonceGuard();
+  return async incoming => {
+    const url = new URL(incoming.url);
+    const path = url.pathname;
+    if (incoming.method === "GET" && path === "/healthz") return new Response("ok");
     const match = BOT_PATH.exec(path);
+    const authorization = incoming.headers.get("authorization");
+    let owner: string | null = null;
+    let req = incoming;
+    const signed = authorization?.startsWith(SIGNED_SCHEME) === true;
+    if (signed) {
+      // The owner and the bot come only from the signed call; the body is read once to check its hash.
+      const body = new Uint8Array(await incoming.arrayBuffer().catch(() => new ArrayBuffer(0)));
+      const claims = verifyCall(authorization, { method: incoming.method, path: path + url.search, body }, { secret: options.secret, direction: "to-service", environment, nonces });
+      if (claims && claims.bot === match?.[1] && ownerAllowed(claims.owner, options.accounts)) {
+        owner = claims.owner;
+        req = new Request(incoming.url, { method: incoming.method, headers: incoming.headers, body: body.byteLength > 0 ? body : undefined });
+      }
+    } else if (acceptLegacy) {
+      owner = authorizedOwner(incoming, options.secret, options.accounts);
+    }
+    if (!owner) return new Response(null, { status: 401 });
     if (!match || !isBotKey(match[1]!)) return new Response(null, { status: 404 });
     const key = match[1]!;
     const rest = match[2] ?? "";
@@ -248,7 +273,7 @@ export function createApp(options: AppOptions): (req: Request) => Promise<Respon
       if (typeof text !== "string" || text.length < 1 || text.length > MAX_TEXT) {
         return eventStream(async sink => sink.error("invalid"));
       }
-      const messenger = turnMessenger(options, owner, key, isRecord(body) ? body.messageableBotKeys : undefined);
+      const messenger = signed ? turnMessenger(options, owner, key, isRecord(body) ? body.messageableBotKeys : undefined) : undefined;
       return eventStream(sink => bot.send(text, sink, owner, messenger));
     }
     if (req.method === "GET") {

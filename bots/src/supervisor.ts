@@ -1,5 +1,5 @@
-// Supervisor process: the internal API plus the bot sandboxes. Holds BOTS_SERVICE_SECRET and nothing else secret;
-// the model key lives only in the gateway container.
+// Supervisor process: the internal API plus the bot sandboxes. Holds the secrets for signed bots calls.
+// The model key lives only in the gateway container.
 
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -37,12 +37,13 @@ Bun.serve({
   idleTimeout: 120,
   maxRequestBodySize: 1024 * 1024,
   fetch: createApp({
-    secret: cfg.serviceSecret, accounts: cfg.accounts, bots, manifest: new OwnerManifests(manifestRoot),
-    admit: createAdmissionClient(cfg.egressRoot, cfg.serviceSecret),
+    secret: cfg.serviceSecret, accounts: cfg.accounts, environment: "private", acceptLegacyOwnerHeader: cfg.acceptLegacyOwnerHeader,
+    bots, manifest: new OwnerManifests(manifestRoot),
+    admit: cfg.backendCallSecret ? createAdmissionClient(cfg.egressRoot, cfg.backendCallSecret) : undefined,
   }),
 });
 console.log(
-  JSON.stringify({ bots: "listening", port: cfg.port, model: cfg.model, idleMs: cfg.idleMs, retentionDays: cfg.retentionDays, limits: cfg.limits }),
+  JSON.stringify({ bots: "listening", port: cfg.port, model: cfg.model, idleMs: cfg.idleMs, retentionDays: cfg.retentionDays, limits: cfg.limits, acceptLegacyOwnerHeader: cfg.acceptLegacyOwnerHeader }),
 );
 
 // Working state unused for BOTS_RETENTION_DAYS is deleted: checked at startup, then every 6 hours.

@@ -1,6 +1,6 @@
 // Environment for the two bots processes: the supervisor (not privileged, but holds what runsc needs; runs the
 // sandboxes, answers the backend) and the egress gateway (unprivileged, the only holder of the model key).
-// The gateway also holds the service secret for authenticated backend admission.
+// The supervisor and gateway share the separate secret for signed backend admission.
 
 import { dirname, join } from "node:path";
 
@@ -26,6 +26,14 @@ function required(env: Env, name: string): string {
   return value;
 }
 
+function backendCallSecret(env: Env): string | undefined {
+  const secret = env.BOTS_BACKEND_CALL_SECRET || undefined;
+  if (secret && secret.length < MIN_SERVICE_SECRET_CHARS) {
+    throw new Error("BOTS_BACKEND_CALL_SECRET must be a unique 256-bit secret");
+  }
+  return secret;
+}
+
 /**
  * Per-bot budget. memoryMb is the sandbox's cgroup limit and bounds everything it holds: processes, the writable
  * root layer, /tmp and the state it writes (all three live in memory). A bot that exceeds it is killed alone.
@@ -42,11 +50,23 @@ export interface SandboxLimits {
   stateMb: number;
 }
 
+/**
+ * BOTS_ACCEPT_LEGACY_OWNER_HEADER=1 also accepts the bearer secret plus `x-tinycloud-owner`, for the rollout only:
+ * until the backend that signs its calls is deployed. Unset or `0`: signed calls only. Anything else is refused.
+ */
+export function legacyOwnerHeaderAccepted(env: Env): boolean {
+  const raw = env.BOTS_ACCEPT_LEGACY_OWNER_HEADER?.trim() ?? "";
+  if (raw !== "" && raw !== "0" && raw !== "1") throw new Error("BOTS_ACCEPT_LEGACY_OWNER_HEADER must be 0 or 1");
+  return raw === "1";
+}
+
 export interface SupervisorConfig {
   port: number;
   serviceSecret: string;
+  backendCallSecret?: string;
   /** Lowercased addresses, or "*" for every account. Empty admits nobody. */
   accounts: Set<string> | "*";
+  acceptLegacyOwnerHeader: boolean;
   model: string;
   idleMs: number;
   dataRoot: string;
@@ -76,6 +96,8 @@ export function supervisorConfig(env: Env): SupervisorConfig {
   if (serviceSecret.length < MIN_SERVICE_SECRET_CHARS) {
     throw new Error("BOTS_SERVICE_SECRET must be a unique 256-bit secret (openssl rand -hex 32)");
   }
+  const admitSecret = backendCallSecret(env);
+  if (admitSecret === serviceSecret) throw new Error("BOTS_BACKEND_CALL_SECRET must differ from BOTS_SERVICE_SECRET");
   const list = (env.BOTS_TEST_ACCOUNTS ?? "").split(",").map(value => value.trim().toLowerCase()).filter(Boolean);
   const limits: SandboxLimits = {
     memoryMb: int(env, "BOTS_SANDBOX_MEMORY_MB", 1536, 256),
@@ -102,7 +124,9 @@ export function supervisorConfig(env: Env): SupervisorConfig {
   return {
     port: int(env, "PORT", 8080),
     serviceSecret,
+    backendCallSecret: admitSecret,
     accounts: list.includes("*") ? "*" : new Set(list),
+    acceptLegacyOwnerHeader: legacyOwnerHeaderAccepted(env),
     model: env.BOTS_MODEL?.trim() || DEFAULT_MODEL,
     idleMs: int(env, "BOTS_IDLE_MS", 10 * 60_000, 1000),
     dataRoot: env.BOTS_DATA_ROOT ?? "/data/bots",
@@ -172,7 +196,7 @@ function backendOrigin(env: Env): string {
   return url.origin;
 }
 
-export function gatewayConfig(env: Env): GatewayConfig & { backendOrigin: string; serviceSecret?: string } {
+export function gatewayConfig(env: Env): GatewayConfig & { backendOrigin: string; backendCallSecret?: string } {
   const model = env.BOTS_MODEL?.trim() || DEFAULT_MODEL;
   const models = (env.BOTS_MODELS ?? "").split(",").map(value => value.trim()).filter(Boolean);
   const botDailyTokens = int(env, "BOTS_BOT_DAILY_TOKENS", 2_000_000);
@@ -182,7 +206,7 @@ export function gatewayConfig(env: Env): GatewayConfig & { backendOrigin: string
     modelKey: required(env, "REDPILL_API_KEY"),
     upstream: upstream(env),
     backendOrigin: backendOrigin(env),
-    serviceSecret: env.BOTS_SERVICE_SECRET || undefined,
+    backendCallSecret: backendCallSecret(env),
     models: models.length > 0 ? models : [model],
     maxTokens: int(env, "BOTS_MAX_TOKENS", 8192),
     botDailyTokens,

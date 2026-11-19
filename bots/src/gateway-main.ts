@@ -15,8 +15,8 @@ import { isRecord } from "./guards";
 import { egressPaths } from "./layout";
 import { BOT_ID } from "./owner";
 
-const { backendOrigin, serviceSecret, ...cfg } = gatewayConfig(process.env);
-const admit = createAdmissionRelay(backendOrigin, serviceSecret);
+const { backendOrigin, backendCallSecret, ...cfg } = gatewayConfig(process.env);
+const admit = createAdmissionRelay(backendOrigin, backendCallSecret);
 const aci = process.env.BOTS_HISTORY_ENABLED === "true" ? new BotAci(cfg.upstream) : undefined;
 // Budgets persist on the gateway's own volume. An unreadable budget file stops the start (fails closed) with one
 // operator line naming the file and the recovery; the non-zero exit keeps Docker restarting it, each time logged.
