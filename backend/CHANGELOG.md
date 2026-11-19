@@ -1,5 +1,68 @@
 # @tinychat/backend
 
+## 0.9.1
+
+### Patch Changes
+
+- 298c5b1: Import meetings from a Granola CSV export. Meetings you've deleted aren't imported again unless you allow them back.
+
+  Details: TC-3292
+
+- 298c5b1: Importing a Granola CSV leaves notes synced from Granola's API unchanged. A meeting you deleted stays out of later Granola syncs and CSV imports until you choose "Allow deleted meetings back" and confirm.
+
+  Details: TC-3292
+
+- 05459bb: Enable Granola imports and API sync in production.
+
+  Details: TC-3292
+
+- 4444996: Main gives earlier messages more time to load when it starts. It shows "Loading earlier messages…" while they load, and you can send a message in the meantime.
+- 2e88e1e: Internal changes for bots; nothing in the app changes.
+
+  Details: TC-3325
+
+- 2bcde9f: Trim oversized web search results instead of failing the reply (TC-3464). A `web_search` result over 64K characters is cut to 64K with the `[...truncated...]` marker and the model answers from it; reading stops at a 256K hard bound, past which the reply still ends with `result_size_limit` (ours, free). Meeting reads keep failing on overflow, since their structured evidence cannot be cut.
+
+## 0.9.1-beta.4
+
+### Patch Changes
+
+- 05459bb: Enable Granola imports and API sync in production.
+
+  Details: TC-3292
+
+## 0.9.1-beta.3
+
+### Patch Changes
+
+- 2e88e1e: Internal changes for bots; nothing in the app changes.
+
+  Details: TC-3325
+
+## 0.9.1-beta.2
+
+### Patch Changes
+
+- 4444996: Main gives earlier messages more time to load when it starts. It shows "Loading earlier messages…" while they load, and you can send a message in the meantime.
+
+## 0.9.1-beta.1
+
+### Patch Changes
+
+- 2bcde9f: Trim oversized web search results instead of failing the reply (TC-3464). A `web_search` result over 64K characters is cut to 64K with the `[...truncated...]` marker and the model answers from it; reading stops at a 256K hard bound, past which the reply still ends with `result_size_limit` (ours, free). Meeting reads keep failing on overflow, since their structured evidence cannot be cut.
+
+## 0.9.1-beta.0
+
+### Patch Changes
+
+- 298c5b1: Import meetings from a Granola CSV export. Meetings you've deleted aren't imported again unless you allow them back.
+
+  Details: TC-3292
+
+- 298c5b1: Importing a Granola CSV leaves notes synced from Granola's API unchanged. A meeting you deleted stays out of later Granola syncs and CSV imports until you choose "Allow deleted meetings back" and confirm.
+
+  Details: TC-3292
+
 ## 0.9.0
 
 ### Minor Changes

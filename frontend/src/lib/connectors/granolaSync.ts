@@ -56,6 +56,7 @@ export const GRANOLA_INCREMENTAL_OVERLAP_MS = 60_000;
 /** Detail fetches a single run will make — the page budget's own bound. */
 export const GRANOLA_MAX_DETAILS_PER_RUN = 250;
 const GRANOLA_SECRET = { secretName: GRANOLA_SECRET_NAME };
+const PURGE_CHECK_TIMEOUT_MS = 20_000;
 
 /** Serialize credential and connection writes with Granola's sync writes. */
 export function saveGranolaConnection(
@@ -139,6 +140,7 @@ export interface SyncGranolaOptions {
   client: GranolaSyncClient;
   store: GranolaSyncStore;
   tcw: TinyCloudWeb;
+  checkPurge: (meetingId: string, sourceTimestamp: string | null, signal: AbortSignal) => Promise<boolean>;
   onProgress?: (progress: SyncProgress) => void;
   signal?: AbortSignal;
   detailCap?: number;
@@ -543,10 +545,25 @@ async function runGranolaSync(
                   if (!before.ok) return { error: before.error };
                   if (before.data?.status !== "connected") return { disconnected: true };
                   if (!current()) return null;
+                  const purgeController = new AbortController();
+                  const abortPurge = () => purgeController.abort();
+                  if (signal.aborted) abortPurge();
+                  else signal.addEventListener("abort", abortPurge, { once: true });
+                  const timeout = setTimeout(abortPurge, PURGE_CHECK_TIMEOUT_MS);
+                  let purged: boolean;
+                  try {
+                    purged = await opts.checkPurge(meeting.sourceId, meeting.startedAt, purgeController.signal);
+                  } finally {
+                    clearTimeout(timeout);
+                    signal.removeEventListener("abort", abortPurge);
+                  }
+                  if (purged) return { purged: true };
+                  if (!current() || signal.aborted) return null;
                   return { upsert: await store.upsertMeeting(tcw, meeting, sentences) };
                 });
                 if (!write) return { ok: true, data: result };
                 if ("disconnected" in write) break;
+                if ("purged" in write) { result.skipped++; continue; }
                 if ("error" in write) {
                   terminal = fromStore(
                     write.error ?? { code: "STORE_ERROR", message: "Connection read failed" },

@@ -127,6 +127,7 @@ export function MainChat({ open, onOpenChange, state, onSend, onRetry, onRetryHi
         <div className="mx-auto flex w-full max-w-2xl flex-col gap-5 py-4">
           <p className="text-center text-callout text-muted-foreground">{BOTS_STRINGS.modelLine}</p>
           {open && notice && onReconnect ? <ExpiryNotice key={`${notice.id}:${notice.deliveredAt ?? notice.renderAttemptAt ?? "initial"}`} notice={notice} onReconnect={onReconnect} /> : null}
+          {history === "loading" ? <p role="status" className="text-callout text-muted-foreground">{BOTS_STRINGS.historyLoading}</p> : null}
           {history === "failed" && !working ? <Failure text={BOTS_STRINGS.historyFailed} onRetry={onRetryHistory} /> : null}
           {lines.map((line) => (
             <Line key={line.id} role={line.role} text={line.text} />

@@ -74,6 +74,8 @@ export interface SandboxLauncher {
   /** Every mount point the supervisor sees (decoded from /proc/self/mountinfo). */
   mountPoints?(): string[];
   provenance?(layout: BotLayout): Promise<unknown>;
+  /** Removes what the bot keeps off this host (a remote sandbox and its snapshot) before its directories go. */
+  removeState?(layout: BotLayout): Promise<void>;
 }
 
 /** Repeated while waiting, so idle proxies keep the stream open through slow starts and long turns. */

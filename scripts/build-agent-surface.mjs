@@ -15,7 +15,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // Bump this one SHA to import a reviewed prompts build.
-export const PROMPTS_COMMIT = "9b33f49b0918cae26a71fb14ec63fd332fd44c2d";
+export const PROMPTS_COMMIT = "e44c83b662e3c9aac0d42353077ab6612333d063";
 const SITE_URL = "https://tinycloud.one/agents/abilities";
 const PREFIX = "/agents/abilities";
 const ROOT_DISCOVERY = ["llms-full.txt", "robots.txt", "sitemap.xml", ".well-known"];
@@ -74,6 +74,27 @@ export function installAgentSurface(siteDir, outDir) {
 
   for (const path of ROOT_DISCOVERY) {
     cpSync(join(siteDir, path), join(outDir, path), { recursive: true, force: true });
+  }
+
+  const skillsIndexPath = join(outDir, ".well-known", "agent-skills", "index.json");
+  if (existsSync(skillsIndexPath)) {
+    const skillsIndex = JSON.parse(readFileSync(skillsIndexPath, "utf8"));
+    for (const skill of skillsIndex.skills ?? []) skill.url = prefixed(skill.url);
+    writeFileSync(skillsIndexPath, `${JSON.stringify(skillsIndex, null, 2)}\n`);
+  }
+
+  const apiCatalogPath = join(outDir, ".well-known", "api-catalog");
+  if (existsSync(apiCatalogPath)) {
+    const apiCatalog = JSON.parse(readFileSync(apiCatalogPath, "utf8"));
+    const links = apiCatalog.linkset?.[0];
+    if (links) {
+      links["service-desc"] = [{
+        href: "https://tinycloud.one/mcp/server-card",
+        type: "application/mcp-server-card+json",
+        title: "TinyCloud MCP server card",
+      }];
+      writeFileSync(apiCatalogPath, `${JSON.stringify(apiCatalog, null, 2)}\n`);
+    }
   }
 
   const rootIndexPath = join(outDir, "llms.txt");

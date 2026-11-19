@@ -261,7 +261,7 @@ describe("EmbedHost: requests", () => {
 });
 
 describe("EmbedHost: spaces that aren't set up", () => {
-  // Courier opens in a new tab (framed: false); the host's behaviour for its entry is what this block checks.
+  // Courier is framed inside One; the host's behaviour for its entry is what this block checks.
   const courier = oneApp("xyz.tinycloud.courier");
   if (courier?.kind !== "framed") throw new Error("Courier is a TinyCloud web app");
   const agentsRead = { service: "tinycloud.kv", space: "agents", path: "xyz.tinycloud.courier/", actions: ["get"] };

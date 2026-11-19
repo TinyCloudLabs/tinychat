@@ -17,7 +17,7 @@ import {
   validateSitrepAction, validateState,
 } from "@tinyboilerplate/core/feed/sitrep";
 import type { BoardRecord, Patch, SamState } from "@tinyboilerplate/core/feed/sitrep";
-import type { HomeMirrorBinding, HomeMirrorCloseReceipt, HomeMirrorContext, HomeMirrorIdentity } from "./bridge-types";
+import type { HomeMirrorBinding, HomeMirrorCloseReceipt, HomeMirrorContext, HomeMirrorIdentity, HomeMirrorPublishInput } from "./bridge-types";
 
 const OWNER = "xyz.tinycloud.tinychat/home_feed";
 const PREFIX = "xyz.tinycloud.tinychat/feed";
