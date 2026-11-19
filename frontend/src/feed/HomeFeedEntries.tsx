@@ -1,6 +1,7 @@
 import { Link } from "react-router-dom";
 import { PATHS } from "@/shell/routes";
 import { useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { AnimatePresence } from "motion/react";
 import { ChevronRightIcon, InfoIcon, SlidersHorizontalIcon, TriangleAlertIcon } from "lucide-react";
 import type { FeedResponse, NewFeedMessage, NewFeedResponse } from "@tinycloud/sdk-services/feed";
 import type { BoardRecord } from "@tinyboilerplate/core/feed/sitrep";
@@ -31,6 +32,8 @@ import { AgentsPill } from "./AgentMarks";
 import { useShowHiddenFeatures } from "@/lib/hiddenFeatures";
 import { PendingCard, type PendingItem } from "./PendingCard";
 import { MorphConfig, MorphItem, MotionFeatures } from "./densityMorph";
+import { DesktopCard, DesktopCardClose, rowElement } from "./DesktopCard";
+import { useDesktopCard } from "./openMode";
 import { useUndoBar } from "./UndoBar";
 import { CardWaitContext, useAnnounceWait, type CardWait, type WaitReport } from "./cardWait";
 import { OptionsToggle } from "./OptionsToggle";
@@ -418,6 +421,8 @@ export function HomeFeedEntries({ source, ask, linked }: { source: HomeFeedSourc
   // How the list is drawn (Compact, Expanded, Cards), kept on this device, the same in every tab.
   const [viewMode, setViewModeState] = useState<FeedViewMode>(readFeedViewMode);
   const setViewMode = (mode: FeedViewMode) => { setViewModeState(mode); saveFeedViewMode(mode); };
+  // A wide screen with a mouse lifts an opened card over the stream (DesktopCard.tsx); Expanded keeps every card open in place.
+  const lift = useDesktopCard() && viewMode !== "expanded";
   // Filter opens a popover under the row.
   const [panel, setPanel] = useState<"filter" | null>(null);
   const toolbarRef = useRef<HTMLDivElement>(null);
@@ -880,12 +885,21 @@ export function HomeFeedEntries({ source, ask, linked }: { source: HomeFeedSourc
     const key = lineageKey(entry);
     if (!sticky.has(key)) setSticky((current) => new Map(current).set(key, attention(entry)));
   }
-  /** Opens a card in place (in the compact view) and brings it into view. */
+  /** Marks a card open. On a wide screen one card is lifted at a time: the others fold, except a card whose answer is counting down (kept, out of sight). */
+  function addOpen(key: string) {
+    setOpened((current) => new Set(lift ? [...current].filter((other) => waits.has(other)) : current).add(key));
+  }
+  /** Opens a card (in place, or lifted over the stream on a wide screen) and brings its row into view. */
   function openCard(entry: HomeFeedEntry) {
     engage(entry);
-    const key = lineageKey(entry);
-    setOpened((current) => new Set(current).add(key));
+    addOpen(lineageKey(entry));
     scrollTo.current = keyOf(entry);
+  }
+  /** Closes the lifted card: the row it came from takes focus back. */
+  function closeLifted(entry: HomeFeedEntry) {
+    fold(entry);
+    // Once the stream is no longer inert.
+    window.setTimeout(() => rowElement(keyOf(entry))?.querySelector<HTMLElement>("button")?.focus(), 0);
   }
   function fold(entry: HomeFeedEntry) {
     const key = lineageKey(entry);
@@ -1066,7 +1080,7 @@ export function HomeFeedEntries({ source, ask, linked }: { source: HomeFeedSourc
       {...(agentProfile(entry.state.card.payload)?.platform ? { platform: agentProfile(entry.state.card.payload)!.platform } : {})} {...(status ? { status } : {})} />;
   }
   /** A card open: its header, body, brief, answers, conversation and foot, with the page's refusal lines. */
-  function fullCard(entry: HomeFeedEntry, retained = false) {
+  function fullCard(entry: HomeFeedEntry, retained = false, lifted = false) {
     const key = lineageKey(entry);
     const held = heldOutcomes.get(JSON.stringify([entry.source.sourceId, entry.state.card.cardId]));
     const unsent = held && (held.outcome === "replaced" || held.outcome === "closed" || held.outcome === "refused") ? held : undefined;
@@ -1085,11 +1099,11 @@ export function HomeFeedEntries({ source, ask, linked }: { source: HomeFeedSourc
     const post = postOf(entry);
     const priority = timingOf(entry).priority;
     const closed = !!closureOf(entry);
-    // Open in place: fold it back to a row from the top right, beside its status. In Expanded every card is open, so there is nothing to fold to.
-    const collapse = viewMode === "expanded" ? undefined : <button type="button" aria-expanded aria-label="Show less" onClick={() => fold(entry)} className="-my-1 flex size-11 items-center justify-center rounded-full text-muted-foreground hover:bg-surface-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring fine:my-0 fine:size-9"><ChevronRightIcon aria-hidden className="size-4 -rotate-90" /></button>;
+    // Open in place: fold it back to a row from the top right, beside its status. In Expanded every card is open, so there is nothing to fold to. Lifted over the stream, the same place holds the X.
+    const collapse = lifted ? <DesktopCardClose onClick={() => closeLifted(entry)} /> : viewMode === "expanded" ? undefined : <button type="button" aria-expanded aria-label="Show less" onClick={() => fold(entry)} className="-my-1 flex size-11 items-center justify-center rounded-full text-muted-foreground hover:bg-surface-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring fine:my-0 fine:size-9"><ChevronRightIcon aria-hidden className="size-4 -rotate-90" /></button>;
     const wake = snoozedNow(entry, clock) ? <button type="button" onClick={() => void unsnooze(entry)} className={footActionClass}>Bring back now</button> : undefined;
     const status = statusOf(entry, author.name);
-    const options = retained || viewMode === "expanded" ? 0 : optionCountOf(entry);
+    const options = retained || lifted || viewMode === "expanded" ? 0 : optionCountOf(entry);
     // Any touch or focus inside an open card engages it, in every view: a card being answered stays bound to its exact
     // issuance (retained in place when a changed revision arrives mid-countdown, so the countdown is refused, never
     // written to the old identity).
@@ -1110,7 +1124,7 @@ export function HomeFeedEntries({ source, ask, linked }: { source: HomeFeedSourc
       {context
         ? <SitrepCard key={key} entry={entry} record={context.record} records={context.records} entries={context.entries} owner={context.owner} projection={context.projection} source={source} now={clock} expanded stale={retained} reference={reference}
           onRefused={onRefused} onSaved={onSaved} onOwnerSaved={() => refreshRef.current()} onSnoozed={(until) => snoozedTyped(entry, until)}
-          onNavigate={(next) => { engage(next); setOpened((current) => new Set(current).add(lineageKey(next))); }}
+          onNavigate={(next) => { engage(next); addOpen(lineageKey(next)); }}
           {...(attention(entry) && !retained ? { close: { kind: "drop" as const, onTap: () => closeCard(entry, "drop") } } : canAcknowledge(entry, retained) ? { close: { kind: "acknowledge" as const, onTap: () => closeCard(entry, "acknowledge") } } : {})} {...(wake ? { extra: wake } : {})} />
         : unsupported
           ? <><p role="status" className="mt-3.5 text-sm text-muted-foreground">Open Details to see this card's content, exactly as {author.name} sent it.</p>
@@ -1129,7 +1143,8 @@ export function HomeFeedEntries({ source, ask, linked }: { source: HomeFeedSourc
     // Each card morphs between a row and its open shape as one item: its box moves and resizes while its content
     // crossfades (densityMorph.tsx).
     // Expanded shows every card open (a post keeps its row: it opens a page of its own).
-    const openHere = isOpen(entry) || retained || (viewMode === "expanded" && !page);
+    // A wide screen lifts the card over the stream instead; its row stays where it is (a card kept in place for a newer version stays open in its row).
+    const openHere = (isOpen(entry) && !lift) || retained || (viewMode === "expanded" && !page);
     const waiting = waits.has(key);
     const boxed = viewMode === "cards" || viewMode === "expanded";
     // "See N options" is a second opener of the same card (the mock's): it opens the card in place, as tapping the post does.
@@ -1197,6 +1212,10 @@ export function HomeFeedEntries({ source, ask, linked }: { source: HomeFeedSourc
   const unreadReplies = (snapshot?.entries ?? []).some((entry) => (repliesOf(entry)?.unread ?? 0) > 0);
   const pageEntry = pageKey ? all.find((entry) => lineageKey(entry) === pageKey && !all.some((other) => other !== entry && other.state.card.revision > entry.state.card.revision && lineageKey(other) === pageKey)) : undefined;
   const pageOpen = pageEntry && labPageOf(pageEntry);
+  // Cards lifted over the stream (a wide screen): one at a time shows, the rest wait out an answer's countdown, mounted and hidden.
+  const retainedKeys = new Set(rows.flatMap((row) => row.kind === "card" && row.retained ? [lineageKey(row.item)] : []));
+  const liftedCards = lift ? [...new Map(shown.filter((entry) => isOpen(entry) && !labPageOf(entry) && !retainedKeys.has(lineageKey(entry))).map((entry) => [lineageKey(entry), entry] as const)).values()] : [];
+  const liftedShown = liftedCards.find((entry) => !waits.has(lineageKey(entry)));
   // The one place a wait shows: bars (Drop, Acknowledge, later), then an answer waiting or being written, then each send that landed.
   const pills: PillItem[] = [
     ...undoBar.pills,
@@ -1248,7 +1267,7 @@ export function HomeFeedEntries({ source, ask, linked }: { source: HomeFeedSourc
       {/* One header for every state, phone and desktop (briefs/feed-lab/design/toprow). "Feed" with the Agents pill on
           its line, the summary, then one row: the island (Needs you · Updates · History, the stream's map) and the
           Filter icon. Scrolled, the row stays at the top over the cards; the title comes back on scroll up. */}
-      <FloatingHeader scrollRef={mainRef} inert={!!pageEntry} className="-mx-3 mb-3 px-3 pb-2 pt-2 sm:-mx-6 sm:px-6 lg:-mx-8 lg:px-8">
+      <FloatingHeader scrollRef={mainRef} inert={!!pageEntry || !!liftedShown} className="-mx-3 mb-3 px-3 pb-2 pt-2 sm:-mx-6 sm:px-6 lg:-mx-8 lg:px-8">
         <header ref={headerRef} className="scroll-mt-4">
           <div className="flex min-w-0 items-center gap-2">
             <h1 className="min-w-0 flex-1 font-display text-[min(1.75rem,9vw)] font-semibold leading-[2.125rem] tracking-[-0.005em]">{NAV_LABEL_HOME}</h1>
@@ -1281,7 +1300,7 @@ export function HomeFeedEntries({ source, ask, linked }: { source: HomeFeedSourc
         </div>}
       </FloatingHeader>
       <SendPills items={pills} />
-      <div inert={!!pageEntry}>
+      <div inert={!!pageEntry || !!liftedShown}>
       {showHidden && ask}
       {error && <div role="alert" className="mb-4 flex items-start gap-3 rounded-2xl bg-card px-4 py-3 text-sm leading-[1.45] shadow-[inset_0_0_0_1px_hsl(var(--border))]">
         <TriangleAlertIcon aria-hidden className="mt-px size-5 shrink-0 text-warning" />
@@ -1332,7 +1351,7 @@ export function HomeFeedEntries({ source, ask, linked }: { source: HomeFeedSourc
           const post = postOf(entry);
           return { key: keyOf(entry), agentKey: agentKey(entry, record), author, title: entry.state.card.title, status, detail: describe(entry), at: (answeredIn(entry) ?? entry).state.response?.createdAt ?? entry.state.card.createdAt,
             ...(post ? { post } : {}), ...(waits.has(lineageKey(entry)) ? { waiting: true } : {}),
-            onOpen: () => openCard(entry), ...(opened.has(lineageKey(entry)) ? { open: fullCard(entry) } : {}),
+            onOpen: () => openCard(entry), ...(opened.has(lineageKey(entry)) && !lift ? { open: fullCard(entry) } : {}),
             ...(status.startsWith("Waiting") ? {} : { onAcknowledge: () => closeCard(entry, "acknowledge") }) };
         })} />}
         {sections.filter(([id]) => id === "history").map(sectionNode)}
@@ -1340,6 +1359,9 @@ export function HomeFeedEntries({ source, ask, linked }: { source: HomeFeedSourc
       {/* Room under the stream, so the last section can still come up under the pinned row. */}
       {agentPage === null && !!listed.length && <div aria-hidden className={STREAM_ROOM_CLASS} />}
       </div>
+      <AnimatePresence>
+        {liftedCards.map((entry) => <DesktopCard key={lineageKey(entry)} id={openCardId(lineageKey(entry))} rowKey={keyOf(entry)} label={entry.state.card.title} open={entry === liftedShown} onClose={() => closeLifted(entry)}>{fullCard(entry, false, true)}</DesktopCard>)}
+      </AnimatePresence>
     </MorphConfig>
     </div>
     {pageEntry && pageOpen && (() => {
