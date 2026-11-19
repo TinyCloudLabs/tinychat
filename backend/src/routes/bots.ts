@@ -148,14 +148,26 @@ export function createBotsRouter(opts: { config?: BotsConfig; authMiddleware: Re
     return undefined;
   };
 
-  const readMessages = async (res: Response, address: string, key: string): Promise<void> => {
+  /**
+   * One call to the service for a bot. Main exists there without being announced; any other bot exists there only
+   * once announced. So if the service does not know a bot the record says is active, it is told again, once, and
+   * the call is made again. `call` builds a fresh request each time. `seq` is the record's counter, absent for Main.
+   */
+  const callBot = async (address: string, key: string, seq: number | undefined, call: () => Promise<globalThis.Response>): Promise<globalThis.Response> => {
+    const first = await call();
+    if (first.status !== 404 || seq === undefined || !(await announce(address, key, "active", seq))) return first;
+    await first.body?.cancel();
+    return call();
+  };
+
+  const readMessages = async (res: Response, address: string, key: string, seq?: number): Promise<void> => {
     const unavailable = key === MAIN_BOT_KEY ? UNAVAILABLE : BOT_UNAVAILABLE;
     try {
       const url = `${config!.serviceUrl}/v1/bots/${key}/messages`;
-      const upstream = await (config!.fetchImpl ?? fetch)(url, {
+      const upstream = await callBot(address, key, seq, () => (config!.fetchImpl ?? fetch)(url, {
         headers: botsServiceHeaders(config!, botOwnerDid(address), "GET", url),
         signal: AbortSignal.timeout(10_000),
-      });
+      }));
       if (!upstream.ok) { res.status(502).json({ error: unavailable.code, message: unavailable.message }); return; }
       res.json(await upstream.json());
     } catch {
@@ -176,11 +188,11 @@ export function createBotsRouter(opts: { config?: BotsConfig; authMiddleware: Re
     if (!own) return;
     // The service answers the same for a bot that is being deleted; say so here, without asking it.
     if (own.bot.state === "deleting") { res.status(409).json({ error: "bot_not_active", state: own.bot.state }); return; }
-    await readMessages(res, address, own.bot.key);
+    await readMessages(res, address, own.bot.key, own.seq);
   });
 
   // One turn: the owner's text goes to the bot `key` names, and the service's events stream back.
-  const sendMessage = async (req: Request, res: Response, address: string, key: string): Promise<void> => {
+  const sendMessage = async (req: Request, res: Response, address: string, key: string, seq?: number): Promise<void> => {
     const text: unknown = req.body?.text;
     if (typeof text !== "string" || text.length < 1 || text.length > MAX_TEXT) {
       res.status(400).json({ error: "invalid", message: "Messages can be up to 8,000 characters." });
@@ -202,12 +214,12 @@ export function createBotsRouter(opts: { config?: BotsConfig; authMiddleware: Re
     try {
       const url = `${config!.serviceUrl}/v1/bots/${key}/messages`;
       const body = JSON.stringify({ text });
-      const upstream = await (config!.fetchImpl ?? fetch)(url, {
+      const upstream = await callBot(address, key, seq, () => (config!.fetchImpl ?? fetch)(url, {
         method: "POST",
         headers: botsServiceHeaders(config!, botOwnerDid(address), "POST", url, body),
         body,
         signal: controller.signal,
-      });
+      }));
       if (!upstream.ok || !upstream.body) throw new Error("upstream");
       const reader = upstream.body.getReader();
       // Release a pending read even if the upstream body ignores the abort signal.
@@ -254,7 +266,7 @@ export function createBotsRouter(opts: { config?: BotsConfig; authMiddleware: Re
     const own = await ownBot(res, address, req.params.key);
     if (!own) return;
     if (own.bot.state !== "active") { res.status(409).json({ error: "bot_not_active", state: own.bot.state }); return; }
-    await sendMessage(req, res, address, own.bot.key);
+    await sendMessage(req, res, address, own.bot.key, own.seq);
   });
 
   return router;

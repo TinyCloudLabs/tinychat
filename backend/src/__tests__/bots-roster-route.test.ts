@@ -251,3 +251,65 @@ describe("sending a message to a bot other than Main", () => {
     } finally { await run.close(); }
   });
 });
+
+describe("a bot the record says is active but the service does not know", () => {
+  const KEY = "1".repeat(32);
+  const stream = 'event: delta\ndata: {"text":"pong"}\n\nevent: done\ndata: {"messageId":"m1"}\n\n';
+  const sse = (body: string) => new Response(body, { headers: { "content-type": "text/event-stream" } });
+  /** A record holding Main and one active bot that was never announced, at counter 7. */
+  const seedUnannounced = (kv: FakeRegistryStore) => kv.rows.set(`bots/registry/${owner.toLowerCase()}`, {
+    version: 1,
+    value: JSON.stringify({ v: 1, seq: 7, deleted: [], bots: [main, { ...main, key: KEY, name: "Research" }] }),
+  });
+  const calls = (seen: UpstreamCall[]) => seen.map(call => `${call.method} ${call.url.replace("http://bots.test", "")}`);
+
+  test("is announced again, once, and the message is then sent", async () => {
+    let sends = 0;
+    const run = await setup(call => {
+      if (call.method === "PUT") return Response.json({ state: "active" });
+      sends += 1;
+      return sends === 1 ? new Response(null, { status: 404 }) : sse(stream);
+    });
+    try {
+      seedUnannounced(run.kv);
+      const response = await fetch(`${run.base}/${KEY}/messages`, { method: "POST", headers: await run.headersFor(owner), body: JSON.stringify({ text: "ping" }) });
+      expect(await response.text()).toBe(stream);
+      expect(calls(run.seen)).toEqual([`POST /v1/bots/${KEY}/messages`, `PUT /v1/bots/${KEY}`, `POST /v1/bots/${KEY}/messages`]);
+      expect(run.seen[1]!.body).toBe(JSON.stringify({ state: "active", seq: 7 }));
+    } finally { await run.close(); }
+  });
+
+  test("is reported unavailable if the service still does not know it, and is not asked a third time", async () => {
+    const run = await setup(call => (call.method === "PUT" ? Response.json({ state: "active" }) : new Response(null, { status: 404 })));
+    try {
+      seedUnannounced(run.kv);
+      const response = await fetch(`${run.base}/${KEY}/messages`, { method: "POST", headers: await run.headersFor(owner), body: JSON.stringify({ text: "ping" }) });
+      expect(await response.text()).toContain("event: error");
+      expect(calls(run.seen)).toEqual([`POST /v1/bots/${KEY}/messages`, `PUT /v1/bots/${KEY}`, `POST /v1/bots/${KEY}/messages`]);
+    } finally { await run.close(); }
+  });
+
+  test("is announced again, once, when its messages are read", async () => {
+    let reads = 0;
+    const run = await setup(call => {
+      if (call.method === "PUT") return Response.json({ state: "active" });
+      reads += 1;
+      return reads === 1 ? new Response(null, { status: 404 }) : Response.json({ messages: [] });
+    });
+    try {
+      seedUnannounced(run.kv);
+      const response = await fetch(`${run.base}/${KEY}/messages`, { headers: await run.headersFor(owner) });
+      expect([response.status, await response.json()]).toEqual([200, { messages: [] }]);
+      expect(calls(run.seen)).toEqual([`GET /v1/bots/${KEY}/messages`, `PUT /v1/bots/${KEY}`, `GET /v1/bots/${KEY}/messages`]);
+    } finally { await run.close(); }
+  });
+
+  test("Main is never announced: a 404 for Main is simply unavailable", async () => {
+    const run = await setup(() => new Response(null, { status: 404 }));
+    try {
+      const response = await fetch(`${run.base}/main/messages`, { headers: await run.headersFor(owner) });
+      expect(response.status).toBe(502);
+      expect(calls(run.seen)).toEqual(["GET /v1/bots/main/messages"]);
+    } finally { await run.close(); }
+  });
+});
