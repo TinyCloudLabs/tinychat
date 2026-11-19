@@ -74,7 +74,19 @@ export class OwnerArchiveCache {
   constructor(private readonly database: FeedDatabase) { this.database = privateFeedDatabase(database); }
 
   async load(sources: readonly FeedSource[]): Promise<OwnerArchiveProjection> {
-    const metadata = unwrap(await this.database.query("SELECT source_space_id,namespace,snapshot_id,created_at,length(bundle_json) FROM feed_owner_imports", [])).rows;
+    return this.project(unwrap(await this.database.query("SELECT source_space_id,namespace,snapshot_id,created_at,length(bundle_json) FROM feed_owner_imports ORDER BY rowid", [])).rows, sources);
+  }
+
+  /** The projection of `feed_owner_imports` metadata rows (source_space_id, namespace, snapshot_id, created_at, length(bundle_json)). */
+  async project(metadata: readonly unknown[][], sources: readonly FeedSource[]): Promise<OwnerArchiveProjection> {
+    // Archives this session has not validated yet are read together, not one after another.
+    const bundles = new Map(await Promise.all(metadata.flatMap((row) => {
+      const [spaceId, namespace, snapshotId] = row;
+      const key = JSON.stringify([spaceId, namespace, snapshotId]);
+      if (this.archives.has(key)) return [];
+      return [this.database.query("SELECT bundle_json FROM feed_owner_imports WHERE source_space_id=? AND namespace=? AND snapshot_id=?", [String(spaceId), String(namespace), String(snapshotId)])
+        .then((result) => [key, unwrap(result).rows[0]?.[0]] as const)];
+    })));
     const projectionKey = JSON.stringify([metadata, sources.map((source) => [source.sourceId, source.agentDid, source.output, source.responses])]);
     if (this.previous?.key === projectionKey) return this.previous.projection;
     const scopes = new Map<string, Map<string, CachedArchive>>();
@@ -87,8 +99,7 @@ export class OwnerArchiveCache {
       let cached = this.archives.get(key);
       if (cached && cached.stamp !== stamp) throw new Error("An immutable owner archive was changed");
       if (!cached) {
-        const rows = unwrap(await this.database.query("SELECT bundle_json FROM feed_owner_imports WHERE source_space_id=? AND namespace=? AND snapshot_id=?", [String(spaceId), String(namespace), String(snapshotId)])).rows;
-        const json = rows[0]?.[0]; if (typeof json !== "string") throw new Error("Owner archive disappeared during validation");
+        const json = bundles.get(key); if (typeof json !== "string") throw new Error("Owner archive disappeared during validation");
         const bundle = await validatePreparedOwnerArchive(parseOwnerJSON(json, "Invalid frozen owner archive JSON"));
         if (bundle.source.spaceId !== spaceId || bundle.source.namespace !== namespace || bundle.source.snapshotId !== snapshotId) throw new Error("Archive source does not match its owner database key");
         const commands: CachedArchive["commands"] = [];

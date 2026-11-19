@@ -2,25 +2,25 @@ import { spawn } from "node:child_process";
 import { chmod, mkdir, readFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { parseArgs } from "node:util";
-import { TinyCloudNode } from "@tinycloud/node-sdk";
 import { z } from "zod";
 import type { Result, SqlValue } from "@tinycloud/sdk-services";
 import { initializeFeedHandoff, projectFeedResponseNotification } from "@tinycloud/sdk-services/feed";
 import type { FeedDatabase, FeedResponse } from "@tinycloud/sdk-services/feed";
-import { loadProfile } from "../agent-sync/fireflies";
-import { closeHomeMirror, publishHomeMirror, watchHomeMirrors } from "./bridge";
-import type { HomeMirrorContext } from "./bridge-types";
+import { closeHomeMirror, homeMirrorDiagnostic, homeMirrorRefusal, publishHomeMirror, watchHomeMirrors } from "./bridge";
+import { inventoryPlan, parseInventoryKinds, postMany, readBoardIndex } from "./inventory";
+import { fullSpace, normalizeHomeMirrorHost, openOwnerSession, withStopSignal } from "./owner-session";
 
-const space = z.string().regex(/^tinycloud:[^\s]+:[^\s]+$/);
+export { normalizeHomeMirrorHost };
+
 const identity = z.object({ sourceId: z.string().min(1), cardId: z.string().uuid(), revision: z.number().int().positive().safe(), issuanceId: z.string().min(1) }).strict();
 const watchInput = z.object({ sourceId: z.string().min(1), recipient: z.string().min(1).refine((value) => value !== "*"), runner: z.array(z.string().min(1)).nonempty(), renewalSeconds: z.number().int().min(60).max(300).optional() }).strict();
-const usage = "bun scripts/home-feed/run.ts post|close|watch --tc-home DIR --profile NAME --owner-space FULL_URI --legacy-space FULL_URI --file JSON [--host URL] [--handoff SQLITE_FILE for watch]\nWatch JSON: {sourceId,recipient,runner:[executable,...argv],renewalSeconds?}. Runner exit zero must mean durable acceptance of the full response ID; execution must recheck dispatchBefore.\n";
-
-export function normalizeHomeMirrorHost(value: string): string {
-  const host = new URL(value);
-  if (!["http:", "https:"].includes(host.protocol) || host.username || host.password || host.search || host.hash) throw new Error("Invalid node host");
-  return host.href.replace(/\/+$/, "");
-}
+const usage = [
+  "bun scripts/home-feed/run.ts post|close|watch --tc-home DIR --profile NAME --owner-space FULL_URI --legacy-space FULL_URI --file JSON [--host URL] [--handoff SQLITE_FILE for watch]",
+  "bun scripts/home-feed/run.ts post-many --from-index BOARD_INDEX_SQLITE --source SOURCE_ID --owner-space FULL_URI --legacy-space FULL_URI [--kinds ask,task,incident,progress,work] [--dry-run | --tc-home DIR --profile NAME] [--host URL]",
+  "Watch JSON: {sourceId,recipient,runner:[executable,...argv],renewalSeconds?}. Runner exit zero must mean durable acceptance of the full response ID; execution must recheck dispatchBefore.",
+  "The answer runner (answer-runner.ts) takes the same recipient as --recipient and rechecks the owner's delivery policy itself. One handoff file serves one owner's source.",
+  "post-many --dry-run reads only the local index and prints the plan; it makes no node call.", "",
+].join("\n");
 
 // Existing owner session only: no sign-in, delegation activation, key generation,
 // schema initialization, legacy CLI invocation, or profile/host mutation.
@@ -29,23 +29,18 @@ export async function runHomeMirror(argv: string[]): Promise<void> {
     "tc-home": { type: "string" }, profile: { type: "string" }, host: { type: "string" },
     "owner-space": { type: "string" }, "legacy-space": { type: "string" }, file: { type: "string" },
     help: { type: "boolean" }, handoff: { type: "string" },
+    "from-index": { type: "string" }, source: { type: "string" }, kinds: { type: "string" }, "dry-run": { type: "boolean" },
   } });
   if (values.help) { process.stdout.write(usage); return; }
   const mode = positionals[0];
-  if (positionals.length !== 1 || (mode !== "post" && mode !== "close" && mode !== "watch") || !values["tc-home"] || !values.profile || !values.file || (mode === "watch" && !values.handoff)) throw new Error("Home mirror requires explicit mode, profile, full spaces, input, and watch handoff file");
-  const ownerSpaceId = space.parse(values["owner-space"]), legacySpaceId = space.parse(values["legacy-space"]);
-  const profile = loadProfile(values["tc-home"], values.profile);
-  if (profile.spaceId !== ownerSpaceId || (profile.expiresAt !== null && (!Number.isFinite(Date.parse(profile.expiresAt)) || Date.parse(profile.expiresAt) <= Date.now()))) throw new Error("Existing owner session is unavailable");
-  const host = normalizeHomeMirrorHost(values.host ?? profile.host);
-  const input: unknown = JSON.parse(await readFile(values.file, "utf8"));
-  const signal = new AbortController();
-  const abort = () => signal.abort();
-  process.once("SIGINT", abort); process.once("SIGTERM", abort);
-  try {
-    const node = new TinyCloudNode({ host, includeAccountRegistryPermissions: false });
-    await node.restoreSession({ ...profile.session, tinycloudHosts: [host] });
-    if (signal.signal.aborted) return;
-    const ctx: HomeMirrorContext = { ownerSpaceId, sql: node.sqlForSpace(ownerSpaceId), legacySpaceId, legacy: node.kvForSpace(legacySpaceId), now: () => new Date().toISOString(), signal: signal.signal };
+  if (mode === "post-many") return runPostMany(values);
+  if (positionals.length !== 1 || (mode !== "post" && mode !== "close" && mode !== "watch") || !values["tc-home"] || !values.profile || !values.file || (mode === "watch" && !values.handoff)) throw homeMirrorRefusal("Home mirror requires explicit mode, profile, full spaces, input, and watch handoff file");
+  const tcHome = values["tc-home"], profile = values.profile, file = values.file;
+  const ownerSpace = fullSpace.parse(values["owner-space"]), legacySpace = fullSpace.parse(values["legacy-space"]);
+  await withStopSignal(async (signal) => {
+    const { ctx, node } = await openOwnerSession({ tcHome, profile, ownerSpace, legacySpace, host: values.host, signal });
+    const input: unknown = JSON.parse(await readFile(file, "utf8"));
+    if (signal.aborted) return;
     let result: unknown;
     if (mode === "watch") {
       const config = watchInput.parse(input);
@@ -55,24 +50,50 @@ export async function runHomeMirror(argv: string[]): Promise<void> {
         if (!initialized.ok) throw new Error("Local durable handoff initialization failed");
         try {
           await watchHomeMirrors(ctx, { sourceId: config.sourceId, recipient: config.recipient, hooks: node.hooks,
-            handoff: local.handle, signal: signal.signal, renewalSeconds: config.renewalSeconds,
-            deliver: (response) => runExternal(config.runner, response, signal.signal) });
+            handoff: local.handle, signal, renewalSeconds: config.renewalSeconds,
+            deliver: (response) => runExternal(config.runner, response, signal) });
         } catch (error) {
-          if (!(signal.signal.aborted && error !== null && typeof error === "object" && "code" in error && error.code === "ABORTED")) throw error;
+          if (!(signal.aborted && error !== null && typeof error === "object" && "code" in error && error.code === "ABORTED")) throw error;
         }
         result = { stopped: true };
       } finally { local.close(); }
     } else result = mode === "post" ? await publishHomeMirror(ctx, input) : await closeHomeMirror(ctx, identity.parse(input));
     process.stdout.write(`${JSON.stringify({ operation: mode, result })}\n`);
-  } finally {
-    process.removeListener("SIGINT", abort); process.removeListener("SIGTERM", abort);
+  });
+}
+
+type Values = { [key: string]: string | boolean | undefined };
+
+/** The open inventory from roci-board's index, mirrored in one process; `--dry-run` reads only the index. */
+async function runPostMany(values: Values): Promise<void> {
+  const index = values["from-index"], source = values.source, ownerSpace = values["owner-space"], legacySpace = values["legacy-space"];
+  if (typeof index !== "string" || typeof source !== "string" || typeof ownerSpace !== "string" || typeof legacySpace !== "string" ||
+    !fullSpace.safeParse(ownerSpace).success || !fullSpace.safeParse(legacySpace).success) throw homeMirrorRefusal("Home mirror inventory requires a board index, a source and full spaces");
+  const kinds = parseInventoryKinds(typeof values.kinds === "string" ? values.kinds : undefined);
+  const { rows, skipped } = readBoardIndex(index, kinds);
+  const now = Date.now();
+  if (values["dry-run"] === true) {
+    const plan = inventoryPlan(rows, now);
+    process.stdout.write(`${JSON.stringify({ operation: "post-many", dryRun: true, kinds, planned: plan.items.length, items: plan.items, skipped: [...skipped, ...plan.refused] })}\n`);
+    return;
   }
+  if (typeof values["tc-home"] !== "string" || typeof values.profile !== "string") throw homeMirrorRefusal("Home mirror inventory requires a board index, a source and full spaces");
+  const tcHome = values["tc-home"], profile = values.profile, host = typeof values.host === "string" ? values.host : undefined;
+  const items = await withStopSignal(async (signal) => {
+    const { ctx } = await openOwnerSession({ tcHome, profile, ownerSpace, legacySpace, host, signal });
+    return postMany(ctx, { sourceId: source, label: source, rows, now });
+  });
+  const count = (outcome: string) => items.filter((item) => item.outcome === outcome).length;
+  process.stdout.write(`${JSON.stringify({ operation: "post-many", dryRun: false, kinds, posted: count("posted"), already: count("already"), changed: count("changed"), refused: count("refused"), items, skipped })}\n`);
+  if (count("refused")) process.exitCode = 1;
 }
 
 async function openHandoff(path: string): Promise<{ handle: FeedDatabase; close(): void }> {
   if (!("Bun" in globalThis)) throw new Error("Home mirror watch requires Bun SQLite");
-  if (path === ":memory:" || path.startsWith("file:")) throw new Error("Home mirror handoff requires a persistent file path");
-  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+  if (path === ":memory:" || path.startsWith("file:")) throw Object.assign(new Error("Home mirror handoff requires a persistent file path"), { code: "INVALID_INPUT" });
+  // A directory created here holds only the ledger: owner-only, whatever the umask.
+  const created = await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+  if (created !== undefined) await chmod(dirname(path), 0o700);
   const { Database } = await import("bun:sqlite");
   const database = new Database(path);
   try {
@@ -137,5 +158,9 @@ function runExternal(argv: readonly [string, ...string[]], input: FeedResponse, 
 
 if (import.meta.main) {
   try { await runHomeMirror(process.argv.slice(2)); }
-  catch { process.stderr.write("Home mirror operation failed; no delivery success is implied.\n"); process.exitCode = 1; }
+  catch (error) {
+    const diagnostic = homeMirrorDiagnostic(error);
+    process.stderr.write(`${JSON.stringify(diagnostic)}\n`);
+    process.exitCode = diagnostic.exitCode;
+  }
 }

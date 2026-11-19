@@ -24,7 +24,7 @@ async function run(decodedSeconds: number | null) {
     updateStt: async (_id: string, stt: { state: string; error: string | null }) => { updates.push(stt); },
     listPending: async () => ({ recordings: [note] }),
     getTranscript: async () => ({ transcript: saved[0] ?? null }),
-    putTranscript: async ({ transcript }: { transcript: unknown }) => { saved.push(transcript); },
+    putTranscriptForOwner: async ({ transcript }: { transcript: unknown }) => { saved.push(transcript); return { transcript }; },
   } as unknown as WebStore;
   const files = {
     invoke: async (command: string) => command === "recorder_models_get" ? "QuantizedLargeTurbo"

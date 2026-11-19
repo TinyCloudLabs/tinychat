@@ -25,6 +25,23 @@ export const DESKTOP = {
   crate: 'exo-desktop',
 };
 
+// tauri.conf.json's productName names the app bundle ("<name>.app"), the DMG volume and, with spaces as hyphens,
+// the release assets ("<Name-With-Hyphens>_<version>_aarch64.dmg"). Words of letters and digits only, so it is safe
+// in paths and asset names.
+export const DESKTOP_PRODUCT_NAME = /^[A-Za-z0-9]+(?: [A-Za-z0-9]+)*$/;
+
+/** productName and identifier from a tauri.conf.json text; assetName is productName with spaces as hyphens. */
+export function desktopProduct(confText) {
+  const { productName, identifier } = JSON.parse(confText);
+  if (typeof productName !== 'string' || !DESKTOP_PRODUCT_NAME.test(productName)) {
+    throw new Error(`${DESKTOP.tauriConf} productName must be words of letters and digits, got ${JSON.stringify(productName)}`);
+  }
+  if (typeof identifier !== 'string' || !/^[a-z0-9]+(?:\.[a-z0-9-]+)+$/.test(identifier)) {
+    throw new Error(`${DESKTOP.tauriConf} identifier must be a reverse-DNS bundle id, got ${JSON.stringify(identifier)}`);
+  }
+  return { productName, identifier, assetName: productName.replaceAll(' ', '-') };
+}
+
 // Stable X.Y.Z, or X.Y.Z-beta.N while main is in Changesets pre mode (tag "beta").
 export const VERSION = /^\d+\.\d+\.\d+(?:-beta\.\d+)?$/;
 export const STABLE_VERSION = /^\d+\.\d+\.\d+$/;
@@ -106,6 +123,42 @@ export function classifyPagesCheckRuns(checkRuns) {
   const deploymentUrl = /Preview URL:[\s\S]*?href='(https:\/\/[^']+)'/.exec(summary)?.[1];
   if (!deploymentUrl) return { state: 'failed', reason: 'no deployment URL in the Cloudflare Pages check run', detailsUrl: latest.details_url };
   return { state: 'production', deploymentUrl, detailsUrl: latest.details_url };
+}
+
+/**
+ * Whether `https://<host>/version.json` names `commit`: the build every web host must serve after a deploy
+ * (frontend/vite.config.ts writes it). Never throws: a host that is down, answers HTML (a different Pages project) or
+ * names another commit is reported as not serving it, with what it served.
+ */
+export async function hostServesCommit(host, commit, fetchImpl = globalThis.fetch) {
+  try {
+    const url = new URL(`https://${host}/version.json`);
+    url.searchParams.set('deploy', commit);
+    const response = await fetchImpl(url, { headers: { 'cache-control': 'no-cache' } });
+    if (!response.ok) return { ok: false, served: `HTTP ${response.status}` };
+    const type = response.headers.get('content-type') ?? '';
+    if (!/json/i.test(type)) return { ok: false, served: `a ${type.split(';')[0] || 'non-JSON'} response, not version.json` };
+    const served = (await response.json())?.commit ?? null;
+    return { ok: served === commit, served: served ?? 'no commit' };
+  } catch (error) {
+    return { ok: false, served: `no answer (${error instanceof Error ? error.message : 'error'})` };
+  }
+}
+
+/**
+ * One sentence for the deploy log when `hostServesCommit` says a host is not serving the commit: what the host did, and
+ * what that usually means. `served` is the `served` field it returned. Only wording; it decides nothing.
+ */
+export function explainUnservedHost(host, served, commit) {
+  if (/^no answer/.test(served)) {
+    return `${host} did not answer (${served.slice('no answer ('.length, -1)}): the domain does not resolve or refuses the connection, so it is probably not attached to the Cloudflare Pages project`;
+  }
+  if (/^HTTP 404\b|response, not version\.json$/.test(served)) {
+    return `${host} answers but has no version.json from this build (${served}): the domain is not bound to the Cloudflare Pages project that built ${commit}, or it is bound to a different project`;
+  }
+  if (/^HTTP \d+$/.test(served)) return `${host} answered ${served} for version.json: it is up but not serving this build (a Pages or edge error)`;
+  if (served === 'no commit') return `${host} serves a version.json without a commit: it is an older build or another project`;
+  return `${host} serves ${served}, not ${commit}: an older build, so the domain is on another Cloudflare Pages project or its deploy has not propagated`;
 }
 
 export const readJson = (root, rel) => JSON.parse(readFileSync(join(root, rel), 'utf8'));

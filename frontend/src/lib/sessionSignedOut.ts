@@ -22,7 +22,7 @@ export async function clearSessionAfterHandoff(session: ClearableSession): Promi
       void transition.finally(() => { if (pending.get(session) === transition) pending.delete(session); })
         .catch(() => undefined);
     }
-    if (!await transition) throw new Error("Couldn't update this phone's recording account. Session was kept.");
+    if (!await transition) throw new Error("Couldn't stop voice recording for this account on this phone, so you're still signed in. Try again.");
   }
   session.clear();
   hook?.onCleared?.();

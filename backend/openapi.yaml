@@ -1734,6 +1734,32 @@ paths:
                 $ref: "#/components/schemas/TranscriberError"
         "503":
           $ref: "#/components/responses/TranscriberUnavailable"
+    delete:
+      operationId: deleteAllTranscriberMeetings
+      summary: Delete every recording this address holds (the step before account deletion)
+      description: >-
+        TC-3136. Same guarantee as deleting one: each is deleted upstream and read back, shared recordings
+        are only dropped from the list, and any that cannot be confirmed yet stay as `deleting` and are retried.
+        Idempotent.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Everything is confirmed gone
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TranscriberBulkDelete"
+        "202":
+          description: Some are still being deleted and retried
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TranscriberBulkDelete"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "503":
+          $ref: "#/components/responses/TranscriberUnavailable"
 
   /api/transcriber/meetings/{id}:
     parameters:
@@ -1763,18 +1789,75 @@ paths:
           $ref: "#/components/responses/TranscriberUnavailable"
     delete:
       operationId: deleteTranscriberMeeting
-      summary: Forget the meeting here and delete it upstream (transcript included)
+      summary: Delete it upstream (recording and transcript), read back that it is gone, then forget it here
+      description: >-
+        TC-3136. The capture provider's copy is deleted and the backend reads the meeting back; only
+        not-found counts as gone. A recording shared with this address is only dropped from its list. If the
+        purge cannot be confirmed within the request, the entry stays as `deleting` and the backend keeps
+        retrying with backoff until it is. Repeating the call is safe. An entry of this account's own that the
+        provider does not attribute to this address is dropped from the list but its provider copy is NOT
+        deleted; that answers 200 `not_deleted`.
       security:
         - bearerAuth: []
       responses:
         "204":
-          description: Gone
+          description: Gone, confirmed by read-back
+        "202":
+          description: Not yet confirmed gone; the entry stays listed as `deleting` and is retried
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, status]
+                properties:
+                  id:
+                    type: string
+                  status:
+                    type: string
+                    const: deleting
+        "200":
+          description: Dropped from this account's list, but the provider's copy was not deleted (not attributed to this address)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, status]
+                properties:
+                  id:
+                    type: string
+                  status:
+                    type: string
+                    const: not_deleted
         "401":
           $ref: "#/components/responses/Unauthenticated"
         "404":
           $ref: "#/components/responses/TranscriberNotFound"
         "503":
           $ref: "#/components/responses/TranscriberUnavailable"
+
+  /api/transcriber/meetings/scope:
+    get:
+      operationId: getTranscriberScope
+      summary: Whether this deployment keeps private cloud transcription jobs (voice notes and uploads)
+      description: |
+        From configuration only; it asks no other service. Mounted when the meeting transcriber or private cloud
+        transcription is on; with neither on it is a 404. The account-deletion step uses it to word its intro and
+        failure line, so voice notes and uploads are only named where they are kept.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: The scope
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [privateCloud]
+                properties:
+                  privateCloud:
+                    type: boolean
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
 
   /api/transcriber/meetings/{id}/stop:
     post:
@@ -2616,6 +2699,41 @@ components:
         unavailable:
           type: boolean
           const: true
+        deleting:
+          type: boolean
+          const: true
+          description: >-
+            The owner removed it and the provider's copy is not yet confirmed gone (TC-3136); the backend is
+            retrying with backoff. It is never reported as removed until upstream reads back not-found.
+    TranscriberBulkDelete:
+      type: object
+      required: [removed, deleting, listOnly, notDeleted, privateCloudDeleted]
+      properties:
+        removed:
+          type: integer
+          description: Entries confirmed gone (provider read-back not-found) or dropped from the list (shared with this address, or not attributed to it by the provider)
+        deleting:
+          type: integer
+          description: Entries whose provider copy is not yet confirmed gone; retried with backoff
+        listOnly:
+          type: integer
+          description: >-
+            A subset of `removed`: recordings shared with this address. They were dropped from this list only;
+            the provider's copy is not this address's to delete and the sharer still has it.
+        notDeleted:
+          type: integer
+          description: >-
+            A subset of `removed`: this address's own entries the provider did not attribute to it (upstream
+            metadata missing or for another address). They were dropped from the list but the provider's copy
+            was NOT deleted.
+        privateCloudDeleted:
+          type: [integer, "null"]
+          description: >-
+            TC-3166: private cloud transcription jobs (voice notes and uploads) this address held, deleted and read
+            back gone from the service's own list. `null` when that service is not used by this deployment (never 0,
+            which would mean "checked, none"). If any cannot be confirmed the whole call is a 503
+            (`privateCloudFailed: true`) and is safe to repeat. A deleted job's audio file is unlinked inside the
+            service's own delete request; a failed unlink is retried by its cleanup sweep.
     TranscriberTranscript:
       type: object
       required: [meeting_id, status]

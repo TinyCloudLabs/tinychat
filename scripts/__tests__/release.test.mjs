@@ -9,7 +9,7 @@ import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
 import { dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { changelogSection, classifyPagesCheckRuns, desktopBundleVersions, planDispatches, setCargoLockVersion, setCargoTomlVersion, stablePlan } from '../release/lib.mjs';
+import { changelogSection, classifyPagesCheckRuns, desktopBundleVersions, explainUnservedHost, hostServesCommit, desktopProduct, planDispatches, setCargoLockVersion, setCargoTomlVersion, stablePlan } from '../release/lib.mjs';
 
 const require = createRequire(import.meta.url);
 const eslintAjv = createRequire(realpathSync(require.resolve('eslint/package.json')))('ajv');
@@ -713,50 +713,14 @@ test('pushes to main no longer deploy production; only the gated Deploy producti
     'the Release job dispatches only after the tags are pushed');
 });
 
-// The Home site: the same frontend built with VITE_HOME_SITE and uploaded to its own Pages project after the web job.
-test('web-home deploys the Home build after web, only when requested and configured, from the gated SHA', () => {
+// One web build: the Pages project behind tinycloud.chat also serves home.tinycloud.xyz, so there is no second job or build flag.
+test('production deploys one web build, with no Home variant job', () => {
   const production = read(repo, '.github/workflows/deploy-production.yml');
-  const job = /^ {2}web-home:\n([\s\S]*?)(?=^ {2}\S)/m.exec(production)?.[1];
-  assert.ok(job, 'deploy-production.yml has a web-home job');
-  assert.match(job, /^ {4}needs: \[target, web\]$/m);
-  const condition = /^ {4}if: >-\n((?: {6}.*\n)+)/m.exec(job)?.[1].replace(/\s+/g, ' ');
-  assert.match(condition, /inputs\.web/);
-  assert.match(condition, /needs\.web\.result == 'success'/);
-  assert.match(condition, /vars\.TINYCHAT_HOME_PAGES_PROJECT != ''/);
-  assert.match(job, /^ {4}environment: release-push$/m);
-  assert.match(job, /actions\/checkout@\S+.*\n\s+with:\n\s+ref: \$\{\{ needs\.target\.outputs\.sha \}\}/);
-  // The Home flag is set on the frontend build step only.
-  const build = /- name: Build the Home site\n((?: {8,}.*\n)+)/.exec(job)?.[1];
-  assert.match(build, /VITE_HOME_SITE: "true"/);
-  assert.match(build, /bun run build:frontend/);
-  // Direct upload to the production branch of the configured project, with the Pages token and an exact wrangler version.
-  assert.match(job, /wrangler@\d+\.\d+\.\d+ pages deploy frontend\/dist --project-name "\$TINYCHAT_HOME_PAGES_PROJECT" --branch production/);
-  assert.match(job, /CLOUDFLARE_API_TOKEN: \$\{\{ secrets\.CLOUDFLARE_PAGES_API_TOKEN \}\}/);
-  assert.match(job, /CLOUDFLARE_ACCOUNT_ID: \$\{\{ secrets\.CLOUDFLARE_ACCOUNT_ID \}\}/);
-  // A rollback to a tag without the Home build must not publish the plain site to the Home project.
-  const stepAt = name => job.indexOf(`- name: ${name}`);
-  const guard = /- name: Refuse a build that is not the Home site\n((?: {8,}.*\n)+)/.exec(job)?.[1];
-  assert.ok(guard, 'web-home has a guard step for the Home build');
-  assert.match(guard, /frontend\/dist\/manifest\.webmanifest/);
-  assert.match(guard, /TinyCloud Home/);
-  assert.match(guard, /::error::/);
-  assert.ok(stepAt('Build the Home site') < stepAt('Refuse a build that is not the Home site'), 'the guard comes after the build');
-  assert.ok(stepAt('Refuse a build that is not the Home site') < stepAt('Upload to the Home Pages project'), 'the guard comes before the upload');
-  // The upload must have landed in production, and the verify step fetches the deployment inside its retry loop.
-  assert.match(job, /\.environment/);
-  assert.match(job, /::error::.*production/);
-  const verify = /- name: Verify home\.tinycloud\.xyz serves the deployment\n([\s\S]*)$/.exec(job)?.[1];
-  const loop = /for attempt in[\s\S]*?\n {10}done/.exec(verify)?.[0];
-  assert.ok(loop, 'verify step has a retry loop');
-  assert.match(loop, /\$DEPLOYMENT_URL/);
-  assert.doesNotMatch(verify.slice(0, verify.indexOf('for attempt in')), /DEPLOYMENT_URL"/);
-  // Nothing hard-requires web-home, but the production report says what it did.
-  assert.equal(production.match(/needs: .*\bweb-home\b/g).length, 1, 'only report needs web-home');
+  assert.doesNotMatch(production, /^ {2}web-home:/m);
+  assert.doesNotMatch(production, /VITE_HOME_SITE|TINYCHAT_HOME_PAGES_PROJECT/);
   const report = /^ {2}report:\n([\s\S]*?)(?=^ {2}\S|(?![\s\S]))/m.exec(production)?.[1];
-  assert.match(report, /^ {4}needs: \[.*\bweb-home\b.*\]$/m);
+  assert.match(report, /^ {4}needs: \[target, backend, web\]$/m);
   assert.match(report, /^ {4}if: always\(\)$/m);
-  assert.match(report, /WEB_HOME_RESULT: \$\{\{ needs\.web-home\.result \}\}/);
-  assert.match(report, /Web Home/);
 });
 
 // Manual deploys: a stable release tag per selected unit on a main commit, or an explicitly confirmed hotfix.
@@ -849,6 +813,9 @@ test('desktop-bundle-config.mjs writes the Info.plist overlay for tauri build --
   const result = run('desktop-bundle-config.mjs', ['--root', root, '--out', out]);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /^version=0\.3\.0-beta\.4$/m);
+  // The name and identifier come from the built tree's tauri.conf.json.
+  assert.match(result.stdout, new RegExp(`^product-name=${JSON.parse(read(root, 'desktop/src-tauri/tauri.conf.json')).productName}$`, 'm'));
+  assert.match(result.stdout, /^bundle-identifier=xyz\.tinycloud\.exo$/m);
   assert.match(result.stdout, /^short-version=0\.3\.0$/m);
   assert.match(result.stdout, /^bundle-version=300004$/m);
   assert.match(result.stdout, /^prerelease=true$/m);
@@ -870,18 +837,18 @@ test('desktop-bundle-config.mjs writes the Info.plist overlay for tauri build --
   assert.equal(normal.bundle.macOS.signingIdentity, undefined);
   const normalEffective = merged(normal);
   assert.equal(normalEffective.identifier, 'xyz.tinycloud.exo');
-  assert.equal(normalEffective.productName, 'Exo');
+  assert.equal(normalEffective.productName, base.productName);
   validateConfig(normalEffective);
   const smokeResult = run('desktop-bundle-config.mjs', ['--root', root, '--out', out, '--smoke']);
   assert.equal(smokeResult.status, 0, smokeResult.stderr);
   const smoke = JSON.parse(read(out, 'tauri.bundle.conf.json'));
   assert.equal(smoke.identifier, 'xyz.tinycloud.exo.smoke');
-  assert.equal(smoke.productName, 'Exo Smoke');
+  assert.equal(smoke.productName, `${base.productName} Smoke`);
   assert.equal(smoke.bundle.identifier, undefined);
   assert.equal(smoke.bundle.productName, undefined);
   const smokeEffective = merged(smoke);
   assert.equal(smokeEffective.identifier, 'xyz.tinycloud.exo.smoke');
-  assert.equal(smokeEffective.productName, 'Exo Smoke');
+  assert.equal(smokeEffective.productName, `${base.productName} Smoke`);
   validateConfig(smokeEffective);
   // Unsigned builds: tauri bundle ad-hoc signs (identity "-"), sealing the app's resources before the DMG is built.
   const adHoc = run('desktop-bundle-config.mjs', ['--root', root, '--out', out, '--ad-hoc-sign']);
@@ -899,8 +866,8 @@ test('desktop-bundle-config emits a usable config path for normal and smoke buil
   const expectedOutputs = ['version', 'short-version', 'bundle-version', 'prerelease', 'product-name', 'bundle-identifier', 'config'];
 
   for (const { smoke, identifier, productName } of [
-    { smoke: false, identifier: 'xyz.tinycloud.exo', productName: 'Exo' },
-    { smoke: true, identifier: 'xyz.tinycloud.exo.smoke', productName: 'Exo Smoke' },
+    { smoke: false, identifier: 'xyz.tinycloud.exo', productName: base.productName },
+    { smoke: true, identifier: 'xyz.tinycloud.exo.smoke', productName: `${base.productName} Smoke` },
   ]) {
     const temp = tempDir(t);
     const out = join(temp, 'bundle');
@@ -933,13 +900,32 @@ test('desktop-bundle-config emits a usable config path for normal and smoke buil
     };
     assert.equal(effective.identifier, identifier);
     assert.equal(effective.productName, productName);
+    assert.equal(outputs['product-name'], productName);
+    assert.equal(outputs['bundle-identifier'], identifier);
   }
 });
 
+// The product name becomes file, volume and asset names, so only words of letters and digits pass.
+test('desktop-bundle-config.mjs refuses a productName or identifier that is unsafe in paths', t => {
+  for (const [key, value] of [['productName', '../Exo'], ['productName', 'Tiny/Cloud'], ['productName', 'Exo '], ['productName', ''], ['productName', 'TinyCloud "Home"'], ['identifier', 'xyz.tinycloud/exo'], ['identifier', 'exo']]) {
+    const root = manifests(t);
+    editJson(root, 'desktop/src-tauri/tauri.conf.json', conf => { conf[key] = value; });
+    const result = run('desktop-bundle-config.mjs', ['--root', root, '--out', join(tempDir(t), 'bundle')]);
+    assert.equal(result.status, 1, `${key}=${value}`);
+    assert.match(result.stderr, new RegExp(`tauri\\.conf\\.json ${key} must be`));
+  }
+  const spaced = manifests(t);
+  editJson(spaced, 'desktop/src-tauri/tauri.conf.json', conf => { conf.productName = 'TinyCloud One'; });
+  const ok = run('desktop-bundle-config.mjs', ['--root', spaced, '--out', join(tempDir(t), 'bundle'), '--smoke']);
+  assert.equal(ok.status, 0, ok.stderr);
+  assert.match(ok.stdout, /^product-name=TinyCloud One Smoke$/m);
+});
+
 // A repo whose main has a release commit at `version`, tagged `exo-desktop@<version>`.
-function releasePlanRepo(t, version) {
+function releasePlanRepo(t, version, productName = 'TinyCloud One') {
   const root = manifests(t);
   for (const dir of ['desktop', 'frontend']) editJson(root, `${dir}/package.json`, pkg => { pkg.version = version; });
+  editJson(root, 'desktop/src-tauri/tauri.conf.json', conf => { conf.productName = productName; });
   write(root, 'desktop/CHANGELOG.md', `# exo-desktop\n\n## ${version}\n\n### Patch Changes\n\n- abc1234: Desktop fix Y\n\n## 0.1.0\n\n- Old\n`);
   write(root, 'frontend/CHANGELOG.md', `# @tinychat/frontend\n\n## ${version}\n\n### Minor Changes\n\n- def5678: Web feature X\n`);
   initRepo(root);
@@ -958,6 +944,7 @@ test('desktop-release-plan.mjs: a beta tag on main becomes a pre-release built f
   const { root, sha } = releasePlanRepo(t, '0.2.0-beta.3');
   // Later main work must not leak into the release: data comes from the tag's commit, not the checkout.
   editJson(root, 'desktop/package.json', pkg => { pkg.version = '0.2.0-beta.4'; });
+  editJson(root, 'desktop/src-tauri/tauri.conf.json', conf => { conf.productName = 'Renamed Later'; });
   write(root, 'desktop/CHANGELOG.md', '# exo-desktop\n\n## 0.2.0-beta.3\n\n- Rewritten later\n');
   commitAll(root, 'later');
   const { result, notes } = releasePlan(t, root, 'exo-desktop@0.2.0-beta.3');
@@ -966,18 +953,32 @@ test('desktop-release-plan.mjs: a beta tag on main becomes a pre-release built f
   assert.match(result.stdout, new RegExp(`^sha=${sha}$`, 'm'));
   assert.match(result.stdout, /^channel=beta$/m);
   assert.match(result.stdout, /^prerelease=true$/m);
-  assert.match(result.stdout, /^title=Exo 0\.2\.0-beta\.3 \(beta\)$/m);
-  assert.match(result.stdout, /^asset-prefix=Exo_0\.2\.0-beta\.3_aarch64$/m);
+  assert.match(result.stdout, /^title=TinyCloud One 0\.2\.0-beta\.3 \(beta\)$/m);
+  assert.match(result.stdout, /^asset-prefix=TinyCloud-One_0\.2\.0-beta\.3_aarch64$/m);
   assert.match(result.stdout, /^signing=required$/m);
   const text = readFileSync(notes, 'utf8');
-  assert.match(text, /\*\*Beta\.\*\* A pre-release of Exo 0\.2\.0/);
+  assert.match(text, /\*\*Beta\.\*\* A pre-release of TinyCloud One 0\.2\.0/);
+  assert.match(text, /^- TinyCloud One 0\.2\.0-beta\.3 for Apple Silicon Macs/m);
   assert.match(text, /## Desktop\n\n### Patch Changes\n\n- abc1234: Desktop fix Y\n/);
   assert.match(text, /## Web app \(bundled, @tinychat\/frontend@0\.2\.0-beta\.3\)\n\n### Minor Changes\n\n- def5678: Web feature X\n/);
   assert.match(text, /CFBundleShortVersionString 0\.2\.0, CFBundleVersion 200003/);
   assert.match(text, new RegExp(`built from \`${sha}\``));
   assert.match(text, /Developer ID signed, notarized and stapled/);
   assert.doesNotMatch(text, /UNSIGNED/);
-  assert.doesNotMatch(text, /- Old|Rewritten later/);
+  assert.doesNotMatch(text, /- Old|Rewritten later|Renamed Later/);
+});
+
+test('desktop-release-plan.mjs names a release before the rename after its own productName', t => {
+  const { root } = releasePlanRepo(t, '0.2.0-beta.3', 'Exo');
+  const { result } = releasePlan(t, root, 'exo-desktop@0.2.0-beta.3');
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^title=Exo 0\.2\.0-beta\.3 \(beta\)$/m);
+  assert.match(result.stdout, /^asset-prefix=Exo_0\.2\.0-beta\.3_aarch64$/m);
+  const unsafe = releasePlanRepo(t, '0.2.0-beta.3', 'Tiny/../Cloud');
+  const refused = releasePlan(t, unsafe.root, 'exo-desktop@0.2.0-beta.3').result;
+  assert.equal(refused.status, 1);
+  assert.match(refused.stderr, /productName must be words of letters and digits/);
+  assert.doesNotMatch(refused.stdout, /^(title|asset-prefix)=/m);
 });
 
 test('desktop-release-plan.mjs: a stable tag becomes the latest release', t => {
@@ -986,11 +987,11 @@ test('desktop-release-plan.mjs: a stable tag becomes the latest release', t => {
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /^channel=stable$/m);
   assert.match(result.stdout, /^prerelease=false$/m);
-  assert.match(result.stdout, /^title=Exo 0\.2\.0$/m);
+  assert.match(result.stdout, /^title=TinyCloud One 0\.2\.0$/m);
   assert.doesNotMatch(readFileSync(notes, 'utf8'), /Beta/);
 });
 
-const UNSIGNED_NOTICE = '> **UNSIGNED build — macOS will block it on first open. Open it once, then go to System Settings → Privacy & Security and click Open Anyway (macOS 15+). Or run: `xattr -dr com.apple.quarantine /Applications/Exo.app`.**';
+const UNSIGNED_NOTICE = '> **UNSIGNED build — macOS will block it on first open. Open it once, then go to System Settings → Privacy & Security and click Open Anyway (macOS 15+). Or run: `xattr -dr com.apple.quarantine "/Applications/TinyCloud One.app"`.**';
 
 test('desktop-release-plan.mjs --signing unsigned: a beta stays a pre-release, marked UNSIGNED in title and notes', t => {
   const { root, sha } = releasePlanRepo(t, '0.2.0-beta.3');
@@ -1000,8 +1001,8 @@ test('desktop-release-plan.mjs --signing unsigned: a beta stays a pre-release, m
   assert.match(result.stdout, /^signing=unsigned$/m);
   assert.match(result.stdout, /^channel=beta$/m);
   assert.match(result.stdout, /^prerelease=true$/m);
-  assert.match(result.stdout, /^title=Exo 0\.2\.0-beta\.3 \(beta, UNSIGNED\)$/m);
-  assert.match(result.stdout, /^asset-prefix=Exo_0\.2\.0-beta\.3_aarch64$/m);
+  assert.match(result.stdout, /^title=TinyCloud One 0\.2\.0-beta\.3 \(beta, UNSIGNED\)$/m);
+  assert.match(result.stdout, /^asset-prefix=TinyCloud-One_0\.2\.0-beta\.3_aarch64$/m);
   const text = readFileSync(notes, 'utf8');
   assert.ok(text.startsWith(`${UNSIGNED_NOTICE}\n\n> **Beta.**`), text);
   assert.match(text, /^- UNSIGNED: not Developer ID signed or notarized\. Check downloads against SHA256SUMS\.txt\.$/m);
@@ -1016,7 +1017,7 @@ test('desktop-release-plan.mjs --signing unsigned: a stable is still the latest 
   assert.match(result.stdout, /^signing=unsigned$/m);
   assert.match(result.stdout, /^channel=stable$/m);
   assert.match(result.stdout, /^prerelease=false$/m);
-  assert.match(result.stdout, /^title=Exo 0\.2\.0 \(UNSIGNED\)$/m);
+  assert.match(result.stdout, /^title=TinyCloud One 0\.2\.0 \(UNSIGNED\)$/m);
   const text = readFileSync(notes, 'utf8');
   assert.ok(text.startsWith(`${UNSIGNED_NOTICE}\n\n## `), text);
   assert.doesNotMatch(text, /Beta|Developer ID signed, notarized and stapled/);
@@ -1084,7 +1085,7 @@ test('desktop-release-plan.mjs refuses a beta older than the latest stable exo-d
   assert.match(plan('exo-desktop@0.2.1-beta.0').result.stderr, /is older than the latest stable release exo-desktop@0\.10\.0 on main/);
 });
 
-test('the Exo build is defined once and shared by CI and releases', () => {
+test('the desktop build is defined once and shared by CI and releases', () => {
   for (const name of ['desktop.yml', 'desktop-release.yml', 'desktop-build.yml']) {
     const text = read(repo, `.github/workflows/${name}`);
     for (const command of ['tauri build', 'tauri bundle']) {
@@ -1115,9 +1116,13 @@ test('desktop releases run main\'s workflow on a validated tag and publish unsig
   assert.match(plan, /SIGNING: \$\{\{ vars\.EXO_DESKTOP_SIGNING \}\}/);
   assert.match(plan, /node scripts\/release\/desktop-release-plan\.mjs --tag "\$TAG" --notes "\$RUNNER_TEMP\/release-notes\.md" --signing "\$SIGNING"/);
   assert.match(plan, /signing: \$\{\{ steps\.plan\.outputs\.signing \}\}/);
-  // Signing (and the desktop-release environment) only for an explicit `required`; no secrets are handed down.
-  assert.match(release, /uses: \.\/\.github\/workflows\/desktop-build\.yml\n\s+with:\n(?:.*\n){2}\s+sign: \$\{\{ needs\.plan\.outputs\.signing == 'required' \}\}\n/);
-  assert.doesNotMatch(release, /secrets: inherit|secrets\./);
+  // Signing (and the desktop-release environment) only for an explicit `required`. Environment secrets reach a called
+  // workflow only through `secrets: inherit` (ios-testflight.yml run 42702360795 found all of them missing without
+  // it), so the build call passes them; desktop-build.yml gates every reference on inputs.sign and keeps them out of
+  // the build job (the signing job-graph test). This workflow itself references none.
+  assert.match(release, /uses: \.\/\.github\/workflows\/desktop-build\.yml\n(?:\s+#.*\n)*\s+secrets: inherit\n\s+with:\n(?:.*\n){2}\s+sign: \$\{\{ needs\.plan\.outputs\.signing == 'required' \}\}\n/);
+  assert.equal((release.match(/secrets: inherit/g) ?? []).length, 1);
+  assert.doesNotMatch(release, /secrets\./);
   const publish = release.slice(release.indexOf('  publish:'));
   assert.match(publish, /SIGNING: \$\{\{ needs\.plan\.outputs\.signing \}\}/);
   const signedCheck = publish.indexOf('case "$SIGNING:$SIGNED" in');
@@ -1267,7 +1272,7 @@ test('desktop builds and releases run release tooling from the workflow commit, 
 });
 
 test('verify-desktop-signing.sh rejects a missing app before running any check', t => {
-  const result = spawnSync('bash', [join(repo, 'scripts/release/verify-desktop-signing.sh'), join(tempDir(t), 'Exo.app'), 'Exo.dmg', 'ABCDE12345'], { encoding: 'utf8' });
+  const result = spawnSync('bash', [join(repo, 'scripts/release/verify-desktop-signing.sh'), join(tempDir(t), 'TinyCloud One.app'), 'TinyCloud-One.dmg', 'ABCDE12345'], { encoding: 'utf8' });
   assert.equal(result.status, 1);
   assert.match(result.stdout, /::error::no app bundle at/);
 });
@@ -1514,6 +1519,7 @@ test('Android: the upload key only in tooling-only jobs, an unsigned build witho
   assert.ok(plan.indexOf('Require the release workflow from main') < plan.indexOf('${{ github.event_name == \'workflow_dispatch\' && secrets.'));
   assert.match(stepNamed(plan, 'Check signing secrets'), /run: scripts\/release\/android-signing\.sh check\n/);
   assert.match(stepNamed(plan, 'Check signing secrets'), /vars\.ANDROID_UPLOAD_CERT_SHA256/);
+  assert.match(stepNamed(plan, 'Check the Play service account'), /secrets\.PLAY_SERVICE_ACCOUNT_JSON/);
   assert.doesNotMatch(withoutComments(plan), PROJECT_CODE);
 
   // The build job: bun, Capacitor and Gradle with no environment and nothing secret, unsigned by explicit override.
@@ -1547,6 +1553,15 @@ test('Android: the upload key only in tooling-only jobs, an unsigned build witho
   // Releases verify against the pinned variable, never a digest taken from the keystore secret.
   assert.match(stepNamed(sign, 'Verify the signed AAB and APK'), /CERT_SHA256: \$\{\{ github\.event_name == 'workflow_dispatch' && vars\.ANDROID_UPLOAD_CERT_SHA256 \|\| steps\.sign\.outputs\.rehearsal-cert-sha256 \}\}/);
   assert.match(stepNamed(sign, 'Verify the signed AAB and APK'), /scripts\/release\/verify-android-release\.sh /);
+  // Play: the verified AAB, to the internal track of xyz.tinycloud.home, by a pinned action.
+  const play = stepNamed(sign, 'Upload the AAB to Google Play (internal testing)');
+  assert.ok(sign.indexOf('- name: Upload the AAB to Google Play (internal testing)\n') > sign.indexOf('- name: Upload AAB + APK\n'), 'Play gets the AAB after the artifact is archived');
+  assert.match(play, /\n\s+if: env\.RELEASE == 'true'\n/);
+  assert.match(play, /uses: r0adkll\/upload-google-play@[0-9a-f]{40} # v/);
+  assert.match(play, /packageName: xyz\.tinycloud\.home\n/);
+  assert.match(play, /releaseFiles: \$\{\{ runner\.temp \}\}\/signed\/app-release\.aab\n/);
+  assert.match(play, /tracks: internal\n/);
+  assert.match(play, /status: completed\n/);
 
   // Signing outside Gradle, passwords from the environment only.
   const signing = read(repo, 'scripts/release/android-signing.sh');
@@ -1652,7 +1667,7 @@ test('verify-android-release.sh rejects a missing APK before running any check',
   assert.match(result.stdout, /::error::no APK at/);
 });
 
-// Desktop (Exo for macOS): the Developer ID certificate and the App Store Connect key are never on a runner that runs
+// Desktop (TinyCloud Home for macOS): the Developer ID certificate and the App Store Connect key are never on a runner that runs
 // project or third-party build code. The build job compiles and ad-hoc seals the app with no environment and no secret;
 // only the preflight and sign jobs, which check out nothing but scripts/release (and the entitlements) at the workflow
 // commit, are in desktop-release. CI runs the sign job as an ad-hoc dry run.
@@ -1685,7 +1700,13 @@ test('desktop signing: keys only in tooling-only jobs, the app built with none, 
   assert.match(signJob, /\n {4}if: \$\{\{ !inputs\.smoke && !cancelled\(\) && needs\.build\.result == 'success' \}\}\n/);
   const smokePackage = stepNamed(build, 'Package .app');
   assert.match(smokePackage, /"\$app_name-macos-arm64\.app\.zip"/);
-  assert.match(stepNamed(signJob, 'Unpack the app'), /needs\.build\.outputs\.product-name.*-macos-arm64\.app\.zip/);
+  // The build job runs untrusted code: its outputs reach the sign job's scripts only as env, never interpolated.
+  assert.match(stepNamed(signJob, 'Unpack the app'), /\n\s+PRODUCT_NAME: \$\{\{ needs\.build\.outputs\.product-name \}\}\n/);
+  assert.match(stepNamed(signJob, 'Unpack the app'), /zip="\$RUNNER_TEMP\/exo-build\/macos\/\$PRODUCT_NAME-macos-arm64\.app\.zip"/);
+  for (const step of jobSteps(signJob)) {
+    const runAt = step.search(/\n\s+run: /);
+    if (runAt !== -1) assert.doesNotMatch(step.slice(runAt), /\$\{\{ needs\./, step.split('\n')[0]);
+  }
   assert.match(workflow, /signed:\n\s+description: .*\n\s+value: \$\{\{ jobs\.sign\.outputs\.signed \}\}/);
   const tooling = (job, paths) => {
     assert.equal((job.match(/uses: actions\/checkout@/g) ?? []).length, 1, 'one checkout: the release tooling');
@@ -1713,7 +1734,7 @@ test('desktop signing: keys only in tooling-only jobs, the app built with none, 
   assert.match(build, /\n {4}needs: preflight\n/);
   assert.match(build, /\n {4}if: \$\{\{ !cancelled\(\) && \(needs\.preflight\.result == 'success' \|\| \(!inputs\.sign && needs\.preflight\.result == 'skipped'\)\) \}\}\n/);
   assert.doesNotMatch(withoutComments(build), /environment:|secrets\.|vars\.|APPLE_|security import|notarytool|--sign |keychain/);
-  const buildOrder = ['Install JS deps', 'Build workspace packages', 'Bundle versions', 'Build Exo desktop app', 'Bundle Exo', 'Check Info.plist',
+  const buildOrder = ['Install JS deps', 'Build workspace packages', 'Bundle versions', 'Build the desktop app', 'Bundle the app', 'Check Info.plist',
     'Verify the ad-hoc seal', 'Package .app', 'Upload dmg + app'].map(name => build.indexOf(`- name: ${name}\n`));
   assert.ok(buildOrder.every(index => index !== -1), `build steps: ${buildOrder}`);
   assert.deepEqual([...buildOrder].sort((a, b) => a - b), buildOrder, 'the seal is verified before the app is handed over');
@@ -1736,7 +1757,7 @@ test('desktop signing: keys only in tooling-only jobs, the app built with none, 
   tooling(sign, ['/scripts/release/', '/desktop/src-tauri/Entitlements.plist']);
   assert.deepEqual(scriptsIn(sign), ['scripts/release/desktop-signing.sh', 'scripts/release/verify-desktop-signing.sh']);
   const signOrder = ['Check out the release tooling', 'Verify signing provenance', 'Check signing secrets', 'Download the build', 'Unpack the app',
-    'Import the Developer ID certificate', 'Sign Exo.app (inside-out)', 'Write the App Store Connect API key', 'Notarize and staple the app',
+    'Import the Developer ID certificate', 'Sign the app (inside-out)', 'Write the App Store Connect API key', 'Notarize and staple the app',
     'Build the DMG', 'Notarize and staple the DMG', 'Verify signing and notarization', 'Remove the keychain and the API key',
     'Package the signed app', 'Upload the signed dmg + app'].map(name => sign.indexOf(`- name: ${name}\n`));
   assert.ok(signOrder.every(index => index !== -1), `sign steps: ${signOrder}`);
@@ -1747,15 +1768,19 @@ test('desktop signing: keys only in tooling-only jobs, the app built with none, 
     assert.match(stepNamed(sign, name), /\n\s+if: inputs\.sign\n/, name);
   }
   // The dry run runs the same unpack, codesign and hdiutil steps; a signed build never falls back to ad-hoc.
-  for (const name of ['Download the build', 'Unpack the app', 'Sign Exo.app (inside-out)', 'Build the DMG']) assert.doesNotMatch(stepNamed(sign, name), /\n\s+if:/, name);
-  for (const name of ['Sign Exo.app (inside-out)', 'Build the DMG']) {
+  for (const name of ['Download the build', 'Unpack the app', 'Sign the app (inside-out)', 'Build the DMG']) assert.doesNotMatch(stepNamed(sign, name), /\n\s+if:/, name);
+  for (const name of ['Sign the app (inside-out)', 'Build the DMG']) {
     assert.match(stepNamed(sign, name), /if \[ "\$SIGN" != true \]; then IDENTITY=-; elif \[ -z "\$IDENTITY" \]; then echo "::error::APPLE_SIGNING_IDENTITY is empty"; exit 1; fi\n/, name);
   }
-  assert.match(stepNamed(sign, 'Sign Exo.app (inside-out)'), /scripts\/release\/desktop-signing\.sh sign "\$EXO_APP" desktop\/src-tauri\/Entitlements\.plist "\$IDENTITY" "\$\{EXO_KEYCHAIN:-\}"/);
+  assert.match(stepNamed(sign, 'Sign the app (inside-out)'), /scripts\/release\/desktop-signing\.sh sign "\$EXO_APP" desktop\/src-tauri\/Entitlements\.plist "\$IDENTITY" "\$\{EXO_KEYCHAIN:-\}"/);
   assert.match(stepNamed(sign, 'Download the build'), /name: \$\{\{ env\.BUILD_ARTIFACT \}\}\n/);
   const unpack = stepNamed(sign, 'Unpack the app');
   assert.match(unpack, /SHA256: \$\{\{ needs\.build\.outputs\.app-sha256 \}\}/);
   assert.ok(unpack.indexOf('!= "$SHA256"') !== -1 && unpack.indexOf('!= "$SHA256"') < unpack.indexOf('desktop-signing.sh unpack'), 'the hand-off digest is checked before unpacking');
+  assert.match(unpack, /desktop-signing\.sh unpack "\$zip" "\$RUNNER_TEMP\/exo-app" "\$PRODUCT_NAME" "\$VERSION" "\$SHORT_VERSION" "\$BUNDLE_VERSION"/);
+  // Signed files are named after the product (spaces as hyphens); publish renames them to the plan's asset prefix.
+  assert.match(unpack, /echo "EXO_DMG=\$EXO_SIGNED\/\$\{asset\}_\$\{VERSION\}_aarch64\.dmg"/);
+  assert.match(stepNamed(sign, 'Package the signed app'), /ditto -c -k --sequesterRsrc --keepParent "\$EXO_APP" "\$EXO_ZIP"/);
   assert.match(stepNamed(sign, 'Notarize and staple the app'), /desktop-signing\.sh notarize "\$EXO_APP" "\$APPLE_API_KEY_PATH"/);
   assert.match(stepNamed(sign, 'Notarize and staple the DMG'), /desktop-signing\.sh notarize "\$EXO_DMG" "\$APPLE_API_KEY_PATH"/);
   assert.match(stepNamed(sign, 'Verify signing and notarization'), /scripts\/release\/verify-desktop-signing\.sh "\$EXO_APP" "\$EXO_DMG" "\$APPLE_TEAM_ID"\n\s+echo "signed=true" >> "\$GITHUB_OUTPUT"/);
@@ -1775,13 +1800,13 @@ test('desktop signing: keys only in tooling-only jobs, the app built with none, 
   assert.match(script, /opts=\(--force --options runtime --sign "\$identity"\)/);
   assert.match(script, /codesign "\$\{opts\[@\]\}" --entitlements "\$entitlements" "\$app"/);
   assert.equal((script.match(/--entitlements "\$entitlements"/g) ?? []).length, 1, 'only the app gets the entitlements');
-  assert.match(script, /hdiutil create -volname Exo -srcfolder "\$staging" -fs HFS\+ -format UDZO/);
+  assert.match(script, /hdiutil create -volname "\$\{bundle%\.app\}" -srcfolder "\$staging" -fs HFS\+ -format UDZO/);
   assert.match(script, /xcrun notarytool submit "\$submit" --key "\$key" --key-id "\$APPLE_API_KEY" --issuer "\$APPLE_API_ISSUER"/);
   assert.match(script, /xcrun stapler staple "\$file"/);
   assert.doesNotMatch(withoutComments(script), DESKTOP_PROJECT_CODE);
 
   // Releases sign only for an explicit `required`; CI never signs but runs the dry run on signing changes too.
-  assert.match(read(repo, '.github/workflows/desktop-release.yml'), /uses: \.\/\.github\/workflows\/desktop-build\.yml\n\s+with:\n(?:.*\n){2}\s+sign: \$\{\{ needs\.plan\.outputs\.signing == 'required' \}\}\n/);
+  assert.match(read(repo, '.github/workflows/desktop-release.yml'), /uses: \.\/\.github\/workflows\/desktop-build\.yml\n(?:\s+#.*\n)*\s+secrets: inherit\n\s+with:\n(?:.*\n){2}\s+sign: \$\{\{ needs\.plan\.outputs\.signing == 'required' \}\}\n/);
   const ci = read(repo, '.github/workflows/desktop.yml');
   assert.doesNotMatch(ci, /sign:/);
   for (const path of ['scripts/release/desktop-*', 'scripts/release/verify-desktop-signing.sh']) assert.equal(triggers('.github/workflows/desktop.yml').split(`"${path}"`).length, 3, path);
@@ -1876,7 +1901,7 @@ exit 1
 `);
   write(dir, 'bin/ditto', '#!/usr/bin/env bash\n[ "$1" = -x ] && [ "$2" = -k ] && exec tar -xf "$3" -C "$4"\nexit 1\n');
   for (const name of ['codesign', 'plutil', 'ditto']) chmodSync(join(bin, name), 0o755);
-  const contents = join(dir, 'src/Exo.app/Contents');
+  const contents = join(dir, 'src/TinyCloud One.app/Contents');
   write(contents, 'Info.plist', ['<plist><dict>', ...Object.entries({ CFBundleExecutable: 'exo-desktop', CFBundleIdentifier: 'xyz.tinycloud.exo',
     CFBundleShortVersionString: '0.2.0', CFBundleVersion: '200003' }).flatMap(([key, value]) => [`<key>${key}</key>`, `<string>${value}</string>`]), '</dict></plist>', ''].join('\n'));
   const macho = rel => {
@@ -1890,7 +1915,7 @@ exit 1
   write(contents, 'Resources/Res.bundle/Contents/Resources/strings.txt', 'resources only');
   const archive = name => {
     const tar = join(dir, name);
-    assert.equal(spawnSync('tar', ['-cf', tar, 'Exo.app'], { cwd: join(dir, 'src') }).status, 0);
+    assert.equal(spawnSync('tar', ['-cf', tar, 'TinyCloud One.app'], { cwd: join(dir, 'src') }).status, 0);
     return tar;
   };
   const log = join(dir, 'codesign.log');
@@ -1900,12 +1925,21 @@ exit 1
 
 test('desktop-signing.sh unpack checks the handed-over app before anything signs it', t => {
   const { dir, contents, archive, env } = stubbedMacTools(t);
-  const unpack = (tar, ...versions) => desktopSigning(['unpack', tar, join(dir, 'out'), ...versions], env);
+  const named = (name, tar, ...versions) => desktopSigning(['unpack', tar, join(dir, 'out'), name, ...versions], env);
+  const unpack = (tar, ...versions) => named('TinyCloud One', tar, ...versions);
   const good = archive('good.tar');
   const ok = unpack(good, '0.2.0-beta.3', '0.2.0', '200003');
   assert.equal(ok.status, 0, ok.stdout + ok.stderr);
-  assert.equal(ok.stdout.trim(), join(dir, 'out/Exo.app'));
-  // The build job's outputs are strings from a job that ran build code: refused unless they look like versions.
+  assert.equal(ok.stdout.trim(), join(dir, 'out/TinyCloud One.app'));
+  // The build job's outputs are strings from a job that ran build code: refused unless they look like a name and
+  // versions, before they name anything.
+  for (const name of ['', '../TinyCloud One', 'TinyCloud/Home', 'TinyCloud One; touch pwned', ' TinyCloud One', 'TinyCloud  Home']) {
+    const refused = named(name, good, '0.2.0-beta.3', '0.2.0', '200003');
+    assert.equal(refused.status, 1, name);
+    assert.match(refused.stdout, /::error::the build reports product name '.*', not words of letters and digits/, name);
+    assert.equal(existsSync(join(dir, 'out')), true, 'out is left from the good unpack');
+  }
+  assert.match(named('Exo', good, '0.2.0-beta.3', '0.2.0', '200003').stdout, /::error::good\.tar holds no Exo\.app/);
   assert.match(unpack(good, '0.2.0-beta.3; touch pwned', '0.2.0', '200003').stdout, /::error::the build reports version '0\.2\.0-beta\.3; touch pwned', not X\.Y\.Z or X\.Y\.Z-beta\.N/);
   assert.match(unpack(good, '0.2.0-beta.3', '0.2.1', '200003').stdout, /::error::the build reports short version '0\.2\.1' for 0\.2\.0-beta\.3/);
   assert.match(unpack(good, '0.2.0-beta.3', '0.2.0', '200004').stdout, /::error::the app is not build 200004/);
@@ -1913,7 +1947,7 @@ test('desktop-signing.sh unpack checks the handed-over app before anything signs
   symlinkSync('../../../../etc/passwd', join(contents, 'Resources/escape'));
   const escape = unpack(archive('escape.tar'), '0.2.0-beta.3', '0.2.0', '200003');
   assert.equal(escape.status, 1);
-  assert.match(escape.stdout, /::error::symlink Exo\.app\/Contents\/Resources\/escape points outside the app/);
+  assert.match(escape.stdout, /::error::symlink TinyCloud One\.app\/Contents\/Resources\/escape points outside the app/);
   chmodSync(join(contents, 'MacOS/exo-desktop'), 0o644);
   rmSync(join(contents, 'Resources/escape'));
   assert.match(unpack(archive('noexec.tar'), '0.2.0-beta.3', '0.2.0', '200003').stdout, /::error::Contents\/MacOS\/exo-desktop lost its executable bit/);
@@ -1921,7 +1955,7 @@ test('desktop-signing.sh unpack checks the handed-over app before anything signs
 
 test('desktop-signing.sh sign signs nested code deepest first, the app last with the entitlements, never with --deep', t => {
   const { dir, archive, env, log } = stubbedMacTools(t);
-  const app = desktopSigning(['unpack', archive('app.tar'), join(dir, 'out'), '0.2.0-beta.3', '0.2.0', '200003'], env).stdout.trim();
+  const app = desktopSigning(['unpack', archive('app.tar'), join(dir, 'out'), 'TinyCloud One', '0.2.0-beta.3', '0.2.0', '200003'], env).stdout.trim();
   const entitlements = join(repo, 'desktop/src-tauri/Entitlements.plist');
   const signed = identity => {
     writeFileSync(log, '');
@@ -1931,19 +1965,19 @@ test('desktop-signing.sh sign signs nested code deepest first, the app last with
   };
   const adHoc = signed('-');
   const signs = adHoc.filter(line => line.includes(' --sign '));
-  const target = line => line.split(' ').at(-1).replace(`${app}/`, '').replace(app, 'Exo.app');
+  const target = line => line.slice(line.lastIndexOf(` ${join(dir, 'out')}/`) + 1).replace(`${app}/`, '').replace(app, 'TinyCloud One.app');
   assert.deepEqual(signs.map(target), [
     'Contents/Frameworks/Foo.framework/Versions/A/Foo',
     'Contents/Resources/lib/libbar.dylib',
     'Contents/Frameworks/Foo.framework',
     'Contents/MacOS/helper',
-    'Exo.app',
+    'TinyCloud One.app',
   ]);
   for (const line of signs) {
     assert.match(line, /^codesign --force --options runtime --sign - --timestamp=none /);
     assert.doesNotMatch(line, /--deep/);
   }
-  assert.deepEqual(signs.filter(line => line.includes('--entitlements')).map(target), ['Exo.app']);
+  assert.deepEqual(signs.filter(line => line.includes('--entitlements')).map(target), ['TinyCloud One.app']);
   assert.ok(adHoc.findIndex(line => line.startsWith('codesign --verify --deep --strict')) > adHoc.indexOf(signs.at(-1)), 'verified after signing');
 
   const developerId = signed('Developer ID Application: TinyCloud Labs (ABCDE12345)').filter(line => line.includes(' --sign '));
@@ -1953,17 +1987,17 @@ test('desktop-signing.sh sign signs nested code deepest first, the app last with
   }
 });
 
-// The real "Sign Exo.app" step: an ad-hoc re-seal in the dry run, a refusal (never an ad-hoc fallback) when signing
+// The real "Sign the app" step: an ad-hoc re-seal in the dry run, a refusal (never an ad-hoc fallback) when signing
 // without an identity.
 test('the desktop sign step re-seals ad-hoc in the dry run and never signs ad-hoc for a signed build', t => {
   const { dir, archive, env, log } = stubbedMacTools(t);
-  const app = desktopSigning(['unpack', archive('app.tar'), join(dir, 'out'), '0.2.0-beta.3', '0.2.0', '200003'], env).stdout.trim();
-  const script = stepScript(jobText(read(repo, '.github/workflows/desktop-build.yml'), 'sign'), 'Sign Exo.app (inside-out)');
+  const app = desktopSigning(['unpack', archive('app.tar'), join(dir, 'out'), 'TinyCloud One', '0.2.0-beta.3', '0.2.0', '200003'], env).stdout.trim();
+  const script = stepScript(jobText(read(repo, '.github/workflows/desktop-build.yml'), 'sign'), 'Sign the app (inside-out)');
   const step = extra => spawnSync('bash', ['--noprofile', '--norc', '-eo', 'pipefail', '-c', script], { cwd: repo, encoding: 'utf8', env: { ...env, EXO_APP: app, ...extra } });
   writeFileSync(log, '');
   const dryRun = step({ SIGN: 'false', IDENTITY: '' });
   assert.equal(dryRun.status, 0, dryRun.stdout + dryRun.stderr);
-  assert.match(dryRun.stdout, /Exo\.app re-sealed ad-hoc inside-out \(4 nested\)/);
+  assert.match(dryRun.stdout, /TinyCloud One\.app re-sealed ad-hoc inside-out \(4 nested\)/);
   writeFileSync(log, '');
   const missing = step({ SIGN: 'true', IDENTITY: '' });
   assert.equal(missing.status, 1);
@@ -2066,24 +2100,23 @@ if command -v sha256sum >/dev/null; then exec sha256sum "$@"; else exec /usr/bin
   open: `#!/bin/bash\nprintf 'open %s\\n' "$1" >> "$STUB_LOG/calls.log"\n`,
 };
 
-function runExoUpdate(t, shell, { sums = 'good', redirectBase, apiRedirect, killAt, installed = true, args = [] } = {}) {
+function runExoUpdate(t, shell, { sums = 'good', redirectBase, apiRedirect, killAt, installed = true, installedAs = 'TinyCloud One.app', releaseApp = 'TinyCloud One.app', releaseDmg, args = [] } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'exo-update-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const dirs = Object.fromEntries(['bin', 'home', 'apps', 'release', 'log', 'tmp'].map((name) => [name, join(root, name)]));
   for (const dir of Object.values(dirs)) mkdirSync(dir, { recursive: true });
-  const plan = readFileSync(join(repo, 'scripts/release/desktop-release-plan.mjs'), 'utf8');
-  const prefix = plan.match(/setOutput\('asset-prefix', `([^`]+)`\)/)[1];
+  // The release asset desktop-release-plan.mjs names after tauri.conf.json's productName.
   const version = '9.9.9';
-  const dmg = `${prefix.replace('${version}', version)}.dmg`;
-  const app = (dir, build) => {
-    mkdirSync(join(dir, 'Exo.app/Contents'), { recursive: true });
-    writeFileSync(join(dir, 'Exo.app/Contents/Info.plist'), `${build}\n`);
+  const dmg = releaseDmg ?? `${desktopProduct(readFileSync(join(repo, 'desktop/src-tauri/tauri.conf.json'), 'utf8')).assetName}_${version}_aarch64.dmg`;
+  const app = (dir, name, build) => {
+    mkdirSync(join(dir, name, 'Contents'), { recursive: true });
+    writeFileSync(join(dir, name, 'Contents/Info.plist'), `${build}\n`);
   };
-  if (installed) app(dirs.apps, 'old-build');
-  app(join(dirs.release, 'content'), 'new-build');
+  if (installed) app(dirs.apps, installedAs, 'old-build');
+  app(join(dirs.release, 'content'), releaseApp, 'new-build');
   writeFileSync(join(dirs.release, dmg), 'fake dmg bytes');
   const digest = createHash('sha256').update(sums === 'bad' ? 'other bytes' : 'fake dmg bytes').digest('hex');
-  writeFileSync(join(dirs.release, 'SHA256SUMS.txt'), `${digest}  ${sums === 'missing' ? 'Exo_other_aarch64.dmg' : dmg}\n`);
+  writeFileSync(join(dirs.release, 'SHA256SUMS.txt'), `${digest}  ${sums === 'missing' ? 'TinyCloud-One_other_aarch64.dmg' : dmg}\n`);
   for (const [name, body] of Object.entries(EXO_UPDATE_STUBS)) {
     writeFileSync(join(dirs.bin, name), body);
     chmodSync(join(dirs.bin, name), 0o755);
@@ -2102,9 +2135,10 @@ function runExoUpdate(t, shell, { sums = 'good', redirectBase, apiRedirect, kill
   return {
     status: result.status, stderr: result.stderr,
     calls: read(join(dirs.log, 'calls.log')), curl: read(join(dirs.log, 'curl.log')),
-    build: read(join(dirs.apps, 'Exo.app/Contents/Info.plist')).trim(),
+    build: read(join(dirs.apps, existsSync(join(dirs.apps, 'TinyCloud One.app')) ? 'TinyCloud One.app' : installedAs, 'Contents/Info.plist')).trim(),
+    apps: readdirSync(dirs.apps).filter((name) => name.endsWith('.app')),
     state: read(join(dirs.home, '.exo-update')).trim(),
-    leftovers: [...readdirSync(dirs.apps).filter((name) => name !== 'Exo.app'), ...readdirSync(dirs.tmp)],
+    leftovers: [...readdirSync(dirs.apps).filter((name) => name !== 'TinyCloud One.app' && name !== installedAs), ...readdirSync(dirs.tmp)],
   };
 }
 
@@ -2127,6 +2161,37 @@ for (const shell of ['bash', 'sh']) {
     for (const call of run.curl.trim().split('\n')) assert.match(call, /--proto =https --proto-redir =https/);
     assert.equal(runExoUpdate(t, shell, { installed: false }).build, 'new-build', 'first install');
     assert.equal(runExoUpdate(t, shell, { args: ['beta'] }).build, 'new-build', 'beta channel');
+  });
+
+  test(`exo-update.sh (${shell}) replaces an install from before the rename (Exo.app) with TinyCloud One.app`, (t) => {
+    const run = runExoUpdate(t, shell, { installedAs: 'Exo.app' });
+    assert.equal(run.status, 0, run.stderr);
+    assert.equal(run.build, 'new-build');
+    assert.deepEqual(run.apps, ['TinyCloud One.app'], 'the old Exo.app is gone, not left beside the new app');
+    assert.deepEqual(run.leftovers, []);
+  });
+
+  test(`exo-update.sh (${shell}) replaces TinyCloud Home.app with TinyCloud One.app, from either release`, (t) => {
+    const fromNew = runExoUpdate(t, shell, { installedAs: 'TinyCloud Home.app' });
+    assert.equal(fromNew.status, 0, fromNew.stderr);
+    assert.equal(fromNew.build, 'new-build');
+    assert.deepEqual(fromNew.apps, ['TinyCloud One.app'], 'the old TinyCloud Home.app is gone, not left beside the new app');
+    assert.deepEqual(fromNew.leftovers, []);
+    const fromHomeRelease = runExoUpdate(t, shell, { installedAs: 'TinyCloud Home.app', releaseApp: 'TinyCloud Home.app', releaseDmg: 'TinyCloud-Home_9.9.9_aarch64.dmg' });
+    assert.equal(fromHomeRelease.status, 0, fromHomeRelease.stderr);
+    assert.equal(fromHomeRelease.build, 'new-build');
+    assert.deepEqual(fromHomeRelease.apps, ['TinyCloud One.app']);
+    assert.match(fromHomeRelease.curl, /TinyCloud-Home_9\.9\.9_aarch64\.dmg/);
+    assert.deepEqual(fromHomeRelease.leftovers, []);
+  });
+
+  test(`exo-update.sh (${shell}) still installs a release from before the rename (Exo_<v>_aarch64.dmg holding Exo.app)`, (t) => {
+    const run = runExoUpdate(t, shell, { installedAs: 'Exo.app', releaseApp: 'Exo.app', releaseDmg: 'Exo_9.9.9_aarch64.dmg' });
+    assert.equal(run.status, 0, run.stderr);
+    assert.equal(run.build, 'new-build');
+    assert.deepEqual(run.apps, ['TinyCloud One.app']);
+    assert.match(run.curl, /Exo_9\.9\.9_aarch64\.dmg/);
+    assert.deepEqual(run.leftovers, []);
   });
 
   test(`exo-update.sh (${shell}) keeps the installed app on a mismatched or missing checksum`, (t) => {
@@ -2361,4 +2426,48 @@ test('a Releases list that cannot be read in full fails closed', { skip: !change
     git(root, 'reset', '-q', '--hard', 'HEAD');
     git(root, 'clean', '-fdq');
   }
+});
+
+test('hostServesCommit says whether a web host serves the deployed commit, and why not', async () => {
+  const COMMIT = 'a'.repeat(40);
+  const answer = (body, init = {}) => async url => {
+    assert.equal(new URL(url).pathname, '/version.json');
+    assert.equal(new URL(url).searchParams.get('deploy'), COMMIT);
+    return new Response(body, { status: 200, headers: { 'content-type': 'application/json; charset=utf-8' }, ...init });
+  };
+  assert.deepEqual(await hostServesCommit('tinycloud.one', COMMIT, answer(JSON.stringify({ commit: COMMIT }))), { ok: true, served: COMMIT });
+  assert.deepEqual(await hostServesCommit('tinycloud.chat', COMMIT, answer(JSON.stringify({ commit: 'b'.repeat(40) }))), { ok: false, served: 'b'.repeat(40) });
+  assert.deepEqual(await hostServesCommit('x', COMMIT, answer(JSON.stringify({ commit: null }))), { ok: false, served: 'no commit' });
+  // A domain on another Pages project answers the SPA shell for /version.json.
+  const html = await hostServesCommit('home.tinycloud.xyz', COMMIT, answer('<!doctype html>', { headers: { 'content-type': 'text/html; charset=utf-8' } }));
+  assert.equal(html.ok, false);
+  assert.match(html.served, /text\/html/);
+  assert.deepEqual(await hostServesCommit('x', COMMIT, async () => new Response('nope', { status: 503 })), { ok: false, served: 'HTTP 503' });
+  const down = await hostServesCommit('x', COMMIT, async () => { throw new Error('connect ECONNREFUSED'); });
+  assert.equal(down.ok, false);
+  assert.match(down.served, /ECONNREFUSED/);
+});
+
+test('explainUnservedHost names the host and tells apart not attached, not bound and an older build', async () => {
+  const COMMIT = 'a'.repeat(40);
+  const html = { 'content-type': 'text/html; charset=utf-8' };
+  const explain = async (host, respond) => {
+    const result = await hostServesCommit(host, COMMIT, respond);
+    assert.equal(result.ok, false);
+    return explainUnservedHost(host, result.served, COMMIT);
+  };
+  const unattached = await explain('tinycloud.one', async () => { throw new Error('getaddrinfo ENOTFOUND tinycloud.one'); });
+  assert.match(unattached, /^tinycloud\.one did not answer \(getaddrinfo ENOTFOUND tinycloud\.one\)/);
+  assert.match(unattached, /not attached to the Cloudflare Pages project/);
+  const spaShell = await explain('tinycloud.one', async () => new Response('<!doctype html>', { status: 200, headers: html }));
+  assert.match(spaShell, /^tinycloud\.one answers but has no version\.json/);
+  assert.match(spaShell, /not bound to the Cloudflare Pages project that built a{40}/);
+  const missing = await explain('home.tinycloud.xyz', async () => new Response('nope', { status: 404 }));
+  assert.match(missing, /^home\.tinycloud\.xyz answers but has no version\.json.*HTTP 404/);
+  const edgeError = await explain('tinycloud.one', async () => new Response('bad gateway', { status: 502 }));
+  assert.match(edgeError, /^tinycloud\.one answered HTTP 502 for version\.json/);
+  assert.doesNotMatch(edgeError, /not bound/);
+  const older = await explain('tinycloud.chat', async () => new Response(JSON.stringify({ commit: 'b'.repeat(40) }), { status: 200, headers: { 'content-type': 'application/json' } }));
+  assert.match(older, /^tinycloud\.chat serves b{40}, not a{40}: an older build/);
+  assert.equal(explainUnservedHost('x', 'no commit', COMMIT), 'x serves a version.json without a commit: it is an older build or another project');
 });

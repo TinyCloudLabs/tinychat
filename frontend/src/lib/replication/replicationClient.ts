@@ -1,5 +1,6 @@
 // Builds the `replication` client option, only when replication is ON for the signed-in user
-// (build flag + platform + the user's own switch; replicationFlag.ts).
+// (build flag + platform + the user's own switch; replicationFlag.ts) and binding is not paused
+// (production builds, until web-sdk 3.12; isReplicationBindPaused).
 //
 // OFF (any gate): returns undefined and imports NOTHING. The optional plugin
 // (`@tinycloud/web-sdk/replica`, which in turn lazily loads the encrypted IndexedDB storage
@@ -14,12 +15,13 @@
 import type { TinyCloudWebConfig } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { noteReplicationCopyPossible } from "./replicationCopyMarker";
-import { isReplicationEnabled } from "./replicationFlag";
+import { isReplicationBindPaused, isReplicationEnabled } from "./replicationFlag";
 import { appFirstLoadSettled, resetAppFirstLoad } from "./replicationFirstLoad";
 import { startupPurgeSettled } from "./replicationStartupPurge";
 import { replicationPrefixes } from "./replicationPrefixes";
 import { clientHasReplication } from "./replicationSignOut";
 import { recordReplicationEvent } from "./replicationStatus";
+import { whenForegroundIdle } from "../localFirst/requestLanes";
 
 /**
  * Origin-wide replica byte budget. Over budget, sync STOPS with STORAGE_BUDGET and nothing is
@@ -80,8 +82,11 @@ export const REPLICATION_SYNC_SCOPE = "prefixes" as const;
 export async function buildReplicationConfig(
   principal: string | undefined,
   loader: ReplicationPluginLoader = defaultReplicationLoader,
+  paused: boolean = isReplicationBindPaused(),
 ): Promise<ReplicationClientConfig | undefined> {
   if (!isReplicationEnabled({ principal })) return undefined;
+  // Paused (production builds): no bind, no kv/sync grant, nothing loaded; an existing copy is kept.
+  if (paused) return undefined;
   // A page-load purge may still be deleting the origin copy (a pending wipe): never build over it.
   await startupPurgeSettled();
   // Before any copy can exist: lets a later OFF load find it (replicationOffPurge.ts).
@@ -120,6 +125,13 @@ export const REPLICATION_FILL_START_GAP_MS = 200;
  */
 export const REPLICATION_FILL_FIRST_LOAD_DEADLINE_MS = 45_000;
 
+const stoppedReplicationFills = new WeakSet<TinyCloudWeb>();
+
+/** Prevent this session's queued application fill from starting after sign-out begins. */
+export function stopReplicationFill(tcw: TinyCloudWeb): void {
+  stoppedReplicationFills.add(tcw);
+}
+
 /** Test seam. Production uses the app's first-load signal and the real prefix list. */
 export interface ReplicationFillDeps {
   firstLoadSettled?: () => Promise<void>;
@@ -152,8 +164,12 @@ async function isNonCompactGrantRefusal(error: unknown): Promise<boolean> {
  * Only when this client HAS a replication controller and the user's opt-in is ON (re-checked before
  * EVERY prefix start), and never while a removal of the copy is in flight. The fill waits for the
  * app's first data load to settle (success or error; at most REPLICATION_FILL_FIRST_LOAD_DEADLINE_MS),
- * then probes one prefix before starting the remaining bounded, spaced worker fill. This prevents a
- * session-wide non-compact grant refusal from fanning out across concurrent prefix starts.
+ * then probes one prefix before starting the remaining bounded, spaced worker fill (at most
+ * REPLICATION_FILL_POOL_SIZE in flight, starts spaced REPLICATION_FILL_START_GAP_MS apart, so a burst
+ * of kv/sync does not queue the app's reads). The probe prevents a session-wide non-compact grant
+ * refusal from fanning out across concurrent prefix starts.
+ * A worker prefix starts only while the tab is visible and no foreground request (the visible screen's
+ * reads, a user action) is in flight (`whenForegroundIdle`).
  * Switch-off / sign-out (controller gone) stops every prefix not yet started; one already started is
  * left to the SDK's own teardown. A non-compact-UCAN refusal is terminal for this client session:
  * close the controller and log once. Other sync errors do not stop later prefixes.
@@ -163,8 +179,8 @@ export function startReplicationFill(
   isEnabled: () => boolean = () => isReplicationEnabled({ principal: tcw.did }),
   deps: ReplicationFillDeps = {},
 ): void {
-  if (terminalGrantRefusals.has(tcw)) return;
-  const canStart = (): boolean => !terminalGrantRefusals.has(tcw) && clientHasReplication(tcw) && isEnabled();
+  const canStart = (): boolean =>
+    !stoppedReplicationFills.has(tcw) && !terminalGrantRefusals.has(tcw) && clientHasReplication(tcw) && isEnabled();
   if (!canStart()) return;
   if (!deps.firstLoadSettled) resetAppFirstLoad(); // a new sign-in/restore waits for ITS first load
   const firstLoadSettled = deps.firstLoadSettled ?? appFirstLoadSettled;
@@ -216,7 +232,9 @@ export function startReplicationFill(
       while (queue.length > 0) {
         const prefix = queue.shift()!;
         let sync: Promise<unknown> | undefined;
-        const slot = turn.then(() => {
+        // Each start also waits for the screen's own requests (and a visible tab):
+        // a kv/sync holds a node DB connection, so it never starts beside them.
+        const slot = turn.then(whenForegroundIdle).then(() => {
           if (!canStart()) { queue.length = 0; return undefined; }
           sync = syncPrefix(prefix);
           return startGapMs > 0 ? sleep(startGapMs) : Promise.resolve();
