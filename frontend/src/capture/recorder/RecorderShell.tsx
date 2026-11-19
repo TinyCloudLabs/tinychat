@@ -17,6 +17,7 @@ import { Island, islandState } from "./Island";
 import { RailLiveButton } from "./RailLiveButton";
 import { islandShown, useRecorder } from "./RecorderProvider";
 import { CaptureSourceUnconfirmedIndicator } from "./CaptureSourceUnconfirmedIndicator";
+import { KeepRecordingPrompt } from "./KeepRecordingPrompt";
 import { RecordingOverlay } from "./RecordingOverlay";
 import { SidebarLiveCard } from "./SidebarLiveCard";
 
@@ -86,6 +87,7 @@ export function RecorderShell({ onOpenNote, ...shell }: RecorderShellProps) {
         }
       />
       {sourceWarning}
+      <KeepRecordingPrompt />
       {navKind === "tabbar" ? null : <ShellNoteNotice layout="beside" />}
       <RecordingOverlay onOpenNote={onOpenNote} desktopHost={recorderHost} />
     </MinimizedProvider>

@@ -403,6 +403,25 @@ describe("POST /api/transcriber/meetings", () => {
     expect(h.calls.filter(call => call.method === "createMeeting")).toEqual([]);
   });
 
+  test("a stuck-joining meeting blocks a repeat send to its link, like a joining one", async () => {
+    for (const status of ["joining", "needs_help"] as const) {
+      const index = new MemoryTranscriberIndexStore();
+      const h = harness(ADDRESS_A, index);
+      const url = "https://meet.jit.si/stuck";
+      h.store.set("mtg_live", meeting("mtg_live", {
+        status, meeting_url: url, metadata: { tinychat_address: ADDRESS_A.toLowerCase() },
+      }));
+      await index.add(ADDRESS_A, "mtg_live");
+      await withServer(h.app, async (base) => {
+        expect((await call(base, "/api/transcriber/meetings")).status).toBe(200);
+        const response = await call(base, "/api/transcriber/meetings", "POST", { meeting_url: url });
+        expect(response.status).toBe(200);
+        expect(response.body.id).toBe("mtg_live");
+      });
+      expect(h.calls.filter(call => call.method === "createMeeting")).toEqual([]);
+    }
+  });
+
   test("an active row attributed to another owner never dedupes this user's send", async () => {
     const index = new MemoryTranscriberIndexStore();
     const h = harness(ADDRESS_A, index);
@@ -579,6 +598,18 @@ describe("GET /api/transcriber/meetings", () => {
       expect(r.status).toBe(200);
       expect(r.body.meetings.map((m: TranscriptionMeeting) => m.id)).toEqual(["mtg_2", "mtg_1"]);
       expect(r.body.meetings[1].status).toBe("in_progress");
+    });
+  });
+
+  test("a stuck-joining meeting is listed with its needs_help status", async () => {
+    const h = harness();
+    await withServer(h.app, async (base) => {
+      await call(base, "/api/transcriber/meetings", "POST", { meeting_url: "https://meet.jit.si/one" });
+      h.store.get("mtg_1")!.status = "needs_help";
+
+      const r = await call(base, "/api/transcriber/meetings");
+      expect(r.status).toBe(200);
+      expect(r.body.meetings[0].status).toBe("needs_help");
     });
   });
 
@@ -1092,7 +1123,8 @@ describe("TC-581 review 6a: ownership fails closed", () => {
       const stop = await call(base, "/api/transcriber/meetings/mtg_shared/stop", "POST");
       expect(stop.status).toBe(403);
       expect(stop.body).toEqual({ error: "shared_meeting" });
-      expect((await call(base, "/api/transcriber/meetings/mtg_shared", "DELETE")).status).toBe(204);
+      const removed = await call(base, "/api/transcriber/meetings/mtg_shared", "DELETE");
+      expect([removed.status, removed.body]).toEqual([200, { id: "mtg_shared", status: "not_deleted" }]);
     });
     expect(h.calls.filter(c => c.method === "stopMeeting" || c.method === "deleteMeeting")).toEqual([]);
     expect(h.store.has("mtg_shared")).toBe(true);

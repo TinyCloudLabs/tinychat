@@ -1,12 +1,11 @@
 // The chat screen's header (TC-761), 52 px:
 //
-//   [Chats]  Weekly recap   [verification] [voice note] [new chat]
+//   [Chats]  Weekly recap   [verification] [live recording] [new chat]
 //
 // Chats opens the list as a sheet where it is not always on screen (phones and
 // tablets). The thread's title is the screen's heading. On wide screens the
 // model's verification indicator sits here; on phones it is in the model sheet.
-// The recorder slot holds the phone app's Record button (and, while the
-// keyboard is up, the live chip); it is empty elsewhere.
+// The recorder slot keeps a live recording reachable while the keyboard is up.
 import type { ReactNode } from "react";
 import { ThreadListPrimitive, useAuiState } from "@assistant-ui/react";
 import { PanelLeftIcon, SquarePenIcon } from "lucide-react";
@@ -17,7 +16,7 @@ import { cn } from "@/lib/utils";
 export interface ChatHeaderProps {
   /** Opens the Chats sheet; absent where the Chats column is always shown. */
   onOpenChats?: () => void;
-  /** The recorder's Record button and live chip (the phone app). */
+  /** The phone app's live-recording chip. */
   recorder?: ReactNode;
   /** A New chat button here (the Chats column has its own beside it). */
   newChat: boolean;

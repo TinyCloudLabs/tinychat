@@ -57,6 +57,27 @@ function surface(markup: string, name: string): { classes: string[]; body: strin
 }
 
 describe("the fixed tree", () => {
+  test("Apps and Feed are in the tab bar, rail and sidebar for everyone, and mount only while shown", () => {
+    for (const [, sizeClass] of SIZES) {
+      const markup = wrap(<AppShellView
+        screen={screenFor(PATHS.chat)} platform="web" pendingMeetings={0}
+        {...SLOTS} feed={<p>feed-work</p>} apps={<p>apps-work</p>}
+        sizeClass={sizeClass} captureMounted={false}
+      />, PATHS.chat);
+      expect(markup).toContain(`href="${PATHS.feed}"`);
+      expect(markup).toContain(`href="${PATHS.apps}"`);
+      expect(markup).not.toContain("feed-work");
+      expect(markup).not.toContain("apps-work");
+      const onFeed = wrap(<AppShellView
+        screen={screenFor(PATHS.feed)} platform="web" pendingMeetings={0}
+        {...SLOTS} feed={<p>feed-work</p>} apps={<p>apps-work</p>}
+        sizeClass={sizeClass} captureMounted={false}
+      />, PATHS.feed);
+      expect(onFeed).toContain("feed-work");
+      expect(onFeed).not.toContain("apps-work");
+    }
+  });
+
   test("every size class renders the same surfaces, in the same order, inside one <main>", () => {
     for (const [, sizeClass] of SIZES) {
       const markup = view(PATHS.chat, sizeClass, true);

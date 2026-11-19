@@ -21,7 +21,7 @@ function authStub(req: Request, _res: Response, next: NextFunction) {
 function createApp() {
   const app = express();
   app.use(createApiBodyParser());
-  app.use("/api/chat", authStub, createChatRouter());
+  app.use("/api/chat", authStub, createChatRouter({ redpillFetch: (input, init) => globalThis.fetch(input, init) }));
   return app;
 }
 
@@ -45,7 +45,7 @@ function stubUpstream(): { bodies: Record<string, unknown>[]; restore: () => voi
   const bodies: Record<string, unknown>[] = [];
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input.toString();
-    if (url.includes("api.redpill.ai") && url.endsWith("/chat/completions")) {
+    if (url.includes("tee.redpill.ai") && url.endsWith("/chat/completions")) {
       bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
       return new Response("data: [DONE]\n\n", {
         status: 200,
@@ -101,6 +101,7 @@ describe("POST /api/chat optional max_output_tokens", () => {
       await res.text();
       expect(upstream.bodies).toHaveLength(1);
       expect(upstream.bodies[0]).toEqual({
+        provider: { aci_verified: true },
         model: OFFERED_MODEL,
         messages: MESSAGES,
         stream: true,
@@ -158,6 +159,7 @@ describe("POST /api/chat optional max_output_tokens", () => {
         expect(res.status).toBe(200);
         await res.text();
         expect(upstream.bodies[0]).toEqual({
+          provider: { aci_verified: true },
           model: OFFERED_MODEL,
           messages: MESSAGES,
           stream: true,

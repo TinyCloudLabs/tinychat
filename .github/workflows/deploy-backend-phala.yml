@@ -17,6 +17,10 @@ on:
         description: Full commit SHA to build and deploy (resolved and gated by deploy-production.yml)
         type: string
         required: true
+      allow_current_dev_os_until_tc2843:
+        description: TC-2843 transition only; refused unless the originating event is workflow_dispatch
+        type: boolean
+        default: false
     outputs:
       state:
         description: unchanged | changed-verified | changed-unverified
@@ -36,13 +40,13 @@ env:
   DOCKER_IMAGE: ${{ vars.TINYCHAT_BACKEND_IMAGE || 'ghcr.io/tinycloudlabs/tinychat-backend' }}
   INGRESS_IMAGE: ${{ vars.TINYCHAT_INGRESS_IMAGE || 'ghcr.io/tinycloudlabs/tinychat-backend' }}
   PHALA_CVM_ID: ${{ vars.PHALA_CVM_ID }}
-  # Production dstack OS the backend CVM must run (the Phala KMS only releases app keys to this image).
+  # Reviewed production OS pin; this is deployment policy, not a claim about KMS release policy.
   PHALA_OS_IMAGE: dstack-0.5.12
   PHALA_OS_IMAGE_HASH: 8db40cb23008d6213668b5816702d100b37b859a8a5bfd18d938ae3a1b3715bd
   PHALA_INGRESS_DOMAIN: ${{ vars.PHALA_INGRESS_DOMAIN || 'api.tinycloud.chat' }}
   PRODUCTION_API_URL: ${{ vars.TINYCHAT_BACKEND_URL || 'https://api.tinycloud.chat' }}
-  PRODUCTION_FRONTEND_URL: ${{ vars.TINYCHAT_FRONTEND_URL || 'https://tinycloud.chat' }}
-  REDPILL_BASE_URL: ${{ vars.REDPILL_BASE_URL || 'https://api.redpill.ai/v1' }}
+  PRODUCTION_FRONTEND_URL: ${{ vars.TINYCHAT_FRONTEND_URL || 'https://tinycloud.one' }}
+  REDPILL_BASE_URL: ${{ vars.REDPILL_BASE_URL || 'https://tee.redpill.ai/v1' }}
   REDPILL_DEFAULT_MODEL: ${{ vars.REDPILL_DEFAULT_MODEL || 'z-ai/glm-5.2' }}
   # Reviewed application stream policy; unset values must fail validation, never default.
   AGENT_STREAM_HEARTBEAT_MS: ${{ vars.AGENT_STREAM_HEARTBEAT_MS }}
@@ -66,6 +70,7 @@ jobs:
       version: ${{ steps.live.outputs.version }}
     env:
       DEPLOY_SHA: ${{ inputs.ref }}
+      ALLOW_CURRENT_DEV_OS_UNTIL_TC2843: ${{ inputs.allow_current_dev_os_until_tc2843 }}
     steps:
       - name: Require a full commit SHA
         run: |
@@ -81,6 +86,18 @@ jobs:
 
       - name: Check the checkout is the deploy commit
         run: test "$(git rev-parse HEAD)" = "$DEPLOY_SHA"
+
+      # Guard policy comes from the workflow commit, never the application/rollback ref.
+      - name: Check out trusted OS guard
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .os-guard
+          sparse-checkout: |
+            /.github/scripts/phala-os-guard.sh
+            /.github/scripts/test-phala-os-guard.sh
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
 
       - name: Publish pending deployment status
         env:
@@ -213,11 +230,10 @@ jobs:
           fi
           echo "$RAW" | jq '{success, username, workspace, profile}'
 
-      # Fail closed before any image is built or the CVM is touched unless it runs the pinned production OS, or the one
-      # pinned dev OS in .github/scripts/phala-dev-os-allowlist.txt after a fresh integrity check.
-      # To fix it, set the OS by hand: `phala api -X PATCH /cvms/<id>/os-image -F os_image_name=dstack-0.5.12`.
+      # Require production OS before building or changing the CVM, except for an explicit
+      # manual TC-2843 transition override for the exact recorded dev image.
       - name: Test the OS image guard
-        run: bash .github/scripts/test-phala-os-guard.sh
+        run: bash .os-guard/.github/scripts/test-phala-os-guard.sh
 
       - name: Require a permitted OS image on the CVM
         env:
@@ -229,7 +245,7 @@ jobs:
             echo "$RAW" | jq '{success, error, details}'
             exit 1
           fi
-          bash .github/scripts/phala-os-guard.sh <<<"$RAW"
+          bash .os-guard/.github/scripts/phala-os-guard.sh <<<"$RAW"
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
@@ -403,12 +419,49 @@ jobs:
           # enabled with an empty list routes all authenticated accounts to tasks.
           ELIZA_TASKS_ENABLED: ${{ vars.ELIZA_TASKS_ENABLED || 'false' }}
           ELIZA_TASKS_TEST_ACCOUNTS: ${{ vars.ELIZA_TASKS_TEST_ACCOUNTS }}
+          # MCP chat (read-only meeting tools and web_search through the hosted TinyCloud MCP). Off by default; it applies only
+          # to the accounts named in MCP_CHAT_TEST_ACCOUNTS (an empty list admits nobody) and every other account keeps the
+          # eliza path. The credential is the same value the MCP holds as TC_MCP_NATIVE_SERVICE_CREDENTIAL; it is a secret and
+          # never a repo variable. The endpoint, header names and 401 values are the MCP's native-auth contract (js-sdk).
+          MCP_CHAT_ENABLED: ${{ vars.MCP_CHAT_ENABLED || 'false' }}
+          MCP_CHAT_TEST_ACCOUNTS: ${{ vars.MCP_CHAT_TEST_ACCOUNTS }}
+          MCP_CHAT_URL: ${{ vars.MCP_CHAT_URL || 'https://mcp.tinycloud.xyz/mcp' }}
+          MCP_CHAT_SERVICE_DID: ${{ vars.MCP_CHAT_SERVICE_DID }}
+          MCP_CHAT_SERVICE_CREDENTIAL: ${{ secrets.MCP_CHAT_SERVICE_CREDENTIAL }}
+          MCP_CHAT_SERVICE_CREDENTIAL_HEADER: ${{ vars.MCP_CHAT_SERVICE_CREDENTIAL_HEADER || 'X-TinyCloud-Service-Credential' }}
+          MCP_CHAT_OWNER_DID_HEADER: ${{ vars.MCP_CHAT_OWNER_DID_HEADER || 'X-TinyCloud-Owner-DID' }}
+          MCP_CHAT_GRANT_EXPIRED_ERROR: ${{ vars.MCP_CHAT_GRANT_EXPIRED_ERROR || 'native_grant_expired' }}
+          MCP_CHAT_GRANT_REJECTED_ERROR: ${{ vars.MCP_CHAT_GRANT_REJECTED_ERROR || 'native_grant_rejected' }}
+          # web_search for MCP accounts runs in the backend; the key moves here from eliza-service.
+          TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
+          # Tiny bots (Home Main bot chat, backend/src/routes/bots.ts). Off by default; on only with BOTS_ENABLED=true, the
+          # service URL and secret, and the accounts named in BOTS_TEST_ACCOUNTS (an empty list admits nobody). The URL is
+          # the bots CVM's ingress (https://<BOTS_INGRESS_DOMAIN>, deploy-bots-phala.yml); the secret is the same value the
+          # bots CVM holds as BOTS_SERVICE_SECRET, and it is a secret, never a variable.
+          BOTS_ENABLED: ${{ vars.BOTS_ENABLED || 'false' }}
+          BOTS_TEST_ACCOUNTS: ${{ vars.BOTS_TEST_ACCOUNTS }}
+          BOTS_SERVICE_CONNECT_HOST: ${{ vars.BOTS_SERVICE_CONNECT_HOST }}
+          BOTS_SERVICE_URL: ${{ vars.BOTS_SERVICE_URL }}
+          BOTS_SERVICE_SECRET: ${{ secrets.BOTS_SERVICE_SECRET }}
+          # Empty means the backend default (120000).
+          BOTS_POST_TIMEOUT_MS: ${{ vars.BOTS_POST_TIMEOUT_MS }}
+          # Owner-history variables; off until explicitly enabled in production-api.
+          BOTS_HISTORY_ENABLED: ${{ vars.BOTS_HISTORY_ENABLED || 'false' }}
+          BOTS_HISTORY_SIGNER_DID: ${{ vars.BOTS_HISTORY_SIGNER_DID }}
+          BOTS_HISTORY_NODE_ORIGIN: ${{ vars.BOTS_HISTORY_NODE_ORIGIN }}
+          BOTS_UNARCHIVED_HISTORY_POLICY: ${{ vars.BOTS_UNARCHIVED_HISTORY_POLICY }}
+          # D2 lease-renewed sign-in (`POST /api/auth/verify-renewal`); all three or none. Unset = the route answers 503.
+          RENEWAL_BACKEND_ORIGIN: ${{ vars.RENEWAL_BACKEND_ORIGIN }}
+          RENEWAL_NODE_DID: ${{ vars.RENEWAL_NODE_DID }}
+          RENEWAL_RENEWER_DID: ${{ vars.RENEWAL_RENEWER_DID }}
           # Optional meeting rollout; defaults keep controller routing disabled.
           MEETING_CONTENT_RETRIEVAL_ENABLED: ${{ vars.MEETING_CONTENT_RETRIEVAL_ENABLED || 'false' }}
           MEETING_CONTENT_TEST_ACCOUNTS: ${{ vars.MEETING_CONTENT_TEST_ACCOUNTS }}
           MEETING_CONTENT_MODELS: ${{ vars.MEETING_CONTENT_MODELS }}
           # Optional one-time, log-only count of stored connector credential rows. Empty = off.
           CREDENTIAL_ROW_COUNT_SOURCES: ${{ vars.CREDENTIAL_ROW_COUNT_SOURCES || '' }}
+          # Optional one-time authenticated read-only count of stored credential rows. Empty = route off.
+          CREDENTIAL_COUNT_ADMIN_KEY: ${{ secrets.CREDENTIAL_COUNT_ADMIN_KEY || '' }}
           # Paywall / billing (docs/stripe-setup.md). Each value may live as a
           # repo SECRET or a repo VARIABLE (secrets win) — all optional until
           # go-live; unset values deploy with the paywall off.
@@ -526,15 +579,33 @@ jobs:
           PRIVATE_CLOUD_TRANSCRIPTION_API_URL: ${{ vars.PRIVATE_CLOUD_TRANSCRIPTION_API_URL }}
           PRIVATE_CLOUD_TRANSCRIPTION_API_KEY: ${{ secrets.PRIVATE_CLOUD_TRANSCRIPTION_API_KEY }}
           PRIVATE_CLOUD_TRANSCRIPTION_TENANT_KEY: ${{ secrets.PRIVATE_CLOUD_TRANSCRIPTION_TENANT_KEY }}
-          # Keep the existing AssemblyAI API key available, but leave TinyCloud-hosted uploads off
-          # for 0.8.0: ASSEMBLYAI_HOSTED_HANDLE_KEY is intentionally absent from the effective
-          # backend environment. The persistent volume remains; a separately approved rollout must
-          # restore the workflow and compose mappings.
+          # Hosted AssemblyAI for Exo uploads (backend/src/routes/assemblyai-hosted.ts) is ON:
+          # TinyCloud's AssemblyAI key and the handle HMAC key (>=32 random bytes,
+          # `openssl rand -base64 32`, distinct from every other secret). Both set = hosted mode on;
+          # either empty = off (users can still bring their own key). Declared in all four places for
+          # the allowed_envs reason.
           ASSEMBLYAI_API_KEY: ${{ secrets.ASSEMBLYAI_API_KEY }}
+          ASSEMBLYAI_HOSTED_HANDLE_KEY: ${{ secrets.ASSEMBLYAI_HOSTED_HANDLE_KEY }}
           ASSEMBLYAI_HOSTED_ADMIN_KEY: ${{ secrets.ASSEMBLYAI_HOSTED_ADMIN_KEY }}
           ASSEMBLYAI_HOSTED_FRESH_INSTALL: ${{ vars.ASSEMBLYAI_HOSTED_FRESH_INSTALL }}
+          # TC-2136 private log shipper (log-shipper/, docker-compose.phala.yml `log-shipper`). Source token for the
+          # private Better Stack source; unset = the sidecar idles and nothing ships. Declared in all four places for
+          # the allowed_envs reason; the sidecar writes it to tmpfs and removes it from its environment.
+          BETTERSTACK_SOURCE_TOKEN: ${{ secrets.BETTERSTACK_SOURCE_TOKEN }}
+          # TC-2537: key for the account_hash in shipped request records. Unset = records omit account_hash.
+          REQUEST_LOG_HMAC_KEY: ${{ secrets.REQUEST_LOG_HMAC_KEY }}
         run: |
           ENV_FILE="$RUNNER_TEMP/phala-prod.env"
+          # These values are written one per line into the env file, so a line break in any of them would add settings.
+          for item in MCP_CHAT_ENABLED MCP_CHAT_TEST_ACCOUNTS MCP_CHAT_URL MCP_CHAT_SERVICE_DID MCP_CHAT_SERVICE_CREDENTIAL \
+            MCP_CHAT_SERVICE_CREDENTIAL_HEADER MCP_CHAT_OWNER_DID_HEADER MCP_CHAT_GRANT_EXPIRED_ERROR MCP_CHAT_GRANT_REJECTED_ERROR TAVILY_API_KEY \
+            BOTS_ENABLED BOTS_TEST_ACCOUNTS BOTS_SERVICE_CONNECT_HOST BOTS_SERVICE_URL BOTS_SERVICE_SECRET BOTS_POST_TIMEOUT_MS \
+            BOTS_HISTORY_ENABLED BOTS_HISTORY_SIGNER_DID BOTS_HISTORY_NODE_ORIGIN BOTS_UNARCHIVED_HISTORY_POLICY \
+            RENEWAL_BACKEND_ORIGIN RENEWAL_NODE_DID RENEWAL_RENEWER_DID; do
+            case "${!item-}" in
+              *$'\n'*|*$'\r'*) echo "::error title=Invalid deployment config::$item must be a single line"; exit 1 ;;
+            esac
+          done
           DEPLOY_RUN_URL="https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           {
             printf '%s\n' "BACKEND_PRIVATE_KEY=$BACKEND_PRIVATE_KEY"
@@ -548,10 +619,34 @@ jobs:
             printf '%s\n' "ELIZA_SERVICE_SECRET=$ELIZA_SERVICE_SECRET"
             printf '%s\n' "ELIZA_TASKS_ENABLED=${ELIZA_TASKS_ENABLED:-false}"
             printf '%s\n' "ELIZA_TASKS_TEST_ACCOUNTS=${ELIZA_TASKS_TEST_ACCOUNTS:-}"
+            printf '%s\n' "MCP_CHAT_ENABLED=${MCP_CHAT_ENABLED:-false}"
+            printf '%s\n' "MCP_CHAT_TEST_ACCOUNTS=${MCP_CHAT_TEST_ACCOUNTS:-}"
+            printf '%s\n' "MCP_CHAT_URL=${MCP_CHAT_URL:-}"
+            printf '%s\n' "MCP_CHAT_SERVICE_DID=${MCP_CHAT_SERVICE_DID:-}"
+            printf '%s\n' "MCP_CHAT_SERVICE_CREDENTIAL=${MCP_CHAT_SERVICE_CREDENTIAL:-}"
+            printf '%s\n' "MCP_CHAT_SERVICE_CREDENTIAL_HEADER=${MCP_CHAT_SERVICE_CREDENTIAL_HEADER:-}"
+            printf '%s\n' "MCP_CHAT_OWNER_DID_HEADER=${MCP_CHAT_OWNER_DID_HEADER:-}"
+            printf '%s\n' "MCP_CHAT_GRANT_EXPIRED_ERROR=${MCP_CHAT_GRANT_EXPIRED_ERROR:-}"
+            printf '%s\n' "MCP_CHAT_GRANT_REJECTED_ERROR=${MCP_CHAT_GRANT_REJECTED_ERROR:-}"
+            printf '%s\n' "TAVILY_API_KEY=${TAVILY_API_KEY:-}"
+            printf '%s\n' "BOTS_ENABLED=${BOTS_ENABLED:-false}"
+            printf '%s\n' "BOTS_TEST_ACCOUNTS=${BOTS_TEST_ACCOUNTS:-}"
+            printf '%s\n' "BOTS_SERVICE_CONNECT_HOST=${BOTS_SERVICE_CONNECT_HOST:-}"
+            printf '%s\n' "BOTS_SERVICE_URL=${BOTS_SERVICE_URL:-}"
+            printf '%s\n' "BOTS_SERVICE_SECRET=${BOTS_SERVICE_SECRET:-}"
+            printf '%s\n' "BOTS_POST_TIMEOUT_MS=${BOTS_POST_TIMEOUT_MS:-}"
+            printf '%s\n' "BOTS_HISTORY_ENABLED=${BOTS_HISTORY_ENABLED:-false}"
+            printf '%s\n' "BOTS_HISTORY_SIGNER_DID=${BOTS_HISTORY_SIGNER_DID:-}"
+            printf '%s\n' "BOTS_HISTORY_NODE_ORIGIN=${BOTS_HISTORY_NODE_ORIGIN:-}"
+            printf '%s\n' "BOTS_UNARCHIVED_HISTORY_POLICY=${BOTS_UNARCHIVED_HISTORY_POLICY:-}"
+            printf '%s\n' "RENEWAL_BACKEND_ORIGIN=${RENEWAL_BACKEND_ORIGIN:-}"
+            printf '%s\n' "RENEWAL_NODE_DID=${RENEWAL_NODE_DID:-}"
+            printf '%s\n' "RENEWAL_RENEWER_DID=${RENEWAL_RENEWER_DID:-}"
             printf '%s\n' "MEETING_CONTENT_RETRIEVAL_ENABLED=${MEETING_CONTENT_RETRIEVAL_ENABLED:-false}"
             printf '%s\n' "MEETING_CONTENT_TEST_ACCOUNTS=${MEETING_CONTENT_TEST_ACCOUNTS:-}"
             printf '%s\n' "MEETING_CONTENT_MODELS=${MEETING_CONTENT_MODELS:-}"
             printf '%s\n' "CREDENTIAL_ROW_COUNT_SOURCES=${CREDENTIAL_ROW_COUNT_SOURCES:-}"
+            printf '%s\n' "CREDENTIAL_COUNT_ADMIN_KEY=${CREDENTIAL_COUNT_ADMIN_KEY:-}"
             printf '%s\n' "AGENT_STREAM_HEARTBEAT_MS=$AGENT_STREAM_HEARTBEAT_MS"
             printf '%s\n' "AGENT_STREAM_TURN_TIMEOUT_MS=$AGENT_STREAM_TURN_TIMEOUT_MS"
             printf '%s\n' "AGENT_STREAM_DRAIN_GRACE_MS=$AGENT_STREAM_DRAIN_GRACE_MS"
@@ -618,8 +713,11 @@ jobs:
             printf '%s\n' "PRIVATE_CLOUD_TRANSCRIPTION_API_KEY=$PRIVATE_CLOUD_TRANSCRIPTION_API_KEY"
             printf '%s\n' "PRIVATE_CLOUD_TRANSCRIPTION_TENANT_KEY=$PRIVATE_CLOUD_TRANSCRIPTION_TENANT_KEY"
             printf '%s\n' "ASSEMBLYAI_API_KEY=$ASSEMBLYAI_API_KEY"
+            printf '%s\n' "ASSEMBLYAI_HOSTED_HANDLE_KEY=$ASSEMBLYAI_HOSTED_HANDLE_KEY"
             printf '%s\n' "ASSEMBLYAI_HOSTED_ADMIN_KEY=$ASSEMBLYAI_HOSTED_ADMIN_KEY"
             printf '%s\n' "ASSEMBLYAI_HOSTED_FRESH_INSTALL=$ASSEMBLYAI_HOSTED_FRESH_INSTALL"
+            printf '%s\n' "BETTERSTACK_SOURCE_TOKEN=$BETTERSTACK_SOURCE_TOKEN"
+            printf '%s\n' "REQUEST_LOG_HMAC_KEY=$REQUEST_LOG_HMAC_KEY"
           } > "$ENV_FILE"
 
           echo "::group::Deploy environment keys"
@@ -648,7 +746,7 @@ jobs:
             echo "$RAW" | jq '{success, error, details}'
             exit 1
           fi
-          bash .github/scripts/phala-os-guard.sh <<<"$RAW"
+          bash .os-guard/.github/scripts/phala-os-guard.sh <<<"$RAW"
 
       # `phala deploy` updates the encrypted env but NOT the CVM's registered
       # allowed_envs whitelist (frozen at CVM creation), so env vars added after

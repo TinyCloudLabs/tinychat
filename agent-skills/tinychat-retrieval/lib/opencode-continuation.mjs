@@ -1,7 +1,7 @@
 import { lstat, readFile, open, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
-const continuation = 'TinyChat installation completed and its sign-in tools are now loaded in this same conversation. Continue the original request using tinychat_setup and, if login is required, tinychat_authorize. Retain the app configuration and the original requested stopping point. The installation turn was interrupted only to activate the plugin. Do not reinstall, restart OpenCode, ask for a continue message, or request an authorization code before tinychat_authorize has opened approval. Keep all authorization input in the existing chat capture flow.';
+const continuation = 'TinyChat installation completed and its tools are now loaded in this same conversation. Continue the original request using tinychat_setup and, if it reports access-required, tinychat_authorize. Retain the app configuration and the original requested stopping point. The installation turn was interrupted only to activate the plugin. Do not reinstall, restart OpenCode or ask for a continue message.';
 const fail = code => { throw Object.assign(new Error(code), { code }); };
 const data = result => { if (result?.error || result?.data === undefined) fail('CONTINUATION_CONTEXT_UNAVAILABLE'); return result.data; };
 

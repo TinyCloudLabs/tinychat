@@ -6,11 +6,11 @@ import { appPlatform, type AppPlatform } from "@/lib/platform";
 import { routeSourceName, TRANSCRIBER_NAME } from "./recorder/final/finalCopy";
 import type { RouteNode } from "./recorder/RouteLine";
 
-/** An upload: through private cloud or AssemblyAI under TinyCloud's account. */
+/** An upload: through private cloud or Powerful (not private). */
 export function uploadRoute(engine: UploadEngine, assemblyAiMode: AssemblyAiKeyMode, platform: AppPlatform = appPlatform()): RouteNode[] {
   const powerful = TRANSCRIBER_NAME.assemblyai;
   const via =
-    engine === "private-cloud" ? TRANSCRIBER_NAME["private-cloud"] : assemblyAiMode === "hosted" ? `${powerful} · TinyCloud's account` : `${powerful} · choose file again`;
+    engine === "private-cloud" ? TRANSCRIBER_NAME["private-cloud"] : assemblyAiMode === "hosted" ? `${powerful} · not private` : `${powerful} · choose file again`;
   return [
     { label: routeSourceName(platform), kind: "source" },
     { label: via, kind: "processing" },

@@ -91,6 +91,7 @@ class MemoryBoundaries {
   readonly unexpectedEgress: string[] = [];
   readonly requests: { url: string; method: string }[] = [];
   secretWrites = 0;
+  readonly credentialSaved = deferred();
   secretUnlocks = 0;
   exchangeCalls = 0;
   recordListings = 0;
@@ -98,6 +99,7 @@ class MemoryBoundaries {
   refreshCalls = 0;
   popupCalls = 0;
   popupUrl = "";
+  readonly autojoinBegins: Record<string, unknown>[] = [];
   autojoinBeginState = "";
   readonly autojoinEnables: unknown[] = [];
   requireRefresh = false;
@@ -169,6 +171,7 @@ class MemoryBoundaries {
       put: async (name: string, value: string, options?: { scope?: string }) => {
         this.secretWrites++;
         this.tokens.set(`${options?.scope ?? ""}:${name}`, value);
+        this.credentialSaved.resolve();
         return ok(undefined);
       },
       get: async (name: string, options?: { scope?: string }) => {
@@ -202,8 +205,9 @@ class MemoryBoundaries {
       return Response.json({ access_token: "synthetic-refreshed-access" });
     }
     if (url.origin === backend && url.pathname === "/api/connectors/google/autojoin/begin" && method === "POST") {
-      const body = JSON.parse(String(init?.body));
-      this.autojoinBeginState = body.state;
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      this.autojoinBegins.push(body);
+      this.autojoinBeginState = String(body.state);
       return Response.json({ authorizationUrl: `https://accounts.example.invalid/authorize?state=${body.state}` });
     }
     if (url.origin === backend && url.pathname === "/api/connectors/google/autojoin/exchange" && method === "POST") {
@@ -344,6 +348,8 @@ async function authorize(fakeClock = false) {
     }));
     await tick();
   });
+  await settle();
+  await memory.credentialSaved.promise;
   await settle();
 }
 
@@ -880,11 +886,12 @@ test("Calendar autojoin enables from the server credential: no Meet secret write
     sessionStore={{ getToken: () => "synthetic-session", isExpired: () => false } as unknown as SessionStore}
     open onOpenChange={(next) => { if (!next) closed++; }} onConnected={() => { connectedCalls++; }} />));
   await settle();
-  const consent = dialog().querySelector<HTMLInputElement>('input[type="checkbox"]');
-  expect(consent).toBeTruthy();
-  await act(async () => { consent!.click(); await tick(); });
+  expect(dialog().querySelector('input[type="checkbox"]')).toBeNull();
+  expect(memory.autojoinBegins).toHaveLength(0);
   await click("Continue with Google");
   await until(() => memory.popupUrl.length > 0 && memory.autojoinBeginState.length > 0, "expected the autojoin authorization URL");
+  expect(memory.autojoinBegins).toHaveLength(1);
+  expect(memory.autojoinBegins[0]).toMatchObject({ consent: true });
   expect(memory.popupUrl).toContain("accounts.example.invalid");
   await act(async () => {
     window.dispatchEvent(new window.MessageEvent("message", {

@@ -47,9 +47,10 @@ import { loadNote } from "@/lib/voiceNotes/recordingNotes";
 import { wasDiscarded, type PendingNote } from "@/lib/voiceNotes/recorderSaves";
 import { nativeVoiceNotesAvailable, VoiceNotes } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { loadVoiceNoteAudioBlob, voiceNoteAudioKvKey, VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
-import { cachedSpaceAudio, cachedSpaceAudioOffline, hasVerifiedSpaceCopy, isVerifiedSpaceReceipt, latestSpaceAudioIdentity, localPlaybackUrl,
+import { cachedSpaceAudio, cachedSpaceAudioOffline, hasVerifiedSpaceCopy, isMissingLocalAudio, isVerifiedSpaceReceipt, latestSpaceAudioIdentity, localPlaybackUrl,
   observeSpaceAudioIdentity } from "@/lib/voiceNotes/audioPlaybackCache";
 import { readTranscriptPreviews, voiceNoteTranscriptLocator, type TranscriptProvenance } from "@/lib/voiceNotes/voiceNoteCommits";
+import { accountCacheKey, readLocal, writeLocal } from "@/lib/localFirst/localCache";
 import { captureEvents } from "../captureEvents";
 import type { LibraryFilter } from "./libraryKinds";
 import type { LibraryStatus } from "./LibraryListView";
@@ -163,6 +164,12 @@ function handoffAfter(previous: Handoff, space: unknown, notes: readonly Pending
   return { space, notes, lingering, departures };
 }
 
+/** What the device keeps of the Library list between opens. */
+interface LocalLibrary {
+  items: LibraryItem[];
+  previews: ReadonlyMap<string, string>;
+}
+
 const settled = (read: { status: string } | undefined) => read !== undefined && read.status !== "failed";
 const noop = () => undefined;
 
@@ -179,6 +186,8 @@ export function useLibrary(
   },
 ): Library {
   const space = useMemo(() => scheduledSpace(tcw), [tcw]);
+  const localKey = typeof tcw.did === "string" && tcw.did ? accountCacheKey(tcw.did, "library") : null;
+  const loadedFromNetwork = useRef(false);
   const [list, setList] = useState<{ status: LibraryStatus; items: LibraryItem[]; previews: ReadonlyMap<string, string> }>({
     status: "loading",
     items: [],
@@ -254,6 +263,7 @@ export function useLibrary(
         }
       }
       if (!mounted.current) return;
+      if (read.status === "ok") loadedFromNetwork.current = true;
       setList((current) =>
         read.status === "ok"
           ? { status: "ready", items: read.meetings, previews: previews ?? current.previews }
@@ -275,6 +285,21 @@ export function useLibrary(
     };
     void enqueue(readList);
   }, [enqueue, space]);
+
+  // The device's last copy of the list shows at once; the read below replaces it.
+  useEffect(() => {
+    if (!localKey) return;
+    let alive = true;
+    void readLocal<LocalLibrary>(localKey).then((local) => {
+      if (!alive || !local || loadedFromNetwork.current) return;
+      setList((current) => (current.status === "loading" ? { status: "ready", items: local.value.items, previews: local.value.previews } : current));
+    });
+    return () => { alive = false; };
+  }, [localKey]);
+  // Every list the network answered becomes the device's copy for the next open.
+  useEffect(() => {
+    if (localKey && loadedFromNetwork.current && list.status === "ready") void writeLocal<LocalLibrary>(localKey, { items: list.items, previews: list.previews });
+  }, [list, localKey]);
 
   // The first mount (Capture's first visit).
   useEffect(() => {
@@ -387,6 +412,23 @@ export function useLibrary(
     });
     return () => { live = false; };
   }, [options.visible, tcw.did, listingRevision, onPhoneNotes]);
+  // The open note's own file on this device, probed by id: the pending list may not carry a saved note,
+  // but a readable file there is the audio whatever the list says.
+  const [deviceFileId, setDeviceFileId] = useState<string | null>(null);
+  useEffect(() => {
+    if (!options.visible || openRecordingId === null || !nativeVoiceNotesAvailable()) {
+      setDeviceFileId(null);
+      return;
+    }
+    let live = true;
+    void Promise.resolve().then(() => VoiceNotes.localAudioSize({ id: openRecordingId })).then(
+      ({ size }) => { if (live) setDeviceFileId(size > 0 ? openRecordingId : null); },
+      (caught: unknown) => {
+        if (live) setDeviceFileId(null);
+        if (!isMissingLocalAudio(caught)) console.error("[Audio] Could not check local audio", openRecordingId, caught);
+      });
+    return () => { live = false; };
+  }, [options.visible, openRecordingId, listingRevision, onPhoneNotes]);
   const lastOpened = useRef<string | null>(null);
   useEffect(() => {
     // A note just closed may have had its moments edited: read them again.
@@ -399,7 +441,7 @@ export function useLibrary(
       const found: [string, string | null][] = [];
       for (const id of todo) {
         try {
-          const note = await loadNote(id);
+          const note = await loadNote(id, tcw.did ?? null);
           found.push([id, noteSnippet(note?.moments.find((moment) => noteSnippet(moment.label) !== null)?.label)]);
         } catch (caught) {
           momentsLoaded.current.delete(id);
@@ -416,7 +458,7 @@ export function useLibrary(
         return next;
       });
     })();
-  }, [openRecordingId, voiceSourceIds]);
+  }, [openRecordingId, voiceSourceIds, tcw.did]);
 
   const readNote = useCallback(
     (note: LibraryItem) => {
@@ -525,7 +567,10 @@ export function useLibrary(
   const localOnlyAudio = (meta?.audio as { stored?: unknown } | undefined)?.stored === false;
   // A note with no stored space audio plays the phone's copy while it has one. A stored space audio plays
   // from the space at Play time, unless this device's copy is not yet verified (checked in the load below).
-  const phoneFirst = item?.onPhone === true || (onThisPhone && audioBase === null);
+  // Metadata that says the space holds no audio makes this device's file the only audio, whether or not the
+  // pending list still carries the note (it does not once the note is saved and its transcript committed).
+  const phoneFirst = item?.onPhone === true || (onThisPhone && audioBase === null)
+    || (voiceSourceId !== null && localOnlyAudio && deviceFileId === voiceSourceId);
   // The stored file is read only when the player asks, one part per queued
   // call; the player's signal stops it when the note closes.
   const noteAudio = useMemo<NoteAudio | null>(() => {
@@ -590,10 +635,12 @@ export function useLibrary(
     // The space loader is always built: a verified receipt that lands after the cached metadata still plays it.
     if (voiceSourceId !== null && phoneFirst) return phoneFirstAudio(voiceSourceId,
       phoneChannels, space.did, spaceLoad(voiceSourceId), localOnlyAudio);
-    if (voiceSourceId !== null && metadataLoaded && !pendingAudioRow && !localOnlyAudio) return { load: spaceLoad(voiceSourceId) };
+    // A pasted transcript never had audio: it is the only voice note with no space load.
+    const pastedRow = voiceSourceId !== null && item?.metadata?.capture === "pasted";
+    if (voiceSourceId !== null && !pastedRow && metadataLoaded && !pendingAudioRow && !localOnlyAudio) return { load: spaceLoad(voiceSourceId) };
     if (audioBase !== null && !localOnlyAudio) return { load: (signal, onProgress) => getAudio(space.kv, audioBase, { signal, onProgress }) };
     return null;
-  }, [audioBase, item?.saving, phoneFirst, phoneChannels, localOnlyAudio, metadataLoaded, pendingAudioRow, space, voiceSourceId]);
+  }, [audioBase, item?.saving, item?.metadata, phoneFirst, phoneChannels, localOnlyAudio, metadataLoaded, pendingAudioRow, space, voiceSourceId]);
 
   const retry = useCallback(() => {
     if (list.status === "failed") refresh();

@@ -1,4 +1,4 @@
-// A read-only EIP-1193 object for restoring a session with the local copy on.
+// A read-only EIP-1193 object for restoring a session.
 //
 // The SDK admits a restored replica only after asking the connected wallet for its account (web-sdk
 // replica.ts `matchesWallet`). A restore client built without a `provider` has no signer, so that
@@ -11,8 +11,9 @@
 // The saved copy stays bound to the session's account by the SDK's own principal stamp (see
 // replicaRestoreStamp.test.ts), which is checked after this question.
 //
-// Used only when the replication option was built (replicationRestore.ts), so a restore with the local
-// copy off is exactly what it was without it: no provider, no signer.
+// Every web restore attaches it (App.tsx): without a signer the SDK's restored client also reports no
+// `session()`, which Main's history and the transcript writer read (TC-3019). The local copy's patch
+// (replicationRestore.ts) adds the same provider.
 import type { EIP1193Provider } from "@tinyboilerplate/client";
 
 /** EIP-1193 error code for an unsupported method. */
@@ -27,7 +28,11 @@ export class UnsupportedMethodError extends Error {
   }
 }
 
-/** The app signs in on chain 1 (the `did:pkh:eip155:1` DID); keep this in step. */
+/**
+ * The app signs in on chain 1 (the `did:pkh:eip155:1` DID); keep this in step. A restored client never asks for it:
+ * the SDK reads the wallet's chain only when signing in (readOnlyAccountProvider.sdk.test.ts). Reading the saved
+ * session's chain here would need a load of the stored record before the restore, which discards an expired one.
+ */
 const CHAIN_ID_HEX = "0x1";
 
 export function readOnlyAccountProvider(storedAddress: string): EIP1193Provider {

@@ -1,8 +1,16 @@
 import { expect, test } from "bun:test";
-import { debugErrorChain, redactDebugText } from "./debugLog";
+import { authFailureCode, debugErrorChain, redactDebugText } from "./debugLog";
+
+test("auth diagnostics retain only a bounded error code", async () => {
+  const response = new Response(JSON.stringify({ error: "invalid_origin", message: "private SIWE material" }), { status: 400 });
+  expect(await authFailureCode(response, "backend/api/auth/verify")).toBe("invalid_origin");
+  expect(await response.json()).toEqual({ error: "invalid_origin", message: "private SIWE material" });
+  expect(await authFailureCode(new Response(JSON.stringify({ error: "secret=private" }), { status: 400 }), "backend/api/auth/nonce")).toBeUndefined();
+  expect(await authFailureCode(response, "tinycloud/api/auth/verify")).toBeUndefined();
+});
 
 test("debug error chains retain each cause but redact URLs and credentials", () => {
-  const cause = Object.assign(new TypeError("Fetch API cannot load https://tee.node.tinycloud.xyz/kv?token=private due to access control checks."),
+  const cause = Object.assign(new TypeError("Fetch API cannot load https://node.tinycloud.xyz/kv?token=private due to access control checks."),
     { code: "NETWORK_ERROR" });
   const error = Object.assign(new Error("upload failed; authorization: Bearer abc123", { cause }), { code: "UPLOAD_FAILED" });
   const chain = debugErrorChain(error);
@@ -10,7 +18,7 @@ test("debug error chains retain each cause but redact URLs and credentials", () 
   expect(chain.map((part) => part.code)).toEqual(["UPLOAD_FAILED", "NETWORK_ERROR"]);
   expect(JSON.stringify(chain)).not.toContain("private");
   expect(JSON.stringify(chain)).not.toContain("abc123");
-  expect(JSON.stringify(chain)).not.toContain("tee.node.tinycloud.xyz");
+  expect(JSON.stringify(chain)).not.toContain("node.tinycloud.xyz");
   expect(debugErrorChain(new Error('session {"d":"ed25519-private"}'))[0]?.message).not.toContain("ed25519-private");
 });
 

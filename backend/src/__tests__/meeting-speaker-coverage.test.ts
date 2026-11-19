@@ -62,7 +62,7 @@ async function run(bodyState: "present" | "unavailable") {
   const config: AgentChatConfig = {
     agentId: "agent", entityIdFor: () => "entity", elizaServiceUrl: "https://eliza.test", elizaServiceSecret: "test",
     redpillApiKey: "test", redpillBaseUrl: "https://model.test", defaultModel: () => "test-model", isModelOffered: () => true,
-    fetchImpl, meetingTrace: () => {}, meetingContentRetrievalEnabled: true,
+    redpillFetch: fetchImpl, fetchImpl, meetingTrace: () => {}, meetingContentRetrievalEnabled: true,
     streamPolicy: { heartbeatMs: 100, turnTimeoutMs: 30_000, drainGraceMs: 100 },
   };
   const result = await orchestrateToolCalling({ config, model: "test-model", messages: [{ role: "user", content: question }], entityId: "entity", roomId: "room",
@@ -89,7 +89,8 @@ test("selected summary/body routing preserves both attributed speakers through s
   ]);
   expect(synthesis.evidence.citations["M1:E2"]).toMatchObject({ meetingId: "M1", kind: "transcript_excerpt" });
   expect(synthesis.evidence.citations["M1:E3"]).toMatchObject({ meetingId: "M1", kind: "transcript_excerpt" });
-  for (const claim of claims) expect(result.answer).toContain(`${claim.text} [${claim.evidenceIds[0]}]`);
+  expect(result.answer).toContain("Ava described saffron verification before launch. [M1:E2, Ava, 00:01:00]");
+  expect(result.answer).toContain("Ben proposed an audit with no owner assigned or decision to proceed. [M1:E3, Ben, 00:01:15]");
   expect(result.result.errorCode).toBeUndefined();
 });
 

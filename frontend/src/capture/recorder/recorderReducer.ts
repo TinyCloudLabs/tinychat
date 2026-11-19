@@ -38,6 +38,11 @@ export interface RecorderState {
   /** A recovery scan can fail before native knows which recording caused it. */
   recoveryScanFailure: string | null;
   maxDurationMs: number;
+  /**
+   * Whether this recording stops by itself at `maxDurationMs`. False under the silent safety cap: no countdown, warning or
+   * prompt is shown for it. A state without the field (older callers) counts as true.
+   */
+  autoStop: boolean;
   /** True after bounded Stop until CoreAudio reports all inputs Exo used stopped or Exo restarts. */
   captureSourceUnconfirmed: boolean;
   mic: RecorderMic;
@@ -82,10 +87,12 @@ export interface RecorderState {
 
 export type RecorderEvent =
   | { type: "START_REQUESTED" }
-  | { type: "STARTED"; id: string; startedAt: number; maxDurationMs: number; elapsedAt: number }
+  | { type: "STARTED"; id: string; startedAt: number; maxDurationMs: number; elapsedAt: number; autoStop?: boolean }
   | { type: "START_FAILED"; error: string }
   /** A recording was already running (a WebView reload, or one started offline). */
-  | { type: "PICKED_UP"; id: string | null; startedAt: number; maxDurationMs: number; audioMs: number; elapsedMs: number; elapsedAt: number; mic: RecorderMic }
+  | { type: "PICKED_UP"; id: string | null; startedAt: number; maxDurationMs: number; audioMs: number; elapsedMs: number; elapsedAt: number; mic: RecorderMic; autoStop?: boolean }
+  /** "Keep going": the running recording's limit was raised by the engine. */
+  | { type: "LIMIT_EXTENDED"; maxDurationMs: number; /** The limit is gone for this recording: no stop time is shown. */ noLimit?: true }
   | ({ type: "MIC_STATE"; mic: RecorderMic; audioMs?: number; captureSourceUnconfirmed?: boolean } & (
     { elapsedMs: number; elapsedAt: number } | { elapsedMs?: never; elapsedAt?: never }))
   | { type: "CAPTURE_ISSUE"; id: string | null; issue: RecorderCaptureIssue }
@@ -143,6 +150,7 @@ export const initialRecorderState: RecorderState = {
   captureIssues: {},
   recoveryScanFailure: null,
   maxDurationMs: VOICE_NOTE_MAX_DURATION_MS,
+  autoStop: true,
   mic: IDLE_MIC,
   captureSourceUnconfirmed: false,
   controlPending: null,
@@ -240,6 +248,7 @@ function reduce(state: RecorderState, event: RecorderEvent): RecorderState {
         elapsedMs: 0,
         elapsedAt: event.elapsedAt,
         maxDurationMs: event.maxDurationMs,
+        autoStop: event.autoStop ?? state.autoStop,
         mic: { state: "recording", reason: null },
       };
     case "START_FAILED":
@@ -257,10 +266,16 @@ function reduce(state: RecorderState, event: RecorderEvent): RecorderState {
         elapsedMs: event.elapsedMs,
         elapsedAt: event.elapsedAt,
         maxDurationMs: event.maxDurationMs,
+        autoStop: event.autoStop ?? state.autoStop,
         mic: event.mic,
         outcome: null,
         localUpload: null,
       };
+    case "LIMIT_EXTENDED":
+      if (state.phase !== "recording") return state;
+      if (event.noLimit) return { ...state, maxDurationMs: Math.max(event.maxDurationMs, state.maxDurationMs), autoStop: false };
+      if (event.maxDurationMs <= state.maxDurationMs) return state;
+      return { ...state, maxDurationMs: event.maxDurationMs };
     case "MIC_STATE": {
       const captureSourceUnconfirmed = event.captureSourceUnconfirmed ?? state.captureSourceUnconfirmed;
       if (state.phase !== "recording") {

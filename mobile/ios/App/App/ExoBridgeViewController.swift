@@ -1,7 +1,9 @@
+import ActivityKit
 import Capacitor
 import CaptureCore
 import Darwin
 import ExoCapture
+import ReplicaStore
 import UIKit
 #if DEBUG
 import os
@@ -18,12 +20,16 @@ class ExoBridgeViewController: CAPBridgeViewController {
         }
         bridge?.registerPluginInstance(VoiceNotesPlugin())
         bridge?.registerPluginInstance(OnDeviceSttPlugin())
+        bridge?.registerPluginInstance(AppLockPlugin())
+        bridge?.registerPluginInstance(AudioDiagnosticsPlugin())
+        // TC-2862 native replica storage (flagged off in the web app until the SDK adapter lands).
+        bridge?.registerPluginInstance(ReplicaStorePlugin())
         #if EXO_HEALTH
         // Health spike (TC-525): Debug builds only (see HealthPlugin.swift).
         bridge?.registerPluginInstance(HealthPlugin())
         #endif
         #if DEBUG
-        if Bundle.main.bundleIdentifier == "xyz.tinycloud.exo.dev" {
+        if Bundle.main.bundleIdentifier == "xyz.tinycloud.home.dev" {
             bridge?.registerPluginInstance(ExoDevLogPlugin())
         }
         // TC-524 location spike: Debug builds only (LocationRecorder.swift). Release has no location code at all.
@@ -92,6 +98,16 @@ class ExoBridgeViewController: CAPBridgeViewController {
             probe.locationStatus = { error: String((error && error.message) || error) };
           }
         }
+        // App lock (TC-2738): the smoke launches with EXO_APP_LOCK=off, so the plugin answers with no device security.
+        if (probe.mounted && cap.nativePromise) {
+          try {
+            const s = await Promise.race([cap.nativePromise("AppLock", "status", {}),
+              new Promise((_, reject) => setTimeout(() => reject(new Error("timed out")), 5000))]);
+            probe.appLock = { deviceSecure: s.deviceSecure };
+          } catch (error) {
+            probe.appLock = { error: String((error && error.message) || error) };
+          }
+        }
         return JSON.stringify(probe);
         """
 
@@ -129,6 +145,9 @@ class ExoBridgeViewController: CAPBridgeViewController {
                     _ = AppLifecycleHooks.performShortcut(UIApplicationShortcutItem(
                         type: "xyz.tinycloud.exo.record", localizedTitle: "Record"))
                 }
+                // The quick-action smoke owns the recording in that run.
+                if ProcessInfo.processInfo.environment["EXO_SHORTCUT_SMOKE"] == "1",
+                   ProcessInfo.processInfo.environment["EXO_QUICK_ACTION_SMOKE"] == nil { self.runShortcutProbe() }
             }
             if ProcessInfo.processInfo.environment["EXO_CAPTURE_SMOKE"] == "1" {
                 DispatchQueue.global(qos: .userInitiated).async {
@@ -160,6 +179,69 @@ class ExoBridgeViewController: CAPBridgeViewController {
             self.startHealthProbe()
             #endif
             if ProcessInfo.processInfo.environment["EXO_LOCATION_SMOKE"] == "1" { self.runLocationProbe() }
+            if let phase = ProcessInfo.processInfo.environment["EXO_REPLICA_SMOKE"] { self.runReplicaProbe(phase) }
+        }
+    }
+
+    /// TC-2862: with `EXO_REPLICA_SMOKE=write|read|wipe`, drive the TinyCloudReplicaStore plugin over the bridge and
+    /// log one `EXO_REPLICA_SMOKE {json}` line with what JS saw plus the replica directory and Keychain items.
+    /// `write` starts clean and stores two entries; `read`, after an app restart, reads them back; `wipe` runs the
+    /// sign-out wipe (`wipe(account)` then `wipeAll()`, as frontend/src/lib/replication/nativeReplicaStore.ts does).
+    private static let replicaProbeScript = """
+        const cap = window.Capacitor;
+        const call = (method, args) => Promise.race([
+          cap.nativePromise("TinyCloudReplicaStore", method, args || {}),
+          new Promise((_, reject) => setTimeout(() => reject(new Error(method + " timed out")), 8000)),
+        ]);
+        const account = "did:pkh:eip155:1:0x00000000000000000000000000000000000a11ce";
+        const out = { phase, available: !!(cap.isPluginAvailable && cap.isPluginAvailable("TinyCloudReplicaStore")) };
+        const readBack = async () => {
+          out.value = (await call("get", { store: "entries", key: "smoke/a" })).value;
+          out.keys = (await call("list", { store: "entries", prefix: "smoke/" })).entries.map((e) => e.key);
+        };
+        try {
+          if (phase === "write") {
+            await call("wipeAll");
+            out.open = await call("open", { account });
+            await call("write", { ops: [
+              { op: "put", store: "entries", key: "smoke/a", value: "aGVsbG8gcmVwbGljYQ==" },
+              { op: "put", store: "entries", key: "smoke/b", value: "c2Vjb25k" },
+            ] });
+            await readBack();
+          } else if (phase === "read") {
+            out.open = await call("open", { account });
+            await readBack();
+            out.estimate = await call("estimate");
+          } else if (phase === "wipe") {
+            await call("wipe", { account });
+            await call("wipeAll");
+            out.afterWipe = await call("get", { store: "entries", key: "smoke/a" }).then(() => "resolved", (e) => e.code);
+          }
+        } catch (error) {
+          out.error = String((error && error.message) || error);
+          out.code = (error && error.code) || null;
+        }
+        return JSON.stringify(out);
+        """
+
+    private func runReplicaProbe(_ phase: String) {
+        webView?.callAsyncJavaScript(Self.replicaProbeScript, arguments: ["phase": phase], in: nil, in: .page) { result in
+            var object: [String: Any]
+            switch result {
+            case .success(let value):
+                object = (value as? String).flatMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) }
+                    as? [String: Any] ?? ["error": "non-string result"]
+            case .failure(let error):
+                object = ["error": error.localizedDescription]
+            }
+            let directory = try? ReplicaStoreCore.defaultDirectory()
+            object["files"] = directory.flatMap { try? FileManager.default.contentsOfDirectory(atPath: $0.path) }?.sorted() ?? []
+            object["keychainItems"] = KeychainSecretStore().count()
+            let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+            let line = data.map { String(decoding: $0, as: UTF8.self) } ?? Self.smokeProbeError("unencodable")
+            print("EXO_REPLICA_SMOKE \(line)")
+            fflush(stdout)
+            Logger(subsystem: "xyz.tinycloud.exo", category: "smoke").notice("EXO_REPLICA_SMOKE \(line, privacy: .public)")
         }
     }
 
@@ -207,6 +289,51 @@ class ExoBridgeViewController: CAPBridgeViewController {
             }
             print("EXO_LOCATION_SMOKE \(line)")
             Logger(subsystem: "xyz.tinycloud.exo", category: "smoke").notice("EXO_LOCATION_SMOKE \(line, privacy: .public)")
+        }
+    }
+
+    /// With `EXO_SHORTCUT_SMOKE=1`, once the main probe has published: run the App Shortcut's start path
+    /// (`RecordingShortcut`, which StartRecordingIntent and the quick action call), check the engine, the Live
+    /// Activity and the bridge all see the recording with its source, that a second shortcut keeps the same
+    /// recording, then discard it and check the activity ends. Logs one `EXO_SHORTCUT_SMOKE {json}` line.
+    private static let shortcutBridgeScript = """
+        const status = await Promise.race([window.Capacitor.nativePromise("VoiceNotes", "status", {}),
+          new Promise((_, reject) => setTimeout(() => reject(new Error("timed out")), 5000))]);
+        return JSON.stringify({ state: status.state, source: status.source, id: status.id });
+        """
+
+    private func runShortcutProbe() {
+        Task { @MainActor [weak self] in
+            var out: [String: Any] = [:]
+            let activeIDs = { Activity<RecordingActivityAttributes>.activities
+                .filter { $0.activityState == .active }.map(\.attributes.recordingId) }
+            do {
+                try await RecordingShortcut.start(.intent, foreground: .already)
+                let status = CaptureEngine.shared.status()
+                let id = status["id"] as? String
+                out["started"] = id != nil
+                out["state"] = status["state"]
+                out["source"] = status["source"]
+                out["activity"] = id.map { activeIDs().contains($0) } ?? false
+                if let webView = self?.webView {
+                    let value = try await webView.callAsyncJavaScript(Self.shortcutBridgeScript, contentWorld: .page)
+                    let bridge = (value as? String).flatMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) } as? [String: Any]
+                    out["bridge"] = ["state": bridge?["state"] ?? NSNull(), "source": bridge?["source"] ?? NSNull(),
+                                     "sameId": (bridge?["id"] as? String) == id]
+                }
+                try await RecordingShortcut.start(.control, foreground: .already)
+                out["secondKeptRecording"] = CaptureEngine.shared.status()["id"] as? String == id
+                out["discarded"] = try CaptureEngine.shared.discard() == id
+                for _ in 0..<50 where !activeIDs().isEmpty { try await Task.sleep(for: .milliseconds(100)) }
+                out["activityEnded"] = activeIDs().isEmpty
+            } catch {
+                out["error"] = String(describing: error)
+            }
+            let data = try? JSONSerialization.data(withJSONObject: out, options: [.sortedKeys])
+            let line = data.map { String(decoding: $0, as: UTF8.self) } ?? Self.smokeProbeError("unserializable")
+            print("EXO_SHORTCUT_SMOKE \(line)")
+            fflush(stdout)
+            Logger(subsystem: "xyz.tinycloud.exo", category: "smoke").notice("EXO_SHORTCUT_SMOKE \(line, privacy: .public)")
         }
     }
 

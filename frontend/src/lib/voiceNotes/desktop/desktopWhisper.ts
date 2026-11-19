@@ -1,3 +1,4 @@
+import { mountedVoiceNoteDid } from "../accountContext";
 import type { BatchResponse, TranscriptionEvent } from "@/lib/anarlog/transcription.gen";
 import { logPipeline, logPipelineError } from "@/lib/debugLog";
 import type { WhisperModel } from "@/lib/localTranscriber";
@@ -105,12 +106,36 @@ async function stageId(id: string): Promise<string> {
   return `whisper-${Array.from(digest.subarray(0, 16), (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
 }
 
+const clock = (ms: number): string => {
+  const seconds = Math.round(ms / 1000);
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+};
+
+/**
+ * The batch response reports how much audio the engine decoded (`metadata.duration`, seconds). A transcript of
+ * less than the saved recording is incomplete, whatever its text says, so it is reported instead of saved.
+ * Encoder padding and rounding get max(3 s, 3%); a response without a duration is not judged.
+ */
+function decodedShortfall(recordingMs: number, response: BatchResponse): string | null {
+  const metadata = response.metadata;
+  const seconds = metadata && typeof metadata === "object" && !Array.isArray(metadata) ? metadata.duration : null;
+  if (typeof seconds !== "number" || !Number.isFinite(seconds) || !(recordingMs > 0)) return null;
+  const decodedMs = seconds * 1000;
+  if (recordingMs - decodedMs <= Math.max(3_000, recordingMs * 0.03)) return null;
+  return `Whisper transcribed only ${clock(decodedMs)} of this ${clock(recordingMs)} recording. Retry transcription.`;
+}
+
 export function createDesktopWhisperQueue(args: {
   store: WebStore; files: DesktopBridge; whisper: DesktopWhisperBridge;
   captureLive: () => boolean;
+  currentAccountDid?: () => string | null;
 }): DesktopWhisperQueue {
   const { store, files, whisper, captureLive } = args;
   const jobs = new Map<string, DesktopWhisperJob>();
+  const owners = new Map<string, string | null>();
+  const currentAccountDid = args.currentAccountDid ?? mountedVoiceNoteDid;
+  const visible = (id: string) => !owners.get(id) || owners.get(id) === currentAccountDid();
+  let snapshotOwner: string | null = null;
   const reruns = new Map<string, DesktopWhisperRerun>();
   const failedReruns = new Map<string, DesktopWhisperRerun>();
   let derivedSnapshot: ReadonlyMap<string, DesktopWhisperJob> | null = null;
@@ -118,6 +143,7 @@ export function createDesktopWhisperQueue(args: {
   const doneListeners = new Set<(id: string) => void>();
   const failedListeners = new Set<(id: string) => void>();
   const emitFailed = (id: string) => {
+    if (!visible(id)) return;
     for (const listener of failedListeners) {
       try { listener(id); } catch (error) { console.error("[desktopWhisper] Failure listener failed", error); }
     }
@@ -138,6 +164,7 @@ export function createDesktopWhisperQueue(args: {
     }
   };
   const emitDone = (id: string) => {
+    if (!visible(id)) return;
     for (const listener of doneListeners) {
       try { listener(id); } catch (error) { console.error("[desktopWhisper] Completion listener failed", error); }
     }
@@ -161,6 +188,7 @@ export function createDesktopWhisperQueue(args: {
     await files.invoke<void>("recorder_whisper_stage_audio", { id, stageId: stagedId });
   };
   const one = async (note: VoiceNoteRecording): Promise<void> => {
+    owners.set(note.id, note.owner ?? null);
     const id = note.id;
     const rerun = reruns.get(id) ?? null;
     let stagedId: string | null = null;
@@ -235,13 +263,14 @@ export function createDesktopWhisperQueue(args: {
         })();
       });
       if (disposed || stopping || captureLive()) throw new Error("capture_has_priority");
+      const shortfall = decodedShortfall(note.durationMs, response);
+      if (shortfall) throw new Error(shortfall);
       const transcript = whisperLocalTranscript(note, model, response, {
         rev: rerun?.rev ?? 1,
         ...(rerun ? { rerunBase: { rev: rerun.baseRev, hash: rerun.baseHash } } : {}),
         chunks,
       });
-      await store.putTranscript({ id, transcript });
-      const persisted = (await store.getTranscript({ id })).transcript;
+      const persisted = (await store.putTranscriptForOwner({ id, owner: note.owner ?? null, transcript })).transcript;
       if (!persisted || persisted.noteId !== id || persisted.outcome !== transcript.outcome
         || persisted.rev !== transcript.rev || (persisted.outcome === "transcribed" && !persisted.segments.some((segment) => segment.text.trim()))) {
         throw new Error("The local transcript could not be verified after saving");
@@ -294,6 +323,7 @@ export function createDesktopWhisperQueue(args: {
     const note = (await store.listPending()).recordings.find((item) => item.id === request.id);
     if (!note)
       throw new Error("unavailable: this note's recording is unavailable on this Mac");
+    owners.set(note.id, note.owner ?? null);
     if (active === request.id || reruns.has(request.id)) throw new Error("This note is already being transcribed");
     failedReruns.delete(request.id);
     reruns.set(request.id, request);
@@ -307,17 +337,20 @@ export function createDesktopWhisperQueue(args: {
   };
   return {
     snapshot: () => {
+      const owner = currentAccountDid();
+      if (owner !== snapshotOwner) { derivedSnapshot = null; snapshotOwner = owner; }
       if (derivedSnapshot !== null) return derivedSnapshot;
-      const line = [...jobs.values()].filter((job) => job.state === "queued" || job.state === "transcribing");
+      const visibleJobs = [...jobs].filter(([id]) => visible(id));
+      const line = visibleJobs.map(([, job]) => job).filter((job) => job.state === "queued" || job.state === "transcribing");
       const positions = new Map(line.map((job, index) => [job.id, index + 1]));
-      derivedSnapshot = new Map([...jobs].map(([id, job]) => [id, { ...job, position: positions.get(id) ?? null, inLine: line.length }]));
+      derivedSnapshot = new Map(visibleJobs.map(([id, job]) => [id, { ...job, position: positions.get(id) ?? null, inLine: line.length }]));
       return derivedSnapshot;
     },
     subscribe(listener) { listeners.add(listener); return () => { listeners.delete(listener); }; },
     onDone(listener) {
       doneListeners.add(listener);
       queueMicrotask(() => {
-        if (doneListeners.has(listener)) for (const job of jobs.values()) if (job.state === "done") {
+        if (doneListeners.has(listener)) for (const job of jobs.values()) if (job.state === "done" && visible(job.id)) {
           try { listener(job.id); } catch (error) { console.error("[desktopWhisper] Completion listener failed", error); }
         }
       });
@@ -327,7 +360,7 @@ export function createDesktopWhisperQueue(args: {
       failedListeners.add(listener);
       queueMicrotask(() => {
         if (failedListeners.has(listener)) for (const job of jobs.values()) {
-          if (job.state === "failed" && !job.error?.startsWith("unavailable:")) {
+          if (visible(job.id) && job.state === "failed" && !job.error?.startsWith("unavailable:")) {
             try { listener(job.id); } catch (error) { console.error("[desktopWhisper] Failure listener failed", error); }
           }
         }
@@ -338,6 +371,7 @@ export function createDesktopWhisperQueue(args: {
     async resume() {
       const notes = (await store.listPending()).recordings;
       for (const note of notes) {
+        owners.set(note.id, note.owner ?? null);
         if (note.stt?.rerunRev != null && ["queued", "running", "waiting_for_model"].includes(note.stt.state)) {
           if (reruns.has(note.id)) continue;
           if (note.stt.state === "running") {
@@ -384,6 +418,7 @@ export function createDesktopWhisperQueue(args: {
       await drain();
     },
     async noteCommitted(note) {
+      owners.set(note.id, note.owner ?? null);
       if (note.options?.transcriber !== "on-device") return;
       await mark(note.id, "queued");
       await drain();

@@ -20,6 +20,7 @@
 import { App as CapacitorApp, type AppInfo } from "@capacitor/app";
 import { Capacitor } from "@capacitor/core";
 
+import { APP_NAME } from "./homeSite";
 import type { AppPlatform } from "./platform";
 
 /** What `formatBuildInfo` renders; every field but the target is optional. */
@@ -36,6 +37,8 @@ export interface BuildInfoInput {
   commit?: string;
   /** Release channel when the pipeline knows it; derived otherwise. */
   channel?: string;
+  /** The product name the line leads with; the build's own name by default. */
+  product?: string;
 }
 
 /** The label each AppPlatform prints: the desktop app is macOS only. */
@@ -58,7 +61,7 @@ export function channelOf(info: Pick<BuildInfoInput, "channel" | "version" | "ap
 export function formatBuildInfo(info: BuildInfoInput): string {
   const version = info.version?.trim();
   const build = info.build?.trim();
-  const head = `Exo ${version || "unknown"}${build ? ` (${build})` : ""}`;
+  const head = `${info.product ?? APP_NAME} ${version || "unknown"}${build ? ` (${build})` : ""}`;
   const parts = [head];
   if (info.target?.trim()) parts.push(info.target.trim());
   const channel = channelOf(info);

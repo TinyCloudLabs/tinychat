@@ -2,4 +2,6 @@
 "@tinychat/frontend": patch
 ---
 
-Lets owners see their existing share links and when they expire while creating new ones stays paused.
+The share links list shows each of your share links and when it expires. While sharing is paused, the list shows no links.
+
+Details: TC-1800

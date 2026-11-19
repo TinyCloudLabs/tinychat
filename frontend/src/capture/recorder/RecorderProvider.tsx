@@ -18,11 +18,14 @@ import { chooseSystemAudio, needsSystemAudioDisclosure, SYSTEM_AUDIO_BODY, SYSTE
 import { SheetDialog } from "./final/SheetDialog";
 import { PRIVATE_CONSENT_ACTION, PRIVATE_CONSENT_TITLE, POWERFUL_CONSENT_ACTION, POWERFUL_CONSENT_BODY, POWERFUL_CONSENT_TITLE, privateConsentBody } from "./final/finalCopy";
 import { privateConsentDevice } from "./final/finalCopy";
+import { PowerfulConsentDescription } from "./final/PowerfulConsentDescription";
 import { markPrivateConsentPrompted, privateConsentWasPrompted } from "./privateConsentPrompt";
 import "@/capture/home/desktop/systemAudioStart.css";
 import { hapticRecordStarted, hapticSaved, hapticWarning } from "@/lib/haptics";
 import { VOICE_NOTE_MAX_DURATION_MS, type VoiceNoteRecording } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { captureEngineAvailable } from "@/lib/voiceNotes/captureEngine";
+import { isHomeReauthorizing } from "@/lib/homeReauthorizing";
+import { FEATURE_ACCESS_WAIT_FOR_OPENKEY } from "@/lib/homeStrings";
 import { writeAccountDefaults } from "@/lib/voiceNotes/transcriberPreference";
 import type { PendingSnapshot } from "@/lib/voiceNotes/recorderSaves";
 import { DISCARDED, micWarning, recorderStatusText, RECEIPT_KEPT } from "./recorderCopy";
@@ -30,11 +33,12 @@ import type { RecorderCaptureIssue, RecorderMic, RecorderPhase, RecorderState } 
 import type { VoiceNoteTranscriptionProps } from "./transcriptionProps";
 import type { RecorderTranscriberChoice, TranscriberChoiceResult, TranscriberChoiceScope, VoiceNoteRecorderController } from "./voiceNoteRecorderController";
 import type { RecorderNote, RecorderNoteStatus } from "./voiceNoteRecorderController";
-import type { TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
+import type { LimitExtension, TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
 import type { VoiceNotePipeline } from "@/lib/voiceNotes/voiceNotePipeline";
 import { useVoiceNoteRecorder } from "./useVoiceNoteRecorder";
 import { shouldScheduleReceiptDismissal } from "./receiptBehavior";
 import { useLimitNotifications } from "./limitNotifications";
+import { useRecordShortcut } from "./recordShortcut";
 
 /** How long a saved receipt stays, once its content is actually visible, before the sheet closes
  * and the island lets go. */
@@ -72,6 +76,8 @@ export interface RecorderValue {
   captureSourceUnconfirmed: boolean;
   controlPending: RecorderState["controlPending"];
   maxDurationMs: number;
+  /** Whether this recording stops by itself at `maxDurationMs`; false under the silent safety cap (no countdown, warning or prompt). */
+  autoStop: boolean;
   limitNotice: string | null;
   savePercent: number | null;
   error: string | null;
@@ -119,6 +125,8 @@ export interface RecorderValue {
   discard(): void;
   retryPending(): void | Promise<void>;
   openSettings(): Promise<void>;
+  /** Raise the live recording's limit (default one hour: "Keep going"), or drop it ("none"). Undefined where the engine cannot change a running limit. */
+  extendLimit: ((extension?: LimitExtension) => Promise<void>) | undefined;
   /** The receipt was read (Done, Open): it goes, and the sheet closes. */
   dismissOutcome(): void;
   openSheet(): void;
@@ -317,6 +325,8 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
   }, [beginRecording, maybePromptPrivate, maybePromptPowerful, recorder.transcriber.id]);
   const record = useCallback(() => {
     if (disclosureBusy || disclosure) return;
+    // A Home permission ask has OpenKey open; a recording started now could be cut off by the session swap.
+    if (isHomeReauthorizing()) { setDisclosureError(FEATURE_ACCESS_WAIT_FOR_OPENKEY); return; }
     disclosureOpener.current = typeof document !== "undefined" && document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setDisclosureError(null);
     if (platform !== "tauri") { afterSystemAudio(); return; }
@@ -371,6 +381,10 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
   }, [dismissOutcome]);
   const openSheet = useCallback(() => setSheetOpen(true), []);
   useLimitNotifications(state, openSheet);
+  // The Mac app's shortcut and menu-bar Start recording: the same Record (or open recorder) as the buttons.
+  // A discard still finishing is not ready yet: the request waits for it instead of being refused.
+  useRecordShortcut(platform === "tauri", { available: recorder.available, ready: state.ready && state.phase !== "discarding",
+    active: recorderActive(state), record, openSheet });
   const minimiseSheet = useCallback(async () => {
     if (state.permissionDenied) await recorder.dismissShortcutRecovery();
     setMomentFieldFocused(false);
@@ -403,6 +417,7 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
       controlPending: state.controlPending,
       captureSourceUnconfirmed: state.captureSourceUnconfirmed,
       maxDurationMs: state.maxDurationMs,
+      autoStop: state.autoStop,
       limitNotice: state.limitNotice,
       savePercent: state.savePercent,
       error: state.error ?? defaultsError,
@@ -434,6 +449,7 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
       discard: recorder.discard,
       retryPending: recorder.retryPending,
       openSettings: recorder.openSettings,
+      extendLimit: recorder.extendLimit,
       dismissOutcome: dismiss,
       openSheet,
       minimiseSheet,
@@ -461,6 +477,7 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
       recorder.pending,
       recorder.retryPending,
       recorder.openSettings,
+      recorder.extendLimit,
       recorder.stop,
       recorder.pause,
       recorder.resume,
@@ -487,7 +504,7 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
       {disclosure && <div className="dch-system-audio" data-testid={disclosure.kind === "system-audio" ? "system-audio-disclosure" : disclosure.kind === "powerful" ? "powerful-consent-disclosure" : "private-consent-disclosure"}>
         <SheetDialog role="dialog" titleId={disclosureTitleId} descriptionId={disclosureDescriptionId}
           title={disclosure.kind === "system-audio" ? SYSTEM_AUDIO_TITLE : disclosure.kind === "powerful" ? POWERFUL_CONSENT_TITLE : PRIVATE_CONSENT_TITLE}
-          description={disclosure.kind === "system-audio" ? SYSTEM_AUDIO_BODY : disclosure.kind === "powerful" ? POWERFUL_CONSENT_BODY : privateConsentBody(privateConsentDevice(platform))}
+          description={disclosure.kind === "system-audio" ? SYSTEM_AUDIO_BODY : disclosure.kind === "powerful" ? <PowerfulConsentDescription body={POWERFUL_CONSENT_BODY} /> : privateConsentBody(privateConsentDevice(platform))}
           onCancel={() => disclosure.kind === "system-audio" ? setDisclosure(null) : closePrivate(false)} returnFocus={disclosureOpener}>
           {disclosureError && <p role="alert">{disclosureError}</p>}
           <div className="dch-system-audio-actions">
@@ -549,6 +566,7 @@ export function StaticRecorderProvider(props: { value?: Partial<RecorderValue>; 
       captureSourceUnconfirmed: false,
       controlPending: null,
       maxDurationMs: VOICE_NOTE_MAX_DURATION_MS,
+      autoStop: true,
       limitNotice: null,
       savePercent: null,
       error: null,
@@ -581,6 +599,7 @@ export function StaticRecorderProvider(props: { value?: Partial<RecorderValue>; 
       discard: noop,
       retryPending: noop,
       openSettings: async () => {},
+      extendLimit: undefined,
       dismissOutcome: noop,
       openSheet: noop,
       minimiseSheet: noop,

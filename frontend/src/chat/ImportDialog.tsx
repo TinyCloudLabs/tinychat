@@ -23,13 +23,15 @@ import {
 } from "@/lib/threadStore";
 import { FilePicker } from "./FilePicker";
 import { runImportLoop } from "./importLoop";
+import { useOriginMoveDeferral } from "@/shell/OriginMoveNotice";
+import { importHoldsMove } from "@/shell/unsavedWork";
 
 // Spec §5: thread id is `claude-<uuid>` (stable across re-imports).
 const CLAUDE_THREAD_PREFIX = "claude-";
 
 const ACCEPTED_EXTENSIONS = ".json,.jsonl,.zip";
 
-type Phase = "idle" | "parsing" | "ready" | "importing" | "done" | "error";
+export type Phase = "idle" | "parsing" | "ready" | "importing" | "done" | "error";
 
 interface PickRow {
   conv: NormalizedConversation;
@@ -69,6 +71,8 @@ interface ImportDialogProps {
 export const ImportDialog: FC<ImportDialogProps> = ({ tcw, onImported }) => {
   const [open, setOpen] = useState(false);
   const [phase, setPhase] = useState<Phase>("idle");
+  // A file read, picked or being imported lives only in this dialog: a held tinycloud.chat page does not move under it.
+  useOriginMoveDeferral(importHoldsMove(open, phase));
   const [error, setError] = useState<string | null>(null);
   const [rows, setRows] = useState<PickRow[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -114,8 +118,8 @@ export const ImportDialog: FC<ImportDialogProps> = ({ tcw, onImported }) => {
       setError(null);
       try {
         const bytes = new Uint8Array(await file.arrayBuffer());
-        // listThreads is contracted not to throw — any cold-path failure logs
-        // and returns the cached value (or []). We rely on that here.
+        // A failed cold load throws ThreadListLoadError (caught below): the
+        // duplicate check needs the real list, never an assumed-empty one.
         const existing = await listThreads(tcw);
         const convs = await parseClaudeExport(bytes);
         if (convs.length === 0) {

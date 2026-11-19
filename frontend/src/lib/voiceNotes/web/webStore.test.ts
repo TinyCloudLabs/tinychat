@@ -1,3 +1,6 @@
+import { hasVerifiedSpaceCopy } from "../audioPlaybackCache";
+import { beginStorageAccountSession, endStorageAccountSession } from "@/lib/storageStatus";
+import { adoptNote, loadNote, saveNote, markNoteSynced } from "../recordingNotes";
 import { describe, expect, test as bunTest } from "bun:test";
 import { createHash } from "node:crypto";
 import { base64ToBytes } from "../voiceNoteAudio";
@@ -40,7 +43,9 @@ const init = (id: string, owner: string | null = null) => ({
 
 /** A session with the given chunks journaled; returns the bytes in order. */
 async function record(store: WebStore, id: string, chunks: Uint8Array[], owner: string | null = null) {
-  await store.beginSession(init(id, owner));
+  const defaults = await store.getCaptureDefaults();
+  if (owner && defaults.accountDid !== owner) await store.setCaptureDefaults({ ...defaults, accountDid: owner, transitionGen: defaults.transitionGen + 1 });
+  await store.beginSession({ ...init(id, owner), transitionGen: (await store.getCaptureDefaults()).transitionGen });
   let audioMs = 0;
   for (const chunk of chunks) {
     audioMs += 1000;
@@ -741,7 +746,8 @@ describe("browserDecodeCheck", () => {
   });
 });
 
-describe("a claim by another tab is never overwritten", () => {
+// TC-2785 test ruling: sign-in never claims unowned sessions, notes or quarantine (Naomi).
+describe("sign-in never claims an unowned recording", () => {
   const signIn = (store: WebStore, did: string) =>
     store.setCaptureDefaults({ accountDid: did, transitionGen: 1, transcriber: "assemblyai", identifySpeakers: false });
   const finish = (session: Parameters<Parameters<WebStore["commitSession"]>[1]>[0], size: number) =>
@@ -753,11 +759,11 @@ describe("a claim by another tab is never overwritten", () => {
     const tabB = await h.open({ locks: memoryLocks() });
     await record(tabA, "n", [bytesOf(10)]);
     const staleOwner = (await tabA.getSession("n"))!.owner;
-    expect((await signIn(tabB, "did:A")).claimed).toEqual(["n"]);
+    expect((await signIn(tabB, "did:A")).claimed).toEqual([]);
     expect(staleOwner).toBeNull();
     const note = await tabA.commitSession("n", finish, { audioMs: 1000, bytes: 10, firstAudioAt: 1500 });
-    expect(note?.owner).toBe("did:A");
-    expect((await tabA.listPending()).recordings[0]!.owner).toBe("did:A");
+    expect(note?.owner).toBeNull();
+    expect((await tabA.listPending()).recordings[0]!.owner).toBeNull();
   });
 
   test("a claim between recovery's checks and its commit is kept", async () => {
@@ -767,8 +773,8 @@ describe("a claim by another tab is never overwritten", () => {
     const claimer = await h.open({ locks: memoryLocks() });
     const tab = await h.open({ hooks: { beforeOp: async (op) => { if (op === "note:commit") await signIn(claimer, "did:A"); } } });
     const { recovered } = await tab.recoverInterruptedSessions();
-    expect(recovered).toMatchObject([{ id: "n", owner: "did:A", recovered: true }]);
-    expect((await tab.listPending()).recordings[0]!.owner).toBe("did:A");
+    expect(recovered).toMatchObject([{ id: "n", owner: null, recovered: true }]);
+    expect((await tab.listPending()).recordings[0]!.owner).toBeNull();
   });
 
   test("a claim between the failed check and the quarantine write is kept when the recording is retried", async () => {
@@ -791,7 +797,7 @@ describe("a claim by another tab is never overwritten", () => {
     expect((await tab.listQuarantine()).items).toHaveLength(1);
     decodable = true;
     await tab.rearmQuarantined("n");
-    expect((await tab.recoverInterruptedSessions()).recovered).toMatchObject([{ id: "n", owner: "did:A" }]);
+    expect((await tab.recoverInterruptedSessions()).recovered).toMatchObject([{ id: "n", owner: null }]);
   });
 });
 
@@ -799,21 +805,24 @@ describe("account and owner isolation", () => {
   const defaults = (accountDid: string | null, transitionGen: number) =>
     ({ accountDid, transitionGen, transcriber: "assemblyai" as const, identifySpeakers: false });
 
-  test("signed-out notes are claimed by the first account only; another account cannot touch them", async () => {
+  test("signed-out notes require an explicit account choice; another account cannot touch them", async () => {
     const { open } = harness();
     const store = await open();
     await noteWith(store, "n");
     expect(await store.getCaptureDefaults()).toMatchObject({ accountDid: null, status: "signed_out", transcriber: "on-device" });
     const claimedByA = await store.setCaptureDefaults(defaults("did:A", 1));
-    expect(claimedByA.claimed).toEqual(["n"]);
+    expect(claimedByA.claimed).toEqual([]);
+    expect((await store.listPending()).recordings[0]!.owner).toBeNull();
+    await store.claim({ id: "n", did: "did:A", evidence: "user_choice" });
     expect((await store.listPending()).recordings[0]).toMatchObject({ owner: "did:A", rev: 2 });
     expect(await store.getCaptureDefaults()).toMatchObject({ accountDid: "did:A", status: "signed_in", transcriber: "assemblyai" });
 
     await store.setCaptureDefaults(defaults("did:B", 2));
     expect((await store.setCaptureDefaults(defaults("did:B", 3))).claimed).toEqual([]);
-    expect((await store.listPending()).recordings[0]!.owner).toBe("did:A");
-    await expect(store.claim({ id: "n", did: "did:B", evidence: "signed_out_v2" })).rejects.toEqual(code("owner_mismatch"));
+    expect((await store.listPending()).recordings).toEqual([]);
+    await expect(store.claim({ id: "n", did: "did:B", evidence: "user_choice" })).rejects.toEqual(code("owner_mismatch"));
     await expect(store.updateLedger({ id: "n", did: "did:B", rev: 2, patch: {} })).rejects.toEqual(code("owner_mismatch"));
+    await store.setCaptureDefaults(defaults("did:A", 4));
     expect((await store.listPending()).recordings[0]!.rev).toBe(2);
   });
 
@@ -828,22 +837,23 @@ describe("account and owner isolation", () => {
     expect(await store.getCaptureDefaults()).toMatchObject({ accountDid: null, status: "signed_out", transcriber: "on-device", transitionGen: 6 });
   });
 
-  test("a session in flight when the account signs in is claimed with the notes", async () => {
+  test("a session in flight stays unowned when an account signs in", async () => {
     const { open } = harness();
     const store = await open();
     await store.beginSession(init("live"));
-    expect((await store.setCaptureDefaults(defaults("did:A", 1))).claimed).toEqual(["live"]);
-    expect((await store.getSession("live"))?.owner).toBe("did:A");
+    expect((await store.setCaptureDefaults(defaults("did:A", 1))).claimed).toEqual([]);
+    expect((await store.getSession("live"))?.owner).toBeNull();
   });
 
-  test("claim evidence rules: legacy notes need a space row or a user choice, v2 notes only signed_out_v2", async () => {
+  test("claim evidence rules: completed v2 notes require explicit user_choice", async () => {
     const { open } = harness();
     const store = await open();
     await noteWith(store, "v2");
+    await store.setCaptureDefaults(defaults("did:A", 1));
     await expect(store.claim({ id: "v2", did: "did:A", evidence: "space_row", rowId: "x" })).rejects.toEqual(code("claim_evidence_invalid"));
-    await expect(store.claim({ id: "nope", did: "did:A", evidence: "signed_out_v2" })).rejects.toEqual(code("not_found"));
-    expect(await store.claim({ id: "v2", did: "did:A", evidence: "signed_out_v2" })).toEqual({ owner: "did:A" });
-    expect(await store.claim({ id: "v2", did: "did:A", evidence: "signed_out_v2" })).toEqual({ owner: "did:A" });
+    await expect(store.claim({ id: "nope", did: "did:A", evidence: "user_choice" })).rejects.toEqual(code("not_found"));
+    expect(await store.claim({ id: "v2", did: "did:A", evidence: "user_choice" })).toEqual({ owner: "did:A" });
+    expect(await store.claim({ id: "v2", did: "did:A", evidence: "user_choice" })).toEqual({ owner: "did:A" });
     await expect(store.claim({ id: "v2", did: "did:A", evidence: "space_row", rowId: "someone-elses" })).rejects.toEqual(code("claim_evidence_invalid"));
     expect((await store.listPending()).recordings[0]!.ledger?.audio.rowId).toBeNull();
   });
@@ -853,6 +863,7 @@ describe("account and owner isolation", () => {
     const store = await open();
     const receipt: RemoteOpReceipt = { id: "gone", did: "did:A", opId: "op1", provider: "assemblyai", mode: "hosted", kind: "hosted_create",
       fingerprint: "fp", startedAt: 1 };
+    await store.setCaptureDefaults(defaults("did:A", 1));
     await store.beginRemoteOp(receipt);
     expect((await store.listOutbox({ did: "did:A" })).entries).toMatchObject([{ entryId: "gone:op1", kind: "hosted_upload", handle: null, state: "unknown" }]);
     expect((await store.listOutbox({ did: "did:B" })).entries).toEqual([]);
@@ -1032,7 +1043,7 @@ describe("ledger, receipts, outbox and transcripts (native parity)", () => {
     expect((await store.listOutbox({ did: "did:A" })).entries).toEqual([]);
     await expect(store.completeOutbox({ entryId: "gone", result: "done" })).rejects.toEqual(code("not_found"));
     await expect(store.updateLedger({ id: "n", did: "did:A", rev: 2, patch: {} })).rejects.toEqual(code("tombstoned"));
-    await expect(store.claim({ id: "n", did: "did:A", evidence: "signed_out_v2" })).rejects.toEqual(code("tombstoned"));
+    await expect(store.claim({ id: "n", did: "did:A", evidence: "user_choice" })).rejects.toEqual(code("tombstoned"));
     await expect(store.beginSession(init("n"))).rejects.toEqual(code("tombstoned"));
   });
 
@@ -1137,5 +1148,172 @@ describe("cache eviction boundary", () => {
       await expect(store.evictCachedAudio({ id: note.id })).rejects.toEqual(code("audio_in_use"));
       expect((await store.readNoteAudio(note.id)).bytes).toEqual(bytes);
     });
+  }
+});
+
+// TC-2785: exercise the durable store across account changes, including direct API reads.
+test("sign-out deletes verified synced data and retains unsynced audio for its account only", async () => {
+  beginStorageAccountSession({}, "did:A", "test");
+  const h = harness();
+  const store = await h.open();
+  const retained = await noteWith(store, "only-copy", [bytesOf(8)], "did:A");
+  const synced = await noteWith(store, "synced", [bytesOf(9)], "did:A");
+  await store.updateLedger({ id: synced.id, did: "did:A", rev: synced.rev!, patch: {
+    audio: { state: "saved", rowId: "row", at: 1, verifiedInSpace: { sha256: "a".repeat(64), size: 9 } },
+  } });
+  const transcript = { version: 1, noteId: synced.id, transcriber: "on-device", rev: 1, engine: "test", model: null,
+    language: "en", outcome: "transcribed", diarized: false, segments: [], createdAt: "2026-11-11T00:00:00Z" } as const;
+  await store.putTranscript({ id: synced.id, transcript });
+  await store.updateLedger({ id: synced.id, did: "did:A", rev: synced.rev! + 1, patch: {
+    transcriptSync: { state: "saved", rev: transcript.rev, at: 1 },
+  } });
+  const markdown = await saveNote(synced.id, "Local recording note", { owner: "did:A" });
+  await markNoteSynced(synced.id, "did:A", markdown.revision);
+  await store.setAccountState({ status: "signed_out", accountDid: null, transitionGen: 2 });
+  expect((await store.listPending()).recordings).toEqual([]);
+  expect(await store.audio.size(synced.id)).toBe(0);
+  expect(await loadNote(synced.id)).toBeNull();
+  await expect(saveNote(synced.id, "Late autosave", { owner: "did:A" })).rejects.toThrow("This recording was deleted.");
+  expect(await store.audio.size(retained.id)).toBe(8);
+  await expect(store.readAudioChunk({ id: retained.id, offset: 0, length: 8 })).rejects.toEqual(code("owner_mismatch"));
+  store.close();
+  const reopened = await h.open();
+  await reopened.setCaptureDefaults({ accountDid: "did:B", transitionGen: 3, transcriber: "on-device", identifySpeakers: false });
+  expect((await reopened.listPending()).recordings).toEqual([]);
+  await expect(reopened.claim({ id: retained.id, did: "did:B", evidence: "user_choice" })).rejects.toEqual(code("owner_mismatch"));
+  await expect(reopened.readNoteAudio(retained.id)).rejects.toEqual(code("owner_mismatch"));
+  await expect(reopened.getTranscript({ id: retained.id })).rejects.toEqual(code("owner_mismatch"));
+  await reopened.setCaptureDefaults({ accountDid: "did:A", transitionGen: 4, transcriber: "on-device", identifySpeakers: false });
+  expect((await reopened.listPending()).recordings.map((note) => note.id)).toEqual([retained.id]);
+  expect((await reopened.readNoteAudio(retained.id)).bytes).toEqual(bytesOf(8));
+  await expect(reopened.getTranscript({ id: synced.id })).rejects.toEqual(code("tombstoned"));
+  const db = await openWebDb(h.env, "exo-voice-notes");
+  const tx = db.transaction(["notes", "transcripts"]);
+  expect(await new Promise((resolve) => { const req = tx.objectStore("notes").get(synced.id); req.onsuccess = () => resolve(req.result); })).toBeUndefined();
+  expect(await new Promise((resolve) => { const req = tx.objectStore("transcripts").get(synced.id); req.onsuccess = () => resolve(req.result); })).toBeUndefined();
+  db.close();
+  endStorageAccountSession();
+});
+
+test("TC-2785 purge requires matching audio and transcript sync receipts", async () => {
+  const store = await harness().open();
+  const cases = [
+    { id: "pending-transcript", transcript: true, sync: "pending" as const, syncRev: 1, receiptSize: 10, rowId: "row", keep: true },
+    { id: "wrong-transcript-rev", transcript: true, sync: "saved" as const, syncRev: 2, receiptSize: 10, rowId: "row", keep: true },
+    { id: "wrong-audio-size", transcript: false, sync: "saved" as const, syncRev: 0, receiptSize: 9, rowId: "row", keep: true },
+    { id: "missing-audio-row", transcript: false, sync: "saved" as const, syncRev: 0, receiptSize: 10, rowId: null, keep: true },
+    { id: "saved-transcript", transcript: true, sync: "saved" as const, syncRev: 1, receiptSize: 10, rowId: "row", keep: false },
+    { id: "saved-audio-only", transcript: false, sync: "saved" as const, syncRev: 0, receiptSize: 10, rowId: "row", keep: false },
+  ];
+  for (const item of cases) {
+    const note = await noteWith(store, item.id, [bytesOf(10)], "did:A");
+    if (item.transcript) await store.putTranscript({ id: item.id, transcript: { version: 1, noteId: item.id, transcriber: "on-device", rev: 1,
+      engine: "test", model: null, language: "en", outcome: "transcribed", diarized: false, segments: [], createdAt: "2026-11-11T00:00:00Z" } });
+    await store.updateLedger({ id: item.id, did: "did:A", rev: note.rev!, patch: {
+      audio: { state: "saved", rowId: item.rowId, at: 1, verifiedInSpace: { sha256: "a".repeat(64), size: item.receiptSize } },
+      transcriptSync: { state: item.sync, rev: item.syncRev, at: 1 },
+    } });
+  }
+  await store.setAccountState({ status: "signed_out", accountDid: null, transitionGen: 2 });
+  expect((await store.listPending()).recordings).toEqual([]);
+  for (const item of cases) expect(await store.audio.size(item.id)).toBe(item.keep ? 10 : 0);
+  await store.setCaptureDefaults({ accountDid: "did:A", transitionGen: 3, transcriber: "on-device", identifySpeakers: false });
+  expect((await store.listPending()).recordings.map((note) => note.id).sort()).toEqual(cases.filter((item) => item.keep).map((item) => item.id).sort());
+  expect((await store.getTranscript({ id: "pending-transcript" })).transcript?.rev).toBe(1);
+});
+
+test("TC-2785 purge replays audio and recording-note cleanup after interruption", async () => {
+  beginStorageAccountSession({}, "did:A", "test");
+  let interrupt = false;
+  const h = harness({ hooks: { beforeOp: (op) => { if (interrupt && op === "audio:delete") throw new Error("interrupted cleanup"); } } });
+  const store = await h.open();
+  const note = await noteWith(store, "purge-retry", [bytesOf(10)], "did:A");
+  const markdown = await saveNote(note.id, "Private note", { owner: "did:A" });
+  await markNoteSynced(note.id, "did:A", markdown.revision);
+  await store.updateLedger({ id: note.id, did: "did:A", rev: note.rev!, patch: {
+    audio: { state: "saved", rowId: "row", at: 1, verifiedInSpace: { sha256: "a".repeat(64), size: 10 } },
+    transcriptSync: { state: "saved", rev: 0, at: 1 },
+  } });
+  interrupt = true;
+  await expect(store.setAccountState({ status: "signed_out", accountDid: null, transitionGen: 2 })).rejects.toEqual(code("account_state_write_failed"));
+  expect(await loadNote(note.id, "did:A")).not.toBeNull();
+  expect(await store.audio.size(note.id)).toBe(10);
+  interrupt = false;
+  await store.setAccountState({ status: "signed_out", accountDid: null, transitionGen: 3 });
+  expect(await loadNote(note.id, "did:A")).toBeNull();
+  expect(await store.audio.size(note.id)).toBe(0);
+  endStorageAccountSession();
+});
+
+test("TC-2785 trusted local work writes only its captured owner after sign-out", async () => {
+  const store = await harness().open();
+  const note = await noteWith(store, "late-transcript", [bytesOf(10)], "did:A");
+  await store.setAccountState({ status: "signed_out", accountDid: null, transitionGen: 2 });
+  await store.setCaptureDefaults({ accountDid: "did:B", transitionGen: 3, transcriber: "on-device", identifySpeakers: false });
+  const transcript = { version: 1, noteId: note.id, transcriber: "on-device", rev: 1, engine: "test", model: null,
+    language: "en", outcome: "transcribed", diarized: false, segments: [], createdAt: "2026-11-11T00:00:00Z" } as const;
+  await expect(store.putTranscript({ id: note.id, transcript })).rejects.toEqual(code("owner_mismatch"));
+  await expect(store.putTranscriptForOwner({ id: note.id, owner: "did:B", transcript })).rejects.toEqual(code("owner_mismatch"));
+  expect(await store.putTranscriptForOwner({ id: note.id, owner: "did:A", transcript })).toEqual({ transcript });
+  await expect(store.getTranscript({ id: note.id })).rejects.toEqual(code("owner_mismatch"));
+  await store.setCaptureDefaults({ accountDid: "did:A", transitionGen: 4, transcriber: "on-device", identifySpeakers: false });
+  expect(await store.getTranscript({ id: note.id })).toEqual({ transcript });
+});
+
+test("TC-2785 purge retains synced notes while local reruns or audio preparation are active", async () => {
+  const store = await harness().open();
+  for (const state of ["queued", "running", "preparing"] as const) {
+    const note = await noteWith(store, `active-${state}`, [bytesOf(10)], "did:A");
+    if (state !== "preparing") await store.updateStt(note.id, { ...note.stt!, state, rerunRev: 2, rerunBaseRev: 1, rerunBaseHash: "base" });
+    await store.updateLedger({ id: note.id, did: "did:A", rev: note.rev!, patch: {
+      audio: { state: "saved", rowId: "row", at: 1, verifiedInSpace: { sha256: "a".repeat(64), size: 10 } },
+      transcriptSync: { state: "saved", rev: 1, at: 1 },
+      ...(state === "preparing" ? { localAudio: { state: "preparing" as const, error: null } } : {}),
+    } });
+  }
+  await store.setAccountState({ status: "signed_out", accountDid: null, transitionGen: 2 });
+  await store.setCaptureDefaults({ accountDid: "did:B", transitionGen: 3, transcriber: "on-device", identifySpeakers: false });
+  expect((await store.listPending()).recordings).toEqual([]);
+  for (const state of ["queued", "running", "preparing"]) expect(await store.audio.size(`active-${state}`)).toBe(10);
+  await store.setCaptureDefaults({ accountDid: "did:A", transitionGen: 4, transcriber: "on-device", identifySpeakers: false });
+  expect((await store.listPending()).recordings).toHaveLength(3);
+});
+
+
+test("TC-2785 sign-out clears an adopted space note without deleting an unsynced local edit", async () => {
+  beginStorageAccountSession({}, "did:A", "test");
+  const store = await harness().open();
+  const remoteId = "adopted-space-copy";
+  const localId = "adopted-over-local-edit";
+  try {
+    for (const id of [remoteId, localId]) {
+      const note = await noteWith(store, id, [bytesOf(10)], "did:A");
+      await store.updateLedger({ id, did: "did:A", rev: note.rev!, patch: {
+        audio: { state: "saved", rowId: `row-${id}`, at: 1, verifiedInSpace: { sha256: "a".repeat(64), size: 10 } },
+        transcriptSync: { state: "saved", rev: 0, at: 1 },
+      } });
+    }
+    const remote = { recordingId: remoteId, md: "Text already in the space", moments: [],
+      createdAt: "2026-11-11T00:00:00Z", editedAt: "2026-11-11T00:00:00Z", revision: 4 };
+    await adoptNote(remote, "did:A");
+    await saveNote(localId, "Only local edit", { owner: "did:A" });
+    await adoptNote({ ...remote, recordingId: localId }, "did:A");
+    // App’s local-only audio choice does not count either already-synced recording.
+    expect((await store.listPending()).recordings.filter((note) => !hasVerifiedSpaceCopy(note))).toEqual([]);
+    await store.setAccountState({ status: "signed_out", accountDid: null, transitionGen: 2 });
+    expect((await store.listPending()).recordings).toEqual([]);
+    expect(await store.audio.size(remoteId)).toBe(0);
+    expect(await store.audio.size(localId)).toBe(0);
+    expect(await loadNote(remoteId, "did:A")).toBeNull();
+    endStorageAccountSession();
+    expect(await loadNote(localId)).toBeNull();
+    beginStorageAccountSession({}, "did:B", "test-B");
+    expect(await loadNote(localId)).toBeNull();
+    beginStorageAccountSession({}, "did:A", "test");
+    expect((await loadNote(localId))?.md).toBe("Only local edit");
+    expect(await loadNote(remoteId)).toBeNull();
+  } finally {
+    store.close();
+    endStorageAccountSession();
   }
 });

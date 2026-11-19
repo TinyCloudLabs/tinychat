@@ -14,8 +14,9 @@ import {
   deviceName,
   percentText,
 } from "./notePipelineCopy";
+import { PRIVATE_TOO_LONG_NOTE } from "@/lib/privateCloud";
 import { storageFullPrecedesChoiceFailure, TRANSCRIPT_STORAGE_FULL_CODE } from "./transcriptionErrors";
-import { STORAGE_FULL_TRANSCRIPT_NOT_SAVED_LINE, STORAGE_FULL_TRANSCRIPT_NOT_SAVED_LOCAL_AUDIO_LINE } from "@/lib/storageStatus";
+import { NATIVE_PLAN_NOTE, STORAGE_FULL_TRANSCRIPT_NOT_SAVED_LINE, STORAGE_FULL_TRANSCRIPT_NOT_SAVED_LOCAL_AUDIO_LINE } from "@/lib/storageStatus";
 
 export type PipelineDevice = "phone" | "mac" | "iphone" | "android" | "browser";
 export type PipelineRoute = "off" | "on-device" | "private-cloud";
@@ -87,6 +88,7 @@ export type PipelineCloudStatus =
   | { kind: "uploading"; progress?: number }
   | { kind: "queued"; position: number | null }
   | { kind: "processing"; completed: number | null; total: number | null }
+  | { kind: "delayed" }
   | { kind: "saving" };
 
 /** `NoteTranscriptionState` (`blocked` is P2). */
@@ -222,6 +224,15 @@ const storageFullBlocker = (localAudioReady: boolean): PipelineBlocker => ({
   action: { kind: "manage-storage", label: ACTION_LABEL["manage-storage"] },
   secondaryAction: { kind: "retry", label: TRANSCRIBE_AGAIN_LABEL },
 });
+/**
+ * The iOS and Android apps open no purchase page (App Store 3.1.1, Play Payments). There a storage-full blocker says where
+ * the plan is managed, as plain text, in place of Manage storage; its second action (Transcribe again), if any, becomes its action.
+ */
+function withoutStoragePurchase(blocker: PipelineBlocker): PipelineBlocker {
+  if (blocker.action?.kind !== "manage-storage") return blocker;
+  const { action: _manage, secondaryAction, ...rest } = blocker;
+  return { ...rest, cause: `${blocker.cause} ${NATIVE_PLAN_NOTE}`, ...(secondaryAction ? { action: secondaryAction } : {}) };
+}
 const fraction = (done: number, total: number): number | null => (total > 0 && Number.isFinite(done) ? Math.min(1, Math.max(0, done / total)) : null);
 const withProgress = (state: "active" | "waiting", caption: string, progress: number | null): Result =>
   progress === null ? { state, caption } : { state, caption, progress };
@@ -344,7 +355,10 @@ function cloudBlockedStep(reason: PipelineBlockedReason, provider: NotePipelineI
     case "limits-unknown": return blocked(provider === "private" ? PRIVATE_COPY.limitsUnknown : `${name} isn't available right now`, "check-again");
     case "check-failed": return blocked(provider === "private" ? PRIVATE_COPY.checkFailed : `Couldn't check whether ${name} is available`, "check-again");
     case "no-consent": return blocked(provider === "private" ? PRIVATE_COPY.noConsent : `Waiting for your OK to use ${name}`, "review-consent");
-    case "limits-exceeded": return blocked(provider === "private" ? "Private transcription couldn't accept this recording's length or size." : `${name} couldn't accept this recording's length or size.`, "check-again");
+    case "limits-exceeded":
+      return provider === "private"
+        ? blocked(PRIVATE_TOO_LONG_NOTE)
+        : blocked(`${name} couldn't accept this recording's length or size.`, "check-again");
   }
 }
 
@@ -364,13 +378,14 @@ function cloudStep(cloud: PipelineCloud | null, spaceSaved: boolean, checkingCap
         case "waiting": return { state: "waiting", caption: provider === "powerful" ? "Waiting for Powerful to start" : provider === "unknown" ? "Waiting for transcription to start" : PRIVATE_COPY.waiting(status.position) };
         case "preparing": return { state: "active", caption: PRIVATE_COPY.preparing };
         case "uploading": return status.progress === undefined
-          ? { state: "active", caption: provider === "powerful" ? "Sending to Powerful (AssemblyAI)" : provider === "unknown" ? "Sending audio for transcription" : PRIVATE_COPY.sending }
-          : withProgress("active", `${provider === "powerful" ? "Sending to Powerful (AssemblyAI)" : provider === "unknown" ? "Sending audio for transcription" : PRIVATE_COPY.sending} · ${percentText(status.progress)}`, status.progress);
+          ? { state: "active", caption: provider === "powerful" ? "Sending to Powerful" : provider === "unknown" ? "Sending audio for transcription" : PRIVATE_COPY.sending }
+          : withProgress("active", `${provider === "powerful" ? "Sending to Powerful" : provider === "unknown" ? "Sending audio for transcription" : PRIVATE_COPY.sending} · ${percentText(status.progress)}`, status.progress);
         case "queued": return { state: "waiting", caption: PRIVATE_COPY.inQueue(status.position) };
         case "processing": {
           const progress = status.completed === null || status.total === null ? null : fraction(status.completed, status.total);
           return withProgress("active", PRIVATE_COPY.transcribing(status.completed, status.total), progress);
         }
+        case "delayed": return { state: "active", caption: PRIVATE_COPY.delayed };
         case "saving": return { state: "active", caption: PRIVATE_COPY.saving };
       }
     }
@@ -426,12 +441,14 @@ export function notePipeline(input: NotePipelineInput): NotePipeline {
     ? { state: "skipped" }
     : notesStep(input, transcript.state);
 
-  const results: [StepKey, string, Result][] = [
+  const phoneApp = input.device === "iphone" || input.device === "android";
+  const results: [StepKey, string, Result][] = ([
     ["phone", STEP_LABEL.phone(input.device), phone],
     ["space", input.space.localOnly ? "Record in your TinyCloud space" : STEP_LABEL.space, space],
     ["transcript", STEP_LABEL.transcript, transcript],
     ["notes", STEP_LABEL.notes, notes],
-  ];
+  ] as [StepKey, string, Result][]).map(([key, label, result]) =>
+    [key, label, phoneApp && result.blocker !== undefined ? { ...result, blocker: withoutStoragePurchase(result.blocker) } : result]);
   const steps: PipelineStep[] = results.map(([key, label, result]) => {
     const step: PipelineStep = { key, label, state: result.state };
     if (result.blocker !== undefined) step.blocker = result.blocker;

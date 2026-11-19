@@ -1,0 +1,70 @@
+import type { IKVService, ISQLService } from "@tinycloud/sdk-services";
+import type { FeedCard, FeedCardIdentity, FeedSource } from "@tinycloud/sdk-services/feed";
+import type { BoardRecord, Kind } from "@tinyboilerplate/core/feed/sitrep";
+
+/** Already-authorized owner handles; these arguments never grant authority. */
+export interface HomeMirrorContext {
+  ownerSpaceId: string;
+  sql: Pick<ISQLService, "db">;
+  legacySpaceId: string;
+  legacy: Pick<IKVService, "get" | "put">;
+  now: () => string;
+  signal?: AbortSignal;
+  /**
+   * Set by one process that posts many cards (post-many): the registry and the mirror table are read once and kept,
+   * and each new binding is added. Every write still re-checks ownership in SQL, so a stale cache cannot double-bind.
+   */
+  cache?: HomeMirrorCache;
+}
+
+export interface HomeMirrorCache {
+  agents?: unknown[][];
+  mirrors?: unknown[][];
+  /** Home's newest copy of each card, by output database: read once by a run that closes many cards (close-many). */
+  cards?: Record<string, FeedCard[]>;
+}
+
+export interface HomeMirrorPublishInput {
+  source: FeedSource;
+  card: FeedCard;
+  legacy: {
+    spaceId: string;
+    fullKey: string;
+    /** Business identity remains unchanged, including claim IDs such as L-042. */
+    record: BoardRecord;
+  };
+}
+
+/** Owner-only publication binding, persisted in home_feed.feed_sitrep_mirrors. */
+export interface HomeMirrorBinding {
+  version: 1;
+  source: Pick<FeedSource, "sourceId" | "agentDid" | "output" | "responses">;
+  identity: FeedCardIdentity;
+  cardUuid: string;
+  legacy: {
+    spaceId: string;
+    fullKey: string;
+    kind: Kind;
+    id: string;
+    publicationSha256: string;
+    publishedETag: string;
+  };
+}
+
+export interface HomeMirrorIdentity extends FeedCardIdentity {
+  sourceId: string;
+}
+
+/** Projection evidence only: never agent acknowledgement, outcome or permission. */
+export interface HomeMirrorCloseReceipt {
+  version: 1;
+  sourceId: string;
+  identity: FeedCardIdentity;
+  responseId: string;
+  legacyKey: string;
+  publicationSha256: string;
+  expectedETag: string;
+  closedETag: string;
+  status: string;
+  observedAt: string;
+}

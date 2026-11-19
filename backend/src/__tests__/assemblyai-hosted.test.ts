@@ -1077,7 +1077,7 @@ describe("rate limits", () => {
 describe("Phala deploy environment", () => {
   const repoRoot = resolve(import.meta.dir, "../../..");
 
-  test("production keeps the AssemblyAI API key available but leaves hosted mode off", () => {
+  test("production maps the AssemblyAI API key and the hosted handle key so hosted mode is on", () => {
     const workflow = loadYaml(readFileSync(resolve(repoRoot, ".github/workflows/deploy-backend-phala.yml"), "utf8")) as {
       jobs?: { deploy?: { steps?: { env?: Record<string, unknown>; run?: string }[] } };
     };
@@ -1089,16 +1089,15 @@ describe("Phala deploy environment", () => {
     const example = readFileSync(resolve(repoRoot, "backend/.env.example"), "utf8");
     expect(String(writer?.env?.ASSEMBLYAI_API_KEY)).toBe("${{ secrets.ASSEMBLYAI_API_KEY }}");
     expect(writer?.run).toContain('"ASSEMBLYAI_API_KEY=$ASSEMBLYAI_API_KEY"');
-    expect(writer?.env?.ASSEMBLYAI_HOSTED_HANDLE_KEY).toBeUndefined();
-    expect(writer?.run).not.toContain("ASSEMBLYAI_HOSTED_HANDLE_KEY=");
+    expect(String(writer?.env?.ASSEMBLYAI_HOSTED_HANDLE_KEY)).toBe("${{ secrets.ASSEMBLYAI_HOSTED_HANDLE_KEY }}");
+    expect(writer?.run).toContain('"ASSEMBLYAI_HOSTED_HANDLE_KEY=$ASSEMBLYAI_HOSTED_HANDLE_KEY"');
     expect(env.ASSEMBLYAI_API_KEY).toBe("${ASSEMBLYAI_API_KEY:-}");
-    expect(env.ASSEMBLYAI_HOSTED_HANDLE_KEY).toBeUndefined();
+    expect(env.ASSEMBLYAI_HOSTED_HANDLE_KEY).toBe("${ASSEMBLYAI_HOSTED_HANDLE_KEY:-}");
     expect(assemblyAiHostedConfigFromEnv({
       ASSEMBLYAI_API_KEY: API_KEY,
-      ASSEMBLYAI_HOSTED_HANDLE_KEY:
-        writer?.env?.ASSEMBLYAI_HOSTED_HANDLE_KEY === undefined && env.ASSEMBLYAI_HOSTED_HANDLE_KEY === undefined ? undefined : HANDLE_KEY,
-      ASSEMBLYAI_HOSTED_SPOOL_DIR: "/persistent/assemblyai",
-    })).toEqual({ hosted: false, reason: "handle_key_unset" });
+      ASSEMBLYAI_HOSTED_HANDLE_KEY: HANDLE_KEY,
+      ASSEMBLYAI_HOSTED_SPOOL_DIR: env.ASSEMBLYAI_HOSTED_SPOOL_DIR,
+    })).toMatchObject({ hosted: true });
     for (const key of ["ASSEMBLYAI_API_KEY", "ASSEMBLYAI_HOSTED_HANDLE_KEY", "ASSEMBLYAI_HOSTED_DAILY_BYTES",
       "ASSEMBLYAI_HOSTED_SPOOL_DIR", "ASSEMBLYAI_HOSTED_FRESH_INSTALL"])
       expect(example).toMatch(new RegExp(`^${key}=$`, "m"));

@@ -3,10 +3,10 @@ import { AssistantRuntimeProvider } from "@assistant-ui/react";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import type { SessionStore } from "@tinyboilerplate/client";
 import { useChatRuntime } from "./runtime";
+import { ReplicationFirstLoadSignal } from "../lib/replication/ReplicationFirstLoadSignal";
 import { Thread } from "./Thread";
 import { ThreadList } from "./ThreadList";
 import { useAgentAccess } from "./useAgentEnablement";
-import { ChatViewAgentStatusIndicator } from "./ChatAgentStatusIndicator";
 import { ChatViewAgentEnablementBanner } from "./AgentEnablementBanner";
 import { appendCompaction, getLatestCompaction } from "../lib/threadStore";
 import { completeChat, emitReceipt, type ChatMessage } from "../lib/chatApi";
@@ -25,7 +25,6 @@ import type { ModelSelectionController, SelectionView } from "./modelSelection";
 import { ChatHeader } from "./ChatHeader";
 import { ChatsPaneHeader, ChatsSheet } from "./ChatsSheet";
 import { ModelVerificationIndicator } from "./ModelVerificationIndicator";
-import { useConversationCanvasFeature } from "./useExperimentalFeatures";
 import { promotedCanvasForTurn } from "../lib/conversationCanvasStore";
 
 export function ChatWorkspace(props: {
@@ -41,17 +40,16 @@ export function ChatWorkspace(props: {
   contextTokensFor: (modelId: string) => number;
   /** The composer's toolbar: the model chip and the usage chip (App owns both). */
   composerToolbar?: ReactNode;
-  /** The header's Record button and live chip (the phone app's recorder). */
+  /** The phone app's live-recording chip. */
   headerRecorder?: ReactNode;
   /** Settings is reachable from the Chats sheet (it is not in local validation). */
   settings: boolean;
   billingStatus: BillingStatus | null;
 }) {
   const {
-    agentEnabledRef, activeThreadIdRef, privateAccessRef, onDelegationError,
+    agentEnabledRef, activeThreadIdRef, privateAccessRef, waitForInitialProbe, onDelegationError,
   } = useAgentAccess();
   const meetingMessageRegistry = useMemo(() => createMeetingMessageRegistry(), [props.tcw]);
-  const conversationCanvas = useConversationCanvasFeature(props.tcw, props.billingStatus);
   // One instance per mounted workspace: its thread selection state is
   // intentionally in-memory only, survives render churn, and vanishes on a
   // workspace reload. It receives only browser-local handles and the existing
@@ -79,6 +77,7 @@ export function ChatWorkspace(props: {
       activeThreadIdRef,
       agentEnabledRef,
       privateAccessRef,
+      waitForInitialProbe,
       onAgentDelegationError: onDelegationError,
       meetingRetriever,
       meetingMessageRegistry,
@@ -141,6 +140,7 @@ export function ChatWorkspace(props: {
       props.onMemoryUpdated,
       props.contextTokensFor,
       onDelegationError,
+      waitForInitialProbe,
       meetingRetriever,
       meetingMessageRegistry,
       // activeThreadIdRef and agentEnabledRef are stable refs — omitted intentionally.
@@ -158,6 +158,7 @@ export function ChatWorkspace(props: {
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
+      <ReplicationFirstLoadSignal />
       <div className="grid h-full grid-cols-1 expanded:grid-cols-[272px_minmax(0,1fr)]">
         {/* The Chats column, always on screen from the expanded class. */}
         <aside className="hidden min-h-0 flex-col border-r border-border/70 expanded:flex">
@@ -171,14 +172,12 @@ export function ChatWorkspace(props: {
             newChat={size !== "expanded"}
             verification={wide && model ? <ModelVerificationIndicator model={model} /> : undefined}
           />
-          <ChatViewAgentStatusIndicator />
           <div className="min-h-0 flex-1">
             <Thread
               tcw={props.tcw}
               selection={props.selectionView}
               onRetrySelection={() => props.selectionControllerRef.current?.retry()}
               onReload={() => props.selectionControllerRef.current?.reload()}
-              canvasEnabled={conversationCanvas.enabled}
               composerToolbar={props.composerToolbar}
             />
           </div>

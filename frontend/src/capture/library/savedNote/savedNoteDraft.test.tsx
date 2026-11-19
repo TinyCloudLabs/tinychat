@@ -1,6 +1,7 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { isOriginMoveDeferred } from "@/lib/originMove";
 import { clearSavedNoteDrafts, readSavedNoteDraft, useSavedNoteDraft, type SavedNoteDraft } from "./savedNoteDraft";
 
 // A root over a stand-in container: the probes render nothing, so only React's effects and stores run.
@@ -43,6 +44,23 @@ function Probe({ id }: { id: string }) {
 }
 
 describe("saved note draft", () => {
+  test("an open edit defers the legacy-origin move until it is saved or discarded", async () => {
+    await show(<Probe id="rec-1" />);
+    expect(isOriginMoveDeferred()).toBe(false);
+    await act(async () => handle.edit("saved text"));
+    await show(<Probe id="rec-2" />);
+    await act(async () => handle.edit("other"));
+    await act(async () => handle.finish());
+    expect(isOriginMoveDeferred()).toBe(true);
+    await show(<Probe id="rec-1" />);
+    await act(async () => handle.type("saved text, and more"));
+    await unmount();
+    expect(isOriginMoveDeferred()).toBe(true);
+    await show(<Probe id="rec-1" />);
+    await act(async () => handle.finish());
+    expect(isOriginMoveDeferred()).toBe(false);
+  });
+
   test("a draft survives a switch between the page and the sheet (unmount, remount)", async () => {
     await show(<Probe id="rec-1" />);
     await act(async () => handle.edit("saved text"));

@@ -6,7 +6,6 @@ import type { RecorderValue } from "../RecorderProvider";
 interface MinimizedBarsProps {
   recorder: Pick<RecorderValue, "subscribeLevel">;
   view: Pick<MinimizedView, "ring" | "flat">;
-  bars: 30 | 22;
   theme: "night" | "day";
 }
 
@@ -14,7 +13,6 @@ interface MinimizedBarsProps {
 export function MinimizedBars({
   recorder,
   view,
-  bars,
   theme,
 }: MinimizedBarsProps) {
   const subscribe = useLevelSource(recorder);
@@ -23,7 +21,7 @@ export function MinimizedBars({
     <MirroredSpectrumBars
       subscribe={live && !view.flat ? subscribe : undefined}
       source={live && view.flat ? QUIET : undefined}
-      bars={bars}
+      bars={30}
       paused={!live}
       theme={theme}
     />

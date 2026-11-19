@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, test } from "bun:test";
+import { resetLanesForTests } from "../localFirst/requestLanes";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
-import { startReplicationFill } from "./replicationClient";
+import { startReplicationFill, stopReplicationFill } from "./replicationClient";
 import { replicationDebugEnabled, formatReplicationStatus, REPLICATION_DEBUG_KEY } from "./ReplicationStatusLine";
 import { startupPurgeSettled, trackStartupPurge } from "./replicationStartupPurge";
 import { getReplicationStatus, recordReplicationEvent, refreshReplicationStatus, resetReplicationStatus } from "./replicationStatus";
@@ -15,11 +16,13 @@ function clientWith(sync: () => Promise<void>): TinyCloudWeb {
 }
 
 beforeEach(resetReplicationStatus);
+// The fill waits on the request lanes, which are module state: start from idle lanes, not from whatever an earlier test file left in flight.
+beforeEach(resetLanesForTests);
 
 describe("first sync after sign-in / restore", () => {
   test("ON with a controller: sync() is called once", async () => {
     let calls = 0;
-    startReplicationFill(clientWith(async () => { calls += 1; }), () => true);
+    startReplicationFill(clientWith(async () => { calls += 1; }), () => true, { firstLoadSettled: async () => {}, prefixes: ["p/"] });
     await flush();
     expect(calls).toBe(1);
   });
@@ -53,7 +56,7 @@ describe("first sync after sign-in / restore", () => {
     let calls = 0;
     const removal = Promise.withResolvers<void>();
     void trackStartupPurge(removal.promise);
-    startReplicationFill(clientWith(async () => { calls += 1; }), () => true);
+    startReplicationFill(clientWith(async () => { calls += 1; }), () => true, { firstLoadSettled: async () => {}, prefixes: ["p/"] });
     await flush();
     expect(calls).toBe(0);
     removal.resolve();
@@ -70,6 +73,22 @@ describe("first sync after sign-in / restore", () => {
     enabled = false;
     removal.resolve();
     await flush();
+    expect(calls).toBe(0);
+  });
+  test("sign-out cancels a fill still waiting for the first-load gate", async () => {
+    let releaseFirstLoad!: () => void;
+    const firstLoad = new Promise<void>((resolve) => { releaseFirstLoad = resolve; });
+    let calls = 0;
+    const tcw = clientWith(async () => { calls += 1; });
+    startReplicationFill(tcw, () => true, {
+      firstLoadSettled: () => firstLoad,
+      prefixes: ["first/", "second/"],
+    });
+
+    stopReplicationFill(tcw);
+    releaseFirstLoad();
+    await flush();
+
     expect(calls).toBe(0);
   });
 });

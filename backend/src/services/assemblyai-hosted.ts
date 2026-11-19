@@ -8,6 +8,8 @@ import type { FileHandle } from "node:fs/promises";
 
 import { assertStrongSecret } from "./webhook-tokens.js";
 import type { JsonKv } from "./transcriber-index.js";
+/** The operator-facing monitor lives beside the store, which it reads: one import for the hosted path's callers. */
+export { HEARTBEAT_INTERVAL_MS, HostedProviderMonitor } from "./assemblyai-hosted-monitor.js";
 
 /**
  * AssemblyAI under TinyCloud's account for Exo uploads ("hosted" mode, contract C10).
@@ -168,6 +170,8 @@ export interface HostedUpload {
   submitDeadline: number;
   /** Stable Exo note key; absent for legacy and non-note uploads. */
   sourceId?: string;
+  /** When the background submit started (ms); the heartbeat's oldest pending job. */
+  startedAt?: number;
 }
 
 type NoteJob = { address: string; sourceId: string; uploadId: string; bootId: string; state: "receiving" | "submitting" | "submitted" | "needs_reconciliation" | "uncertain" | "deleted"; handle?: string; expiresAt?: number; byteSize?: number; contentType?: string; uploadUrl?: string; transcriptId?: string };
@@ -645,6 +649,7 @@ export class HostedUploadStore {
     upload.state = "submitting";
     upload.abort = controller;
     upload.submitDeadline = now() + SUBMIT_DEADLINE_MS;
+    upload.startedAt = now();
     const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(SUBMIT_DEADLINE_MS)]);
     const run = (async () => {
       let outcome: SubmitOutcome;
@@ -676,6 +681,13 @@ export class HostedUploadStore {
   /** Resolves when every background submit started so far has settled. */
   async idle(): Promise<void> {
     while (this.inFlight.size > 0) await Promise.all([...this.inFlight]);
+  }
+
+  /** Jobs being sent to AssemblyAI right now and the age in seconds of the oldest. Nothing waits to be resent yet: `delayed` is 0. */
+  pendingStats(nowMs: number): { pending: number; delayed: number; oldestAgeSeconds: number } {
+    const jobs = [...this.uploads.values()].filter((u) => u.state === "submitting");
+    const oldest = Math.min(...jobs.map((u) => u.startedAt ?? nowMs));
+    return { pending: jobs.length, delayed: 0, oldestAgeSeconds: jobs.length === 0 ? 0 : Math.max(0, Math.floor((nowMs - oldest) / 1000)) };
   }
 
   /** Delete the spool and free the slot. Safe to call more than once. */

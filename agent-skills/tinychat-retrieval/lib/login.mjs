@@ -1,15 +1,16 @@
 import { spawn } from 'node:child_process';
+import { defaultTc } from './retrieval.mjs';
 
 const messages = {
-  INVALID_AUTH_RESPONSE: 'Supply the complete JSON or base64 JSON authorization response. Truncated or redacted values cannot be used.',
-  AUTH_RESPONSE_REJECTED: 'The CLI rejected the authorization response. No successful login is claimed.',
-  OPENKEY_PROOF_INVALID: 'The CLI could not verify the signed response for this profile. Supply the complete response for the same profile.',
-  OWNER_MISMATCH: 'The approved signing identity differs from the expected owner. Keep the existing profile and choose the intended identity.',
+  INVALID_AUTH_RESPONSE: 'Send the code OpenKey showed, exactly as shown.',
+  AUTH_RESPONSE_REJECTED: 'The CLI did not accept the code. Each code works once and expires after 5 minutes: run authorize again and send the new link.',
+  OPENKEY_PROOF_INVALID: 'The CLI could not verify the code for this profile. Run authorize again and send the new link.',
+  OWNER_MISMATCH: 'The approved signing identity differs from the expected owner. Approve with the account you use for TinyChat.',
   OPENKEY_SCOPE_MISMATCH: 'The approved space differs from the requested space.',
-  OPENKEY_GRANT_BROADENED: 'The signed grant exceeds the installed permission manifest.',
-  AUTH_EXPIRED: 'The signed authorization has expired. Browser approval is required again.',
-  AUTH_TRANSPORT_TIMEOUT: 'The CLI did not finish the authorization transport within 30 seconds.',
-  CLI_UNAVAILABLE: 'TinyCloud CLI could not be started.',
+  OPENKEY_GRANT_BROADENED: 'The signed grant exceeds the requested TinyChat access.',
+  AUTH_EXPIRED: 'The approval has expired. Run authorize again and send the new link.',
+  AUTH_TRANSPORT_TIMEOUT: 'The CLI did not finish the approval within 30 seconds.',
+  CLI_UNAVAILABLE: 'TinyCloud CLI not found: run https://agents.tinycloud.xyz/onboarding or set TC_BIN.',
 };
 const failure = code => Object.assign(new Error(messages[code]), { code });
 
@@ -17,6 +18,8 @@ const failure = code => Object.assign(new Error(messages[code]), { code });
 export function responseInput(code) {
   if (typeof code !== 'string' || Buffer.byteLength(code) > 1024 * 1024) throw failure('INVALID_AUTH_RESPONSE');
   const text = code.trim();
+  // OpenKey's short code (like ABCD-EFGH): the CLI looks it up and checks it against this profile's key.
+  if (/^[a-z2-7]{4}-[a-z2-7]{4}$/i.test(text)) return text + '\n';
   let value;
   try {
     value = text.startsWith('{') ? JSON.parse(text) : /^[A-Za-z0-9+/=_-]+$/.test(text) ? JSON.parse(Buffer.from(text, 'base64').toString('utf8')) : null;
@@ -25,10 +28,13 @@ export function responseInput(code) {
   return JSON.stringify(value) + '\n';
 }
 
-/** Published CLI --paste supplies both the URL and the verification path; no protocol/key reimplementation. */
-export function runLogin(args, { executable = 'tc', input } = {}) {
+/**
+ * Runs `auth request ... --grant --paste`. Without input it returns the OpenKey URL the CLI prints,
+ * or undefined when the profile already has the access. With input, the code goes to the CLI's stdin.
+ */
+export function runGrant(args, { executable = defaultTc(), input } = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(executable, [...args, '--paste'], { stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn(executable, args, { stdio: ['pipe', 'pipe', 'pipe'] });
     let stdout = '', stderr = '', authorizationUrl, settled = false;
     const finish = (error, result) => {
       if (settled) return;
@@ -47,15 +53,15 @@ export function runLogin(args, { executable = 'tc', input } = {}) {
         const match = stderr.match(/Open this URL in a browser to authenticate:\s*\n\s*(https?:\/\/[^\s]+)\s*\n/);
         if (match) {
           authorizationUrl = match[1];
-          // URL generation is complete. Paste-mode acquisition has no callback server or saved grant.
-          // Stop the waiting process; a later invocation uses the same profile key to verify the response.
+          // Paste mode keeps no callback server or saved grant. Stop the waiting process;
+          // a later invocation with the code on stdin uses the same profile key.
           child.kill();
         }
       }
     });
     child.on('close', code => {
       if (authorizationUrl) { finish(null, authorizationUrl); return; }
-      if (code === 0 && input !== undefined) { finish(null); return; }
+      if (code === 0) { finish(null); return; }
       let detail;
       for (const output of [stdout, stderr]) {
         const start = output.search(/\{\s*"error"\s*:/);
@@ -64,6 +70,7 @@ export function runLogin(args, { executable = 'tc', input } = {}) {
       const resultCode = detail?.code === 'OPENKEY_OWNER_MISMATCH' ? 'OWNER_MISMATCH' : detail?.code;
       finish(failure(Object.hasOwn(messages, resultCode) ? resultCode : 'AUTH_RESPONSE_REJECTED'));
     });
-    if (input !== undefined) child.stdin.end(input);
+    // No code: empty stdin, like `< /dev/null`, so the CLI only prints the link.
+    child.stdin.end(input);
   });
 }

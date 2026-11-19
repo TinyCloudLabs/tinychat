@@ -71,6 +71,8 @@ export interface MeetingsContentPort {
 
 export interface ConnectorMeetingsRouterOptions {
   content: MeetingsContentPort;
+  isDisabled?: (address: string) => Promise<boolean>;
+  deleteReconciled?: (source: string, address: string) => Promise<unknown>;
   /** The cohort gate. Absent = no address is enrolled, so every route 404s. */
   modes?: IngestModeLookup;
   registry?: ReadonlySet<string>;
@@ -166,7 +168,7 @@ export function createConnectorMeetingsRouter(
     }
     let mode: string;
     try {
-      mode = await options.modes.mode(address);
+      mode = await options.modes.mode(address, rawSource);
     } catch {
       // Fail closed: an unreadable cohort is an outage, not "this user is not enrolled".
       warnMeetings(`op=cohort result=unavailable aid=${hashedField(address)}`);
@@ -374,6 +376,14 @@ export function createConnectorMeetingsRouter(
           `aid=${hashedField(target.address)} mid=${hashedField(sourceId)} ` +
           `err=${redactedErrorMessage(error)}`,
       );
+      res.status(503).json({ error: "unavailable" });
+      return;
+    }
+    try {
+      if (stamped && await options.isDisabled?.(target.address)) {
+        await options.deleteReconciled?.(target.source, target.address);
+      }
+    } catch {
       res.status(503).json({ error: "unavailable" });
       return;
     }

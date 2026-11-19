@@ -230,7 +230,15 @@ export async function runMeetingTurn(params: MeetingTurnParams): Promise<Orchest
   const toolTrace = trace.tools as Array<Record<string, unknown>>;
   const total: OrchestrateResult = { promptTokens: 0, completionTokens: 0, completionId: "" };
   const account = (result: OrchestrateResult) => { total.promptTokens += result.promptTokens; total.completionTokens += result.completionTokens; };
-  const deliver = async (text: string, errorCode?: OrchestrateResult["errorCode"]) => { abortCheck(params.signal); if (errorCode) trace.terminal = errorCode; await params.write(params.contentFrame(text)); return { ...total, ...(errorCode ? { errorCode } : {}) }; };
+  const deliver = async (text: string, errorCode?: OrchestrateResult["errorCode"]) => {
+    abortCheck(params.signal);
+    if (errorCode) trace.terminal = errorCode;
+    await params.write(params.contentFrame(text));
+    if (errorCode) params.onTerminalError?.(errorCode);
+    // The text is already the terminal user-facing error; returning errorCode
+    // would make the outer stream owner append a second generic error line.
+    return { ...total };
+  };
   try {
     const calendar = validCalendarDate(params.turnContext?.localDate) && validTimeZone(params.turnContext?.timeZone) ? params.turnContext : undefined;
     const interpretationMessages = trimConvoToBudget(truncateToolResults([{ role: "system", content: meetingInterpretationGuidance(calendar) }, ...params.messages]), params.contextWindowTokens) as ChatMsg[];
@@ -292,7 +300,7 @@ export async function runMeetingTurn(params: MeetingTurnParams): Promise<Orchest
     let capability: any;
     try { capability = await inSlice(Math.min(10000, retrievalDeadline - Date.now()), params.signal, "retrieval_budget", params.capability); } catch { abortCheck(params.signal); }
     if (capability?.meetingRetrieval?.contractVersion !== 2 || typeof capability.buildRevision !== "string" || !capability.buildRevision || capability.buildRevision === "unknown") return await deliver("Meeting retrieval is temporarily unavailable because the reader service has not passed its compatibility check.", "meeting_feature_unavailable");
-    trace.elizaRevision = capability.buildRevision; trace.contractVersion = 2;
+    trace.readerRevision = capability.buildRevision; trace.contractVersion = 2;
     let delegationCode: string | undefined;
     let accessDenied = false;
     let resultSizeLimit = false;

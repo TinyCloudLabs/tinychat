@@ -43,6 +43,7 @@ import type { NotePipeline } from "@/lib/voiceNotes/notePipeline";
 import { pipelineTranscriptStatus } from "@/capture/pipeline/PipelineTrackSummary";
 
 import { RowBadge } from "../../library/RowBadge";
+import { RecordingTitleEditField, RenameRecordingButton, useRecordingTitleEdit, useUserTitle } from "../../library/rename/RecordingRename";
 import { KIND_ICON, libraryKind } from "../../library/libraryKinds";
 import { CaptureSettings } from "../../recorder/final/desktop/CaptureSettings";
 import { Toasts } from "../../recorder/final/desktop/Toasts";
@@ -388,6 +389,8 @@ export function RecentRow(props: {
       ? entry.item.sourceId
       : null,
   );
+  const userTitle = useUserTitle(entry.type === "item" ? entry.item : { id: "", title: null });
+  const edit = useRecordingTitleEdit(entry.type === "item" ? entry.item : null, entry.type === "item" ? userTitle ?? libraryRowTitle(entry.item) : "");
   let icon: LucideIcon = MicIcon;
   let title: string = COPY.voiceNoteTitle;
   let meta: string;
@@ -403,7 +406,7 @@ export function RecentRow(props: {
   if (entry.type === "item") {
     const { item } = entry;
     icon = KIND_ICON[libraryKind(item.source)];
-    title = libraryRowTitle(item);
+    title = userTitle ?? libraryRowTitle(item);
     badge = libraryRowBadge(item, placeWhere(place));
     href = notePath(item.id);
     if (libraryKind(item.source) === "note") sourceId = item.sourceId;
@@ -494,6 +497,9 @@ export function RecentRow(props: {
     attention,
     opensDetails: sheetId !== undefined,
   });
+  if (edit?.editing) {
+    return <li className="soft-row-item dch-row-item" data-testid="recent-item" data-source-id={sourceId}><RecordingTitleEditField edit={edit} /></li>;
+  }
   return (
     <li
       className="soft-row-item dch-row-item"
@@ -519,6 +525,7 @@ export function RecentRow(props: {
           {body}
         </div>
       )}
+      {edit && href !== undefined && <RenameRecordingButton edit={edit} />}
       {dismissId !== undefined && (
         <DismissControl
           label={COPY.dismissLabel(title)}

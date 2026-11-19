@@ -630,7 +630,7 @@ async function main(): Promise<number> {
     if (profile.expiresAt && Date.parse(profile.expiresAt) <= at.getTime()) {
       throw new RunnerError("needs_renewal", "write profile grant expired");
     }
-    const node = new TinyCloudNode({ host: profile.host });
+    const node = new TinyCloudNode({ host: profile.host, includeAccountRegistryPermissions: false });
     await node.restoreSession(profile.session);
     // node-sdk's TinyCloudNode exposes the kv/sql/did/spaceId surface the connector store uses.
     const tcw: TinyCloudWeb = node as unknown as TinyCloudWeb;

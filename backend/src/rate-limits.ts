@@ -11,8 +11,8 @@
  * Extracted from index.ts so the wiring is unit-testable without booting the
  * full server.
  */
-import rateLimit from "express-rate-limit";
-import type { Express, Request, RequestHandler } from "express";
+import rateLimit, { MemoryStore, type Options } from "express-rate-limit";
+import type { Express, Request, RequestHandler, Response } from "express";
 import { verifySessionToken } from "@tinyboilerplate/server";
 
 const WINDOW_MS = 15 * 60 * 1000;
@@ -146,7 +146,7 @@ export const PRIVATE_CLOUD_TRANSCRIPTION_PATHS = ["/api/transcriber/private-clou
  * call). A request budget, not a dollar guarantee.
  */
 export const PAID_CHAT_LIMIT = 600;
-export const PAID_CHAT_PATHS = ["/api/chat", "/api/agent/chat"] as const;
+export const PAID_CHAT_PATHS = ["/api/chat", "/api/agent/chat", "/api/bots/main/messages"] as const;
 
 /**
  * Session minting (`/api/auth`: `GET /nonce`, `POST /verify`; the only routes that issue a
@@ -158,6 +158,53 @@ export const PAID_CHAT_PATHS = ["/api/chat", "/api/agent/chat"] as const;
  */
 export const AUTH_LIMIT = 1200;
 export const AUTH_PATHS = ["/api/auth"] as const;
+
+/**
+ * `POST /api/auth/verify-renewal` asks the TinyCloud node on every accepted request. Its own budget is per
+ * claimed address, one minute, and is charged only once the grant's session key has signed the request
+ * (after the holder proof), so only that key's holder can spend an account's budget. Nothing is keyed on
+ * the IP: behind the Phala gateway every client shares one address (see above), and otherwise the key is
+ * the client's own `X-Forwarded-For`. Before the holder proof the route does only local checks, each on a
+ * single-use nonce minted under the shared `auth` bucket, which bounds that work service-wide.
+ */
+export const VERIFY_RENEWAL_WINDOW_MS = 60 * 1000;
+export const VERIFY_RENEWAL_ADDRESS_LIMIT = 5;
+
+/** A fresh per-address budget (see `VERIFY_RENEWAL_ADDRESS_LIMIT`): false once this window's is spent. */
+export function createVerifyRenewalBudget(): (address: string) => Promise<boolean> {
+  const store = new MemoryStore();
+  store.init({ windowMs: VERIFY_RENEWAL_WINDOW_MS } as Options);
+  return async (address) => (await store.increment(`address:${address.toLowerCase()}`)).totalHits <= VERIFY_RENEWAL_ADDRESS_LIMIT;
+}
+
+/**
+ * The optional authenticated credential count (routes/credential-count.ts) is a one-time, read-only
+ * operator read behind a shared admin key. Two hard buckets, both blind to everything the client
+ * sends (no session bearer, no IP: behind the gateway every client shares one address, and an
+ * `X-Forwarded-For` key is attacker-chosen), so each is ONE whole-service counter per window:
+ *
+ *  - FAILURE: counts only requests whose key did not match (wrong or missing). Exhausted, those
+ *    get 429. The route path is public in the repo, so this bucket must not be able to lock the
+ *    operator out: it is charged AFTER the key compare, and a correct key never touches it.
+ *  - SUCCESS: counts only requests with the correct key. Exhausted, those get 429.
+ *
+ * The 429 is bare (no body, no RateLimit headers); the route sets `Cache-Control: no-store`.
+ * The limiters are built by `createCredentialCountLimiters` and invoked by the route handler, not
+ * mounted app-wide; `CREDENTIAL_COUNT_PATHS` only keeps the path out of the shared global bucket.
+ */
+export const CREDENTIAL_COUNT_FAILURE_LIMIT = 5;
+export const CREDENTIAL_COUNT_SUCCESS_LIMIT = 10;
+export const CREDENTIAL_COUNT_WINDOW_MS = 60 * 60 * 1000;
+export const CREDENTIAL_COUNT_PATHS = ["/api/internal/credential-row-count"] as const;
+
+/**
+ * The hosted AssemblyAI status probe (routes/assemblyai-status.ts) has the same two hard hourly buckets as the
+ * credential count and is kept out of the global bucket the same way. Its success bucket is sized for a probe
+ * every 5 minutes (12/h) with room for manual checks and a faster probe: 60/h. The failure bucket stays 5/h.
+ */
+export const ASSEMBLYAI_STATUS_FAILURE_LIMIT = 5;
+export const ASSEMBLYAI_STATUS_SUCCESS_LIMIT = 60;
+export const ASSEMBLYAI_STATUS_PATHS = ["/api/internal/assemblyai-status"] as const;
 
 /** Liveness probes, matched exactly (`/health` or `/health/`). Exempt from every bucket: the
  *  handler only serializes in-memory state, and a drained bucket must never make monitors report
@@ -178,6 +225,7 @@ export type Bucket =
   | "hostedUpload"
   | "paidChat"
   | "auth"
+  | "credentialCount"
   | "global"
   | "none";
 
@@ -193,6 +241,8 @@ const PREFIX_BUCKETS: ReadonlyArray<readonly [readonly string[], Bucket]> = [
   [GOOGLE_OAUTH_PATHS, "googleOAuth"],
   [CALENDAR_AUTOJOIN_PATHS, "calendarAutojoin"],
   [AUTH_PATHS, "auth"],
+  [CREDENTIAL_COUNT_PATHS, "credentialCount"],
+  [ASSEMBLYAI_STATUS_PATHS, "credentialCount"],
 ];
 
 function matchesMountPath(path: string, mount: string): boolean {
@@ -231,6 +281,7 @@ const MUTATION_BUCKETS: Partial<Record<Bucket, Bucket>> = {
  */
 export function bucketFor(method: string, rawPath: string): Bucket {
   if (isUnlimitedPath(rawPath.toLowerCase())) return "none";
+  if (rawPath === "/api/ops/content-continuity") return "credentialCount";
   const path = collapseSlashes(rawPath.toLowerCase());
   if (method === "POST" && PAID_CHAT_PATHS.some((p) => withoutTrailingSlash(path) === p)) return "paidChat";
   for (const [mounts, bucket] of PREFIX_BUCKETS) {
@@ -340,7 +391,7 @@ export function logGlobalBucketRoutes(counter: GlobalBucketRouteCounter, everyMs
  * anonymous ceiling divided by `SHARED_KEY_HEADROOM`; spend, consent and mutation buckets are
  * set on their own.
  */
-export const SESSION_LIMITS: Record<Exclude<Bucket, "none" | "auth">, number> = {
+export const SESSION_LIMITS: Record<Exclude<Bucket, "none" | "auth" | "credentialCount">, number> = {
   global: GLOBAL_LIMIT / SHARED_KEY_HEADROOM,
   verification: VERIFICATION_LIMIT / SHARED_KEY_HEADROOM,
   connectorCompanion: CONNECTOR_COMPANION_LIMIT / SHARED_KEY_HEADROOM,
@@ -367,7 +418,7 @@ export const SESSION_LIMITS: Record<Exclude<Bucket, "none" | "auth">, number> = 
  * never reach a cost, and a tokenless flood must not drain the ceiling every signed-in user
  * shares. Draining it takes real sessions (about five at the per-session limits).
  */
-export const AGGREGATE_LIMITS: Partial<Record<Exclude<Bucket, "none" | "auth">, number>> = {
+export const AGGREGATE_LIMITS: Partial<Record<Exclude<Bucket, "none" | "auth" | "credentialCount">, number>> = {
   paidChat: PAID_CHAT_LIMIT,
   privateCloudTranscriptionMutation: PRIVATE_CLOUD_TRANSCRIPTION_MUTATION_LIMIT,
   hostedUpload: ASSEMBLYAI_HOSTED_UPLOAD_LIMIT,
@@ -395,6 +446,51 @@ function sessionAddress(req: Request, sessionKey: string): Promise<string | null
   return address;
 }
 
+export interface CredentialCountLimiters {
+  /** Charge one failed (wrong or missing key) attempt. Resolves false after answering 429. */
+  failure: (req: Request, res: Response) => Promise<boolean>;
+  /** Charge one correct-key request. Resolves false after answering 429. */
+  success: (req: Request, res: Response) => Promise<boolean>;
+}
+
+/** The credential count's two buckets (see `CREDENTIAL_COUNT_FAILURE_LIMIT`), fresh stores per call. */
+export function createCredentialCountLimiters(): CredentialCountLimiters {
+  return createAdminProbeLimiters(CREDENTIAL_COUNT_FAILURE_LIMIT, CREDENTIAL_COUNT_SUCCESS_LIMIT, "credential-count");
+}
+
+/** The AssemblyAI status probe's two buckets (see `ASSEMBLYAI_STATUS_SUCCESS_LIMIT`), fresh stores per call. */
+export function createAssemblyAiStatusLimiters(): CredentialCountLimiters {
+  return createAdminProbeLimiters(ASSEMBLYAI_STATUS_FAILURE_LIMIT, ASSEMBLYAI_STATUS_SUCCESS_LIMIT, "assemblyai-status");
+}
+
+function createAdminProbeLimiters(failureLimit: number, successLimit: number, key: string): CredentialCountLimiters {
+  const make = (limit: number) => {
+    const limiter = rateLimit({
+      windowMs: CREDENTIAL_COUNT_WINDOW_MS,
+      limit,
+      keyGenerator: () => key,
+      standardHeaders: false,
+      legacyHeaders: false,
+      handler: (_req, res) => {
+        res.status(429).end();
+      },
+    });
+    return async (req: Request, res: Response): Promise<boolean> => {
+      let passed = false;
+      try {
+        await limiter(req, res, (error?: unknown) => {
+          passed = error === undefined;
+        });
+      } catch {
+        passed = false;
+      }
+      if (!passed && !res.headersSent) res.status(429).end();
+      return passed;
+    };
+  };
+  return { failure: make(failureLimit), success: make(successLimit) };
+}
+
 export interface RateLimitOptions {
   /** The key the backend signs session JWTs with (`BACKEND_PRIVATE_KEY`). */
   sessionKey: string;
@@ -407,7 +503,7 @@ export function applyRateLimiters(app: Express, { sessionKey }: RateLimitOptions
 } {
   // No limiter reads req.ip any more; other code (the connector webhook pre-limiter) still does.
   app.set("trust proxy", 1);
-  const bucket = (kind: Exclude<Bucket, "none">, anonymous: number, skip?: (req: Request) => boolean) =>
+  const bucket = (kind: Exclude<Bucket, "none" | "credentialCount">, anonymous: number, skip?: (req: Request) => boolean) =>
     rateLimit({
       windowMs: WINDOW_MS,
       // `auth` never looks at the bearer: see `AUTH_LIMIT`.
@@ -436,7 +532,7 @@ export function applyRateLimiters(app: Express, { sessionKey }: RateLimitOptions
     if (bucketFor(req.method, req.path) === "global") globalRoutes.record(req.method, req.path);
     next();
   });
-  const limits: Record<Exclude<Bucket, "none" | "paidChat">, number> = {
+  const limits: Record<Exclude<Bucket, "none" | "paidChat" | "credentialCount">, number> = {
     verification: VERIFICATION_LIMIT,
     connectorCompanion: CONNECTOR_COMPANION_LIMIT,
     connectorMeetings: CONNECTOR_MEETINGS_LIMIT,
