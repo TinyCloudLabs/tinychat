@@ -230,7 +230,7 @@ interface ConnectorConnectDialogProps {
   purpose?: "browser" | "autojoin";
   tcw: TinyCloudWeb;
   descriptor: ConnectorDescriptor;
-  /** Backend session used for OAuth proxy calls, the Fireflies purge check, and connectors that proxy requests. */
+  /** Backend session for connectors that proxy requests. */
   backendUrl: string;
   sessionStore: SessionStore;
   open: boolean;
