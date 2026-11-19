@@ -562,6 +562,7 @@ export interface ConnectorWebhookHandlerOptions {
   tokens: WebhookTokenLookup;
   queue: WebhookEnqueuer;
   limiters: ConnectorWebhookLimiters;
+  control?: Pick<ConnectorControl, "readDisabled">;
   registry?: ReadonlySet<string>;
   now?: () => number;
   /**
@@ -969,6 +970,11 @@ export function createConnectorWebhookHandler(
           `recv sig=${hashedField(signatureValue(req))} ` +
             `source=${safeField(source)} result=invalid_signature reason=signature`,
         );
+        generic401();
+        return;
+      }
+
+      if (options.control && await options.control.readDisabled(record.address) !== null) {
         generic401();
         return;
       }

@@ -314,7 +314,7 @@ async function withCallbackServer<T>(h: Harness, action: (base: string) => Promi
   const app = express();
   const limiters = new ConnectorWebhookLimiters();
   app.post("/api/connectors/webhooks/:source/:token", express.raw({ type: "application/json" }),
-    createConnectorWebhookHandler({ tokens: h.tokens, queue: h.queue, now: h.clock, limiters }));
+    createConnectorWebhookHandler({ tokens: h.tokens, queue: h.queue, control: h.control, now: h.clock, limiters }));
   app.use(express.json(), (req, _res, next) => { req.user = { address: ADDRESS_A }; next(); });
   app.post("/api/connectors/webhooks/purge-check", (req, res) => respondToConnectorPurgeCheck(h.control, req, res));
   app.use("/api/connectors/webhooks", createConnectorWebhookCompanionRouter({
@@ -886,5 +886,22 @@ test("an active Fireflies purge blocks webhook import until the owner allows the
     await worker.runOnce();
     expect(fetcher.calls).toEqual(["mtgA1"]);
     expect(await h.content.get(SOURCE, ADDRESS_A, "mtgA1")).not.toBeNull();
+  });
+});
+
+test("a signed callback returns 401 while the disconnect marker stands", async () => {
+  const h = harness();
+  await withCallbackServer(h, async base => {
+    const active = await enableCallbacks(base);
+    const send = callbackDelivery(active.url, active.secret);
+    expect((await send()).status).toBe(202);
+    await h.queue.clear(SOURCE, ADDRESS_A);
+    await h.control.markDisabled(ADDRESS_A, SOURCE, true);
+    // The token is still live while teardown or replacement works through its durable steps.
+    const token = new URL(active.url).pathname.split("/").at(-1)!;
+    expect(await h.tokens.lookup(token)).not.toBeNull();
+    expect((await send()).status).toBe(401);
+    expect(await h.queue.list(SOURCE, ADDRESS_A)).toEqual([]);
+    expect(await h.content.list(SOURCE, ADDRESS_A)).toEqual([]);
   });
 });

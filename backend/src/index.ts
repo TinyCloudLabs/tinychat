@@ -755,6 +755,7 @@ async function main() {
       createConnectorWebhookHandler({
         tokens: connectorWebhooks.tokens,
         queue: connectorWebhooks.queue,
+        control: connectorWebhooks.control,
         limiters: connectorWebhookLimiters,
         onDelivery: createIngestOnDelivery({ modes: connectorWebhooks.modes }),
       }),
