@@ -146,11 +146,13 @@ function HowItWorks() {
 
 /** The Capture / Connectors entry card. */
 export function MeetingSourcesEntry({
+  subtitle,
   summary,
   connected,
   onClick,
   buttonRef,
 }: {
+  subtitle: string;
   summary: string;
   connected: boolean;
   onClick: () => void;
@@ -165,7 +167,7 @@ export function MeetingSourcesEntry({
         </span>
         <span className="ms-entry-copy">
           <b>Meeting sources</b>
-          <span className="ms-entry-sub">Fireflies, Google Meet and Granola</span>
+          <span className="ms-entry-sub">{subtitle}</span>
           <span className="ms-status" data-tone={connected ? "on" : "off"}>
             <i aria-hidden="true" />
             <span>{summary}</span>
