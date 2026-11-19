@@ -37,6 +37,8 @@ services:
       PORT: "8080"
       # Unique 256-bit secret shared with the backend only (openssl rand -hex 32).
       BOTS_SERVICE_SECRET: ${BOTS_SERVICE_SECRET}
+      # See bots/README.md, "Deploy order".
+      BOTS_ACCEPT_LEGACY_OWNER_HEADER: ${BOTS_ACCEPT_LEGACY_OWNER_HEADER:-0}
       # Same list as the backend's BOTS_TEST_ACCOUNTS; the service enforces it too. Empty admits nobody.
       BOTS_TEST_ACCOUNTS: ${BOTS_TEST_ACCOUNTS:-}
       # Owner history stays off; enabling requires the receipt signer and node-origin pins.
