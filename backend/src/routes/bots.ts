@@ -1,8 +1,7 @@
 // /api/bots — tiny bots slice 1 (TC-2808): the owner's Main bot, proxied to the bots service.
 //
 // The owner is always the authenticated session address; the body and request headers never choose it.
-// Each call to the service is signed (bots-signed-call.ts); the owner travels only inside the signature, and the
-// service secret never leaves the backend. Message content is neither logged nor stored here.
+// Each call to the service is signed (bots-signed-call.ts). Message content is neither logged nor stored here.
 
 import { botsConnectFetch, validateBotsConnectHost } from "../bots-transport";
 import { type Environment, signedCallHeader } from "../bots-signed-call";
@@ -42,8 +41,7 @@ export async function botTurnBody(config: BotsConfig, address: string, sourceKey
 }
 
 /**
- * Headers for one signed call to the bots service at `url`: the owner, the bot named in the path, the method, the
- * path and exactly `body` are signed. Each call needs its own headers; the service accepts a signature once.
+ * Headers for one signed call to the bots service at `url`, with exactly `body`. Each call needs its own headers.
  */
 export function botsServiceHeaders(config: BotsConfig, ownerDid: string, method: string, url: string, body?: string): Record<string, string> {
   const { pathname, search } = new URL(url);

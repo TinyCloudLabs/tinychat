@@ -18,19 +18,8 @@ Treat every sandbox as hostile: OMP has a shell, so each owner can run any code 
 ## Internal API
 
 All requests except `/healthz` are signed by the backend (`src/signed-call.ts`; the backend's copy is
-`backend/src/bots-signed-call.ts`): `Authorization: TinyCloud-Signed <claims>.<mac>`, an HMAC-SHA256 under
-`BOTS_SERVICE_SECRET` over the direction, this service's environment (`private`), the owner DID, the bot key, the
-method, the path, the body's sha256, an expiry (60 s, with 30 s of clock skew allowed) and a single-use nonce. The
-service takes the owner and the bot only from a verified call; the bot must be the one in the path, and the owner's
-address must be on this service's own `BOTS_TEST_ACCOUNTS`. Anything else gets an empty 401. No header names the
-owner, and the secret itself is never sent.
-
-While `BOTS_ACCEPT_LEGACY_OWNER_HEADER=1`, the older form is also accepted: `Authorization: Bearer
-<BOTS_SERVICE_SECRET>` (constant-time compare) plus `X-TinyCloud-Owner: did:pkh:eip155:1:0x<40 lowercase hex>`. It
-exists only for the rollout below.
-
-The same module signs calls in the other direction, from a bots service to the backend (`to-backend`), under a
-separate secret per environment.
+`backend/src/bots-signed-call.ts`), and the owner's address must be on this service's own `BOTS_TEST_ACCOUNTS`.
+Anything else gets an empty 401.
 
 - `POST /v1/bots/main/messages` `{ "text": "..." }` (1 to 8000 characters) streams `text/event-stream`:
   `status` (`starting` on a cold start, then `working`, repeated every 15 s while waiting), `delta` (assistant
@@ -221,9 +210,9 @@ Supervisor (`bots-supervisor`):
 
 | Var | Default | |
 | --- | --- | --- |
-| `BOTS_SERVICE_SECRET` | required | unique 256-bit secret (at least 43 characters); `openssl rand -hex 32`; the key of the backend's signed calls |
+| `BOTS_SERVICE_SECRET` | required | unique 256-bit secret (at least 43 characters); `openssl rand -hex 32` |
 | `BOTS_ADMISSION_CONTROL_KEY` | unset | admission control socket key from the deploy workflow |
-| `BOTS_ACCEPT_LEGACY_OWNER_HEADER` | `0` | `1` also accepts the bearer secret plus `X-TinyCloud-Owner`, for the signed-calls rollout only |
+| `BOTS_ACCEPT_LEGACY_OWNER_HEADER` | `0` | see [Deploy order](#deploy-order) |
 | `BOTS_TEST_ACCOUNTS` | empty (nobody) | comma-separated addresses, or `*` |
 | `BOTS_MODEL` | `z-ai/glm-5.2` | the backend's `REDPILL_DEFAULT_MODEL` default |
 | `BOTS_IDLE_MS` | `600000` | idle time after `session_settled` before a sandbox stops |
@@ -343,15 +332,6 @@ The backend picks up `BOTS_ENABLED`, `BOTS_TEST_ACCOUNTS`, `BOTS_SERVICE_URL=htt
 `BOTS_POST_TIMEOUT_MS` from `production-api` variables and `BOTS_SERVICE_SECRET` from a `production-api` secret,
 through `.github/workflows/deploy-backend-phala.yml`. `BOTS_ENABLED` defaults to `false`.
 
-### Signed calls rollout
+### Deploy order
 
-A backend from before signed calls sends the bearer secret plus `X-TinyCloud-Owner`; a newer one sends only signed
-calls. Deploy in this order:
-
-1. The service, with `BOTS_ACCEPT_LEGACY_OWNER_HEADER=1`. The workflow passes `1` while the `production-bots`
-   variable is unset, so the running backend keeps working.
-2. The backend. Its calls are now signed.
-3. Set the `production-bots` variable `BOTS_ACCEPT_LEGACY_OWNER_HEADER` to `0` and deploy the service again. From
-   then on only signed calls are accepted.
-
-Rolling the backend back past step 2 needs step 3 undone first.
+Deploy the bots service first, then the backend. Set `BOTS_ACCEPT_LEGACY_OWNER_HEADER=0` after both are deployed.

@@ -1,10 +1,4 @@
-// Signed calls between the backend and a bots service (TC-3325, E0). Each call carries an HMAC-SHA256 over its
-// direction, environment, owner, bot, method, path, body hash, expiry and a single-use nonce. The owner and the bot
-// come only from a verified signature, never from a header or body field the caller sets.
-//
-// Each direction and each environment has its own secret: the backend signs calls to a service with that service's
-// secret, and a service signs calls to the backend with a different one. The direction and environment are signed
-// too, so a call never verifies in the other direction or at the other environment's service.
+// Signed calls between the backend and a bots service (TC-3325).
 //
 // This file is shared byte for byte: bots/src/signed-call.ts and backend/src/bots-signed-call.ts. It imports nothing
 // but node:crypto so both copies build unchanged; backend/src/__tests__/bots-signed-call.test.ts checks that each
