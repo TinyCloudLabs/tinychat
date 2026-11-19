@@ -4,7 +4,7 @@
 import type { StagedHistory } from "./history";
 import { type ErrorCode, ERROR_MESSAGES, type ListedMessage, MAX_TEXT, type TurnSink } from "./bot";
 import { isRecord } from "./guards";
-import { ANNOUNCED_STATES, type AnnouncedState, type BotState } from "./manifest";
+import { ANNOUNCED_STATES, type AnnouncedState, type BotState, OwnerBotLimit } from "./manifest";
 import { authorizedOwner, isBotKey, MAIN_KEY } from "./owner";
 import type { DeleteSkip } from "./retention";
 
@@ -111,7 +111,13 @@ async function announce(req: Request, manifest: NonNullable<AppOptions["manifest
   if (!state || typeof seq !== "number" || !Number.isSafeInteger(seq) || seq < 0 || (key === MAIN_KEY && state === "deleting")) {
     return new Response(null, { status: 400 });
   }
-  return Response.json({ state: manifest.announce(owner, key, state, seq) });
+  try {
+    return Response.json({ state: manifest.announce(owner, key, state, seq) });
+  } catch (error) {
+    // This service's own limit on one owner's bots. Anything else is not expected here and is not hidden.
+    if (error instanceof OwnerBotLimit) return Response.json({ error: "owner_bot_limit" }, { status: 409 });
+    throw error;
+  }
 }
 
 /** `DELETE /v1/bots/<key>`: gone, waiting (it will go once its history is saved) or failed. Only a bot being deleted may go. */
