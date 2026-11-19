@@ -40,7 +40,7 @@ function fakeChats(reply: Reply): BotChats {
       onEvent({ type: "status", state: "working" });
       onEvent({ type: "delta", text: "Sent. I'll let you know when Dana replies, and I've moved the" });
       // The reply never finishes, so the capture shows it mid-stream.
-      return Promise.withResolvers<void>().promise;
+      return new Promise<void>(() => {});
     },
   }));
 }
@@ -72,7 +72,8 @@ function Screen({ reply, send, notice }: { reply: Reply; send?: string; notice?:
   );
 }
 
-const BASE = { group: "bot-view", layout: "pane", platform: "web", path: "/chat", viewports: ["phone", "tablet", "desktop"] } as const;
+const VIEWPORTS = ["phone", "tablet", "desktop"];
+const BASE = { group: "bot-view", layout: "pane", platform: "web", path: "/chat", viewports: VIEWPORTS } as const;
 const EXPIRED = Date.UTC(2026, 10, 12);
 
 export const botViewScreens: HarnessScreen[] = [

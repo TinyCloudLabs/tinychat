@@ -43,6 +43,7 @@ export const BOT_VIEW_STRINGS = {
     bot_unavailable: (name: string) => `${name} couldn't start.`,
     model_unavailable: (name: string) => `${name}'s model isn't answering. Try again later.`,
     busy: (name: string) => `${name} is still working on your last message. Send this one when it replies.`,
+    at_capacity: (name: string) => botsErrorText("at_capacity", name),
     invalid: (name: string) => `That message is too long for ${name}. Shorten it to 8,000 characters or fewer.`,
     signed_out: (name: string) => `Your session expired. Sign in again to talk to ${name}.`,
     failed: (name: string) => `${name}'s reply didn't come through.`,
