@@ -38,7 +38,7 @@ test('prepare binds the onboarding default profile with the TinyCloud host and c
   const result = await setup.prepare();
   assert.equal(result.status, 'ready');
   assert.equal(result.profile, 'default');
-  assert.equal(result.host, 'https://tee.node.tinycloud.xyz');
+  assert.equal(result.host, 'https://node.tinycloud.xyz');
   assert.equal(result.identityMatch, 'onboarding-profile');
   assert.deepEqual(result.retrievalArgs, ['--profile', 'default', '--host', DEFAULT_CONFIG.host, '--space', `tinycloud:${owner.slice(4)}:applications`, '--owner', owner]);
   assert.ok(!calls.some(a => a.includes('create') || a.includes('switch') || a.includes('login')));
@@ -147,7 +147,7 @@ test('operation guard checks saved setup and current bound owner/key/expiry with
 });
 
 test('an onboarding profile on the node\'s other name keeps working with the default (TC-2923)', async t => {
-  const other = 'https://node.tinycloud.xyz';
+  const other = 'https://tee.node.tinycloud.xyz';
   const { setup, statePath } = await fixture(t, { host: other });
   const result = await setup.prepare();
   assert.equal(result.status, 'ready');

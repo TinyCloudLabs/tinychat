@@ -144,7 +144,7 @@ test("the node is chosen explicitly: --host or --production, never a default", (
   expect(() => parseSeedArgs(base)).toThrow(/--host <origin>, or --production/);
   expect(() => parseSeedArgs([...base, "--production", "--host", PRODUCTION_HOST])).toThrow(/not both/);
   expect(() => parseSeedArgs([...base, "--production", "--host", "https://node.example"])).toThrow(/not both/);
-  expect(parseSeedArgs([...base, "--production"]).host).toBe("https://tee.node.tinycloud.xyz");
+  expect(parseSeedArgs([...base, "--production"]).host).toBe("https://node.tinycloud.xyz");
   expect(parseSeedArgs([...base, "--host", "https://node.example"]).host).toBe("https://node.example");
   for (const host of ["http://node.tinycloud.xyz", "https://node.tinycloud.xyz/", "https://node.tinycloud.xyz@evil.example", "https://evil.example/?x", ""])
     expect(() => parseSeedArgs([...base, "--host", host])).toThrow(UsageError);
