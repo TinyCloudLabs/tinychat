@@ -1,0 +1,14 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/v1/server-card.schema.json",
+  "name": "xyz.tinycloud/mcp",
+  "version": "0.9.0",
+  "title": "TinyCloud hosted MCP",
+  "description": "Connect an AI assistant to your TinyCloud space. You approve its access with OpenKey.",
+  "websiteUrl": "https://docs.tinycloud.xyz/cli/mcp",
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://mcp.tinycloud.xyz/mcp"
+    }
+  ]
+}

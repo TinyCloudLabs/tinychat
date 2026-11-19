@@ -19,6 +19,8 @@ export interface BottomSheetProps {
   /** Yield modal focus/aria isolation while a caller-owned external dialog is active. */
   modal?: boolean;
   onOpenAutoFocus?: (event: Event) => void;
+  /** Where focus goes when the sheet closes; Radix's own default returns it to a Drawer trigger, which few sheets have. */
+  onCloseAutoFocus?: (event: Event) => void;
   /** `content` grows with what it holds (up to the screen); `full` takes the whole height. */
   height?: "content" | "full";
   title: React.ReactNode;
@@ -28,6 +30,8 @@ export interface BottomSheetProps {
   contentProps?: Record<`data-${string}`, string>;
   /** The content brings its own header: the title is for screen readers only, and there is no close button. */
   bare?: boolean;
+  /** More classes for the sheet itself, e.g. a width cap on wide screens. */
+  className?: string;
 }
 
 export function BottomSheet({
@@ -36,18 +40,21 @@ export function BottomSheet({
   dismissible = true,
   modal = true,
   onOpenAutoFocus,
+  onCloseAutoFocus,
   height = "content",
   title,
   description,
   children,
   contentProps,
   bare = false,
+  className,
 }: BottomSheetProps) {
   const content = (
     <Drawer.Portal>
       {modal && <Drawer.Overlay className="fixed inset-0 z-50 bg-black/50" />}
       <Drawer.Content
         onOpenAutoFocus={onOpenAutoFocus}
+        onCloseAutoFocus={onCloseAutoFocus}
         {...contentProps}
         {...(description ? {} : { "aria-describedby": undefined })}
         className={cn(
@@ -56,6 +63,7 @@ export function BottomSheet({
           // Never under the status bar; the visible viewport shrinks with the keyboard.
           "max-h-[calc(var(--tc-app-height,100dvh)-env(safe-area-inset-top)-0.75rem)]",
           height === "full" && "h-[calc(var(--tc-app-height,100dvh)-env(safe-area-inset-top)-0.75rem)]",
+          className,
         )}
       >
         <div aria-hidden className="mx-auto mt-2 h-1.5 w-9 shrink-0 rounded-full bg-muted-foreground/40" />

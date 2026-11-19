@@ -100,7 +100,7 @@ export function DueMark({ due, now, className = "" }: { due: string; now?: numbe
   return <span title={Number.isNaN(at.getTime()) ? undefined : `Due ${at.toLocaleString()}`} className={`font-medium ${overdue ? "text-destructive" : "text-foreground"} ${className}`}>{text}</span>;
 }
 
-export function CompactCard({ agentKey, author, platform, priority, due, now, status, replies, text, note, thumb, type, courier, onOpen, opensPage = false, layout = "row" }: {
+export function CompactCard({ agentKey, author, platform, priority, due, now, status, replies, text, note, thumb, type, courier, onOpen, controls, opensPage = false, layout = "row" }: {
   agentKey: string; author: string; platform?: Platform;
   /** The card's task type, at the top of the row's end, or at the top right of a tile (TypeLabel). */
   type?: CardType;
@@ -124,6 +124,8 @@ export function CompactCard({ agentKey, author, platform, priority, due, now, st
   /** A post's page, as a 44px square at the row's end; `video` adds a play badge. */
   thumb?: { src: string; video: boolean };
   onOpen: () => void;
+  /** The id of the open card this row opens into (`aria-controls`). */
+  controls?: string;
   /** A post opens its page; every other card opens in place. */
   opensPage?: boolean;
   /** "row": the feed's row. "tile": a tile in the Cards view. */
@@ -131,7 +133,7 @@ export function CompactCard({ agentKey, author, platform, priority, due, now, st
 }) {
   const needsYou = status === "Needs you";
   const done = status === "Dropped" || status === "Acknowledged" || status === "Done" || status === "Closed";
-  const opens = opensPage ? { "aria-haspopup": "dialog" as const } : { "aria-expanded": false };
+  const opens = opensPage ? { "aria-haspopup": "dialog" as const } : { "aria-expanded": false, ...(controls ? { "aria-controls": controls } : {}), "data-card-row": "" };
   const ring = "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring motion-reduce:transition-none";
   const textClass = "line-clamp-4 break-words text-[15px] leading-[22px] [text-wrap:pretty] min-[600px]:text-base min-[600px]:leading-6";
   const doneMark = done && <CheckIcon aria-hidden className="mr-1 inline size-3.5 align-[-2px] text-muted-foreground" />;

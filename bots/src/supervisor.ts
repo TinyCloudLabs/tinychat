@@ -1,10 +1,11 @@
-// Supervisor process: the internal API plus the bot sandboxes. Holds BOTS_SERVICE_SECRET and nothing else secret;
-// the model key lives only in the gateway container.
+// Supervisor process: the internal API plus the bot sandboxes. Holds the secrets for signed bots calls.
+// The model key lives only in the gateway container.
 
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { rootProblem } from "./retention";
 import { BotManager } from "./bot";
+import { createAdmissionClient } from "./bot-admission";
 import { supervisorConfig } from "./config";
 import { OwnerManifests } from "./manifest";
 import { RunscHost } from "./sandbox";
@@ -35,10 +36,14 @@ Bun.serve({
   // Cold starts can take a while before the first byte of a list response.
   idleTimeout: 120,
   maxRequestBodySize: 1024 * 1024,
-  fetch: createApp({ secret: cfg.serviceSecret, accounts: cfg.accounts, bots, manifest: new OwnerManifests(manifestRoot) }),
+  fetch: createApp({
+    secret: cfg.serviceSecret, accounts: cfg.accounts, environment: "private", acceptLegacyOwnerHeader: cfg.acceptLegacyOwnerHeader,
+    bots, manifest: new OwnerManifests(manifestRoot, cfg.maxBotsPerOwner),
+    admit: cfg.admissionControlKey ? createAdmissionClient(cfg.egressRoot, cfg.admissionControlKey) : undefined,
+  }),
 });
 console.log(
-  JSON.stringify({ bots: "listening", port: cfg.port, model: cfg.model, idleMs: cfg.idleMs, retentionDays: cfg.retentionDays, limits: cfg.limits }),
+  JSON.stringify({ bots: "listening", port: cfg.port, model: cfg.model, idleMs: cfg.idleMs, retentionDays: cfg.retentionDays, limits: cfg.limits, acceptLegacyOwnerHeader: cfg.acceptLegacyOwnerHeader }),
 );
 
 // Working state unused for BOTS_RETENTION_DAYS is deleted: checked at startup, then every 6 hours.

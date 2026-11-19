@@ -4,9 +4,9 @@
   Release entitlements (TC-3195), wired to the App target's Release configuration only (CODE_SIGN_ENTITLEMENTS).
   Debug keeps App.entitlements (the Health spike, TC-525).
 
-  - associated-domains: recording share links (https://tinycloud.one/s/<id>#…) open in the app. iOS checks the
-    domain's apple-app-site-association file, which is not published yet (it needs the Team ID); until then the
-    links open in the browser. The App ID needs the Associated Domains capability for a signed export.
+  - associated-domains: recording share links (https://tinycloud.one/s/<id>#…) open in the app when the domain's
+    apple-app-site-association file lists it; otherwise they open in the browser. The App ID needs the Associated
+    Domains capability for a signed export.
 -->
 <plist version="1.0">
 <dict>

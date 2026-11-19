@@ -4,7 +4,7 @@ import { ChevronDownIcon } from "lucide-react";
 const NAME_POST_CHARS = 80;
 
 /**
- * The quiet line of a card that asks (Sam, mock 2): "See 3 options" under its folded row, "Hide options" under its post
+ * The quiet line of a card that asks: "See 3 options" under its folded row, "Hide options" under its post
  * once it is open. It is a second opener of the same card: tapping it does what tapping the post does. Its name starts
  * with its visible words, then says which post it is for. It does not move focus: the first option is the next stop.
  * `inset` lines it up under a row's text, beside the agent's mark.
