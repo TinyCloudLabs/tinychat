@@ -162,6 +162,8 @@ export interface ContentUpsertInput {
   fetchedAt: string;
   /** ISO — the delivery's own `receivedAt`, so W4 can report ingest lag without a timer. */
   receivedAt: string;
+  /** The signed delivery timestamp, when the provider sent one. */
+  sourceTimestamp?: string;
 }
 
 /**
@@ -190,6 +192,7 @@ export interface RetentionGuard {
     meetingId: string;
     kind: PendingKind;
     sourceTimestamp?: string;
+    receivedAt?: string;
   }): Promise<boolean>;
 }
 
@@ -834,6 +837,7 @@ export class ConnectorFetchWorker implements FetchWorkerNudge {
           address: target.address,
           meetingId: item.meetingId,
           kind: item.kind,
+          receivedAt: item.receivedAt,
           ...(item.sourceTimestamp !== undefined
             ? { sourceTimestamp: item.sourceTimestamp }
             : {}),
@@ -965,6 +969,7 @@ export class ConnectorFetchWorker implements FetchWorkerNudge {
       content: stripped.value,
       fetchedAt: new Date(fetchedAt).toISOString(),
       receivedAt: item.receivedAt,
+      ...(item.sourceTimestamp === undefined ? {} : { sourceTimestamp: item.sourceTimestamp }),
     };
 
     if (receiptExpired()) return { settle: failedOutcome(item, "receipt_expired", true) };

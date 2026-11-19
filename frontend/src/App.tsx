@@ -93,6 +93,9 @@ import { resolveLocalValidation, prepareLocalSignIn } from "./lib/localValidatio
 import { DEFAULT_CONTEXT_TOKENS } from "./chat/compaction";
 import { loadSharedThreadFromToken, readShareTokenFromLocation } from "./lib/tinychatShareLinks";
 import { bindSharedWithMe } from "./lib/sharedWithMe";
+import { bindNativeShares } from "./lib/nativeShares/receivedShares";
+import { isShareLinkPath } from "./lib/nativeShares/link";
+import { ShareLinkSurface } from "./capture/share/ShareLinkSurface";
 import { historyPrefetch } from "./lib/historyPrefetch";
 import { noteScreen } from "./lib/localFirst/requestLanes";
 import {
@@ -114,6 +117,7 @@ import {
 } from "./lib/billingConfigPolicy";
 import { Button } from "@/components/ui/button";
 import { FeedView } from "./feed/FeedView";
+import { ChatSlot } from "./bots/ChatSlot";
 import { clearAllHeldAnswers, clearHeldAnswers } from "./feed/answerOutbox";
 import { clearAllPostDrafts, clearPostDrafts } from "./feed/postAnswers";
 import { settleHeldAnswersForSignOut } from "./feed/feedStore";
@@ -148,7 +152,6 @@ import {
 } from "./chat/useBackgroundDrain";
 import { TranscriberLibrarySyncProvider } from "./chat/useTranscriberLibrarySync";
 import { WordFixesSync } from "./lib/wordFixes/WordFixesSync";
-import { DeviceCaptureSurface, DeviceCaptureSettings } from "./capture/DeviceCaptureSurface";
 import { useAudioCacheBoot } from "./lib/voiceNotes/audioReceiptUpgrade";
 import { PendingVoiceNotesSaver } from "./chat/PendingVoiceNotesSaver";
 import { VoiceNotes } from "./lib/voiceNotes/nativeVoiceNotes";
@@ -217,6 +220,9 @@ const FramedAppScreen = lazyTab("Apps", () => import("./apps/FramedAppScreen").t
 const SettingsPage = lazyTab("Settings", () => import("./chat/SettingsPage").then((m) => m.SettingsPage));
 const AboutPage = lazyTab("How it works", () => import("./chat/AboutPage").then((m) => m.AboutPage));
 const LAZY_SCREENS = [ChatWorkspace, CaptureSurface, MeetingsSection, ConnectorsPage, AppsPage, SettingsPage, AboutPage];
+// The signed-out recorder's screens: only the phone and desktop apps show them, so the web never fetches them.
+const DeviceCaptureSurface = lazyTab("Recording", () => import("./capture/DeviceCaptureSurface").then((m) => m.DeviceCaptureSurface));
+const DeviceCaptureSettings = lazyTab("Settings", () => import("./capture/DeviceCaptureSurface").then((m) => m.DeviceCaptureSettings));
 
 // AppState and stateLabel live in lib/appState; re-exported for imports from App.
 export { stateLabel, type AppState } from "./lib/appState";
@@ -1439,6 +1445,7 @@ export function App() {
   const isReady = state === "ready" && tcw !== null;
   useEffect(() => { setSignedIn(isReady); }, [isReady]);
   useEffect(() => { void bindSharedWithMe(isReady && !LOCAL_VALIDATION ? tcw : null); }, [isReady, tcw]);
+  useEffect(() => { bindNativeShares(isReady && !LOCAL_VALIDATION ? tcw : null); }, [isReady, tcw]);
   // The other screens' chunks load once the signed-in shell has shown Feed, so opening one doesn't wait. A failed
   // load is reported by the screen itself when it is opened: it loads again, or offers a reload when the browser may
   // have kept the failed chunk (src/shell/lazyTab.tsx).
@@ -1485,6 +1492,9 @@ export function App() {
   const capabilities = captureCapabilities();
   const deviceCapture = voiceNotesInApp && capabilities.offlineRecorder && !LOCAL_VALIDATION &&
     (state === "offline" || state === "unauthenticated" || state === "recoverableError");
+  useEffect(() => {
+    if (deviceCapture) for (const screen of [DeviceCaptureSurface, DeviceCaptureSettings]) screen.preload().catch(() => {});
+  }, [deviceCapture]);
   const settleSignedOut = useCallback(() => {
     setError(null);
     setState("unauthenticated");
@@ -1625,6 +1635,9 @@ export function App() {
               }}
             />
           </main>
+        ) : isShareLinkPath(location.pathname) && !nativeSignInFlow.screenShown ? (
+          // A share link (TC-3195): who shared what, sign-in, then the recording in your Library.
+          <ShareLinkSurface tcw={isReady ? tcw : null} state={state} error={error} onSignIn={authAction} />
         ) : isReady && tcw ? (
           <AgentAccessProvider tcw={tcw} sessionStore={sessionStoreRef.current} backendUrl={BACKEND_URL}
             appName={APP_NAME} openkeyHost={OPENKEY_HOST} tinycloudHosts={tcw.hosts}>
@@ -1641,6 +1654,7 @@ export function App() {
               pendingMeetings={pendingMeetings}
               accountDid={did}
               chat={
+                <ChatSlot account={LOCAL_VALIDATION ? null : did} tcw={tcw} active={screen.destination === "chat"} onReconnect={authAction} classic={
                 <ChatWorkspace
                   key={importRefreshKey}
                   tcw={tcw}
@@ -1665,6 +1679,7 @@ export function App() {
                   settings={!LOCAL_VALIDATION}
                   billingStatus={billingStatus}
                 />
+                } />
               }
               capture={LOCAL_VALIDATION ? null : <CaptureSurface
                 tcw={tcw}

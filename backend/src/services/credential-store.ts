@@ -10,6 +10,9 @@ import {
 import type { TinyCloudNode } from "@tinycloud/node-sdk";
 import * as serverPackage from "@tinyboilerplate/server";
 import { BackendStorageLane, type BackendStorageLaneRunOptions } from "./backend-storage-lane.js";
+import type { ConnectorKeyStore } from "./connector-key-store.js";
+import { withConnectorConnectionChange } from "./connector-connection-lane.js";
+import { assertConnectorPlaintextTestMode } from "./connector-retention-keys.js";
 import {
   assertStrongSecret,
   isValidSource,
@@ -111,6 +114,7 @@ export interface CredentialRow {
   kind: CredentialKind;
   ciphertext: string;
   wrappedDEK: string;
+  keyId?: string;
   createdAt: string;
   rotatedAt: string;
   lastUsedAt: string;
@@ -199,6 +203,7 @@ export interface CredentialStoreOptions {
   /** The process's custody registry (default: this process's). A test gives two CredentialStores
    *  separate ones to stand for two backend processes. */
   custody?: CredentialCustody;
+  credentialKeys?: Pick<ConnectorKeyStore, "getOrCreateScopedCredentialKey" | "getCredentialKey" | "destroyScopedCredentialKey">;
 }
 
 // ── Master key ───────────────────────────────────────────────────────
@@ -286,8 +291,13 @@ export function _resetCredentialMasterCache(): void {
 
 // ── Envelope encryption ──────────────────────────────────────────────
 
-function envelopeAad(source: string, address: string): Buffer {
-  return Buffer.from(`${source}:${address}`, "utf8");
+function credentialKeyScope(source: string, address: string): string {
+  return createHash("sha256").update(JSON.stringify(["tinychat-credential-custody-v2", source, address])).digest("hex");
+}
+
+function envelopeAad(source: string, address: string, keyId?: string): Buffer {
+  return keyId === undefined ? Buffer.from(`${source}:${address}`, "utf8")
+    : Buffer.from(JSON.stringify(["tinychat-credential-v2", source, address, keyId]));
 }
 
 function keyEncryptionKey(
@@ -423,6 +433,7 @@ export class CredentialStore {
     | null;
   private readonly lastUsedThrottleMs: number;
   private readonly custody: CredentialCustody;
+  private readonly credentialKeys: CredentialStoreOptions["credentialKeys"];
 
   constructor(
     private readonly rows: CredentialRowStore,
@@ -436,6 +447,7 @@ export class CredentialStore {
     this.lastUsedThrottleMs =
       options.lastUsedThrottleMs ?? LAST_USED_THROTTLE_MS;
     this.custody = options.custody ?? processCustody;
+    this.credentialKeys = options.credentialKeys;
   }
 
   /** This process's custody version of the credential (see CredentialCustody). */
@@ -459,7 +471,8 @@ export class CredentialStore {
     address: string;
     secret: CredentialSecret;
   }): Promise<CredentialMeta> {
-    return this.write(input, "store");
+    if (this.credentialKeys === undefined) return this.write(input, "store");
+    return withConnectorConnectionChange(input.address, () => this.write(input, "store"));
   }
 
   /**
@@ -560,6 +573,17 @@ export class CredentialStore {
       throw new Error("credential row does not belong to this tenant");
     }
 
+    if (row.keyId !== undefined || this.credentialKeys !== undefined) {
+      try {
+        const key = row.keyId === undefined ? null : this.credentialKeys?.getCredentialKey(row.keyId, credentialKeyScope(src, addr));
+        if (!key) throw new Error();
+        const aad = envelopeAad(src, addr, row.keyId);
+        const dek = open(key, row.wrappedDEK, aad);
+        return parseSecret(open(dek, row.ciphertext, aad));
+      } catch {
+        throw new Error("credential envelope is unreadable");
+      }
+    }
     const aad = envelopeAad(src, addr);
     // Dual-read on decrypt, single-write on encrypt (mirrors the HMAC rotation posture): try the
     // current master first, then the grace master if a rotation is in flight. A write always uses
@@ -594,7 +618,10 @@ export class CredentialStore {
     const src = normalizeSource(source);
     const addr = normalizeWebhookAddress(address);
     const row = await this.rows.read(src, addr);
-    return row === null ? null : metaOf(row);
+    if (row === null) return null;
+    if (this.credentialKeys !== undefined && (row.keyId === undefined ||
+        this.credentialKeys.getCredentialKey(row.keyId, credentialKeyScope(src, addr)) === null)) return null;
+    return metaOf(row);
   }
 
   /**
@@ -634,7 +661,13 @@ export class CredentialStore {
     let reason: CredentialRevokeResult["reason"];
     let existed = false;
 
-    const row = await this.rows.read(src, addr);
+    let row: CredentialRow | null;
+    try {
+      row = await this.rows.read(src, addr);
+    } catch (error) {
+      if (this.credentialKeys !== undefined) await this.removeCustody(src, addr);
+      throw error;
+    }
     if (row !== null) {
       existed = true;
       if (this.upstreamRevoker !== null) {
@@ -698,8 +731,9 @@ export class CredentialStore {
   private removeCustody(src: string, addr: string, readAt?: string | null): Promise<void> {
     const key = rowKey(src, addr);
     return this.custody.queue(key, () => this.custody.settle(key, async () => {
+      this.credentialKeys?.destroyScopedCredentialKey(credentialKeyScope(src, addr));
       for (let attempt = 1; ; attempt++) {
-        const stored = attempt === 1 && readAt !== undefined ? (readAt === null ? null : { version: readAt }) : await this.readVersionedRow(src, addr);
+        const stored = this.credentialKeys === undefined && attempt === 1 && readAt !== undefined ? (readAt === null ? null : { version: readAt }) : await this.readVersionedRow(src, addr);
         if (stored === null) return;
         if (stored.version === undefined) throw new CredentialUnversioned();
         try { await this.rows.remove(src, addr, { ifMatch: stored.version }); return; }
@@ -744,14 +778,20 @@ export class CredentialStore {
   /** A fresh envelope of `secret`, keeping `existing`'s createdAt and lastUsedAt, at the next revision. */
   private sealRow(src: string, addr: string, secret: CredentialSecret, existing: CredentialRow | null): CredentialRow {
     const stamp = new Date(this.now()).toISOString();
-    const aad = envelopeAad(src, addr);
+    if (src === "fireflies" && this.credentialKeys === undefined) assertConnectorPlaintextTestMode();
+    // The same scoped key covers every envelope written during this sign-in, including retries
+    // after a lost KV acknowledgement. Disconnect removes that key even if the row is absent.
+    const scoped = this.credentialKeys?.getOrCreateScopedCredentialKey(credentialKeyScope(src, addr));
+    const aad = envelopeAad(src, addr, scoped?.id);
     const dek = randomBytes(DEK_BYTES);
+    const kek = scoped?.key ?? keyEncryptionKey(this.master(), src, addr);
     return {
       source: src,
       address: addr,
       kind: secret.kind,
       ciphertext: seal(dek, Buffer.from(JSON.stringify(secret), "utf8"), aad),
-      wrappedDEK: seal(keyEncryptionKey(this.master(), src, addr), dek, aad),
+      wrappedDEK: seal(kek, dek, aad),
+      ...(scoped === undefined ? {} : { keyId: scoped.id }),
       createdAt: existing?.createdAt ?? stamp,
       rotatedAt: stamp,
       lastUsedAt: existing?.lastUsedAt ?? stamp,
@@ -786,6 +826,7 @@ function parseRow(raw: unknown): CredentialRow | null {
     (value.kind !== "oauth" && value.kind !== "api_key") ||
     typeof value.ciphertext !== "string" ||
     typeof value.wrappedDEK !== "string" ||
+    (value.keyId !== undefined && typeof value.keyId !== "string") ||
     typeof value.createdAt !== "string" ||
     typeof value.rotatedAt !== "string" ||
     typeof value.lastUsedAt !== "string"
@@ -798,6 +839,7 @@ function parseRow(raw: unknown): CredentialRow | null {
     kind: value.kind,
     ciphertext: value.ciphertext,
     wrappedDEK: value.wrappedDEK,
+    ...(typeof value.keyId === "string" ? { keyId: value.keyId } : {}),
     createdAt: value.createdAt,
     rotatedAt: value.rotatedAt,
     lastUsedAt: value.lastUsedAt,
