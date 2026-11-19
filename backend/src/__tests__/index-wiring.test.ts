@@ -881,6 +881,8 @@ async function bootIndex(patch: Record<string, string | undefined> = {}, options
   requestHandler?: express.RequestHandler;
   capture?: (name: string, config: Record<string, unknown>) => void;
   processLogSink?: boolean;
+  realCsrf?: boolean;
+  connectorControl?: object;
 } = {}): Promise<Boot> {
   const env: Record<string, string | undefined> = { ...envBase, ...patch };
   const logs: string[] = [];
@@ -915,7 +917,9 @@ async function bootIndex(patch: Record<string, string | undefined> = {}, options
     cors: () => (_req: express.Request, _res: express.Response, next: express.NextFunction) => next(),
     "@tinyboilerplate/server": {
       DelegationStore: class {}, DelegationCache: class {}, createNonceStore: () => ({}),
-      createCsrfMiddleware: () => (_req: express.Request, _res: express.Response, next: express.NextFunction) => next(),
+      createCsrfMiddleware: options.realCsrf
+        ? load("@tinyboilerplate/server").createCsrfMiddleware
+        : () => (_req: express.Request, _res: express.Response, next: express.NextFunction) => next(),
       createDelegationMiddleware: () => (_req: express.Request, _res: express.Response, next: express.NextFunction) => next(),
     },
     "@tinyboilerplate/core": { APP_ID: "test-backend" },
@@ -1015,7 +1019,9 @@ async function bootIndex(patch: Record<string, string | undefined> = {}, options
         options.capture?.("connectorWebhooks", config);
         return express.Router();
       },
-      ConnectorControlStore: class {}, ConnectorWebhookLimiters: class {
+      ConnectorControlStore: class {
+        constructor() { if (options.connectorControl) return options.connectorControl; }
+      }, ConnectorWebhookLimiters: class {
         ipPreLimiter(_req: express.Request, _res: express.Response, next: express.NextFunction) { next(); }
       },
       createConnectorWebhookHostGuard: () => (_req: express.Request, _res: express.Response, next: express.NextFunction) => next(),
@@ -1170,6 +1176,34 @@ const ptxEnv = {
 };
 
 describe("backend entry-point HTTP and lifecycle guards", () => {
+  test("Granola purge mutations require authentication and CSRF with webhook delivery off", async () => {
+    const ledgers = new Map<string, unknown>();
+    const boot = await bootIndex({ CONNECTOR_WEBHOOKS_ENABLED: "false" }, {
+      realCsrf: true,
+      connectorControl: {
+        async readLedger(source: string, address: string) {
+          const ledger = ledgers.get(`${source}/${address}`);
+          return ledger === undefined ? { status: "absent" } : { status: "ok", ledger };
+        },
+        async writeLedger(source: string, address: string, ledger: unknown) { ledgers.set(`${source}/${address}`, ledger); },
+        async clearLedger(source: string, address: string) { ledgers.delete(`${source}/${address}`); },
+        async clearQuarantinedLedger() {},
+      },
+    });
+    for (const method of ["POST", "DELETE"]) {
+      const request = (headers: Record<string, string>) => fetch(`${boot.url}/api/connectors/webhooks/purged`, {
+        method, headers: { "content-type": "application/json", ...headers },
+        body: JSON.stringify({ source: "granola", ids: ["not_0001"], purgedThrough: "2026-01-01T00:00:00.000Z" }),
+      });
+      expect((await request({ "x-requested-with": "XMLHttpRequest" })).status).toBe(401);
+      const noCsrf = await request({ authorization: "Bearer test-session" });
+      expect(noCsrf.status).toBe(403);
+      expect((await noCsrf.json()).error).toBe("csrf_rejected");
+      expect((await request({ authorization: "Bearer test-session", "x-requested-with": "XMLHttpRequest" })).status).toBe(204);
+      expect(ledgers.size).toBe(method === "POST" ? 1 : 0);
+    }
+  });
+
   test("Stripe receives raw bytes without a CSRF header; unauthenticated NRAS rejects before its large parser", async () => {
     const boot = await bootIndex();
     const body = '{ "event" : "test" }';

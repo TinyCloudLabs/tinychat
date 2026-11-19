@@ -341,7 +341,7 @@ export async function runGranolaSyncNow(opts: {
       client,
       store: connectorStore,
       tcw: opts.tcw,
-      checkPurge: (id, timestamp) => webhooks.checkPurge(id, timestamp, "granola"),
+      checkPurge: (id, timestamp, signal) => webhooks.checkPurge(id, timestamp, "granola", signal),
       onProgress: opts.onProgress,
       signal: opts.signal,
       isCurrent: opts.isCurrent,

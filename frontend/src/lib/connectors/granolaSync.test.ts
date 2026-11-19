@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, jest, test } from "bun:test";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import type { TranscriptSentence } from "@tinyboilerplate/core";
 
@@ -17,9 +17,13 @@ import type {
 import {
   normalizeGranolaNote,
   syncGranola,
+  abortGranolaSync,
+  runGranolaSpaceWrite,
   type GranolaSyncClient,
   type GranolaSyncStore,
 } from "./granolaSync";
+import { createConnectorWebhooksClient } from "./webhooksApi";
+const realSetImmediate = setImmediate;
 
 const ok = <T>(data: T): StoreResult<T> => ({ ok: true, data });
 const tcw = {} as TinyCloudWeb;
@@ -220,6 +224,58 @@ describe("normalizeGranolaNote", () => {
 // ── Engine ──────────────────────────────────────────────────────────────
 
 describe("syncGranola", () => {
+  for (const mode of ["timeout", "stop"] as const) {
+    test(`${mode} releases a pending purge request and the shared write lane without saving or advancing progress`, async () => {
+      const store = new FakeStore();
+      store.lastSyncedAt = "2026-11-17T12:00:00Z";
+      const client = new MockClient([{ notes: [noteSummary("not_0001")], hasMore: false, cursor: null }]);
+      client.details.set("not_0001", { ok: true, data: noteDetail("not_0001") });
+      const entered = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<Response>();
+      const webhooks = createConnectorWebhooksClient("https://backend.example", {
+        sessionStore: { getToken: () => "test-session", isExpired: () => false } as never,
+        fetchImpl: ((_input, init) => {
+          const pending = Promise.withResolvers<Response>();
+          const signal = init?.signal;
+          if (signal?.aborted) pending.reject(signal.reason);
+          else signal?.addEventListener("abort", () => pending.reject(signal.reason), { once: true });
+          entered.resolve();
+          void release.promise.then(pending.resolve);
+          return pending.promise;
+        }) as typeof fetch,
+      });
+      jest.useFakeTimers();
+      const syncing = syncGranola({
+        ...syncOpts(store, client),
+        checkPurge: (id, timestamp, signal) => webhooks.checkPurge(id, timestamp, "granola", signal),
+      });
+      await entered.promise;
+      const nextWrite = runGranolaSpaceWrite(async () => "lane available");
+      const stopped = mode === "stop" ? abortGranolaSync() : Promise.resolve();
+      if (mode === "timeout") jest.advanceTimersByTime(20_000);
+      let finished = false;
+      void Promise.all([syncing, nextWrite, stopped]).then(() => { finished = true; });
+      try {
+        // Drain the native promise chain after the controlled timer or abort, without a wall-clock wait.
+        const turn = Promise.withResolvers<void>();
+        realSetImmediate(turn.resolve);
+        await turn.promise;
+        expect(finished).toBe(true);
+        expect(await syncing).toMatchObject({ ok: true, data: { added: 0 } });
+        expect(await nextWrite).toBe("lane available");
+        expect(store.meetings).toEqual([]);
+        expect(store.bodies.size).toBe(0);
+        expect(store.state).toMatchObject({ lastSyncStatus: "partial", lastSyncedAt: "2026-11-17T12:00:00Z" });
+      } finally {
+        release.resolve(Response.json({ blocked: false }));
+        await syncing;
+        await nextWrite;
+        await stopped;
+        jest.useRealTimers();
+      }
+    });
+  }
+
   test("REST sync skips a deleted note without recreating its row or transcript", async () => {
     const store = new FakeStore();
     const client = new MockClient([{ notes: [noteSummary("not_0001")], hasMore: false, cursor: null }]);

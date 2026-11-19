@@ -337,7 +337,7 @@ const GranolaConnectDialog: FC<ConnectorConnectDialogProps> = ({
       const webhooks = createConnectorWebhooksClient(backendUrl, { sessionStore });
       const synced = await syncGranola({
         client, tcw, store: connectorStore, signal, isCurrent, onProgress: setProgress,
-        checkPurge: (id, timestamp) => webhooks.checkPurge(id, timestamp, "granola"),
+        checkPurge: (id, timestamp, signal) => webhooks.checkPurge(id, timestamp, "granola", signal),
       });
       if (!isCurrent()) return;
       onConnected();
