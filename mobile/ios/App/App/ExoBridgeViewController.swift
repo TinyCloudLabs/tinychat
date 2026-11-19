@@ -18,9 +18,9 @@ class ExoBridgeViewController: CAPBridgeViewController {
         if let webView = webView, let start = bridge?.config.appStartServerURL, let original = webView.navigationDelegate {
             webViewRecovery = WebViewRecovery(webView: webView, startURL: start, original: original)
         }
-        // TC-3045: once the web app has imported what it keeps (OldOriginMigrationPlugin, below), delete what it left at
-        // the old origin (capacitor://localhost). Tried a few seconds later so the hidden WebView it uses stays off the
-        // app WebView's first load; before the import this does nothing, and the import's ack starts it instead.
+        // TC-3045: once the web app has confirmed its copy of what it keeps is on disk (OldOriginMigrationPlugin, below),
+        // delete what it left at the old origin (capacitor://localhost). Tried a few seconds later so the hidden WebView
+        // it uses stays off the app WebView's first load; before the confirm this does nothing, and the confirm starts it.
         let appHost = bridge?.config.appStartServerURL.host
         DispatchQueue.main.asyncAfter(deadline: .now() + 5) { OldOriginWipe.startIfNeeded(appHost: appHost) }
         bridge?.registerPluginInstance(VoiceNotesPlugin())

@@ -1,16 +1,24 @@
 // TC-3045: the phone apps moved to their own WebView origin (https://app.tinycloud.one on Android,
 // tinycloudone://app.tinycloud.one on iOS). The new origin can't read what the app stored at the old one
-// (https://localhost, capacitor://localhost), and the native side wipes the old origin once it is imported.
+// (https://localhost, capacitor://localhost), and the native side wipes the old origin once a later launch has
+// confirmed the copy.
 //
 // On the first launch on the new origin, before the app renders, the native side opens the old origin in a hidden
 // WebView and exports what's listed in OLD_ORIGIN_ALLOW to an app-private file (mobile: OldOriginMigration). This
-// copies it in, keeping anything the new origin already has, and acks. Native deletes the file and only then wipes the
-// old origin, so nothing listed here is wiped before it is imported. Without the ack (a failure, or the export not
-// answering in time) the old data stays and the next launch tries again.
+// copies it in, keeping anything the new origin already has, writes OLD_ORIGIN_IMPORT_MARKER last, and acks. The ack
+// wipes nothing: the WebView writes localStorage to disk only after a delay (Chromium about 5 s, WebKit 0.5 s), so an
+// app killed just after the import can lose it. A later launch ("verify") checks the marker. The WebView commits an
+// origin's pending localStorage changes as one batch, in order, so the marker on disk means every key copied before it
+// is on disk too (the IndexedDB rows committed before it was written). Then it confirms, and only then is the old
+// origin wiped. Without the marker it copies again from the same export and acks again; every launch retries, and the
+// old origin's data is never wiped on an unconfirmed copy. Without the ack (a failure, or the export not answering in
+// time) the next launch tries again.
 //
 // The allowlist is work that may exist only on the phone, plus settings that aren't synced. It never names a
 // secret: the backend JWT, the SDK session keys and share tokens stay behind and are wiped (they are renewed or
-// re-read from the account after sign-in).
+// re-read from the account after sign-in). From the third launch with work to do, while the copy is unconfirmed, the
+// native side first runs OLD_ORIGIN_SCRUB_SCRIPT at the old origin, which removes only its sign-in token and session
+// keys; the old origin's other data stays until the copy is confirmed.
 import { Capacitor, registerPlugin } from "@capacitor/core";
 
 export interface OldOriginAllow {
@@ -115,16 +123,37 @@ for (const name of allow.databases) {
 return JSON.stringify({ version: 1, localStorage: entries, databases });
 `;
 
-export type TakeResult = { state: "done" | "skip" } | { state: "export"; data: string };
+/**
+ * Like OLD_ORIGIN_EXPORT_SCRIPT, run at the old origin (with an empty `allow`): removes the backend JWT and every SDK
+ * session key (session, active address, runtime grants), nothing else, and resolves how many it removed, as JSON.
+ */
+export const OLD_ORIGIN_SCRUB_SCRIPT = `
+const secret = (key) => key === "xyz.tinycloud.tinychat:session" || key.startsWith("tinycloud:session:");
+const keys = [];
+for (let i = 0; i < localStorage.length; i++) {
+  const key = localStorage.key(i);
+  if (key !== null && secret(key)) keys.push(key);
+}
+for (const key of keys) localStorage.removeItem(key);
+return JSON.stringify({ removed: keys.length });
+`;
+
+/** Written at the new origin after everything the import copies; see the top of this file. */
+export const OLD_ORIGIN_IMPORT_MARKER = "xyz.tinycloud.home.oldOriginImport.v1";
+
+export type TakeResult = { state: "done" | "skip" } | { state: "export" | "verify"; data: string };
 
 export interface OldOriginMigrationPlugin {
   /**
-   * `done`: already imported. `skip`: a dev build still served from the old origin. `export`: the export, as JSON,
-   * from `script` run with `allow` at the old origin (or the file an earlier launch saved).
+   * `done`: the copy is confirmed. `skip`: a dev build still served from the old origin. `export`: the export, as
+   * JSON, from `script` run with `allow` at the old origin (or the file an earlier launch saved). `verify`: the same,
+   * on a launch after an ack. From the third launch with work to do, `scrub` has run at the old origin first.
    */
-  take(options: { allow: OldOriginAllow; script: string }): Promise<TakeResult>;
-  /** The export is in: native deletes its file, then wipes the old origin. */
+  take(options: { allow: OldOriginAllow; script: string; scrub: string }): Promise<TakeResult>;
+  /** The export is in. Native wipes nothing yet; the file stays for a re-import. */
   ack(): Promise<void>;
+  /** A later launch found the marker: native deletes its file, then wipes the old origin. */
+  confirm(): Promise<void>;
 }
 
 /** Adds the rows a store doesn't have yet (by their in-line key) to `database`'s stores, as its own module opens it. */
@@ -141,12 +170,14 @@ export interface ImportOptions {
 export type ImportOutcome =
   | { kind: "none" }
   | { kind: "imported"; keys: string[] }
+  | { kind: "confirmed" }
   | { kind: "failed"; reason: string };
 
 /**
- * The phone app's first launch on its new origin: copy what the old origin's export holds, keeping what this origin
- * already has, then ack. Never throws; resolves `failed` (nothing acked, the next launch tries again) on any error,
- * or when the export doesn't answer within `timeoutMs`. `imported.keys` are the localStorage keys copied.
+ * The phone app's launch on its new origin: copy what the old origin's export holds, keeping what this origin already
+ * has, write the marker, then ack; or, on a launch after an ack, confirm if the marker is there (else copy again).
+ * Never throws; resolves `failed` (nothing acked or confirmed, the next launch tries again) on any error, or when the
+ * export doesn't answer within `timeoutMs`. `imported.keys` are the localStorage keys copied.
  */
 export async function importOldOrigin(options: ImportOptions = {}): Promise<ImportOutcome> {
   if (!options.plugin && !Capacitor.isNativePlatform()) return { kind: "none" };
@@ -158,9 +189,16 @@ export async function importOldOrigin(options: ImportOptions = {}): Promise<Impo
     const timeout = new Promise<never>((_, reject) => {
       timer = setTimeout(() => reject(new Error("the old origin's export did not answer in time")), options.timeoutMs ?? 8000);
     });
-    const taken = await Promise.race([plugin.take({ allow: OLD_ORIGIN_ALLOW, script: OLD_ORIGIN_EXPORT_SCRIPT }), timeout]);
+    const taken = await Promise.race([
+      plugin.take({ allow: OLD_ORIGIN_ALLOW, script: OLD_ORIGIN_EXPORT_SCRIPT, scrub: OLD_ORIGIN_SCRUB_SCRIPT }),
+      timeout,
+    ]);
     clearTimeout(timer);
-    if (taken.state !== "export") return { kind: "none" };
+    if (taken.state !== "export" && taken.state !== "verify") return { kind: "none" };
+    if (taken.state === "verify" && storage.getItem(OLD_ORIGIN_IMPORT_MARKER) !== null) {
+      await plugin.confirm();
+      return { kind: "confirmed" };
+    }
     const data = JSON.parse(taken.data) as OldOriginExport;
     if (data.version !== 1) throw new Error(`unknown export version ${String(data.version)}`);
     const keys: string[] = [];
@@ -176,6 +214,8 @@ export async function importOldOrigin(options: ImportOptions = {}): Promise<Impo
         if (rows.length) await addRows(database, store, rows);
       }
     }
+    // Last: on disk, it means everything above is (see the top of this file).
+    storage.setItem(OLD_ORIGIN_IMPORT_MARKER, new Date().toISOString());
     await plugin.ack();
     return { kind: "imported", keys };
   } catch (error) {

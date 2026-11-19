@@ -98,9 +98,10 @@ void installEd25519Polyfill().catch((error: unknown) => {
     new Promise((resolve) => setTimeout(resolve, 2000)),
   ]);
   if (nativeShell) {
-    // TC-3045: the first launch on the phone app's own origin copies in what the old origin kept (oldOriginImport.ts)
-    // before anything reads it, then takes the recording settings from the engine when none came with it. Both run
-    // ahead of RecorderProvider pushing the stored settings to the engine (writeAccountDefaults).
+    // TC-3045: the first launch on the phone app's own origin copies in what the old origin kept, and a later one
+    // confirms the copy reached disk (oldOriginImport.ts), before anything reads it; then the recording settings come
+    // from the engine when none came with it. Both run ahead of RecorderProvider pushing the stored settings to the
+    // engine (writeAccountDefaults).
     const imported = await importOldOrigin();
     if (imported.kind === "imported" && imported.keys.includes(THEME_CHOICE_KEY)) setThemeChoice(readThemeChoice());
     void seedPreferenceFromEngine();

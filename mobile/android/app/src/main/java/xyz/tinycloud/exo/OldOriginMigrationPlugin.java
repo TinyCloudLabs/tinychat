@@ -35,20 +35,32 @@ public class OldOriginMigrationPlugin extends Plugin {
     private static final String TAG = "ExoWebView";
     private static final String OLD_ORIGIN_PAGE = "https://" + OldOriginWipe.OLD_SITE + "/";
     private static final long EXPORT_TIMEOUT_MS = 20_000L;
+    private static final String LAUNCHES_KEY = "xyz.tinycloud.home.oldOriginImport.launches.v1";
+    /** This process has counted its launch (a reload of the web app is not a launch). */
+    private static boolean launchCounted;
 
     /** Resolves {@code {state, data?}}; see {@link OldOriginMigration#take}. */
     @PluginMethod
     public void take(PluginCall call) {
         JSObject allow = call.getObject("allow");
         String script = call.getString("script");
-        if (allow == null || script == null) {
-            call.reject("allow and script are required");
+        String scrub = call.getString("scrub");
+        if (allow == null || script == null || scrub == null) {
+            call.reject("allow, script and scrub are required");
             return;
         }
-        OldOriginMigration.take(store(), exportFile(), this::export, appHost(), allow.toString(), script,
+        OldOriginMigration.Scrubbed scrubbed = new OldOriginMigration.Scrubbed() {
+            @Override public void scrubbed(String json) {
+                Log.i(TAG, "Removed the old origin's sign-in token and session keys; its other data stays until the copy is confirmed (" + json + ")");
+            }
+            @Override public void failed(String reason) {
+                Log.w(TAG, "Could not remove the old origin's sign-in token and session keys (" + reason + "); the next launch tries again");
+            }
+        };
+        OldOriginMigration.take(store(), exportFile(), this::export, appHost(), allow.toString(), script, scrub, scrubbed,
             new OldOriginMigration.Taken() {
                 @Override public void resolve(String state, @Nullable String data) {
-                    if (data != null) Log.i(TAG, "Handing the old origin's export to the web app (" + data.length() + " chars)");
+                    if (data != null) Log.i(TAG, "Handing the old origin's export to the web app (" + state + ", " + data.length() + " chars)");
                     JSObject result = new JSObject();
                     result.put("state", state);
                     if (data != null) result.put("data", data);
@@ -63,8 +75,15 @@ public class OldOriginMigrationPlugin extends Plugin {
 
     @PluginMethod
     public void ack(PluginCall call) {
-        OldOriginMigration.ack(store(), exportFile(), () -> OldOriginWipe.afterImport(getContext(), appHost()));
-        Log.i(TAG, "The web app imported the old origin's export; deleted the export file");
+        OldOriginMigration.ack(store());
+        Log.i(TAG, "The web app imported the old origin's export; the old origin stays until a later launch confirms the copy");
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void confirm(PluginCall call) {
+        OldOriginMigration.confirm(store(), exportFile(), () -> OldOriginWipe.afterConfirm(getContext(), appHost()));
+        Log.i(TAG, "The web app confirmed the copy is on disk; deleted the export file");
         call.resolve();
     }
 
@@ -76,8 +95,20 @@ public class OldOriginMigrationPlugin extends Plugin {
         SharedPreferences prefs = getContext().getSharedPreferences(OldOriginWipe.PREFS, Context.MODE_PRIVATE);
         return new OldOriginMigration.Store() {
             @Override public boolean imported() { return prefs.getBoolean(OldOriginWipe.IMPORTED_KEY, false); }
-            // commit, not apply: the wipe that follows must find it on disk.
             @Override public void markImported() { prefs.edit().putBoolean(OldOriginWipe.IMPORTED_KEY, true).commit(); }
+            @Override public boolean confirmed() { return prefs.getBoolean(OldOriginWipe.CONFIRMED_KEY, false); }
+            // commit, not apply: the wipe that follows must find it on disk.
+            @Override public void markConfirmed() { prefs.edit().putBoolean(OldOriginWipe.CONFIRMED_KEY, true).commit(); }
+            @Override public int countLaunch() {
+                synchronized (OldOriginMigrationPlugin.class) {
+                    int launches = prefs.getInt(LAUNCHES_KEY, 0);
+                    if (launchCounted) return launches;
+                    launchCounted = true;
+                    // commit: a launch the app dies in still counts.
+                    prefs.edit().putInt(LAUNCHES_KEY, launches + 1).commit();
+                    return launches + 1;
+                }
+            }
         };
     }
 
@@ -109,9 +140,10 @@ public class OldOriginMigrationPlugin extends Plugin {
     }
 
     /**
-     * Runs the export in a hidden WebView at the old origin. It is served a blank page there and nothing else (every
-     * other request gets a 404, so nothing leaves the device), and answers through a JavaScript interface because
-     * evaluateJavascript doesn't wait for a promise.
+     * Runs a web app script (the export, or the scrub of the old origin's sign-in token and session keys) in a hidden
+     * WebView at the old origin. It is served a blank page there and nothing else (every other request gets a 404, so
+     * nothing leaves the device), and answers through a JavaScript interface because evaluateJavascript doesn't wait
+     * for a promise.
      */
     private void export(String allowJson, String script, OldOriginMigration.Exported done) {
         Handler main = new Handler(Looper.getMainLooper());

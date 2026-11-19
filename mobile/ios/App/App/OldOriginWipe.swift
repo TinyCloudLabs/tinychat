@@ -17,14 +17,16 @@ import WebKit
 /// tries again, up to `OldOriginWipeAttempts.limit` attempts. A dev build served from http://localhost
 /// (EXO_DEV_SERVER_URL) still lives on that site and is skipped.
 ///
-/// Nothing is wiped before the web app has imported what it keeps from the old origin (`OldOriginMigrationPlugin`):
-/// until then a launch starts no attempt and costs none. Once it has, the wipe starts right after the import's ack, or
-/// a few seconds into a later launch if that attempt didn't finish.
+/// Nothing is wiped before the web app has confirmed, on a launch after its import, that the copy is on disk at the new
+/// origin (`OldOriginMigrationPlugin`): until then a launch starts no attempt and costs none. Once it has, the wipe
+/// starts right after the confirm, or a few seconds into a later launch if that attempt didn't finish.
 final class OldOriginWipe: NSObject, WKNavigationDelegate, WKURLSchemeHandler {
     static let doneKey = "xyz.tinycloud.home.oldOriginWiped.v1"
     static let attemptsKey = "xyz.tinycloud.home.oldOriginWipe.attempts.v1"
     /// Set by `OldOriginMigrationPlugin.ack` once the web app has imported the old origin's export.
     static let importedKey = "xyz.tinycloud.home.oldOriginImported.v1"
+    /// Set by `OldOriginMigrationPlugin.confirm` once a later launch found the import on disk; the wipe waits for it.
+    static let confirmedKey = "xyz.tinycloud.home.oldOriginImportConfirmed.v1"
     static let oldScheme = "capacitor"
     static let oldPage = URL(string: "capacitor://localhost/")!
     static let oldHost = "localhost"
@@ -68,11 +70,11 @@ final class OldOriginWipe: NSObject, WKNavigationDelegate, WKURLSchemeHandler {
     }
 
     /// On the main thread, off the app WebView's first load; at most one attempt per process, and none before the web
-    /// app has imported the old origin's export. `appHost` is the host the app WebView serves the app from.
+    /// app has confirmed its copy of the old origin's export. `appHost` is the host the app WebView serves the app from.
     static func startIfNeeded(appHost: String?, defaults: UserDefaults = .standard) {
         guard !ranThisProcess else { return }
-        guard defaults.bool(forKey: importedKey) else {
-            log.notice("The old origin's WebView data stays until the web app has imported it")
+        guard defaults.bool(forKey: confirmedKey) else {
+            log.notice("The old origin's WebView data stays until a launch after the import confirms the copy")
             return
         }
         ranThisProcess = true
@@ -203,9 +205,9 @@ enum OldOriginWipeAttempts {
     }
 }
 
-/// TC-3045: the old origin's export for the web app's import (frontend/src/lib/oldOriginImport.ts). A hidden WKWebView
-/// at capacitor://localhost runs the web app's export script with its allowlist and hands back the JSON it resolves.
-/// It only reads; the wipe waits for the import's ack.
+/// TC-3045: runs a web app script (frontend/src/lib/oldOriginImport.ts) at the old origin in a hidden WKWebView at
+/// capacitor://localhost, which loads only a blank page, and hands back the JSON it resolves: the export (reads only),
+/// or the scrub of the old origin's sign-in token and session keys.
 final class OldOriginExport: NSObject, WKNavigationDelegate, WKURLSchemeHandler {
     static let timeout: TimeInterval = 20
     private static var running: [OldOriginExport] = []
@@ -286,28 +288,47 @@ struct OldOriginExportError: LocalizedError {
     var errorDescription: String? { reason }
 }
 
-/// The web app's side of the old origin's export and wipe (frontend/src/lib/oldOriginImport.ts). `take` hands over the
-/// export (saved first to an app-private file kept out of backups, and reused by a later launch until acked); `ack`
-/// marks the import done, deletes the file, and only then lets `OldOriginWipe` run.
+/// The web app's side of the old origin's export and wipe (frontend/src/lib/oldOriginImport.ts); it mirrors Android's
+/// OldOriginMigration. `take` hands over the export (saved first to an app-private file kept out of backups, and reused
+/// by later launches until the copy is confirmed); `ack` marks the import and wipes nothing, because the WebView writes
+/// localStorage to disk only after a short delay; on a later launch `confirm` (the web app found its marker, written
+/// after every copied item, on disk) deletes the file and only then lets `OldOriginWipe` run. From launch
+/// `scrubFromLaunch` on, while the copy is unconfirmed, `take` first runs the web app's scrub at the old origin, which
+/// removes only its sign-in token and session keys.
 public final class OldOriginMigrationPlugin: CAPPlugin, CAPBridgedPlugin {
     public let identifier = "OldOriginMigrationPlugin"
     public let jsName = "OldOriginMigration"
     public let pluginMethods: [CAPPluginMethod] = [
         CAPPluginMethod(name: "take", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "ack", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "confirm", returnType: CAPPluginReturnPromise),
     ]
+    static let scrubFromLaunch = 3
+    static let launchesKey = "xyz.tinycloud.home.oldOriginImport.launches.v1"
     private static let log = Logger(subsystem: "xyz.tinycloud.exo", category: "webview")
+    /// This process has counted its launch (a reload of the web app is not a launch).
+    private static var launchCounted = false
 
     private static var exportFile: URL? {
         try? FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
             .appendingPathComponent("old-origin-export.json")
     }
 
-    /// Resolves `{state, data?}`: "skip" for a dev build still served from the old site, "done" once imported, or
-    /// "export" with the export's JSON.
+    /// On the main thread: counts this launch once per process and returns the launches counted so far.
+    private static func countLaunch(_ defaults: UserDefaults) -> Int {
+        let launches = defaults.integer(forKey: launchesKey)
+        if launchCounted { return launches }
+        launchCounted = true
+        defaults.set(launches + 1, forKey: launchesKey)
+        return launches + 1
+    }
+
+    /// Resolves `{state, data?}`: "skip" for a dev build still served from the old site, "done" once confirmed, or
+    /// "export" (import, then ack) / "verify" (an earlier launch acked) with the export's JSON.
     @objc func take(_ call: CAPPluginCall) {
-        guard let allow = call.options["allow"] as? [String: Any], let script = call.getString("script") else {
-            call.reject("allow and script are required")
+        guard let allow = call.options["allow"] as? [String: Any], let script = call.getString("script"),
+              let scrub = call.getString("scrub") else {
+            call.reject("allow, script and scrub are required")
             return
         }
         DispatchQueue.main.async { [weak self] in
@@ -319,45 +340,72 @@ public final class OldOriginMigrationPlugin: CAPPlugin, CAPBridgedPlugin {
                 call.reject("Could not find the app's support directory")
                 return
             }
-            if UserDefaults.standard.bool(forKey: OldOriginWipe.importedKey) {
-                // Left behind if the app died between the ack's flag and the file's deletion.
+            let defaults = UserDefaults.standard
+            if defaults.bool(forKey: OldOriginWipe.confirmedKey) {
+                // Left behind if the app died between the confirm's flag and the file's deletion.
                 try? FileManager.default.removeItem(at: file)
                 call.resolve(["state": "done"])
                 return
             }
-            if let existing = try? String(contentsOf: file, encoding: .utf8) {
-                call.resolve(["state": "export", "data": existing])
+            let state = defaults.bool(forKey: OldOriginWipe.importedKey) ? "verify" : "export"
+            guard Self.countLaunch(defaults) >= Self.scrubFromLaunch else {
+                Self.handOver(call, state: state, file: file, allow: allow, script: script)
                 return
             }
-            OldOriginExport.run(allow: allow, script: script) { result in
+            OldOriginExport.run(allow: [:], script: scrub) { result in
                 switch result {
                 case .success(let json):
-                    do {
-                        try Data(json.utf8).write(to: file, options: [.atomic])
-                        var values = URLResourceValues()
-                        values.isExcludedFromBackup = true
-                        var saved = file
-                        try saved.setResourceValues(values)
-                    } catch {
-                        call.reject("Could not save the old origin's export (\(error.localizedDescription))")
-                        return
-                    }
-                    Self.log.notice("Handing the old origin's export to the web app (\(json.count, privacy: .public) chars)")
-                    call.resolve(["state": "export", "data": json])
+                    Self.log.notice("Removed the old origin's sign-in token and session keys; its other data stays until the copy is confirmed (\(json, privacy: .public))")
                 case .failure(let error):
-                    let reason = "Could not export the old origin's data (\(error.localizedDescription))"
-                    Self.log.notice("\(reason, privacy: .public)")
-                    call.reject(reason)
+                    Self.log.notice("Could not remove the old origin's sign-in token and session keys (\(error.localizedDescription, privacy: .public)); the next launch tries again")
                 }
+                Self.handOver(call, state: state, file: file, allow: allow, script: script)
+            }
+        }
+    }
+
+    /// The file from an earlier launch, or a fresh export saved to the file before it is handed over.
+    private static func handOver(_ call: CAPPluginCall, state: String, file: URL, allow: [String: Any], script: String) {
+        if let existing = try? String(contentsOf: file, encoding: .utf8) {
+            call.resolve(["state": state, "data": existing])
+            return
+        }
+        OldOriginExport.run(allow: allow, script: script) { result in
+            switch result {
+            case .success(let json):
+                do {
+                    try Data(json.utf8).write(to: file, options: [.atomic])
+                    var values = URLResourceValues()
+                    values.isExcludedFromBackup = true
+                    var saved = file
+                    try saved.setResourceValues(values)
+                } catch {
+                    call.reject("Could not save the old origin's export (\(error.localizedDescription))")
+                    return
+                }
+                Self.log.notice("Handing the old origin's export to the web app (\(state, privacy: .public), \(json.count, privacy: .public) chars)")
+                call.resolve(["state": state, "data": json])
+            case .failure(let error):
+                let reason = "Could not export the old origin's data (\(error.localizedDescription))"
+                Self.log.notice("\(reason, privacy: .public)")
+                call.reject(reason)
             }
         }
     }
 
     @objc func ack(_ call: CAPPluginCall) {
-        DispatchQueue.main.async { [weak self] in
+        DispatchQueue.main.async {
             UserDefaults.standard.set(true, forKey: OldOriginWipe.importedKey)
+            Self.log.notice("The web app imported the old origin's export; the old origin stays until a later launch confirms the copy")
+            call.resolve()
+        }
+    }
+
+    @objc func confirm(_ call: CAPPluginCall) {
+        DispatchQueue.main.async { [weak self] in
+            UserDefaults.standard.set(true, forKey: OldOriginWipe.confirmedKey)
             if let file = Self.exportFile { try? FileManager.default.removeItem(at: file) }
-            Self.log.notice("The web app imported the old origin's export; deleted the export file")
+            Self.log.notice("The web app confirmed the copy is on disk; deleted the export file")
             OldOriginWipe.startIfNeeded(appHost: self?.bridge?.config.appStartServerURL.host)
             call.resolve()
         }

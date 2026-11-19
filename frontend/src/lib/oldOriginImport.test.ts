@@ -4,8 +4,8 @@
 import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import {
-  addMissingRows, importOldOrigin, isMigratedKey, OLD_ORIGIN_ALLOW, OLD_ORIGIN_EXPORT_SCRIPT,
-  type OldOriginAllow, type OldOriginExport, type OldOriginMigrationPlugin, type TakeResult,
+  addMissingRows, importOldOrigin, isMigratedKey, OLD_ORIGIN_ALLOW, OLD_ORIGIN_EXPORT_SCRIPT, OLD_ORIGIN_IMPORT_MARKER,
+  OLD_ORIGIN_SCRUB_SCRIPT, type OldOriginAllow, type OldOriginExport, type OldOriginMigrationPlugin, type TakeResult,
 } from "./oldOriginImport";
 import { openRecordingNotesDb, RECORDING_NOTES_DB } from "./voiceNotes/recordingNotes";
 import { HELD_RESULTS_DB, openHeldResultsDb } from "./voiceNotes/heldResults";
@@ -102,16 +102,23 @@ async function oldOrigin(storage: Record<string, string>, rows: { notes?: object
 }
 
 /** What the native side does: run the script at the old origin, where `localStorage` and `indexedDB` are its own. */
-async function runExport(origin: { factory: IDBFactory; storage: ReturnType<typeof mapStorage> }, allow: OldOriginAllow = OLD_ORIGIN_ALLOW): Promise<string> {
+async function runExport(origin: { factory: IDBFactory; storage: ReturnType<typeof mapStorage> }, allow: OldOriginAllow = OLD_ORIGIN_ALLOW, script = OLD_ORIGIN_EXPORT_SCRIPT): Promise<string> {
   const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor as new (...args: string[]) => (...values: unknown[]) => Promise<string>;
-  return new AsyncFunction("allow", "localStorage", "indexedDB", OLD_ORIGIN_EXPORT_SCRIPT)(JSON.parse(JSON.stringify(allow)), origin.storage, origin.factory);
+  return new AsyncFunction("allow", "localStorage", "indexedDB", script)(JSON.parse(JSON.stringify(allow)), origin.storage, origin.factory);
 }
 
-function nativeSide(data: string | null, order: string[] = []): OldOriginMigrationPlugin & { acks: number } {
+/** The native side: "export" before an ack, "verify" after one, "done" (`data` null) once confirmed. */
+function nativeSide(data: string | null, order: string[] = [], state: "export" | "verify" = "export") {
   const plugin = {
     acks: 0,
-    take: async (): Promise<TakeResult> => (data === null ? { state: "done" } : { state: "export", data }),
+    confirms: 0,
+    scrub: "",
+    take: async (options: Parameters<OldOriginMigrationPlugin["take"]>[0]): Promise<TakeResult> => {
+      plugin.scrub = options.scrub;
+      return data === null ? { state: "done" } : { state, data };
+    },
     ack: async () => { plugin.acks++; order.push("ack"); },
+    confirm: async () => { plugin.confirms++; order.push("confirm"); },
   };
   return plugin;
 }
@@ -178,17 +185,18 @@ test("keys outside the allowlist in an export are never imported", async () => {
   const plugin = nativeSide(JSON.stringify(data));
 
   expect(await importOldOrigin({ plugin, storage: newOrigin })).toEqual({ kind: "imported", keys: [] });
-  expect(newOrigin.values.size).toBe(0);
+  expect([...newOrigin.values.keys()]).toEqual([OLD_ORIGIN_IMPORT_MARKER]);
   for (const key of SECRETS) expect(isMigratedKey(key)).toBe(false);
 });
 
-test("nothing is acked, so nothing is wiped, when the rows can't be imported or the export doesn't answer in time", async () => {
+test("nothing is marked or acked, so nothing is wiped, when the rows can't be imported or the export doesn't answer in time", async () => {
   newOrigin = mapStorage();
   const data: OldOriginExport = { version: 1, localStorage: [], databases: { [RECORDING_NOTES_DB]: { stores: { notes: [note("x", "x")] } } } };
   const failing = nativeSide(JSON.stringify(data));
   const failed = await importOldOrigin({ plugin: failing, storage: newOrigin, addMissingRows: async () => { throw new Error("quota"); } });
   expect(failed).toEqual({ kind: "failed", reason: "quota" });
   expect(failing.acks).toBe(0);
+  expect(newOrigin.getItem(OLD_ORIGIN_IMPORT_MARKER)).toBeNull();
 
   const silent = { ...nativeSide(null), take: () => new Promise<TakeResult>(() => {}) };
   expect((await importOldOrigin({ plugin: silent, storage: newOrigin, timeoutMs: 10 })).kind).toBe("failed");
@@ -250,7 +258,7 @@ async function rowsOf(database: string, store: string, prefix: string): Promise<
   }
 }
 
-test("every key and row is in before the ack, and the ack (which starts the wipe) comes last", async () => {
+test("every key and row is in before the marker, and the marker before the ack", async () => {
   const origin = await oldOrigin({
     "tinychat.home.post-draft.v1:ord": "{\"draft\":\"half\"}",
     "exo.voiceNotes.transcriber": "assemblyai",
@@ -265,14 +273,15 @@ test("every key and row is in before the ack, and the ack (which starts the wipe
     order.push(`rows ${database}/${store}`);
   } });
 
-  expect(order.at(-1)).toBe("ack");
-  expect(order.filter((step) => step === "ack")).toHaveLength(1);
-  expect(order.slice(0, -1).sort()).toEqual([
+  expect(order.slice(-2)).toEqual([`key ${OLD_ORIGIN_IMPORT_MARKER}`, "ack"]);
+  expect(order.filter((step) => step === "ack" || step.endsWith(OLD_ORIGIN_IMPORT_MARKER))).toHaveLength(2);
+  expect(order.slice(0, -2).sort()).toEqual([
     "key exo.voiceNotes.transcriber",
     "key tinychat.home.post-draft.v1:ord",
     `rows ${HELD_RESULTS_DB}/held`,
     `rows ${RECORDING_NOTES_DB}/notes`,
   ]);
+  expect(plugin.confirms).toBe(0);
 });
 
 test("a store that fails midway leaves no ack; the next launch finishes from the same export without duplicating, then acks once", async () => {
@@ -323,10 +332,75 @@ test("an ack lost after a full import: the next launch re-imports without duplic
   expect(retry.acks).toBe(1);
   expect(await rowsOf(RECORDING_NOTES_DB, "notes", "idem-")).toEqual([note("idem-1", "edited on the new origin")]);
   expect(await rowsOf(HELD_RESULTS_DB, "held", "idem-")).toEqual([held("idem-s1")]);
-  expect([...newOrigin.values.keys()]).toEqual(["tinychat.home.answer-outbox.v1:idem"]);
+  expect([...newOrigin.values.keys()].sort()).toEqual([OLD_ORIGIN_IMPORT_MARKER, "tinychat.home.answer-outbox.v1:idem"].sort());
 
   // Native now answers "done": nothing is imported or acked again.
   const after = nativeSide(null);
   expect(await importOldOrigin({ plugin: after, storage: newOrigin, addMissingRows: async () => { throw new Error("must not run"); } })).toEqual({ kind: "none" });
   expect(after.acks).toBe(0);
+});
+
+test("a launch after the ack finds the marker on disk: it confirms (native then wipes) and imports nothing", async () => {
+  const origin = await oldOrigin({ "tinychat.home.answer-outbox.v1:conf": "{\"answer\":\"sent later\"}" }, { notes: [note("conf-1", "typed")] });
+  newOrigin = mapStorage();
+  const data = await runExport(origin);
+  const first = nativeSide(data);
+  expect((await importOldOrigin({ plugin: first, storage: newOrigin, addMissingRows: addAppRows })).kind).toBe("imported");
+  expect(first.confirms).toBe(0);
+  // The user sends the outbox answer and deletes the note before the next launch: confirming must not bring them back.
+  newOrigin.removeItem("tinychat.home.answer-outbox.v1:conf");
+  const notes = await openRecordingNotesDb();
+  await settle(notes.transaction("notes", "readwrite").objectStore("notes").delete(`${DID}:conf-1`));
+
+  const order: string[] = [];
+  const second = nativeSide(data, order, "verify");
+  expect(await importOldOrigin({ plugin: second, storage: newOrigin, addMissingRows: async () => { throw new Error("must not run"); } }))
+    .toEqual({ kind: "confirmed" });
+  expect(order).toEqual(["confirm"]);
+  expect(newOrigin.getItem("tinychat.home.answer-outbox.v1:conf")).toBeNull();
+  expect(await rowsOf(RECORDING_NOTES_DB, "notes", "conf-")).toEqual([]);
+});
+
+test("a launch after the ack without the marker (the copy never reached disk) copies again, keeps the user's values, marks and acks, never confirms", async () => {
+  const origin = await oldOrigin({
+    "tinychat.home.answer-unsent.v1:lost": "{\"answer\":\"unsent\"}",
+    "xyz.tinycloud.tinychat:theme-choice": "dark",
+  }, { notes: [note("lost-1", "typed")], held: [held("lost-s1")] });
+  const data = await runExport(origin);
+  // The first launch's import and marker were lost with the WebView's unwritten localStorage; this launch has
+  // since set a theme of its own.
+  newOrigin = mapStorage({ "xyz.tinycloud.tinychat:theme-choice": "light" });
+  const order: string[] = [];
+  const plugin = nativeSide(data, order, "verify");
+
+  expect(await importOldOrigin({ plugin, storage: newOrigin, addMissingRows: addAppRows }))
+    .toEqual({ kind: "imported", keys: ["tinychat.home.answer-unsent.v1:lost"] });
+  expect(order).toEqual(["ack"]);
+  expect(newOrigin.getItem("xyz.tinycloud.tinychat:theme-choice")).toBe("light");
+  expect(newOrigin.getItem(OLD_ORIGIN_IMPORT_MARKER)).not.toBeNull();
+  expect(await rowsOf(RECORDING_NOTES_DB, "notes", "lost-")).toEqual([note("lost-1", "typed")]);
+  expect(await rowsOf(HELD_RESULTS_DB, "held", "lost-")).toEqual([held("lost-s1")]);
+
+  // The launch after that finds it.
+  const next = nativeSide(data, [], "verify");
+  expect(await importOldOrigin({ plugin: next, storage: newOrigin })).toEqual({ kind: "confirmed" });
+  expect(next.acks).toBe(0);
+});
+
+test("the scrub the app hands native removes only the old origin's sign-in token and session keys", async () => {
+  const userData = {
+    "tinychat.home.answer-outbox.v1:scr": "{\"answer\":\"yes\"}",
+    "exo.voiceNotes.transcriber": "private-cloud",
+    "xyz.tinycloud.tinychat:theme-choice": "dark",
+  };
+  const origin = await oldOrigin({ ...userData, ...Object.fromEntries(SECRETS.map((key) => [key, "secret"])) }, { notes: [note("scr-1", "typed")] });
+  const plugin = nativeSide(null);
+  await importOldOrigin({ plugin, storage: mapStorage() });
+
+  expect(JSON.parse(await runExport(origin, { exact: [], prefixes: [], databases: [] }, plugin.scrub))).toEqual({ removed: 3 });
+
+  expect(Object.fromEntries(origin.storage.values)).toEqual({ ...userData, [`tinychat:shared-with-me:${DID}`]: "secret" });
+  const exported = JSON.parse(await runExport(origin)) as OldOriginExport;
+  expect(exported.databases[RECORDING_NOTES_DB].stores.notes).toEqual([note("scr-1", "typed")]);
+  expect(plugin.scrub).toBe(OLD_ORIGIN_SCRUB_SCRIPT);
 });
