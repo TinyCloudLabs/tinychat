@@ -351,15 +351,18 @@ jobs:
           # shellcheck disable=SC2034
           REDPILL_API_KEY="$BOTS_REDPILL_API_KEY"
           # See bots/README.md.
-          if [[ -n "$BOTS_BACKEND_CALL_SECRET" && "$BOTS_BACKEND_CALL_SECRET" == "$BOTS_SERVICE_SECRET" ]]; then
-            echo "::error title=Invalid deployment config::BOTS_BACKEND_CALL_SECRET must differ from BOTS_SERVICE_SECRET"
-            exit 1
+          BOTS_ADMISSION_CONTROL_KEY=
+          if [[ -n "${BOTS_BACKEND_CALL_SECRET:-}" ]]; then
+            if [[ "$BOTS_BACKEND_CALL_SECRET" == "$BOTS_SERVICE_SECRET" ]]; then
+              echo "::error title=Invalid deployment config::BOTS_BACKEND_CALL_SECRET must differ from BOTS_SERVICE_SECRET"
+              exit 1
+            fi
+            BOTS_ADMISSION_CONTROL_KEY="$(node -e '
+              const { hkdfSync } = require("node:crypto");
+              const secret = process.env.BOTS_BACKEND_CALL_SECRET;
+              process.stdout.write(Buffer.from(hkdfSync("sha256", secret, "", "bots-control-socket/v1", 32)).toString("base64url"));
+            ')"
           fi
-          BOTS_ADMISSION_CONTROL_KEY="$(node -e '
-            const { hkdfSync } = require("node:crypto");
-            const secret = process.env.BOTS_BACKEND_CALL_SECRET;
-            if (secret) process.stdout.write(Buffer.from(hkdfSync("sha256", secret, "", "bots-control-socket/v1", 32)).toString("base64url"));
-          ')"
           required=(BOTS_SERVICE_SECRET REDPILL_API_KEY CLOUDFLARE_API_TOKEN CERTBOT_EMAIL BOTS_INGRESS_DOMAIN PHALA_GATEWAY_CNAME)
           # Include empty history values so allowed_envs sync registers the names while history is off.
           optional=(BOTS_TEST_ACCOUNTS BOTS_ACCEPT_LEGACY_OWNER_HEADER BOTS_MODEL BOTS_IDLE_MS BOTS_SANDBOX_MEMORY_MB BOTS_SANDBOX_CPUS BOTS_SANDBOX_PIDS
