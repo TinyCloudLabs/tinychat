@@ -59,6 +59,8 @@ export async function recordingNoteOwner(id: string, fallbackOwner?: string | nu
   return native === undefined ? active : native;
 }
 
+/** Also opened by the TC-3045 old-origin import (oldOriginImport.ts), so imported rows land in this schema. */
+export { openDb as openRecordingNotesDb };
 function openDb(): Promise<IDBDatabase> {
   if (dbPromise) return dbPromise;
   const pending = new Promise<IDBDatabase>((resolve, reject) => {

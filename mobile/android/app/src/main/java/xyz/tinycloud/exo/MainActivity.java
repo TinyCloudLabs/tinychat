@@ -48,6 +48,8 @@ public class MainActivity extends BridgeActivity implements CaptureEngine.Listen
         registerPlugin(VoiceNotesPlugin.class);
         registerPlugin(ThemeBarsPlugin.class);
         registerPlugin(AppLockPlugin.class);
+        // TC-3045: hands the old origin's data to the web app before the wipe below may run.
+        registerPlugin(OldOriginMigrationPlugin.class);
         registerPlugin(OnDeviceSttPlugin.class);
         registerPlugin(HealthPlugin.class);
         // TC-524 location spike. Registered in every build, but only the debug manifest declares
@@ -59,7 +61,8 @@ public class MainActivity extends BridgeActivity implements CaptureEngine.Listen
         if (savedInstanceState != null) consumedCommandId = savedInstanceState.getString("consumedCommandId");
         consumeIntent(getIntent());
         super.onCreate(savedInstanceState);
-        // TC-3045: once, after the first frame, delete what the web app left at the old origin (https://localhost).
+        // TC-3045: once the web app has imported what it keeps (OldOriginMigration), delete what it left at the old
+        // origin (https://localhost), after the first frame.
         OldOriginWipe.afterFirstFrame(this, getBridge().getAppUrl());
         webViewRecovery = new WebViewRecovery(this, getBridge().getAppUrl());
         getBridge().addWebViewListener(webViewRecovery);

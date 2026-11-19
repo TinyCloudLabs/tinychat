@@ -1,3 +1,4 @@
+import Capacitor
 import os
 import WebKit
 
@@ -15,9 +16,15 @@ import WebKit
 /// starts, so a crash or hang mid-run counts too; an error or the timeout leaves the flag unset and the next launch
 /// tries again, up to `OldOriginWipeAttempts.limit` attempts. A dev build served from http://localhost
 /// (EXO_DEV_SERVER_URL) still lives on that site and is skipped.
+///
+/// Nothing is wiped before the web app has imported what it keeps from the old origin (`OldOriginMigrationPlugin`):
+/// until then a launch starts no attempt and costs none. Once it has, the wipe starts right after the import's ack, or
+/// a few seconds into a later launch if that attempt didn't finish.
 final class OldOriginWipe: NSObject, WKNavigationDelegate, WKURLSchemeHandler {
     static let doneKey = "xyz.tinycloud.home.oldOriginWiped.v1"
     static let attemptsKey = "xyz.tinycloud.home.oldOriginWipe.attempts.v1"
+    /// Set by `OldOriginMigrationPlugin.ack` once the web app has imported the old origin's export.
+    static let importedKey = "xyz.tinycloud.home.oldOriginImported.v1"
     static let oldScheme = "capacitor"
     static let oldPage = URL(string: "capacitor://localhost/")!
     static let oldHost = "localhost"
@@ -60,10 +67,14 @@ final class OldOriginWipe: NSObject, WKNavigationDelegate, WKURLSchemeHandler {
         self.attempt = attempt
     }
 
-    /// On the main thread, off the app WebView's first load; once per process. `appHost` is the host the app WebView
-    /// serves the app from.
+    /// On the main thread, off the app WebView's first load; at most one attempt per process, and none before the web
+    /// app has imported the old origin's export. `appHost` is the host the app WebView serves the app from.
     static func startIfNeeded(appHost: String?, defaults: UserDefaults = .standard) {
         guard !ranThisProcess else { return }
+        guard defaults.bool(forKey: importedKey) else {
+            log.notice("The old origin's WebView data stays until the web app has imported it")
+            return
+        }
         ranThisProcess = true
         let decision = OldOriginWipeAttempts.decide(done: defaults.bool(forKey: doneKey),
                                                     attempts: defaults.integer(forKey: attemptsKey), appHost: appHost)
@@ -121,7 +132,12 @@ final class OldOriginWipe: NSObject, WKNavigationDelegate, WKURLSchemeHandler {
     }
 
     func webView(_ webView: WKWebView, start urlSchemeTask: WKURLSchemeTask) {
-        let url = urlSchemeTask.request.url ?? Self.oldPage
+        Self.serveBlankPage(urlSchemeTask)
+    }
+
+    /// The old origin's page for a hidden WebView: empty, so only the storage it can reach matters.
+    static func serveBlankPage(_ urlSchemeTask: WKURLSchemeTask) {
+        let url = urlSchemeTask.request.url ?? oldPage
         let body = Data("<!doctype html><title></title>".utf8)
         let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil,
                                        headerFields: ["Content-Type": "text/html; charset=utf-8"])
@@ -184,5 +200,166 @@ enum OldOriginWipeAttempts {
     /// After attempt `number` failed: whether it was the last one.
     static func givesUp(afterFailedAttempt number: Int) -> Bool {
         number >= Self.limit
+    }
+}
+
+/// TC-3045: the old origin's export for the web app's import (frontend/src/lib/oldOriginImport.ts). A hidden WKWebView
+/// at capacitor://localhost runs the web app's export script with its allowlist and hands back the JSON it resolves.
+/// It only reads; the wipe waits for the import's ack.
+final class OldOriginExport: NSObject, WKNavigationDelegate, WKURLSchemeHandler {
+    static let timeout: TimeInterval = 20
+    private static var running: [OldOriginExport] = []
+
+    private let allow: [String: Any]
+    private let script: String
+    private let completion: (Result<String, Error>) -> Void
+    private var webView: WKWebView?
+    private var deadline: DispatchWorkItem?
+
+    private init(allow: [String: Any], script: String, completion: @escaping (Result<String, Error>) -> Void) {
+        self.allow = allow
+        self.script = script
+        self.completion = completion
+    }
+
+    /// On the main thread. `script` is the body of an async function of `allow`; `completion` is called once.
+    static func run(allow: [String: Any], script: String, completion: @escaping (Result<String, Error>) -> Void) {
+        let export = OldOriginExport(allow: allow, script: script, completion: completion)
+        running.append(export)
+        export.start()
+    }
+
+    private func start() {
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .default()
+        configuration.setURLSchemeHandler(self, forURLScheme: OldOriginWipe.oldScheme)
+        let webView = WKWebView(frame: .zero, configuration: configuration)
+        webView.navigationDelegate = self
+        self.webView = webView
+        let deadline = DispatchWorkItem { [weak self] in self?.finish(.failure(OldOriginExportError(reason: "timed out"))) }
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.timeout, execute: deadline)
+        self.deadline = deadline
+        webView.load(URLRequest(url: OldOriginWipe.oldPage))
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        webView.callAsyncJavaScript(script, arguments: ["allow": allow], in: nil, in: .page) { [weak self] result in
+            switch result {
+            case .success(let json as String):
+                self?.finish(.success(json))
+            case .success:
+                self?.finish(.failure(OldOriginExportError(reason: "unexpected script result")))
+            case .failure(let error):
+                self?.finish(.failure(error))
+            }
+        }
+    }
+
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        finish(.failure(error))
+    }
+
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        finish(.failure(error))
+    }
+
+    func webView(_ webView: WKWebView, start urlSchemeTask: WKURLSchemeTask) {
+        OldOriginWipe.serveBlankPage(urlSchemeTask)
+    }
+
+    func webView(_ webView: WKWebView, stop urlSchemeTask: WKURLSchemeTask) {}
+
+    private func finish(_ result: Result<String, Error>) {
+        guard let webView else { return }
+        deadline?.cancel()
+        deadline = nil
+        webView.stopLoading()
+        webView.navigationDelegate = nil
+        self.webView = nil
+        Self.running.removeAll { $0 === self }
+        completion(result)
+    }
+}
+
+struct OldOriginExportError: LocalizedError {
+    let reason: String
+    var errorDescription: String? { reason }
+}
+
+/// The web app's side of the old origin's export and wipe (frontend/src/lib/oldOriginImport.ts). `take` hands over the
+/// export (saved first to an app-private file kept out of backups, and reused by a later launch until acked); `ack`
+/// marks the import done, deletes the file, and only then lets `OldOriginWipe` run.
+public final class OldOriginMigrationPlugin: CAPPlugin, CAPBridgedPlugin {
+    public let identifier = "OldOriginMigrationPlugin"
+    public let jsName = "OldOriginMigration"
+    public let pluginMethods: [CAPPluginMethod] = [
+        CAPPluginMethod(name: "take", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "ack", returnType: CAPPluginReturnPromise),
+    ]
+    private static let log = Logger(subsystem: "xyz.tinycloud.exo", category: "webview")
+
+    private static var exportFile: URL? {
+        try? FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+            .appendingPathComponent("old-origin-export.json")
+    }
+
+    /// Resolves `{state, data?}`: "skip" for a dev build still served from the old site, "done" once imported, or
+    /// "export" with the export's JSON.
+    @objc func take(_ call: CAPPluginCall) {
+        guard let allow = call.options["allow"] as? [String: Any], let script = call.getString("script") else {
+            call.reject("allow and script are required")
+            return
+        }
+        DispatchQueue.main.async { [weak self] in
+            if self?.bridge?.config.appStartServerURL.host?.lowercased() == OldOriginWipe.oldHost {
+                call.resolve(["state": "skip"])
+                return
+            }
+            guard let file = Self.exportFile else {
+                call.reject("Could not find the app's support directory")
+                return
+            }
+            if UserDefaults.standard.bool(forKey: OldOriginWipe.importedKey) {
+                // Left behind if the app died between the ack's flag and the file's deletion.
+                try? FileManager.default.removeItem(at: file)
+                call.resolve(["state": "done"])
+                return
+            }
+            if let existing = try? String(contentsOf: file, encoding: .utf8) {
+                call.resolve(["state": "export", "data": existing])
+                return
+            }
+            OldOriginExport.run(allow: allow, script: script) { result in
+                switch result {
+                case .success(let json):
+                    do {
+                        try Data(json.utf8).write(to: file, options: [.atomic])
+                        var values = URLResourceValues()
+                        values.isExcludedFromBackup = true
+                        var saved = file
+                        try saved.setResourceValues(values)
+                    } catch {
+                        call.reject("Could not save the old origin's export (\(error.localizedDescription))")
+                        return
+                    }
+                    Self.log.notice("Handing the old origin's export to the web app (\(json.count, privacy: .public) chars)")
+                    call.resolve(["state": "export", "data": json])
+                case .failure(let error):
+                    let reason = "Could not export the old origin's data (\(error.localizedDescription))"
+                    Self.log.notice("\(reason, privacy: .public)")
+                    call.reject(reason)
+                }
+            }
+        }
+    }
+
+    @objc func ack(_ call: CAPPluginCall) {
+        DispatchQueue.main.async { [weak self] in
+            UserDefaults.standard.set(true, forKey: OldOriginWipe.importedKey)
+            if let file = Self.exportFile { try? FileManager.default.removeItem(at: file) }
+            Self.log.notice("The web app imported the old origin's export; deleted the export file")
+            OldOriginWipe.startIfNeeded(appHost: self?.bridge?.config.appStartServerURL.host)
+            call.resolve()
+        }
     }
 }

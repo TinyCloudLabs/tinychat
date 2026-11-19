@@ -18,13 +18,15 @@ class ExoBridgeViewController: CAPBridgeViewController {
         if let webView = webView, let start = bridge?.config.appStartServerURL, let original = webView.navigationDelegate {
             webViewRecovery = WebViewRecovery(webView: webView, startURL: start, original: original)
         }
-        // TC-3045: once, delete what the web app left at the old origin (capacitor://localhost). Started a few seconds
-        // later so the hidden WebView it uses stays off the app WebView's first load.
+        // TC-3045: once the web app has imported what it keeps (OldOriginMigrationPlugin, below), delete what it left at
+        // the old origin (capacitor://localhost). Tried a few seconds later so the hidden WebView it uses stays off the
+        // app WebView's first load; before the import this does nothing, and the import's ack starts it instead.
         let appHost = bridge?.config.appStartServerURL.host
         DispatchQueue.main.asyncAfter(deadline: .now() + 5) { OldOriginWipe.startIfNeeded(appHost: appHost) }
         bridge?.registerPluginInstance(VoiceNotesPlugin())
         bridge?.registerPluginInstance(OnDeviceSttPlugin())
         bridge?.registerPluginInstance(AppLockPlugin())
+        bridge?.registerPluginInstance(OldOriginMigrationPlugin())
         bridge?.registerPluginInstance(AudioDiagnosticsPlugin())
         // TC-2862 native replica storage (flagged off in the web app until the SDK adapter lands).
         bridge?.registerPluginInstance(ReplicaStorePlugin())

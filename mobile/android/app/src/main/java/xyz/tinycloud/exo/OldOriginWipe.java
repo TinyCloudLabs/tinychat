@@ -24,18 +24,25 @@ import androidx.webkit.WebViewFeature;
  * good and says so once. A WebView too old for DELETE_BROWSING_DATA is checked first and costs no attempt, so the wipe
  * runs on a launch after a WebView update. Not WebStorage.deleteOrigin (it leaves localStorage) and not
  * WebStorageCompat.deleteBrowsingData (it would wipe the new origin too).
+ *
+ * <p>Nothing is wiped before the web app has imported what it keeps from the old origin ({@link OldOriginMigration}):
+ * until then a launch starts no attempt and costs none. Once it has, the wipe starts right after the import's ack, or
+ * after the first frame of a later launch if that attempt didn't finish.
  */
 final class OldOriginWipe {
     static final String OLD_SITE = "localhost";
     static final int MAX_ATTEMPTS = 3;
     static final long TIMEOUT_MS = 10_000L;
-    private static final String PREFS = "exo.webview";
+    static final String PREFS = "exo.webview";
+    /** Set by {@link OldOriginMigration#ack} once the web app has imported the old origin's export. */
+    static final String IMPORTED_KEY = "xyz.tinycloud.home.oldOriginImported.v1";
     private static final String DONE_KEY = "xyz.tinycloud.home.oldOriginWiped.v1";
     private static final String ATTEMPTS_KEY = "xyz.tinycloud.home.oldOriginWipe.attempts.v1";
     private static final String TAG = "ExoWebView";
+    /** An attempt was started (or the wipe found done) in this process; the next try is the next launch. */
     private static boolean ranThisProcess;
 
-    enum Result { ALREADY_DONE, OLD_SITE_IN_USE, GAVE_UP, UNSUPPORTED, STARTED, FAILED }
+    enum Result { ALREADY_DONE, OLD_SITE_IN_USE, GAVE_UP, UNSUPPORTED, STARTED, FAILED, NOT_IMPORTED }
 
     /** The persisted state: the done flag and the attempts started so far ({@code MAX_ATTEMPTS + 1} once given up). */
     interface Store {
@@ -91,6 +98,12 @@ final class OldOriginWipe {
         return Result.STARTED;
     }
 
+    /** {@link #start}, once the web app has imported the old origin's export; before that, nothing and no attempt. */
+    static Result startAfterImport(boolean imported, Store store, Wiper wiper, Scheduler scheduler, Events events, String appHost) {
+        if (!imported) return Result.NOT_IMPORTED;
+        return start(store, wiper, scheduler, events, appHost);
+    }
+
     private static void giveUp(Store store, Events events) {
         store.setAttempts(MAX_ATTEMPTS + 1);
         events.gaveUp();
@@ -125,20 +138,26 @@ final class OldOriginWipe {
 
     /**
      * From MainActivity.onCreate once the bridge exists. Runs after the first frame is drawn and never blocks: the
-     * WebView deletes in the background. Once per process, so recreating the activity does not spend an attempt.
+     * WebView deletes in the background.
      */
     @UiThread
     static void afterFirstFrame(Activity activity, String appUrl) {
-        if (ranThisProcess) return;
-        ranThisProcess = true;
         Handler main = new Handler(Looper.getMainLooper());
         String appHost = Uri.parse(appUrl).getHost();
         Context context = activity.getApplicationContext();
         OneShotPreDrawListener.add(activity.getWindow().getDecorView(), () -> main.post(() -> run(context, main, appHost)));
     }
 
+    /** From {@link OldOriginMigration#ack}: the import is in, so the wipe may start now. */
+    static void afterImport(Context context, String appHost) {
+        Handler main = new Handler(Looper.getMainLooper());
+        main.post(() -> run(context.getApplicationContext(), main, appHost));
+    }
+
+    /** At most one attempt per process, whichever of the first frame and the import's ack comes first once imported. */
     @UiThread
     private static void run(Context context, Handler main, String appHost) {
+        if (ranThisProcess) return;
         SharedPreferences prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         Store store = new Store() {
             @Override public boolean done() { return prefs.getBoolean(DONE_KEY, false); }
@@ -164,7 +183,13 @@ final class OldOriginWipe {
                 Log.w(TAG, "Gave up deleting the old origin's WebView data after " + MAX_ATTEMPTS + " attempts");
             }
         };
-        Result result = start(store, wiper, (delayMs, task) -> main.postDelayed(task, delayMs), events, appHost);
+        Result result = startAfterImport(prefs.getBoolean(IMPORTED_KEY, false), store, wiper,
+            (delayMs, task) -> main.postDelayed(task, delayMs), events, appHost);
+        if (result == Result.NOT_IMPORTED) {
+            Log.i(TAG, "The old origin's WebView data stays until the web app has imported it");
+            return;
+        }
+        ranThisProcess = true;
         if (result == Result.UNSUPPORTED) {
             Log.i(TAG, "This WebView cannot delete a site's data; the old origin's data stays until a WebView update");
         }

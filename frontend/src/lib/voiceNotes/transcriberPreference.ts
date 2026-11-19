@@ -255,6 +255,34 @@ export function writeAccountDefaults(
 }
 
 /**
+ * The phone app with a WebView storage that has no stored choice yet (TC-3045, a new origin): take the choice from the
+ * engine's defaults, which still hold it, before any later step in the write lane writes the stored preference (here,
+ * its defaults) over them. Call before anything renders, so it runs first in the lane. A stored key is kept; unless
+ * signed in, the engine holds the signed-out default or a transition, not a choice, so nothing is taken. Never throws.
+ */
+export async function seedPreferenceFromEngine(): Promise<void> {
+  let seeded = false;
+  try {
+    await inOrder(async () => {
+      const store = storage();
+      if (!store || captureEngineKind() !== "native" || store.getItem(TRANSCRIBER_KEY) !== null) return;
+      const engine = await withCaptureDeadline(VoiceNotes.getCaptureDefaults());
+      if (engine.status !== "signed_in" || engine.accountDid === null) return;
+      store.setItem(TRANSCRIBER_KEY, engine.transcriber);
+      // The engine holds the effective speakers setting, which is a choice only for the cloud transcribers.
+      if (store.getItem(SPEAKERS_KEY) === null && (engine.transcriber === "private-cloud" || engine.transcriber === "assemblyai")) {
+        store.setItem(SPEAKERS_KEY, engine.identifySpeakers ? "1" : "0");
+      }
+      if (store.getItem(UPLOAD_AUDIO_KEY) === null) store.setItem(UPLOAD_AUDIO_KEY, engine.uploadAudio ? "1" : "0");
+      seeded = true;
+    });
+  } catch (caught) {
+    console.warn("[VoiceNotes] Could not take the default transcription mode from the engine", caught);
+  }
+  if (seeded) for (const listener of listeners) listener();
+}
+
+/**
  * One change to the preference, applied as one unit inside the write lane. Only the changed field is carried in; the
  * rest is read from the stored preference when the write runs, so a request queued earlier can never write back what
  * an earlier change replaced. The stored keys are read first, then the engine is written, then both keys. If any
