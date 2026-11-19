@@ -52,6 +52,10 @@ interface ImportMetaEnv {
   readonly VITE_ONE_APPS?: string;
   /** "true" registers the PWA service worker under `vite dev` too (src/lib/pwa.ts); off by default. */
   readonly VITE_PWA_DEV?: string;
+  /** TC-3195: the origin recording share links point at (default https://tinycloud.one). */
+  readonly VITE_SHARE_LINK_ORIGIN?: string;
+  /** TC-3195: the links service origin that holds each share link's record (default https://api.tinycloud.xyz). */
+  readonly VITE_SHARE_LINKS_API_ORIGIN?: string;
 }
 
 interface ImportMeta {
