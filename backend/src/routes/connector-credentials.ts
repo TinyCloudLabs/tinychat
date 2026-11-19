@@ -19,6 +19,7 @@ import {
   normalizeWebhookAddress,
 } from "../services/webhook-tokens.js";
 import { CONNECTOR_REGISTRY } from "./connector-webhooks.js";
+import { credentialRouteUnavailable } from "./route-unavailable.js";
 
 /**
  * W2 — the authenticated custody surface (backend-ingest plan §6.2 "obtain" / "revoke").
@@ -119,7 +120,7 @@ export function createConnectorCredentialRouter(
   async function tenant(req: Request, res: Response): Promise<string | null> {
     const source = req.params.source;
     if (!isValidSource(source) || !registry.has(source)) {
-      res.status(404).json({ error: "not_found" });
+      credentialRouteUnavailable(res);
       return null;
     }
 
@@ -132,7 +133,7 @@ export function createConnectorCredentialRouter(
     }
 
     if (options.modes === undefined) {
-      res.status(404).json({ error: "not_found" });
+      credentialRouteUnavailable(res);
       return null;
     }
     let mode: string;
@@ -146,7 +147,7 @@ export function createConnectorCredentialRouter(
     }
     if (mode !== "backend") {
       // Dark for everyone else — the same answer as a deployment without the flag.
-      res.status(404).json({ error: "not_found" });
+      credentialRouteUnavailable(res);
       return null;
     }
     return address;

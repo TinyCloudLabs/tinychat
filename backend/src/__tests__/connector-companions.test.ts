@@ -848,11 +848,11 @@ describe("POST /config enable", () => {
       expect(res.status).toBe(200);
     });
 
-    // Queue clear precedes the marker clear, which precedes the mint.
+    // Clear the queue, then mint the replacement before clearing the marker.
     expect(h.ops).toEqual([
       `clear:${SOURCE}/${ADDRESS}`,
-      "clear-disabled",
       "mint",
+      "clear-disabled",
     ]);
     expect(h.queue.items.size).toBe(0);
     expect(h.queue.deadItems.size).toBe(0);

@@ -48,6 +48,19 @@
                     android:path="/google" />
             </intent-filter>
 
+            <!-- Recording share links (TC-3195): https://tinycloud.one/s/<id>#… can open here
+                 (`appUrlOpen`). This filter has no android:autoVerify, so Android opens these links in the
+                 browser by default. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="https"
+                    android:host="tinycloud.one"
+                    android:pathPrefix="/s/" />
+            </intent-filter>
+
         </activity>
 
         <provider

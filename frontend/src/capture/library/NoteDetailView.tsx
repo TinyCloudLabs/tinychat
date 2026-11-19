@@ -60,6 +60,7 @@ import { LazySavedNote } from "./savedNote/LazySavedNote";
 import { SAVED_NOTE_COPY } from "./savedNote/savedNoteCopy";
 import type { SavedNoteStore } from "./savedNote/savedNoteStore";
 import { NoteHeaderTitle } from "./rename/RecordingRename";
+import { RowBadge } from "./RowBadge";
 
 export type AudioLoad = (signal: AbortSignal, onProgress: (loadedBytes: number, totalBytes: number) => void) => Promise<Blob | string | null>;
 
@@ -106,6 +107,8 @@ export interface NoteDetailViewProps {
   combine?: CombineDetail;
   /** The note's speaker names (TC-2189); without them the labels stay as stored. */
   speakerNames?: SpeakerNamesController;
+  /** The owner is sharing it (TC-3195): a "Shared" badge before the meta line. */
+  shared?: boolean;
 }
 
 /** Consecutive sentences of one speaker as one block. */
@@ -130,7 +133,7 @@ export function noteMeta(item: LibraryItem): string {
     .join(" · ");
 }
 
-function Frame(props: { title: string; pushed: boolean; onBack: () => void; activityControl?: ReactNode; children: ReactNode }) {
+export function Frame(props: { title: string; pushed: boolean; onBack: () => void; activityControl?: ReactNode; children: ReactNode }) {
   return (
     <>
       {props.pushed && <PageHeader title={props.title} back={props.onBack} className={PAGE_COLUMN} trailing={props.activityControl} />}
@@ -561,7 +564,7 @@ export function NoteDetailView(props: NoteDetailViewProps) {
   return <NotePlaybackProvider><NoteDetailViewContent {...props} /></NotePlaybackProvider>;
 }
 
-function NotePlaybackProvider({ children }: { children: ReactNode }) {
+export function NotePlaybackProvider({ children }: { children: ReactNode }) {
   const [seek, setSeek] = useState<{ seconds: number; nonce: number } | null>(null);
   const [clock, setClock] = useState({ elapsed: 0, playing: false });
   return <NotePlaybackContext.Provider value={{ seek, playFrom: (seconds) => setSeek((current) => ({ seconds, nonce: (current?.nonce ?? 0) + 1 })),
@@ -633,7 +636,7 @@ function NoteDetailViewContent(props: NoteDetailViewProps) {
   return (
     <Frame title={title} pushed={props.pushed} onBack={props.onBack} activityControl={props.activityControl}>
       <header className="flex flex-col gap-1" data-testid="note-detail" data-note-id={item.id}>
-        <NoteHeaderTitle item={item} title={title} pushed={props.pushed} meta={noteMeta(item)} />
+        <NoteHeaderTitle item={item} title={title} pushed={props.pushed} meta={props.shared ? <><RowBadge>Shared</RowBadge> {noteMeta(item)}</> : noteMeta(item)} />
         {activityStatus && <div className="flex flex-wrap items-center gap-3" data-testid="note-detail-status"><p className={activityStatus.startsWith("Needs attention") ? "text-callout text-amber-700 dark:text-amber-300" : "text-callout text-muted-foreground"}>{activityStatus}</p>{statusJobs.flatMap((job) => job.action ? [job.action] : []).map((action, index) => <button key={`${action.label}:${index}`} type="button" className="min-h-11 text-callout text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={action.run}>{action.label}</button>)}{!statusJobs.some((job) => job.action) && activityRetry && <button type="button" className="min-h-11 text-callout text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={activityRetry}>Try again</button>}</div>}
         <CombineActions combine={props.combine} />
       </header>
