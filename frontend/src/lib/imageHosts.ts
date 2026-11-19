@@ -1,5 +1,6 @@
-// Hosts whose image requests are not read by someone who wants the data in the address. Such an image does not use a reply's
-// budget (lib/imageBudget.ts). The address filter (lib/imageUrlFilter.ts) judges an address on these hosts like any other.
+// Hosts whose image requests are not read by someone who wants the data in the address. Such an image uses only the floor
+// of a reply's budget (lib/imageBudget.ts). The address filter (lib/imageUrlFilter.ts) judges an address on these hosts
+// like any other.
 
 // Ours, listed exactly: each is a host that serves our own pages or media, so the request log is ours. Other subdomains of our
 // domains are not listed, because some serve user-published content; they are judged like any other host.

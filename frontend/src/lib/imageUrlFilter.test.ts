@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
+import { ADDRESS_BIT_LIMIT } from "./imageAddressBits";
 import { ASK_THRESHOLD, IMAGE_PROMPT_COPY, imageUrlVerdict, type ImageReasonCode } from "./imageUrlFilter";
 
 // What each sign weighs and where its steps are. The corpus (imageUrlFilter.corpus.test.ts) checks whole addresses.
@@ -23,8 +24,9 @@ const score = (src: string) => {
 };
 
 describe("the verdict", () => {
-  test("an ordinary address loads with no reasons", () => {
-    expect(imageUrlVerdict("https://example.com/photos/2026/11/team-offsite-group-photo.jpg")).toEqual({ kind: "load", score: 0, reasons: [] });
+  test("an ordinary address loads with no reasons, and says how much room it has and over what that was counted", () => {
+    const src = "https://example.com/photos/2026/11/team-offsite-group-photo.jpg";
+    expect(imageUrlVerdict(src)).toEqual({ kind: "load", score: 0, reasons: [], bits: 287, charged: [src] });
   });
 
   test("weak signs are listed on an address that still loads", () => {
@@ -53,7 +55,58 @@ describe("the verdict", () => {
         { code: "credentials", weight: 100, detail: "a user name or password before the host" },
         { code: "port", weight: 35, detail: "port 8443" },
       ],
+      bits: 230,
     });
+  });
+});
+
+// The bound under the signs (imageAddressBits.ts, which has its own tests for what each character costs).
+describe("room for data", () => {
+  const words = "zebra quartz violin harbor meadow copper lantern orchid falcon timber saffron glacier pebble walnut crimson anchor thistle marble ember juniper".split(" ");
+  const bits = (src: string) => {
+    const verdict = imageUrlVerdict(src);
+    return verdict.kind === "block" ? NaN : verdict.bits;
+  };
+
+  test("an address with room for more than the limit asks, whatever it looks like", () => {
+    // Made-up words: no sign fires on them, fifteen at a time.
+    const page = (n: number) => `https://example.com/${Array.from({ length: n }, (_, i) => words.slice(i, i + 15).map((word) => word + words[(i * 7 + 3) % 20]).join("-")).join("/")}.png`;
+    expect(score(page(1))).toBe(0);
+    expect(bits(page(1))).toBeLessThan(ADDRESS_BIT_LIMIT);
+    const big = imageUrlVerdict(page(2));
+    expect(big.kind).toBe("ask");
+    expect(big.reasons.find((reason) => reason.code === "capacity")).toEqual({
+      code: "capacity",
+      weight: 100,
+      detail: `room for about ${bits(page(2))} bits of data, over the ${ADDRESS_BIT_LIMIT} one address may have`,
+    });
+  });
+
+  test("no image is free: the smallest address is charged the floor", () => {
+    expect(bits("https://a.io/")).toBeGreaterThanOrEqual(32);
+    expect(bits("https://lh3.googleusercontent.com/a/x")).toBe(32);
+  });
+
+  test("on a CDN whose uploader cannot read its requests, the id is not counted; an address inside it is", () => {
+    const id = opaque(100);
+    const direct = imageUrlVerdict(`https://lh3.googleusercontent.com/pw/${id}=w1200`);
+    expect(direct).toMatchObject({ kind: "load", bits: 32, charged: [] });
+    const through = imageUrlVerdict("https://images.unsplash.com/photo-1?mark=https://cdn.example.org/zebra-quartz-violin.png");
+    expect(through).toMatchObject({ kind: "load", charged: ["https://cdn.example.org/zebra-quartz-violin.png"] });
+    expect(bits("https://images.unsplash.com/photo-1?mark=https://cdn.example.org/zebra-quartz-violin.png")).toBe(bits("https://cdn.example.org/zebra-quartz-violin.png"));
+  });
+
+  test("an address inside an ordinary address is counted once, as part of the text the outer host receives", () => {
+    const outer = "https://example.com/_next/image?url=https%3A%2F%2Fcdn.example.org%2Fzebra-quartz-violin.png&w=640&q=75";
+    expect(imageUrlVerdict(outer)).toMatchObject({ kind: "load", charged: [outer] });
+    expect(bits(outer)).toBeGreaterThan(bits("https://cdn.example.org/zebra-quartz-violin.png"));
+  });
+
+  test("a signed S3 address loads: its signature is charged as 256 bits, not as text", () => {
+    const signed = `https://my-bucket.s3.amazonaws.com/photo.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIAIOSFODNN7EXAMPLE%2F20261118%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20261118T120000Z&X-Amz-Expires=3600&X-Amz-SignedHeaders=host&X-Amz-Signature=${SHA256}`;
+    expect(kind(signed)).toBe("load");
+    expect(bits(signed)).toBeGreaterThan(256 + 100);
+    expect(bits(signed)).toBeLessThan(ADDRESS_BIT_LIMIT);
   });
 });
 

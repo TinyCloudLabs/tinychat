@@ -1,9 +1,12 @@
+import { ADDRESS_BIT_LIMIT, IMAGE_BIT_FLOOR, URL_PLUMBING, addressBits, signedShape } from "./imageAddressBits";
 import { servesOpaqueIds } from "./imageHosts";
 
 // Which image addresses in model-written or note Markdown load on their own, which ask first, and which never load.
 // An image address can carry text out (`![](https://host/a.png?d=<owner data>)`); an ordinary image address does not look
 // like that. This is permissive: any host loads. Each sign that an address carries data adds a weight, and the address asks
-// only when the weights reach ASK_THRESHOLD. It looks at the address alone and keeps no state.
+// when the weights reach ASK_THRESHOLD. Under the signs is a bound that does not depend on shape: an address with room for
+// more than ADDRESS_BIT_LIMIT bits of data asks, whatever it looks like (imageAddressBits.ts). It looks at the address
+// alone and keeps no state; what the images of one reply carry together is bounded in imageBudget.ts.
 //
 // Normalisation: the WHATWG URL parser lowercases the host, turns an international name into its ASCII (xn--) form and an
 // IPv4 host written as one number, in octal or in hex into dotted form. Each path segment and query key or value is
@@ -44,14 +47,24 @@ export type ImageReasonCode =
   | "bad-escape"
   | "structured-data"
   | "long"
-  | "non-ascii";
+  | "non-ascii"
+  | "capacity";
 
 export type ImageReason = { code: ImageReasonCode; weight: number; detail: string };
 
 export type ImageVerdict =
-  | { kind: "load"; score: number; reasons: ImageReason[] }
+  | {
+      kind: "load";
+      score: number;
+      reasons: ImageReason[];
+      /** The room for data in the address, in bits (imageAddressBits.ts), counted on its own. */
+      bits: number;
+      /** The addresses that room was counted over: this one, or on a CDN whose requests the uploader cannot read, only the
+       * addresses inside it. The reply's budget counts them again against what the reply's earlier images sent. */
+      charged: string[];
+    }
   | { kind: "block"; reasons: ImageReason[] }
-  | { kind: "ask"; host: string; address: string; score: number; reasons: ImageReason[] };
+  | { kind: "ask"; host: string; address: string; score: number; reasons: ImageReason[]; bits: number };
 
 type Step = readonly [atLeast: number, weight: number];
 
@@ -134,17 +147,6 @@ const CAPTURE_HOST =
   /(?:^|\.)(?:webhook\.site|requestbin\.(?:com|net)|pipedream\.net|requestcatcher\.com|beeceptor\.com|hookbin\.com|interact\.sh|oast\.(?:fun|live|site|online|pro|me)|oastify\.com|burpcollaborator\.net|canarytokens\.com|dnslog\.cn|ceye\.io|ngrok\.(?:io|app|dev)|ngrok-free\.(?:app|dev)|trycloudflare\.com|loca\.lt|serveo\.net)$/;
 const HOST_PLUMBING = new Set(["www", "cdn", "img", "images", "image", "static", "media", "assets", "us", "eu", "ap", "east", "west", "north", "south", "central"]);
 
-// Words that are URL plumbing rather than text: file types, sizes and the vocabulary of image CDNs' transform parameters.
-const PLUMBING = new Set(
-  (
-    "image images img photo photos picture pictures pic pics media upload uploads file files asset assets static content " +
-    "public thumb thumbs thumbnail thumbnails fetch cdn wp commons wikipedia avatar avatars original default large medium " +
-    "small png jpg jpeg gif webp svg avif ico bmp format auto fit crop fill cover contain center faces face entropy compress " +
-    "tinysrgb srgb smart true false block light dark top bottom left right clip scale limit good best eco low progressive " +
-    "steep quality width height resize size max min identicon retro robohash monsterid wavatar blank px"
-  ).split(" "),
-);
-
 const REDIRECT_PARAM =
   /^(?:redirect|redirect_?ur[il]|redir|next|goto|go|return|return_?to|return_?url|continue|dest|destination|target|forward|fwd|out|jump|callback|rurl|to)$/;
 const TRACKING_PARAM = /^(?:utm_[a-z]+|fbclid|gclid|dclid|msclkid|yclid|twclid|igshid|mc_[ce]id|_hsenc|_hsmi|mkt_tok)$/;
@@ -187,41 +189,6 @@ const BASE64_RUN = /[A-Za-z0-9+/_-]{16,}/g;
 const HEX_RUN = /[0-9a-fA-F][0-9a-fA-F-]{14,}[0-9a-fA-F]/g;
 const BASE32_RUN = /[A-Za-z2-7]{24,}/g;
 const RUN_BREAKERS = /[.~,;:!*'()\s]/g;
-
-// What a signed URL's parameters look like, by grammar rather than by host: anyone can own a bucket and read its access log,
-// so the host proves nothing. The grammar is what bounds how much a forged one can carry (a 256-bit signature field, and a
-// few characters of key id and region). When every parameter of a shape is present and well-formed, those parameters are
-// not judged as blobs, length or parameter count. Shapes whose signature is an RSA value (Google Cloud Storage V4,
-// CloudFront: 2048 bits anyone could fill) are left out on purpose; those addresses ask.
-const SIGV4_HEADERS = "(?:host|range|content-type|content-md5|x-amz-(?:date|content-sha256|security-token|checksum-mode|user-agent|acl))";
-const SIGNED_HEADERS = new RegExp(`^${SIGV4_HEADERS}(?:;${SIGV4_HEADERS}){0,5}$`);
-const REGION = "(?:auto|[a-z]{2,4}(?:-[a-z]+){1,3}-?\\d{0,2})";
-const SIGNED_URL_SHAPES: readonly Readonly<Record<string, RegExp>>[] = [
-  {
-    // AWS Signature V4: S3, R2, Spaces, MinIO.
-    "x-amz-algorithm": /^AWS4-HMAC-SHA256$/,
-    "x-amz-credential": new RegExp(`^(?:[A-Z0-9]{16,20}|[0-9a-f]{32})/\\d{8}/${REGION}/s3/aws4_request$`),
-    "x-amz-date": /^\d{8}T\d{6}Z$/,
-    "x-amz-expires": /^\d{1,6}$/,
-    "x-amz-signedheaders": SIGNED_HEADERS,
-    "x-amz-signature": /^[0-9a-f]{64}$/,
-  },
-  {
-    // Azure Blob SAS.
-    sv: /^\d{4}-\d{2}-\d{2}$/,
-    se: /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?Z$/,
-    sr: /^[a-z]{1,2}$/,
-    sp: /^[a-z]{1,10}$/,
-    sig: /^[A-Za-z0-9+/]{43}=$/,
-  },
-];
-// Parameters that travel with a signed URL; exempt only alongside a complete shape above.
-const SIGNED_URL_EXTRAS: Readonly<Record<string, RegExp>> = {
-  "x-amz-content-sha256": /^UNSIGNED-PAYLOAD$/,
-  "x-id": /^GetObject$/,
-  st: /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?Z$/,
-  spr: /^https(?:,http)?$/,
-};
 
 type Escapes = { plain: number; binary: number; double: number; stray: number };
 
@@ -382,6 +349,8 @@ type Pool = {
   nested: number;
   /** The non-ASCII characters of each path segment and query key and value; a file name that repeats is counted once. */
   nonAscii: Set<string>;
+  /** The addresses whose room for data is counted (see ImageVerdict.charged). */
+  charged: string[];
 };
 
 /** Sorts one decoded path segment or query key or value into the pool: words, numbers, id shapes and what is left, opaque. */
@@ -412,7 +381,7 @@ function judgeToken(token: string, where: "path" | "query-key" | "query-value", 
         continue;
       }
       const bag = where === "path" ? pool.pathWords : phrase;
-      for (const word of words) if (word.length >= 2 && !PLUMBING.has(word.toLowerCase())) bag?.add(word.toLowerCase());
+      for (const word of words) if (word.length >= 2 && !URL_PLUMBING.has(word.toLowerCase())) bag?.add(word.toLowerCase());
     } else if (/[^A-Za-z0-9]/.test(piece)) {
       // Letters or digits mixed with another script: not a word in either, so it is opaque.
       pool.opaque.push(piece);
@@ -539,7 +508,7 @@ function judgeHost(hostname: string, add: Pool["add"]): void {
   for (const label of above) {
     for (const piece of label.split(NOT_ALPHANUMERIC)) {
       if (/^\d+$/.test(piece)) {
-        if (piece.length > 10) opaque += piece.length;
+        if (piece.length > 4) opaque += piece.length;
       } else if (/^\p{L}+$/u.test(piece)) {
         const found = wordsIn(piece);
         if (found === undefined) opaque += piece.length;
@@ -557,27 +526,13 @@ function judgeHost(hostname: string, add: Pool["add"]): void {
   if (text > 0) add("host-text", text, `${words.size} words in the subdomain labels`);
 }
 
-/** The keys (lowercased) of the query parameters that form a complete, well-formed signed-URL shape. */
-function signedParams(params: readonly (readonly [string, string])[]): Set<string> {
-  const values = new Map<string, string>();
-  const repeated = new Set<string>();
-  for (const [key, value] of params) {
-    const name = key.toLowerCase();
-    if (values.has(name)) repeated.add(name);
-    values.set(name, value);
-  }
-  const exempt = new Set<string>();
-  for (const shape of SIGNED_URL_SHAPES) {
-    const names = Object.keys(shape);
-    const complete = names.every((name) => !repeated.has(name) && shape[name]!.test(values.get(name) ?? "") && hiddenText(values.get(name) ?? "") === undefined);
-    if (complete) for (const name of names) exempt.add(name);
-  }
-  if (exempt.size > 0) {
-    for (const [name, grammar] of Object.entries(SIGNED_URL_EXTRAS)) {
-      if (!repeated.has(name) && grammar.test(values.get(name) ?? "")) exempt.add(name);
-    }
-  }
-  return exempt;
+/** The names of the query parameters that form a complete, well-formed signed-URL shape (imageAddressBits.ts): those
+ * parameters are not judged as blobs, length or parameter count; their room for data is counted by their grammar. A
+ * signature that decodes to text is not a signature. */
+function signedParams(params: readonly (readonly [string, string])[]): ReadonlySet<string> {
+  const shape = signedShape(params);
+  if (!shape || params.some(([name, value]) => shape.names.has(name) && hiddenText(value) !== undefined)) return new Set();
+  return shape.names;
 }
 
 /** An address inside `text` (decoded once): where it starts, or -1. `leading` allows the scheme-less `//host` form. */
@@ -594,8 +549,9 @@ function looksNested(view: string): boolean {
   return HTTP_INSIDE.test(view) || /:\/\/|^\s*\/\//.test(view) || ODD_SCHEME.test(view.trim());
 }
 
-/** Judges one URL's own parts into the pool; an address found inside it is judged the same way, into the same pool. */
-function gather(url: URL, raw: string, depth: number, pool: Pool): void {
+/** Judges one URL's own parts into the pool; an address found inside it is judged the same way, into the same pool.
+ * `outerCharged` says an address around this one already has its room for data counted, this one's text included. */
+function gather(url: URL, raw: string, depth: number, pool: Pool, outerCharged = false): void {
   const { add } = pool;
   const inside = depth > 0 ? "inside the address: " : "";
   const note: Pool["add"] = (code, weight, detail) => add(code, weight, inside + detail);
@@ -609,6 +565,8 @@ function gather(url: URL, raw: string, depth: number, pool: Pool): void {
   if (url.port) note("port", COMMON_PORTS.has(url.port) ? W.port : W.oddPort, `port ${url.port}`);
 
   const waived = servesOpaqueIds(url.hostname.replace(/\.$/, ""));
+  const chargedHere = !outerCharged && !waived;
+  if (chargedHere) pool.charged.push(url.href);
 
   // An address inside this one. Its parts are judged in place of the text that carries it, which is sound only when that
   // text is exactly the address as a URL parser writes it back: nothing in front of it, no fragment, no dot-segments, no
@@ -630,7 +588,7 @@ function gather(url: URL, raw: string, depth: number, pool: Pool): void {
     else if (!canonical) note("nested-url", W.hiddenUrl, "the address inside is not written as a browser writes one (text before it, a fragment, dot-segments or changed escaping)");
     else note("nested-url", W.nestedUrl, `carries another address (${innerUrl!.host})`);
     if (!canonical || depth >= MAX_NESTING) return false;
-    gather(innerUrl!, inner, depth + 1, pool);
+    gather(innerUrl!, inner, depth + 1, pool, outerCharged || chargedHere);
     return true;
   };
 
@@ -666,7 +624,7 @@ function gather(url: URL, raw: string, depth: number, pool: Pool): void {
   let tracking = false;
   for (const [key, value] of params) {
     const name = decodeOnce(key).toLowerCase();
-    if (signed.has(name)) continue;
+    if (signed.has(decodeOnce(key))) continue;
     counted++;
     if (TRACKING_PARAM.test(name)) tracking = true;
     const inKey = judgeSegment(key, "query-key", pool, waived);
@@ -752,6 +710,7 @@ export function imageUrlVerdict(src: string): ImageVerdict {
     escapes: { plain: 0, binary: 0, double: 0, stray: 0 },
     nested: 0,
     nonAscii: new Set(),
+    charged: [],
   };
   gather(url, raw, 0, pool);
 
@@ -787,9 +746,14 @@ export function imageUrlVerdict(src: string): ImageVerdict {
   if (double > 0) pool.add("double-encoded", W.doubleEncoded, "percent-encoded more than once");
   if (stray > 0) pool.add("bad-escape", W.badEscape, "a % that is not an escape");
 
+  // The bound under the signs: the room for data, whatever its shape.
+  const seen = new Set<string>();
+  const bits = Math.max(IMAGE_BIT_FLOOR, Math.ceil(pool.charged.reduce((sum, href) => sum + addressBits(new URL(href), seen), 0)));
+  if (bits > ADDRESS_BIT_LIMIT) pool.add("capacity", ASK_THRESHOLD, `room for about ${bits} bits of data, over the ${ADDRESS_BIT_LIMIT} one address may have`);
+
   const score = reasons.reduce((sum, reason) => sum + reason.weight, 0);
-  if (score < ASK_THRESHOLD) return { kind: "load", score, reasons };
-  return { kind: "ask", host: url.host, address: url.href, score, reasons };
+  if (score < ASK_THRESHOLD) return { kind: "load", score, reasons, bits, charged: pool.charged };
+  return { kind: "ask", host: url.host, address: url.href, score, reasons, bits };
 }
 
 export const IMAGE_PROMPT_COPY = {

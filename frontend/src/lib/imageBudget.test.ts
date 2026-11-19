@@ -1,10 +1,17 @@
 import { describe, expect, test } from "bun:test";
 
+import { IMAGE_BIT_FLOOR, REPLY_BIT_BUDGET } from "./imageAddressBits";
+import { heavyImageAddress as heavy } from "./imageBudget.fixture";
 import { isAllowlistedImageHost } from "./imageHosts";
-import { heldImages, ReplyImageBudget, SILENT_THIRD_PARTY_IMAGES } from "./imageBudget";
+import { heldImages, ReplyImageBudget } from "./imageBudget";
+import { imageUrlVerdict } from "./imageUrlFilter";
 
 const img = (host: string, name = "a") => `https://${host}/${name}.png`;
 const heldSrcs = (srcs: string[]) => heldImages(srcs).map((held) => held.src);
+const bits = (src: string) => {
+  const verdict = imageUrlVerdict(src);
+  return verdict.kind === "block" ? NaN : verdict.bits;
+};
 
 describe("allowlisted hosts", () => {
   test.each(["tinycloud.one", "app.tinycloud.one", "tinycloud.chat", "www.tinycloud.chat", "node.tinycloud.xyz", "tinycloud.xyz", "i.imgur.com", "avatars.githubusercontent.com"])(
@@ -19,83 +26,111 @@ describe("allowlisted hosts", () => {
 });
 
 describe("the images of a reply that must wait", () => {
-  test("the first two from other hosts load, the rest wait, in document order", () => {
-    const srcs = ["a", "b", "c", "d", "e"].map((name) => img(`${name}.example`));
-    expect(SILENT_THIRD_PARTY_IMAGES).toBe(2);
-    expect(heldSrcs(srcs)).toEqual(srcs.slice(2));
-    expect(heldImages(srcs)[0]).toEqual({ src: srcs[2]!, host: "c.example" });
+  test("the fixture: an address that loads on its own, three of which fit in the budget and four of which do not", () => {
+    expect(imageUrlVerdict(heavy("a.example")).kind).toBe("load");
+    expect(bits(heavy("a.example"))).toBeGreaterThan(REPLY_BIT_BUDGET / 4);
+    expect(bits(heavy("a.example"))).toBeLessThan(REPLY_BIT_BUDGET / 3);
   });
 
-  test("two images do not wait", () => {
-    expect(heldSrcs([img("a.example"), img("b.example")])).toEqual([]);
+  test("images load while the room for data in their addresses, added up, stays within the budget; the rest wait, in document order", () => {
+    const srcs = ["a", "b", "c", "d", "e"].map((name) => heavy(`${name}.example`));
+    expect(heldSrcs(srcs)).toEqual(srcs.slice(3));
+    expect(heldImages(srcs)[0]).toEqual({ src: srcs[3]!, host: "d.example" });
+    expect(heldSrcs(srcs.slice(0, 3))).toEqual([]);
   });
 
-  test("our own hosts never count, however many", () => {
-    const own = Array.from({ length: 6 }, (_, i) => img("node.tinycloud.xyz", `n${i}`));
-    expect(heldSrcs([...own, img("a.example"), img("b.example")])).toEqual([]);
-    expect(heldSrcs([img("a.example"), ...own, img("b.example"), img("c.example")])).toEqual([img("c.example")]);
+  test("ordinary images do not wait: five from one site, or five from five sites", () => {
+    const wikimedia = ["Golden_Gate_Bridge", "Starry_Night", "Mount_Everest_North_Face", "Tokyo_Tower_at_night", "Photosynthesis_diagram"].map(
+      (name) => `https://upload.wikimedia.org/wikipedia/commons/thumb/a/a9/${name}.jpg/640px-${name}.jpg`,
+    );
+    expect(heldSrcs(wikimedia)).toEqual([]);
+    expect(heldSrcs(["a", "b", "c", "d", "e"].map((name) => `https://www.${name}-news.example/photos/2026/11/front-page-${name}.jpg`))).toEqual([]);
   });
 
-  test("a trusted third-party host does not use the budget either", () => {
-    const trusted = ["i.imgur.com", "avatars.githubusercontent.com"].map((h) => img(h));
-    expect(heldSrcs([...trusted, img("a.example"), img("b.example")])).toEqual([]);
+  test("the budget is one number for the reply: hosts, domains and free hosting tenants all draw on it", () => {
+    const oneHost = ["1", "2", "3", "4", "5"].map((name) => heavy("cdn.example", name));
+    const manyDomains = ["one.example", "two.example.org", "three.pages.dev", "four.vercel.app", "five.example.co.uk"].map((host) => heavy(host));
+    expect(heldSrcs(oneHost)).toEqual(oneHost.slice(3));
+    expect(heldSrcs(manyDomains)).toEqual(manyDomains.slice(3));
   });
 
-  test("an imgix-backed host is budgeted: a base64 overlay address is not readable, so it must not be free", () => {
-    const overlay = "https://images.unsplash.com/photo-1?mark64=aHR0cHM6Ly94LmVlL2FiY2RlZmdoaWprbG0";
-    expect(heldSrcs([img("a.example"), img("b.example"), overlay])).toEqual([overlay]);
+  test("no image is free: even the smallest addresses use the budget up", () => {
+    const tiny = Array.from({ length: 200 }, (_, i) => `https://a.io/${i}`);
+    expect(tiny.map(bits).every((n) => n >= IMAGE_BIT_FLOOR)).toBe(true);
+    expect(tiny.length - heldSrcs(tiny).length).toBeLessThanOrEqual(REPLY_BIT_BUDGET / IMAGE_BIT_FLOOR);
+    expect(heldSrcs(tiny).length).toBeGreaterThan(0);
   });
 
-  test("an address that asks or is blocked is judged alone and does not use the budget", () => {
+  test("what an earlier image of the reply already sent is charged as an index, so a gallery from one site costs little", () => {
+    const gallery = Array.from({ length: 8 }, (_, i) => `https://photos.example.com/albums/summer-trip/day-${i + 1}/sunset.jpg`);
+    expect(gallery.map(bits).reduce((sum, n) => sum + n, 0)).toBeGreaterThan(REPLY_BIT_BUDGET / 2); // each counted alone
+    expect(heldSrcs(gallery)).toEqual([]);
+  });
+
+  test("an image that waits is not charged: a small one after it still loads", () => {
+    const srcs = [heavy("a.example"), heavy("b.example"), heavy("c.example"), heavy("d.example"), img("e.example")];
+    expect(heldSrcs(srcs)).toEqual([srcs[3]!]);
+  });
+
+  test("an address on the allowlist is charged the floor and nothing more, but not nothing", () => {
+    const own = Array.from({ length: 100 }, (_, i) => heavy("node.tinycloud.xyz", `n${i}`));
+    expect(heldSrcs(own)).toEqual([]);
+    // Forty floors (1,280 bits) leave room for two heavy addresses, not three.
+    expect(heldSrcs([...own.slice(0, 40), heavy("a.example"), heavy("b.example"), heavy("c.example")])).toEqual([heavy("c.example")]);
+    const many = Array.from({ length: REPLY_BIT_BUDGET / IMAGE_BIT_FLOOR + 5 }, (_, i) => img("i.imgur.com", `Zk3x${i}`));
+    expect(heldSrcs(many)).toEqual(many.slice(REPLY_BIT_BUDGET / IMAGE_BIT_FLOOR));
+  });
+
+  test("an address that asks or is blocked is judged alone and is not charged", () => {
     const asks = `https://x.example/p.png?d=${"z".repeat(70)}`;
-    const srcs = [asks, "data:image/png;base64,AAAA", img("a.example"), img("b.example")];
+    const srcs = [asks, "data:image/png;base64,AAAA", heavy("a.example"), heavy("b.example"), heavy("c.example")];
     expect(heldSrcs(srcs)).toEqual([]);
   });
 
-  test("the same address twice counts once; different ports or paths on one host count separately", () => {
-    expect(heldSrcs([img("a.example"), img("a.example"), img("b.example")])).toEqual([]);
-    expect(heldSrcs([img("a.example", "1"), img("a.example", "2"), img("a.example", "3")])).toEqual([img("a.example", "3")]);
+  test("the same address twice is charged once", () => {
+    expect(heldSrcs([heavy("a.example"), heavy("a.example"), heavy("b.example"), heavy("b.example"), heavy("c.example")])).toEqual([]);
   });
 });
 
 describe("a reply's choices", () => {
-  const four = ["a", "b", "c", "d"].map((name) => img(`${name}.example`));
+  const five = ["a", "b", "c", "d", "e"].map((name) => heavy(`${name}.example`));
 
   test("the held images are reported once, and again only when they change", () => {
     const budget = new ReplyImageBudget();
     let changes = 0;
     budget.subscribe(() => changes++);
-    four.forEach((src, i) => budget.claim(`i${i}`, src));
+    five.forEach((src, i) => budget.claim(`i${i}`, src));
     budget.publish();
     budget.publish();
-    expect(budget.waiting().map((held) => held.src)).toEqual(four.slice(2));
+    expect(budget.waiting().map((held) => held.src)).toEqual(five.slice(3));
     expect(changes).toBe(1);
-    expect(budget.isHeld(four[2]!)).toBe(true);
-    expect(budget.isHeld(four[0]!)).toBe(false);
+    expect(budget.isHeld(five[3]!)).toBe(true);
+    expect(budget.isHeld(five[0]!)).toBe(false);
   });
 
   test("a choice is for the exact address: a changed address is held again", () => {
     const budget = new ReplyImageBudget();
-    four.forEach((src, i) => budget.claim(`i${i}`, src));
+    five.forEach((src, i) => budget.claim(`i${i}`, src));
     budget.publish();
-    budget.decide([four[2]!, four[3]!], "load");
+    budget.decide([five[3]!, five[4]!], "load");
     expect(budget.waiting()).toEqual([]);
-    expect(budget.choice(four[2]!)).toBe("load");
-    const changed = img("c.example", "streamed-longer");
-    budget.claim("i2", changed);
+    expect(budget.choice(five[3]!)).toBe("load");
+    const changed = heavy("d.example", "streamed-longer");
+    budget.claim("i3", changed);
     budget.publish();
     expect(budget.choice(changed)).toBeUndefined();
     expect(budget.waiting().map((held) => held.src)).toEqual([changed]);
   });
 
-  test("an image that goes away gives its slot up, so a stale address never keeps one", () => {
+  test("an image that goes away gives up what it was charged, so a stale address never keeps it", () => {
     const budget = new ReplyImageBudget();
-    ["https://evil.ex", "https://evil.exam", "https://evil.example/real.png"].forEach((src, i) => budget.claim(`i${i}`, src));
-    expect(budget.isHeld("https://evil.example/real.png")).toBe(true);
+    const real = heavy("s.example", "real");
+    [heavy("s.example", "r"), heavy("s.example", "re"), heavy("s.example", "rea"), real].forEach((src, i) => budget.claim(`i${i}`, src));
+    expect(budget.isHeld(real)).toBe(true);
     budget.release("i0");
     budget.release("i1");
     budget.publish();
-    expect(budget.isHeld("https://evil.example/real.png")).toBe(false);
+    expect(budget.isHeld(real)).toBe(false);
     expect(budget.waiting()).toEqual([]);
   });
 });

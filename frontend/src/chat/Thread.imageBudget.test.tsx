@@ -5,6 +5,7 @@ import { AssistantRuntimeProvider, ThreadPrimitive, useExternalStoreRuntime, typ
 
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { installDom } from "@/test/dom";
+import { heavyImageAddress } from "@/lib/imageBudget.fixture";
 import { IMAGE_PROMPT_COPY } from "@/lib/imageUrlFilter";
 import { AssistantMessage } from "./Thread";
 
@@ -17,8 +18,10 @@ afterEach(() => {
   restore = undefined;
 });
 
-const four = (tag: string) =>
-  ["a", "b", "c", "d"].map((n) => `![${n}](https://${n}.example/${tag}.png)`).join("\n\n");
+// Addresses with a lot of room for data: three fit in a reply's budget, a fourth does not.
+const names = ["a", "b", "c", "d", "e"];
+const address = (name: string, tag: string) => heavyImageAddress(`${name}.example`, tag);
+const five = (tag: string) => names.map((n) => `![${n}](${address(n, tag)})`).join("\n\n");
 
 const message = (id: string, text: string): ThreadMessageLike => ({
   id,
@@ -60,13 +63,14 @@ test("a thread that reuses a message's component for another message gives it a 
   document.body.append(host);
   mounted = createRoot(host);
 
-  await show(host, [message("m1", four("x"))]);
-  expect(srcs(host)).toEqual(["https://a.example/x.png", "https://b.example/x.png"]);
+  const silent = names.slice(0, 3).map((n) => address(n, "x"));
+  await show(host, [message("m1", five("x"))]);
+  expect(srcs(host)).toEqual(silent);
   await act(async () => { load(host).click(); });
-  expect(srcs(host)).toHaveLength(4);
+  expect(srcs(host)).toHaveLength(5);
 
   // The same position now shows another message with the same addresses: the earlier approval is not its approval.
-  await show(host, [message("m2", four("x"))]);
-  expect(srcs(host)).toEqual(["https://a.example/x.png", "https://b.example/x.png"]);
-  expect(host.textContent).toContain(IMAGE_PROMPT_COPY.more.title(2, ["c.example", "d.example"]));
+  await show(host, [message("m2", five("x"))]);
+  expect(srcs(host)).toEqual(silent);
+  expect(host.textContent).toContain(IMAGE_PROMPT_COPY.more.title(2, ["d.example", "e.example"]));
 });

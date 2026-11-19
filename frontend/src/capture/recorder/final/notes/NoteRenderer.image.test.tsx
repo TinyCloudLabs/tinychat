@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 
+import { heavyImageAddress } from "@/lib/imageBudget.fixture";
 import { IMAGE_PROMPT_COPY } from "@/lib/imageUrlFilter";
 import { installDom } from "@/test/dom";
 import { NoteRenderer } from "./NoteRenderer";
@@ -88,30 +89,37 @@ test("a choice does not carry over to a different note", async () => {
   expect(host.querySelectorAll(".nt-img-gate").length).toBe(1);
 });
 
-const photo = (host: string) => `![p](https://${host}/p.png)`;
+// Addresses with a lot of room for data (about 1,150 bits each): three fit in a note's budget, a fourth does not.
+const photo = (host: string) => `![p](${heavyImageAddress(host)})`;
 
-test("a note's images from other hosts: two load, the rest wait for one prompt for the whole note", async () => {
-  const host = await note(["a", "b", "c", "d"].map((h) => photo(`${h}.example`)).join("\n\n"));
-  expect(host.querySelectorAll("img").length).toBe(2);
+test("ordinary images never wait: five from other hosts all load, and nothing asks", async () => {
+  const host = await note(["a", "b", "c", "d", "e"].map((h) => `![p](https://${h}.example/photos/2026/front-page-${h}.png)`).join("\n\n"));
+  expect(host.querySelectorAll("img").length).toBe(5);
+  expect(host.querySelector("button")).toBeNull();
+});
+
+test("a note whose images have more room for data than its budget: three load, the rest wait for one prompt for the whole note", async () => {
+  const host = await note(["a", "b", "c", "d", "e"].map((h) => photo(`${h}.example`)).join("\n\n"));
+  expect(host.querySelectorAll("img").length).toBe(3);
   expect(host.textContent).toContain(IMAGE_PROMPT_COPY.notLoaded("p"));
-  expect(host.textContent).toContain(IMAGE_PROMPT_COPY.more.title(2, ["c.example", "d.example"]));
+  expect(host.textContent).toContain(IMAGE_PROMPT_COPY.more.title(2, ["d.example", "e.example"]));
   expect(host.querySelectorAll("button[data-images-load]").length).toBe(1);
   await click(host.querySelector("button[data-images-load]")!);
-  expect(host.querySelectorAll("img").length).toBe(4);
+  expect(host.querySelectorAll("img").length).toBe(5);
   expect(host.querySelector("button")).toBeNull();
 });
 
 test("Not now on the note's prompt leaves the held images as descriptions", async () => {
-  const host = await note(["a", "b", "c", "d"].map((h) => photo(`${h}.example`)).join("\n\n"));
+  const host = await note(["a", "b", "c", "d", "e"].map((h) => photo(`${h}.example`)).join("\n\n"));
   await click(host.querySelector("button[data-images-skip]")!);
-  expect(host.querySelectorAll("img").length).toBe(2);
+  expect(host.querySelectorAll("img").length).toBe(3);
   expect(host.querySelector("button")).toBeNull();
   expect(host.textContent).toContain(IMAGE_PROMPT_COPY.notLoaded("p"));
 });
 
-test("our own hosts do not use the note's budget", async () => {
+test("our own hosts are charged only the floor: three of them leave room for three heavy images", async () => {
   const own = [1, 2, 3].map((n) => `![o](https://app.tinycloud.one/n${n}.png)`).join("\n\n");
-  const host = await note(`${own}\n\n${photo("a.example")}\n\n${photo("b.example")}`);
-  expect(host.querySelectorAll("img").length).toBe(5);
+  const host = await note(`${own}\n\n${photo("a.example")}\n\n${photo("b.example")}\n\n${photo("c.example")}`);
+  expect(host.querySelectorAll("img").length).toBe(6);
   expect(host.querySelector("button")).toBeNull();
 });

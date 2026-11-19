@@ -4,6 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { TextMessagePartProvider } from "@assistant-ui/react";
 
 import { installDom } from "@/test/dom";
+import { heavyImageAddress } from "@/lib/imageBudget.fixture";
 import { IMAGE_PROMPT_COPY } from "@/lib/imageUrlFilter";
 import { ImageBudgetScope } from "./image-budget";
 import { MarkdownText } from "./markdown-text";
@@ -110,55 +111,63 @@ test("Load approves the address the reader saw: if the address changes under the
   expect(host.querySelector("img")?.getAttribute("src")).toBe(b);
 });
 
-const photo = (host: string, name = "p") => `![${name}](https://${host}/${name}.png)`;
+// Addresses with a lot of room for data (about 1,150 bits each): three fit in a reply's budget, a fourth does not.
+const photo = (host: string, name = "p") => `![${name}](${heavyImageAddress(host, name)})`;
 const imageCount = (host: HTMLElement) => host.querySelectorAll("img").length;
 
-test("a reply's images from other hosts: two load, the rest wait for one prompt for the whole reply", async () => {
-  const host = await reply(["a.example", "b.example", "c.example", "d.example"].map((h) => photo(h)).join("\n\n"));
-  expect(imageCount(host)).toBe(2);
+test("ordinary images never wait: five from other hosts all load, and nothing asks", async () => {
+  const host = await reply(["a", "b", "c", "d", "e"].map((h) => `![${h}](https://${h}.example/photos/2026/front-page-${h}.png)`).join("\n\n"));
+  expect(imageCount(host)).toBe(5);
+  expect(host.querySelector("button")).toBeNull();
+});
+
+test("a reply whose images have more room for data than its budget: three load, the rest wait for one prompt for the whole reply", async () => {
+  const host = await reply(["a.example", "b.example", "c.example", "d.example", "e.example"].map((h) => photo(h)).join("\n\n"));
+  expect(imageCount(host)).toBe(3);
   expect(host.textContent).toContain(IMAGE_PROMPT_COPY.notLoaded("p"));
-  expect(host.textContent).toContain(IMAGE_PROMPT_COPY.more.title(2, ["c.example", "d.example"]));
+  expect(host.textContent).toContain(IMAGE_PROMPT_COPY.more.title(2, ["d.example", "e.example"]));
   expect(host.textContent).toContain(IMAGE_PROMPT_COPY.more.why);
   expect(host.querySelectorAll("button").length).toBe(2); // one prompt: Load and Not now
   await click(buttonNamed(host, IMAGE_PROMPT_COPY.load));
-  expect(imageCount(host)).toBe(4);
+  expect(imageCount(host)).toBe(5);
   expect(host.querySelector("button")).toBeNull();
 });
 
 test("Not now on the reply's prompt leaves the held images as descriptions and asks no more", async () => {
-  const host = await reply(["a", "b", "c", "d"].map((h) => photo(`${h}.example`)).join("\n\n"));
+  const host = await reply(["a", "b", "c", "d", "e"].map((h) => photo(`${h}.example`)).join("\n\n"));
   await click(buttonNamed(host, IMAGE_PROMPT_COPY.notNow));
-  expect(imageCount(host)).toBe(2);
+  expect(imageCount(host)).toBe(3);
   expect(host.querySelector("button")).toBeNull();
   expect(host.textContent).toContain(IMAGE_PROMPT_COPY.notLoaded("p"));
 });
 
-test("our own hosts do not use the reply's budget", async () => {
+test("our own hosts are charged only the floor: four of them leave room for three heavy images", async () => {
   const own = [1, 2, 3, 4].map((n) => photo("node.tinycloud.xyz", `n${n}`)).join("\n\n");
-  const host = await reply(`${own}\n\n${photo("a.example")}\n\n${photo("b.example")}`);
-  expect(imageCount(host)).toBe(6);
+  const host = await reply(`${own}\n\n${photo("a.example")}\n\n${photo("b.example")}\n\n${photo("c.example")}`);
+  expect(imageCount(host)).toBe(7);
   expect(host.querySelector("button")).toBeNull();
 });
 
 test("an approval covers the addresses it named: an image added to the reply afterwards waits again", async () => {
-  const four = ["a", "b", "c", "d"].map((h) => photo(`${h}.example`)).join("\n\n");
-  const host = await reply(four);
+  const five = ["a", "b", "c", "d", "e"].map((h) => photo(`${h}.example`)).join("\n\n");
+  const host = await reply(five);
   await click(buttonNamed(host, IMAGE_PROMPT_COPY.load));
-  expect(imageCount(host)).toBe(4);
-  await show(mounted!, `${four}\n\n${photo("e.example")}`, host);
-  expect(imageCount(host)).toBe(4);
-  expect(host.textContent).toContain(IMAGE_PROMPT_COPY.more.title(1, ["e.example"]));
+  expect(imageCount(host)).toBe(5);
+  await show(mounted!, `${five}\n\n${photo("f.example")}`, host);
+  expect(imageCount(host)).toBe(5);
+  expect(host.textContent).toContain(IMAGE_PROMPT_COPY.more.title(1, ["f.example"]));
 });
 
 const srcs = (host: HTMLElement) => [...host.querySelectorAll("img")].map((img) => img.getAttribute("src"));
 
-test("while a reply streams, no image from another host loads; the silent two are chosen from the finished text, in document order", async () => {
+test("while a reply streams, no image from another host loads; the silent three are chosen from the finished text, in document order", async () => {
   const text = [
     "![a][r]",
     photo("b.example", "b"),
     photo("c.example", "c"),
+    photo("d.example", "d"),
     photo("node.tinycloud.xyz", "own"),
-    "[r]: https://evil.example/real.png",
+    `[r]: ${heavyImageAddress("r.example", "real")}`,
   ].join("\n\n");
   restore = installDom();
   const host = document.createElement("div");
@@ -168,16 +177,18 @@ test("while a reply streams, no image from another host loads; the silent two ar
   // A reference definition arriving character by character: every prefix that parses as an address is a different image.
   for (const prefix of [text.slice(0, text.indexOf("[r]:") + 14), text.slice(0, text.indexOf("[r]:") + 21), text]) {
     await show(mounted, prefix, host, true);
-    expect(srcs(host)).toEqual(prefix.includes("own") ? ["https://node.tinycloud.xyz/own.png"] : []);
+    expect(srcs(host)).toEqual(prefix.includes("own") ? [heavyImageAddress("node.tinycloud.xyz", "own")] : []);
     expect(host.textContent).not.toContain("more image");
   }
 
   await show(mounted, text, host, false);
+  // The reference definition is revealed last and draws nothing itself, so the page looks settled before the reveal ends.
+  for (let waited = 0; srcs(host).length < 4 && waited < 3000; waited += 20) await act(async () => { await Bun.sleep(20); });
   const settled = srcs(host);
-  expect(settled).toEqual(["https://evil.example/real.png", "https://b.example/b.png", "https://node.tinycloud.xyz/own.png"]);
-  expect(host.textContent).toContain(IMAGE_PROMPT_COPY.more.title(1, ["c.example"]));
+  expect(settled).toEqual([heavyImageAddress("r.example", "real"), heavyImageAddress("b.example", "b"), heavyImageAddress("c.example", "c"), heavyImageAddress("node.tinycloud.xyz", "own")]);
+  expect(host.textContent).toContain(IMAGE_PROMPT_COPY.more.title(1, ["d.example"]));
 
-  // Reopening the reply decides the same two, whatever happened while it streamed.
+  // Reopening the reply decides the same three, whatever happened while it streamed.
   act(() => mounted!.unmount());
   host.remove();
   const reopened = document.createElement("div");
@@ -185,7 +196,7 @@ test("while a reply streams, no image from another host loads; the silent two ar
   mounted = createRoot(reopened);
   await show(mounted, text, reopened, false);
   expect(srcs(reopened)).toEqual(settled);
-  expect(reopened.textContent).toContain(IMAGE_PROMPT_COPY.more.title(1, ["c.example"]));
+  expect(reopened.textContent).toContain(IMAGE_PROMPT_COPY.more.title(1, ["d.example"]));
 });
 
 test("an address that asks shows no prompt for half a reply: it waits until the text is final", async () => {
@@ -222,45 +233,45 @@ async function mountRecorded() {
   return { host, ever: recorder.ever };
 }
 
-const four = (...names: string[]) => names.map((n) => photo(`${n}.example`, n)).join("\n\n");
-const loaded = (...names: string[]) => names.map((n) => `https://${n}.example/${n}.png`);
+const row = (...names: string[]) => names.map((n) => photo(`${n}.example`, n)).join("\n\n");
+const loaded = (...names: string[]) => names.map((n) => heavyImageAddress(`${n}.example`, n));
 
-test("a finished reply loads its first two images and no other address is ever requested, not even once", async () => {
+test("a finished reply loads its first three images and no other address is ever requested, not even once", async () => {
   const { host, ever } = await mountRecorded();
-  await show(mounted!, four("a", "b", "c", "d"), host, false);
-  expect(new Set(ever)).toEqual(new Set(loaded("a", "b")));
+  await show(mounted!, row("a", "b", "c", "d", "e"), host, false);
+  expect(new Set(ever)).toEqual(new Set(loaded("a", "b", "c")));
 });
 
-test("an address changed in place while the reply is finished keeps its slot: no held image takes it", async () => {
+test("an address changed in place while the reply is finished keeps its place: no held image takes it", async () => {
   const { host, ever } = await mountRecorded();
-  await show(mounted!, four("a", "b", "c", "d"), host, false);
-  await show(mounted!, four("x", "b", "c", "d"), host, false);
-  await show(mounted!, four("y", "b", "c", "d"), host, false);
-  expect(new Set(ever)).toEqual(new Set(loaded("a", "b", "x", "y")));
-  expect(srcs(host)).toEqual(loaded("y", "b"));
-  expect(host.textContent).toContain(IMAGE_PROMPT_COPY.more.title(2, ["c.example", "d.example"]));
+  await show(mounted!, row("a", "b", "c", "d", "e"), host, false);
+  await show(mounted!, row("x", "b", "c", "d", "e"), host, false);
+  await show(mounted!, row("y", "b", "c", "d", "e"), host, false);
+  expect(new Set(ever)).toEqual(new Set(loaded("a", "b", "c", "x", "y")));
+  expect(srcs(host)).toEqual(loaded("y", "b", "c"));
+  expect(host.textContent).toContain(IMAGE_PROMPT_COPY.more.title(2, ["d.example", "e.example"]));
 });
 
-test("images that go away give their slots up: no prompt is left for an image that is no longer there", async () => {
+test("images that go away give up what they were charged: no prompt is left for an image that is no longer there", async () => {
   const { host } = await mountRecorded();
-  await show(mounted!, four("a", "b", "c", "d"), host, false);
+  await show(mounted!, row("a", "b", "c", "d", "e"), host, false);
   expect(host.textContent).toContain("more images");
-  await show(mounted!, four("d"), host, false);
-  expect(srcs(host)).toEqual(loaded("d"));
+  await show(mounted!, row("e"), host, false);
+  expect(srcs(host)).toEqual(loaded("e"));
   expect(host.textContent).not.toContain("more image");
   expect(host.querySelector("button")).toBeNull();
 });
 
 test("another message in the same component starts with a fresh budget: an approval does not carry over", async () => {
   const { host } = await mountRecorded();
-  await show(mounted!, four("a", "b", "c", "d"), host, false, "message-1");
+  await show(mounted!, row("a", "b", "c", "d", "e"), host, false, "message-1");
   await click(buttonNamed(host, IMAGE_PROMPT_COPY.load));
-  expect(srcs(host)).toEqual(loaded("a", "b", "c", "d"));
-  await show(mounted!, four("a", "b", "c", "d"), host, false, "message-1");
-  expect(srcs(host)).toEqual(loaded("a", "b", "c", "d"));
-  await show(mounted!, four("a", "b", "c", "d"), host, false, "message-2");
-  expect(srcs(host)).toEqual(loaded("a", "b"));
-  expect(host.textContent).toContain(IMAGE_PROMPT_COPY.more.title(2, ["c.example", "d.example"]));
+  expect(srcs(host)).toEqual(loaded("a", "b", "c", "d", "e"));
+  await show(mounted!, row("a", "b", "c", "d", "e"), host, false, "message-1");
+  expect(srcs(host)).toEqual(loaded("a", "b", "c", "d", "e"));
+  await show(mounted!, row("a", "b", "c", "d", "e"), host, false, "message-2");
+  expect(srcs(host)).toEqual(loaded("a", "b", "c"));
+  expect(host.textContent).toContain(IMAGE_PROMPT_COPY.more.title(2, ["d.example", "e.example"]));
 });
 
 test("a Load on an asking address belongs to its message: the same address in another message asks again", async () => {

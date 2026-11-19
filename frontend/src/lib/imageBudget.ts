@@ -1,26 +1,47 @@
+import { IMAGE_BIT_FLOOR, REPLY_BIT_BUDGET, addressBits } from "./imageAddressBits";
 import { isAllowlistedImageHost } from "./imageHosts";
 import { imageUrlVerdict } from "./imageUrlFilter";
 
-// The address filter judges one image at a time. A reply or note can hold many, and each silent image to someone else's
-// server can carry about 1.4 kbit in its address. So per reply (or note), at most this many different images from hosts
-// outside the allowlist load without asking; the rest wait behind one prompt for the whole reply.
-export const SILENT_THIRD_PARTY_IMAGES = 2;
+// The address filter judges one image at a time. A reply or note can hold many, so what its images can carry is bounded
+// together: every image that loads without asking is charged the room for data in its address, in bits
+// (imageAddressBits.ts), and the images of one reply or note load on their own only while their total stays within
+// REPLY_BIT_BUDGET. The rest wait behind one prompt for the whole reply.
+//
+// The budget is one number for the whole reply. It is not kept per host or per domain, so sending to many domains buys
+// nothing, and no image is free: each is charged at least IMAGE_BIT_FLOOR. An address on the allowlist (imageHosts.ts) is
+// charged only that floor, because its requests are not read by whoever wrote the reply. A piece of an address that an
+// earlier image of the reply already sent (the host, a folder) is charged as an index, not again in full.
 
 export type HeldImage = { src: string; host: string };
 
 /**
- * The images of one reply or note that must wait, from every image address in document order: the different addresses that
- * pass the filter and are not ours, after the first SILENT_THIRD_PARTY_IMAGES. An address that asks or is blocked is judged on
- * its own and never counts; the same address twice counts once.
+ * The images of one reply or note that must wait, from every image address in document order: those that would take the
+ * total past the budget. One that waits is not charged, so a smaller image after it may still load. An address that asks or
+ * is blocked is judged on its own and is never charged; the same address twice is charged once.
  */
 export function heldImages(srcs: readonly string[]): HeldImage[] {
-  const counted = new Map<string, string>();
+  const counted = new Set<string>();
+  const held: HeldImage[] = [];
+  let sent = new Set<string>();
+  let spent = 0;
   for (const src of srcs) {
-    if (counted.has(src) || imageUrlVerdict(src).kind !== "load") continue;
+    if (counted.has(src)) continue;
+    counted.add(src);
+    const verdict = imageUrlVerdict(src);
+    if (verdict.kind !== "load") continue;
     const { hostname, host } = new URL(src);
-    if (!isAllowlistedImageHost(hostname)) counted.set(src, host);
+    const withThis = new Set(sent);
+    const bits = isAllowlistedImageHost(hostname)
+      ? IMAGE_BIT_FLOOR
+      : Math.max(IMAGE_BIT_FLOOR, Math.ceil(verdict.charged.reduce((sum, href) => sum + addressBits(new URL(href), withThis), 0)));
+    if (spent + bits > REPLY_BIT_BUDGET) {
+      held.push({ src, host });
+      continue;
+    }
+    spent += bits;
+    if (!isAllowlistedImageHost(hostname)) sent = withThis;
   }
-  return [...counted].slice(SILENT_THIRD_PARTY_IMAGES).map(([src, host]) => ({ src, host }));
+  return held;
 }
 
 /**
