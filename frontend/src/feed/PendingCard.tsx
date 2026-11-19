@@ -9,6 +9,7 @@ import { Clock3Icon } from "lucide-react";
 
 import { AgentMark } from "./AgentMark";
 import { STREAM_HEADING_CLASS } from "./feedStream";
+import { FOCUS_DIM_CLASS } from "./focusRow";
 
 export interface PendingItem {
   key: string;
@@ -26,6 +27,8 @@ export interface PendingItem {
   waiting?: boolean;
   /** The card open in place, when the owner opened it from here. */
   open?: ReactNode;
+  /** Another card is open (on a phone): this row dims. */
+  dimmed?: boolean;
   onOpen: () => void;
   /** Done (or failed): the owner can acknowledge it now. */
   onAcknowledge?: () => void;
@@ -40,7 +43,7 @@ export function PendingCard({ items }: { items: readonly PendingItem[] }) {
         const lead = waiting && item.detail ? item.detail : item.title;
         const under = item.post || item.title;
         // Hidden (not removed) while its own answer counts: the open card inside keeps its place.
-        return <li key={item.key} data-card-key={item.key} hidden={item.waiting} className="min-w-0">
+        return <li key={item.key} data-card-key={item.key} hidden={item.waiting} {...(item.dimmed ? { "data-dim": "" } : {})} className={`min-w-0 ${FOCUS_DIM_CLASS}`}>
           {item.open ? <div hidden={item.waiting} inert={item.waiting}>{item.open}</div> : <div className="flex items-start gap-3 px-4 pb-3 pt-3.5 min-[600px]:px-5 min-[600px]:pb-3.5 min-[600px]:pt-4">
             <button type="button" onClick={item.onOpen} aria-expanded={false} data-card-row className="relative flex min-h-11 min-w-0 flex-1 items-start gap-3 rounded-lg text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
               <span className="-my-[3px] shrink-0"><AgentMark agentKey={item.agentKey} name={item.author} small /></span>

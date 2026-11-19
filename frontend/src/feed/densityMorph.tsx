@@ -14,7 +14,7 @@ import { AnimatePresence, LayoutGroup, LazyMotion, MotionConfig, type Transition
 import { cn } from "@/lib/utils";
 
 /** One tween for every box in the morph. */
-const LAYOUT_TWEEN: Transition = { duration: 0.4, ease: [0.2, 0, 0, 1] };
+const LAYOUT_TWEEN: Transition = { duration: 0.35, ease: [0.2, 0, 0, 1] };
 /** With reduced motion, boxes jump straight to their new size. */
 const INSTANT: Transition = { duration: 0 };
 /**
