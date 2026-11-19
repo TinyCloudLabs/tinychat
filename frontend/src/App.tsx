@@ -19,15 +19,22 @@ import {
   createAndSignIn,
   createTinyCloudWeb,
   createApiClient,
+  openKeyRenewalClient,
+  renewalVerifyProof,
   requestNonce,
   restoreTinyCloudWebSession,
+  verifyRenewedSession,
   verifySession,
+  type OpenKeyRenewalOutcome,
 } from "@tinyboilerplate/client";
 import {
+  CONNECTORS_KV_PREFIX,
   manifestCarriesBundle,
   OFFERED_CHAT_MODELS,
   offeredChatModelContextTokens,
+  SESSION_EXPIRATION_MS,
 } from "@tinyboilerplate/core";
+import { SIGN_IN_RENEWAL_ASK, admitSignInRenewal, renewalRestoreFor } from "./lib/renewalReceipt";
 import { withEncryptionDecryptGrant } from "./lib/connectors/encryptionGrant";
 import { homeFeaturesToRequest, webSignInManifest, readHomeFeatures, type HomeFeature } from "./lib/homeFeatures";
 import { rememberExistingWebConnectors } from "./lib/rememberWebConnectors";
@@ -192,6 +199,7 @@ import { NativeSignIn } from "./shell/NativeSignIn";
 import { useNativeSignIn } from "./shell/useNativeSignIn";
 import { lazyTab } from "./shell/lazyTab";
 import { setTinyCloudWebMcpFeedLoader, tinyCloudWebMcpFeedEnabled } from "./lib/webMcp";
+import { closeAllEmbeds } from "./apps/liveEmbeds";
 
 // Every screen but Feed loads from its own chunk (TC-2882): the entry chunk carries boot and Feed only.
 const ChatWorkspace = lazyTab("Chat", () => import("./chat/ChatWorkspace").then((m) => m.ChatWorkspace));
@@ -204,6 +212,9 @@ const CaptureSurface = lazyTab("Recording", () => import("./capture/CaptureSurfa
 const MeetingsSection = lazyTab("Meetings", () => import("./chat/MeetingsSection").then((m) => m.MeetingsSection));
 const ConnectorsPage = lazyTab("Connectors", () => import("./chat/ConnectorsPage").then((m) => m.ConnectorsPage));
 const AppsPage = lazyTab("Apps", () => import("./home/AppsPage").then((m) => m.AppsPage));
+// One Apps: on only when VITE_ONE_APPS is exactly "true"; off is exactly the old Apps page.
+const ONE_APPS_ENABLED = import.meta.env.VITE_ONE_APPS === "true";
+const FramedAppScreen = lazyTab("Apps", () => import("./apps/FramedAppScreen").then((m) => m.FramedAppScreen));
 const SettingsPage = lazyTab("Settings", () => import("./chat/SettingsPage").then((m) => m.SettingsPage));
 const AboutPage = lazyTab("How it works", () => import("./chat/AboutPage").then((m) => m.AboutPage));
 const LAZY_SCREENS = [ChatWorkspace, CaptureSurface, MeetingsSection, ConnectorsPage, AppsPage, SettingsPage, AboutPage];
@@ -758,11 +769,17 @@ export function App() {
         setState("unauthenticated");
         return;
       }
+      // TC-2872: past the saved session's signed end, its own verified renewal receipt carries it (web only). With the
+      // bearer gone too, the receipt's account is the one restored, and the backend reissues the bearer from it.
+      const renewalRestore = appPlatform() === "web" && !LOCAL_VALIDATION
+        ? await renewalRestoreFor(sessionStoreRef.current.getAddress())
+        : null;
+      if (!mayCommitRestore()) return;
       // Stale sessions need explicit consent for this client's grants. Complete
       // capture handoff before clearing; no Home storage starts under old grants.
       const revisionGate = await applyManifestRevisionGate({
         store: browserRevisionStore(),
-        address: sessionStoreRef.current.getAddress(),
+        address: sessionStoreRef.current.getAddress() ?? renewalRestore?.address ?? null,
         isOffline: browserIsOffline,
         servedManifestCarriesBundle: async () => manifestCarriesBundle(WEB_APP_MANIFEST),
         handoff: captureHandoff,
@@ -802,7 +819,36 @@ export function App() {
             provider: readOnlyAccountProvider(storedAddress),
             // Local copy ON adds the replication option (and the same provider). See replicationRestore.ts.
             ...(LOCAL_VALIDATION ? {} : await replicationRestorePatch(storedAddress)),
+            ...(renewalRestore ? { renewalLeaseAuthorization: renewalRestore.leaseAuthorization } : {}),
           }),
+        ...(renewalRestore ? {
+          renewalVerification: {
+            // One live read: the node must accept the renewed session before anything is shown.
+            read: async (client: TinyCloudWeb) => {
+              const listed = await client.kv.list({ path: `${CONNECTORS_KV_PREFIX}/`, source: "network" });
+              if (!listed.ok) throw listed.error;
+            },
+            signOut: async (client: TinyCloudWeb) => {
+              clearPersistedSession(renewalRestore.address);
+              await client.signOut();
+            },
+            cleanup: (client: TinyCloudWeb) => client.cleanup(),
+            reissue: {
+              address: renewalRestore.address,
+              bearer: async (client: TinyCloudWeb) => {
+                const nonce = await requestNonce(BACKEND_URL, renewalRestore.address);
+                const proof = await renewalVerifyProof({
+                  tcw: client, backendOrigin: new URL(BACKEND_URL).origin, address: renewalRestore.address, nonce,
+                });
+                const verified = await verifyRenewedSession(BACKEND_URL, {
+                  ...proof, address: renewalRestore.address, nonce, leaseAuthorization: renewalRestore.leaseAuthorization,
+                });
+                if (!mayCommitRestore()) throw new Error("Restore superseded");
+                sessionStoreRef.current.setSession(verified.token, verified.expiresIn, renewalRestore.address);
+              },
+            },
+          },
+        } : {}),
       });
       if (!mayCommitRestore()) {
         if (restored.kind === "restored") restored.tcw.cleanup();
@@ -1179,6 +1225,24 @@ export function App() {
         // replica prefixes at this sign-in; see lib/replication/replicationClient.ts.
         ...(LOCAL_VALIDATION ? {} : await replicationConfigPatch(replicationPrincipalFor(connectedAddress))),
       };
+      // TC-2872: the web signs in through OpenKey's own window, which offers renewal beside the session it signs.
+      // The desktop app keeps the wallet signature. The nonce reaches OpenKey through the config.
+      let renewalOutcome: OpenKeyRenewalOutcome = {};
+      // When the lease arrived, on this device's monotonic clock: it is sent to the node only within a minute of it.
+      let renewalArrivedAt: number | undefined;
+      const openkeySignIn = appPlatform() === "web"
+        ? {
+            openkey: {
+              client: openKeyRenewalClient(openkey, SIGN_IN_RENEWAL_ASK, (outcome) => {
+                renewalOutcome = outcome;
+                renewalArrivedAt = performance.now();
+              }),
+              mode: "iframe" as const,
+              expiryChangeable: true,
+              maxExpiresAt: () => Date.now() + SESSION_EXPIRATION_MS,
+            },
+          }
+        : {};
       const { tcw: signedTcw, session } = LOCAL_VALIDATION
         ? await (async () => {
             const localTcw = createTinyCloudWeb(prefetch.guardSigning(web3Provider), { ...signInConfig, siweConfig: { nonce } });
@@ -1186,7 +1250,7 @@ export function App() {
             await localTcw.clearPersistedSession(connectedAddress);
             return { tcw: localTcw, session: await localTcw.signIn({ nonce }) };
           })()
-        : await createAndSignIn(prefetch.guardSigning(web3Provider), signInConfig);
+        : await createAndSignIn(prefetch.guardSigning(web3Provider), { ...signInConfig, ...openkeySignIn });
 
       rememberReplicationPrincipal(signedTcw);
       // Exchange the SIWE message for a backend Bearer token (for /api/chat).
@@ -1195,6 +1259,9 @@ export function App() {
         throw new UserFacingError("Sign-out didn't finish on this device. Sign in again, then sign out.");
       }
       sessionStoreRef.current.setSession(verified.token, verified.expiresIn, connectedAddress);
+      // OpenKey signed and recorded the lease but doesn't send it to the node: the session's node admits it here,
+      // within a minute of its arrival, else this sign-in runs to its signed end without renewal (lib/renewalReceipt.ts).
+      await admitSignInRenewal({ tcw: signedTcw, address: connectedAddress, renewal: renewalOutcome.renewal, arrivedAt: renewalArrivedAt });
       // Marked current only if the manifest this sign-in used carries the bundle (an older served manifest does not).
       recordManifestRevisionIfSigned(browserRevisionStore(), connectedAddress, manifest);
       // The SDK keeps this provider for later user-authorized operations;
@@ -1339,6 +1406,8 @@ export function App() {
       }
       // Home answers held from a closed page get one bounded try while the session still works.
       if (tcw) await settleHeldAnswersForSignOut(tcw);
+      // Framed apps' grants are revoked while One's session can still sign the revocations (bounded).
+      if (ONE_APPS_ENABLED) await closeAllEmbeds();
       const openKeyClient = !nativeSession && !options.terminal ? openkeyRef.current : null;
       completeLocalSignOut(nativeFenceStored ? options.terminal ?? null : NATIVE_SIGN_OUT_WARNING,
         Boolean(options.terminal), webFenceToken);
@@ -1578,6 +1647,7 @@ export function App() {
               screen={screen}
               platform={platform}
               pendingMeetings={pendingMeetings}
+              accountDid={did}
               chat={
                 <ChatWorkspace
                   key={importRefreshKey}
@@ -1623,7 +1693,9 @@ export function App() {
                 sessionStore={sessionStoreRef.current}
               /></HomeFeatureGate>}
               feed={LOCAL_VALIDATION ? null : <FeedView tcw={tcw} onReconnect={authAction} />}
-              apps={LOCAL_VALIDATION ? null : <AppsPage />}
+              apps={LOCAL_VALIDATION ? null : ONE_APPS_ENABLED && screen.appId
+                ? <FramedAppScreen appId={screen.appId} tcw={tcw} fallback={<AppsPage accountDid={did} pendingMeetings={pendingMeetings} />} />
+                : <AppsPage accountDid={did} pendingMeetings={pendingMeetings} />}
               settings={LOCAL_VALIDATION ? null : <SettingsPage
                 address={address}
                 did={did}

@@ -494,7 +494,7 @@ export function SitrepCard(props: Props) {
     {!waiting && (projection.request || expanded) && <div className="mt-3 border-t border-border pt-1">
       {/* On an ask, "Drop this card" is an answer: it waits out the undo, then tells the agent to drop the question, so
           the agent hears it (a plain close would only hide the card here). */}
-      <CardDetails card={entry.state.card} typed={{ record }} agent={agent} close={record.kind === "ask" && props.close?.kind === "drop" ? { kind: "drop", onTap: () => afterUndo(DROP_LABEL, () => askAnswer("drop", undefined, true), true) } : props.close} actions={props.extra ?? (projection.needsAction && !snoozed && <button type="button" className={footActionClass} disabled={busy} aria-expanded={later} onClick={() => setLater(!later)}>Ask me later</button>)}>
+      <CardDetails card={entry.state.card} typed={{ record }} agent={agent} publisher={entry.source} close={record.kind === "ask" && props.close?.kind === "drop" ? { kind: "drop", onTap: () => afterUndo(DROP_LABEL, () => askAnswer("drop", undefined, true), true) } : props.close} actions={props.extra ?? (projection.needsAction && !snoozed && <button type="button" className={footActionClass} disabled={busy} aria-expanded={later} onClick={() => setLater(!later)}>Ask me later</button>)}>
         <dl>{([
           ...(sourceLine ? [["Source", sourceLine] as [string, ReactNode]] : []),
           ["Agent", record.from !== agent ? `${record.from} (through ${agent})` : agent],
