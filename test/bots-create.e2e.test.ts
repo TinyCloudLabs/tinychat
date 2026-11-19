@@ -65,7 +65,7 @@ test("the dialog shows the cap and blocks Create even with an unused name", asyn
   const { name, create, status } = await open("bots-create-at-cap");
   await name.fill("Notes");
   expect(await create.isDisabled()).toBe(true);
-  expect(await status.textContent()).toBe("You have 3 bots, the most an account can have. Delete a bot other than Main to make a new one.");
+  expect(await status.textContent()).toBe("You have 3 bots, the most your account can have. Delete a bot other than Main to make a new one.");
 });
 
 test("the table shows the Main-only notice when the plan includes one private bot", async () => {

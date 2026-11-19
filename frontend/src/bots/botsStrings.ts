@@ -40,7 +40,7 @@ export const CREATE_BOT_STRINGS = {
   cap: {
     flat3: {
       count: (used: number, max: number) => `${used} of ${max} bots`,
-      atLimit: (max: number) => `You have ${max} bots, the most an account can have. Delete a bot other than Main to make a new one.`,
+      atLimit: (max: number) => `You have ${max} bots, the most your account can have. Delete a bot other than Main to make a new one.`,
       refused: (max: number) => `You already have ${max} bots. Delete a bot other than Main to make a new one.`,
     },
     table: {
