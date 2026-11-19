@@ -19,6 +19,7 @@
 //      copy are the same meeting, merged by `(source, sourceId)`);
 //   4. no vault, no key: the section takes a session and a backend URL and
 //      nothing else — no `tcw`, no secrets helper, no Fireflies client;
+//   5. the drain-UX wiring in App.tsx is untouched by the meetings wiring.
 
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
@@ -247,5 +248,14 @@ describe("App.tsx wiring", () => {
     expect(CAPTURE).toContain("meetingsSlot={meetingsSlot}");
     expect(LIBRARY).toContain("{props.meetingsSlot}");
     expect(APP).toMatch(/<CaptureSurface[\s\S]{0,400}meetingsSlot=\{\s*<MeetingsSection/);
+  });
+
+  test("the drain-UX wiring App already had is untouched", () => {
+    // The meetings view is ADDITIVE. The Option-C badge and the sign-out clear
+    // are what the frozen drain-UX files depend on from App.tsx.
+    expect(APP).toContain("clearBackgroundDrainRecord");
+    expect(APP).toContain("subscribeBackgroundDrainRecord");
+    expect(APP).toContain("badgePendingCount");
+    expect(APP).toContain("<BackgroundDrainer");
   });
 });
