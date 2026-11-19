@@ -178,7 +178,7 @@ test("a deleted meeting is skipped until the owner allows deleted meetings back"
 
   await click(dialog(), "Allow deleted meetings back");
   await click(dialog(), "Allow them back");
-  await until(() => textOf(dialog()).includes("Deleted meetings can be imported again."), "Allow back should finish");
+  await until(() => f.cleared.includes("granola"), "Allow back should clear Granola's ledger");
   expect(f.cleared).toEqual(["granola"]);
 
   await upload(GOOD);

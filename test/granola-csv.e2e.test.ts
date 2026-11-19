@@ -173,8 +173,11 @@ for (const theme of ["light", "dark"] as const) {
         if (SHOTS) await page.screenshot({ path: `${SHOTS}/skipped-deleted-${theme}.png` });
 
         await dialog.getByRole("button", { name: "Allow deleted meetings back" }).click();
+        const cleared = page.waitForResponse((response) =>
+          response.request().method() === "DELETE" && new URL(response.url()).pathname === "/api/connectors/webhooks/purged",
+        );
         await dialog.getByRole("button", { name: "Allow them back" }).click();
-        await dialog.getByText("Deleted meetings can be imported again.").waitFor();
+        expect((await cleared).status()).toBe(204);
         expect(control.ledgers.has(`granola/${ADDRESS}`)).toBe(false);
 
         await chooseFile(page, CSV);
