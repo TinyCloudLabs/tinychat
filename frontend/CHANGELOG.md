@@ -16,6 +16,78 @@
 - TC-2204: Native audience checks accept Home's three exact SQL hook subscriptions only alongside an existing TinyChat data grant.
 - TC-2499: The Home mirror adapter persists close receipts using node-compatible NULL/non-NULL compare-and-set predicates. If the KV mirror is already exactly closed but its receipt is missing, recovery records the original publication ETag without writing the KV copy again, before any gated child handoff. The CLI reports JSON error class, safe message, code, HTTP status when available, and operation step; private SQL bodies and nested causes remain redacted. Exit 2 identifies invalid input, exit 6 known transient failures (including NODE_BUSY and REQUEST_TIMEOUT without HTTP metadata), and exit 1 other runtime failures or OUTCOME_UNKNOWN. Unclassified errors are not labelled bad input; no failure confirms delivery or authorizes an automatic retry.
 
+## 0.15.0-beta.7
+
+### Minor Changes
+
+- 8ec6a58: Web sign-in goes through OpenKey's own sign-in window. When that window offers automatic renewal and the owner leaves it on, the session renews for up to 90 days without another sign-in. Otherwise a sign-in lasts its usual 30 days.
+
+  Details: TC-2872
+
+## 0.15.0-beta.6
+
+### Patch Changes
+
+- 620ad17: One Apps is on in TinyCloud One on the web. The iOS, Android and desktop apps are unchanged.
+
+  Details: TC-3337
+
+## 0.15.0-beta.5
+
+### Patch Changes
+
+- 27e5641: Internal changes for tests; nothing in the app changes.
+
+  Details: TC-3337
+
+- 27e5641: One Apps behind VITE_ONE_APPS (off in production): the Apps page becomes the "TinyCloud apps" launcher with Pin and Unpin, and the navigation holds Feed, Chat and Apps plus the apps each account pins (Recording, Connectors and the TinyCloud apps). The phone tab bar shows at most five items; the rail and sidebar show every pin.
+
+  Details: TC-3337
+
+- 27e5641: One Apps behind VITE_ONE_APPS (off in production): TinyCloud's own apps open inside One with the access they need from One's session, asking first when an app wants more. Also fixes `vite dev` pages crashing on start; production builds are unchanged.
+
+  Details: TC-3337
+
+## 0.15.0-beta.4
+
+### Minor Changes
+
+- a9e1b3d: Feed: cards can show what kind of task they are, and messages from another team over Courier are marked. An agent can label a card Spend, Publish, Send, Access, Rule, Ship, Do, Review, Direction, Answer, News or Alert. The label shows at the top right of the card in the list and Cards views, and beside the title of an open card. Spend, Publish, Send and Access, where your tap sends something out, are outlined with an arrow; Alert uses the warning colour; the rest are grey. A message relayed over Courier starts with the Courier mark and its sender, and the open card adds "via" the agent that passed it on. The mark appears only on cards that come from your Courier connection. Filter offers "Task" when any card has a label. A label the app doesn't recognise doesn't change the card and is listed in Details as not shown.
+
+## 0.15.0-beta.3
+
+### Patch Changes
+
+- 3b7d871: TinyCloud One's agent guides are built from the earlier published set of TinyCloud guides.
+
+  Details: TC-3278
+
+## 0.15.0-beta.2
+
+### Patch Changes
+
+- 1b34214: The agent guides are built from the latest published set of TinyCloud guides.
+
+  Details: TC-3278
+
+- 4893c98: The Feed welcome card's agent prompt asks the agent to follow the Feed guide.
+
+  Details: TC-3392
+
+## 0.15.0-beta.1
+
+### Patch Changes
+
+- 22e42aa: Some images in chat replies and notes now ask before they load, and say which site they come from. In a chat reply, images appear once the reply has finished.
+
+  Details: TC-3144
+
+## 0.15.0-beta.0
+
+### Minor Changes
+
+- 3bf909b: tinycloud.one serves the TinyCloud agent guides and discovery metadata, including `/llms.txt` and `/agents/abilities/`.
+
 ## 0.14.0
 
 ### Minor Changes

@@ -9,7 +9,7 @@ import type { HomeFeedSource } from "./feedStoreTypes";
 import { safeUrl, selectFeed, type FeedCard } from "./feedData";
 import { FEED_SKILL_URL, FEED_STRINGS } from "./strings";
 import { AgentDetails, AgentMark, PlatformName, type AgentProfile } from "./AgentMark";
-import { StatusMark } from "./CompactCard";
+import { CourierMark, StatusMark, TypeLabel } from "./CompactCard";
 import { ShortTime } from "./ShortTime";
 
 // These keys belong to the bundled sample only. A real card's media key is never a web URL.
@@ -192,9 +192,25 @@ export function HomeCardView({ card, sample = true, readBody, status, onAuthor, 
     <article className={plain ? "min-w-0 text-foreground [overflow-wrap:anywhere]" : inline ? "min-w-0 px-3.5 py-4 text-foreground [overflow-wrap:anywhere] cq:px-5" : `min-w-0 overflow-hidden rounded-2xl border bg-card p-4 text-card-foreground [overflow-wrap:anywhere] cq:p-5 ${agent ? "border-foreground/20 shadow-float" : "border-border shadow-sm"}`} aria-label={`${card.render} by ${card.author.name}`}>
       {/* One meta line, the compact card's (design round 7), so a card keeps its header row when it opens: the agent's
           mark, its name, its platform's mark, the time, and at the right the status and "Show less". */}
-      <div className="flex min-w-0 items-center gap-3">
+      <div className={`flex min-w-0 ${card.courier ? "items-start" : "items-center"} gap-3`}>
         {agent ? <AgentMark agentKey={agent.key} name={card.author.name} small /> : avatar && <img src={avatar} alt="" className="size-7 shrink-0 rounded-full bg-muted object-cover" />}
-        <div className="flex min-h-6 min-w-0 flex-1 items-center gap-1.5 text-meta text-muted-foreground">
+        <div className={`flex min-h-6 min-w-0 flex-1 ${card.courier ? "items-start" : "items-center"} gap-1.5 text-meta text-muted-foreground`}>
+          {card.courier
+            /* A Courier message (another team's): the Courier mark and its sender as the name, then, smaller, the agent
+               that relayed it ("via …") and the time; the line wraps, a long sender too, before anything is cut. */
+            ? <span data-agent-line className="flex min-h-6 min-w-0 flex-1 flex-wrap items-center gap-x-1.5 gap-y-0.5">
+              <CourierMark />
+              {card.courier.from && <span className="min-w-0 max-w-full break-words font-semibold text-foreground">{card.courier.from}</span>}
+              <span className={`flex min-w-0 max-w-full items-center gap-1 ${card.courier.from ? "text-xs" : ""}`}>
+                {card.courier.from && <span className="shrink-0">via</span>}
+                {onAuthor
+                  ? <button type="button" aria-expanded={agent ? about : undefined} onClick={agent ? () => setAbout(!about) : onAuthor} className={`-my-2.5 flex min-h-11 min-w-11 max-w-full items-center text-left fine:my-0 fine:min-h-6 fine:min-w-0 ${card.courier.from ? "font-medium" : "font-semibold text-foreground"}`}><span className="truncate underline decoration-border underline-offset-2">{card.author.name}</span></button>
+                  : <span className={`max-w-full truncate ${card.courier.from ? "font-medium" : "font-semibold text-foreground"}`}>{card.author.name}</span>}
+                {platform && <span className="flex min-w-0 shrink items-center"><PlatformName platform={platform} logoOnly /></span>}
+                <span className="shrink-0 before:mr-1 before:content-['·']"><ShortTime at={card.at} day className="tabular-nums" /></span>
+              </span>
+            </span>
+            : <>
           <span data-agent-line className="flex min-w-0 max-w-[60%] shrink-0 items-center gap-1.5">
             {/* The name's own box is 44px tall on touch, pulled back by its negative margin so the line stays 24px (critique #8, QA cb784d4). */}
             {onAuthor
@@ -204,6 +220,7 @@ export function HomeCardView({ card, sample = true, readBody, status, onAuthor, 
           </span>
           {/* Who a typed card came through ("Holden (through Rocinante)") is in Details; here it was a stub ("via…"). */}
           <p className="flex shrink-0 items-center gap-1.5 before:content-['·']"><ShortTime at={card.at} day className="shrink-0 tabular-nums" /></p>
+            </>}
           <span className="ml-auto flex shrink-0 items-center gap-2">
             {sample && <span className="shrink-0 rounded-full border border-border bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">{FEED_STRINGS.provenance}</span>}
             {/* The same status mark as the compact card, so a card keeps its status look when it opens. */}
@@ -213,7 +230,12 @@ export function HomeCardView({ card, sample = true, readBody, status, onAuthor, 
         </div>
       </div>
       {agent && about && <div className="mt-3"><AgentDetails name={card.author.name} via={card.author.via} profile={agent.profile} onOpen={onAuthor} /></div>}
-      {card.title && card.render !== "article" && <h2 className="mt-4 break-words font-display text-title-2">{card.title}</h2>}
+      {/* The card's task type, at the top right of its content, beside the title's first line (as on the row). */}
+      {card.type
+        ? card.title && card.render !== "article"
+          ? <div className="mt-4 flex min-w-0 items-start gap-3"><h2 className="min-w-0 flex-1 break-words font-display text-title-2">{card.title}</h2><span className="mt-1 shrink-0"><TypeLabel type={card.type} /></span></div>
+          : <div className="mt-4 flex justify-end"><TypeLabel type={card.type} /></div>
+        : card.title && card.render !== "article" && <h2 className="mt-4 break-words font-display text-title-2">{card.title}</h2>}
       {card.lead.text && <p className="mt-4 whitespace-pre-wrap break-words text-sm leading-relaxed">{card.lead.text}</p>}
       {sample && (card.render === "post" || card.render === "image") && <CardImage image={card.lead.image} alt={card.lead.text} />}
       {card.render === "thread" && card.replies?.map((reply, index) => (
