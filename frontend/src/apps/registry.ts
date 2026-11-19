@@ -184,10 +184,10 @@ const ALL_APPS: readonly OneApp[] = [
   },
   {
     // Courier's data view lives on the share site; only its `/courier` pages may be framed (share repo headers).
-    // Opens in a new tab.
+    // Read-only in the frame: approving, denying and saving orders open Courier in a new tab.
     id: "xyz.tinycloud.courier",
     kind: "framed",
-    framed: false,
+    framed: true,
     ...text("xyz.tinycloud.courier"),
     icon: MessagesSquare,
     origin: KIND === "dev" ? "https://localhost:5195" : "https://share.tinycloud.xyz",
