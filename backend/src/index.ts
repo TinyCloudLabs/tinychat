@@ -161,6 +161,7 @@ import { agentStreamPolicyFromEnv, type AgentStreamPolicy } from "./agent-stream
 import { localValidationFromEnv, localValidationGuard } from "./local-validation.js";
 import { createApiBodyParser } from "./body-parsing.js";
 import { configureRequestLogAccountHash, createRequestContextMiddleware, installRequestLogBoundary, parseRequestIdFirstPartyOrigins, recordMountTemplates } from "./request-context.js";
+import { renewalVerifyConfigFromEnv } from "./renewal-verify.js";
 
 const BACKEND_PRIVATE_KEY = process.env.BACKEND_PRIVATE_KEY;
 const TINYCLOUD_HOST = process.env.TINYCLOUD_HOST ?? "https://tee.node.tinycloud.xyz";
@@ -815,6 +816,7 @@ async function main() {
       privateKey: backendPrivateKey,
       frontendOrigins,
       nativeSiweDomain: process.env.OPENKEY_SIWE_DOMAIN,
+      renewal: renewalVerifyConfigFromEnv(process.env, TINYCLOUD_HOST),
     }),
   );
   app.use(

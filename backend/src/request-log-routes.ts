@@ -12,6 +12,7 @@ export const REQUEST_LOG_ROUTE_TEMPLATES: readonly string[] = [
   "/api/attestation/self",
   "/api/auth/nonce",
   "/api/auth/verify",
+  "/api/auth/verify-renewal",
   "/api/billing/checkout",
   "/api/billing/config",
   "/api/billing/portal",

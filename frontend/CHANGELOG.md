@@ -16,6 +16,22 @@
 - TC-2204: Native audience checks accept Home's three exact SQL hook subscriptions only alongside an existing TinyChat data grant.
 - TC-2499: The Home mirror adapter persists close receipts using node-compatible NULL/non-NULL compare-and-set predicates. If the KV mirror is already exactly closed but its receipt is missing, recovery records the original publication ETag without writing the KV copy again, before any gated child handoff. The CLI reports JSON error class, safe message, code, HTTP status when available, and operation step; private SQL bodies and nested causes remain redacted. Exit 2 identifies invalid input, exit 6 known transient failures (including NODE_BUSY and REQUEST_TIMEOUT without HTTP metadata), and exit 1 other runtime failures or OUTCOME_UNKNOWN. Unclassified errors are not labelled bad input; no failure confirms delivery or authorizes an automatic retry.
 
+## 0.15.0-beta.7
+
+### Minor Changes
+
+- 8ec6a58: Web sign-in goes through OpenKey's own sign-in window. When that window offers automatic renewal and the owner leaves it on, the session renews for up to 90 days without another sign-in. Otherwise a sign-in lasts its usual 30 days.
+
+  Details: TC-2872
+
+## 0.15.0-beta.6
+
+### Patch Changes
+
+- 620ad17: One Apps is on in TinyCloud One on the web. The iOS, Android and desktop apps are unchanged.
+
+  Details: TC-3337
+
 ## 0.15.0-beta.5
 
 ### Patch Changes

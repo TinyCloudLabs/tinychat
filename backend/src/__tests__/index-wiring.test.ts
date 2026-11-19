@@ -1061,6 +1061,7 @@ async function bootIndex(patch: Record<string, string | undefined> = {}, options
     "./routes/exo-mailbox.js": { createExoMailboxRouter: router },
     // TC-2808: the bots routes are off unless BOTS_* are set; this test doesn't arm them.
     "./routes/bots.js": { botsFromEnv: () => undefined, createBotsRouter: router },
+    "./renewal-verify.js": { renewalVerifyConfigFromEnv: () => undefined },
     // TC-1013 S4b: startup wires the grant-holder index and tracked grant store outside the flag.
     "./exo/grant-holders.js": { GrantHolderIndex: class GrantHolderIndex { async refresh() {} }, createTrackedGrantStore: (store: unknown) => store },
     "./security.js": { applySecurityDefaults: noop },
