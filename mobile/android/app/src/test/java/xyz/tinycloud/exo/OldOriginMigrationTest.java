@@ -186,4 +186,19 @@ public class OldOriginMigrationTest {
         assertEquals("done", take(NEW_HOST).state);
         assertEquals(1, wipedSites.size());
     }
+
+    @Test public void aRepeatedAckAfterTheWipeWipesNothingAgain() {
+        Answer answer = take(NEW_HOST);
+        exporter.pending.exported(EXPORT);
+        assertEquals("export", answer.state);
+        OldOriginMigration.ack(store, exportFile, this::launchWipe);
+        assertEquals(List.of(OldOriginWipe.OLD_SITE), wipedSites);
+
+        // The web app's ack answered too late, so it imports and acks again: copy-if-absent, then this.
+        OldOriginMigration.ack(store, exportFile, () -> assertEquals(OldOriginWipe.Result.ALREADY_DONE, launchWipe()));
+
+        assertEquals(1, wipedSites.size());
+        assertEquals(1, attempts);
+        assertEquals(1, exporter.runs);
+    }
 }

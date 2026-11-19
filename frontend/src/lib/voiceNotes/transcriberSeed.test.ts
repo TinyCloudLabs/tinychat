@@ -43,6 +43,16 @@ test("with nothing stored, the engine's choice is taken and survives the account
   expect((await fake.plugin.getCaptureDefaults()).transcriber).toBe("private-cloud");
 });
 
+test("Powerful is taken the same way and survives the account write", async () => {
+  const fake = await engine({ signedIn: true, transcriber: "assemblyai" });
+
+  await seedPreferenceFromEngine();
+  expect(readTranscriberPreference()).toEqual({ transcriber: "assemblyai", identifySpeakers: false, uploadAudio: true });
+
+  await writeAccountDefaults((native) => ({ accountDid: native.accountDid, transitionGen: native.transitionGen }));
+  expect((await fake.plugin.getCaptureDefaults()).transcriber).toBe("assemblyai");
+});
+
 test("a stored choice is kept", async () => {
   await engine({ signedIn: true, transcriber: "private-cloud" });
   values.set("exo.voiceNotes.transcriber", "on-device");

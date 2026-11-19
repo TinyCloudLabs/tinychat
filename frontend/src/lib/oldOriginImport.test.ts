@@ -4,7 +4,7 @@
 import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import {
-  importOldOrigin, isMigratedKey, OLD_ORIGIN_ALLOW, OLD_ORIGIN_EXPORT_SCRIPT,
+  addMissingRows, importOldOrigin, isMigratedKey, OLD_ORIGIN_ALLOW, OLD_ORIGIN_EXPORT_SCRIPT,
   type OldOriginAllow, type OldOriginExport, type OldOriginMigrationPlugin, type TakeResult,
 } from "./oldOriginImport";
 import { openRecordingNotesDb, RECORDING_NOTES_DB } from "./voiceNotes/recordingNotes";
@@ -229,4 +229,104 @@ test("the imported recording settings are what RecorderProvider's account write 
   const engine = await fake.plugin.getCaptureDefaults();
   expect(engine.transcriber).toBe("private-cloud");
   expect(engine.identifySpeakers).toBe(true);
+});
+
+/** The app's own adder, through the same openers and copy-if-absent add the import uses by default. */
+async function addAppRows(database: string, store: string, rows: unknown[]) {
+  const db = database === RECORDING_NOTES_DB ? await openRecordingNotesDb() : await openHeldResultsDb();
+  try {
+    await addMissingRows(db, store, rows);
+  } finally {
+    if (database === HELD_RESULTS_DB) db.close();
+  }
+}
+
+async function rowsOf(database: string, store: string, prefix: string): Promise<unknown[]> {
+  const db = database === RECORDING_NOTES_DB ? await openRecordingNotesDb() : await openHeldResultsDb();
+  try {
+    return (await allRows(db, store)).filter((row) => JSON.stringify(row).includes(prefix));
+  } finally {
+    if (database === HELD_RESULTS_DB) db.close();
+  }
+}
+
+test("every key and row is in before the ack, and the ack (which starts the wipe) comes last", async () => {
+  const origin = await oldOrigin({
+    "tinychat.home.post-draft.v1:ord": "{\"draft\":\"half\"}",
+    "exo.voiceNotes.transcriber": "assemblyai",
+  }, { notes: [note("ord-1", "typed")], held: [held("ord-s1")] });
+  newOrigin = mapStorage();
+  const order: string[] = [];
+  const storage = { getItem: newOrigin.getItem, setItem: (key: string, value: string) => { order.push(`key ${key}`); newOrigin.setItem(key, value); } };
+  const plugin = nativeSide(await runExport(origin), order);
+
+  await importOldOrigin({ plugin, storage, addMissingRows: async (database, store, rows) => {
+    await addAppRows(database, store, rows);
+    order.push(`rows ${database}/${store}`);
+  } });
+
+  expect(order.at(-1)).toBe("ack");
+  expect(order.filter((step) => step === "ack")).toHaveLength(1);
+  expect(order.slice(0, -1).sort()).toEqual([
+    "key exo.voiceNotes.transcriber",
+    "key tinychat.home.post-draft.v1:ord",
+    `rows ${HELD_RESULTS_DB}/held`,
+    `rows ${RECORDING_NOTES_DB}/notes`,
+  ]);
+});
+
+test("a store that fails midway leaves no ack; the next launch finishes from the same export without duplicating, then acks once", async () => {
+  const origin = await oldOrigin({ "xyz.tinycloud.tinychat:theme-choice": "dark" }, {
+    notes: [note("part-1", "one"), note("part-2", "two")],
+    held: [held("part-s1"), held("part-s2")],
+  });
+  newOrigin = mapStorage();
+  const plugin = nativeSide(await runExport(origin));
+
+  // First launch: the held store takes its first row, then fails (the disk filled up, say).
+  const first = await importOldOrigin({ plugin, storage: newOrigin, addMissingRows: async (database, store, rows) => {
+    if (store !== "held") return addAppRows(database, store, rows);
+    await addAppRows(database, store, rows.slice(0, 1));
+    throw new Error("QuotaExceededError");
+  } });
+  expect(first).toEqual({ kind: "failed", reason: "QuotaExceededError" });
+  expect(plugin.acks).toBe(0);
+  expect(await rowsOf(HELD_RESULTS_DB, "held", "part-s")).toHaveLength(1);
+
+  // Between launches the user changes the copied theme on the new origin; the retry must not undo that.
+  newOrigin.setItem("xyz.tinycloud.tinychat:theme-choice", "light");
+
+  const second = await importOldOrigin({ plugin, storage: newOrigin, addMissingRows: addAppRows });
+  expect(second).toEqual({ kind: "imported", keys: [] });
+  expect(plugin.acks).toBe(1);
+  expect(newOrigin.values.get("xyz.tinycloud.tinychat:theme-choice")).toBe("light");
+  expect(await rowsOf(HELD_RESULTS_DB, "held", "part-s")).toEqual([held("part-s1"), held("part-s2")]);
+  expect(await rowsOf(RECORDING_NOTES_DB, "notes", "part-")).toEqual([note("part-1", "one"), note("part-2", "two")]);
+});
+
+test("an ack lost after a full import: the next launch re-imports without duplicating or overwriting, and the one after imports nothing", async () => {
+  const origin = await oldOrigin({ "tinychat.home.answer-outbox.v1:idem": "{\"answer\":\"yes\"}" }, {
+    notes: [note("idem-1", "typed on the old origin")],
+    held: [held("idem-s1")],
+  });
+  newOrigin = mapStorage();
+  const data = await runExport(origin);
+  const lost = { ...nativeSide(data), ack: async () => { throw new Error("bridge gone"); } };
+
+  expect(await importOldOrigin({ plugin: lost, storage: newOrigin, addMissingRows: addAppRows })).toEqual({ kind: "failed", reason: "bridge gone" });
+  // The user edits the imported note before the next launch.
+  const notes = await openRecordingNotesDb();
+  await putRows(notes, "notes", [note("idem-1", "edited on the new origin")]);
+
+  const retry = nativeSide(data);
+  expect(await importOldOrigin({ plugin: retry, storage: newOrigin, addMissingRows: addAppRows })).toEqual({ kind: "imported", keys: [] });
+  expect(retry.acks).toBe(1);
+  expect(await rowsOf(RECORDING_NOTES_DB, "notes", "idem-")).toEqual([note("idem-1", "edited on the new origin")]);
+  expect(await rowsOf(HELD_RESULTS_DB, "held", "idem-")).toEqual([held("idem-s1")]);
+  expect([...newOrigin.values.keys()]).toEqual(["tinychat.home.answer-outbox.v1:idem"]);
+
+  // Native now answers "done": nothing is imported or acked again.
+  const after = nativeSide(null);
+  expect(await importOldOrigin({ plugin: after, storage: newOrigin, addMissingRows: async () => { throw new Error("must not run"); } })).toEqual({ kind: "none" });
+  expect(after.acks).toBe(0);
 });
