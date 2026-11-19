@@ -3,9 +3,10 @@
 // a sheet below that. `ActivityPanel` is the recorder's panel, hence the name.
 import { XIcon } from "lucide-react";
 
+import { Button } from "@/components/ui/button";
 import { BotAvatar } from "./BotAvatar";
 import type { BotActivity } from "./botsApi";
-import { BOT_ACTIVITY_STRINGS } from "./botsStrings";
+import { BOT_ACTIVITY_STRINGS, BOT_MANAGE_STRINGS } from "./botsStrings";
 import type { ViewBot } from "./BotView";
 
 /** "Ran 3 commands", "Changed 1 file": the line for one activity record. */
@@ -22,9 +23,13 @@ export interface BotPanelProps {
   awake: boolean;
   /** In the column the panel carries its own name and Close; in a sheet the sheet's title is the name. */
   onClose?: () => void;
+  /** Edit (name, shape, colour). Absent when the bot cannot be changed from here. */
+  onEdit?: () => void;
+  /** Delete bot. Absent on Main, and when the bot cannot be changed from here. */
+  onDelete?: () => void;
 }
 
-export function BotPanel({ bot, activity, awake, onClose }: BotPanelProps) {
+export function BotPanel({ bot, activity, awake, onClose, onEdit, onDelete }: BotPanelProps) {
   const newestFirst = [...activity].sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
   return (
     <div data-bot-panel={bot.key} className="flex flex-col gap-6 px-5 pb-6 pt-4">
@@ -61,6 +66,12 @@ export function BotPanel({ bot, activity, awake, onClose }: BotPanelProps) {
         <h3 className="text-meta font-medium text-muted-foreground">{BOT_ACTIVITY_STRINGS.environment}</h3>
         <p className="text-callout" data-bot-environment="">{BOT_ACTIVITY_STRINGS.environmentRow(bot.private ? "private" : "regular", awake)}</p>
       </section>
+      {onEdit || onDelete ? (
+        <div className="flex flex-col gap-2">
+          {onEdit ? <Button type="button" variant="outline" onClick={onEdit}>{BOT_MANAGE_STRINGS.edit}</Button> : null}
+          {onDelete ? <Button type="button" variant="outline" className="text-destructive" onClick={onDelete}>{BOT_MANAGE_STRINGS.deleteBot}</Button> : null}
+        </div>
+      ) : null}
     </div>
   );
 }

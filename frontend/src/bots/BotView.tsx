@@ -14,6 +14,7 @@ import { BotAvatar } from "./BotAvatar";
 import { BOT_VIEW_STRINGS, BOTS_STRINGS, HISTORY_EXPIRY_NOTICE, HISTORY_RECONNECT_LABEL } from "./botsStrings";
 import { historyNoticeDeadline, type HistoryNotice } from "./historyNotice";
 import { activityText, BotPanel } from "./BotPanel";
+import { DeleteBotConfirm, EditBotDialog, type BotManagement } from "./BotManage";
 import { useBotActivity, useBotChat, type ActivityItem, type BotChats } from "./useBotChat";
 import { isWorking, type ChatLine } from "./useMainChat";
 
@@ -122,9 +123,11 @@ export interface BotViewProps {
   onReconnect?: () => void;
   /** Above the conversation: the other bots, on a phone. */
   strip?: ReactNode;
+  /** Edit and Delete bot in the panel. Absent: the panel offers neither (the roster is not loaded). */
+  manage?: BotManagement;
 }
 
-export function BotView({ bot, chats, notice, acknowledgeNotice, onReconnect, strip }: BotViewProps) {
+export function BotView({ bot, chats, notice, acknowledgeNotice, onReconnect, strip, manage }: BotViewProps) {
   const { lines, history, turn } = useBotChat(chats, bot.key);
   const activity = useBotActivity(chats, bot.key);
   const working = isWorking(turn);
@@ -147,7 +150,22 @@ export function BotView({ bot, chats, notice, acknowledgeNotice, onReconnect, st
   const [panelOpen, setPanelOpen] = useState(false);
   const panelId = useId();
 
-  const panel = panelOpen ? <BotPanel bot={bot} activity={activity} awake={working} onClose={column ? () => setPanelOpen(false) : undefined} /> : null;
+  // The panel's sheet closes before a dialog opens, so the two never stack.
+  const [dialog, setDialog] = useState<"edit" | "delete" | null>(null);
+  const ask = (next: "edit" | "delete") => {
+    if (!column) setPanelOpen(false);
+    setDialog(next);
+  };
+  const panel = panelOpen ? (
+    <BotPanel
+      bot={bot}
+      activity={activity}
+      awake={working}
+      onClose={column ? () => setPanelOpen(false) : undefined}
+      onEdit={manage ? () => ask("edit") : undefined}
+      onDelete={manage?.remove ? () => ask("delete") : undefined}
+    />
+  ) : null;
   return (
     <>
       <div className="flex h-full min-h-0">
@@ -216,6 +234,8 @@ export function BotView({ bot, chats, notice, acknowledgeNotice, onReconnect, st
           <div id={panelId}>{panel}</div>
         </ResponsiveSheet>
       ) : null}
+      {dialog === "edit" && manage ? <EditBotDialog botKey={bot.key} name={bot.name} manage={manage} onClose={() => setDialog(null)} /> : null}
+      {dialog === "delete" && manage?.remove ? <DeleteBotConfirm name={bot.name} remove={manage.remove} onClose={() => setDialog(null)} /> : null}
     </>
   );
 }

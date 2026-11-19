@@ -1,5 +1,5 @@
-import { afterEach, expect, test } from "bun:test";
-import { act } from "react";
+import { afterEach, expect, mock, test } from "bun:test";
+import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 
 import { initSizeClass } from "@/lib/sizeClass";
@@ -7,7 +7,16 @@ import { installDom } from "@/test/dom";
 import { MAIN_BOT } from "./BotAvatar";
 import type { BotChatApi } from "./botChatApi";
 import type { MainEvent } from "./botsApi";
-import { BotsChat, type ControllerBot } from "./BotsChat";
+import type { ControllerBot } from "./BotsChat";
+
+// Radix portals do not attach in happy-dom: the sheet's chrome is an inline stand-in (a dynamic import so the mock
+// is in place first); everything inside it is real.
+mock.module("../components/ui/responsive-sheet", () => ({
+  ResponsiveSheet: (props: { open: boolean; title: ReactNode; children?: ReactNode; footer?: ReactNode; contentProps?: Record<string, string> }) =>
+    props.open ? <div role="dialog" {...props.contentProps}><h2>{props.title}</h2>{props.children}<div>{props.footer}</div></div> : null,
+  ResponsiveSheetBody: (props: { children?: ReactNode }) => <div>{props.children}</div>,
+}));
+const { BotsChat } = await import("./BotsChat");
 
 let restore: (() => void) | undefined;
 let stopSize: (() => void) | undefined;

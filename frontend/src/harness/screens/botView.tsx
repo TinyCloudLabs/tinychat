@@ -1,10 +1,13 @@
 // The Bots view in the Chat slot (TC-3325), inside the app's navigation, with a fake bots service: Main's earlier
 // messages with Markdown, a reply streaming in, a failed reply with Try again, and the history expiry notice.
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 
 import { MAIN_BOT } from "@/bots/BotAvatar";
+import { createBotChatApi } from "@/bots/botChatApi";
+import { BotsChat } from "@/bots/BotsChat";
 import type { BotActivity, BotMessage, MainEvent } from "@/bots/botsApi";
 import { BotView, type ViewBot } from "@/bots/BotView";
+import type { BotManagement } from "@/bots/BotManage";
 import type { HistoryNotice } from "@/bots/historyNotice";
 import { createBotChats, type BotChats } from "@/bots/useBotChat";
 import { useSizeClass } from "@/lib/sizeClass";
@@ -62,10 +65,11 @@ const GRID = {
 } as const;
 
 const MAIN: ViewBot = { key: "main", name: MAIN_BOT.name, private: true, face: MAIN_BOT };
+const RESEARCH: ViewBot = { key: "0123456789abcdef0123456789abcdef", name: "Research", private: true, face: { name: "Research", shape: "sprout", colour: "green" } };
+/** Edit and Delete bot do nothing here: the harness has no roster. */
+const MANAGE: BotManagement = { shape: "sprout", colour: "green", takenNames: ["Main"], update: async () => {}, remove: async () => {} };
 
-function Screen({ reply, send, notice, timed, panel }: { reply: Reply; send?: string; notice?: HistoryNotice; timed?: boolean; panel?: boolean }) {
-  const nav = navKindFor(useSizeClass());
-  const navProps = { items: navItems(0), current: "chat" as const, replace: false, onReselect: () => {} };
+function Screen({ reply, send, notice, timed, panel, manage }: { reply: Reply; send?: string; notice?: HistoryNotice; timed?: boolean; panel?: boolean; manage?: boolean }) {
   const [chats] = useState(() => fakeChats(reply, timed));
   useEffect(() => {
     if (send) void chats.ensureHistory("main").then(() => chats.send("main", send));
@@ -75,12 +79,31 @@ function Screen({ reply, send, notice, timed, panel }: { reply: Reply; send?: st
     if (panel) document.querySelector<HTMLButtonElement>("[data-bot-view] h1 button")?.click();
   }, [panel]);
   return (
+    <Frame>
+      <BotView bot={manage ? RESEARCH : MAIN} chats={chats} notice={notice} acknowledgeNotice={async (value) => value} onReconnect={() => {}} manage={manage ? MANAGE : undefined} />
+    </Frame>
+  );
+}
+
+/** The view over real HTTP: the real client reads the list and the reply stream from whatever answers at this origin. */
+function WireScreen() {
+  const [chatApi] = useState(() => createBotChatApi({ baseUrl: window.location.origin, getToken: () => "harness" }));
+  return (
+    <Frame>
+      <BotsChat controller={{ status: "ready", roster: { bots: [{ key: "main", name: "Main", environment: "private", state: "active" }] } }} selected="main"
+        faceOf={() => MAIN_BOT} history={null} active chatApi={chatApi} />
+    </Frame>
+  );
+}
+
+function Frame({ children }: { children: ReactNode }) {
+  const nav = navKindFor(useSizeClass());
+  const navProps = { items: navItems(0), current: "chat" as const, replace: false, onReselect: () => {} };
+  return (
     <div className={cn("grid h-[100dvh] min-h-0 bg-background text-foreground", GRID[nav])}>
       {nav === "sidebar" ? <Sidebar {...navProps} settings /> : null}
       {nav === "rail" ? <NavRail {...navProps} settings /> : null}
-      <div className="min-h-0 min-w-0" data-surface="chat">
-        <BotView bot={MAIN} chats={chats} notice={notice} acknowledgeNotice={async (value) => value} onReconnect={() => {}} />
-      </div>
+      <div className="min-h-0 min-w-0" data-surface="chat">{children}</div>
       {nav === "tabbar" ? <TabBar {...navProps} /> : null}
     </div>
   );
@@ -102,4 +125,7 @@ export const botViewScreens: HarnessScreen[] = [
   },
   { ...BASE, id: "bot-view-activity", readyWhen: "[data-bot-activity]", render: () => <Screen reply="none" timed /> },
   { ...BASE, id: "bot-view-panel", readyWhen: "[data-bot-panel]", render: () => <Screen reply="none" timed panel /> },
+  { ...BASE, id: "bot-view-panel-manage", readyWhen: "[data-bot-panel]", render: () => <Screen reply="none" timed panel manage /> },
+  // Driven by hand against a stand-in service (the screenshot run has none).
+  { ...BASE, id: "bot-view-wire", interactive: true, render: () => <WireScreen /> },
 ];

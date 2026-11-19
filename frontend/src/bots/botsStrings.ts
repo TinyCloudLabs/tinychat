@@ -105,3 +105,16 @@ export const CREATE_BOT_STRINGS = {
     orange: "Orange", red: "Red", pink: "Pink", purple: "Purple", indigo: "Indigo", slate: "Slate",
   },
 } as const;
+
+// The bot panel's Edit and Delete bot (TC-3325). "Edit" and "Delete bot" are the plan's; the rest is for the copy owner.
+export const BOT_MANAGE_STRINGS = {
+  edit: "Edit",
+  deleteBot: "Delete bot",
+  save: "Save",
+  saving: "Saving…",
+  saveFailed: "Couldn't save your changes. Try again.",
+  deleteTitle: (name: string) => `Delete ${name}?`,
+  deleteBody: "Its history stays in your space.",
+  deleting: "Deleting…",
+  deleteFailed: "Couldn't delete your bot. Try again.",
+} as const;

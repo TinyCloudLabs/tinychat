@@ -7,7 +7,10 @@ import { useCallback, useEffect, useRef, useState, type ComponentProps, type Rea
 import { BotAvatar, MAIN_BOT } from "./BotAvatar";
 import { botChatApi as defaultChatApi, type BotChatApi } from "./botChatApi";
 import type { BotMessage } from "./botsApi";
+import type { CreateBotInput } from "./botRosterApi";
+import type { ColourId, ShapeId } from "./botShapes";
 import { BotView, type ViewBot } from "./BotView";
+import type { BotManagement } from "./BotManage";
 import type { HistoryNotice } from "./historyNotice";
 import { useBotChats, type BotChatSource, type BotChats } from "./useBotChat";
 
@@ -17,12 +20,20 @@ export interface ControllerBot {
   name: string;
   environment: "regular" | "private";
   state: "active" | "suspended" | "deleting";
+  /** The look the roster holds; Edit starts from it. */
+  shape?: ShapeId;
+  colour?: ColourId;
 }
 
 /** The account's bots, from the roster (useBots.ts): Main first. */
 export interface BotsController<Bot extends ControllerBot = ControllerBot> {
   status: "loading" | "ready" | "failed";
   roster: { bots: readonly Bot[] } | null;
+  /** Changing a bot (botRosterApi.ts), after which the roster is read again. Absent: the panel offers no Edit or Delete bot. */
+  manage?: {
+    update(key: string, input: Partial<CreateBotInput>): Promise<unknown>;
+    remove(key: string): Promise<unknown>;
+  };
 }
 
 /** Saving a bot's history into the owner's space, and reading it back. */
@@ -134,6 +145,16 @@ export function BotsChat<Bot extends ControllerBot>({
 
   if (!chats || waiting) return <div className="h-full bg-background" data-bot-view-loading="" />;
   const view: ViewBot = { key: shown.key, name: shown.name, private: shown.environment === "private", face: faceOf(shown) };
+  const { manage: actions } = controller;
+  const manage: BotManagement | undefined = actions && shown.shape && shown.colour
+    ? {
+      shape: shown.shape,
+      colour: shown.colour,
+      takenNames: bots.filter((bot) => bot.key !== shown.key).map((bot) => bot.name),
+      update: (input) => actions.update(shown.key, input),
+      remove: shown.key === "main" ? undefined : () => actions.remove(shown.key),
+    }
+    : undefined;
   return (
     <BotView
       bot={view}
@@ -142,6 +163,7 @@ export function BotsChat<Bot extends ControllerBot>({
       acknowledgeNotice={acknowledgeNotice}
       onReconnect={onReconnect}
       strip={strip}
+      manage={manage}
     />
   );
 }
