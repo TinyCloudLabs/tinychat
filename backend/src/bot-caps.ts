@@ -5,7 +5,8 @@ import type { TierId } from "./billing/tiers.js";
 import type { BotEnvironment, OwnerBots } from "./bots-registry.js";
 
 export type CapMode = "flat3" | "table";
-export type PlanName = "Free" | "$10" | "$20" | "Ultra";
+/** A row of the per-plan table, lowest first. */
+export type PlanName = "tier1" | "tier2" | "tier3" | "tier4";
 
 /**
  * Which rule applies.
@@ -19,15 +20,14 @@ export const FLAT_LIMIT = 3;
 
 /**
  * Limits per plan. NOT ENFORCED while the mode is "flat3": nothing reads this table then.
- * Main counts as a private bot. So under "table", while only private bots can be created, a Free or $10 account
- * cannot create a bot at all: Main already fills its private limit. That is why "flat3" is the default until regular
- * bots can be created.
+ * Main counts as a private bot. So under "table", while only private bots can be created, a tier1 or tier2 account
+ * cannot create a bot at all: Main already fills its private limit.
  */
 export const BOT_LIMITS_BY_PLAN: Record<PlanName, Record<BotEnvironment, number>> = {
-  Free: { private: 0, regular: 1 },
-  $10: { private: 1, regular: 3 },
-  $20: { private: 3, regular: 5 },
-  Ultra: { private: 10, regular: 10 },
+  tier1: { private: 0, regular: 1 },
+  tier2: { private: 1, regular: 3 },
+  tier3: { private: 3, regular: 5 },
+  tier4: { private: 10, regular: 10 },
 };
 
 export interface BotCount { max: number; used: number }
@@ -44,15 +44,9 @@ export function capModeFromEnv(env: Record<string, string | undefined>): CapMode
   return value === "table" || value === "flat3" ? value : CAP_MODE;
 }
 
-/**
- * The plan whose limits a tier gets. The backend's tiers do not match the four plans one for one:
- * - `plus` is the $10 plan.
- * - `pro` is the $50 plan. It is neither the $20 plan nor Ultra (the $200 plan). It gets the $20 plan's limits, the
- *   smaller of the two, so it is never given more than the lower plan.
- * - No tier reaches Ultra. Its row takes effect when a tier for it exists.
- */
+/** The table row a backend tier gets. The two lists do not match one for one; how they correspond is recorded in TC-3325. */
 export function planFor(tier: TierId): PlanName {
-  return tier === "free" ? "Free" : tier === "plus" ? "$10" : "$20";
+  return tier === "free" ? "tier1" : tier === "plus" ? "tier2" : "tier3";
 }
 
 /** What the owner is told about limits, from the rule in force, the account's plan if it could be read, and its record. */

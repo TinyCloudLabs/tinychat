@@ -25,7 +25,7 @@ describe("how many bots an account may have", () => {
   });
 
   test("under the flat limit every account may have 3 bots, Main included, whatever its plan", () => {
-    for (const plan of ["Free", "$10", "$20", "Ultra", undefined] as const) {
+    for (const plan of ["tier1", "tier2", "tier3", "tier4", undefined] as const) {
       expect(botCaps("flat3", plan, record(1))).toEqual({
         capMode: "flat3",
         limits: { private: { max: 3, used: 1 }, regular: { max: 0, used: 0 } },
@@ -38,29 +38,29 @@ describe("how many bots an account may have", () => {
 
   test("the per-plan table holds exactly these numbers", () => {
     expect(BOT_LIMITS_BY_PLAN).toEqual({
-      Free: { private: 0, regular: 1 },
-      $10: { private: 1, regular: 3 },
-      $20: { private: 3, regular: 5 },
-      Ultra: { private: 10, regular: 10 },
+      tier1: { private: 0, regular: 1 },
+      tier2: { private: 1, regular: 3 },
+      tier3: { private: 3, regular: 5 },
+      tier4: { private: 10, regular: 10 },
     });
   });
 
-  test("the backend's tiers map to plans: free to Free, plus to $10, pro to $20", () => {
-    expect(planFor("free")).toBe("Free");
-    expect(planFor("plus")).toBe("$10");
-    expect(planFor("pro")).toBe("$20");
+  test("the backend's tiers map to the table's rows: free to tier1, plus to tier2, pro to tier3", () => {
+    expect(planFor("free")).toBe("tier1");
+    expect(planFor("plus")).toBe("tier2");
+    expect(planFor("pro")).toBe("tier3");
   });
 
   test("under the table a plan's private limit counts Main", () => {
-    expect(botCaps("table", "$10", record(1))).toEqual({
+    expect(botCaps("table", "tier2", record(1))).toEqual({
       capMode: "table",
       limits: { private: { max: 1, used: 1 }, regular: { max: 3, used: 0 } },
       canCreate: { private: false, regular: false },
     });
-    expect(botCaps("table", "$20", record(1)).canCreate.private).toBe(true);
-    expect(botCaps("table", "$20", record(2)).canCreate.private).toBe(true);
-    expect(botCaps("table", "$20", record(3)).canCreate.private).toBe(false);
-    expect(botCaps("table", "Free", record(1)).limits).toEqual({ private: { max: 0, used: 1 }, regular: { max: 1, used: 0 } });
+    expect(botCaps("table", "tier3", record(1)).canCreate.private).toBe(true);
+    expect(botCaps("table", "tier3", record(2)).canCreate.private).toBe(true);
+    expect(botCaps("table", "tier3", record(3)).canCreate.private).toBe(false);
+    expect(botCaps("table", "tier1", record(1)).limits).toEqual({ private: { max: 0, used: 1 }, regular: { max: 1, used: 0 } });
   });
 
   test("a bot that is being deleted is not counted", () => {
@@ -80,9 +80,9 @@ describe("how many bots an account may have", () => {
   });
 
   test("a regular bot cannot be created, whatever the limit says", () => {
-    const caps = botCaps("table", "Ultra", record(1));
+    const caps = botCaps("table", "tier4", record(1));
     expect(caps.limits?.regular).toEqual({ max: 10, used: 0 });
     expect(caps.canCreate.regular).toBe(false);
-    expect(botCaps("table", "Free", record(1, [{ environment: "regular" }])).limits?.regular).toEqual({ max: 1, used: 1 });
+    expect(botCaps("table", "tier1", record(1, [{ environment: "regular" }])).limits?.regular).toEqual({ max: 1, used: 1 });
   });
 });

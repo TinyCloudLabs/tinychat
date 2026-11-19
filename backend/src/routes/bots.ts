@@ -74,7 +74,7 @@ export function botsServiceHeaders(config: BotsConfig, ownerDid: string, _method
 }
 
 /** The same answer as UNAVAILABLE, for a bot other than Main. */
-const BOT_UNAVAILABLE = { code: "bot_unavailable", message: "This bot isn't available. Try again later." };
+const BOT_UNAVAILABLE = { code: "bot_unavailable", message: "This bot can't be reached right now. Try again shortly." };
 
 export function createBotsRouter(opts: {
   config?: BotsConfig; authMiddleware: RequestHandler; paidLimiter?: RequestHandler; registry?: BotsRegistry; capMode?: CapMode;

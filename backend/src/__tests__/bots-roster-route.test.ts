@@ -385,7 +385,7 @@ describe("limits per plan, when that rule is switched on", () => {
   const announced: Upstream = () => Response.json({ state: "active" });
 
   test("the list shows the plan's numbers", async () => {
-    const run = await setup(announced, {}, undefined, { capMode: "table", planOf: async () => "$20" });
+    const run = await setup(announced, {}, undefined, { capMode: "table", planOf: async () => "tier3" });
     try {
       const list = await (await fetch(run.base, { headers: await run.headersFor(owner) })).json();
       expect(list.capMode).toBe("table");
@@ -395,7 +395,7 @@ describe("limits per plan, when that rule is switched on", () => {
   });
 
   test("an account whose private limit Main already fills cannot create a bot", async () => {
-    const run = await setup(announced, {}, undefined, { capMode: "table", planOf: async () => "$10" });
+    const run = await setup(announced, {}, undefined, { capMode: "table", planOf: async () => "tier2" });
     try {
       const headers = await run.headersFor(owner);
       const refused = await fetch(run.base, { method: "POST", headers, body: JSON.stringify(wanted) });
@@ -407,7 +407,7 @@ describe("limits per plan, when that rule is switched on", () => {
 
   test("the account's plan is asked for by its signed-in address", async () => {
     const asked: string[] = [];
-    const run = await setup(announced, {}, undefined, { capMode: "table", planOf: async address => { asked.push(address); return "$20"; } });
+    const run = await setup(announced, {}, undefined, { capMode: "table", planOf: async address => { asked.push(address); return "tier3"; } });
     try {
       await fetch(run.base, { headers: await run.headersFor(owner) });
       expect(asked.map(address => address.toLowerCase())).toEqual([owner.toLowerCase()]);
@@ -432,7 +432,7 @@ describe("limits per plan, when that rule is switched on", () => {
 describe("the flat limit", () => {
   test("never asks for the account's plan", async () => {
     const asked: string[] = [];
-    const run = await setup(() => Response.json({ state: "active" }), {}, undefined, { planOf: async address => { asked.push(address); return "Free"; } });
+    const run = await setup(() => Response.json({ state: "active" }), {}, undefined, { planOf: async address => { asked.push(address); return "tier1"; } });
     try {
       const headers = await run.headersFor(owner);
       await fetch(run.base, { headers });
@@ -597,6 +597,20 @@ describe("deleting a bot through the routes", () => {
       expect([response.status, await response.json()]).toEqual([202, { bot: leaving }]);
       expect((await run.registry.read(owner)).bots[1]).toEqual(leaving);
       expect(handed).toEqual([KEY]);
+    } finally { await run.close(); }
+  });
+});
+
+describe("a bot that cannot be reached", () => {
+  test("a bot other than Main answers in these exact words, and Main keeps its own", async () => {
+    const run = await setup(call => (call.method === "PUT" ? Response.json({ state: "active" }) : new Response("no", { status: 500 })));
+    try {
+      const headers = await run.headersFor(owner);
+      expect((await fetch(run.base, { method: "POST", headers, body: JSON.stringify({ name: "Research", shape: "sprout", colour: "teal" }) })).status).toBe(201);
+      const other = await fetch(`${run.base}/${"1".repeat(32)}/messages`, { headers });
+      expect([other.status, await other.json()]).toEqual([502, { error: "bot_unavailable", message: "This bot can't be reached right now. Try again shortly." }]);
+      const mainBot = await fetch(`${run.base}/main/messages`, { headers });
+      expect([mainBot.status, await mainBot.json()]).toEqual([502, { error: "bot_unavailable", message: "Main isn't available. Try again later." }]);
     } finally { await run.close(); }
   });
 });
