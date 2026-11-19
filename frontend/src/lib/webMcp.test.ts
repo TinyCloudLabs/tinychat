@@ -70,7 +70,7 @@ test("falls back to navigator.modelContext and does nothing without WebMCP", asy
   expect(registerTinyCloudWebMcp({})).toBeUndefined();
 });
 
-test("registers the Feed tool only with its default-off query flag", async () => {
+test("registers the Feed tool only with its default-off local device setting", async () => {
   const registrations: Array<Record<string, unknown>> = [];
   setTinyCloudWebMcpFeedLoader(null);
   const controller = registerTinyCloudWebMcp({
@@ -81,7 +81,7 @@ test("registers the Feed tool only with its default-off query flag", async () =>
         },
       },
     },
-    location: { search: "?webmcp=feed" },
+    localStorage: { getItem: () => "enabled" },
   });
 
   expect(registrations).toHaveLength(2);
@@ -146,7 +146,7 @@ test("the Feed tool returns metadata and existing summaries without card bodies"
         },
       },
     },
-    location: { search: "?webmcp=feed" },
+    localStorage: { getItem: () => "enabled" },
   });
 
   const result = await (registrations[1]!.execute as () => Promise<{

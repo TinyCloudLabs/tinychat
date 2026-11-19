@@ -191,7 +191,7 @@ import { setSignedIn } from "./lib/signedIn";
 import { NativeSignIn } from "./shell/NativeSignIn";
 import { useNativeSignIn } from "./shell/useNativeSignIn";
 import { lazyTab } from "./shell/lazyTab";
-import { setTinyCloudWebMcpFeedLoader } from "./lib/webMcp";
+import { setTinyCloudWebMcpFeedLoader, tinyCloudWebMcpFeedEnabled } from "./lib/webMcp";
 
 // Every screen but Feed loads from its own chunk (TC-2882): the entry chunk carries boot and Feed only.
 const ChatWorkspace = lazyTab("Chat", () => import("./chat/ChatWorkspace").then((m) => m.ChatWorkspace));
@@ -257,7 +257,7 @@ export function App() {
   const [spaceId, setSpaceId] = useState<string | null>(null);
   const [tcw, setTcw] = useState<TinyCloudWeb | null>(null);
   useEffect(() => {
-    if (new URLSearchParams(window.location.search).get("webmcp") !== "feed") return;
+    if (!tinyCloudWebMcpFeedEnabled()) return;
     setTinyCloudWebMcpFeedLoader(
       tcw ? () => homeFeedSourceFor(tcw).load(undefined, { feed: true }) : null,
     );

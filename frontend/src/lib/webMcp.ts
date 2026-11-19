@@ -16,6 +16,10 @@ interface ModelContextHolder {
   modelContext?: ModelContext;
 }
 
+interface WebMcpStorage {
+  getItem(key: string): string | null;
+}
+
 interface WebMcpFeedEntry {
   source: { sourceId: string; label: string };
   state: {
@@ -36,13 +40,30 @@ type WebMcpFeedLoader = () => Promise<{ entries: WebMcpFeedEntry[] }>;
 export interface WebMcpRoot {
   document?: ModelContextHolder;
   navigator?: ModelContextHolder;
-  location?: { search: string };
+  localStorage?: WebMcpStorage;
 }
 
+const FEED_STORAGE_KEY = "tinycloud:webmcp:feed";
 let feedLoader: WebMcpFeedLoader | null = null;
 
 export function setTinyCloudWebMcpFeedLoader(loader: WebMcpFeedLoader | null): void {
   feedLoader = loader;
+}
+
+function browserStorage(): WebMcpStorage | undefined {
+  try {
+    return typeof localStorage === "undefined" ? undefined : localStorage;
+  } catch {
+    return undefined;
+  }
+}
+
+export function tinyCloudWebMcpFeedEnabled(storage: WebMcpStorage | undefined = browserStorage()): boolean {
+  try {
+    return storage?.getItem(FEED_STORAGE_KEY) === "enabled";
+  } catch {
+    return false;
+  }
 }
 
 export function tinyCloudAppCatalog() {
@@ -107,10 +128,11 @@ function feedCardsTool(): WebMcpTool {
 }
 
 function browserRoot(): WebMcpRoot {
+  const localStorage = browserStorage();
   return {
     ...(typeof document === "undefined" ? {} : { document: document as unknown as ModelContextHolder }),
     ...(typeof navigator === "undefined" ? {} : { navigator: navigator as unknown as ModelContextHolder }),
-    ...(typeof location === "undefined" ? {} : { location }),
+    ...(localStorage ? { localStorage } : {}),
   };
 }
 
@@ -121,7 +143,7 @@ export function registerTinyCloudWebMcp(root: WebMcpRoot = browserRoot()): Abort
   const controller = new AbortController();
   const tools = [
     appCatalogTool(),
-    ...(new URLSearchParams(root.location?.search ?? "").get("webmcp") === "feed" ? [feedCardsTool()] : []),
+    ...(tinyCloudWebMcpFeedEnabled(root.localStorage) ? [feedCardsTool()] : []),
   ];
   try {
     for (const tool of tools) {
