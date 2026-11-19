@@ -22,8 +22,8 @@ export interface AnswerOption { id: string; label: string; detail?: string; cost
 export const OWN_OPTION: AnswerOption = { id: "own-answer", label: "Your own answer" };
 
 /**
- * A question's options as buttons (design mock, 11-17): one outlined button per option, 44px tall at least, one per row and
- * full width on every screen (Sam, 11-17: stacked for legibility), with "Suggested" under the label of the one its agent recommends
+ * A question's options as buttons (design mock): one outlined button per option, 44px tall at least, one per row and
+ * full width on every screen, stacked for legibility, with "Suggested" under the label of the one its agent recommends
  * (`suggested`, or else an option whose label ends in "(Recommended)"; the marker comes off the label, as in
  * `displayOptions`). The chosen one stays pressed; while its answer waits (`pending`) or is being saved (`saving`) it
  * reads as the wait, with Undo and a line that runs out, and the others dim. "Your own answer" is the last button:

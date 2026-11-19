@@ -61,7 +61,7 @@ function names(list: readonly string[]): string {
 }
 
 /**
- * A card's folded section (design mock, 11-17): a title, a count, a chevron, and the section's content under it. The
+ * A card's folded section (design mock): a title, a count, a chevron, and the section's content under it. The
  * same style holds "Known so far" (folded at every width: the answers stay on the first screen) and an approval's
  * "Steps" (`open`). After it first shows, it is the owner's to open or fold.
  */
@@ -336,7 +336,7 @@ export function SitrepCard(props: Props) {
   const asking = record.kind === "ask" && responds && (!projection.answer || followup || !!text.trim());
   const snoozed = Date.parse(entry.view.snoozedUntil ?? "") > now;
   const hint = expiryHint(record, now, state);
-  // An ask's or task's timing, in the feed's words (Monica, TC-2982), in UTC: "Due 13 Nov, 18:00 UTC · Expires
+  // An ask's or task's timing, in the feed's words (TC-2982), in UTC: "Due 13 Nov, 18:00 UTC · Expires
   // 14 Nov, 14:48 UTC · in 2 h". It stands on its own line under the answers. A card that never expires says nothing about it.
   const timing = record.kind === "ask" || record.kind === "task"
     ? [record.deadline && `Due ${utcStamp(record.deadline)}`, projection.expiryAt && `Expires ${utcStamp(new Date(projection.expiryAt).toISOString())}`, hint?.replace(/^expires in (\d+)h$/, "in $1 h")].filter(Boolean).join(" · ")
