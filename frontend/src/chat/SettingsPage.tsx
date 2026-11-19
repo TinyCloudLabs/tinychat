@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useContext, useEffect } from "react";
 import { AgentSetupCard } from "./AgentSetupCard";
 import { useAgentAccess } from "./useAgentEnablement";
 import { AgentAccessControls } from "./AgentEnablementBanner";
@@ -18,15 +18,20 @@ import {
 } from "lucide-react";
 import { Link, useLocation } from "react-router-dom";
 import { StorageFullMessage } from "./StorageFullDialog";
-import { openManageStorage } from "@/lib/openManageStorage";
+import { billingLinksAllowed, openManageStorage } from "@/lib/openManageStorage";
+import { NATIVE_PLAN_NOTE } from "@/lib/storageStatus";
+import { PlatformContext } from "@/lib/platform";
+import { DeleteOpenKeyAccountButton } from "./DeleteOpenKeyAccountButton";
+import { DeleteRecordingsStep } from "./DeleteRecordingsStep";
 import { useStorageReadOnly } from "@/lib/useStorageReadOnly";
 import { useStorageFreePlan } from "@/lib/useStorageFreePlan";
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { Button } from "@/components/ui/button";
-import { BuildInfoLine } from "@/components/BuildInfoLine";
+import { SettingsBuildFooter } from "@/components/PlaybackDiagnosticsSection";
 import { HowItWorksLink } from "@/components/ui/how-it-works-link";
 import { InfoTip } from "@/components/ui/info-tip";
+import { PrivacyPolicyLink } from "@/components/ui/privacy-policy-link";
 import { SectionCard } from "@/components/ui/section-card";
 import { MemoryPanel } from "@/components/MemoryPanel";
 import { AppearanceControl } from "./AppearanceControl";
@@ -49,8 +54,11 @@ import { useSizeClass } from "../lib/sizeClass";
 import { PageHeader } from "../shell/PageHeader";
 import { PATHS } from "../shell/routes";
 import { FirstScreenControl } from "../home/FirstScreenControl";
-import { setAppsFeedEnabled, useAppsFeedEnabled } from "../lib/appsFeedFeature";
+import { ChatViewSetting } from "../bots/ChatViewControl";
 import { TinyCloudSettings } from "./TinyCloudSettings";
+import { AppLockSettings } from "./AppLockSettings";
+import { HiddenFeaturesSettings } from "./HiddenFeaturesSettings";
+import { LegacyDataLinks } from "./LegacyDataLinks";
 
 /** An InfoTip beside a card title: a 44 px target on touch that doesn't push the title row taller. */
 const TITLE_TIP = "-my-3 -ml-2 fine:-my-1 fine:-ml-1";
@@ -101,7 +109,6 @@ export function SettingsPage({
   const { hash } = useLocation();
   const agentAccess = useAgentAccess();
   const conversationCanvas = useConversationCanvasFeature(tcw, billingStatus);
-  const appsFeedEnabled = useAppsFeedEnabled();
   const compact = useSizeClass().size === "compact";
   const usage = billingStatus?.usage;
   const hasLimit = !!usage && usage.limit > 0;
@@ -111,6 +118,8 @@ export function SettingsPage({
   const near = pct >= 90;
   const storageFull = useStorageReadOnly();
   const canUpgrade = useStorageFreePlan() && paywallEnabled;
+  // The iOS and Android apps show usage only: no Manage storage, Upgrade or Manage plan (App Store 3.1.1, Play Payments).
+  const billingLinks = billingLinksAllowed(useContext(PlatformContext));
   const resetsLabel = usage?.resetsAt ? formatResetsAt(usage.resetsAt) : null;
   useEffect(() => {
     if (hash !== "#agent-access") return;
@@ -134,13 +143,19 @@ export function SettingsPage({
             <p>
               <strong>Storage full</strong> <StorageFullMessage detail />
             </p>
-            <Button type="button" variant="outline" size="sm" className="mt-3" onClick={() => void openManageStorage()}>
-              Manage storage
-            </Button>
-            {canUpgrade && (
-              <Button type="button" variant="outline" size="sm" className="ml-2 mt-3" onClick={() => void openManageStorage()}>
-                Upgrade
-              </Button>
+            {billingLinks ? (
+              <>
+                <Button type="button" variant="outline" size="sm" className="mt-3" onClick={() => void openManageStorage()}>
+                  Manage storage
+                </Button>
+                {canUpgrade && (
+                  <Button type="button" variant="outline" size="sm" className="ml-2 mt-3" onClick={() => void openManageStorage()}>
+                    Upgrade
+                  </Button>
+                )}
+              </>
+            ) : (
+              <p className="mt-3 text-muted-foreground">{NATIVE_PLAN_NOTE}</p>
             )}
           </div>
         )}
@@ -181,12 +196,30 @@ export function SettingsPage({
                 <span>{signingOut ? "Signing out…" : "Sign out"}</span>
               </Button>
             </div>
+            {/* App Store 5.1.1(v): the account lives on OpenKey, so deletion opens OpenKey's own
+                deletion page, which asks for a fresh passkey or email code. Desktop has no
+                fixed-URL opener for it yet, so the row is phone and web only. */}
+            {appPlatform() !== "tauri" && (
+              <div className="mt-4 border-t border-border pt-4">
+                <div className="mb-4">
+                  <DeleteRecordingsStep backendUrl={backendUrl} sessionStore={sessionStore} />
+                </div>
+                <DeleteOpenKeyAccountButton backendUrl={backendUrl} sessionStore={sessionStore} />
+                <p className="mt-2 text-xs text-muted-foreground">
+                  Permanently deletes your OpenKey account and destroys its keys. You'll confirm on openkey.so.
+                </p>
+              </div>
+            )}
+            <div className="mt-4 border-t border-border pt-3 fine:pt-4">
+              <PrivacyPolicyLink />
+            </div>
           </SectionCard>
-          {appsFeedEnabled && (
-            <SectionCard icon={LayoutGridIcon} title="Home">
-              <FirstScreenControl tcw={tcw} did={did} />
-            </SectionCard>
-          )}
+          <AppLockSettings />
+          <HiddenFeaturesSettings />
+          <SectionCard icon={LayoutGridIcon} title="Start screen">
+            <FirstScreenControl tcw={tcw} did={did} />
+          </SectionCard>
+          <ChatViewSetting account={did} />
           <SectionCard
             id="agent-access"
             icon={ShieldCheckIcon}
@@ -236,6 +269,7 @@ export function SettingsPage({
             <div className="mt-3">
               <ImportDialog tcw={tcw} onImported={onImported} />
             </div>
+            <LegacyDataLinks />
           </SectionCard>
           {paywallEnabled && (
             <SectionCard icon={CreditCardIcon} title="Plan & Usage">
@@ -269,15 +303,20 @@ export function SettingsPage({
                   )}
                 </div>
               )}
+              {!billingLinks && (
+                <p className="mt-3 text-xs text-muted-foreground">{NATIVE_PLAN_NOTE}</p>
+              )}
               <div className="mt-4 flex flex-wrap items-center gap-2">
-                <Button
-                  variant="default"
-                  size="sm"
-                  onClick={onManagePlan}
-                  aria-haspopup="dialog"
-                >
-                  Manage plan
-                </Button>
+                {billingLinks && (
+                  <Button
+                    variant="default"
+                    size="sm"
+                    onClick={onManagePlan}
+                    aria-haspopup="dialog"
+                  >
+                    Manage plan
+                  </Button>
+                )}
                 <Button
                   variant="outline"
                   size="sm"
@@ -293,21 +332,8 @@ export function SettingsPage({
           <SectionCard icon={SunIcon} title="Appearance">
             <AppearanceControl />
           </SectionCard>
-          <SectionCard icon={DatabaseIcon} title="Experimental Features">
-              <div data-testid="apps-feed-setting-row" className="mb-4 flex items-center justify-between gap-3">
-                <div className="flex min-w-0 flex-1 items-center">
-                  <p className="text-sm font-medium">Apps and Feed</p>
-                  <InfoTip label="About Apps and Feed" className="-my-3 fine:-my-1">
-                    Show Apps and Feed in navigation and choose one as your Home screen.
-                  </InfoTip>
-                </div>
-                <button type="button" role="switch" aria-checked={appsFeedEnabled} aria-label="Enable Apps and Feed" onClick={() => setAppsFeedEnabled(!appsFeedEnabled)} className="-my-2.5 flex h-11 w-12 shrink-0 items-center justify-center rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring fine:my-0 fine:h-6 fine:w-11">
-                  <span aria-hidden className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${appsFeedEnabled ? "bg-primary" : "bg-muted"}`}>
-                    <span className={`absolute top-1 size-4 rounded-full bg-background transition-transform ${appsFeedEnabled ? "left-6" : "left-1"}`} />
-                  </span>
-                </button>
-              </div>
-              {conversationCanvas.eligible && <>
+          {conversationCanvas.eligible && (
+            <SectionCard icon={DatabaseIcon} title="Experimental Features">
                 <div data-testid="canvas-setting-row" className="flex items-center justify-between gap-3">
                 <div className="flex min-w-0 flex-1 items-center">
                   <p className="text-sm font-medium">Conversation Canvas</p>
@@ -323,8 +349,8 @@ export function SettingsPage({
                 </button>
                 </div>
                 {conversationCanvas.error && <p role="alert" className="mt-2 text-xs text-destructive">{conversationCanvas.error}</p>}
-              </>}
-          </SectionCard>
+            </SectionCard>
+          )}
           <Link
             to={PATHS.about}
             className="tap-transparent flex min-h-14 items-center gap-2 rounded-lg border border-border bg-card px-4 text-sm font-semibold tracking-tight transition-colors hover:bg-surface-2 active:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring fine:min-h-12"
@@ -333,8 +359,8 @@ export function SettingsPage({
             <span className="flex-1">How it works</span>
             <ChevronRightIcon aria-hidden className="size-4 text-muted-foreground" />
           </Link>
-          {/* The build line at the bottom of Settings (TC-840). */}
-          <BuildInfoLine />
+          {/* The build line at the bottom of Settings (TC-840); seven taps reveal playback diagnostics (TC-2857). */}
+          <SettingsBuildFooter />
         </div>
       </div>
     </div>

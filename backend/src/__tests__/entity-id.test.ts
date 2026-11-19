@@ -19,8 +19,8 @@ describe("entity-id parity", () => {
   });
 
   it("lowercase and EIP-55 checksummed addresses map to the same entityId", () => {
-    const lc = "0x7d0333579c19e8fa149c2dbf8405cb6f66c373f2";
-    const checksummed = "0x7D0333579C19E8Fa149C2dbF8405Cb6f66C373f2";
+    const lc = "0x4db6e7be716ba504cd103bc16b9329fe6bbe41f2";
+    const checksummed = "0x4db6e7Be716bA504Cd103BC16B9329FE6BBE41F2";
     expect(addressToEntityId(lc, TINYCHAT_AGENT_ID)).toBe(
       addressToEntityId(checksummed, TINYCHAT_AGENT_ID),
     );
@@ -29,8 +29,8 @@ describe("entity-id parity", () => {
   it("pinned address→entityId vector (byte-equal to eliza-service source)", () => {
     // Computed from both repos' entity-id.ts — the cross-repo routing contract.
     expect(
-      addressToEntityId("0x7d0333579c19e8fa149c2dbf8405cb6f66c373f2", TINYCHAT_AGENT_ID),
-    ).toBe("b7da5202-d81f-0f0f-a602-46f696ae2b8a");
+      addressToEntityId("0x4db6e7be716ba504cd103bc16b9329fe6bbe41f2", TINYCHAT_AGENT_ID),
+    ).toBe("03c43cbe-21ca-05ec-b4b2-401bbe407cee");
   });
 
   it("the frozen tinychat agentId is unchanged", () => {

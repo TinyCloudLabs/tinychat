@@ -6,6 +6,11 @@ import { isCanonicalResourcePath } from "./portable-delegation.js";
 const APP_PATH_PREFIX = `${APP_ID}/`;
 const KV_ACTIONS: readonly string[] = ["tinycloud.kv/get", "tinycloud.kv/put", "tinycloud.kv/del", "tinycloud.kv/list", "tinycloud.kv/metadata"];
 const SQL_ACTIONS: readonly string[] = ["tinycloud.sql/read", "tinycloud.sql/write", "tinycloud.sql/schema"];
+const HOME_HOOK_PATHS: readonly string[] = [
+  `sql/${APP_ID}/home_feed`,
+  `sql/${APP_ID}/feed/`,
+  `sql/${APP_ID}/threads`,
+];
 const CATALOG_SQL_PATHS: Record<string, true> = {
   "xyz.tinycloud.sample.healthlog/healthlog": true,
   "xyz.tinycloud.sample.recipes/recipes": true,
@@ -33,6 +38,11 @@ export function hasTinyChatNativeAudience(message: string, address: string, chai
       entry.space.toLowerCase() !== space) return false;
     if (entry.service === "capabilities" && entry.path === "" &&
       entry.actions.length === 1 && entry.actions[0] === "tinycloud.capabilities/read") continue;
+    if (entry.service === "hooks") {
+      if (!HOME_HOOK_PATHS.includes(entry.path) || entry.actions.length !== 1 ||
+        entry.actions[0] !== "tinycloud.hooks/subscribe") return false;
+      continue;
+    }
     if (entry.service !== "kv" && entry.service !== "sql") return false;
     const homeKvRoot = entry.service === "kv" && entry.path === "";
     const catalogDatabase = entry.service === "sql" && CATALOG_SQL_PATHS[entry.path] === true;

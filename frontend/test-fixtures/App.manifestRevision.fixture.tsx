@@ -1,3 +1,4 @@
+import { newIdbEnv } from "@/lib/voiceNotes/web/testing/idb";
 // Mounted-App proof of the manifest-revision gate at restore: a session saved under an older sign-in
 // manifest is handed off, cleared, and met with the sign-in screen carrying the one-line notice, with no
 // manifest fetch or storage restore before the handoff; a failed handoff keeps the session; offline defers;
@@ -14,8 +15,6 @@ import { installDom } from "@/test/dom";
 import { PlatformContext, type AppPlatform } from "@/lib/platform";
 import { replicationOptInKey } from "@/lib/replication/replicationOptIn";
 import { REPLICATION_RUNTIME_FLAG_KEY } from "@/lib/replication/replicationFlag";
-import { SIGN_IN_BUNDLE_ENTRIES } from "@tinyboilerplate/core";
-import realManifest from "../../manifest.json";
 
 // The app code under test must never reach a real home: HOME is a throwaway dir under /var/tmp,
 // set at load and asserted before anything runs.
@@ -48,19 +47,13 @@ const PRINCIPAL = `did:pkh:eip155:1:${ADDRESS}`;
 const CHROME = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
 const APP_SESSION_KEY = "xyz.tinycloud.tinychat:session";
 const REVISION_KEY = `xyz.tinycloud.tinychat:manifest-revision:${ADDRESS}`;
-const NOTICE = "Sign in once more so TinyCloud Home can open your apps and your feed. Your data stays as it is.";
+const NOTICE = "Sign in once more so TinyCloud One can open your apps and your feed. Your data stays as it is.";
 
 /** Every effect the gate must order, in the order it happened. */
 const events: string[] = [];
 let syncCalls = 0;
 let handoffResult: { ok: boolean; failClosed: boolean; message: string | null } = { ok: true, failClosed: false, message: null };
 let offline = false;
-/** What the backend serves at /api/manifest: this build's manifest.json, the same without the bundle (an older backend), or nothing. */
-let served: "full" | "old" | "unreachable" = "full";
-const oldManifest = {
-  ...realManifest,
-  permissions: realManifest.permissions.filter((entry) => !SIGN_IN_BUNDLE_ENTRIES.some((required) => required.service === entry.service && required.path === entry.path)),
-};
 
 function fakeTcw(): TinyCloudWeb {
   return {
@@ -73,11 +66,6 @@ mock.module("@tinyboilerplate/client", () => ({
   ...clientApi,
   connectWallet: async () => ({ address: ADDRESS, openkey: {}, web3Provider: {} }),
   requestNonce: async () => "nonce",
-  loadAppManifest: async () => {
-    events.push("loadManifest");
-    if (served === "unreachable") throw new TypeError("Failed to fetch");
-    return served === "old" ? oldManifest : realManifest;
-  },
   createAndSignIn: async () => { events.push("signIn"); return { tcw: fakeTcw(), session: { siwe: "message", signature: "signature" } }; },
   verifySession: async () => ({ token: "bearer", expiresIn: 3600, address: ADDRESS }),
   clearPersistedSession: (address: string) => { events.push(`clearPersisted:${address}`); realClearPersistedSession(address); },
@@ -118,7 +106,7 @@ mock.module("@/lib/voiceNotes/captureEngine", () => ({
 }));
 mock.module("@/lib/voiceNotes/nativeVoiceNotes", () => ({
   ...nativeVoiceNotesApi,
-  VoiceNotes: { ...nativeVoiceNotesApi.VoiceNotes, getCaptureDefaults: async () => ({ status: "signed_in", accountDid: PRINCIPAL, transitionGen: 0 }) },
+  VoiceNotes: { ...nativeVoiceNotesApi.VoiceNotes, status: async () => ({ intent: "stopped" }), getCaptureDefaults: async () => ({ status: "signed_in", accountDid: PRINCIPAL, transitionGen: 0 }) },
 }));
 mock.module("@/lib/voiceNotes/accountHandoff", () => ({
   ...handoffApi,
@@ -152,8 +140,22 @@ let restoreDom: (() => void) | undefined;
 let root: Root | null = null;
 let host: HTMLDivElement | null = null;
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+/**
+ * Waits until the page has been quiet, in real time, for QUIET_MS: no new event and no DOM change. The app's
+ * startup chain does real async work (IndexedDB, dynamic imports) that takes a varying number of event-loop
+ * turns, so a fixed count of turns ends too early on a slow CPU (TC-3029).
+ */
+const QUIET_MS = 150;
 async function settle() {
-  await act(async () => { await tick(); await tick(); await tick(); });
+  let last = "";
+  let changedAt = performance.now();
+  const giveUpAt = changedAt + 5_000;
+  while (performance.now() < giveUpAt) {
+    await act(async () => { await tick(); });
+    const now = JSON.stringify([events, host?.innerHTML ?? ""]);
+    if (now !== last) { last = now; changedAt = performance.now(); }
+    else if (performance.now() - changedAt >= QUIET_MS) return;
+  }
 }
 
 /** A Chromium web page with the build flag (dev runtime flag) ON and the user's switch ON. */
@@ -167,12 +169,13 @@ function qualifyBrowser() {
     maxTouchPoints: { configurable: true, value: 0 },
     locks: { configurable: true, value: { request: () => undefined } },
   });
-  Object.defineProperty(globalThis, "indexedDB", { configurable: true, writable: true, value: {} });
+  Object.defineProperty(globalThis, "indexedDB", { configurable: true, writable: true, value: newIdbEnv().factory });
+  Object.defineProperty(globalThis, "IDBKeyRange", { configurable: true, value: newIdbEnv().keyRange });
   Object.defineProperty(globalThis, "Worker", { configurable: true, writable: true, value: class {} });
 }
 
 async function mount(platform: AppPlatform = "web") {
-  restoreDom = installDom();
+  restoreDom = installDom({ localStorage: globalThis.localStorage, sessionStorage: globalThis.sessionStorage });
   qualifyBrowser();
   host = document.createElement("div");
   document.body.append(host);
@@ -215,7 +218,6 @@ beforeEach(() => {
   events.length = 0;
   syncCalls = 0;
   offline = false;
-  served = "full";
   handoffResult = { ok: true, failClosed: false, message: null };
   Object.defineProperty(globalThis, "localStorage", { configurable: true, writable: true, value: memoryLocalStorage() });
   // The page's backend calls fail like an unreachable network: a refused (401) call would end the session mid-test.
@@ -224,10 +226,10 @@ beforeEach(() => {
 afterEach(async () => { await unmount(); });
 afterAll(() => { mock.restore(); restoreImportDom(); globalThis.fetch = realFetch; Reflect.deleteProperty(globalThis, "localStorage"); });
 
-test("a session with no revision record: the served manifest is read, then handoff, clear, then the sign-in screen with the notice; nothing restores", async () => {
+test("a session with no revision record is handed off before clearing and shows the re-sign notice without restoration", async () => {
   seedSession();
   await mount();
-  expect(events).toEqual(["loadManifest", "handoff", `clearPersisted:${ADDRESS}`]);
+  expect(events).toEqual(["handoff", `clearPersisted:${ADDRESS}`]);
   expect(localStorage.getItem(APP_SESSION_KEY)).toBeNull();
   expect(host!.textContent).toContain(NOTICE);
   expect([...host!.querySelectorAll("button")].some((button) => button.textContent?.trim() === "Sign in")).toBe(true);
@@ -238,15 +240,16 @@ test("a session recorded under the withdrawn revision \"1\" is forced the same w
   seedSession();
   localStorage.setItem(REVISION_KEY, "1");
   await mount();
-  expect(events).toEqual(["loadManifest", "handoff", `clearPersisted:${ADDRESS}`]);
+  expect(events).toEqual(["handoff", `clearPersisted:${ADDRESS}`]);
   expect(host!.textContent).toContain(NOTICE);
 });
 
 test("a failed handoff keeps the session: it is not cleared, nothing restores, and the notice is not shown", async () => {
-  handoffResult = { ok: false, failClosed: false, message: "Couldn't update this phone's recording settings. Try again." };
+  handoffResult = { ok: false, failClosed: false, message: "Couldn't stop voice recording for this account on this phone, so you're still signed in. Try again." };
   seedSession();
   await mount();
-  expect(events).toEqual(["loadManifest", "handoff"]);
+  expect(events).toEqual(["handoff"]);
+  expect(host!.textContent).toContain("Couldn't stop voice recording for this account on this phone, so you're still signed in. Try again.");
   expect(localStorage.getItem(APP_SESSION_KEY)).not.toBeNull();
   expect(host!.textContent).not.toContain(NOTICE);
   expect(host!.querySelector('[data-testid="authenticated-workspace"]')).toBeNull();
@@ -271,47 +274,11 @@ test("a deferred session is forced on the first online load", async () => {
   events.length = 0;
   offline = false;
   await mount();
-  expect(events).toEqual(["loadManifest", "handoff", `clearPersisted:${ADDRESS}`]);
+  expect(events).toEqual(["handoff", `clearPersisted:${ADDRESS}`]);
   expect(host!.textContent).toContain(NOTICE);
 });
 
-test("a backend still serving the older manifest: the stale session is kept, not cleared, no notice, and the page restores it as before", async () => {
-  served = "old";
-  seedSession();
-  await mount();
-  expect(events[0]).toBe("loadManifest");
-  expect(events).not.toContain("handoff");
-  expect(events.filter((event) => event.startsWith("clearPersisted"))).toEqual([]);
-  expect(events).toContain("restore");
-  expect(host!.textContent).not.toContain(NOTICE);
-  expect(host!.querySelector('[data-testid="authenticated-workspace"]')).toBeTruthy();
-});
-
-test("an unreachable manifest defers the same way: nothing cleared, no notice", async () => {
-  served = "unreachable";
-  seedSession();
-  await mount();
-  expect(events[0]).toBe("loadManifest");
-  expect(events).not.toContain("handoff");
-  expect(events.filter((event) => event.startsWith("clearPersisted"))).toEqual([]);
-  expect(host!.textContent).not.toContain(NOTICE);
-});
-
-test("once the backend serves the bundle, the deferred session is forced on the next open", async () => {
-  served = "old";
-  seedSession();
-  await mount();
-  expect(events).not.toContain("handoff");
-  await unmount();
-  events.length = 0;
-  served = "full";
-  seedSession();
-  await mount();
-  expect(events).toEqual(["loadManifest", "handoff", `clearPersisted:${ADDRESS}`]);
-  expect(host!.textContent).toContain(NOTICE);
-});
-
-test("a signed-out new user sees no notice, signs in under the new manifest with no handoff, and the revision \"3\" is recorded", async () => {
+test("a new user signs in without the re-sign notice and later restores without another prompt", async () => {
   await mount();
   // A signed-out boot may run the capture handoff; it must not clear, fetch the manifest, or restore anything.
   expect(events.filter((event) => event !== "handoff")).toEqual([]);
@@ -321,7 +288,6 @@ test("a signed-out new user sees no notice, signs in under the new manifest with
   await settle();
   expect(host!.querySelector('[data-testid="authenticated-workspace"]')).toBeTruthy();
   expect(events).not.toContain("handoff");
-  expect(localStorage.getItem(REVISION_KEY)).toBe("3");
   await unmount();
   events.length = 0;
   seedSession();
@@ -331,34 +297,23 @@ test("a signed-out new user sees no notice, signs in under the new manifest with
   expect(host!.querySelector('[data-testid="authenticated-workspace"]')).toBeTruthy();
 });
 
-test("a new user who signs in under a manifest without the bundle is not marked current", async () => {
-  served = "old";
-  await mount();
-  await click("Sign in");
-  await settle();
-  expect(host!.querySelector('[data-testid="authenticated-workspace"]')).toBeTruthy();
-  expect(events).toContain("signIn");
-  expect(localStorage.getItem(REVISION_KEY)).toBeNull();
-});
-
 test("after a forced re-sign the first replication sync runs after the new sign-in and again after a later restore", async () => {
   seedSession();
   await mount();
-  expect(events).toEqual(["loadManifest", "handoff", `clearPersisted:${ADDRESS}`]);
+  expect(events).toEqual(["handoff", `clearPersisted:${ADDRESS}`]);
   await click("Sign in");
   await settle();
   expect(host!.querySelector('[data-testid="authenticated-workspace"]')).toBeTruthy();
   expect(host!.textContent).not.toContain(NOTICE);
   // Sign-in, then the sync; the stale session was never restored.
-  expect(events).toEqual(["loadManifest", "handoff", `clearPersisted:${ADDRESS}`, "loadManifest", "signIn", "sync"]);
-  expect(localStorage.getItem(REVISION_KEY)).toBe("3");
+  expect(events).toEqual(["handoff", `clearPersisted:${ADDRESS}`, "signIn", "sync"]);
 
   await unmount();
   events.length = 0;
   syncCalls = 0;
   seedSession();
   await mount();
-  expect(events).toEqual(["loadManifest", "restore", "sync"]);
+  expect(events).toEqual(["restore", "sync"]);
   expect(syncCalls).toBe(1);
   expect(host!.querySelector('[data-testid="authenticated-workspace"]')).toBeTruthy();
 });

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { isReplicationAvailable, isReplicationEnabled, replicationPlatformRefusal, type ReplicationEnv } from "./replicationFlag";
+import { isReplicationAvailable, isReplicationBindPaused, isReplicationEnabled, replicationPlatformRefusal, type ReplicationEnv } from "./replicationFlag";
 
 const CHROME_DESKTOP: ReplicationEnv = {
   platform: "web",
@@ -22,6 +22,13 @@ describe("replication flag", () => {
   test("turns on from the build flag or the runtime flag in Chromium on the web, once the user opted in", () => {
     expect(isReplicationEnabled({ ...ON, env: CHROME_DESKTOP })).toBe(true);
     expect(isReplicationEnabled({ killSwitchOpen: true, runtimeFlag: true, buildFlag: undefined, userOptIn: true, env: CHROME_DESKTOP })).toBe(true);
+  });
+
+  test("binding is paused only in production builds, and the pause leaves replication enabled", () => {
+    expect(isReplicationBindPaused({ paused: true, production: true })).toBe(true);
+    expect(isReplicationBindPaused({ paused: true, production: false })).toBe(false);
+    expect(isReplicationBindPaused({ paused: false, production: true })).toBe(false);
+    expect(isReplicationEnabled({ ...ON, env: CHROME_DESKTOP })).toBe(true);
   });
 
   test("the hard-coded kill switch beats every flag", () => {

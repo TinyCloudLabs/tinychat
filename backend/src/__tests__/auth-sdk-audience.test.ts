@@ -11,6 +11,7 @@ import type { TinyCloudWeb as TinyCloudWebClass } from "@tinycloud/web-sdk";
 import APP_MANIFEST from "../../../manifest.json";
 import { nativePermissions } from "../../../frontend/src/lib/openkeyNative.js";
 import { createAuthRouter } from "../routes/auth.js";
+import { frontendOriginsFromEnv } from "../cors-origins.js";
 
 const account = privateKeyToAccount(`0x${"01".repeat(32)}`);
 const SESSION_URI = /^did:key:(z6Mk[1-9A-HJ-NP-Za-km-z]{44})#\1$/;
@@ -59,7 +60,9 @@ async function startAuthServer() {
   const app = express();
   app.use(express.json());
   app.use("/api/auth", createAuthRouter({
-    nonceStore, privateKey: "isolated-sdk-audience-test-key", frontendUrl: "https://tinycloud.chat",
+    nonceStore, privateKey: "isolated-sdk-audience-test-key",
+    // Production's FRONTEND_URL with the built-in FRONTEND_ORIGINS default (both web sites).
+    frontendOrigins: frontendOriginsFromEnv("https://tinycloud.chat", {}),
   }));
   const server = await new Promise<Server>((resolve) => {
     const listener = app.listen(0, "127.0.0.1", () => resolve(listener));
@@ -92,6 +95,12 @@ async function startAuthServer() {
  * Stop there so this test never needs a live OpenKey key or TinyCloud node. */
 async function signWithWebSdk(origin: string, nonce: string, claimedDomain?: string) {
   browser.happyDOM.setURL(origin);
+  // The web SDK decides first-party from window.location.origin (js-sdk #945); happy-dom reports a custom scheme such
+  // as tauri:// as "null", where the desktop WebView reports the scheme and host.
+  const reported = new URL(origin);
+  if (browser.location.origin === "null") {
+    Object.defineProperty(browser.location, "origin", { configurable: true, get: () => `${reported.protocol}//${reported.host}` });
+  }
   const captured = { message: "", signature: "" };
   const signed = Symbol("signed by offline wallet");
   const provider = {
@@ -181,7 +190,8 @@ describe("real SDK SIWE audience", () => {
   test("raw Tauri development authority includes the port and is rejected by production", async () => {
     const server = await startAuthServer();
     try {
-      const signed = await signWithWebSdk("http://localhost:5186/chat", await server.nonce());
+      // Signed on the desktop app's origin; the SIWE domain carries the raw development authority under test.
+      const signed = await signWithWebSdk("tauri://localhost/chat", await server.nonce(), "localhost:5186");
       const parsed = parseSiweMessage(signed.message);
       expect(parsed.domain).toBe("localhost:5186");
       expect(parsed.uri).toMatch(SESSION_URI);
@@ -193,8 +203,9 @@ describe("real SDK SIWE audience", () => {
 
   for (const [name, origin, domain, claimedDomain] of [
     ["production web", "https://tinycloud.chat/chat", "tinycloud.chat"],
+    ["Home site", "https://home.tinycloud.xyz/", "home.tinycloud.xyz"],
     ["Pages preview", "https://feature-12.tinychat-4jq.pages.dev/chat", "feature-12.tinychat-4jq.pages.dev"],
-    ["Tauri development", "http://localhost:5186/chat", "localhost", "localhost"],
+    ["Tauri development", "tauri://localhost/chat", "localhost", "localhost"],
     ["macOS Tauri", "tauri://localhost/chat", "localhost"],
     ["Windows Tauri", "http://tauri.localhost/chat", "tauri.localhost"],
   ] as const) {
@@ -236,6 +247,34 @@ describe("real SDK SIWE audience", () => {
     }
   });
 
+  test("native hooks neither broaden the app scope nor establish an audience alone", async () => {
+    const server = await startAuthServer();
+    try {
+      const invalidHooks: Record<string, string[]>[] = [
+        { "sql/xyz.other.application/home_feed": ["tinycloud.hooks/subscribe"] },
+        { "sql/xyz.tinycloud.tinychat/": ["tinycloud.hooks/subscribe"] },
+        { "sql/xyz.tinycloud.tinychat/home_feed": ["tinycloud.sql/read"] },
+      ];
+      for (const hooks of invalidHooks) {
+        const message = signNativeWithAbilities(await server.nonce(false), {
+          kv: { "xyz.tinycloud.tinychat/threads/": ["tinycloud.kv/get"] },
+          hooks,
+        });
+        expect(await server.verify(message, await account.signMessage({ message }))).toEqual({
+          status: 400, error: "invalid_native_audience",
+        });
+      }
+      const message = signNativeWithAbilities(await server.nonce(false), {
+        hooks: { "sql/xyz.tinycloud.tinychat/home_feed": ["tinycloud.hooks/subscribe"] },
+      });
+      expect(await server.verify(message, await account.signMessage({ message }))).toEqual({
+        status: 400, error: "invalid_native_audience",
+      });
+    } finally {
+      await server.close();
+    }
+  });
+
   test("a native grant that names only the broad Home entries is not proof of a TinyChat sign-in", async () => {
     const server = await startAuthServer();
     try {
@@ -257,7 +296,8 @@ describe("real SDK SIWE audience", () => {
     const server = await startAuthServer();
     try {
       const nonce = await server.nonce(false);
-      const signed = await signWithWebSdk("https://attacker.example/chat", nonce, "openkey.so");
+      // Signed on a TinyCloud origin; the claimed SIWE domain is what the backend must refuse as a native grant.
+      const signed = await signWithWebSdk("https://tinycloud.chat/chat", nonce, "openkey.so");
       const parsed = parseSiweMessage(signed.message);
       expect(parsed.domain).toBe("openkey.so");
       expect(parsed.uri).toMatch(SESSION_URI);
@@ -273,7 +313,8 @@ describe("real SDK SIWE audience", () => {
     const server = await startAuthServer();
     try {
       const nonce = await server.nonce();
-      const signed = await signWithWebSdk("https://evil.pages.dev/chat", nonce);
+      // Signed on a TinyCloud origin; the claimed SIWE domain is the attacker host the backend must refuse.
+      const signed = await signWithWebSdk("https://tinycloud.chat/chat", nonce, "evil.pages.dev");
       expect(await server.verify(signed.message, signed.signature)).toEqual({ status: 400, error: "invalid_origin" });
     } finally {
       await server.close();

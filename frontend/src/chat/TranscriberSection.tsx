@@ -32,6 +32,7 @@ import {
 import { useTranscriberSavedState } from "./useTranscriberLibrarySync";
 import { createCalendarAutojoinClient, calendarOutcomeLabel, type CalendarAutojoinOutcome } from "@/lib/connectors/calendarAutojoinApi";
 import { transcriberMeetingTitle } from "@/lib/transcriberSave";
+import { ROW_NOT_DELETED } from "./recordingsDeletedCopy";
 
 /** Only these end a meeting. Any other status, including one this build does not know yet, is still moving. */
 const TERMINAL_STATUSES: ReadonlySet<string> = new Set(["completed", "failed", "cancelled"]);
@@ -408,7 +409,7 @@ export const TranscriberView: FC<TranscriberViewProps> = ({
               {meetings.map((row) => (
                 <li key={row.id} className="py-2.5">
                   {"unavailable" in row ? (
-                    <UnavailableRow id={row.id} busy={busyId === row.id} onRemove={onRemove} />
+                    <UnavailableRow id={row.id} deleting={"deleting" in row && row.deleting === true} kept={"kept" in row && row.kept === true} busy={busyId === row.id} onRemove={onRemove} />
                   ) : (
                     <MeetingRow
                       meeting={row}
@@ -430,24 +431,30 @@ export const TranscriberView: FC<TranscriberViewProps> = ({
   );
 };
 
-function UnavailableRow(props: { id: string; busy: boolean; onRemove: (id: string) => void }) {
+function UnavailableRow(props: { id: string; deleting: boolean; kept: boolean; busy: boolean; onRemove: (id: string) => void }) {
   return (
     <div className="flex items-start justify-between gap-3">
       <div className="min-w-0 flex-1">
         <span className="block truncate font-mono text-xs">{props.id}</span>
         <span className="mt-0.5 block text-xs text-muted-foreground">
-          Could not be read right now.
+          {props.kept
+            ? ROW_NOT_DELETED
+            : props.deleting
+              ? "Being deleted. We keep trying until it's gone."
+              : "Could not be read right now."}
         </span>
       </div>
-      <Button
-        type="button"
-        variant="outline"
-        size="sm"
-        disabled={props.busy}
-        onClick={() => props.onRemove(props.id)}
-      >
-        Remove
-      </Button>
+      {!props.kept && (
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          disabled={props.busy}
+          onClick={() => props.onRemove(props.id)}
+        >
+          {props.deleting ? "Retry now" : "Remove"}
+        </Button>
+      )}
     </div>
   );
 }
@@ -676,7 +683,7 @@ function listStatusOf<T>(result: TranscriberResult<T>): ListStatus {
   }
 }
 
-export function describeFailure<T>(result: TranscriberResult<T>): string {
+export function describeFailure<T>(result: TranscriberResult<T>, meetingUrl?: string): string {
   switch (result.status) {
     case "unauthenticated":
       return "Your session expired. Sign in again.";
@@ -694,8 +701,21 @@ export function describeFailure<T>(result: TranscriberResult<T>): string {
       return "The transcriber is temporarily unavailable. Try again in a moment.";
     case "rejected":
       switch (result.code) {
-        case "invalid_meeting_url":
+        case "invalid_meeting_url": {
+          try {
+            const url = new URL(meetingUrl ?? "");
+            if (
+              (url.protocol === "http:" || url.protocol === "https:") &&
+              url.hostname === "meet.google.com" &&
+              /^\/lookup\/[^/]+\/?$/.test(url.pathname)
+            ) {
+              return "Paste the meet.google.com/abc-defg-hij link for this meeting";
+            }
+          } catch {
+            // Keep the existing generic copy when the pasted value cannot be parsed as a URL.
+          }
           return "That doesn't look like a meeting link.";
+        }
         case "unsupported_platform":
           return "That meeting platform isn't supported yet.";
         case "idempotency_conflict":
@@ -845,6 +865,9 @@ export function useMeetingBot({ backendUrl, sessionStore, client, calendar: cale
   const [checkingIntent, setCheckingIntent] = useState<(SendIntent & { normalizedUrl: string; owner: string; error: string }) | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  // Recordings the owner removed whose copy at the notetaker service remains: the server has dropped them from
+  // the list, so they are kept here (this session) to say so on their own row.
+  const [keptIds, setKeptIds] = useState<string[]>([]);
   const [open, setOpen] = useState<OpenTranscriptState | null>(null);
   const saved = useTranscriberSavedState();
   const submitLatch = useRef(false);
@@ -990,11 +1013,11 @@ export function useMeetingBot({ backendUrl, sessionStore, client, calendar: cale
         const result = await api.create(intent.input, { idempotencyKey: intent.key });
         if (result.status !== "ok") {
           if (isAmbiguousCreateFailure(result)) {
-            setCheckingIntent({ ...intent, normalizedUrl: normalized, owner, error: describeFailure(result) });
+            setCheckingIntent({ ...intent, normalizedUrl: normalized, owner, error: describeFailure(result, intent.input.meeting_url) });
             return;
           }
           if (result.status === "rejected" && result.code === "idempotency_conflict") clearIntent(normalized);
-          setFormError(describeFailure(result));
+          setFormError(describeFailure(result, intent.input.meeting_url));
           return;
         }
         if (!isActiveStatus(result.value.status)) clearIntent(normalized);
@@ -1034,9 +1057,15 @@ export function useMeetingBot({ backendUrl, sessionStore, client, calendar: cale
       void (async () => {
         const result = await api.remove(id);
         setBusyId(null);
-        if (result.status === "ok" || result.status === "not-found") {
+        if (result.status === "ok" && result.value.deleting) {
+          // Not yet confirmed gone at the provider: keep the row, as "deleting"; the server keeps retrying.
+          setMeetings((current) => current.map((m) => (m.id === id ? { id, unavailable: true as const, deleting: true as const } : m)));
+          setOpen((o) => (o !== null && o.id === id ? null : o));
+        } else if (result.status === "ok" || result.status === "not-found") {
           setMeetings((current) => current.filter((m) => m.id !== id));
           setOpen((o) => (o !== null && o.id === id ? null : o));
+          // Dropped from the list, but the notetaker service still holds the copy: the row says so, never "gone".
+          if (result.status === "ok" && result.value.notDeleted) setKeptIds((current) => (current.includes(id) ? current : [...current, id]));
         }
       })();
     },
@@ -1072,9 +1101,14 @@ export function useMeetingBot({ backendUrl, sessionStore, client, calendar: cale
     [submit, refresh, stop, toggleTranscript, remove],
   );
 
+  const shownMeetings = useMemo(
+    () => [...meetings, ...keptIds.filter((id) => !meetings.some((m) => m.id === id)).map((id) => ({ id, unavailable: true as const, kept: true as const }))],
+    [meetings, keptIds],
+  );
+
   return {
     listStatus,
-    meetings,
+    meetings: shownMeetings,
     saved,
     form: {
       url,

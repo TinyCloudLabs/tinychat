@@ -43,7 +43,9 @@ import {
   logCreditGateDeny,
 } from "../billing/ledger-gate.js";
 import { createTurnBudgetMonitor, MIN_TURN_CREDITS, parseBudgetPreflightMode, parseBudgetStopMode } from "../billing/turn-budget.js";
+import { noteRequestRecord, recordAfterHandler, type StreamOutcome } from "../request-context.js";
 
+import { RECEIPT_AUDIT_TIMEOUT_MS, RedPillAciError, RedPillAttestationError, RedPillResponseLimitError, STREAMED_RESPONSE_UNVERIFIED_MESSAGE, redPillAciFetch } from "../redpill-aci.js";
 // Conservative default rates for the post-stream recording fallback (mirrors chat.ts §7).
 const FALLBACK_RECORDING_RATES: ModelRates = {
   creditsPerKInput: 200,
@@ -122,9 +124,10 @@ export interface AgentChatConfig {
   defaultModel: () => string;
   /** True when the model may be proxied (phala/* and not blocklisted). */
   isModelOffered: (model: string) => boolean;
-  /** Injectable fetch (tests). Defaults to global fetch. */
+  /** Injectable model fetch for tests; production wiring uses the ACI verifier. */
+  redpillFetch?: typeof fetch;
+  /** Injectable fetch for tool/service requests in tests. */
   fetchImpl?: typeof fetch;
-  /** Max tool→result rounds before forcing a final answer (default 3). */
   maxRounds?: number;
   /** Selected once after admission; task mode takes precedence over legacy controllers. */
   elizaTasksEnabled?: boolean;
@@ -133,6 +136,9 @@ export interface AgentChatConfig {
   meetingContentRetrievalEnabled?: boolean;
   meetingContentAccountAllowed?: (address: string) => boolean;
   meetingContentModelAllowed?: (model: string) => boolean;
+  /** The same gates for MCP-served turns only (`*` account entry, empty model list = all offered models); they replace the two above on those turns. */
+  meetingContentMcpAccountAllowed?: (address: string) => boolean;
+  meetingContentMcpModelAllowed?: (model: string) => boolean;
   backendRevision?: string;
   meetingTrace?: (trace: Record<string, unknown>) => void;
   /** §E.6 — shadow-push outbox (disabled when absent). */
@@ -313,7 +319,12 @@ export async function* parseSseJson(
       throwIfAborted(signal);
       let chunk: ReadableStreamReadResult<Uint8Array> | IteratorResult<Uint8Array>;
       try { chunk = await withAbort(reader ? reader.read() : iterator!.next(), signal); }
-      catch (error) { throwIfAborted(signal); throw error instanceof StreamFailure ? error : new StreamFailure("upstream_failed"); }
+      catch (error) {
+        throwIfAborted(signal);
+        if (error instanceof RedPillAttestationError) throw new StreamFailure("private_response_unverified_streamed");
+        if (error instanceof RedPillResponseLimitError) throw new StreamFailure("result_size_limit");
+        throw error instanceof StreamFailure ? error : new StreamFailure("upstream_failed");
+      }
       throwIfAborted(signal);
       if (chunk.done) throw new StreamFailure("upstream_incomplete");
       buffer += decoder.decode(chunk.value, { stream: true });
@@ -325,8 +336,8 @@ export async function* parseSseJson(
           const line = rawLine.trimStart();
           if (!line.startsWith("data:")) continue;
           const data = line.slice(5).trim();
-          if (data === "[DONE]") return;
           if (!data) continue;
+          if (data === "[DONE]") return;
           let value: unknown;
           try { value = JSON.parse(data); } catch { throw new StreamFailure("upstream_incomplete"); }
           if (!value || typeof value !== "object" || Array.isArray(value)) throw new StreamFailure("upstream_incomplete");
@@ -344,6 +355,10 @@ export async function* parseSseJson(
 
 function contentFrame(text: string): string {
   return `data: ${JSON.stringify({ choices: [{ delta: { content: text } }] })}\n\n`;
+}
+
+function receiptVerificationFrame(): string {
+  return `data: ${JSON.stringify({ receipt_verification: { status: "verified" } })}\n\n`;
 }
 
 function toolActivityFrame(name: string, status: "running" | "done" | "error", id?: string): string {
@@ -456,6 +471,10 @@ async function dispatchTool(
     throw new StreamFailure("upstream_incomplete");
   }
   throwIfAborted(signal);
+  // An MCP turn never falls back to eliza-service: a name the wrapper does not serve (invented or injected) is refused here.
+  if (config.mcpOwner && !config.mcpMeetings?.handles(call.name)) {
+    return { status: "error", code: "tool_not_found", text: `(tool ${JSON.stringify(call.name.slice(0, 64))} is not available)` };
+  }
   const mcpMeeting = config.mcpMeetings && config.mcpOwner && config.mcpMeetings.handles(call.name)
     ? await config.mcpMeetings.run({ name: call.name, args, owner: config.mcpOwner, ...(roomId ? { roomId } : {}), ...(turnContext ? { context: turnContext as unknown as RetrievalContext } : {}), ...(signal ? { signal } : {}) })
     : undefined;
@@ -572,6 +591,8 @@ export interface OrchestrateParams {
   /** Remaining time on the existing SSE owner's deadline. */
   remainingMs?: () => number;
   onUsage?: (usage: { promptTokens: number; completionTokens: number }) => void;
+  /** A meeting failure whose user-visible terminal text has already been written. */
+  onTerminalError?: (code: StreamErrorCode) => void;
 }
 
 export interface OrchestrateResult {
@@ -611,7 +632,8 @@ export async function orchestrateToolCalling(params: OrchestrateParams): Promise
     streamErrorCode: error => error instanceof StreamFailure ? error.code : undefined,
     modelCall: request => bufferedMeetingModelCall({ ...params, onUsage: checkpoint() }, request),
     dispatch: (name, args, context, signal, id) => dispatchTool(params.config, fetchImpl, { name, args: JSON.stringify(args), id }, params.entityId, params.roomId, context, signal),
-    capability: async signal => {
+    // MCP turns read through the in-process wrapper, which emits contract v2 by construction; there is no remote reader to probe.
+    capability: params.config.mcpOwner ? async () => ({ meetingRetrieval: { contractVersion: 2 }, buildRevision: params.config.backendRevision ?? "unknown" }) : async signal => {
       const response = await fetchForTurn(fetchImpl, `${params.config.elizaServiceUrl}/capabilities`, { headers: { authorization: `Bearer ${params.config.elizaServiceSecret}` } }, signal);
       if (!response.ok) { if (response.body) ignoreCleanup(() => response.body!.cancel()); return null; }
       // This content-free response has a small independent transport bound.
@@ -633,9 +655,10 @@ export async function orchestrateToolCalling(params: OrchestrateParams): Promise
 async function bufferedMeetingModelCall(params: OrchestrateParams, request: MeetingModelRequest): Promise<BufferedMeetingModelResult> {
   const maxChars = request.maxOutputTokens === 1024 ? 12288 : 24576;
   params.onPhase?.(request.phase);
-  const upstream = await fetchForTurn(params.config.fetchImpl ?? fetch, `${params.config.redpillBaseUrl}/chat/completions`, {
+  const redpillFetch = params.config.redpillFetch ?? redPillAciFetch(params.config.redpillBaseUrl, RECEIPT_AUDIT_TIMEOUT_MS);
+  const upstream = await fetchForTurn(redpillFetch, `${params.config.redpillBaseUrl}/chat/completions`, {
     method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${params.config.redpillApiKey}` },
-    body: JSON.stringify({ model: params.model, messages: request.messages, ...(request.tool ? { tools: [request.tool], tool_choice: { type: "function", function: { name: "prepare_meeting_turn" } }, reasoning: { enabled: false } } : { reasoning_effort: "low" }), max_tokens: request.maxOutputTokens, stream: true, stream_options: { include_usage: true } }),
+    body: JSON.stringify({ model: params.model, provider: { aci_verified: true }, messages: request.messages, ...(request.tool ? { tools: [request.tool], tool_choice: { type: "function", function: { name: "prepare_meeting_turn" } }, reasoning: { enabled: false } } : { reasoning_effort: "low" }), max_tokens: request.maxOutputTokens, stream: true, stream_options: { include_usage: true } }),
   }, request.signal);
   if (!upstream.ok || !upstream.body) { if (upstream.body) ignoreCleanup(() => upstream.body!.cancel()); throw new StreamFailure("upstream_failed"); }
   let content = "", completionId = "", promptTokens = 0, completionTokens = 0, finish: unknown;
@@ -669,6 +692,7 @@ async function bufferedMeetingModelCall(params: OrchestrateParams, request: Meet
 async function orchestrateExistingLoop(params: OrchestrateParams, generalOnly = false): Promise<OrchestrateResult> {
   const { config, model, write } = params;
   const fetchImpl = config.fetchImpl ?? fetch;
+  const redpillFetch = config.redpillFetch ?? redPillAciFetch(config.redpillBaseUrl, RECEIPT_AUDIT_TIMEOUT_MS);
   const maxRounds = generalOnly ? Math.min(config.maxRounds ?? 3, 3) : config.maxRounds ?? 3;
   // Missing access outranks model admission: changing the model cannot fix it.
   const accessIssue = config.privateAccessActive === false ? config.privateAccessIssue ?? "delegation_required" : undefined;
@@ -740,7 +764,7 @@ async function orchestrateExistingLoop(params: OrchestrateParams, generalOnly = 
     const bufferMeetingAnswer = meetingCitations.length > 0;
 
     params.onPhase?.(repairing ? "repair" : isSynthesisRound ? "synthesis" : "model");
-    const upstream = await fetchForTurn(fetchImpl, `${config.redpillBaseUrl}/chat/completions`, {
+    const upstream = await fetchForTurn(redpillFetch, `${config.redpillBaseUrl}/chat/completions`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -750,6 +774,7 @@ async function orchestrateExistingLoop(params: OrchestrateParams, generalOnly = 
         cleanSynthesis
           ? {
               model,
+              provider: { aci_verified: true },
               messages: generalOnly ? [
                 { role: "system", content: "Answer the user's question using the supplied public-web results. Cite source links for factual claims supported by those results." },
                 { role: "user", content: `Question: ${lastUserQuestion}\n\nPublic-web results:\n${toolResults.map(message => message.content).join("\n\n")}` },
@@ -765,6 +790,7 @@ async function orchestrateExistingLoop(params: OrchestrateParams, generalOnly = 
             }
           : {
               model,
+              provider: { aci_verified: true },
               messages: convo,
               tools: generalOnly ? [WEB_SEARCH_TOOL] : [WEB_SEARCH_TOOL, ...TINYCLOUD_MEETING_TOOLS],
               tool_choice: forceAnswer ? "none" : "auto",
@@ -997,7 +1023,7 @@ async function orchestrateExistingLoop(params: OrchestrateParams, generalOnly = 
   return { promptTokens: totalPromptTokens, completionTokens: totalCompletionTokens, completionId: finalCompletionId, ...(errorCode ? { errorCode } : {}) };
 }
 
-export type StreamErrorCode = "turn_timeout" | "upstream_incomplete" | "upstream_failed" | "agent_failed" | "routing_mismatch" | "interpretation_failed" | "interpretation_timeout" | "meeting_feature_unavailable" | "result_size_limit" | "budget_exhausted";
+export type StreamErrorCode = "turn_timeout" | "upstream_incomplete" | "upstream_failed" | "private_response_unverified" | "private_response_unverified_streamed" | "agent_failed" | "routing_mismatch" | "interpretation_failed" | "interpretation_timeout" | "meeting_feature_unavailable" | "result_size_limit" | "budget_exhausted";
 type StreamPhase = "model" | "tool" | "synthesis" | "repair" | "terminal";
 
 class StreamFailure extends Error {
@@ -1023,6 +1049,14 @@ export interface AgentStreamRuntime {
   setTimeout(callback: () => void, ms: number): unknown;
   clearTimeout(handle: unknown): void;
   log(summary: AgentStreamSummary): void;
+}
+
+/** The request record's coarse view of a turn's end: client-side ends are aborted, server-side ones error. */
+function recordedOutcome(outcome: AgentStreamSummary["outcome"]): { stream: StreamOutcome; code?: string } {
+  if (outcome === "success") return { stream: "done" };
+  if (outcome === "cancelled") return { stream: "aborted" };
+  if (outcome === "transport_failed") return { stream: "aborted", code: "transport_failed" };
+  return { stream: "error", code: outcome };
 }
 
 const streamRuntime: AgentStreamRuntime = {
@@ -1065,6 +1099,9 @@ async function fetchForTurn(fetchImpl: typeof fetch, url: string, init: RequestI
     return await withAbort(operation, signal);
   } catch (error) {
     throwIfAborted(signal);
+    if (error instanceof RedPillAttestationError) throw new StreamFailure("private_response_unverified");
+    if (error instanceof RedPillResponseLimitError) throw new StreamFailure("result_size_limit");
+    if (error instanceof RedPillAciError) throw new StreamFailure("upstream_failed");
     throw error instanceof StreamFailure ? error : new StreamFailure("upstream_failed");
   }
 }
@@ -1183,9 +1220,9 @@ class AgentStreamOwner {
     }
   }
 
-  complete(result: OrchestrateResult): Promise<void> {
+  complete(result: OrchestrateResult, terminalErrorCode?: StreamErrorCode, receiptVerified = false): Promise<void> {
     if (result.errorCode) return this.fail(new StreamFailure(result.errorCode));
-    if (this.claim("success")) void this.deliver(result);
+    if (this.claim(terminalErrorCode ?? "success")) void this.deliver(result, undefined, !terminalErrorCode, receiptVerified);
     return this.closed;
   }
 
@@ -1211,17 +1248,20 @@ class AgentStreamOwner {
     return true;
   }
 
-  private async deliver(result?: OrchestrateResult, code?: StreamErrorCode): Promise<void> {
+  private async deliver(result?: OrchestrateResult, code?: StreamErrorCode, includeMetadata = true, receiptVerified = false): Promise<void> {
     try {
       if (this.busy) await this.busy;
       if (this.drain) await this.drain;
       if (!this.viable()) return;
       if (this.partialFrame) await this.writeBytes("\n\n", true);
-      if (code) {
+      if (code === "private_response_unverified_streamed") {
+        await this.writeBytes(contentFrame(`\n\n${STREAMED_RESPONSE_UNVERIFIED_MESSAGE}`), true);
+      } else if (code) {
         await this.writeBytes(`data: ${JSON.stringify({ stream_error: { code }, choices: [{ delta: { content: "\n\nThis reply was interrupted before it finished. Please try again." } }] })}\n\n`, true);
-      } else if (result) {
+      } else if (result && includeMetadata) {
         if (result.completionId) await this.writeBytes(idFrame(result.completionId), true);
         await this.writeBytes(usageFrame(result.promptTokens, result.completionTokens), true);
+        if (receiptVerified) await this.writeBytes(receiptVerificationFrame(), true);
       }
       await this.writeBytes("data: [DONE]\n\n", true);
       if (!this.viable()) return;
@@ -1236,6 +1276,7 @@ class AgentStreamOwner {
   private close(outcome: AgentStreamSummary["outcome"], destroy: boolean): void {
     if (this.state === "closed") return;
     this.outcome ??= outcome;
+    noteRequestRecord(this.res, recordedOutcome(this.outcome));
     this.state = "closed";
     this.runtime.clearTimeout(this.heartbeat);
     this.runtime.clearTimeout(this.deadline);
@@ -1262,7 +1303,7 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
   const taskClient = createAgentTaskClient({ baseUrl: config.elizaServiceUrl, apiKey: config.elizaServiceSecret, fetch: config.fetchImpl });
   const budgetStopMode = parseBudgetStopMode(process.env.AGENT_CHAT_BUDGET_STOP_MODE);
   const budgetPreflightMode = parseBudgetPreflightMode(process.env.AGENT_CHAT_BUDGET_PREFLIGHT);
-  return async (req: Request, res: Response) => {
+  return recordAfterHandler(async (req: Request, res: Response) => {
     if (!req.user) {
       res.status(401).json({ error: "unauthenticated", message: "Authentication required" });
       return;
@@ -1485,7 +1526,11 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
     const accessIssue = accessControl || mcpSelected ? privateAccessIssue(privateStatus) : undefined;
     const privateAccessActive = accessIssue === undefined;
     const turnConfig: AgentChatConfig = { ...config, privateAccessActive,
-      ...(mcpSelected ? { mcpOwner: config.mcpOwnerDidFor!(address) } : {}),
+      ...(mcpSelected ? {
+        mcpOwner: config.mcpOwnerDidFor!(address),
+        ...(config.meetingContentMcpAccountAllowed ? { meetingContentAccountAllowed: config.meetingContentMcpAccountAllowed } : {}),
+        ...(config.meetingContentMcpModelAllowed ? { meetingContentModelAllowed: config.meetingContentMcpModelAllowed } : {}),
+      } : {}),
       ...(accessIssue ? { privateAccessIssue: accessIssue } : {}),
       privateAccessRevision: privateAccessActive && typeof privateStatus?.revision === "string" ? privateStatus.revision : undefined };
     // A public-only turn still answers; it also tells the browser to offer
@@ -1546,7 +1591,7 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
       // erase it because a subsequent content/write/end/enqueue operation fails.
       if (paywallEnabled() && address) {
         const credits = creditsFor(rates ?? FALLBACK_RECORDING_RATES, result.usage.promptTokens, result.usage.completionTokens);
-        try { recordUsage(address, TIERS[gatedTier], credits, anchor); }
+        try { recordUsage(address, TIERS[gatedTier], credits, anchor); noteRequestRecord(res, { credits }); }
         catch { console.error("[agent-chat] task local usage recording failed"); }
         if (config.flusher && credits > 0) {
           const now = Date.now();
@@ -1578,36 +1623,37 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
           completionId: final.answerIsProviderVerbatim && !compositeAnswer ? final.finalProviderCompletionId ?? "" : "" });
       } else {
         const code = result.errorCode ?? final?.code;
-        const safeCodes: StreamErrorCode[] = ["upstream_failed", "upstream_incomplete", "agent_failed", "routing_mismatch", "result_size_limit", "turn_timeout", "budget_exhausted"];
+        const safeCodes: StreamErrorCode[] = ["upstream_failed", "upstream_incomplete", "private_response_unverified", "private_response_unverified_streamed", "agent_failed", "routing_mismatch", "result_size_limit", "turn_timeout", "budget_exhausted"];
         await streamOwner.fail(new StreamFailure(safeCodes.includes(code as StreamErrorCode) ? code as StreamErrorCode : "agent_failed"));
       }
       return;
     }
     let orchestrateResult: OrchestrateResult | null = null;
+    let meetingTerminalErrorCode: StreamErrorCode | undefined;
     let observedUsage = { promptTokens: 0, completionTokens: 0 };
     if (await streamOwner.open()) {
       try {
         if (accessFrame) await streamOwner.write(accessFrame);
         orchestrateResult = await orchestrateToolCalling({
-          config: { ...turnConfig, meetingContentRetrievalEnabled: config.meetingContentRetrievalEnabled === true && (!config.meetingContentAccountAllowed || config.meetingContentAccountAllowed(req.user.address)) }, model: resolvedModel, messages: messages as ChatMsg[], entityId,
+          config: { ...turnConfig, meetingContentRetrievalEnabled: turnConfig.meetingContentRetrievalEnabled === true && (!turnConfig.meetingContentAccountAllowed || turnConfig.meetingContentAccountAllowed(req.user.address)) }, model: resolvedModel, messages: messages as ChatMsg[], entityId,
           roomId: typeof roomId === "string" ? roomId : undefined, turnContext,
           onUsage: usage => { observedUsage = usage; },
+          onTerminalError: code => { meetingTerminalErrorCode = code; },
           write: streamOwner.write, signal: streamOwner.signal, onPhase: streamOwner.setPhase, remainingMs: streamOwner.remainingMs,
         });
-        await streamOwner.complete(orchestrateResult);
       } catch (error) {
-        orchestrateResult = null;
-        await streamOwner.fail(error);
+        // Preserve the failure for terminal delivery after observed usage settles.
+        orchestrateResult = { ...observedUsage, completionId: "",
+          errorCode: error instanceof StreamFailure ? error.code : "agent_failed" };
       }
     } else {
       await streamOwner.fail(new StreamFailure("agent_failed"));
     }
-    // A completed result stays provisional through final writes and end().
-    if (streamOwner.deliveryException) orchestrateResult = null;
     // Content delivery and cancellation must not erase already observed usage.
     orchestrateResult ??= { ...observedUsage, completionId: "" };
 
-    // A4: post-stream usage recording — mirrors chat.ts:335-372.
+    // Record usage before terminal metadata and stream end so follow-up requests
+    // see the completed turn's charge during their budget preflight.
     // NEVER throw after bytes were served. Falls back to conservative rates on any failure.
     if (paywallEnabled() && address && orchestrateResult) {
       try {
@@ -1618,6 +1664,7 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
           orchestrateResult.completionTokens,
         );
         recordUsage(address, TIERS[gatedTier], credits, anchor);
+        noteRequestRecord(res, { credits });
         // §E.6 — shadow-push to ledger (async, never blocks serving)
         if (config.flusher && credits > 0) {
           const now = Date.now();
@@ -1647,6 +1694,7 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
             orchestrateResult.completionTokens,
           );
           recordUsage(address, TIERS[gatedTier], credits, anchor);
+          noteRequestRecord(res, { credits });
           if (config.flusher && credits > 0) {
             const now = Date.now();
             const tierCfg = TIERS[gatedTier];
@@ -1671,6 +1719,8 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
         }
       }
     }
+    // Also await an already claimed timeout/cancellation terminal's drain.
+    await streamOwner.complete(orchestrateResult, meetingTerminalErrorCode, true);
     } finally { releaseAccess?.(); }
-  };
+  });
 }

@@ -1,7 +1,10 @@
 // The minimised bar (TC-2077): timer, Pause and Stop only, plus the recording limit's thin line, "Stops in"
-// readout and the exact stop time on hover; no waveform and no status line.
+// readout and the exact stop time on hover; no waveform and no status line. The Mac app's Ribbon and the dock
+// are the small bar; the phone keeps its Ribbon with moving bars (ribbon.test.tsx).
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
+
+import { PlatformContext } from "@/lib/platform";
 
 import { StaticRecorderProvider, useRecorder, type RecorderValue } from "../RecorderProvider";
 import { clockTime } from "../recorderCopy";
@@ -91,14 +94,16 @@ describe("minimizedLimit", () => {
 describe("the minimised bar", () => {
   const ribbon = (patch: Partial<RecorderValue>) =>
     renderToStaticMarkup(
-      <RibbonView recorder={recorderWith(patch)} elapsedMs={patch.elapsedMs ?? 0} theme="night" />,
+      <PlatformContext.Provider value="tauri">
+        <RibbonView recorder={recorderWith(patch)} elapsedMs={patch.elapsedMs ?? 0} theme="night" />
+      </PlatformContext.Provider>,
     );
   const dock = (patch: Partial<RecorderValue>) =>
     renderToStaticMarkup(
       <SidebarDockView recorder={recorderWith(patch)} elapsedMs={patch.elapsedMs ?? 0} theme="night" />,
     );
 
-  test("Ribbon: timer, Pause and Stop, with no waveform and no Listening line", () => {
+  test("Mac app Ribbon: timer, Pause and Stop, with no waveform and no Listening line", () => {
     const html = ribbon(running(2 * MIN));
     expect(html).toContain('data-testid="ribbon-timer">2:00<');
     expect(html).toContain('aria-label="Pause recording"');

@@ -1,6 +1,10 @@
 // The minimised recorder (TC-870): the Ribbon, the sidebar dock and the Capture item's dot, in each state.
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import postcss from "postcss";
 import { renderToStaticMarkup } from "react-dom/server";
+
+import { PlatformContext, type AppPlatform } from "@/lib/platform";
 
 import { HeaderLiveChipView } from "../HeaderLiveChip";
 import {
@@ -90,25 +94,25 @@ function describedBy(html: string): string {
 }
 
 describe("RibbonView", () => {
-  test("recording: one labelled control for the timer, Pause, and a Stop that saves", () => {
+  test("recording: one labelled control for the timer and bars, Pause, and a Stop that saves", () => {
     const html = ribbon(LIVE);
     expect(html).toContain('data-state="live"');
     expect(html).toContain(">0:06</span>");
     expect(html).toContain('aria-label="Recording. Open recorder"');
-    expect(describedBy(html)).toMatch(/^0:06 Recording stops at .+/);
+    expect(describedBy(html)).toMatch(/^0:06 Stops at .+/);
     expect(html).toContain('aria-label="Pause recording"');
     expect(html).toContain('aria-label="Stop and save"');
     expect(html).toContain('data-testid="ribbon-open"');
   });
 
-  test("the timer and its limit readout share one button, and no control is nested in it", () => {
+  test("the timer and bars share one button, and no control is nested in it", () => {
     const html = ribbon(LIVE);
     const open = html.slice(
       html.indexOf('data-testid="ribbon-open"'),
       html.indexOf("</button>", html.indexOf('data-testid="ribbon-open"')),
     );
     expect(open).toContain("ribbon-timer");
-    expect(open).toContain("ribbon-remaining");
+    expect(open).toContain("ribbon-bars");
     expect(open).not.toContain("<button");
   });
 
@@ -118,23 +122,21 @@ describe("RibbonView", () => {
     expect(html.match(/<button/g)).toHaveLength(3);
   });
 
-  test("paused: Resume in place of Pause, the timer dims", () => {
+  test("paused: Resume in place of Pause, the timer dims, the bars hold", () => {
     const html = ribbon(PAUSED);
     expect(html).toContain('data-state="paused"');
     expect(html).toContain('data-live="false"');
     expect(html).toContain('aria-label="Resume recording"');
     expect(html).not.toContain('aria-label="Pause recording"');
     expect(html).toContain('aria-label="Paused. Open recorder"');
-    expect(describedBy(html)).toMatch(/^0:15 Recording stops at .+/);
+    expect(describedBy(html)).toMatch(/^0:15 Stops at .+/);
     expect(html).toContain(">0:15</span>");
   });
 
-  test("no waveform, in any state", () => {
-    for (const patch of [LIVE, PAUSED, SILENCED]) {
-      const html = ribbon(patch);
-      expect(bars(html)).toBe(0);
-      expect(html).not.toContain("data-spectrum-bars");
-    }
+  test("30 bars, hidden from assistive technology", () => {
+    expect(bars(ribbon(LIVE))).toBe(30);
+    expect(ribbon(LIVE)).toContain('data-spectrum-bars="" data-paused="false"');
+    expect(ribbon(PAUSED)).toContain('data-paused="true"');
   });
 
   test("interrupted: not live, so no red recording state", () => {
@@ -163,13 +165,72 @@ describe("RibbonView", () => {
   });
 });
 
+// TC-2077 made the minimised bar small for the desktop. The phone (iOS, Android, the web) keeps its Ribbon:
+// moving bars and the stop time under them; only the Mac app's Ribbon and the sidebar dock are the small bar.
+describe("the minimised bar's platform split", () => {
+  const ribbonOn = (platform: AppPlatform, patch: Partial<RecorderValue>) =>
+    renderToStaticMarkup(
+      <PlatformContext.Provider value={platform}>
+        <RibbonView recorder={recorderWith(patch)} elapsedMs={patch.elapsedMs ?? 0} theme="night" />
+      </PlatformContext.Provider>,
+    );
+
+  for (const platform of ["ios", "android", "web"] as const) {
+    test(`${platform}: the full Ribbon, with 30 moving bars and no small-bar readout or limit line`, () => {
+      const html = ribbonOn(platform, LIVE);
+      expect(html).toContain('data-size="full"');
+      expect(bars(html)).toBe(30);
+      expect(html).toContain('data-spectrum-bars="" data-paused="false"');
+      expect(html).toContain('data-testid="ribbon-stops"');
+      expect(html).not.toContain("ribbon-remaining");
+      expect(html).not.toContain("ribbon-limit");
+      expect(html).not.toContain("mini-tip");
+    });
+  }
+
+  test("tauri: the small bar, with no waveform", () => {
+    const html = ribbonOn("tauri", LIVE);
+    expect(html).toContain('data-size="small"');
+    expect(bars(html)).toBe(0);
+    expect(html).not.toContain("data-spectrum-bars");
+    expect(html).toContain('data-testid="ribbon-remaining"');
+    expect(html).toContain('data-testid="ribbon-limit"');
+  });
+
+  test("ribbon.css: the phone sizes are the Ribbon's own; the small sizes apply only under data-size=small", () => {
+    const css = postcss.parse(readFileSync(new URL("./ribbon.css", import.meta.url), "utf8"));
+    const decls = (selector: string) => {
+      const found: Record<string, string> = {};
+      css.walkRules((rule) => {
+        if (rule.parent?.type !== "root" || !rule.selectors.includes(selector)) return;
+        rule.walkDecls((decl) => {
+          found[decl.prop] = decl.value;
+        });
+      });
+      return found;
+    };
+    expect(decls(".ribbon")).toMatchObject({ gap: "10px", padding: "6px 6px 6px 16px", "border-radius": "22px" });
+    expect(decls(".ribbon-timer")).toMatchObject({ "font-size": "19px" });
+    expect(decls(".ribbon .mini-disc")).toMatchObject({ width: "40px", height: "40px" });
+    expect(decls(".ribbon .mini-stop-glyph")).toMatchObject({ width: "13px", height: "13px" });
+    expect(decls(".ribbon-bars")).toMatchObject({ flex: "1" });
+    expect(decls('.ribbon-skin[data-size="small"] .ribbon')).toMatchObject({ padding: "3px 4px 5px 14px" });
+    expect(decls('.ribbon-skin[data-size="small"] .ribbon-timer')).toMatchObject({ "font-size": "17px" });
+    expect(decls('.ribbon-skin[data-size="small"] .ribbon .mini-disc')).toMatchObject({ width: "30px" });
+  });
+});
+
 describe("a silenced mic", () => {
   const SINCE = Date.now() - 60_000;
 
-  test("the Ribbon stays in the live state with no waveform to go flat", () => {
+  test("the Ribbon stays red but its bars are flat: nothing follows the level", () => {
     const html = ribbon(SILENCED);
     expect(html).toContain('data-state="live"');
-    expect(html).not.toContain("data-spectrum-bars");
+    expect(html).toContain('data-spectrum-bars="" data-paused="false"');
+    expect(html).toContain("#ff6b62");
+    expect(html).not.toContain("#8f8993");
+    // Resting height, the same for every bar.
+    expect(html.match(/scaleY\(0\.120\)/g)).toHaveLength(30);
   });
 
   test("the dock has no waveform to rest at a floor", () => {

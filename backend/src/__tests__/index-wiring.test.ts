@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { validateAgentStreamPolicy } from "../agent-stream-policy.js";
+import { mcpChatFromEnv } from "../mcp-meetings/config.js";
 import { createHmac, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -46,11 +48,24 @@ const STREAM_ENV = {
 
 // Execute the actual startup body with isolated imports and environment. Every side effect
 // is intercepted; stop at the agent-router factory, before any socket or external I/O.
-async function runIsolatedStartup(env: Record<string, string | undefined>) {
+async function runIsolatedStartup(
+  env: Record<string, string | undefined>,
+  options: {
+    contentIndexes?: readonly { source: string; address: string }[];
+    contentIndexDirectory?: () => Promise<readonly { source: string; address: string }[]>;
+    contentCustodyValid?: boolean;
+  } = {},
+) {
   const calls: string[] = [];
   const logs: string[] = [];
   let agentConfig: any;
   const stopped = new Error("synthetic-startup-stopped");
+  const retentionSweeps: { source: string; address: string }[] = [];
+  const contentCustodyChecks: boolean[] = [];
+  let finishRetentionSweep!: () => void;
+  const retentionSweepDone = new Promise<void>((resolve) => {
+    finishRetentionSweep = resolve;
+  });
   const noop = () => {};
   const middleware = () => noop;
   const fakeApp = {
@@ -63,15 +78,61 @@ async function runIsolatedStartup(env: Record<string, string | undefined>) {
   const express = Object.assign(() => fakeApp, { raw: middleware, json: middleware });
   const moduleExports = {};
   const known: Record<string, any> = {
+    "./services/content-store.js": {
+      KvContentBlobStore: class {},
+      assertNoContentKey: async () => {},
+      ContentStore: class { async assertContinuity() {} },
+    },
     fs: { existsSync: () => false },
     path: load("node:path"),
     url: load("node:url"),
     express,
     cors: middleware,
+    "./services/content-store.js": {
+      createContentIndexDirectory: () => options.contentIndexDirectory ?? (async () => options.contentIndexes ?? []),
+      validateContentCustodyConfig: () => {
+        const valid = options.contentCustodyValid ?? true;
+        contentCustodyChecks.push(valid);
+        return valid ? { ok: true } : { ok: false, error: "content master missing" };
+      },
+      KvContentBlobStore: class {},
+      assertNoContentKey: async () => {},
+      ContentStore: class {
+        async assertContinuity() {}
+
+        async probeIndex() { return { ok: true, id: "fixture-index" }; }
+        async sweepRetention(index: {
+          source: string;
+          address: string;
+          safetyMarginMs: number;
+        }) {
+          retentionSweeps.push(index);
+          finishRetentionSweep();
+          return { swept: 1, bytesFreed: 0, tombstones: 0 };
+        }
+        async sweepExpiredReplayTombstones() { return 0; }
+      },
+    },
+    "./services/ingest-retention.js": load("./services/ingest-retention.ts"),
+    "./services/ingest-instance.js": {
+      IngestInstanceGuard: class {},
+      KvInstanceLeaseStore: class {},
+      IngestInstanceSupervisor: class {
+        private readonly worker: { start(): void };
+        constructor(config: { worker: { start(): void } }) {
+          this.worker = config.worker;
+        }
+        start() {
+          calls.push("ingest-supervisor-start");
+          this.worker.start();
+        }
+        stop() {}
+      },
+    },
     "./startup.js": {
       createTinychatBackendIdentity: async () => {
         calls.push("identity");
-        return { node: {}, did: "synthetic-backend-did" };
+        return { node: { kv: { list: async () => ({ data: { keys: [] } }) } }, did: "synthetic-backend-did" };
       },
     },
     "./services/ingest-mode.js": { backendIngestEnabled: () => false },
@@ -89,11 +150,13 @@ async function runIsolatedStartup(env: Record<string, string | undefined>) {
       transcriptionApiConfigFromEnv: () => transcription.transcriptionApiConfigFromEnv(env),
       createTranscriptionApiClient: () => ({}),
     },
-    // MCP chat is off in these startups; the stub is the disabled result of the real parser.
-    "./mcp-meetings/config.js": { mcpChatFromEnv: () => ({}) },
+    // Real wiring parser; MCP operations remain inert until a request uses them.
+    "./mcp-meetings/config.js": { mcpChatFromEnv },
+    "./redpill-aci.js": load("./redpill-aci.ts"),
     "./routes/agent.js": {
-      createAgentRouter: (config: unknown) => {
+      createAgentRouter: (config: any) => {
         agentConfig = config;
+        if (config.chat) validateAgentStreamPolicy(config.chat.streamPolicy);
         calls.push("agent-router");
         throw stopped;
       },
@@ -136,8 +199,41 @@ async function runIsolatedStartup(env: Record<string, string | undefined>) {
   } catch (error) {
     if (error !== stopped) logs.push(error instanceof Error ? error.message : String(error));
   }
-  return { calls, logs, agentConfig };
+  return { calls, logs, agentConfig, contentCustodyChecks, retentionSweeps, retentionSweepDone };
 }
+
+test("disabled backend ingest starts retention over every listed content index", async () => {
+  const index = { source: "fireflies", address: `0x${"a".repeat(40)}` };
+  const result = await runIsolatedStartup(
+    { ...AGENT_ENV, ...STREAM_ENV, CONNECTOR_CONTENT_MASTER: "fixture-configured-master" },
+    { contentIndexes: [index] },
+  );
+  await result.retentionSweepDone;
+  expect(result.calls).toContain("ingest-supervisor-start");
+  expect(result.retentionSweeps).toEqual([{ ...index, safetyMarginMs: 5 * 60_000 }]);
+});
+test("content custody remains required when backend ingest is disabled", async () => {
+  const result = await runIsolatedStartup(
+    { ...AGENT_ENV, ...STREAM_ENV, CONNECTOR_CONTENT_MASTER: "fixture-configured-master" },
+    { contentCustodyValid: false },
+  );
+
+  expect(result.contentCustodyChecks).toEqual([false]);
+  expect(result.calls).toContain("exit");
+  expect(result.calls).not.toContain("agent-router");
+});
+test("a failed startup index listing does not prevent backend startup", async () => {
+  const result = await runIsolatedStartup(
+    { ...AGENT_ENV, ...STREAM_ENV, CONNECTOR_CONTENT_MASTER: "fixture-configured-master" },
+    {
+      contentIndexDirectory: async () => {
+        throw new Error("synthetic KV list failure");
+      },
+    },
+  );
+
+  expect(result.calls).toContain("agent-router");
+});
 
 describe("agent stream startup policy wiring", () => {
   test("rejects missing policy before identity, background work, route mounting or listening", async () => {
@@ -160,6 +256,30 @@ describe("agent stream startup policy wiring", () => {
     });
     expect(result.calls).toContain("agent-router");
     expect(result.calls).not.toContain("listen");
+  });
+  test("mounts MCP-only agent chat without Eliza configuration", async () => {
+    const result = await runIsolatedStartup({
+      BACKEND_PRIVATE_KEY: "synthetic-private-key",
+      ...STREAM_ENV,
+      REDPILL_API_KEY: "synthetic-provider-key",
+      MCP_CHAT_ENABLED: "true",
+      MCP_CHAT_TEST_ACCOUNTS: "0x1111111111111111111111111111111111111111",
+      MCP_CHAT_URL: "https://mcp.example/mcp",
+      MCP_CHAT_SERVICE_DID: "did:service",
+      MCP_CHAT_SERVICE_CREDENTIAL: "synthetic-mcp-secret",
+      MCP_CHAT_SERVICE_CREDENTIAL_HEADER: "X-Service-Credential",
+      MCP_CHAT_OWNER_DID_HEADER: "X-Owner-DID",
+    });
+    expect(result.logs).toEqual([]);
+    expect(result.calls).toContain("agent-router");
+    expect(result.agentConfig?.chat?.streamPolicy).toEqual({
+      heartbeatMs: 17,
+      turnTimeoutMs: 251,
+      drainGraceMs: 31,
+    });
+    expect(result.agentConfig?.agentDid).toBeUndefined();
+    expect(result.agentConfig?.elizaServiceUrl).toBeUndefined();
+    expect(result.agentConfig?.elizaServiceSecret).toBeUndefined();
   });
 
   test("wires explicit meeting account and evaluated-model allowlists with rollout off by default", async () => {
@@ -416,6 +536,47 @@ describe("backend index middleware wiring", () => {
     expect(LIMITS).toContain('bucketFor(req.method, req.path) !== kind');
   });
 
+  test("the granola proxy mount lives INSIDE the granolaProxyEnabled() branch, behind auth", () => {
+    // Same dark-ship contract as the Google OAuth proxy: flag off ⇒ no mount ⇒ 404, and the
+    // mount sits in the NORMAL window (parser, CSRF, its own rate bucket) after
+    // `applyRateLimiters`. Unlike Google's, EVERY granola route is authenticated — the user's
+    // own key is worthless without our session anyway, and an open proxy would be a Granola
+    // relay anyone could point at a victim account.
+    const gate = INDEX.indexOf("if (granolaProxyEnabled()) {");
+    const mount = INDEX.indexOf('"/api/connectors/granola"');
+    expect(gate).toBeGreaterThan(-1);
+    expect(mount).toBeGreaterThan(gate);
+    expect(INDEX.slice(gate, mount)).not.toMatch(/\n {2}\}/);
+    expect(INDEX.match(/"\/api\/connectors\/granola"/g)).toHaveLength(1);
+    expect(INDEX).toMatch(
+      /app\.use\(\s*\n?\s*"\/api\/connectors\/granola",\s*\n?\s*authMiddleware,\s*\n?\s*createGranolaProxyRouter\(\)\s*\n?\s*\)/,
+    );
+    const limiterIndex = INDEX.indexOf("applyRateLimiters(app, ");
+    expect(mount).toBeGreaterThan(limiterIndex);
+
+    // Exactly the three documented read paths, all GETs. A fourth route cannot silently
+    // inherit the pass-through.
+    const ROUTES = readFileSync(resolve(import.meta.dir, "../routes/granola-proxy.ts"), "utf8");
+    const registered = [...ROUTES.matchAll(/router\.(get|post|delete|put|patch)\(\s*"([^"]+)"/g)]
+      .map((m) => `${m[1]!.toUpperCase()} ${m[2]!}`);
+    expect(registered).toEqual([
+      "GET /v1/notes",
+      "GET /v1/notes/:id",
+      "GET /v1/notes/:id/transcript",
+    ]);
+    // The upstream host is a constant in the route file, never request-derived.
+    expect(ROUTES).toContain('GRANOLA_API_BASE_URL = "https://public-api.granola.ai"');
+    // The key header and the session bearer are separate channels by contract.
+    expect(ROUTES).toContain('GRANOLA_KEY_HEADER = "x-granola-key"');
+  });
+
+  test("the granola proxy prefix carries its own rate-limit bucket, never the global one", () => {
+    const LIMITS = readFileSync(resolve(import.meta.dir, "../rate-limits.ts"), "utf8");
+    expect(LIMITS).toContain('GRANOLA_PROXY_PATHS = ["/api/connectors/granola"]');
+    expect(LIMITS).toContain('[GRANOLA_PROXY_PATHS, "granolaProxy"]');
+    expect(LIMITS).toContain('bucketFor(req.method, req.path) !== kind');
+  });
+
   test("an armed-but-unregistered google OAuth config refuses to boot", () => {
     // The `firefliesOAuthConfigFromEnv` posture (:236): an operator who sets the flag and forgets
     // a client var learns it from a refused start, not from a user's half-finished consent screen.
@@ -519,15 +680,25 @@ describe("backend index middleware wiring", () => {
   });
 });
 
-test("diagnostic foreground override isolates agent sends while unset startup preserves provider defaults", async () => {
-  const initial = await runIsolatedStartup({ ...AGENT_ENV, ...STREAM_ENV, REDPILL_BASE_URL: "https://background.invalid/background" });
-  expect(initial.agentConfig.chat.redpillBaseUrl).toBe("https://background.invalid/background");
+test("diagnostic foreground override isolates agent sends on the approved gateway", async () => {
+  const initial = await runIsolatedStartup({ ...AGENT_ENV, ...STREAM_ENV, REDPILL_BASE_URL: "https://tee.redpill.ai/background" });
+  expect(initial.agentConfig.chat.redpillBaseUrl).toBe("https://tee.redpill.ai/background");
   expect(initial.agentConfig.chat.redpillApiKey).toBe("synthetic-provider-key");
-  const diagnostic = await runIsolatedStartup({ ...AGENT_ENV, ...STREAM_ENV, REDPILL_BASE_URL: "https://background.invalid/background",
-    MEETING_DIAGNOSTIC_FOREGROUND_BASE_URL: "https://gateway.invalid/foreground", MEETING_DIAGNOSTIC_FOREGROUND_API_KEY: "synthetic-foreground-key" });
-  expect(diagnostic.agentConfig.chat.redpillBaseUrl).toBe("https://gateway.invalid/foreground");
+  const diagnostic = await runIsolatedStartup({ ...AGENT_ENV, ...STREAM_ENV, REDPILL_BASE_URL: "https://tee.redpill.ai/background",
+    MEETING_DIAGNOSTIC_FOREGROUND_BASE_URL: "https://tee.redpill.ai/foreground", MEETING_DIAGNOSTIC_FOREGROUND_API_KEY: "synthetic-foreground-key" });
+  expect(diagnostic.agentConfig.chat.redpillBaseUrl).toBe("https://tee.redpill.ai/foreground");
   expect(diagnostic.agentConfig.chat.redpillApiKey).toBe("synthetic-foreground-key");
   expect(diagnostic.logs).toEqual([]);
+});
+
+test("refuses startup when the configured model endpoint is not the attested gateway", async () => {
+  const result = await runIsolatedStartup({
+    ...AGENT_ENV,
+    ...STREAM_ENV,
+    REDPILL_BASE_URL: "https://api.redpill.ai/v1",
+  });
+  expect(result.calls).toEqual(["exit"]);
+  expect(result.logs).toEqual(["Invalid confidential model endpoint: expected the attested gateway"]);
 });
 
 test("partial or empty diagnostic endpoint credentials fail before startup effects and never log values", async () => {
@@ -664,7 +835,10 @@ test("shutdown holds the exit until an in-flight retention pass stops", async ()
   expect(await exited.promise).toBe(0);
 });
 
-const envBase = { BACKEND_PRIVATE_KEY: "test-only-private-key", PORT: "0" };
+const envBase = {
+  BACKEND_PRIVATE_KEY: "test-only-private-key",
+  PORT: "0",
+};
 const privateCloud = load("./services/private-cloud-transcription.ts");
 const hosted = load("./services/assemblyai-hosted.ts");
 const transcription = load("./services/transcription-api.ts");
@@ -681,6 +855,9 @@ const exoMailbox = load("./exo/mailbox.ts");
 const exoGrant = load("./routes/exo-grant.ts");
 const { ASSEMBLYAI_HOSTED_MOUNT, createAssemblyAiHostedRouter } = load("./routes/assemblyai-hosted.ts");
 const { createPrivateCloudTranscriptionRouter } = load("./routes/private-cloud-transcription.ts");
+const transcriberRoutes = load("./routes/transcriber.ts");
+const privateCloudPurge = load("./services/private-cloud-purge.ts");
+const granolaProxyModule = load("./routes/granola-proxy.ts");
 
 interface Boot {
   url: string | null;
@@ -742,7 +919,7 @@ async function bootIndex(patch: Record<string, string | undefined> = {}, options
       createDelegationMiddleware: () => (_req: express.Request, _res: express.Response, next: express.NextFunction) => next(),
     },
     "@tinyboilerplate/core": { APP_ID: "test-backend" },
-    "./startup.js": { createTinychatBackendIdentity: async () => ({ node: {}, did: "did:test:backend" }) },
+    "./startup.js": { createTinychatBackendIdentity: async () => ({ node: { kv: { list: async () => ({ data: { keys: [] } }) } }, did: "did:test:backend" }) },
     "./build-info.js": { readBackendBuildInfo: () => ({ backendRevision: "test-revision", backendVersion: "0.5.6" }) },
     "./body-parsing.js": { createApiBodyParser },
     "./request-context.js": {
@@ -759,6 +936,8 @@ async function bootIndex(patch: Record<string, string | undefined> = {}, options
     },
     "./services/private-cloud-transcription.js": privateCloud,
     "./routes/private-cloud-transcription.js": { createPrivateCloudTranscriptionRouter },
+    "./routes/transcriber.js": transcriberRoutes,
+    "./services/private-cloud-purge.js": privateCloudPurge,
     "./services/assemblyai-hosted.js": { ...hosted, HostedUploadStore: class {
       init() { return Promise.resolve(); }
       shutdown() { return stop.hosted?.() ?? Promise.resolve(); }
@@ -769,6 +948,12 @@ async function bootIndex(patch: Record<string, string | undefined> = {}, options
       googleMeetOAuthEnabled: () => google.googleMeetOAuthEnabled(env),
       googleOAuthConfigFromEnv: () => google.googleOAuthConfigFromEnv(env),
       GoogleOAuthClient: google.GoogleOAuthClient,
+    },
+    // The REAL flag parser reads the harness env (the same contract google-oauth uses), and the
+    // fallback's class-per-property stub would otherwise call a class for `granolaProxyEnabled`.
+    "./routes/granola-proxy.js": {
+      granolaProxyEnabled: () => granolaProxyModule.granolaProxyEnabled(env),
+      createGranolaProxyRouter: router,
     },
     "./routes/google-oauth.js": {
       createGoogleOAuthRouter: (options: Parameters<typeof createGoogleOAuthRouter>[0]) => createGoogleOAuthRouter({
@@ -796,7 +981,23 @@ async function bootIndex(patch: Record<string, string | undefined> = {}, options
       CredentialStore: class {},
       KvCredentialRowStore: class {},
     },
-    "./services/content-store.js": { ...contentStore },
+    "./routes/content-continuity.js": { mountContentContinuityRoute: noop },
+    "./services/ingest-retention.js": load("./services/ingest-retention.ts"),
+    "./services/content-store.js": {
+      ...contentStore,
+      assertNoContentKey: async () => {},
+      currentContentMaster: () => env.CONNECTOR_CONTENT_MASTER,
+      ContentStore: class extends contentStore.ContentStore {
+        async assertContinuity() {}
+        async probeIndex() { return { ok: true, id: "fixture-index" }; }
+        async sweepRetention(index: { source: string; address: string }) {
+          retentionSweeps.push(index);
+          finishRetentionSweep();
+          return { swept: 1, bytesFreed: 0, tombstones: 0 };
+        }
+        async sweepExpiredReplayTombstones() { return 0; }
+      },
+    },
     "./services/fireflies-oauth.js": { ...firefliesOAuthModule },
     "./services/calendar-autojoin-connection.js": { CalendarAutojoinConnection: class {
       constructor(config: Record<string, unknown>) { options.capture?.("calendar", config); }
@@ -830,6 +1031,7 @@ async function bootIndex(patch: Record<string, string | undefined> = {}, options
         return express.Router();
       },
     },
+    "./routes/route-unavailable.js": load("./routes/route-unavailable.ts"),
     "./services/webhook-tokens.js": { assertStrongSecret: () => {}, WebhookTokenService: class {} },
     "./routes/delegations.js": { createDelegationRouter: (config: Record<string, unknown>) => {
       options.capture?.("delegation", config);
@@ -857,6 +1059,9 @@ async function bootIndex(patch: Record<string, string | undefined> = {}, options
     "./exo/wake-intake.js": { WakeQueue: class WakeQueue { async drain() {} } },
     "./exo/retention-sweep.js": { startExoRetentionSweepTimer: () => ({ stop: async () => {} }) },
     "./routes/exo-mailbox.js": { createExoMailboxRouter: router },
+    // TC-2808: the bots routes are off unless BOTS_* are set; this test doesn't arm them.
+    "./routes/bots.js": { botsFromEnv: () => undefined, createBotsRouter: router },
+    "./renewal-verify.js": { renewalVerifyConfigFromEnv: () => undefined },
     // TC-1013 S4b: startup wires the grant-holder index and tracked grant store outside the flag.
     "./exo/grant-holders.js": { GrantHolderIndex: class GrantHolderIndex { async refresh() {} }, createTrackedGrantStore: (store: unknown) => store },
     "./security.js": { applySecurityDefaults: noop },
@@ -865,7 +1070,17 @@ async function bootIndex(patch: Record<string, string | undefined> = {}, options
     "./routes/assemblyai-delete.js": { ASSEMBLYAI_DELETE_MOUNT: "/api/assemblyai/delete", createAssemblyAiDeleteRouter: router },
     "./billing/ledger-flusher.js": { LedgerFlusher: class { start() {} stop() {} } },
     "./billing/ledger-rehydrate.js": { LedgerRehydrator: class {} },
-    "./services/connector-drain.js": { ConnectorDrainWorker: class { stop() {} }, startConnectorQueueMaintenanceTimer: () => ({ stop() {} }), drainIntervalFromEnv: () => 60_000, createWebhookConfigDirectory: noop },
+    "./services/connector-drain.js": {
+      ConnectorDrainWorker: class { stop() {} },
+      startConnectorQueueMaintenanceTimer: (config: Record<string, unknown>) => {
+        options.capture?.("queueMaintenance", config);
+        return { stop() {} };
+      },
+      drainIntervalFromEnv: () => 60_000,
+      createWebhookConfigDirectory: noop,
+      createWebhookQueueDirectory: () => async () => [],
+      createWebhookPurgeLedgerDirectory: () => async () => [],
+    },
     "./services/connector-queue.js": { ConnectorQueue: class {} },
     "./services/backend-storage-lane.js": { BackendStorageLane: class {} },
     "./services/transcriber-index.js": { KvJsonKv: class {}, KvTranscriberIndexStore: class {} },
@@ -876,9 +1091,13 @@ async function bootIndex(patch: Record<string, string | undefined> = {}, options
     "./routes/chat.js": { createChatRouter: router, defaultModel: "test-model" },
     "./agent-stream-policy.js": load("./agent-stream-policy.ts"),
     "./mcp-meetings/config.js": { mcpChatFromEnv: () => ({}) },
+    "./redpill-aci.js": load("./redpill-aci.ts"),
     "./transcripts/meeting-rollout.js": load("./transcripts/meeting-rollout.ts"),
     "./local-validation.js": { localValidationFromEnv: () => false, localValidationGuard: noop },
-    "./cors-origins.js": { appCorsOptions: () => ({ origin: [], exposedHeaders: ["Retry-After", "RateLimit", "RateLimit-Policy"] }) },
+    "./cors-origins.js": {
+      appCorsOptions: () => ({ origin: [], exposedHeaders: ["Retry-After", "RateLimit", "RateLimit-Policy"] }),
+      frontendOriginsFromEnv: load("./cors-origins.ts").frontendOriginsFromEnv,
+    },
     "js-yaml": { load: () => ({}) },
     "@scalar/express-api-reference": { apiReference: router },
   };
@@ -969,6 +1188,20 @@ describe("backend entry-point HTTP and lifecycle guards", () => {
     expect((await post(boot.url!, "/api/connectors/webhooks/config", "{}")).status).toBe(401);
     const disabled = await bootIndex();
     expect((await post(disabled.url!, path, "{}")).status).toBe(404);
+  });
+
+  test("queue and purge-ledger retention maintenance is wired with connector webhooks disabled", async () => {
+    const captured: Record<string, Record<string, unknown>> = {};
+    const boot = await bootIndex({}, {
+      capture: (name, config) => { captured[name] = config; },
+    });
+
+    const maintenance = captured.queueMaintenance;
+    expect(boot.exits).toEqual([]);
+    expect(typeof maintenance?.listQueueEntries).toBe("function");
+    expect(typeof maintenance?.sweepQueue).toBe("function");
+    expect(typeof maintenance?.listLedgerAddresses).toBe("function");
+    expect(typeof maintenance?.sweepLedger).toBe("function");
   });
 
   test("exo grant route is unmounted (404, before auth) when the exo flag is off", async () => {
@@ -1303,6 +1536,38 @@ describe("TC-959 backend request contract", () => {
     }
   });
 
+  test("private cloud on and the meeting transcriber off still mounts the bulk delete, behind auth (TC-3166)", async () => {
+    const upstream = express();
+    const listed: string[] = [];
+    upstream.get("/v1/transcriptions", (req, res) => {
+      listed.push(String(req.query.limit));
+      res.status(200).json({ data: [] });
+    });
+    const listening = Promise.withResolvers<void>();
+    const server = upstream.listen(0, "127.0.0.1", listening.resolve);
+    await listening.promise;
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Synthetic batch did not listen");
+    const boot = await bootIndex({ ...ptxEnv, PRIVATE_CLOUD_TRANSCRIPTION_API_URL: `http://127.0.0.1:${address.port}` });
+    try {
+      const anonymous = await fetch(boot.url! + "/api/transcriber/meetings", { method: "DELETE" });
+      expect(anonymous.status).toBe(401);
+      const response = await fetch(boot.url! + "/api/transcriber/meetings", { method: "DELETE", headers: { authorization: "Bearer test-session" } });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ removed: 0, deleting: 0, listOnly: 0, notDeleted: 0, privateCloudDeleted: 0 });
+      expect(listed).toEqual(["50"]);
+      const scope = await fetch(boot.url! + "/api/transcriber/meetings/scope", { headers: { authorization: "Bearer test-session" } });
+      expect(scope.status).toBe(200);
+      expect(await scope.json()).toEqual({ privateCloud: true });
+      expect((await fetch(boot.url! + "/api/transcriber/meetings/scope")).status).toBe(401);
+    } finally {
+      server.closeAllConnections();
+      const closed = Promise.withResolvers<void>();
+      server.close(() => closed.resolve());
+      await closed.promise;
+    }
+  });
+
   test("terminal error logs never include raw wallet, tenant, capability or transcript", async () => {
     const forbidden = ["0x" + "a".repeat(40), "tenant-private-canary", "capability-private-canary", "transcript-private-canary"];
     const boot = await bootIndex({}, { requestHandler: () => { throw new Error(forbidden.join(" ")); } });
@@ -1434,5 +1699,24 @@ describe("TC-959 backend request contract", () => {
         await closed.promise;
       }
     }
+  });
+
+  test("an unmounted credential route answers 404 with the backend's own marker; a mounted one does not add it", async () => {
+    const path = "/api/connectors/credentials/fireflies";
+    const marker = "x-route-unavailable";
+    for (const patch of [{}, { CONNECTOR_WEBHOOKS_ENABLED: "true" }]) {
+      const dark = await bootIndex(patch);
+      const response = await fetch(dark.url! + path, { headers: { authorization: "Bearer test-session" } });
+      expect(response.status).toBe(404);
+      expect(response.headers.get(marker)).toBe("connector-credentials");
+    }
+    const mounted = await bootIndex({
+      CONNECTOR_WEBHOOKS_ENABLED: "true", CONNECTOR_BACKEND_INGEST_ENABLED: "true",
+      CONNECTOR_CREDENTIAL_MASTER: randomBytes(32).toString("hex"), CONNECTOR_CONTENT_MASTER: randomBytes(32).toString("hex"),
+      FIREFLIES_OAUTH_CLIENT_ID: "test-fireflies-client", FIREFLIES_OAUTH_CLIENT_SECRET: "test-fireflies-secret",
+      FIREFLIES_OAUTH_REDIRECT_URI: "https://app.invalid/fireflies-callback", CONNECTOR_WEBHOOK_PUBLIC_ORIGIN: "https://app.invalid",
+    });
+    const response = await fetch(mounted.url! + path, { headers: { authorization: "Bearer test-session" } });
+    expect(response.headers.get(marker)).toBeNull();
   });
 });

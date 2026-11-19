@@ -32,7 +32,7 @@ function authStub(req: Request, _res: Response, next: NextFunction) {
 function createApp() {
   const app = express();
   app.use(express.json());
-  app.use("/api/chat", authStub, createChatRouter());
+  app.use("/api/chat", authStub, createChatRouter({ redpillFetch: (input, init) => globalThis.fetch(input, init) }));
   return app;
 }
 
@@ -119,13 +119,13 @@ function stubRedPillFetch(opts: {
   const sseChunks = opts.sseChunks ?? [];
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input.toString();
-    if (url.includes("api.redpill.ai") && url.endsWith("/models")) {
+    if (url.includes("tee.redpill.ai") && url.endsWith("/models")) {
       return new Response(JSON.stringify({ data: models }), {
         status: 200,
         headers: { "content-type": "application/json" },
       });
     }
-    if (url.includes("api.redpill.ai") && url.endsWith("/chat/completions")) {
+    if (url.includes("tee.redpill.ai") && url.endsWith("/chat/completions")) {
       const body = sseChunks.join("");
       return new Response(body, {
         status: 200,
@@ -280,7 +280,7 @@ describe("POST /api/chat offered-model gate, paywall OFF (ST2)", () => {
     const originalFetch = globalThis.fetch;
     globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === "string" ? input : input.toString();
-      if (url.includes("api.redpill.ai")) upstreamCalled = true;
+      if (url.includes("tee.redpill.ai")) upstreamCalled = true;
       return originalFetch(input, init);
     }) as typeof fetch;
     try {
@@ -589,7 +589,7 @@ describe("GET /api/chat/models graceful degradation (catalog unavailable)", () =
     const originalFetch = globalThis.fetch;
     globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === "string" ? input : input.toString();
-      if (url.includes("api.redpill.ai") && url.endsWith("/models")) {
+      if (url.includes("tee.redpill.ai") && url.endsWith("/models")) {
         throw new Error("simulated catalog hang/network failure");
       }
       return originalFetch(input, init);
@@ -744,7 +744,7 @@ describe("POST /api/chat blocklist enforcement (ST7)", () => {
     const originalFetch = globalThis.fetch;
     globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === "string" ? input : input.toString();
-      if (url.includes("api.redpill.ai")) upstreamCalled = true;
+      if (url.includes("tee.redpill.ai")) upstreamCalled = true;
       return originalFetch(input, init);
     }) as typeof fetch;
     try {
@@ -804,7 +804,7 @@ function makeMockRehydrator(opts: {
 function createAppWithRehydrator(rehydrator: LedgerRehydrator) {
   const app = express();
   app.use(express.json());
-  app.use("/api/chat", authStub, createChatRouter({ rehydrator }));
+  app.use("/api/chat", authStub, createChatRouter({ rehydrator, redpillFetch: (input, init) => globalThis.fetch(input, init) }));
   return app;
 }
 
@@ -1201,7 +1201,7 @@ test("model selection is no-store, probes only the four offered models, and neve
       calls.push(String(input));
       return Response.json({});
     }
-    if (String(input).startsWith("https://api.redpill.ai")) throw new Error("Unexpected pricing dependency");
+    if (String(input).startsWith("https://tee.redpill.ai")) throw new Error("Unexpected pricing dependency");
     return originalFetch(input, init);
   }) as typeof fetch;
   try {

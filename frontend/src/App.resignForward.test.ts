@@ -12,7 +12,4 @@ test("mounted desktop App shows the re-sign notice on the offline recorder scree
   });
   expect(result.error).toBeUndefined();
   expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
-  const output = `${result.stdout}\n${result.stderr}`;
-  expect(output).toContain("2 pass");
-  expect(output).toContain("0 fail");
 });

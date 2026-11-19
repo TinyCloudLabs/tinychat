@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { Window } from "happy-dom";
 import { askToQuitDuringFinishing, FINISHING_QUIT_COPY, installFinishingQuitGuard } from "./finishingQuitGuard";
 
@@ -81,4 +82,11 @@ test("app-menu Quit and Cmd+Q share one finishing prompt with window close", asy
   await Bun.sleep(0);
   expect(quits).toBe(1);
   unlisten();
+});
+
+test("the window API is imported only when the guard installs: its desktop-only chunk stays off every platform's boot path", () => {
+  // The web precache leaves that chunk out, so a static import kept an offline web launch from loading the app (TC-2882).
+  const source = readFileSync(new URL("./finishingQuitGuard.ts", import.meta.url), "utf8");
+  expect(source).not.toMatch(/^import [^;]*"@tauri-apps\/api\/window"/m);
+  expect(source).toContain('await import("@tauri-apps/api/window")');
 });

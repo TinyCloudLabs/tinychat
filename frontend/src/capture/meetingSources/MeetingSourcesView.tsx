@@ -146,11 +146,13 @@ function HowItWorks() {
 
 /** The Capture / Connectors entry card. */
 export function MeetingSourcesEntry({
+  subtitle,
   summary,
   connected,
   onClick,
   buttonRef,
 }: {
+  subtitle: string;
   summary: string;
   connected: boolean;
   onClick: () => void;
@@ -165,7 +167,7 @@ export function MeetingSourcesEntry({
         </span>
         <span className="ms-entry-copy">
           <b>Meeting sources</b>
-          <span className="ms-entry-sub">Fireflies, Google Meet and Granola</span>
+          <span className="ms-entry-sub">{subtitle}</span>
           <span className="ms-status" data-tone={connected ? "on" : "off"}>
             <i aria-hidden="true" />
             <span>{summary}</span>
@@ -243,7 +245,7 @@ export function SourceRow(props: SourceRowProps) {
         )}
         {props.syncing && props.joined && (
           <p className="ms-desc" data-testid="ms-joined-note">
-            A sync that started when you opened Exo is still running — this one joined it rather than
+            A sync that started when you opened TinyCloud One is still running — this one joined it rather than
             starting a second pass over the same meetings. It finishes on its own; progress isn’t shown
             for the run that owns it.
           </p>
@@ -322,6 +324,9 @@ export function SourceRow(props: SourceRowProps) {
           </button>
         )}
       </div>
+      {id === "fireflies" && !props.comingSoon && props.lookup === "ready" && !props.connected && (
+        <p className="ms-desc ms-hint">Connecting imports your meetings from Fireflies.</p>
+      )}
       {props.connected && props.manageOpen && (
         <div className="ms-panel" id={`msx-${id}`}>
           {props.manage}
@@ -431,7 +436,7 @@ export function CalendarAutojoinRow({
         <div className="ms-opt-copy">
           <b>Calendar autojoin</b>
           <p className="ms-opt-text">
-            Exo&apos;s notetaker joins the Google Meet calls on your calendar and transcribes them.
+            TinyCloud One&apos;s notetaker joins the Google Meet calls on your calendar and transcribes them.
             Last scan: {scan}.
           </p>
           {detail && <p className="ms-opt-text">{detail}</p>}

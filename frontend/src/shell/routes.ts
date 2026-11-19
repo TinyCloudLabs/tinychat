@@ -1,9 +1,9 @@
-// Exo's addresses, in one pure module (TC-761).
+// TinyCloud Home's addresses, in one pure module (TC-761).
 //
 //     Capture  /chat/capture → Library /chat/capture/library → a note /chat/capture/library/:id
 //     Chat     /chat
 //     Connectors /chat/connectors
-//     Feed     /chat/feed (experimental Home entry from `/`)
+//     Feed     /chat/feed (the first screen, entered from `/`)
 //     Apps     /chat/apps
 //     Settings /chat/settings (global, behind the gear)
 //     How it works /chat/about (global, from Settings and the screens' hints)
@@ -14,7 +14,6 @@
 // storage, which is what makes the whole map directly testable.
 
 import { ABOUT_PATH } from "../lib/about";
-import type { AppPlatform } from "../lib/platform";
 import type { SizeClass } from "../lib/sizeClass";
 
 export const PATHS = {
@@ -39,6 +38,8 @@ export interface Screen {
   destination: Destination | null;
   /** The `connector_meeting.id` of an open note (decoded), else null. */
   noteId: string | null;
+  /** One Apps: the app id an `/chat/apps/<appId>` address names (decoded); absent elsewhere. */
+  appId?: string;
 }
 
 /** Connectors, one page (its address before the shell, kept for the links that name it). */
@@ -50,6 +51,38 @@ export const CONNECTORS_LIBRARY_PATH = "/chat/connectors/library";
 export function notePath(id: string): string {
   return `${PATHS.library}/${encodeURIComponent(id)}`;
 }
+
+const CARD_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const cardIdOf = (segment: string | undefined): string | null => (segment !== undefined && CARD_ID.test(segment) ? segment.toLowerCase() : null);
+
+/**
+ * The address of one Feed card: /chat/feed/<card id>, always the card's latest revision. It is a path under the Feed,
+ * so it needs no screen of its own, survives sign-in in place and keeps Back and reload. There is no return parameter:
+ * the id is only ever compared with loaded cards, never navigated to.
+ */
+export function feedCardPath(cardId: string): string {
+  return `${PATHS.feed}/${cardId}`;
+}
+
+/** The card id a pathname names: exactly /chat/feed/<one UUID>, else null (the plain Feed). Never throws. */
+export function feedCardTarget(pathname: string): string | null {
+  const path = trim(pathname);
+  return path.startsWith(`${PATHS.feed}/`) ? cardIdOf(path.slice(PATHS.feed.length + 1)) : null;
+}
+
+/** The short address, /feed/<card id>, which lands on the same page as feedCardPath. */
+export const FEED_ALIAS_PATH = "/feed";
+
+/** Where /feed/<segment> goes: the card's page when the segment is a card id, else the plain Feed. A constant plus a checked id, never the text. */
+export function feedAliasTarget(segment: string | undefined): string {
+  const cardId = cardIdOf(segment);
+  return cardId ? feedCardPath(cardId) : PATHS.feed;
+}
+
+/** The Library's query that shows only this account's recordings whose audio is only in this browser. */
+export const LOCAL_AUDIO_FILTER = { param: "show", value: "local-audio" } as const;
+/** The Library filtered to that list (the tinycloud.chat notice links here). */
+export const LOCAL_AUDIO_LIBRARY_PATH = `${PATHS.library}?${LOCAL_AUDIO_FILTER.param}=${LOCAL_AUDIO_FILTER.value}`;
 
 /**
  * Retired addresses and where they live now. Each one holds its address until
@@ -82,7 +115,17 @@ export function screenFor(pathname: string): Screen {
   if (path === PATHS.settings) return { id: "settings", destination: null, noteId: null };
   if (path === PATHS.about) return { id: "about", destination: null, noteId: null };
   if (path === PATHS.feed || path.startsWith(`${PATHS.feed}/`)) return { id: "feed", destination: "feed", noteId: null };
-  if (path === PATHS.apps || path.startsWith(`${PATHS.apps}/`)) return { id: "apps", destination: "apps", noteId: null };
+  if (path.startsWith(`${PATHS.apps}/`)) {
+    const raw = path.slice(PATHS.apps.length + 1);
+    let appId: string;
+    try {
+      appId = decodeURIComponent(raw);
+    } catch {
+      appId = raw;
+    }
+    return { id: "apps", destination: "apps", noteId: null, appId };
+  }
+  if (path === PATHS.apps) return { id: "apps", destination: "apps", noteId: null };
   if (path === PATHS.connectors || path.startsWith(`${PATHS.connectors}/`)) {
     return { id: "connectors", destination: "connectors", noteId: null };
   }
@@ -135,20 +178,15 @@ export function parentPath(screen: Screen): string | null {
   return screen.destination ? DESTINATION_ROOTS[screen.destination] : null;
 }
 
-/** The phone app opens on Capture; the desktop app, the web and the PWA on Chat. */
-export function homeDestination(platform: AppPlatform): Destination {
-  return platform === "ios" || platform === "android" ? "capture" : "chat";
-}
-
-export function homePath(platform: AppPlatform): string {
-  return DESTINATION_ROOTS[homeDestination(platform)];
-}
+/** Every platform's home is Feed (TC-2040): where Back and a signed-out redirect go, on web, desktop, iOS and Android. */
+export const HOME_DESTINATION: Destination = "feed";
+export const HOME_PATH = DESTINATION_ROOTS[HOME_DESTINATION];
 
 /**
  * Whether a screen sends a settled signed-out user home. Settings and
  * Connectors only exist signed in. Capture never redirects: the sign-in surface
- * renders in place, so the phone app lands on Capture after signing in and a
- * note's address survives a cold sign-in. How it works holds no account data,
+ * renders in place, so a recording started signed out stays on Capture after
+ * signing in and a note's address survives a cold sign-in. How it works holds no account data,
  * so it keeps its address the same way and shows once the user signs in.
  */
 export function redirectsWhenSignedOut(screen: Screen): boolean {

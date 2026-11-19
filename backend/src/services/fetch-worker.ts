@@ -162,6 +162,8 @@ export interface ContentUpsertInput {
   fetchedAt: string;
   /** ISO — the delivery's own `receivedAt`, so W4 can report ingest lag without a timer. */
   receivedAt: string;
+  /** The signed delivery timestamp, when the provider sent one. */
+  sourceTimestamp?: string;
 }
 
 /**
@@ -190,13 +192,14 @@ export interface RetentionGuard {
     meetingId: string;
     kind: PendingKind;
     sourceTimestamp?: string;
+    receivedAt?: string;
   }): Promise<boolean>;
 }
 
 /** The cohort membership the worker sweeps. Satisfied by `IngestModeService`. */
 export interface IngestCohortLookup {
   cohort(): Promise<ReadonlySet<string>>;
-  mode(address: string): Promise<IngestMode>;
+  mode(address: string, source?: string): Promise<IngestMode>;
 }
 
 /** §6.2 restricts credential retrieval to this path; the purpose argument says so out loud. */
@@ -693,6 +696,9 @@ export class ConnectorFetchWorker implements FetchWorkerNudge {
     if (gate !== undefined && gate > this.now()) return;
     if (gate !== undefined) this.gates.delete(key);
 
+    // Cohort eligibility alone cannot claim browser-owned pending IDs.
+    if (await this.deps.modes.mode(target.address, target.source) !== "backend") return;
+
     let due: PendingItem[];
     try {
       due = await this.deps.queue.due(target.source, target.address);
@@ -728,6 +734,7 @@ export class ConnectorFetchWorker implements FetchWorkerNudge {
       return;
     }
     if (secret === null) {
+      if (await this.deps.modes.mode(target.address, target.source) !== "backend") return;
       this.holdLane(key, "credential_missing", target);
       return;
     }
@@ -817,6 +824,9 @@ export class ConnectorFetchWorker implements FetchWorkerNudge {
     item: PendingItem,
     secret: CredentialSecret,
   ): Promise<ItemOutcome> {
+    const receiptExpired = () => !Number.isFinite(Date.parse(item.receivedAt)) ||
+      this.now() >= Date.parse(item.receivedAt) + 14 * 86_400_000;
+    if (receiptExpired()) return { settle: failedOutcome(item, "receipt_expired", true) };
     // 1. Retention / purge tombstones (delta 5, W4/W7). Checked BEFORE the upstream call: a
     //    swept or purged meeting must cost neither a fetch nor a store.
     if (this.deps.retention !== undefined) {
@@ -827,6 +837,7 @@ export class ConnectorFetchWorker implements FetchWorkerNudge {
           address: target.address,
           meetingId: item.meetingId,
           kind: item.kind,
+          receivedAt: item.receivedAt,
           ...(item.sourceTimestamp !== undefined
             ? { sourceTimestamp: item.sourceTimestamp }
             : {}),
@@ -863,6 +874,8 @@ export class ConnectorFetchWorker implements FetchWorkerNudge {
       if (this.inFlightUpstream > this.counters.peakUpstreamConcurrency) {
         this.counters.peakUpstreamConcurrency = this.inFlightUpstream;
       }
+      if (receiptExpired()) return { settle: failedOutcome(item, "receipt_expired", true) };
+      if (await this.deps.modes.mode(target.address, target.source) !== "backend") return { stopLane: true };
       this.lastCallAt.set(key, this.now());
       result = await this.fetchWithTimeout(target.source, item, secret);
     } finally {
@@ -956,8 +969,11 @@ export class ConnectorFetchWorker implements FetchWorkerNudge {
       content: stripped.value,
       fetchedAt: new Date(fetchedAt).toISOString(),
       receivedAt: item.receivedAt,
+      ...(item.sourceTimestamp === undefined ? {} : { sourceTimestamp: item.sourceTimestamp }),
     };
 
+    if (receiptExpired()) return { settle: failedOutcome(item, "receipt_expired", true) };
+    if (await this.deps.modes.mode(target.address, target.source) !== "backend") return { stopLane: true };
     let stored: unknown;
     try {
       stored = await this.deps.content.upsert(upsert);

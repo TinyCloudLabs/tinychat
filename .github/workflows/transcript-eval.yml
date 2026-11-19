@@ -104,7 +104,8 @@ jobs:
   native:
     needs: paths
     if: needs.paths.outputs.native == 'true'
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest is Ubuntu 26.04; the apt packages installed below are the 24.04 ones. Unpin per TC-3071.
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0

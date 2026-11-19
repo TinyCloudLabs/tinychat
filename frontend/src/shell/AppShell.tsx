@@ -19,10 +19,11 @@ import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefO
 import { useLocation } from "react-router-dom";
 
 import { cn } from "@/lib/utils";
-import { useAppsFeedEnabled } from "../lib/appsFeedFeature";
 import type { AppPlatform } from "../lib/platform";
 import { useSizeClass, type SizeClassState } from "../lib/sizeClass";
-import { navItems, navKindFor, type NavKind } from "./navItems";
+import { currentItemId, navItems, navKindFor, tabBarItems, type NavItemId, type NavKind, type NavPinOptions } from "./navItems";
+import { NAV_APPS, NAV_APP_IDS } from "./navApps";
+import { ONE_APPS_ENABLED, useNavPins } from "./navPins";
 import { NavRail } from "./NavRail";
 import { noteLocation, scrollSurfaceToTop } from "./navigation";
 import type { Destination, Screen } from "./routes";
@@ -33,6 +34,8 @@ import { useKeyboardOpen } from "./useKeyboardOpen";
 
 export interface AppShellProps {
   screen: Screen;
+  /** The signed-in account's DID: One Apps keeps each account's pinned apps under it. */
+  accountDid?: string | null;
   platform: AppPlatform;
   /** Meetings waiting in Connectors, for its badge. */
   pendingMeetings: number;
@@ -87,12 +90,12 @@ const GRID: Record<NavKind | "none", string> = {
 
 export interface AppShellViewProps extends AppShellProps {
   sizeClass: SizeClassState;
-  /** Optional override for pure shell previews and tests. */
-  experimentalAppsFeedEnabled?: boolean;
   /** Capture is mounted after its first visit, or at Mac launch for Activity. */
   captureMounted: boolean;
   mainRef?: RefObject<HTMLElement | null>;
   onReselect?: (destination: Destination) => void;
+  /** One Apps: the account's pins. Absent with the flag off, which leaves the navigation as it was. */
+  pinOptions?: NavPinOptions;
 }
 
 /** The frame as a pure function of its props (server-rendered in the tests). */
@@ -112,25 +115,23 @@ export function AppShellView({
   sidebarLive = null,
   recorderHost,
   sizeClass,
-  experimentalAppsFeedEnabled,
   captureMounted,
   mainRef,
   onReselect = () => {},
+  pinOptions,
 }: AppShellViewProps) {
-  const appsFeedEnabled = useAppsFeedEnabled();
-  if (!(experimentalAppsFeedEnabled ?? appsFeedEnabled)) { feed = null; apps = null; }
   const nav = shellNavKind(sizeClass, { capture, connectors });
   const shown = shownSurface(screen, { capture, connectors, settings, feed, apps, about });
   // Settings and How it works are global: no navigation item is current.
   const globalScreen = shown === "settings" || shown === "about";
-  const current: Destination | null = globalScreen ? null : shown;
-  const items = navItems(pendingMeetings).filter(
+  const items = navItems(pendingMeetings, pinOptions).filter(
     (item) =>
       (item.id !== "capture" || capture !== null) &&
       (item.id !== "connectors" || connectors !== null) &&
       (item.id !== "feed" || feed !== null) &&
-      (item.id !== "apps" || apps !== null),
+      (item.destination !== "apps" || apps !== null),
   );
+  const current: NavItemId | null = globalScreen ? null : currentItemId(shown, screen, items);
   const navProps = { items, current, replace: platform === "ios" || platform === "android", onReselect };
   const beside = nav === "rail" || nav === "sidebar";
   const surface = (name: Shown) => (shown === name ? "h-full" : "hidden");
@@ -187,7 +188,7 @@ export function AppShellView({
       ) : null}
       {nav === "tabbar" && !globalScreen ? (
         <div className="row-start-3">
-          <TabBar {...navProps} />
+          <TabBar {...navProps} items={tabBarItems(items)} />
         </div>
       ) : null}
     </div>
@@ -195,6 +196,8 @@ export function AppShellView({
 }
 
 export function AppShell(props: AppShellProps) {
+  const { pins } = useNavPins(props.accountDid ?? null, NAV_APP_IDS);
+  const pinOptions = ONE_APPS_ENABLED ? { pins, apps: NAV_APPS } : undefined;
   const sizeClass = useSizeClass();
   const location = useLocation();
   const mainRef = useRef<HTMLElement>(null);
@@ -257,6 +260,7 @@ export function AppShell(props: AppShellProps) {
       captureMounted={captureMounted}
       mainRef={mainRef}
       onReselect={scrollSurfaceToTop}
+      pinOptions={pinOptions}
     />
   );
 }

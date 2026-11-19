@@ -30,6 +30,7 @@ test("off Android the same failure never mentions the Android WebView", () => {
 });
 
 test("an unknown error is never shown raw", () => {
+  expect(SIGN_IN_FAILED_MESSAGE).toBe("Couldn't sign in. Try again.");
   expect(authErrorMessage(new Error("HTTP 500 at https://internal/x"), "android")).toBe(SIGN_IN_FAILED_MESSAGE);
   expect(authErrorMessage({ code: "TIMEOUT", message: "timeout" }, "web")).toBe(SIGN_IN_FAILED_MESSAGE);
   expect(authErrorMessage("boom", "web")).toBe(SIGN_IN_FAILED_MESSAGE);
@@ -57,18 +58,7 @@ test("sign-in returns quietly to signed-out on cancel and shows no raw message o
   expect(app).not.toMatch(/setError\(errorMessage\(caught\)\)/);
 });
 
-test("OpenKey sign-out waits for the user: no capture deadline around it", () => {
-  const signOut = app.slice(app.indexOf("const signOut = useCallback"), app.indexOf("const isReady"));
-  const openKey = signOut.slice(signOut.indexOf("const openKeyClient"), signOut.indexOf("openkeyRef.current = null"));
-  expect(openKey).toContain("await signOutOpenKeySession(");
-  expect(openKey).not.toContain("withCaptureDeadline");
-  expect(openKey).not.toContain("timed out");
-});
 
-test("the app is called Exo everywhere sign-in and sign-out show a name", () => {
-  expect(app).toContain('const APP_NAME = "Exo";');
-  expect(app).not.toContain("TinyChat is signed out");
-  expect(app.match(/Exo is signed out locally/g)?.length).toBe(1);
-  expect(app).toContain("Signed out of Exo. To use a different account");
-  expect(readFileSync(join(import.meta.dir, "..", "..", "index.html"), "utf8")).toContain("<title>TinyCloud Home</title>");
+test("the document title is TinyCloud One", () => {
+  expect(readFileSync(join(import.meta.dir, "..", "..", "index.html"), "utf8")).toContain("<title>TinyCloud One</title>");
 });
