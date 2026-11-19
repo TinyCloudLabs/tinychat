@@ -3,4 +3,6 @@
 "@tinychat/backend": patch
 ---
 
-Background memory extraction asks for minimal reasoning so a short turn no longer spends hidden tokens; the visible turn total includes it once it settles. Details: TC-2002
+Background memory extraction asks each model for its lowest reasoning setting, which keeps hidden reasoning tokens down on short turns; the turn's total includes the extraction once it settles.
+
+Details: TC-2002
