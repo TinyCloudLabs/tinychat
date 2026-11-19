@@ -1,0 +1,82 @@
+// The real sandbox host: @getenergy/gke-sandboxes 0.3.0 on Google Cloud. Only the opt-in check
+// (scripts/real-cluster-check.ts) and a deployed service run this; the tests use LocalProvider and a fake.
+
+import { readFile } from "node:fs/promises";
+import { GkeSandboxes, KubernetesApi } from "@getenergy/gke-sandboxes";
+import type { ExecResult, SandboxProvider } from "./provider";
+
+/** Where the bridge lives in the sandbox image (Dockerfile target `sandbox`). */
+export const BRIDGE_SCRIPT = "/opt/bridge/bridge.ts";
+export const ARM_COMMAND = "bun /opt/bridge/arm.ts";
+
+export interface GkeProviderOptions {
+  /** The Kubernetes API: https://kubernetes.default.svc inside the cluster, the cluster's DNS endpoint outside. */
+  apiUrl: string;
+  /** An access token for an identity bound to the library's `sandbox-controller` Role. */
+  token: () => Promise<string>;
+  namespace: string;
+  serviceAccount: string;
+  /** The sandbox image, pinned by digest. */
+  image: string;
+}
+
+/** Inside the cluster: the service account token the kubelet keeps current, read for every call as it rotates. */
+export const inClusterToken = async () =>
+  (await readFile("/var/run/secrets/kubernetes.io/serviceaccount/token", "utf8")).trim();
+
+export class GkeProvider implements SandboxProvider {
+  readonly #sandboxes: GkeSandboxes;
+  /** The library keeps a sandbox awake only through the `touch` its `acquire` returned. */
+  readonly #touches = new Map<string, () => Promise<void>>();
+
+  constructor(options: GkeProviderOptions) {
+    this.#sandboxes = new GkeSandboxes(new KubernetesApi(options.apiUrl, options.token), {
+      namespace: options.namespace,
+      serviceAccount: options.serviceAccount,
+      image: options.image,
+      // The bridge starts with every pod, holding nothing until the service arms it.
+      boot: () => ({ shell: `exec bun ${BRIDGE_SCRIPT}`, args: [] }),
+      memoryWatchdog: { protect: [BRIDGE_SCRIPT] },
+      // The service decides when its bot is idle and stops touching it first; the host's sweeper, with its own
+      // five-minute wait, puts to sleep whatever the service leaves awake.
+      idleTimeoutMs: 1000,
+      onOperation: ({ operation, outcome, labels, durationMs, error }) =>
+        console.log(JSON.stringify({
+          bots: "sandbox",
+          operation,
+          outcome,
+          sandbox: labels["energy-sandbox"],
+          duration_ms: durationMs,
+          error: error ? String(error).slice(0, 300) : undefined,
+        })),
+    });
+  }
+
+  async acquire(id: string, signal: AbortSignal): Promise<void> {
+    const { touch } = await this.#sandboxes.acquire(id, signal);
+    this.#touches.set(id, touch);
+  }
+
+  async exec(id: string, command: string, env: Record<string, string>, timeoutSeconds: number): Promise<ExecResult> {
+    const result = await this.#sandboxes.environment(id, "started").process.executeCommand(command, "/", env, timeoutSeconds);
+    return { exitCode: result.exitCode, output: result.result };
+  }
+
+  async endpoint(id: string, port: number): Promise<string> {
+    return (await this.#sandboxes.endpoint({ id }, port)).url;
+  }
+
+  async touch(id: string): Promise<void> {
+    await this.#touches.get(id)?.();
+  }
+
+  async sleep(id: string): Promise<void> {
+    this.#touches.delete(id);
+    await this.#sandboxes.sleep(id);
+  }
+
+  async destroy(id: string): Promise<void> {
+    this.#touches.delete(id);
+    await this.#sandboxes.delete(id);
+  }
+}
