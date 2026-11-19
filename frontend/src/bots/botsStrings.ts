@@ -66,8 +66,8 @@ export const BOT_VIEW_STRINGS = {
 } as const;
 
 export const CREATE_BOT_STRINGS = {
-  title: "Create New Bot",
-  name: "Name your Bot",
+  title: "New bot",
+  name: "Name your bot",
   shape: "Shape",
   colour: "Colour",
   cancel: "Cancel",
@@ -78,7 +78,7 @@ export const CREATE_BOT_STRINGS = {
   cap: {
     flat3: {
       count: (used: number, max: number) => `${used} of ${max} bots`,
-      atLimit: (max: number) => `You have ${max} bots, the most an account can have. Delete a bot other than Main to make a new one.`,
+      atLimit: (max: number) => `You have ${max} bots, the most your account can have. Delete a bot other than Main to make a new one.`,
       refused: (max: number) => `You already have ${max} bots. Delete a bot other than Main to make a new one.`,
     },
     table: {
@@ -92,7 +92,6 @@ export const CREATE_BOT_STRINGS = {
     },
   },
   failed: "Couldn't create your bot. Try again.",
-  approvalNeeded: "Approval needed",
   shapes: {
     pebble: "Pebble", sprout: "Sprout", drop: "Drop", clover: "Clover", bloom: "Bloom",
     cloud: "Cloud", ghost: "Ghost", bean: "Bean", comet: "Comet", petal: "Petal",
