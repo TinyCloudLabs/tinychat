@@ -2,6 +2,6 @@
 "@tinychat/frontend": patch
 ---
 
-The share links list shows each of your share links and when it expires. While sharing is paused, the list shows no links.
+Settings and the Share dialog list each of your share links and when it expires. While sharing is paused, the list is hidden.
 
 Details: TC-1800
