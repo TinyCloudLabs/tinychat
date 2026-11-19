@@ -1,5 +1,17 @@
 # @tinychat/backend
 
+## 0.9.1-beta.0
+
+### Patch Changes
+
+- 298c5b1: Import meetings from a Granola CSV export. Meetings you've deleted aren't imported again unless you allow them back.
+
+  Details: TC-3292
+
+- 298c5b1: Importing a Granola CSV leaves notes synced from Granola's API unchanged. A meeting you deleted stays out of later Granola syncs and CSV imports until you choose "Allow deleted meetings back" and confirm.
+
+  Details: TC-3292
+
 ## 0.9.0
 
 ### Minor Changes
