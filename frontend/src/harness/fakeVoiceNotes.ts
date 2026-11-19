@@ -40,6 +40,7 @@ export interface FakeVoiceNotes {
   emit(event: "writeFailure", payload: WriteFailureEvent): void;
   emit(event: "recovered" | "committed", payload: { id: string }): void;
   emit(event: "autoStopped", payload: VoiceNoteAutoStopEvent): void;
+  emit(event: "captureFinalized", payload: { id: string; finalizing: boolean }): void;
   emit(event: "presentRecorder", payload: { id: string | null; reason?: string }): void;
   /** Capacitor hands a retained presentRecorder event to the first listener only. */
   retainPresentRecorder(payload: { id: string | null; reason?: string }): void;

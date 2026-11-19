@@ -26,13 +26,12 @@ import { paywallEnabled, resolveTier } from "../billing/stripe.js";
 import {
   getUsage,
   isOverBudget,
-  recordUsage,
-  startOfAnchoredWeek,
-  startOfUtcDay,
 } from "../billing/usage.js";
 import { contextLengthFor, getCatalog, type CatalogModel } from "../billing/catalog.js";
 import { truncateToolResults, trimConvoToBudget } from "../lib/contextGuard.js";
-import { creditsFor, ratesForModel, type ModelRates } from "../billing/credits.js";
+import { FALLBACK_MODEL_RATES, ratesForModel, type ModelRates } from "../billing/credits.js";
+import { createReplyBudget, lengthStoppedByBudget, type ReplyBudget } from "../billing/reply-budget.js";
+import { settleReply, type FailureCause, type ReplyOutcome } from "../billing/settle.js";
 import type { LedgerFlusher } from "../billing/ledger-flusher.js";
 import type { LedgerRehydrator } from "../billing/ledger-rehydrate.js";
 import {
@@ -46,13 +45,6 @@ import { createTurnBudgetMonitor, MIN_TURN_CREDITS, parseBudgetPreflightMode, pa
 import { noteRequestRecord, recordAfterHandler, type StreamOutcome } from "../request-context.js";
 
 import { RECEIPT_AUDIT_TIMEOUT_MS, RedPillAciError, RedPillAttestationError, RedPillResponseLimitError, STREAMED_RESPONSE_UNVERIFIED_MESSAGE, redPillAciFetch } from "../redpill-aci.js";
-// Conservative default rates for the post-stream recording fallback (mirrors chat.ts §7).
-const FALLBACK_RECORDING_RATES: ModelRates = {
-  creditsPerKInput: 200,
-  creditsPerKOutput: 1000,
-  fallback: true,
-};
-
 // Look up a model in the catalog and resolve its rates. Missing entries get the fallback.
 // Duplicated from chat.ts (sanctioned — chat.ts must stay untouched).
 function resolveRates(catalog: CatalogModel[], modelId: string): ModelRates {
@@ -357,6 +349,11 @@ function contentFrame(text: string): string {
   return `data: ${JSON.stringify({ choices: [{ delta: { content: text } }] })}\n\n`;
 }
 
+/** True for a frame built by `contentFrame`. */
+function isContentFrame(frame: string): boolean {
+  return frame.startsWith('data: {"choices":[{"delta":{"content":');
+}
+
 function receiptVerificationFrame(): string {
   return `data: ${JSON.stringify({ receipt_verification: { status: "verified" } })}\n\n`;
 }
@@ -438,6 +435,11 @@ function expandUnambiguousMeetingCitations(content: string, supplied: string[]):
 /** Stable eliza-service codes meaning "this user's grant is missing or unusable". */
 const DELEGATION_ERROR_CODES = new Set(["delegation_required", "delegation_expired", "delegation_revoked"]);
 
+/** The result for a call this turn cannot serve (TC-3463): nothing is dispatched; the model gets it back as a tool result and answers without it. */
+function toolNotFound(name: string): ToolDispatchOutcome {
+  return { status: "error", code: "tool_not_found", text: `(tool ${JSON.stringify(name.slice(0, 64))} is not available in this conversation; answer without it)` };
+}
+
 export interface ToolDispatchOutcome {
   /** The role:"tool" content handed back to the model. */
   text: string;
@@ -462,19 +464,17 @@ async function dispatchTool(
   signal?: AbortSignal,
   allowedTools?: readonly string[],
 ): Promise<ToolDispatchOutcome> {
-  if (config.privateAccessActive === false && call.name !== "web_search") throw new StreamFailure("routing_mismatch");
-  if (allowedTools && !allowedTools.includes(call.name)) throw new StreamFailure("routing_mismatch");
+  if (config.privateAccessActive === false && call.name !== "web_search") return toolNotFound(call.name);
+  if (allowedTools && !allowedTools.includes(call.name)) return toolNotFound(call.name);
   let args: Record<string, unknown>;
   try {
     args = call.args ? (JSON.parse(call.args) as Record<string, unknown>) : {};
   } catch {
-    throw new StreamFailure("upstream_incomplete");
+    throw new StreamFailure("upstream_incomplete", "model");
   }
   throwIfAborted(signal);
   // An MCP turn never falls back to eliza-service: a name the wrapper does not serve (invented or injected) is refused here.
-  if (config.mcpOwner && !config.mcpMeetings?.handles(call.name)) {
-    return { status: "error", code: "tool_not_found", text: `(tool ${JSON.stringify(call.name.slice(0, 64))} is not available)` };
-  }
+  if (config.mcpOwner && !config.mcpMeetings?.handles(call.name)) return toolNotFound(call.name);
   const mcpMeeting = config.mcpMeetings && config.mcpOwner && config.mcpMeetings.handles(call.name)
     ? await config.mcpMeetings.run({ name: call.name, args, owner: config.mcpOwner, ...(roomId ? { roomId } : {}), ...(turnContext ? { context: turnContext as unknown as RetrievalContext } : {}), ...(signal ? { signal } : {}) })
     : undefined;
@@ -584,15 +584,18 @@ export interface OrchestrateParams {
   entityId: string;
   roomId?: string;
   turnContext?: AgentTurnContext;
-  write: (frame: string) => unknown | Promise<unknown>;
+  /** `notice` marks an error message rather than answer content (it does not make the reply billable). */
+  write: (frame: string, notice?: boolean) => unknown | Promise<unknown>;
   signal?: AbortSignal;
   onPhase?: (phase: StreamPhase) => void;
   isAborted?: () => boolean;
   /** Remaining time on the existing SSE owner's deadline. */
   remainingMs?: () => number;
   onUsage?: (usage: { promptTokens: number; completionTokens: number }) => void;
+  /** Stops the reply at the allowance it started with: caps each provider call and refuses calls and tools it cannot afford. */
+  budget?: ReplyBudget;
   /** A meeting failure whose user-visible terminal text has already been written. */
-  onTerminalError?: (code: StreamErrorCode) => void;
+  onTerminalError?: (code: StreamErrorCode, cause: FailureCause) => void;
 }
 
 export interface OrchestrateResult {
@@ -601,6 +604,8 @@ export interface OrchestrateResult {
   completionId: string;
   /** Nonthrowing failures retain completed-round accounting eligibility. */
   errorCode?: StreamErrorCode;
+  /** Set when the model's own output caused errorCode; absent means ours. */
+  errorCause?: FailureCause;
 }
 
 /**
@@ -609,7 +614,11 @@ export interface OrchestrateResult {
  * model's final answer. Returns final ID and summed usage to the lifecycle owner,
  * which alone writes terminal metadata and the protocol terminal.
  */
-export async function orchestrateToolCalling(params: OrchestrateParams): Promise<OrchestrateResult> {
+export async function orchestrateToolCalling(input: OrchestrateParams): Promise<OrchestrateResult> {
+  // The budget follows the reply's cumulative usage as the loops report it.
+  const params: OrchestrateParams = input.budget
+    ? { ...input, onUsage: usage => { input.budget!.observe(usage); input.onUsage?.(usage); } }
+    : input;
   if (params.config.privateAccessActive === false) return orchestrateExistingLoop(params, true);
   if (!params.config.meetingContentRetrievalEnabled) return orchestrateExistingLoop(params);
   // Model admission applies before interpretation: an unqualified interpreter
@@ -629,6 +638,7 @@ export async function orchestrateToolCalling(params: OrchestrateParams): Promise
   const result = await runMeetingTurn({
     ...params,
     contextWindowTokens: contextLengthFor(params.model),
+    streamErrorCause: error => error instanceof StreamFailure ? error.failureCause : "ours",
     streamErrorCode: error => error instanceof StreamFailure ? error.code : undefined,
     modelCall: request => bufferedMeetingModelCall({ ...params, onUsage: checkpoint() }, request),
     dispatch: (name, args, context, signal, id) => dispatchTool(params.config, fetchImpl, { name, args: JSON.stringify(args), id }, params.entityId, params.roomId, context, signal),
@@ -655,10 +665,13 @@ export async function orchestrateToolCalling(params: OrchestrateParams): Promise
 async function bufferedMeetingModelCall(params: OrchestrateParams, request: MeetingModelRequest): Promise<BufferedMeetingModelResult> {
   const maxChars = request.maxOutputTokens === 1024 ? 12288 : 24576;
   params.onPhase?.(request.phase);
+  const base = { model: params.model, provider: { aci_verified: true }, messages: request.messages, ...(request.tool ? { tools: [request.tool], tool_choice: { type: "function", function: { name: "prepare_meeting_turn" } }, reasoning: { enabled: false } } : { reasoning_effort: "low" }), stream: true, stream_options: { include_usage: true } };
+  const limit = params.budget ? params.budget.limitFor(JSON.stringify(base).length, request.maxOutputTokens) : { maxTokens: request.maxOutputTokens, capped: false };
+  if (!limit) throw new StreamFailure("budget_exhausted");
   const redpillFetch = params.config.redpillFetch ?? redPillAciFetch(params.config.redpillBaseUrl, RECEIPT_AUDIT_TIMEOUT_MS);
   const upstream = await fetchForTurn(redpillFetch, `${params.config.redpillBaseUrl}/chat/completions`, {
     method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${params.config.redpillApiKey}` },
-    body: JSON.stringify({ model: params.model, provider: { aci_verified: true }, messages: request.messages, ...(request.tool ? { tools: [request.tool], tool_choice: { type: "function", function: { name: "prepare_meeting_turn" } }, reasoning: { enabled: false } } : { reasoning_effort: "low" }), max_tokens: request.maxOutputTokens, stream: true, stream_options: { include_usage: true } }),
+    body: JSON.stringify({ ...base, max_tokens: limit.maxTokens }),
   }, request.signal);
   if (!upstream.ok || !upstream.body) { if (upstream.body) ignoreCleanup(() => upstream.body!.cancel()); throw new StreamFailure("upstream_failed"); }
   let content = "", completionId = "", promptTokens = 0, completionTokens = 0, finish: unknown;
@@ -679,9 +692,11 @@ async function bufferedMeetingModelCall(params: OrchestrateParams, request: Meet
     if (Array.isArray(choice?.delta?.tool_calls)) {
       accumulateToolCalls(calls, normalizeToolCallDeltas(choice.delta.tool_calls));
     }
-    if (content.length + [...calls.values()].reduce((n, call) => n + call.args.length + call.name.length, 0) > maxChars || calls.size > 8) throw new StreamFailure("result_size_limit");
+    if (content.length + [...calls.values()].reduce((n, call) => n + call.args.length + call.name.length, 0) > maxChars || calls.size > 8) throw new StreamFailure("result_size_limit", "model");
     if (choice?.finish_reason != null) finish = choice.finish_reason;
   }
+  // Output cut at the budget's cap is the limit, not an incomplete provider reply; a model's own length stop is not.
+  if (params.budget && finish === "length" && lengthStoppedByBudget(limit, completionTokens, params.budget)) throw new StreamFailure("budget_exhausted");
   let inline = false;
   if (calls.size === 0 && content.includes("<tool_call>")) {
     parseInlineToolCalls(content).forEach((call, i) => calls.set(i, { id: `inline_${i}`, ...call })); inline = calls.size > 0;
@@ -715,6 +730,9 @@ async function orchestrateExistingLoop(params: OrchestrateParams, generalOnly = 
   let totalCompletionTokens = 0;
   let finalCompletionId = "";
   let errorCode: StreamErrorCode | undefined;
+  let errorCause: FailureCause | undefined;
+  /** Every call of the last dispatched round was a tool the turn did not offer (TC-3463). */
+  let notFoundOnly = false;
   let repairing = false;
   // A provider can emit a private-tool preamble in standalone content deltas
   // before the later tool_calls delta identifies it as private progress. Those
@@ -727,6 +745,7 @@ async function orchestrateExistingLoop(params: OrchestrateParams, generalOnly = 
 
   for (let round = 0; round < roundLimit; round++) {
     if (params.isAborted?.() || params.signal?.aborted) break;
+    notFoundOnly = false;
 
     // Deterministic context guard (§C.11, NO LLM): before this round's upstream
     // fetch, first cap oversize role:"tool" results, then drop the oldest
@@ -764,13 +783,8 @@ async function orchestrateExistingLoop(params: OrchestrateParams, generalOnly = 
     const bufferMeetingAnswer = meetingCitations.length > 0;
 
     params.onPhase?.(repairing ? "repair" : isSynthesisRound ? "synthesis" : "model");
-    const upstream = await fetchForTurn(redpillFetch, `${config.redpillBaseUrl}/chat/completions`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${config.redpillApiKey}`,
-      },
-      body: JSON.stringify(
+    // The body is built first: its size prices the prompt against the reply budget.
+    const requestBody = (
         cleanSynthesis
           ? {
               model,
@@ -797,8 +811,17 @@ async function orchestrateExistingLoop(params: OrchestrateParams, generalOnly = 
               ...(isSynthesisRound ? { reasoning_effort: "low" } : {}),
               stream: true,
               stream_options: { include_usage: true },
-            },
-      ),
+            }
+    );
+    const limit = params.budget?.limitFor(JSON.stringify(requestBody).length);
+    if (limit === null) { errorCode = "budget_exhausted"; break; }
+    const upstream = await fetchForTurn(redpillFetch, `${config.redpillBaseUrl}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${config.redpillApiKey}`,
+      },
+      body: JSON.stringify(limit?.maxTokens === undefined ? requestBody : { ...requestBody, max_tokens: limit.maxTokens }),
     }, params.signal);
 
     if (!upstream.ok || !upstream.body) {
@@ -936,15 +959,20 @@ async function orchestrateExistingLoop(params: OrchestrateParams, generalOnly = 
       await flushPending();
     }
 
-    if (generalOnly && [...toolCalls.values()].some(call => call.name !== "web_search")) { errorCode = "routing_mismatch"; break; }
-    if (toolCalls.size > 0 && finish !== "tool_calls") throw new StreamFailure("upstream_incomplete");
+    // Output cut at the budget's cap is the limit; text already streamed stays with the user. A model's own length stop is a normal end.
+    if (params.budget && limit && finish === "length" && lengthStoppedByBudget(limit, roundCompletionTokens, params.budget)) { errorCode = "budget_exhausted"; break; }
+
+    if (toolCalls.size > 0 && finish !== "tool_calls") throw new StreamFailure("upstream_incomplete", "model");
     if (finish === "tool_calls") {
+      // A round that used up the allowance must not run its tools: nothing after them could be afforded.
+      if (params.budget?.exhausted()) { errorCode = "budget_exhausted"; break; }
       const calls = [...toolCalls.values()];
-      if (!calls.length) throw new StreamFailure("upstream_incomplete");
+      if (!calls.length) throw new StreamFailure("upstream_incomplete", "model");
       for (const call of calls) {
         let args: unknown;
-        try { args = JSON.parse(call.args); } catch { throw new StreamFailure("upstream_incomplete"); }
-        if (!call.id || !call.name || !args || typeof args !== "object" || Array.isArray(args)) throw new StreamFailure("upstream_incomplete");
+        try { args = JSON.parse(call.args); } catch { throw new StreamFailure("upstream_incomplete", "model"); }
+        if (!call.id) throw new StreamFailure("upstream_incomplete");
+        if (!call.name || !args || typeof args !== "object" || Array.isArray(args)) throw new StreamFailure("upstream_incomplete", "model");
         // Normalize before recording tool_calls so provider history and dispatch
         // agree. Scoped reads keep their existing room/meeting selection.
         const hasMeetingRef = "meetingRef" in args && typeof args.meetingRef === "string" && args.meetingRef.trim().length > 0;
@@ -969,6 +997,11 @@ async function orchestrateExistingLoop(params: OrchestrateParams, generalOnly = 
       });
       for (const call of calls) {
         throwIfAborted(params.signal);
+        // A public-only turn offers only web_search: any other call is answered here, never dispatched or shown as activity (TC-3463).
+        if (generalOnly && call.name !== "web_search") {
+          convo.push({ role: "tool", tool_call_id: call.id, content: toolNotFound(call.name).text });
+          continue;
+        }
         params.onPhase?.("tool");
         await write(toolActivityFrame(call.name, "running"));
         let outcome: ToolDispatchOutcome;
@@ -992,6 +1025,7 @@ async function orchestrateExistingLoop(params: OrchestrateParams, generalOnly = 
         }
         convo.push({ role: "tool", tool_call_id: call.id, content: outcome.text });
       }
+      notFoundOnly = generalOnly && calls.every(call => call.name !== "web_search");
       continue; // loop for the model's answer using the tool results
     }
 
@@ -1019,15 +1053,19 @@ async function orchestrateExistingLoop(params: OrchestrateParams, generalOnly = 
     break; // finish_reason "stop" (or no tools) — content already streamed
   }
 
-
-  return { promptTokens: totalPromptTokens, completionTokens: totalCompletionTokens, completionId: finalCompletionId, ...(errorCode ? { errorCode } : {}) };
+  // The rounds ran out on a model that only kept calling tools it was not offered: still the model's failure.
+  if (notFoundOnly && !errorCode && !params.isAborted?.() && !params.signal?.aborted) { errorCode = "routing_mismatch"; errorCause = "model"; }
+  return { promptTokens: totalPromptTokens, completionTokens: totalCompletionTokens, completionId: finalCompletionId, ...(errorCode ? { errorCode } : {}), ...(errorCause ? { errorCause } : {}) };
 }
 
 export type StreamErrorCode = "turn_timeout" | "upstream_incomplete" | "upstream_failed" | "private_response_unverified" | "private_response_unverified_streamed" | "agent_failed" | "routing_mismatch" | "interpretation_failed" | "interpretation_timeout" | "meeting_feature_unavailable" | "result_size_limit" | "budget_exhausted";
 type StreamPhase = "model" | "tool" | "synthesis" | "repair" | "terminal";
 
+/** Eliza final codes that only the model's own output produces; its other failure codes also cover provider and tool causes. */
+const MODEL_CAUSED_TASK_CODES: Record<string, true> = { routing_mismatch: true, tool_attempt_limit: true };
+/** `failureCause` "model": the model's own output broke the reply (charged). Everything else is ours (free). */
 class StreamFailure extends Error {
-  constructor(readonly code: StreamErrorCode) { super(code); }
+  constructor(readonly code: StreamErrorCode, readonly failureCause: FailureCause = "ours") { super(code); }
 }
 
 export interface AgentStreamSummary {
@@ -1052,11 +1090,11 @@ export interface AgentStreamRuntime {
 }
 
 /** The request record's coarse view of a turn's end: client-side ends are aborted, server-side ones error. */
-function recordedOutcome(outcome: AgentStreamSummary["outcome"]): { stream: StreamOutcome; code?: string } {
+function recordedOutcome(outcome: AgentStreamSummary["outcome"], failureCause: FailureCause): { stream: StreamOutcome; code?: string; failureCause?: FailureCause } {
   if (outcome === "success") return { stream: "done" };
   if (outcome === "cancelled") return { stream: "aborted" };
   if (outcome === "transport_failed") return { stream: "aborted", code: "transport_failed" };
-  return { stream: "error", code: outcome };
+  return { stream: "error", code: outcome, failureCause };
 }
 
 const streamRuntime: AgentStreamRuntime = {
@@ -1112,6 +1150,8 @@ class AgentStreamOwner {
   readonly signal = this.controller.signal;
   private state: "opening" | "open" | "terminating" | "closed" = "opening";
   private outcome: AgentStreamSummary["outcome"] | undefined;
+  /** Who caused a failed terminal; set with the claim, so a timeout or transport close keeps "ours". */
+  private failureCause: FailureCause = "ours";
   private phase: StreamPhase = "model";
   private heartbeat: unknown;
   private deadline: unknown;
@@ -1220,15 +1260,19 @@ class AgentStreamOwner {
     }
   }
 
-  complete(result: OrchestrateResult, terminalErrorCode?: StreamErrorCode, receiptVerified = false): Promise<void> {
-    if (result.errorCode) return this.fail(new StreamFailure(result.errorCode));
-    if (this.claim(terminalErrorCode ?? "success")) void this.deliver(result, undefined, !terminalErrorCode, receiptVerified);
+  complete(result: OrchestrateResult, terminalErrorCode?: StreamErrorCode, receiptVerified = false, terminalErrorCause: FailureCause = "ours"): Promise<void> {
+    if (result.errorCode) return this.fail(new StreamFailure(result.errorCode, result.errorCause));
+    if (this.claim(terminalErrorCode ?? "success")) {
+      if (terminalErrorCode) this.failureCause = terminalErrorCause;
+      void this.deliver(result, undefined, !terminalErrorCode, receiptVerified);
+    }
     return this.closed;
   }
 
   fail(error: unknown): Promise<void> {
     const code = error instanceof StreamFailure ? error.code : "agent_failed";
     if (this.claim(code)) {
+      if (error instanceof StreamFailure) this.failureCause = error.failureCause;
       // The terminal claim closes write admission BEFORE synchronous abort callbacks.
       this.controller.abort(new StreamFailure(code));
       void this.deliver(undefined, code);
@@ -1276,7 +1320,7 @@ class AgentStreamOwner {
   private close(outcome: AgentStreamSummary["outcome"], destroy: boolean): void {
     if (this.state === "closed") return;
     this.outcome ??= outcome;
-    noteRequestRecord(this.res, recordedOutcome(this.outcome));
+    noteRequestRecord(this.res, recordedOutcome(this.outcome, this.failureCause));
     this.state = "closed";
     this.runtime.clearTimeout(this.heartbeat);
     this.runtime.clearTimeout(this.deadline);
@@ -1370,6 +1414,8 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
     let anchor: number | null = null;
     let rates: ModelRates | null = null;
     let budgetRemaining: number | null = null;
+    // The window and allowance a reply is charged against are those at admission.
+    const startedAt = Date.now();
     if (paywallEnabled()) {
       let resolution;
       try {
@@ -1510,6 +1556,7 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
       res.status(503).json({ error: "eliza_unavailable" });
       return;
     }
+    const allowance = budgetRemaining === null ? null : Math.max(0, budgetRemaining);
     const taskSelected = !mcpSelected && config.elizaTasksEnabled === true &&
       (!config.elizaTasksAccountAllowed || config.elizaTasksAccountAllowed(address));
     owner = new AgentStreamOwner(req, res, policy, config.streamRuntime ?? streamRuntime);
@@ -1564,7 +1611,7 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
       if (accessFrame && !enqueue(accessFrame)) return;
       const executionId = crypto.randomUUID();
       const budgetMonitor = budgetRemaining !== null && budgetStopMode !== "off"
-        ? createTurnBudgetMonitor({ mode: budgetStopMode, remaining: budgetRemaining, rates: rates ?? FALLBACK_RECORDING_RATES })
+        ? createTurnBudgetMonitor({ mode: budgetStopMode, remaining: budgetRemaining, rates: rates ?? FALLBACK_MODEL_RATES })
         : undefined;
       const result = await taskClient.run({
         version: 1, executionId, entityId,
@@ -1587,25 +1634,20 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
         onDelegationError: (code: string) => { enqueue(delegationErrorFrame(code)); },
         onUsage: budgetMonitor,
       });
+      const final = result.final;
+      const code = result.errorCode ?? final?.code;
+      const completed = !result.cancelled && !result.errorCode && final && ["success", "partial", "clarification"].includes(final.outcome);
+      // Only eliza's own final code can name a model-caused failure; the client's codes are transport and our limits.
+      const failureCause: FailureCause = !result.errorCode && final?.code && MODEL_CAUSED_TASK_CODES[final.code] === true ? "model" : "ours";
       // Accounting has settled even if the browser failed or cancelled. Never
       // erase it because a subsequent content/write/end/enqueue operation fails.
-      if (paywallEnabled() && address) {
-        const credits = creditsFor(rates ?? FALLBACK_RECORDING_RATES, result.usage.promptTokens, result.usage.completionTokens);
-        try { recordUsage(address, TIERS[gatedTier], credits, anchor); noteRequestRecord(res, { credits }); }
-        catch { console.error("[agent-chat] task local usage recording failed"); }
-        if (config.flusher && credits > 0) {
-          const now = Date.now();
-          const tierCfg = TIERS[gatedTier];
-          try {
-            config.flusher.enqueue({
-              account: address, model: resolvedModel, credits,
-              window_start: tierCfg.budgetWindow === "week" ? startOfAnchoredWeek(anchor ?? now, now) : startOfUtcDay(now),
-              window_kind: tierCfg.budgetWindow === "week" ? "anchored_week" : "utc_day",
-              prompt_tokens: result.usage.promptTokens, completion_tokens: result.usage.completionTokens,
-              occurred_at: now, signed_token_count: null,
-            });
-          } catch { console.error("[agent-chat] task usage enqueue failed"); }
-        }
+      if (paywallEnabled() && address && allowance !== null) {
+        const outcome: ReplyOutcome = completed ? "success"
+          : code === "budget_exhausted" ? "limit_stop"
+            : code === "turn_timeout" || final?.outcome === "timed_out" ? "timed_out"
+              : result.cancelled ? "cancelled" : "failed";
+        const settled = settleReply({ address, tier: TIERS[gatedTier], anchor, startedAt, allowance, model: resolvedModel, usage: result.usage, rates, outcome, failureCause, deliveredOutput: streamedContent, executionId, flusher: config.flusher });
+        noteRequestRecord(res, { credits: settled.charged });
       }
       console.info("[agent-chat] task accounting", {
         executionId, model: resolvedModel, complete: result.observationComplete,
@@ -1614,8 +1656,7 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
         startedAttempts: result.usage.startedAttempts, reportedAttempts: result.usage.reportedAttempts,
         finalizedAttempts: result.usage.finalizedAttempts,
       });
-      const final = result.final;
-      if (!result.cancelled && !result.errorCode && final && ["success", "partial", "clarification"].includes(final.outcome)) {
+      if (completed) {
         const compositeAnswer = streamedContent && final.answer?.delivery === "buffered";
         if (final.answer?.delivery === "buffered") enqueue(contentFrame((compositeAnswer ? "\n\n" : "") + final.answer.text!));
         await delivery;
@@ -1624,12 +1665,21 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
       } else {
         const code = result.errorCode ?? final?.code;
         const safeCodes: StreamErrorCode[] = ["upstream_failed", "upstream_incomplete", "private_response_unverified", "private_response_unverified_streamed", "agent_failed", "routing_mismatch", "result_size_limit", "turn_timeout", "budget_exhausted"];
-        await streamOwner.fail(new StreamFailure(safeCodes.includes(code as StreamErrorCode) ? code as StreamErrorCode : "agent_failed"));
+        await streamOwner.fail(new StreamFailure(safeCodes.includes(code as StreamErrorCode) ? code as StreamErrorCode : "agent_failed", failureCause));
       }
       return;
     }
+    const executionId = crypto.randomUUID();
+    const replyBudget = allowance === null ? undefined : createReplyBudget(allowance, rates ?? FALLBACK_MODEL_RATES, contextLengthFor(resolvedModel));
+    // Logged with the settlement: whether answer content (not an error notice or tool activity) reached the user.
+    let deliveredOutput = false;
+    const writeFrame = async (frame: string, notice?: boolean) => {
+      await streamOwner.write(frame);
+      if (!notice && isContentFrame(frame)) deliveredOutput = true;
+    };
     let orchestrateResult: OrchestrateResult | null = null;
     let meetingTerminalErrorCode: StreamErrorCode | undefined;
+    let meetingTerminalErrorCause: FailureCause | undefined;
     let observedUsage = { promptTokens: 0, completionTokens: 0 };
     if (await streamOwner.open()) {
       try {
@@ -1638,13 +1688,15 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
           config: { ...turnConfig, meetingContentRetrievalEnabled: turnConfig.meetingContentRetrievalEnabled === true && (!turnConfig.meetingContentAccountAllowed || turnConfig.meetingContentAccountAllowed(req.user.address)) }, model: resolvedModel, messages: messages as ChatMsg[], entityId,
           roomId: typeof roomId === "string" ? roomId : undefined, turnContext,
           onUsage: usage => { observedUsage = usage; },
-          onTerminalError: code => { meetingTerminalErrorCode = code; },
-          write: streamOwner.write, signal: streamOwner.signal, onPhase: streamOwner.setPhase, remainingMs: streamOwner.remainingMs,
+          onTerminalError: (code, cause) => { meetingTerminalErrorCode = code; meetingTerminalErrorCause = cause; },
+          write: writeFrame, signal: streamOwner.signal, onPhase: streamOwner.setPhase, remainingMs: streamOwner.remainingMs,
+          ...(replyBudget ? { budget: replyBudget } : {}),
         });
       } catch (error) {
         // Preserve the failure for terminal delivery after observed usage settles.
         orchestrateResult = { ...observedUsage, completionId: "",
-          errorCode: error instanceof StreamFailure ? error.code : "agent_failed" };
+          errorCode: error instanceof StreamFailure ? error.code : "agent_failed",
+          ...(error instanceof StreamFailure && error.failureCause === "model" ? { errorCause: "model" as const } : {}) };
       }
     } else {
       await streamOwner.fail(new StreamFailure("agent_failed"));
@@ -1652,75 +1704,21 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
     // Content delivery and cancellation must not erase already observed usage.
     orchestrateResult ??= { ...observedUsage, completionId: "" };
 
-    // Record usage before terminal metadata and stream end so follow-up requests
+    // Settle before terminal metadata and stream end so follow-up requests
     // see the completed turn's charge during their budget preflight.
-    // NEVER throw after bytes were served. Falls back to conservative rates on any failure.
-    if (paywallEnabled() && address && orchestrateResult) {
-      try {
-        const effectiveRates = rates ?? FALLBACK_RECORDING_RATES;
-        const credits = creditsFor(
-          effectiveRates,
-          orchestrateResult.promptTokens,
-          orchestrateResult.completionTokens,
-        );
-        recordUsage(address, TIERS[gatedTier], credits, anchor);
-        noteRequestRecord(res, { credits });
-        // §E.6 — shadow-push to ledger (async, never blocks serving)
-        if (config.flusher && credits > 0) {
-          const now = Date.now();
-          const tierCfg = TIERS[gatedTier];
-          const ws =
-            tierCfg.budgetWindow === "week"
-              ? startOfAnchoredWeek(anchor ?? now, now)
-              : startOfUtcDay(now);
-          config.flusher.enqueue({
-            account: address,
-            window_start: ws,
-            window_kind: tierCfg.budgetWindow === "week" ? "anchored_week" : "utc_day",
-            credits,
-            model: resolvedModel,
-            prompt_tokens: orchestrateResult.promptTokens,
-            completion_tokens: orchestrateResult.completionTokens,
-            occurred_at: now,
-            signed_token_count: null,
-          });
-        }
-      } catch {
-        console.error("[agent-chat] post-stream usage recording failed");
-        try {
-          const credits = creditsFor(
-            FALLBACK_RECORDING_RATES,
-            orchestrateResult.promptTokens,
-            orchestrateResult.completionTokens,
-          );
-          recordUsage(address, TIERS[gatedTier], credits, anchor);
-          noteRequestRecord(res, { credits });
-          if (config.flusher && credits > 0) {
-            const now = Date.now();
-            const tierCfg = TIERS[gatedTier];
-            const ws =
-              tierCfg.budgetWindow === "week"
-                ? startOfAnchoredWeek(anchor ?? now, now)
-                : startOfUtcDay(now);
-            config.flusher.enqueue({
-              account: address,
-              window_start: ws,
-              window_kind: tierCfg.budgetWindow === "week" ? "anchored_week" : "utc_day",
-              credits,
-              model: resolvedModel,
-              prompt_tokens: orchestrateResult.promptTokens,
-              completion_tokens: orchestrateResult.completionTokens,
-              occurred_at: now,
-              signed_token_count: null,
-            });
-          }
-        } catch {
-          console.error("[agent-chat] fallback usage recording failed");
-        }
-      }
+    // Never throws after bytes were served.
+    if (paywallEnabled() && address && allowance !== null) {
+      const failure = orchestrateResult.errorCode ?? meetingTerminalErrorCode;
+      const failureCause = orchestrateResult.errorCode ? orchestrateResult.errorCause : meetingTerminalErrorCause;
+      const cancelledByClient = streamOwner.signal.aborted && !(streamOwner.signal.reason instanceof StreamFailure);
+      const outcome: ReplyOutcome = failure === "budget_exhausted" ? "limit_stop"
+        : failure === "turn_timeout" ? "timed_out"
+          : cancelledByClient ? "cancelled" : failure ? "failed" : "success";
+      const settled = settleReply({ address, tier: TIERS[gatedTier], anchor, startedAt, allowance, model: resolvedModel, usage: orchestrateResult, rates, outcome, failureCause, deliveredOutput, executionId, flusher: config.flusher });
+      noteRequestRecord(res, { credits: settled.charged });
     }
     // Also await an already claimed timeout/cancellation terminal's drain.
-    await streamOwner.complete(orchestrateResult, meetingTerminalErrorCode, true);
+    await streamOwner.complete(orchestrateResult, meetingTerminalErrorCode, true, meetingTerminalErrorCause);
     } finally { releaseAccess?.(); }
   });
 }

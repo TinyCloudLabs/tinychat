@@ -56,6 +56,7 @@ import {
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { GranolaCsvImport } from "@/chat/GranolaCsvImport";
 import {
   AlertDialog,
   AlertDialogCancel,
@@ -89,6 +90,7 @@ import {
 import { syncFireflies } from "@/lib/connectors/firefliesSync";
 import { GranolaClient } from "@/lib/connectors/granolaClient";
 import { granolaConnectorEnabled } from "@/lib/connectors/granolaFeature";
+import { GRANOLA_CSV_STRINGS } from "@/lib/connectors/granolaCsvStrings";
 import { GRANOLA_PLAN_INACTIVE, GRANOLA_SYNC_FAILED } from "@/lib/connectors/granolaStatus";
 import { saveGranolaConnection, syncGranola } from "@/lib/connectors/granolaSync";
 import { GmeetClient } from "@/lib/connectors/gmeetClient";
@@ -235,6 +237,10 @@ interface ConnectorConnectDialogProps {
   onOpenChange: (open: boolean) => void;
   /** Granola starts connecting on a valid form submission, not on dialog open. */
   onGranolaConnectingChange?: (connecting: boolean) => void;
+  /** Granola: open on the API key step, as a reconnect does. */
+  startWithKey?: boolean;
+  /** Granola: meetings were imported from a CSV, so the parent can refresh. */
+  onImported?: () => void;
   /**
    * Fires after save+sync finishes (both ok and connected-with-error paths)
    * so the parent card can refetch the persisted connection row.
@@ -266,11 +272,14 @@ const GRANOLA_KEY_DETAILS = "Your API key is kept in TinyCloud's encrypted secre
 
 const GranolaConnectDialog: FC<ConnectorConnectDialogProps> = ({
   tcw, descriptor, backendUrl, sessionStore, open, onOpenChange, onConnected, onGranolaConnectingChange,
+  startWithKey, onImported,
 }) => {
   const [phase, setPhase] = useState<Exclude<ConnectPhase, "verified">>("key-entry");
   const [apiKey, setApiKey] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [progress, setProgress] = useState<SyncProgress | null>(null);
+  const [keyOpen, setKeyOpen] = useState(startWithKey === true);
+  const [csvBusy, setCsvBusy] = useState(false);
   const [summary, setSummary] = useState<SyncResult | null>(null);
   const inFlight = useRef<AbortController | null>(null);
   useEffect(() => () => {
@@ -347,20 +356,39 @@ const GranolaConnectDialog: FC<ConnectorConnectDialogProps> = ({
     }
   };
 
+  const keyStep = phase === "key-entry" || phase === "validating";
+  const showKeyForm = available && keyStep && keyOpen;
+  const closeBlocked = busy || csvBusy;
   return (
-    <Dialog open={open} onOpenChange={(next) => { if (!busy) onOpenChange(next); }}>
-      <DialogContent className="max-w-md" hideCloseButton={busy}>
+    <Dialog open={open} onOpenChange={(next) => { if (!closeBlocked) onOpenChange(next); }}>
+      <DialogContent className="max-h-[90dvh] max-w-md overflow-y-auto" hideCloseButton={closeBlocked}>
         <DialogHeader>
           <DialogTitle>Connect {descriptor.name}</DialogTitle>
-          <DialogDescription>{descriptor.description} {GRANOLA_KEY_DETAILS}</DialogDescription>
+          <DialogDescription>{GRANOLA_CSV_STRINGS.dialogDescription}</DialogDescription>
         </DialogHeader>
-        {!available ? (
+        {keyStep && (
+          <GranolaCsvImport
+            tcw={tcw} backendUrl={backendUrl} sessionStore={sessionStore}
+            disabled={busy} onBusyChange={setCsvBusy} onImported={onImported}
+          />
+        )}
+        {keyStep && !keyOpen && (
+          <section aria-labelledby="granola-auto-heading" className="flex flex-col gap-1 border-t border-border pt-3">
+            <strong id="granola-auto-heading" className="text-sm">{GRANOLA_CSV_STRINGS.autoHeading}</strong>
+            <p className="text-xs text-muted-foreground">{GRANOLA_CSV_STRINGS.autoPlan}</p>
+            <Button type="button" variant="outline" size="sm" className="mt-1 self-start" disabled={csvBusy} onClick={() => setKeyOpen(true)}>
+              {GRANOLA_CSV_STRINGS.connectWithKey}
+            </Button>
+          </section>
+        )}
+        {!available && keyOpen ? (
           <p className="text-xs text-muted-foreground">{SECRETS_UNAVAILABLE_IN_APP_MESSAGE}</p>
-        ) : phase === "key-entry" || phase === "validating" ? (
+        ) : showKeyForm ? (
           <form id="granola-key-form" className="flex flex-col gap-2" onSubmit={(event) => {
             event.preventDefault();
             void submit();
           }}>
+            <p className="text-xs text-muted-foreground">{GRANOLA_KEY_DETAILS}</p>
             <label htmlFor="granola-api-key" className="text-sm font-medium">Granola API key</label>
             <input
               id="granola-api-key" type="password" autoComplete="off" spellCheck={false}
@@ -384,22 +412,24 @@ const GranolaConnectDialog: FC<ConnectorConnectDialogProps> = ({
         ) : phase === "saving" ? <SavingPanel />
           : phase === "syncing" ? <SyncingPanel progress={progress} />
           : phase === "done" && summary ? <DonePanel summary={summary} />
-          : error ? <SyncFailedPanel error={{ kind: "network", message: error }} /> : null}
-        <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-          {!available || phase === "done" || phase === "error" ? (
-            <Button size="sm" onClick={() => onOpenChange(false)}>Done</Button>
-          ) : phase === "syncing" ? (
-            <Button variant="outline" size="sm" onClick={() => inFlight.current?.abort()}>Stop sync</Button>
-          ) : phase !== "saving" ? (
-            <>
-              <Button variant="outline" size="sm" disabled={busy} onClick={() => onOpenChange(false)}>Cancel</Button>
-              <Button type="submit" form="granola-key-form" size="sm" disabled={busy || !apiKey.trim()} className="gap-1.5">
-                {busy && <Loader2Icon className="size-4 animate-spin" aria-hidden />}
-                Continue
-              </Button>
-            </>
-          ) : null}
-        </div>
+          : phase === "error" && error ? <SyncFailedPanel error={{ kind: "network", message: error }} /> : null}
+        {(keyOpen || !keyStep) && (
+          <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+            {!available || phase === "done" || phase === "error" ? (
+              <Button size="sm" onClick={() => onOpenChange(false)}>Done</Button>
+            ) : phase === "syncing" ? (
+              <Button variant="outline" size="sm" onClick={() => inFlight.current?.abort()}>Stop sync</Button>
+            ) : phase !== "saving" ? (
+              <>
+                <Button variant="outline" size="sm" disabled={busy} onClick={() => onOpenChange(false)}>Cancel</Button>
+                <Button type="submit" form="granola-key-form" size="sm" disabled={busy || !apiKey.trim()} className="gap-1.5">
+                  {busy && <Loader2Icon className="size-4 animate-spin" aria-hidden />}
+                  Continue
+                </Button>
+              </>
+            ) : null}
+          </div>
+        )}
       </DialogContent>
     </Dialog>
   );

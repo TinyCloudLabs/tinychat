@@ -60,18 +60,6 @@ describe("Connectors page composition", () => {
     expect(usage).toContain("sessionStore={sessionStore}");
   });
 
-  test("Connectors navigation lives in the app shell", () => {
-    const threadList = read("ThreadList.tsx");
-    const shell = read("../shell/AppShell.tsx");
-
-    // The chat list carries chats only; the destinations are the shell's.
-    expect(threadList).not.toContain("{navigation}");
-    expect(threadList).not.toContain("connectorsAriaLabel");
-    // Chat stays mounted: the shell hides its slot when another surface shows.
-    expect(shell).toContain('<div data-surface="chat" className={surface("chat")}>');
-    expect(shell).toContain('const surface = (name: Shown) => (shown === name ? "h-full" : "hidden");');
-  });
-
   test("the card builds BOTH typed clients from those props — no new globals", () => {
     // Two companion clients now — the webhooks write/config surface and the
     // cohort-gated meetings read surface (F011's consent probe) — and both

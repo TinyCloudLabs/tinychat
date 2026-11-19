@@ -16,6 +16,366 @@
 - TC-2204: Native audience checks accept Home's three exact SQL hook subscriptions only alongside an existing TinyChat data grant.
 - TC-2499: The Home mirror adapter persists close receipts using node-compatible NULL/non-NULL compare-and-set predicates. If the KV mirror is already exactly closed but its receipt is missing, recovery records the original publication ETag without writing the KV copy again, before any gated child handoff. The CLI reports JSON error class, safe message, code, HTTP status when available, and operation step; private SQL bodies and nested causes remain redacted. Exit 2 identifies invalid input, exit 6 known transient failures (including NODE_BUSY and REQUEST_TIMEOUT without HTTP metadata), and exit 1 other runtime failures or OUTCOME_UNKNOWN. Unclassified errors are not labelled bad input; no failure confirms delivery or authorizes an automatic retry.
 
+## 0.15.0
+
+### Minor Changes
+
+- 74889d5: A Feed card has an address: `tinycloud.one/chat/feed/<card id>`, and the shorter `tinycloud.one/feed/<card id>`. Opening it (signed out, you sign in first and land on the same card) shows the Feed with that card open and outlined for a moment, under History or Snoozed if that is where it lives. If the card isn't in your feed (it was removed or expired, or it's in someone else's feed), the Feed opens as usual with a short note you can dismiss. Details: TC-3279.
+- a9e1b3d: Feed: cards can show what kind of task they are, and messages from another team over Courier are marked. An agent can label a card Spend, Publish, Send, Access, Rule, Ship, Do, Review, Direction, Answer, News or Alert. The label shows at the top right of the card in the list and Cards views, and beside the title of an open card. Spend, Publish, Send and Access, where your tap sends something out, are outlined with an arrow; Alert uses the warning colour; the rest are grey. A message relayed over Courier starts with the Courier mark and its sender, and the open card adds "via" the agent that passed it on. The mark appears only on cards that come from your Courier connection. Filter offers "Task" when any card has a label. A label the app doesn't recognise doesn't change the card and is listed in Details as not shown.
+- 74889d5: Feed: answering a card takes it out of the list at once, with one pill at the top of the list that names what you answered, with Undo and a five-second countdown. A second answer sends the first at once, and the pill then says where it went ("Sent to" and the agent's name). Acknowledge, Drop this card and Ask me later (Show me later on an update) use the same pill and never say "Sent to". Counts drop when you answer and come back if you Undo. An answered card waits in Pending at the end of the list ("You chose …", with the post and "Waiting on" the agent's name); Pending is always open and a tap on a row opens the card again, where Change answer lives. A card that asks now has "See N options" under its row, which opens the same card as tapping the post and turns into "Hide options" while it is open.
+- 74889d5: Feed: a collapsed card now shows just its post, up to four lines (or its title if the agent wrote no post), in a flat list that runs edge to edge. The agent's name, the time and the title no longer appear on the collapsed row. Nothing opens by itself: Needs you starts with every card collapsed. An open card shows the post first, then the title, then the rest. Updates in All are listed newest first. The Cards and Expanded views show the post too.
+- 74889d5: An open Feed card is easier to scan. "Known so far" and an approval's steps are collapsed sections you can open, the expiry shows in UTC, and tapping the suggested option accepts it, so there's no separate Accept recommendation button.
+
+  Details: TC-3300
+
+- 74889d5: The Feed is one list: Needs you, Updates, Pending and History, one under the other, each with a heading that stays in view while you scroll its section. The island at the top shows Needs you, Updates and History with their counts. Tap one to jump to it, and the highlight follows as you scroll. An empty section is dimmed on the island and can't be tapped. When nothing needs you, Needs you still comes first and says so. The old Needs you, All and History views are gone.
+
+  Details: TC-3300
+
+- 8ec6a58: Web sign-in goes through OpenKey's own sign-in window. When that window offers automatic renewal and the owner leaves it on, the session renews for up to 90 days without another sign-in. Otherwise a sign-in lasts its usual 30 days.
+
+  Details: TC-2872
+
+- 74889d5: You can share a meeting or voice note recording with a link. People who open it sign in, find it under Shared with me in their Library, and can read the transcript and play the audio until 30 days after you create the link, or until you stop sharing. You choose how long the link can be opened: 1, 7 or 30 days. On iOS and Android, tinycloud.one/s/ links open in the app.
+
+  Details: TC-3195
+
+- 3bf909b: tinycloud.one serves the TinyCloud agent guides and discovery metadata, including `/llms.txt` and `/agents/abilities/`.
+
+### Patch Changes
+
+- 27e5641: Internal changes for tests; nothing in the app changes.
+
+  Details: TC-3337
+
+- 3b7d871: TinyCloud One's agent guides are built from the earlier published set of TinyCloud guides.
+
+  Details: TC-3278
+
+- 1b34214: The agent guides are built from the latest published set of TinyCloud guides.
+
+  Details: TC-3278
+
+- 3f59ffe: The agent guides are built from the latest published set of TinyCloud guides.
+
+  Details: TC-3278
+
+- a720d94: Settings has a card.md: one note for your whole Feed on how agents make cards for you and what you prefer. It starts from a default that explains how to write a card, with an example of each kind. You can edit it, clear it or reset it to the default. Agents read it before they post and see each saved version, including agents connected before this change.
+
+  Details: TC-3345
+
+- 74889d5: Links in the Feed open in a sheet inside the app. On the web the page rises from the bottom over the Feed, with Open in browser and Close at the top; a site that doesn't allow being shown inside another page says so, with the same Open in browser button. In the iPhone and Android apps the page opens in the phone's in-app browser over the app. Cmd-click, Ctrl-click and middle click still open a new tab, and email links work as before.
+
+  Details: TC-3404
+
+- 74889d5: On a computer with a mouse, a Feed card opens over the dimmed Feed instead of inside the list. The X, Escape or a tap outside closes it.
+
+  Details: TC-3300
+
+- 74889d5: On a phone, the Feed opens one row at a time. Opening a row folds the one that was open, dims the others and brings the open row up under its section heading. "Show less" at the foot of an open card folds it and brings its row back into view. With reduced motion nothing animates, and the open row still comes into view. An answer that's still counting down is still sent when you open another row.
+
+  Details: TC-3300
+
+- 74889d5: Updates has an Acknowledge all button, and you have 5 seconds to undo it.
+
+  Details: TC-3300
+
+- 74889d5: Opening or folding a card in the Feed keeps the keyboard with it: focus moves to the open card's Show less and back to its row, and Escape folds an open card.
+
+  Details: TC-3300
+
+- 74889d5: Feed section buttons are easier to tap on phones.
+
+  Details: TC-3300
+
+- 4893c98: The Feed welcome card's agent prompt asks the agent to follow the Feed guide.
+
+  Details: TC-3392
+
+- 74889d5: The Fireflies row now says that connecting imports your meetings from Fireflies. Details: TC-2778
+- 51274a8: Fireflies consent text says our server keeps meeting copies for up to 14 days.
+
+  Details: TC-2778
+
+- 74889d5: If you disconnect Fireflies and connect it again, Sync now imports your older meetings again.
+
+  Details: TC-2778
+
+- 74889d5: Internal changes for Fireflies sync; nothing in the app changes. Details: TC-2778
+- 74889d5: Internal changes for Granola meeting sync; nothing in the app changes. Details: TC-3292
+- 59e0b09: Import meetings from a Granola CSV export. Meetings you've deleted aren't imported again unless you allow them back.
+
+  Details: TC-3292
+
+- 74889d5: Connectors no longer lists Granola, which couldn't be connected.
+
+  Details: TC-3292
+
+- 7973a69: The secret guard reads a one-tap approval link the way a browser opens it.
+
+  Details: TC-3242
+
+- 74889d5: Feed: when a collapsed card has no summary, its second line shows the card's title instead of the start of its body or its "why now" line.
+- 4712b3f: Returning visitors on the Home address see the page during an update.
+
+  Details: TC-3450
+
+- 22e42aa: Some images in chat replies and notes now ask before they load, and say which site they come from. In a chat reply, images appear once the reply has finished.
+
+  Details: TC-3144
+
+- 1676a13: Leaving an app inside TinyCloud One, or signing out with one open, doesn't ask you to sign anything. One tells the app to stop using its access right away, and that access ends within an hour.
+
+  Details: TC-3483
+
+- e26e84c: Stopping a recording from outside the app closes the recorder and shows the saved note, like its own Done. This covers the Live Activity's Stop on the Lock Screen or Dynamic Island, "Stop recording" from Siri or Shortcuts and the Android notification's Stop or Discard. When the app comes back to the foreground, it checks with the phone whether the recording on screen is still running.
+
+  Details: TC-3118
+
+- 5e64d15: Notetaker: when Google Meet doesn't let the notetaker into a meeting, the recording says so and points to the host's Meeting access setting.
+
+  Details: TC-2443
+
+- 74889d5: Internal changes for build checks; nothing in the app changes.
+
+  Details: TC-2778
+
+- 620ad17: One Apps is on in TinyCloud One on the web. The iOS, Android and desktop apps are unchanged.
+
+  Details: TC-3337
+
+- 9b37cea: When a One App asks for more access and OpenKey doesn't add it, One says why, using lines it already shows: "Couldn't ask for permission. Nothing changed. Try again." when another try can help, the different-account line when another OpenKey account was picked, and otherwise "{App} can't do this without that access."
+
+  Sending to Main after the session has ended says "Your session expired. Sign in again to talk to Main."
+
+  The Conversation Canvas permission error shows only its own sentence.
+
+  Details: TC-3445
+
+- 93b8799: The TinyCloud One web build completes again, with the agent guide pages included.
+
+  Details: TC-3471
+
+- 27e5641: One Apps behind VITE_ONE_APPS (off in production): the Apps page becomes the "TinyCloud apps" launcher with Pin and Unpin, and the navigation holds Feed, Chat and Apps plus the apps each account pins (Recording, Connectors and the TinyCloud apps). The phone tab bar shows at most five items; the rail and sidebar show every pin.
+
+  Details: TC-3337
+
+- 27e5641: One Apps behind VITE_ONE_APPS (off in production): TinyCloud's own apps open inside One with the access they need from One's session, asking first when an app wants more. Also fixes `vite dev` pages crashing on start; production builds are unchanged.
+
+  Details: TC-3337
+
+- 74889d5: Internal changes for sign-in; nothing in the app changes.
+
+  Details: TC-3030
+
+- a26bd95: Missing build files return a real 404, so a Home page left open across a deploy doesn't get the app's page back for a missing script. A failed lazy load (the TinyCloud panel's "This didn't load.", a screen that couldn't open) offers "New version available — Reload" when a newer build is live.
+- 9ad1572: "Delete OpenKey account" first deletes your meeting recordings, voice notes and uploads, then opens OpenKey. If a deletion is still running or can't be confirmed, a notice says what's left, and you can try again or continue to OpenKey. The notetaker service's sign-in is still removed before OpenKey opens.
+
+  Details: TC-3136
+
+- 74889d5: When TinyCloud is already running as many bots as it can, a message to a bot now says so and that it wasn't sent, with a Try again button, instead of the general "couldn't start" line.
+
+  Details: TC-3325
+
+- 74889d5: Internal changes for bots; nothing in the app changes.
+
+  Details: TC-3325
+
+- 74889d5: In the bot view, a small line between the messages says what the bot did on its computer, such as "Ran 3 commands" or "Changed 1 file", and it is still there after a reload. The bot's name at the top opens a panel with the bot's avatar, its activity with times (newest first), and where it runs, such as "Private · asleep". The panel is a column beside the chat on wide screens and a sheet on smaller ones. From the panel you can change a bot's name, shape and colour, or delete the bot after a confirmation (Main can't be deleted).
+
+  Details: TC-3325
+
+- 74889d5: Settings has a Chat view card where you can choose Classic or Bots. Classic stays the default. With Bots, your bots are listed under Chat in the sidebar, on the rail and above the chat on a phone, and Chat opens the bot you had open last. New bot is turned off, with the reason, once you have as many bots as your account allows.
+
+  Details: TC-3325
+
+- 74889d5: The Chat tab can show a bot's own chat in place of the classic chat, behind a "Chat view" choice kept per account on each device. Classic stays the default, so nothing changes unless an account picks Bots and is let into bots. The bot view has the same composer as Main's chat, keeps a reply going when you switch bots, saves history into your space the same way, and offers Try again when a reply fails.
+
+  Details: TC-3325
+
+- ad02ee7: Disconnect agent in Settings > Agent access ends the access of an agent connected through the TinyCloud connector, and shows Disconnected once the agent can no longer use it. An agent whose access you removed somewhere else shows as not connected. Settings > Agent access also explains what the access is for.
+
+  Details: TC-2196
+
+- 79b2d17: The note above the prompt you paste into an agent and the prompt itself say your TinyCloud One Feed, and the note shown where stored credentials are not available in the app reads "This uses stored credentials, which you set up in TinyCloud One on the web or desktop. Everything you connect there works here."
+
+## 0.15.0-beta.16
+
+### Patch Changes
+
+- 1676a13: Leaving an app inside TinyCloud One, or signing out with one open, doesn't ask you to sign anything. One tells the app to stop using its access right away, and that access ends within an hour.
+
+  Details: TC-3483
+
+- ad02ee7: Disconnect agent in Settings > Agent access ends the access of an agent connected through the TinyCloud connector, and shows Disconnected once the agent can no longer use it. An agent whose access you removed somewhere else shows as not connected. Settings > Agent access also explains what the access is for.
+
+  Details: TC-2196
+
+## 0.15.0-beta.15
+
+### Patch Changes
+
+- a720d94: Settings has a card.md: one note for your whole Feed on how agents make cards for you and what you prefer. It starts from a default that explains how to write a card, with an example of each kind. You can edit it, clear it or reset it to the default. Agents read it before they post and see each saved version, including agents connected before this change.
+
+  Details: TC-3345
+
+## 0.15.0-beta.14
+
+### Patch Changes
+
+- 93b8799: The TinyCloud One web build completes again, with the agent guide pages included.
+
+  Details: TC-3471
+
+- 9ad1572: "Delete OpenKey account" first deletes your meeting recordings, voice notes and uploads, then opens OpenKey. If a deletion is still running or can't be confirmed, a notice says what's left, and you can try again or continue to OpenKey. The notetaker service's sign-in is still removed before OpenKey opens.
+
+  Details: TC-3136
+
+## 0.15.0-beta.13
+
+### Patch Changes
+
+- 59e0b09: Import meetings from a Granola CSV export. Meetings you've deleted aren't imported again unless you allow them back.
+
+  Details: TC-3292
+
+## 0.15.0-beta.12
+
+### Patch Changes
+
+- 3f59ffe: The agent guides are built from the latest published set of TinyCloud guides.
+
+  Details: TC-3278
+
+## 0.15.0-beta.11
+
+### Patch Changes
+
+- 79b2d17: The note above the prompt you paste into an agent and the prompt itself say your TinyCloud One Feed, and the note shown where stored credentials are not available in the app reads "This uses stored credentials, which you set up in TinyCloud One on the web or desktop. Everything you connect there works here."
+
+## 0.15.0-beta.10
+
+### Patch Changes
+
+- e26e84c: Stopping a recording from outside the app closes the recorder and shows the saved note, like its own Done. This covers the Live Activity's Stop on the Lock Screen or Dynamic Island, "Stop recording" from Siri or Shortcuts and the Android notification's Stop or Discard. When the app comes back to the foreground, it checks with the phone whether the recording on screen is still running.
+
+  Details: TC-3118
+
+- 5e64d15: Notetaker: when Google Meet doesn't let the notetaker into a meeting, the recording says so and points to the host's Meeting access setting.
+
+  Details: TC-2443
+
+## 0.15.0-beta.9
+
+### Patch Changes
+
+- 51274a8: Fireflies consent text says our server keeps meeting copies for up to 14 days.
+
+  Details: TC-2778
+
+- 7973a69: The secret guard reads a one-tap approval link the way a browser opens it.
+
+  Details: TC-3242
+
+- a26bd95: Missing build files return a real 404, so a Home page left open across a deploy doesn't get the app's page back for a missing script. A failed lazy load (the TinyCloud panel's "This didn't load.", a screen that couldn't open) offers "New version available — Reload" when a newer build is live.
+
+## 0.15.0-beta.8
+
+### Minor Changes
+
+- 74889d5: A Feed card has an address: `tinycloud.one/chat/feed/<card id>`, and the shorter `tinycloud.one/feed/<card id>`. Opening it (signed out, you sign in first and land on the same card) shows the Feed with that card open and outlined for a moment, under History or Snoozed if that is where it lives. If the card isn't in your feed (it was removed or expired, or it's in someone else's feed), the Feed opens as usual with a short note you can dismiss. Details: TC-3279.
+- 74889d5: Feed: answering a card takes it out of the list at once, with one pill at the top of the list that names what you answered, with Undo and a five-second countdown. A second answer sends the first at once, and the pill then says where it went ("Sent to" and the agent's name). Acknowledge, Drop this card and Ask me later (Show me later on an update) use the same pill and never say "Sent to". Counts drop when you answer and come back if you Undo. An answered card waits in Pending at the end of the list ("You chose …", with the post and "Waiting on" the agent's name); Pending is always open and a tap on a row opens the card again, where Change answer lives. A card that asks now has "See N options" under its row, which opens the same card as tapping the post and turns into "Hide options" while it is open.
+- 74889d5: Feed: a collapsed card now shows just its post, up to four lines (or its title if the agent wrote no post), in a flat list that runs edge to edge. The agent's name, the time and the title no longer appear on the collapsed row. Nothing opens by itself: Needs you starts with every card collapsed. An open card shows the post first, then the title, then the rest. Updates in All are listed newest first. The Cards and Expanded views show the post too.
+- 74889d5: An open Feed card is easier to scan. "Known so far" and an approval's steps are collapsed sections you can open, the expiry shows in UTC, and tapping the suggested option accepts it, so there's no separate Accept recommendation button.
+
+  Details: TC-3300
+
+- 74889d5: The Feed is one list: Needs you, Updates, Pending and History, one under the other, each with a heading that stays in view while you scroll its section. The island at the top shows Needs you, Updates and History with their counts. Tap one to jump to it, and the highlight follows as you scroll. An empty section is dimmed on the island and can't be tapped. When nothing needs you, Needs you still comes first and says so. The old Needs you, All and History views are gone.
+
+  Details: TC-3300
+
+- 74889d5: You can share a meeting or voice note recording with a link. People who open it sign in, find it under Shared with me in their Library, and can read the transcript and play the audio until 30 days after you create the link, or until you stop sharing. You choose how long the link can be opened: 1, 7 or 30 days. On iOS and Android, tinycloud.one/s/ links open in the app.
+
+  Details: TC-3195
+
+### Patch Changes
+
+- 74889d5: Links in the Feed open in a sheet inside the app. On the web the page rises from the bottom over the Feed, with Open in browser and Close at the top; a site that doesn't allow being shown inside another page says so, with the same Open in browser button. In the iPhone and Android apps the page opens in the phone's in-app browser over the app. Cmd-click, Ctrl-click and middle click still open a new tab, and email links work as before.
+
+  Details: TC-3404
+
+- 74889d5: On a computer with a mouse, a Feed card opens over the dimmed Feed instead of inside the list. The X, Escape or a tap outside closes it.
+
+  Details: TC-3300
+
+- 74889d5: On a phone, the Feed opens one row at a time. Opening a row folds the one that was open, dims the others and brings the open row up under its section heading. "Show less" at the foot of an open card folds it and brings its row back into view. With reduced motion nothing animates, and the open row still comes into view. An answer that's still counting down is still sent when you open another row.
+
+  Details: TC-3300
+
+- 74889d5: Updates has an Acknowledge all button, and you have 5 seconds to undo it.
+
+  Details: TC-3300
+
+- 74889d5: Opening or folding a card in the Feed keeps the keyboard with it: focus moves to the open card's Show less and back to its row, and Escape folds an open card.
+
+  Details: TC-3300
+
+- 74889d5: Feed section buttons are easier to tap on phones.
+
+  Details: TC-3300
+
+- 74889d5: The Fireflies row now says that connecting imports your meetings from Fireflies. Details: TC-2778
+- 74889d5: If you disconnect Fireflies and connect it again, Sync now imports your older meetings again.
+
+  Details: TC-2778
+
+- 74889d5: Internal changes for Fireflies sync; nothing in the app changes. Details: TC-2778
+- 74889d5: Internal changes for Granola meeting sync; nothing in the app changes. Details: TC-3292
+- 74889d5: Connectors no longer lists Granola, which couldn't be connected.
+
+  Details: TC-3292
+
+- 74889d5: Feed: when a collapsed card has no summary, its second line shows the card's title instead of the start of its body or its "why now" line.
+- 4712b3f: Returning visitors on the Home address see the page during an update.
+
+  Details: TC-3450
+
+- 74889d5: Internal changes for build checks; nothing in the app changes.
+
+  Details: TC-2778
+
+- 9b37cea: When a One App asks for more access and OpenKey doesn't add it, One says why, using lines it already shows: "Couldn't ask for permission. Nothing changed. Try again." when another try can help, the different-account line when another OpenKey account was picked, and otherwise "{App} can't do this without that access."
+
+  Sending to Main after the session has ended says "Your session expired. Sign in again to talk to Main."
+
+  The Conversation Canvas permission error shows only its own sentence.
+
+  Details: TC-3445
+
+- 74889d5: Internal changes for sign-in; nothing in the app changes.
+
+  Details: TC-3030
+
+- 74889d5: When TinyCloud is already running as many bots as it can, a message to a bot now says so and that it wasn't sent, with a Try again button, instead of the general "couldn't start" line.
+
+  Details: TC-3325
+
+- 74889d5: Internal changes for bots; nothing in the app changes.
+
+  Details: TC-3325
+
+- 74889d5: In the bot view, a small line between the messages says what the bot did on its computer, such as "Ran 3 commands" or "Changed 1 file", and it is still there after a reload. The bot's name at the top opens a panel with the bot's avatar, its activity with times (newest first), and where it runs, such as "Private · asleep". The panel is a column beside the chat on wide screens and a sheet on smaller ones. From the panel you can change a bot's name, shape and colour, or delete the bot after a confirmation (Main can't be deleted).
+
+  Details: TC-3325
+
+- 74889d5: Settings has a Chat view card where you can choose Classic or Bots. Classic stays the default. With Bots, your bots are listed under Chat in the sidebar, on the rail and above the chat on a phone, and Chat opens the bot you had open last. New bot is turned off, with the reason, once you have as many bots as your account allows.
+
+  Details: TC-3325
+
+- 74889d5: The Chat tab can show a bot's own chat in place of the classic chat, behind a "Chat view" choice kept per account on each device. Classic stays the default, so nothing changes unless an account picks Bots and is let into bots. The bot view has the same composer as Main's chat, keeps a reply going when you switch bots, saves history into your space the same way, and offers Try again when a reply fails.
+
+  Details: TC-3325
+
 ## 0.15.0-beta.7
 
 ### Minor Changes

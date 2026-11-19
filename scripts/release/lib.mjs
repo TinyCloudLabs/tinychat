@@ -129,12 +129,26 @@ export function classifyPagesCheckRuns(checkRuns) {
  * Whether `https://<host>/version.json` names `commit`: the build every web host must serve after a deploy
  * (frontend/vite.config.ts writes it). Never throws: a host that is down, answers HTML (a different Pages project) or
  * names another commit is reported as not serving it, with what it served.
+ *
+ * With `options.productionHost` the redirect is NOT followed: a host that answers a 301, 302, 307 or 308 whose
+ * Location is `https://<productionHost>/…` is also accepted, as `{ ok: true, redirectedTo: <productionHost> }`. That
+ * host hands visitors to the production site (tinycloud.chat does, except for held visitors), and the production
+ * site is verified separately. Following the redirect would report the production site's commit as this host's.
+ * Any other redirect is not ok and says where it went.
  */
-export async function hostServesCommit(host, commit, fetchImpl = globalThis.fetch) {
+export async function hostServesCommit(host, commit, fetchImpl = globalThis.fetch, options = {}) {
   try {
     const url = new URL(`https://${host}/version.json`);
     url.searchParams.set('deploy', commit);
-    const response = await fetchImpl(url, { headers: { 'cache-control': 'no-cache' } });
+    const { productionHost } = options;
+    const response = await fetchImpl(url, { headers: { 'cache-control': 'no-cache' }, ...(productionHost ? { redirect: 'manual' } : {}) });
+    if (productionHost && [301, 302, 307, 308].includes(response.status)) {
+      const location = response.headers.get('location');
+      let target;
+      try { target = location ? new URL(location, url) : undefined; } catch { target = undefined; }
+      if (target?.protocol === 'https:' && target.host === productionHost) return { ok: true, served: `a ${response.status} redirect to ${productionHost}`, redirectedTo: productionHost };
+      return { ok: false, served: `a ${response.status} redirect to ${target ? target.host : 'no valid Location'}, not ${productionHost}` };
+    }
     if (!response.ok) return { ok: false, served: `HTTP ${response.status}` };
     const type = response.headers.get('content-type') ?? '';
     if (!/json/i.test(type)) return { ok: false, served: `a ${type.split(';')[0] || 'non-JSON'} response, not version.json` };
@@ -156,6 +170,7 @@ export function explainUnservedHost(host, served, commit) {
   if (/^HTTP 404\b|response, not version\.json$/.test(served)) {
     return `${host} answers but has no version.json from this build (${served}): the domain is not bound to the Cloudflare Pages project that built ${commit}, or it is bound to a different project`;
   }
+  if (/^a \d+ redirect to /.test(served)) return `${host} answered ${served}: it sends visitors somewhere other than the production site`;
   if (/^HTTP \d+$/.test(served)) return `${host} answered ${served} for version.json: it is up but not serving this build (a Pages or edge error)`;
   if (served === 'no commit') return `${host} serves a version.json without a commit: it is an older build or another project`;
   return `${host} serves ${served}, not ${commit}: an older build, so the domain is on another Cloudflare Pages project or its deploy has not propagated`;

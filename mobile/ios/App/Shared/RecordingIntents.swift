@@ -37,8 +37,8 @@ struct RecordControlIntent: AudioRecordingIntent, LiveActivityIntent {
     }
 }
 
-/// "Stop recording in TinyCloud One", and the Live Activity's Stop button. The note is saved natively; the web
-/// app picks it up like any other stopped recording.
+/// "Stop recording in TinyCloud One", and the Live Activity's Stop button. The note is saved natively; a web app
+/// showing the recording sees it idle, and lands the note like its own Stop (frontend voiceNoteRecorderController).
 struct StopRecordingIntent: AudioRecordingIntent, LiveActivityIntent {
     static let title: LocalizedStringResource = "Stop Recording"
     static let description = IntentDescription("Stops and saves the voice note TinyCloud One is recording.")

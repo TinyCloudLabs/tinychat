@@ -30,6 +30,9 @@ beforeEach(() => {
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const key = `${init?.method ?? "GET"} ${String(input)}`;
     calls.push(key);
+    if (key === "DELETE https://api.example/api/transcriber/meetings") {
+      return Response.json({ removed: 0, deleting: 0, listOnly: 0, notDeleted: 0, privateCloudDeleted: null });
+    }
     const next = responses[key]?.[0];
     if (!next) throw new Error(`no answer for ${key} Bearer ${SENTINEL}`);
     return new Response(JSON.stringify(next.body ?? {}), { status: next.status, headers: next.headers });
@@ -68,7 +71,7 @@ test("a stored sign-in is torn down once, then OpenKey opens", async () => {
   responses = { [`GET ${CREDS}`]: [connected], [`DELETE ${CREDS}`]: [{ status: 200, body: { deleted: true, upstreamRevoked: true } }] };
   const page = await mount();
   await page.click("Delete OpenKey account");
-  expect(calls).toEqual([`GET ${CREDS}`, `DELETE ${CREDS}`]);
+  expect(calls).toEqual(["DELETE https://api.example/api/transcriber/meetings", `GET ${CREDS}`, `DELETE ${CREDS}`]);
   expect(page.opened()).toBe(1);
   expect(page.host.querySelector("[role=alert]")).toBeNull();
   await page.unmount();
@@ -81,7 +84,7 @@ test("not connected: the full DELETE is sent once, no message, OpenKey opens", a
   };
   const page = await mount();
   await page.click("Delete OpenKey account");
-  expect(calls).toEqual([`GET ${CREDS}`, `DELETE ${CREDS}`]);
+  expect(calls).toEqual(["DELETE https://api.example/api/transcriber/meetings", `GET ${CREDS}`, `DELETE ${CREDS}`]);
   expect(page.opened()).toBe(1);
   expect(page.host.querySelector("[role=alert]")).toBeNull();
   await page.unmount();
@@ -91,7 +94,7 @@ test("the route dark: no DELETE, no message, OpenKey opens", async () => {
   responses = { [`GET ${CREDS}`]: [{ status: 404, headers: { "X-Route-Unavailable": "connector-credentials" } }] };
   const page = await mount();
   await page.click("Delete OpenKey account");
-  expect(calls).toEqual([`GET ${CREDS}`]);
+  expect(calls).toEqual(["DELETE https://api.example/api/transcriber/meetings", `GET ${CREDS}`]);
   expect(page.opened()).toBe(1);
   expect(page.host.querySelector("[role=alert]")).toBeNull();
   await page.unmount();
@@ -109,7 +112,7 @@ test("502 upstream_revoke_failed: the notice shows and OpenKey opens only on con
   expect([...page.host.querySelectorAll("button")].some((b) => b.textContent === "Try again")).toBe(false);
   await page.click("Continue to OpenKey");
   expect(page.opened()).toBe(1);
-  expect(calls.filter((c) => c.startsWith("DELETE"))).toHaveLength(1);
+  expect(calls.filter((c) => c === `DELETE ${CREDS}`)).toHaveLength(1);
   await page.unmount();
 });
 
@@ -124,7 +127,7 @@ test("503: the failure shows, the owner can try again or continue anyway", async
   expect(alert).toBe("The server is temporarily unavailable (503). We couldn't confirm your Fireflies sign-in was removed from our server. Try again, or continue to OpenKey and revoke it yourself in your Fireflies account.");
   expect(page.opened()).toBe(0);
   await page.click("Try again");
-  expect(calls.filter((c) => c.startsWith("DELETE"))).toHaveLength(2);
+  expect(calls.filter((c) => c === `DELETE ${CREDS}`)).toHaveLength(2);
   await page.click("Continue to OpenKey");
   expect(page.opened()).toBe(1);
   await page.unmount();
@@ -168,7 +171,7 @@ test("a 404 the backend did not mark is a failure: the text shows, Try again and
   expect(alert).toContain("We couldn't confirm your Fireflies sign-in was removed from our server.");
   expect(page.opened()).toBe(0);
   expect([...page.host.querySelectorAll("button")].map((b) => b.textContent)).toEqual(expect.arrayContaining(["Try again", "Continue to OpenKey"]));
-  expect(calls.filter((c) => c.startsWith("DELETE"))).toHaveLength(0);
+  expect(calls.filter((c) => c === `DELETE ${CREDS}`)).toHaveLength(0);
   await page.click("Continue to OpenKey");
   expect(page.opened()).toBe(1);
   await page.unmount();

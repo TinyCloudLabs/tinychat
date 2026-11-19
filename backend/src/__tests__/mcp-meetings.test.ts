@@ -18,7 +18,9 @@ const db = new Database(":memory:");
 for (const { sql } of CONNECTOR_SCHEMA) db.run(sql);
 db.run("CREATE TABLE voice_note_transcript (source_id TEXT PRIMARY KEY, rev INTEGER, hash TEXT, body_key TEXT, outcome TEXT, preview TEXT)");
 const kv = new Map<string, string>();
-let grantMode: "ok" | "none" | "expired" | "rejected" = "ok";
+let grantMode: "ok" | "none" | "expired" | "rejected" | "revoked" = "ok";
+// Only the speaker-names query: "invalid" answers as a rejected query, "rejected" as a revoked grant.
+let speakerNamesMode: "ok" | "invalid" | "rejected" = "ok";
 let sqlCalls: string[] = [];
 let server: ReturnType<typeof Bun.serve>;
 let url = "";
@@ -44,6 +46,24 @@ beforeAll(() => {
   const hash = "0123456789abcdef0123456789abcdef";
   db.run("INSERT INTO voice_note_transcript VALUES (?,?,?,?,?,?)", ["vn-ok", 1, hash, `${KV_PREFIX}/exo-voice-note/transcript-rev/vn-ok/${hash}`, "transcribed", "p"]);
   kv.set(`${KV_PREFIX}/exo-voice-note/transcript-rev/vn-ok/${hash}`, transcript([["Speaker 1", "Remember to buy milk."]]));
+  // TC-2189: renames live on the row as metadata.speaker_names; the stored sentences keep their original labels.
+  insertMeeting({ id: "m-renamed", source: "fireflies", sourceId: "ff-renamed", title: "Renamed speakers", startedAt: "2026-10-17T15:00:00Z",
+    metadata: { speaker_names: { Me: "Hunter", Them: "Sam Gbafa", Ghost: 42, Blank: "  ", Messy: "  Ola\n  Zingo  ", Long: "x".repeat(200) } } });
+  kv.set(`${KV_PREFIX}/fireflies/transcript/ff-renamed`, transcript([["Me", "I will send the plan."], ["Them", "Great, send it on Monday."], ["Ghost", "Nobody named this line."], ["Blank", "This label has an empty name."],
+    ["Messy", "A name with a line break."], ["Long", "A very long name."]]));
+  insertMeeting({ id: "m-vn-renamed", source: "exo-voice-note", sourceId: "vn-renamed", title: "Voice note renamed", startedAt: "2026-10-17T09:00:00Z",
+    metadata: { transcription_outcome: "transcribed", speaker_names: { "Speaker 1": "Ola" } } });
+  const renamedHash = "abcdef0123456789abcdef0123456789";
+  db.run("INSERT INTO voice_note_transcript VALUES (?,?,?,?,?,?)", ["vn-renamed", 1, renamedHash, `${KV_PREFIX}/exo-voice-note/transcript-rev/vn-renamed/${renamedHash}`, "transcribed", "p"]);
+  kv.set(`${KV_PREFIX}/exo-voice-note/transcript-rev/vn-renamed/${renamedHash}`, transcript([["Speaker 1", "The wallet release is next week."]]));
+  // Names the reader must ignore: a map over the size bound, a non-object value, and metadata that is not JSON.
+  insertMeeting({ id: "m-names-big", source: "fireflies", sourceId: "ff-names-big", title: "Oversized names", startedAt: "2026-10-16T15:00:00Z",
+    metadata: { speaker_names: { Them: "Renamed", filler: "y".repeat(17_000) } } });
+  kv.set(`${KV_PREFIX}/fireflies/transcript/ff-names-big`, transcript([["Them", "The oversized map is ignored."]]));
+  insertMeeting({ id: "m-names-list", source: "fireflies", sourceId: "ff-names-list", title: "List names", startedAt: "2026-10-15T15:00:00Z", metadata: { speaker_names: ["Renamed"] } });
+  kv.set(`${KV_PREFIX}/fireflies/transcript/ff-names-list`, transcript([["Them", "A list is not a rename map."]]));
+  insertMeeting({ id: "m-names-badjson", source: "fireflies", sourceId: "ff-names-badjson", title: "Bad metadata", startedAt: "2026-10-14T15:00:00Z", metadata: "{not json" });
+  kv.set(`${KV_PREFIX}/fireflies/transcript/ff-names-badjson`, transcript([["Them", "Broken metadata keeps the stored label."]]));
   // TC-2163 regression shape: many rows whose metadata embeds large transcript text.
   const bulk = "x".repeat(50_000);
   for (let i = 0; i < 120; i++) insertMeeting({ id: `bulk-${i}`, source: "google-meet", sourceId: `gm-${i}`, title: `Bulk ${i}`, startedAt: `2026-09-${String((i % 27) + 1).padStart(2, "0")}T08:00:00Z`, metadata: { transcript_text: bulk, kind: "meeting" } });
@@ -53,6 +73,10 @@ beforeAll(() => {
     async fetch(request) {
       if (request.headers.get(CREDENTIAL_HEADER) !== CREDENTIAL || !request.headers.get(OWNER_HEADER)) return Response.json({ error: "missing" }, { status: 401 });
       seenOwners.add(request.headers.get(OWNER_HEADER)!);
+      if (grantMode === "revoked") {
+        const { id: revokedId } = await request.json() as { id: number };
+        return Response.json({ jsonrpc: "2.0", id: revokedId, result: { content: [{ type: "text", text: "" }], structuredContent: { status: "error", error: { code: "AUTH_REQUIRED", message: "This grant was revoked.", retryable: false, details: { reason: "delegation_revoked", revokedCid: "bafy-test" } } } } });
+      }
       if (grantMode === "none") return Response.json({ error: "grant_missing_test" }, { status: 401 });
       if (grantMode === "expired") return Response.json({ error: "grant_expired_test" }, { status: 401 });
       if (grantMode === "rejected") return Response.json({ error: "grant_rejected_test" }, { status: 401 });
@@ -64,6 +88,10 @@ beforeAll(() => {
         return respond(canonical);
       };
       const args = params.arguments;
+      if (params.name === "tinycloud_sql_query" && String(args.sql).includes("$.speaker_names")) {
+        if (speakerNamesMode === "rejected") return Response.json({ error: "grant_rejected_test" }, { status: 401 });
+        if (speakerNamesMode === "invalid") return respond({ status: "error", error: { code: "SQL_QUERY_INVALID" } });
+      }
       if (params.name === "tinycloud_sql_query") {
         sqlCalls.push(args.sql);
         if (args.database !== KV_PREFIX || args.space !== "applications" || !/^\s*(SELECT|WITH)\b/i.test(args.sql)) return respond({ status: "error", error: { code: "SQL_QUERY_INVALID" } });
@@ -173,6 +201,66 @@ describe("meeting tools over the MCP", () => {
     expect(none.status === 404 || (none.body as any).result?.data?.outcomes?.[0]?.state !== "read").toBe(true);
   });
 
+  test("renamed speakers reach the reader, and stored labels stay when there is no usable name (TC-2189)", async () => {
+    const speakers = async (meetingRef: string) => {
+      const read = await run("tinycloud_read_meeting", { meetingRef, focus: "transcript", includeBody: true });
+      expect(read.status).toBe(200);
+      return JSON.stringify((read.body as any).result.data);
+    };
+    const renamed = await speakers("m-renamed");
+    expect(renamed).toContain('"speaker":"Hunter"');
+    expect(renamed).toContain('"speaker":"Sam Gbafa"');
+    expect(renamed).not.toContain('"speaker":"Me"');
+    expect(renamed).not.toContain('"speaker":"Them"');
+    // A name that is not a string, or is blank, never replaces the stored label.
+    expect(renamed).toContain('"speaker":"Ghost"');
+    expect(renamed).toContain('"speaker":"Blank"');
+    // Names are cleaned like the frontend's cleanSpeakerName: one line, trimmed, at most 80 characters.
+    expect(renamed).toContain('"speaker":"Ola Zingo"');
+    expect(renamed).toContain(`"speaker":"${"x".repeat(80)}"`);
+    expect(renamed).not.toContain("x".repeat(81));
+    // The voice-note path reads the committed revision and applies the same names.
+    const note = await speakers("m-vn-renamed");
+    expect(note).toContain('"speaker":"Ola"');
+    expect(note).not.toContain('"speaker":"Speaker 1"');
+    for (const ref of ["m-names-big", "m-names-list", "m-names-badjson"]) {
+      const kept = await speakers(ref);
+      expect(kept).toContain('"speaker":"Them"');
+      expect(kept).not.toContain("Renamed");
+    }
+    // Speaker filters match the shown name, which is what the user and the model see.
+    const bySpeaker = await run("tinycloud_read_meeting", { meetingRef: "m-renamed", focus: "speaker", speaker: "Sam" });
+    expect(JSON.stringify((bySpeaker.body as any).result.data)).toContain("send it on Monday");
+    const found = await run("tinycloud_search_transcripts", { query: "Monday", speaker: "Sam Gbafa" });
+    expect(JSON.stringify((found.body as any).result.data)).toContain("send it on Monday");
+    // The names query is bounded in SQL and never selects the raw metadata column.
+    const namesQueries = sqlCalls.filter(sql => sql.includes("$.speaker_names"));
+    expect(namesQueries.length).toBeGreaterThan(0);
+    for (const sql of namesQueries) expect(/SELECT\s+metadata\b|,\s*metadata\s*(,|FROM)/i.test(sql)).toBe(false);
+  });
+
+  test("a failed speaker-names query keeps the stored labels, and a revoked grant during it still fails the read (TC-2189)", async () => {
+    const speakers = async () => {
+      const read = await run("tinycloud_read_meeting", { meetingRef: "m-renamed", focus: "transcript", includeBody: true });
+      return { status: read.status, text: JSON.stringify(read.body) };
+    };
+    try {
+      speakerNamesMode = "invalid";
+      const kept = await speakers();
+      expect(kept.status).toBe(200);
+      expect(kept.text).toContain("send it on Monday");
+      expect(kept.text).toContain('"speaker":"Them"');
+      expect(kept.text).not.toContain("Sam Gbafa");
+      speakerNamesMode = "rejected";
+      const revoked = await speakers();
+      expect(revoked.status).toBe(409);
+      expect(revoked.text).toContain("delegation_revoked");
+      expect(revoked.text).not.toContain("send it on Monday");
+    } finally {
+      speakerNamesMode = "ok";
+    }
+  });
+
   test("a missing grant maps to delegation_required, expired to delegation_expired and rejected to delegation_revoked (409)", async () => {
     grantMode = "none";
     const missing = await run("tinycloud_find_meetings", {});
@@ -184,6 +272,15 @@ describe("meeting tools over the MCP", () => {
     expect(missing).toEqual({ status: 409, body: { error: "delegation_required" } });
     expect(expired).toEqual({ status: 409, body: { error: "delegation_expired" } });
     expect(rejected).toEqual({ status: 409, body: { error: "delegation_revoked" } });
+  });
+
+  test("a grant the owner revoked on the node reads as not connected, for chat turns and for the status the Settings card shows", async () => {
+    grantMode = "revoked";
+    const turn = await run("tinycloud_find_meetings", {});
+    const status = await tools().status(OWNER);
+    grantMode = "ok";
+    expect(turn).toEqual({ status: 409, body: { error: "delegation_required" } });
+    expect(status).toEqual({ status: "none", transcriptStatus: "none", revision: "mcp" });
   });
 
   test("a wrong service credential never yields meeting data", async () => {

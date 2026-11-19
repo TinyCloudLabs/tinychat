@@ -264,10 +264,10 @@ describe("agent chat turn budget", () => {
       );
       expect(followUpStatus).toBe(402);
       expect(followUpBody).toMatchObject({
-        error: "credit_budget_exceeded", tier: "free", usage: { used: 820, limit: 500 },
+        error: "credit_budget_exceeded", tier: "free", usage: { used: 500, limit: 500 },
       });
-      expect(usageAtEnd).toBe(820);
-      expect(getUsage(address, TIERS.free).used).toBe(820);
+      expect(usageAtEnd).toBe(500);
+      expect(getUsage(address, TIERS.free).used).toBe(500);
     } finally {
       await new Promise<void>((resolve, reject) => server.close(err => err ? reject(err) : resolve()));
     }
@@ -277,7 +277,8 @@ describe("agent chat turn budget", () => {
     ["provider error", "upstream_failed"],
     ["truncated SSE", "upstream_incomplete"],
   ] as const) {
-    test(`records observed legacy usage before the ${failure} terminal so an immediate /api/chat is denied`, async () => {
+    // TC-2601 (D1): a provider failure after content is ours, so the reply is free and the follow-up is admitted.
+    test(`charges nothing for the ${failure} terminal after content, so an immediate /api/chat is admitted`, async () => {
       process.env.CREDIT_BUDGET_FREE = "500";
       const run = fixture([], "final");
       const entries: unknown[] = [];
@@ -332,15 +333,11 @@ describe("agent chat turn budget", () => {
         expect(stream).toContain(`"stream_error":{"code":"${code}"}`);
         expect(stream.match(/"stream_error":/g)).toHaveLength(1);
         expect(stream.match(/data: \[DONE\]/g)).toHaveLength(1);
-        expect(followUpStatus).toBe(402);
-        expect(followUpBody).toMatchObject({
-          error: "credit_budget_exceeded", tier: "free", usage: { used: 820, limit: 500 },
-        });
-        expect(usageAtEnd).toBe(820);
-        expect(getUsage(address, TIERS.free).used).toBe(820);
-        expect(entries).toEqual([expect.objectContaining({
-          credits: 820, prompt_tokens: 60_000, completion_tokens: 22_000,
-        })]);
+        expect(followUpStatus).toBe(200);
+        expect(followUpBody).toContain("follow-up admitted");
+        expect(usageAtEnd).toBe(0);
+        expect(getUsage(address, TIERS.free).used).toBe(0);
+        expect(entries).toEqual([]);
       } finally {
         await new Promise<void>((resolve, reject) => server.close(err => err ? reject(err) : resolve()));
       }
