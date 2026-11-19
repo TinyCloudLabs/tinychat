@@ -11,31 +11,38 @@ import {
   APPS_OPENS_NEW_TAB,
   APPS_PAGE_LEAD,
   APPS_PAGE_TITLE,
-  NAV_LABEL_RECORDING,
 } from "@/lib/homeStrings";
-import { ONE_APPS } from "@/apps/registry";
+import { ONE_APPS, appTarget } from "@/apps/registry";
 import { PAGE_COLUMN, PageHeader } from "@/shell/PageHeader";
 import { NAV_APP_IDS } from "@/shell/navApps";
-import { appHref } from "@/shell/navItems";
 import { ONE_APPS_ENABLED, appPinId, useNavPins } from "@/shell/navPins";
 import { PATHS } from "@/shell/routes";
 import { AppsLauncher, type LauncherTile } from "./AppsLauncher";
 import { SHARE_APPS, shareRunUrl, type ShareApp } from "./shareApps";
 
 /** The launcher's tiles: every TinyCloud app, then Connectors (which has its own page, not a frame). */
-export function launcherTiles(pendingMeetings: number): LauncherTile[] {
-  const tiles: LauncherTile[] = ONE_APPS.map((app) =>
-    app.kind === "native"
-      ? { pin: "capture", name: NAV_LABEL_RECORDING, description: app.description, icon: app.icon, href: app.route }
-      : { pin: appPinId(app.id), name: app.name, description: app.description, icon: app.icon, href: appHref(app.id) },
-  );
-  tiles.push({ pin: "connectors", name: "Connectors", description: APPS_CONNECTORS_DESCRIPTION, icon: PlugIcon, href: PATHS.connectors, pending: pendingMeetings });
+export function launcherTiles(pendingMeetings: number, origin: string): LauncherTile[] {
+  const tiles: LauncherTile[] = ONE_APPS.map((app) => ({
+    pin: app.kind === "native" ? "capture" : appPinId(app.id),
+    name: app.name,
+    description: app.description,
+    icon: app.icon,
+    target: appTarget(app, origin),
+  }));
+  tiles.push({
+    pin: "connectors",
+    name: "Connectors",
+    description: APPS_CONNECTORS_DESCRIPTION,
+    icon: PlugIcon,
+    target: { kind: "route", path: PATHS.connectors },
+    pending: pendingMeetings,
+  });
   return tiles;
 }
 
 function OneAppsPage({ accountDid, pendingMeetings }: { accountDid: string | null; pendingMeetings: number }) {
   const { pins, pin, unpin } = useNavPins(accountDid, NAV_APP_IDS);
-  const tiles = useMemo(() => launcherTiles(pendingMeetings), [pendingMeetings]);
+  const tiles = useMemo(() => launcherTiles(pendingMeetings, window.location.origin), [pendingMeetings]);
   return <AppsLauncher tiles={tiles} pins={pins} canPin={accountDid !== null} onPin={pin} onUnpin={unpin} />;
 }
 

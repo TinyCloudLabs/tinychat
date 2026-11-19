@@ -1,13 +1,14 @@
 // The TinyCloud apps launcher (One Apps): a grid of tiles, each opening an app
 // and each pinnable to the navigation. Presentational; AppsPage feeds it the
 // registry and the account's pins.
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ComponentProps } from "react";
 import { Link } from "react-router-dom";
-import { PinIcon, PinOffIcon, type LucideIcon } from "lucide-react";
+import { ExternalLinkIcon, PinIcon, PinOffIcon, type LucideIcon } from "lucide-react";
 
 import { connectorsAriaLabel } from "@/chat/useBackgroundDrain";
 import {
   APPS_LAUNCHER_TITLE,
+  APPS_OPENS_NEW_TAB,
   APPS_PIN,
   APPS_PIN_HINT,
   APPS_UNPIN,
@@ -15,6 +16,7 @@ import {
   appUnpinnedToast,
 } from "@/lib/homeStrings";
 import { cn } from "@/lib/utils";
+import type { AppTarget } from "@/apps/registry";
 import { NavBadge } from "@/shell/NavBadge";
 import type { PinId } from "@/shell/navPins";
 import { PAGE_COLUMN, PageHeader } from "@/shell/PageHeader";
@@ -25,10 +27,25 @@ export interface LauncherTile {
   name: string;
   description?: string;
   icon: LucideIcon;
-  /** Where the tile opens. */
-  href: string;
+  /** Where the tile opens: One's route, or the app's own page in a new tab (the registry's appTarget). */
+  target: AppTarget;
   /** Meetings waiting (Connectors): shown on the tile while the tile is not pinned. */
   pending?: number;
+}
+
+function TileLink({ opens, children, ...rest }: { opens: AppTarget } & Omit<ComponentProps<"a">, "href" | "target">) {
+  if (opens.kind === "newTab") {
+    return (
+      <a href={opens.url} target="_blank" rel="noopener noreferrer" {...rest}>
+        {children}
+      </a>
+    );
+  }
+  return (
+    <Link to={opens.path} {...rest}>
+      {children}
+    </Link>
+  );
 }
 
 const TOAST_MS = 2400;
@@ -61,18 +78,20 @@ export function AppsLauncher({ tiles, pins, canPin, onPin, onUnpin }: AppsLaunch
             const Icon = tile.icon;
             return (
               <li key={tile.pin} className="flex flex-col rounded-lg border bg-card">
-                <Link
-                  to={tile.href}
+                <TileLink
+                  opens={tile.target}
                   aria-label={tile.pending && !pinned ? connectorsAriaLabel(tile.pending) : undefined}
                   className="tap-transparent relative flex min-h-11 flex-1 flex-col gap-1 rounded-t-lg p-3 hover:bg-surface-2"
                 >
                   <span className="flex items-center gap-2 text-body font-semibold text-foreground">
                     <Icon aria-hidden className="size-5 shrink-0 text-muted-foreground" />
                     {tile.name}
+                    {tile.target.kind === "newTab" ? <ExternalLinkIcon aria-hidden className="size-4 shrink-0 text-muted-foreground" /> : null}
                   </span>
                   {tile.description ? <span className="text-body text-muted-foreground">{tile.description}</span> : null}
+                  {tile.target.kind === "newTab" ? <span className="sr-only">({APPS_OPENS_NEW_TAB})</span> : null}
                   {pinned ? null : <NavBadge count={tile.pending} className="right-3 top-3" />}
-                </Link>
+                </TileLink>
                 {canPin ? (
                   <button
                     type="button"

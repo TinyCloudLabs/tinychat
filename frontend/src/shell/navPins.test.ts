@@ -6,7 +6,14 @@ import { appPinId, navPinsKey, parsePins, pinDestination, unpinDestination, type
 import { screenFor } from "./routes";
 
 const KNOWN = ["xyz.tinycloud.secrets", "xyz.tinycloud.explorer", "xyz.tinycloud.account"];
-const APPS: NavApp[] = KNOWN.map((id) => ({ id, name: id.split(".").pop()!, icon: AppWindowIcon }));
+const APPS: NavApp[] = KNOWN.map((id) => ({
+  id,
+  name: id.split(".").pop()!,
+  icon: AppWindowIcon,
+  target: id === "xyz.tinycloud.secrets"
+    ? { kind: "newTab", url: "https://secrets.tinycloud.xyz/app" }
+    : { kind: "route", path: `/chat/apps/${id}` },
+}));
 const ALICE = "did:pkh:eip155:1:0xalice";
 const BOB = "did:pkh:eip155:1:0xbob";
 
@@ -89,11 +96,14 @@ describe("navigation with pins", () => {
     ]);
   });
 
-  test("a pinned app opens its own address and a pin whose app is gone shows nothing", () => {
-    const items = navItems(0, { pins: ["app:xyz.tinycloud.secrets", "app:com.gone.app"], apps: APPS });
-    expect(items).toHaveLength(4);
-    expect(items[3]!.href).toBe("/chat/apps/xyz.tinycloud.secrets");
-    expect(navTarget(items[3]!, false)).toBe("/chat/apps/xyz.tinycloud.secrets");
+  test("a pinned app follows its registry target and a pin whose app is gone shows nothing", () => {
+    const items = navItems(0, { pins: ["app:xyz.tinycloud.secrets", "app:xyz.tinycloud.explorer", "app:com.gone.app"], apps: APPS });
+    expect(items).toHaveLength(5);
+    expect(items[3]!.newTab).toBe("https://secrets.tinycloud.xyz/app");
+    expect(items[3]!.href).toBe("https://secrets.tinycloud.xyz/app");
+    expect(items[4]!.newTab).toBeUndefined();
+    expect(items[4]!.href).toBe("/chat/apps/xyz.tinycloud.explorer");
+    expect(navTarget(items[4]!, false)).toBe("/chat/apps/xyz.tinycloud.explorer");
     expect(navTarget(items[2]!, false)).toBe("/chat/apps");
   });
 

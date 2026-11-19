@@ -2,10 +2,11 @@
 // surface, one hairline, and the current tab marked by a tinted pill behind
 // its icon plus a heavier label and icon stroke (never colour alone).
 import type { MouseEvent } from "react";
-import { Link, useLocation } from "react-router-dom";
+import { useLocation } from "react-router-dom";
 
 import { cn } from "@/lib/utils";
 import { NavBadge } from "./NavBadge";
+import { NavLink } from "./NavLink";
 import { navTarget, type NavItem, type NavItemId } from "./navItems";
 import type { Destination } from "./routes";
 
@@ -33,7 +34,8 @@ export function TabBar({ items, current, replace, onReselect }: NavProps) {
           const Icon = item.icon;
           return (
             <li key={item.id} className="flex min-w-fit flex-1">
-              <Link
+              <NavLink
+                item={item}
                 to={navTarget(item, active)}
                 replace={replace}
                 aria-current={active ? "page" : undefined}
@@ -57,7 +59,7 @@ export function TabBar({ items, current, replace, onReselect }: NavProps) {
                 <span className={cn("min-w-0 text-center !text-[11px] text-label [word-break:keep-all] [overflow-wrap:normal]", active ? "font-semibold text-foreground" : "font-medium text-muted-foreground")} style={{ fontSize: "min(0.6875rem,12px)", lineHeight: "min(0.875rem,14px)" }}>
                   {item.label}
                 </span>
-              </Link>
+              </NavLink>
             </li>
           );
         })}

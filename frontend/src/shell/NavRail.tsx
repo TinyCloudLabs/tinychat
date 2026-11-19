@@ -9,6 +9,7 @@ import { CaptureDot } from "@/capture/recorder/final/CaptureDot";
 import { cn } from "@/lib/utils";
 import { useStorageReadOnly } from "@/lib/useStorageReadOnly";
 import { NavBadge } from "./NavBadge";
+import { NavLink } from "./NavLink";
 import { navTarget } from "./navItems";
 import { PATHS } from "./routes";
 import type { NavProps } from "./TabBar";
@@ -41,7 +42,8 @@ export function NavRail({
           const Icon = item.icon;
           return (
             <li key={item.id} className="flex w-full">
-              <Link
+              <NavLink
+                item={item}
                 to={navTarget(item, active)}
                 replace={replace}
                 aria-current={active ? "page" : undefined}
@@ -66,7 +68,7 @@ export function NavRail({
                 <span className={cn("text-label", active ? "font-semibold text-foreground" : "font-medium text-muted-foreground")}>
                   {item.label}
                 </span>
-              </Link>
+              </NavLink>
             </li>
           );
         })}

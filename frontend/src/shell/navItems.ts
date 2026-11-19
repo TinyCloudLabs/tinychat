@@ -5,6 +5,7 @@ import { AppWindowIcon, AudioLinesIcon, HouseIcon, MessageCircleIcon, PlugIcon, 
 import { connectorsAriaLabel } from "../chat/useBackgroundDrain";
 import { NAV_LABEL_APPS, NAV_LABEL_CHAT, NAV_LABEL_HOME, NAV_LABEL_RECORDING } from "../lib/homeStrings";
 import { useSizeClass, type SizeClassState } from "../lib/sizeClass";
+import type { AppTarget } from "@/apps/registry";
 import { tabTarget } from "./navigation";
 import { appIdOfPin, appPinId, type PinId } from "./navPins";
 import { PATHS, type Destination, type Screen } from "./routes";
@@ -32,6 +33,8 @@ export interface NavItem {
   destination: Destination;
   /** The item always opens `href`, never where it was left. */
   fixed?: boolean;
+  /** Opens this address in a new tab (noopener, noreferrer) instead of routing. */
+  newTab?: string;
   label: string;
   icon: LucideIcon;
   /** The destination's root. */
@@ -47,6 +50,8 @@ export interface NavApp {
   id: string;
   name: string;
   icon?: LucideIcon;
+  /** Where the app opens (the registry's appTarget): One's route, or its own page in a new tab. */
+  target: AppTarget;
 }
 
 /** One Apps: the pins in order and the apps they may name. Absent, the navigation is today's. */
@@ -57,8 +62,6 @@ export interface NavPinOptions {
 
 /** The tab bar holds the three defaults and the first two pins. */
 export const TAB_BAR_MAX = 5;
-
-export const appHref = (appId: string) => `${PATHS.apps}/${encodeURIComponent(appId)}`;
 
 /** `pendingMeetings`: meetings waiting in Connectors (0 while Connectors is open). */
 export function navItems(pendingMeetings: number, options?: NavPinOptions): NavItem[] {
@@ -88,7 +91,16 @@ export function navItems(pendingMeetings: number, options?: NavPinOptions): NavI
       const appId = appIdOfPin(pin);
       const app = appId === null ? undefined : options.apps.find((candidate) => candidate.id === appId);
       if (app) {
-        items.push({ id: appPinId(app.id), destination: "apps", fixed: true, label: app.name, icon: app.icon ?? AppWindowIcon, href: appHref(app.id) });
+        const newTab = app.target.kind === "newTab" ? app.target.url : undefined;
+        items.push({
+          id: appPinId(app.id),
+          destination: "apps",
+          fixed: true,
+          label: app.name,
+          icon: app.icon ?? AppWindowIcon,
+          href: app.target.kind === "newTab" ? app.target.url : app.target.path,
+          newTab,
+        });
       }
     }
   }
