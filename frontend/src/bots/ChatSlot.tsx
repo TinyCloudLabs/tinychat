@@ -2,13 +2,15 @@
 // and the backend lets it use bots. The classic chat stays mounted, hidden, while Bots shows, so its thread, drafts
 // and first-load signal are as they were when the owner switches back. An account on Classic makes no bots calls.
 import { useMemo, type ReactNode } from "react";
+import { useLocation } from "react-router-dom";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { MAIN_BOT } from "./BotAvatar";
 import { historyAccessFor } from "./botHistoryAccess";
 import type { BotChatApi } from "./botChatApi";
 import { botsApi as defaultBotsApi, type BotsApi } from "./botsApi";
-import { BotsChat, type BotHistoryAccess, type BotsController } from "./BotsChat";
+import { botForPath } from "./botPath";
+import { BotsChat, viewableBots, type BotHistoryAccess, type BotsController } from "./BotsChat";
 import { useChatView } from "./chatViewSetting";
 import { useBotsAdmitted } from "./useBotsAdmitted";
 
@@ -34,12 +36,17 @@ export function ChatSlot({ classic, account, tcw, active, onReconnect, api = def
   const admitted = useBotsAdmitted(chosen ? api : null);
   const bots = chosen && admitted;
   const sessionHistory = useMemo(() => historyAccessFor(tcw), [tcw]);
+  const { pathname } = useLocation();
+  const controller = NO_ROSTER;
+  const keys = new Set(viewableBots(controller).map((bot) => bot.key));
+  // While the list loads every key counts, so an address naming another bot isn't sent to Main before it arrives.
+  const selected = botForPath(pathname, account, (key) => controller.status === "loading" || keys.has(key));
   return (
     <>
       <div className={bots ? "hidden" : "h-full"} data-chat-view="classic">{classic}</div>
       {bots ? (
         <div className="h-full" data-chat-view="bots">
-          <BotsChat controller={NO_ROSTER} selected="main" faceOf={() => MAIN_BOT} history={history === undefined ? sessionHistory : history}
+          <BotsChat controller={controller} selected={selected} faceOf={() => MAIN_BOT} history={history === undefined ? sessionHistory : history}
             active={active} onReconnect={onReconnect} chatApi={chatApi} />
         </div>
       ) : null}

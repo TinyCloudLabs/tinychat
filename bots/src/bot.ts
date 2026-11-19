@@ -101,6 +101,11 @@ export class RunningLimit {
     return true;
   }
 
+  /** Whether a place is free now. Only a hint: take() decides. */
+  hasRoom(): boolean {
+    return this.#running < this.#max;
+  }
+
   release(): void {
     this.#running--;
   }
@@ -263,6 +268,13 @@ export class Bot {
   async send(text: string, sink: TurnSink, owner?: string): Promise<void> {
     if (this.#busy) {
       sink.error("busy");
+      return;
+    }
+    // A start that will be refused at the cap must not leave the message in the history, or a retry would show it twice.
+    if (!this.#sandbox && !this.#starting && !this.#hasPlace && !this.#retired && !this.#running.hasRoom()) {
+      log("at_capacity", this.layout.botId);
+      sink.status("starting");
+      sink.error("at_capacity");
       return;
     }
     if (this.#options.history) {
