@@ -16,7 +16,7 @@ import {
 } from "./granolaCsv";
 import type { NormalizedMeeting, StoreError, StoreResult, UpsertMeetingOutcome } from "./connectorStore";
 import { isStorageFullError } from "../storageStatus";
-import { runOnSpaceLane } from "../spaceWriteLane";
+import { runGranolaSpaceWrite } from "./granolaSync";
 import type { TranscriptSentence } from "@tinyboilerplate/core";
 
 /** Same shape as the Fireflies purge check; `true` means the meeting was deleted and must stay out. */
@@ -84,7 +84,7 @@ export async function importGranolaCsv(opts: GranolaCsvImportOptions): Promise<G
   if (!parsed.ok) return { ok: false, error: { kind: "malformed", csv: parsed.error }, partial: counts };
   counts.blank = parsed.data.blank;
 
-  const schema = await runOnSpaceLane(() => opts.store.ensureSchema(opts.tcw));
+  const schema = await runGranolaSpaceWrite(() => opts.store.ensureSchema(opts.tcw));
   if (!schema.ok) return { ok: false, error: storageFailure(schema.error), partial: counts };
 
   const rows = parsed.data.rows;
@@ -107,7 +107,7 @@ export async function importGranolaCsv(opts: GranolaCsvImportOptions): Promise<G
     }
     if (blocked) { counts.skippedDeleted++; continue; }
 
-    const write = await runOnSpaceLane(() => opts.store.upsertMeeting(opts.tcw, meeting, sentences));
+    const write = await runGranolaSpaceWrite(() => opts.store.upsertMeeting(opts.tcw, meeting, sentences));
     if (!write.ok) {
       counts.failed++;
       if (isStorageFullError(write.error)) return { ok: false, error: storageFailure(write.error), partial: counts };
