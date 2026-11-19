@@ -41,10 +41,32 @@ export interface HistoryBatch {
   /** A sibling's key, as the service put it inside the batch. Main's batches have none. */
   bot?: string;
 }
+/** The activity record emitted by the supervisor and stored in the owner's history. */
+export type BotActivityRecord = {
+  type: "activity";
+  id: string;
+  count: number;
+  at: string;
+} & ({ verb: "ran_commands" | "changed_files" } | { verb: "messaged_bot"; targetKey: string });
+const isObject = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === "object" && !Array.isArray(value);
+
+export function isBotActivityRecord(value: unknown): value is BotActivityRecord {
+  return isObject(value) && value.type === "activity"
+    && typeof value.id === "string" && value.id.length === 32 && /^[a-f0-9]{32}$/.test(value.id)
+    && typeof value.count === "number" && Number.isInteger(value.count) && value.count >= 1 && value.count <= 256
+    && typeof value.at === "string" && value.at.length === 24
+    && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(value.at) && Number.isFinite(Date.parse(value.at))
+    && (value.verb === "messaged_bot"
+      ? Object.keys(value).length === 6 && typeof value.targetKey === "string"
+        && (value.targetKey === "main" || (value.targetKey.length === 32 && HISTORY_BOT_KEY.test(value.targetKey)))
+      : Object.keys(value).length === 5 && (value.verb === "ran_commands" || value.verb === "changed_files"));
+}
 export function checkedBatch(value: unknown): HistoryBatch {
   const batch = value as HistoryBatch;
   if (!batch || batch.v !== 1 || !/^[a-f0-9]{32}$/.test(batch.generation) || !Number.isSafeInteger(batch.seq) || batch.seq < 1
     || !/^[a-f0-9]{64}$/.test(batch.challenge) || !batch.record || (batch.bot !== undefined && !HISTORY_BOT_KEY.test(batch.bot))
+    || (isObject(batch.record) && batch.record.type === "activity" && !isBotActivityRecord(batch.record))
     || Buffer.byteLength(JSON.stringify(batch)) > 512 * 1024) throw new Error("invalid_history_batch");
   // The same fields in the same order as the service's journal, so both sides hash the same bytes.
   return { v: 1, generation: batch.generation, seq: batch.seq, challenge: batch.challenge, record: batch.record, ...(batch.bot ? { bot: batch.bot } : {}) };
@@ -124,6 +146,46 @@ export class BotHistory {
       if (result.truncated && !cursor) throw new Error("history_owner_pagination_unavailable");
     } while (cursor);
     return owners;
+  }
+  /**
+   * The delegation id of a bot's stored grant, so it can be revoked when the bot is deleted. Undefined when nothing is
+   * stored. Read from the stored envelope as it was accepted: an expired grant still has an id.
+   */
+  async storedGrantCid(address: string, botKey: string): Promise<string | undefined> {
+    const key = this.#deletableKeyFor(address, botKey);
+    const stored = await withSessionRefresh(this.node, async () => {
+      const result = await this.node.kv.get<string>(key);
+      if (!isKvMissingKeyResult(result, key)) assertKvResult(result);
+      return result;
+    });
+    if (isKvMissingKeyResult(stored, key)) return undefined;
+    const value = resultData(stored).data;
+    try {
+      const bundle: unknown = JSON.parse((this.#open(value, key) as GrantEnvelope).serialized);
+      const cid = typeof bundle === "object" && bundle !== null && "cid" in bundle ? bundle.cid : undefined;
+      return typeof cid === "string" && cid !== "" ? cid : undefined;
+    } catch {
+      // What is stored cannot be opened or read, so there is no id to recover from it.
+      return undefined;
+    }
+  }
+  /** Removes a bot's stored grant. Never Main's: this is for a bot that is being deleted, and Main cannot be. */
+  async forget(address: string, botKey: string): Promise<void> {
+    const key = this.#deletableKeyFor(address, botKey);
+    await withSessionRefresh(this.node, async () => {
+      const result = await this.node.kv.delete(key);
+      if (!isKvMissingKeyResult(result, key)) assertKvResult(result);
+    });
+  }
+  /** Revokes a delegation at the node. */
+  async revoke(cid: string): Promise<void> {
+    const result = await this.node.revokeDelegation(cid);
+    if (!result.ok) throw new Error("history_revoke_failed");
+  }
+  /** Where a bot other than Main keeps its grant. Main is refused by name, before any storage key is built. */
+  #deletableKeyFor(address: string, botKey: string) {
+    if (typeof botKey !== "string" || botKey === "main") throw new Error("history_main_grant_kept");
+    return this.#keyFor(address, botKey);
   }
   /** Saves one batch under the bot's own grant. A batch that names a different bot than the one asked for is refused. */
   async archive(address: string, input: unknown, stage: (staged: StagedHistory) => Promise<void>, botKey?: string) {

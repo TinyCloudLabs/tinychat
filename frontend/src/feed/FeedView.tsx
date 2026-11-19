@@ -14,6 +14,7 @@ import { syncCardMd } from "./cardMd";
 import { inBackground } from "../lib/localFirst/requestLanes";
 import { CourierMark, StatusMark, TypeLabel } from "./CompactCard";
 import { ShortTime } from "./ShortTime";
+import { FeedLink, LinkSheetHost } from "./FeedLink";
 
 /** How often a change in the Feed may re-run the card.md check (cardMd.ts syncCardMd); an open always runs it. */
 const CARD_MD_SYNC_MS = 5 * 60_000;
@@ -153,12 +154,12 @@ export function FeedCardView({ card, sample = true, readBody, now, chip, comment
       {expanded && card.render === "article" && card.body && (sample || readBody) && <ArticleBody body={card.body} readBody={readBody ?? readArticleBody} />}
       {card.render === "link" && card.url && <div className="mt-1 min-w-0">
         {safeUrl(card.url)
-          ? <a className="inline-flex min-h-11 max-w-full items-center break-all text-sm underline underline-offset-[3px]" href={card.url} target="_blank" rel="noopener noreferrer">{FEED_STRINGS.openLink}</a>
+          ? <FeedLink className="inline-flex min-h-11 max-w-full items-center break-all text-sm underline underline-offset-[3px]" href={card.url}>{FEED_STRINGS.openLink}</FeedLink>
           : <span className="mt-2 block break-all text-sm text-muted-foreground">{card.url}</span>}
       </div>}
       <CardTextContext.Provider value={full}>{children}</CardTextContext.Provider>
       {expanded && card.source && <p className="mt-3 text-[13px] text-muted-foreground">Source: {card.source.url
-        ? <a href={card.source.url} target="_blank" rel="noopener noreferrer" className="inline-flex min-h-11 max-w-full items-center break-all underline underline-offset-[3px]">{card.source.label}</a>
+        ? <FeedLink href={card.source.url} className="inline-flex min-h-11 max-w-full items-center break-all underline underline-offset-[3px]">{card.source.label}</FeedLink>
         : <span className="break-words">{card.source.label}{card.source.ref && ` · ${card.source.ref}`}</span>}</p>}
     </article>
   );
@@ -261,11 +262,11 @@ export function HomeCardView({ card, sample = true, readBody, status, onAuthor, 
       </div>}
       {card.render === "link" && card.url && <div className="mt-3 min-w-0">
         {safeUrl(card.url)
-          ? <a className="mt-2 inline-flex min-h-8 max-w-full items-center break-all text-sm font-medium underline underline-offset-4" href={card.url} target="_blank" rel="noopener noreferrer">{FEED_STRINGS.openLink}</a>
+          ? <FeedLink className="mt-2 inline-flex min-h-8 max-w-full items-center break-all text-sm font-medium underline underline-offset-4" href={card.url}>{FEED_STRINGS.openLink}</FeedLink>
           : <span className="mt-2 block break-all text-sm text-muted-foreground">{card.url}</span>}
       </div>}
       {card.source && <p className="mt-4 border-t border-border pt-3 text-xs text-muted-foreground">Source: {card.source.url
-        ? <a href={card.source.url} target="_blank" rel="noopener noreferrer" className="inline-block min-h-7 max-w-full break-all underline underline-offset-2">{card.source.label}</a>
+        ? <FeedLink href={card.source.url} className="inline-block min-h-7 max-w-full break-all underline underline-offset-2">{card.source.label}</FeedLink>
         : <span className="break-words">{card.source.label}{card.source.ref && ` · ${card.source.ref}`}</span>}</p>}
       {children}
     </article>
@@ -328,7 +329,7 @@ function SampleFeedEntries({ realEntries }: { realEntries: unknown }): JSX.Eleme
       {sample && <section className="mb-5 rounded-xl border border-border bg-card p-4 text-sm" aria-label={FEED_STRINGS.getStartedHeading}>
         <h2 className="font-display text-lg font-semibold">{FEED_STRINGS.getStartedHeading}</h2>
         <p className="mt-2">{FEED_STRINGS.getStartedBody}</p>
-        <a href={FEED_SKILL_URL} target="_blank" rel="noopener noreferrer" className="mt-3 inline-flex min-h-8 items-center underline underline-offset-2">{FEED_STRINGS.howAgentsPost}</a>
+        <FeedLink href={FEED_SKILL_URL} className="mt-3 inline-flex min-h-8 items-center underline underline-offset-2">{FEED_STRINGS.howAgentsPost}</FeedLink>
       </section>}
       {error && <div role="status" className="mb-4 rounded-lg bg-muted px-3 py-2 text-sm text-muted-foreground">
         <p>{cards.length ? FEED_STRINGS.stale : FEED_STRINGS.unavailable}</p>
@@ -342,7 +343,11 @@ function SampleFeedEntries({ realEntries }: { realEntries: unknown }): JSX.Eleme
 }
 
 export function FeedViewEntries({ realEntries, source, ask, linked }: { realEntries: unknown; source?: HomeFeedSource; ask?: ReactNode; linked?: FeedCardLink | null }): JSX.Element {
-  return source ? <HomeFeedEntries source={source} ask={ask} linked={linked} /> : <SampleFeedEntries realEntries={realEntries} />;
+  // One sheet for every link in the Feed, its cards, briefs and pages included.
+  return <>
+    {source ? <HomeFeedEntries source={source} ask={ask} linked={linked} /> : <SampleFeedEntries realEntries={realEntries} />}
+    <LinkSheetHost />
+  </>;
 }
 
 export function FeedView({ tcw, onReconnect }: { tcw: TinyCloudWeb | null; onReconnect?: () => void }): JSX.Element {

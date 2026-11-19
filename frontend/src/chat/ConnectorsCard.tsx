@@ -194,6 +194,8 @@ function gmeetRowProgress(p: GmeetSyncProgress): SyncProgress {
 
 export async function runFirefliesSyncNow(opts: {
   tcw: TinyCloudWeb;
+  backendUrl: string;
+  sessionStore: SessionStore;
   apiKey: string;
   signal: AbortSignal;
   onProgress: (p: SyncProgress) => void;
@@ -209,6 +211,7 @@ export async function runFirefliesSyncNow(opts: {
     const res = await syncFireflies({
       client,
       store: connectorStore,
+      checkPurge: createConnectorWebhooksClient(opts.backendUrl, { sessionStore: opts.sessionStore }).checkPurge,
       tcw: opts.tcw,
       onProgress: opts.onProgress,
       signal: opts.signal,
@@ -592,6 +595,8 @@ export function ConnectorsCard({
               })
             : await runFirefliesSyncNow({
                 tcw,
+                backendUrl,
+                sessionStore,
                 apiKey: keyRes.data,
                 signal: ac.signal,
                 onProgress,
@@ -794,7 +799,7 @@ interface GmeetRowExtras {
   onCancelWait: () => void;
 }
 
-export const ConnectorRow: FC<{
+const ConnectorRow: FC<{
   descriptor: ConnectorDescriptor;
   state: RowState;
   onConnect: () => void;
@@ -871,20 +876,13 @@ export const ConnectorRow: FC<{
               </p>
             )}
             {state.loaded && !connected && secretsAvailable() && (
-              <div className="flex flex-col items-end gap-1">
-                <Button
-                  size="sm"
-                  onClick={onConnect}
-                  aria-label={`Connect ${d.name}`}
-                >
-                  Connect
-                </Button>
-                {d.id === "fireflies" && (
-                  <p className="max-w-52 text-right text-xs text-muted-foreground">
-                    Connecting imports your meetings from Fireflies.
-                  </p>
-                )}
-              </div>
+              <Button
+                size="sm"
+                onClick={onConnect}
+                aria-label={`Connect ${d.name}`}
+              >
+                Connect
+              </Button>
             )}
             {state.loaded && connected && secretsAvailable() && (
               <>

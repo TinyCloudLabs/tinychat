@@ -14,7 +14,7 @@ import { syntheticRecord } from "./sitrep.fixtures";
  * The folded row is the card's post and nothing else of its text (its title when the agent wrote no post); the open
  * card is the post, then the title, then the content; nothing opens on its own; updates run newest first.
  */
-const AUTHOR = "Holden";
+const AUTHOR = "Avery";
 function entry(cardId: string, title: string, over: { post?: string; summary?: string; body?: string; createdAt?: string; needs?: boolean; priority?: number; typed?: boolean; label?: string } = {}): HomeFeedEntry {
   const needs = over.needs ?? true;
   const record = over.typed ? { ...syntheticRecord("ask"), ...(over.post ? { post: over.post } : {}) } : undefined;
@@ -65,6 +65,7 @@ async function mount(cards: HomeFeedEntry[], defaultSelector: "needs-action" | "
   clock ??= installFakeClock();
   globalThis.fetch = (async () => new Response(null, { status: 404 })) as typeof fetch;
   globalThis.matchMedia = window.matchMedia.bind(window);
+  window.innerWidth = 800; // these tests open a card in its row (phone width)
   (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver = QuietObserver;
   MotionGlobalConfig.skipAnimations = true;
   const feed: HomeFeedSource = {

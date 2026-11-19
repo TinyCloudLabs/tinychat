@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { validateAgentStreamPolicy } from "../agent-stream-policy.js";
+import { mcpChatFromEnv } from "../mcp-meetings/config.js";
 import { createHmac, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -148,11 +150,13 @@ async function runIsolatedStartup(
       transcriptionApiConfigFromEnv: () => transcription.transcriptionApiConfigFromEnv(env),
       createTranscriptionApiClient: () => ({}),
     },
-    "./mcp-meetings/config.js": { mcpChatFromEnv: () => ({}) },
+    // Real wiring parser; MCP operations remain inert until a request uses them.
+    "./mcp-meetings/config.js": { mcpChatFromEnv },
     "./redpill-aci.js": load("./redpill-aci.ts"),
     "./routes/agent.js": {
-      createAgentRouter: (config: unknown) => {
+      createAgentRouter: (config: any) => {
         agentConfig = config;
+        if (config.chat) validateAgentStreamPolicy(config.chat.streamPolicy);
         calls.push("agent-router");
         throw stopped;
       },
@@ -252,6 +256,30 @@ describe("agent stream startup policy wiring", () => {
     });
     expect(result.calls).toContain("agent-router");
     expect(result.calls).not.toContain("listen");
+  });
+  test("mounts MCP-only agent chat without Eliza configuration", async () => {
+    const result = await runIsolatedStartup({
+      BACKEND_PRIVATE_KEY: "synthetic-private-key",
+      ...STREAM_ENV,
+      REDPILL_API_KEY: "synthetic-provider-key",
+      MCP_CHAT_ENABLED: "true",
+      MCP_CHAT_TEST_ACCOUNTS: "0x1111111111111111111111111111111111111111",
+      MCP_CHAT_URL: "https://mcp.example/mcp",
+      MCP_CHAT_SERVICE_DID: "did:service",
+      MCP_CHAT_SERVICE_CREDENTIAL: "synthetic-mcp-secret",
+      MCP_CHAT_SERVICE_CREDENTIAL_HEADER: "X-Service-Credential",
+      MCP_CHAT_OWNER_DID_HEADER: "X-Owner-DID",
+    });
+    expect(result.logs).toEqual([]);
+    expect(result.calls).toContain("agent-router");
+    expect(result.agentConfig?.chat?.streamPolicy).toEqual({
+      heartbeatMs: 17,
+      turnTimeoutMs: 251,
+      drainGraceMs: 31,
+    });
+    expect(result.agentConfig?.agentDid).toBeUndefined();
+    expect(result.agentConfig?.elizaServiceUrl).toBeUndefined();
+    expect(result.agentConfig?.elizaServiceSecret).toBeUndefined();
   });
 
   test("wires explicit meeting account and evaluated-model allowlists with rollout off by default", async () => {
@@ -1003,6 +1031,7 @@ async function bootIndex(patch: Record<string, string | undefined> = {}, options
         return express.Router();
       },
     },
+    "./routes/route-unavailable.js": load("./routes/route-unavailable.ts"),
     "./services/webhook-tokens.js": { assertStrongSecret: () => {}, WebhookTokenService: class {} },
     "./routes/delegations.js": { createDelegationRouter: (config: Record<string, unknown>) => {
       options.capture?.("delegation", config);
@@ -1032,6 +1061,7 @@ async function bootIndex(patch: Record<string, string | undefined> = {}, options
     "./routes/exo-mailbox.js": { createExoMailboxRouter: router },
     // TC-2808: the bots routes are off unless BOTS_* are set; this test doesn't arm them.
     "./routes/bots.js": { botsFromEnv: () => undefined, createBotsRouter: router },
+    "./renewal-verify.js": { renewalVerifyConfigFromEnv: () => undefined },
     // TC-1013 S4b: startup wires the grant-holder index and tracked grant store outside the flag.
     "./exo/grant-holders.js": { GrantHolderIndex: class GrantHolderIndex { async refresh() {} }, createTrackedGrantStore: (store: unknown) => store },
     "./security.js": { applySecurityDefaults: noop },
@@ -1669,5 +1699,24 @@ describe("TC-959 backend request contract", () => {
         await closed.promise;
       }
     }
+  });
+
+  test("an unmounted credential route answers 404 with the backend's own marker; a mounted one does not add it", async () => {
+    const path = "/api/connectors/credentials/fireflies";
+    const marker = "x-route-unavailable";
+    for (const patch of [{}, { CONNECTOR_WEBHOOKS_ENABLED: "true" }]) {
+      const dark = await bootIndex(patch);
+      const response = await fetch(dark.url! + path, { headers: { authorization: "Bearer test-session" } });
+      expect(response.status).toBe(404);
+      expect(response.headers.get(marker)).toBe("connector-credentials");
+    }
+    const mounted = await bootIndex({
+      CONNECTOR_WEBHOOKS_ENABLED: "true", CONNECTOR_BACKEND_INGEST_ENABLED: "true",
+      CONNECTOR_CREDENTIAL_MASTER: randomBytes(32).toString("hex"), CONNECTOR_CONTENT_MASTER: randomBytes(32).toString("hex"),
+      FIREFLIES_OAUTH_CLIENT_ID: "test-fireflies-client", FIREFLIES_OAUTH_CLIENT_SECRET: "test-fireflies-secret",
+      FIREFLIES_OAUTH_REDIRECT_URI: "https://app.invalid/fireflies-callback", CONNECTOR_WEBHOOK_PUBLIC_ORIGIN: "https://app.invalid",
+    });
+    const response = await fetch(mounted.url! + path, { headers: { authorization: "Bearer test-session" } });
+    expect(response.headers.get(marker)).toBeNull();
   });
 });

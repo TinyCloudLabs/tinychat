@@ -213,8 +213,7 @@ describe("Home's page-close outbox in Chromium", () => {
 
       await reopened.evaluate(() => window.harness.mount());
       await until(reopened, () => Object.keys(window.harness.outbox()).length === 0, "the outbox to empty");
-      // An answered card leaves "Needs action": it is under All, short until tapped open.
-      await reopened.getByRole("radio", { name: "All", exact: true }).check();
+      // An answered card leaves Needs you: it is in Pending, short until tapped open.
       await reopened.getByRole("button", { name: /Book the Thursday flight\?/ }).click();
       await reopened.getByText("You chose Go.").waitFor();
       await reopened.getByText("Sent when you opened TinyCloud One again.").waitFor();

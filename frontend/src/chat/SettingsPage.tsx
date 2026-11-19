@@ -14,7 +14,6 @@ import {
   RefreshCwIcon,
   ShieldCheckIcon,
   SunIcon,
-  Trash2Icon,
   UserIcon,
 } from "lucide-react";
 import { Link, useLocation } from "react-router-dom";
@@ -22,7 +21,7 @@ import { StorageFullMessage } from "./StorageFullDialog";
 import { billingLinksAllowed, openManageStorage } from "@/lib/openManageStorage";
 import { NATIVE_PLAN_NOTE } from "@/lib/storageStatus";
 import { PlatformContext } from "@/lib/platform";
-import { openOpenKeyAccountDeletion } from "@/lib/openOpenKeyAccountDeletion";
+import { DeleteOpenKeyAccountButton } from "./DeleteOpenKeyAccountButton";
 import { DeleteRecordingsStep } from "./DeleteRecordingsStep";
 import { useStorageReadOnly } from "@/lib/useStorageReadOnly";
 import { useStorageFreePlan } from "@/lib/useStorageFreePlan";
@@ -55,6 +54,7 @@ import { useSizeClass } from "../lib/sizeClass";
 import { PageHeader } from "../shell/PageHeader";
 import { PATHS } from "../shell/routes";
 import { FirstScreenControl } from "../home/FirstScreenControl";
+import { ChatViewSetting } from "../bots/ChatViewControl";
 import { TinyCloudSettings } from "./TinyCloudSettings";
 import { AppLockSettings } from "./AppLockSettings";
 import { HiddenFeaturesSettings } from "./HiddenFeaturesSettings";
@@ -205,15 +205,7 @@ export function SettingsPage({
                 <div className="mb-4">
                   <DeleteRecordingsStep backendUrl={backendUrl} sessionStore={sessionStore} />
                 </div>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => void openOpenKeyAccountDeletion()}
-                  className="h-auto min-h-[var(--tc-control-height-sm)] max-w-full gap-1.5 whitespace-normal py-1.5 text-left text-destructive"
-                >
-                  <Trash2Icon className="size-4" />
-                  <span>Delete OpenKey account</span>
-                </Button>
+                <DeleteOpenKeyAccountButton backendUrl={backendUrl} sessionStore={sessionStore} />
                 <p className="mt-2 text-xs text-muted-foreground">
                   Permanently deletes your OpenKey account and destroys its keys. You'll confirm on openkey.so.
                 </p>
@@ -229,6 +221,7 @@ export function SettingsPage({
             <FirstScreenControl tcw={tcw} did={did} />
           </SectionCard>
           <CardMdSettings tcw={tcw} />
+          <ChatViewSetting account={did} />
           <SectionCard
             id="agent-access"
             icon={ShieldCheckIcon}

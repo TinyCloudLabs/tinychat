@@ -69,6 +69,7 @@ function MeetingSourcesFixture({
     <div style={{ padding: 24, maxWidth: 560 }}>
       <MeetingSourcesEntry
         buttonRef={entryRef}
+        subtitle={`${fireflies.name}, ${google.name} and ${granola.name}`}
         connected={connected}
         summary={connected ? "Fireflies connected · 416 meetings" : "Nothing connected yet"}
         onClick={() => setOpen(true)}

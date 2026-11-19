@@ -11,7 +11,7 @@ import type { FeedResponse, HomeFeedEntry, HomeFeedSource } from "./feedStoreTyp
 import { SITREP_NOW, syntheticRecord } from "./sitrep.fixtures";
 
 /**
- * Answering a card (Sam, mock 21-23): one tap on an option takes the card out of sight at once, a black pill at the top
+ * Answering a card: one tap on an option takes the card out of sight at once, a black pill at the top
  * counts down with Undo, the answer is sent when the count ends, and the answered card then sits in Pending. One wait
  * at a time: starting another sends the first at once.
  */
@@ -27,7 +27,7 @@ function entry(cardId: string, title: string, over: { label?: string; summary?: 
   const verified = over.courier?.verified;
   return {
     source: {
-      sourceId: verified ? COURIER_SOURCE_ID : "agent-one", agentDid: "did:key:isolated-test-agent", label: over.label ?? "Holden",
+      sourceId: verified ? COURIER_SOURCE_ID : "agent-one", agentDid: "did:key:isolated-test-agent", label: over.label ?? "Avery",
       output: { spaceId: "test-space", database: verified ? COURIER_OUTPUT_DATABASE : "xyz.tinycloud.tinychat/feed_output_testone" },
       responses: { spaceId: "test-space", database: "xyz.tinycloud.tinychat/feed_responses_testone" },
     },
@@ -112,6 +112,7 @@ async function mount(source: HomeFeedSource): Promise<HTMLElement> {
   clock ??= installFakeClock();
   globalThis.fetch = (async () => new Response(null, { status: 404 })) as typeof fetch;
   globalThis.matchMedia = window.matchMedia.bind(window);
+  window.innerWidth = 800; // these tests open a card in its row (phone width)
   (globalThis as { history?: History }).history ??= window.history;
   (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver = QuietObserver;
   MotionGlobalConfig.skipAnimations = true;
@@ -234,7 +235,7 @@ test("the answer is written once, when the count ends, and then the card is in P
   const row = pendingList(host)!.querySelector("li")!;
   expect(row.textContent).toContain("You chose Proceed");
   expect(row.textContent).toContain("Ship it?");
-  expect(row.textContent).toContain("Waiting on Holden");
+  expect(row.textContent).toContain("Waiting on Avery");
   expect(rowsOf(host, "alpha")).toHaveLength(1);
 });
 
@@ -251,10 +252,10 @@ test("Sent to appears only after the held write lands, and goes after a moment",
   expect(announcement(host)).not.toContain("Sent to");
   await act(async () => feed.held.get("alpha")!.resolve());
   expect(feed.writes).toHaveLength(1);
-  expect(lines(host).join("|")).toContain("Sent to Holden");
-  expect(announcement(host)).toContain("Sent to Holden.");
+  expect(lines(host).join("|")).toContain("Sent to Avery");
+  expect(announcement(host)).toContain("Sent to Avery.");
   await clock!.advance(3000);
-  expect(host.textContent).not.toContain("Sent to Holden");
+  expect(host.textContent).not.toContain("Sent to Avery");
 });
 
 test("a write that fails brings the card back with the failure line, and says nothing was sent", async () => {
@@ -271,7 +272,7 @@ test("a write that fails brings the card back with the failure line, and says no
 });
 
 test("one wait at a time: a second answer sends the first at once, and its pill says where it went", async () => {
-  const feed = store([entry("alpha", "First?", { summary: "First post", label: "Holden" }), entry("bravo", "Second?", { summary: "Second post", label: "Mira" })]);
+  const feed = store([entry("alpha", "First?", { summary: "First post", label: "Avery" }), entry("bravo", "Second?", { summary: "Second post", label: "Mira" })]);
   const host = await mount(feed.source);
   await answer(host, "alpha", "Proceed");
   expect(undoButtons(host)).toHaveLength(1);
@@ -281,7 +282,7 @@ test("one wait at a time: a second answer sends the first at once, and its pill 
   expect(feed.writes[0]).toMatchObject({ cardId: "alpha", choiceId: "proceed" });
   expect(undoButtons(host)).toHaveLength(1);
   expect(pillText(host)).toBe("Hold·Undo·5");
-  expect(lines(host).join("|")).toContain("Sent to Holden");
+  expect(lines(host).join("|")).toContain("Sent to Avery");
   expect(feed.writes.filter((write) => write.cardId === "alpha")).toHaveLength(1);
   await clock!.advance(5000);
   expect(feed.writes).toHaveLength(2);
@@ -510,7 +511,7 @@ test("a folded row's own name is unchanged by the control beside it", async () =
   const feed = store([entry("alpha", "Ship the node update?", { summary: "Ship it?" })]);
   const host = await mount(feed.source);
   const name = rowButton(rowOf(host, "alpha")).getAttribute("aria-label")!;
-  expect(name.startsWith("Holden. Ship it?")).toBe(true);
+  expect(name.startsWith("Avery. Ship it?")).toBe(true);
   expect(name).not.toMatch(/options/);
 });
 
