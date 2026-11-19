@@ -1,15 +1,19 @@
 // /api/bots — tiny bots slice 1 (TC-2808): the owner's Main bot, proxied to the bots service.
 //
 // The owner is always the authenticated session address; the body and request headers never choose it.
-// The service secret stays server-side. Message content is neither logged nor stored here.
+// Each call to the service is signed (bots-signed-call.ts); the owner travels only inside the signature, and the
+// service secret never leaves the backend. Message content is neither logged nor stored here.
 
 import { botsConnectFetch, validateBotsConnectHost } from "../bots-transport";
+import { type Environment, signedCallHeader } from "../bots-signed-call";
 import { Router } from "express";
 import type { Request, RequestHandler, Response } from "express";
 
 export interface BotsConfig {
   serviceUrl: string;
   serviceSecret: string;
+  /** The environment of the service at serviceUrl, signed into every call. Default `private`. */
+  environment?: Environment;
   accountAllowed: (address: string) => boolean;
   /** Overall bound on one POST turn (BOTS_POST_TIMEOUT_MS, default 120000). */
   postTimeoutMs: number;
@@ -23,6 +27,19 @@ const UNAVAILABLE = { code: "bot_unavailable", message: "Main isn't available. T
 /** Same canonical owner DID as MCP chat: did:pkh on chain 1 with the lowercased address. */
 export function botOwnerDid(address: string): string {
   return `did:pkh:eip155:1:${address.toLowerCase()}`;
+}
+
+/**
+ * Headers for one signed call to the bots service at `url`: the owner, the bot named in the path, the method, the
+ * path and exactly `body` are signed. Each call needs its own headers; the service accepts a signature once.
+ */
+export function botsServiceHeaders(config: BotsConfig, ownerDid: string, method: string, url: string, body?: string): Record<string, string> {
+  const { pathname, search } = new URL(url);
+  const bot = /^\/v1\/bots\/([^/]+)/.exec(pathname)?.[1] ?? "";
+  const authorization = signedCallHeader(config.serviceSecret, {
+    direction: "to-service", environment: config.environment ?? "private", owner: ownerDid, bot, method, path: pathname + search, body,
+  });
+  return body === undefined ? { authorization } : { authorization, "content-type": "application/json" };
 }
 
 /**
@@ -54,10 +71,6 @@ export function createBotsRouter(opts: { config?: BotsConfig; authMiddleware: Re
   router.use(opts.authMiddleware);
 
   const enabledFor = (req: Request): boolean => Boolean(config && req.user && config.accountAllowed(req.user.address));
-  const upstreamHeaders = (address: string): Record<string, string> => ({
-    authorization: `Bearer ${config!.serviceSecret}`,
-    "x-tinycloud-owner": botOwnerDid(address),
-  });
   const gate = (req: Request, res: Response): string | null => {
     if (!req.user) { res.status(401).json({ error: "unauthenticated", message: "Authentication required" }); return null; }
     if (!enabledFor(req)) { res.status(404).json({ error: "not_found" }); return null; }
@@ -72,8 +85,9 @@ export function createBotsRouter(opts: { config?: BotsConfig; authMiddleware: Re
     const address = gate(req, res);
     if (!address) return;
     try {
-      const upstream = await (config!.fetchImpl ?? fetch)(`${config!.serviceUrl}/v1/bots/main/messages`, {
-        headers: upstreamHeaders(address),
+      const url = `${config!.serviceUrl}/v1/bots/main/messages`;
+      const upstream = await (config!.fetchImpl ?? fetch)(url, {
+        headers: botsServiceHeaders(config!, botOwnerDid(address), "GET", url),
         signal: AbortSignal.timeout(10_000),
       });
       if (!upstream.ok) { res.status(502).json({ error: UNAVAILABLE.code, message: UNAVAILABLE.message }); return; }
@@ -106,10 +120,12 @@ export function createBotsRouter(opts: { config?: BotsConfig; authMiddleware: Re
     res.flushHeaders();
 
     try {
-      const upstream = await (config!.fetchImpl ?? fetch)(`${config!.serviceUrl}/v1/bots/main/messages`, {
+      const url = `${config!.serviceUrl}/v1/bots/main/messages`;
+      const body = JSON.stringify({ text });
+      const upstream = await (config!.fetchImpl ?? fetch)(url, {
         method: "POST",
-        headers: { ...upstreamHeaders(address), "content-type": "application/json" },
-        body: JSON.stringify({ text }),
+        headers: botsServiceHeaders(config!, botOwnerDid(address), "POST", url, body),
+        body,
         signal: controller.signal,
       });
       if (!upstream.ok || !upstream.body) throw new Error("upstream");

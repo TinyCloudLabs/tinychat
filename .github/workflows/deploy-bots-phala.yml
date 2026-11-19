@@ -315,6 +315,9 @@ jobs:
           CERTBOT_EMAIL: ${{ secrets.CERTBOT_EMAIL }}
           # Same list as the backend's BOTS_TEST_ACCOUNTS. Empty admits nobody.
           BOTS_TEST_ACCOUNTS: ${{ vars.BOTS_TEST_ACCOUNTS }}
+          # Rollout of signed calls: 1 keeps the backend's older bearer-plus-owner-header calls working until the signing
+          # backend is deployed; then set the production-bots variable to 0. See bots/README.md, "Signed calls rollout".
+          BOTS_ACCEPT_LEGACY_OWNER_HEADER: ${{ vars.BOTS_ACCEPT_LEGACY_OWNER_HEADER || '1' }}
           BOTS_MODEL: ${{ vars.BOTS_MODEL }}
           BOTS_IDLE_MS: ${{ vars.BOTS_IDLE_MS }}
           BOTS_SANDBOX_MEMORY_MB: ${{ vars.BOTS_SANDBOX_MEMORY_MB }}
@@ -348,7 +351,7 @@ jobs:
           REDPILL_API_KEY="$BOTS_REDPILL_API_KEY"
           required=(BOTS_SERVICE_SECRET REDPILL_API_KEY CLOUDFLARE_API_TOKEN CERTBOT_EMAIL BOTS_INGRESS_DOMAIN PHALA_GATEWAY_CNAME)
           # Include empty history values so allowed_envs sync registers the names while history is off.
-          optional=(BOTS_TEST_ACCOUNTS BOTS_MODEL BOTS_IDLE_MS BOTS_SANDBOX_MEMORY_MB BOTS_SANDBOX_CPUS BOTS_SANDBOX_PIDS
+          optional=(BOTS_TEST_ACCOUNTS BOTS_ACCEPT_LEGACY_OWNER_HEADER BOTS_MODEL BOTS_IDLE_MS BOTS_SANDBOX_MEMORY_MB BOTS_SANDBOX_CPUS BOTS_SANDBOX_PIDS
             BOTS_SANDBOX_OVERLAY_MB BOTS_SANDBOX_TMP_MB BOTS_STATE_MB BOTS_TOTAL_MEMORY_MB BOTS_TOTAL_PIDS BOTS_MAX_RUNNING
             BOTS_STATE_COPY_TIMEOUT_MS BOTS_TURN_TIMEOUT_MS BOTS_MAX_TURN_BYTES BOTS_MODELS BOTS_MAX_TOKENS BOTS_BOT_DAILY_TOKENS
             BOTS_GLOBAL_DAILY_TOKENS BOTS_BODY_TIMEOUT_MS

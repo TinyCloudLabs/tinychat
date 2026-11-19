@@ -5,7 +5,9 @@ import type { StagedHistory } from "./history";
 import { type ErrorCode, ERROR_MESSAGES, type ListedMessage, MAX_TEXT, type TurnSink } from "./bot";
 import { isRecord } from "./guards";
 import { ANNOUNCED_STATES, type AnnouncedState, type BotState } from "./manifest";
-import { authorizedOwner, isBotKey, MAIN_KEY } from "./owner";
+import { legacyOwnerHeaderAccepted } from "./config";
+import { authorizedOwner, isBotKey, MAIN_KEY, ownerAllowed } from "./owner";
+import { type Environment, NonceGuard, SIGNED_SCHEME, verifyCall } from "./signed-call";
 import type { DeleteSkip } from "./retention";
 
 /** `/v1/bots/<key>` and what follows it. The key is checked before anything is built from it. */
@@ -39,8 +41,13 @@ export interface BotApi {
 }
 
 export interface AppOptions {
+  /** This service's secret: the HMAC key of the backend's signed calls (and the legacy bearer while it is accepted). */
   secret: string;
   accounts: Set<string> | "*";
+  /** The environment this service runs; a call signed for another is refused. Default `private`. */
+  environment?: Environment;
+  /** Also accept the legacy bearer plus `x-tinycloud-owner`. Unset: from BOTS_ACCEPT_LEGACY_OWNER_HEADER. */
+  acceptLegacyOwnerHeader?: boolean;
   bots: {
     forOwner(ownerDid: string): BotApi;
     /** A sibling by key. Without it the service has only Main. */
@@ -128,12 +135,29 @@ async function remove(options: AppOptions, owner: string, key: string): Promise<
 }
 
 export function createApp(options: AppOptions): (req: Request) => Promise<Response> {
-  return async req => {
-    const path = new URL(req.url).pathname;
-    if (req.method === "GET" && path === "/healthz") return new Response("ok");
-    const owner = authorizedOwner(req, options.secret, options.accounts);
-    if (!owner) return new Response(null, { status: 401 });
+  const environment = options.environment ?? "private";
+  const acceptLegacy = options.acceptLegacyOwnerHeader ?? legacyOwnerHeaderAccepted(process.env);
+  const nonces = new NonceGuard();
+  return async incoming => {
+    const url = new URL(incoming.url);
+    const path = url.pathname;
+    if (incoming.method === "GET" && path === "/healthz") return new Response("ok");
     const match = BOT_PATH.exec(path);
+    const authorization = incoming.headers.get("authorization");
+    let owner: string | null = null;
+    let req = incoming;
+    if (authorization?.startsWith(SIGNED_SCHEME)) {
+      // The owner and the bot come only from the signed call; the body is read once to check its hash.
+      const body = new Uint8Array(await incoming.arrayBuffer().catch(() => new ArrayBuffer(0)));
+      const claims = verifyCall(authorization, { method: incoming.method, path: path + url.search, body }, { secret: options.secret, direction: "to-service", environment, nonces });
+      if (claims && claims.bot === match?.[1] && ownerAllowed(claims.owner, options.accounts)) {
+        owner = claims.owner;
+        req = new Request(incoming.url, { method: incoming.method, headers: incoming.headers, body: body.byteLength > 0 ? body : undefined });
+      }
+    } else if (acceptLegacy) {
+      owner = authorizedOwner(incoming, options.secret, options.accounts);
+    }
+    if (!owner) return new Response(null, { status: 401 });
     if (!match || !isBotKey(match[1]!)) return new Response(null, { status: 404 });
     const key = match[1]!;
     const rest = match[2] ?? "";
