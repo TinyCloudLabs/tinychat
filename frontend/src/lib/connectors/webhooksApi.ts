@@ -253,7 +253,8 @@ export interface ConnectorWebhooksClientConfig {
   fetchImpl?: typeof fetch;
 }
 
-export type FirefliesPurgeCheck = (meetingId: string, sourceTimestamp: string | null) => Promise<boolean>;
+/** `source` names a ledger-only source such as Granola; absent means Fireflies. */
+export type FirefliesPurgeCheck = (meetingId: string, sourceTimestamp: string | null, source?: string) => Promise<boolean>;
 
 export interface ConnectorWebhooksClient {
   checkPurge?: FirefliesPurgeCheck;
@@ -417,10 +418,10 @@ export function createConnectorWebhooksClient(
   }
 
   return {
-    async checkPurge(meetingId, sourceTimestamp) {
+    async checkPurge(meetingId, sourceTimestamp, source) {
       const result = await request<{ blocked: boolean }>("/purge-check", {
         method: "POST",
-        body: { meetingId, sourceTimestamp },
+        body: source === undefined ? { meetingId, sourceTimestamp } : { meetingId, sourceTimestamp, source },
       });
       if (result.status !== "ok" || typeof result.value?.blocked !== "boolean") {
         throw new Error("Fireflies sync failed");
