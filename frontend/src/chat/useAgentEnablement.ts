@@ -234,9 +234,10 @@ export function createAgentAccessController(opts: UseAgentEnablementOptions) {
       revision: null, probeFailed: false, disconnecting: true, enableError: null, reconnectReason: null });
     signalChange();
     stopping = (async () => {
+      let failure = "Couldn't confirm the disconnect. Try again.";
       try {
         const token = opts.sessionStore.getToken();
-        if (!token) throw new Error("Disconnection was not confirmed. Sign in and retry.");
+        if (!token) { failure = "You're signed out, so we couldn't confirm the disconnect. Sign in and try again."; throw new Error(failure); }
         if (state.mcpServiceDid) {
           // The MCP cannot revoke a grant itself; the owner revokes it on the node from this session, and the status below is
           // read back from the MCP, so "Disconnected" is only shown once the MCP can no longer use the grant.
@@ -245,9 +246,9 @@ export function createAgentAccessController(opts: UseAgentEnablementOptions) {
           if (ceremony && replacementPending) await ceremony.catch(() => {});
           const revoked = await revokeMcpGrants(opts.tcw, state.mcpServiceDid);
           // Access that was connected but matched no grant means the match missed it: not a disconnect.
-          if (revoked === 0 && wasEnabled) throw new Error("Disconnection was not confirmed. Please retry.");
+          if (revoked === 0 && wasEnabled) throw new Error("Couldn't confirm the disconnect. Try again.");
           const readBack = await probeAgentSession(opts.backendUrl, token);
-          if (readBack.capability === "enabled" || readBack.status === null) throw new Error("Disconnection was not confirmed. Please retry.");
+          if (readBack.capability === "enabled" || readBack.status === null) throw new Error("Couldn't confirm the disconnect. Try again.");
           if (!disposed && operation === currentOperation) apply(readBack);
         } else {
           const body = await disconnectAgentSession(opts.backendUrl, token);
@@ -256,7 +257,7 @@ export function createAgentAccessController(opts: UseAgentEnablementOptions) {
           }
         }
       } catch {
-        if (operation === currentOperation) update({ status: null, enableError: "Disconnection was not confirmed. Please retry." });
+        if (operation === currentOperation) update({ status: null, enableError: failure });
       } finally {
         stopping = null;
         update({ disconnecting: false });

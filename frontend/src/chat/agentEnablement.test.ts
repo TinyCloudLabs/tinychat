@@ -509,7 +509,7 @@ describe("shared private access controller", () => {
     globalThis.fetch = (async () => new Response(null, { status: 503 })) as typeof fetch;
     const c = controller(); await c.onDisconnect();
     expect(c.getSnapshot().status).toBe(null);
-    expect(c.getSnapshot().enableError).toContain("not confirmed");
+    expect(c.getSnapshot().enableError).toContain("confirm the disconnect");
     expect(c.privateAccessRef.current.active).toBe(false);
     c.dispose();
   });
@@ -560,7 +560,7 @@ describe("shared private access controller", () => {
       const c = mcpController(false, []); await c.refresh();
       await c.onDisconnect();
       expect(c.getSnapshot().status).toBe(null);
-      expect(c.getSnapshot().enableError).toContain("not confirmed");
+      expect(c.getSnapshot().enableError).toContain("confirm the disconnect");
       c.dispose();
     });
 
@@ -570,7 +570,7 @@ describe("shared private access controller", () => {
       await c.onDisconnect();
       expect(c.getSnapshot().capability).not.toBe("enabled");
       expect(c.getSnapshot().status).toBe(null);
-      expect(c.getSnapshot().enableError).toContain("not confirmed");
+      expect(c.getSnapshot().enableError).toContain("confirm the disconnect");
       c.dispose();
     });
 
@@ -584,7 +584,7 @@ describe("shared private access controller", () => {
       await c.onDisconnect();
       expect(revoked).toEqual([]);
       expect(c.getSnapshot().status).toBe(null);
-      expect(c.getSnapshot().enableError).toContain("not confirmed");
+      expect(c.getSnapshot().enableError).toContain("confirm the disconnect");
       c.dispose();
     });
 

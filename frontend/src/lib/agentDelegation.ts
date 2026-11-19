@@ -473,9 +473,9 @@ export async function revokeMcpGrants(tcw: TinyCloudWeb, serviceDid: string): Pr
   const matches: string[] = [];
   let cursor: string | undefined;
   for (let page = 0; ; page++) {
-    if (page >= MCP_GRANT_QUERY_PAGES) throw new Error("Disconnection was not confirmed. Please retry.");
+    if (page >= MCP_GRANT_QUERY_PAGES) throw new Error("Couldn't confirm the disconnect. Try again.");
     const listing = await tcw.delegations.query({ direction: "granted", status: "active", limit: 100, ...(cursor ? { cursor } : {}) });
-    if (!listing.ok) throw new Error("Disconnection was not confirmed. Please retry.");
+    if (!listing.ok) throw new Error("Couldn't confirm the disconnect. Try again.");
     for (const item of listing.data.items) {
       if (item.delegateDid === serviceDid && item.status === "active" && item.resources.length > 0
         && item.resources.every(entry => MCP_CHAT_GRANT_RESOURCE.test(entry.resource))) matches.push(item.cid);
@@ -485,7 +485,7 @@ export async function revokeMcpGrants(tcw: TinyCloudWeb, serviceDid: string): Pr
   }
   for (const cid of matches) {
     const revoked = await tcw.revokeDelegation(cid);
-    if (!revoked.ok) throw new Error("Disconnection was not confirmed. Please retry.");
+    if (!revoked.ok) throw new Error("Couldn't confirm the disconnect. Try again.");
   }
   return matches.length;
 }
@@ -620,10 +620,10 @@ export async function disconnectAgentSession(backendUrl: string, token: string):
   const res = await fetch(`${backendUrl.replace(/\/$/, "")}/api/agent/session`, {
     method: "DELETE", headers: authHeaders(token),
   });
-  if (!res.ok) throw new Error("Disconnection was not confirmed. Please retry.");
+  if (!res.ok) throw new Error("Couldn't confirm the disconnect. Try again.");
   const body = await res.json() as AgentSessionSnapshot;
   if (body.status !== "none" || typeof body.revision !== "string" || !body.revision) {
-    throw new Error("Disconnection was not confirmed. Please retry.");
+    throw new Error("Couldn't confirm the disconnect. Try again.");
   }
   return body;
 }
