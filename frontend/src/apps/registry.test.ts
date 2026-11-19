@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { ONE_APPS, ONE_HOST_ORIGINS, framesAppsHere, frameUrl, oneAppsFor, type FramedOneApp } from "./registry";
+import { ONE_APPS, ONE_HOST_ORIGINS, appTarget, framedApp, framesAppsHere, frameUrl, oneApp, oneAppsFor, type FramedOneApp } from "./registry";
 import { joinScopes } from "./strings";
 
 const framed = (apps: readonly { kind: string }[]) => apps.filter((app): app is FramedOneApp => app.kind === "framed");
@@ -37,6 +37,18 @@ describe("registry", () => {
 
   test("the registry cannot be changed at runtime", () => {
     expect(Object.isFrozen(ONE_APPS)).toBe(true);
+  });
+
+  test("tiles: framed apps route inside One only on One's origin; Secrets always opens a new tab", () => {
+    const explorer = oneApp("xyz.tinycloud.explorer")!;
+    const secrets = oneApp("xyz.tinycloud.secrets")!;
+    expect(appTarget(explorer, "https://tinycloud.one")).toEqual({ kind: "route", path: "/chat/apps/xyz.tinycloud.explorer" });
+    expect(appTarget(explorer, "https://home.tinycloud.xyz")).toEqual({ kind: "newTab", url: "https://explorer.tinycloud.xyz/" });
+    expect(appTarget(secrets, "https://tinycloud.one")).toEqual({ kind: "newTab", url: "https://secrets.tinycloud.xyz/app" });
+    expect(appTarget(oneApp("capture")!, "https://home.tinycloud.xyz")).toEqual({ kind: "route", path: "/chat/capture" });
+    expect(framedApp("xyz.tinycloud.secrets")).toBeUndefined();
+    expect(framedApp("capture")).toBeUndefined();
+    expect(framedApp("xyz.tinycloud.explorer")?.id).toBe("xyz.tinycloud.explorer");
   });
 
   test("iOS leaves Account out; web and Android keep it", () => {

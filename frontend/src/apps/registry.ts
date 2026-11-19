@@ -46,10 +46,15 @@ export interface NativeOneApp extends OneAppBase {
   route: string;
 }
 
-/** An app One opens in a frame at `/chat/apps/<id>`. */
+/** A TinyCloud web app: framed at `/chat/apps/<id>` when `framed`, else opened in a new tab. */
 export interface FramedOneApp extends OneAppBase {
   id: FramedAppId;
   kind: "framed";
+  /**
+   * Whether One frames this app (with a delegation). False → its tile always opens `appUrl` in a new tab with no
+   * delegation. Secrets is false until the SDK can decrypt session-only (CONTRACT.md "OPEN → ANSWERED").
+   */
+  framed: boolean;
   /**
    * The exact origin One frames and accepts messages from (`https://host`, no path, no trailing slash), chosen at
    * build time by build kind: production builds contain only the production origin.
@@ -99,6 +104,7 @@ const ALL_APPS: readonly OneApp[] = [
   {
     id: "xyz.tinycloud.secrets",
     kind: "framed",
+    framed: false,
     ...text("xyz.tinycloud.secrets"),
     icon: KeyRound,
     origin: __ONE_APPS_BUILD_KIND__ === "dev" ? "https://localhost:5191"
@@ -122,6 +128,7 @@ const ALL_APPS: readonly OneApp[] = [
   {
     id: "xyz.tinycloud.opencredentials",
     kind: "framed",
+    framed: true,
     ...text("xyz.tinycloud.opencredentials"),
     icon: BadgeCheck,
     origin: __ONE_APPS_BUILD_KIND__ === "dev" ? "https://localhost:5192"
@@ -139,6 +146,7 @@ const ALL_APPS: readonly OneApp[] = [
   {
     id: "xyz.tinycloud.explorer",
     kind: "framed",
+    framed: true,
     ...text("xyz.tinycloud.explorer"),
     icon: Compass,
     origin: __ONE_APPS_BUILD_KIND__ === "dev" ? "https://localhost:5193"
@@ -158,6 +166,7 @@ const ALL_APPS: readonly OneApp[] = [
   {
     id: "xyz.tinycloud.account",
     kind: "framed",
+    framed: true,
     ...text("xyz.tinycloud.account"),
     icon: CircleUserRound,
     origin: __ONE_APPS_BUILD_KIND__ === "dev" ? "https://localhost:5194"
@@ -187,9 +196,22 @@ export function oneApp(id: string): OneApp | undefined {
   return ONE_APPS.find((app) => app.id === id);
 }
 
+/** The app One frames for `id`, or undefined (unknown id, native app, or an app that opens in a new tab). */
 export function framedApp(id: string): FramedOneApp | undefined {
   const app = oneApp(id);
-  return app?.kind === "framed" ? app : undefined;
+  return app?.kind === "framed" && app.framed ? app : undefined;
+}
+
+export type AppTarget = { kind: "route"; path: string } | { kind: "newTab"; url: string };
+
+/**
+ * Where a tile goes on a page at `origin` (`window.location.origin`): One's route for native apps and for apps One
+ * frames here; otherwise the app's own page in a new tab, with no delegation.
+ */
+export function appTarget(app: OneApp, origin: string): AppTarget {
+  if (app.kind === "native") return { kind: "route", path: app.route };
+  if (app.framed && framesAppsHere(origin)) return { kind: "route", path: appRoute(app) };
+  return { kind: "newTab", url: appUrl(app) };
 }
 
 /** The page the app opens outside One's frame (a new tab, no delegation). */
