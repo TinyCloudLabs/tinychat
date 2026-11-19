@@ -22,8 +22,8 @@ export interface AnswerOption { id: string; label: string; detail?: string; cost
 export const OWN_OPTION: AnswerOption = { id: "own-answer", label: "Your own answer" };
 
 /**
- * A question's options as buttons (design mock, 11-17): one outlined button per option, 56px tall, one per row and
- * full width on every screen (Sam, 11-17: stacked for legibility), with "Suggested" on the one its agent recommends
+ * A question's options as buttons (design mock): one outlined button per option, 44px tall at least, one per row and
+ * full width on every screen, stacked for legibility, with "Suggested" under the label of the one its agent recommends
  * (`suggested`, or else an option whose label ends in "(Recommended)"; the marker comes off the label, as in
  * `displayOptions`). The chosen one stays pressed; while its answer waits (`pending`) or is being saved (`saving`) it
  * reads as the wait, with Undo and a line that runs out, and the others dim. "Your own answer" is the last button:
@@ -43,7 +43,7 @@ export function AnswerOptions({ options: given, suggested: recommended, pending,
   disabled?: boolean;
   /** "Your own answer" as the last entry: while `open` its slot holds `box` (the text and Send) in place of the button; `onOpen(true)` opens it. */
   own?: { open: boolean; onOpen: (open: boolean) => void; box: ReactNode };
-  /** Small text at the right of the "Choose an option" line, such as when the question expires. */
+  /** Small text on its own line under the buttons, such as when the question expires. */
   note?: string;
   /** A tap on an option, with its label as the owner sees it (for `usePendingSend.start`). Never called for the own row. */
   onChoose: (choiceId: string, label: string) => void;
@@ -69,11 +69,10 @@ export function AnswerOptions({ options: given, suggested: recommended, pending,
     event.preventDefault(); undo();
   }
   const status = pending && waitingLabel ? `Your answer, ${waitingLabel}, sends in ${UNDO_SECONDS} seconds. Undo is available until then.` : saving ? "Sending…" : undone ? "Undone. Nothing was sent." : "";
-  // The legend and the note share a line while they fit and stack when they don't: both float, the buttons clear them.
+  // The legend is for screen readers only; the note (such as when the question expires) is its own line under the buttons.
   return <fieldset className="text-sm" onKeyDown={escape}>
-    <legend className="float-left mb-2 mr-3 p-0 text-xs font-medium leading-4 text-muted-foreground">Choose an option</legend>
-    {note && <p className="float-right mb-2 text-xs leading-4 tabular-nums text-muted-foreground">{note}</p>}
-    <div className="clear-both grid gap-2">
+    <legend className="sr-only">Choose an option</legend>
+    <div className="grid gap-2">
     {options.map((option) => {
       const held = waitingId === option.id;
       const isOwn = option === OWN_OPTION;
@@ -86,9 +85,10 @@ export function AnswerOptions({ options: given, suggested: recommended, pending,
           ? <div className={held ? "invisible" : ""}>{own?.box}</div>
           : isOwn
             ? <button type="button" aria-pressed={false} disabled={off} onClick={() => choose(option)} className="flex min-h-11 w-full items-center gap-2 rounded-xl px-3.5 text-left text-sm font-medium hover:bg-muted/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring fine:min-h-9"><PencilIcon aria-hidden className="size-4 shrink-0 text-muted-foreground" />{option.label}</button>
-            : <button type="button" aria-pressed={pressed} disabled={off} onClick={() => choose(option)} className={`flex min-h-14 w-full flex-col justify-center gap-px rounded-xl px-3.5 py-[9px] text-left transition-[background-color,transform] hover:bg-muted active:scale-[0.985] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring disabled:hover:bg-transparent disabled:active:scale-100 ${held ? "invisible" : ""}`}>
-              <span className="flex flex-wrap items-center gap-x-2 gap-y-1"><span className="min-w-0 break-words text-[15px] font-semibold leading-[1.3]">{option.label}</span>{suggested === option.id && <span className="shrink-0 rounded-full border border-border bg-background px-2 py-0.5 text-xs text-muted-foreground">Suggested</span>}</span>
-              {option.detail && <span className="block break-words text-[13px] leading-[1.35] text-muted-foreground">{option.detail}</span>}
+            : <button type="button" aria-pressed={pressed} disabled={off} onClick={() => choose(option)} className={`flex min-h-11 w-full flex-col justify-center gap-px rounded-xl px-3.5 py-[9px] text-left transition-[background-color,transform] hover:bg-muted active:scale-[0.985] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring disabled:hover:bg-transparent disabled:active:scale-100 ${held ? "invisible" : ""}`}>
+              <span className="min-w-0 break-words text-[13.5px] font-semibold leading-[17px]">{option.label}</span>
+              {suggested === option.id && <span className="block text-[11px] leading-[14px] text-muted-foreground">Suggested</span>}
+              {option.detail && <span className="block break-words text-[12.5px] leading-[1.35] text-muted-foreground">{option.detail}</span>}
               {option.cost && <span className="block text-xs">Cost: {option.cost}</span>}
             </button>}
         {/* The wait lies over the button, which keeps its size: nothing moves while Undo is on offer. The label never
@@ -105,6 +105,7 @@ export function AnswerOptions({ options: given, suggested: recommended, pending,
       </div>;
     })}
     </div>
+    {note && <p className="mt-2 text-xs leading-4 tabular-nums text-muted-foreground">{note}</p>}
     <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">{status}</p>
   </fieldset>;
 }
