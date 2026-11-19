@@ -36,6 +36,7 @@ beforeEach(() => {
   restoreDom = installDom();
   // Opening a card scrolls it into view, which asks the browser's bare matchMedia about reduced motion.
   Object.assign(globalThis, { matchMedia: window.matchMedia.bind(window) });
+  window.innerWidth = 800; // these tests open a card in its row (phone width)
   clock = installFakeClock();
   setSystemTime(new Date(SITREP_NOW));
 });
