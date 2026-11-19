@@ -8,6 +8,10 @@
 //! - the name attributes only of nodes a path ends on;
 //! - values only of the self-marker candidates inside a matched row.
 //!
+//! A step's `has` condition (a node of some role a few levels below) is answered from the scan
+//! alone, and before any label of that node is read: a list child that is not a participant row
+//! costs no text read at all.
+//!
 //! An element that the walk meets a second time (a toolbar whose children lead back to the window,
 //! or one element under two parents) is skipped: it is counted against the node budget, but it is
 //! not read again and not attached again.
@@ -19,7 +23,7 @@
 //! Nodes are kept in document order, so a node's subtree is the index range `index..end`.
 
 use crate::names::{split_suffix_tags, Name, MAX_PEOPLE};
-use crate::rules::{App, AppRules, Axis, Matcher, SelfMarker, SourceRule, Step};
+use crate::rules::{App, AppRules, Axis, Has, Matcher, SelfMarker, SourceRule, Step};
 use crate::session::{Discard, Meter};
 use crate::tree::{Node, Source, Structure, TextAttr};
 use std::collections::HashMap;
@@ -35,6 +39,7 @@ pub struct Entry {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SourceNames {
     pub id: String,
+    /// The source is a participant list (see `SourceRule::one_per_person`).
     pub one_per_person: bool,
     pub entries: Vec<Entry>,
 }
@@ -259,13 +264,13 @@ impl<H: Clone> Scan<H> {
                 let mut found = Vec::new();
                 match step.find {
                     Axis::Itself => {
-                        if self.matches(source, from, &step.matcher, meter)? {
+                        if self.step_matches(source, from, step, meter)? {
                             found.push(from);
                         }
                     }
                     Axis::Child | Axis::FirstChild => {
                         for child in self.nodes[from].children.clone() {
-                            if self.matches(source, child, &step.matcher, meter)? {
+                            if self.step_matches(source, child, step, meter)? {
                                 found.push(child);
                                 if step.find == Axis::FirstChild {
                                     break;
@@ -280,7 +285,7 @@ impl<H: Clone> Scan<H> {
                                 index = self.nodes[index].end;
                                 continue;
                             }
-                            if self.matches(source, index, &step.matcher, meter)? {
+                            if self.step_matches(source, index, step, meter)? {
                                 found.push(index);
                             }
                             index += 1;
@@ -408,6 +413,28 @@ impl<H: Clone> Scan<H> {
         Ok(false)
     }
 
+    /// A path step: the node's own structure, then what must lie below it, then its label. Only
+    /// the last one reads text, and only when the first two hold.
+    fn step_matches<S: Source<Node = H>>(
+        &mut self,
+        source: &mut S,
+        index: usize,
+        step: &Step,
+        meter: &mut Meter,
+    ) -> Result<bool, Discard> {
+        if !self.structure_matches(index, &step.matcher) {
+            return Ok(false);
+        }
+        if step
+            .has
+            .as_ref()
+            .is_some_and(|has| !self.has_below(index, has))
+        {
+            return Ok(false);
+        }
+        self.label_matches(source, index, &step.matcher, meter)
+    }
+
     /// Structure first; title and description only when the structure matched and a label list
     /// is set.
     fn matches<S: Source<Node = H>>(
@@ -417,20 +444,53 @@ impl<H: Clone> Scan<H> {
         matcher: &Matcher,
         meter: &mut Meter,
     ) -> Result<bool, Discard> {
+        if !self.structure_matches(index, matcher) {
+            return Ok(false);
+        }
+        self.label_matches(source, index, matcher, meter)
+    }
+
+    /// Role, subrole and identifier: answered from the scan, no read.
+    fn structure_matches(&self, index: usize, matcher: &Matcher) -> bool {
         let structure = &self.nodes[index].structure;
         let any = |wanted: &[String], have: Option<&str>| {
             wanted.is_empty() || wanted.iter().any(|want| Some(want.as_str()) == have)
         };
-        if !any(&matcher.role, structure.role.as_deref())
-            || !any(&matcher.subrole, structure.subrole.as_deref())
-        {
-            return Ok(false);
-        }
-        if let Some(identifier) = &matcher.identifier {
-            if !identifier.matches(structure.identifier.as_deref()) {
-                return Ok(false);
+        any(&matcher.role, structure.role.as_deref())
+            && any(&matcher.subrole, structure.subrole.as_deref())
+            && matcher
+                .identifier
+                .as_ref()
+                .is_none_or(|identifier| identifier.matches(structure.identifier.as_deref()))
+    }
+
+    /// True when a node at most `has.within` levels below `index` has the wanted structure.
+    /// Answered from the scan, no read.
+    fn has_below(&self, index: usize, has: &Has) -> bool {
+        let below = |node: usize, depth: usize| {
+            let children = self.nodes[node].children.iter();
+            children.map(move |&child| (child, depth + 1))
+        };
+        let mut stack: Vec<(usize, usize)> = below(index, 0).collect();
+        while let Some((node, depth)) = stack.pop() {
+            if self.structure_matches(node, &has.matcher) {
+                return true;
+            }
+            if depth < has.within {
+                stack.extend(below(node, depth));
             }
         }
+        false
+    }
+
+    /// The label list of a matcher, if it has one: one read of title and description.
+    fn label_matches<S: Source<Node = H>>(
+        &mut self,
+        source: &mut S,
+        index: usize,
+        matcher: &Matcher,
+        meter: &mut Meter,
+    ) -> Result<bool, Discard> {
         let Some(labels) = &matcher.label else {
             return Ok(true);
         };

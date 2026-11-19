@@ -1,6 +1,6 @@
 {
   "format": 1,
-  "version": 1,
+  "version": 2,
   "apps": [
     {
       "app": "google-meet",
@@ -15,12 +15,12 @@
       "sources": [
         {
           "id": "meet-people-panel",
-          "note": "Fixtures meet-people-panel (solo) and meet-two-people-panel: each row's title is the name; only the local user's row has a child text \"(You)\". Three or more people, long or virtualised lists, other languages and duplicate names are provisional until such snapshots exist.",
+          "note": "Fixtures meet-people-panel (solo), meet-two-people-panel and meet-three-connections-panel: each participant row's title is the name, and only the local user's row has a child text \"(You)\". The list also holds headings such as \"Merged audio\" (above devices that share a room). A participant row has its actions menu, a pop-up button three levels below it; a heading has none. That is a role, so it does not depend on the language. One account on two devices is two rows with one name. Long or virtualised lists and other languages are provisional until such snapshots exist.",
           "one_per_person": true,
           "path": [
             { "find": "descendant", "role": "AXGroup", "subrole": "AXLandmarkRegion", "label": ["In call"] },
             { "find": "descendant", "role": "AXList" },
-            { "find": "child", "role": "AXGroup" }
+            { "find": "child", "role": "AXGroup", "has": { "role": "AXPopUpButton", "within": 4 } }
           ],
           "name": { "from": ["title", "description"] },
           "self": { "find": "child", "role": "AXStaticText", "value": ["(You)"] }

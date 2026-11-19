@@ -2,16 +2,23 @@
 """Turn an ax-probe (or examples/snapshot.rs) JSONL capture into a test fixture that is safe to commit.
 
     python3 -I tools/scrub.py IN.jsonl OUT.jsonl --name "Real Name=Alex Example" [--name ...] [--snap N|last]
+    python3 -I tools/scrub.py IN.jsonl OUT.jsonl --redacted "9:1a2b3c4d=Alex Example" [--redacted ...]
 
 Input: one `meta` line, one `full` line with every node, then `diff` lines (the probe's format).
 Text in the input is redacted as «length:hash» except names passed to the probe, numbers, and the labels
-of controls and page regions.
+of controls and page regions. The output of examples/snapshot.rs is read the same way: its first
+`full` line is used, and its `timing`, `result` and `roster` lines are left out.
+
+A capture made without names in clear (the snapshot example's default) shows each name as a
+redacted «length:hash». --redacted gives such a mark and the made-up name to put in its place, so
+the real name never has to be known or typed.
 
 Kept: the tree (paths and depth), roles, subroles, AX identifiers, live-region fields, interface labels.
   - Labels redacted by the probe are restored when their hash matches KNOWN_LABELS.
   - Class names become stable tokens (`c` + 8 hex digits, the same in every fixture). They are the only
     speaking signal found so far, so phase 2 needs them; they never feed a rule (tree::Node has no field).
 Replaced: every real name given with --name, also inside longer labels; a name's single words too.
+  Every redacted mark given with --redacted, by its made-up name.
 Dropped: DOM ids, every other redacted text, and any text that looks like a URL, a meeting code or id,
   an email address, account, plan or organisation text ("(outside Org)"), or a device id, or that
   contains a word given with --drop. From the meta line: wall-clock times, process ids, the name
@@ -42,6 +49,11 @@ KNOWN_LABELS = [
     "Captions", "Call controls", "Side panel", "Contributors", "More options", "Adjust view",
     "Your microphone is off.", "Video settings", "Captions and translation",
     "Zoom Meeting", "Participants list",
+    # The heading Meet puts in the People list above devices that share a room.
+    "Merged audio",
+    "Call feature notifications and actions", "Leave call", "Share screen",
+    "Camera problem. Show more info", "Microphone problem. Show more info",
+    "Raise hand (ctrl + ⌘ + h)",
 ] + [f"Participants ({n})" for n in range(0, 101)] + [f"Contributors {n}" for n in range(0, 101)]
 
 REDACTED = re.compile(r"«(\d+):([0-9a-f]+)»")
@@ -73,7 +85,9 @@ def class_token(name):
 
 
 class Scrubber:
-    def __init__(self, names, drop=()):
+    def __init__(self, names, drop=(), redacted=None):
+        # Redacted marks that stand for a name, as (length, hash), and the made-up name of each.
+        self.redacted = redacted or {}
         pairs = []
         for real, fake in names:
             pairs.append((real, fake))
@@ -94,7 +108,8 @@ class Scrubber:
             return None
         match = REDACTED.fullmatch(value)
         if match:
-            label = KNOWN.get((int(match.group(1)), match.group(2)))
+            mark = (int(match.group(1)), match.group(2))
+            label = self.redacted.get(mark) or KNOWN.get(mark)
             if label is None:
                 self.dropped += 1
                 return None
@@ -170,7 +185,11 @@ def meta_os(meta):
 
 
 def root_apps(meta):
-    """Bundle id and version of the apps a root came from (root labels start with a<app index>)."""
+    """Bundle id and version of the apps a root came from.
+
+    The probe's root labels start with a<app index>. The snapshot example's do not say which app a
+    root belongs to, so its app is known only when it looked at one app.
+    """
     apps = meta.get("apps") or []
     found = []
     for root in meta.get("roots") or []:
@@ -180,7 +199,27 @@ def root_apps(meta):
             entry = {key: app.get(key) for key in ("bundleId", "version") if app.get(key)}
             if entry and entry not in found:
                 found.append(entry)
+    if not found and len(apps) == 1:
+        entry = {key: apps[0].get(key) for key in ("bundleId", "version") if apps[0].get(key)}
+        if entry:
+            found.append(entry)
     return found
+
+
+def root_labels(meta, full):
+    """The roots of the capture: as the meta line names them, or the paths that have no parent."""
+    roots = meta.get("roots")
+    if roots:
+        return roots
+    return sorted({node["p"] for node in full["nodes"] if "." not in node.get("p", ".")})
+
+
+def redacted_mark(text):
+    """"9:1a2b3c4d" or "«9:1a2b3c4d»" as (9, "1a2b3c4d")."""
+    match = re.fullmatch(r"«?(\d+):([0-9a-f]+)»?", text.strip())
+    if not match:
+        sys.exit(f"--redacted needs LENGTH:HASH=NAME, got {text!r}")
+    return int(match.group(1)), match.group(2)
 
 
 def main():
@@ -189,6 +228,8 @@ def main():
     parser.add_argument("output")
     parser.add_argument("--name", action="append", default=[], metavar="REAL=FAKE",
                         help="a real name and the fake name that replaces it (repeat for each person)")
+    parser.add_argument("--redacted", action="append", default=[], metavar="LENGTH:HASH=FAKE",
+                        help="a redacted mark that stands for a name, and the made-up name to put in its place")
     parser.add_argument("--drop", action="append", default=[], metavar="WORD",
                         help="drop every text that contains this word, such as an organisation name")
     parser.add_argument("--snap", help="rebuild the window after diff N ('last' = all diffs); drops the diffs")
@@ -208,7 +249,14 @@ def main():
     diffs = [line for line in lines if line.get("kind") == "diff"]
     attributes = [line for line in lines if line.get("kind") == "attributes"]
 
-    scrub = Scrubber(names, args.drop)
+    redacted = {}
+    for item in args.redacted:
+        mark, sep, fake = item.partition("=")
+        if not sep or not fake.strip():
+            sys.exit(f"--redacted needs LENGTH:HASH=NAME, got {item!r}")
+        redacted[redacted_mark(mark)] = fake.strip()
+
+    scrub = Scrubber(names, args.drop, redacted)
     snap = None
     if args.snap is not None:
         snap = "last" if args.snap == "last" else int(args.snap)
@@ -221,7 +269,7 @@ def main():
         "app": meta.get("app"),
         **meta_os(meta),
         "apps": root_apps(meta),
-        "roots": meta.get("roots", []),
+        "roots": root_labels(meta, full),
         "every": meta.get("every"),
         "redacted": True,
         "scrubbed": 2,

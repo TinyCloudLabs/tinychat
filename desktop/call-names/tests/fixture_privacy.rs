@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 /// Every text a fixture may hold, after each made-up name is written `{name}` and each run of
 /// digits `#`. A new fixture that needs a new entry must add it here, in review.
-const ALLOWED_TEXT: [&str; 72] = [
+const ALLOWED_TEXT: [&str; 73] = [
     "#",
     "(You)",
     "Add people",
@@ -40,6 +40,7 @@ const ALLOWED_TEXT: [&str; 72] = [
     "Meeting details",
     "Meeting host",
     "Meeting tools",
+    "Merged audio",
     "Microphone problem. Show more info",
     "More",
     "More actions",
@@ -224,8 +225,8 @@ fn fixture_meta_lines_say_nothing_about_the_capture_machine() {
                 path.display()
             );
         }
-        // The OS version without its build.
-        let os = meta["os"].as_str().unwrap();
+        // The OS version without its build, when the capture gave one.
+        let os = meta.get("os").map_or("", |os| os.as_str().unwrap());
         assert!(
             os.chars().all(|ch| ch.is_ascii_digit() || ch == '.'),
             "{}: os {os:?}",

@@ -1873,10 +1873,12 @@ mod tests {
 
     #[test]
     fn two_people_with_a_known_name_mark_nobody() {
+        // Two entries carry the known name: the roster keeps one entry for each spelling, and a
+        // known name is compared without case and spacing.
         let mut rig = Rig::with_account(|| Some("Alex Example".to_owned()));
         rig.next(vec![people(&[
             ("Alex Example", false),
-            ("Alex Example", false),
+            ("ALEX EXAMPLE", false),
             ("Robin Sample", false),
         ])]);
         rig.host.record(RECORDING, STEREO, 1_000);
@@ -1905,6 +1907,21 @@ mod tests {
             file.contains(r#""id":"p2""#) && !file.contains("\"self\""),
             "{file}"
         );
+    }
+
+    #[test]
+    fn one_name_on_two_rows_is_one_person_for_the_guess() {
+        // The user's account is in the call on two devices: two rows, one name, one person.
+        let mut rig = Rig::with_account(|| Some("Alex Example".to_owned()));
+        rig.next(vec![people(&[
+            ("Alex Example", false),
+            ("Alex Example", false),
+            ("Robin Sample", false),
+        ])]);
+        rig.host.record(RECORDING, STEREO, 1_000);
+        rig.tick();
+        assert_eq!(rig.file(RECORDING).as_deref(), Some(ALEX_AND_SAM));
+        assert!(rig.host.reports().pop().unwrap().guessed);
     }
 
     #[test]

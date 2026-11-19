@@ -7,6 +7,9 @@
 //!   read on a node that the structure has not already selected;
 //! - step to the node itself, a child, the first matching child, or any descendant, never to a
 //!   child index;
+//! - ask that a matched node has, a few levels below it, a node of a given role, subrole or
+//!   identifier (`has`). This is structure only: it cannot name a label, so it never reads text.
+//!   It tells a participant row (which holds a menu button) from a heading in the same list;
 //! - read a name from the title, description or value of the node the path ends on.
 //!
 //! What a rules file cannot change lives in code: which apps and windows are read (`ax`), that
@@ -30,6 +33,8 @@ const MAX_STEPS: usize = 8;
 const MAX_MATCHERS: usize = 16;
 const MAX_LIST: usize = 64;
 const MAX_TEXT: usize = 200;
+/// How far below a node a `has` condition may look.
+const MAX_HAS_DEPTH: usize = 8;
 
 /// The meeting apps this crate knows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -71,8 +76,9 @@ pub struct SourceRule {
     pub id: String,
     #[serde(default)]
     pub note: Option<String>,
-    /// Each match is a different person (a participant list), so two equal names are two people.
-    /// Otherwise one person can match more than once (a tile and its copy) and equal names merge.
+    /// The source is a participant list: one match for each connection to the call. It says what
+    /// kind of source this is and nothing more. The roster keeps one person for each name from
+    /// every source, because one account on two devices is two rows with one name.
     #[serde(default)]
     pub one_per_person: bool,
     pub path: Vec<Step>,
@@ -88,8 +94,49 @@ pub struct SourceRule {
 pub struct Step {
     pub find: Axis,
     pub matcher: Matcher,
+    /// What must lie below the node as well. Checked on structure alone, before any label is read.
+    pub has: Option<Has>,
     /// With `descendant`: subtrees whose root matches one of these are neither matched nor entered.
     pub skip: Vec<Matcher>,
+}
+
+/// A condition on what lies below a node: some node at most `within` levels down has this role,
+/// subrole or identifier. It has no label, so checking it reads no text.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(try_from = "HasJson")]
+pub struct Has {
+    /// Role, subrole and identifier only: `label` is always `None`.
+    pub matcher: Matcher,
+    /// How far down to look: 1 is the node's children.
+    pub within: usize,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HasJson {
+    #[serde(default, deserialize_with = "one_or_many")]
+    role: Vec<String>,
+    #[serde(default, deserialize_with = "one_or_many")]
+    subrole: Vec<String>,
+    #[serde(default)]
+    identifier: Option<IdMatch>,
+    within: usize,
+}
+
+impl TryFrom<HasJson> for Has {
+    type Error = String;
+
+    fn try_from(json: HasJson) -> Result<Self, String> {
+        Ok(Has {
+            matcher: Matcher {
+                role: json.role,
+                subrole: json.subrole,
+                identifier: json.identifier,
+                label: None,
+            },
+            within: json.within,
+        })
+    }
 }
 
 #[derive(Deserialize)]
@@ -104,6 +151,8 @@ struct StepJson {
     identifier: Option<IdMatch>,
     #[serde(default)]
     label: Option<Vec<String>>,
+    #[serde(default)]
+    has: Option<Has>,
     #[serde(default)]
     skip: Vec<Matcher>,
 }
@@ -120,6 +169,7 @@ impl TryFrom<StepJson> for Step {
                 identifier: json.identifier,
                 label: json.label,
             },
+            has: json.has,
             skip: json.skip,
         })
     }
@@ -354,6 +404,12 @@ fn check_source(source: &SourceRule) -> Result<(), String> {
 
 fn check_step(step: &Step, at: &str) -> Result<(), String> {
     check_matcher(&step.matcher, at)?;
+    if let Some(has) = &step.has {
+        check_matcher(&has.matcher, &format!("{at} has"))?;
+        if has.within == 0 || has.within > MAX_HAS_DEPTH {
+            return Err(format!("{at} has: within must be 1 to {MAX_HAS_DEPTH}"));
+        }
+    }
     if !step.skip.is_empty() && step.find != Axis::Descendant {
         return Err(format!("{at}: skip only applies to descendant steps"));
     }

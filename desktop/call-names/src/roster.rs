@@ -1,9 +1,10 @@
 //! The people seen during one recording.
 //!
 //! Each tick's [`Extraction`] is added with the recording's audio clock (`audio_ms`). People get
-//! stable ids `p1`, `p2`, … in first-seen order. Equal names merge, except that a source with one
-//! row per person (a participant list) can show that two people share a name: the roster keeps as
-//! many people of that name as one such source showed at once.
+//! stable ids `p1`, `p2`, … in first-seen order. Equal names are one person, wherever they show:
+//! one account that joins on two devices is two rows with one name in a participant list, and one
+//! person can fill two tiles. Two people who share a display name cannot be told apart from that,
+//! so they are one entry as well.
 //!
 //! A person is `self` only when the window marked that entry, and a recording has at most one
 //! `self`. A guest chooses their own display name and can imitate the mark, so:
@@ -22,7 +23,6 @@ use crate::extract::Extraction;
 use crate::names::{json_error, Name, MAX_PEOPLE};
 use crate::rules::App;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
 /// One person, with when they were first and last seen on the recording's audio clock.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -67,23 +67,15 @@ impl Roster {
         if self.app.is_some_and(|app| app != extraction.app) {
             return false;
         }
-        // For each name: how many people this tick shows at once.
+        // The names this tick shows, in the order met.
         let mut order: Vec<&Name> = Vec::new();
-        let mut tick: HashMap<&Name, usize> = HashMap::new();
         // The names this tick marks as the local user. A source with more than one mark gives none.
         let mut selves: Vec<&Name> = Vec::new();
         for source in &extraction.sources {
-            let mut counts: HashMap<&Name, usize> = HashMap::new();
             for entry in &source.entries {
-                *counts.entry(&entry.name).or_default() += 1;
                 if !order.contains(&&entry.name) {
                     order.push(&entry.name);
                 }
-            }
-            for (name, people) in counts {
-                let people = if source.one_per_person { people } else { 1 };
-                let best = tick.entry(name).or_default();
-                *best = (*best).max(people);
             }
             let mut marked = source.entries.iter().filter(|entry| entry.is_self);
             if let (Some(entry), None) = (marked.next(), marked.next()) {
@@ -102,18 +94,12 @@ impl Roster {
         }
         self.app = Some(extraction.app);
         for name in order {
-            let people = tick[name];
-            let mut have = self
-                .people
-                .iter()
-                .filter(|person| &person.name == name)
-                .count();
-            while have < people {
-                if self.people.len() == MAX_PEOPLE {
-                    changed |= !self.truncated;
-                    self.truncated = true;
-                    break;
-                }
+            if let Some(person) = self.people.iter_mut().find(|person| &person.name == name) {
+                person.last_ms = person.last_ms.max(audio_ms);
+            } else if self.people.len() == MAX_PEOPLE {
+                changed |= !self.truncated;
+                self.truncated = true;
+            } else {
                 let id = format!("p{}", self.people.len() + 1);
                 self.people.push(Person {
                     id,
@@ -122,11 +108,7 @@ impl Roster {
                     first_ms: audio_ms,
                     last_ms: audio_ms,
                 });
-                have += 1;
                 changed = true;
-            }
-            for person in self.people.iter_mut().filter(|person| &person.name == name) {
-                person.last_ms = person.last_ms.max(audio_ms);
             }
         }
         if let [name] = selves.as_slice() {
@@ -415,26 +397,48 @@ mod tests {
     }
 
     #[test]
-    fn a_participant_list_can_hold_two_people_with_one_name() {
+    fn the_same_name_twice_in_a_participant_list_is_one_person() {
+        // One account that joins on two devices is two rows with one name.
         let mut roster = Roster::new();
-        roster.observe(0, &panel(vec![entry("Alex", true), entry("Alex", false)]));
+        let rows = panel(vec![
+            entry("Alex Example", true),
+            entry("Robin Sample", false),
+            entry("Robin Sample", false),
+        ]);
+        assert!(roster.observe(0, &rows));
         assert_eq!(
             summary(&roster),
             [
-                ("p1".into(), "Alex".into(), true),
-                ("p2".into(), "Alex".into(), false)
+                ("p1".into(), "Alex Example".into(), true),
+                ("p2".into(), "Robin Sample".into(), false)
             ]
         );
-        // The same two people in later ticks, from either source, add nobody.
-        assert!(!roster.observe(
-            5_000,
-            &panel(vec![entry("Alex", true), entry("Alex", false)])
-        ));
+        // The same rows in later ticks, from either source, add nobody.
+        assert!(!roster.observe(5_000, &rows));
         assert!(!roster.observe(
             9_000,
-            &tiles(vec![entry("Alex", false), entry("Alex", false)])
+            &tiles(vec![
+                entry("Robin Sample", false),
+                entry("Robin Sample", false),
+                entry("Alex Example", false),
+            ])
         ));
         assert_eq!(roster.people().len(), 2);
+        assert_eq!(roster.people()[1].last_ms, 9_000);
+
+        // The user's own second device has no mark of its own: still one person, and the user.
+        let mut roster = Roster::new();
+        roster.observe(
+            0,
+            &panel(vec![
+                entry("Alex Example", true),
+                entry("Alex Example", false),
+            ]),
+        );
+        assert_eq!(
+            summary(&roster),
+            [("p1".into(), "Alex Example".into(), true)]
+        );
     }
 
     #[test]
