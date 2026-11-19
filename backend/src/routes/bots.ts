@@ -21,7 +21,7 @@ export interface BotsConfig {
   postTimeoutMs: number;
   fetchImpl?: typeof fetch;
   onTurnFinished?: () => void;
-  /** The bots a turn of `sourceKey` may message, asked for by the owner's DID. Absent means none. */
+  /** Current owner-scoped admission for an outgoing turn, supplied by the registry. */
   listForTurn?: (ownerDid: string, sourceKey: string) => Promise<string[]>;
 }
 
@@ -31,6 +31,15 @@ const UNAVAILABLE = { code: "bot_unavailable", message: "Main isn't available. T
 /** Same canonical owner DID as MCP chat: did:pkh on chain 1 with the lowercased address. */
 export function botOwnerDid(address: string): string {
   return `did:pkh:eip155:1:${address.toLowerCase()}`;
+}
+
+/** Builds the internal send body from the authenticated owner and route's admitted bot. */
+export async function botTurnBody(config: BotsConfig, address: string, sourceKey: string, text: string) {
+  try {
+    const messageableBotKeys = await config.listForTurn?.(botOwnerDid(address), sourceKey);
+    if (messageableBotKeys?.length) return { text, messageableBotKeys };
+  } catch { /* A registry read failure leaves the turn without messaging. */ }
+  return { text };
 }
 
 /**
@@ -66,18 +75,6 @@ export function botsFromEnv(env: Record<string, string | undefined>): BotsConfig
     ...(connectHost ? { fetchImpl: botsConnectFetch(serviceUrl, connectHost) } : {}),
     postTimeoutMs: Number.isInteger(postTimeoutMs) && postTimeoutMs > 0 ? postTimeoutMs : 120_000,
     accountAllowed: address => accounts.has("*") || accounts.has(address.toLowerCase()) };
-}
-
-/**
- * What the service is sent for one turn. The bots the turn may message come from `listForTurn` alone: nothing the
- * browser sent is in it except the text the route has checked.
- */
-export async function botTurnBody(config: BotsConfig, address: string, sourceKey: string, text: string) {
-  try {
-    const messageableBotKeys = await config.listForTurn?.(botOwnerDid(address), sourceKey);
-    if (messageableBotKeys?.length) return { text, messageableBotKeys };
-  } catch { /* A registry read failure leaves the turn without messaging. */ }
-  return { text };
 }
 
 /**

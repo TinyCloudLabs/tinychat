@@ -42,23 +42,25 @@ export interface HistoryBatch {
   bot?: string;
 }
 /** The activity record emitted by the supervisor and stored in the owner's history. */
-export interface BotActivityRecord {
+export type BotActivityRecord = {
   type: "activity";
   id: string;
-  verb: "ran_commands" | "changed_files";
   count: number;
   at: string;
-}
+} & ({ verb: "ran_commands" | "changed_files" } | { verb: "messaged_bot"; targetKey: string });
 const isObject = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 
 export function isBotActivityRecord(value: unknown): value is BotActivityRecord {
-  return isObject(value) && Object.keys(value).length === 5 && value.type === "activity"
+  return isObject(value) && value.type === "activity"
     && typeof value.id === "string" && value.id.length === 32 && /^[a-f0-9]{32}$/.test(value.id)
-    && (value.verb === "ran_commands" || value.verb === "changed_files")
     && typeof value.count === "number" && Number.isInteger(value.count) && value.count >= 1 && value.count <= 256
     && typeof value.at === "string" && value.at.length === 24
-    && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(value.at) && Number.isFinite(Date.parse(value.at));
+    && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(value.at) && Number.isFinite(Date.parse(value.at))
+    && (value.verb === "messaged_bot"
+      ? Object.keys(value).length === 6 && typeof value.targetKey === "string"
+        && (value.targetKey === "main" || (value.targetKey.length === 32 && HISTORY_BOT_KEY.test(value.targetKey)))
+      : Object.keys(value).length === 5 && (value.verb === "ran_commands" || value.verb === "changed_files"));
 }
 export function checkedBatch(value: unknown): HistoryBatch {
   const batch = value as HistoryBatch;

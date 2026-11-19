@@ -1,10 +1,11 @@
-// Supervisor process: the internal API plus the bot sandboxes. Holds BOTS_SERVICE_SECRET and nothing else secret;
-// the model key lives only in the gateway container.
+// Supervisor process: the internal API plus the bot sandboxes. Holds the secrets for signed bots calls.
+// The model key lives only in the gateway container.
 
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { rootProblem } from "./retention";
 import { BotManager } from "./bot";
+import { createAdmissionClient } from "./bot-admission";
 import { supervisorConfig } from "./config";
 import { OwnerManifests } from "./manifest";
 import { RunscHost } from "./sandbox";
@@ -38,6 +39,7 @@ Bun.serve({
   fetch: createApp({
     secret: cfg.serviceSecret, accounts: cfg.accounts, environment: "private", acceptLegacyOwnerHeader: cfg.acceptLegacyOwnerHeader,
     bots, manifest: new OwnerManifests(manifestRoot, cfg.maxBotsPerOwner),
+    admit: cfg.admissionControlKey ? createAdmissionClient(cfg.egressRoot, cfg.admissionControlKey) : undefined,
   }),
 });
 console.log(

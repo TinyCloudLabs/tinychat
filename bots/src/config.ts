@@ -1,6 +1,6 @@
 // Environment for the two bots processes: the supervisor (not privileged, but holds what runsc needs; runs the
 // sandboxes, answers the backend) and the egress gateway (unprivileged, the only holder of the model key).
-// Neither reads the other's secrets.
+// The supervisor holds its control key and the gateway holds the backend admission secret.
 
 import { dirname, join } from "node:path";
 
@@ -8,6 +8,7 @@ type Env = Record<string, string | undefined>;
 
 export const DEFAULT_MODEL = "z-ai/glm-5.2";
 export const PINNED_UPSTREAM = "https://tee.redpill.ai";
+export const DEFAULT_BACKEND_ORIGIN = "https://api.tinycloud.chat";
 /** 256 bits, hex or base64url encoded. */
 const MIN_SERVICE_SECRET_CHARS = 43;
 
@@ -23,6 +24,14 @@ function required(env: Env, name: string): string {
   const value = env[name];
   if (!value) throw new Error(`${name} is not set`);
   return value;
+}
+
+function backendCallSecret(env: Env): string | undefined {
+  const secret = env.BOTS_BACKEND_CALL_SECRET || undefined;
+  if (secret && secret.length < MIN_SERVICE_SECRET_CHARS) {
+    throw new Error("BOTS_BACKEND_CALL_SECRET must be a unique 256-bit secret");
+  }
+  return secret;
 }
 
 /**
@@ -51,6 +60,7 @@ export function legacyOwnerHeaderAccepted(env: Env): boolean {
 export interface SupervisorConfig {
   port: number;
   serviceSecret: string;
+  admissionControlKey?: string;
   /** Lowercased addresses, or "*" for every account. Empty admits nobody. */
   accounts: Set<string> | "*";
   acceptLegacyOwnerHeader: boolean;
@@ -85,6 +95,10 @@ export function supervisorConfig(env: Env): SupervisorConfig {
   if (serviceSecret.length < MIN_SERVICE_SECRET_CHARS) {
     throw new Error("BOTS_SERVICE_SECRET must be a unique 256-bit secret (openssl rand -hex 32)");
   }
+  const controlKey = env.BOTS_ADMISSION_CONTROL_KEY || undefined;
+  if (controlKey && !/^[A-Za-z0-9_-]{43}$/.test(controlKey)) {
+    throw new Error("BOTS_ADMISSION_CONTROL_KEY must be a 32-byte base64url key");
+  }
   const list = (env.BOTS_TEST_ACCOUNTS ?? "").split(",").map(value => value.trim().toLowerCase()).filter(Boolean);
   const limits: SandboxLimits = {
     memoryMb: int(env, "BOTS_SANDBOX_MEMORY_MB", 1536, 256),
@@ -111,6 +125,7 @@ export function supervisorConfig(env: Env): SupervisorConfig {
   return {
     port: int(env, "PORT", 8080),
     serviceSecret,
+    admissionControlKey: controlKey,
     accounts: list.includes("*") ? "*" : new Set(list),
     acceptLegacyOwnerHeader: legacyOwnerHeaderAccepted(env),
     model: env.BOTS_MODEL?.trim() || DEFAULT_MODEL,
@@ -174,7 +189,16 @@ function upstream(env: Env): string {
   return url.origin;
 }
 
-export function gatewayConfig(env: Env): GatewayConfig {
+function backendOrigin(env: Env): string {
+  const raw = env.BACKEND_ORIGIN?.trim() || DEFAULT_BACKEND_ORIGIN;
+  const url = URL.parse(raw);
+  if (!url || url.protocol !== "https:" || (raw !== url.origin && raw !== `${url.origin}/`)) {
+    throw new Error("BACKEND_ORIGIN must be an HTTPS origin");
+  }
+  return url.origin;
+}
+
+export function gatewayConfig(env: Env): GatewayConfig & { backendOrigin: string; backendCallSecret?: string } {
   const model = env.BOTS_MODEL?.trim() || DEFAULT_MODEL;
   const models = (env.BOTS_MODELS ?? "").split(",").map(value => value.trim()).filter(Boolean);
   const botDailyTokens = int(env, "BOTS_BOT_DAILY_TOKENS", 2_000_000);
@@ -183,6 +207,8 @@ export function gatewayConfig(env: Env): GatewayConfig {
     egressRoot: env.BOTS_EGRESS_ROOT ?? "/egress",
     modelKey: required(env, "REDPILL_API_KEY"),
     upstream: upstream(env),
+    backendOrigin: backendOrigin(env),
+    backendCallSecret: backendCallSecret(env),
     models: models.length > 0 ? models : [model],
     maxTokens: int(env, "BOTS_MAX_TOKENS", 8192),
     botDailyTokens,
