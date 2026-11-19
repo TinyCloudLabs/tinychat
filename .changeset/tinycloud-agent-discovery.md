@@ -2,4 +2,4 @@
 "@tinychat/frontend": patch
 ---
 
-tinycloud.one now serves its agent discovery files directly.
+tinycloud.one serves its agent discovery files, and a missing discovery file answers 404.
