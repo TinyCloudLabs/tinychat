@@ -19,6 +19,17 @@ export interface SpaceGrant {
   prompted: boolean;
 }
 
+/** `delegate` throws this when the node does not host `spaceId`: the grant leaves that space out; nothing creates it. */
+export class SpaceNotHostedError extends Error {
+  constructor(readonly spaceId: string) {
+    super(`one_apps_space_not_hosted:${spaceId}`);
+    this.name = "SpaceNotHostedError";
+  }
+}
+
+/** The name part of a space id (`tinycloud:pkh:eip155:1:0xabc:secrets` → `secrets`). */
+export const spaceName = (spaceId: string) => spaceId.slice(spaceId.lastIndexOf(":") + 1);
+
 export interface EmbedHostDeps {
   app: FramedOneApp;
   owner: OneAppOwner;
@@ -27,11 +38,22 @@ export interface EmbedHostDeps {
   /** Posts to the frame with targetOrigin = `app.origin`. */
   post(message: HostMessage): void;
   holds(entries: PermissionEntry[]): boolean;
-  /** `tcw.delegateTo(audience, entries, { expiry: 1h, disableSubDelegation: true })` for one space. */
+  /**
+   * `tcw.delegateTo(audience, entries, { expiry: 1h, disableSubDelegation: true, requireActivation: true })` for one
+   * space. Throws `SpaceNotHostedError` when the node skips the space (it isn't set up).
+   */
   delegate(audience: string, entries: PermissionEntry[]): Promise<SpaceGrant>;
   revoke(cid: string): Promise<void>;
-  /** Shows the ask card for `scopes`; on Continue runs the OpenKey step-up for `entries`. True once One holds them. */
-  stepUp(scopes: ScopeId[], entries: PermissionEntry[]): Promise<boolean>;
+  /**
+   * Shows the ask card for `scopes` (the spaces that exist), noting `missing` (space names known not to be set up);
+   * on Continue runs the OpenKey step-up for `entries`. True once One holds them.
+   */
+  stepUp(scopes: ScopeId[], entries: PermissionEntry[], missing: string[]): Promise<boolean>;
+  /**
+   * Tells the person the app asked for spaces that aren't set up (space names). `none`: nothing it asked for exists,
+   * so there is nothing to approve.
+   */
+  missing(spaces: string[], none: boolean): void;
   theme(): EmbedTheme;
   onError?(error: unknown): void;
 }
@@ -94,6 +116,8 @@ export class EmbedHost {
   private live: LiveGrant | undefined;
   private closed = false;
   private queue: Promise<void> = Promise.resolve();
+  /** Space ids the node reported as not hosted on the latest delegation to them. */
+  private readonly missingSpaces = new Set<string>();
 
   constructor(private readonly deps: EmbedHostDeps) {
     this.ceiling = resolveCeiling(deps.owner, deps.app.ceiling(deps.owner));
@@ -154,34 +178,89 @@ export class EmbedHost {
       this.deps.post({ v: 1, type: "tc-embed/denied", nonce: message.nonce });
       return;
     }
-    const missing = asked.filter((entry) => !this.deps.holds([entry.permission]));
-    if (missing.length > 0) {
-      const approved = await this.deps.stepUp([...new Set(asked.map((entry) => entry.scope))], missing.map((entry) => entry.permission));
+    const askedSpaces = [...new Set(asked.flatMap(({ permission }) => (permission.space === undefined ? [] : [permission.space])))];
+    await this.recheckMissing(askedSpaces.filter((spaceId) => this.missingSpaces.has(spaceId)));
+    if (this.closed) return;
+    // Known before signing (a silent grant was refused there): never put to OpenKey, named on the card instead.
+    const knownMissing = askedSpaces.filter((spaceId) => this.missingSpaces.has(spaceId));
+    const approvable = asked.filter(({ permission }) => permission.space === undefined || !this.missingSpaces.has(permission.space));
+    if (approvable.length === 0) {
+      this.deps.missing(knownMissing.map(spaceName), true);
+      this.deps.post({ v: 1, type: "tc-embed/denied", nonce: message.nonce });
+      return;
+    }
+    const needed = approvable.filter((entry) => !this.deps.holds([entry.permission]));
+    if (needed.length > 0) {
+      const scopes = [...new Set(approvable.map((entry) => entry.scope))];
+      const approved = await this.deps.stepUp(scopes, needed.map((entry) => entry.permission), knownMissing.map(spaceName));
       if (this.closed) return;
       if (!approved) {
         this.deps.post({ v: 1, type: "tc-embed/denied", nonce: message.nonce });
         return;
       }
+    } else if (knownMissing.length > 0) {
+      this.deps.missing(knownMissing.map(spaceName), false);
     }
-    await this.grant(this.heldScope(), message.nonce);
+    const skipped = await this.grant(this.heldScope(), message.nonce);
+    if (skipped === undefined || this.closed) return;
+    // Found only once the node saw the approved scope (post-activation): said after the fact.
+    const foundMissing = askedSpaces.filter((spaceId) => skipped.includes(spaceId) && !knownMissing.includes(spaceId));
+    if (foundMissing.length > 0) {
+      const noneGranted = askedSpaces.every((spaceId) => skipped.includes(spaceId)) && asked.every(({ permission }) => permission.space !== undefined);
+      this.deps.missing(foundMissing.map(spaceName), noneGranted);
+    }
   }
 
-  private async grant(scope: ResolvedEntry[], nonce: string): Promise<void> {
+  /** Spaces may have been set up since (in another tab): a silent delegation to each tells; a fresh one is revoked. */
+  private async recheckMissing(spaceIds: string[]): Promise<void> {
+    if (spaceIds.length === 0) return;
+    const audience = this.sessionDid!.split("#")[0];
+    const held = bySpace(this.heldScope());
+    for (const spaceId of spaceIds) {
+      const entries = held.get(spaceId);
+      if (!entries) continue;
+      try {
+        const probe = await this.deps.delegate(audience, entries);
+        this.missingSpaces.delete(spaceId);
+        await this.deps.revoke(probe.cid).catch((error: unknown) => this.deps.onError?.(error));
+      } catch (error) {
+        if (!(error instanceof SpaceNotHostedError)) throw error;
+      }
+    }
+  }
+
+  /**
+   * Delegates `scope` space by space, posts the grant and revokes the one it replaces. A space the node doesn't host
+   * is left out and remembered as missing. Returns the skipped space ids, or undefined when nothing was sent.
+   */
+  private async grant(scope: ResolvedEntry[], nonce: string): Promise<string[] | undefined> {
     const audience = this.sessionDid!.split("#")[0];
     const made: SpaceGrant[] = [];
+    const skipped: string[] = [];
     const discard = () => Promise.allSettled(made.map((grant) => this.deps.revoke(grant.cid)));
     try {
-      for (const entries of bySpace(scope).values()) {
-        const grant = await this.deps.delegate(audience, entries);
+      for (const [spaceId, entries] of bySpace(scope)) {
+        let grant: SpaceGrant;
+        try {
+          grant = await this.deps.delegate(audience, entries);
+        } catch (error) {
+          if (!(error instanceof SpaceNotHostedError)) throw error;
+          skipped.push(spaceId);
+          continue;
+        }
         made.push(grant);
         if (grant.prompted || this.closed) {
           await discard();
-          return;
+          return undefined;
         }
       }
     } catch (error) {
       await discard();
       throw error;
+    }
+    for (const spaceId of bySpace(scope).keys()) {
+      if (skipped.includes(spaceId)) this.missingSpaces.add(spaceId);
+      else this.missingSpaces.delete(spaceId);
     }
     const expiresAt = made.length > 0 ? Math.min(...made.map((grant) => grant.expiresAt)) : Date.now() + 60 * 60 * 1000;
     this.deps.post({
@@ -195,5 +274,6 @@ export class EmbedHost {
     const replaced = this.live?.cids ?? [];
     this.live = { key: scopeKey(scope), cids: made.map((grant) => grant.cid) };
     await Promise.allSettled(replaced.map((cid) => this.deps.revoke(cid)));
+    return skipped;
   }
 }

@@ -5,11 +5,17 @@ import { connectWallet } from "@tinyboilerplate/client";
 import { APP_NAME } from "../lib/homeSite";
 import { openkeyPasskeysSupported } from "../lib/openkeyPasskeys";
 
+/** The slice of OpenKey's connect the step-up uses: the owner's address and a byte-exact message signer. */
+export type StepUpConnect = (options: Parameters<typeof connectWallet>[0]) => Promise<{
+  address: string;
+  openkey: { signMessage(input: { message: string }): Promise<{ signature: string }> };
+}>;
+
 /**
  * Asks OpenKey for `permissions` (one `requestPermissions` call; the SDK signs once per space) and resolves true only
  * when this same session now holds all of them. Throws when the owner or session changed underneath.
  */
-export async function stepUpForApp(tcw: TinyCloudWeb, permissions: PermissionEntry[], connect = connectWallet): Promise<boolean> {
+export async function stepUpForApp(tcw: TinyCloudWeb, permissions: PermissionEntry[], connect: StepUpConnect = connectWallet): Promise<boolean> {
   const session = tcw.session();
   if (!session) return false;
   const owner = session.address.toLowerCase();

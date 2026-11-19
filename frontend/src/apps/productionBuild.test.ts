@@ -5,7 +5,7 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import path from "node:path";
 
 const frontend = path.join(import.meta.dir, "../..");
-const FORBIDDEN = [/pages\.dev/, /localhost:5\d{3}/, /feat-one-apps/];
+const FORBIDDEN = [/pages\.dev/, /localhost:5\d{3}/, /feat-one-apps/, /one-apps-dev/];
 
 function files(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) =>
@@ -29,6 +29,8 @@ describe("One Apps production build", () => {
         expect(shipped.filter((file) => pattern.test(readFileSync(file, "utf8"))).map((file) => path.relative(outDir, file))).toEqual([]);
       }
       expect(readFileSync(path.join(outDir, "_headers"), "utf8")).not.toMatch(/localhost|pages\.dev/);
+      // The dev harness page (frontend/one-apps-dev.html, src/apps/dev) is served only by the dev server.
+      expect(files(outDir).map((file) => path.relative(outDir, file)).filter((file) => /one-apps-dev|apps\/dev\//.test(file))).toEqual([]);
     } finally {
       rmSync(outDir, { recursive: true, force: true });
     }

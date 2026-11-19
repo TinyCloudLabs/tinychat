@@ -57,3 +57,50 @@ export const askBody = (app: string, scope: string) => `${app} wants access to $
 export const ASK_CONTINUE = "Continue in OpenKey";
 export const ASK_NOT_NOW = "Not now";
 export const askDeclined = (app: string) => `${app} can't do this without that access.`;
+export const ASK_CLOSE = "Close";
+
+/**
+ * What One says when an app asks for a space that isn't set up, keyed by space name (CONTRACT.md "Copy"):
+ * `open` names the app people open to set it up; `courier` is Courier's own line; `silent` says nothing.
+ * `applications` cannot be missing (One's sign-in creates it), so it is silent too.
+ */
+export const MISSING_SPACE_COPY: Readonly<Record<string, { kind: "open"; name: string } | { kind: "courier" } | { kind: "silent" }>> = {
+  secrets: { kind: "open", name: "Secrets" },
+  credentials: { kind: "open", name: "Credentials" },
+  account: { kind: "open", name: "Account" },
+  agents: { kind: "courier" },
+  public: { kind: "silent" },
+  applications: { kind: "silent" },
+};
+
+/** "A and B", "A, B and C". */
+const joinNames = (names: readonly string[]) =>
+  names.length <= 1 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+
+/**
+ * Monica's line for the missing spaces that have an app to open, or undefined when none do. `none`: nothing the app
+ * asked for exists (the line replaces the ask body); otherwise it goes under the body.
+ */
+export function missingSpacesLine(app: string, spaces: readonly string[], none: boolean): string | undefined {
+  const names = [...new Set(spaces.flatMap((space) => {
+    const copy = MISSING_SPACE_COPY[space];
+    return copy?.kind === "open" ? [copy.name] : [];
+  }))];
+  if (names.length === 0) return undefined;
+  if (names.length === 1) {
+    const [space] = names;
+    return none
+      ? `${app} uses ${space}, which isn't set up in your TinyCloud. Open ${space} once to set it up, then come back to give ${app} access.`
+      : `${app} also uses ${space}, which isn't set up in your TinyCloud. Open ${space} once to set it up, then come back to give ${app} access to it.`;
+  }
+  return `${app} ${none ? "uses" : "also uses"} ${joinNames(names)}, which aren't set up in your TinyCloud. Open each once to set it up, then come back to give ${app} access to them.`;
+}
+
+/** Courier's line when its space (agents) is missing; "Open Courier" links to Courier's own page in a new tab. */
+export const COURIER_MISSING = {
+  before: "Courier starts working once you connect an agent to it. ",
+  link: "Open Courier",
+  after: " to see how, then come back to give Courier access.",
+} as const;
+
+export const courierMissing = (spaces: readonly string[]) => spaces.some((space) => MISSING_SPACE_COPY[space]?.kind === "courier");
