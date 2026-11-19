@@ -23,7 +23,7 @@
  *    caller cannot mint an upstream path or filter this router does not know.
  */
 import { Router } from "express";
-import type { Request, Response } from "express";
+import type { NextFunction, Request, Response } from "express";
 
 /** The only host this proxy will ever call. The client never supplies a URL. */
 export const GRANOLA_API_BASE_URL = "https://public-api.granola.ai";
@@ -79,6 +79,8 @@ export interface GranolaProxyOptions {
   fetchImpl?: typeof fetch;
   /** Test seam for the timeout. */
   timeoutMs?: number;
+  /** Test seam for the response size limit. */
+  maxResponseBytes?: number;
 }
 
 /** Log shapes and statuses only — never a key, an id, a path suffix or a query value. */
@@ -120,7 +122,7 @@ function checkedQuery(
   const params = new URLSearchParams();
   for (const [name, value] of Object.entries(req.query)) {
     if (allowed[name] !== true) {
-      respondError(res, 400, "VALIDATION_ERROR", `Unsupported query parameter: ${name}`);
+      respondError(res, 400, "VALIDATION_ERROR", "Unsupported query parameter");
       return null;
     }
     if (typeof value !== "string" || !(name === "cursor" ? CURSOR_PATTERN : QUERY_VALUE_PATTERN).test(value)) {
@@ -132,11 +134,91 @@ function checkedQuery(
   return params;
 }
 
+/** Upstream responses larger than this are refused (a full transcript page is far smaller). */
+export const GRANOLA_MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
+
+/** Locally minted `{code, message}` for each upstream status the proxy replaces. */
+function fixedErrorFor(status: number): { status: number; code: string; message: string } {
+  switch (status) {
+    case 400: return { status, code: "BAD_REQUEST", message: "Granola rejected the request" };
+    case 401: return { status, code: "UNAUTHORIZED", message: "Granola did not accept the API key" };
+    case 403: return { status, code: "FORBIDDEN", message: "Granola refused the request" };
+    case 404: return { status, code: "NOT_FOUND", message: "Granola could not find that note" };
+    case 429: return { status, code: "RATE_LIMITED", message: "Granola is rate limiting this key" };
+    default:
+      return status >= 400 && status < 500
+        ? { status, code: "UPSTREAM_REJECTED", message: "Granola rejected the request" }
+        : { status: 502, code: "UPSTREAM_ERROR", message: "Granola did not respond as expected" };
+  }
+}
+
+/** `Retry-After` is passed on as delta-seconds or an HTTP date, and only in those shapes. */
+function passRetryAfter(res: Response, upstream: globalThis.Response): void {
+  const retryAfter = upstream.headers.get("retry-after");
+  if (!retryAfter || retryAfter.length > 64) return;
+  if (/^\d{1,6}$/.test(retryAfter)) {
+    res.set("Retry-After", retryAfter);
+    return;
+  }
+  const date = Date.parse(retryAfter);
+  if (Number.isFinite(date)) res.set("Retry-After", new Date(date).toUTCString());
+}
+
+/** The response body as text, or null when it exceeds `max` bytes (the rest is never read). */
+async function readCappedText(upstream: globalThis.Response, max: number): Promise<string | null> {
+  const declared = Number(upstream.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > max) {
+    await upstream.body?.cancel().catch(() => {});
+    return null;
+  }
+  if (!upstream.body) return "";
+  const reader = upstream.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > max) {
+      await reader.cancel().catch(() => {});
+      return null;
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
+
+function isJsonObject(text: string): boolean {
+  try {
+    const value: unknown = JSON.parse(text);
+    return typeof value === "object" && value !== null && !Array.isArray(value);
+  } catch {
+    return false;
+  }
+}
+
+/** A fetch or body-read failure: a timeout is a 504, anything else a 502; only the error class is logged. */
+function answerUpstreamFailure(res: Response, op: string, result: string, message: string, error: unknown): void {
+  // The error object is logged by class name only — its message can echo the URL, and a
+  // URL built from a hostile query value would then carry that value into the log.
+  const name = error instanceof Error ? error.name : "unknown";
+  if (name === "TimeoutError" || name === "AbortError") {
+    logGranolaProxy(`op=${op} result=upstream_timeout error=${name}`);
+    respondError(res, 504, "UPSTREAM_TIMEOUT", "Granola took too long to respond");
+    return;
+  }
+  logGranolaProxy(`op=${op} result=${result} error=${name}`);
+  respondError(res, 502, "UPSTREAM_ERROR", message);
+}
+
 /**
- * Fetch the pinned upstream and relay status, content-type and body verbatim, plus `Retry-After`
- * on a 429 (the client honours it). The upstream error body passes through untouched — it is
- * Granola's own `{code, message}` envelope and carries nothing of ours. The Authorization header
- * is set ONLY on the upstream request and is gone from this process the moment it resolves.
+ * Fetch the pinned upstream and answer with stable statuses:
+ *  - 2xx: the JSON object body as-is; anything else is a 502;
+ *  - 4xx: Granola's JSON error body as-is, or a fixed `{code, message}` when it is not a JSON object;
+ *  - 429 and 5xx carry `Retry-After` when Granola sent one; 5xx and redirects answer 502;
+ *  - a timeout is a 504, an unreachable upstream or an oversized body a 502;
+ *  - a body that contains the caller's key is replaced by the fixed `{code, message}` for its status.
+ * The Authorization header is set ONLY on the upstream request.
  */
 async function relayGranola(
   req: Request,
@@ -162,36 +244,51 @@ async function relayGranola(
       signal: AbortSignal.timeout(options.timeoutMs ?? UPSTREAM_TIMEOUT_MS),
     });
   } catch (error) {
-    // The abort/error object is logged by class name only — its message can echo the URL, and a
-    // URL built from a hostile query value would then carry that value into the log.
-    logGranolaProxy(`op=${op} result=upstream_unreachable error=${error instanceof Error ? error.name : "unknown"}`);
-    respondError(res, 502, "UPSTREAM_ERROR", "Failed to reach Granola");
+    answerUpstreamFailure(res, op, "upstream_unreachable", "Failed to reach Granola", error);
     return;
   }
 
   try {
-    const body = await upstream.text();
-    const contentType = upstream.headers.get("content-type");
-    if (contentType) res.type(contentType);
-    const retryAfter = upstream.headers.get("retry-after");
-    if (upstream.status === 429 && retryAfter && retryAfter.length <= 64) {
-      if (/^\d{1,6}$/.test(retryAfter)) {
-        res.set("Retry-After", retryAfter);
-      } else {
-        const date = Date.parse(retryAfter);
-        if (Number.isFinite(date)) res.set("Retry-After", new Date(date).toUTCString());
-      }
+    const status = upstream.status;
+    const failure = status < 200 || status >= 300;
+    if (status < 200 || (status >= 300 && status < 400) || status >= 500) {
+      await upstream.body?.cancel().catch(() => {});
+      if (status >= 500) passRetryAfter(res, upstream);
+      const fixed = fixedErrorFor(status);
+      respondError(res, fixed.status, fixed.code, fixed.message);
+      logGranolaProxy(`op=${op} result=upstream_status status=${status}`);
+      return;
     }
-    res.status(upstream.status).send(body);
-    logGranolaProxy(`op=${op} result=ok status=${upstream.status}`);
+    const body = await readCappedText(upstream, options.maxResponseBytes ?? GRANOLA_MAX_RESPONSE_BYTES);
+    if (body === null) {
+      respondError(res, 502, "UPSTREAM_TOO_LARGE", "The Granola response was too large");
+      logGranolaProxy(`op=${op} result=too_large status=${status}`);
+      return;
+    }
+    if (status === 429) passRetryAfter(res, upstream);
+    if (body.includes(key) || !isJsonObject(body)) {
+      const fixed = failure
+        ? fixedErrorFor(status)
+        : { status: 502, code: "UPSTREAM_INVALID_RESPONSE", message: "Granola returned an unreadable response" };
+      respondError(res, fixed.status, fixed.code, fixed.message);
+      logGranolaProxy(`op=${op} result=body_replaced status=${status}`);
+      return;
+    }
+    res.status(status).type("application/json").send(body);
+    logGranolaProxy(`op=${op} result=ok status=${status}`);
   } catch (error) {
-    logGranolaProxy(`op=${op} result=read_failed error=${error instanceof Error ? error.name : "unknown"}`);
-    respondError(res, 502, "UPSTREAM_ERROR", "Failed to read the Granola response");
+    answerUpstreamFailure(res, op, "read_failed", "Failed to read the Granola response", error);
   }
 }
 
 export function createGranolaProxyRouter(options: GranolaProxyOptions = {}): Router {
   const router = Router();
+
+  /** Only GET is served; HEAD, OPTIONS and every other method are 404. */
+  router.use((req: Request, res: Response, next: NextFunction) => {
+    if (req.method === "GET") return next();
+    respondError(res, 404, "NOT_FOUND", "Not found");
+  });
 
   /** `GET /v1/notes` — newest-first listing; the sync's incremental `updated_after` rides the query. */
   router.get("/v1/notes", async (req: Request, res: Response) => {
