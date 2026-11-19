@@ -35,7 +35,7 @@ export const WEB_ACCESS_STRINGS = {
   offDescription: "Main can't search the web or read pages.",
   presets: {
     off: { label: "Off", description: "Main can't search the web or read pages." },
-    listed: { label: "Only sites I list", description: "Main searches and reads pages only on the sites you list." },
+    listed: { label: "Only sites you list", description: "Main searches and reads pages only on the sites you list." },
     any: { label: "Search and read any public site", description: "Main can search the web and open any public page." },
   },
   listLabel: "Sites Main may use",
@@ -46,7 +46,7 @@ export const WEB_ACCESS_STRINGS = {
   warningFace: "Using the web can be risky for your agent. Turn it on with care.",
   warningLearnMore: "Learn more",
   warningBody: "A web page can hide instructions meant for an AI. Main might follow them and put things you've told it into a search or a web address. Searches go to our search provider, Tavily. Our server fetches pages, so the sites see our server, not you. Don't open or paste links Main gives you unless you trust them.",
-  warningBodyAny: "This setting lets Main open pages you've never seen, and any of them could try this. \"Only sites I list\" is safer, but anyone who can post on those sites could still try it.",
+  warningBodyAny: "This setting lets Main open pages you've never seen, and any of them could try this. \"Only sites you list\" is safer, but anyone who can post on those sites could still try it.",
   warningConfirm: "Turn on",
   warningCancel: "Not now",
   save: "Save",
