@@ -67,8 +67,8 @@ describe("bots routes", () => {
       expect(body).not.toContain(secret);
       expect([...response.headers.values()].join(" ")).not.toContain(secret);
       expect(run.seen[0]!.url).toBe("http://bots.test/v1/bots/main/messages");
-      expect(run.seen[0]!.headers.get("x-tinycloud-owner")).toBe(`did:pkh:eip155:1:${enabled.toLowerCase()}`);
-      expect(run.seen[0]!.headers.get("authorization")).toBe(`Bearer ${secret}`);
+      expect(run.seen[0]!.headers.get("x-tinycloud-owner")).toBeNull();
+      expect(run.seen[0]!.headers.get("authorization")).toStartWith("TinyCloud-Signed ");
     } finally { await run.close(); }
   });
 

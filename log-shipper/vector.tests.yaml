@@ -423,6 +423,48 @@ tests:
               assert_eq!(.count, 3)
               assert_eq!(.alert, true)
               assert_eq!(length(keys(.)), 6)
+  - name: "retention sweep stalled ships counts only, whatever else the line carries"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "{\"event\":\"retention_sweep_stalled\",\"alert\":true,\"indexes_unreadable\":2,\"errors\":1,\"overdue_rows\":5,\"consecutive_passes\":6,\"source\":\"fireflies\",\"address\":\"0xa1a1a10000000000000000000000000000000fed\",\"meeting_id\":\"MEETING-CANARY\",\"ts\":\"2026-10-26T22:00:00.123Z\"}", "level": 3, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+    outputs:
+      - extract_from: allowlist
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.event, "retention_sweep_stalled")
+              assert_eq!(.level, "error")
+              assert_eq!(.alert, true)
+              assert_eq!(.indexes_unreadable, 2)
+              assert_eq!(.errors, 1)
+              assert_eq!(.overdue_rows, 5)
+              assert_eq!(.consecutive_passes, 6)
+              assert_eq!(length(keys(.)), 9)
+              assert!(!contains(encode_json(.), "CANARY"))
+              assert!(!contains(encode_json(.), "0xa1a1"))
+  - name: "retention sweep stalled with a missing or out-of-range count is dropped"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "{\"event\":\"retention_sweep_stalled\",\"alert\":true,\"indexes_unreadable\":0,\"errors\":-1,\"overdue_rows\":0,\"consecutive_passes\":6,\"ts\":\"2026-10-26T22:00:00.123Z\"}", "level": 3, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+    no_outputs_from: [allowlist]
+  - name: "retention sweep recovered ships the event alone"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "{\"event\":\"retention_sweep_recovered\",\"ts\":\"2026-10-26T22:00:00.123Z\",\"note\":\"user Alice\"}", "level": 6, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+    outputs:
+      - extract_from: allowlist
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.event, "retention_sweep_recovered")
+              assert_eq!(.level, "info")
+              assert_eq!(length(keys(.)), 4)
   - name: "an unlisted JSON event is dropped"
     inputs:
       - insert_at: redact

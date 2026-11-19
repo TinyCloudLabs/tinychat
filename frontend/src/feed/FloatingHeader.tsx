@@ -11,7 +11,7 @@ import { cn } from "@/lib/utils";
 // it flicker.
 const THRESHOLD_PX = 8;
 
-export function FloatingHeader({ scrollRef, children, className }: { scrollRef: RefObject<HTMLElement | null>; children: ReactNode; className?: string }) {
+export function FloatingHeader({ scrollRef, children, className, inert }: { scrollRef: RefObject<HTMLElement | null>; children: ReactNode; className?: string; inert?: boolean }) {
   const headerRef = useRef<HTMLDivElement>(null);
   // Where the header sits in the page; once that spot is scrolled away, the header is stuck over the cards.
   const spotRef = useRef<HTMLDivElement>(null);
@@ -69,7 +69,7 @@ export function FloatingHeader({ scrollRef, children, className }: { scrollRef: 
 
   return <>
     <div ref={spotRef} aria-hidden className="h-0" />
-    <div ref={headerRef} data-hidden={hidden || undefined} data-stuck={stuck || undefined}
+    <div ref={headerRef} data-hidden={hidden || undefined} data-stuck={stuck || undefined} inert={inert}
       style={shift ? { transform: `translateY(-${shift}px)` } : undefined}
       onFocus={(event) => setFocusInside((event.target as HTMLElement).matches(":focus-visible"))}
       onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setFocusInside(false); }}
