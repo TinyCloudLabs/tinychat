@@ -142,7 +142,7 @@ the gateway applies it on every call. A missing or unreadable file reads as `off
   `TAVILY_API_KEY` a search answers "isn't available".
 - A page is read by the `bots-fetch` container (`src/fetch-main.ts`, `POST /fetch {"url", "hosts"}`), which reads pages
   without a key (`BOTS_TEST_FETCH_URL` is a loopback mock for tests). It cannot read PDFs or pages that need JavaScript.
-- Page HTML becomes plain text (`src/page-text.ts`) and is wrapped in a fixed untrusted-content label before Main sees it.
+- Page HTML becomes plain text (`src/page-text.ts`) before Main sees it.
 - Daily budgets per bot and for all bots, and the call timeout, are set with the `BOTS_WEB_*` variables below.
 - The log and the saved counts hold counts by tool and outcome only.
 

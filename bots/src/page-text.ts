@@ -1,8 +1,7 @@
 // Turns the bytes of a fetched page into plain text for Main. It runs in the key-less fetch process on whatever a site
 // sent, so it keeps no state, calls nothing, and returns only text: no markup, no script, no image reference.
 //  - scripts, styles, embedded content and hidden-template content are dropped;
-//  - an image becomes its alt text (a picture is never fetched or referenced, which is also what keeps a page from
-//    making Main emit an image URL: #757's rule, enforced at the source);
+//  - an image becomes its alt text (a picture is never fetched or referenced);
 //  - a link becomes "text (address)" so an address the page really offered can be followed, which is the only way a
 //    page address becomes one Main may fetch (the gateway re-extracts them from this text).
 

@@ -79,8 +79,7 @@ export function addressKey(raw: string): string | undefined {
 /**
  * A page address the tools may read: http or https, no user info, no port but the scheme's own (80 for http, 443 for https), a real multi-label host
  * name (no IP address of either kind, no `localhost`, no local-only suffix), at most 2,048 characters. It does not
- * resolve names, so a name that points at a private address passes: it must never stand in for the dial guard, which
- * resolves every name and refuses any non-public answer (fetch-guard.ts, run by the page reader on every hop).
+ * resolve names; the page reader resolves and checks every name (fetch-guard.ts).
  */
 export function readableAddress(raw: unknown): URL | undefined {
   if (typeof raw !== "string" || raw.length > MAX_URL_CHARS) return undefined;
