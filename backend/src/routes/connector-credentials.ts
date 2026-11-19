@@ -19,6 +19,7 @@ import {
   normalizeWebhookAddress,
 } from "../services/webhook-tokens.js";
 import { CONNECTOR_REGISTRY } from "./connector-webhooks.js";
+import { credentialRouteUnavailable } from "./route-unavailable.js";
 
 /**
  * W2 — the authenticated custody surface (backend-ingest plan §6.2 "obtain" / "revoke").
@@ -119,7 +120,7 @@ export function createConnectorCredentialRouter(
   async function tenant(req: Request, res: Response): Promise<string | null> {
     const source = req.params.source;
     if (!isValidSource(source) || !registry.has(source)) {
-      res.status(404).json({ error: "not_found" });
+      credentialRouteUnavailable(res);
       return null;
     }
 
@@ -132,19 +133,21 @@ export function createConnectorCredentialRouter(
     }
 
     if (options.modes === undefined) {
-      res.status(404).json({ error: "not_found" });
+      credentialRouteUnavailable(res);
       return null;
     }
     let mode: string;
     try {
-      mode = await options.modes.mode(address);
+      mode = options.modes.eligible
+        ? (await options.modes.eligible(address) ? "backend" : "browser")
+        : await options.modes.mode(address, source);
     } catch {
       res.status(503).json({ error: "unavailable" });
       return null;
     }
     if (mode !== "backend") {
       // Dark for everyone else — the same answer as a deployment without the flag.
-      res.status(404).json({ error: "not_found" });
+      credentialRouteUnavailable(res);
       return null;
     }
     return address;
@@ -334,8 +337,8 @@ export function createConnectorCredentialRouter(
         result = await credentials.revoke(req.params.source, address);
       }
     } catch {
-      // The tombstone is written first, so a failure below it has already classified this
-      // tenant's content as purged. 503 asks for a retry of the SAME idempotent call.
+      // Ingress shutdown or the subsequent purge may have partially completed. 503 asks for
+      // a retry of the SAME idempotent disconnect, never reports partial cleanup as success.
       logCredentialRoute(
         `op=disconnect result=teardown_incomplete source=${req.params.source} ` +
           `aid=${hashedAddress(address)}`,

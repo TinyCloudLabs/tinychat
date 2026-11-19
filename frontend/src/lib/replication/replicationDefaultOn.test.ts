@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, jest, test } from "bun:test";
+import { resetLanesForTests } from "../localFirst/requestLanes";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { buildReplicationConfig, startReplicationFill, type ReplicationPluginLoader } from "./replicationClient";
 import { REPLICATION_COPY_KEY } from "./replicationCopyMarker";
@@ -38,6 +39,8 @@ function installBrowser(store: ReturnType<typeof memoryStore>) {
   define("Worker", class {});
 }
 beforeEach(() => { saved = new Map(GLOBAL_NAMES.map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)])); });
+// The fill waits on the request lanes, which are module state: start from idle lanes, not from whatever an earlier test file left in flight.
+beforeEach(resetLanesForTests);
 afterEach(() => {
   jest.useRealTimers();
   for (const [name, descriptor] of saved) {

@@ -1,6 +1,7 @@
-import { afterEach, beforeEach, expect, setSystemTime, test } from "bun:test";
+import { afterEach, beforeEach, expect, mock, setSystemTime, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
+import type { ReactNode } from "react";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
@@ -14,18 +15,29 @@ import {
   type PrepareSitrepImportInput, type PreparedSitrepImportBundle,
 } from "@tinyboilerplate/core/feed/sitrep";
 import { installDom } from "@/test/dom";
+import { installFakeClock, type FakeClock } from "@/test/fakeClock.fixture";
 import { useLocalThreadStorage } from "../lib/threadStore";
-import { FeedViewEntries } from "./FeedView";
 import { createHomeFeedSource, HOME_FEED_RESOURCE } from "./feedStore";
 import { archivePreparedOwnerBundle } from "./sitrepArchiveStore";
 import { SITREP_NOW, syntheticRecord } from "./sitrep.fixtures";
 import type { HomeFeedSnapshot, HomeFeedSource } from "./feedStoreTypes";
+
+// Radix portals do not attach in this DOM (happy-dom), so the sheet's chrome (BottomSheet / Dialog) is swapped for an
+// inline stand-in with the same props. Everything inside it, and every component around it, is the real one; the
+// static import of the Home UI must wait until the mock is registered, hence the dynamic import below.
+mock.module("../components/ui/responsive-sheet", () => ({
+  ResponsiveSheet: (props: { open: boolean; title: ReactNode; description?: ReactNode; children?: ReactNode; footer?: ReactNode; contentProps?: Record<string, string> }) =>
+    props.open ? <div role="dialog" aria-label="sheet" {...props.contentProps}><h2>{props.title}</h2><p>{props.description}</p>{props.children}<div>{props.footer}</div></div> : null,
+  ResponsiveSheetBody: (props: { children?: ReactNode }) => <div>{props.children}</div>,
+}));
+const { FeedViewEntries } = await import("./FeedView");
 
 const PREFIX = "xyz.tinycloud.rocinante/";
 const NONCE = "00000000000000000000000000000001";
 const roots = new Set<Root>();
 const databases: Database[] = [];
 let restoreDom: (() => void) | undefined;
+let clock: FakeClock | undefined;
 beforeEach(() => {
   setSystemTime(new Date(SITREP_NOW));
   restoreDom = installDom();
@@ -33,6 +45,7 @@ beforeEach(() => {
 afterEach(async () => {
   for (const root of roots) await act(async () => root.unmount());
   roots.clear();
+  clock?.restore(); clock = undefined;
   restoreDom?.(); restoreDom = undefined;
   for (const database of databases.splice(0)) database.close();
   setSystemTime();
@@ -138,11 +151,23 @@ function button(host: ParentNode, label: string): HTMLButtonElement {
   return result;
 }
 async function mount(transport: ReturnType<typeof observedSource>) {
+  // Every card open at once (these tests act on several): Expanded, since a phone opens one row at a time.
+  window.localStorage.setItem("tinychat:feed-view-mode:v1", "expanded");
   const host = document.createElement("div"); document.body.append(host);
   const root = createRoot(host); roots.add(root);
   await act(async () => root.render(<FeedViewEntries realEntries={[]} source={transport.source} />));
   await transport.settle();
+  // Every card open, as these tests read and act on the open card: Needs you opens its first card itself, a tap
+  // opens each row, and answered cards wait in the Pending card at the end (opened first).
+  const pending = host.querySelector<HTMLButtonElement>('section[aria-label="Pending"] > button[aria-expanded="false"]');
+  if (pending) await click(transport, pending);
+  for (let row = closedRow(host); row; row = closedRow(host)) await click(transport, row);
   return { host, async unmount() { await act(async () => root.unmount()); roots.delete(root); host.remove(); } };
+}
+/** A card still shown as a row (a post's row opens a page, so it is left alone). */
+function closedRow(host: ParentNode) {
+  return [...host.querySelectorAll<HTMLElement>("li[data-card-key]")].filter((item) => !item.querySelector("article") && !item.closest("[inert]"))
+    .map((item) => item.querySelector<HTMLButtonElement>('button[aria-expanded="false"]:not([aria-haspopup])')).find(Boolean) ?? null;
 }
 async function click(transport: ReturnType<typeof observedSource>, element: HTMLElement) {
   await act(async () => element.click()); await transport.settle();
@@ -160,10 +185,22 @@ function codeInput(host: ParentNode): HTMLInputElement {
   if (!input) throw new Error("The expected approval code input is missing");
   return input;
 }
-async function openCard(transport: ReturnType<typeof observedSource>, host: HTMLElement, title: string) {
-  const card = [...host.querySelectorAll<HTMLButtonElement>('[aria-label="Cards in this view"] button')].find((candidate) => candidate.textContent?.includes(title));
-  if (!card) throw new Error(`Published card is not visible in navigation: ${title}`);
-  await click(transport, card);
+type Transport = { source: HomeFeedSource; settle(): Promise<void>; notify(): Promise<void> };
+// Every open card is an article showing its title. `exclude` skips articles inside
+// another card (a folded approval step renders inside its question).
+function cardArticle(host: ParentNode, title: string, exclude?: Element): HTMLElement {
+  const matches = [...host.querySelectorAll<HTMLElement>("article")].filter((candidate) => [...candidate.children].some((child) => child.tagName === "H2" && child.textContent === title) && !(exclude && exclude.contains(candidate)));
+  if (matches.length !== 1) throw new Error(`Expected exactly one visible card: ${title}`);
+  return matches[0]!;
+}
+function foldedStep(host: ParentNode, askTitle: string): HTMLElement {
+  const section = cardArticle(host, askTitle).querySelector<HTMLElement>('[aria-label="Folded approval step"]');
+  if (!section) throw new Error("Folded approval step is missing from its question");
+  return section;
+}
+/** History, the island's third tab: answered, replaced and closed cards, each opened in place. */
+async function showHistory(transport: Transport, host: ParentNode) {
+  for (let row = closedRow(host); row; row = closedRow(host)) await click(transport, row);
 }
 
 for (const engagement of ["empty field focus", "consent link activation"] as const) {
@@ -175,14 +212,17 @@ for (const engagement of ["empty field focus", "consent link activation"] as con
     const original = typedCard(grant, "folded-approval");
     value(await publishFeedCard(agent.output, ask)); value(await publishFeedCard(agent.output, original));
     const transport = owner.fresh(); const view = await mount(transport);
-    await openCard(transport, view.host, ask.title);
-    const input = codeInput(view.host);
-    expect(input.value).toBe("");
+    let input: HTMLInputElement | undefined;
     if (engagement === "empty field focus") {
-      await act(async () => input.focus());
+      await click(transport, button(foldedStep(view.host, ask.title), "Got a code? Paste it"));
+      input = codeInput(foldedStep(view.host, ask.title));
+      expect(input.value).toBe("");
+      await act(async () => input?.focus());
       expect(document.activeElement === input).toBe(true);
     } else {
-      const link = view.host.querySelector<HTMLAnchorElement>('a[href="https://openkey.so/delegate?fixture=engagement-original"]');
+      // The code box stays closed: only the consent link is activated.
+      expect(foldedStep(view.host, ask.title).querySelector('[aria-label="Approval code"]')).toBeNull();
+      const link = foldedStep(view.host, ask.title).querySelector<HTMLAnchorElement>('a[href="https://openkey.so/delegate?fixture=engagement-original"]');
       if (!link) throw new Error("Original approval consent link is missing");
       // Cancel navigation at document bubble phase, after React handles the
       // activation. No consent endpoint, window.open, or network call occurs.
@@ -192,24 +232,38 @@ for (const engagement of ["empty field focus", "consent link activation"] as con
     }
     const replacement: FeedCard = { ...original, revision: 2, issuanceId: "replacement-consent-issuance", payload: { sitrep: { version: 1, record: { ...grant, issuedAt: SITREP_NOW, url: "https://openkey.so/delegate?fixture=engagement-replacement" } } } };
     value(await publishFeedCard(agent.output, replacement)); await transport.notify();
-    const afterReissue = codeInput(view.host);
-    // A real user can only enter/click if the input is enabled. Before the fix
+    // A real user can only reveal/enter/click what is enabled. Before the fix
     // that incorrectly posts an old-consent code to the replacement issuance.
-    if (!afterReissue.disabled) {
+    const reveal = [...foldedStep(view.host, ask.title).querySelectorAll<HTMLButtonElement>("button")].find((candidate) => candidate.textContent?.trim() === "Got a code? Paste it");
+    if (reveal && !reveal.disabled) await click(transport, reveal);
+    const afterReissue = foldedStep(view.host, ask.title).querySelector<HTMLInputElement>('[aria-label="Approval code"]');
+    if (afterReissue && !afterReissue.disabled) {
       await enterCode(afterReissue, "CODE-FROM-ORIGINAL-CONSENT");
-      await click(transport, button(view.host, "Save code"));
+      await click(transport, button(foldedStep(view.host, ask.title), "Save code"));
     }
     expect(value(await listFeedResponses(agent.responses))).toEqual([]);
-    expect(codeInput(view.host) === input).toBe(true);
-    expect(input.disabled).toBe(true);
-    expect(view.host.querySelector('[aria-label="Folded approval step"] code')?.textContent).toBe(`${original.cardId}/${original.revision}/${original.issuanceId}`);
+    if (input) {
+      expect(afterReissue === input).toBe(true);
+      expect(input.disabled).toBe(true);
+    } else expect(afterReissue === null || afterReissue.disabled).toBe(true);
+    // The engaged step stays on the original consent; the new UI prints no raw identity.
+    expect(foldedStep(view.host, ask.title).querySelector('a[href="https://openkey.so/delegate?fixture=engagement-original"]') !== null).toBe(true);
+    expect(foldedStep(view.host, ask.title).querySelector('a[href="https://openkey.so/delegate?fixture=engagement-replacement"]')).toBeNull();
     expect(value(await getFeedCardState(agent.output, agent.responses, identity(original))).response).toBeNull();
-    await click(transport, button(view.host, "Open current approval"));
-    const currentInput = codeInput(view.host);
+    await click(transport, button(foldedStep(view.host, ask.title), "Open the new request"));
+    const askCard = cardArticle(view.host, ask.title);
+    const current = cardArticle(view.host, original.title, askCard);
+    expect(current.querySelector('a[href="https://openkey.so/delegate?fixture=engagement-replacement"]') !== null).toBe(true);
+    await click(transport, button(current, "Got a code? Paste it"));
+    const currentInput = codeInput(current);
     expect(currentInput === input).toBe(false);
     expect(currentInput.value).toBe("");
     await enterCode(currentInput, "FRESH-CODE-FROM-EXPLICIT-REPLACEMENT-CONSENT");
-    await click(transport, button(view.host, "Save code"));
+    // The code waits out the undo window, then is written once.
+    clock = installFakeClock();
+    await click(transport, button(current, "Save code"));
+    expect(value(await listFeedResponses(agent.responses))).toEqual([]);
+    await clock.advance(5000); await transport.settle();
     const headers = value(await listFeedResponses(agent.responses));
     expect(headers).toHaveLength(1);
     expect(headers[0]).toMatchObject({ ...identity(replacement), kind: "answer" });
@@ -227,23 +281,25 @@ test("focused code-less folded confirmation keeps its original issuance until ex
   const original = typedCard(grant, "folded-confirmation");
   value(await publishFeedCard(agent.output, ask)); value(await publishFeedCard(agent.output, original));
   const transport = owner.fresh(); const view = await mount(transport);
-  await openCard(transport, view.host, ask.title);
-  const confirmation = button(view.host, "I completed this step");
+  const confirmation = button(foldedStep(view.host, ask.title), "I've done this step");
   await act(async () => confirmation.focus());
   expect(document.activeElement === confirmation).toBe(true);
   const replacement: FeedCard = { ...original, revision: 2, issuanceId: "replacement-confirmation-issuance", payload: { sitrep: { version: 1, record: { ...grant, issuedAt: SITREP_NOW } } } };
   value(await publishFeedCard(agent.output, replacement)); await transport.notify();
-  const afterReissue = button(view.host, "I completed this step");
+  const afterReissue = button(foldedStep(view.host, ask.title), "I've done this step");
   if (!afterReissue.disabled) await click(transport, afterReissue);
   expect(value(await listFeedResponses(agent.responses))).toEqual([]);
   expect(afterReissue === confirmation).toBe(true);
   expect(afterReissue.disabled).toBe(true);
-  expect(view.host.querySelector('[aria-label="Folded approval step"] code')?.textContent).toBe(`${original.cardId}/${original.revision}/${original.issuanceId}`);
-  await click(transport, button(view.host, "Open current approval"));
-  const current = button(view.host, "I completed this step");
+  await click(transport, button(foldedStep(view.host, ask.title), "Open the new request"));
+  const currentCard = cardArticle(view.host, original.title, cardArticle(view.host, ask.title));
+  const current = button(currentCard, "I've done this step");
   expect(current === confirmation).toBe(false);
   expect(current.disabled).toBe(false);
+  clock = installFakeClock();
   await click(transport, current);
+  expect(value(await listFeedResponses(agent.responses))).toEqual([]);
+  await clock.advance(5000); await transport.settle();
   const headers = value(await listFeedResponses(agent.responses));
   expect(headers).toHaveLength(1);
   const response = headers[0]; if (!response) throw new Error("Explicit replacement confirmation did not persist");
@@ -317,15 +373,18 @@ for (const history of ["answer", "claim", "thread", "command"] as const) {
     expect(retained?.state.card).toMatchObject(identity(original));
     expect(retained?.state.response).toBeNull();
     expect(retained?.responses).toEqual([]);
-    const view = await mount(fresh); await click(fresh, button(view.host, "History"));
-    await openCard(fresh, view.host, original.title);
-    if (history === "answer") expect(view.host.querySelector('[aria-label="Focused card"]')?.textContent).toContain("Immutable archive-only answer");
-    if (history === "claim") expect(view.host.querySelector('[aria-label="Focused card"]')?.textContent).toContain("Immutable archive-only claim decision");
-    if (history === "thread") {
-      await click(fresh, button(view.host, `Message ${agent.source.label}`));
-      expect(view.host.querySelector('[aria-label="Card thread"]')?.textContent).toContain("Immutable archive-only thread message");
+    const view = await mount(fresh); await showHistory(fresh, view.host);
+    const card = cardArticle(view.host, original.title);
+    if (history === "answer") expect(card.textContent).toContain("Immutable archive-only answer");
+    if (history === "claim") {
+      expect(card.textContent).toContain("Immutable archive-only claim decision");
+      expect(button(card, "Keep claim").getAttribute("aria-pressed")).toBe("true");
     }
-    if (history === "command") expect(view.host.querySelector('[aria-label="Historical owner commands"]') !== null).toBe(true);
+    if (history === "thread") {
+      // The thread shows inline on the card; no menu to open.
+      expect(card.querySelector('[aria-label="Comments"]')?.textContent).toContain("Immutable archive-only thread message");
+    }
+    if (history === "command") expect(card.querySelector('[aria-label="Historical owner commands"]') !== null).toBe(true);
     expect(await responseCount(agent.responses)).toBe(0);
   });
 }
@@ -340,13 +399,13 @@ test("command-only archive history remains visible after mutable owner state res
   expect(loaded.owner?.states[0]?.doneAt).toBeUndefined();
   expect(loaded.owner?.answers).toEqual([]); expect(loaded.owner?.threads).toEqual([]);
   expect(await responseCount(agent.responses)).toBe(0);
-  const view = await mount(fresh); await click(fresh, button(view.host, "History"));
-  await openCard(fresh, view.host, card.title);
-  expect(view.host.querySelector('[aria-label="Historical owner commands"]') !== null).toBe(true);
+  const view = await mount(fresh); await showHistory(fresh, view.host);
+  const article = cardArticle(view.host, card.title);
+  expect(article.querySelector('[aria-label="Historical owner commands"]') !== null).toBe(true);
   expect(await responseCount(agent.responses)).toBe(0);
 });
 
-async function expandGroups(transport: ReturnType<typeof observedSource>, host: HTMLElement) {
+async function expandGroups(transport: Transport, host: HTMLElement) {
   for (const section of host.querySelectorAll<HTMLElement>('section[aria-label="Card group Release"]')) {
     const toggle = section.querySelector<HTMLButtonElement>('button[aria-expanded="false"]');
     if (toggle) await click(transport, toggle);
@@ -397,7 +456,7 @@ for (const scope of ["independent registered sources", "independent validated ar
       }
       const view = await mount(transport); await expandGroups(transport, view.host);
       const groupA = groupSection(view.host, first.title);
-      await click(transport, button(groupA, operation === "set" ? "Mark private group priority" : "Clear private group priority"));
+      await click(transport, button(groupA, operation === "set" ? "Mark priority" : "Clear priority"));
       await view.unmount();
       const reopened = owner.fresh(); await reopened.source.load();
       const durable = await mount(reopened); await expandGroups(reopened, durable.host);

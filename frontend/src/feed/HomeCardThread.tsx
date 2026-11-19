@@ -1,6 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { ownerThreadResponseKey, parseThreadKey, publisherThreadReceipts, recentThread, type BoardRecord, type SitrepOwnerData, type ThreadMessage } from "@tinyboilerplate/core/feed/sitrep";
 import type { HomeFeedEntry } from "./feedStoreTypes";
+import { CardConversation, type ConversationLine } from "./CardConversation";
+import { isOwnerAction } from "./ownerActions";
 
 interface Props {
   entry: HomeFeedEntry;
@@ -8,10 +10,19 @@ interface Props {
   owner: SitrepOwnerData;
   busy: boolean;
   closed: boolean;
+  /** A newer issuance replaced this card: a comment still in its undo window is refused, not sent. */
+  stale?: boolean;
   now: number;
-  onSend: (text: string, resendOf?: string) => Promise<boolean>;
+  /** The card is open: its comments show. */
+  open: boolean;
+  /** Who a comment goes to ("Leave a comment for {to}"); none, no comment control (`reason` says why). */
+  to?: string;
+  reason?: string;
+  /** The comment box, opened from the card's "Comment" foot action; without it, a closed box opens it. */
+  composer?: { open: boolean; onOpenChange: (open: boolean) => void };
+  onSend: (text: string) => Promise<boolean>;
+  onResend: (text: string, resendOf: string) => Promise<boolean>;
 }
-const buttonClass = "min-h-10 rounded-lg border border-border px-3 text-sm disabled:opacity-50";
 function sameParent(entry: HomeFeedEntry, value: { cardId: string; revision: number; issuanceId: string }) { const card = entry.state.card; return card.cardId === value.cardId && card.revision === value.revision && card.issuanceId === value.issuanceId; }
 function claimDeadline(value: unknown): number | undefined {
   if (!value || typeof value !== "object" || !("state" in value) || value.state !== "claimed") return;
@@ -20,22 +31,35 @@ function claimDeadline(value: unknown): number | undefined {
   return Number.isFinite(parsed) ? parsed + 120_000 : undefined;
 }
 
-export function HomeCardThread({ entry, record, owner, busy, closed, now, onSend }: Props) {
-  const [open, setOpen] = useState(false);
-  const [text, setText] = useState("");
+/** How many comments a typed card has (the collapsed card shows the count). Owner card actions ("feed.*") are not comments. */
+export function threadSize(entry: HomeFeedEntry, record: BoardRecord, owner: SitrepOwnerData): number {
+  const linked = new Set([...Object.values(owner.threadResponses ?? {}), ...(owner.outboundNotes ?? []).map((note) => note.responseId)]);
+  return owner.threads.filter((message) => message.kind === record.kind && message.id === record.id).length
+    + (entry.responses?.filter((response) => response.kind === "message" && !isOwnerAction(response) && !linked.has(response.responseId)).length ?? 0)
+    + (owner.heldNotes?.length ?? 0);
+}
+
+/**
+ * A typed card's conversation: the owner's thread messages and the agent's (a `replyTo` names the
+ * owner message answered), plain card messages, and notes kept privately. Typed routing and receipts
+ * stay: per-recipient states show under the comment, an unconfirmed or claim-expired receipt marks it
+ * unconfirmed at once, and "Send again" resends with `resendOf` only to a routed message.
+ */
+export function HomeCardThread({ entry, record, owner, busy, closed, stale = false, now, open, to, reason, composer, onSend, onResend }: Props) {
   const [localClock, setLocalClock] = useState(now);
   const clock = Math.max(now, localClock);
+  const agent = entry.source.label;
   const messages = recentThread(owner.threads.filter((message) => message.kind === record.kind && message.id === record.id));
   const legacyClaims = owner.deliveries.flatMap((delivery) => { const deadline = claimDeadline(delivery.originalReceipt); return deadline && deadline > clock ? [deadline] : []; });
   const liveClaims = messages.flatMap((message) => receiptsFor(message).reported.flatMap((receipt) => { const deadline = Date.parse(receipt.at) + 120_000; return receipt.state === "claimed" && deadline > clock ? [deadline] : []; }));
   const nextClaim = Math.min(...legacyClaims, ...liveClaims);
   const linked = new Set([...Object.values(owner.threadResponses ?? {}), ...(owner.outboundNotes ?? []).map((note) => note.responseId)]);
-  const plainMessages = entry.responses?.filter((response) => response.kind === "message" && !linked.has(response.responseId)) ?? [];
+  const plainMessages = entry.responses?.filter((response) => response.kind === "message" && !!response.text && !isOwnerAction(response) && !linked.has(response.responseId)) ?? [];
   useEffect(() => {
-    if (!open || !Number.isFinite(nextClaim)) return;
+    if (!Number.isFinite(nextClaim)) return;
     const timer = window.setTimeout(() => setLocalClock(Date.now()), Math.min(Math.max(0, nextClaim - Date.now() + 1), 2_147_483_647));
     return () => window.clearTimeout(timer);
-  }, [open, nextClaim, clock]);
+  }, [nextClaim, clock]);
 
   function receiptsFor(message: ThreadMessage) {
     const responseId = message.side === "sam" ? owner.threadResponses?.[ownerThreadResponseKey(message)] : undefined;
@@ -52,43 +76,36 @@ export function HomeCardThread({ entry, record, owner, busy, closed, now, onSend
     const uncertain = legacy.some((receipt) => receipt.state === "unconfirmed") || reported.some((receipt) => receipt.state === "unconfirmed" || (receipt.state === "claimed" && Date.parse(receipt.at) + 120_000 <= clock));
     return { legacy, reported, handling, waitingClaim, uncertain };
   }
-  return <div className="space-y-3">
-    <button type="button" className={buttonClass} onClick={() => setOpen(!open)}>{`Message ${entry.source.label}`}</button>
-    {open && <section aria-label="Card thread" className="space-y-3 rounded-xl border border-border p-3">
-      <p className="text-xs text-muted-foreground">To authenticated publisher {entry.source.label} · {entry.source.agentDid}. No implicit broadcast or owner-label routing.</p>
-      <ol className="space-y-3">
-        {messages.map((message) => {
-          const { legacy, reported, handling, waitingClaim, uncertain } = receiptsFor(message);
-          const origin = owner.threadOrigins?.[ownerThreadResponseKey(message)];
-          const route = entry.threadRoutes?.[ownerThreadResponseKey(message)];
-          const routed = route?.kind === "publisher" || route?.kind === "recipients";
-          return <li key={JSON.stringify([message.kind, message.id, message.side, message.messageId])} className="space-y-1">
-            <p className="text-xs text-muted-foreground">{message.side === "sam" ? "You" : origin?.kind === "legacy" && parseThreadKey(origin.sourceKey)?.side === "officer" ? `${message.from} · archived officer message (display name)` : origin?.kind === "agent-output" && origin.sourceId === entry.source.sourceId ? `${message.from} · registered publisher ${entry.source.label}` : `${message.from} · officer history (display name; output provenance not available)`} · {new Date(message.at).toLocaleString()}</p>
-            <p className="whitespace-pre-wrap">{message.text}</p>
-            {"replyTo" in message && message.replyTo && <p className="text-xs">Reply to {message.replyTo}</p>}
-            {"resendOf" in message && message.resendOf && <p className="text-xs">Explicit resend of {message.resendOf}</p>}
-            {legacy.map((receipt) => <p key={`${receipt.sourceKey}:${receipt.recipientKey}`} className="text-xs">{receipt.recipientKey} · {(claimDeadline(receipt.originalReceipt) ?? 0) > clock ? "Sending (legacy claim)" : receipt.state === "unconfirmed" ? "Unconfirmed" : receipt.state} · {receipt.routedTo}{receipt.reason && ` · ${receipt.reason}`}</p>)}
-            {reported.map((receipt) => <p key={receipt.recipientKey} className="text-xs">{receipt.recipient} · Publisher-reported {receipt.state === "claimed" && Date.parse(receipt.at) + 120_000 <= clock ? "unconfirmed" : receipt.state} · {receipt.routedTo}{receipt.reason && ` · ${receipt.reason}`}</p>)}
-            {handling?.acknowledgement && <p className="text-xs">Publisher received</p>}
-            {handling?.outcome && <p className="text-xs">Publisher outcome: {handling.outcome.phase}</p>}
-            {!legacy.length && !reported.length && <p className="text-xs text-muted-foreground">Logical recipient delivery: not reported</p>}
-            {entry.recipientRoute?.recipients.filter((recipient) => !legacy.some((receipt) => receipt.recipientKey === recipient.recipientKey) && !reported.some((receipt) => receipt.recipientKey === recipient.recipientKey)).map((recipient) => <p key={recipient.recipientKey} className="text-xs text-muted-foreground">{recipient.legacyName}: not reported</p>)}
-            {message.side === "sam" && uncertain && !waitingClaim && !closed && <div className="space-y-1">
-              <p className="text-xs text-muted-foreground">{route?.kind === "publisher" ? `Explicit resend to authenticated publisher ${entry.source.label} (${entry.source.agentDid}).` : route?.kind === "recipients" ? `Explicit resend via ${entry.source.label} to ${route.delivery.targets.map((target) => `${target.recipientKey} (${target.agentId})`).join(", ")}. The original may already have reached these destinations.` : `Held / unrouted: ${route?.kind === "held" ? route.unresolved.join(" / ") : "the original destination has no approved mapping"}. No publisher fallback.`}</p>
-              <button type="button" disabled={busy || !routed} className={buttonClass} onClick={() => onSend(message.text, message.messageId)}>Resend message</button>
-            </div>}
-          </li>;
-        })}
-      </ol>
-      {!!plainMessages.length && <section aria-label="Other saved card messages" className="space-y-2">
-        {plainMessages.map((message) => {
-          const handling = entry.responseHandling?.[message.responseId];
-          return <div key={message.responseId} className="rounded-lg bg-muted/30 p-3 text-sm"><p className="whitespace-pre-wrap">{message.text}</p><p className="text-xs">Message saved · {new Date(message.createdAt).toLocaleString()}{handling?.acknowledgement && " · Publisher received"}{handling?.outcome && ` · Publisher outcome ${handling.outcome.phase}`}</p><p className="text-xs text-muted-foreground">Logical recipient delivery: not reported. This message is not a question decision.</p></div>;
-        })}
-      </section>}
-      <p className="text-xs text-muted-foreground">An explicit resend creates a new immutable message. An unconfirmed original may already have arrived.</p>
-      <label className="block">Message<textarea aria-label="Card message" value={text} onInput={(event) => setText(event.currentTarget.value)} disabled={closed || busy} className="mt-2 min-h-20 w-full rounded-xl border border-border bg-background p-3 text-sm" /></label>
-      <button type="button" className={buttonClass} disabled={closed || busy || !text.trim()} onClick={() => { void onSend(text).then((saved) => { if (saved) setText(""); }); }}>Send message</button>
-    </section>}
-  </div>;
+  function ownLine(message: ThreadMessage): ConversationLine {
+    const { legacy, reported, handling, waitingClaim, uncertain } = receiptsFor(message);
+    const route = entry.threadRoutes?.[ownerThreadResponseKey(message)];
+    const routed = route?.kind === "publisher" || route?.kind === "recipients";
+    const states = [
+      ...legacy.map((receipt) => `${entry.recipientRoute?.recipients.find((recipient) => recipient.recipientKey === receipt.recipientKey)?.legacyName ?? receipt.recipientKey}: ${receipt.state === "unconfirmed" ? "Unconfirmed" : receipt.state}`),
+      ...reported.map((receipt) => `${receipt.recipient}: ${receipt.state === "claimed" && Date.parse(receipt.at) + 120_000 <= clock ? "Unconfirmed" : receipt.state}`),
+    ];
+    const heldRoute = uncertain && !waitingClaim && (route?.kind === "held" || !routed);
+    const note: ReactNode = states.length || heldRoute ? <>
+      {!!states.length && <span className="block">{states.join(" · ")}</span>}
+      {heldRoute && <span className="block">Kept private, not sent: {route?.kind === "held" ? route.unresolved.join(" / ") : "the first recipient"} isn't connected.</span>}
+    </> : undefined;
+    return { key: `me:${message.messageId}`, id: message.messageId, mine: true, text: message.text, at: message.at, who: to ?? agent,
+      received: !!handling?.acknowledgement, ...(uncertain && !waitingClaim ? { uncertain: true } : {}), ...(!routed || closed ? { noResend: true } : {}), ...(note ? { note } : {}) };
+  }
+
+  const lines: ConversationLine[] = [
+    ...messages.map((message) => {
+      if (message.side === "sam") return ownLine(message);
+      const origin = owner.threadOrigins?.[ownerThreadResponseKey(message)];
+      // Only output this card's registered agent published carries its name; archived
+      // officer messages keep the display name they were written with.
+      const who = origin?.kind === "agent-output" && origin.sourceId === entry.source.sourceId ? agent : message.from;
+      return { key: `agent:${message.messageId}`, mine: false, text: message.text, at: message.at, who, ...(message.replyTo ? { replyTo: `me:${message.replyTo}` } : {}) };
+    }),
+    ...plainMessages.map((message) => ({ key: `me:${message.responseId}`, id: message.responseId, mine: true, text: message.text ?? "", at: message.createdAt, who: agent, noResend: true,
+      received: !!entry.responseHandling?.[message.responseId]?.acknowledgement })),
+    ...(owner.heldNotes ?? []).map((note) => ({ key: `held:${note.eventId}`, mine: true, text: note.text, at: note.at, who: note.intendedRecipient, held: true })),
+  ].sort((a, b) => a.at.localeCompare(b.at));
+  return <CardConversation lines={lines} to={closed ? undefined : to} reason={reason} disabled={busy || closed} stale={stale} visible={open} composer={composer}
+    onSend={onSend} onResend={(line) => line.id ? onResend(line.text, line.id) : Promise.resolve(false)} />;
 }

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, jest, test } from "bun:test";
+import { resetLanesForTests } from "../localFirst/requestLanes";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import {
   REPLICATION_FILL_FIRST_LOAD_DEADLINE_MS,
@@ -63,6 +64,8 @@ async function drain(h: Harness): Promise<void> {
 }
 
 beforeEach(() => { jest.useFakeTimers(); });
+// The fill waits on the request lanes, which are module state: start from idle lanes, not from whatever an earlier test file left in flight.
+beforeEach(resetLanesForTests);
 afterEach(() => { jest.useRealTimers(); });
 
 describe("replication fill: deferred and staggered", () => {

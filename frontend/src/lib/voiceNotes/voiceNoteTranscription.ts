@@ -1603,6 +1603,8 @@ export async function transcribeVoiceNote(args: {
   if (args.explicitRerun && !args.explicit)
     throw new PrivateCloudError("transcription_off", "A transcript rerun requires an explicit user action");
   const { tcw, cloud, sourceId } = args;
+  // A hidden held row must never be mistaken for absence and start new remote work.
+  await args.held?.assertAccount?.();
   const storageScope = storageScopeFor(tcw);
   logPipeline("transcription", sourceId, "start", { engine: "private-cloud" });
   const report = (status: VoiceNoteTranscriptionStatus) => {
@@ -3002,6 +3004,7 @@ export function transcribeSavedNote(
 
 /** One transcriber per signed-in account, kept across mounts (StrictMode, tab switches). */
 const transcribers = new Map<string, { transcriber: VoiceNoteTranscriber; tcw: { current: TinyCloudWeb } }>();
+subscribeAccountGeneration(() => transcribers.clear());
 
 /** The account's transcriber; null without an account DID (nothing is offered then). */
 export function voiceNoteTranscriberFor(

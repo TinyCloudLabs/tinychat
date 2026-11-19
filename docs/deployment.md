@@ -4,7 +4,7 @@ TinyChat mirrors Listen's production topology:
 
 | Layer | Host | URL |
 | --- | --- | --- |
-| Frontend (Vite SPA) | Cloudflare Pages | `https://tinycloud.chat` |
+| Frontend (Vite SPA) | Cloudflare Pages | `https://tinycloud.one` (also `tinycloud.chat`, `home.tinycloud.xyz`) |
 | Backend (Express on Bun) | Phala Cloud (TEE / dstack) | `https://api.tinycloud.chat` |
 
 The backend runs in a Phala CVM behind a `dstack-ingress` sidecar that
@@ -31,8 +31,8 @@ dispatches for a stable `@tinychat/frontend` release, after the backend deploy.
 It checks that the current `production` tip was made by the workflow (or seeded
 from `main`), creates a commit whose tree is exactly the released commit's,
 fast-forwards `production` to it, waits for the Pages production build (the
-`Cloudflare Pages` check on that commit), checks that `tinycloud.chat` serves
-that deployment, and checks the branch still points at its commit before and
+`Cloudflare Pages` check on that commit), checks that `tinycloud.one` serves
+that deployment and that the other web hosts serve its commit, and checks the branch still points at its commit before and
 after. Every other branch, `main` included, only gets preview builds. Only
 the `release-push` deploy key may update `production` (see the rulesets below).
 To roll back, dispatch the workflow with the older release tag (`--ref main -f
@@ -151,6 +151,104 @@ rulesets stop direct pushes, hand-made release tags, branch or tag-controlled
 workflows, accidents and out-of-band deploys; they do not stop a malicious
 writer. Treat write access to this repo as production access.
 
+### One web build: tinycloud.one (canonical), tinycloud.chat and home.tinycloud.xyz
+
+There is one frontend build. The web, the desktop app and the mobile apps all
+run it, sign in with the root `manifest.json`, and open on Feed (named Home)
+with the tabs Home, Chat, Apps, Recording, Connectors. There is no build flag
+or host check that changes the product.
+
+- **Pages project:** the Git-integrated `tinychat` project above serves all
+  three custom domains: `tinycloud.one` (canonical), `tinycloud.chat` and
+  `home.tinycloud.xyz` (`CNAME` to `tinychat-4jq.pages.dev`). The `web` job in
+  `deploy-production.yml` verifies the URL in `TINYCHAT_FRONTEND_URL` (default
+  `https://tinycloud.one`) and then every host in `TINYCHAT_ALSO_HOSTS`
+  (space-separated, default `tinycloud.chat home.tinycloud.xyz`): each must
+  answer `/version.json` with the deployed commit, or the release is reported
+  changed and unverified. A domain left on another Pages project (an old
+  build, HTML for `/version.json`) fails that check.
+- **Moving visitors off the legacy hosts:** origins do not share IndexedDB or
+  localStorage, so a redirect would strand work kept only in the browser.
+  `frontend/src/lib/originMove.ts` runs only on `tinycloud.chat` and
+  `home.tinycloud.xyz`. It never moves a Google same-tab OAuth return
+  (`state=tab.…`/`hometab.…` with `google_oauth_code`/`google_oauth_error`; its
+  PKCE verifier is in this origin's sessionStorage), a page opened as a popup,
+  `/agents` and `/agents/…` (the published setup and tarball links), or a page
+  loaded with `?legacy=1` (below). Otherwise, before the app renders, it
+  counts, across every account, work that exists only in this browser: capture
+  sessions, quarantined recoveries, notes not saved or with local work left,
+  outbox entries, local transcripts not yet saved, `exo-held-results` rows,
+  note Markdown edits the space has not confirmed (`exo-recording-notes`),
+  Private transcription jobs holding or producing a transcript, unsaved
+  Upload-sheet jobs, and notes whose **audio is only local** (no
+  `verifiedInSpace` receipt), plus Home answers and post drafts. The full store
+  inventory, including the stores that are not counted and why, is in the
+  comments of `originMove.ts`. None, and `https://tinycloud.one/version.json`
+  names this same build's commit: `location.replace` to `https://tinycloud.one`
+  with the same path, query and `#hash`. Otherwise (or if any check fails) the
+  app runs as usual with a notice (`shell/OriginMoveNotice.tsx`) when work is
+  held, and re-checks every 30 s, on focus and when back online. It never
+  moves while the tab is signing in, re-authorising Connectors, connecting
+  Google, streaming or drafting a chat reply, or editing a note
+  (`deferOriginMove`). A visitor who moves signs in once on tinycloud.one.
+- **Edge redirect (the `tinycloud-domain-redirects` Cloudflare Worker, TinyCloudLabs/internal
+  `infra/tinycloud-domain-redirects`, routes on `tinycloud.chat/*` and
+  `home.tinycloud.xyz/*` in front of this Pages project; the Pages `_redirects`
+  file matches paths only):** a page load gets a 302 to `https://tinycloud.one`
+  with the same path and query (`no-store`). The Worker's `worker.js` is the
+  source of truth for what it lets through to this app instead: a request with
+  the `tc_hold=1` cookie; `?legacy=1`; the same-tab Google sign-in return
+  (`state` starting `tab.`, `hometab.` or `onetab.` with `google_oauth_code` or
+  `google_oauth_error`); a request the browser says is not a page load
+  (`Sec-Fetch-Dest` other than `document`, `iframe`, `frame`, `embed`,
+  `object`: scripts, styles, images, fonts, `fetch`/XHR, the service worker and
+  its imports); any method but `GET` or `HEAD`; and these paths: `/sw.js`,
+  `/workbox-<hash>.js`, `/assets/*`, `/manifest.webmanifest`, `/version.json`,
+  `/icons/*`, `/fonts/*`, `/agents` and `/agents/*`. Browsers keep the `#hash`
+  across a 302 whose `Location` has none.
+- **`tc_hold` cookie:** the edge redirect runs before the app, so it could
+  strand local-only work. While the app holds work on a legacy host it sets
+  `tc_hold=1` (host-only, `Secure`, `SameSite=Lax`, 400 days) so the rule lets
+  the app load; it clears the cookie when nothing is held. A failed work check
+  counts as held.
+- **Recovering data left on a legacy origin (`?legacy=1`):** open
+  `https://tinycloud.chat/?legacy=1` or `https://home.tinycloud.xyz/?legacy=1`.
+  The Worker lets it through, the app stays on that origin, and it sets `tc_hold`
+  so plain visits keep loading the app there. From that page the visitor
+  uploads or saves their recordings and answers as usual; once nothing local is
+  left, the app clears the cookie and moves them to tinycloud.one on its own.
+- **`version.json`:** every build writes `{"commit": …}` to `/version.json`
+  (`frontend/vite.config.ts`), served `no-store` with
+  `Access-Control-Allow-Origin: *` (`frontend/public/_headers`): it holds only a
+  commit hash, and a header can name one origin at most. The legacy hosts read
+  it on tinycloud.one before moving a visitor, so deploying a build never moves
+  anyone until tinycloud.one serves that same commit.
+- **Google OAuth:** a page on `https://home.tinycloud.xyz` tags its `state`
+  `home.`/`hometab.`, and a page on `https://tinycloud.one` tags it
+  `one.`/`onetab.`, so the backend returns to that origin
+  (`HOME_WEB_ORIGIN`); anywhere else the state is untagged and returns to
+  `FRONTEND_URL` (`https://tinycloud.one`).
+- **Backend:** the backend accepts all three web origins through the
+  `FRONTEND_ORIGINS` allowlist (default
+  `https://tinycloud.chat,https://home.tinycloud.xyz,https://tinycloud.one`,
+  plus `FRONTEND_URL`) for CORS, the SIWE domain check and the OAuth returns,
+  whichever of them `FRONTEND_URL` names. See **CORS** under "Notes" in
+  section 2.
+- **Cutover order:** (1) deploy OpenKey with tinycloud.one as a first-party
+  origin; (2) move `home.tinycloud.xyz` from the `tinycloud-home` Pages project
+  to `tinychat` (remove it from `tinycloud-home`, add it to `tinychat`, point
+  the `CNAME` at `tinychat-4jq.pages.dev`; keep `tinycloud-home` 7 days as a
+  rollback target and stop deploying it by hand); (3) set `TINYCHAT_FRONTEND_URL`
+  to `https://tinycloud.one` and deploy the backend (it writes the variable as
+  `FRONTEND_URL`: Stripe returns and untagged OAuth returns land on
+  tinycloud.one); (4) deploy this web build and confirm all three hosts serve
+  it; (5) check a held visitor stays, a clear visitor moves, and `?legacy=1`
+  works on both legacy hosts; (6) deploy the Worker's forwards (its README, "Turn the forwards on").
+- **Links the backend generates** keep using `FRONTEND_URL`: the Stripe
+  checkout and portal returns (`/?billing=…`) and the connector-off link (the
+  bare origin). All three hosts serve the same build, so those paths work on
+  any of them.
+
 ---
 
 ## 2. Backend → Phala Cloud (`api.tinycloud.chat`)
@@ -200,21 +298,31 @@ backend afterwards: `unchanged` (failed before `phala deploy`),
 `changed-verified`, or `changed-unverified` (the CVM may run the new image but a
 later check failed; web is not deployed).
 
-The workflow also refuses to run unless the backend CVM is on the production OS
-image pinned in `PHALA_OS_IMAGE` / `PHALA_OS_IMAGE_HASH` (`dstack-0.5.12`), or on
-a dev image whose hash is listed in `.github/scripts/phala-dev-os-allowlist.txt`
-(today only `dstack-dev-0.5.12`) and that passes a fresh check in the same job:
-`download.dstack.org` serves `mr_<hash>.tar.gz`, and `sha256sum sha256sum.txt` of
-the extracted archive equals `<hash>`, and every file it lists matches
-(`sha256sum -c`). An unknown dev hash, a missing field, a
-failed fetch or a hash mismatch fails closed. The allowlist is changed only by a
-reviewed PR. The logic is `.github/scripts/phala-os-guard.sh`, tested by
-`.github/scripts/test-phala-os-guard.sh` (which the deploy runs first). The check
-runs on `phala cvms get` before building anything and again after `phala deploy`.
-It reads the script from the deployed ref's checkout, so a rollback to a ref that
-predates it fails closed.
-CI never changes the OS; if the check fails, set it by hand and re-run:
-`phala api -X PATCH /cvms/<id>/os-image -F os_image_name=dstack-0.5.12`.
+The backend workflow requires the exact production OS name/hash pinned in
+`PHALA_OS_IMAGE` / `PHALA_OS_IMAGE_HASH` (`dstack-0.5.12`) and `is_dev=false`.
+Dev images fail closed by default. Missing/malformed metadata or a different
+name/hash also fails closed.
+
+**TC-2843 transition exception:** a separately authorized manual dispatch of
+`deploy-production.yml` may explicitly set
+`allow_current_dev_os_until_tc2843=true` (default **false**). Only
+`dstack-dev-0.5.12`, hash
+`e866e987221db357129ebc3f066b6706ef955889ea95e5510acbdf3d3055186b`,
+with `is_dev=true` is permitted. Push, schedule and originating workflow-call
+events cannot enable this exception: the guard refuses the override unless
+`github.event_name` is `workflow_dispatch`. The reusable backend workflow
+forwards the dispatch choice; it does not provide an independent non-manual escape.
+Accepted dev checks print a warning and append a **TC-2843** warning with the
+exact tuple to the run summary. The OS-move PR (or first deploy after the move)
+must remove this input and exception in the same change.
+
+Both backend and bots run `.github/scripts/phala-os-guard.sh` and its self-tests
+from a separate sparse checkout at `github.workflow_sha`, not the application
+target ref. Checks run before building and after `phala deploy`, so rolling back
+application code cannot restore an older dev-permitting guard. Bots has no
+transition input and always requires the production tuple.
+CI never changes the OS. An OS move requires its own reviewed, separately
+authorized operation; do not treat a failed guard as permission to move it.
 `phala deploy --image/--no-dev-os` is ignored for an existing CVM.
 
 Production deploys go only through this workflow; the repository has no local
@@ -236,6 +344,7 @@ Repository **secrets**:
 | `WEBHOOK_HMAC_MASTER` | Connector-webhook HMAC master. `openssl rand -base64 32`. Required only when `CONNECTOR_WEBHOOKS_ENABLED=true`; a weak value refuses to boot. |
 | `WEBHOOK_HMAC_MASTER_PREV` | Rotation grace key — the outgoing master, set only while a rotation drains. |
 | `LOG_HASH_SALT` | Salt for the public log stream's keyed hashes. Its own `openssl rand -base64 32` value; never derived from `WEBHOOK_HMAC_MASTER`. |
+| `REQUEST_LOG_HMAC_KEY` | Keys the `account_hash` in the backend's shipped request records (TC-2537, `docs/dev-logging.md`). Generate once with `openssl rand -hex 32` and pipe it straight into `gh secret set` (environment `production-api`); never reuse another secret. Unset or weak only omits `account_hash`. Rotating it breaks joins across the rotation. |
 | `STRIPE_SECRET_KEY` | Stripe secret key for `/api/billing` (`sk_live_…`; `sk_test_…` while testing). Optional until go-live — unset resolves everyone to the free tier and checkout/portal return `503 billing_not_configured` (`docs/stripe-setup.md`). |
 | `STRIPE_WEBHOOK_SECRET` | Signing secret (`whsec_…`) of the Stripe webhook endpoint pointing at `/api/billing/webhook`. |
 | `LEDGER_SERVICE_SECRET` | Shared secret for the Universal Ledger credits sidecar. Optional — unset disables the ledger client. |
@@ -252,9 +361,9 @@ Repository **variables** (all optional — defaults shown):
 | `PHALA_CVM_ID` | _(required — no default; the workflow fails fast if unset)_ |
 | `PHALA_INGRESS_DOMAIN` | `api.tinycloud.chat` |
 | `TINYCHAT_BACKEND_URL` | `https://api.tinycloud.chat` |
-| `TINYCHAT_FRONTEND_URL` | `https://tinycloud.chat` |
+| `TINYCHAT_FRONTEND_URL` | `https://tinycloud.chat` (web URL the `web` job verifies, and the backend's `FRONTEND_URL`: Stripe and connector-off links. Do not set it to `https://home.tinycloud.xyz` before the backend with the `FRONTEND_ORIGINS` allowlist is deployed; see "One web build") |
 | `TINYCHAT_BACKEND_IMAGE` / `TINYCHAT_INGRESS_IMAGE` | `ghcr.io/tinycloudlabs/tinychat-backend` |
-| `REDPILL_BASE_URL` | `https://api.redpill.ai/v1` |
+| `REDPILL_BASE_URL` | `https://tee.redpill.ai/v1` |
 | `REDPILL_DEFAULT_MODEL` | `z-ai/glm-5.2` (must stay an offered model — a non-offered value warns and falls back at runtime; `backend/src/routes/chat.ts` ST11) |
 | `CONNECTOR_WEBHOOKS_ENABLED` | `false` (ships dark: route unmounted, maintenance timer off, section hidden) |
 | `CONNECTOR_WEBHOOK_PUBLIC_ORIGIN` | _(empty — the minted callback host falls back to the request's `Host` header, with the scheme forced to `https`)_. Set it to `https://api.tinycloud.chat` before enabling the flag: this is the origin of the URL users paste into their provider dashboard, and a wrong host mints a webhook that silently never delivers. Origin only — `https`, no path, no trailing slash — or the companion router refuses to build. |
@@ -267,6 +376,12 @@ Repository **variables** (all optional — defaults shown):
 | `ELIZA_SERVICE_URL` | _(required — no default; the workflow's config check fails fast if unset)_ — Eliza agent service URL (agent triad) |
 | `ELIZA_TASKS_ENABLED` | `false` (repo variable; only literal `true` routes admitted agent turns through Eliza `/tasks`) |
 | `ELIZA_TASKS_TEST_ACCOUNTS` | _(empty — repo variable; comma-separated account addresses, trimmed and lowercased)_. **When tasks are enabled, an empty list admits all authenticated accounts.** Set an explicit canary list before enabling. |
+| `RENEWAL_BACKEND_ORIGIN` / `RENEWAL_NODE_DID` / `RENEWAL_RENEWER_DID` | _(empty — `POST /api/auth/verify-renewal` answers 503)_. Set all three or none (a partial set refuses to boot). The backend's public origin (`https://api.tinycloud.chat`, bound into the holder proof) and the production node's DID and renewer DID exactly as `/.well-known/tinycloud/node-keys` advertises them: the same values as OpenKey's `OPENKEY_RENEWAL_NODE_DID` / `OPENKEY_RENEWAL_RENEWER_DID`. The route relays the session's status invocation to `TINYCLOUD_HOST` and issues a bearer for at most 24 hours, never past the lease or the node-verified renewed end. Each address may renew 5 times a minute, counted only after the request's holder proof passes; nothing is keyed on the IP. The shared `/api/auth` bucket also applies. |
+| `BOTS_ENABLED` | `false` (only literal `true` turns on tiny bots: the Home Main bot chat at `/api/bots`). Off unless `BOTS_SERVICE_URL`, `BOTS_SERVICE_SECRET` and a non-empty `BOTS_TEST_ACCOUNTS` are also set. |
+| `BOTS_TEST_ACCOUNTS` | _(empty — comma-separated account addresses, trimmed and lowercased; the single entry `*` admits every account; an empty list admits nobody)_ |
+| `BOTS_SERVICE_URL` | _(empty)_ — internal URL of the bots service; never exposed to browsers. |
+| `BOTS_SERVICE_SECRET` | _(empty — repo **secret**)_ — bearer the backend sends to the bots service; never returned to clients. |
+| `BOTS_POST_TIMEOUT_MS` | `120000` — overall bound on one Main bot message turn; when it fires the backend aborts the bots service request and sends a `bot_unavailable` error event. |
 | `MEETING_CONTENT_RETRIEVAL_ENABLED` | `false` (optional; only literal `true` enables controller routing for admitted accounts) |
 | `MEETING_CONTENT_TEST_ACCOUNTS` | _(empty — optional comma-separated account allowlist; entries are trimmed and lowercased)_. For turns served by MCP chat (`MCP_CHAT_ENABLED`), a `*` entry admits every MCP account; the eliza-service path never honors `*`, and an empty list admits nobody on either path. |
 | `MEETING_CONTENT_MODELS` | _(empty — optional comma-separated evaluated-model allowlist; entries are trimmed and matched exactly)_. On the eliza-service path an empty list admits no model; for turns served by MCP chat an empty list admits every offered model. |
@@ -458,10 +573,11 @@ above for the listed addresses. This is deliberate and operator-signed
   expiry are the only bounds, which is why the breach-response runbook (plan
   §12.2, W11) is a precondition for enabling the flag rather than a follow-up.
 - The backend **fetches the meeting and keeps its own copy**, encrypted under
-  `CONNECTOR_CONTENT_MASTER`, for **90 days** (`D2a-retention-days`;
+  `CONNECTOR_CONTENT_MASTER`, for **14 days** at most (`D2a-retention-days`;
   `RETENTION_WINDOW_DAYS` in `backend/src/services/content-store.ts`). The
-  retention sweep then deletes it and records a tombstone, so a provider replay
-  cannot silently re-store aged-out content. Disconnect/purge deletes the stored
+  retention sweep deletes it at the authenticated expiry day (first-store UTC day
+  plus 13), checked every five minutes. A keyed replay marker lasts 14 days after
+  deletion; provider meetings older than 14 days are refused on re-delivery. Disconnect/purge deletes the stored
   meetings and the credential immediately.
 - What does **not** change: the backend still holds **no connector delegation**.
   Custody is out of band (plan §6), so no new permission is minted inside a
@@ -563,11 +679,17 @@ nothing below may be reported as done on its behalf.
   ports removal cherry-picked onto it first. After the new build is live it also
   requires `https://<app_id>-3001.<gateway>/health` to be closed (TLS accepted,
   no HTTP response) and fails on any HTTP status.
-- **CORS:** the backend allows `FRONTEND_URL`, Exo's fixed Tauri origins, the
-  TinyChat Cloudflare Pages project (`*.tinychat-4jq.pages.dev`), and the exact
-  documented local origins on port `5186`. Production must still set
-  `FRONTEND_URL=https://tinycloud.chat`; unrelated Pages projects, localhost
-  ports, and lookalike domains remain blocked.
+- **CORS:** the backend allows the web origins in `FRONTEND_ORIGINS`
+  (comma-separated exact `http(s)` origins; unset means the built-in default
+  `https://tinycloud.chat,https://home.tinycloud.xyz,https://tinycloud.one`, `DEFAULT_FRONTEND_ORIGINS`
+  in `backend/src/cors-origins.ts`) plus `FRONTEND_URL`, which is always added;
+  TinyCloud One's fixed Tauri and Capacitor origins; the TinyChat Cloudflare
+  Pages project (`*.tinychat-4jq.pages.dev`); and the exact documented local
+  origins on port `5186`. A malformed `FRONTEND_ORIGINS` entry stops startup.
+  The Phala deploy does not pass `FRONTEND_ORIGINS`, so production uses the
+  default and accepts all three web sites whichever one `FRONTEND_URL` names.
+  Unrelated Pages projects, localhost ports, and lookalike domains remain
+  blocked.
 - **Home manifest (TC-2043):** deploy the backend that serves revision 3's
   manifest before the frontend revision gate. Existing web sessions re-sign
   once per device after the served bundle is available; native (mobile)
@@ -577,15 +699,19 @@ nothing below may be reported as done on its behalf.
   Adding a catalog database requires a manifest bump and another one-time
   sign-in. The `secrets` grants and backend delegation policy are unchanged.
 - **SIWE audience (TC-1201):** `/api/auth/verify` checks the signed domain
-  and URI before consuming the nonce. The web SDK signs the page hostname
-  (without the port) and a canonical `did:key` session verification-method
+  and URI before consuming the nonce. The web SDK signs the page host,
+  including any port, and a canonical `did:key` session verification-method
   URI, not the page origin. Production signs `tinycloud.chat`; one-label
   branch/commit previews under `tinychat-4jq.pages.dev` sign their exact
-  hostname; local web and macOS desktop sign `localhost`, and Windows desktop
-  signs `tauri.localhost`. Older clients signing the paired
+  hostname; macOS desktop signs `localhost` (the dev desktop build signs
+  `localhost` explicitly), and Windows desktop signs `tauri.localhost`. A
+  local web build served on `localhost:5186` signs `localhost:5186`, which no
+  backend accepts, so it cannot complete `/api/auth/verify`; test web sign-in
+  on a one-label `tinychat-4jq.pages.dev` preview instead. Older clients signing the paired
   `https://<hostname>` URI remain accepted for those web domains. The
-  production web domain comes from `FRONTEND_URL` in
-  `docker-compose.phala.yml`; local and Pages hosts come from
+  production web domains are the hostnames of the `FRONTEND_ORIGINS` allowlist
+  (tinycloud.chat, home.tinycloud.xyz and tinycloud.one, all signing the same way; see
+  **CORS**); local and Pages hosts come from
   `backend/src/cors-origins.ts`. Native OpenKey sign-in (iOS and Android)
   signs its configured issuer domain (`openkey.so` by default) and a canonical
   `did:key` session URI, never a web HTTPS URI. Only this native domain
@@ -594,16 +720,30 @@ nothing below may be reported as done on its behalf.
   app-path grant, which is the proof that the sign-in is for TinyChat. The root
   KV grant and the two named runnable catalog databases are tolerated next to
   it but never count as that proof on their own; other grants are rejected.
-  Native sign-in cannot request the broad entries until OpenKey's native
-  client policy and ceiling are changed (TC-1990), and the served revision-3
-  manifest lists them, so native sign-in is expected to fail until then. The
-  web sign-in does not use that client ceiling. Set
+  Native sign-in requests every applications-space KV, SQL and hook entry of
+  the served manifest except `tinycloud.space`; OpenKey's TinyCloud One native
+  client ceiling matches it (TC-2720), and the `Native ceiling` CI job PARs that
+  exact request against production OpenKey. Widen the ceiling before adding a
+  manifest entry. The web sign-in does not use that client ceiling. Set
   `OPENKEY_SIWE_DOMAIN` on the backend if that client's `siweDomain` changes;
   never use the API host as the signed audience.
   Nonces remain single-use for five minutes, with at most 2048 pending per
   backend process; a full store evicts its oldest nonce rather than blocking
   new sign-ins. The shared `/api/auth` limit is 1200 requests per 15 minutes
   for all unauthenticated clients, not a per-IP limit.
+- **Google OAuth return:** the client tags the `state` it sends, and the tag
+  picks where `/callback` returns. An untagged state and `tab.<path>.<nonce>`
+  return to `FRONTEND_URL` (the popup `postMessage` target, or a redirect to
+  the path), except when `FRONTEND_URL` is `https://home.tinycloud.xyz`: then
+  they return to `https://tinycloud.chat`, because the client tags every flow
+  it starts on home.tinycloud.xyz or tinycloud.one. `home.<nonce>` and `hometab.<path>.<nonce>`
+  do the same for the TinyCloud One site, but to the fixed `HOME_WEB_ORIGIN`;
+  `one.<nonce>` and `onetab.<path>.<nonce>` do it for the fixed `TINYCLOUD_ONE_WEB_ORIGIN`;
+  the nonce is base64url of at least 16 characters, and the path rules are the
+  `tab.` ones. A return origin missing from `FRONTEND_ORIGINS` is refused at
+  `/start` and gets the no-code page at `/callback`. `native.<nonce>` still
+  returns to the app deep link, and `/desktop/start` accepts untagged states
+  only. An unknown or malformed tag is refused at `/start` and `/callback`.
 - **TLS:** Phala's `dstack-ingress` terminates TLS for the API. The backend's
   local-only `HTTPS_CERT_FILE`/`HTTPS_KEY_FILE` path is unused in production.
 - **What's not included yet:** CI (`ci.yml`) and PR-preview deployments. Port

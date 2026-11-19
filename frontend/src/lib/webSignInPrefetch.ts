@@ -3,7 +3,7 @@ import { validateManifest, type Manifest } from "@tinycloud/sdk-core";
 import appManifest from "../../../manifest.json";
 
 // Web and backend deploy independently. Sign the grants shipped with this client.
-export const WEB_APP_MANIFEST = validateManifest(appManifest);
+export const WEB_APP_MANIFEST: Manifest = validateManifest(appManifest);
 
 // Server nonces expire at five minutes; leave one minute for SDK setup and verification.
 const MAX_NONCE_AGE_MS = 4 * 60_000;

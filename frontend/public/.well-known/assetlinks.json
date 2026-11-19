@@ -1,0 +1,10 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "xyz.tinycloud.home",
+      "sha256_cert_fingerprints": ["7F:3B:1A:C0:75:93:36:F4:27:86:B7:41:15:09:43:57:4F:66:7E:0B:9C:5A:5C:F7:40:82:D7:33:7B:69:62:B1"]
+    }
+  }
+]

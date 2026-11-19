@@ -10,6 +10,51 @@ export const EXO_ANDROID_ORIGIN = "https://localhost";
 /** The fixed origin Capacitor assigns to Exo's bundled frontend on iOS. */
 export const EXO_IOS_ORIGIN = "capacitor://localhost";
 
+/** The TinyCloud Home site, the canonical web origin of the single TinyChat/Home web build. */
+export const HOME_WEB_ORIGIN = "https://home.tinycloud.xyz";
+
+/** The original TinyChat web origin. Visitors whose local work has not synced stay here. */
+export const TINYCHAT_WEB_ORIGIN = "https://tinycloud.chat";
+
+/** The Home app on tinycloud.one: the same web build as the other two sites, served from its own origin. */
+export const TINYCLOUD_ONE_WEB_ORIGIN = "https://tinycloud.one";
+
+/** Env var listing the web origins the backend accepts, comma-separated. FRONTEND_URL is always added. */
+export const FRONTEND_ORIGINS_ENV = "FRONTEND_ORIGINS";
+
+/** The web origins accepted when FRONTEND_ORIGINS is unset: every production site. */
+export const DEFAULT_FRONTEND_ORIGINS: readonly string[] = [TINYCHAT_WEB_ORIGIN, HOME_WEB_ORIGIN, TINYCLOUD_ONE_WEB_ORIGIN];
+
+/**
+ * The web origins the backend accepts for CORS, the SIWE domain check and Google OAuth returns:
+ * FRONTEND_URL's origin, plus FRONTEND_ORIGINS (comma-separated HTTP(S) origins; unset or blank means
+ * DEFAULT_FRONTEND_ORIGINS). The explicit list keeps tinycloud.chat accepted when FRONTEND_URL moves
+ * to home.tinycloud.xyz. Anything that is not an exact origin throws, so a bad value fails startup.
+ */
+export function frontendOriginsFromEnv(frontendUrl: string, env: NodeJS.ProcessEnv = process.env): string[] {
+  let frontendOrigin: string;
+  try {
+    const url = new URL(frontendUrl.trim());
+    if (url.protocol !== "https:" && url.protocol !== "http:") throw new Error();
+    frontendOrigin = url.origin;
+  } catch {
+    throw new Error("FRONTEND_URL must be an HTTP(S) URL");
+  }
+  const raw = env[FRONTEND_ORIGINS_ENV] ?? "";
+  const listed = raw.trim()
+    ? raw.split(",").map((entry) => {
+      try {
+        const url = new URL(entry.trim());
+        if ((url.protocol !== "https:" && url.protocol !== "http:") || url.href !== url.origin + "/") throw new Error();
+        return url.origin;
+      } catch {
+        throw new Error(`${FRONTEND_ORIGINS_ENV} must contain only comma-separated HTTP(S) origins`);
+      }
+    })
+    : DEFAULT_FRONTEND_ORIGINS;
+  return [...new Set([frontendOrigin, ...listed])];
+}
+
 /** TinyChat's Cloudflare Pages project, including branch and commit previews. */
 export const TINYCHAT_PAGES_ORIGIN = /^https:\/\/[a-z0-9-]+\.tinychat-4jq\.pages\.dev$/;
 
@@ -26,11 +71,11 @@ const SESSION_KEY_URI = /^did:key:(z6Mk[1-9A-HJ-NP-Za-km-z]{44})#\1$/;
 export function isExpectedSiweOrigin(
   domain: string,
   uri: string,
-  webDomain: string,
+  webDomains: readonly string[],
   nativeDomain: string,
 ): boolean {
   if (domain === nativeDomain) return SESSION_KEY_URI.test(uri);
-  if (domain !== webDomain &&
+  if (!webDomains.includes(domain) &&
     domain !== "localhost" &&
     domain !== "tauri.localhost" &&
     !TINYCHAT_PAGES_ORIGIN.test(`https://${domain}`)) return false;
@@ -38,9 +83,9 @@ export function isExpectedSiweOrigin(
 }
 
 /** Browser origins allowed to call the TinyChat backend. */
-export function appCorsOrigins(frontendOrigin: string): Array<string | RegExp> {
+export function appCorsOrigins(frontendOrigins: readonly string[]): Array<string | RegExp> {
   return [
-    frontendOrigin,
+    ...frontendOrigins,
     EXO_DESKTOP_ORIGIN,
     EXO_DESKTOP_WINDOWS_ORIGIN,
     EXO_ANDROID_ORIGIN,
@@ -51,9 +96,9 @@ export function appCorsOrigins(frontendOrigin: string): Array<string | RegExp> {
 }
 
 /** Shared CORS options for application requests, including readable draft-7 limiter headers. */
-export function appCorsOptions(frontendOrigin: string) {
+export function appCorsOptions(frontendOrigins: readonly string[]) {
   return {
-    origin: appCorsOrigins(frontendOrigin),
-    exposedHeaders: ["Retry-After", "RateLimit", "RateLimit-Policy", "X-Request-Id", "X-Correlation-Id"],
+    origin: appCorsOrigins(frontendOrigins),
+    exposedHeaders: ["Retry-After", "RateLimit", "RateLimit-Policy", "X-Request-Id", "X-Correlation-Id", "X-TinyCloud-Session-Rejected", "X-Route-Unavailable"],
   };
 }

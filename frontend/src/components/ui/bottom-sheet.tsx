@@ -7,6 +7,7 @@
 import * as React from "react";
 import { XIcon } from "lucide-react";
 import { Drawer } from "vaul";
+import * as DialogPrimitive from "@radix-ui/react-dialog";
 
 import { cn } from "@/lib/utils";
 
@@ -15,6 +16,11 @@ export interface BottomSheetProps {
   onOpenChange: (open: boolean) => void;
   /** False while busy: no drag, scrim or Escape closes it, and there is no close button. */
   dismissible?: boolean;
+  /** Yield modal focus/aria isolation while a caller-owned external dialog is active. */
+  modal?: boolean;
+  onOpenAutoFocus?: (event: Event) => void;
+  /** Where focus goes when the sheet closes; Radix's own default returns it to a Drawer trigger, which few sheets have. */
+  onCloseAutoFocus?: (event: Event) => void;
   /** `content` grows with what it holds (up to the screen); `full` takes the whole height. */
   height?: "content" | "full";
   title: React.ReactNode;
@@ -24,62 +30,80 @@ export interface BottomSheetProps {
   contentProps?: Record<`data-${string}`, string>;
   /** The content brings its own header: the title is for screen readers only, and there is no close button. */
   bare?: boolean;
+  /** More classes for the sheet itself, e.g. a width cap on wide screens. */
+  className?: string;
 }
 
 export function BottomSheet({
   open,
   onOpenChange,
   dismissible = true,
+  modal = true,
+  onOpenAutoFocus,
+  onCloseAutoFocus,
   height = "content",
   title,
   description,
   children,
   contentProps,
   bare = false,
+  className,
 }: BottomSheetProps) {
+  const content = (
+    <Drawer.Portal>
+      {modal && <Drawer.Overlay className="fixed inset-0 z-50 bg-black/50" />}
+      <Drawer.Content
+        onOpenAutoFocus={onOpenAutoFocus}
+        onCloseAutoFocus={onCloseAutoFocus}
+        {...contentProps}
+        {...(description ? {} : { "aria-describedby": undefined })}
+        className={cn(
+          "fixed inset-x-0 bottom-0 z-50 flex flex-col rounded-t-sheet bg-card text-card-foreground shadow-float outline-none",
+          "pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)]",
+          // Never under the status bar; the visible viewport shrinks with the keyboard.
+          "max-h-[calc(var(--tc-app-height,100dvh)-env(safe-area-inset-top)-0.75rem)]",
+          height === "full" && "h-[calc(var(--tc-app-height,100dvh)-env(safe-area-inset-top)-0.75rem)]",
+          className,
+        )}
+      >
+        <div aria-hidden className="mx-auto mt-2 h-1.5 w-9 shrink-0 rounded-full bg-muted-foreground/40" />
+        {bare ? (
+          <Drawer.Title className="sr-only">{title}</Drawer.Title>
+        ) : (
+          <div className="flex min-h-13 shrink-0 items-center gap-2 pl-4 pr-2">
+            <Drawer.Title className="min-w-0 flex-1 font-display text-title-2 [overflow-wrap:anywhere]">{title}</Drawer.Title>
+            {dismissible && (
+              <Drawer.Close
+                aria-label="Close"
+                className="tap-transparent flex size-11 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-surface-2 hover:text-foreground active:bg-surface-2"
+              >
+                <XIcon className="size-5" />
+              </Drawer.Close>
+            )}
+          </div>
+        )}
+        {description && (
+          <Drawer.Description className="shrink-0 px-4 pb-1 text-callout text-muted-foreground">{description}</Drawer.Description>
+        )}
+        {children}
+      </Drawer.Content>
+    </Drawer.Portal>
+  );
   return (
     <Drawer.Root
       open={open}
       onOpenChange={onOpenChange}
       dismissible={dismissible}
+      modal={modal}
       shouldScaleBackground={false}
       repositionInputs
     >
-      <Drawer.Portal>
-        <Drawer.Overlay className="fixed inset-0 z-50 bg-black/50" />
-        <Drawer.Content
-          {...contentProps}
-          {...(description ? {} : { "aria-describedby": undefined })}
-          className={cn(
-            "fixed inset-x-0 bottom-0 z-50 flex flex-col rounded-t-sheet bg-card text-card-foreground shadow-float outline-none",
-            "pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)]",
-            // Never under the status bar; the visible viewport shrinks with the keyboard.
-            "max-h-[calc(var(--tc-app-height,100dvh)-env(safe-area-inset-top)-0.75rem)]",
-            height === "full" && "h-[calc(var(--tc-app-height,100dvh)-env(safe-area-inset-top)-0.75rem)]",
-          )}
-        >
-          <div aria-hidden className="mx-auto mt-2 h-1.5 w-9 shrink-0 rounded-full bg-muted-foreground/40" />
-          {bare ? (
-            <Drawer.Title className="sr-only">{title}</Drawer.Title>
-          ) : (
-            <div className="flex min-h-13 shrink-0 items-center gap-2 pl-4 pr-2">
-              <Drawer.Title className="min-w-0 flex-1 font-display text-title-2 [overflow-wrap:anywhere]">{title}</Drawer.Title>
-              {dismissible && (
-                <Drawer.Close
-                  aria-label="Close"
-                  className="tap-transparent flex size-11 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-surface-2 hover:text-foreground active:bg-surface-2"
-                >
-                  <XIcon className="size-5" />
-                </Drawer.Close>
-              )}
-            </div>
-          )}
-          {description && (
-            <Drawer.Description className="shrink-0 px-4 pb-1 text-callout text-muted-foreground">{description}</Drawer.Description>
-          )}
-          {children}
-        </Drawer.Content>
-      </Drawer.Portal>
+      {modal ? content : (
+        // Vaul1.1.2 does not forward modal to Radix; yield aria/focus isolation only in this branch.
+        <DialogPrimitive.Root open={open} modal={false} onOpenChange={(next) => (dismissible || next) && onOpenChange(next)}>
+          {content}
+        </DialogPrimitive.Root>
+      )}
     </Drawer.Root>
   );
 }

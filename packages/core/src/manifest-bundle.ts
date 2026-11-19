@@ -34,8 +34,8 @@ interface ManifestLike {
 }
 
 /**
- * True when `manifest` declares every bundle entry: same service, space, path and skipPrefix,
- * and at least the entry's actions. Omitted space resolves to `applications`.
+ * True when `manifest` declares every bundle entry: same service, space, path and skipPrefix, and at least the
+ * entry's actions. Omitted space resolves to `applications`.
  */
 export function manifestCarriesBundle(manifest: ManifestLike | null | undefined): boolean {
   const permissions = manifest?.permissions;

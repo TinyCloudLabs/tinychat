@@ -573,17 +573,17 @@ function useNativeNotes(ids: readonly string[], rowVersion: number): NativeRead 
 type LocalRead = { note: LocalNoteFacts | null } | { error: string };
 
 /** Each note's local Markdown, read again whenever a note sync finishes (an edit syncs after it is written) or on `reread`. A failed read is kept as its error, not as "no note". */
-function useLocalNotes(ids: readonly string[], reread: unknown): ReadonlyMap<string, LocalRead> {
+function useLocalNotes(entries: readonly { id: string; source: NotePipelineSource }[], reread: unknown): ReadonlyMap<string, LocalRead> {
   const platform = useContext(PlatformContext);
   const localDevice = deviceName(platform === "tauri" ? "mac" : platform === "ios" ? "iphone" : platform === "android" ? "android" : "browser");
   const [notes, setNotes] = useState<ReadonlyMap<string, LocalRead>>(new Map());
-  const key = ids.join("\n");
+  const key = JSON.stringify(entries.map(({ id, source }) => [id, source.tcw?.did ?? null]));
   useEffect(() => {
     let alive = true;
     Promise.all(
-      ids.map(async (id): Promise<[string, LocalRead]> => {
+      entries.map(async ({ id, source }): Promise<[string, LocalRead]> => {
         try {
-          const note = await loadNote(id);
+          const note = await loadNote(id, source.tcw?.did ?? null);
           return [id, { note: note === null ? null : { editedAt: note.editedAt, hasContent: note.md.trim().length > 0 || note.moments.length > 0 } }];
         } catch (caught) {
           logPipelineError("[NotePipeline] Could not read the local note", caught);
@@ -820,7 +820,7 @@ function usePipelineStates(entries: readonly { id: string; source: NotePipelineS
   const nativeRead = useNativeNotes(ids, pending.rowVersion ?? 0);
   const natives = nativeRead.notes;
   const [localAttempt, setLocalAttempt] = useState(0);
-  const locals = useLocalNotes(ids, `${syncVersion}:${localAttempt}`);
+  const locals = useLocalNotes(entries, `${syncVersion}:${localAttempt}`);
   // The capture issues the home shows: the recorder's, with the sessions native parked (account-filtered). Where the
   // Soft home is on it already holds them; elsewhere (wide layouts, the receipt) they are read here.
   const soft = useSoftHome();

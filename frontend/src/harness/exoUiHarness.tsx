@@ -13,6 +13,7 @@ import { createRoot } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
 
 import { __setBuildInfoForTests } from "@/lib/buildInfo";
+import { setShowHiddenFeatures } from "@/lib/hiddenFeatures";
 import { PlatformContext, type AppPlatform } from "@/lib/platform";
 import { initSizeClass } from "@/lib/sizeClass";
 import { applyTheme } from "@/lib/theme";
@@ -32,7 +33,7 @@ import { legacyScreens } from "./screens/legacy";
 import { libraryScreens } from "./screens/library";
 import { speakerNameScreens } from "./screens/speakerNames";
 import { wordFixesScreens } from "./screens/wordFixes";
-import { localScreens } from "./screens/local";
+import { localScreens, accountDataScreens } from "./screens/local";
 import { meetingSourcesScreens } from "./screens/meetingSources";
 import { meetingSourcesGmeetScreens } from "./screens/meetingSourcesGmeet";
 import { micRecoveryScreens } from "./screens/micRecovery";
@@ -52,6 +53,10 @@ import { savedNoteScreens } from "./screens/savedNote";
 import { sheetsScreens } from "./screens/sheets";
 import { shellScreens } from "./screens/shell";
 import { homeScreens } from "./screens/home";
+import { homeFeedDetailsScreens } from "./screens/homeFeedDetails";
+import { homeFeedCardTypesScreens } from "./screens/homeFeedCardTypes";
+import { botsScreens } from "./screens/bots";
+import { botViewScreens } from "./screens/botView";
 import { waitUntilReady } from "./readiness";
 import { FROZEN_NOW, freezeClock } from "./stubs";
 
@@ -68,6 +73,10 @@ const SCREENS: HarnessScreen[] = [
   ...legacyScreens,
   ...shellScreens,
   ...homeScreens,
+  ...homeFeedDetailsScreens,
+  ...homeFeedCardTypesScreens,
+  ...botsScreens,
+  ...botViewScreens,
   ...sheetsScreens,
   ...recorderScreens,
   recorderFinalHaloScreen,
@@ -89,6 +98,7 @@ const SCREENS: HarnessScreen[] = [
   ...combineScreens,
   ...savedNoteScreens,
   ...localScreens,
+  ...accountDataScreens,
   ...meetingSourcesScreens,
   ...meetingSourcesGmeetScreens,
   ...micRecoveryScreens,
@@ -114,6 +124,9 @@ window.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
 const params = new URLSearchParams(window.location.search);
 const platform = PLATFORMS.find((p) => p === params.get("platform")) ?? "web";
 if (params.get("freeze") === "1") freezeClock();
+// Hidden features (the Home ask box, the Agents pill) show in every screen, as they did before they were hidden; the
+// `home-hidden-features-off` screen turns them off itself.
+setShowHiddenFeatures(true);
 applyTheme(params.get("theme") === "dark" ? "dark" : "light", false);
 document.documentElement.dataset.platform = platform;
 initSizeClass();
@@ -133,7 +146,7 @@ __setOnDeviceSttForTests({
 // fake App.getInfo() makes the build line resolve with the real native
 // segments (build number and bundle id), not just the web baseline (TC-840).
 if (platform === "ios" || platform === "android") {
-  __setBuildInfoForTests({ version: "", build: "160", id: "xyz.tinycloud.exo.dev" });
+  __setBuildInfoForTests({ version: "", build: "160", id: "xyz.tinycloud.home.dev" });
   const fake = createCaptureFakeVoiceNotes();
   if (params.get("screen")?.startsWith("recorder-") || params.get("screen")?.startsWith("pipeline-wire-")) {
     fake.controls.commitLegacy({
@@ -192,7 +205,7 @@ function Ready(props: { scrollTo?: string; readyWhen?: string }) {
 function Index() {
   return (
     <main className="mx-auto max-w-xl px-4 py-8">
-      <h1 className="font-display text-title-1">Exo UI screens</h1>
+      <h1 className="font-display text-title-1">TinyCloud One UI screens</h1>
       <ul className="mt-4 flex flex-col gap-2 text-body">
         {SCREENS.map((screen) => (
           <li key={screen.id} className="flex items-baseline gap-3">
