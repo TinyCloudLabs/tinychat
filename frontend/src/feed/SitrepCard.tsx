@@ -10,7 +10,9 @@ import { safeUrl } from "./feedData";
 import { homeFeedKey } from "./feedIdentity";
 import type { HomeFeedEntry, HomeFeedOwnerEvent, HomeFeedSource } from "./feedStoreTypes";
 import { HomeCardThread } from "./HomeCardThread";
-import { HistoryTimeline, type HistoryItem } from "./HistoryTimeline";
+import { HistoryTimeline, historyFromEntry, joinHistory, type HistoryItem } from "./HistoryTimeline";
+import { isOwnerAction } from "./ownerActions";
+import { HISTORY, POSTED_TO_BOARD, SHIP_RECORD, SHOW_ME_AGAIN, SHOW_ME_LATER, WENT_LIVE } from "./updatesStrings";
 import { shortTime } from "./ShortTime";
 
 /** Text with its links: URLs and GitHub refs underlined; a Linear ticket (TC-1234) in the link colour with a dotted underline, as the design mock's inline references. */
@@ -184,6 +186,7 @@ export function SitrepCard(props: Props) {
   const [claimNote, setClaimNote] = useState("");
   const [followup, setFollowup] = useState(false);
   const [later, setLater] = useState(false);
+  const [commenting, setCommenting] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   // The answer whose send failed: whether it is still held is read when the line renders.
@@ -351,11 +354,19 @@ export function SitrepCard(props: Props) {
       ...(answer.action !== "code" && answer.text ? { detail: answer.text } : {}) })),
     ...(state?.snoozes ?? []).map((snooze) => ({ key: `snooze:${snooze.at}:${snooze.until}`, at: snooze.at, title: `Snoozed until ${stamp(snooze.until)}` })),
   ].sort((a, b) => (Date.parse(a.at) || 0) - (Date.parse(b.at) || 0)).map((item, index, all) => ({ ...item, tone: index === all.length - 1 ? "current" as const : "done" as const }));
+  // An update's face carries its whole life as one rail: the record's own steps, then the owner's (opened, comments,
+  // snoozes). A step both lists once. A question keeps its rail under Details.
+  const update = !entry.state.card.needsResponse;
+  const updateHistory = update ? joinHistory(
+    [...(record.kind === "ship" ? [{ key: "went-live", at: record.at, title: WENT_LIVE }] : []), { key: "posted", at: entry.state.card.createdAt, title: POSTED_TO_BOARD }],
+    historyFromEntry({ ...entry, responses: (entry.responses ?? []).filter((response) => !isOwnerAction(response)) }).filter((item) => item.key !== "posted"),
+    entry.viewEvents?.some((event) => event.kind === "snoozed") ? [] : history.filter((item) => item.key.startsWith("snooze:")),
+  ) : [];
 
   // Who a comment reaches: the owner-approved recipients; with none approved, who it is kept for privately; else the agent.
   // The conversation keeps its own closed box ("Leave a comment for …") above the foot, as on the lab's cards.
   const commentTo = closed ? undefined : destinations.length ? names(destinations.map((recipient) => recipient.legacyName)) : route ? names(unresolved.length ? unresolved : [ownerLabel]) : agent;
-  const thread = <HomeCardThread entry={entry} record={record} owner={owner} busy={busy} closed={closed} now={now} open={expanded} stale={stale} to={commentTo}
+  const thread = <HomeCardThread entry={entry} record={record} owner={owner} busy={busy} closed={closed} now={now} open={expanded} stale={stale} to={commentTo} {...(update ? { composer: { open: commenting, onOpenChange: setCommenting } } : {})}
     onSend={(value) => perform(() => messageAgent(value))} onResend={(value, resendOf) => perform(() => sendThread(value, resendOf))} />;
   // A non-option action counting down, with "Undo · N"; it stands where the card's controls were. An option's own
   // countdown (`chosen`) shows in its row instead.
@@ -381,9 +392,11 @@ export function SitrepCard(props: Props) {
       {!!record.context.known.length && <KnownFold facts={record.context.known.length}><ul className="mb-1.5 mt-0.5 grid list-disc gap-1.5 pl-5 text-sm leading-[1.45] marker:text-muted-foreground">{record.context.known.map((known, index) => <li key={index}>{prose(known, record.repo)}</li>)}</ul></KnownFold>}
       {!!record.context.related.length && <p className="mt-2 text-sm">Earlier questions: {record.context.related.join(", ")}</p>}
     </div>}
-    {/* An update's face is one line: its outcome, then what moved. The ship record itself is in Details. */}
+    {/* An update's face: its outcome and what moved, the ship record, the links, then its history as one rail. */}
     {record.kind === "ship" && <p className="mt-2.5 text-[13px] leading-6 tabular-nums text-muted-foreground"><span className="mr-2 inline-flex h-6 items-center gap-1 whitespace-nowrap rounded-full bg-muted px-2.5 align-middle text-[12.5px] font-semibold text-foreground"><CheckIcon aria-hidden className="size-[13px]" />{record.status.charAt(0).toUpperCase() + record.status.slice(1)}</span><span className="whitespace-nowrap">{record.component} {record.prevVersion ? `${record.prevVersion} → ` : ""}{record.version}</span> · <span className="whitespace-nowrap">{shortTime(record.at, now)}</span></p>}
+    {record.kind === "ship" && entry.state.card.body && <section aria-label="Ship record" className="mt-3.5"><p className="mb-1 text-xs font-medium text-muted-foreground">{SHIP_RECORD}</p><p className="whitespace-pre-wrap">{prose(entry.state.card.body, record.repo)}</p></section>}
     {!!record.links.length && <LinkChips links={record.links} tight={"context" in record && !!record.context.known.length} />}
+    {update && <section aria-label="Card history" className="mt-4"><p className="mb-2 text-xs font-medium text-muted-foreground">{HISTORY}</p><HistoryTimeline items={updateHistory} /></section>}
     {timing && !(record.kind === "ask" && asking) && <p className="mt-3 text-xs text-muted-foreground">{timing}</p>}
     {record.kind !== "ask" && record.kind !== "task" && hint && <p className="mt-2 text-[13px] font-medium text-warning">{hint.replace(/^expires/, "Expires")}</p>}
 
@@ -494,12 +507,17 @@ export function SitrepCard(props: Props) {
     </div>}
 
     {thread}
-    {/* The card's foot, one row: Ask me later, Drop this card (from the page), and Details at the right, which holds
-        who posted the card, its wiring, Pin to top and its history. */}
+    {/* The card's foot. A question, one row: Ask me later, Drop this card (from the page), and Details at the right. An
+        update: Acknowledge, then Show me later, Comment and Details on one line. Details holds who posted the card, its
+        wiring, Pin to top and, on a question, its history. */}
     {!waiting && (projection.request || expanded) && <div className="mt-3 border-t border-border pt-1">
       {/* On an ask, "Drop this card" is an answer: it waits out the undo, then tells the agent to drop the question, so
           the agent hears it (a plain close would only hide the card here). */}
-      <CardDetails card={entry.state.card} typed={{ record }} agent={agent} publisher={entry.source} close={record.kind === "ask" && props.close?.kind === "drop" ? { kind: "drop", onTap: () => afterUndo(DROP_LABEL, () => askAnswer("drop", undefined, true), true) } : props.close} actions={props.extra ?? (projection.needsAction && !snoozed && <button type="button" className={footActionClass} disabled={busy} aria-expanded={later} onClick={() => setLater(!later)}>Ask me later</button>)}>
+      <CardDetails card={entry.state.card} typed={{ record }} agent={agent} publisher={entry.source} close={record.kind === "ask" && props.close?.kind === "drop" ? { kind: "drop", onTap: () => afterUndo(DROP_LABEL, () => askAnswer("drop", undefined, true), true) } : props.close}
+        actions={props.extra ?? (update
+          ? !snoozed && props.close?.kind === "acknowledge" && <button type="button" className={footActionClass} disabled={busy} aria-expanded={later} onClick={() => setLater(!later)}>{SHOW_ME_LATER}</button>
+          : projection.needsAction && !snoozed && <button type="button" className={footActionClass} disabled={busy} aria-expanded={later} onClick={() => setLater(!later)}>Ask me later</button>)}
+        secondary={update && commentTo ? <button type="button" className={footActionClass} aria-expanded={commenting} onClick={() => setCommenting(!commenting)}>Comment</button> : undefined}>
         <dl>{([
           ...(sourceLine ? [["Source", sourceLine] as [string, ReactNode]] : []),
           ["Agent", record.from !== agent ? `${record.from} (through ${agent})` : agent],
@@ -508,7 +526,6 @@ export function SitrepCard(props: Props) {
           ...(typeof entry.state.card.payload?.project === "string" && entry.state.card.payload.project ? [["Project", entry.state.card.payload.project] as [string, ReactNode]] : []),
           ["Reference", <code className="block truncate select-all text-xs">{record.id}</code>],
         ] as [string, ReactNode][]).map(([term, value]) => <div key={term} className="flex items-baseline justify-between gap-4 border-t border-border py-2 first:border-t-0 first:pt-0"><dt className="shrink-0 text-muted-foreground">{term}</dt><dd className="min-w-0 text-right">{value}</dd></div>)}</dl>
-        {record.kind === "ship" && entry.state.card.body && <section aria-label="Ship record" className="mt-2"><p className="mb-1 text-xs font-medium text-muted-foreground">Ship record</p><p className="whitespace-pre-wrap">{prose(entry.state.card.body, record.repo)}</p></section>}
         {receipt && <p>{receipt.header ? "Your answer is saved here." : "This answer is from your archive."}</p>}
         {routeReady && <p className="text-[12.5px] leading-[1.4] text-muted-foreground">Messages on this card go to: {destinations.map((recipient) => <span key={recipient.recipientKey} className="block break-all font-mono">{recipient.legacyName} · {recipient.runtimeTarget.agentId}</span>)}</p>}
         {!!state?.notes?.length && <div aria-label="Your private notes" className="space-y-1"><p className={fineClass}>Your private notes. Only you can see them; they aren't sent to the agent.</p>{state.notes.map((note) => <p key={note.id} className="whitespace-pre-wrap">{note.text} <time className={fineClass} dateTime={note.at}>{stamp(note.at)}</time></p>)}</div>}
@@ -516,12 +533,12 @@ export function SitrepCard(props: Props) {
         <div><button type="button" className={`${buttonClass} aria-pressed:bg-muted`} disabled={busy} aria-pressed={!!pinned} onClick={() => void perform(() => savePrivate({ priority: { on: !pinned, at: new Date().toISOString() } }, `priority:${!pinned}`))}>{pinned ? "Unpin" : "Pin to top"}</button>
           <p className={fineClass}>Your agents don't see this.</p></div>
         {reference}
-        <section aria-label="Card history" className="mt-2"><p className="mb-2 text-xs font-medium text-muted-foreground">History</p><HistoryTimeline items={history} /></section>
+        {!update && <section aria-label="Card history" className="mt-2"><p className="mb-2 text-xs font-medium text-muted-foreground">History</p><HistoryTimeline items={history} /></section>}
         {(error || notice) && <p role={error ? "alert" : "status"}>{error ?? notice}</p>}
       </CardDetails>
     </div>}
-    {later && <section aria-label="Ask me later" className="mt-2 space-y-2 pb-2">
-      <p className="text-[13px] font-semibold">Ask me again</p>
+    {later && <section aria-label={update ? SHOW_ME_LATER : "Ask me later"} className="mt-2 space-y-2 pb-2">
+      <p className="text-[13px] font-semibold">{update ? SHOW_ME_AGAIN : "Ask me again"}</p>
       <div className="flex flex-wrap gap-2">{snoozePresets(now).slice(0, 3).map((preset) => <button key={preset.id} type="button" className={buttonClass} disabled={busy} onClick={() => void perform(async () => { await source.snooze(entry, preset.until); setLater(false); onOwnerSaved(); onSnoozed?.(preset.until); })}>{preset.label}</button>)}</div>
     </section>}
     {failedAnswer !== null ? <AnswerFailedLine held={!!answerId.current && !!source.holdsAnswer?.(entry, answerId.current)} /> : error && <ErrorLine>{error}</ErrorLine>}{notice && <p role="status" className={`mt-2 ${fineClass}`}>{notice}</p>}

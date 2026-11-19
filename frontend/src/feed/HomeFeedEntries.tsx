@@ -38,6 +38,7 @@ import { HeldDrafts } from "./heldDrafts";
 import { BriefButton, LazyBriefSheet } from "./BriefButton";
 import { briefOf } from "./brief";
 import { shortTime } from "./ShortTime";
+import { ACKNOWLEDGE_ALL, acknowledgeAllLabel, acknowledgedPill, acknowledgingAnnounce } from "./updatesStrings";
 import { PostPreview } from "./PostPreview";
 import { lazyTab } from "@/shell/lazyTab";
 import { labPageOf, postStatus } from "./postAnswers";
@@ -765,6 +766,11 @@ export function HomeFeedEntries({ source, ask, linked }: { source: HomeFeedSourc
   const listed = sections.flatMap(([, list]) => list.flatMap((row) => row.kind === "card" ? [row.item] : row.items));
   const shown = [...listed, ...pendingEntries];
   const isOpen = (entry: HomeFeedEntry) => opened.has(lineageKey(entry));
+  /** An update the owner can acknowledge: nothing to answer, not closed yet, and drawn as a card (a post opens its own page). */
+  const canAcknowledge = (entry: HomeFeedEntry, retained = false) => !retained && !entry.state.card.needsResponse && !closureOf(entry) && !labPageOf(entry) && !(isTypedPayload(entry) && !contextFor(entry));
+  // What "Acknowledge all" at the Updates heading takes: the cards in that section whose own Acknowledge is allowed.
+  const acknowledgeable = (sections.find(([heading]) => heading === "Updates")?.[1] ?? [])
+    .flatMap((row) => row.kind === "card" ? (row.retained ? [] : [row.item]) : row.items).filter((entry) => canAcknowledge(entry));
 
   // In Expanded every card is open, so opening cannot mark it seen: a card counts as seen once enough of it has stayed
   // on screen for a moment (expandedSeen.ts), not because it is somewhere down the list or was scrolled past. A post
@@ -949,6 +955,32 @@ export function HomeFeedEntries({ source, ask, linked }: { source: HomeFeedSourc
     const target = answeredIn(entry) ?? entry;
     takeAway(entry, kind === "drop" ? "Dropped" : "Acknowledged", `${kind === "drop" ? "Dropping" : "Acknowledging"} this card in ${UNDO_SECONDS} seconds. ${UNDO_AVAILABLE}`, tell(target, { type: kind === "drop" ? "feed.drop" : "feed.acknowledge" }));
   }
+  /**
+   * Acknowledge all (the Updates heading): every card goes now and one pill counts the 5 s with Undo, which brings them
+   * all back. Each card is written once, when the count ends.
+   */
+  function acknowledgeAll(list: readonly HomeFeedEntry[]) {
+    if (list.length < 2) { if (list[0]) closeCard(list[0], "acknowledge"); return; }
+    const keys = list.map(lineageKey);
+    // One wait at a time: an answer still counting is sent now (the bar flushes an earlier bar itself).
+    for (const send of [...pendingSends.current]) send();
+    for (const entry of list) release(entry);
+    const opening = list.filter(isOpen).map(lineageKey);
+    setOpened((current) => { const remaining = new Set(current); for (const key of keys) remaining.delete(key); return remaining; });
+    undoBar.push({
+      key: `acknowledge-all:${keys[0]}`, keys, text: acknowledgedPill(list.length), announce: acknowledgingAnnounce(list.length),
+      // Every write starts at once (each is held in the outbox before its first await), so a page that closes mid-way
+      // loses none; a card whose write failed comes back, the others stay acknowledged.
+      commit: async () => {
+        const results = await Promise.allSettled(list.map((entry) => tell(answeredIn(entry) ?? entry, { type: "feed.acknowledge" })()));
+        const failed = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
+        if (failed) throw failed.reason;
+      },
+      undo: () => setOpened((current) => { const restored = new Set(current); for (const key of opening) restored.add(key); return restored; }),
+    });
+    const next = shown.find((candidate) => !keys.includes(lineageKey(candidate)));
+    if (next) requestAnimationFrame(() => document.querySelector<HTMLElement>(`[data-card-key="${CSS.escape(keyOf(next))}"] button`)?.focus());
+  }
   /** Ask me later / Show me later on a plain card: saved, and its agent told, once the undo has passed. */
   function askLater(entry: HomeFeedEntry, until: string) {
     const time = shortTime(until, clock);
@@ -1102,7 +1134,7 @@ export function HomeFeedEntries({ source, ask, linked }: { source: HomeFeedSourc
         ? <SitrepCard key={key} entry={entry} record={context.record} records={context.records} entries={context.entries} owner={context.owner} projection={context.projection} source={source} now={clock} expanded stale={retained} reference={reference}
           onRefused={onRefused} onSaved={onSaved} onOwnerSaved={() => refreshRef.current()} onSnoozed={(until) => snoozedTyped(entry, until)}
           onNavigate={(next) => { engage(next); setOpened((current) => new Set(current).add(lineageKey(next))); }}
-          {...(attention(entry) && !retained ? { close: { kind: "drop" as const, onTap: () => closeCard(entry, "drop") } } : {})} {...(wake ? { extra: wake } : {})} />
+          {...(attention(entry) && !retained ? { close: { kind: "drop" as const, onTap: () => closeCard(entry, "drop") } } : canAcknowledge(entry, retained) ? { close: { kind: "acknowledge" as const, onTap: () => closeCard(entry, "acknowledge") } } : {})} {...(wake ? { extra: wake } : {})} />
         : unsupported
           ? <><p role="status" className="mt-3.5 text-sm text-muted-foreground">Open Details to see this card's content, exactly as {author.name} sent it.</p>
             <div className="mt-3 border-t border-border pt-2"><CardDetails card={entry.state.card} typed={{}} agent={author.name} publisher={entry.source}>
@@ -1282,7 +1314,8 @@ export function HomeFeedEntries({ source, ask, linked }: { source: HomeFeedSourc
         </div>)}
       {agentPage === null && !!listed.length && <div className="mb-4 space-y-6">
         {sections.map(([heading, list]) => !!list.length && <section key={heading || "cards"} aria-label={heading || (history ? "History" : snoozedOnly ? "Snoozed" : "Cards")}>
-          {heading && <h2 className="mb-2 flex items-baseline justify-between px-1 text-label font-semibold uppercase tracking-[0.06em] text-muted-foreground"><span>{heading}</span><span className="tabular-nums">{list.reduce((count, row) => count + (row.kind === "card" ? 1 : row.items.length), 0)}</span></h2>}
+          {heading && <h2 className="mb-2 flex items-baseline justify-between gap-2 px-1 text-label font-semibold uppercase tracking-[0.06em] text-muted-foreground"><span>{heading}</span><span className="tabular-nums">{list.reduce((count, row) => count + (row.kind === "card" ? 1 : row.items.length), 0)}</span>
+            {heading === "Updates" && !!acknowledgeable.length && <button type="button" aria-label={acknowledgeAllLabel(acknowledgeable.length)} onClick={() => acknowledgeAll(acknowledgeable)} className="-my-2 ml-auto inline-flex min-h-11 items-center rounded-full px-3 text-[13px] font-medium normal-case tracking-normal text-foreground transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring fine:min-h-9">{ACKNOWLEDGE_ALL}</button>}</h2>}
           <ul className="space-y-2">{renderList(list)}</ul>
         </section>)}
       </div>}
