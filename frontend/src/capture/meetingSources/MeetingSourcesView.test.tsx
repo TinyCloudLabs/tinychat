@@ -163,7 +163,7 @@ describe("Connectors entry card", () => {
       />,
     );
     expect(html).not.toContain("Checking");
-    expect(html).toContain('class="ms-entry-sub">Fireflies, Google Meet and Granola</span>');
+    expect(html).toContain('class="ms-entry-sub">Fireflies and Google Meet</span>');
     expect(html).toContain("<span>Meeting sources</span>");
   });
 });
@@ -172,6 +172,8 @@ describe("one Meeting sources view", () => {
   const read = (name: string) => readFileSync(join(import.meta.dir, name), "utf8");
 
   test("the registry is the one table of source descriptions", () => {
+    expect(read("MeetingSourcesDialog.tsx")).not.toContain("DESCRIPTIONS");
+    expect(read("MeetingSourcesDialog.tsx")).toContain("description={d.description}");
     expect(CONNECTORS.map((d) => d.description)).toEqual([
       "Meeting transcripts from Fireflies.ai.",
       "Notes and transcripts from Granola.",

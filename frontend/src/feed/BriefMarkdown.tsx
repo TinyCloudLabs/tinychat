@@ -5,6 +5,7 @@
 // don't fit: the assistant-ui one needs a chat message around it, and the app's WASM Markdown library is 7.7 MB and
 // returns HTML, which feed code must never inject (FeedArticle.test.tsx).
 import type { ReactNode } from "react";
+import { FeedLink } from "./FeedLink";
 
 export type BriefBlock =
   | { kind: "heading"; level: number; text: string }
@@ -162,8 +163,8 @@ const linkClass = "font-medium text-foreground underline decoration-muted-foregr
 
 function Link({ href, base, children }: { href: string; base: string | undefined; children: ReactNode }) {
   const target = linkTarget(href, base);
-  // Links leave the sheet for a new tab, so the decision being made stays where it is.
-  return target ? <a href={target} target="_blank" rel="noopener noreferrer" className={linkClass}>{children}</a> : <>{children}</>;
+  // Another site's page opens in a sheet over the brief (FeedLink), so the decision being made stays where it is.
+  return target ? <FeedLink href={target} className={linkClass}>{children}</FeedLink> : <>{children}</>;
 }
 
 // One pass over a line of text. Order matters: code first (nothing inside it is Markdown), images before links.
