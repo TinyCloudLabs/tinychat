@@ -13,6 +13,10 @@ serde_json = "1.0.151"
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "0.10.1"
 
+# The full name of the computer account, one of the user's known names (src/service.rs).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.189"
+
 # Standalone on purpose: not a member of desktop/Cargo.toml's workspace (its
 # manifest and lock trigger the transcript-eval jobs) and not of src-tauri's.
 [workspace]

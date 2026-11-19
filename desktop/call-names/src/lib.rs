@@ -22,5 +22,6 @@ pub mod extract;
 pub mod names;
 pub mod roster;
 pub mod rules;
+pub mod service;
 pub mod session;
 pub mod tree;

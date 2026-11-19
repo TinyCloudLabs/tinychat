@@ -2005,8 +2005,8 @@ test('the desktop sign step re-seals ad-hoc in the dry run and never signs ad-ho
   assert.equal(read(dir, 'codesign.log'), '', 'nothing was signed');
 });
 
-test('every recorder invoke is registered, manifested, and granted to recorder capabilities', () => {
-  const rustCommands = text => new Set([...text.matchAll(/\b(recorder_[a-z0-9_]+)\b/g)].map(match => match[1]));
+test('every recorder and call-names invoke is registered, manifested, and granted to recorder capabilities', () => {
+  const rustCommands = text => new Set([...text.matchAll(/\b((?:recorder|call_names)_[a-z0-9_]+)\b/g)].map(match => match[1]));
   const lib = read(repo, 'desktop/src-tauri/src/lib.rs');
   const handlers = [...lib.matchAll(/generate_handler!\s*\[([\s\S]*?)\]/g)];
   assert.ok(handlers.length >= 2, 'debug and release transcription handlers are present');
@@ -2045,7 +2045,7 @@ test('every recorder invoke is registered, manifested, and granted to recorder c
   const sourceFiles = walk(join(repo, 'frontend/src')).filter(path => /\.(?:ts|tsx)$/.test(path));
   const invoked = new Set(sourceFiles.flatMap(path => {
     const source = readFileSync(path, 'utf8');
-    return [...source.matchAll(/\binvoke(?:<[^>]*>)?\s*\(\s*["'](recorder_[a-z0-9_]+)["']/g)]
+    return [...source.matchAll(/\b\w*[Ii]nvoke(?:<[^>]*>)?\s*\(\s*["']((?:recorder|call_names)_[a-z0-9_]+)["']/g)]
       .map(match => match[1]);
   }));
   for (const command of invoked) {

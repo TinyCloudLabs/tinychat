@@ -81,6 +81,11 @@ fn main() {
             "recorder_system_audio_set",
             "recorder_system_audio_consent_get",
             "recorder_system_audio_consent_set",
+            "call_names_get",
+            "call_names_set",
+            "call_names_open_settings",
+            "call_names_read",
+            "call_names_clear",
         ]),
     ))
     .expect("failed to run tauri-build");

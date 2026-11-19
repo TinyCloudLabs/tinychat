@@ -49,6 +49,11 @@
     "allow-recorder-system-audio-set",
     "allow-recorder-system-audio-consent-get",
     "allow-recorder-system-audio-consent-set",
+    "allow-call-names-get",
+    "allow-call-names-set",
+    "allow-call-names-open-settings",
+    "allow-call-names-read",
+    "allow-call-names-clear",
     "core:event:deny-emit",
     "core:event:deny-emit-to"
   ]
