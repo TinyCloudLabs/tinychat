@@ -1146,7 +1146,7 @@ async function main() {
         // process already resolved the web app origin once, with the localhost/TLS fallback a bare
         // env read does not have. CORS also accepts Exo's fixed app origins, but the callback page
         // only returns to an allowlisted web origin (FRONTEND_URL, tinycloud.chat once FRONTEND_URL
-        // is the Home site, or the fixed Home origin for `home.`/`hometab.` states); the Exo apps
+        // is the Home or tinycloud.one site, or the fixed Home origin for `home.`/`hometab.` states); the Exo apps
         // return through the fixed native deep link.
         appOrigin: FRONTEND_URL,
         frontendOrigins,
