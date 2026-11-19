@@ -37,7 +37,7 @@ services:
       PORT: "8080"
       # Unique 256-bit secret shared with the backend only (openssl rand -hex 32): the key of its signed calls.
       BOTS_SERVICE_SECRET: ${BOTS_SERVICE_SECRET}
-      BOTS_BACKEND_CALL_SECRET: ${BOTS_BACKEND_CALL_SECRET:-}
+      BOTS_ADMISSION_CONTROL_KEY: ${BOTS_ADMISSION_CONTROL_KEY:-}
       # 1 also accepts the older bearer secret plus owner header, during the signed-calls rollout only. Off by default.
       BOTS_ACCEPT_LEGACY_OWNER_HEADER: ${BOTS_ACCEPT_LEGACY_OWNER_HEADER:-0}
       # Same list as the backend's BOTS_TEST_ACCOUNTS; the service enforces it too. Empty admits nobody.

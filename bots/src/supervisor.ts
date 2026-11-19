@@ -39,7 +39,7 @@ Bun.serve({
   fetch: createApp({
     secret: cfg.serviceSecret, accounts: cfg.accounts, environment: "private", acceptLegacyOwnerHeader: cfg.acceptLegacyOwnerHeader,
     bots, manifest: new OwnerManifests(manifestRoot),
-    admit: cfg.backendCallSecret ? createAdmissionClient(cfg.egressRoot, cfg.backendCallSecret) : undefined,
+    admit: cfg.admissionControlKey ? createAdmissionClient(cfg.egressRoot, cfg.admissionControlKey) : undefined,
   }),
 });
 console.log(

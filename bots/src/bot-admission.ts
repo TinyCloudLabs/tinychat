@@ -1,3 +1,4 @@
+import { hkdfSync } from "node:crypto";
 import { join } from "node:path";
 import { readBody, type UpstreamFetch } from "./gateway";
 import { isRecord } from "./guards";
@@ -11,6 +12,10 @@ const BODY_TIMEOUT_MS = 1_000;
 const UPSTREAM_TIMEOUT_MS = 3_000;
 const CONTROL_TIMEOUT_MS = 5_000;
 const ENVIRONMENT = "private";
+
+export function admissionControlKey(backendSecret: string): string {
+  return Buffer.from(hkdfSync("sha256", backendSecret, "", "bots-control-socket/v1", 32)).toString("base64url");
+}
 
 const REFUSALS = [
   "unknown_source", "unknown_target", "same_bot", "source_not_active",
@@ -42,14 +47,14 @@ function admissionHeaders(secret: string, path: string, owner: string, sourceKey
 }
 
 /** The supervisor has no outbound network. It asks the gateway through the supervisor-only Unix socket. */
-export function createAdmissionClient(egressRoot: string, secret: string, send = fetch): BotAdmission {
+export function createAdmissionClient(egressRoot: string, controlKey: string, send = fetch): BotAdmission {
   const unix = join(egressRoot, "control.sock");
   return async (owner, sourceKey, targetKey) => {
     try {
       const body = JSON.stringify({ owner, sourceKey, targetKey });
       return await readVerdict(await send(`http://gateway${ADMISSION_CONTROL_PATH}`, {
         method: "POST", unix, redirect: "error", signal: AbortSignal.timeout(CONTROL_TIMEOUT_MS),
-        headers: admissionHeaders(secret, ADMISSION_CONTROL_PATH, owner, sourceKey, body), body,
+        headers: admissionHeaders(controlKey, ADMISSION_CONTROL_PATH, owner, sourceKey, body), body,
       }));
     } catch {
       return REFUSED;
@@ -58,20 +63,21 @@ export function createAdmissionClient(egressRoot: string, secret: string, send =
 }
 
 /** Installed only on the control socket. Forward a newly built request to the configured backend. */
-export function createAdmissionRelay(origin: string, secret: string | undefined, send: UpstreamFetch = fetch) {
+export function createAdmissionRelay(origin: string, backendSecret: string | undefined, send: UpstreamFetch = fetch) {
+  const controlKey = backendSecret ? admissionControlKey(backendSecret) : undefined;
   const nonces = new NonceGuard();
   return async (req: Request): Promise<Response> => {
     const { pathname, search } = new URL(req.url);
     if (pathname !== ADMISSION_CONTROL_PATH || search) return new Response(null, { status: 404 });
     if (req.method !== "POST") return new Response(null, { status: 405 });
     const auth = req.headers.get("authorization");
-    if (!secret || !auth?.startsWith(SIGNED_SCHEME)) return new Response(null, { status: 401 });
+    if (!backendSecret || !controlKey || !auth?.startsWith(SIGNED_SCHEME)) return new Response(null, { status: 401 });
     try {
       const bytes = await readBody(req, MAX_ADMISSION_BYTES, BODY_TIMEOUT_MS);
       if (bytes === "too_large") return new Response(null, { status: 413 });
       if (bytes === "timeout") return new Response(null, { status: 408 });
       const claims = verifyCall(auth, { method: req.method, path: pathname, body: bytes }, {
-        secret, direction: "to-backend", environment: ENVIRONMENT, nonces,
+        secret: controlKey, direction: "to-backend", environment: ENVIRONMENT, nonces,
       });
       if (!claims) return new Response(null, { status: 401 });
       const value: unknown = JSON.parse(new TextDecoder().decode(bytes));
@@ -84,7 +90,7 @@ export function createAdmissionRelay(origin: string, secret: string | undefined,
       }
       const body = JSON.stringify({ owner, sourceKey, targetKey });
       const response = await send(`${origin}${BACKEND_PATH}`, {
-        method: "POST", headers: admissionHeaders(secret, BACKEND_PATH, owner, sourceKey, body), redirect: "error", body,
+        method: "POST", headers: admissionHeaders(backendSecret, BACKEND_PATH, owner, sourceKey, body), redirect: "error", body,
         signal: AbortSignal.any([req.signal, AbortSignal.timeout(UPSTREAM_TIMEOUT_MS)]),
       });
       return Response.json(await readVerdict(response));

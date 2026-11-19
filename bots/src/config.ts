@@ -1,6 +1,6 @@
 // Environment for the two bots processes: the supervisor (not privileged, but holds what runsc needs; runs the
 // sandboxes, answers the backend) and the egress gateway (unprivileged, the only holder of the model key).
-// The supervisor and gateway share the separate secret for signed backend admission.
+// The supervisor holds its control key and the gateway holds the backend admission secret.
 
 import { dirname, join } from "node:path";
 
@@ -63,7 +63,7 @@ export function legacyOwnerHeaderAccepted(env: Env): boolean {
 export interface SupervisorConfig {
   port: number;
   serviceSecret: string;
-  backendCallSecret?: string;
+  admissionControlKey?: string;
   /** Lowercased addresses, or "*" for every account. Empty admits nobody. */
   accounts: Set<string> | "*";
   acceptLegacyOwnerHeader: boolean;
@@ -96,8 +96,10 @@ export function supervisorConfig(env: Env): SupervisorConfig {
   if (serviceSecret.length < MIN_SERVICE_SECRET_CHARS) {
     throw new Error("BOTS_SERVICE_SECRET must be a unique 256-bit secret (openssl rand -hex 32)");
   }
-  const admitSecret = backendCallSecret(env);
-  if (admitSecret === serviceSecret) throw new Error("BOTS_BACKEND_CALL_SECRET must differ from BOTS_SERVICE_SECRET");
+  const controlKey = env.BOTS_ADMISSION_CONTROL_KEY || undefined;
+  if (controlKey && !/^[A-Za-z0-9_-]{43}$/.test(controlKey)) {
+    throw new Error("BOTS_ADMISSION_CONTROL_KEY must be a 32-byte base64url key");
+  }
   const list = (env.BOTS_TEST_ACCOUNTS ?? "").split(",").map(value => value.trim().toLowerCase()).filter(Boolean);
   const limits: SandboxLimits = {
     memoryMb: int(env, "BOTS_SANDBOX_MEMORY_MB", 1536, 256),
@@ -124,7 +126,7 @@ export function supervisorConfig(env: Env): SupervisorConfig {
   return {
     port: int(env, "PORT", 8080),
     serviceSecret,
-    backendCallSecret: admitSecret,
+    admissionControlKey: controlKey,
     accounts: list.includes("*") ? "*" : new Set(list),
     acceptLegacyOwnerHeader: legacyOwnerHeaderAccepted(env),
     model: env.BOTS_MODEL?.trim() || DEFAULT_MODEL,

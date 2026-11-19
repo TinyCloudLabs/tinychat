@@ -2,18 +2,19 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createAdmissionClient, createAdmissionRelay } from "../bot-admission";
+import { admissionControlKey, createAdmissionClient, createAdmissionRelay } from "../bot-admission";
 import { DEFAULT_BACKEND_ORIGIN, gatewayConfig } from "../config";
 import { Gateway } from "../gateway";
 import { NonceGuard, signedCallHeader, verifyCall } from "../signed-call";
 
 const secret = "secret-" + "x".repeat(64);
+const controlKey = admissionControlKey(secret);
 const sandboxToken = "2".repeat(64);
 const owner = `did:pkh:eip155:1:0x${"11".repeat(20)}`;
 const targetKey = "a".repeat(32);
 const requestBody = { owner, sourceKey: "main", targetKey };
 const configuredOrigin = "https://backend.example";
-const signed = (body: string, key = secret) => signedCallHeader(key, {
+const signed = (body: string, key = controlKey) => signedCallHeader(key, {
   direction: "to-backend", environment: "private", owner, bot: "main", method: "POST", path: "/admit", body,
 });
 
@@ -38,6 +39,7 @@ test("the admission endpoint is accessible only on the supervisor's authenticate
     const body = JSON.stringify(requestBody);
     expect((await relay(request(`Bearer ${sandboxToken}`, "/admit", body))).status).toBe(401);
     expect((await relay(request(signed(body, sandboxToken), "/admit", body))).status).toBe(401);
+    expect((await relay(request(signed(body, secret), "/admit", body))).status).toBe(401);
     expect((await relay(request(signed(body), "/admit?next=https://elsewhere.example", body))).status).toBe(404);
     expect((await relay(request(signed(body), "/wrong", body))).status).toBe(404);
     const extra = JSON.stringify({ ...requestBody, url: "https://elsewhere.example" });
@@ -48,7 +50,7 @@ test("the admission endpoint is accessible only on the supervisor's authenticate
     expect((await gateway.handle(botId, request(`Bearer ${sandboxToken}`, "/admit", body))).status).toBe(403);
     expect(calls).toHaveLength(0);
 
-    const admit = createAdmissionClient(root, secret);
+    const admit = createAdmissionClient(root, controlKey);
     expect(await admit(owner, "main", targetKey)).toEqual({ admitted: true });
     expect(calls).toHaveLength(1);
     expect(calls[0]!.url).toBe(`${configuredOrigin}/api/internal/bots/admit`);
@@ -61,6 +63,7 @@ test("the admission endpoint is accessible only on the supervisor's authenticate
     const outbound = { method: "POST", path: "/api/internal/bots/admit", body };
     expect(verifyCall(authorization, { ...outbound, path: "/admit" }, checks)).toBeNull();
     expect(verifyCall(authorization, { ...outbound, body: forged }, checks)).toBeNull();
+    expect(verifyCall(authorization, outbound, { ...checks, secret: controlKey })).toBeNull();
     expect(verifyCall(authorization, outbound, checks)).toMatchObject({ owner, bot: "main" });
     expect(verifyCall(authorization, outbound, checks)).toBeNull();
 
