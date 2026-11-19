@@ -125,6 +125,46 @@ export class BotHistory {
     } while (cursor);
     return owners;
   }
+  /**
+   * The delegation id of a bot's stored grant, so it can be revoked when the bot is deleted. Undefined when nothing is
+   * stored. Read from the stored envelope as it was accepted: an expired grant still has an id.
+   */
+  async storedGrantCid(address: string, botKey: string): Promise<string | undefined> {
+    const key = this.#deletableKeyFor(address, botKey);
+    const stored = await withSessionRefresh(this.node, async () => {
+      const result = await this.node.kv.get<string>(key);
+      if (!isKvMissingKeyResult(result, key)) assertKvResult(result);
+      return result;
+    });
+    if (isKvMissingKeyResult(stored, key)) return undefined;
+    const value = resultData(stored).data;
+    try {
+      const bundle: unknown = JSON.parse((this.#open(value, key) as GrantEnvelope).serialized);
+      const cid = typeof bundle === "object" && bundle !== null && "cid" in bundle ? bundle.cid : undefined;
+      return typeof cid === "string" && cid !== "" ? cid : undefined;
+    } catch {
+      // What is stored cannot be opened or read, so there is no id to recover from it.
+      return undefined;
+    }
+  }
+  /** Removes a bot's stored grant. Never Main's: this is for a bot that is being deleted, and Main cannot be. */
+  async forget(address: string, botKey: string): Promise<void> {
+    const key = this.#deletableKeyFor(address, botKey);
+    await withSessionRefresh(this.node, async () => {
+      const result = await this.node.kv.delete(key);
+      if (!isKvMissingKeyResult(result, key)) assertKvResult(result);
+    });
+  }
+  /** Revokes a delegation at the node. */
+  async revoke(cid: string): Promise<void> {
+    const result = await this.node.revokeDelegation(cid);
+    if (!result.ok) throw new Error("history_revoke_failed");
+  }
+  /** Where a bot other than Main keeps its grant. Main is refused by name, before any storage key is built. */
+  #deletableKeyFor(address: string, botKey: string) {
+    if (typeof botKey !== "string" || botKey === "main") throw new Error("history_main_grant_kept");
+    return this.#keyFor(address, botKey);
+  }
   /** Saves one batch under the bot's own grant. A batch that names a different bot than the one asked for is refused. */
   async archive(address: string, input: unknown, stage: (staged: StagedHistory) => Promise<void>, botKey?: string) {
     const batch = checkedBatch(input);
