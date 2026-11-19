@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHmac, randomUUID } from "node:crypto";
 import type { Express, NextFunction, Request, RequestHandler, Response } from "express";
+import type { FailureCause } from "./billing/settle.js";
 
 // Legacy Private/hosted correlation headers intentionally keep their existing broader UUID syntax.
 const LEGACY_CORRELATION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -26,6 +27,8 @@ export type RequestEvent = {
   /** Streaming routes only: how the stream ended, plus a fixed error code. */
   stream?: StreamOutcome;
   code?: string;
+  /** Failed streams only: whether the model's own output (charged) or we (free) caused the failure. */
+  failure_cause?: FailureCause;
   /** Bucket of the credits recorded for this request, when any were charged. */
   credits?: CreditsBucket;
   /** Keyed HMAC of the authenticated account and the record's UTC month; omitted when unauthenticated or no key is configured. */
@@ -48,6 +51,7 @@ type RecordNotes = {
   mountTemplate?: string;
   stream?: StreamOutcome;
   code?: string;
+  failureCause?: FailureCause;
   credits?: number;
   holds: number;
   release?: () => void;
@@ -83,12 +87,13 @@ export function requestLogCreditsBucket(credits: number): CreditsBucket {
   return "1000+";
 }
 
-/** Add the stream outcome, a fixed error code or charged credits to this response's request record. */
-export function noteRequestRecord(res: object, fields: { stream?: StreamOutcome; code?: string; credits?: number }): void {
+/** Add the stream outcome, a fixed error code, the failure cause or charged credits to this response's request record. */
+export function noteRequestRecord(res: object, fields: { stream?: StreamOutcome; code?: string; failureCause?: FailureCause; credits?: number }): void {
   const note = notes.get(res);
   if (!note) return;
   if (fields.stream) note.stream = fields.stream;
   if (fields.code !== undefined && RECORD_CODE.test(fields.code)) note.code = fields.code;
+  if (fields.failureCause === "model" || fields.failureCause === "ours") note.failureCause = fields.failureCause;
   if (fields.credits !== undefined && Number.isSafeInteger(fields.credits) && fields.credits >= 0) {
     note.credits = (note.credits ?? 0) + fields.credits;
   }
@@ -230,6 +235,7 @@ export function createRequestContextMiddleware(emit: EventSink = emitToStdout): 
           ...(typeof correlation === "string" && LEGACY_CORRELATION_ID.test(correlation) ? { correlation_id: correlation.toLowerCase() } : {}),
           ...(note.stream ? { stream: note.stream } : {}),
           ...(note.code ? { code: note.code } : {}),
+          ...(note.stream === "error" && note.failureCause ? { failure_cause: note.failureCause } : {}),
           ...(note.credits !== undefined ? { credits: requestLogCreditsBucket(note.credits) } : {}),
           ...(accountHash ? { account_hash: accountHash } : {}),
         });
