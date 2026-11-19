@@ -115,7 +115,7 @@ test("at the cap New bot is off, with the reason built from the backend's number
   expect(botsNavStore.snapshot()!.newBot).toMatchObject({
     enabled: false,
     counter: "4 of 4 bots",
-    reason: "You have 4 bots, the most an account can have. Delete a bot other than Main to make a new one.",
+    reason: "You have 4 bots, the most your account can have. Delete a bot other than Main to make a new one.",
   });
 });
 

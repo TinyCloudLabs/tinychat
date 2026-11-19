@@ -19,7 +19,7 @@ afterEach(async () => {
 });
 
 const RESEARCH = "0123456789abcdef0123456789abcdef";
-const AT_CAP = "You have 3 bots, the most an account can have. Delete a bot other than Main to make a new one.";
+const AT_CAP = "You have 3 bots, the most your account can have. Delete a bot other than Main to make a new one.";
 
 function state(overrides: Partial<BotsNavState> = {}, newBot: Partial<BotsNavState["newBot"]> = {}): BotsNavState {
   return {
