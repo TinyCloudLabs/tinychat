@@ -132,18 +132,17 @@ test("a card in the list opens in place, outlined, and nothing is written", asyn
   expect(openTitles(view.host)).toEqual(["Second question"]);
 });
 
-test("a card that Needs you's saved view would not list is shown under All, and the saved view is left alone", async () => {
+test("a card that is an update is opened in the list, and nothing is written", async () => {
   const feed = store([entry(A, "A question"), information(B, "Just an update")], { defaultSelector: "needs-action" });
   const view = await mount(feed, `/chat/feed/${B}`);
   expect(openTitles(view.host)).toContain("Just an update");
-  expect(tab(view.host)).toBe("both");
   expect(feed.writes).toEqual([]);
 });
 
 test("a closed or expired card opens under History", async () => {
   const feed = store([entry(A, "A question"), information(B, "Old update", { payload: { expiresAt: "2020-01-01T00:00:00Z" } })]);
   const view = await mount(feed, `/chat/feed/${B}`);
-  expect(tab(view.host)).toBe("history");
+  expect(view.host.querySelector('section[aria-label="History"] article h2')?.textContent).toBe("Old update");
   expect(openTitles(view.host)).toEqual(["Old update"]);
   expect(feed.writes).toEqual([]);
 });

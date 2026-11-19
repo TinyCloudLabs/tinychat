@@ -159,8 +159,8 @@ test("a tap on Updates scrolls the pane to the Updates heading and changes nothi
   expect(current(host)).toEqual(["Needs you1"]);
   await act(async () => mapButton(host, "Updates").click());
   expect(calls).toHaveLength(1);
-  // The section's top (520) under the pinned row (60): where the heading comes to rest.
-  expect(calls[0]?.top).toBe(460);
+  // The section's top (520) under the pinned row (55): where the heading comes to rest.
+  expect(calls[0]?.top).toBe(465);
   expect(current(host)).toEqual(["Updates1"]);
   expect(sectionNames(host)).toEqual(before);
   expect(rowsOf(host, "ask")).toHaveLength(1);
@@ -211,9 +211,9 @@ test("a card in History opens in place, once", async () => {
 });
 
 test("there is room under the stream for the last section to come to the top, and none when the Feed is empty", async () => {
-  const room = (host: HTMLElement) => host.querySelector<HTMLElement>('main div[aria-hidden="true"][style*="height"]');
+  const room = (host: HTMLElement) => host.querySelector<HTMLElement>('main div[aria-hidden="true"][class*="460px"]');
   const full = await mount(store([entry("ask", "Ship the node update?")]).source);
-  expect(room(full)?.style.height).toBe("460px");
+  expect(room(full)).not.toBeNull();
   const empty = await mount(store([]).source);
   expect(room(empty)).toBeNull();
 });

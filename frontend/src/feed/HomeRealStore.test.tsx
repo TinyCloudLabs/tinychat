@@ -499,7 +499,6 @@ test("Needs you's first card, opened by a tap: any other revision during the cou
   value(await publishFeedCard(agent.output, plainCard()));
   // Nothing is open until the owner taps a card; the tap on Go then binds it.
   const transport = owner.fresh(); const view = await mount(transport, { open: false });
-  await act(async () => view.host.querySelector<HTMLInputElement>('[role="radiogroup"][aria-label="Feed view"] input[value="needs-action"]')!.click());
   expect(view.host.querySelector("article")).toBeNull();
   await openCards(view.host);
   await tap(option(card(view.host, "Book the Thursday flight?"), "Go"));
@@ -548,13 +547,12 @@ test("Drop this card writes one feed.drop message once the bar's 5 s pass, held 
   expect(header(rows[0]!)).toEqual({ responseId: rows[0]!.responseId, cardId: "plain-card", revision: 1, issuanceId: "plain-issuance-1", kind: "message", text: "Dropped", createdAt: COMMITTED });
   expect(value(await readFeedResponsePayload(agent.responses, rows[0]!))).toEqual({ type: "feed.drop", version: 1, data: {} });
   expect(outboxKeys()).toEqual([]);
-  // Out of Needs you and Updates, a row under All's Done today, and in History marked Dropped.
+  // Out of Needs you and Updates, a row under History, marked Dropped.
   await transport.notify();
-  const done = view.host.querySelector<HTMLElement>('section[aria-label="Done today"]');
+  const done = view.host.querySelector<HTMLElement>('section[aria-label="History"]');
   expect(done?.textContent).toContain("Book the Thursday flight?");
   expect(done?.querySelector("article")).toBeNull();
   for (const section of ["Needs you", "Updates"]) expect(view.host.querySelector(`section[aria-label="${section}"]`)?.textContent ?? "").not.toContain("Book the Thursday flight?");
-  await click(transport, view.host.querySelector<HTMLInputElement>('[role="radiogroup"][aria-label="Feed view"] input[value="history"]')!);
   const history = view.host.querySelector<HTMLElement>('section[aria-label="History"]');
   const item = [...history?.querySelectorAll<HTMLElement>("li[data-card-key]") ?? []].find((node) => node.textContent?.includes("Book the Thursday flight?"));
   expect(item?.textContent).toContain("Dropped");
@@ -586,7 +584,6 @@ test("Acknowledge on a plain update: the card stays away while its write is in f
   await transport.notify();
   await countdown(transport, 2000);
   expect(listed()).toBe(false);
-  await click(transport, view.host.querySelector<HTMLInputElement>('[role="radiogroup"][aria-label="Feed view"] input[value="history"]')!);
   const history = view.host.querySelector<HTMLElement>('section[aria-label="History"]');
   const item = [...history?.querySelectorAll<HTMLElement>("li[data-card-key]") ?? []].find((node) => node.textContent?.includes("The 09:10 flight was rebooked"));
   expect(item?.textContent).toContain("Acknowledged");

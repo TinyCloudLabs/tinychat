@@ -143,6 +143,11 @@ function hasButton(host: ParentNode, label: string) {
 function item(host: ParentNode, title: string) {
   return [...host.querySelectorAll<HTMLElement>("li[data-card-key]")].find((node) => node.textContent?.includes(title)) ?? null;
 }
+/** A card in the live list (Needs you or Updates), not a row under History or Pending. */
+function inList(host: ParentNode, title: string) {
+  const found = item(host, title);
+  return found && (found.closest('section[aria-label="Needs you"]') ?? found.closest('section[aria-label="Updates"]')) ? found : null;
+}
 /**
  * Opens a card in place by tapping its row; Needs you's first card is open already. An answered card still waiting
  * or done sits in the Pending card at the end of the list (Sam, 11-13), so that opens first when the card isn't listed.
@@ -235,14 +240,16 @@ async function comment(host: ParentNode, value: string) {
   await type(input!, value);
   await act(async () => input!.nextElementSibling!.querySelector<HTMLButtonElement>("button")!.click());
 }
-type View = "Needs you" | "All" | "History";
+type View = "Needs you" | "Updates" | "History";
+/** A button of the island, the Feed's map: it scrolls to its section and changes nothing on the page. */
 function viewRadio(host: HTMLElement, label: View) {
-  const value = ({ "Needs you": "needs-action", All: "both", History: "history" } as const)[label];
-  const node = host.querySelector<HTMLInputElement>(`[role="radiogroup"][aria-label="Feed view"] input[value="${value}"]`);
-  expect(node).not.toBeNull();
+  const node = [...host.querySelectorAll<HTMLButtonElement>('nav[aria-label="Feed sections"] button')].find((button) => button.textContent!.startsWith(label));
+  expect(node).not.toBeUndefined();
   return node!;
 }
 async function chooseView(host: HTMLElement, label: View) {
+  const main = host.querySelector<HTMLElement>("main")!;
+  if (typeof main.scrollTo !== "function") main.scrollTo = () => {};
   await act(async () => viewRadio(host, label).click());
 }
 /** History (the island's third tab), or Filter → Snoozed (the Filter panel opens the first time). */
@@ -285,7 +292,7 @@ test("saving an answer waits for durability, then distinguishes saved, received,
   expect(status(view.host)).toContain("Reversible action completed");
   await view.unmount();
   const reopened = await mount(store.source());
-  await chooseView(reopened.host, "All");
+  await chooseView(reopened.host, "Updates");
   await open(reopened.host);
   expect(status(reopened.host)).toContain("Proceed with the isolated action");
   expect(status(reopened.host)).toContain("finished it");
@@ -360,18 +367,17 @@ test("a retried tap after a failed write reuses its response identity", async ()
   expect(store.responses).toHaveLength(1);
 });
 
-test("Needs you shows what needs you with every card folded until a tap; All adds updates as rows; information is nonactionable", async () => {
+test("Needs you shows what needs you with every card folded until a tap; Updates holds updates as rows under it; information is nonactionable", async () => {
   const store = persistence([decision(), information()], { defaultSelector: "needs-action" });
   const view = await mount(store.source());
-  expect(viewRadio(view.host, "Needs you").checked).toBe(true);
   // Nothing is open until a tap; opening a card counts as seen.
   expect(view.host.querySelector("article")).toBeNull();
   await open(view.host);
   expect(answers(card(view.host, "Question decision-one"))).not.toBeNull();
   expect(store.durable.entries[0]!.view.seenAt).toBeDefined();
-  expect(view.host.textContent).not.toContain("Informational update");
-  await chooseView(view.host, "All");
-  expect(viewRadio(view.host, "All").checked).toBe(true);
+  expect(view.host.querySelector('section[aria-label="Needs you"]')?.textContent).not.toContain("Informational update");
+  await chooseView(view.host, "Updates");
+  expect(viewRadio(view.host, "Updates").getAttribute("aria-current")).toBe("true");
   expect(view.host.querySelector('section[aria-label="Needs you"]')?.textContent).toContain("Question decision-one");
   expect(view.host.querySelector('section[aria-label="Updates"]')?.textContent).toContain("Informational update");
   // Rows in All: a row isn't seen; opening it is.
@@ -384,7 +390,7 @@ test("Needs you shows what needs you with every card folded until a tap; All add
   expect(answers(info)).toBeNull();
   expect(hasButton(info, "Acknowledge")).toBe(true);
   await chooseView(view.host, "Needs you");
-  expect(view.host.textContent).not.toContain("Informational update");
+  expect(view.host.querySelector('section[aria-label="Needs you"]')?.textContent).not.toContain("Informational update");
   expect(store.responses).toEqual([]);
 });
 
@@ -509,36 +515,19 @@ test("Ask me later takes the card away without writing an answer, writes the sno
   await act(async () => button(view.host, "Ask me later").click());
   const presets = view.host.querySelector('section[aria-label="Ask me later"]')!;
   await act(async () => presets.querySelector("button")!.click());
-  expect(item(view.host, "Question decision-one")).toBeNull();
+  expect(inList(view.host, "Question decision-one")).toBeNull();
   // Nothing is written while the bar's undo counts.
   expect(store.durable.entries[0]!.view.snoozedUntil).toBeUndefined();
   await clock!.advance(5_500);
   expect(store.responses).toEqual([]);
   expect(store.durable.entries[0]!.view.snoozedUntil).toBeDefined();
-  expect(item(view.host, "Question decision-one")).toBeNull();
+  expect(inList(view.host, "Question decision-one")).toBeNull();
   store.durable.entries[0]!.view.snoozedUntil = "2000-01-01T00:00:00Z";
   await act(async () => store.notify());
   expect(view.host.textContent).toContain("Question decision-one");
   await open(view.host);
   expect(status(view.host)).toBeNull();
   expect(option(view.host, "Hold")).toBeDefined();
-});
-
-test("the last view is remembered for the next session; History is not", async () => {
-  const store = persistence([decision(), information()]);
-  const view = await mount(store.source());
-  await chooseView(view.host, "All");
-  expect(store.durable.settings.defaultSelector).toBe("both");
-  await chooseView(view.host, "Needs you");
-  expect(store.durable.settings.defaultSelector).toBe("needs-action");
-  await chooseView(view.host, "History");
-  expect(store.durable.settings.defaultSelector).toBe("needs-action");
-  await view.unmount();
-  const secondSession = await mount(store.source());
-  expect(viewRadio(secondSession.host, "Needs you").checked).toBe(true);
-  expect(secondSession.host.textContent).toContain("Question decision-one");
-  expect(secondSession.host.textContent).not.toContain("Informational update");
-  expect(secondSession.host.querySelector('section[aria-label="History"]')).toBeNull();
 });
 
 test("a failed outcome stays distinct from an unsaved answer and keeps source/report links", async () => {
@@ -639,7 +628,7 @@ test("a snoozed card stays out of the views and shows no options until it is bro
   entry.view.snoozedUntil = "2099-01-01T00:00:00Z";
   const store = persistence([entry], { defaultSelector: "both" });
   const view = await mount(store.source());
-  expect(item(view.host, "Question decision-one")).toBeNull();
+  expect(inList(view.host, "Question decision-one")).toBeNull();
   await filter(view.host, "Snoozed");
   const row = item(view.host, "Question decision-one")!;
   expect(row.textContent).toContain("Back at");
@@ -736,7 +725,8 @@ test("leaving the view mid-countdown sends the answer at once, exactly once", as
   await act(async () => option(view.host, "Hold").click());
   await clock!.advance(1000);
   expect(store.responses).toEqual([]);
-  await chooseView(view.host, "History");
+  // The island only scrolls; what leaves the view now is the screen itself.
+  await view.unmount();
   expect(store.responses).toHaveLength(1);
   expect(store.responses[0]).toMatchObject({ kind: "answer", choiceId: "hold" });
   await clock!.advance(10_000);
@@ -842,7 +832,7 @@ test("reply-only revision after an answer: no banner, the answer shows, nothing 
   // A fresh session shows the same: the answer stays bound to revision 1 and is displayed on revision 2.
   await view.unmount();
   const fresh = await mount(store.source());
-  await chooseView(fresh.host, "All");
+  await chooseView(fresh.host, "Updates");
   await open(fresh.host, "Plain question");
   expect(status(fresh.host)).toContain("You chose Hold.");
   expect(needsLine(fresh.host)).toContain("Nothing needs you.");
@@ -888,7 +878,7 @@ test("leaving the view mid-countdown after a non-reply-only revision writes noth
   await act(async () => option(view.host, "Hold").click());
   edit(store, "plain-one", "The flight times changed.");
   await act(async () => store.notify());
-  await chooseView(view.host, "All");
+  await chooseView(view.host, "Updates");
   await clock!.advance(10_000);
   expect(store.responses).toEqual([]);
 });
@@ -1051,11 +1041,12 @@ test("answered cards waiting on their agent or done but not acknowledged fold in
     expect(status(view.host)).toContain("You chose Hold.");
     await view.unmount();
   }
-  // History lists what is done: no Pending card.
+  // The waiting card is in Pending only: the History section does not repeat it.
   const store = persistence([answered("waiting-one", false), information()]);
   const view = await mount(store.source());
   await chooseView(view.host, "History");
-  expect(pendingSection(view.host)).toBeNull();
+  expect(item(view.host, "Question waiting-one")!.closest('section[aria-label="Pending"]')).not.toBeNull();
+  expect(view.host.querySelector('section[aria-label="History"]')?.textContent ?? "").not.toContain("Question waiting-one");
 });
 
 test("Acknowledge on a done row takes it out of Pending through the undo bar", async () => {
@@ -1083,12 +1074,12 @@ test("an answer its agent acknowledged but has not finished stays in Pending, re
   expect(item(view.host, "Question acked-one")!.textContent).toContain("Answered");
 });
 
-test("the top row is Needs you · All · History and a Filter icon; Filter shows its dropdowns first and Snoozed under them", async () => {
+test("the top row is Needs you · Updates · History and a Filter icon; Filter shows its dropdowns first and Snoozed under them", async () => {
   const store = persistence([decision()]);
   const view = await mount(store.source());
   const filterButton = view.host.querySelector<HTMLButtonElement>('button[aria-controls="home-feed-filters"]')!;
   const row = filterButton.parentElement!;
-  expect([...row.querySelectorAll<HTMLInputElement>('[role="radiogroup"][aria-label="Feed view"] input')].map((input) => input.parentElement!.textContent)).toEqual(["Needs you1", "All", "History"]);
+  expect([...row.querySelectorAll<HTMLButtonElement>('nav[aria-label="Feed sections"] button')].map((node) => node.textContent)).toEqual(["Needs you1", "Updates", "History"]);
   expect([...row.children].filter((node) => node.tagName === "BUTTON").map((node) => node.textContent)).toEqual(["Filter"]);
   expect(view.host.querySelector('button[aria-controls="home-feed-view"]')).toBeNull();
   await act(async () => filterButton.click());
