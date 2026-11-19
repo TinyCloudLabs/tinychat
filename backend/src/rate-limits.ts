@@ -147,6 +147,11 @@ export const PRIVATE_CLOUD_TRANSCRIPTION_PATHS = ["/api/transcriber/private-clou
  */
 export const PAID_CHAT_LIMIT = 600;
 export const PAID_CHAT_PATHS = ["/api/chat", "/api/agent/chat", "/api/bots/main/messages"] as const;
+/**
+ * A send to a bot other than Main: POST /api/bots/<32 hex>/messages, the whole path and that method only. It stands
+ * beside the list above rather than in it: the list holds exact paths, and this path has a bot's key in it.
+ */
+const PAID_BOT_SEND_PATH = /^\/api\/bots\/[0-9a-f]{32}\/messages$/;
 
 /**
  * Session minting (`/api/auth`: `GET /nonce`, `POST /verify`; the only routes that issue a
@@ -265,7 +270,7 @@ export function bucketFor(method: string, rawPath: string): Bucket {
   if (isUnlimitedPath(rawPath.toLowerCase())) return "none";
   if (rawPath === "/api/ops/content-continuity") return "credentialCount";
   const path = collapseSlashes(rawPath.toLowerCase());
-  if (method === "POST" && PAID_CHAT_PATHS.some((p) => withoutTrailingSlash(path) === p)) return "paidChat";
+  if (method === "POST" && (PAID_CHAT_PATHS.some((p) => withoutTrailingSlash(path) === p) || PAID_BOT_SEND_PATH.test(withoutTrailingSlash(path)))) return "paidChat";
   for (const [mounts, bucket] of PREFIX_BUCKETS) {
     if (mounts.some((m) => matchesMountPath(path, m))) {
       const mutation = MUTATION_BUCKETS[bucket];

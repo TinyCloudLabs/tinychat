@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import express from "express";
 import { createCsrfMiddleware, issueSessionToken } from "@tinyboilerplate/server";
 import { createAuthMiddleware } from "../middleware/auth.js";
+import type { RequestHandler } from "express";
 import { BotsRegistry } from "../bots-registry.js";
 import { botsFromEnv, createBotsRouter, type BotsConfig } from "../routes/bots.js";
 import { fakeRegistryStore, type FakeRegistryStore } from "./helpers/fake-registry-store.js";
@@ -16,7 +17,7 @@ interface UpstreamCall { method: string; url: string; headers: Headers; body: st
 type Upstream = (call: UpstreamCall) => Response | Promise<Response>;
 
 /** The real router on a local port, with real session tokens, a registry over a fake store, and a recording stand-in for the bots service. */
-async function setup(upstream: Upstream = () => Response.json({}), extra: Partial<BotsConfig> = {}) {
+async function setup(upstream: Upstream = () => Response.json({}), extra: Partial<BotsConfig> = {}, paidLimiter?: RequestHandler) {
   const seen: UpstreamCall[] = [];
   const fetchImpl = (async (input, init) => {
     const call = { method: init?.method ?? "GET", url: String(input), headers: new Headers(init?.headers), body: typeof init?.body === "string" ? init.body : undefined };
@@ -29,7 +30,7 @@ async function setup(upstream: Upstream = () => Response.json({}), extra: Partia
   const registry = new BotsRegistry(kv, { now: () => T0, newKey: () => (++next).toString(16).repeat(32) });
   const app = express();
   app.use(express.json()); app.use(createCsrfMiddleware());
-  app.use("/api/bots", createBotsRouter({ config: { ...config, ...extra, fetchImpl }, authMiddleware: createAuthMiddleware(sessionKey), registry }));
+  app.use("/api/bots", createBotsRouter({ config: { ...config, ...extra, fetchImpl }, authMiddleware: createAuthMiddleware(sessionKey), registry, paidLimiter }));
   const server = app.listen(0, "127.0.0.1");
   await new Promise<void>(resolve => server.once("listening", resolve));
   const address = server.address();
@@ -350,6 +351,30 @@ describe("the bots a turn may message", () => {
       const response = await fetch(`${run.base}/main/messages`, { method: "POST", headers: await run.headersFor(owner), body: JSON.stringify({ text: "hi" }) });
       expect(await response.text()).toContain("event: done");
       expect(sent(run.seen)).toEqual([{ text: "hi" }]);
+    } finally { await run.close(); }
+  });
+});
+
+describe("the paid-send limit", () => {
+  test("is applied to a send to any bot, and to nothing else on these routes", async () => {
+    const KEY = "1".repeat(32);
+    const limited: string[] = [];
+    const service: Upstream = call => {
+      if (call.method === "PUT") return Response.json({ state: "active" });
+      if (call.method === "POST") return new Response('event: done\ndata: {"messageId":"m1"}\n\n', { headers: { "content-type": "text/event-stream" } });
+      return Response.json({ messages: [] });
+    };
+    const run = await setup(service, {}, (req, _res, next) => { limited.push(`${req.method} ${req.path}`); next(); });
+    try {
+      const headers = await run.headersFor(owner);
+      await fetch(run.base, { headers });
+      expect((await fetch(run.base, { method: "POST", headers, body: JSON.stringify({ name: "Research", shape: "sprout", colour: "teal" }) })).status).toBe(201);
+      await fetch(`${run.base}/${KEY}/messages`, { headers });
+      await fetch(`${run.base}/main/messages`, { headers });
+      expect(limited).toEqual([]);
+      await (await fetch(`${run.base}/main/messages`, { method: "POST", headers, body: JSON.stringify({ text: "hi" }) })).text();
+      await (await fetch(`${run.base}/${KEY}/messages`, { method: "POST", headers, body: JSON.stringify({ text: "hi" }) })).text();
+      expect(limited).toEqual(["POST /main/messages", `POST /${KEY}/messages`]);
     } finally { await run.close(); }
   });
 });

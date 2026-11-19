@@ -53,10 +53,6 @@ export function botsFromEnv(env: Record<string, string | undefined>): BotsConfig
 }
 
 /**
- * Headers for one call to the bots service at `url`. Every call this router makes to the service goes through here,
- * so how a call is authenticated is decided in one place.
- */
-/**
  * What the service is sent for one turn. The bots the turn may message come from `listForTurn` alone: nothing the
  * browser sent is in it except the text the route has checked.
  */
@@ -68,6 +64,10 @@ export async function botTurnBody(config: BotsConfig, address: string, sourceKey
   return { text };
 }
 
+/**
+ * Headers for one call to the bots service at `url`. Every call this router makes to the service goes through here,
+ * so how a call is authenticated is decided in one place.
+ */
 export function botsServiceHeaders(config: BotsConfig, ownerDid: string, _method: string, _url: string, body?: string): Record<string, string> {
   const headers = { authorization: `Bearer ${config.serviceSecret}`, "x-tinycloud-owner": ownerDid };
   return body === undefined ? headers : { ...headers, "content-type": "application/json" };
