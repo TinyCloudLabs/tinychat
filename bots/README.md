@@ -334,4 +334,4 @@ through `.github/workflows/deploy-backend-phala.yml`. `BOTS_ENABLED` defaults to
 
 ### Deploy order
 
-Set `BOTS_ACCEPT_LEGACY_OWNER_HEADER=1`, deploy the bots service, then the backend, then set it to `0` and deploy the bots service again.
+Set `BOTS_ACCEPT_LEGACY_OWNER_HEADER=1`, deploy the bots service, then the backend, then set it to `0` and deploy the bots service again. After each step, check that the bots service answers 200. Once it does with `0`, remove the variable.
