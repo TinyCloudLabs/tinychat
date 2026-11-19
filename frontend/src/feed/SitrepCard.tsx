@@ -358,9 +358,10 @@ export function SitrepCard(props: Props) {
     ...(state?.snoozes ?? []).map((snooze) => ({ key: `snooze:${snooze.at}:${snooze.until}`, at: snooze.at, title: `Snoozed until ${stamp(snooze.until)}` })),
   ].sort((a, b) => (Date.parse(a.at) || 0) - (Date.parse(b.at) || 0)).map((item, index, all) => ({ ...item, tone: index === all.length - 1 ? "current" as const : "done" as const }));
 
-  // Who a comment reaches: the owner-approved recipients; with none approved, who it is kept for privately; else the agent.
+  // Who a comment reaches: the owner-approved recipients; with none approved, who it is kept for privately; else the
+  // officer who posted the card (the connection's name only when the card names none).
   // The conversation keeps its own closed box ("Leave a comment for …") above the foot, as on the lab's cards.
-  const commentTo = closed ? undefined : destinations.length ? names(destinations.map((recipient) => recipient.legacyName)) : route ? names(unresolved.length ? unresolved : [ownerLabel]) : ownerLabel || agent;
+  const commentTo = closed ? undefined : destinations.length ? names(destinations.map((recipient) => recipient.legacyName)) : route ? names(unresolved.length ? unresolved : [ownerLabel]) : record.from || agent;
   const thread = <HomeCardThread entry={entry} record={record} owner={owner} busy={busy} closed={closed} now={now} open={expanded} stale={stale} to={commentTo}
     onSend={(value) => perform(() => messageAgent(value))} onResend={(value, resendOf) => perform(() => sendThread(value, resendOf))} />;
   // A non-option action counting down, with "Undo · N"; it stands where the card's controls were. An option's own

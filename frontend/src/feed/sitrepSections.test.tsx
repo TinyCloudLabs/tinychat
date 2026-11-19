@@ -112,6 +112,7 @@ const options = (scope: ParentNode) => scope.querySelector("fieldset")!;
 const choice = (scope: ParentNode, label: string) => [...options(scope).querySelectorAll<HTMLButtonElement>("button")].find((node) => node.textContent?.startsWith(label))!;
 
 test("Known so far stays folded on a wide card (600 px), with its count", async () => {
+  restore ??= installDom();
   rect = HTMLElement.prototype.getBoundingClientRect;
   HTMLElement.prototype.getBoundingClientRect = function wide() { return { x: 0, y: 0, top: 0, left: 0, right: 600, bottom: 100, width: 600, height: 100, toJSON() { return {}; } } as DOMRect; };
   const record = syntheticRecord("ask");
