@@ -27,6 +27,14 @@
 //! When the roster withdraws a mark (a second person carried it in the same recording), the
 //! remembered names go back to what they were before that recording.
 //!
+//! What the reader last did is in `<folder>/_status.json`, for a build that has no log: the kind
+//! of outcome and a few counts, never a name. It is written when the kind changes, and every
+//! [`STATUS_INTERVAL`] while the window is being read.
+//!
+//! The folder and its files are the user's alone (modes 0700 and 0600 on unix). When the service
+//! starts it removes what an interrupted write left behind, and each names file older than
+//! [`MAX_NAMES_AGE`]: nobody saved its note in all that time.
+//!
 //! Everything here is plain Rust and runs on any platform; the tests drive it with a fake host
 //! and a fake window. No failure reaches the recorder: a tick that fails reads or saves nothing
 //! and says so in its [`Report`], which holds counts, codes and rule ids, never a name.
@@ -46,7 +54,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Channels of a recording of both sides of a call ("Me" and "Them").
 pub const STEREO: u8 = 2;
@@ -58,11 +66,17 @@ pub const IDLE_INTERVAL: Duration = Duration::from_secs(2);
 pub const THREAD_NAME: &str = "call-names";
 /// Most names the user is remembered by.
 pub const MAX_SELF_NAMES: usize = 8;
+/// The least time between two status files while the kind of outcome stays the same.
+pub const STATUS_INTERVAL: Duration = Duration::from_secs(30);
+/// A names file older than this is removed when the service starts.
+pub const MAX_NAMES_AGE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 
 /// The setting's file. No recording id gives this name: an id has no underscore.
 const SETTING_FILE: &str = "_setting.json";
 /// The file of the names the user is remembered by. No recording id gives this name either.
 const SELF_NAMES_FILE: &str = "_self-names.json";
+/// The file that says what the reader last did. No recording id gives this name either.
+const STATUS_FILE: &str = "_status.json";
 /// The largest file the store reads; 50 names of 80 characters are far smaller.
 const MAX_FILE_BYTES: u64 = 64 * 1024;
 
@@ -113,8 +127,22 @@ struct SelfNamesFile {
     names: Vec<Name>,
 }
 
-/// The folder with the names file of each recording, the setting, and the names the user is
-/// remembered by.
+/// What the reader last did: the kind of outcome and counts. No field can hold a name.
+#[derive(Serialize)]
+struct Status<'a> {
+    v: u32,
+    /// When this was written, in UTC.
+    at: String,
+    outcome: &'a str,
+    apps: usize,
+    people: usize,
+    self_known: bool,
+    self_guessed: bool,
+    tick_ms: u64,
+}
+
+/// The folder with the names file of each recording, the setting, the names the user is
+/// remembered by, and the status.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Store {
     dir: PathBuf,
@@ -170,6 +198,57 @@ impl Store {
         let bytes = serde_json::to_vec(&SelfNamesFile { names })
             .map_err(|_| StoreError::Io(io::ErrorKind::InvalidData))?;
         write_atomic(&self.dir.join(SELF_NAMES_FILE), &bytes).map_err(io_error)
+    }
+
+    /// Say what the reader last did, in place of what was said before: the kind of outcome, the
+    /// running apps it was given, the people kept so far, whether one of them is given as the
+    /// user and whether that is a guess, and the time the reading took.
+    pub fn set_status(&self, report: &Report, now: SystemTime) -> Result<(), StoreError> {
+        let status = Status {
+            v: 1,
+            at: utc(now),
+            outcome: &report.outcome,
+            apps: report.apps,
+            people: report.people,
+            self_known: report.self_known,
+            self_guessed: report.guessed,
+            tick_ms: report.elapsed_ms,
+        };
+        let bytes =
+            serde_json::to_vec(&status).map_err(|_| StoreError::Io(io::ErrorKind::InvalidData))?;
+        write_atomic(&self.dir.join(STATUS_FILE), &bytes).map_err(io_error)
+    }
+
+    /// What the service does to the folder when it starts. The folder becomes the user's alone.
+    /// What an interrupted write left behind is removed, and so is each names file last written
+    /// more than [`MAX_NAMES_AGE`] before `now`. The setting, the remembered names and the
+    /// status stay. Returns the number of files removed.
+    pub fn tidy(&self, now: SystemTime) -> usize {
+        let Ok(entries) = fs::read_dir(&self.dir) else {
+            return 0;
+        };
+        restrict_dir(&self.dir);
+        let mut removed = 0;
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            let old = || {
+                entry
+                    .metadata()
+                    .and_then(|metadata| metadata.modified())
+                    .ok()
+                    .and_then(|written| now.duration_since(written).ok())
+                    .is_some_and(|age| age > MAX_NAMES_AGE)
+            };
+            let leftover = name.ends_with(".tmp");
+            let old_names = name.strip_suffix(".json").is_some_and(valid_id) && old();
+            if (leftover || old_names) && fs::remove_file(entry.path()).is_ok() {
+                removed += 1;
+            }
+        }
+        removed
     }
 
     fn names_path(&self, id: &str) -> Result<PathBuf, StoreError> {
@@ -236,11 +315,40 @@ fn read_small(path: &Path) -> io::Result<Vec<u8>> {
 
 static TEMPORARY: AtomicU64 = AtomicU64::new(0);
 
+/// Make the folder, for the user alone (mode 0700 on unix).
+fn make_dir(dir: &Path) -> io::Result<()> {
+    let mut builder = fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    builder.create(dir)
+}
+
+/// Take a folder that exists away from other users (unix). A failure changes nothing else.
+fn restrict_dir(dir: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(dir, fs::Permissions::from_mode(0o700));
+    }
+    #[cfg(not(unix))]
+    let _ = dir;
+}
+
+/// A new file for the user alone (mode 0600 on unix). Nothing may be at `path`.
+fn create_private(path: &Path) -> io::Result<File> {
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    options.open(path)
+}
+
 /// Write a whole file so that a reader sees the old content or the new one, never a part: a
 /// temporary file, synced, then renamed over the target (as the recorder's journal does).
 fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let dir = path.parent().ok_or(io::ErrorKind::InvalidInput)?;
-    fs::create_dir_all(dir)?;
+    make_dir(dir)?;
     let mut temporary = path.as_os_str().to_owned();
     temporary.push(format!(
         ".{}.{}.tmp",
@@ -248,8 +356,10 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
         TEMPORARY.fetch_add(1, Ordering::Relaxed)
     ));
     let temporary = PathBuf::from(temporary);
+    // A file of this name can only be what an earlier process left behind.
+    let _ = fs::remove_file(&temporary);
     let written = (|| {
-        let mut file = File::create(&temporary)?;
+        let mut file = create_private(&temporary)?;
         file.write_all(bytes)?;
         file.sync_all()?;
         fs::rename(&temporary, path)?;
@@ -263,6 +373,35 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
 
 fn sync_dir(dir: &Path) -> io::Result<()> {
     File::open(dir)?.sync_all()
+}
+
+/// `time` in UTC, to the second, as RFC 3339 writes it: `2026-11-19T17:25:03Z`.
+fn utc(time: SystemTime) -> String {
+    let seconds = time
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs());
+    let (days, second) = ((seconds / 86_400) as i64, seconds % 86_400);
+    // Days since 1970-01-01 to a date of the Gregorian calendar, in 400-year eras that start on
+    // 1 March of year 0 (so a leap day is the last day of a year).
+    let shifted = days + 719_468;
+    let (era, day_of_era) = (shifted.div_euclid(146_097), shifted.rem_euclid(146_097));
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let shifted_month = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * shifted_month + 2) / 5 + 1;
+    let month = if shifted_month < 10 {
+        shifted_month + 3
+    } else {
+        shifted_month - 9
+    };
+    let year = year_of_era + era * 400 + i64::from(month <= 2);
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
+        second / 3_600,
+        second % 3_600 / 60,
+        second % 60
+    )
 }
 
 /// The setting and the permission, as the settings screen shows them:
@@ -487,15 +626,17 @@ impl Default for Pace {
     }
 }
 
-/// What one tick did, for the app's log. Counts, codes and rule ids only: no field can hold a
-/// name.
+/// What one tick did, for the app's log and the status file. Counts, codes and rule ids only: no
+/// field can hold a name.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Report {
-    /// Nothing was read: `idle`, `mono`, `invalid_id`, `off`, `no_rules`, `permission_missing`,
-    /// `unsupported`. The window was read: `names`, `no_target`, `not_in_call`,
-    /// `several_in_call:N`, `discarded:…`, or `capture_ended` when the capture paused or stopped
-    /// during the reading.
+    /// The kind of outcome. Nothing was read: `not_live`, `mono`, `invalid_id`, `setting_off`,
+    /// `no_rules`, `no_permission`, `unsupported`. The window was read: `names`, `no_apps` (no
+    /// meeting app runs), `no_target`, `not_in_call`, `several_in_call:N`, `discarded:…`, or
+    /// `capture_ended` when the capture paused or stopped during the reading.
     pub outcome: String,
+    /// The running meeting apps the reading was given.
+    pub apps: usize,
     /// Elements the reading visited.
     pub nodes: usize,
     pub elapsed_ms: u64,
@@ -503,6 +644,8 @@ pub struct Report {
     pub sources: String,
     /// The people kept for the recording so far.
     pub people: usize,
+    /// One of them is given as the user.
+    pub self_known: bool,
     /// The user is given by a known name, because no meeting app marked anybody.
     pub guessed: bool,
     /// The names file was written in this tick.
@@ -523,7 +666,7 @@ impl Report {
 fn outcome(no_names: &NoNames) -> String {
     match no_names {
         NoNames::Unsupported => "unsupported".into(),
-        NoNames::PermissionMissing => "permission_missing".into(),
+        NoNames::PermissionMissing => "no_permission".into(),
         NoNames::Skip(Skip::NoTarget) => "no_target".into(),
         NoNames::Skip(Skip::NotInCall) => "not_in_call".into(),
         NoNames::Skip(Skip::SeveralInCall(count)) => format!("several_in_call:{count}"),
@@ -591,6 +734,10 @@ pub struct Service<W: Window> {
     /// The user's known names, from the first reading on. Before it, and so for as long as the
     /// setting is off, neither the account's name nor the remembered names are read.
     known: Option<SelfNames>,
+    /// The kind of outcome in the status file.
+    status: Option<String>,
+    /// The time the ticks have taken since the status file was written.
+    since_status: Duration,
 }
 
 impl<W: Window> Service<W> {
@@ -606,6 +753,7 @@ impl<W: Window> Service<W> {
         pace: Pace,
         account: fn() -> Option<String>,
     ) -> Self {
+        store.tidy(SystemTime::now());
         Service {
             store,
             window,
@@ -617,6 +765,8 @@ impl<W: Window> Service<W> {
             reported: None,
             account,
             known: None,
+            status: None,
+            since_status: Duration::ZERO,
         }
     }
 
@@ -628,10 +778,27 @@ impl<W: Window> Service<W> {
             host.report(&report);
             self.reported = Some(said);
         }
-        if self.reading {
+        let delay = if self.reading {
             self.pace.reading
         } else {
             self.pace.idle
+        };
+        self.tell(&report);
+        self.since_status = self.since_status.saturating_add(delay);
+        delay
+    }
+
+    /// Keep the status file up to date: at once when the kind of outcome changes, and every
+    /// [`STATUS_INTERVAL`] while the window is being read. A status that cannot be written is
+    /// tried again on the next tick.
+    fn tell(&mut self, report: &Report) {
+        let same = self.status.as_deref() == Some(report.outcome.as_str());
+        if same && !(self.reading && self.since_status >= STATUS_INTERVAL) {
+            return;
+        }
+        if self.store.set_status(report, SystemTime::now()).is_ok() {
+            self.status = Some(report.outcome.clone());
+            self.since_status = Duration::ZERO;
         }
     }
 
@@ -644,7 +811,7 @@ impl<W: Window> Service<W> {
 
     /// The capture to read now, or why nothing is read.
     fn gate<H: Host>(&self, host: &H) -> Result<Live, &'static str> {
-        let live = host.live().ok_or("idle")?;
+        let live = host.live().ok_or("not_live")?;
         if live.channels != STEREO {
             return Err("mono");
         }
@@ -652,7 +819,7 @@ impl<W: Window> Service<W> {
             return Err("invalid_id");
         }
         if !self.store.enabled() {
-            return Err("off");
+            return Err("setting_off");
         }
         if self.rules.is_none() {
             return Err("no_rules");
@@ -660,7 +827,7 @@ impl<W: Window> Service<W> {
         match self.window.permission() {
             Permission::Granted => Ok(live),
             Permission::Unsupported => Err("unsupported"),
-            _ => Err("permission_missing"),
+            _ => Err("no_permission"),
         }
     }
 
@@ -679,6 +846,7 @@ impl<W: Window> Service<W> {
         self.reading = true;
         let tick = self.window.read(rules, &apps, self.budget);
         let mut report = Report {
+            apps: apps.len(),
             nodes: tick.nodes,
             elapsed_ms: tick.elapsed.as_millis() as u64,
             ..Report::default()
@@ -739,6 +907,10 @@ impl<W: Window> Service<W> {
                     }
                 }
             }
+            // Without a running meeting app there is no window to look for.
+            Err(NoNames::Skip(Skip::NoTarget)) if apps.is_empty() => {
+                report.outcome = "no_apps".into()
+            }
             Err(no_names) => report.outcome = outcome(&no_names),
         }
         // A save that fails is tried again on the next reading: what is kept stays unsaved.
@@ -752,6 +924,7 @@ impl<W: Window> Service<W> {
         let mut participants = recording.roster.participants();
         if let Some(participants) = participants.as_mut() {
             report.guessed = !recording.marked && known.mark(participants);
+            report.self_known = participants.people.iter().any(|person| person.is_self);
         }
         if participants != recording.saved {
             let written = match &participants {
@@ -913,6 +1086,8 @@ mod tests {
     #[derive(Default)]
     struct HostState {
         live: Option<Live>,
+        /// No meeting app runs.
+        no_apps: bool,
         asked: Vec<String>,
         reports: Vec<Report>,
         scopes: usize,
@@ -958,7 +1133,11 @@ mod tests {
         }
 
         fn running(&self, bundle_id: &str) -> Vec<RunningApp> {
-            self.0.lock().unwrap().asked.push(bundle_id.to_owned());
+            let mut state = self.0.lock().unwrap();
+            state.asked.push(bundle_id.to_owned());
+            if state.no_apps {
+                return Vec::new();
+            }
             let app = |pid, bundle_id: &str| RunningApp {
                 pid,
                 bundle_id: bundle_id.to_owned(),
@@ -1070,9 +1249,31 @@ mod tests {
 
     impl Drop for FakeWindow {
         fn drop(&mut self) {
-            self.0.lock().unwrap().mark("dropped");
+            // A test that failed while it held the lock has poisoned it. That failure is the one
+            // to show; a second panic here would hide it.
+            if let Ok(mut state) = self.0.lock() {
+                state.mark("dropped");
+            }
         }
     }
+
+    /// The names of the files in a store, sorted.
+    fn files(store: &Store) -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(store.dir())
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                    .collect()
+            })
+            .unwrap_or_default();
+        names.sort();
+        names
+    }
+
+    /// Every part of a made-up name in these tests, in small letters: none may reach a log or the
+    /// status file.
+    const NAME_PARTS: [&str; 5] = ["alex", "example", "robin", "sample", "guest"];
 
     /// A reading that found these people in a Meet participant list.
     fn people(found: &[(&str, bool)]) -> Reading {
@@ -1162,16 +1363,7 @@ mod tests {
 
         /// The names of the files in the store, sorted.
         fn files(&self) -> Vec<String> {
-            let mut names: Vec<String> = fs::read_dir(self.store.dir())
-                .map(|entries| {
-                    entries
-                        .flatten()
-                        .map(|entry| entry.file_name().to_string_lossy().into_owned())
-                        .collect()
-                })
-                .unwrap_or_default();
-            names.sort();
-            names
+            files(&self.store)
         }
     }
 
@@ -1186,8 +1378,8 @@ mod tests {
         assert_eq!(rig.reads(), 0);
         assert_eq!(rig.window.lock().unwrap().permission_checks, 0);
         assert!(rig.host.asked().is_empty());
-        assert_eq!(rig.files(), [SETTING_FILE]);
-        assert_eq!(rig.host.outcomes(), ["off"]);
+        assert_eq!(rig.files(), [SETTING_FILE, STATUS_FILE]);
+        assert_eq!(rig.host.outcomes(), ["setting_off"]);
 
         // On: the next tick reads. Off again: reading stops and the browser gets its flag back.
         rig.store.set_enabled(true).unwrap();
@@ -1211,7 +1403,8 @@ mod tests {
         service.tick(&host);
         assert!(window.lock().unwrap().reads.is_empty());
         assert!(host.asked().is_empty());
-        assert!(!folder.store().dir().exists());
+        // The service says what it does, and nothing else is in the folder.
+        assert_eq!(files(&folder.store()), [STATUS_FILE]);
     }
 
     #[test]
@@ -1236,7 +1429,7 @@ mod tests {
         }
         assert_eq!((rig.reads(), rig.stops()), (0, 0));
         assert!(rig.host.asked().is_empty());
-        assert_eq!(rig.host.outcomes(), ["idle"]);
+        assert_eq!(rig.host.outcomes(), ["not_live"]);
     }
 
     #[test]
@@ -1250,7 +1443,8 @@ mod tests {
             [
                 format!("{RECORDING}.json"),
                 SELF_NAMES_FILE.into(),
-                SETTING_FILE.into()
+                SETTING_FILE.into(),
+                STATUS_FILE.into()
             ]
         );
 
@@ -1343,7 +1537,7 @@ mod tests {
         assert_eq!(rig.tick(), IDLE_INTERVAL);
         assert_eq!(rig.reads(), 0);
         assert!(rig.host.asked().is_empty());
-        assert_eq!(rig.host.outcomes(), ["permission_missing"]);
+        assert_eq!(rig.host.outcomes(), ["no_permission"]);
 
         rig.window.lock().unwrap().permission = Permission::Granted;
         assert_eq!(rig.tick(), READING_INTERVAL);
@@ -1400,7 +1594,8 @@ mod tests {
             [
                 format!("{RECORDING}.json"),
                 SELF_NAMES_FILE.into(),
-                SETTING_FILE.into()
+                SETTING_FILE.into(),
+                STATUS_FILE.into()
             ]
         );
 
@@ -1436,25 +1631,27 @@ mod tests {
         assert_eq!(
             rig.host.outcomes(),
             [
-                "idle",
+                "not_live",
                 "names",
                 "not_in_call",
                 "several_in_call:2",
                 "discarded:Time",
                 "no_target",
-                "permission_missing",
+                "no_permission",
                 "names",
-                "idle"
+                "not_live"
             ]
         );
         assert_eq!(
             rig.host.reports()[1],
             Report {
                 outcome: "names".into(),
+                apps: 1,
                 nodes: 12,
                 elapsed_ms: 3,
                 sources: "panel=2".into(),
                 people: 2,
+                self_known: true,
                 guessed: false,
                 saved: true,
                 error: None,
@@ -1651,10 +1848,14 @@ mod tests {
         assert_eq!(remembered(&rig.store), None);
         assert_eq!(
             rig.files(),
-            [format!("{RECORDING}.json"), SETTING_FILE.into()]
+            [
+                format!("{RECORDING}.json"),
+                SETTING_FILE.into(),
+                STATUS_FILE.into()
+            ]
         );
         let log = format!("{:?}", rig.host.reports()).to_lowercase();
-        for part in ["alex", "example", "sam", "rivera"] {
+        for part in NAME_PARTS {
             assert!(!log.contains(part), "{log}");
         }
 
@@ -2005,6 +2206,344 @@ mod tests {
         assert!(!same_name(&name("Alex Example"), &name("AlexExample")));
     }
 
+    /// The status file as `(outcome, apps, people, self_known, self_guessed, tick_ms)`, after a
+    /// check that it holds these and the time, and no part of a name.
+    fn status(store: &Store) -> (String, u64, u64, bool, bool, u64) {
+        let text = fs::read_to_string(store.dir().join(STATUS_FILE)).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let mut keys: Vec<&str> = value
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "apps",
+                "at",
+                "outcome",
+                "people",
+                "self_guessed",
+                "self_known",
+                "tick_ms",
+                "v"
+            ],
+            "{text}"
+        );
+        assert_eq!(value["v"], 1, "{text}");
+        let at = value["at"].as_str().unwrap().as_bytes();
+        assert!(at.len() == 20 && at[10] == b'T' && at[19] == b'Z', "{text}");
+        let lower = text.to_lowercase();
+        for part in NAME_PARTS {
+            assert!(!lower.contains(part), "{text}");
+        }
+        (
+            value["outcome"].as_str().unwrap().to_owned(),
+            value["apps"].as_u64().unwrap(),
+            value["people"].as_u64().unwrap(),
+            value["self_known"].as_bool().unwrap(),
+            value["self_guessed"].as_bool().unwrap(),
+            value["tick_ms"].as_u64().unwrap(),
+        )
+    }
+
+    #[test]
+    fn the_status_file_says_what_the_reader_last_did() {
+        let mut rig = Rig::new();
+        assert!(!rig.store.dir().join(STATUS_FILE).exists());
+        rig.tick();
+        assert_eq!(
+            status(&rig.store),
+            ("not_live".into(), 0, 0, false, false, 0)
+        );
+        rig.host.record(RECORDING, 1, 1_000);
+        rig.tick();
+        assert_eq!(status(&rig.store).0, "mono");
+        rig.host.record(RECORDING, STEREO, 1_000);
+        rig.store.set_enabled(false).unwrap();
+        rig.tick();
+        assert_eq!(status(&rig.store).0, "setting_off");
+        rig.store.set_enabled(true).unwrap();
+        rig.window.lock().unwrap().permission = Permission::Missing;
+        rig.tick();
+        assert_eq!(status(&rig.store).0, "no_permission");
+        rig.window.lock().unwrap().permission = Permission::Unsupported;
+        rig.tick();
+        assert_eq!(status(&rig.store).0, "unsupported");
+        assert_eq!(rig.reads(), 0);
+
+        // From here on the window is read. First no meeting app runs.
+        rig.window.lock().unwrap().permission = Permission::Granted;
+        rig.host.0.lock().unwrap().no_apps = true;
+        rig.next(vec![Err(NoNames::Skip(Skip::NoTarget))]);
+        rig.tick();
+        assert_eq!(
+            status(&rig.store),
+            ("no_apps".into(), 0, 0, false, false, 3)
+        );
+        // A browser runs, without a call.
+        rig.host.0.lock().unwrap().no_apps = false;
+        rig.tick();
+        assert_eq!(
+            status(&rig.store),
+            ("no_target".into(), 1, 0, false, false, 3)
+        );
+        rig.next(vec![Err(NoNames::Skip(Skip::NotInCall))]);
+        rig.tick();
+        assert_eq!(status(&rig.store).0, "not_in_call");
+        rig.next(vec![Err(NoNames::Skip(Skip::Discarded(Discard::Time)))]);
+        rig.tick();
+        assert_eq!(status(&rig.store).0, "discarded:Time");
+        // A call with two people, and nobody is known to be the user.
+        rig.next(vec![people(&UNMARKED)]);
+        rig.tick();
+        assert_eq!(status(&rig.store), ("names".into(), 1, 2, false, false, 3));
+        rig.host.pause();
+        rig.tick();
+        assert_eq!(
+            status(&rig.store),
+            ("not_live".into(), 0, 0, false, false, 0)
+        );
+
+        // The app marked the user.
+        let mut rig = Rig::new();
+        rig.host.record(RECORDING, STEREO, 1_000);
+        rig.tick();
+        assert_eq!(status(&rig.store), ("names".into(), 1, 2, true, false, 3));
+        // The user is a guess from a known name.
+        let mut rig = Rig::with_account(|| Some("Alex Example".to_owned()));
+        rig.next(vec![people(&UNMARKED)]);
+        rig.host.record(RECORDING, STEREO, 1_000);
+        rig.tick();
+        assert_eq!(status(&rig.store), ("names".into(), 1, 2, true, true, 3));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_status_file_is_written_on_a_change_and_every_30_s_of_reading() {
+        use std::os::unix::fs::MetadataExt;
+        // A write puts a new file in the place of the old one, so its number tells one write
+        // from the next.
+        fn written(rig: &Rig) -> u64 {
+            fs::metadata(rig.store.dir().join(STATUS_FILE))
+                .unwrap()
+                .ino()
+        }
+        let mut rig = Rig::new();
+        // Nothing is live: one status file, however long that lasts.
+        rig.tick();
+        let idle = written(&rig);
+        for _ in 0..100 {
+            rig.tick();
+        }
+        assert_eq!(written(&rig), idle);
+
+        // A call is read: a status file at once, then one for every 30 s of ticks.
+        rig.host.record(RECORDING, STEREO, 1_000);
+        rig.tick();
+        let first = written(&rig);
+        assert_ne!(first, idle);
+        // A third person joins at once. The kind of outcome stays, so the status file waits.
+        rig.next(vec![people(&[
+            ("Alex Example", true),
+            ("Robin Sample", false),
+            ("Test Guest A", false),
+        ])]);
+        let ticks = STATUS_INTERVAL.as_secs() / READING_INTERVAL.as_secs();
+        for _ in 1..ticks {
+            rig.tick();
+            assert_eq!(written(&rig), first);
+        }
+        assert_eq!(status(&rig.store).2, 2);
+        rig.tick();
+        assert_ne!(written(&rig), first);
+        assert_eq!(status(&rig.store), ("names".into(), 1, 3, true, false, 3));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_folder_and_its_files_are_the_users_alone() {
+        use std::os::unix::fs::PermissionsExt;
+        fn mode(path: &Path) -> u32 {
+            fs::metadata(path).unwrap().permissions().mode() & 0o777
+        }
+        let mut rig = Rig::new();
+        rig.host.record(RECORDING, STEREO, 1_000);
+        rig.tick();
+        assert_eq!(mode(rig.store.dir()), 0o700);
+        let all = rig.files();
+        assert_eq!(
+            all,
+            [
+                format!("{RECORDING}.json"),
+                SELF_NAMES_FILE.into(),
+                SETTING_FILE.into(),
+                STATUS_FILE.into()
+            ]
+        );
+        for file in all {
+            assert_eq!(mode(&rig.store.dir().join(&file)), 0o600, "{file}");
+        }
+
+        // A folder that an earlier build made for everybody to read is the user's alone once the
+        // service has started.
+        fs::set_permissions(rig.store.dir(), fs::Permissions::from_mode(0o755)).unwrap();
+        rig.restart();
+        assert_eq!(mode(rig.store.dir()), 0o700);
+    }
+
+    #[test]
+    fn the_service_tidies_the_folder_when_it_starts() {
+        let folder = Folder::new();
+        let store = folder.store();
+        store.set_enabled(true).unwrap();
+        let participants = CallParticipants::from_json(ALEX_AND_SAM).unwrap();
+        store.write(RECORDING, &participants).unwrap();
+        store.write(NEXT_RECORDING, &participants).unwrap();
+        store.set_self_names(&[name("Alex Example")]).unwrap();
+        let report = Report::of("names");
+        store.set_status(&report, SystemTime::now()).unwrap();
+        let dir = store.dir().to_owned();
+        // What an interrupted write left behind, and a file that is not the store's.
+        fs::write(
+            dir.join(format!("{NEXT_RECORDING}.json.77.0.tmp")),
+            ALEX_AND_SAM,
+        )
+        .unwrap();
+        fs::write(dir.join("other.txt"), "kept").unwrap();
+        // All but one names file were last written long ago.
+        let long_ago = SystemTime::now() - MAX_NAMES_AGE - Duration::from_secs(60);
+        for file in [
+            format!("{RECORDING}.json"),
+            SELF_NAMES_FILE.into(),
+            SETTING_FILE.into(),
+            STATUS_FILE.into(),
+            "other.txt".into(),
+        ] {
+            fs::OpenOptions::new()
+                .write(true)
+                .open(dir.join(file))
+                .unwrap()
+                .set_modified(long_ago)
+                .unwrap();
+        }
+
+        let window = WindowState::new();
+        let _service = Service::with_account(
+            store.clone(),
+            FakeWindow::new(&window),
+            Pace::default(),
+            || None,
+        );
+        assert_eq!(
+            files(&store),
+            [
+                format!("{NEXT_RECORDING}.json"),
+                SELF_NAMES_FILE.into(),
+                SETTING_FILE.into(),
+                STATUS_FILE.into(),
+                "other.txt".into()
+            ]
+        );
+        assert_eq!(store.read(RECORDING), Ok(None));
+        assert_eq!(names(&store), ["Alex Example"]);
+        assert!(store.enabled());
+
+        // The age counts from the last write, and the limit itself is not too old.
+        let written = fs::metadata(dir.join(format!("{NEXT_RECORDING}.json")))
+            .unwrap()
+            .modified()
+            .unwrap();
+        assert_eq!(store.tidy(written + MAX_NAMES_AGE), 0);
+        assert_eq!(store.read(NEXT_RECORDING), Ok(Some(participants)));
+        assert_eq!(
+            store.tidy(written + MAX_NAMES_AGE + Duration::from_secs(1)),
+            1
+        );
+        assert_eq!(store.read(NEXT_RECORDING), Ok(None));
+        // A folder that is not there is not made.
+        assert_eq!(Folder::new().store().tidy(SystemTime::now()), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_write_puts_a_whole_new_file_in_place() {
+        use std::os::unix::fs::MetadataExt;
+        let folder = Folder::new();
+        let store = folder.store();
+        let small = CallParticipants::from_json(ALEX_AND_SAM).unwrap();
+        let fifty: Vec<String> = (1..=50)
+            .map(|number| {
+                format!(
+                    r#"{{"id":"p{number}","name":"Person {number} {}"}}"#,
+                    "x".repeat(60)
+                )
+            })
+            .collect();
+        let large = CallParticipants::from_json(&format!(
+            r#"{{"v":1,"source":"call_window","app":"zoom","people":[{}],"truncated":false}}"#,
+            fifty.join(",")
+        ))
+        .unwrap();
+        let path = store.dir().join(format!("{RECORDING}.json"));
+        store.write(RECORDING, &small).unwrap();
+        let first = fs::metadata(&path).unwrap().ino();
+        store.write(RECORDING, &large).unwrap();
+        // Another file is in the place of the first one: the first was never written into.
+        assert_ne!(fs::metadata(&path).unwrap().ino(), first);
+
+        // While one thread writes, a reader sees one whole file or the other: never a part of
+        // one, and never no file.
+        let whole = [small.to_json(), large.to_json()];
+        let writer = {
+            let store = store.clone();
+            thread::spawn(move || {
+                for round in 0..60 {
+                    let people = if round % 2 == 0 { &small } else { &large };
+                    store.write(RECORDING, people).unwrap();
+                }
+            })
+        };
+        let mut reads = 0;
+        while !writer.is_finished() {
+            let seen = fs::read_to_string(&path).unwrap();
+            assert!(
+                whole.contains(&seen),
+                "a part of a file: {} bytes",
+                seen.len()
+            );
+            reads += 1;
+        }
+        writer.join().unwrap();
+        assert!(reads > 0);
+        // Nothing temporary is left.
+        assert_eq!(files(&store), [format!("{RECORDING}.json")]);
+    }
+
+    #[test]
+    fn the_time_in_the_status_file_is_utc() {
+        let at = |seconds: u64| utc(UNIX_EPOCH + Duration::from_secs(seconds));
+        assert_eq!(at(0), "1970-01-01T00:00:00Z");
+        assert_eq!(at(946_684_799), "1999-12-31T23:59:59Z");
+        assert_eq!(at(951_782_399), "2000-02-28T23:59:59Z");
+        assert_eq!(at(951_782_400), "2000-02-29T00:00:00Z");
+        assert_eq!(at(951_868_800), "2000-03-01T00:00:00Z");
+        assert_eq!(at(1_709_251_199), "2024-02-29T23:59:59Z");
+        assert_eq!(at(1_735_689_599), "2024-12-31T23:59:59Z");
+        assert_eq!(at(1_795_109_103), "2026-11-19T17:25:03Z");
+        // 2100 is not a leap year.
+        assert_eq!(at(4_102_444_800), "2100-01-01T00:00:00Z");
+        assert_eq!(at(4_107_542_399), "2100-02-28T23:59:59Z");
+        assert_eq!(at(4_107_542_400), "2100-03-01T00:00:00Z");
+        // A clock set before 1970 gives the first time there is, not a panic.
+        assert_eq!(
+            utc(UNIX_EPOCH - Duration::from_secs(5)),
+            "1970-01-01T00:00:00Z"
+        );
+    }
+
     /// Long enough for a machine that is busy with other work.
     const PATIENCE: Duration = Duration::from_secs(60);
 
@@ -2065,7 +2604,7 @@ mod tests {
             FakeWindow::new(&made)
         })
         .unwrap();
-        wait_for(|| host.outcomes() == ["idle"]);
+        wait_for(|| host.outcomes() == ["not_live"]);
         assert!(worker.stop(PATIENCE));
         let state = window.lock().unwrap();
         // Nothing was read, so there is nothing to put back.
@@ -2078,9 +2617,9 @@ mod tests {
         let folder = Folder::new();
         let host = FakeHost::default();
         let worker = spawn(folder.store(), host.clone()).unwrap();
-        wait_for(|| host.outcomes() == ["idle"]);
+        wait_for(|| host.outcomes() == ["not_live"]);
         assert!(worker.stop(PATIENCE));
         assert!(host.asked().is_empty());
-        assert!(!folder.store().dir().exists());
+        assert_eq!(files(&folder.store()), [STATUS_FILE]);
     }
 }
