@@ -123,21 +123,7 @@ kubectl exec -n bots-regular deploy/bots-regular -c service -- \
   env BOTS_REGULAR_REAL_CHECK=1 BOTS_REGULAR_MEASURE_FIT_MAX=8 bun scripts/real-cluster-check.ts > check.json
 ```
 
-*See:* one line per step on stderr, then `REAL CHECK PASSED`:
-
-```
-sandbox bot-<52 hex>, started <time>
-ok   start a bot and get a reply: done b-<number>, reply "ok"
-ok   warm turn: done b-<number>, <ms> ms
-ok   bridge without the launch token: no token 401, another token 401
-ok   fetch https://example.com from the sandbox: blocked
-ok   gateway, another bot's path, from the sandbox: status 403
-ok   sleep: stopped in <ms> ms
-ok   wake: done b-<number>, 6 messages listed after waking
-ok   delete: deleted
-fit: <k> bots awake at once (tried <n>)
-REAL CHECK PASSED in <seconds> s
-```
+*See:* one `ok` line per step on stderr, then `REAL CHECK PASSED`.
 
 stdout (`check.json`) is one JSON object:
 
