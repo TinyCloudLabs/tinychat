@@ -168,7 +168,7 @@ async function firstVisit(context: BrowserContext, space: string, agent: Awaited
   const page = await open(context, space);
   // Needs you opens its first card (TC-2941); a card shown as a row opens with a tap.
   const go = page.getByRole("button", { name: /^Go/ });
-  const row = page.getByRole("button", { name: /Book the Thursday flight\?/ });
+  const row = page.getByRole("button", { name: "Travel agent. Book the Thursday flight?", exact: true });
   await Promise.race([go.waitFor(), row.waitFor()]);
   if (!(await go.isVisible())) await row.click();
   await go.waitFor();

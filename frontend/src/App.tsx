@@ -86,6 +86,9 @@ import { resolveLocalValidation, prepareLocalSignIn } from "./lib/localValidatio
 import { DEFAULT_CONTEXT_TOKENS } from "./chat/compaction";
 import { loadSharedThreadFromToken, readShareTokenFromLocation } from "./lib/tinychatShareLinks";
 import { bindSharedWithMe } from "./lib/sharedWithMe";
+import { bindNativeShares } from "./lib/nativeShares/receivedShares";
+import { isShareLinkPath } from "./lib/nativeShares/link";
+import { ShareLinkSurface } from "./capture/share/ShareLinkSurface";
 import { historyPrefetch } from "./lib/historyPrefetch";
 import { noteScreen } from "./lib/localFirst/requestLanes";
 import {
@@ -1370,6 +1373,7 @@ export function App() {
   const isReady = state === "ready" && tcw !== null;
   useEffect(() => { setSignedIn(isReady); }, [isReady]);
   useEffect(() => { void bindSharedWithMe(isReady && !LOCAL_VALIDATION ? tcw : null); }, [isReady, tcw]);
+  useEffect(() => { bindNativeShares(isReady && !LOCAL_VALIDATION ? tcw : null); }, [isReady, tcw]);
   // The other screens' chunks load once the signed-in shell has shown Feed, so opening one doesn't wait. A failed
   // load is reported by the screen itself when it is opened: it loads again, or offers a reload when the browser may
   // have kept the failed chunk (src/shell/lazyTab.tsx).
@@ -1556,6 +1560,9 @@ export function App() {
               }}
             />
           </main>
+        ) : isShareLinkPath(location.pathname) && !nativeSignInFlow.screenShown ? (
+          // A share link (TC-3195): who shared what, sign-in, then the recording in your Library.
+          <ShareLinkSurface tcw={isReady ? tcw : null} state={state} error={error} onSignIn={authAction} />
         ) : isReady && tcw ? (
           <AgentAccessProvider tcw={tcw} sessionStore={sessionStoreRef.current} backendUrl={BACKEND_URL}
             appName={APP_NAME} openkeyHost={OPENKEY_HOST} tinycloudHosts={tcw.hosts}>

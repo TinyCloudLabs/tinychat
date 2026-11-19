@@ -105,6 +105,15 @@ export const CALENDAR_AUTOJOIN_MUTATION_LIMIT = 150;
 export const CALENDAR_AUTOJOIN_PATHS = ["/api/connectors/google/autojoin"] as const;
 
 /**
+ * The Granola pass-through (routes/granola-proxy.ts) relays every note-list, note-read and
+ * transcript page the user's sync makes, so one backfill is dozens of authenticated GETs in a
+ * burst — sharing `globalLimiter`'s 120/15min would let a first sync 429 the next chat send.
+ * Own bucket, same reasoning as the meetings view it accompanies.
+ */
+export const GRANOLA_PROXY_LIMIT = 600 * SHARED_KEY_HEADROOM;
+export const GRANOLA_PROXY_PATHS = ["/api/connectors/granola"] as const;
+
+/**
  * The transcriber surface (routes/transcriber.ts) polls: while a bot is joining or in a meeting
  * the settings card re-reads the list every few seconds, and that alone would exhaust the
  * 120/15min global bucket `/api/chat` shares. Own bucket, same reasoning as the meetings view.
@@ -201,6 +210,7 @@ export type Bucket =
   | "googleOAuth"
   | "calendarAutojoin"
   | "calendarAutojoinMutation"
+  | "granolaProxy"
   | "transcriber"
   | "privateCloudTranscription"
   | "privateCloudTranscriptionMutation"
@@ -222,6 +232,7 @@ const PREFIX_BUCKETS: ReadonlyArray<readonly [readonly string[], Bucket]> = [
   [DELEGATION_PATHS, "delegation"],
   [GOOGLE_OAUTH_PATHS, "googleOAuth"],
   [CALENDAR_AUTOJOIN_PATHS, "calendarAutojoin"],
+  [GRANOLA_PROXY_PATHS, "granolaProxy"],
   [AUTH_PATHS, "auth"],
   [CREDENTIAL_COUNT_PATHS, "credentialCount"],
   [ASSEMBLYAI_STATUS_PATHS, "credentialCount"],
@@ -386,6 +397,8 @@ export const SESSION_LIMITS: Record<Exclude<Bucket, "none" | "auth" | "credentia
   privateCloudTranscriptionMutation: 60,
   calendarAutojoin: 240,
   calendarAutojoinMutation: 30,
+  // Per-session sync traffic: hundreds of transcript pages in one window must not exhaust chat.
+  granolaProxy: 600,
   googleOAuth: 30,
   delegation: 240,
 };
@@ -522,6 +535,7 @@ export function applyRateLimiters(app: Express, { sessionKey }: RateLimitOptions
     googleOAuth: GOOGLE_OAUTH_LIMIT,
     calendarAutojoin: CALENDAR_AUTOJOIN_LIMIT,
     calendarAutojoinMutation: CALENDAR_AUTOJOIN_MUTATION_LIMIT,
+    granolaProxy: GRANOLA_PROXY_LIMIT,
     transcriber: TRANSCRIBER_LIMIT,
     privateCloudTranscription: PRIVATE_CLOUD_TRANSCRIPTION_LIMIT,
     privateCloudTranscriptionMutation: PRIVATE_CLOUD_TRANSCRIPTION_MUTATION_LIMIT,

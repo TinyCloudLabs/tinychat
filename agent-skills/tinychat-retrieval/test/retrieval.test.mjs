@@ -446,7 +446,7 @@ describe('operation-local verified acquisition', () => {
 test('diagnostics probes supported-source body access independently of unsupported catalog rows', async () => {
   const f = fixture(); f.add('supported', { date: '2026-09-18T00:00:00Z' }); f.add('unsupported', { source: 'future-source', date: '2026-09-20T00:00:00Z' });
   const result = await invoke(f, 'diagnostics'); expect(result.ok).toBe(true); expect(result.access.bodyRead).toBe(true);
-  expect(result.coverage.supportedSources).toEqual(['fireflies', 'google-meet', 'tinycloud-transcriber', 'exo-local', 'exo-voice-note', 'exo-upload', 'exo-merged']);
+  expect(result.coverage.supportedSources).toEqual(['fireflies', 'granola', 'google-meet', 'tinycloud-transcriber', 'exo-local', 'exo-voice-note', 'exo-upload', 'exo-merged']);
   expect(bodyGets(f)[0].find(arg => arg.endsWith('/supported'))).toBeTruthy();
 });
 
@@ -482,7 +482,7 @@ test('mixed-source catalog pages report consistent coverage for find, latest and
   f.add('voice', { source: 'exo-voice-note', date: '2026-09-19T00:00:00Z', sourceId: 'voice-recording' });
   f.add('upload', { source: 'exo-upload', date: '2026-09-18T00:00:00Z' });
   f.add('unknown', { source: 'future-source', date: '2026-09-17T00:00:00Z' });
-  const expectedSupported = ['fireflies', 'google-meet', 'tinycloud-transcriber', 'exo-local', 'exo-voice-note', 'exo-upload', 'exo-merged'];
+  const expectedSupported = ['fireflies', 'granola', 'google-meet', 'tinycloud-transcriber', 'exo-local', 'exo-voice-note', 'exo-upload', 'exo-merged'];
   for (const [command, input] of [['find', { limit: 10 }], ['latest', {}], ['search', { term: 'Hello', scanLimit: 10 }]]) {
     const result = await invoke(f, command, input);
     expect(result.ok, `${command} should succeed on mixed-source catalog`).toBe(true);

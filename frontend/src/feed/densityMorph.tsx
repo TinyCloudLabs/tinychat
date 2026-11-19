@@ -51,6 +51,8 @@ export type MorphItemProps = {
   contentKey: string;
   children: ReactNode;
   className?: string;
+  /** Out of sight but still mounted (a card whose answer waits out its undo window). */
+  hidden?: boolean;
 } & {
   /** `data-*` attributes reach the `<li>` (the feed finds cards by `data-card-key`). */
   [attribute: `data-${string}`]: string | number | boolean | undefined;

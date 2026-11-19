@@ -9,12 +9,12 @@ import type { Shape } from "./unshown";
 type Fields = Readonly<Record<string, Shape>>;
 
 /**
- * Drawn on every kind: the title, body and posting time in the card's header (the publisher copies them from the
+ * Drawn on every kind: the post above the title, then the title, body and posting time in the card's header (the publisher copies them from the
  * record), `from` as the author and Details' Agent, the id as Details' Reference, `status` in Details' Type, "Holds
  * up" for `blocks`, and the links (each label with its host, the URL as the link). Never drawn on any kind: `owner`
  * (except as a progress card's updater, below), `urgency`, `importance`, `updatedAt` (except on progress) and `closedAt`.
  */
-const drawn = { kind: true, id: true, title: true, body: true, from: true, createdAt: true, status: true, blocks: true, links: { "[]": { label: true, url: true } } } as const;
+const drawn = { kind: true, id: true, title: true, post: true, body: true, from: true, createdAt: true, status: true, blocks: true, links: { "[]": { label: true, url: true } } } as const;
 
 /** The shaded context panel; `related` as "Earlier questions". */
 const context = { context: { background: true, whyNow: true, ifNoAnswer: true, known: true, related: true } } as const;

@@ -2,6 +2,8 @@
 // sandboxes, answers the backend) and the egress gateway (unprivileged, the only holder of the model key).
 // Neither reads the other's secrets.
 
+import { dirname, join } from "node:path";
+
 type Env = Record<string, string | undefined>;
 
 export const DEFAULT_MODEL = "z-ai/glm-5.2";
@@ -130,6 +132,8 @@ export interface GatewayConfig {
   models: string[];
   maxTokens: number;
   botDailyTokens: number;
+  /** All of one owner's bots together, per UTC day. Unset: the same as one bot's limit. */
+  ownerDailyTokens?: number;
   globalDailyTokens: number;
   maxBodyBytes: number;
   maxResponseBytes: number;
@@ -139,6 +143,8 @@ export interface GatewayConfig {
   bodyTimeoutMs: number;
   /** Where the daily budget counters persist across restarts. */
   budgetFile: string;
+  /** Which owner each bot belongs to, kept across restarts beside the budget file. Unset: not kept. */
+  ownersFile?: string;
 }
 
 /**
@@ -159,19 +165,23 @@ function upstream(env: Env): string {
 export function gatewayConfig(env: Env): GatewayConfig {
   const model = env.BOTS_MODEL?.trim() || DEFAULT_MODEL;
   const models = (env.BOTS_MODELS ?? "").split(",").map(value => value.trim()).filter(Boolean);
+  const botDailyTokens = int(env, "BOTS_BOT_DAILY_TOKENS", 2_000_000);
+  const budgetFile = env.BOTS_BUDGET_FILE ?? "/var/lib/bots-gateway/budget.json";
   return {
     egressRoot: env.BOTS_EGRESS_ROOT ?? "/egress",
     modelKey: required(env, "REDPILL_API_KEY"),
     upstream: upstream(env),
     models: models.length > 0 ? models : [model],
     maxTokens: int(env, "BOTS_MAX_TOKENS", 8192),
-    botDailyTokens: int(env, "BOTS_BOT_DAILY_TOKENS", 2_000_000),
+    botDailyTokens,
+    ownerDailyTokens: int(env, "BOTS_OWNER_DAILY_TOKENS", botDailyTokens),
     globalDailyTokens: int(env, "BOTS_GLOBAL_DAILY_TOKENS", 20_000_000),
     maxBodyBytes: int(env, "BOTS_MAX_BODY_BYTES", 4 * 1024 * 1024, 1024),
     maxResponseBytes: int(env, "BOTS_MAX_RESPONSE_BYTES", 8 * 1024 * 1024, 1024),
     connectTimeoutMs: int(env, "BOTS_UPSTREAM_CONNECT_TIMEOUT_MS", 30_000, 100),
     totalTimeoutMs: int(env, "BOTS_UPSTREAM_TOTAL_TIMEOUT_MS", 10 * 60_000, 100),
     bodyTimeoutMs: int(env, "BOTS_BODY_TIMEOUT_MS", 30_000, 100),
-    budgetFile: env.BOTS_BUDGET_FILE ?? "/var/lib/bots-gateway/budget.json",
+    budgetFile,
+    ownersFile: env.BOTS_OWNERS_FILE ?? join(dirname(budgetFile), "owners.json"),
   };
 }
