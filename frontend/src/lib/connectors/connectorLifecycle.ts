@@ -468,7 +468,7 @@ export async function runServerCredentialTeardown(
   if (webhooks.teardownCredential === undefined) return { status: "done" };
   const result = await webhooks.teardownCredential(source);
   if (result.status === "ok") {
-    // `null`: no sign-in is stored for this owner, so nothing was torn down.
+    // `null`: no sign-in was stored for this owner, so there is no revoke to confirm.
     if (result.value === null || result.value.upstreamRevoked) return { status: "done" };
     return { status: "done", notice: CREDENTIAL_REVOKE_UNCONFIRMED_MESSAGE };
   }

@@ -275,10 +275,11 @@ export interface ConnectorWebhooksClient {
    * revoke it. A bare `DELETE` carrying only the session auth: no provider
    * token is ever read, held or sent from here. `feature-dark` (a 404 carrying the backend's
    * not-available marker) means the route is not mounted or the owner is not
-   * enrolled — nothing to do; an unmarked 404 is a retryable failure. The `DELETE` runs ONLY when a read-only
-   * `GET` says a sign-in is stored: the teardown writes a purge watermark, which
-   * must not be written for an owner who holds no server sign-in. Not connected
-   * resolves `ok` with `null`; any other failed read is a failure, never a skip.
+   * enrolled — nothing to do; an unmarked 404 is a retryable failure. A read-only
+   * `GET` comes first; any failed read is a failure, never a skip. The full `DELETE`
+   * follows whether or not a sign-in is still stored, so a retry finishes a
+   * teardown that stopped part-way. With no sign-in stored, a completed `DELETE`
+   * resolves `ok` with `null`.
    * A failed provider revoke is still an
    * `ok` (`upstreamRevoked: false`): the local delete happened. Optional so a
    * lane that has no server-side sign-in (and test doubles) simply omits it.
@@ -459,8 +460,9 @@ export function createConnectorWebhooksClient(
       if (typeof stored.value?.connected !== "boolean") {
         return { status: "rejected", httpStatus: 200, code: null };
       }
-      if (!stored.value.connected) return { status: "ok", value: null };
-      return request<ConnectorCredentialTeardown | null>(path, {
+      const connected = stored.value.connected;
+      let revokeUnconfirmed = false;
+      const torn = await request<ConnectorCredentialTeardown | null>(path, {
         method: "DELETE",
         basePath: CONNECTOR_CREDENTIALS_BASE_PATH,
         // 502 `upstream_revoke_failed` + `deleted: true`: the local delete
@@ -470,6 +472,7 @@ export function createConnectorWebhooksClient(
           try {
             const body = (await response.json()) as { error?: unknown; deleted?: unknown };
             if (body?.error === "upstream_revoke_failed" && body.deleted === true) {
+              revokeUnconfirmed = true;
               return { status: "ok", value: { deleted: true, upstreamRevoked: false } };
             }
           } catch {
@@ -478,6 +481,10 @@ export function createConnectorWebhooksClient(
           return null;
         },
       });
+      if (!connected && torn.status === "ok" && !revokeUnconfirmed) {
+        return { status: "ok", value: null };
+      }
+      return torn;
     },
     getPending() {
       return request<ConnectorWebhookPending>("/pending", { method: "GET" });
