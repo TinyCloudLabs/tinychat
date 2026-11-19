@@ -46,7 +46,7 @@ describe("regular runtime", () => {
   }, 60_000);
 
   test("sandboxes, bridges, gateway tokens and snapshots belong to one bot, across owners and within one owner", async () => {
-    runtime = startRuntime(400);
+    runtime = startRuntime(60_000);
     const mainA = runtime.bots.forOwner(OWNER_A);
     const siblingA = runtime.bots.forBot(OWNER_A, SIBLING_KEY);
     const mainB = runtime.bots.forOwner(OWNER_B);
@@ -89,8 +89,10 @@ describe("regular runtime", () => {
       }
     }
 
+    // Keep the sandboxes awake for the token checks, then stop them to inspect their snapshots.
+    for (const bot of bots) expect(await bot.stop()).toBe(true);
     // Each snapshot holds its own bot's session alone, and no token.
-    for (const id of ids) await until(() => !runtime!.provider.local.isAwake(id));
+    for (const id of ids) expect(runtime.provider.local.isAwake(id)).toBe(false);
     for (const [index, id] of ids.entries()) {
       const saved = allText(runtime.provider.local.snapshotOf(id));
       expect(saved).toContain(`secret ${index}`);
