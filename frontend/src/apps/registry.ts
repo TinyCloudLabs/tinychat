@@ -1,14 +1,16 @@
 // TinyCloud's own apps that One opens (One Apps). A hard-coded constant: no remote config, exact https origins.
-// Dev origins exist only in dev builds; `import.meta.env.DEV` is false in production, so the minifier drops them.
 //
 // `ceiling(owner)` is the most One will ever delegate to the app: the abilities of the app's own manifest, copied from
 // its repo (secret-manager src/lib/tinycloud-manifest.ts, OpenCredentials apps/open-credentials/src/lib/tinycloud-manifest.ts,
 // tinycloud-explorer src/data/realExplorerDataSource.ts createExplorerManifest, billing app/src/lib/manifest.ts).
-// It is a function because two apps name owner-bound resources (an encryption network, a per-address path).
+// It is a function because two apps name owner-bound resources (an encryption network, a per-address path). Each
+// entry carries the `<scope>` phrase the ask card shows for it (strings.ts).
 
+import { Capacitor } from "@capacitor/core";
 import type { PermissionEntry } from "@tinycloud/web-sdk";
 import type { LucideIcon } from "lucide-react";
 import { BadgeCheck, CircleUserRound, Compass, KeyRound, Mic } from "lucide-react";
+import { APP_DESCRIPTIONS, APP_NAMES, type ScopeId } from "./strings";
 
 export type FramedAppId =
   | "xyz.tinycloud.secrets"
@@ -24,11 +26,15 @@ export interface OneAppOwner {
   chainId: number;
 }
 
+/** One ceiling ability and the plain-words phrase the ask card names it by. */
+export interface CeilingEntry {
+  scope: ScopeId;
+  permission: PermissionEntry;
+}
+
 interface OneAppBase {
-  /** User text. Framed apps: the app manifest's own `name`/`description`, verbatim, until Monica supplies One's words. */
   name: string;
-  /** Undefined until Monica supplies it (Capture has no description string yet). */
-  description: string | undefined;
+  description: string;
   icon: LucideIcon;
 }
 
@@ -36,7 +42,7 @@ interface OneAppBase {
 export interface NativeOneApp extends OneAppBase {
   id: "capture";
   kind: "native";
-  /** One's route, e.g. `/chat/capture`. */
+  /** One's route. */
   route: string;
 }
 
@@ -51,7 +57,7 @@ export interface FramedOneApp extends OneAppBase {
   origin: string;
   /** Path on the origin the frame opens (One adds `?embed=one`). */
   path: string;
-  ceiling(owner: OneAppOwner): readonly PermissionEntry[];
+  ceiling(owner: OneAppOwner): readonly CeilingEntry[];
 }
 
 export type OneApp = NativeOneApp | FramedOneApp;
@@ -78,101 +84,104 @@ function ownerDid(owner: OneAppOwner): string {
   return `did:pkh:eip155:${owner.chainId}:${owner.address}`;
 }
 
-const kv = (space: string, path: string, actions: string[]): PermissionEntry =>
-  ({ service: "tinycloud.kv", space, path, actions, skipPrefix: true });
-const sql = (space: string, path: string, actions: string[]): PermissionEntry =>
-  ({ service: "tinycloud.sql", space, path, actions, skipPrefix: true });
+const entry = (scope: ScopeId, permission: PermissionEntry): CeilingEntry => ({ scope, permission });
+const kv = (scope: ScopeId, space: string, path: string, actions: string[]): CeilingEntry =>
+  entry(scope, { service: "tinycloud.kv", space, path, actions, skipPrefix: true });
+const sql = (scope: ScopeId, space: string, path: string, actions: string[]): CeilingEntry =>
+  entry(scope, { service: "tinycloud.sql", space, path, actions, skipPrefix: true });
+const capabilities = (space: string): CeilingEntry =>
+  entry("capabilityList", { service: "tinycloud.capabilities", space, path: "", actions: ["read"], skipPrefix: true });
 
-export const ONE_APPS: readonly OneApp[] = Object.freeze([
-  {
-    id: "capture",
-    kind: "native",
-    name: "Recording",
-    description: undefined,
-    icon: Mic,
-    route: "/chat/capture",
-  },
+const text = (id: OneAppId) => ({ name: APP_NAMES[id], description: APP_DESCRIPTIONS[id] });
+
+const ALL_APPS: readonly OneApp[] = [
+  { id: "capture", kind: "native", ...text("capture"), icon: Mic, route: "/chat/capture" },
   {
     id: "xyz.tinycloud.secrets",
     kind: "framed",
-    name: "TinyCloud Secrets",
-    description: "Manage encrypted provider API keys, scoped secrets, and environment variables.",
+    ...text("xyz.tinycloud.secrets"),
     icon: KeyRound,
     origin: __ONE_APPS_BUILD_KIND__ === "dev" ? "https://localhost:5191"
       : __ONE_APPS_BUILD_KIND__ === "preview" ? "https://feat-one-apps-embed.tinycloud-secrets.pages.dev"
         : "https://secrets.tinycloud.xyz",
     path: "/app",
     ceiling: (owner) => [
-      kv("secrets", "vault/secrets/", ["get", "list", "metadata"]),
-      {
+      kv("secrets", "secrets", "vault/secrets/", ["get", "list", "metadata"]),
+      entry("secrets", {
         service: "tinycloud.encryption",
         path: `urn:tinycloud:encryption:${ownerDid(owner)}:default`,
         actions: ["decrypt"],
         skipPrefix: true,
-      },
-      kv("secrets", "variables", ["list", "metadata"]),
-      kv("secrets", "variables/", ["get", "put", "del", "list", "metadata"]),
-      sql("secrets", "default", ["read", "write", "schema"]),
-      { service: "tinycloud.capabilities", space: "secrets", path: "", actions: ["read"], skipPrefix: true },
+      }),
+      kv("variables", "secrets", "variables", ["list", "metadata"]),
+      kv("variables", "secrets", "variables/", ["get", "put", "del", "list", "metadata"]),
+      sql("secretsAppData", "secrets", "default", ["read", "write", "schema"]),
+      capabilities("secrets"),
     ],
   },
   {
     id: "xyz.tinycloud.opencredentials",
     kind: "framed",
-    name: "OpenCredentials",
-    description: "Issue, store, inspect, and prove OpenCredentials verifiable credentials.",
+    ...text("xyz.tinycloud.opencredentials"),
     icon: BadgeCheck,
     origin: __ONE_APPS_BUILD_KIND__ === "dev" ? "https://localhost:5192"
       : __ONE_APPS_BUILD_KIND__ === "preview" ? "https://feat-one-apps-embed.open-credentials.pages.dev"
         : "https://credentials.org",
     path: "/",
     ceiling: (owner) => [
-      sql("credentials", "default", ["read", "write", "schema"]),
-      kv("credentials", "payloads/", ["get", "put", "del", "list", "metadata"]),
-      kv("credentials", "app-state/", ["get", "put", "del", "list", "metadata"]),
-      { service: "tinycloud.capabilities", space: "credentials", path: "", actions: ["read"], skipPrefix: true },
-      kv("credentials", `v1/held/${owner.address.toLowerCase()}/`, ["get", "list", "put", "del"]),
+      sql("credentials", "credentials", "default", ["read", "write", "schema"]),
+      kv("credentials", "credentials", "payloads/", ["get", "put", "del", "list", "metadata"]),
+      kv("credentials", "credentials", "app-state/", ["get", "put", "del", "list", "metadata"]),
+      capabilities("credentials"),
+      kv("credentials", "credentials", `v1/held/${owner.address.toLowerCase()}/`, ["get", "list", "put", "del"]),
     ],
   },
   {
     id: "xyz.tinycloud.explorer",
     kind: "framed",
-    name: "TinyCloud Explorer",
-    description: "Spatial browser for TinyCloud spaces, SQL tables, and KV data.",
+    ...text("xyz.tinycloud.explorer"),
     icon: Compass,
     origin: __ONE_APPS_BUILD_KIND__ === "dev" ? "https://localhost:5193"
       : __ONE_APPS_BUILD_KIND__ === "preview" ? "https://feat-one-apps-embed.tinycloud-explorer.pages.dev"
         : "https://explorer.tinycloud.xyz",
     path: "/",
     ceiling: () => [
-      { service: "tinycloud.kv", space: "applications", path: "", actions: ["get", "list", "put", "del"] },
-      { service: "tinycloud.sql", space: "applications", path: "default", actions: ["read", "schema"] },
-      { service: "tinycloud.kv", space: "public", path: "", actions: ["get", "list", "metadata"] },
-      sql("secrets", "default", ["read"]),
-      kv("secrets", "", ["list"]),
-      kv("secrets", "vault/secrets", ["get", "list", "metadata"]),
-      kv("secrets", "variables", ["get", "list", "metadata"]),
+      entry("appsData", { service: "tinycloud.kv", space: "applications", path: "", actions: ["get", "list", "put", "del"] }),
+      entry("appsData", { service: "tinycloud.sql", space: "applications", path: "default", actions: ["read", "schema"] }),
+      entry("publicSpace", { service: "tinycloud.kv", space: "public", path: "", actions: ["get", "list", "metadata"] }),
+      sql("secretNames", "secrets", "default", ["read"]),
+      kv("secretNames", "secrets", "", ["list"]),
+      kv("secretNames", "secrets", "vault/secrets", ["get", "list", "metadata"]),
+      kv("secretNames", "secrets", "variables", ["get", "list", "metadata"]),
     ],
   },
   {
     id: "xyz.tinycloud.account",
     kind: "framed",
-    name: "TinyCloud Account",
-    description: "Manage TinyCloud account data, billing, spaces, and installed application manifests.",
+    ...text("xyz.tinycloud.account"),
     icon: CircleUserRound,
     origin: __ONE_APPS_BUILD_KIND__ === "dev" ? "https://localhost:5194"
       : __ONE_APPS_BUILD_KIND__ === "preview" ? "https://feat-one-apps-embed.tinycloud-account.pages.dev"
         : "https://account.tinycloud.xyz",
     path: "/",
     ceiling: () => [
-      kv("account", "applications/", ["get", "list", "put"]),
-      kv("account", "spaces/", ["get", "list", "put"]),
-      { service: "tinycloud.space", space: "account", path: "", actions: ["list"], skipPrefix: true },
-      sql("account", "account", ["read"]),
-      { service: "tinycloud.delegation", space: "account", path: "", actions: ["list", "status"], skipPrefix: true },
+      kv("installedApps", "account", "applications/", ["get", "list", "put"]),
+      kv("spaces", "account", "spaces/", ["get", "list", "put"]),
+      entry("spaces", { service: "tinycloud.space", space: "account", path: "", actions: ["list"], skipPrefix: true }),
+      sql("accountSummary", "account", "account", ["read"]),
+      entry("delegations", { service: "tinycloud.delegation", space: "account", path: "", actions: ["list", "status"], skipPrefix: true }),
     ],
   },
-] satisfies OneApp[]);
+];
+
+/**
+ * The apps a platform offers. iOS leaves Account out: its tile would open account.tinycloud.xyz, which has Billing.
+ */
+export function oneAppsFor(platform: string): readonly OneApp[] {
+  return Object.freeze(ALL_APPS.filter((app) => !(platform === "ios" && app.id === "xyz.tinycloud.account")));
+}
+
+export const ONE_APPS: readonly OneApp[] = oneAppsFor(Capacitor.getPlatform());
 
 export function oneApp(id: string): OneApp | undefined {
   return ONE_APPS.find((app) => app.id === id);
@@ -183,7 +192,7 @@ export function framedApp(id: string): FramedOneApp | undefined {
   return app?.kind === "framed" ? app : undefined;
 }
 
-/** The page the app opens, outside One's frame (a new tab, no delegation). */
+/** The page the app opens outside One's frame (a new tab, no delegation). */
 export function appUrl(app: FramedOneApp): string {
   return new URL(app.path, app.origin).toString();
 }
