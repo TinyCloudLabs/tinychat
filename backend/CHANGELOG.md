@@ -1,5 +1,77 @@
 # @tinychat/backend
 
+## 0.9.0-beta.0
+
+### Minor Changes
+
+- 8ec6a58: Web sign-in goes through OpenKey's own sign-in window. When that window offers automatic renewal and the owner leaves it on, the session renews for up to 90 days without another sign-in. Otherwise a sign-in lasts its usual 30 days.
+
+  Details: TC-2872
+
+## 0.8.0
+
+### Minor Changes
+
+- e31dd71: Ship one metadata record per request to the private log sink: request id, route template, method, status, duration, stream outcome and code, credits charged and a keyed account hash (new optional `REQUEST_LOG_HMAC_KEY`). Records are capped per minute and never carry bodies, headers, keys, emails or IPs. The local `tinychat_request` event's `route` now includes the mount template (for example `/api/chat` instead of `/`).
+- abe8e22: Save bot chat history encrypted in the owner's TinyCloud space, with verified model receipts and storage acknowledgments. Notify the owner in Main's chat when expired TinyCloud permission schedules local history deletion, and resume copying after reconnection. Details: TC-2808.
+- 033a30f: Tiny bots, slice 1 (TC-2808), off by default. For accounts on `BOTS_TEST_ACCOUNTS` with `BOTS_ENABLED=true`, Home shows a "What do you want done?" box that sends to Main, the owner's main bot, and opens Main's chat with the reply streaming in. The backend adds `/api/bots/status` and `/api/bots/main/messages`, which forward to the new bots service (`bots/`). Everyone else sees no change.
+
+### Patch Changes
+
+- 9bf796f: Record legacy agent-turn credit usage before ending either successful or failed responses so immediate follow-up chat requests enforce the updated budget. Preserve the existing soft-cap policy and streamed answer.
+- be21a74: Google connections started on tinycloud.one return to tinycloud.one. The backend accepts two new `state` tags, `one.<nonce>` for the popup return and `onetab.<path>.<nonce>` for the same-tab return; both go to the fixed https://tinycloud.one origin when it is in the `FRONTEND_ORIGINS` allowlist (it is by default), and are refused like any unknown tag when it is not. Untagged, `tab.`, `home.`, `hometab.` and `native.` flows are unchanged.
+- aa036e0: The backend accepts https://tinycloud.one, the Home app's new site, for CORS and the sign-in (SIWE) domain, alongside tinycloud.chat and home.tinycloud.xyz. It is one more exact origin in the default `FRONTEND_ORIGINS` list; `www.tinycloud.one`, other ports, other schemes and lookalike hosts are still refused. Google connections started on tinycloud.one still return to `FRONTEND_URL` until they get their own return tag.
+- 20598f6: The backend accepts both tinycloud.chat and home.tinycloud.xyz for CORS, sign-in (the SIWE domain) and Google OAuth returns, through the new `FRONTEND_ORIGINS` allowlist: comma-separated exact origins, `FRONTEND_URL` always added, defaulting to `https://tinycloud.chat,https://home.tinycloud.xyz`. A Google connection started on tinycloud.chat returns to tinycloud.chat even after `FRONTEND_URL` moves to home.tinycloud.xyz; one started on home.tinycloud.xyz returns there. Stripe and connector-off links still use `FRONTEND_URL`.
+
+  Deploy this backend before setting `TINYCHAT_FRONTEND_URL` to `https://home.tinycloud.xyz`. That variable is also the backend's `FRONTEND_URL`, and an older backend would stop accepting tinycloud.chat, where visitors whose recordings are still only in that browser stay.
+
+- 339a1d2: Route Fireflies ingestion by the user's connection: server OAuth plus cohort eligibility selects backend ingestion; users without server OAuth keep browser access to their queued meetings.
+- 915a8f9: Stop webhook admission on Fireflies disconnect, close the in-flight enqueue race, and retain purge-ledger ID timestamps without extending them on retries.
+- 20484c4: Delete server-held Fireflies meeting IDs within 14 days and enforce authenticated content expiry and bounded replay protection.
+- fc73a24: Remove reconciled server copies when Fireflies sync is disabled, preserving unreadable or unreconciled copies for retention cleanup.
+- e667585: TinyCloud Home and the backend treat `https://node.tinycloud.xyz` and `https://tee.node.tinycloud.xyz` as the same TinyCloud node. Stored backend grants, bot history receipts, native delegations and agent CLI profiles on either name keep working when the default node name changes. The reviewer seed and the TinyChat retrieval skill (now 0.1.1-onboarding.26) default to `https://node.tinycloud.xyz`. Production still runs on `https://tee.node.tinycloud.xyz`; nothing changes for users.
+
+  Details: TC-2923
+
+- 17f9687: TC-3166: "Delete my recordings first" (the bulk `DELETE /api/transcriber/meetings`) now also deletes the account's private cloud transcription jobs, so voice notes and uploads left behind by a failed or cancelled run are cleared on account deletion. Queued or running jobs are cancelled, transcripts are deleted, and the call only succeeds once TinyCloud Private Transcription's own list for the account is empty; otherwise it is a 503 and safe to retry. The response gains `privateCloudDeleted` (a count, or `null` when private cloud transcription is not used), which the step requires, so an older backend can never produce a "deleted" claim for voice notes and uploads; with `null` the step says nothing about them. The bulk delete is also mounted when private cloud transcription is on and the meeting transcriber is off. A new `GET /api/transcriber/meetings/scope` (config only) tells the step whether the deployment keeps private cloud jobs, so its intro and failure line name voice notes and uploads only where they are kept; the step waits for it before showing anything.
+- 7b5db01: TC-3136: removing a notetaker recording now deletes the capture provider's copy (audio, video, transcript and derived artifacts) and only counts it as gone after reading it back not-found. A delete that cannot be confirmed yet stays listed as "deleting" and is retried with backoff, never dropped. Settings → Account gains "Delete my recordings first", a bulk `DELETE /api/transcriber/meetings`, ahead of deleting the OpenKey account. A recording shared with you is only removed from your list. A recording the notetaker service cannot attribute to you is removed from your list but not deleted there, and says so on its row.
+- ae08fc0: Streamed replies from confidential models now show an "Enclave verified" mark once the gateway's signed receipt checks out, or a note if it can't be confirmed. Details: TC-2196
+- f4853a8: Add an explicit exact-email transcript share action to note detail, with read-only immutable encrypted snapshots, SDK-valid note-title filenames capped at 128 UTF-8 bytes with a nonempty fallback, and no audio inclusion.
+
+  Adopt the published TinyCloud Web, Node, Core and Services SDKs at 3.11.0 (Share SDK 1.4.4 and Share Envelope 1.5.0, as pinned by those releases) for exact Share-key runtime consent, and remove the obsolete local NodeSDK sign-in patch now included upstream.
+
+  Keep transcript-share dialogs open through same-owner, same-session runtime-grant refreshes. Reject stale account/content completions and surface interrupted shares without exposing the prior recipient or link. Treat an OpenKey cancellation of exact-key consent as a cancelled share.
+
+  Discard underlying SDK errors at the transcript-share boundary so diagnostic cause chains contain only the sanitized failure message.
+
+  Freeze speaker aliases in the shared copy using the transcript's existing display, Copy and export mapping. Reject semantic alias changes during sharing, including unused labels, and validate the same projection against persisted metadata without rewriting stored sentences.
+
+  Details: TC-2192
+
+- 898ce96: Require a pinned content-master commitment and successful existing-index decrypt before canary enrollment; verify the encrypted canary before ingestion starts. Add an authenticated read-only continuity diagnostic. Existing ingestion deployments must pin CONNECTOR_CONTENT_EXPECTED_SHA256 from their live master before first startup; fresh installations require explicit CONNECTOR_CONTENT_ENROLL_FRESH=true enrollment.
+
+  Take the ingest singleton lease before enrollment and reject blank pins. Require encoded random key material for new enrollment. An unset master permits startup only with empty sealed storage, leaves sealed features disabled, and returns a diagnostic error without a fingerprint.
+
+  Close connections that become idle after an in-flight response finishes during shutdown, so Bun shutdown does not wait for keep-alive expiry. Tighten base64 padding validation and limit the diagnostic exemption to its literal path.
+
+- a4ab606: Adopt the published SDK graph and support browser restore with explicit owner-signed renewal leases. Details: TC-2872
+- c709e31: TC-2917: calendar autojoin row writes are If-Match compare-and-sets on the node, a token refresh writes custody only if no other change happened since it was read, and the cached access-token map is bounded and evicted on expiry, disable or a new generation.
+- c709e31: TC-2917: calendar autojoin reads consent from the node before every Google scan and recording check, and every connection write re-reads the stored row first, so a disable or deletion stored outside the backend is kept. The row cache is bounded, and a cached access token is dropped when any credential store in the process changes that credential.
+
+  Every calendar row and credential write or delete is now conditional on the version it was decided on (If-Match / If-None-Match; a row the node sends without an ETag is refused, never written blind), and each row carries a revision so the node's content-hash ETag changes on every write. Enable and OAuth setup re-decide on the stored row. A token refresh is bound to the grant it read and re-reads custody after writing; cached access tokens serve at most 5 minutes after their custody read, and a status read showing a disable evicts them. markUsed is conditional and never recreates a deleted credential.
+
+- 095dda1: TC-2917: the calendar autojoin worker reads connection and meeting rows from an in-process copy instead of the node every 30 s tick. Idle users, disabled connections and finished meetings no longer cost node calls; scheduling, due-time timers and dispatch policy reads are unchanged.
+- 6d52413: The per-request log record now names its route only from the fixed list of routes the backend serves (anything else is `unmatched`), reports credits as a range (`0`, `1-9`, `10-99`, `100-999`, `1000+`) instead of an exact count, and uses an account pseudonym that changes every calendar month (UTC), so one account's records can be linked within a month but not across months. Details: TC-3031.
+- 78c73f1: Support a bots service connection host with TLS verification against the service URL identity. Details: TC-2808
+- 36f006a: Backend deploys pass the tiny bots settings (BOTS_ENABLED, BOTS_TEST_ACCOUNTS, BOTS_SERVICE_URL, BOTS_SERVICE_SECRET, BOTS_POST_TIMEOUT_MS) to the backend CVM; BOTS_ENABLED defaults to false. A new workflow, deploy-bots-phala.yml, deploys the bots service to its own CVM. Details: TC-2808
+- f8823ef: Exo is now TinyCloud Home everywhere you can see it: the web app's title, install name and sign-in, the desktop app (now `TinyCloud Home.app`), the Android and iOS app names, notifications, permission prompts and error messages. Home opens on Feed on the web, on desktop and on iOS and Android, on a fresh install and after signing in, unless you chose Apps as your first screen in Settings. Feed and Apps are no longer experimental: they are in the navigation for everyone, and Settings › Home holds the first-screen choice. App id, bundle ids, URL schemes and every data path are unchanged. Details: TC-2050, TC-2040
+- 98e2480: TinyCloud Home is now TinyCloud One everywhere you can see it: the web app's title, install name and sign-in, the desktop app (now `TinyCloud One.app`; `exo-update` replaces an existing `TinyCloud Home.app`), the Android and iOS app names, widgets, Siri phrases ("Start recording in TinyCloud One"), notifications, permission prompts and error messages. The main screen is now called Feed, and Settings › Start screen holds the first-screen choice. You stay signed in: the app id, bundle ids, URL schemes, installed web app id and every data path are unchanged, and nobody has to sign in again.
+- 0d8fa35: Distinguish slow storage-lane waits from queue timeouts in private logs and include closed calendar failure classifications without account IDs, storage keys, values or error text. Preserve request-log rate limits and existing storage scheduling.
+
+  Bound every non-request log stream to ten samples per minute and retain pre-sampling outcome counts in one fixed-size summary per minute, without changing the existing request-record limits.
+
+- 761a6ba: The web build includes connector secret permissions and the decrypt permission at sign-in for devices that have used Connectors. First use requests access through OpenKey in place. Remove the unused custom AssemblyAI key permission from the manifest.
+
 ## 0.8.0-beta.26
 
 ### Patch Changes
