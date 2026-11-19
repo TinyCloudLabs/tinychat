@@ -315,8 +315,7 @@ jobs:
           CERTBOT_EMAIL: ${{ secrets.CERTBOT_EMAIL }}
           # Same list as the backend's BOTS_TEST_ACCOUNTS. Empty admits nobody.
           BOTS_TEST_ACCOUNTS: ${{ vars.BOTS_TEST_ACCOUNTS }}
-          # Rollout of signed calls: 1 keeps the backend's older bearer-plus-owner-header calls working until the signing
-          # backend is deployed; then set the production-bots variable to 0. See bots/README.md, "Signed calls rollout".
+          # See bots/README.md, "Deploy order".
           BOTS_ACCEPT_LEGACY_OWNER_HEADER: ${{ vars.BOTS_ACCEPT_LEGACY_OWNER_HEADER || '1' }}
           BOTS_MODEL: ${{ vars.BOTS_MODEL }}
           BOTS_IDLE_MS: ${{ vars.BOTS_IDLE_MS }}

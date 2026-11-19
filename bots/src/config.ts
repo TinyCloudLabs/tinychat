@@ -41,10 +41,7 @@ export interface SandboxLimits {
   stateMb: number;
 }
 
-/**
- * BOTS_ACCEPT_LEGACY_OWNER_HEADER=1 also accepts the bearer secret plus `x-tinycloud-owner`, for the rollout only:
- * until the backend that signs its calls is deployed. Unset or `0`: signed calls only. Anything else is refused.
- */
+/** BOTS_ACCEPT_LEGACY_OWNER_HEADER: `0` (the default) or `1`; anything else is refused. See README, "Deploy order". */
 export function legacyOwnerHeaderAccepted(env: Env): boolean {
   const raw = env.BOTS_ACCEPT_LEGACY_OWNER_HEADER?.trim() ?? "";
   if (raw !== "" && raw !== "0" && raw !== "1") throw new Error("BOTS_ACCEPT_LEGACY_OWNER_HEADER must be 0 or 1");

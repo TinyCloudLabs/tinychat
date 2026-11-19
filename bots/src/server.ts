@@ -41,12 +41,12 @@ export interface BotApi {
 }
 
 export interface AppOptions {
-  /** This service's secret: the HMAC key of the backend's signed calls (and the legacy bearer while it is accepted). */
+  /** This service's secret. */
   secret: string;
   accounts: Set<string> | "*";
-  /** The environment this service runs; a call signed for another is refused. Default `private`. */
+  /** The environment this service runs. Default `private`. */
   environment?: Environment;
-  /** Also accept the legacy bearer plus `x-tinycloud-owner`. Unset: from BOTS_ACCEPT_LEGACY_OWNER_HEADER. */
+  /** Unset: from BOTS_ACCEPT_LEGACY_OWNER_HEADER. */
   acceptLegacyOwnerHeader?: boolean;
   bots: {
     forOwner(ownerDid: string): BotApi;
@@ -147,7 +147,7 @@ export function createApp(options: AppOptions): (req: Request) => Promise<Respon
     let owner: string | null = null;
     let req = incoming;
     if (authorization?.startsWith(SIGNED_SCHEME)) {
-      // The owner and the bot come only from the signed call; the body is read once to check its hash.
+      // The body is read once to check its hash, then passed on.
       const body = new Uint8Array(await incoming.arrayBuffer().catch(() => new ArrayBuffer(0)));
       const claims = verifyCall(authorization, { method: incoming.method, path: path + url.search, body }, { secret: options.secret, direction: "to-service", environment, nonces });
       if (claims && claims.bot === match?.[1] && ownerAllowed(claims.owner, options.accounts)) {
