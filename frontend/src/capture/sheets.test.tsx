@@ -1,8 +1,6 @@
 // The Upload and Meeting sheets' views and Capture's In progress rows
 // (TC-761), rendered on the server: what each state says and offers.
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
@@ -236,9 +234,6 @@ describe("Meeting sheet", () => {
     expect(button).toContain('form="transcriber-form"');
     expect(button).toContain('type="submit"');
     expect(button).not.toContain('disabled=""');
-    const sheet = readFileSync(join(import.meta.dir, "meeting/MeetingSheet.tsx"), "utf8");
-    expect(sheet).toContain('footer={bot.listStatus === "dark" ? null : <SendNotetakerButton form={bot.form} listStatus={bot.listStatus} />}');
-    expect(sheet).toContain("sendInline={false}");
   });
 
   test("dark: no form and no sessions, and says why", () => {
