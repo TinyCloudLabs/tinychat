@@ -325,3 +325,84 @@ describe("may one bot message another", () => {
     expect(await hook(ADDRESS, "main")).toEqual([]);
   });
 });
+
+describe("renaming and restyling a bot", () => {
+  const KEY_A = "a".repeat(32);
+  const KEY_B = "b".repeat(32);
+  const LEAVING = "d".repeat(32);
+  const GONE = "f".repeat(32);
+  const bot = (key: string, name: string, state = "active") => ({ key, name, shape: "pebble", colour: "blue", environment: "private", state, createdAt: T0.toISOString() });
+  /** A store whose record holds Main, Research, Notes and one bot that is being deleted, and remembers one deleted key. */
+  const seeded = () => {
+    const kv = store();
+    kv.rows.set(KEY, { version: 1, value: JSON.stringify({ v: 1, seq: 4, deleted: [{ key: GONE, name: "Gone" }], bots: [bot("main", "Main"), bot(KEY_A, "Research"), bot(KEY_B, "Notes"), bot(LEAVING, "Leaving", "deleting")] }) });
+    return kv;
+  };
+
+  test("a new name, shape or colour is stored, and the key and everything else stay as they were", async () => {
+    const registry = new BotsRegistry(seeded(), { now: () => new Date("2026-12-01T00:00:00.000Z") });
+    expect(await registry.update(ADDRESS, KEY_A, { name: "  Reading  " })).toEqual({ ok: true, bot: bot(KEY_A, "Reading") });
+    const restyled = { ...bot(KEY_A, "Reading"), shape: "moon", colour: "indigo" };
+    expect(await registry.update(ADDRESS, KEY_A, { shape: "moon", colour: "indigo" })).toEqual({ ok: true, bot: restyled });
+    const row = await registry.read(ADDRESS);
+    expect(row.seq).toBe(6);
+    expect(row.bots).toEqual([bot("main", "Main"), restyled, bot(KEY_B, "Notes"), bot(LEAVING, "Leaving", "deleting")]);
+  });
+
+  test("Main can be renamed and restyled, and stays Main", async () => {
+    const registry = new BotsRegistry(seeded());
+    const changed = { ...bot("main", "Home base"), shape: "star", colour: "red" };
+    expect(await registry.update(ADDRESS, "main", { name: "Home base", shape: "star", colour: "red" })).toEqual({ ok: true, bot: changed });
+    expect((await registry.read(ADDRESS)).bots[0]).toEqual(changed);
+  });
+
+  test("a change that is empty or not valid is refused before the store is touched", async () => {
+    const kv = seeded();
+    const before = kv.rows.get(KEY);
+    const touched: string[] = [];
+    const { get } = kv;
+    kv.get = async (key, options) => { touched.push(key); return get(key, options); };
+    const registry = new BotsRegistry(kv);
+    const cases: Array<[input: { name?: unknown; shape?: unknown; colour?: unknown }, error: string]> = [
+      [{}, "invalid"],
+      [{ name: "" }, "invalid_name"],
+      [{ name: "x".repeat(25) }, "invalid_name"],
+      [{ name: 7 }, "invalid_name"],
+      [{ shape: "square" }, "invalid_shape"],
+      [{ colour: "#ffffff" }, "invalid_colour"],
+      [{ name: "Fine", shape: "square" }, "invalid_shape"],
+    ];
+    for (const [input, error] of cases) {
+      expect([input, await registry.update(ADDRESS, KEY_A, input)]).toEqual([input, { ok: false, error }]);
+    }
+    expect(touched).toEqual([]);
+    expect(kv.rows.get(KEY)).toEqual(before);
+  });
+
+  test("a name another bot has is refused, ignoring case, but a bot may keep its own name or change only its case", async () => {
+    const registry = new BotsRegistry(seeded());
+    for (const taken of ["Notes", "notes", "MAIN", " Leaving "]) {
+      expect([taken, await registry.update(ADDRESS, KEY_A, { name: taken })]).toEqual([taken, { ok: false, error: "name_taken" }]);
+    }
+    expect(await registry.update(ADDRESS, KEY_A, { name: "Research" })).toEqual({ ok: true, bot: bot(KEY_A, "Research") });
+    expect(await registry.update(ADDRESS, KEY_A, { name: "RESEARCH" })).toEqual({ ok: true, bot: bot(KEY_A, "RESEARCH") });
+  });
+
+  test("a key that is unknown, malformed or deleted is not found, and a bot that is being deleted cannot be changed", async () => {
+    const kv = seeded();
+    const before = kv.rows.get(KEY);
+    const registry = new BotsRegistry(kv);
+    for (const key of ["9".repeat(32), "../x", "Research", GONE]) {
+      expect([key, await registry.update(ADDRESS, key, { name: "New" })]).toEqual([key, { ok: false, error: "not_found" }]);
+    }
+    expect(await registry.update(ADDRESS, LEAVING, { name: "New" })).toEqual({ ok: false, error: "bot_deleting" });
+    expect(kv.rows.get(KEY)).toEqual(before);
+  });
+
+  test("a change that changes nothing writes nothing", async () => {
+    const kv = seeded();
+    const registry = new BotsRegistry(kv);
+    expect(await registry.update(ADDRESS, KEY_A, { name: "Research", shape: "pebble", colour: "blue" })).toEqual({ ok: true, bot: bot(KEY_A, "Research") });
+    expect(kv.rows.get(KEY)!.version).toBe(1);
+  });
+});

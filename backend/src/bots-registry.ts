@@ -32,6 +32,7 @@ export interface OwnerBots { v: 1; seq: number; bots: Bot[]; deleted: DeletedBot
 
 /** `seq` is the counter of the write that stored the bot: the service is told the bot's state under it. */
 export type CreateResult = { ok: true; bot: Bot; seq: number } | { ok: false; error: "invalid_name" | "invalid_shape" | "invalid_colour" | "name_taken" | "bot_limit" };
+export type UpdateResult = { ok: true; bot: Bot } | { ok: false; error: "invalid" | "invalid_name" | "invalid_shape" | "invalid_colour" | "name_taken" | "bot_deleting" | "not_found" };
 
 export const MAIN_BOT_KEY = "main";
 export const BOT_NAME_MAX = 24;
@@ -187,6 +188,27 @@ export class BotsRegistry {
     } catch {
       return [];
     }
+  }
+
+  /** Renames or restyles a bot. Main too: its key, its id, its directory and its permission do not depend on its name or look. */
+  async update(address: string, key: string, input: { name?: unknown; shape?: unknown; colour?: unknown }): Promise<UpdateResult> {
+    if (input.name === undefined && input.shape === undefined && input.colour === undefined) return { ok: false, error: "invalid" };
+    const name = input.name === undefined ? undefined : checkedName(input.name);
+    if (input.name !== undefined && name === undefined) return { ok: false, error: "invalid_name" };
+    const { shape, colour } = input;
+    if (shape !== undefined && !isBotShape(shape)) return { ok: false, error: "invalid_shape" };
+    if (colour !== undefined && !isBotColour(colour)) return { ok: false, error: "invalid_colour" };
+    if (key !== MAIN_BOT_KEY && !BOT_KEY.test(key)) return { ok: false, error: "not_found" };
+    return (await this.#mutate<UpdateResult>(address, current => {
+      const bot = current.bots.find(candidate => candidate.key === key);
+      if (!bot) return { result: { ok: false, error: "not_found" } };
+      if (bot.state === "deleting") return { result: { ok: false, error: "bot_deleting" } };
+      // Another bot's name, ignoring case. A bot may keep its own, or change only its case.
+      if (name !== undefined && current.bots.some(other => other.key !== key && other.name.toLowerCase() === name.toLowerCase())) return { result: { ok: false, error: "name_taken" } };
+      const changed: Bot = { ...bot, ...(name !== undefined ? { name } : {}), ...(shape !== undefined ? { shape } : {}), ...(colour !== undefined ? { colour } : {}) };
+      if (changed.name === bot.name && changed.shape === bot.shape && changed.colour === bot.colour) return { result: { ok: true, bot } };
+      return { result: { ok: true, bot: changed }, next: { bots: current.bots.map(other => (other.key === key ? changed : other)), deleted: current.deleted } };
+    })).result;
   }
 }
 
