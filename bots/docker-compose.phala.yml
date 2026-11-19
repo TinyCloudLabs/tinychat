@@ -35,9 +35,10 @@ services:
     networks: [bots-internal]
     environment:
       PORT: "8080"
-      # Unique 256-bit secret shared with the backend only (openssl rand -hex 32): the key of its signed calls.
+      # Unique 256-bit secret shared with the backend only (openssl rand -hex 32).
       BOTS_SERVICE_SECRET: ${BOTS_SERVICE_SECRET}
-      # 1 also accepts the older bearer secret plus owner header, during the signed-calls rollout only. Off by default.
+      BOTS_ADMISSION_CONTROL_KEY: ${BOTS_ADMISSION_CONTROL_KEY:-}
+      # See bots/README.md, "Deploy order".
       BOTS_ACCEPT_LEGACY_OWNER_HEADER: ${BOTS_ACCEPT_LEGACY_OWNER_HEADER:-0}
       # Same list as the backend's BOTS_TEST_ACCOUNTS; the service enforces it too. Empty admits nobody.
       BOTS_TEST_ACCOUNTS: ${BOTS_TEST_ACCOUNTS:-}
@@ -82,6 +83,8 @@ services:
     environment:
       # A dedicated RedPill key with its own provider-side budget; never the main chat key.
       REDPILL_API_KEY: ${REDPILL_API_KEY}
+      BOTS_BACKEND_CALL_SECRET: ${BOTS_BACKEND_CALL_SECRET:-}
+      BACKEND_ORIGIN: ${BACKEND_ORIGIN:-https://api.tinycloud.chat}
       BOTS_HISTORY_ENABLED: ${BOTS_HISTORY_ENABLED:-false}
       BOTS_MODEL: ${BOTS_MODEL:-z-ai/glm-5.2}
       BOTS_MODELS: ${BOTS_MODELS:-}

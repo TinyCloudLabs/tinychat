@@ -100,7 +100,7 @@ export function useMainChat(api: BotsApi, prepare?: () => Promise<void>) {
             lines: [...current.lines, { id: `local-${++localId.current}`, role: "user", text }, { id: event.messageId, role: "bot", text: reply }],
             turn: null,
           }));
-        } else setTurn((turn) => ({ ...turn, state: "error", error: event.code }));
+        } else if (event.type === "error") setTurn((turn) => ({ ...turn, state: "error", error: event.code }));
       }, controller.signal);
     } catch (cause) {
       if (controller.signal.aborted) return;

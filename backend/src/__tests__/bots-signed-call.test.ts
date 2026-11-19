@@ -1,6 +1,7 @@
-// Signed calls between the backend and the bots service, end to end: the backend's router and history drain call
-// the real service app (bots/src/server.ts) with the legacy owner header turned off, and each side's copy of the
-// signing module verifies what the other signs.
+// Signed calls between the backend and the bots service: the backend's router and history drain call a stand-in
+// service that checks each call with the service's own copy of the signing module (the real service app is tested
+// in bots/src/__tests__/signed-call.test.ts), and each copy verifies what the other signs. Only the dependency-free
+// signing module is imported from bots/.
 import { describe, expect, it } from "bun:test";
 import express from "express";
 import { createCsrfMiddleware, issueSessionToken } from "@tinyboilerplate/server";
@@ -10,7 +11,6 @@ import { createAuthMiddleware } from "../middleware/auth.js";
 import { startBotHistoryDrain } from "../routes/bot-history.js";
 import { botsFromEnv, createBotsRouter, type BotsConfig } from "../routes/bots.js";
 import * as serviceCalls from "../../../bots/src/signed-call";
-import { type BotApi, createApp } from "../../../bots/src/server";
 
 const key = `0x${"03".repeat(32)}`;
 const enabled = "0xAAAAaaaaAAAAaaaaAAAAaaaaAAAAaaaaAAAAaaaa";
@@ -18,32 +18,37 @@ const other = "0x2222222222222222222222222222222222222222";
 const owner = `did:pkh:eip155:1:${enabled.toLowerCase()}`;
 const secret = "b".repeat(64);
 
-/** The real service app with a recording stand-in bot, reached through the backend's fetchImpl. */
-function service(bot: Partial<BotApi> = {}) {
-  const reached: string[] = [];
+type Route = (body: unknown) => Response | Promise<Response>;
+
+/**
+ * A stand-in service reached through the backend's fetchImpl: it accepts a call only as the service does (verifyCall
+ * plus the bot in the path), records the signed owner, and answers from `routes` keyed by `METHOD path`.
+ */
+function service(routes: Record<string, Route>) {
   const owners: string[] = [];
   const upstream: Headers[] = [];
-  const app = createApp({
-    secret, accounts: "*", environment: "private", acceptLegacyOwnerHeader: false,
-    bots: { forOwner: ownerDid => {
-      owners.push(ownerDid);
-      return {
-        send: async (_text, sink) => { reached.push(`${ownerDid} send`); sink.done("m1"); },
-        list: async () => { reached.push(`${ownerDid} list`); return []; },
-        ...bot,
-      };
-    } },
-  });
+  const nonces = new serviceCalls.NonceGuard();
   const fetchImpl = (async (input, init) => {
-    upstream.push(new Headers(init?.headers));
-    return app(new Request(String(input), init));
+    const headers = new Headers(init?.headers);
+    upstream.push(headers);
+    const url = new URL(String(input));
+    const method = init?.method ?? "GET";
+    const body = typeof init?.body === "string" ? init.body : undefined;
+    const claims = serviceCalls.verifyCall(headers.get("authorization"), { method, path: url.pathname + url.search, body }, { secret, direction: "to-service", environment: "private", nonces });
+    if (!claims || !url.pathname.startsWith(`/v1/bots/${claims.bot}/`)) return new Response(null, { status: 401 });
+    owners.push(claims.owner);
+    const route = routes[`${method} ${url.pathname}`];
+    return route ? route(body === undefined ? undefined : JSON.parse(body)) : new Response(null, { status: 404 });
   }) as typeof fetch;
-  return { reached, owners, upstream, fetchImpl };
+  return { owners, upstream, fetchImpl };
 }
 
 describe("signed calls from the backend to the bots service", () => {
   it("the session owner reaches their bot; forged owners and the secret never travel", async () => {
-    const svc = service();
+    const svc = service({
+      "GET /v1/bots/main/messages": () => Response.json({ messages: [] }),
+      "POST /v1/bots/main/messages": () => new Response('event: done\ndata: {"messageId":"m1"}\n\n', { headers: { "content-type": "text/event-stream" } }),
+    });
     const config = botsFromEnv({ BOTS_ENABLED: "true", BOTS_TEST_ACCOUNTS: enabled, BOTS_SERVICE_URL: "http://bots.test/", BOTS_SERVICE_SECRET: secret })!;
     const app = express();
     app.use(express.json()); app.use(createCsrfMiddleware());
@@ -58,7 +63,7 @@ describe("signed calls from the backend to the bots service", () => {
       expect(await list.json()).toEqual({ messages: [] });
       const turn = await fetch(`${base}/main/messages`, { method: "POST", headers, body: JSON.stringify({ text: "ping", owner: other }) });
       expect(await turn.text()).toContain("event: done");
-      expect(svc.reached).toEqual([`${owner} list`, `${owner} send`]);
+      expect(svc.owners).toEqual([owner, owner]);
       for (const sent of svc.upstream) {
         expect(sent.get("x-tinycloud-owner")).toBeNull();
         expect(sent.get("authorization")?.startsWith(backendCalls.SIGNED_SCHEME)).toBe(true);
@@ -72,9 +77,9 @@ describe("signed calls from the backend to the bots service", () => {
     const { promise: received, resolve: receive } = Promise.withResolvers<unknown>();
     let pending: unknown = { seq: 1 };
     const svc = service({
-      historyPending: async () => pending,
-      historyStage: async value => { staged.push(value); },
-      historyReceipt: async value => { pending = undefined; receive(value); },
+      "GET /v1/bots/main/history": () => Response.json({ batch: pending }),
+      "POST /v1/bots/main/history/stage": value => { staged.push(value); return new Response(null, { status: 204 }); },
+      "POST /v1/bots/main/history": value => { pending = null; receive(value); return new Response(null, { status: 204 }); },
     });
     const history = {
       owners: async () => [enabled],

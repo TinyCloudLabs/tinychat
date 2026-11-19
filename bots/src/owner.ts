@@ -42,11 +42,7 @@ export function ownerAllowed(owner: string, accounts: Set<string> | "*"): boolea
   return accounts === "*" || accounts.has(owner.slice(owner.lastIndexOf(":") + 1));
 }
 
-/**
- * The legacy authentication, accepted only while BOTS_ACCEPT_LEGACY_OWNER_HEADER=1: the shared secret as a bearer and
- * the owner named in `x-tinycloud-owner`. Returns the owner DID, or null for a 401. Signed calls replace it
- * (signed-call.ts).
- */
+/** Used only while BOTS_ACCEPT_LEGACY_OWNER_HEADER=1. Returns the owner DID, or null for a 401. */
 export function authorizedOwner(req: Request, secret: string, accounts: Set<string> | "*"): string | null {
   if (!bearerMatches(req.headers.get("authorization"), secret)) return null;
   const owner = req.headers.get("x-tinycloud-owner") ?? "";

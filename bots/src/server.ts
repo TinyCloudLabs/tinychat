@@ -1,14 +1,17 @@
 // Internal HTTP API, called only by the TinyChat backend (docs/plans/tiny-bots-slice1.md, piece 1).
 // Every SSE event is encoded here from checked fields; nothing from a sandbox is passed through raw.
 
-import type { StagedHistory } from "./history";
-import { type ErrorCode, ERROR_MESSAGES, type ListedMessage, MAX_TEXT, type TurnSink } from "./bot";
+import type { ActivityRecord, StagedHistory } from "./history";
+import type { BotAdmission } from "./bot-admission";
+import { type BotMessenger, type ErrorCode, ERROR_MESSAGES, type ListedMessage, MAX_TEXT, type TurnSink } from "./bot";
 import { isRecord } from "./guards";
-import { ANNOUNCED_STATES, type AnnouncedState, type BotState } from "./manifest";
+import { ANNOUNCED_STATES, type AnnouncedState, type BotState, OwnerBotLimit } from "./manifest";
 import { legacyOwnerHeaderAccepted } from "./config";
+import { MESSAGING_STRINGS } from "./messaging-strings";
 import { authorizedOwner, isBotKey, MAIN_KEY, ownerAllowed } from "./owner";
-import { type Environment, NonceGuard, SIGNED_SCHEME, verifyCall } from "./signed-call";
 import type { DeleteSkip } from "./retention";
+import type { HostToolReply } from "./rpc";
+import { type Environment, NonceGuard, SIGNED_SCHEME, verifyCall } from "./signed-call";
 
 /** `/v1/bots/<key>` and what follows it. The key is checked before anything is built from it. */
 const BOT_PATH = /^\/v1\/bots\/([^/]+)(\/.*)?$/;
@@ -30,8 +33,9 @@ function operationOf(rest: string, method: string): Operation | undefined {
 }
 
 export interface BotApi {
-  send(text: string, sink: TurnSink, owner?: string): Promise<void>;
+  send(text: string, sink: TurnSink, owner?: string, messenger?: BotMessenger): Promise<void>;
   list(): Promise<ListedMessage[]>;
+  listActivities?(): Promise<ActivityRecord[]>;
   historyPending?(): Promise<unknown>;
   historyStage?(staged: StagedHistory): Promise<void>;
   historyPermission?(owner: string, expiresAt?: number, validUntil?: number): Promise<void>;
@@ -41,12 +45,13 @@ export interface BotApi {
 }
 
 export interface AppOptions {
-  /** This service's secret: the HMAC key of the backend's signed calls (and the legacy bearer while it is accepted). */
+  /** This service's secret. */
   secret: string;
   accounts: Set<string> | "*";
-  /** The environment this service runs; a call signed for another is refused. Default `private`. */
+  admit?: BotAdmission;
+  /** The environment this service runs. Default `private`. */
   environment?: Environment;
-  /** Also accept the legacy bearer plus `x-tinycloud-owner`. Unset: from BOTS_ACCEPT_LEGACY_OWNER_HEADER. */
+  /** Unset: from BOTS_ACCEPT_LEGACY_OWNER_HEADER. */
   acceptLegacyOwnerHeader?: boolean;
   bots: {
     forOwner(ownerDid: string): BotApi;
@@ -65,13 +70,60 @@ export interface AppOptions {
 const encoder = new TextEncoder();
 /** Bytes an SSE stream may queue for a caller that is not reading; past it the stream is dropped, not buffered. */
 const MAX_QUEUED_BYTES = 1024 * 1024;
+// Keeps one tool reply well below the RPC frame limit even when JSON escapes its characters.
+const MAX_BOT_REPLY_BYTES = 32 * 1024;
+const UNAVAILABLE_REPLY = { text: MESSAGING_STRINGS.unavailable, isError: true } as const;
+
+async function relayMessage(target: BotApi, owner: string, text: string): Promise<HostToolReply> {
+  let reply = "";
+  let bytes = 0;
+  let complete = false;
+  let errorCode: ErrorCode | undefined;
+  // A delivered message always starts a turn with no messenger, even if this bot previously had one.
+  await target.send(text, {
+    status() {},
+    delta(chunk) {
+      bytes += Buffer.byteLength(chunk);
+      if (bytes <= MAX_BOT_REPLY_BYTES) reply += chunk;
+    },
+    done: () => { complete = true; },
+    error: code => { errorCode = code; },
+  }, owner);
+  if (errorCode === "busy") return { text: MESSAGING_STRINGS.busy, isError: true };
+  if (errorCode || !complete || !reply || bytes > MAX_BOT_REPLY_BYTES) return UNAVAILABLE_REPLY;
+  return { text: reply };
+}
+
+function turnMessenger(options: AppOptions, owner: string, sourceKey: string, value: unknown): BotMessenger | undefined {
+  const { admit, manifest } = options;
+  if (!admit || !manifest || !Array.isArray(value)
+    || !value.every((key): key is string => typeof key === "string" && isBotKey(key))) return undefined;
+  const keys = [...new Set(value)].filter(key => key !== sourceKey);
+  if (!keys.length) return undefined;
+  return {
+    keys,
+    async dispatch(targetKey, text, signal) {
+      if (!keys.includes(targetKey) || signal.aborted) return UNAVAILABLE_REPLY;
+      try {
+        // The backend checks current ownership, state and environment for every delivery, even if the manifest is stale.
+        const decision = await admit(owner, sourceKey, targetKey);
+        if (signal.aborted || decision.admitted !== true || manifest.stateOf(owner, sourceKey) !== "active"
+          || manifest.stateOf(owner, targetKey) !== "active") return UNAVAILABLE_REPLY;
+        const target = targetKey === MAIN_KEY ? options.bots.forOwner(owner) : options.bots.forBot?.(owner, targetKey);
+        return target ? await relayMessage(target, owner, text) : UNAVAILABLE_REPLY;
+      } catch {
+        return UNAVAILABLE_REPLY;
+      }
+    },
+  };
+}
 
 function eventStream(run: (sink: TurnSink) => Promise<void>): Response {
   let open = true;
   const stream = new ReadableStream<Uint8Array>(
     {
       start(controller) {
-        const send = (event: string, data: Record<string, string>) => {
+        const send = (event: string, data: Record<string, string | number>) => {
           if (!open) return;
           try {
             controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
@@ -87,6 +139,10 @@ function eventStream(run: (sink: TurnSink) => Promise<void>): Response {
         const sink: TurnSink = {
           status: state => send("status", { state }),
           delta: text => send("delta", { text }),
+          activity: record => {
+            const { type, id, verb, count, at } = record;
+            send("activity", { type, id, verb, count, at, ...(verb === "messaged_bot" ? { targetKey: record.targetKey } : {}) });
+          },
           done: messageId => send("done", { messageId }),
           error: (code: ErrorCode) => send("error", { code, message: ERROR_MESSAGES[code] }),
         };
@@ -118,7 +174,13 @@ async function announce(req: Request, manifest: NonNullable<AppOptions["manifest
   if (!state || typeof seq !== "number" || !Number.isSafeInteger(seq) || seq < 0 || (key === MAIN_KEY && state === "deleting")) {
     return new Response(null, { status: 400 });
   }
-  return Response.json({ state: manifest.announce(owner, key, state, seq) });
+  try {
+    return Response.json({ state: manifest.announce(owner, key, state, seq) });
+  } catch (error) {
+    // This service's own limit on one owner's bots. Anything else is not expected here and is not hidden.
+    if (error instanceof OwnerBotLimit) return Response.json({ error: "owner_bot_limit" }, { status: 409 });
+    throw error;
+  }
 }
 
 /** `DELETE /v1/bots/<key>`: gone, waiting (it will go once its history is saved) or failed. Only a bot being deleted may go. */
@@ -131,7 +193,8 @@ async function remove(options: AppOptions, owner: string, key: string): Promise<
     options.manifest!.markRemoved(owner, key);
     return Response.json({ outcome: "gone" });
   }
-  return Response.json({ outcome: cause === "archive_pending" || cause === "closing" ? "waiting" : "failed", cause });
+  const waiting = cause === "archive_pending" || cause === "closing" || cause === "gateway_cleanup_pending";
+  return Response.json({ outcome: waiting ? "waiting" : "failed", cause });
 }
 
 export function createApp(options: AppOptions): (req: Request) => Promise<Response> {
@@ -146,8 +209,9 @@ export function createApp(options: AppOptions): (req: Request) => Promise<Respon
     const authorization = incoming.headers.get("authorization");
     let owner: string | null = null;
     let req = incoming;
-    if (authorization?.startsWith(SIGNED_SCHEME)) {
-      // The owner and the bot come only from the signed call; the body is read once to check its hash.
+    const signed = authorization?.startsWith(SIGNED_SCHEME) === true;
+    if (signed) {
+      // The body is read once to check its hash, then passed on.
       const body = new Uint8Array(await incoming.arrayBuffer().catch(() => new ArrayBuffer(0)));
       const claims = verifyCall(authorization, { method: incoming.method, path: path + url.search, body }, { secret: options.secret, direction: "to-service", environment, nonces });
       if (claims && claims.bot === match?.[1] && ownerAllowed(claims.owner, options.accounts)) {
@@ -216,11 +280,14 @@ export function createApp(options: AppOptions): (req: Request) => Promise<Respon
       if (typeof text !== "string" || text.length < 1 || text.length > MAX_TEXT) {
         return eventStream(async sink => sink.error("invalid"));
       }
-      return eventStream(sink => bot.send(text, sink, owner));
+      const messenger = signed ? turnMessenger(options, owner, key, isRecord(body) ? body.messageableBotKeys : undefined) : undefined;
+      return eventStream(sink => bot.send(text, sink, owner, messenger));
     }
     if (req.method === "GET") {
       try {
-        return Response.json({ messages: await bot.list() });
+        const messages = await bot.list();
+        const activity = await bot.listActivities?.();
+        return Response.json({ messages, ...(activity?.length ? { activity } : {}) });
       } catch {
         return Response.json({ error: "bot_unavailable", message: ERROR_MESSAGES.bot_unavailable }, { status: 503 });
       }

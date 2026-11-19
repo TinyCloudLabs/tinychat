@@ -10,7 +10,7 @@ except the ingress:
 | Container | Privileges | Holds | Does |
 | --- | --- | --- | --- |
 | `bots-supervisor` | capability set below, no published port, no outbound network | `BOTS_SERVICE_SECRET` | internal API, starts and stops the sandboxes, talks to OMP over each sandbox's stdio |
-| `bots-gateway` | unprivileged user, read-only, no capabilities | `REDPILL_API_KEY` | the only way out of a sandbox: one Unix socket per bot, forwards allowed model calls to `https://tee.redpill.ai` |
+| `bots-gateway` | unprivileged user, read-only, no capabilities | `REDPILL_API_KEY` | one Unix socket per bot for allowed model calls and a control socket for bot admission |
 | `dstack-ingress` | the backend's ingress image | `CLOUDFLARE_API_TOKEN` (DNS for the certificate) | ends TLS inside the CVM, forwards to the supervisor |
 
 Treat every sandbox as hostile: OMP has a shell, so each owner can run any code as root inside their sandbox.
@@ -18,19 +18,8 @@ Treat every sandbox as hostile: OMP has a shell, so each owner can run any code 
 ## Internal API
 
 All requests except `/healthz` are signed by the backend (`src/signed-call.ts`; the backend's copy is
-`backend/src/bots-signed-call.ts`): `Authorization: TinyCloud-Signed <claims>.<mac>`, an HMAC-SHA256 under
-`BOTS_SERVICE_SECRET` over the direction, this service's environment (`private`), the owner DID, the bot key, the
-method, the path, the body's sha256, an expiry (60 s, with 30 s of clock skew allowed) and a single-use nonce. The
-service takes the owner and the bot only from a verified call; the bot must be the one in the path, and the owner's
-address must be on this service's own `BOTS_TEST_ACCOUNTS`. Anything else gets an empty 401. No header names the
-owner, and the secret itself is never sent.
-
-While `BOTS_ACCEPT_LEGACY_OWNER_HEADER=1`, the older form is also accepted: `Authorization: Bearer
-<BOTS_SERVICE_SECRET>` (constant-time compare) plus `X-TinyCloud-Owner: did:pkh:eip155:1:0x<40 lowercase hex>`. It
-exists only for the rollout below.
-
-The same module signs calls in the other direction, from a bots service to the backend (`to-backend`), under a
-separate secret per environment.
+`backend/src/bots-signed-call.ts`), and the owner's address must be on this service's own `BOTS_TEST_ACCOUNTS`.
+Anything else gets an empty 401.
 
 - `POST /v1/bots/main/messages` `{ "text": "..." }` (1 to 8000 characters) streams `text/event-stream`:
   `status` (`starting` on a cold start, then `working`, repeated every 15 s while waiting), `delta` (assistant
@@ -57,9 +46,12 @@ for a sibling may create anything. `main` exists without being announced; a sibl
 - `PUT /v1/bots/<key>` `{ "state": "active" | "suspended" | "deleting", "seq": <integer> }` announces a bot's state
   and answers `{ "state": <the state now held> }`. `seq` is the registry's counter: an update with a `seq` at or below
   the one held is ignored, and so is anything after `deleting`. `main` cannot be set to `deleting`.
+  A bot this service has not seen before is refused with `409 { "error": "owner_bot_limit" }` when its owner already
+  has `BOTS_MAX_PER_OWNER` bots here, `main` included. Bots that are `deleting` or gone are not counted, a bot first
+  announced as `deleting` is not refused, and an update to a bot already held is never refused.
 - `DELETE /v1/bots/<key>` deletes the working state of a bot that is `deleting` and answers
-  `{ "outcome": "gone" }`, `{ "outcome": "waiting", "cause": "archive_pending" | "closing" }` (it will go once its
-  history is saved) or `{ "outcome": "failed", "cause": ... }`. Once gone, the bot is `removed` for good, and a
+  `{ "outcome": "gone" }`, `{ "outcome": "waiting", "cause": "archive_pending" | "closing" | "gateway_cleanup_pending" }`
+  or `{ "outcome": "failed", "cause": ... }`. Once gone, the bot is `removed` for good, and a
   request that was still waiting on the deletion is refused (503) instead of starting the bot again.
 
 | | active | suspended | deleting | unknown or removed |
@@ -95,11 +87,11 @@ file counts from the snapshot's modification time. The supervisor checks every b
 are skipped) at startup and every 6 hours, and skips a bot with a request in flight.
 
 Deleting goes through one path. It stops the bot's sandbox (unmounting its state snapshot) and then checks that the
-teardown succeeded, that `/data/bots/<bot id>` and `/run/bots/<bot id>` are real directories (not symlinks) directly
+teardown and gateway cleanup succeeded, that `/data/bots/<bot id>` and `/run/bots/<bot id>` are real directories directly
 under their roots, that nothing is mounted at or under either (`/proc/self/mountinfo`). If all hold, it removes both directories and logs `state_deleted`. Otherwise it removes
-nothing and logs `state_delete_skipped` with a `cause` (`teardown_failed`, `unsafe_path`, `mounted`
-or `error`), and the next sweep tries again. A message that arrives meanwhile waits for the deletion, then starts a
-fresh bot. Once shutdown begins, deletion is refused, including a deletion still waiting for teardown.
+nothing and logs `state_delete_skipped` with the cause. The backend retries explicit deletes while the bot is
+`deleting`, and the next supervisor sweep retries retention deletes. A message arriving during a retention deletion
+waits, then starts a fresh bot. Once shutdown begins, deletion is refused, including a deletion still waiting for teardown.
 
 The supervisor creates data and run roots with mode 0700 and refuses roots that are symlinks, owned by another user, or writable by group or others.
 
@@ -125,7 +117,7 @@ All sandboxes together sit under one parent cgroup (`/bots`) capped at `BOTS_TOT
 (`/bots/restore`), outside the bot's own cgroup, so each running bot counts there as `BOTS_SANDBOX_MEMORY_MB +
 BOTS_STATE_MB`. `BOTS_MAX_RUNNING` caps how many bots run at once (default `BOTS_TOTAL_MEMORY_MB /
 (BOTS_SANDBOX_MEMORY_MB + BOTS_STATE_MB)`, 3); the supervisor refuses to start if that many would not fit, and a
-message or history request that would start a bot past the cap gets `bot_unavailable`. A bot whose last stop was
+message that would start a bot past the cap gets `at_capacity` (it is not queued and spends nothing; a history request gets `bot_unavailable`). A bot whose last stop was
 not confirmed (see Saved state) keeps its place until its next start confirms the end. The whole supervisor
 container sits at `mem_limit: 7g` in the compose, so many bots cannot starve the gateway or the ingress. Size the CVM
 as the supervisor's `mem_limit` plus about 1 GiB.
@@ -221,8 +213,9 @@ Supervisor (`bots-supervisor`):
 
 | Var | Default | |
 | --- | --- | --- |
-| `BOTS_SERVICE_SECRET` | required | unique 256-bit secret (at least 43 characters); `openssl rand -hex 32`; the key of the backend's signed calls |
-| `BOTS_ACCEPT_LEGACY_OWNER_HEADER` | `0` | `1` also accepts the bearer secret plus `X-TinyCloud-Owner`, for the signed-calls rollout only |
+| `BOTS_SERVICE_SECRET` | required | unique 256-bit secret (at least 43 characters); `openssl rand -hex 32` |
+| `BOTS_ADMISSION_CONTROL_KEY` | unset | admission control socket key from the deploy workflow |
+| `BOTS_ACCEPT_LEGACY_OWNER_HEADER` | `0` | see [Deploy order](#deploy-order) |
 | `BOTS_TEST_ACCOUNTS` | empty (nobody) | comma-separated addresses, or `*` |
 | `BOTS_MODEL` | `z-ai/glm-5.2` | the backend's `REDPILL_DEFAULT_MODEL` default |
 | `BOTS_IDLE_MS` | `600000` | idle time after `session_settled` before a sandbox stops |
@@ -231,6 +224,7 @@ Supervisor (`bots-supervisor`):
 | `BOTS_STATE_MB` | `256` | state tmpfs size (inside the memory limit, 64 files and directories per MiB) and the cap on its saved copy |
 | `BOTS_TOTAL_MEMORY_MB` / `BOTS_TOTAL_PIDS` | `6144` / `2048` | all sandboxes and their restored state together |
 | `BOTS_MAX_RUNNING` | `BOTS_TOTAL_MEMORY_MB / (BOTS_SANDBOX_MEMORY_MB + BOTS_STATE_MB)` (3) | sandboxes running at once; at most that quotient |
+| `BOTS_MAX_PER_OWNER` | `10` | one owner's bots, `main` included, that this service holds; a new one past it is refused when announced |
 | `BOTS_STATE_COPY_TIMEOUT_MS` | `60000` | a state restore or save still running by then is killed and fails |
 | `BOTS_TURN_TIMEOUT_MS` | `300000` | a turn with no result by then is ended and its sandbox killed |
 | `BOTS_MAX_TURN_BYTES` | `262144` | assistant text per turn |
@@ -242,6 +236,8 @@ Gateway (`bots-gateway`):
 | Var | Default | |
 | --- | --- | --- |
 | `REDPILL_API_KEY` | required | a dedicated RedPill key with its own provider-side budget, not shared with main chat |
+| `BOTS_BACKEND_CALL_SECRET` | unset in local model-only runs | key for bot admission calls |
+| `BACKEND_ORIGIN` | `https://api.tinycloud.chat` | HTTPS origin for bot admission at `/api/internal/bots/admit` |
 | `BOTS_MODELS` | `BOTS_MODEL` | comma-separated model allowlist |
 | `BOTS_MAX_TOKENS` | `8192` | |
 | `BOTS_BOT_DAILY_TOKENS` / `BOTS_GLOBAL_DAILY_TOKENS` | `2000000` / `20000000` | UTC day |
@@ -325,6 +321,9 @@ Its configuration lives in the `production-bots` GitHub environment:
 | limit overrides from [Configuration](#configuration) | variables | optional, e.g. `BOTS_MODEL`, `BOTS_TOTAL_MEMORY_MB`, `BOTS_GLOBAL_DAILY_TOKENS`; empty keeps the compose default |
 | `PHALA_CLOUD_API_KEY` | secret | deploy tooling only; never a CVM env |
 | `BOTS_SERVICE_SECRET` | secret | the supervisor's secret, the same value as the backend's |
+| `BOTS_BACKEND_CALL_SECRET` | secret | bot admission key |
+| `BOTS_ADMISSION_CONTROL_KEY` | derived | control socket key from the deploy workflow |
+| `BACKEND_ORIGIN` | variable | set from `TINYCHAT_BACKEND_URL` in the deployment environment, default `https://api.tinycloud.chat` |
 | `BOTS_REDPILL_API_KEY` | secret | the dedicated RedPill key, written to the CVM as `REDPILL_API_KEY` |
 | `CLOUDFLARE_API_TOKEN`, `CERTBOT_EMAIL` | secrets | the ingress certificate |
 
@@ -337,15 +336,6 @@ The backend picks up `BOTS_ENABLED`, `BOTS_TEST_ACCOUNTS`, `BOTS_SERVICE_URL=htt
 `BOTS_POST_TIMEOUT_MS` from `production-api` variables and `BOTS_SERVICE_SECRET` from a `production-api` secret,
 through `.github/workflows/deploy-backend-phala.yml`. `BOTS_ENABLED` defaults to `false`.
 
-### Signed calls rollout
+### Deploy order
 
-A backend from before signed calls sends the bearer secret plus `X-TinyCloud-Owner`; a newer one sends only signed
-calls. Deploy in this order:
-
-1. The service, with `BOTS_ACCEPT_LEGACY_OWNER_HEADER=1`. The workflow passes `1` while the `production-bots`
-   variable is unset, so the running backend keeps working.
-2. The backend. Its calls are now signed.
-3. Set the `production-bots` variable `BOTS_ACCEPT_LEGACY_OWNER_HEADER` to `0` and deploy the service again. From
-   then on only signed calls are accepted.
-
-Rolling the backend back past step 2 needs step 3 undone first.
+Set `BOTS_ACCEPT_LEGACY_OWNER_HEADER=1`, deploy the bots service, then the backend, then set it to `0` and deploy the bots service again. After each step, check that the bots service answers 200. Once it does with `0`, remove the variable.

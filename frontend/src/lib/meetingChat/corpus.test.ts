@@ -248,10 +248,10 @@ describe("SQL meeting metadata discovery", () => {
 
   test("rejects unsupported SQL sources before they become candidates", async () => {
     const unsupported = [...validRow];
-    unsupported[1] = "granola";
+    unsupported[1] = "otter";
     const result = await discoverSqlMeetings(fakeTcw(async () => ({ ok: true, data: { rows: [unsupported] } })));
     expect(SQL_MEETING_METADATA_QUERY).toContain(
-      "source IN ('fireflies', 'google-meet', 'tinycloud-transcriber', 'exo-local', 'exo-voice-note', 'exo-upload', 'exo-merged')",
+      "source IN ('fireflies', 'granola', 'google-meet', 'tinycloud-transcriber', 'exo-local', 'exo-voice-note', 'exo-upload', 'exo-merged')",
     );
     // The browser-local capture sources are named by their writers' own constants.
     expect(SUPPORTED_MEETING_SOURCES).toEqual(expect.arrayContaining([LOCAL_MEETING_SOURCE, VOICE_NOTE_SOURCE]));
@@ -694,7 +694,7 @@ describe("exact-identity meeting corpus merge", () => {
   });
 
   test("does not enumerate KV prefixes for an unsupported SQL source", async () => {
-    const rows = [[...validRow.slice(0, 1), "granola", "g-1", ...validRow.slice(3)]];
+    const rows = [[...validRow.slice(0, 1), "otter", "o-1", ...validRow.slice(3)]];
     const lists: string[] = [];
     const result = await discoverMeetingCorpus({
       sql: { db: () => ({ query: async () => ({ ok: true, data: { rows } }) }) },
@@ -703,8 +703,8 @@ describe("exact-identity meeting corpus merge", () => {
         return { ok: true, data: { keys: [] } };
       } },
     } as unknown as TinyCloudWeb, { list: async () => ({ status: "ok", value: serverPage({ meetings: [] }) }) });
-    expect(result.candidates).not.toEqual(expect.arrayContaining([expect.objectContaining({ source: "granola" })]));
-    expect(lists.some((path) => path.includes("/granola/"))).toBe(false);
+    expect(result.candidates).not.toEqual(expect.arrayContaining([expect.objectContaining({ source: "otter" })]));
+    expect(lists.some((path) => path.includes("/otter/"))).toBe(false);
   });
 
   test("includes an already-selected supported source when SQL discovery fails", async () => {
