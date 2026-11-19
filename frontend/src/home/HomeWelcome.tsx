@@ -4,6 +4,7 @@ import { BuildInfoLine } from "@/components/BuildInfoLine";
 import { Button } from "@/components/ui/button";
 import type { AppState } from "@/lib/appState";
 import { errorLinkFor } from "@/lib/authErrors";
+import { APP_NAME } from "@/lib/homeSite";
 import { WELCOME_DEMO_NOTE, WELCOME_LEAD, WELCOME_LEARN_MORE, WELCOME_LEARN_MORE_LEAD, WELCOME_TITLE } from "@/lib/homeStrings";
 import { bootMessage } from "@/shell/BootSurface";
 import { AgentPromptCard } from "./AgentPromptCard";
@@ -25,7 +26,7 @@ export function HomeWelcome({ state, error, onSignIn }: { state: AppState; error
         {(busy || error) && <p role="status" className="mt-3 text-sm">{bootMessage(state, error)}</p>}
         {errorLink && <a href={errorLink.href} target="_blank" rel="noreferrer" className="mt-1 inline-block text-sm text-primary underline underline-offset-4">{errorLink.label}</a>}
         <div className="mt-5">
-          <Button className="h-11 px-6 fine:h-10 fine:px-5" disabled={busy} onClick={onSignIn}>{busy ? "Signing in…" : "Sign in to your Home"}</Button>
+          <Button className="h-11 px-6 fine:h-10 fine:px-5" disabled={busy} onClick={onSignIn}>{busy ? "Signing in…" : `Sign in to ${APP_NAME}`}</Button>
         </div>
         <AgentPromptCard />
         <h2 className="mt-10 text-sm font-medium">Try it</h2>

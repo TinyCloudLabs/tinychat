@@ -46,7 +46,7 @@ describe("microphone recovery never shows a native error", () => {
     const { page, errors } = await open("off", "ios");
     await page.getByRole("button", { name: "Open Settings" }).click();
     const text = await alertText(page);
-    expect(text).toBe("Couldn't open Settings. Open Settings › TinyCloud Home › Microphone.");
+    expect(text).toBe("Couldn't open Settings. Open Settings › TinyCloud One › Microphone.");
     expect(text).not.toMatch(NATIVE);
     expect(errors.some((line) => line.includes("Could not open Settings"))).toBe(true);
     await page.context().close();
@@ -65,7 +65,7 @@ describe("microphone recovery never shows a native error", () => {
   test("signed out, microphone denied: Open Settings and the dismiss both fail with stable lines", async () => {
     const { page, errors } = await open("denied", "android");
     await page.getByRole("button", { name: "Open Settings" }).click();
-    expect(await alertText(page)).toBe("Couldn't open Settings. Open Settings › TinyCloud Home › Microphone.");
+    expect(await alertText(page)).toBe("Couldn't open Settings. Open Settings › TinyCloud One › Microphone.");
     await page.getByRole("button", { name: "Minimise recorder" }).click();
     await page.getByText("Couldn't close this. Try again.").waitFor();
     expect(await page.getByRole("alert").allTextContents()).not.toContainEqual(expect.stringMatching(NATIVE));
@@ -79,7 +79,7 @@ describe("microphone recovery never shows a native error", () => {
     await page.evaluate(() => {
       window.exoMicStatusFails = true;
     });
-    const text = await page.getByText("Couldn't check microphone access. TinyCloud Home will try again.").textContent();
+    const text = await page.getByText("Couldn't check microphone access. TinyCloud One will try again.").textContent();
     expect(text).not.toMatch(NATIVE);
     expect(errors.some((line) => line.includes("Could not check microphone recovery"))).toBe(true);
     await page.context().close();

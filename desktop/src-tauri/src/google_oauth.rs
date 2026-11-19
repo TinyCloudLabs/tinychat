@@ -273,11 +273,11 @@ fn handle_request(
         return None;
     }
     if let Some(code) = code {
-        respond(stream, 200, "Google sign-in received. Return to TinyCloud Home.");
+        respond(stream, 200, "Google sign-in received. Return to TinyCloud One.");
         return Some(Ok(code));
     }
     if error.is_some() {
-        respond(stream, 200, "Google sign-in was cancelled. Return to TinyCloud Home.");
+        respond(stream, 200, "Google sign-in was cancelled. Return to TinyCloud One.");
         return Some(Err("Google sign-in was cancelled".into()));
     }
     respond(stream, 400, "Invalid sign-in return");
@@ -285,7 +285,7 @@ fn handle_request(
 }
 
 fn respond(stream: &mut TcpStream, status: u16, message: &str) {
-    let body = format!("<!doctype html><title>TinyCloud Home</title><p>{message}</p>");
+    let body = format!("<!doctype html><title>TinyCloud One</title><p>{message}</p>");
     let response = format!("HTTP/1.1 {status} OK\r\nContent-Type: text/html; charset=utf-8\r\nCache-Control: no-store\r\nReferrer-Policy: no-referrer\r\nContent-Security-Policy: default-src 'none'\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
     let _ = stream.write_all(response.as_bytes());
 }

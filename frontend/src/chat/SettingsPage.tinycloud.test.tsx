@@ -23,7 +23,7 @@ test("Settings has a TinyCloud section with the button toggle and the panel row"
     <MemoryRouter>
       <PlatformContext.Provider value="web">
         <StaticRecorderProvider value={{ signedIn: true, available: false }}>
-          <AgentAccessProvider backendUrl="http://localhost" sessionStore={sessionStore} tcw={tcw} appName="TinyCloud Home" openkeyHost="http://localhost">
+          <AgentAccessProvider backendUrl="http://localhost" sessionStore={sessionStore} tcw={tcw} appName="TinyCloud One" openkeyHost="http://localhost">
             <SettingsPage
               address={tcw.address()} did={tcw.did} spaceId={tcw.spaceId} state="ready" error={null}
               onSignOut={noop} signingOut={false} paywallEnabled={false} onBack={noop}

@@ -1,8 +1,8 @@
-// The compact card (Sam, 11-12: "make your own"), one component for every card in the compact view, and
-// the status mark the grid's tiles share. Spec: the design agent's compact-card/SPEC.md. Three cues, none of them
-// colour alone, tell a card's kind before you read it: a solid "Needs you" chip (every other status is quiet text
-// with an icon; updates show none), a semibold title only on cards that need you, and a thumbnail only on posts.
-import { AlarmClockIcon, CheckIcon, CircleAlertIcon, Clock3Icon, MessageCircleIcon, PlayIcon } from "lucide-react";
+// The feed's row (Sam, 11-13 11:58Z, briefs/feed-lab/design/toprow): every card that isn't open is one row in a
+// list, the agent's mark, the title (semibold when it needs you), the agent and a short description, and at the row's
+// end its due date or how long ago it came, with its status. Rows sit together in one bordered list (HomeFeedEntries).
+// Also the status mark the open card shares. Posts add a thumbnail.
+import { AlarmClockIcon, CheckCheckIcon, CheckIcon, CircleAlertIcon, Clock3Icon, MessageCircleIcon, PlayIcon } from "lucide-react";
 
 import { AgentMark, PlatformName, type Platform } from "./AgentMark";
 import { ShortTime } from "./ShortTime";
@@ -13,6 +13,7 @@ export function StatusMark({ status }: { status?: string }) {
   if (status === "Needs you") return <span className="inline-flex h-5 shrink-0 items-center rounded-full bg-foreground px-2 text-[11px] font-semibold text-background">Needs you</span>;
   const quiet = "inline-flex shrink-0 items-center gap-1 text-meta text-muted-foreground [&_svg]:size-3.5";
   if (status.startsWith("Waiting on")) return <span className={quiet} title={status}><Clock3Icon aria-hidden />Waiting</span>;
+  if (status === "Answered") return <span className={quiet}><CheckCheckIcon aria-hidden />Answered</span>;
   if (status === "Done") return <span className={quiet}><CheckIcon aria-hidden />Done</span>;
   if (status === "Snoozed") return <span className={quiet}><AlarmClockIcon aria-hidden />Snoozed</span>;
   if (status === "Failed") return <span className={`${quiet} text-destructive`}><CircleAlertIcon aria-hidden />Failed</span>;
@@ -71,42 +72,61 @@ export function DueMark({ due, now, className = "" }: { due: string; now?: numbe
   return <span title={Number.isNaN(at.getTime()) ? undefined : `Due ${at.toLocaleString()}`} className={`font-medium ${overdue ? "text-destructive" : "text-foreground"} ${className}`}>{text}</span>;
 }
 
-export function CompactCard({ agentKey, author, platform, createdAt, priority, due, now, status, replies, title, description, thumb, onOpen, opensPage = false }: {
+export function CompactCard({ agentKey, author, platform, createdAt, priority, due, now, status, replies, title, description, thumb, onOpen, opensPage = false, layout = "row" }: {
   agentKey: string; author: string; platform?: Platform; createdAt: string;
-  /** The agent's priority, 0 (highest) to 5 (Sam, 23:30Z). Only P0 and P1 show, beside the status (PriorityMark). */
+  /** The agent's priority, 0 (highest) to 5 (Sam, 23:30Z). Only P0 and P1 show, at the row's end (PriorityMark). */
   priority?: number;
-  /** When the card is due (ISO), shown before its description (DueMark); `now` is the clock it is read against. */
+  /** When the card is due (ISO), at the row's end (DueMark); `now` is the clock it is read against. */
   due?: string; now?: number;
-  /** The agent's replies to your comments, shown beside the status. */
+  /** The agent's replies to your comments, at the row's end. */
   replies?: Replies;
-  /** cardStatus's word (or a post's progress); undefined shows none. */
+  /** cardStatus's word (or a post's progress); "Needs you" and undefined show none (the view says it). */
   status?: string;
   title: string; description?: string;
-  /** A post's page, as a 64px square; `video` adds a play badge. */
+  /** A post's page, as a 44px square at the row's end; `video` adds a play badge. */
   thumb?: { src: string; video: boolean };
   onOpen: () => void;
   /** A post opens its page; every other card opens in place. */
   opensPage?: boolean;
+  /** "row": the feed's row. "tile": a tile in the Cards view. */
+  layout?: "row" | "tile";
 }) {
   const needsYou = status === "Needs you";
-  const textColumns = thumb ? "col-span-1" : "col-span-2";
-  return <button type="button" onClick={onOpen} {...(opensPage ? { "aria-haspopup": "dialog" as const } : { "aria-expanded": false })}
-    className="grid w-full min-w-0 grid-cols-[1.75rem_minmax(0,1fr)_auto] gap-x-3 rounded-2xl border border-border bg-card px-3.5 pb-[13px] pt-3 text-left text-card-foreground transition-[transform,border-color] duration-150 ease-smooth active:scale-[.985] active:bg-muted/50 fine:hover:border-foreground/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background motion-reduce:transition-none motion-reduce:active:scale-100">
-    <span className="row-span-3 -mt-1"><AgentMark agentKey={agentKey} name={author} small /></span>
-    <span className="col-span-2 flex h-5 min-w-0 items-center gap-1.5 overflow-hidden text-meta text-muted-foreground">
-      {/* The status group on the right never shrinks; the name, then the time, give way first (QA: "Needs you" cut). */}
-      <span className="min-w-[3rem] max-w-[58%] shrink truncate font-semibold text-foreground">{author}</span>
-      {platform && <span className="flex min-w-0 shrink items-center"><PlatformName platform={platform} logoOnly /></span>}
-      <ShortTime relative at={createdAt} className="min-w-0 shrink-[2] truncate tabular-nums before:mr-1.5 before:content-['·']" />
-      <span className="ml-auto flex shrink-0 items-center gap-2"><PriorityMark priority={priority} /><ReplyCount replies={replies} /><StatusMark status={status} /></span>
+  const done = status === "Dropped" || status === "Acknowledged" || status === "Done" || status === "Closed";
+  const opens = opensPage ? { "aria-haspopup": "dialog" as const } : { "aria-expanded": false };
+  const ring = "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring motion-reduce:transition-none";
+  const titleClass = `break-words text-[15px] leading-5 tracking-[-0.005em] ${needsYou ? "font-semibold" : "font-medium"}`;
+  const doneMark = done && <CheckIcon aria-hidden className="mr-1 inline size-3.5 align-[-2px] text-muted-foreground" />;
+  const marks = <span className="flex items-center gap-2 empty:hidden"><PriorityMark priority={priority} /><ReplyCount replies={replies} />{!needsYou && <StatusMark status={status} />}</span>;
+  const when = due ? <DueMark due={due} now={now} className="whitespace-nowrap" /> : <ShortTime relative at={createdAt} className="whitespace-nowrap tabular-nums" />;
+  if (layout === "tile") {
+    return <button type="button" onClick={onOpen} {...opens}
+      className={`flex h-full min-h-[132px] w-full min-w-0 flex-col gap-1.5 p-3.5 text-left text-card-foreground transition-colors duration-150 active:bg-muted/50 fine:hover:bg-muted/30 ${ring}`}>
+      <span className="flex min-w-0 items-center gap-2 text-[13px] leading-[18px] text-muted-foreground">
+        <AgentMark agentKey={agentKey} name={author} small />
+        <span className="min-w-0 truncate font-medium text-foreground/80">{author}</span>
+        {platform && <span className="flex min-w-0 shrink-0 items-center"><PlatformName platform={platform} logoOnly /></span>}
+      </span>
+      <span className={`line-clamp-3 ${titleClass}`}>{doneMark}{title}</span>
+      {description && <span className="line-clamp-2 break-words text-[13px] leading-[18px] text-muted-foreground">{description}</span>}
+      <span className="mt-auto flex flex-wrap items-center justify-between gap-x-3 gap-y-1 pt-1 text-meta text-muted-foreground">{marks}{when}</span>
+    </button>;
+  }
+  return <button type="button" onClick={onOpen} {...opens}
+    className="grid min-h-[60px] w-full min-w-0 grid-cols-[1.75rem_minmax(0,1fr)_auto] items-center gap-x-3 px-3.5 py-[9px] text-left text-card-foreground transition-colors duration-150 active:bg-muted/50 fine:hover:bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring motion-reduce:transition-none">
+    <span className="row-span-2 self-center"><AgentMark agentKey={agentKey} name={author} small /></span>
+    <span className={`line-clamp-2 break-words text-[15px] leading-5 tracking-[-0.005em] ${needsYou ? "font-semibold" : "font-medium"}`}>{done && <CheckIcon aria-hidden className="mr-1 inline size-3.5 align-[-2px] text-muted-foreground" />}{title}</span>
+    <span className="col-start-3 row-span-2 row-start-1 flex flex-col items-end gap-1 self-center text-meta text-muted-foreground">
+      {thumb ? <span className="relative size-11 overflow-hidden rounded-[10px] border border-border bg-muted">
+        <img src={thumb.src} alt="" loading="lazy" className="size-full object-cover" />
+        {thumb.video && <span aria-hidden className="absolute bottom-0.5 left-0.5 flex size-4 items-center justify-center rounded-full bg-black/60 text-white"><PlayIcon className="size-[9px]" /></span>}
+      </span> : due ? <DueMark due={due} now={now} className="whitespace-nowrap" /> : <ShortTime relative at={createdAt} className="whitespace-nowrap tabular-nums" />}
+      <span className="flex items-center gap-2 empty:hidden"><PriorityMark priority={priority} /><ReplyCount replies={replies} />{!needsYou && <StatusMark status={status} />}</span>
     </span>
-    <span className={`${textColumns} mt-1 line-clamp-2 break-words text-[15px] leading-5 tracking-[-0.005em] ${needsYou ? "font-semibold" : "font-medium"}`}>{title}</span>
-    {(due || description) && <span className={`${textColumns} mt-0.5 line-clamp-2 break-words text-sm leading-[19px] text-muted-foreground`}>
-      {due && <DueMark due={due} now={now} />}{due && description && " · "}{description}
-    </span>}
-    {thumb && <span className="relative col-start-3 row-span-2 row-start-2 mt-1.5 size-16 self-start overflow-hidden rounded-[10px] border border-border bg-muted">
-      <img src={thumb.src} alt="" loading="lazy" className="size-full object-cover" />
-      {thumb.video && <span aria-hidden className="absolute bottom-1 left-1 flex size-5 items-center justify-center rounded-full bg-black/60 text-white"><PlayIcon className="size-[11px]" /></span>}
-    </span>}
+    <span className="col-start-2 flex min-w-0 items-center gap-1.5 text-[13px] leading-[18px] text-muted-foreground">
+      <span className="max-w-[60%] shrink-0 truncate font-medium text-foreground/80">{author}</span>
+      {platform && <span className="flex min-w-0 shrink-0 items-center"><PlatformName platform={platform} logoOnly /></span>}
+      {description && <span className="min-w-0 truncate before:mr-1.5 before:content-['·']">{description}</span>}
+    </span>
   </button>;
 }

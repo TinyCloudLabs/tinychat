@@ -21,7 +21,7 @@ import {
   type GoogleOAuthPort,
   type GoogleTokenPayload,
 } from "../services/google-oauth.js";
-import { frontendOriginsFromEnv, HOME_WEB_ORIGIN, TINYCHAT_WEB_ORIGIN } from "../cors-origins.js";
+import { frontendOriginsFromEnv, HOME_WEB_ORIGIN, TINYCHAT_WEB_ORIGIN, TINYCLOUD_ONE_WEB_ORIGIN } from "../cors-origins.js";
 import {
   createGoogleOAuthRouter,
   encodeForScript,
@@ -872,7 +872,7 @@ describe("Home site return", () => {
 
 describe("both web origins (FRONTEND_URL on either site)", () => {
   const NONCE = "abcdefghijklmnopqrstuvwx";
-  const tabState = (tag: "tab" | "hometab", path: string) => `${tag}.${Buffer.from(path).toString("base64url")}.${NONCE}`;
+  const tabState = (tag: "tab" | "hometab" | "onetab", path: string) => `${tag}.${Buffer.from(path).toString("base64url")}.${NONCE}`;
 
   async function withRouter(
     frontendUrl: string,
@@ -931,6 +931,45 @@ describe("both web origins (FRONTEND_URL on either site)", () => {
       });
     });
   }
+
+  for (const frontendUrl of [TINYCHAT_WEB_ORIGIN, HOME_WEB_ORIGIN, TINYCLOUD_ONE_WEB_ORIGIN]) {
+    test(`with FRONTEND_URL=${frontendUrl}, a tinycloud.one flow returns to tinycloud.one`, async () => {
+      await withRouter(frontendUrl, {}, async ({ start, callback }) => {
+        expect((await start(`one.${NONCE}`)).status).toBe(302);
+        const html = await (await callback(`one.${NONCE}`)).text();
+        expect(html).toContain(`postMessage(payload, "${TINYCLOUD_ONE_WEB_ORIGIN}")`);
+        expect(html).not.toContain(HOME_WEB_ORIGIN);
+        expect(html).not.toContain(TINYCHAT_WEB_ORIGIN);
+        const state = tabState("onetab", "/chat/connectors");
+        expect((await start(state)).status).toBe(302);
+        const tab = new URL((await callback(state)).headers.get("location")!);
+        expect(tab.origin).toBe(TINYCLOUD_ONE_WEB_ORIGIN);
+        expect(tab.pathname).toBe("/chat/connectors");
+        expect(tab.searchParams.get("google_oauth_code")).toBe("fake-code");
+      });
+    });
+  }
+
+  test("a tinycloud.one flow is refused when its origin is not allowlisted, and malformed one tags are refused", async () => {
+    await withRouter(HOME_WEB_ORIGIN, { FRONTEND_ORIGINS: HOME_WEB_ORIGIN }, async ({ start, callback }) => {
+      for (const state of [`one.${NONCE}`, tabState("onetab", "/chat")]) {
+        expect((await start(state)).status).toBe(400);
+        const returned = await callback(state);
+        expect(returned.status).toBe(400);
+        expect(returned.headers.get("location")).toBeNull();
+        expect(await returned.text()).not.toContain("postMessage");
+      }
+    });
+    await withRouter(TINYCHAT_WEB_ORIGIN, {}, async ({ start, callback }) => {
+      for (const state of ["one.short", `onetab.${Buffer.from("//evil.example").toString("base64url")}.${NONCE}`, `onetab.${Buffer.from("/chat?x=1").toString("base64url")}.${NONCE}`, `oneX.${NONCE}`]) {
+        expect((await start(state)).status).toBe(400);
+        const returned = await callback(state);
+        expect(returned.status).toBe(400);
+        expect(returned.headers.get("location")).toBeNull();
+        expect(await returned.text()).not.toContain("postMessage");
+      }
+    });
+  });
 
   test("an origin left out of FRONTEND_ORIGINS gets no flow and no code", async () => {
     await withRouter(HOME_WEB_ORIGIN, { FRONTEND_ORIGINS: HOME_WEB_ORIGIN }, async ({ start, callback }) => {

@@ -488,8 +488,12 @@ describe("CredentialStore", () => {
   });
 
   test("[delta-03] a store write that fails is a FAILURE — never a reported success", async () => {
+    // A stored row, so revoke() attempts its conditional delete (a row it reads as absent needs none).
+    const existing: CredentialRow = { source: SOURCE, address: ADDRESS_A.toLowerCase(), kind: "oauth", ciphertext: "synthetic",
+      wrappedDEK: "synthetic", createdAt: new Date(0).toISOString(), rotatedAt: new Date(0).toISOString(), lastUsedAt: new Date(0).toISOString() };
     const failing: CredentialRowStore = {
-      read: async () => null,
+      read: async () => existing,
+      readVersioned: async () => ({ row: existing, version: "synthetic-version" }),
       write: async () => {
         throw new Error("substrate write refused");
       },
@@ -503,6 +507,18 @@ describe("CredentialStore", () => {
       store.store({ source: SOURCE, address: ADDRESS_A, secret: oauthSecret(SECRET_A) }),
     ).rejects.toThrow();
     await expect(store.revoke(SOURCE, ADDRESS_A)).rejects.toThrow();
+  });
+
+  test("TC-2917: a revoke that reads no credential resolves and issues no delete", async () => {
+    let removes = 0;
+    const store = new CredentialStore({
+      read: async () => null,
+      readVersioned: async () => null,
+      write: async () => { throw new Error("unexpected write"); },
+      remove: async () => { removes++; },
+    });
+    await expect(store.revoke(SOURCE, ADDRESS_A)).resolves.toMatchObject({ deleted: true, reason: "no_credential" });
+    expect(removes).toBe(0);
   });
 
   test("[delta-03] no credential substring appears in any captured log, on any path", async () => {

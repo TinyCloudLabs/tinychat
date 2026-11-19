@@ -159,7 +159,7 @@ describe("createPrivateCloudApi", () => {
   });
 });
 
-describe("createPrivateCloudJob (webview create, TinyCloud Home mobile)", () => {
+describe("createPrivateCloudJob (webview create, TinyCloud One mobile)", () => {
   const ATTEMPT = "6f9619ff-8b86-4011-b42d-00c04fc964ff";
   const BODY = { content_type: "audio/wav", byte_size: 32_044, sha256: "a".repeat(64), language: "en" };
   const CAP = "tcu_abcdefghijklmnop0123456789";

@@ -44,7 +44,7 @@ describe("SavedReceipt notice", () => {
     expect(receipt({ issues: {} })).not.toContain("voice-note-partial-audio");
   });
 
-  test("never beside 'TinyCloud Home will finish it automatically'", () => {
+  test("never beside 'TinyCloud One will finish it automatically'", () => {
     const html = receipt({ error: FINALIZATION_PENDING, pendingId: "rec-1" });
     expect(html).toContain("automatically");
     expect(html).not.toContain("voice-note-partial-audio");

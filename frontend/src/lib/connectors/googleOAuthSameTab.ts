@@ -1,12 +1,12 @@
-import { CANONICAL_ORIGIN } from "../originMove";
 import { SAME_TAB_CODE_PARAM, SAME_TAB_ERROR_PARAM, sameTabReturnState } from "./googleOAuthReturn";
+import { oauthReturnTag, type OAuthReturnTag } from "./googleOAuthState";
 
 const KEY_PREFIX = "exo-google-oauth-tab:";
 
-/** `tab.<path>.<nonce>`; `hometab.…` on home.tinycloud.xyz, so the backend returns to that origin. */
-export function sameTabState(path: string, nonce: string, homeOrigin: boolean = globalThis.location?.origin === CANONICAL_ORIGIN): string {
+/** `tab.<path>.<nonce>`; `hometab.…` on home.tinycloud.xyz and `onetab.…` on tinycloud.one, so the backend returns to that origin. */
+export function sameTabState(path: string, nonce: string, tag: OAuthReturnTag | null = oauthReturnTag()): string {
   const encoded = btoa(path).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
-  return `${homeOrigin ? "hometab" : "tab"}.${encoded}.${nonce}`;
+  return `${tag ?? ""}tab.${encoded}.${nonce}`;
 }
 
 export function saveSameTabVerifier(state: string, verifier: string, purpose: "connect" | "autojoin"): void {

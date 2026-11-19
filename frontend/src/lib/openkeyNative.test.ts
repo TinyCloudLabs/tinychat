@@ -44,6 +44,10 @@ import {
   type NativeSignInDeps,
 } from "./openkeyNative";
 import APP_MANIFEST from "../../../manifest.json";
+import { APP_LOCK_PREFS_KEY, createAppLock, type AppLockNative, type UnlockResult } from "./appLock";
+import { durableKeyReady, hydrateDurableKeys, resetDurableKeysForTest, type DurableStore } from "./durableKeys";
+import { NATIVE_SESSION_KIND_KEY, NATIVE_SIGN_OUT_PENDING_KEY } from "./openkeyNative";
+import { beforeEach } from "bun:test";
 
 const ADDRESS = "0x1111111111111111111111111111111111111111";
 const HOST = "https://node.tinycloud.xyz";
@@ -1156,5 +1160,220 @@ describe("native feed grant upgrade", () => {
     flow.deps.loadManifest = async () => { throw new TypeError("Failed to fetch"); };
     expect((await restoreNativeAtBoot(config, true, flow.deps)).kind).toBe("restored");
     expect(flow.order).not.toContain("signOut");
+  });
+});
+
+describe("an app update that moves the WebView to a new origin (TC-3045)", () => {
+  const KEYS = [APP_LOCK_PREFS_KEY, NATIVE_SESSION_KIND_KEY, NATIVE_SIGN_OUT_PENDING_KEY];
+
+  function nativePreferences(): DurableStore {
+    const values = new Map<string, string>();
+    return {
+      get: async (key) => values.get(key) ?? null,
+      set: async (key, value) => { values.set(key, value); },
+      remove: async (key) => { values.delete(key); },
+    };
+  }
+
+  /** The last launch of the build before the update, on the old origin; then the update's first launch, whose WebView storage is empty. */
+  async function update(oldOrigin: Record<string, string>): Promise<void> {
+    const preferences = nativePreferences();
+    localStorage.clear();
+    for (const [key, value] of Object.entries(oldOrigin)) localStorage.setItem(key, value);
+    await hydrateDurableKeys(KEYS, preferences, localStorage);
+    localStorage.clear();
+    resetDurableKeysForTest();
+    await hydrateDurableKeys(KEYS, preferences, localStorage);
+  }
+
+  function deviceWithFaceId(result: UnlockResult = "cancelled") {
+    const asks: string[] = [];
+    const native: AppLockNative = {
+      status: async () => ({ biometry: "faceID", biometryEnrolled: true, deviceSecure: true }),
+      authenticate: async () => { asks.push("unlock"); return { result }; },
+      setCover: async () => {},
+      reveal: async () => {},
+      addListener: async () => ({ remove: async () => {} }),
+    };
+    return { native, asks };
+  }
+
+  /** The OpenKey session in the device's secure store, still valid: only the backend token was left behind. */
+  function signedInDevice() {
+    const flow = makeFlow();
+    const live = { ...delegation, issuedAt: new Date(Date.now() - 300_000).toISOString(), expiresAt: new Date(Date.now() + 3_300_000).toISOString() };
+    flow.openkey.current = async () => ({ tokens: { accessToken: "a", refreshToken: "r" }, delegation: live, sessionKey });
+    flow.openkey.renew = async () => {
+      flow.order.push("renew");
+      return { tokens: { accessToken: "a", refreshToken: "r2" }, delegation, sessionKey };
+    };
+    return flow;
+  }
+
+  // The WebView's localStorage, which the app reads directly.
+  beforeEach(() => {
+    const values = new Map<string, string>();
+    const storage = {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => { values.set(key, String(value)); },
+      removeItem: (key: string) => { values.delete(key); },
+      clear: () => values.clear(),
+      key: (index: number) => [...values.keys()][index] ?? null,
+      get length() { return values.size; },
+    };
+    Object.defineProperty(globalThis, "localStorage", { configurable: true, writable: true, value: storage });
+  });
+
+  afterEach(() => {
+    Reflect.deleteProperty(globalThis, "localStorage");
+    resetDurableKeysForTest();
+  });
+
+  test("a signed-in tester with the lock on restores without signing in, and the lock asks at that first launch", async () => {
+    await update({ [NATIVE_SESSION_KIND_KEY]: "native", [APP_LOCK_PREFS_KEY]: JSON.stringify({ enabled: true, timeoutMinutes: 15 }) });
+    const { native, asks } = deviceWithFaceId();
+    const lock = createAppLock({ native, storage: localStorage, signedIn: nativeSessionWasActive(), afterPaint: (callback) => callback() });
+    expect(lock.getSnapshot().state.locked).toBe(true);
+    expect(lock.getSnapshot().prefs).toEqual({ enabled: true, timeoutMinutes: 15 });
+    await lock.start();
+    expect(asks).toEqual(["unlock"]);
+    expect(lock.getSnapshot().state.locked).toBe(true);
+
+    const flow = signedInDevice();
+    const boot = await restoreNativeAtBoot(config, false, flow.deps);
+    expect(boot.kind).toBe("restored");
+    if (boot.kind === "restored") expect(boot.verified?.token).toBe("jwt");
+    expect(flow.order).not.toContain("signIn");
+    expect(flow.order).not.toContain("signOut");
+  });
+
+  test("a tester who turned the lock off keeps it off", async () => {
+    await update({ [NATIVE_SESSION_KIND_KEY]: "native", [APP_LOCK_PREFS_KEY]: JSON.stringify({ enabled: false, timeoutMinutes: 5 }) });
+    const { native, asks } = deviceWithFaceId();
+    const lock = createAppLock({ native, storage: localStorage, signedIn: nativeSessionWasActive(), afterPaint: (callback) => callback() });
+    await lock.start();
+    expect(lock.getSnapshot().state.locked).toBe(false);
+    expect(lock.getSnapshot().prefs.enabled).toBe(false);
+    expect(asks).toEqual([]);
+  });
+
+  test("a sign-out still pending on the old origin is finished at the first launch, not undone", async () => {
+    await update({ [NATIVE_SIGN_OUT_PENDING_KEY]: "1" });
+    const flow = signedInDevice();
+    const boot = await restoreNativeAtBoot(config, false, flow.deps);
+    expect(boot.kind).toBe("none");
+    expect(flow.order).toContain("signOut");
+    expect(flow.order).not.toContain("restore");
+  });
+
+  test("a tester who skipped the build that keeps these settings: the session restored at launch locks", async () => {
+    // Nothing reached native storage, so the update starts with no record of a session or of the lock.
+    await update({});
+    const { native, asks } = deviceWithFaceId();
+    const lock = createAppLock({ native, storage: localStorage, signedIn: nativeSessionWasActive(), afterPaint: (callback) => callback() });
+    expect(lock.getSnapshot().state.locked).toBe(false);
+    await lock.start();
+    lock.setSignedIn(true, true);
+    expect(lock.getSnapshot().state.locked).toBe(true);
+    expect(asks).toEqual(["unlock"]);
+  });
+
+  test("a session restored before the device answers locks once it does; a fresh sign-in never locks", async () => {
+    const restored = deviceWithFaceId();
+    const early = createAppLock({ native: restored.native, storage: localStorage, signedIn: false, afterPaint: (callback) => callback() });
+    early.setSignedIn(true, true);
+    await early.start();
+    expect(early.getSnapshot().state.locked).toBe(true);
+    expect(restored.asks).toEqual(["unlock"]);
+
+    localStorage.clear();
+    const fresh = deviceWithFaceId();
+    const signIn = createAppLock({ native: fresh.native, storage: localStorage, signedIn: false, afterPaint: (callback) => callback() });
+    await signIn.start();
+    signIn.setSignedIn(true);
+    expect(signIn.getSnapshot().state.locked).toBe(false);
+    expect(fresh.asks).toEqual([]);
+  });
+
+  /** Native storage that answers only when told to, as on a slow first launch at the new origin. */
+  function slowPreferences(values: Record<string, string>) {
+    const gate = Promise.withResolvers<void>();
+    const store: DurableStore = {
+      get: async (key) => { await gate.promise; return values[key] ?? null; },
+      set: async () => {},
+      remove: async () => {},
+    };
+    return { store, answer: () => gate.resolve() };
+  }
+
+  test("a slow native read: the boot restore waits for the sign-out fence, then finishes the sign-out", async () => {
+    const slow = slowPreferences({ [NATIVE_SIGN_OUT_PENDING_KEY]: "1" });
+    // The app renders without waiting for this (main.tsx bounds that wait); the restore must not.
+    const hydrated = hydrateDurableKeys(KEYS, slow.store, localStorage);
+    const flow = signedInDevice();
+    const boot = restoreNativeAtBoot(config, false, flow.deps);
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    expect(flow.order).toEqual([]);
+    slow.answer();
+    await hydrated;
+    expect((await boot).kind).toBe("none");
+    expect(flow.order).toContain("signOut");
+    expect(flow.order).not.toContain("restore");
+  });
+
+  test("a native read that fails at the first launch counts a sign-out as still pending", async () => {
+    const failing: DurableStore = {
+      get: async () => { throw new Error("preferences unavailable"); },
+      set: async () => {},
+      remove: async () => {},
+    };
+    await hydrateDurableKeys(KEYS, failing, localStorage);
+    const flow = signedInDevice();
+    expect((await restoreNativeAtBoot(config, false, flow.deps)).kind).toBe("none");
+    expect(flow.order).toContain("signOut");
+    expect(flow.order).not.toContain("restore");
+  });
+
+  function lockAfterSlowLaunch(values: Record<string, string>) {
+    const slow = slowPreferences(values);
+    const hydrated = hydrateDurableKeys(KEYS, slow.store, localStorage);
+    const device = deviceWithFaceId();
+    // As the app's instance (appLock()) is built: it may be created before the settings arrive.
+    const lock = createAppLock({
+      native: device.native,
+      storage: localStorage,
+      signedIn: nativeSessionWasActive(),
+      afterPaint: (callback) => callback(),
+      settingsLoaded: async () => {
+        await Promise.all([durableKeyReady(APP_LOCK_PREFS_KEY), durableKeyReady(NATIVE_SESSION_KIND_KEY)]);
+      },
+      signedInRecord: nativeSessionWasActive,
+    });
+    return { lock, asks: device.asks, settle: async () => { const started = lock.start(); slow.answer(); await Promise.all([hydrated, started]); } };
+  }
+
+  test("the lock reads its settings once loaded: a tester's lock-off survives a slow first launch", async () => {
+    const { lock, asks, settle } = lockAfterSlowLaunch({
+      [NATIVE_SESSION_KIND_KEY]: "native",
+      [APP_LOCK_PREFS_KEY]: JSON.stringify({ enabled: false, timeoutMinutes: 5 }),
+    });
+    await settle();
+    expect(lock.getSnapshot().prefs.enabled).toBe(false);
+    // Not overwritten by the new-install default (on, with Face ID enrolled).
+    expect(JSON.parse(localStorage.getItem(APP_LOCK_PREFS_KEY)!).enabled).toBe(false);
+    expect(lock.getSnapshot().state.locked).toBe(false);
+    expect(asks).toEqual([]);
+  });
+
+  test("the lock reads its settings once loaded: lock-on and signed in still locks after a slow first launch", async () => {
+    const { lock, asks, settle } = lockAfterSlowLaunch({
+      [NATIVE_SESSION_KIND_KEY]: "native",
+      [APP_LOCK_PREFS_KEY]: JSON.stringify({ enabled: true, timeoutMinutes: 15 }),
+    });
+    expect(lock.getSnapshot().state.locked).toBe(false);
+    await settle();
+    expect(lock.getSnapshot().prefs).toEqual({ enabled: true, timeoutMinutes: 15 });
+    expect(lock.getSnapshot().state.locked).toBe(true);
+    expect(asks).toEqual(["unlock"]);
   });
 });

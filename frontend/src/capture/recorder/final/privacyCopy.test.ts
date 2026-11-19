@@ -3,11 +3,11 @@ import { FINAL_COPY, PRIVATE_CONSENT_ACTION, PRIVATE_CONSENT_TITLE, privateConse
 
 test("Build 1 Private disclosure and mode copy are exact on phone and Mac", () => {
   expect(PRIVATE_CONSENT_TITLE).toBe("Use Private transcription?");
-  expect(privateConsentBody("phone")).toBe("Private transcription sends this note's audio from this phone to TinyCloud Private Transcription, a sealed hardware enclave. It's deleted there once the transcript is ready. TinyCloud Home never sees it.");
-  expect(privateConsentBody("Mac")).toBe("Private transcription sends this note's audio from this Mac to TinyCloud Private Transcription, a sealed hardware enclave. It's deleted there once the transcript is ready. TinyCloud Home never sees it.");
+  expect(privateConsentBody("phone")).toBe("Private transcription sends this note's audio from this phone to TinyCloud Private Transcription, a sealed hardware enclave. It's deleted there once the transcript is ready. TinyCloud One never sees it.");
+  expect(privateConsentBody("Mac")).toBe("Private transcription sends this note's audio from this Mac to TinyCloud Private Transcription, a sealed hardware enclave. It's deleted there once the transcript is ready. TinyCloud One never sees it.");
   expect(privateConsentBody(privateConsentDevice("web"))).toContain("from this browser");
   expect(privateConsentDevice("ios")).toBe("iPhone")
   expect(privateConsentDevice("android")).toBe("Android phone");
   expect(PRIVATE_CONSENT_ACTION).toBe("Use Private transcription");
-  expect(FINAL_COPY.modes.privateExplanation).toBe("Sent to a sealed hardware enclave, transcribed, then deleted. TinyCloud Home never sees it.");
+  expect(FINAL_COPY.modes.privateExplanation).toBe("Sent to a sealed hardware enclave, transcribed, then deleted. TinyCloud One never sees it.");
 });

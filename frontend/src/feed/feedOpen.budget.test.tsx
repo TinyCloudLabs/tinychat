@@ -334,13 +334,16 @@ const showsCard = (open: Open) => hasCard(open, PLAIN_TITLE);
 
 /** The node's Feed, whole: no load error, and the answered typed asks among the cards. */
 function expectWholeFeed(open: Open) {
-  expect(open.host.textContent).not.toContain("Home didn't load");
+  expect(open.host.textContent).not.toContain("Feed didn't load");
   for (const title of [PLAIN_TITLE, "Choose the synthetic approach", "Choose the second synthetic approach", "Synthetic incident"]) {
     expect(hasCard(open, title)).toBe(true);
   }
 }
 
-/** Lets everything not waiting on the node run (the device copy's read included), and notes the first card. */
+/**
+ * Lets everything not waiting on the node run (the device copy's read included), and notes the first card. Answered
+ * cards sit in the Pending card at the end of the list (Sam, 11-13); it is opened so its cards count as shown.
+ */
 async function settle(node: FakeNode, open: Open) {
   let stable = 0;
   let mark = "";
@@ -350,6 +353,8 @@ async function settle(node: FakeNode, open: Open) {
     stable = open.cachedSettled && next === mark ? stable + 1 : 0;
     mark = next;
   }
+  const pending = open.host.querySelector<HTMLButtonElement>('section[aria-label="Pending"] > button[aria-expanded="false"]');
+  if (pending) await act(async () => pending.click());
   if (open.firstCard === undefined && showsCard(open)) {
     open.firstCard = node.requests.length;
     open.firstCardWaves = node.waves;
@@ -457,7 +462,7 @@ test("new device: a first load that fails before the registry names the agents s
   node.unavailable.add(HOME_FEED_RESOURCE);
   const open = await openFeed(node, ownerClient(node));
   await answerUntil(node, open, () => node.requests.some(isTicket));
-  expect(open.host.textContent).toContain("Home didn't load");
+  expect(open.host.textContent).toContain("Feed didn't load");
   expect(open.fresh).toBeUndefined();
 
   node.unavailable.clear();
