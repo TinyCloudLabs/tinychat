@@ -166,6 +166,8 @@ export interface ContentMeta {
   title?: string;
   /** The provider's meeting timestamp when it gave one. */
   ts?: string;
+  /** Signed delivery time used by downstream purge checks. */
+  sourceTimestamp?: string;
   participantNames?: string[];
   participantEmails?: string[];
   organizerEmail?: string;
@@ -953,6 +955,7 @@ export class ContentStore implements ContentSink, RetentionGuard {
               ? { title: priorMeta.title }
               : {}),
           ...(normalizedTs !== undefined ? { ts: normalizedTs } : {}),
+          ...(usesDayKeys && input.sourceTimestamp !== undefined ? { sourceTimestamp: input.sourceTimestamp } : {}),
           ...(input.participantNames !== undefined
             ? { participantNames: input.participantNames }
             : priorMeta?.participantNames !== undefined
@@ -1947,6 +1950,7 @@ function parseMeta(raw: unknown): ContentMeta | null {
     sourceId: value.sourceId,
     ...(typeof value.title === "string" ? { title: value.title } : {}),
     ...(typeof value.ts === "string" ? { ts: value.ts } : {}),
+    ...(typeof value.sourceTimestamp === "string" ? { sourceTimestamp: value.sourceTimestamp } : {}),
     ...(participantNames === undefined ? {} : { participantNames }),
     ...(participantEmails === undefined ? {} : { participantEmails }),
     ...(organizerEmail === undefined ? {} : { organizerEmail }),

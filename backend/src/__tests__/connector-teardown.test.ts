@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import express from "express";
+import { createHmac } from "node:crypto";
+import { once } from "node:events";
 import type { TinyCloudNode } from "@tinycloud/node-sdk";
 
 import {
@@ -30,9 +32,12 @@ import type { ConnectorOAuthPort } from "../routes/connector-credentials.js";
 import type {
   PurgeLedger,
   PurgeLedgerRead,
+  DisabledMarker,
 } from "../routes/connector-webhooks.js";
 import type { IngestMode } from "../services/ingest-mode.js";
 import { _resetWebhookTokenState } from "../services/webhook-tokens.js";
+import { deriveWebhookSecret, WebhookTokenService } from "../services/webhook-tokens.js";
+import { ConnectorDrainAbortFlags, ConnectorWebhookLimiters, createConnectorWebhookCompanionRouter, createConnectorWebhookHandler, respondToConnectorPurgeCheck } from "../routes/connector-webhooks.js";
 
 /**
  * W7 — TEARDOWN + PURGE EXTENSION (backend-ingest plan §8.1 W7; §8.2 delta item 12;
@@ -138,6 +143,19 @@ function asNode(node: FakeNode): TinyCloudNode {
 /** The §6.2 ledger store, as the companions own it. Raw on purpose: a corrupt value is a case. */
 class FakeControl {
   readonly ledgers = new Map<string, unknown>();
+  readonly ledgersAtRemoval = new Map<string, PurgeLedger>();
+  readonly disabled = new Map<string, DisabledMarker>();
+  async readDisabled(address: string) { return this.disabled.get(address) ?? null; }
+  async markDisabled(address: string, source: string | null, connectionRemoved?: true) {
+    this.disabled.set(address, { source, revokedAt: new Date().toISOString(), connectionRemoved });
+  }
+  async clearDisabled(address: string) { this.disabled.delete(address); }
+  async clearLedger(source: string, address: string) {
+    const ledger = this.ledgerFor(source, address);
+    if (ledger) this.ledgersAtRemoval.set(this.key(source, address), ledger);
+    this.ledgers.delete(this.key(source, address));
+  }
+  ledgerAtRemoval(source: string, address: string) { return this.ledgersAtRemoval.get(this.key(source, address)); }
   readonly quarantined: Array<{ key: string; raw: unknown }> = [];
   failWrite = false;
 
@@ -229,6 +247,7 @@ interface Harness {
   credentials: CredentialStore;
   control: FakeControl;
   oauth: FakeOAuth;
+  tokens: WebhookTokenService;
   teardown: ConnectorTeardownService;
 }
 
@@ -252,9 +271,13 @@ function harness(): Harness {
     upstreamRevoker: (secret) => oauth.revoke(secret),
   });
   const exoCleared: Array<{ source: string; address: string }> = [];
+  const tokens = new WebhookTokenService(asNode(node));
   const teardown = new ConnectorTeardownService(
     {
-      notifications: { disable: async () => {} },
+      notifications: { disable: async (source, address) => {
+        await control.markDisabled(address, source, true);
+        await tokens.revoke(address);
+      } },
       credentials,
       content,
       queue,
@@ -281,9 +304,51 @@ function harness(): Harness {
     credentials,
     control,
     oauth,
+    tokens,
     teardown,
     exoCleared,
   };
+}
+
+async function withCallbackServer<T>(h: Harness, action: (base: string) => Promise<T>): Promise<T> {
+  const app = express();
+  const limiters = new ConnectorWebhookLimiters();
+  app.post("/api/connectors/webhooks/:source/:token", express.raw({ type: "application/json" }),
+    createConnectorWebhookHandler({ tokens: h.tokens, queue: h.queue, control: h.control, now: h.clock, limiters }));
+  app.use(express.json(), (req, _res, next) => { req.user = { address: ADDRESS_A }; next(); });
+  app.post("/api/connectors/webhooks/purge-check", (req, res) => respondToConnectorPurgeCheck(h.control, req, res));
+  app.use("/api/connectors/webhooks", createConnectorWebhookCompanionRouter({
+    tokens: h.tokens, queue: h.queue, control: h.control, now: h.clock, limiters, abort: new ConnectorDrainAbortFlags(),
+  }));
+  const server = app.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  try {
+    return await action(`http://127.0.0.1:${(server.address() as { port: number }).port}`);
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+  }
+}
+
+function callbackDelivery(url: string, secret: string) {
+  const body = JSON.stringify({ eventType: "meeting.transcribed", meetingId: "mtgA1", timestamp: new Date(T0 - HOUR_MS).toISOString() });
+  const signature = `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`;
+  return () => fetch(url, {
+    method: "POST", headers: { "content-type": "application/json", "x-hub-signature": signature }, body,
+  });
+}
+
+async function enableCallbacks(base: string): Promise<{ url: string; secret: string }> {
+  const response = await fetch(`${base}/api/connectors/webhooks/config`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ source: SOURCE }),
+  });
+  expect(response.status).toBe(200);
+  return response.json() as Promise<{ url: string; secret: string }>;
+}
+
+async function recordActivePurge(h: Harness, recentIds: string[]) {
+  const stamp = new Date(h.clock()).toISOString();
+  await h.control.writeLedger(SOURCE, ADDRESS_A, { recentIds, purgedThrough: stamp, updatedAt: stamp });
+  await h.content.purge(SOURCE, ADDRESS_A);
 }
 
 function upsertInput(
@@ -383,13 +448,21 @@ describe("W7 teardown — full per-user teardown (delta 12, AP 8)", () => {
       "mtgA1",
     ]);
 
-    const result = await h.teardown.run(SOURCE, ADDRESS_A);
+    await withCallbackServer(h, async base => {
+      const active = await enableCallbacks(base);
+      const replay = callbackDelivery(active.url, active.secret);
+      expect((await replay()).status).toBe(202);
+      const result = await h.teardown.run(SOURCE, ADDRESS_A);
 
-    const ledger = h.control.ledgerFor(SOURCE, ADDRESS_A);
-    expect(ledger).not.toBeNull();
-    expect(Date.parse(ledger!.purgedThrough)).toBe(T0);
-    expect(ledger!.recentIds).toContain("mtgA1");
-    expect(result.tombstonedThrough).toBe(new Date(T0).toISOString());
+      const ledger = h.control.ledgerAtRemoval(SOURCE, ADDRESS_A);
+      expect(Date.parse(ledger!.purgedThrough)).toBe(T0);
+      expect(ledger!.recentIds).toContain("mtgA1");
+      expect(result.tombstonedThrough).toBe(new Date(T0).toISOString());
+      expect(h.control.ledgerFor(SOURCE, ADDRESS_A)).toBeNull();
+      expect((await replay()).status).toBe(401);
+      expect(await h.queue.list(SOURCE, ADDRESS_A)).toEqual([]);
+      expect(await h.content.list(SOURCE, ADDRESS_A)).toEqual([]);
+    });
   });
 
   test("[delta-12] the ledger watermark only ever moves forward", async () => {
@@ -403,9 +476,10 @@ describe("W7 teardown — full per-user teardown (delta 12, AP 8)", () => {
 
     await h.teardown.run(SOURCE, ADDRESS_A);
 
-    const ledger = h.control.ledgerFor(SOURCE, ADDRESS_A);
+    const ledger = h.control.ledgerAtRemoval(SOURCE, ADDRESS_A);
     expect(Date.parse(ledger!.purgedThrough)).toBe(T0 + 5 * HOUR_MS);
     expect(ledger!.recentIds).toContain("older");
+    expect(h.control.ledgerFor(SOURCE, ADDRESS_A)).toBeNull();
   });
 
   test("[delta-12] an unparseable ledger is quarantined, never read as 'nothing was ever purged'", async () => {
@@ -424,7 +498,8 @@ describe("W7 teardown — full per-user teardown (delta 12, AP 8)", () => {
     }
 
     expect(h.control.quarantined).toHaveLength(1);
-    expect(h.control.ledgerFor(SOURCE, ADDRESS_A)!.recentIds).toContain("mtgA1");
+    expect(h.control.ledgerAtRemoval(SOURCE, ADDRESS_A)!.recentIds).toContain("mtgA1");
+    expect(h.control.ledgerFor(SOURCE, ADDRESS_A)).toBeNull();
   });
 
   test("[delta-12] a ledger write that fails aborts the teardown BEFORE anything is deleted", async () => {
@@ -531,7 +606,7 @@ describe("W7 purge extension — redelivery after purge (delta 12, AP 8)", () =>
     await seedTenant(h, ADDRESS_A, { kind: "oauth", accessToken: SECRET_A }, [
       "mtgA1",
     ]);
-    await h.teardown.run(SOURCE, ADDRESS_A);
+    await recordActivePurge(h, ["mtgA1"]);
     h.advance(HOUR_MS);
 
     // The provider replays the SAME delivery: same id, same (pre-purge) provider timestamp.
@@ -545,7 +620,7 @@ describe("W7 purge extension — redelivery after purge (delta 12, AP 8)", () =>
   test("[delta-12] a timestamp-less redelivery after purge is tombstoned too", async () => {
     const h = harness();
     await seedTenant(h, ADDRESS_A, { kind: "oauth", accessToken: SECRET_A }, []);
-    await h.teardown.run(SOURCE, ADDRESS_A);
+    await recordActivePurge(h, []);
     h.advance(HOUR_MS);
 
     const legacy = upsertInput(ADDRESS_A, "mtgLegacy");
@@ -613,59 +688,50 @@ describe("W7 purge extension — redelivery after purge (delta 12, AP 8)", () =>
     ).rejects.toThrow();
   });
 
-  test("[delta-12] the worker never RE-FETCHES a purged meeting — even once the user reconnects", async () => {
+  test("an old signed Fireflies webhook returns 401 after disconnect and reconnect", async () => {
     const h = harness();
-    await seedTenant(h, ADDRESS_A, { kind: "oauth", accessToken: SECRET_A }, [
-      "mtgA1",
-    ]);
-    await h.teardown.run(SOURCE, ADDRESS_A);
-
-    // Reconnect an hour later: a NEW credential exists, so nothing but the tombstone stands
-    // between the replayed delivery and a refetch of content the user disconnected from.
-    h.advance(HOUR_MS);
-    await h.credentials.store({
-      source: SOURCE,
-      address: ADDRESS_A,
-      secret: { kind: "oauth", accessToken: SECRET_A },
+    await withCallbackServer(h, async base => {
+      const initial = await enableCallbacks(base);
+      const oldToken = new URL(initial.url).pathname.split("/").at(-1)!;
+      expect(initial.secret).toBe(deriveWebhookSecret(SOURCE, oldToken));
+      const replay = callbackDelivery(initial.url, initial.secret);
+      expect((await replay()).status).toBe(202);
+      await h.teardown.run(SOURCE, ADDRESS_A);
+      expect((await replay()).status).toBe(401);
+      const fresh = await enableCallbacks(base);
+      expect(fresh.url).not.toBe(initial.url);
+      expect(fresh.secret).not.toBe(initial.secret);
+      expect((await replay()).status).toBe(401);
+      expect(await h.queue.list(SOURCE, ADDRESS_A)).toEqual([]);
+      expect(await h.content.list(SOURCE, ADDRESS_A)).toEqual([]);
     });
-    await h.queue.enqueue(SOURCE, ADDRESS_A, {
-      meetingId: "mtgA1",
-      kind: "transcript",
-      receivedAt: new Date(T0 + HOUR_MS).toISOString(),
-      sourceTimestamp: new Date(T0 - HOUR_MS).toISOString(),
-    });
+  });
 
-    const fetcher = new CountingFetcher();
-    const worker = new ConnectorFetchWorker(
-      {
+  test("an explicit re-sync after reconnection can import meetings from the earlier connection", async () => {
+    const h = harness();
+    await seedTenant(h, ADDRESS_A, { kind: "oauth", accessToken: SECRET_A }, ["mtgA1"]);
+    await withCallbackServer(h, async base => {
+      await enableCallbacks(base);
+      await h.teardown.run(SOURCE, ADDRESS_A);
+      h.advance(HOUR_MS);
+      await h.credentials.store({ source: SOURCE, address: ADDRESS_A, secret: { kind: "oauth", accessToken: SECRET_A } });
+      const fresh = await enableCallbacks(base);
+      const clear = await fetch(`${base}/api/connectors/webhooks/purged`, {
+        method: "DELETE", headers: { "content-type": "application/json" }, body: JSON.stringify({ source: SOURCE }),
+      });
+      expect(clear.status).toBe(204);
+      expect((await callbackDelivery(fresh.url, fresh.secret)()).status).toBe(202);
+      const fetcher = new CountingFetcher();
+      const worker = new ConnectorFetchWorker({
         queue: h.queue,
-        modes: {
-          cohort: async () => new Set([ADDRESS_A.toLowerCase()]),
-          mode: async (): Promise<IngestMode> => "backend",
-        },
-        credentials: {
-          getCredential: (source: string, address: string) =>
-            h.credentials.getCredential(source, address, "fetch-worker"),
-        },
-        fetcher,
-        content: h.content,
-        retention: h.content,
-      },
-      { now: h.clock, sleep: async () => {}, sources: [SOURCE] },
-    );
-
-    const capture = captureLogs();
-    try {
+        modes: { cohort: async () => new Set([ADDRESS_A.toLowerCase()]), mode: async () => "backend" },
+        credentials: { getCredential: (source, address) => h.credentials.getCredential(source, address, "fetch-worker") },
+        fetcher, content: h.content, retention: h.content,
+      }, { now: h.clock, sleep: async () => {}, sources: [SOURCE] });
       await worker.runOnce();
-    } finally {
-      capture.restore();
-    }
-
-    expect(fetcher.calls).toEqual([]);
-    expect(worker.stats().tombstoned).toBe(1);
-    expect(await h.content.list(SOURCE, ADDRESS_A)).toEqual([]);
-    // The item does not sit in the queue forever either — a tombstoned item is settled done.
-    expect(await h.queue.list(SOURCE, ADDRESS_A)).toEqual([]);
+      expect(fetcher.calls).toEqual(["mtgA1"]);
+      expect((await h.content.list(SOURCE, ADDRESS_A)).map(meta => meta.sourceId)).toEqual(["mtgA1"]);
+    });
   });
 });
 
@@ -745,7 +811,7 @@ describe("W7 teardown route — the disconnect the client calls (delta 12)", () 
     expect(body.queueDropped).toBe(2);
     expect(await h.credentials.status(SOURCE, ADDRESS_A)).toBeNull();
     expect(await h.content.list(SOURCE, ADDRESS_A)).toEqual([]);
-    expect(h.control.ledgerFor(SOURCE, ADDRESS_A)).not.toBeNull();
+    expect(h.control.ledgerFor(SOURCE, ADDRESS_A)).toBeNull();
     // The response is a disposition, never a credential or a meeting id.
     expect(JSON.stringify(body)).not.toContain(SECRET_A);
     expect(JSON.stringify(body)).not.toContain("mtgA1");
@@ -781,6 +847,88 @@ describe("W7 teardown route — the disconnect the client calls (delta 12)", () 
     expect(body.deleted).toBe(true);
     expect(body.upstreamRevoked).toBe(false);
     expect(body.contentRemoved).toBe(1);
+    expect(await h.content.list(SOURCE, ADDRESS_A)).toEqual([]);
+  });
+});
+
+test("an active Fireflies purge blocks webhook import until the owner allows the meeting back", async () => {
+  const h = harness();
+  await seedTenant(h, ADDRESS_A, { kind: "oauth", accessToken: SECRET_A }, []);
+  await withCallbackServer(h, async base => {
+    const active = await enableCallbacks(base);
+    const headers = { "content-type": "application/json" };
+    const prefix = `${base}/api/connectors/webhooks`;
+    const purge = await fetch(`${prefix}/purged`, {
+      method: "POST", headers, body: JSON.stringify({ source: SOURCE, ids: ["mtgA1"] }),
+    });
+    expect(purge.status).toBe(204);
+    const check = () => fetch(`${prefix}/purge-check`, {
+      method: "POST", headers, body: JSON.stringify({ meetingId: "mtgA1", sourceTimestamp: new Date(T0 - HOUR_MS).toISOString() }),
+    }).then(response => response.json());
+    expect(await check()).toEqual({ blocked: true });
+    const send = callbackDelivery(active.url, active.secret);
+    const fetcher = new CountingFetcher();
+    const worker = new ConnectorFetchWorker({
+      queue: h.queue,
+      modes: { cohort: async () => new Set([ADDRESS_A.toLowerCase()]), mode: async () => "backend" },
+      credentials: { getCredential: (source, address) => h.credentials.getCredential(source, address, "fetch-worker") },
+      fetcher, content: h.content, retention: h.content,
+    }, { now: h.clock, sleep: async () => {}, sources: [SOURCE] });
+    expect((await send()).status).toBe(202);
+    await worker.runOnce();
+    expect(fetcher.calls).toEqual([]);
+    expect(await h.content.get(SOURCE, ADDRESS_A, "mtgA1")).toBeNull();
+    expect((await fetch(`${prefix}/purged`, {
+      method: "DELETE", headers, body: JSON.stringify({ source: SOURCE }),
+    })).status).toBe(204);
+    expect(await check()).toEqual({ blocked: false });
+    expect((await send()).status).toBe(202);
+    await worker.runOnce();
+    expect(fetcher.calls).toEqual(["mtgA1"]);
+    expect(await h.content.get(SOURCE, ADDRESS_A, "mtgA1")).not.toBeNull();
+  });
+});
+
+test("a signed callback returns 401 while the disconnect marker stands", async () => {
+  const h = harness();
+  await withCallbackServer(h, async base => {
+    const active = await enableCallbacks(base);
+    const send = callbackDelivery(active.url, active.secret);
+    expect((await send()).status).toBe(202);
+    await h.queue.clear(SOURCE, ADDRESS_A);
+    await h.control.markDisabled(ADDRESS_A, SOURCE, true);
+    // The token is still live while teardown or replacement works through its durable steps.
+    const token = new URL(active.url).pathname.split("/").at(-1)!;
+    expect(await h.tokens.lookup(token)).not.toBeNull();
+    expect((await send()).status).toBe(401);
+    expect(await h.queue.list(SOURCE, ADDRESS_A)).toEqual([]);
+    expect(await h.content.list(SOURCE, ADDRESS_A)).toEqual([]);
+  });
+});
+
+test("a newly minted callback returns 401 when reconnect cannot clear the disconnect marker", async () => {
+  const h = harness();
+  await withCallbackServer(h, async base => {
+    const before = await enableCallbacks(base);
+    await h.teardown.run(SOURCE, ADDRESS_A);
+    expect(await h.tokens.config(ADDRESS_A)).toBeNull();
+
+    h.control.clearDisabled = async () => { throw new Error("marker clear failed"); };
+    const enable = await fetch(`${base}/api/connectors/webhooks/config`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ source: SOURCE }),
+    });
+    expect(enable.status).toBe(503);
+    expect(await h.control.readDisabled(ADDRESS_A)).toMatchObject({ connectionRemoved: true });
+
+    const replacement = await h.tokens.config(ADDRESS_A);
+    expect(replacement).not.toBeNull();
+    const token = replacement!.token;
+    expect(token).not.toBe(new URL(before.url).pathname.split("/").at(-1));
+    expect(await h.tokens.lookup(token)).not.toBeNull();
+
+    const url = `${base}/api/connectors/webhooks/${SOURCE}/${token}`;
+    expect((await callbackDelivery(url, deriveWebhookSecret(SOURCE, token))()).status).toBe(401);
+    expect(await h.queue.list(SOURCE, ADDRESS_A)).toEqual([]);
     expect(await h.content.list(SOURCE, ADDRESS_A)).toEqual([]);
   });
 });

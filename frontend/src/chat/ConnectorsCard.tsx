@@ -194,6 +194,8 @@ function gmeetRowProgress(p: GmeetSyncProgress): SyncProgress {
 
 export async function runFirefliesSyncNow(opts: {
   tcw: TinyCloudWeb;
+  backendUrl: string;
+  sessionStore: SessionStore;
   apiKey: string;
   signal: AbortSignal;
   onProgress: (p: SyncProgress) => void;
@@ -209,6 +211,7 @@ export async function runFirefliesSyncNow(opts: {
     const res = await syncFireflies({
       client,
       store: connectorStore,
+      checkPurge: createConnectorWebhooksClient(opts.backendUrl, { sessionStore: opts.sessionStore }).checkPurge,
       tcw: opts.tcw,
       onProgress: opts.onProgress,
       signal: opts.signal,
@@ -592,6 +595,8 @@ export function ConnectorsCard({
               })
             : await runFirefliesSyncNow({
                 tcw,
+                backendUrl,
+                sessionStore,
                 apiKey: keyRes.data,
                 signal: ac.signal,
                 onProgress,

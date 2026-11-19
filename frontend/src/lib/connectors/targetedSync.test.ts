@@ -629,3 +629,24 @@ describe("ingestQueuedMeetings — targeted queued-id ingest", () => {
     expect(res.data.acknowledged).toBe(0);
   });
 });
+
+test("a purged queued Fireflies delivery stays absent until allowed back", async () => {
+  const h = harness();
+  const id = "queued-purge-fixture";
+  let blocked = true;
+  h.client.transcripts.set(id, transcript(id));
+  Object.assign(h.webhooks, {
+    checkPurge: async (meetingId: string, stamp: string) => {
+      expect(meetingId).toBe(id);
+      expect(stamp).toBe("2026-08-01T10:00:00.000Z");
+      return blocked;
+    },
+  });
+  const result = await h.run([T(id)]);
+  expect(result.ok && result.data.tombstoned).toBe(1);
+  expect(h.store.rows.size).toBe(0);
+  expect(h.webhooks.requests).toEqual([]);
+  blocked = false;
+  expect((await h.run([T(id)])).ok).toBe(true);
+  expect(h.store.rows.has(`fireflies/${id}`)).toBe(true);
+});

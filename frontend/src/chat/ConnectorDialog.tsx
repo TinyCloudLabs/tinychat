@@ -45,6 +45,7 @@
 
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type FC } from "react";
 import type { SessionStore } from "@tinyboilerplate/client";
+import { createConnectorWebhooksClient } from "@/lib/connectors/webhooksApi";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import {
   AlertTriangleIcon,
@@ -227,7 +228,7 @@ interface ConnectorConnectDialogProps {
   purpose?: "browser" | "autojoin";
   tcw: TinyCloudWeb;
   descriptor: ConnectorDescriptor;
-  /** Backend session for connectors that proxy requests. */
+  /** Backend session used for OAuth proxy calls, the Fireflies purge check, and connectors that proxy requests. */
   backendUrl: string;
   sessionStore: SessionStore;
   open: boolean;
@@ -407,6 +408,8 @@ const GranolaConnectDialog: FC<ConnectorConnectDialogProps> = ({
 const FirefliesConnectDialog: FC<ConnectorConnectDialogProps> = ({
   tcw,
   descriptor,
+  backendUrl,
+  sessionStore,
   open,
   onOpenChange,
   onConnected,
@@ -511,6 +514,7 @@ const FirefliesConnectDialog: FC<ConnectorConnectDialogProps> = ({
       syncRes = await syncFireflies({
         client,
         store: connectorStore,
+        checkPurge: createConnectorWebhooksClient(backendUrl, { sessionStore }).checkPurge,
         tcw,
         onProgress: setProgress,
         signal: ac.signal,
@@ -551,7 +555,7 @@ const FirefliesConnectDialog: FC<ConnectorConnectDialogProps> = ({
     }
     setSummary(syncRes.data);
     setPhase("done");
-  }, [apiKey, descriptor, onConnected, tcw]);
+  }, [apiKey, backendUrl, descriptor, onConnected, sessionStore, tcw]);
 
   const handleStopSync = useCallback(() => {
     abortRef.current?.abort();
