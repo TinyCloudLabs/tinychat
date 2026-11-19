@@ -179,7 +179,7 @@ export function BotView({ bot, chats, notice, acknowledgeNotice, onReconnect, st
                   aria-expanded={panelOpen}
                   aria-controls={panelId}
                   onClick={() => setPanelOpen((open) => !open)}
-                  className="flex max-w-full items-center gap-2 rounded-full border border-border bg-card/90 py-1 pl-1 pr-4 text-callout font-medium shadow-sm backdrop-blur hover:bg-card focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  className="flex min-h-11 max-w-full items-center gap-2 rounded-full border border-border bg-card/90 py-1 pl-1 pr-4 text-callout font-medium shadow-sm backdrop-blur hover:bg-card focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring fine:min-h-9"
                 >
                   <BotAvatar bot={bot.face} working={working} size={28} decorative />
                   <span className="truncate">{bot.name}</span>
