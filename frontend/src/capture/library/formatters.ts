@@ -48,7 +48,8 @@ function daysBetween(earlier: Date, later: Date): number {
   return Math.round((dayStart(later) - dayStart(earlier)) / 86_400_000);
 }
 
-function shortDate(date: Date, now: Date): string {
+/** "Nov 16" this year, "Dec 30, 2025" before it. */
+export function shortDate(date: Date, now: Date): string {
   return date.toLocaleDateString(undefined, {
     month: "short",
     day: "numeric",
