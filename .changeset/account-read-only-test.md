@@ -2,6 +2,6 @@
 "@tinychat/frontend": patch
 ---
 
-One Apps behind VITE_ONE_APPS: a test keeps Account's access inside One read-only.
+Internal changes for tests; nothing in the app changes.
 
 Details: TC-3337
