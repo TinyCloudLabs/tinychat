@@ -126,7 +126,7 @@ OMP also probes `GET /models` and `GET /props` without a token at startup; the g
 
 ### Web access
 
-Main can use the web only when its owner turns it on (Main's settings; off by default). The setting is one of `off`,
+Main can use the web only when its owner turns it on (Main's chat, Web access; off by default). The setting is one of `off`,
 `listed` (only the owner's sites, subdomains included) or `any` public site. It is saved by the supervisor in
 `/data/bots/<bot id>/web.json`, outside everything the sandbox mounts, and the supervisor gives it to the gateway
 before each message; the gateway decides every call, so the sandbox cannot widen it. A missing or unreadable file
