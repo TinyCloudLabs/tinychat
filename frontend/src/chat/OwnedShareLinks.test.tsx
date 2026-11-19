@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 
 test("share links UI with sharing enabled runs in an isolated process", async () => {
-  const child = Bun.spawn([process.execPath, "test", "./src/chat/OwnedShareLinks.enabled.fixture.tsx"], {
+  const child = Bun.spawn([process.execPath, "test", "./src/chat/OwnedShareLinks.enabled.fixture.ts"], {
     cwd: new URL("../../", import.meta.url).pathname,
     stdout: "pipe",
     stderr: "pipe",

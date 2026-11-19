@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, expect, mock, test } from "bun:test";
-import { act } from "react";
+import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { SHARE_LINK_COPY } from "@/lib/shareLinkCopy";
@@ -54,7 +54,7 @@ async function mountCard(tcw: TinyCloudWeb) {
   document.body.appendChild(host);
   const root = createRoot(host);
   await act(async () => {
-    root.render(<OwnedShareLinksCard tcw={tcw} />);
+    root.render(createElement(OwnedShareLinksCard, { tcw }));
   });
   // The load settles immediately; give its state update a turn.
   await act(async () => {});
@@ -126,7 +126,7 @@ test("a link that lapses while the card is open disappears on the next render", 
 
     offset = 120_000;
     await act(async () => {
-      root.render(<OwnedShareLinksCard tcw={tcw} />);
+      root.render(createElement(OwnedShareLinksCard, { tcw }));
     });
 
     expect(host.textContent).not.toContain("My chat");
