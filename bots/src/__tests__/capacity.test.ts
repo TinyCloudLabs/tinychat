@@ -1,4 +1,7 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { BotManager, type ErrorCode, type Sandbox, type SandboxLauncher, type TurnSink } from "../bot";
 import type { Frame } from "../rpc";
 import { createApp } from "../server";
@@ -148,5 +151,38 @@ describe("a start past BOTS_MAX_RUNNING", () => {
 
     await sandboxes[0]!.complete();
     expect(await (await firstResponse).text()).toContain("event: done");
+  });
+});
+
+describe("a refused start with history on", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "capacity-"));
+  afterAll(() => rmSync(tmp, { recursive: true, force: true }));
+
+  test("leaves nothing in the history, so the retry shows the message once", async () => {
+    const sandboxes = [new FakeSandbox(), new FakeSandbox()];
+    let launches = 0;
+    const launcher: SandboxLauncher = { hasState: () => true, leftover: () => false, launch: async () => sandboxes[launches++]! };
+    const history = { signerDid: "did:pkh:eip155:1:0x" + "11".repeat(20), host: "https://node.test", policy: "notice-then-expiry-30-days" as const };
+    const roots = { dataRoot: join(tmp, "data"), runRoot: join(tmp, "run"), egressRoot: join(tmp, "egress") };
+    const manager = new BotManager(launcher, roots, { ...OPTIONS, history }, 1);
+    const first = manager.forOwner(OWNER_A);
+    const second = manager.forOwner(OWNER_B);
+
+    const firstRun = first.send("one", recorder().sink, OWNER_A);
+    await sandboxes[0]!.prompted.promise;
+    const refused = recorder();
+    await second.send("two", refused.sink, OWNER_B);
+    expect(refused.events.at(-1)).toEqual(["error", "at_capacity"]);
+    expect(await second.list()).toEqual([]);
+
+    await sandboxes[0]!.complete();
+    await firstRun;
+    await first.stop();
+
+    const retry = second.send("two", recorder().sink, OWNER_B);
+    await sandboxes[1]!.prompted.promise;
+    await sandboxes[1]!.complete();
+    await retry;
+    expect((await second.list()).map(message => [message.role, message.text])).toEqual([["user", "two"], ["bot", ""]]);
   });
 });
