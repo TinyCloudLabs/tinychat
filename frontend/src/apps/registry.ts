@@ -132,7 +132,7 @@ const ALL_APPS: readonly OneApp[] = [
   {
     id: "xyz.tinycloud.opencredentials",
     kind: "framed",
-    framed: false, // opens in a new tab until its embed change lands; then it returns to framed
+    framed: false, // opens in a new tab
     ...text("xyz.tinycloud.opencredentials"),
     icon: BadgeCheck,
     origin: KIND === "dev" ? "https://localhost:5192"
@@ -184,7 +184,7 @@ const ALL_APPS: readonly OneApp[] = [
   },
   {
     // Courier's data view lives on the share site; only its `/courier` pages may be framed (share repo headers).
-    // Opens in a new tab until its embed change lands; then it returns to framed.
+    // Opens in a new tab.
     id: "xyz.tinycloud.courier",
     kind: "framed",
     framed: false,
