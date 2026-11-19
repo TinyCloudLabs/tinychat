@@ -50,6 +50,11 @@ describe("registry", () => {
     expect(framedApp("xyz.tinycloud.secrets")).toBeUndefined();
     expect(framedApp("capture")).toBeUndefined();
     expect(framedApp("xyz.tinycloud.explorer")?.id).toBe("xyz.tinycloud.explorer");
+    // Credentials and Courier open in a new tab until their embed changes land.
+    expect(appTarget(oneApp("xyz.tinycloud.opencredentials")!, "https://tinycloud.one")).toEqual({ kind: "newTab", url: "https://credentials.org/" });
+    expect(appTarget(oneApp("xyz.tinycloud.courier")!, "https://tinycloud.one")).toEqual({ kind: "newTab", url: "https://share.tinycloud.xyz/courier" });
+    expect(framedApp("xyz.tinycloud.opencredentials")).toBeUndefined();
+    expect(framedApp("xyz.tinycloud.courier")).toBeUndefined();
   });
 
   test("iOS leaves Account out; web and Android keep it", () => {
@@ -60,7 +65,9 @@ describe("registry", () => {
   });
 
   test("Courier is framed from exactly https://share.tinycloud.xyz/courier, read-only, and no other share page is framed", () => {
-    const courier = framedApp("xyz.tinycloud.courier")!;
+    // Courier opens in a new tab for now (framed: false); its entry's origin, path and access are what this checks.
+    const courier = oneApp("xyz.tinycloud.courier");
+    if (courier?.kind !== "framed") throw new Error("Courier is a TinyCloud web app");
     expect(courier.origin).toBe("https://share.tinycloud.xyz");
     expect(new URL(frameUrl(courier)).pathname).toBe("/courier");
     expect(framed(ONE_APPS).filter((app) => new URL(app.origin).hostname === "share.tinycloud.xyz").map((app) => app.id))

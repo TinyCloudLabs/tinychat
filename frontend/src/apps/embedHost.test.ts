@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { PermissionEntry } from "@tinycloud/web-sdk";
 import { EmbedHost, SpaceNotHostedError, type EmbedHostDeps, type HostMessage, type SpaceGrant } from "./embedHost";
 import { closeAllEmbeds, trackEmbed } from "./liveEmbeds";
-import { framedApp } from "./registry";
+import { framedApp, oneApp } from "./registry";
 import { courierMissing, missingSpacesLine } from "./strings";
 
 const app = framedApp("xyz.tinycloud.explorer")!;
@@ -233,7 +233,9 @@ describe("EmbedHost: requests", () => {
 });
 
 describe("EmbedHost: spaces that aren't set up", () => {
-  const courier = framedApp("xyz.tinycloud.courier")!;
+  // Courier opens in a new tab for now (framed: false); the host's behaviour for its entry is what this block checks.
+  const courier = oneApp("xyz.tinycloud.courier");
+  if (courier?.kind !== "framed") throw new Error("Courier is a TinyCloud web app");
   const agentsRead = { service: "tinycloud.kv", space: "agents", path: "xyz.tinycloud.courier/", actions: ["get"] };
   const publicRead = { service: "tinycloud.kv", space: "public", path: "", actions: ["get"] };
   const secretsList = { service: "tinycloud.kv", space: "secrets", path: "vault/secrets", actions: ["list"] };
