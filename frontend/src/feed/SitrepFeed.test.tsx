@@ -760,13 +760,14 @@ test("an ask Sam answered that its agent then closes in a new revision is one ca
   await timer.advance(5000);
   expect(fixture.saved).toHaveLength(1);
   expect(await closeInNewRevision(fixture, view.host, "answered")).toEqual(["Answered"]);
+  window.localStorage.removeItem("tinychat:feed-view-mode:v1");
 });
 
 test("current status reads Answered: the History card of an ask its agent closed in a new revision, with every card open", async () => {
   const fixture = typedFixture(syntheticRecord("ask"));
   const view = await mount(fixture.source);
   const timer = installFakeClock(); clock = timer;
-  await act(async () => button(card(view.host, String(fixture.entry.state.card.title)), "Accept recommendation").click());
+  await act(async () => option(card(view.host, String(fixture.entry.state.card.title)), "Careful option").click());
   await timer.advance(5000);
   expect(fixture.saved).toHaveLength(1);
   const statuses = await closeInNewRevision(fixture, view.host, "answered");

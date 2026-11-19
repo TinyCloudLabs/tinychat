@@ -212,12 +212,12 @@ test("with reduced motion the opened card still comes into view, without easing"
   expect(dimmed(host).sort()).toEqual(ids(A, C).sort());
 });
 
-test("on a wide screen with a mouse every card the owner opened stays open, nothing dims, and there is no foot link", async () => {
+test("on a wide screen with a mouse the card lifts over the stream instead: no row opens in place, nothing dims, no foot link", async () => {
   const feed = three();
   const host = await mount(feed.source, { desktop: true });
   await tap(host, A);
   await tap(host, B);
-  expect(openIds(host).sort()).toEqual(ids(A, B).sort());
+  expect(openIds(host)).toEqual([]);
   expect(dimmed(host)).toEqual([]);
   expect(footShowLess(rowOf(host, A))).toBeUndefined();
 });

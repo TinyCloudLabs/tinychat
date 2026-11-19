@@ -1140,10 +1140,10 @@ export function HomeFeedEntries({ source, ask, linked }: { source: HomeFeedSourc
     const boxed = viewMode === "cards" || viewMode === "expanded";
     // "See N options" is a second opener of the same card (the mock's): it opens the card in place, as tapping the post does.
     const options = page || openHere || viewMode === "expanded" ? 0 : optionCountOf(entry);
-    return <MorphItem key={key} hidden={waiting} contentKey={page ? "post" : openHere ? "full" : "compact"} data-card-key={keyOf(entry)} {...(focusing && !openHere ? { "data-dim": "" } : {})} className={`min-w-0 scroll-mt-4${single ? ` ${FOCUS_DIM_CLASS}` : ""}${outlined === key ? " shadow-[inset_0_0_0_2px_hsl(var(--ring))]" : ""}${boxed ? ` rounded-2xl border border-border bg-card${viewMode === "cards" && openHere ? " col-span-full" : ""}` : ""}`}>
+    return <MorphItem key={key} hidden={waiting} contentKey={page ? "post" : openHere ? "full" : "compact"} data-card-key={keyOf(entry)} {...(focusing && !openHere ? { "data-dim": "" } : {})} className={`min-w-0 scroll-mt-4${single ? ` ${FOCUS_DIM_CLASS}` : ""}${single && openHere && !page ? ` ${OPEN_STAGGER_CLASS}` : ""}${outlined === key ? " shadow-[inset_0_0_0_2px_hsl(var(--ring))]" : ""}${boxed ? ` rounded-2xl border border-border bg-card${viewMode === "cards" && openHere ? " col-span-full" : ""}` : ""}`}>
       {page ? postCard(entry) : openHere
         // Hidden, not removed, while its answer waits: the card keeps its place and its props, so the wait can still be refused or sent.
-        ? <div id={openCardId(key)} hidden={waiting} inert={waiting} className={single ? OPEN_STAGGER_CLASS : undefined}>{fullCard(entry, retained)}</div>
+        ? <div id={openCardId(key)} hidden={waiting} inert={waiting}>{fullCard(entry, retained)}</div>
         : <>
           {compactCard(entry)}
           {options > 0 && <OptionsToggle inset count={options} post={postOf(entry) ?? entry.state.card.title} open={false} controls={openCardId(key)} onToggle={() => openCard(entry)} />}
