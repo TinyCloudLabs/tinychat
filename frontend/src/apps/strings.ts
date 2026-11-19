@@ -75,15 +75,8 @@ export const MISSING_SPACE_COPY: Readonly<Record<string, { kind: "open"; name: s
 const joinNames = (names: readonly string[]) =>
   names.length <= 1 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
 
-/**
- * Monica's line for the missing spaces that have an app to open, or undefined when none do. `none`: nothing the app
- * asked for exists (the line replaces the ask body); otherwise it goes under the body.
- */
-export function missingSpacesLine(app: string, spaces: readonly string[], none: boolean): string | undefined {
-  const names = [...new Set(spaces.flatMap((space) => {
-    const copy = MISSING_SPACE_COPY[space];
-    return copy?.kind === "open" ? [copy.name] : [];
-  }))];
+/** The line for missing spaces that belong to other apps; undefined when there are none. */
+function otherSpacesLine(app: string, names: readonly string[], none: boolean): string | undefined {
   if (names.length === 0) return undefined;
   if (names.length === 1) {
     const [space] = names;
@@ -92,6 +85,21 @@ export function missingSpacesLine(app: string, spaces: readonly string[], none: 
       : `${app} also uses ${space}, which isn't set up in your TinyCloud. Open ${space} once to set it up, then come back to give ${app} access to it.`;
   }
   return `${app} ${none ? "uses" : "also uses"} ${joinNames(names)}, which aren't set up in your TinyCloud. Open each once to set it up, then come back to give ${app} access to them.`;
+}
+
+/**
+ * Monica's line for the missing spaces that have an app to open, or undefined when none do. `none`: nothing the app
+ * asked for exists (the line replaces the ask body); otherwise it goes under the body. The app's own space comes first.
+ */
+export function missingSpacesLine(app: string, spaces: readonly string[], none: boolean): string | undefined {
+  const names = [...new Set(spaces.flatMap((space) => {
+    const copy = MISSING_SPACE_COPY[space];
+    return copy?.kind === "open" ? [copy.name] : [];
+  }))];
+  const others = otherSpacesLine(app, names.filter((name) => name !== app), none);
+  if (!names.includes(app)) return others;
+  const own = `${app} isn't set up in your TinyCloud. Open ${app} once to set it up, then come back to give it access.`;
+  return others ? `${own} ${others}` : own;
 }
 
 /** Courier's line when its space (agents) is missing; "Open Courier" links to Courier's own page in a new tab. */

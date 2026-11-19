@@ -26,6 +26,9 @@ const node = params.get("node");
 // A registry that knows no one (shared/local-run-kit registry-stub.ts) routes every owner to `node`: never the
 // production registry.
 const registry = params.get("registry");
+// `?spaces=applications,account,credentials,secrets,public`: spaces to host and create for the throwaway key right after sign-in
+// (the sign-in creates only the default ones), so an app whose space exists gets a real grant. Default none: the missing-space path.
+const spaces = (params.get("spaces") ?? "").split(",").map((name) => name.trim()).filter(Boolean);
 const account = privateKeyToAccount(generatePrivateKey());
 
 /** A minimal EIP-1193 wallet over the throwaway key: accounts, chain 1 and personal_sign. */
@@ -97,6 +100,10 @@ function Harness() {
         newUserHost: node,
         manifest: MANIFEST,
       } as never);
+      for (const name of spaces) {
+        setStatus(`Hosting ${name}…`);
+        await signed.ensureOwnedSpaceHosted(name);
+      }
       setTcw(signed);
       setStatus(`Signed in as ${account.address} on ${node}`);
     } catch (error) {
