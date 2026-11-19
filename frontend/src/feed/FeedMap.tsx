@@ -22,14 +22,14 @@ export function FeedMap({ value, needs, updates, present, onSelect, className }:
   const before = OPTIONS.slice(0, Math.max(0, index)).reduce((sum, option) => sum + option.weight, 0);
   const counts: Record<StreamSection, number> = { needs, updates, history: 0 };
   return <nav aria-label="Feed sections"
-    className={cn("relative grid grid-cols-[42fr_34fr_24fr] rounded-full bg-black p-1 dark:bg-[#1c1c1e]", className)}>
+    className={cn("relative grid grid-cols-[42fr_34fr_24fr] rounded-full bg-black px-1 py-0 fine:py-1 dark:bg-[#1c1c1e]", className)}>
     {index >= 0 && <span aria-hidden className="pointer-events-none absolute bottom-1 top-1 rounded-full bg-[#2c2c2e] transition-[left,width] duration-[250ms] ease-[cubic-bezier(.2,0,0,1)] motion-reduce:transition-none dark:bg-[#3a3a3c]"
       style={{ left: `calc(0.25rem + (100% - 0.5rem) * ${before / 100})`, width: `calc((100% - 0.5rem) * ${OPTIONS[index]!.weight / 100})` }} />}
     {OPTIONS.map((option) => {
       const checked = option.value === value;
       const count = counts[option.value];
       return <button key={option.value} type="button" disabled={!present[option.value]} aria-current={checked ? "true" : undefined} onClick={() => onSelect(option.value)}
-        className={cn("relative z-10 flex min-h-9 min-w-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-full px-1 text-[13px] transition-[color,transform] duration-300 active:scale-[0.92] max-[359px]:gap-1 max-[359px]:px-0 max-[359px]:text-[12px]",
+        className={cn("relative z-10 flex min-h-11 min-w-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-full px-1 text-[13px] transition-[color,transform] duration-300 fine:min-h-9 active:scale-[0.92] max-[359px]:gap-1 max-[359px]:px-0 max-[359px]:text-[12px]",
           "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-offset-2 focus-visible:ring-offset-black disabled:opacity-40 disabled:active:scale-100",
           checked ? "font-semibold text-white" : "font-medium text-[#a1a1aa] enabled:hover:text-white dark:text-[#8e8e93]")}>
         {option.label}
