@@ -6,7 +6,7 @@
 import { botsConnectFetch, validateBotsConnectHost } from "../bots-transport";
 import { Router } from "express";
 import type { Request, RequestHandler, Response } from "express";
-import { botCaps, CAP_MODE, type CapMode } from "../bot-caps";
+import { botCaps, CAP_MODE, type CapMode, type PlanName } from "../bot-caps";
 import { BOT_KEY, MAIN_BOT_KEY, orderedBots, type Bot, type BotsRegistry } from "../bots-registry";
 
 export interface BotsConfig {
@@ -76,9 +76,22 @@ export function botsServiceHeaders(config: BotsConfig, ownerDid: string, _method
 /** The same answer as UNAVAILABLE, for a bot other than Main. */
 const BOT_UNAVAILABLE = { code: "bot_unavailable", message: "This bot isn't available. Try again later." };
 
-export function createBotsRouter(opts: { config?: BotsConfig; authMiddleware: RequestHandler; paidLimiter?: RequestHandler; registry?: BotsRegistry; capMode?: CapMode }): Router {
+export function createBotsRouter(opts: {
+  config?: BotsConfig; authMiddleware: RequestHandler; paidLimiter?: RequestHandler; registry?: BotsRegistry; capMode?: CapMode;
+  /** The plan of an account, for the per-plan limit rule. */
+  planOf?: (address: string) => Promise<PlanName | undefined>;
+}): Router {
   const { registry } = opts;
   const capMode = opts.capMode ?? CAP_MODE;
+  /** The account's plan, asked for only under the per-plan rule. One that cannot be read is undefined: none is guessed. */
+  const accountPlan = async (address: string): Promise<PlanName | undefined> => {
+    if (capMode !== "table") return undefined;
+    try {
+      return await opts.planOf?.(address);
+    } catch {
+      return undefined;
+    }
+  };
   const router = Router();
   const { config } = opts;
   router.use(opts.authMiddleware);
@@ -116,7 +129,7 @@ export function createBotsRouter(opts: { config?: BotsConfig; authMiddleware: Re
     if (!registry) { res.status(404).json({ error: "not_found" }); return; }
     try {
       const row = await registry.read(address);
-      res.json({ bots: orderedBots(row), deleted: row.deleted, ...botCaps(capMode, undefined, row) });
+      res.json({ bots: orderedBots(row), deleted: row.deleted, ...botCaps(capMode, await accountPlan(address), row) });
     } catch {
       res.status(503).json({ error: "bots_unavailable" });
     }
@@ -128,7 +141,7 @@ export function createBotsRouter(opts: { config?: BotsConfig; authMiddleware: Re
     if (!address) return;
     if (!registry) { res.status(404).json({ error: "not_found" }); return; }
     try {
-      const { limits } = botCaps(capMode, undefined, await registry.read(address));
+      const { limits } = botCaps(capMode, await accountPlan(address), await registry.read(address));
       if (!limits) { res.status(503).json({ error: "bots_unavailable" }); return; }
       const created = await registry.create(address, { name: req.body?.name, shape: req.body?.shape, colour: req.body?.colour }, limits.private.max);
       if (!created.ok) {

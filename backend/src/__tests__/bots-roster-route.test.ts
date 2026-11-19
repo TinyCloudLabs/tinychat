@@ -3,6 +3,7 @@ import express from "express";
 import { createCsrfMiddleware, issueSessionToken } from "@tinyboilerplate/server";
 import { createAuthMiddleware } from "../middleware/auth.js";
 import type { RequestHandler } from "express";
+import type { CapMode, PlanName } from "../bot-caps.js";
 import { BotsRegistry } from "../bots-registry.js";
 import { botsFromEnv, createBotsRouter, type BotsConfig } from "../routes/bots.js";
 import { fakeRegistryStore, type FakeRegistryStore } from "./helpers/fake-registry-store.js";
@@ -17,7 +18,7 @@ interface UpstreamCall { method: string; url: string; headers: Headers; body: st
 type Upstream = (call: UpstreamCall) => Response | Promise<Response>;
 
 /** The real router on a local port, with real session tokens, a registry over a fake store, and a recording stand-in for the bots service. */
-async function setup(upstream: Upstream = () => Response.json({}), extra: Partial<BotsConfig> = {}, paidLimiter?: RequestHandler) {
+async function setup(upstream: Upstream = () => Response.json({}), extra: Partial<BotsConfig> = {}, paidLimiter?: RequestHandler, rule: { capMode?: CapMode; planOf?: (address: string) => Promise<PlanName | undefined> } = {}) {
   const seen: UpstreamCall[] = [];
   const fetchImpl = (async (input, init) => {
     const call = { method: init?.method ?? "GET", url: String(input), headers: new Headers(init?.headers), body: typeof init?.body === "string" ? init.body : undefined };
@@ -30,7 +31,7 @@ async function setup(upstream: Upstream = () => Response.json({}), extra: Partia
   const registry = new BotsRegistry(kv, { now: () => T0, newKey: () => (++next).toString(16).repeat(32) });
   const app = express();
   app.use(express.json()); app.use(createCsrfMiddleware());
-  app.use("/api/bots", createBotsRouter({ config: { ...config, ...extra, fetchImpl }, authMiddleware: createAuthMiddleware(sessionKey), registry, paidLimiter }));
+  app.use("/api/bots", createBotsRouter({ config: { ...config, ...extra, fetchImpl }, authMiddleware: createAuthMiddleware(sessionKey), registry, paidLimiter, ...rule }));
   const server = app.listen(0, "127.0.0.1");
   await new Promise<void>(resolve => server.once("listening", resolve));
   const address = server.address();
@@ -375,6 +376,68 @@ describe("the paid-send limit", () => {
       await (await fetch(`${run.base}/main/messages`, { method: "POST", headers, body: JSON.stringify({ text: "hi" }) })).text();
       await (await fetch(`${run.base}/${KEY}/messages`, { method: "POST", headers, body: JSON.stringify({ text: "hi" }) })).text();
       expect(limited).toEqual(["POST /main/messages", `POST /${KEY}/messages`]);
+    } finally { await run.close(); }
+  });
+});
+
+describe("limits per plan, when that rule is switched on", () => {
+  const wanted = { name: "Research", shape: "sprout", colour: "teal" };
+  const announced: Upstream = () => Response.json({ state: "active" });
+
+  test("the list shows the plan's numbers", async () => {
+    const run = await setup(announced, {}, undefined, { capMode: "table", planOf: async () => "$20" });
+    try {
+      const list = await (await fetch(run.base, { headers: await run.headersFor(owner) })).json();
+      expect(list.capMode).toBe("table");
+      expect(list.limits).toEqual({ private: { max: 3, used: 1 }, regular: { max: 5, used: 0 } });
+      expect(list.canCreate).toEqual({ private: true, regular: false });
+    } finally { await run.close(); }
+  });
+
+  test("an account whose private limit Main already fills cannot create a bot", async () => {
+    const run = await setup(announced, {}, undefined, { capMode: "table", planOf: async () => "$10" });
+    try {
+      const headers = await run.headersFor(owner);
+      const refused = await fetch(run.base, { method: "POST", headers, body: JSON.stringify(wanted) });
+      expect([refused.status, await refused.json()]).toEqual([409, { error: "bot_limit", environment: "private" }]);
+      expect((await (await fetch(run.base, { headers })).json()).canCreate).toEqual({ private: false, regular: false });
+      expect(run.seen).toHaveLength(0);
+    } finally { await run.close(); }
+  });
+
+  test("the account's plan is asked for by its signed-in address", async () => {
+    const asked: string[] = [];
+    const run = await setup(announced, {}, undefined, { capMode: "table", planOf: async address => { asked.push(address); return "$20"; } });
+    try {
+      await fetch(run.base, { headers: await run.headersFor(owner) });
+      expect(asked.map(address => address.toLowerCase())).toEqual([owner.toLowerCase()]);
+    } finally { await run.close(); }
+  });
+
+  test("when the plan cannot be read, the list has the bots and no numbers, and creating answers 503", async () => {
+    for (const planOf of [async () => undefined, async () => { throw new Error("billing unreachable"); }]) {
+      const run = await setup(announced, {}, undefined, { capMode: "table", planOf });
+      try {
+        const headers = await run.headersFor(owner);
+        const list = await (await fetch(run.base, { headers })).json();
+        expect(list).toEqual({ bots: [main], deleted: [], limits: null, canCreate: { private: false, regular: false }, capMode: "table" });
+        const refused = await fetch(run.base, { method: "POST", headers, body: JSON.stringify(wanted) });
+        expect([refused.status, await refused.json()]).toEqual([503, { error: "bots_unavailable" }]);
+        expect((await run.registry.read(owner)).bots).toHaveLength(1);
+      } finally { await run.close(); }
+    }
+  });
+});
+
+describe("the flat limit", () => {
+  test("never asks for the account's plan", async () => {
+    const asked: string[] = [];
+    const run = await setup(() => Response.json({ state: "active" }), {}, undefined, { planOf: async address => { asked.push(address); return "Free"; } });
+    try {
+      const headers = await run.headersFor(owner);
+      await fetch(run.base, { headers });
+      expect((await fetch(run.base, { method: "POST", headers, body: JSON.stringify({ name: "Research", shape: "sprout", colour: "teal" }) })).status).toBe(201);
+      expect(asked).toEqual([]);
     } finally { await run.close(); }
   });
 });
