@@ -20,8 +20,15 @@ const probe = { reads: 0, sends: 0,
 };
 Object.assign(window, { tc2909: probe });
 initSizeClass();
+// Home shows the ask box only after one read of Main's messages succeeds; that read answers at once, and the
+// controllable history response starts with Main's own read.
+let shown = false;
 createRoot(document.getElementById("root")!).render(<HomeAskBox api={{
   getBotsStatus: async () => ({ enabled: true }),
-  listMainMessages: () => { if (probe.reads++) history = pendingHistory(); return history.promise; },
+  listMainMessages: () => {
+    if (!shown) { shown = true; return Promise.resolve([]); }
+    if (probe.reads++) history = pendingHistory();
+    return history.promise;
+  },
   sendToMain: async (_text, callback) => { probe.sends++; event = callback; callback({ type: "status", state: "working" }); await new Promise<void>(resolve => { finish = resolve; }); },
 }} />);
