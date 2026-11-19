@@ -76,6 +76,27 @@ export function installAgentSurface(siteDir, outDir) {
     cpSync(join(siteDir, path), join(outDir, path), { recursive: true, force: true });
   }
 
+  const skillsIndexPath = join(outDir, ".well-known", "agent-skills", "index.json");
+  if (existsSync(skillsIndexPath)) {
+    const skillsIndex = JSON.parse(readFileSync(skillsIndexPath, "utf8"));
+    for (const skill of skillsIndex.skills ?? []) skill.url = prefixed(skill.url);
+    writeFileSync(skillsIndexPath, `${JSON.stringify(skillsIndex, null, 2)}\n`);
+  }
+
+  const apiCatalogPath = join(outDir, ".well-known", "api-catalog");
+  if (existsSync(apiCatalogPath)) {
+    const apiCatalog = JSON.parse(readFileSync(apiCatalogPath, "utf8"));
+    const links = apiCatalog.linkset?.[0];
+    if (links) {
+      links["service-desc"] = [{
+        href: "https://tinycloud.one/mcp/server-card",
+        type: "application/mcp-server-card+json",
+        title: "TinyCloud MCP server card",
+      }];
+      writeFileSync(apiCatalogPath, `${JSON.stringify(apiCatalog, null, 2)}\n`);
+    }
+  }
+
   const rootIndexPath = join(outDir, "llms.txt");
   writeFileSync(
     rootIndexPath,
