@@ -2,7 +2,11 @@
 // writes it depends on, with the node's real versions, through the same storage lane the backend uses. It writes only
 // the backend's own record of bots: no permission and no history record. No production accounts, services or keys.
 // Needs a local TinyCloud node: BOTS_REGISTRY_TEST_NODE=http://127.0.0.1:<port>.
-import { expect, test } from "bun:test";
+//
+// A client library may contact hosts of its own choosing. Left to its default, this one looks every session owner up
+// in the public location registry, which is not on this machine. So the registry is switched off here, and every
+// request this process makes is checked: one to anything but 127.0.0.1 is refused, and the test fails.
+import { afterAll, expect, test } from "bun:test";
 import express from "express";
 import { TinyCloudNode } from "@tinycloud/node-sdk";
 import { createCsrfMiddleware, issueSessionToken } from "@tinyboilerplate/server";
@@ -11,13 +15,18 @@ import { BotsRegistry, type RegistryKv } from "../bots-registry.js";
 import { createAuthMiddleware } from "../middleware/auth.js";
 import { botsFromEnv, createBotsRouter } from "../routes/bots.js";
 import { BackendStorageLane } from "../services/backend-storage-lane.js";
+import { loopbackOnly } from "./helpers/loopback-only.js";
 
 const host = process.env.BOTS_REGISTRY_TEST_NODE;
 const wanted = (name: string) => ({ name, shape: "sprout", colour: "teal" });
+const realFetch = globalThis.fetch;
+const guard = loopbackOnly(realFetch);
+afterAll(() => { globalThis.fetch = realFetch; });
 
 test.skipIf(!host)("real TinyCloud: an owner's record is created once, creates at the same moment stay within the limit, and the routes work on it", async () => {
   if (new URL(host!).hostname !== "127.0.0.1") throw new Error("loopback node required");
-  const backend = new TinyCloudNode({ privateKey: generatePrivateKey(), host, prefix: "bots-registry-test", includeAccountRegistryPermissions: false });
+  globalThis.fetch = guard.fetch;
+  const backend = new TinyCloudNode({ privateKey: generatePrivateKey(), host, prefix: "bots-registry-test", includeAccountRegistryPermissions: false, tinycloudRegistryUrl: null });
   await backend.signIn();
   await backend.hostOwnedSpace("bots-registry-test");
   // As in the backend's startup: reads go straight to the node, writes through the one storage lane.
@@ -102,4 +111,6 @@ test.skipIf(!host)("real TinyCloud: an owner's record is created once, creates a
   } finally {
     await new Promise<void>(resolve => server.close(() => resolve()));
   }
+  // Nothing this test did tried to reach a host other than this machine.
+  expect(guard.refused).toEqual([]);
 }, 120_000);
