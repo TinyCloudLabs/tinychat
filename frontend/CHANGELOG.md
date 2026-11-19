@@ -16,6 +16,22 @@
 - TC-2204: Native audience checks accept Home's three exact SQL hook subscriptions only alongside an existing TinyChat data grant.
 - TC-2499: The Home mirror adapter persists close receipts using node-compatible NULL/non-NULL compare-and-set predicates. If the KV mirror is already exactly closed but its receipt is missing, recovery records the original publication ETag without writing the KV copy again, before any gated child handoff. The CLI reports JSON error class, safe message, code, HTTP status when available, and operation step; private SQL bodies and nested causes remain redacted. Exit 2 identifies invalid input, exit 6 known transient failures (including NODE_BUSY and REQUEST_TIMEOUT without HTTP metadata), and exit 1 other runtime failures or OUTCOME_UNKNOWN. Unclassified errors are not labelled bad input; no failure confirms delivery or authorizes an automatic retry.
 
+## 0.15.0-beta.5
+
+### Patch Changes
+
+- 27e5641: Internal changes for tests; nothing in the app changes.
+
+  Details: TC-3337
+
+- 27e5641: One Apps behind VITE_ONE_APPS (off in production): the Apps page becomes the "TinyCloud apps" launcher with Pin and Unpin, and the navigation holds Feed, Chat and Apps plus the apps each account pins (Recording, Connectors and the TinyCloud apps). The phone tab bar shows at most five items; the rail and sidebar show every pin.
+
+  Details: TC-3337
+
+- 27e5641: One Apps behind VITE_ONE_APPS (off in production): TinyCloud's own apps open inside One with the access they need from One's session, asking first when an app wants more. Also fixes `vite dev` pages crashing on start; production builds are unchanged.
+
+  Details: TC-3337
+
 ## 0.15.0-beta.4
 
 ### Minor Changes
