@@ -1,0 +1,14 @@
+[package]
+name = "call-names"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Display names of the people in a call, read from the meeting app's window for the TinyCloud One desktop recorder"
+
+[dependencies]
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+
+# Standalone on purpose: not a member of desktop/Cargo.toml's workspace (its
+# manifest and lock trigger the transcript-eval jobs) and not of src-tauri's.
+[workspace]
