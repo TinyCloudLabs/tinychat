@@ -35,6 +35,9 @@ import type { Library } from "./useLibrary";
 import { notePath } from "@/shell/routes";
 import { EXO_MERGED_SOURCE } from "@tinyboilerplate/core";
 import { captureEvents } from "../captureEvents";
+import { ShareRecordingButton } from "../share/ShareRecordingSheet";
+import { useRecordingShared } from "@/lib/nativeShares/sentShares";
+import { libraryRowTitle } from "./LibraryRow";
 
 /** Matches markdown-text's copy button: the tick reverts on its own. */
 const COPIED_DURATION = 1500;
@@ -162,7 +165,12 @@ export function NoteDetail(props: {
       setCopyState("idle");
     }, COPIED_DURATION);
   }, [sentences, names, applyWordFixes, isPrivateCloud, item, reads.metadata]);
-
+  // Share (TC-3195): a recording in the space, with its transcript or its audio there to share.
+  const shared = useRecordingShared(item?.id ?? null);
+  const shareButton = item && !item.onPhone && item.metadata?.capture !== "pasted" && reads.metadata?.status === "ok" ? (
+    <ShareRecordingButton tcw={props.tcw} recording={{ item, title: libraryRowTitle(item), metadata: reads.metadata.metadata,
+      hasTranscript: remoteTranscript?.status === "ok" && remoteTranscript.sentences.length > 0 }} />
+  ) : null;
   return (
     <>
       <NoteDetailView
@@ -187,7 +195,8 @@ export function NoteDetail(props: {
         pushed={props.pushed}
         onBack={props.onBack}
         savedNote={props.savedNote}
-        activityControl={props.activityControl}
+        activityControl={shareButton ? <>{props.activityControl}{shareButton}</> : props.activityControl}
+        shared={shared}
         combine={combine}
         speakerNames={speakerNames}
       />
