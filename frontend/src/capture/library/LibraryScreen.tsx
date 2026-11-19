@@ -10,6 +10,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
 import { RefreshCwIcon } from "lucide-react";
 
+import { useReceivedShares } from "@/lib/nativeShares/receivedShares";
 import { countLocalOnlyRecordingWork, type LocalRecordingWork } from "@/lib/originMove";
 import { cn } from "@/lib/utils";
 import { PageHeader } from "@/shell/PageHeader";
@@ -91,6 +92,7 @@ export function LibraryScreen(props: {
 }) {
   const { library } = props;
   const only = useLocalAudioFilter(library.all, props.countLocalWork ?? countLocalOnlyRecordingWork);
+  const shared = useReceivedShares();
   const refresh = <div className="flex flex-wrap items-center gap-1">{props.activityControl}<RefreshButton onClick={library.refresh} busy={library.listing} /></div>;
   return (
     <>
@@ -115,6 +117,7 @@ export function LibraryScreen(props: {
           activityViews={props.activityViews}
           platform={props.platform}
           only={only}
+          shared={shared}
         />
         {props.meetingsSlot}
       </div>

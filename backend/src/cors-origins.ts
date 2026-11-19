@@ -14,8 +14,7 @@ export const EXO_ANDROID_ORIGIN = "https://app.tinycloud.one";
 export const EXO_IOS_ORIGIN = "tinycloudone://app.tinycloud.one";
 
 /**
- * The phone apps' origins before TC-3045 (Capacitor's defaults), still accepted until the tester builds with
- * the new origins are out. Removal: TC-3046.
+ * The phone apps' origins before TC-3045 (Capacitor's defaults), accepted for builds from before the move.
  */
 export const EXO_LEGACY_ANDROID_ORIGIN = "https://localhost";
 export const EXO_LEGACY_IOS_ORIGIN = "capacitor://localhost";
@@ -111,6 +110,6 @@ export function appCorsOrigins(frontendOrigins: readonly string[]): Array<string
 export function appCorsOptions(frontendOrigins: readonly string[]) {
   return {
     origin: appCorsOrigins(frontendOrigins),
-    exposedHeaders: ["Retry-After", "RateLimit", "RateLimit-Policy", "X-Request-Id", "X-Correlation-Id"],
+    exposedHeaders: ["Retry-After", "RateLimit", "RateLimit-Policy", "X-Request-Id", "X-Correlation-Id", "X-TinyCloud-Session-Rejected", "X-Route-Unavailable"],
   };
 }

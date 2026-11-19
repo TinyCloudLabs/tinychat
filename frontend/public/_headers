@@ -1,3 +1,49 @@
+# Agent discovery. These headers don't change the SPA route or response body.
+/
+  Link: </llms.txt>; rel="describedby"; type="text/plain", </.well-known/agent-skills/index.json>; rel="describedby"; type="application/json", </.well-known/api-catalog>; rel="api-catalog"; type="application/linkset+json"; profile="https://www.rfc-editor.org/info/rfc9727", </.well-known/ai-catalog.json>; rel="describedby"; type="application/json", </mcp/server-card>; rel="describedby"; type="application/mcp-server-card+json", </sitemap.xml>; rel="sitemap"; type="application/xml"
+  Agentmap: https://tinycloud.one/.well-known/ai-catalog.json
+/index.html
+  Link: </llms.txt>; rel="describedby"; type="text/plain", </.well-known/agent-skills/index.json>; rel="describedby"; type="application/json", </.well-known/api-catalog>; rel="api-catalog"; type="application/linkset+json"; profile="https://www.rfc-editor.org/info/rfc9727", </.well-known/ai-catalog.json>; rel="describedby"; type="application/json", </mcp/server-card>; rel="describedby"; type="application/mcp-server-card+json", </sitemap.xml>; rel="sitemap"; type="application/xml"
+  Agentmap: https://tinycloud.one/.well-known/ai-catalog.json
+
+
+/llms.txt
+  Cache-Control: no-cache
+  Content-Type: text/plain; charset=utf-8
+/llms-full.txt
+  Cache-Control: no-cache
+  Content-Type: text/plain; charset=utf-8
+/robots.txt
+  Cache-Control: no-cache
+  Content-Type: text/plain; charset=utf-8
+/sitemap.xml
+  Cache-Control: no-cache
+  Content-Type: application/xml; charset=utf-8
+/.well-known/*
+  Access-Control-Allow-Origin: *
+  X-Content-Type-Options: nosniff
+  Cache-Control: public, max-age=300
+/.well-known/api-catalog
+  Content-Type: application/linkset+json; profile="https://www.rfc-editor.org/info/rfc9727"
+/.well-known/agent-skills/index.json
+  Content-Type: application/json; charset=utf-8
+/.well-known/ai-catalog.json
+  Content-Type: application/json; charset=utf-8
+/.well-known/poppy.json
+  Content-Type: application/json; charset=utf-8
+/.well-known/mcp.json
+  Content-Type: application/mcp-server-card+json; charset=utf-8
+/.well-known/mcp/server-card.json
+  Content-Type: application/mcp-server-card+json; charset=utf-8
+/mcp/server-card
+  Access-Control-Allow-Origin: *
+  Access-Control-Allow-Methods: GET
+  Access-Control-Allow-Headers: Content-Type, If-None-Match
+  Access-Control-Expose-Headers: ETag
+  Cache-Control: public, max-age=3600
+  Content-Type: application/mcp-server-card+json; charset=utf-8
+  X-Content-Type-Options: nosniff
+
 /agents/*
   X-Content-Type-Options: nosniff
 /agents/
@@ -41,3 +87,15 @@
   Cache-Control: no-store
   Content-Type: application/json; charset=utf-8
   Access-Control-Allow-Origin: *
+
+/s/*
+  Referrer-Policy: no-referrer
+# Share links open in the app (TC-3195): iOS universal links (Release entitlement applinks:tinycloud.one) and Android
+# App Links for https://tinycloud.one/s/ (autoVerify stays off until assetlinks.json also lists the Play signing key).
+# Both verifiers want JSON, served without a redirect.
+/.well-known/apple-app-site-association
+  Content-Type: application/json
+  Cache-Control: public, max-age=3600
+/.well-known/assetlinks.json
+  Content-Type: application/json
+  Cache-Control: public, max-age=3600

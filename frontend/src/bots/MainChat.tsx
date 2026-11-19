@@ -8,7 +8,7 @@ import { MAX_MESSAGE_LENGTH, SendButton, sendOnEnter, useDraft } from "./AskBox"
 import { focusSdkPrompt, useSdkPromptOpen } from "./useSdkPromptOpen";
 import { BotAvatar, MAIN_BOT } from "./BotAvatar";
 import { acknowledgeHistoryNotice, historyNoticeDeadline, type HistoryNotice } from "./historyNotice";
-import { BOTS_STRINGS, HISTORY_EXPIRY_NOTICE, HISTORY_RECONNECT_LABEL } from "./botsStrings";
+import { BOTS_STRINGS, botsErrorText, HISTORY_EXPIRY_NOTICE, HISTORY_RECONNECT_LABEL } from "./botsStrings";
 import { isWorking, type ChatLine, type MainChatState } from "./useMainChat";
 
 function Line({ role, text }: Pick<ChatLine, "role" | "text">) {
@@ -136,7 +136,7 @@ export function MainChat({ open, onOpenChange, state, onSend, onRetry, onRetryHi
               <Line role="user" text={turn.text} />
               {turn.reply ? <Line role="bot" text={turn.reply} /> : null}
               {working && !turn.reply ? <BotAvatar bot={MAIN_BOT} working size={28} /> : null}
-              {turn.state === "error" ? <Failure text={BOTS_STRINGS.errors[turn.error ?? "failed"]} onRetry={onRetry} /> : null}
+              {turn.state === "error" ? <Failure text={botsErrorText(turn.error ?? "failed", MAIN_BOT.name)} onRetry={onRetry} /> : null}
             </>
           ) : null}
           <div ref={end} data-bots-chat-end="" />

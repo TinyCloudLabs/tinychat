@@ -210,7 +210,7 @@ describe("app CORS origins", () => {
 });
 
 describe("phone app origins during the TC-3045 move", () => {
-  // Builds from before the move keep working until the new-origin tester builds are out (removal: TC-3046).
+  // Builds from before the move keep working.
   test.each(["https://app.tinycloud.one", "tinycloudone://app.tinycloud.one", "https://localhost", "capacitor://localhost"])(
     "allows %s",
     async (origin) => {
