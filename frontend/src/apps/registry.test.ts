@@ -75,8 +75,8 @@ describe("joinScopes", () => {
   test("no serial comma", () => {
     expect(joinScopes(["secrets"])).toBe("your secrets");
     expect(joinScopes(["secrets", "variables"])).toBe("your secrets and your environment variables");
-    expect(joinScopes(["installedApps", "spaces", "accountSummary", "delegations"])).toBe(
-      "your installed apps, the list of your spaces, your account summary and the access you've given to apps and agents",
+    expect(joinScopes(["installedApps", "spaces", "publicSpace"])).toBe(
+      "your installed apps, the list of your spaces and your public space",
     );
   });
 

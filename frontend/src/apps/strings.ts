@@ -33,8 +33,6 @@ export const SCOPE_PHRASES = {
   secretNames: "the names of your secrets and variables, not their values",
   installedApps: "your installed apps",
   spaces: "the list of your spaces",
-  accountSummary: "your account summary",
-  delegations: "the access you've given to apps and agents",
   courier: "your Courier threads and messages, the agents you've paired and requests waiting for you",
 } as const;
 
