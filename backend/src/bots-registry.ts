@@ -13,6 +13,8 @@ import { isKvPreconditionFailed, readVersionedKv, type ExoKvGetOptions, type Exo
 export interface RegistryKv {
   get(key: string, options: ExoKvGetOptions): Promise<unknown>;
   put(key: string, value: unknown, options: ExoKvPutOptions): Promise<unknown>;
+  /** One page of the keys under a prefix. Needed only to find every owner that has a record. */
+  list?(options: { prefix: string; cursor?: string }): Promise<unknown>;
 }
 
 export type BotEnvironment = "private" | "regular";
@@ -298,6 +300,29 @@ export class BotsRegistry {
       return { result: true, next: { bots: current.bots.filter(other => other.key !== key), deleted: [...current.deleted, entry] } };
     })).result;
   }
+
+  /**
+   * Every owner that has a record. A listing that is cut short with no way to continue is an error, never a shorter
+   * list: an owner left out would have work that is never picked up.
+   */
+  async owners(): Promise<string[]> {
+    if (!this.#kv.list) throw new RegistryUnavailable("list");
+    const owners: string[] = [];
+    let cursor: string | undefined;
+    for (let page = 0; page < MAX_LIST_PAGES; page += 1) {
+      const listed = listPage(assertKvResult(await this.#kv.list({ prefix: "bots/registry/", ...(cursor === undefined ? {} : { cursor }) })));
+      for (const key of listed.keys) {
+        const address = /(?:^|\/)bots\/registry\/(0x[0-9a-f]{40})$/.exec(key)?.[1];
+        if (address) owners.push(address);
+      }
+      if (listed.nextCursor === undefined) {
+        if (listed.truncated) throw new RegistryUnavailable("list");
+        return owners;
+      }
+      cursor = listed.nextCursor;
+    }
+    throw new RegistryUnavailable("list");
+  }
 }
 
 export type AdmissionRefusal = "unknown_source" | "unknown_target" | "same_bot" | "source_not_active" | "target_not_active" | "different_environment" | "unavailable";
@@ -353,3 +378,17 @@ export function publicBot(bot: Bot): Omit<Bot, "grantClosed" | "revoke"> {
 
 /** A deleted bot as its owner is shown it: its key and its name. */
 export const publicDeleted = (entry: DeletedBot): { key: string; name: string } => ({ key: entry.key, name: entry.name });
+
+/** Pages a listing may take before it is given up as unavailable, so a store that never ends its listing cannot hold a pass up for ever. */
+const MAX_LIST_PAGES = 1000;
+
+/** One page of a listing, checked field by field. */
+function listPage(result: unknown): { keys: string[]; nextCursor: string | undefined; truncated: boolean } {
+  const data = typeof result === "object" && result !== null ? field(result, "data") : undefined;
+  if (typeof data !== "object" || data === null) throw new RegistryUnavailable("list");
+  const keys = field(data, "keys");
+  const nextCursor = field(data, "nextCursor");
+  if (!Array.isArray(keys) || !keys.every((key): key is string => typeof key === "string")) throw new RegistryUnavailable("list");
+  if (nextCursor !== undefined && nextCursor !== null && typeof nextCursor !== "string") throw new RegistryUnavailable("list");
+  return { keys, nextCursor: typeof nextCursor === "string" && nextCursor !== "" ? nextCursor : undefined, truncated: field(data, "truncated") === true };
+}

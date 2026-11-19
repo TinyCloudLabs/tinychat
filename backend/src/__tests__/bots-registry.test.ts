@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { addressFromOwnerDid, admission, BotsRegistry, parseOwnerBots, turnListHook, type AdmissionRefusal, type BotEnvironment, type RegistryKv } from "../bots-registry.js";
+import { fakeRegistryStore } from "./helpers/fake-registry-store.js";
 
 const ADDRESS = `0x${"Ab".repeat(20)}`;
 const KEY = `bots/registry/${ADDRESS.toLowerCase()}`;
@@ -537,5 +538,43 @@ describe("deleting a bot", () => {
       await expect(new BotsRegistry(kv).read(ADDRESS)).rejects.toThrow("bots_registry_unavailable");
       expect(kv.rows.get(KEY)).toEqual(before);
     }
+  });
+});
+
+describe("every owner that has a record", () => {
+  const address = (digit: string) => `0x${digit.repeat(40)}`;
+  const record = JSON.stringify({ v: 1, seq: 1, deleted: [], bots: [{ key: "main", name: "Main", shape: "pebble", colour: "blue", environment: "private", state: "active", createdAt: T0.toISOString() }] });
+  const filled = () => {
+    // The shared stand-in store, which can list and page; the one above in this file cannot.
+    const kv = fakeRegistryStore();
+    for (const digit of ["1", "2", "3", "4", "5"]) kv.rows.set(`bots/registry/${address(digit)}`, { version: 1, value: record });
+    // Neither of these is an owner's record.
+    kv.rows.set("bots/registry/not-an-address", { version: 1, value: record });
+    kv.rows.set(`bots/other/${address("9")}`, { version: 1, value: record });
+    return kv;
+  };
+  const all = ["1", "2", "3", "4", "5"].map(address);
+
+  test("is found, across as many pages as the listing takes", async () => {
+    for (const pageSize of [undefined, 1, 2, 5]) {
+      const kv = filled();
+      kv.pageSize = pageSize;
+      expect([pageSize, (await new BotsRegistry(kv).owners()).sort()]).toEqual([pageSize, all]);
+    }
+  });
+
+  test("a listing that is cut short with no way to continue is an error, never a shorter list", async () => {
+    const kv = filled();
+    kv.pageSize = 2;
+    kv.cutShort = true;
+    await expect(new BotsRegistry(kv).owners()).rejects.toThrow("bots_registry_unavailable");
+  });
+
+  test("a store that cannot be reached, or cannot list, is an error", async () => {
+    const kv = filled();
+    kv.down = true;
+    await expect(new BotsRegistry(kv).owners()).rejects.toThrow();
+    const reachable = filled();
+    await expect(new BotsRegistry({ get: reachable.get, put: reachable.put }).owners()).rejects.toThrow("bots_registry_unavailable");
   });
 });
