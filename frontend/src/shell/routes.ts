@@ -52,6 +52,33 @@ export function notePath(id: string): string {
   return `${PATHS.library}/${encodeURIComponent(id)}`;
 }
 
+const CARD_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const cardIdOf = (segment: string | undefined): string | null => (segment !== undefined && CARD_ID.test(segment) ? segment.toLowerCase() : null);
+
+/**
+ * The address of one Feed card: /chat/feed/<card id>, always the card's latest revision. It is a path under the Feed,
+ * so it needs no screen of its own, survives sign-in in place and keeps Back and reload. There is no return parameter:
+ * the id is only ever compared with loaded cards, never navigated to.
+ */
+export function feedCardPath(cardId: string): string {
+  return `${PATHS.feed}/${cardId}`;
+}
+
+/** The card id a pathname names: exactly /chat/feed/<one UUID>, else null (the plain Feed). Never throws. */
+export function feedCardTarget(pathname: string): string | null {
+  const path = trim(pathname);
+  return path.startsWith(`${PATHS.feed}/`) ? cardIdOf(path.slice(PATHS.feed.length + 1)) : null;
+}
+
+/** The short address, /feed/<card id>, which lands on the same page as feedCardPath. */
+export const FEED_ALIAS_PATH = "/feed";
+
+/** Where /feed/<segment> goes: the card's page when the segment is a card id, else the plain Feed. A constant plus a checked id, never the text. */
+export function feedAliasTarget(segment: string | undefined): string {
+  const cardId = cardIdOf(segment);
+  return cardId ? feedCardPath(cardId) : PATHS.feed;
+}
+
 /** The Library's query that shows only this account's recordings whose audio is only in this browser. */
 export const LOCAL_AUDIO_FILTER = { param: "show", value: "local-audio" } as const;
 /** The Library filtered to that list (the tinycloud.chat notice links here). */
