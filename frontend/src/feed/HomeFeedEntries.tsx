@@ -23,7 +23,7 @@ import { cardStatus } from "./cardStatus";
 import { agentProfile } from "./AgentMark";
 import { HistoryTimeline, historyFromEntry } from "./HistoryTimeline";
 import { FeedMap } from "./FeedMap";
-import { STREAM_COVER_PX, STREAM_HEADING_CLASS, STREAM_ROOM_PX, STREAM_STICKY_TOP, type StreamSection } from "./feedStream";
+import { STREAM_COVER_PX, STREAM_HEADING_CLASS, STREAM_ROOM_CLASS, STREAM_STICKY_TOP, type StreamSection } from "./feedStream";
 import { readFeedViewMode, saveFeedViewMode, type FeedViewMode } from "./feedViewMode";
 import { SEEN_DWELL_MS, SEEN_THRESHOLDS, visibleEnoughToSee } from "./expandedSeen";
 import { FloatingHeader } from "./FloatingHeader";
@@ -1303,7 +1303,7 @@ export function HomeFeedEntries({ source, ask, linked }: { source: HomeFeedSourc
         {sections.filter(([id]) => id === "history").map(sectionNode)}
       </div>}
       {/* Room under the stream, so the last section can still come up under the pinned row. */}
-      {agentPage === null && !!listed.length && <div aria-hidden style={{ height: STREAM_ROOM_PX }} />}
+      {agentPage === null && !!listed.length && <div aria-hidden className={STREAM_ROOM_CLASS} />}
       </div>
     </MorphConfig>
     </div>
