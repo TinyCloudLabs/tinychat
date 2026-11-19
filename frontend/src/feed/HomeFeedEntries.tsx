@@ -1,6 +1,6 @@
 import { Link } from "react-router-dom";
 import { PATHS } from "@/shell/routes";
-import { useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useContext, useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { AnimatePresence } from "motion/react";
 import { ChevronRightIcon, InfoIcon, SlidersHorizontalIcon, TriangleAlertIcon } from "lucide-react";
 import type { FeedResponse, NewFeedMessage, NewFeedResponse } from "@tinycloud/sdk-services/feed";
@@ -451,6 +451,8 @@ export function HomeFeedEntries({ source, ask, linked }: { source: HomeFeedSourc
   const headerRef = useRef<HTMLElement>(null);
   // The card to bring into view once the list has laid out: one just opened (to just under the sticky heading), or one just folded from its foot.
   const scrollTo = useRef<{ key: string; fold: boolean } | null>(null);
+  /** The card the owner just opened or folded: focus goes to its fold control or to its row once the render has put it there. */
+  const focusAfter = useRef<{ key: string; open: boolean } | null>(null);
   // Drop this card, Acknowledge, Ask me later and Show me later take the card away at once; a bar at the bottom
   // counts the same 5 s as every send, with Undo, and only then is the action written (held in the outbox).
   const undoBar = useUndoBar((message) => setError({ lead: message, text: "Try again." }));
@@ -846,6 +848,16 @@ export function HomeFeedEntries({ source, ask, linked }: { source: HomeFeedSourc
     const off = offset < STREAM_COVER_PX || offset > root.clientHeight - 80;
     if (target.fold ? off : single ? Math.abs(offset - rests) > 2 : off) root.scrollTo({ top: root.scrollTop + offset - rests, behavior });
   });
+  // Focus follows the card (the row's own button is replaced by the open card, and its Show less by the row): to the open
+  // card's fold control when it opens, to its row when it folds. Not scrolled to: the scroll above decides where it sits.
+  useEffect(() => {
+    const target = focusAfter.current, root = mainRef.current;
+    if (!target || !root) return;
+    focusAfter.current = null;
+    const item = [...root.querySelectorAll<HTMLElement>("li[data-card-key]")].find((candidate) => candidate.dataset.cardKey === target.key);
+    const buttons = item?.querySelectorAll<HTMLElement>(target.open ? "button[data-card-fold]" : "button[data-card-row]");
+    [...(buttons ?? [])].find((button) => !button.closest("[inert]"))?.focus({ preventScroll: true });
+  });
 
   const onSaved = useCallback((entry: HomeFeedEntry, response: FeedResponse) => {
     if (currentSource.current !== source) return;
@@ -909,11 +921,12 @@ export function HomeFeedEntries({ source, ask, linked }: { source: HomeFeedSourc
   function addOpen(key: string) {
     setOpened((current) => lift ? new Set([...current].filter((other) => waits.has(other))).add(key) : withOpened(current, key));
   }
-  /** Opens a card (in place, or lifted over the stream on a wide screen) and brings its row into view. */
-  function openCard(entry: HomeFeedEntry) {
+  /** Opens a card (in place, or lifted over the stream on a wide screen) and brings its row into view; in place, focus goes to its fold control, except from "See options", whose next stop is the first option. */
+  function openCard(entry: HomeFeedEntry, moveFocus = true) {
     engage(entry);
     addOpen(lineageKey(entry));
     scrollTo.current = { key: keyOf(entry), fold: false };
+    if (moveFocus) focusAfter.current = { key: keyOf(entry), open: true };
   }
   /** Closes the lifted card: the row it came from takes focus back. */
   function closeLifted(entry: HomeFeedEntry) {
@@ -925,6 +938,18 @@ export function HomeFeedEntries({ source, ask, linked }: { source: HomeFeedSourc
     const key = lineageKey(entry);
     setOpened((current) => { const next = new Set(current); next.delete(key); return next; });
     if (fromFoot) scrollTo.current = { key: keyOf(entry), fold: true };
+    focusAfter.current = { key: keyOf(entry), open: false };
+  }
+  /** Escape in an open card folds it, as the X closes a card on a wide screen. Not while typing, and not when a control already took the key (Undo, a popover). */
+  function escapeFolds(event: KeyboardEvent<HTMLElement>) {
+    if (event.key !== "Escape" || event.defaultPrevented || event.nativeEvent.isComposing || viewMode === "expanded") return;
+    const target = event.target as HTMLElement;
+    if (target.closest("input, textarea, select, [contenteditable]")) return;
+    const key = target.closest<HTMLElement>("li[data-card-key]")?.dataset.cardKey;
+    const entry = key ? shown.find((candidate) => keyOf(candidate) === key) : undefined;
+    if (!entry || !isOpen(entry)) return;
+    event.preventDefault();
+    fold(entry);
   }
   function release(entry: HomeFeedEntry) {
     const key = lineageKey(entry);
@@ -1086,7 +1111,7 @@ export function HomeFeedEntries({ source, ask, linked }: { source: HomeFeedSourc
     const text = postOf(entry) ?? entry.state.card.title;
     const line = describe(entry);
     return <CompactCard layout={viewMode === "cards" ? "tile" : "row"} agentKey={agentKey(entry, context?.record)} author={author} platform={agentProfile(entry.state.card.payload)?.platform}
-      text={text} now={clock} onOpen={() => openCard(entry)}
+      text={text} now={clock} onOpen={() => openCard(entry)} controls={openCardId(lineageKey(entry))}
       {...(line !== text ? { note: line } : {})}
       {...(priority !== undefined ? { priority } : {})} {...(replies ? { replies } : {})} {...(status ? { status } : {})} {...(due ? { due } : {})}
       {...(type ? { type } : {})} {...(courier ? { courier: { ...courier, via: author } } : {})} />;
@@ -1121,7 +1146,7 @@ export function HomeFeedEntries({ source, ask, linked }: { source: HomeFeedSourc
     const priority = timingOf(entry).priority;
     const closed = !!closureOf(entry);
     // Open in place: fold it back to a row from the top right, beside its status. In Expanded every card is open, so there is nothing to fold to. Lifted over the stream, the same place holds the X.
-    const collapse = lifted ? <DesktopCardClose onClick={() => closeLifted(entry)} /> : viewMode === "expanded" ? undefined : <button type="button" aria-expanded aria-label="Show less" onClick={() => fold(entry)} className="-my-1 flex size-11 items-center justify-center rounded-full text-muted-foreground hover:bg-surface-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring fine:my-0 fine:size-9"><ChevronRightIcon aria-hidden className="size-4 -rotate-90" /></button>;
+    const collapse = lifted ? <DesktopCardClose onClick={() => closeLifted(entry)} /> : viewMode === "expanded" ? undefined : <button type="button" data-card-fold aria-expanded aria-label="Show less" onClick={() => fold(entry)} className="-my-1 flex size-11 items-center justify-center rounded-full text-muted-foreground hover:bg-surface-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring fine:my-0 fine:size-9"><ChevronRightIcon aria-hidden className="size-4 -rotate-90" /></button>;
     const wake = snoozedNow(entry, clock) ? <button type="button" onClick={() => void unsnooze(entry)} className={footActionClass}>Bring back now</button> : undefined;
     const status = statusOf(entry, author.name);
     const options = retained || lifted || viewMode === "expanded" ? 0 : optionCountOf(entry);
@@ -1178,7 +1203,7 @@ export function HomeFeedEntries({ source, ask, linked }: { source: HomeFeedSourc
         ? <div id={openCardId(key)} hidden={waiting} inert={waiting}>{fullCard(entry, retained)}</div>
         : <>
           {compactCard(entry)}
-          {options > 0 && <OptionsToggle inset count={options} post={postOf(entry) ?? entry.state.card.title} open={false} controls={openCardId(key)} onToggle={() => openCard(entry)} />}
+          {options > 0 && <OptionsToggle inset count={options} post={postOf(entry) ?? entry.state.card.title} open={false} controls={openCardId(key)} onToggle={() => openCard(entry, false)} />}
         </>}
       {/* The Snoozed list: each card can come back now without opening it. */}
       {snoozedOnly && !openHere && snoozedNow(entry, clock) && <div className="flex justify-end px-2 pb-2"><button type="button" onClick={() => void unsnooze(entry)} className={footActionClass}>Bring back now</button></div>}
@@ -1284,7 +1309,7 @@ export function HomeFeedEntries({ source, ask, linked }: { source: HomeFeedSourc
       {list.length ? <ul className="space-y-2">{renderList(list)}</ul> : <p className="px-1 py-1 text-[15px] text-muted-foreground">Nothing needs you.</p>}
     </section>;
   };
-  return <PendingSendContext.Provider value={pendingSends.current}><MotionFeatures><main ref={mainRef} className="h-full min-w-0 overflow-x-hidden overflow-y-auto overscroll-y-contain bg-background text-foreground [overflow-anchor:none]" aria-label={NAV_LABEL_HOME}>
+  return <PendingSendContext.Provider value={pendingSends.current}><MotionFeatures><main ref={mainRef} className="h-full min-w-0 overflow-x-hidden overflow-y-auto overscroll-y-contain bg-background text-foreground [overflow-anchor:none]" aria-label={NAV_LABEL_HOME} onKeyDown={escapeFolds}>
     <div className="mx-auto w-full max-w-[672px] min-w-0 px-3 pb-[calc(var(--tc-bottom-chrome)+2rem)] pt-5 sm:px-6 lg:max-w-[760px] lg:px-8 lg:pt-10">
     <MorphConfig>
       {/* One header for every state, phone and desktop (briefs/feed-lab/design/toprow). "Feed" with the Agents pill on
