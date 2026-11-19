@@ -35,8 +35,6 @@ import { BootSurface } from "@/shell/BootSurface";
 import { HOME_PATH, legacyRedirectFor, screenFor } from "@/shell/routes";
 import type { createRuntimeShim } from "./runtimeShim";
 import { HARNESS_ADDRESS, HARNESS_DID, harnessSessionStore, harnessTcw } from "./stubs";
-import { createBotChatApi } from "@/bots/botChatApi";
-import { createBotsApi } from "@/bots/botsApi";
 import { ChatSlot } from "@/bots/ChatSlot";
 
 const EMPTY_VIEW: SelectionView = {
@@ -87,9 +85,6 @@ export function ShellApp({ platform, shim, state, probe = (_id, node) => node, c
   const selectionControllerRef = useRef<ModelSelectionController | null>(null);
   const memoryRef = useRef<string | null>(null);
   const backendUrl = window.location.origin;
-  // As App's Chat slot, against the harness page's own /api/bots/ (a 404 there: the account isn't let into bots).
-  const botsApi = useMemo(() => createBotsApi({ baseUrl: backendUrl, getToken: harnessSessionStore.getToken }), [backendUrl]);
-  const botChatApi = useMemo(() => createBotChatApi({ baseUrl: backendUrl, getToken: harnessSessionStore.getToken }), [backendUrl]);
 
   // As App: voice notes in the phone app, through the one recorder once ready.
   const voiceNotesInApp = useMemo(() => nativeVoiceNotesAvailable(), []);
@@ -111,7 +106,7 @@ export function ShellApp({ platform, shim, state, probe = (_id, node) => node, c
       pendingMeetings={0}
       chat={probe(
         "chat",
-        <ChatSlot account={HARNESS_DID} tcw={shim.tcw} active={screen.destination === "chat"} api={botsApi} chatApi={botChatApi} history={null} classic={
+        <ChatSlot account={HARNESS_DID} tcw={shim.tcw} active={screen.destination === "chat"} classic={
         <ChatWorkspace
           tcw={shim.tcw}
           sessionStore={shim.sessionStore}

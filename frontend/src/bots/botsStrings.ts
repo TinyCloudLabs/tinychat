@@ -50,6 +50,19 @@ export const BOT_VIEW_STRINGS = {
   } satisfies Record<BotsErrorCode, (name: string) => string>,
   /** For a bot other than Main: HISTORY_EXPIRY_NOTICE with the bot's name. */
   historyExpiryNotice: (name: string) => HISTORY_EXPIRY_NOTICE.replace("Main's chat history", `${name}'s chat history`),
+  /** The bots under Chat in the navigation. */
+  botsList: "Bots",
+  newBot: "New bot",
+  /** A bot's row when it replied while another bot was on screen. */
+  unseen: (name: string) => `${name}, new reply`,
+  // The Chat view choice in Settings: owner-approved copy, verbatim.
+  chatView: {
+    label: "Chat view",
+    classic: "Classic",
+    bots: "Bots",
+    helper: "Classic is the chat you've used so far. Bots gives each bot its own chat.",
+    notAdmitted: "Bots aren't on this account. Classic chat works as before.",
+  },
 } as const;
 
 export const CREATE_BOT_STRINGS = {
