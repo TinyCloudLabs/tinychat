@@ -102,9 +102,6 @@ async function click(root: ParentNode, label: string) {
   const target = button(root, label);
   if (!target || target.disabled) throw new Error(`Missing enabled ${label} button`);
   await act(async () => target.click());
-  // The key form sits behind "Connect with an API key", so opening Connect also opens it.
-  const openKey = label === "Connect" && root === row() ? button(dialog() ?? document, "Connect with an API key") : undefined;
-  if (openKey) await act(async () => openKey.click());
 }
 
 async function enterKey(value: string) {
@@ -156,6 +153,7 @@ async function connect(f: ReturnType<typeof fixture>) {
 test("Connect sends the masked key only through TinyCloud and saves summary and transcript", async () => mounted(async f => {
   await click(row(), "Connect");
   expect(row().textContent).toContain("Not connected");
+  await click(dialog()!, "Connect with an API key");
   expect(dialog()?.textContent).toContain("Your API key is kept in TinyCloud's encrypted secrets. Each sync sends it through the TinyCloud One server to Granola, and that server never stores or logs it.");
   expect(dialog()?.textContent).toContain("API keys need a Granola Business or Enterprise plan.");
   expect(dialog()?.querySelector("input")?.type).toBe("password");
