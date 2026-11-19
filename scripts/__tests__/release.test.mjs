@@ -9,7 +9,7 @@ import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
 import { dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { changelogSection, classifyPagesCheckRuns, desktopBundleVersions, desktopProduct, planDispatches, setCargoLockVersion, setCargoTomlVersion, stablePlan } from '../release/lib.mjs';
+import { changelogSection, classifyPagesCheckRuns, desktopBundleVersions, explainUnservedHost, hostServesCommit, desktopProduct, planDispatches, setCargoLockVersion, setCargoTomlVersion, stablePlan } from '../release/lib.mjs';
 
 const require = createRequire(import.meta.url);
 const eslintAjv = createRequire(realpathSync(require.resolve('eslint/package.json')))('ajv');
@@ -2426,4 +2426,48 @@ test('a Releases list that cannot be read in full fails closed', { skip: !change
     git(root, 'reset', '-q', '--hard', 'HEAD');
     git(root, 'clean', '-fdq');
   }
+});
+
+test('hostServesCommit says whether a web host serves the deployed commit, and why not', async () => {
+  const COMMIT = 'a'.repeat(40);
+  const answer = (body, init = {}) => async url => {
+    assert.equal(new URL(url).pathname, '/version.json');
+    assert.equal(new URL(url).searchParams.get('deploy'), COMMIT);
+    return new Response(body, { status: 200, headers: { 'content-type': 'application/json; charset=utf-8' }, ...init });
+  };
+  assert.deepEqual(await hostServesCommit('tinycloud.one', COMMIT, answer(JSON.stringify({ commit: COMMIT }))), { ok: true, served: COMMIT });
+  assert.deepEqual(await hostServesCommit('tinycloud.chat', COMMIT, answer(JSON.stringify({ commit: 'b'.repeat(40) }))), { ok: false, served: 'b'.repeat(40) });
+  assert.deepEqual(await hostServesCommit('x', COMMIT, answer(JSON.stringify({ commit: null }))), { ok: false, served: 'no commit' });
+  // A domain on another Pages project answers the SPA shell for /version.json.
+  const html = await hostServesCommit('home.tinycloud.xyz', COMMIT, answer('<!doctype html>', { headers: { 'content-type': 'text/html; charset=utf-8' } }));
+  assert.equal(html.ok, false);
+  assert.match(html.served, /text\/html/);
+  assert.deepEqual(await hostServesCommit('x', COMMIT, async () => new Response('nope', { status: 503 })), { ok: false, served: 'HTTP 503' });
+  const down = await hostServesCommit('x', COMMIT, async () => { throw new Error('connect ECONNREFUSED'); });
+  assert.equal(down.ok, false);
+  assert.match(down.served, /ECONNREFUSED/);
+});
+
+test('explainUnservedHost names the host and tells apart not attached, not bound and an older build', async () => {
+  const COMMIT = 'a'.repeat(40);
+  const html = { 'content-type': 'text/html; charset=utf-8' };
+  const explain = async (host, respond) => {
+    const result = await hostServesCommit(host, COMMIT, respond);
+    assert.equal(result.ok, false);
+    return explainUnservedHost(host, result.served, COMMIT);
+  };
+  const unattached = await explain('tinycloud.one', async () => { throw new Error('getaddrinfo ENOTFOUND tinycloud.one'); });
+  assert.match(unattached, /^tinycloud\.one did not answer \(getaddrinfo ENOTFOUND tinycloud\.one\)/);
+  assert.match(unattached, /not attached to the Cloudflare Pages project/);
+  const spaShell = await explain('tinycloud.one', async () => new Response('<!doctype html>', { status: 200, headers: html }));
+  assert.match(spaShell, /^tinycloud\.one answers but has no version\.json/);
+  assert.match(spaShell, /not bound to the Cloudflare Pages project that built a{40}/);
+  const missing = await explain('home.tinycloud.xyz', async () => new Response('nope', { status: 404 }));
+  assert.match(missing, /^home\.tinycloud\.xyz answers but has no version\.json.*HTTP 404/);
+  const edgeError = await explain('tinycloud.one', async () => new Response('bad gateway', { status: 502 }));
+  assert.match(edgeError, /^tinycloud\.one answered HTTP 502 for version\.json/);
+  assert.doesNotMatch(edgeError, /not bound/);
+  const older = await explain('tinycloud.chat', async () => new Response(JSON.stringify({ commit: 'b'.repeat(40) }), { status: 200, headers: { 'content-type': 'application/json' } }));
+  assert.match(older, /^tinycloud\.chat serves b{40}, not a{40}: an older build/);
+  assert.equal(explainUnservedHost('x', 'no commit', COMMIT), 'x serves a version.json without a commit: it is an older build or another project');
 });

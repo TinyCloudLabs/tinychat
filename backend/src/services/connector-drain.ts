@@ -344,7 +344,7 @@ export function isTombstoned(
   ledger: PurgeLedger | null,
 ): boolean {
   if (ledger === null) return false;
-  if (ledger.recentIds.includes(item.meetingId)) return true;
+  if (ledger.recentIds.includes(item.meetingId) || ledger.matchesRecentIdCode?.(item.meetingId)) return true;
   // The PROVIDER's timestamp, and ONLY it. `receivedAt` is set to `now` on every (re-)delivery
   // and a purge clears the queue, so every post-purge item — replayed capture or genuinely new —
   // carries a `receivedAt` on the safe side of the watermark. Comparing it does not merely weaken
@@ -380,7 +380,7 @@ export function tombstoneReason(
   item: Pick<PendingItem, "meetingId" | "receivedAt" | "sourceTimestamp">,
   ledger: PurgeLedger | null,
 ): string {
-  if (ledger !== null && ledger.recentIds.includes(item.meetingId))
+  if (ledger !== null && (ledger.recentIds.includes(item.meetingId) || ledger.matchesRecentIdCode?.(item.meetingId)))
     return "purged";
   if (item.sourceTimestamp === undefined) return "purged_no_timestamp";
   return "purged";

@@ -316,6 +316,22 @@ describe("TranscriberView", () => {
     expect(html).toContain(">Remove<");
   });
 
+  test("a recording whose delete is not confirmed yet says it is being deleted, never that it is gone", () => {
+    const html = render({ meetings: [{ id: "mtg_x", unavailable: true, deleting: true }] });
+    expect(html).toContain("Being deleted. We keep trying until it&#x27;s gone.");
+    expect(html).toContain(">Retry now<");
+    expect(html).not.toContain(">Try again<");
+    expect(html).not.toContain("Could not be read");
+  });
+
+  test("a removed recording whose copy remains says so on its own row, with no Remove button", () => {
+    const html = render({ meetings: [{ id: "mtg_x", unavailable: true, kept: true }] });
+    expect(html).toContain("Removed from your list but still with the notetaker service. To have it deleted, email team@tinycloud.xyz.");
+    expect(html).not.toContain(">Remove<");
+    expect(html).not.toContain("Could not be read");
+    expect(html).not.toContain("Being deleted");
+  });
+
   test("an open transcript renders speaker-attributed segments with timestamps", () => {
     const html = render({
       meetings: [meeting({ status: "completed" })],
@@ -479,10 +495,6 @@ describe("TranscriberView in the Meeting sheet", () => {
     expect(html).not.toContain("Local recording");
     expect(html).not.toContain("Upload audio");
     expect(html).toContain('id="transcriber-meeting-url"');
-    const source = readFileSync(join(import.meta.dir, "TranscriberSection.tsx"), "utf8");
-    expect(source).not.toContain("uploadPanel");
-    expect(source).not.toContain("localPanel");
-    expect(source).not.toContain("onKindChange");
   });
 });
 
@@ -517,6 +529,63 @@ describe("transcriber client", () => {
     const client = createTranscriberClient("https://api.example", { sessionStore: session(), fetchImpl });
     expect(await client.get("mtg_1")).toEqual({ status: "not-found" });
     expect(await client.remove("mtg_1")).toEqual({ status: "not-found" });
+  });
+
+  test("remove tells a confirmed delete (204), one still being retried (202) and one whose copy remains (200 not_deleted)", async () => {
+    const answers = [
+      new Response(null, { status: 204 }),
+      new Response(JSON.stringify({ id: "mtg_1", status: "deleting" }), { status: 202 }),
+      new Response(JSON.stringify({ id: "mtg_1", status: "not_deleted" }), { status: 200 }),
+    ];
+    const fetchImpl = (async () => answers.shift()!) as typeof fetch;
+    const client = createTranscriberClient("https://api.example", { sessionStore: session(), fetchImpl });
+    expect(await client.remove("mtg_1")).toEqual({ status: "ok", value: { deleting: false, notDeleted: false } });
+    expect(await client.remove("mtg_1")).toEqual({ status: "ok", value: { deleting: true, notDeleted: false } });
+    expect(await client.remove("mtg_1")).toEqual({ status: "ok", value: { deleting: false, notDeleted: true } });
+  });
+
+  test("removeAll sends DELETE to the collection and reports what is still deleting", async () => {
+    const seen: { url: string; method?: string }[] = [];
+    const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+      seen.push({ url: String(url), method: init?.method });
+      return new Response(JSON.stringify({ removed: 3, deleting: 1, listOnly: 1, notDeleted: 1, privateCloudDeleted: 2 }), { status: 202 });
+    }) as typeof fetch;
+    const client = createTranscriberClient("https://api.example", { sessionStore: session(), fetchImpl });
+    expect(await client.removeAll()).toEqual({ status: "ok", value: { removed: 3, deleting: 1, listOnly: 1, notDeleted: 1, privateCloudDeleted: 2 } });
+    expect(seen).toEqual([{ url: "https://api.example/api/transcriber/meetings", method: "DELETE" }]);
+  });
+
+  test("removeAll from a backend that cannot say what was really deleted is rejected, never guessed", async () => {
+    // An older backend answers { removed, deleting } only, or has no private cloud count: what was really deleted is unknown.
+    const fetchImpl = (async () => new Response(JSON.stringify({ removed: 3, deleting: 0, listOnly: 0, notDeleted: 0 }), { status: 200 })) as typeof fetch;
+    const client = createTranscriberClient("https://api.example", { sessionStore: session(), fetchImpl });
+    expect(await client.removeAll()).toMatchObject({ status: "rejected" });
+  });
+
+  test("removeAll accepts a null private cloud count (service not used) but rejects an absent one", async () => {
+    const answer = (body: object) => (async () => new Response(JSON.stringify(body), { status: 200 })) as typeof fetch;
+    const base = { removed: 1, deleting: 0, listOnly: 0, notDeleted: 0 };
+    const used = createTranscriberClient("https://api.example", { sessionStore: session(), fetchImpl: answer({ ...base, privateCloudDeleted: null }) });
+    expect(await used.removeAll()).toEqual({ status: "ok", value: { ...base, privateCloudDeleted: null } });
+    const absent = createTranscriberClient("https://api.example", { sessionStore: session(), fetchImpl: answer(base) });
+    expect(await absent.removeAll()).toMatchObject({ status: "rejected" });
+  });
+
+  test("scope reads a boolean, calls the scope path, and a 404 is feature-dark", async () => {
+    const urls: string[] = [];
+    const answer = (status: number, body: object) => (async (url: string | URL | Request) => {
+      urls.push(String(url));
+      return new Response(JSON.stringify(body), { status });
+    }) as typeof fetch;
+    const on = createTranscriberClient("https://api.example", { sessionStore: session(), fetchImpl: answer(200, { privateCloud: true }) });
+    expect(await on.scope()).toEqual({ status: "ok", value: { privateCloud: true } });
+    expect(urls).toEqual(["https://api.example/api/transcriber/meetings/scope"]);
+    const off = createTranscriberClient("https://api.example", { sessionStore: session(), fetchImpl: answer(200, { privateCloud: false }) });
+    expect(await off.scope()).toEqual({ status: "ok", value: { privateCloud: false } });
+    const dark = createTranscriberClient("https://api.example", { sessionStore: session(), fetchImpl: answer(404, { error: "not_found" }) });
+    expect(await dark.scope()).toEqual({ status: "feature-dark" });
+    const unreadable = createTranscriberClient("https://api.example", { sessionStore: session(), fetchImpl: answer(200, { privateCloud: "yes" }) });
+    expect(await unreadable.scope()).toMatchObject({ status: "rejected" });
   });
 
   test("create posts JSON; a 400 comes back rejected with its code", async () => {

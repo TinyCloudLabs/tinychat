@@ -11,6 +11,8 @@
 // has the rest. Private uploads use the account's versioned voice-note disclosure.
 
 import { useCallback, useContext, useEffect, useMemo, useState, useSyncExternalStore, type FC, type ReactNode } from "react";
+import { useOriginMoveDeferral } from "@/shell/OriginMoveNotice";
+import { uploadHoldsMove } from "@/shell/unsavedWork";
 import { useNavigate } from "react-router-dom";
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
@@ -480,6 +482,8 @@ export const AudioUploadPanel: FC<AudioUploadPanelProps> = ({ tcw, backendUrl, s
   const onContinue = useCallback(() => continuePausedUpload(deps), [deps]);
 
   const [file, setFile] = useState<File | null>(null);
+  // A picked file not yet sent exists only in this page: a held tinycloud.chat page does not move under it.
+  useOriginMoveDeferral(uploadHoldsMove({ pastedText: "", pickedFile: file !== null }));
   const [engine, setEngine] = useState<UploadEngine>(readDefaultUploadEngine);
   const [diarize, setDiarize] = useState(true);
   const [privateConsent, setPrivateConsent] = useState(() => consentStore.get());

@@ -19,10 +19,14 @@ import {
   supportsBackgroundNotifications,
 } from "@/chat/backgroundSyncState";
 import { ConnectorConnectDialog } from "@/chat/ConnectorDialog";
+import { GranolaAllowBack } from "@/chat/GranolaAllowBack";
+import { GranolaReconnect, GranolaSummariesNotice } from "@/chat/GranolaConnectionNotices";
+import { GRANOLA_CSV_STRINGS } from "@/lib/connectors/granolaCsvStrings";
 import { describeGmeetLive, gmeetPressLabel } from "@/chat/GmeetCardStatus";
 import { useBackgroundSync } from "@/chat/useBackgroundSync";
 import { useGmeetRowStatus } from "@/chat/useGmeetRowStatus";
 import * as connectorStore from "@/lib/connectors/connectorStore";
+import { GRANOLA_LAST_SYNC_FAILED, granolaKeyExpired, granolaSummariesOnly, granolaSyncErrorMessage } from "@/lib/connectors/granolaStatus";
 import { clearGmeetLastRun } from "@/lib/connectors/gmeetLastRun";
 import { getGmeetMeetingCount, onGmeetMeetingCount, refreshGmeetMeetingCount } from "@/lib/connectors/gmeetLiveCount";
 import { onGmeetNotesSettled } from "@/lib/connectors/gmeetSync";
@@ -46,6 +50,8 @@ import {
   meetingSourceStatus,
   meetingSourcesSummary,
   sourceRowDisplay,
+  meetingCount,
+  syncedAgo,
 } from "./meetingSourceState";
 import { autojoinDetail, useCalendarAutojoin } from "./useCalendarAutojoin";
 import { useConnectorDisconnect } from "./useConnectorDisconnect";
@@ -59,6 +65,11 @@ const DISCONNECT_MESSAGE: Record<DisconnectMode, string> = {
 };
 
 export const SOURCE_IDS: readonly ConnectorId[] = ["fireflies", "google-meet", "granola"];
+
+const visibleSources = SOURCE_IDS.map((id) => CONNECTORS.find((d) => d.id === id)).filter(
+  (d): d is ConnectorDescriptor => d !== undefined && (d.id !== "granola" || d.status === "available"),
+);
+const sourceSubtitle = new Intl.ListFormat("en-GB").format(visibleSources.map((d) => d.name));
 
 /** A source with no entry yet has not been read. Failed is not "not connected". */
 type ConnectionRead =
@@ -103,7 +114,9 @@ export function MeetingSourcesDialog({
   const [connectDialog, setConnectDialog] = useState<{
     descriptor: ConnectorDescriptor;
     purpose: "browser" | "autojoin";
+    startWithKey?: boolean;
   } | null>(null);
+  const [granolaConnecting, setGranolaConnecting] = useState(false);
   const [disconnecting, setDisconnecting] = useState<ConnectorId | null>(null);
   const [rowNotes, setRowNotes] = useState<Partial<Record<ConnectorId, string>>>({});
   const [featureDark, setFeatureDark] = useState(false);
@@ -141,9 +154,8 @@ export function MeetingSourcesDialog({
     if (!open) return;
     let active = true;
     void (async () => {
-      for (const id of SOURCE_IDS) {
-        const d = CONNECTORS.find((item) => item.id === id);
-        if (!d || d.status !== "available") continue;
+      for (const { id, status } of visibleSources) {
+        if (status !== "available") continue;
         const next = await readConnection(id);
         if (!active) return;
         setConnections((old) => ({ ...old, [id]: next }));
@@ -161,9 +173,6 @@ export function MeetingSourcesDialog({
     connected: connectionOf(connections["google-meet"])?.status === "connected",
     revision,
   });
-  const descriptors = SOURCE_IDS.map((id) => CONNECTORS.find((d) => d.id === id)).filter(
-    (d): d is ConnectorDescriptor => d !== undefined,
-  );
   const autojoin = useCalendarAutojoin({
     backendUrl,
     sessionStore,
@@ -172,7 +181,7 @@ export function MeetingSourcesDialog({
   });
 
   const autojoinInfo = autojoinDetail(autojoin.status, autojoin.error);
-  const disconnectDescriptor = descriptors.find((d) => d.id === disconnecting) ?? null;
+  const disconnectDescriptor = visibleSources.find((d) => d.id === disconnecting) ?? null;
   const requestDisconnect = (id: ConnectorId) => {
     if (sourceSync.syncingId === id) return;
     setDisconnecting(id);
@@ -185,18 +194,22 @@ export function MeetingSourcesDialog({
         onOpenChange={onOpenChange}
         returnFocus={returnFocus ?? (() => null)}
       >
-        {descriptors.map((d) => {
+        {visibleSources.map((d) => {
           const read = connections[d.id] ?? { status: "loading" };
           const lookup = read.status;
           const connection = read.status === "ready" ? read.connection : null;
           const connected = connection?.status === "connected";
-          const connecting = connectDialog?.descriptor.id === d.id && connectDialog.purpose === "browser";
+          const dialogOpenForSource = connectDialog?.descriptor.id === d.id && connectDialog.purpose === "browser";
+          const connecting = dialogOpenForSource && (d.id !== "granola" || granolaConnecting);
           const syncing = sourceSync.syncingId === d.id;
+          const reconnect = !syncing && granolaKeyExpired(connection);
           const { state, status, error } = sourceRowDisplay({
             comingSoon: d.status === "coming-soon",
             connection,
             syncing,
             connecting,
+            syncFailureLabel: d.id === "granola" ? GRANOLA_LAST_SYNC_FAILED : undefined,
+            describePersistedSyncError: d.id === "granola" ? granolaSyncErrorMessage : undefined,
             syncError: sourceSync.error?.id === d.id ? sourceSync.error.message : null,
             rowNote: rowNotes[d.id] ?? null,
             // Meet's count is the saved meetings the Library shows, not the figure cached when a sync last settled.
@@ -245,7 +258,7 @@ export function MeetingSourcesDialog({
                       return log === null ? null : JSON.stringify(log, null, 2);
                     } : null}
                   />
-                ) : undefined
+                ) : granolaSummariesOnly(connection) ? <GranolaSummariesNotice className="ms-note" /> : undefined
               }
               manage={
                 d.id === "fireflies" ? (
@@ -261,7 +274,33 @@ export function MeetingSourcesDialog({
                     onDisconnect={() => requestDisconnect(d.id)}
                   />
                 ) : (
-                  <DisconnectRow name={d.name} syncing={syncing} onDisconnect={() => requestDisconnect(d.id)} />
+                  <>
+                    {d.id === "granola" && syncing && connection?.lastSyncedAt && (
+                      <div className="ms-opt">
+                        <p className="ms-opt-text">
+                          Last synced {syncedAgo(connection.lastSyncedAt)} · {meetingCount(connection.itemCount)}.
+                        </p>
+                      </div>
+                    )}
+                    {reconnect && (
+                      <div className="ms-opt">
+                        <div className="ms-opt-copy">
+                          <GranolaReconnect tcw={tcw} className="ms-link" disabled={dialogOpenForSource}
+                            onReconnect={() => setConnectDialog({ descriptor: d, purpose: "browser", startWithKey: true })} />
+                          <p className="ms-opt-text">Paste a new key and sync again.</p>
+                        </div>
+                      </div>
+                    )}
+                    {d.id === "granola" && (
+                      <div className="ms-opt">
+                        <div className="ms-opt-copy">
+                          <p className="ms-opt-text">{GRANOLA_CSV_STRINGS.allowBackNote}</p>
+                          <GranolaAllowBack backendUrl={backendUrl} sessionStore={sessionStore} />
+                        </div>
+                      </div>
+                    )}
+                    <DisconnectRow name={d.name} syncing={syncing} onDisconnect={() => requestDisconnect(d.id)} />
+                  </>
                 )
               }
               extra={
@@ -329,13 +368,21 @@ export function MeetingSourcesDialog({
           backendUrl={backendUrl}
           sessionStore={sessionStore}
           open
+          onGranolaConnectingChange={setGranolaConnecting}
+          startWithKey={connectDialog.startWithKey}
+          onImported={() => {
+            setRevision((n) => n + 1);
+            void refresh(connectDialog.descriptor.id);
+          }}
           onOpenChange={(next) => {
             if (!next) {
+              setGranolaConnecting(false);
               setConnectDialog(null);
               setRevision((n) => n + 1);
             }
           }}
           onConnected={() => {
+            if (connectDialog.descriptor.id === "granola") sourceSync.clearError("granola");
             setRevision((n) => n + 1);
             void refresh(connectDialog.descriptor.id);
           }}
@@ -540,9 +587,8 @@ export function MeetingSourcesFeature(
     let active = true;
     void (async () => {
       const found: { id: ConnectorId; name: string; connected: boolean; count: number }[] = [];
-      for (const id of SOURCE_IDS) {
-        const d = CONNECTORS.find((item) => item.id === id);
-        if (!d || d.status !== "available") continue;
+      for (const { id, name, status } of visibleSources) {
+        if (status !== "available") continue;
         const result = await connectorStore.getConnection(tcw, id);
         if (!result.ok) {
           console.error("Meeting sources connection status failed", result.error);
@@ -551,7 +597,7 @@ export function MeetingSourcesFeature(
         }
         const connected = result.data?.status === "connected";
         if (id === "google-meet" && connected) await refreshGmeetMeetingCount(tcw, connectorStore.countMeetings);
-        found.push({ id, name: d.name, connected, count: result.data?.itemCount ?? 0 });
+        found.push({ id, name, connected, count: result.data?.itemCount ?? 0 });
       }
       if (active) setSources(found);
     })();
@@ -578,6 +624,7 @@ export function MeetingSourcesFeature(
     <>
       <MeetingSourcesEntry
         buttonRef={entryRef}
+        subtitle={sourceSubtitle}
         summary={summary.text}
         connected={summary.connected}
         onClick={() => setOpen(true)}

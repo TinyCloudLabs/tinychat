@@ -32,6 +32,7 @@ import {
 import { useTranscriberSavedState } from "./useTranscriberLibrarySync";
 import { createCalendarAutojoinClient, calendarOutcomeLabel, type CalendarAutojoinOutcome } from "@/lib/connectors/calendarAutojoinApi";
 import { transcriberMeetingTitle } from "@/lib/transcriberSave";
+import { ROW_NOT_DELETED } from "./recordingsDeletedCopy";
 
 /** Only these end a meeting. Any other status, including one this build does not know yet, is still moving. */
 const TERMINAL_STATUSES: ReadonlySet<string> = new Set(["completed", "failed", "cancelled"]);
@@ -408,7 +409,7 @@ export const TranscriberView: FC<TranscriberViewProps> = ({
               {meetings.map((row) => (
                 <li key={row.id} className="py-2.5">
                   {"unavailable" in row ? (
-                    <UnavailableRow id={row.id} busy={busyId === row.id} onRemove={onRemove} />
+                    <UnavailableRow id={row.id} deleting={"deleting" in row && row.deleting === true} kept={"kept" in row && row.kept === true} busy={busyId === row.id} onRemove={onRemove} />
                   ) : (
                     <MeetingRow
                       meeting={row}
@@ -430,24 +431,30 @@ export const TranscriberView: FC<TranscriberViewProps> = ({
   );
 };
 
-function UnavailableRow(props: { id: string; busy: boolean; onRemove: (id: string) => void }) {
+function UnavailableRow(props: { id: string; deleting: boolean; kept: boolean; busy: boolean; onRemove: (id: string) => void }) {
   return (
     <div className="flex items-start justify-between gap-3">
       <div className="min-w-0 flex-1">
         <span className="block truncate font-mono text-xs">{props.id}</span>
         <span className="mt-0.5 block text-xs text-muted-foreground">
-          Could not be read right now.
+          {props.kept
+            ? ROW_NOT_DELETED
+            : props.deleting
+              ? "Being deleted. We keep trying until it's gone."
+              : "Could not be read right now."}
         </span>
       </div>
-      <Button
-        type="button"
-        variant="outline"
-        size="sm"
-        disabled={props.busy}
-        onClick={() => props.onRemove(props.id)}
-      >
-        Remove
-      </Button>
+      {!props.kept && (
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          disabled={props.busy}
+          onClick={() => props.onRemove(props.id)}
+        >
+          {props.deleting ? "Retry now" : "Remove"}
+        </Button>
+      )}
     </div>
   );
 }
@@ -562,7 +569,8 @@ export function departureMessage(meeting: TranscriberMeeting): string | null {
     case "max_bot_time_exceeded": return "Bot reached its meeting time limit.";
     case "stopped": return "Bot was stopped.";
     case "awaiting_admission_timeout": return "Bot timed out waiting to be admitted.";
-    case "awaiting_admission_rejected": return "Bot was not admitted to the call.";
+    case "awaiting_admission_rejected":
+      return "Google Meet didn't let the notetaker in. The host's Meeting access setting may keep out people from outside their organization. Ask the host to check it and to admit the notetaker when it asks to join, then try again.";
     case "join_failure":
     case "auth_session_missing":
     case "validation_error": return "Bot reported a connection or setup failure.";
@@ -858,6 +866,9 @@ export function useMeetingBot({ backendUrl, sessionStore, client, calendar: cale
   const [checkingIntent, setCheckingIntent] = useState<(SendIntent & { normalizedUrl: string; owner: string; error: string }) | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  // Recordings the owner removed whose copy at the notetaker service remains: the server has dropped them from
+  // the list, so they are kept here (this session) to say so on their own row.
+  const [keptIds, setKeptIds] = useState<string[]>([]);
   const [open, setOpen] = useState<OpenTranscriptState | null>(null);
   const saved = useTranscriberSavedState();
   const submitLatch = useRef(false);
@@ -1047,9 +1058,15 @@ export function useMeetingBot({ backendUrl, sessionStore, client, calendar: cale
       void (async () => {
         const result = await api.remove(id);
         setBusyId(null);
-        if (result.status === "ok" || result.status === "not-found") {
+        if (result.status === "ok" && result.value.deleting) {
+          // Not yet confirmed gone at the provider: keep the row, as "deleting"; the server keeps retrying.
+          setMeetings((current) => current.map((m) => (m.id === id ? { id, unavailable: true as const, deleting: true as const } : m)));
+          setOpen((o) => (o !== null && o.id === id ? null : o));
+        } else if (result.status === "ok" || result.status === "not-found") {
           setMeetings((current) => current.filter((m) => m.id !== id));
           setOpen((o) => (o !== null && o.id === id ? null : o));
+          // Dropped from the list, but the notetaker service still holds the copy: the row says so, never "gone".
+          if (result.status === "ok" && result.value.notDeleted) setKeptIds((current) => (current.includes(id) ? current : [...current, id]));
         }
       })();
     },
@@ -1085,9 +1102,14 @@ export function useMeetingBot({ backendUrl, sessionStore, client, calendar: cale
     [submit, refresh, stop, toggleTranscript, remove],
   );
 
+  const shownMeetings = useMemo(
+    () => [...meetings, ...keptIds.filter((id) => !meetings.some((m) => m.id === id)).map((id) => ({ id, unavailable: true as const, kept: true as const }))],
+    [meetings, keptIds],
+  );
+
   return {
     listStatus,
-    meetings,
+    meetings: shownMeetings,
     saved,
     form: {
       url,

@@ -1,10 +1,10 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
 import { ErrorCodes } from "@tinycloud/sdk-services";
 import type { QueryOptions, Result, SqlValue } from "@tinycloud/sdk-services";
 import {
-  deliverFeedResponse, feedCardSchema, feedResourceNames, getFeedHandoff,
+  deliverFeedResponse, feedCardSchema, feedResourceNames, getFeedCardState, getFeedHandoff,
   listFeedCards, listFeedResponseDeliveries, listFeedResponses,
   projectFeedResponseNotification, publishFeedCard, readFeedResponseHandling, readFeedResponsePayload, recordFeedHandling,
 } from "@tinycloud/sdk-services/feed";
@@ -12,7 +12,7 @@ import type { FeedCard, FeedCardIdentity, FeedDatabase, FeedDeliveryOptions, Fee
 import {
   applyUpsert, boardKey, claimDecisionHistory, closePatch, currentAnswer,
   decodeLegacySendNote, decodeOwnerThreadMessage,
-  emptySitrepOwnerData, holdLiftPatch, isKind, openApprovals, ownerAnswerLookup,
+  emptySitrepOwnerData, findRecordSecrets, holdLiftPatch, isKind, openApprovals, ownerAnswerLookup,
   parseSitrepCardPayload, validateAnswer, validateClaimDecision, validateRecord,
   validateSitrepAction, validateState,
 } from "@tinyboilerplate/core/feed/sitrep";
@@ -47,7 +47,7 @@ const inputSchema = z.object({
   source: sourceSchema.extend({ label: z.string() }).strict(), card: cardSchema,
   legacy: z.object({ spaceId: text, fullKey: text, record: businessSchema }).strict(),
 }).strict();
-type SafeDiagnostic = { name: string; message: string; code: string; step: string; status?: number };
+type SafeDiagnostic = { name: string; message: string; code: string; step: string; status?: number; detail?: string };
 class MirrorFailure extends Error {
   readonly code: string;
   readonly status?: number;
@@ -64,6 +64,7 @@ const refusalMessages = [
   "Home mirror inventory requires a board index, a source and full spaces",
   "Home mirror inventory leaves holds and claims on the board",
   "Home mirror leaves the consent code of a closed approval on the board",
+  "Home mirror leaves a record that holds a secret or an approval link on the board",
   "Board index is unreadable",
   "The synthetic check runs only in a QA owner space",
   "Synthetic check requires a profile, full spaces and a source",
@@ -89,8 +90,11 @@ const argumentMessages = new Set<string>([
 ]);
 const inputFields = new Set(["source", "sourceId", "agentDid", "label", "output", "responses", "spaceId", "database", "card", "cardId", "revision", "issuanceId", "legacy", "fullKey", "record", "recipient", "runner", "renewalSeconds", "responseId", "kind", "createdAt", "sequence", "payloadType", "payloadVersion"]);
 function failure(code: string = ErrorCodes.INVALID_INPUT): Error { return Object.assign(new Error("Home mirror operation refused"), { code }); }
-/** A refusal whose message may reach the diagnostic (it names no input value). */
-export function homeMirrorRefusal(message: HomeMirrorRefusalMessage, code: string = ErrorCodes.INVALID_INPUT): Error { return Object.assign(new Error(message), { code }); }
+/**
+ * A refusal whose message may reach the diagnostic (it names no input value). `detail`, when given, reaches it too:
+ * the caller builds it from the card's id and the kinds of finding only, never from anything the record holds.
+ */
+export function homeMirrorRefusal(message: HomeMirrorRefusalMessage, code: string = ErrorCodes.INVALID_INPUT, detail?: string): Error { return Object.assign(new Error(message), { code, ...(detail === undefined ? {} : { detail }) }); }
 function safeFailure(error: unknown, step = "mirror"): MirrorFailure {
   if (error instanceof MirrorFailure) return error.diagnostic.step === "mirror" && step !== "mirror" ? new MirrorFailure({ ...error.diagnostic, step }) : error;
   const candidate = object(error) ? error.code : undefined;
@@ -111,7 +115,8 @@ function safeFailure(error: unknown, step = "mirror"): MirrorFailure {
     message = error.message;
     if (argumentMessages.has(message)) step = "arguments";
   }
-  return new MirrorFailure({ name, message, code, step, ...(typeof status === "number" && Number.isInteger(status) && status >= 400 && status <= 599 ? { status } : {}) });
+  const detail = error instanceof Error && safeMessages.has(error.message) && "detail" in error && typeof error.detail === "string" ? error.detail : undefined;
+  return new MirrorFailure({ name, message, code, step, ...(typeof status === "number" && Number.isInteger(status) && status >= 400 && status <= 599 ? { status } : {}), ...(detail === undefined ? {} : { detail }) });
 }
 /** Any failure as the mirror reports it: a code, a safe message and a step, never a node message or HTTP body. */
 export function homeMirrorFailure(error: unknown, step: string): Error { return safeFailure(error, step); }
@@ -133,6 +138,14 @@ const publication = (record: BoardRecord, cardUuid: string) => JSON.stringify({ 
  * refused. An open approval is carried whole, with its code. The board's own copy is never changed by this.
  */
 export function homeMirrorRecord(record: BoardRecord, now: number): BoardRecord {
+  // What reaches Home is what the board's own write guard lets onto the board. A record that holds a secret or an approval
+  // link anyway (written before a pattern existed, or by anything that skips the guard) stays on the board: it is neither
+  // posted nor revised, and the refusal names the card and the kinds of finding, never the value.
+  const found = findRecordSecrets(record.kind, record as unknown as Record<string, unknown>);
+  if (found.length) {
+    const id = found.some((hit) => hit.path === "id") ? "(id withheld)" : record.id;
+    throw homeMirrorRefusal("Home mirror leaves a record that holds a secret or an approval link on the board", ErrorCodes.INVALID_INPUT, `${record.kind}/${id}: ${[...new Set(found.map((hit) => hit.reason))].join("; ")}`);
+  }
   if (record.kind !== "approval" || record.url === undefined) return record;
   if (record.status === "open" && (!record.expiresAt || Date.parse(record.expiresAt) > now)) return record;
   const page = new URL(record.url), bare = `${page.origin}${page.pathname}`;
@@ -246,6 +259,48 @@ async function currentCard(ctx: HomeMirrorContext, source: HomeMirrorBinding["so
   const cards = take(await listFeedCards(privateDatabase(ctx.sql.db(source.output.database), ctx)));
   return cards.find((card) => card.cardId === identity.cardId && sameIdentity(card, identity));
 }
+/**
+ * A mirrored card as Home holds it now, for the close-from-board pass: its newest binding's source, Home's newest copy
+ * of the card, and whether the owner has answered that copy in Home (that answer closes the board record itself).
+ */
+export interface HomeMirrorHeld { source: HomeMirrorBinding["source"]; binding: HomeMirrorBinding; card: FeedCard; answered: boolean }
+export async function readHomeMirrorHeld(ctx: HomeMirrorContext, sourceId: string, fullKey: string): Promise<HomeMirrorHeld | undefined> {
+  try {
+    active(ctx);
+    const bindings = (await mirrorRowsFor(ctx, fullKey)).map((row) => stored(ctx, row).binding)
+      .filter((binding) => binding.source.sourceId === sourceId && binding.legacy.fullKey === fullKey && binding.legacy.spaceId === ctx.legacySpaceId);
+    const binding = bindings.sort((a, b) => b.identity.revision - a.identity.revision)[0];
+    if (!binding) return undefined;
+    const source = await registered(ctx, sourceId);
+    if (!isDeepStrictEqual(source, binding.source)) throw failure();
+    const database = source.output.database;
+    let cards = ctx.cache?.cards?.[database];
+    if (!cards) {
+      cards = take(await listFeedCards(privateDatabase(ctx.sql.db(database), ctx)));
+      if (ctx.cache) (ctx.cache.cards ??= {})[database] = cards;
+    }
+    const card = cards.find((candidate) => candidate.cardId === binding.cardUuid);
+    if (!card) return undefined;
+    const state = take(await getFeedCardState(privateDatabase(ctx.sql.db(database), ctx), privateDatabase(ctx.sql.db(source.responses.database), ctx), tuple(card)));
+    return { source, binding, card, answered: state.response !== null };
+  } catch (error) { throw safeFailure(error, "close"); }
+}
+/**
+ * Publishes the closing revision of a mirrored card: the next revision after Home's newest copy, no longer waiting on
+ * the owner, still carrying the board record it was mirrored from. Nothing else is written: the binding and the board's
+ * own copy stay as they are.
+ */
+export async function publishHomeMirrorClosing(ctx: HomeMirrorContext, held: HomeMirrorHeld, card: FeedCard): Promise<void> {
+  try {
+    active(ctx);
+    const typed = parseSitrepCardPayload(card.payload?.sitrep);
+    if (card.cardId !== held.card.cardId || card.revision !== held.card.revision + 1 || card.needsResponse || !typed ||
+      typed.record.kind !== held.binding.legacy.kind || typed.record.id !== held.binding.legacy.id || findRecordSecrets(typed.record.kind, typed.record as unknown as Record<string, unknown>).length) throw failure();
+    take(await publishFeedCard(privateDatabase(ctx.sql.db(held.source.output.database), ctx), card));
+    const database = held.source.output.database;
+    if (ctx.cache?.cards?.[database]) ctx.cache.cards[database] = ctx.cache.cards[database]!.map((candidate) => candidate.cardId === card.cardId ? card : candidate);
+  } catch (error) { throw safeFailure(error, "close"); }
+}
 type LegacyRead = { raw: Record<string, unknown>; record: BoardRecord; etag: string; sha256: string };
 async function readLegacy(ctx: HomeMirrorContext, kind: BoardRecord["kind"], key: string): Promise<LegacyRead | undefined> {
   const result = await ctx.legacy.get<Uint8Array>(key, { binary: true, source: "network", prefix: "", signal: ctx.signal });
@@ -268,10 +323,25 @@ export async function readHomeMirrorBoardRecord(ctx: HomeMirrorContext, binding:
   try { return (await readLegacy(ctx, binding.legacy.kind, binding.legacy.fullKey))?.record; } catch (error) { throw safeFailure(error); }
 }
 
+/**
+ * The revision of an unbound card to publish. Home's newest copy of it decides: a newer revision number than Home
+ * holds goes out as given; the same content as Home's newest keeps its identity (a retry); other content goes out as
+ * the next revision after it, since a published revision cannot change. (A bound card is not asked: the mirror reports
+ * it changed and leaves it.)
+ */
+async function revisionToPublish(ctx: HomeMirrorContext, source: HomeMirrorBinding["source"], card: FeedCard): Promise<FeedCard> {
+  const held = take(await listFeedCards(privateDatabase(ctx.sql.db(source.output.database), ctx))).find((candidate) => candidate.cardId === card.cardId);
+  if (!held || card.revision > held.revision) return card;
+  const content = ({ revision: _revision, issuanceId: _issuanceId, ...rest }: FeedCard): unknown => JSON.parse(JSON.stringify(rest));
+  if (isDeepStrictEqual(content(held), content(card))) return { ...card, revision: held.revision, issuanceId: held.issuanceId };
+  return { ...card, revision: held.revision + 1, issuanceId: randomUUID() };
+}
+
 export async function publishHomeMirror(ctx: HomeMirrorContext, value: unknown): Promise<HomeMirrorBinding> {
   try {
     active(ctx);
-    const input = inputSchema.parse(value), identity = identitySchema.parse(tuple(input.card));
+    const input = inputSchema.parse(value);
+    let identity = identitySchema.parse(tuple(input.card));
     const source = await registered(ctx, input.source.sourceId);
     const requestedSource = { sourceId: input.source.sourceId, agentDid: input.source.agentDid, output: input.source.output, responses: input.source.responses };
     if (!isDeepStrictEqual(source, requestedSource) || input.legacy.spaceId !== ctx.legacySpaceId) throw failure();
@@ -282,13 +352,30 @@ export async function publishHomeMirror(ctx: HomeMirrorContext, value: unknown):
     // (idempotent), and refuses a payload that is neither the board record nor its stripped form.
     const carried = homeMirrorRecord(checked.value, Date.parse(ctx.now()));
     if (!isDeepStrictEqual(typed.record, checked.value) && !isDeepStrictEqual(typed.record, carried)) throw failure();
-    const card: HomeMirrorPublishInput["card"] = { ...input.card, payload: { ...input.card.payload, sitrep: { ...(input.card.payload?.sitrep as object), record: carried } } };
+    let card: HomeMirrorPublishInput["card"] = { ...input.card, payload: { ...input.card.payload, sitrep: { ...(input.card.payload?.sitrep as object), record: carried } } };
     const record = checked.value, body = publication(record, identity.cardId), publicationSha256 = hash(body);
     const owner = privateDatabase(ctx.sql.db(OWNER), ctx);
     const all = (await mirrorRowsFor(ctx, input.legacy.fullKey, { sourceId: source.sourceId, identity })).map((row) => stored(ctx, row));
     const previous = all.find((row) => row.binding.source.sourceId === source.sourceId && sameIdentity(row.binding.identity, identity));
     if (previous && (!isDeepStrictEqual(previous.binding.source, source) || previous.binding.legacy.fullKey !== input.legacy.fullKey || previous.binding.legacy.publicationSha256 !== publicationSha256)) throw failure();
     for (const row of all) if (row.binding.legacy.fullKey === input.legacy.fullKey && (row.binding.source.sourceId !== source.sourceId || row.binding.cardUuid !== identity.cardId)) throw failure();
+    // A card Home holds but the board was never cut over to (no binding) may have been edited since: its revision in
+    // Home is immutable, so its content goes out as the next revision rather than as that one again.
+    if (all.length === 0) { card = await revisionToPublish(ctx, source, card); identity = identitySchema.parse(tuple(card)); }
+    // The board's live head is checked before anything is written to Home: a head this card may not replace is refused
+    // here, so a stale card never reaches the feed. (The head is read again after publication and still decides.)
+    const refusesHead = (head: LegacyRead | undefined): boolean => {
+      // A Home close rewrote the board copy after publication: its receipt, not the binding, names that head.
+      const predecessor = head && all.find((row) => row.binding.source.sourceId === source.sourceId && row.binding.cardUuid === identity.cardId && row.binding.legacy.fullKey === input.legacy.fullKey &&
+        ((row.binding.legacy.publishedETag === head.etag && row.binding.legacy.publicationSha256 === head.sha256) ||
+          (row.receipt !== null && row.receipt.closedETag === head.etag && head.raw.cardUuid === identity.cardId && head.record.status === row.receipt.status)));
+      const unboundSameBusiness = head && !Object.hasOwn(head.raw, "cardUuid") && isDeepStrictEqual(head.record, record);
+      return Boolean(head && !predecessor && !unboundSameBusiness);
+    };
+    if (!previous) {
+      const live = await readLegacy(ctx, record.kind, input.legacy.fullKey);
+      if ((!live || live.sha256 !== publicationSha256 || live.raw.cardUuid !== identity.cardId) && refusesHead(live)) throw failure(ErrorCodes.KV_PRECONDITION_FAILED);
+    }
     // Home is canonical and durable before its mirror is published. No schema is created here.
     take(await publishFeedCard(privateDatabase(ctx.sql.db(source.output.database), ctx), card));
     if (!await currentCard(ctx, source, identity)) throw failure();
@@ -299,13 +386,7 @@ export async function publishHomeMirror(ctx: HomeMirrorContext, value: unknown):
       return previous.binding;
     }
     if (!head || head.sha256 !== publicationSha256 || head.raw.cardUuid !== identity.cardId) {
-      const priorHead = head;
-      // A Home close rewrote the board copy after publication: its receipt, not the binding, names that head.
-      const predecessor = priorHead && all.find((row) => row.binding.source.sourceId === source.sourceId && row.binding.cardUuid === identity.cardId && row.binding.legacy.fullKey === input.legacy.fullKey &&
-        ((row.binding.legacy.publishedETag === priorHead.etag && row.binding.legacy.publicationSha256 === priorHead.sha256) ||
-          (row.receipt !== null && row.receipt.closedETag === priorHead.etag && priorHead.raw.cardUuid === identity.cardId && priorHead.record.status === row.receipt.status)));
-      const unboundSameBusiness = head && !Object.hasOwn(head.raw, "cardUuid") && isDeepStrictEqual(head.record, record);
-      if (head && !predecessor && !unboundSameBusiness) throw failure(ErrorCodes.KV_PRECONDITION_FAILED);
+      if (refusesHead(head)) throw failure(ErrorCodes.KV_PRECONDITION_FAILED);
       if (!await currentCard(ctx, source, identity)) throw failure();
       active(ctx);
       take(await ctx.legacy.put(input.legacy.fullKey, body, { ...(head ? { ifMatch: head.etag } : { ifNoneMatch: "*" as const }), prefix: "", contentType: "application/json", signal: ctx.signal }));
@@ -744,7 +825,10 @@ export async function watchHomeMirrors(context: HomeMirrorContext, options: Home
       await draining;
     }
     if (failed) throw safeFailure(failureValue);
-    if (!connection.signal.aborted) return;
+    // Nothing ended this connection (not the renewal timer, not a stop) yet the subscription finished. The hooks service
+    // reconnects a closed stream itself, so this is it giving up on the session. Returning would end the run with exit 0,
+    // which a supervisor reads as the watcher's own choice to stop; fail so it restarts the watcher on a fresh session.
+    if (!connection.signal.aborted) throw failure(ErrorCodes.NETWORK_ERROR);
   }
   if (failed) throw safeFailure(failureValue);
 }

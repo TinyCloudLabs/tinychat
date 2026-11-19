@@ -148,7 +148,8 @@ export async function ensureCanvasAccess(tcw: TinyCloudWeb): Promise<void> {
   try {
     approved = (await tcw.requestPermissions(CANVAS_PERMISSIONS)).approved;
   } catch (error) {
-    throw new Error(`${CANVAS_ACCESS_MESSAGE} (${error instanceof Error ? error.message : String(error)})`, { cause: error });
+    // The screen shows this message as is, so OpenKey's own wording stays in `cause`.
+    throw new Error(CANVAS_ACCESS_MESSAGE, { cause: error });
   }
   if (!approved) throw new Error(CANVAS_ACCESS_MESSAGE);
   accessGranted.add(tcw as unknown as object);

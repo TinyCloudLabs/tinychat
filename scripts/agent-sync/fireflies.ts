@@ -493,7 +493,20 @@ interface ProfileFiles {
   ownerDid: string;
   spaceId: string;
   expiresAt: string | null;
+  /** The owner's renewal lease from `session.renewal.receipt`, when the profile was approved with one. */
+  lease: { authorization: string; expiresAt: string } | null;
   session: Parameters<TinyCloudNode["restoreSession"]>[0];
+}
+
+function leaseOf(session: Record<string, unknown>): ProfileFiles["lease"] {
+  const { renewal } = session;
+  const receipt = renewal && typeof renewal === "object" && "receipt" in renewal ? renewal.receipt : undefined;
+  if (!receipt || typeof receipt !== "object") return null;
+  const authorization = "leaseAuthorization" in receipt ? receipt.leaseAuthorization : undefined;
+  const expiresAt = "leaseExpiresAt" in receipt ? receipt.leaseExpiresAt : undefined;
+  return typeof authorization === "string" && authorization.length > 0 && typeof expiresAt === "string"
+    ? { authorization, expiresAt }
+    : null;
 }
 
 function readJson(file: string): Record<string, unknown> {
@@ -535,6 +548,7 @@ export function loadProfile(home: string, name: string): ProfileFiles {
     ownerDid: ownerDid.split("#")[0],
     spaceId,
     expiresAt: str(session, "expiresAt") ?? null,
+    lease: leaseOf(session),
     session: {
       delegationHeader: { Authorization: authorization },
       delegationCid,
@@ -547,6 +561,49 @@ export function loadProfile(home: string, name: string): ProfileFiles {
       signature: str(session, "signature"),
     },
   };
+}
+
+function errorCode(error: unknown): unknown {
+  return typeof error === "object" && error !== null && "code" in error ? error.code : undefined;
+}
+
+/** node-sdk's refusals for a lease that ended or was stopped; an unreachable node is none of these. */
+const RENEWAL_ENDED = new Set(["AUTH_EXPIRED", "RENEWAL_LEASE_EXPIRED", "RENEWAL_AUTHORITY_INACTIVE", "RENEWAL_LEASE_ORIGINAL_EXPIRED"]);
+
+/**
+ * Restores the profile's session. Without a live lease the grant's own expiry is checked first. With one,
+ * the original grant restores as usual while it is live, and once it has lapsed only through the
+ * lease. A lease that has ended or was stopped is `needs_renewal`, like an expired grant; any other
+ * failure, such as the node not answering, is passed on unchanged.
+ */
+export async function restoreProfileSession(
+  node: Pick<TinyCloudNode, "restoreSession" | "restoreSessionWithRenewal">,
+  profile: Pick<ProfileFiles, "expiresAt" | "lease" | "session">,
+  now = Date.now(),
+): Promise<void> {
+  const lease = profile.lease && Date.parse(profile.lease.expiresAt) > now ? profile.lease : null;
+  if (!lease) {
+    if (profile.expiresAt && Date.parse(profile.expiresAt) <= now) {
+      throw new RunnerError("needs_renewal", "write profile grant expired");
+    }
+    await node.restoreSession(profile.session);
+    return;
+  }
+  try {
+    await node.restoreSession(profile.session);
+    return;
+  } catch (error) {
+    if (errorCode(error) !== "AUTH_EXPIRED") throw error;
+  }
+  try {
+    await node.restoreSessionWithRenewal(profile.session, lease.authorization);
+  } catch (error) {
+    const code = errorCode(error);
+    if (typeof code === "string" && RENEWAL_ENDED.has(code)) {
+      throw new RunnerError("needs_renewal", "write profile renewal ended");
+    }
+    throw error;
+  }
 }
 
 /** Reads the key through the CLI into memory; stdout is never echoed, stderr yields only a code. */
@@ -627,11 +684,8 @@ async function main(): Promise<number> {
     if (profile.ownerDid.toLowerCase() !== args.owner.toLowerCase() || profile.spaceId.toLowerCase() !== expectedSpace) {
       throw new RunnerError("error", "write profile is not signed in to the owner's applications space");
     }
-    if (profile.expiresAt && Date.parse(profile.expiresAt) <= at.getTime()) {
-      throw new RunnerError("needs_renewal", "write profile grant expired");
-    }
     const node = new TinyCloudNode({ host: profile.host, includeAccountRegistryPermissions: false });
-    await node.restoreSession(profile.session);
+    await restoreProfileSession(node, profile, at.getTime());
     // node-sdk's TinyCloudNode exposes the kv/sql/did/spaceId surface the connector store uses.
     const tcw: TinyCloudWeb = node as unknown as TinyCloudWeb;
     report = await runFirefliesAgentSync({

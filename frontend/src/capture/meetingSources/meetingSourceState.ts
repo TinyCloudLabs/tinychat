@@ -42,12 +42,13 @@ export function meetingSourceStatus(
   syncedAgoText?: string | null,
   count: number | null = 0,
   problem: PersistedSyncProblem | null = null,
+  syncFailureLabel = "Last sync failed",
 ): MeetingSourceStatus {
   switch (state) {
     case "connected": {
       const lead =
         problem === "error"
-          ? "Last sync failed"
+          ? syncFailureLabel
           : problem === "partial"
             ? "Last sync incomplete"
             : "Connected";
@@ -102,6 +103,8 @@ export function sourceRowDisplay(input: {
   lastRun?: { syncedAt: string | null; status: "ok" | "partial" | "error"; error: string | null } | null;
   syncing: boolean;
   connecting: boolean;
+  syncFailureLabel?: string;
+  describePersistedSyncError?: (code: string | null) => string | null;
   /** This window's own sync failure for the row, if the last attempt failed. */
   syncError: string | null;
   /** A disconnect warning left on the row. */
@@ -129,7 +132,11 @@ export function sourceRowDisplay(input: {
         syncedAgo(run?.syncedAt ?? connection?.lastSyncedAt),
         input.itemCount !== undefined ? input.itemCount : (connection?.itemCount ?? 0),
         problem?.kind ?? null,
+        input.syncFailureLabel,
       );
   // The current attempt's failure wins over what the last finished sync saved.
-  return { state, status, error: input.syncError ?? input.rowNote ?? problem?.message ?? null };
+  const problemMessage = !run && input.describePersistedSyncError
+    ? input.describePersistedSyncError(problem?.message ?? null)
+    : problem?.message ?? null;
+  return { state, status, error: input.syncError ?? input.rowNote ?? problemMessage };
 }

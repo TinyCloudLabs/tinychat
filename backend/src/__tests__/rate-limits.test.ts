@@ -559,6 +559,7 @@ describe("per-session keying", () => {
       privateCloudTranscriptionMutation: 60,
       calendarAutojoin: 240,
       calendarAutojoinMutation: 30,
+      granolaProxy: 600,
       googleOAuth: 30,
       delegation: 240,
     });
