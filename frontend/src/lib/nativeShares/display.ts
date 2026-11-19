@@ -18,6 +18,7 @@ export interface RecordingShareDisplay {
 
 const MAX_TEXT = 200;
 // Control characters (C0, DEL, C1) and the bidi controls that can make a title read differently than it is written.
+// eslint-disable-next-line no-control-regex
 const CONTROL = /[\u0000-\u001F\u007F-\u009F]/g;
 const BIDI = /[\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/g;
 
