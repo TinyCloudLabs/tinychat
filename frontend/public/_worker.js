@@ -1,4 +1,5 @@
 const OAUTH_DISCOVERY = "https://api.openkey.so/.well-known/oauth-authorization-server/api/auth";
+const A2A_AGENT_CARD = "https://tinycloud.xyz/.well-known/agent-card.json";
 const HOME_LINK = [
   '</llms.txt>; rel="llms-txt"; type="text/plain"',
   '</.well-known/agent-skills/index.json>; rel="describedby"; type="application/json"',
@@ -48,6 +49,16 @@ function notFound() {
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
+
+    if (url.pathname === "/.well-known/agent-card.json") {
+      return new Response(null, {
+        status: 302,
+        headers: {
+          Location: A2A_AGENT_CARD,
+          "Cache-Control": "public, max-age=300",
+        },
+      });
+    }
 
     if (url.pathname === "/.well-known/oauth-authorization-server") {
       return Response.redirect(OAUTH_DISCOVERY, 302);

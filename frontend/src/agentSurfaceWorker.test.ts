@@ -37,9 +37,11 @@ describe("TinyCloud agent routes", () => {
       resource_documentation: "https://docs.tinycloud.xyz/cli/mcp",
       bearer_methods_supported: ["header"],
     });
-    expect(readFileSync(join(publicDir, "auth.md"), "utf8")).toContain(
-      "https://api.openkey.so/.well-known/oauth-authorization-server/api/auth",
+    const auth = readFileSync(join(publicDir, "auth.md"), "utf8");
+    expect(auth).toContain(
+      "The protected resource is the hosted MCP at https://mcp.tinycloud.xyz/mcp.",
     );
+    expect(auth).toContain("https://api.openkey.so/.well-known/oauth-authorization-server/api/auth");
   });
 
   test("negotiates Markdown and advertises discovery links", async () => {
@@ -96,6 +98,18 @@ describe("TinyCloud agent routes", () => {
     expect(response.status).toBe(302);
     expect(response.headers.get("Location")).toBe(
       "https://api.openkey.so/.well-known/oauth-authorization-server/api/auth",
+    );
+  });
+
+  test("redirects A2A discovery to the TinyCloud discovery agent", async () => {
+    const response = await worker.fetch(
+      new Request("https://tinycloud.one/.well-known/agent-card.json"),
+      { ASSETS: { fetch: () => new Response("<!doctype html>", { headers: { "Content-Type": "text/html" } }) } },
+    );
+
+    expect(response.status).toBe(302);
+    expect(response.headers.get("Location")).toBe(
+      "https://tinycloud.xyz/.well-known/agent-card.json",
     );
   });
 });

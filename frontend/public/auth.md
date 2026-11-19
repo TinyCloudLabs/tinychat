@@ -2,7 +2,7 @@
 
 TinyCloud's hosted MCP uses OAuth 2.0.
 
-The protected resource metadata is available at https://tinycloud.one/.well-known/oauth-protected-resource.
+The protected resource is the hosted MCP at https://mcp.tinycloud.xyz/mcp. Its metadata is available at https://tinycloud.one/.well-known/oauth-protected-resource.
 
 OpenKey is the authorization server, with issuer `https://api.openkey.so/api/auth`.
 
