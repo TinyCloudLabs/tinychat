@@ -71,7 +71,6 @@ spec:
         app: bots-regular
     spec:
       serviceAccountName: bots-regular
-      # The Kubernetes token is mounted into the service container only (volume kube-api).
       automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
@@ -217,7 +216,7 @@ spec:
       port: 8080
       targetPort: 8080
 ---
-# The service pod: allows ingress to port 8081 from sandbox pods, and to port 8080 from every namespace except sandboxes.
+# Network rules for the service pod.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -249,8 +248,7 @@ spec:
         - protocol: TCP
           port: 8080
 ---
-# Sandbox pods: allows egress to DNS and to the service pod's port 8081 only, and ingress to port 7070 from the service
-# pod only. Takes the place of the library's policy with the same name.
+# Network rules for sandbox pods. Takes the place of the library's policy with the same name.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
