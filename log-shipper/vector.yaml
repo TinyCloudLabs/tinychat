@@ -131,6 +131,17 @@ transforms:
           if count < 0 || count > 1000 { abort }
           out = {"svc": "backend", "event": name, "level": "error", "ts": ts, "count": count}
           if j.alert == true { out.alert = true }
+        } else if name == "retention_sweep_stalled" {
+          # Retention-floor alert (TC-2778): counts only. No source, address, hash or meeting id is a field.
+          if !is_integer(j.indexes_unreadable) || !is_integer(j.errors) || !is_integer(j.overdue_rows) || !is_integer(j.consecutive_passes) { abort }
+          indexes_unreadable = int(j.indexes_unreadable) ?? -1
+          retention_errors = int(j.errors) ?? -1
+          overdue_rows = int(j.overdue_rows) ?? -1
+          consecutive_passes = int(j.consecutive_passes) ?? -1
+          if indexes_unreadable < 0 || indexes_unreadable > 1000000 || retention_errors < 0 || retention_errors > 1000000 || overdue_rows < 0 || overdue_rows > 1000000 || consecutive_passes < 0 || consecutive_passes > 1000000 { abort }
+          out = {"svc": "backend", "event": name, "level": "error", "ts": ts, "alert": true, "indexes_unreadable": indexes_unreadable, "errors": retention_errors, "overdue_rows": overdue_rows, "consecutive_passes": consecutive_passes}
+        } else if name == "retention_sweep_recovered" {
+          out = {"svc": "backend", "event": name, "level": "info", "ts": ts}
         } else if name == "assemblyai_worker_heartbeat" {
           if !is_integer(j.pending_jobs) || !is_integer(j.delayed_jobs) || !is_integer(j.consecutive_failed_jobs) { abort }
           if !(is_integer(j.oldest_pending_age_s) || is_float(j.oldest_pending_age_s)) { abort }

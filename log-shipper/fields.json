@@ -125,6 +125,8 @@
         "assemblyai_provider_recovered",
         "assemblyai_jobs_failed_in_a_row",
         "assemblyai_worker_heartbeat",
+        "retention_sweep_stalled",
+        "retention_sweep_recovered",
         "tinychat_request"
       ],
       "fields": {
@@ -139,6 +141,10 @@
         "code": { "type": "string", "regex": "^[a-z][a-z0-9_]{0,59}$", "max_len": 60 },
         "reason": { "type": "string", "regex": "^[A-Za-z0-9_]{1,40}$", "max_len": 40 },
         "cid": { "type": "string", "regex": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", "max_len": 36 },
+        "indexes_unreadable": { "type": "integer", "min": 0, "max": 1000000 },
+        "errors": { "type": "integer", "min": 0, "max": 1000000 },
+        "overdue_rows": { "type": "integer", "min": 0, "max": 1000000 },
+        "consecutive_passes": { "type": "integer", "min": 0, "max": 1000000 },
         "alert": { "type": "boolean" },
         "http_status": { "type": "integer", "min": 400, "max": 599 },
         "delayed_jobs": { "type": "integer", "min": 0, "max": 100000 },
