@@ -16,6 +16,7 @@ import {
   type UsageInfo,
 } from "../lib/chatApi";
 import { AgentStreamError, streamAgentChat, type AgentDelegationErrorCode } from "../lib/agentChatApi";
+import { clearGatewayReceipt, setGatewayReceiptVerified } from "../lib/gatewayReceiptStore";
 import {
   clearToolActivity,
   setToolActivity,
@@ -123,6 +124,8 @@ export interface AdapterDeps {
   selection: ModelSelectionCoordinator;
   agentEnabledRef: React.MutableRefObject<boolean>;
   privateAccessRef: React.MutableRefObject<PrivateAgentAccess>;
+  /** Wait until the account's initial private-agent access probe has settled. */
+  waitForInitialProbe?: (signal: AbortSignal) => Promise<void>;
   /** Surfaces a streamed private-tool delegation failure to reconnect UI. */
   onAgentDelegationError?: (code: AgentDelegationErrorCode) => void;
   /**
@@ -238,10 +241,13 @@ export function messageText(message: { content: readonly unknown[] }): string {
 export function createChatModelAdapter(deps: AdapterDeps): ChatModelAdapter {
   return {
     async *run({ messages, abortSignal, context, unstable_assistantMessageId }) {
+      if (typeof unstable_assistantMessageId === "string") clearGatewayReceipt(unstable_assistantMessageId);
       // Separate the memory system block (kept caller-side, prepended first so it
       // lands at the least-context-rotted position) from the conversation
       // messages (which compaction may fold into a summary checkpoint).
       // Rebound only when this turn's own delegation error downgrades access.
+      if (deps.waitForInitialProbe) await deps.waitForInitialProbe(abortSignal);
+      if (abortSignal.aborted) throw new Error("Send cancelled.");
       let privateAccess = deps.privateAccessRef.current;
       const systemContent = privateAccess.active ? context?.system : undefined;
       const memoryBlock: ChatMessage | null =
@@ -468,6 +474,9 @@ export function createChatModelAdapter(deps: AdapterDeps): ChatModelAdapter {
       const onCompletionId = (id: string) => {
         completionId = id;
       };
+      const onReceiptVerification = (_status: "verified") => {
+        if (typeof unstable_assistantMessageId === "string") setGatewayReceiptVerified(unstable_assistantMessageId);
+      };
 
       // One transport attempt with the CURRENT payload. Grounded browser-meeting
       // turns use the plain relay. Agent-enabled transcript turns never construct
@@ -495,6 +504,7 @@ export function createChatModelAdapter(deps: AdapterDeps): ChatModelAdapter {
               abortSignal,
               onUsage,
               onCompletionId,
+              onReceiptVerification,
               onDelegationError: reportDelegationError && ((code) => {
                 const before = deps.privateAccessRef.current;
                 reportDelegationError(code);
@@ -527,6 +537,7 @@ export function createChatModelAdapter(deps: AdapterDeps): ChatModelAdapter {
             abortSignal,
             onUsage,
             onCompletionId,
+            onReceiptVerification,
           })) {
             assertTurn();
             yield { content: [{ type: "text", text }] };

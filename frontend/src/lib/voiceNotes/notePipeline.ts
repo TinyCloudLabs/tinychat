@@ -16,7 +16,7 @@ import {
 } from "./notePipelineCopy";
 import { PRIVATE_TOO_LONG_NOTE } from "@/lib/privateCloud";
 import { storageFullPrecedesChoiceFailure, TRANSCRIPT_STORAGE_FULL_CODE } from "./transcriptionErrors";
-import { STORAGE_FULL_TRANSCRIPT_NOT_SAVED_LINE, STORAGE_FULL_TRANSCRIPT_NOT_SAVED_LOCAL_AUDIO_LINE } from "@/lib/storageStatus";
+import { NATIVE_PLAN_NOTE, STORAGE_FULL_TRANSCRIPT_NOT_SAVED_LINE, STORAGE_FULL_TRANSCRIPT_NOT_SAVED_LOCAL_AUDIO_LINE } from "@/lib/storageStatus";
 
 export type PipelineDevice = "phone" | "mac" | "iphone" | "android" | "browser";
 export type PipelineRoute = "off" | "on-device" | "private-cloud";
@@ -224,6 +224,15 @@ const storageFullBlocker = (localAudioReady: boolean): PipelineBlocker => ({
   action: { kind: "manage-storage", label: ACTION_LABEL["manage-storage"] },
   secondaryAction: { kind: "retry", label: TRANSCRIBE_AGAIN_LABEL },
 });
+/**
+ * The iOS and Android apps open no purchase page (App Store 3.1.1, Play Payments). There a storage-full blocker says where
+ * the plan is managed, as plain text, in place of Manage storage; its second action (Transcribe again), if any, becomes its action.
+ */
+function withoutStoragePurchase(blocker: PipelineBlocker): PipelineBlocker {
+  if (blocker.action?.kind !== "manage-storage") return blocker;
+  const { action: _manage, secondaryAction, ...rest } = blocker;
+  return { ...rest, cause: `${blocker.cause} ${NATIVE_PLAN_NOTE}`, ...(secondaryAction ? { action: secondaryAction } : {}) };
+}
 const fraction = (done: number, total: number): number | null => (total > 0 && Number.isFinite(done) ? Math.min(1, Math.max(0, done / total)) : null);
 const withProgress = (state: "active" | "waiting", caption: string, progress: number | null): Result =>
   progress === null ? { state, caption } : { state, caption, progress };
@@ -432,12 +441,14 @@ export function notePipeline(input: NotePipelineInput): NotePipeline {
     ? { state: "skipped" }
     : notesStep(input, transcript.state);
 
-  const results: [StepKey, string, Result][] = [
+  const phoneApp = input.device === "iphone" || input.device === "android";
+  const results: [StepKey, string, Result][] = ([
     ["phone", STEP_LABEL.phone(input.device), phone],
     ["space", input.space.localOnly ? "Record in your TinyCloud space" : STEP_LABEL.space, space],
     ["transcript", STEP_LABEL.transcript, transcript],
     ["notes", STEP_LABEL.notes, notes],
-  ];
+  ] as [StepKey, string, Result][]).map(([key, label, result]) =>
+    [key, label, phoneApp && result.blocker !== undefined ? { ...result, blocker: withoutStoragePurchase(result.blocker) } : result]);
   const steps: PipelineStep[] = results.map(([key, label, result]) => {
     const step: PipelineStep = { key, label, state: result.state };
     if (result.blocker !== undefined) step.blocker = result.blocker;

@@ -1,13 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import type { ISessionStorage, PersistedSessionData, TinyCloudWeb } from "@tinycloud/web-sdk";
 import type { TinyCloudWebConfig } from "@tinyboilerplate/client";
-import { webAppManifestFor } from "./webSignInPrefetch";
-import { homeSignInManifest } from "./homeFeatures";
+import { WEB_APP_MANIFEST } from "./webSignInPrefetch";
+import { webSignInManifest } from "./homeFeatures";
 import { reauthorizeHome, type HomeReauthorizeDeps } from "./homeReauthorize";
 import { isHomeReauthorizing } from "./homeReauthorizing";
 
 const ADDRESS = "0x00000000000000000000000000000000000000A1";
-const base = webAppManifestFor(true);
+const base = WEB_APP_MANIFEST;
 const OLD = { tag: "old session" } as unknown as PersistedSessionData;
 const NEW = { tag: "new session" } as unknown as PersistedSessionData;
 
@@ -65,17 +65,18 @@ function harness(options: { answer: "approve" | "cancel" | "error"; connected?: 
   return { deps, storage, calls };
 }
 
-const input = { address: ADDRESS.toLowerCase(), features: ["recording" as const], config: { autoCreateSpace: true }, canCommit: () => null };
+const input = { address: ADDRESS.toLowerCase(), features: ["connectors" as const], config: { autoCreateSpace: true }, canCommit: () => null };
 
-describe("re-authorising the Home site in place", () => {
-  test("approved: one sign-in for the base plus the asked sets, and the new session is kept only once verified", async () => {
+describe("re-authorising Connectors in place", () => {
+  test("approved: one sign-in for the web grant plus Connectors' secrets and decrypt, and the new session is kept only once verified", async () => {
     const { deps, storage, calls } = harness({ answer: "approve" });
-    const result = await reauthorizeHome(deps, { ...input, features: ["connectors", "recording"] });
+    const result = await reauthorizeHome(deps, input);
     expect(result.outcome).toBe("granted");
     if (result.outcome !== "granted") return;
     expect(calls.signIn).toBe(1);
-    expect(calls.config!.manifest).toEqual(homeSignInManifest(base, ["connectors", "recording"], ADDRESS));
+    expect(calls.config!.manifest).toEqual(webSignInManifest(base, ["connectors"], ADDRESS));
     expect(result.manifest).toEqual(calls.config!.manifest);
+    expect(calls.config!.manifest!.secrets).toEqual(base.secrets);
     expect(calls.config!.siweConfig).toEqual({ nonce: "nonce-1" });
     expect(storage.records.get(ADDRESS)).toBe(NEW);
     expect(result.verified).toEqual({ token: "bearer-2", expiresIn: 3600 });

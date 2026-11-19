@@ -1,3 +1,4 @@
+import { newIdbEnv } from "@/lib/voiceNotes/web/testing/idb";
 // Mounted-App proof of the manifest-revision gate at restore: a session saved under an older sign-in
 // manifest is handed off, cleared, and met with the sign-in screen carrying the one-line notice, with no
 // manifest fetch or storage restore before the handoff; a failed handoff keeps the session; offline defers;
@@ -46,7 +47,7 @@ const PRINCIPAL = `did:pkh:eip155:1:${ADDRESS}`;
 const CHROME = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
 const APP_SESSION_KEY = "xyz.tinycloud.tinychat:session";
 const REVISION_KEY = `xyz.tinycloud.tinychat:manifest-revision:${ADDRESS}`;
-const NOTICE = "Sign in once more so TinyCloud Home can open your apps and your feed. Your data stays as it is.";
+const NOTICE = "Sign in once more so TinyCloud One can open your apps and your feed. Your data stays as it is.";
 
 /** Every effect the gate must order, in the order it happened. */
 const events: string[] = [];
@@ -105,7 +106,7 @@ mock.module("@/lib/voiceNotes/captureEngine", () => ({
 }));
 mock.module("@/lib/voiceNotes/nativeVoiceNotes", () => ({
   ...nativeVoiceNotesApi,
-  VoiceNotes: { ...nativeVoiceNotesApi.VoiceNotes, getCaptureDefaults: async () => ({ status: "signed_in", accountDid: PRINCIPAL, transitionGen: 0 }) },
+  VoiceNotes: { ...nativeVoiceNotesApi.VoiceNotes, status: async () => ({ intent: "stopped" }), getCaptureDefaults: async () => ({ status: "signed_in", accountDid: PRINCIPAL, transitionGen: 0 }) },
 }));
 mock.module("@/lib/voiceNotes/accountHandoff", () => ({
   ...handoffApi,
@@ -139,8 +140,22 @@ let restoreDom: (() => void) | undefined;
 let root: Root | null = null;
 let host: HTMLDivElement | null = null;
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+/**
+ * Waits until the page has been quiet, in real time, for QUIET_MS: no new event and no DOM change. The app's
+ * startup chain does real async work (IndexedDB, dynamic imports) that takes a varying number of event-loop
+ * turns, so a fixed count of turns ends too early on a slow CPU (TC-3029).
+ */
+const QUIET_MS = 150;
 async function settle() {
-  await act(async () => { await tick(); await tick(); await tick(); });
+  let last = "";
+  let changedAt = performance.now();
+  const giveUpAt = changedAt + 5_000;
+  while (performance.now() < giveUpAt) {
+    await act(async () => { await tick(); });
+    const now = JSON.stringify([events, host?.innerHTML ?? ""]);
+    if (now !== last) { last = now; changedAt = performance.now(); }
+    else if (performance.now() - changedAt >= QUIET_MS) return;
+  }
 }
 
 /** A Chromium web page with the build flag (dev runtime flag) ON and the user's switch ON. */
@@ -154,12 +169,13 @@ function qualifyBrowser() {
     maxTouchPoints: { configurable: true, value: 0 },
     locks: { configurable: true, value: { request: () => undefined } },
   });
-  Object.defineProperty(globalThis, "indexedDB", { configurable: true, writable: true, value: {} });
+  Object.defineProperty(globalThis, "indexedDB", { configurable: true, writable: true, value: newIdbEnv().factory });
+  Object.defineProperty(globalThis, "IDBKeyRange", { configurable: true, value: newIdbEnv().keyRange });
   Object.defineProperty(globalThis, "Worker", { configurable: true, writable: true, value: class {} });
 }
 
 async function mount(platform: AppPlatform = "web") {
-  restoreDom = installDom();
+  restoreDom = installDom({ localStorage: globalThis.localStorage, sessionStorage: globalThis.sessionStorage });
   qualifyBrowser();
   host = document.createElement("div");
   document.body.append(host);
@@ -229,10 +245,11 @@ test("a session recorded under the withdrawn revision \"1\" is forced the same w
 });
 
 test("a failed handoff keeps the session: it is not cleared, nothing restores, and the notice is not shown", async () => {
-  handoffResult = { ok: false, failClosed: false, message: "Couldn't update this phone's recording settings. Try again." };
+  handoffResult = { ok: false, failClosed: false, message: "Couldn't stop voice recording for this account on this phone, so you're still signed in. Try again." };
   seedSession();
   await mount();
   expect(events).toEqual(["handoff"]);
+  expect(host!.textContent).toContain("Couldn't stop voice recording for this account on this phone, so you're still signed in. Try again.");
   expect(localStorage.getItem(APP_SESSION_KEY)).not.toBeNull();
   expect(host!.textContent).not.toContain(NOTICE);
   expect(host!.querySelector('[data-testid="authenticated-workspace"]')).toBeNull();

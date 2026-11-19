@@ -25,7 +25,8 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { authErrorMessage, UserFacingError } from "./authErrors";
 import { nativeRenewAt, renewalLeadMs, terminalRenewalError, nativeCode } from "./openkeyNativeRenewal";
 import { withAbortTimeout } from "./abortTimeout";
-import { manifestCarriesBundle } from "@tinyboilerplate/core";
+import { durableKeyReady, writeDurableKey } from "./durableKeys";
+import { manifestCarriesBundle, sameTinyCloudNode } from "@tinyboilerplate/core";
 import APP_MANIFEST from "../../../manifest.json";
 
 // ── Gate ──────────────────────────────────────────────────────────────
@@ -44,8 +45,53 @@ export function isNativeOpenKeySignIn(platform: AppPlatform = appPlatform()): bo
  * no secrets capability, so every flow that unlocks or stores credentials is
  * gated on this inside the app.
  */
-const NATIVE_SESSION_KIND_KEY = "xyz.tinycloud.tinychat:auth-kind";
+export const NATIVE_SESSION_KIND_KEY = "xyz.tinycloud.tinychat:auth-kind";
+export const NATIVE_SIGN_OUT_PENDING_KEY = "xyz.tinycloud.tinychat:native-signout-pending";
+/**
+ * `<host> <delegationCid>` of the last delegation this device saw the node accept
+ * (`/delegate` succeeded and hosted the space). Not secret: a CID names the
+ * delegation, it grants nothing (TC-2865).
+ */
+const NATIVE_ACTIVATED_KEY = "xyz.tinycloud.tinychat:native-activated";
+
+/** Durable "this node accepted this delegation" marker; web storage errors read as unmarked. */
+const localActivationMarker: NativeActivationMarker = {
+  read: () => {
+    try { return localStorage.getItem(NATIVE_ACTIVATED_KEY); } catch { return null; }
+  },
+  write: (value) => {
+    try {
+      if (value === null) localStorage.removeItem(NATIVE_ACTIVATED_KEY);
+      else localStorage.setItem(NATIVE_ACTIVATED_KEY, value);
+    } catch {
+      // Unmarked only costs the next restore an awaited activation.
+    }
+  },
+};
 let nativeSessionActive = false;
+
+export function setNativeSignOutPending(pending: boolean): boolean {
+  try {
+    // Also kept in native storage (durableKeys.ts): a pending sign-out must survive a WebView origin change.
+    writeDurableKey(NATIVE_SIGN_OUT_PENDING_KEY, pending ? "1" : null, localStorage);
+    return (localStorage.getItem(NATIVE_SIGN_OUT_PENDING_KEY) === "1") === pending;
+  } catch { return false; }
+}
+
+export function nativeSignOutPending(): boolean | null {
+  if (typeof localStorage === "undefined") return false;
+  try { return localStorage.getItem(NATIVE_SIGN_OUT_PENDING_KEY) === "1"; }
+  catch { return null; }
+}
+
+/**
+ * The fence as the boot restore must see it: only once its native copy has been reconciled (durableKeys.ts), which
+ * can take longer than the app waits to render. If native storage can't say, a sign-out counts as still pending,
+ * so an unfinished sign-out is never undone by restoring the session it was signing out of.
+ */
+async function settledNativeSignOutPending(): Promise<boolean | null> {
+  return (await durableKeyReady(NATIVE_SIGN_OUT_PENDING_KEY)) ? nativeSignOutPending() : true;
+}
 
 /** A native JWT is marked separately from a legacy widget session. No key material is stored here. */
 export function nativeSessionWasActive(): boolean {
@@ -56,14 +102,23 @@ export function nativeSessionWasActive(): boolean {
   }
 }
 
-export function setNativeSessionActive(active: boolean): void {
+const nativeSessionListeners = new Set<(active: boolean, restored: boolean) => void>();
+
+/** The app lock (lib/appLock.ts) follows sign-in and sign-out through this. */
+export function onNativeSessionChange(listener: (active: boolean, restored: boolean) => void): () => void {
+  nativeSessionListeners.add(listener);
+  return () => { nativeSessionListeners.delete(listener); };
+}
+
+/** `restored`: the session was restored at launch rather than signed in just now (the app lock tells them apart). */
+export function setNativeSessionActive(active: boolean, restored = false): void {
   nativeSessionActive = active;
   try {
-    if (active) localStorage.setItem(NATIVE_SESSION_KIND_KEY, "native");
-    else localStorage.removeItem(NATIVE_SESSION_KIND_KEY);
+    writeDurableKey(NATIVE_SESSION_KIND_KEY, active ? "native" : null, localStorage);
   } catch {
     // The SDK secure store is still authoritative if web storage is unavailable.
   }
+  for (const listener of nativeSessionListeners) listener(active, restored);
 }
 
 export function isNativeOpenKeySession(): boolean {
@@ -83,7 +138,7 @@ export function setSecretsAvailableForTests(available: boolean | null): void {
 
 /** User-facing message for secrets-dependent features inside the app. */
 export const SECRETS_UNAVAILABLE_IN_APP_MESSAGE =
-  "This uses stored credentials, which aren't available in the Exo app yet. Set it up from Exo on the web or desktop — everything you connect there works here.";
+  "This uses stored credentials, which aren't available in the TinyCloud One app yet. Set it up from TinyCloud One on the web or desktop — everything you connect there works here.";
 
 // ── Capabilities ──────────────────────────────────────────────────────
 
@@ -249,7 +304,7 @@ export function nativeSignInErrorMessage(error: unknown): string {
 }
 
 export const NATIVE_SIGN_OUT_WARNING =
-  "Exo signed out locally. OpenKey will retry any queued revocation when the app opens again. Check your grants at openkey.so if it remains active.";
+  "TinyCloud One signed out locally. OpenKey will retry any queued revocation when the app opens again. Check your grants at openkey.so if it remains active.";
 export const NATIVE_SIGN_OUT_STORAGE_WARNING =
   "Couldn't access secure storage on this device. Your OpenKey session may still be stored. Please try signing out again when storage is available.";
 
@@ -349,6 +404,15 @@ export interface NativeSignInDeps {
     siwe: string,
     signature: string,
   ) => Promise<{ token: string; expiresIn: number; address: string }>;
+  /** Optional test seam; production reads the durable local sign-out fence. */
+  readSignOutFence?: () => boolean | null;
+  /** Optional test seam; production keeps the activation marker in localStorage. */
+  activationMarker?: NativeActivationMarker;
+}
+
+export interface NativeActivationMarker {
+  read: () => string | null;
+  write: (value: string | null) => void;
 }
 
 /** The client's registered redirect; the Exo app's own reverse-DNS scheme. */
@@ -514,6 +578,7 @@ export type NativeBootOutcome =
   | { kind: "failed" }
   | { kind: "storage" }
   | { kind: "configuration" }
+  | { kind: "signOutPending" }
   | { kind: "terminal" | "upgrade"; revoke: () => Promise<void> };
 
 /** Restore before the backend JWT gate: a live native grant can mint a new JWT. */
@@ -526,6 +591,17 @@ export async function restoreNativeAtBoot(
   try {
     const d = deps ?? await defaultDeps();
     openkey = nativeClient(nativeClientOptions(config.env ?? import.meta.env, config.tinycloudHost), d.createOpenKeyNative);
+    const signOutPending = d.readSignOutFence ? d.readSignOutFence() : await settledNativeSignOutPending();
+    if (signOutPending === null) return { kind: "signOutPending" };
+    if (signOutPending) {
+      try {
+        await withNativeDeadline(openkey.signOut());
+        if (!setNativeSignOutPending(false)) return { kind: "signOutPending" };
+        return { kind: "none" };
+      } catch {
+        return { kind: "signOutPending" };
+      }
+    }
     let session = await openkey.current();
     if (!session) return { kind: "none" };
     if (!nativeGrantCoversCurrentManifest(session)) {
@@ -644,7 +720,8 @@ export async function installNativeSession(
     !delegation.delegationHeader ||
     !delegation.delegationCid ||
     !delegation.spaceId ||
-    (!restoringExisting && delegation.tinycloudHost !== config.tinycloudHost)
+    // A renewal may keep the delegation on the node's previous name (tee.node.tinycloud.xyz before TC-2923): same node.
+    (!restoringExisting && (!delegation.tinycloudHost || !sameTinyCloudNode(delegation.tinycloudHost, config.tinycloudHost)))
   ) {
     throw new Error("OpenKey returned an incomplete delegation for a different TinyCloud node.");
   }
@@ -669,14 +746,42 @@ export async function installNativeSession(
     tinycloudHosts: [delegation.tinycloudHost],
   });
 
-  const activation = await d.activateSession(delegation.tinycloudHost, delegation.delegationHeader);
-  if (!activation.success) {
-    throw new NativeHandoffRetryError(activation.error ?? "TinyCloud space activation failed");
-  }
-  // OpenKey may already have hosted the space during consent. In that case
-  // /delegate returns a successful reconciliation with activated: [].
-  if (activation.skipped?.includes(delegation.spaceId)) {
-    throw new NativeSpaceUnavailableError("TinyCloud could not host the delegated space");
+  // Activation registers the delegation with the node; every later invocation is
+  // still authorized by the node against it. A boot restore of the delegation
+  // this device already saw the node accept re-sends it without waiting, so the
+  // cached app is not held behind a round trip that the node answers with
+  // `activated: []` (TC-2865). Only boot restores read or write the marker: the
+  // first launch after a sign-in or renewal waits once and marks; a failure
+  // clears it, so the next launch waits again and surfaces the error. Sign-in
+  // and live renewal always wait and leave web storage untouched.
+  const marker = d.activationMarker ?? localActivationMarker;
+  const { delegationHeader, spaceId } = delegation;
+  const activationKey = `${delegation.tinycloudHost} ${delegation.delegationCid}`;
+  const bootRestore = restoringExisting && !liveTcw;
+  const activate = async () => {
+    const activation = await d.activateSession(delegation.tinycloudHost, delegationHeader);
+    if (!activation.success) {
+      throw new NativeHandoffRetryError(activation.error ?? "TinyCloud space activation failed");
+    }
+    // OpenKey may already have hosted the space during consent. In that case
+    // /delegate returns a successful reconciliation with activated: [].
+    if (activation.skipped?.includes(spaceId)) {
+      throw new NativeSpaceUnavailableError("TinyCloud could not host the delegated space");
+    }
+  };
+  if (bootRestore && stored?.tinycloudSession?.delegationCid === delegation.delegationCid && marker.read() === activationKey) {
+    void activate().catch((error: unknown) => {
+      marker.write(null);
+      logNativeOpenKeyError("background activation", error);
+    });
+  } else {
+    try {
+      await activate();
+    } catch (error) {
+      if (bootRestore) marker.write(null);
+      throw error;
+    }
+    if (bootRestore) marker.write(activationKey);
   }
 
   if (liveTcw) {

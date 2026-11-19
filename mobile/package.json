@@ -16,6 +16,7 @@
     "@capacitor/core": "^8.5.2",
     "@capacitor/haptics": "^8.0.2",
     "@capacitor/ios": "^8.5.2",
+    "@capacitor/preferences": "^8.0.1",
     "@openkey/sdk-capacitor": "0.2.0-beta.0"
   },
   "devDependencies": {

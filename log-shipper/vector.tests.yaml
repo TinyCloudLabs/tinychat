@@ -443,7 +443,7 @@ tests:
         type: vrl
         source: |
           # Event first, exactly as backend/src/request-context.ts serialises it, plus every kind of sensitive value as extra keys.
-          . = {"message": "{\"event\":\"tinychat_request\",\"request_id\":\"0b6f2c1e-9d4a-4e7b-8c3f-2a1d5e6f7a8b\",\"request_id_replaced\":false,\"method\":\"POST\",\"route\":\"/api/chat\",\"status\":200,\"duration_ms\":1834.56789,\"correlation_id\":\"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee\",\"stream\":\"aborted\",\"code\":\"transport_failed\",\"credits\":13,\"account_hash\":\"3f1c0d9e8b7a6f5e4d3c2b1a0f9e8d7c6b5a4f3e2d1c0b9a8f7e6d5c4b3a2f10\",\"body\":\"PROMPT-CANARY what did the board decide\",\"reply\":\"REPLY-CANARY\",\"authorization\":\"Bearer BEARER-CANARY-7f3a\",\"api_key\":\"sk-live-APIKEYCANARY0123456789\",\"cookie\":\"sid=COOKIE-CANARY\",\"email\":\"alice.canary@example.com\",\"ip\":\"203.0.113.77\",\"address\":\"0xAbC1230000000000000000000000000000dEf456\"}", "level": 6, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+          . = {"message": "{\"event\":\"tinychat_request\",\"request_id\":\"0b6f2c1e-9d4a-4e7b-8c3f-2a1d5e6f7a8b\",\"request_id_replaced\":false,\"method\":\"POST\",\"route\":\"/api/chat\",\"status\":200,\"duration_ms\":1834.56789,\"correlation_id\":\"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee\",\"stream\":\"aborted\",\"code\":\"transport_failed\",\"credits\":\"10-99\",\"account_hash\":\"3f1c0d9e8b7a6f5e4d3c2b1a0f9e8d7c6b5a4f3e2d1c0b9a8f7e6d5c4b3a2f10\",\"body\":\"PROMPT-CANARY what did the board decide\",\"reply\":\"REPLY-CANARY\",\"authorization\":\"Bearer BEARER-CANARY-7f3a\",\"api_key\":\"sk-live-APIKEYCANARY0123456789\",\"cookie\":\"sid=COOKIE-CANARY\",\"email\":\"alice.canary@example.com\",\"ip\":\"203.0.113.77\",\"address\":\"0xAbC1230000000000000000000000000000dEf456\"}", "level": 6, "timestamp": now(), "_tc.logship": "tinychat-backend"}
     outputs:
       - extract_from: allowlist
         conditions:
@@ -459,7 +459,7 @@ tests:
               assert_eq!(.duration_ms, 1834.6)
               assert_eq!(.stream, "aborted")
               assert_eq!(.code, "transport_failed")
-              assert_eq!(.credits, 13)
+              assert_eq!(.credits, "10-99")
               assert_eq!(.account_hash, "3f1c0d9e8b7a6f5e4d3c2b1a0f9e8d7c6b5a4f3e2d1c0b9a8f7e6d5c4b3a2f10")
               assert_eq!(keys(.), ["account_hash", "code", "credits", "duration_ms", "event", "level", "method", "request_id", "route_template", "status", "stream", "svc", "ts"])
               text = encode_json(.)
@@ -504,6 +504,71 @@ tests:
         source: |
           . = {"message": "{\"event\":\"tinychat_request\",\"request_id\":\"0b6f2c1e-9d4a-4e7b-8c3f-2a1d5e6f7a8b\",\"method\":\"GET\",\"route\":\"/health\",\"status\":\"200 alice\",\"duration_ms\":1}", "level": 6, "timestamp": now(), "_tc.logship": "tinychat-backend"}
     no_outputs_from: [allowlist]
+  - name: "TC-3031 a listed route template and a credits bucket ship as they are"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "{\"event\":\"tinychat_request\",\"request_id\":\"0b6f2c1e-9d4a-4e7b-8c3f-2a1d5e6f7a8b\",\"method\":\"GET\",\"route\":\"/api/transcriber/private-cloud/transcriptions/:id/result\",\"status\":200,\"duration_ms\":3,\"credits\":\"1000+\"}", "level": 6, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+    outputs:
+      - extract_from: allowlist
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.route_template, "/api/transcriber/private-cloud/transcriptions/:id/result")
+              assert_eq!(.credits, "1000+")
+  - name: "TC-3031 a template-shaped route that is not registered ships as unmatched"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "{\"event\":\"tinychat_request\",\"request_id\":\"0b6f2c1e-9d4a-4e7b-8c3f-2a1d5e6f7a8b\",\"method\":\"GET\",\"route\":\"/api/x/0xabc1230000000000000000000000000000def456\",\"status\":200,\"duration_ms\":3,\"credits\":\"0\"}", "level": 6, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+    outputs:
+      - extract_from: allowlist
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.route_template, "unmatched")
+              assert_eq!(.credits, "0")
+              assert!(!contains(encode_json(.), "abc123"))
+  - name: "TC-3031 an exact credit count is not a bucket and is omitted"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "{\"event\":\"tinychat_request\",\"request_id\":\"0b6f2c1e-9d4a-4e7b-8c3f-2a1d5e6f7a8b\",\"method\":\"GET\",\"route\":\"/api/chat\",\"status\":200,\"duration_ms\":3,\"credits\":13}", "level": 6, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+    outputs:
+      - extract_from: allowlist
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.route_template, "/api/chat")
+              assert!(!exists(.credits))
+  - name: "TC-3031 a credits string outside the closed buckets is omitted"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "{\"event\":\"tinychat_request\",\"request_id\":\"0b6f2c1e-9d4a-4e7b-8c3f-2a1d5e6f7a8b\",\"method\":\"GET\",\"route\":\"/api/chat\",\"status\":200,\"duration_ms\":3,\"credits\":\"13\"}", "level": 6, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+    outputs:
+      - extract_from: allowlist
+        conditions:
+          - type: vrl
+            source: |
+              assert!(!exists(.credits))
+  - name: "TC-3031 a route over 96 characters ships as unmatched"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "{\"event\":\"tinychat_request\",\"request_id\":\"0b6f2c1e-9d4a-4e7b-8c3f-2a1d5e6f7a8b\",\"method\":\"GET\",\"route\":\"/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"status\":200,\"duration_ms\":3,\"credits\":\"1-9\"}", "level": 6, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+    outputs:
+      - extract_from: allowlist
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.route_template, "unmatched")
+              assert_eq!(.credits, "1-9")
   - name: "storage lane slow wait ships only typed warning fields despite hostile extra keys"
     inputs:
       - insert_at: redact

@@ -32,6 +32,8 @@ const PATTERNS: ReadonlyArray<[reason: string, pattern: RegExp]> = [
   ["a URL carrying a code or token", /[?&#](?:code|token|access_token|id_token|refresh_token|client_secret|api_key|apikey|key|password|user_code|sig|signature|x-amz-signature)=/i],
   ["a Share link (its fragment is the read authority)", /#(?:tc1=|v=\d+&p=)/],
   ["an OpenKey device approval link", /\bopenkey\.so\/device\b/i],
+  // OpenKey's one-tap approval link carries its bearer key in the fragment, which none of the patterns above see. No card field may hold one.
+  ["an OpenKey one-tap approval link", /\bopenkey\.so\/a\/[A-Za-z0-9]/i],
   ["an OAuth/approval URL", /\bhttps?:\/\/[^\s]*\/(?:oauth2?|authorize|login\/device|device\/approve|consent)\b/i],
 ];
 
@@ -132,6 +134,37 @@ export function findRecordSecrets(kind: string, value: Record<string, unknown>):
     }
   }
   return findSecrets(value);
+}
+
+export const REDACTED = "[link removed]";
+
+/**
+ * `text` with whatever findSecrets would refuse taken out, for words shown to the owner from a card nobody checked
+ * (a connected agent's): a whole word that holds a secret or an approval link (a one-tap link carries its key after the
+ * path, so the word goes, not only the matched part), then any match that spans words. Text with nothing in it comes
+ * back as it was. If something still matches, nothing of the text is kept.
+ */
+export function redactSecrets(text: string): string {
+  if (!findSecrets(text).length) return text;
+  let out = text.split(/(\s+)/).map((part) => (part.trim() && findSecrets(part).length ? REDACTED : part)).join("");
+  for (const [, pattern] of PATTERNS) out = out.replace(new RegExp(pattern.source, pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`), REDACTED);
+  out = out.replace(URL_IN_TEXT, (url) => (consentUrlIn(url) ? REDACTED : url));
+  return findSecrets(out).length ? REDACTED : out;
+}
+
+/** `value` with every string in it passed through redactSecrets; the same object when nothing changed. */
+export function redactSecretsDeep<T>(value: T): T {
+  if (typeof value === "string") return redactSecrets(value) as T;
+  if (Array.isArray(value)) {
+    const items = value.map(redactSecretsDeep);
+    return items.some((item, index) => item !== value[index]) ? items as T : value;
+  }
+  if (value && typeof value === "object") {
+    let changed = false;
+    const entries = Object.entries(value).map(([key, item]) => { const next = redactSecretsDeep(item); if (next !== item) changed = true; return [key, next] as const; });
+    return changed ? Object.fromEntries(entries) as T : value;
+  }
+  return value;
 }
 
 /**

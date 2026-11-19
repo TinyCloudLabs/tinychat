@@ -78,7 +78,7 @@ async function setup(options: { rateLimit?: boolean; holdTask?: boolean; capabil
     agentId: TINYCHAT_AGENT_ID, entityIdFor: value => addressToEntityId(value, TINYCHAT_AGENT_ID),
     elizaServiceUrl: "http://service.test", elizaServiceSecret: "local-service-fixture",
     redpillApiKey: "local-provider-fixture", redpillBaseUrl: "http://provider.test/v1", defaultModel: () => model,
-    isModelOffered: value => value === model, fetchImpl, elizaTasksEnabled: true,
+    isModelOffered: value => value === model, redpillFetch: fetchImpl, fetchImpl, elizaTasksEnabled: true,
     streamPolicy: { heartbeatMs: 1000, turnTimeoutMs: 3000, drainGraceMs: 100 },
   };
   const app = express();

@@ -3,6 +3,7 @@ import { Capacitor } from "@capacitor/core";
 import { Link, useNavigate } from "react-router-dom";
 import { MicIcon, UserIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { PrivacyPolicyLink } from "@/components/ui/privacy-policy-link";
 import { SectionCard } from "@/components/ui/section-card";
 import { PageHeader } from "@/shell/PageHeader";
 import { PATHS, type Screen } from "@/shell/routes";
@@ -31,7 +32,6 @@ import { useRecorder } from "./recorder/RecorderProvider";
 import { SoftHomeProvider } from "./home/softHome";
 import { SystemAudioStart } from "./home/desktop/SystemAudioStart";
 import { ActivityPanel } from "./activity/ActivityPanel";
-import { openManageStorage } from "@/lib/openManageStorage";
 import { MANIFEST_RESIGN_NOTICE } from "@/lib/manifestRevision";
 
 /** A missing pending-store entry does not prove that a known account is signed out. */
@@ -54,7 +54,7 @@ export function DeviceCaptureSurface({ did, offline, error, resign = false, onSi
   const compact = useSizeClass().size === "compact";
   const platform = useContext(PlatformContext);
   const navigate = useNavigate();
-  const { notes, error: notesError, refresh, remove } = useLocalNotes(did, offline || error !== null);
+  const { notes, accountDid, error: notesError, refresh, remove } = useLocalNotes(did, offline || error !== null);
   const [filter, setFilter] = useState<LibraryFilter>("all");
   const status = useSyncExternalStore(onDeviceSttStore.subscribe, onDeviceSttStore.snapshot, onDeviceSttStore.snapshot);
   const enqueued = useRef(new Set<string>());
@@ -77,7 +77,8 @@ export function DeviceCaptureSurface({ did, offline, error, resign = false, onSi
     const handle = OnDeviceStt.addListener("transcribed", () => { void refresh(); });
     return () => { void handle.then((listener) => listener.remove()); };
   }, [refresh]);
-  const currentNotes = useMemo(() => notes.filter((note) => !note.ownerUnknown), [notes]);
+  const currentNotes = useMemo(() => notes.filter((note) => !note.ownerUnknown && !!accountDid && note.owner === accountDid), [notes, accountDid]);
+  const unownedNotes = useMemo(() => notes.filter((note) => !note.ownerUnknown && !note.owner), [notes]);
   const earlierNotes = useMemo(() => notes.filter((note) => note.ownerUnknown), [notes]);
   const items = useMemo(() => currentNotes.map((note) => onPhoneItem(note)), [currentNotes]);
   const activityItems = useMemo(() => notes.map((note) => onPhoneItem(note)), [notes]);
@@ -99,7 +100,7 @@ export function DeviceCaptureSurface({ did, offline, error, resign = false, onSi
     };
     const pipeline = notePipeline(input);
     return [note.id, { input, pipeline, provider: route === "on-device" ? "local" : note.options?.transcriber === "assemblyai" ? "powerful" : "private",
-      onAction: (kind) => { if (kind === "sign-in") onSignIn(); else if (kind === "get-model") void downloadOnDeviceModel(); else if (kind === "retry") { if (pipeline.current === "transcript") void retryOnDeviceNote(note.id); else if (sessionReadFailed) onRetry(); else void recorder.retryPending(); } else if (kind === "check-again") void recorder.transcription?.onRecheck(); else if (kind === "review-consent") recorder.reviewPrivateConsent?.(); else if (kind === "manage-storage") void openManageStorage(); },
+      onAction: (kind) => { if (kind === "sign-in") onSignIn(); else if (kind === "get-model") void downloadOnDeviceModel(); else if (kind === "retry") { if (pipeline.current === "transcript") void retryOnDeviceNote(note.id); else if (sessionReadFailed) onRetry(); else void recorder.retryPending(); } else if (kind === "check-again") void recorder.transcription?.onRecheck(); else if (kind === "review-consent") recorder.reviewPrivateConsent?.(); },
       onRetryStep: (key) => { if (key === "transcript") void retryOnDeviceNote(note.id); else if (sessionReadFailed) onRetry(); else void recorder.retryPending(); }, actionError: null }];
   })), [notes, recorder, status, platform, offline, onSignIn, onRetry, did, error]);
   const selected = notes.find((note) => onPhoneItem(note).id === screen.noteId);
@@ -109,7 +110,7 @@ export function DeviceCaptureSurface({ did, offline, error, resign = false, onSi
   const soft = compact;
   const activity = <ActivityPanel items={activityItems} views={activityViews} platform={platform} onOpenNote={(id) => navigate(PATHS.library + "/" + id)} />;
   const notice = <div className="rounded-xl border border-border bg-surface-2 px-4 py-3 text-callout">
-    <p>{offline ? `You're offline. Recordings stay on ${deviceName(platform)} until Exo reconnects.` : did === null ? `Recordings stay on ${deviceName(platform)} until you sign in.` : `Recordings stay on ${deviceName(platform)} while Exo checks your TinyCloud connection.`}</p>
+    <p>{offline ? `You're offline. Recordings stay on ${deviceName(platform)} until TinyCloud One reconnects.` : did === null ? `Recordings stay on ${deviceName(platform)} until you sign in.` : `Recordings stay on ${deviceName(platform)} while TinyCloud One checks your TinyCloud connection.`}</p>
     {resign && !offline && did === null && <p role="status" className="mt-1">{MANIFEST_RESIGN_NOTICE}</p>}
     {error && !offline && !(resign && did === null) && <p role="alert" className="mt-1 text-destructive">{did === null ? "Couldn't sign in. Try again." : "Couldn't check your TinyCloud connection. Try again."}</p>}
     <div className="mt-2 flex flex-wrap gap-2">
@@ -138,6 +139,7 @@ export function DeviceCaptureSurface({ did, offline, error, resign = false, onSi
                   <LibraryRow key={item.id} item={item} now={new Date()} grouped={false} activityView={activityViews.get(item.sourceId)} platform={platform} />)}</ul>
                   : <p className="soft-empty">Your recordings will appear here.</p>}
               </section>
+              {platform === "ios" || platform === "android" ? null : <EarlierVersionNotes signedOutNotes notes={unownedNotes} did={did} onChange={refresh} onDelete={remove} />}
               <EarlierVersionNotes notes={earlierNotes} did={did} onChange={refresh} onDelete={remove} />
             </div>
           </div>
@@ -181,7 +183,7 @@ export function DeviceCaptureSettings({ onBack, onSignIn, offline = false }: { o
   return <div className="h-full overflow-y-auto" data-scroll-root>
     <PageHeader title="Settings" back={onBack} className="mx-auto w-full max-w-2xl px-4" />
     <div className="mx-auto w-full max-w-2xl space-y-4 px-4 pb-8 pt-2">
-      <SectionCard icon={UserIcon} title="Account"><p className="text-callout text-muted-foreground">{offline ? "Exo will sync when it reconnects." : "Sign in to sync your recordings."}</p><Button className="mt-3" onClick={onSignIn}>{offline ? "Try again" : "Sign in"}</Button></SectionCard>
+      <SectionCard icon={UserIcon} title="Account"><p className="text-callout text-muted-foreground">{offline ? "TinyCloud One will sync when it reconnects." : "Sign in to sync your recordings."}</p><Button className="mt-3" onClick={onSignIn}>{offline ? "Try again" : "Sign in"}</Button><div className="mt-3"><PrivacyPolicyLink /></div></SectionCard>
       <SectionCard icon={MicIcon} title="Voice notes"><VoiceNotesTranscriberSettings /></SectionCard>
       <SectionCard icon={MicIcon} title="Storage"><AudioCacheSettings /></SectionCard>
     </div>

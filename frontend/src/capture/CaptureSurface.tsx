@@ -23,7 +23,7 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { uploadRunner } from "@/lib/audioUpload";
 import { PlatformContext } from "@/lib/platform";
-import { openManageStorage } from "@/lib/openManageStorage";
+import { billingLinksAllowed, openManageStorage } from "@/lib/openManageStorage";
 import { isStorageReadOnly, subscribeStorageReadOnly } from "@/lib/storageStatus";
 import { useSizeClass } from "@/lib/sizeClass";
 import { cn } from "@/lib/utils";
@@ -225,8 +225,9 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
           pendingNotes: pendingVisible ? recorder.pending.notes ?? [] : [],
           lastError: pendingVisible ? recorder.pending.lastError : null,
           limitNotice: recorder.phase === "recording" ? null : recorder.limitNotice,
-          onSaveNow: storageFull ? openManageStorage : recorder.retryPending,
-          storageFull,
+          // Manage storage opens a purchase page, so the iOS and Android apps keep Save now.
+          onSaveNow: storageFull && billingLinksAllowed(platform) ? openManageStorage : recorder.retryPending,
+          storageFull: storageFull && billingLinksAllowed(platform),
         }
       : undefined,
     onOpenUpload: () => setSheet("upload"),

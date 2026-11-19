@@ -12,6 +12,7 @@ import { __setVoiceNotesForTests } from "@/lib/voiceNotes/nativeVoiceNotes";
 
 // App Store 5.1.1(v): Settings → Account offers "Delete OpenKey account", which opens
 // OpenKey's deletion page outside the app.
+// App Store 5.1.1(i): it also links the privacy policy, on every platform.
 
 let cleanDom: (() => void) | undefined;
 let previousCustomElements: PropertyDescriptor | undefined;
@@ -40,7 +41,7 @@ async function renderSettings(platform: AppPlatform): Promise<HTMLDivElement> {
     <MemoryRouter>
       <PlatformContext.Provider value={platform}>
         <StaticRecorderProvider value={{ signedIn: true, available: false }}>
-          <AgentAccessProvider backendUrl="http://localhost" sessionStore={sessionStore} tcw={tcw} appName="Exo" openkeyHost="http://localhost">
+          <AgentAccessProvider backendUrl="http://localhost" sessionStore={sessionStore} tcw={tcw} appName="TinyCloud One" openkeyHost="http://localhost">
             <SettingsPage
               address={tcw.address()} did={tcw.did} spaceId={tcw.spaceId} state="ready" error={null}
               onSignOut={noop} signingOut={false} paywallEnabled={false} onBack={noop}
@@ -72,6 +73,15 @@ test("the Account section offers Delete OpenKey account beside Sign out", async 
   expect(section?.textContent).toContain("You'll confirm on openkey.so.");
 });
 
+test("the Account section puts Delete my recordings first above Delete OpenKey account (TC-3136)", async () => {
+  const page = await renderSettings("web");
+  const buttons = [...page.querySelectorAll("button")];
+  const recordings = buttons.find((button) => button.textContent === "Delete my recordings first");
+  const del = buttons.find((button) => button.textContent === "Delete OpenKey account");
+  expect(recordings).toBeDefined();
+  expect(recordings!.compareDocumentPosition(del!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+});
+
 test("desktop, which has no fixed-URL opener for it, shows no deletion row", async () => {
   Object.defineProperty(window, "__TAURI_INTERNALS__", { configurable: true, value: {} });
   try {
@@ -80,5 +90,19 @@ test("desktop, which has no fixed-URL opener for it, shows no deletion row", asy
     expect(page.textContent).not.toContain("Delete OpenKey account");
   } finally {
     Reflect.deleteProperty(window, "__TAURI_INTERNALS__");
+  }
+});
+
+test("the Account section links the privacy policy, on the web and on desktop", async () => {
+  for (const platform of ["web", "tauri"] as const) {
+    if (platform === "tauri") Object.defineProperty(window, "__TAURI_INTERNALS__", { configurable: true, value: {} });
+    try {
+      const page = await renderSettings(platform);
+      const link = [...page.querySelectorAll("button")].find((button) => button.textContent === "Privacy policy");
+      expect(link).toBeDefined();
+      expect(accountSection(page)?.contains(link!)).toBe(true);
+    } finally {
+      Reflect.deleteProperty(window, "__TAURI_INTERNALS__");
+    }
   }
 });

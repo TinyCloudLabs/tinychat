@@ -30,9 +30,18 @@ export interface PendingTranscriberCreate {
   createdAt: number;
 }
 
+/** A removal whose provider-side purge is not yet confirmed (TC-3136). `nextAt` is epoch ms. */
+export interface PurgeState { since: number; attempts: number; nextAt: number }
+
 export interface TranscriberIndexEntries {
   ids: string[];
   shared: Record<string, ShareProvenance>;
+  /** Present only while a removal's provider-side purge is unconfirmed. */
+  purging?: Record<string, PurgeState>;
+}
+
+function pendingPurges(row: IndexRecord): { purging?: Record<string, PurgeState> } {
+  return row.purging && Object.keys(row.purging).length > 0 ? { purging: row.purging } : {};
 }
 
 /** The stored document. A legacy `{ ids }` document has no shares and no pending creates. */
@@ -40,6 +49,7 @@ interface IndexRecord {
   ids: string[];
   shared?: Record<string, ShareProvenance>;
   pending?: PendingTranscriberCreate[];
+  purging?: Record<string, PurgeState>;
 }
 
 /**
@@ -60,6 +70,14 @@ export interface TranscriberIndexStore {
   shares(address: string): Promise<Record<string, ShareProvenance>>;
   /** Ids and shares from ONE read of the document, so ownership and sharing can never disagree. */
   entries(address: string): Promise<TranscriberIndexEntries>;
+  /**
+   * TC-3136: the owner removed this recording but the capture provider's copy is not yet confirmed
+   * gone. The entry stays in the list as "deleting" and the purge sweeper retries it; nothing
+   * drops it until the provider read-back says not-found. Idempotent.
+   */
+  markPurging(address: string, meetingId: string): Promise<void>;
+  /** Records one failed purge attempt and when the sweeper may try again. */
+  notePurgeAttempt(address: string, meetingId: string, nextAt: number): Promise<void>;
   listAddresses(): Promise<string[]>;
   /** Adds the durable intent and returns ownership from the same lane read/write. */
   beginCreate(address: string, intent: PendingTranscriberCreate): Promise<TranscriberIndexEntries>;
@@ -175,12 +193,21 @@ function parseRecord(value: unknown): IndexRecord {
   if (shared !== undefined && (shared === null || typeof shared !== "object" || Array.isArray(shared))) {
     throw new Error("transcriber_index_invalid");
   }
+  const purging = "purging" in value ? value.purging : undefined;
+  if (purging !== undefined && (purging === null || typeof purging !== "object" || Array.isArray(purging)
+    || !Object.values(purging).every(state => state && typeof state === "object"
+      && "since" in state && typeof state.since === "number"
+      && "attempts" in state && typeof state.attempts === "number"
+      && "nextAt" in state && typeof state.nextAt === "number"))) {
+    throw new Error("transcriber_index_invalid");
+  }
   return {
     ids: [...value.ids],
     ...(shared === undefined ? {} : {
       shared: Object.fromEntries(Object.entries(shared).map(([id, raw]) => [id, sanitizeProvenance(raw)])),
     }),
     ...(pending === undefined ? {} : { pending: [...pending] }),
+    ...(purging === undefined ? {} : { purging: structuredClone(purging) as Record<string, PurgeState> }),
   };
 }
 
@@ -193,6 +220,10 @@ function withoutId(row: IndexRecord, meetingId: string): IndexRecord {
   if (row.shared && meetingId in row.shared) {
     const { [meetingId]: _removed, ...rest } = row.shared;
     next.shared = rest;
+  }
+  if (row.purging && meetingId in row.purging) {
+    const { [meetingId]: _removed, ...rest } = row.purging;
+    next.purging = rest;
   }
   return next;
 }
@@ -266,7 +297,22 @@ export class JsonTranscriberIndexStore implements TranscriberIndexStore {
   }
 
   entries(address: string): Promise<TranscriberIndexEntries> {
-    return this.view(address, row => structuredClone({ ids: row.ids, shared: row.shared ?? {} }));
+    return this.view(address, row => structuredClone({ ids: row.ids, shared: row.shared ?? {}, ...pendingPurges(row) }));
+  }
+
+  markPurging(address: string, meetingId: string): Promise<void> {
+    return this.update(address, row => {
+      if (!row.ids.includes(meetingId) || row.purging?.[meetingId]) return row;
+      return { ...row, purging: { ...row.purging, [meetingId]: { since: Date.now(), attempts: 0, nextAt: 0 } } };
+    });
+  }
+
+  notePurgeAttempt(address: string, meetingId: string, nextAt: number): Promise<void> {
+    return this.update(address, row => {
+      const state = row.purging?.[meetingId];
+      if (!state) return row;
+      return { ...row, purging: { ...row.purging, [meetingId]: { ...state, attempts: state.attempts + 1, nextAt } } };
+    });
   }
 
   async listAddresses(): Promise<string[]> {
@@ -299,7 +345,7 @@ export class JsonTranscriberIndexStore implements TranscriberIndexStore {
         await this.json.put(key, next);
         this.remember(key, next);
       }
-      return structuredClone({ ids: next.ids, shared: next.shared ?? {} });
+      return structuredClone({ ids: next.ids, shared: next.shared ?? {}, ...pendingPurges(next) });
     });
   }
 

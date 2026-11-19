@@ -1,4 +1,4 @@
-# Exo development logs
+# TinyCloud One development logs
 
 Development builds write one JSON object per line. Each entry has `at`,
 `kind`, and `source_id` (null for session, request, and native bridge events).
@@ -41,7 +41,7 @@ live stream on the Mac. Its rotated predecessor is
 
 ## Android debug build
 
-Android Debug keeps the `xyz.tinycloud.exo` application ID. Logging is enabled
+Android Debug uses the same `xyz.tinycloud.home` application ID as release. Logging is enabled
 by `BuildConfig.DEBUG`.
 
 ```sh
@@ -206,10 +206,16 @@ provider refusal can be read without public Phala logs. Same pattern as tinyclou
   `request_id`, `method`, `route_template` (the record's `route`), `status`, `duration_ms` (0.1 ms), `stream`, `code`,
   `credits`, `account_hash`, plus `svc`, `event`, `level` (`error` for a 5xx, else `info`) and `ts`.
   `request_id_replaced`, `correlation_id` and any other key are dropped; a malformed `request_id` or `status` drops
-  the record; a route that is not template-shaped or is longer than 64 characters ships as `unmatched`, and an
+  the record; a route that is not in the closed list (below) ships as `unmatched`, and an
   off-shape optional field is omitted. Bodies, prompts, replies, headers, keys, tokens, emails
   and IPs are never fields. To bound volume on the shared Better Stack allowance, at most 10 problem records
   (5xx, stream `error` or `aborted`) and 20 other records per minute ship; the rest are dropped (Vector `throttle`).
+  TC-3031 narrows three fields. `route_template` is one of the templates in `backend/src/request-log-routes.ts`
+  (every route the backend registers; each at most 96 characters) or `unmatched`. `credits` ships only as a bucket: `0`,
+  `1-9`, `10-99`, `100-999` or `1000+`. `account_hash` is
+  `hex(HMAC-SHA256(REQUEST_LOG_HMAC_KEY, "account\0" || UTC "YYYY-MM" of the record || "\0" || lowercase address))`,
+  so one account's records join within a calendar month and not across months. The scheme and its test vectors are in
+  `ops/logging/pseudonyms.md` in `tinycloud-dev`.
   `backend/src/__tests__/request-record.test.ts` sends a chat turn carrying each kind of sensitive value and checks
   the emitted record and, with `VECTOR_BIN`, what the real pipeline passes to the sink.
 - **Storage and calendar diagnostics (TC-2546).** A `[storage-lane]` line projects exactly `svc`, `event`, `component`,
@@ -243,10 +249,41 @@ provider refusal can be read without public Phala logs. Same pattern as tinyclou
   application-payload budgets, not a guarantee about future traffic from other services or vendor billing changes.
 - **`REQUEST_LOG_HMAC_KEY`.** Generated once (`openssl rand -hex 32`) and set as the `production-api` secret; it
   reaches only the backend's encrypted CVM env (step `env:`, env-file `printf`, Compose). It is never logged or
-  shipped. Rotating it changes every `account_hash`, so records before and after a rotation no longer join.
+  shipped. Rotating it changes every `account_hash`, so records before and after a rotation no longer join; the
+  hash also changes at each UTC month boundary.
+- **Add or remove a route.** `backend/src/__tests__/request-log-routes.test.ts` reads the route registrations from
+  the source and fails until `backend/src/request-log-routes.ts` lists the new template. Copy the list into the
+  `route_template` enum in `ops/logging/fields.json` in `tinycloud-dev` (then byte-for-byte into
+  `log-shipper/fields.json`) and into the `includes([...], route)` check in `log-shipper/vector.yaml` and its Compose copy;
+  the same test checks all three. A route path the scanner cannot read as a literal fails the test.
 - **Add an event or field.** (1) Add it to `tinychat-backend` in `ops/logging/fields.json` in `tinycloud-dev` and merge;
   (2) copy that file byte-for-byte to `log-shipper/fields.json`; (3) emit it in the `allowlist` transform in
   `log-shipper/vector.yaml` with a type/range check; (4) mirror the YAML into `docker-compose.phala.yml` (`$` → `$$`);
   (5) add a case to `log-shipper/vector.tests.yaml`. Native Vector fixtures and the sink-facing
   `request-record.test.ts` cases verify the emitted keys and rejection of private extras; CI also validates the pinned image.
 - **Delivery is best effort.** UDP and the sink buffer can drop lines under load or while the shipper restarts.
+
+## Playback diagnostics (TC-2857)
+
+An opt-in log of how note audio plays on a device, for a user to export when playback sounds choppy. It is off by
+default and works in release builds. To turn it on: Settings → tap the build line at the bottom seven times →
+**Playback diagnostics** → switch on. Open the note, play it, then **Share log** (or **Copy log**). Turning the switch
+off stops recording; **Clear** deletes the log. The log stays on the device (localStorage, the newest 5,000 entries)
+until it is shared.
+
+Each line is a JSON object with `t` (wall ms) and `m` (`performance.now()` ms). The first line is a header with the
+build. Entries (`frontend/src/lib/audio/playbackDiagnostics.ts`):
+
+- `audio_session`: iOS only (`AudioDiagnosticsPlugin.swift`). The session's category, mode, options, input and output
+  ports, sample rate, IO buffer and output latency, thermal state, Low Power Mode and app state, as a snapshot when
+  turned on and when a player starts playing, and on every route change (with its reason and previous route),
+  interruption, media-services loss or reset, secondary-audio hint, thermal change and Low Power Mode change.
+- `source`: what the player was given: `blob` with its size and type, `local_file` (the phone's copy), or a URL scheme.
+  No path.
+- `media`: each `<audio>` event (`play`, `playing`, `waiting`, `stalled`, `suspend`, `seeking`, `pause`, `ended`,
+  `error`, …) with `currentTime`, `readyState`, `networkState`, `playbackRate`, `paused` and the buffered ranges.
+- `clock`: on each `timeupdate`, the media time against the wall time since playback last started; a negative
+  `driftMs` means the audio fell behind real time.
+- `main_thread_block`: the web view's main thread was blocked for at least 100 ms while a note played.
+
+Android records the web side only (`audio_session_unavailable`).

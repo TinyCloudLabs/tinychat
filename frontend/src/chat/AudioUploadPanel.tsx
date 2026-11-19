@@ -11,6 +11,8 @@
 // has the rest. Private uploads use the account's versioned voice-note disclosure.
 
 import { useCallback, useContext, useEffect, useMemo, useState, useSyncExternalStore, type FC, type ReactNode } from "react";
+import { useOriginMoveDeferral } from "@/shell/OriginMoveNotice";
+import { uploadHoldsMove } from "@/shell/unsavedWork";
 import { useNavigate } from "react-router-dom";
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
@@ -254,7 +256,7 @@ export const AudioUploadView: FC<AudioUploadViewProps> = ({
       <div className="flex flex-col gap-3">
         <p className="text-callout text-muted-foreground" role="status">
           {job.fileName ? <>&ldquo;{job.fileName}&rdquo; is </> : "An upload is "}
-          being transcribed in another Exo tab or window. It continues there.
+          being transcribed in another TinyCloud One tab or window. It continues there.
         </p>
         <Button type="button" variant="outline" onClick={onRetry} className="w-full">
           Check again
@@ -443,7 +445,7 @@ export function assemblyAiStatus(
   mode: AssemblyAiKeyMode,
   hostedCaps: { state: "checking" } | { state: "ok"; caps: Pick<HostedAssemblyAiCapabilities, "hosted"> } | { state: "failed" },
 ): EngineStatus {
-  if (mode === "own") return { state: "unavailable", reason: "Choose this file again to use Powerful through Exo's server." };
+  if (mode === "own") return { state: "unavailable", reason: "Choose this file again to use Powerful through TinyCloud One's server." };
   if (hostedCaps.state === "checking") return { state: "checking" };
   if (hostedCaps.state === "failed") return { state: "unavailable", reason: "Couldn't reach the Powerful transcription service.", action: "recheck" };
   return hostedCaps.caps.hosted
@@ -480,6 +482,8 @@ export const AudioUploadPanel: FC<AudioUploadPanelProps> = ({ tcw, backendUrl, s
   const onContinue = useCallback(() => continuePausedUpload(deps), [deps]);
 
   const [file, setFile] = useState<File | null>(null);
+  // A picked file not yet sent exists only in this page: a held tinycloud.chat page does not move under it.
+  useOriginMoveDeferral(uploadHoldsMove({ pastedText: "", pickedFile: file !== null }));
   const [engine, setEngine] = useState<UploadEngine>(readDefaultUploadEngine);
   const [diarize, setDiarize] = useState(true);
   const [privateConsent, setPrivateConsent] = useState(() => consentStore.get());
@@ -522,7 +526,7 @@ export const AudioUploadPanel: FC<AudioUploadPanelProps> = ({ tcw, backendUrl, s
 
   const privateStatus: EngineStatus =
     origin === null
-      ? { state: "unavailable", reason: "Private transcription isn't set up in this version of Exo yet. Use Powerful instead." }
+      ? { state: "unavailable", reason: "Private transcription isn't set up in this version of TinyCloud One yet. Use Powerful instead." }
       : caps.state === "checking"
         ? { state: "checking" }
         : caps.state === "failed"

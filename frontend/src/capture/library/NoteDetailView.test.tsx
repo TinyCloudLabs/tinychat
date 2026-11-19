@@ -25,6 +25,8 @@ import type { NotePipeline } from "@/lib/voiceNotes/notePipeline";
 import { SAVED_NOTE_COPY } from "./savedNote/savedNoteCopy";
 import { NoteDetailView, transcriptBlocks, transcriptStepLine, type NoteDetailViewProps } from "./NoteDetailView";
 import { TRANSCRIPT_FALLBACK_NOTE } from "./transcriptProvenanceCopy";
+import { PlatformContext } from "@/lib/platform";
+import { NATIVE_PLAN_NOTE } from "@/lib/storageStatus";
 
 const noop = () => {};
 const VOICE: LibraryItem = { id: "row-1", source: "exo-voice-note", sourceId: "rec-1", title: "Voice note · Oct 6, 9:28 AM", startedAt: "2026-10-06T09:28:00.000Z", durationSecs: 42 };
@@ -354,6 +356,26 @@ describe("a voice note's transcription", () => {
     expect(live).toContain("Manage storage");
     expect(live).toContain("Transcribe again");
   });
+  for (const platform of ["ios", "android"] as const) {
+    test(`a Private transcript storage refused on ${platform}: no Manage storage; the plan is managed on the web, said as text, then Transcribe again`, () => {
+      const html = renderToStaticMarkup(
+        <PlatformContext.Provider value={platform}>
+          <MemoryRouter>
+            <NoteDetailView
+              item={VOICE} listStatus="ready"
+              metadata={{ status: "ok", metadata: { transcription_outcome: "failed", transcription_error_code: "storage_full" } }}
+              transcript={{ status: "absent" }} transcription={transcription()}
+              audio={audio} copyState="idle" onCopy={noop} onRetry={noop} pushed onBack={noop}
+            />
+          </MemoryRouter>
+        </PlatformContext.Provider>,
+      );
+      expect(html).not.toContain("Manage storage");
+      expect(html).toContain(NATIVE_PLAN_NOTE);
+      expect(html).toContain("Transcribe again");
+      expect(html).not.toContain("account.tinycloud.xyz");
+    });
+  }
   test("TC-1206: a persisted storage-full transcript takes precedence over a local Private-choice failure", () => {
     const html = render({
       metadata: { status: "ok", metadata: { transcription_outcome: "failed", transcription_error_code: "storage_full" } },

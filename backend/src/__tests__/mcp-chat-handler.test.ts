@@ -86,7 +86,7 @@ function setup(options: { grant: "active" | "none"; mcpAccounts?: string; elizaS
   const config: AgentChatConfig = {
     agentId: "agent", streamPolicy: { heartbeatMs: 1000, turnTimeoutMs: 10000, drainGraceMs: 100 }, entityIdFor: () => "entity-1",
     elizaServiceUrl: options.elizaServiceUrl ?? "", elizaServiceSecret: "", redpillApiKey: "rp", redpillBaseUrl: "https://redpill.test/v1",
-    defaultModel: () => "phala/gpt-oss-120b", isModelOffered: () => true, fetchImpl, maxRounds: 3, ...mcp,
+    defaultModel: () => "phala/gpt-oss-120b", isModelOffered: () => true, redpillFetch: fetchImpl, fetchImpl, maxRounds: 3, ...mcp,
   };
   return { calls, config };
 }
