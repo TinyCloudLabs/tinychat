@@ -200,7 +200,6 @@ function foldedStep(host: ParentNode, askTitle: string): HTMLElement {
 }
 /** History, the island's third tab: answered, replaced and closed cards, each opened in place. */
 async function showHistory(transport: Transport, host: ParentNode) {
-  await click(transport, host.querySelector<HTMLInputElement>('[role="radiogroup"][aria-label="Feed view"] input[value="history"]')!);
   for (let row = closedRow(host); row; row = closedRow(host)) await click(transport, row);
 }
 
