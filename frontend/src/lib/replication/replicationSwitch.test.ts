@@ -101,8 +101,10 @@ afterEach(() => {
 });
 
 describe("the per-user switch", () => {
-  test("a new profile has it OFF, and an unreadable store or no principal is OFF too", () => {
-    expect(readReplicationOptIn(ALICE, memoryStore())).toBe(false);
+  test("a new profile has it ON; an explicit opt-out is OFF; an unreadable store or no principal is OFF", () => {
+    expect(readReplicationOptIn(ALICE, memoryStore())).toBe(true);
+    expect(readReplicationOptIn(ALICE, memoryStore({ [replicationOptInKey(ALICE)]: "false" }))).toBe(false);
+    expect(readReplicationOptIn(ALICE, memoryStore({ [replicationOptInKey(ALICE)]: "garbage" }))).toBe(true);
     expect(readReplicationOptIn(undefined, memoryStore({ [replicationOptInKey(ALICE)]: "true" }))).toBe(false);
     const broken = { getItem: () => { throw new Error("denied"); }, setItem: () => undefined, removeItem: () => undefined };
     expect(readReplicationOptIn(ALICE, broken)).toBe(false);
@@ -114,7 +116,9 @@ describe("the per-user switch", () => {
     expect(writeReplicationOptIn(ALICE, true, store)).toBe(true);
     expect(readReplicationOptIn(ALICE, store)).toBe(true);
     expect(readReplicationOptIn(ALICE.toLowerCase(), store)).toBe(true);
+    expect(writeReplicationOptIn(BOB, false, store)).toBe(true);
     expect(readReplicationOptIn(BOB, store)).toBe(false);
+    expect(readReplicationOptIn(ALICE, store)).toBe(true);
     writeReplicationOptIn(BOB, true, store);
     writeReplicationOptIn(ALICE, false, store);
     expect(readReplicationOptIn(ALICE, store)).toBe(false);
@@ -134,14 +138,14 @@ describe("the per-user switch", () => {
     const replica = await seedReplica();
     replica.close();
     const store = memoryStore({ [REPLICATION_COPY_KEY]: ALICE });
-    store.removeItem = () => { throw new Error("quota"); }; // turning OFF removes the key
+    store.setItem = () => { throw new Error("quota"); }; // turning OFF writes the opt-out
     expect(await setReplicationSwitch(false, undefined, ALICE, { store, loader: fakeLoader([], [ALICE]) })).toEqual({ status: "not-saved" });
     expect(await replicaExists()).toBe(true);
   });
 });
 
 describe("turning the switch OFF removes the local copy now", () => {
-  test("stops the live controller, shreds the keys, empties the store and clears every marker", async () => {
+  test("stops the live controller, shreds the keys, empties the store, clears every marker and records the opt-out", async () => {
     const replica = await seedReplica();
     replica.close();
     const log: string[] = [];
@@ -152,7 +156,7 @@ describe("turning the switch OFF removes the local copy now", () => {
     expect(result).toEqual({ status: "off", purge: { status: "purged" } });
     expect(log).toEqual(["controller.purge(db:true)", "controller.close", `deny:${ALICE}`]);
     expect(await replicaExists()).toBe(false);
-    expect([...store.map.keys()]).toEqual([]); // opt-in, copy marker, SDK marker and wipe marker all gone
+    expect([...store.map.entries()]).toEqual([[replicationOptInKey(ALICE), "false"]]); // only the explicit opt-out is left: copy marker, SDK marker and wipe marker all gone
     expect(readReplicationOptIn(ALICE, store)).toBe(false);
     expect(getReplicationStatus().offPurgeCode).toBeNull();
     expect(getReplicationStatus().purging).toBe(false);

@@ -1357,6 +1357,7 @@ describe("desktop recorder adapter", () => {
       bridge.files.set(id, Uint8Array.of(1, 2, 3));
       bridge.elapsed = 1000;
       await engine.plugin.stop();
+      await engine.plugin.awaitAudioReady?.(id);
       await engine.plugin.putTranscript({ id, transcript: {
         version: 2, noteId: id, transcriber: "private-cloud", rev: 1, engine: "tinycloud-private-transcription",
         model: null, language: "en", outcome: "transcribed", diarized: false,
@@ -1850,10 +1851,175 @@ describe("desktop recorder adapter", () => {
     expect(await audio.size("note-1")).toBe(0);
   });
 
+  test("TC-2785 sign-out stops handoff capture for A and hides its completion from B", async () => {
+    const bridge = new FakeBridge();
+    let release!: () => void;
+    bridge.finishGate = new Promise<void>((resolve) => { release = resolve; });
+    const engine = await rig(bridge);
+    try {
+      await engine.plugin.setAccountState({ status: "transitioning", accountDid: "did:A", transitionGen: 1 });
+      const { id } = await engine.plugin.start();
+      bridge.files.set(id, Uint8Array.of(1, 2, 3, 4));
+      bridge.elapsed = 1000;
+      await engine.plugin.setAccountState({ status: "signed_out", accountDid: null, transitionGen: 2 });
+      expect(await engine.plugin.status()).toMatchObject({ state: "idle", id: null });
+      expect((await engine.plugin.listPending()).recordings).toEqual([]);
+      await engine.plugin.setCaptureDefaults({ accountDid: "did:B", transitionGen: 3, transcriber: "off", identifySpeakers: false });
+      const seen: string[] = [];
+      await engine.plugin.addListener("committed", (event) => seen.push(event.id));
+      await Promise.resolve();
+      expect(seen).toEqual([]);
+      release();
+      await waitFor(() => bridge.calls.includes("recorder_acknowledge"));
+      expect(seen).toEqual([]);
+      await expect(engine.plugin.localAudioUrl({ id })).rejects.toMatchObject({ code: "owner_mismatch" });
+      await engine.plugin.setCaptureDefaults({ accountDid: "did:A", transitionGen: 4, transcriber: "off", identifySpeakers: false });
+      expect((await engine.plugin.listPending()).recordings).toMatchObject([{ id, owner: "did:A", durationMs: 1000 }]);
+      expect((await engine.plugin.localAudioSize({ id })).size).toBe(4);
+    } finally { release(); engine.dispose(); }
+  });
+
+  test("TC-2785 playback requested by A cannot finish after sign-out", async () => {
+    class SlowReadBridge extends FakeBridge {
+      readGate: Promise<void> | null = null;
+      readStarted = false;
+      override async invoke<T>(command: string, args: Record<string, unknown> = {}): Promise<T> {
+        if (command === "read_audio_chunk" && this.readGate) { this.readStarted = true; await this.readGate; }
+        return super.invoke<T>(command, args);
+      }
+    }
+    const bridge = new SlowReadBridge();
+    const engine = await rig(bridge);
+    let release = () => {};
+    try {
+      await engine.plugin.setAccountState({ status: "signed_in", accountDid: "did:A", transitionGen: 1 });
+      const { id } = await engine.plugin.start();
+      bridge.files.set(id, Uint8Array.of(1, 2, 3, 4));
+      bridge.elapsed = 1000;
+      await engine.plugin.stop();
+      await engine.plugin.awaitAudioReady?.(id);
+      bridge.readGate = new Promise<void>((resolve) => { release = resolve; });
+      const playback = engine.plugin.localAudioUrl({ id }).then(() => null, (error: unknown) => error);
+      await waitFor(() => bridge.readStarted);
+      await engine.plugin.setAccountState({ status: "signed_out", accountDid: null, transitionGen: 2 });
+      await engine.plugin.setCaptureDefaults({ accountDid: "did:B", transitionGen: 3, transcriber: "off", identifySpeakers: false });
+      release();
+      expect(await playback).toMatchObject({ code: "owner_mismatch" });
+    } finally { release(); engine.dispose(); }
+  });
+
+  test("TC-2785 native recovery actions require visible ownership metadata", async () => {
+    const bridge = new FakeBridge();
+    const engine = await rig(bridge);
+    try {
+      await engine.plugin.setAccountState({ status: "signed_in", accountDid: "did:A", transitionGen: 1 });
+      const { id } = await engine.plugin.start();
+      bridge.failed = [{ id, segmentId: "rec-broken", reason: "write_failed", error: "bad MP3",
+        journal: { id, startedAt: bridge.now, recordedMs: 0, pausedMs: 0, maxDurationMs: 10_000 } }];
+      await expect(engine.plugin.stop()).rejects.toThrow("bad MP3");
+      await engine.plugin.setAccountState({ status: "signed_out", accountDid: null, transitionGen: 2 });
+      await engine.plugin.setCaptureDefaults({ accountDid: "did:B", transitionGen: 3, transcriber: "off", identifySpeakers: false });
+      expect((await engine.plugin.listQuarantine()).items).toEqual([]);
+      bridge.calls = [];
+      for (const sourceId of [id, "unknown-native-id"]) {
+        await expect(engine.plugin.retryRecovery({ id: sourceId })).rejects.toMatchObject({ code: "not_found" });
+        await expect(engine.plugin.discardFailedRecording({ id: sourceId })).rejects.toMatchObject({ code: "not_found" });
+        await expect(engine.plugin.deleteQuarantined({ id: sourceId })).rejects.toMatchObject({ code: "not_found" });
+      }
+      expect(bridge.calls).not.toContain("recorder_failed_retry");
+      expect(bridge.calls).not.toContain("recorder_failed_delete");
+      expect(bridge.calls).not.toContain("delete_audio_file");
+      await engine.plugin.setCaptureDefaults({ accountDid: "did:A", transitionGen: 4, transcriber: "off", identifySpeakers: false });
+      expect((await engine.plugin.listQuarantine()).items).toMatchObject([{ id, owner: "did:A" }]);
+    } finally { engine.dispose(); }
+  });
+
+  test("TC-2785 metadata and upload results cannot cross sign-out, and cancellation stays bound to its account", async () => {
+    class SlowCommandsBridge extends FakeBridge {
+      metadataGate: Promise<void> | null = null;
+      uploadGate: Promise<void> | null = null;
+      metadataStarted = false;
+      uploadStarted = false;
+      override async invoke<T>(command: string, args: Record<string, unknown> = {}): Promise<T> {
+        if (command === "ptx_audio_metadata" && this.metadataGate) { this.metadataStarted = true; await this.metadataGate; }
+        if (command === "ptx_upload_audio" && this.uploadGate) { this.uploadStarted = true; await this.uploadGate; }
+        return super.invoke<T>(command, args);
+      }
+    }
+    const bridge = new SlowCommandsBridge();
+    const engine = await rig(bridge);
+    let releaseMetadata = () => {}, releaseUpload = () => {};
+    try {
+      await engine.plugin.setAccountState({ status: "signed_in", accountDid: "did:A", transitionGen: 1 });
+      const { id } = await engine.plugin.start();
+      bridge.files.set(id, Uint8Array.of(1, 2, 3, 4));
+      bridge.elapsed = 1000;
+      await engine.plugin.stop();
+      await engine.plugin.awaitAudioReady?.(id);
+      bridge.metadataGate = new Promise<void>((resolve) => { releaseMetadata = resolve; });
+      bridge.uploadGate = new Promise<void>((resolve) => { releaseUpload = resolve; });
+      const metadata = engine.plugin.audioMetadata!({ id }).then(() => null, (error: unknown) => error);
+      const request = { id, uploadId: "put-A", url: "https://example.test/upload", capability: "fixture", contentType: "audio/mpeg",
+        contentLength: 4, correlationId: "put-A" };
+      const upload = engine.plugin.uploadAudio!(request).then(() => null, (error: unknown) => error);
+      await waitFor(() => bridge.metadataStarted && bridge.uploadStarted);
+      const progress: number[] = [];
+      await engine.plugin.addListener("audioUploadProgress", (event) => progress.push(event.loaded));
+      await engine.plugin.setAccountState({ status: "signed_out", accountDid: null, transitionGen: 2 });
+      expect(bridge.calls.filter((command) => command === "ptx_cancel_audio_upload")).toHaveLength(1);
+      await engine.plugin.setCaptureDefaults({ accountDid: "did:B", transitionGen: 3, transcriber: "off", identifySpeakers: false });
+      await expect(engine.plugin.cancelAudioUpload!({ uploadId: "put-A" })).rejects.toMatchObject({ code: "not_found" });
+      await expect(engine.plugin.uploadAudio!(request)).rejects.toMatchObject({ code: "owner_mismatch" });
+      releaseMetadata(); releaseUpload();
+      expect(await metadata).toMatchObject({ code: "owner_mismatch" });
+      expect(await upload).toMatchObject({ code: "owner_mismatch" });
+      expect(progress).toEqual([]);
+      expect(bridge.calls.filter((command) => command === "ptx_cancel_audio_upload")).toHaveLength(1);
+    } finally { releaseMetadata(); releaseUpload(); engine.dispose(); }
+  });
+
+  test("TC-2785 Whisper completes for A while B sees no transcript or queue identity", async () => {
+    const bridge = new FakeBridge();
+    bridge.selectedModel = "QuantizedTinyEn";
+    bridge.downloadedModels.add("QuantizedTinyEn");
+    const whisper = new FakeWhisper();
+    whisper.pending = true;
+    const engine = await openDesktopVoiceNotes({ bridge, whisper, now: () => bridge.now,
+      storeOptions: { env: newIdbEnv(), dbName: crypto.randomUUID(), locks: memoryLocks(), decodeCheck: null } });
+    try {
+      await engine.plugin.setAccountState({ status: "signed_in", accountDid: "did:A", transitionGen: 1 });
+      const { id } = await engine.plugin.start({ transcriber: "on-device" });
+      bridge.files.set(id, Uint8Array.of(1, 2, 3, 4));
+      bridge.elapsed = 1000;
+      await engine.plugin.stop();
+      await waitFor(() => whisper.calls.length === 1);
+      expect(engine.whisper!.snapshot().has(id)).toBe(true);
+      await engine.plugin.setAccountState({ status: "signed_out", accountDid: null, transitionGen: 2 });
+      await engine.plugin.setCaptureDefaults({ accountDid: "did:B", transitionGen: 3, transcriber: "off", identifySpeakers: false });
+      expect(engine.whisper!.snapshot().size).toBe(0);
+      const done: string[] = [];
+      const stopDone = engine.whisper!.onDone((completedId) => done.push(completedId));
+      whisper.emit({ type: "completed", session_id: id, mode: "direct", response: {
+        metadata: null, results: { channels: [{ alternatives: [{ transcript: "A private transcript", confidence: 1 }] }] },
+      } });
+      await waitFor(() => ![...bridge.files.keys()].some((sourceId) => sourceId.startsWith("whisper-")));
+      await expect(engine.plugin.getTranscript({ id })).rejects.toMatchObject({ code: "owner_mismatch" });
+      expect(engine.whisper!.snapshot().size).toBe(0);
+      expect(done).toEqual([]);
+      await engine.plugin.setCaptureDefaults({ accountDid: "did:A", transitionGen: 4, transcriber: "off", identifySpeakers: false });
+      await waitFor(() => engine.whisper!.snapshot().get(id)?.state === "done");
+      expect((await engine.plugin.getTranscript({ id })).transcript).toMatchObject({ outcome: "transcribed", segments: [{ text: "A private transcript" }] });
+      stopDone();
+    } finally { engine.dispose(); }
+  });
+
   test("Mac Private uses the Tauri uploader with the local file and progress", async () => {
     const bridge = new FakeBridge();
     bridge.files.set("note-1", Uint8Array.of(1, 2, 3, 4));
     const engine = await rig(bridge);
+    await engine.plugin.start();
+    await engine.plugin.stop();
+    await engine.plugin.awaitAudioReady?.("note-1");
     const progress: number[] = [];
     await engine.plugin.addListener("audioUploadProgress", (event) => progress.push(event.loaded));
     expect(engine.plugin.capabilities.nativeFileUpload).toBe(true);
@@ -1879,6 +2045,10 @@ describe("desktop recorder adapter", () => {
     }
     const bridge = new FailingBridge();
     const engine = await rig(bridge);
+    await engine.plugin.start();
+    bridge.files.set("note-1", Uint8Array.of(1, 2, 3, 4));
+    await engine.plugin.stop();
+    await engine.plugin.awaitAudioReady?.("note-1");
     bridge.failure = "audio_read_failed";
     await expect(engine.plugin.audioMetadata?.({ id: "note-1" })).rejects.toMatchObject({ name: "VoiceNoteAudioError", code: "audio_read_failed" });
     const request = { id: "note-1", uploadId: "put-1", url: "https://ptx.example/uploads/trn_01J8Z3K4M5N6P7Q8R9S0T1V2W3",

@@ -7,7 +7,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleDisplayName</key>
-        <string>Exo</string>
+        <string>TinyCloud One</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -54,12 +54,10 @@
       </array>
     </dict>
 	</dict>
-	<key>NSHealthShareUsageDescription</key>
-	<string>Exo reads the steps, sleep and heart rate you allow and saves a daily summary to your own TinyCloud space. It never uses health data for advertising.</string>
-	<key>NSHealthUpdateUsageDescription</key>
-	<string>Exo's development preview can add sample steps, sleep and heart rate to Health for testing. Exo never writes health data otherwise.</string>
+	<key>NSFaceIDUsageDescription</key>
+	<string>Unlock TinyCloud One with Face ID</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Exo records voice notes you start, and saves them to your TinyCloud space.</string>
+	<string>TinyCloud One records voice notes you start, and saves them to your TinyCloud space.</string>
 	<key>NSSupportsLiveActivities</key>
 	<true/>
 	<key>UIBackgroundModes</key>

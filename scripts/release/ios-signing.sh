@@ -11,11 +11,11 @@
 #                                   desktop-signing.sh write-key (desktop notarization) runs this too
 #   ios-signing.sh verify-ipa <ipa> require an App Store build signed by APPLE_TEAM_ID: valid deep signature, Apple
 #                                   Distribution authority, the team's App Store profile (no devices, not an
-#                                   in-house ProvisionsAllDevices profile, no get-task-allow) for xyz.tinycloud.exo
+#                                   in-house ProvisionsAllDevices profile, no get-task-allow) for xyz.tinycloud.home
 #                                   and its ExoWidgets extension
 set -euo pipefail
 
-BUNDLE_ID=xyz.tinycloud.exo
+BUNDLE_ID=xyz.tinycloud.home
 SECRETS=(APPLE_TEAM_ID APPLE_API_KEY APPLE_API_ISSUER APPLE_API_PRIVATE_KEY)
 
 fail() { echo "::error::$1"; exit 1; }

@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, test as bunTest } from "bun:test";
+// TC-2785 test ruling (Naomi): sign-in never claims unowned recordings; completed notes require user_choice.
+import { afterEach, describe, expect, spyOn, test as bunTest } from "bun:test";
 import { base64ToBytes } from "../voiceNoteAudio";
 import { VOICE_NOTE_MAX_DURATION_MS, VOICE_NOTE_MIN_DURATION_LIMIT_MS, type VoiceNoteRecording } from "../nativeVoiceNotes";
 import { FakeMediaRecorder, createRig, memoryAudioBlobs, slowTest, type Rig, type RigOptions } from "./webTestKit";
@@ -174,14 +175,14 @@ describe("recording", () => {
     await plugin.discard();
   });
 
-  test("the requested limit is clamped to [1 s, 3 h] and defaults to 3 h", async () => {
+  test("the requested limit is clamped to [1 s, 8 h] and defaults to 3 h", async () => {
     const rig = await createRig();
     const { plugin } = rig.engine;
     expect((await plugin.start()).maxDurationMs).toBe(3 * HOUR);
     await plugin.discard();
     expect((await plugin.start({ maxDurationMs: 5 })).maxDurationMs).toBe(1000);
     await plugin.discard();
-    expect((await plugin.start({ maxDurationMs: 99 * HOUR })).maxDurationMs).toBe(3 * HOUR);
+    expect((await plugin.start({ maxDurationMs: 99 * HOUR })).maxDurationMs).toBe(8 * HOUR);
   });
 
   test("a stop with no audio rejects with no_audio_captured and leaves nothing behind", async () => {
@@ -239,15 +240,15 @@ describe("recording", () => {
     expect(await plugin.stop()).toMatchObject({ options: { transcriber: "on-device", identifySpeakers: true, uploadAudio: false } });
   });
 
-  test("signing in during a recording claims it", async () => {
+  test("signing in during a recording leaves it unowned", async () => {
     const rig = await createRig();
     const { plugin } = rig.engine;
     await plugin.start();
     await rig.chunk([1]);
     const { claimed } = await plugin.setCaptureDefaults({ accountDid: "did:A", transitionGen: 1, transcriber: "assemblyai", identifySpeakers: false });
-    expect(claimed).toHaveLength(1);
-    expect((await plugin.status()).owner).toBe("did:A");
-    expect(await plugin.stop()).toMatchObject({ owner: "did:A" });
+    expect(claimed).toHaveLength(0);
+    expect((await plugin.status()).owner).toBeNull();
+    expect(await plugin.stop()).toMatchObject({ owner: null });
   });
 
   test("the retained committed event reaches a listener that attaches late", async () => {
@@ -370,17 +371,17 @@ describe("failures while recording", () => {
     }
   });
 
-  test("a claim by another tab while recording survives the stop", async () => {
+  test("another tab signing in leaves the recording unowned after Stop", async () => {
     const rig = await createRig();
     const { plugin } = rig.engine;
     await plugin.start();
     await rig.chunk([1, 2, 3]);
     const other = await openWebStore({ env: rig.idb, locks: memoryLocks(), now: rig.clock.now });
     const { claimed } = await other.setCaptureDefaults({ accountDid: "did:A", transitionGen: 1, transcriber: "assemblyai", identifySpeakers: false });
-    expect(claimed).toHaveLength(1);
+    expect(claimed).toHaveLength(0);
     const note = await plugin.stop();
-    expect(note.owner).toBe("did:A");
-    expect((await plugin.listPending()).recordings.map((r) => r.owner)).toEqual(["did:A"]);
+    expect(note.owner).toBeNull();
+    expect((await plugin.listPending()).recordings.map((r) => r.owner)).toEqual([null]);
   });
 
   describe("pause releases the microphone without waiting for the encoder", () => {
@@ -680,20 +681,33 @@ describe("inputs and levels", () => {
 });
 
 describe("pending notes: playback and deletion", () => {
-  test("localAudioUrl serves the stored bytes and deleteAudio revokes it", async () => {
-    const rig = await createRig();
-    const { plugin } = rig.engine;
-    const { id } = await plugin.start();
-    await rig.chunk([7, 8, 9]);
-    await plugin.stop();
-    const { url } = await plugin.localAudioUrl({ id });
-    expect(url.startsWith("blob:")).toBe(true);
-    expect((await plugin.localAudioUrl({ id })).url).toBe(url);
-    const blob = await (await fetch(url)).blob();
-    expect(blob.type).toBe("audio/webm;codecs=opus");
-    expect(Array.from(new Uint8Array(await blob.arrayBuffer()))).toEqual([7, 8, 9]);
-    await plugin.deleteAudio({ id });
-    await expect(plugin.localAudioUrl({ id })).rejects.toEqual(code("tombstoned"));
+  test("localAudioUrl caches a Blob URL for stored bytes and deleteAudio revokes it", async () => {
+    const createdBlobs: Blob[] = [];
+    const created = spyOn(URL, "createObjectURL").mockImplementation((blob) => {
+      createdBlobs.push(blob as Blob);
+      return "blob:export";
+    });
+    const revoked = spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+    try {
+      const rig = await createRig();
+      const { plugin } = rig.engine;
+      const { id } = await plugin.start();
+      await rig.chunk([7, 8, 9]);
+      await plugin.stop();
+      const { url } = await plugin.localAudioUrl({ id });
+      expect(url).toBe("blob:export");
+      expect((await plugin.localAudioUrl({ id })).url).toBe(url);
+      expect(createdBlobs).toHaveLength(1);
+      const blob = createdBlobs[0]!;
+      expect(blob.type).toBe("audio/webm;codecs=opus");
+      expect(Array.from(new Uint8Array(await blob.arrayBuffer()))).toEqual([7, 8, 9]);
+      await plugin.deleteAudio({ id });
+      expect(revoked).toHaveBeenCalledWith(url);
+      await expect(plugin.localAudioUrl({ id })).rejects.toEqual(code("tombstoned"));
+    } finally {
+      created.mockRestore();
+      revoked.mockRestore();
+    }
   });
 
   test("the live recording cannot be deleted, retried or discarded as a failed recording", async () => {
@@ -768,5 +782,96 @@ describe("recovery after the tab died", () => {
     expect(rig.fake.mic.liveTracks()).toEqual([]);
     const next = await rig.reopen();
     expect((await next.engine.recoverInterrupted()).recovered.map((r: VoiceNoteRecording) => r.id)).toEqual([id]);
+  });
+});
+
+describe("TC-2785 account changes in another tab", () => {
+  test("a stale tab reveals no live recording or retained events to another account", async () => {
+    const rig = await createRig();
+    const { plugin } = rig.engine;
+    await plugin.setCaptureDefaults({ accountDid: "did:A", transitionGen: 1, transcriber: "on-device", identifySpeakers: false });
+    const { id } = await plugin.start({ maxDurationMs: 2_000 });
+    await rig.chunk([1, 2, 3]);
+    const other = await openWebStore({ env: rig.idb, locks: memoryLocks(), now: rig.clock.now });
+    await other.setCaptureDefaults({ accountDid: "did:B", transitionGen: 2, transcriber: "on-device", identifySpeakers: false });
+    expect(await plugin.status()).toMatchObject({ state: "idle", id: null, startedAt: null, audioMs: 0, spans: [], input: null });
+    expect((await plugin.status()).owner).toBeUndefined();
+    expect(await plugin.listInputs()).toMatchObject({ selectedId: null, activeId: null });
+    for (const control of [() => plugin.stop(), () => plugin.pause(), () => plugin.resume(), () => plugin.discard(),
+      () => plugin.setMaxDuration({ maxDurationMs: 3_000 }), () => plugin.setRecordingOptions({ identifySpeakers: true }),
+      () => plugin.selectInput({ id: "usb-1" })]) {
+      await expect(control()).rejects.toEqual(code("owner_mismatch"));
+    }
+    const { micStates, events } = await listen(rig);
+    expect(micStates).toEqual([]);
+    rig.fake.context().analyser.samples.fill(0.25);
+    rig.clock.advance(33);
+    rig.fake.timers.tick();
+    await rig.settle();
+    expect(events.level).toEqual([]);
+    // Internal finalization preserves A's audio but must not emit A's result to B.
+    await rig.chunk([4, 5, 6]);
+    expect(events.committed).toEqual([]);
+    expect(events.autoStopped).toEqual([]);
+    expect((await plugin.listPending()).recordings).toEqual([]);
+    await other.setCaptureDefaults({ accountDid: "did:A", transitionGen: 3, transcriber: "on-device", identifySpeakers: false });
+    expect((await plugin.listPending()).recordings).toMatchObject([{ id, owner: "did:A", sizeBytes: 6 }]);
+    other.close();
+  });
+
+  test("Stop finishing after an account switch keeps A's audio but returns nothing to B", async () => {
+    const rig = await createRig();
+    const { plugin } = rig.engine;
+    await plugin.setCaptureDefaults({ accountDid: "did:A", transitionGen: 1, transcriber: "on-device", identifySpeakers: false });
+    const { id } = await plugin.start();
+    await rig.chunk([1, 2, 3]);
+    rig.fake.env.stopTailTimeoutMs = 60_000;
+    rig.fake.recorder().requestDataMode = "deferred";
+    rig.fake.recorder().encode([4, 5]);
+    rig.clock.advance(1_000);
+    await quiet(() => plugin.pause());
+    const stopping = plugin.stop().then(() => ({ error: null }), (error: unknown) => ({ error }));
+    await rig.settle();
+    const other = await openWebStore({ env: rig.idb, locks: memoryLocks(), now: rig.clock.now });
+    await other.setCaptureDefaults({ accountDid: "did:B", transitionGen: 2, transcriber: "on-device", identifySpeakers: false });
+    rig.fake.recorder().releaseRequestedData();
+    expect((await stopping).error).toEqual(code("owner_mismatch"));
+    expect((await plugin.listPending()).recordings).toEqual([]);
+    await other.setCaptureDefaults({ accountDid: "did:A", transitionGen: 3, transcriber: "on-device", identifySpeakers: false });
+    expect((await plugin.listPending()).recordings).toMatchObject([{ id, owner: "did:A", sizeBytes: 5 }]);
+    other.close();
+  });
+
+  test("retained completed events are checked against the account at replay", async () => {
+    const rig = await createRig();
+    const { plugin } = rig.engine;
+    await plugin.setCaptureDefaults({ accountDid: "did:A", transitionGen: 1, transcriber: "on-device", identifySpeakers: false });
+    await plugin.start();
+    await rig.chunk([1, 2, 3]);
+    await plugin.stop();
+    const other = await openWebStore({ env: rig.idb, locks: memoryLocks(), now: rig.clock.now });
+    await other.setCaptureDefaults({ accountDid: "did:B", transitionGen: 2, transcriber: "on-device", identifySpeakers: false });
+    const received: unknown[] = [];
+    await plugin.addListener("committed", (event) => received.push(event));
+    await rig.settle();
+    expect(received).toEqual([]);
+    other.close();
+  });
+
+  test("an unowned retained result becomes private after an explicit claim", async () => {
+    const rig = await createRig();
+    const { plugin } = rig.engine;
+    const { id } = await plugin.start();
+    await rig.chunk([1]);
+    await plugin.stop();
+    const other = await openWebStore({ env: rig.idb, locks: memoryLocks(), now: rig.clock.now });
+    await other.setCaptureDefaults({ accountDid: "did:A", transitionGen: 1, transcriber: "on-device", identifySpeakers: false });
+    await other.claim({ id, did: "did:A", evidence: "user_choice" });
+    await other.setCaptureDefaults({ accountDid: "did:B", transitionGen: 2, transcriber: "on-device", identifySpeakers: false });
+    const received: unknown[] = [];
+    await plugin.addListener("committed", (event) => received.push(event));
+    await rig.settle();
+    expect(received).toEqual([]);
+    other.close();
   });
 });

@@ -1,3 +1,6 @@
+import { useNavigate } from "react-router-dom";
+import { PATHS } from "@/shell/routes";
+import { HomeFeatureGate, useHomeFeatureAccess } from "@/shell/homeFeatureAccess";
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { ChevronRightIcon, PlugIcon } from "lucide-react";
@@ -80,6 +83,23 @@ export function ConnectMeetingsButton(props: {
 }
 
 export function ConnectMeetingsLink(props: {
+  tcw: TinyCloudWeb;
+  backendUrl: string;
+  sessionStore: SessionStore;
+}) {
+  const access = useHomeFeatureAccess();
+  if (!access.covered("connectors")) {
+    return <ConnectMeetingsAccessButton />;
+  }
+  return <HomeFeatureGate feature="connectors"><CoveredConnectMeetingsLink {...props} /></HomeFeatureGate>;
+}
+
+function ConnectMeetingsAccessButton() {
+  const navigate = useNavigate();
+  return <ConnectMeetingsButton status={null} onClick={() => navigate(PATHS.connectors)} />;
+}
+
+function CoveredConnectMeetingsLink(props: {
   tcw: TinyCloudWeb;
   backendUrl: string;
   sessionStore: SessionStore;

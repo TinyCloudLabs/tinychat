@@ -1,12 +1,17 @@
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
+import { CONNECTOR_SCHEMA } from "@tinyboilerplate/core";
 import { readableError } from "@/lib/readableError";
 import { storageScopeFor, trackStorageWrites } from "@/lib/storageStatus";
 import { deviceName } from "@/lib/platform";
+import { setSetting } from "@/lib/threadStore";
 import { autoMeetingTitle } from "@/lib/meetingTitle";
-import { transcriptionModelLabel } from "@/lib/transcriptionModelLabel";
+import { planRename } from "../recordingTitleMeta";
 import type { FirefliesSentence } from "../connectors/firefliesClient";
 import { CONNECTORS_KV_PREFIX, CONNECTORS_SQL_DB_NAME, ensureSchema, transcriptKvKey } from "../connectors/connectorStore";
+import { clearLocalMarker, hasLocalMarker, setLocalMarker } from "../localFirst/localCache";
+import { whenForegroundIdle } from "../localFirst/requestLanes";
 import { runOnSpaceLane, SpaceLaneQueueWaitTimeout, spaceLaneAbandonedSqlCalls, spaceLaneSnapshot, subscribeSpaceLane } from "../spaceWriteLane";
+import { isAccountWorkAllowed } from "./accountContext";
 import type { VoiceNoteRecording } from "./nativeVoiceNotes";
 import { hasTranscriptCommitTable, LEGACY_TRANSCRIPT_KEYS, legacyTranscriptWinner, readTranscriptCommit, SQL_CHUNK, type LegacyTranscriptRow, type TranscriptCommit } from "./voiceNoteCommits";
 
@@ -29,10 +34,15 @@ function errorOf(result: { ok: boolean; error?: { code?: string; message?: strin
     code: e?.code ?? "STORE_ERROR", meta: e?.meta, requiredAction: e?.requiredAction,
   });
 }
+function failureOf(tcw: TinyCloudWeb, result: { ok: boolean; error?: { code?: string; message?: string } }): Error {
+  // A table the stored identity marker vouched for is gone (a reset space): check the identity again.
+  if (/no such table/i.test(result.error?.message ?? "")) forgetVoiceNoteIdentity(tcw);
+  return errorOf(result);
+}
 async function query(tcw: TinyCloudWeb, sql: string, params: unknown[] = [], checkpoint: () => void = () => undefined): Promise<unknown[][]> {
   const result = await runOnSpaceLane((signal) => { checkpoint(); return db(tcw).query(sql, params as never[], { signal }); },
     { operation: `SQL query: ${sql.slice(0, 80)}`, sql: true });
-  if (!result.ok) throw errorOf(result);
+  if (!result.ok) throw failureOf(tcw, result);
   return result.data.rows as unknown[][];
 }
 async function execute(tcw: TinyCloudWeb, sql: string, params: unknown[] = [], checkpoint: () => void = () => undefined,
@@ -40,7 +50,7 @@ async function execute(tcw: TinyCloudWeb, sql: string, params: unknown[] = [], c
   const result = await runOnSpaceLane((signal) => {
     checkpoint(); return db(tcw, reportSuccessfulWrites).execute(sql, params as never[], { signal });
   }, { operation: `SQL execute: ${sql.slice(0, 80)}`, sql: true });
-  if (!result.ok) throw errorOf(result);
+  if (!result.ok) throw failureOf(tcw, result);
   return Number((result.data as { changes?: number }).changes ?? 0);
 }
 async function readTranscriptCommitOnLane(tcw: TinyCloudWeb, sourceId: string,
@@ -77,13 +87,69 @@ function identityFailure(e: unknown): IdentityResult {
 const identityInFlight = new WeakMap<TinyCloudWeb, { key: string; promise: Promise<IdentityResult>;
   checkpoints: Set<() => void> }>();
 const identityReady = new WeakMap<TinyCloudWeb, string>();
+const sweptThisSession = new WeakMap<TinyCloudWeb, string>();
 function identityKey(tcw: TinyCloudWeb): string { return JSON.stringify([tcw.did, tcw.spaceId]); }
 
-/** DDL requires the manifest's schema grant; an older delegation is a sign-in state. */
+/**
+ * Changes with the identity DDL (and the connector tables it relies on), so
+ * every device runs the changed check once. FNV-1a of the statements.
+ */
+export const VOICE_NOTE_IDENTITY_VERSION = (() => {
+  const text = [...CONNECTOR_SCHEMA.map(({ sql }) => sql), TRANSCRIPT_TABLE_DDL, VOICE_NOTE_INDEX_DDL].join("\n");
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) hash = Math.imul(hash ^ text.charCodeAt(i), 0x01000193);
+  return (hash >>> 0).toString(36);
+})();
+
+/** "This device established the identity for this account at this version"; null without an account. */
+function identityMarkerKey(tcw: TinyCloudWeb): string | null {
+  if (typeof tcw.did !== "string" || !tcw.did || typeof tcw.spaceId !== "string" || !tcw.spaceId) return null;
+  return `tinychat:voice-note-identity:${VOICE_NOTE_IDENTITY_VERSION}:${tcw.did}:${tcw.spaceId}`;
+}
+
+function forgetVoiceNoteIdentity(tcw: TinyCloudWeb): void {
+  identityReady.delete(tcw);
+  const marker = identityMarkerKey(tcw);
+  if (marker) clearLocalMarker(marker);
+}
+
+/**
+ * The identity is known from an earlier open, so no DDL runs. The space-wide
+ * archive sweep (late writes to archived duplicates) still runs once per
+ * session, after the open's foreground reads. A failed or stopped sweep runs
+ * again on the next identity check. Sign-out stops it like other account work.
+ */
+function sweepAfterOpen(tcw: TinyCloudWeb, key: string): void {
+  if (sweptThisSession.get(tcw) === key) return;
+  sweptThisSession.set(tcw, key);
+  const current = () => {
+    if (identityKey(tcw) !== key) throw new Error("Voice-note space changed");
+    if (!isAccountWorkAllowed(tcw)) throw new Error("Voice-note account work is paused");
+  };
+  void whenForegroundIdle().then(() => sweepArchived(tcw, current)).catch((error: unknown) => {
+    if (sweptThisSession.get(tcw) === key) sweptThisSession.delete(tcw);
+    console.warn("[VoiceNotes] Archived duplicate sweep is still pending", error);
+  });
+}
+
+/**
+ * DDL requires the manifest's schema grant; an older delegation is a sign-in state.
+ * The DDL and definition check run once per account per `VOICE_NOTE_IDENTITY_VERSION`
+ * on this device; later opens trust the stored marker.
+ */
 export function ensureVoiceNoteIdentity(tcw: TinyCloudWeb, checkpoint: () => void = () => undefined): Promise<IdentityResult> {
   checkpoint();
   const key = identityKey(tcw);
-  if (identityReady.get(tcw) === key) return Promise.resolve({ status: "established" });
+  if (identityReady.get(tcw) === key) {
+    sweepAfterOpen(tcw, key);
+    return Promise.resolve({ status: "established" });
+  }
+  const marker = identityMarkerKey(tcw);
+  if (marker && hasLocalMarker(marker)) {
+    identityReady.set(tcw, key);
+    sweepAfterOpen(tcw, key);
+    return Promise.resolve({ status: "established" });
+  }
   const existing = identityInFlight.get(tcw);
   if (existing?.key === key) {
     existing.checkpoints.add(checkpoint);
@@ -124,6 +190,9 @@ async function establish(tcw: TinyCloudWeb, key: string, checkpoint: () => void)
       await sweepArchived(tcw, checkpoint);
       if (identityKey(tcw) !== key) return { status: "retry", reason: "Voice-note space changed during identity check" };
       identityReady.set(tcw, key);
+      sweptThisSession.set(tcw, key);
+      const marker = identityMarkerKey(tcw);
+      if (marker) setLocalMarker(marker);
       return { status: "established" };
     } catch (e) {
       if (!isConstraint(e)) return identityFailure(e);
@@ -255,15 +324,28 @@ export async function createVoiceNoteRow(tcw: TinyCloudWeb, recording: VoiceNote
   if (identity.status !== "established") throw Object.assign(new Error(identity.reason ?? identity.status), { code: identity.status, cause: identity.cause });
   const now = new Date().toISOString();
   const outcome = recording.options?.transcriber === "off" ? "skipped" : "pending";
+  const speakerNames = recording.ledger?.speakerNames;
   const changes = await execute(tcw, `INSERT INTO connector_meeting
     (id, source, source_id, title, started_at, duration_secs, organizer_email, participants, summary_overview,
      summary_action_items, keywords, meeting_type, metadata, created_at, updated_at)
     VALUES (?, 'exo-voice-note', ?, ?, ?, ?, NULL, '[]', NULL, NULL, NULL, NULL, ?, ?, ?)
     ON CONFLICT DO NOTHING`, [`vn-${recording.id}`, recording.id, title, new Date(recording.startedAt).toISOString(),
     recording.durationMs / 1000, JSON.stringify({ transcription_outcome: outcome, title_auto: title,
-      capture: captureMetadata(recording, platform) }), now, now], checkpoint);
+      capture: captureMetadata(recording, platform),
+      ...(speakerNames !== null && typeof speakerNames === "object" && !Array.isArray(speakerNames) ? { speaker_names: speakerNames } : {}) }), now, now], checkpoint);
   const row = await resolveVoiceNoteRow(tcw, recording.id, checkpoint);
   if (!row) throw new Error("The voice-note identity index was established but its row is missing");
+  // Names renamed on the phone while the note was local land with it; a row already carrying
+  // names keeps them (it may have been renamed since).
+  if (speakerNames !== null && typeof speakerNames === "object" && !Array.isArray(speakerNames)
+    && row.metadata.speaker_names === undefined) {
+    for (const [label, shown] of Object.entries(speakerNames)) {
+      if (typeof shown === "string") await patchRowSpeakerName(tcw, row.id, label, shown, checkpoint);
+    }
+    const named = await resolveVoiceNoteRow(tcw, recording.id, checkpoint);
+    if (!named) throw new Error("The voice-note identity index was established but its row is missing");
+    return { ...named, inserted: false };
+  }
   if (changes === 0) {
     await execute(tcw, `UPDATE connector_meeting SET metadata = json_set(COALESCE(metadata,'{}'), '$.transcription_outcome', ?),
       updated_at = ?
@@ -489,10 +571,9 @@ export async function commitVoiceNoteTranscript(
         new Date().toISOString(), live.id], checkpoint);
     if (live) {
       const [startedRow] = await query(tcw, "SELECT started_at FROM connector_meeting WHERE id = ?", [live.id], checkpoint);
-      const title = autoMeetingTitle({ startedAt: startedRow?.[0], modelLabel: transcriptionModelLabel(input.model),
-        participantNames: input.participants });
+      const title = autoMeetingTitle({ startedAt: startedRow?.[0], participantNames: input.participants });
       // Rename only while the title is still the one the insert wrote; an edited title is kept.
-      if (title) await execute(tcw, "UPDATE connector_meeting SET title = ?, metadata = json_remove(metadata, '$.title_auto') WHERE id = ? AND source = 'exo-voice-note' AND title = json_extract(metadata, '$.title_auto')",
+      if (title) await execute(tcw, "UPDATE connector_meeting SET title = ?, metadata = json_remove(metadata, '$.title_auto') WHERE id = ? AND source = 'exo-voice-note' AND title = json_extract(metadata, '$.title_auto') AND json_extract(metadata, '$.title_user') IS NULL",
         [title, live.id], checkpoint);
     }
     const key = transcriptKvKey("exo-voice-note", sourceId);
@@ -513,4 +594,46 @@ export async function verifyVoiceNoteTranscript(tcw: TinyCloudWeb, sourceId: str
   if (!body.ok) throw errorOf(body);
   checkpoint();
   return committed;
+}
+
+/**
+ * One speaker's name on a note (TC-2189): `metadata.speaker_names[original]`, on any connector_meeting row (voice note,
+ * upload, meeting, combined). Only that one label changes, applied by the database to the metadata as it is when the
+ * write runs, so a name another writer saved meanwhile stays. A null `shown` clears the label, and the map when it
+ * was the last.
+ */
+export async function patchRowSpeakerName(tcw: TinyCloudWeb, rowId: string, original: string, shown: string | null,
+  checkpoint: () => void = () => undefined): Promise<void> {
+  const base = "CASE WHEN json_valid(metadata) THEN metadata ELSE '{}' END";
+  const changes = await execute(tcw,
+    `UPDATE connector_meeting SET metadata = json_patch(${base}, json_object('speaker_names', json_object(?, ?))), updated_at = ? WHERE id = ?`,
+    [original, shown, new Date().toISOString(), rowId], checkpoint);
+  if (changes === 0) throw new Error("The note's row is missing");
+  await execute(tcw, `UPDATE connector_meeting SET metadata = json_remove(metadata, '$.speaker_names')
+    WHERE id = ? AND json_valid(metadata) AND json_extract(metadata, '$.speaker_names') = '{}'`, [rowId], checkpoint);
+}
+
+/**
+ * Names a recording's row, or (an empty `name`) returns it to its automatic title. The read and the write each run
+ * on the space write lane, and the write applies only if the row is unchanged since the read, so a transcript
+ * commit landing in between is never overwritten.
+ */
+export async function writeRecordingTitle(tcw: TinyCloudWeb, rowId: string, name: string, checkpoint: () => void = () => undefined):
+  Promise<{ status: "missing" | "conflict" } | { status: "unchanged" | "written"; title: string | null }> {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const [row] = await query(tcw, "SELECT title, metadata, updated_at, source, started_at, participants FROM connector_meeting WHERE id = ?", [rowId], checkpoint);
+    if (!row) return { status: "missing" };
+    const title = typeof row[0] === "string" ? row[0] : null;
+    const plan = planRename(name, { title, metadata: typeof row[1] === "string" ? row[1] : null, source: String(row[3]), startedAt: row[4], participants: row[5] });
+    if (!plan) return { status: "unchanged", title };
+    const changes = await execute(tcw, "UPDATE connector_meeting SET title = ?, metadata = ?, updated_at = ? WHERE id = ? AND updated_at = ?",
+      [plan.title, JSON.stringify(plan.metadata), new Date().toISOString(), rowId, row[2]], checkpoint);
+    if (changes > 0) return { status: "written", title: plan.title };
+  }
+  return { status: "conflict" };
+}
+
+/** Saves one cross-device setting (the `settings` table) on the space write lane, behind any save already waiting on it (TC-2199). */
+export function writeUserSetting(tcw: TinyCloudWeb, key: string, value: string): Promise<void> {
+  return runOnSpaceLane(() => setSetting(tcw, key, value), { operation: `SQL execute: settings ${key}`, timeoutMs: 30_000 });
 }

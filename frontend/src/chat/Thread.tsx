@@ -1,7 +1,5 @@
 import {
   createContext,
-  lazy,
-  Suspense,
   useCallback,
   useContext,
   useEffect,
@@ -21,7 +19,6 @@ import {
   ThreadPrimitive,
   useAuiState,
   useMessage,
-  useThreadRuntime,
 } from "@assistant-ui/react";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import {
@@ -36,6 +33,7 @@ import {
   Square,
 } from "lucide-react";
 
+import { ImageBudgetScope } from "@/components/assistant-ui/image-budget";
 import { MarkdownText } from "@/components/assistant-ui/markdown-text";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -57,6 +55,7 @@ import {
 } from "@/lib/billingApi";
 import { copyText } from "@/lib/copyText";
 import { isLocalThreadStorage } from "@/lib/threadStore";
+import { useOriginMoveDeferral } from "@/shell/OriginMoveNotice";
 import {
   createTinychatShareLink,
   findStoredTinychatShareForThread,
@@ -66,41 +65,27 @@ import {
   type OwnedTinychatShare,
   type StoredTinychatShare,
 } from "@/lib/tinychatShareLinks";
+import { sharedWithMeVersion, subscribeSharedWithMe } from "@/lib/sharedWithMe";
 import { canOfferChatShare } from "@/lib/chatSharing";
 import { getThreadCompaction, subscribeThreadCompaction } from "./chatModelAdapter";
 import { ModelVerificationBadge } from "./ModelVerificationBadge";
+import { getGatewayReceiptVerified, onGatewayReceipt } from "@/lib/gatewayReceiptStore";
 import { ToolActivityChip } from "./ToolActivityChip";
 import type { SelectionView } from "./modelSelection";
-import { repositoryFromCanvas } from "./runtime";
-import type { ConversationCanvas as CanvasModel } from "./canvas/model";
-
-// Loaded on first use, so the graph library and its CSS stay out of the main
-// bundle for everyone who never opens Canvas.
-const ConversationCanvas = lazy(() =>
-  import("./canvas/ConversationCanvas").then((module) => ({ default: module.ConversationCanvas })),
-);
 
 interface ThreadProps {
   tcw: TinyCloudWeb;
   selection: SelectionView;
   onRetrySelection: () => void;
   onReload: () => void;
-  canvasEnabled?: boolean;
   /** The composer's toolbar, beside Send: the model chip and the usage chip. */
   composerToolbar?: ReactNode;
 }
 
-export const Thread: FC<ThreadProps> = ({ tcw, selection, onRetrySelection, onReload, canvasEnabled = false, composerToolbar }) => {
+export const Thread: FC<ThreadProps> = ({ tcw, selection, onRetrySelection, onReload, composerToolbar }) => {
   const threadId = useAuiState((s) => s.threadListItem.remoteId ?? s.threadListItem.id) as string | undefined;
-  const isRunning = useAuiState((s) => s.thread.isRunning);
   const isEmpty = useAuiState((s) => s.thread.isEmpty);
   const viewportRef = useRef<HTMLDivElement>(null);
-  const threadRuntime = useThreadRuntime();
-  const applyCanvasToRuntime = useCallback((canvas: CanvasModel) => {
-    threadRuntime.import(repositoryFromCanvas(canvas));
-  }, [threadRuntime]);
-  const [surface, setSurface] = useState<"chat" | "canvas">("chat");
-  useEffect(() => setSurface("chat"), [threadId]);
   useLayoutEffect(() => {
     if (!isEmpty) return;
     const viewport = viewportRef.current;
@@ -130,31 +115,18 @@ export const Thread: FC<ThreadProps> = ({ tcw, selection, onRetrySelection, onRe
     <TooltipProvider delayDuration={300}>
       <ShareThreadProvider tcw={tcw}>
         <ThreadPrimitive.Root className="flex h-full flex-col bg-background">
-          {canvasEnabled && threadId && (
-            <div className="flex items-center justify-end gap-1 border-b border-border px-3 py-1.5">
-              <span className="mr-2 text-xs text-muted-foreground">View</span>
-              <Button type="button" variant={surface === "chat" ? "default" : "outline"} size="sm" aria-pressed={surface === "chat"} onClick={() => setSurface("chat")}>Chat</Button>
-              <Button type="button" variant={surface === "canvas" ? "default" : "outline"} size="sm" aria-pressed={surface === "canvas"} onClick={() => setSurface("canvas")}>Canvas</Button>
-            </div>
-          )}
           <ThreadPrimitive.Viewport ref={viewportRef} autoScroll={!isEmpty} data-scroll-root className="relative flex flex-1 flex-col items-center overflow-y-auto scroll-smooth px-4">
-            {surface === "canvas" ? (
-              <div className="h-full w-full">
-                <Suspense fallback={<div className="flex h-full items-center justify-center text-sm text-muted-foreground">Loading canvas…</div>}>
-                  <ConversationCanvas tcw={tcw} threadId={threadId ?? ""} editingDisabled={isRunning} onCanvasChange={applyCanvasToRuntime} onSwitchToChat={() => setSurface("chat")} />
-                </Suspense>
-              </div>
-            ) : <div className="flex w-full max-w-[46rem] flex-1 flex-col gap-6 pt-8">
-                <CompactionIndicator />
-                {!selection.canSend && selection.message && (
-                  <div role="status" className="flex items-center justify-center gap-2 rounded-md border border-border bg-muted/50 px-3 py-2 text-xs text-muted-foreground">
-                    <span>{selection.message}</span>
-                    {(selection.saveFailed || selection.message.startsWith("Retry loading")) && <Button type="button" variant="outline" size="sm" onClick={onRetrySelection}>Retry</Button>}
-                    {selection.message === "Chat unavailable." && <Button type="button" variant="outline" size="sm" onClick={onReload}>Reload</Button>}
-                  </div>
-                )}
-                <ThreadBody />
-              </div>}
+            <div className="flex w-full max-w-[46rem] flex-1 flex-col gap-6 pt-8">
+              <CompactionIndicator />
+              {!selection.canSend && selection.message && (
+                <div role="status" className="flex items-center justify-center gap-2 rounded-md border border-border bg-muted/50 px-3 py-2 text-xs text-muted-foreground">
+                  <span>{selection.message}</span>
+                  {(selection.saveFailed || selection.message.startsWith("Retry loading")) && <Button type="button" variant="outline" size="sm" onClick={onRetrySelection}>Retry</Button>}
+                  {selection.message === "Chat unavailable." && <Button type="button" variant="outline" size="sm" onClick={onReload}>Reload</Button>}
+                </div>
+              )}
+              <ThreadBody />
+            </div>
 
             <Composer selection={selection} toolbar={composerToolbar} isEmpty={isEmpty} />
           </ThreadPrimitive.Viewport>
@@ -282,7 +254,9 @@ const ShareThreadProvider: FC<{ tcw: TinyCloudWeb; children: React.ReactNode }> 
 
   // `visible` gates whether the share button renders at all — only once a
   // chat exchange exists (not empty, history loaded). `canShare` additionally
-  // pauses actions while a share link is being created.
+  // pauses actions while a share link is being created. Subscribing re-renders
+  // when the account's share list syncs from its space.
+  useSyncExternalStore(subscribeSharedWithMe, sharedWithMeVersion);
   const hasExistingShare = Boolean(threadId && findStoredTinychatShareForThread(threadId));
   const visible = Boolean(
     !isLocalThreadStorage(tcw) &&
@@ -539,7 +513,7 @@ const ThreadWelcome: FC = () => {
       <div className="relative -top-20 flex w-full flex-1 flex-col items-center justify-center gap-6 px-4 py-16 pb-24 text-center sm:top-0">
         <div className="flex flex-col items-center gap-2">
           {/* The chat header's title is the screen's h1. */}
-          <h2 className="font-display text-title-2">TinyCloud Chat</h2>
+          <h2 className="font-display text-title-2">TinyCloud One</h2>
           <p className="max-w-sm text-callout text-muted-foreground">
             Your conversations are private and stored in your TinyCloud space.
           </p>
@@ -591,6 +565,8 @@ const WELCOME_SUGGESTIONS = [
 // above the tab bar it needs no safe area (the bar has it), over the keyboard
 // it tightens to 8 px, and at the screen's edge it clears the home indicator.
 const Composer: FC<{ selection: SelectionView; toolbar?: ReactNode; isEmpty: boolean }> = ({ selection, toolbar, isEmpty }) => {
+  // A typed draft and a reply being written live only in this page: a held tinycloud.chat page must not move under them.
+  useOriginMoveDeferral(useAuiState((s) => s.thread.isRunning || s.composer.text.trim() !== ""));
   return (
     <div className="sticky bottom-0 z-10 w-full max-w-[46rem] bg-gradient-to-t from-background via-background to-transparent pb-[max(1rem,env(safe-area-inset-bottom))] pt-2 [html[data-keyboard=open]_&]:pb-2 [html[data-nav=tabbar]:not([data-keyboard=open])_&]:pb-3">
       <div className="relative">
@@ -600,7 +576,7 @@ const Composer: FC<{ selection: SelectionView; toolbar?: ReactNode; isEmpty: boo
         <ComposerPrimitive.Input
           autoFocus
           rows={1}
-          placeholder="Message TinyCloud Chat…"
+          placeholder="Message TinyCloud One…"
           disabled={!selection.canSend}
           // Always 16px: smaller text makes iOS zoom the page when the field
           // gains focus, and the composer reads the same on every device.
@@ -647,32 +623,60 @@ const UserMessage: FC = () => (
   </MessagePrimitive.Root>
 );
 
-const AssistantMessage: FC = () => (
-  <MessagePrimitive.Root className="group flex w-full flex-col gap-1">
-    <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
-      <span className="flex size-5 items-center justify-center rounded-full bg-primary text-xs font-semibold text-primary-foreground">
-        T
-      </span>
-      <span>TinyCloud Chat</span>
-    </div>
-    <div className="pl-7 text-sm leading-relaxed text-foreground">
-      <MessagePrimitive.Parts components={{ Text: MarkdownText }} />
-      <ThinkingIndicator />
-      <StreamingCursor />
-      <ToolActivityChip />
-    </div>
-    <MessagePrimitive.Error>
-      <ErrorPrimitive.Root className="ml-7 mt-1 flex items-start gap-2 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-        <AlertTriangleIcon className="mt-0.5 size-3.5 shrink-0" />
-        <ErrorPrimitive.Message className="leading-relaxed" />
-      </ErrorPrimitive.Root>
-    </MessagePrimitive.Error>
-    <AssistantActionBar />
-    <div className="pl-7">
-      <ModelVerificationBadge />
-    </div>
-  </MessagePrimitive.Root>
-);
+export const AssistantMessage: FC = () => {
+  // Messages are keyed by position, so a component can be reused for another message: its images get a fresh budget.
+  const messageId = useMessage((message) => message.id);
+  return (
+    <MessagePrimitive.Root className="group flex w-full flex-col gap-1">
+      <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
+        <span className="flex size-5 items-center justify-center rounded-full bg-primary text-xs font-semibold text-primary-foreground">
+          T
+        </span>
+        <span>TinyCloud One</span>
+      </div>
+      <div className="pl-7 text-sm leading-relaxed text-foreground">
+        <ImageBudgetScope messageId={messageId}>
+          <MessagePrimitive.Parts components={{ Text: MarkdownText }} />
+        </ImageBudgetScope>
+        <ThinkingIndicator />
+        <StreamingCursor />
+        <ToolActivityChip />
+        <GatewayReceiptMark />
+      </div>
+      <MessagePrimitive.Error>
+        <ErrorPrimitive.Root className="ml-7 mt-1 flex items-start gap-2 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+          <AlertTriangleIcon className="mt-0.5 size-3.5 shrink-0" />
+          <ErrorPrimitive.Message className="leading-relaxed" />
+        </ErrorPrimitive.Root>
+      </MessagePrimitive.Error>
+      <AssistantActionBar />
+      <div className="pl-7">
+        <ModelVerificationBadge />
+      </div>
+    </MessagePrimitive.Root>
+  );
+};
+const GatewayReceiptMark: FC = () => {
+  const messageId = useMessage((message) => message.id);
+  const verified = useSyncExternalStore(
+    (notify) => onGatewayReceipt(messageId, notify),
+    () => getGatewayReceiptVerified(messageId),
+    () => false,
+  );
+  if (!verified) return null;
+  return (
+    <span
+      aria-label="Enclave verified"
+      className="mt-2 inline-flex items-center gap-1 text-xs font-medium text-teal-700 dark:text-teal-300"
+      data-testid="gateway-receipt-verified"
+      role="status"
+      title="Enclave verified"
+    >
+      <CheckIcon aria-hidden="true" className="size-3.5" />
+      Enclave verified
+    </span>
+  );
+};
 
 // Three-way phase for the running assistant message — exactly one of the two
 // indicators below matches each phase, so the handoff is mutually exclusive.

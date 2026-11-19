@@ -28,7 +28,7 @@ import { readDefaultTranscriber, refreshEffectiveTranscriber, setDefaultIdentify
 import { createVoiceNoteTranscriber, HELD_NOTE_MESSAGE, type VoiceNoteTranscriber } from "@/lib/voiceNotes/voiceNoteTranscription";
 import { createVoiceNotePipeline, VoiceNoteSaveDeferred, type VoiceNotePipeline } from "@/lib/voiceNotes/voiceNotePipeline";
 import { advanceAccountGeneration } from "@/lib/voiceNotes/accountContext";
-import { CONNECTORS_SQL_DB_NAME } from "@/lib/connectors/connectorStore";
+import { CONNECTORS_SQL_DB_NAME, _resetConnectorSchemaMemoForTests } from "@/lib/connectors/connectorStore";
 import { consentToRecordingPrivateCloud, setRecordingRoute } from "./TranscriptionRouteControl";
 import { loadNote } from "@/lib/voiceNotes/recordingNotes";
 import { reportRecordingNoteSyncError } from "@/lib/voiceNotes/voiceNoteStore";
@@ -69,6 +69,7 @@ let serial = 0;
 let currentId: string | null = null;
 let paused = false;
 let plugin: VoiceNotesPlugin;
+let nativeIds = new Map<string, string>();
 
 async function stopNatively(): Promise<VoiceNoteRecording> {
   const stopped = await fake.plugin.stop();
@@ -76,6 +77,7 @@ async function stopNatively(): Promise<VoiceNoteRecording> {
     options: { ...stopped.options, transcriber: stopped.options?.transcriber ?? "on-device",
       identifySpeakers: stopped.options?.identifySpeakers ?? false,
       uploadAudio: stopped.options?.uploadAudio ?? true }, rev: 1 };
+  nativeIds.set(recording.id, stopped.id);
   currentId = null;
   paused = false;
   onPhone.push(recording);
@@ -144,6 +146,7 @@ const fails = async (_tcw: unknown, recording: VoiceNoteRecording) => {
 
 beforeEach(() => {
   fake = createFakeVoiceNotes();
+  nativeIds = new Map();
   onPhone = [];
   saves = [];
   noted = [];
@@ -169,7 +172,7 @@ beforeEach(() => {
     stop: stopNatively,
     async status() {
       const status = await fake.plugin.status();
-      return { ...status, state: paused ? "paused" as const : status.state, reason: paused ? "user" as const : status.reason, id: status.id === null ? null : currentId,
+      return { ...status, owner: status.id ? (await fake.plugin.getCaptureDefaults()).accountDid : undefined, state: paused ? "paused" as const : status.state, reason: paused ? "user" as const : status.reason, id: status.id === null ? null : currentId,
         audioMs: 42_000, micDeniedPresentation: micDenied, shortcutRecordPending: shortcutPending,
         microphonePermissionGranted: microphoneGranted };
     },
@@ -183,6 +186,10 @@ beforeEach(() => {
       currentId = null;
       onPhone = onPhone.filter((recording) => recording.id !== id);
       return { id };
+    },
+    async readAudioChunk(args) {
+      const chunk = await fake.plugin.readAudioChunk({ ...args, id: nativeIds.get(args.id) ?? args.id });
+      return { ...chunk, id: args.id };
     },
     async listPending() {
       return { recordings: [...onPhone] };
@@ -371,6 +378,8 @@ describe("voice-note recorder controller", () => {
     await recorder.setNoteText("Signed-out draft");
     await recorder.stop();
     await tick();
+    // The stand-in native fixture must keep a signed-out note unowned after Stop.
+    onPhone.find((recording) => recording.id === id)!.owner = null;
     expect((await loadNote(id))?.md).toBe("Signed-out draft");
     expect(saves).toEqual([]);
     expect(recorder.getNoteSyncError()).toBeNull();
@@ -385,7 +394,7 @@ describe("voice-note recorder controller", () => {
     const id = currentId!;
     await tick();
     await first.setNoteText("# Draft\n- **0:07** hallway");
-    expect((await loadNote(id))?.md).toBe("# Draft\n- **0:07** hallway");
+    expect((await loadNote(id, (await plugin.status()).owner ?? null, true))?.md).toBe("# Draft\n- **0:07** hallway");
     detach();
 
     const reopened = controller();
@@ -410,12 +419,12 @@ describe("voice-note recorder controller", () => {
 
     let release!: () => void;
     const gate = new Promise<void>((resolve) => { release = resolve; });
-    const reopened = controller({ noteLoader: async (noteId) => { await gate; return loadNote(noteId); } });
+    const reopened = controller({ noteLoader: async (noteId, owner, live) => { await gate; return loadNote(noteId, owner, live); } });
     const remove = reopened.attach();
     await tick();
     expect(reopened.getNoteStatus()).toBe("loading");
     await expect(reopened.setNoteText("x")).rejects.toMatchObject({ code: "note_not_loaded" });
-    expect((await loadNote(id))?.md).toBe("# Ten lines of work\nKeep this draft");
+    expect((await loadNote(id, (await plugin.status()).owner ?? null, true))?.md).toBe("# Ten lines of work\nKeep this draft");
     release();
     await tick();
     expect(reopened.getNoteStatus()).toBe("ready");
@@ -438,7 +447,7 @@ describe("voice-note recorder controller", () => {
     const timers: { ms: number; run: () => void; cancelled: boolean }[] = [];
     const readFailure = new Error("IndexedDB open failed");
     const reopened = controller({
-      noteLoader: (noteId) => { reads++; return available ? loadNote(noteId) : Promise.reject(readFailure); },
+      noteLoader: (noteId, owner, live) => { reads++; return available ? loadNote(noteId, owner, live) : Promise.reject(readFailure); },
       noteRetryScheduler: (ms, run) => {
         const timer = { ms, run, cancelled: false };
         timers.push(timer);
@@ -449,7 +458,7 @@ describe("voice-note recorder controller", () => {
     await tick();
     expect(reopened.getNoteStatus()).toBe("error");
     await expect(reopened.setNoteText("x")).rejects.toBe(readFailure);
-    expect((await loadNote(id))?.md).toBe("Do not overwrite");
+    expect((await loadNote(id, (await plugin.status()).owner ?? null, true))?.md).toBe("Do not overwrite");
     expect(timers.map((timer) => timer.ms)).toEqual([1_000]);
     fake.emit("micState", { id, state: "recording", reason: null, elapsedMs: 2_000, at: Date.now() });
     await tick();
@@ -466,7 +475,7 @@ describe("voice-note recorder controller", () => {
     await tick();
     expect(reopened.getNoteStatus()).toBe("ready");
     expect(reopened.getNote()?.md).toBe("Do not overwrite");
-    expect((await loadNote(id))?.md).toBe("Do not overwrite");
+    expect((await loadNote(id, (await plugin.status()).owner ?? null, true))?.md).toBe("Do not overwrite");
     remove();
   });
 
@@ -1161,19 +1170,17 @@ describe("voice-note recorder controller", () => {
     expect(onPhone.map((recording) => recording.id)).toEqual([failed.failedRecording!.id]);
   });
 
-  test("Save now reclaims a fresh sign-in note and resumes its account pipeline", async () => {
+  test("Save now resumes an owned note’s account pipeline", async () => {
     const account = { did: tcw.did, spaceId: "tinycloud:space" } as TinyCloudWeb;
-    const note = { ...earlier(), owner: null };
+    const note = earlier();
     onPhone = [note];
-    let claimed = 0;
     let accepting = false;
     const base = plugin;
     __setVoiceNotesForTests({ ...base,
       getCaptureDefaults: async () => ({ status: "signed_in", accountDid: account.did, transitionGen: 1,
         transcriber: "on-device", identifySpeakers: false }),
       async setCaptureDefaults() {
-        for (const pending of onPhone) if (!pending.owner) { pending.owner = account.did; claimed++; }
-        return { claimed: onPhone.map((pending) => pending.id) };
+        return { claimed: [] };
       } }, { available: true });
     const pipeline: VoiceNotePipeline = {
       process: async () => {}, cancelAll: () => { accepting = false; },
@@ -1190,7 +1197,7 @@ describe("voice-note recorder controller", () => {
     const detach = recorder.attach();
     await tick();
     await recorder.retryPending();
-    expect(claimed).toBe(1);
+    expect(note.owner).toBe(account.did);
     expect(saves).toEqual([note.id]);
     expect(recorder.getState().ready).toBe(true);
     expect(accepting).toBe(true);
@@ -1541,6 +1548,8 @@ const hostWindow = () => ({ HTMLIFrameElement: class {}, document: hostDocument,
     const previousAct = Reflect.get(globalThis, "IS_REACT_ACT_ENVIRONMENT");
     Reflect.set(globalThis, "window", hostWindow());
     Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
+    // This fresh database shares the account DID with earlier scripted fixtures.
+    _resetConnectorSchemaMemoForTests();
     const sqlite = new Database(":memory:");
     const values = new Map<string, string>();
     const account = { did: tcw.did, spaceId: tcw.spaceId,
@@ -1827,7 +1836,7 @@ const hostWindow = () => ({ HTMLIFrameElement: class {}, document: hostDocument,
     await recorder.record();
     await recorder.stop();
     expect(recorder.getState()).toMatchObject({
-      phase: "idle", error: "Kept on this browser. Exo will finish it automatically.",
+      phase: "idle", error: "Kept on this browser. TinyCloud One will finish it automatically.",
     });
     expect(recorder.getState().captureIssues[currentId ?? onPhone[0].id]).toEqual({ kind: "finalization_timed_out" });
     expect(onPhone).toHaveLength(1);
@@ -2017,7 +2026,7 @@ const hostWindow = () => ({ HTMLIFrameElement: class {}, document: hostDocument,
       recording: null, error: "finalization_timed_out",
     });
     expect(recorder.getState()).toMatchObject({
-      phase: "idle", error: "Kept on this browser. Exo will finish it automatically.",
+      phase: "idle", error: "Kept on this browser. TinyCloud One will finish it automatically.",
     });
     expect(saves).toEqual([]);
   });
@@ -3355,5 +3364,103 @@ describe("Settings → Stop recording after reaches VoiceNotes.start", () => {
     await settled(() => recorder.getState().phase === "idle", "the save");
     expect(recorder.getState()).toMatchObject({ limitNotice: "Recording stopped because device storage is full.", limitStopMs: null });
     detach();
+  });
+});
+
+describe("Stop recordings automatically reaches VoiceNotes.start (TC-2081)", () => {
+  const HOUR = 60 * 60_000;
+  const SAFETY_CAP = 8 * HOUR;
+  const savedStorage = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+  const savedWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+  let values: Map<string, string>;
+  let requested: (number | undefined)[];
+
+  const widthIs = (innerWidth: number) => Object.defineProperty(globalThis, "window", { configurable: true, writable: true,
+    value: { innerWidth, addEventListener() {}, removeEventListener() {} } });
+
+  beforeEach(() => {
+    values = new Map();
+    Object.defineProperty(globalThis, "localStorage", { configurable: true, value: {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => { values.set(key, value); },
+      removeItem: (key: string) => { values.delete(key); },
+    } });
+    requested = [];
+    const base = plugin;
+    __setVoiceNotesForTests({ ...base, async start(options) { requested.push(options?.maxDurationMs); return base.start(options); } }, { available: true });
+  });
+  afterEach(() => {
+    for (const [name, descriptor] of [["localStorage", savedStorage], ["window", savedWindow]] as const) {
+      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+      else Reflect.deleteProperty(globalThis, name);
+    }
+  });
+
+  async function recordOnce() {
+    const { recorder, detach } = await attached();
+    await recorder.record();
+    const state = recorder.getState();
+    await recorder.stop();
+    await settled(() => recorder.getState().phase === "idle", "the stop");
+    detach();
+    return state;
+  }
+
+  test("the phone layout defaults to off: the silent 8-hour cap, and the recording is not an automatic-stop recording", async () => {
+    widthIs(390);
+    const state = await recordOnce();
+    expect(requested).toEqual([SAFETY_CAP]);
+    expect(state).toMatchObject({ maxDurationMs: SAFETY_CAP, autoStop: false });
+  });
+
+  test("the desktop layout defaults to on: Stop recording after, as before", async () => {
+    widthIs(1280);
+    const state = await recordOnce();
+    expect(requested).toEqual([HOUR]);
+    expect(state).toMatchObject({ maxDurationMs: HOUR, autoStop: true });
+  });
+
+  test("turning it on at the phone layout restores today's limit; turning it off on desktop gives the cap", async () => {
+    widthIs(390);
+    values.set("exo.voiceNotes.autoStop", "1");
+    expect(await recordOnce()).toMatchObject({ maxDurationMs: HOUR, autoStop: true });
+    widthIs(1280);
+    values.set("exo.voiceNotes.autoStop", "0");
+    expect(await recordOnce()).toMatchObject({ maxDurationMs: SAFETY_CAP, autoStop: false });
+    expect(requested).toEqual([HOUR, SAFETY_CAP]);
+  });
+
+  test("Keep going raises the running limit by one hour through the plugin and the state follows", async () => {
+    widthIs(1280);
+    const { recorder, detach } = await attached();
+    await recorder.record();
+    expect(typeof recorder.extendLimit).toBe("function");
+    await recorder.extendLimit!();
+    expect(fake.stats().maxDurationChanges).toEqual([2 * HOUR]);
+    expect(recorder.getState().maxDurationMs).toBe(2 * HOUR);
+    await recorder.extendLimit!();
+    expect(recorder.getState().maxDurationMs).toBe(3 * HOUR);
+    await recorder.stop();
+    await settled(() => recorder.getState().phase === "idle", "the stop");
+    detach();
+  });
+
+  test("no extension under the silent cap, and none where the plugin cannot change a running limit", async () => {
+    widthIs(390);
+    const capped = await attached();
+    await capped.recorder.record();
+    await capped.recorder.extendLimit!();
+    expect(fake.stats().maxDurationChanges).toEqual([]);
+    expect(capped.recorder.getState().maxDurationMs).toBe(SAFETY_CAP);
+    await capped.recorder.stop();
+    await settled(() => capped.recorder.getState().phase === "idle", "the stop");
+    capped.detach();
+
+    const base = plugin;
+    __setVoiceNotesForTests({ ...base, setMaxDuration: undefined }, { available: true });
+    widthIs(1280);
+    const fixed = await attached();
+    expect(fixed.recorder.extendLimit).toBeUndefined();
+    fixed.detach();
   });
 });

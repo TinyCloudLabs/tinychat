@@ -181,9 +181,7 @@ describe.serial(`minimised recorder interactions (${engineName})`, () => {
     await expect(
       page.getByTestId("ribbon-stop").getAttribute("aria-label"),
     ).resolves.toBe("Stop and save");
-    expect(await page.locator("[data-spectrum-bars] [data-bar]").count()).toBe(
-      30,
-    );
+    expect(await page.locator("[data-spectrum-bars] [data-bar]").count()).toBe(30);
     const tabs = await page.getByRole("navigation").last().boundingBox();
     const box = (await ribbon(page).boundingBox())!;
     if (tabs) expect(box.y + box.height).toBeLessThanOrEqual(tabs.y + 1);
@@ -299,9 +297,8 @@ describe.serial(`minimised recorder interactions (${engineName})`, () => {
     const { page, calls, patch } = await open("recording", DESKTOP);
     await shown(dock(page));
     await gone(ribbon(page));
-    expect(await page.locator("[data-spectrum-bars] [data-bar]").count()).toBe(
-      22,
-    );
+    expect(await page.locator("[data-bar]").count()).toBe(0);
+    expect(await dock(page).innerText()).not.toContain("Listening");
     await page.getByTestId("dock-pause").click();
     await attr(
       page.getByTestId("dock-pause"),
@@ -312,7 +309,7 @@ describe.serial(`minimised recorder interactions (${engineName})`, () => {
     await page.getByTestId("dock-stop").click();
     expect(await calls()).toEqual(["pause", "resume", "stop"]);
 
-    await page.getByTestId("dock-status").click({ force: true });
+    await page.getByTestId("dock-timer").click({ force: true });
     await until("openSheet", async () => (await calls()).includes("openSheet"));
     await patch({ sheetOpen: false });
     await shown(dock(page));
@@ -414,34 +411,66 @@ describe.serial(`a silenced mic (${engineName})`, () => {
     bars(page).evaluateAll((spans) =>
       spans.map((span) => (span as HTMLElement).style.transform),
     );
-  const colour = (page: Page) =>
-    bars(page)
-      .first()
-      .evaluate((span) => getComputedStyle(span).backgroundColor);
 
-  for (const [layout, size, container] of [
-    ["Ribbon", PHONE, "ribbon"],
-    ["dock", DESKTOP, "sidebar-dock"],
-  ] as const) {
-    test(`the ${layout} stays red but its bars are flat while the level keeps arriving`, async () => {
-      const { page, errors } = await open("silenced", size);
-      const box = page.getByTestId(container);
-      await attr(box, "data-state", "live");
-      await attr(box.locator("[data-spectrum-bars]"), "data-paused", "false");
-      const first = await transforms(page);
-      expect(new Set(first).size).toBe(1);
-      await sleep(600);
-      expect(await transforms(page)).toEqual(first);
-      expect(await colour(page)).toBe("rgb(255, 107, 98)");
-      expect(errors).toEqual([]);
-    });
-  }
+  test("the phone Ribbon stays red but its bars are flat while the level keeps arriving", async () => {
+    const { page, errors } = await open("silenced");
+    const box = page.getByTestId("ribbon");
+    await attr(box, "data-state", "live");
+    await attr(box.locator("[data-spectrum-bars]"), "data-paused", "false");
+    const first = await transforms(page);
+    expect(new Set(first).size).toBe(1);
+    await sleep(600);
+    expect(await transforms(page)).toEqual(first);
+    expect(
+      await bars(page).first().evaluate((span) => getComputedStyle(span).backgroundColor),
+    ).toBe("rgb(255, 107, 98)");
+    expect(errors).toEqual([]);
+  });
 
-  test("a live mic's bars, by contrast, follow the level", async () => {
+  test("a live mic's bars on the phone Ribbon, by contrast, follow the level", async () => {
     const { page } = await open("recording");
     await until("the bars to move off their resting height", async () =>
       (await transforms(page)).some((value) => value !== "scaleY(0.12)"),
     );
+  });
+
+  test("the dock stays live with no waveform", async () => {
+    const { page, errors } = await open("silenced", DESKTOP);
+    await attr(page.getByTestId("sidebar-dock"), "data-state", "live");
+    expect(await bars(page).count()).toBe(0);
+    expect(errors).toEqual([]);
+  });
+});
+
+describe.serial(`the stop time on hover (${engineName})`, () => {
+  test("hovering the dock shows the exact stop time; leaving hides it", async () => {
+    const { page, errors } = await open("recording", DESKTOP);
+    const tip = page.getByTestId("dock-stops");
+    await expect(tip.evaluate((el) => getComputedStyle(el).opacity)).resolves.toBe("0");
+    await page.getByTestId("dock-timer").hover({ force: true });
+    await until("the tooltip to show", async () =>
+      (await tip.evaluate((el) => getComputedStyle(el).opacity)) === "1",
+    );
+    expect(await tip.textContent()).toMatch(/^Recording stops at \d/);
+    expect(await page.getByTestId("dock-remaining").textContent()).toMatch(/^Stops in \d+:\d\d/);
+    await page.mouse.move(700, 400);
+    await until("the tooltip to hide", async () =>
+      (await tip.evaluate((el) => getComputedStyle(el).opacity)) === "0",
+    );
+    expect(errors).toEqual([]);
+  });
+
+  test("the phone Ribbon shows the stop time on its own line, without overflowing a 320 px phone", async () => {
+    const { page } = await open("recording", { width: 320, height: 640 });
+    const stops = page.getByTestId("ribbon-stops");
+    expect(await stops.textContent()).toMatch(/^Stops at \d/);
+    const timerBox = (await page.getByTestId("ribbon-timer").boundingBox())!;
+    const stopsBox = (await stops.boundingBox())!;
+    expect(stopsBox.y).toBeGreaterThanOrEqual(timerBox.y + timerBox.height);
+    expect(await page.locator("[data-testid=ribbon-remaining], [data-testid=ribbon-limit]").count()).toBe(0);
+    const box = (await ribbon(page).boundingBox())!;
+    expect(box.x).toBeGreaterThanOrEqual(0);
+    expect(box.x + box.width).toBeLessThanOrEqual(320);
   });
 });
 

@@ -16,9 +16,11 @@ import type { EIP1193Provider } from "./openkey.js";
 export interface TinyCloudWebConfig {
   tinycloudHosts?: string[];
   tinycloudRegistryUrl?: string | null;
-  tinycloudFallbackHosts?: string[] | null;
+  newUserHost?: string | null;
   autoCreateSpace?: boolean;
   siweConfig?: SiweConfig;
+  /** Explicit SIWE authority when the app is served from a development URL. */
+  domain?: string;
   /**
    * Manifest driving the SIWE recap at sign-in. If `capabilityRequest`
    * is present, it takes precedence and is signed directly.
@@ -26,14 +28,16 @@ export interface TinyCloudWebConfig {
   manifest?: Manifest;
   /** Pre-composed manifest request that may include app and delegate manifests. */
   capabilityRequest?: ComposedManifestRequest;
-  /** Include implicit account registry permissions when composing `manifest`. Default true in the SDK. */
-  includeAccountRegistryPermissions?: boolean;
+  /** Account registry permissions are disabled for Home sessions. */
+  includeAccountRegistryPermissions?: false;
   /**
    * Session storage backend. Defaults to BrowserSessionStorage (localStorage);
    * the Exo native app passes the OpenKey secure-store adapter so the session
    * key never touches web storage.
    */
   sessionStorage?: ISessionStorage;
+  /** Panel layout: "native" inside the phone and desktop apps. Default "web". */
+  uiPlatform?: "native" | "web";
   /** SIWE nonce override. If set, `siweConfig.nonce` still wins inside the SDK. */
   nonce?: string;
   /**
@@ -42,6 +46,11 @@ export interface TinyCloudWebConfig {
    * Only the web flag in frontend/src/lib/replication sets it.
    */
   replication?: TinyCloudWebSdkConfig["replication"];
+  /**
+   * Sign in through OpenKey's `authorizeTinyCloud` instead of the provider's `personal_sign`. The SIWE nonce then
+   * comes from `nonce` alone: the SDK refuses per-call SIWE overrides on this path.
+   */
+  openkey?: TinyCloudWebSdkConfig["openkey"];
 }
 
 export interface RestoreTinyCloudWebSessionResult {
@@ -65,16 +74,20 @@ export function createTinyCloudWeb(
     provider: web3Provider,
     tinycloudHosts: config?.tinycloudHosts,
     tinycloudRegistryUrl: config?.tinycloudRegistryUrl,
-    tinycloudFallbackHosts: config?.tinycloudFallbackHosts,
+    newUserHost: config?.newUserHost,
     autoCreateSpace: config?.autoCreateSpace ?? true,
     sessionStorage: config?.sessionStorage ?? new BrowserSessionStorage(),
     sessionExpirationMs: SESSION_EXPIRATION_MS,
     nonce: config?.nonce,
     siweConfig: config?.siweConfig,
+    ...(config?.domain ? { domain: config.domain } : {}),
     manifest,
     capabilityRequest: config?.capabilityRequest,
-    includeAccountRegistryPermissions: config?.includeAccountRegistryPermissions,
+    includeAccountRegistryPermissions: false,
+    // The app owns the floating button (Settings toggle); the SDK default shows it.
+    ui: { button: false, platform: config?.uiPlatform ?? "web" },
     ...(config?.replication ? { replication: config.replication } : {}),
+    ...(config?.openkey ? { openkey: config.openkey } : {}),
     autoBootstrapAccount: false,
   };
 
@@ -100,7 +113,7 @@ export async function createAndSignIn(
   if (config?.nonce) {
     await tcw.clearPersistedSession(config.address);
   }
-  const session = await tcw.signIn(config?.nonce ? { nonce: config.nonce } : undefined);
+  const session = await tcw.signIn(config?.nonce && !config.openkey ? { nonce: config.nonce } : undefined);
   return { tcw, session };
 }
 
@@ -118,8 +131,10 @@ export class RestoredSessionMissingSpaceError extends Error {
   }
 }
 
+type RestoreStorage = ISessionStorage & Partial<Pick<BrowserSessionStorage, "isSignedOut">>;
+
 interface RecordingStorage {
-  storage: ISessionStorage;
+  storage: RestoreStorage;
   /** Start capturing; returns the record the SDK loaded while capturing. */
   capture: <T>(run: () => Promise<T>) => Promise<{ value: T; record: PersistedSessionData | null }>;
 }
@@ -129,7 +144,7 @@ interface RecordingStorage {
  * can be read back, instead of reading storage a second time (which could see
  * a different record than the one the SDK installed).
  */
-function recordRestoredSession(storage: ISessionStorage): RecordingStorage {
+function recordRestoredSession(storage: RestoreStorage): RecordingStorage {
   let capturing = false;
   let record: PersistedSessionData | null = null;
 
@@ -144,10 +159,10 @@ function recordRestoredSession(storage: ISessionStorage): RecordingStorage {
           return data;
         };
       }
-      if (prop === "loadWithStatus") {
+      if (prop === "loadWithStatus" || prop === "loadRenewalCandidate") {
         return async (address: string) => {
           const result = await member.call(target, address);
-          if (capturing) record = result?.status === "loaded" ? result.data : null;
+          if (capturing) record = result?.status === "loaded" || result?.status === "renewal-candidate" ? result.data : null;
           return result;
         };
       }
@@ -203,22 +218,26 @@ function exposeRestoredSpaceId(tcw: TinyCloudWeb, restored: PersistedSessionData
  */
 export async function restoreTinyCloudWebSession(
   address: string,
-  config?: TinyCloudWebConfig & { provider?: EIP1193Provider },
+  config?: TinyCloudWebConfig & { provider?: EIP1193Provider; renewalLeaseAuthorization?: string },
 ): Promise<RestoreTinyCloudWebSessionResult> {
   const manifest = config?.manifest ?? config?.capabilityRequest?.manifests;
   const recording = recordRestoredSession(config?.sessionStorage ?? new BrowserSessionStorage());
   const tcwConfig: TinyCloudWebSdkConfig = {
     tinycloudHosts: config?.tinycloudHosts,
     tinycloudRegistryUrl: config?.tinycloudRegistryUrl,
-    tinycloudFallbackHosts: config?.tinycloudFallbackHosts,
+    newUserHost: null,
     autoCreateSpace: config?.autoCreateSpace ?? false,
     sessionStorage: recording.storage,
     nonce: config?.nonce,
     siweConfig: config?.siweConfig,
     manifest,
     capabilityRequest: config?.capabilityRequest,
-    includeAccountRegistryPermissions: config?.includeAccountRegistryPermissions,
+    includeAccountRegistryPermissions: false,
+    // The app owns the floating button (Settings toggle); the SDK default shows it.
+    ui: { button: false, platform: config?.uiPlatform ?? "web" },
     ...(config?.replication ? { replication: config.replication } : {}),
+    // A restore never sets up an account, whatever page it runs on (as createTinyCloudWeb). Details: TC-3019
+    autoBootstrapAccount: false,
   };
 
   if (config?.provider) {
@@ -228,8 +247,15 @@ export async function restoreTinyCloudWebSession(
   const tcw = new TinyCloudWeb(tcwConfig);
 
   try {
-    const { value: result, record } = await recording.capture(() => tcw.restoreSession(address));
+    const { value: result, record } = await recording.capture(() => config?.renewalLeaseAuthorization !== undefined
+      ? tcw.restoreSessionWithRenewal(config.renewalLeaseAuthorization, address)
+      : tcw.restoreSession(address));
     if (result.status === "restored") {
+      // Custom storage without isSignedOut has no persisted fence to recheck. Details: TC-2872
+      if (!record || recording.storage.isSignedOut?.(address, record.signature)) {
+        tcw.cleanup();
+        return { tcw: null, status: "missing" };
+      }
       exposeRestoredSpaceId(tcw, record);
       return { tcw, status: result.status, session: result.session };
     }

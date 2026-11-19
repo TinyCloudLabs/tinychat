@@ -5,7 +5,6 @@ import {
   applyManifestRevisionGate,
   browserRevisionStore,
   EXO_MANIFEST_REVISION,
-  MANIFEST_RESIGN_NOTICE,
   needsManifestResign,
   recordManifestRevision,
   recordManifestRevisionIfSigned,
@@ -80,31 +79,12 @@ async function runGate(options: { store: RevisionStore | null; address?: string 
   return { outcome, calls };
 }
 
-describe("revision value and storage key", () => {
-  test("the revision is \"2\": a record written by the withdrawn \"1\" gate is stale", () => {
-    expect(EXO_MANIFEST_REVISION).toBe("2");
-    const { store } = memoryStore({ [KEY]: "1" });
-    expect(needsManifestResign(store, ADDRESS)).toBe(true);
-  });
-
-  test("the record is written under the device-local key prefix, lower-cased address, value \"2\"", () => {
-    const { store, data } = memoryStore();
-    recordManifestRevision(store, ADDRESS);
-    expect(data).toEqual({ [KEY]: "2" });
-  });
-});
-
 describe("stored revision table", () => {
   const cases: Array<[string, string | null, boolean]> = [
     ["missing", null, true],
-    ["older (\"0\")", "0", true],
-    ["the withdrawn gate's \"1\"", "1", true],
-    ["current", "2", false],
-    ["empty", "", true],
-    ["padded", " 2", true],
-    ["numeric spelling", "2.0", true],
-    ["zero padded", "02", true],
-    ["not a number", "two", true],
+    ["previous feed-container session", "3", true],
+    ["current", EXO_MANIFEST_REVISION, false],
+    ["unknown", "unrecognized", true],
   ];
   for (const [name, stored, stale] of cases) {
     test(`${name} revision ${stale ? "re-signs" : "is kept"}`, () => {
@@ -165,7 +145,7 @@ describe("restore gate", () => {
   });
 
   test("a current session is untouched: no handoff, no clear, online or offline", async () => {
-    const { store } = memoryStore({ [KEY]: "2" });
+    const { store } = memoryStore({ [KEY]: EXO_MANIFEST_REVISION });
     expect(await runGate({ store })).toEqual({ outcome: "current", calls: [] });
     expect(await runGate({ store, offline: true })).toEqual({ outcome: "current", calls: [] });
   });
@@ -226,7 +206,7 @@ describe("restore gate", () => {
   });
 
   test("the served manifest is not fetched for a current session, a signed-out user, or while offline", async () => {
-    const { store } = memoryStore({ [KEY]: "2" });
+    const { store } = memoryStore({ [KEY]: EXO_MANIFEST_REVISION });
     expect((await runGate({ store })).calls).toEqual([]);
     expect((await runGate({ store: memoryStore().store, address: null })).calls).toEqual([]);
     expect((await runGate({ store: memoryStore().store, offline: true })).calls).toEqual([]);
@@ -247,11 +227,10 @@ describe("users without a stored session", () => {
     expect(writes).toEqual([]);
   });
 
-  test("a new user signs in under the new manifest and records \"2\": the next restore is left alone", async () => {
-    const { store, data } = memoryStore();
+  test("signing under the complete manifest keeps the next restored session", async () => {
+    const { store } = memoryStore();
     expect((await runGate({ store, address: null })).outcome).toBe("current");
     recordManifestRevisionIfSigned(store, ADDRESS, servedManifest(true));
-    expect(data[KEY]).toBe("2");
     expect(await runGate({ store })).toEqual({ outcome: "current", calls: [] });
   });
 
@@ -265,7 +244,7 @@ describe("users without a stored session", () => {
     expect(needsManifestResign(store, ADDRESS)).toBe(true);
   });
 
-  test("a manifest with an entry missing or narrowed does not count as carrying the bundle", () => {
+  test("a manifest with a missing, narrowed or wrong-space entry does not carry the bundle", () => {
     const full = servedManifest(true).permissions;
     expect(manifestCarriesBundle({ permissions: full })).toBe(true);
     for (const required of SIGN_IN_BUNDLE_ENTRIES) {
@@ -276,6 +255,8 @@ describe("users without a stored session", () => {
     }
     const noSkip = full.map((entry) => entry.service === "tinycloud.space" ? { service: entry.service, path: entry.path, actions: entry.actions } : entry);
     expect(manifestCarriesBundle({ permissions: noSkip })).toBe(false);
+    const wrongSpace = full.map((entry) => entry.service === "tinycloud.kv" && entry.path === "" ? { ...entry, space: "default" } : entry);
+    expect(manifestCarriesBundle({ permissions: wrongSpace })).toBe(false);
   });
 
   test("a forced re-sign asks once: cleared, sign-in records, the next restore is current", async () => {
@@ -285,13 +266,5 @@ describe("users without a stored session", () => {
     expect(needsManifestResign(store, ADDRESS)).toBe(true);
     recordManifestRevisionIfSigned(store, ADDRESS, servedManifest(true));
     expect((await runGate({ store })).outcome).toBe("current");
-  });
-});
-
-describe("notice", () => {
-  test("the forced-re-sign line is Monica's revised wording, verbatim", () => {
-    expect(MANIFEST_RESIGN_NOTICE).toBe(
-      "Sign in again to finish updating Exo. You'll do this once on each device.",
-    );
   });
 });

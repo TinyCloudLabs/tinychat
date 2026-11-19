@@ -236,4 +236,113 @@ describe("CaptureSurface", () => {
     expect(host.querySelector('[data-testid="notification-recorder"]')).not.toBeNull();
   });
 
+
+describe("a pasted transcript on the Soft home", () => {
+  const settle = () => {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    setTimeout(resolve, 10);
+    return promise;
+  };
+
+  // The pasted row, through the same reads useLibrary issues (one sql.db, one kv).
+  const pastedTcw = {
+    did: "did:test:capture-pasted",
+    spaceId: "capture-pasted-test",
+    sql: { db: () => ({ query: async (sql: string) => {
+      if (sql.includes("sqlite_schema")) return { ok: true, data: { rows: [[1]] } };
+      if (sql.includes("FROM connector_meeting c")) return { ok: true, data: { rows: [[
+        "vn-pasted-1", "exo-voice-note", "pasted-1", "Pasted", "2026-10-12T12:00:00.000Z", null,
+        JSON.stringify({ capture: "pasted", transcription_outcome: "transcribed", has_transcript_text: 1 }), null,
+      ]] } };
+      if (sql.includes("SELECT source_id, preview FROM voice_note_transcript")) return { ok: true, data: { rows: [] } };
+      if (sql.includes("FROM voice_note_transcript")) return { ok: true, data: { rows: [[
+        "pasted-1", 1, "hash", "voice/transcripts/pasted-1", "transcribed", "Pasted words", "pasted", "pasted", null, null, 0, null, null, null,
+      ]] } };
+      if (sql.includes("SELECT metadata FROM connector_meeting WHERE id = ?")) return { ok: true, data: { rows: [[JSON.stringify({
+        source: "pasted", capture: "pasted", transcription_outcome: "transcribed", transcript_text: "Hello world",
+      })]] } };
+      if (sql.includes("FROM connector_meeting g")) return { ok: true, data: { rows: [] } };
+      return { ok: true, data: { rows: [] } };
+    } }) },
+    kv: { get: async () => ({ ok: true, data: { data: JSON.stringify([{ index: 0, speaker_name: null, text: "Hello world", start_time: 0, end_time: 0 }]) } }) },
+  } as unknown as TinyCloudWeb;
+
+  let cleanupSurface: (() => void) | undefined;
+  let mounted: Root | null = null;
+  const mount = async (host: HTMLElement, screen: string) => {
+    mounted = createRoot(host);
+    await act(async () => mounted!.render(
+      <BrowserRouter>
+        <PlatformContext.Provider value="android">
+          <StaticRecorderProvider value={{ available: true, sheetOpen: false }}>
+            <CaptureSurface
+              tcw={pastedTcw}
+              backendUrl="http://127.0.0.1"
+              sessionStore={{ getToken: () => null } as unknown as SessionStore}
+              active
+              screen={screenFor(screen)}
+            />
+          </StaticRecorderProvider>
+        </PlatformContext.Provider>
+      </BrowserRouter>,
+    ));
+    await act(async () => { await settle(); });
+  };
+  const classes = (host: HTMLElement, testId: string) =>
+    host.querySelector<HTMLElement>(`[data-testid="${testId}"]`)?.className ?? "";
+
+  beforeEach(() => {
+    cleanupSurface = installDom();
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 390 });
+    const stopSizeClass = initSizeClass(window);
+    const restore = cleanupSurface;
+    cleanupSurface = () => { stopSizeClass(); restore?.(); };
+  });
+  afterEach(async () => {
+    if (mounted) await act(async () => mounted!.unmount());
+    mounted = null;
+    cleanupSurface?.();
+    cleanupSurface = undefined;
+  });
+
+  test("its note route shows the note, not a hidden detail pane", async () => {
+    window.history.replaceState(null, "", "/chat/capture/library/vn-pasted-1");
+    const host = document.createElement("div");
+    document.body.append(host);
+    await mount(host, "/chat/capture/library/vn-pasted-1");
+    expect(classes(host, "capture-detail")).not.toContain("hidden");
+    expect(classes(host, "capture-library")).toContain("hidden");
+    expect(host.querySelector('[data-testid="note-detail"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="note-transcript"]')?.textContent).toContain("Hello world");
+    expect(host.querySelector('[data-testid="recent-note-sheet"]')).toBeNull();
+  });
+
+  test("a Recent row links to the note route, never the saved-note sheet state", async () => {
+    window.history.replaceState(null, "", "/chat/capture");
+    const host = document.createElement("div");
+    document.body.append(host);
+    await mount(host, "/chat/capture");
+    const recentLink = host.querySelector<HTMLAnchorElement>('[data-testid="recent-item"] a[href]');
+    expect(recentLink?.getAttribute("href")).toBe("/chat/capture/library/vn-pasted-1");
+    await act(async () => recentLink!.click());
+    expect(window.location.pathname).toBe("/chat/capture/library/vn-pasted-1");
+    expect((window.history.state as { usr?: { recentNoteSheet?: string } } | null)?.usr?.recentNoteSheet).toBeUndefined();
+    expect(host.querySelector('[data-testid="recent-note-sheet"]')).toBeNull();
+  });
+
+  test("a leftover Recent sheet state for a pasted row opens its note page", async () => {
+    window.history.replaceState(
+      { idx: 0, key: "recent-pasted", usr: { recentNoteSheet: "vn-pasted-1" } },
+      "",
+      "/chat/capture",
+    );
+    const host = document.createElement("div");
+    document.body.append(host);
+    await mount(host, "/chat/capture");
+    expect(classes(host, "capture-detail")).not.toContain("hidden");
+    expect(classes(host, "capture-home")).toContain("hidden");
+    expect(host.querySelector('[data-testid="note-detail"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="recent-note-sheet"]')).toBeNull();
+  });
+});
 });

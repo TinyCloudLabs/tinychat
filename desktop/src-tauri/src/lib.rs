@@ -11,6 +11,7 @@ mod recorder;
 mod dev_log;
 mod google_oauth;
 mod manage_storage;
+mod privacy_policy;
 // Release-profile library tests validate probe names without putting the
 // self-test in the ordinary shipped binary.
 #[cfg(all(
@@ -22,6 +23,8 @@ mod manage_storage;
 mod ipc_selftest_probes;
 #[cfg(feature = "transcription")]
 mod local;
+#[cfg(feature = "transcription")]
+mod record_launch;
 #[cfg(feature = "transcription")]
 mod local_url;
 #[cfg(feature = "transcription")]
@@ -65,6 +68,7 @@ pub fn run() {
         google_oauth::google_oauth_cancel,
         google_oauth::google_oauth_open_browser,
         manage_storage::open_manage_storage,
+        privacy_policy::open_privacy_policy,
     ]);
 
     // anarlog (MIT) transcription stack: local capture + on-device Whisper.
@@ -94,6 +98,7 @@ pub fn run() {
                     meter,
                 )) as std::sync::Arc<dyn audio_actual::AudioProvider>,
             )
+            .manage(record_launch::StartRequest::default())
             .plugin(tauri_plugin_settings::init())
             .plugin(tauri_plugin_transcription::init())
             .plugin(tauri_plugin_local_stt::init(
@@ -109,6 +114,7 @@ pub fn run() {
             google_oauth::google_oauth_cancel,
             google_oauth::google_oauth_open_browser,
             manage_storage::open_manage_storage,
+            privacy_policy::open_privacy_policy,
             recorder::files::append_audio_chunk,
             ptx_upload::ptx_audio_metadata,
             ptx_upload::ptx_upload_audio,
@@ -123,12 +129,14 @@ pub fn run() {
             recorder::files::delete_audio_file,
             recorder::engine::recorder_start,
             recorder::engine::recorder_pause,
+            recorder::engine::recorder_set_max_duration,
             recorder::engine::recorder_resume,
             recorder::engine::recorder_stop,
             recorder::engine::recorder_stop_durable,
             recorder::engine::recorder_discard_durable,
             recorder::engine::recorder_finish,
             recorder_quit_anyway,
+            record_launch::recorder_take_start_request,
             recorder::engine::recorder_status,
             recorder::engine::recorder_list_inputs,
             recorder::engine::recorder_select_input,
@@ -157,6 +165,7 @@ pub fn run() {
             google_oauth::google_oauth_cancel,
             google_oauth::google_oauth_open_browser,
             manage_storage::open_manage_storage,
+            privacy_policy::open_privacy_policy,
             recorder::files::append_audio_chunk,
             ptx_upload::ptx_audio_metadata,
             ptx_upload::ptx_upload_audio,
@@ -171,12 +180,14 @@ pub fn run() {
             recorder::files::delete_audio_file,
             recorder::engine::recorder_start,
             recorder::engine::recorder_pause,
+            recorder::engine::recorder_set_max_duration,
             recorder::engine::recorder_resume,
             recorder::engine::recorder_stop,
             recorder::engine::recorder_stop_durable,
             recorder::engine::recorder_discard_durable,
             recorder::engine::recorder_finish,
             recorder_quit_anyway,
+            record_launch::recorder_take_start_request,
             recorder::engine::recorder_status,
             recorder::engine::recorder_list_inputs,
             recorder::engine::recorder_select_input,
@@ -211,6 +222,12 @@ pub fn run() {
             app.add_capability(include_str!(
                 "../capabilities-transcription/transcription.json"
             ))?;
+            // Shortcut and menu-bar item start a recording. Neither is required
+            // for the app to work, so a failure is logged, not fatal.
+            if let Err(error) = record_launch::install(app) {
+                tracing::error!(target: "exo_dev::record_launch", operation = "install",
+                    error = %error);
+            }
             #[cfg(any(debug_assertions, feature = "ipc-selftest"))]
             ipc_selftest::maybe_run(app);
             // EXO_SMOKE=1 runs real plugin invokes in the webview (debug only).

@@ -297,7 +297,7 @@ describe("origin-wide purge on OFF", () => {
     const requested = { buildFlag: "true", runtimeFlag: true, userOptIn: true } as const;
     const cases: Array<[string, () => boolean]> = [
       ["kill switch engaged", () => isReplicationEnabled({ ...requested, killSwitchOpen: false, env: CHROME })],
-      ["flag unset", () => isReplicationEnabled({ killSwitchOpen: true, buildFlag: undefined, runtimeFlag: false, userOptIn: true, env: CHROME })],
+      ["flag \"false\"", () => isReplicationEnabled({ killSwitchOpen: true, buildFlag: "false", runtimeFlag: false, userOptIn: true, env: CHROME })],
       ["user switch OFF (build flag ON, platform qualified)", () => isReplicationEnabled({ ...requested, userOptIn: false, killSwitchOpen: true, env: CHROME })],
       ["Tauri shell refused", () => isReplicationEnabled({ ...requested, killSwitchOpen: true, env: { ...CHROME, platform: "tauri" } })],
       ["Capacitor (android) shell refused", () => isReplicationEnabled({ ...requested, killSwitchOpen: true, env: { ...CHROME, platform: "android" } })],

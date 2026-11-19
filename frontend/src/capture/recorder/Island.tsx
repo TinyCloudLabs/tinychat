@@ -4,9 +4,11 @@
 // when the save failed. Tapping it opens the recorder again.
 import { AlertCircleIcon, CheckIcon, Loader2Icon, PlayIcon, SquareIcon } from "lucide-react";
 
+import { useContext } from "react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { openManageStorage } from "@/lib/openManageStorage";
+import { billingLinksAllowed, openManageStorage } from "@/lib/openManageStorage";
+import { PlatformContext } from "@/lib/platform";
 import { useStorageReadOnly } from "@/lib/useStorageReadOnly";
 import { LevelTrace } from "./LevelTrace";
 import { islandShown, useRecorder, type RecorderValue } from "./RecorderProvider";
@@ -23,7 +25,8 @@ export function islandState(value: Pick<RecorderValue, "phase" | "outcome">): Is
 
 export function IslandView(props: { recorder: RecorderValue; onOpenNote?: (id: string) => void; className?: string }) {
   const { recorder } = props;
-  const storageFull = useStorageReadOnly();
+  // Manage storage opens a purchase page, so the iOS and Android apps keep Save now instead.
+  const manageStorage = useStorageReadOnly() && billingLinksAllowed(useContext(PlatformContext));
   const state = islandState(recorder);
   const warning = recorder.phase === "recording" && micWarning(recorder.mic) !== null;
   const paused = recorder.phase === "recording" && (recorder.mic.state === "paused" || recorder.mic.state === "interrupted" || recorder.mic.state === "needs_user");
@@ -121,11 +124,11 @@ export function IslandView(props: { recorder: RecorderValue; onOpenNote?: (id: s
           type="button"
           variant="ghost"
           className="h-11 min-w-11 shrink-0 rounded-full px-4"
-          onClick={storageFull ? openManageStorage : recorder.retryPending}
+          onClick={manageStorage ? openManageStorage : recorder.retryPending}
           disabled={recorder.pending.running}
           data-testid="island-save-now"
         >
-          {storageFull ? "Manage storage" : "Save now"}
+          {manageStorage ? "Manage storage" : "Save now"}
         </Button>
       )}
     </div>

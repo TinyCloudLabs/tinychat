@@ -9,11 +9,11 @@ import { manifestCarriesBundle } from "@tinyboilerplate/core";
  * Bump this when the grants change. "1" was used by an earlier, withdrawn gate
  * whose records may still sit in browsers, so the current value is never "1".
  */
-export const EXO_MANIFEST_REVISION = "2";
+export const EXO_MANIFEST_REVISION = "4";
 
 /** Shown above the sign-in action only after the gate clears a stale session (final wording). */
 export const MANIFEST_RESIGN_NOTICE =
-  "Sign in again to finish updating Exo. You'll do this once on each device.";
+  "Sign in once more so TinyCloud One can open your apps and your feed. Your data stays as it is.";
 
 const REVISION_KEY_PREFIX = "xyz.tinycloud.tinychat:manifest-revision:";
 
@@ -48,37 +48,52 @@ export type ManifestRevisionGate = "current" | "deferred" | "cleared" | "handoff
 
 /**
  * Restore-time gate used by App. A stale session for `address` is cleared only after
- * the manifest the backend serves is known to carry the current grants: the web app and
- * the backend image deploy separately, and clearing under an older served manifest would
- * make the user sign in again for nothing. Then it gets one capture handoff, then is
- * cleared so the user signs in again.
+ * the current client's sign-in manifest is known to carry the grants. Then capture
+ * is handed off before clearing, so the owner can consent once to that same bundle.
  *
  * "deferred" keeps the session untouched, so the next load runs the gate again: offline,
- * the served manifest unreachable, or the served manifest lacking the bundle. A failed
+ * the current manifest unavailable, or the current manifest lacking the bundle. A failed
  * handoff keeps the session and reports "handoff_failed"; the caller stops without clearing.
  */
 export async function applyManifestRevisionGate(input: {
   store: RevisionStore | null;
   address: string | null;
   isOffline: () => boolean;
-  /** Fetches the served manifest and says whether it carries the bundle; a rejection counts as no. */
+  /** Reports whether the current sign-in manifest carries the bundle; a rejection counts as no. */
   servedManifestCarriesBundle: () => Promise<boolean>;
   handoff: () => Promise<boolean>;
   clearSession: (address: string) => void;
+  /** When given, the gate clears a stale session at most once per guard (one page session). */
+  promptGuard?: ResignPromptGuard;
 }): Promise<ManifestRevisionGate> {
-  const { store, address, isOffline, servedManifestCarriesBundle, handoff, clearSession } = input;
+  const { store, address, isOffline, servedManifestCarriesBundle, handoff, clearSession, promptGuard } = input;
   if (!address || !needsManifestResign(store, address)) return "current";
+  if (promptGuard?.prompted) return "current";
   if (isOffline()) return "deferred";
   const served = await servedManifestCarriesBundle().catch(() => false);
   if (!served) return "deferred";
   if (!await handoff()) return "handoff_failed";
   clearSession(address);
+  if (promptGuard) promptGuard.prompted = true;
   return "cleared";
 }
 
 /**
+ * Records that this page session has already asked the user to sign in again, so unwritable
+ * storage (the record below never sticks) cannot turn every later restore into another
+ * forced re-sign. In memory only: a new page session may ask once more.
+ */
+export interface ResignPromptGuard {
+  prompted: boolean;
+}
+
+export function createResignPromptGuard(): ResignPromptGuard {
+  return { prompted: false };
+}
+
+/**
  * Record the current revision after a successful sign-in. Unwritable storage
- * leaves the revision stale, so the next restore re-signs once more.
+ * leaves the revision stale; the gate's prompt guard keeps that to one re-sign per page session.
  */
 export function recordManifestRevision(store: RevisionStore | null, address: string): void {
   if (!store) return;

@@ -13,7 +13,7 @@ import {
   useMinimizedRecorder,
   useMinimizedSilencedSince,
 } from "./MinimizedProvider";
-import { minimizedView } from "./minimizedView";
+import { minimizedLimit, minimizedView } from "./minimizedView";
 import "./soft.css";
 import "./ribbon.css";
 
@@ -30,7 +30,11 @@ export interface RibbonViewProps {
   announcement?: string;
 }
 
-/** The minimised recorder above the tab bar (and floating on the rail): the time and bars reopen it. */
+/**
+ * The minimised recorder above the tab bar (and floating on the rail): the time and bars reopen it.
+ * On the phone (and the web) it keeps the moving bars and the stop time under them; in the Mac app
+ * it is the small bar (TC-2077): timer, Pause and Stop, "Stops in" and the stop time on hover.
+ */
 export function RibbonView({
   recorder,
   elapsedMs,
@@ -41,17 +45,21 @@ export function RibbonView({
   announcement = "",
 }: RibbonViewProps) {
   const device = useContext(PlatformContext) === "tauri" ? "mac" : "phone";
+  const small = device === "mac";
   const view = minimizedView(recorder, elapsedMs, silencedSinceMs, device);
   const live = view.ring === "live";
+  const limit = small ? minimizedLimit(view, recorder.maxDurationMs) : null;
   const timerId = useId();
   const stopsId = useId();
   const canToggle = view.controls.resume || view.controls.pause;
+  const describedBy = (small ? limit : view.timer.countdown) ? `${timerId} ${stopsId}` : timerId;
   return (
     <div
       data-testid="ribbon"
       data-state={view.ring}
       data-live={live}
       data-layout={layout}
+      data-size={small ? "small" : "full"}
       className={cn(
         "mini-skin soft-skin ribbon-skin",
         theme === "night" ? "soft-night" : "soft-day",
@@ -64,7 +72,7 @@ export function RibbonView({
           className="ribbon-open"
           onClick={recorder.openSheet}
           aria-label={`${view.status}. Open recorder`}
-          aria-describedby={view.timer.countdown ? `${timerId} ${stopsId}` : timerId}
+          aria-describedby={describedBy}
           data-testid="ribbon-open"
         >
           <span
@@ -74,18 +82,37 @@ export function RibbonView({
           >
             {view.timer.text}
           </span>
-          <span className="ribbon-bars">
-            <MinimizedBars
-              recorder={recorder}
-              view={view}
-              bars={30}
-              theme={theme}
-            />
-          </span>
-          {view.timer.countdown && (
-            <span id={stopsId} className="ribbon-stops" data-testid="ribbon-stops">
-              {view.timer.countdown.text}
-            </span>
+          {small ? (
+            limit && (
+              <>
+                <span className="ribbon-remaining" data-testid="ribbon-remaining">
+                  {limit.stopsIn}
+                </span>
+                <span
+                  id={stopsId}
+                  className="mini-tip"
+                  role="tooltip"
+                  data-testid="ribbon-stops"
+                >
+                  {limit.stopsAt}
+                </span>
+              </>
+            )
+          ) : (
+            <>
+              <span className="ribbon-bars">
+                <MinimizedBars
+                  recorder={recorder}
+                  view={view}
+                  theme={theme}
+                />
+              </span>
+              {view.timer.countdown && (
+                <span id={stopsId} className="ribbon-stops" data-testid="ribbon-stops">
+                  {view.timer.countdown.text}
+                </span>
+              )}
+            </>
           )}
         </button>
         <button
@@ -118,6 +145,14 @@ export function RibbonView({
             <i className="mini-stop-glyph" aria-hidden="true" />
           </span>
         </button>
+        {limit && (
+          <span className="mini-limit" aria-hidden="true" data-testid="ribbon-limit">
+            <span
+              className="mini-limit-fill"
+              style={{ width: `${(limit.fraction * 100).toFixed(1)}%` }}
+            />
+          </span>
+        )}
       </div>
       <span
         role="status"

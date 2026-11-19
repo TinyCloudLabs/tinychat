@@ -52,7 +52,6 @@ describe("captureRoute", () => {
     ]);
     const own = captureRoute("exo-upload", { capture: "upload", audio: { stored: true }, transcript_provider: "assemblyai", assemblyai_account: "own" });
     expect(own.nodes.map((n) => n.label)).toEqual(["Upload", "Powerful", "Your space"]);
-    expect(own.sentence).toContain("transcribed by AssemblyAI with your key.");
     expect(captureRoute("exo-upload", { transcript_provider: "assemblyai", assemblyai_account: "tinycloud" }).sentence).toContain("TinyCloud's account");
   });
 

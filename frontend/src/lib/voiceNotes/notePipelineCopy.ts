@@ -2,6 +2,7 @@
 // no em dashes. Every blocker line says what is wrong and, where it is true, that the note is safe.
 import type { PipelineActionKind, PipelineDevice, StepKey } from "./notePipeline";
 import { deviceName as platformDeviceName } from "@/lib/platform";
+import { PRIVATE_TOO_LARGE_NOTE, PRIVATE_TOO_LONG_NOTE } from "@/lib/privateCloud";
 import { STORAGE_FULL_RECORDING_LINE, STORAGE_FULL_TRANSCRIPT_LINE } from "@/lib/storageStatus";
 
 export const deviceName = (device: PipelineDevice): string => platformDeviceName(device === "mac" ? "tauri" : device === "iphone" ? "ios" : device === "android" ? "android" : device === "browser" ? "web" : undefined);
@@ -47,7 +48,7 @@ export const privatePartsDone = (completed: number | null, total: number | null)
 
 export const PHONE_COPY = {
   finishing: "Finishing the recording…",
-  timedOut: "Exo will finish it next launch",
+  timedOut: "TinyCloud One will finish it next launch",
   recoveryFailed: "Couldn't recover · audio kept",
   writeFailed: (detail: string | null | undefined) => withDetail("Couldn't write the recording", detail),
   partialAudio: "Saved · part of this recording couldn't be written",
@@ -65,7 +66,7 @@ export const SPACE_COPY = {
   signedOut: (device: PipelineDevice) => `You're signed out. This note is safe on ${deviceName(device)}.`,
   sessionExpired: (device: PipelineDevice) => `Your session ended. This note is safe on ${deviceName(device)}.`,
   otherAccount: "Recorded on another account",
-  accountUnknown: (device: PipelineDevice) => `Exo can't tell which account this note belongs to. It stays on ${deviceName(device)}.`,
+  accountUnknown: (device: PipelineDevice) => `TinyCloud One can't tell which account this note belongs to. It stays on ${deviceName(device)}.`,
   quota: (device: PipelineDevice) => `Saved on ${deviceName(device)}. ${STORAGE_FULL_RECORDING_LINE}`,
   timeout: (device: PipelineDevice) => `Saving timed out. This note is safe on ${deviceName(device)}.`,
   server: (_detail: string | null | undefined, device: PipelineDevice) =>
@@ -113,6 +114,9 @@ export const LOCAL_COPY = {
   otherReadFailed: (detail: string | null | undefined) => withDetail("Some details about this note couldn't be read", detail),
 };
 
+/** Shown while PTX holds a note until its speech-to-text provider can take it. Not an error: it finishes by itself. */
+export const PROVIDER_DELAYED_COPY = "Transcription is delayed, it will finish automatically.";
+
 export const PRIVATE_COPY = {
   waiting: (position: number) => `Waiting · ${place(position)}`,
   preparing: "Preparing…",
@@ -122,6 +126,7 @@ export const PRIVATE_COPY = {
     const partsDone = privatePartsDone(completed, total);
     return partsDone === null ? "Transcribing…" : `Transcribing · ${partsDone}`;
   },
+  delayed: PROVIDER_DELAYED_COPY,
   saving: "Saving transcript",
   notStarted: "Waiting for private transcription",
   afterUpload: "After audio uploads",
@@ -131,7 +136,7 @@ export const PRIVATE_COPY = {
   checkFailed: "Couldn't check whether private transcription is available",
   checking: "Checking private transcription…",
   noConsent: "Waiting for your OK to use Private",
-  failed: (code: string, provider: "private" | "powerful" | "unknown" = "private") => code === "recording_too_long" ? "This recording is too long to transcribe." : provider === "powerful" ? "Powerful transcription didn't finish." : provider === "unknown" ? "Transcription didn't finish." : "Private transcription didn't finish.",
+  failed: (code: string, provider: "private" | "powerful" | "unknown" = "private") => code === "recording_too_long" ? PRIVATE_TOO_LONG_NOTE : code === "recording_too_large" ? PRIVATE_TOO_LARGE_NOTE : provider === "powerful" ? "Powerful transcription didn't finish." : provider === "unknown" ? "Transcription didn't finish." : "Private transcription didn't finish.",
 };
 
 export const NOTES_COPY = {

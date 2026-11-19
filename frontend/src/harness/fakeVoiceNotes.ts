@@ -18,13 +18,22 @@ import type {
   WriteFailureEvent,
   VoiceNotesPlugin,
 } from "@/lib/voiceNotes/nativeVoiceNotes";
+import {
+  VOICE_NOTE_MAX_DURATION_MS, VOICE_NOTE_MIN_DURATION_LIMIT_MS, VOICE_NOTE_SAFETY_CAP_MS,
+} from "@/lib/voiceNotes/nativeVoiceNotes";
+
+const clampLimitMs = (requested: number | undefined): number =>
+  Math.min(VOICE_NOTE_SAFETY_CAP_MS, Math.max(VOICE_NOTE_MIN_DURATION_LIMIT_MS, requested ?? VOICE_NOTE_MAX_DURATION_MS));
 
 type Listener = (event: never) => void;
 
 export interface FakeVoiceNotes {
   plugin: VoiceNotesPlugin;
-  /** Listeners added since creation, listeners not yet removed, and the ids deleteAudio was given. */
-  stats(): { adds: number; active: number; recording: boolean; deleted: string[] };
+  /**
+   * Listeners added since creation, listeners not yet removed, the ids deleteAudio was given, and the
+   * limits setMaxDuration resolved with, in call order.
+   */
+  stats(): { adds: number; active: number; recording: boolean; deleted: string[]; maxDurationChanges: number[] };
   emit(event: "level", payload: LevelEvent): void;
   emit(event: "micState", payload: MicStateEvent): void;
   emit(event: "recoveryFailed", payload: RecoveryFailedEvent): void;
@@ -59,7 +68,8 @@ export function createFakeVoiceNotes(options: FakeVoiceNotesOptions = {}): FakeV
   let current: { id: string; startedAt: number; options: CaptureOptions; source: CaptureSource } | null = null;
   let state: MicState = "idle";
   let counter = 0;
-  let maxDurationMs = 10_800_000;
+  let maxDurationMs: number = VOICE_NOTE_MAX_DURATION_MS;
+  const maxDurationChanges: number[] = [];
   let defaults: CaptureDefaults = { accountDid: null, transitionGen: 0, transcriber: "on-device", identifySpeakers: false };
   const deleted: string[] = [];
   /** Committed recordings, for `listPending` — a real note's own transcriber and durable on-device
@@ -76,7 +86,7 @@ export function createFakeVoiceNotes(options: FakeVoiceNotesOptions = {}): FakeV
       transcriber: defaults.accountDid ? (options?.transcriber ?? defaults.transcriber) : "on-device",
       identifySpeakers: options?.identifySpeakers ?? defaults.identifySpeakers,
     } };
-    maxDurationMs = options?.maxDurationMs ?? 10_800_000;
+    maxDurationMs = clampLimitMs(options?.maxDurationMs);
     state = "recording";
     return { ...current, maxDurationMs };
   };
@@ -110,6 +120,12 @@ export function createFakeVoiceNotes(options: FakeVoiceNotesOptions = {}): FakeV
       committed.push({ ...recording, stt: recording.options?.transcriber === "on-device"
         ? { state: "waiting_for_model", pack: null, engine: null, segmentsDone: 0, windowsDone: 0, error: null } : undefined });
       return recording;
+    },
+    async setMaxDuration({ maxDurationMs: requested }: { maxDurationMs: number }) {
+      if (!current) throw Object.assign(new Error("Not recording"), { code: "no_recording" });
+      maxDurationMs = clampLimitMs(requested);
+      maxDurationChanges.push(maxDurationMs);
+      return { maxDurationMs };
     },
     async status(): Promise<CaptureStatus> {
       const elapsedMs = current ? Date.now() - current.startedAt : 0;
@@ -213,7 +229,7 @@ export function createFakeVoiceNotes(options: FakeVoiceNotesOptions = {}): FakeV
 
   return {
     plugin,
-    stats: () => ({ adds, active, recording: current !== null, deleted: [...deleted] }),
+    stats: () => ({ adds, active, recording: current !== null, deleted: [...deleted], maxDurationChanges: [...maxDurationChanges] }),
     emit(event: string, payload: unknown) {
       for (const listener of listeners.get(event) ?? []) (listener as (value: unknown) => void)(payload);
     },

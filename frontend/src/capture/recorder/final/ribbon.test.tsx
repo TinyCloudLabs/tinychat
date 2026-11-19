@@ -1,6 +1,10 @@
 // The minimised recorder (TC-870): the Ribbon, the sidebar dock and the Capture item's dot, in each state.
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import postcss from "postcss";
 import { renderToStaticMarkup } from "react-dom/server";
+
+import { PlatformContext, type AppPlatform } from "@/lib/platform";
 
 import { HeaderLiveChipView } from "../HeaderLiveChip";
 import {
@@ -161,6 +165,61 @@ describe("RibbonView", () => {
   });
 });
 
+// TC-2077 made the minimised bar small for the desktop. The phone (iOS, Android, the web) keeps its Ribbon:
+// moving bars and the stop time under them; only the Mac app's Ribbon and the sidebar dock are the small bar.
+describe("the minimised bar's platform split", () => {
+  const ribbonOn = (platform: AppPlatform, patch: Partial<RecorderValue>) =>
+    renderToStaticMarkup(
+      <PlatformContext.Provider value={platform}>
+        <RibbonView recorder={recorderWith(patch)} elapsedMs={patch.elapsedMs ?? 0} theme="night" />
+      </PlatformContext.Provider>,
+    );
+
+  for (const platform of ["ios", "android", "web"] as const) {
+    test(`${platform}: the full Ribbon, with 30 moving bars and no small-bar readout or limit line`, () => {
+      const html = ribbonOn(platform, LIVE);
+      expect(html).toContain('data-size="full"');
+      expect(bars(html)).toBe(30);
+      expect(html).toContain('data-spectrum-bars="" data-paused="false"');
+      expect(html).toContain('data-testid="ribbon-stops"');
+      expect(html).not.toContain("ribbon-remaining");
+      expect(html).not.toContain("ribbon-limit");
+      expect(html).not.toContain("mini-tip");
+    });
+  }
+
+  test("tauri: the small bar, with no waveform", () => {
+    const html = ribbonOn("tauri", LIVE);
+    expect(html).toContain('data-size="small"');
+    expect(bars(html)).toBe(0);
+    expect(html).not.toContain("data-spectrum-bars");
+    expect(html).toContain('data-testid="ribbon-remaining"');
+    expect(html).toContain('data-testid="ribbon-limit"');
+  });
+
+  test("ribbon.css: the phone sizes are the Ribbon's own; the small sizes apply only under data-size=small", () => {
+    const css = postcss.parse(readFileSync(new URL("./ribbon.css", import.meta.url), "utf8"));
+    const decls = (selector: string) => {
+      const found: Record<string, string> = {};
+      css.walkRules((rule) => {
+        if (rule.parent?.type !== "root" || !rule.selectors.includes(selector)) return;
+        rule.walkDecls((decl) => {
+          found[decl.prop] = decl.value;
+        });
+      });
+      return found;
+    };
+    expect(decls(".ribbon")).toMatchObject({ gap: "10px", padding: "6px 6px 6px 16px", "border-radius": "22px" });
+    expect(decls(".ribbon-timer")).toMatchObject({ "font-size": "19px" });
+    expect(decls(".ribbon .mini-disc")).toMatchObject({ width: "40px", height: "40px" });
+    expect(decls(".ribbon .mini-stop-glyph")).toMatchObject({ width: "13px", height: "13px" });
+    expect(decls(".ribbon-bars")).toMatchObject({ flex: "1" });
+    expect(decls('.ribbon-skin[data-size="small"] .ribbon')).toMatchObject({ padding: "3px 4px 5px 14px" });
+    expect(decls('.ribbon-skin[data-size="small"] .ribbon-timer')).toMatchObject({ "font-size": "17px" });
+    expect(decls('.ribbon-skin[data-size="small"] .ribbon .mini-disc')).toMatchObject({ width: "30px" });
+  });
+});
+
 describe("a silenced mic", () => {
   const SINCE = Date.now() - 60_000;
 
@@ -174,19 +233,19 @@ describe("a silenced mic", () => {
     expect(html.match(/scaleY\(0\.120\)/g)).toHaveLength(30);
   });
 
-  test("the dock's bars rest at their own floor, in red", () => {
-    const html = dock(SILENCED);
-    expect(html).toContain("#ff6b62");
-    expect(html.match(/scaleY\(0\.200\)/g)).toHaveLength(22);
+  test("the dock has no waveform to rest at a floor", () => {
+    expect(dock(SILENCED)).not.toContain("data-spectrum-bars");
   });
 
-  test("after five seconds of silence the no-sound line is in the accessible name and the dock's foot", () => {
+  test("after five seconds of silence the no-sound line is in the accessible name, and the dock has no status line", () => {
     expect(ribbon(SILENCED, 6000, { silencedSinceMs: SINCE })).toContain(
       'aria-label="Recording. No sound from the microphone. Open recorder"',
     );
-    expect(dock(SILENCED, 6000, SINCE)).toContain(
-      'data-testid="dock-status">No sound from the microphone<',
+    const html = dock(SILENCED, 6000, SINCE);
+    expect(html).toContain(
+      'aria-label="Recording. No sound from the microphone. Open recorder"',
     );
+    expect(html).not.toContain("dock-status");
   });
 
   test("before that, it is only Recording", () => {
@@ -241,19 +300,20 @@ describe("MinimizedLimitNotice (the rail's floating row after an automatic stop)
 });
 
 describe("SidebarDockView", () => {
-  test("22 bars", () => {
-    expect(bars(dock(LIVE))).toBe(22);
+  test("no waveform", () => {
+    expect(bars(dock(LIVE))).toBe(0);
+    expect(dock(LIVE)).not.toContain("data-spectrum-bars");
   });
 
-  test("recording: the time, Pause, Stop, Listening and an open control", () => {
+  test("recording: the time, Pause, Stop and an open control, and no Listening line", () => {
     const html = dock(LIVE);
     expect(html).toContain('data-testid="sidebar-dock"');
     expect(html).toContain(">0:06</span>");
     expect(html).toContain('aria-label="Recording. Open recorder"');
-    expect(describedBy(html)).toMatch(/^Stops at .+/);
+    expect(describedBy(html)).toMatch(/^Recording stops at .+/);
     expect(html).toContain('aria-label="Pause recording"');
     expect(html).toContain('aria-label="Stop and save"');
-    expect(html).toContain(">Listening</span>");
+    expect(html).not.toContain("Listening");
   });
 
   test("the open control is not a parent of Pause or Stop", () => {
@@ -266,13 +326,11 @@ describe("SidebarDockView", () => {
     expect(open).not.toContain("dock-stop");
   });
 
-  test("paused: Resume, and the pill says so", () => {
+  test("paused: Resume, and no status line", () => {
     const html = dock(PAUSED);
     expect(html).toContain('aria-label="Resume recording"');
     expect(html).toContain('data-state="paused"');
-    expect(html).toContain(
-      'data-testid="dock-status">Resting · tap to continue<',
-    );
+    expect(html).not.toContain("Resting");
   });
 
   test("interrupted: not live", () => {

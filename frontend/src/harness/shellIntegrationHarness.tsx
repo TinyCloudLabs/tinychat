@@ -63,7 +63,6 @@ function Controls({ onState }: { onState: (state: AppState) => void }) {
   const location = useLocation();
   const back = useBack({
     screen: screenFor(location.pathname),
-    platform,
     onMinimize: () => {
       minimized += 1;
     },

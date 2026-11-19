@@ -30,13 +30,16 @@ import {
   getThread,
   getThreadTitle,
   isKnownThreadId,
+  isLocalThreadStorage,
   listThreads,
   memoryWriteGen,
   readMemoryCache,
+  normalizeUserTitle,
   renameThread,
   setMemory,
   setThreadModel,
   subscribeThreadIndex,
+  ThreadListLoadError,
   DEFAULT_MODEL,
   DEFAULT_TITLE,
   type ThreadDoc,
@@ -50,6 +53,8 @@ import {
 } from "../lib/conversationCanvasStore";
 import { activePathItems, type ConversationCanvas } from "./canvas/model";
 import { historyPrefetch, setPrefetchFetcher } from "../lib/historyPrefetch";
+import { afterFeedFirst } from "../lib/localFirst/requestLanes";
+import { readThreadCopy, threadCopyFor } from "../lib/localFirst/threadCopy";
 import { privateMemoryContext, runPrivateMemoryExtraction } from "./privateAgentMemory";
 import type { PrivateAgentAccess } from "./useAgentEnablement";
 import { pickExtractionModel } from "../lib/extractionModel";
@@ -117,6 +122,8 @@ export interface ChatRuntimeDeps {
    */
   agentEnabledRef: React.MutableRefObject<boolean>;
   privateAccessRef: React.MutableRefObject<PrivateAgentAccess>;
+  /** Wait for the initial access probe before a turn snapshots its route and grant. */
+  waitForInitialProbe?: (signal: AbortSignal) => Promise<void>;
   /** Surfaces a streamed private-tool delegation failure to reconnect UI. */
   onAgentDelegationError?: (code: AgentDelegationErrorCode) => void;
   /** One mounted, browser-only meeting retriever with ephemeral thread state. */
@@ -563,19 +570,28 @@ export function createHistoryAdapter(
 function useThreadListAdapter(
   deps: ChatRuntimeDeps,
   selection: ModelSelectionCoordinator,
+  reloadList: () => void,
 ): RemoteThreadListAdapter {
   const { tcw } = deps;
   const depsRef = useRef(deps);
   depsRef.current = deps;
 
-  // Point the prefetch queue at this session's `getThread`. Bound during render
-  // (not in an effect) so the fetcher is in place before assistant-ui ever
-  // calls the history adapter's load() — otherwise a miss could fetch through a
-  // stale/default fetcher. Re-binds only when the account (tcw) changes.
+  // Point the prefetch queue at this session's `getThread` and this account's
+  // device copy of chat histories. Bound during render (not in an effect) so
+  // the fetcher is in place before assistant-ui ever calls the history
+  // adapter's load() — otherwise a miss could fetch through a stale/default
+  // fetcher. Re-binds only when the account (tcw) changes. The device copy is
+  // loaded into the cache at once, so a copied thread opens without a request.
   const fetcherTcwRef = useRef<TinyCloudWeb | null>(null);
   if (fetcherTcwRef.current !== tcw) {
     fetcherTcwRef.current = tcw;
-    setPrefetchFetcher((id) => getThread(tcw, id));
+    const account = !isLocalThreadStorage(tcw) && typeof tcw.did === "string" && tcw.did ? tcw.did : null;
+    setPrefetchFetcher((id, lane) => getThread(tcw, id, undefined, lane), account ? threadCopyFor(account) : null);
+    if (account) {
+      void readThreadCopy(account).then((docs) => {
+        if (fetcherTcwRef.current === tcw) historyPrefetch.hydrate(docs);
+      });
+    }
   }
 
   const onAssistantTurn = useCallback(
@@ -721,9 +737,21 @@ function useThreadListAdapter(
   return useMemo<RemoteThreadListAdapter>(
     () => ({
       async list() {
-        // The account's Canvas state is read once with the thread list, so a
-        // failure surfaces here rather than in a send.
-        const [summaries] = await Promise.all([listThreads(tcw), loadCanvasState(tcw)]);
+        // The chat list never waits on the Canvas settings read: the cached
+        // list paints at once. The read starts here (after the Feed's first
+        // load on a Feed open) so the first send or Canvas view finds it
+        // loaded; those await it (and retry a failure).
+        void afterFeedFirst(() => loadCanvasState(tcw)).catch(() => {});
+        let summaries;
+        try {
+          summaries = await listThreads(tcw);
+        } catch (err) {
+          // A failed load is shown by the sidebar as an error with a retry
+          // (threadStore's load state), never as "No chats yet". Hand the
+          // adapter nothing, and do not reset the known-thread set.
+          if (err instanceof ThreadListLoadError) return { threads: [] };
+          throw err;
+        }
         selection.setKnownThreadIds(summaries.map((thread) => thread.id));
         return {
           threads: summaries.map((t) => ({
@@ -743,6 +771,10 @@ function useThreadListAdapter(
       },
       async rename(remoteId: string, newTitle: string) {
         await renameThread(tcw, remoteId, newTitle);
+        // A cleared title returns to the auto title, which the list only knows
+        // from the store. The optimistic row carries the text typed (empty)
+        // until this call settles, so reload once it has.
+        if (!normalizeUserTitle(newTitle)) setTimeout(reloadList, 0);
       },
       async archive() {
         // Archiving is not surfaced in the UI; no-op.
@@ -778,7 +810,7 @@ function useThreadListAdapter(
       },
       unstable_Provider: Provider,
     }),
-    [tcw, Provider, selection],
+    [tcw, Provider, selection, reloadList],
   );
 }
 
@@ -804,7 +836,9 @@ export function useChatRuntime(deps: ChatRuntimeDeps): AssistantRuntime {
   }
   const selection = selectionRef.current;
   deps.selectionControllerRef.current = selection;
-  const adapter = useThreadListAdapter(deps, selection);
+  const reloadListRef = useRef<() => void>(() => {});
+  const reloadList = useCallback(() => reloadListRef.current(), []);
+  const adapter = useThreadListAdapter(deps, selection, reloadList);
 
   const mountGeneration = useRef(0);
   useEffect(() => {
@@ -838,6 +872,11 @@ export function useChatRuntime(deps: ChatRuntimeDeps): AssistantRuntime {
     },
     adapter,
   });
+
+  // Never reload the list under a running stream (see the sidebar refresh below).
+  reloadListRef.current = () => {
+    if (!runtime.thread.getState().isRunning) void runtime.threads.reload();
+  };
 
   // assistant-ui retains inactive providers. Only the committed main thread
   // owns activation; this subscription establishes the barrier synchronously
@@ -880,12 +919,14 @@ export function useChatRuntime(deps: ChatRuntimeDeps): AssistantRuntime {
     const unsubIndex = subscribeThreadIndex((summaries, changed) => {
       // Wait-for-boot-critical-reads is already satisfied: this fires only after
       // listThreads' revalidate (or a mutation) has resolved. Enqueue newest-
-      // first, sequential (concurrency-1 is enforced inside the queue).
+      // first; the queue copies one at a time in the background lane, and
+      // skips threads whose local copy matches the list's updatedAt.
       // NOT gated on `changed`: a typical boot revalidates to an UNCHANGED
-      // list, and the prefetch still has to warm it.
+      // list, and the copy still has to fill in what this device lacks.
       const activeId = runtime.thread.getState().threadId;
       historyPrefetch.enqueueAll(
         summaries.map((s) => s.id).filter((id) => id !== activeId),
+        new Map(summaries.map((s) => [s.id, s.updatedAt])),
       );
       // The sidebar reload IS gated on `changed` — identical lists never
       // trigger a needless refetch (and never risk the C.1 defer path).
@@ -926,7 +967,7 @@ export function useChatRuntime(deps: ChatRuntimeDeps): AssistantRuntime {
     if (!access.active) return;
     const startGen = memoryWriteGen();
     (async () => {
-      const sqlDoc = await getMemory(deps.tcw).catch(() => null);
+      const sqlDoc = await afterFeedFirst(() => getMemory(deps.tcw)).catch(() => null);
       if (cancelled || deps.privateAccessRef.current !== access) return;
       if (
         sqlDoc !== null

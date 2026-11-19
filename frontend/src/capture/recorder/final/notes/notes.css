@@ -91,6 +91,53 @@
   cursor: pointer;
 }
 
+/* An image whose address looks like it carries data waits behind a prompt. */
+.soft-skin .nt-img-gate {
+  display: block;
+  margin: 8px 0;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: var(--glass);
+  box-shadow: inset 0 0 0 1px var(--gedge);
+  font-size: 13px;
+}
+.soft-skin .nt-img-gate-title {
+  display: block;
+  font-weight: 600;
+}
+.soft-skin .nt-img-gate-alt {
+  display: block;
+  color: var(--dim);
+}
+.soft-skin .nt-img-gate-address {
+  display: block;
+  margin: 4px 0 6px;
+  color: var(--dim);
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.soft-skin .nt-img-gate-why {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--dim);
+}
+.soft-skin .nt-img-gate-button {
+  min-height: 44px;
+  padding: 0 12px 0 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  text-decoration: underline;
+  cursor: pointer;
+}
+.soft-skin .nt-img-skipped {
+  color: var(--dim);
+  font-style: italic;
+}
+
 /* franken-markdown's HTML, styled with the Soft tokens (the engine's own theme is replaced). */
 .soft-skin .fmd {
   font-size: 14px;
