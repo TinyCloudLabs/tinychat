@@ -102,6 +102,9 @@ async function click(root: ParentNode, label: string) {
   const target = button(root, label);
   if (!target || target.disabled) throw new Error(`Missing enabled ${label} button`);
   await act(async () => target.click());
+  // The key form sits behind "Connect with an API key", so opening Connect also opens it.
+  const openKey = label === "Connect" && root === row() ? button(dialog() ?? document, "Connect with an API key") : undefined;
+  if (openKey) await act(async () => openKey.click());
 }
 
 async function enterKey(value: string) {

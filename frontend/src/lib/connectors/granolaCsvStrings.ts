@@ -32,7 +32,7 @@ export const GRANOLA_CSV_STRINGS = {
   importing: "Importing your meetings…",
   importingProgress: (done: number, total: number) => `Importing ${done} of ${total} meetings…`,
   allowBack: "Allow deleted meetings back",
-  allowBackNote: "Meetings you deleted here are imported again if they're in a CSV you upload. You're asked first.",
+  allowBackNote: "Meetings you deleted come back only if they're in a CSV you upload and you say yes.",
   allowingBack: "Allowing…",
   allowBackFailed: "Couldn't allow deleted meetings back. Try again.",
   allowBackDone: "Deleted meetings can be imported again. Upload the CSV to bring them in.",
