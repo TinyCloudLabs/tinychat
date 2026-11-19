@@ -10,9 +10,14 @@ import type { HomeFeedSource } from "./feedStoreTypes";
 import { safeUrl, selectFeed, type FeedCard } from "./feedData";
 import { FEED_SKILL_URL, FEED_STRINGS } from "./strings";
 import { AgentDetails, AgentMark, PlatformName, type AgentProfile } from "./AgentMark";
+import { syncCardMd } from "./cardMd";
+import { inBackground } from "../lib/localFirst/requestLanes";
 import { CourierMark, StatusMark, TypeLabel } from "./CompactCard";
 import { ShortTime } from "./ShortTime";
 import { FeedLink, LinkSheetHost } from "./FeedLink";
+
+/** How often a change in the Feed may re-run the card.md check (cardMd.ts syncCardMd); an open always runs it. */
+const CARD_MD_SYNC_MS = 5 * 60_000;
 
 // These keys belong to the bundled sample only. A real card's media key is never a web URL.
 const sampleAssets: Record<string, string> = {
@@ -348,6 +353,19 @@ export function FeedViewEntries({ realEntries, source, ask, linked }: { realEntr
 export function FeedView({ tcw, onReconnect }: { tcw: TinyCloudWeb | null; onReconnect?: () => void }): JSX.Element {
   const source = useMemo(() => tcw ? homeFeedSourceFor(tcw) : null, [tcw]);
   const linked = useFeedCardLink();
+  // Agents connected since the last run get the owner's card.md the first time the Feed sees them: on open, and on a
+  // change at most every five minutes, behind the Feed's own reads.
+  useEffect(() => {
+    if (!tcw || !source) return;
+    let last = Number.NEGATIVE_INFINITY;
+    const sync = () => {
+      if (Date.now() - last < CARD_MD_SYNC_MS) return;
+      last = Date.now();
+      void inBackground(async () => syncCardMd(tcw)).catch((error: unknown) => console.error("Giving agents card.md failed", error));
+    };
+    sync();
+    return source.subscribe(sync);
+  }, [tcw, source]);
   return source
     ? <FeedViewEntries key={`${tcw?.did}:${tcw?.spaceId}`} realEntries={[]} source={source} linked={linked} ask={<HomeAskBox tcw={tcw ?? undefined} onReconnect={onReconnect} />} />
     : <main aria-label="Feed" className="p-6 text-sm text-muted-foreground">Sign in to load your feed.</main>;
