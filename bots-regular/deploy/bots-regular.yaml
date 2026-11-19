@@ -1,0 +1,297 @@
+# The regular bots runtime on a gke-sandboxes cluster (TC-3325). Apply after the library's manifests; see "Deploying"
+# in bots-regular/README.md.
+#
+# ${BOTS_REGULAR_IMAGE} and ${BOTS_REGULAR_SANDBOX_IMAGE} are image digests, filled in by envsubst at deploy time.
+# The Secret bots-regular is created by hand (README).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: bots-regular
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  namespace: bots-regular
+  name: bots-regular
+automountServiceAccountToken: false
+---
+# Binds the service account to the library's sandbox-controller Role in the sandboxes namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  namespace: sandboxes
+  name: bots-regular
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: sandbox-controller
+subjects:
+  - kind: ServiceAccount
+    namespace: bots-regular
+    name: bots-regular
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  namespace: bots-regular
+  name: bots-regular-data
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  namespace: bots-regular
+  name: bots-regular-gateway
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  namespace: bots-regular
+  name: bots-regular
+spec:
+  replicas: 1
+  # Stops the old pod before starting the new one.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: bots-regular
+  template:
+    metadata:
+      labels:
+        app: bots-regular
+    spec:
+      serviceAccountName: bots-regular
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: bots-regular-data
+        - name: budget
+          persistentVolumeClaim:
+            claimName: bots-regular-gateway
+        - name: gateway-control
+          emptyDir: {}
+        - name: run
+          emptyDir: {}
+        - name: kube-api
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 3600
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+      containers:
+        - name: service
+          image: ${BOTS_REGULAR_IMAGE}
+          command: [bun, src/main.ts]
+          ports:
+            - containerPort: 8080
+          env:
+            - name: BOTS_REGULAR_SERVICE_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: bots-regular
+                  key: BOTS_REGULAR_SERVICE_SECRET
+            - name: BOTS_TEST_ACCOUNTS
+              valueFrom:
+                secretKeyRef:
+                  name: bots-regular
+                  key: BOTS_TEST_ACCOUNTS
+                  optional: true
+            - name: BOTS_REGULAR_PROVIDER
+              value: gke
+            - name: BOTS_REGULAR_SANDBOX_IMAGE
+              value: ${BOTS_REGULAR_SANDBOX_IMAGE}
+            - name: BOTS_REGULAR_GATEWAY_ORIGIN
+              value: http://bots-regular-gateway.bots-regular.svc.cluster.local:8081
+            - name: BOTS_REGULAR_GATEWAY_CONTROL_SOCKET
+              value: /run/gateway/control.sock
+            - name: BOTS_DATA_ROOT
+              value: /data/bots
+            - name: BOTS_RUN_ROOT
+              value: /run/bots
+            # The cluster's certificate authority, for calls to the Kubernetes API.
+            - name: NODE_EXTRA_CA_CERTS
+              value: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: run
+              mountPath: /run/bots
+            - name: gateway-control
+              mountPath: /run/gateway
+            - name: kube-api
+              mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+              readOnly: true
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              memory: 1Gi
+        - name: gateway
+          image: ${BOTS_REGULAR_IMAGE}
+          command: [bun, src/gateway-main.ts]
+          ports:
+            - containerPort: 8081
+          env:
+            - name: REDPILL_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: bots-regular
+                  key: REDPILL_API_KEY
+            - name: BOTS_REGULAR_GATEWAY_PORT
+              value: "8081"
+            - name: BOTS_REGULAR_GATEWAY_CONTROL_SOCKET
+              value: /run/gateway/control.sock
+            - name: BOTS_BUDGET_FILE
+              value: /var/lib/bots-gateway/budget.json
+          volumeMounts:
+            - name: budget
+              mountPath: /var/lib/bots-gateway
+            - name: gateway-control
+              mountPath: /run/gateway
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  namespace: bots-regular
+  name: bots-regular-gateway
+spec:
+  selector:
+    app: bots-regular
+  ports:
+    - name: gateway
+      port: 8081
+      targetPort: 8081
+---
+# The internal API on port 8080.
+apiVersion: v1
+kind: Service
+metadata:
+  namespace: bots-regular
+  name: bots-regular
+spec:
+  selector:
+    app: bots-regular
+  ports:
+    - name: api
+      port: 8080
+      targetPort: 8080
+---
+# Network rules for the service pod.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  namespace: bots-regular
+  name: bots-regular
+spec:
+  podSelector:
+    matchLabels:
+      app: bots-regular
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: sandboxes
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/managed-by: gke-sandboxes
+      ports:
+        - protocol: TCP
+          port: 8081
+    - from:
+        - namespaceSelector:
+            matchExpressions:
+              - key: kubernetes.io/metadata.name
+                operator: NotIn
+                values: [sandboxes]
+      ports:
+        - protocol: TCP
+          port: 8080
+---
+# Network rules for sandbox pods. Takes the place of the library's policy with the same name.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  namespace: sandboxes
+  name: sandboxes
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/managed-by: gke-sandboxes
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: bots-regular
+          podSelector:
+            matchLabels:
+              app: bots-regular
+      ports:
+        - protocol: TCP
+          port: 7070
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchExpressions:
+              - key: k8s-app
+                operator: In
+                values: [node-local-dns, kube-dns]
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: bots-regular
+          podSelector:
+            matchLabels:
+              app: bots-regular
+      ports:
+        - protocol: TCP
+          port: 8081
