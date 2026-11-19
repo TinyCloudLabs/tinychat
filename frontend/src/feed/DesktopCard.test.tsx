@@ -69,7 +69,7 @@ function store(entries: HomeFeedEntry[]) {
 async function mount(source: HomeFeedSource, width = 1280): Promise<HTMLElement> {
   restore ??= installDom();
   clock ??= installFakeClock();
-  (window as unknown as { happyDOM: { setViewport(size: { width: number; height: number }): void } }).happyDOM.setViewport({ width, height: 800 });
+  window.innerWidth = width;
   globalThis.fetch = (async () => new Response(null, { status: 404 })) as typeof fetch;
   globalThis.matchMedia = window.matchMedia.bind(window);
   (globalThis as { history?: History }).history ??= window.history;
@@ -87,7 +87,7 @@ async function mount(source: HomeFeedSource, width = 1280): Promise<HTMLElement>
 
 const rowOf = (host: HTMLElement, cardId: string) => [...host.querySelectorAll<HTMLElement>("li[data-card-key]")].find((row) => row.dataset.cardKey?.includes(cardId))!;
 const rowButton = (row: HTMLElement) => row.querySelector<HTMLButtonElement>("button[aria-expanded]")!;
-const dialogs = () => [...document.querySelectorAll<HTMLElement>("[role=dialog]")].filter((node) => !node.closest("[hidden]"));
+const dialogs = () => [...document.querySelectorAll<HTMLElement>("[role=dialog]")].filter((node) => !node.closest("[inert]"));
 const dialog = () => dialogs()[0]!;
 const closeButton = () => document.querySelector<HTMLButtonElement>("[data-desktop-close]")!;
 /** Whether the stream (any row in it) sits under an inert ancestor. */

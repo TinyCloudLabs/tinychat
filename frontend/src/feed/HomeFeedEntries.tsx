@@ -32,7 +32,7 @@ import { AgentsPill } from "./AgentMarks";
 import { useShowHiddenFeatures } from "@/lib/hiddenFeatures";
 import { PendingCard, type PendingItem } from "./PendingCard";
 import { MorphConfig, MorphItem, MotionFeatures } from "./densityMorph";
-import { DesktopCard, DesktopCardClose, LiftRow } from "./DesktopCard";
+import { DesktopCard, DesktopCardClose, rowElement } from "./DesktopCard";
 import { useDesktopCard } from "./openMode";
 import { useUndoBar } from "./UndoBar";
 import { CardWaitContext, useAnnounceWait, type CardWait, type WaitReport } from "./cardWait";
@@ -892,7 +892,8 @@ export function HomeFeedEntries({ source, ask, linked }: { source: HomeFeedSourc
   /** Closes the lifted card: the row it came from takes focus back. */
   function closeLifted(entry: HomeFeedEntry) {
     fold(entry);
-    requestAnimationFrame(() => document.querySelector<HTMLElement>(`[data-card-key="${CSS.escape(keyOf(entry))}"] button`)?.focus());
+    // Once the stream is no longer inert.
+    window.setTimeout(() => rowElement(keyOf(entry))?.querySelector<HTMLElement>("button")?.focus(), 0);
   }
   function fold(entry: HomeFeedEntry) {
     const key = lineageKey(entry);
@@ -1121,7 +1122,7 @@ export function HomeFeedEntries({ source, ask, linked }: { source: HomeFeedSourc
         // Hidden, not removed, while its answer waits: the card keeps its place and its props, so the wait can still be refused or sent.
         ? <div id={openCardId(key)} hidden={waiting} inert={waiting}>{fullCard(entry, retained)}</div>
         : <>
-          {lift && !page ? <LiftRow layoutId={`card-${key}`}>{compactCard(entry)}</LiftRow> : compactCard(entry)}
+          {compactCard(entry)}
           {options > 0 && <OptionsToggle inset count={options} post={postOf(entry) ?? entry.state.card.title} open={false} controls={openCardId(key)} onToggle={() => openCard(entry)} />}
         </>}
       {/* The Snoozed list: each card can come back now without opening it. */}
@@ -1324,7 +1325,7 @@ export function HomeFeedEntries({ source, ask, linked }: { source: HomeFeedSourc
       {agentPage === null && !!listed.length && <div aria-hidden style={{ height: STREAM_ROOM_PX }} />}
       </div>
       <AnimatePresence>
-        {liftedCards.map((entry) => <DesktopCard key={lineageKey(entry)} id={openCardId(lineageKey(entry))} layoutId={`card-${lineageKey(entry)}`} label={entry.state.card.title} open={entry === liftedShown} onClose={() => closeLifted(entry)}>{fullCard(entry, false, true)}</DesktopCard>)}
+        {liftedCards.map((entry) => <DesktopCard key={lineageKey(entry)} id={openCardId(lineageKey(entry))} rowKey={keyOf(entry)} label={entry.state.card.title} open={entry === liftedShown} onClose={() => closeLifted(entry)}>{fullCard(entry, false, true)}</DesktopCard>)}
       </AnimatePresence>
     </MorphConfig>
     </div>

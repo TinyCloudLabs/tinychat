@@ -5,7 +5,7 @@
 // The card is always mounted while its row is open, so an answer counting down in it still sends or undoes exactly as
 // before: while `open` is false (the wait shows as a pill instead) it is only hidden, and its dim and trap go with it.
 // The caller makes the stream `inert` while `open` is true, and keeps the pill outside that.
-import { type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type Ref, useEffect, useRef } from "react";
+import { type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type Ref, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { XIcon } from "lucide-react";
 import { m, useIsPresent, useReducedMotion } from "motion/react";
@@ -24,16 +24,16 @@ export function DesktopCardClose({ onClick, ref }: { onClick: () => void; ref?: 
   </button>;
 }
 
-/** The row, which the card lifts from and returns to: one shared layout id with the card. */
-export function LiftRow({ layoutId, children }: { layoutId: string; children: ReactNode }) {
-  const reduce = useReducedMotion();
-  return reduce ? <>{children}</> : <m.div layoutId={layoutId}>{children}</m.div>;
+/** A card's row in the stream, by its `data-card-key`. */
+export function rowElement(key: string): HTMLElement | undefined {
+  return [...document.querySelectorAll<HTMLElement>("[data-card-key]")].find((row) => row.dataset.cardKey === key);
 }
 
-export function DesktopCard({ label, layoutId, open, onClose, id, children }: {
+export function DesktopCard({ label, rowKey, open, onClose, id, children }: {
   /** The card's title, as the dialog's name. */
   label: string;
-  layoutId: string;
+  /** The card's row (its `data-card-key`): the card lifts from it and goes back to it. */
+  rowKey: string;
   /** False while the card is out of sight but mounted (its answer is counting down). */
   open: boolean;
   onClose: () => void;
@@ -45,6 +45,11 @@ export function DesktopCard({ label, layoutId, open, onClose, id, children }: {
   const present = useIsPresent();
   const shell = useRef<HTMLDivElement>(null);
   const active = open && present;
+  // Where the card lifts from: the row's centre, as an offset from the screen's centre, where the card rests.
+  const [from] = useState(() => {
+    const row = rowElement(rowKey)?.getBoundingClientRect();
+    return row ? { x: row.left + row.width / 2 - window.innerWidth / 2, y: row.top + row.height / 2 - window.innerHeight / 2 } : { x: 0, y: 0 };
+  });
 
   useEffect(() => {
     if (!active) return;
@@ -85,7 +90,9 @@ export function DesktopCard({ label, layoutId, open, onClose, id, children }: {
       onPointerDown={(event) => { if (active && event.target === event.currentTarget) onClose(); }}
       className={`fixed inset-0 z-40 items-center justify-center bg-black/40 p-6 ${open ? "flex" : "hidden"} ${active ? "" : "pointer-events-none"}`}>
       <m.div ref={shell} role="dialog" aria-modal="true" aria-label={label} id={id} inert={!active} onKeyDown={trap}
-        {...(reduce ? { initial: { opacity: 0 }, animate: { opacity: 1 }, exit: { opacity: 0 }, transition: { duration: 0.12 } } : { layoutId, transition: { duration: 0.4, ease: [0.2, 0, 0, 1] } })}
+        {...(reduce
+          ? { initial: { opacity: 0 }, animate: { opacity: 1 }, exit: { opacity: 0 }, transition: { duration: 0.12 } }
+          : { initial: { opacity: 0, scale: 0.92, ...from }, animate: { opacity: 1, scale: 1, x: 0, y: 0 }, exit: { opacity: 0, scale: 0.92, ...from }, transition: { duration: 0.35, ease: [0.2, 0, 0, 1] } })}
         className="max-h-full w-full max-w-[600px] overflow-y-auto overscroll-contain rounded-2xl border border-border bg-card text-card-foreground shadow-float">
         {children}
       </m.div>
