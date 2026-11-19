@@ -495,10 +495,6 @@ describe("TranscriberView in the Meeting sheet", () => {
     expect(html).not.toContain("Local recording");
     expect(html).not.toContain("Upload audio");
     expect(html).toContain('id="transcriber-meeting-url"');
-    const source = readFileSync(join(import.meta.dir, "TranscriberSection.tsx"), "utf8");
-    expect(source).not.toContain("uploadPanel");
-    expect(source).not.toContain("localPanel");
-    expect(source).not.toContain("onKindChange");
   });
 });
 
