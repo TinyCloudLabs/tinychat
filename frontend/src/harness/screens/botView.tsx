@@ -4,8 +4,11 @@ import { useEffect, useState, type ReactNode } from "react";
 
 import { MAIN_BOT } from "@/bots/BotAvatar";
 import { createBotChatApi } from "@/bots/botChatApi";
-import { BotsChat } from "@/bots/BotsChat";
-import type { BotActivity, BotMessage, MainEvent } from "@/bots/botsApi";
+import { botPath } from "@/bots/botPath";
+import { createBotRosterApi } from "@/bots/botRosterApi";
+import { createBotsApi, type BotActivity, type BotMessage, type MainEvent } from "@/bots/botsApi";
+import { saveChatView } from "@/bots/chatViewSetting";
+import { ChatSlot } from "@/bots/ChatSlot";
 import { BotView, type ViewBot } from "@/bots/BotView";
 import type { BotManagement } from "@/bots/BotManage";
 import type { HistoryNotice } from "@/bots/historyNotice";
@@ -16,6 +19,7 @@ import { NavRail } from "@/shell/NavRail";
 import { navItems, navKindFor } from "@/shell/navItems";
 import { Sidebar } from "@/shell/Sidebar";
 import { TabBar } from "@/shell/TabBar";
+import { HARNESS_DID, harnessTcw } from "../stubs";
 import type { HarnessScreen } from "../screen";
 
 const EARLIER: BotMessage[] = [
@@ -85,13 +89,16 @@ function Screen({ reply, send, notice, timed, panel, manage }: { reply: Reply; s
   );
 }
 
-/** The view over real HTTP: the real client reads the list and the reply stream from whatever answers at this origin. */
+/** The Chat slot over real HTTP: the real clients read the list, the roster and the reply stream from whatever answers at this origin. */
 function WireScreen() {
-  const [chatApi] = useState(() => createBotChatApi({ baseUrl: window.location.origin, getToken: () => "harness" }));
+  const [clients] = useState(() => {
+    const options = { baseUrl: window.location.origin, getToken: () => "harness" };
+    saveChatView(HARNESS_DID, "bots");
+    return { api: createBotsApi(options), chatApi: createBotChatApi(options), rosterApi: createBotRosterApi(options) };
+  });
   return (
     <Frame>
-      <BotsChat controller={{ status: "ready", roster: { bots: [{ key: "main", name: "Main", environment: "private", state: "active" }] } }} selected="main"
-        faceOf={() => MAIN_BOT} history={null} active chatApi={chatApi} />
+      <ChatSlot account={HARNESS_DID} tcw={harnessTcw} active classic={<div />} history={null} {...clients} />
     </Frame>
   );
 }
@@ -126,6 +133,6 @@ export const botViewScreens: HarnessScreen[] = [
   { ...BASE, id: "bot-view-activity", readyWhen: "[data-bot-activity]", render: () => <Screen reply="none" timed /> },
   { ...BASE, id: "bot-view-panel", readyWhen: "[data-bot-panel]", render: () => <Screen reply="none" timed panel /> },
   { ...BASE, id: "bot-view-panel-manage", readyWhen: "[data-bot-panel]", render: () => <Screen reply="none" timed panel manage /> },
-  // Driven by hand against a stand-in service (the screenshot run has none).
-  { ...BASE, id: "bot-view-wire", interactive: true, render: () => <WireScreen /> },
+  // Driven by hand against a stand-in service (the screenshot run has none): the Chat slot over real HTTP, on Research's address.
+  { ...BASE, id: "bot-view-wire", path: botPath("0123456789abcdef0123456789abcdef"), interactive: true, render: () => <WireScreen /> },
 ];

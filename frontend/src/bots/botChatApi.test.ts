@@ -79,3 +79,11 @@ test("a malformed notice fails the read instead of showing a broken date", async
   const { api } = recorder(() => Response.json({ notice: { id: "n1", expiresAt: "soon" } }));
   await expect(api.readNotice("main")).rejects.toMatchObject({ code: "failed" });
 });
+
+test("an unreachable bot fails with its code, and the backend's own wording is never used", async () => {
+  const unreachable = Response.json({ error: "bot_unavailable", message: "This bot isn't available. Try again later." }, { status: 502 });
+  const failure = await recorder(() => unreachable).api.send(KEY, "x", () => {}).catch((error: unknown) => error);
+  expect(failure).toMatchObject({ code: "bot_unavailable" });
+  expect(String((failure as Error).message)).not.toContain("isn't available");
+  await expect(recorder(() => new Response("upstream", { status: 502 })).api.send(KEY, "x", () => {})).rejects.toMatchObject({ code: "failed" });
+});

@@ -5,6 +5,7 @@ import { DEFAULT_REQUEST_HEADER_NAME, DEFAULT_REQUEST_HEADER_VALUE, SessionStore
 
 import { BotsError, createMainEventParser, toActivity, type BotActivity, type BotMessage, type MainEvent } from "./botsApi";
 import type { HistoryNotice } from "./historyNotice";
+import { createBotRosterApi, type BotRosterApi } from "./botRosterApi";
 
 /** `main`, or the 32 lower-case hex characters the backend chose. Checked before any address is built from it. */
 export const BOT_KEY = /^(?:main|[0-9a-f]{32})$/;
@@ -133,7 +134,12 @@ export function createBotChatApi({ baseUrl, getToken, fetch: fetchImpl = (input,
     async send(key, text, onEvent, signal) {
       const response = await request("POST", `${botPath(key)}/messages`, { signal, body: { text } });
       if (response.status === 400) throw new BotsError("invalid");
-      if (!response.ok || !response.body) throw new BotsError("failed");
+      // The backend's own `message` is never shown: only its code picks the owner's line (botsStrings.ts).
+      if (!response.ok) {
+        const code = fields(await response.json().catch(() => null)).error;
+        throw new BotsError(code === "bot_unavailable" ? "bot_unavailable" : "failed");
+      }
+      if (!response.body) throw new BotsError("failed");
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let ended = false;
@@ -183,6 +189,12 @@ const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || `${globalThis.location?.
 const SESSION_STORE_KEY = "xyz.tinycloud.tinychat:session";
 
 export const botChatApi: BotChatApi = createBotChatApi({
+  baseUrl: BACKEND_URL,
+  getToken: () => new SessionStore(SESSION_STORE_KEY).getToken(),
+});
+
+/** The account's bots (S3's client), on the same origin and session. */
+export const botRosterApi: BotRosterApi = createBotRosterApi({
   baseUrl: BACKEND_URL,
   getToken: () => new SessionStore(SESSION_STORE_KEY).getToken(),
 });
