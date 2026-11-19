@@ -1154,7 +1154,8 @@ async function main() {
   }
   app.use("/api/bots", createBotsRouter({
     config: botsConfig, authMiddleware, paidLimiter: paidChatLimiter, registry: botsRegistry,
-    capMode: capModeFromEnv(process.env),
+    // Read only when bots are configured: with bots off no route uses it, and startup calls nothing it does not need.
+    ...(botsConfig ? { capMode: capModeFromEnv(process.env) } : {}),
     planOf: async address => planFor((await resolveTier(address)).tier),
     onDeleting: (address, key) => { void botDeletions?.run(address, key); },
   }));
