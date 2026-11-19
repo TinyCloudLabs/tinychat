@@ -32,7 +32,7 @@ import { useSizeClass } from "@/lib/sizeClass";
 import { useVisualViewportFit } from "@/lib/useVisualViewport";
 import { nativeVoiceNotesAvailable } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { BootSurface } from "@/shell/BootSurface";
-import { homePath, legacyRedirectFor, screenFor } from "@/shell/routes";
+import { HOME_PATH, legacyRedirectFor, screenFor } from "@/shell/routes";
 import type { createRuntimeShim } from "./runtimeShim";
 import { HARNESS_ADDRESS, HARNESS_DID, harnessSessionStore, harnessTcw } from "./stubs";
 
@@ -94,8 +94,8 @@ export function ShellApp({ platform, shim, state, probe = (_id, node) => node, c
   const settled = state === "ready" || state === "unauthenticated" || state === "recoverableError";
   useEffect(() => {
     if (!legacy || !settled) return;
-    navigate(state === "ready" ? legacy.to : homePath(platform), { replace: true });
-  }, [legacy, settled, state, platform, navigate]);
+    navigate(state === "ready" ? legacy.to : HOME_PATH, { replace: true });
+  }, [legacy, settled, state, navigate]);
 
   const recorderShell = (
     <RecorderShell

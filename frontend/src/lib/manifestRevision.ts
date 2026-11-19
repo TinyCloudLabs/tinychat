@@ -13,7 +13,7 @@ export const EXO_MANIFEST_REVISION = "4";
 
 /** Shown above the sign-in action only after the gate clears a stale session (final wording). */
 export const MANIFEST_RESIGN_NOTICE =
-  "Sign in once more so TinyCloud Home can open your apps and your feed. Your data stays as it is.";
+  "Sign in once more so TinyCloud One can open your apps and your feed. Your data stays as it is.";
 
 const REVISION_KEY_PREFIX = "xyz.tinycloud.tinychat:manifest-revision:";
 

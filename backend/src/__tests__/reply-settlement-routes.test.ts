@@ -83,7 +83,7 @@ function agentConfig(fetchImpl: typeof fetch, over: Partial<AgentChatConfig> = {
     agentId: "92361e74-91ed-43a2-9656-5cc37ff3a07a", entityIdFor: () => "8ed637c2-9747-4d8e-a36f-803e1c24bc10",
     streamPolicy: { heartbeatMs: 1000, turnTimeoutMs: 5000, drainGraceMs: 100 },
     elizaServiceUrl: "https://eliza.test", elizaServiceSecret: "local-test", redpillApiKey: "unused", redpillBaseUrl: "https://provider.test/v1",
-    defaultModel: () => model, isModelOffered: value => value === model, fetchImpl, flusher,
+    defaultModel: () => model, isModelOffered: value => value === model, fetchImpl, redpillFetch: fetchImpl, flusher,
     streamRuntime: { now: () => performance.now(), setTimeout: (fn, ms) => setTimeout(fn, ms), clearTimeout: handle => clearTimeout(handle as ReturnType<typeof setTimeout>), log: () => {} },
     ...over,
   };
@@ -259,7 +259,7 @@ describe("/api/chat: clamp and free on early failure", () => {
     }) as typeof fetch;
     const app = express();
     app.use(express.json());
-    app.use("/api/chat", (req, _res, next) => { req.user = { address }; next(); }, createChatRouter({ flusher, ...(rehydrator ? { rehydrator } : {}) }));
+    app.use("/api/chat", (req, _res, next) => { req.user = { address }; next(); }, createChatRouter({ flusher, redpillFetch: (input, init) => globalThis.fetch(input, init), ...(rehydrator ? { rehydrator } : {}) }));
     const server = await new Promise<Server>(resolve => { const instance = app.listen(0, "127.0.0.1", () => resolve(instance)); });
     try {
       const { port } = server.address() as { port: number };

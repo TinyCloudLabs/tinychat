@@ -25,7 +25,8 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { authErrorMessage, UserFacingError } from "./authErrors";
 import { nativeRenewAt, renewalLeadMs, terminalRenewalError, nativeCode } from "./openkeyNativeRenewal";
 import { withAbortTimeout } from "./abortTimeout";
-import { manifestCarriesBundle } from "@tinyboilerplate/core";
+import { durableKeyReady, writeDurableKey } from "./durableKeys";
+import { manifestCarriesBundle, sameTinyCloudNode } from "@tinyboilerplate/core";
 import APP_MANIFEST from "../../../manifest.json";
 
 // ── Gate ──────────────────────────────────────────────────────────────
@@ -44,8 +45,53 @@ export function isNativeOpenKeySignIn(platform: AppPlatform = appPlatform()): bo
  * no secrets capability, so every flow that unlocks or stores credentials is
  * gated on this inside the app.
  */
-const NATIVE_SESSION_KIND_KEY = "xyz.tinycloud.tinychat:auth-kind";
+export const NATIVE_SESSION_KIND_KEY = "xyz.tinycloud.tinychat:auth-kind";
+export const NATIVE_SIGN_OUT_PENDING_KEY = "xyz.tinycloud.tinychat:native-signout-pending";
+/**
+ * `<host> <delegationCid>` of the last delegation this device saw the node accept
+ * (`/delegate` succeeded and hosted the space). Not secret: a CID names the
+ * delegation, it grants nothing (TC-2865).
+ */
+const NATIVE_ACTIVATED_KEY = "xyz.tinycloud.tinychat:native-activated";
+
+/** Durable "this node accepted this delegation" marker; web storage errors read as unmarked. */
+const localActivationMarker: NativeActivationMarker = {
+  read: () => {
+    try { return localStorage.getItem(NATIVE_ACTIVATED_KEY); } catch { return null; }
+  },
+  write: (value) => {
+    try {
+      if (value === null) localStorage.removeItem(NATIVE_ACTIVATED_KEY);
+      else localStorage.setItem(NATIVE_ACTIVATED_KEY, value);
+    } catch {
+      // Unmarked only costs the next restore an awaited activation.
+    }
+  },
+};
 let nativeSessionActive = false;
+
+export function setNativeSignOutPending(pending: boolean): boolean {
+  try {
+    // Also kept in native storage (durableKeys.ts): a pending sign-out must survive a WebView origin change.
+    writeDurableKey(NATIVE_SIGN_OUT_PENDING_KEY, pending ? "1" : null, localStorage);
+    return (localStorage.getItem(NATIVE_SIGN_OUT_PENDING_KEY) === "1") === pending;
+  } catch { return false; }
+}
+
+export function nativeSignOutPending(): boolean | null {
+  if (typeof localStorage === "undefined") return false;
+  try { return localStorage.getItem(NATIVE_SIGN_OUT_PENDING_KEY) === "1"; }
+  catch { return null; }
+}
+
+/**
+ * The fence as the boot restore must see it: only once its native copy has been reconciled (durableKeys.ts), which
+ * can take longer than the app waits to render. If native storage can't say, a sign-out counts as still pending,
+ * so an unfinished sign-out is never undone by restoring the session it was signing out of.
+ */
+async function settledNativeSignOutPending(): Promise<boolean | null> {
+  return (await durableKeyReady(NATIVE_SIGN_OUT_PENDING_KEY)) ? nativeSignOutPending() : true;
+}
 
 /** A native JWT is marked separately from a legacy widget session. No key material is stored here. */
 export function nativeSessionWasActive(): boolean {
@@ -56,14 +102,23 @@ export function nativeSessionWasActive(): boolean {
   }
 }
 
-export function setNativeSessionActive(active: boolean): void {
+const nativeSessionListeners = new Set<(active: boolean, restored: boolean) => void>();
+
+/** The app lock (lib/appLock.ts) follows sign-in and sign-out through this. */
+export function onNativeSessionChange(listener: (active: boolean, restored: boolean) => void): () => void {
+  nativeSessionListeners.add(listener);
+  return () => { nativeSessionListeners.delete(listener); };
+}
+
+/** `restored`: the session was restored at launch rather than signed in just now (the app lock tells them apart). */
+export function setNativeSessionActive(active: boolean, restored = false): void {
   nativeSessionActive = active;
   try {
-    if (active) localStorage.setItem(NATIVE_SESSION_KIND_KEY, "native");
-    else localStorage.removeItem(NATIVE_SESSION_KIND_KEY);
+    writeDurableKey(NATIVE_SESSION_KIND_KEY, active ? "native" : null, localStorage);
   } catch {
     // The SDK secure store is still authoritative if web storage is unavailable.
   }
+  for (const listener of nativeSessionListeners) listener(active, restored);
 }
 
 export function isNativeOpenKeySession(): boolean {
@@ -83,7 +138,7 @@ export function setSecretsAvailableForTests(available: boolean | null): void {
 
 /** User-facing message for secrets-dependent features inside the app. */
 export const SECRETS_UNAVAILABLE_IN_APP_MESSAGE =
-  "This uses stored credentials, which aren't available in the Exo app yet. Set it up from Exo on the web or desktop — everything you connect there works here.";
+  "This uses stored credentials, which aren't available in the TinyCloud One app yet. Set it up from TinyCloud One on the web or desktop — everything you connect there works here.";
 
 // ── Capabilities ──────────────────────────────────────────────────────
 
@@ -94,65 +149,31 @@ const CAPABILITIES_READ: NativeDelegationPermission = {
   actions: ["tinycloud.capabilities/read"],
 };
 
-const NATIVE_SERVICES = new Set(["tinycloud.kv", "tinycloud.sql"]);
-
 /**
- * Owner-app paths admitted by native sign-in. Feed authority belongs to Home;
- * agents receive separate exact database grants without response-write access.
+ * Services native sign-in requests. `tinycloud.space` (space info for the
+ * storage panel) is left out until the backend's native ReCap check accepts it
+ * (TC-2720 follow-up); secrets and vault never reach a native session.
  */
-const NATIVE_CEILING = new Set([
-  "tinycloud.kv:threads/",
-  "tinycloud.kv:connectors/",
-  "tinycloud.sql:threads",
-  "tinycloud.sql:canvas",
-  "tinycloud.sql:connectors",
-  "tinycloud.sql:home_feed",
-  "tinycloud.sql:feed/",
-]);
-
-const NATIVE_FEED_SQL_ACTIONS: Record<string, true> = {
-  "tinycloud.sql/read": true,
-  "tinycloud.sql/write": true,
-  "tinycloud.sql/schema": true,
-};
+const NATIVE_SERVICES: Record<string, true> = { "tinycloud.kv": true, "tinycloud.sql": true, "tinycloud.hooks": true };
 
 /**
- * The owner's applications-space manifest entries within Home's native scope,
- * plus capabilities/read. Non-feed broad app entries remain web-only. Hook
- * authority is limited separately to subscriptions for Home's own feed and
- * synced settings; adding another hook action or another app path admits nothing.
+ * The delegation's permission list: every applications-space KV, SQL and hook
+ * entry of the manifest, exactly as the web sign-in grants it, plus the
+ * mandatory capabilities/read. OpenKey's TinyCloud Home native client ceiling
+ * matches the served manifest (TC-2720) and refuses the whole request if any
+ * entry is outside it, so a manifest change must widen that ceiling first; the
+ * native-ceiling CI job PARs this exact request against production OpenKey.
  */
 export function nativePermissions(manifest: Manifest): NativeDelegationPermission[] {
   const permissions: NativeDelegationPermission[] = [CAPABILITIES_READ];
   const prefix = manifest.prefix === undefined ? manifest.app_id : manifest.prefix;
   for (const entry of manifest.permissions ?? []) {
-    const space = entry.space ?? "applications";
-    if (space !== "applications") continue;
-    const path = entry.skipPrefix || prefix === "" ? entry.path : `${prefix}/${entry.path}`;
-    const actions = entry.actions.map((action) =>
-      action.includes("/") ? action : `${entry.service}/${action}`,
-    );
-    if (entry.service === "tinycloud.hooks") {
-      const ownFeedScope = prefix !== "" && (
-        path === `sql/${prefix}/feed/` ||
-        path === `sql/${prefix}/home_feed` ||
-        path === `sql/${prefix}/threads`
-      );
-      if (!ownFeedScope || actions.length === 0 || !actions.every((action) => action === "tinycloud.hooks/subscribe")) continue;
-    } else {
-      if (!NATIVE_SERVICES.has(entry.service)) continue;
-      if (prefix !== "" && !NATIVE_CEILING.has(`${entry.service}:${path.slice(prefix.length + 1)}`)) continue;
-      if (prefix !== "" && !path.startsWith(`${prefix}/`)) continue;
-      const feedSql = entry.service === "tinycloud.sql" && (
-        path === `${prefix}/home_feed` || path === `${prefix}/feed/`
-      );
-      if (feedSql && (actions.length === 0 || !actions.every((action) => NATIVE_FEED_SQL_ACTIONS[action] === true))) continue;
-    }
+    if ((entry.space ?? "applications") !== "applications" || NATIVE_SERVICES[entry.service] !== true) continue;
     permissions.push({
       service: entry.service,
       space: "applications",
-      path,
-      actions,
+      path: entry.skipPrefix || prefix === "" ? entry.path : `${prefix}/${entry.path}`,
+      actions: entry.actions.map((action) => action.includes("/") ? action : `${entry.service}/${action}`),
     });
   }
   return permissions;
@@ -283,7 +304,7 @@ export function nativeSignInErrorMessage(error: unknown): string {
 }
 
 export const NATIVE_SIGN_OUT_WARNING =
-  "Exo signed out locally. OpenKey will retry any queued revocation when the app opens again. Check your grants at openkey.so if it remains active.";
+  "TinyCloud One signed out locally. OpenKey will retry any queued revocation when the app opens again. Check your grants at openkey.so if it remains active.";
 export const NATIVE_SIGN_OUT_STORAGE_WARNING =
   "Couldn't access secure storage on this device. Your OpenKey session may still be stored. Please try signing out again when storage is available.";
 
@@ -297,7 +318,35 @@ export function isNativeStorageError(error: unknown): boolean {
 export interface NativeSignInHints {
   /** Only with `loginMethod: "email"`. A normalised address (see `normalizeLoginHint`). */
   loginHint?: string;
-  loginMethod: "email" | "passkey" | "google";
+  // Spelled out: @openkey/sdk-capacitor 0.2.0-beta.0's .d.ts re-exports NativeLoginMethod from @openkey/core,
+  // which it bundles rather than depends on, so the type does not resolve here.
+  loginMethod: "email" | "passkey" | "google" | "apple";
+}
+
+/** The social sign-ins OpenKey can finish in its sheet. */
+export type OpenKeySocialProvider = "google" | "apple";
+
+/**
+ * The social providers OpenKey has turned on (`GET /api/auth/providers`), so
+ * Exo never offers a button whose sheet would fail. Any failure reads as none:
+ * email and passkey never wait on this.
+ */
+export async function loadOpenKeySocialProviders(
+  openKeyHost: string,
+  fetchFn: typeof fetch = fetch,
+): Promise<OpenKeySocialProvider[]> {
+  try {
+    const response = await fetchFn(`${deriveOAuthHost(openKeyHost)}/api/auth/providers`, {
+      headers: { Accept: "application/json" },
+      credentials: "omit",
+    });
+    if (!response.ok) return [];
+    const body: unknown = await response.json();
+    if (!body || typeof body !== "object" || !("providers" in body) || !Array.isArray(body.providers)) return [];
+    return body.providers.filter((id: unknown): id is OpenKeySocialProvider => id === "google" || id === "apple");
+  } catch {
+    return [];
+  }
 }
 
 /** The login_hint rule: no whitespace, exactly one "@" with text either side, at most 254 characters. Lowercased. Null when it is not an address. */
@@ -355,6 +404,15 @@ export interface NativeSignInDeps {
     siwe: string,
     signature: string,
   ) => Promise<{ token: string; expiresIn: number; address: string }>;
+  /** Optional test seam; production reads the durable local sign-out fence. */
+  readSignOutFence?: () => boolean | null;
+  /** Optional test seam; production keeps the activation marker in localStorage. */
+  activationMarker?: NativeActivationMarker;
+}
+
+export interface NativeActivationMarker {
+  read: () => string | null;
+  write: (value: string | null) => void;
 }
 
 /** The client's registered redirect; the Exo app's own reverse-DNS scheme. */
@@ -520,6 +578,7 @@ export type NativeBootOutcome =
   | { kind: "failed" }
   | { kind: "storage" }
   | { kind: "configuration" }
+  | { kind: "signOutPending" }
   | { kind: "terminal" | "upgrade"; revoke: () => Promise<void> };
 
 /** Restore before the backend JWT gate: a live native grant can mint a new JWT. */
@@ -532,6 +591,17 @@ export async function restoreNativeAtBoot(
   try {
     const d = deps ?? await defaultDeps();
     openkey = nativeClient(nativeClientOptions(config.env ?? import.meta.env, config.tinycloudHost), d.createOpenKeyNative);
+    const signOutPending = d.readSignOutFence ? d.readSignOutFence() : await settledNativeSignOutPending();
+    if (signOutPending === null) return { kind: "signOutPending" };
+    if (signOutPending) {
+      try {
+        await withNativeDeadline(openkey.signOut());
+        if (!setNativeSignOutPending(false)) return { kind: "signOutPending" };
+        return { kind: "none" };
+      } catch {
+        return { kind: "signOutPending" };
+      }
+    }
     let session = await openkey.current();
     if (!session) return { kind: "none" };
     if (!nativeGrantCoversCurrentManifest(session)) {
@@ -650,7 +720,8 @@ export async function installNativeSession(
     !delegation.delegationHeader ||
     !delegation.delegationCid ||
     !delegation.spaceId ||
-    (!restoringExisting && delegation.tinycloudHost !== config.tinycloudHost)
+    // A renewal may keep the delegation on the node's previous name (tee.node.tinycloud.xyz before TC-2923): same node.
+    (!restoringExisting && (!delegation.tinycloudHost || !sameTinyCloudNode(delegation.tinycloudHost, config.tinycloudHost)))
   ) {
     throw new Error("OpenKey returned an incomplete delegation for a different TinyCloud node.");
   }
@@ -675,14 +746,42 @@ export async function installNativeSession(
     tinycloudHosts: [delegation.tinycloudHost],
   });
 
-  const activation = await d.activateSession(delegation.tinycloudHost, delegation.delegationHeader);
-  if (!activation.success) {
-    throw new NativeHandoffRetryError(activation.error ?? "TinyCloud space activation failed");
-  }
-  // OpenKey may already have hosted the space during consent. In that case
-  // /delegate returns a successful reconciliation with activated: [].
-  if (activation.skipped?.includes(delegation.spaceId)) {
-    throw new NativeSpaceUnavailableError("TinyCloud could not host the delegated space");
+  // Activation registers the delegation with the node; every later invocation is
+  // still authorized by the node against it. A boot restore of the delegation
+  // this device already saw the node accept re-sends it without waiting, so the
+  // cached app is not held behind a round trip that the node answers with
+  // `activated: []` (TC-2865). Only boot restores read or write the marker: the
+  // first launch after a sign-in or renewal waits once and marks; a failure
+  // clears it, so the next launch waits again and surfaces the error. Sign-in
+  // and live renewal always wait and leave web storage untouched.
+  const marker = d.activationMarker ?? localActivationMarker;
+  const { delegationHeader, spaceId } = delegation;
+  const activationKey = `${delegation.tinycloudHost} ${delegation.delegationCid}`;
+  const bootRestore = restoringExisting && !liveTcw;
+  const activate = async () => {
+    const activation = await d.activateSession(delegation.tinycloudHost, delegationHeader);
+    if (!activation.success) {
+      throw new NativeHandoffRetryError(activation.error ?? "TinyCloud space activation failed");
+    }
+    // OpenKey may already have hosted the space during consent. In that case
+    // /delegate returns a successful reconciliation with activated: [].
+    if (activation.skipped?.includes(spaceId)) {
+      throw new NativeSpaceUnavailableError("TinyCloud could not host the delegated space");
+    }
+  };
+  if (bootRestore && stored?.tinycloudSession?.delegationCid === delegation.delegationCid && marker.read() === activationKey) {
+    void activate().catch((error: unknown) => {
+      marker.write(null);
+      logNativeOpenKeyError("background activation", error);
+    });
+  } else {
+    try {
+      await activate();
+    } catch (error) {
+      if (bootRestore) marker.write(null);
+      throw error;
+    }
+    if (bootRestore) marker.write(activationKey);
   }
 
   if (liveTcw) {

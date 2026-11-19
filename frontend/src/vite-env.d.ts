@@ -6,8 +6,6 @@ interface ImportMetaEnv {
   readonly VITE_OPENKEY_HOST?: string;
   readonly VITE_BACKEND_URL?: string;
   readonly VITE_TINYCLOUD_HOST?: string;
-  /** "true" builds the home.tinycloud.xyz variant (lib/homeSite.ts). */
-  readonly VITE_HOME_SITE?: string;
   /** Agent DID override for a local joint-stack smoke; production uses the frozen default. */
   readonly VITE_AGENT_DID?: string;
   /** Browser-e2e lane only — retargets the Fireflies client at the mock upstream. */
@@ -35,6 +33,11 @@ interface ImportMetaEnv {
   readonly VITE_EXO_PTX_UPLOAD_ORIGIN?: string;
   /** "false" turns web-only local replication OFF for this build (unset or anything else = ON; it also needs a qualified Chromium web browser and is off for any user who opted out). */
   readonly VITE_EXO_REPLICATION?: string;
+  /**
+   * TC-2862: "true" lets the phone app's native local copy (the TinyCloudReplicaStore plugin) be used once the SDK can
+   * consume it. Unset (off) in every build; the sign-out wipe of that copy runs regardless.
+   */
+  readonly VITE_EXO_NATIVE_REPLICA?: string;
   /**
    * Exo mobile health spike (TC-525): "true" shows the development-only Health card in Connectors → Sources
    * (when the app's native Health plugin exists, i.e. Android and iOS debug builds). Unset in every normal build.

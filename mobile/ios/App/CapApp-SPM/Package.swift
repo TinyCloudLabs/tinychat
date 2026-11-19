@@ -15,6 +15,7 @@ let package = Package(
         .package(name: "CapacitorApp", path: "../../../../node_modules/.bun/@capacitor+app@8.1.2+8c735c3c6e2ff3c1/node_modules/@capacitor/app"),
         .package(name: "CapacitorBrowser", path: "../../../../node_modules/.bun/@capacitor+browser@8.0.5+8c735c3c6e2ff3c1/node_modules/@capacitor/browser"),
         .package(name: "CapacitorHaptics", path: "../../../../node_modules/.bun/@capacitor+haptics@8.0.2+8c735c3c6e2ff3c1/node_modules/@capacitor/haptics"),
+        .package(name: "CapacitorPreferences", path: "../../../../node_modules/.bun/@capacitor+preferences@8.0.1+8c735c3c6e2ff3c1/node_modules/@capacitor/preferences"),
         .package(name: "OpenkeySdkCapacitor", path: "../../../node_modules/@openkey/sdk-capacitor")
     ],
     targets: [
@@ -26,6 +27,7 @@ let package = Package(
                 .product(name: "CapacitorApp", package: "CapacitorApp"),
                 .product(name: "CapacitorBrowser", package: "CapacitorBrowser"),
                 .product(name: "CapacitorHaptics", package: "CapacitorHaptics"),
+                .product(name: "CapacitorPreferences", package: "CapacitorPreferences"),
                 .product(name: "OpenkeySdkCapacitor", package: "OpenkeySdkCapacitor")
             ]
         )

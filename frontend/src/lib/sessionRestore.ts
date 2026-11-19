@@ -45,6 +45,12 @@ export interface RestoreDeps<M, T> {
   loadManifest: () => Promise<M>;
   /** restoreTinyCloudWebSession, bound to the app's host + restore config. */
   restore: (address: string, manifest: M) => Promise<RestoreAttempt<T>>;
+  /** Explicit lease bootstrap verifies one live read before publishing its client. Details: TC-2872 */
+  renewalVerification?: {
+    read: (tcw: T) => Promise<void>;
+    signOut: (tcw: T) => Promise<void>;
+    cleanup: (tcw: T) => void;
+  };
   /** True when the browser reports no connectivity (`navigator.onLine`). */
   isOffline: () => boolean;
 }
@@ -62,7 +68,7 @@ export type RestoreOutcome<T> =
 const MISSING_SPACE_CODE = "restored-session-missing-space";
 
 export const MISSING_SPACE_MESSAGE =
-  "Your saved session is missing its TinyCloud space, so Exo can't open or save your notes with it. Tap Sign in to sign in again; notes recorded on this device stay on it until they upload.";
+  "Your saved session is missing its TinyCloud space, so TinyCloud One can't open or save your notes with it. Tap Sign in to sign in again; notes recorded on this device stay on it until they upload.";
 
 function isMissingSpaceError(error: unknown): boolean {
   return typeof error === "object" && error !== null && (error as { code?: unknown }).code === MISSING_SPACE_CODE;
@@ -70,8 +76,8 @@ function isMissingSpaceError(error: unknown): boolean {
 
 export type RestoreFailureKind = "transient" | "auth";
 
-const OFFLINE_MESSAGE = "You're offline. Exo will reconnect when you're back online.";
-const UNREACHABLE_MESSAGE = "Can't reach Exo right now. You're still signed in.";
+const OFFLINE_MESSAGE = "You're offline. TinyCloud One will reconnect when you're back online.";
+const UNREACHABLE_MESSAGE = "Can't reach TinyCloud One right now. You're still signed in.";
 
 export function restoreUnavailableMessage(offline: boolean): string {
   return offline ? OFFLINE_MESSAGE : UNREACHABLE_MESSAGE;
@@ -183,6 +189,31 @@ export async function restorePersistedSession<M, T>(
   }
 
   if (restored.status === "restored" && restored.tcw) {
+    const renewal = deps.renewalVerification;
+    if (renewal) {
+      try {
+        await renewal.read(restored.tcw);
+      } catch (error) {
+        const refusal = error as { status?: number; meta?: { status?: number } } | null;
+        const status = refusal?.meta?.status ?? refusal?.status;
+        if (status === 401 || status === 403) {
+          try {
+            try {
+              await deps.beforeClear?.();
+            } finally {
+              await renewal.signOut(restored.tcw);
+            }
+          } catch {
+            console.warn("[session] renewal sign-out cleanup failed");
+          } finally {
+            sessionStore.clear();
+          }
+          return { kind: "signedOut" };
+        }
+        renewal.cleanup(restored.tcw);
+        return unavailable();
+      }
+    }
     return { kind: "restored", address, tcw: restored.tcw };
   }
   if (isMissingSpaceError(restored.error)) {

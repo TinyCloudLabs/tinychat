@@ -37,7 +37,7 @@ async function request(
 
 // The route captures REDPILL_BASE_URL at module load, so these assert against
 // the default base rather than a per-test override.
-const BASE = process.env.REDPILL_BASE_URL ?? "https://api.redpill.ai/v1";
+const BASE = process.env.REDPILL_BASE_URL ?? "https://tee.redpill.ai/v1";
 
 describe("signature route", () => {
   const savedKey = process.env.REDPILL_API_KEY;

@@ -3,6 +3,7 @@
 // classified, so we can see: tool dispatch, content frames, usage. Diagnoses the
 // empty-answer live e2e turn.
 import { orchestrateToolCalling } from "../backend/src/routes/agent-chat.ts";
+import { DEFAULT_RED_PILL_BASE_URL, validateRedPillBaseUrl } from "../backend/src/redpill-aci.ts";
 
 const backendEnvText = await Bun.file(new URL("../backend/.env", import.meta.url).pathname).text();
 const elizaEnvText = await Bun.file(new URL("../../tinycloud-agents/packages/eliza-service/.env", import.meta.url).pathname).text();
@@ -13,11 +14,11 @@ const readEnv = (text: string, k: string): string => {
 
 const config = {
   agentId: "tinychat",
-  entityIdFor: (_a: string) => "b7da5202-d81f-0f0f-a602-46f696ae2b8a",
+  entityIdFor: (_a: string) => "03c43cbe-21ca-05ec-b4b2-401bbe407cee",
   elizaServiceUrl: "http://localhost:3000",
   elizaServiceSecret: readEnv(elizaEnvText, "ELIZA_SERVICE_SECRET"),
   redpillApiKey: readEnv(backendEnvText, "REDPILL_API_KEY"),
-  redpillBaseUrl: readEnv(backendEnvText, "REDPILL_BASE_URL") || "https://api.redpill.ai/v1",
+  redpillBaseUrl: validateRedPillBaseUrl(readEnv(backendEnvText, "REDPILL_BASE_URL") || DEFAULT_RED_PILL_BASE_URL),
   defaultModel: () => "phala/gpt-oss-120b",
   isModelOffered: () => true,
   maxRounds: 3,
@@ -32,7 +33,7 @@ const result = await orchestrateToolCalling({
   config,
   model: process.env.PROBE_MODEL ?? "phala/gpt-oss-120b",
   messages: [{ role: "user", content: "Use web search to give me one current news headline today, and cite the source." }],
-  entityId: "b7da5202-d81f-0f0f-a602-46f696ae2b8a",
+  entityId: "03c43cbe-21ca-05ec-b4b2-401bbe407cee",
   write: (frame: string) => {
     const m = frame.match(/^data: (.*)\n\n$/s);
     if (!m || m[1] === "[DONE]") return;

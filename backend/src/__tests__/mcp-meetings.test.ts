@@ -223,8 +223,7 @@ describe("chat loop with MCP chat enabled", () => {
     const wiring = mcpChatFromEnv(env());
     const config: AgentChatConfig = {
       agentId: "agent", streamPolicy: { heartbeatMs: 1000, turnTimeoutMs: 10000, drainGraceMs: 100 }, entityIdFor: () => "entity-1",
-      elizaServiceUrl: "https://eliza.test", elizaServiceSecret: "svc", redpillApiKey: "rp", redpillBaseUrl: "https://redpill.test/v1",
-      defaultModel: () => "phala/gpt-oss-120b", isModelOffered: () => true, fetchImpl, maxRounds: 3,
+      defaultModel: () => "phala/gpt-oss-120b", isModelOffered: () => true, redpillFetch: fetchImpl, fetchImpl, maxRounds: 3,
       ...wiring, mcpOwner: wiring.mcpOwnerDidFor!(ADDRESS),
     };
     const frames: string[] = [];

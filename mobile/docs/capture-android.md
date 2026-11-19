@@ -25,11 +25,25 @@ then moves remote cleanup into the outbox and removes local artifacts. Legacy
 orphan audio is probed with `MediaExtractor`; playable orphans are imported as
 `ownerUnknown`, and unplayable ones move to quarantine.
 
+## Launch surfaces
+
+Both ship with the APK and need no setup. The launcher shortcut "Record"
+(`record_voice_note`, long-press the app icon) and the Quick Settings tile
+"Record" (`RecordTileService`; add it from the Quick Settings edit panel) open
+`MainActivity` with `xyz.tinycloud.exo.capture.RECORD`. The tile adds the
+`xyz.tinycloud.exo.capture.extra.SOURCE` extra `tile`; `LaunchSource` allowlists
+it, and anything else records as `app_shortcut`. The tile never opens the mic
+itself, because a microphone foreground service must start while the app is
+visible. On a locked device it asks for unlock first. It shows as
+active while a recording is live; tapping it then just shows the recorder.
+
 ## Device checks
 
 Build with `bun run --cwd mobile sync android` and `cd mobile/android &&
 ./gradlew :app:assembleDebug`. Before installing on the Moto G Power, check for
-another install process. Install with `adb -s ZY22KKZ2GB install -r
+another install process. A phone that still has the old `xyz.tinycloud.exo`
+build needs it uninstalled first (after its pending recordings upload): both
+builds answer the same sign-in links. Install with `adb -s ZY22KKZ2GB install -r
 mobile/android/app/build/outputs/apk/debug/app-debug.apk`. Record with the
 screen off, Stop from the notification, pull the private file with `run-as`,
 and inspect it with `ffprobe` and `ffmpeg -af volumedetect`. For recovery,
@@ -48,12 +62,12 @@ permission flags before **each** test:
 adb -s emulator-5574 install -r mobile/android/app/build/outputs/apk/debug/app-debug.apk
 adb -s emulator-5574 install -r -t mobile/android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
 
-for test in shortcutFirstUsePermissionGrantStartsRecording shortcutDeniedPermissionClearsCommandWithoutReprompting; do
-  adb -s emulator-5574 shell pm revoke xyz.tinycloud.exo android.permission.RECORD_AUDIO
-  adb -s emulator-5574 shell pm clear-permission-flags xyz.tinycloud.exo android.permission.RECORD_AUDIO user-set user-fixed
+for test in shortcutFirstUsePermissionGrantStartsRecording shortcutDeniedTwiceHoldsCommandAndOffersRecordOnGrant; do
+  adb -s emulator-5574 shell pm revoke xyz.tinycloud.home android.permission.RECORD_AUDIO
+  adb -s emulator-5574 shell pm clear-permission-flags xyz.tinycloud.home android.permission.RECORD_AUDIO user-set user-fixed
   adb -s emulator-5574 shell am instrument -w -r \
     -e class "xyz.tinycloud.exo.capture.CaptureInstrumentedTest#$test" \
-    xyz.tinycloud.exo.test/androidx.test.runner.AndroidJUnitRunner
+    xyz.tinycloud.home.test/androidx.test.runner.AndroidJUnitRunner
 done
 ```
 

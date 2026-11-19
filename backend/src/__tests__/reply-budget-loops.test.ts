@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { orchestrateToolCalling, type AgentChatConfig } from "../routes/agent-chat.js";
+import { orchestrateToolCalling, type AgentChatConfig, type OrchestrateResult } from "../routes/agent-chat.js";
 import { createReplyBudget } from "../billing/reply-budget.js";
 import type { ModelRates } from "../billing/credits.js";
 
@@ -29,7 +29,7 @@ function harness(provider: (body: any, index: number) => Response, options: { me
   }) as typeof fetch;
   const config: AgentChatConfig = {
     agentId: "agent", entityIdFor: () => "entity", elizaServiceUrl: "https://eliza.test", elizaServiceSecret: "test",
-    redpillApiKey: "test", redpillBaseUrl: "https://model.test", defaultModel: () => "test-model", isModelOffered: () => true, fetchImpl,
+    redpillApiKey: "test", redpillBaseUrl: "https://model.test", defaultModel: () => "test-model", isModelOffered: () => true, fetchImpl, redpillFetch: fetchImpl,
     streamPolicy: { heartbeatMs: 1000, turnTimeoutMs: 10000, drainGraceMs: 100 }, maxRounds: 3,
     ...(options.meeting ? { meetingContentRetrievalEnabled: true, meetingTrace: () => {} } : {}),
   };
@@ -38,13 +38,15 @@ function harness(provider: (body: any, index: number) => Response, options: { me
 
 async function run(h: ReturnType<typeof harness>, allowance: number | undefined, text = "Search for the capital of Portugal", budgetRates = rates, contextTokens = 100_000) {
   const frames: string[] = [];
+  let terminal: OrchestrateResult["errorCode"];
   const budget = allowance === undefined ? undefined : createReplyBudget(allowance, budgetRates, contextTokens);
   const result = await orchestrateToolCalling({
     config: h.config, model: "test-model", messages: [{ role: "user", content: text }], entityId: "entity",
     turnContext: { localDate: "2026-09-09", timeZone: "Europe/Lisbon" },
-    write: frame => { frames.push(frame); }, ...(budget ? { budget } : {}),
+    write: frame => { frames.push(frame); }, onTerminalError: code => { terminal = code; }, ...(budget ? { budget } : {}),
   });
-  return { result, frames };
+  // A meeting turn reports its terminal error through the callback, not the result.
+  return { result: { ...result, errorCode: result.errorCode ?? terminal }, frames };
 }
 
 describe("existing tool loop under a reply budget", () => {

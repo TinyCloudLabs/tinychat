@@ -105,7 +105,7 @@ function setup(env: Record<string, string>, mcpSelected = true) {
   const config: AgentChatConfig = {
     agentId: "agent", streamPolicy: { heartbeatMs: 1000, turnTimeoutMs: 10000, drainGraceMs: 100 }, entityIdFor: () => "entity-1",
     elizaServiceUrl: mcpSelected ? "" : "https://eliza.test", elizaServiceSecret: mcpSelected ? "" : "s", redpillApiKey: "rp", redpillBaseUrl: "https://redpill.test/v1",
-    defaultModel: () => "phala/some-model", isModelOffered: () => true, fetchImpl, maxRounds: 3, backendRevision: "rev-1", meetingTrace: () => {},
+    defaultModel: () => "phala/some-model", isModelOffered: () => true, redpillFetch: fetchImpl, fetchImpl, maxRounds: 3, backendRevision: "rev-1", meetingTrace: () => {},
     mcpMeetings, mcpChatAccountAllowed: () => mcpSelected, mcpOwnerDidFor: address => `did:pkh:eip155:1:${address.toLowerCase()}`,
     meetingContentRetrievalEnabled: rollout.enabled, meetingContentAccountAllowed: rollout.accountAllowed, meetingContentModelAllowed: rollout.modelAllowed,
     meetingContentMcpAccountAllowed: rollout.mcpAccountAllowed, meetingContentMcpModelAllowed: rollout.mcpModelAllowed,

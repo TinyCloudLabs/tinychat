@@ -1,8 +1,10 @@
 import { expect, test } from "bun:test";
 import { newIdbEnv } from "./web/testing/idb";
-import { createHeldResultStore, MAX_HELD_DID_BYTES, MAX_HELD_TOTAL_BYTES } from "./heldResults";
+import { createHeldResultStore as createStore, MAX_HELD_DID_BYTES, MAX_HELD_TOTAL_BYTES } from "./heldResults";
 import { transcriptHash } from "./voiceNoteRows";
 import { localStorageVoiceNotePendingStore } from "./voiceNoteTranscription";
+const createHeldResultStore = (did: string, options: Parameters<typeof createStore>[1] = {}) =>
+  createStore(did, { isSignedIn: async () => true, ...options });
 const heldInput = (did: string, rev: number, text: string) => ({
   version: 1 as const,
   did,
@@ -169,22 +171,30 @@ test("compare-and-delete cannot remove a newer held row that replaced its holdId
   let reachedAuthorize!: () => void;
   const authGate = new Promise<void>((resolve) => { authorize = resolve; });
   const authorizing = new Promise<void>((resolve) => { reachedAuthorize = resolve; });
+  let identityChecks = 0;
+  const writer = createHeldResultStore("did:a", { env });
   const store = createHeldResultStore("did:a", {
     env,
-    isSignedIn: async () => { reachedAuthorize(); await authGate; return true; },
+    // Let readHeld check its owner before and after reading; pause the delete authorization.
+    isSignedIn: async () => {
+      if (++identityChecks <= 2) return true;
+      reachedAuthorize(); await authGate; return true;
+    },
   });
-  const original = await store.hold(heldInput("did:a", 1, "original"));
+  const original = await writer.hold(heldInput("did:a", 1, "original"));
   const tcw = { did: "did:a", spaceId: "space-a" } as never;
   const deleting = store.discard(tcw, "note-a", original.holdId, "user_discarded");
   await authorizing;
-  const newer = await store.hold(heldInput("did:a", 2, "newer"));
+  const newer = await writer.hold(heldInput("did:a", 2, "newer"));
   authorize();
   await deleting;
   expect(await store.readHeld("note-a")).toMatchObject({ holdId: newer.holdId, transcript: { sentences: [{ text: "newer" }] } });
 });
+// TC-2785 Naomi ruling: signed-out public reads hide the retained row; verify persistence directly in IDB.
 test("persisted sign-out blocks a held commit and leaves its row intact", async () => {
   let signedIn = true;
-  const store = createHeldResultStore("did:a", { env: newIdbEnv(), isSignedIn: async () => signedIn });
+  const env = newIdbEnv();
+  const store = createHeldResultStore("did:a", { env, isSignedIn: async () => signedIn });
   await store.hold(heldInput("did:a", 1, "still held"));
   signedIn = false;
   const tcw = { did: "did:a", spaceId: "space-a" } as never;
@@ -192,7 +202,13 @@ test("persisted sign-out blocks a held commit and leaves its row intact", async 
     save: async () => { throw new Error("save must not run after sign-out"); },
     afterCommit: async () => {},
   }, "automatic")).rejects.toMatchObject({ code: "voice_note_account_mismatch" });
-  expect(await store.readHeld("note-a")).not.toBeNull();
+  // TC-2785: the durable row survives this failed commit, but the signed-out API cannot read it.
+  expect(await store.readHeld("note-a")).toBeNull();
+  const { request, transact } = await import("./web/idb");
+  const db = await request(env.factory.open("exo-held-results", 2));
+  const persisted = await transact(db, ["held"], "readonly", (tx) => request(tx.objectStore("held").get(["did:a", "note-a"])));
+  expect(persisted).toMatchObject({ transcript: { sentences: [{ text: "still held" }] } });
+  db.close();
 });
 
 test("a fifty-first hold for one DID refuses without evicting any existing result", async () => {
@@ -253,4 +269,107 @@ test("UTF-8 byte shares reserve each DID and the hard device budget without evic
     const row = await createHeldResultStore(did, { env }).readHeld(sourceId);
     expect(row).toMatchObject({ holdId, hash, transcript: { sentences: [{ text: dense }] } });
   }
+});
+
+test("TC-2785 sign-out deletes held rows and fences existing stores from repopulating them", async () => {
+  const { clearHeldResultsForSignOut } = await import("./heldResults");
+  const env = newIdbEnv();
+  const a = createHeldResultStore("did:a", { env });
+  const b = createHeldResultStore("did:b", { env });
+  await a.hold(heldInput("did:a", 1, "held a"));
+  await b.hold(heldInput("did:b", 1, "held b"));
+  await clearHeldResultsForSignOut("did:a", env);
+  expect(await a.readHeld("note-a")).toBeNull();
+  expect(a.heldHint("note-a")).toBe(false);
+  await expect(a.hold(heldInput("did:a", 2, "late"))).rejects.toMatchObject({ code: "held_result_persistence_failed" });
+  const signedBackIn = createHeldResultStore("did:a", { env });
+  expect(await signedBackIn.listHeld()).toEqual([]);
+  await signedBackIn.hold(heldInput("did:a", 3, "new sign-in"));
+  expect((await signedBackIn.listHeld())).toHaveLength(1);
+  expect(await createHeldResultStore("did:b", { env }).listHeld()).toHaveLength(1);
+});
+
+test("TC-2785 another tab fences a pending hold and preserves other accounts and unassigned legacy rows", async () => {
+  const otherTab = await import("./heldResults.ts" + "?atomic-other-tab");
+  const { request, transact } = await import("./web/idb");
+  const env = newIdbEnv();
+  const a = createHeldResultStore("did:a", { env });
+  const b = createHeldResultStore("did:b", { env });
+  await a.hold(heldInput("did:a", 1, "first"));
+  await b.hold(heldInput("did:b", 1, "other account"));
+  const db = await request(env.factory.open("exo-held-results", 2));
+  await transact(db, ["held"], "readwrite", (tx) => request(tx.objectStore("held").put({ did: "", sourceId: "legacy", value: "unassigned" })));
+  db.close();
+  const hashingStarted = Promise.withResolvers<void>();
+  const releaseHash = Promise.withResolvers<void>();
+  const originalDigest = crypto.subtle.digest.bind(crypto.subtle);
+  const { spyOn } = await import("bun:test");
+  const hashing = spyOn(crypto.subtle, "digest").mockImplementation(async (algorithm, data) => {
+    hashingStarted.resolve();
+    await releaseHash.promise;
+    return originalDigest(algorithm, data);
+  });
+  try {
+    const pending = a.hold(heldInput("did:a", 2, "late result"));
+    await hashingStarted.promise;
+    await otherTab.clearHeldResultsForSignOut("did:a", env);
+    releaseHash.resolve();
+    await expect(pending).rejects.toMatchObject({ code: "held_result_persistence_failed" });
+  } finally { releaseHash.resolve(); hashing.mockRestore(); }
+  expect(await createHeldResultStore("did:a", { env }).listHeld()).toEqual([]);
+  expect(await b.readHeld("note-a")).toMatchObject({ transcript: { sentences: [{ text: "other account" }] } });
+  const reopened = await request(env.factory.open("exo-held-results", 2));
+  const legacy = await transact(reopened, ["held"], "readonly", (tx) => request(tx.objectStore("held").get(["", "legacy"])));
+  expect(legacy).toEqual({ did: "", sourceId: "legacy", value: "unassigned" });
+  reopened.close();
+});
+
+test("TC-2785 retained held results are unreadable through another account's store", async () => {
+  const env = newIdbEnv();
+  let active = "did:b";
+  const isSignedIn = async (did: string) => did === active;
+  const b = createStore("did:b", { env, isSignedIn });
+  await b.hold(heldInput("did:b", 1, "only B reads this"));
+  active = "did:c";
+  const impersonatedB = createStore("did:b", { env, isSignedIn });
+  expect(await impersonatedB.readHeld("note-a")).toBeNull();
+  expect(await impersonatedB.listHeld()).toEqual([]);
+  await expect(impersonatedB.hold(heldInput("did:b", 2, "wrong account"))).rejects.toMatchObject({ code: "held_result_persistence_failed" });
+  active = "did:b";
+  expect(await b.readHeld("note-a")).toMatchObject({ transcript: { sentences: [{ text: "only B reads this" }] } });
+});
+
+test("TC-2785 adding held epoch metadata preserves version-one results", async () => {
+  const { request, transact } = await import("./web/idb");
+  const env = newIdbEnv();
+  const opening = env.factory.open("exo-held-results", 1);
+  opening.onupgradeneeded = () => opening.result.createObjectStore("held", { keyPath: ["did", "sourceId"] });
+  const original = await request(opening);
+  const row = { ...heldInput("did:a", 1, "before upgrade"), holdId: "v1", heldAt: 1, bytes: 123, hash: "old-hash" };
+  await transact(original, ["held"], "readwrite", (tx) => request(tx.objectStore("held").put(row)));
+  original.close();
+  expect(await createHeldResultStore("did:a", { env }).readHeld("note-a")).toMatchObject({ holdId: "v1", transcript: { sentences: [{ text: "before upgrade" }] } });
+});
+
+test("TC-2785 an unused or signed-out held store does not open IndexedDB", async () => {
+  const { spyOn } = await import("bun:test");
+  const env = newIdbEnv();
+  const opening = spyOn(env.factory, "open");
+  try {
+    const inactive = createStore("did:a", { env, isSignedIn: async () => false });
+    expect(opening).not.toHaveBeenCalled();
+    expect(await inactive.readHeld("note-a")).toBeNull();
+    expect(await inactive.listHeld()).toEqual([]);
+    await expect(inactive.hold(heldInput("did:a", 1, "inactive"))).rejects.toMatchObject({ code: "held_result_persistence_failed" });
+    expect(opening).not.toHaveBeenCalled();
+  } finally { opening.mockRestore(); }
+});
+
+test("TC-2785 clearing an account invalidates a store created before its first operation", async () => {
+  const { clearHeldResultsForSignOut } = await import("./heldResults");
+  const env = newIdbEnv();
+  const unused = createHeldResultStore("did:a", { env });
+  await clearHeldResultsForSignOut("did:a", env);
+  await expect(unused.hold(heldInput("did:a", 1, "stale instance"))).rejects.toMatchObject({ code: "held_result_persistence_failed" });
+  expect(await unused.readHeld("note-a")).toBeNull();
 });
