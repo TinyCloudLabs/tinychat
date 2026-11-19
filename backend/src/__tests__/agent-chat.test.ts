@@ -348,7 +348,7 @@ describe("orchestrateToolCalling", () => {
             models++;
             return { ok: true, body: sseStream([
               models === 1
-                ? dataFrame({ choices: [{ delta: { tool_calls: [{ index: 0, id: "size", function: { name: "web_search", arguments: "{}" } }] }, finish_reason: "tool_calls" }] })
+                ? dataFrame({ choices: [{ delta: { tool_calls: [{ index: 0, id: "size", function: { name: "tinycloud_find_meetings", arguments: "{}" } }] }, finish_reason: "tool_calls" }] })
                 : dataFrame({ id: "answer-id", choices: [{ delta: { content: "Safe answer." }, finish_reason: "stop" }] }),
               dataFrame({ usage: { prompt_tokens: 7, completion_tokens: 3 } }),
             ]) };
@@ -385,7 +385,7 @@ describe("orchestrateToolCalling", () => {
         if (String(url).includes("/tools/")) return new Response(body);
         models++;
         return { ok: true, body: sseStream([models === 1
-          ? dataFrame({ choices: [{ delta: { tool_calls: [{ index: 0, id: "flush", function: { name: "web_search", arguments: "{}" } }] }, finish_reason: "tool_calls" }] })
+          ? dataFrame({ choices: [{ delta: { tool_calls: [{ index: 0, id: "flush", function: { name: "tinycloud_find_meetings", arguments: "{}" } }] }, finish_reason: "tool_calls" }] })
           : dataFrame({ choices: [{ delta: { content: "Must not synthesize." }, finish_reason: "stop" }] }),
         ]) };
       }) as typeof fetch;
@@ -1580,7 +1580,8 @@ describe("createAgentChatHandler — A4 paywall + A5 recording", () => {
       let models = 0, dispatches = 0, endCount = 0;
       const entries: unknown[] = [], logs: unknown[] = [], traces: unknown[] = [];
       const fetchImpl = (async (url) => {
-        if (String(url).includes("/tools/")) { dispatches++; return new Response(sizedToolJson(65537)); }
+        // TC-3464: web_search trims up to its 4 x 64K hard bound; one character over it still overflows.
+        if (String(url).includes("/tools/")) { dispatches++; return new Response(sizedToolJson(4 * 65536 + 1)); }
         if (String(url).endsWith("/capabilities")) throw new Error("Unexpected capability request");
         models++;
         if (failure === "provider-error") return new Response("PRIVATE PROVIDER SENTINEL", { status: 429 });
