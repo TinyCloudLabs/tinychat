@@ -151,6 +151,8 @@ function button(host: ParentNode, label: string): HTMLButtonElement {
   return result;
 }
 async function mount(transport: ReturnType<typeof observedSource>) {
+  // Every card open at once (these tests act on several): Expanded, since a phone opens one row at a time.
+  window.localStorage.setItem("tinychat:feed-view-mode:v1", "expanded");
   const host = document.createElement("div"); document.body.append(host);
   const root = createRoot(host); roots.add(root);
   await act(async () => root.render(<FeedViewEntries realEntries={[]} source={transport.source} />));
