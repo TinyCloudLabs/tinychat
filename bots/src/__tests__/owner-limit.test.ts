@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { supervisorConfig } from "../config";
 import { OwnerBotLimit, OwnerManifests } from "../manifest";
-import { type BotApi, createApp } from "../server";
+import { createApp } from "../server";
 
 const tmp = mkdtempSync(join(tmpdir(), "bot-owner-limit-"));
 afterAll(() => rmSync(tmp, { recursive: true, force: true }));
@@ -74,7 +74,8 @@ describe("the service's own limit on one owner's bots", () => {
 
   test("over HTTP a new bot past the limit answers 409 owner_bot_limit, and a known bot is still served", async () => {
     const secret = "s".repeat(64);
-    const app = createApp({ secret, accounts: "*", manifest: manifests(2), bots: {} as unknown as BotApi });
+    // Announcing a bot never asks for a bot's working state: this stand-in fails the test if it is touched.
+    const app = createApp({ secret, accounts: "*", manifest: manifests(2), bots: { forOwner: () => { throw new Error("no bot is needed to announce one"); } } });
     const put = (botKey: string, body: unknown) => app(new Request(`http://bots.internal/v1/bots/${botKey}`, {
       method: "PUT", headers: { authorization: `Bearer ${secret}`, "x-tinycloud-owner": OWNER }, body: JSON.stringify(body),
     }));
