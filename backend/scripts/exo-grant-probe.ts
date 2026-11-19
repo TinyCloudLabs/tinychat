@@ -53,6 +53,19 @@ const ownerManifest = (encryptionNetworkId: string): Manifest => ({
   ],
 });
 
+// The probe backend reads nothing in its own space: it only activates and uses the owner's grants.
+const backendManifest: Manifest = {
+  manifest_version: 1,
+  app_id: "xyz.tinycloud.tinychat.exo-probe.backend",
+  name: "TinyCloud exo grant probe backend",
+  defaults: false,
+  includePublicSpace: false,
+  space: "probe.backend",
+  prefix: "",
+  expiry: "30d",
+  permissions: [],
+};
+
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
@@ -103,7 +116,8 @@ async function main(): Promise<void> {
   const owner = new TinyCloudNode({ privateKey: ownerKey, host, prefix: "probe.owner", autoCreateSpace: true, manifest: ownerManifest(ownerNetworkId), includeAccountRegistryPermissions: false });
   const backendKey = generatePrivateKey();
   const backendDid = `did:pkh:eip155:1:${privateKeyToAccount(backendKey).address.toLowerCase()}`;
-  const backend = new TinyCloudNode({ privateKey: backendKey, host, prefix: "probe.backend", autoCreateSpace: false, includeAccountRegistryPermissions: false });
+  // The SDK default (30 days), stated so the lifetime does not move with the SDK.
+  const backend = new TinyCloudNode({ privateKey: backendKey, host, prefix: "probe.backend", autoCreateSpace: false, manifest: backendManifest, includeAccountRegistryPermissions: false, sessionExpirationMs: 30 * 24 * 60 * 60 * 1000 });
 
   let spaceId = "";
   const written = new Set<string>();

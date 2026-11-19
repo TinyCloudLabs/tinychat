@@ -1,4 +1,4 @@
-import { TinyCloudNode } from "@tinycloud/node-sdk";
+import { TinyCloudNode, type Manifest } from "@tinycloud/node-sdk";
 import { SESSION_EXPIRATION_MS } from "@tinyboilerplate/core";
 
 // ── Configuration ────────────────────────────────────────────────────
@@ -12,6 +12,8 @@ export interface BackendIdentityConfig {
   prefix: string;
   /** Automatically create a space if one doesn't exist */
   autoCreateSpace?: boolean;
+  /** What the backend's session may do: the keys it uses in its own space, nothing else. */
+  manifest: Manifest;
 }
 
 export interface BackendIdentity {
@@ -53,6 +55,7 @@ export async function createBackendIdentity(
     host: config.host ?? "https://node.tinycloud.xyz",
     prefix,
     autoCreateSpace: config.autoCreateSpace ?? true,
+    manifest: config.manifest,
     includeAccountRegistryPermissions: false,
     sessionExpirationMs: SESSION_EXPIRATION_MS,
   });
