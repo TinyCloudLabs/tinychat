@@ -109,7 +109,7 @@ import { Button } from "@/components/ui/button";
 import { FeedView } from "./feed/FeedView";
 import { clearAllHeldAnswers, clearHeldAnswers } from "./feed/answerOutbox";
 import { clearAllPostDrafts, clearPostDrafts } from "./feed/postAnswers";
-import { settleHeldAnswersForSignOut } from "./feed/feedStore";
+import { homeFeedSourceFor, settleHeldAnswersForSignOut } from "./feed/feedStore";
 import { HomeEntryGate } from "./home/HomeEntryGate";
 import { readCachedFirstScreen, readFirstScreen } from "./home/firstScreenStore";
 import { HeaderLiveChip } from "./capture/recorder/HeaderLiveChip";
@@ -191,6 +191,7 @@ import { setSignedIn } from "./lib/signedIn";
 import { NativeSignIn } from "./shell/NativeSignIn";
 import { useNativeSignIn } from "./shell/useNativeSignIn";
 import { lazyTab } from "./shell/lazyTab";
+import { setTinyCloudWebMcpFeedLoader } from "./lib/webMcp";
 
 // Every screen but Feed loads from its own chunk (TC-2882): the entry chunk carries boot and Feed only.
 const ChatWorkspace = lazyTab("Chat", () => import("./chat/ChatWorkspace").then((m) => m.ChatWorkspace));
@@ -255,6 +256,13 @@ export function App() {
   const [did, setDid] = useState<string | null>(null);
   const [spaceId, setSpaceId] = useState<string | null>(null);
   const [tcw, setTcw] = useState<TinyCloudWeb | null>(null);
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get("webmcp") !== "feed") return;
+    setTinyCloudWebMcpFeedLoader(
+      tcw ? () => homeFeedSourceFor(tcw).load(undefined, { feed: true }) : null,
+    );
+    return () => setTinyCloudWebMcpFeedLoader(null);
+  }, [tcw]);
   const [captureFailClosed, setCaptureFailClosed] = useState(false);
   const [captureReadyTcw, setCaptureReadyTcw] = useState<TinyCloudWeb | null>(null);
   const voiceNotePipeline = useMemo(() => tcw ? createVoiceNotePipeline(tcw) : null, [tcw]);
