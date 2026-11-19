@@ -15,6 +15,8 @@ export interface ListRowProps {
   leading?: React.ReactNode;
   title: React.ReactNode;
   meta?: React.ReactNode;
+  /** A second muted line under the meta, cut at one line like it. */
+  subMeta?: React.ReactNode;
   /** Inside the tap target, after the text: not interactive. */
   aside?: React.ReactNode;
   /** Beside the tap target: buttons and links of its own. */
@@ -24,11 +26,13 @@ export interface ListRowProps {
   selected?: boolean;
   /** Cut the title after this many lines. By default it wraps, so large text never clips it. */
   titleLines?: 1 | 2;
+  /** Cut the meta after this many lines (default 1). */
+  metaLines?: 1 | 2;
   className?: string;
   [data: `data-${string}`]: string | undefined;
 }
 
-export function ListRow({ leading, title, meta, aside, trailing, href, onClick, selected = false, titleLines, className, ...data }: ListRowProps) {
+export function ListRow({ leading, title, meta, subMeta, aside, trailing, href, onClick, selected = false, titleLines, metaLines = 1, className, ...data }: ListRowProps) {
   const main = cn(
     "tap-transparent flex min-h-14 min-w-0 flex-1 items-center gap-3 rounded-lg px-2 py-2 text-left transition-colors fine:min-h-11",
     "hover:bg-surface-2 active:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
@@ -46,7 +50,8 @@ export function ListRow({ leading, title, meta, aside, trailing, href, onClick, 
         <span className={cn("text-body [overflow-wrap:anywhere]", titleLines === 1 && "line-clamp-1", titleLines === 2 && "line-clamp-2", selected && "font-semibold")}>
           {title}
         </span>
-        {meta && <span className="line-clamp-1 text-meta text-muted-foreground [overflow-wrap:anywhere]">{meta}</span>}
+        {meta && <span className={cn("text-meta text-muted-foreground [overflow-wrap:anywhere]", metaLines === 1 ? "line-clamp-1" : "line-clamp-2")}>{meta}</span>}
+        {subMeta && <span className="line-clamp-1 text-meta text-muted-foreground [overflow-wrap:anywhere]">{subMeta}</span>}
       </span>
       {aside}
     </>
