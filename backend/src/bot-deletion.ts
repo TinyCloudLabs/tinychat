@@ -17,7 +17,10 @@ export interface DeletionPorts {
 /** `deleted`: the bot is in the deleted list. `waiting` and `failed`: try again later. `not_deleting`: nothing to do. */
 export type DeletionOutcome = "deleted" | "waiting" | "failed" | "not_deleting";
 
-/** Best effort. On success nothing is left to retry; on failure the id stays in the record for a later run. */
+/**
+ * Best effort, and expected to be refused: a node accepts a revocation from the owner, not from the backend, which
+ * only holds the grant. If it does succeed nothing is owed any more; otherwise the id stays in the record.
+ */
 async function revokeAndClear(ports: DeletionPorts, address: string, key: string, cid: string): Promise<void> {
   try {
     await ports.revoke(cid);
