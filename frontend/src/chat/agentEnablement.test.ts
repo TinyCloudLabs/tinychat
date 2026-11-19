@@ -5,11 +5,31 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
 import { agentAccessStatusLabel, connectErrorMessage, createAgentAccessController, probeAgentCapability, probeAgentSession } from "./useAgentEnablement.js";
 import { AgentOwnerMismatchError } from "../lib/agentDelegation.js";
+import type { AgentAccessController } from "./useAgentEnablement.js";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { MemoryRouter } from "react-router-dom";
+import { AgentAccessControls } from "./AgentEnablementBanner.js";
 
 const realFetch = globalThis.fetch;
 afterEach(() => {
   globalThis.fetch = realFetch;
 });
+
+// The unconfirmed-disconnect error state as Settings renders it: an alert, and both
+// actions (Connect and the Disconnect retry) offered and enabled. No wording is matched.
+function expectUnconfirmedDisconnect(c: AgentAccessController) {
+  const snapshot = c.getSnapshot();
+  expect(snapshot.status).toBe(null);
+  expect(snapshot.enableError).toBeTruthy();
+  const html = renderToStaticMarkup(createElement(MemoryRouter, null, createElement(AgentAccessControls, {
+    ...snapshot, onEnable: c.onEnable, onDisconnect: c.onDisconnect, onDelegationError: c.onDelegationError,
+  })));
+  expect(html).toContain('role="alert"');
+  const buttons = html.match(/<button\b[^>]*>/g) ?? [];
+  expect(buttons).toHaveLength(2);
+  expect(buttons.filter(tag => /\sdisabled(=""|\s|>)/.test(tag))).toEqual([]);
+}
 
 describe("probeAgentCapability", () => {
   it("returns 'unavailable' on 404 (route absent)", async () => {
@@ -509,7 +529,7 @@ describe("shared private access controller", () => {
     globalThis.fetch = (async () => new Response(null, { status: 503 })) as typeof fetch;
     const c = controller(); await c.onDisconnect();
     expect(c.getSnapshot().status).toBe(null);
-    expect(c.getSnapshot().enableError).toContain("confirm the disconnect");
+    expectUnconfirmedDisconnect(c);
     expect(c.privateAccessRef.current.active).toBe(false);
     c.dispose();
   });
@@ -560,7 +580,7 @@ describe("shared private access controller", () => {
       const c = mcpController(false, []); await c.refresh();
       await c.onDisconnect();
       expect(c.getSnapshot().status).toBe(null);
-      expect(c.getSnapshot().enableError).toContain("confirm the disconnect");
+      expectUnconfirmedDisconnect(c);
       c.dispose();
     });
 
@@ -570,7 +590,7 @@ describe("shared private access controller", () => {
       await c.onDisconnect();
       expect(c.getSnapshot().capability).not.toBe("enabled");
       expect(c.getSnapshot().status).toBe(null);
-      expect(c.getSnapshot().enableError).toContain("confirm the disconnect");
+      expectUnconfirmedDisconnect(c);
       c.dispose();
     });
 
@@ -584,7 +604,7 @@ describe("shared private access controller", () => {
       await c.onDisconnect();
       expect(revoked).toEqual([]);
       expect(c.getSnapshot().status).toBe(null);
-      expect(c.getSnapshot().enableError).toContain("confirm the disconnect");
+      expectUnconfirmedDisconnect(c);
       c.dispose();
     });
 

@@ -106,7 +106,7 @@ describe("revokeMcpGrants", () => {
 
   it("resolves with zero when no matching grant is active, and throws when a revoke fails", async () => {
     expect(await revokeMcpGrants(tcwWith([{ items: [item("OTHER", "did:key:z6MkOther")] }], []), SERVICE_DID)).toBe(0);
-    await expect(revokeMcpGrants(tcwWith([{ items: [item("A")] }], [], "A"), SERVICE_DID)).rejects.toThrow("confirm the disconnect");
+    await expect(revokeMcpGrants(tcwWith([{ items: [item("A")] }], [], "A"), SERVICE_DID)).rejects.toThrow();
   });
 
   it("leaves a grant to the same DID alone when it also covers data beyond the connectors", async () => {
@@ -122,12 +122,12 @@ describe("revokeMcpGrants", () => {
       delegations: { query: async (options: { cursor?: string }) => options.cursor ? { ok: false, error: {} } : { ok: true, data: { items: [item("A")], nextCursor: "1" } } },
       revokeDelegation: async (cid: string) => { revoked.push(cid); return { ok: true, data: { revoked: true, cid } }; },
     } as unknown as TinyCloudWeb;
-    await expect(revokeMcpGrants(failing, SERVICE_DID)).rejects.toThrow("confirm the disconnect");
+    await expect(revokeMcpGrants(failing, SERVICE_DID)).rejects.toThrow();
     const endless = {
       delegations: { query: async () => ({ ok: true, data: { items: [item("A")], nextCursor: "again" } }) },
       revokeDelegation: async (cid: string) => { revoked.push(cid); return { ok: true, data: { revoked: true, cid } }; },
     } as unknown as TinyCloudWeb;
-    await expect(revokeMcpGrants(endless, SERVICE_DID)).rejects.toThrow("confirm the disconnect");
+    await expect(revokeMcpGrants(endless, SERVICE_DID)).rejects.toThrow();
     expect(revoked).toEqual([]);
   });
 });
