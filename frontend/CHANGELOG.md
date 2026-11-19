@@ -16,6 +16,18 @@
 - TC-2204: Native audience checks accept Home's three exact SQL hook subscriptions only alongside an existing TinyChat data grant.
 - TC-2499: The Home mirror adapter persists close receipts using node-compatible NULL/non-NULL compare-and-set predicates. If the KV mirror is already exactly closed but its receipt is missing, recovery records the original publication ETag without writing the KV copy again, before any gated child handoff. The CLI reports JSON error class, safe message, code, HTTP status when available, and operation step; private SQL bodies and nested causes remain redacted. Exit 2 identifies invalid input, exit 6 known transient failures (including NODE_BUSY and REQUEST_TIMEOUT without HTTP metadata), and exit 1 other runtime failures or OUTCOME_UNKNOWN. Unclassified errors are not labelled bad input; no failure confirms delivery or authorizes an automatic retry.
 
+## 0.15.0-beta.16
+
+### Patch Changes
+
+- 1676a13: Leaving an app inside TinyCloud One, or signing out with one open, doesn't ask you to sign anything. One tells the app to stop using its access right away, and that access ends within an hour.
+
+  Details: TC-3483
+
+- ad02ee7: Disconnect agent in Settings > Agent access ends the access of an agent connected through the TinyCloud connector, and shows Disconnected once the agent can no longer use it. An agent whose access you removed somewhere else shows as not connected. Settings > Agent access also explains what the access is for.
+
+  Details: TC-2196
+
 ## 0.15.0-beta.15
 
 ### Patch Changes
