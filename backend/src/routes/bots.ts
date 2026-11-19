@@ -70,10 +70,6 @@ export function createBotsRouter(opts: { config?: BotsConfig; authMiddleware: Re
   router.use(opts.authMiddleware);
 
   const enabledFor = (req: Request): boolean => Boolean(config && req.user && config.accountAllowed(req.user.address));
-  const upstreamHeaders = (address: string): Record<string, string> => ({
-    authorization: `Bearer ${config!.serviceSecret}`,
-    "x-tinycloud-owner": botOwnerDid(address),
-  });
   const gate = (req: Request, res: Response): string | null => {
     if (!req.user) { res.status(401).json({ error: "unauthenticated", message: "Authentication required" }); return null; }
     if (!enabledFor(req)) { res.status(404).json({ error: "not_found" }); return null; }
@@ -178,13 +174,13 @@ export function createBotsRouter(opts: { config?: BotsConfig; authMiddleware: Re
     if (!address) return;
     const own = await ownBot(res, address, req.params.key);
     if (!own) return;
+    // The service answers the same for a bot that is being deleted; say so here, without asking it.
+    if (own.bot.state === "deleting") { res.status(409).json({ error: "bot_not_active", state: own.bot.state }); return; }
     await readMessages(res, address, own.bot.key);
   });
 
-  // Each send starts a model call in the bot, so it is charged to the paid-chat limiter like /api/agent/chat.
-  router.post("/main/messages", opts.paidLimiter ?? ((_req, _res, next) => next()), async (req, res) => {
-    const address = gate(req, res);
-    if (!address) return;
+  // One turn: the owner's text goes to the bot `key` names, and the service's events stream back.
+  const sendMessage = async (req: Request, res: Response, address: string, key: string): Promise<void> => {
     const text: unknown = req.body?.text;
     if (typeof text !== "string" || text.length < 1 || text.length > MAX_TEXT) {
       res.status(400).json({ error: "invalid", message: "Messages can be up to 8,000 characters." });
@@ -204,10 +200,12 @@ export function createBotsRouter(opts: { config?: BotsConfig; authMiddleware: Re
     res.flushHeaders();
 
     try {
-      const upstream = await (config!.fetchImpl ?? fetch)(`${config!.serviceUrl}/v1/bots/main/messages`, {
+      const url = `${config!.serviceUrl}/v1/bots/${key}/messages`;
+      const body = JSON.stringify({ text });
+      const upstream = await (config!.fetchImpl ?? fetch)(url, {
         method: "POST",
-        headers: { ...upstreamHeaders(address), "content-type": "application/json" },
-        body: JSON.stringify({ text }),
+        headers: botsServiceHeaders(config!, botOwnerDid(address), "POST", url, body),
+        body,
         signal: controller.signal,
       });
       if (!upstream.ok || !upstream.body) throw new Error("upstream");
@@ -231,7 +229,7 @@ export function createBotsRouter(opts: { config?: BotsConfig; authMiddleware: Re
       }
     } catch {
       if ((timedOut || !controller.signal.aborted) && !res.writableEnded) {
-        res.write(`event: error\ndata: ${JSON.stringify(UNAVAILABLE)}\n\n`);
+        res.write(`event: error\ndata: ${JSON.stringify(key === MAIN_BOT_KEY ? UNAVAILABLE : BOT_UNAVAILABLE)}\n\n`);
       }
     } finally {
       clearTimeout(timer);
@@ -239,6 +237,24 @@ export function createBotsRouter(opts: { config?: BotsConfig; authMiddleware: Re
       if (!res.writableEnded) res.end();
       config!.onTurnFinished?.();
     }
+  };
+
+  const paidLimiter: RequestHandler = opts.paidLimiter ?? ((_req, _res, next) => next());
+
+  // Each send starts a model call in the bot, so it is charged to the paid-chat limiter like /api/agent/chat.
+  router.post("/main/messages", paidLimiter, async (req, res) => {
+    const address = gate(req, res);
+    if (!address) return;
+    await sendMessage(req, res, address, MAIN_BOT_KEY);
+  });
+
+  router.post("/:key/messages", paidLimiter, async (req, res) => {
+    const address = gate(req, res);
+    if (!address) return;
+    const own = await ownBot(res, address, req.params.key);
+    if (!own) return;
+    if (own.bot.state !== "active") { res.status(409).json({ error: "bot_not_active", state: own.bot.state }); return; }
+    await sendMessage(req, res, address, own.bot.key);
   });
 
   return router;

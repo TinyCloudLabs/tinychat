@@ -216,8 +216,8 @@ describe("the bots registry", () => {
 });
 
 describe("may one bot message another", () => {
-  const bot = (key: string, name: string, state = "active", environment = "private") =>
-    ({ key, name, shape: "pebble", colour: "blue", environment, state, createdAt: T0.toISOString() });
+  const bot = (key: string, name: string, state = "active", environment = "private", createdAt = T0.toISOString()) =>
+    ({ key, name, shape: "pebble", colour: "blue", environment, state, createdAt });
   const A = "a".repeat(32);
   const SUSPENDED = "5".repeat(32);
   const DELETING = "d".repeat(32);
@@ -281,13 +281,12 @@ describe("may one bot message another", () => {
 
   test("a turn may message the owner's other active bots of its own environment, Main first, then oldest first", async () => {
     const NEWER = "b".repeat(32);
-    const at = (entry: ReturnType<typeof bot>, createdAt: string) => ({ ...entry, createdAt });
     const kv = store();
     kv.rows.set(KEY, {
       version: 1,
       value: JSON.stringify({
         v: 1, seq: 9, deleted: [],
-        bots: [at(bot(NEWER, "Newer"), "2026-11-19T02:00:00.000Z"), bot(SUSPENDED, "Paused", "suspended"), at(bot(A, "Older"), "2026-11-19T01:00:00.000Z"),
+        bots: [bot(NEWER, "Newer", "active", "private", "2026-11-19T02:00:00.000Z"), bot(SUSPENDED, "Paused", "suspended"), bot(A, "Older", "active", "private", "2026-11-19T01:00:00.000Z"),
           bot("main", "Main"), bot(DELETING, "Leaving", "deleting"), bot(REGULAR, "Regular", "active", "regular")],
       }),
     });

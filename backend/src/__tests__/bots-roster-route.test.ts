@@ -4,7 +4,7 @@ import { createCsrfMiddleware, issueSessionToken } from "@tinyboilerplate/server
 import { createAuthMiddleware } from "../middleware/auth.js";
 import { BotsRegistry } from "../bots-registry.js";
 import { botsFromEnv, createBotsRouter } from "../routes/bots.js";
-import { fakeRegistryStore } from "./helpers/fake-registry-store.js";
+import { fakeRegistryStore, type FakeRegistryStore } from "./helpers/fake-registry-store.js";
 
 const sessionKey = `0x${"03".repeat(32)}`;
 const owner = "0xAAAAaaaaAAAAaaaaAAAAaaaaAAAAaaaaAAAAaaaa";
@@ -189,6 +189,65 @@ describe("messages of a bot other than Main", () => {
       expect(response.status).toBe(503);
       expect(await response.json()).toEqual({ error: "bots_unavailable" });
       expect(run.seen).toHaveLength(0);
+    } finally { await run.close(); }
+  });
+});
+
+describe("sending a message to a bot other than Main", () => {
+  const wanted = { name: "Research", shape: "sprout", colour: "teal" };
+  const KEY = "1".repeat(32);
+  const stream = 'event: status\ndata: {"state":"working"}\n\nevent: delta\ndata: {"text":"pong"}\n\nevent: done\ndata: {"messageId":"m1"}\n\n';
+  const sse = (body: string) => new Response(body, { headers: { "content-type": "text/event-stream" } });
+  /** A service that takes announcements and answers every send with `stream`. */
+  const service: Upstream = call => (call.method === "PUT" ? Response.json({ state: "active" }) : sse(stream));
+
+  test("streams the service's events for that bot back to the owner", async () => {
+    const run = await setup(service);
+    try {
+      const headers = await run.headersFor(owner);
+      expect((await fetch(run.base, { method: "POST", headers, body: JSON.stringify(wanted) })).status).toBe(201);
+      const response = await fetch(`${run.base}/${KEY}/messages`, { method: "POST", headers, body: JSON.stringify({ text: "ping" }) });
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-type")).toContain("text/event-stream");
+      expect(await response.text()).toBe(stream);
+      const call = run.seen.at(-1)!;
+      expect(call).toMatchObject({ method: "POST", url: `http://bots.test/v1/bots/${KEY}/messages`, body: JSON.stringify({ text: "ping" }) });
+      expect(call.headers.get("x-tinycloud-owner")).toBe(`did:pkh:eip155:1:${owner.toLowerCase()}`);
+      expect(call.headers.get("authorization")).toBe(`Bearer ${secret}`);
+    } finally { await run.close(); }
+  });
+
+  const SUSPENDED = "5".repeat(32);
+  const DELETING = "d".repeat(32);
+  /** Puts a record straight into the store: Main, one suspended bot and one that is being deleted. */
+  const seedStates = (kv: FakeRegistryStore) => kv.rows.set(`bots/registry/${owner.toLowerCase()}`, {
+    version: 1,
+    value: JSON.stringify({ v: 1, seq: 4, deleted: [], bots: [main, { ...main, key: SUSPENDED, name: "Paused", state: "suspended" }, { ...main, key: DELETING, name: "Leaving", state: "deleting" }] }),
+  });
+
+  test("a bot that is suspended or being deleted takes no message, and the service is not called", async () => {
+    const run = await setup(service);
+    try {
+      seedStates(run.kv);
+      const headers = await run.headersFor(owner);
+      for (const [key, state] of [[SUSPENDED, "suspended"], [DELETING, "deleting"]] as const) {
+        const response = await fetch(`${run.base}/${key}/messages`, { method: "POST", headers, body: JSON.stringify({ text: "ping" }) });
+        expect([state, response.status, await response.json()]).toEqual([state, 409, { error: "bot_not_active", state }]);
+      }
+      expect(run.seen).toHaveLength(0);
+    } finally { await run.close(); }
+  });
+
+  test("a suspended bot's messages can still be read, and a bot that is being deleted answers 409", async () => {
+    const run = await setup(() => Response.json({ messages: [] }));
+    try {
+      seedStates(run.kv);
+      const headers = await run.headersFor(owner);
+      const suspended = await fetch(`${run.base}/${SUSPENDED}/messages`, { headers });
+      expect([suspended.status, await suspended.json()]).toEqual([200, { messages: [] }]);
+      const deleting = await fetch(`${run.base}/${DELETING}/messages`, { headers });
+      expect([deleting.status, await deleting.json()]).toEqual([409, { error: "bot_not_active", state: "deleting" }]);
+      expect(run.seen.map(call => call.url)).toEqual([`http://bots.test/v1/bots/${SUSPENDED}/messages`]);
     } finally { await run.close(); }
   });
 });
