@@ -88,7 +88,7 @@ afterEach(async () => {
 async function mount(source: HomeFeedSource) {
   restore ??= installDom();
   // Every card open at once (these tests act on several): Expanded, since a phone opens one row at a time.
-  window.localStorage.setItem("tinychat:feed-view-mode:v1", "expanded");
+  if (window.localStorage.getItem("tinychat:feed-view-mode:v1") === null) window.localStorage.setItem("tinychat:feed-view-mode:v1", "expanded");
   const host = document.createElement("div"); document.body.append(host);
   const root = createRoot(host); roots.add(root);
   await act(async () => root.render(<FeedViewEntries realEntries={[]} source={source} />));
@@ -752,12 +752,27 @@ async function closeInNewRevision(fixture: ReturnType<typeof typedFixture>, host
 
 test("an ask Sam answered that its agent then closes in a new revision is one card in History, reading Answered", async () => {
   const fixture = typedFixture(syntheticRecord("ask"));
+  restore ??= installDom();
+  window.localStorage.setItem("tinychat:feed-view-mode:v1", "compact");
   const view = await mount(fixture.source);
   const timer = installFakeClock(); clock = timer;
   await act(async () => button(card(view.host, String(fixture.entry.state.card.title)), "Accept recommendation").click());
   await timer.advance(5000);
   expect(fixture.saved).toHaveLength(1);
   expect(await closeInNewRevision(fixture, view.host, "answered")).toEqual(["Answered"]);
+});
+
+test("current status reads Answered: the History card of an ask its agent closed in a new revision, with every card open", async () => {
+  const fixture = typedFixture(syntheticRecord("ask"));
+  const view = await mount(fixture.source);
+  const timer = installFakeClock(); clock = timer;
+  await act(async () => button(card(view.host, String(fixture.entry.state.card.title)), "Accept recommendation").click());
+  await timer.advance(5000);
+  expect(fixture.saved).toHaveLength(1);
+  const statuses = await closeInNewRevision(fixture, view.host, "answered");
+  // The card the owner was answering may still sit in Updates on its own issuance (reading Waiting); the one in History is current.
+  expect(statuses.at(-1)).toBe("Answered");
+  expect(statuses.filter((status) => status === "Answered")).toHaveLength(1);
 });
 
 test("a typed ask's timing line says Due and Expires in the feed's words; one that never expires says nothing of it", async () => {
