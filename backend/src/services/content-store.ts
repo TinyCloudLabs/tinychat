@@ -1602,7 +1602,15 @@ export class ContentStore implements ContentSink, RetentionGuard {
   // ── Sealed I/O ─────────────────────────────────────────────────────
 
   private async sweepDayContent(source: string, address: string) {
-    const summary = { swept: 0, bytesFreed: 0, tombstones: 0, storedAtBackfilled: 0, unreadableIndex: false };
+    const summary = {
+      swept: 0,
+      bytesFreed: 0,
+      tombstones: 0,
+      storedAtBackfilled: 0,
+      unreadableIndex: false,
+      overdue: 0,
+      oldestOverdueAgeMs: 0,
+    };
     let index: ContentCleanupIndex;
     let keys: Map<number, Buffer>;
     try {
