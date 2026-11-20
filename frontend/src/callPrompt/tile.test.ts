@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 
 import { installDom } from "@/test/dom";
-import { CALL_PROMPT_EVENT, mountCallPromptTile, readCallPromptPhase, type CallPromptBridge, type CallPromptTile } from "./tile";
+import { CALL_PROMPT_CLICK_GUARD_MS, CALL_PROMPT_EVENT, mountCallPromptTile, readCallPromptPhase, type CallPromptBridge, type CallPromptTile } from "./tile";
 
 // The "Record this call" tile over a scripted bridge: it shows the phase the native side sends, and passes on the two
 // clicks without ever being left stuck.
@@ -48,13 +48,16 @@ afterEach(() => {
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-async function mount(state?: unknown) {
+/** Mounts the tile on a clock of its own; unless `guarded`, the clock then moves past the click guard. */
+async function mount(state?: unknown, { guarded = false } = {}) {
   restoreDom = installDom();
   const root = document.createElement("main");
   document.body.append(root);
   const fake = fakeBridge(state);
-  tile = mountCallPromptTile(root, fake.bridge);
+  let clock = 1_000;
+  tile = mountCallPromptTile(root, fake.bridge, { now: () => clock });
   await settle();
+  if (!guarded) clock += CALL_PROMPT_CLICK_GUARD_MS;
   const button = (name: string) =>
     [...root.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent === name) ?? null;
   return {
@@ -64,6 +67,7 @@ async function mount(state?: unknown) {
     dismiss: () => button("Not now"),
     dot: () => root.querySelector(".cp-dot"),
     label: () => root.querySelector(".cp-label")?.textContent ?? null,
+    advance: (ms: number) => { clock += ms; },
   };
 }
 
@@ -215,6 +219,36 @@ describe("the call prompt tile", () => {
     answer({ phase: "offered" });
     await settle();
     expect(root.querySelector(".cp-dot")).not.toBeNull();
+  });
+
+  test("a newly offered tile ignores clicks for half a second, without looking any different", async () => {
+    const view = await mount({ phase: "offered" }, { guarded: true });
+    view.advance(100);
+    view.start()!.click();
+    view.dismiss()!.click();
+    expect(view.invoked).toEqual(["call_prompt_state"]);
+    expect(view.start()?.disabled).toBe(false);
+    expect(view.dismiss()?.disabled).toBe(false);
+    view.advance(500);
+    view.start()!.click();
+    expect(view.invoked).toEqual(["call_prompt_state", "call_prompt_start"]);
+  });
+
+  test("the guard starts again when a new offer follows hidden, and not for an offer sent again", async () => {
+    const view = await mount({ phase: "offered" }, { guarded: true });
+    view.advance(600);
+    view.emit({ phase: "offered" });
+    view.dismiss()!.click();
+    expect(view.invoked).toEqual(["call_prompt_state", "call_prompt_dismiss"]);
+    view.emit({ phase: "hidden" });
+    view.advance(1000);
+    view.emit({ phase: "offered" });
+    view.advance(100);
+    view.start()!.click();
+    expect(view.invoked).toEqual(["call_prompt_state", "call_prompt_dismiss"]);
+    view.advance(500);
+    view.start()!.click();
+    expect(view.invoked).toEqual(["call_prompt_state", "call_prompt_dismiss", "call_prompt_start"]);
   });
 
   test("dispose stops listening", async () => {

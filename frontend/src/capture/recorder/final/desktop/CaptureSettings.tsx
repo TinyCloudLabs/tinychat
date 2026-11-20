@@ -35,6 +35,7 @@ import {
   type WhisperModelId,
   type WhisperModelInfo,
 } from "@/lib/voiceNotes/desktopCaptureExtras";
+import { commandAbsent } from "@/lib/voiceNotes/desktop/tauriDesktopCaptureExtras";
 import { useAudioInputs, type AudioInputsSource } from "../useAudioInputs";
 import {
   adjacentRadio,
@@ -725,9 +726,10 @@ export function CaptureSettings({
     });
   };
 
-  // Offer to record when a call starts: read when the popover opens. Shown only when the app answers
-  // `{ enabled, supported: true }`; any other answer, or a failed read, hides it until the app restarts (a build
-  // without the commands has by then dropped them from the extras too). Independent of the other switches.
+  // Offer to record when a call starts: read each time the popover opens. Shown only when the app answers
+  // `{ enabled, supported: true }`. `supported: false`, or a build without the command, hides it until the app
+  // restarts; any other answer or failure hides it for this opening only, and the next opening asks again.
+  // Independent of the other switches.
   const callPromptApi = extras?.callPrompt ?? null;
   const [callPromptOn, setCallPromptOn] = useState<boolean | null>(null);
   const [callPromptSwitch, setCallPromptSwitch] = useState<{ pending: boolean; error: string | null }>(NO_SWITCH);
@@ -738,19 +740,21 @@ export function CaptureSettings({
     if (!open || !callPromptApi || callPromptGone.current) return;
     const turn = ++callPromptTurn.current;
     setCallPromptSwitch(NO_SWITCH);
-    const hide = () => {
-      callPromptGone.current = true;
+    const hide = (forSession: boolean) => {
+      if (forSession) callPromptGone.current = true;
       setCallPromptOn(null);
     };
     callPromptApi.get().then((answer) => {
       if (turn !== callPromptTurn.current) return;
       const state = readCallPromptState(answer);
       if (state?.supported) setCallPromptOn(state.enabled);
-      else hide();
+      else hide(state?.supported === false);
     }, (caught: unknown) => {
       if (turn !== callPromptTurn.current) return;
-      if (extras?.callPrompt) console.error("[CaptureSettings] Could not read the call prompt setting", caught);
-      hide();
+      // The Tauri extras drop the member once the command is refused as absent; they have said so once already.
+      const absent = !extras?.callPrompt || commandAbsent("call_prompt_get", caught);
+      if (!absent) console.error("[CaptureSettings] Could not read the call prompt setting", caught);
+      hide(absent);
     });
     return () => { callPromptTurn.current++; };
   }, [open, callPromptApi, extras]);
