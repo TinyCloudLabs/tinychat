@@ -53,3 +53,30 @@ describe("the call prompt tile's page", () => {
     }
   });
 });
+
+describe("the recording dot", () => {
+  const css = read("callPrompt.css");
+  const rule = (selector: string, within = css) => {
+    const at = within.indexOf(`${selector} {`);
+    expect(at).toBeGreaterThanOrEqual(0);
+    return within.slice(at, within.indexOf("}", at));
+  };
+
+  test("pulses slowly while recording (one cycle in 1.5 to 2 s), CSS only", () => {
+    const duration = /animation:\s*cp-pulse\s+([\d.]+)s/.exec(rule(".cp-rec"))?.[1];
+    expect(Number(duration)).toBeGreaterThanOrEqual(1.5);
+    expect(Number(duration)).toBeLessThanOrEqual(2);
+    expect(css).toContain("@keyframes cp-pulse");
+  });
+
+  test("is still and dimmed while paused", () => {
+    const paused = rule('.cp-bar[data-paused="true"] .cp-rec');
+    expect(paused).toContain("animation: none");
+    expect(paused).toMatch(/opacity:\s*0\.\d/);
+  });
+
+  test("does not move with reduced motion", () => {
+    const reduced = css.slice(css.indexOf("@media (prefers-reduced-motion: reduce)"));
+    expect(rule(".cp-rec", reduced)).toContain("animation: none");
+  });
+});

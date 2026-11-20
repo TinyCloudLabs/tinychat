@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 
 import { installDom } from "@/test/dom";
-import { CALL_PROMPT_CLICK_GUARD_MS, CALL_PROMPT_EVENT, mountCallPromptTile, readCallPromptPhase, type CallPromptBridge, type CallPromptTile } from "./tile";
+import { CALL_PROMPT_CLICK_GUARD_MS, CALL_PROMPT_EVENT, CALL_PROMPT_LOCAL_ADVANCE_MS, formatCallPromptElapsed, mountCallPromptTile, readCallPromptState, readCallPromptPhase, type CallPromptBridge, type CallPromptTile } from "./tile";
 
 // The "Record this call" tile over a scripted bridge: it shows the phase the native side sends, and passes on the two
 // clicks without ever being left stuck.
@@ -55,7 +55,11 @@ async function mount(state?: unknown, { guarded = false } = {}) {
   document.body.append(root);
   const fake = fakeBridge(state);
   let clock = 1_000;
-  tile = mountCallPromptTile(root, fake.bridge, { now: () => clock });
+  const ticks = new Set<() => void>();
+  tile = mountCallPromptTile(root, fake.bridge, {
+    now: () => clock,
+    every: (tick) => { ticks.add(tick); return () => void ticks.delete(tick); },
+  });
   await settle();
   if (!guarded) clock += CALL_PROMPT_CLICK_GUARD_MS;
   const button = (name: string) =>
@@ -68,6 +72,12 @@ async function mount(state?: unknown, { guarded = false } = {}) {
     dot: () => root.querySelector(".cp-dot"),
     label: () => root.querySelector(".cp-label")?.textContent ?? null,
     advance: (ms: number) => { clock += ms; },
+    /** Moves the clock and runs the tile's ticker, as the interval would. */
+    tick: (ms: number) => { clock += ms; for (const tick of [...ticks]) tick(); },
+    ticking: () => ticks.size,
+    stop: () => button("Stop"),
+    bar: () => root.querySelector<HTMLElement>(".cp-bar"),
+    time: () => root.querySelector(".cp-time")?.textContent ?? null,
   };
 }
 
@@ -256,5 +266,130 @@ describe("the call prompt tile", () => {
     tile!.dispose();
     tile = null;
     expect(view.unlistened()).toBe(1);
+  });
+});
+
+describe("the time on the recording bar", () => {
+  test("m:ss under an hour, h:mm:ss from one hour", () => {
+    expect(formatCallPromptElapsed(0)).toBe("0:00");
+    expect(formatCallPromptElapsed(999)).toBe("0:00");
+    expect(formatCallPromptElapsed(59_999)).toBe("0:59");
+    expect(formatCallPromptElapsed(60_000)).toBe("1:00");
+    expect(formatCallPromptElapsed(754_000)).toBe("12:34");
+    expect(formatCallPromptElapsed(3_599_999)).toBe("59:59");
+    expect(formatCallPromptElapsed(3_600_000)).toBe("1:00:00");
+    expect(formatCallPromptElapsed(3_725_000)).toBe("1:02:05");
+    expect(formatCallPromptElapsed(36_000_000 + 61_000)).toBe("10:01:01");
+  });
+
+  test("the state: elapsedMs and paused only in recording; a bad elapsedMs is absent", () => {
+    expect(readCallPromptState({ phase: "recording", elapsedMs: 5000, paused: true })).toEqual({ phase: "recording", elapsedMs: 5000, paused: true });
+    expect(readCallPromptState({ phase: "recording", elapsedMs: 5000 })).toEqual({ phase: "recording", elapsedMs: 5000, paused: false });
+    expect(readCallPromptState({ phase: "recording" })).toEqual({ phase: "recording", paused: false });
+    for (const elapsedMs of ["5000", -1, Number.NaN, Number.POSITIVE_INFINITY, null])
+      expect(readCallPromptState({ phase: "recording", elapsedMs })).toEqual({ phase: "recording", paused: false });
+    expect(readCallPromptState({ phase: "offered", elapsedMs: 5000, paused: true })).toEqual({ phase: "offered", paused: false });
+  });
+});
+
+describe("the recording bar", () => {
+  test("a red dot, the time and Stop, nothing else; the time is not a live region", async () => {
+    const view = await mount({ phase: "recording", elapsedMs: 754_000, paused: false });
+    expect(view.bar()).not.toBeNull();
+    expect(view.root.querySelector(".cp-tile")).toBeNull();
+    expect(view.root.textContent).toBe("12:34Stop");
+    expect(view.bar()?.dataset.paused).toBe("false");
+    expect(view.root.querySelector(".cp-rec")?.getAttribute("role")).toBe("img");
+    expect(view.root.querySelector(".cp-time")?.getAttribute("role")).toBe("timer");
+    expect(view.root.querySelector("[aria-live]")).toBeNull();
+    expect(view.stop()?.getAttribute("aria-label")).toBeNull();
+    expect(view.stop()?.disabled).toBe(false);
+    expect(view.root.querySelector("[title]")).toBeNull();
+  });
+
+  test("advances the time itself between native states, never more than a second ahead", async () => {
+    // `guarded` keeps the clock where the state arrived.
+    const view = await mount({ phase: "recording", elapsedMs: 10_000, paused: false }, { guarded: true });
+    expect(view.ticking()).toBe(1);
+    view.tick(500);
+    expect(view.time()).toBe("0:10");
+    view.tick(500);
+    expect(view.time()).toBe("0:11");
+    // No native state for a while: it stops one second ahead of the last one.
+    view.tick(5000);
+    expect(view.time()).toBe("0:11");
+    expect(CALL_PROMPT_LOCAL_ADVANCE_MS).toBe(1000);
+    // The native value wins when it comes, ahead or behind.
+    view.emit({ phase: "recording", elapsedMs: 30_400, paused: false });
+    expect(view.time()).toBe("0:30");
+    expect(view.ticking()).toBe(1);
+  });
+
+  test("paused: the time stands still, the dot is dimmed, nothing ticks", async () => {
+    const view = await mount({ phase: "recording", elapsedMs: 65_000, paused: true });
+    expect(view.bar()?.dataset.paused).toBe("true");
+    expect(view.root.querySelector(".cp-rec")?.getAttribute("aria-label")).toBe("Paused");
+    expect(view.ticking()).toBe(0);
+    view.tick(3000);
+    expect(view.time()).toBe("1:05");
+    view.emit({ phase: "recording", elapsedMs: 65_000, paused: false });
+    expect(view.bar()?.dataset.paused).toBe("false");
+    expect(view.ticking()).toBe(1);
+    view.emit({ phase: "recording", elapsedMs: 66_000, paused: true });
+    expect(view.ticking()).toBe(0);
+  });
+
+  test("Stop sends one command and stays disabled until the next state", async () => {
+    const view = await mount({ phase: "recording", elapsedMs: 1000, paused: false });
+    view.stop()!.click();
+    view.stop()!.click();
+    expect(view.invoked).toEqual(["call_prompt_state", "call_prompt_stop"]);
+    expect(view.stop()?.disabled).toBe(true);
+    view.answer("call_prompt_stop").resolve();
+    await settle();
+    expect(view.stop()?.disabled).toBe(true);
+    view.emit({ phase: "recording", elapsedMs: 2000, paused: false });
+    expect(view.stop()?.disabled).toBe(false);
+    view.emit({ phase: "hidden" });
+    expect(view.root.childElementCount).toBe(0);
+    expect(view.ticking()).toBe(0);
+  });
+
+  test("a failed Stop re-enables the button and logs one error", async () => {
+    const error = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const view = await mount({ phase: "recording", elapsedMs: 1000, paused: false });
+      view.stop()!.click();
+      view.answer("call_prompt_stop").reject(new Error("main window gone"));
+      await settle();
+      expect(view.stop()?.disabled).toBe(false);
+      expect(error).toHaveBeenCalledTimes(1);
+    } finally { error.mockRestore(); }
+  });
+
+  test("an older native side (recording without elapsedMs) shows the dot only", async () => {
+    const view = await mount({ phase: "recording" });
+    expect(view.bar()).toBeNull();
+    expect(view.dot()).not.toBeNull();
+    expect(view.stop()).toBeNull();
+    expect(view.ticking()).toBe(0);
+  });
+
+  test("offered, starting, recording, hidden: each renders from its state", async () => {
+    const view = await mount({ phase: "offered" });
+    expect(view.start()?.disabled).toBe(false);
+    view.start()!.click();
+    expect(view.invoked).toEqual(["call_prompt_state", "call_prompt_start"]);
+    view.emit({ phase: "starting" });
+    expect(view.start()?.disabled).toBe(true);
+    expect(view.bar()).toBeNull();
+    view.emit({ phase: "recording", elapsedMs: 0, paused: false });
+    expect(view.root.querySelector(".cp-tile")).toBeNull();
+    expect(view.time()).toBe("0:00");
+    view.emit({ phase: "hidden" });
+    expect(view.root.childElementCount).toBe(0);
+    view.emit({ phase: "offered" });
+    expect(view.bar()).toBeNull();
+    expect(view.start()).not.toBeNull();
   });
 });
