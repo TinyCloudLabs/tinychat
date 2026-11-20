@@ -48,10 +48,18 @@ impl StartRequest {
     }
 }
 
-/// True once per request: the web app then starts (or shows) the recorder.
+/// True once per request: the web app then starts (or shows) the recorder. The call prompt is
+/// told of each claim, so its status file can say how long one took after its "Start".
 #[tauri::command]
-pub fn recorder_take_start_request(request: tauri::State<'_, StartRequest>) -> bool {
-    request.take(Instant::now())
+pub fn recorder_take_start_request(
+    app: tauri::AppHandle,
+    request: tauri::State<'_, StartRequest>,
+) -> bool {
+    let claimed = request.take(Instant::now());
+    if claimed {
+        crate::call_prompt::start_claimed(&app);
+    }
+    claimed
 }
 
 const MENU_RECORD: &str = "record";

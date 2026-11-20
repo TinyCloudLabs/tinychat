@@ -4,6 +4,7 @@ use call_prompt::apps::Kind;
 use call_prompt::mic::{AudioProcesses, ScanError};
 use call_prompt::service::{spawn_with, Clock, Host, Report, Watcher, PANIC_REST};
 use call_prompt::session::{Action, Phase, Stage, TICK};
+use call_prompt::status::StatusFile;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -654,4 +655,107 @@ fn turning_the_setting_off_during_a_scan_leaves_nothing_behind() {
     assert!(rig.app.take().is_empty());
     let last = *rig.app.reports.lock().unwrap().last().unwrap();
     assert_eq!(last.stage, Stage::Idle);
+}
+
+/// The rig's status file, in a folder of its own that goes with the test.
+struct StatusFolder(std::path::PathBuf);
+
+impl StatusFolder {
+    fn new(rig: &Rig) -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "call-prompt-watcher-status-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        rig.watcher.keep_status(StatusFile::new(&dir));
+        StatusFolder(dir)
+    }
+
+    fn read(&self) -> serde_json::Value {
+        let text = std::fs::read_to_string(self.0.join("_status.json")).unwrap();
+        serde_json::from_str(&text).unwrap()
+    }
+}
+
+impl Drop for StatusFolder {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+#[test]
+fn the_status_file_follows_the_watcher_without_any_id() {
+    let rig = Rig::new();
+    let folder = StatusFolder::new(&rig);
+    rig.watcher.set_enabled(true);
+    rig.watcher.tick();
+    let status = folder.read();
+    assert_eq!(status["enabled"], true);
+    assert_eq!(status["phase"], "hidden");
+    assert_eq!(status["gate"], "open");
+    assert!(status["scan_ms"].is_number());
+    assert_eq!(status["kind"], serde_json::Value::Null);
+    rig.clock.advance(TICK);
+    rig.audio.zoom.store(true, Ordering::SeqCst);
+    // Heard at the next quiet scan (6 s), offered 8 s later.
+    rig.run(16);
+    let status = folder.read();
+    assert_eq!(status["phase"], "offered");
+    assert_eq!(status["stage"], "offered");
+    assert_eq!(status["kind"], "native");
+    let text = std::fs::read_to_string(folder.0.join("_status.json")).unwrap();
+    assert!(!text.to_lowercase().contains("zoom"), "{text}");
+    // The setting goes off: said at once.
+    rig.watcher.set_enabled(false);
+    let status = folder.read();
+    assert_eq!(status["enabled"], false);
+    assert_eq!(status["gate"], "off");
+    assert_eq!(status["phase"], "hidden");
+}
+
+#[test]
+fn the_status_file_says_how_long_the_start_request_took_to_be_claimed() {
+    let rig = Rig::new();
+    let folder = StatusFolder::new(&rig);
+    rig.offer();
+    rig.watcher.start();
+    rig.clock.advance(Duration::from_millis(1500));
+    rig.watcher.start_claimed();
+    rig.app.recording.store(true, Ordering::SeqCst);
+    rig.app.live.store(true, Ordering::SeqCst);
+    rig.watcher.tick();
+    assert_eq!(
+        folder.read()["last_start"],
+        serde_json::json!({ "claimed_after_ms": 1500, "timed_out": false })
+    );
+    // A claim with no "Start" before it (the shortcut) changes nothing.
+    rig.watcher.start_claimed();
+    rig.run(4);
+    assert_eq!(folder.read()["last_start"]["claimed_after_ms"], 1500);
+}
+
+#[test]
+fn the_status_file_says_when_the_wait_for_the_recording_ran_out() {
+    let rig = Rig::new();
+    let folder = StatusFolder::new(&rig);
+    rig.offer();
+    rig.watcher.start();
+    // The web app never claims the request (its window is hidden and slow): the wait runs out.
+    rig.run(10);
+    assert!(rig.app.take().contains(&Action::Present));
+    assert_eq!(
+        folder.read()["last_start"],
+        serde_json::json!({ "claimed_after_ms": null, "timed_out": true })
+    );
+    // A late claim is still measured.
+    rig.watcher.start_claimed();
+    rig.run(32);
+    let last = folder.read()["last_start"].clone();
+    assert_eq!(last["timed_out"], true);
+    assert!(
+        last["claimed_after_ms"].as_u64().unwrap() >= 10_000,
+        "{last}"
+    );
 }

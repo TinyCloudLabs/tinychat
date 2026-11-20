@@ -13,6 +13,7 @@
 //!   gate, then a process scan only when needed) and drives the session.
 //! - [`tile`]: the contract with the tile's page (window label, event, phases) and where the tile
 //!   docks on the screen.
+//! - [`status`]: what the watcher last did, in a small file, for builds without a log.
 //!
 //! Privacy: no audio is read. A scan reads the process list and whether each process captures;
 //! for capturing processes only, the process id, the bundle id and whether it plays. A bundle id
@@ -27,4 +28,5 @@ pub mod apps;
 pub mod mic;
 pub mod service;
 pub mod session;
+pub mod status;
 pub mod tile;

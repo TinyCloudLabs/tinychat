@@ -16,6 +16,7 @@ use std::time::Duration;
 
 use call_prompt::service::{self, Report, Worker};
 use call_prompt::session::{Action, Phase};
+use call_prompt::status::StatusFile;
 use call_prompt::tile::{self, Setting, TileState};
 use tauri::{Emitter, Manager};
 
@@ -135,6 +136,15 @@ pub fn start(app: &tauri::AppHandle) {
     }
     match service::spawn(Host(app.clone())) {
         Ok(worker) => {
+            // `<app data>/voice-notes/call-prompt/_status.json`, beside the names feature's own:
+            // what the watcher last did, for builds without a log.
+            match app.path().app_data_dir() {
+                Ok(app_data) => worker.keep_status(StatusFile::in_app_data(&app_data)),
+                Err(error) => {
+                    tracing::warn!(target: "exo_dev::call_prompt", operation = "status_file",
+                        error = %error);
+                }
+            }
             app.manage(worker);
         }
         Err(error) => {
@@ -157,6 +167,14 @@ pub fn start(app: &tauri::AppHandle) {
             }
         }
     });
+}
+
+/// The web app claimed a start request. After a "Start" on the tile, the status file says how
+/// long that took.
+pub(crate) fn start_claimed(app: &tauri::AppHandle) {
+    if let Some(prompt) = app.try_state::<Prompt>() {
+        prompt.start_claimed();
+    }
 }
 
 /// Stops the watcher's thread as the app exits.
