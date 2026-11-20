@@ -26,6 +26,8 @@ export type { AudioBlobStore, DecodeCheck };
 
 /** One native call never moves more than this much audio (matches the shells). */
 export const MAX_READ_CHUNK_BYTES = 4 * 1024 * 1024;
+/** One read of a playback Blob (readNoteAudioBlob): the size of an upload part. */
+export const PLAYBACK_PART_BYTES = 1024 * 1024;
 export const MAX_RECOVERY_ATTEMPTS = 3;
 /** Quarantine reason of a recovered prefix the browser cannot decode. */
 export const UNDECODABLE_REASON = "undecodable_audio";
@@ -204,6 +206,11 @@ export interface WebStore extends PluginProtocol {
   retryPreparingAudio(id: string): Promise<void>;
   /** The whole audio of a pending recording, for playback. */
   readNoteAudio(id: string): Promise<{ bytes: Uint8Array; mimeType: string }>;
+  /**
+   * The audio of a pending recording as one Blob for playback, read in parts of PLAYBACK_PART_BYTES. Each part
+   * becomes a Blob of its own as it arrives, so this page never holds more than one part of the recording.
+   */
+  readNoteAudioBlob(id: string): Promise<Blob>;
   /** Drops a session that captured nothing (no tombstone: there is nothing to protect). Rejects `audio_not_empty` rather than delete durable bytes. */
   dropEmptySession(id: string): Promise<void>;
   /** Durably marks a live session discarded before native capture is stopped. */
@@ -577,6 +584,26 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
       const bytes = await audio.read(id, 0, size);
       await store.assertAccess(id);
       return { bytes, mimeType: note.mimeType };
+    },
+
+    async readNoteAudioBlob(id) {
+      const note = await transact(db, [STORES.kv, STORES.notes, STORES.tombstones], "readonly", (tx) => checkedNote(tx, id));
+      if (note.ledger?.localAudio?.state !== undefined && note.ledger.localAudio.state !== "ready") {
+        throw failure(note.ledger.localAudio.state === "failed" ? "audio_preparation_failed" : "audio_preparing");
+      }
+      const size = await audio.size(id);
+      if (size === 0) throw failure("not_found");
+      const parts: Blob[] = [];
+      for (let offset = 0; offset < size;) {
+        const length = Math.min(PLAYBACK_PART_BYTES, size - offset);
+        const bytes = await audio.read(id, offset, length);
+        if (bytes.byteLength !== length) throw failure("audio_read_failed", `Read ${bytes.byteLength} of ${length} bytes at ${offset}.`);
+        // A Blob of its own: the part's bytes leave this page's heap now, not when the last part is in.
+        parts.push(new Blob([bytes as BlobPart]));
+        offset += length;
+      }
+      await store.assertAccess(id);
+      return new Blob(parts, { type: note.mimeType });
     },
 
     async dropEmptySession(id) {

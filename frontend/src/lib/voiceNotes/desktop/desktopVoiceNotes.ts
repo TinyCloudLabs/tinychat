@@ -205,6 +205,8 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
   const listeners = new Map<EventName, Set<Listener>>();
   const retained = new Map<EventName, unknown[]>();
   const urls = new Map<string, string>();
+  /** Playback Blobs being read, by account epoch and note. */
+  const playbackReads = new Map<string, Promise<string>>();
   const accountEpoch = localDataEpoch("exo.capture.accountEpoch");
   const uploads = new Map<string, { id: string; epoch: string }>();
   let queueAccount = await store.getCaptureDefaults();
@@ -869,11 +871,26 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
       await plugin.awaitAudioReady?.(id);
       const cached = urls.get(id);
       if (cached) return { url: cached };
-      const { bytes, mimeType } = await store.readNoteAudio(id);
+      // One read per note and account at a time: a second caller (the receipt and the note page) waits for it.
+      const key = `${epoch}\n${id}`;
+      let building = playbackReads.get(key);
+      if (!building) {
+        building = (async () => {
+          // In parts, never as one array: a long recording would otherwise sit in this page whole (and more than
+          // once while it is copied into the Blob).
+          const blob = await store.readNoteAudioBlob(id);
+          if (epoch !== accountEpoch.read()) throw failure("owner_mismatch");
+          await store.assertAccess(id);
+          const existing = urls.get(id);
+          if (existing) return existing;
+          const url = URL.createObjectURL(blob);
+          urls.set(id, url);
+          return url;
+        })().finally(() => playbackReads.delete(key));
+        playbackReads.set(key, building);
+      }
+      const url = await building;
       if (epoch !== accountEpoch.read()) throw failure("owner_mismatch");
-      await store.assertAccess(id);
-      const url = URL.createObjectURL(new Blob([bytes as BlobPart], { type: mimeType }));
-      urls.set(id, url);
       return { url };
     },
     async localAudioSize({ id }) {
