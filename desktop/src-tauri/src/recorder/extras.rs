@@ -263,6 +263,17 @@ pub async fn set_call_prompt(app: &tauri::AppHandle, enabled: bool) -> Result<()
     Ok(())
 }
 
+/// This Mac's audio is on but its consent was never given: a recording started now asks for it
+/// in the main window first.
+pub async fn system_audio_needs_consent(app: &tauri::AppHandle) -> Result<bool, String> {
+    let prefs = preferences(app).await?;
+    Ok(needs_system_audio_consent(&prefs))
+}
+
+fn needs_system_audio_consent(prefs: &Preferences) -> bool {
+    prefs.system_audio && !prefs.system_audio_consent
+}
+
 pub fn install(app: &tauri::AppHandle) {
     let handle = app.clone();
     app.listen_any(UPSTREAM_PROGRESS_EVENT, move |event| {
@@ -726,7 +737,11 @@ mod tests {
     #[test]
     fn call_prompt_defaults_on_and_survives_preferences_roundtrip() {
         assert!(Preferences::default().call_prompt);
-        assert!(parse_preferences(&serde_json::json!({})).unwrap().call_prompt);
+        assert!(
+            parse_preferences(&serde_json::json!({}))
+                .unwrap()
+                .call_prompt
+        );
         let mut prefs = parse_preferences(&serde_json::json!({ "exo_recorder": {
             "systemAudioV2": true,
             "systemAudioConsent": true
@@ -739,5 +754,19 @@ mod tests {
         let relaunched = parse_preferences(&serde_json::json!({ "exo_recorder": stored })).unwrap();
         assert!(!relaunched.call_prompt);
         assert!(relaunched.system_audio_consent);
+    }
+
+    #[test]
+    fn a_call_prompt_start_asks_first_only_when_this_macs_audio_lacks_consent() {
+        let mut prefs = Preferences::default();
+        assert!(needs_system_audio_consent(&prefs));
+        prefs.system_audio_consent = true;
+        assert!(!needs_system_audio_consent(&prefs));
+        prefs.system_audio = false;
+        prefs.system_audio_consent = false;
+        assert!(
+            !needs_system_audio_consent(&prefs),
+            "Mic only needs no consent"
+        );
     }
 }

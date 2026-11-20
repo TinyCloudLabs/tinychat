@@ -88,6 +88,9 @@ fn main() {
             "call_names_clear",
             "call_prompt_get",
             "call_prompt_set",
+            "call_prompt_state",
+            "call_prompt_start",
+            "call_prompt_dismiss",
         ]),
     ))
     .expect("failed to run tauri-build");

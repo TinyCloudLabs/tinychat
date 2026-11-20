@@ -1,17 +1,26 @@
 //! "Record this call": offer to record when a call starts.
 //!
 //! The logic is in the `call-prompt` crate (`service`, `session`), which is tested without a Mac.
-//! This file only connects it to the app: the recorder's state, the setting, the watcher's thread
-//! and the commands. Nothing here can fail, delay or crash a recording: every failure is logged
-//! and dropped, the recorder is read with brief locks, and the log carries the stage and the kind
-//! of call app, never an app's id.
+//! This file only connects it to the app: the recorder's state, the setting, the watcher's thread,
+//! the tile (`panel`) and the commands. Nothing here can fail, delay or crash a recording: every
+//! failure is logged and dropped, the recorder is read with brief locks, the watcher hands all
+//! work off without waiting, and the log carries the stage and the kind of call app, never an
+//! app's id.
+//!
+//! "Start" uses the menu-bar item's start request (`record_launch`), so the web app's recorder
+//! starts the recording as it does for the shortcut. The main window comes forward first only
+//! when the start needs the user: this Mac's audio is on and its consent was never given. When
+//! the recording does not capture within 8 s, the watcher brings the main window forward.
 
 use std::time::Duration;
 
 use call_prompt::service::{self, Report, Worker};
-use call_prompt::session::Action;
-use call_prompt::tile::Setting;
-use tauri::Manager;
+use call_prompt::session::{Action, Phase};
+use call_prompt::tile::{self, Setting, TileState};
+use tauri::{Emitter, Manager};
+
+#[cfg(target_os = "macos")]
+mod panel;
 
 /// The watcher changes nothing outside the app, so quitting hardly waits for it.
 const STOP_WAIT: Duration = Duration::from_millis(200);
@@ -28,8 +37,30 @@ impl service::Host for Host {
         crate::recorder::engine::live_capture(&self.0).is_some()
     }
 
-    fn act(&self, _action: Action) {
-        // The tile comes with its window.
+    fn act(&self, action: Action) {
+        let app = &self.0;
+        match action {
+            Action::Phase(phase) => {
+                if let Err(error) =
+                    app.emit_to(tile::WINDOW_LABEL, tile::EVENT, TileState { phase })
+                {
+                    tracing::warn!(target: "exo_dev::call_prompt", operation = "emit",
+                        error = %error);
+                }
+            }
+            Action::Show => show_tile(app),
+            Action::Hide => hide_tile(app),
+            Action::Start => start_recording(app),
+            Action::Present => {
+                let handle = app.clone();
+                if let Err(error) =
+                    app.run_on_main_thread(move || crate::record_launch::show_main(&handle))
+                {
+                    tracing::warn!(target: "exo_dev::call_prompt", operation = "present",
+                        error = %error);
+                }
+            }
+        }
     }
 
     // The watcher's thread lives as long as the app; a pool per tick keeps what the system
@@ -46,6 +77,39 @@ impl service::Host for Host {
 }
 
 type Prompt = Worker<Host>;
+
+#[cfg(target_os = "macos")]
+fn show_tile(app: &tauri::AppHandle) {
+    panel::show(app);
+}
+
+#[cfg(target_os = "macos")]
+fn hide_tile(app: &tauri::AppHandle) {
+    panel::hide(app);
+}
+
+// No watcher runs elsewhere, so nothing asks for the tile.
+#[cfg(not(target_os = "macos"))]
+fn show_tile(_app: &tauri::AppHandle) {}
+
+#[cfg(not(target_os = "macos"))]
+fn hide_tile(_app: &tauri::AppHandle) {}
+
+/// "Start": the start request of the menu-bar item, on a task, so the watcher never waits. With
+/// this Mac's audio on and no consent yet, the main window comes forward first, where the
+/// recorder asks for it.
+fn start_recording(app: &tauri::AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let ask_first = crate::recorder::extras::system_audio_needs_consent(&app)
+            .await
+            .unwrap_or(true);
+        if ask_first {
+            crate::record_launch::show_main(&app);
+        }
+        crate::record_launch::request_start(&app);
+    });
+}
 
 /// Starts the watcher's thread, switched off, then turns it on if the setting is on. While the
 /// setting is off the thread sleeps and reads nothing. Only macOS can tell which app uses the
@@ -85,6 +149,49 @@ pub fn stop(app: &tauri::AppHandle) {
     if let Some(prompt) = app.try_state::<Prompt>() {
         prompt.stop(STOP_WAIT);
     }
+}
+
+/// The tile is a second window, so closing the main window would leave the app running with
+/// only the hidden tile. Quit as Tauri does when its last window closes, unless a recording is
+/// finishing: then the exit is held, as `lib.rs` holds a user's exit.
+pub fn main_window_destroyed(app: &tauri::AppHandle) {
+    if app.get_webview_window(tile::WINDOW_LABEL).is_none()
+        || crate::FINISHING_QUIT.load(std::sync::atomic::Ordering::SeqCst)
+    {
+        return;
+    }
+    app.exit(0);
+}
+
+/// What the tile shows. The tile asks once it listens to `exo://call-prompt`.
+#[tauri::command]
+pub async fn call_prompt_state(app: tauri::AppHandle) -> TileState {
+    TileState {
+        phase: app
+            .try_state::<Prompt>()
+            .map_or(Phase::Hidden, |prompt| prompt.phase()),
+    }
+}
+
+/// "Start" on the tile. The tile hears a phase back on `exo://call-prompt`; an error turns its
+/// buttons back on.
+#[tauri::command]
+pub async fn call_prompt_start(app: tauri::AppHandle) -> Result<(), String> {
+    let prompt = app
+        .try_state::<Prompt>()
+        .ok_or_else(|| "call_prompt_unavailable".to_string())?;
+    prompt.start();
+    Ok(())
+}
+
+/// "Not now" on the tile: no offer again in this call.
+#[tauri::command]
+pub async fn call_prompt_dismiss(app: tauri::AppHandle) -> Result<(), String> {
+    let prompt = app
+        .try_state::<Prompt>()
+        .ok_or_else(|| "call_prompt_unavailable".to_string())?;
+    prompt.dismiss();
+    Ok(())
 }
 
 /// The setting, and whether this Mac can make the offer.

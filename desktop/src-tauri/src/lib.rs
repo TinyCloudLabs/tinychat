@@ -108,6 +108,10 @@ pub fn run() {
             .plugin(tauri_plugin_local_stt::init(
                 tauri_plugin_local_stt::InitOptions::default(),
             ));
+        // The call prompt's tile is an NSPanel (src/call_prompt/panel.rs). The plugin has no
+        // commands.
+        #[cfg(target_os = "macos")]
+        let builder = builder.plugin(tauri_nspanel::init());
 
         // App commands. build.rs declares them in the app ACL manifest, so each
         // one is callable only where a capability grants it.
@@ -166,6 +170,9 @@ pub fn run() {
             call_names::call_names_clear,
             call_prompt::call_prompt_get,
             call_prompt::call_prompt_set,
+            call_prompt::call_prompt_state,
+            call_prompt::call_prompt_start,
+            call_prompt::call_prompt_dismiss,
         ]);
         // Debug builds add a diagnostic that lets the webview verify the
         // native wiring in one invoke before any recording is attempted.
@@ -224,6 +231,9 @@ pub fn run() {
             call_names::call_names_clear,
             call_prompt::call_prompt_get,
             call_prompt::call_prompt_set,
+            call_prompt::call_prompt_state,
+            call_prompt::call_prompt_start,
+            call_prompt::call_prompt_dismiss,
             smoke::exo_desktop_smoke,
             dev_log::append_dev_log,
             dev_log::debug_logging_enabled,
@@ -239,6 +249,10 @@ pub fn run() {
             }
             app.add_capability(include_str!(
                 "../capabilities-transcription/transcription.json"
+            ))?;
+            // The call prompt's tile window: its event and its three commands only.
+            app.add_capability(include_str!(
+                "../capabilities-transcription/call-prompt.json"
             ))?;
             // Shortcut and menu-bar item start a recording. Neither is required
             // for the app to work, so a failure is logged, not fatal.
@@ -280,6 +294,12 @@ pub fn run() {
                         let _ = app.emit("exo://recorder-exit-requested", ());
                     }
                 }
+                // The call prompt's tile must not keep the app open without its main window.
+                tauri::RunEvent::WindowEvent {
+                    label,
+                    event: tauri::WindowEvent::Destroyed,
+                    ..
+                } if label == "main" => call_prompt::main_window_destroyed(app),
                 // The call-names reader puts back what it changed in a browser.
                 tauri::RunEvent::Exit => {
                     call_prompt::stop(app);

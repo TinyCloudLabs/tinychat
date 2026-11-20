@@ -77,6 +77,14 @@ fn shortcut_launch(state: ShortcutState) -> Option<Launch> {
 }
 
 fn launch<R: Runtime>(app: &AppHandle<R>, launch: Launch) {
+    show_main(app);
+    if launch == Launch::Record {
+        request_start(app);
+    }
+}
+
+/// Brings the main window forward. Also used by the call prompt when a start needs the user.
+pub(crate) fn show_main<R: Runtime>(app: &AppHandle<R>) {
     if let Some(window) = app.get_webview_window("main") {
         for (operation, result) in [
             ("show", window.show()),
@@ -88,11 +96,14 @@ fn launch<R: Runtime>(app: &AppHandle<R>, launch: Launch) {
             }
         }
     }
-    if launch == Launch::Record {
-        app.state::<StartRequest>().request(Instant::now());
-        if let Err(error) = app.emit(START_REQUESTED_EVENT, ()) {
-            tracing::warn!(target: "exo_dev::record_launch", operation = "emit", error = %error);
-        }
+}
+
+/// Asks the web app to start a recording, as the shortcut and the menu-bar item do. Also used
+/// by the call prompt's "Start", which brings no window forward when nothing needs the user.
+pub(crate) fn request_start<R: Runtime>(app: &AppHandle<R>) {
+    app.state::<StartRequest>().request(Instant::now());
+    if let Err(error) = app.emit(START_REQUESTED_EVENT, ()) {
+        tracing::warn!(target: "exo_dev::record_launch", operation = "emit", error = %error);
     }
 }
 

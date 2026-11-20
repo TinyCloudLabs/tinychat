@@ -2127,7 +2127,7 @@ test('every call-prompt command is registered, manifested, and granted to its ow
   for (const commands of handlers) {
     assert.deepEqual(sorted(commands), sorted(registered), 'every handler list registers the same call-prompt commands');
   }
-  for (const command of settingCommands) assert.ok(registered.has(command), `${command} is registered`);
+  for (const command of [...settingCommands, ...tileCommands]) assert.ok(registered.has(command), `${command} is registered`);
   for (const command of registered) {
     assert.ok([...settingCommands, ...tileCommands].includes(command), `${command} is a setting or a tile command`);
   }
@@ -2171,9 +2171,7 @@ test('every call-prompt command is registered, manifested, and granted to its ow
     }
   }
   assert.deepEqual(sorted(granted), sorted([...registered].map(permissionName)), 'every registered call-prompt command is granted, and only those');
-  if (tileCommands.some(command => registered.has(command))) {
-    assert.match(lib, /include_str!\(\s*"\.\.\/capabilities-transcription\/call-prompt\.json"\s*\)/, 'lib.rs loads the tile capability');
-  }
+  assert.match(lib, /include_str!\(\s*"\.\.\/capabilities-transcription\/call-prompt\.json"\s*\)/, 'lib.rs loads the tile capability');
 
   const sourceFiles = walk(join(repo, 'frontend/src')).filter(path => /\.(?:ts|tsx)$/.test(path));
   const invoked = new Set(sourceFiles.flatMap(path => {
