@@ -719,7 +719,7 @@ test('production deploys one web build, with no Home variant job', () => {
   assert.doesNotMatch(production, /^ {2}web-home:/m);
   assert.doesNotMatch(production, /VITE_HOME_SITE|TINYCHAT_HOME_PAGES_PROJECT/);
   const report = /^ {2}report:\n([\s\S]*?)(?=^ {2}\S|(?![\s\S]))/m.exec(production)?.[1];
-  assert.match(report, /^ {4}needs: \[target, backend, web\]$/m);
+  assert.match(report, /^ {4}needs: \[target, backend, backend-pinned, web\]$/m);
   assert.match(report, /^ {4}if: always\(\)$/m);
 });
 

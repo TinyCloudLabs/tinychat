@@ -305,6 +305,27 @@ backend afterwards: `unchanged` (failed before `phala deploy`),
 `changed-verified`, or `changed-unverified` (the CVM may run the new image but a
 later check failed; web is not deployed).
 
+**Pinned backend redeploy (true rollback to the same images):** add
+`-f backend_digest=sha256:<64 hex> -f ingress_digest=sha256:<64 hex>` (with
+`-f web=false`) to the same gated dispatch, for example
+`gh workflow run deploy-production.yml --ref main -f allow_unreleased=true -f confirm_sha=<SHA> -f web=false -f backend_digest=sha256:… -f ingress_digest=sha256:…`.
+Both digests must be the GHCR index digests that the earlier run of that commit
+pushed. Take them from that run's push log (`pushing manifest for …@sha256:…`
+in its Backend job; its summary lists them too), and record that run id with
+the digests in the dispatch record: that log is the provenance. The run goes
+through the `backend-pinned` job, whose token has `packages: read` only, so it
+builds nothing and cannot push to GHCR. The hotfix opt-in
+(`allow_unreleased` + `confirm_sha`) is an accepted recovery path for it. It checks that both digests exist in GHCR as the
+linux/amd64 backend and ingress images whose
+`org.opencontainers.image.revision` is the gated commit. This is a check for a
+wrong or swapped digest, not provenance: labels are whatever the pusher set. It
+also checks that the compose diff changes only the backend and ingress `image:`
+lines to
+`@sha256` pins. It then deploys with the same env step and the same
+post-deploy checks. Env values (including `FRONTEND_URL` from
+`TINYCHAT_FRONTEND_URL`) are the current repo values, sent from Actions as in
+any deploy.
+
 The backend workflow requires the exact production OS name/hash pinned in
 `PHALA_OS_IMAGE` / `PHALA_OS_IMAGE_HASH` (`dstack-0.5.12`) and `is_dev=false`.
 Dev images fail closed by default. Missing/malformed metadata or a different

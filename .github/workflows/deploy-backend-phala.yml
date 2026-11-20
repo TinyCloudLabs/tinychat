@@ -9,6 +9,16 @@ name: Deploy Backend to Phala Cloud
 # This is the one deploy definition: the env var list below, the allowed_envs sync and the public API probes apply
 # to every deploy. It proves the new build is live (server-info backendRevision == the deployed commit and
 # backendVersion == backend/package.json) and always reports whether the production backend changed.
+# Pinned redeploy (backend_digest + ingress_digest, both sha256:<64 hex>): deploys those exact GHCR images of `ref`
+# instead of building. No build and no push of any tag in that mode; the env file, deploy command and post-deploy
+# checks are the same steps as a normal deploy. Both digests must exist in GHCR, be linux/amd64 images of this
+# repository's backend and ingress, and carry org.opencontainers.image.revision == ref. That label check catches
+# mistakes and swaps; it is not provenance. Provenance is the operator's: take the digests from the push log of the
+# run that deployed them and record that run id with the digests in the dispatch record:
+#   gh workflow run deploy-production.yml --ref main -f allow_unreleased=true -f confirm_sha=<ref> -f web=false \
+#     -f backend_digest=sha256:<64 hex> -f ingress_digest=sha256:<64 hex>      (or -f tag=<stable tag> instead)
+# The hotfix opt-in (allow_unreleased + confirm_sha) is an accepted recovery path for a pinned redeploy. Pinned runs come
+# through deploy-production.yml's `backend-pinned` job, whose token has packages: read only: they cannot push to GHCR.
 
 on:
   workflow_call:
@@ -21,6 +31,14 @@ on:
         description: TC-2843 transition only; refused unless the originating event is workflow_dispatch
         type: boolean
         default: false
+      backend_digest:
+        description: Pinned redeploy only. sha256:<64 hex> of an existing backend image of `ref` (needs ingress_digest)
+        type: string
+        default: ""
+      ingress_digest:
+        description: Pinned redeploy only. sha256:<64 hex> of an existing ingress image of `ref` (needs backend_digest)
+        type: string
+        default: ""
     outputs:
       state:
         description: unchanged | changed-verified | changed-unverified
@@ -60,10 +78,9 @@ jobs:
     environment:
       name: production-api
       url: ${{ vars.TINYCHAT_BACKEND_URL || 'https://api.tinycloud.chat' }}
-    permissions:
-      contents: read
-      packages: write
-      statuses: write
+    # No permissions block: this job uses the calling job's token, as deploy-production.yml grants it: contents: read,
+    # statuses: write, and packages: write for `backend` (build and push) but packages: read for `backend-pinned`, so a
+    # pinned redeploy cannot push to GHCR. A block here could only narrow that, and packages: write would fail pinned runs.
     outputs:
       state: ${{ steps.state.outputs.state }}
       revision: ${{ steps.live.outputs.revision }}
@@ -71,6 +88,9 @@ jobs:
     env:
       DEPLOY_SHA: ${{ inputs.ref }}
       ALLOW_CURRENT_DEV_OS_UNTIL_TC2843: ${{ inputs.allow_current_dev_os_until_tc2843 }}
+      PIN_BACKEND_DIGEST: ${{ inputs.backend_digest }}
+      PIN_INGRESS_DIGEST: ${{ inputs.ingress_digest }}
+      PINNED: ${{ inputs.backend_digest != '' || inputs.ingress_digest != '' }}
     steps:
       - name: Require a full commit SHA
         run: |
@@ -78,6 +98,21 @@ jobs:
             echo "::error::ref must be a full commit SHA, got '$DEPLOY_SHA'"
             exit 1
           fi
+
+      - name: Require valid pinned image digests (pinned redeploy)
+        if: env.PINNED == 'true'
+        run: |
+          for item in PIN_BACKEND_DIGEST PIN_INGRESS_DIGEST; do
+            if ! [[ "${!item}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "::error::Pinned redeploy needs both backend_digest and ingress_digest as sha256:<64 lowercase hex>; ${item#PIN_} is '${!item}'. Tags are refused."
+              exit 1
+            fi
+          done
+          if [ "$PIN_BACKEND_DIGEST" = "$PIN_INGRESS_DIGEST" ]; then
+            echo "::error::backend_digest and ingress_digest are the same digest"
+            exit 1
+          fi
+          echo "Pinned redeploy of $DEPLOY_SHA: backend $PIN_BACKEND_DIGEST, ingress $PIN_INGRESS_DIGEST. No build, no push."
 
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -289,7 +324,41 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
+      # Pinned redeploy: the digests must already exist in GHCR as linux/amd64 backend and ingress images whose labels
+      # (set by the build steps below) name `ref`. This catches a wrong or swapped digest; labels are not provenance.
+      - name: Verify the pinned images in GHCR (pinned redeploy)
+        if: env.PINNED == 'true'
+        run: |
+          set -euo pipefail
+          check_image() {
+            local ref=$1 want_description=$2 image
+            if ! image=$(docker buildx imagetools inspect "$ref" --format '{{json .Image}}'); then
+              echo "::error title=Pinned image not found::$ref is not in GHCR"
+              return 1
+            fi
+            if ! jq -e --arg rev "$DEPLOY_SHA" --arg desc "$want_description" '
+                has("config") and .os == "linux" and .architecture == "amd64"
+                and .config.Labels["org.opencontainers.image.revision"] == $rev
+                and .config.Labels["org.opencontainers.image.description"] == $desc' <<<"$image" >/dev/null; then
+              echo "::error title=Pinned image mismatch::$ref is not a single linux/amd64 '$want_description' image of $DEPLOY_SHA"
+              jq -c '{os, architecture, revision: .config.Labels["org.opencontainers.image.revision"], description: .config.Labels["org.opencontainers.image.description"]}' <<<"$image" || true
+              return 1
+            fi
+            echo "$ref: linux/amd64 '$want_description', revision $DEPLOY_SHA"
+          }
+          check_image "${DOCKER_IMAGE}@${PIN_BACKEND_DIGEST}" "TinyChat backend"
+          check_image "${INGRESS_IMAGE}@${PIN_INGRESS_DIGEST}" "TinyChat Phala ingress"
+          {
+            echo
+            echo "### Pinned images (redeploy: no build, no push)"
+            echo
+            echo "- Backend: \`${DOCKER_IMAGE}@${PIN_BACKEND_DIGEST}\`"
+            echo "- Ingress: \`${INGRESS_IMAGE}@${PIN_INGRESS_DIGEST}\`"
+            echo "- Both carry org.opencontainers.image.revision \`${DEPLOY_SHA}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Build and push Docker image
+        if: env.PINNED != 'true'
         id: build
         uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5.4.0
         with:
@@ -310,6 +379,7 @@ jobs:
             org.opencontainers.image.description=TinyChat backend
 
       - name: Build and push ingress image
+        if: env.PINNED != 'true'
         id: ingress-build
         uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5.4.0
         with:
@@ -328,6 +398,7 @@ jobs:
             org.opencontainers.image.description=TinyChat Phala ingress
 
       - name: Record pushed image
+        if: env.PINNED != 'true'
         run: |
           {
             echo
@@ -340,9 +411,36 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Pin deployed image tag
+        if: env.PINNED != 'true'
         run: |
           sed -i "s|\${TINYCHAT_BACKEND_IMAGE:-ghcr.io/tinycloudlabs/tinychat-backend:latest}|${DOCKER_IMAGE}:${DEPLOY_SHA}|g" docker-compose.phala.yml
           sed -i "s|\${TINYCHAT_INGRESS_IMAGE:-ghcr.io/tinycloudlabs/tinychat-backend:ingress-latest}|${INGRESS_IMAGE}:ingress-${DEPLOY_SHA}|g" docker-compose.phala.yml
+
+      # Only-change check: exactly the backend and ingress image lines change, each to its pinned digest; every other
+      # line, including the log-shipper's existing @sha256 pin, stays as committed.
+      - name: Pin image digests (pinned redeploy)
+        if: env.PINNED == 'true'
+        run: |
+          set -euo pipefail
+          before="$RUNNER_TEMP/docker-compose.phala.committed.yml"
+          cp docker-compose.phala.yml "$before"
+          sed -i "s|\${TINYCHAT_BACKEND_IMAGE:-ghcr.io/tinycloudlabs/tinychat-backend:latest}|${DOCKER_IMAGE}@${PIN_BACKEND_DIGEST}|g" docker-compose.phala.yml
+          sed -i "s|\${TINYCHAT_INGRESS_IMAGE:-ghcr.io/tinycloudlabs/tinychat-backend:ingress-latest}|${INGRESS_IMAGE}@${PIN_INGRESS_DIGEST}|g" docker-compose.phala.yml
+          changed=$(diff "$before" docker-compose.phala.yml | grep -c '^[<>]' || true)
+          pinned=$(grep -cF -e "${DOCKER_IMAGE}@sha256:" -e "${INGRESS_IMAGE}@sha256:" docker-compose.phala.yml || true)
+          total_before=$(grep -c '@sha256:' "$before" || true)
+          total_after=$(grep -c '@sha256:' docker-compose.phala.yml || true)
+          backend_service=$(yq '.services["tinychat-backend"].image' docker-compose.phala.yml)
+          ingress_service=$(yq '.services["dstack-ingress"].image' docker-compose.phala.yml)
+          echo "diff lines $changed (want 4); pinned image lines $pinned (want 2); @sha256 lines $total_before -> $total_after (want +2)"
+          if [ "$changed" -ne 4 ] || [ "$pinned" -ne 2 ] || [ "$total_after" -ne $((total_before + 2)) ] \
+              || [ "$backend_service" != "${DOCKER_IMAGE}@${PIN_BACKEND_DIGEST}" ] \
+              || [ "$ingress_service" != "${INGRESS_IMAGE}@${PIN_INGRESS_DIGEST}" ]; then
+            echo "::error title=Pinned compose check failed::docker-compose.phala.yml at $DEPLOY_SHA did not pin exactly the backend and ingress images to the given digests"
+            diff "$before" docker-compose.phala.yml || true
+            exit 1
+          fi
+          echo "Compose pins tinychat-backend and dstack-ingress to the given digests; nothing else changed."
 
       - name: Capture CVM status before deploy
         env:
