@@ -326,7 +326,10 @@ export async function createVoiceNoteRow(tcw: TinyCloudWeb, recording: VoiceNote
   if (identity.status !== "established") throw Object.assign(new Error(identity.reason ?? identity.status), { code: identity.status, cause: identity.cause });
   const now = new Date().toISOString();
   const outcome = recording.options?.transcriber === "off" ? "skipped" : "pending";
-  const speakerNames = recording.ledger?.speakerNames;
+  // An empty map (every local rename undone) is no names: the row gets none, as a row renamed and put back has none.
+  const ledgerNames = recording.ledger?.speakerNames;
+  const speakerNames = ledgerNames !== null && typeof ledgerNames === "object" && Object.keys(ledgerNames).length > 0
+    ? ledgerNames : null;
   const changes = await execute(tcw, `INSERT INTO connector_meeting
     (id, source, source_id, title, started_at, duration_secs, organizer_email, participants, summary_overview,
      summary_action_items, keywords, meeting_type, metadata, created_at, updated_at)

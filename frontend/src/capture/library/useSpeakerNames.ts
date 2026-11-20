@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { captureEvents } from "../captureEvents";
-import { readCallParticipants, speakerChoices } from "./callParticipants";
+import { readCallParticipants, speakerChoices, suggestSpeakerNames, type CallParticipants } from "./callParticipants";
 import { NO_SPEAKER_NAMES, NO_SUGGESTED_SPEAKER_NAMES, readSpeakerNames, readSuggestedSpeakerNames, speakerDisplayName, suggestedSpeakers,
   withoutSuggestedSpeakerName, withSpeakerName, type SpeakerNames, type SuggestedSpeakerNames } from "./speakerNames";
+import { readCallNamesOnThisMac, saveCallNames } from "@/lib/voiceNotes/callNames";
 import { patchRowSpeakerName } from "@/lib/voiceNotes/voiceNoteRows";
 import { readLedgerSpeakerNames, saveLedgerSpeakerNames } from "@/lib/voiceNotes/ledgerSpeakerNames";
 import { VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
@@ -20,7 +21,7 @@ export interface SpeakerNamesController {
   names: SpeakerNames;
   /** Labels whose name the app suggested and the user has not confirmed or changed. */
   suggested: ReadonlySet<string>;
-  /** Names to offer when renaming `original`: the people seen in the call window, when the row has them. */
+  /** Names to offer when renaming `original`: the people seen in the call window, from the row or this Mac. */
   choices: (original: string) => readonly string[];
   /** Renames `original`; saving a suggested label's name unchanged confirms the suggestion. */
   rename: (original: string, shown: string) => void;
@@ -54,11 +55,46 @@ const applyIntent = (shown: Shown, intent: Intent): Shown => ({
   suggestions: withoutSuggestedSpeakerName(shown.suggestions, intent.original),
 });
 
+/** A note's names in its capture ledger: the user's own, and the labels whose call suggestion they ended. */
+interface LedgerNames {
+  key: string | null;
+  names: SpeakerNames;
+  ended: readonly string[];
+}
+
+const NO_LEDGER_NAMES: LedgerNames = { key: null, names: NO_SPEAKER_NAMES, ended: [] };
+
+/**
+ * The call's suggestions for a note whose row does not hold the names yet (it is only on this Mac, or the space
+ * cannot be reached). `at` is not shown, so it is left empty.
+ */
+const callSuggestions = (participants: CallParticipants | null) => suggestSpeakerNames(participants, "");
+
+/**
+ * What such a note shows: the names given on this device, and the call's suggestion for a label that has no name and
+ * whose suggestion the user has not ended. The rule writeCallParticipants applies when the names reach the row.
+ */
+function withCallSuggestions(names: SpeakerNames, ended: readonly string[], participants: CallParticipants | null): Shown {
+  let shown = names;
+  const suggestions: Record<string, string> = {};
+  for (const [original, suggestion] of Object.entries(callSuggestions(participants))) {
+    if (ended.includes(original) || Object.hasOwn(names, original)) continue;
+    shown = withSpeakerName(shown, original, suggestion.name);
+    suggestions[original] = suggestion.name;
+  }
+  return Object.keys(suggestions).length === 0 ? { names: shown, suggestions: NO_SUGGESTED_SPEAKER_NAMES }
+    : { names: shown, suggestions: Object.freeze(suggestions) };
+}
+
 /**
  * The open note's speaker names. On a space row they live in its metadata; a note still on this
  * phone keeps them in its capture ledger (`localId`) and the row takes them when the note lands.
  * Shown at once when changed and saved one write at a time; a failed save puts the names back as
  * they were. Undefined while the note's place for them is unknown or not this account's to write.
+ *
+ * Names in the call: a note whose row does not hold them yet (only on this Mac, or its row cannot be read) takes
+ * them from the desktop app's copy, with the same suggestion and choices a row would give. A local rename of a
+ * suggested label ends that suggestion in the ledger, so the row never gets it.
  */
 export function useSpeakerNames(options: {
   tcw: TinyCloudWeb;
@@ -67,9 +103,11 @@ export function useSpeakerNames(options: {
   metadata: unknown;
   /** The recording id of a note still on this phone; its ledger carries the names until it lands. */
   localId?: string | null;
+  /** The note's row when its metadata cannot be read (the space is unreachable): the call's names come from this Mac. */
+  unreadRow?: { id: string; source: string; sourceId: string } | null;
 }): SpeakerNamesController | undefined {
-  const { tcw, row, metadata, localId = null } = options;
-  const key = row?.id ?? localId;
+  const { tcw, row, metadata, localId = null, unreadRow = null } = options;
+  const key = row?.id ?? localId ?? unreadRow?.id ?? null;
   const [local, setLocal] = useState<{ key: string; shown: Shown } | null>(null);
   const [change, setChange] = useState<{ key: string; value: SpeakerNameChange } | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
@@ -81,9 +119,18 @@ export function useSpeakerNames(options: {
   const landed = useRef<Shown>(NOTHING_SHOWN);
   const shownRef = useRef<Shown>(landed.current);
   const chain = useRef<Promise<void>>(Promise.resolve());
+  const ledger = useRef<LedgerNames>(NO_LEDGER_NAMES);
+  // The names the desktop app still holds for a note whose row does not have them (read once per note).
+  const nativeSource = row === null ? (localId ?? unreadRow?.sourceId ?? null) : null;
+  const [native, setNative] = useState<{ source: string; participants: CallParticipants } | null>(null);
+  const participantsHere = native !== null && native.source === nativeSource ? native.participants : null;
+  const nativeRef = useRef(participantsHere);
+  nativeRef.current = participantsHere;
 
   const shown = local?.key === key ? local.shown
-    : row !== null ? readShown(metadata) : landed.current;
+    : row !== null ? readShown(metadata)
+    : withCallSuggestions(ledger.current.key === key ? ledger.current.names : NO_SPEAKER_NAMES,
+      ledger.current.key === key ? ledger.current.ended : [], participantsHere);
   shownRef.current = shown;
   // With nothing in flight the row's own names are also the write base: a rename that runs before
   // the effects below still composes over what is stored, never over an empty map.
@@ -115,13 +162,25 @@ export function useSpeakerNames(options: {
       if (read === "not-owned") { setWritable(false); return; }
       if (read === "unavailable") { setWritable(false); setFailure(localId); return; }
       setWritable(true);
-      if (read.names !== null) {
-        landed.current = intents.current.length === 0 ? { names: read.names, suggestions: NO_SUGGESTED_SPEAKER_NAMES } : landed.current;
-        if (intents.current.length === 0) setLocal(null);
+      if (intents.current.length === 0) {
+        ledger.current = { key: localId, names: read.names ?? NO_SPEAKER_NAMES, ended: read.ended };
+        setLocal(null);
       }
     });
     return () => { active = false; };
   }, [tcw, localId, row]);
+
+  // Names in the call, from this Mac. A read that fails, finds nothing or never answers leaves the page as it is.
+  useEffect(() => {
+    if (nativeSource === null) return;
+    let active = true;
+    void readCallNamesOnThisMac(nativeSource).then((participants) => {
+      if (!active || participants === null) return;
+      setNative({ source: nativeSource, participants });
+      if (intents.current.length === 0) setLocal(null);
+    });
+    return () => { active = false; };
+  }, [nativeSource]);
 
   const writeNames = useCallback(async (intent: Intent): Promise<Shown> => {
     if (row !== null) {
@@ -131,13 +190,28 @@ export function useSpeakerNames(options: {
       captureEvents.emit("library-changed", { source: row.source, sourceId: row.sourceId });
       return target;
     }
+    if (localId === null && unreadRow !== null) {
+      // The row exists but could not be read, and the call's names are not on it yet: they land first (the save's
+      // own write, once), so the rename then applies as on a row that had them, and no suggestion comes after it.
+      if (await saveCallNames(tcw, unreadRow.sourceId, unreadRow.id) === "failed")
+        throw new Error("The names in the call are not on the note's row yet");
+      const target = applyIntent(landed.current, intent);
+      await patchRowSpeakerName(tcw, unreadRow.id, intent.original,
+        Object.hasOwn(target.names, intent.original) ? target.names[intent.original]! : null);
+      captureEvents.emit("library-changed", { source: unreadRow.source, sourceId: unreadRow.sourceId });
+      return target;
+    }
     if (localId === null) throw new Error("The note has no place for speaker names");
     // The ledger may move between our read and our write (another device, the
     // recorder): the rename applies to the map just read, never overwrites it.
-    const names = await saveLedgerSpeakerNames(tcw, localId, (stored) => withSpeakerName(stored, intent.original, intent.to));
+    // A label the call suggested a name for: any name written for it ends the suggestion, as on a row.
+    const end = Object.hasOwn(callSuggestions(nativeRef.current), intent.original) ? intent.original : undefined;
+    const names = await saveLedgerSpeakerNames(tcw, localId, (stored) => withSpeakerName(stored, intent.original, intent.to), end);
+    const before = ledger.current.key === localId ? ledger.current.ended : [];
+    ledger.current = { key: localId, names, ended: end === undefined || before.includes(end) ? before : [...before, end] };
     captureEvents.emit("library-changed", { source: VOICE_NOTE_SOURCE, sourceId: localId });
-    return { names, suggestions: NO_SUGGESTED_SPEAKER_NAMES };
-  }, [tcw, row, localId]);
+    return withCallSuggestions(ledger.current.names, ledger.current.ended, nativeRef.current);
+  }, [tcw, row, localId, unreadRow]);
 
   const commit = useCallback((intent: Intent) => {
     if (key === null) return;
@@ -148,6 +222,9 @@ export function useSpeakerNames(options: {
       try {
         landed.current = await writeNames(intent);
         intents.current = intents.current.filter((queued) => queued.id !== intent.id);
+        // Off the space, with nothing left in flight, what landed is what shows: the call's names may have come
+        // from this Mac meanwhile. A row's next read does this for a row.
+        if (row === null && intents.current.length === 0) setLocal({ key, shown: landed.current });
       } catch {
         // Drop the failed change and replay what is still queued over what landed, so a queued
         // write computed on top of it cannot smuggle the failed name back in.
@@ -157,7 +234,7 @@ export function useSpeakerNames(options: {
         setFailure(key);
       }
     });
-  }, [key, writeNames]);
+  }, [key, row, writeNames]);
 
   const rename = useCallback((original: string, shown: string) => {
     if (key === null) return;
@@ -183,11 +260,15 @@ export function useSpeakerNames(options: {
     commit({ id: nextIntent.current++, original, to: from });
   }, [change, key, commit]);
 
-  // Names in the call: the people the desktop app saw in the meeting window. Only a space row carries them.
-  const participants = useMemo(() => (row !== null ? readCallParticipants(metadata) : null), [row, metadata]);
+  // Names in the call: the people the desktop app saw in the meeting window, from the row or, before they reach
+  // it, from this Mac.
+  const participants = useMemo(() => (row !== null ? readCallParticipants(metadata) : participantsHere),
+    [row, metadata, participantsHere]);
   const choices = useCallback((original: string) => speakerChoices(participants, original), [participants]);
 
   if (key === null || writable !== true) return undefined;
+  // A row that cannot be read has no names to show but the call's, and nowhere to save without the space.
+  if (row === null && localId === null && participantsHere === null) return undefined;
   const status = change?.key === key ? change : null;
   return { names: shown.names, suggested: suggestedSpeakers(shown.names, shown.suggestions), choices, rename,
     undo: status !== null && !status.value.undone ? undo : null, change: status?.value ?? null, failed: failure === key };
