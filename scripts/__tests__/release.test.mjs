@@ -1809,7 +1809,8 @@ test('desktop signing: keys only in tooling-only jobs, the app built with none, 
   assert.match(read(repo, '.github/workflows/desktop-release.yml'), /uses: \.\/\.github\/workflows\/desktop-build\.yml\n(?:\s+#.*\n)*\s+secrets: inherit\n\s+with:\n(?:.*\n){2}\s+sign: \$\{\{ needs\.plan\.outputs\.signing == 'required' \}\}\n/);
   const ci = read(repo, '.github/workflows/desktop.yml');
   assert.doesNotMatch(ci, /sign:/);
-  for (const path of ['scripts/release/desktop-*', 'scripts/release/verify-desktop-signing.sh']) assert.equal(triggers('.github/workflows/desktop.yml').split(`"${path}"`).length, 3, path);
+  const inputSelection = spawnSync('python3', [join(repo, '.github/scripts/test-native-changes.py')], { encoding: 'utf8' });
+  assert.equal(inputSelection.status, 0, inputSelection.stdout + inputSelection.stderr);
 
   const conf = JSON.parse(read(repo, 'desktop/src-tauri/tauri.conf.json'));
   assert.equal(conf.bundle.macOS.hardenedRuntime, true);

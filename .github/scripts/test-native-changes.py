@@ -37,6 +37,9 @@ class NativeInputsTest(unittest.TestCase):
             "packages/server/scripts/fix-wasm-esm.mjs",
             "scripts/build-agent-skills.mjs", "scripts/build-agent-setup.mjs",
             "scripts/build-agent-surface.mjs", "patches/sdk.patch",
+            "scripts/release/desktop-signing.sh",
+            "scripts/release/desktop-bundle-config.mjs",
+            "scripts/release/verify-desktop-signing.sh",
             ".github/workflows/native-changes.yml", "test/package.json",
         ]
         cases = [(path, "true", "true") for path in selected] + [
