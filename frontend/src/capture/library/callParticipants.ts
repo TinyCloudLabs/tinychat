@@ -141,6 +141,23 @@ export function suggestSpeakerNames(participants: CallParticipants | null, at: s
     reason: "one_other_participant", person: other.id, at } };
 }
 
+/**
+ * Who spoke when: the people of a call by id only, no names. `self`: the entries that are the user (marked so, or
+ * with the name of one marked so). `others`: everyone else, in the call's order; "Them N" is `others[N - 1]`.
+ */
+export interface CallRoster {
+  self: readonly string[];
+  others: readonly string[];
+}
+
+/** The ids of `participants` as a roster (the same rule as the names offered for "Them"); null without participants. */
+export function callRoster(participants: CallParticipants | null): CallRoster | null {
+  if (participants === null) return null;
+  const others = otherPeople(participants).map((person) => person.id);
+  const isOther = new Set(others);
+  return { self: participants.people.filter((person) => !isOther.has(person.id)).map((person) => person.id), others };
+}
+
 /** The rename field's text as a list: "Alice ,Bob," reads as "Alice, Bob". */
 const asList = (text: string) => text.split(",").map(cleanSpeakerName).filter((name) => name !== "").join(", ");
 
