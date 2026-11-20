@@ -24,7 +24,7 @@ import {
 import { syncOnDeviceTranscript } from "@/lib/voiceNotes/onDeviceTranscriber";
 import { saveVoiceNote, type NoteSyncErrorCode, type VoiceNoteAudio, type VoiceNoteAudioSource, type StoreAudioOptions } from "@/lib/voiceNotes/voiceNoteStore";
 import { upgradeSavedAudioReceipt } from "./audioReceiptUpgrade";
-import { saveCallNames } from "./callNames";
+import { saveCallNames, saveLocalCallSpeakerNames } from "./callNames";
 import { assertAccountContext, assertCurrent, captureAccountContext, type AccountContext } from "@/lib/voiceNotes/accountContext";
 import { isLegacyNote } from "@/lib/voiceNotes/legacyMigration";
 import { deleteNote } from "@/lib/voiceNotes/recordingNotes";
@@ -46,10 +46,14 @@ function enforceAudioCacheAfterSave(id: string): void {
  * Names in the call, for a note already saved: each pass over the saved notes (app start, sign-in) tries again to
  * put the names of a recording of both sides on its row. It needs no transcript commit, so it also works with the
  * transcriber off. Not awaited and never throws; a no-op once the names are on the row or nothing was read.
+ * Who spoke when: the same pass puts the suggested names of the "Them N" labels of this device's transcript on the
+ * row, under the same guards as after a transcript commit.
  */
 function retryCallNames(tcw: TinyCloudWeb, recording: VoiceNoteRecording, checkpoint: () => void): void {
   const rowId = recording.ledger?.audio.rowId;
-  if (recording.channels === 2 && rowId) void saveCallNames(tcw, recording.id, rowId, checkpoint);
+  if (recording.channels !== 2 || !rowId) return;
+  void saveCallNames(tcw, recording.id, rowId, checkpoint);
+  void saveLocalCallSpeakerNames(tcw, recording.id, rowId, checkpoint);
 }
 
 export const TINYCLOUD_NETWORK_FAILURE_MESSAGE =
