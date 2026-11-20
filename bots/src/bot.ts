@@ -82,6 +82,8 @@ export interface SandboxLauncher {
   webStatus?(layout: BotLayout): Promise<unknown>;
   /** Page addresses the owner typed, which the bot may read. */
   learnAddresses?(layout: BotLayout, urls: string[]): Promise<void>;
+  /** Removes what the bot keeps off this host (a remote sandbox and its snapshot) before its directories go. */
+  removeState?(layout: BotLayout): Promise<void>;
 }
 
 /** The owner's web setting plus what the gateway says of it. */

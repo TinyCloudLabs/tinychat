@@ -108,7 +108,8 @@ export type RecorderEvent =
   | { type: "STOP_REQUESTED"; at: number }
   /** A failed stop was checked against native status; unknown keeps the view in stopping. */
   | { type: "STOP_FAILED"; error: string | null; status: "active"; mic: RecorderMic; audioMs: number; elapsedMs: number; elapsedAt: number; id?: string | null }
-  | { type: "STOP_FAILED"; error: string | null; status: "idle" | "unknown"; id?: string | null }
+  | { type: "STOP_FAILED"; error: string | null; status: "idle" | "unknown"; id?: string | null;
+    /** The error on screen is answered too: a check that failed has since succeeded. */ clearError?: true }
   /** The save started (percent null) or moved on. */
   | { type: "SAVE_PROGRESS"; percent: number | null }
   | { type: "LOCAL_COMMITTED"; id: string; durationMs: number; channels?: 1 | 2; at: number }
@@ -179,7 +180,7 @@ function stopFailed(state: RecorderState, event: Extract<RecorderEvent, { type: 
   if (event.status === "unknown") return { ...state, error: event.error };
   if (event.status === "active") return { ...state, phase: "recording", mic: event.mic, audioMs: event.audioMs,
     elapsedMs: event.elapsedMs, elapsedAt: event.elapsedAt, error: event.error };
-  return { ...toIdle(state), error: event.error ?? state.error };
+  return { ...toIdle(state), error: event.clearError ? null : event.error ?? state.error };
 }
 
 /** A stop that timed out finalizing names its recording, before `toIdle` forgets which one it was. */

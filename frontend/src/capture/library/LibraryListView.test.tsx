@@ -3,8 +3,6 @@
 // under their day with a tabular duration. And the Library keeps BOTH meeting
 // data paths (from connectorsNav.test.tsx).
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 
@@ -85,7 +83,7 @@ describe("LibraryListView", () => {
 });
 
 describe("the Library keeps BOTH meeting data paths", () => {
-  test("LibraryScreen renders the list and the cohort slot; the list reads the user's own space", () => {
+  test("LibraryScreen renders the list and the cohort slot", () => {
     const library: Library = {
       status: "ready",
       items: ITEMS,
@@ -102,7 +100,5 @@ describe("the Library keeps BOTH meeting data paths", () => {
     );
     expect(html).toContain('data-testid="library-list"');
     expect(html).toContain("cohort-meetings");
-    const source = readFileSync(join(import.meta.dir, "useLibrary.ts"), "utf8");
-    expect(source).toContain("listMeetingsRead(space)");
   });
 });

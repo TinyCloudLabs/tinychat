@@ -37,6 +37,7 @@ services:
       MCP_CHAT_GRANT_EXPIRED_ERROR: ${MCP_CHAT_GRANT_EXPIRED_ERROR:-}
       MCP_CHAT_GRANT_REJECTED_ERROR: ${MCP_CHAT_GRANT_REJECTED_ERROR:-}
       TAVILY_API_KEY: ${TAVILY_API_KEY:-}
+      GRANOLA_PROXY_ENABLED: ${GRANOLA_PROXY_ENABLED:-false}
       # Tiny bots (Home Main bot chat); off unless enabled, configured, and the account is listed.
       BOTS_ENABLED: ${BOTS_ENABLED:-false}
       BOTS_TEST_ACCOUNTS: ${BOTS_TEST_ACCOUNTS:-}
@@ -322,7 +323,7 @@ services:
                 if length(app_ts) <= 24 && match(app_ts, r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$$') { ts = app_ts }
                 if name == "tinychat_request" {
                   # TC-2537 allow-list: request id, route template, method, status, duration, stream outcome and code,
-                  # credits, account hash. Bodies, headers, query strings, path values, addresses and IPs are never fields.
+                  # failure cause (TC-3462), credits, account hash. Bodies, headers, query strings, path values, addresses and IPs are never fields.
                   request_id = string(j.request_id) ?? ""
                   if length(request_id) != 36 || !match(request_id, r'^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$$') { abort }
                   method = string(j.method) ?? ""
@@ -342,6 +343,8 @@ services:
                   if includes(["done", "error", "aborted"], stream) { out.stream = stream }
                   code = string(j.code) ?? ""
                   if length(code) <= 60 && match(code, r'^[a-z][a-z0-9_]{0,59}$$') { out.code = code }
+                  failure_cause = string(j.failure_cause) ?? ""
+                  if includes(["model", "ours"], failure_cause) { out.failure_cause = failure_cause }
                   credits = string(j.credits) ?? ""
                   if includes(["0", "1-9", "10-99", "100-999", "1000+"], credits) { out.credits = credits }
                   account_hash = string(j.account_hash) ?? ""

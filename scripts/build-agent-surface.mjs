@@ -15,7 +15,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // Bump this one SHA to import a reviewed prompts build.
-export const PROMPTS_COMMIT = "8837bcea54afeda15c22cc0ddfaf71d9ecb48a0d";
+export const PROMPTS_COMMIT = "208c9b0cfa081bea2b667be0d930ca35f5a874f4";
 const SITE_URL = "https://tinycloud.one/agents/abilities";
 const PREFIX = "/agents/abilities";
 const ROOT_DISCOVERY = ["llms-full.txt", "robots.txt", "sitemap.xml", ".well-known"];
@@ -52,9 +52,9 @@ function prefixRedirects(text) {
 
 function mergeRedirects(current, generated) {
   const lines = current.trim().split("\n");
+  // Generated rules go before an explicit SPA fallback; without one (Pages' implicit SPA mode), they go last.
   const fallback = lines.findIndex((line) => /^\/\*\s+\/index\.html\s+200\s*$/.test(line));
-  if (fallback === -1) throw new Error("frontend redirect file is missing its final SPA fallback");
-  lines.splice(fallback, 0, ...generated.split("\n"));
+  lines.splice(fallback === -1 ? lines.length : fallback, 0, ...generated.split("\n"));
   return `${lines.join("\n")}\n`;
 }
 
@@ -74,6 +74,27 @@ export function installAgentSurface(siteDir, outDir) {
 
   for (const path of ROOT_DISCOVERY) {
     cpSync(join(siteDir, path), join(outDir, path), { recursive: true, force: true });
+  }
+
+  const skillsIndexPath = join(outDir, ".well-known", "agent-skills", "index.json");
+  if (existsSync(skillsIndexPath)) {
+    const skillsIndex = JSON.parse(readFileSync(skillsIndexPath, "utf8"));
+    for (const skill of skillsIndex.skills ?? []) skill.url = prefixed(skill.url);
+    writeFileSync(skillsIndexPath, `${JSON.stringify(skillsIndex, null, 2)}\n`);
+  }
+
+  const apiCatalogPath = join(outDir, ".well-known", "api-catalog");
+  if (existsSync(apiCatalogPath)) {
+    const apiCatalog = JSON.parse(readFileSync(apiCatalogPath, "utf8"));
+    const links = apiCatalog.linkset?.[0];
+    if (links) {
+      links["service-desc"] = [{
+        href: "https://tinycloud.one/mcp/server-card",
+        type: "application/mcp-server-card+json",
+        title: "TinyCloud MCP server card",
+      }];
+      writeFileSync(apiCatalogPath, `${JSON.stringify(apiCatalog, null, 2)}\n`);
+    }
   }
 
   const rootIndexPath = join(outDir, "llms.txt");

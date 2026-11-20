@@ -293,7 +293,7 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
             if (remoteJob.status === "submitted" && remoteJob.id) {
               handle = remoteJob.id;
               await advance({ handle, uploadId, status: "submitted" });
-            } else if (remoteJob.status === "submitting") submitting = true;
+            } else if (remoteJob.status === "submitting" || remoteJob.status === "delayed") submitting = true;
             if (uploadId && !handle) {
               try {
                 const remote = await client.uploadState(uploadId);
@@ -301,7 +301,7 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
                   handle = remote.id;
                   await advance({ handle, status: "submitted" });
                 }
-                else if (remote.status === "submitting") submitting = true;
+                else if (remote.status === "submitting" || remote.status === "delayed") submitting = true;
                 else if (remote.status === "failed") { uploadId = undefined; persist(id, null); await advance({ uploadId: undefined }); }
               } catch (error) {
                 if (!(error instanceof AssemblyAiError && (error.kind === "not-found" || error.uploadEnded))) throw error;
@@ -324,7 +324,7 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
                 if (created.status === "submitted" && created.id) {
                   handle = created.id;
                   await advance({ handle, status: "submitted" });
-                } else if (created.status === "submitting") submitting = true;
+                } else if (created.status === "submitting" || created.status === "delayed") submitting = true;
               }
               if (!submitting && !handle) {
                 state(id, { kind: "uploading", progress: 0 });
@@ -343,7 +343,9 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
                 await native.beginRemoteOp({ id, did, opId, provider: "assemblyai", mode: "hosted", kind: "hosted_submit",
                   fingerprint: `${source.size}:${source.mimeType}`, startedAt: Date.now() });
                 const submitted = await client.createTranscript(uploadId, { speakerLabels: channels === 2 || recording.options?.identifySpeakers !== false,
-                  multichannel: channels === 2, sourceId: id });
+                  multichannel: channels === 2, sourceId: id,
+                  // AssemblyAI is refusing the submission and the server keeps retrying it: a calm in-progress note, not a failure.
+                  onDelayed: (delayed) => state(id, delayed ? { kind: "delayed" } : { kind: "queued", position: null }) });
                 handle = submitted.id;
                 persist(id, { handle });
                 await advance({ handle, status: "submitted" });

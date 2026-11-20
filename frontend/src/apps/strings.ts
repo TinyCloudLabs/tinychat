@@ -1,5 +1,7 @@
 // Every user-visible One Apps string lives here.
 
+import type { OpenKeyFailure } from "../lib/authErrors";
+import { FEATURE_ACCESS_FAILED, FEATURE_ACCESS_WRONG_ACCOUNT } from "../lib/homeStrings";
 import type { OneAppId } from "./registry";
 
 export const APP_NAMES: Readonly<Record<OneAppId, string>> = {
@@ -55,6 +57,23 @@ export const askBody = (app: string, scope: string) => `${app} wants access to $
 export const ASK_CONTINUE = "Continue in OpenKey";
 export const ASK_NOT_NOW = "Not now";
 export const askDeclined = (app: string) => `${app} can't do this without that access.`;
+
+/** Why a step-up added nothing: "Not now", OpenKey's own outcome, or another account picked in OpenKey. */
+export type StepUpFailure = OpenKeyFailure | { kind: "declined" } | { kind: "wrong-account" };
+
+/**
+ * The line after a step-up that added nothing. Outcomes another try can fix say "Try again"; a refusal, a decline or
+ * an ended session say the app can't go on without the access.
+ */
+export function stepUpFailedLine(app: string, failure: StepUpFailure): string {
+  switch (failure.kind) {
+    case "wrong-account": return FEATURE_ACCESS_WRONG_ACCOUNT;
+    case "popup-blocked":
+    case "failed": return FEATURE_ACCESS_FAILED;
+    default: return askDeclined(app);
+  }
+}
+
 export const ASK_CLOSE = "Close";
 
 /**

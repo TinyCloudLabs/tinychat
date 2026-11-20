@@ -44,7 +44,9 @@ export interface TinyCloudWebConfig {
   /**
    * Optional local KV replication. Omit it (the default) and the SDK config is
    * exactly what it was before replication existed: the key is not present.
-   * Only the web flag in frontend/src/lib/replication sets it.
+   * Only the web flag in frontend/src/lib/replication sets it. When supplied for
+   * a browser SIWE/CACAO grant (which cannot back a replica), the replica
+   * controller stops itself on the first grant refusal instead of retrying.
    */
   replication?: TinyCloudWebSdkConfig["replication"];
   /**

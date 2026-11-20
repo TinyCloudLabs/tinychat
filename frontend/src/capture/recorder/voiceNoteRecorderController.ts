@@ -9,8 +9,9 @@ import { pruneDeletedFailureNotification } from "../activity/failureNotification
 // mounts it exactly once; the tests drive it directly against the fake plugin.
 //
 // It owns the plugin's four listeners (micState, level, autoStopped, presentRecorder), picks a
-// running recording back up after a WebView reload (status()), saves a stopped
-// recording through the shared single-flight guards (recorderSaves.ts), and
+// running recording back up after a WebView reload (status()), lands one stopped outside
+// the app (the Live Activity, Siri, a notification) once status() shows it ended, saves a
+// stopped recording through the shared single-flight guards (recorderSaves.ts), and
 // hands each saved note to private cloud transcription. Discard (PR5) marks the
 // recording before stopping it, so no save that meets it keeps it.
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
@@ -158,6 +159,14 @@ export interface VoiceNoteRecorderController {
   /** Source-aware levels for the Mac's separate Them trace. */
   subscribeLevels(listener: (levels: LevelEvent) => void): () => void;
 }
+
+/**
+ * Why native reports idle after the engine stopped a recording by itself; its retained autoStopped lands the note.
+ * Not write_failed: a Stop from outside the app whose save fails reports it too, with no autoStopped to follow. The
+ * engine's own write-failure stop sends autoStopped in the same native turn as its committed event, so it reaches the
+ * recorder before any status read it started, and lands the note from `stopping` with its notice.
+ */
+const ENGINE_STOP_REASONS: ReadonlySet<CaptureStatus["reason"]> = new Set(["max_duration", "disk_full", "permission_revoked", "pause_timeout"]);
 
 // Waits between the engine reads of a closed recorder's held place (the last repeats).
 const ENGINE_IDLE_POLL_MS: readonly number[] = [1_000, 2_000, 5_000, 30_000];
@@ -731,6 +740,83 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     );
   };
 
+  // A Stop this recorder did not make: the Live Activity's Stop, Siri or Shortcuts (iOS StopRecordingIntent), or the
+  // notification's Stop or Discard (Android CaptureService). Native ends the recording and commits its note but sends
+  // no autoStopped, which is only for the engine's own stops, so nothing else here leaves `recording`: the view stayed
+  // on "Finishing…" with every control off and the clock running. Native status is the proof: once it no longer shows
+  // the recording on screen live, the recorder lands the committed note like its own Stop (one save, saveStopped), or
+  // closes when nothing was kept. It runs on the idle micState and whenever the app comes forward, so an event the
+  // suspended WebView missed is made up from status.
+  let endedElsewhere: string | null = null;
+  const endedElsewhereCurrent = (id: string) =>
+    !closed && endedElsewhere === id && state.phase === "stopping" && state.recordingId === id;
+  const settleEndedElsewhere = async (id: string) => {
+    try {
+      // Status first: once native is no longer finalizing, the list holds the note if it was kept.
+      const status = await VoiceNotes.status();
+      // Still being saved: its committed event, or captureFinalized when the save ends, comes back here.
+      if (!endedElsewhereCurrent(id) || status.finalizing) return;
+      const { recordings } = await VoiceNotes.listPending();
+      if (!endedElsewhereCurrent(id)) return;
+      endedElsewhere = null;
+      const recording = recordings.find((candidate) => candidate.id === id);
+      if (recording) {
+        captureCommitted(recording.id, recording);
+        void saveStopped(recording).catch((caught: unknown) =>
+          send({ type: "SAVE_FAILED", error: messageOf(caught), recording: { id: recording.id, durationMs: recording.durationMs } }),
+        );
+      } else {
+        // Discarded where it was stopped, or nothing was captured: there is no note to show.
+        send({ type: "STOP_FAILED", status: "idle", error: null, id, clearError: true });
+        void pendingStore.refresh();
+      }
+      // Another recording started meanwhile (a Shortcut during the save; its presentRecorder met `stopping`): show it,
+      // as attach would, if it still runs.
+      const latest = await VoiceNotes.status();
+      if (closed || state.phase !== "idle" || !latest.id || latest.id === id || latest.state === "idle") return;
+      acceptNativeOptions(latest);
+      send(activePickup(latest));
+      if (latest.source && latest.source !== "in_app") present();
+    } catch (caught) {
+      console.warn("[VoiceNotes] Could not settle a recording stopped outside the app", caught);
+      if (!endedElsewhereCurrent(id)) return;
+      // Stop again (reconcileFailedStop) closes it; the stop stays marked, so its committed event or the next micState
+      // can still land the note.
+      send({ type: "STOP_FAILED", status: "unknown", id,
+        error: `Could not check whether this ${recorderDevice()} saved the recording: ${messageOf(caught)}` });
+    }
+  };
+  /** `stoppedAt`: when native reported it idle, so the clock stops there. */
+  const reconcileWithEngine = async (stoppedAt?: number) => {
+    // Only the phone shells can be stopped outside the web app; the browser and Mac engines report idle with no reason
+    // ahead of their own autoStopped.
+    if (closed || captureEngineKind() !== "native") return;
+    if (endedElsewhere) {
+      if (endedElsewhereCurrent(endedElsewhere)) return settleEndedElsewhere(endedElsewhere);
+      endedElsewhere = null;
+    }
+    const id = state.recordingId;
+    if (state.phase !== "recording" || !id) return;
+    let status: CaptureStatus;
+    try {
+      status = await VoiceNotes.status();
+    } catch (caught) {
+      console.warn("[VoiceNotes] Could not check the recording on screen", caught);
+      return;
+    }
+    if (closed || endedElsewhere || state.phase !== "recording" || state.recordingId !== id) return;
+    // Still live, or stopped by the engine itself (its autoStopped lands it, with its notice): show what native says.
+    if ((status.id === id && status.state !== "idle") || (status.state === "idle" && ENGINE_STOP_REASONS.has(status.reason))) {
+      acceptNativeOptions(status);
+      sendMicState(status);
+      return;
+    }
+    ++controlOperationId;
+    endedElsewhere = id;
+    send({ type: "STOP_REQUESTED", at: stoppedAt ?? Date.now() });
+    await settleEndedElsewhere(id);
+  };
+
   let retryPendingInFlight: Promise<void> | null = null;
   return {
     getState: () => state,
@@ -849,10 +935,11 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
           console.warn("[VoiceNotes] Could not recheck microphone permission", caught);
         }
       };
+      const appActive = () => { void recheckPermission(); void reconcileWithEngine(); };
       const appActiveHandle = (subscribeAppActive
-        ? subscribeAppActive(() => { void recheckPermission(); })
+        ? subscribeAppActive(appActive)
         : Capacitor.isNativePlatform()
-          ? App.addListener("appStateChange", ({ isActive }) => { if (isActive) void recheckPermission(); })
+          ? App.addListener("appStateChange", ({ isActive }) => { if (isActive) appActive(); })
           : null)?.catch((caught: unknown) => {
             console.warn("[VoiceNotes] Could not watch app activity", caught);
             return null;
@@ -884,10 +971,22 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       });
       const handles = [
         VoiceNotes.addListener("micState", (event) => {
+          // A stop ended outside the app is waiting on its save: any micState, even a newer recording's (its failed save
+          // sends no committed), settles it.
+          if (endedElsewhere) void reconcileWithEngine(event.at);
           if (event.id && state.recordingId && event.id !== state.recordingId) return;
+          // Idle under the recording on screen, which this recorder is not stopping: status decides what ended it, and
+          // the clock stays where it stopped.
+          if (captureEngineKind() === "native" && state.phase === "recording" && event.state === "idle" &&
+            !ENGINE_STOP_REASONS.has(event.reason)) {
+            void reconcileWithEngine(event.at);
+            return;
+          }
           acceptNativeOptions(event);
           sendMicState(event);
         }),
+        // iOS: a stop's save ended, committed or not. A stop ended outside the app that waited on it settles now.
+        VoiceNotes.addListener("captureFinalized", () => { if (endedElsewhere) void reconcileWithEngine(); }),
         VoiceNotes.addListener("level", (event) => {
           // Every capture engine emits linear RMS. Convert once at the boundary to the
           // perceptual 0..1 level shared by the halo, bars, trace, and activity gate.
@@ -929,6 +1028,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
           const id = event.id ?? event.recording?.id;
           captureCommitted(id, event.recording);
           if (!event.recording) inspectSidecar(id);
+          if (id && id === endedElsewhere) void settleEndedElsewhere(id);
         }),
         VoiceNotes.addListener("presentRecorder", async (event) => {
           if (event.reason === "permission_denied" && event.id === null) {
