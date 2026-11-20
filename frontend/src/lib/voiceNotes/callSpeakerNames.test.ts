@@ -8,6 +8,7 @@ import { registerDesktopCaptureExtras } from "./desktopCaptureExtras";
 import { createFakeDesktopCaptureExtras } from "./fakeDesktopCaptureExtras";
 import { VoiceNotes, __setVoiceNotesForTests } from "./nativeVoiceNotes";
 import { patchRowSpeakerName, readRowCallParticipants, writeCallSpeakerSuggestions } from "./voiceNoteRows";
+import { saveRecording } from "./recorderSaves";
 import { saveVoiceNote, saveVoiceNoteTranscript } from "./voiceNoteStore";
 
 // Who spoke when, the save step: once a transcript with "Them N" labels is committed, each label's suggested name goes
@@ -229,4 +230,60 @@ test("committing a transcript with Them N labels puts each label's suggested nam
     speaker_suggestions: { "Them 1": { name: "Alex Example", reason: "speaking_marker", person: "p2" },
       "Them 2": { name: "Dana Lee", reason: "speaking_marker", person: "p3" } } });
   expect(Object.keys(metadata("call-1")?.speaker_names as object)).toEqual(["Them 1", "Them 2"]);
+});
+
+describe("the pass over notes already saved", () => {
+  const LOCAL = { version: 2, noteId: "rec-1", transcriber: "on-device", rev: 1, engine: "whispercpp", model: "QuantizedLargeTurbo",
+    language: "en", outcome: "transcribed", diarized: true, createdAt: AT, segments: [
+      { start: 0, end: 3000, text: "Shall we start?", speaker: "Me", channel: 0, timing: "engine" },
+      { start: 3500, end: 9000, text: "Yes.", speaker: "Them 1", speakerId: "call:p2", channel: 1, timing: "engine" },
+      { start: 9600, end: 15000, text: "Ready.", speaker: "Them 2", speakerId: "call:p3", channel: 1, timing: "engine" },
+    ] };
+  /** A Mac note saved to the space before its transcript was ready: its row is known, the transcript is only here. */
+  const saved = (channels: 1 | 2 = 2) => ({ id: "rec-1", owner: "did:test", startedAt: Date.UTC(2026, 10, 20, 9), durationMs: 60_000,
+    mimeType: "audio/mp4", sizeBytes: 4, silencedMs: 0, silencedEvents: 0, noSignalMs: 0, channels, version: 2, source: "in_app",
+    options: { transcriber: "on-device", identifySpeakers: false, uploadAudio: false },
+    ledger: { audio: { state: "saved", rowId: "vn-rec-1", at: 1 } } });
+  const thisMac = (transcript: unknown) => {
+    const reads: string[] = [];
+    __setVoiceNotesForTests({
+      listPending: async () => ({ recordings: [saved()] }),
+      getTranscript: async ({ id }: { id: string }) => { reads.push(id); return { transcript }; },
+    } as never, { available: true });
+    return reads;
+  };
+
+  test("puts the suggested names of this Mac's transcript on the row, once, with no transcript commit", async () => {
+    const reads = thisMac(LOCAL);
+    // The names reached the row earlier; the transcript has not been committed (this space takes no KV writes).
+    const { tcw, stored } = row({ ...STEREO, call_participants: PEOPLE });
+    expect((await saveRecording(tcw, saved() as never)).kind).toBe("already-saved");
+    await until(() => stored().speaker_suggestions_made !== undefined);
+    expect(reads).toContain("rec-1");
+    expect(stored()).toMatchObject({ speaker_names: { "Them 1": "Alex Example", "Them 2": "Dana Lee" },
+      speaker_suggestions: { "Them 1": { reason: "speaking_marker", person: "p2" }, "Them 2": { reason: "speaking_marker", person: "p3" } } });
+    // The next pass changes nothing, and a name the user gave meanwhile stays.
+    await patchRowSpeakerName(tcw, "vn-rec-1", "Them 1", "Alex E.");
+    const before = stored();
+    await saveRecording(tcw, saved() as never);
+    await Bun.sleep(30);
+    expect(stored()).toEqual(before);
+  });
+
+  test("does nothing for a transcript without Them N labels, without a transcript here, or for a recording of one side", async () => {
+    const plain = { ...LOCAL, segments: LOCAL.segments.map((segment) => segment.channel === 1 ? { ...segment, speaker: "Them", speakerId: undefined } : segment) };
+    for (const transcript of [plain, null, { ...LOCAL, noteId: "rec-2" }]) {
+      thisMac(transcript);
+      const { tcw, stored } = row({ ...STEREO, call_participants: PEOPLE });
+      await saveRecording(tcw, saved() as never);
+      await Bun.sleep(30);
+      expect(stored()).toEqual({ ...STEREO, call_participants: PEOPLE });
+    }
+    const reads = thisMac(LOCAL);
+    const { tcw, stored } = row({ ...STEREO, call_participants: PEOPLE });
+    await saveRecording(tcw, saved(1) as never);
+    await Bun.sleep(30);
+    expect(reads.length).toBeLessThanOrEqual(1);
+    expect(stored()).toEqual({ ...STEREO, call_participants: PEOPLE });
+  });
 });

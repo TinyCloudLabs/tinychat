@@ -7,11 +7,13 @@
 // from the app's copy (`readCallNamesOnThisMac`), so they show while the space cannot be reached.
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { captureEvents } from "@/capture/captureEvents";
-import { parseCallParticipants, SUGGESTED_SPEAKER, suggestCallSpeakerNames, suggestSpeakerNames, type CallParticipants,
+import { callSpeakerLabels, parseCallParticipants, SUGGESTED_SPEAKER, suggestCallSpeakerNames, suggestSpeakerNames, type CallParticipants,
   type CallSpeakerLabels } from "@/capture/library/callParticipants";
 import { rememberCallRoster } from "./callSpeakersOnThisMac";
 import { getDesktopCaptureExtras } from "./desktopCaptureExtras";
 import { readLedgerSuggestionsEnded } from "./ledgerSpeakerNames";
+import { VoiceNotes } from "./nativeVoiceNotes";
+import { withVoiceNoteSaveDeadline } from "./saveDeadline";
 import { readRowCallParticipants, writeCallParticipants, writeCallSpeakerSuggestions } from "./voiceNoteRows";
 
 /**
@@ -88,6 +90,28 @@ export async function saveCallSpeakerNames(tcw: TinyCloudWeb, sourceId: string, 
       error instanceof Error ? error.message : String(error));
     return "failed";
   }
+}
+
+/**
+ * Who spoke when, for a note already saved: the suggested names of the "Them N" labels of the transcript this device
+ * holds for recording `sourceId`, put on its row `rowId` as `saveCallSpeakerNames` does. For the pass over the notes
+ * already saved (app start, sign-in), so a note saved before its transcript was ready gets its names without another
+ * transcript commit. "none" when this device has no such transcript. Never throws; logs no names.
+ */
+export async function saveLocalCallSpeakerNames(tcw: TinyCloudWeb, sourceId: string, rowId: string,
+  checkpoint: () => void = () => undefined): Promise<"none" | "saved" | "kept" | "failed"> {
+  let segments;
+  try {
+    checkpoint();
+    const { transcript } = await withVoiceNoteSaveDeadline(`local transcript read id=${sourceId}`,
+      () => VoiceNotes.getTranscript({ id: sourceId }));
+    if (transcript?.noteId !== sourceId) return "none";
+    segments = transcript.segments;
+  } catch {
+    return "none";
+  }
+  const speakers = callSpeakerLabels(segments.map((segment) => ({ speaker_name: segment.speaker, speaker_id: segment.speakerId })));
+  return saveCallSpeakerNames(tcw, sourceId, rowId, speakers, checkpoint);
 }
 
 /**
