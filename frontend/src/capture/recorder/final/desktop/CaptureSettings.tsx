@@ -28,6 +28,7 @@ import {
 import {
   getDesktopCaptureExtras,
   readCallNamesState,
+  readCallPromptState,
   type CallNames,
   type CallNamesState,
   type DesktopCaptureExtras,
@@ -117,6 +118,14 @@ export interface CallNamesRow {
   onOpenSettings: () => void;
 }
 
+/** "Offer to record when a call starts": the setting of this Mac, shown only where the app can offer (macOS). */
+export interface CallPromptRow {
+  enabled: boolean;
+  pending: boolean;
+  error: string | null;
+  onToggle: (on: boolean) => void;
+}
+
 export interface SettingsPanelProps {
   variant: CaptureSettingsVariant;
   /** Null: nothing registered a DesktopCaptureExtras, so the app variant has nothing to show. */
@@ -128,6 +137,8 @@ export interface SettingsPanelProps {
   switches: Record<SwitchKey, { pending: boolean; error: string | null }>;
   /** Absent or null: the switch is not shown. */
   callNames?: CallNamesRow | null;
+  /** Absent or null: the switch is not shown. */
+  callPrompt?: CallPromptRow | null;
   onRetryLoad: () => void;
   onSelectModel: (id: WhisperModelId) => void;
   onGetModel: (id: WhisperModelId) => void;
@@ -343,6 +354,7 @@ function ModelSection({
 const UPLOAD_PAUSED = "Paused: storage full";
 const CALL_NAMES_LABEL = "Read names from the call window";
 const CALL_NAMES_OPEN_SETTINGS = "Open System Settings";
+const CALL_PROMPT_LABEL = "Offer to record when a call starts";
 
 function Switch({
   label,
@@ -450,6 +462,7 @@ export function SettingsPanel({
   modelError,
   switches,
   callNames = null,
+  callPrompt = null,
   onRetryLoad,
   onSelectModel,
   onGetModel,
@@ -508,6 +521,16 @@ export function SettingsPanel({
           <h3 id="cs-meet-h" className="cs-h">
             Meetings
           </h3>
+          {callPrompt && (
+            <Switch
+              label={CALL_PROMPT_LABEL}
+              checked={callPrompt.enabled}
+              pending={callPrompt.pending}
+              error={callPrompt.error}
+              testId="switch-call-prompt"
+              onToggle={callPrompt.onToggle}
+            />
+          )}
           <Switch
             label="Also record this Mac's audio"
             description="Records everything this Mac plays as Them, with your mic as Me. Turning it off applies when you resume. Turning it on applies to your next recording. macOS asks for permission once."
@@ -699,6 +722,48 @@ export function CaptureSettings({
     callNamesApi?.openSettings().catch((caught: unknown) => {
       console.error("[CaptureSettings] Could not open System Settings", caught);
       setCallNamesSwitch({ pending: false, error: `Could not open System Settings: ${messageOf(caught)}` });
+    });
+  };
+
+  // Offer to record when a call starts: read when the popover opens. Shown only when the app answers
+  // `{ enabled, supported: true }`; any other answer, or a failed read, hides it until the app restarts (a build
+  // without the commands has by then dropped them from the extras too). Independent of the other switches.
+  const callPromptApi = extras?.callPrompt ?? null;
+  const [callPromptOn, setCallPromptOn] = useState<boolean | null>(null);
+  const [callPromptSwitch, setCallPromptSwitch] = useState<{ pending: boolean; error: string | null }>(NO_SWITCH);
+  const callPromptGone = useRef(false);
+  // As for names: an answer counts only while its turn is the latest, so a late one never shows a stale value.
+  const callPromptTurn = useRef(0);
+  useEffect(() => {
+    if (!open || !callPromptApi || callPromptGone.current) return;
+    const turn = ++callPromptTurn.current;
+    setCallPromptSwitch(NO_SWITCH);
+    const hide = () => {
+      callPromptGone.current = true;
+      setCallPromptOn(null);
+    };
+    callPromptApi.get().then((answer) => {
+      if (turn !== callPromptTurn.current) return;
+      const state = readCallPromptState(answer);
+      if (state?.supported) setCallPromptOn(state.enabled);
+      else hide();
+    }, (caught: unknown) => {
+      if (turn !== callPromptTurn.current) return;
+      if (extras?.callPrompt) console.error("[CaptureSettings] Could not read the call prompt setting", caught);
+      hide();
+    });
+    return () => { callPromptTurn.current++; };
+  }, [open, callPromptApi, extras]);
+  const onToggleCallPrompt = (on: boolean) => {
+    if (!callPromptApi) return;
+    callPromptTurn.current++; // Answers to reads made before this change are out of date.
+    setCallPromptSwitch({ pending: true, error: null });
+    callPromptApi.set(on).then(() => {
+      setCallPromptSwitch(NO_SWITCH);
+      setCallPromptOn(on);
+    }, (caught: unknown) => {
+      console.error("[CaptureSettings] Could not change the call prompt setting", caught);
+      setCallPromptSwitch({ pending: false, error: `Could not change this setting: ${messageOf(caught)}` });
     });
   };
 
@@ -967,6 +1032,9 @@ export function CaptureSettings({
               enabled: callNamesOn, permission: callNames.permission, error: callNamesSwitch.error,
               pending: callNamesSwitch.pending || switches.systemAudio.pending,
               onToggle: onToggleCallNames, onOpenSettings: onOpenCallNamesSettings }}
+            callPrompt={callPromptApi === null || callPromptOn === null ? null : {
+              enabled: callPromptOn, pending: callPromptSwitch.pending, error: callPromptSwitch.error,
+              onToggle: onToggleCallPrompt }}
             onRetryLoad={() => void reload(true)}
             onSelectModel={onSelectModel}
             onGetModel={onGetModel}
