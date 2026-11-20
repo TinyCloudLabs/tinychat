@@ -1,6 +1,6 @@
 // A scripted DesktopCaptureExtras for tests and the harness. The app never registers it: it is for TC-880's
 // absence, not a stand-in for it.
-import { LOCAL_WHISPER_MODELS } from "@/lib/localTranscriber";
+import { LOCAL_PARAKEET_MODEL, LOCAL_WHISPER_MODELS } from "@/lib/localTranscriber";
 import type {
   CallNamesPermission,
   DesktopCaptureExtras,
@@ -23,6 +23,8 @@ export interface FakeDesktopCaptureExtrasOptions {
   callNames?: { enabled?: boolean; permission?: CallNamesPermission; read?: Record<string, unknown> };
   /** The call prompt's setting (on by default, supported by default). Without it the fake has no `callPrompt`. */
   callPrompt?: { enabled?: boolean; supported?: boolean };
+  /** Lists Parakeet after the Whisper models, as the app does. Off by default. */
+  parakeet?: boolean;
 }
 
 export type FakeCall =
@@ -100,11 +102,15 @@ export function createFakeDesktopCaptureExtras(
     throw new Error(message);
   };
 
+  const catalog: { id: WhisperModelId; label: string; sizeBytes: number }[] = [
+    ...LOCAL_WHISPER_MODELS.map((model) => ({ id: model.id, label: model.label, sizeBytes: model.approxSizeMb * 1_000_000 })),
+    ...(options.parakeet ? [LOCAL_PARAKEET_MODEL] : []),
+  ];
   const info = (): WhisperModelInfo[] =>
-    LOCAL_WHISPER_MODELS.map((model) => ({
+    catalog.map((model) => ({
       id: model.id,
       label: model.label,
-      sizeBytes: model.approxSizeMb * 1_000_000,
+      sizeBytes: model.sizeBytes,
       downloaded: downloaded.has(model.id),
       selected: model.id === selected,
       downloading: inFlight.has(model.id),

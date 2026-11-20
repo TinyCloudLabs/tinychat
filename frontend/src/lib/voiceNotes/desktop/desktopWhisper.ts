@@ -1,15 +1,15 @@
 import { mountedVoiceNoteDid } from "../accountContext";
 import type { BatchResponse, TranscriptionEvent } from "@/lib/anarlog/transcription.gen";
 import { logPipeline, logPipelineError } from "@/lib/debugLog";
-import type { WhisperModel } from "@/lib/localTranscriber";
+import { PARAKEET_MODEL_ID, type LocalSttModel, type WhisperModel } from "@/lib/localTranscriber";
 import { leaseWhisperServer, SHARED_WHISPER_SERVER_SCOPE, type WhisperServerLease } from "@/lib/whisperServerLease";
 import type { NoteSttState, VoiceNoteRecording } from "../nativeVoiceNotes";
 import type { WebStore } from "../web/webStore";
 import type { DesktopBridge } from "./desktopVoiceNotes";
 import { whisperLocalTranscript } from "./whisperTranscript";
 
-const MODEL_IDS = new Set<WhisperModel>(["QuantizedTinyEn", "QuantizedTiny", "QuantizedBaseEn", "QuantizedBase",
-  "QuantizedSmallEn", "QuantizedSmall", "QuantizedLargeTurbo"]);
+const MODEL_IDS = new Set<LocalSttModel>(["QuantizedTinyEn", "QuantizedTiny", "QuantizedBaseEn", "QuantizedBase",
+  "QuantizedSmallEn", "QuantizedSmall", "QuantizedLargeTurbo", PARAKEET_MODEL_ID]);
 type WhisperEvent = TranscriptionEvent;
 
 /** Local STT commands and Exo's session-id-only recorder transcription command. */
@@ -18,6 +18,8 @@ export interface DesktopWhisperBridge {
   startServer(model: WhisperModel): Promise<string>;
   stopServer(): Promise<void>;
   startTranscription(params: { id: string; stageId: string; model: WhisperModel }): Promise<void>;
+  /** Parakeet on the same staged recording: no Whisper server. Absent where the app cannot do it. */
+  startLocalStt?(params: { id: string; stageId: string; model: typeof PARAKEET_MODEL_ID }): Promise<void>;
   stopTranscription(id: string): Promise<void>;
   onTranscription(cb: (event: WhisperEvent) => void): Promise<() => void>;
 }
@@ -36,6 +38,7 @@ export async function loadDesktopWhisperBridge(): Promise<DesktopWhisperBridge> 
     startServer: async (model) => unwrap(await localStt.commands.startServer(model)),
     stopServer: async () => { unwrap(await localStt.commands.stopServer("internal")); },
     startTranscription: async (params) => { await invoke("recorder_whisper_start", params); },
+    startLocalStt: async (params) => { await invoke("recorder_local_stt_start", params); },
     stopTranscription: async (id) => { unwrap(await transcription.commands.stopTranscription(id)); },
     onTranscription: async (cb) => {
       const stop = await transcription.events.transcriptionEvent.listen(({ payload }) => cb(payload));
@@ -73,8 +76,8 @@ export const __desktopWhisperQueueReadsForTests = () => queueReads;
 export function registerDesktopWhisperQueue(queue: DesktopWhisperQueue | null): void { registered = queue; }
 
 const stt = (state: NoteSttState["state"], error: string | null = null,
-  rerun: DesktopWhisperRerun | null = null): NoteSttState => ({
-  state, pack: null, engine: "whisper", segmentsDone: 0, windowsDone: 0, error,
+  rerun: DesktopWhisperRerun | null = null, engine: NoteSttState["engine"] = "whisper"): NoteSttState => ({
+  state, pack: null, engine, segmentsDone: 0, windowsDone: 0, error,
   rerunRev: rerun?.rev ?? null, rerunBaseRev: rerun?.baseRev ?? null, rerunBaseHash: rerun?.baseHash ?? null,
 });
 
@@ -86,7 +89,7 @@ const WHISPER_REJECTION_HELP: Record<string, string> = {
   server_unavailable: "The Whisper server is unavailable. Restart local transcription and retry.",
 };
 
-function whisperFailure(error: unknown): string {
+function whisperFailure(error: unknown, engineName = "Whisper"): string {
   if (typeof error === "string") return error;
   if (error && typeof error === "object") {
     const { code, message } = error as { code?: unknown; message?: unknown };
@@ -94,11 +97,11 @@ function whisperFailure(error: unknown): string {
     if (typeof code === "string" && code) {
       const help = Object.hasOwn(WHISPER_REJECTION_HELP, code) ? WHISPER_REJECTION_HELP[code] : undefined;
       return help ? `${code}: ${help}${detail ? ` Details: ${detail}` : ""}`
-        : `${code}: ${detail || "Whisper transcription failed"}`;
+        : `${code}: ${detail || `${engineName} transcription failed`}`;
     }
     if (detail) return detail;
   }
-  return "Whisper transcription failed";
+  return `${engineName} transcription failed`;
 }
 
 async function stageId(id: string): Promise<string> {
@@ -116,13 +119,13 @@ const clock = (ms: number): string => {
  * less than the saved recording is incomplete, whatever its text says, so it is reported instead of saved.
  * Encoder padding and rounding get max(3 s, 3%); a response without a duration is not judged.
  */
-function decodedShortfall(recordingMs: number, response: BatchResponse): string | null {
+function decodedShortfall(recordingMs: number, response: BatchResponse, engineName = "Whisper"): string | null {
   const metadata = response.metadata;
   const seconds = metadata && typeof metadata === "object" && !Array.isArray(metadata) ? metadata.duration : null;
   if (typeof seconds !== "number" || !Number.isFinite(seconds) || !(recordingMs > 0)) return null;
   const decodedMs = seconds * 1000;
   if (recordingMs - decodedMs <= Math.max(3_000, recordingMs * 0.03)) return null;
-  return `Whisper transcribed only ${clock(decodedMs)} of this ${clock(recordingMs)} recording. Retry transcription.`;
+  return `${engineName} transcribed only ${clock(decodedMs)} of this ${clock(recordingMs)} recording. Retry transcription.`;
 }
 
 export function createDesktopWhisperQueue(args: {
@@ -152,6 +155,8 @@ export function createDesktopWhisperQueue(args: {
   let activeRun: Promise<void> | null = null;
   let transcribing = false;
   let serverLease: WhisperServerLease | null = null;
+  /** Notes whose current job runs on Parakeet; every other job is Whisper. */
+  const parakeetJobs = new Set<string>();
   let disposed = false;
   let stopping = false;
 
@@ -171,18 +176,18 @@ export function createDesktopWhisperQueue(args: {
   };
   const mark = async (id: string, state: NoteSttState["state"], error: string | null = null, progress = 0,
     rerun: DesktopWhisperRerun | null = reruns.get(id) ?? failedReruns.get(id) ?? null) => {
-    await store.updateStt(id, stt(state, error, rerun));
+    await store.updateStt(id, stt(state, error, rerun, parakeetJobs.has(id) ? "parakeet" : "whisper"));
     publish(id, state === "running" ? "transcribing" : state === "waiting_for_model" ? "failed"
       : state === "cancelled" ? "queued" : state, error,
       state === "running" ? progress : null);
   };
-  const selectedModel = async (): Promise<WhisperModel> => {
+  const selectedModel = async (): Promise<LocalSttModel> => {
     const id = await files.invoke<string | null>("recorder_models_get");
-    if (!id || !MODEL_IDS.has(id as WhisperModel)) throw new Error("unavailable: select a downloaded Whisper model in Capture settings");
+    if (!id || !MODEL_IDS.has(id as LocalSttModel)) throw new Error("unavailable: select a downloaded Whisper model in Capture settings");
     const models = await files.invoke<{ id: string; downloaded: boolean }[]>("recorder_models_list");
     if (!models.some((row) => row.id === id && row.downloaded))
-      throw new Error("unavailable: the selected Whisper model is not downloaded");
-    return id as WhisperModel;
+      throw new Error(`unavailable: the selected ${id === PARAKEET_MODEL_ID ? "Parakeet" : "Whisper"} model is not downloaded`);
+    return id as LocalSttModel;
   };
   const stageAudio = async (id: string, stagedId: string): Promise<void> => {
     await files.invoke<void>("recorder_whisper_stage_audio", { id, stageId: stagedId });
@@ -193,6 +198,7 @@ export function createDesktopWhisperQueue(args: {
     const rerun = reruns.get(id) ?? null;
     let stagedId: string | null = null;
     let yieldedForCapture = false;
+    let engineName = "Whisper";
     try {
       const existing = (await store.getTranscript({ id })).transcript;
       if (!rerun && existing?.noteId === id && (existing.outcome === "no_speech" || existing.segments.some((segment) => segment.text.trim()))) {
@@ -201,16 +207,25 @@ export function createDesktopWhisperQueue(args: {
         return;
       }
       const model = await selectedModel();
-      logPipeline("transcription", id, "start", { engine: "whisper" });
+      // Parakeet runs in the app's process: no Whisper server is leased or started for it.
+      const engine = model === PARAKEET_MODEL_ID ? "parakeet" : "whisper";
+      if (model === PARAKEET_MODEL_ID) {
+        if (!whisper.startLocalStt) throw new Error("unavailable: this app cannot run Parakeet; select a Whisper model in Capture settings");
+        parakeetJobs.add(id);
+        engineName = "Parakeet";
+      }
+      logPipeline("transcription", id, "start", { engine });
       await mark(id, "running");
       stagedId = await stageId(id);
       await stageAudio(id, stagedId);
       if (disposed || stopping || captureLive()) throw new Error("capture_has_priority");
-      const lease = leaseWhisperServer(model, () => whisper.startServer(model), () => whisper.stopServer(),
-        whisper.serverScope ?? whisper);
-      serverLease = lease;
-      await lease.ready;
-      if (disposed || stopping || captureLive()) throw new Error("capture_has_priority");
+      if (model !== PARAKEET_MODEL_ID) {
+        const lease = leaseWhisperServer(model, () => whisper.startServer(model), () => whisper.stopServer(),
+          whisper.serverScope ?? whisper);
+        serverLease = lease;
+        await lease.ready;
+        if (disposed || stopping || captureLive()) throw new Error("capture_has_priority");
+      }
       const chunks: Extract<import("@/lib/anarlog/transcription.gen").StreamResponse, { type: "Results" }>[] = [];
       const response = await new Promise<BatchResponse>((resolve, reject) => {
         let settled = false;
@@ -230,7 +245,7 @@ export function createDesktopWhisperQueue(args: {
               }
               catch { /* The task may have already stopped. */ }
               finally { if (stopDeadline !== undefined) clearTimeout(stopDeadline); }
-              reject(new Error("Whisper transcription timed out"));
+              reject(new Error(`${engineName} transcription timed out`));
             })();
           }
         }, timeoutMs);
@@ -241,7 +256,7 @@ export function createDesktopWhisperQueue(args: {
               chunks.push(event.event.response);
             if (event.event.type === "progress") {
               const progress = Math.round(event.event.percentage * 100);
-              logPipeline("transcription", id, "progress", { engine: "whisper" });
+              logPipeline("transcription", id, "progress", { engine });
               progressUpdates = progressUpdates.then(() => mark(id, "running", null, progress));
             }
             return;
@@ -258,12 +273,13 @@ export function createDesktopWhisperQueue(args: {
             stop = await whisper.onTranscription(finish);
             if (settled) { stop(); return; }
             transcribing = true;
-            await whisper.startTranscription({ id, stageId: stagedId!, model });
+            if (model === PARAKEET_MODEL_ID) await whisper.startLocalStt!({ id, stageId: stagedId!, model });
+            else await whisper.startTranscription({ id, stageId: stagedId!, model });
           } catch (error) { if (!settled) { settled = true; clearTimeout(timer); stop(); reject(error); } }
         })();
       });
       if (disposed || stopping || captureLive()) throw new Error("capture_has_priority");
-      const shortfall = decodedShortfall(note.durationMs, response);
+      const shortfall = decodedShortfall(note.durationMs, response, engineName);
       if (shortfall) throw new Error(shortfall);
       const transcript = whisperLocalTranscript(note, model, response, {
         rev: rerun?.rev ?? 1,
@@ -275,13 +291,13 @@ export function createDesktopWhisperQueue(args: {
         || persisted.rev !== transcript.rev || (persisted.outcome === "transcribed" && !persisted.segments.some((segment) => segment.text.trim()))) {
         throw new Error("The local transcript could not be verified after saving");
       }
-      logPipeline("transcription", id, "done", { engine: "whisper" });
+      logPipeline("transcription", id, "done", { engine });
       await mark(id, "done", null, 0, null);
       emitDone(id);
     } catch (error) {
       logPipelineError("transcription", error, id);
       if (disposed) return;
-      const message = whisperFailure(error);
+      const message = whisperFailure(error, engineName);
       if (stopping || captureLive() || message.includes("capture_has_priority")) {
         yieldedForCapture = rerun !== null;
         await mark(id, "queued");
@@ -292,6 +308,7 @@ export function createDesktopWhisperQueue(args: {
       }
     } finally {
       transcribing = false;
+      parakeetJobs.delete(id);
       serverLease?.release();
       serverLease = null;
       if (stagedId) {
