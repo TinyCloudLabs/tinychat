@@ -2,13 +2,18 @@
 //!
 //! The logic is in the `call-names` crate (`service`), which is tested without a Mac. This file
 //! only connects it to the app: the live capture, the running meeting apps, the reader's thread
-//! and five commands. Nothing here can fail or delay a recording, and no name is logged.
+//! and six commands. Nothing here can fail or delay a recording, and no name is logged.
+//!
+//! The speaking timeline of a recording (who spoke when, as person ids and times) is read by
+//! `call_names_speaking_read`. Saving the note (`call_names_clear`) leaves it, for a new
+//! transcription; it goes with the recording's audio (`forget`) or after 30 days.
 
 use std::time::Duration;
 
 use call_names::ax::{self, Permission, RunningApp};
 use call_names::roster::CallParticipants;
 use call_names::service::{self, Live, Report, Store, Worker};
+use call_names::timeline::Timeline;
 use tauri::Manager;
 use tauri_plugin_opener::OpenerExt;
 
@@ -109,9 +114,10 @@ pub fn stop(app: &tauri::AppHandle) {
     }
 }
 
-/// The names read during a recording go with its audio. A failure is logged, never returned.
+/// The names and the speaking timeline of a recording go with its audio. A failure is logged,
+/// never returned.
 pub(crate) fn forget(app: &tauri::AppHandle, id: &str) {
-    let cleared = store(app).and_then(|store| store.clear(id).map_err(|error| error.to_string()));
+    let cleared = store(app).and_then(|store| store.forget(id).map_err(|error| error.to_string()));
     if let Err(error) = cleared {
         tracing::warn!(target: "exo_dev::call_names", operation = "forget", error = %error);
     }
@@ -173,6 +179,19 @@ pub async fn call_names_read(
 pub async fn call_names_clear(app: tauri::AppHandle, id: String) -> Result<(), String> {
     with_store(app, move |store| {
         store.clear(&id).map_err(|error| error.to_string())
+    })
+    .await
+}
+
+/// The speaking timeline of the recording `id` (person ids and times on the recording's clock),
+/// or null when there is none. Saving the note does not remove it.
+#[tauri::command]
+pub async fn call_names_speaking_read(
+    app: tauri::AppHandle,
+    id: String,
+) -> Result<Option<Timeline>, String> {
+    with_store(app, move |store| {
+        store.read_speaking(&id).map_err(|error| error.to_string())
     })
     .await
 }

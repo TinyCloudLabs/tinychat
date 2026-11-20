@@ -12,6 +12,7 @@
 
 use crate::extract::{Extraction, Scan};
 use crate::rules::{App, Rules};
+use crate::speaking::{find_markers, FindCost, Marker};
 use crate::tree::{Node, ReadError, Source};
 use std::time::{Duration, Instant};
 
@@ -174,6 +175,31 @@ pub(crate) struct TickTrace {
     pub text_reads: usize,
     /// With `keep_trees`: each window that was read, with its target index.
     pub trees: Vec<(usize, Node)>,
+    /// The search for speaking markers: time and class lists read.
+    pub speaking_time: Duration,
+    pub class_reads: usize,
+}
+
+/// As [`read_tick`], and finds the speaking markers of the window that gave the names (see
+/// `speaking`), on the same scan and within the same meter. The markers are `None` when the tick
+/// gave no names, or when their search ran out of time or failed; that never costs the names.
+#[allow(clippy::type_complexity)]
+pub fn read_tick_with_speaking<S: Source>(
+    rules: &Rules,
+    source: &mut S,
+    targets: &[Target<S::Node>],
+    meter: &mut Meter,
+) -> (Result<Extraction, Skip>, Option<Vec<Marker<S::Node>>>) {
+    let mut markers = None;
+    let result = read_tick_full(
+        rules,
+        source,
+        targets,
+        meter,
+        &mut TickTrace::default(),
+        Some(&mut markers),
+    );
+    (result, markers)
 }
 
 /// As [`read_tick`], and fills `trace`: which targets are in a call, which target a discard came
@@ -184,6 +210,19 @@ pub(crate) fn read_tick_traced<S: Source>(
     targets: &[Target<S::Node>],
     meter: &mut Meter,
     trace: &mut TickTrace,
+) -> Result<Extraction, Skip> {
+    read_tick_full(rules, source, targets, meter, trace, None)
+}
+
+/// As [`read_tick_traced`]; with `markers`, also the speaking markers of the window that gave the
+/// names, after its names and only when they were read.
+pub(crate) fn read_tick_full<S: Source>(
+    rules: &Rules,
+    source: &mut S,
+    targets: &[Target<S::Node>],
+    meter: &mut Meter,
+    trace: &mut TickTrace,
+    markers: Option<&mut Option<Vec<Marker<S::Node>>>>,
 ) -> Result<Extraction, Skip> {
     trace.in_call = vec![None; targets.len()];
     if targets.is_empty() {
@@ -234,6 +273,15 @@ pub(crate) fn read_tick_traced<S: Source>(
         None if several == 0 => Err(Skip::NotInCall),
         None => Err(Skip::SeveralInCall(several)),
     };
+    if let (Some(markers), Some((_, scan, app_rules)), Ok(_)) = (markers, only.as_mut(), &result) {
+        // After the names, on the same scan: a search that fails or runs out of time finds no
+        // markers and leaves the names as they are.
+        let began = meter.elapsed();
+        let mut cost = FindCost::default();
+        *markers = find_markers(scan, source, app_rules, meter, &mut cost).ok();
+        trace.speaking_time += meter.elapsed().saturating_sub(began);
+        trace.class_reads += cost.class_reads;
+    }
     if trace.keep_trees {
         // The one window that was read for names, with what the rules read in it.
         if let Some((index, scan, _)) = &only {

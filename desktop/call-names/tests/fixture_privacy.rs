@@ -275,3 +275,33 @@ fn fixtures_hold_no_redacted_text_addresses_or_dom_ids() {
         }
     }
 }
+
+#[test]
+fn no_fixture_holds_a_class_name_of_the_rules() {
+    // Class names reach a fixture only as the scrubber's tokens, so the speaking rule's own
+    // class names never appear in one.
+    let rules = call_names::rules::Rules::embedded().unwrap();
+    let classes: Vec<&String> = rules
+        .apps
+        .iter()
+        .flat_map(|app| &app.speaking)
+        .filter_map(|rule| rule.classes.as_ref())
+        .flat_map(|classes| {
+            classes
+                .all
+                .iter()
+                .chain(&classes.quiet)
+                .chain(&classes.speaking)
+        })
+        .collect();
+    assert!(classes.len() >= 3);
+    for (path, text) in fixtures() {
+        for class in &classes {
+            assert!(
+                !text.contains(&format!("\"{class}\"")),
+                "{} holds a class name of the rules",
+                path.display()
+            );
+        }
+    }
+}

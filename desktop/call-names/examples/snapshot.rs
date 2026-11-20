@@ -3,7 +3,24 @@
 //! ```text
 //! cargo run --release --example snapshot -- --app meet|zoom [--pid N --bundle ID] [--ticks N]
 //!                                           [--every S] [--budget-ms MS] [--show-names]
+//! cargo run --release --example snapshot -- --speaking [--hz 5] [--seconds S] [--show-names]
+//!                                           [--pid N --bundle ID]
 //! ```
+//!
+//! `--speaking` runs the app's own service on the Meet call, as a recording would: a names tick
+//! every 5 s and a speaking sample `--hz` times a second in between (default 5), for `--seconds`
+//! (default 600) or until Ctrl-C. Output, JSON lines on stdout:
+//! - `meta`: the options and `startedWall` (seconds since 1970 when it started; the recording
+//!   clock of the samples and the timeline starts there);
+//! - per names tick, `tick`: the outcome, elements, time;
+//! - per sample, `sample`: for each tile read its index, person id and `on`/`off`/`unknown` (a
+//!   preliminary mark: the timeline keeps a sample once the next names tick confirms it), the
+//!   round trips and the microseconds;
+//! - at the end, `roster` (ids, names only with `--show-names`), `timeline` (the file the app
+//!   would keep) and `cost` (p50 and p95 of a sample's time and round trips).
+//!
+//! No class name is ever shown. `tools/speaking-check.py` compares this output with the tester's
+//! timed events.
 //!
 //! It runs the code the app runs: `Reader::read` once per tick. The terminal needs Accessibility
 //! permission (System Settings > Privacy & Security > Accessibility). Output goes to stdout as
@@ -50,7 +67,7 @@ mod mac {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::{Duration, Instant};
 
-    const USAGE: &str = "usage: snapshot --app meet|zoom [--pid N --bundle ID] [--ticks N] [--every S] [--budget-ms MS] [--show-names]";
+    const USAGE: &str = "usage: snapshot --app meet|zoom [--pid N --bundle ID] [--ticks N] [--every S] [--budget-ms MS] [--show-names]\n       snapshot --speaking [--hz 5] [--seconds S] [--show-names] [--pid N --bundle ID]";
 
     /// App bundle names and executables, to find running processes with pgrep.
     const PROCESSES: [(&str, &str, &str); 8] = [
@@ -86,6 +103,9 @@ mod mac {
         every: f64,
         budget: Budget,
         show_names: bool,
+        speaking: bool,
+        hz: f64,
+        seconds: f64,
     }
 
     fn parse() -> Result<Options, String> {
@@ -97,6 +117,9 @@ mod mac {
             every: 5.0,
             budget: Budget::DEFAULT,
             show_names: false,
+            speaking: false,
+            hz: 5.0,
+            seconds: 600.0,
         };
         let mut args = std::env::args().skip(1);
         while let Some(arg) = args.next() {
@@ -120,6 +143,19 @@ mod mac {
                         Duration::from_millis(value()?.parse().map_err(|_| "bad --budget-ms")?)
                 }
                 "--show-names" => options.show_names = true,
+                "--speaking" => options.speaking = true,
+                "--hz" => {
+                    options.hz = value()?
+                        .parse::<f64>()
+                        .map_err(|_| "bad --hz")?
+                        .clamp(0.2, 10.0)
+                }
+                "--seconds" => {
+                    options.seconds = value()?
+                        .parse::<f64>()
+                        .map_err(|_| "bad --seconds")?
+                        .max(5.0)
+                }
                 other => return Err(format!("unknown option {other}")),
             }
         }
@@ -369,6 +405,10 @@ mod mac {
             clear: &clear,
             show_names: options.show_names,
         };
+        if options.speaking {
+            speaking::run(&options, apps, &shown);
+            return;
+        }
         let mut reader = Reader::new();
         reader.keep_trees(true);
         let mut roster = Roster::new();
@@ -441,5 +481,187 @@ mod mac {
             "Done after {:.1} s. The browser's accessibility flag is back to its earlier value.",
             started.elapsed().as_secs_f64()
         );
+    }
+
+    /// `--speaking`: the app's own service, with this terminal as its host.
+    mod speaking {
+        use super::{emit, Options, Shown, STOP};
+        use call_names::ax::{Reader, RunningApp};
+        use call_names::service::{
+            Due, Host, Live, Pace, Report, SampleReport, Sampling, Schedule, Service, Store,
+        };
+        use call_names::speaking::Mark;
+        use serde_json::{json, Value};
+        use std::sync::atomic::Ordering;
+        use std::sync::Mutex;
+        use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+        /// The recording id of this run: a made-up one, as the app's ids look.
+        const RECORDING: &str = "snapshot-speaking";
+
+        struct Terminal {
+            started: Instant,
+            apps: Vec<RunningApp>,
+            /// Per sample: microseconds and round trips.
+            costs: Mutex<Vec<(u64, u64)>>,
+        }
+
+        impl Host for Terminal {
+            fn live(&self) -> Option<Live> {
+                Some(Live {
+                    id: RECORDING.into(),
+                    channels: 2,
+                    recorded_ms: self.started.elapsed().as_millis() as u64,
+                })
+            }
+
+            fn running(&self, bundle_id: &str) -> Vec<RunningApp> {
+                self.apps
+                    .iter()
+                    .filter(|app| app.bundle_id == bundle_id)
+                    .cloned()
+                    .collect()
+            }
+
+            fn report(&self, report: &Report) {
+                emit(json!({
+                    "kind": "tick",
+                    "t": self.started.elapsed().as_secs_f64(),
+                    "outcome": report.outcome,
+                    "nodes": report.nodes,
+                    "tickMs": report.elapsed_ms,
+                    "people": report.people,
+                    "error": report.error,
+                }));
+            }
+
+            fn sampled(&self, sample: &SampleReport) {
+                let us = sample.elapsed.as_micros() as u64;
+                if let Ok(mut costs) = self.costs.lock() {
+                    costs.push((us, sample.calls));
+                }
+                let tiles: Vec<Value> = sample
+                    .tiles
+                    .iter()
+                    .map(|(tile, person, mark)| {
+                        let mark = match mark {
+                            Mark::Speaking => "on",
+                            Mark::Quiet => "off",
+                            Mark::Unknown => "unknown",
+                        };
+                        json!({ "tile": tile, "person": person, "mark": mark })
+                    })
+                    .collect();
+                emit(json!({
+                    "kind": "sample",
+                    "t": sample.at_ms as f64 / 1000.0,
+                    "intervalMs": sample.interval_ms,
+                    "tiles": tiles,
+                    "calls": sample.calls,
+                    "us": us,
+                    "timedOut": sample.timed_out,
+                    "kept": sample.kept,
+                }));
+            }
+        }
+
+        fn percentile(sorted: &[u64], share: f64) -> u64 {
+            if sorted.is_empty() {
+                return 0;
+            }
+            let index = ((sorted.len() - 1) as f64 * share).round() as usize;
+            sorted[index.min(sorted.len() - 1)]
+        }
+
+        pub fn run(options: &Options, apps: Vec<RunningApp>, shown: &Shown) {
+            let folder =
+                std::env::temp_dir().join(format!("call-names-speaking-{}", std::process::id()));
+            let store = Store::new(folder.join("call-names"));
+            if let Err(error) = store.set_enabled(true) {
+                eprintln!("cannot write {}: {error}", folder.display());
+                std::process::exit(73);
+            }
+            let started_wall = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_or(0.0, |since| since.as_secs_f64());
+            let host = Terminal {
+                started: Instant::now(),
+                apps,
+                costs: Mutex::new(Vec::new()),
+            };
+            let interval = Duration::from_secs_f64(1.0 / options.hz);
+            emit(json!({
+                "kind": "meta",
+                "tool": "call-names snapshot --speaking",
+                "startedWall": started_wall,
+                "hz": options.hz,
+                "intervalMs": interval.as_millis() as u64,
+                "seconds": options.seconds,
+                "apps": host.apps.iter().map(|app| json!({ "bundleId": app.bundle_id, "pid": app.pid.to_string() })).collect::<Vec<_>>(),
+                "store": folder.display().to_string(),
+                "redacted": !options.show_names,
+            }));
+            let mut service = Service::new(store.clone(), Reader::new(), Pace::default());
+            service.set_sampling(Sampling {
+                interval,
+                write_every: Duration::from_secs(15),
+            });
+            let mut schedule = Schedule::default();
+            let until = Duration::from_secs_f64(options.seconds);
+            while !STOP.load(Ordering::SeqCst) && host.started.elapsed() < until {
+                match schedule.due(host.started.elapsed()) {
+                    Due::Names => {
+                        let delay = service.tick(&host);
+                        schedule.ticked(host.started.elapsed(), delay, service.sampling());
+                    }
+                    Due::Sample => {
+                        let next = service.sample(&host);
+                        schedule.sampled(host.started.elapsed(), next);
+                    }
+                    Due::Wait(wait) => std::thread::sleep(wait.min(Duration::from_millis(50))),
+                }
+            }
+            service.finish();
+            let roster = store.read(RECORDING).ok().flatten();
+            let people: Vec<Value> = roster
+                .iter()
+                .flat_map(|participants| &participants.people)
+                .map(|person| json!({ "id": person.id, "name": shown.text(person.name.as_str()), "self": person.is_self }))
+                .collect();
+            emit(json!({ "kind": "roster", "people": people }));
+            match store.read_speaking(RECORDING) {
+                Ok(Some(timeline)) => {
+                    let value: Value =
+                        serde_json::from_str(&timeline.to_json()).unwrap_or(Value::Null);
+                    emit(json!({ "kind": "timeline", "timeline": value }));
+                }
+                Ok(None) => emit(json!({ "kind": "timeline", "timeline": null })),
+                Err(error) => emit(json!({ "kind": "timeline", "error": error.to_string() })),
+            }
+            let costs = host
+                .costs
+                .lock()
+                .map(|costs| costs.clone())
+                .unwrap_or_default();
+            let mut us: Vec<u64> = costs.iter().map(|(us, _)| *us).collect();
+            let mut calls: Vec<u64> = costs.iter().map(|(_, calls)| *calls).collect();
+            us.sort_unstable();
+            calls.sort_unstable();
+            emit(json!({
+                "kind": "cost",
+                "samples": costs.len(),
+                "usP50": percentile(&us, 0.5),
+                "usP95": percentile(&us, 0.95),
+                "usMax": us.last().copied().unwrap_or(0),
+                "callsP50": percentile(&calls, 0.5),
+                "callsP95": percentile(&calls, 0.95),
+            }));
+            eprintln!(
+                "Done after {:.1} s: {} samples. The browser's accessibility flag is back to its earlier value. Files: {}",
+                host.started.elapsed().as_secs_f64(),
+                costs.len(),
+                folder.display()
+            );
+        }
     }
 }

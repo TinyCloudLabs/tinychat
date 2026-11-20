@@ -31,9 +31,26 @@
 //! of outcome and a few counts, never a name. It is written when the kind changes, and every
 //! [`STATUS_INTERVAL`] while the window is being read.
 //!
+//! Who spoke when. In a Meet call with three or more tiles, the service also follows each tile's
+//! speaking marker between ticks (see `speaking`) and keeps the speaking timeline of the
+//! recording in `<folder>/speaking/<recording id>.json` (see `timeline`): person ids and times
+//! only. A names tick goes first, every [`READING_INTERVAL`]; in between, [`Service::sample`]
+//! takes a speaking sample every [`SAMPLE_INTERVAL`] (every [`SLOW_SAMPLE_INTERVAL`] for
+//! [`SLOW_FOR`] after [`TIMEOUTS_BEFORE_SLOW`] samples in a row timed out). A sample is taken only
+//! while the last names tick read the window and followed three tiles or more, the capture is
+//! live with two channels and the setting is on; the capture is asked before and after the
+//! sample's reads, and a sample is dropped when it paused or changed in between. When the capture
+//! pauses or stops, the samples since the last names tick count for the tiles that tick confirmed
+//! (see `timeline`), without another reading. The timeline is
+//! written every [`Sampling::write_every`] of recording while it changes, when the capture pauses
+//! or stops, and when the service ends. The status file adds counts (samples, unknown samples,
+//! tiles followed, mode) and nothing else. The frontend reads it when it transcribes ([`Store::read_speaking`]). Saving the note
+//! does not remove it ([`Store::clear`] leaves it), because a new transcription needs it again;
+//! it goes with the recording's audio ([`Store::forget`]) or after [`MAX_NAMES_AGE`].
+//!
 //! The folder and its files are the user's alone (modes 0700 and 0600 on unix). When the service
-//! starts it removes what an interrupted write left behind, and each names file older than
-//! [`MAX_NAMES_AGE`]: nobody saved its note in all that time.
+//! starts it removes what an interrupted write left behind, and each names file and timeline
+//! older than [`MAX_NAMES_AGE`]: nobody saved its note in all that time.
 //!
 //! Everything here is plain Rust and runs on any platform; the tests drive it with a fake host
 //! and a fake window. No failure reaches the recorder: a tick that fails reads or saves nothing
@@ -47,6 +64,11 @@ use crate::names::Name;
 use crate::roster::{CallParticipants, Roster};
 use crate::rules::Rules;
 use crate::session::{Budget, Skip};
+use crate::speaking::{
+    tiles_to_read, Found, Mark, SampleRead, Tokens, SAMPLE_INTERVAL, SLOW_FOR,
+    SLOW_SAMPLE_INTERVAL, TIMEOUTS_BEFORE_SLOW,
+};
+use crate::timeline::{Counts, Timeline, Tracker, MAX_TIMELINE_BYTES};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::fs::{self, File};
@@ -79,6 +101,9 @@ const SELF_NAMES_FILE: &str = "_self-names.json";
 const STATUS_FILE: &str = "_status.json";
 /// The largest file the store reads; 50 names of 80 characters are far smaller.
 const MAX_FILE_BYTES: u64 = 64 * 1024;
+/// The folder of the speaking timelines, inside the store's folder. No recording id gives this
+/// name to a names file: those end in `.json`.
+const SPEAKING_DIR: &str = "speaking";
 
 /// True when `id` has the form of a recording id: 1 to 64 ASCII letters, digits and hyphens. It
 /// is the app's own rule for note ids (`valid_id` in `desktop/local-transcription`), so an id can
@@ -139,6 +164,9 @@ struct Status<'a> {
     self_known: bool,
     self_guessed: bool,
     tick_ms: u64,
+    /// Speaking samples of the recording: counts and the mode only. Absent without them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    speaking: Option<Counts>,
 }
 
 /// The folder with the names file of each recording, the setting, the names the user is
@@ -204,6 +232,16 @@ impl Store {
     /// running apps it was given, the people kept so far, whether one of them is given as the
     /// user and whether that is a guess, and the time the reading took.
     pub fn set_status(&self, report: &Report, now: SystemTime) -> Result<(), StoreError> {
+        self.set_status_with(report, None, now)
+    }
+
+    /// As [`Store::set_status`], with the speaking counts of the recording when there are any.
+    pub fn set_status_with(
+        &self,
+        report: &Report,
+        speaking: Option<Counts>,
+        now: SystemTime,
+    ) -> Result<(), StoreError> {
         let status = Status {
             v: 1,
             at: utc(now),
@@ -213,6 +251,7 @@ impl Store {
             self_known: report.self_known,
             self_guessed: report.guessed,
             tick_ms: report.elapsed_ms,
+            speaking,
         };
         let bytes =
             serde_json::to_vec(&status).map_err(|_| StoreError::Io(io::ErrorKind::InvalidData))?;
@@ -228,7 +267,7 @@ impl Store {
             return 0;
         };
         restrict_dir(&self.dir);
-        let mut removed = 0;
+        let mut removed = tidy_files(&self.dir.join(SPEAKING_DIR), now);
         for entry in entries.flatten() {
             let name = entry.file_name();
             let Some(name) = name.to_str() else {
@@ -303,11 +342,110 @@ impl Store {
             Err(error) => Err(io_error(error)),
         }
     }
+
+    fn speaking_path(&self, id: &str) -> Result<PathBuf, StoreError> {
+        if !valid_id(id) {
+            return Err(StoreError::InvalidId);
+        }
+        Ok(self.dir.join(SPEAKING_DIR).join(format!("{id}.json")))
+    }
+
+    /// The speaking timeline of the recording `id`, or `None` when there is none. A file that is
+    /// not a timeline this build reads is removed, and the answer is `None`.
+    pub fn read_speaking(&self, id: &str) -> Result<Option<Timeline>, StoreError> {
+        let path = self.speaking_path(id)?;
+        let timeline = match read_limited(&path, MAX_TIMELINE_BYTES) {
+            Ok(bytes) => String::from_utf8(bytes)
+                .ok()
+                .and_then(|json| Timeline::from_json(&json).ok()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) if error.kind() == io::ErrorKind::InvalidData => None,
+            Err(error) => return Err(io_error(error)),
+        };
+        if timeline.is_none() {
+            remove_with_temporaries(&path).map_err(io_error)?;
+        }
+        Ok(timeline)
+    }
+
+    /// Keep the speaking timeline of the recording `id`, in place of what was kept before.
+    pub fn write_speaking(&self, id: &str, timeline: &Timeline) -> Result<(), StoreError> {
+        write_atomic(&self.speaking_path(id)?, timeline.to_json().as_bytes()).map_err(io_error)
+    }
+
+    /// Forget everything kept about the recording `id`: its names and its speaking timeline. For
+    /// when its audio is deleted. Not an error when there is nothing.
+    pub fn forget(&self, id: &str) -> Result<(), StoreError> {
+        let names = self.clear(id);
+        let speaking = remove_with_temporaries(&self.speaking_path(id)?).map_err(io_error);
+        names.and(speaking)
+    }
+}
+
+/// Remove a file of the store and what an interrupted write of it left behind. Not an error when
+/// there is none.
+fn remove_with_temporaries(path: &Path) -> io::Result<()> {
+    let (Some(dir), Some(name)) = (
+        path.parent(),
+        path.file_name().and_then(|name| name.to_str()),
+    ) else {
+        return Err(io::ErrorKind::InvalidInput.into());
+    };
+    let temporary = format!("{name}.");
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let file = entry.file_name();
+            if file
+                .to_str()
+                .is_some_and(|file| file.starts_with(&temporary) && file.ends_with(".tmp"))
+            {
+                let _ = fs::remove_file(entry.path());
+            }
+        }
+    }
+    match fs::remove_file(path) {
+        Ok(()) => sync_dir(dir),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+/// In a folder of timelines: remove what an interrupted write left behind, and each timeline
+/// last written more than [`MAX_NAMES_AGE`] before `now`. Returns the number removed.
+fn tidy_files(dir: &Path, now: SystemTime) -> usize {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return 0;
+    };
+    restrict_dir(dir);
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        let old = entry
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .ok()
+            .and_then(|written| now.duration_since(written).ok())
+            .is_some_and(|age| age > MAX_NAMES_AGE);
+        let leftover = name.ends_with(".tmp");
+        let old_timeline = name.strip_suffix(".json").is_some_and(valid_id) && old;
+        if (leftover || old_timeline) && fs::remove_file(entry.path()).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
 }
 
 /// A whole file of the store. One larger than anything the store writes is refused unread.
 fn read_small(path: &Path) -> io::Result<Vec<u8>> {
-    if fs::metadata(path)?.len() > MAX_FILE_BYTES {
+    read_limited(path, MAX_FILE_BYTES)
+}
+
+/// A whole file, refused unread when it is larger than `max` bytes.
+fn read_limited(path: &Path, max: u64) -> io::Result<Vec<u8>> {
+    if fs::metadata(path)?.len() > max {
         return Err(io::ErrorKind::InvalidData.into());
     }
     fs::read(path)
@@ -580,6 +718,26 @@ pub trait Host {
 
     /// What a tick did, for the app's log. Called when it differs from the tick before.
     fn report(&self, _report: &Report) {}
+
+    /// What a speaking sample did, for a developer's tool (`examples/snapshot.rs`): ids, marks,
+    /// counts and times. The app does not log it.
+    fn sampled(&self, _sample: &SampleReport) {}
+}
+
+/// What one speaking sample did: per tile its person id and a preliminary mark (the timeline
+/// keeps the sample only once the next names tick confirms its tiles), and what it cost.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SampleReport {
+    /// On the recording's clock.
+    pub at_ms: u64,
+    pub interval_ms: u64,
+    /// Tile index in the last names tick, person id, mark.
+    pub tiles: Vec<(usize, Option<String>, Mark)>,
+    pub calls: u64,
+    pub elapsed: Duration,
+    pub timed_out: bool,
+    /// False when the capture paused or changed during the sample, which drops it.
+    pub kept: bool,
 }
 
 /// The reader of the meeting window: [`ax::Reader`] in the app, a fake in tests.
@@ -592,6 +750,18 @@ pub trait Window {
 
     /// Put back what reading changed in the apps.
     fn stop(&mut self);
+
+    /// What the last [`Window::read`] found for speaking: `None` when it did not look. Asked
+    /// once after each reading. The default follows nothing.
+    fn speaking(&mut self) -> Option<Found> {
+        None
+    }
+
+    /// One speaking sample of these tiles of the last reading. The default reads nothing.
+    fn sample(&mut self, slots: &[usize]) -> SampleRead {
+        let _ = slots;
+        SampleRead::default()
+    }
 }
 
 impl Window for ax::Reader {
@@ -605,6 +775,14 @@ impl Window for ax::Reader {
 
     fn stop(&mut self) {
         ax::Reader::stop(self)
+    }
+
+    fn speaking(&mut self) -> Option<Found> {
+        ax::Reader::speaking(self)
+    }
+
+    fn sample(&mut self, slots: &[usize]) -> SampleRead {
+        ax::Reader::sample(self, slots)
     }
 }
 
@@ -623,6 +801,65 @@ impl Default for Pace {
             reading: READING_INTERVAL,
             idle: IDLE_INTERVAL,
         }
+    }
+}
+
+/// How speaking samples are taken and kept.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Sampling {
+    /// Between two samples.
+    pub interval: Duration,
+    /// The least recording time between two writes of a timeline that changes.
+    pub write_every: Duration,
+}
+
+impl Default for Sampling {
+    fn default() -> Self {
+        Sampling {
+            interval: SAMPLE_INTERVAL,
+            write_every: Duration::from_secs(15),
+        }
+    }
+}
+
+/// What the reader's thread does next: a names tick goes first, speaking samples go in between.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Due {
+    Names,
+    Sample,
+    /// Nothing until this much time has passed.
+    Wait(Duration),
+}
+
+/// When the next names tick and the next sample are due, on the thread's own clock.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Schedule {
+    next_names: Duration,
+    next_sample: Option<Duration>,
+}
+
+impl Schedule {
+    pub fn due(&self, now: Duration) -> Due {
+        if now >= self.next_names {
+            return Due::Names;
+        }
+        match self.next_sample {
+            Some(at) if now >= at => Due::Sample,
+            Some(at) => Due::Wait(at.min(self.next_names) - now),
+            None => Due::Wait(self.next_names - now),
+        }
+    }
+
+    /// A names tick ended at `now`; the next one is `delay` away. `sample`: the sample interval
+    /// from now on, when samples are taken.
+    pub fn ticked(&mut self, now: Duration, delay: Duration, sample: Option<Duration>) {
+        self.next_names = now + delay;
+        self.next_sample = sample.map(|interval| now + interval);
+    }
+
+    /// A sample ended at `now`; `next`: the interval to the next one, if samples go on.
+    pub fn sampled(&mut self, now: Duration, next: Option<Duration>) {
+        self.next_sample = next.map(|interval| now + interval);
     }
 }
 
@@ -715,6 +952,50 @@ struct Recording {
     before: Option<Vec<Name>>,
     /// What the names file holds.
     saved: Option<CallParticipants>,
+    /// Who speaks when, once a names tick followed speaking markers.
+    speaking: Option<Tracker>,
+    /// The recording time of the last write of the timeline.
+    speaking_written: Option<u64>,
+}
+
+impl Recording {
+    /// The user's roster id in the participants as saved, if one is given.
+    fn self_id(&self) -> Option<String> {
+        let participants = self.saved.as_ref()?;
+        let person = participants.people.iter().find(|person| person.is_self)?;
+        Some(person.id.clone())
+    }
+
+    /// Write the timeline when it changed, at most every `every` of recording (always when
+    /// `every` is `None`). A write that fails is tried again later.
+    fn write_speaking(
+        &mut self,
+        store: &Store,
+        now_ms: u64,
+        every: Option<Duration>,
+    ) -> Result<(), StoreError> {
+        let Some(tracker) = self.speaking.as_ref() else {
+            return Ok(());
+        };
+        let due = match (every, self.speaking_written) {
+            (Some(every), Some(written)) => {
+                now_ms.saturating_sub(written) >= every.as_millis() as u64
+            }
+            _ => true,
+        };
+        if !tracker.changed() || !due {
+            return Ok(());
+        }
+        let Some(timeline) = tracker.timeline(self.self_id().as_deref()) else {
+            return Ok(());
+        };
+        store.write_speaking(&self.id, &timeline)?;
+        if let Some(tracker) = self.speaking.as_mut() {
+            tracker.saved();
+        }
+        self.speaking_written = Some(now_ms);
+        Ok(())
+    }
 }
 
 /// Decides each tick whether to read, reads, and keeps the names file up to date.
@@ -738,6 +1019,14 @@ pub struct Service<W: Window> {
     status: Option<String>,
     /// The time the ticks have taken since the status file was written.
     since_status: Duration,
+    sampling: Sampling,
+    /// The last names tick followed enough tiles: samples are taken until the next one.
+    sample_ok: bool,
+    /// Samples in a row that timed out, and until when (recording time) sampling stays slow.
+    timeouts: u32,
+    slow_until_ms: Option<u64>,
+    /// Where the next sample starts when the tiles take turns.
+    cursor: usize,
 }
 
 impl<W: Window> Service<W> {
@@ -767,7 +1056,115 @@ impl<W: Window> Service<W> {
             known: None,
             status: None,
             since_status: Duration::ZERO,
+            sampling: Sampling::default(),
+            sample_ok: false,
+            timeouts: 0,
+            slow_until_ms: None,
+            cursor: 0,
         }
+    }
+
+    /// Read with these rules instead of the embedded ones.
+    pub fn set_rules(&mut self, rules: Rules) {
+        self.rules = Some(rules);
+    }
+
+    /// Take speaking samples this way instead.
+    pub fn set_sampling(&mut self, sampling: Sampling) {
+        self.sampling = sampling;
+    }
+
+    /// The interval to the next speaking sample, while samples are taken: the last names tick
+    /// read the window and followed three tiles or more.
+    pub fn sampling(&self) -> Option<Duration> {
+        (self.reading && self.sample_ok).then(|| self.interval())
+    }
+
+    fn interval(&self) -> Duration {
+        if self.slow_until_ms.is_some() {
+            SLOW_SAMPLE_INTERVAL
+        } else {
+            self.sampling.interval
+        }
+    }
+
+    /// One speaking sample, between names ticks. Returns the interval to the next one, or `None`
+    /// when samples stop until the next names tick. Reads nothing unless the capture is live
+    /// with two channels, is the recording of the last names tick, the setting is on and three
+    /// tiles or more are followed. The capture is asked again after the reads; when it paused or
+    /// changed in between, the sample is dropped.
+    pub fn sample<H: Host>(&mut self, host: &H) -> Option<Duration> {
+        if !self.reading || !self.sample_ok {
+            return None;
+        }
+        let recording = self.recording.as_ref()?;
+        let slots = recording.speaking.as_ref()?.followed();
+        if slots.is_empty() {
+            return None;
+        }
+        let same = |live: &Live| live.id == recording.id && live.channels == STEREO;
+        let before = host.live().filter(same)?;
+        if !self.store.enabled() {
+            return None;
+        }
+        if self
+            .slow_until_ms
+            .is_some_and(|until| before.recorded_ms >= until)
+        {
+            self.slow_until_ms = None;
+        }
+        let interval = self.interval();
+        let chosen = tiles_to_read(&slots, interval, &mut self.cursor);
+        let read = self.window.sample(&chosen);
+        let after = host.live();
+        let recording = self.recording.as_mut()?;
+        let kept = after.as_ref().is_some_and(|after| {
+            after.id == recording.id
+                && after.channels == STEREO
+                && after.recorded_ms >= before.recorded_ms
+        });
+        if read.timed_out {
+            self.timeouts += 1;
+            if self.timeouts >= TIMEOUTS_BEFORE_SLOW {
+                self.timeouts = 0;
+                self.slow_until_ms = Some(before.recorded_ms + SLOW_FOR.as_millis() as u64);
+            }
+        } else if read.calls > 0 {
+            self.timeouts = 0;
+        }
+        let tracker = recording.speaking.as_mut()?;
+        let report = SampleReport {
+            at_ms: before.recorded_ms,
+            interval_ms: interval.as_millis() as u64,
+            tiles: tracker.preview(&read),
+            calls: read.calls,
+            elapsed: read.elapsed,
+            timed_out: read.timed_out,
+            kept,
+        };
+        if read.resting || read.not_trusted {
+            // Nothing more until the next names tick says what can be read.
+            tracker.unfollow();
+            self.sample_ok = false;
+        } else if kept {
+            tracker.sample(before.recorded_ms, interval.as_millis() as u64, read);
+        }
+        host.sampled(&report);
+        self.sample_ok.then(|| self.interval())
+    }
+
+    /// The capture paused or stopped, or reading stopped: the speaking intervals close and the
+    /// timeline is written if it changed.
+    fn pause_speaking(&mut self) {
+        self.sample_ok = false;
+        end_speaking(&mut self.recording, &self.store, false);
+    }
+
+    /// The service ends: the timeline is written and the apps get back what reading changed.
+    pub fn finish(&mut self) {
+        self.sample_ok = false;
+        end_speaking(&mut self.recording, &self.store, true);
+        self.stop();
     }
 
     /// One tick. Returns how long to wait before the next one.
@@ -796,7 +1193,16 @@ impl<W: Window> Service<W> {
         if same && !(self.reading && self.since_status >= STATUS_INTERVAL) {
             return;
         }
-        if self.store.set_status(report, SystemTime::now()).is_ok() {
+        let speaking = self
+            .recording
+            .as_ref()
+            .and_then(|recording| recording.speaking.as_ref())
+            .map(Tracker::counts);
+        if self
+            .store
+            .set_status_with(report, speaking, SystemTime::now())
+            .is_ok()
+        {
             self.status = Some(report.outcome.clone());
             self.since_status = Duration::ZERO;
         }
@@ -835,6 +1241,7 @@ impl<W: Window> Service<W> {
         let live = match self.gate(host) {
             Ok(live) => live,
             Err(why) => {
+                self.pause_speaking();
                 self.stop();
                 return Report::of(why);
             }
@@ -845,6 +1252,8 @@ impl<W: Window> Service<W> {
         let apps = running_apps(host);
         self.reading = true;
         let tick = self.window.read(rules, &apps, self.budget);
+        let found = self.window.speaking();
+        let names_app = tick.outcome.as_ref().ok().map(|extraction| extraction.app);
         let mut report = Report {
             apps: apps.len(),
             nodes: tick.nodes,
@@ -858,6 +1267,7 @@ impl<W: Window> Service<W> {
             .filter(|now| now.id == live.id && now.channels == STEREO)
             .map(|now| now.recorded_ms)
         else {
+            self.pause_speaking();
             self.stop();
             report.outcome = "capture_ended".into();
             return report;
@@ -867,7 +1277,12 @@ impl<W: Window> Service<W> {
             .as_ref()
             .is_none_or(|recording| recording.id != live.id)
         {
+            self.sample_ok = false;
+            end_speaking(&mut self.recording, &self.store, true);
             self.recording = None;
+            self.timeouts = 0;
+            self.slow_until_ms = None;
+            self.cursor = 0;
         }
         let recording = self.recording.get_or_insert_with(|| Recording {
             id: live.id,
@@ -875,7 +1290,12 @@ impl<W: Window> Service<W> {
             marked: false,
             before: None,
             saved: None,
+            speaking: None,
+            speaking_written: None,
         });
+        if let Some(tracker) = recording.speaking.as_mut() {
+            tracker.resume(recorded_ms);
+        }
         let known = self
             .known
             .get_or_insert_with(|| SelfNames::load(&self.store, self.account));
@@ -939,10 +1359,58 @@ impl<W: Window> Service<W> {
                 Err(error) => failed = Some(error),
             }
         }
+        // Who speaks: the tiles this tick followed confirm the samples taken since the last.
+        let looked = found.as_ref();
+        if recording.speaking.is_none() {
+            let rule =
+                names_app.and_then(|app| rules.app(app)?.speaking.first().map(|rule| (app, rule)));
+            if let (Some((app, rule)), Some(found)) = (rule, looked) {
+                if !found.tiles.is_empty() {
+                    recording.speaking = Some(Tracker::new(
+                        app,
+                        rules.version,
+                        self.sampling.interval.as_millis() as u64,
+                        rule.classes.as_ref().map(Tokens::of),
+                    ));
+                }
+            }
+        }
+        self.sample_ok = false;
+        if let Some(tracker) = recording.speaking.as_mut() {
+            let roster = &recording.roster;
+            tracker.tick(recorded_ms, looked, |name| {
+                let person = roster.people().iter().find(|person| &person.name == name)?;
+                Some(person.id.clone())
+            });
+            self.sample_ok = !tracker.followed().is_empty();
+            let every = Some(self.sampling.write_every);
+            if let Err(error) = recording.write_speaking(&self.store, recorded_ms, every) {
+                failed = Some(error);
+            }
+        }
         report.error = failed.map(|error| error.to_string());
         report.people = recording.roster.people().len();
         report
     }
+}
+
+/// The capture paused or stopped (`finished`: the recording is over): the speaking intervals of
+/// the recording close, what still waits is classified when it is over, and the timeline is
+/// written if it changed. A write that fails is tried again later.
+fn end_speaking(recording: &mut Option<Recording>, store: &Store, finished: bool) {
+    let Some(recording) = recording.as_mut() else {
+        return;
+    };
+    let Some(tracker) = recording.speaking.as_mut() else {
+        return;
+    };
+    if finished {
+        tracker.finish();
+    } else {
+        tracker.pause();
+    }
+    let now = recording.speaking_written.unwrap_or(0);
+    let _ = recording.write_speaking(store, now, None);
 }
 
 #[derive(Default)]
@@ -1026,14 +1494,30 @@ where
             // Declared first, so dropped last: after the service and its window are gone.
             let done = done;
             let mut service = Service::new(store, window(), pace);
+            let started = std::time::Instant::now();
+            let mut schedule = Schedule::default();
             loop {
-                let mut delay = pace.idle;
-                host.scope(&mut || delay = service.tick(&host));
-                if done.0.sleep(delay) {
+                let wait = match schedule.due(started.elapsed()) {
+                    Due::Names => {
+                        let mut delay = pace.idle;
+                        host.scope(&mut || delay = service.tick(&host));
+                        schedule.ticked(started.elapsed(), delay, service.sampling());
+                        Duration::ZERO
+                    }
+                    Due::Sample => {
+                        let mut next = None;
+                        host.scope(&mut || next = service.sample(&host));
+                        schedule.sampled(started.elapsed(), next);
+                        Duration::ZERO
+                    }
+                    Due::Wait(wait) => wait,
+                };
+                // Also asks whether to stop after a tick or a sample, without waiting.
+                if done.0.sleep(wait) {
                     break;
                 }
             }
-            host.scope(&mut || service.stop());
+            host.scope(&mut || service.finish());
         })?;
     Ok(Worker { shared })
 }

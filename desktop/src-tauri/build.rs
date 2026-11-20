@@ -88,6 +88,7 @@ fn main() {
             "call_names_open_settings",
             "call_names_read",
             "call_names_clear",
+            "call_names_speaking_read",
             "call_prompt_get",
             "call_prompt_set",
             "call_prompt_state",

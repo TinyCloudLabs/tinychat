@@ -10,6 +10,10 @@
 //! - [`names`]: cleaning and caps; a `Debug` that never prints a name.
 //! - [`roster`]: the people of one recording with stable ids, and the `call_participants` JSON.
 //! - [`session`]: one tick, with its node, depth and time budget; an overrun discards the tick.
+//! - [`speaking`]: phase 2, who is speaking: the marker in each Meet tile, found in a names tick,
+//!   sampled in between, and classified as speaking, quiet or unknown.
+//! - [`timeline`]: the samples of one recording, confirmed by the next names tick, as speaking
+//!   intervals per person id: the file the frontend reads.
 //! - [`ax`]: the macOS reader (Accessibility API); on other platforms a stub that reports
 //!   "unsupported".
 //!
@@ -24,4 +28,6 @@ pub mod roster;
 pub mod rules;
 pub mod service;
 pub mod session;
+pub mod speaking;
+pub mod timeline;
 pub mod tree;

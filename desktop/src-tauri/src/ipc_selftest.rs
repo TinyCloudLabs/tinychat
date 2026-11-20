@@ -71,6 +71,7 @@ const SCRIPT: &str = r#"(async () => {
     ["recorder_take_start_request", {}],
     ["recorder_take_stop_request", {}],
     ["call_names_get", {}],
+    ["call_names_speaking_read", { id: crypto.randomUUID() }],
     ["call_prompt_get", {}],
   ];
   for (let n = 0; n < 300 && !window.__TAURI_INTERNALS__?.invoke; n++) {
@@ -161,6 +162,7 @@ fn assert_results(value: &serde_json::Value) -> bool {
         "recorder_take_start_request",
         "recorder_take_stop_request",
         "call_names_get",
+        "call_names_speaking_read",
         "call_prompt_get",
     ] {
         let passed =

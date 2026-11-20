@@ -33,6 +33,12 @@
 //! where a rule names a name. A web area's address is a read of its own, so that no address is
 //! ever asked of an element that is not a page.
 //!
+//! Speaking (see `speaking`). In a reading that gave names, one `AXDOMClassList` per speaking
+//! marker candidate, and `AXMinimized` and the title of the page's window. Between readings,
+//! [`Reader::sample`] reads one `AXDOMClassList` per followed marker and nothing else, each marker
+//! with a messaging timeout of [`crate::speaking::MARKER_TIMEOUT_SECONDS`], within
+//! [`crate::speaking::SAMPLE_BUDGET`]. A class list becomes hashes at once; no class name is kept.
+//!
 //! Time. Every element gets a messaging timeout of [`MESSAGING_TIMEOUT_SECONDS`]. Each budget is
 //! checked before each round trip, not only after it. Apps without a call window are touched only
 //! in the search phase, so a browser that hangs there cannot cost the browser with the call its
@@ -64,6 +70,7 @@
 use crate::extract::Extraction;
 use crate::rules::App;
 use crate::session::{Budget, Discard, Skip};
+use crate::speaking::{Found, SampleRead};
 use crate::tree::{Node, ReadError};
 use serde::Serialize;
 use std::time::Duration;
@@ -344,7 +351,8 @@ mod imp {
     use super::*;
     use crate::rules::Rules;
     use crate::session::{Meter, Stopwatch, Target};
-    use crate::tree::{Source, Structure, TextAttr};
+    use crate::speaking::{MARKER_TIMEOUT_SECONDS, SAMPLE_BUDGET};
+    use crate::tree::{ClassSet, Source, Structure, TextAttr, MAX_CLASSES};
     use core_foundation::array::{CFArray, CFArrayGetValueAtIndex, CFArrayRef};
     use core_foundation::base::{
         CFEqual, CFGetTypeID, CFHash, CFIndex, CFNullGetTypeID, CFType, CFTypeID, CFTypeRef,
@@ -460,6 +468,8 @@ mod imp {
         identifier: CFString,
         windows: CFString,
         url: CFString,
+        class_list: CFString,
+        minimized: CFString,
     }
 
     impl Names {
@@ -479,6 +489,8 @@ mod imp {
                 identifier: name("AXIdentifier"),
                 windows: name("AXWindows"),
                 url: name("AXURL"),
+                class_list: name("AXDOMClassList"),
+                minimized: name("AXMinimized"),
             }
         }
 
@@ -692,6 +704,12 @@ mod imp {
             Ok(values.iter().map(string).collect())
         }
 
+        fn class_list(&mut self, node: &AXUIElement) -> Result<Option<ClassSet>, ReadError> {
+            // A single value: an element without a class list has no value there.
+            let value = copy(node, &self.names.class_list, false)?;
+            Ok(class_set(&value))
+        }
+
         fn identity_hash(&self, node: &AXUIElement) -> u64 {
             unsafe { CFHash(node.as_CFTypeRef()) as u64 }
         }
@@ -753,6 +771,41 @@ mod imp {
         fn calls(&self) -> u64 {
             AxSource::calls(self)
         }
+
+        fn quick(&mut self, node: &AXUIElement) {
+            unsafe {
+                AXUIElementSetMessagingTimeout(node.as_concrete_TypeRef(), MARKER_TIMEOUT_SECONDS)
+            };
+        }
+
+        fn minimized(&mut self, window: &AXUIElement) -> Result<bool, ReadError> {
+            Ok(copy(window, &self.names.minimized, false)?
+                .and_then(|value| value.downcast::<CFBoolean>())
+                .map(bool::from)
+                .unwrap_or(false))
+        }
+    }
+
+    /// The class list of an element as a [`ClassSet`]: each string is hashed and dropped at once.
+    /// `None` when there is no array of strings, or more than [`MAX_CLASSES`] items; items that
+    /// are not strings are left out.
+    fn class_set(value: &Option<CFType>) -> Option<ClassSet> {
+        let array = value.as_ref()?.downcast::<CFArray>()?;
+        let count = usize::try_from(array.len()).ok()?;
+        if count > MAX_CLASSES {
+            return None;
+        }
+        let string_type = CFString::type_id();
+        let mut tokens: Vec<String> = Vec::with_capacity(count);
+        for index in 0..count {
+            let item =
+                unsafe { CFArrayGetValueAtIndex(array.as_concrete_TypeRef(), index as CFIndex) };
+            if !item.is_null() && unsafe { CFGetTypeID(item) } == string_type {
+                let text = unsafe { CFString::wrap_under_get_rule(item as CFStringRef) };
+                tokens.push(text.to_string());
+            }
+        }
+        ClassSet::from_tokens(tokens.iter().map(String::as_str))
     }
 
     /// Reads the meeting window once per tick, for the length of one recording. See the module
@@ -830,6 +883,19 @@ mod imp {
         /// Where the last tick spent its time, phase by phase. Counts and times only.
         pub fn stats(&self) -> TickStats {
             self.driver.stats()
+        }
+
+        /// What the last `read` found for speaking: the followed tiles with their names, and
+        /// whether the call window is hidden. `None` when it did not look. Once per `read`.
+        pub fn speaking(&mut self) -> Option<Found> {
+            self.driver.speaking()
+        }
+
+        /// One speaking sample: the class list of the marker of each tile asked for (by its
+        /// index in the last [`Reader::speaking`]), within [`SAMPLE_BUDGET`]. Nothing else is read.
+        pub fn sample(&mut self, slots: &[usize]) -> SampleRead {
+            let clock = Stopwatch::start();
+            self.driver.sample(slots, SAMPLE_BUDGET, &clock)
         }
 
         /// Diagnostics on a developer's own call: keep a copy of what each `read` reads, with
@@ -966,6 +1032,14 @@ mod imp {
         }
 
         pub fn search(&mut self, _apps: &[RunningApp]) {}
+
+        pub fn speaking(&mut self) -> Option<Found> {
+            None
+        }
+
+        pub fn sample(&mut self, _slots: &[usize]) -> SampleRead {
+            SampleRead::default()
+        }
 
         pub fn stats(&self) -> TickStats {
             TickStats::default()
