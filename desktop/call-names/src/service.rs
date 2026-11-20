@@ -745,6 +745,10 @@ pub trait Window {
     /// Whether this process may read other apps' windows. Never prompts.
     fn permission(&self) -> Permission;
 
+    /// Ask the system to show its permission prompt. Returns at once; the prompt shows by
+    /// itself. The default asks nothing.
+    fn request_permission(&self) {}
+
     /// One reading over the given running apps.
     fn read(&mut self, rules: &Rules, apps: &[RunningApp], budget: Budget) -> TickReport;
 
@@ -767,6 +771,10 @@ pub trait Window {
 impl Window for ax::Reader {
     fn permission(&self) -> Permission {
         ax::permission()
+    }
+
+    fn request_permission(&self) {
+        ax::request_permission();
     }
 
     fn read(&mut self, rules: &Rules, apps: &[RunningApp], budget: Budget) -> TickReport {
@@ -1027,6 +1035,17 @@ pub struct Service<W: Window> {
     slow_until_ms: Option<u64>,
     /// Where the next sample starts when the tiles take turns.
     cursor: usize,
+    /// The recording for which the system was last asked to prompt for the permission: it is
+    /// asked once for each recording that meets a missing permission.
+    prompted_for: Option<String>,
+}
+
+/// Why [`Service`] reads nothing on a tick.
+enum Closed {
+    /// The outcome to report.
+    Because(&'static str),
+    /// A recording, by its id, would be read but the permission is missing.
+    NoPermission(String),
 }
 
 impl<W: Window> Service<W> {
@@ -1061,6 +1080,7 @@ impl<W: Window> Service<W> {
             timeouts: 0,
             slow_until_ms: None,
             cursor: 0,
+            prompted_for: None,
         }
     }
 
@@ -1215,32 +1235,45 @@ impl<W: Window> Service<W> {
         }
     }
 
-    /// The capture to read now, or why nothing is read.
-    fn gate<H: Host>(&self, host: &H) -> Result<Live, &'static str> {
-        let live = host.live().ok_or("not_live")?;
+    /// The capture to read now, or why nothing is read. The permission is checked on every call,
+    /// so reading starts on the first tick after the user grants it.
+    fn gate<H: Host>(&self, host: &H) -> Result<Live, Closed> {
+        let live = host.live().ok_or(Closed::Because("not_live"))?;
         if live.channels != STEREO {
-            return Err("mono");
+            return Err(Closed::Because("mono"));
         }
         if !valid_id(&live.id) {
-            return Err("invalid_id");
+            return Err(Closed::Because("invalid_id"));
         }
         if !self.store.enabled() {
-            return Err("setting_off");
+            return Err(Closed::Because("setting_off"));
         }
         if self.rules.is_none() {
-            return Err("no_rules");
+            return Err(Closed::Because("no_rules"));
         }
         match self.window.permission() {
             Permission::Granted => Ok(live),
-            Permission::Unsupported => Err("unsupported"),
-            _ => Err("no_permission"),
+            Permission::Unsupported => Err(Closed::Because("unsupported")),
+            _ => Err(Closed::NoPermission(live.id)),
         }
     }
 
     fn step<H: Host>(&mut self, host: &H) -> Report {
         let live = match self.gate(host) {
             Ok(live) => live,
-            Err(why) => {
+            Err(closed) => {
+                let why = match closed {
+                    Closed::Because(why) => why,
+                    Closed::NoPermission(id) => {
+                        // A recording would be read but for the permission, and the user may not
+                        // know it is missing: the system is asked to prompt, once per recording.
+                        if self.prompted_for.as_ref() != Some(&id) {
+                            self.window.request_permission();
+                            self.prompted_for = Some(id);
+                        }
+                        "no_permission"
+                    }
+                };
                 self.pause_speaking();
                 self.stop();
                 return Report::of(why);
@@ -1659,6 +1692,8 @@ mod tests {
     struct WindowState {
         permission: Permission,
         permission_checks: usize,
+        /// How often the system was asked to prompt for the permission.
+        permission_requests: usize,
         /// What the next readings return; the last one repeats.
         script: VecDeque<Reading>,
         /// The apps each reading was given.
@@ -1684,6 +1719,7 @@ mod tests {
             Arc::new(Mutex::new(WindowState {
                 permission: Permission::Granted,
                 permission_checks: 0,
+                permission_requests: 0,
                 script: VecDeque::from([people(&[
                     ("Alex Example", true),
                     ("Robin Sample", false),
@@ -1705,6 +1741,10 @@ mod tests {
             let mut state = self.0.lock().unwrap();
             state.permission_checks += 1;
             state.permission
+        }
+
+        fn request_permission(&self) {
+            self.0.lock().unwrap().permission_requests += 1;
         }
 
         fn read(&mut self, rules: &Rules, apps: &[RunningApp], _budget: Budget) -> TickReport {
@@ -2043,6 +2083,101 @@ mod tests {
         rig.tick();
         assert_eq!(rig.host.outcomes().last().unwrap(), "unsupported");
         assert_eq!(rig.reads(), 1);
+    }
+
+    #[test]
+    fn a_recording_that_meets_a_missing_permission_asks_for_it_once_not_on_each_tick() {
+        let mut rig = Rig::new();
+        rig.window.lock().unwrap().permission = Permission::Missing;
+        rig.host.record(RECORDING, STEREO, 1_000);
+        for _ in 0..3 {
+            assert_eq!(rig.tick(), IDLE_INTERVAL);
+        }
+        assert_eq!(rig.window.lock().unwrap().permission_requests, 1);
+        // The permission is still checked on every tick, and nothing else changes.
+        assert_eq!(rig.window.lock().unwrap().permission_checks, 3);
+        assert_eq!(rig.reads(), 0);
+        assert_eq!(rig.host.outcomes(), ["no_permission"]);
+        assert_eq!(status(&rig.store).0, "no_permission");
+
+        // Paused and resumed, it is the same recording: it is not asked again.
+        rig.host.pause();
+        rig.tick();
+        rig.host.record(RECORDING, STEREO, 5_000);
+        rig.tick();
+        assert_eq!(rig.window.lock().unwrap().permission_requests, 1);
+
+        // Granted: the same recording is read on the next tick, and nothing more is asked.
+        rig.window.lock().unwrap().permission = Permission::Granted;
+        assert_eq!(rig.tick(), READING_INTERVAL);
+        assert_eq!(rig.file(RECORDING).as_deref(), Some(ALEX_AND_SAM));
+        assert_eq!(rig.window.lock().unwrap().permission_requests, 1);
+    }
+
+    #[test]
+    fn the_next_recording_with_the_permission_still_missing_asks_again_once() {
+        let mut rig = Rig::new();
+        rig.window.lock().unwrap().permission = Permission::Missing;
+        rig.host.record(RECORDING, STEREO, 1_000);
+        rig.tick();
+        rig.tick();
+        rig.host.pause();
+        rig.tick();
+        assert_eq!(rig.window.lock().unwrap().permission_requests, 1);
+
+        rig.host.record(NEXT_RECORDING, STEREO, 0);
+        for _ in 0..3 {
+            rig.tick();
+        }
+        assert_eq!(rig.window.lock().unwrap().permission_requests, 2);
+        assert_eq!(rig.reads(), 0);
+    }
+
+    #[test]
+    fn nothing_asks_for_the_permission_when_the_recording_would_not_be_read_anyway() {
+        let requests = |rig: &Rig| rig.window.lock().unwrap().permission_requests;
+
+        // Nothing is live.
+        let mut rig = Rig::new();
+        rig.window.lock().unwrap().permission = Permission::Missing;
+        rig.tick();
+        assert_eq!(requests(&rig), 0);
+
+        // The recording is mono.
+        rig.host.record(RECORDING, 1, 1_000);
+        rig.tick();
+        assert_eq!(requests(&rig), 0);
+
+        // The id is not valid.
+        rig.host.record("not/an/id", STEREO, 1_000);
+        rig.tick();
+        assert_eq!(requests(&rig), 0);
+
+        // The setting is off.
+        rig.store.set_enabled(false).unwrap();
+        rig.host.record(RECORDING, STEREO, 1_000);
+        rig.tick();
+        assert_eq!(requests(&rig), 0);
+
+        // There are no rules.
+        rig.store.set_enabled(true).unwrap();
+        rig.service.rules = None;
+        rig.tick();
+        assert_eq!(requests(&rig), 0);
+        assert_eq!(
+            rig.host.outcomes(),
+            ["not_live", "mono", "invalid_id", "setting_off", "no_rules"]
+        );
+
+        // The permission is granted, or there is none to ask for on this computer.
+        for permission in [Permission::Granted, Permission::Unsupported] {
+            let mut rig = Rig::new();
+            rig.window.lock().unwrap().permission = permission;
+            rig.host.record(RECORDING, STEREO, 1_000);
+            rig.tick();
+            rig.tick();
+            assert_eq!(requests(&rig), 0);
+        }
     }
 
     #[test]
