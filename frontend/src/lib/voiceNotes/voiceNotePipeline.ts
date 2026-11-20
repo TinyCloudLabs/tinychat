@@ -64,7 +64,17 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
   // Executor form: the frontend's ES2022 lib has no Promise.withResolvers.
   let releaseDrainWaiters = () => {};
   let drainWaitersReleased = new Promise<void>((resolve) => { releaseDrainWaiters = resolve; });
-  const awaitServerDrain = async (check: () => void) => {
+  // When the next probe goes out after one the node did not answer; told to waiters that show it.
+  let drainRetryAt: number | null = null;
+  const drainWaits = new Set<(at: number) => void>();
+  const awaitServerDrain = async (check: () => void, onWait?: (nextProbeAt: number) => void) => {
+    if (onWait) {
+      drainWaits.add(onWait);
+      if (drainRetryAt !== null) onWait(drainRetryAt);
+    }
+    try { await drainServer(check); } finally { if (onWait) drainWaits.delete(onWait); }
+  };
+  const drainServer = async (check: () => void) => {
     while (spaceLaneAbandonedSqlCalls() > drainedThrough) {
       if (!drainProbe) {
         const probe: Promise<void> = (async () => {
@@ -81,7 +91,11 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
           }
           // Unanswered or timed out: the node may still be busy, and a probe it never
           // answered may itself stay queued, so space the next one out.
-          await new Promise<void>((resolve) => setTimeout(resolve, Math.round(probeBackoffMs * (0.8 + Math.random() * 0.4))));
+          const delay = Math.round(probeBackoffMs * (0.8 + Math.random() * 0.4));
+          drainRetryAt = Date.now() + delay;
+          for (const wait of [...drainWaits]) wait(drainRetryAt);
+          await new Promise<void>((resolve) => setTimeout(resolve, delay));
+          drainRetryAt = null;
           probeBackoffMs = Math.min(probeBackoffMs * 2, DRAIN_PROBE_MAX_BACKOFF_MS);
         })().finally(() => { if (drainProbe === probe) drainProbe = null; });
         drainProbe = probe;
@@ -111,9 +125,12 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
       if (!ticket.owns) return;
       void run(async () => {
         try {
-          // processOne settles the ticket; a retry cancelled while it waits must settle it here.
-          try { await awaitServerDrain(checkFor(ctx, epoch)); }
+          // processOne settles the ticket; a retry cancelled while it waits must settle it here. While the node
+          // does not answer the drain probe, the note shows when the next try goes out, as it did for this one.
+          let waited = false;
+          try { await awaitServerDrain(checkFor(ctx, epoch), (at) => { waited = true; pendingStore.setRetrying(id, at); }); }
           catch (error) { pendingStore.settleUploadQueue(ticket); throw error; }
+          if (waited) pendingStore.setRetrying(id, null);
           const saved = await processOne(ctx, id, epoch, true, ticket, onRowCreated, onSaved);
           syncDesktopAfterUpload(ctx, saved);
           if (saved) {
@@ -251,7 +268,11 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
           await Promise.race([whenForegroundIdle(), drainWaitersReleased]);
           check();
         }
-        await awaitServerDrain(check);
+        // While the node does not answer the drain probe, the notes this pass will save show when it tries again.
+        const waiting = notes.filter((note) => note.owner === ctx.did && !note.ownerUnknown && note.ledger?.audio.state !== "saved" && !isDiscarded(note.id));
+        let waited = false;
+        await awaitServerDrain(check, (at) => { waited = true; for (const note of waiting) pendingStore.setRetrying(note.id, at); });
+        if (waited) for (const note of waiting) pendingStore.setRetrying(note.id, null);
         try {
           const gate = await withVoiceNoteSaveDeadline("voice-note space setup", () => ensureVoiceNoteIdentity(tcw, check));
           if (gate.status !== "established") throw Object.assign(new Error(gate.reason ?? gate.status), { code: gate.status, cause: gate.cause });

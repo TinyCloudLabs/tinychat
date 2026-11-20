@@ -48,7 +48,20 @@ export async function loadDesktopWhisperBridge(): Promise<DesktopWhisperBridge> 
 }
 
 export type DesktopWhisperJob = { id: string; state: "queued" | "transcribing" | "done" | "failed";
-  error: string | null; progress: number | null; explicitRerun?: boolean; position?: number | null; inLine?: number };
+  error: string | null; progress: number | null; explicitRerun?: boolean; position?: number | null; inLine?: number;
+  /** Queued while the recording's audio is still being finished on this Mac: the job starts once it is ready. */
+  audio?: "preparing";
+  /** Stopped because no Whisper model is selected or downloaded: it waits for a model (`modelAvailable` requeues it). */
+  model?: "missing" };
+
+/** A job that waits for a Whisper model: it did not fail, and Get model is its action. */
+export function whisperJobNeedsModel(job: Pick<DesktopWhisperJob, "state" | "model"> | null | undefined): boolean {
+  return job?.state === "failed" && job.model === "missing";
+}
+
+/** The queue's own refusal when no downloaded Whisper model is selected (`selectedModel`), as stored in the note's stt error. */
+const modelMissing = (error: string | null | undefined): boolean =>
+  error?.startsWith("unavailable:") === true && /\bmodel\b/i.test(error);
 
 export interface DesktopWhisperRerun { id: string; rev: number; baseRev: number; baseHash: string }
 
@@ -59,9 +72,13 @@ export interface DesktopWhisperQueue {
   onDone(listener: (id: string) => void): () => void;
   onFailed(listener: (id: string) => void): () => void;
   noteCommitted(recording: VoiceNoteRecording): Promise<void>;
+  /** A stopped note whose audio is still being finished: shown as waiting for it; finishing calls noteCommitted. */
+  notePreparing(recording: VoiceNoteRecording): void;
   rerun(request: DesktopWhisperRerun): Promise<void>;
   retry(id: string): Promise<void>;
   modelAvailable(): Promise<void>;
+  /** Shows each pending note's stored state at once, before `resume` restarts any work (a reload's first paint). */
+  restore(): Promise<void>;
   resume(): Promise<void>;
   beforeCapture(): Promise<void>;
   captureEnded(): void;
@@ -161,8 +178,9 @@ export function createDesktopWhisperQueue(args: {
   let stopping = false;
 
   const publish = (id: string, state: DesktopWhisperJob["state"], error: string | null = null,
-    progress: number | null = null) => {
-    jobs.set(id, { id, state, error, progress, explicitRerun: reruns.has(id) || failedReruns.has(id) });
+    progress: number | null = null, audio?: "preparing") => {
+    jobs.set(id, { id, state, error, progress, explicitRerun: reruns.has(id) || failedReruns.has(id), ...(audio ? { audio } : {}),
+      ...(state === "failed" && !reruns.has(id) && !failedReruns.has(id) && modelMissing(error) ? { model: "missing" as const } : {}) });
     derivedSnapshot = null;
     for (const listener of listeners) {
       try { listener(); } catch (error) { console.error("[desktopWhisper] Status listener failed", error); }
@@ -321,6 +339,8 @@ export function createDesktopWhisperQueue(args: {
   const drain = async () => {
     if (disposed || activeRun || captureLive() || stopping) return;
     const notes = (await store.listPending()).recordings;
+    // Two drains can overlap (a resume and a model change): only one may start a job.
+    if (disposed || activeRun || captureLive() || stopping) return;
     const next = notes.find((note) => (!note.ledger?.localAudio || note.ledger.localAudio.state === "ready")
       && (reruns.has(note.id) || note.options?.transcriber === "on-device"
         && !["done", "failed", "cancelled"].includes(note.stt?.state ?? "queued")));
@@ -406,7 +426,12 @@ export function createDesktopWhisperQueue(args: {
           continue;
         }
         if (note.options?.transcriber !== "on-device") continue;
-        if (note.ledger?.localAudio && note.ledger.localAudio.state !== "ready") continue;
+        if (note.ledger?.localAudio && note.ledger.localAudio.state !== "ready") {
+          // Still being finished on this Mac: it waits for its audio, and starts when finishing calls noteCommitted.
+          if (note.ledger.localAudio.state === "preparing" && !["done", "failed", "cancelled"].includes(note.stt?.state ?? "queued"))
+            publish(note.id, "queued", null, null, "preparing");
+          continue;
+        }
         if (note.stt?.state === "running") {
           // The Rust task can outlive a WebView reload. Stop that instance before
           // replacing its staged path and starting the durable queued attempt.
@@ -438,7 +463,27 @@ export function createDesktopWhisperQueue(args: {
       owners.set(note.id, note.owner ?? null);
       if (note.options?.transcriber !== "on-device") return;
       await mark(note.id, "queued");
+      if (note.ledger?.localAudio?.state === "preparing") publish(note.id, "queued", null, null, "preparing");
       await drain();
+    },
+    notePreparing(note) {
+      owners.set(note.id, note.owner ?? null);
+      if (note.options?.transcriber !== "on-device" || note.ledger?.localAudio?.state !== "preparing" || jobs.has(note.id)) return;
+      publish(note.id, "queued", null, null, "preparing");
+    },
+    async restore() {
+      const notes = (await store.listPending()).recordings;
+      for (const note of notes) {
+        // Work this queue already reported is newer than the store; reruns are settled by resume.
+        if (jobs.has(note.id) || note.options?.transcriber !== "on-device" || note.stt?.rerunRev != null) continue;
+        owners.set(note.id, note.owner ?? null);
+        const audio = note.ledger?.localAudio?.state;
+        if (audio === "failed") continue;
+        const state = note.stt?.state ?? "queued";
+        if (state === "done") publish(note.id, "done");
+        else if (state === "failed") publish(note.id, "failed", note.stt?.error ?? null);
+        else publish(note.id, "queued", null, null, audio === "preparing" ? "preparing" : undefined);
+      }
     },
     rerun,
     async retry(id) {
