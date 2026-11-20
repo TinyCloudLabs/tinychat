@@ -1,7 +1,10 @@
 import importlib.util
 import json
+import os
 from pathlib import Path
+import subprocess
 import tempfile
+import textwrap
 import unittest
 
 spec = importlib.util.spec_from_file_location("merge", Path(__file__).with_name("merge_screen_shards.py"))
@@ -73,6 +76,32 @@ class ShardCoverageTests(unittest.TestCase):
         (self.root / "dark/junit.xml").write_text(f'<testsuites><testsuite><testcase file="{self.expected_file}"><skipped /></testcase></testsuite></testsuites>')
         with self.assertRaisesRegex(ValueError, "failed or skipped"):
             self.run_merge()
+
+
+class ScreenAggregateTests(unittest.TestCase):
+    def test_dependency_outcomes(self):
+        workflow = Path(__file__).resolve().parents[1] / "workflows/frontend.yml"
+        job = workflow.read_text().split("\n  screens:\n", 1)[1].split("\n  halo-webkit:\n", 1)[0]
+        script = textwrap.dedent(job.split("        run: |\n", 1)[1])
+        cases = [
+            ("selected full success", "success", "true", "success", "success", "pull_request", True),
+            ("cancelled shard", "success", "true", "cancelled", "success", "pull_request", False),
+            ("cancelled coverage", "success", "true", "success", "cancelled", "pull_request", False),
+            ("cancelled detector", "cancelled", "", "skipped", "skipped", "pull_request", False),
+            ("missing shard", "success", "true", "skipped", "success", "pull_request", False),
+            ("failed coverage", "success", "true", "success", "failure", "pull_request", False),
+            ("skipped coverage", "success", "true", "success", "skipped", "pull_request", False),
+            ("backend-only skip", "success", "false", "skipped", "skipped", "pull_request", True),
+            ("main-event skip", "success", "true", "skipped", "skipped", "push", True),
+            ("unexpected execution", "success", "false", "success", "success", "pull_request", False),
+        ]
+        for name, changes, frontend, shards, coverage, event, expected in cases:
+            with self.subTest(name=name):
+                result = subprocess.run(["bash", "-e", "-c", script], env={
+                    **os.environ, "CHANGES_RESULT": changes, "FRONTEND_CHANGED": frontend,
+                    "SHARDS_RESULT": shards, "COVERAGE_RESULT": coverage, "EVENT_NAME": event,
+                }, capture_output=True, text=True)
+                self.assertEqual(result.returncode == 0, expected, result.stderr)
 
 
 if __name__ == "__main__":

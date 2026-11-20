@@ -220,7 +220,7 @@ jobs:
   screens-coverage:
     name: Screen shard coverage (${{ matrix.viewport }})
     needs: [changes, screens-shards]
-    if: ${{ !cancelled() && github.event_name == 'pull_request' && needs.changes.outputs.frontend == 'true' }}
+    if: ${{ always() && github.event_name == 'pull_request' && needs.changes.outputs.frontend == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     strategy:
@@ -254,7 +254,7 @@ jobs:
     # Preserve the four required check names; intentional path/event skips pass.
     name: Exo UI screens (Chromium, ${{ matrix.viewport }})
     needs: [changes, screens-shards, screens-coverage]
-    if: ${{ !cancelled() }}
+    if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     strategy:
