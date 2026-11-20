@@ -1,7 +1,7 @@
 // `/chat/apps/<appId>`: one of TinyCloud's apps framed inside One, running on a silent, scoped delegation of One's
 // session. Lazy: loads only when the flag is on and an app route is open.
 
-import { serializeDelegation, type PermissionEntry, type TinyCloudWeb } from "@tinycloud/web-sdk";
+import type { PermissionEntry, TinyCloudWeb } from "@tinycloud/web-sdk";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   AlertDialog,
@@ -16,7 +16,8 @@ import {
 import { openKeyFailureOf } from "../lib/authErrors";
 import { isNativeOpenKeySession } from "../lib/openkeyNative";
 import { useResolvedTheme } from "../lib/theme";
-import { EmbedHost, SpaceNotHostedError, type EmbedTheme } from "./embedHost";
+import { EmbedHost, type EmbedTheme } from "./embedHost";
+import { frameGrantDelegate } from "./frameGrant";
 import { trackEmbed } from "./liveEmbeds";
 import { framedApp, framesAppHere, frameUrl, ONE_APPS, type FramedOneApp } from "./registry";
 import { stepUpForApp, type StepUpConnect } from "./stepUp";
@@ -35,7 +36,6 @@ import {
   type ScopeId,
 } from "./strings";
 
-const GRANT_LIFETIME_MS = 60 * 60 * 1000;
 const SANDBOX = "allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads";
 
 interface Ask {
@@ -49,12 +49,6 @@ interface Ask {
 interface Missing {
   spaces: string[];
   none: boolean;
-}
-
-/** True when the node skipped the delegation's space: it answered 200 but does not host it (requireActivation). */
-function skippedByNode(error: unknown): boolean {
-  const cause = error instanceof Error ? (error.cause as { success?: unknown; skipped?: unknown } | undefined) : undefined;
-  return cause?.success === true && Array.isArray(cause.skipped) && cause.skipped.length > 0;
 }
 
 /** Courier's own page, where "Open Courier" leads (a new tab, never the framed route). */
@@ -107,23 +101,7 @@ function FramedApp({ app, tcw, address, chainId, connect }: FramedAppProps) {
       frameWindow: () => frameRef.current?.contentWindow ?? null,
       post: (message) => frameRef.current?.contentWindow?.postMessage(message, app.origin),
       holds: (entries) => tcw.hasPermissions(entries),
-      delegate: async (audience, entries) => {
-        let made: Awaited<ReturnType<TinyCloudWeb["delegateTo"]>>;
-        try {
-          made = await tcw.delegateTo(audience, entries, { expiry: GRANT_LIFETIME_MS, disableSubDelegation: true, requireActivation: true });
-        } catch (error) {
-          if (skippedByNode(error) && entries[0]?.space) throw new SpaceNotHostedError(entries[0].space);
-          throw error;
-        }
-        const { delegation, prompted } = made;
-        return {
-          spaceId: delegation.spaceId,
-          cid: delegation.cid,
-          delegation: serializeDelegation(delegation),
-          expiresAt: new Date(delegation.expiry).getTime(),
-          prompted,
-        };
-      },
+      delegate: frameGrantDelegate(tcw),
       stepUp: (scopes, entries, missingSpaces) => askThenStepUp(scopes, entries, missingSpaces),
       missing: (spaces, none) => {
         setFailedLine(null);
