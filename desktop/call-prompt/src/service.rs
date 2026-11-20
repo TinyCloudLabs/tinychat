@@ -38,9 +38,10 @@
 use crate::apps::Kind;
 use crate::mic::{AudioProcesses, CoreAudio, Mic, Pass, ScanError};
 use crate::session::{Action, Capture, Observation, Phase, Session, Stage, TICK};
-use crate::status::{GateState, LastStart, Status, StatusFile};
+use crate::status::{GateState, LastStart, Status, StatusFile, Transition, HISTORY};
 use crate::tile::TileState;
 use crate::tile::PAGE_WAIT;
+use std::collections::VecDeque;
 use std::io;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
@@ -106,12 +107,17 @@ struct Inner {
     page_ready: bool,
     /// The window was asked for ([`Action::Prepare`]) and the page has not asked yet.
     prepared: bool,
-    /// An offer is due but its page has not asked yet: since when.
+    /// The tile is due but its page has not asked yet: since when.
     waiting_since: Option<Duration>,
+    /// The app was told to show the tile, and not to hide it since.
+    shown: bool,
     /// When "Start" was last pressed, until the web app claims the start request.
     start_pressed_at: Option<Duration>,
     /// The last "Start", for the status file.
     last_start: Option<LastStart>,
+    /// The last transitions, and the stage and phase after the last one.
+    history: VecDeque<Transition>,
+    last_state: (Stage, Phase),
 }
 
 /// The CoreAudio reader, the passes and their pace, and the time of the last full scan.
@@ -172,9 +178,12 @@ impl<H: Host, A: AudioProcesses> Watcher<H, A> {
             inner: Mutex::new(Inner {
                 session: Session::new(),
                 last_report: None,
+                history: VecDeque::new(),
+                last_state: (Stage::Idle, Phase::Hidden),
                 page_ready: false,
                 prepared: false,
                 waiting_since: None,
+                shown: false,
                 start_pressed_at: None,
                 last_start: None,
             }),
@@ -258,7 +267,9 @@ impl<H: Host, A: AudioProcesses> Watcher<H, A> {
         catch_unwind(AssertUnwindSafe(|| {
             let mut inner = lock(&self.inner);
             inner.page_ready = true;
-            if inner.waiting_since.take().is_some() && inner.session.phase() != Phase::Hidden {
+            inner.waiting_since = None;
+            if !inner.shown && inner.session.phase() != Phase::Hidden {
+                inner.shown = true;
                 self.host.act(Action::Show);
             }
             inner.session.tile()
@@ -269,7 +280,9 @@ impl<H: Host, A: AudioProcesses> Watcher<H, A> {
     /// The app has just made the tile's window: its page has not asked yet.
     pub fn window_created(&self) {
         let _ = catch_unwind(AssertUnwindSafe(|| {
-            lock(&self.inner).page_ready = false;
+            let mut inner = lock(&self.inner);
+            inner.page_ready = false;
+            inner.shown = false;
         }));
     }
 
@@ -305,7 +318,7 @@ impl<H: Host, A: AudioProcesses> Watcher<H, A> {
                 let _ = catch_unwind(AssertUnwindSafe(|| {
                     let now = (self.clock)();
                     let mut inner = lock(&self.inner);
-                    let actions = inner.session.reset();
+                    let actions = inner.session.reset_because("panicked");
                     self.carry_out(&mut inner, actions, Some("panicked"), now);
                 }));
                 PANIC_REST
@@ -334,14 +347,17 @@ impl<H: Host, A: AudioProcesses> Watcher<H, A> {
         }
         let mut error = look.error.map(ScanError::as_str);
         let mut actions = Vec::new();
-        // An offer whose page never asked: never shown, and "Not now" for this call.
+        // An offer whose page never asked: never shown, and "Not now" for this call. (A recording
+        // bar waits for the page as long as it takes: it shows when the page asks.)
         if inner
             .waiting_since
             .is_some_and(|since| now.saturating_sub(since) >= PAGE_WAIT)
         {
             inner.waiting_since = None;
-            actions.extend(inner.session.dismiss(now));
-            error = Some("tile_page_missing");
+            if inner.session.stage() == Stage::Offered {
+                actions.extend(inner.session.page_missing(now));
+                error = Some("tile_page_missing");
+            }
         }
         let seen = Observation {
             heard: look.heard.as_deref(),
@@ -376,6 +392,7 @@ impl<H: Host, A: AudioProcesses> Watcher<H, A> {
             scan_ms: seen.full_ms,
             last_start: inner.last_start,
             error,
+            history: inner.history.iter().cloned().collect(),
         }
     }
 
@@ -442,19 +459,35 @@ impl<H: Host, A: AudioProcesses> Watcher<H, A> {
                 actions.push(inner.session.tile_action());
             }
             let error = inner.last_report.and_then(|report| report.error);
-            self.carry_out(&mut inner, actions, error, now);
+            let changed = self.carry_out(&mut inner, actions, error, now);
+            if changed {
+                // Every transition goes to the status file, also one a button made.
+                let sight = lock(&self.audio)
+                    .last_look
+                    .map(|(_, seen)| seen)
+                    .unwrap_or(Seen {
+                        gate: GateState::Closed,
+                        pass: Pass::GateOnly,
+                        pass_ms: 0.0,
+                        full_ms: None,
+                    });
+                let status = Self::status(&inner, true, &sight, error);
+                drop(inner);
+                self.write_status(now, &status);
+            }
         }));
     }
 
-    /// Carry out the actions in order. A show waits for the tile's page: until it has asked, the
-    /// window is only made ([`Action::Prepare`]) and the offer waits up to [`PAGE_WAIT`].
+    /// Carry out the actions in order, and note a transition in the history. A show waits for the
+    /// tile's page: until it has asked, the window is only made ([`Action::Prepare`]) and the
+    /// offer waits up to [`PAGE_WAIT`]. True when the stage or the phase changed.
     fn carry_out(
         &self,
         inner: &mut Inner,
         actions: Vec<Action>,
         error: Option<&'static str>,
         now: Duration,
-    ) {
+    ) -> bool {
         for action in actions {
             match action {
                 Action::Show if !inner.page_ready => {
@@ -462,8 +495,13 @@ impl<H: Host, A: AudioProcesses> Watcher<H, A> {
                     inner.prepared = true;
                     self.host.act(Action::Prepare);
                 }
+                Action::Show => {
+                    inner.shown = true;
+                    self.host.act(Action::Show);
+                }
                 Action::Hide => {
                     inner.waiting_since = None;
+                    inner.shown = false;
                     self.host.act(Action::Hide);
                 }
                 Action::Start => {
@@ -499,6 +537,20 @@ impl<H: Host, A: AudioProcesses> Watcher<H, A> {
             inner.last_report = Some(report);
             self.host.report(&report);
         }
+        let state = (inner.session.stage(), inner.session.phase());
+        if state == inner.last_state {
+            return false;
+        }
+        inner.last_state = state;
+        inner.history.push_back(Transition::now(
+            state.1,
+            state.0.as_str(),
+            inner.session.reason(),
+        ));
+        while inner.history.len() > HISTORY {
+            inner.history.pop_front();
+        }
+        true
     }
 
     fn wake(&self) {

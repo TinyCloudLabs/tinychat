@@ -12,8 +12,10 @@
 //! when the start needs the user: this Mac's audio is on and its consent was never given. When
 //! the recording does not capture within 8 s, the watcher brings the main window forward.
 //!
-//! The recording started from the tile keeps the tile, as a bar with the recorder's own time
-//! (`engine::recording_clock`) and "Stop". "Stop" uses the symmetric stop request
+//! While a call is followed and any recording is in progress (and for a recording started from
+//! the tile, until it ends), the tile is that recording's bar, with the recorder's own time
+//! (`engine::recording_clock`) and "Stop"; afterwards the offer comes back unless the user
+//! pressed "Not now" in this call (the `call-prompt` crate's `session`). "Stop" uses the symmetric stop request
 //! (`record_launch::request_stop`): the web app claims it and stops with its own Stop, so the
 //! note is finalized and saved as when the user presses Stop in the app.
 
@@ -55,7 +57,13 @@ impl service::Host for Host {
     fn act(&self, action: Action) {
         let app = &self.0;
         match action {
-            Action::Phase(phase) => tell_tile(app, TileState::of(phase)),
+            Action::Phase(phase) => {
+                // The offer (and "starting") after a recording's bar: the offer's size again.
+                if matches!(phase, Phase::Offered | Phase::Starting) {
+                    expand_tile(app);
+                }
+                tell_tile(app, TileState::of(phase));
+            }
             Action::Recording(state) => {
                 // The first one turns the tile into the bar; later ones only tell the time.
                 compact_tile(app);
@@ -105,8 +113,16 @@ fn compact_tile(app: &tauri::AppHandle) {
     panel::compact(app);
 }
 
+#[cfg(target_os = "macos")]
+fn expand_tile(app: &tauri::AppHandle) {
+    panel::expand(app);
+}
+
 #[cfg(not(target_os = "macos"))]
 fn compact_tile(_app: &tauri::AppHandle) {}
+
+#[cfg(not(target_os = "macos"))]
+fn expand_tile(_app: &tauri::AppHandle) {}
 
 #[cfg(target_os = "macos")]
 fn show_tile(app: &tauri::AppHandle) {

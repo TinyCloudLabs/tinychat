@@ -45,20 +45,36 @@ use class::CallPromptPanel;
 /// The window is the bar now (or has been asked to become it).
 static COMPACT: AtomicBool = AtomicBool::new(false);
 
-/// Docks the tile at its offer size and shows it, without focus. Builds it the first time.
+/// Shows the tile, without focus, docked on the screen that holds the mouse, at its current
+/// shape: the offer (200 x 150), or the bar after [`compact`]. Builds it the first time.
 pub fn show(app: &AppHandle) {
-    COMPACT.store(false, Ordering::SeqCst);
-    on_main(app, "show", |app| {
+    let bar = COMPACT.load(Ordering::SeqCst);
+    on_main(app, "show", move |app| {
         let Some(panel) = panel(app) else {
             return;
         };
-        resize_and_dock(app, tile::WIDTH, tile::HEIGHT, false);
+        if bar {
+            resize_and_dock(app, tile::BAR_WIDTH, tile::BAR_HEIGHT, false);
+        } else {
+            resize_and_dock(app, tile::WIDTH, tile::HEIGHT, false);
+        }
         panel.show();
     });
 }
 
-/// Makes the shown tile the bar of a recording, docked at the same place on the same screen.
-/// Once per showing: later calls do nothing.
+/// Gives the tile back its offer size, docked at the same place on the same screen, when it is
+/// the bar. Later calls do nothing.
+pub fn expand(app: &AppHandle) {
+    if !COMPACT.swap(false, Ordering::SeqCst) {
+        return;
+    }
+    on_main(app, "expand", |app| {
+        resize_and_dock(app, tile::WIDTH, tile::HEIGHT, true);
+    });
+}
+
+/// Makes the tile the bar of a recording, docked at the same place on the same screen. Later
+/// calls do nothing until [`expand`].
 pub fn compact(app: &AppHandle) {
     if COMPACT.swap(true, Ordering::SeqCst) {
         return;

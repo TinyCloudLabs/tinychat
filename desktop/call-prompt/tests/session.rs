@@ -221,27 +221,37 @@ fn a_call_that_ends_while_offered_hides_the_tile() {
 }
 
 #[test]
-fn a_recording_at_call_start_is_never_offered() {
+fn a_recording_at_call_start_gets_the_bar_and_never_an_offer() {
     let mut call = Call::new();
     let zoom = [app(ZOOM, false)];
-    assert!(call.run(60, &zoom, true, true).is_empty());
-    assert_eq!(call.session.stage(), Stage::Started);
-    // The recording stops mid-call: the offer does not come back.
-    assert!(call.run(300, &zoom, false, false).is_empty());
-    assert_eq!(call.shows(), 0);
+    let actions = call.run(60, &zoom, true, true);
+    assert_eq!(&actions[..2], [bar(0, false), Action::Show]);
+    assert!(!actions.contains(&Action::Phase(Phase::Offered)));
+    assert_eq!(call.session.stage(), Stage::Recording);
+    // The recording stops mid-call: the offer comes, at once.
+    assert_eq!(
+        call.run(2, &zoom, false, false),
+        [Action::Phase(Phase::Offered)]
+    );
+    assert_eq!(call.session.stage(), Stage::Offered);
 }
 
 #[test]
-fn a_recording_begun_by_the_shortcut_while_offered_hides_the_tile_for_good() {
+fn a_recording_begun_by_the_shortcut_while_offered_turns_the_offer_into_the_bar() {
     let mut call = Call::new();
     let zoom = [app(ZOOM, false)];
     call.run(10, &zoom, false, false);
     assert_eq!(call.session.phase(), Phase::Offered);
     let actions = call.run(2, &zoom, true, false);
-    assert_eq!(actions, [Action::Hide, Action::Phase(Phase::Hidden)]);
-    assert_eq!(call.session.stage(), Stage::Started);
-    call.run(300, &zoom, false, false);
-    assert_eq!(call.shows(), 1);
+    assert_eq!(actions, [bar(0, true)], "the visible tile becomes the bar");
+    assert_eq!(call.session.stage(), Stage::Recording);
+    assert!(!call.session.from_tile());
+    // Over, the call goes on: the offer again.
+    assert_eq!(
+        call.run(2, &zoom, false, false),
+        [Action::Phase(Phase::Offered)]
+    );
+    assert_eq!(call.shows(), 1, "the tile never left the screen");
 }
 
 #[test]
@@ -303,33 +313,114 @@ fn recording_call() -> (Call, [Heard; 1]) {
     (call, zoom)
 }
 
+fn bar(elapsed_ms: u64, paused: bool) -> Action {
+    Action::Recording(RecordingState { elapsed_ms, paused })
+}
+
 fn hidden() -> [Action; 2] {
     [Action::Hide, Action::Phase(Phase::Hidden)]
 }
 
 #[test]
-fn a_recording_stopped_in_the_app_hides_the_tile_and_the_offer_stays_spent() {
+fn a_recording_over_during_the_call_brings_the_offer_back() {
     // Stopped in the app, stopped by its limit or discarded: the recorder has no recording.
     let (mut call, zoom) = recording_call();
     call.now += RECORDING_TICK;
-    assert_eq!(call.tick_with(Some(&zoom), false, false), hidden());
-    assert_eq!(call.session.stage(), Stage::Started);
-    call.run(300, &zoom, false, false);
-    assert_eq!(call.shows(), 1, "no second offer in this call");
+    assert_eq!(
+        call.tick_with(Some(&zoom), false, false),
+        [Action::Phase(Phase::Offered)]
+    );
+    assert_eq!(call.session.stage(), Stage::Offered);
+    // Recorded again from the offer, stopped again: the offer again.
+    call.start();
+    call.recording_id = "rec-2".into();
+    call.tick_with(Some(&zoom), true, true);
+    assert!(call.session.from_tile());
+    call.now += RECORDING_TICK;
+    assert_eq!(
+        call.tick_with(Some(&zoom), false, false),
+        [Action::Phase(Phase::Offered)]
+    );
 }
 
 #[test]
-fn another_recording_is_not_the_one_the_tile_shows() {
+fn not_now_keeps_the_offer_away_but_a_later_recording_gets_its_bar() {
+    let mut call = Call::new();
+    let zoom = [app(ZOOM, false)];
+    call.run(10, &zoom, false, false);
+    call.dismiss();
+    // Recorded from the app later in the call: the bar.
+    let actions = call.run(2, &zoom, true, true);
+    assert_eq!(actions, [bar(0, false), Action::Show]);
+    // Over: hidden, not offered.
+    assert_eq!(call.run(2, &zoom, false, false), hidden());
+    assert_eq!(call.session.stage(), Stage::Dismissed);
+    call.run(300, &zoom, false, false);
+    assert!(!call
+        .log
+        .iter()
+        .skip(1)
+        .any(|(_, action)| *action == Action::Phase(Phase::Offered)));
+}
+
+#[test]
+fn an_unanswered_offer_comes_back_after_a_recording() {
+    let mut call = Call::new();
+    let zoom = [app(ZOOM, false)];
+    call.run(10, &zoom, false, false);
+    call.run(130, &zoom, false, false);
+    assert_eq!(call.session.stage(), Stage::Dismissed, "unanswered");
+    call.run(10, &zoom, true, true);
+    // The bar was on screen: it becomes the offer.
+    assert_eq!(
+        call.run(2, &zoom, false, false),
+        [Action::Phase(Phase::Offered)]
+    );
+}
+
+#[test]
+fn a_recording_without_a_call_gets_no_tile() {
+    let mut call = Call::new();
+    assert!(call.run(120, &[], true, true).is_empty());
+    assert_eq!(call.session.stage(), Stage::Idle);
+}
+
+#[test]
+fn the_bar_of_a_recording_not_started_from_the_tile_hides_when_the_call_ends() {
+    let mut call = Call::new();
+    let zoom = [app(ZOOM, false)];
+    call.run(10, &zoom, true, true);
+    assert_eq!(call.session.phase(), Phase::Recording);
+    // Zoom goes quiet; the recording goes on.
+    let actions = call.run(40, &[], true, true);
+    assert!(
+        actions.ends_with(&hidden()) || actions.contains(&Action::Hide),
+        "{actions:?}"
+    );
+    assert_eq!(call.session.stage(), Stage::Idle);
+    assert_eq!(call.session.phase(), Phase::Hidden);
+}
+
+#[test]
+fn another_recording_between_two_ticks_keeps_the_bar() {
     let (mut call, zoom) = recording_call();
+    assert!(call.session.from_tile());
     // The recording stopped and the user started another one in the app between two ticks.
     call.recording_id = "rec-2".into();
+    call.elapsed_ms = 0;
     call.now += RECORDING_TICK;
-    assert_eq!(call.tick_with(Some(&zoom), true, true), hidden());
-    assert_eq!(call.session.stage(), Stage::Started);
+    assert_eq!(call.tick_with(Some(&zoom), true, true), [bar(0, false)]);
+    assert_eq!(call.session.stage(), Stage::Recording);
+    assert!(
+        !call.session.from_tile(),
+        "the new one did not come from the tile"
+    );
+    // Stop works for it too, once.
+    assert_eq!(call.session.stop(call.now), [Action::Stop]);
 }
 
 #[test]
-fn stop_on_the_tile_sends_one_stop_and_the_tile_hides_when_the_recorder_has_stopped() {
+fn stop_on_the_tile_sends_one_stop_and_the_bar_goes_when_the_recorder_has_stopped() {
     let (mut call, zoom) = recording_call();
     assert_eq!(call.session.stop(call.now), [Action::Stop]);
     assert!(
@@ -349,7 +440,10 @@ fn stop_on_the_tile_sends_one_stop_and_the_tile_hides_when_the_recorder_has_stop
         );
     }
     call.now += RECORDING_TICK;
-    assert_eq!(call.tick_with(Some(&zoom), false, false), hidden());
+    assert_eq!(
+        call.tick_with(Some(&zoom), false, false),
+        [Action::Phase(Phase::Offered)]
+    );
     assert!(
         call.session.stop(call.now).is_empty(),
         "nothing to stop any more"
@@ -438,30 +532,38 @@ fn the_tile_state_carries_the_time_only_while_recording() {
     call.tick_with(Some(&zoom), false, false);
     assert_eq!(
         serde_json::to_value(call.session.tile()).unwrap(),
-        serde_json::json!({ "phase": "hidden" })
+        serde_json::json!({ "phase": "offered" })
     );
 }
 
 #[test]
-fn a_start_that_does_not_capture_brings_the_main_window_forward() {
+fn a_start_that_does_not_record_brings_the_main_window_forward_and_a_late_recording_gets_its_bar() {
     let mut call = Call::new();
     let zoom = [app(ZOOM, false)];
     call.run(10, &zoom, false, false);
     call.start();
     let pressed = call.now;
-    // A consent question in the main window: a recording exists, it does not capture.
+    // A consent question in the main window: no recording yet.
     while call.now < pressed + START_TIMEOUT {
-        assert!(call.tick_with(Some(&zoom), true, false).is_empty());
+        assert!(call.tick_with(Some(&zoom), false, false).is_empty());
         call.now += Duration::from_millis(500);
     }
-    let actions = call.tick_with(Some(&zoom), true, false);
+    let actions = call.tick_with(Some(&zoom), false, false);
     assert_eq!(
         actions,
         [Action::Hide, Action::Phase(Phase::Hidden), Action::Present]
     );
     assert_eq!(call.session.stage(), Stage::Started);
-    call.run(300, &zoom, false, false);
-    assert_eq!(call.shows(), 1);
+    assert!(
+        call.run(30, &zoom, false, false).is_empty(),
+        "no offer meanwhile"
+    );
+    // The user answers; the recording starts: its bar, as one started from the tile.
+    assert_eq!(
+        call.run(2, &zoom, true, true),
+        [bar(0, false), Action::Show]
+    );
+    assert!(call.session.from_tile());
 }
 
 #[test]
@@ -586,7 +688,7 @@ impl Random {
 }
 
 #[test]
-fn over_random_input_never_a_show_while_recording_and_at_most_one_per_call() {
+fn over_random_input_a_bar_only_while_recording_never_an_offer_while_recording_and_not_now_holds() {
     let pool = [
         ZOOM,
         CHROME,
@@ -594,7 +696,7 @@ fn over_random_input_never_a_show_while_recording_and_at_most_one_per_call() {
         "com.apple.avconferenced",
         "com.google.Chrome.helper",
     ];
-    let mut total_shows = 0;
+    let (mut offers, mut bars) = (0, 0);
     for seed in 1..=200u64 {
         let mut random = Random(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
         let mut session = Session::new();
@@ -603,18 +705,26 @@ fn over_random_input_never_a_show_while_recording_and_at_most_one_per_call() {
         // Each recording has its own id; sometimes one ends and the next starts between ticks.
         let mut generation = 0u64;
         let mut stopped = false;
-        // An independent model of when the offered call may have ended: the setting went off,
-        // no tick came for CALL_END, or the offered app was not heard for CALL_END.
-        let mut offered: Option<(call_prompt::apps::AppId, Duration)> = None;
-        let mut ended = true;
+        // An independent model of "Not now": from an effective press until the call may have
+        // ended (the setting went off, no tick came for CALL_END, or the call's app was not heard
+        // for CALL_END).
+        let mut not_now: Option<(call_prompt::apps::AppId, Duration)> = None;
         let mut last_tick: Option<Duration> = None;
         for _ in 0..3000 {
             let mut heard: Vec<Heard> = Vec::new();
             let mut ticked = false;
             let mut scan_failed = false;
+            let mut capture = None;
             let actions = match random.below(20) {
                 0 => session.start(now),
-                1 if random.below(2) == 0 => session.dismiss(now),
+                1 if random.below(2) == 0 => {
+                    let owner = session.app();
+                    let actions = session.dismiss(now);
+                    if actions.contains(&Action::Hide) {
+                        not_now = Some((owner.expect("an offer has an app"), now));
+                    }
+                    actions
+                }
                 1 => {
                     let actions = session.stop(now);
                     if actions.contains(&Action::Stop) {
@@ -624,7 +734,7 @@ fn over_random_input_never_a_show_while_recording_and_at_most_one_per_call() {
                     actions
                 }
                 2 => {
-                    ended = true;
+                    not_now = None;
                     last_tick = None;
                     session.reset()
                 }
@@ -654,7 +764,7 @@ fn over_random_input_never_a_show_while_recording_and_at_most_one_per_call() {
                         heard.clear();
                     }
                     let live = recording && random.below(2) == 0;
-                    let capture = recording.then(|| Capture {
+                    capture = recording.then(|| Capture {
                         id: format!("rec-{generation}"),
                         elapsed_ms: random.below(10_000_000),
                         paused: !live,
@@ -673,27 +783,40 @@ fn over_random_input_never_a_show_while_recording_and_at_most_one_per_call() {
             };
             if ticked {
                 if last_tick.is_some_and(|last| now.saturating_sub(last) >= CALL_END) {
-                    ended = true;
+                    not_now = None;
                 }
                 last_tick = Some(now);
-                if let Some((owner, last_heard)) = offered.as_mut() {
+                if let Some((owner, last_heard)) = not_now.as_mut() {
                     if !scan_failed {
                         if heard.iter().any(|entry| entry.app == *owner) {
                             *last_heard = now;
                         } else if now.saturating_sub(*last_heard) >= CALL_END {
-                            ended = true;
+                            not_now = None;
                         }
                     }
                 }
-            }
-            for action in &actions {
-                if *action == Action::Show {
-                    assert!(!recording, "seed {seed}: shown while recording");
-                    assert!(ended, "seed {seed}: a second offer in one call at {now:?}");
-                    ended = false;
-                    offered = Some((session.app().expect("an offer has an app"), now));
-                    total_shows += 1;
+                let phase = session.phase();
+                // A bar only while a recording is in progress, and always then while the session
+                // follows a call.
+                if phase == Phase::Recording {
+                    assert!(capture.is_some(), "seed {seed}: a bar with no recording");
+                    bars += 1;
                 }
+                if capture.is_some() && session.stage() != Stage::Idle {
+                    assert_eq!(
+                        phase,
+                        Phase::Recording,
+                        "seed {seed}: a recording without its bar"
+                    );
+                }
+            }
+            if actions.contains(&Action::Phase(Phase::Offered)) {
+                assert!(capture.is_none(), "seed {seed}: an offer while recording");
+                assert!(
+                    not_now.is_none(),
+                    "seed {seed}: an offer after Not now in the call"
+                );
+                offers += 1;
             }
             // Mostly the watcher's pace; sometimes a long gap (sleep) or a fast tick.
             now += match random.below(40) {
@@ -703,5 +826,8 @@ fn over_random_input_never_a_show_while_recording_and_at_most_one_per_call() {
             };
         }
     }
-    assert!(total_shows > 200, "the input makes offers: {total_shows}");
+    assert!(
+        offers > 200 && bars > 1000,
+        "the input exercises both: {offers} offers, {bars} bars"
+    );
 }

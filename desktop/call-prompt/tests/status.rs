@@ -1,7 +1,7 @@
 //! The status file on its own: when it is written, its shape and its mode.
 
 use call_prompt::session::Phase;
-use call_prompt::status::{GateState, LastStart, Status, StatusFile, STATUS_INTERVAL};
+use call_prompt::status::{GateState, LastStart, Status, StatusFile, Transition, STATUS_INTERVAL};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -44,6 +44,12 @@ fn status(phase: Phase) -> Status {
             stopped_from_tile: false,
         }),
         error: None,
+        history: vec![Transition {
+            at: "2026-11-20T12:35:07Z".into(),
+            phase: Phase::Recording,
+            stage: "recording",
+            reason: "live",
+        }],
     }
 }
 
@@ -99,6 +105,7 @@ fn it_has_kinds_and_times_only() {
             "enabled",
             "error",
             "gate",
+            "history",
             "kind",
             "last_start",
             "pass",
@@ -116,6 +123,15 @@ fn it_has_kinds_and_times_only() {
     assert_eq!(value["scan_ms"], 12.5);
     assert_eq!(value["pass"], "followed");
     assert_eq!(value["pass_ms"], 0.4);
+    assert_eq!(
+        value["history"],
+        serde_json::json!([{
+            "at": "2026-11-20T12:35:07Z",
+            "phase": "recording",
+            "stage": "recording",
+            "reason": "live"
+        }])
+    );
     assert_eq!(
         value["last_start"],
         serde_json::json!({
@@ -164,4 +180,15 @@ fn a_failed_write_is_tried_again() {
     assert!(file
         .offer(T0 + Duration::from_secs(2), &status(Phase::Offered))
         .unwrap());
+}
+
+#[test]
+fn a_change_of_stage_alone_is_written_at_once() {
+    let folder = Folder::new();
+    let mut file = StatusFile::new(&folder.0);
+    assert!(file.offer(T0, &status(Phase::Hidden)).unwrap());
+    let mut next = status(Phase::Hidden);
+    next.stage = "hearing";
+    assert!(file.offer(T0 + Duration::from_secs(2), &next).unwrap());
+    assert!(!file.offer(T0 + Duration::from_secs(4), &next).unwrap());
 }
