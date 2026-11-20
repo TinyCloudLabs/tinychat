@@ -2,4 +2,4 @@
 "@tinychat/frontend": patch
 ---
 
-Use accurate failure labels when transcript and meeting tools cannot complete a lookup.
+Failed transcript searches and meeting reads say they failed and don't ask you to reconnect.
