@@ -23,6 +23,29 @@ the tokens and primitives rendered, run the screenshot harness
 (`bun run --cwd test exo-ui:screens`) and open the primitives gallery in its
 contact sheet.
 
+## Native CI routing
+
+`mobile.yml`, `desktop.yml`, `transcript-eval.yml` and `frontend.yml` always report
+their aggregate checks: **Mobile checks**, **Desktop checks**, **Metal checks** and
+**WebKit checks**. A skipped native job is accepted only on a pull request whose
+input detector succeeded and found no matching paths. Failed, cancelled or
+unexpectedly skipped builds fail the aggregate check; existing job names remain
+unchanged.
+
+`.github/workflows/native-changes.yml` compares the whole PR with its merge base,
+including deleted files and both sides of renames. Native inputs include all of
+`mobile/`, `desktop/`, `ios/`, `android/`, `frontend/`, `packages/`, `patches/`,
+`scripts/`, `test/`, `.github/`, dependency locks and root build configuration.
+WebKit keeps broad frontend/test/shared-package coverage; Swift/Rust-only changes
+do not require it. Backend-only and documentation-only PRs skip macOS work.
+
+All macOS checks run without path selection on `merge_group`, every push to
+`main` or `release/**`, and the repository's `exo-desktop@*`,
+`@tinychat/frontend@*` and `@tinychat/backend@*` release tags. Signing and release
+publication remain in their existing workflows. Only superseded PR runs are
+cancelled. Main currently has no merge queue; enabling one is a repository-admin
+decision. Until then, the unconditional main push runs provide the full check.
+
 ## Local TLS
 
 OpenKey/passkey checks may use HTTP localhost when the identity flow supports
