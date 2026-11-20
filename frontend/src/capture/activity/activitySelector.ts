@@ -6,7 +6,7 @@ import type { NotePipelineView } from "@/lib/voiceNotes/useNotePipeline";
 import type { UploadState } from "@/lib/audioUpload";
 import type { PausedUpload } from "@/capture/upload/pausedUpload";
 import { STORAGE_FULL_SAVE_MESSAGE, isStorageFullError, storageSaveMessage } from "@/lib/storageStatus";
-import { HOSTED_DELAYED_ROW, LOCAL_COPY, PROVIDER_DELAYED_COPY } from "@/lib/voiceNotes/notePipelineCopy";
+import { ACTION_LABEL, HOSTED_DELAYED_ROW, LOCAL_COPY, PROVIDER_DELAYED_COPY } from "@/lib/voiceNotes/notePipelineCopy";
 
 export type ActivityKind = "finish" | "transcribe" | "sync" | "upload-audio";
 export type ActivityState = "running" | "retrying" | "waiting" | "needs-attention";
@@ -113,7 +113,8 @@ export function activityForNote(view: NotePipelineView | undefined, platform: Ap
       failureCode: input.space.pending?.failed?.kind });
     if (upload && input.audioUploadIntent !== false) {
       const progress = upload.total > 0 ? Math.min(1, upload.bytes / upload.total) : undefined;
-      const uploadFailure = input.space.pending?.failed && input.space.pending.failed.kind !== "offline" ? input.space.pending.failed : null;
+      // A failure the next automatic attempt (`retryAt`) will try again is not one that needs you: the Sync line has Try now.
+      const uploadFailure = input.space.pending?.failed && input.space.pending.failed.kind !== "offline" && !(retryAt && retryAt > now) ? input.space.pending.failed : null;
       jobs.push({ kind: "upload-audio", state: uploadFailure ? "needs-attention" : upload.state === "retrying" ? "retrying" : upload.state === "uploading" || upload.state === "preparing" ? "running" : "waiting",
         label: "Upload audio", destination: "your TinyCloud space",
         detail: uploadFailure ? `Couldn't upload the audio. It's safe on ${device}.` : !input.online ? "Waiting for a connection · syncs by itself" : upload.state === "preparing" ? "Preparing audio upload…"
@@ -129,12 +130,22 @@ export function activityForNote(view: NotePipelineView | undefined, platform: Ap
       failureCode: notes.state === "failed" ? input.notes.state : undefined });
   }
   const transcriptSync = input.transcript.onDevice?.sync;
+  const blockerAction = view.pipeline.blocker?.action ? { label: view.pipeline.blocker.action.label, run: () => view.onAction(view.pipeline.blocker!.action!.kind) } : undefined;
+  // The transcript step's own retry. With a finished local transcript it writes (or records) that transcript, never a new
+  // one (`transcriptRetryTarget`). A transcript the space already has leaves the step done, with no blocker to offer it.
+  const transcriptAgain = view.onRetryStep && (transcriptSync?.state === "failed" || transcriptSync?.state === "unrecorded") ? () => view.onRetryStep?.("transcript") : undefined;
   const existingSync = jobs.findIndex((job) => job.kind === "sync");
-  if (transcriptSync?.state === "unrecorded" && existingSync >= 0) jobs[existingSync] = { ...jobs[existingSync]!, state: "needs-attention", detail: "The transcript is in your space, but this device couldn't record that.", diagnostics: transcriptSync.message, failureCode: "transcript-unrecorded", action: view.pipeline.blocker?.action ? { label: view.pipeline.blocker.action.label, run: () => view.onAction(view.pipeline.blocker!.action!.kind) } : undefined };
+  if (transcriptSync?.state === "unrecorded" && existingSync >= 0) jobs[existingSync] = { ...jobs[existingSync]!, state: "needs-attention", detail: "The transcript is in your space, but this device couldn't record that.", diagnostics: transcriptSync.message, failureCode: "transcript-unrecorded", action: blockerAction ?? (transcriptAgain && { label: ACTION_LABEL.retry, run: transcriptAgain }) };
   if (transcriptSync && (transcriptSync.state === "syncing" || transcriptSync.state === "failed" || transcriptSync.state === "unrecorded" || transcriptSync.state === "held") && !jobs.some((job) => job.kind === "sync")) {
-    jobs.push({ kind: "sync", state: transcriptSync.state === "syncing" ? "running" : "needs-attention", label: "Sync", destination: "your TinyCloud space",
-      detail: transcriptSync.state === "unrecorded" ? "The transcript is in your space, but this device couldn't record that." : transcriptSync.state === "held" ? LOCAL_COPY.transcriptStorageFull(input.device) : transcriptSync.state === "failed" ? "Couldn't sync to your TinyCloud space." : "Syncing to your TinyCloud space…",
-      retry: transcribe ? retryFor(view, transcribe) : undefined, action: transcriptSync.state === "unrecorded" && view.pipeline.blocker?.action ? { label: view.pipeline.blocker.action.label, run: () => view.onAction(view.pipeline.blocker!.action!.kind) } : transcribe ? actionFor(view, transcribe) : undefined,
+    // A failed write that will be tried again by itself (`retryAt`) is retrying, and Try now skips the wait.
+    const retryAt = transcriptSync.state === "failed" && transcriptSync.retryAt !== undefined && transcriptSync.retryAt > now ? transcriptSync.retryAt : null;
+    const stepAction = transcribe ? actionFor(view, transcribe) : undefined;
+    // Held by full storage with the transcript step done: Manage storage, where the app may open it (not the iOS and Android apps).
+    const manageStorage = transcriptSync.state === "held" && !stepAction && platform !== "ios" && platform !== "android" ? { label: ACTION_LABEL["manage-storage"], run: () => view.onAction("manage-storage") } : undefined;
+    jobs.push({ kind: "sync", state: transcriptSync.state === "syncing" ? "running" : retryAt !== null ? "retrying" : "needs-attention", label: "Sync", destination: "your TinyCloud space",
+      detail: transcriptSync.state === "unrecorded" ? "The transcript is in your space, but this device couldn't record that." : transcriptSync.state === "held" ? LOCAL_COPY.transcriptStorageFull(input.device) : retryAt !== null ? retryCaption(retryAt, now) : transcriptSync.state === "failed" ? "Couldn't sync to your TinyCloud space." : "Syncing to your TinyCloud space…",
+      retry: retryAt !== null ? undefined : (transcribe ? retryFor(view, transcribe) : undefined) ?? transcriptAgain,
+      action: retryAt !== null && transcriptAgain ? { label: "Try now", run: transcriptAgain } : transcriptSync.state === "unrecorded" && blockerAction ? blockerAction : stepAction ?? manageStorage,
       diagnostics: transcriptSync.state === "unrecorded" || transcriptSync.state === "failed" ? transcriptSync.message : undefined,
       failureCode: transcriptSync.state === "unrecorded" ? "transcript-unrecorded" : transcriptSync.state === "failed" ? "transcript-sync-failed" : undefined });
   }

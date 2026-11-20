@@ -364,7 +364,8 @@ export function transcriptRetryTarget(input: NotePipelineInput): "reread" | "pri
   if (input.route === "private-cloud") return "private-cloud";
   const od = input.transcript.onDevice;
   if (od?.sync?.state === "unrecorded") return "record";
-  if (od?.sync?.state === "failed" || (od?.sync === null && od.stt?.state === "done")) return "sync";
+  // A finished local transcript is written again, never made again, whatever its last write did.
+  if (od?.sync?.state === "failed" || (od != null && od.stt?.state === "done")) return "sync";
   if (od !== null && (od.stt === null || od.stt.state === "waiting_for_model")) return "model";
   return "note";
 }
