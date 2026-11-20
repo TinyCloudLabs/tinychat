@@ -4,7 +4,7 @@ use call_prompt::apps::Kind;
 use call_prompt::mic::{AudioProcesses, ScanError};
 use call_prompt::service::{spawn_with, Clock, Host, Report, Watcher, PANIC_REST};
 use call_prompt::session::{Action, Phase, Stage, TICK};
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -48,25 +48,42 @@ impl App {
     }
 }
 
-/// Zoom capturing, or nothing; counts the scans.
+/// The gate: what `input_in_use` answers.
+const GATE_OPEN: u8 = 0;
+const GATE_CLOSED: u8 = 1;
+const GATE_FAILS: u8 = 2;
+
+/// Zoom capturing, or nothing; counts the gate's reads and the scans. The gate is open unless a
+/// test closes it.
 #[derive(Clone, Default)]
 struct FakeAudio {
     zoom: Arc<AtomicBool>,
+    gate: Arc<AtomicU8>,
+    gate_reads: Arc<AtomicUsize>,
     scans: Arc<AtomicUsize>,
     fail: Arc<AtomicBool>,
 }
 
 impl AudioProcesses for FakeAudio {
-    fn processes(&mut self) -> Result<Vec<u32>, ScanError> {
+    fn input_in_use(&mut self) -> Result<bool, ScanError> {
+        self.gate_reads.fetch_add(1, Ordering::SeqCst);
+        match self.gate.load(Ordering::SeqCst) {
+            GATE_OPEN => Ok(true),
+            GATE_CLOSED => Ok(false),
+            _ => Err(ScanError::InputFailed(-2)),
+        }
+    }
+
+    fn processes(&mut self, list: &mut Vec<u32>) -> Result<(), ScanError> {
         self.scans.fetch_add(1, Ordering::SeqCst);
+        list.clear();
         if self.fail.load(Ordering::SeqCst) {
             return Err(ScanError::Failed(-1));
         }
-        Ok(if self.zoom.load(Ordering::SeqCst) {
-            vec![7]
-        } else {
-            Vec::new()
-        })
+        if self.zoom.load(Ordering::SeqCst) {
+            list.push(7);
+        }
+        Ok(())
     }
 
     fn capturing(&mut self, _process: u32) -> Option<bool> {
@@ -171,11 +188,13 @@ fn start_through_the_watcher() {
     let rig = Rig::new();
     rig.offer();
     rig.watcher.start();
-    rig.watcher.start();
     assert_eq!(
         rig.app.take(),
         [Action::Phase(Phase::Starting), Action::Start]
     );
+    // A second press sends no second request, but the tile hears its phase again.
+    rig.watcher.start();
+    assert_eq!(rig.app.take(), [Action::Phase(Phase::Starting)]);
     assert_eq!(rig.watcher.phase(), Phase::Starting);
     assert_eq!(rig.watcher.tick(), Duration::from_millis(500));
     rig.app.recording.store(true, Ordering::SeqCst);
@@ -276,4 +295,106 @@ fn the_thread_sleeps_while_off_scans_while_on_and_stops() {
         "no timed scan came while this test ran"
     );
     assert_eq!(scans.load(Ordering::SeqCst), scans_off);
+}
+
+#[test]
+fn a_closed_gate_means_no_process_scan() {
+    let rig = Rig::new();
+    rig.watcher.set_enabled(true);
+    rig.audio.gate.store(GATE_CLOSED, Ordering::SeqCst);
+    rig.run(60);
+    assert_eq!(rig.audio.scans.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        rig.audio.gate_reads.load(Ordering::SeqCst),
+        30,
+        "one gate read per tick"
+    );
+    assert_eq!(rig.watcher.stage(), Stage::Idle);
+}
+
+#[test]
+fn an_open_gate_means_a_scan() {
+    let rig = Rig::new();
+    rig.watcher.set_enabled(true);
+    rig.audio.gate.store(GATE_CLOSED, Ordering::SeqCst);
+    rig.run(10);
+    rig.audio.gate.store(GATE_OPEN, Ordering::SeqCst);
+    rig.watcher.tick();
+    assert_eq!(rig.audio.scans.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn a_gate_that_cannot_be_read_scans_and_is_reported() {
+    let rig = Rig::new();
+    rig.watcher.set_enabled(true);
+    rig.audio.gate.store(GATE_FAILS, Ordering::SeqCst);
+    rig.audio.zoom.store(true, Ordering::SeqCst);
+    rig.run(10);
+    assert_eq!(rig.audio.scans.load(Ordering::SeqCst), 5);
+    assert_eq!(rig.watcher.phase(), Phase::Offered);
+    let last = *rig.app.reports.lock().unwrap().last().unwrap();
+    assert_eq!(last.error, Some("input_device_failed"));
+}
+
+#[test]
+fn a_followed_call_keeps_scanning_until_it_ends_whatever_the_gate() {
+    let rig = Rig::new();
+    rig.offer();
+    rig.watcher.dismiss();
+    rig.app.take();
+    // The gate closes for a while (another default device, a flicker); Zoom still captures.
+    rig.audio.gate.store(GATE_CLOSED, Ordering::SeqCst);
+    let scans = rig.audio.scans.load(Ordering::SeqCst);
+    rig.run(60);
+    assert_eq!(rig.audio.scans.load(Ordering::SeqCst), scans + 30);
+    assert_eq!(rig.watcher.stage(), Stage::Dismissed, "the same call");
+    assert!(rig.app.take().is_empty(), "no second offer");
+    // Zoom stops: scans go on until the call has ended, then stop.
+    rig.audio.zoom.store(false, Ordering::SeqCst);
+    rig.run(30);
+    assert_eq!(rig.watcher.stage(), Stage::Idle);
+    let ended = rig.audio.scans.load(Ordering::SeqCst);
+    rig.run(60);
+    assert_eq!(rig.audio.scans.load(Ordering::SeqCst), ended);
+}
+
+#[test]
+fn a_hearing_app_keeps_scanning_while_the_gate_flickers() {
+    let rig = Rig::new();
+    rig.watcher.set_enabled(true);
+    rig.audio.zoom.store(true, Ordering::SeqCst);
+    rig.watcher.tick();
+    assert_eq!(rig.watcher.stage(), Stage::Hearing);
+    rig.clock.advance(TICK);
+    // The gate closes for one tick; the app is still followed, and the 8 s still count.
+    rig.audio.gate.store(GATE_CLOSED, Ordering::SeqCst);
+    rig.watcher.tick();
+    rig.clock.advance(TICK);
+    rig.audio.gate.store(GATE_OPEN, Ordering::SeqCst);
+    rig.run(6);
+    assert_eq!(rig.watcher.phase(), Phase::Offered);
+}
+
+#[test]
+fn every_button_press_gets_a_phase_back() {
+    let rig = Rig::new();
+    // No offer at all (the tile was left over, or the offer had just gone).
+    rig.watcher.start();
+    assert_eq!(rig.app.take(), [Action::Phase(Phase::Hidden)]);
+    rig.watcher.dismiss();
+    assert_eq!(rig.app.take(), [Action::Phase(Phase::Hidden)]);
+    // A recording began just before the press: the offer went, the tile hears "hidden".
+    rig.offer();
+    rig.app.recording.store(true, Ordering::SeqCst);
+    rig.watcher.tick();
+    assert_eq!(rig.app.take(), [Action::Hide, Action::Phase(Phase::Hidden)]);
+    rig.watcher.start();
+    assert_eq!(rig.app.take(), [Action::Phase(Phase::Hidden)]);
+    // "Not now" while starting changes nothing and says so.
+    let rig = Rig::new();
+    rig.offer();
+    rig.watcher.start();
+    rig.app.take();
+    rig.watcher.dismiss();
+    assert_eq!(rig.app.take(), [Action::Phase(Phase::Starting)]);
 }

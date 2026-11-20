@@ -1,7 +1,7 @@
 //! The app table's mapping and the scan, over a fake CoreAudio.
 
 use call_prompt::apps::{lookup, Kind, APPS};
-use call_prompt::mic::{scan, AudioProcesses, Heard, ScanError};
+use call_prompt::mic::{scan, AudioProcesses, Heard, ScanError, Scanner};
 use std::collections::HashMap;
 
 const OWN_PID: i32 = 4242;
@@ -49,9 +49,17 @@ impl Fake {
 }
 
 impl AudioProcesses for Fake {
-    fn processes(&mut self) -> Result<Vec<u32>, ScanError> {
+    fn input_in_use(&mut self) -> Result<bool, ScanError> {
+        Ok(true)
+    }
+
+    fn processes(&mut self, list: &mut Vec<u32>) -> Result<(), ScanError> {
+        list.clear();
         match &self.list {
-            Ok(list) => Ok((0..list.len() as u32).collect()),
+            Ok(processes) => {
+                list.extend(0..processes.len() as u32);
+                Ok(())
+            }
             Err(status) => Err(ScanError::Failed(*status)),
         }
     }
@@ -253,5 +261,27 @@ fn unknown_ids_never_leave_the_scan() {
     assert!(
         size <= 2,
         "Heard grew to {size} bytes: does it hold more than an entry and a flag?"
+    );
+}
+
+#[test]
+fn a_scanner_keeps_its_buffer_and_leaves_no_stale_entries() {
+    let mut scanner = Scanner::new();
+    let mut fake = Fake::new(vec![
+        process("com.example.player", 1, false, true),
+        process("com.example.player", 2, false, true),
+        process("com.example.player", 3, false, true),
+        process("us.zoom.xos", 4, true, false),
+    ]);
+    assert_eq!(
+        scanner.scan(&mut fake, OWN_PID).unwrap(),
+        [entry("us.zoom.xos", false)]
+    );
+    // Fewer processes on the next scan: Zoom has quit.
+    let mut fake = Fake::new(vec![process("com.example.player", 1, false, true)]);
+    assert!(scanner.scan(&mut fake, OWN_PID).unwrap().is_empty());
+    assert!(
+        !fake.read(3, "capturing"),
+        "an old entry of the buffer was read"
     );
 }

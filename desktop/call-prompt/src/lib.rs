@@ -9,7 +9,8 @@
 //!   other platforms a stub that reports "unsupported".
 //! - [`session`]: the state machine of one call: when to show the tile, when to hide it, what
 //!   "Start" and "Not now" do.
-//! - [`service`]: the watcher thread that scans every two seconds and drives the session.
+//! - [`service`]: the watcher thread that looks at the microphone every two seconds (a cheap
+//!   gate, then a process scan only when needed) and drives the session.
 //! - [`tile`]: the contract with the tile's page (window label, event, phases) and where the tile
 //!   docks on the screen.
 //!

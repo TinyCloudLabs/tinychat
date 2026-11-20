@@ -1,12 +1,18 @@
-//! The watcher: a scan every two seconds while the setting is on, the session it drives, and the
-//! tile's two buttons.
+//! The watcher: a look at the microphone every two seconds while the setting is on, the session
+//! it drives, and the tile's two buttons.
+//!
+//! A look is the gate first ([`AudioProcesses::input_in_use`], two cheap reads); the process scan
+//! ([`crate::mic::Scanner`]) runs only when the default input device is in use, when the gate
+//! cannot be read, or while the session follows a call app ([`Session::tracking`]), so that a
+//! call is followed until it has ended even if the gate closes for a moment.
 //!
 //! How the app hosts it:
 //! - [`spawn`] at start-up, with a [`Host`] that knows the recorder and carries out [`Action`]s.
-//!   The watcher starts switched off; [`Worker::set_enabled`] with the saved setting turns it on.
+//!   The watcher starts switched off; [`Watcher::set_enabled`] with the saved setting turns it on.
 //! - While the setting is off the thread sleeps on a condition variable: no scan, no timer.
-//! - [`Worker::start`] and [`Worker::dismiss`] are the tile's "Start" and "Not now";
-//!   [`Worker::phase`] is what the tile shows.
+//! - [`Watcher::start`] and [`Watcher::dismiss`] are the tile's "Start" and "Not now";
+//!   [`Watcher::phase`] is what the tile shows. Each press is answered with a phase, also when
+//!   it changes nothing: the tile keeps its buttons disabled until it hears one.
 //! - [`Worker::stop`] on the app's exit path.
 //!
 //! Nothing here may block, delay or crash a recording or the app:
@@ -19,7 +25,7 @@
 //!   must hand work off (to the main thread, to a task) and return at once.
 
 use crate::apps::Kind;
-use crate::mic::{self, AudioProcesses, CoreAudio};
+use crate::mic::{AudioProcesses, CoreAudio, Heard, ScanError, Scanner};
 use crate::session::{Action, Observation, Phase, Session, Stage, TICK};
 use std::io;
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -78,10 +84,17 @@ struct Inner {
     last_report: Option<Report>,
 }
 
-/// The watcher without its thread: one [`Watcher::tick`] is one scan. [`Worker`] runs it.
+/// The CoreAudio reader and the scan's buffer.
+struct Audio<A> {
+    audio: A,
+    scanner: Scanner,
+}
+
+/// The watcher without its thread: one [`Watcher::tick`] is one look at the microphone.
+/// [`Worker`] runs it.
 pub struct Watcher<H: Host, A: AudioProcesses> {
     host: H,
-    audio: Mutex<A>,
+    audio: Mutex<Audio<A>>,
     clock: Clock,
     own_pid: i32,
     inner: Mutex<Inner>,
@@ -100,7 +113,10 @@ impl<H: Host, A: AudioProcesses> Watcher<H, A> {
     pub fn new(host: H, audio: A, clock: Clock) -> Self {
         Watcher {
             host,
-            audio: Mutex::new(audio),
+            audio: Mutex::new(Audio {
+                audio,
+                scanner: Scanner::new(),
+            }),
             clock,
             own_pid: std::process::id() as i32,
             inner: Mutex::new(Inner {
@@ -142,14 +158,15 @@ impl<H: Host, A: AudioProcesses> Watcher<H, A> {
         self.changed.notify_all();
     }
 
-    /// "Start" on the tile.
+    /// "Start" on the tile. The tile always gets a phase back: `starting`, or what it should show
+    /// when there was nothing to start (the offer had already gone).
     pub fn start(&self) {
         self.answer(Session::start);
         // A faster pace while the recording starts.
         self.wake();
     }
 
-    /// "Not now" on the tile.
+    /// "Not now" on the tile. The tile always gets a phase back.
     pub fn dismiss(&self) {
         self.answer(Session::dismiss);
     }
@@ -174,7 +191,8 @@ impl<H: Host, A: AudioProcesses> Watcher<H, A> {
     }
 
     fn tick_inner(&self) -> Duration {
-        let scanned = mic::scan(&mut *lock(&self.audio), self.own_pid);
+        let tracking = lock(&self.inner).session.tracking();
+        let (heard, error) = self.look(tracking);
         let recording = self.host.recording();
         let live = self.host.live();
         let now = (self.clock)();
@@ -184,24 +202,43 @@ impl<H: Host, A: AudioProcesses> Watcher<H, A> {
             return TICK;
         }
         let seen = Observation {
-            heard: scanned.as_deref().ok(),
+            heard: heard.as_deref(),
             recording,
             live,
         };
         let actions = inner.session.tick(now, &seen);
-        self.carry_out(
-            &mut inner,
-            actions,
-            scanned.err().map(|error| error.as_str()),
-        );
+        self.carry_out(&mut inner, actions, error.map(ScanError::as_str));
         inner.session.next_tick(now)
+    }
+
+    /// The gate, then the scan when the gate is open, when it cannot be read, or while a call
+    /// is followed. A closed gate and no call: nothing captures on the default input device.
+    /// Returns what was heard (`None` when the scan failed) and a failure for the log.
+    fn look(&self, tracking: bool) -> (Option<Vec<Heard>>, Option<ScanError>) {
+        let mut guard = lock(&self.audio);
+        let Audio { audio, scanner } = &mut *guard;
+        let gate = audio.input_in_use();
+        if gate == Ok(false) && !tracking {
+            return (Some(Vec::new()), None);
+        }
+        match scanner.scan(audio, self.own_pid) {
+            Ok(heard) => (Some(heard), gate.err()),
+            Err(error) => (None, Some(error)),
+        }
     }
 
     fn answer(&self, answer: fn(&mut Session, Duration) -> Vec<Action>) {
         let _ = catch_unwind(AssertUnwindSafe(|| {
             let now = (self.clock)();
             let mut inner = lock(&self.inner);
-            let actions = answer(&mut inner.session, now);
+            let mut actions = answer(&mut inner.session, now);
+            // The tile keeps its buttons disabled until it hears a phase.
+            if !actions
+                .iter()
+                .any(|action| matches!(action, Action::Phase(_)))
+            {
+                actions.push(Action::Phase(inner.session.phase()));
+            }
             let error = inner.last_report.and_then(|report| report.error);
             self.carry_out(&mut inner, actions, error);
         }));

@@ -165,6 +165,12 @@ impl Session {
         self.stage
     }
 
+    /// A call app is being followed or a call is under way: the watcher scans whatever the
+    /// microphone gate says, until the call has ended.
+    pub fn tracking(&self) -> bool {
+        self.stage != Stage::Idle
+    }
+
     /// What the tile shows now.
     pub fn phase(&self) -> Phase {
         self.phase

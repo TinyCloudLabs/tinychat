@@ -4,17 +4,23 @@
 //! cargo run --release --example mic_apps -- [--seconds N]
 //! ```
 //!
-//! Once a second for N seconds (20 by default) it prints one line: the time, how long the app's
-//! own scan took (`mic::scan`, the read the watcher makes every two seconds), and every process
-//! that captures (`in`) or plays (`out`) audio: its bundle id, its process id and the table entry
-//! it maps to, or `-` for none. No permission is needed and no audio is read.
+//! Once a second for N seconds (20 by default) it prints one line:
+//! - the time;
+//! - the gate: whether the default input device is in use, and how long that read took (the app
+//!   reads it every two seconds, and scans only when it is open or a call is being followed);
+//! - the app's own scan (`Scanner::scan`, with its buffer kept from line to line): how long it
+//!   took and which call apps it heard. Here it runs on every line, whatever the gate says;
+//! - every process that captures (`in`) or plays (`out`) audio: its bundle id, its process id
+//!   and the table entry it maps to, or `-` for none.
+//!
+//! No permission is needed and no audio is read.
 //!
 //! Unlike the app, this lists every audio process with its bundle id, so that the table can be
 //! checked: run it through a Meet call (lobby, joined, muted), Zoom, a Slack huddle and a clip,
 //! FaceTime, Signal, Teams, Safari and dictation. Its output stays in your terminal.
 
 use call_prompt::apps;
-use call_prompt::mic::{self, AudioProcesses, CoreAudio};
+use call_prompt::mic::{self, AudioProcesses, CoreAudio, Scanner};
 use std::time::{Duration, Instant};
 
 const USAGE: &str = "usage: mic_apps [--seconds N]";
@@ -42,13 +48,24 @@ fn main() {
 
     let own_pid = std::process::id() as i32;
     let mut audio = CoreAudio;
-    println!("# t | app scan time | bundle id, pid, in = captures, out = plays, -> table entry (kind) or -");
+    let mut scanner = Scanner::new();
+    let mut list = Vec::new();
+    println!("# t | gate: default input in use (time) | app scan time | heard | bundle id, pid, in = captures, out = plays, -> table entry (kind) or -");
     let started = Instant::now();
     for second in 1..=seconds {
+        let gate_started = Instant::now();
+        let gate = audio.input_in_use();
+        let gate_ms = gate_started.elapsed().as_secs_f64() * 1000.0;
+        let gate = match gate {
+            Ok(true) => "yes".to_string(),
+            Ok(false) => "no".to_string(),
+            Err(error) => format!("failed {error:?}"),
+        };
         let scan_started = Instant::now();
-        let scan = mic::scan(&mut audio, own_pid);
+        let scan = scanner.scan(&mut audio, own_pid);
         let scan_ms = scan_started.elapsed().as_secs_f64() * 1000.0;
-        let mut line = format!("{second:>4} s | scan {scan_ms:.2} ms");
+        let mut line =
+            format!("{second:>4} s | gate {gate} ({gate_ms:.2} ms) | scan {scan_ms:.2} ms");
         match &scan {
             Ok(heard) => {
                 let calls: Vec<&str> = heard
@@ -59,7 +76,7 @@ fn main() {
             }
             Err(error) => line.push_str(&format!(" | scan failed: {error:?}")),
         }
-        match everything(&mut audio, own_pid) {
+        match everything(&mut audio, own_pid, &mut list) {
             Ok(processes) if processes.is_empty() => {
                 line.push_str(" | no process captures or plays")
             }
@@ -80,9 +97,14 @@ fn main() {
 }
 
 /// Every process that captures or plays, as one text each.
-fn everything(audio: &mut CoreAudio, own_pid: i32) -> Result<Vec<String>, mic::ScanError> {
+fn everything(
+    audio: &mut CoreAudio,
+    own_pid: i32,
+    list: &mut Vec<u32>,
+) -> Result<Vec<String>, mic::ScanError> {
     let mut out = Vec::new();
-    for process in audio.processes()? {
+    audio.processes(list)?;
+    for &process in list.iter() {
         let capturing = audio.capturing(process) == Some(true);
         let playing = audio.playing(process) == Some(true);
         if !capturing && !playing {
