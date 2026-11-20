@@ -51,6 +51,7 @@ fn main() {
             "recorder_whisper_stage_audio",
             "recorder_audio_envelope",
             "recorder_whisper_start",
+            "recorder_local_stt_start",
             "recorder_whisper_cleanup_stages",
             "delete_audio_file",
             "recorder_start",
