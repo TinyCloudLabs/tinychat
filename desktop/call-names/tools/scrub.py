@@ -3,6 +3,8 @@
 
     python3 -I tools/scrub.py IN.jsonl OUT.jsonl --name "Real Name=Alex Example" [--name ...] [--snap N|last]
     python3 -I tools/scrub.py IN.jsonl OUT.jsonl --redacted "9:1a2b3c4d=Alex Example" [--redacted ...]
+    python3 -I tools/scrub.py IN.jsonl OUT.jsonl ... [--name-at PATH=FAKE ...] [--diffs FIRST:LAST]
+                             [--events EVENTS.json --events-out OUT.json --speaker LABEL=TILE ...]
 
 Input: one `meta` line, one `full` line with every node, then `diff` lines (the probe's format).
 Text in the input is redacted as «length:hash» except names passed to the probe, numbers, and the labels
@@ -27,6 +29,19 @@ Dropped: DOM ids, every other redacted text, and any text that looks like a URL,
 
 --snap N rebuilds the window as it was after diff N (`last` = after every diff) and writes it as the
 `full` line with no diffs. Without --snap the diffs are kept, scrubbed the same way.
+
+--diffs FIRST:LAST keeps only diffs FIRST to LAST (either may be empty: from the start, to the end).
+The `full` line becomes the window as it was just before FIRST; the times of the kept lines stay as
+they were in the capture.
+
+--name-at PATH=FAKE gives the subtree at a node path its own made-up name: there, a name given with
+--name or --redacted becomes FAKE. Two connections that show one display name (one account on two
+devices) can so become two people in the fixture. The longest matching path wins.
+
+--events converts the tester's timed events of a speaking test (speech, microphone presses, turns)
+into a fixture: each time becomes seconds since the capture's `full` line, as the diff times are,
+and each speaker becomes a tile number (--speaker host=0). Only the kind, the time, the turn and
+the tile are kept; tool output, titles and wall-clock times are dropped.
 
 Before writing, the output is checked for the real names (and their words), the --drop words,
 redaction marks, "@", URLs, "meet.google.com/" and "tinycloud"; any hit stops the script and
@@ -84,38 +99,58 @@ def class_token(name):
     return "c" + hashlib.sha256(("call-names-fixture:" + name).encode("utf-8")).hexdigest()[:8]
 
 
+def name_pairs(names):
+    """Compiled (real, fake) replacements: each full name, then its single words."""
+    pairs = []
+    for real, fake in names:
+        pairs.append((real, fake))
+        real_words, fake_words = real.split(), fake.split()
+        if len(real_words) == len(fake_words) > 1:
+            pairs.extend(zip(real_words, fake_words))
+    # Longest first, so a full name is replaced before its words.
+    pairs.sort(key=lambda pair: -len(pair[0]))
+    return [(re.compile(re.escape(real), re.I), fake) for real, fake in pairs]
+
+
 class Scrubber:
-    def __init__(self, names, drop=(), redacted=None):
+    def __init__(self, names, drop=(), redacted=None, name_at=None):
         # Redacted marks that stand for a name, as (length, hash), and the made-up name of each.
         self.redacted = redacted or {}
-        pairs = []
-        for real, fake in names:
-            pairs.append((real, fake))
-            real_words, fake_words = real.split(), fake.split()
-            if len(real_words) == len(fake_words) > 1:
-                pairs.extend(zip(real_words, fake_words))
-        # Longest first, so a full name is replaced before its words.
-        pairs.sort(key=lambda pair: -len(pair[0]))
-        self.pairs = [(re.compile(re.escape(real), re.I), fake) for real, fake in pairs]
+        self.names = names
+        self.pairs = name_pairs(names)
+        # Subtrees with a made-up name of their own, longest path first.
+        self.name_at = sorted((name_at or {}).items(), key=lambda item: -len(item[0]))
+        self.pairs_at = {fake: name_pairs([(real, fake) for real, _ in names]) for _, fake in self.name_at}
         self.forbidden = sorted({word.lower() for real, _ in names for word in [real] + real.split() if len(word) >= 3}
                                 | {word.lower() for word in drop})
         self.drop = [re.compile(re.escape(word), re.I) for word in drop]
         self.dropped = 0
         self.restored = 0
 
-    def text(self, value):
+    def fake_at(self, path):
+        """The made-up name of the subtree that holds `path`, if --name-at gave it one."""
+        for prefix, fake in self.name_at:
+            if path == prefix or (path or "").startswith(prefix + "."):
+                return fake
+        return None
+
+    def text(self, value, path=None):
         if not isinstance(value, str):
             return None
+        own = self.fake_at(path)
         match = REDACTED.fullmatch(value)
         if match:
             mark = (int(match.group(1)), match.group(2))
-            label = self.redacted.get(mark) or KNOWN.get(mark)
+            label = self.redacted.get(mark)
+            if label is not None and own is not None:
+                label = own
+            label = label or KNOWN.get(mark)
             if label is None:
                 self.dropped += 1
                 return None
             self.restored += 1
             return label
-        for pattern, fake in self.pairs:
+        for pattern, fake in (self.pairs_at[own] if own is not None else self.pairs):
             value = pattern.sub(fake, value)
         if any(pattern.search(value) for pattern in SENSITIVE + self.drop):
             self.dropped += 1
@@ -125,10 +160,11 @@ class Scrubber:
             return None
         return value
 
-    def identifier(self, value):
+    def identifier(self, value, path=None):
         if not isinstance(value, str) or not value:
             return None
-        for pattern, fake in self.pairs:
+        own = self.fake_at(path)
+        for pattern, fake in (self.pairs_at[own] if own is not None else self.pairs):
             value = pattern.sub(fake, value)
         if any(pattern.search(value) for pattern in SENSITIVE + self.drop):
             return None
@@ -136,6 +172,7 @@ class Scrubber:
 
     def node(self, node):
         out = {}
+        path = node.get("p")
         for key, value in node.items():
             if key == "cls":
                 if isinstance(value, list) and value:
@@ -143,11 +180,11 @@ class Scrubber:
             elif key not in KEEP_NODE_KEYS:
                 continue
             elif key in TEXT_KEYS:
-                text = self.text(value)
+                text = self.text(value, path)
                 if text is not None:
                     out[key] = text
             elif key == "id":
-                identifier = self.identifier(value)
+                identifier = self.identifier(value, path)
                 if identifier is not None:
                     out[key] = identifier
             else:
@@ -176,6 +213,55 @@ def rebuild(full, diffs, snap):
         reached = diff["snap"]
     nodes = [state[path] for path in sorted(state, key=path_key)]
     return nodes, reached
+
+
+def diff_range(text):
+    """"FIRST:LAST" as (FIRST, LAST); an empty side is open."""
+    match = re.fullmatch(r"(\d*):(\d*)", text.strip())
+    if not match:
+        sys.exit(f"--diffs needs FIRST:LAST, got {text!r}")
+    first = int(match.group(1)) if match.group(1) else None
+    last = int(match.group(2)) if match.group(2) else None
+    if first is not None and last is not None and last < first:
+        sys.exit(f"--diffs {text!r}: LAST is before FIRST")
+    return first, last
+
+
+EVENT_KINDS = ("turn_begin", "turn_end", "speech_start", "speech_end")
+
+
+def scrub_events(events, start, speakers):
+    """The tester's events as {"t", "kind", "turn", "tile"}: seconds since `start`, tile numbers."""
+    out = []
+    turn = None
+    for event in events:
+        kind = event.get("kind")
+        if kind in EVENT_KINDS:
+            who = event.get("speaker")
+            turn = event.get("turn", turn)
+        elif kind == "microphone_press":
+            who = event.get("who")
+            title = str(event.get("title") or "")
+            if title.startswith("Turn on"):
+                kind = "microphone_on"
+            elif title.startswith("Turn off"):
+                kind = "microphone_off"
+            else:
+                continue
+        elif kind == "panel_open":
+            # The tester opened the People panel: the window's structure changes, nobody speaks.
+            who = None
+        else:
+            continue
+        if who is not None and who not in speakers:
+            sys.exit(f"event {kind} names a speaker that --speaker does not map")
+        wall = event.get("wallTime")
+        if not isinstance(wall, (int, float)):
+            sys.exit(f"event {kind} has no wallTime")
+        out.append({"t": round(wall - start, 3), "kind": kind, "turn": turn,
+                    "tile": speakers[who] if who is not None else None})
+    out.sort(key=lambda event: event["t"])
+    return out
 
 
 def meta_os(meta):
@@ -233,7 +319,18 @@ def main():
     parser.add_argument("--drop", action="append", default=[], metavar="WORD",
                         help="drop every text that contains this word, such as an organisation name")
     parser.add_argument("--snap", help="rebuild the window after diff N ('last' = all diffs); drops the diffs")
+    parser.add_argument("--diffs", metavar="FIRST:LAST", help="keep only these diffs; the full line is the window before FIRST")
+    parser.add_argument("--name-at", action="append", default=[], metavar="PATH=FAKE",
+                        help="the made-up name of every name in the subtree at this node path")
+    parser.add_argument("--events", metavar="EVENTS.json", help="the tester's timed events of a speaking test")
+    parser.add_argument("--events-out", metavar="OUT.json", help="where the scrubbed events go")
+    parser.add_argument("--speaker", action="append", default=[], metavar="LABEL=TILE",
+                        help="the tile number of a speaker label in the events (repeat for each speaker)")
     args = parser.parse_args()
+    if args.snap is not None and args.diffs is not None:
+        sys.exit("--snap and --diffs do not go together")
+    if (args.events is None) != (args.events_out is None):
+        sys.exit("--events and --events-out go together")
 
     names = []
     for item in args.name:
@@ -256,13 +353,29 @@ def main():
             sys.exit(f"--redacted needs LENGTH:HASH=NAME, got {item!r}")
         redacted[redacted_mark(mark)] = fake.strip()
 
-    scrub = Scrubber(names, args.drop, redacted)
+    name_at = {}
+    for item in args.name_at:
+        path, sep, fake = item.partition("=")
+        if not sep or not re.fullmatch(r"[A-Za-z0-9]+(\.\d+)*", path.strip()) or not fake.strip():
+            sys.exit(f"--name-at needs PATH=FAKE, got {item!r}")
+        name_at[path.strip()] = fake.strip()
+
+    start_wall = full.get("wallTime")
+    scrub = Scrubber(names, args.drop, redacted, name_at)
     snap = None
     if args.snap is not None:
         snap = "last" if args.snap == "last" else int(args.snap)
         nodes, reached = rebuild(full, diffs, snap)
         full = dict(full, nodes=nodes, snap=reached, count=len(nodes))
         diffs = []
+    elif args.diffs is not None:
+        first, last = diff_range(args.diffs)
+        before = [diff for diff in diffs if first is not None and diff["snap"] < first]
+        if before:
+            nodes, reached = rebuild(full, before, before[-1]["snap"])
+            full = dict(full, nodes=nodes, snap=reached, count=len(nodes), t=before[-1].get("t", 0))
+        diffs = [diff for diff in diffs
+                 if (first is None or diff["snap"] >= first) and (last is None or diff["snap"] <= last)]
 
     out = [{
         "kind": "meta",
@@ -300,15 +413,36 @@ def main():
     out.extend(attributes)
 
     text = "".join(json.dumps(line, sort_keys=True, ensure_ascii=False, separators=(",", ":")) + "\n" for line in out)
-    lower = text.lower()
-    hits = [word for word in scrub.forbidden if word in lower]
-    hits += [mark for mark in ("«", "»", "@", "://", "meet.google.com/", "tinycloud") if mark in lower]
-    if hits:
-        sys.exit(f"refusing to write {args.output}: output still contains {hits}")
+    events_text = None
+    if args.events is not None:
+        speakers = {}
+        for item in args.speaker:
+            label, sep, tile = item.partition("=")
+            if not sep or not label.strip() or not tile.strip().isdigit():
+                sys.exit(f"--speaker needs LABEL=TILE, got {item!r}")
+            speakers[label.strip()] = int(tile)
+        if not isinstance(start_wall, (int, float)):
+            sys.exit("the capture's full line has no wallTime, so event times cannot be made relative")
+        with open(args.events, encoding="utf-8") as handle:
+            events = scrub_events(json.load(handle), start_wall, speakers)
+        events_text = json.dumps({"kind": "speaking-events", "v": 1, "events": events},
+                                 sort_keys=True, ensure_ascii=False, indent=1) + "\n"
+    for name, checked in ((args.output, text), (args.events_out, events_text)):
+        if checked is None:
+            continue
+        lower = checked.lower()
+        hits = [word for word in scrub.forbidden if word in lower]
+        hits += [mark for mark in ("«", "»", "@", "://", "meet.google.com/", "tinycloud") if mark in lower]
+        if hits:
+            sys.exit(f"refusing to write {name}: output still contains {hits}")
     with open(args.output, "w", encoding="utf-8") as handle:
         handle.write(text)
     print(f"{args.output}: {len(out[1]['nodes'])} nodes, {len(diffs)} diffs, "
           f"{scrub.restored} labels restored, {scrub.dropped} texts dropped")
+    if events_text is not None:
+        with open(args.events_out, "w", encoding="utf-8") as handle:
+            handle.write(events_text)
+        print(f"{args.events_out}: {len(json.loads(events_text)['events'])} events")
 
 
 if __name__ == "__main__":

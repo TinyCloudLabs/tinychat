@@ -235,3 +235,6 @@ impl Source for Arena {
         a == b
     }
 }
+
+/// A capture with its diffs, played sample by sample.
+pub mod replay;
