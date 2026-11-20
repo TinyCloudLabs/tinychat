@@ -1,0 +1,257 @@
+//! The app table's mapping and the scan, over a fake CoreAudio.
+
+use call_prompt::apps::{lookup, Kind, APPS};
+use call_prompt::mic::{scan, AudioProcesses, Heard, ScanError};
+use std::collections::HashMap;
+
+const OWN_PID: i32 = 4242;
+
+/// One fake process object.
+#[derive(Clone, Default)]
+struct Process {
+    pid: Option<i32>,
+    bundle_id: Option<&'static str>,
+    capturing: Option<bool>,
+    playing: Option<bool>,
+}
+
+fn process(bundle_id: &'static str, pid: i32, capturing: bool, playing: bool) -> Process {
+    Process {
+        pid: Some(pid),
+        bundle_id: Some(bundle_id),
+        capturing: Some(capturing),
+        playing: Some(playing),
+    }
+}
+
+/// CoreAudio as a list, counting what is read of each process.
+struct Fake {
+    list: Result<Vec<Process>, i32>,
+    reads: HashMap<(u32, &'static str), usize>,
+}
+
+impl Fake {
+    fn new(list: Vec<Process>) -> Self {
+        Fake {
+            list: Ok(list),
+            reads: HashMap::new(),
+        }
+    }
+
+    fn get(&mut self, object: u32, what: &'static str) -> Option<Process> {
+        *self.reads.entry((object, what)).or_default() += 1;
+        self.list.as_ref().ok()?.get(object as usize).cloned()
+    }
+
+    fn read(&self, object: u32, what: &'static str) -> bool {
+        self.reads.contains_key(&(object, what))
+    }
+}
+
+impl AudioProcesses for Fake {
+    fn processes(&mut self) -> Result<Vec<u32>, ScanError> {
+        match &self.list {
+            Ok(list) => Ok((0..list.len() as u32).collect()),
+            Err(status) => Err(ScanError::Failed(*status)),
+        }
+    }
+
+    fn capturing(&mut self, process: u32) -> Option<bool> {
+        self.get(process, "capturing")?.capturing
+    }
+
+    fn playing(&mut self, process: u32) -> Option<bool> {
+        self.get(process, "playing")?.playing
+    }
+
+    fn pid(&mut self, process: u32) -> Option<i32> {
+        self.get(process, "pid")?.pid
+    }
+
+    fn bundle_id(&mut self, process: u32) -> Option<String> {
+        self.get(process, "bundle_id")?.bundle_id.map(str::to_owned)
+    }
+}
+
+fn entry(bundle_id: &str, playing: bool) -> Heard {
+    Heard {
+        app: lookup(bundle_id).unwrap(),
+        playing,
+    }
+}
+
+#[test]
+fn helpers_map_to_their_app_by_a_dot_prefix() {
+    assert_eq!(
+        lookup("com.google.Chrome.helper"),
+        lookup("com.google.Chrome")
+    );
+    assert_eq!(
+        lookup("com.google.Chrome.helper.Renderer"),
+        lookup("com.google.Chrome")
+    );
+    assert_eq!(
+        lookup("com.tinyspeck.slackmacgap.helper"),
+        lookup("com.tinyspeck.slackmacgap")
+    );
+    assert_eq!(
+        lookup("com.apple.TelephonyUtilities.callservicesd"),
+        lookup("com.apple.TelephonyUtilities")
+    );
+    // Not a dot: another app.
+    assert_eq!(lookup("com.google.Chromeish"), None);
+    assert_eq!(lookup("us.zoom.xosx"), None);
+    // A prefix of an entry is not the entry.
+    assert_eq!(lookup("com.google"), None);
+}
+
+#[test]
+fn the_longest_entry_wins() {
+    let beta = lookup("com.google.Chrome.beta").unwrap();
+    assert_eq!(beta.app().bundle_id, "com.google.Chrome.beta");
+    let beta_helper = lookup("com.google.Chrome.beta.helper").unwrap();
+    assert_eq!(beta_helper, beta);
+    // Teams: the old and the new app are two entries, not a prefix of each other.
+    assert_eq!(
+        lookup("com.microsoft.teams2").unwrap().app().bundle_id,
+        "com.microsoft.teams2"
+    );
+    assert_eq!(
+        lookup("com.microsoft.teams").unwrap().app().bundle_id,
+        "com.microsoft.teams"
+    );
+}
+
+#[test]
+fn case_does_not_matter() {
+    assert_eq!(lookup("COM.GOOGLE.CHROME"), lookup("com.google.Chrome"));
+    assert_eq!(
+        lookup("company.thebrowser.browser.helper"),
+        lookup("company.thebrowser.Browser")
+    );
+    assert_eq!(lookup("Us.Zoom.Xos"), lookup("us.zoom.xos"));
+}
+
+#[test]
+fn unknown_and_odd_ids_map_to_nothing() {
+    for id in [
+        "",
+        ".",
+        "com.apple.dictation",
+        "com.apple.VoiceMemos",
+        "com.apple.WebKit.GPU",
+        "xyz.tinycloud.exo",
+        "com.example.Robin-Sample",
+        "ünïcödé.zoom",
+        "us.zoom.xos\u{0}",
+    ] {
+        assert_eq!(lookup(id), None, "{id:?}");
+    }
+}
+
+#[test]
+fn the_rules_are_eight_and_fifteen_seconds() {
+    assert_eq!(lookup("us.zoom.xos").unwrap().kind(), Kind::Native);
+    assert_eq!(lookup("com.apple.Safari").unwrap().kind(), Kind::Browser);
+    assert_eq!(Kind::Native.sustain().as_secs(), 8);
+    assert_eq!(Kind::Browser.sustain().as_secs(), 15);
+    assert!(APPS.iter().any(|app| app.kind == Kind::Native));
+}
+
+#[test]
+fn a_scan_returns_listed_apps_that_capture() {
+    let mut fake = Fake::new(vec![
+        process("us.zoom.xos", 100, true, true),
+        process("com.google.Chrome.helper", 200, true, false),
+        process("com.google.Chrome.helper", 201, true, true),
+        process("com.apple.WebKit.GPU", 300, true, true),
+        process("com.tinyspeck.slackmacgap", 400, false, true),
+    ]);
+    let heard = scan(&mut fake, OWN_PID).unwrap();
+    assert_eq!(
+        heard,
+        [entry("us.zoom.xos", true), entry("com.google.Chrome", true)]
+    );
+}
+
+#[test]
+fn only_capturing_processes_are_asked_for_anything_else() {
+    let mut fake = Fake::new(vec![
+        process("com.tinyspeck.slackmacgap", 400, false, true),
+        process("com.example.player", 500, false, true),
+        process("us.zoom.xos", 100, true, false),
+    ]);
+    scan(&mut fake, OWN_PID).unwrap();
+    for object in [0, 1] {
+        assert!(fake.read(object, "capturing"));
+        for what in ["pid", "bundle_id", "playing"] {
+            assert!(
+                !fake.read(object, what),
+                "process {object} was asked for its {what}"
+            );
+        }
+    }
+    for what in ["capturing", "pid", "bundle_id", "playing"] {
+        assert!(fake.read(2, what));
+    }
+}
+
+#[test]
+fn this_process_is_skipped() {
+    // As if the app's own id were in the table: its pid still keeps it out.
+    let mut fake = Fake::new(vec![process("us.zoom.xos", OWN_PID, true, true)]);
+    assert!(scan(&mut fake, OWN_PID).unwrap().is_empty());
+    assert!(!fake.read(0, "bundle_id"), "its id is not even read");
+}
+
+#[test]
+fn a_process_without_an_id_or_with_failed_reads_is_skipped() {
+    let mut fake = Fake::new(vec![
+        Process {
+            pid: Some(1),
+            capturing: Some(true),
+            ..Process::default()
+        },
+        Process {
+            pid: Some(2),
+            bundle_id: Some("us.zoom.xos"),
+            capturing: None,
+            playing: Some(true),
+        },
+        Process {
+            pid: None,
+            bundle_id: Some("com.hnc.Discord.helper"),
+            capturing: Some(true),
+            playing: None,
+        },
+    ]);
+    // The last one has no pid: it cannot be this process, and it is Discord, not playing.
+    assert_eq!(
+        scan(&mut fake, OWN_PID).unwrap(),
+        [entry("com.hnc.Discord", false)]
+    );
+}
+
+#[test]
+fn a_failed_process_list_is_an_error() {
+    let mut fake = Fake {
+        list: Err(-50),
+        reads: HashMap::new(),
+    };
+    assert_eq!(scan(&mut fake, OWN_PID), Err(ScanError::Failed(-50)));
+}
+
+#[test]
+fn unknown_ids_never_leave_the_scan() {
+    // `Heard` holds a table entry and a flag: nothing of an unknown process can be kept.
+    let mut fake = Fake::new(vec![
+        process("com.example.dictation", 10, true, false),
+        process("com.example.Alex-Example-recorder", 11, true, true),
+    ]);
+    assert!(scan(&mut fake, OWN_PID).unwrap().is_empty());
+    let size = std::mem::size_of::<Heard>();
+    assert!(
+        size <= 2,
+        "Heard grew to {size} bytes: does it hold more than an entry and a flag?"
+    );
+}
