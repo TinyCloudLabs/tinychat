@@ -151,6 +151,12 @@ export const SUBMIT_DEADLINE_MS = 15 * 60 * 1000;
 export const SETTLED_TTL_MS = 60 * 60 * 1000;
 /** Give an absent owner a day to collect the handle before deleting the unclaimed transcript. */
 export const UNCLAIMED_SUBMITTED_TTL_MS = 24 * 60 * 60 * 1000;
+/** A job waiting out an AssemblyAI refusal keeps its spool (no TTL), so such jobs are bounded apart from uploads in transit. */
+export const MAX_DELAYED_UPLOADS = 16;
+/** Waits between attempts to submit while AssemblyAI refuses (billing, key, rate limit); the last one repeats. */
+export const SUBMIT_RETRY_SCHEDULE_MS: readonly number[] = [60_000, 120_000, 300_000, 600_000];
+/** A job refused for this long, counted from its first refusal, fails. */
+export const SUBMIT_RETRY_MAX_MS = 24 * 60 * 60 * 1000;
 
 export interface HostedUpload {
   id: string;
@@ -163,8 +169,8 @@ export interface HostedUpload {
   expiresAt: number;
   /** The allowance key this upload was charged to (refunded if it is abandoned unsent). */
   dayKey: string;
-  /** `receiving` takes parts; `submitting` is being sent to AssemblyAI (no parts, no abandon). */
-  state: "receiving" | "submitting";
+  /** `receiving` takes parts; `submitting` is being sent to AssemblyAI (no parts, no abandon); `delayed` was refused by AssemblyAI and waits to be sent again (spool kept, no TTL, no parts, no abandon). */
+  state: "receiving" | "submitting" | "delayed";
   /** Aborts the background submit (deadline, sweep, shutdown). Set while submitting. */
   abort: AbortController | null;
   submitDeadline: number;
@@ -172,10 +178,14 @@ export interface HostedUpload {
   sourceId?: string;
   /** When the background submit started (ms); the heartbeat's oldest pending job. */
   startedAt?: number;
+  /** While `delayed`: when the next attempt is due (ms). */
+  retryAt?: number;
+  /** While `delayed`: ends the wait now (the provider recovered). */
+  wake?: () => void;
 }
 
-type NoteJob = { address: string; sourceId: string; uploadId: string; bootId: string; state: "receiving" | "submitting" | "submitted" | "needs_reconciliation" | "uncertain" | "deleted"; handle?: string; expiresAt?: number; byteSize?: number; contentType?: string; uploadUrl?: string; transcriptId?: string };
-export type NoteJobView = { status: "receiving" | "submitting" | "submitted" | "needs_reconciliation" | "deleted"; upload_id: string; id?: string }
+type NoteJob = { address: string; sourceId: string; uploadId: string; bootId: string; state: "receiving" | "submitting" | "delayed" | "submitted" | "needs_reconciliation" | "uncertain" | "deleted"; handle?: string; expiresAt?: number; byteSize?: number; contentType?: string; uploadUrl?: string; transcriptId?: string };
+export type NoteJobView = { status: "receiving" | "submitting" | "delayed" | "submitted" | "needs_reconciliation" | "deleted"; upload_id: string; id?: string }
   | { status: "unresolved" };
 export const HOSTED_IDENTITY_KEY = "assemblyai/hosted/spool-identity";
 type SpoolIdentity = { installId: string; createdAt: string };
@@ -183,7 +193,8 @@ type SpoolIdentity = { installId: string; createdAt: string };
 /** How a background submit ended. Codes are the router's public error codes. */
 export type SubmitOutcome =
   | { status: "submitted"; handle: string; expiresAt?: number }
-  | { status: "failed"; code: "assemblyai_unavailable" | "assemblyai_rate_limited" };
+  /** `definite`: AssemblyAI only ever refused it (no transcript was created), so the note is not left to reconcile. */
+  | { status: "failed"; code: "assemblyai_unavailable" | "assemblyai_rate_limited"; definite?: true };
 
 export type CreateUploadResult =
   | { ok: true; upload: HostedUpload }
@@ -304,7 +315,9 @@ export class HostedUploadStore {
     if (!upload.sourceId) return;
     const key = this.noteKey(upload.owner, upload.sourceId);
     const job = this.noteJobs.get(key);
-    if (job?.uploadId === upload.id) await this.saveNoteJob(key, outcome.status === "submitted"
+    if (job?.uploadId !== upload.id) return;
+    if (outcome.status === "failed" && outcome.definite) await this.removeNoteJob(key);
+    else await this.saveNoteJob(key, outcome.status === "submitted"
       ? { ...job, state: "submitted", handle: outcome.handle, expiresAt: outcome.expiresAt } : { ...job, state: "needs_reconciliation" });
   }
 
@@ -432,6 +445,8 @@ export class HostedUploadStore {
             job = state;
           } catch { this.quarantinedKeys.add(key); await this.quarantine(legacy); consumed.add(legacy); await this.quarantine(name); continue; }
         }
+        // A delayed job was only ever refused, nothing paid: it recovers like one still receiving.
+        if (job.bootId !== this.bootId && job.state === "delayed") job = { ...job, state: "receiving" };
         // Receiving has not crossed the paid boundary. Recreate an empty spool under the same
         // upload ID: the client resends every part. Older records lack size/type and fail closed.
         if (job.bootId !== this.bootId && job.state === "receiving") {
@@ -483,7 +498,7 @@ export class HostedUploadStore {
       && typeof job.sourceId === "string" && job.sourceId.length > 0 && job.sourceId.length <= 256
       && this.noteKey(job.address, job.sourceId) === key
       && typeof job.uploadId === "string" && UPLOAD_ID_RE.test(job.uploadId)
-      && ["receiving", "submitting", "submitted", "needs_reconciliation", "uncertain", "deleted"].includes(job.state ?? "")
+      && ["receiving", "submitting", "delayed", "submitted", "needs_reconciliation", "uncertain", "deleted"].includes(job.state ?? "")
       && (job.handle === undefined || typeof job.handle === "string")
       && (job.byteSize === undefined || (Number.isSafeInteger(job.byteSize) && job.byteSize > 0 && job.byteSize <= MAX_HOSTED_BYTES))
       && (job.contentType === undefined || HOSTED_CONTENT_TYPES.includes(job.contentType))
@@ -502,6 +517,10 @@ export class HostedUploadStore {
 
   get activeCount(): number {
     return this.uploads.size;
+  }
+
+  get delayedCount(): number {
+    return [...this.uploads.values()].filter((u) => u.state === "delayed").length;
   }
 
   /**
@@ -531,11 +550,13 @@ export class HostedUploadStore {
   private async createLocked(address: string, byteSize: number, contentType: string, nowMs: number, sourceId?: string): Promise<CreateUploadResult> {
     if (this.stopping) return { ok: false, code: "assemblyai_busy", retryAfterSeconds: 30 };
     const mine = [...this.uploads.values()].find((u) => u.owner === address);
-    if (mine?.state === "submitting") return { ok: false, code: "assemblyai_busy", retryAfterSeconds: 30 };
+    if (mine?.state === "submitting" || mine?.state === "delayed") return { ok: false, code: "assemblyai_busy", retryAfterSeconds: 30 };
     if (mine) await this.abandonLocked(mine);
     if (this.stopping) return { ok: false, code: "assemblyai_busy", retryAfterSeconds: 30 };
-    if (this.uploads.size >= this.maxConcurrent) {
-      const soonest = Math.min(...[...this.uploads.values()].map((u) => u.expiresAt));
+    const delayed = this.delayedCount;
+    if (delayed >= MAX_DELAYED_UPLOADS) return { ok: false, code: "assemblyai_busy", retryAfterSeconds: 30 };
+    if (this.uploads.size - delayed >= this.maxConcurrent) {
+      const soonest = Math.min(...[...this.uploads.values()].filter((u) => u.state !== "delayed").map((u) => u.expiresAt));
       return { ok: false, code: "assemblyai_busy", retryAfterSeconds: Math.min(60, Math.max(1, Math.ceil((soonest - nowMs) / 1000))) };
     }
     // Every active upload reserves room for its eventual outcome. Retained failures must
@@ -628,7 +649,7 @@ export class HostedUploadStore {
   }
 
   /** Validate and claim under the same lock as parts, replacement and abandonment. */
-  async submitIfComplete(upload: HostedUpload, now: () => number, submit: (signal: AbortSignal) => Promise<SubmitOutcome>): Promise<boolean> {
+  async submitIfComplete(upload: HostedUpload, now: () => number, submit: (signal: AbortSignal, control: AbortSignal) => Promise<SubmitOutcome>): Promise<boolean> {
     return this.withAccount(upload.owner, async () => {
       if (!this.receiving(upload) || upload.expiresAt <= now()) return true;
       if (!(await this.complete(upload))) return false;
@@ -643,7 +664,7 @@ export class HostedUploadStore {
    * signal (its own deadline, the sweep, or shutdown). Whatever happens, the spool is deleted,
    * the slot freed, and the outcome kept for the owner to read.
    */
-  startSubmit(upload: HostedUpload, now: () => number, submit: (signal: AbortSignal) => Promise<SubmitOutcome>): void {
+  startSubmit(upload: HostedUpload, now: () => number, submit: (signal: AbortSignal, control: AbortSignal) => Promise<SubmitOutcome>): void {
     if (!this.receiving(upload)) return;
     const controller = new AbortController();
     upload.state = "submitting";
@@ -654,7 +675,7 @@ export class HostedUploadStore {
     const run = (async () => {
       let outcome: SubmitOutcome;
       try {
-        outcome = await submit(signal);
+        outcome = await submit(signal, controller.signal);
       } catch {
         outcome = { status: "failed", code: "assemblyai_unavailable" };
       }
@@ -683,11 +704,69 @@ export class HostedUploadStore {
     while (this.inFlight.size > 0) await Promise.all([...this.inFlight]);
   }
 
-  /** Jobs being sent to AssemblyAI right now and the age in seconds of the oldest. Nothing waits to be resent yet: `delayed` is 0. */
+  /**
+   * Jobs being sent or waiting to be sent again, how many of them wait, and the age in seconds of the oldest one
+   * being sent. A waiting job's time blocked is not "stuck": its age restarts when it resumes, so a recovery
+   * cannot trip a stuck-job rule.
+   */
   pendingStats(nowMs: number): { pending: number; delayed: number; oldestAgeSeconds: number } {
-    const jobs = [...this.uploads.values()].filter((u) => u.state === "submitting");
-    const oldest = Math.min(...jobs.map((u) => u.startedAt ?? nowMs));
-    return { pending: jobs.length, delayed: 0, oldestAgeSeconds: jobs.length === 0 ? 0 : Math.max(0, Math.floor((nowMs - oldest) / 1000)) };
+    const jobs = [...this.uploads.values()].filter((u) => u.state !== "receiving");
+    const sending = jobs.filter((u) => u.state === "submitting");
+    const oldest = Math.min(...sending.map((u) => u.startedAt ?? nowMs));
+    return {
+      pending: jobs.length,
+      delayed: jobs.length - sending.length,
+      oldestAgeSeconds: sending.length === 0 ? 0 : Math.max(0, Math.floor((nowMs - oldest) / 1000)),
+    };
+  }
+
+  /** The provider works again: every delayed job tries at once instead of finishing its wait. */
+  wakeDelayed(): void {
+    for (const upload of this.uploads.values()) upload.wake?.();
+  }
+
+  /**
+   * AssemblyAI refused this submission before any paid work, so it waits (`delayed`, spool kept, no TTL) until
+   * `waitMs` passes, `wakeDelayed` fires or `control` aborts; false when aborted (the caller settles).
+   * `onDelayed` runs once the job reads `delayed` (so counts taken there include it). The journal reads
+   * `delayed` meanwhile (a restart recovers it like an unsent upload) and `submitting` again BEFORE the next
+   * attempt crosses the paid boundary.
+   */
+  async waitDelayed(
+    upload: HostedUpload,
+    waitMs: number,
+    now: () => number,
+    control: AbortSignal,
+    sleep: (ms: number, signal: AbortSignal) => Promise<void>,
+    onDelayed: () => void,
+  ): Promise<boolean> {
+    upload.state = "delayed";
+    upload.retryAt = now() + waitMs;
+    await this.journalState(upload, "delayed");
+    onDelayed();
+    const stop = new AbortController();
+    const woken = new Promise<void>((resolve) => { upload.wake = resolve; });
+    const aborted = new Promise<void>((resolve) => control.addEventListener("abort", () => resolve(), { once: true }));
+    try {
+      if (!control.aborted) await Promise.race([sleep(waitMs, stop.signal).catch(() => {}), woken, aborted]);
+    } finally {
+      stop.abort();
+      upload.wake = undefined;
+    }
+    if (control.aborted) return false;
+    upload.state = "submitting";
+    upload.retryAt = undefined;
+    upload.submitDeadline = now() + SUBMIT_DEADLINE_MS;
+    upload.startedAt = now();
+    await this.journalState(upload, "submitting");
+    return true;
+  }
+
+  private async journalState(upload: HostedUpload, state: "delayed" | "submitting"): Promise<void> {
+    if (!upload.sourceId) return;
+    const key = this.noteKey(upload.owner, upload.sourceId);
+    const job = this.noteJobs.get(key);
+    if (job?.uploadId === upload.id) await this.saveNoteJob(key, { ...job, state });
   }
 
   /** Delete the spool and free the slot. Safe to call more than once. */
@@ -787,8 +866,8 @@ export class HostedUploadStore {
   async sweep(nowMs: number): Promise<number> {
     let removed = 0;
     for (const upload of [...this.uploads.values()]) {
-      if (upload.state === "submitting") {
-        if (nowMs >= upload.submitDeadline) upload.abort?.abort();
+      if (upload.state !== "receiving") {
+        if (upload.state === "submitting" && nowMs >= upload.submitDeadline) upload.abort?.abort();
         continue;
       }
       if (upload.expiresAt > nowMs) continue;
