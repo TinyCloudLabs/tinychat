@@ -5,12 +5,12 @@
 
 import { fetchGuarded, type GuardDeps, type GuardLimits, LIMITS } from "./fetch-guard";
 import { isRecord } from "./guards";
-import { pageText } from "./page-text";
+import { MAX_TEXT_CHARS, pageText } from "./page-text";
 import { readableAddress } from "./web";
 import { hostListed, listedHost, MAX_HOSTS } from "./web-policy";
 
-/** Plain text handed back is cut here; the gateway cuts again for the model. */
-export const MAX_REPLY_CHARS = 100_000;
+/** Plain text handed back is cut here (HTML is cut while it is built, plain text after); the gateway cuts again for the model. */
+export const MAX_REPLY_CHARS = MAX_TEXT_CHARS;
 const MAX_REQUEST_BYTES = 16 * 1024;
 const MAX_IN_FLIGHT = 8;
 

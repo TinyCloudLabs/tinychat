@@ -23,13 +23,33 @@ function entities(text: string): string {
   });
 }
 
+/**
+ * The most text a page may give back: the caller cuts to this after the whitespace is tidied.
+ */
+export const MAX_TEXT_CHARS = 100_000;
+
+/**
+ * The most text built before that tidy-up. It is applied while the text is built, so a page of tiny links that each grow
+ * into a full address cannot make the output many times larger than the page. Twice the cap leaves room for the
+ * whitespace the tidy-up removes, so a long page still reaches MAX_TEXT_CHARS.
+ */
+const BUILD_LIMIT = 2 * MAX_TEXT_CHARS;
+
 /** The page's text, as the byte-for-byte decoded string `html` (already decoded; see decodeBody). */
 export async function htmlToText(html: string, base: URL): Promise<string> {
   const out: string[] = [];
+  let size = 0;
   let skipping = 0;
   let raw = "";
+  const full = () => size >= BUILD_LIMIT;
+  const emit = (text: string) => {
+    if (full()) return;
+    const part = text.slice(0, BUILD_LIMIT - size);
+    out.push(part);
+    size += part.length;
+  };
   const flush = () => {
-    if (raw) out.push(entities(raw));
+    if (raw) emit(entities(raw));
     raw = "";
   };
   const rewriter = new HTMLRewriter()
@@ -44,26 +64,26 @@ export async function htmlToText(html: string, base: URL): Promise<string> {
     .on(LINES, {
       element() {
         flush();
-        if (!skipping) out.push("\n");
+        if (!skipping) emit("\n");
       },
     })
     .on(PARAGRAPHS, {
       element() {
         flush();
-        if (!skipping) out.push("\n\n");
+        if (!skipping) emit("\n\n");
       },
     })
     .on("img", {
       element(element) {
         flush();
         const alt = element.getAttribute("alt")?.trim();
-        if (alt && !skipping) out.push(` ${entities(alt)} `);
+        if (alt && !skipping) emit(` ${entities(alt)} `);
       },
     })
     .on("a[href]", {
       element(element) {
         const href = element.getAttribute("href");
-        if (!href || skipping) return;
+        if (!href || skipping || full()) return;
         let target: URL;
         try {
           target = new URL(href.trim(), base);
@@ -74,14 +94,14 @@ export async function htmlToText(html: string, base: URL): Promise<string> {
         target.hash = "";
         element.onEndTag(() => {
           flush();
-          if (!skipping) out.push(` (${target.href}) `);
+          if (!skipping) emit(` (${target.href}) `);
         });
       },
     })
     // Document-level, so text outside any element (a page with no <body>) is read too.
     .onDocument({
       text(chunk) {
-        if (skipping) return;
+        if (skipping || full()) return;
         raw += chunk.text;
         if (chunk.lastInTextNode) flush();
       },
