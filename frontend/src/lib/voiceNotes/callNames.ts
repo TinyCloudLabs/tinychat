@@ -3,11 +3,13 @@
 // exists they move onto it (`writeCallParticipants`: the people, and the suggestion for Them with one other person),
 // then the app's copy is cleared. Best-effort: nothing here fails or holds up a save. It runs when the row is created,
 // and again as the retry after each transcript commit and on each pass over the notes already saved (which needs no
-// transcriber); the write applies once, so running it again is harmless.
+// transcriber); the write applies once, so running it again is harmless. Until then a note shows the names straight
+// from the app's copy (`readCallNamesOnThisMac`), so they show while the space cannot be reached.
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { captureEvents } from "@/capture/captureEvents";
-import { parseCallParticipants, SUGGESTED_SPEAKER, suggestSpeakerNames } from "@/capture/library/callParticipants";
+import { parseCallParticipants, SUGGESTED_SPEAKER, suggestSpeakerNames, type CallParticipants } from "@/capture/library/callParticipants";
 import { getDesktopCaptureExtras } from "./desktopCaptureExtras";
+import { readLedgerSuggestionsEnded } from "./ledgerSpeakerNames";
 import { writeCallParticipants } from "./voiceNoteRows";
 
 /**
@@ -36,7 +38,11 @@ export async function saveCallNames(tcw: TinyCloudWeb, sourceId: string, rowId: 
       return "refused";
     }
     checkpoint();
-    const suggestion = suggestSpeakerNames(participants, new Date().toISOString())[SUGGESTED_SPEAKER] ?? null;
+    // A suggestion the user already kept, changed or put back while the note was on this Mac is not made again.
+    const suggested = suggestSpeakerNames(participants, new Date().toISOString())[SUGGESTED_SPEAKER] ?? null;
+    const suggestion = suggested !== null && (await readLedgerSuggestionsEnded(sourceId)).includes(SUGGESTED_SPEAKER)
+      ? null : suggested;
+    checkpoint();
     const outcome = await writeCallParticipants(tcw, rowId, participants, suggestion, checkpoint);
     if (outcome === "missing") return "no-row";
     if (outcome === "written") captureEvents.emit("library-changed", { source: "exo-voice-note", sourceId });
@@ -48,5 +54,20 @@ export async function saveCallNames(tcw: TinyCloudWeb, sourceId: string, rowId: 
     console.warn("[callNames] The names from the call window will be saved on the next try:",
       error instanceof Error ? error.message : String(error));
     return "failed";
+  }
+}
+
+/**
+ * The names read during recording `sourceId` that the app still holds (not yet on its row), checked and cleaned as
+ * the save checks them; null when there are none, they are not in the agreed shape, or the app cannot answer. Never
+ * throws; logs no names.
+ */
+export async function readCallNamesOnThisMac(sourceId: string): Promise<CallParticipants | null> {
+  const callNames = getDesktopCaptureExtras()?.callNames;
+  if (!callNames) return null;
+  try {
+    return parseCallParticipants(await callNames.read(sourceId));
+  } catch {
+    return null;
   }
 }

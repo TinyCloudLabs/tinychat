@@ -147,6 +147,9 @@ export function NoteDetail(props: {
     row: item !== null && !item.onPhone && reads.metadata?.status === "ok" ? item : null,
     metadata: reads.metadata?.status === "ok" ? reads.metadata.metadata : null,
     localId: item?.onPhone === true && item.source === VOICE_NOTE_SOURCE ? item.sourceId : null,
+    // A recording whose row cannot be read now (the space is unreachable): the call's names come from this Mac.
+    unreadRow: item !== null && !item.onPhone && item.source === VOICE_NOTE_SOURCE && item.metadata?.capture !== "pasted"
+      && reads.metadata?.status === "failed" ? item : null,
   });
   const names = speakerNames?.names;
   const onCopy = useCallback(async (withTimestamps = false) => {
