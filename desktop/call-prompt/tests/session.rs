@@ -3,8 +3,8 @@
 use call_prompt::apps::lookup;
 use call_prompt::mic::Heard;
 use call_prompt::session::{
-    Action, Observation, Phase, Session, Stage, CALL_END, RECORDING_DOT, START_TIMEOUT, TICK,
-    UNANSWERED,
+    Action, Capture, Observation, Phase, RecordingState, Session, Stage, CALL_END, RECORDING_TICK,
+    START_TIMEOUT, TICK, UNANSWERED,
 };
 use std::time::Duration;
 
@@ -25,6 +25,9 @@ struct Call {
     now: Duration,
     /// Every action so far, with its time.
     log: Vec<(Duration, Action)>,
+    /// The recording that exists while `recording` is given: its id and recorded time.
+    recording_id: String,
+    elapsed_ms: u64,
 }
 
 impl Call {
@@ -33,6 +36,8 @@ impl Call {
             session: Session::new(),
             now: Duration::from_secs(1000),
             log: Vec::new(),
+            recording_id: "rec-1".into(),
+            elapsed_ms: 0,
         }
     }
 
@@ -45,12 +50,19 @@ impl Call {
 
     /// One tick at the current time.
     fn tick_with(&mut self, heard: Option<&[Heard]>, recording: bool, live: bool) -> Vec<Action> {
+        // A recording that exists but does not capture is paused (or still starting).
+        let capture = recording.then(|| Capture {
+            id: self.recording_id.clone(),
+            elapsed_ms: self.elapsed_ms,
+            paused: !live,
+        });
         let actions = self.session.tick(
             self.now,
             &Observation {
                 heard,
                 recording,
                 live,
+                capture: capture.as_ref(),
             },
         );
         self.record(actions)
@@ -233,7 +245,7 @@ fn a_recording_begun_by_the_shortcut_while_offered_hides_the_tile_for_good() {
 }
 
 #[test]
-fn start_sends_one_request_and_live_hides_after_the_red_dot() {
+fn start_sends_one_request_and_the_tile_stays_as_the_recording_runs() {
     let mut call = Call::new();
     let zoom = [app(ZOOM, false)];
     call.run(10, &zoom, false, false);
@@ -249,19 +261,185 @@ fn start_sends_one_request_and_live_hides_after_the_red_dot() {
     assert_eq!(call.session.stage(), Stage::Starting);
     assert_eq!(call.session.next_tick(call.now), Duration::from_millis(500));
 
-    // The recorder captures: the red dot, then the tile hides.
+    // The recorder captures: the tile becomes the bar and stays, with the recorder's time.
+    call.elapsed_ms = 300;
     let actions = call.tick_with(Some(&zoom), true, true);
-    assert_eq!(actions, [Action::Phase(Phase::Recording)]);
-    assert_eq!(call.session.next_tick(call.now), RECORDING_DOT);
-    call.now += RECORDING_DOT;
-    let actions = call.tick_with(Some(&zoom), true, true);
-    assert_eq!(actions, [Action::Hide, Action::Phase(Phase::Hidden)]);
-    assert_eq!(call.session.stage(), Stage::Started);
-
-    call.run(300, &zoom, false, false);
+    assert_eq!(
+        actions,
+        [Action::Recording(RecordingState {
+            elapsed_ms: 300,
+            paused: false
+        })]
+    );
+    assert_eq!(call.session.stage(), Stage::Recording);
+    assert_eq!(call.session.phase(), Phase::Recording);
+    assert_eq!(call.session.next_tick(call.now), RECORDING_TICK);
+    assert!(RECORDING_TICK <= Duration::from_secs(1));
+    for second in 1..=600u64 {
+        call.now += RECORDING_TICK;
+        call.elapsed_ms = 300 + second * 500;
+        let actions = call.tick_with(Some(&zoom), true, true);
+        assert_eq!(
+            actions,
+            [Action::Recording(RecordingState {
+                elapsed_ms: call.elapsed_ms,
+                paused: false
+            })]
+        );
+    }
     let starts = call.log.iter().filter(|(_, a)| *a == Action::Start).count();
     assert_eq!(starts, 1);
     assert_eq!(call.shows(), 1);
+}
+
+/// A call whose offer was started and whose recording runs, with the tile as the bar.
+fn recording_call() -> (Call, [Heard; 1]) {
+    let mut call = Call::new();
+    let zoom = [app(ZOOM, false)];
+    call.run(10, &zoom, false, false);
+    call.start();
+    call.tick_with(Some(&zoom), true, true);
+    assert_eq!(call.session.stage(), Stage::Recording);
+    (call, zoom)
+}
+
+fn hidden() -> [Action; 2] {
+    [Action::Hide, Action::Phase(Phase::Hidden)]
+}
+
+#[test]
+fn a_recording_stopped_in_the_app_hides_the_tile_and_the_offer_stays_spent() {
+    // Stopped in the app, stopped by its limit or discarded: the recorder has no recording.
+    let (mut call, zoom) = recording_call();
+    call.now += RECORDING_TICK;
+    assert_eq!(call.tick_with(Some(&zoom), false, false), hidden());
+    assert_eq!(call.session.stage(), Stage::Started);
+    call.run(300, &zoom, false, false);
+    assert_eq!(call.shows(), 1, "no second offer in this call");
+}
+
+#[test]
+fn another_recording_is_not_the_one_the_tile_shows() {
+    let (mut call, zoom) = recording_call();
+    // The recording stopped and the user started another one in the app between two ticks.
+    call.recording_id = "rec-2".into();
+    call.now += RECORDING_TICK;
+    assert_eq!(call.tick_with(Some(&zoom), true, true), hidden());
+    assert_eq!(call.session.stage(), Stage::Started);
+}
+
+#[test]
+fn stop_on_the_tile_sends_one_stop_and_the_tile_hides_when_the_recorder_has_stopped() {
+    let (mut call, zoom) = recording_call();
+    assert_eq!(call.session.stop(call.now), [Action::Stop]);
+    assert!(
+        call.session.stop(call.now).is_empty(),
+        "one click, one stop"
+    );
+    // The app stops and saves: the recording still exists while it closes.
+    call.elapsed_ms = 4_000;
+    for _ in 0..4 {
+        call.now += RECORDING_TICK;
+        assert_eq!(
+            call.tick_with(Some(&zoom), true, false),
+            [Action::Recording(RecordingState {
+                elapsed_ms: 4_000,
+                paused: true
+            })]
+        );
+    }
+    call.now += RECORDING_TICK;
+    assert_eq!(call.tick_with(Some(&zoom), false, false), hidden());
+    assert!(
+        call.session.stop(call.now).is_empty(),
+        "nothing to stop any more"
+    );
+}
+
+#[test]
+fn stop_does_nothing_outside_a_recording_the_tile_shows() {
+    let mut call = Call::new();
+    assert!(call.session.stop(call.now).is_empty());
+    let zoom = [app(ZOOM, false)];
+    call.run(10, &zoom, false, false);
+    assert!(call.session.stop(call.now).is_empty(), "offered");
+    call.start();
+    assert!(call.session.stop(call.now).is_empty(), "starting");
+}
+
+#[test]
+fn a_pause_keeps_the_tile_with_the_time_standing_still() {
+    let (mut call, zoom) = recording_call();
+    call.elapsed_ms = 60_000;
+    for _ in 0..10 {
+        call.now += RECORDING_TICK;
+        assert_eq!(
+            call.tick_with(Some(&zoom), true, false),
+            [Action::Recording(RecordingState {
+                elapsed_ms: 60_000,
+                paused: true
+            })]
+        );
+    }
+    // Resumed.
+    call.elapsed_ms = 60_500;
+    call.now += RECORDING_TICK;
+    assert_eq!(
+        call.tick_with(Some(&zoom), true, true),
+        [Action::Recording(RecordingState {
+            elapsed_ms: 60_500,
+            paused: false
+        })]
+    );
+    assert_eq!(call.session.stage(), Stage::Recording);
+}
+
+#[test]
+fn the_call_ending_first_keeps_the_tile_until_the_recording_is_over() {
+    let (mut call, _zoom) = recording_call();
+    // Zoom goes quiet for minutes, the Mac sleeps for one: the recording goes on, so does the bar.
+    for _ in 0..240 {
+        call.now += RECORDING_TICK;
+        let actions = call.tick_with(Some(&[]), true, true);
+        assert!(
+            matches!(actions.as_slice(), [Action::Recording(_)]),
+            "{actions:?}"
+        );
+    }
+    call.now += Duration::from_secs(60);
+    let actions = call.tick_with(Some(&[]), true, true);
+    assert!(
+        matches!(actions.as_slice(), [Action::Recording(_)]),
+        "{actions:?}"
+    );
+    // The recording ends: the tile hides, and the call that ended meanwhile ends too.
+    call.now += RECORDING_TICK;
+    assert_eq!(call.tick_with(Some(&[]), false, false), hidden());
+    call.now += TICK;
+    call.tick_with(Some(&[]), false, false);
+    assert_eq!(call.session.stage(), Stage::Idle);
+    // A new call gets a new offer.
+    call.run(10, &[app(ZOOM, false)], false, false);
+    assert_eq!(call.shows(), 2);
+}
+
+#[test]
+fn the_tile_state_carries_the_time_only_while_recording() {
+    let (mut call, zoom) = recording_call();
+    call.elapsed_ms = 65_000;
+    call.now += RECORDING_TICK;
+    call.tick_with(Some(&zoom), true, false);
+    let state = serde_json::to_value(call.session.tile()).unwrap();
+    assert_eq!(
+        state,
+        serde_json::json!({ "phase": "recording", "elapsedMs": 65_000, "paused": true })
+    );
+    call.now += RECORDING_TICK;
+    call.tick_with(Some(&zoom), false, false);
+    assert_eq!(
+        serde_json::to_value(call.session.tile()).unwrap(),
+        serde_json::json!({ "phase": "hidden" })
+    );
 }
 
 #[test]
@@ -422,6 +600,9 @@ fn over_random_input_never_a_show_while_recording_and_at_most_one_per_call() {
         let mut session = Session::new();
         let mut now = Duration::from_secs(50);
         let mut recording = false;
+        // Each recording has its own id; sometimes one ends and the next starts between ticks.
+        let mut generation = 0u64;
+        let mut stopped = false;
         // An independent model of when the offered call may have ended: the setting went off,
         // no tick came for CALL_END, or the offered app was not heard for CALL_END.
         let mut offered: Option<(call_prompt::apps::AppId, Duration)> = None;
@@ -433,7 +614,15 @@ fn over_random_input_never_a_show_while_recording_and_at_most_one_per_call() {
             let mut scan_failed = false;
             let actions = match random.below(20) {
                 0 => session.start(now),
-                1 => session.dismiss(now),
+                1 if random.below(2) == 0 => session.dismiss(now),
+                1 => {
+                    let actions = session.stop(now);
+                    if actions.contains(&Action::Stop) {
+                        assert!(!stopped, "seed {seed}: two stops for one recording");
+                        stopped = true;
+                    }
+                    actions
+                }
                 2 => {
                     ended = true;
                     last_tick = None;
@@ -443,6 +632,14 @@ fn over_random_input_never_a_show_while_recording_and_at_most_one_per_call() {
                     ticked = true;
                     if random.below(30) == 0 {
                         recording = !recording;
+                        if recording {
+                            generation += 1;
+                            stopped = false;
+                        }
+                    }
+                    if recording && random.below(200) == 0 {
+                        generation += 1;
+                        stopped = false;
                     }
                     for id in pool {
                         if random.below(3) == 0 {
@@ -457,6 +654,11 @@ fn over_random_input_never_a_show_while_recording_and_at_most_one_per_call() {
                         heard.clear();
                     }
                     let live = recording && random.below(2) == 0;
+                    let capture = recording.then(|| Capture {
+                        id: format!("rec-{generation}"),
+                        elapsed_ms: random.below(10_000_000),
+                        paused: !live,
+                    });
                     scan_failed = random.below(25) == 0;
                     session.tick(
                         now,
@@ -464,6 +666,7 @@ fn over_random_input_never_a_show_while_recording_and_at_most_one_per_call() {
                             heard: (!scan_failed).then_some(heard.as_slice()),
                             recording,
                             live,
+                            capture: capture.as_ref(),
                         },
                     )
                 }

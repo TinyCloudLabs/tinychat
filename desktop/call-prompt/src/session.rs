@@ -1,4 +1,5 @@
-//! One call at a time: when the tile shows, when it hides, and what "Start" and "Not now" do.
+//! One call at a time: when the tile shows, when it hides, and what "Start", "Not now" and
+//! "Stop" do.
 //!
 //! Stages:
 //! - [`Stage::Idle`]: no call app captures.
@@ -7,6 +8,11 @@
 //! - [`Stage::Offered`]: the tile shows "Record this call".
 //! - [`Stage::Starting`]: "Start" was pressed; the app waits up to [`START_TIMEOUT`] for the
 //!   recorder to capture.
+//! - [`Stage::Recording`]: the recording started from the tile captures. The tile stays, as a
+//!   bar with the recorder's own time ([`RecordingState`], sent every [`RECORDING_TICK`]) and
+//!   "Stop", until that recording is over: stopped from the tile or in the app, stopped by its
+//!   limit, or discarded, which the recorder tells by having no recording, or another one. The
+//!   call ending meanwhile (its app gone quiet, the Mac asleep) does not hide it.
 //! - [`Stage::Started`]: the call is recorded, or was asked to be. The offer never comes back in
 //!   this call, also when the recording stops before the call ends.
 //! - [`Stage::Dismissed`]: "Not now", or [`UNANSWERED`] without an answer. Lasts the call.
@@ -25,6 +31,7 @@
 
 use crate::apps::{AppId, Kind};
 use crate::mic::Heard;
+use crate::tile::TileState;
 use serde::Serialize;
 use std::time::Duration;
 
@@ -38,8 +45,8 @@ pub const CALL_END: Duration = Duration::from_secs(30);
 pub const UNANSWERED: Duration = Duration::from_secs(120);
 /// How long "Start" waits for the recorder to capture before it brings the main window forward.
 pub const START_TIMEOUT: Duration = Duration::from_secs(8);
-/// How long the tile shows its red dot once the recording captures.
-pub const RECORDING_DOT: Duration = Duration::from_secs(1);
+/// The pace while the tile shows a recording: its time goes to the tile at least once a second.
+pub const RECORDING_TICK: Duration = Duration::from_millis(500);
 
 /// What the tile shows. The tile's page gets it as `{ "phase": … }`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -51,8 +58,34 @@ pub enum Phase {
     Offered,
     /// "Start" was pressed: the buttons are disabled.
     Starting,
-    /// The recording captures: a red dot, then the tile hides.
+    /// The recording started from the tile runs: a bar with its time and "Stop".
     Recording,
+}
+
+/// The recording the tile shows, from the recorder's own clock.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RecordingState {
+    /// Recorded time: it does not move while the recording is paused.
+    pub elapsed_ms: u64,
+    pub paused: bool,
+}
+
+/// The recording that exists now, as the recorder tells it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Capture {
+    /// The recording's id, to tell one recording from the next. Kept in memory only.
+    pub id: String,
+    pub elapsed_ms: u64,
+    pub paused: bool,
+}
+
+impl Capture {
+    pub fn state(&self) -> RecordingState {
+        RecordingState {
+            elapsed_ms: self.elapsed_ms,
+            paused: self.paused,
+        }
+    }
 }
 
 /// Where the session is in the current call.
@@ -62,6 +95,7 @@ pub enum Stage {
     Hearing,
     Offered,
     Starting,
+    Recording,
     Started,
     Dismissed,
 }
@@ -74,6 +108,7 @@ impl Stage {
             Stage::Hearing => "hearing",
             Stage::Offered => "offered",
             Stage::Starting => "starting",
+            Stage::Recording => "recording",
             Stage::Started => "started",
             Stage::Dismissed => "dismissed",
         }
@@ -97,6 +132,11 @@ pub enum Action {
     /// it (`service`), never the session: the tile shows only once its page has asked for its
     /// state.
     Prepare,
+    /// Tell the tile the recording's state (`recording`, its time, paused or not). The first one
+    /// makes the tile the compact bar.
+    Recording(RecordingState),
+    /// Ask the web app to stop the recording through its own Stop.
+    Stop,
 }
 
 /// What the watcher saw in one tick.
@@ -109,6 +149,8 @@ pub struct Observation<'a> {
     pub recording: bool,
     /// The recorder captures now.
     pub live: bool,
+    /// The recording that exists now, with its clock; `None` when there is none.
+    pub capture: Option<&'a Capture>,
 }
 
 /// A call app heard while no app owns the call.
@@ -132,8 +174,11 @@ pub struct Session {
     owner_last_heard: Duration,
     candidates: Vec<Candidate>,
     phase: Phase,
-    /// While the red dot shows: when it hides.
-    dot_until: Option<Duration>,
+    /// The recording started from the tile, while the tile shows it.
+    recording_id: Option<String>,
+    clock: RecordingState,
+    /// "Stop" was sent for it.
+    stop_sent: bool,
     last_tick: Option<Duration>,
 }
 
@@ -160,7 +205,12 @@ impl Session {
             owner_last_heard: Duration::ZERO,
             candidates: Vec::new(),
             phase: Phase::Hidden,
-            dot_until: None,
+            recording_id: None,
+            clock: RecordingState {
+                elapsed_ms: 0,
+                paused: false,
+            },
+            stop_sent: false,
             last_tick: None,
         }
     }
@@ -180,6 +230,22 @@ impl Session {
         self.phase
     }
 
+    /// What the tile shows now, with the recording's time in the `recording` phase.
+    pub fn tile(&self) -> TileState {
+        match self.phase {
+            Phase::Recording => TileState::recording(self.clock),
+            phase => TileState::of(phase),
+        }
+    }
+
+    /// The action that tells the tile what it shows now.
+    pub fn tile_action(&self) -> Action {
+        match self.phase {
+            Phase::Recording => Action::Recording(self.clock),
+            phase => Action::Phase(phase),
+        }
+    }
+
     /// The call's app, once an app owns the call. A table entry, never a process's own id.
     pub fn app(&self) -> Option<AppId> {
         self.owner
@@ -191,12 +257,10 @@ impl Session {
     }
 
     /// How long the watcher may wait before the next tick.
-    pub fn next_tick(&self, now: Duration) -> Duration {
-        match (self.stage, self.dot_until) {
-            (Stage::Starting, _) => STARTING_TICK,
-            (Stage::Started, Some(until)) => until
-                .saturating_sub(now)
-                .clamp(Duration::from_millis(10), TICK),
+    pub fn next_tick(&self, _now: Duration) -> Duration {
+        match self.stage {
+            Stage::Starting => STARTING_TICK,
+            Stage::Recording => RECORDING_TICK,
             _ => TICK,
         }
     }
@@ -204,8 +268,11 @@ impl Session {
     /// One scan's worth of news.
     pub fn tick(&mut self, now: Duration, seen: &Observation<'_>) -> Vec<Action> {
         let mut actions = Vec::new();
+        // While the tile shows a recording, the call ending does not hide it: the call's end is
+        // only noted, and acted on once the recording is over.
+        let recording = self.stage == Stage::Recording;
         if let Some(last) = self.last_tick {
-            if now.saturating_sub(last) >= CALL_END {
+            if !recording && now.saturating_sub(last) >= CALL_END {
                 self.end_call(&mut actions);
             }
         }
@@ -214,7 +281,7 @@ impl Session {
         if let (Some(owner), Some(heard)) = (self.owner, seen.heard) {
             if heard.iter().any(|entry| entry.app == owner) {
                 self.owner_last_heard = now;
-            } else if now.saturating_sub(self.owner_last_heard) >= CALL_END {
+            } else if !recording && now.saturating_sub(self.owner_last_heard) >= CALL_END {
                 self.end_call(&mut actions);
             }
         }
@@ -231,10 +298,14 @@ impl Session {
                 }
             }
             Stage::Starting => {
-                if seen.live {
-                    self.enter(Stage::Started, now);
-                    self.dot_until = Some(now + RECORDING_DOT);
-                    self.show(Phase::Recording, &mut actions);
+                if let (true, Some(capture)) = (seen.live, seen.capture) {
+                    // The recording started from the tile captures: the tile stays, as a bar.
+                    self.enter(Stage::Recording, now);
+                    self.recording_id = Some(capture.id.clone());
+                    self.clock = capture.state();
+                    self.stop_sent = false;
+                    self.phase = Phase::Recording;
+                    actions.push(Action::Recording(self.clock));
                 } else if now.saturating_sub(self.since) >= START_TIMEOUT {
                     // A consent question, a denied microphone or an open receipt: the main
                     // window shows what is needed.
@@ -243,13 +314,20 @@ impl Session {
                     actions.push(Action::Present);
                 }
             }
-            Stage::Started => {
-                if self.dot_until.is_some_and(|until| now >= until) {
-                    self.dot_until = None;
+            Stage::Recording => match seen.capture {
+                Some(capture) if self.recording_id.as_deref() == Some(capture.id.as_str()) => {
+                    self.clock = capture.state();
+                    actions.push(Action::Recording(self.clock));
+                }
+                // No recording, or another one: this recording is over (stopped from the tile or
+                // in the app, stopped by its limit, or discarded). The offer stays spent.
+                _ => {
+                    self.enter(Stage::Started, now);
+                    self.recording_id = None;
                     self.show(Phase::Hidden, &mut actions);
                 }
-            }
-            Stage::Dismissed => {}
+            },
+            Stage::Started | Stage::Dismissed => {}
         }
         actions
     }
@@ -263,6 +341,15 @@ impl Session {
             actions.push(Action::Start);
         }
         actions
+    }
+
+    /// "Stop" on the tile: one request to stop, for the recording it shows.
+    pub fn stop(&mut self, _now: Duration) -> Vec<Action> {
+        if self.stage == Stage::Recording && !self.stop_sent {
+            self.stop_sent = true;
+            return vec![Action::Stop];
+        }
+        Vec::new()
     }
 
     /// "Not now" on the tile: no offer again in this call.
@@ -312,7 +399,7 @@ impl Session {
         self.stage = Stage::Idle;
         self.owner = None;
         self.candidates.clear();
-        self.dot_until = None;
+        self.recording_id = None;
         self.show(Phase::Hidden, actions);
     }
 

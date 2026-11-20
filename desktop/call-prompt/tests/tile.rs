@@ -22,7 +22,7 @@ fn the_tile_state_is_one_phase() {
         (Phase::Recording, "recording"),
     ] {
         assert_eq!(
-            serde_json::to_value(TileState { phase }).unwrap(),
+            serde_json::to_value(TileState::of(phase)).unwrap(),
             json!({ "phase": text })
         );
     }
@@ -86,4 +86,32 @@ fn a_tiny_screen_keeps_the_tile_inside() {
         height: 100.0,
     });
     assert_eq!((x, y), (10.0, 20.0));
+}
+
+#[test]
+fn the_recording_state_has_its_time_and_pause() {
+    use call_prompt::session::RecordingState;
+    assert_eq!(
+        serde_json::to_value(TileState::recording(RecordingState {
+            elapsed_ms: 3_725_000,
+            paused: false
+        }))
+        .unwrap(),
+        json!({ "phase": "recording", "elapsedMs": 3_725_000, "paused": false })
+    );
+}
+
+#[test]
+fn the_bar_docks_at_the_same_place() {
+    use call_prompt::tile::{dock_sized, BAR_HEIGHT, BAR_WIDTH};
+    let area = Area {
+        x: 0.0,
+        y: 33.0,
+        width: 1512.0,
+        height: 949.0,
+    };
+    let (x, y) = dock_sized(area, BAR_WIDTH, BAR_HEIGHT);
+    assert_eq!(x + BAR_WIDTH, 1512.0 - EDGE_MARGIN, "the same right edge");
+    assert_eq!(y + BAR_HEIGHT / 2.0, 33.0 + 949.0 / 2.0, "the same middle");
+    assert_eq!((BAR_WIDTH, BAR_HEIGHT), (180.0, 52.0));
 }

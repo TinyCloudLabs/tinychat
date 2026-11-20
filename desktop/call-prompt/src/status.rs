@@ -7,7 +7,8 @@
 //! ```json
 //! {"v":1,"at":"2026-11-20T01:23:45Z","enabled":true,"phase":"offered","stage":"offered",
 //!  "kind":"native","gate":"open","pass":"followed","pass_ms":0.4,"scan_ms":95.2,
-//!  "last_start":{"claimed_after_ms":850,"timed_out":false},"error":null}
+//!  "last_start":{"claimed_after_ms":850,"timed_out":false,"stopped_from_tile":false},
+//!  "error":null}
 //! ```
 //!
 //! - `kind`: the rule of the call's app, `native` or `browser`, or null.
@@ -16,8 +17,10 @@
 //! - `pass`: the last look's pass, `gate` (nothing else read), `followed` (only the call apps'
 //!   process objects) or `full` (every process object); `pass_ms`: how long it took.
 //! - `scan_ms`: how long the last full scan took.
+//! - `phase`: `recording` while the tile shows the recording it started.
 //! - `last_start`: the last "Start" on the tile: how long after it the web app claimed the start
-//!   request (null until it does), and whether the 8 s wait for the recording ran out.
+//!   request (null until it does), whether the 8 s wait for the recording ran out, and whether
+//!   "Stop" on the tile asked to stop that recording.
 //!
 //! It is written at most once per [`STATUS_INTERVAL`], and at once when the phase or the setting
 //! changes. Each write replaces the whole file (a temporary file, synced, then renamed), mode 0600
@@ -53,6 +56,8 @@ pub struct LastStart {
     pub claimed_after_ms: Option<u64>,
     /// The wait for the recording to capture ran out, and the main window was brought forward.
     pub timed_out: bool,
+    /// "Stop" on the tile asked to stop that recording.
+    pub stopped_from_tile: bool,
 }
 
 /// One status. No field can hold a bundle id or a name.

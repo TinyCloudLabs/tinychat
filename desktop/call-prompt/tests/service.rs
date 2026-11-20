@@ -3,7 +3,7 @@
 use call_prompt::apps::Kind;
 use call_prompt::mic::{AudioProcesses, ScanError};
 use call_prompt::service::{spawn_with, Clock, Host, Report, Watcher, PANIC_REST};
-use call_prompt::session::{Action, Phase, Stage, TICK};
+use call_prompt::session::{Action, Capture, Phase, RecordingState, Stage, RECORDING_TICK, TICK};
 use call_prompt::status::StatusFile;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -14,6 +14,9 @@ use std::time::{Duration, Instant};
 struct App {
     recording: AtomicBool,
     live: AtomicBool,
+    /// The recording's number (its id is `rec-N`) and its recorded time.
+    recording_number: AtomicU64,
+    elapsed_ms: AtomicU64,
     panic_on_recording: AtomicBool,
     actions: Mutex<Vec<Action>>,
     reports: Mutex<Vec<Report>>,
@@ -32,6 +35,14 @@ impl Host for FakeHost {
 
     fn live(&self) -> bool {
         self.0.live.load(Ordering::SeqCst)
+    }
+
+    fn capture(&self) -> Option<Capture> {
+        self.0.recording.load(Ordering::SeqCst).then(|| Capture {
+            id: format!("rec-{}", self.0.recording_number.load(Ordering::SeqCst)),
+            elapsed_ms: self.0.elapsed_ms.load(Ordering::SeqCst),
+            paused: !self.0.live.load(Ordering::SeqCst),
+        })
     }
 
     fn act(&self, action: Action) {
@@ -262,8 +273,18 @@ fn start_through_the_watcher() {
     rig.app.recording.store(true, Ordering::SeqCst);
     rig.app.live.store(true, Ordering::SeqCst);
     rig.watcher.tick();
-    assert_eq!(rig.app.take(), [Action::Phase(Phase::Recording)]);
-    rig.run(4);
+    assert_eq!(
+        rig.app.take(),
+        [Action::Recording(RecordingState {
+            elapsed_ms: 0,
+            paused: false
+        })]
+    );
+    assert_eq!(rig.watcher.stage(), Stage::Recording);
+    // Stopped in the app: the tile hides.
+    rig.app.recording.store(false, Ordering::SeqCst);
+    rig.app.live.store(false, Ordering::SeqCst);
+    rig.run(1);
     assert_eq!(rig.app.take(), [Action::Hide, Action::Phase(Phase::Hidden)]);
     assert_eq!(rig.watcher.stage(), Stage::Started);
 }
@@ -570,7 +591,7 @@ fn the_window_is_made_when_a_call_app_is_heard_and_shown_once_the_page_asked() {
     assert_eq!(rig.app.take(), [Action::Prepare], "made at once, hidden");
     // The page loads and asks; the offer comes later and shows as usual.
     rig.watcher.window_created();
-    assert_eq!(rig.watcher.page_asked(), Phase::Hidden);
+    assert_eq!(rig.watcher.page_asked().phase, Phase::Hidden);
     rig.clock.advance(TICK);
     rig.run(8);
     assert_eq!(
@@ -591,7 +612,7 @@ fn an_offer_waits_for_the_page_and_shows_when_it_asks() {
     assert_eq!(shows(&actions), 0, "{actions:?}");
     assert_eq!(actions.last(), Some(&Action::Prepare));
     // The page asks within the wait: it gets the offer and the window shows.
-    assert_eq!(rig.watcher.page_asked(), Phase::Offered);
+    assert_eq!(rig.watcher.page_asked().phase, Phase::Offered);
     assert_eq!(rig.app.take(), [Action::Show]);
     rig.run(20);
     assert_eq!(rig.watcher.phase(), Phase::Offered);
@@ -771,7 +792,7 @@ fn the_status_file_says_how_long_the_start_request_took_to_be_claimed() {
     rig.watcher.tick();
     assert_eq!(
         folder.read()["last_start"],
-        serde_json::json!({ "claimed_after_ms": 1500, "timed_out": false })
+        serde_json::json!({ "claimed_after_ms": 1500, "timed_out": false, "stopped_from_tile": false })
     );
     // A claim with no "Start" before it (the shortcut) changes nothing.
     rig.watcher.start_claimed();
@@ -790,7 +811,7 @@ fn the_status_file_says_when_the_wait_for_the_recording_ran_out() {
     assert!(rig.app.take().contains(&Action::Present));
     assert_eq!(
         folder.read()["last_start"],
-        serde_json::json!({ "claimed_after_ms": null, "timed_out": true })
+        serde_json::json!({ "claimed_after_ms": null, "timed_out": true, "stopped_from_tile": false })
     );
     // A late claim is still measured.
     rig.watcher.start_claimed();
@@ -800,5 +821,120 @@ fn the_status_file_says_when_the_wait_for_the_recording_ran_out() {
     assert!(
         last["claimed_after_ms"].as_u64().unwrap() >= 10_000,
         "{last}"
+    );
+}
+
+impl Rig {
+    /// An offer, "Start", and the recording it started captures: the tile shows it.
+    fn recording(&self) {
+        self.offer();
+        self.watcher.start();
+        self.app.recording.store(true, Ordering::SeqCst);
+        self.app.live.store(true, Ordering::SeqCst);
+        self.watcher.tick();
+        assert_eq!(self.watcher.stage(), Stage::Recording);
+        self.app.take();
+    }
+}
+
+#[test]
+fn the_recording_goes_to_the_tile_at_least_once_a_second_with_the_recorders_clock() {
+    let rig = Rig::new();
+    rig.recording();
+    rig.app.elapsed_ms.store(61_000, Ordering::SeqCst);
+    rig.app.live.store(false, Ordering::SeqCst);
+    rig.run(5);
+    let actions = rig.app.take();
+    assert_eq!(actions.len(), (5_000 / RECORDING_TICK.as_millis()) as usize);
+    assert!(actions.iter().all(|action| *action
+        == Action::Recording(RecordingState {
+            elapsed_ms: 61_000,
+            paused: true
+        })));
+    assert_eq!(
+        serde_json::to_value(rig.watcher.tile()).unwrap(),
+        serde_json::json!({ "phase": "recording", "elapsedMs": 61_000, "paused": true })
+    );
+}
+
+#[test]
+fn while_the_tile_shows_a_recording_the_microphone_is_looked_at_every_2_s_only() {
+    let rig = Rig::new();
+    rig.recording();
+    let (gate_reads, reads) = (
+        rig.audio.gate_reads.load(Ordering::SeqCst),
+        rig.audio.reads.load(Ordering::SeqCst),
+    );
+    rig.run(10);
+    // 20 ticks of 500 ms; the microphone once per 2 s of them.
+    let looks = rig.audio.gate_reads.load(Ordering::SeqCst) - gate_reads;
+    assert!((4..=5).contains(&looks), "{looks} looks");
+    assert_eq!(rig.audio.reads.load(Ordering::SeqCst) - reads, looks);
+}
+
+#[test]
+fn stop_on_the_tile_asks_once_and_the_tile_follows_the_recorder_until_it_has_stopped() {
+    let rig = Rig::new();
+    let folder = StatusFolder::new(&rig);
+    rig.recording();
+    rig.app.elapsed_ms.store(5_000, Ordering::SeqCst);
+    rig.watcher.stop();
+    let stop = rig.app.take();
+    assert!(
+        matches!(stop.as_slice(), [Action::Stop, Action::Recording(_)]),
+        "one stop, and the tile hears its state at once: {stop:?}"
+    );
+    // A second click sends nothing more, but the tile hears its state again.
+    rig.watcher.stop();
+    let again = rig.app.take();
+    assert!(
+        matches!(again.as_slice(), [Action::Recording(_)]),
+        "{again:?}"
+    );
+    // The app stops and saves; the recording exists until it is closed.
+    rig.app.live.store(false, Ordering::SeqCst);
+    rig.run(2);
+    assert!(rig
+        .app
+        .take()
+        .iter()
+        .all(|action| matches!(action, Action::Recording(_))));
+    rig.app.recording.store(false, Ordering::SeqCst);
+    rig.run(1);
+    assert_eq!(rig.app.take(), [Action::Hide, Action::Phase(Phase::Hidden)]);
+    let status = folder.read();
+    assert_eq!(status["phase"], "hidden");
+    assert_eq!(status["last_start"]["stopped_from_tile"], true);
+    // Stop does nothing more.
+    rig.watcher.stop();
+    assert_eq!(rig.app.take(), [Action::Phase(Phase::Hidden)]);
+}
+
+#[test]
+fn the_status_file_says_recording_while_the_tile_shows_one() {
+    let rig = Rig::new();
+    let folder = StatusFolder::new(&rig);
+    rig.recording();
+    rig.run(1);
+    let status = folder.read();
+    assert_eq!(status["phase"], "recording");
+    assert_eq!(status["stage"], "recording");
+    assert_eq!(status["last_start"]["stopped_from_tile"], false);
+}
+
+#[test]
+fn a_recording_started_another_way_gets_no_tile() {
+    let rig = Rig::new();
+    rig.watcher.set_enabled(true);
+    rig.app.recording.store(true, Ordering::SeqCst);
+    rig.app.live.store(true, Ordering::SeqCst);
+    rig.audio.zoom.store(true, Ordering::SeqCst);
+    rig.run(60);
+    let actions = rig.app.take();
+    assert!(
+        actions
+            .iter()
+            .all(|action| !matches!(action, Action::Recording(_) | Action::Show)),
+        "{actions:?}"
     );
 }

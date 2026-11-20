@@ -12,7 +12,8 @@
 //! - [`spawn`] at start-up, with a [`Host`] that knows the recorder and carries out [`Action`]s.
 //!   The watcher starts switched off; [`Watcher::set_enabled`] with the saved setting turns it on.
 //! - While the setting is off the thread sleeps on a condition variable: no scan, no timer.
-//! - [`Watcher::start`] and [`Watcher::dismiss`] are the tile's "Start" and "Not now";
+//! - [`Watcher::start`], [`Watcher::dismiss`] and [`Watcher::stop`] are the tile's "Start",
+//!   "Not now" and "Stop";
 //!   [`Watcher::phase`] is what the tile shows. Each press is answered with a phase, also when
 //!   it changes nothing: the tile keeps its buttons disabled until it hears one.
 //! - The tile's window is shown only once its page has asked for its state
@@ -36,8 +37,9 @@
 
 use crate::apps::Kind;
 use crate::mic::{AudioProcesses, CoreAudio, Mic, Pass, ScanError};
-use crate::session::{Action, Observation, Phase, Session, Stage, TICK};
+use crate::session::{Action, Capture, Observation, Phase, Session, Stage, TICK};
 use crate::status::{GateState, LastStart, Status, StatusFile};
+use crate::tile::TileState;
 use crate::tile::PAGE_WAIT;
 use std::io;
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -57,6 +59,12 @@ pub trait Host: Send + Sync + 'static {
 
     /// The recorder captures now.
     fn live(&self) -> bool;
+
+    /// The recording that exists now, with its own clock (recorded time, paused). The tile shows
+    /// it while it runs after a "Start" on the tile. `None` when there is none.
+    fn capture(&self) -> Option<Capture> {
+        None
+    }
 
     /// Carry out one action. Must not block: hand the work off and return.
     fn act(&self, action: Action);
@@ -112,9 +120,12 @@ struct Audio<A> {
     mic: Mic,
     /// How long the last full scan took, in ms.
     full_ms: Option<f64>,
+    /// The last look, on the watcher's clock, and what the status file said of it.
+    last_look: Option<(Duration, Seen)>,
 }
 
 /// What the status file says of one look.
+#[derive(Clone, Copy)]
 struct Seen {
     gate: GateState,
     pass: Pass,
@@ -154,6 +165,7 @@ impl<H: Host, A: AudioProcesses> Watcher<H, A> {
                 audio,
                 mic: Mic::new(),
                 full_ms: None,
+                last_look: None,
             }),
             clock,
             own_pid: std::process::id() as i32,
@@ -235,18 +247,23 @@ impl<H: Host, A: AudioProcesses> Watcher<H, A> {
         self.changed.notify_all();
     }
 
+    /// What the tile shows now, with the recording's time in the `recording` phase.
+    pub fn tile(&self) -> TileState {
+        lock(&self.inner).session.tile()
+    }
+
     /// The tile's page asked for its state (`call_prompt_state`): it has loaded. An offer that
     /// waited for it shows now. Returns what the tile shows.
-    pub fn page_asked(&self) -> Phase {
+    pub fn page_asked(&self) -> TileState {
         catch_unwind(AssertUnwindSafe(|| {
             let mut inner = lock(&self.inner);
             inner.page_ready = true;
             if inner.waiting_since.take().is_some() && inner.session.phase() != Phase::Hidden {
                 self.host.act(Action::Show);
             }
-            inner.session.phase()
+            inner.session.tile()
         }))
-        .unwrap_or(Phase::Hidden)
+        .unwrap_or(TileState::of(Phase::Hidden))
     }
 
     /// The app has just made the tile's window: its page has not asked yet.
@@ -267,6 +284,12 @@ impl<H: Host, A: AudioProcesses> Watcher<H, A> {
     /// "Not now" on the tile. The tile always gets a phase back.
     pub fn dismiss(&self) {
         self.answer(Session::dismiss);
+    }
+
+    /// "Stop" on the tile: one stop request for the recording it shows. The tile always gets its
+    /// state back; it hears `recording` until the recorder has no recording, then `hidden`.
+    pub fn stop(&self) {
+        self.answer(Session::stop);
     }
 
     /// One scan and the session's answer, when the setting is on. Returns how long to wait before
@@ -290,9 +313,17 @@ impl<H: Host, A: AudioProcesses> Watcher<H, A> {
     }
 
     fn tick_inner(&self) -> Duration {
-        let tracking = lock(&self.inner).session.tracking();
-        let (look, sight) = self.look(tracking, (self.clock)());
-        let recording = self.host.recording();
+        let (tracking, fast) = {
+            let inner = lock(&self.inner);
+            let stage = inner.session.stage();
+            (
+                inner.session.tracking(),
+                matches!(stage, Stage::Starting | Stage::Recording),
+            )
+        };
+        let (look, sight) = self.look(tracking, fast, (self.clock)());
+        let capture = self.host.capture();
+        let recording = self.host.recording() || capture.is_some();
         let live = self.host.live();
         let now = (self.clock)();
         let mut inner = lock(&self.inner);
@@ -315,6 +346,7 @@ impl<H: Host, A: AudioProcesses> Watcher<H, A> {
             heard: look.heard.as_deref(),
             recording,
             live,
+            capture: capture.as_ref(),
         };
         actions.extend(inner.session.tick(now, &seen));
         // A call app is heard: have the window made now, so its page has loaded when an offer is
@@ -353,14 +385,31 @@ impl<H: Host, A: AudioProcesses> Watcher<H, A> {
         }
     }
 
-    /// One look at the microphone ([`Mic::look`]), and what the status file says of it.
-    fn look(&self, tracking: bool, now: Duration) -> (crate::mic::Look, Seen) {
+    /// One look at the microphone ([`Mic::look`]), and what the status file says of it. On the
+    /// fast ticks of a starting or shown recording, the microphone is looked at only once per
+    /// [`TICK`]; in between nothing is read and nothing is heard (`heard: None`).
+    fn look(&self, tracking: bool, fast: bool, now: Duration) -> (crate::mic::Look, Seen) {
         let mut guard = lock(&self.audio);
         let Audio {
             audio,
             mic,
             full_ms,
+            last_look,
         } = &mut *guard;
+        if let Some((at, seen)) = *last_look {
+            if fast && now.saturating_sub(at) < TICK {
+                let skipped = crate::mic::Look {
+                    heard: None,
+                    gate: Ok(seen.gate == GateState::Open),
+                    error: None,
+                    pass: seen.pass,
+                    gate_took: Duration::ZERO,
+                    took: Duration::ZERO,
+                    objects: 0,
+                };
+                return (skipped, seen);
+            }
+        }
         let look = mic.look(audio, self.own_pid, tracking, now);
         if look.pass == Pass::Full {
             *full_ms = Some(ms(look.took));
@@ -375,6 +424,7 @@ impl<H: Host, A: AudioProcesses> Watcher<H, A> {
             pass_ms: ms(look.took),
             full_ms: *full_ms,
         };
+        *last_look = Some((now, seen));
         (look, seen)
     }
 
@@ -386,9 +436,9 @@ impl<H: Host, A: AudioProcesses> Watcher<H, A> {
             // The tile keeps its buttons disabled until it hears a phase.
             if !actions
                 .iter()
-                .any(|action| matches!(action, Action::Phase(_)))
+                .any(|action| matches!(action, Action::Phase(_) | Action::Recording(_)))
             {
-                actions.push(Action::Phase(inner.session.phase()));
+                actions.push(inner.session.tile_action());
             }
             let error = inner.last_report.and_then(|report| report.error);
             self.carry_out(&mut inner, actions, error, now);
@@ -420,8 +470,15 @@ impl<H: Host, A: AudioProcesses> Watcher<H, A> {
                     inner.last_start = Some(LastStart {
                         claimed_after_ms: None,
                         timed_out: false,
+                        stopped_from_tile: false,
                     });
                     self.host.act(Action::Start);
+                }
+                Action::Stop => {
+                    if let Some(last) = inner.last_start.as_mut() {
+                        last.stopped_from_tile = true;
+                    }
+                    self.host.act(Action::Stop);
                 }
                 Action::Present => {
                     if let Some(last) = inner.last_start.as_mut() {
