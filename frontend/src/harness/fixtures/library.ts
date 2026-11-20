@@ -283,3 +283,38 @@ export function libraryTcw(options: { rows?: readonly FixtureRow[]; hang?: boole
     get: (target, key) => (key === "sql" ? sql : key === "kv" ? kv : key === "spaceId" ? "harness-library" : Reflect.get(target, key)),
   }) as TinyCloudWeb;
 }
+
+/** The lines of the three-person call: Them 1 is Alex Example (p2), Them 2 is Dana Lee (p3). */
+const CALL_SPEAKER_LINES: FirefliesSentence[] = [
+  { index: 0, speaker_name: "Me", channel: 0, text: "Thanks, both. Where are we with the launch?", start_time: 0, end_time: 4 },
+  { index: 1, speaker_name: "Them 1", speaker_id: "call:p2", channel: 1, text: "The press kit is ready and the pricing page is nearly done.", start_time: 4.6, end_time: 10 },
+  { index: 2, speaker_name: "Them 2", speaker_id: "call:p3", channel: 1, text: "Support has the new help articles. We need the date to schedule the emails.", start_time: 10.7, end_time: 17 },
+  { index: 3, speaker_name: "Me", channel: 0, text: "Let's say the fourteenth.", start_time: 17.5, end_time: 19.5 },
+  { index: 4, speaker_name: "Them 1", speaker_id: "call:p2", channel: 1, text: "That works for the press side.", start_time: 20, end_time: 22.5 },
+  { index: 5, speaker_name: "Them 2", speaker_id: "call:p3", channel: 1, text: "Then I'll book the emails for that morning.", start_time: 23, end_time: 26 },
+];
+
+/**
+ * Who spoke when: a Mac recording of a three-person call, transcribed on the Mac, whose remote lines carry "Them 1" and
+ * "Them 2" with the person each was; the row holds each label's suggested name.
+ */
+export const CALL_SPEAKER_ROWS: FixtureRow[] = [
+  ...CALL_NAME_ROWS,
+  {
+    ...callRecording("call-three", "Launch review", [
+      { id: "p1", name: "Robin Sample", self: true }, { id: "p2", name: "Alex Example" }, { id: "p3", name: "Dana Lee" }], {
+      transcription_engine: "whispercpp",
+      transcript_provider: "whispercpp",
+      inference_provider: undefined,
+      // The body is shown only when its text is the row's.
+      transcript_text: CALL_SPEAKER_LINES.map((line) => line.text).join(" "),
+      speaker_names: { "Them 1": "Alex Example", "Them 2": "Dana Lee" },
+      speaker_suggestions: {
+        "Them 1": { name: "Alex Example", source: "call_window", confidence: "high", reason: "speaking_marker", person: "p2", at: at(10, 6, 9, 40) },
+        "Them 2": { name: "Dana Lee", source: "call_window", confidence: "high", reason: "speaking_marker", person: "p3", at: at(10, 6, 9, 40) },
+      },
+      speaker_suggestions_made: { "Them 1": at(10, 6, 9, 40), "Them 2": at(10, 6, 9, 40) },
+    }),
+    sentences: CALL_SPEAKER_LINES,
+  },
+];

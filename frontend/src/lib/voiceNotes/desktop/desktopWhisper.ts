@@ -3,7 +3,8 @@ import type { BatchResponse, TranscriptionEvent } from "@/lib/anarlog/transcript
 import { logPipeline, logPipelineError } from "@/lib/debugLog";
 import { PARAKEET_MODEL_ID, type LocalSttModel, type WhisperModel } from "@/lib/localTranscriber";
 import { leaseWhisperServer, SHARED_WHISPER_SERVER_SCOPE, type WhisperServerLease } from "@/lib/whisperServerLease";
-import type { NoteSttState, VoiceNoteRecording } from "../nativeVoiceNotes";
+import { nameCallSpeakersOnThisMac } from "../callSpeakersOnThisMac";
+import type { LocalTranscript, NoteSttState, VoiceNoteRecording } from "../nativeVoiceNotes";
 import type { WebStore } from "../web/webStore";
 import type { DesktopBridge } from "./desktopVoiceNotes";
 import { whisperLocalTranscript } from "./whisperTranscript";
@@ -149,8 +150,11 @@ export function createDesktopWhisperQueue(args: {
   store: WebStore; files: DesktopBridge; whisper: DesktopWhisperBridge;
   captureLive: () => boolean;
   currentAccountDid?: () => string | null;
+  /** Who spoke when: names the remote lines of a call recording before the transcript is stored. Never throws. */
+  nameCallSpeakers?: (note: VoiceNoteRecording, transcript: LocalTranscript) => Promise<LocalTranscript>;
 }): DesktopWhisperQueue {
   const { store, files, whisper, captureLive } = args;
+  const nameCallSpeakers = args.nameCallSpeakers ?? nameCallSpeakersOnThisMac;
   const jobs = new Map<string, DesktopWhisperJob>();
   const owners = new Map<string, string | null>();
   const currentAccountDid = args.currentAccountDid ?? mountedVoiceNoteDid;
@@ -299,11 +303,14 @@ export function createDesktopWhisperQueue(args: {
       if (disposed || stopping || captureLive()) throw new Error("capture_has_priority");
       const shortfall = decodedShortfall(note.durationMs, response, engineName);
       if (shortfall) throw new Error(shortfall);
-      const transcript = whisperLocalTranscript(note, model, response, {
+      // Who spoke when: in a call recording, each remote line gets the person the call window showed speaking. Read
+      // on this Mac with a bounded wait; whatever fails or is late leaves "Them" and never fails the transcript.
+      const built = whisperLocalTranscript(note, model, response, {
         rev: rerun?.rev ?? 1,
         ...(rerun ? { rerunBase: { rev: rerun.baseRev, hash: rerun.baseHash } } : {}),
         chunks,
       });
+      const transcript = await nameCallSpeakers(note, built).catch(() => built);
       const persisted = (await store.putTranscriptForOwner({ id, owner: note.owner ?? null, transcript })).transcript;
       if (!persisted || persisted.noteId !== id || persisted.outcome !== transcript.outcome
         || persisted.rev !== transcript.rev || (persisted.outcome === "transcribed" && !persisted.segments.some((segment) => segment.text.trim()))) {

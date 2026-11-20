@@ -10,7 +10,7 @@
 // exactly one other person in the call that person is suggested for "Them" (`suggestSpeakerNames`).
 
 import { cleanSpeakerName, MAX_SPEAKER_NAME_LENGTH, type SpeakerSuggestion } from "./speakerNames";
-import { OTHER_SIDE_LABELS, OWN_SIDE_LABELS } from "./speakerNamesCopy";
+import { isCallPersonLabel, OTHER_SIDE_LABELS, OWN_SIDE_LABELS } from "./speakerNamesCopy";
 
 export const CALL_PARTICIPANTS_KEY = "call_participants";
 export const MAX_CALL_PARTICIPANTS = 50;
@@ -139,6 +139,63 @@ export function suggestSpeakerNames(participants: CallParticipants | null, at: s
   const [other] = others as [CallParticipant, ...CallParticipant[]];
   return { [SUGGESTED_SPEAKER]: { name: other.name, source: "call_window", confidence: "high",
     reason: "one_other_participant", person: other.id, at } };
+}
+
+/**
+ * Who spoke when: the people of a call by id only, no names. `self`: the entries that are the user (marked so, or
+ * with the name of one marked so). `others`: everyone else, in the call's order; "Them N" is `others[N - 1]`.
+ */
+export interface CallRoster {
+  self: readonly string[];
+  others: readonly string[];
+}
+
+/** The ids of `participants` as a roster (the same rule as the names offered for "Them"); null without participants. */
+export function callRoster(participants: CallParticipants | null): CallRoster | null {
+  if (participants === null) return null;
+  const others = otherPeople(participants).map((person) => person.id);
+  const isOther = new Set(others);
+  return { self: participants.people.filter((person) => !isOther.has(person.id)).map((person) => person.id), others };
+}
+
+/** Who spoke when: each "Them N" label of a transcript and the call's person id its lines carry. */
+export type CallSpeakerLabels = Readonly<Record<string, string>>;
+
+export const NO_CALL_SPEAKER_LABELS: CallSpeakerLabels = Object.freeze({});
+
+const CALL_SPEAKER_ID = /^call:([A-Za-z0-9_-]{1,32})$/;
+
+/**
+ * The "Them N" labels of `sentences` with the person id their lines carry (`speaker_id: "call:p2"`). A label whose
+ * lines carry different ids, or none, is left out: it names nobody for sure.
+ */
+export function callSpeakerLabels(sentences: readonly { speaker_name: string | null; speaker_id?: string | null }[]): CallSpeakerLabels {
+  const found = new Map<string, string | null>();
+  for (const sentence of sentences) {
+    const label = sentence.speaker_name;
+    if (label === null || !isCallPersonLabel(label)) continue;
+    const person = CALL_SPEAKER_ID.exec(sentence.speaker_id ?? "")?.[1] ?? null;
+    found.set(label, found.has(label) && found.get(label) !== person ? null : person);
+  }
+  const entries = [...found].filter((entry): entry is [string, string] => entry[1] !== null);
+  return entries.length === 0 ? NO_CALL_SPEAKER_LABELS : Object.freeze(Object.fromEntries(entries));
+}
+
+/**
+ * Who spoke when: for each "Them N" label, the name of the person its lines carry, as a suggestion. Only people of the
+ * call other than the user are suggested; a label whose person is not in the call's list gets nothing.
+ */
+export function suggestCallSpeakerNames(participants: CallParticipants | null, labels: CallSpeakerLabels,
+  at: string): Readonly<Record<string, SpeakerSuggestion>> {
+  if (participants === null) return {};
+  const others = new Map(otherPeople(participants).map((person) => [person.id, person]));
+  const suggestions: Record<string, SpeakerSuggestion> = {};
+  for (const [label, id] of Object.entries(labels)) {
+    const person = others.get(id);
+    if (person !== undefined && isCallPersonLabel(label))
+      suggestions[label] = { name: person.name, source: "call_window", confidence: "high", reason: "speaking_marker", person: id, at };
+  }
+  return suggestions;
 }
 
 /** The rename field's text as a list: "Alice ,Bob," reads as "Alice, Bob". */

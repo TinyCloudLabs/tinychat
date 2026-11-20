@@ -8,10 +8,13 @@
 // A name the app suggested (names in the call, see callParticipants.ts) is written to `speaker_names`
 // like any other, and `speaker_suggestions` records that it was a suggestion:
 //   "speaker_suggestions": { "Them": { "name": "Alice", "source": "call_window", ... } }
-// The label shows as suggested exactly while its suggested name is the name shown.
+// The label shows as suggested exactly while its suggested name is the name shown. Who spoke when adds one per
+// "Them N" label (reason "speaking_marker"), and `speaker_suggestions_made` records each label the app has made (or
+// skipped) its suggestion for, so an ended suggestion is never made again.
 
 export const SPEAKER_NAMES_KEY = "speaker_names";
 export const SPEAKER_SUGGESTIONS_KEY = "speaker_suggestions";
+export const SPEAKER_SUGGESTIONS_MADE_KEY = "speaker_suggestions_made";
 export const MAX_SPEAKER_NAME_LENGTH = 80;
 
 /** Original label -> name shown. Only differing, non-empty names are kept. */
@@ -24,7 +27,8 @@ export interface SpeakerSuggestion {
   name: string;
   source: "call_window";
   confidence: "high";
-  reason: "one_other_participant";
+  /** One other person in the call (for "Them"), or their speaking marker was on while each line was said ("Them N"). */
+  reason: "one_other_participant" | "speaking_marker";
   /** The `call_participants` person the name is from. */
   person: string;
   /** When it was suggested (ISO time). */
