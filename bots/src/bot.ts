@@ -323,7 +323,7 @@ export class Bot {
   }
 
   /** Runs one message. Reports through `sink` and always ends with exactly one done or error. */
-  async send(text: string, sink: TurnSink, owner?: string, messenger?: BotMessenger): Promise<void> {
+  async send(text: string, sink: TurnSink, owner?: string, messenger?: BotMessenger, from: "owner" | "bot" = "owner"): Promise<void> {
     if (this.#busy) {
       sink.error("busy");
       return;
@@ -365,7 +365,8 @@ export class Bot {
         sandbox = await this.#ensure();
         this.#markUsed();
         await sandbox.refreshEgress();
-        const typed = addressesIn(text, 50);
+        // Only what the owner typed counts as an address they chose; a message from another bot may carry text a web page put there.
+        const typed = from === "owner" ? addressesIn(text, 50) : [];
         if (typed.length > 0) await this.#launcher.learnAddresses?.(this.layout, typed);
       } catch (error) {
         if (error instanceof AtCapacity) {

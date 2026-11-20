@@ -35,7 +35,8 @@ function operationOf(rest: string, method: string): Operation | undefined {
 }
 
 export interface BotApi {
-  send(text: string, sink: TurnSink, owner?: string, messenger?: BotMessenger): Promise<void>;
+  /** `from` says who wrote the text; only the owner's own messages teach the bot which addresses it may read. */
+  send(text: string, sink: TurnSink, owner?: string, messenger?: BotMessenger, from?: "owner" | "bot"): Promise<void>;
   list(): Promise<ListedMessage[]>;
   listActivities?(): Promise<ActivityRecord[]>;
   historyPending?(): Promise<unknown>;
@@ -92,7 +93,7 @@ async function relayMessage(target: BotApi, owner: string, text: string): Promis
     },
     done: () => { complete = true; },
     error: code => { errorCode = code; },
-  }, owner);
+  }, owner, undefined, "bot");
   if (errorCode === "busy") return { text: MESSAGING_STRINGS.busy, isError: true };
   if (errorCode || !complete || !reply || bytes > MAX_BOT_REPLY_BYTES) return UNAVAILABLE_REPLY;
   return { text: reply };
