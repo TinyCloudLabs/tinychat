@@ -1,5 +1,13 @@
 # @tinychat/backend
 
+## 0.9.2-beta.1
+
+### Patch Changes
+
+- d519be5: Background memory extraction asks each model for its lowest reasoning setting, which keeps hidden reasoning tokens down on short turns; the turn's total includes the extraction once it settles.
+
+  Details: TC-2002
+
 ## 0.9.2-beta.0
 
 ### Patch Changes
