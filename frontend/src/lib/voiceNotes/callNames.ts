@@ -7,11 +7,12 @@
 // from the app's copy (`readCallNamesOnThisMac`), so they show while the space cannot be reached.
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { captureEvents } from "@/capture/captureEvents";
-import { parseCallParticipants, SUGGESTED_SPEAKER, suggestSpeakerNames, type CallParticipants } from "@/capture/library/callParticipants";
+import { parseCallParticipants, SUGGESTED_SPEAKER, suggestCallSpeakerNames, suggestSpeakerNames, type CallParticipants,
+  type CallSpeakerLabels } from "@/capture/library/callParticipants";
 import { rememberCallRoster } from "./callSpeakersOnThisMac";
 import { getDesktopCaptureExtras } from "./desktopCaptureExtras";
 import { readLedgerSuggestionsEnded } from "./ledgerSpeakerNames";
-import { writeCallParticipants } from "./voiceNoteRows";
+import { readRowCallParticipants, writeCallParticipants, writeCallSpeakerSuggestions } from "./voiceNoteRows";
 
 /**
  * - none: nothing to save (no desktop app here, a build without the feature, or nothing was read)
@@ -55,6 +56,35 @@ export async function saveCallNames(tcw: TinyCloudWeb, sourceId: string, rowId: 
     // A build without the feature refused the call: the extras have dropped it for the session, and said so once.
     if (!getDesktopCaptureExtras()?.callNames) return "none";
     console.warn("[callNames] The names from the call window will be saved on the next try:",
+      error instanceof Error ? error.message : String(error));
+    return "failed";
+  }
+}
+
+/**
+ * Who spoke when, the save step: once a transcript whose remote lines carry "Them N" labels (`speakers`, each with its
+ * person id) is committed, each label's suggested name goes onto the note's row (`writeCallSpeakerSuggestions`: once
+ * per label, never over a name the user gave, and without a suggestion the user already ended on this device). The
+ * people come from this Mac's copy while it has them, else from the row. "none": nothing to suggest; "saved": a label
+ * was written now; "kept": every label was written before; "failed": the next commit tries again. Never throws; logs no
+ * names.
+ */
+export async function saveCallSpeakerNames(tcw: TinyCloudWeb, sourceId: string, rowId: string, speakers: CallSpeakerLabels,
+  checkpoint: () => void = () => undefined): Promise<"none" | "saved" | "kept" | "failed"> {
+  if (Object.keys(speakers).length === 0) return "none";
+  try {
+    checkpoint();
+    const participants = await readCallNamesOnThisMac(sourceId) ?? await readRowCallParticipants(tcw, rowId, checkpoint);
+    const suggestions = suggestCallSpeakerNames(participants, speakers, new Date().toISOString());
+    if (Object.keys(suggestions).length === 0) return "none";
+    checkpoint();
+    const ended = await readLedgerSuggestionsEnded(sourceId);
+    checkpoint();
+    const written = await writeCallSpeakerSuggestions(tcw, rowId, suggestions, ended, checkpoint);
+    if (written > 0) captureEvents.emit("library-changed", { source: "exo-voice-note", sourceId });
+    return written > 0 ? "saved" : "kept";
+  } catch (error) {
+    console.warn("[callNames] The names of who spoke when will be saved on the next try:",
       error instanceof Error ? error.message : String(error));
     return "failed";
   }

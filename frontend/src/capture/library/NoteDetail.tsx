@@ -29,6 +29,7 @@ import { useCombinedSummary } from "./combine/useCombinedSummary";
 import type { SummaryRunner } from "@/lib/meetingSummary/summaryRunner";
 import { applySpeakerNames } from "./speakerNames";
 import { useSpeakerNames } from "./useSpeakerNames";
+import { callSpeakerLabels } from "./callParticipants";
 import { useWordFixApplier, useWordFixedSentences } from "@/lib/wordFixes/wordFixesStore";
 import { hasPrivateCloudTimingProvenance, hasSegmentTimes, transcriptWithTimestamps } from "./transcriptSegments";
 import type { Library } from "./useLibrary";
@@ -142,8 +143,11 @@ export function NoteDetail(props: {
       reads.metadata?.status === "ok" ? reads.metadata.metadata : null,
       selectedTranscript?.provenance,
     );
+  // Who spoke when: the "Them N" labels of the transcript shown and the person each carries, for the names this Mac knows.
+  const callSpeakers = useMemo(() => callSpeakerLabels(storedSentences ?? []), [storedSentences]);
   const speakerNames = useSpeakerNames({
     tcw: props.tcw,
+    callSpeakers,
     row: item !== null && !item.onPhone && reads.metadata?.status === "ok" ? item : null,
     metadata: reads.metadata?.status === "ok" ? reads.metadata.metadata : null,
     localId: item?.onPhone === true && item.source === VOICE_NOTE_SOURCE ? item.sourceId : null,
