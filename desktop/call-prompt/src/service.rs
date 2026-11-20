@@ -12,10 +12,10 @@
 //! - [`spawn`] at start-up, with a [`Host`] that knows the recorder and carries out [`Action`]s.
 //!   The watcher starts switched off; [`Watcher::set_enabled`] with the saved setting turns it on.
 //! - While the setting is off the thread sleeps on a condition variable: no scan, no timer.
-//! - [`Watcher::start`], [`Watcher::dismiss`] and [`Watcher::stop`] are the tile's "Start",
-//!   "Not now" and "Stop";
-//!   [`Watcher::phase`] is what the tile shows. Each press is answered with a phase, also when
-//!   it changes nothing: the tile keeps its buttons disabled until it hears one.
+//! - [`Watcher::start`], [`Watcher::dismiss`] and [`Watcher::stop_recording`] are the tile's
+//!   "Start", "Not now" and "Stop"; [`Watcher::tile`] is what the tile shows. Each press is
+//!   answered with a state, also when it changes nothing: the tile keeps its buttons disabled
+//!   until it hears one.
 //! - The tile's window is shown only once its page has asked for its state
 //!   ([`Watcher::page_asked`], from the `call_prompt_state` command) since the window was made
 //!   ([`Watcher::window_created`]). The watcher asks the app to build the window
@@ -288,7 +288,8 @@ impl<H: Host, A: AudioProcesses> Watcher<H, A> {
 
     /// "Stop" on the tile: one stop request for the recording it shows. The tile always gets its
     /// state back; it hears `recording` until the recorder has no recording, then `hidden`.
-    pub fn stop(&self) {
+    /// (Not `stop`: [`Worker::stop`] ends the thread.)
+    pub fn stop_recording(&self) {
         self.answer(Session::stop);
     }
 

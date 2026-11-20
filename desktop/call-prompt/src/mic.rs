@@ -10,8 +10,9 @@
 //!    No input device means nothing is in use. A closed gate with no call followed ends the tick
 //!    there.
 //! 2. The followed pass ([`Scanner::followed`]): only the process objects of the call apps a
-//!    full scan saw capturing, each asked whether it captures (`kAudioProcessPropertyIsRunningInput`)
-//!    and, for a browser, whether it plays (`…IsRunningOutput`). An object that cannot be read
+//!    full scan saw capturing, each asked whether it captures
+//!    (`kAudioProcessPropertyIsRunningInput`) and, for a browser, whether it plays
+//!    (`…IsRunningOutput`). An object that cannot be read
 //!    (its process ended) is dropped and a full scan runs at once.
 //! 3. The full scan ([`Scanner::scan`]): the list of CoreAudio process objects
 //!    (`kAudioHardwarePropertyProcessObjectList`, one read into a buffer kept from scan to scan)

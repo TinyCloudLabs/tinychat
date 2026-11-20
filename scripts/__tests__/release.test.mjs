@@ -2118,6 +2118,8 @@ test('every call-prompt command is registered, manifested, and granted to its ow
   const sorted = commands => [...commands].sort();
   const settingCommands = ['call_prompt_get', 'call_prompt_set'];
   const tileCommands = ['call_prompt_dismiss', 'call_prompt_start', 'call_prompt_state'];
+  // The tile's Stop while it shows a recording (the plan's "tile stays during a recording").
+  tileCommands.push('call_prompt_stop');
   const lib = read(repo, 'desktop/src-tauri/src/lib.rs');
   const handlers = [...lib.matchAll(/generate_handler!\s*\[([\s\S]*?)\]/g)]
     .map(([, body]) => rustCommands(withoutComments(body)))

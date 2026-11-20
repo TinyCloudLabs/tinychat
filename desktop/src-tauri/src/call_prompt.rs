@@ -11,11 +11,16 @@
 //! starts the recording as it does for the shortcut. The main window comes forward first only
 //! when the start needs the user: this Mac's audio is on and its consent was never given. When
 //! the recording does not capture within 8 s, the watcher brings the main window forward.
+//!
+//! The recording started from the tile keeps the tile, as a bar with the recorder's own time
+//! (`engine::recording_clock`) and "Stop". "Stop" uses the symmetric stop request
+//! (`record_launch::request_stop`): the web app claims it and stops with its own Stop, so the
+//! note is finalized and saved as when the user presses Stop in the app.
 
 use std::time::Duration;
 
 use call_prompt::service::{self, Report, Worker};
-use call_prompt::session::{Action, Phase};
+use call_prompt::session::{Action, Capture, Phase};
 use call_prompt::status::StatusFile;
 use call_prompt::tile::{self, Setting, TileState};
 use tauri::{Emitter, Manager};
@@ -38,17 +43,25 @@ impl service::Host for Host {
         crate::recorder::engine::live_capture(&self.0).is_some()
     }
 
+    fn capture(&self) -> Option<Capture> {
+        let (id, elapsed_ms, paused) = crate::recorder::engine::recording_clock(&self.0)?;
+        Some(Capture {
+            id,
+            elapsed_ms,
+            paused,
+        })
+    }
+
     fn act(&self, action: Action) {
         let app = &self.0;
         match action {
-            Action::Phase(phase) => {
-                if let Err(error) =
-                    app.emit_to(tile::WINDOW_LABEL, tile::EVENT, TileState { phase })
-                {
-                    tracing::warn!(target: "exo_dev::call_prompt", operation = "emit",
-                        error = %error);
-                }
+            Action::Phase(phase) => tell_tile(app, TileState::of(phase)),
+            Action::Recording(state) => {
+                // The first one turns the tile into the bar; later ones only tell the time.
+                compact_tile(app);
+                tell_tile(app, TileState::recording(state));
             }
+            Action::Stop => crate::record_launch::request_stop(app),
             Action::Show => show_tile(app),
             Action::Hide => hide_tile(app),
             Action::Prepare => prepare_tile(app),
@@ -79,6 +92,21 @@ impl service::Host for Host {
 }
 
 type Prompt = Worker<Host>;
+
+/// The tile's state, to the tile's window only (`exo://call-prompt`).
+fn tell_tile(app: &tauri::AppHandle, state: TileState) {
+    if let Err(error) = app.emit_to(tile::WINDOW_LABEL, tile::EVENT, state) {
+        tracing::warn!(target: "exo_dev::call_prompt", operation = "emit", error = %error);
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn compact_tile(app: &tauri::AppHandle) {
+    panel::compact(app);
+}
+
+#[cfg(not(target_os = "macos"))]
+fn compact_tile(_app: &tauri::AppHandle) {}
 
 #[cfg(target_os = "macos")]
 fn show_tile(app: &tauri::AppHandle) {
@@ -200,12 +228,11 @@ pub fn main_window_destroyed(app: &tauri::AppHandle) {
 /// how the watcher knows the page has loaded, so the window shows only after it.
 #[tauri::command]
 pub async fn call_prompt_state(app: tauri::AppHandle, window: tauri::WebviewWindow) -> TileState {
-    let phase = match app.try_state::<Prompt>() {
+    match app.try_state::<Prompt>() {
         Some(prompt) if window.label() == tile::WINDOW_LABEL => prompt.page_asked(),
-        Some(prompt) => prompt.phase(),
-        None => Phase::Hidden,
-    };
-    TileState { phase }
+        Some(prompt) => prompt.tile(),
+        None => TileState::of(Phase::Hidden),
+    }
 }
 
 /// "Start" on the tile. The tile hears a phase back on `exo://call-prompt`; an error turns its
@@ -216,6 +243,18 @@ pub async fn call_prompt_start(app: tauri::AppHandle) -> Result<(), String> {
         .try_state::<Prompt>()
         .ok_or_else(|| "call_prompt_unavailable".to_string())?;
     prompt.start();
+    Ok(())
+}
+
+/// "Stop" on the tile: the web app stops the recording with its own Stop, so the note is
+/// finalized and saved as when the user presses Stop in the app. One click, one stop; the tile
+/// hears `recording` until the recorder has no recording, then `hidden`.
+#[tauri::command]
+pub async fn call_prompt_stop(app: tauri::AppHandle) -> Result<(), String> {
+    let prompt = app
+        .try_state::<Prompt>()
+        .ok_or_else(|| "call_prompt_unavailable".to_string())?;
+    prompt.stop_recording();
     Ok(())
 }
 

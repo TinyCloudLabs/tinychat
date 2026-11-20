@@ -103,6 +103,7 @@ pub fn run() {
                 )) as std::sync::Arc<dyn audio_actual::AudioProvider>,
             )
             .manage(record_launch::StartRequest::default())
+            .manage(record_launch::StopRequest::default())
             .plugin(tauri_plugin_settings::init())
             .plugin(tauri_plugin_transcription::init())
             .plugin(tauri_plugin_local_stt::init(
@@ -145,6 +146,7 @@ pub fn run() {
             recorder::engine::recorder_finish,
             recorder_quit_anyway,
             record_launch::recorder_take_start_request,
+            record_launch::recorder_take_stop_request,
             recorder::engine::recorder_status,
             recorder::engine::recorder_list_inputs,
             recorder::engine::recorder_select_input,
@@ -173,6 +175,7 @@ pub fn run() {
             call_prompt::call_prompt_state,
             call_prompt::call_prompt_start,
             call_prompt::call_prompt_dismiss,
+            call_prompt::call_prompt_stop,
         ]);
         // Debug builds add a diagnostic that lets the webview verify the
         // native wiring in one invoke before any recording is attempted.
@@ -206,6 +209,7 @@ pub fn run() {
             recorder::engine::recorder_finish,
             recorder_quit_anyway,
             record_launch::recorder_take_start_request,
+            record_launch::recorder_take_stop_request,
             recorder::engine::recorder_status,
             recorder::engine::recorder_list_inputs,
             recorder::engine::recorder_select_input,
@@ -234,6 +238,7 @@ pub fn run() {
             call_prompt::call_prompt_state,
             call_prompt::call_prompt_start,
             call_prompt::call_prompt_dismiss,
+            call_prompt::call_prompt_stop,
             smoke::exo_desktop_smoke,
             dev_log::append_dev_log,
             dev_log::debug_logging_enabled,

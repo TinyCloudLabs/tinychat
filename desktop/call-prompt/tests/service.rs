@@ -792,7 +792,11 @@ fn the_status_file_says_how_long_the_start_request_took_to_be_claimed() {
     rig.watcher.tick();
     assert_eq!(
         folder.read()["last_start"],
-        serde_json::json!({ "claimed_after_ms": 1500, "timed_out": false, "stopped_from_tile": false })
+        serde_json::json!({
+            "claimed_after_ms": 1500,
+            "timed_out": false,
+            "stopped_from_tile": false
+        })
     );
     // A claim with no "Start" before it (the shortcut) changes nothing.
     rig.watcher.start_claimed();
@@ -811,7 +815,11 @@ fn the_status_file_says_when_the_wait_for_the_recording_ran_out() {
     assert!(rig.app.take().contains(&Action::Present));
     assert_eq!(
         folder.read()["last_start"],
-        serde_json::json!({ "claimed_after_ms": null, "timed_out": true, "stopped_from_tile": false })
+        serde_json::json!({
+            "claimed_after_ms": null,
+            "timed_out": true,
+            "stopped_from_tile": false
+        })
     );
     // A late claim is still measured.
     rig.watcher.start_claimed();
@@ -878,14 +886,14 @@ fn stop_on_the_tile_asks_once_and_the_tile_follows_the_recorder_until_it_has_sto
     let folder = StatusFolder::new(&rig);
     rig.recording();
     rig.app.elapsed_ms.store(5_000, Ordering::SeqCst);
-    rig.watcher.stop();
+    rig.watcher.stop_recording();
     let stop = rig.app.take();
     assert!(
         matches!(stop.as_slice(), [Action::Stop, Action::Recording(_)]),
         "one stop, and the tile hears its state at once: {stop:?}"
     );
     // A second click sends nothing more, but the tile hears its state again.
-    rig.watcher.stop();
+    rig.watcher.stop_recording();
     let again = rig.app.take();
     assert!(
         matches!(again.as_slice(), [Action::Recording(_)]),
@@ -906,7 +914,7 @@ fn stop_on_the_tile_asks_once_and_the_tile_follows_the_recorder_until_it_has_sto
     assert_eq!(status["phase"], "hidden");
     assert_eq!(status["last_start"]["stopped_from_tile"], true);
     // Stop does nothing more.
-    rig.watcher.stop();
+    rig.watcher.stop_recording();
     assert_eq!(rig.app.take(), [Action::Phase(Phase::Hidden)]);
 }
 

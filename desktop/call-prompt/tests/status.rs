@@ -118,7 +118,11 @@ fn it_has_kinds_and_times_only() {
     assert_eq!(value["pass_ms"], 0.4);
     assert_eq!(
         value["last_start"],
-        serde_json::json!({ "claimed_after_ms": 850, "timed_out": false, "stopped_from_tile": false })
+        serde_json::json!({
+            "claimed_after_ms": 850,
+            "timed_out": false,
+            "stopped_from_tile": false
+        })
     );
     let at = value["at"].as_str().unwrap().as_bytes();
     assert_eq!(at.len(), 20);

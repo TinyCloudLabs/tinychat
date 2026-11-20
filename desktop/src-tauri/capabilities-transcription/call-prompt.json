@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "call-prompt",
-  "description": "Record this call tile: listens to its phase event and calls its three commands; nothing of the recorder or of call-names.",
+  "description": "Record this call tile: listens to its phase event and calls its four commands; nothing of the recorder or of call-names.",
   "windows": ["call-prompt"],
   "permissions": [
     "core:event:allow-listen",
@@ -9,6 +9,7 @@
     "allow-call-prompt-state",
     "allow-call-prompt-start",
     "allow-call-prompt-dismiss",
+    "allow-call-prompt-stop",
     "core:event:deny-emit",
     "core:event:deny-emit-to"
   ]

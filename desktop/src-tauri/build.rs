@@ -63,6 +63,7 @@ fn main() {
             "recorder_finish",
             "recorder_quit_anyway",
             "recorder_take_start_request",
+            "recorder_take_stop_request",
             "recorder_status",
             "recorder_list_inputs",
             "recorder_select_input",
@@ -91,6 +92,7 @@ fn main() {
             "call_prompt_state",
             "call_prompt_start",
             "call_prompt_dismiss",
+            "call_prompt_stop",
         ]),
     ))
     .expect("failed to run tauri-build");

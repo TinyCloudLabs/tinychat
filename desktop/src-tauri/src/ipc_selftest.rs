@@ -67,6 +67,7 @@ const SCRIPT: &str = r#"(async () => {
     ["recorder_whisper_start:missing", { id: crypto.randomUUID(), stageId: "whisper-bad", model: "QuantizedTinyEn" }],
     ["recorder_status", {}],
     ["recorder_take_start_request", {}],
+    ["recorder_take_stop_request", {}],
     ["call_names_get", {}],
     ["call_prompt_get", {}],
   ];
@@ -151,6 +152,7 @@ fn assert_results(value: &serde_json::Value) -> bool {
     for label in [
         "recorder_status",
         "recorder_take_start_request",
+        "recorder_take_stop_request",
         "call_names_get",
         "call_prompt_get",
     ] {

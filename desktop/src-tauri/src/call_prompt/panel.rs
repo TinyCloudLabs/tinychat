@@ -13,11 +13,15 @@
 //!   call here runs through `run_on_main_thread`, nothing waits for it, and a panic in it is
 //!   caught and logged.
 //!
-//! The page (`call-prompt.html`) is transparent and fills the window, so the window is the tile.
+//! The page (`call-prompt.html`) is transparent and fills the window, so the window is the tile:
+//! 200 x 150 for the offer, and the 180 x 52 bar while the tile shows a recording ([`compact`]),
+//! docked at the same place.
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use call_prompt::tile::{self, Area};
+use tauri::Monitor;
 use tauri::{AppHandle, LogicalPosition, LogicalSize, Manager, Position, Size, WebviewUrl, Wry};
 use tauri_nspanel::{
     CollectionBehavior, ManagerExt, PanelBuilder, PanelHandle, PanelLevel, StyleMask,
@@ -38,14 +42,29 @@ mod class {
 
 use class::CallPromptPanel;
 
-/// Docks the tile and shows it, without focus. Builds it the first time.
+/// The window is the bar now (or has been asked to become it).
+static COMPACT: AtomicBool = AtomicBool::new(false);
+
+/// Docks the tile at its offer size and shows it, without focus. Builds it the first time.
 pub fn show(app: &AppHandle) {
+    COMPACT.store(false, Ordering::SeqCst);
     on_main(app, "show", |app| {
         let Some(panel) = panel(app) else {
             return;
         };
-        dock(app);
+        resize_and_dock(app, tile::WIDTH, tile::HEIGHT, false);
         panel.show();
+    });
+}
+
+/// Makes the shown tile the bar of a recording, docked at the same place on the same screen.
+/// Once per showing: later calls do nothing.
+pub fn compact(app: &AppHandle) {
+    if COMPACT.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    on_main(app, "compact", |app| {
+        resize_and_dock(app, tile::BAR_WIDTH, tile::BAR_HEIGHT, true);
     });
 }
 
@@ -140,29 +159,44 @@ fn build(app: &AppHandle) -> tauri::Result<PanelHandle<Wry>> {
         .build()
 }
 
-/// Moves the tile to the right edge of the usable area of the screen that holds the mouse (the
-/// main screen when that cannot be told), vertically centred.
-fn dock(app: &AppHandle) {
+/// Gives the tile this size and moves it to the right edge of a screen's usable area, vertically
+/// centred: the screen the window is on when `same_screen`, else the one that holds the mouse
+/// (the main screen when that cannot be told). Both window calls go to AppKit in this order.
+fn resize_and_dock(app: &AppHandle, width: f64, height: f64, same_screen: bool) {
     let Some(window) = app.get_webview_window(tile::WINDOW_LABEL) else {
         return;
     };
-    let monitor = app
-        .cursor_position()
-        .ok()
-        .and_then(|cursor| app.monitor_from_point(cursor.x, cursor.y).ok().flatten())
-        .or_else(|| app.primary_monitor().ok().flatten());
+    if let Err(error) = window.set_size(Size::Logical(LogicalSize::new(width, height))) {
+        tracing::warn!(target: "exo_dev::call_prompt", operation = "resize", error = %error);
+    }
+    let window_screen = || window.current_monitor().ok().flatten();
+    let mouse_screen = || {
+        app.cursor_position()
+            .ok()
+            .and_then(|cursor| app.monitor_from_point(cursor.x, cursor.y).ok().flatten())
+    };
+    let monitor: Option<Monitor> = if same_screen {
+        window_screen().or_else(mouse_screen)
+    } else {
+        mouse_screen()
+    }
+    .or_else(|| app.primary_monitor().ok().flatten());
     let Some(monitor) = monitor else {
         return;
     };
     let scale = monitor.scale_factor();
     let position = monitor.work_area().position.to_logical::<f64>(scale);
     let size = monitor.work_area().size.to_logical::<f64>(scale);
-    let (x, y) = tile::dock(Area {
-        x: position.x,
-        y: position.y,
-        width: size.width,
-        height: size.height,
-    });
+    let (x, y) = tile::dock_sized(
+        Area {
+            x: position.x,
+            y: position.y,
+            width: size.width,
+            height: size.height,
+        },
+        width,
+        height,
+    );
     if let Err(error) = window.set_position(Position::Logical(LogicalPosition::new(x, y))) {
         tracing::warn!(target: "exo_dev::call_prompt", operation = "dock", error = %error);
     }
