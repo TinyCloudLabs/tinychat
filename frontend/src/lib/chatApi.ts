@@ -192,6 +192,8 @@ export function emitReceipt(messageId: string, credits: number, modelId: string)
   emitBilling({ type: "receipt", messageId, credits, modelId });
 }
 
+export type BackgroundReasoningPreference = "off" | "minimal";
+
 export interface StreamChatOptions {
   backendUrl: string;
   sessionStore: SessionStore;
@@ -201,6 +203,8 @@ export interface StreamChatOptions {
   maxTokens?: number;
   /** Optional output cap, forwarded as max_output_tokens. */
   maxOutputTokens?: number;
+  /** Extraction-only reasoning preference; visible replies leave this absent. */
+  reasoning?: BackgroundReasoningPreference;
   abortSignal?: AbortSignal;
   /**
    * Called once when the SSE usage chunk (final frame with empty `choices` and
@@ -226,7 +230,10 @@ export interface StreamChatOptions {
  * surfaced via the `onUsage` option, not the yield stream.
  */
 export async function* streamChat(options: StreamChatOptions): AsyncGenerator<string, void, unknown> {
-  const { backendUrl, sessionStore, model, messages, maxTokens, maxOutputTokens, abortSignal, onUsage, onCompletionId, onReceiptVerification } = options;
+  const {
+    backendUrl, sessionStore, model, messages, maxTokens, maxOutputTokens,
+    reasoning, abortSignal, onUsage, onCompletionId, onReceiptVerification,
+  } = options;
 
   const token = sessionStore.getToken();
   if (!token) {
@@ -248,7 +255,10 @@ export async function* streamChat(options: StreamChatOptions): AsyncGenerator<st
       model,
       messages,
       ...(typeof maxTokens === "number" && maxTokens > 0 ? { max_tokens: maxTokens } : {}),
-      ...(typeof maxOutputTokens === "number" && maxOutputTokens > 0 ? { max_output_tokens: maxOutputTokens } : {}),
+      ...(typeof maxOutputTokens === "number" && maxOutputTokens > 0
+        ? { max_output_tokens: maxOutputTokens }
+        : {}),
+      ...(reasoning ? { reasoning } : {}),
     }),
     signal: abortSignal,
   });

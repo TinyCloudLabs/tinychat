@@ -1,7 +1,8 @@
 # syntax=docker/dockerfile:1
-# TinyCloud bots service (TC-2808). One image, two containers (see docker-compose.phala.yml):
+# TinyCloud bots service (TC-2808). One image, three containers (see docker-compose.phala.yml):
 #   supervisor  not privileged, but holds the capabilities runsc needs (see the compose); internal API + sandboxes
 #   gateway     unprivileged user, no capabilities; egress + the model key            bun src/gateway-main.ts
+#   fetch       unprivileged user, no capabilities, no key; reads web pages for Main  bun src/fetch-main.ts
 # Build from this directory: docker build -t tinychat-bots bots/
 # The image holds no keys.
 ARG BUN_IMAGE=oven/bun:1.4.4-debian@sha256:93d5032fe06d163427822dc1598f420363759bb18155c9cc90eb1be05a64a19e

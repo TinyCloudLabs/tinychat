@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "include": [
+    "/",
+    "/robots.txt",
+    "/sitemap.xml",
+    "/llms.txt",
+    "/llms-full.txt",
+    "/auth.md",
+    "/mcp/server-card",
+    "/.well-known/*"
+  ],
+  "exclude": []
+}

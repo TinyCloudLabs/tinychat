@@ -64,6 +64,9 @@ function fixture() {
     if (url.origin === backendUrl && url.pathname === "/api/connectors/google/autojoin/status") {
       return Response.json({ state: "off", enabled: false, offReason: "never_enabled", lastScanAt: null, errorCode: null, outcomes: [] });
     }
+    if (url.origin === backendUrl && url.pathname === "/api/connectors/webhooks/purge-check") {
+      return Response.json({ blocked: false });
+    }
     const headers = new Headers(init?.headers);
     requests.push({ url: url.href, key: headers.get("x-granola-key"), auth: headers.get("authorization") });
     if (url.origin !== backendUrl || !url.pathname.startsWith(listPath)) throw new Error("Unexpected fixture endpoint");
@@ -105,6 +108,8 @@ async function click(root: ParentNode, label: string) {
 }
 
 async function enterKey(value: string) {
+  const openKey = button(dialog()!, "Connect with an API key");
+  if (openKey) await click(dialog()!, "Connect with an API key");
   const input = dialog()?.querySelector("input");
   if (!input) throw new Error("Missing Granola key field");
   await act(async () => {
@@ -151,6 +156,7 @@ async function connect(f: ReturnType<typeof fixture>) {
 test("Connect sends the masked key only through TinyCloud and saves summary and transcript", async () => mounted(async f => {
   await click(row(), "Connect");
   expect(row().textContent).toContain("Not connected");
+  await click(dialog()!, "Connect with an API key");
   expect(dialog()?.textContent).toContain("Your API key is kept in TinyCloud's encrypted secrets. Each sync sends it through the TinyCloud One server to Granola, and that server never stores or logs it.");
   expect(dialog()?.textContent).toContain("API keys need a Granola Business or Enterprise plan.");
   expect(dialog()?.querySelector("input")?.type).toBe("password");

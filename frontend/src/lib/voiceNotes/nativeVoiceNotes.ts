@@ -234,6 +234,9 @@ export interface CaptureStatus {
   micDeniedPresentation?: boolean;
   shortcutRecordPending?: boolean;
   microphonePermissionGranted?: boolean;
+  /** iOS: a stopped recording is still being saved, so a note not listed yet may still be committed (captureFinalized
+   * says when it ends). Absent: none is. */
+  finalizing?: boolean;
 }
 
 /**
@@ -329,6 +332,8 @@ export interface VoiceNotesPlugin {
   openSettings(): Promise<void>;
   addListener(event: "level", listener: (event: LevelEvent) => void): Promise<PluginListenerHandle>;
   addListener(event: "autoStopped", listener: (event: VoiceNoteAutoStopEvent) => void): Promise<PluginListenerHandle>;
+  /** iOS: a stopped recording's save ended (committed or not); `finalizing` is whether another is still being saved. */
+  addListener(event: "captureFinalized", listener: (event: { id: string; finalizing: boolean }) => void): Promise<PluginListenerHandle>;
   addListener(event: "presentRecorder", listener: (event: { id: string | null; reason?: "permission_denied" | "permission_granted" | string }) => void): Promise<PluginListenerHandle>;
   addListener(event: "inputs", listener: (event: { inputs: AudioInput[]; selectedId: string | null; activeId: string | null }) => void): Promise<PluginListenerHandle>;
 }

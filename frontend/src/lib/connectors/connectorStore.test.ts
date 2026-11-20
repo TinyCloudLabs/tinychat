@@ -38,6 +38,7 @@ import {
   upsertMeeting,
 } from "./connectorStore";
 import type { NormalizedMeeting } from "./connectorStore";
+import { importGranolaCsv } from "./granolaCsvImport";
 
 // ── Minimal in-memory fakes for TinyCloud sql/kv ────────────────────────
 //
@@ -113,6 +114,8 @@ class FakeSqlDb {
   nextCreateError: SqlError | null = null;
   /** When set, the NEXT non-DDL execute() fails with the given error. Consumed on use. */
   nextExecuteError: SqlError | null = null;
+  /** Records statements sent to the fake SQL service. */
+  queries: string[] = [];
   /** When set, the NEXT query() fails with the given error. Consumed on use. */
   nextQueryError: SqlError | null = null;
   /** Mirror TinyCloud rows that return JSON-valued TEXT cells already decoded. */
@@ -124,6 +127,7 @@ class FakeSqlDb {
   }
 
   async query(sql: string, params: unknown[] = []): Promise<SqlResult> {
+    this.queries.push(sql);
     return this.tracker.run("sql.query", () => this.queryImpl(sql, params));
   }
 
@@ -1608,6 +1612,18 @@ describe("connectorStore Drive Notes lifecycle", () => {
 // ── updateSyncState + getConnection ─────────────────────────────────────
 
 describe("connectorStore.updateSyncState / getConnection", () => {
+  test("missing connector state table is detected read-only without querying it", async () => {
+    const f = makeFake();
+
+    const result = await getConnection(f.tcw, "fireflies");
+
+    expect(result).toEqual({ ok: true, data: null });
+    expect(f.sql.queries).toHaveLength(1);
+    expect(f.sql.queries[0]).toMatch(/FROM sqlite_master/i);
+    expect(f.sql.queries[0]).not.toMatch(/FROM connector_state/i);
+    expect(f.sql.createAttempts).toBe(0);
+  });
+
   test("updateSyncState upserts and getConnection returns the row", async () => {
     const f = makeFake();
     const initial = await getConnection(f.tcw, "fireflies");
@@ -2092,6 +2108,31 @@ function meetingFixture(over: Partial<NormalizedMeeting> = {}): NormalizedMeetin
 }
 
 const S = (text: string) => ({ index: 0, speaker_name: "Ada", text, start_time: 0, end_time: 1 });
+
+for (const updatedAt of [null, "2026-11-10T15:00:00Z"]) {
+  test(`a CSV collision preserves an API-backed Granola row and transcript (${updatedAt})`, async () => {
+    const f = makeFake();
+    const apiMeeting = meetingFixture({
+      source: "granola", sourceId: "not_0001", title: "API title",
+      summaryOverview: "API summary", metadata: { granola_updated_at: updatedAt },
+    });
+    expect((await upsertMeeting(f.tcw, apiMeeting, [S("API transcript")])).ok).toBe(true);
+    const before = { ...f.sql.meetings.get(apiMeeting.id)! };
+    const transcript = f.kv.entries.get(transcriptKvKey("granola", "not_0001"));
+
+    const result = await importGranolaCsv({
+      tcw: f.tcw, store: { ensureSchema, upsertMeeting }, checkPurge: async () => false,
+      text: "ID,Title,Summary,Transcript\nnot_0001,CSV title,CSV summary,CSV transcript",
+    });
+
+    expect(result).toMatchObject({ ok: true, data: { added: 0, alreadyImported: 1 } });
+    expect(f.sql.meetings.get(apiMeeting.id)).toEqual(before);
+    expect(f.kv.entries.get(transcriptKvKey("granola", "not_0001"))).toBe(transcript);
+    expect((await upsertMeeting(f.tcw, { ...apiMeeting, summaryOverview: "New API summary" }, [S("New API transcript")])).ok).toBe(true);
+    expect(f.sql.meetings.get(apiMeeting.id)?.summary_overview).toBe("New API summary");
+    expect(f.kv.entries.get(transcriptKvKey("granola", "not_0001"))).toContain("New API transcript");
+  });
+}
 
 describe("connectorStore.upsertMeeting — insert path", () => {
   test("inserts a genuinely new (source, source_id) and writes the transcript KV body", async () => {

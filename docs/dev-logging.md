@@ -139,7 +139,11 @@ optional and admitted only as a UUID from the response header.
 TC-2537 adds four optional fields. The streaming chat routes (`POST /api/chat`,
 `POST /api/agent/chat`) set `stream` (`done`, `error` or `aborted`) and, for an
 error or a server-side transport failure, a fixed `code` (for example
-`upstream_failed`, `turn_timeout`, `transport_failed`). `credits` is the credits
+`upstream_failed`, `turn_timeout`, `transport_failed`). A stream that ended in
+`error` also carries `failure_cause` (TC-3462): `model` when the model's own
+output broke the reply (charged, `docs/credits.md`), else `ours`. It names who
+caused the failure, not whether it was charged: a `turn_timeout` is `ours` and
+still charged what it used, so read `credits` for the charge. `credits` is the credits
 recorded for the request, when any were charged; those handlers are wrapped in
 `recordAfterHandler`, so the record waits until the post-stream charge is
 recorded (at most 30 seconds after the response ended). `account_hash` is
@@ -207,7 +211,7 @@ provider refusal can be read without public Phala logs. Same pattern as tinyclou
   of their fields against a strict pattern instead.
 - **Request records (TC-2537).** The allowlist rebuilds each `tinychat_request` from these fields only:
   `request_id`, `method`, `route_template` (the record's `route`), `status`, `duration_ms` (0.1 ms), `stream`, `code`,
-  `credits`, `account_hash`, plus `svc`, `event`, `level` (`error` for a 5xx, else `info`) and `ts`.
+  `failure_cause` (`model` or `ours`), `credits`, `account_hash`, plus `svc`, `event`, `level` (`error` for a 5xx, else `info`) and `ts`.
   `request_id_replaced`, `correlation_id` and any other key are dropped; a malformed `request_id` or `status` drops
   the record; a route that is not in the closed list (below) ships as `unmatched`, and an
   off-shape optional field is omitted. Bodies, prompts, replies, headers, keys, tokens, emails

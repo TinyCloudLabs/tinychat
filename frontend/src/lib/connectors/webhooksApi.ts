@@ -253,7 +253,8 @@ export interface ConnectorWebhooksClientConfig {
   fetchImpl?: typeof fetch;
 }
 
-export type FirefliesPurgeCheck = (meetingId: string, sourceTimestamp: string | null) => Promise<boolean>;
+/** `source` names a ledger-only source such as Granola; absent means Fireflies. */
+export type FirefliesPurgeCheck = (meetingId: string, sourceTimestamp: string | null, source?: string, signal?: AbortSignal) => Promise<boolean>;
 
 export interface ConnectorWebhooksClient {
   checkPurge?: FirefliesPurgeCheck;
@@ -332,6 +333,7 @@ export function createConnectorWebhooksClient(
       method: "GET" | "POST" | "DELETE";
       body?: unknown;
       basePath?: string;
+      signal?: AbortSignal;
       /** When set, a 404 is `feature-dark` only if it carries this marker header value; otherwise it is retryable. */
       darkMarker?: string;
       /** Reads a non-2xx answer the caller treats as a value; `null` falls through to the default failures. */
@@ -360,6 +362,7 @@ export function createConnectorWebhooksClient(
             [REQUEST_HEADER_NAME]: REQUEST_HEADER_VALUE,
           },
           ...(hasBody ? { body: JSON.stringify(init.body) } : {}),
+          signal: init.signal,
         },
       );
     } catch {
@@ -417,10 +420,11 @@ export function createConnectorWebhooksClient(
   }
 
   return {
-    async checkPurge(meetingId, sourceTimestamp) {
+    async checkPurge(meetingId, sourceTimestamp, source, signal) {
       const result = await request<{ blocked: boolean }>("/purge-check", {
         method: "POST",
-        body: { meetingId, sourceTimestamp },
+        body: source === undefined ? { meetingId, sourceTimestamp } : { meetingId, sourceTimestamp, source },
+        signal,
       });
       if (result.status !== "ok" || typeof result.value?.blocked !== "boolean") {
         throw new Error("Fireflies sync failed");

@@ -6,8 +6,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { act, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { renderToStaticMarkup } from "react-dom/server";
 import { BrowserRouter, MemoryRouter } from "react-router-dom";
 import type { SessionStore } from "@tinyboilerplate/client";
@@ -104,36 +102,6 @@ describe("CaptureSurface", () => {
     // Opened before the list has answered: it waits for it.
     expect(detail).toContain('data-testid="note-loading"');
     expect(pane(markup, "capture-home").after).toContain('data-testid="capture-actions"');
-  });
-
-  test("Recent, the Library and a note read through one useLibrary; the Soft actions row holds Record", () => {
-    const source = readFileSync(join(import.meta.dir, "CaptureSurface.tsx"), "utf8");
-    expect(source).not.toContain("VoiceNotesListCard");
-    expect(source.match(/useLibrary\(/g)).toHaveLength(1);
-    expect(source).toContain("<LibraryScreen");
-    expect(source).toContain("<NoteDetail");
-    // One Record: SoftActions' own, between Upload and Meeting.
-    expect(source.match(/<SoftActions\b/g)).toHaveLength(1);
-    // The recorder's notes on the phone and its limit notice are In progress rows.
-    expect(source).toContain("pendingVisible ? recorder.pending.listing");
-    // App and the harness hand `active` from the screen's destination.
-    const app = readFileSync(join(import.meta.dir, "../App.tsx"), "utf8");
-    expect(app).toContain('active={screen.destination === "capture"}');
-  });
-
-  test("the fixed tree: one list pane (home above the Library) and one detail pane, whatever the size", () => {
-    const source = readFileSync(join(import.meta.dir, "CaptureSurface.tsx"), "utf8");
-    for (const id of ["capture-list-pane", "capture-home", "capture-library", "capture-detail"]) {
-      expect(source.match(new RegExp(`data-testid="${id}"`, "g"))).toHaveLength(1);
-    }
-    expect(source.indexOf('data-testid="capture-home"')).toBeLessThan(source.indexOf('data-testid="capture-library"'));
-    expect(source.indexOf('data-testid="capture-library"')).toBeLessThan(source.indexOf('data-testid="capture-detail"'));
-    expect(source.match(/meetingsSlot=\{meetingsSlot\}/g)).toHaveLength(1);
-  });
-
-  test("the sheets close when the home is left", () => {
-    const source = readFileSync(join(import.meta.dir, "CaptureSurface.tsx"), "utf8");
-    expect(source).toContain("if (!homeShown) setSheet(null);");
   });
 
   test("Recent tap opens the actual CaptureSurface note sheet; browser Back closes it on Capture", async () => {

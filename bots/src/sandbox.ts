@@ -15,6 +15,7 @@ import type { BotLayout } from "./layout";
 import { BOT_START, type OciSpec, SANDBOX_SESSION_DIR, sandboxSpec } from "./oci";
 import { RpcChannel } from "./rpc";
 import { COPY_FAILURES, type CopyFailure, hasSnapshot, STATE_INODES_PER_MB } from "./state";
+import { readWebPolicy } from "./web-policy";
 
 const CGROUP_ROOT = "/sys/fs/cgroup";
 const CGROUP_CONTROLLERS = ["cpu", "memory", "pids"];
@@ -102,6 +103,21 @@ export function modelsYml(model: string): string {
     "        reasoning: false",
     "",
   ].join("\n");
+}
+
+/**
+ * OMP's MCP config inside every sandbox: Main's web tools, served by the gateway on the same egress socket. The
+ * server is always configured; whether a call does anything is the owner's setting, applied by the gateway.
+ */
+export function mcpJson(): string {
+  return JSON.stringify({
+    mcpServers: { web: { type: "http", url: "http://127.0.0.1:8080/v1/mcp", headers: { Authorization: "Bearer ${BOT_TOKEN}" }, timeout: 60_000 } },
+  });
+}
+
+/** OMP's own settings inside every sandbox: its built-in web tools would only fail without a network, so they are off. */
+export function configYml(): string {
+  return ["# Written by the bots supervisor.", "web_search:", "  enabled: false", "fetch:", "  enabled: false", ""].join("\n");
 }
 
 /** A container's status as `runsc list` reports it; "absent" once runsc no longer knows it. */
@@ -286,6 +302,8 @@ export class RunscHost implements SandboxLauncher {
     const agentDir = join(this.#cfg.rootfs, "root", ".omp", "agent");
     mkdirSync(agentDir, { recursive: true });
     writeFileSync(join(agentDir, "models.yml"), modelsYml(this.#cfg.model));
+    writeFileSync(join(agentDir, "mcp.json"), mcpJson());
+    writeFileSync(join(agentDir, "config.yml"), configYml());
     for (const dir of [this.#cfg.dataRoot, this.#cfg.runRoot]) mkdirSync(dir, { recursive: true, mode: 0o700 });
     // Saved state never holds setuid files or devices (state.ts copies neither); its volume refuses both anyway.
     await run(["sh", "-c", 'mount -o remount,bind,nosuid,nodev "$(findmnt -n -o TARGET -T "$1")"', "sh", this.#cfg.dataRoot]);
@@ -387,6 +405,7 @@ export class RunscHost implements SandboxLauncher {
     try {
       await this.#mountState(layout);
       restored = true;
+      await this.#pushWeb(layout);
       await register();
       const spec = sandboxSpec(this.#baseSpec, {
         rootfs: this.#cfg.rootfs,
@@ -437,7 +456,10 @@ export class RunscHost implements SandboxLauncher {
         onFrame: listener => rpc.onFrame(listener),
         onHostToolCall: handle => rpc.onHostToolCall(handle),
         exited,
-        refreshEgress: register,
+        refreshEgress: async () => {
+          await this.#pushWeb(layout);
+          await register();
+        },
         snapshot,
         stop: () =>
           (stopping ??= (async () => {
@@ -538,6 +560,38 @@ export class RunscHost implements SandboxLauncher {
     const argv = [process.execPath, STATE_COPY, command, from, to, String(this.#cfg.limits.stateMb)];
     const procs = join(CGROUP_ROOT, "bots", RESTORE_CGROUP, "cgroup.procs");
     return this.#copiers.run(botId, command === "restore" ? ["sh", "-c", 'echo $$ > "$0" && exec "$@"', procs, ...argv] : argv, this.#cfg.stateCopyTimeoutMs);
+  }
+
+  /** One request on the gateway's control socket; the body is JSON. Throws unless the answer is 2xx. */
+  async #gateway(method: "GET" | "PUT" | "POST", path: string, body?: unknown): Promise<Response> {
+    const response = await fetch(`http://gateway${path}`, {
+      unix: join(this.#cfg.egressRoot, "control.sock"),
+      method,
+      headers: { "content-type": "application/json" },
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!response.ok) throw new Error(`gateway ${method} failed: ${response.status}`);
+    return response;
+  }
+
+  /** Gives the gateway the owner's saved web setting, before the bot's token is registered and on every message. */
+  pushWeb(layout: BotLayout): Promise<void> {
+    return this.#pushWeb(layout);
+  }
+
+  async #pushWeb(layout: BotLayout): Promise<void> {
+    await this.#gateway("PUT", `/bots/${layout.botId}/web`, readWebPolicy(layout));
+  }
+
+  /** Today's web counts for one bot and whether the gateway has a provider key. */
+  async webStatus(layout: BotLayout): Promise<unknown> {
+    return (await this.#gateway("GET", `/bots/${layout.botId}/web`)).json();
+  }
+
+  /** Page addresses the owner typed in a message: the bot may read them. */
+  async learnAddresses(layout: BotLayout, urls: string[]): Promise<void> {
+    await this.#gateway("POST", `/bots/${layout.botId}/web/addresses`, { urls });
   }
 
   async #registerEgress(botId: string, token: string, owner: string): Promise<void> {

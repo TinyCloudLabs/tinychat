@@ -1,6 +1,6 @@
 // Main's chat, over Home: a full-height sheet on a phone, a dialog on a wider screen. Main's reply is
 // shown as plain text, never as HTML.
-import { useEffect, useRef, useState, type RefObject } from "react";
+import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 
 import { Button } from "@/components/ui/button";
 import { ResponsiveSheet, ResponsiveSheetBody } from "@/components/ui/responsive-sheet";
@@ -8,10 +8,11 @@ import { MAX_MESSAGE_LENGTH, SendButton, sendOnEnter, useDraft } from "./AskBox"
 import { focusSdkPrompt, useSdkPromptOpen } from "./useSdkPromptOpen";
 import { BotAvatar, MAIN_BOT } from "./BotAvatar";
 import { acknowledgeHistoryNotice, historyNoticeDeadline, type HistoryNotice } from "./historyNotice";
-import { BOTS_STRINGS, botsErrorText, HISTORY_EXPIRY_NOTICE, HISTORY_RECONNECT_LABEL } from "./botsStrings";
+import { BOTS_STRINGS, botsErrorText, HISTORY_EXPIRY_NOTICE, HISTORY_RECONNECT_LABEL, WEB_ACCESS_STRINGS } from "./botsStrings";
 import { isWorking, type ChatLine, type MainChatState } from "./useMainChat";
+import { WebAccess, type WebAccessApi } from "./WebAccess";
 
-function Line({ role, text }: Pick<ChatLine, "role" | "text">) {
+export function Line({ role, text }: Pick<ChatLine, "role" | "text">) {
   return role === "user" ? (
     <p className="max-w-[80%] self-end whitespace-pre-wrap break-words rounded-3xl bg-muted px-4 py-2.5 text-body">{text}</p>
   ) : (
@@ -79,9 +80,33 @@ export interface MainChatProps {
   onRetryHistory: () => void;
   notice?: HistoryNotice | null;
   onReconnect?: () => void;
+  /** When given, the sheet offers Main's web access setting. */
+  webAccess?: WebAccessApi;
 }
 
-export function MainChat({ open, onOpenChange, state, onSend, onRetry, onRetryHistory, notice, onReconnect }: MainChatProps) {
+/** Services that answered 404 for web access, so reopening Main's chat does not show the button again. */
+const WITHOUT_WEB_ACCESS = new WeakSet<WebAccessApi>();
+
+/**
+ * Main's web access setting, behind one button so the chat stays the first thing in the sheet. When the service has
+ * no web access route yet (404), opening it removes the button too, for as long as this page lives.
+ */
+export function WebAccessToggle({ api }: { api: WebAccessApi }) {
+  const [shown, setShown] = useState(false);
+  const [missing, setMissing] = useState(() => WITHOUT_WEB_ACCESS.has(api));
+  const onMissing = useCallback(() => { WITHOUT_WEB_ACCESS.add(api); setMissing(true); }, [api]);
+  if (missing) return null;
+  return (
+    <div className="flex flex-col items-start gap-3">
+      <Button type="button" variant="outline" size="sm" aria-expanded={shown} onClick={() => setShown((value) => !value)}>
+        {WEB_ACCESS_STRINGS.title}
+      </Button>
+      {shown ? <WebAccess api={api} onMissing={onMissing} /> : null}
+    </div>
+  );
+}
+
+export function MainChat({ open, onOpenChange, state, onSend, onRetry, onRetryHistory, notice, onReconnect, webAccess }: MainChatProps) {
   const { lines, history, turn } = state;
   const working = isWorking(turn);
   const sdkPromptOpen = useSdkPromptOpen();
@@ -126,7 +151,9 @@ export function MainChat({ open, onOpenChange, state, onSend, onRetry, onRetryHi
       <ResponsiveSheetBody>
         <div className="mx-auto flex w-full max-w-2xl flex-col gap-5 py-4">
           <p className="text-center text-callout text-muted-foreground">{BOTS_STRINGS.modelLine}</p>
+          {open && webAccess ? <WebAccessToggle api={webAccess} /> : null}
           {open && notice && onReconnect ? <ExpiryNotice key={`${notice.id}:${notice.deliveredAt ?? notice.renderAttemptAt ?? "initial"}`} notice={notice} onReconnect={onReconnect} /> : null}
+          {history === "loading" ? <p role="status" className="text-callout text-muted-foreground">{BOTS_STRINGS.historyLoading}</p> : null}
           {history === "failed" && !working ? <Failure text={BOTS_STRINGS.historyFailed} onRetry={onRetryHistory} /> : null}
           {lines.map((line) => (
             <Line key={line.id} role={line.role} text={line.text} />

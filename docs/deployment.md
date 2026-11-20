@@ -383,6 +383,7 @@ Repository **variables** (all optional — defaults shown):
 | `ELIZA_SERVICE_URL` | _(required — no default; the workflow's config check fails fast if unset)_ — Eliza agent service URL (agent triad) |
 | `ELIZA_TASKS_ENABLED` | `false` (repo variable; only literal `true` routes admitted agent turns through Eliza `/tasks`) |
 | `ELIZA_TASKS_TEST_ACCOUNTS` | _(empty — repo variable; comma-separated account addresses, trimmed and lowercased)_. **When tasks are enabled, an empty list admits all authenticated accounts.** Set an explicit canary list before enabling. |
+| `GRANOLA_PROXY_ENABLED` | `false` (the `production-api` variable enables the Granola API proxy when set to `true`). To disable it, unset the variable and redeploy. The web import is enabled by `VITE_GRANOLA_CONNECTOR_ENABLED = "true"` in `wrangler.toml` under `[env.production.vars]`; remove that line and rebuild to hide it. Preview builds are unchanged. |
 | `RENEWAL_BACKEND_ORIGIN` / `RENEWAL_NODE_DID` / `RENEWAL_RENEWER_DID` | _(empty — `POST /api/auth/verify-renewal` answers 503)_. Set all three or none (a partial set refuses to boot). The backend's public origin (`https://api.tinycloud.chat`, bound into the holder proof) and the production node's DID and renewer DID exactly as `/.well-known/tinycloud/node-keys` advertises them: the same values as OpenKey's `OPENKEY_RENEWAL_NODE_DID` / `OPENKEY_RENEWAL_RENEWER_DID`. The route relays the session's status invocation to `TINYCLOUD_HOST` and issues a bearer for at most 24 hours, never past the lease or the node-verified renewed end. Each address may renew 5 times a minute, counted only after the request's holder proof passes; nothing is keyed on the IP. The shared `/api/auth` bucket also applies. |
 | `BOTS_ENABLED` | `false` (only literal `true` turns on tiny bots: the Home Main bot chat at `/api/bots`). Off unless `BOTS_SERVICE_URL`, `BOTS_SERVICE_SECRET` and a non-empty `BOTS_TEST_ACCOUNTS` are also set. |
 | `BOTS_TEST_ACCOUNTS` | _(empty — comma-separated account addresses, trimmed and lowercased; the single entry `*` admits every account; an empty list admits nobody)_ |
@@ -679,6 +680,14 @@ nothing below may be reported as done on its behalf.
 - **Port:** the container listens on `3001` in production (`PORT=3001` is set in
   the compose/env), matching Listen and the ingress `TARGET_ENDPOINT`. Local dev
   still defaults to `3014`.
+- **Ingress body cap:** the `infra/phala-ingress` image (dstack-ingress plus a
+  cert-bootstrap wrapper) accepts an optional `CLIENT_MAX_BODY_SIZE` (positive
+  integer of at most 6 digits with an optional `k`/`m` suffix, e.g. `2m`). When
+  it is set, the wrapper writes `client_max_body_size` at nginx http level; when
+  it is unset, nginx keeps its 1m default. An invalid value stops the container
+  from starting.
+  TinyChat's own compose leaves it unset. The eliza-service CVM, which uses this
+  image, needs `2m` so it can accept tasks up to the 1,064,960-byte task contract.
 - **No published port (TC-1012):** `docker-compose.phala.yml` does not publish
   `3001`; only `dstack-ingress` reaches it over the compose network. The deploy
   workflow refuses (before `phala deploy`) any ref whose compose publishes
