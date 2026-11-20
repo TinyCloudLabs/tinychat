@@ -1680,6 +1680,7 @@ export function App() {
                   })(); }}
                   onMemoryUpdated={onMemoryUpdated}
                   contextTokensFor={contextTokensFor}
+                  onBackgroundUsageSettled={refreshBillingStatus}
                   composerToolbar={composerToolbar}
                   // Keep live-recording status without the header microphone button.
                   headerRecorder={<HeaderLiveChip />}
