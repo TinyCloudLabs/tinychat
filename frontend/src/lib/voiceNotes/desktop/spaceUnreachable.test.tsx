@@ -29,6 +29,11 @@ import { newIdbEnv } from "../web/testing/idb";
 import { memoryLocks } from "../web/webStore";
 import { openDesktopVoiceNotes, type DesktopBridge } from "./desktopVoiceNotes";
 import { registerDesktopWhisperQueue, type DesktopWhisperBridge } from "./desktopWhisper";
+import { activityForNote } from "@/capture/activity/activitySelector";
+import { captureAccountContext } from "../accountContext";
+import { notePipeline } from "../notePipeline";
+import { installTranscriptSyncRetries, onDeviceTranscriptSyncState, syncOnDeviceTranscript, transcriptSyncForPipeline } from "../onDeviceTranscriber";
+import { buildNotePipelineInput, type NotePipelineView } from "../useNotePipeline";
 
 const originalVoiceNotes = VoiceNotes;
 afterEach(() => {
@@ -364,5 +369,56 @@ describe("a Mac recording while the TinyCloud space is unreachable", () => {
       expect(m.rows("connector_meeting", id)).toBe(0);
       await savedOnceWhenBack(m, id, 2);
     } finally { m.dispose(); }
+  }, SLOW);
+});
+
+describe("a saved Mac note when the app opens while the TinyCloud space is down", () => {
+  /** The note as Activity shows it, from what this Mac knows: its space row (with the transcript), its Whisper job, its transcript write. */
+  const activityOf = (m: Awaited<ReturnType<typeof mac>>, id: string) => {
+    const input = buildNotePipelineInput({ id, device: "mac", online: true, saved: true, localNote: null, native: null, pending: null,
+      rowMetadata: { audio: { stored: true }, capture: { options: { transcriber: "on-device" } }, transcript_text: SPOKEN },
+      capture: { finalizing: false, issue: null }, lane: { busy: false, depth: 0 }, onDeviceStatus: null, cloudJob: null,
+      desktopJob: m.engine.whisper!.snapshot().get(id) ?? null, transcriptSync: transcriptSyncForPipeline(m.tcw, id),
+      noteSync: { syncing: false, failed: false, skip: null, syncedAt: null, attempting: false } });
+    const view: NotePipelineView = { input, pipeline: notePipeline(input), provider: "local", route: input.route,
+      onAction: () => {}, onRetryStep: () => {}, actionError: null };
+    return activityForNote(view, "tauri");
+  };
+
+  test("its transcript check is Retrying with Try now, never a dead Needs attention, and settles by itself when the space is back", async () => {
+    const m = await mac();
+    // As PendingVoiceNotesSaver runs them for the signed-in account; spaced out for the test.
+    const stopRetries = installTranscriptSyncRetries({ delaysMs: [40] });
+    try {
+      // A note recorded and transcribed on this Mac, saved with its transcript once the space answered.
+      const id = await m.recordAndStop();
+      expect(await waitFor(() => m.engine.whisper!.snapshot().get(id)?.state === "done")).toBe(true);
+      await savedOnceWhenBack(m, id);
+      expect(await waitFor(() => onDeviceTranscriptSyncState(m.tcw, id)?.state === "synced")).toBe(true);
+      expect(activityOf(m, id)).toEqual([]);
+      // The node goes down. The app opens again: its saver hands every finished Mac transcript back to the write, which
+      // checks the space first. The check cannot reach the space.
+      m.state.down = true;
+      const refusedBefore = m.state.refused;
+      const note = await pendingOf(id);
+      await syncOnDeviceTranscript(m.tcw, note!, captureAccountContext(m.tcw));
+      expect(m.state.refused).toBeGreaterThan(refusedBefore);
+      expect(onDeviceTranscriptSyncState(m.tcw, id)?.state).toBe("failed");
+      const jobs = activityOf(m, id);
+      expect(jobs.filter((job) => job.state === "needs-attention")).toEqual([]);
+      const sync = jobs.find((job) => job.kind === "sync");
+      expect(sync?.state).toBe("retrying");
+      expect(sync?.action?.label).toBe("Try now");
+      expect(JSON.stringify(jobs)).not.toContain("NODE_NOT_RESPONDING");
+      // While the node stays down the check is tried again, by itself.
+      const refusedWhileDown = m.state.refused;
+      expect(await waitFor(() => m.state.refused > refusedWhileDown, 1_500)).toBe(true);
+      // The node comes back: the note settles with no action, and nothing is written twice or transcribed again.
+      m.state.down = false;
+      expect(await waitFor(() => onDeviceTranscriptSyncState(m.tcw, id)?.state === "synced")).toBe(true);
+      expect(activityOf(m, id)).toEqual([]);
+      expect(m.rows("voice_note_transcript", id)).toBe(1);
+      expect(m.whisper.starts.filter((started) => started === id)).toHaveLength(1);
+    } finally { stopRetries(); m.dispose(); }
   }, SLOW);
 });
