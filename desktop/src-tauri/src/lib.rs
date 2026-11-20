@@ -250,10 +250,14 @@ pub fn run() {
             app.add_capability(include_str!(
                 "../capabilities-transcription/transcription.json"
             ))?;
-            // The call prompt's tile window: its event and its three commands only.
-            app.add_capability(include_str!(
+            // The call prompt's tile window: its event and its three commands only. Without
+            // it the tile cannot work, but the app must still start.
+            if let Err(error) = app.add_capability(include_str!(
                 "../capabilities-transcription/call-prompt.json"
-            ))?;
+            )) {
+                tracing::error!(target: "exo_dev::call_prompt", operation = "add_capability",
+                    error = %error);
+            }
             // Shortcut and menu-bar item start a recording. Neither is required
             // for the app to work, so a failure is logged, not fatal.
             if let Err(error) = record_launch::install(app) {
