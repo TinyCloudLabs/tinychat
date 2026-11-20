@@ -1,5 +1,9 @@
 # exo-desktop
 
+## 0.15.2-beta.3
+
+No changes in this release.
+
 ## 0.15.2-beta.2
 
 No changes in this release.

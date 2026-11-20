@@ -1,5 +1,13 @@
 # @tinychat/backend
 
+## 0.9.2-beta.2
+
+### Patch Changes
+
+- 95b5f15: Main can read web pages and search the web. It's off until you turn it on: in Main's chat, tap Web access and choose a setting. You can limit it to sites you list.
+
+  Details: TC-2808
+
 ## 0.9.2-beta.1
 
 ### Patch Changes
