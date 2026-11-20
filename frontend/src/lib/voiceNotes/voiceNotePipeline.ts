@@ -3,7 +3,7 @@ import { captureEvents } from "@/capture/captureEvents";
 import { assertCurrent, setAccountWorkPaused, StaleAccountContext, type AccountContext } from "./accountContext";
 import { associateLegacyNotes, markLegacyOwnerUnknown, migrateLegacyDiscardLedger } from "./legacyMigration";
 import { VoiceNotes, type VoiceNoteRecording } from "./nativeVoiceNotes";
-import { errorCode, isDiscarded, pendingStore, saveNoteForAccount, type PendingUploadTicket } from "./recorderSaves";
+import { errorCode, isDiscarded, isTinyCloudUnreachable, pendingStore, saveNoteForAccount, type PendingUploadTicket } from "./recorderSaves";
 import { ensureVoiceNoteIdentity, spaceLaneAbandonedSqlCalls } from "./voiceNoteRows";
 import { withVoiceNoteSaveDeadline } from "./saveDeadline";
 import { CONNECTORS_SQL_DB_NAME } from "@/lib/connectors/connectorStore";
@@ -128,6 +128,26 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
     }, Math.max(0, at - Date.now()));
     retryTimers.set(id, timer);
   };
+  /**
+   * A save that timed out gets a few more tries. A space the SDK cannot reach (`isTinyCloudUnreachable`: the node is not
+   * answering) is tried again at the last spacing until it answers, so a note recorded during an outage saves by itself.
+   * False when this failure is not retried.
+   */
+  const retryLater = (ctx: AccountContext, id: string, epoch: number, failure: { kind: string; cause: unknown }, sizeBytes: number,
+    uploadTicket?: PendingUploadTicket, onRowCreated?: () => void, onSaved?: (note: VoiceNoteRecording) => void): boolean => {
+    const retryDelays = testOptions.saveRetryDelaysMs ?? [5_000, 30_000, 120_000];
+    const attempt = retryAttempts.get(id) ?? 0;
+    if (retryDelays.length === 0 || !(failure.kind === "timeout" && attempt < retryDelays.length || isTinyCloudUnreachable(failure.cause))) return false;
+    const spacing = retryDelays[Math.min(attempt, retryDelays.length - 1)]!;
+    const delay = testOptions.saveRetryDelaysMs ? spacing : Math.round(spacing * (0.8 + Math.random() * 0.4));
+    const nextAttemptAt = Date.now() + delay;
+    retryAttempts.set(id, attempt + 1);
+    pendingStore.setRetrying(id, nextAttemptAt);
+    if (uploadTicket) pendingStore.publishUpload(id, uploadTicket.owner, { state: "retrying", bytes: 0, total: sizeBytes });
+    logPipeline("save", id, "retrying");
+    scheduleRetry(ctx, id, epoch, nextAttemptAt, onRowCreated, onSaved);
+    return true;
+  };
   const syncDesktopAfterUpload = (ctx: AccountContext, note: VoiceNoteRecording | null) => {
     if (!note || appPlatform() !== "tauri" || note.options?.transcriber !== "on-device") return;
     // Upload owns no slot by this point. Whisper and upload may finish in either order.
@@ -149,7 +169,15 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
     }
     if (uploadTicket) pendingStore.preparingUpload(uploadTicket);
     const gate = await withVoiceNoteSaveDeadline("voice-note space setup", () => ensureVoiceNoteIdentity(tcw, check));
-    if (gate.status !== "established") throw Object.assign(new Error(gate.reason ?? gate.status), { code: gate.status, cause: gate.cause });
+    if (gate.status !== "established") {
+      const failure = Object.assign(new Error(gate.reason ?? gate.status), { code: gate.status, cause: gate.cause });
+      check();
+      if (isTinyCloudUnreachable(failure) && retryLater(ctx, id, epoch, { kind: "offline", cause: failure }, 0, uploadTicket, onRowCreated, onSaved)) {
+        pendingStore.clearNoteFailure(id);
+        return null;
+      }
+      throw failure;
+    }
     check();
     // Identity does the archive repair once per account. A fresh Stop must not
     // repeat that space-wide work before its upload.
@@ -163,7 +191,6 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
     const finish = trackPending && note.ledger?.audio.state !== "saved"
       ? pendingStore.beginAutomaticSave() : () => undefined;
     try {
-      const retryDelays = testOptions.saveRetryDelaysMs ?? [5_000, 30_000, 120_000];
       check();
       pendingStore.setHeld(id, undefined);
       pendingStore.setRetrying(id, null);
@@ -173,19 +200,8 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
         onRowCreated,
         audioGate,
       });
-      const attempt = retryAttempts.get(id) ?? 0;
-      if (result.kind === "failed" && result.failureKind === "timeout" && attempt < retryDelays.length) {
-        const delay = testOptions.saveRetryDelaysMs
-          ? retryDelays[attempt]!
-          : Math.round(retryDelays[attempt]! * (0.8 + Math.random() * 0.4));
-        const nextAttemptAt = Date.now() + delay;
-        retryAttempts.set(id, attempt + 1);
-        pendingStore.setRetrying(id, nextAttemptAt);
-        if (uploadTicket) pendingStore.publishUpload(id, uploadTicket.owner, { state: "retrying", bytes: 0, total: note.sizeBytes });
-        logPipeline("save", id, "retrying");
-        scheduleRetry(ctx, id, epoch, nextAttemptAt, onRowCreated, onSaved);
-        return null;
-      }
+      if (result.kind === "failed" && retryLater(ctx, id, epoch, { kind: result.failureKind, cause: result.failureCause },
+        note.sizeBytes, uploadTicket, onRowCreated, onSaved)) return null;
       retryAttempts.delete(id);
       if (result.kind === "failed") {
         check();
@@ -245,8 +261,15 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb,
           await associateLegacyNotes(tcw, ctx.did, notes, check);
         } catch (error) {
           check();
+          // A space that cannot be reached is tried again by itself: its notes wait, they have not failed.
+          const unreachable = isTinyCloudUnreachable(error);
           for (const note of notes) {
             if (note.owner === ctx.did && !note.ownerUnknown && note.ledger?.audio.state !== "saved" && !isDiscarded(note.id)) {
+              if (unreachable && (retryTimers.has(note.id)
+                || retryLater(ctx, note.id, epoch, { kind: "offline", cause: error }, note.sizeBytes, undefined, undefined, onSaved))) {
+                pendingStore.clearNoteFailure(note.id);
+                continue;
+              }
               pendingStore.reportNoteFailure(note.id, error);
             }
           }
