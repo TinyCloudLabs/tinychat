@@ -249,6 +249,11 @@ const remoteLine = (segment: Segment) => segment.channel === 1 && segment.speake
 const ownLine = (segment: Segment) => segment.channel === 0 && segment.timing === "engine"
   && Number.isFinite(segment.start) && Number.isFinite(segment.end) && segment.end > segment.start;
 
+/** Whether `assignCallSpeakers` could name any of these lines: the Whisper route, with remote lines it has times for. */
+export function mayNameCallSpeakers(segments: LocalTranscript["segments"], engine: LocalTranscript["engine"]): boolean {
+  return engine === "whispercpp" && segments.some(remoteLine);
+}
+
 /** The delay where `remote` (marker time) best covers `lines` (audio time), within `[from, to)`. */
 function bestDelay(remote: Intervals, lines: Intervals, from: number, to: number, rules: typeof CALL_SPEAKER_RULES, base: number): number {
   let best = base;

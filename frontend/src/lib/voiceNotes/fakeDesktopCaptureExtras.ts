@@ -20,7 +20,12 @@ export interface FakeDesktopCaptureExtrasOptions {
    * Names in the call. Without it the fake has no `callNames`, like a build without it. `read` holds what each
    * recording's reader stored, by recording id.
    */
-  callNames?: { enabled?: boolean; permission?: CallNamesPermission; read?: Record<string, unknown> };
+  callNames?: { enabled?: boolean; permission?: CallNamesPermission; read?: Record<string, unknown>;
+    /**
+     * Who spoke when: the speaking timeline the app holds for each recording, by recording id. Without it the fake's
+     * `callNames` has no `readSpeaking`, like a build without it.
+     */
+    speaking?: Record<string, unknown> };
   /** The call prompt's setting (on by default, supported by default). Without it the fake has no `callPrompt`. */
   callPrompt?: { enabled?: boolean; supported?: boolean };
   /** Lists Parakeet after the Whisper models, as the app does. Off by default. */
@@ -41,6 +46,7 @@ export type FakeCall =
   | "callNames.openSettings"
   | "callNames.read"
   | "callNames.clear"
+  | "callNames.readSpeaking"
   | "callPrompt.get"
   | "callPrompt.set";
 
@@ -76,6 +82,7 @@ export function createFakeDesktopCaptureExtras(
   let callPromptEnabled = options.callPrompt?.enabled ?? true;
   const callPromptSupported = options.callPrompt?.supported ?? true;
   const callNamesStored = new Map<string, unknown>(Object.entries(options.callNames?.read ?? {}));
+  const speakingStored = new Map<string, unknown>(Object.entries(options.callNames?.speaking ?? {}));
   const calls: string[] = [];
   const failures = new Map<FakeCall, string>();
   const listeners = new Set<(progress: DownloadProgress) => void>();
@@ -191,6 +198,13 @@ export function createFakeDesktopCaptureExtras(
           enter("callNames.clear", id);
           callNamesStored.delete(id);
         },
+        // The timeline stays when the names are cleared, as the app keeps it for a new transcript of the recording.
+        ...(options.callNames.speaking === undefined ? {} : {
+          async readSpeaking(id: string) {
+            enter("callNames.readSpeaking", id);
+            return speakingStored.get(id) ?? null;
+          },
+        }),
       },
     }),
     ...(options.callPrompt === undefined ? {} : {

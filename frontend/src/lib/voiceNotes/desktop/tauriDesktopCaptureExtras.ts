@@ -54,12 +54,27 @@ export function createTauriDesktopCaptureExtras(bridge: DesktopBridge): DesktopC
       }
       throw error;
     });
+  // Who spoke when. A build with names in the call but without the speaking timeline refuses only this command: from
+  // then on it answers null without asking, and the names stay.
+  let speakingAbsent = false;
+  const readSpeaking = async (id: string): Promise<unknown> => {
+    if (speakingAbsent) return null;
+    try {
+      return await bridge.invoke<unknown>("call_names_speaking_read", { id });
+    } catch (error) {
+      if (!commandAbsent("call_names_speaking_read", error)) throw error;
+      speakingAbsent = true;
+      console.info("[DesktopCaptureExtras] This build has no speaking timeline");
+      return null;
+    }
+  };
   const callNames: CallNames = {
     get: () => callNamesInvoke<unknown>("call_names_get"),
     set: (enabled) => callNamesInvoke<void>("call_names_set", { enabled }),
     openSettings: () => callNamesInvoke<void>("call_names_open_settings"),
     read: (id) => callNamesInvoke<unknown>("call_names_read", { id }),
     clear: (id) => callNamesInvoke<void>("call_names_clear", { id }),
+    readSpeaking,
   };
 
   // The call prompt's setting, the same way: a build without its commands drops it for the session.

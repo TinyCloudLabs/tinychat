@@ -8,6 +8,7 @@
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { captureEvents } from "@/capture/captureEvents";
 import { parseCallParticipants, SUGGESTED_SPEAKER, suggestSpeakerNames, type CallParticipants } from "@/capture/library/callParticipants";
+import { rememberCallRoster } from "./callSpeakersOnThisMac";
 import { getDesktopCaptureExtras } from "./desktopCaptureExtras";
 import { readLedgerSuggestionsEnded } from "./ledgerSpeakerNames";
 import { writeCallParticipants } from "./voiceNoteRows";
@@ -46,6 +47,8 @@ export async function saveCallNames(tcw: TinyCloudWeb, sourceId: string, rowId: 
     const outcome = await writeCallParticipants(tcw, rowId, participants, suggestion, checkpoint);
     if (outcome === "missing") return "no-row";
     if (outcome === "written") captureEvents.emit("library-changed", { source: "exo-voice-note", sourceId });
+    // Who spoke when: a transcript of this recording made after the names leave this Mac still numbers the people.
+    rememberCallRoster(sourceId, participants);
     await callNames.clear(sourceId);
     return outcome === "written" ? "saved" : "kept";
   } catch (error) {

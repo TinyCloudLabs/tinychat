@@ -117,6 +117,13 @@ export interface CallNames {
   read(id: string): Promise<unknown>;
   /** Forgets what was read during the recording `id`, once its row holds it. */
   clear(id: string): Promise<void>;
+  /**
+   * Who spoke when: the speaking timeline the app recorded from the meeting window during the recording `id` (ids and
+   * times only, `call_names_speaking_read`), or null when there is none. `clear` leaves it in place. Validate it before
+   * use (`parseSpeakingTimeline`). Absent where the app cannot do it; a build whose native side lacks the command
+   * answers null.
+   */
+  readSpeaking?(id: string): Promise<unknown>;
 }
 
 let registered: DesktopCaptureExtras | null = null;
