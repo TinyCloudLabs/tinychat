@@ -21,6 +21,8 @@ export interface FakeDesktopCaptureExtrasOptions {
    * recording's reader stored, by recording id.
    */
   callNames?: { enabled?: boolean; permission?: CallNamesPermission; read?: Record<string, unknown> };
+  /** The call prompt's setting (on by default, supported by default). Without it the fake has no `callPrompt`. */
+  callPrompt?: { enabled?: boolean; supported?: boolean };
 }
 
 export type FakeCall =
@@ -36,7 +38,9 @@ export type FakeCall =
   | "callNames.set"
   | "callNames.openSettings"
   | "callNames.read"
-  | "callNames.clear";
+  | "callNames.clear"
+  | "callPrompt.get"
+  | "callPrompt.set";
 
 export interface FakeDesktopCaptureExtras {
   extras: DesktopCaptureExtras;
@@ -67,6 +71,8 @@ export function createFakeDesktopCaptureExtras(
   let systemAudioConsent = options.systemAudioConsent ?? false;
   let callNamesEnabled = options.callNames?.enabled ?? false;
   let callNamesPermission: CallNamesPermission = options.callNames?.permission ?? "missing";
+  let callPromptEnabled = options.callPrompt?.enabled ?? true;
+  const callPromptSupported = options.callPrompt?.supported ?? true;
   const callNamesStored = new Map<string, unknown>(Object.entries(options.callNames?.read ?? {}));
   const calls: string[] = [];
   const failures = new Map<FakeCall, string>();
@@ -178,6 +184,18 @@ export function createFakeDesktopCaptureExtras(
         async clear(id: string) {
           enter("callNames.clear", id);
           callNamesStored.delete(id);
+        },
+      },
+    }),
+    ...(options.callPrompt === undefined ? {} : {
+      callPrompt: {
+        async get() {
+          enter("callPrompt.get");
+          return { enabled: callPromptEnabled, supported: callPromptSupported };
+        },
+        async set(enabled: boolean) {
+          enter("callPrompt.set", enabled);
+          callPromptEnabled = enabled;
         },
       },
     }),
