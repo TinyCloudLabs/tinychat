@@ -28,11 +28,13 @@ describe("serviceWorkerDecision", () => {
       serviceWorkerDecision({ ...web, isCapacitorNative: true, protocol: "http:", hostname: "localhost", port: "5186", dev: true, devEnabled: true }),
     ).toBe("skip:capacitor");
     // iOS bundle (WKWebView has no service workers there anyway).
-    expect(serviceWorkerDecision({ ...web, protocol: "capacitor:", hostname: "localhost", hasServiceWorker: false })).toBe(
+    expect(serviceWorkerDecision({ ...web, protocol: "tinycloudone:", hostname: "app.tinycloud.one", hasServiceWorker: false })).toBe(
       "skip:capacitor",
     );
-    // Android bundle: https://localhost, where the WebView WOULD allow a worker.
-    expect(serviceWorkerDecision({ ...web, hostname: "localhost" })).toBe("skip:capacitor");
+    // Android bundle: https://app.tinycloud.one, where the WebView WOULD allow a worker.
+    expect(serviceWorkerDecision({ ...web, hostname: "app.tinycloud.one" })).toBe("skip:capacitor");
+    // The same host with a port is not the app's origin.
+    expect(serviceWorkerDecision({ ...web, hostname: "app.tinycloud.one", port: "8443" })).toBe("register");
   });
 
   test("never registers inside Tauri, by flag or by origin", () => {

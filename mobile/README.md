@@ -190,9 +190,12 @@ adb reverse tcp:5186 tcp:5391   # device :5186 → host dev server
 
 The WebView origin must be exactly `http://localhost:5186`, one of the
 backend's allowed CORS origins. `adb reverse` lets the host server run on any
-free port. Release builds use Capacitor's fixed origins, `https://localhost`
-(Android) and `capacitor://localhost` (iOS), which are allowed in
-`backend/src/cors-origins.ts`.
+free port. Release builds use the app's own origins, set by `server.hostname`,
+`androidScheme` and `iosScheme` in `capacitor.config.ts`: `https://app.tinycloud.one`
+(Android) and `tinycloudone://app.tinycloud.one` (iOS). They are allowed in
+`backend/src/cors-origins.ts`, and `webview-origin.test.ts` fails CI if the config,
+the backend and `frontend/src/lib/nativeOrigins.ts` disagree. Nothing is ever served
+at `app.tinycloud.one`: the WebView answers that host from the bundle (TC-3045).
 
 Debug the WebView over CDP:
 `adb forward tcp:9333 localabstract:$(adb shell cat /proc/net/unix | grep -o 'webview_devtools_remote_[0-9]*' | head -1)`.
@@ -213,7 +216,7 @@ upload key. It never loads a dev server.
 - **Web app.** `bun run build:frontend` is a production `vite build`
   (`frontend/.env.production`), and `cap sync android` copies `frontend/dist` into
   the app. Without `EXO_DEV_SERVER_URL`, `capacitor.config.json` has no
-  `server.url`, so the WebView origin is `https://localhost`. The backend
+  `server.url`, so the WebView origin is `https://app.tinycloud.one`. The backend
   allows that origin.
 - **Gate.** `app/build.gradle` runs `verifyExoRelease` before every release
   task (`assembleRelease`, `bundleRelease`). It fails the build if the web app
@@ -492,7 +495,7 @@ Xcode 26.6.
   fails unless the Debug-only probe in `ExoBridgeViewController` logs, after the
   bundled app page has committed and React has mounted,
   `EXO_SMOKE {…}` reporting:
-  - the bundled web app at `capacitor://localhost`, platform `ios`, and React
+  - the bundled web app at `tinycloudone://app.tinycloud.one`, platform `ios`, and React
     mounted;
   - `VoiceNotes` registered, visible to JS, and answering `status()` over the
     bridge.
