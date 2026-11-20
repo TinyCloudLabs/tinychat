@@ -1,6 +1,6 @@
 // Main's chat, over Home: a full-height sheet on a phone, a dialog on a wider screen. Main's reply is
 // shown as plain text, never as HTML.
-import { useEffect, useRef, useState, type RefObject } from "react";
+import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 
 import { Button } from "@/components/ui/button";
 import { ResponsiveSheet, ResponsiveSheetBody } from "@/components/ui/responsive-sheet";
@@ -84,15 +84,24 @@ export interface MainChatProps {
   webAccess?: WebAccessApi;
 }
 
-/** Main's web access setting, behind one button so the chat stays the first thing in the sheet. */
+/** Services that answered 404 for web access, so reopening Main's chat does not show the button again. */
+const WITHOUT_WEB_ACCESS = new WeakSet<WebAccessApi>();
+
+/**
+ * Main's web access setting, behind one button so the chat stays the first thing in the sheet. When the service has
+ * no web access route yet (404), opening it removes the button too, for as long as this page lives.
+ */
 export function WebAccessToggle({ api }: { api: WebAccessApi }) {
   const [shown, setShown] = useState(false);
+  const [missing, setMissing] = useState(() => WITHOUT_WEB_ACCESS.has(api));
+  const onMissing = useCallback(() => { WITHOUT_WEB_ACCESS.add(api); setMissing(true); }, [api]);
+  if (missing) return null;
   return (
     <div className="flex flex-col items-start gap-3">
       <Button type="button" variant="outline" size="sm" aria-expanded={shown} onClick={() => setShown((value) => !value)}>
         {WEB_ACCESS_STRINGS.title}
       </Button>
-      {shown ? <WebAccess api={api} /> : null}
+      {shown ? <WebAccess api={api} onMissing={onMissing} /> : null}
     </div>
   );
 }

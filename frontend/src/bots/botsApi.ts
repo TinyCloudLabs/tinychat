@@ -34,6 +34,14 @@ export class BotsError extends Error {
   }
 }
 
+/** The service answered 404: the route is not deployed there. For the owner it is a plain failure, like any other. */
+export class BotsRouteMissing extends BotsError {
+  constructor() {
+    super("failed");
+    this.name = "BotsRouteMissing";
+  }
+}
+
 export type MainWebMode = "off" | "listed" | "any";
 
 /** Main's web access setting, as the service reports it. `hosts` is the owner's list, used only in `listed` mode. */
@@ -195,6 +203,7 @@ export function createBotsApi({ baseUrl, getToken, fetch: fetchImpl = (input, in
     }
     if (response.status === 401) throw new BotsError("signed_out");
     if (response.status === 400) throw new BotsError("invalid");
+    if (response.status === 404) throw new BotsRouteMissing();
     if (!response.ok) throw new BotsError("failed");
     return response;
   }
