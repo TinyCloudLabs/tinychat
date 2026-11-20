@@ -11,6 +11,8 @@ export interface LibraryChangedDetail {
   /** A completed deletion can outlive its screen; only its original owner/space may evict it. */
   ownerDid?: string | null;
   spaceId?: string | null;
+  /** Combined rows whose sources could not be verified; those rows were not deleted. */
+  unverifiedCombinedIds?: readonly string[];
 }
 
 const listeners = new Map<CaptureEvent, Set<(detail?: LibraryChangedDetail) => void>>();

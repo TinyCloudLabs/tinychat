@@ -11,7 +11,7 @@ import { captureEvents } from "../captureEvents";
 import { accountCacheKey, deleteLocal } from "@/lib/localFirst/localCache";
 import type { LibraryItem } from "./LibraryRow";
 
-const DELETE_DESCRIPTION = "This deletes the meeting and its transcript from your Library. Combined meetings that use it are deleted too; other meetings stay. Copies already saved, shared or quoted elsewhere, such as in a chat, aren't removed. It won't come back in a Granola sync or CSV import unless you choose “Allow deleted meetings back”.";
+const DELETE_DESCRIPTION = "This deletes the meeting and its transcript from your Library. Combined meetings that use it are deleted too; other meetings stay. If we can't check a combined meeting's sources, it stays in your Library for you to review. Copies already saved, shared or quoted elsewhere, such as in a chat, aren't removed. It won't come back in a Granola sync or CSV import unless you choose “Allow deleted meetings back”.";
 
 export function GranolaDeleteAction({ tcw, item, onChanged, onDeleted }: {
   tcw: TinyCloudWeb;
@@ -38,16 +38,21 @@ export function GranolaDeleteAction({ tcw, item, onChanged, onDeleted }: {
     inFlight.current = scope;
     setConfirmation({ scope, phase: "busy" });
     const deleted = await runGranolaSpaceWrite(async () => {
-      if (current.current !== scope) return null;
+      if (current.current !== scope
+        || (scope.space.did ?? null) !== scope.ownerDid
+        || (scope.space.spaceId ?? null) !== scope.spaceId) return null;
       return deleteGranolaCsvMeeting(scope.space, scope.sourceId);
-    }).then(result => result?.ok === true, () => false);
+    }).catch(() => null);
     if (inFlight.current === scope) inFlight.current = null;
-    if (deleted) {
+    if (deleted?.ok) {
       if (scope.ownerDid) await deleteLocal(accountCacheKey(scope.ownerDid, "library"));
-      captureEvents.emit("note-deleted", { source: "granola", sourceId: scope.sourceId, ownerDid: scope.ownerDid, spaceId: scope.spaceId });
+      captureEvents.emit("note-deleted", {
+        source: "granola", sourceId: scope.sourceId, ownerDid: scope.ownerDid, spaceId: scope.spaceId,
+        unverifiedCombinedIds: deleted.data.unverifiedCombinedIds,
+      });
     }
     if (current.current !== scope) return;
-    if (!deleted) {
+    if (!deleted?.ok) {
       setConfirmation({ scope, phase: "failed" });
       return;
     }

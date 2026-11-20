@@ -1,16 +1,19 @@
 import { Database, type SQLQueryBindings } from "bun:sqlite";
 import { afterAll, expect, test } from "bun:test";
 import { act } from "react";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, useLocation } from "react-router-dom";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
+import type { SessionStore } from "@tinyboilerplate/client";
 import { IDBFactory, IDBObjectStore } from "fake-indexeddb";
 import { captureEvents } from "@/capture/captureEvents";
 import { combineMeetings } from "@/lib/connectors/combinedMeetingStore";
 import { runGranolaSpaceWrite } from "@/lib/connectors/granolaSync";
+import { GRANOLA_CSV_STRINGS as S, GRANOLA_RESYNC_CONFIRM } from "@/lib/connectors/granolaCsvStrings";
 import { accountCacheKey, readLocal, resetLocalCacheForTests, writeLocal } from "@/lib/localFirst/localCache";
 import type { Library } from "@/capture/library/useLibrary";
 import type { LibraryItem } from "@/capture/library/LibraryRow";
 import { installDom } from "@/test/dom";
+import { notePath } from "@/shell/routes";
 
 const restoreDom = installDom();
 afterAll(restoreDom);
@@ -20,9 +23,28 @@ const { NoteDetail } = await import("@/capture/library/NoteDetail");
 const connectorStore = await import("@/lib/connectors/connectorStore");
 const { importGranolaCsv } = await import("@/lib/connectors/granolaCsvImport");
 const { useLibrary } = await import("@/capture/library/useLibrary");
+const { GranolaAllowBack } = await import("@/chat/GranolaAllowBack");
+const { LibraryRow } = await import("@/capture/library/LibraryRow");
+const { SoftHomeProvider } = await import("@/capture/home/softHome");
 
 const csv = "Title,Created,Summary,Transcript\nFirst CSV meeting,2026-11-10T14:00:00Z,First summary,QA: first\nOther CSV meeting,2026-11-11T14:00:00Z,Other summary,QA: other";
 const ok = <T,>(data: T) => ({ ok: true as const, data });
+const backendUrl = "https://tinychat-backend.example";
+const sessionStore = { getToken: () => "fixture-session", isExpired: () => false } as unknown as SessionStore;
+
+function allowBackBackend() {
+  const sources: unknown[] = [];
+  const fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(String(input));
+    if (url.origin !== backendUrl || !url.pathname.endsWith("/purged") || init?.method !== "DELETE") {
+      throw new Error("Unexpected allow-back fixture endpoint");
+    }
+    const body = JSON.parse(String(init.body));
+    sources.push(body.source);
+    return new Response(null, { status: 204 });
+  }) as typeof globalThis.fetch;
+  return { fetch, sources };
+}
 
 function fixture() {
   const db = new Database(":memory:");
@@ -69,6 +91,16 @@ function fixture() {
   return { db, kv, tcw, storage };
 }
 
+function makeCombinedSourcesUnreadable(f: { db: Database; kv: Map<string, unknown> }, id: string) {
+  const row = f.db.query("SELECT source_id FROM connector_meeting WHERE id = ? AND source = 'exo-merged'").values(id)[0]!;
+  const key = connectorStore.transcriptKvKey("exo-merged", String(row[0]));
+  const body = JSON.parse(String(f.kv.get(key))) as Record<string, unknown>[];
+  // Either SQL members or segment sources can prove membership; retain the text but remove both proofs.
+  for (const segment of body) delete segment.sources;
+  f.kv.set(key, JSON.stringify(body));
+  f.db.query("UPDATE connector_meeting SET metadata = '{}' WHERE id = ?").run(id);
+}
+
 const button = (label: string) => [...(document.querySelector('[role="dialog"][data-state="open"]') ?? document).querySelectorAll("button")].find(element => element.textContent?.trim() === label);
 async function click(label: string) {
   const target = button(label);
@@ -103,6 +135,8 @@ test("a CSV-only owner can confirm deletion of one imported meeting without dele
   };
   const host = document.body.appendChild(document.createElement("div"));
   const root = createRoot(host);
+  const restoreFetch = globalThis.fetch;
+  const backend = allowBackBackend();
   try {
     await act(async () => root.render(<MemoryRouter><NoteDetail library={library} tcw={f.tcw} pushed onBack={() => { left = true; }} transcription={undefined} /></MemoryRouter>));
     await click("Delete meeting");
@@ -115,8 +149,24 @@ test("a CSV-only owner can confirm deletion of one imported meeting without dele
     const repeat = await importGranolaCsv({ tcw: f.tcw, store: connectorStore, text: csv, checkPurge: async () => false });
     expect(repeat.ok && repeat.data.skippedDeleted).toBe(1);
     expect(f.db.query("SELECT title FROM connector_meeting").values()).toEqual([["Other CSV meeting"]]);
+    expect(f.db.query("SELECT source_id FROM granola_deleted_meeting").values()).toEqual([[selected.sourceId]]);
+    globalThis.fetch = backend.fetch;
+    await act(async () => root.render(<GranolaAllowBack tcw={f.tcw} backendUrl={backendUrl} sessionStore={sessionStore} />));
+    await click(S.allowBack);
+    expect(backend.sources).toEqual([]);
+    expect(f.db.query("SELECT count(*) FROM granola_deleted_meeting").values()).toEqual([[1]]);
+    await click(GRANOLA_RESYNC_CONFIRM.confirmLabel);
+    await until(() => host.querySelector('[role="status"]')?.textContent === S.allowBackDone);
+    expect(backend.sources).toEqual(["granola"]);
+    expect(f.db.query("SELECT count(*) FROM granola_deleted_meeting").values()).toEqual([[0]]);
+    const restored = await importGranolaCsv({ tcw: f.tcw, store: connectorStore, text: csv, checkPurge: async () => false });
+    expect(restored.ok && restored.data.added).toBe(1);
+    expect(f.db.query("SELECT title FROM connector_meeting ORDER BY title").values()).toEqual([["First CSV meeting"], ["Other CSV meeting"]]);
+    expect(f.kv.has(firstBody)).toBe(true);
+    expect(f.kv.has(otherBody)).toBe(true);
   } finally {
     await act(async () => root.unmount());
+    globalThis.fetch = restoreFetch;
     host.remove();
     f.db.close();
   }
@@ -419,5 +469,167 @@ test("late deletion evicts the original owner's cache without touching the curre
     resetLocalCacheForTests();
     if (previousIndexedDB) Object.defineProperty(globalThis, "indexedDB", previousIndexedDB);
     else Reflect.deleteProperty(globalThis, "indexedDB");
+  }
+});
+
+for (const change of ["owner", "unmount"] as const) {
+  test(`an allow-back confirmation queued behind sync cannot clear deleted meetings after ${change} changes`, async () => {
+    const f = await importedFixture();
+    const otherOwner = await importedFixture();
+    expect((await connectorStore.deleteGranolaCsvMeeting(f.tcw, f.items[0]!.sourceId)).ok).toBe(true);
+    expect((await connectorStore.deleteGranolaCsvMeeting(otherOwner.tcw, otherOwner.items[0]!.sourceId)).ok).toBe(true);
+    const backend = allowBackBackend();
+    const restoreFetch = globalThis.fetch;
+    const host = document.body.appendChild(document.createElement("div"));
+    const root = createRoot(host);
+    const { promise, resolve } = Promise.withResolvers<void>();
+    const blocked = runGranolaSpaceWrite(() => promise);
+    let mounted = true;
+    try {
+      globalThis.fetch = backend.fetch;
+      await act(async () => root.render(<GranolaAllowBack tcw={f.tcw} backendUrl={backendUrl} sessionStore={sessionStore} />));
+      await click(S.allowBack);
+      await click(GRANOLA_RESYNC_CONFIRM.confirmLabel);
+      if (change === "owner") {
+        await act(async () => root.render(<GranolaAllowBack tcw={otherOwner.tcw} backendUrl={backendUrl} sessionStore={sessionStore} />));
+      } else {
+        await act(async () => root.unmount());
+        mounted = false;
+      }
+      await act(async () => { resolve(); await blocked; await runGranolaSpaceWrite(async () => {}); });
+      expect(backend.sources).toEqual([]);
+      expect(f.db.query("SELECT count(*) FROM granola_deleted_meeting").values()).toEqual([[1]]);
+      expect(otherOwner.db.query("SELECT count(*) FROM granola_deleted_meeting").values()).toEqual([[1]]);
+      expect(f.db.query("SELECT count(*) FROM connector_meeting").values()).toEqual([[1]]);
+      expect(otherOwner.db.query("SELECT count(*) FROM connector_meeting").values()).toEqual([[1]]);
+      if (mounted) expect(button(S.allowBack)?.disabled).toBe(false);
+    } finally {
+      resolve();
+      await blocked;
+      await runGranolaSpaceWrite(async () => {});
+      if (mounted) await act(async () => root.unmount());
+      globalThis.fetch = restoreFetch;
+      host.remove();
+      f.db.close();
+      otherOwner.db.close();
+    }
+  });
+}
+
+for (const soft of [false, true]) {
+  test(`a retained unreadable combined row has its own actionable warning in the ${soft ? "Soft" : "default"} Library while the CSV original stays deleted`, async () => {
+    const f = await importedFixture();
+    const first = f.items[0]!;
+    const second = f.items[1]!;
+    expect((await combineMeetings(f.tcw, { source: "granola", sourceId: first.sourceId }, { source: "granola", sourceId: second.sourceId }, { force: true })).ok).toBe(true);
+    const combinedId = String(f.db.query("SELECT id FROM connector_meeting WHERE source = 'exo-merged'").values()[0]![0]);
+    const host = document.body.appendChild(document.createElement("div"));
+    const root = createRoot(host);
+    const seen: Library[] = [];
+    const issues = {};
+    const dismissIssue = () => false;
+    let left = false;
+    function Screen() {
+      const location = useLocation();
+      const library = useLibrary(f.tcw, { visible: true, noteId: location.pathname === notePath(combinedId) ? combinedId : first.id });
+      seen.push(library);
+      return (
+        <SoftHomeProvider enabled={soft} issues={issues} onDismissIssue={dismissIssue}>
+          <ul>{library.items.map(item => <LibraryRow key={item.id} item={item} now={new Date("2026-11-19T00:00:00Z")} grouped={false} />)}</ul>
+          <NoteDetail library={library} tcw={f.tcw} pushed onBack={() => { left = true; }} transcription={undefined} />
+        </SoftHomeProvider>
+      );
+    }
+    try {
+      await act(async () => root.render(<MemoryRouter initialEntries={[notePath(first.id)]}><Screen /></MemoryRouter>));
+      await until(() => seen.at(-1)?.all.length === 3 && seen.at(-1)?.note.reads.metadata?.status === "ok" && !seen.at(-1)?.listing);
+      // The Library still has the prior, readable membership; storage now cannot prove any sources.
+      makeCombinedSourcesUnreadable(f, combinedId);
+      await click("Delete meeting");
+      await click("Delete meeting");
+      await until(() => left && !seen.at(-1)!.listing && seen.at(-1)!.all.length === 2);
+      expect(f.db.query("SELECT title FROM connector_meeting WHERE source = 'granola'").values()).toEqual([["Other CSV meeting"]]);
+      expect(f.db.query("SELECT metadata FROM connector_meeting WHERE id = ?").values(combinedId)).toEqual([["{}"]]);
+      expect(f.kv.has(connectorStore.transcriptKvKey("granola", first.sourceId))).toBe(false);
+      expect(f.kv.has(connectorStore.transcriptKvKey("granola", second.sourceId))).toBe(true);
+      expect(seen.at(-1)!.all.find(item => item.id === combinedId)?.deletionWarning).toBe("unverified-combined");
+      expect(seen.at(-1)!.all.find(item => item.id === second.id)?.deletionWarning).toBeUndefined();
+      const warningSelector = soft ? '[data-testid="soft-row-submeta"]' : '[data-testid="library-deletion-warning"]';
+      const combinedLink = host.querySelector<HTMLAnchorElement>(`a[href="${notePath(combinedId)}"]`);
+      expect(Boolean(combinedLink?.querySelector(warningSelector))).toBe(true);
+      expect(Boolean(host.querySelector(`a[href="${notePath(second.id)}"]`))).toBe(true);
+      expect(Boolean(host.querySelector(`a[href="${notePath(second.id)}"]`)?.querySelector(warningSelector))).toBe(false);
+      const repeated = await importGranolaCsv({ tcw: f.tcw, store: connectorStore, text: csv, checkPurge: async () => false });
+      expect(repeated.ok && repeated.data.skippedDeleted).toBe(1);
+      await act(async () => seen.at(-1)!.refresh());
+      await until(() => !seen.at(-1)!.listing);
+      expect(seen.at(-1)!.all.find(item => item.id === combinedId)?.deletionWarning).toBe("unverified-combined");
+      await act(async () => combinedLink!.click());
+      await until(() => seen.at(-1)!.note.item?.id === combinedId && button("Delete combined meeting") !== undefined);
+      expect(f.db.query("SELECT count(*) FROM connector_meeting WHERE id = ?").values(combinedId)).toEqual([[1]]);
+      f.db.query("UPDATE connector_meeting SET metadata = ? WHERE id = ?").run(JSON.stringify({
+        merge: { members: [{ source: "granola", source_id: first.sourceId }, { source: "granola", source_id: second.sourceId }] },
+      }), combinedId);
+      await act(async () => seen.at(-1)!.refresh());
+      await until(() => !seen.at(-1)!.listing);
+      expect(seen.at(-1)!.all.find(item => item.id === combinedId)?.deletionWarning).toBeUndefined();
+      expect(Boolean(host.querySelector(`a[href="${notePath(combinedId)}"]`)?.querySelector(warningSelector))).toBe(false);
+    } finally {
+      await act(async () => root.unmount());
+      host.remove();
+      f.db.close();
+    }
+  });
+}
+
+test("unverified combined-row warnings ignore another owner or space and do not survive an owner switch", async () => {
+  const firstOwner = await importedFixture();
+  const currentOwner = await importedFixture();
+  for (const f of [firstOwner, currentOwner]) {
+    expect((await combineMeetings(f.tcw, { source: "granola", sourceId: f.items[0]!.sourceId }, { source: "granola", sourceId: f.items[1]!.sourceId }, { force: true })).ok).toBe(true);
+    const id = String(f.db.query("SELECT id FROM connector_meeting WHERE source = 'exo-merged'").values()[0]![0]);
+    makeCombinedSourcesUnreadable(f, id);
+  }
+  const combinedId = String(currentOwner.db.query("SELECT id FROM connector_meeting WHERE source = 'exo-merged'").values()[0]![0]);
+  const host = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(host);
+  const seen: Library[] = [];
+  function Screen({ tcw }: { tcw: TinyCloudWeb }) {
+    const library = useLibrary(tcw, { visible: true, noteId: null });
+    seen.push(library);
+    return <ul>{library.items.map(item => <LibraryRow key={item.id} item={item} now={new Date("2026-11-19T00:00:00Z")} grouped={false} />)}</ul>;
+  }
+  try {
+    await act(async () => root.render(<MemoryRouter><Screen tcw={currentOwner.tcw} /></MemoryRouter>));
+    await until(() => !seen.at(-1)!.listing && seen.at(-1)!.all.length === 3);
+    for (const scope of [
+      { ownerDid: firstOwner.tcw.did, spaceId: currentOwner.tcw.spaceId },
+      { ownerDid: currentOwner.tcw.did, spaceId: firstOwner.tcw.spaceId },
+    ]) {
+      await act(async () => captureEvents.emit("note-deleted", {
+        source: "granola", sourceId: currentOwner.items[0]!.sourceId, ...scope, unverifiedCombinedIds: [combinedId],
+      }));
+      expect(seen.at(-1)!.all).toHaveLength(3);
+      expect(seen.at(-1)!.all.find(item => item.id === combinedId)?.deletionWarning).toBeUndefined();
+    }
+    const deleted = await connectorStore.deleteGranolaCsvMeeting(currentOwner.tcw, currentOwner.items[0]!.sourceId);
+    expect(deleted.ok).toBe(true);
+    if (!deleted.ok) throw new Error("Fixture deletion failed");
+    expect(deleted.data.unverifiedCombinedIds).toEqual([combinedId]);
+    await act(async () => captureEvents.emit("note-deleted", {
+      source: "granola", sourceId: currentOwner.items[0]!.sourceId, ownerDid: currentOwner.tcw.did,
+      spaceId: currentOwner.tcw.spaceId, unverifiedCombinedIds: deleted.data.unverifiedCombinedIds,
+    }));
+    await until(() => !seen.at(-1)!.listing);
+    expect(seen.at(-1)!.all.find(item => item.id === combinedId)?.deletionWarning).toBe("unverified-combined");
+    await act(async () => root.render(<MemoryRouter><Screen tcw={firstOwner.tcw} /></MemoryRouter>));
+    await until(() => !seen.at(-1)!.listing && seen.at(-1)!.all.length === 3);
+    expect(seen.at(-1)!.all.every(item => item.deletionWarning === undefined)).toBe(true);
+    expect(Boolean(host.querySelector('[data-testid="library-deletion-warning"]'))).toBe(false);
+  } finally {
+    await act(async () => root.unmount());
+    host.remove();
+    firstOwner.db.close();
+    currentOwner.db.close();
   }
 });
