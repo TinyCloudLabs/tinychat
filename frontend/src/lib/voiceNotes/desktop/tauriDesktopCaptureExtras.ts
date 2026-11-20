@@ -1,5 +1,6 @@
 import type {
   CallNames,
+  CallPrompt,
   DesktopCaptureExtras,
   DownloadProgress,
   WhisperModelId,
@@ -13,14 +14,14 @@ const PROGRESS_EVENT = "exo://recorder-model-progress";
  * Tauri's own refusals of `command`: the native side does not have it, or does not let this window call it (the
  * wordings `ipc_selftest.rs` checks). A failure the command itself reports is not one of these.
  */
-function commandAbsent(command: string, error: unknown): boolean {
+export function commandAbsent(command: string, error: unknown): boolean {
   const text = error instanceof Error ? error.message : String(error);
   return text === `Command ${command} not found` || text === `${command} not allowed. Command not found`
     || text === `Command ${command} not allowed by ACL`
     || (text.includes(command) && (text.includes("not allowed. Permissions associated with this command:") || text.includes("explicitly denied")));
 }
 
-/** DesktopCaptureExtras bound to the recorder model, system audio and call names commands. */
+/** DesktopCaptureExtras bound to the recorder model, system audio, call names and call prompt commands. */
 export function createTauriDesktopCaptureExtras(bridge: DesktopBridge): DesktopCaptureExtras {
   const subscribe = (callback: (progress: DownloadProgress) => void) =>
     bridge.listen<DownloadProgress>(PROGRESS_EVENT, callback);
@@ -61,6 +62,21 @@ export function createTauriDesktopCaptureExtras(bridge: DesktopBridge): DesktopC
     clear: (id) => callNamesInvoke<void>("call_names_clear", { id }),
   };
 
+  // The call prompt's setting, the same way: a build without its commands drops it for the session.
+  let callPromptAbsent = false;
+  const callPromptInvoke = <T>(command: string, args?: Record<string, unknown>) =>
+    bridge.invoke<T>(command, args).catch((error: unknown) => {
+      if (!callPromptAbsent && commandAbsent(command, error)) {
+        callPromptAbsent = true;
+        console.info("[DesktopCaptureExtras] This build has no call prompt");
+      }
+      throw error;
+    });
+  const callPrompt: CallPrompt = {
+    get: () => callPromptInvoke<unknown>("call_prompt_get"),
+    set: (enabled) => callPromptInvoke<void>("call_prompt_set", { enabled }),
+  };
+
   return {
     models: {
       list: () => bridge.invoke<WhisperModelInfo[]>("recorder_models_list"),
@@ -81,6 +97,9 @@ export function createTauriDesktopCaptureExtras(bridge: DesktopBridge): DesktopC
     },
     get callNames() {
       return callNamesAbsent ? undefined : callNames;
+    },
+    get callPrompt() {
+      return callPromptAbsent ? undefined : callPrompt;
     },
   };
 }

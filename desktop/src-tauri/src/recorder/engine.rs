@@ -660,6 +660,28 @@ pub(crate) fn live_capture(app: &tauri::AppHandle) -> Option<(String, u8, u64)> 
     ))
 }
 
+/// The recording that exists, with its own clock, for the call prompt's tile: its id, the
+/// recorded time (which stands still while paused) and whether it is paused. `None` before the
+/// recorder is first used and when there is no recording. One brief lock.
+pub(crate) fn recording_clock(app: &tauri::AppHandle) -> Option<(String, u64, bool)> {
+    let engine = app.try_state::<Engine>()?;
+    let state = engine.0.lock();
+    let id = state.id.clone()?;
+    let status = state.recorder.status(mono_ms());
+    Some((id, status.elapsed_ms, status.state == State::Paused))
+}
+
+/// Whether a recording exists, from its start until it is stopped or discarded: capturing,
+/// paused or stopping. The call prompt never offers to record while one does, however it began.
+/// `false` before the recorder is first used.
+pub(crate) fn recording_in_progress(app: &tauri::AppHandle) -> bool {
+    let Some(engine) = app.try_state::<Engine>() else {
+        return false;
+    };
+    let recording = engine.0.lock().id.is_some();
+    recording
+}
+
 fn emit_status(app: &tauri::AppHandle) {
     let status = app.state::<Engine>().0.lock().status();
     let _ = app.emit(MIC_EVENT, status);

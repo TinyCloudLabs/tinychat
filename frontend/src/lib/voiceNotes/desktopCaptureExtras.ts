@@ -59,6 +59,31 @@ export interface DesktopCaptureExtras {
    * and from the moment a build without it has refused a call: read the member each time, do not keep it.
    */
   callNames?: CallNames;
+  /**
+   * "Offer to record when a call starts": the tile that offers to record when a call app starts using the microphone.
+   * A setting of this Mac, on by default. Absent where the app has no such commands, and from the moment a build
+   * without them has refused a call: read the member each time, do not keep it.
+   */
+  callPrompt?: CallPrompt;
+}
+
+export interface CallPromptState {
+  enabled: boolean;
+  /** False where the app cannot see which app uses the microphone (anything but macOS). */
+  supported: boolean;
+}
+
+/** `answer` as the setting's state; null for anything but `{ enabled: boolean, supported: boolean }`. */
+export function readCallPromptState(answer: unknown): CallPromptState | null {
+  if (answer === null || typeof answer !== "object") return null;
+  const { enabled, supported } = answer as { enabled?: unknown; supported?: unknown };
+  return typeof enabled === "boolean" && typeof supported === "boolean" ? { enabled, supported } : null;
+}
+
+export interface CallPrompt {
+  /** The setting as the app answers it: a `CallPromptState`, to be checked with `readCallPromptState` before use. */
+  get(): Promise<unknown>;
+  set(enabled: boolean): Promise<void>;
 }
 
 /** Whether macOS lets the app read other apps' windows (Accessibility); "unsupported" off macOS. */

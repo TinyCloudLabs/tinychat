@@ -1,0 +1,9 @@
+/* The tile's window: transparent and frameless, so the tile's rounded corners are the window's edge. */
+html,
+body {
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: transparent;
+}

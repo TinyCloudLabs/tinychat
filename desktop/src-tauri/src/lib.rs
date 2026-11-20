@@ -9,6 +9,8 @@ mod ptx_upload;
 mod recorder;
 #[cfg(feature = "transcription")]
 mod call_names;
+#[cfg(feature = "transcription")]
+mod call_prompt;
 #[cfg(debug_assertions)]
 mod dev_log;
 mod google_oauth;
@@ -101,11 +103,16 @@ pub fn run() {
                 )) as std::sync::Arc<dyn audio_actual::AudioProvider>,
             )
             .manage(record_launch::StartRequest::default())
+            .manage(record_launch::StopRequest::default())
             .plugin(tauri_plugin_settings::init())
             .plugin(tauri_plugin_transcription::init())
             .plugin(tauri_plugin_local_stt::init(
                 tauri_plugin_local_stt::InitOptions::default(),
             ));
+        // The call prompt's tile is an NSPanel (src/call_prompt/panel.rs). The plugin has no
+        // commands.
+        #[cfg(target_os = "macos")]
+        let builder = builder.plugin(tauri_nspanel::init());
 
         // App commands. build.rs declares them in the app ACL manifest, so each
         // one is callable only where a capability grants it.
@@ -139,6 +146,7 @@ pub fn run() {
             recorder::engine::recorder_finish,
             recorder_quit_anyway,
             record_launch::recorder_take_start_request,
+            record_launch::recorder_take_stop_request,
             recorder::engine::recorder_status,
             recorder::engine::recorder_list_inputs,
             recorder::engine::recorder_select_input,
@@ -162,6 +170,12 @@ pub fn run() {
             call_names::call_names_open_settings,
             call_names::call_names_read,
             call_names::call_names_clear,
+            call_prompt::call_prompt_get,
+            call_prompt::call_prompt_set,
+            call_prompt::call_prompt_state,
+            call_prompt::call_prompt_start,
+            call_prompt::call_prompt_dismiss,
+            call_prompt::call_prompt_stop,
         ]);
         // Debug builds add a diagnostic that lets the webview verify the
         // native wiring in one invoke before any recording is attempted.
@@ -195,6 +209,7 @@ pub fn run() {
             recorder::engine::recorder_finish,
             recorder_quit_anyway,
             record_launch::recorder_take_start_request,
+            record_launch::recorder_take_stop_request,
             recorder::engine::recorder_status,
             recorder::engine::recorder_list_inputs,
             recorder::engine::recorder_select_input,
@@ -218,6 +233,12 @@ pub fn run() {
             call_names::call_names_open_settings,
             call_names::call_names_read,
             call_names::call_names_clear,
+            call_prompt::call_prompt_get,
+            call_prompt::call_prompt_set,
+            call_prompt::call_prompt_state,
+            call_prompt::call_prompt_start,
+            call_prompt::call_prompt_dismiss,
+            call_prompt::call_prompt_stop,
             smoke::exo_desktop_smoke,
             dev_log::append_dev_log,
             dev_log::debug_logging_enabled,
@@ -234,6 +255,14 @@ pub fn run() {
             app.add_capability(include_str!(
                 "../capabilities-transcription/transcription.json"
             ))?;
+            // The call prompt's tile window: its event and its three commands only. Without
+            // it the tile cannot work, but the app must still start.
+            if let Err(error) = app.add_capability(include_str!(
+                "../capabilities-transcription/call-prompt.json"
+            )) {
+                tracing::error!(target: "exo_dev::call_prompt", operation = "add_capability",
+                    error = %error);
+            }
             // Shortcut and menu-bar item start a recording. Neither is required
             // for the app to work, so a failure is logged, not fatal.
             if let Err(error) = record_launch::install(app) {
@@ -243,6 +272,9 @@ pub fn run() {
             // Names in the call. The thread reads nothing until a recording of both
             // sides is live and the user has turned the setting on.
             call_names::start(app.handle());
+            // Offer to record when a call starts. The thread reads nothing while the
+            // setting is off; a failure is logged, never fatal.
+            call_prompt::start(app.handle());
             #[cfg(any(debug_assertions, feature = "ipc-selftest"))]
             ipc_selftest::maybe_run(app);
             // EXO_SMOKE=1 runs real plugin invokes in the webview (debug only).
@@ -271,8 +303,17 @@ pub fn run() {
                         let _ = app.emit("exo://recorder-exit-requested", ());
                     }
                 }
+                // The call prompt's tile must not keep the app open without its main window.
+                tauri::RunEvent::WindowEvent {
+                    label,
+                    event: tauri::WindowEvent::Destroyed,
+                    ..
+                } if label == "main" => call_prompt::main_window_destroyed(app),
                 // The call-names reader puts back what it changed in a browser.
-                tauri::RunEvent::Exit => call_names::stop(app),
+                tauri::RunEvent::Exit => {
+                    call_prompt::stop(app);
+                    call_names::stop(app);
+                }
                 _ => {}
             }
             #[cfg(not(feature = "transcription"))]
