@@ -414,3 +414,40 @@ test("a two-hour call with thousands of turns is assigned in well under a second
   expect(result.segments.filter((segment) => segment.channel === 1).every((segment) =>
     segment.speakerId === `call:${turns.find((turn) => turn.start === segment.start)!.who}`)).toBe(true);
 });
+
+describe("the timeline's own order of the people", () => {
+  const withOrder = (order: unknown) => {
+    const setup = call(CLEAR);
+    return { segments: setup.segments, timeline: { ...setup.timeline, order } };
+  };
+
+  test("numbers Them N without the roster, the user excluded", () => {
+    const result = assign(withOrder(["p1", "p2", "p3"]), { roster: null });
+    expect(labels(result.segments)).toEqual(["Me", "Them 1", "Them 2", "Me", "Them 1", "Them 2"]);
+    expect(ids(result.segments)).toEqual([null, "call:p2", "call:p3", null, "call:p2", "call:p3"]);
+    // Its order wins over the roster's.
+    expect(labels(assign(withOrder(["p3", "p1", "p2"])).segments)).toEqual(["Me", "Them 2", "Them 1", "Me", "Them 2", "Them 1"]);
+    // People seen in the recording but not in the call's list (or vice versa) keep their places.
+    expect(labels(assign(withOrder(["p4", "p1", "p2", "p5", "p3"]), { roster: null }).segments))
+      .toEqual(["Me", "Them 2", "Them 4", "Me", "Them 2", "Them 4"]);
+  });
+
+  test("with fewer than two people besides the user names nobody", () => {
+    expect(assign(withOrder(["p1", "p2"])).assigned).toBe(0);
+    expect(assign(withOrder([]), { roster: null }).assigned).toBe(0);
+  });
+
+  test("an order not in the agreed shape falls back to the roster, and keeps the timeline", () => {
+    for (const order of [["p2", "p2", "p3"], ["p 2", "p3"], [2, 3], "p2,p3", { p2: 1 }, null,
+      Array.from({ length: 201 }, (_, index) => `p${index}`)]) {
+      const setup = withOrder(order);
+      expect(parseSpeakingTimeline(setup.timeline)?.order).toBeNull();
+      // The roster numbers the people...
+      expect(labels(assign(setup).segments)).toEqual(["Me", "Them 1", "Them 2", "Me", "Them 1", "Them 2"]);
+      // ...and without one nobody is named.
+      expect(assign(setup, { roster: null }).assigned).toBe(0);
+    }
+    expect(parseSpeakingTimeline(call(CLEAR).timeline)?.order).toBeNull();
+    expect(parseSpeakingTimeline(withOrder(["p1", "p2", "p3"]).timeline)?.order).toEqual(["p1", "p2", "p3"]);
+  });
+});

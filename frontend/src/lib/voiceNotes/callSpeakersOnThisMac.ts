@@ -91,17 +91,20 @@ export async function nameCallSpeakersOnThisMac(note: Pick<VoiceNoteRecording, "
   if (!callNames?.readSpeaking) return transcript;
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    const reads = Promise.all([callNames.readSpeaking(note.id), readCallRosterOnThisMac(note.id)]);
+    const timelineRead = callNames.readSpeaking(note.id);
+    // The people are only a fallback for a timeline without its own order: a read of them that fails or is late is none.
+    const rosterRead = readCallRosterOnThisMac(note.id).catch(() => null);
     const late = new Promise<"late">((resolve) => { timer = setTimeout(() => resolve("late"), waitMs); });
-    const read = await Promise.race([reads, late]);
-    if (read === "late") {
-      // The reads may still settle: nothing waits for them, and a late rejection is not reported.
-      reads.catch(() => undefined);
+    const timeline = await Promise.race([timelineRead, late]);
+    if (timeline === "late") {
+      // The read may still settle: nothing waits for it, and a late rejection is not reported.
+      timelineRead.catch(() => undefined);
       logPipeline("call_speakers", note.id, "timed_out");
       return transcript;
     }
-    const [timeline, roster] = read;
     if (timeline === null || timeline === undefined) return transcript;
+    const people = await Promise.race([rosterRead, late]);
+    const roster = people === "late" ? null : people;
     const named = assignCallSpeakers({ segments: transcript.segments, engine: transcript.engine, timeline, roster });
     logPipeline("call_speakers", note.id, named.assigned > 0 ? "named" : "none");
     return named.assigned > 0 ? { ...transcript, segments: named.segments } : transcript;

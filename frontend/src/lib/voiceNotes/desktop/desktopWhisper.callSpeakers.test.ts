@@ -312,3 +312,30 @@ test("the fake has readSpeaking only when given timelines, and the timeline stay
   expect(await fake.extras.callNames!.readSpeaking!("note-2")).toBeNull();
   expect(fake.calls).toEqual(["callNames.clear:note-1", "callNames.readSpeaking:note-1", "callNames.readSpeaking:note-2"]);
 });
+
+describe("a timeline with its own order of the people", () => {
+  const ORDERED = { ...TIMELINE, order: ["p1", "p2", "p3"] };
+
+  test("names the lines with the names file gone and nothing kept on this Mac", async () => {
+    desktop({ enabled: true, permission: "granted", read: {}, speaking: { "note-1": ORDERED } });
+    const run = queueFor();
+    try { await run.job(); } finally { run.dispose(); }
+    expect(labels(run.saved[0])).toEqual(NAMED);
+    expect(rememberedCallRoster("note-1")).toBeNull();
+  });
+
+  test("names the lines when the names read never answers", async () => {
+    const fake = desktop({ enabled: true, permission: "granted", read: { "note-1": PEOPLE }, speaking: { "note-1": ORDERED } });
+    fake.extras.callNames!.read = () => new Promise(() => {});
+    const run = queueFor({ nameCallSpeakers: (note, transcript) => nameCallSpeakersOnThisMac(note, transcript, 50) });
+    try { await run.job(); } finally { run.dispose(); }
+    expect(labels(run.saved[0])).toEqual(NAMED);
+  });
+
+  test("an order not in the agreed shape falls back to the names file", async () => {
+    desktop({ enabled: true, permission: "granted", read: { "note-1": PEOPLE }, speaking: { "note-1": { ...TIMELINE, order: ["p1", "p1"] } } });
+    const run = queueFor();
+    try { await run.job(); } finally { run.dispose(); }
+    expect(labels(run.saved[0])).toEqual(NAMED);
+  });
+});
