@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { LOCAL_WHISPER_MODELS } from "@/lib/localTranscriber";
 import {
   getDesktopCaptureExtras,
+  readCallNamesState,
   registerDesktopCaptureExtras,
 } from "./desktopCaptureExtras";
 import { createFakeDesktopCaptureExtras } from "./fakeDesktopCaptureExtras";
@@ -111,5 +112,47 @@ describe("the fake, downloads", () => {
     await expect(done).rejects.toThrow("Disk full");
     expect(events).toEqual([{ status: "error", error: "Disk full" }]);
     expect(await row(fake, "QuantizedSmall")).toMatchObject({ downloaded: false, downloading: false });
+  });
+});
+
+describe("the fake's names in the call", () => {
+  test("is absent unless asked for, like a build without it", () => {
+    expect(createFakeDesktopCaptureExtras().extras.callNames).toBeUndefined();
+  });
+
+  test("is off with permission missing by default; turning it on does not grant the permission", async () => {
+    const fake = createFakeDesktopCaptureExtras({ callNames: {} });
+    const callNames = fake.extras.callNames!;
+    expect(await callNames.get()).toEqual({ enabled: false, permission: "missing" });
+    await callNames.set(true);
+    expect(await callNames.get()).toEqual({ enabled: true, permission: "missing" });
+    fake.setCallNamesPermission("granted");
+    expect(await callNames.get()).toEqual({ enabled: true, permission: "granted" });
+    await callNames.openSettings();
+    expect(fake.calls).toEqual(["callNames.get", "callNames.set:true", "callNames.get", "callNames.get", "callNames.openSettings"]);
+  });
+
+  test("hands over what each recording's reader stored, until it is cleared", async () => {
+    const people = { v: 1, source: "call_window", app: "zoom", truncated: false, people: [{ id: "p1", name: "Alex" }] };
+    const fake = createFakeDesktopCaptureExtras({ callNames: { read: { "rec-1": people } } });
+    const callNames = fake.extras.callNames!;
+    expect(await callNames.read("rec-1")).toEqual(people);
+    expect(await callNames.read("rec-2")).toBeNull();
+    await callNames.clear("rec-1");
+    expect(await callNames.read("rec-1")).toBeNull();
+    expect(fake.callNamesRead("rec-1")).toBeUndefined();
+    fake.failNext("callNames.read", "reader busy");
+    await expect(callNames.read("rec-1")).rejects.toThrow("reader busy");
+  });
+});
+
+describe("readCallNamesState", () => {
+  test("accepts only a boolean and one of the three permissions", () => {
+    expect(readCallNamesState({ enabled: true, permission: "granted" })).toEqual({ enabled: true, permission: "granted" });
+    expect(readCallNamesState({ enabled: false, permission: "missing", extra: 1 })).toEqual({ enabled: false, permission: "missing" });
+    expect(readCallNamesState({ enabled: false, permission: "unsupported" })).toEqual({ enabled: false, permission: "unsupported" });
+    for (const answer of [null, undefined, "granted", 1, [], { enabled: "yes", permission: "granted" }, { enabled: true },
+      { enabled: true, permission: "maybe" }, { permission: "granted" }])
+      expect(readCallNamesState(answer)).toBeNull();
   });
 });

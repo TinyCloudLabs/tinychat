@@ -1,5 +1,7 @@
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { CONNECTOR_SCHEMA } from "@tinyboilerplate/core";
+import { SUGGESTED_SPEAKER, type CallParticipants } from "@/capture/library/callParticipants";
+import type { SpeakerSuggestion } from "@/capture/library/speakerNames";
 import { readableError } from "@/lib/readableError";
 import { storageScopeFor, trackStorageWrites } from "@/lib/storageStatus";
 import { deviceName } from "@/lib/platform";
@@ -324,7 +326,10 @@ export async function createVoiceNoteRow(tcw: TinyCloudWeb, recording: VoiceNote
   if (identity.status !== "established") throw Object.assign(new Error(identity.reason ?? identity.status), { code: identity.status, cause: identity.cause });
   const now = new Date().toISOString();
   const outcome = recording.options?.transcriber === "off" ? "skipped" : "pending";
-  const speakerNames = recording.ledger?.speakerNames;
+  // An empty map (every local rename undone) is no names: the row gets none, as a row renamed and put back has none.
+  const ledgerNames = recording.ledger?.speakerNames;
+  const speakerNames = ledgerNames !== null && typeof ledgerNames === "object" && Object.keys(ledgerNames).length > 0
+    ? ledgerNames : null;
   const changes = await execute(tcw, `INSERT INTO connector_meeting
     (id, source, source_id, title, started_at, duration_secs, organizer_email, participants, summary_overview,
      summary_action_items, keywords, meeting_type, metadata, created_at, updated_at)
@@ -600,17 +605,54 @@ export async function verifyVoiceNoteTranscript(tcw: TinyCloudWeb, sourceId: str
  * One speaker's name on a note (TC-2189): `metadata.speaker_names[original]`, on any connector_meeting row (voice note,
  * upload, meeting, combined). Only that one label changes, applied by the database to the metadata as it is when the
  * write runs, so a name another writer saved meanwhile stays. A null `shown` clears the label, and the map when it
- * was the last.
+ * was the last. The same write ends that label's suggestion (`speaker_suggestions`, names in the call): a name
+ * written here is the user's, a suggestion they kept included; a row without suggestions gets the names-only patch.
  */
 export async function patchRowSpeakerName(tcw: TinyCloudWeb, rowId: string, original: string, shown: string | null,
   checkpoint: () => void = () => undefined): Promise<void> {
   const base = "CASE WHEN json_valid(metadata) THEN metadata ELSE '{}' END";
+  const names = { speaker_names: { [original]: shown } };
   const changes = await execute(tcw,
-    `UPDATE connector_meeting SET metadata = json_patch(${base}, json_object('speaker_names', json_object(?, ?))), updated_at = ? WHERE id = ?`,
-    [original, shown, new Date().toISOString(), rowId], checkpoint);
+    `UPDATE connector_meeting SET metadata = json_patch(${base},
+      CASE WHEN json_type(${base}, '$.speaker_suggestions') = 'object' THEN ? ELSE ? END), updated_at = ? WHERE id = ?`,
+    [JSON.stringify({ ...names, speaker_suggestions: { [original]: null } }), JSON.stringify(names), new Date().toISOString(), rowId],
+    checkpoint);
   if (changes === 0) throw new Error("The note's row is missing");
-  await execute(tcw, `UPDATE connector_meeting SET metadata = json_remove(metadata, '$.speaker_names')
-    WHERE id = ? AND json_valid(metadata) AND json_extract(metadata, '$.speaker_names') = '{}'`, [rowId], checkpoint);
+  await execute(tcw, `UPDATE connector_meeting SET metadata = CASE
+      WHEN json_extract(metadata, '$.speaker_names') = '{}' AND json_extract(metadata, '$.speaker_suggestions') = '{}'
+        THEN json_remove(metadata, '$.speaker_names', '$.speaker_suggestions')
+      WHEN json_extract(metadata, '$.speaker_names') = '{}' THEN json_remove(metadata, '$.speaker_names')
+      ELSE json_remove(metadata, '$.speaker_suggestions') END
+    WHERE id = ? AND json_valid(metadata)
+      AND (json_extract(metadata, '$.speaker_names') = '{}' OR json_extract(metadata, '$.speaker_suggestions') = '{}')`,
+  [rowId], checkpoint);
+}
+
+/**
+ * Names in the call: puts the people the desktop app read from the meeting window (`call_participants`) on a Mac
+ * recording's row, with the name suggested for "Them" when there is one. One statement, applied by the database to
+ * the metadata as it is when it runs: it writes only while the row has no `call_participants` (so it runs once,
+ * however often it is retried), and the suggestion goes into `speaker_names` only while "Them" has no name there, so
+ * a name the user gave is never replaced, even one saved a moment before. "written" when this call wrote them; "kept"
+ * when the row already had them; "missing" when there is no such voice-note row of a recording of both sides.
+ */
+export async function writeCallParticipants(tcw: TinyCloudWeb, rowId: string, participants: CallParticipants,
+  suggestion: SpeakerSuggestion | null, checkpoint: () => void = () => undefined): Promise<"written" | "kept" | "missing"> {
+  const m = "CASE WHEN json_valid(metadata) THEN metadata ELSE '{}' END";
+  const withoutName = JSON.stringify({ call_participants: participants });
+  const withName = suggestion === null ? withoutName : JSON.stringify({ call_participants: participants,
+    speaker_suggestions: { [SUGGESTED_SPEAKER]: suggestion }, speaker_names: { [SUGGESTED_SPEAKER]: suggestion.name } });
+  const changes = await execute(tcw, `UPDATE connector_meeting SET metadata = json_patch(${m},
+      CASE WHEN json_extract(${m}, '$.speaker_names.${SUGGESTED_SPEAKER}') IS NULL THEN ? ELSE ? END), updated_at = ?
+    WHERE id = ? AND source = 'exo-voice-note' AND json_extract(${m}, '$.capture.channels') = 2
+      AND json_extract(${m}, '$.call_participants') IS NULL`,
+  [withName, withoutName, new Date().toISOString(), rowId], checkpoint);
+  if (changes > 0) return "written";
+  // The same guarded metadata as the write: AND does not stop at a false json_valid, and json_extract throws on
+  // text that is not JSON.
+  const [row] = await query(tcw, `SELECT json_extract(${m}, '$.call_participants') IS NOT NULL
+    FROM connector_meeting WHERE id = ? AND source = 'exo-voice-note'`, [rowId], checkpoint);
+  return row !== undefined && Number(row[0]) === 1 ? "kept" : "missing";
 }
 
 /**

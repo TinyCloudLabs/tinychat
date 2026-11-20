@@ -75,6 +75,11 @@ export interface NoteLedger {
     cleanup: "none" | "pending" | "done" }[];
   /** Speaker renames made while the note is still on this device (TC-2189); the row takes them at save. */
   speakerNames?: Record<string, string> | null;
+  /**
+   * Names in the call: the labels whose suggested name the user kept, changed or put back while the note was on
+   * this device. The row never gets those suggestions (`saveCallNames`), as a row renamed in the space would not.
+   */
+  speakerSuggestionsEnded?: string[] | null;
 }
 export interface NoteSttState {
   state: "waiting_for_model" | "queued" | "running" | "done" | "failed" | "cancelled";

@@ -21,6 +21,8 @@ tauri-plugin-opener = "2"
 url = "2"
 recorder-state = { path = "../recorder-state" }
 wav-snapshot = { path = "../wav-snapshot" }
+# Names in the call: the reader, its per-recording files and its setting (src/call_names.rs).
+call-names = { path = "../call-names" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tracing = "0.1"
@@ -136,6 +138,13 @@ optional = true
 [dependencies.futures-util]
 version = "0.3"
 optional = true
+
+# Names in the call finds the meeting apps' processes through NSRunningApplication
+# (src/call_names.rs). All three crates are already in the graph through tauri.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["NSRunningApplication", "libc"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["NSArray", "NSString"] }
 
 # anarlog's `storage` crate hardcodes `~/Library/Application Support/anarlog`
 # for release builds, which would share (or be redirected by) a real anarlog

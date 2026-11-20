@@ -8,6 +8,10 @@ export const SPEAKER_NAMES_COPY = {
   save: "Save",
   cancel: "Cancel",
   reset: (original: string) => `Go back to ${original}`,
+  /** Names in the call: the group of names to pick from in the rename form (read by screen readers only). */
+  choices: "Names in the call",
+  /** The mark on a name the app suggested, until it is kept or changed. */
+  suggested: "Suggested",
   renamed: (from: string, to: string) => `${from} is now ${to}.`,
   cleared: (original: string) => `Back to ${original}.`,
   undo: "Undo",

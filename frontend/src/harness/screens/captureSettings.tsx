@@ -1,7 +1,8 @@
 // The desktop ⚙︎ Capture settings popover (D4) over a scripted DesktopCaptureExtras, in the Capture header's
 // place: the app variant (nothing downloaded, one downloading, Large Turbo selected, a failed download,
-// nothing registered) and the web variant. The interactive screen exposes `window.exoCaptureSettings` for
-// test/capture-settings.e2e.test.ts to drive the downloads and make calls fail.
+// nothing registered, names in the call inside the Mac audio row it needs) and the web variant. The interactive
+// screen exposes `window.exoCaptureSettings` for test/capture-settings.e2e.test.ts to drive the downloads and make
+// calls fail.
 import { useEffect, useState, type ReactNode } from "react";
 import {
   CaptureSettings,
@@ -189,6 +190,14 @@ export const captureSettingsScreens: HarnessScreen[] = [
   screen("app-unavailable", () => <Settings variant="app" noExtras />, {
     readyWhen: "[data-testid=settings-unavailable]",
   }),
+  // Names in the call needs the Mac's audio: the names row is nested in that row, here on and waiting for macOS.
+  screen("app-call-names", () => (
+    <Settings variant="app" fake={{ ...LARGE_TURBO, callNames: { enabled: true, permission: "missing" } }} />
+  ), { readyWhen: "[data-testid=switch-system-audio] ~ div [data-testid=call-names-open-settings]" }),
+  // Both off: the nested row with nothing else on it.
+  screen("app-call-names-off", () => (
+    <Settings variant="app" fake={{ ...LARGE_TURBO, systemAudio: false, callNames: {} }} />
+  ), { readyWhen: "[data-testid=switch-system-audio] ~ div [data-testid=switch-call-names]" }),
   screen("web", () => <Settings variant="microphone-only" />),
   screen(
     "interactive",

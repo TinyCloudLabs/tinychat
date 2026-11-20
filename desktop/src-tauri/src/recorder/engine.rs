@@ -642,6 +642,24 @@ impl EngineState {
     }
 }
 
+/// The capture the call-names reader may read beside: the note id, the channel count and the
+/// recorded time. Only while the native source is capturing; `None` before the recorder is first
+/// used and while it is idle, paused, stopping or stopped. A pause or a stop holds `busy` from
+/// the request until its segment is closed, and the segment counts as live for all that time,
+/// so `busy` ends the capture here, as it does for the auto-stop check.
+pub(crate) fn live_capture(app: &tauri::AppHandle) -> Option<(String, u8, u64)> {
+    let engine = app.try_state::<Engine>()?;
+    let state = engine.0.lock();
+    if state.busy || !state.recorder.is_live() {
+        return None;
+    }
+    Some((
+        state.id.clone()?,
+        state.layout.channels(),
+        state.recorder.status(mono_ms()).elapsed_ms,
+    ))
+}
+
 fn emit_status(app: &tauri::AppHandle) {
     let status = app.state::<Engine>().0.lock().status();
     let _ = app.emit(MIC_EVENT, status);

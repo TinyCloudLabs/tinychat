@@ -7,6 +7,8 @@ mod ipc_selftest;
 mod ptx_upload;
 #[cfg(feature = "transcription")]
 mod recorder;
+#[cfg(feature = "transcription")]
+mod call_names;
 #[cfg(debug_assertions)]
 mod dev_log;
 mod google_oauth;
@@ -155,6 +157,11 @@ pub fn run() {
             recorder::extras::recorder_system_audio_set,
             recorder::extras::recorder_system_audio_consent_get,
             recorder::extras::recorder_system_audio_consent_set,
+            call_names::call_names_get,
+            call_names::call_names_set,
+            call_names::call_names_open_settings,
+            call_names::call_names_read,
+            call_names::call_names_clear,
         ]);
         // Debug builds add a diagnostic that lets the webview verify the
         // native wiring in one invoke before any recording is attempted.
@@ -206,6 +213,11 @@ pub fn run() {
             recorder::extras::recorder_system_audio_set,
             recorder::extras::recorder_system_audio_consent_get,
             recorder::extras::recorder_system_audio_consent_set,
+            call_names::call_names_get,
+            call_names::call_names_set,
+            call_names::call_names_open_settings,
+            call_names::call_names_read,
+            call_names::call_names_clear,
             smoke::exo_desktop_smoke,
             dev_log::append_dev_log,
             dev_log::debug_logging_enabled,
@@ -228,6 +240,9 @@ pub fn run() {
                 tracing::error!(target: "exo_dev::record_launch", operation = "install",
                     error = %error);
             }
+            // Names in the call. The thread reads nothing until a recording of both
+            // sides is live and the user has turned the setting on.
+            call_names::start(app.handle());
             #[cfg(any(debug_assertions, feature = "ipc-selftest"))]
             ipc_selftest::maybe_run(app);
             // EXO_SMOKE=1 runs real plugin invokes in the webview (debug only).
@@ -245,15 +260,20 @@ pub fn run() {
         .expect("error building Exo")
         .run(|app, event| {
             #[cfg(feature = "transcription")]
-            if let tauri::RunEvent::ExitRequested { code, api, .. } = event {
-                use tauri::Emitter;
-                if guard_user_exit(
-                    FINISHING_QUIT.load(std::sync::atomic::Ordering::SeqCst),
-                    code,
-                ) {
-                    api.prevent_exit();
-                    let _ = app.emit("exo://recorder-exit-requested", ());
+            match event {
+                tauri::RunEvent::ExitRequested { code, api, .. } => {
+                    use tauri::Emitter;
+                    if guard_user_exit(
+                        FINISHING_QUIT.load(std::sync::atomic::Ordering::SeqCst),
+                        code,
+                    ) {
+                        api.prevent_exit();
+                        let _ = app.emit("exo://recorder-exit-requested", ());
+                    }
                 }
+                // The call-names reader puts back what it changed in a browser.
+                tauri::RunEvent::Exit => call_names::stop(app),
+                _ => {}
             }
             #[cfg(not(feature = "transcription"))]
             let _ = (app, event);

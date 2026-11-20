@@ -24,6 +24,7 @@ import {
 import { syncOnDeviceTranscript } from "@/lib/voiceNotes/onDeviceTranscriber";
 import { saveVoiceNote, type NoteSyncErrorCode, type VoiceNoteAudio, type VoiceNoteAudioSource, type StoreAudioOptions } from "@/lib/voiceNotes/voiceNoteStore";
 import { upgradeSavedAudioReceipt } from "./audioReceiptUpgrade";
+import { saveCallNames } from "./callNames";
 import { assertAccountContext, assertCurrent, captureAccountContext, type AccountContext } from "@/lib/voiceNotes/accountContext";
 import { isLegacyNote } from "@/lib/voiceNotes/legacyMigration";
 import { deleteNote } from "@/lib/voiceNotes/recordingNotes";
@@ -39,6 +40,16 @@ import { STORAGE_FULL_RECORDING_LINE, isStorageFullError } from "@/lib/storageSt
 
 function enforceAudioCacheAfterSave(id: string): void {
   void trimCachedAudio().catch((error: unknown) => logPipelineError("audio cache trim", error, id));
+}
+
+/**
+ * Names in the call, for a note already saved: each pass over the saved notes (app start, sign-in) tries again to
+ * put the names of a recording of both sides on its row. It needs no transcript commit, so it also works with the
+ * transcriber off. Not awaited and never throws; a no-op once the names are on the row or nothing was read.
+ */
+function retryCallNames(tcw: TinyCloudWeb, recording: VoiceNoteRecording, checkpoint: () => void): void {
+  const rowId = recording.ledger?.audio.rowId;
+  if (recording.channels === 2 && rowId) void saveCallNames(tcw, recording.id, rowId, checkpoint);
 }
 
 export const TINYCLOUD_NETWORK_FAILURE_MESSAGE =
@@ -422,6 +433,7 @@ export async function saveRecording(
     if (isDiscarded(recording.id)) throw new Error("Recording was discarded");
   };
   if (recording.ledger?.audio.state === "saved") {
+    retryCallNames(tcw, recording, checkActive);
     await upgradeSavedAudioReceipt(tcw, recording);
     void syncOnDeviceTranscript(tcw, recording);
     return { kind: "already-saved", cleanupError: null };
@@ -515,6 +527,7 @@ export async function saveNoteForAccount(tcw: TinyCloudWeb, ctx: AccountContext,
   if (!recording.owner) return { kind: "held", reason: "unowned" };
   if (recording.owner !== ctx.did) return { kind: "held", reason: "other-account" };
   if (recording.ledger?.audio.state === "saved") {
+    retryCallNames(tcw, recording, checkActive);
     await upgradeSavedAudioReceipt(tcw, recording);
     return { kind: "already-saved", cleanupError: null };
   }
