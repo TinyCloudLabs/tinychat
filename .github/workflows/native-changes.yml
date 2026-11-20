@@ -25,6 +25,9 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
+      - name: Test native build input selection
+        if: github.event_name == 'pull_request'
+        run: python3 .github/scripts/test-native-changes.py
       - id: diff
         name: Select native and WebKit inputs
         shell: bash
@@ -42,10 +45,16 @@ jobs:
           native=false
           frontend=false
           while IFS= read -r -d '' path; do
+            # Root files include workspace definitions, lockfiles and build/install configuration.
+            # Over-include new root inputs rather than accidentally accepting a native skip.
+            if [[ "$path" != */* ]]; then
+              native=true; frontend=true
+              continue
+            fi
             case "$path" in
-              frontend/*|packages/*|patches/*|scripts/*|test/*|.github/*|package.json|bun.lock|bun.lockb|bunfig.toml|turbo.json|tsconfig*|.env*|.npmrc|.node-version|.tool-versions)
+              frontend/*|packages/*|patches/*|scripts/*|test/*|.github/*|agent-skills/*|agent-setup/*|*/package.json|*/bun.lock|*/bun.lockb|*/bunfig.toml|*/package-lock.json|*/npm-shrinkwrap.json|*/pnpm-lock.yaml|*/yarn.lock|*/.npmrc)
                 native=true; frontend=true ;;
-              ios/*|android/*|mobile/*|desktop/*|Cargo.toml|Cargo.lock|rust-toolchain*|.cargo/*|Podfile*|Package.resolved)
+              ios/*|android/*|mobile/*|desktop/*|.cargo/*)
                 native=true ;;
             esac
           done < "$RUNNER_TEMP/native-paths"
