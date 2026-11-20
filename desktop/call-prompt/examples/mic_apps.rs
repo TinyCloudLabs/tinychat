@@ -1,18 +1,24 @@
-//! Mac check A: which processes capture or play audio, and what the call prompt makes of them.
+//! Mac check A: which processes capture or play audio, what the call prompt makes of them, and
+//! what each of its passes costs.
 //!
 //! ```text
-//! cargo run --release --example mic_apps -- [--seconds N]
+//! cargo run --release --example mic_apps -- [--seconds N] [--full-every S] [--no-list]
 //! ```
 //!
-//! Once a second for N seconds (20 by default) it prints one line:
+//! Once a second for N seconds (20 by default) it runs the app's own look (`Mic::look`, the read
+//! the watcher makes every two seconds) and prints one line:
 //! - the time;
-//! - the gate: whether any input device is in use, and how long that took (the app asks every
-//!   two seconds, and scans only when it is open or a call is being followed), then each input
-//!   device's own answer: its CoreAudio id, `in` or `in+out` (a headset), `yes` or `no`;
-//! - the app's own scan (`Scanner::scan`, with its buffer kept from line to line): how long it
-//!   took and which call apps it heard. Here it runs on every line, whatever the gate says;
-//! - every process that captures (`in`) or plays (`out`) audio: its bundle id, its process id
-//!   and the table entry it maps to, or `-` for none.
+//! - the gate: whether any input device is in use, how long that took, then each input device's
+//!   own answer: its CoreAudio id, `in` or `in+out` (a headset), `yes` or `no`;
+//! - the pass that ran and its time: `gate` (nothing else read), `followed` (only the process
+//!   objects of the call apps seen capturing) or `full` (every process object), with the number
+//!   of process objects it read. As in the app, a full scan runs when the gate opens, then every
+//!   10 s with the gate open, every 14 s while a call app is heard; `--full-every S` forces a full
+//!   scan every S seconds instead;
+//! - the call apps heard;
+//! - unless `--no-list`: every process that captures (`in`) or plays (`out`) audio, with its
+//!   bundle id, its process id and the table entry it maps to (`-` for none). That list is an
+//!   extra read of every process, after the timed pass.
 //!
 //! No permission is needed and no audio is read.
 //!
@@ -21,13 +27,15 @@
 //! FaceTime, Signal, Teams, Safari and dictation. Its output stays in your terminal.
 
 use call_prompt::apps;
-use call_prompt::mic::{self, AudioProcesses, CoreAudio, Gate, Scanner};
+use call_prompt::mic::{self, AudioProcesses, CoreAudio, Mic};
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "usage: mic_apps [--seconds N]";
+const USAGE: &str = "usage: mic_apps [--seconds N] [--full-every S] [--no-list]";
 
 fn main() {
     let mut seconds: u64 = 20;
+    let mut full_every: Option<u64> = None;
+    let mut list_all = true;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -35,6 +43,11 @@ fn main() {
                 Some(value) => seconds = value,
                 None => fail(),
             },
+            "--full-every" => match args.next().and_then(|value| value.parse().ok()) {
+                Some(value) if value > 0 => full_every = Some(value),
+                _ => fail(),
+            },
+            "--no-list" => list_all = false,
             "-h" | "--help" => {
                 println!("{USAGE}");
                 return;
@@ -49,21 +62,23 @@ fn main() {
 
     let own_pid = std::process::id() as i32;
     let mut audio = CoreAudio;
-    let mut gate = Gate::new();
-    let mut scanner = Scanner::new();
+    let mut mic = match full_every {
+        Some(every) => Mic::with_full_every(Duration::from_secs(every)),
+        None => Mic::new(),
+    };
     let mut list = Vec::new();
-    println!("# t | gate: an input device in use (time) [each input device: id in|in+out yes|no] | app scan time | heard | bundle id, pid, in = captures, out = plays, -> table entry (kind) or -");
+    let mut following = false;
+    println!("# t | gate: an input device in use (time) [each input device: id in|in+out yes|no] | pass: gate|followed|full (time, process objects read) | heard | bundle id, pid, in = captures, out = plays, -> table entry (kind) or -");
     let started = Instant::now();
     for second in 1..=seconds {
-        let gate_started = Instant::now();
-        let open = gate.open(&mut audio, started.elapsed());
-        let gate_ms = gate_started.elapsed().as_secs_f64() * 1000.0;
-        let open = match open {
+        let look = mic.look(&mut audio, own_pid, following, started.elapsed());
+        let open = match look.gate {
             Ok(true) => "yes".to_string(),
             Ok(false) => "no".to_string(),
             Err(error) => format!("failed {error:?}"),
         };
-        let devices: Vec<String> = gate
+        let devices: Vec<String> = mic
+            .gate()
             .devices()
             .to_vec()
             .into_iter()
@@ -81,34 +96,39 @@ fn main() {
                 format!("{device} {streams} {running}")
             })
             .collect();
-        let scan_started = Instant::now();
-        let scan = scanner.scan(&mut audio, own_pid);
-        let scan_ms = scan_started.elapsed().as_secs_f64() * 1000.0;
         let mut line = format!(
-            "{second:>4} s | gate {open} ({gate_ms:.2} ms) [{}] | scan {scan_ms:.2} ms",
-            devices.join(", ")
+            "{second:>4} s | gate {open} ({:.2} ms) [{}] | pass {} ({:.2} ms, {} objects)",
+            look.gate_took.as_secs_f64() * 1000.0,
+            devices.join(", "),
+            look.pass.as_str(),
+            look.took.as_secs_f64() * 1000.0,
+            look.objects
         );
-        match &scan {
-            Ok(heard) => {
+        match &look.heard {
+            Some(heard) => {
                 let calls: Vec<&str> = heard
                     .iter()
                     .map(|entry| entry.app.app().bundle_id)
                     .collect();
                 line.push_str(&format!(" | heard: {}", list_or_dash(&calls)));
+                // As the session would: a heard call app is followed.
+                following = !heard.is_empty() || (following && look.pass != mic::Pass::Full);
             }
-            Err(error) => line.push_str(&format!(" | scan failed: {error:?}")),
+            None => line.push_str(&format!(" | scan failed: {:?}", look.error)),
         }
-        match everything(&mut audio, own_pid, &mut list) {
-            Ok(processes) if processes.is_empty() => {
-                line.push_str(" | no process captures or plays")
-            }
-            Ok(processes) => {
-                for process in processes {
-                    line.push_str(" | ");
-                    line.push_str(&process);
+        if list_all {
+            match everything(&mut audio, own_pid, &mut list) {
+                Ok(processes) if processes.is_empty() => {
+                    line.push_str(" | no process captures or plays")
                 }
+                Ok(processes) => {
+                    for process in processes {
+                        line.push_str(" | ");
+                        line.push_str(&process);
+                    }
+                }
+                Err(error) => line.push_str(&format!(" | process list failed: {error:?}")),
             }
-            Err(error) => line.push_str(&format!(" | process list failed: {error:?}")),
         }
         println!("{line}");
         let next = Duration::from_secs(second);
