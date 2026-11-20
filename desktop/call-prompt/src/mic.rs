@@ -1,33 +1,51 @@
 //! Which call apps capture audio now, read from CoreAudio's process objects.
 //!
-//! Two reads, the cheap one first:
-//! 1. The gate ([`Gate::open`]): whether any audio device with input streams runs for some
-//!    process (`kAudioDevicePropertyDeviceIsRunningSomewhere`), so a microphone picked inside a
-//!    call app counts as much as the system default. One read per input device. The list of
-//!    input devices (`kAudioHardwarePropertyDevices`, kept when `kAudioDevicePropertyStreams` has
-//!    input streams) is cached and read again every [`DEVICE_LIST_REFRESH`], or on the next tick
-//!    after a read failed (a device was unplugged). No input device means nothing is in use.
-//!    A device that also plays (a USB headset) opens the gate when it only plays; the watcher
-//!    then scans less often (`service`).
-//! 2. The scan ([`Scanner::scan`]), only when the gate is open or a call is being followed (the
-//!    watcher decides, `service`): the list of CoreAudio process objects
-//!    (`kAudioHardwarePropertyProcessObjectList`) and for each one whether it captures
-//!    (`kAudioProcessPropertyIsRunningInput`); for capturing processes only, the process id
-//!    (`…PID`), the bundle id (`…BundleID`) and whether it plays (`…IsRunningOutput`). The list
-//!    is read into a buffer kept from scan to scan.
+//! Three kinds of pass, the cheapest first; [`Mic::look`] picks one per tick:
+//! 1. The gate ([`Gate::open`]), on every tick: whether any audio device with input streams runs
+//!    for some process (`kAudioDevicePropertyDeviceIsRunningSomewhere`), so a microphone picked
+//!    inside a call app counts as much as the system default. One read per input device. The
+//!    list of input devices (`kAudioHardwarePropertyDevices`, kept when
+//!    `kAudioDevicePropertyStreams` has input streams) is cached and read again every
+//!    [`DEVICE_LIST_REFRESH`], or on the next tick after a read failed (a device was unplugged).
+//!    No input device means nothing is in use. A closed gate with no call followed ends the tick
+//!    there.
+//! 2. The followed pass ([`Scanner::followed`]): only the process objects of the call apps a
+//!    full scan saw capturing, each asked whether it captures (`kAudioProcessPropertyIsRunningInput`)
+//!    and, for a browser, whether it plays (`…IsRunningOutput`). An object that cannot be read
+//!    (its process ended) is dropped and a full scan runs at once.
+//! 3. The full scan ([`Scanner::scan`]): the list of CoreAudio process objects
+//!    (`kAudioHardwarePropertyProcessObjectList`, one read into a buffer kept from scan to scan)
+//!    and for each one whether it captures. For capturing processes only, the process id
+//!    (`…PID`) and the bundle id (`…BundleID`), once per process: the table entry it maps to (or
+//!    "none") is kept by object id until the object leaves the list, and an object known to be
+//!    no call app is not asked again. It runs when the gate opens, then every
+//!    [`FULL_SCAN_IDLE`] while the gate is open and no call is followed, and every
+//!    [`FULL_SCAN_FOLLOWING`] (14 s) while a call is followed (to notice a second app within
+//!    15 s). Never more often, except once after a followed object failed.
+//!
+//! Budget, from the owner's Mac (macOS 26.3, many audio-capable processes): a full scan took a
+//! median of 65 ms idle and 107 ms (worst 211 ms) during a Meet call, one read per process object.
+//! The target is a followed pass under 5 ms (a few reads), and at most one full scan per 10 to
+//! 15 s. `examples/mic_apps.rs` prints the kind and the time of every pass.
 //!
 //! No device is opened, no audio is read and macOS asks for no permission. A bundle id that is
-//! not in [`crate::apps`] is dropped as soon as it is compared; a scan returns table entries
-//! only. This process is skipped, so the app's own recording never looks like a call.
+//! not in [`crate::apps`] is dropped as soon as it is compared; only table entries are kept or
+//! returned. This process is skipped, so the app's own recording never looks like a call.
 //!
 //! [`AudioProcesses`] is the seam: [`CoreAudio`] on a Mac, a fake in tests. On other platforms
 //! [`CoreAudio`] answers [`ScanError::Unsupported`].
 
-use crate::apps::{self, AppId};
-use std::time::Duration;
+use crate::apps::{self, AppId, Kind};
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 /// How long the gate keeps its list of input devices before it reads the list again.
 pub const DEVICE_LIST_REFRESH: Duration = Duration::from_secs(30);
+/// The full scan's pace while the gate is open and no call is followed.
+pub const FULL_SCAN_IDLE: Duration = Duration::from_secs(10);
+/// The full scan's pace while a call is followed: 14 s, so that with the 2 s tick a second app
+/// that starts to capture is heard within 15 s, well within [`crate::session::CALL_END`].
+pub const FULL_SCAN_FOLLOWING: Duration = Duration::from_secs(14);
 
 /// The CoreAudio reads the watcher needs. Each read of one process may fail on its own (the
 /// process may have ended since the list was read); a failed read is `None`.
@@ -132,10 +150,28 @@ impl Gate {
     }
 }
 
-/// Scans with one process-list buffer, kept from scan to scan.
+/// The full scan and the followed pass, with what they keep between ticks: the process-list
+/// buffer, the table entry of each process object identified so far, and the objects followed.
 #[derive(Debug, Default)]
 pub struct Scanner {
     list: Vec<u32>,
+    /// Object id to table entry; `None`: no call app (or this process), never asked again.
+    entries: HashMap<u32, Option<AppId>>,
+    /// The objects of call apps a full scan saw capturing, while they stay in the list.
+    followed: Vec<(u32, AppId)>,
+}
+
+/// Whether a capturing object of `app` also plays, read only where the rule needs it.
+fn heard_entry<A: AudioProcesses + ?Sized>(audio: &mut A, object: u32, app: AppId) -> Heard {
+    let playing = app.kind() == Kind::Browser && audio.playing(object) == Some(true);
+    Heard { app, playing }
+}
+
+fn add(heard: &mut Vec<Heard>, entry: Heard) {
+    match heard.iter_mut().find(|known| known.app == entry.app) {
+        Some(known) => known.playing |= entry.playing,
+        None => heard.push(entry),
+    }
 }
 
 impl Scanner {
@@ -143,45 +179,245 @@ impl Scanner {
         Self::default()
     }
 
-    /// The call apps that capture audio now, one entry per app, in table order.
+    /// The process objects followed between full scans.
+    pub fn followed_objects(&self) -> usize {
+        self.followed.len()
+    }
+
+    /// The full scan: the call apps that capture audio now, one entry per app, in table order.
     ///
-    /// `own_pid` is this process: it is skipped. Processes that do not capture are not asked for
-    /// anything else.
+    /// `own_pid` is this process: it is skipped. A process is asked whether it captures, and
+    /// nothing else unless it does; a capturing process is identified once (pid, bundle id) and
+    /// its table entry kept until it leaves the list. An object known to be no call app is not
+    /// read at all.
     pub fn scan<A: AudioProcesses + ?Sized>(
         &mut self,
         audio: &mut A,
         own_pid: i32,
     ) -> Result<Vec<Heard>, ScanError> {
-        audio.processes(&mut self.list)?;
+        if let Err(error) = audio.processes(&mut self.list) {
+            self.list.clear();
+            return Err(error);
+        }
+        self.list.sort_unstable();
+        let list = &self.list;
+        self.entries
+            .retain(|object, _| list.binary_search(object).is_ok());
+        self.followed
+            .retain(|(object, _)| list.binary_search(object).is_ok());
         let mut heard: Vec<Heard> = Vec::new();
-        for &process in &self.list {
-            if audio.capturing(process) != Some(true) {
+        for &object in &self.list {
+            let known = self.entries.get(&object).copied();
+            if known == Some(None) {
                 continue;
             }
-            if audio.pid(process) == Some(own_pid) {
+            if audio.capturing(object) != Some(true) {
                 continue;
             }
-            // The id is compared and dropped here; only the table entry leaves this block.
-            let Some(app) = audio.bundle_id(process).and_then(|id| apps::lookup(&id)) else {
-                continue;
+            let app = match known {
+                Some(Some(app)) => app,
+                _ => match identify(audio, object, own_pid) {
+                    Some(entry) => {
+                        self.entries.insert(object, entry);
+                        match entry {
+                            Some(app) => app,
+                            None => continue,
+                        }
+                    }
+                    // No bundle id this time: asked again on the next full scan.
+                    None => continue,
+                },
             };
-            let playing = audio.playing(process) == Some(true);
-            match heard.iter_mut().find(|entry| entry.app == app) {
-                Some(entry) => entry.playing |= playing,
-                None => heard.push(Heard { app, playing }),
+            if !self
+                .followed
+                .iter()
+                .any(|(followed, _)| *followed == object)
+            {
+                self.followed.push((object, app));
             }
+            add(&mut heard, heard_entry(audio, object, app));
+        }
+        heard.sort_by_key(|entry| entry.app);
+        Ok(heard)
+    }
+
+    /// The followed pass: only the objects a full scan saw capturing. `Err(())` when one of them
+    /// could not be read (its process ended): it is dropped, and the caller runs a full scan.
+    #[allow(clippy::result_unit_err)]
+    pub fn followed<A: AudioProcesses + ?Sized>(
+        &mut self,
+        audio: &mut A,
+    ) -> Result<Vec<Heard>, ()> {
+        let mut heard: Vec<Heard> = Vec::new();
+        let mut vanished = false;
+        self.followed
+            .retain(|&(object, app)| match audio.capturing(object) {
+                None => {
+                    vanished = true;
+                    false
+                }
+                Some(true) => {
+                    add(&mut heard, heard_entry(audio, object, app));
+                    true
+                }
+                Some(false) => true,
+            });
+        if vanished {
+            return Err(());
         }
         heard.sort_by_key(|entry| entry.app);
         Ok(heard)
     }
 }
 
-/// One scan with a fresh buffer; see [`Scanner::scan`].
+/// The table entry of a capturing object: `Some(None)` for this process or a process that is no
+/// call app (kept), `None` when its bundle id could not be read (asked again later). The id is
+/// compared and dropped here; only the table entry leaves.
+fn identify<A: AudioProcesses + ?Sized>(
+    audio: &mut A,
+    object: u32,
+    own_pid: i32,
+) -> Option<Option<AppId>> {
+    if audio.pid(object) == Some(own_pid) {
+        return Some(None);
+    }
+    audio.bundle_id(object).map(|id| apps::lookup(&id))
+}
+
+/// One full scan with a fresh scanner; see [`Scanner::scan`].
 pub fn scan<A: AudioProcesses + ?Sized>(
     audio: &mut A,
     own_pid: i32,
 ) -> Result<Vec<Heard>, ScanError> {
     Scanner::new().scan(audio, own_pid)
+}
+
+/// Which pass a look ran.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pass {
+    /// The gate was closed and no call is followed: nothing else was read.
+    GateOnly,
+    /// Only the followed objects were read.
+    Followed,
+    /// Every process object was read.
+    Full,
+}
+
+impl Pass {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Pass::GateOnly => "gate",
+            Pass::Followed => "followed",
+            Pass::Full => "full",
+        }
+    }
+}
+
+/// What one look found.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Look {
+    /// The call apps heard. `None` when the full scan failed.
+    pub heard: Option<Vec<Heard>>,
+    /// The gate's answer.
+    pub gate: Result<bool, ScanError>,
+    /// A failure for the log: the full scan's, else the gate's.
+    pub error: Option<ScanError>,
+    pub pass: Pass,
+    /// The time the gate took, and the time the pass took after it.
+    pub gate_took: Duration,
+    pub took: Duration,
+    /// The process objects the pass read: the whole list for a full scan, the followed ones for
+    /// a followed pass.
+    pub objects: usize,
+}
+
+/// The gate, the followed pass and the full scan, with their pace. One [`Mic::look`] per tick.
+#[derive(Debug, Default)]
+pub struct Mic {
+    gate: Gate,
+    scanner: Scanner,
+    last_full: Option<Duration>,
+    full_every: Option<Duration>,
+}
+
+impl Mic {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// A full scan every `every` whatever happens, for `mic_apps --full-every`.
+    pub fn with_full_every(every: Duration) -> Self {
+        Mic {
+            full_every: Some(every),
+            ..Self::default()
+        }
+    }
+
+    pub fn gate(&self) -> &Gate {
+        &self.gate
+    }
+
+    pub fn followed_objects(&self) -> usize {
+        self.scanner.followed_objects()
+    }
+
+    /// One tick's look. `following`: the session follows a call app. `now` is the watcher's
+    /// clock.
+    pub fn look<A: AudioProcesses + ?Sized>(
+        &mut self,
+        audio: &mut A,
+        own_pid: i32,
+        following: bool,
+        now: Duration,
+    ) -> Look {
+        let started = Instant::now();
+        let gate = self.gate.open(audio, now);
+        let gate_took = started.elapsed();
+        let mut look = Look {
+            heard: Some(Vec::new()),
+            gate,
+            error: gate.err(),
+            pass: Pass::GateOnly,
+            gate_took,
+            took: Duration::ZERO,
+            objects: 0,
+        };
+        if gate == Ok(false) && !following {
+            // The next opening scans at once.
+            self.last_full = None;
+            return look;
+        }
+        let every = self.full_every.unwrap_or(if following {
+            FULL_SCAN_FOLLOWING
+        } else {
+            FULL_SCAN_IDLE
+        });
+        let due = self
+            .last_full
+            .is_none_or(|at| now.saturating_sub(at) >= every);
+        let started = Instant::now();
+        if !due {
+            look.objects = self.scanner.followed_objects();
+            if let Ok(heard) = self.scanner.followed(audio) {
+                look.pass = Pass::Followed;
+                look.heard = Some(heard);
+                look.took = started.elapsed();
+                return look;
+            }
+        }
+        self.last_full = Some(now);
+        look.pass = Pass::Full;
+        match self.scanner.scan(audio, own_pid) {
+            Ok(heard) => look.heard = Some(heard),
+            Err(error) => {
+                look.heard = None;
+                look.error = Some(error);
+            }
+        }
+        look.objects = self.scanner.list.len();
+        look.took = started.elapsed();
+        look
+    }
 }
 
 /// The system's CoreAudio process objects.
@@ -541,7 +777,23 @@ mod mac_tests {
             let started = std::time::Instant::now();
             let result = scanner.scan(&mut CoreAudio, std::process::id() as i32);
             assert!(result.is_ok(), "{result:?}");
-            eprintln!("one scan took {:?}", started.elapsed());
+            eprintln!("one full scan took {:?}", started.elapsed());
+        }
+        let mut mic = Mic::new();
+        for second in 0..3 {
+            let look = mic.look(
+                &mut CoreAudio,
+                std::process::id() as i32,
+                true,
+                Duration::from_secs(2 * second),
+            );
+            assert!(look.heard.is_some(), "{look:?}");
+            eprintln!(
+                "look: {} pass in {:?}, {} objects",
+                look.pass.as_str(),
+                look.took,
+                look.objects
+            );
         }
     }
 }

@@ -6,14 +6,16 @@
 //!
 //! ```json
 //! {"v":1,"at":"2026-11-20T01:23:45Z","enabled":true,"phase":"offered","stage":"offered",
-//!  "kind":"native","gate":"open","scan_ms":12.5,
+//!  "kind":"native","gate":"open","pass":"followed","pass_ms":0.4,"scan_ms":95.2,
 //!  "last_start":{"claimed_after_ms":850,"timed_out":false},"error":null}
 //! ```
 //!
 //! - `kind`: the rule of the call's app, `native` or `browser`, or null.
 //! - `gate`: `open` (an input device is in use), `closed`, `failed` (it could not be read) or
 //!   `off` (the setting is off).
-//! - `scan_ms`: how long the last process scan took.
+//! - `pass`: the last look's pass, `gate` (nothing else read), `followed` (only the call apps'
+//!   process objects) or `full` (every process object); `pass_ms`: how long it took.
+//! - `scan_ms`: how long the last full scan took.
 //! - `last_start`: the last "Start" on the tile: how long after it the web app claimed the start
 //!   request (null until it does), and whether the 8 s wait for the recording ran out.
 //!
@@ -61,6 +63,10 @@ pub struct Status {
     pub stage: &'static str,
     pub kind: Option<&'static str>,
     pub gate: GateState,
+    /// The last pass: `gate`, `followed` or `full`, and how long it took.
+    pub pass: &'static str,
+    pub pass_ms: f64,
+    /// How long the last full scan took.
     pub scan_ms: Option<f64>,
     pub last_start: Option<LastStart>,
     pub error: Option<&'static str>,

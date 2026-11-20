@@ -61,7 +61,10 @@ struct FakeAudio {
     zoom: Arc<AtomicBool>,
     gate: Arc<AtomicU8>,
     gate_reads: Arc<AtomicUsize>,
+    /// Full scans: reads of the process list.
     scans: Arc<AtomicUsize>,
+    /// Reads of a process's input flag, in full scans and followed passes.
+    reads: Arc<AtomicUsize>,
     fail: Arc<AtomicBool>,
     blocker: Arc<Blocker>,
 }
@@ -125,7 +128,6 @@ impl AudioProcesses for FakeAudio {
 
     fn processes(&mut self, list: &mut Vec<u32>) -> Result<(), ScanError> {
         self.scans.fetch_add(1, Ordering::SeqCst);
-        self.blocker.hold();
         list.clear();
         if self.fail.load(Ordering::SeqCst) {
             return Err(ScanError::Failed(-1));
@@ -137,7 +139,9 @@ impl AudioProcesses for FakeAudio {
     }
 
     fn capturing(&mut self, _process: u32) -> Option<bool> {
-        Some(true)
+        self.reads.fetch_add(1, Ordering::SeqCst);
+        self.blocker.hold();
+        Some(self.zoom.load(Ordering::SeqCst))
     }
 
     fn playing(&mut self, _process: u32) -> Option<bool> {
@@ -300,8 +304,14 @@ fn a_failed_scan_is_reported_and_changes_nothing() {
     rig.run(120);
     assert!(rig.app.take().is_empty());
     assert_eq!(rig.watcher.stage(), Stage::Dismissed);
-    let last = *rig.app.reports.lock().unwrap().last().unwrap();
-    assert_eq!(last.error, Some("process_list_failed"));
+    // The full scans fail; the followed passes go on in between.
+    assert!(rig
+        .app
+        .reports
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|report| report.error == Some("process_list_failed")));
 }
 
 #[test]
@@ -320,9 +330,9 @@ fn reports_carry_the_stage_and_the_kind_and_come_on_change_only() {
 fn the_thread_sleeps_while_off_scans_while_on_and_stops() {
     let host = FakeHost::default();
     let audio = FakeAudio::default();
-    // A call app is heard, so the scan keeps its pace (no quiet back-off).
+    // A call app is heard, so each tick reads it.
     audio.zoom.store(true, Ordering::SeqCst);
-    let scans = audio.scans.clone();
+    let scans = audio.reads.clone();
     let worker = spawn_with(host, audio, Box::new(call_prompt::service::now)).unwrap();
     std::thread::sleep(Duration::from_millis(100));
     assert_eq!(scans.load(Ordering::SeqCst), 0, "no scan while off");
@@ -338,7 +348,7 @@ fn the_thread_sleeps_while_off_scans_while_on_and_stops() {
         "turning it on scans at once"
     );
 
-    // "Start" wakes the thread: with no offer it changes nothing, but it scans again now.
+    // "Start" wakes the thread: with no offer it changes nothing, but it looks again now.
     worker.start();
     let deadline = Instant::now() + Duration::from_secs(1);
     while scans.load(Ordering::SeqCst) < 2 && Instant::now() < deadline {
@@ -390,7 +400,12 @@ fn a_gate_that_cannot_be_read_scans_and_is_reported() {
     rig.audio.gate.store(GATE_FAILS, Ordering::SeqCst);
     rig.audio.zoom.store(true, Ordering::SeqCst);
     rig.run(10);
-    assert_eq!(rig.audio.scans.load(Ordering::SeqCst), 5);
+    assert_eq!(rig.audio.scans.load(Ordering::SeqCst), 1, "one full scan");
+    assert_eq!(
+        rig.audio.reads.load(Ordering::SeqCst),
+        5,
+        "Zoom read on each tick"
+    );
     assert_eq!(rig.watcher.phase(), Phase::Offered);
     let last = *rig.app.reports.lock().unwrap().last().unwrap();
     assert_eq!(last.error, Some("input_device_failed"));
@@ -404,18 +419,26 @@ fn a_followed_call_keeps_scanning_until_it_ends_whatever_the_gate() {
     rig.app.take();
     // The gate closes for a while (another default device, a flicker); Zoom still captures.
     rig.audio.gate.store(GATE_CLOSED, Ordering::SeqCst);
-    let scans = rig.audio.scans.load(Ordering::SeqCst);
+    let reads = rig.audio.reads.load(Ordering::SeqCst);
     rig.run(60);
-    assert_eq!(rig.audio.scans.load(Ordering::SeqCst), scans + 30);
+    assert_eq!(
+        rig.audio.reads.load(Ordering::SeqCst),
+        reads + 30,
+        "Zoom read on each tick"
+    );
     assert_eq!(rig.watcher.stage(), Stage::Dismissed, "the same call");
     assert!(rig.app.take().is_empty(), "no second offer");
-    // Zoom stops: scans go on until the call has ended, then stop.
+    // Zoom stops: reads go on until the call has ended, then stop.
     rig.audio.zoom.store(false, Ordering::SeqCst);
     rig.run(30);
     assert_eq!(rig.watcher.stage(), Stage::Idle);
-    let ended = rig.audio.scans.load(Ordering::SeqCst);
+    let (ended, scans) = (
+        rig.audio.reads.load(Ordering::SeqCst),
+        rig.audio.scans.load(Ordering::SeqCst),
+    );
     rig.run(60);
-    assert_eq!(rig.audio.scans.load(Ordering::SeqCst), ended);
+    assert_eq!(rig.audio.reads.load(Ordering::SeqCst), ended);
+    assert_eq!(rig.audio.scans.load(Ordering::SeqCst), scans);
 }
 
 #[test]
@@ -460,35 +483,55 @@ fn every_button_press_gets_a_phase_back() {
 }
 
 #[test]
-fn an_open_gate_with_no_call_app_scans_every_6_s_and_a_call_app_brings_back_2_s() {
+fn platform_reads_per_mode_gate_only_then_full_every_10_s_then_followed_with_full_every_14_s() {
     let rig = Rig::new();
     rig.watcher.set_enabled(true);
-    // A headset plays music: the gate is open, nothing captures.
+    // Idle, gate closed: the gate's read and nothing else.
+    rig.audio.gate.store(GATE_CLOSED, Ordering::SeqCst);
+    rig.run(20);
+    assert_eq!(rig.audio.gate_reads.load(Ordering::SeqCst), 10);
+    assert_eq!(rig.audio.scans.load(Ordering::SeqCst), 0);
+    assert_eq!(rig.audio.reads.load(Ordering::SeqCst), 0);
+    // A headset plays music: the gate is open, nothing captures. A full scan when the gate
+    // opens, then one per 10 s.
+    rig.audio.gate.store(GATE_OPEN, Ordering::SeqCst);
     rig.run(60);
     assert_eq!(
         rig.audio.scans.load(Ordering::SeqCst),
-        10,
-        "one scan per 6 s"
+        6,
+        "one full scan per 10 s"
+    );
+    assert_eq!(
+        rig.audio.reads.load(Ordering::SeqCst),
+        0,
+        "no process listed"
     );
     assert_eq!(
         rig.audio.gate_reads.load(Ordering::SeqCst),
-        30,
+        40,
         "the gate on every tick"
     );
-    // Zoom starts: heard at the next quiet scan, then every tick.
+    // Zoom starts: heard at the next full scan, then followed.
     rig.audio.zoom.store(true, Ordering::SeqCst);
-    let before = rig.audio.scans.load(Ordering::SeqCst);
     rig.run(2);
     assert_eq!(rig.watcher.stage(), Stage::Hearing);
-    let heard = rig.audio.scans.load(Ordering::SeqCst);
-    assert_eq!(heard, before + 1);
-    rig.run(20);
+    let (scans, reads) = (
+        rig.audio.scans.load(Ordering::SeqCst),
+        rig.audio.reads.load(Ordering::SeqCst),
+    );
+    assert_eq!(scans, 7);
+    rig.run(56);
+    assert_eq!(
+        rig.audio.reads.load(Ordering::SeqCst),
+        reads + 28,
+        "one read per tick: Zoom's input flag"
+    );
     assert_eq!(
         rig.audio.scans.load(Ordering::SeqCst),
-        heard + 10,
-        "every tick again"
+        scans + 4,
+        "one full scan per 14 s"
     );
-    assert_eq!(rig.watcher.phase(), Phase::Offered);
+    assert_eq!(rig.watcher.stage(), Stage::Offered);
 }
 
 #[test]
@@ -699,8 +742,8 @@ fn the_status_file_follows_the_watcher_without_any_id() {
     assert_eq!(status["kind"], serde_json::Value::Null);
     rig.clock.advance(TICK);
     rig.audio.zoom.store(true, Ordering::SeqCst);
-    // Heard at the next quiet scan (6 s), offered 8 s later.
-    rig.run(16);
+    // Heard at the next full scan (10 s after the first), offered 8 s later.
+    rig.run(20);
     let status = folder.read();
     assert_eq!(status["phase"], "offered");
     assert_eq!(status["stage"], "offered");

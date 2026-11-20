@@ -1,12 +1,12 @@
 //! The watcher: a look at the microphone every two seconds while the setting is on, the session
 //! it drives, and the tile's two buttons.
 //!
-//! A look is the gate first ([`crate::mic::Gate`], one cheap read per input device); the process
-//! scan ([`crate::mic::Scanner`]) runs only when an input device is in use, when the gate cannot
-//! be read, or while the session follows a call app ([`Session::tracking`]), so that a call is
-//! followed until it has ended even if the gate closes for a moment. While the gate is open but
-//! the last scan heard no call app (a headset that only plays music keeps it open), and no call
-//! is followed, the scan runs every [`QUIET_SCAN`] instead of every tick.
+//! A look is [`crate::mic::Mic::look`]: the gate on every tick (one cheap read per input
+//! device), then, when an input device is in use, when the gate cannot be read, or while the
+//! session follows a call app ([`Session::tracking`]), either a followed pass (only the process
+//! objects of the call apps seen capturing) or a full scan of every process object, at most one
+//! per 10 s idle and per 15 s while a call is followed. So a call is followed until it has ended,
+//! even if the gate closes for a moment, at a cost of a few reads per tick.
 //!
 //! How the app hosts it:
 //! - [`spawn`] at start-up, with a [`Host`] that knows the recorder and carries out [`Action`]s.
@@ -35,21 +35,19 @@
 //!   must hand work off (to the main thread, to a task) and return at once.
 
 use crate::apps::Kind;
-use crate::mic::{AudioProcesses, CoreAudio, Gate, Heard, ScanError, Scanner};
+use crate::mic::{AudioProcesses, CoreAudio, Mic, Pass, ScanError};
 use crate::session::{Action, Observation, Phase, Session, Stage, TICK};
 use crate::status::{GateState, LastStart, Status, StatusFile};
 use crate::tile::PAGE_WAIT;
 use std::io;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// The watcher thread's name.
 pub const THREAD_NAME: &str = "call-prompt";
 /// After a tick panics, the watcher waits this long before the next one.
 pub const PANIC_REST: Duration = Duration::from_secs(60);
-/// The scan's pace while the gate is open but no call app was heard and no call is followed.
-pub const QUIET_SCAN: Duration = Duration::from_secs(6);
 
 /// The app, as the watcher sees it. Called from the watcher thread and from the commands'
 /// threads.
@@ -108,27 +106,24 @@ struct Inner {
     last_start: Option<LastStart>,
 }
 
-/// What one look at the microphone found.
-struct Look {
-    /// The call apps heard; `None` when the scan failed.
-    heard: Option<Vec<Heard>>,
-    error: Option<ScanError>,
-    gate: GateState,
-    /// How long the last scan took, also when this look did not scan.
-    scan_ms: Option<f64>,
-}
-
-/// The CoreAudio reader, the gate, the scan's buffer and the scan's pace.
+/// The CoreAudio reader, the passes and their pace, and the time of the last full scan.
 struct Audio<A> {
     audio: A,
-    gate: Gate,
-    scanner: Scanner,
-    /// When the last scan ran, on the watcher's clock, while the gate stayed open.
-    last_scan_at: Option<Duration>,
-    /// The last scan heard no call app.
-    quiet: bool,
-    /// How long the last scan took.
-    scan_ms: Option<f64>,
+    mic: Mic,
+    /// How long the last full scan took, in ms.
+    full_ms: Option<f64>,
+}
+
+/// What the status file says of one look.
+struct Seen {
+    gate: GateState,
+    pass: Pass,
+    pass_ms: f64,
+    full_ms: Option<f64>,
+}
+
+fn ms(duration: Duration) -> f64 {
+    (duration.as_secs_f64() * 100_000.0).round() / 100.0
 }
 
 /// The watcher without its thread: one [`Watcher::tick`] is one look at the microphone.
@@ -157,11 +152,8 @@ impl<H: Host, A: AudioProcesses> Watcher<H, A> {
             host,
             audio: Mutex::new(Audio {
                 audio,
-                gate: Gate::new(),
-                scanner: Scanner::new(),
-                last_scan_at: None,
-                quiet: false,
-                scan_ms: None,
+                mic: Mic::new(),
+                full_ms: None,
             }),
             clock,
             own_pid: std::process::id() as i32,
@@ -229,7 +221,13 @@ impl<H: Host, A: AudioProcesses> Watcher<H, A> {
             }
             // Off: say so at once. On: the next tick says what it finds.
             if !enabled {
-                let status = Self::status(&inner, false, GateState::Off, None, None);
+                let seen = Seen {
+                    gate: GateState::Off,
+                    pass: Pass::GateOnly,
+                    pass_ms: 0.0,
+                    full_ms: None,
+                };
+                let status = Self::status(&inner, false, &seen, None);
                 drop(inner);
                 self.write_status(now, &status);
             }
@@ -293,7 +291,7 @@ impl<H: Host, A: AudioProcesses> Watcher<H, A> {
 
     fn tick_inner(&self) -> Duration {
         let tracking = lock(&self.inner).session.tracking();
-        let look = self.look(tracking, (self.clock)());
+        let (look, sight) = self.look(tracking, (self.clock)());
         let recording = self.host.recording();
         let live = self.host.live();
         let now = (self.clock)();
@@ -327,26 +325,22 @@ impl<H: Host, A: AudioProcesses> Watcher<H, A> {
         }
         self.carry_out(&mut inner, actions, error, now);
         let delay = inner.session.next_tick(now);
-        let status = Self::status(&inner, true, look.gate, look.scan_ms, error);
+        let status = Self::status(&inner, true, &sight, error);
         drop(inner);
         self.write_status(now, &status);
         delay
     }
 
-    fn status(
-        inner: &Inner,
-        enabled: bool,
-        gate: GateState,
-        scan_ms: Option<f64>,
-        error: Option<&'static str>,
-    ) -> Status {
+    fn status(inner: &Inner, enabled: bool, seen: &Seen, error: Option<&'static str>) -> Status {
         Status {
             enabled,
             phase: inner.session.phase(),
             stage: inner.session.stage().as_str(),
             kind: inner.session.kind().map(Kind::as_str),
-            gate,
-            scan_ms,
+            gate: seen.gate,
+            pass: seen.pass.as_str(),
+            pass_ms: seen.pass_ms,
+            scan_ms: seen.full_ms,
             last_start: inner.last_start,
             error,
         }
@@ -359,60 +353,29 @@ impl<H: Host, A: AudioProcesses> Watcher<H, A> {
         }
     }
 
-    /// The gate, then the scan when the gate is open, when it cannot be read, or while a call
-    /// is followed. A closed gate and no call: nothing captures on any input device. An open gate
-    /// after a scan that heard no call app, with no call followed: the next scan waits until
-    /// [`QUIET_SCAN`] after it.
-    fn look(&self, tracking: bool, now: Duration) -> Look {
+    /// One look at the microphone ([`Mic::look`]), and what the status file says of it.
+    fn look(&self, tracking: bool, now: Duration) -> (crate::mic::Look, Seen) {
         let mut guard = lock(&self.audio);
         let Audio {
             audio,
-            gate,
-            scanner,
-            last_scan_at,
-            quiet,
-            scan_ms,
+            mic,
+            full_ms,
         } = &mut *guard;
-        let gate = gate.open(audio, now);
-        let gate_state = match gate {
-            Ok(true) => GateState::Open,
-            Ok(false) => GateState::Closed,
-            Err(_) => GateState::Failed,
+        let look = mic.look(audio, self.own_pid, tracking, now);
+        if look.pass == Pass::Full {
+            *full_ms = Some(ms(look.took));
+        }
+        let seen = Seen {
+            gate: match look.gate {
+                Ok(true) => GateState::Open,
+                Ok(false) => GateState::Closed,
+                Err(_) => GateState::Failed,
+            },
+            pass: look.pass,
+            pass_ms: ms(look.took),
+            full_ms: *full_ms,
         };
-        let mut look = Look {
-            heard: Some(Vec::new()),
-            error: gate.err(),
-            gate: gate_state,
-            scan_ms: *scan_ms,
-        };
-        if gate == Ok(false) && !tracking {
-            *last_scan_at = None;
-            return look;
-        }
-        let resting = !tracking
-            && *quiet
-            && last_scan_at.is_some_and(|at| now.saturating_sub(at) < QUIET_SCAN);
-        if resting {
-            return look;
-        }
-        *last_scan_at = Some(now);
-        let started = Instant::now();
-        let scanned = scanner.scan(audio, self.own_pid);
-        let took = started.elapsed().as_secs_f64() * 1000.0;
-        *scan_ms = Some((took * 100.0).round() / 100.0);
-        look.scan_ms = *scan_ms;
-        match scanned {
-            Ok(heard) => {
-                *quiet = heard.is_empty();
-                look.heard = Some(heard);
-            }
-            Err(error) => {
-                *quiet = false;
-                look.heard = None;
-                look.error = Some(error);
-            }
-        }
-        look
+        (look, seen)
     }
 
     fn answer(&self, answer: fn(&mut Session, Duration) -> Vec<Action>) {

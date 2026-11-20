@@ -2,7 +2,8 @@
 
 use call_prompt::apps::{lookup, Kind, APPS};
 use call_prompt::mic::{
-    scan, AudioProcesses, Gate, Heard, ScanError, Scanner, DEVICE_LIST_REFRESH,
+    scan, AudioProcesses, Gate, Heard, Mic, Pass, ScanError, Scanner, DEVICE_LIST_REFRESH,
+    FULL_SCAN_FOLLOWING, FULL_SCAN_IDLE,
 };
 use std::collections::HashMap;
 use std::time::Duration;
@@ -31,6 +32,7 @@ fn process(bundle_id: &'static str, pid: i32, capturing: bool, playing: bool) ->
 struct Fake {
     list: Result<Vec<Process>, i32>,
     reads: HashMap<(u32, &'static str), usize>,
+    lists: usize,
 }
 
 impl Fake {
@@ -38,7 +40,27 @@ impl Fake {
         Fake {
             list: Ok(list),
             reads: HashMap::new(),
+            lists: 0,
         }
+    }
+
+    /// How many times this was read of the process, since the last call to `reset`.
+    fn count(&self, object: u32, what: &'static str) -> usize {
+        self.reads.get(&(object, what)).copied().unwrap_or(0)
+    }
+
+    /// Every read of a process since the last reset.
+    fn total(&self) -> usize {
+        self.reads.values().sum()
+    }
+
+    fn reset(&mut self) {
+        self.reads.clear();
+        self.lists = 0;
+    }
+
+    fn set(&mut self, object: usize, process: Process) {
+        self.list.as_mut().unwrap()[object] = process;
     }
 
     fn get(&mut self, object: u32, what: &'static str) -> Option<Process> {
@@ -63,6 +85,7 @@ impl AudioProcesses for Fake {
     }
 
     fn processes(&mut self, list: &mut Vec<u32>) -> Result<(), ScanError> {
+        self.lists += 1;
         list.clear();
         match &self.list {
             Ok(processes) => {
@@ -185,9 +208,13 @@ fn a_scan_returns_listed_apps_that_capture() {
         process("com.tinyspeck.slackmacgap", 400, false, true),
     ]);
     let heard = scan(&mut fake, OWN_PID).unwrap();
+    // Zoom's output is not read: its rule needs capturing only.
     assert_eq!(
         heard,
-        [entry("us.zoom.xos", true), entry("com.google.Chrome", true)]
+        [
+            entry("us.zoom.xos", false),
+            entry("com.google.Chrome", true)
+        ]
     );
 }
 
@@ -196,7 +223,7 @@ fn only_capturing_processes_are_asked_for_anything_else() {
     let mut fake = Fake::new(vec![
         process("com.tinyspeck.slackmacgap", 400, false, true),
         process("com.example.player", 500, false, true),
-        process("us.zoom.xos", 100, true, false),
+        process("com.google.Chrome", 100, true, false),
     ]);
     scan(&mut fake, OWN_PID).unwrap();
     for object in [0, 1] {
@@ -254,6 +281,7 @@ fn a_failed_process_list_is_an_error() {
     let mut fake = Fake {
         list: Err(-50),
         reads: HashMap::new(),
+        lists: 0,
     };
     assert_eq!(scan(&mut fake, OWN_PID), Err(ScanError::Failed(-50)));
 }
@@ -434,4 +462,169 @@ fn a_failed_device_list_is_an_error_and_is_tried_again() {
     audio.list_fails = false;
     assert_eq!(gate.open(&mut audio, T0 + Duration::from_secs(2)), Ok(true));
     assert_eq!(audio.lists, 2);
+}
+
+/// A Mac with many audio processes: unlisted players, a dictation tool, and the call apps at
+/// fixed places (Zoom at 10, Slack at 11, Chrome's audio helper at 12).
+fn busy_mac() -> Fake {
+    let mut list: Vec<Process> = (0..10)
+        .map(|n| process("com.example.player", 500 + n, false, true))
+        .collect();
+    list.push(process("us.zoom.xos", 100, false, false));
+    list.push(process("com.tinyspeck.slackmacgap", 101, false, false));
+    list.push(process("com.google.Chrome.helper", 102, false, false));
+    list.push(process("com.example.dictation", 103, false, false));
+    Fake::new(list)
+}
+
+const ZOOM_OBJECT: usize = 10;
+const SLACK_OBJECT: usize = 11;
+const DICTATION_OBJECT: usize = 13;
+
+fn capturing(bundle_id: &'static str, pid: i32) -> Process {
+    process(bundle_id, pid, true, false)
+}
+
+#[test]
+fn a_followed_call_reads_only_its_own_objects_between_full_scans() {
+    let mut fake = busy_mac();
+    fake.set(ZOOM_OBJECT, capturing("us.zoom.xos", 100));
+    let mut mic = Mic::new();
+    let look = mic.look(&mut fake, OWN_PID, false, T0);
+    assert_eq!(look.pass, Pass::Full, "the gate opened");
+    assert_eq!(look.objects, 14);
+    assert_eq!(look.heard, Some(vec![entry("us.zoom.xos", false)]));
+    assert_eq!(mic.followed_objects(), 1);
+    // The session follows the call now: each tick reads Zoom's one object.
+    let mut now = T0;
+    for _ in 0..6 {
+        now += Duration::from_secs(2);
+        fake.reset();
+        let look = mic.look(&mut fake, OWN_PID, true, now);
+        assert_eq!(look.pass, Pass::Followed, "at {now:?}");
+        assert_eq!(look.heard, Some(vec![entry("us.zoom.xos", false)]));
+        assert_eq!(fake.lists, 0);
+        assert_eq!(fake.total(), 1, "one read: Zoom's input flag");
+        assert_eq!(fake.count(ZOOM_OBJECT as u32, "capturing"), 1);
+    }
+    // At the full scan's pace after the last one, a full one.
+    now = T0 + FULL_SCAN_FOLLOWING;
+    let look = mic.look(&mut fake, OWN_PID, true, now);
+    assert_eq!(look.pass, Pass::Full);
+}
+
+#[test]
+fn full_scans_come_every_10_s_with_the_gate_open_and_every_15_s_while_a_call_is_followed() {
+    let count_full = |following: bool, seconds: u64| {
+        let mut fake = busy_mac();
+        if following {
+            fake.set(ZOOM_OBJECT, capturing("us.zoom.xos", 100));
+        }
+        let mut mic = Mic::new();
+        let mut full = 0;
+        let mut now = T0;
+        while now < T0 + Duration::from_secs(seconds) {
+            if mic.look(&mut fake, OWN_PID, following, now).pass == Pass::Full {
+                full += 1;
+            }
+            now += Duration::from_secs(2);
+        }
+        full
+    };
+    assert_eq!(count_full(false, 60), 6, "one per 10 s");
+    assert_eq!(count_full(true, 60), 5, "one per 14 s");
+    assert_eq!(FULL_SCAN_IDLE.as_secs(), 10);
+}
+
+#[test]
+fn a_followed_object_that_disappears_is_dropped_and_a_full_scan_runs_at_once() {
+    let mut fake = busy_mac();
+    fake.set(ZOOM_OBJECT, capturing("us.zoom.xos", 100));
+    let mut mic = Mic::new();
+    mic.look(&mut fake, OWN_PID, false, T0);
+    // Zoom quits: its object can no longer be read.
+    fake.set(ZOOM_OBJECT, Process::default());
+    let look = mic.look(&mut fake, OWN_PID, true, T0 + Duration::from_secs(2));
+    assert_eq!(look.pass, Pass::Full);
+    assert_eq!(look.heard, Some(Vec::new()));
+    assert_eq!(mic.followed_objects(), 0);
+    // The next tick does not scan again.
+    let look = mic.look(&mut fake, OWN_PID, true, T0 + Duration::from_secs(4));
+    assert_eq!(look.pass, Pass::Followed);
+}
+
+#[test]
+fn a_second_app_that_starts_capturing_is_heard_within_15_s() {
+    let mut fake = busy_mac();
+    fake.set(ZOOM_OBJECT, capturing("us.zoom.xos", 100));
+    let mut mic = Mic::new();
+    mic.look(&mut fake, OWN_PID, false, T0);
+    fake.set(SLACK_OBJECT, capturing("com.tinyspeck.slackmacgap", 101));
+    let mut now = T0;
+    let heard_at = loop {
+        now += Duration::from_secs(2);
+        let look = mic.look(&mut fake, OWN_PID, true, now);
+        if look
+            .heard
+            .unwrap()
+            .contains(&entry("com.tinyspeck.slackmacgap", false))
+        {
+            break now;
+        }
+        assert!(now < T0 + Duration::from_secs(60));
+    };
+    assert!(
+        heard_at - T0 <= Duration::from_secs(15),
+        "{:?}",
+        heard_at - T0
+    );
+    assert_eq!(mic.followed_objects(), 2);
+}
+
+#[test]
+fn a_process_known_to_be_no_call_app_is_not_read_again() {
+    let mut fake = busy_mac();
+    fake.set(DICTATION_OBJECT, capturing("com.example.dictation", 103));
+    let mut mic = Mic::new();
+    mic.look(&mut fake, OWN_PID, false, T0);
+    assert_eq!(fake.count(DICTATION_OBJECT as u32, "bundle_id"), 1);
+    fake.reset();
+    let look = mic.look(&mut fake, OWN_PID, false, T0 + FULL_SCAN_IDLE);
+    assert_eq!(look.pass, Pass::Full);
+    assert_eq!(fake.count(DICTATION_OBJECT as u32, "capturing"), 0);
+    assert_eq!(fake.count(DICTATION_OBJECT as u32, "bundle_id"), 0);
+    // One read per other object: the input flag.
+    assert_eq!(fake.total(), 13);
+}
+
+#[test]
+fn an_identified_call_app_is_not_identified_again() {
+    let mut fake = busy_mac();
+    fake.set(ZOOM_OBJECT, capturing("us.zoom.xos", 100));
+    let mut mic = Mic::with_full_every(Duration::from_secs(2));
+    mic.look(&mut fake, OWN_PID, false, T0);
+    fake.reset();
+    let look = mic.look(&mut fake, OWN_PID, true, T0 + Duration::from_secs(2));
+    assert_eq!(look.pass, Pass::Full);
+    assert_eq!(fake.count(ZOOM_OBJECT as u32, "bundle_id"), 0);
+    assert_eq!(fake.count(ZOOM_OBJECT as u32, "pid"), 0);
+    assert_eq!(look.heard, Some(vec![entry("us.zoom.xos", false)]));
+}
+
+#[test]
+fn a_closed_gate_with_no_call_reads_no_process() {
+    let mut audio = Devices {
+        devices: vec![(40, Some(false))],
+        ..Devices::default()
+    };
+    let mut mic = Mic::new();
+    for n in 0..10 {
+        let look = mic.look(&mut audio, OWN_PID, false, T0 + Duration::from_secs(2 * n));
+        assert_eq!(look.pass, Pass::GateOnly);
+    }
+    assert_eq!(
+        audio.reads.len(),
+        10,
+        "one device read per tick, nothing else"
+    );
 }

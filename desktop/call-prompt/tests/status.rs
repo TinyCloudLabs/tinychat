@@ -35,6 +35,8 @@ fn status(phase: Phase) -> Status {
         stage: "offered",
         kind: Some("native"),
         gate: GateState::Open,
+        pass: "followed",
+        pass_ms: 0.4,
         scan_ms: Some(12.5),
         last_start: Some(LastStart {
             claimed_after_ms: Some(850),
@@ -98,6 +100,8 @@ fn it_has_kinds_and_times_only() {
             "gate",
             "kind",
             "last_start",
+            "pass",
+            "pass_ms",
             "phase",
             "scan_ms",
             "stage",
@@ -109,6 +113,8 @@ fn it_has_kinds_and_times_only() {
     assert_eq!(value["kind"], "native");
     assert_eq!(value["gate"], "open");
     assert_eq!(value["scan_ms"], 12.5);
+    assert_eq!(value["pass"], "followed");
+    assert_eq!(value["pass_ms"], 0.4);
     assert_eq!(
         value["last_start"],
         serde_json::json!({ "claimed_after_ms": 850, "timed_out": false })
