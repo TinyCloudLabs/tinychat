@@ -25,13 +25,28 @@ export function readCallPromptPhase(answer: unknown): CallPromptPhase {
 
 const MARK_SRC = "/icons/pwa-192.png";
 
+/**
+ * How long a newly offered tile ignores clicks. The tile appears unannounced over the call and takes the first
+ * click, so a click aimed at the call must not land on Start.
+ */
+export const CALL_PROMPT_CLICK_GUARD_MS = 500;
+
+export interface CallPromptTileOptions {
+  /** Milliseconds, for the click guard: tests pass their own clock. */
+  now?: () => number;
+}
+
 export interface CallPromptTile {
   /** Stops listening. */
   dispose(): void;
 }
 
 /** Renders the tile into `root` and keeps it in step with the native side. */
-export function mountCallPromptTile(root: HTMLElement, bridge: CallPromptBridge): CallPromptTile {
+export function mountCallPromptTile(
+  root: HTMLElement,
+  bridge: CallPromptBridge,
+  { now = () => Date.now() }: CallPromptTileOptions = {},
+): CallPromptTile {
   const doc = root.ownerDocument;
   const element = <K extends keyof HTMLElementTagNameMap>(tag: K, className: string) => {
     const node = doc.createElement(tag);
@@ -65,6 +80,8 @@ export function mountCallPromptTile(root: HTMLElement, bridge: CallPromptBridge)
   let pending = false;
   // A phase from the event is newer than any answer to the first `call_prompt_state`.
   let heard = false;
+  // When the phase last became "offered": clicks before the guard has passed are ignored.
+  let offeredAt = -Infinity;
   let disposed = false;
   let unlisten: (() => void) | null = null;
 
@@ -83,13 +100,14 @@ export function mountCallPromptTile(root: HTMLElement, bridge: CallPromptBridge)
   };
 
   const show = (next: CallPromptPhase) => {
+    if (next === "offered" && phase !== "offered") offeredAt = now();
     phase = next;
     pending = false;
     render();
   };
 
   const click = (command: "call_prompt_start" | "call_prompt_dismiss") => {
-    if (pending || phase !== "offered") return;
+    if (pending || phase !== "offered" || now() - offeredAt < CALL_PROMPT_CLICK_GUARD_MS) return;
     pending = true;
     render();
     bridge.invoke(command).catch((error: unknown) => {
