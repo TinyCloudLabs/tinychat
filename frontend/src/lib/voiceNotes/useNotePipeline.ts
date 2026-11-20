@@ -46,6 +46,7 @@ import {
   recordOnDeviceTranscript,
   subscribeOnDeviceTranscriptSync,
   syncOnDeviceTranscript,
+  transcriptSyncForPipeline,
   type OnDeviceTranscriptSyncState,
 } from "./onDeviceTranscriber";
 import { useQuarantinedRecordings } from "./quarantine";
@@ -121,7 +122,8 @@ export interface NotePipelineFacts {
   /** Null when this build has no on-device speech. */
   onDeviceStatus: OnDeviceSttStatus | null;
   desktopJob?: DesktopWhisperJob | null;
-  transcriptSync: OnDeviceTranscriptSyncState | null;
+  /** With the time of the next automatic attempt of a failed write, when one is scheduled (`transcriptSyncForPipeline`). */
+  transcriptSync: (OnDeviceTranscriptSyncState & { retryAt?: number }) | null;
   /** The space row (read by the hook, behind the write lane) has not answered yet: `rowMetadata` is null for want of an answer, not for want of a row. */
   spaceReading?: boolean;
   /** With `spaceReading`: uploads are ahead of the read in the write lane. */
@@ -932,7 +934,8 @@ function usePipelineStates(entries: readonly { id: string; source: NotePipelineS
         lane: { busy: textLaneBusy, depth: textLaneDepth },
         onDeviceStatus: device !== "mac" && hasOnDevice ? onDeviceStatus : null,
         desktopJob: device === "mac" && hasOnDevice ? getDesktopWhisperQueue()?.snapshot().get(id) ?? null : null,
-        transcriptSync: tcw === null ? null : onDeviceTranscriptSyncState(tcw, id),
+        // A failed write carries the time of its next automatic attempt, so the note shows it retrying, not stuck.
+        transcriptSync: tcw === null ? null : transcriptSyncForPipeline(tcw, id),
         spaceReading,
         spaceAfterUploads: spaceReading && textLaneDepth > 0,
         cloudJob: recorder.transcription?.jobs.get(id) ?? null,
