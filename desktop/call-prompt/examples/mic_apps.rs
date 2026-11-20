@@ -6,8 +6,9 @@
 //!
 //! Once a second for N seconds (20 by default) it prints one line:
 //! - the time;
-//! - the gate: whether the default input device is in use, and how long that read took (the app
-//!   reads it every two seconds, and scans only when it is open or a call is being followed);
+//! - the gate: whether any input device is in use, and how long that took (the app asks every
+//!   two seconds, and scans only when it is open or a call is being followed), then each input
+//!   device's own answer: its CoreAudio id, `in` or `in+out` (a headset), `yes` or `no`;
 //! - the app's own scan (`Scanner::scan`, with its buffer kept from line to line): how long it
 //!   took and which call apps it heard. Here it runs on every line, whatever the gate says;
 //! - every process that captures (`in`) or plays (`out`) audio: its bundle id, its process id
@@ -20,7 +21,7 @@
 //! FaceTime, Signal, Teams, Safari and dictation. Its output stays in your terminal.
 
 use call_prompt::apps;
-use call_prompt::mic::{self, AudioProcesses, CoreAudio, Scanner};
+use call_prompt::mic::{self, AudioProcesses, CoreAudio, Gate, Scanner};
 use std::time::{Duration, Instant};
 
 const USAGE: &str = "usage: mic_apps [--seconds N]";
@@ -48,24 +49,45 @@ fn main() {
 
     let own_pid = std::process::id() as i32;
     let mut audio = CoreAudio;
+    let mut gate = Gate::new();
     let mut scanner = Scanner::new();
     let mut list = Vec::new();
-    println!("# t | gate: default input in use (time) | app scan time | heard | bundle id, pid, in = captures, out = plays, -> table entry (kind) or -");
+    println!("# t | gate: an input device in use (time) [each input device: id in|in+out yes|no] | app scan time | heard | bundle id, pid, in = captures, out = plays, -> table entry (kind) or -");
     let started = Instant::now();
     for second in 1..=seconds {
         let gate_started = Instant::now();
-        let gate = audio.input_in_use();
+        let open = gate.open(&mut audio, started.elapsed());
         let gate_ms = gate_started.elapsed().as_secs_f64() * 1000.0;
-        let gate = match gate {
+        let open = match open {
             Ok(true) => "yes".to_string(),
             Ok(false) => "no".to_string(),
             Err(error) => format!("failed {error:?}"),
         };
+        let devices: Vec<String> = gate
+            .devices()
+            .to_vec()
+            .into_iter()
+            .map(|device| {
+                let streams = if audio.device_plays(device) {
+                    "in+out"
+                } else {
+                    "in"
+                };
+                let running = match audio.device_running(device) {
+                    Ok(true) => "yes".to_string(),
+                    Ok(false) => "no".to_string(),
+                    Err(error) => format!("failed {error:?}"),
+                };
+                format!("{device} {streams} {running}")
+            })
+            .collect();
         let scan_started = Instant::now();
         let scan = scanner.scan(&mut audio, own_pid);
         let scan_ms = scan_started.elapsed().as_secs_f64() * 1000.0;
-        let mut line =
-            format!("{second:>4} s | gate {gate} ({gate_ms:.2} ms) | scan {scan_ms:.2} ms");
+        let mut line = format!(
+            "{second:>4} s | gate {open} ({gate_ms:.2} ms) [{}] | scan {scan_ms:.2} ms",
+            devices.join(", ")
+        );
         match &scan {
             Ok(heard) => {
                 let calls: Vec<&str> = heard

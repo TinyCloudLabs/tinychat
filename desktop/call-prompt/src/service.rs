@@ -1,10 +1,12 @@
 //! The watcher: a look at the microphone every two seconds while the setting is on, the session
 //! it drives, and the tile's two buttons.
 //!
-//! A look is the gate first ([`AudioProcesses::input_in_use`], two cheap reads); the process scan
-//! ([`crate::mic::Scanner`]) runs only when the default input device is in use, when the gate
-//! cannot be read, or while the session follows a call app ([`Session::tracking`]), so that a
-//! call is followed until it has ended even if the gate closes for a moment.
+//! A look is the gate first ([`crate::mic::Gate`], one cheap read per input device); the process
+//! scan ([`crate::mic::Scanner`]) runs only when an input device is in use, when the gate cannot
+//! be read, or while the session follows a call app ([`Session::tracking`]), so that a call is
+//! followed until it has ended even if the gate closes for a moment. While the gate is open but
+//! the last scan heard no call app (a headset that only plays music keeps it open), and no call
+//! is followed, the scan runs every [`QUIET_SCAN`] instead of every tick.
 //!
 //! How the app hosts it:
 //! - [`spawn`] at start-up, with a [`Host`] that knows the recorder and carries out [`Action`]s.
@@ -25,7 +27,7 @@
 //!   must hand work off (to the main thread, to a task) and return at once.
 
 use crate::apps::Kind;
-use crate::mic::{AudioProcesses, CoreAudio, Heard, ScanError, Scanner};
+use crate::mic::{AudioProcesses, CoreAudio, Gate, Heard, ScanError, Scanner};
 use crate::session::{Action, Observation, Phase, Session, Stage, TICK};
 use std::io;
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -36,6 +38,8 @@ use std::time::Duration;
 pub const THREAD_NAME: &str = "call-prompt";
 /// After a tick panics, the watcher waits this long before the next one.
 pub const PANIC_REST: Duration = Duration::from_secs(60);
+/// The scan's pace while the gate is open but no call app was heard and no call is followed.
+pub const QUIET_SCAN: Duration = Duration::from_secs(6);
 
 /// The app, as the watcher sees it. Called from the watcher thread and from the commands'
 /// threads.
@@ -84,10 +88,15 @@ struct Inner {
     last_report: Option<Report>,
 }
 
-/// The CoreAudio reader and the scan's buffer.
+/// The CoreAudio reader, the gate, the scan's buffer and the scan's pace.
 struct Audio<A> {
     audio: A,
+    gate: Gate,
     scanner: Scanner,
+    /// When the last scan ran, on the watcher's clock, while the gate stayed open.
+    last_scan_at: Option<Duration>,
+    /// The last scan heard no call app.
+    quiet: bool,
 }
 
 /// The watcher without its thread: one [`Watcher::tick`] is one look at the microphone.
@@ -115,7 +124,10 @@ impl<H: Host, A: AudioProcesses> Watcher<H, A> {
             host,
             audio: Mutex::new(Audio {
                 audio,
+                gate: Gate::new(),
                 scanner: Scanner::new(),
+                last_scan_at: None,
+                quiet: false,
             }),
             clock,
             own_pid: std::process::id() as i32,
@@ -192,7 +204,7 @@ impl<H: Host, A: AudioProcesses> Watcher<H, A> {
 
     fn tick_inner(&self) -> Duration {
         let tracking = lock(&self.inner).session.tracking();
-        let (heard, error) = self.look(tracking);
+        let (heard, error) = self.look(tracking, (self.clock)());
         let recording = self.host.recording();
         let live = self.host.live();
         let now = (self.clock)();
@@ -212,18 +224,40 @@ impl<H: Host, A: AudioProcesses> Watcher<H, A> {
     }
 
     /// The gate, then the scan when the gate is open, when it cannot be read, or while a call
-    /// is followed. A closed gate and no call: nothing captures on the default input device.
-    /// Returns what was heard (`None` when the scan failed) and a failure for the log.
-    fn look(&self, tracking: bool) -> (Option<Vec<Heard>>, Option<ScanError>) {
+    /// is followed. A closed gate and no call: nothing captures on any input device. An open gate
+    /// after a scan that heard no call app, with no call followed: the next scan waits until
+    /// [`QUIET_SCAN`] after it. Returns what was heard (`None` when the scan failed) and a failure
+    /// for the log.
+    fn look(&self, tracking: bool, now: Duration) -> (Option<Vec<Heard>>, Option<ScanError>) {
         let mut guard = lock(&self.audio);
-        let Audio { audio, scanner } = &mut *guard;
-        let gate = audio.input_in_use();
+        let Audio {
+            audio,
+            gate,
+            scanner,
+            last_scan_at,
+            quiet,
+        } = &mut *guard;
+        let gate = gate.open(audio, now);
         if gate == Ok(false) && !tracking {
+            *last_scan_at = None;
             return (Some(Vec::new()), None);
         }
+        let resting = !tracking
+            && *quiet
+            && last_scan_at.is_some_and(|at| now.saturating_sub(at) < QUIET_SCAN);
+        if resting {
+            return (Some(Vec::new()), gate.err());
+        }
+        *last_scan_at = Some(now);
         match scanner.scan(audio, self.own_pid) {
-            Ok(heard) => (Some(heard), gate.err()),
-            Err(error) => (None, Some(error)),
+            Ok(heard) => {
+                *quiet = heard.is_empty();
+                (Some(heard), gate.err())
+            }
+            Err(error) => {
+                *quiet = false;
+                (None, Some(error))
+            }
         }
     }
 

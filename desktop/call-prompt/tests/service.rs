@@ -48,13 +48,13 @@ impl App {
     }
 }
 
-/// The gate: what `input_in_use` answers.
+/// The gate: what the one input device answers.
 const GATE_OPEN: u8 = 0;
 const GATE_CLOSED: u8 = 1;
 const GATE_FAILS: u8 = 2;
 
-/// Zoom capturing, or nothing; counts the gate's reads and the scans. The gate is open unless a
-/// test closes it.
+/// One input device, and Zoom capturing or nothing; counts the gate's reads and the scans. The
+/// gate is open unless a test closes it.
 #[derive(Clone, Default)]
 struct FakeAudio {
     zoom: Arc<AtomicBool>,
@@ -65,7 +65,13 @@ struct FakeAudio {
 }
 
 impl AudioProcesses for FakeAudio {
-    fn input_in_use(&mut self) -> Result<bool, ScanError> {
+    fn input_devices(&mut self, list: &mut Vec<u32>) -> Result<(), ScanError> {
+        list.clear();
+        list.push(1);
+        Ok(())
+    }
+
+    fn device_running(&mut self, _device: u32) -> Result<bool, ScanError> {
         self.gate_reads.fetch_add(1, Ordering::SeqCst);
         match self.gate.load(Ordering::SeqCst) {
             GATE_OPEN => Ok(true),
@@ -262,6 +268,8 @@ fn reports_carry_the_stage_and_the_kind_and_come_on_change_only() {
 fn the_thread_sleeps_while_off_scans_while_on_and_stops() {
     let host = FakeHost::default();
     let audio = FakeAudio::default();
+    // A call app is heard, so the scan keeps its pace (no quiet back-off).
+    audio.zoom.store(true, Ordering::SeqCst);
     let scans = audio.scans.clone();
     let worker = spawn_with(host, audio, Box::new(call_prompt::service::now)).unwrap();
     std::thread::sleep(Duration::from_millis(100));
@@ -397,4 +405,55 @@ fn every_button_press_gets_a_phase_back() {
     rig.app.take();
     rig.watcher.dismiss();
     assert_eq!(rig.app.take(), [Action::Phase(Phase::Starting)]);
+}
+
+#[test]
+fn an_open_gate_with_no_call_app_scans_every_6_s_and_a_call_app_brings_back_2_s() {
+    let rig = Rig::new();
+    rig.watcher.set_enabled(true);
+    // A headset plays music: the gate is open, nothing captures.
+    rig.run(60);
+    assert_eq!(
+        rig.audio.scans.load(Ordering::SeqCst),
+        10,
+        "one scan per 6 s"
+    );
+    assert_eq!(
+        rig.audio.gate_reads.load(Ordering::SeqCst),
+        30,
+        "the gate on every tick"
+    );
+    // Zoom starts: heard at the next quiet scan, then every tick.
+    rig.audio.zoom.store(true, Ordering::SeqCst);
+    let before = rig.audio.scans.load(Ordering::SeqCst);
+    rig.run(2);
+    assert_eq!(rig.watcher.stage(), Stage::Hearing);
+    let heard = rig.audio.scans.load(Ordering::SeqCst);
+    assert_eq!(heard, before + 1);
+    rig.run(20);
+    assert_eq!(
+        rig.audio.scans.load(Ordering::SeqCst),
+        heard + 10,
+        "every tick again"
+    );
+    assert_eq!(rig.watcher.phase(), Phase::Offered);
+}
+
+#[test]
+fn a_gate_that_closes_and_opens_again_scans_at_once() {
+    let rig = Rig::new();
+    rig.watcher.set_enabled(true);
+    rig.watcher.tick();
+    assert_eq!(rig.audio.scans.load(Ordering::SeqCst), 1);
+    rig.clock.advance(TICK);
+    rig.audio.gate.store(GATE_CLOSED, Ordering::SeqCst);
+    rig.watcher.tick();
+    rig.clock.advance(TICK);
+    rig.audio.gate.store(GATE_OPEN, Ordering::SeqCst);
+    rig.watcher.tick();
+    assert_eq!(
+        rig.audio.scans.load(Ordering::SeqCst),
+        2,
+        "no wait after a closed gate"
+    );
 }

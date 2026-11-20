@@ -1,8 +1,11 @@
 //! The app table's mapping and the scan, over a fake CoreAudio.
 
 use call_prompt::apps::{lookup, Kind, APPS};
-use call_prompt::mic::{scan, AudioProcesses, Heard, ScanError, Scanner};
+use call_prompt::mic::{
+    scan, AudioProcesses, Gate, Heard, ScanError, Scanner, DEVICE_LIST_REFRESH,
+};
 use std::collections::HashMap;
+use std::time::Duration;
 
 const OWN_PID: i32 = 4242;
 
@@ -49,7 +52,13 @@ impl Fake {
 }
 
 impl AudioProcesses for Fake {
-    fn input_in_use(&mut self) -> Result<bool, ScanError> {
+    fn input_devices(&mut self, list: &mut Vec<u32>) -> Result<(), ScanError> {
+        list.clear();
+        list.push(1);
+        Ok(())
+    }
+
+    fn device_running(&mut self, _device: u32) -> Result<bool, ScanError> {
         Ok(true)
     }
 
@@ -284,4 +293,145 @@ fn a_scanner_keeps_its_buffer_and_leaves_no_stale_entries() {
         !fake.read(3, "capturing"),
         "an old entry of the buffer was read"
     );
+}
+
+/// Input devices only: each one runs, idles, fails or is gone. Counts the reads.
+#[derive(Default)]
+struct Devices {
+    /// (device, its answer); `None` fails the read.
+    devices: Vec<(u32, Option<bool>)>,
+    list_fails: bool,
+    lists: usize,
+    reads: Vec<u32>,
+}
+
+impl AudioProcesses for Devices {
+    fn input_devices(&mut self, list: &mut Vec<u32>) -> Result<(), ScanError> {
+        self.lists += 1;
+        list.clear();
+        if self.list_fails {
+            return Err(ScanError::InputFailed(-3));
+        }
+        list.extend(self.devices.iter().map(|(device, _)| *device));
+        Ok(())
+    }
+
+    fn device_running(&mut self, device: u32) -> Result<bool, ScanError> {
+        self.reads.push(device);
+        match self.devices.iter().find(|(id, _)| *id == device) {
+            Some((_, Some(running))) => Ok(*running),
+            _ => Err(ScanError::InputFailed(-4)),
+        }
+    }
+
+    fn processes(&mut self, _list: &mut Vec<u32>) -> Result<(), ScanError> {
+        unreachable!("the gate never scans")
+    }
+
+    fn capturing(&mut self, _process: u32) -> Option<bool> {
+        None
+    }
+
+    fn playing(&mut self, _process: u32) -> Option<bool> {
+        None
+    }
+
+    fn pid(&mut self, _process: u32) -> Option<i32> {
+        None
+    }
+
+    fn bundle_id(&mut self, _process: u32) -> Option<String> {
+        None
+    }
+}
+
+const T0: Duration = Duration::from_secs(100);
+
+#[test]
+fn any_input_device_opens_the_gate_not_only_the_default() {
+    // The built-in microphone (the default) idles; a USB microphone picked in the call app runs.
+    let mut audio = Devices {
+        devices: vec![(40, Some(false)), (73, Some(true))],
+        ..Devices::default()
+    };
+    let mut gate = Gate::new();
+    assert_eq!(gate.open(&mut audio, T0), Ok(true));
+    assert_eq!(gate.devices(), [40, 73]);
+    audio.devices[1].1 = Some(false);
+    assert_eq!(
+        gate.open(&mut audio, T0 + Duration::from_secs(2)),
+        Ok(false)
+    );
+}
+
+#[test]
+fn no_input_device_means_a_closed_gate() {
+    let mut audio = Devices::default();
+    assert_eq!(Gate::new().open(&mut audio, T0), Ok(false));
+}
+
+#[test]
+fn the_device_list_is_read_again_every_30_s() {
+    let mut audio = Devices {
+        devices: vec![(40, Some(false))],
+        ..Devices::default()
+    };
+    let mut gate = Gate::new();
+    let mut now = T0;
+    while now < T0 + DEVICE_LIST_REFRESH {
+        gate.open(&mut audio, now).unwrap();
+        now += Duration::from_secs(2);
+    }
+    assert_eq!(audio.lists, 1, "one list for 30 s of ticks");
+    assert_eq!(audio.reads.len(), 15, "one read per device per tick");
+    // A headset plugged in: seen once the list is read again.
+    audio.devices.push((90, Some(true)));
+    assert_eq!(gate.open(&mut audio, now), Ok(true));
+    assert_eq!(audio.lists, 2);
+}
+
+#[test]
+fn a_failed_read_says_so_and_reads_the_list_again_next_time() {
+    let mut audio = Devices {
+        devices: vec![(40, Some(false)), (73, None)],
+        ..Devices::default()
+    };
+    let mut gate = Gate::new();
+    assert_eq!(gate.open(&mut audio, T0), Err(ScanError::InputFailed(-4)));
+    assert_eq!(audio.lists, 1);
+    // The device was unplugged: the next call reads the list again and the gate answers.
+    audio.devices.pop();
+    assert_eq!(
+        gate.open(&mut audio, T0 + Duration::from_secs(2)),
+        Ok(false)
+    );
+    assert_eq!(audio.lists, 2);
+    assert_eq!(
+        gate.open(&mut audio, T0 + Duration::from_secs(4)),
+        Ok(false)
+    );
+    assert_eq!(audio.lists, 2);
+}
+
+#[test]
+fn a_running_device_wins_over_a_failed_one() {
+    let mut audio = Devices {
+        devices: vec![(73, None), (40, Some(true))],
+        ..Devices::default()
+    };
+    assert_eq!(Gate::new().open(&mut audio, T0), Ok(true));
+}
+
+#[test]
+fn a_failed_device_list_is_an_error_and_is_tried_again() {
+    let mut audio = Devices {
+        devices: vec![(40, Some(true))],
+        list_fails: true,
+        ..Devices::default()
+    };
+    let mut gate = Gate::new();
+    assert_eq!(gate.open(&mut audio, T0), Err(ScanError::InputFailed(-3)));
+    audio.list_fails = false;
+    assert_eq!(gate.open(&mut audio, T0 + Duration::from_secs(2)), Ok(true));
+    assert_eq!(audio.lists, 2);
 }
