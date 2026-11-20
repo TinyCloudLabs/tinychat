@@ -3,7 +3,7 @@ import { PencilIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { listsSpeakerName, withSpeakerChoice } from "./callParticipants";
 import { MAX_SPEAKER_NAME_LENGTH, speakerDisplayName } from "./speakerNames";
-import { OTHER_SIDE_LABELS, OWN_SIDE_LABELS, SPEAKER_NAMES_COPY as COPY } from "./speakerNamesCopy";
+import { isCallPersonLabel, OTHER_SIDE_LABELS, OWN_SIDE_LABELS, SPEAKER_NAMES_COPY as COPY } from "./speakerNamesCopy";
 import type { SpeakerNamesController } from "./useSpeakerNames";
 
 /** The open note's speaker names; absent where a note's names can't be saved, and labels then stay plain text. */
@@ -11,7 +11,8 @@ export const SpeakerNamesContext = createContext<SpeakerNamesController | undefi
 
 function placeholderFor(original: string): string {
   if (OWN_SIDE_LABELS.has(original)) return COPY.mePlaceholder;
-  return OTHER_SIDE_LABELS.has(original) ? COPY.othersPlaceholder : COPY.otherPlaceholder;
+  // "Them 1" is one person of the other side, so it asks for one name.
+  return OTHER_SIDE_LABELS.has(original) && !isCallPersonLabel(original) ? COPY.othersPlaceholder : COPY.otherPlaceholder;
 }
 
 const LABEL_CLASS = "text-meta font-semibold text-muted-foreground";

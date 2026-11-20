@@ -50,7 +50,7 @@ import { librarySourceLabel } from "./libraryKinds";
 import { useWordFixApplier, useWordFixedSentences } from "@/lib/wordFixes/wordFixesStore";
 import { TimestampedTranscript, type TranscriptGap } from "./TimestampedTranscript";
 import { SpeakerLabel, SpeakerNamesContext, SpeakerNamesStatus } from "./SpeakerLabel";
-import { applySpeakerNames, NO_SPEAKER_NAMES } from "./speakerNames";
+import { applySpeakerNames, NO_SPEAKER_NAMES, speakerDisplayName, type SpeakerNames } from "./speakerNames";
 import type { SpeakerNamesController } from "./useSpeakerNames";
 import { TranscriptProvenanceNote } from "./TranscriptProvenanceNote";
 import { hasPrivateCloudTimingProvenance, hasSegmentTimes, transcriptMarkdown } from "./transcriptSegments";
@@ -112,13 +112,17 @@ export interface NoteDetailViewProps {
   shared?: boolean;
 }
 
-/** Consecutive sentences of one speaker as one block. */
-export function transcriptBlocks(sentences: readonly FirefliesSentence[]): { speaker: string | null; text: string }[] {
+/**
+ * Consecutive sentences of one speaker as one block. Speakers are told apart by the name shown for them (`names`), so
+ * two labels given the same name ("Them 1" and "Them 2", both "Alex Example") read as one speaker. A block keeps the
+ * label of its first sentence.
+ */
+export function transcriptBlocks(sentences: readonly FirefliesSentence[], names: SpeakerNames = NO_SPEAKER_NAMES): { speaker: string | null; text: string }[] {
   const blocks: { speaker: string | null; text: string }[] = [];
   for (const sentence of sentences) {
     const speaker = sentence.speaker_name ?? null;
     const last = blocks[blocks.length - 1];
-    if (last && last.speaker === speaker) last.text = `${last.text} ${sentence.text}`;
+    if (last && speakerDisplayName(names, last.speaker) === speakerDisplayName(names, speaker)) last.text = `${last.text} ${sentence.text}`;
     else blocks.push({ speaker, text: sentence.text });
   }
   return blocks;
@@ -467,7 +471,7 @@ export function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
           </div>}
           <SpeakerNamesStatus />
           <TranscriptProvenanceNote sentences={sentences} />
-          {timed || gaps.length > 0 ? <TimestampedTranscript gaps={namedGaps} sentences={sentences} hasAudio={props.audio !== null} isPrivateCloud={isPrivateCloud} /> : transcriptBlocks(sentences).map((block, index) => (
+          {timed || gaps.length > 0 ? <TimestampedTranscript gaps={namedGaps} sentences={sentences} hasAudio={props.audio !== null} isPrivateCloud={isPrivateCloud} /> : transcriptBlocks(sentences, speakerNames).map((block, index) => (
             <div key={index}>
               {block.speaker && <SpeakerLabel original={block.speaker} />}
               <p className="whitespace-pre-wrap break-words text-body">{block.text}</p>
