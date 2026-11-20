@@ -171,11 +171,12 @@ fn the_replay_gives_each_turn_to_its_speaker_and_nothing_in_the_silences() {
         let intervals = timeline.people[id].speaking.len();
         println!("{id}: {intervals} intervals");
         assert!((4..=8).contains(&intervals), "{id}: {intervals}");
-        // Seen from the first sample to the last names tick (205 s), without a hole. The samples
-        // after the last tick have no tick to confirm them.
+        // Seen from the first sample to the end of the capture (205.8 s), without a hole: when
+        // the recording ends, the samples after the last names tick count for the tiles it
+        // confirmed.
         let seen = &timeline.people[id].seen;
         assert_eq!(seen.len(), 1, "{id}: {seen:?}");
-        assert!(seen[0][0] <= 500 && seen[0][1] >= 204_500, "{id}: {seen:?}");
+        assert!(seen[0][0] <= 500 && seen[0][1] >= 205_700, "{id}: {seen:?}");
     }
     assert!(timeline.breaks.is_empty() && timeline.hidden.is_empty() && !timeline.truncated);
 }

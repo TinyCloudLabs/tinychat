@@ -306,6 +306,7 @@ fn the_service_turns_the_replay_into_a_timeline_with_eight_of_eight_turns() {
                 .collect();
             lines.push(json!({
                 "kind": "sample", "t": sample.at_ms as f64 / 1000.0, "tiles": tiles,
+                "intervalMs": sample.interval_ms,
                 "calls": sample.calls, "us": 0, "timedOut": sample.timed_out, "kept": sample.kept,
             }));
         }
@@ -371,6 +372,10 @@ struct Scripted {
     samples: Rc<Cell<usize>>,
     timeouts: Rc<Cell<bool>>,
     during: Rc<RefCell<Option<Box<dyn FnMut()>>>>,
+    /// Tiles whose marker reads as speaking.
+    speaking: Rc<RefCell<Vec<usize>>>,
+    /// A tile that every names tick shows as new: never confirmed.
+    fresh: Rc<Cell<Option<usize>>>,
 }
 
 impl Scripted {
@@ -381,6 +386,8 @@ impl Scripted {
             samples: Default::default(),
             timeouts: Default::default(),
             during: Default::default(),
+            speaking: Default::default(),
+            fresh: Default::default(),
         }
     }
 }
@@ -426,7 +433,7 @@ impl Window for Scripted {
                 .enumerate()
                 .map(|(index, name)| TileFound {
                     name: Name::clean(name).unwrap(),
-                    previous: (!first).then_some(index),
+                    previous: (!first && self.fresh.get() != Some(index)).then_some(index),
                     rules_ok: true,
                     single: true,
                 })
@@ -449,10 +456,19 @@ impl Window for Scripted {
             };
         }
         let quiet = ClassSet::from_tokens(["DYfzY", "cYKTje", "gjg47c"]).unwrap();
+        let loud = ClassSet::from_tokens(["DYfzY", "cYKTje", "Oaajhc"]).unwrap();
+        let speaking = self.speaking.borrow();
         SampleRead {
             readings: slots
                 .iter()
-                .map(|&slot| (slot, Reading::Classes(quiet.clone())))
+                .map(|&slot| {
+                    let set = if speaking.contains(&slot) {
+                        &loud
+                    } else {
+                        &quiet
+                    };
+                    (slot, Reading::Classes(set.clone()))
+                })
                 .collect(),
             calls: slots.len() as u64,
             ..SampleRead::default()
@@ -584,4 +600,53 @@ fn a_sample_is_dropped_when_the_capture_pauses_during_it() {
         .people
         .values()
         .all(|person| person.seen == [[1_000, 1_200]]));
+}
+
+#[test]
+fn a_turn_that_ends_just_before_a_stop_or_a_pause_is_kept_for_confirmed_tiles_only() {
+    for stop in [true, false] {
+        let folder = Folder::new(if stop { "end-stop" } else { "end-pause" });
+        let store = folder.store();
+        let host = FakeHost::default();
+        host.record(RECORDING, 2, 0);
+        let window = Scripted::new(&THREE);
+        let (speaking, fresh) = (window.speaking.clone(), window.fresh.clone());
+        // The third tile is new at every names tick: no tick ever confirms it.
+        fresh.set(Some(2));
+        let mut service = Service::with_account(store.clone(), window, Pace::default(), || None);
+        service.tick(&host);
+        // The tick at 5 s shows the first two tiles again, for the same people.
+        host.at(5_000);
+        service.tick(&host);
+        // The second and the third tile speak until 8.8 s; the capture stops or pauses at 9.8 s,
+        // before the next names tick.
+        for at in (5_200..=9_800).step_by(200) {
+            host.at(at);
+            *speaking.borrow_mut() = if at <= 8_800 { vec![1, 2] } else { vec![] };
+            assert_eq!(service.sample(&host), Some(SAMPLE_INTERVAL));
+        }
+        host.pause();
+        service.tick(&host);
+        if !stop {
+            // Resumed, then stopped before anything more: the file has the break as well.
+            host.record(RECORDING, 2, 9_800);
+            service.tick(&host);
+            host.pause();
+            service.tick(&host);
+        }
+        let timeline = store.read_speaking(RECORDING).unwrap().unwrap();
+        // p1 "Alex Example", p2 "Robin Sample", p3 "Test Guest A" (never confirmed).
+        assert_eq!(
+            timeline.people["p2"].speaking,
+            [[5_200, 9_000]],
+            "stop {stop}"
+        );
+        assert!(timeline.people["p1"].speaking.is_empty());
+        assert_eq!(timeline.people["p1"].seen, [[5_200, 10_000]]);
+        assert!(
+            !timeline.people.contains_key("p3"),
+            "an unconfirmed tile counts for nothing"
+        );
+        assert_eq!(timeline.breaks, if stop { vec![] } else { vec![9_800] });
+    }
 }

@@ -39,7 +39,9 @@
 //! [`SLOW_FOR`] after [`TIMEOUTS_BEFORE_SLOW`] samples in a row timed out). A sample is taken only
 //! while the last names tick read the window and followed three tiles or more, the capture is
 //! live with two channels and the setting is on; the capture is asked before and after the
-//! sample's reads, and a sample is dropped when it paused or changed in between. The timeline is
+//! sample's reads, and a sample is dropped when it paused or changed in between. When the capture
+//! pauses or stops, the samples since the last names tick count for the tiles that tick confirmed
+//! (see `timeline`), without another reading. The timeline is
 //! written every [`Sampling::write_every`] of recording while it changes, when the capture pauses
 //! or stops, and when the service ends. The status file adds counts (samples, unknown samples,
 //! tiles followed, mode) and nothing else. The frontend reads it when it transcribes ([`Store::read_speaking`]). Saving the note

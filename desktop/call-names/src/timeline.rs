@@ -5,7 +5,11 @@
 //! - **Confirmation.** A sample waits in memory until the next names tick. It counts only for a
 //!   tile that the tick shows again as the same element, with the same marker, for the same
 //!   person; the rest of it is dropped. A tick that did not look (it failed or ran out of time)
-//!   leaves the samples waiting, for at most [`MAX_PENDING_MS`].
+//!   leaves the samples waiting, for at most [`MAX_PENDING_MS`]. When the capture pauses or the
+//!   recording ends there is no next tick: the waiting samples then count for each tile that the
+//!   last tick itself showed again for the same person (a tile it showed for the first time
+//!   counts for nothing). No window is read for that; a tile handed to another person in those
+//!   last seconds is the risk taken.
 //! - **Intervals**, per person id, on the recording's clock: from the first "speaking" sample to
 //!   the last one plus one sample interval; two intervals closer than [`MERGE_GAP_MS`] are one; an
 //!   interval of a single sample is dropped. No delay is subtracted here. `seen` spans say where
@@ -444,6 +448,8 @@ pub struct Tracker {
     classifier: Classifier,
     /// Per tile of the last names tick that looked: the person it belongs to, when followed.
     slots: Vec<Option<String>>,
+    /// Per tile of that tick: it showed the tile again, as the same element, for the same person.
+    confirmed: Vec<bool>,
     pending: Vec<Pending>,
     paused: bool,
     counts: Counts,
@@ -455,6 +461,7 @@ impl Tracker {
             builder: TimelineBuilder::new(app, rules_version, sample_ms),
             classifier: Classifier::new(tokens),
             slots: Vec::new(),
+            confirmed: Vec::new(),
             pending: Vec::new(),
             paused: false,
             counts: Counts::default(),
@@ -503,6 +510,17 @@ impl Tracker {
         self.observe(ready);
         self.builder.set_mode(self.classifier.mode());
         self.builder.hidden(at_ms, found.hidden);
+        self.confirmed = found
+            .tiles
+            .iter()
+            .zip(&ids)
+            .map(|(tile, id)| {
+                let before = tile
+                    .previous
+                    .and_then(|old| self.slots.get(old).cloned().flatten());
+                id.is_some() && before == *id
+            })
+            .collect();
         self.slots = found
             .tiles
             .iter()
@@ -527,6 +545,7 @@ impl Tracker {
     /// or the permission missing).
     pub fn unfollow(&mut self) {
         self.slots.clear();
+        self.confirmed.clear();
         self.counts.tiles = 0;
     }
 
@@ -550,11 +569,38 @@ impl Tracker {
         });
     }
 
-    /// The capture paused: open intervals close. Samples still wait for the next names tick.
+    /// The capture paused: the waiting samples count for the tiles the last names tick confirmed
+    /// (see the module documentation), then open intervals close.
     pub fn pause(&mut self) {
         if !self.paused {
+            self.accept_pending();
             self.paused = true;
             self.builder.pause();
+        }
+    }
+
+    /// Without a next names tick: keep the waiting readings of each tile whose person the last
+    /// tick confirmed, and drop the rest.
+    fn accept_pending(&mut self) {
+        for sample in std::mem::take(&mut self.pending) {
+            let readings: Vec<(String, Reading)> = sample
+                .readings
+                .into_iter()
+                .filter_map(|(slot, reading)| {
+                    let id = self.slots.get(slot)?.as_ref()?;
+                    let confirmed = self.confirmed.get(slot).copied().unwrap_or(false);
+                    confirmed.then(|| (id.clone(), reading))
+                })
+                .collect();
+            if readings.is_empty() {
+                continue;
+            }
+            let ready = self.classifier.push(Confirmed {
+                at_ms: sample.at_ms,
+                period_ms: sample.period_ms,
+                readings,
+            });
+            self.observe(ready);
         }
     }
 
@@ -565,10 +611,10 @@ impl Tracker {
         }
     }
 
-    /// The recording ended: what the classifier still holds is classified if it can be. Samples
-    /// no names tick confirmed are dropped.
+    /// The recording ended: the waiting samples count for the tiles the last names tick
+    /// confirmed, and what the classifier still holds is classified if it can be.
     pub fn finish(&mut self) {
-        self.pending.clear();
+        self.accept_pending();
         let ready = self.classifier.finish();
         self.observe(ready);
         self.pause();

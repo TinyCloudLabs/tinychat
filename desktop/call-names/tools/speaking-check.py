@@ -15,6 +15,12 @@ the recording clock); then name each tile: --speaker 0=p1 --speaker 1=p2.
 
 --speaker LABEL=ID says which roster person id (see the `roster` line; use --show-names in your own
 test room, with a distinct display name for each connection) spoke for each label of the events.
+--speaker LABEL=tile:N names a tile instead (N is its index in the names tick, 0 is the first tile
+under the main landmark), for a room where two connections show one display name and so are one
+person in the roster and the timeline. Tiles are judged from the samples' preliminary marks, with
+the timeline's rules (first "on" to last "on" plus one interval, gaps up to 1 s merged, a lone
+sample dropped); the names tick did not confirm those marks, and a tile's index holds only while
+the layout does not change. Use either person ids or tiles, not both.
 
 For each turn (speech start to speech end) the owner is the person whose speaking intervals overlap
 the speech, and GRACE seconds after it, the most. Per turn: the owner and whether it is right, the
@@ -29,7 +35,10 @@ PASS: every owner right, and "on" covers under 1% of the silence. Exit code 0 on
 """
 import argparse
 import json
+import statistics
 import sys
+
+MERGE_GAP_MS = 1000
 
 
 def fail_input(message):
@@ -56,9 +65,62 @@ def load_snapshot(path):
                 samples.append(value)
     if meta is None:
         fail_input(f"{path}: no meta line; is this `snapshot --speaking` output?")
-    if not timeline:
-        fail_input(f"{path}: no timeline; the run followed no speaking marker")
     return meta, timeline, samples
+
+
+def tile_spans(samples, default_ms):
+    """Per tile ("tile:N"), speaking and seen spans in ms from the samples' marks, by the timeline's rules."""
+    tracks = {}
+
+    def close_run(track):
+        run = track["run"]
+        if run and run[2] >= 2:
+            track["speaking"].append([run[0], run[1]])
+        track["run"] = None
+
+    for sample in samples:
+        if sample.get("kept") is False:
+            continue
+        at = round(float(sample.get("t", 0)) * 1000)
+        period = int(sample.get("intervalMs") or default_ms)
+        for tile in sample.get("tiles", []):
+            mark = tile.get("mark")
+            if mark not in ("on", "off"):
+                continue
+            track = tracks.setdefault(f"tile:{tile.get('tile')}",
+                                      {"speaking": [], "seen": [], "run": None, "view": None})
+            view = track["view"]
+            if view and at <= view[1] + MERGE_GAP_MS:
+                view[1] = max(view[1], at + period)
+            else:
+                if view:
+                    track["seen"].append(view)
+                track["view"] = [at, at + period]
+            run = track["run"]
+            if mark == "on":
+                if run and at <= run[1] + MERGE_GAP_MS:
+                    run[1] = max(run[1], at + period)
+                    run[2] += 1
+                else:
+                    close_run(track)
+                    track["run"] = [at, at + period, 1]
+            elif run and at > run[1] + MERGE_GAP_MS:
+                close_run(track)
+    for track in tracks.values():
+        close_run(track)
+        if track["view"]:
+            track["seen"].append(track["view"])
+    return ({key: track["speaking"] for key, track in tracks.items()},
+            {key: track["seen"] for key, track in tracks.items()})
+
+
+def sample_interval_ms(meta, samples):
+    """The sample interval: from the meta line, else the median time between samples, else 200 ms."""
+    if meta.get("intervalMs"):
+        return int(meta["intervalMs"])
+    times = sorted(float(sample.get("t", 0)) for sample in samples)
+    gaps = [round((b - a) * 1000) for a, b in zip(times, times[1:]) if b > a]
+    return int(statistics.median(gaps)) if gaps else 200
 
 
 def load_turns(path, started_wall):
@@ -96,11 +158,16 @@ def overlap(spans, start, end):
     return total
 
 
-def check(timeline, turns, speakers, grace):
-    speaking = {person: data.get("speaking", []) for person, data in timeline.get("people", {}).items()}
-    seen = {person: data.get("seen", []) for person, data in timeline.get("people", {}).items()}
-    if timeline.get("self"):
-        speaking[timeline["self"]] = timeline.get("self_speaking", [])
+def check(timeline, turns, speakers, grace, tiles=None):
+    """`tiles`: (speaking, seen) per tile, when the speakers are tiles; else the timeline's people."""
+    if tiles is not None:
+        speaking, seen = tiles
+        timeline = timeline or {}
+    else:
+        speaking = {person: data.get("speaking", []) for person, data in timeline.get("people", {}).items()}
+        seen = {person: data.get("seen", []) for person, data in timeline.get("people", {}).items()}
+        if timeline.get("self"):
+            speaking[timeline["self"]] = timeline.get("self_speaking", [])
     rows, all_right = [], True
     for index, (label, start, end) in enumerate(turns, 1):
         expected = speakers.get(label)
@@ -157,7 +224,18 @@ def main():
         speakers[label.strip()] = person.strip()
     meta, timeline, samples = load_snapshot(args.snapshot)
     turns = load_turns(args.events, meta.get("startedWall"))
-    result = check(timeline, turns, speakers, args.grace)
+    by_tile = [person.startswith("tile:") for person in speakers.values()]
+    if any(by_tile) and not all(by_tile):
+        fail_input("use either person ids or tiles (tile:N) for every --speaker, not both")
+    if any(by_tile):
+        if not samples:
+            fail_input(f"{args.snapshot}: no sample lines to judge tiles by")
+        tiles = tile_spans(samples, sample_interval_ms(meta, samples))
+        result = check(timeline, turns, speakers, args.grace, tiles)
+    else:
+        if not timeline:
+            fail_input(f"{args.snapshot}: no timeline; the run followed no speaking marker")
+        result = check(timeline, turns, speakers, args.grace)
     marks = [tile.get("mark") for sample in samples for tile in sample.get("tiles", [])]
     result["samples"] = len(samples)
     result["unknown_marks"] = sum(1 for mark in marks if mark == "unknown")
