@@ -12,9 +12,16 @@
 //!   It tells a participant row (which holds a menu button) from a heading in the same list;
 //! - read a name from the title, description or value of the node the path ends on.
 //!
+//! An app may also say where it shows who is speaking ([`SpeakingRule`], optional): a path to each
+//! participant tile, a path from a tile to its name, and a path from a tile to a marker element
+//! whose class list changes while that person speaks. The marker path is structure only (no
+//! label), so a speaking sample never reads text. The marker's class tokens (`classes`) are the
+//! only place a class name may appear in a rules file, and they are compared, never used to find a
+//! node.
+//!
 //! What a rules file cannot change lives in code: which apps and windows are read (`ax`), that
-//! reading never acts on the window, and the caps on names (`names`). Anything malformed is an
-//! error from [`Rules::from_json`]; nothing panics.
+//! reading never acts on the window, and the caps on names (`names`) and on speaking samples
+//! (`speaking`). Anything malformed is an error from [`Rules::from_json`]; nothing panics.
 
 use crate::tree::TextAttr;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -35,6 +42,15 @@ const MAX_LIST: usize = 64;
 const MAX_TEXT: usize = 200;
 /// How far below a node a `has` condition may look.
 const MAX_HAS_DEPTH: usize = 8;
+/// Speaking rules of one app. The rules file holds a list so that a later build can take more.
+const MAX_SPEAKING_RULES: usize = 1;
+/// The fewest tiles a speaking rule may ask for: with two people, the 1:1 rule names the other
+/// side and nothing is sampled.
+pub const MIN_SPEAKING_TILES: usize = 3;
+/// The most tiles a speaking rule may ask for.
+const MAX_SPEAKING_TILES: usize = 12;
+/// Class tokens in one list of a speaking rule.
+const MAX_CLASS_TOKENS: usize = 16;
 
 /// The meeting apps this crate knows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -67,6 +83,66 @@ pub struct AppRules {
     #[serde(default)]
     pub in_call: Vec<Step>,
     pub sources: Vec<SourceRule>,
+    /// Where the app shows who is speaking. Empty: it does not, and nothing is sampled.
+    #[serde(default)]
+    pub speaking: Vec<SpeakingRule>,
+}
+
+/// Where an app shows who is speaking: a marker element in each participant tile whose class list
+/// changes while that person speaks (see `speaking`).
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SpeakingRule {
+    pub id: String,
+    #[serde(default)]
+    pub note: Option<String>,
+    /// Nothing is sampled while fewer tiles than this show; at least [`MIN_SPEAKING_TILES`].
+    pub min_tiles: usize,
+    /// From the window's root to each participant tile.
+    pub tile: Vec<Step>,
+    /// From a tile to the text of its name. A tile with more or fewer than one name is skipped.
+    pub name: SpeakingName,
+    /// From a tile to its marker candidates. Structure only: no step may have a label.
+    pub marker: Vec<Step>,
+    /// The marker's class tokens, when they are known. Without them, or when the window's tokens
+    /// do not match, the quiet marker is learned instead.
+    #[serde(default)]
+    pub classes: Option<Classes>,
+}
+
+/// How a tile's name is read: a path from the tile, then the first non-empty attribute.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SpeakingName {
+    pub path: Vec<Step>,
+    pub from: Vec<TextAttr>,
+    /// Texts that are never names.
+    #[serde(default)]
+    pub ignore: Vec<String>,
+}
+
+/// The class tokens of a speaking marker. Its `Debug` shows only how many there are.
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Classes {
+    /// Every marker has all of these, speaking or not.
+    pub all: Vec<String>,
+    /// A quiet marker has one of these.
+    pub quiet: Vec<String>,
+    /// A speaking marker has one of these.
+    pub speaking: Vec<String>,
+}
+
+impl fmt::Debug for Classes {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "Classes(<{} all, {} quiet, {} speaking>)",
+            self.all.len(),
+            self.quiet.len(),
+            self.speaking.len()
+        )
+    }
 }
 
 /// One place in the window where names appear.
@@ -355,9 +431,93 @@ impl Rules {
                     return Err(format!("source id {:?} appears twice", source.id));
                 }
             }
+            check_count(
+                app.speaking.len(),
+                MAX_SPEAKING_RULES,
+                &format!("{at} speaking"),
+            )?;
+            for speaking in &app.speaking {
+                check_speaking(speaking)?;
+                if !ids.insert(speaking.id.as_str()) {
+                    return Err(format!("rule id {:?} appears twice", speaking.id));
+                }
+            }
         }
         Ok(())
     }
+}
+
+fn check_speaking(rule: &SpeakingRule) -> Result<(), String> {
+    check_text(&rule.id, "speaking id")?;
+    let at = format!("speaking {:?}", rule.id);
+    check_note(&rule.note, &at)?;
+    if !(MIN_SPEAKING_TILES..=MAX_SPEAKING_TILES).contains(&rule.min_tiles) {
+        return Err(format!(
+            "{at}: min_tiles must be {MIN_SPEAKING_TILES} to {MAX_SPEAKING_TILES}"
+        ));
+    }
+    for (what, steps) in [
+        ("tile", &rule.tile),
+        ("name.path", &rule.name.path),
+        ("marker", &rule.marker),
+    ] {
+        if steps.is_empty() || steps.len() > MAX_STEPS {
+            return Err(format!("{at}: {what} needs 1 to {MAX_STEPS} steps"));
+        }
+        for step in steps {
+            check_step(step, &format!("{at} {what}"))?;
+        }
+    }
+    // A sample reads the marker's class list and nothing else: no step towards it reads text.
+    let reads_text = |step: &Step| {
+        step.matcher.label.is_some() || step.skip.iter().any(|skip| skip.label.is_some())
+    };
+    if rule.marker.iter().any(reads_text) {
+        return Err(format!(
+            "{at}: marker steps are structure only, without labels"
+        ));
+    }
+    let name = &rule.name;
+    if name.from.is_empty() || name.from.len() > 3 {
+        return Err(format!("{at}: name.from needs 1 to 3 attributes"));
+    }
+    if name.from.iter().collect::<HashSet<_>>().len() != name.from.len() {
+        return Err(format!("{at}: name.from repeats an attribute"));
+    }
+    check_list(&name.ignore, &format!("{at} name.ignore"), true)?;
+    if let Some(classes) = &rule.classes {
+        let mut seen = HashSet::new();
+        for (what, tokens) in [
+            ("all", &classes.all),
+            ("quiet", &classes.quiet),
+            ("speaking", &classes.speaking),
+        ] {
+            if tokens.is_empty() || tokens.len() > MAX_CLASS_TOKENS {
+                return Err(format!(
+                    "{at}: classes.{what} needs 1 to {MAX_CLASS_TOKENS} tokens"
+                ));
+            }
+            for token in tokens {
+                if !is_class_token(token) {
+                    return Err(format!(
+                        "{at}: classes.{what} has a token that is not 1 to 40 letters, digits, '-' or '_'"
+                    ));
+                }
+                if !seen.insert(token.as_str()) {
+                    return Err(format!("{at}: a class token appears twice"));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// A class token a rule may name: 1 to 40 ASCII letters, digits, `-` or `_`.
+fn is_class_token(token: &str) -> bool {
+    (1..=40).contains(&token.len())
+        && token
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
 }
 
 fn check_source(source: &SourceRule) -> Result<(), String> {
@@ -488,6 +648,15 @@ mod tests {
             "\"google-meet\""
         );
         assert_eq!(serde_json::to_string(&App::Zoom).unwrap(), "\"zoom\"");
+    }
+
+    #[test]
+    fn class_tokens_are_short_words() {
+        assert!(is_class_token("gjg47c"));
+        assert!(is_class_token("a-b_C9"));
+        assert!(!is_class_token(""));
+        assert!(!is_class_token("md:flex"));
+        assert!(!is_class_token(&"x".repeat(41)));
     }
 
     #[test]

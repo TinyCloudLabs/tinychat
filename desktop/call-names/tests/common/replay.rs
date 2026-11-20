@@ -9,7 +9,7 @@
 //! Class lists are kept as the scrubber's stable tokens (`c` and eight hex digits). [`Replay`]
 //! counts every read by kind and element, so a test can say what a reading asked for.
 
-use call_names::tree::{ReadError, Source, Structure, TextAttr};
+use call_names::tree::{ClassSet, ReadError, Source, Structure, TextAttr};
 use serde::Deserialize;
 use std::collections::HashMap;
 
@@ -269,6 +269,16 @@ impl Source for Replay {
             .collect())
     }
 
+    fn class_list(&mut self, node: &String) -> Result<Option<ClassSet>, ReadError> {
+        self.reads.class_lists.push(node.clone());
+        self.fail(node)?;
+        let found = &self.state[node];
+        if found.cls.is_empty() {
+            return Ok(None);
+        }
+        Ok(ClassSet::from_tokens(found.cls.iter().map(String::as_str)))
+    }
+
     fn identity_hash(&self, node: &String) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -338,4 +348,35 @@ pub fn turns(events: &[Event]) -> Vec<Turn> {
         }
     }
     out
+}
+
+/// The class names of the Meet speaking rule and the scrubber's token for each, so that a rule
+/// can read the fixture's class lists.
+pub const MEET_CLASS_TOKENS: [(&str, &str); 7] = [
+    ("DYfzY", "cace893be"),
+    ("cYKTje", "c34db12c0"),
+    ("gjg47c", "c9ffe0173"),
+    ("Oaajhc", "c1edf03cb"),
+    ("HX2H7", "c524b0d6f"),
+    ("wEsLMd", "cc8a7d408"),
+    ("OgVli", "c18c9959b"),
+];
+
+/// The embedded rules with the speaking rule's class names replaced by the fixture's tokens.
+pub fn token_rules_json() -> String {
+    let mut json = call_names::rules::EMBEDDED_JSON.to_owned();
+    for (class, token) in MEET_CLASS_TOKENS {
+        let quoted = format!("\"{class}\"");
+        assert_eq!(
+            json.matches(&quoted).count(),
+            1,
+            "{class} once in the rules"
+        );
+        json = json.replace(&quoted, &format!("\"{token}\""));
+    }
+    json
+}
+
+pub fn token_rules() -> call_names::rules::Rules {
+    call_names::rules::Rules::from_json(&token_rules_json()).unwrap()
 }

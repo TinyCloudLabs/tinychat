@@ -1,11 +1,19 @@
 //! The Accessibility node model.
 //!
 //! [`Node`] is an owned tree: what a fixture loads and what a snapshot prints. It has no class-list
-//! or DOM-id field on purpose, so obfuscated page classes can never become rule anchors.
+//! or DOM-id field on purpose, so obfuscated page classes can never become rule anchors: no path
+//! step can match a class, and [`Structure`] has no class field either.
 //!
 //! [`Source`] is how a reading walks a live window: one node at a time, structure first, so that
 //! text is requested only where a rule needs it (see `extract`). [`NodeSource`] implements it over
 //! an owned [`Node`] tree.
+//!
+//! Class lists, narrowly. [`Source::class_list`] is the one way a class list is read, and only the
+//! speaking marker uses it (see `speaking`): once per marker candidate that a structural path
+//! already selected, during a names tick, and once per followed marker in each speaking sample. A
+//! class list becomes a [`ClassSet`] at once: 64-bit hashes of at most [`MAX_CLASSES`] tokens,
+//! never the tokens themselves. It is compared and dropped; it cannot be serialized, and its
+//! `Debug` shows only how many tokens it has.
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -126,11 +134,87 @@ pub trait Source {
         attrs: &[TextAttr],
     ) -> Result<Vec<Option<String>>, ReadError>;
 
+    /// The class list of one node (`AXDOMClassList` on macOS), as hashes. Only the speaking marker
+    /// asks for it, and only on a node a structural path selected. `Ok(None)`: the node has no
+    /// class list, or this source cannot read class lists at all, which is the default.
+    fn class_list(&mut self, node: &Self::Node) -> Result<Option<ClassSet>, ReadError> {
+        let _ = node;
+        Ok(None)
+    }
+
     /// Identity, for cycle checks: equal elements must hash equal (`CFHash` on macOS).
     fn identity_hash(&self, node: &Self::Node) -> u64;
 
     /// True when both handles are the same element (`CFEqual` on macOS).
     fn same(&self, a: &Self::Node, b: &Self::Node) -> bool;
+}
+
+/// Most tokens a [`ClassSet`] holds. A speaking marker has three or four; an element with more
+/// is not one.
+pub const MAX_CLASSES: usize = 16;
+
+/// The class list of one element, as 64-bit hashes of its tokens, sorted and without repeats.
+///
+/// The tokens themselves are never kept: [`ClassSet::from_tokens`] hashes each one and drops it.
+/// A set is compared and dropped; it is not `Serialize`, and its `Debug` shows only the count.
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct ClassSet(Vec<u64>);
+
+impl ClassSet {
+    /// The set of these tokens. `None` when there are more than [`MAX_CLASSES`] distinct ones.
+    pub fn from_tokens<'t>(tokens: impl IntoIterator<Item = &'t str>) -> Option<ClassSet> {
+        let mut hashes: Vec<u64> = tokens.into_iter().map(class_hash).collect();
+        hashes.sort_unstable();
+        hashes.dedup();
+        (hashes.len() <= MAX_CLASSES).then_some(ClassSet(hashes))
+    }
+
+    /// Tokens in the set.
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// True when the set holds the token of this hash (see [`class_hash`]).
+    pub fn contains(&self, hash: u64) -> bool {
+        self.0.binary_search(&hash).is_ok()
+    }
+
+    /// True when every token of `other` is in this set.
+    pub fn contains_all(&self, other: &ClassSet) -> bool {
+        other.0.iter().all(|hash| self.contains(*hash))
+    }
+
+    /// One hash for the whole set, the same for the same tokens in any order.
+    pub fn fingerprint(&self) -> u64 {
+        self.0
+            .iter()
+            .fold(FNV_OFFSET, |hash, token| fnv(hash, &token.to_le_bytes()))
+    }
+}
+
+/// Only the count: hashes of class tokens are not shown either.
+impl fmt::Debug for ClassSet {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "ClassSet(<{} classes>)", self.0.len())
+    }
+}
+
+const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+
+fn fnv(hash: u64, bytes: &[u8]) -> u64 {
+    bytes.iter().fold(hash, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3)
+    })
+}
+
+/// The hash a [`ClassSet`] keeps for a token (64-bit FNV-1a). The rules hash their tokens the same
+/// way, so a set is compared with them without holding a token.
+pub fn class_hash(token: &str) -> u64 {
+    fnv(FNV_OFFSET, token.as_bytes())
 }
 
 /// [`Source`] over an owned [`Node`] tree.

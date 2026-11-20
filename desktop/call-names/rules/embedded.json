@@ -1,6 +1,6 @@
 {
   "format": 1,
-  "version": 2,
+  "version": 3,
   "apps": [
     {
       "app": "google-meet",
@@ -40,6 +40,43 @@
             }
           ],
           "name": { "from": ["value"], "ignore": ["You"] }
+        }
+      ],
+      "speaking": [
+        {
+          "id": "meet-tile-speaking",
+          "note": "Fixture meet-speaking-s56 (a three-connection call in Chrome 158 on macOS 26.3, 2026-11-20, default layout, cameras off): each participant tile is a child of the main landmark that holds its name. Below the tile, first child three times, then the child that has children, then its first child is an empty group whose classes are the marker. In all 811 samples it was exactly quiet or speaking, and it followed each speaker within 0.64 to 0.88 s. Its sibling adds nothing. Other layouts, cameras on, screen sharing, a background tab and other Chrome or Meet versions are untested.",
+          "min_tiles": 3,
+          "tile": [
+            { "find": "descendant", "role": "AXGroup", "subrole": "AXLandmarkMain" },
+            { "find": "child", "role": "AXGroup", "has": { "role": "AXStaticText", "within": 8 } }
+          ],
+          "name": {
+            "path": [
+              {
+                "find": "descendant",
+                "role": "AXStaticText",
+                "skip": [
+                  { "subrole": ["AXLandmarkRegion", "AXLandmarkComplementary", "AXLandmarkNavigation", "AXLandmarkBanner", "AXLandmarkContentInfo", "AXLandmarkSearch", "AXLandmarkForm", "AXLandmarkMain", "AXApplicationDialog", "AXApplicationAlert", "AXApplicationAlertDialog", "AXApplicationStatus", "AXApplicationLog", "AXApplicationMarquee", "AXApplicationTimer"] },
+                  { "role": ["AXHeading", "AXButton", "AXPopUpButton", "AXMenuButton", "AXCheckBox", "AXRadioButton", "AXLink", "AXTextField", "AXTextArea", "AXComboBox", "AXMenu", "AXSlider"] }
+                ]
+              }
+            ],
+            "from": ["value"],
+            "ignore": ["You"]
+          },
+          "marker": [
+            { "find": "first_child", "role": "AXGroup" },
+            { "find": "first_child", "role": "AXGroup" },
+            { "find": "first_child", "role": "AXGroup" },
+            { "find": "child", "role": "AXGroup", "has": { "role": "AXGroup", "within": 1 } },
+            { "find": "first_child", "role": "AXGroup", "subrole": "AXEmptyGroup" }
+          ],
+          "classes": {
+            "all": ["DYfzY", "cYKTje"],
+            "quiet": ["gjg47c"],
+            "speaking": ["Oaajhc", "HX2H7", "wEsLMd", "OgVli"]
+          }
         }
       ]
     },

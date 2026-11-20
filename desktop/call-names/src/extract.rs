@@ -20,10 +20,14 @@
 //! name: the text that shows the name never counts as the marker, and a source that shows more
 //! than one "self" in a tick marks nobody in that tick.
 //!
+//! A speaking rule ([`Scan::speaking_tiles`]) runs over the same scan after the names: its tile
+//! and marker paths are structure, and a tile's name comes from texts the names rules have
+//! mostly read already. No class list is read here; `speaking` reads one per marker candidate.
+//!
 //! Nodes are kept in document order, so a node's subtree is the index range `index..end`.
 
 use crate::names::{split_suffix_tags, Name, MAX_PEOPLE};
-use crate::rules::{App, AppRules, Axis, Has, Matcher, SelfMarker, SourceRule, Step};
+use crate::rules::{App, AppRules, Axis, Has, Matcher, SelfMarker, SourceRule, SpeakingRule, Step};
 use crate::session::{Discard, Meter};
 use crate::tree::{Node, Source, Structure, TextAttr};
 use std::collections::HashMap;
@@ -52,6 +56,28 @@ pub struct Extraction {
     pub sources: Vec<SourceNames>,
     /// A source had more than [`MAX_PEOPLE`] names; the rest were not read.
     pub truncated: bool,
+}
+
+/// Most marker candidates a tile may have. A tile with more is skipped: the marker path does not
+/// pick one element there.
+pub const MAX_MARKER_CANDIDATES: usize = 2;
+
+/// One participant tile a speaking rule found: the tile, its marker candidates (one or two), and
+/// the one name it shows. `Debug` shows neither elements nor the name.
+#[derive(Clone)]
+pub struct TileCandidates<H> {
+    pub tile: H,
+    pub candidates: Vec<H>,
+    pub name: Name,
+}
+
+impl<H> std::fmt::Debug for TileCandidates<H> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TileCandidates")
+            .field("candidates", &self.candidates.len())
+            .field("name", &self.name)
+            .finish()
+    }
 }
 
 impl Extraction {
@@ -245,6 +271,65 @@ impl<H: Clone> Scan<H> {
         }
     }
 
+    /// The participant tiles of a speaking rule, each with its marker candidates and its one name.
+    /// A tile that shows no name or more than one, or whose marker path reaches no element or more
+    /// than [`MAX_MARKER_CANDIDATES`], is left out. At most [`MAX_PEOPLE`] tiles.
+    pub fn speaking_tiles<S: Source<Node = H>>(
+        &mut self,
+        source: &mut S,
+        rule: &SpeakingRule,
+        meter: &mut Meter,
+    ) -> Result<Vec<TileCandidates<H>>, Discard> {
+        let mut out = Vec::new();
+        for (tile, _) in self.eval_path(source, &rule.tile, meter)? {
+            if out.len() == MAX_PEOPLE {
+                break;
+            }
+            let mut names: Vec<Name> = Vec::new();
+            for (text, _) in self.eval_path_from(source, tile, &rule.name.path, meter)? {
+                let texts = self.texts(source, text, &rule.name.from, meter)?;
+                let Some(raw) = texts
+                    .into_iter()
+                    .flatten()
+                    .find(|text| !text.trim().is_empty())
+                else {
+                    continue;
+                };
+                let Some(name) = Name::clean(&raw) else {
+                    continue;
+                };
+                if rule.name.ignore.iter().any(|word| word == name.as_str()) {
+                    continue;
+                }
+                names.push(name);
+                if names.len() > 1 {
+                    break;
+                }
+            }
+            let mut names = names.into_iter();
+            let (Some(name), None) = (names.next(), names.next()) else {
+                continue;
+            };
+            let candidates: Vec<usize> = self
+                .eval_path_from(source, tile, &rule.marker, meter)?
+                .into_iter()
+                .map(|(index, _)| index)
+                .collect();
+            if candidates.is_empty() || candidates.len() > MAX_MARKER_CANDIDATES {
+                continue;
+            }
+            out.push(TileCandidates {
+                tile: self.nodes[tile].handle.clone(),
+                candidates: candidates
+                    .iter()
+                    .map(|&index| self.nodes[index].handle.clone())
+                    .collect(),
+                name,
+            });
+        }
+        Ok(out)
+    }
+
     /// Nodes reached by a path from the root, each with the node the previous step matched.
     fn eval_path<S: Source<Node = H>>(
         &mut self,
@@ -252,11 +337,22 @@ impl<H: Clone> Scan<H> {
         steps: &[Step],
         meter: &mut Meter,
     ) -> Result<Vec<(usize, Option<usize>)>, Discard> {
-        let mut current: Vec<(usize, Option<usize>)> = if self.nodes.is_empty() {
-            Vec::new()
-        } else {
-            vec![(0, None)]
-        };
+        if self.nodes.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.eval_path_from(source, 0, steps, meter)
+    }
+
+    /// Nodes reached by a path from the node `start`, each with the node the previous step
+    /// matched.
+    fn eval_path_from<S: Source<Node = H>>(
+        &mut self,
+        source: &mut S,
+        start: usize,
+        steps: &[Step],
+        meter: &mut Meter,
+    ) -> Result<Vec<(usize, Option<usize>)>, Discard> {
+        let mut current: Vec<(usize, Option<usize>)> = vec![(start, None)];
         for step in steps {
             let mut next: Vec<(usize, Option<usize>)> = Vec::new();
             let mut taken = vec![false; self.nodes.len()];
