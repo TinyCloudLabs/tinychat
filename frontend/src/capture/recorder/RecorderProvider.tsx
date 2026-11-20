@@ -36,7 +36,7 @@ import type { RecorderNote, RecorderNoteStatus } from "./voiceNoteRecorderContro
 import type { LimitExtension, TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
 import type { VoiceNotePipeline } from "@/lib/voiceNotes/voiceNotePipeline";
 import { useVoiceNoteRecorder } from "./useVoiceNoteRecorder";
-import { shouldScheduleReceiptDismissal } from "./receiptBehavior";
+import { noteAfterReceipt, shouldScheduleReceiptDismissal } from "./receiptBehavior";
 import { useLimitNotifications } from "./limitNotifications";
 import { stopRequestApplies, useRecordShortcut, useStopShortcut } from "./recordShortcut";
 
@@ -178,10 +178,12 @@ export interface RecorderProviderProps {
   onSignIn?: () => void | Promise<void>;
   /** The sign-in opens a screen of its own: the sheet minimises first, so it is not left covering it. */
   minimiseOnSignIn?: boolean;
+  /** Shows a recording's own page: where the Mac's receipt leaves the user when it closes by itself (noteAfterReceipt). */
+  onShowNote?: (recordingId: string) => void;
   children: ReactNode;
 }
 
-export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSaved, onAccountReady, pipeline, signedOut, onSignedOut, onSignIn, minimiseOnSignIn, children }: RecorderProviderProps) {
+export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSaved, onAccountReady, pipeline, signedOut, onSignedOut, onSignIn, minimiseOnSignIn, onShowNote, children }: RecorderProviderProps) {
   const platform = useContext(PlatformContext);
   const disclosureTitleId = useId();
   const disclosureDescriptionId = useId();
@@ -266,6 +268,19 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
     }
   }, [state]);
 
+  // A receipt whose time is up: the sheet closes and the outcome goes. On the Mac, while the receipt is on screen, the
+  // recording's own page takes its place (noteAfterReceipt), so Stop never ends on the screen the recording began on.
+  // Read through a ref: whether the sheet is open must not restart the receipt's clock.
+  const expiry = useRef({ platform, sheetOpen, savedId: state.lastSaved?.id ?? null, onShowNote });
+  expiry.current = { platform, sheetOpen, savedId: state.lastSaved?.id ?? null, onShowNote };
+  const expireReceipt = useCallback(() => {
+    const { platform: shell, sheetOpen: shown, savedId, onShowNote: showNote } = expiry.current;
+    const note = noteAfterReceipt(shell, shown, savedId);
+    if (note !== null) showNote?.(note);
+    setSheetOpen(false);
+    dismissOutcome();
+  }, [dismissOutcome]);
+
   // The receipt clock starts once its content is actually visible — the local Play control, or
   // its load error (receiptReady) — not at commit: a native read slow enough to still be loading
   // must not let the sheet close before the user ever sees it. Playback keeps it open past that.
@@ -277,12 +292,9 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
     if (state.permissionDenied) return;
     if (!shouldScheduleReceiptDismissal(state, momentFieldFocused)) return;
     if (receiptReady) return;
-    const ceiling = setTimeout(() => {
-      setSheetOpen(false);
-      dismissOutcome();
-    }, RECEIPT_MAX_MS);
+    const ceiling = setTimeout(expireReceipt, RECEIPT_MAX_MS);
     return () => clearTimeout(ceiling);
-  }, [dismissOutcome, momentFieldFocused, receiptReady, state.outcome, state.lastSaved, state.permissionDenied, state.limitNotice]);
+  }, [expireReceipt, momentFieldFocused, receiptReady, state.outcome, state.lastSaved, state.permissionDenied, state.limitNotice]);
 
   useEffect(() => {
     if (state.outcome !== "local" && state.outcome !== "saved") return;
@@ -290,12 +302,9 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
     if (!shouldScheduleReceiptDismissal(state, momentFieldFocused)) return;
     if (!receiptReady) return;
     if (receiptPlaying) return;
-    const timer = setTimeout(() => {
-      setSheetOpen(false);
-      dismissOutcome();
-    }, receiptWindowMs(receiptActionable));
+    const timer = setTimeout(expireReceipt, receiptWindowMs(receiptActionable));
     return () => clearTimeout(timer);
-  }, [dismissOutcome, momentFieldFocused, receiptActionable, receiptPlaying, receiptReady, state.outcome, state.lastSaved, state.permissionDenied, state.limitNotice]);
+  }, [expireReceipt, momentFieldFocused, receiptActionable, receiptPlaying, receiptReady, state.outcome, state.lastSaved, state.permissionDenied, state.limitNotice]);
 
   useEffect(() => recorder.setOnPresent(() => setSheetOpen(true)), [recorder.setOnPresent]);
 
