@@ -95,7 +95,7 @@ describe("CaptureSettings, offer to record when a call starts", () => {
     }
   });
 
-  test("a failed read hides it for the session: one error, and no later popover asks again", async () => {
+  test("a passing failure hides it for this opening only: one error, and the next opening asks again", async () => {
     const fake = createFakeDesktopCaptureExtras({ callPrompt: {} });
     fake.failNext("callPrompt.get", "watcher busy");
     const error = spyOn(console, "error").mockImplementation(() => {});
@@ -103,10 +103,44 @@ describe("CaptureSettings, offer to record when a call starts", () => {
       const view = await mountSettings(fake.extras);
       expect(view.toggle()).toBeNull();
       expect(view.systemAudio()).not.toBeNull();
+      expect(error.mock.calls.filter((call) => String(call[0]).includes("call prompt")).length).toBe(1);
+      await view.reopen();
+      expect(view.toggle()?.getAttribute("aria-checked")).toBe("true");
+      expect(fake.calls.filter((call) => call.startsWith("callPrompt"))).toEqual(["callPrompt.get", "callPrompt.get"]);
+    } finally { error.mockRestore(); }
+  });
+
+  test("an answer that is not the agreed one hides it for this opening only", async () => {
+    const fake = createFakeDesktopCaptureExtras({ callPrompt: {} });
+    const get = fake.extras.callPrompt!.get;
+    let answers = 0;
+    fake.extras.callPrompt!.get = async () => (answers++ === 0 ? { enabled: "yes" } : get());
+    const view = await mountSettings(fake.extras);
+    expect(view.toggle()).toBeNull();
+    await view.reopen();
+    expect(view.toggle()).not.toBeNull();
+  });
+
+  test("supported: false hides it for the session: no later opening asks again", async () => {
+    const { fake, reopen, toggle } = await open({ callPrompt: { supported: false } });
+    expect(toggle()).toBeNull();
+    await reopen();
+    expect(toggle()).toBeNull();
+    expect(fake.calls.filter((call) => call.startsWith("callPrompt"))).toEqual(["callPrompt.get"]);
+  });
+
+  test("a refusal that says the command does not exist hides it for the session, with no error", async () => {
+    const fake = createFakeDesktopCaptureExtras({ callPrompt: {} });
+    let asked = 0;
+    fake.extras.callPrompt!.get = async () => { asked++; throw "Command call_prompt_get not found"; };
+    const error = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const view = await mountSettings(fake.extras);
+      expect(view.toggle()).toBeNull();
       await view.reopen();
       expect(view.toggle()).toBeNull();
-      expect(fake.calls.filter((call) => call.startsWith("callPrompt"))).toEqual(["callPrompt.get"]);
-      expect(error.mock.calls.filter((call) => String(call[0]).includes("call prompt")).length).toBe(1);
+      expect(asked).toBe(1);
+      expect(error.mock.calls.filter((call) => String(call[0]).includes("call prompt"))).toEqual([]);
     } finally { error.mockRestore(); }
   });
 

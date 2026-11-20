@@ -14,7 +14,7 @@ const PROGRESS_EVENT = "exo://recorder-model-progress";
  * Tauri's own refusals of `command`: the native side does not have it, or does not let this window call it (the
  * wordings `ipc_selftest.rs` checks). A failure the command itself reports is not one of these.
  */
-function commandAbsent(command: string, error: unknown): boolean {
+export function commandAbsent(command: string, error: unknown): boolean {
   const text = error instanceof Error ? error.message : String(error);
   return text === `Command ${command} not found` || text === `${command} not allowed. Command not found`
     || text === `Command ${command} not allowed by ACL`
