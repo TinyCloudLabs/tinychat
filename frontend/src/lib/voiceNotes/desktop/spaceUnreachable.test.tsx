@@ -29,7 +29,10 @@ import { newIdbEnv } from "../web/testing/idb";
 import { memoryLocks } from "../web/webStore";
 import { openDesktopVoiceNotes, type DesktopBridge } from "./desktopVoiceNotes";
 import { registerDesktopWhisperQueue, type DesktopWhisperBridge } from "./desktopWhisper";
-import { activityForNote } from "@/capture/activity/activitySelector";
+import { activityForNote, noteStatus } from "@/capture/activity/activitySelector";
+import { activityNotes } from "@/capture/activity/ActivityPanel";
+import { failureNotifications } from "@/capture/activity/failureNotifications";
+import type { LibraryItem } from "@/capture/library/LibraryRow";
 import { captureAccountContext } from "../accountContext";
 import { notePipeline } from "../notePipeline";
 import { installTranscriptSyncRetries, onDeviceTranscriptSyncState, syncOnDeviceTranscript, transcriptSyncForPipeline } from "../onDeviceTranscriber";
@@ -373,8 +376,9 @@ describe("a Mac recording while the TinyCloud space is unreachable", () => {
 });
 
 describe("a saved Mac note when the app opens while the TinyCloud space is down", () => {
-  /** The note as Activity shows it, from what this Mac knows: its space row (with the transcript), its Whisper job, its transcript write. */
-  const activityOf = (m: Awaited<ReturnType<typeof mac>>, id: string) => {
+  const item = (id: string): LibraryItem => ({ id: `vn-${id}`, source: "exo-voice-note", sourceId: id, title: "A voice note", startedAt: null, durationSecs: 8 });
+  /** The note as the app shows it, from what this Mac knows: its space row (with the transcript), its Whisper job, its transcript write. */
+  const shown = (m: Awaited<ReturnType<typeof mac>>, id: string) => {
     const input = buildNotePipelineInput({ id, device: "mac", online: true, saved: true, localNote: null, native: null, pending: null,
       rowMetadata: { audio: { stored: true }, capture: { options: { transcriber: "on-device" } }, transcript_text: SPOKEN },
       capture: { finalizing: false, issue: null }, lane: { busy: false, depth: 0 }, onDeviceStatus: null, cloudJob: null,
@@ -382,10 +386,19 @@ describe("a saved Mac note when the app opens while the TinyCloud space is down"
       noteSync: { syncing: false, failed: false, skip: null, syncedAt: null, attempting: false } });
     const view: NotePipelineView = { input, pipeline: notePipeline(input), provider: "local", route: input.route,
       onAction: () => {}, onRetryStep: () => {}, actionError: null };
-    return activityForNote(view, "tauri");
+    const views = new Map([[id, view]]);
+    return {
+      jobs: activityForNote(view, "tauri"),
+      /** The notes the Activity panel lists (and counts on its button). */
+      activity: activityNotes([item(id)], views, "tauri"),
+      /** The Library row's status line. */
+      rowStatus: noteStatus(activityForNote(view, "tauri"), view.pipeline),
+      notifications: failureNotifications([item(id)], views, "tauri"),
+    };
   };
+  const nothingShown = { jobs: [], activity: [], rowStatus: null, notifications: [] };
 
-  test("its transcript check is Retrying with Try now, never a dead Needs attention, and settles by itself when the space is back", async () => {
+  test("Activity has no line for it, its row status is empty, and the check settles by itself when the space answers", async () => {
     const m = await mac();
     // As PendingVoiceNotesSaver runs them for the signed-in account; spaced out for the test.
     const stopRetries = installTranscriptSyncRetries({ delaysMs: [40] });
@@ -395,28 +408,25 @@ describe("a saved Mac note when the app opens while the TinyCloud space is down"
       expect(await waitFor(() => m.engine.whisper!.snapshot().get(id)?.state === "done")).toBe(true);
       await savedOnceWhenBack(m, id);
       expect(await waitFor(() => onDeviceTranscriptSyncState(m.tcw, id)?.state === "synced")).toBe(true);
-      expect(activityOf(m, id)).toEqual([]);
+      expect(shown(m, id)).toEqual(nothingShown);
       // The node goes down. The app opens again: its saver hands every finished Mac transcript back to the write, which
-      // checks the space first. The check cannot reach the space.
+      // first checks the space against this Mac's record that the transcript is saved. The check cannot reach the space.
       m.state.down = true;
       const refusedBefore = m.state.refused;
       const note = await pendingOf(id);
+      expect(note?.ledger?.transcriptSync?.state).toBe("saved");
       await syncOnDeviceTranscript(m.tcw, note!, captureAccountContext(m.tcw));
       expect(m.state.refused).toBeGreaterThan(refusedBefore);
-      expect(onDeviceTranscriptSyncState(m.tcw, id)?.state).toBe("failed");
-      const jobs = activityOf(m, id);
-      expect(jobs.filter((job) => job.state === "needs-attention")).toEqual([]);
-      const sync = jobs.find((job) => job.kind === "sync");
-      expect(sync?.state).toBe("retrying");
-      expect(sync?.action?.label).toBe("Try now");
-      expect(JSON.stringify(jobs)).not.toContain("NODE_NOT_RESPONDING");
-      // While the node stays down the check is tried again, by itself.
+      // Nothing of the user's waits: no Activity line or count, no row status, no notification.
+      expect(shown(m, id)).toEqual(nothingShown);
+      // While the node stays down the check is tried again, by itself, and still shows nothing.
       const refusedWhileDown = m.state.refused;
       expect(await waitFor(() => m.state.refused > refusedWhileDown, 1_500)).toBe(true);
-      // The node comes back: the note settles with no action, and nothing is written twice or transcribed again.
+      expect(shown(m, id)).toEqual(nothingShown);
+      // The node comes back: the check settles with no action, and nothing is written twice or transcribed again.
       m.state.down = false;
       expect(await waitFor(() => onDeviceTranscriptSyncState(m.tcw, id)?.state === "synced")).toBe(true);
-      expect(activityOf(m, id)).toEqual([]);
+      expect(shown(m, id)).toEqual(nothingShown);
       expect(m.rows("voice_note_transcript", id)).toBe(1);
       expect(m.whisper.starts.filter((started) => started === id)).toHaveLength(1);
     } finally { stopRetries(); m.dispose(); }

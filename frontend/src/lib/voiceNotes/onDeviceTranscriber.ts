@@ -57,6 +57,8 @@ export function subscribeOnDeviceTranscriptSync(listener: () => void): () => voi
 function publish(key: string, next: OnDeviceTranscriptSyncState | null): void {
   // Written, held, unrecorded or abandoned: nothing is left for an automatic retry of the write to do.
   if (next?.state !== "failed" && next?.state !== "syncing") forgetSyncRetry(key);
+  // A new failure is a failed write unless the check says otherwise (`spaceRefusedWrite`).
+  else if (next?.state === "failed") { const retry = syncRetries.get(key); if (retry) retry.check = false; }
   if (JSON.stringify(syncStates.get(key) ?? null) === JSON.stringify(next)) return;
   if (next) syncStates.set(key, next);
   else syncStates.delete(key);
@@ -71,8 +73,11 @@ function notifySync(): void {
 
 /** First waits between automatic retries of one note's write; the last repeats until the space takes it. */
 const SYNC_RETRY_DELAYS_MS: readonly number[] = [30_000, 120_000, 300_000];
-/** `at`: when the next automatic attempt goes out (null: none scheduled). `running`: attempts started and not settled. */
-interface SyncRetry { tcw: TinyCloudWeb; id: string; ctx: AccountContext; attempt: number; at: number | null; timer: ReturnType<typeof setTimeout> | null; running: number }
+/**
+ * `at`: when the next automatic attempt goes out (null: none scheduled). `running`: attempts started and not settled.
+ * `check`: what failed was the check of a transcript this device records as saved in the space, not a write.
+ */
+interface SyncRetry { tcw: TinyCloudWeb; id: string; ctx: AccountContext; attempt: number; at: number | null; timer: ReturnType<typeof setTimeout> | null; running: number; check: boolean }
 /** Notes whose last write the space did not take (it did not answer, timed out, or refused it), by sync key. */
 const syncRetries = new Map<string, SyncRetry>();
 /** Set while the signed-in app runs retries (`installTranscriptSyncRetries`); without it nothing is scheduled. */
@@ -117,13 +122,18 @@ function scheduleSyncRetry(key: string): void {
   notifySync();
 }
 
-/** The space did not take this note's write: it is tried again by itself, spaced out, while the app runs retries. */
-function spaceRefusedWrite(tcw: TinyCloudWeb, key: string, id: string, ctx: AccountContext): void {
-  const retry = syncRetries.get(key) ?? { tcw, id, ctx, attempt: 0, at: null, timer: null, running: 0 };
+/**
+ * The space did not take this note's write, or (`check`) did not answer the check of a transcript this device records as
+ * saved there: it is tried again by itself, spaced out, while the app runs retries.
+ */
+function spaceRefusedWrite(tcw: TinyCloudWeb, key: string, id: string, ctx: AccountContext, check = false): void {
+  const retry = syncRetries.get(key) ?? { tcw, id, ctx, attempt: 0, at: null, timer: null, running: 0, check };
   retry.tcw = tcw;
   retry.ctx = ctx;
+  retry.check = check;
   syncRetries.set(key, retry);
   scheduleSyncRetry(key);
+  notifySync();
 }
 
 /**
@@ -148,14 +158,18 @@ export function __transcriptSyncRetriesRunningForTests(): boolean {
 }
 
 /**
- * The sync state as the note pipeline shows it. A write the space refused before is "syncing" while another attempt runs, and
- * carries the time of its next automatic attempt while one is scheduled.
+ * The sync state as the note pipeline shows it. A failed check of a transcript this device records as saved shows as synced.
+ * A write the space refused before is "syncing" while another attempt runs, and carries the time of its next automatic
+ * attempt while one is scheduled.
  */
 export function transcriptSyncForPipeline(tcw: TinyCloudWeb, id: string): (OnDeviceTranscriptSyncState & { retryAt?: number }) | null {
   const key = syncKey(tcw, id);
   const state = syncStates.get(key) ?? null;
   const retry = syncRetries.get(key);
   if (state?.state !== "failed" || !retry) return state;
+  // This device records the transcript as saved and only the check of it failed: nothing of the user's waits, so the note
+  // shows it as this device records it. The check is tried again by itself; a check that finds it missing writes it, shown.
+  if (retry.check) return { state: "synced" };
   if (retry.running > 0) return { state: "syncing" };
   return retry.at !== null ? { ...state, retryAt: retry.at } : state;
 }
@@ -422,7 +436,7 @@ async function syncOnce(tcw: TinyCloudWeb, key: string, id: string, expected: bo
   } catch {
     if (!isCurrent(tcw, ctx)) return true;
     publish(key, { state: "failed", message: LOCAL_COPY.transcriptCheckFailed });
-    spaceRefusedWrite(tcw, key, id, ctx);
+    spaceRefusedWrite(tcw, key, id, ctx, true);
     return false;
   }
   if (published.has(resultKey)) return recordAndPublish(tcw, key, id, transcript, ctx);

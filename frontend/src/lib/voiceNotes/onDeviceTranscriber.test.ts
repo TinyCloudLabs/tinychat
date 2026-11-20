@@ -758,6 +758,31 @@ describe("a transcript write the space did not take is tried again by itself", (
     } finally { stop(); }
   });
 
+  test("a check that finds the transcript missing writes it and shows the write", async () => {
+    const tcw = account();
+    const stop = installTranscriptSyncRetries({ delaysMs: [20] });
+    try {
+      // This device's record says the transcript is in the space; the space has none.
+      phone.ledger.transcriptSync = { state: "saved", rev: 1, at: 1 };
+      spaceCommitPresent = false;
+      let finish!: (result: SaveResult) => void;
+      let saves = 0;
+      save = () => { saves++; return saves === 1 ? new Promise((resolve) => { finish = resolve; }) : Promise.resolve({ ok: true as const, data: {} }); };
+      const sync = syncOnDeviceTranscript(tcw, { ...SAVED, owner: tcw.did, stt: { state: "done" } });
+      expect(await until(() => saves === 1)).toBe(true);
+      // The write runs, and the note shows it.
+      expect(transcriptSyncForPipeline(tcw, "rec-1")).toEqual({ state: "syncing" });
+      finish(DOWN);
+      await sync;
+      // It did not land: the note shows the write, retrying by itself.
+      const failed = transcriptSyncForPipeline(tcw, "rec-1");
+      expect(failed).toMatchObject({ state: "failed", message: "Couldn't add the transcript to this note." });
+      expect(failed).toHaveProperty("retryAt");
+      expect(await until(() => onDeviceTranscriptSyncState(tcw, "rec-1")?.state === "synced")).toBe(true);
+      expect(saves).toBe(2);
+    } finally { stop(); }
+  });
+
   test("a missing local transcript is not retried by itself", async () => {
     const tcw = account();
     const stop = installTranscriptSyncRetries({ delaysMs: [20] });
