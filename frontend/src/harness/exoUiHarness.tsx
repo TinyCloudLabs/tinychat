@@ -40,6 +40,7 @@ import { meetingSourcesGmeetScreens } from "./screens/meetingSourcesGmeet";
 import { micRecoveryScreens } from "./screens/micRecovery";
 import { nativeSignInScreens } from "./screens/nativeSignIn";
 import { pipelineScreens } from "./screens/pipeline";
+import { shareLinksScreens } from "./screens/shareLinks";
 import { pipelineWireScreens } from "./screens/pipelineWire";
 import { primitivesScreens } from "./screens/primitives";
 import { recorderScreens } from "./screens/recorder";
@@ -107,6 +108,7 @@ const SCREENS: HarnessScreen[] = [
   ...nativeSignInScreens,
   ...pipelineScreens,
   ...pipelineWireScreens,
+  ...shareLinksScreens,
   ...recordingRenameScreens,
 ];
 const PLATFORMS: readonly AppPlatform[] = ["ios", "android", "tauri", "web"];
