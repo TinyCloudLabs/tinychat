@@ -3,7 +3,8 @@
 
 import type { ActivityRecord, StagedHistory } from "./history";
 import type { BotAdmission } from "./bot-admission";
-import { type BotMessenger, type ErrorCode, ERROR_MESSAGES, type ListedMessage, MAX_TEXT, type TurnSink } from "./bot";
+import { type BotMessenger, type ErrorCode, ERROR_MESSAGES, type ListedMessage, MAX_TEXT, type TurnSink, type WebSettings } from "./bot";
+import { INVALID_HOSTS, parseWebPolicy, type WebPolicy } from "./web-policy";
 import { isRecord } from "./guards";
 import { ANNOUNCED_STATES, type AnnouncedState, type BotState, OwnerBotLimit } from "./manifest";
 import { legacyOwnerHeaderAccepted } from "./config";
@@ -27,13 +28,15 @@ const ALLOWED: Record<Operation, readonly BotState[]> = {
 };
 
 function operationOf(rest: string, method: string): Operation | undefined {
+  if (rest === "/web") return "read";
   if (rest === "/messages") return method === "POST" ? "turn" : "read";
   if (rest === "/history" || rest === "/history/stage" || rest === "/history/permission" || rest === "/history/notice") return "history";
   return undefined;
 }
 
 export interface BotApi {
-  send(text: string, sink: TurnSink, owner?: string, messenger?: BotMessenger): Promise<void>;
+  /** `from` says who wrote the text; only the owner's own messages teach the bot which addresses it may read. */
+  send(text: string, sink: TurnSink, owner?: string, messenger?: BotMessenger, from?: "owner" | "bot"): Promise<void>;
   list(): Promise<ListedMessage[]>;
   listActivities?(): Promise<ActivityRecord[]>;
   historyPending?(): Promise<unknown>;
@@ -42,6 +45,8 @@ export interface BotApi {
   historyNotice?(): Promise<unknown>;
   historyNoticeAck?(id: string, receivedAt: number): Promise<void>;
   historyReceipt?(receipt: unknown): Promise<void>;
+  webSettings?(): Promise<WebSettings>;
+  setWebPolicy?(policy: WebPolicy): Promise<WebSettings>;
 }
 
 export interface AppOptions {
@@ -88,7 +93,7 @@ async function relayMessage(target: BotApi, owner: string, text: string): Promis
     },
     done: () => { complete = true; },
     error: code => { errorCode = code; },
-  }, owner);
+  }, owner, undefined, "bot");
   if (errorCode === "busy") return { text: MESSAGING_STRINGS.busy, isError: true };
   if (errorCode || !complete || !reply || bytes > MAX_BOT_REPLY_BYTES) return UNAVAILABLE_REPLY;
   return { text: reply };
@@ -233,6 +238,7 @@ export function createApp(options: AppOptions): (req: Request) => Promise<Respon
       } catch { return new Response(null, { status: 503 }); }
       return new Response(null, { status: 405 });
     }
+    if (rest === "/web" && key !== MAIN_KEY) return new Response(null, { status: 404 });
     const operation = operationOf(rest, req.method);
     if (!operation) return new Response(null, { status: 404 });
     // The state is read before a sibling is looked up, so a key nobody announced never creates anything.
@@ -244,6 +250,19 @@ export function createApp(options: AppOptions): (req: Request) => Promise<Respon
     const found = key === MAIN_KEY ? options.bots.forOwner(owner) : options.bots.forBot?.(owner, key);
     if (!found) return new Response(null, { status: 404 });
     const bot = found;
+    if (rest === "/web") {
+      try {
+        if (req.method === "GET" && bot.webSettings) return Response.json(await bot.webSettings());
+        if (req.method === "PUT" && bot.setWebPolicy) {
+          const policy = parseWebPolicy(await req.json().catch(() => null));
+          if (!policy) return Response.json({ error: "invalid", message: INVALID_HOSTS }, { status: 400 });
+          return Response.json(await bot.setWebPolicy(policy));
+        }
+      } catch {
+        return Response.json({ error: "bot_unavailable", message: ERROR_MESSAGES.bot_unavailable }, { status: 503 });
+      }
+      return new Response(null, { status: 405 });
+    }
     if (rest === "/history/stage" && req.method === "POST") {
       try { await bot.historyStage?.(await req.json()); return new Response(null, { status: 204 }); }
       catch { return new Response(null, { status: 503 }); }

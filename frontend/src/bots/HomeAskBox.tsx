@@ -98,6 +98,7 @@ function MainAsk({ api, tcw, onReconnect }: { api: BotsApi; tcw?: TinyCloudWeb; 
         onRetryHistory={() => void chat.loadHistory()}
         notice={notice}
         onReconnect={onReconnect}
+        webAccess={client}
       />
     </>
   );

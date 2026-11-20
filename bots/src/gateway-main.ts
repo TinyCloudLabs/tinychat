@@ -3,6 +3,9 @@
 //   PUT    /bots/<botId>  {"token": "<64 hex>", "owner": "<64 hex>"}  listen on the bot's socket and accept that
 //                         token; `owner` is the id of its owner's Main (left out, the bot is its own owner)
 //   DELETE /bots/<botId>                         stop listening and remove the directory
+//   PUT    /bots/<botId>/web  {"mode", "hosts"}  the owner's web-access setting (applies from the bot's next call)
+//   GET    /bots/<botId>/web                     {"available", "today": {"searches", "pages", "blocked"}}
+//   POST   /bots/<botId>/web/addresses {"urls"}  page addresses the owner typed, which the bot may then read
 
 import { chmodSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -14,6 +17,8 @@ import { fileBudgetStore, fileOwnerStore, Gateway } from "./gateway";
 import { isRecord } from "./guards";
 import { egressPaths } from "./layout";
 import { BOT_ID } from "./owner";
+import { addressKey, readableAddress } from "./web";
+import { parseWebPolicy } from "./web-policy";
 
 const { backendOrigin, backendCallSecret, ...cfg } = gatewayConfig(process.env);
 const admit = createAdmissionRelay(backendOrigin, backendCallSecret);
@@ -83,6 +88,30 @@ const control = Bun.serve({
     if (pathname === ADMISSION_CONTROL_PATH) return admit(req);
     const receiptMatch = /^\/bots\/([0-9a-f]{64})\/receipts$/.exec(pathname);
     if (req.method === "GET" && receiptMatch) return Response.json(aci?.take(receiptMatch[1]!) ?? []);
+    const webMatch = /^\/bots\/([0-9a-f]{64})\/web(\/addresses)?$/.exec(pathname);
+    if (webMatch) {
+      const webBot = webMatch[1]!;
+      if (!webMatch[2] && req.method === "GET") return Response.json({ available: gateway.webAvailable, today: gateway.webUsage(webBot) });
+      const input: unknown = await req.json().catch(() => null);
+      if (!webMatch[2] && req.method === "PUT") {
+        const policy = parseWebPolicy(input);
+        if (!policy) return new Response(null, { status: 400 });
+        gateway.setWebPolicy(webBot, policy);
+        return new Response(null, { status: 204 });
+      }
+      if (webMatch[2] && req.method === "POST") {
+        const urls = isRecord(input) && Array.isArray(input.urls) ? input.urls.slice(0, 50) : undefined;
+        if (!urls) return new Response(null, { status: 400 });
+        const keys = urls.flatMap(url => {
+          const readable = readableAddress(url);
+          const key = readable && addressKey(readable.href);
+          return key ? [key] : [];
+        });
+        gateway.learnAddresses(webBot, keys);
+        return new Response(null, { status: 204 });
+      }
+      return new Response(null, { status: 405 });
+    }
     const match = /^\/bots\/([0-9a-f]{64})$/.exec(pathname);
     if (!match) return new Response(null, { status: 404 });
     const botId = match[1]!;
