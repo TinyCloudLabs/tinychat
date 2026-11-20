@@ -376,6 +376,20 @@ struct Scripted {
     speaking: Rc<RefCell<Vec<usize>>>,
     /// A tile that every names tick shows as new: never confirmed.
     fresh: Rc<Cell<Option<usize>>>,
+    /// People who joined later, after `names`.
+    joined: Rc<RefCell<Vec<&'static str>>>,
+    /// The name the window marks as the user.
+    self_name: Option<&'static str>,
+    /// Tiles the names tick before showed.
+    shown: usize,
+}
+
+impl Scripted {
+    fn all(&self) -> Vec<&'static str> {
+        let mut all = self.names.clone();
+        all.extend(self.joined.borrow().iter().copied());
+        all
+    }
 }
 
 impl Scripted {
@@ -388,6 +402,9 @@ impl Scripted {
             during: Default::default(),
             speaking: Default::default(),
             fresh: Default::default(),
+            joined: Default::default(),
+            self_name: None,
+            shown: 0,
         }
     }
 }
@@ -399,11 +416,11 @@ impl Window for Scripted {
 
     fn read(&mut self, _rules: &Rules, _apps: &[RunningApp], _budget: Budget) -> TickReport {
         let entries = self
-            .names
+            .all()
             .iter()
             .map(|name| Entry {
                 name: Name::clean(name).unwrap(),
-                is_self: false,
+                is_self: Some(*name) == self.self_name,
             })
             .collect();
         TickReport {
@@ -426,14 +443,17 @@ impl Window for Scripted {
     fn speaking(&mut self) -> Option<Found> {
         let first = self.ticks == 0;
         self.ticks += 1;
+        let now = self.all().len();
+        let shown = std::mem::replace(&mut self.shown, now);
         Some(Found {
             tiles: self
-                .names
+                .all()
                 .iter()
                 .enumerate()
                 .map(|(index, name)| TileFound {
                     name: Name::clean(name).unwrap(),
-                    previous: (!first && self.fresh.get() != Some(index)).then_some(index),
+                    previous: (!first && index < shown && self.fresh.get() != Some(index))
+                        .then_some(index),
                     rules_ok: true,
                     single: true,
                 })
@@ -649,4 +669,58 @@ fn a_turn_that_ends_just_before_a_stop_or_a_pause_is_kept_for_confirmed_tiles_on
         );
         assert_eq!(timeline.breaks, if stop { vec![] } else { vec![9_800] });
     }
+}
+
+#[test]
+fn the_timeline_keeps_the_roster_order_with_late_joiners_and_the_user() {
+    let folder = Folder::new("order");
+    let store = folder.store();
+    let host = FakeHost::default();
+    host.record(RECORDING, 2, 0);
+    let mut window = Scripted::new(&THREE[1..]);
+    // The user is marked by the window, and shows after the others.
+    window.joined.borrow_mut().push("Alex Example");
+    window.self_name = Some("Alex Example");
+    let joined = window.joined.clone();
+    let mut service = Service::with_account(store.clone(), window, Pace::default(), || None);
+    service.tick(&host);
+    for at in (200..=4_800).step_by(200) {
+        host.at(at);
+        service.sample(&host);
+    }
+    // Somebody joins at 5 s; the tick at 20 s writes the file again.
+    joined.borrow_mut().push("Test Guest B");
+    for tick in 1..=4u64 {
+        host.at(tick * 5_000);
+        service.tick(&host);
+        for at in (200..=4_800).step_by(200) {
+            host.at(tick * 5_000 + at);
+            service.sample(&host);
+        }
+    }
+    host.pause();
+    service.tick(&host);
+    let timeline = store.read_speaking(RECORDING).unwrap().unwrap();
+    // p1 "Robin Sample", p2 "Test Guest A", p3 the user, p4 who joined late.
+    assert_eq!(timeline.order, ["p1", "p2", "p3", "p4"]);
+    assert_eq!(timeline.self_id.as_deref(), Some("p3"));
+    assert!(!timeline.people.contains_key("p3"));
+    // What call_names_speaking_read hands to the frontend: the timeline as serde writes it.
+    let sent = serde_json::to_value(store.read_speaking(RECORDING).unwrap()).unwrap();
+    assert_eq!(sent["order"], serde_json::json!(["p1", "p2", "p3", "p4"]));
+    let text = std::fs::read_to_string(
+        store
+            .dir()
+            .join("speaking")
+            .join(format!("{RECORDING}.json")),
+    )
+    .unwrap();
+    assert_private(&text);
+    // Saving the note clears the names; the order stays with the timeline.
+    store.clear(RECORDING).unwrap();
+    assert!(store.read(RECORDING).unwrap().is_none());
+    assert_eq!(
+        store.read_speaking(RECORDING).unwrap().unwrap().order,
+        ["p1", "p2", "p3", "p4"]
+    );
 }

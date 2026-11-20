@@ -1378,6 +1378,12 @@ impl<W: Window> Service<W> {
         self.sample_ok = false;
         if let Some(tracker) = recording.speaking.as_mut() {
             let roster = &recording.roster;
+            let order: Vec<String> = roster
+                .people()
+                .iter()
+                .map(|person| person.id.clone())
+                .collect();
+            tracker.set_order(&order);
             tracker.tick(recorded_ms, looked, |name| {
                 let person = roster.people().iter().find(|person| &person.name == name)?;
                 Some(person.id.clone())

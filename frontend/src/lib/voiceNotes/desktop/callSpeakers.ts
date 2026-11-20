@@ -41,6 +41,11 @@ export interface SpeakingTimeline {
   breaks: readonly number[];
   /** More intervals were seen than kept: nothing is known after the last one kept. */
   truncated: boolean;
+  /**
+   * Every roster person id seen in the recording, in the roster's order, the user's included; null when the timeline
+   * has none or it is not in the agreed shape. "Them N" is numbered by it when present.
+   */
+  order: readonly string[] | null;
 }
 
 /** The thresholds of plan section 4. Times are milliseconds. */
@@ -105,6 +110,17 @@ function parseIntervals(value: unknown, budget: { left: number }): Intervals | n
   return intervals;
 }
 
+/** The timeline's `order`: unique person ids, at most one per person; null when absent or not in that shape. */
+function parseOrder(value: unknown): string[] | null {
+  if (!Array.isArray(value) || value.length > MAX_PEOPLE) return null;
+  const ids = new Set<string>();
+  for (const id of value as unknown[]) {
+    if (typeof id !== "string" || !PERSON_ID.test(id) || ids.has(id)) return null;
+    ids.add(id);
+  }
+  return [...ids];
+}
+
 /**
  * `value` as a speaking timeline, or null when anything in it is not the agreed shape: a wrong version, app or mode, a
  * person id that is not an id, the user among `people`, an interval out of order or overlapping the one before, a
@@ -142,8 +158,9 @@ export function parseSpeakingTimeline(value: unknown): SpeakingTimeline | null {
     if (!isTime(at) || at <= previous) return null;
     previous = at;
   }
+  // An `order` not in the agreed shape does not refuse the timeline: the people are then numbered as the roster has them.
   return { v: 1, app: value.app, mode: value.mode, rulesVersion, sampleMs, self, people, selfSpeaking, hidden,
-    breaks: breaks as number[], truncated: value.truncated };
+    breaks: breaks as number[], truncated: value.truncated, order: parseOrder(value.order) };
 }
 
 // ── Interval arithmetic (sorted, non-overlapping lists) ─────────────────────────────────────────────────────────
@@ -279,7 +296,8 @@ function bestDelay(remote: Intervals, lines: Intervals, from: number, to: number
  * 4): the delay is searched per recording segment; a 10-minute window whose marker and audio disagree names nobody;
  * a line is named only if it was seen, nothing of it was hidden, and one person's marker clearly covers it. Lines are
  * never split. Nothing is named on the Parakeet route (its times are made up), when the timeline is missing or not in
- * the agreed shape, or when the roster has fewer than two people besides the user.
+ * the agreed shape, or when the call has fewer than two people besides the user (by the timeline's `order`, else the
+ * roster).
  */
 export function assignCallSpeakers(input: {
   segments: LocalTranscript["segments"];
@@ -291,14 +309,18 @@ export function assignCallSpeakers(input: {
 }): CallSpeakersResult {
   const rules = input.rules ?? CALL_SPEAKER_RULES;
   const unchanged: CallSpeakersResult = { segments: input.segments, assigned: 0, delaysMs: [] };
-  if (input.engine !== "whispercpp" || input.roster === null || new Set(input.roster.others).size < 2) return unchanged;
+  if (input.engine !== "whispercpp") return unchanged;
   const timeline = parseSpeakingTimeline(input.timeline);
   if (timeline === null || timeline.people.size === 0) return unchanged;
+  const userIds = new Set([...input.roster?.self ?? [], ...(timeline.self === null ? [] : [timeline.self])]);
+  // The numbering: the timeline's own order of the roster's ids when it has one, else the roster's (the names file, or
+  // the ids kept on this Mac). Either way, the user does not take a number.
+  const others = timeline.order !== null ? timeline.order.filter((id) => !userIds.has(id)) : input.roster?.others ?? null;
+  if (others === null || new Set(others).size < 2) return unchanged;
   const remoteIndexes = input.segments.flatMap((segment, index) => remoteLine(segment) ? [index] : []);
   if (remoteIndexes.length === 0) return unchanged;
 
-  const rank = new Map(input.roster.others.map((id, index) => [id, index + 1]));
-  const userIds = new Set([...input.roster.self, ...(timeline.self === null ? [] : [timeline.self])]);
+  const rank = new Map(others.map((id, index) => [id, index + 1]));
   const themLines = merge(remoteIndexes.map((index) => [input.segments[index]!.start, input.segments[index]!.end] as const));
   const meLines = merge(input.segments.filter(ownLine).map((segment) => [segment.start, segment.end] as const));
   const bounds = [0, ...timeline.breaks.filter((at) => at > 0), Number.MAX_SAFE_INTEGER];

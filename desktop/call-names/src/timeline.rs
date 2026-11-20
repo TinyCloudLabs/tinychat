@@ -31,8 +31,12 @@
 //! ```
 //!
 //! It holds no name and no class token: people are roster ids, and nothing else is text.
+//!
+//! `order` (optional, added within version 1): every roster person id of the recording, the
+//! user's own included, in roster order (first seen first). The frontend numbers the other side
+//! ("Them 1", "Them 2", …) by it after the names file is gone. A file without it is still read.
 
-use crate::names::{json_error, Name};
+use crate::names::{json_error, Name, MAX_PEOPLE};
 use crate::rules::App;
 use crate::speaking::{
     Classified, Classifier, Confirmed, Found, Mark, Mode, Reading, SampleRead, Tokens,
@@ -74,6 +78,10 @@ pub struct Timeline {
     pub hidden: Vec<Span>,
     pub breaks: Vec<u64>,
     pub truncated: bool,
+    /// Every roster person id of the recording, the user's included, first seen first. Optional:
+    /// absent in a file written before it existed, and left out while it is empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub order: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -131,6 +139,15 @@ impl Timeline {
         }
         if intervals > MAX_INTERVALS || parsed.breaks.len() > MAX_BREAKS {
             return Err("too many intervals".into());
+        }
+        let mut ordered = std::collections::HashSet::new();
+        if parsed.order.len() > MAX_PEOPLE
+            || !parsed
+                .order
+                .iter()
+                .all(|id| is_person_id(id) && ordered.insert(id.as_str()))
+        {
+            return Err("order is not a list of distinct person ids".into());
         }
         if parsed.breaks.windows(2).any(|pair| pair[0] > pair[1]) {
             return Err("breaks out of order".into());
@@ -274,6 +291,8 @@ pub struct TimelineBuilder {
     /// The time of the last names tick, where a hidden span may have begun.
     last_tick: Option<u64>,
     changed: bool,
+    /// The roster's person ids, first seen first.
+    order: Vec<String>,
 }
 
 impl TimelineBuilder {
@@ -289,6 +308,16 @@ impl TimelineBuilder {
             count: Count::default(),
             last_tick: None,
             changed: false,
+            order: Vec::new(),
+        }
+    }
+
+    /// The roster's person ids as they are now, first seen first (at most [`MAX_PEOPLE`]).
+    pub fn set_order(&mut self, ids: &[String]) {
+        let ids = &ids[..ids.len().min(MAX_PEOPLE)];
+        if self.order != ids {
+            self.order = ids.to_vec();
+            self.changed = true;
         }
     }
 
@@ -417,6 +446,7 @@ impl TimelineBuilder {
             hidden,
             breaks: self.breaks.clone(),
             truncated,
+            order: self.order.clone(),
         })
     }
 }
@@ -622,6 +652,11 @@ impl Tracker {
 
     pub fn counts(&self) -> Counts {
         self.counts
+    }
+
+    /// The roster's person ids, the user's included, first seen first: the timeline's `order`.
+    pub fn set_order(&mut self, ids: &[String]) {
+        self.builder.set_order(ids);
     }
 
     /// A preliminary look at a sample, before any names tick confirmed it: each tile read, its
@@ -875,6 +910,45 @@ mod tests {
                 !error.contains("Zebra") && !error.contains("Quartz"),
                 "{error}"
             );
+        }
+    }
+
+    #[test]
+    fn the_order_lists_every_roster_id_and_is_checked_when_read() {
+        let mut builder = builder();
+        feed(&mut builder, "p2", &[200, 400], 1000);
+        let without = builder.timeline(Some("p1")).unwrap().to_json();
+        assert!(
+            !without.contains("\"order\""),
+            "left out while empty: {without}"
+        );
+        let ids = |list: &[&str]| list.iter().map(|id| (*id).to_owned()).collect::<Vec<_>>();
+        builder.saved();
+        builder.set_order(&ids(&["p1", "p2"]));
+        assert!(builder.changed());
+        builder.saved();
+        builder.set_order(&ids(&["p1", "p2"]));
+        assert!(!builder.changed(), "the same order changes nothing");
+        builder.set_order(&ids(&["p1", "p2", "p3"]));
+        let timeline = builder.timeline(Some("p1")).unwrap();
+        assert_eq!(timeline.order, ["p1", "p2", "p3"]);
+        let json = timeline.to_json();
+        assert!(
+            json.ends_with(r#""truncated":false,"order":["p1","p2","p3"]}"#),
+            "{json}"
+        );
+        assert_eq!(Timeline::from_json(&json).unwrap(), timeline);
+        // A file without it (written before it existed) still reads.
+        assert_eq!(
+            Timeline::from_json(&without).unwrap().order,
+            Vec::<String>::new()
+        );
+        for bad in [
+            json.replace(r#""order":["p1","p2","p3"]"#, r#""order":["p1","p1"]"#),
+            json.replace(r#""order":["p1","p2","p3"]"#, r#""order":["Zebra Quartz"]"#),
+        ] {
+            let error = Timeline::from_json(&bad).unwrap_err();
+            assert!(!error.contains("Zebra"), "{error}");
         }
     }
 
