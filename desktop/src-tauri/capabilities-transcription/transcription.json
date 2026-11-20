@@ -19,6 +19,7 @@
     "allow-recorder-whisper-stage-audio",
     "allow-recorder-audio-envelope",
     "allow-recorder-whisper-start",
+    "allow-recorder-local-stt-start",
     "allow-recorder-whisper-cleanup-stages",
     "allow-delete-audio-file",
     "allow-recorder-start",

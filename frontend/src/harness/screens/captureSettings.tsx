@@ -1,5 +1,5 @@
 // The desktop ⚙︎ Capture settings popover (D4) over a scripted DesktopCaptureExtras, in the Capture header's
-// place: the app variant (nothing downloaded, one downloading, Large Turbo selected, a failed download,
+// place: the app variant (nothing downloaded, one downloading, Large Turbo selected, Parakeet, a failed download,
 // nothing registered, names in the call inside the Mac audio row it needs, the offer to record a call) and the web
 // variant. The interactive screen exposes `window.exoCaptureSettings` for test/capture-settings.e2e.test.ts to drive
 // the downloads and make calls fail.
@@ -187,6 +187,15 @@ export const captureSettingsScreens: HarnessScreen[] = [
       }}
     />
   )),
+  // Parakeet next to the Whisper models: selected and on disk; and on offer, downloading, beside a Whisper model.
+  screen("app-parakeet", () => (
+    <Settings variant="app" fake={{ parakeet: true, downloaded: ["QuantizedTinyEn", "soniqo-parakeet-batch"],
+      selected: "soniqo-parakeet-batch", systemAudio: true }} />
+  )),
+  screen("app-parakeet-downloading", () => (
+    <Settings variant="app" fake={{ parakeet: true, downloaded: ["QuantizedTinyEn"], selected: "QuantizedTinyEn",
+      downloading: { "soniqo-parakeet-batch": 0.63 } }} />
+  ), { readyWhen: ".cs-progress" }),
   screen("app-unavailable", () => <Settings variant="app" noExtras />, {
     readyWhen: "[data-testid=settings-unavailable]",
   }),

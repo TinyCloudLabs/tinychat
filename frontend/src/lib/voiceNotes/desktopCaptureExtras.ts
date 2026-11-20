@@ -1,6 +1,7 @@
-import type { WhisperModel } from "@/lib/localTranscriber";
+import type { LocalSttModel } from "@/lib/localTranscriber";
 
-export type WhisperModelId = WhisperModel;
+/** A Whisper model, or Parakeet. */
+export type WhisperModelId = LocalSttModel;
 
 export interface WhisperModelInfo {
   id: WhisperModelId;

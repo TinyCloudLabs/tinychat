@@ -65,6 +65,8 @@ const SCRIPT: &str = r#"(async () => {
     ["local_transcription_start", {}],
     ["recorder_whisper_start:traversal", { id: "../x", stageId: "whisper-bad", model: "QuantizedTinyEn" }],
     ["recorder_whisper_start:missing", { id: crypto.randomUUID(), stageId: "whisper-bad", model: "QuantizedTinyEn" }],
+    ["recorder_local_stt_start:traversal", { id: "../x", stageId: "whisper-bad", model: "soniqo-parakeet-batch" }],
+    ["recorder_local_stt_start:missing", { id: crypto.randomUUID(), stageId: "whisper-bad", model: "soniqo-parakeet-batch" }],
     ["recorder_status", {}],
     ["recorder_take_start_request", {}],
     ["recorder_take_stop_request", {}],
@@ -79,7 +81,7 @@ const SCRIPT: &str = r#"(async () => {
   }
   const results = {};
   for (const [label, args] of probes) {
-    const cmd = label.startsWith("recorder_whisper_start:") ? label.split(":")[0] : label;
+    const cmd = /^recorder_(whisper|local_stt)_start:/.test(label) ? label.split(":")[0] : label;
     try {
       results[label] = { ok: true, value: await window.__TAURI_INTERNALS__.invoke(cmd, args) };
     } catch (error) {
@@ -136,6 +138,11 @@ fn assert_results(value: &serde_json::Value) -> bool {
     for (label, code) in [
         ("recorder_whisper_start:traversal", "recording_unavailable"),
         ("recorder_whisper_start:missing", "recording_unavailable"),
+        (
+            "recorder_local_stt_start:traversal",
+            "recording_unavailable",
+        ),
+        ("recorder_local_stt_start:missing", "recording_unavailable"),
     ] {
         let actual = value
             .get(label)

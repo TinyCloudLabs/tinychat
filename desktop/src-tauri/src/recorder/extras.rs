@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Listener, Manager};
-use tauri_plugin_local_stt::{LocalModel, LocalSttPluginExt, WhisperModel};
+use tauri_plugin_local_stt::{LocalModel, LocalSttPluginExt, SoniqoModel, WhisperModel};
 use tauri_plugin_settings::SettingsPluginExt;
 
 const PROGRESS_EVENT: &str = "exo://recorder-model-progress";
@@ -20,6 +20,15 @@ const MODEL_IDS: [&str; 7] = [
     "QuantizedSmall",
     "QuantizedLargeTurbo",
 ];
+/// Parakeet TDT v3, run in this process by the plugin's Soniqo runtime (speech-swift, Core ML).
+/// An option next to the Whisper models; `recorder_local_stt_start` transcribes with it.
+const PARAKEET_MODEL_ID: &str = "soniqo-parakeet-batch";
+const PARAKEET_LABEL: &str = "Parakeet TDT 0.6B v3";
+/// What the Soniqo bridge fetches from Hugging Face before it reports the model ready: the
+/// model files (640,656,886 bytes) and the speaker-diarization bundle its loader also requires
+/// (33,699,183 bytes), as the two repositories list them on 2026-11-20. The plugin's figure
+/// (632 MiB) leaves the diarization bundle out.
+const PARAKEET_DOWNLOAD_BYTES: u64 = 674_356_069;
 
 #[derive(Default)]
 pub struct ExtrasState {
@@ -128,7 +137,7 @@ fn watch_download(app: tauri::AppHandle, id: String) {
         return;
     }
     tauri::async_runtime::spawn(async move {
-        let model = parse_model(&id);
+        let model = parse_recorder_model(&id);
         let mut inactive = 0;
         // Downloads started by local transcription can outlive the recorder
         // window. Keep watching until the shared task really terminates.
@@ -200,6 +209,19 @@ fn parse_model(id: &str) -> Result<LocalModel, String> {
     let model: WhisperModel = serde_json::from_value(serde_json::Value::String(id.into()))
         .map_err(|_| "unsupported_model".to_string())?;
     Ok(LocalModel::Whisper(model))
+}
+
+/// Whether the recorder offers this model: a Whisper model, or Parakeet.
+fn is_recorder_model(id: &str) -> bool {
+    MODEL_IDS.contains(&id) || id == PARAKEET_MODEL_ID
+}
+
+/// `parse_model` for the Whisper models, and Parakeet. No other Soniqo model is offered.
+fn parse_recorder_model(id: &str) -> Result<LocalModel, String> {
+    if id == PARAKEET_MODEL_ID {
+        return Ok(LocalModel::Soniqo(SoniqoModel::ParakeetBatch));
+    }
+    parse_model(id)
 }
 
 async fn preferences<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<Preferences, String> {
@@ -283,7 +305,7 @@ pub fn install(app: &tauri::AppHandle) {
         let Some(id) = value["model"].as_str() else {
             return;
         };
-        if !MODEL_IDS.contains(&id) {
+        if !is_recorder_model(id) {
             return;
         }
         if value["status"] == "completed" {
@@ -391,7 +413,62 @@ pub async fn recorder_models_list(app: tauri::AppHandle) -> Result<Vec<ModelRow>
             progress,
         });
     }
+    if let Some(row) = parakeet_row(&app, selected.as_deref()).await {
+        rows.push(row);
+    }
     Ok(rows)
+}
+
+/// The Parakeet row, after the Whisper rows. When the Soniqo bridge cannot say whether the model
+/// is on disk, the row is left out and the Whisper rows are still listed.
+async fn parakeet_row(app: &tauri::AppHandle, selected: Option<&str>) -> Option<ModelRow> {
+    let model = LocalModel::Soniqo(SoniqoModel::ParakeetBatch);
+    let (downloaded, downloading) = match download_state(app, &model).await {
+        Ok(state) => state,
+        Err(error) => {
+            tracing::warn!(target: "exo_dev::whisper", operation = "models_list",
+                model = PARAKEET_MODEL_ID, error = %error);
+            return None;
+        }
+    };
+    let progress = if downloading {
+        app.state::<ExtrasState>()
+            .progress
+            .lock()
+            .unwrap()
+            .get(PARAKEET_MODEL_ID)
+            .filter(|p| p.status == "downloading")
+            .map(|p| p.fraction)
+    } else {
+        None
+    };
+    Some(ModelRow {
+        id: PARAKEET_MODEL_ID.into(),
+        label: PARAKEET_LABEL.into(),
+        size_bytes: PARAKEET_DOWNLOAD_BYTES,
+        downloaded,
+        selected: selected == Some(PARAKEET_MODEL_ID),
+        downloading,
+        progress,
+    })
+}
+
+async fn download_state(
+    app: &tauri::AppHandle,
+    model: &LocalModel,
+) -> Result<(bool, bool), String> {
+    let downloaded = app
+        .local_stt()
+        .is_model_downloaded(model)
+        .await
+        .map_err(|e| e.to_string())?;
+    let downloading = !downloaded
+        && app
+            .local_stt()
+            .is_model_downloading(model)
+            .await
+            .map_err(|e| e.to_string())?;
+    Ok((downloaded, downloading))
 }
 
 #[tauri::command]
@@ -403,7 +480,7 @@ pub async fn recorder_models_get(app: tauri::AppHandle) -> Result<Option<String>
 #[tauri::command]
 pub async fn recorder_models_select(app: tauri::AppHandle, id: String) -> Result<(), String> {
     super::ensure(&app);
-    let model = parse_model(&id)?;
+    let model = parse_recorder_model(&id)?;
     if !app
         .local_stt()
         .is_model_downloaded(&model)
@@ -432,7 +509,7 @@ pub async fn recorder_models_progress(app: tauri::AppHandle) -> Vec<Progress> {
 #[tauri::command]
 pub async fn recorder_models_download(app: tauri::AppHandle, id: String) -> Result<(), String> {
     super::ensure(&app);
-    let model = parse_model(&id)?;
+    let model = parse_recorder_model(&id)?;
     let result = download_model_until_done(app.clone(), id.clone(), model).await;
     if let Err(error) = &result {
         let fraction = app
@@ -768,5 +845,45 @@ mod tests {
             !needs_system_audio_consent(&prefs),
             "Mic only needs no consent"
         );
+    }
+
+    #[test]
+    fn parakeet_is_offered_next_to_the_whisper_models() {
+        assert_eq!(
+            parse_recorder_model("soniqo-parakeet-batch"),
+            Ok(LocalModel::Soniqo(SoniqoModel::ParakeetBatch))
+        );
+        assert!(is_recorder_model("soniqo-parakeet-batch"));
+        for id in MODEL_IDS {
+            assert!(is_recorder_model(id));
+            assert_eq!(parse_recorder_model(id), parse_model(id));
+        }
+        for other in [
+            "soniqo-parakeet-streaming",
+            "soniqo-omnilingual",
+            "soniqo-qwen3-small",
+            "aufklarer/Parakeet-TDT-v3-CoreML-INT8",
+            "parakeet-tdt-0.6b-v3",
+            "",
+        ] {
+            assert!(!is_recorder_model(other), "{other}");
+            assert!(parse_recorder_model(other).is_err(), "{other}");
+        }
+    }
+
+    #[test]
+    fn a_parakeet_selection_survives_preferences_roundtrip() {
+        let prefs = Preferences {
+            selected_model: Some(PARAKEET_MODEL_ID.into()),
+            ..Preferences::default()
+        };
+        let stored = serde_json::to_value(&prefs).unwrap();
+        assert_eq!(stored["selectedModel"], "soniqo-parakeet-batch");
+        let relaunched = parse_preferences(&serde_json::json!({ "exo_recorder": stored })).unwrap();
+        assert_eq!(
+            relaunched.selected_model.as_deref(),
+            Some(PARAKEET_MODEL_ID)
+        );
+        assert!(parse_recorder_model(PARAKEET_MODEL_ID).is_ok());
     }
 }
