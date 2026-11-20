@@ -62,6 +62,48 @@ struct FakeAudio {
     gate_reads: Arc<AtomicUsize>,
     scans: Arc<AtomicUsize>,
     fail: Arc<AtomicBool>,
+    blocker: Arc<Blocker>,
+}
+
+/// Holds a scan inside the process list until the test lets it go.
+#[derive(Default)]
+struct Blocker {
+    /// (armed, inside, released)
+    state: Mutex<(bool, bool, bool)>,
+    changed: std::sync::Condvar,
+}
+
+impl Blocker {
+    fn arm(&self) {
+        *self.state.lock().unwrap() = (true, false, false);
+    }
+
+    /// Called by the scan: when armed, say so and wait for the release.
+    fn hold(&self) {
+        let mut state = self.state.lock().unwrap();
+        if !state.0 {
+            return;
+        }
+        state.1 = true;
+        self.changed.notify_all();
+        let _released = self.changed.wait_while(state, |state| !state.2).unwrap();
+    }
+
+    fn wait_inside(&self) {
+        let state = self.state.lock().unwrap();
+        let (state, timeout) = self
+            .changed
+            .wait_timeout_while(state, Duration::from_secs(5), |state| !state.1)
+            .unwrap();
+        assert!(!timeout.timed_out() && state.1, "the scan never started");
+    }
+
+    fn release(&self) {
+        let mut state = self.state.lock().unwrap();
+        state.0 = false;
+        state.2 = true;
+        self.changed.notify_all();
+    }
 }
 
 impl AudioProcesses for FakeAudio {
@@ -82,6 +124,7 @@ impl AudioProcesses for FakeAudio {
 
     fn processes(&mut self, list: &mut Vec<u32>) -> Result<(), ScanError> {
         self.scans.fetch_add(1, Ordering::SeqCst);
+        self.blocker.hold();
         list.clear();
         if self.fail.load(Ordering::SeqCst) {
             return Err(ScanError::Failed(-1));
@@ -585,4 +628,30 @@ fn an_offer_withdrawn_while_it_waits_for_the_page_never_shows() {
         .unwrap()
         .iter()
         .all(|report| report.error != Some("tile_page_missing")));
+}
+
+#[test]
+fn turning_the_setting_off_during_a_scan_leaves_nothing_behind() {
+    let rig = Arc::new(Rig::new());
+    rig.watcher.set_enabled(true);
+    rig.audio.zoom.store(true, Ordering::SeqCst);
+    rig.run(6);
+    assert_eq!(rig.watcher.stage(), Stage::Hearing);
+    rig.app.take();
+    // The next scan is held inside CoreAudio while the user turns the setting off.
+    rig.audio.blocker.arm();
+    let ticking = {
+        let rig = rig.clone();
+        std::thread::spawn(move || rig.watcher.tick())
+    };
+    rig.audio.blocker.wait_inside();
+    rig.watcher.set_enabled(false);
+    assert_eq!(rig.watcher.stage(), Stage::Idle);
+    rig.audio.blocker.release();
+    ticking.join().unwrap();
+    // The scan that ends after the switch went off is dropped: no call is followed.
+    assert_eq!(rig.watcher.stage(), Stage::Idle);
+    assert!(rig.app.take().is_empty());
+    let last = *rig.app.reports.lock().unwrap().last().unwrap();
+    assert_eq!(last.stage, Stage::Idle);
 }
