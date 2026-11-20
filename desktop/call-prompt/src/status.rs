@@ -17,14 +17,17 @@
 //! - `pass`: the last look's pass, `gate` (nothing else read), `followed` (only the call apps'
 //!   process objects) or `full` (every process object); `pass_ms`: how long it took.
 //! - `scan_ms`: how long the last full scan took.
-//! - `phase`: `recording` while the tile shows the recording it started.
+//! - `phase`: `recording` while the tile is a recording's bar.
 //! - `last_start`: the last "Start" on the tile: how long after it the web app claimed the start
 //!   request (null until it does), whether the 8 s wait for the recording ran out, and whether
 //!   "Stop" on the tile asked to stop that recording.
 //!
-//! It is written at most once per [`STATUS_INTERVAL`], and at once when the phase or the setting
-//! changes. Each write replaces the whole file (a temporary file, synced, then renamed), mode 0600
-//! in a folder of mode 0700.
+//! - `history`: the last [`HISTORY`] transitions of the phase or the stage, each with its time and
+//!   a short reason code.
+//!
+//! It is written on every transition (a change of the phase, the stage or the setting), and at
+//! least once per [`STATUS_INTERVAL`] otherwise. Each write replaces the whole file (a temporary
+//! file, synced, then renamed), mode 0600 in a folder of mode 0700.
 
 use crate::session::Phase;
 use serde::Serialize;
@@ -36,8 +39,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// The status file's name.
 pub const STATUS_FILE: &str = "_status.json";
-/// The least time between two writes while the phase and the setting stay the same.
+/// The least time between two writes while the phase, the stage and the setting stay the same.
 pub const STATUS_INTERVAL: Duration = Duration::from_secs(30);
+/// How many of the last transitions the status file keeps.
+pub const HISTORY: usize = 20;
 
 /// The gate, as the status file says it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -60,6 +65,30 @@ pub struct LastStart {
     pub stopped_from_tile: bool,
 }
 
+/// One change of what the tile shows or of the session's stage, with a short reason code.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct Transition {
+    /// When, in UTC.
+    pub at: String,
+    pub phase: Phase,
+    pub stage: &'static str,
+    /// Why: `heard`, `offer`, `start`, `live`, `recording`, `recording_over`, `not_now`,
+    /// `unanswered`, `start_timeout`, `call_ended`, `sleep`, `quiet`, `page_missing`, `reset`,
+    /// `panicked`, ...
+    pub reason: &'static str,
+}
+
+impl Transition {
+    pub fn now(phase: Phase, stage: &'static str, reason: &'static str) -> Self {
+        Transition {
+            at: utc(SystemTime::now()),
+            phase,
+            stage,
+            reason,
+        }
+    }
+}
+
 /// One status. No field can hold a bundle id or a name.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Status {
@@ -75,6 +104,8 @@ pub struct Status {
     pub scan_ms: Option<f64>,
     pub last_start: Option<LastStart>,
     pub error: Option<&'static str>,
+    /// The last [`HISTORY`] transitions, oldest first.
+    pub history: Vec<Transition>,
 }
 
 #[derive(Serialize)]
@@ -89,7 +120,7 @@ struct File1<'a> {
 #[derive(Debug)]
 pub struct StatusFile {
     path: PathBuf,
-    last: Option<(Duration, Phase, bool)>,
+    last: Option<(Duration, Phase, bool, &'static str)>,
 }
 
 impl StatusFile {
@@ -110,15 +141,17 @@ impl StatusFile {
         &self.path
     }
 
-    /// Write `status` when the phase or the setting changed since the last write, or when the
+    /// Write `status` when the phase, the stage or the setting changed since the last write (so on
+    /// every transition), or when the
     /// last write is [`STATUS_INTERVAL`] old on the watcher's clock (`now`). True when written. A
     /// failed write is tried again on the next call.
     pub fn offer(&mut self, now: Duration, status: &Status) -> io::Result<bool> {
         let due = match self.last {
             None => true,
-            Some((at, phase, enabled)) => {
+            Some((at, phase, enabled, stage)) => {
                 phase != status.phase
                     || enabled != status.enabled
+                    || stage != status.stage
                     || now.saturating_sub(at) >= STATUS_INTERVAL
             }
         };
@@ -132,7 +165,7 @@ impl StatusFile {
         })
         .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?;
         write_atomic(&self.path, &bytes)?;
-        self.last = Some((now, status.phase, status.enabled));
+        self.last = Some((now, status.phase, status.enabled, status.stage));
         Ok(true)
     }
 }
@@ -185,7 +218,7 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
 }
 
 /// `time` in UTC, to the second, as RFC 3339 writes it: `2026-11-19T17:25:03Z`.
-fn utc(time: SystemTime) -> String {
+pub(crate) fn utc(time: SystemTime) -> String {
     let seconds = time
         .duration_since(UNIX_EPOCH)
         .map_or(0, |since| since.as_secs());

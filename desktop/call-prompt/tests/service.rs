@@ -281,12 +281,12 @@ fn start_through_the_watcher() {
         })]
     );
     assert_eq!(rig.watcher.stage(), Stage::Recording);
-    // Stopped in the app: the tile hides.
+    // Stopped in the app while the call goes on: the offer comes back.
     rig.app.recording.store(false, Ordering::SeqCst);
     rig.app.live.store(false, Ordering::SeqCst);
     rig.run(1);
-    assert_eq!(rig.app.take(), [Action::Hide, Action::Phase(Phase::Hidden)]);
-    assert_eq!(rig.watcher.stage(), Stage::Started);
+    assert_eq!(rig.app.take(), [Action::Phase(Phase::Offered)]);
+    assert_eq!(rig.watcher.stage(), Stage::Offered);
 }
 
 #[test]
@@ -487,13 +487,17 @@ fn every_button_press_gets_a_phase_back() {
     assert_eq!(rig.app.take(), [Action::Phase(Phase::Hidden)]);
     rig.watcher.dismiss();
     assert_eq!(rig.app.take(), [Action::Phase(Phase::Hidden)]);
-    // A recording began just before the press: the offer went, the tile hears "hidden".
+    // A recording began just before the press: the offer became its bar, which the tile hears.
     rig.offer();
     rig.app.recording.store(true, Ordering::SeqCst);
     rig.watcher.tick();
-    assert_eq!(rig.app.take(), [Action::Hide, Action::Phase(Phase::Hidden)]);
+    let bar = Action::Recording(RecordingState {
+        elapsed_ms: 0,
+        paused: true,
+    });
+    assert_eq!(rig.app.take(), [bar]);
     rig.watcher.start();
-    assert_eq!(rig.app.take(), [Action::Phase(Phase::Hidden)]);
+    assert_eq!(rig.app.take(), [bar]);
     // "Not now" while starting changes nothing and says so.
     let rig = Rig::new();
     rig.offer();
@@ -666,7 +670,7 @@ fn a_new_window_waits_for_its_own_page() {
 }
 
 #[test]
-fn an_offer_withdrawn_while_it_waits_for_the_page_never_shows() {
+fn an_offer_that_became_a_recording_bar_while_it_waited_for_the_page_shows_when_the_page_asks() {
     let rig = Rig::without_page();
     rig.watcher.set_enabled(true);
     rig.audio.zoom.store(true, Ordering::SeqCst);
@@ -681,11 +685,13 @@ fn an_offer_withdrawn_while_it_waits_for_the_page_never_shows() {
     rig.clock.advance(Duration::from_secs(1));
     rig.app.recording.store(true, Ordering::SeqCst);
     rig.watcher.tick();
-    assert_eq!(rig.watcher.stage(), Stage::Started);
-    rig.app.take();
-    rig.watcher.page_asked();
+    assert_eq!(rig.watcher.stage(), Stage::Recording);
+    assert_eq!(shows(&rig.app.take()), 0, "not before the page asked");
+    // The page asks late, after the offer's wait: the bar shows, once.
     rig.run(10);
-    assert_eq!(shows(&rig.app.take()), 0);
+    assert_eq!(rig.watcher.page_asked().phase, Phase::Recording);
+    rig.run(10);
+    assert_eq!(shows(&rig.app.take()), 1);
     assert!(rig
         .app
         .reports
@@ -909,13 +915,14 @@ fn stop_on_the_tile_asks_once_and_the_tile_follows_the_recorder_until_it_has_sto
         .all(|action| matches!(action, Action::Recording(_))));
     rig.app.recording.store(false, Ordering::SeqCst);
     rig.run(1);
-    assert_eq!(rig.app.take(), [Action::Hide, Action::Phase(Phase::Hidden)]);
+    // The call goes on: the offer comes back.
+    assert_eq!(rig.app.take(), [Action::Phase(Phase::Offered)]);
     let status = folder.read();
-    assert_eq!(status["phase"], "hidden");
+    assert_eq!(status["phase"], "offered");
     assert_eq!(status["last_start"]["stopped_from_tile"], true);
     // Stop does nothing more.
     rig.watcher.stop_recording();
-    assert_eq!(rig.app.take(), [Action::Phase(Phase::Hidden)]);
+    assert_eq!(rig.app.take(), [Action::Phase(Phase::Offered)]);
 }
 
 #[test]
@@ -931,7 +938,7 @@ fn the_status_file_says_recording_while_the_tile_shows_one() {
 }
 
 #[test]
-fn a_recording_started_another_way_gets_no_tile() {
+fn a_recording_started_in_the_app_during_a_call_gets_the_bar() {
     let rig = Rig::new();
     rig.watcher.set_enabled(true);
     rig.app.recording.store(true, Ordering::SeqCst);
@@ -939,10 +946,68 @@ fn a_recording_started_another_way_gets_no_tile() {
     rig.audio.zoom.store(true, Ordering::SeqCst);
     rig.run(60);
     let actions = rig.app.take();
+    assert_eq!(shows(&actions), 1, "{actions:?}");
     assert!(
-        actions
-            .iter()
-            .all(|action| !matches!(action, Action::Recording(_) | Action::Show)),
-        "{actions:?}"
+        !actions.contains(&Action::Phase(Phase::Offered)),
+        "never an offer while recording"
     );
+    assert_eq!(rig.watcher.phase(), Phase::Recording);
+    assert!(actions.iter().all(|action| *action != Action::Start));
+}
+
+#[test]
+fn a_recording_with_no_call_gets_no_tile() {
+    let rig = Rig::new();
+    rig.watcher.set_enabled(true);
+    rig.app.recording.store(true, Ordering::SeqCst);
+    rig.app.live.store(true, Ordering::SeqCst);
+    rig.run(60);
+    assert!(rig.app.take().is_empty());
+    assert_eq!(rig.watcher.stage(), Stage::Idle);
+}
+
+#[test]
+fn the_status_file_keeps_the_last_transitions_with_their_reasons() {
+    let rig = Rig::new();
+    let folder = StatusFolder::new(&rig);
+    rig.recording();
+    rig.app.recording.store(false, Ordering::SeqCst);
+    rig.run(1);
+    rig.watcher.dismiss();
+    let history = folder.read()["history"].clone();
+    let steps: Vec<(String, String)> = history
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|step| {
+            (
+                step["stage"].as_str().unwrap().to_owned(),
+                step["reason"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect();
+    let steps: Vec<(&str, &str)> = steps
+        .iter()
+        .map(|(a, b)| (a.as_str(), b.as_str()))
+        .collect();
+    assert_eq!(
+        steps,
+        [
+            ("hearing", "heard"),
+            ("offered", "offer"),
+            ("starting", "start"),
+            ("recording", "live"),
+            ("offered", "recording_over"),
+            ("dismissed", "not_now"),
+        ]
+    );
+    assert!(history[0]["at"].as_str().unwrap().ends_with('Z'));
+    // At most the last 20.
+    for _ in 0..30 {
+        rig.watcher.set_enabled(false);
+        rig.watcher.set_enabled(true);
+        rig.run(10);
+    }
+    let history = folder.read()["history"].clone();
+    assert_eq!(history.as_array().unwrap().len(), 20);
 }
