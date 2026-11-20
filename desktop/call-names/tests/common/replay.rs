@@ -380,3 +380,80 @@ pub fn token_rules_json() -> String {
 pub fn token_rules() -> call_names::rules::Rules {
     call_names::rules::Rules::from_json(&token_rules_json()).unwrap()
 }
+
+/// The replay as the window the service reads: names ticks and speaking samples on the replay as
+/// it is now. The test moves the replay on.
+pub struct ReplayWindow {
+    pub replay: std::rc::Rc<std::cell::RefCell<Replay>>,
+    markers: call_names::speaking::Markers<String>,
+    found: Option<call_names::speaking::Found>,
+    /// Samples asked for.
+    pub samples: std::rc::Rc<std::cell::Cell<usize>>,
+}
+
+impl ReplayWindow {
+    pub fn new(replay: std::rc::Rc<std::cell::RefCell<Replay>>) -> Self {
+        ReplayWindow {
+            replay,
+            markers: call_names::speaking::Markers::new(),
+            found: None,
+            samples: Default::default(),
+        }
+    }
+}
+
+impl call_names::service::Window for ReplayWindow {
+    fn permission(&self) -> call_names::ax::Permission {
+        call_names::ax::Permission::Granted
+    }
+
+    fn read(
+        &mut self,
+        rules: &call_names::rules::Rules,
+        _apps: &[call_names::ax::RunningApp],
+        budget: call_names::session::Budget,
+    ) -> call_names::ax::TickReport {
+        let mut replay = self.replay.borrow_mut();
+        let clock = super::frozen();
+        let mut meter = call_names::session::Meter::new(budget, &clock);
+        let root = replay.root();
+        let (names, found) = call_names::session::read_tick_with_speaking(
+            rules,
+            &mut *replay,
+            &[call_names::session::Target {
+                app: call_names::rules::App::GoogleMeet,
+                root,
+            }],
+            &mut meter,
+        );
+        self.found = found.map(|found| call_names::speaking::Found {
+            tiles: self.markers.update(&*replay, found),
+            hidden: false,
+        });
+        call_names::ax::TickReport {
+            outcome: names.map_err(call_names::ax::NoNames::from),
+            nodes: meter.nodes(),
+            elapsed: std::time::Duration::ZERO,
+        }
+    }
+
+    fn stop(&mut self) {
+        self.markers.clear();
+    }
+
+    fn speaking(&mut self) -> Option<call_names::speaking::Found> {
+        self.found.take()
+    }
+
+    fn sample(&mut self, slots: &[usize]) -> call_names::speaking::SampleRead {
+        self.samples.set(self.samples.get() + 1);
+        let clock = super::frozen();
+        let mut replay = self.replay.borrow_mut();
+        self.markers.sample(
+            &mut *replay,
+            slots,
+            call_names::speaking::SAMPLE_BUDGET,
+            &clock,
+        )
+    }
+}

@@ -578,6 +578,19 @@ impl Tracker {
         self.counts
     }
 
+    /// A preliminary look at a sample, before any names tick confirmed it: each tile read, its
+    /// person and its mark as the classifier reads it now (unknown before a mode, or while the
+    /// learned mode learns). For a developer's tool; the timeline does not use it.
+    pub fn preview(&self, read: &SampleRead) -> Vec<(usize, Option<String>, Mark)> {
+        read.readings
+            .iter()
+            .map(|(slot, reading)| {
+                let person = self.slots.get(*slot).cloned().flatten();
+                (*slot, person, self.classifier.preview(reading))
+            })
+            .collect()
+    }
+
     pub fn changed(&self) -> bool {
         self.builder.changed()
     }

@@ -21,11 +21,18 @@
 //! finds nothing. In the reading, an app rests for `TIMEOUT_SKIP_TICKS` ticks after
 //! `TIMEOUTS_BEFORE_REST` ticks in a row with a timeout; one slow answer costs that tick only.
 //!
+//! Speaking markers. A reading that gives names also finds the speaking markers of that window
+//! (see `speaking`), on the same scan and meter, and checks with two reads whether the window is
+//! minimised or shows another tab (Arc: only minimised). The markers are kept until the next
+//! reading, with the short messaging timeout of a sample, and [`Driver::sample`] reads their class
+//! lists in between: nothing else, and nothing while their app rests after timeouts.
+//!
 //! Only the round trips are the platform's, so all of this is tested with a fake one.
 
 use super::*;
 use crate::rules::{App, Rules};
-use crate::session::{read_tick_traced, Meter, Target, TickTrace};
+use crate::session::{read_tick_full, Clock, Meter, Target, TickTrace};
+use crate::speaking::{Found as SpeakingFound, Markers, SampleRead};
 use crate::tree::{Node, Source};
 use std::collections::{HashMap, VecDeque};
 
@@ -59,6 +66,15 @@ pub(crate) trait Platform: Source {
     fn set_flag(&mut self, application: &Self::Node, on: bool) -> Result<bool, ReadError>;
     /// Round trips made so far, for diagnostics.
     fn calls(&self) -> u64;
+    /// Give a speaking marker the short messaging timeout of a sample. No round trip.
+    fn quick(&mut self, node: &Self::Node) {
+        let _ = node;
+    }
+    /// Whether a window is minimised. One round trip; "no value" is not minimised.
+    fn minimized(&mut self, window: &Self::Node) -> Result<bool, ReadError> {
+        let _ = window;
+        Ok(false)
+    }
 }
 
 /// Call windows, each with the process it belongs to.
@@ -78,6 +94,8 @@ struct Page<N> {
     root: N,
     /// Found by this tick's search, so not checked again in this tick.
     fresh: bool,
+    /// The browser window that shows the page, to tell whether it is hidden. Zoom: none.
+    window: Option<N>,
 }
 
 /// What is remembered about one running app between ticks.
@@ -126,6 +144,11 @@ pub(crate) struct Driver<P: Platform> {
     /// Diagnostics: keep a copy of what each tick read.
     pub(crate) keep_trees: bool,
     trees: Vec<(App, Node)>,
+    /// The speaking markers of the window that gave names, and the process they belong to.
+    markers: Markers<P::Node>,
+    marker_pid: Option<i32>,
+    /// What the last reading found for speaking, until it is asked for.
+    found: Option<SpeakingFound>,
 }
 
 impl<P: Platform> Driver<P> {
@@ -139,6 +162,9 @@ impl<P: Platform> Driver<P> {
             stats: TickStats::default(),
             keep_trees: false,
             trees: Vec::new(),
+            markers: Markers::new(),
+            marker_pid: None,
+            found: None,
         }
     }
 
@@ -223,9 +249,17 @@ impl<P: Platform> Driver<P> {
             ..TickTrace::default()
         };
         let calls = self.platform.calls();
-        let result = read_tick_traced(rules, &mut self.platform, &targets, meter, &mut trace);
+        let mut markers = None;
+        let result = read_tick_full(
+            rules,
+            &mut self.platform,
+            &targets,
+            meter,
+            &mut trace,
+            Some(&mut markers),
+        );
         let calls = self.platform.calls() - calls;
-        let text_reads = trace.text_reads as u64;
+        let text_reads = (trace.text_reads + trace.class_reads) as u64;
         self.stats.page = PhaseCost {
             calls: calls.saturating_sub(text_reads),
             nodes: trace.scan_nodes,
@@ -250,12 +284,127 @@ impl<P: Platform> Driver<P> {
                 self.strike(pids[index]);
             }
         }
-        self.trees = trace
-            .trees
+        self.trees = std::mem::take(&mut trace.trees)
             .into_iter()
             .map(|(index, tree)| (targets[index].app, tree))
             .collect();
+        self.speaking_found(&result, markers, &trace, &pids, &targets, apps, meter);
         result.map_err(NoNames::from)
+    }
+
+    /// Keep what a reading found for speaking. A reading that gave names and found markers
+    /// replaces the markers; one that found the call over drops them; one that failed, or whose
+    /// search for markers failed, keeps them for the samples and says it did not look.
+    #[allow(clippy::too_many_arguments)]
+    fn speaking_found(
+        &mut self,
+        result: &Result<Extraction, Skip>,
+        markers: Option<Vec<crate::speaking::Marker<P::Node>>>,
+        trace: &TickTrace,
+        pids: &[i32],
+        targets: &[Target<P::Node>],
+        apps: &[RunningApp],
+        meter: &mut Meter,
+    ) {
+        self.found = None;
+        match (result, markers) {
+            (Ok(_), Some(found)) => {
+                let index = trace
+                    .in_call
+                    .iter()
+                    .position(|in_call| *in_call == Some(true));
+                let Some(index) = index else {
+                    return;
+                };
+                for marker in &found {
+                    self.platform.quick(&marker.marker);
+                }
+                let hidden =
+                    !found.is_empty() && self.hidden(pids[index], &targets[index], apps, meter);
+                let tiles = self.markers.update(&self.platform, found);
+                self.marker_pid = Some(pids[index]);
+                self.found = Some(SpeakingFound { tiles, hidden });
+            }
+            (Ok(_), None) | (Err(Skip::Discarded(_)), _) => {}
+            (Err(_), _) => {
+                // No call window, or more than one: nothing to follow.
+                self.markers.clear();
+                self.marker_pid = None;
+                self.found = Some(SpeakingFound::default());
+            }
+        }
+    }
+
+    /// Whether the window of a Meet page is minimised, or (except in Arc, whose titles do not
+    /// say which tab shows) titled for another tab. A read that fails or is out of time says
+    /// "not hidden"; the title is compared and dropped.
+    fn hidden(
+        &mut self,
+        pid: i32,
+        target: &Target<P::Node>,
+        apps: &[RunningApp],
+        meter: &mut Meter,
+    ) -> bool {
+        if target.app != App::GoogleMeet {
+            return false;
+        }
+        let window = self.known.get(&pid).and_then(|known| {
+            known
+                .pages
+                .iter()
+                .find(|page| self.platform.same(&page.root, &target.root))
+                .and_then(|page| page.window.clone())
+        });
+        let Some(window) = window else {
+            return false;
+        };
+        if meter.check_time().is_err() {
+            return false;
+        }
+        if self.platform.minimized(&window).unwrap_or(false) {
+            return true;
+        }
+        let arc = apps
+            .iter()
+            .any(|app| app.pid == pid && app.bundle_id == ARC_BUNDLE_ID);
+        if arc || meter.check_time().is_err() {
+            return false;
+        }
+        match self.platform.title(&window) {
+            Ok(Some(title)) => !title.contains(MEET_WINDOW_TITLE_HINT),
+            _ => false,
+        }
+    }
+
+    /// What the last reading found for speaking; `None` when it did not look. Once per reading.
+    pub(crate) fn speaking(&mut self) -> Option<SpeakingFound> {
+        self.found.take()
+    }
+
+    /// One speaking sample of the kept markers, within `budget` on `clock`. Nothing is read
+    /// while their app rests after timeouts.
+    pub(crate) fn sample(
+        &mut self,
+        slots: &[usize],
+        budget: Duration,
+        clock: &dyn Clock,
+    ) -> SampleRead {
+        let resting = self
+            .marker_pid
+            .and_then(|pid| self.known.get(&pid))
+            .is_some_and(|known| known.resting);
+        if resting || self.marker_pid.is_none() {
+            return SampleRead {
+                resting,
+                readings: slots
+                    .iter()
+                    .map(|&slot| (slot, crate::speaking::Reading::Unknown))
+                    .collect(),
+                ..SampleRead::default()
+            };
+        }
+        self.markers
+            .sample(&mut self.platform, slots, budget, clock)
     }
 
     /// The known call windows that still are call windows, each with its process id. One read
@@ -339,6 +488,9 @@ impl<P: Platform> Driver<P> {
         self.trees.clear();
         self.searched = false;
         self.not_trusted = false;
+        self.markers.clear();
+        self.marker_pid = None;
+        self.found = None;
     }
 
     /// Forget the apps that are gone, and count down the apps that wait or rest.
@@ -396,7 +548,7 @@ impl<P: Platform> Driver<P> {
             AppKind::Zoom => {
                 // The meeting window is the page.
                 for window in candidates {
-                    self.keep(pid, App::Zoom, window);
+                    self.keep(pid, App::Zoom, window, None);
                 }
                 Ok(())
             }
@@ -415,8 +567,10 @@ impl<P: Platform> Driver<P> {
                 let nodes = meter.nodes();
                 let mut result = Ok(());
                 for window in candidates {
-                    match find_page(&mut self.platform, window, meter, arc) {
-                        Ok(Some(web_area)) => self.keep(pid, App::GoogleMeet, web_area),
+                    match find_page(&mut self.platform, window.clone(), meter, arc) {
+                        Ok(Some(web_area)) => {
+                            self.keep(pid, App::GoogleMeet, web_area, Some(window))
+                        }
                         Ok(None) => {}
                         Err(discard) => {
                             result = Err(discard);
@@ -522,12 +676,13 @@ impl<P: Platform> Driver<P> {
         turned_on.map_err(Discard::Read)
     }
 
-    fn keep(&mut self, pid: i32, app: App, root: P::Node) {
+    fn keep(&mut self, pid: i32, app: App, root: P::Node, window: Option<P::Node>) {
         if let Some(known) = self.known.get_mut(&pid) {
             known.pages.push(Page {
                 app,
                 root,
                 fresh: true,
+                window,
             });
             self.stats.found += 1;
         }
@@ -697,7 +852,7 @@ fn walk_to_page<P: Platform>(
 mod tests {
     use super::*;
     use crate::session::Budget;
-    use crate::tree::{Structure, TextAttr};
+    use crate::tree::{ClassSet, Structure, TextAttr};
     use std::cell::Cell;
     use std::collections::HashSet;
     use std::rc::Rc;
@@ -728,6 +883,9 @@ mod tests {
         SetFlag(usize, bool),
         Structure(usize),
         Texts(usize),
+        ClassList(usize),
+        Minimized(usize),
+        Quick(usize),
     }
 
     impl Op {
@@ -743,6 +901,7 @@ mod tests {
                 | Op::SetFlag(node, _)
                 | Op::Structure(node)
                 | Op::Texts(node) => Some(node),
+                Op::ClassList(node) | Op::Minimized(node) | Op::Quick(node) => Some(node),
             }
         }
 
@@ -773,6 +932,10 @@ mod tests {
         /// The child limit of every call that takes one.
         limits: Vec<usize>,
         calls: u64,
+        /// Class lists, by element.
+        classes: HashMap<usize, Vec<&'static str>>,
+        /// Windows that are minimised.
+        minimized: HashSet<usize>,
     }
 
     impl Fake {
@@ -857,6 +1020,14 @@ mod tests {
             Ok(attrs.iter().map(text).collect())
         }
 
+        fn class_list(&mut self, node: &usize) -> Result<Option<ClassSet>, ReadError> {
+            self.trip(*node, Op::ClassList(*node))?;
+            Ok(self
+                .classes
+                .get(node)
+                .and_then(|classes| ClassSet::from_tokens(classes.iter().copied())))
+        }
+
         fn identity_hash(&self, node: &usize) -> u64 {
             *node as u64 % 3
         }
@@ -926,6 +1097,15 @@ mod tests {
 
         fn calls(&self) -> u64 {
             self.calls
+        }
+
+        fn quick(&mut self, node: &usize) {
+            self.ops.push(Op::Quick(*node));
+        }
+
+        fn minimized(&mut self, window: &usize) -> Result<bool, ReadError> {
+            self.trip(*window, Op::Minimized(*window))?;
+            Ok(self.minimized.contains(window))
         }
     }
 
@@ -1909,5 +2089,205 @@ mod tests {
         assert_eq!(trees.len(), 1);
         assert_eq!(trees[0].0, App::Zoom);
         assert_eq!(trees[0].1.descendants().len(), 3);
+    }
+
+    /// The Meet classes of the embedded speaking rule: a quiet marker, and a speaking one.
+    const QUIET: [&str; 3] = ["DYfzY", "cYKTje", "gjg47c"];
+    const SPEAKING: [&str; 3] = ["DYfzY", "cYKTje", "Oaajhc"];
+
+    /// A Meet window with three tiles as the speaking rule expects them. Returns the window and
+    /// each tile's marker.
+    fn speaking_window(fake: &mut Fake, pid: i32, title: &str) -> (usize, Vec<usize>) {
+        let leave = fake.add(FakeNode {
+            title: Some("Leave call".into()),
+            ..node(pid, "AXButton", &[])
+        });
+        let controls = fake.add(FakeNode {
+            subrole: Some("AXLandmarkRegion".into()),
+            title: Some("Call controls".into()),
+            ..node(pid, "AXGroup", &[leave])
+        });
+        let mut tiles = Vec::new();
+        let mut markers = Vec::new();
+        for name in ["Alex Example", "Robin Sample", "Test Guest A"] {
+            let empty = |fake: &mut Fake, children: &[usize]| {
+                fake.add(FakeNode {
+                    subrole: Some("AXEmptyGroup".into()),
+                    ..node(pid, "AXGroup", children)
+                })
+            };
+            let marker = empty(fake, &[]);
+            fake.classes.insert(marker, QUIET.to_vec());
+            let holder = fake.add(node(pid, "AXGroup", &[marker]));
+            let leaf = empty(fake, &[]);
+            let ring = fake.add(node(pid, "AXGroup", &[leaf, holder]));
+            let avatar = fake.add(node(pid, "AXGroup", &[ring]));
+            let text = fake.add(FakeNode {
+                value: Some(name.into()),
+                ..node(pid, "AXStaticText", &[])
+            });
+            let label = fake.add(node(pid, "AXGroup", &[text]));
+            let inner = fake.add(node(pid, "AXGroup", &[avatar, label]));
+            tiles.push(fake.add(node(pid, "AXGroup", &[inner])));
+            markers.push(marker);
+        }
+        let main = fake.add(FakeNode {
+            subrole: Some("AXLandmarkMain".into()),
+            ..node(pid, "AXGroup", &tiles)
+        });
+        let web_area = fake.add(FakeNode {
+            url: Some(MEET.into()),
+            ..node(pid, "AXWebArea", &[controls, main])
+        });
+        let window = fake.add(FakeNode {
+            title: Some(title.into()),
+            ..node(pid, "AXWindow", &[web_area])
+        });
+        (window, markers)
+    }
+
+    fn speaking_driver(title: &str) -> (Driver<Fake>, Vec<usize>, usize, [RunningApp; 1]) {
+        let mut fake = Fake::default();
+        let (window, markers) = speaking_window(&mut fake, 10, title);
+        let application = browser(&mut fake, 10, &[window]);
+        fake.flags_on.insert(application);
+        (Driver::new(fake), markers, window, [app(10, CHROME)])
+    }
+
+    fn sample(driver: &mut Driver<Fake>, slots: &[usize]) -> (SampleRead, Vec<Op>) {
+        let before = driver.platform.ops.len();
+        let clock = || Duration::ZERO;
+        let read = driver.sample(slots, crate::speaking::SAMPLE_BUDGET, &clock);
+        (read, driver.platform.ops[before..].to_vec())
+    }
+
+    #[test]
+    fn a_reading_finds_each_tiles_marker_and_gives_it_the_short_timeout() {
+        let (mut driver, markers, _, apps) = speaking_driver(MEET_TITLE);
+        let first = tick(&mut driver, &apps);
+        assert!(first.outcome.is_ok());
+        let found = driver.speaking().expect("the reading looked");
+        let names: Vec<&str> = found.tiles.iter().map(|tile| tile.name.as_str()).collect();
+        assert_eq!(names, ["Alex Example", "Robin Sample", "Test Guest A"]);
+        assert!(found.tiles.iter().all(|tile| tile.rules_ok && tile.single));
+        assert!(found.tiles.iter().all(|tile| tile.previous.is_none()));
+        assert!(!found.hidden);
+        // One class list per candidate, and the short timeout on each marker.
+        let class_reads: Vec<usize> = first
+            .ops
+            .iter()
+            .filter_map(|op| match op {
+                Op::ClassList(node) => Some(*node),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(class_reads, markers);
+        for marker in &markers {
+            assert!(first.ops.contains(&Op::Quick(*marker)));
+        }
+        assert_eq!(driver.speaking(), None, "once per reading");
+
+        // A sample reads the class lists of the markers and nothing else.
+        driver
+            .platform
+            .classes
+            .insert(markers[1], SPEAKING.to_vec());
+        let (read, ops) = sample(&mut driver, &[0, 1, 2]);
+        assert_eq!(
+            ops,
+            markers
+                .iter()
+                .map(|marker| Op::ClassList(*marker))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(read.calls, 3);
+        let tokens = crate::speaking::Tokens::of(
+            Rules::embedded()
+                .unwrap()
+                .app(App::GoogleMeet)
+                .unwrap()
+                .speaking[0]
+                .classes
+                .as_ref()
+                .unwrap(),
+        );
+        let marks: Vec<crate::speaking::Mark> = read
+            .readings
+            .iter()
+            .map(|(_, reading)| match reading {
+                crate::speaking::Reading::Classes(set) => tokens.classify(set),
+                _ => crate::speaking::Mark::Unknown,
+            })
+            .collect();
+        use crate::speaking::Mark::{Quiet, Speaking};
+        assert_eq!(marks, [Quiet, Speaking, Quiet]);
+
+        // The next reading knows each tile again.
+        tick(&mut driver, &apps);
+        let again = driver.speaking().unwrap();
+        let previous: Vec<Option<usize>> = again.tiles.iter().map(|tile| tile.previous).collect();
+        assert_eq!(previous, [Some(0), Some(1), Some(2)]);
+    }
+
+    #[test]
+    fn a_minimised_window_or_another_tab_is_hidden() {
+        let (mut driver, _, window, apps) = speaking_driver(MEET_TITLE);
+        tick(&mut driver, &apps);
+        assert!(!driver.speaking().unwrap().hidden);
+        driver.platform.minimized.insert(window);
+        tick(&mut driver, &apps);
+        assert!(driver.speaking().unwrap().hidden);
+        driver.platform.minimized.clear();
+        // Another tab in front: the window's title no longer has the hint.
+        driver.platform.nodes[window].title = Some("Inbox - Google Chrome".into());
+        tick(&mut driver, &apps);
+        assert!(driver.speaking().unwrap().hidden);
+    }
+
+    #[test]
+    fn nothing_is_sampled_while_the_app_rests_and_the_markers_go_with_the_call() {
+        let (mut driver, markers, _, apps) = speaking_driver(MEET_TITLE);
+        tick(&mut driver, &apps);
+        assert_eq!(driver.speaking().unwrap().tiles.len(), 3);
+        // Two readings in a row time out: the app rests, and a sample reads nothing.
+        driver.platform.hung_inside.insert(10);
+        tick(&mut driver, &apps);
+        assert_eq!(driver.speaking(), None, "a failed reading did not look");
+        tick(&mut driver, &apps);
+        assert_eq!(driver.speaking(), None);
+        // Resting, the app has no call window to read: nothing is followed until it is read again.
+        let resting = tick(&mut driver, &apps);
+        assert_eq!(resting.outcome, NO_TARGET);
+        assert_eq!(driver.speaking().unwrap().tiles, []);
+        let (read, ops) = sample(&mut driver, &[0, 1, 2]);
+        assert!(ops.is_empty());
+        assert_eq!(read.calls, 0);
+        assert!(read
+            .readings
+            .iter()
+            .all(|(_, reading)| *reading == crate::speaking::Reading::Unknown));
+
+        // The call ends: nothing is followed any more.
+        let (mut driver, markers_again, _, apps) = speaking_driver(MEET_TITLE);
+        assert_eq!(markers_again.len(), markers.len());
+        tick(&mut driver, &apps);
+        driver.speaking();
+        let controls_gone = driver
+            .platform
+            .nodes
+            .iter()
+            .position(|node| node.title.as_deref() == Some("Call controls"));
+        driver.platform.nodes[controls_gone.unwrap()].title = None;
+        tick(&mut driver, &apps);
+        assert_eq!(driver.speaking().unwrap().tiles, []);
+        let (_, ops) = sample(&mut driver, &[0, 1, 2]);
+        assert!(ops.is_empty());
+
+        // Stopping forgets the markers.
+        let (mut driver, _, _, apps) = speaking_driver(MEET_TITLE);
+        tick(&mut driver, &apps);
+        driver.stop();
+        let (_, ops) = sample(&mut driver, &[0]);
+        assert!(!ops.iter().any(|op| matches!(op, Op::ClassList(_))));
     }
 }

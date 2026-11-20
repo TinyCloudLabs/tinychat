@@ -471,6 +471,20 @@ impl Classifier {
         self.mode
     }
 
+    /// One reading as the classifier reads it now, without keeping anything: unknown before a
+    /// mode, and while the learned mode learns. Not for the timeline.
+    pub fn preview(&self, reading: &Reading) -> Mark {
+        let Reading::Classes(set) = reading else {
+            return Mark::Unknown;
+        };
+        match (self.mode, &self.tokens, &self.quiet) {
+            (Some(Mode::Rules), Some(tokens), _) => tokens.classify(set),
+            (Some(Mode::Learned), _, Some(quiet)) if set.contains_all(quiet) => Mark::Quiet,
+            (Some(Mode::Learned), _, Some(_)) => Mark::Speaking,
+            _ => Mark::Unknown,
+        }
+    }
+
     /// Whether a tile may be followed in the mode as it is now: the learned mode follows only a
     /// tile with one marker candidate.
     pub fn follows(&self, tile: &TileFound) -> bool {
