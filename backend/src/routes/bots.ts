@@ -35,6 +35,37 @@ export function botOwnerDid(address: string): string {
   return `did:pkh:eip155:1:${address.toLowerCase()}`;
 }
 
+const WEB_MODES = ["off", "listed", "any"] as const;
+type WebMode = (typeof WEB_MODES)[number];
+const MAX_WEB_HOSTS = 50;
+const MAX_WEB_HOST_LENGTH = 253;
+const MAX_WEB_MESSAGE = 200;
+const WEB_INVALID_MESSAGE = "Those sites weren't accepted. Use site names like example.com, one per line, up to 50. Shared domains like github.io or co.uk need your own name in front, like you.github.io.";
+
+const isWebMode = (value: unknown): value is WebMode => WEB_MODES.some(mode => mode === value);
+
+/** The only two fields a browser may set; anything else in the body is dropped. */
+function webSettingsBody(body: unknown): { mode: WebMode; hosts: string[] } | null {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return null;
+  const { mode, hosts } = body as { mode?: unknown; hosts?: unknown };
+  if (!isWebMode(mode) || !Array.isArray(hosts) || hosts.length > MAX_WEB_HOSTS) return null;
+  if (!hosts.every(host => typeof host === "string" && host.length <= MAX_WEB_HOST_LENGTH)) return null;
+  return { mode, hosts: hosts as string[] };
+}
+
+const isCount = (value: unknown): value is number => typeof value === "number" && Number.isInteger(value) && value >= 0;
+
+/** Rebuilds the service's answer from the contract fields; null when it does not have the contract's shape. */
+function toWebSettings(payload: unknown): { mode: WebMode; hosts: string[]; available: boolean; today: { searches: number; pages: number; blocked: number } } | null {
+  if (!payload || typeof payload !== "object") return null;
+  const { mode, hosts, available, today } = payload as { mode?: unknown; hosts?: unknown; available?: unknown; today?: unknown };
+  if (!isWebMode(mode) || !Array.isArray(hosts) || !hosts.every(host => typeof host === "string") || typeof available !== "boolean") return null;
+  if (!today || typeof today !== "object") return null;
+  const { searches, pages, blocked } = today as { searches?: unknown; pages?: unknown; blocked?: unknown };
+  if (!isCount(searches) || !isCount(pages) || !isCount(blocked)) return null;
+  return { mode, hosts: [...hosts], available, today: { searches, pages, blocked } };
+}
+
 /** Builds the internal send body from the authenticated owner and route's admitted bot. */
 export async function botTurnBody(config: BotsConfig, address: string, sourceKey: string, text: string) {
   try {
@@ -168,6 +199,47 @@ export function createBotsRouter(opts: {
     } catch {
       res.status(503).json({ error: "bots_unavailable" });
     }
+  });
+
+  // Main's web access setting (user-enabled, off by default). The service owns the rules; this only proxies, and
+  // rebuilds the answer from the contract fields so nothing else the service returns reaches the browser.
+  const webUrl = `/v1/bots/main/web`;
+  const callWeb = async (address: string, init: { method: "GET" | "PUT"; body?: string }): Promise<globalThis.Response> =>
+    (config!.fetchImpl ?? fetch)(`${config!.serviceUrl}${webUrl}`, {
+      method: init.method,
+      headers: botsServiceHeaders(config!, botOwnerDid(address), init.method, `${config!.serviceUrl}${webUrl}`, init.body),
+      ...(init.body === undefined ? {} : { body: init.body }),
+      signal: AbortSignal.timeout(10_000),
+    });
+  const sendWeb = async (res: Response, upstream: Promise<globalThis.Response>): Promise<void> => {
+    try {
+      const response = await upstream;
+      if (response.status === 400) {
+        const message: unknown = ((await response.json().catch(() => null)) as { message?: unknown } | null)?.message;
+        res.status(400).json({ error: "invalid", message: typeof message === "string" && message.length > 0 && message.length <= MAX_WEB_MESSAGE ? message : WEB_INVALID_MESSAGE });
+        return;
+      }
+      if (!response.ok) throw new Error("upstream");
+      const settings = toWebSettings(await response.json());
+      if (!settings) throw new Error("shape");
+      res.json(settings);
+    } catch {
+      res.status(502).json({ error: UNAVAILABLE.code, message: UNAVAILABLE.message });
+    }
+  };
+
+  router.get("/main/web", async (req, res) => {
+    const address = gate(req, res);
+    if (!address) return;
+    await sendWeb(res, callWeb(address, { method: "GET" }));
+  });
+
+  router.put("/main/web", async (req, res) => {
+    const address = gate(req, res);
+    if (!address) return;
+    const body = webSettingsBody(req.body);
+    if (!body) { res.status(400).json({ error: "invalid", message: WEB_INVALID_MESSAGE }); return; }
+    await sendWeb(res, callWeb(address, { method: "PUT", body: JSON.stringify(body) }));
   });
 
   // Creates a bot for the signed-in owner. Its key is chosen here; the request names neither an owner nor a key.

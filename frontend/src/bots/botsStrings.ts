@@ -34,6 +34,38 @@ export function botsErrorText(code: BotsErrorCode, name: string = BOTS_STRINGS.m
 export const HISTORY_EXPIRY_NOTICE = "Your TinyCloud permission expired on {expiryDate}. Main's chat history on our server will be deleted on {deletionDate}. Reconnect TinyCloud before then to save it to your space.";
 export const HISTORY_RECONNECT_LABEL = "Reconnect TinyCloud";
 
+// Web access panel strings.
+const plural = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
+
+export const WEB_ACCESS_STRINGS = {
+  title: "Web access",
+  offDescription: "Main can't search the web or read pages.",
+  presets: {
+    off: { label: "Off", description: "Main can't search the web or read pages." },
+    listed: { label: "Only sites you list", description: "Main searches and reads pages only on the sites you list." },
+    any: { label: "Search and read any public site", description: "Main can search the web and open any public page." },
+  },
+  listLabel: "Sites Main may use",
+  listHint: "One site per line, like docs.example.com. Subdomains are included. For shared domains like github.io, list your own site, like you.github.io.",
+  listPlaceholder: "docs.example.com",
+  listError: "Use site names like example.com, one per line, up to 50. Shared domains like github.io or co.uk need your own name in front, like you.github.io.",
+  warningTitle: "Let Main use the web?",
+  warningFace: "Using the web can be risky for your agent. Turn it on with care.",
+  warningLearnMore: "Learn more",
+  warningBody: "A web page can hide instructions meant for an AI. Main might follow them and put things you've told it into a search or a web address. Searches go to our search provider, Tavily. Our server fetches pages, so the sites see our server, not you. Don't open or paste links Main gives you unless you trust them.",
+  warningBodyAny: "This setting lets Main open pages you've never seen, and any of them could try this. \"Only sites you list\" is safer, but anyone who can post on those sites could still try it.",
+  warningConfirm: "Turn on",
+  warningCancel: "Not now",
+  save: "Save",
+  saving: "Saving…",
+  unavailable: "Web access isn't working right now. Try again later.",
+  loadFailed: "Couldn't load Main's web access setting. Reload the page to try again.",
+  saveFailed: "Couldn't save that, so Main's web access is unchanged. Try again.",
+  /** Today's use, or nothing yet (the line is hidden). */
+  usageLine: (today: { searches: number; pages: number }) =>
+    today.searches + today.pages === 0 ? "" : `Searched ${plural(today.searches, "time", "times")} and read ${plural(today.pages, "page", "pages")} today.`,
+} as const;
+
 // The bot view in the Chat slot (TC-3325). The same sentences as Main's chat above, with the bot's own name, so
 // for Main they read exactly as they do today.
 export const BOT_VIEW_STRINGS = {

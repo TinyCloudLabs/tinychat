@@ -8,10 +8,11 @@ import { MAX_MESSAGE_LENGTH, SendButton, sendOnEnter, useDraft } from "./AskBox"
 import { focusSdkPrompt, useSdkPromptOpen } from "./useSdkPromptOpen";
 import { BotAvatar, MAIN_BOT } from "./BotAvatar";
 import { acknowledgeHistoryNotice, historyNoticeDeadline, type HistoryNotice } from "./historyNotice";
-import { BOTS_STRINGS, botsErrorText, HISTORY_EXPIRY_NOTICE, HISTORY_RECONNECT_LABEL } from "./botsStrings";
+import { BOTS_STRINGS, botsErrorText, HISTORY_EXPIRY_NOTICE, HISTORY_RECONNECT_LABEL, WEB_ACCESS_STRINGS } from "./botsStrings";
 import { isWorking, type ChatLine, type MainChatState } from "./useMainChat";
+import { WebAccess, type WebAccessApi } from "./WebAccess";
 
-function Line({ role, text }: Pick<ChatLine, "role" | "text">) {
+export function Line({ role, text }: Pick<ChatLine, "role" | "text">) {
   return role === "user" ? (
     <p className="max-w-[80%] self-end whitespace-pre-wrap break-words rounded-3xl bg-muted px-4 py-2.5 text-body">{text}</p>
   ) : (
@@ -79,9 +80,24 @@ export interface MainChatProps {
   onRetryHistory: () => void;
   notice?: HistoryNotice | null;
   onReconnect?: () => void;
+  /** When given, the sheet offers Main's web access setting. */
+  webAccess?: WebAccessApi;
 }
 
-export function MainChat({ open, onOpenChange, state, onSend, onRetry, onRetryHistory, notice, onReconnect }: MainChatProps) {
+/** Main's web access setting, behind one button so the chat stays the first thing in the sheet. */
+export function WebAccessToggle({ api }: { api: WebAccessApi }) {
+  const [shown, setShown] = useState(false);
+  return (
+    <div className="flex flex-col items-start gap-3">
+      <Button type="button" variant="outline" size="sm" aria-expanded={shown} onClick={() => setShown((value) => !value)}>
+        {WEB_ACCESS_STRINGS.title}
+      </Button>
+      {shown ? <WebAccess api={api} /> : null}
+    </div>
+  );
+}
+
+export function MainChat({ open, onOpenChange, state, onSend, onRetry, onRetryHistory, notice, onReconnect, webAccess }: MainChatProps) {
   const { lines, history, turn } = state;
   const working = isWorking(turn);
   const sdkPromptOpen = useSdkPromptOpen();
@@ -126,6 +142,7 @@ export function MainChat({ open, onOpenChange, state, onSend, onRetry, onRetryHi
       <ResponsiveSheetBody>
         <div className="mx-auto flex w-full max-w-2xl flex-col gap-5 py-4">
           <p className="text-center text-callout text-muted-foreground">{BOTS_STRINGS.modelLine}</p>
+          {open && webAccess ? <WebAccessToggle api={webAccess} /> : null}
           {open && notice && onReconnect ? <ExpiryNotice key={`${notice.id}:${notice.deliveredAt ?? notice.renderAttemptAt ?? "initial"}`} notice={notice} onReconnect={onReconnect} /> : null}
           {history === "loading" ? <p role="status" className="text-callout text-muted-foreground">{BOTS_STRINGS.historyLoading}</p> : null}
           {history === "failed" && !working ? <Failure text={BOTS_STRINGS.historyFailed} onRetry={onRetryHistory} /> : null}

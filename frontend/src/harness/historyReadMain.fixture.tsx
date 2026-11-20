@@ -25,6 +25,8 @@ initSizeClass();
 let shown = false;
 createRoot(document.getElementById("root")!).render(<HomeAskBox api={{
   getBotsStatus: async () => ({ enabled: true }),
+  getMainWeb: async () => ({ mode: "off", hosts: [], available: false, today: { searches: 0, pages: 0, blocked: 0 } }),
+  setMainWeb: async () => ({ mode: "off", hosts: [], available: false, today: { searches: 0, pages: 0, blocked: 0 } }),
   listMainMessages: () => {
     if (!shown) { shown = true; return Promise.resolve([]); }
     if (probe.reads++) history = pendingHistory();
