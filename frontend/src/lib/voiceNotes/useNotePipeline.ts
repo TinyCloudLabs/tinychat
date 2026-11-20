@@ -13,7 +13,8 @@ import { privateRefusalCopy } from "@/capture/recorder/privateInstead";
 import { PlatformContext, type AppPlatform } from "@/lib/platform";
 import { deviceName } from "./notePipelineCopy";
 import { localTranscriptionUnavailable } from "./captureEngine";
-import { getDesktopWhisperQueue, type DesktopWhisperJob } from "./desktop/desktopWhisper";
+import { getDesktopWhisperQueue, whisperJobNeedsModel, type DesktopWhisperJob } from "./desktop/desktopWhisper";
+import { GET_WHISPER_NO_SETTINGS, openCaptureSettings } from "@/capture/recorder/final/desktop/openCaptureSettings";
 import { resolveVoiceNoteRows, SpaceLaneQueueWaitTimeout, spaceLaneSnapshot, subscribeSpaceLane } from "./voiceNoteRows";
 import { legacyTranscriptMetadata, readTranscriptCommits } from "./voiceNoteCommits";
 import {
@@ -252,11 +253,19 @@ const CAPTURE_ISSUE: Record<HomeIssue["kind"], PipelineCaptureIssue> = {
 
 function onDeviceInput(facts: NotePipelineFacts): PipelineOnDevice | null {
   const status = facts.onDeviceStatus;
-  if (status === null) return facts.desktopJob ? {
-    stt: { state: facts.desktopJob.state === "transcribing" ? "running" : facts.desktopJob.state, error: facts.desktopJob.error },
-    queue: { position: facts.desktopJob.position ?? (facts.desktopJob.state === "queued" ? 1 : null), inLine: facts.desktopJob.inLine ?? 1, percent: facts.desktopJob.progress },
-    model: null, download: "idle", sync: facts.transcriptSync,
-  } : null;
+  const job = facts.desktopJob;
+  if (status === null) {
+    if (!job) return null;
+    // A Mac job stopped for want of a Whisper model waits for one: the model step and its Get model, never "couldn't transcribe".
+    if (whisperJobNeedsModel(job)) return { stt: { state: "waiting_for_model", error: job.error }, queue: null,
+      model: { state: "absent", bytes: 0, totalBytes: 0, error: null }, download: "idle", sync: facts.transcriptSync };
+    return {
+      stt: { state: job.state === "transcribing" ? "running" : job.state, error: job.error },
+      // While its audio is still being finished the job has no place in line yet.
+      queue: { position: job.audio === "preparing" ? null : job.position ?? (job.state === "queued" ? 1 : null), inLine: job.inLine ?? 1, percent: job.progress },
+      model: null, download: "idle", sync: facts.transcriptSync,
+    };
+  }
   const place = onDeviceQueuePlace(status, facts.id);
   // The live queue entry is the newest word on the job; the ledger read is what is left after a restart.
   const stt = place !== null ? { state: place.entry.state, error: place.entry.error } : facts.native?.stt != null ? { state: facts.native.stt.state, error: facts.native.stt.error } : null;
@@ -312,7 +321,8 @@ export function buildNotePipelineInput(facts: NotePipelineFacts): NotePipelineIn
     online: facts.online,
     audioUploadIntent: (facts.native?.recording?.options as { uploadAudio?: boolean } | undefined)?.uploadAudio ?? true,
     capture: {
-      finalizing: facts.capture.finalizing,
+      // A Mac note whose audio is still being finished on the Mac is finishing too: nothing waits for the space yet.
+      finalizing: facts.capture.finalizing || (facts.device === "mac" && facts.desktopJob?.audio === "preparing"),
       issue: facts.capture.issue === null ? null : CAPTURE_ISSUE[facts.capture.issue.kind],
       readError: facts.capture.readError ?? null,
     },
@@ -405,6 +415,8 @@ export async function runPipelineAction(kind: PipelineActionKind, env: PipelineA
         env.reviewConsent();
         return null;
       case "get-model":
+        // The Mac's Whisper models are chosen and downloaded in ⚙︎ Capture settings.
+        if (env.input.device === "mac") return openCaptureSettings() ? null : GET_WHISPER_NO_SETTINGS;
         return await downloadOnDeviceModel();
       case "check-again": {
         if (!env.transcription) return "Private transcription isn't available here.";
@@ -465,6 +477,7 @@ export async function runPipelineAction(kind: PipelineActionKind, env: PipelineA
                     : env.native?.audio == null ? undefined : { audio: env.native.audio }, stt: { state: "done" } });
                 return null;
               case "model":
+                if (env.input.device === "mac") return openCaptureSettings() ? null : GET_WHISPER_NO_SETTINGS;
                 return await downloadOnDeviceModel();
               case "note":
                 if (env.input.device === "mac") {
