@@ -655,29 +655,287 @@ test('pages-production-commit.mjs deploys the exact target tree as a fast-forwar
 });
 
 // Real Cloudflare Pages check-run summaries (production f33cd32, preview 9545f4b), trimmed.
-const pagesRun = (id, fields) => ({ id, name: 'Cloudflare Pages', app: { slug: 'cloudflare-workers-and-pages' }, details_url: `https://dash.cloudflare.com/${id}`, ...fields });
+const PAGES_COMMIT = 'f33cd32'.padEnd(40, '0');
+const pagesRun = (id, fields) => ({ id, head_sha: PAGES_COMMIT, name: 'Cloudflare Pages', app: { slug: 'cloudflare-workers-and-pages' }, details_url: `https://dash.cloudflare.com/${id}`, ...fields });
 const PRODUCTION_SUMMARY = "<table><tr><td><strong>Latest commit:</strong> </td><td>\n<code>f33cd32</code>\n</td></tr>\n<tr><td><strong>Status:</strong></td><td>&nbsp;✅&nbsp; Deploy successful!</td></tr>\n<tr><td><strong>Preview URL:</strong></td><td>\n<a href='https://465be04b.tinychat-4jq.pages.dev'>https://465be04b.tinychat-4jq.pages.dev</a>\n</td></tr>\n</table>";
 const PREVIEW_SUMMARY = PRODUCTION_SUMMARY.replace('</table>', "<tr><td><strong>Branch Preview URL:</strong></td><td>\n<a href='https://production.tinychat-4jq.pages.dev'>https://production.tinychat-4jq.pages.dev</a>\n</td></tr>\n</table>");
 
 test('classifyPagesCheckRuns tells a live production deploy from waiting, failed and preview builds', () => {
-  assert.deepEqual(classifyPagesCheckRuns([]), { state: 'waiting' });
-  assert.deepEqual(classifyPagesCheckRuns([{ ...pagesRun(1, { status: 'completed', conclusion: 'success' }), app: { slug: 'other' } }]), { state: 'waiting' });
-  assert.deepEqual(classifyPagesCheckRuns([pagesRun(1, { status: 'in_progress', conclusion: null })]), { state: 'waiting' });
+  assert.deepEqual(classifyPagesCheckRuns([], PAGES_COMMIT), { state: 'waiting' });
+  assert.deepEqual(classifyPagesCheckRuns([pagesRun(1, { status: 'in_progress', conclusion: null })], PAGES_COMMIT), { state: 'waiting' });
 
-  const production = classifyPagesCheckRuns([pagesRun(1, { status: 'completed', conclusion: 'success', output: { summary: PRODUCTION_SUMMARY } })]);
+  const production = classifyPagesCheckRuns([pagesRun(1, { status: 'completed', conclusion: 'success', output: { summary: PRODUCTION_SUMMARY } })], PAGES_COMMIT);
   assert.equal(production.state, 'production');
   assert.equal(production.deploymentUrl, 'https://465be04b.tinychat-4jq.pages.dev');
+  assert.equal(production.detailsUrl, 'https://dash.cloudflare.com/1');
 
-  assert.equal(classifyPagesCheckRuns([pagesRun(1, { status: 'completed', conclusion: 'success', output: { summary: PREVIEW_SUMMARY } })]).state, 'preview');
-  const failed = classifyPagesCheckRuns([pagesRun(1, { status: 'completed', conclusion: 'failure', output: { title: 'Build failed', summary: '' } })]);
+  assert.equal(classifyPagesCheckRuns([pagesRun(1, { status: 'completed', conclusion: 'success', output: { summary: PREVIEW_SUMMARY } })], PAGES_COMMIT).state, 'preview');
+  const failed = classifyPagesCheckRuns([pagesRun(1, { status: 'completed', conclusion: 'failure', output: { title: 'Build failed', summary: '' } })], PAGES_COMMIT);
   assert.equal(failed.state, 'failed');
   assert.match(failed.reason, /failure: Build failed/);
+});
 
-  // The newest run (a retry) decides.
-  assert.equal(classifyPagesCheckRuns([
-    pagesRun(1, { status: 'completed', conclusion: 'failure', output: { summary: '' } }),
-    pagesRun(2, { status: 'completed', conclusion: 'success', output: { summary: PRODUCTION_SUMMARY } }),
-  ]).state, 'production');
+test('classifyPagesCheckRuns ignores other check names, apps and SHAs for success and failure', () => {
+  for (const fields of [{ name: 'Other check' }, { app: { slug: 'other' } }, { head_sha: 'a'.repeat(40) }]) {
+    for (const conclusion of ['success', 'failure']) {
+      const other = pagesRun(2, { ...fields, status: 'completed', conclusion, output: { summary: PREVIEW_SUMMARY } });
+      assert.deepEqual(classifyPagesCheckRuns([other], PAGES_COMMIT), { state: 'waiting' });
+      const result = classifyPagesCheckRuns([
+        pagesRun(1, { status: 'completed', conclusion: 'success', output: { summary: PRODUCTION_SUMMARY } }),
+        other,
+      ], PAGES_COMMIT);
+      assert.equal(result.state, 'production');
+      assert.equal(result.detailsUrl, 'https://dash.cloudflare.com/1');
+    }
+  }
+});
+
+test('classifyPagesCheckRuns accepts success with cancelled or unfinished duplicates in either order', () => {
+  for (const duplicate of [
+    { status: 'completed', conclusion: 'cancelled' },
+    { status: 'in_progress', conclusion: null },
+    { status: 'queued', conclusion: null },
+  ]) {
+    for (const successId of [1, 3]) {
+      const result = classifyPagesCheckRuns([
+        pagesRun(2, duplicate),
+        pagesRun(successId, { status: 'completed', conclusion: 'success', output: { summary: PRODUCTION_SUMMARY } }),
+      ], PAGES_COMMIT);
+      assert.equal(result.state, 'production');
+      assert.equal(result.detailsUrl, `https://dash.cloudflare.com/${successId}`);
+    }
+  }
+});
+
+test('classifyPagesCheckRuns lets only the newest completed noncancelled attempt decide', () => {
+  for (const conclusion of ['failure', 'timed_out', 'action_required', 'startup_failure', 'stale', 'neutral', 'skipped', null]) {
+    for (const failedId of [1, 3]) {
+      for (const reverse of [false, true]) {
+        const runs = [
+          pagesRun(2, { status: 'completed', conclusion: 'success', output: { summary: PRODUCTION_SUMMARY } }),
+          pagesRun(failedId, { status: 'completed', conclusion, output: { title: 'Build failed' } }),
+        ];
+        const result = classifyPagesCheckRuns(reverse ? runs.reverse() : runs, PAGES_COMMIT);
+        if (failedId < 2) {
+          assert.equal(result.state, 'production');
+          assert.equal(result.detailsUrl, 'https://dash.cloudflare.com/2');
+          assert.deepEqual(result.supersededFailures, [{ id: failedId, conclusion }]);
+        } else {
+          assert.equal(result.state, 'failed');
+          assert.equal(result.reason, `${conclusion}: Build failed`);
+          assert.equal(result.detailsUrl, `https://dash.cloudflare.com/${failedId}`);
+        }
+      }
+    }
+  }
+});
+
+test('classifyPagesCheckRuns orders creation IDs, not late completion timestamps', () => {
+  for (const olderConclusion of ['success', 'failure']) {
+    for (const newerConclusion of ['success', 'failure']) {
+      const older = pagesRun(1, { status: 'completed', conclusion: olderConclusion, completed_at: '2026-11-20T12:00:00Z', output: { summary: PREVIEW_SUMMARY } });
+      const newer = pagesRun(2, { status: 'completed', conclusion: newerConclusion, completed_at: '2026-11-20T11:00:00Z', output: { summary: PRODUCTION_SUMMARY } });
+      for (const runs of [[older, newer], [newer, older]]) {
+        const result = classifyPagesCheckRuns(runs, PAGES_COMMIT);
+        assert.equal(result.state, newerConclusion === 'success' ? 'production' : 'failed');
+        assert.equal(result.detailsUrl, newer.details_url);
+      }
+    }
+  }
+});
+
+test('classifyPagesCheckRuns waits only for newer unfinished attempts after a completed failure', () => {
+  const failure = pagesRun(2, { status: 'completed', conclusion: 'failure' });
+  for (const status of ['queued', 'in_progress']) {
+    for (const retryId of [1, 3]) {
+      const retry = pagesRun(retryId, { status, conclusion: null });
+      for (const runs of [[failure, retry], [retry, failure]]) {
+        assert.equal(classifyPagesCheckRuns(runs, PAGES_COMMIT).state, retryId > 2 ? 'waiting' : 'failed');
+      }
+    }
+    for (const fields of [{ name: 'Other check' }, { app: { slug: 'other' } }, { head_sha: 'a'.repeat(40) }]) {
+      assert.equal(classifyPagesCheckRuns([failure, pagesRun(3, { ...fields, status, conclusion: null })], PAGES_COMMIT).state, 'failed');
+    }
+  }
+  assert.equal(classifyPagesCheckRuns([failure, pagesRun(3, { status: 'completed', conclusion: 'cancelled' })], PAGES_COMMIT).state, 'failed');
+});
+
+test('classifyPagesCheckRuns refuses missing, invalid and tied IDs in matching noncancelled attempts', () => {
+  const success = pagesRun(2, { status: 'completed', conclusion: 'success', output: { summary: PRODUCTION_SUMMARY } });
+  for (const id of [undefined, null, '3', 0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+    for (const status of ['completed', 'queued']) {
+      const invalid = pagesRun(id, { status, conclusion: status === 'completed' ? 'failure' : null });
+      for (const runs of [[success, invalid], [invalid, success], [invalid]]) {
+        const result = classifyPagesCheckRuns(runs, PAGES_COMMIT);
+        assert.equal(result.state, 'failed');
+        assert.match(result.reason, /invalid or missing check-run ID/);
+      }
+      assert.equal(classifyPagesCheckRuns([success, { ...invalid, conclusion: 'cancelled' }], PAGES_COMMIT).state, 'production');
+      assert.equal(classifyPagesCheckRuns([success, { ...invalid, app: { slug: 'other' } }], PAGES_COMMIT).state, 'production');
+    }
+  }
+  for (const status of ['completed', 'queued']) {
+    const tied = pagesRun(2, { status, conclusion: status === 'completed' ? 'failure' : null });
+    for (const runs of [[success, tied], [tied, success]]) {
+      const result = classifyPagesCheckRuns(runs, PAGES_COMMIT);
+      assert.equal(result.state, 'failed');
+      assert.match(result.reason, /duplicate check-run ID 2/);
+    }
+    assert.equal(classifyPagesCheckRuns([success, { ...tied, conclusion: 'cancelled' }], PAGES_COMMIT).state, 'production');
+  }
+});
+
+test('classifyPagesCheckRuns returns every superseded nonsuccess, even before a newer failure or pending retry', () => {
+  const older = [
+    pagesRun(1, { status: 'completed', conclusion: 'timed_out' }),
+    pagesRun(2, { status: 'completed', conclusion: 'failure' }),
+    pagesRun(3, { status: 'completed', conclusion: 'cancelled' }),
+  ];
+  for (const conclusion of ['success', 'failure']) {
+    const latest = pagesRun(4, { status: 'completed', conclusion, output: { summary: PRODUCTION_SUMMARY } });
+    for (const pending of [[], [pagesRun(5, { status: 'queued', conclusion: null })]]) {
+      const result = classifyPagesCheckRuns([older[1], latest, older[2], ...pending, older[0]], PAGES_COMMIT);
+      assert.equal(result.state, conclusion === 'success' ? 'production' : pending.length ? 'waiting' : 'failed');
+      assert.deepEqual(result.supersededFailures, [
+        ...(conclusion !== 'success' && pending.length ? [{ id: 4, conclusion }] : []),
+        { id: 2, conclusion: 'failure' }, { id: 1, conclusion: 'timed_out' },
+      ]);
+    }
+  }
+});
+
+test('classifyPagesCheckRuns never treats cancellation or an unfinished success as a successful build', () => {
+  for (const fields of [
+    { status: 'completed', conclusion: 'cancelled' },
+    { status: 'in_progress', conclusion: 'success' },
+    { status: 'queued', conclusion: null },
+  ]) {
+    assert.deepEqual(classifyPagesCheckRuns([pagesRun(1, { ...fields, output: { summary: PRODUCTION_SUMMARY } })], PAGES_COMMIT), { state: 'waiting' });
+    assert.deepEqual(classifyPagesCheckRuns([
+      pagesRun(2, { status: 'completed', conclusion: 'cancelled' }),
+      pagesRun(1, { ...fields, output: { summary: PRODUCTION_SUMMARY } }),
+    ], PAGES_COMMIT), { state: 'waiting' });
+  }
+});
+
+test('classifyPagesCheckRuns uses the newest successful deployment, never an older production result', () => {
+  const production = pagesRun(1, { status: 'completed', conclusion: 'success', output: { summary: PRODUCTION_SUMMARY } });
+  const preview = pagesRun(2, { status: 'completed', conclusion: 'success', output: { summary: PREVIEW_SUMMARY } });
+  const cancelled = pagesRun(3, { status: 'completed', conclusion: 'cancelled' });
+  assert.deepEqual(classifyPagesCheckRuns([preview, cancelled, production], PAGES_COMMIT), {
+    state: 'preview', detailsUrl: preview.details_url,
+  });
+
+  const summary = PRODUCTION_SUMMARY.replaceAll('465be04b', 'new-build');
+  const latest = pagesRun(4, { status: 'completed', conclusion: 'success', output: { summary } });
+  const result = classifyPagesCheckRuns([latest, preview, production], PAGES_COMMIT);
+  assert.equal(result.state, 'production');
+  assert.equal(result.deploymentUrl, 'https://new-build.tinychat-4jq.pages.dev');
+  assert.equal(result.detailsUrl, latest.details_url);
+});
+
+test('classifyPagesCheckRuns fails closed when the newest successful run has no deployment URL', () => {
+  const result = classifyPagesCheckRuns([
+    pagesRun(1, { status: 'completed', conclusion: 'success', output: { summary: PRODUCTION_SUMMARY } }),
+    pagesRun(2, { status: 'completed', conclusion: 'success' }),
+  ], PAGES_COMMIT);
+  assert.equal(result.state, 'failed');
+  assert.match(result.reason, /no deployment URL/);
+  assert.equal(result.detailsUrl, 'https://dash.cloudflare.com/2');
+});
+
+test('classifyPagesCheckRuns validates only the newest completed success after superseding failures', () => {
+  for (const summary of [PREVIEW_SUMMARY, '']) {
+    const result = classifyPagesCheckRuns([
+      pagesRun(1, { status: 'completed', conclusion: 'success', output: { summary: PRODUCTION_SUMMARY } }),
+      pagesRun(3, { status: 'completed', conclusion: 'success', output: { summary } }),
+      pagesRun(2, { status: 'completed', conclusion: 'failure' }),
+    ], PAGES_COMMIT);
+    assert.equal(result.state, summary ? 'preview' : 'failed');
+    assert.equal(result.detailsUrl, 'https://dash.cloudflare.com/3');
+    if (!summary) assert.match(result.reason, /no deployment URL/);
+    assert.deepEqual(result.supersededFailures, [{ id: 2, conclusion: 'failure' }]);
+  }
+});
+
+test('pages-production-verify accepts a newer production success across API pages and logs each superseded failure on stderr', t => {
+  const root = tempDir(t);
+  const pages = [
+    { check_runs: [pagesRun(200, { status: 'completed', conclusion: 'success', output: { summary: PRODUCTION_SUMMARY } })] },
+    { check_runs: [pagesRun(1, { status: 'completed', conclusion: 'failure', output: { title: 'Older build failed' } })] },
+    { check_runs: [pagesRun(3, { status: 'completed', conclusion: 'cancelled' }), pagesRun(2, { status: 'completed', conclusion: 'timed_out' })] },
+  ];
+  write(root, 'gh', `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[1].includes('/git/ref/heads/production')) {
+  console.log(${JSON.stringify(PAGES_COMMIT)});
+} else {
+  const pages = ${JSON.stringify(pages)};
+  const endpoint = new URL(args[1], 'https://api.github.com/');
+  if (endpoint.pathname !== '/repos/TinyCloudLabs/tinychat/commits/${PAGES_COMMIT}/check-runs' || endpoint.searchParams.get('filter') !== 'all' || endpoint.searchParams.get('per_page') !== '100' || !args.includes('--paginate') || !args.includes('--slurp')) process.exit(1);
+  console.log(JSON.stringify(pages));
+}
+`);
+  write(root, 'fetch.mjs', `
+globalThis.fetch = async url => {
+  if (!['https://465be04b.tinychat-4jq.pages.dev/?deploy=${PAGES_COMMIT}', 'https://production.invalid/?deploy=${PAGES_COMMIT}'].includes(String(url))) throw new Error('Unexpected fetch: ' + url);
+  return new Response('<html>production deployment</html>');
+};
+`);
+  chmodSync(join(root, 'gh'), 0o755);
+  const result = run('pages-production-verify.mjs', ['--commit', PAGES_COMMIT, '--url', 'https://production.invalid', '--build-minutes=-1'], {
+    PATH: `${root}:${process.env.PATH}`, GITHUB_REPOSITORY: 'TinyCloudLabs/tinychat',
+    NODE_OPTIONS: `--import=${join(root, 'fetch.mjs')}`, GITHUB_STEP_SUMMARY: '',
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Cloudflare Pages on .*: production/);
+  assert.match(result.stdout, /After verifying the web hosts: production is at/);
+  assert.match(result.stdout, /Web: https:\/\/production.invalid serves Cloudflare Pages deployment https:\/\/465be04b.tinychat-4jq.pages.dev/);
+  assert.doesNotMatch(result.stdout, /superseded|failure|timed_out/);
+  assert.deepEqual(result.stderr.trim().split('\n'), [
+    'Cloudflare Pages superseded check-run 2: timed_out',
+    'Cloudflare Pages superseded check-run 1: failure',
+  ]);
+});
+
+test('pages-production-verify refuses a newer failed attempt on a later API page', t => {
+  const root = tempDir(t);
+  const pages = [
+    { check_runs: [pagesRun(1, { status: 'completed', conclusion: 'success', output: { summary: PRODUCTION_SUMMARY } })] },
+    { check_runs: [pagesRun(200, { status: 'completed', conclusion: 'failure', output: { title: 'Newest build failed' } })] },
+  ];
+  write(root, 'gh', `#!/usr/bin/env node
+const args = process.argv.slice(2);
+console.log(args[1].includes('/git/ref/heads/production') ? ${JSON.stringify(PAGES_COMMIT)} : JSON.stringify(${JSON.stringify(pages)}));
+`);
+  chmodSync(join(root, 'gh'), 0o755);
+  const result = run('pages-production-verify.mjs', ['--commit', PAGES_COMMIT, '--url', 'https://production.invalid', '--build-minutes=-1'], {
+    PATH: `${root}:${process.env.PATH}`, GITHUB_REPOSITORY: 'TinyCloudLabs/tinychat',
+  });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Cloudflare Pages build failed \(failure: Newest build failed\)/);
+  assert.match(result.stderr, /https:\/\/dash.cloudflare.com\/200/);
+});
+
+test('pages-production-verify keeps a newer unfinished retry waiting until the existing build deadline', t => {
+  const root = tempDir(t);
+  const pages = [
+    { check_runs: [pagesRun(2, { status: 'in_progress', conclusion: null })] },
+    { check_runs: [pagesRun(1, { status: 'completed', conclusion: 'failure' })] },
+  ];
+  write(root, 'gh', `#!/usr/bin/env node
+const args = process.argv.slice(2);
+console.log(args[1].includes('/git/ref/heads/production') ? ${JSON.stringify(PAGES_COMMIT)} : JSON.stringify(${JSON.stringify(pages)}));
+`);
+  chmodSync(join(root, 'gh'), 0o755);
+  const result = run('pages-production-verify.mjs', ['--commit', PAGES_COMMIT, '--url', 'https://production.invalid', '--build-minutes=-1'], {
+    PATH: `${root}:${process.env.PATH}`, GITHUB_REPOSITORY: 'TinyCloudLabs/tinychat',
+  });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stdout, /Cloudflare Pages on .*: waiting/);
+  assert.match(result.stderr, /No finished Cloudflare Pages check run/);
+  assert.match(result.stderr, /Cloudflare Pages superseded check-run 1: failure/);
+  assert.doesNotMatch(result.stderr, /Cloudflare Pages build failed/);
 });
 
 // The `on:` block of a workflow file.
