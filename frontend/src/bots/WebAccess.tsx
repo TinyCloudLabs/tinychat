@@ -3,7 +3,7 @@
 import { useEffect, useId, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
-import { BotsError, type BotsApi, type MainWebMode, type MainWebSettings } from "./botsApi";
+import { BotsError, BotsRouteMissing, type BotsApi, type MainWebMode, type MainWebSettings } from "./botsApi";
 import { BOTS_STRINGS, WEB_ACCESS_STRINGS as COPY } from "./botsStrings";
 
 export type WebAccessApi = Pick<BotsApi, "getMainWeb" | "setMainWeb">;
@@ -79,10 +79,15 @@ function Warning({ mode, onConfirm, onCancel }: { mode: MainWebMode; onConfirm: 
   );
 }
 
-export function WebAccess({ api }: { api: WebAccessApi }) {
+/**
+ * `onMissing` runs when the service has no web access route (404): the card then renders nothing, so a service that
+ * has not been updated shows no broken setting. Any other failure keeps its message and Retry.
+ */
+export function WebAccess({ api, onMissing }: { api: WebAccessApi; onMissing?: () => void }) {
   const id = useId();
   const [saved, setSaved] = useState<MainWebSettings | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
+  const [missing, setMissing] = useState(false);
   const [attempt, setAttempt] = useState(0);
   const [mode, setMode] = useState<MainWebMode>("off");
   const [text, setText] = useState("");
@@ -106,11 +111,15 @@ export function WebAccess({ api }: { api: WebAccessApi }) {
         setMode(settings.mode);
         setText(settings.hosts.join("\n"));
       },
-      () => { if (!controller.signal.aborted) setLoadFailed(true); },
+      (error: unknown) => {
+        if (controller.signal.aborted) return;
+        if (error instanceof BotsRouteMissing) { setMissing(true); onMissing?.(); } else setLoadFailed(true);
+      },
     );
     return () => controller.abort();
-  }, [api, attempt]);
+  }, [api, attempt, onMissing]);
 
+  if (missing) return null;
   if (!saved) {
     return (
       <section aria-labelledby={`${id}-title`} className="flex flex-col gap-3" data-bots-web-access="">
