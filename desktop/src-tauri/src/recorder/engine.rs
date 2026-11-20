@@ -660,6 +660,17 @@ pub(crate) fn live_capture(app: &tauri::AppHandle) -> Option<(String, u8, u64)> 
     ))
 }
 
+/// Whether a recording exists, from its start until it is stopped or discarded: capturing,
+/// paused or stopping. The call prompt never offers to record while one does, however it began.
+/// `false` before the recorder is first used.
+pub(crate) fn recording_in_progress(app: &tauri::AppHandle) -> bool {
+    let Some(engine) = app.try_state::<Engine>() else {
+        return false;
+    };
+    let recording = engine.0.lock().id.is_some();
+    recording
+}
+
 fn emit_status(app: &tauri::AppHandle) {
     let status = app.state::<Engine>().0.lock().status();
     let _ = app.emit(MIC_EVENT, status);

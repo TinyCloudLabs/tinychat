@@ -9,6 +9,8 @@ mod ptx_upload;
 mod recorder;
 #[cfg(feature = "transcription")]
 mod call_names;
+#[cfg(feature = "transcription")]
+mod call_prompt;
 #[cfg(debug_assertions)]
 mod dev_log;
 mod google_oauth;
@@ -162,6 +164,8 @@ pub fn run() {
             call_names::call_names_open_settings,
             call_names::call_names_read,
             call_names::call_names_clear,
+            call_prompt::call_prompt_get,
+            call_prompt::call_prompt_set,
         ]);
         // Debug builds add a diagnostic that lets the webview verify the
         // native wiring in one invoke before any recording is attempted.
@@ -218,6 +222,8 @@ pub fn run() {
             call_names::call_names_open_settings,
             call_names::call_names_read,
             call_names::call_names_clear,
+            call_prompt::call_prompt_get,
+            call_prompt::call_prompt_set,
             smoke::exo_desktop_smoke,
             dev_log::append_dev_log,
             dev_log::debug_logging_enabled,
@@ -243,6 +249,9 @@ pub fn run() {
             // Names in the call. The thread reads nothing until a recording of both
             // sides is live and the user has turned the setting on.
             call_names::start(app.handle());
+            // Offer to record when a call starts. The thread reads nothing while the
+            // setting is off; a failure is logged, never fatal.
+            call_prompt::start(app.handle());
             #[cfg(any(debug_assertions, feature = "ipc-selftest"))]
             ipc_selftest::maybe_run(app);
             // EXO_SMOKE=1 runs real plugin invokes in the webview (debug only).
@@ -272,7 +281,10 @@ pub fn run() {
                     }
                 }
                 // The call-names reader puts back what it changed in a browser.
-                tauri::RunEvent::Exit => call_names::stop(app),
+                tauri::RunEvent::Exit => {
+                    call_prompt::stop(app);
+                    call_names::stop(app);
+                }
                 _ => {}
             }
             #[cfg(not(feature = "transcription"))]

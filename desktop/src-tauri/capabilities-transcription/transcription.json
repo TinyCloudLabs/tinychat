@@ -54,6 +54,8 @@
     "allow-call-names-open-settings",
     "allow-call-names-read",
     "allow-call-names-clear",
+    "allow-call-prompt-get",
+    "allow-call-prompt-set",
     "core:event:deny-emit",
     "core:event:deny-emit-to"
   ]
