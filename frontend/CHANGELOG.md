@@ -16,6 +16,33 @@
 - TC-2204: Native audience checks accept Home's three exact SQL hook subscriptions only alongside an existing TinyChat data grant.
 - TC-2499: The Home mirror adapter persists close receipts using node-compatible NULL/non-NULL compare-and-set predicates. If the KV mirror is already exactly closed but its receipt is missing, recovery records the original publication ETag without writing the KV copy again, before any gated child handoff. The CLI reports JSON error class, safe message, code, HTTP status when available, and operation step; private SQL bodies and nested causes remain redacted. Exit 2 identifies invalid input, exit 6 known transient failures (including NODE_BUSY and REQUEST_TIMEOUT without HTTP metadata), and exit 1 other runtime failures or OUTCOME_UNKNOWN. Unclassified errors are not labelled bad input; no failure confirms delivery or authorizes an automatic retry.
 
+## 0.15.2
+
+### Patch Changes
+
+- defebb9: The agent guides are built from the latest published set of TinyCloud guides.
+
+  Details: TC-3278
+
+- c8d1e5d: The agent guides are built from the latest published set of TinyCloud guides.
+
+  Details: TC-3558
+
+- 49f8456: Powerful transcriptions that the provider can't take right away wait and finish by themselves. The server keeps the audio and retries (after 1, 2, 5 and 10 minutes, then every 10) for up to 24 hours, and never sends the same paid request twice when the outcome is unclear. While it waits, the note and the upload sheet show "Transcription delayed" and say it will finish automatically.
+
+  Details: TC-2131
+
+- 95b5f15: Main can read web pages and search the web. It's off until you turn it on: in Main's chat, tap Web access and choose a setting. You can limit it to sites you list.
+
+  Details: TC-2808
+
+- 36ba6ff: Private Transcription uploads reach the transcription service at its current address.
+- d519be5: Background memory extraction asks each model for its lowest reasoning setting, which keeps hidden reasoning tokens down on short turns; the turn's total includes the extraction once it settles.
+
+  Details: TC-2002
+
+- 15e207c: Main's Web access setting stays out of sight until the service it talks to supports it.
+
 ## 0.15.2-beta.5
 
 ### Patch Changes
