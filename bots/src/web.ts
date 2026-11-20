@@ -118,13 +118,16 @@ export function addressesIn(text: string, limit = Number.POSITIVE_INFINITY): str
  * images become their alt text (no address survives), every other HTML tag goes, and the end marker of the wrapper
  * cannot appear inside it. Image addresses are never repeated into a reply this way, so the image rules of the
  * chat and notes renderers (which ask before loading) are a second layer, not the only one.
+ *
+ * Each pattern's bracket class excludes its own opener, so an opener with no closer fails at the next opener instead of
+ * scanning to the end of the text: the cost is linear in the input however many openers there are.
  */
 export function plainWebText(text: string): string {
   let plain = text
-    .replace(/!\[([^\]]*)\]\([^)]*\)/g, (_all, alt: string) => alt)
-    .replace(/!\[([^\]]*)\]\[[^\]]*\]/g, (_all, alt: string) => alt)
-    .replace(/<img\b[^>]*?\balt\s*=\s*(?:"([^"]*)"|'([^']*)')[^>]*>/gi, (_all, a: string | undefined, b: string | undefined) => a ?? b ?? "")
-    .replace(/<\/?[a-z!][^>]*>/gi, "")
+    .replace(/!\[([^\][]*)\]\([^()]*\)/g, (_all, alt: string) => alt)
+    .replace(/!\[([^\][]*)\]\[[^\][]*\]/g, (_all, alt: string) => alt)
+    .replace(/<img\b[^<>]*?\balt\s*=\s*(?:"([^"<>]*)"|'([^'<>]*)')[^<>]*>/gi, (_all, a: string | undefined, b: string | undefined) => a ?? b ?? "")
+    .replace(/<\/?[a-z!][^<>]*>/gi, "")
     .replaceAll("\u0000", "");
   // The wrapper's markers are three angle brackets; none may survive, nor be rebuilt from what is left around a cut.
   for (let before = ""; before !== plain; ) {
@@ -194,7 +197,13 @@ async function postJson(
   }
 }
 
-const clip = (value: unknown, max: number): string => (typeof value === "string" ? plainWebText(value).slice(0, max) : "");
+/** The first `max` characters of untrusted text, cleaned. The text is cut before it is cleaned, so its size is bounded first. */
+const clip = (value: unknown, max: number): string => {
+  if (typeof value !== "string") return "";
+  // A cut can leave the start of a tag with no end; it goes too, so no part of an address survives from it.
+  const cut = value.slice(0, max * 4).replace(/<[^<>]*$/, "");
+  return plainWebText(cut).slice(0, max);
+};
 
 export interface Delivered {
   /** What the model gets (already wrapped). */
