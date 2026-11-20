@@ -5,9 +5,28 @@ import Darwin
 import ExoCapture
 import ReplicaStore
 import UIKit
+import WebKit
 #if DEBUG
 import os
 #endif
+
+/// Capacitor's iOS bridge handler is registered for every frame and never checks which frame posted
+/// (WebViewDelegationHandler: `contentController.add(self, name: "bridge")`; only the JS shim is main-frame only).
+/// One frames other apps (TC-3568), so script in a frame could call native plugins straight through
+/// `window.webkit.messageHandlers.bridge`. This stands in for that handler and passes on only the main frame's
+/// messages, the rule Android's bridge already applies.
+final class MainFrameBridgeMessages: NSObject, WKScriptMessageHandler {
+    private weak var capacitor: WebViewDelegationHandler?
+
+    init(_ capacitor: WebViewDelegationHandler) {
+        self.capacitor = capacitor
+    }
+
+    func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard message.frameInfo.isMainFrame else { return }
+        capacitor?.userContentController(controller, didReceive: message)
+    }
+}
 
 /// Registers Exo's app-local plugins with the Capacitor bridge.
 /// SceneDelegate makes this the window's root (Main.storyboard names it too).
@@ -15,6 +34,13 @@ class ExoBridgeViewController: CAPBridgeViewController {
     private var webViewRecovery: WebViewRecovery?
 
     override open func capacitorDidLoad() {
+        // Before the first page load (loadWebView runs from viewDidLoad). Capacitor's cleanUp() removes by this name.
+        if let capacitor = webView?.uiDelegate as? WebViewDelegationHandler {
+            capacitor.contentController.removeScriptMessageHandler(forName: "bridge")
+            capacitor.contentController.add(MainFrameBridgeMessages(capacitor), name: "bridge")
+        } else {
+            fatalError("Capacitor's WebView delegation handler is missing; the bridge would accept every frame")
+        }
         if let webView = webView, let start = bridge?.config.appStartServerURL, let original = webView.navigationDelegate {
             webViewRecovery = WebViewRecovery(webView: webView, startURL: start, original: original)
         }
@@ -106,6 +132,35 @@ class ExoBridgeViewController: CAPBridgeViewController {
             probe.appLock = { deviceSecure: s.deviceSecure };
           } catch (error) {
             probe.appLock = { error: String((error && error.message) || error) };
+          }
+        }
+        // TC-3568: a frame inside the app must not reach native plugins through the bridge (MainFrameBridgeMessages).
+        // The frame says whether it sees the bridge handler and posts Preferences.set straight to it; the key must stay unset.
+        if (probe.mounted && cap.nativePromise) {
+          const key = "exo.smoke.subframe";
+          try {
+            await cap.nativePromise("Preferences", "remove", { key });
+            const seen = new Promise((resolve) => {
+              const onMessage = (event) => {
+                if (event.data && event.data.exoSubframe) { removeEventListener("message", onMessage); resolve(event.data.exoSubframe); }
+              };
+              addEventListener("message", onMessage);
+              setTimeout(() => resolve("no-report"), 3000);
+            });
+            const frame = document.createElement("iframe");
+            frame.hidden = true;
+            frame.srcdoc = "<script>const h = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.bridge;" +
+              "if (h) h.postMessage({ type: 'message', pluginId: 'Preferences', methodName: 'set', callbackId: 'exo-subframe', " +
+              "options: { key: '" + key + "', value: 'reached' } });" +
+              "parent.postMessage({ exoSubframe: typeof h }, '*');</scr" + "ipt>";
+            document.body.appendChild(frame);
+            const bridge = await seen;
+            await new Promise((resolve) => setTimeout(resolve, 500));
+            const stored = await cap.nativePromise("Preferences", "get", { key });
+            frame.remove();
+            probe.subframe = { bridge, leaked: stored.value !== null && stored.value !== undefined };
+          } catch (error) {
+            probe.subframe = { error: String((error && error.message) || error) };
           }
         }
         return JSON.stringify(probe);
