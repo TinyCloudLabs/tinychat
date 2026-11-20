@@ -1,9 +1,10 @@
 // Renaming a note's speakers (TC-2189) in the real shell over the fixture space: the Transcript before a rename,
 // after it, and after Undo, for a Me/Them note, a diarized note and a meeting. Names in the call: the rename
-// form of a Mac call recording offering the names the desktop app read from the call window.
+// form of a Mac call recording offering the names the desktop app read from the call window. Who spoke when: a
+// three-person call whose remote lines are named per person, each name suggested.
 import { useEffect } from "react";
 
-import { CALL_NAME_ROWS, SPEAKER_ROWS } from "../fixtures/library";
+import { CALL_NAME_ROWS, CALL_SPEAKER_ROWS, SPEAKER_ROWS } from "../fixtures/library";
 import { CaptureShell } from "./capture";
 import type { HarnessScreen } from "../screen";
 
@@ -51,6 +52,9 @@ const READ = '[data-testid="note-transcript"]:not(:has([role="status"])) [data-t
 const RENAMED = '[data-testid="speaker-rename-status"]';
 const shell = (steps: Step[] = []) => () => <CaptureShell library rows={SPEAKER_ROWS}><Act steps={steps} /></CaptureShell>;
 const callShell = (steps: Step[] = []) => () => <CaptureShell library rows={CALL_NAME_ROWS}><Act steps={steps} /></CaptureShell>;
+const callSpeakersShell = (steps: Step[] = []) => () => <CaptureShell library rows={CALL_SPEAKER_ROWS}><Act steps={steps} /></CaptureShell>;
+/** Who spoke when: both remote people of the three-person call shown by name, each marked Suggested. */
+const BOTH_SUGGESTED = '[data-testid="note-transcript"] [data-testid="speaker-label"][aria-label="Rename speaker Dana Lee"] ~ [data-testid="speaker-suggested"]';
 
 const ME_THEM: Step[] = [{ rename: "Me", to: "Sam" }, { rename: "Them", to: "Alice, Bob" }];
 const DIARIZED: Step[] = [{ rename: "Speaker A", to: "Dana (interviewer)" }];
@@ -70,4 +74,8 @@ export const speakerNameScreens: HarnessScreen[] = [
   { ...NOTE, id: "speakerNames-call-kept", path: note("call-one"),
     readyWhen: '[data-testid="note-transcript"] [data-testid="speaker-label"][aria-label="Rename speaker Alex Example"]:not(:has(~ [data-testid="speaker-suggested"]))',
     render: callShell([{ rename: "Alex Example", to: "Alex Example" }]) },
+  // Who spoke when: a three-person call whose remote lines are Them 1 and Them 2, each with its suggested name.
+  { ...NOTE, id: "speakerNames-call-speakers", path: note("call-three"), readyWhen: BOTH_SUGGESTED, render: callSpeakersShell() },
+  { ...NOTE, id: "speakerNames-call-speakers-choices", path: note("call-three"), readyWhen: '[data-testid="speaker-choices"]',
+    render: callSpeakersShell([{ open: "Alex Example" }]) },
 ];

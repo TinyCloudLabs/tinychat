@@ -49,9 +49,10 @@ export function SpeakerLabel(props: { original: string; className?: string }) {
   const choose = (name: string) => { if (field.current) field.current.value = withSpeakerChoice(field.current.value, name); };
   return <form onSubmit={save} data-testid="speaker-rename-form" className="flex flex-wrap items-center gap-2 py-1"
     onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); setEditing(false); } }}>
+    {/* At least 8rem wide: with a long "Go back to" button the buttons wrap below rather than squeeze the field. */}
     <input ref={field} type="text" autoFocus autoComplete="off" enterKeyHint="done" defaultValue={initial} maxLength={MAX_SPEAKER_NAME_LENGTH}
       placeholder={placeholderFor(props.original)} aria-label={COPY.fieldLabel(props.original)}
-      className="h-[var(--tc-control-height)] min-w-0 flex-1 rounded-md border bg-background px-3 text-body" />
+      className="h-[var(--tc-control-height)] min-w-32 flex-1 rounded-md border bg-background px-3 text-body" />
     <Button type="submit" size="sm">{COPY.save}</Button>
     <Button type="button" size="sm" variant="ghost" onClick={() => setEditing(false)}>{COPY.cancel}</Button>
     {renamed && <Button type="button" size="sm" variant="ghost"
