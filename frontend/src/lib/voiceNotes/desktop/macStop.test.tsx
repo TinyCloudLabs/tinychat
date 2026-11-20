@@ -1,27 +1,34 @@
-// Stop on a long Mac recording: what the page holds of its audio afterwards. On the owner's Mac the page grew from
-// 429 MB to 1.3 GB at the Stop of a 1 h 37 min call (an MP3 of 44.3 MiB; audio upload off; the space unreachable). At
-// Stop the saved receipt read the whole file through the bridge into one array, and copied it into a Blob, to show its
-// Play control.
+// Stop on a long Mac recording: what the page holds of its audio afterwards, and where the user is left. On the owner's
+// Mac the page grew from 429 MB to 1.3 GB at the Stop of a 1 h 37 min call (an MP3 of 44.3 MiB; audio upload off; the
+// space unreachable). At Stop the saved receipt read the whole file through the bridge into one array, and copied it
+// into a Blob, to show its Play control. Then the receipt closed by itself and left the user on Feed, the screen the
+// recording began on.
 // Here a two-hour recording is stopped with the real engine, Whisper queue, recorder controller, save pipeline and
-// receipt; the native commands, the Whisper server and the space are fakes. Every read of the audio is counted: none
-// may ask for more than one native call carries, whatever the recording's length.
+// receipt (and, for where the user is left, the real recorder provider); the native commands, the Whisper server and
+// the space are fakes. Every read of the audio is counted: none may ask for more than one native call carries,
+// whatever the recording's length.
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, useLocation } from "react-router-dom";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
+import { onPhoneId } from "@/capture/library/onPhone";
+import { useOpenSavedNote, useShowRecordingNote } from "@/capture/library/useOpenSavedNote";
 import { ReceiptView } from "@/capture/recorder/ReceiptView";
-import { StaticRecorderProvider, useRecorder } from "@/capture/recorder/RecorderProvider";
+import { RecorderProvider, StaticRecorderProvider, useRecorder, type RecorderValue } from "@/capture/recorder/RecorderProvider";
 import { createVoiceNoteRecorderController } from "@/capture/recorder/voiceNoteRecorderController";
 import type { TranscriptionEvent } from "@/lib/anarlog/transcription.gen";
 import { CONNECTORS_SQL_DB_NAME } from "@/lib/connectors/connectorStore";
 import { PlatformContext } from "@/lib/platform";
+import { notePath, PATHS } from "@/shell/routes";
 import { installDom } from "@/test/dom";
 import { currentAccountGeneration } from "../accountContext";
 import { __resetCaptureEngineForTests, __setInstalledEngineForTests } from "../captureEngine";
 import { installVoiceNotesEngine, VoiceNotes, type VoiceNoteRecording } from "../nativeVoiceNotes";
+import { registerDesktopCaptureExtras } from "../desktopCaptureExtras";
+import { createFakeDesktopCaptureExtras } from "../fakeDesktopCaptureExtras";
 import { pendingStore } from "../recorderSaves";
 import { createVoiceNotePipeline } from "../voiceNotePipeline";
 import { ensureVoiceNoteIdentity } from "../voiceNoteRows";
@@ -217,6 +224,7 @@ interface World {
   store: WebStore;
   reads: number[];
   engine: Awaited<ReturnType<typeof openDesktopVoiceNotes>>;
+  /** The recorder controller as the app's provider makes it; left unattached when a test mounts the provider, which makes its own. */
   recorder: ReturnType<typeof createVoiceNoteRecorderController>;
   pipeline: ReturnType<typeof createVoiceNotePipeline>;
   host: HTMLElement;
@@ -224,7 +232,7 @@ interface World {
   close(): Promise<void>;
 }
 
-async function world(options: { spaceDown: boolean; uploadAudio: boolean }): Promise<World> {
+async function world(options: { spaceDown: boolean; uploadAudio: boolean; provider?: boolean }): Promise<World> {
   const s = space();
   const bridge = new FakeBridge();
   const whisper = new FakeWhisper();
@@ -247,11 +255,11 @@ async function world(options: { spaceDown: boolean; uploadAudio: boolean }): Pro
   const booted = (async () => { await engine.recoverInterrupted(); await engine.whisper?.resume(); })();
   const pipeline = createVoiceNotePipeline(s.tcw, TIMING);
   const recorder = createVoiceNoteRecorderController({ tcw: s.tcw, available: true, transcriber: null, pipeline, onDeviceReady: () => true });
-  const detach = recorder.attach();
+  const detach = options.provider ? () => {} : recorder.attach();
   const ctx = { did: s.did, spaceId: s.did, generation: currentAccountGeneration() };
   void booted.then(() => pipeline.reconcileAll(ctx, "reconcile")).catch(() => undefined);
   await booted;
-  expect(await waitFor(() => recorder.getState().ready)).toBe(true);
+  if (!options.provider) expect(await waitFor(() => recorder.getState().ready)).toBe(true);
   const host = document.createElement("div");
   document.body.append(host);
   const root = createRoot(host);
@@ -318,6 +326,7 @@ afterEach(async () => {
   URL.createObjectURL = createObjectURL;
   if (current) await current.close();
   current = null;
+  registerDesktopCaptureExtras(null);
   __resetCaptureEngineForTests();
   cleanDom?.();
 });
@@ -384,5 +393,57 @@ describe("a long Mac recording, audio upload on, the space reachable", () => {
     expect(w.space.audioBytes(id)).toBe(size);
     expect(w.reads.length).toBeGreaterThan(1);
     expect(largest(w.reads)).toBeLessThanOrEqual(ONE_NATIVE_READ);
+  }, SLOW);
+});
+
+/** What App mounts around the recorder: the provider, wired to the router as App wires it, and the receipt with its Open. */
+function MacShell(props: { w: World; seen: { recorder: RecorderValue | null; path: string } }) {
+  const showNote = useShowRecordingNote();
+  const openNote = useOpenSavedNote(props.w.space.tcw);
+  return (
+    <RecorderProvider tcw={props.w.space.tcw} pipeline={props.w.pipeline} onShowNote={showNote}>
+      <Seen seen={props.seen} />
+      <Receipt onOpenNote={openNote} />
+    </RecorderProvider>
+  );
+}
+/** RecordingOverlay's receipt, without the dialog around it: shown while the sheet is open on a recording that ended. */
+function Receipt(props: { onOpenNote: (id: string) => void }) {
+  const recorder = useRecorder();
+  return recorder.sheetOpen && recorder.phase === "idle" && recorder.outcome !== null
+    ? <ReceiptView recorder={recorder} onOpenNote={props.onOpenNote} /> : null;
+}
+function Seen(props: { seen: { recorder: RecorderValue | null; path: string } }) {
+  props.seen.recorder = useRecorder();
+  props.seen.path = useLocation().pathname;
+  return null;
+}
+
+describe("where Stop leaves the user on the Mac, the space unreachable", () => {
+  test("the receipt hands over to the recording's own page when it closes, never to the screen the recording began on", async () => {
+    const w = current = await world({ spaceDown: true, uploadAudio: false, provider: true });
+    registerDesktopCaptureExtras(createFakeDesktopCaptureExtras({ systemAudio: false }).extras);
+    const seen: { recorder: RecorderValue | null; path: string } = { recorder: null, path: "" };
+    await act(async () => w.root.render(
+      <PlatformContext.Provider value="tauri">
+        <MemoryRouter initialEntries={[PATHS.feed]}><MacShell w={w} seen={seen} /></MemoryRouter>
+      </PlatformContext.Provider>,
+    ));
+    expect(await waitFor(() => seen.recorder?.ready === true && seen.recorder.available)).toBe(true);
+    // Record from Feed, and stop.
+    await act(async () => { seen.recorder!.record(); });
+    expect(await waitFor(() => seen.recorder?.phase === "recording" && w.bridge.current !== null)).toBe(true);
+    const id = w.bridge.current!;
+    w.bridge.sizes.set(id, TWO_HOURS_BYTES);
+    w.bridge.elapsed = TWO_HOURS_MS;
+    const receipt = () => document.querySelector('[data-testid="voice-note-receipt"]');
+    await act(async () => { seen.recorder!.stop(); });
+    expect(await waitFor(() => receipt() !== null)).toBe(true);
+    expect(seen.path).toBe(PATHS.feed);
+    // The receipt closes by itself; what shows then is the recording.
+    expect(await waitFor(() => receipt() === null, 30_000)).toBe(true);
+    expect(seen.path).toBe(notePath(onPhoneId(id)));
+    expect(await pendingOf(id)).toMatchObject({ id, sizeBytes: TWO_HOURS_BYTES });
+    expect(w.bridge.bytesRead).toBe(0);
   }, SLOW);
 });

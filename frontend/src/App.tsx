@@ -129,7 +129,7 @@ import { MicDeniedRecovery } from "./capture/recorder/MicDeniedRecovery";
 import { RecorderShell } from "./capture/recorder/RecorderShell";
 import { UploadResumer } from "./capture/upload/UploadResumer";
 import { TinyCloudButtonSync } from "./chat/TinyCloudButtonSync";
-import { useOpenSavedNote } from "./capture/library/useOpenSavedNote";
+import { useOpenSavedNote, useShowRecordingNote } from "./capture/library/useOpenSavedNote";
 import { resetNavigationMemory } from "./shell/navigation";
 import {
   HOME_PATH,
@@ -1475,6 +1475,7 @@ export function App() {
   const location = useLocation();
   // The recorder's Open: the Library, then the note just saved.
   const openSavedNote = useOpenSavedNote(tcw);
+  const showRecordingNote = useShowRecordingNote();
   const loadFirstScreen = useCallback(() => readFirstScreen(tcw!, did), [tcw, did]);
   const cachedFirstScreen = useCallback(() => readCachedFirstScreen(did), [did]);
   const { size } = useSizeClass();
@@ -1618,6 +1619,7 @@ export function App() {
       onSignedOut={captureHandoff}
       onSignIn={authAction}
       minimiseOnSignIn={nativeSignIn}
+      onShowNote={showRecordingNote}
     >
     <div
       className="flex flex-col bg-background text-foreground"
