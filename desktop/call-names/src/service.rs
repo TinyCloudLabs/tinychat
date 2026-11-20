@@ -31,9 +31,16 @@
 //! of outcome and a few counts, never a name. It is written when the kind changes, and every
 //! [`STATUS_INTERVAL`] while the window is being read.
 //!
+//! Who spoke when. In a Meet call with three or more tiles, the service also follows each tile's
+//! speaking marker between ticks (see `speaking`) and keeps the speaking timeline of the
+//! recording in `<folder>/speaking/<recording id>.json` (see `timeline`): person ids and times
+//! only. The frontend reads it when it transcribes ([`Store::read_speaking`]). Saving the note
+//! does not remove it ([`Store::clear`] leaves it), because a new transcription needs it again;
+//! it goes with the recording's audio ([`Store::forget`]) or after [`MAX_NAMES_AGE`].
+//!
 //! The folder and its files are the user's alone (modes 0700 and 0600 on unix). When the service
-//! starts it removes what an interrupted write left behind, and each names file older than
-//! [`MAX_NAMES_AGE`]: nobody saved its note in all that time.
+//! starts it removes what an interrupted write left behind, and each names file and timeline
+//! older than [`MAX_NAMES_AGE`]: nobody saved its note in all that time.
 //!
 //! Everything here is plain Rust and runs on any platform; the tests drive it with a fake host
 //! and a fake window. No failure reaches the recorder: a tick that fails reads or saves nothing
@@ -47,6 +54,7 @@ use crate::names::Name;
 use crate::roster::{CallParticipants, Roster};
 use crate::rules::Rules;
 use crate::session::{Budget, Skip};
+use crate::timeline::{Timeline, MAX_TIMELINE_BYTES};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::fs::{self, File};
@@ -79,6 +87,9 @@ const SELF_NAMES_FILE: &str = "_self-names.json";
 const STATUS_FILE: &str = "_status.json";
 /// The largest file the store reads; 50 names of 80 characters are far smaller.
 const MAX_FILE_BYTES: u64 = 64 * 1024;
+/// The folder of the speaking timelines, inside the store's folder. No recording id gives this
+/// name to a names file: those end in `.json`.
+const SPEAKING_DIR: &str = "speaking";
 
 /// True when `id` has the form of a recording id: 1 to 64 ASCII letters, digits and hyphens. It
 /// is the app's own rule for note ids (`valid_id` in `desktop/local-transcription`), so an id can
@@ -228,7 +239,7 @@ impl Store {
             return 0;
         };
         restrict_dir(&self.dir);
-        let mut removed = 0;
+        let mut removed = tidy_files(&self.dir.join(SPEAKING_DIR), now);
         for entry in entries.flatten() {
             let name = entry.file_name();
             let Some(name) = name.to_str() else {
@@ -303,11 +314,110 @@ impl Store {
             Err(error) => Err(io_error(error)),
         }
     }
+
+    fn speaking_path(&self, id: &str) -> Result<PathBuf, StoreError> {
+        if !valid_id(id) {
+            return Err(StoreError::InvalidId);
+        }
+        Ok(self.dir.join(SPEAKING_DIR).join(format!("{id}.json")))
+    }
+
+    /// The speaking timeline of the recording `id`, or `None` when there is none. A file that is
+    /// not a timeline this build reads is removed, and the answer is `None`.
+    pub fn read_speaking(&self, id: &str) -> Result<Option<Timeline>, StoreError> {
+        let path = self.speaking_path(id)?;
+        let timeline = match read_limited(&path, MAX_TIMELINE_BYTES) {
+            Ok(bytes) => String::from_utf8(bytes)
+                .ok()
+                .and_then(|json| Timeline::from_json(&json).ok()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) if error.kind() == io::ErrorKind::InvalidData => None,
+            Err(error) => return Err(io_error(error)),
+        };
+        if timeline.is_none() {
+            remove_with_temporaries(&path).map_err(io_error)?;
+        }
+        Ok(timeline)
+    }
+
+    /// Keep the speaking timeline of the recording `id`, in place of what was kept before.
+    pub fn write_speaking(&self, id: &str, timeline: &Timeline) -> Result<(), StoreError> {
+        write_atomic(&self.speaking_path(id)?, timeline.to_json().as_bytes()).map_err(io_error)
+    }
+
+    /// Forget everything kept about the recording `id`: its names and its speaking timeline. For
+    /// when its audio is deleted. Not an error when there is nothing.
+    pub fn forget(&self, id: &str) -> Result<(), StoreError> {
+        let names = self.clear(id);
+        let speaking = remove_with_temporaries(&self.speaking_path(id)?).map_err(io_error);
+        names.and(speaking)
+    }
+}
+
+/// Remove a file of the store and what an interrupted write of it left behind. Not an error when
+/// there is none.
+fn remove_with_temporaries(path: &Path) -> io::Result<()> {
+    let (Some(dir), Some(name)) = (
+        path.parent(),
+        path.file_name().and_then(|name| name.to_str()),
+    ) else {
+        return Err(io::ErrorKind::InvalidInput.into());
+    };
+    let temporary = format!("{name}.");
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let file = entry.file_name();
+            if file
+                .to_str()
+                .is_some_and(|file| file.starts_with(&temporary) && file.ends_with(".tmp"))
+            {
+                let _ = fs::remove_file(entry.path());
+            }
+        }
+    }
+    match fs::remove_file(path) {
+        Ok(()) => sync_dir(dir),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+/// In a folder of timelines: remove what an interrupted write left behind, and each timeline
+/// last written more than [`MAX_NAMES_AGE`] before `now`. Returns the number removed.
+fn tidy_files(dir: &Path, now: SystemTime) -> usize {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return 0;
+    };
+    restrict_dir(dir);
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        let old = entry
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .ok()
+            .and_then(|written| now.duration_since(written).ok())
+            .is_some_and(|age| age > MAX_NAMES_AGE);
+        let leftover = name.ends_with(".tmp");
+        let old_timeline = name.strip_suffix(".json").is_some_and(valid_id) && old;
+        if (leftover || old_timeline) && fs::remove_file(entry.path()).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
 }
 
 /// A whole file of the store. One larger than anything the store writes is refused unread.
 fn read_small(path: &Path) -> io::Result<Vec<u8>> {
-    if fs::metadata(path)?.len() > MAX_FILE_BYTES {
+    read_limited(path, MAX_FILE_BYTES)
+}
+
+/// A whole file, refused unread when it is larger than `max` bytes.
+fn read_limited(path: &Path, max: u64) -> io::Result<Vec<u8>> {
+    if fs::metadata(path)?.len() > max {
         return Err(io::ErrorKind::InvalidData.into());
     }
     fs::read(path)
