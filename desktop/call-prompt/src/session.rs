@@ -93,6 +93,10 @@ pub enum Action {
     Start,
     /// Bring the main window forward: the recording did not start by itself.
     Present,
+    /// Build the tile's window, hidden, so that its page loads; show nothing. The watcher sends
+    /// it (`service`), never the session: the tile shows only once its page has asked for its
+    /// state.
+    Prepare,
 }
 
 /// What the watcher saw in one tick.

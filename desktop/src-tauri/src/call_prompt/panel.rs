@@ -49,6 +49,16 @@ pub fn show(app: &AppHandle) {
     });
 }
 
+/// Builds the tile's window, hidden, when it is not built yet, so that its page loads before the
+/// tile is shown. `created` runs on the main thread right after a new window is made.
+pub fn prepare(app: &AppHandle, created: impl FnOnce(&AppHandle) + Send + 'static) {
+    on_main(app, "prepare", |app| {
+        if existing(app).is_none() && panel(app).is_some() {
+            created(app);
+        }
+    });
+}
+
 /// Hides the tile. It stays built, hidden, for the next call.
 pub fn hide(app: &AppHandle) {
     on_main(app, "hide", |app| {

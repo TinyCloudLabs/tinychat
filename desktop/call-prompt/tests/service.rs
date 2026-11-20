@@ -132,7 +132,15 @@ struct Rig {
 }
 
 impl Rig {
+    /// A watcher whose tile page has loaded (it asked for its state once).
     fn new() -> Self {
+        let rig = Self::without_page();
+        rig.watcher.page_asked();
+        rig
+    }
+
+    /// A watcher whose tile page has never asked.
+    fn without_page() -> Self {
         let host = FakeHost::default();
         let audio = FakeAudio::default();
         let clock = FakeClock::default();
@@ -456,4 +464,125 @@ fn a_gate_that_closes_and_opens_again_scans_at_once() {
         2,
         "no wait after a closed gate"
     );
+}
+
+fn shows(actions: &[Action]) -> usize {
+    actions
+        .iter()
+        .filter(|action| **action == Action::Show)
+        .count()
+}
+
+#[test]
+fn the_window_is_made_when_a_call_app_is_heard_and_shown_once_the_page_asked() {
+    let rig = Rig::without_page();
+    rig.watcher.set_enabled(true);
+    rig.audio.zoom.store(true, Ordering::SeqCst);
+    rig.watcher.tick();
+    assert_eq!(rig.watcher.stage(), Stage::Hearing);
+    assert_eq!(rig.app.take(), [Action::Prepare], "made at once, hidden");
+    // The page loads and asks; the offer comes later and shows as usual.
+    rig.watcher.window_created();
+    assert_eq!(rig.watcher.page_asked(), Phase::Hidden);
+    rig.clock.advance(TICK);
+    rig.run(8);
+    assert_eq!(
+        rig.app.take(),
+        [Action::Phase(Phase::Offered), Action::Show]
+    );
+}
+
+#[test]
+fn an_offer_waits_for_the_page_and_shows_when_it_asks() {
+    let rig = Rig::without_page();
+    rig.watcher.set_enabled(true);
+    rig.audio.zoom.store(true, Ordering::SeqCst);
+    rig.run(10);
+    // The offer is due but the page has not asked: the window is not shown.
+    assert_eq!(rig.watcher.phase(), Phase::Offered);
+    let actions = rig.app.take();
+    assert_eq!(shows(&actions), 0, "{actions:?}");
+    assert_eq!(actions.last(), Some(&Action::Prepare));
+    // The page asks within the wait: it gets the offer and the window shows.
+    assert_eq!(rig.watcher.page_asked(), Phase::Offered);
+    assert_eq!(rig.app.take(), [Action::Show]);
+    rig.run(20);
+    assert_eq!(rig.watcher.phase(), Phase::Offered);
+    assert_eq!(shows(&rig.app.take()), 0, "shown once");
+}
+
+#[test]
+fn an_offer_whose_page_never_asks_is_never_shown_and_counts_as_not_now() {
+    let rig = Rig::without_page();
+    rig.watcher.set_enabled(true);
+    rig.audio.zoom.store(true, Ordering::SeqCst);
+    rig.run(10);
+    rig.app.take();
+    rig.run(2);
+    assert_eq!(rig.watcher.stage(), Stage::Dismissed);
+    assert_eq!(rig.watcher.phase(), Phase::Hidden);
+    assert_eq!(rig.app.take(), [Action::Hide, Action::Phase(Phase::Hidden)]);
+    let reports = rig.app.reports.lock().unwrap().clone();
+    let missing = reports
+        .iter()
+        .filter(|report| report.error == Some("tile_page_missing"))
+        .count();
+    assert_eq!(missing, 1, "logged once: {reports:?}");
+    // The rest of the call: nothing, even if the page asks late.
+    rig.run(120);
+    rig.watcher.page_asked();
+    assert_eq!(shows(&rig.app.take()), 0);
+    assert_eq!(
+        rig.app
+            .reports
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|report| report.error == Some("tile_page_missing"))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn a_new_window_waits_for_its_own_page() {
+    let rig = Rig::new();
+    rig.watcher.window_created();
+    rig.watcher.set_enabled(true);
+    rig.audio.zoom.store(true, Ordering::SeqCst);
+    rig.run(10);
+    let actions = rig.app.take();
+    assert_eq!(shows(&actions), 0, "{actions:?}");
+    rig.watcher.page_asked();
+    assert_eq!(rig.app.take(), [Action::Show]);
+}
+
+#[test]
+fn an_offer_withdrawn_while_it_waits_for_the_page_never_shows() {
+    let rig = Rig::without_page();
+    rig.watcher.set_enabled(true);
+    rig.audio.zoom.store(true, Ordering::SeqCst);
+    rig.run(8);
+    rig.watcher.tick();
+    assert_eq!(
+        rig.watcher.phase(),
+        Phase::Offered,
+        "due, waiting for the page"
+    );
+    // A second later, before the wait is over, a recording starts from the shortcut.
+    rig.clock.advance(Duration::from_secs(1));
+    rig.app.recording.store(true, Ordering::SeqCst);
+    rig.watcher.tick();
+    assert_eq!(rig.watcher.stage(), Stage::Started);
+    rig.app.take();
+    rig.watcher.page_asked();
+    rig.run(10);
+    assert_eq!(shows(&rig.app.take()), 0);
+    assert!(rig
+        .app
+        .reports
+        .lock()
+        .unwrap()
+        .iter()
+        .all(|report| report.error != Some("tile_page_missing")));
 }

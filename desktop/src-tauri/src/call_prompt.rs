@@ -50,6 +50,7 @@ impl service::Host for Host {
             }
             Action::Show => show_tile(app),
             Action::Hide => hide_tile(app),
+            Action::Prepare => prepare_tile(app),
             Action::Start => start_recording(app),
             Action::Present => {
                 let handle = app.clone();
@@ -88,12 +89,26 @@ fn hide_tile(app: &tauri::AppHandle) {
     panel::hide(app);
 }
 
+/// Has the tile's window made, hidden. A new window's page has not asked for its state yet, so
+/// the watcher waits for it before it shows the tile.
+#[cfg(target_os = "macos")]
+fn prepare_tile(app: &tauri::AppHandle) {
+    panel::prepare(app, |app| {
+        if let Some(prompt) = app.try_state::<Prompt>() {
+            prompt.window_created();
+        }
+    });
+}
+
 // No watcher runs elsewhere, so nothing asks for the tile.
 #[cfg(not(target_os = "macos"))]
 fn show_tile(_app: &tauri::AppHandle) {}
 
 #[cfg(not(target_os = "macos"))]
 fn hide_tile(_app: &tauri::AppHandle) {}
+
+#[cfg(not(target_os = "macos"))]
+fn prepare_tile(_app: &tauri::AppHandle) {}
 
 /// "Start": the start request of the menu-bar item, on a task, so the watcher never waits. With
 /// this Mac's audio on and no consent yet, the main window comes forward first, where the
@@ -163,14 +178,16 @@ pub fn main_window_destroyed(app: &tauri::AppHandle) {
     app.exit(0);
 }
 
-/// What the tile shows. The tile asks once it listens to `exo://call-prompt`.
+/// What the tile shows. The tile asks once it listens to `exo://call-prompt`; that first ask is
+/// how the watcher knows the page has loaded, so the window shows only after it.
 #[tauri::command]
-pub async fn call_prompt_state(app: tauri::AppHandle) -> TileState {
-    TileState {
-        phase: app
-            .try_state::<Prompt>()
-            .map_or(Phase::Hidden, |prompt| prompt.phase()),
-    }
+pub async fn call_prompt_state(app: tauri::AppHandle, window: tauri::WebviewWindow) -> TileState {
+    let phase = match app.try_state::<Prompt>() {
+        Some(prompt) if window.label() == tile::WINDOW_LABEL => prompt.page_asked(),
+        Some(prompt) => prompt.phase(),
+        None => Phase::Hidden,
+    };
+    TileState { phase }
 }
 
 /// "Start" on the tile. The tile hears a phase back on `exo://call-prompt`; an error turns its

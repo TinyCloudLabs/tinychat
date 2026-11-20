@@ -10,6 +10,7 @@
 
 use crate::session::Phase;
 use serde::Serialize;
+use std::time::Duration;
 
 /// The tile window's label.
 pub const WINDOW_LABEL: &str = "call-prompt";
@@ -22,6 +23,10 @@ pub const WIDTH: f64 = 200.0;
 pub const HEIGHT: f64 = 150.0;
 /// The gap between the tile and the right edge of the screen's usable area.
 pub const EDGE_MARGIN: f64 = 16.0;
+/// How long an offer that is due waits for the tile's page to ask for its state. The window is
+/// never shown before that, so a page that failed to load cannot leave an empty window over the
+/// call; after this wait the offer counts as "Not now" for the call.
+pub const PAGE_WAIT: Duration = Duration::from_secs(2);
 
 /// What the tile shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
