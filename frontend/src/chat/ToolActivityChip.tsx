@@ -6,7 +6,7 @@ import {
   type ToolActivity,
 } from "../lib/toolActivityStore";
 
-function labelForActivity(activity: ToolActivity): string {
+export function labelForActivity(activity: ToolActivity): string {
   const { name, status } = activity;
   const isDone = status === "done";
   const isError = status === "error";
@@ -18,12 +18,12 @@ function labelForActivity(activity: ToolActivity): string {
       return isDone
         ? "Searched your transcripts"
         : isError
-          ? "Transcript search needs reconnection"
+          ? "Transcript search failed"
           : "Searching your transcripts…";
     case "tinycloud_find_meetings":
       return isDone ? "Found your meetings" : isError ? "Meeting lookup failed" : "Finding your meetings…";
     case "tinycloud_read_meeting":
-      return isDone ? "Read your meeting" : isError ? "Meeting read needs reconnection" : "Reading your meeting…";
+      return isDone ? "Read your meeting" : isError ? "Meeting read failed" : "Reading your meeting…";
     case "tinycloud_list_meeting_actions":
       return isDone ? "Reviewed meeting actions" : isError ? "Meeting action lookup failed" : "Reviewing meeting actions…";
     default:
