@@ -662,6 +662,8 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
     whisperQueue?.captureEnded();
     if (!recording) throw failure("no_audio_captured");
     emit("committed", { id, recording });
+    // From Stop the note shows as waiting for its audio; finishing queues the Whisper job (noteCommitted).
+    whisperQueue?.notePreparing(recording);
     void finishPrepared(id).catch((error: unknown) =>
       console.error("[desktopVoiceNotes] Could not prepare stopped audio", error));
     return recording;
@@ -1041,6 +1043,8 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
     whisperQueue = createDesktopWhisperQueue({ store, files: bridge, whisper: options.whisper, captureLive: () => live !== null,
       currentAccountDid: () => queueAccountEpoch === accountEpoch.read() && queueAccount.status === "signed_in" ? queueAccount.accountDid : null });
     registerDesktopWhisperQueue(whisperQueue);
+    // A reloaded page shows where each note stands while recovery runs; resume() restarts the work after it.
+    void whisperQueue.restore().catch((error: unknown) => console.warn("[desktopWhisper] Could not show pending notes", error));
   }
 
   if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {

@@ -60,6 +60,20 @@ export function isTinyCloudUploadRejected(error: unknown): boolean {
   return /Fetch API cannot load .+? due to access control checks\./i.test(rawErrorMessage(error));
 }
 
+/** The SDK's codes for a space it cannot reach right now: the node (or what routes to it) is not answering. */
+const SPACE_UNREACHABLE_CODES = new Set(["NODE_NOT_RESPONDING", "DECRYPTION_DEPENDENCY_UNAVAILABLE", "REGISTRY_UNAVAILABLE"]);
+
+/** The space could not be reached (the SDK's NODE_NOT_RESPONDING and its kin), here or in the error's causes. */
+export function isTinyCloudUnreachable(error: unknown): boolean {
+  const seen: unknown[] = [];
+  for (let current = error; current !== null && current !== undefined && seen.length < 4 && !seen.includes(current);) {
+    seen.push(current);
+    if (SPACE_UNREACHABLE_CODES.has(errorCode(current)?.toUpperCase() ?? "")) return true;
+    current = typeof current === "object" && "cause" in current ? (current as { cause?: unknown }).cause : undefined;
+  }
+  return false;
+}
+
 /** The native console gets only a stable code; the dev log holds a redacted error chain. */
 export function logVoiceNoteError(operation: string, error: unknown): void {
   const rawCode = errorCode(error);
@@ -81,8 +95,8 @@ export function messageOf(error: unknown): string {
     logVoiceNoteError("TinyCloud upload rejected", error);
     return TINYCLOUD_UPLOAD_REJECTED_MESSAGE;
   }
-  if (isTinyCloudNetworkFailure(error)) {
-    // Keep credential-bearing URLs out of the native console.
+  if (isTinyCloudNetworkFailure(error) || isTinyCloudUnreachable(error)) {
+    // Keep credential-bearing URLs out of the native console, and the SDK's code off the screen.
     logVoiceNoteError("TinyCloud network failure", error);
     return TINYCLOUD_NETWORK_FAILURE_MESSAGE;
   }
@@ -668,7 +682,7 @@ export function classifyNoteFailure(error: unknown): NoteFailure["kind"] {
     || (item && typeof item === "object" && (item as { name?: unknown }).name === "VoiceNoteSaveTimeout"))
     || codes.some((code) => code === "SPACE_LANE_QUEUE_TIMEOUT" || code === "VOICE_NOTE_OPERATION_TIMEOUT" || /timeout|timed out/i.test(code))) return "timeout";
   if (chain.some(isTinyCloudUploadRejected)) return "rejected";
-  if (chain.some(isTinyCloudNetworkFailure) || codes.includes("NETWORK_ERROR")
+  if (chain.some(isTinyCloudNetworkFailure) || codes.includes("NETWORK_ERROR") || codes.some((code) => SPACE_UNREACHABLE_CODES.has(code))
     || messages.some((message) => /offline|network|failed to fetch|load failed/i.test(message))) return "offline";
   return "other";
 }

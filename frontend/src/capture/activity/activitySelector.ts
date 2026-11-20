@@ -85,7 +85,8 @@ export function activityForNote(view: NotePipelineView | undefined, platform: Ap
         else if (phase === "waiting") detail = provider === "powerful" ? "Waiting for Powerful to start" : provider === "private" ? "Waiting for your other Private transcription to finish" : "Waiting for transcription to start";
         else if (phase === "queued") detail = provider === "powerful" ? "Queued with Powerful" : provider === "private" ? "Queued for Private transcription" : "Queued for transcription";
         else detail = transcribe.caption ?? "Waiting to start";
-      } else if (local) detail = `Transcribing on ${device}${transcribe.progress == null ? "…" : ` · ${percent(transcribe.progress)}`}`;
+      } else if (transcribe.state === "upcoming") detail = transcribe.caption ?? (local ? LOCAL_COPY.notStarted : "Waiting to start");
+      else if (local) detail = `Transcribing on ${device}${transcribe.progress == null ? "…" : ` · ${percent(transcribe.progress)}`}`;
       else if (phase === "uploading") detail = `Sending to ${destination}${transcribe.progress == null ? "…" : ` · ${percent(transcribe.progress)}`}`;
       else if (phase === "preparing") detail = `Preparing for ${destination}…`;
       else if (phase === "delayed") detail = provider === "powerful" ? HOSTED_DELAYED_ROW : PROVIDER_DELAYED_COPY;
