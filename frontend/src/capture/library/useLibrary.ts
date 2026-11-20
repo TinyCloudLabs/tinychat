@@ -13,7 +13,7 @@
 // (`library-changed`, which a voice note's saved transcript also sends), from
 // Refresh or Try again, and when Capture comes back on screen after more than
 // two minutes away. One read at a time: asks that arrive while one is out
-// become a single read after it; a read already out is never thrown away.
+// become a single read after it; only a confirmed delete discards an older read.
 //
 // A note's settled reads are cached. Failed revalidation keeps a prior
 // successful read visible but marks only that field stale for Try again or
@@ -29,6 +29,7 @@
 // space changes, and for a note that was discarded rather than uploaded.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
+import { EXO_MERGED_SOURCE } from "@tinyboilerplate/core";
 
 import { PHONE_AUDIO_UNAVAILABLE } from "@/chat/audioPlayback";
 import { getAudio, getAudioManifest, manifestReceipt, type StoredAudioManifest } from "@/lib/audio/audioStore";
@@ -50,7 +51,7 @@ import { loadVoiceNoteAudioBlob, voiceNoteAudioKvKey, VOICE_NOTE_SOURCE } from "
 import { cachedSpaceAudio, cachedSpaceAudioOffline, hasVerifiedSpaceCopy, isMissingLocalAudio, isVerifiedSpaceReceipt, latestSpaceAudioIdentity, localPlaybackUrl,
   observeSpaceAudioIdentity } from "@/lib/voiceNotes/audioPlaybackCache";
 import { readTranscriptPreviews, voiceNoteTranscriptLocator, type TranscriptProvenance } from "@/lib/voiceNotes/voiceNoteCommits";
-import { accountCacheKey, readLocal, writeLocal } from "@/lib/localFirst/localCache";
+import { accountCacheKey, deleteLocal, readLocal, writeLocal } from "@/lib/localFirst/localCache";
 import { captureEvents } from "../captureEvents";
 import type { LibraryFilter } from "./libraryKinds";
 import type { LibraryStatus } from "./LibraryListView";
@@ -187,6 +188,11 @@ export function useLibrary(
 ): Library {
   const space = useMemo(() => scheduledSpace(tcw), [tcw]);
   const localKey = typeof tcw.did === "string" && tcw.did ? accountCacheKey(tcw.did, "library") : null;
+  const deletionWarnings = useRef<{ ownerDid: string | null; spaceId: string | null; ids: Set<string> } | null>(null);
+  if (!deletionWarnings.current || deletionWarnings.current.ownerDid !== (tcw.did ?? null) || deletionWarnings.current.spaceId !== (tcw.spaceId ?? null)) {
+    deletionWarnings.current = { ownerDid: tcw.did ?? null, spaceId: tcw.spaceId ?? null, ids: new Set() };
+  }
+  const warningScope = deletionWarnings.current;
   const loadedFromNetwork = useRef(false);
   const [list, setList] = useState<{ status: LibraryStatus; items: LibraryItem[]; previews: ReadonlyMap<string, string> }>({
     status: "loading",
@@ -214,6 +220,8 @@ export function useLibrary(
   const mounted = useRef(true);
   const listRun = useRef({ out: false, again: false });
   const readsStarted = useRef(0);
+  // A confirmed delete invalidates list responses that began before its eviction.
+  const discardListsThrough = useRef(0);
   const onPhoneNotes = options.onPhone ?? null;
   const [handoff, setHandoff] = useState<Handoff>({ space, notes: onPhoneNotes, lingering: new Map(), departures: 0 });
   // Derived while rendering, so no render shows the note gone before its stand-in is kept.
@@ -263,17 +271,22 @@ export function useLibrary(
         }
       }
       if (!mounted.current) return;
-      if (read.status === "ok") loadedFromNetwork.current = true;
-      setList((current) =>
-        read.status === "ok"
-          ? { status: "ready", items: read.meetings, previews: previews ?? current.previews }
-          : { status: "failed", items: current.items, previews: current.previews },
-      );
-      if (read.status === "ok") {
-        setHandoff((current) => {
-          const lingering = new Map([...current.lingering].filter(([, entry]) => entry.since >= started));
-          return lingering.size === current.lingering.size ? current : { ...current, lingering };
-        });
+      if (started > discardListsThrough.current) {
+        if (read.status === "ok") loadedFromNetwork.current = true;
+        setList((current) =>
+          read.status === "ok"
+            ? { status: "ready", items: read.meetings, previews: previews ?? current.previews }
+            : { status: "failed", items: current.items, previews: current.previews },
+        );
+        if (read.status === "ok") {
+          for (const entry of read.meetings) {
+            if (entry.source === EXO_MERGED_SOURCE && entry.mergeMembers !== undefined) warningScope.ids.delete(entry.id);
+          }
+          setHandoff((current) => {
+            const lingering = new Map([...current.lingering].filter(([, entry]) => entry.since >= started));
+            return lingering.size === current.lingering.size ? current : { ...current, lingering };
+          });
+        }
       }
       if (listRun.current.again) {
         listRun.current.again = false;
@@ -284,14 +297,15 @@ export function useLibrary(
       setListing(false);
     };
     void enqueue(readList);
-  }, [enqueue, space]);
+  }, [enqueue, space, warningScope]);
 
   // The device's last copy of the list shows at once; the read below replaces it.
   useEffect(() => {
     if (!localKey) return;
     let alive = true;
+    const deletedBeforeRead = discardListsThrough.current;
     void readLocal<LocalLibrary>(localKey).then((local) => {
-      if (!alive || !local || loadedFromNetwork.current) return;
+      if (!alive || !local || loadedFromNetwork.current || discardListsThrough.current !== deletedBeforeRead) return;
       setList((current) => (current.status === "loading" ? { status: "ready", items: local.value.items, previews: local.value.previews } : current));
     });
     return () => { alive = false; };
@@ -336,6 +350,31 @@ export function useLibrary(
     refresh();
   }), [refresh]);
 
+  useEffect(() => captureEvents.on("note-deleted", (detail) => {
+    if (!detail || detail.source !== "granola") return;
+    if (detail.ownerDid !== undefined && detail.ownerDid !== (tcw.did ?? null)) return;
+    if (detail.spaceId !== undefined && detail.spaceId !== (tcw.spaceId ?? null)) return;
+    const unverifiedIds = new Set(detail.unverifiedCombinedIds ?? []);
+    for (const id of unverifiedIds) warningScope.ids.add(id);
+    discardListsThrough.current = ++readsStarted.current;
+    const keep = (entry: LibraryItem) => !(
+      (entry.source === detail.source && entry.sourceId === detail.sourceId)
+      || (entry.source === EXO_MERGED_SOURCE && !unverifiedIds.has(entry.id) && entry.mergeMembers?.some(member => member.source === detail.source && member.sourceId === detail.sourceId))
+    );
+    for (const entry of itemsRef.current) {
+      if (keep(entry) && !unverifiedIds.has(entry.id)) continue;
+      reads.current.delete(entry.id);
+      invalidated.current.delete(entry.id);
+      staleReads.current.delete(entry.id);
+      readVersions.current.set(entry.id, (readVersions.current.get(entry.id) ?? 0) + 1);
+    }
+    itemsRef.current = itemsRef.current.filter(keep);
+    // Drop the old persisted list even if writing its replacement is unavailable.
+    if (localKey) void deleteLocal(localKey);
+    setList(current => ({ ...current, items: current.items.filter(keep) }));
+    refresh();
+  }), [localKey, refresh, tcw.did, tcw.spaceId, warningScope]);
+
   // Each note that leaves the phone asks for one list read to catch up.
   useEffect(() => {
     if (handoff.departures > 0) refresh();
@@ -354,16 +393,17 @@ export function useLibrary(
       [...currentHandoff.lingering.values()].map((entry) => entry.note).filter((note) => !wasDiscarded(note.id)),
     );
     return merged.map((entry) => {
+      if (entry.source === EXO_MERGED_SOURCE && warningScope.ids.has(entry.id)) return { ...entry, deletionWarning: "unverified-combined" as const };
       if (entry.source !== VOICE_NOTE_SOURCE || entry.metadata?.capture === "pasted") return entry;
       const snippet = moments.get(entry.sourceId) ?? noteSnippet(list.previews.get(entry.sourceId));
       return { ...entry, ...(snippet === null ? {} : { snippet }),
         ...(localAudioIds.has(entry.sourceId) ? { hasLocalAudio: true as const } : {}),
         ...(localAudioReadyIds.has(entry.sourceId) ? { localAudioReady: true as const } : {}) };
     });
-  }, [list.items, list.previews, moments, onPhoneNotes, currentHandoff.lingering, localAudioIds, localAudioReadyIds]);
+  }, [list.items, list.previews, moments, onPhoneNotes, currentHandoff.lingering, localAudioIds, localAudioReadyIds, warningScope]);
 
   // Captures a combined meeting stands in for, derived from the combined rows of this list read.
-  const hiddenKeys = useMemo(() => hiddenMemberKeys(list.items), [list.items]);
+  const hiddenKeys = useMemo(() => hiddenMemberKeys(warningScope.ids.size === 0 ? list.items : list.items.filter(entry => !warningScope.ids.has(entry.id))), [list.items, warningScope]);
   const isCombinedMember = useCallback(
     (entry: Pick<LibraryItem, "source" | "sourceId">) => hiddenKeys.has(memberKey(entry.source, entry.sourceId)),
     [hiddenKeys],

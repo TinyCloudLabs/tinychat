@@ -8,15 +8,20 @@ compatibility_date = "2026-05-12"
 # values in at build time; anything not set here comes from
 # frontend/.env.production, which every build reads, mobile builds included.
 #
-# Top-level [vars] apply to preview builds. Production builds use
-# [env.production.vars] instead; vars are not inherited, so every production
-# value is listed there.
+# Top-level [vars] are preview defaults. Explicit preview and production
+# environments use their own vars instead; vars are not inherited, so
+# each environment below lists all of its values.
 [vars]
 VITE_OPENKEY_HOST = "https://openkey.so"
 VITE_BACKEND_URL = "https://api.tinycloud.chat"
+
+[env.preview.vars]
+VITE_OPENKEY_HOST = "https://openkey.so"
+VITE_BACKEND_URL = "https://api.tinycloud.chat"
+VITE_GRANOLA_CONNECTOR_ENABLED = "true"
 
 [env.production.vars]
 VITE_OPENKEY_HOST = "https://openkey.so"
 VITE_BACKEND_URL = "https://api.tinycloud.chat"
 VITE_ONE_APPS = "true"
-VITE_GRANOLA_CONNECTOR_ENABLED = "false"
+VITE_GRANOLA_CONNECTOR_ENABLED = "true"

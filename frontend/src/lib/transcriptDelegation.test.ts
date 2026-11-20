@@ -1,6 +1,7 @@
 import { afterAll, afterEach, describe, expect, it } from "bun:test";
+import { Database, type SQLQueryBindings } from "bun:sqlite";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
-import type { DelegationResponse } from "@tinyboilerplate/core";
+import { writeTranscriberMeeting, type ConnectorStorePort, type DelegationResponse } from "@tinyboilerplate/core";
 import {
   beginTranscriptConsentStatus, clearTranscriptConsentStatus, resolveTranscriptConsentStatus,
   subscribeTranscriptConsent, transcriptConsentState,
@@ -17,6 +18,7 @@ const address = "0x0000000000000000000000000000000000000abc";
 const originalFetch = globalThis.fetch;
 const originalNavigator = Object.getOwnPropertyDescriptor(globalThis, "navigator");
 const originalStorage = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+const databases = new Set<Database>();
 afterAll(() => {
   if (previousHTMLElement) globalThis.HTMLElement = previousHTMLElement;
   else Reflect.deleteProperty(globalThis, "HTMLElement");
@@ -39,6 +41,8 @@ function memoryStorage(): Storage {
 
 afterEach(() => {
   clearTranscriptDelegationSchedule(address);
+  for (const database of databases) database.close();
+  databases.clear();
   globalThis.fetch = originalFetch;
   if (originalNavigator) Object.defineProperty(globalThis, "navigator", originalNavigator);
   else Reflect.deleteProperty(globalThis, "navigator");
@@ -84,6 +88,27 @@ describe("per-account transcript consent status", () => {
 
 function setup(schemaFails: boolean, status: "none" | "schema_missing" = "none") {
   const operations: string[] = [];
+  const sqlite = new Database(":memory:");
+  databases.add(sqlite);
+  const bodies = new Map<string, string>();
+  const deliveryPort: ConnectorStorePort = {
+    query: async (sql, params) => ({ ok: true, data: { rows: sqlite.query(sql).values(...params as SQLQueryBindings[]) } }),
+    execute: async (sql, params = []) => ({ ok: true, data: sqlite.query(sql).run(...params as SQLQueryBindings[]) }),
+    kvGet: async (key) => ({ ok: true, data: bodies.has(key) ? "present" : "missing" }),
+    kvPutIfAbsent: async (key, body) => {
+      if (bodies.has(key)) return { ok: true, data: "exists" };
+      bodies.set(key, body);
+      return { ok: true, data: "written" };
+    },
+  };
+  const deliver = () => writeTranscriberMeeting(deliveryPort, {
+    meeting: {
+      id: "00000000-0000-8000-8000-000000000001", source: "tinycloud-transcriber", sourceId: "delivery-probe",
+      title: "Delivered transcript", startedAt: null, durationSecs: null, organizerEmail: null, participants: [],
+      summaryOverview: null, summaryActionItems: null, keywords: null, meetingType: null, metadata: {},
+    },
+    body: '[{"text":"A persisted delivery"}]',
+  }, { ensureSchema: false });
   Object.defineProperty(globalThis, "localStorage", { configurable: true, value: memoryStorage() });
   Object.defineProperty(globalThis, "navigator", {
     configurable: true,
@@ -102,34 +127,42 @@ function setup(schemaFails: boolean, status: "none" | "schema_missing" = "none")
     throw new Error(`Unexpected request: ${path}`);
   }) as typeof fetch;
   const db = {
-    query: async (sql: string) => {
+    query: async (sql: string, params: SQLQueryBindings[] = []) => {
       operations.push(`SQL ${sql.trim().split(/\s+/, 1)[0]}`);
-      return { ok: true, data: { rows: [] } };
+      return { ok: true, data: { rows: sqlite.query(sql).values(...params) } };
     },
-    execute: async (sql: string) => {
+    execute: async (sql: string, params: SQLQueryBindings[] = []) => {
       operations.push(`SQL ${sql.trim().split(/\s+/, 1)[0]}`);
-      return schemaFails
-        ? { ok: false, error: { code: "SCHEMA_DENIED", message: "Schema unavailable" } }
-        : { ok: true, data: {} };
+      if (schemaFails) return { ok: false, error: { code: "SCHEMA_DENIED", message: "Schema unavailable" } };
+      return { ok: true, data: sqlite.query(sql).run(...params) };
     },
   };
   const tcw = {
     address: () => address,
     session: () => ({ siwe: `Expiration Time: ${new Date(Date.now() + 30 * 86_400_000).toISOString()}`, signature: "signed" }),
     sql: { db: () => db },
-    delegateTo: async () => { operations.push("delegateTo"); throw new Error("Stop before serialization"); },
+    delegateTo: async () => {
+      operations.push("delegateTo");
+      await deliver();
+      throw new Error("Stop before serialization");
+    },
   } as unknown as TinyCloudWeb;
   const sessionStore = {
     getToken: () => "test-token", getAddress: () => address, isExpired: () => false,
   } as unknown as SessionStore;
-  return { operations, tcw, sessionStore };
+  return {
+    operations, tcw, sessionStore, deliver,
+    deliveryRow: () => sqlite.query("SELECT source, source_id, title FROM connector_meeting").get(),
+    deliveryBody: () => bodies.get("xyz.tinycloud.tinychat/connectors/tinycloud-transcriber/transcript/delivery-probe"),
+  };
 }
 
 describe("transcript delegation schema prerequisite", () => {
   it("ensures the user's connector schema inside the lock before asking the session to mint", async () => {
-    const { operations, tcw, sessionStore } = setup(false);
+    const { operations, tcw, sessionStore, deliveryRow, deliveryBody } = setup(false);
     expect(await ensureTranscriptWriterDelegation({ tcw, sessionStore, backendUrl: "https://localhost:31314" })).toBe("unavailable");
-    expect(operations.filter((op) => op === "SQL CREATE")).toHaveLength(2);
+    expect(deliveryRow()).toEqual({ source: "tinycloud-transcriber", source_id: "delivery-probe", title: "Delivered transcript" });
+    expect(deliveryBody()).toBe('[{"text":"A persisted delivery"}]');
     expect(operations.indexOf("delegateTo")).toBeGreaterThan(operations.lastIndexOf("SQL CREATE"));
   });
 
@@ -141,9 +174,11 @@ describe("transcript delegation schema prerequisite", () => {
     expect(operations).not.toContain("POST /api/delegations");
   });
   it("repairs a missing schema without replacing a healthy signed grant", async () => {
-    const { operations, tcw, sessionStore } = setup(false, "schema_missing");
+    const { operations, tcw, sessionStore, deliver, deliveryRow, deliveryBody } = setup(false, "schema_missing");
     expect(await ensureTranscriptWriterDelegation({ tcw, sessionStore, backendUrl: "https://localhost:31314" })).toBe("active");
-    expect(operations.filter((op) => op === "SQL CREATE")).toHaveLength(2);
+    expect(await deliver()).toMatchObject({ ok: true, data: { row: "inserted", body: "written" } });
+    expect(deliveryRow()).toEqual({ source: "tinycloud-transcriber", source_id: "delivery-probe", title: "Delivered transcript" });
+    expect(deliveryBody()).toBe('[{"text":"A persisted delivery"}]');
     expect(operations).not.toContain("delegateTo");
     expect(operations).not.toContain("POST /api/delegations");
   });
@@ -177,7 +212,7 @@ function mintHarness(initial: Partial<DelegationResponse> = {}, sessionDays = 30
     throw new Error(`Unexpected request: ${path}`);
   }) as typeof fetch;
   const db = {
-    query: async () => ({ ok: true, data: { rows: [["connector_state"], ["connector_meeting"]] } }),
+    query: async () => ({ ok: true, data: { rows: [["connector_state"], ["connector_meeting"], ["granola_deleted_meeting"]] } }),
     execute: async () => { throw new Error("The schema already exists"); },
   };
   const tcw = {

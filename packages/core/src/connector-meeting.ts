@@ -29,7 +29,7 @@ export const TRANSCRIPT_WRITER_PERMISSIONS: NonEmptyServerInfoPermissions = [
   { service: "tinycloud.kv", space: "applications", path: `${CONNECTORS_KV_PREFIX}/${TRANSCRIBER_MEETING_SOURCE}/`, actions: ["get", "put"], skipPrefix: true },
 ];
 
-/** The two existing connector tables, with the statements preserved byte-for-byte. */
+/** Connector data and exact-ID Granola deletion markers; no meeting content is retained in markers. */
 export const CONNECTOR_SCHEMA: { sql: string; table: string }[] = [
   {
     table: "connector_state",
@@ -61,6 +61,14 @@ export const CONNECTOR_SCHEMA: { sql: string; table: string }[] = [
       metadata TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
+    )`,
+  },
+  {
+    table: "granola_deleted_meeting",
+    sql: `CREATE TABLE IF NOT EXISTS granola_deleted_meeting (
+      source_id TEXT PRIMARY KEY,
+      id TEXT NOT NULL,
+      created_at TEXT NOT NULL
     )`,
   },
 ];
