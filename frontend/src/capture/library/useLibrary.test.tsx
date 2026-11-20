@@ -1371,3 +1371,48 @@ describe("useLibrary, which audio a note on the phone plays", () => {
     });
   });
 });
+
+// The Mac app records into its own files (the desktop engine), not through a phone plugin. A saved note whose audio
+// stays on this Mac (the row says the space holds none) plays this Mac's file, and its row says the audio stays here.
+// Without this, a one-hour recording the app stopped at its limit read "The audio for this note isn't on this device."
+// on its page while its file was on the Mac.
+describe("useLibrary on the Mac app, a saved note whose audio stays on this Mac", () => {
+  test("its page plays this Mac's file and its row says the audio stays here", async () => {
+    const { __resetCaptureEngineForTests, __setInstalledEngineForTests } = await import("@/lib/voiceNotes/captureEngine");
+    const { DESKTOP_CAPABILITIES } = await import("@/lib/voiceNotes/desktop/desktopVoiceNotes");
+    const previousIdb = globalThis.indexedDB;
+    globalThis.indexedDB = new IDBFactory() as unknown as IDBFactory;
+    const space = fakeSpace();
+    const original = VoiceNotes;
+    const localUrl = URL.createObjectURL(new Blob(["mac bytes"], { type: "audio/mpeg" }));
+    let localReads = 0;
+    __setVoiceNotesForTests({
+      localAudioSize: async () => ({ size: 9 }),
+      localAudioUrl: async () => { localReads++; return { url: localUrl }; },
+      listPending: async () => ({ recordings: [{ id: "rec-mac", owner: space.tcw.did,
+        ledger: { audio: { state: "saved", rowId: "mac", at: 1 }, localAudio: { state: "ready" } } }] }),
+    } as unknown as VoiceNotesPlugin, { available: false });
+    __setInstalledEngineForTests("tauri", DESKTOP_CAPABILITIES);
+    try {
+      const seen: Library[] = [];
+      await render({ tcw: space.tcw, visible: true, now: () => 0, seen, onPhone: [], noteId: "mac" });
+      await space.answer("list", listedVoice("mac"));
+      await space.answer("metadata", { ok: true, data: { rows: [[JSON.stringify({
+        audio: { stored: false, reason: "local_only", device: { platform: "tauri" } }, transcription_outcome: "failed",
+      })]] } });
+      const library = seen.at(-1)!;
+      expect(library.note.item?.hasLocalAudio).toBe(true);
+      const audio = library.note.audio;
+      expect(audio).not.toBeNull();
+      const got = audio && "load" in audio ? await audio.load(new AbortController().signal, () => {}) : null;
+      expect(got).toBe(localUrl);
+      expect(localReads).toBe(1);
+      expect(space.kinds).not.toContain("audio");
+    } finally {
+      __resetCaptureEngineForTests();
+      __setVoiceNotesForTests(original, { available: null });
+      globalThis.indexedDB = previousIdb;
+      URL.revokeObjectURL(localUrl);
+    }
+  });
+});

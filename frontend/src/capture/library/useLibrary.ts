@@ -46,6 +46,7 @@ import { scheduledSpace } from "@/lib/spaceQueue";
 import { loadNote } from "@/lib/voiceNotes/recordingNotes";
 import { wasDiscarded, type PendingNote } from "@/lib/voiceNotes/recorderSaves";
 import { nativeVoiceNotesAvailable, VoiceNotes } from "@/lib/voiceNotes/nativeVoiceNotes";
+import { captureEngineKind } from "@/lib/voiceNotes/captureEngine";
 import { loadVoiceNoteAudioBlob, voiceNoteAudioKvKey, VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
 import { cachedSpaceAudio, cachedSpaceAudioOffline, hasVerifiedSpaceCopy, isMissingLocalAudio, isVerifiedSpaceReceipt, latestSpaceAudioIdentity, localPlaybackUrl,
   observeSpaceAudioIdentity } from "@/lib/voiceNotes/audioPlaybackCache";
@@ -57,6 +58,9 @@ import type { LibraryStatus } from "./LibraryListView";
 import type { LibraryItem } from "./LibraryRow";
 import type { AudioLoad, NoteAudio } from "./NoteDetailView";
 import { noteSnippet, recordingIdOfOnPhoneId, withOnPhone } from "./onPhone";
+
+/** This device keeps recordings in files of its own: a phone's plugin, or the Mac app's desktop engine. */
+const deviceRecordingsAvailable = (): boolean => nativeVoiceNotesAvailable() || captureEngineKind() === "tauri";
 
 export interface SelectedTranscript {
   transcript: TranscriptRead;
@@ -389,7 +393,7 @@ export function useLibrary(
   const openRecordingId = item?.source === VOICE_NOTE_SOURCE ? item.sourceId : null;
   useEffect(() => {
     if (!options.visible) return;
-    if (!nativeVoiceNotesAvailable()) {
+    if (!deviceRecordingsAvailable()) {
       setLocalAudioIds(new Set());
       setLocalAudioReadyIds(new Set());
       setPhoneOnlyAudio(new Map());
@@ -416,7 +420,7 @@ export function useLibrary(
   // but a readable file there is the audio whatever the list says.
   const [deviceFileId, setDeviceFileId] = useState<string | null>(null);
   useEffect(() => {
-    if (!options.visible || openRecordingId === null || !nativeVoiceNotesAvailable()) {
+    if (!options.visible || openRecordingId === null || !deviceRecordingsAvailable()) {
       setDeviceFileId(null);
       return;
     }
