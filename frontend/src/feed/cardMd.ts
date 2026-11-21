@@ -1,9 +1,11 @@
 // card.md: the owner's one note on how cards are made for their Feed. The owner's master copy is one row (table
-// `card_md`) in the owner-only `threads` database: the signed-in session holds it, and neither an `onboard --with feed`
-// grant nor an agent token covers it. Every connected agent gets a copy of that row in its own response database, which
-// its feed token already reads, so a change reaches agents connected before it without a new grant; the CLI compares
-// the version on publish. Only the owner writes the master; the copies sit under the feed namespace, so each run
-// repairs any that differ. The contract with the CLI is the per-agent table and `cardMdVersion`.
+// `card_md`) in the owner-only `threads` database: the signed-in session holds it. A feed-only grant cannot write it
+// (`onboard --with feed` covers SQL only under `xyz.tinycloud.tinychat/home_feed` and `xyz.tinycloud.tinychat/feed/`),
+// while an apps grant (SQL on the whole applications space) can. Every connected agent gets a copy of that row in its
+// own response database, which its feed token already reads, so a change reaches agents connected before it without a
+// new grant; the CLI compares the version on publish. The owner's session writes the master; the copies sit under the
+// feed namespace, so each run repairs any that differ. The contract with the CLI is the per-agent table and
+// `cardMdVersion`.
 import { sha256 } from "@noble/hashes/sha256";
 import { bytesToHex, utf8ToBytes } from "@noble/hashes/utils";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
