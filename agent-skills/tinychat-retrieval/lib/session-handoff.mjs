@@ -130,7 +130,7 @@ export function buildSessionHandoff({ sessionID, messages = [], receipt, observa
   const observedCliVersions = [...new Set(events.map(event => version(event.value.cliVersion)).filter(value => value !== 'unavailable'))];
   const lines = [
     '# Local diagnostic handoff', '',
-    `User goal: ${note(goal ?? 'Review the TinyChat session outcome and meeting evidence.')}`, '',
+    `User goal: ${note(goal ?? 'Review the TinyCloud One meetings session outcome and meeting evidence.')}`, '',
     `Session: ${sessionID}`, `Client: ${version(versions.client ?? (versions.opencode ? 'OpenCode ' + versions.opencode : undefined))}`, `Model observed: ${[...models].join(', ') || 'unavailable'}`,
     `Installed candidate: ${version(versions.candidate)}`, `CLI version: ${version(versions.cli) !== 'unavailable' ? version(versions.cli) : observedCliVersions.join(', ') || 'unavailable'}`, '',
     '## Stages and material failures', '',

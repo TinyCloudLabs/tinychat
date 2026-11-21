@@ -1,14 +1,14 @@
-# Use TinyChat with your agent
+# Use TinyCloud One meetings with your agent
 
-Use your existing TinyChat account and synced meetings from any agent that can run shell commands, such as Claude Code, Codex or OpenCode. Meetings use the TinyCloud CLI; the hosted TinyCloud MCP doesn't have meeting tools yet. You don't need to reconnect sources, copy meetings or clone a repository.
+Use your existing TinyCloud One account and synced meetings from any agent that can run shell commands, such as Claude Code, Codex or OpenCode. Meetings use the TinyCloud CLI; the hosted TinyCloud MCP doesn't have meeting tools yet. You don't need to reconnect sources, copy meetings or clone a repository.
 
 ## Install once
 
 Use Node.js **22.20 or later**.
 
-First set up TinyCloud with https://agents.tinycloud.xyz/onboarding. It installs the CLI and signs you in; TinyChat uses that sign-in. Skip it if this computer is already set up.
+First set up TinyCloud with https://agents.tinycloud.xyz/onboarding. It installs the CLI and signs you in; TinyCloud One uses that sign-in. Skip it if this computer is already set up.
 
-Then install the TinyChat skill. Set `CLIENT` to your agent's installer name, for example `claude-code`, `codex` or `opencode`. Run it in the foreground. Inspect any existing same-named skill before replacing it.
+Then install the TinyCloud One meetings skill. Set `CLIENT` to your agent's installer name, for example `claude-code`, `codex` or `opencode`. Run it in the foreground. Inspect any existing same-named skill before replacing it.
 
 ```sh
 npx --yes skills@{{INSTALLER_VERSION}} add {{SETUP_URL}}tinychat-retrieval/{{PACK_VERSION}}/tinychat-retrieval-{{PACK_VERSION}}.tgz --skill tinychat-retrieval --global --copy --agent CLIENT --yes
@@ -30,7 +30,7 @@ The release includes [skill instructions](tinychat-retrieval/{{PACK_VERSION}}/SK
 
 ## Sign in and approve access
 
-TinyChat uses your TinyCloud onboarding sign-in. The app configuration for this setup page is:
+TinyCloud One uses your TinyCloud onboarding sign-in. The app configuration for this setup page is:
 
 ```json
 {{SETUP_CONTEXT}}
@@ -44,9 +44,9 @@ node PACK/scripts/setup.mjs prepare --config APP_CONTEXT_FILE
 
 - `ready`: continue.
 - `onboarding-required`: follow https://agents.tinycloud.xyz/onboarding, then run `prepare` again.
-- `access-required`: run `node PACK/scripts/setup.mjs authorize` (in OpenCode, `tinychat_authorize` with no arguments). Send the owner `approvalUrl` with one line: “Open this link and approve TinyChat access, then send me the short code OpenKey shows (like ABCD-EFGH).” When they send the code, pass it exactly as sent: `node PACK/scripts/setup.mjs login --code '<the code>'` (in OpenCode, `tinychat_authorize` with `code`).
+- `access-required`: run `node PACK/scripts/setup.mjs authorize` (in OpenCode, `tinychat_authorize` with no arguments). Send the owner `approvalUrl` with one line: “Open this link and approve TinyCloud One access, then send me the short code OpenKey shows (like ABCD-EFGH).” When they send the code, pass it exactly as sent: `node PACK/scripts/setup.mjs login --code '<the code>'` (in OpenCode, `tinychat_authorize` with `code`).
 
-Sign in with the account you use for TinyChat. The owner can open the link on any device, including a phone. Each code works once and expires after 5 minutes; if it's refused, run `authorize` again and send the new link. TinyChat only reads your meeting list and transcripts.
+Sign in with the account you use for TinyCloud One. The owner can open the link on any device, including a phone. Each code works once and expires after 5 minutes; if it's refused, run `authorize` again and send the new link. TinyCloud One only reads your meeting list and transcripts.
 
 If the user requested setup or login only, stop at the ready result. Retrieve meetings only when requested. For a last-meeting request, call `tinychat_meetings` with `action: "latest"` and a new short operation ID, such as `last-meeting`. It selects the latest supported dated meeting, verifies actual SQL/body access and returns evidence immediately. It preserves profile, host, space and primary owner. Do not renew valid access or switch accounts to work around a retrieval failure. Standalone diagnostics remains available for explicit checks or failure investigation.
 
@@ -72,7 +72,7 @@ This is bounded literal passage search. Report the declared scope, examined/unex
 
 ### Which meetings are covered?
 
-This release discovers the existing `connector_meeting` SQL catalog and reads matching connector KV bodies. User-space **KV-only** meeting records remain outside that discovery scope and are listed in `coverage.excludedCatalogs`. `coverage.backendPending` separately reports metadata-only counts for unreconciled backend-ingest meetings and completed or uncertain transcriber IDs not known saved in the user's space. Each source includes an unknown count, `checked_at`, and freshness; backend-ingest becomes stale after 24 hours, while transcriber becomes stale at 1 hour 30 seconds or more. Missing, future-dated, corrupt, or unsupported snapshots are unknown, never zero. The snapshot is not a live backend catalog; the pack returns no pending IDs or titles. A meeting visible in another TinyChat view may therefore be absent here. Do not ask the user to reconnect sources or report that their entire TinyChat library is empty. Missing bodies, unsupported formats, denied permissions, expired sessions and unavailable hosts are distinct failures.
+This release discovers the existing `connector_meeting` SQL catalog and reads matching connector KV bodies. User-space **KV-only** meeting records remain outside that discovery scope and are listed in `coverage.excludedCatalogs`. `coverage.backendPending` separately reports metadata-only counts for unreconciled backend-ingest meetings and completed or uncertain transcriber IDs not known saved in the user's space. Each source includes an unknown count, `checked_at`, and freshness; backend-ingest becomes stale after 24 hours, while transcriber becomes stale at 1 hour 30 seconds or more. Missing, future-dated, corrupt, or unsupported snapshots are unknown, never zero. The snapshot is not a live backend catalog; the pack returns no pending IDs or titles. A meeting visible elsewhere in TinyCloud One may therefore be absent here. Do not ask the user to reconnect sources or report that their entire TinyCloud One meeting library is empty. Missing bodies, unsupported formats, denied permissions, expired sessions and unavailable hosts are distinct failures.
 
 The external agent's chosen model/provider receives the content it reads. TinyCloud One's agent-access setting controls its own service and does not revoke a separately approved CLI session. Local skill removal or profile logout also does not revoke a signed grant at the node.
 
@@ -94,4 +94,4 @@ npx --yes skills@{{INSTALLER_VERSION}} remove tinychat-retrieval --global --agen
 
 For OpenCode, remove the generated `tinychat-signin.js` loader from `$XDG_CONFIG_HOME/opencode/plugins` (or `$HOME/.config/opencode/plugins`) and restart the client when removing this integration.
 
-This removes the TinyChat skill for the chosen client installation. Codex and OpenCode share `~/.agents/skills` under this installer, so removing there affects both clients' discovery. Other skills and model/provider settings remain intact. To end access sooner, revoke it at https://account.tinycloud.xyz/delegations.
+This removes the TinyCloud One meetings skill for the chosen client installation. Codex and OpenCode share `~/.agents/skills` under this installer, so removing there affects both clients' discovery. Other skills and model/provider settings remain intact. To end access sooner, revoke it at https://account.tinycloud.xyz/delegations.
