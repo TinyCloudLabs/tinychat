@@ -57,8 +57,9 @@ export function plainAskText(input: unknown, max: number): string | undefined {
   return length >= 1 && length <= max ? text : undefined;
 }
 
-/** The question as compared for the one-hour cooldown: trimmed, whitespace collapsed, lowercase. */
-export const normalizedQuestion = (question: string): string => question.trim().replace(/\s+/g, " ").toLowerCase();
+/** The question as compared for the one-hour cooldown: lowercase, apostrophes and other punctuation dropped, whitespace collapsed. */
+export const normalizedQuestion = (question: string): string =>
+  question.toLowerCase().replace(/['’]/g, "").replace(/\p{P}/gu, " ").replace(/\s+/g, " ").trim();
 export const questionHash = (question: string): string => createHash("sha256").update(normalizedQuestion(question)).digest("hex");
 export const utcDay = (ms: number): string => new Date(ms).toISOString().slice(0, 10);
 
@@ -161,21 +162,35 @@ function writeFileAtomic(layout: BotLayout, file: string, content: string): void
   renameSync(fresh, file);
 }
 
-/** The owner's setting. Missing, unreadable or malformed reads as off: the safe reading, never an error. */
-export function readAsksEnabled(layout: BotLayout): boolean {
+function readAsksFile(layout: BotLayout): Record<string, unknown> {
   const file = asksFile(layout);
   try {
-    if (!lstatSync(file, { throwIfNoEntry: false })?.isFile()) return false;
+    if (!lstatSync(file, { throwIfNoEntry: false })?.isFile()) return {};
     const saved: unknown = JSON.parse(readFileSync(file, "utf8"));
-    return isRecord(saved) && saved.enabled === true;
+    return isRecord(saved) ? saved : {};
   } catch {
-    return false;
+    return {};
   }
+}
+
+/** The owner's setting. Missing, unreadable or malformed reads as off: the safe reading, never an error. */
+export const readAsksEnabled = (layout: BotLayout): boolean => readAsksFile(layout).enabled === true;
+
+/** Whether anything from outside the owner's own words has reached Main's conversation since it began. */
+export const readOutsideSeen = (layout: BotLayout): boolean => readAsksFile(layout).outsideSeen === true;
+
+function writeAsksFile(layout: BotLayout, enabled: boolean, outsideSeen: boolean): void {
+  writeFileAtomic(layout, asksFile(layout), JSON.stringify({ enabled, ...(outsideSeen ? { outsideSeen } : {}) }));
 }
 
 /** Saves the setting. Throws if it cannot be written. */
 export function writeAsksEnabled(layout: BotLayout, enabled: boolean): void {
-  writeFileAtomic(layout, asksFile(layout), JSON.stringify({ enabled }));
+  writeAsksFile(layout, enabled, readOutsideSeen(layout));
+}
+
+/** Records that outside text has reached the conversation. It stays until the bot's working state is reset. */
+export function writeOutsideSeen(layout: BotLayout): void {
+  writeAsksFile(layout, readAsksEnabled(layout), true);
 }
 
 function validStored(value: unknown): value is StoredAsk {
@@ -395,14 +410,24 @@ const chains = new Map<string, Promise<unknown>>();
 /**
  * Brings the supervisor's records and the gateway together: collects new questions, stores them, then gives the
  * gateway the setting, the counts and the cooldowns. One at a time per bot, so a push never overtakes the
- * collection that precedes it. `turn` starts a new turn on the gateway (resets its outside flag).
+ * collection that precedes it. Whether outside text has reached Main's conversation only ever turns on: by a web
+ * call the gateway saw, or by `turn.outside` (the turn began with another bot's message, or a bot's reply came
+ * back during it). It is kept in asks.json and given to the gateway with every push, so a restart of either side
+ * does not lose it; only a reset of the bot's working state (its data directory goes) clears it.
  */
 export function syncAsks(layout: BotLayout, gateway: AsksGateway, turn?: { outside: boolean }, now: () => number = Date.now): Promise<void> {
   const run = (chains.get(layout.botId) ?? Promise.resolve()).catch(() => {}).then(async () => {
     const store = new AskStore(layout, now);
-    const collected = parseNewAsks(await gateway.drain());
+    const drained = await gateway.drain();
+    const collected = parseNewAsks(drained);
     if (collected?.length) store.ingest(collected);
-    await gateway.push({ enabled: readAsksEnabled(layout), ...store.push(), ...(turn ? { turn } : {}) });
+    let outside = readOutsideSeen(layout);
+    if (!outside && (turn?.outside || (isRecord(drained) && drained.outside === true))) {
+      outside = true;
+      // A disk that cannot take the flag still lets the gateway have it for as long as it runs.
+      try { writeOutsideSeen(layout); } catch { /* the push below carries it */ }
+    }
+    await gateway.push({ enabled: readAsksEnabled(layout), ...store.push(), ...(turn || outside ? { turn: { outside } } : {}) });
   });
   chains.set(layout.botId, run);
   void run.catch(() => {}).finally(() => { if (chains.get(layout.botId) === run) chains.delete(layout.botId); });

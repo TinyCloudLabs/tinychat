@@ -270,16 +270,16 @@ describe("the supervisor and the gateway together", () => {
     expect((await call("Something else?")).isError).toBe(true);
   });
 
-  test("questions asked in a turn are marked from what the supervisor said about the turn", async () => {
+  test("questions asked in a turn are marked from what the supervisor said about the conversation, and a later turn does not clear it", async () => {
     const { adapter, call } = pair();
     writeAsksEnabled(layout(), true);
     await syncAsks(layout(), adapter, { outside: true }, () => clock);
     await call("From a relayed message?");
     await syncAsks(layout(), adapter, undefined, () => clock);
     await syncAsks(layout(), adapter, { outside: false }, () => clock);
-    await call("From the owner?");
+    await call("From the owner, in a later turn?");
     await syncAsks(layout(), adapter, undefined, () => clock);
-    expect(store().list().map(request => request.outside)).toEqual([true, false]);
+    expect(store().list().map(request => request.outside)).toEqual([true, true]);
   });
 
   test("the caps hold across collection: three open questions, then a fixed refusal", async () => {

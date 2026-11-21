@@ -8,7 +8,8 @@
 //   POST   /bots/<botId>/web/addresses {"urls"}  page addresses the owner typed, which the bot may then read
 //   PUT    /bots/<botId>/asks  {"enabled", "pending", "day", "today", "declined", "turn"?}  the owner's setting for questions and the
 //                         supervisor's counts (applies from the bot's next call)
-//   POST   /bots/<botId>/asks/drain              {"asks"}: the questions the bot has asked since the last drain
+//   POST   /bots/<botId>/asks/drain              {"asks", "outside"}: the questions the bot has asked since the last drain, and
+//                         whether outside text has reached its conversation (a web call)
 
 import { chmodSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -95,7 +96,7 @@ const control = Bun.serve({
     const asksMatch = /^\/bots\/([0-9a-f]{64})\/asks(\/drain)?$/.exec(pathname);
     if (asksMatch) {
       const asksBot = asksMatch[1]!;
-      if (asksMatch[2] && req.method === "POST") return Response.json({ asks: gateway.drainAsks(asksBot) });
+      if (asksMatch[2] && req.method === "POST") return Response.json({ asks: gateway.drainAsks(asksBot), outside: gateway.asksOutside(asksBot) });
       if (!asksMatch[2] && req.method === "PUT") {
         const push = parseAsksPush(await req.json().catch(() => null));
         if (!push) return new Response(null, { status: 400 });

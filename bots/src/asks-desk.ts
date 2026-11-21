@@ -41,7 +41,7 @@ interface Ledger {
   declined: Map<string, number>;
   /** Questions asked since the supervisor last collected. */
   outbox: NewAsk[];
-  /** Something from outside the owner's own words has reached Main in this turn. */
+  /** Something from outside the owner's own words has reached Main's conversation: asks from now on say so. */
   outside: boolean;
 }
 
@@ -69,7 +69,8 @@ export class AskDesk {
     ledger.day = push.day;
     ledger.today = push.today;
     ledger.declined = new Map(push.declined.map(entry => [entry.hash, entry.until]));
-    if (push.turn) ledger.outside = push.turn.outside;
+    // Only ever turned on here: a later push cannot say the conversation is clean again. The supervisor keeps the truth.
+    if (push.turn?.outside) ledger.outside = true;
   }
 
   /**
@@ -86,17 +87,28 @@ export class AskDesk {
     return asks;
   }
 
-  /** The bot's sandbox is gone: its setting goes (the supervisor gives it again at the next launch); uncollected questions stay. */
+  /**
+   * The bot's sandbox is gone: its setting and its outside flag go (the supervisor gives both again at the next
+   * launch, the flag from what it kept); uncollected questions stay.
+   */
   drop(botId: string): void {
     const ledger = this.#ledgers.get(botId);
     if (!ledger) return;
     if (ledger.outbox.length === 0) this.#ledgers.delete(botId);
-    else ledger.enabled = false;
+    else {
+      ledger.enabled = false;
+      ledger.outside = false;
+    }
   }
 
-  /** A web tool was called by the box: what Main asks in this turn may have been shaped by outside text. */
+  /** A web tool was called by the box: anything Main asks from now on may have been shaped by outside text. */
   markOutside(botId: string): void {
     this.#ledger(botId).outside = true;
+  }
+
+  /** Whether outside text has reached Main's conversation while this sandbox ran; the supervisor keeps it from here. */
+  outside(botId: string): boolean {
+    return this.#ledgers.get(botId)?.outside === true;
   }
 
   /** Whether the `app` tools are offered: only while the owner's setting is on. */

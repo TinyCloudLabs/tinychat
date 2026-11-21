@@ -683,7 +683,11 @@ export class Bot {
       reaching.add(targetKey);
       try {
         const reply = await messenger.dispatch(targetKey, args.text, signal);
-        if (!signal.aborted && !reply.isError) activity.messaged(targetKey);
+        if (!signal.aborted && !reply.isError) {
+          activity.messaged(targetKey);
+          // Another bot's words are now in Main's conversation: what it asks from here on says so.
+          await this.#launcher.syncAsks?.(this.layout, { outside: true }).catch(() => {});
+        }
         return reply;
       } finally {
         reaching.delete(targetKey);
@@ -816,8 +820,9 @@ export class Bot {
 
   async #stop(sandbox: Sandbox): Promise<StopFailure | undefined> {
     if (this.#sandbox === sandbox) this.#sandbox = undefined;
-    this.#stopping = sandbox
-      .stop()
+    // What the gateway holds about this sandbox (questions, whether outside text came in) is collected before it forgets it.
+    const collected = this.#launcher.syncAsks?.(this.layout).catch(() => {});
+    this.#stopping = (collected ? collected.then(() => sandbox.stop()) : sandbox.stop())
       .then(cause => cause || undefined)
       .catch(error => {
         log("stop_failed", this.layout.botId, { error: error instanceof Error ? error.message.slice(0, 300) : "unknown" });

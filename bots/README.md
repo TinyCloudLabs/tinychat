@@ -195,19 +195,26 @@ the `ask_owner` tool of the `app` MCP server.
   refused rather than shortened. It answers `{ id, state: "pending" }` at once and nothing else. Refusals are fixed
   sentences that never repeat what the model or the owner wrote.
 - Limits, applied by the gateway from counts the supervisor pushes: 3 open questions and 10 a day (UTC), for the
-  bot and for its owner; a question the owner said not now to is refused for an hour (compared after trimming,
-  collapsing whitespace and lowercasing). A question left unanswered for 24 hours expires.
+  bot and for its owner; a question the owner said not now to is refused for an hour (compared after dropping
+  punctuation, collapsing whitespace and lowercasing, so rewording by punctuation does not get past it; any other
+  question is still allowed). A question left unanswered for 24 hours expires.
 - The owner's setting is `/data/bots/<bot id>/asks.json` and the requests are `/data/bots/<bot id>/requests.json`, in
   the data directory beside `web.json`. Neither is under `state/`, which is what gets copied into a sandbox, and no
   sandbox mount is the data directory or inside it. Their only link to the box is the gateway. A missing or unreadable
   setting reads as off.
 - The gateway cannot call the supervisor (separate containers), so it holds a validated new question in memory until
-  the supervisor collects it over the control socket: `POST /bots/<id>/asks/drain` answers `{ asks }`, and
+  the supervisor collects it over the control socket: `POST /bots/<id>/asks/drain` answers `{ asks, outside }`, and
   `PUT /bots/<id>/asks` gives the setting, the counts and the declined hashes. The supervisor does this at sandbox
   launch, at the start and end of each message, when the owner lists requests and after each decision. A question the
   box asked that the supervisor has not collected is lost if the gateway restarts.
-- Each request has `outside`: true when the turn that asked it had used `search` or `fetch`, or began with a message
-  relayed from another bot. The gateway sets it; the supervisor's per-message push clears it.
+- Each request has `outside`: true when anything from outside the owner's own words has reached Main's conversation
+  before it was asked: a `search` or `fetch` call, a message relayed from another bot, or a reply from another bot to
+  Main's own message. It is a warning for the owner, not a block, and it is sticky: the conversation persists, so a page
+  read in one turn can steer a question in a later one. The supervisor keeps it as `outsideSeen` in `asks.json`, learns
+  of web calls when it collects from the gateway (`{ asks, outside }`, also just before a sandbox stops, while the
+  gateway still holds them) and gives it to the gateway with every push; the gateway only ever turns it on. Only
+  resetting the bot's working state, which removes its data directory, clears it. A web call the gateway saw and the
+  supervisor had not yet collected is lost if the gateway restarts before then.
 - Routes, Main only (any other bot: 404; a service without them answers 404, which the backend passes on):
   - `GET` and `PUT /v1/bots/main/asks`: `{ enabled }`.
   - `GET /v1/bots/main/requests`: `{ requests: [{ id, kind: "ask", state, askedAt, expiresAt, outside, resolvedAt?,

@@ -208,17 +208,30 @@ describe("the limits", () => {
 });
 
 describe("whether the turn took in outside text", () => {
-  test("a web call in the turn marks the question, and the next message's push clears it", async () => {
+  test("a web call marks the question, and no later push says the conversation is clean again", async () => {
     const gateway = setup();
     on(gateway);
     await ask(gateway, { question: "before" });
     await gateway.handle(BOT, rpc("/v1/mcp", "tools/call", { name: "search", arguments: { query: "anything" } }));
     await ask(gateway, { question: "after" });
     expect(gateway.drainAsks(BOT).map(entry => entry.outside)).toEqual([false, true]);
+    expect(gateway.asksOutside(BOT)).toBe(true);
 
     on(gateway, BOT, { turn: { outside: false } });
     await ask(gateway, { question: "next turn" });
-    expect(gateway.drainAsks(BOT).map(entry => entry.outside)).toEqual([false]);
+    expect(gateway.drainAsks(BOT).map(entry => entry.outside)).toEqual([true]);
+  });
+
+  test("the flag goes with the sandbox: the next one starts from what the supervisor gives", async () => {
+    const gateway = setup();
+    on(gateway);
+    await gateway.handle(BOT, rpc("/v1/mcp", "tools/call", { name: "search", arguments: { query: "anything" } }));
+    expect(gateway.asksOutside(BOT)).toBe(true);
+    gateway.dropToken(BOT);
+    gateway.setToken(BOT, TOKEN);
+    expect(gateway.asksOutside(BOT)).toBe(false);
+    on(gateway, BOT, { turn: { outside: true } });
+    expect(gateway.asksOutside(BOT)).toBe(true);
   });
 
   test("a turn that began with a relayed message from another bot is marked from its start", async () => {

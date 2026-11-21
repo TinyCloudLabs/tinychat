@@ -418,6 +418,11 @@ export class Gateway {
     return this.#asks.drain(botId);
   }
 
+  /** Whether outside text has reached Main's conversation while the bot's sandbox has run (the supervisor keeps it). */
+  asksOutside(botId: string): boolean {
+    return this.#asks.outside(botId);
+  }
+
   /** Whether a search provider key is configured at all. */
   get webAvailable(): boolean {
     return Boolean(this.#cfg.web?.key);
