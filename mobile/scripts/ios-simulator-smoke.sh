@@ -696,6 +696,10 @@ if [ "$capture_smoke" = 1 ]; then
     "capture duration matches the native file probe within 100 ms"
 fi
 check '.serviceWorkerDecision == "skip:capacitor" and .serviceWorkerRegistrations == 0' "the web app's PWA service worker is not registered in the shell"
+# TC-3568: the probe's own frame posts Preferences.set straight to the bridge; it must not land. "undefined" also passes
+# (WebKit kept the handler from the frame); "no-report" or an error means the frame never ran, which fails.
+check '.subframe.leaked == false and (.subframe.bridge == "object" or .subframe.bridge == "undefined")' \
+  "a frame inside the app cannot call native plugins"
 check '.locationAvailable == true and .locationStatus.platform == "ios"' "Location plugin (Debug-only TC-524 spike) registered and answering status()"
 check '.locationStatus.declared.foreground == true and .locationStatus.declared.background == true and .locationStatus.declared.backgroundExecution == true' \
   "Debug Info.plist has the location usage strings and the location background mode"

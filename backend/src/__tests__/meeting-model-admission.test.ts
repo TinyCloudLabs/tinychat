@@ -60,8 +60,8 @@ test("an unadmitted Kimi greeting answers without interpretation and offers only
   expect(enabled.requests[0].tools.map(tool => tool.function.name)).toEqual(["web_search"]);
 });
 
-test("an unadmitted model cannot dispatch a private tool it calls despite the offered tools", async () => {
-  const requests: Array<{ tools: Array<{ function: { name: string } }> }> = [];
+test("an unadmitted model cannot dispatch a private tool it calls despite the offered tools; it gets tool_not_found and answers", async () => {
+  const requests: Array<{ tools: Array<{ function: { name: string } }>; messages: Array<{ role: string; content: string }> }> = [];
   const privateUrls: string[] = [];
   const frames: string[] = [];
   const cfg = config((async (input, init) => {
@@ -71,15 +71,19 @@ test("an unadmitted model cannot dispatch a private tool it calls despite the of
       return Response.json({ result: { text: "Private meeting content must not be returned" } });
     }
     requests.push(JSON.parse(String(init?.body)));
+    if (requests.length > 1) return response("This model cannot read meetings; please choose a supported model.");
     const delta = { tool_calls: [{ index: 0, id: "private", function: { name: "tinycloud_read_meeting", arguments: '{"meetingRef":"meeting-a"}' } }] };
     return new Response(`data: ${JSON.stringify({ choices: [{ delta, finish_reason: "tool_calls" }] })}\n\ndata: [DONE]\n\n`);
   }) as typeof fetch);
   const result = await orchestrateToolCalling({ config: cfg, model: kimi,
     messages: [{ role: "user", content: "Read my meeting" }], entityId: "entity", write: frame => { frames.push(frame); } });
-  expect(result.errorCode).toBe("routing_mismatch");
-  expect(requests).toHaveLength(1);
-  expect(requests[0].tools.map(tool => tool.function.name)).toEqual(["web_search"]);
+  expect(result.errorCode).toBeUndefined();
+  expect(requests).toHaveLength(2);
+  expect(requests.map(request => request.tools.map(tool => tool.function.name))).toEqual([["web_search"], ["web_search"]]);
+  expect(requests[1].messages.filter(message => message.role === "tool").map(message => message.content))
+    .toEqual(['(tool "tinycloud_read_meeting" is not available in this conversation; answer without it)']);
   expect(privateUrls).toEqual([]);
+  expect(output(frames)).toBe("This model cannot read meetings; please choose a supported model.");
   expect(output(frames)).not.toContain("Private meeting content");
 });
 

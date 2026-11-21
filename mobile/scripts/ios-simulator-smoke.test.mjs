@@ -17,6 +17,7 @@ const goodProbe = {
   locationAvailable: true,
   locationStatus: { platform: "ios", declared: { foreground: true, background: true, backgroundExecution: true } },
   appLock: { deviceSecure: false },
+  subframe: { bridge: "object", leaked: false },
 };
 const earlyProbe = { href: "about:blank", platform: "ios", mounted: false };
 const aliveLine = { file: "liveness.log", pattern: "pid \\d+ alive" };
@@ -166,7 +167,7 @@ async function runSmoke({
   kernelStart = "missing", kernelChangedCall = 0, kernelAvailableCall = 0, kernelMissingCall = 0,
   psMissingStartCall = 0, psMissingEtimeCall = 0,
   gapFailSeconds = 0, trackProcesses = false, signalWhen = null,
-  timeout = 8, settle = 0, commandTimeoutMs = 90000,
+  timeout = 8, settle = 0, commandTimeoutMs = 90000, probe = goodProbe,
 }) {
   const dir = mkdtempSync(join(tmpdir(), "exo-smoke-test-"));
   const bin = join(dir, "bin");
@@ -237,7 +238,7 @@ PATH=\${PATH#*:} exec mv "$@"
     FAKE_HEARTBEAT_STALL_CALL: String(heartbeatStallCall),
     FAKE_HEARTBEAT_STALL_SECONDS: String(heartbeatStallSeconds),
     PATH: bin + ":" + process.env.PATH, HOME: dir, TMPDIR: tmp, FAKE_SIM_STATE: dir, FAKE_OUT: out,
-    FAKE_PROBE_MODE: mode, FAKE_GOOD_PROBE: JSON.stringify(goodProbe),
+    FAKE_PROBE_MODE: mode, FAKE_GOOD_PROBE: JSON.stringify(probe),
     FAKE_EARLY_PROBE: JSON.stringify(earlyProbe),
     FAKE_EXIT_WHEN: exitWhen ? JSON.stringify(exitWhen) : "",
     FAKE_CHANGE_WHEN: changeWhen ? JSON.stringify(changeWhen) : "",
@@ -355,6 +356,12 @@ describe("ios-simulator-smoke.sh", { concurrency: 24 }, () => {
     const { result, artifact } = await runSmoke({ mode: "late-mounted", timeout: 2 });
     assert.equal(result.status, 1, result.stdout + result.stderr);
     assert.match(artifact("summary.md"), /no EXO_SMOKE probe line within 2s/);
+  });
+
+  test("a frame that reached a native plugin fails the run (TC-3568)", async () => {
+    const { result, artifact } = await runSmoke({ mode: "mounted", probe: { ...goodProbe, subframe: { bridge: "object", leaked: true } }, timeout: 10 });
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    assert.match(artifact("summary.md"), /- \[ \] a frame inside the app cannot call native plugins/);
   });
 
   test("sanitized artifacts and CI output reject a marker-bearing non-timestamp prefix", async () => {

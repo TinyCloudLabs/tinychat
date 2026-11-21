@@ -34,9 +34,31 @@ export class BotsError extends Error {
   }
 }
 
+/** The service answered 404: the route is not deployed there. For the owner it is a plain failure, like any other. */
+export class BotsRouteMissing extends BotsError {
+  constructor() {
+    super("failed");
+    this.name = "BotsRouteMissing";
+  }
+}
+
+export type MainWebMode = "off" | "listed" | "any";
+
+/** Main's web access setting, as the service reports it. `hosts` is the owner's list, used only in `listed` mode. */
+export interface MainWebSettings {
+  mode: MainWebMode;
+  hosts: string[];
+  /** False when the service has no search provider, so no on-preset can work. */
+  available: boolean;
+  today: { searches: number; pages: number; blocked: number };
+}
+
 export interface BotsApi {
   getBotsStatus(signal?: AbortSignal): Promise<{ enabled: boolean }>;
   listMainMessages(signal?: AbortSignal): Promise<BotMessage[]>;
+  getMainWeb(signal?: AbortSignal): Promise<MainWebSettings>;
+  /** Resolves with the stored setting; throws BotsError("invalid") when the service refuses the list. */
+  setMainWeb(settings: Pick<MainWebSettings, "mode" | "hosts">, signal?: AbortSignal): Promise<MainWebSettings>;
   /** Resolves after the stream's `done` or `error` event; throws BotsError when the stream fails or ends without one. */
   sendToMain(text: string, onEvent: (event: MainEvent) => void, signal?: AbortSignal): Promise<void>;
 }
@@ -136,6 +158,21 @@ function toMessages(payload: unknown): BotMessage[] {
   });
 }
 
+const isCount = (value: unknown): value is number => typeof value === "number" && Number.isInteger(value) && value >= 0;
+
+function toWebSettings(payload: unknown): MainWebSettings {
+  const value = fields(payload);
+  const { mode, hosts, available } = value;
+  const today = fields(value.today);
+  if (
+    (mode !== "off" && mode !== "listed" && mode !== "any") ||
+    !Array.isArray(hosts) || !hosts.every((host): host is string => typeof host === "string") ||
+    typeof available !== "boolean" ||
+    !isCount(today.searches) || !isCount(today.pages) || !isCount(today.blocked)
+  ) throw new BotsError("failed");
+  return { mode, hosts: [...hosts], available, today: { searches: today.searches, pages: today.pages, blocked: today.blocked } };
+}
+
 export interface BotsApiOptions {
   baseUrl: string;
   getToken: () => string | null;
@@ -145,7 +182,7 @@ export interface BotsApiOptions {
 export function createBotsApi({ baseUrl, getToken, fetch: fetchImpl = (input, init) => globalThis.fetch(input, init) }: BotsApiOptions): BotsApi {
   const base = baseUrl.replace(/\/$/, "");
 
-  async function request(method: "GET" | "POST", path: string, signal?: AbortSignal, body?: string): Promise<Response> {
+  async function request(method: "GET" | "POST" | "PUT", path: string, signal?: AbortSignal, body?: string): Promise<Response> {
     const token = getToken();
     if (!token) throw new BotsError("signed_out");
     let response: Response;
@@ -166,6 +203,7 @@ export function createBotsApi({ baseUrl, getToken, fetch: fetchImpl = (input, in
     }
     if (response.status === 401) throw new BotsError("signed_out");
     if (response.status === 400) throw new BotsError("invalid");
+    if (response.status === 404) throw new BotsRouteMissing();
     if (!response.ok) throw new BotsError("failed");
     return response;
   }
@@ -187,6 +225,14 @@ export function createBotsApi({ baseUrl, getToken, fetch: fetchImpl = (input, in
 
     async listMainMessages(signal) {
       return toMessages(await readJson(await request("GET", "/api/bots/main/messages", signal)));
+    },
+
+    async getMainWeb(signal) {
+      return toWebSettings(await readJson(await request("GET", "/api/bots/main/web", signal)));
+    },
+
+    async setMainWeb({ mode, hosts }, signal) {
+      return toWebSettings(await readJson(await request("PUT", "/api/bots/main/web", signal, JSON.stringify({ mode, hosts }))));
     },
 
     async sendToMain(text, onEvent, signal) {
@@ -229,4 +275,4 @@ export const botsApi: BotsApi = createBotsApi({
   getToken: () => new SessionStore(SESSION_STORE_KEY).getToken(),
 });
 
-export const { getBotsStatus, listMainMessages, sendToMain } = botsApi;
+export const { getBotsStatus, listMainMessages, getMainWeb, setMainWeb, sendToMain } = botsApi;

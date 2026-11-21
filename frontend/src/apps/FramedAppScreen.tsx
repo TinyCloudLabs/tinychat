@@ -14,16 +14,18 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { openKeyFailureOf } from "../lib/authErrors";
+import { isNativeOpenKeySession } from "../lib/openkeyNative";
 import { useResolvedTheme } from "../lib/theme";
 import { EmbedHost, SpaceNotHostedError, type EmbedTheme } from "./embedHost";
 import { trackEmbed } from "./liveEmbeds";
-import { framedApp, framesAppsHere, frameUrl, ONE_APPS, type FramedOneApp } from "./registry";
+import { framedApp, framesAppHere, frameUrl, ONE_APPS, type FramedOneApp } from "./registry";
 import { stepUpForApp, type StepUpConnect } from "./stepUp";
 import {
   ASK_CLOSE,
   ASK_CONTINUE,
   ASK_NOT_NOW,
   askBody,
+  askNotInApp,
   askTitle,
   COURIER_MISSING,
   courierMissing,
@@ -73,7 +75,7 @@ export interface FramedAppScreenProps {
 export function FramedAppScreen({ appId, tcw, fallback, connect }: FramedAppScreenProps) {
   const app = framedApp(appId);
   const session = tcw?.session();
-  if (!app || !tcw || !session || !framesAppsHere(window.location.origin)) return <>{fallback}</>;
+  if (!app || !tcw || !session || !framesAppHere(app, window.location.origin)) return <>{fallback}</>;
   return <FramedApp key={`${app.id}:${session.address}:${session.chainId}:${session.sessionKey}`} app={app} tcw={tcw} address={session.address} chainId={session.chainId} connect={connect} />;
 }
 
@@ -97,7 +99,7 @@ function FramedApp({ app, tcw, address, chainId, connect }: FramedAppProps) {
   const src = useMemo(() => frameUrl(app), [app]);
   const hostRef = useRef<EmbedHost | null>(null);
 
-  // One host per mount: its close revokes for good, so a remount (StrictMode included) starts a fresh one.
+  // One host per mount: its close ends the frame's grant for good, so a remount (StrictMode included) starts a fresh one.
   useEffect(() => {
     const host = new EmbedHost({
       app,
@@ -121,10 +123,6 @@ function FramedApp({ app, tcw, address, chainId, connect }: FramedAppProps) {
           expiresAt: new Date(delegation.expiry).getTime(),
           prompted,
         };
-      },
-      revoke: async (cid) => {
-        const result = await tcw.revokeDelegation(cid);
-        if (!result.ok) throw new Error(`one_apps_revoke_failed:${cid}`);
       },
       stepUp: (scopes, entries, missingSpaces) => askThenStepUp(scopes, entries, missingSpaces),
       missing: (spaces, none) => {
@@ -150,6 +148,12 @@ function FramedApp({ app, tcw, address, chainId, connect }: FramedAppProps) {
   useEffect(() => { hostRef.current?.setTheme(theme); }, [theme]);
 
   function askThenStepUp(scopes: ScopeId[], entries: PermissionEntry[], missingSpaces: string[]): Promise<boolean> {
+    // The phone app's session never signs (OpenKey's canonical key stays out of the app): no OpenKey step-up there.
+    if (isNativeOpenKeySession()) {
+      setMissing(null);
+      setFailedLine(askNotInApp(app.name));
+      return Promise.resolve(false);
+    }
     return new Promise<boolean>((resolve) => {
       let settled = false;
       setFailedLine(null);

@@ -51,3 +51,6 @@ jobs:
 
       - name: Release script tests
         run: node --test scripts/__tests__/release.test.mjs
+
+      - name: Release script tests (also-host check)
+        run: node --test scripts/__tests__/release-also-host.test.mjs

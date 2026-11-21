@@ -157,6 +157,28 @@ The gateway, per bot socket:
 
 OMP also probes `GET /models` and `GET /props` without a token at startup; the gateway refuses them and logs it.
 
+### Web access
+
+Main can use the web only when its owner turns it on: in Main's chat, tap Web access and choose `off` (the default),
+`listed` (only the owner's sites, subdomains included) or `any` public site. Turning it on shows this warning first:
+
+> A web page can hide instructions meant for an AI. Main might follow them and put things you've told it into a search or a web address. Searches go to our search provider, Tavily. Our server fetches pages, so the sites see our server, not you. Don't open or paste links Main gives you unless you trust them.
+>
+> This setting lets Main open pages you've never seen, and any of them could try this. "Only sites you list" is safer, but anyone who can post on those sites could still try it.
+
+The setting is saved by the supervisor in `/data/bots/<bot id>/web.json` and given to the gateway before each message;
+the gateway applies it on every call. A missing or unreadable file reads as `off`.
+
+- Main's OMP has one MCP server, `web`: the gateway's `POST /v1/mcp` on the egress socket (bot token required). Its
+  tools, `search` and `fetch`, reach OMP as `mcp__web_search` and `mcp__web_fetch`; OMP's own web tools are off.
+- A search goes to the search provider (Tavily Search; `BOTS_TEST_WEB_URL` is a loopback mock for tests). Without
+  `TAVILY_API_KEY` a search answers "isn't available".
+- A page is read by the `bots-fetch` container (`src/fetch-main.ts`, `POST /fetch {"url", "hosts"}`), which reads pages
+  without a key (`BOTS_TEST_FETCH_URL` is a loopback mock for tests). It cannot read PDFs or pages that need JavaScript.
+- Page HTML becomes plain text (`src/page-text.ts`) before Main sees it.
+- Daily budgets per bot and for all bots, and the call timeout, are set with the `BOTS_WEB_*` variables below.
+- The log and the saved counts hold counts by tool and outcome only.
+
 ### Saved state
 
 The supervisor saves each bot's tmpfs to `/data/bots/<bot id>/state`: when a turn settles, with the sandbox paused
@@ -246,10 +268,14 @@ Gateway (`bots-gateway`):
 | `BOTS_UPSTREAM_CONNECT_TIMEOUT_MS` / `BOTS_UPSTREAM_TOTAL_TIMEOUT_MS` | `30000` / `600000` | |
 | `BOTS_BODY_TIMEOUT_MS` | `30000` | request body deadline |
 | `BOTS_BUDGET_FILE` | `/var/lib/bots-gateway/budget.json` | on the `bot-budget` volume |
+| `TAVILY_API_KEY` | empty | Main's web access: the search provider's key; empty refuses every web call as unavailable |
+| `BOTS_WEB_BOT_DAILY_SEARCHES` / `BOTS_WEB_BOT_DAILY_PAGES` | `100` / `300` | per bot, UTC day |
+| `BOTS_WEB_GLOBAL_DAILY_SEARCHES` / `BOTS_WEB_GLOBAL_DAILY_PAGES` | `2000` / `6000` | all bots, UTC day |
+| `BOTS_WEB_TIMEOUT_MS` | `20000` | per provider call |
 | `BOTS_OWNERS_FILE` | `owners.json` beside the budget file | which owner each bot belongs to |
 
-`BOTS_TEST_UPSTREAM_URL` exists only for the local mock smoke: it must be a loopback `http://` URL, and the compose
-file never passes it.
+`BOTS_TEST_UPSTREAM_URL` and `BOTS_TEST_WEB_URL` exist only for local mocks: each must be a loopback `http://` URL, and
+the compose file never passes either.
 
 ## Pinning
 
@@ -307,9 +333,18 @@ It builds `bots/` (`linux/amd64`) as `ghcr.io/tinycloudlabs/tinychat-bots:<sha>`
 (`infra/phala-ingress`) as `ghcr.io/tinycloudlabs/tinychat-backend:ingress-bots-<sha>`, writes both pushed digests
 over `BOTS_IMAGE_DIGEST` and `INGRESS_IMAGE_DIGEST` in a copy of `docker-compose.phala.yml`, and deploys that copy
 with the complete encrypted env set below. It checks the CVM runs the backend's pinned dstack OS image before and
-after, syncs `allowed_envs`, and probes `https://<BOTS_INGRESS_DOMAIN>/healthz` for `ok`. The job summary lists the
+after, syncs `allowed_envs`, and probes `/healthz` for `ok` through the CVM's TLS-passthrough host. The job summary lists the
 commit, both digests, the rendered compose's sha256 and the env names. To roll back, run it with an earlier SHA;
 the `bot-data` and `bot-budget` volumes are kept.
+
+The bots service is live when this check passes. Run it the same way outside the workflow:
+
+```bash
+node .github/scripts/bots-healthz.mjs <APP_ID>-443s.<gateway> bots.tinycloud.xyz
+```
+
+`<APP_ID>-443s.<gateway>` is the CVM's TLS-passthrough host (the backend's `BOTS_SERVICE_CONNECT_HOST`), and the
+certificate is checked against `bots.tinycloud.xyz`. The public name bots.tinycloud.xyz does not route; never probe it.
 
 Its configuration lives in the `production-bots` GitHub environment:
 
@@ -325,6 +360,7 @@ Its configuration lives in the `production-bots` GitHub environment:
 | `BOTS_ADMISSION_CONTROL_KEY` | derived | control socket key from the deploy workflow |
 | `BACKEND_ORIGIN` | variable | set from `TINYCHAT_BACKEND_URL` in the deployment environment, default `https://api.tinycloud.chat` |
 | `BOTS_REDPILL_API_KEY` | secret | the dedicated RedPill key, written to the CVM as `REDPILL_API_KEY` |
+| `BOTS_TAVILY_API_KEY` | secret | optional; the search provider key for Main's web access, written to the CVM as the gateway's `TAVILY_API_KEY` |
 | `CLOUDFLARE_API_TOKEN`, `CERTBOT_EMAIL` | secrets | the ingress certificate |
 
 `PHALA_GATEWAY_CNAME` is read from the CVM. No other secrets belong in this CVM.

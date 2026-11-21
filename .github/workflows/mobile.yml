@@ -3,61 +3,27 @@ name: Mobile (TinyCloud One)
 on:
   workflow_dispatch:
   pull_request:
-    paths:
-      - "mobile/**"
-      - "frontend/src/lib/voiceNotes/**"
-      - "frontend/src/chat/VoiceNotesSection.tsx"
-      - "frontend/src/lib/health/**"
-      - "frontend/src/chat/HealthSpikeSection.tsx"
-      - "frontend/src/lib/location/**"
-      - "frontend/src/chat/LocationSpikeSection.tsx"
-      # The phone app's shell, capture surfaces and theme (TC-761).
-      - "frontend/src/capture/**"
-      - "frontend/src/shell/**"
-      - "frontend/src/chat/QuickVoiceNote.tsx"
-      - "frontend/src/chat/OfflineVoiceNotes.tsx"
-      - "frontend/src/chat/PendingVoiceNotesSaver.tsx"
-      - "frontend/src/lib/platform.ts"
-      # The phone apps' WebView origins: the config, these two and mobile/webview-origin.test.ts must agree (TC-3045).
-      - "frontend/src/lib/nativeOrigins.ts"
-      - "backend/src/cors-origins.ts"
-      - "frontend/src/lib/theme.ts"
-      - "frontend/src/lib/sizeClass.ts"
-      - "frontend/index.html"
-      - "frontend/src/index.css"
-      # What the phone bundle is built from besides its source: dependency pins and the workspace packages it imports,
-      # so an SDK repin builds both apps on its own PR.
-      - "package.json"
-      - "bun.lock"
-      - "frontend/package.json"
-      - "packages/**"
-      - ".github/workflows/mobile.yml"
-      - ".github/workflows/ios-build.yml"
-      - ".github/workflows/ios-testflight.yml"
-      - "scripts/release/ios-*"
+  merge_group:
   push:
-    branches: [main]
-    paths:
-      - "mobile/**"
-      - "frontend/**"
-      - "packages/**"
-      - ".github/workflows/mobile.yml"
-      - "backend/src/cors-origins.ts"
-      - ".github/workflows/ios-build.yml"
-      - ".github/workflows/ios-testflight.yml"
-      - "scripts/release/ios-*"
+    branches: [main, "release/**"]
+    tags: ["exo-desktop@*", "@tinychat/frontend@*", "@tinychat/backend@*"]
 
-# A newer push cancels the older runs of the same PR or feature branch; main, release/* and tag runs are never cancelled and never share a group, so none is dropped while pending either.
+# Only superseded PR runs share a group; main, merge queue and release runs are never dropped.
 concurrency:
-  group: ${{ github.workflow }}-${{ (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/') || startsWith(github.ref, 'refs/tags/')) && github.run_id || github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' || (github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/heads/release/') && !startsWith(github.ref, 'refs/tags/')) }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
 
 jobs:
+  changes:
+    uses: ./.github/workflows/native-changes.yml
+
   android:
     name: Android (debug APK)
+    needs: changes
+    if: needs.changes.outputs.native == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -108,6 +74,8 @@ jobs:
   # The smoke script's own tests drive it with fake xcrun/ps/sysctl binaries, so they run on Linux.
   ios-smoke-script:
     name: iOS smoke script tests (fakes)
+    needs: changes
+    if: needs.changes.outputs.native == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -122,6 +90,8 @@ jobs:
 
   ios:
     name: iOS (simulator build and smoke test)
+    needs: changes
+    if: needs.changes.outputs.native == 'true'
     # Same pin as the iOS release build (ios-build.yml) and desktop: macos-26 runner, Xcode 26.6.
     runs-on: macos-26
     timeout-minutes: 45
@@ -277,6 +247,35 @@ jobs:
   # and upload in that job.
   ios-release:
     name: iOS release
+    needs: changes
+    if: needs.changes.outputs.native == 'true'
     uses: ./.github/workflows/ios-build.yml
     with:
       build-number: ${{ github.run_number }}
+
+  mobile-check:
+    name: Mobile checks
+    if: always()
+    needs: [changes, android, ios-smoke-script, ios, ios-release]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require successful builds or an intentional non-native PR skip
+        env:
+          EVENT: ${{ github.event_name }}
+          CHANGES: ${{ needs.changes.result }}
+          NATIVE: ${{ needs.changes.outputs.native }}
+          ANDROID: ${{ needs.android.result }}
+          SMOKE_SCRIPT: ${{ needs.ios-smoke-script.result }}
+          IOS: ${{ needs.ios.result }}
+          IOS_RELEASE: ${{ needs.ios-release.result }}
+        run: |
+          [[ "$CHANGES" == success ]]
+          case "$NATIVE:$EVENT" in
+            true:*) expected=success ;;
+            false:pull_request) expected=skipped ;;
+            *) exit 1 ;;
+          esac
+          for result in "$ANDROID" "$SMOKE_SCRIPT" "$IOS" "$IOS_RELEASE"; do
+            [[ "$result" == "$expected" ]] || exit 1
+          done

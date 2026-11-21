@@ -15,6 +15,7 @@ import { AboutRedirect, RootRoute } from "./landing/RootRoute";
 import { FeedCardAlias } from "./feed/FeedCardAlias";
 import { FEED_ALIAS_PATH } from "./shell/routes";
 import { registerWebCaptureEngine } from "./lib/voiceNotes/web/registerWebEngine";
+import { registerTinyCloudWebMcp } from "./lib/webMcp";
 import { appPlatform } from "./lib/platform";
 import { setIOSDynamicTypeScale } from "./lib/dynamicType";
 import { setupPwa } from "./lib/pwa";
@@ -85,6 +86,7 @@ setupPwa({
 });
 
 registerWebCaptureEngine();
+registerTinyCloudWebMcp();
 
 // tinycloud.chat and home.tinycloud.xyz serve this same build; their visitors move to tinycloud.one (path, query and
 // #hash kept) once that origin serves this build, unless recordings or answers saved only in this origin's storage would

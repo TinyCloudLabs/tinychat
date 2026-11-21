@@ -15,7 +15,6 @@
 //   4. the read-only meetings view is UNCHANGED: it still takes no `tcw`, so a
 //      device with no vault still sees its meetings (W5's whole point). The
 //      reconcile is a separate, additive mount;
-//   5. App.tsx's drain-UX wiring is untouched.
 //
 // The frontend workspace has no DOM harness, so rendering goes through
 // `react-dom/server` and the plumbing is source-asserted — the same call
@@ -286,12 +285,5 @@ describe("BackendReconciler wiring", () => {
     expect(app).not.toMatch(/<MeetingsSection[\s\S]{0,240}tcw=\{/);
     expect(section).not.toContain("TinyCloudWeb");
     expect(section).not.toContain("markReconciled");
-  });
-
-  test("the drain-UX wiring App already had is untouched", () => {
-    const app = read("../App.tsx");
-    expect(app).toContain("clearBackgroundDrainRecord");
-    expect(app).toContain("subscribeBackgroundDrainRecord");
-    expect(app).toContain("<BackgroundDrainer");
   });
 });

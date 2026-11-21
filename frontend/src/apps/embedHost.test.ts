@@ -16,7 +16,6 @@ function setup(options: { held?: (entry: PermissionEntry) => boolean; prompted?:
   const frame = { name: "frame" };
   const posted: HostMessage[] = [];
   const delegated: Array<{ audience: string; entries: PermissionEntry[] }> = [];
-  const revoked: string[] = [];
   const stepUps: Array<{ scopes: string[]; entries: PermissionEntry[]; missing: string[] }> = [];
   const missing: Array<{ spaces: string[]; none: boolean }> = [];
   const state = {
@@ -37,7 +36,6 @@ function setup(options: { held?: (entry: PermissionEntry) => boolean; prompted?:
       next += 1;
       return { spaceId: entries[0].space!, cid: `cid-${next}`, delegation: `wire-${next}`, expiresAt: 1_000 + next, prompted: options.prompted ?? false };
     },
-    revoke: async (cid) => { revoked.push(cid); },
     stepUp: async (scopes, entries, missingSpaces) => {
       stepUps.push({ scopes, entries, missing: missingSpaces });
       if (state.stepUp) {
@@ -52,7 +50,7 @@ function setup(options: { held?: (entry: PermissionEntry) => boolean; prompted?:
   const host = new EmbedHost(deps);
   const send = (data: unknown, overrides: { origin?: string; source?: unknown } = {}) =>
     host.handle({ origin: overrides.origin ?? deps.app.origin, source: overrides.source ?? frame, data });
-  return { host, frame, posted, delegated, revoked, stepUps, missing, state, send };
+  return { host, frame, posted, delegated, stepUps, missing, state, send };
 }
 
 const hello = (overrides: Record<string, unknown> = {}) => ({ v: 1, type: "tc-embed/hello", appId: app.id, sessionDid: SESSION_DID, nonce: "nonce-hello-000001", ...overrides });
@@ -122,12 +120,11 @@ describe("EmbedHost: silent grants", () => {
     expect(run.delegated.flatMap(({ entries }) => entries)).toHaveLength(ceiling);
   });
 
-  test("a repeat hello while mounted with unchanged scope re-grants silently and revokes the old grant", async () => {
+  test("a repeat hello while mounted with unchanged scope re-grants silently", async () => {
     const run = setup();
     await run.send(hello());
     await run.send(hello({ nonce: "nonce-hello-000002" }));
     expect(grants(run.posted).map((message) => message.nonce)).toEqual(["nonce-hello-000001", "nonce-hello-000002"]);
-    expect(run.revoked).toEqual(["cid-1"]);
   });
 
   test("no re-grant after the scope changed", async () => {
@@ -139,32 +136,64 @@ describe("EmbedHost: silent grants", () => {
     expect(run.delegated).toHaveLength(1);
   });
 
-  test("no re-grant after unmount; unmount revokes the live grant and tells the child", async () => {
+  test("no re-grant after unmount; unmount tells the child", async () => {
     const run = setup();
     await run.send(hello());
     await run.host.close();
-    expect(run.revoked).toEqual(["cid-1"]);
     expect(run.posted.at(-1)).toEqual({ v: 1, type: "tc-embed/revoke" });
     await run.send(hello({ nonce: "nonce-hello-000002" }));
     expect(grants(run.posted)).toHaveLength(1);
     expect(run.delegated).toHaveLength(1);
   });
 
-  test("nothing is sent when the SDK had to prompt, and what it made is revoked", async () => {
+  test("nothing is sent when the SDK had to prompt", async () => {
     const run = setup({ prompted: true });
     await run.send(hello());
     expect(run.posted).toEqual([]);
-    expect(run.revoked).toEqual(["cid-1"]);
   });
 
-  test("sign-out revokes every framed app's grant", async () => {
+  test("sign-out tells every framed app to drop its key", async () => {
     const run = setup();
     await run.send(hello());
     const untrack = trackEmbed(() => run.host.close());
     await closeAllEmbeds();
     untrack();
-    expect(run.revoked).toEqual(["cid-1"]);
     expect(run.posted.at(-1)).toEqual({ v: 1, type: "tc-embed/revoke" });
+  });
+
+  test("closing a frame posts tc-embed/revoke to the child and calls no other dep, so no OpenKey frame opens (TC-3483)", async () => {
+    const frame = { name: "frame" };
+    const posted: HostMessage[] = [];
+    const calls: string[] = [];
+    let next = 0;
+    const base: EmbedHostDeps = {
+      app,
+      owner,
+      frameWindow: () => frame,
+      post: (message) => posted.push(message),
+      holds: () => true,
+      delegate: async (_audience, entries) => {
+        next += 1;
+        return { spaceId: entries[0].space!, cid: `cid-${next}`, delegation: `wire-${next}`, expiresAt: 1_000 + next, prompted: false };
+      },
+      stepUp: async () => true,
+      missing: () => {},
+      theme: () => "dark",
+    };
+    // Any function dep One wires (delegate, stepUp, or a revoke that signs with the owner's wallet) is recorded.
+    const deps = new Proxy(base, {
+      get(target, prop, receiver) {
+        const value = Reflect.get(target, prop, receiver);
+        return typeof value === "function" ? (...args: unknown[]) => { calls.push(String(prop)); return value(...args); } : value;
+      },
+    });
+    const host = new EmbedHost(deps);
+    await host.handle({ origin: app.origin, source: frame, data: hello() });
+    calls.length = 0;
+    const postedBefore = posted.length;
+    await host.close();
+    expect(posted.slice(postedBefore)).toEqual([{ v: 1, type: "tc-embed/revoke" }]);
+    expect(calls.filter((name) => name !== "post" && name !== "frameWindow")).toEqual([]);
   });
 });
 
@@ -195,7 +224,7 @@ describe("EmbedHost: requests", () => {
     expect(last.type === "tc-embed/grant" && last.grants.map((grant) => grant.spaceId)).toEqual([space("applications"), space("public"), space("secrets")]);
   });
 
-  test("an approved request re-grants the space's full scope (old + new) as epoch ms, and revokes the superseded cid", async () => {
+  test("an approved request re-grants the space's full scope (old + new) as epoch ms", async () => {
     const run = setup({ held: (entry) => entry.space === space("applications") && entry.service === "tinycloud.kv" });
     await run.send(hello());
     expect(run.delegated[0].entries.map((entry) => entry.service)).toEqual(["tinycloud.kv"]);
@@ -205,7 +234,6 @@ describe("EmbedHost: requests", () => {
     expect(applications.entries.map((entry) => entry.service).sort()).toEqual(["tinycloud.kv", "tinycloud.sql"]);
     const last = grants(run.posted).at(-1)!;
     expect(last.type === "tc-embed/grant" && last.grants).toEqual([{ spaceId: space("applications"), delegation: "wire-2", cid: "cid-2" }]);
-    expect(run.revoked).toEqual(["cid-1"]);
   });
 
   test("expiresAt is epoch milliseconds even when the grant is empty", async () => {
@@ -233,7 +261,7 @@ describe("EmbedHost: requests", () => {
 });
 
 describe("EmbedHost: spaces that aren't set up", () => {
-  // Courier opens in a new tab (framed: false); the host's behaviour for its entry is what this block checks.
+  // Courier is framed inside One; the host's behaviour for its entry is what this block checks.
   const courier = oneApp("xyz.tinycloud.courier");
   if (courier?.kind !== "framed") throw new Error("Courier is a TinyCloud web app");
   const agentsRead = { service: "tinycloud.kv", space: "agents", path: "xyz.tinycloud.courier/", actions: ["get"] };
@@ -276,7 +304,7 @@ describe("EmbedHost: spaces that aren't set up", () => {
     expect(deliveredSpaces(run.posted).filter((spaceId) => spaceId === space("public"))).toEqual([]);
   });
 
-  test("a space set up since the silent grant is checked again, and its probe delegation revoked", async () => {
+  test("a space set up since the silent grant is checked again", async () => {
     const run = setup({ held: (entry) => entry.space === space("applications") || entry.space === space("public"), unhosted: ["public"] });
     await run.send(hello());
     run.state.unhosted.clear();
@@ -285,8 +313,6 @@ describe("EmbedHost: spaces that aren't set up", () => {
     expect(run.missing).toEqual([]);
     const last = grants(run.posted).at(-1)!;
     expect(last.type === "tc-embed/grant" && last.grants.map((grant) => grant.spaceId)).toEqual([space("applications"), space("public")]);
-    // cid-1: hello's applications; cid-2: the public probe; cid-3/4: the request's grant.
-    expect(run.revoked).toEqual(["cid-2", "cid-1"]);
   });
 
   test("a space found missing only after the approval is left out and named then", async () => {

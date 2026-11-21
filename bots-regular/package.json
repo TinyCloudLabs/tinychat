@@ -1,0 +1,20 @@
+{
+  "name": "@tinychat/bots-regular",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "service": "bun src/main.ts",
+    "gateway": "bun src/gateway-main.ts",
+    "build": "tsc --noEmit",
+    "test": "bun test src",
+    "real-cluster-check": "bun scripts/real-cluster-check.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "1.4.4",
+    "typescript": "5.9.3"
+  },
+  "dependencies": {
+    "@getenergy/gke-sandboxes": "0.3.0"
+  }
+}
