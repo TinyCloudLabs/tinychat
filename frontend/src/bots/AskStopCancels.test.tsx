@@ -48,7 +48,7 @@ const pending = (id: string): AskRequest => ({
 function service() {
   const state = {
     enabled: true,
-    requests: [pending("r1"), pending("r2")],
+    requests: [pending("r1"), pending("r2"), pending("r3")],
     sends: [] as string[],
     asks: [] as boolean[],
     lists: 0,
@@ -82,7 +82,9 @@ function service() {
       const request = state.requests.find((candidate) => candidate.id === id);
       if (!id || !request?.undelivered) throw new BotsNoReply();
       state.sends.push(id);
-      state.requests = state.requests.map((candidate) => candidate.id === id ? { ...candidate, undelivered: false } : candidate);
+      // One switch-off is one message: delivering any stopped request delivers the whole batch.
+      state.requests = state.requests.map((candidate) => candidate.id === id || (request.state === "stopped" && candidate.state === "stopped")
+        ? { ...candidate, undelivered: false } : candidate);
       onEvent({ type: "done", messageId: `m${state.sends.length}` });
     },
   };
@@ -105,19 +107,19 @@ async function render(api: BotsApi) {
   await flush();
 }
 
-test("Stop Main from asking on Home removes the cards now, sends Main each stopped request once, and keeps the confirmation", async () => {
+test("Stop Main from asking on Home removes the cards now and sends Main ONE message for all stopped requests, once, and keeps the confirmation", async () => {
   const { api, state } = service();
   await render(api);
-  expect(cards()).toHaveLength(2);
+  expect(cards()).toHaveLength(3);
   await click(button("Stop Main from asking"));
   expect(state.asks).toEqual([false]);
   expect(cards()).toHaveLength(0);
   expect(document.querySelector("[data-ask-stopped]")!.textContent).toBe(ASK_STRINGS.stopped);
-  expect([...state.sends].sort()).toEqual(["r1", "r2"]);
+  expect([...state.sends]).toEqual(["r1"]);
   // Opening and closing the chat does not send again, and the confirmation stays.
   await openChat();
   await click(button("Close"));
-  expect([...state.sends].sort()).toEqual(["r1", "r2"]);
+  expect([...state.sends]).toEqual(["r1"]);
   expect(document.querySelector("[data-ask-stopped]")).not.toBeNull();
 });
 
@@ -135,24 +137,47 @@ test("turning the setting off in the chat does the same, and turning it back on 
   const { api, state } = service();
   await render(api);
   await openChat();
-  expect(cards()).toHaveLength(2);
+  expect(cards()).toHaveLength(3);
   const toggle = () => document.querySelector<HTMLInputElement>("[data-bots-asks] input")!;
   expect(toggle().checked).toBe(true);
   await click(toggle());
   expect(state.asks).toEqual([false]);
   expect(cards()).toHaveLength(0);
-  expect([...state.sends].sort()).toEqual(["r1", "r2"]);
+  expect([...state.sends]).toEqual(["r1"]);
   expect(chatLines("stopped")).toEqual([STOPPED_LINE]);
 
   await click(toggle());
   expect(state.asks).toEqual([false, true]);
   expect(cards()).toHaveLength(0);
   expect(document.querySelector("[data-ask-stopped]")).toBeNull();
-  expect([...state.sends].sort()).toEqual(["r1", "r2"]);
+  expect([...state.sends]).toEqual(["r1"]);
   expect(chatLines("stopped")).toEqual([STOPPED_LINE]);
   expect(chatLines("declined")).toEqual([]);
   await click(button("Close"));
   expect(document.querySelector("[data-home-asks]")).toBeNull();
+});
+
+test("a second switch-off later is a new batch: it sends again, once, and adds its own line", async () => {
+  const { api, state } = service();
+  await render(api);
+  await openChat();
+  const toggle = () => document.querySelector<HTMLInputElement>("[data-bots-asks] input")!;
+  await click(toggle());
+  expect(state.sends).toEqual(["r1"]);
+  await click(toggle());
+  expect(state.asks).toEqual([false, true]);
+  state.requests = [...state.requests, pending("r4"), pending("r5")];
+  await click(button("Close"));
+  await openChat();
+  expect(cards()).toHaveLength(2);
+  await click(toggle());
+  expect(state.asks).toEqual([false, true, false]);
+  expect(cards()).toHaveLength(0);
+  expect(state.sends).toEqual(["r1", "r4"]);
+  expect(chatLines("stopped")).toEqual([STOPPED_LINE, STOPPED_LINE]);
+  await click(button("Close"));
+  await openChat();
+  expect(state.sends).toEqual(["r1", "r4"]);
 });
 
 test("no question text from before the stop is shown after it, even when a read that began earlier lands late", async () => {
@@ -169,10 +194,10 @@ test("no question text from before the stop is shown after it, even when a read 
   expect(cards()).toHaveLength(0);
   expect(document.body.textContent).not.toContain("Secret question");
   expect(document.querySelector("[data-ask-outcome]")).toBeNull();
-  expect([...state.sends].sort()).toEqual(["r1", "r2"]);
+  expect([...state.sends]).toEqual(["r1"]);
 });
 
-test("history lines with the decision stopped show the line once per switch-off; the decision, not the text, decides", async () => {
+test("history lines with the decision stopped each show the line; the decision, not the text, decides", async () => {
   const { api } = service();
   api.getAsks = async () => ({ enabled: false });
   api.listMainMessages = async (): Promise<BotMessage[]> => [
@@ -185,7 +210,7 @@ test("history lines with the decision stopped show the line once per switch-off;
   ];
   await render(api);
   await openChat();
-  expect(chatLines("stopped")).toEqual([STOPPED_LINE, STOPPED_LINE]);
+  expect(chatLines("stopped")).toEqual([STOPPED_LINE, STOPPED_LINE, STOPPED_LINE]);
   expect(chatLines("declined")).toEqual([]);
   expect(document.querySelector("[data-bots-main-chat]")!.textContent).not.toContain("Any words at all");
   expect(document.querySelector("[data-bots-main-chat]")!.textContent).toContain("typed by me");

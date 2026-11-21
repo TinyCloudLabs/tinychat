@@ -374,8 +374,9 @@ export class AskStore {
 
   /**
    * The owner turned questions off: every pending request becomes `stopped` (not declined, and not an answer) with its
-   * question and choices gone at once, so Main is told once, with its own sentence, when the app sends the reply. A
-   * stopped question is not held against being asked again: only declined requests make a cooldown (see `push`).
+   * question and choices gone at once. They share one `resolvedAt`, which marks them as one switch-off: Main is told
+   * once for the lot, with its own sentence (see `delivered`). A stopped question is not held against being asked
+   * again: only declined requests make a cooldown (see `push`).
    * Requests already decided or expired are left as they are. Returns how many were stopped.
    */
   cancelPending(): number {
@@ -402,13 +403,20 @@ export class AskStore {
     return { text: composeReply(ask.state, ask.answer), decision: ask.state };
   }
 
-  /** Main has been told: the answer text is deleted, the metadata stays. */
+  /**
+   * Main has been told: the answer text is deleted, the metadata stays. For a stopped request the one message told
+   * Main about the whole switch-off, so every request stopped by that same switch-off (they share `resolvedAt`) is
+   * delivered with it; a request stopped by a later switch-off is a separate message.
+   */
   delivered(id: string): void {
     const asks = this.#load();
     const ask = asks.find(held => held.id === id);
     if (!ask?.undelivered) return;
-    delete ask.undelivered;
-    delete ask.answer;
+    for (const told of asks) {
+      if (told !== ask && !(ask.state === "stopped" && told.state === "stopped" && told.resolvedAt === ask.resolvedAt)) continue;
+      delete told.undelivered;
+      delete told.answer;
+    }
     this.#save(asks);
   }
 

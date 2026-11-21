@@ -210,11 +210,14 @@ the `ask_owner` tool of the `app` MCP server.
 - Turning the setting off (`PUT /asks { enabled: false }`, which is also what stopping Main from asking does) closes
   every pending question at once: it becomes `stopped` with `undelivered: true` and its question and choices are
   deleted from `requests.json` at that moment, so nothing about it is listed or can come back when the setting is
-  turned on again. Main is told once, with the `stopped` sentence below, when the app sends the reply (`appReply`
-  does not need the setting on); one not told is dropped after the usual 12 hours. A stopped request is not an answer
-  and not a decline: no one-hour cooldown is recorded for its question. Requests already answered, declined or expired
-  are not touched. A question the gateway took but the supervisor had not collected is dropped, never stored: the
-  supervisor collects nothing into the records while the setting is off, the off push empties the gateway's hold, and
+  turned on again. Main is told once per switch-off, not once per request, with the `stopped` sentence below: the
+  requests one switch-off stopped share a time, and when the app sends the reply for any of them (`appReply` does not
+  need the setting on) all of them are marked told together, so the others get 409 `no_reply`. A request stopped by a
+  later switch-off is a separate message. A switch-off not told is dropped after the usual 12 hours, all together.
+  A stopped request is not an answer and not a decline: no one-hour cooldown is recorded for its question. Requests
+  already answered, declined or expired are not touched. A question the gateway took but the supervisor had not
+  collected is dropped, never stored: the supervisor collects nothing into the records while the setting is off, the
+  off push empties the gateway's hold, and
   the closing waits for any collection under way (they run one at a time per bot), so nothing becomes pending after
   the off. The closing does not depend on the gateway: if the gateway cannot be told, the setting is still off and it
   is told at the next sync.

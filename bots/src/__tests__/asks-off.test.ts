@@ -201,24 +201,45 @@ describe("turning the setting off", () => {
     expect(JSON.parse(stored).asks.map((ask: { state: string }) => ask.state)).toEqual(["stopped", "stopped"]);
   });
 
-  test("tells Main once per closed question, in the fixed sentence, while the setting is still off", async () => {
-    const first = await run.asked("First?");
-    const second = await run.asked("Second?");
+  test("tells Main once for the whole switch-off, in the fixed sentence, while the setting is still off", async () => {
+    const ids = [await run.asked("First?"), await run.asked("Second?"), await run.asked("Third?")];
     await run.setting(false);
+    expect((await run.requests()).map(request => request.undelivered)).toEqual([true, true, true]);
 
-    const one = await run.reply(first);
+    const one = await run.reply(ids[1]!);
     expect(one.status).toBe(200);
     expect(one.prompt).toBe(STOPPED_SENTENCE);
     expect(one.prompt).toBe(ASK_REPLIES.stopped);
-    expect(await run.reply(first)).toMatchObject({ status: 409, body: JSON.stringify({ error: "no_reply" }) });
-    expect((await run.reply(second)).prompt).toBe(STOPPED_SENTENCE);
-    expect((await run.reply(second)).status).toBe(409);
+    for (const id of ids) expect(await run.reply(id)).toMatchObject({ status: 409, body: JSON.stringify({ error: "no_reply" }) });
 
     const told = (await run.history()).filter(message => message.origin === "app");
-    expect(told).toEqual([
-      { id: expect.any(String), role: "user", text: STOPPED_SENTENCE, at: expect.any(String), origin: "app", decision: "stopped" },
-      { id: expect.any(String), role: "user", text: STOPPED_SENTENCE, at: expect.any(String), origin: "app", decision: "stopped" },
-    ]);
+    expect(told).toEqual([{ id: expect.any(String), role: "user", text: STOPPED_SENTENCE, at: expect.any(String), origin: "app", decision: "stopped" }]);
+    expect((await run.requests()).map(request => [request.state, request.undelivered])).toEqual([["stopped", undefined], ["stopped", undefined], ["stopped", undefined]]);
+  });
+
+  test("a later switch-off is a new message, whichever is told first", async () => {
+    const early = [await run.asked("First?"), await run.asked("Second?")];
+    await run.setting(false);
+    skew += 1000;
+    const late = await run.asked("Third?");
+    skew += 1000;
+    await run.setting(false);
+    expect((await run.requests()).map(request => request.undelivered)).toEqual([true, true, true]);
+
+    expect((await run.reply(late)).prompt).toBe(STOPPED_SENTENCE);
+    // The earlier switch-off is still untold: it is not covered by the later one's message.
+    expect((await run.requests()).filter(request => request.undelivered).map(request => request.id).sort()).toEqual([...early].sort());
+    expect((await run.reply(early[0]!)).prompt).toBe(STOPPED_SENTENCE);
+    expect((await run.reply(early[1]!)).status).toBe(409);
+    expect((await run.reply(late)).status).toBe(409);
+    expect((await run.history()).filter(message => message.origin === "app")).toHaveLength(2);
+  });
+
+  test("a switch-off not told within the usual 12 hours is dropped together", async () => {
+    const ids = [await run.asked("First?"), await run.asked("Second?")];
+    await run.setting(false);
+    skew += 13 * 3_600_000;
+    for (const id of ids) expect((await run.reply(id)).status).toBe(409);
     expect((await run.requests()).map(request => [request.state, request.undelivered])).toEqual([["stopped", undefined], ["stopped", undefined]]);
   });
 

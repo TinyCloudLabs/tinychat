@@ -22,15 +22,6 @@ export function Line({ role, text }: Pick<ChatLine, "role" | "text">) {
   );
 }
 
-/** One switch-off closes every open question and Main is told once for each; the owner is told once, not once per question. */
-function followsStopLine(lines: readonly ChatLine[], index: number): boolean {
-  for (let i = index - 1; i >= 0; i--) {
-    if (lines[i]!.role === "bot") continue;
-    return lines[i]!.app === "stopped";
-  }
-  return false;
-}
-
 function ExpiryNotice({ notice, onReconnect }: { notice: HistoryNotice; onReconnect: () => void }) {
   const [renderedAt] = useState(Date.now);
   const [acknowledged, setAcknowledged] = useState<HistoryNotice | null>(null);
@@ -169,15 +160,12 @@ export function MainChat({ open, onOpenChange, state, onSend, onRetry, onRetryHi
           {open && notice && onReconnect ? <ExpiryNotice key={`${notice.id}:${notice.deliveredAt ?? notice.renderAttemptAt ?? "initial"}`} notice={notice} onReconnect={onReconnect} /> : null}
           {history === "loading" ? <p role="status" className="text-callout text-muted-foreground">{BOTS_STRINGS.historyLoading}</p> : null}
           {history === "failed" && !working ? <Failure text={BOTS_STRINGS.historyFailed} onRetry={onRetryHistory} /> : null}
-          {lines.map((line, index) => (
-            line.app === "stopped" && followsStopLine(lines, index) ? null
-              : line.app ? <AppLine key={line.id} decision={line.app} live={line.id.startsWith("local-")} /> : <Line key={line.id} role={line.role} text={line.text} />
+          {lines.map((line) => (
+            line.app ? <AppLine key={line.id} decision={line.app} live={line.id.startsWith("local-")} /> : <Line key={line.id} role={line.role} text={line.text} />
           ))}
           {turn ? (
             <>
-              {turn.appReply
-                ? (turn.appReply.decision === "stopped" && followsStopLine(lines, lines.length) ? null : <AppLine decision={turn.appReply.decision} live />)
-                : <Line role="user" text={turn.text} />}
+              {turn.appReply ? <AppLine decision={turn.appReply.decision} live /> : <Line role="user" text={turn.text} />}
               {turn.reply ? <Line role="bot" text={turn.reply} /> : null}
               {working && !turn.reply ? <BotAvatar bot={MAIN_BOT} working size={28} /> : null}
               {turn.state === "error" ? <Failure text={botsErrorText(turn.error ?? "failed", MAIN_BOT.name)} onRetry={onRetry} /> : null}

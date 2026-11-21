@@ -95,11 +95,17 @@ export function useAsks(api: AsksApi, { open, onDecided }: { open: boolean; onDe
     if (gone.length > 0) setOutcomes((current) => [...current, ...gone.filter((outcome) => !current.some((known) => known.id === outcome.id))]);
     // A decision that was recorded but never reached Main (the page closed first) goes out now.
     for (const request of list) {
-      if ((request.state === "answered" || request.state === "declined" || request.state === "stopped") && request.undelivered && !decided.current.has(request.id)) {
+      if ((request.state === "answered" || request.state === "declined") && request.undelivered && !decided.current.has(request.id)) {
         decided.current.add(request.id);
         onDecidedRef.current({ requestId: request.id, decision: request.state });
       }
     }
+    // One switch-off is one message to Main, however many questions it closed: the service marks the whole batch
+    // delivered together, so the first id stands for all, and a batch is not sent again while the page is open.
+    const stopped = list.filter((request) => request.state === "stopped" && request.undelivered);
+    const first = stopped.find((request) => !decided.current.has(request.id));
+    for (const request of stopped) decided.current.add(request.id);
+    if (first) onDecidedRef.current({ requestId: first.id, decision: "stopped" });
   }, []);
 
   // Web access is read again whenever the list of cards changes or the chat opens or closes, and `noteWeb` sets it
