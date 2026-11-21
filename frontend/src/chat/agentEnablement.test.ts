@@ -337,7 +337,7 @@ describe("agent access connectivity monitoring", () => {
     try {
       await c.refresh();
       expect(agentAccessStatusLabel(c.getSnapshot())).toBe("Agent unavailable");
-      vi.advanceTimersByTime(119_999);
+      vi.advanceTimersByTime(9_999);
       expect(probes).toBe(1);
       vi.advanceTimersByTime(1);
       await flushMicrotasks();
@@ -365,7 +365,7 @@ describe("agent access connectivity monitoring", () => {
     const unlisten = c.listen();
     try {
       await c.refresh();
-      vi.advanceTimersByTime(119_999);
+      vi.advanceTimersByTime(9_999);
       expect(probes).toBe(1);
       vi.advanceTimersByTime(1);
       await flushMicrotasks();
