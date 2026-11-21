@@ -1,5 +1,29 @@
 # @tinychat/backend
 
+## 0.9.3-beta.3
+
+### Patch Changes
+
+- 6759764: The backend accepts requests from the phone apps at `https://app.tinycloud.one` (Android) and `tinycloudone://app.tinycloud.one` (iOS), as well as `https://localhost` and `capacitor://localhost`, which installed builds use.
+
+  Details: TC-3693
+
+## 0.9.3-beta.2
+
+### Patch Changes
+
+- e52b520: The backend now states the storage access it needs in its own space when it signs in, so a later upgrade of the TinyCloud library cannot cut it off from its own data. It asks to read, write, delete and list there and for nothing else.
+
+  Details: TC-3671
+
+## 0.9.3-beta.1
+
+### Patch Changes
+
+- 0cd1ccc: The billing error message names TinyCloud One.
+
+  Details: TC-3659
+
 ## 0.9.3-beta.0
 
 ### Patch Changes

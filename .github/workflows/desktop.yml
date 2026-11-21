@@ -32,6 +32,8 @@ permissions:
 jobs:
   changes:
     uses: ./.github/workflows/native-changes.yml
+    with:
+      component: desktop
 
   build-macos:
     name: Build

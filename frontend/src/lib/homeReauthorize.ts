@@ -27,6 +27,12 @@ export interface HomeReauthorizeDeps {
   sessionStorage?: ISessionStorage;
 }
 
+/**
+ * The one permission Connectors needs beyond its storage: unlocking what is encrypted to the account. OpenKey lets the
+ * owner leave a permission out, and the SDK then returns a session whose signed approval lacks it.
+ */
+const UNLOCK_SERVICE = "tinycloud.encryption";
+
 type CommitBlocked = "signed-out" | "busy";
 
 export type HomeReauthorizeResult =
@@ -42,7 +48,7 @@ export type HomeReauthorizeResult =
      */
     rollback(): Promise<boolean>;
   }
-  | { outcome: "declined" | "failed" | "wrong-account" | CommitBlocked };
+  | { outcome: "declined" | "failed" | "wrong-account" | "partial" | CommitBlocked };
 
 // Which attempt saved the persisted session last: a rollback by any other attempt is a no-op.
 let commitAttempts = 0;
@@ -131,8 +137,10 @@ export async function reauthorizeHome(
     // An approval of less than was asked (the base, or some of the sets) is not kept.
     const asked = composeManifestRequest([manifest], { includeAccountRegistryPermissions: false }).resources as PermissionEntry[];
     if (!created.hasPermissions(asked)) {
+      // Everything else covered and only the unlock permission left out is its own answer, so the owner is told which one.
+      const leftOutUnlock = created.hasPermissions(asked.filter((entry) => entry.service !== UNLOCK_SERVICE));
       created.cleanup();
-      return { outcome: "failed" };
+      return { outcome: leftOutUnlock ? "partial" : "failed" };
     }
     const verified = await deps.verify(session.siwe, session.signature);
     // Asked before the snapshot of what is saved and again after it, immediately before anything is written.

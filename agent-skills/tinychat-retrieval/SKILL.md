@@ -1,21 +1,21 @@
 ---
 name: tinychat-retrieval
-description: Find and read existing TinyChat meetings and search literal transcript passages through TinyCloud CLI. Use for meeting recaps, exact meeting follow-ups, and topic searches in the user's connected TinyChat data.
+description: Find and read existing TinyCloud One meetings and search literal transcript passages through TinyCloud CLI. Use for meeting recaps, exact meeting follow-ups, and topic searches in the user's connected TinyCloud One data.
 metadata:
-  version: "0.1.1-onboarding.28"
+  version: "0.1.1-onboarding.29"
 ---
 
-# TinyChat retrieval
+# TinyCloud One meetings retrieval
 
-TinyChat uses the owner's TinyCloud onboarding sign-in (`TC_PROFILE`, else the `default` profile). Any agent that can run shell commands can use this skill. Meetings need this CLI route; the hosted TinyCloud MCP doesn't have meeting tools yet.
+This skill uses the owner's TinyCloud onboarding sign-in (`TC_PROFILE`, else the `default` profile). Any agent that can run shell commands can use this skill. Meetings need this CLI route; the hosted TinyCloud MCP doesn't have meeting tools yet.
 
 Setup is **prepare → (onboarding or one approval, if needed) → ready**. Run `node <this-skill>/scripts/setup.mjs prepare` (add `--config APP_CONTEXT_FILE` when the app prompt supplies one); in OpenCode, `tinychat_setup` does the same. It reports one of:
 
 - `ready`: continue.
 - `onboarding-required`: set up TinyCloud with https://agents.tinycloud.xyz/onboarding, then run `prepare` again.
-- `access-required`: the profile can't read TinyChat yet. Run `setup.mjs authorize` (or call `tinychat_authorize` with no arguments). Send the owner `approvalUrl` with its `message`: “Open this link and approve TinyChat access, then send me the short code OpenKey shows (like ABCD-EFGH).” When they send the code, pass it exactly as sent: `node <this-skill>/scripts/setup.mjs login --code '<the code>'` (or `tinychat_authorize` with `code`). The owner can approve on any device, including a phone. Each code works once and expires after 5 minutes; if it's refused, run `authorize` again and send the new link.
+- `access-required`: the profile can't read TinyCloud One meetings yet. Run `setup.mjs authorize` (or call `tinychat_authorize` with no arguments). Send the owner `approvalUrl` with its `message`: “Open this link and approve TinyCloud One access, then send me the short code OpenKey shows (like ABCD-EFGH).” When they send the code, pass it exactly as sent: `node <this-skill>/scripts/setup.mjs login --code '<the code>'` (or `tinychat_authorize` with `code`). The owner can approve on any device, including a phone. Each code works once and expires after 5 minutes; if it's refused, run `authorize` again and send the new link.
 
-Sign in with the account the owner uses for TinyChat. The official CLI checks every code.
+Sign in with the account the owner uses for TinyCloud One. The official CLI checks every code.
 
 In OpenCode, the installed **tinychat_setup**, **tinychat_authorize**, **tinychat_meetings** and **tinychat_handoff** tools are the normal path. Their presence identifies the loaded adapter; do not glob plugin directories or repeatedly inspect setup documents. The known skill path is `$HOME/.agents/skills/tinychat-retrieval`, resolved from this terminal's HOME, unless the installer reported another explicit path. On local macOS with Node >=22.20 and stock OpenCode 1.18.31 started as `opencode` or `opencode /absolute/project/path`, missing tools load with `node "$HOME/.agents/skills/tinychat-retrieval/scripts/install-opencode.mjs" --activate`, run as the last, separate native bash tool call with no background or parallel commands; see [references/setup.md](references/setup.md). The tool interruption is expected; the same conversation resumes automatically. If the tools don't load, use `scripts/setup.mjs` and `scripts/consume.mjs` like any other agent.
 
@@ -26,7 +26,7 @@ If the user requested setup or login only, stop at the ready result. Retrieve me
 3. Cite every substantive point with the delivered spans' `ref` values, such as `[recap/r7:120-196]`. Shared meeting/source/provenance binds those refs to this acquired body. Check named attribution against each supporting span's speaker; preserve unknown speakers and separate claims from different speakers. Use all supporting refs when a point combines evidence.
 4. Check meaning against the exact delivered text yourself. Questions, offers, preferences, proposals, agreements and commitments differ. Narrow unsupported claims. A structurally valid reference does not certify semantic support.
 
-The adapter packs up to 96 KiB of serialized JSON per evidence response, an adapter budget chosen to fit the pinned client's configured output handling. It is not a TinyChat/TinyCloud service limit or a measured model context ceiling. At startup, the OpenCode plugin raises the client's in-memory tool-output limits to at least 96 KiB and 2,000 lines for the session, preserving larger user values and leaving configuration files unchanged. The normal serialized JSON is one line. Large artifacts use numbered chunks without splitting surrogate pairs or discarding original text.
+The adapter packs up to 96 KiB of serialized JSON per evidence response, an adapter budget chosen to fit the pinned client's configured output handling. It is not a TinyCloud service limit or a measured model context ceiling. At startup, the OpenCode plugin raises the client's in-memory tool-output limits to at least 96 KiB and 2,000 lines for the session, preserving larger user values and leaving configuration files unchanged. The normal serialized JSON is one line. Large artifacts use numbered chunks without splitting surrogate pairs or discarding original text.
 
 `coverage.returnedComplete` means the final chunk is included in the returned payload. `visibleComplete` records all evidence surviving the pinned OpenCode client path toward model input; its bookkeeping is automatic. It does not measure attention or comprehension. Saved bodies and portable CLI output alone never establish model delivery. If the client reports truncation, stop and repair the loaded adapter/configuration before repeating the same chunk; do not claim complete evidence from a truncated result.
 
