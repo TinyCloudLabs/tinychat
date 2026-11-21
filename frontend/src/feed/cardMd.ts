@@ -82,13 +82,15 @@ const INSERT_IF_MISSING = "INSERT OR IGNORE INTO card_md (id, text, version, upd
 
 /**
  * One-time move of the owner's card.md from the feed namespace (`LEGACY_CARD_MD_RESOURCE`) to the master table.
- * Where the master has no row: an old row whose version matches its text is copied over, anything else (no table, no
- * row, a mismatch) seeds the default. The copy is INSERT OR IGNORE, so an owner's edit made after it always stands,
- * and a second run changes nothing. Then the old row is deleted, so it stops being a writable source anyone trusts.
+ * Where the master has no row: an old row is copied over with its text as it is, its version recomputed from that text
+ * so the agent copies stay consistent. When the old row's version did not match its text, a warning says so and the
+ * text is still carried over. Only where there is no table and no row is the default seeded. The copy is INSERT OR
+ * IGNORE, so an owner's edit made after it always stands, and a second run changes nothing. Then the old row is
+ * deleted, so it stops being a writable source anyone trusts.
  *
- * The version check catches corruption, NOT tampering: anyone can compute a sha256 prefix. A row rewritten before this
- * ran carries over. The owner sees the carried-over text in Settings and can change it. An owner who cleared their
- * card.md (empty text, its own version) keeps it cleared.
+ * The version is not a check on the text: anyone can compute a sha256 prefix, so a row rewritten before this ran
+ * carries over like any other. The owner sees the carried-over text in Settings and can change it. An owner who
+ * cleared their card.md (empty text, its own version) keeps it cleared.
  *
  * The old row is the owner's only copy until the master holds it, so after the insert the master is read back: a row
  * there lets the old row be deleted and the move count as finished (true). No row there (the insert reported success
@@ -101,10 +103,10 @@ export async function migrateCardMd(master: FeedDatabase, legacy: FeedDatabase, 
   let stored = await readCardMd(master);
   if (!stored) {
     const old = legacyTable ? await readCardMd(legacy) : null;
-    if (old && old.version === cardMdVersion(old.text)) {
-      unwrap(await master.execute(INSERT_IF_MISSING, [old.text, old.version, old.updatedAt]));
+    if (old) {
+      if (old.version !== cardMdVersion(old.text)) console.warn("card.md migration: the old row's version did not match its text, and the text was carried over as it is");
+      unwrap(await master.execute(INSERT_IF_MISSING, [old.text, cardMdVersion(old.text), old.updatedAt]));
     } else {
-      if (old) console.warn("card.md migration: the old row's version did not match its text, so the default was used");
       unwrap(await master.execute(INSERT_IF_MISSING, [CARD_MD_DEFAULT, cardMdVersion(CARD_MD_DEFAULT), now.toISOString()]));
     }
     stored = await readCardMd(master);
