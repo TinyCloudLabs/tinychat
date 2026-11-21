@@ -14,7 +14,7 @@ compatibility_date = "2026-05-12"
 [vars]
 VITE_OPENKEY_HOST = "https://openkey.so"
 VITE_BACKEND_URL = "https://api.tinycloud.chat"
-# One Apps with One's new navigation on previews only (TC-3650); production turns it on after the native run.
+# One Apps with One's new navigation on previews and production web (TC-3650).
 VITE_ONE_APPS = "true"
 VITE_ONE_NAV = "true"
 # Add an app is still being worked out: previews only, never production.
@@ -24,4 +24,5 @@ VITE_ONE_ADD_APP = "true"
 VITE_OPENKEY_HOST = "https://openkey.so"
 VITE_BACKEND_URL = "https://api.tinycloud.chat"
 VITE_ONE_APPS = "true"
+VITE_ONE_NAV = "true"
 VITE_GRANOLA_CONNECTOR_ENABLED = "false"
