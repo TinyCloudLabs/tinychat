@@ -230,7 +230,7 @@ describe("running cap", () => {
     await second.send("hi", refused.sink);
     expect(refused.events).toEqual([
       ["status", "starting"],
-      ["error", "bot_unavailable"],
+      ["error", "at_capacity"],
     ]);
     expect(launches).toBe(1);
 
@@ -274,7 +274,7 @@ describe("running cap", () => {
     await bots[3]!.send("hi", refused.sink);
     expect(refused.events).toEqual([
       ["status", "starting"],
-      ["error", "bot_unavailable"],
+      ["error", "at_capacity"],
     ]);
     expect(launches).toBe(3);
 
@@ -284,7 +284,7 @@ describe("running cap", () => {
     expect(launches).toBe(4);
     const stillRefused = recorder();
     await bots[3]!.send("hi", stillRefused.sink);
-    expect(stillRefused.events.at(-1)).toEqual(["error", "bot_unavailable"]);
+    expect(stillRefused.events.at(-1)).toEqual(["error", "at_capacity"]);
     expect(launches).toBe(4);
   });
 });

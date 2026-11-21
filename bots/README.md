@@ -10,16 +10,16 @@ except the ingress:
 | Container | Privileges | Holds | Does |
 | --- | --- | --- | --- |
 | `bots-supervisor` | capability set below, no published port, no outbound network | `BOTS_SERVICE_SECRET` | internal API, starts and stops the sandboxes, talks to OMP over each sandbox's stdio |
-| `bots-gateway` | unprivileged user, read-only, no capabilities | `REDPILL_API_KEY` | the only way out of a sandbox: one Unix socket per bot, forwards allowed model calls to `https://tee.redpill.ai` |
+| `bots-gateway` | unprivileged user, read-only, no capabilities | `REDPILL_API_KEY` | one Unix socket per bot for allowed model calls and a control socket for bot admission |
 | `dstack-ingress` | the backend's ingress image | `CLOUDFLARE_API_TOKEN` (DNS for the certificate) | ends TLS inside the CVM, forwards to the supervisor |
 
 Treat every sandbox as hostile: OMP has a shell, so each owner can run any code as root inside their sandbox.
 
 ## Internal API
 
-All requests except `/healthz` need `Authorization: Bearer <BOTS_SERVICE_SECRET>` (constant-time compare) and
-`X-TinyCloud-Owner: did:pkh:eip155:1:0x<40 lowercase hex>`, and the owner's address must be on this service's own
-`BOTS_TEST_ACCOUNTS`. Anything else gets an empty 401.
+All requests except `/healthz` are signed by the backend (`src/signed-call.ts`; the backend's copy is
+`backend/src/bots-signed-call.ts`), and the owner's address must be on this service's own `BOTS_TEST_ACCOUNTS`.
+Anything else gets an empty 401.
 
 - `POST /v1/bots/main/messages` `{ "text": "..." }` (1 to 8000 characters) streams `text/event-stream`:
   `status` (`starting` on a cold start, then `working`, repeated every 15 s while waiting), `delta` (assistant
@@ -33,11 +33,41 @@ All requests except `/healthz` need `Authorization: Bearer <BOTS_SERVICE_SECRET>
   A reply's `id` equals the `messageId` of its `done` event.
 - `GET /healthz` returns `ok`.
 
+### More than one bot per owner
+
+An owner's bots are named by a key: `main`, or the 32 lower-case hex characters the backend chose when it created
+the bot. Everything above also exists at `/v1/bots/<key>/...`. A key of any other form gets 404 before anything is
+built from it.
+
+The backend's registry decides which bots exist. This service keeps its own copy, one file per owner on the data
+volume (`/data/bots/owners/<sha256(owner DID)>.json`, never mounted into a sandbox), and checks it before a request
+for a sibling may create anything. `main` exists without being announced; a sibling exists only once announced.
+
+- `PUT /v1/bots/<key>` `{ "state": "active" | "suspended" | "deleting", "seq": <integer> }` announces a bot's state
+  and answers `{ "state": <the state now held> }`. `seq` is the registry's counter: an update with a `seq` at or below
+  the one held is ignored, and so is anything after `deleting`. `main` cannot be set to `deleting`.
+  A bot this service has not seen before is refused with `409 { "error": "owner_bot_limit" }` when its owner already
+  has `BOTS_MAX_PER_OWNER` bots here, `main` included. Bots that are `deleting` or gone are not counted, a bot first
+  announced as `deleting` is not refused, and an update to a bot already held is never refused.
+- `DELETE /v1/bots/<key>` deletes the working state of a bot that is `deleting` and answers
+  `{ "outcome": "gone" }`, `{ "outcome": "waiting", "cause": "archive_pending" | "closing" | "gateway_cleanup_pending" }`
+  or `{ "outcome": "failed", "cause": ... }`. Once gone, the bot is `removed` for good, and a
+  request that was still waiting on the deletion is refused (503) instead of starting the bot again.
+
+| | active | suspended | deleting | unknown or removed |
+| --- | --- | --- | --- | --- |
+| `POST .../messages` | yes | 409 | 409 | 404 |
+| `GET .../messages` | yes | yes | 409 | 404 |
+| `.../history`, `/history/stage`, `/history/notice`, `/history/permission` | yes | yes | yes | 404 |
+
+A permission update for a sibling that has never run creates no journal and no directory.
+
 Every event is encoded by the supervisor from checked fields; OMP output never passes through.
 
 ## How a message runs
 
-1. The bot id is `sha256(owner DID)`. Every path is built from it, never from the DID.
+1. The bot id is `sha256(owner DID)` for `main`, and `sha256(owner DID + "\n" + key)` for a sibling. Every path is
+   built from it, never from the DID or the key.
 2. On the first message (or the first after an idle stop) the supervisor mounts a fresh tmpfs for the bot's state,
    restores the bot's saved state into it, registers a fresh random token for the bot with the gateway, writes the
    OCI spec (from `runsc spec`) and runs `runsc run` in the foreground. Inside, `bot-start.sh` bridges
@@ -57,11 +87,11 @@ file counts from the snapshot's modification time. The supervisor checks every b
 are skipped) at startup and every 6 hours, and skips a bot with a request in flight.
 
 Deleting goes through one path. It stops the bot's sandbox (unmounting its state snapshot) and then checks that the
-teardown succeeded, that `/data/bots/<bot id>` and `/run/bots/<bot id>` are real directories (not symlinks) directly
+teardown and gateway cleanup succeeded, that `/data/bots/<bot id>` and `/run/bots/<bot id>` are real directories directly
 under their roots, that nothing is mounted at or under either (`/proc/self/mountinfo`). If all hold, it removes both directories and logs `state_deleted`. Otherwise it removes
-nothing and logs `state_delete_skipped` with a `cause` (`teardown_failed`, `unsafe_path`, `mounted`
-or `error`), and the next sweep tries again. A message that arrives meanwhile waits for the deletion, then starts a
-fresh bot. Once shutdown begins, deletion is refused, including a deletion still waiting for teardown.
+nothing and logs `state_delete_skipped` with the cause. The backend retries explicit deletes while the bot is
+`deleting`, and the next supervisor sweep retries retention deletes. A message arriving during a retention deletion
+waits, then starts a fresh bot. Once shutdown begins, deletion is refused, including a deletion still waiting for teardown.
 
 The supervisor creates data and run roots with mode 0700 and refuses roots that are symlinks, owned by another user, or writable by group or others.
 
@@ -87,7 +117,7 @@ All sandboxes together sit under one parent cgroup (`/bots`) capped at `BOTS_TOT
 (`/bots/restore`), outside the bot's own cgroup, so each running bot counts there as `BOTS_SANDBOX_MEMORY_MB +
 BOTS_STATE_MB`. `BOTS_MAX_RUNNING` caps how many bots run at once (default `BOTS_TOTAL_MEMORY_MB /
 (BOTS_SANDBOX_MEMORY_MB + BOTS_STATE_MB)`, 3); the supervisor refuses to start if that many would not fit, and a
-message or history request that would start a bot past the cap gets `bot_unavailable`. A bot whose last stop was
+message that would start a bot past the cap gets `at_capacity` (it is not queued and spends nothing; a history request gets `bot_unavailable`). A bot whose last stop was
 not confirmed (see Saved state) keeps its place until its next start confirms the end. The whole supervisor
 container sits at `mem_limit: 7g` in the compose, so many bots cannot starve the gateway or the ingress. Size the CVM
 as the supervisor's `mem_limit` plus about 1 GiB.
@@ -109,7 +139,10 @@ The gateway, per bot socket:
   fallbacks off and always asks for usage;
 - sends to the fixed origin `https://tee.redpill.ai` with the model key, refuses redirects, and forwards only
   `content-type` back;
-- enforces connect and total timeouts, an 8 MiB response cap, a daily token budget per bot and a global daily cap.
+- enforces connect and total timeouts, an 8 MiB response cap, a daily token budget per bot, a daily total for all of
+  one owner's bots, and a global daily cap. The supervisor names a bot's owner when it registers the bot; the map of
+  bots to owners is kept beside the budget file (`owners.json`) and saved the same way, and if it cannot be saved the
+  gateway answers 503 until it can.
   Bots calling at once cannot overshoot either: a prompt whose estimate (bytes / 3) does not fit what is
   left is refused, `max_tokens` is capped by `BOTS_MAX_TOKENS` and by what is left, and the whole estimate (prompt
   plus `max_tokens`) is reserved against both budgets before the call. When the call ends the reservation is settled
@@ -123,6 +156,28 @@ The gateway, per bot socket:
 - filters `/v1/models` to the allowlist.
 
 OMP also probes `GET /models` and `GET /props` without a token at startup; the gateway refuses them and logs it.
+
+### Web access
+
+Main can use the web only when its owner turns it on: in Main's chat, tap Web access and choose `off` (the default),
+`listed` (only the owner's sites, subdomains included) or `any` public site. Turning it on shows this warning first:
+
+> A web page can hide instructions meant for an AI. Main might follow them and put things you've told it into a search or a web address. Searches go to our search provider, Tavily. Our server fetches pages, so the sites see our server, not you. Don't open or paste links Main gives you unless you trust them.
+>
+> This setting lets Main open pages you've never seen, and any of them could try this. "Only sites you list" is safer, but anyone who can post on those sites could still try it.
+
+The setting is saved by the supervisor in `/data/bots/<bot id>/web.json` and given to the gateway before each message;
+the gateway applies it on every call. A missing or unreadable file reads as `off`.
+
+- Main's OMP has one MCP server, `web`: the gateway's `POST /v1/mcp` on the egress socket (bot token required). Its
+  tools, `search` and `fetch`, reach OMP as `mcp__web_search` and `mcp__web_fetch`; OMP's own web tools are off.
+- A search goes to the search provider (Tavily Search; `BOTS_TEST_WEB_URL` is a loopback mock for tests). Without
+  `TAVILY_API_KEY` a search answers "isn't available".
+- A page is read by the `bots-fetch` container (`src/fetch-main.ts`, `POST /fetch {"url", "hosts"}`), which reads pages
+  without a key (`BOTS_TEST_FETCH_URL` is a loopback mock for tests). It cannot read PDFs or pages that need JavaScript.
+- Page HTML becomes plain text (`src/page-text.ts`) before Main sees it.
+- Daily budgets per bot and for all bots, and the call timeout, are set with the `BOTS_WEB_*` variables below.
+- The log and the saved counts hold counts by tool and outcome only.
 
 ### Saved state
 
@@ -181,6 +236,8 @@ Supervisor (`bots-supervisor`):
 | Var | Default | |
 | --- | --- | --- |
 | `BOTS_SERVICE_SECRET` | required | unique 256-bit secret (at least 43 characters); `openssl rand -hex 32` |
+| `BOTS_ADMISSION_CONTROL_KEY` | unset | admission control socket key from the deploy workflow |
+| `BOTS_ACCEPT_LEGACY_OWNER_HEADER` | `0` | see [Deploy order](#deploy-order) |
 | `BOTS_TEST_ACCOUNTS` | empty (nobody) | comma-separated addresses, or `*` |
 | `BOTS_MODEL` | `z-ai/glm-5.2` | the backend's `REDPILL_DEFAULT_MODEL` default |
 | `BOTS_IDLE_MS` | `600000` | idle time after `session_settled` before a sandbox stops |
@@ -189,6 +246,7 @@ Supervisor (`bots-supervisor`):
 | `BOTS_STATE_MB` | `256` | state tmpfs size (inside the memory limit, 64 files and directories per MiB) and the cap on its saved copy |
 | `BOTS_TOTAL_MEMORY_MB` / `BOTS_TOTAL_PIDS` | `6144` / `2048` | all sandboxes and their restored state together |
 | `BOTS_MAX_RUNNING` | `BOTS_TOTAL_MEMORY_MB / (BOTS_SANDBOX_MEMORY_MB + BOTS_STATE_MB)` (3) | sandboxes running at once; at most that quotient |
+| `BOTS_MAX_PER_OWNER` | `10` | one owner's bots, `main` included, that this service holds; a new one past it is refused when announced |
 | `BOTS_STATE_COPY_TIMEOUT_MS` | `60000` | a state restore or save still running by then is killed and fails |
 | `BOTS_TURN_TIMEOUT_MS` | `300000` | a turn with no result by then is ended and its sandbox killed |
 | `BOTS_MAX_TURN_BYTES` | `262144` | assistant text per turn |
@@ -200,16 +258,24 @@ Gateway (`bots-gateway`):
 | Var | Default | |
 | --- | --- | --- |
 | `REDPILL_API_KEY` | required | a dedicated RedPill key with its own provider-side budget, not shared with main chat |
+| `BOTS_BACKEND_CALL_SECRET` | unset in local model-only runs | key for bot admission calls |
+| `BACKEND_ORIGIN` | `https://api.tinycloud.chat` | HTTPS origin for bot admission at `/api/internal/bots/admit` |
 | `BOTS_MODELS` | `BOTS_MODEL` | comma-separated model allowlist |
 | `BOTS_MAX_TOKENS` | `8192` | |
 | `BOTS_BOT_DAILY_TOKENS` / `BOTS_GLOBAL_DAILY_TOKENS` | `2000000` / `20000000` | UTC day |
+| `BOTS_OWNER_DAILY_TOKENS` | `BOTS_BOT_DAILY_TOKENS` | all of one owner's bots together, UTC day |
 | `BOTS_MAX_BODY_BYTES` / `BOTS_MAX_RESPONSE_BYTES` | 4 MiB / 8 MiB | |
 | `BOTS_UPSTREAM_CONNECT_TIMEOUT_MS` / `BOTS_UPSTREAM_TOTAL_TIMEOUT_MS` | `30000` / `600000` | |
 | `BOTS_BODY_TIMEOUT_MS` | `30000` | request body deadline |
 | `BOTS_BUDGET_FILE` | `/var/lib/bots-gateway/budget.json` | on the `bot-budget` volume |
+| `TAVILY_API_KEY` | empty | Main's web access: the search provider's key; empty refuses every web call as unavailable |
+| `BOTS_WEB_BOT_DAILY_SEARCHES` / `BOTS_WEB_BOT_DAILY_PAGES` | `100` / `300` | per bot, UTC day |
+| `BOTS_WEB_GLOBAL_DAILY_SEARCHES` / `BOTS_WEB_GLOBAL_DAILY_PAGES` | `2000` / `6000` | all bots, UTC day |
+| `BOTS_WEB_TIMEOUT_MS` | `20000` | per provider call |
+| `BOTS_OWNERS_FILE` | `owners.json` beside the budget file | which owner each bot belongs to |
 
-`BOTS_TEST_UPSTREAM_URL` exists only for the local mock smoke: it must be a loopback `http://` URL, and the compose
-file never passes it.
+`BOTS_TEST_UPSTREAM_URL` and `BOTS_TEST_WEB_URL` exist only for local mocks: each must be a loopback `http://` URL, and
+the compose file never passes either.
 
 ## Pinning
 
@@ -267,9 +333,18 @@ It builds `bots/` (`linux/amd64`) as `ghcr.io/tinycloudlabs/tinychat-bots:<sha>`
 (`infra/phala-ingress`) as `ghcr.io/tinycloudlabs/tinychat-backend:ingress-bots-<sha>`, writes both pushed digests
 over `BOTS_IMAGE_DIGEST` and `INGRESS_IMAGE_DIGEST` in a copy of `docker-compose.phala.yml`, and deploys that copy
 with the complete encrypted env set below. It checks the CVM runs the backend's pinned dstack OS image before and
-after, syncs `allowed_envs`, and probes `https://<BOTS_INGRESS_DOMAIN>/healthz` for `ok`. The job summary lists the
+after, syncs `allowed_envs`, and probes `/healthz` for `ok` through the CVM's TLS-passthrough host. The job summary lists the
 commit, both digests, the rendered compose's sha256 and the env names. To roll back, run it with an earlier SHA;
 the `bot-data` and `bot-budget` volumes are kept.
+
+The bots service is live when this check passes. Run it the same way outside the workflow:
+
+```bash
+node .github/scripts/bots-healthz.mjs <APP_ID>-443s.<gateway> bots.tinycloud.xyz
+```
+
+`<APP_ID>-443s.<gateway>` is the CVM's TLS-passthrough host (the backend's `BOTS_SERVICE_CONNECT_HOST`), and the
+certificate is checked against `bots.tinycloud.xyz`. The public name bots.tinycloud.xyz does not route; never probe it.
 
 Its configuration lives in the `production-bots` GitHub environment:
 
@@ -281,7 +356,11 @@ Its configuration lives in the `production-bots` GitHub environment:
 | limit overrides from [Configuration](#configuration) | variables | optional, e.g. `BOTS_MODEL`, `BOTS_TOTAL_MEMORY_MB`, `BOTS_GLOBAL_DAILY_TOKENS`; empty keeps the compose default |
 | `PHALA_CLOUD_API_KEY` | secret | deploy tooling only; never a CVM env |
 | `BOTS_SERVICE_SECRET` | secret | the supervisor's secret, the same value as the backend's |
+| `BOTS_BACKEND_CALL_SECRET` | secret | bot admission key |
+| `BOTS_ADMISSION_CONTROL_KEY` | derived | control socket key from the deploy workflow |
+| `BACKEND_ORIGIN` | variable | set from `TINYCHAT_BACKEND_URL` in the deployment environment, default `https://api.tinycloud.chat` |
 | `BOTS_REDPILL_API_KEY` | secret | the dedicated RedPill key, written to the CVM as `REDPILL_API_KEY` |
+| `BOTS_TAVILY_API_KEY` | secret | optional; the search provider key for Main's web access, written to the CVM as the gateway's `TAVILY_API_KEY` |
 | `CLOUDFLARE_API_TOKEN`, `CERTBOT_EMAIL` | secrets | the ingress certificate |
 
 `PHALA_GATEWAY_CNAME` is read from the CVM. No other secrets belong in this CVM.
@@ -292,3 +371,7 @@ in the job summary).
 The backend picks up `BOTS_ENABLED`, `BOTS_TEST_ACCOUNTS`, `BOTS_SERVICE_URL=https://<BOTS_INGRESS_DOMAIN>` and
 `BOTS_POST_TIMEOUT_MS` from `production-api` variables and `BOTS_SERVICE_SECRET` from a `production-api` secret,
 through `.github/workflows/deploy-backend-phala.yml`. `BOTS_ENABLED` defaults to `false`.
+
+### Deploy order
+
+Set `BOTS_ACCEPT_LEGACY_OWNER_HEADER=1`, deploy the bots service, then the backend, then set it to `0` and deploy the bots service again. After each step, check that the bots service answers 200. Once it does with `0`, remove the variable.

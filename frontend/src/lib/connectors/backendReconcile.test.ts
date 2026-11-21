@@ -617,3 +617,24 @@ describe("reconcileBackendMeetings — the user-space copy", () => {
     expect(lines).toEqual([]);
   });
 });
+
+test("reconciling a backend Fireflies copy uses signed delivery time and honors the purge", async () => {
+  const { tcw, kv } = makeTcw(tracker);
+  const sourceId = "copy-purge-fixture";
+  const sourceTimestamp = "2026-11-01T00:00:00.000Z";
+  const meeting = meta({ sourceId, ts: "2026-11-02T00:00:00.000Z", sourceTimestamp });
+  const api = client({ lists: [okList([meeting])] }, tracker);
+  let blocked = true;
+  const run = () => reconcileBackendMeetings({ tcw, meetings: api, secrets: unlocked(),
+    checkPurge: async (candidate, timestamp) => {
+      expect(candidate).toBe(sourceId);
+      expect(timestamp).toBe(sourceTimestamp);
+      return blocked;
+    },
+  });
+  expect((await run()).ok).toBe(true);
+  expect(kv.putKeys).toEqual([]);
+  blocked = false;
+  expect((await run()).ok).toBe(true);
+  expect(kv.putKeys).toHaveLength(2);
+});

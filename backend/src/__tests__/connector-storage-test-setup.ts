@@ -1,0 +1,1 @@
+process.env.CONNECTOR_KEY_STORE_TEST_PLAINTEXT = "1";

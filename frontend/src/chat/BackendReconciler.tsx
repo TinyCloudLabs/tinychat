@@ -37,6 +37,7 @@ import {
 import { onSecretsUnlocked } from "@/lib/connectors/connectorSecrets";
 import { DEFAULT_MEETINGS_SOURCE } from "@/lib/connectors/meetingsView";
 import { createConnectorMeetingsClient } from "@/lib/connectors/meetingsApi";
+import { createConnectorWebhooksClient } from "@/lib/connectors/webhooksApi";
 import { backendPendingRows, writePendingReconcileSnapshot } from "@/lib/connectors/pendingReconcileSnapshot";
 import { enqueueDrainWork } from "./useBackgroundDrain";
 
@@ -71,6 +72,9 @@ export async function runBackendReconcile(
       reconcileBackendMeetings({
         tcw,
         meetings,
+        ...(options.meetings === undefined
+          ? { checkPurge: createConnectorWebhooksClient(backendUrl, { sessionStore }).checkPurge }
+          : {}),
         source: options.source ?? DEFAULT_MEETINGS_SOURCE,
         ...(options.secrets === undefined ? {} : { secrets: options.secrets }),
         onPendingSnapshot: async (rows, observedAt) => {

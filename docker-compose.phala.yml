@@ -37,6 +37,7 @@ services:
       MCP_CHAT_GRANT_EXPIRED_ERROR: ${MCP_CHAT_GRANT_EXPIRED_ERROR:-}
       MCP_CHAT_GRANT_REJECTED_ERROR: ${MCP_CHAT_GRANT_REJECTED_ERROR:-}
       TAVILY_API_KEY: ${TAVILY_API_KEY:-}
+      GRANOLA_PROXY_ENABLED: ${GRANOLA_PROXY_ENABLED:-false}
       # Tiny bots (Home Main bot chat); off unless enabled, configured, and the account is listed.
       BOTS_ENABLED: ${BOTS_ENABLED:-false}
       BOTS_TEST_ACCOUNTS: ${BOTS_TEST_ACCOUNTS:-}
@@ -94,6 +95,7 @@ services:
       # Turning it on requires WEBHOOK_HMAC_MASTER and LOG_HASH_SALT — each generated with
       # `openssl rand -base64 32`, never reused — or the backend refuses to boot.
       CONNECTOR_WEBHOOKS_ENABLED: ${CONNECTOR_WEBHOOKS_ENABLED:-false}
+      CONNECTOR_KEY_STORE_DIR: /var/lib/tinychat/connector-keys
       WEBHOOK_HMAC_MASTER: ${WEBHOOK_HMAC_MASTER:-}
       # Rotation grace key (§4.2/§7.6): set only while a master rotation is draining.
       WEBHOOK_HMAC_MASTER_PREV: ${WEBHOOK_HMAC_MASTER_PREV:-}
@@ -175,6 +177,8 @@ services:
     volumes:
       - /var/run/dstack.sock:/var/run/dstack.sock:ro
       - assemblyai-data:/var/lib/tinychat/assemblyai
+      # Dedicated backend volume. Exclude it from backups and snapshots.
+      - connector-key-data:/var/lib/tinychat/connector-keys
     restart: unless-stopped
     # TC-2136: stdout/stderr also go to the log-shipper below over dockerd's GELF driver (UDP to host loopback).
     # Non-blocking with a bounded buffer: an absent or stopped shipper drops log copies and never slows or fails the
@@ -319,13 +323,13 @@ services:
                 if length(app_ts) <= 24 && match(app_ts, r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$$') { ts = app_ts }
                 if name == "tinychat_request" {
                   # TC-2537 allow-list: request id, route template, method, status, duration, stream outcome and code,
-                  # credits, account hash. Bodies, headers, query strings, path values, addresses and IPs are never fields.
+                  # failure cause (TC-3462), credits, account hash. Bodies, headers, query strings, path values, addresses and IPs are never fields.
                   request_id = string(j.request_id) ?? ""
                   if length(request_id) != 36 || !match(request_id, r'^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$$') { abort }
                   method = string(j.method) ?? ""
                   if !includes(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "CONNECT", "TRACE", "OTHER"], method) { abort }
                   route = string(j.route) ?? ""
-                  if !includes(["/api/agent/chat", "/api/agent/session", "/api/attestation/self", "/api/auth/nonce", "/api/auth/verify", "/api/auth/verify-renewal", "/api/billing/checkout", "/api/billing/config", "/api/billing/portal", "/api/billing/rates", "/api/billing/status", "/api/billing/webhook", "/api/bots/history/grant", "/api/bots/history/notice", "/api/bots/history/notice/ack", "/api/bots/history/status", "/api/bots/main/messages", "/api/bots/status", "/api/chat", "/api/chat/model-selection", "/api/chat/models", "/api/connectors/credentials/:source", "/api/connectors/credentials/:source/oauth/callback", "/api/connectors/credentials/:source/oauth/start", "/api/connectors/google/autojoin/begin", "/api/connectors/google/autojoin/disable", "/api/connectors/google/autojoin/disconnect", "/api/connectors/google/autojoin/enable", "/api/connectors/google/autojoin/exchange", "/api/connectors/google/autojoin/status", "/api/connectors/google/oauth/callback", "/api/connectors/google/oauth/desktop/start", "/api/connectors/google/oauth/exchange", "/api/connectors/google/oauth/refresh", "/api/connectors/google/oauth/revoke", "/api/connectors/google/oauth/start", "/api/connectors/meetings", "/api/connectors/meetings/:source/:sourceId", "/api/connectors/meetings/:source/:sourceId/reconciled", "/api/connectors/webhooks/:source/:token", "/api/connectors/webhooks/ack", "/api/connectors/webhooks/config", "/api/connectors/webhooks/drain", "/api/connectors/webhooks/pending", "/api/connectors/webhooks/purged", "/api/delegations", "/api/delegations/status", "/api/exo/v1/grant", "/api/exo/v1/requests", "/api/internal/assemblyai-status", "/api/internal/credential-row-count", "/api/manifest", "/api/nras-proxy", "/api/nras-proxy/jwks", "/api/openapi.json", "/api/ops/content-continuity", "/api/phala-verify", "/api/server-info", "/api/signature/:id", "/api/transcriber/assemblyai/capabilities", "/api/transcriber/assemblyai/hosted/admin/reconcile", "/api/transcriber/assemblyai/hosted/jobs/:source_id", "/api/transcriber/assemblyai/hosted/transcripts", "/api/transcriber/assemblyai/hosted/transcripts/:handle", "/api/transcriber/assemblyai/hosted/transcripts/:handle/sentences", "/api/transcriber/assemblyai/hosted/uploads", "/api/transcriber/assemblyai/hosted/uploads/:upload_id", "/api/transcriber/assemblyai/hosted/uploads/:upload_id/parts/:index", "/api/transcriber/assemblyai/transcripts/:id", "/api/transcriber/meetings", "/api/transcriber/meetings/:id", "/api/transcriber/meetings/:id/stop", "/api/transcriber/meetings/:id/transcript", "/api/transcriber/meetings/scope", "/api/transcriber/private-cloud/capabilities", "/api/transcriber/private-cloud/transcriptions", "/api/transcriber/private-cloud/transcriptions/:id", "/api/transcriber/private-cloud/transcriptions/:id/cancel", "/api/transcriber/private-cloud/transcriptions/:id/result", "/api/transcriber/webhooks/ptx", "/health", "unmatched"], route) { route = "unmatched" }
+                  if !includes(["/api/agent/chat", "/api/agent/session", "/api/attestation/self", "/api/auth/nonce", "/api/auth/verify", "/api/auth/verify-renewal", "/api/billing/checkout", "/api/billing/config", "/api/billing/portal", "/api/billing/rates", "/api/billing/status", "/api/billing/webhook", "/api/bots", "/api/bots/:key", "/api/bots/:key/messages", "/api/bots/history/grant", "/api/bots/history/notice", "/api/bots/history/notice/ack", "/api/bots/history/status", "/api/bots/main/messages", "/api/bots/main/web", "/api/bots/status", "/api/chat", "/api/chat/model-selection", "/api/chat/models", "/api/connectors/credentials/:source", "/api/connectors/credentials/:source/oauth/callback", "/api/connectors/credentials/:source/oauth/start", "/api/connectors/google/autojoin/begin", "/api/connectors/google/autojoin/disable", "/api/connectors/google/autojoin/disconnect", "/api/connectors/google/autojoin/enable", "/api/connectors/google/autojoin/exchange", "/api/connectors/google/autojoin/status", "/api/connectors/google/oauth/callback", "/api/connectors/google/oauth/desktop/start", "/api/connectors/google/oauth/exchange", "/api/connectors/google/oauth/refresh", "/api/connectors/google/oauth/revoke", "/api/connectors/google/oauth/start", "/api/connectors/granola/v1/notes", "/api/connectors/granola/v1/notes/:id", "/api/connectors/granola/v1/notes/:id/transcript", "/api/connectors/meetings", "/api/connectors/meetings/:source/:sourceId", "/api/connectors/meetings/:source/:sourceId/reconciled", "/api/connectors/webhooks/:source/:token", "/api/connectors/webhooks/ack", "/api/connectors/webhooks/config", "/api/connectors/webhooks/drain", "/api/connectors/webhooks/pending", "/api/connectors/webhooks/purge-check", "/api/connectors/webhooks/purged", "/api/delegations", "/api/delegations/status", "/api/exo/v1/grant", "/api/exo/v1/requests", "/api/internal/assemblyai-status", "/api/internal/credential-row-count", "/api/manifest", "/api/nras-proxy", "/api/nras-proxy/jwks", "/api/openapi.json", "/api/ops/content-continuity", "/api/phala-verify", "/api/server-info", "/api/signature/:id", "/api/transcriber/assemblyai/capabilities", "/api/transcriber/assemblyai/hosted/admin/reconcile", "/api/transcriber/assemblyai/hosted/jobs/:source_id", "/api/transcriber/assemblyai/hosted/transcripts", "/api/transcriber/assemblyai/hosted/transcripts/:handle", "/api/transcriber/assemblyai/hosted/transcripts/:handle/sentences", "/api/transcriber/assemblyai/hosted/uploads", "/api/transcriber/assemblyai/hosted/uploads/:upload_id", "/api/transcriber/assemblyai/hosted/uploads/:upload_id/parts/:index", "/api/transcriber/assemblyai/transcripts/:id", "/api/transcriber/meetings", "/api/transcriber/meetings/:id", "/api/transcriber/meetings/:id/stop", "/api/transcriber/meetings/:id/transcript", "/api/transcriber/meetings/scope", "/api/transcriber/private-cloud/capabilities", "/api/transcriber/private-cloud/transcriptions", "/api/transcriber/private-cloud/transcriptions/:id", "/api/transcriber/private-cloud/transcriptions/:id/cancel", "/api/transcriber/private-cloud/transcriptions/:id/result", "/api/transcriber/webhooks/ptx", "/health", "unmatched"], route) { route = "unmatched" }
                   if !is_integer(j.status) { abort }
                   status = int(j.status) ?? 0
                   if status < 100 || status > 599 { abort }
@@ -339,6 +343,8 @@ services:
                   if includes(["done", "error", "aborted"], stream) { out.stream = stream }
                   code = string(j.code) ?? ""
                   if length(code) <= 60 && match(code, r'^[a-z][a-z0-9_]{0,59}$$') { out.code = code }
+                  failure_cause = string(j.failure_cause) ?? ""
+                  if includes(["model", "ours"], failure_cause) { out.failure_cause = failure_cause }
                   credits = string(j.credits) ?? ""
                   if includes(["0", "1-9", "10-99", "100-999", "1000+"], credits) { out.credits = credits }
                   account_hash = string(j.account_hash) ?? ""
@@ -377,6 +383,17 @@ services:
                   if count < 0 || count > 1000 { abort }
                   out = {"svc": "backend", "event": name, "level": "error", "ts": ts, "count": count}
                   if j.alert == true { out.alert = true }
+                } else if name == "retention_sweep_stalled" {
+                  # Retention-floor alert (TC-2778): counts only. No source, address, hash or meeting id is a field.
+                  if !is_integer(j.indexes_unreadable) || !is_integer(j.errors) || !is_integer(j.overdue_rows) || !is_integer(j.consecutive_passes) { abort }
+                  indexes_unreadable = int(j.indexes_unreadable) ?? -1
+                  retention_errors = int(j.errors) ?? -1
+                  overdue_rows = int(j.overdue_rows) ?? -1
+                  consecutive_passes = int(j.consecutive_passes) ?? -1
+                  if indexes_unreadable < 0 || indexes_unreadable > 1000000 || retention_errors < 0 || retention_errors > 1000000 || overdue_rows < 0 || overdue_rows > 1000000 || consecutive_passes < 0 || consecutive_passes > 1000000 { abort }
+                  out = {"svc": "backend", "event": name, "level": "error", "ts": ts, "alert": true, "indexes_unreadable": indexes_unreadable, "errors": retention_errors, "overdue_rows": overdue_rows, "consecutive_passes": consecutive_passes}
+                } else if name == "retention_sweep_recovered" {
+                  out = {"svc": "backend", "event": name, "level": "info", "ts": ts}
                 } else if name == "assemblyai_worker_heartbeat" {
                   if !is_integer(j.pending_jobs) || !is_integer(j.delayed_jobs) || !is_integer(j.consecutive_failed_jobs) { abort }
                   if !(is_integer(j.oldest_pending_age_s) || is_float(j.oldest_pending_age_s)) { abort }
@@ -592,6 +609,7 @@ services:
 volumes:
   cert-data:
   assemblyai-data:
+  connector-key-data:
 
 networks:
   logship:

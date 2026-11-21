@@ -1,12 +1,11 @@
-// The feed's row (Sam, 11-13 11:58Z, briefs/feed-lab/design/toprow): every card that isn't open is one row in a
-// list, the agent's mark, the title (semibold when it needs you), the agent and a short description, and at the row's
-// end its due date or how long ago it came, with its status. Rows sit together in one bordered list (HomeFeedEntries).
-// Also the status mark the open card shares. Posts add a thumbnail.
+// The feed's row: every card that isn't open is one row in a flat list (HomeFeedEntries), the agent's mark and the
+// card's post (its title when the agent wrote none), cut at four lines; at the row's end its due date, its task type
+// and its status marks. Nothing else: the agent's name, the time and the options are in the open card. Also the status
+// mark the open card shares. Posts add a thumbnail.
 import { AlarmClockIcon, ArrowUpRightIcon, CheckCheckIcon, CheckIcon, CircleAlertIcon, Clock3Icon, MailIcon, MessageCircleIcon, PlayIcon, TriangleAlertIcon } from "lucide-react";
 
 import { AgentMark, PlatformName, type Platform } from "./AgentMark";
 import { cardTypeLabel, OUTBOUND_TYPES, type CardType } from "./feedData";
-import { ShortTime } from "./ShortTime";
 
 /** A card's status as the compact card and the grid show it. `status` is cardStatus's word, or a post's progress. */
 export function StatusMark({ status }: { status?: string }) {
@@ -50,6 +49,9 @@ export function CourierMark() {
  * about the decision, replies about the conversation, so one never hides the other. Bold with a dot while some reply
  * is newer than when you last opened the card. Inside a card's button, so the words are read as text, not a label. */
 export interface Replies { count: number; unread: number; from: string }
+function repliesWords(replies: Replies): string {
+  return `${replies.count} ${replies.count === 1 ? "reply" : "replies"} from ${replies.from}${replies.unread > 0 ? `, ${replies.unread} new` : ""}`;
+}
 export function ReplyCount({ replies }: { replies?: Replies }) {
   if (!replies?.count) return null;
   const fresh = replies.unread > 0;
@@ -57,7 +59,7 @@ export function ReplyCount({ replies }: { replies?: Replies }) {
     <MessageCircleIcon aria-hidden className="size-3.5" />
     <span aria-hidden>{replies.count}</span>
     {fresh && <span aria-hidden className="size-1.5 rounded-full bg-foreground" />}
-    <span className="sr-only">{`${replies.count} ${replies.count === 1 ? "reply" : "replies"} from ${replies.from}${fresh ? `, ${replies.unread} new` : ""}`}</span>
+    <span className="sr-only">{repliesWords(replies)}</span>
   </span>;
 }
 
@@ -65,7 +67,7 @@ export function ReplyCount({ replies }: { replies?: Replies }) {
  * show in the card's Details instead. Inside a card's button, so the words are read as text, not a label. */
 export function PriorityMark({ priority }: { priority?: number }) {
   if (priority !== 0 && priority !== 1) return null;
-  return <span className={`inline-flex h-4 shrink-0 items-center rounded px-1 text-[10px] font-semibold tabular-nums ${priority === 0 ? "bg-destructive text-destructive-foreground" : "bg-foreground/10 text-foreground"}`}>
+  return <span className={`inline-flex h-4 shrink-0 items-center rounded px-1 text-[11px] font-semibold tabular-nums ${priority === 0 ? "bg-destructive text-destructive-foreground" : "bg-foreground/10 text-foreground"}`}>
     <span aria-hidden>P{priority}</span><span className="sr-only">{`Priority ${priority}`}</span>
   </span>;
 }
@@ -98,12 +100,12 @@ export function DueMark({ due, now, className = "" }: { due: string; now?: numbe
   return <span title={Number.isNaN(at.getTime()) ? undefined : `Due ${at.toLocaleString()}`} className={`font-medium ${overdue ? "text-destructive" : "text-foreground"} ${className}`}>{text}</span>;
 }
 
-export function CompactCard({ agentKey, author, platform, createdAt, priority, due, now, status, replies, title, description, thumb, type, courier, onOpen, opensPage = false, layout = "row" }: {
-  agentKey: string; author: string; platform?: Platform; createdAt: string;
+export function CompactCard({ agentKey, author, platform, priority, due, now, status, replies, text, note, thumb, type, courier, onOpen, controls, opensPage = false, layout = "row" }: {
+  agentKey: string; author: string; platform?: Platform;
   /** The card's task type, at the top of the row's end, or at the top right of a tile (TypeLabel). */
   type?: CardType;
   /**
-   * A Courier message: the Courier mark and its sender make the name line (no description), and `via`, the agent that
+   * A Courier message: the Courier mark and its sender make a line under its text, and `via`, the agent that
    * relayed it, is in its accessible name; the open card shows it.
    */
   courier?: { from?: string; via: string };
@@ -115,10 +117,15 @@ export function CompactCard({ agentKey, author, platform, createdAt, priority, d
   replies?: Replies;
   /** cardStatus's word (or a post's progress); "Needs you" and undefined show none (the view says it). */
   status?: string;
-  title: string; description?: string;
+  /** The card's post, or its title when it has none. */
+  text: string;
+  /** Where the card stands when that is more than its post: what was chosen, when it comes back, what a ship moved. One line under the text. */
+  note?: string;
   /** A post's page, as a 44px square at the row's end; `video` adds a play badge. */
   thumb?: { src: string; video: boolean };
   onOpen: () => void;
+  /** The id of the open card this row opens into (`aria-controls`). */
+  controls?: string;
   /** A post opens its page; every other card opens in place. */
   opensPage?: boolean;
   /** "row": the feed's row. "tile": a tile in the Cards view. */
@@ -126,12 +133,13 @@ export function CompactCard({ agentKey, author, platform, createdAt, priority, d
 }) {
   const needsYou = status === "Needs you";
   const done = status === "Dropped" || status === "Acknowledged" || status === "Done" || status === "Closed";
-  const opens = opensPage ? { "aria-haspopup": "dialog" as const } : { "aria-expanded": false };
+  const opens = opensPage ? { "aria-haspopup": "dialog" as const } : { "aria-expanded": false, ...(controls ? { "aria-controls": controls } : {}), "data-card-row": "" };
   const ring = "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring motion-reduce:transition-none";
-  const titleClass = `break-words text-[15px] leading-5 tracking-[-0.005em] ${needsYou ? "font-semibold" : "font-medium"}`;
+  const textClass = "line-clamp-4 break-words text-[15px] leading-[22px] [text-wrap:pretty] min-[600px]:text-base min-[600px]:leading-6";
   const doneMark = done && <CheckIcon aria-hidden className="mr-1 inline size-3.5 align-[-2px] text-muted-foreground" />;
-  const marks = <span className="flex items-center gap-2 empty:hidden"><PriorityMark priority={priority} /><ReplyCount replies={replies} />{!needsYou && <StatusMark status={status} />}</span>;
-  const when = due ? <DueMark due={due} now={now} className="whitespace-nowrap" /> : <ShortTime relative at={createdAt} className="whitespace-nowrap tabular-nums" />;
+  const hasMarks = priority === 0 || priority === 1 || !!replies?.count || (!needsYou && !!status && status !== "Information");
+  const marks = hasMarks && <span className="flex items-center gap-2"><PriorityMark priority={priority} /><ReplyCount replies={replies} />{!needsYou && <StatusMark status={status} />}</span>;
+  const noteLine = note && <span className="mt-1 block truncate text-[13px] leading-[18px] text-muted-foreground">{note}</span>;
   if (layout === "tile") {
     return <button type="button" onClick={onOpen} {...opens}
       className={`flex h-full min-h-[132px] w-full min-w-0 flex-col gap-1.5 p-3.5 text-left text-card-foreground transition-colors duration-150 active:bg-muted/50 fine:hover:bg-muted/30 ${ring}`}>
@@ -144,31 +152,34 @@ export function CompactCard({ agentKey, author, platform, createdAt, priority, d
         {/* The task type, at the top right of the tile, as on the row. */}
         {type && <span className="ml-auto flex shrink-0 items-center"><TypeLabel type={type} /></span>}
       </span>
-      <span className={`line-clamp-3 ${titleClass}`}>{doneMark}{title}</span>
-      {description && <span className="line-clamp-2 break-words text-[13px] leading-[18px] text-muted-foreground">{description}</span>}
-      <span className="mt-auto flex flex-wrap items-center justify-between gap-x-3 gap-y-1 pt-1 text-meta text-muted-foreground">{marks}{when}</span>
+      <span className={textClass}>{doneMark}{text}</span>
+      {noteLine}
+      {(marks || due) && <span className="mt-auto flex flex-wrap items-center justify-between gap-x-3 gap-y-1 pt-1 text-meta text-muted-foreground">{marks}{due && <DueMark due={due} now={now} className="whitespace-nowrap" />}</span>}
     </button>;
   }
-  return <button type="button" onClick={onOpen} {...opens}
-    className="grid min-h-[60px] w-full min-w-0 grid-cols-[1.75rem_minmax(0,1fr)_auto] items-center gap-x-3 px-3.5 py-[9px] text-left text-card-foreground transition-colors duration-150 active:bg-muted/50 fine:hover:bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring motion-reduce:transition-none">
-    <span className="row-span-2 self-center"><AgentMark agentKey={agentKey} name={author} small /></span>
-    <span className={`line-clamp-2 break-words text-[15px] leading-5 tracking-[-0.005em] ${needsYou ? "font-semibold" : "font-medium"}`}>{done && <CheckIcon aria-hidden className="mr-1 inline size-3.5 align-[-2px] text-muted-foreground" />}{title}</span>
-    <span className="col-start-3 row-span-2 row-start-1 flex flex-col items-end gap-1 self-center text-meta text-muted-foreground">
+  const hasEnd = !!thumb || !!type || !!due || hasMarks;
+  // The row prints no author, so its accessible name leads with it (a verified Courier message: its verified sender, as the sender line shows); the name replaces the button's own text, so it carries the rest of the row too.
+  const name = [courier?.from ?? author, text, note, courier && `via ${courier.via}`, type && cardTypeLabel(type), !needsYou && status !== "Information" && status, (priority === 0 || priority === 1) && `Priority ${priority}`, replies?.count && repliesWords(replies), due && dueLabel(due, now).text]
+    .filter((part): part is string => typeof part === "string" && part.trim() !== "").join(". ");
+  return <button type="button" onClick={onOpen} {...opens} aria-label={name}
+    className="flex min-h-11 w-full min-w-0 items-start gap-3 px-4 pb-3 pt-3.5 text-left text-card-foreground transition-colors duration-150 active:bg-muted/50 fine:hover:bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring motion-reduce:transition-none min-[600px]:px-5 min-[600px]:pb-3.5 min-[600px]:pt-4">
+    <span className="-my-[3px] shrink-0"><AgentMark agentKey={agentKey} name={author} small /></span>
+    <span className="min-w-0 flex-1">
+      <span className={textClass}>{doneMark}{text}</span>
+      {noteLine}
+      {courier && <span className="mt-1 flex min-w-0 items-center gap-1.5 text-[13px] leading-[18px] text-muted-foreground">
+        <CourierMark />
+        <span className="min-w-0 truncate font-medium text-foreground/80">{courier.from ?? author}</span>
+        {courier.from && <span className="sr-only">{`via ${courier.via}`}</span>}
+      </span>}
+    </span>
+    {hasEnd && <span className="flex shrink-0 flex-col items-end gap-1 text-meta text-muted-foreground">
       <TypeLabel type={type} />
       {thumb ? <span className="relative size-11 overflow-hidden rounded-[10px] border border-border bg-muted">
         <img src={thumb.src} alt="" loading="lazy" className="size-full object-cover" />
         {thumb.video && <span aria-hidden className="absolute bottom-0.5 left-0.5 flex size-4 items-center justify-center rounded-full bg-black/60 text-white"><PlayIcon className="size-[9px]" /></span>}
-      </span> : due ? <DueMark due={due} now={now} className="whitespace-nowrap" /> : <ShortTime relative at={createdAt} className="whitespace-nowrap tabular-nums" />}
-      <span className="flex items-center gap-2 empty:hidden"><PriorityMark priority={priority} /><ReplyCount replies={replies} />{!needsYou && <StatusMark status={status} />}</span>
-    </span>
-    <span className="col-start-2 flex min-w-0 items-center gap-1.5 text-[13px] leading-[18px] text-muted-foreground">
-      {courier && <CourierMark />}
-      {/* A Courier row has no description, so its sender may take the rest of the line. */}
-      <span className={`${courier ? "min-w-0" : "max-w-[60%] shrink-0"} truncate font-medium text-foreground/80`}>{courier?.from ?? author}</span>
-      {courier?.from && <span className="sr-only">{`via ${courier.via}`}</span>}
-      {platform && <span className="flex min-w-0 shrink-0 items-center"><PlatformName platform={platform} logoOnly /></span>}
-      {/* A Courier row's line is its mark and sender: a description beside them would be cut to a stray dot on a phone. */}
-      {description && !courier && <span className="min-w-0 truncate before:mr-1.5 before:content-['·']">{description}</span>}
-    </span>
+      </span> : due && <DueMark due={due} now={now} className="whitespace-nowrap" />}
+      {marks}
+    </span>}
   </button>;
 }

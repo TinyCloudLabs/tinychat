@@ -5,6 +5,10 @@
 import { useEffect, useLayoutEffect, useState, type ReactNode } from "react";
 
 import { AskBox } from "@/bots/AskBox";
+import { CreateBotDialog } from "@/bots/CreateBotDialog";
+import { BOTS_STRINGS } from "@/bots/botsStrings";
+import type { BotRoster, BotRosterApi, RosterBot } from "@/bots/botRosterApi";
+import { useBots } from "@/bots/useBots";
 import type { BotsApi } from "@/bots/botsApi";
 import { HomeAskBox } from "@/bots/HomeAskBox";
 import { MainChat } from "@/bots/MainChat";
@@ -85,6 +89,8 @@ const MANY: HomeFeedSource = {
 const ENABLED: BotsApi = {
   getBotsStatus: async () => ({ enabled: true }),
   listMainMessages: async () => [],
+  getMainWeb: async () => ({ mode: "off", hosts: [], available: true, today: { searches: 0, pages: 0, blocked: 0 } }),
+  setMainWeb: () => new Promise(() => {}),
   sendToMain: () => new Promise(() => {}),
 };
 
@@ -153,9 +159,53 @@ function PendingHistoryNotice() {
   </>} />;
 }
 
+function CreateBotPreview({ cap = null }: { cap?: "flat3" | "table" | null }) {
+  const [open, setOpen] = useState(true);
+  const [created, setCreated] = useState<RosterBot | null>(null);
+  const [api] = useState<BotRosterApi>(() => {
+    const createdAt = new Date(FROZEN_NOW).toISOString();
+    const main = { key: "main", name: BOTS_STRINGS.mainName, shape: "pebble", colour: "blue", environment: "private", state: "active", createdAt } as const;
+    const bots: RosterBot[] = cap === "flat3" ? [
+      main,
+      { ...main, key: "b".repeat(32), name: "Research", shape: "sprout", colour: "teal" },
+      { ...main, key: "c".repeat(32), name: "Writing", shape: "bloom", colour: "pink" },
+    ] : [main];
+    const limits = { private: { max: cap === "table" ? 1 : 3, used: bots.length }, regular: { max: 0, used: 0 } };
+    const roster: BotRoster = {
+      bots, deleted: [], limits, capMode: cap ?? "flat3", canCreate: { private: !cap, regular: false },
+    };
+    return {
+      list: async () => ({ ...roster }),
+      create: async (input) => {
+        const bot: RosterBot = { ...input, key: "a".repeat(32), createdAt, state: "active", environment: "private" };
+        roster.bots = [...roster.bots, bot];
+        const privateLimit = { max: limits.private.max, used: roster.bots.length };
+        roster.limits = { ...limits, private: privateLimit };
+        roster.canCreate = { ...roster.canCreate, private: privateLimit.used < privateLimit.max };
+        return bot;
+      },
+      update: async () => { throw new Error("harness: updating is unavailable"); },
+      remove: async () => { throw new Error("harness: removing is unavailable"); },
+    };
+  });
+  const { roster, create } = useBots(api);
+  return <>
+    <Home source={FEED} ask={
+      roster && <CreateBotDialog open={open} onOpenChange={setOpen} roster={roster} onCreate={create} onCreated={setCreated} />
+    } />
+    {created && <output hidden data-created-bot={JSON.stringify(created)} />}
+  </>;
+}
+
 const BASE = { group: "bots", layout: "pane", platform: "web", path: "/chat/feed", displayTitle: true } as const;
 
 export const botsScreens: HarnessScreen[] = [
+  { ...BASE, id: "bots-create", readyWhen: "[data-create-bot-dialog]", viewports: ["phone", "desktop-min", "desktop"],
+    render: () => <CreateBotPreview /> },
+  { ...BASE, id: "bots-create-at-cap", readyWhen: "[data-create-bot-dialog]", viewports: ["phone", "desktop-min", "desktop"],
+    render: () => <CreateBotPreview cap="flat3" /> },
+  { ...BASE, id: "bots-create-main-at-cap", readyWhen: "[data-create-bot-dialog]", viewports: ["phone", "desktop-min", "desktop"],
+    render: () => <CreateBotPreview cap="table" /> },
   { ...BASE, id: "bots-history-expiry-pending", readyWhen: "[data-bots-ask]", render: () => <PendingHistoryNotice /> },
   {
     ...BASE, id: "bots-history-expiry", readyWhen: "[data-history-expiry-notice]",

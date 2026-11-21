@@ -85,7 +85,7 @@ describe("captureRoute", () => {
     expect(labels("exo-voice-note", null)).toEqual(["This iPhone", "Your space"]);
     // A provider the Library does not know draws no middle node.
     expect(labels("exo-upload", { transcript_provider: "someone-else" })).toEqual(["Upload", "Your space"]);
-    expect(labels("granola", { transcript_provider: "assemblyai" })).toEqual(["granola", "Your space"]);
+    expect(labels("otter", { transcript_provider: "assemblyai" })).toEqual(["otter", "Your space"]);
   });
 });
 

@@ -26,7 +26,11 @@ import { createAuthRouter } from "./routes/auth.js";
 import { mcpChatFromEnv } from "./mcp-meetings/config.js";
 import { BotHistory } from "./bot-history.js";
 import { createBotHistoryRouter, startBotHistoryDrain } from "./routes/bot-history.js";
-import { botsFromEnv, createBotsRouter } from "./routes/bots.js";
+import { botsFromEnv, createBotsRouter, removeBotFromService } from "./routes/bots.js";
+import { capModeFromEnv, planFor } from "./bot-caps.js";
+import { BotsRegistry, turnListHook } from "./bots-registry.js";
+import { BOT_DELETION_PASS_MS, BotDeletions } from "./bot-deletion.js";
+import { resolveTier } from "./billing/stripe.js";
 import { createDelegationRouter } from "./routes/delegations.js";
 import { createExoGrantRouter } from "./routes/exo-grant.js";
 import { createAgentRouter } from "./routes/agent.js";
@@ -50,6 +54,8 @@ import {
   ConnectorControlStore,
   ConnectorWebhookLimiters,
   createConnectorWebhookCompanionRouter,
+  createConnectorPurgeRouter,
+  respondToConnectorPurgeCheck,
   createConnectorWebhookHandler,
   createConnectorWebhookHostGuard,
   createConnectorWebhookParserErrorHandler,
@@ -58,6 +64,7 @@ import {
   DEFAULT_CONNECTOR_SOURCE,
 } from "./routes/connector-webhooks.js";
 import { createConnectorCredentialRouter } from "./routes/connector-credentials.js";
+import { credentialRouteUnavailable } from "./routes/route-unavailable.js";
 import { createConnectorMeetingsRouter } from "./routes/connector-meetings.js";
 import { createGoogleOAuthRouter, normalizeAppOrigin } from "./routes/google-oauth.js";
 import { createPrivateCloudOnlyBulkDeleteRouter, createTranscriberRouter } from "./routes/transcriber.js";
@@ -129,6 +136,7 @@ import {
   googleMeetOAuthEnabled,
   googleOAuthConfigFromEnv,
 } from "./services/google-oauth.js";
+import { createGranolaProxyRouter, granolaProxyEnabled } from "./routes/granola-proxy.js";
 import { ConnectorFetchWorker } from "./services/fetch-worker.js";
 import { FirefliesMeetingFetcher } from "./services/fireflies-fetch.js";
 import { backendIngestEnabled as ingestFlagEnabled, IngestModeService } from "./services/ingest-mode.js";
@@ -331,11 +339,12 @@ async function main() {
     return;
   }
   const redpillApiKey = process.env.REDPILL_API_KEY;
+  const mcpChat = mcpChatFromEnv(process.env);
   let agentStreamPolicy: AgentStreamPolicy | undefined;
   try {
     agentStreamPolicy = agentStreamPolicyFromEnv(
       process.env,
-      Boolean(AGENT_DID && ELIZA_SERVICE_URL && ELIZA_SERVICE_SECRET && redpillApiKey),
+      Boolean(((AGENT_DID && ELIZA_SERVICE_URL && ELIZA_SERVICE_SECRET) || mcpChat.mcpMeetings) && redpillApiKey),
     );
   } catch (error) {
     console.error(error instanceof Error ? error.message : "Invalid agent stream configuration");
@@ -381,6 +390,7 @@ async function main() {
     console.warn(`[startup] hosted AssemblyAI is off (${assemblyAiHosted.reason}); clients can still use their own key.`);
   }
 
+  let credentialRouteMounted = false;
   if (connectorWebhooksEnabled()) {
     const webhookSecrets = validateConnectorWebhookSecrets(process.env);
     if (!webhookSecrets.ok) {
@@ -572,9 +582,18 @@ async function main() {
 
   // Share these stores with the optional routes, but keep retention maintenance alive even when
   // the connector webhook feature is disabled.
-  const connectorControl = new ConnectorControlStore(node);
+  const connectorKeyDirectory = process.env.CONNECTOR_KEY_STORE_DIR?.trim();
+  const connectorRetention = connectorKeyDirectory
+    ? await import("./services/connector-key-store.js").then(({ ConnectorKeyStore, startConnectorKeyRotation }) => {
+        const store = ConnectorKeyStore.open(connectorKeyDirectory);
+        return { store, startRotation: () => startConnectorKeyRotation(store) };
+      })
+    : undefined;
+  const connectorKeyStore = connectorRetention?.store;
+  const connectorControl = new ConnectorControlStore(node, undefined, connectorKeyStore);
   const connectorQueue = new ConnectorQueue(node, {
     storageLane: backendStorageLane,
+    retentionKeys: connectorKeyStore,
     isDisabled: async address => (await connectorControl.readDisabled(address)) !== null,
   });
   // ONE set of instances shared by BOTH connector mounts, the public one below and the
@@ -591,10 +610,14 @@ async function main() {
         // companions' "may this browser drain?" must never disagree. Dark by default
         // (CONNECTOR_BACKEND_INGEST_ENABLED); with the flag off it makes no node call at all.
         const credentialRows = new KvCredentialRowStore(node, backendStorageLane);
+        const credentials = new CredentialStore(credentialRows, {
+          credentialKeys: connectorKeyStore,
+          upstreamRevoker: secret => firefliesOAuth().revoke(secret),
+        });
         const modes = new IngestModeService(node, {
           enabled: backendIngestEnabled,
           hasOAuthCredential: async (source, address) => {
-            const row = await credentialRows.read(source, address);
+            const row = await credentials.status(source, address);
             return row?.kind === "oauth" && !row.revokedAt;
           },
         });
@@ -603,6 +626,7 @@ async function main() {
           tokens,
           queue,
           control,
+          credentials,
           modes,
           backendStorageLane,
           // §5.4/§4.7 — the drain worker. Under OPTION C it surfaces the pending id list to the
@@ -672,7 +696,7 @@ async function main() {
       backendKv: exoBackendKv,
       openOwnerGrant,
       webhooks: new WebhookTokenService(node),
-      controls: new ConnectorControlStore(node),
+      controls: connectorControl,
       grantHolders: exoGrantHolders,
       frontendOrigin: process.env.FRONTEND_URL ?? "https://localhost:5186",
     });
@@ -741,6 +765,7 @@ async function main() {
       createConnectorWebhookHandler({
         tokens: connectorWebhooks.tokens,
         queue: connectorWebhooks.queue,
+        control: connectorWebhooks.control,
         limiters: connectorWebhookLimiters,
         onDelivery: createIngestOnDelivery({ modes: connectorWebhooks.modes }),
       }),
@@ -829,6 +854,10 @@ async function main() {
   // A prefix mount is correct HERE and forbidden in the raw window above — every path inside
   // the router is ONE segment deep, so none of them can be matched by the public
   // `/:source/:token` mount.
+  // Direct imports consult the ledger even when notification delivery is disabled.
+  app.post("/api/connectors/webhooks/purge-check", authMiddleware, (req, res) =>
+    respondToConnectorPurgeCheck(connectorControl, req, res));
+  app.use("/api/connectors/webhooks", createConnectorPurgeRouter({ control: connectorControl, authMiddleware }));
   if (connectorWebhooks) {
     app.use(
       "/api/connectors/webhooks",
@@ -887,6 +916,7 @@ async function main() {
       const contentMaster = currentContentMaster();
       const ingestGuard = new IngestInstanceGuard(new KvInstanceLeaseStore(node));
       const contentStore = new ContentStore(contentBlobs, {
+        retentionKeys: connectorKeyStore,
         purgeLedger: connectorWebhooks.control,
         master: () => contentMaster,
         mutationGuard: ingestGuard,
@@ -896,11 +926,9 @@ async function main() {
       mountContentContinuityRoute(app, process.env, contentMaster, did, async () =>
         contentStore.probeIndex(await contentBlobs.findIndex()),
       );
-      const credentialStore = new CredentialStore(
-        new KvCredentialRowStore(node, connectorWebhooks.backendStorageLane),
-        { upstreamRevoker: (secret) => firefliesOAuth().revoke(secret) },
-      );
+      const credentialStore = connectorWebhooks.credentials;
 
+      credentialRouteMounted = true;
       app.use(
         "/api/connectors/credentials",
         authMiddleware,
@@ -913,7 +941,7 @@ async function main() {
             notifications: {
               disable: async (source, address) => {
                 connectorDrainAbort.abort(address);
-                await connectorWebhooks.control.markDisabled(address, source);
+                await connectorWebhooks.control.markDisabled(address, source, true);
                 await connectorWebhooks.tokens.revoke(address);
               },
             },
@@ -1010,6 +1038,11 @@ async function main() {
       ).start();
     }
   }
+  // An unmounted credential route answers 404 with the backend's own marker, so a client can tell
+  // "this deployment does not have it" from a 404 that came from somewhere else.
+  if (!credentialRouteMounted) {
+    app.use("/api/connectors/credentials", (_req, res) => credentialRouteUnavailable(res));
+  }
   // Retention runs independently of ingest flags and cohort membership. The sweeper owns index
   // enumeration inside each guarded pass so a KV list failure is logged and retried next interval,
   // never a reason to prevent backend startup.
@@ -1019,6 +1052,7 @@ async function main() {
       new KvInstanceLeaseStore(node),
     );
     const retentionContent = new ContentStore(retentionBlobs, {
+      retentionKeys: connectorKeyStore,
       purgeLedger: connectorControl,
       mutationGuard: retentionGuard,
     });
@@ -1114,7 +1148,7 @@ async function main() {
         // process already resolved the web app origin once, with the localhost/TLS fallback a bare
         // env read does not have. CORS also accepts Exo's fixed app origins, but the callback page
         // only returns to an allowlisted web origin (FRONTEND_URL, tinycloud.chat once FRONTEND_URL
-        // is the Home site, or the fixed Home origin for `home.`/`hometab.` states); the Exo apps
+        // is the Home or tinycloud.one site, or the fixed Home origin for `home.`/`hometab.` states); the Exo apps
         // return through the fixed native deep link.
         appOrigin: FRONTEND_URL,
         frontendOrigins,
@@ -1122,20 +1156,52 @@ async function main() {
     );
   }
 
+  // The Granola REST pass-through (granola plan S1). Same dark-ship shape as the Google OAuth
+  // proxy: flag off ⇒ no mount ⇒ 404. It sits in the normal window — JSON parser, global CSRF
+  // (GETs exempt anyway), `applyRateLimiters`' granolaProxy bucket and `authMiddleware` — and
+  // forwards ONLY the three documented read paths to the pinned Granola host. The user's key
+  // arrives per-request in `x-granola-key` and is never stored or logged.
+  if (granolaProxyEnabled()) {
+    app.use("/api/connectors/granola", authMiddleware, createGranolaProxyRouter());
+  }
+
   // Tiny bots (BOTS_ENABLED): Main bot chat proxied to the bots service for listed accounts; status always answers.
   const botsConfig = botsFromEnv(process.env);
-  if (botsConfig && process.env.BOTS_HISTORY_ENABLED === "true") {
-    const history = new BotHistory(node, backendPrivateKey as `0x${string}`, TINYCLOUD_HOST);
-    app.use("/api/bots/history", createBotHistoryRouter(history, botsConfig, authMiddleware));
-    const historyDrain = startBotHistoryDrain(history, botsConfig);
+  // Stored history permissions are read and removed here whether or not the history routes are on, so that deleting
+  // a bot always clears one that was stored earlier.
+  const botHistory = botsConfig ? new BotHistory(node, backendPrivateKey as `0x${string}`, TINYCLOUD_HOST) : undefined;
+  if (botsConfig && botHistory && process.env.BOTS_HISTORY_ENABLED === "true") {
+    app.use("/api/bots/history", createBotHistoryRouter(botHistory, botsConfig, authMiddleware));
+    const historyDrain = startBotHistoryDrain(botHistory, botsConfig);
     botsConfig.onTurnFinished = () => { void historyDrain.drain(); };
     process.once("SIGTERM", historyDrain.stop);
     process.once("SIGINT", historyDrain.stop);
   }
-  app.use("/api/bots", createBotsRouter({ config: botsConfig, authMiddleware, paidLimiter: paidChatLimiter }));
+  // The record of each owner's bots is kept in the backend's own space and written through the one storage lane.
+  // Finding every owner pages through the store's listing.
+  const botsRegistry = botsConfig ? new BotsRegistry({ get: exoBackendKv.get, put: exoBackendKv.put, list: options => node.kv.list(options) }) : undefined;
+  if (botsConfig && botsRegistry) botsConfig.listForTurn = turnListHook(botsRegistry);
+  // A deletion is carried out when it is recorded, and on a pass for whatever is still outstanding, as after a restart.
+  const botDeletions = botsConfig && botsRegistry && botHistory ? new BotDeletions({
+    registry: botsRegistry,
+    removeFromService: (address, key, seq) => removeBotFromService(botsConfig, address, key, seq),
+    storedGrantCid: (address, key) => botHistory.storedGrantCid(address, key),
+    forgetGrant: (address, key) => botHistory.forget(address, key),
+    revoke: cid => botHistory.revoke(cid),
+  }) : undefined;
+  if (botDeletions) {
+    void botDeletions.sweep();
+    setInterval(() => { void botDeletions.sweep(); }, BOT_DELETION_PASS_MS).unref();
+  }
+  app.use("/api/bots", createBotsRouter({
+    config: botsConfig, authMiddleware, paidLimiter: paidChatLimiter, registry: botsRegistry,
+    // Read only when bots are configured: with bots off no route uses it, and startup calls nothing it does not need.
+    ...(botsConfig ? { capMode: capModeFromEnv(process.env) } : {}),
+    planOf: async address => planFor((await resolveTier(address)).tier),
+    onDeleting: (address, key) => { void botDeletions?.run(address, key); },
+  }));
 
   // MCP chat (MCP_CHAT_ENABLED) serves its listed accounts without eliza-service; every other account keeps the eliza path.
-  const mcpChat = mcpChatFromEnv(process.env);
   if ((AGENT_DID && ELIZA_SERVICE_URL && ELIZA_SERVICE_SECRET) || mcpChat.mcpMeetings) {
     const elizaServiceUrl = ELIZA_SERVICE_URL?.replace(/\/$/, "");
     const meetingRollout = meetingRolloutFromEnv(process.env);
@@ -1325,6 +1391,8 @@ async function main() {
   // Queue and purge-ledger retention is not an ingestion feature: disconnected records must
   // expire even while webhook routes are disabled. This timer only deletes expired state and
   // reports counts; it never drains or surfaces meeting IDs.
+  // The unref'd rotation stays active through shutdown so the drain cannot delay key erasure.
+  connectorRetention?.startRotation();
   const connectorQueueMaintenance = startConnectorQueueMaintenanceTimer({
     listQueueEntries: createWebhookQueueDirectory(node),
     listLedgerAddresses: createWebhookPurgeLedgerDirectory(node),

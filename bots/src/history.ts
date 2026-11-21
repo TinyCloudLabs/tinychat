@@ -3,9 +3,13 @@ import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readF
 import { createHash, randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { recoverMessageAddress } from "viem";
+import { isRecord } from "./guards";
 import type { BotLayout } from "./layout";
+import { BOT_KEY, botIdFor } from "./owner";
 
 const DOMAIN = "tinychat.bot-history.storage/v1\n";
+/** Where the backend saves a bot's records in its owner's space; a sibling's receipt must name the path it wrote. */
+const HISTORY_PREFIX = "xyz.tinycloud.tinychat/threads/bots/v1/";
 const hash = (s: string) => createHash("sha256").update(s).digest("hex");
 // Both names reach the same production TinyCloud node (one node DID): node.tinycloud.xyz through Cloudflare, the default
 // since TC-2923, and tee.node.tinycloud.xyz, the default before it. A receipt signed under either name is for that node.
@@ -14,7 +18,14 @@ const PRODUCTION_NODE_ORIGINS = ["https://node.tinycloud.xyz", "https://tee.node
 const sameNode = (host: unknown, expected: string) => host === expected
   || (typeof host === "string" && PRODUCTION_NODE_ORIGINS.includes(host) && PRODUCTION_NODE_ORIGINS.includes(expected));
 export interface HistoryOptions { signerDid: string; host: string; policy: "notice-then-expiry-30-days" }
-export interface JournalBatch { v: 1; generation: string; seq: number; challenge: string; record: unknown }
+export type ActivityRecord = {
+  type: "activity";
+  id: string;
+  count: number;
+  at: string;
+} & ({ verb: "ran_commands" | "changed_files" } | { verb: "messaged_bot"; targetKey: string });
+/** `bot` is a sibling's key. It is inside the batch, so it is inside the hash the backend signs. Main's batches have none. */
+export interface JournalBatch { v: 1; generation: string; seq: number; challenge: string; record: unknown; bot?: string }
 export interface ExpiryNotice { id: string; expiresAt: number; firstAttemptAt: number; deliveredAt?: number; deleteAt?: number }
 export function noticeDeadline(notice: ExpiryNotice, renderedAt: number): number {
   if (notice.deleteAt !== undefined) return notice.deleteAt;
@@ -22,7 +33,7 @@ export function noticeDeadline(notice: ExpiryNotice, renderedAt: number): number
   return renderedAt > base ? renderedAt + 30 * 86_400_000 : base;
 }
 export interface StagedHistory { seq: number; challenge: string; batchHash: string; envelope: unknown }
-interface Journal { v: 1; generation: string; owner: string; legacyPending: boolean; batches: JournalBatch[]; receipts: unknown[]; draft?: { text: string }; notice?: ExpiryNotice; permissionValidUntil?: number; staged?: StagedHistory }
+interface Journal { v: 1; generation: string; owner: string; key?: string; legacyPending: boolean; batches: JournalBatch[]; receipts: unknown[]; draft?: { text: string }; notice?: ExpiryNotice; permissionValidUntil?: number; staged?: StagedHistory }
 const MAX_JOURNAL_BYTES = 8 * 1024 * 1024;
 export class HistoryJournal {
   readonly #path: string;
@@ -32,9 +43,12 @@ export class HistoryJournal {
     if (existsSync(this.#path)) {
       if (!lstatSync(this.#path).isFile()) throw new Error("invalid_history_journal");
       this.#state = JSON.parse(readFileSync(this.#path, "utf8"));
+      const key = this.#state.key;
       if (this.#state.v !== 1 || !Array.isArray(this.#state.batches) || !Array.isArray(this.#state.receipts)
         || this.#state.receipts.length > this.#state.batches.length || !/^[a-f0-9]{32}$/.test(this.#state.generation)
-        || hash(this.#state.owner) !== layout.botId || this.#state.batches.some((batch, i) => batch.seq !== i + 1 || batch.generation !== this.#state.generation || !/^[a-f0-9]{64}$/.test(batch.challenge))) throw new Error("invalid_history_journal");
+        || (key !== undefined && !BOT_KEY.test(key)) || (layout.botKey !== undefined && layout.botKey !== key)
+        || typeof this.#state.owner !== "string" || botIdFor(this.#state.owner, key) !== layout.botId
+        || this.#state.batches.some((batch, i) => batch.seq !== i + 1 || batch.generation !== this.#state.generation || !/^[a-f0-9]{64}$/.test(batch.challenge) || batch.bot !== key)) throw new Error("invalid_history_journal");
       const notice = this.#state.notice;
       if (notice && (!/^[a-f0-9]{64}$/.test(notice.id) || !Number.isFinite(notice.expiresAt) || !Number.isFinite(notice.firstAttemptAt)
         || notice.firstAttemptAt < notice.expiresAt || (notice.deliveredAt !== undefined && (!Number.isFinite(notice.deliveredAt)
@@ -42,7 +56,7 @@ export class HistoryJournal {
         || (notice.deliveredAt === undefined && notice.deleteAt !== undefined))) throw new Error("invalid_history_notice");
       if (this.#state.draft) this.finishDraft({ type: "interrupted" });
     } else {
-      this.#state = { v: 1, generation: randomBytes(16).toString("hex"), owner: "", legacyPending: existsSync(layout.stateSnapshot), batches: [], receipts: [] };
+      this.#state = { v: 1, generation: randomBytes(16).toString("hex"), owner: "", ...(layout.botKey ? { key: layout.botKey } : {}), legacyPending: existsSync(layout.stateSnapshot), batches: [], receipts: [] };
     }
   }
   #save() {
@@ -54,14 +68,14 @@ export class HistoryJournal {
     try { fsyncSync(dir); } finally { closeSync(dir); }
   }
   begin(owner: string, reserve: number) {
-    if (hash(owner) !== this.layout.botId || (this.#state.owner && this.#state.owner !== owner)) throw new Error("history_owner_mismatch");
+    if (botIdFor(owner, this.#state.key) !== this.layout.botId || (this.#state.owner && this.#state.owner !== owner)) throw new Error("history_owner_mismatch");
     if (Buffer.byteLength(JSON.stringify(this.#state)) + reserve > MAX_JOURNAL_BYTES) throw new Error("history_full");
     this.#state.owner = owner;
     this.#save();
   }
   append(record: unknown) {
     if (!this.#state.owner) throw new Error("history_owner_missing");
-    const batch: JournalBatch = { v: 1, generation: this.#state.generation, seq: this.#state.batches.length + 1, challenge: randomBytes(32).toString("hex"), record };
+    const batch: JournalBatch = { v: 1, generation: this.#state.generation, seq: this.#state.batches.length + 1, challenge: randomBytes(32).toString("hex"), record, ...(this.#state.key ? { bot: this.#state.key } : {}) };
     if (Buffer.byteLength(JSON.stringify(this.#state)) + Buffer.byteLength(JSON.stringify(batch)) > MAX_JOURNAL_BYTES) throw new Error("history_full");
     this.#state.batches.push(batch);
     this.#save();
@@ -110,10 +124,14 @@ export class HistoryJournal {
   get legacyPending(): boolean { return this.#state.legacyPending; }
   messages() {
     return this.#state.batches.flatMap(batch => {
-      const record = batch.record as { type?: string; text?: string; at?: string };
+      const record = batch.record as { type?: string; text?: string; at?: string; outcome?: { messageId?: string } };
       return (record.type === "user" || record.type === "assistant") && typeof record.text === "string"
-        ? [{ id: `history-${batch.generation}-${batch.seq}`, role: record.type === "user" ? "user" as const : "bot" as const, text: record.text, at: record.at ?? "" }] : [];
+        ? [{ id: record.type === "assistant" && typeof record.outcome?.messageId === "string" ? record.outcome.messageId : `history-${batch.generation}-${batch.seq}`, role: record.type === "user" ? "user" as const : "bot" as const, text: record.text, at: record.at ?? "" }] : [];
     });
+  }
+  activities(): ActivityRecord[] {
+    return this.#state.batches.flatMap(({ record }) =>
+      isRecord(record) && record.type === "activity" ? [record as unknown as ActivityRecord] : []);
   }
   stage(staged: StagedHistory) {
     const batch = this.#state.batches[this.#state.receipts.length];
@@ -141,6 +159,9 @@ export class HistoryJournal {
       || typeof spaceId !== "string" || !/^tinycloud:pkh:eip155:1:0x[a-fA-F0-9]{40}:applications$/.test(spaceId)
       || spaceId.split(":")[4]?.toLowerCase() !== this.#state.owner.split(":")[4]?.toLowerCase()
       || typeof ciphertextHash !== "string" || !/^[a-f0-9]{64}$/.test(ciphertextHash)) throw new Error("invalid_history_receipt");
+    // A sibling's receipt also names the sibling and the exact path its record was written to.
+    const key = this.#state.key;
+    if (key !== undefined && (body.key !== key || body.path !== `${HISTORY_PREFIX}${this.layout.botId}/${batch.generation}/${batch.seq}-${batch.challenge}`)) throw new Error("invalid_history_receipt");
     const signer = await recoverMessageAddress({ message: DOMAIN + JSON.stringify(body), signature });
     if (`did:pkh:eip155:1:${signer.toLowerCase()}` !== this.options.signerDid.toLowerCase()) throw new Error("history_wrong_signer");
   }

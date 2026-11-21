@@ -50,11 +50,11 @@ describe("registry", () => {
     expect(framedApp("xyz.tinycloud.secrets")).toBeUndefined();
     expect(framedApp("capture")).toBeUndefined();
     expect(framedApp("xyz.tinycloud.explorer")?.id).toBe("xyz.tinycloud.explorer");
-    // Credentials and Courier open in a new tab.
+    // Credentials opens in a new tab; Courier is framed inside One.
     expect(appTarget(oneApp("xyz.tinycloud.opencredentials")!, "https://tinycloud.one")).toEqual({ kind: "newTab", url: "https://credentials.org/" });
-    expect(appTarget(oneApp("xyz.tinycloud.courier")!, "https://tinycloud.one")).toEqual({ kind: "newTab", url: "https://share.tinycloud.xyz/courier" });
+    expect(appTarget(oneApp("xyz.tinycloud.courier")!, "https://tinycloud.one")).toEqual({ kind: "route", path: "/chat/apps/xyz.tinycloud.courier" });
     expect(framedApp("xyz.tinycloud.opencredentials")).toBeUndefined();
-    expect(framedApp("xyz.tinycloud.courier")).toBeUndefined();
+    expect(framedApp("xyz.tinycloud.courier")?.id).toBe("xyz.tinycloud.courier");
   });
 
   test("iOS leaves Account out; web and Android keep it", () => {
@@ -65,7 +65,7 @@ describe("registry", () => {
   });
 
   test("Courier is framed from exactly https://share.tinycloud.xyz/courier, read-only, and no other share page is framed", () => {
-    // Courier opens in a new tab (framed: false); its entry's origin, path and access are what this checks.
+    // Courier is framed inside One; its entry's origin, path and access are what this checks.
     const courier = oneApp("xyz.tinycloud.courier");
     if (courier?.kind !== "framed") throw new Error("Courier is a TinyCloud web app");
     expect(courier.origin).toBe("https://share.tinycloud.xyz");
@@ -75,6 +75,20 @@ describe("registry", () => {
     expect(courier.ceiling({ address: "0x1111111111111111111111111111111111111111", chainId: 1 }).map(({ permission }) => permission)).toEqual([
       { service: "tinycloud.kv", space: "agents", path: "xyz.tinycloud.courier/", actions: ["get", "list"], skipPrefix: true },
     ]);
+  });
+
+  test("the phone app frames only Explorer, only on its exact origins; Account, Courier and the rest open outside", () => {
+    const explorer = oneApp("xyz.tinycloud.explorer")!;
+    for (const origin of ["capacitor://localhost", "https://localhost"]) {
+      expect(appTarget(explorer, origin)).toEqual({ kind: "route", path: "/chat/apps/xyz.tinycloud.explorer" });
+      for (const id of ["xyz.tinycloud.account", "xyz.tinycloud.courier", "xyz.tinycloud.secrets", "xyz.tinycloud.opencredentials"] as const) {
+        expect(appTarget(oneApp(id)!, origin).kind).toBe("newTab");
+      }
+    }
+    // A page elsewhere on a localhost-like origin is not the phone app.
+    for (const origin of ["http://localhost", "https://localhost:8443", "https://evil.localhost", "capacitor://localhost:1", "capacitor://evil", "https://localhost.evil.example"]) {
+      expect(appTarget(explorer, origin)).toEqual({ kind: "newTab", url: "https://explorer.tinycloud.xyz/" });
+    }
   });
 });
 

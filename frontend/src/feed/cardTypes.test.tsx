@@ -115,6 +115,7 @@ async function mount(entries: HomeFeedEntry[]) {
   clock ??= installFakeClock();
   globalThis.fetch = (async () => new Response(null, { status: 404 })) as typeof fetch;
   globalThis.matchMedia = window.matchMedia.bind(window);
+  window.innerWidth = 800; // these tests open a card in its row (phone width)
   MotionGlobalConfig.skipAnimations = true;
   const host = document.createElement("div");
   document.body.append(host);
@@ -213,7 +214,6 @@ describe("the Courier mark needs a verified Courier publisher", () => {
   const OTHER: TestSource = { sourceId: "agent-two", agentDid: "did:key:isolated-test-other", label: "Other agent", ...resources("testtwo") };
   const LABELLED: TestSource = { sourceId: "agent-three", agentDid: "did:key:isolated-test-labelled", label: "Courier", ...resources("testthree") };
   const marks = (node: ParentNode) => node.querySelectorAll("[data-courier]").length;
-  const nameOf = (line: HTMLElement) => line.querySelector<HTMLElement>("button > span:last-child > span:first-child")!;
   const header = (host: ParentNode, cardId: string) => openCard(host, cardId)!.querySelector<HTMLElement>("[data-agent-line]")!;
   const detailsLabel = (host: ParentNode, cardId: string) => [...openCard(host, cardId)!.querySelectorAll("button")].find((node) => node.textContent?.startsWith("Details"))!.getAttribute("aria-label");
   const withoutDetails = (host: ParentNode, cardId: string) => openCard(host, cardId)!.innerHTML.replace(/<button[^>]*>Details.*?<\/button>/, "");
@@ -265,7 +265,7 @@ describe("the Courier mark needs a verified Courier publisher", () => {
       expect(marks(line)).toBe(0);
       expect(line.querySelector(".sr-only")).toBeNull();
       expect(line.textContent).not.toContain(SENDER);
-      expect(nameOf(line).textContent).toBe(from.label);
+      expect(line.textContent).not.toContain(from.label);
       // The task type is untouched.
       expect(line.querySelector('[data-card-type="answer"]')?.textContent).toBe("Answer");
 
@@ -294,7 +294,7 @@ describe("the Courier mark needs a verified Courier publisher", () => {
     const line = row(host, "own")!;
     expect(marks(line)).toBe(0);
     expect(line.querySelector(".sr-only")).toBeNull();
-    expect(nameOf(line).textContent).toBe(COURIER.label);
+    expect(line.textContent).not.toContain(COURIER.label);
     expect(line.textContent).not.toContain(SENDER);
     await open(host, "own");
     expect(marks(openCard(host, "own")!)).toBe(0);

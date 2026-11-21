@@ -37,13 +37,54 @@ const PATTERNS: ReadonlyArray<[reason: string, pattern: RegExp]> = [
   ["an OAuth/approval URL", /\bhttps?:\/\/[^\s]*\/(?:oauth2?|authorize|login\/device|device\/approve|consent)\b/i],
 ];
 
+// What a browser opens is the parsed URL, not the text it was written as: `:443`, `/./`, backslashes, a fullwidth or
+// ideographic dot, a soft hyphen, `%2E` in the host, and a tab or newline inside the link all parse to the same
+// address. So each link in a string is tested in its parsed form too, and an OpenKey one-tap path is refused on the
+// parsed host whatever follows `/a/`. The page's link chips and the raw `href`s both go through findSecrets, which makes
+// this the one place that enforces it.
+const LINK_IN_TEXT = /\bhttps?:[\\/]{2}[^\s<>"'`]+/gi;
+
+function parsedLinks(text: string): string[] {
+  const out: string[] = [];
+  const add = (candidate: string) => {
+    try {
+      out.push(new URL(candidate).href);
+    } catch {
+      // not a link
+    }
+  };
+  add(text);
+  for (const match of text.matchAll(LINK_IN_TEXT)) add(match[0].replace(/[.,;:!?)\]}]+$/, ""));
+  return out;
+}
+
+/**
+ * An OpenKey one-tap approval link: any openkey.so host whose first path segment is `a`, however the path is spelled. The
+ * path is percent-decoded before it is split (a router decodes it), so `/%61/`, `/a%2F` and an empty first segment
+ * (`//a/`) are the same address. A path that does not decode is treated as one: it cannot be told apart from a spelling.
+ */
+function isOneTapLink(href: string): boolean {
+  const url = new URL(href), host = url.hostname.replace(/\.+$/, "");
+  if (host !== "openkey.so" && !host.endsWith(".openkey.so")) return false;
+  let path: string;
+  try { path = decodeURIComponent(url.pathname); } catch { return true; }
+  return path.split("/").find((segment) => segment !== "")?.toLowerCase() === "a";
+}
+
+function textReason(text: string): string | undefined {
+  for (const [reason, pattern] of PATTERNS) if (pattern.test(text)) return reason;
+  return consentUrlIn(text) ? "an approval or consent link" : undefined;
+}
+
 /** Every string in the record that looks like a secret or an approval link, by field path. */
 export function findSecrets(value: unknown, path = ""): SecretFinding[] {
   if (typeof value === "string") {
-    for (const [reason, pattern] of PATTERNS) {
-      if (pattern.test(value)) return [{ path: path || "(value)", reason }];
+    const reason = textReason(value);
+    if (reason) return [{ path: path || "(value)", reason }];
+    for (const href of parsedLinks(value)) {
+      const parsed = textReason(href) ?? (isOneTapLink(href) ? "an OpenKey one-tap approval link" : undefined);
+      if (parsed) return [{ path: path || "(value)", reason: parsed }];
     }
-    if (consentUrlIn(value)) return [{ path: path || "(value)", reason: "an approval or consent link" }];
     return [];
   }
   if (Array.isArray(value)) return value.flatMap((item, index) => findSecrets(item, path ? `${path}.${index}` : String(index)));

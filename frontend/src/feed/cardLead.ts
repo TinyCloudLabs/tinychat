@@ -1,9 +1,8 @@
-// The one line a folded card shows under its title (design mock, 11-17): for a question, why it is being asked now;
-// for an update, what moved. A card whose record has neither gives none, and the row falls back to the card's body.
+// The line a folded ship card shows under its title: what moved. Every other card shows its summary, or its title when it
+// has none (HomeFeedEntries describe); the row never falls back to a question's why-now or to the body.
 import type { BoardRecord } from "@tinyboilerplate/core/feed/sitrep";
 
 export function cardLead(record: BoardRecord): string | undefined {
-  if (record.kind === "ask") return record.context.whyNow || undefined;
   if (record.kind === "ship") return `${record.status.charAt(0).toUpperCase()}${record.status.slice(1)} · ${record.component} ${record.prevVersion ? `${record.prevVersion} → ` : ""}${record.version}`;
   return undefined;
 }

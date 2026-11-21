@@ -19,7 +19,7 @@ import type { SandboxLauncher } from "./bot";
 import type { BotLayout } from "./layout";
 
 /** Why a deletion kept the bot's working state: a fixed code, logged as `cause`. */
-export type DeleteSkip = "archive_pending" | "closing" | "teardown_failed" | "unsafe_path" | "mounted" | "error";
+export type DeleteSkip = "archive_pending" | "closing" | "gateway_cleanup_pending" | "teardown_failed" | "unsafe_path" | "mounted" | "error";
 
 /** Records that the bot served a request at `at`: a temporary file, fsynced, renamed over the marker. */
 export function markUsed(layout: BotLayout, at = Date.now()): void {
@@ -49,11 +49,12 @@ export function lastUsed(layout: BotLayout): number | undefined {
 /**
  * Removes the bot's data directory (state snapshot and marker) and its run directory once its sandbox has stopped.
  * Removes nothing unless each one that exists is a directory (not a symlink) resolving to `<resolved root>/<bot id>`,
- * and nothing is mounted at or under either. Returns the check that refused.
+ * and nothing is mounted at or under either. Returns the check that refused. A launcher with off-host state removes
+ * that first; if it throws, nothing local is removed and the caller logs `error`.
  */
 export async function removeWorkingState(
   layout: BotLayout,
-  host: Pick<SandboxLauncher, "mountPoints">,
+  host: Pick<SandboxLauncher, "mountPoints" | "removeState">,
 ): Promise<DeleteSkip | undefined> {
   if (!BOT_ID.test(layout.botId)) return "unsafe_path";
   const dirs: string[] = [];
@@ -67,6 +68,7 @@ export async function removeWorkingState(
     dirs.push(real);
   }
   if (host.mountPoints!().some(point => dirs.some(dir => point === dir || point.startsWith(`${dir}${sep}`)))) return "mounted";
+  await host.removeState?.(layout);
   for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
   return undefined;
 }

@@ -1387,6 +1387,179 @@ paths:
         "503":
           description: Durable disable or local credential deletion failed; retry.
 
+  /api/connectors/granola/v1/notes:
+    get:
+      operationId: listGranolaNotes
+      summary: Stateless pass-through to Granola's GET /v1/notes
+      description: >-
+        A thin relay to `https://public-api.granola.ai`, mounted only when
+        GRANOLA_PROXY_ENABLED is armed. It exists because Granola's CORS preflight
+        404s, so a browser cannot call it directly. The user's personal `grn_…`
+        key arrives per request in `x-granola-key` and is forwarded verbatim as
+        `Authorization: Bearer` — never stored, never logged, never returned.
+        Only the documented query parameters pass; anything else is a 400.
+        The upstream response (status, content-type, body — including Granola's
+        own `{code, message}` error envelope) is relayed verbatim, plus
+        `Retry-After` on a 429.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: x-granola-key
+          in: header
+          required: true
+          description: The caller's own Granola API key, forwarded upstream as the Bearer token.
+          schema:
+            type: string
+            pattern: "^grn_[A-Za-z0-9._~+-]{8,256}$"
+        - name: created_before
+          in: query
+          required: false
+          schema: { type: string }
+        - name: created_after
+          in: query
+          required: false
+          schema: { type: string }
+        - name: updated_after
+          in: query
+          required: false
+          description: The incremental-sync cursor — only notes changed since this instant.
+          schema: { type: string }
+        - name: folder_id
+          in: query
+          required: false
+          schema: { type: string }
+        - name: space_id
+          in: query
+          required: false
+          schema: { type: string }
+        - name: page_size
+          in: query
+          required: false
+          description: "1-30, Granola's own bound."
+          schema: { type: string }
+        - name: cursor
+          in: query
+          required: false
+          schema: { type: string }
+      responses:
+        "200":
+          description: Granola's `{notes, hasMore, cursor}` page, relayed verbatim.
+          content:
+            application/json:
+              schema: { type: object }
+        "400":
+          description: A query parameter or value the proxy does not allow.
+          content:
+            application/json:
+              schema: { type: object }
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "429":
+          description: Granola's rate limit, relayed with its Retry-After header.
+        "502":
+          description: Granola was unreachable or its response could not be read.
+
+  /api/connectors/granola/v1/notes/{id}:
+    get:
+      operationId: getGranolaNote
+      summary: Stateless pass-through to Granola's GET /v1/notes/{id}
+      description: >-
+        The note detail — summary, attendees, calendar event, metadata. Same
+        custody contract as the list route: the key transits `x-granola-key` and
+        nothing is written server-side. `id` must match Granola's `not_…` shape;
+        `include` accepts only `transcript` (the sync always pages transcripts
+        through the dedicated route instead, which cannot hit the 413).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: x-granola-key
+          in: header
+          required: true
+          schema:
+            type: string
+            pattern: "^grn_[A-Za-z0-9._~+-]{8,256}$"
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: "^not_[A-Za-z0-9]{1,64}$"
+        - name: include
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [transcript]
+      responses:
+        "200":
+          description: The note object, relayed verbatim.
+          content:
+            application/json:
+              schema: { type: object }
+        "400":
+          description: A query parameter or value the proxy does not allow.
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          description: Granola's NOTE_NOT_FOUND, or an id that fails the shape check.
+        "429":
+          description: Granola's rate limit, relayed with its Retry-After header.
+        "502":
+          description: Granola was unreachable or its response could not be read.
+
+  /api/connectors/granola/v1/notes/{id}/transcript:
+    get:
+      operationId: getGranolaTranscript
+      summary: Stateless pass-through to Granola's GET /v1/notes/{id}/transcript
+      description: >-
+        One cursor-paged transcript page — the sync fetches pages of 100 and
+        never uses `include=transcript`, so the upstream 413 cannot occur. Same
+        custody contract as the list route.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: x-granola-key
+          in: header
+          required: true
+          schema:
+            type: string
+            pattern: "^grn_[A-Za-z0-9._~+-]{8,256}$"
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: "^not_[A-Za-z0-9]{1,64}$"
+        - name: page_size
+          in: query
+          required: false
+          description: "1-100, Granola's own bound."
+          schema: { type: string }
+        - name: cursor
+          in: query
+          required: false
+          schema: { type: string }
+        - name: from_time
+          in: query
+          required: false
+          schema: { type: string }
+      responses:
+        "200":
+          description: One `{transcript, hasMore, cursor}` page, relayed verbatim.
+          content:
+            application/json:
+              schema: { type: object }
+        "400":
+          description: A query parameter or value the proxy does not allow.
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          description: Granola's NOTE_NOT_FOUND, or an id that fails the shape check.
+        "429":
+          description: Granola's rate limit, relayed with its Retry-After header.
+        "502":
+          description: Granola was unreachable or its response could not be read.
+
   /api/connectors/meetings:
     get:
       operationId: listConnectorMeetings

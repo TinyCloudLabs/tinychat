@@ -29,6 +29,8 @@ export interface SoftRowProps {
   title: string;
   /** "Today 2:18 AM" (or the source and time). */
   meta: string;
+  /** A second quiet line under the meta; said in the label after it. */
+  subMeta?: string;
   /** "On this phone" or "Saving…": a note not yet settled in the space; said in the label, shown before the meta. */
   badge?: string;
   durationSecs?: number | null;
@@ -59,7 +61,7 @@ function stateLine(issue: HomeIssue | undefined, meta: string): string {
 export function softRowLabel(
   props: Pick<
     SoftRowProps,
-    "title" | "meta" | "badge" | "durationSecs" | "issue" | "onActivate" | "pipeline" | "activityStatus"
+    "title" | "meta" | "subMeta" | "badge" | "durationSecs" | "issue" | "onActivate" | "pipeline" | "activityStatus"
   >,
 ): string {
   const parts = [props.title];
@@ -67,6 +69,7 @@ export function softRowLabel(
   if (props.activityStatus) parts.push(props.activityStatus);
   else if (props.pipeline && (!props.pipeline.done || pipelineTranscriptStatus(props.pipeline) !== null)) parts.push(pipelineTrackLabel(props.pipeline));
   parts.push(stateLine(props.issue, props.meta));
+  if (props.subMeta) parts.push(props.subMeta);
   if (props.durationSecs != null)
     parts.push(formatSpokenDuration(props.durationSecs));
   if (props.issue && issueIsInformational(props.issue))
@@ -117,6 +120,7 @@ export function SoftRow(props: SoftRowProps) {
           {props.badge && <RowBadge>{props.badge}</RowBadge>}
           {stateLine(issue, props.meta)}
         </span>
+        {props.subMeta && <span className="soft-row-meta" data-testid="soft-row-submeta">{props.subMeta}</span>}
         {props.activityStatus && <span className={props.activityStatus.startsWith("Needs attention") ? "soft-row-meta text-amber-700 dark:text-amber-300" : "soft-row-meta"} data-testid="library-note-status">{props.activityStatus}</span>}
         {!props.activityStatus && props.pipeline && (!props.pipeline.done || pipelineTranscriptStatus(props.pipeline) !== null) && <PipelineTrackSummary pipeline={props.pipeline} />}
       </span>

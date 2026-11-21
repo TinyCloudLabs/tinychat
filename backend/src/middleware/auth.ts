@@ -7,6 +7,7 @@ export function createAuthMiddleware(privateKey: string) {
     const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : authHeader;
 
     if (!token) {
+      res.set("X-TinyCloud-Session-Rejected", "1");
       res.status(401).json({ error: "missing_token", message: "Authorization header is required" });
       return;
     }
@@ -16,6 +17,7 @@ export function createAuthMiddleware(privateKey: string) {
       req.user = { address };
       next();
     } catch {
+      res.set("X-TinyCloud-Session-Rejected", "1");
       res.status(401).json({ error: "invalid_token", message: "Token verification failed" });
     }
   };

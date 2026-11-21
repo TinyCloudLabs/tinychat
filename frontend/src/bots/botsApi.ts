@@ -11,10 +11,19 @@ export interface BotMessage {
   at: string;
 }
 
+/** What a bot did on its computer, as the service records it: fixed verbs and counts, never words the model wrote. */
+export interface BotActivity {
+  id: string;
+  verb: "ran_commands" | "changed_files";
+  count: number;
+  at: string;
+}
+
 /** One event of Main's reply stream. Error codes are the service's; anything else arrives as `failed`. */
 export type MainEvent =
   | { type: "status"; state: "starting" | "working" }
   | { type: "delta"; text: string }
+  | { type: "activity"; activity: BotActivity }
   | { type: "done"; messageId: string }
   | { type: "error"; code: BotsErrorCode };
 
@@ -25,9 +34,31 @@ export class BotsError extends Error {
   }
 }
 
+/** The service answered 404: the route is not deployed there. For the owner it is a plain failure, like any other. */
+export class BotsRouteMissing extends BotsError {
+  constructor() {
+    super("failed");
+    this.name = "BotsRouteMissing";
+  }
+}
+
+export type MainWebMode = "off" | "listed" | "any";
+
+/** Main's web access setting, as the service reports it. `hosts` is the owner's list, used only in `listed` mode. */
+export interface MainWebSettings {
+  mode: MainWebMode;
+  hosts: string[];
+  /** False when the service has no search provider, so no on-preset can work. */
+  available: boolean;
+  today: { searches: number; pages: number; blocked: number };
+}
+
 export interface BotsApi {
   getBotsStatus(signal?: AbortSignal): Promise<{ enabled: boolean }>;
   listMainMessages(signal?: AbortSignal): Promise<BotMessage[]>;
+  getMainWeb(signal?: AbortSignal): Promise<MainWebSettings>;
+  /** Resolves with the stored setting; throws BotsError("invalid") when the service refuses the list. */
+  setMainWeb(settings: Pick<MainWebSettings, "mode" | "hosts">, signal?: AbortSignal): Promise<MainWebSettings>;
   /** Resolves after the stream's `done` or `error` event; throws BotsError when the stream fails or ends without one. */
   sendToMain(text: string, onEvent: (event: MainEvent) => void, signal?: AbortSignal): Promise<void>;
 }
@@ -36,6 +67,7 @@ const STREAM_ERROR_CODES: Record<string, BotsErrorCode> = {
   bot_unavailable: "bot_unavailable",
   model_unavailable: "model_unavailable",
   busy: "busy",
+  at_capacity: "at_capacity",
   invalid: "invalid",
 };
 
@@ -44,8 +76,21 @@ function fields(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
 }
 
+/** The record when it has exactly the service's shape; anything else is not an activity line. */
+export function toActivity(value: unknown): BotActivity | null {
+  const record = fields(value);
+  if (record.type !== "activity" || Object.keys(record).length !== 5) return null;
+  const { id, verb, count, at } = record;
+  return typeof id === "string" && /^[a-f0-9]{32}$/.test(id)
+    && (verb === "ran_commands" || verb === "changed_files")
+    && typeof count === "number" && Number.isInteger(count) && count >= 1 && count <= 256
+    && typeof at === "string" && Number.isFinite(Date.parse(at))
+    ? { id, verb, count, at }
+    : null;
+}
+
 function toEvent(name: string, data: string): MainEvent | null {
-  if (name !== "status" && name !== "delta" && name !== "done" && name !== "error") return null;
+  if (name !== "status" && name !== "delta" && name !== "activity" && name !== "done" && name !== "error") return null;
   let parsed: unknown;
   try {
     parsed = JSON.parse(data);
@@ -53,6 +98,11 @@ function toEvent(name: string, data: string): MainEvent | null {
     throw new BotsError("failed");
   }
   const value = fields(parsed);
+  // An activity line is a note beside the reply: one that does not check out is left out, and the turn goes on.
+  if (name === "activity") {
+    const activity = toActivity(value);
+    return activity ? { type: "activity", activity } : null;
+  }
   if (name === "status" && (value.state === "starting" || value.state === "working")) return { type: "status", state: value.state };
   if (name === "delta" && typeof value.text === "string") return { type: "delta", text: value.text };
   if (name === "done" && typeof value.messageId === "string") return { type: "done", messageId: value.messageId };
@@ -108,6 +158,21 @@ function toMessages(payload: unknown): BotMessage[] {
   });
 }
 
+const isCount = (value: unknown): value is number => typeof value === "number" && Number.isInteger(value) && value >= 0;
+
+function toWebSettings(payload: unknown): MainWebSettings {
+  const value = fields(payload);
+  const { mode, hosts, available } = value;
+  const today = fields(value.today);
+  if (
+    (mode !== "off" && mode !== "listed" && mode !== "any") ||
+    !Array.isArray(hosts) || !hosts.every((host): host is string => typeof host === "string") ||
+    typeof available !== "boolean" ||
+    !isCount(today.searches) || !isCount(today.pages) || !isCount(today.blocked)
+  ) throw new BotsError("failed");
+  return { mode, hosts: [...hosts], available, today: { searches: today.searches, pages: today.pages, blocked: today.blocked } };
+}
+
 export interface BotsApiOptions {
   baseUrl: string;
   getToken: () => string | null;
@@ -117,7 +182,7 @@ export interface BotsApiOptions {
 export function createBotsApi({ baseUrl, getToken, fetch: fetchImpl = (input, init) => globalThis.fetch(input, init) }: BotsApiOptions): BotsApi {
   const base = baseUrl.replace(/\/$/, "");
 
-  async function request(method: "GET" | "POST", path: string, signal?: AbortSignal, body?: string): Promise<Response> {
+  async function request(method: "GET" | "POST" | "PUT", path: string, signal?: AbortSignal, body?: string): Promise<Response> {
     const token = getToken();
     if (!token) throw new BotsError("signed_out");
     let response: Response;
@@ -138,6 +203,7 @@ export function createBotsApi({ baseUrl, getToken, fetch: fetchImpl = (input, in
     }
     if (response.status === 401) throw new BotsError("signed_out");
     if (response.status === 400) throw new BotsError("invalid");
+    if (response.status === 404) throw new BotsRouteMissing();
     if (!response.ok) throw new BotsError("failed");
     return response;
   }
@@ -159,6 +225,14 @@ export function createBotsApi({ baseUrl, getToken, fetch: fetchImpl = (input, in
 
     async listMainMessages(signal) {
       return toMessages(await readJson(await request("GET", "/api/bots/main/messages", signal)));
+    },
+
+    async getMainWeb(signal) {
+      return toWebSettings(await readJson(await request("GET", "/api/bots/main/web", signal)));
+    },
+
+    async setMainWeb({ mode, hosts }, signal) {
+      return toWebSettings(await readJson(await request("PUT", "/api/bots/main/web", signal, JSON.stringify({ mode, hosts }))));
     },
 
     async sendToMain(text, onEvent, signal) {
@@ -201,4 +275,4 @@ export const botsApi: BotsApi = createBotsApi({
   getToken: () => new SessionStore(SESSION_STORE_KEY).getToken(),
 });
 
-export const { getBotsStatus, listMainMessages, sendToMain } = botsApi;
+export const { getBotsStatus, listMainMessages, getMainWeb, setMainWeb, sendToMain } = botsApi;

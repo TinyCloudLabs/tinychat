@@ -36,8 +36,8 @@ export interface CardClose { kind: "drop" | "acknowledge"; onTap: () => void }
 /**
  * The card's foot, with "Details" in the bottom-right corner on every card, and a "+N" when the card holds N parts it
  * does not draw. A decision, one row: its quiet `actions` (Ask me later), then "Drop this card", both taking the card
- * away through the undo bar. An update: "Acknowledge" (its one real action, the dark pill) and its quiet `actions` (Show
- * me later), then a bottom row with `secondary` ("Comment") level with Details. `card` is the card as sent, `typed` its
+ * away through the undo bar. An update: "Acknowledge" (its one real action, quiet and outlined) on its own row, then
+ * one row under it: its quiet `actions` (Show me later), `secondary` ("Comment") and Details. `card` is the card as sent, `typed` its
  * board record when it is a typed card (with no record when the app could not read it), and `agent` who sent it.
  * `publisher` is the registered source the card was read through: only Courier's draws the Courier mark.
  */
@@ -60,16 +60,22 @@ export function CardDetails({ children, actions, secondary, close, card, typed, 
     {/* On phones the "+N", the pressed state and aria-expanded carry the disclosure, so the foot keeps one line at 375. */}
     <ChevronDownIcon aria-hidden className={`size-4 transition-transform motion-reduce:transition-none max-sm:hidden ${open ? "rotate-180" : ""}`} />
   </button>;
+  // An update's Acknowledge is quiet and outlined (the dark pill is the page's undo pill). It stands alone on its row;
+  // under it, one line: the card's later action, its comment, and Details.
+  const acknowledge = close?.kind === "acknowledge"
+    ? <button type="button" onClick={close.onTap} className="ml-1.5 mr-1 inline-flex min-h-11 items-center gap-1.5 rounded-full border border-border pl-3 pr-3.5 text-sm font-medium text-foreground transition-colors hover:bg-surface-2 active:scale-[.97] motion-reduce:transform-none fine:min-h-9"><CheckIcon aria-hidden className="size-4" />Acknowledge</button>
+    : undefined;
   const leading = <>
-    {close?.kind === "acknowledge" && <button type="button" onClick={close.onTap} className="mr-1 inline-flex min-h-11 items-center gap-1 rounded-full bg-foreground pl-3 pr-3.5 text-sm font-semibold text-background transition-transform active:scale-[.97] motion-reduce:transform-none fine:min-h-9"><CheckIcon aria-hidden className="size-4" />Acknowledge</button>}
     {actions}
     {close?.kind === "drop" && <button type="button" onClick={close.onTap} className={`${footActionClass} hover:text-destructive`}>Drop this card</button>}
   </>;
   return <div className="text-sm">
     <div aria-label="Card actions" className="-mx-1.5">
-      {secondary
-        ? <><div className="flex flex-wrap items-center gap-0.5">{leading}</div><div className="mt-1 flex items-center gap-0.5">{secondary}{details}</div></>
-        : <div className="flex flex-wrap items-center gap-0.5">{leading}{details}</div>}
+      {acknowledge
+        ? <><div className="flex">{acknowledge}</div><div className="mt-1 flex flex-wrap items-center gap-0.5">{actions}{secondary}{details}</div></>
+        : secondary
+          ? <><div className="flex flex-wrap items-center gap-0.5">{leading}</div><div className="mt-1 flex items-center gap-0.5">{secondary}{details}</div></>
+          : <div className="flex flex-wrap items-center gap-0.5">{leading}{details}</div>}
     </div>
     {/* Not shown on the card (only when there is any), then This card with its history, then the feed's folded
         bookkeeping, then the card as sent. From 900px the list sits right of a 240px rail holding the rest. Long tokens

@@ -43,7 +43,8 @@ export interface EmbedHostDeps {
    * space. Throws `SpaceNotHostedError` when the node skips the space (it isn't set up).
    */
   delegate(audience: string, entries: PermissionEntry[]): Promise<SpaceGrant>;
-  revoke(cid: string): Promise<void>;
+  // No revoke: the SDK revokes with the owner's wallet, so every revoke asked OpenKey for a signature (TC-3483).
+  // A grant is terminal, lasts an hour and goes to a key that lives only in the frame's memory.
   /**
    * Shows the ask card for `scopes` (the spaces that exist), noting `missing` (space names known not to be set up);
    * on Continue runs the OpenKey step-up for `entries`. True once One holds them.
@@ -101,7 +102,6 @@ export function parseChildMessage(data: unknown): ChildMessage | undefined {
 
 interface LiveGrant {
   key: string;
-  cids: string[];
 }
 
 export interface IncomingMessage {
@@ -140,14 +140,12 @@ export class EmbedHost {
     this.deps.post({ v: 1, type: "tc-embed/theme", theme });
   }
 
-  /** Frame closed, app switched, signed out or session changed: revoke every live grant and tell the child. */
+  /** Frame closed, app switched, signed out or session changed: tell the child to drop its key. Grants expire on their own. */
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
-    const cids = this.live?.cids ?? [];
     this.live = undefined;
     if (this.sessionDid !== undefined) this.deps.post({ v: 1, type: "tc-embed/revoke" });
-    await Promise.allSettled(cids.map((cid) => this.deps.revoke(cid)));
   }
 
   private async process(message: ChildMessage): Promise<void> {
@@ -211,7 +209,7 @@ export class EmbedHost {
     }
   }
 
-  /** Spaces may have been set up since (in another tab): a silent delegation to each tells; a fresh one is revoked. */
+  /** Spaces may have been set up since (in another tab): a silent delegation to each tells. */
   private async recheckMissing(spaceIds: string[]): Promise<void> {
     if (spaceIds.length === 0) return;
     const audience = this.sessionDid!.split("#")[0];
@@ -220,9 +218,8 @@ export class EmbedHost {
       const entries = held.get(spaceId);
       if (!entries) continue;
       try {
-        const probe = await this.deps.delegate(audience, entries);
+        await this.deps.delegate(audience, entries);
         this.missingSpaces.delete(spaceId);
-        await this.deps.revoke(probe.cid).catch((error: unknown) => this.deps.onError?.(error));
       } catch (error) {
         if (!(error instanceof SpaceNotHostedError)) throw error;
       }
@@ -230,33 +227,25 @@ export class EmbedHost {
   }
 
   /**
-   * Delegates `scope` space by space, posts the grant and revokes the one it replaces. A space the node doesn't host
-   * is left out and remembered as missing. Returns the skipped space ids, or undefined when nothing was sent.
+   * Delegates `scope` space by space and posts the grant, which the child takes in place of the one before. A space
+   * the node doesn't host is left out and remembered as missing. Returns the skipped space ids, or undefined when
+   * nothing was sent.
    */
   private async grant(scope: ResolvedEntry[], nonce: string): Promise<string[] | undefined> {
     const audience = this.sessionDid!.split("#")[0];
     const made: SpaceGrant[] = [];
     const skipped: string[] = [];
-    const discard = () => Promise.allSettled(made.map((grant) => this.deps.revoke(grant.cid)));
-    try {
-      for (const [spaceId, entries] of bySpace(scope)) {
-        let grant: SpaceGrant;
-        try {
-          grant = await this.deps.delegate(audience, entries);
-        } catch (error) {
-          if (!(error instanceof SpaceNotHostedError)) throw error;
-          skipped.push(spaceId);
-          continue;
-        }
-        made.push(grant);
-        if (grant.prompted || this.closed) {
-          await discard();
-          return undefined;
-        }
+    for (const [spaceId, entries] of bySpace(scope)) {
+      let grant: SpaceGrant;
+      try {
+        grant = await this.deps.delegate(audience, entries);
+      } catch (error) {
+        if (!(error instanceof SpaceNotHostedError)) throw error;
+        skipped.push(spaceId);
+        continue;
       }
-    } catch (error) {
-      await discard();
-      throw error;
+      made.push(grant);
+      if (grant.prompted || this.closed) return undefined;
     }
     for (const spaceId of bySpace(scope).keys()) {
       if (skipped.includes(spaceId)) this.missingSpaces.add(spaceId);
@@ -271,9 +260,7 @@ export class EmbedHost {
       expiresAt,
       theme: this.deps.theme(),
     });
-    const replaced = this.live?.cids ?? [];
-    this.live = { key: scopeKey(scope), cids: made.map((grant) => grant.cid) };
-    await Promise.allSettled(replaced.map((cid) => this.deps.revoke(cid)));
+    this.live = { key: scopeKey(scope) };
     return skipped;
   }
 }

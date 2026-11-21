@@ -14,6 +14,22 @@ import type {
   PurgeLedgerRead,
 } from "../routes/connector-webhooks.js";
 import { BackendStorageLane } from "./backend-storage-lane.js";
+import {
+  CONTENT_DAY_MS,
+  contentSlotForDelivery,
+  dayContentAad,
+  dayContentKek,
+  dayContentPath,
+  dayReplayDigest,
+  dayReplayMac,
+  isDayContentPath,
+  signContentCleanupEntry,
+  verifyContentCleanupEntry,
+  type ContentCleanupEntry,
+  type ContentCleanupIndex,
+} from "./content-day-sealing.js";
+import { assertConnectorPlaintextTestMode, slotFor, type ConnectorRetentionKeys } from "./connector-retention-keys.js";
+import { utcDay } from "./connector-key-store.js";
 import { isTombstoned } from "./connector-drain.js";
 import type {
   ContentSink,
@@ -47,14 +63,11 @@ const { isKvMissingKeyResult } = serverPackage as typeof serverPackage & {
  * only ever existed in another device's vault. Everything the old invariant made unnecessary is
  * re-established here explicitly:
  *
- *  - **Only ciphertext leaves the TEE.** Nothing but a sealed blob and its wrapped DEK reaches
- *    the substrate — not the transcript, not the summary, not the meeting TITLE, not the
- *    per-user metadata index. App-layer AES-256-GCM envelope encryption under a DEDICATED env
- *    master (`CONNECTOR_CONTENT_MASTER`), separate from both `WEBHOOK_HMAC_MASTER` and
- *    `CONNECTOR_CREDENTIAL_MASTER`, with the same refuse-boot-on-weak-master posture. At-rest
- *    encryption is a control we apply, never a substrate property we assume (plan §7). Every
- *    envelope is AAD-bound to `(source, address, sourceId)`, so a blob relabelled into another
- *    tenant's slot does not decrypt: cross-tenant reuse fails closed rather than leaking.
+ *  - **Meeting data stays in the envelope.** The day-key format stores the provider ID and
+ *    meeting data inside a per-meeting envelope. Its path and replay code use the same expiry
+ *    day key. The index contains authenticated cleanup locations and deadlines. The dedicated
+ *    content master authenticates the cleanup index and retains the archive continuity check.
+ *    Each blob is bound to its source, tenant, path and expiry slot.
  *  - **Tenant-scoped by construction.** Every method takes `(source, address)`; there is no
  *    scan, no enumerate-all-users, no "list every meeting" surface anywhere in the class or in
  *    the blob-store port beneath it. One user's overflow can only ever evict that user's rows.
@@ -70,10 +83,9 @@ const { isKvMissingKeyResult } = serverPackage as typeof serverPackage & {
  *    never read as "this user has no meetings" (that reading disables every cap, makes the
  *    retention sweep a no-op and lets a replay re-store swept content). `upsert` answers the
  *    worker's Result type, and the ONLY success arm is a literal `{ok:true, stored}`.
- *  - **Retention (up to 14 days).** Each blob has an authenticated UTC expiry day, set at first
- *    storage to the storage day plus 13 days. Five-minute sweeps leave a day of scheduling slack.
- *    Keyed replay markers contain no meeting IDs and expire 14 days after deletion; provider
- *    source times older than 14 days are refused even after the marker expires.
+ *  - **Retention.** Day-key blobs and replay markers share the slot chosen from the delivery
+ *    timestamp, or receipt time for a timestamp-less delivery. Rotation and admission use the
+ *    same UTC boundary. Cleanup can run from authenticated index entries after rotation.
  *  - **Purge tombstones (W7, delta 12).** {@link ContentStoreOptions.purgeLedger} is the second
  *    tombstone input: the SHIPPED §6.2 purge ledger (`purgedThrough` + `recentIds`), applied
  *    through connector-drain's `isTombstoned` — the rule is IMPORTED, never re-implemented, so
@@ -126,7 +138,7 @@ const DEK_BYTES = 32;
 const CONTENT_KEY_PREFIX = "connector-content";
 const CONTENT_INDEX_KEY_PREFIX = "connector-content-index";
 const CONTENT_KEY_FAILURE_PREFIX = "connector-content-key-failure";
-const REPLAY_TOMBSTONE_KEY_PREFIX = "connector-content-replay-tombstone/v1";
+const REPLAY_TOMBSTONE_KEY_PREFIX = "connector-content-replay-tombstone";
 
 // ── Result / row shapes ──────────────────────────────────────────────
 
@@ -134,6 +146,8 @@ const REPLAY_TOMBSTONE_KEY_PREFIX = "connector-content-replay-tombstone/v1";
 export interface SealedBlob {
   ciphertext: string;
   wrappedDEK: string;
+  version?: 2;
+  keySlot?: number;
   /** Original storage time, kept outside encryption for index-independent expiry. */
   storedAt?: string;
   /** UTC day expiry, authenticated as part of the per-meeting envelope AAD. */
@@ -144,12 +158,16 @@ export interface SealedBlob {
   updatedAt: string;
 }
 
+type StoredContentIndex = SealedBlob | ContentCleanupIndex;
+
 /** Row metadata (plan §8.1 W4's schema). `title` rides the sealed body, never the substrate. */
 export interface ContentMeta {
   sourceId: string;
   title?: string;
   /** The provider's meeting timestamp when it gave one. */
   ts?: string;
+  /** Signed delivery time used by downstream purge checks. */
+  sourceTimestamp?: string;
   participantNames?: string[];
   participantEmails?: string[];
   organizerEmail?: string;
@@ -236,11 +254,12 @@ export interface ContentContinuityStorage {
 }
 
 export interface ContentBlobStore {
-  readIndex(source: string, address: string): Promise<SealedBlob | null>;
+  readIndex(source: string, address: string): Promise<StoredContentIndex | null>;
+  hasLegacyContent(source: string, address: string): Promise<boolean>;
   writeIndex(
     source: string,
     address: string,
-    blob: SealedBlob,
+    blob: StoredContentIndex,
   ): Promise<void>;
   listContentIds(source: string, address: string): Promise<Array<{
     sourceId: string;
@@ -309,6 +328,7 @@ export interface ContentStoreOptions {
   purgeLedger?: ContentPurgeLedgerReader;
   /** Production always supplies the continuity-claimed ingest/retention lease. */
   mutationGuard?: ContentMutationGuard;
+  retentionKeys?: ConnectorRetentionKeys;
   retentionMs?: number;
   maxMeetingBytes?: number;
   maxUserMeetings?: number;
@@ -452,7 +472,6 @@ function open(key: Buffer, sealed: string, aad: Buffer): Buffer {
   // no detail: an "unreadable envelope" diagnostic must not become an oracle.
   return Buffer.concat([decipher.update(body), decipher.final()]);
 }
-const CONTENT_DAY_MS = 86_400_000;
 const REPLAY_TOMBSTONE_HKDF_INFO = "tinychat-content-replay-tombstone-v1";
 
 function isUtcDate(value: unknown): value is string {
@@ -562,6 +581,7 @@ export class ContentStore implements ContentSink, RetentionGuard {
   private readonly maxUserTombstones: number;
   private readonly purgeLedger: ContentPurgeLedgerReader | null;
   private readonly mutationGuard: ContentMutationGuard | null;
+  private readonly retentionKeys?: ConnectorRetentionKeys;
   private readonly lanes = new Map<string, Promise<unknown>>();
   private readonly counters: ContentStoreStats = {
     created: 0,
@@ -590,6 +610,7 @@ export class ContentStore implements ContentSink, RetentionGuard {
     this.maxUserTombstones = options.maxUserTombstones ?? MAX_USER_TOMBSTONES;
     this.purgeLedger = options.purgeLedger ?? null;
     this.mutationGuard = options.mutationGuard ?? null;
+    this.retentionKeys = options.retentionKeys;
   }
 
   private assertMutationAllowed(): void {
@@ -605,6 +626,10 @@ export class ContentStore implements ContentSink, RetentionGuard {
     try {
       const blob = await this.blobs.readIndex(target.source, target.address);
       if (!blob) return { ok: false, id };
+      if ("entries" in blob) {
+        const ok = blob.entries.length > 0 && blob.entries.every(entry => this.verifyCleanupEntry(target.source, target.address, entry) !== null);
+        return { ok, id };
+      }
       parseIndex(this.unseal(target.source, target.address, "index", blob), this.now());
       return { ok: true, id };
     } catch {
@@ -661,6 +686,12 @@ export class ContentStore implements ContentSink, RetentionGuard {
       throw new ContentMasterUnavailableError();
     }
   }
+
+  private contentLogContext(source: string, address: string, sourceId?: string): string {
+    if (this.retentionKeys !== undefined) return `source=${source}`;
+    const meeting = sourceId === undefined ? "" : ` mid=${hashed(sourceId)}`;
+    return `source=${source}${meeting} aid=${hashed(address)}`;
+  }
   private async noteRetentionFailure(
     source: string,
     address: string,
@@ -677,12 +708,11 @@ export class ContentStore implements ContentSink, RetentionGuard {
       );
       errorContent(
         `op=retention result=content_index_unavailable first_failure=true ` +
-          `alert=true source=${source} aid=${hashed(address)}`,
+          `alert=true ${this.contentLogContext(source, address)}`,
       );
     } catch {
       errorContent(
-        `op=retention result=failure_marker_unavailable alert=true source=${source} ` +
-          `aid=${hashed(address)}`,
+        `op=retention result=failure_marker_unavailable alert=true ${this.contentLogContext(source, address)}`,
       );
     }
   }
@@ -696,8 +726,7 @@ export class ContentStore implements ContentSink, RetentionGuard {
       await this.blobs.clearKeyFailureSince(source, address);
     } catch {
       warnContent(
-        `op=retention result=failure_marker_clear_failed source=${source} ` +
-          `aid=${hashed(address)}`,
+        `op=retention result=failure_marker_clear_failed ${this.contentLogContext(source, address)}`,
       );
     }
   }
@@ -763,6 +792,7 @@ export class ContentStore implements ContentSink, RetentionGuard {
     address: string,
     sourceId: string,
   ): Promise<void> {
+    assertConnectorPlaintextTestMode();
     const master = this.contentMaster();
     const digest = replayTombstoneDigest(master, source, address, sourceId);
     const expiresAt = new Date(this.now() + this.retentionMs).toISOString();
@@ -771,6 +801,32 @@ export class ContentStore implements ContentSink, RetentionGuard {
       expiresAt,
       mac: replayTombstoneMac(master, digest, expiresAt),
     });
+  }
+
+  private async dayReplayMarker(source: string, address: string, sourceId: string): Promise<ReplayTombstoneRecord | null> {
+    for (const [slot, key] of this.liveDayKeys()) {
+      const digest = `${slot}/${dayReplayDigest(key, source, address, sourceId)}`;
+      const marker = await this.blobs.readReplayTombstone(digest);
+      if (marker === null) continue;
+      const end = Date.parse(marker.expiresAt);
+      if (
+        !Number.isFinite(end) || end !== (slot + 1) * CONTENT_DAY_MS ||
+        typeof marker.mac !== "string" || !/^[a-f0-9]{64}$/.test(marker.mac) ||
+        !timingSafeEqual(Buffer.from(marker.mac, "hex"), Buffer.from(dayReplayMac(key, digest, marker.expiresAt), "hex"))
+      ) throw new Error("Replay marker unreadable");
+      if (this.now() < end) return marker;
+    }
+    return null;
+  }
+
+  private async writeDayReplayMarker(
+    source: string, address: string, sourceId: string, slot: number, key: Buffer, end: number,
+  ): Promise<void> {
+    if (this.now() >= end) return;
+    const digest = `${slot}/${dayReplayDigest(key, source, address, sourceId)}`;
+    const expiresAt = new Date(end).toISOString();
+    this.assertMutationAllowed();
+    await this.blobs.writeReplayTombstone(digest, { expiresAt, mac: dayReplayMac(key, digest, expiresAt) });
   }
 
 
@@ -794,8 +850,7 @@ export class ContentStore implements ContentSink, RetentionGuard {
     }
     if (input.kind !== "transcript" && input.kind !== "summary") {
       warnContent(
-        `op=upsert result=${INVALID_TARGET} source=${target.source} ` +
-          `aid=${hashed(target.address)}`,
+        `op=upsert result=${INVALID_TARGET} ${this.contentLogContext(target.source, target.address)}`,
       );
       return { ok: false, code: INVALID_TARGET };
     }
@@ -803,40 +858,47 @@ export class ContentStore implements ContentSink, RetentionGuard {
     const { source, address, sourceId } = target;
     return this.lane(source, address, async () => {
       try {
+        const usesDayKeys = this.retentionKeys !== undefined;
+        const deliverySlot = usesDayKeys
+          ? contentSlotForDelivery(input.sourceTimestamp, input.receivedAt, this.now(), this.retentionMs)
+          : undefined;
+        if (deliverySlot === null) return { ok: false, code: MEETING_TOO_OLD };
         const index = await this.openIndex(source, address);
         if (index.tombstones.some((t) => t.sourceId === sourceId)) {
           this.counters.tombstoneRefusals += 1;
           return { ok: false, code: RETENTION_TOMBSTONED };
         }
-        const replayMarker = await this.replayMarker(source, address, sourceId);
+        const dayMeeting = usesDayKeys ? await this.findDayMeeting(source, address, sourceId) : undefined;
+        const replayMarker = dayMeeting === undefined
+          ? await this.replayMarker(source, address, sourceId)
+          : dayMeeting === null ? await this.dayReplayMarker(source, address, sourceId) : null;
         if (replayMarker !== null && Date.parse(replayMarker.expiresAt) > this.now()) {
           this.counters.tombstoneRefusals += 1;
           logContent(
-            `op=upsert result=${RETENTION_TOMBSTONED} source=${source} ` +
-              `mid=${hashed(sourceId)} aid=${hashed(address)}`,
+            `op=upsert result=${RETENTION_TOMBSTONED} ${this.contentLogContext(source, address, sourceId)}`,
           );
           return { ok: false, code: RETENTION_TOMBSTONED };
         }
-        if (await this.purgeTombstoned(source, address, sourceId, input)) {
+        if (await this.purgeTombstoned(source, address, sourceId, { ts: usesDayKeys ? input.sourceTimestamp : input.ts })) {
           this.counters.purgeRefusals += 1;
           logContent(
-            `op=upsert result=${PURGE_TOMBSTONED} source=${source} ` +
-              `mid=${hashed(sourceId)} aid=${hashed(address)}`,
+            `op=upsert result=${PURGE_TOMBSTONED} ${this.contentLogContext(source, address, sourceId)}`,
           );
           return { ok: false, code: PURGE_TOMBSTONED };
         }
 
         const sourceTimestamp = input.ts === undefined ? NaN : Date.parse(input.ts);
-        if (this.now() - sourceTimestamp > RETENTION_WINDOW_DAYS * CONTENT_DAY_MS) {
+        if (!usesDayKeys && this.now() - sourceTimestamp > RETENTION_WINDOW_DAYS * CONTENT_DAY_MS) {
           return { ok: false, code: MEETING_TOO_OLD };
         }
         const prior = index.meetings.find((m) => m.sourceId === sourceId);
-        const existing = await this.readMeeting(source, address, sourceId);
-        if (!Number.isFinite(sourceTimestamp) || sourceTimestamp > this.now() + 5 * 60_000) {
+        const existing = dayMeeting === undefined ? await this.readMeeting(source, address, sourceId) : dayMeeting;
+        if (!usesDayKeys && (!Number.isFinite(sourceTimestamp) || sourceTimestamp > this.now() + 5 * 60_000)) {
           warnContent(`op=upsert result=meeting_time_invalid mid=${hashed(sourceId)} aid=${hashed(address)}`);
           if (existing === null) return { ok: false, code: "meeting_time_invalid" };
         }
         if (prior !== undefined && existing === null) {
+          if (usesDayKeys) return { ok: false, code: RETENTION_TOMBSTONED };
           if (prior.expiresAt === undefined || !isUtcDate(prior.expiresAt)) {
             throw new Error("missing content has no authenticated expiry");
           }
@@ -861,10 +923,10 @@ export class ContentStore implements ContentSink, RetentionGuard {
         const stamp = new Date(this.now()).toISOString();
         const storedAt = priorMeta?.storedAt ?? stamp;
         const expiresAt =
-          priorMeta?.expiresAt ?? expiryDateForStoredAt(storedAt, this.retentionMs);
+          priorMeta?.expiresAt ?? deliverySlot?.expiresAt ?? expiryDateForStoredAt(storedAt, this.retentionMs);
         if (!isUtcDate(expiresAt)) throw new Error("content expiry is unreadable");
         if (this.now() >= Date.parse(`${expiresAt}T00:00:00.000Z`)) {
-          await this.writeReplayMarker(source, address, sourceId);
+          if (!usesDayKeys) await this.writeReplayMarker(source, address, sourceId);
           this.counters.tombstoneRefusals += 1;
           return { ok: false, code: RETENTION_TOMBSTONED };
         }
@@ -876,8 +938,7 @@ export class ContentStore implements ContentSink, RetentionGuard {
         if (sizeBytes > this.maxMeetingBytes) {
           this.counters.rejectedTooLarge += 1;
           warnContent(
-            `op=upsert result=${CONTENT_TOO_LARGE} source=${source} ` +
-              `mid=${hashed(sourceId)} aid=${hashed(address)} ` +
+            `op=upsert result=${CONTENT_TOO_LARGE} ${this.contentLogContext(source, address, sourceId)} ` +
               `bytes=${sizeBytes} cap=${this.maxMeetingBytes}`,
           );
           return { ok: false, code: CONTENT_TOO_LARGE };
@@ -894,6 +955,7 @@ export class ContentStore implements ContentSink, RetentionGuard {
               ? { title: priorMeta.title }
               : {}),
           ...(normalizedTs !== undefined ? { ts: normalizedTs } : {}),
+          ...(usesDayKeys && input.sourceTimestamp !== undefined ? { sourceTimestamp: input.sourceTimestamp } : {}),
           ...(input.participantNames !== undefined
             ? { participantNames: input.participantNames }
             : priorMeta?.participantNames !== undefined
@@ -932,7 +994,7 @@ export class ContentStore implements ContentSink, RetentionGuard {
         if (!Number.isFinite(receipt) || this.now() >= receipt + RETENTION_WINDOW_DAYS * CONTENT_DAY_MS) {
           return { ok: false, code: "receipt_expired" };
         }
-        if (priorMeta?.reconciledAt !== undefined) {
+        if (!usesDayKeys && priorMeta?.reconciledAt !== undefined) {
           const unreconciledPrior = { ...priorMeta };
           delete unreconciledPrior.reconciledAt;
           await this.writeIndex(source, address, {
@@ -947,7 +1009,7 @@ export class ContentStore implements ContentSink, RetentionGuard {
         if (!Number.isFinite(receivedAt) || this.now() >= receivedAt + RETENTION_WINDOW_DAYS * CONTENT_DAY_MS) {
           return { ok: false, code: "receipt_expired" };
         }
-        if (this.now() - sourceTimestamp > RETENTION_WINDOW_DAYS * CONTENT_DAY_MS) {
+        if (!usesDayKeys && this.now() - sourceTimestamp > RETENTION_WINDOW_DAYS * CONTENT_DAY_MS) {
           return { ok: false, code: MEETING_TOO_OLD };
         }
         await this.writeMeeting(source, address, meta, content);
@@ -957,22 +1019,20 @@ export class ContentStore implements ContentSink, RetentionGuard {
         });
         for (const victim of evicted) {
           this.assertMutationAllowed();
-          await this.blobs.remove(source, address, victim.sourceId);
+          await this.removeMeeting(source, address, victim);
         }
 
         const stored = existing === null ? "created" : "merged";
         if (stored === "created") this.counters.created += 1;
         else this.counters.merged += 1;
         logContent(
-          `op=upsert result=ok stored=${stored} source=${source} ` +
-            `mid=${hashed(sourceId)} aid=${hashed(address)} bytes=${sizeBytes}`,
+          `op=upsert result=ok stored=${stored} ${this.contentLogContext(source, address, sourceId)} bytes=${sizeBytes}`,
         );
         return { ok: true, stored };
       } catch {
         this.counters.writeFailures += 1;
         warnContent(
-          `op=upsert result=${CONTENT_STORE_FAILED} source=${source} ` +
-            `mid=${hashed(sourceId)} aid=${hashed(address)}`,
+          `op=upsert result=${CONTENT_STORE_FAILED} ${this.contentLogContext(source, address, sourceId)}`,
         );
         return { ok: false, code: CONTENT_STORE_FAILED };
       }
@@ -1063,8 +1123,7 @@ export class ContentStore implements ContentSink, RetentionGuard {
         recordReconcileLag(this.now() - storedAtMs);
       }
       logContent(
-        `op=reconciled result=ok source=${target.source} ` +
-          `mid=${hashed(target.sourceId)} aid=${hashed(target.address)}`,
+        `op=reconciled result=ok ${this.contentLogContext(target.source, target.address, target.sourceId)}`,
       );
       return true;
     });
@@ -1079,9 +1138,14 @@ export class ContentStore implements ContentSink, RetentionGuard {
     tombstones: number;
     storedAtBackfilled: number;
     unreadableIndex: boolean;
+    /** Rows whose expiry deadline has passed and that this pass did not delete. A count, never an id. */
+    overdue: number;
+    /** How long past its deadline the oldest such row is; 0 when none. */
+    oldestOverdueAgeMs: number;
   }> {
     const target = normalizeTarget(input.source, input.address);
     return this.lane(target.source, target.address, async () => {
+      if (this.retentionKeys !== undefined) return this.sweepDayContent(target.source, target.address);
       let index: ContentIndex | null = null;
       const now = this.now();
       try {
@@ -1113,6 +1177,7 @@ export class ContentStore implements ContentSink, RetentionGuard {
         sourceId: string;
         meta: ContentMeta;
         missing: boolean;
+        deadline: number;
       }> = [];
       for (const sourceId of ids) {
         const indexMeta = indexed.get(sourceId);
@@ -1151,7 +1216,7 @@ export class ContentStore implements ContentSink, RetentionGuard {
             continue;
           }
           // The row is already absent; prune its readable index entry on this pass.
-          expired.push({ sourceId, meta: indexMeta, missing: true });
+          expired.push({ sourceId, meta: indexMeta, missing: true, deadline: expiryDeadline(indexMeta.expiresAt) ?? now });
           continue;
         }
         let meta = stored.meta;
@@ -1190,7 +1255,7 @@ export class ContentStore implements ContentSink, RetentionGuard {
           continue;
         }
         if (now >= deadline) {
-          expired.push({ sourceId, meta, missing: false });
+          expired.push({ sourceId, meta, missing: false, deadline });
         }
       }
 
@@ -1240,6 +1305,7 @@ export class ContentStore implements ContentSink, RetentionGuard {
 
       let swept = 0;
       let bytesFreed = 0;
+      const sweptIds = new Set<string>();
       for (const candidate of confirmed) {
         try {
           if (!candidate.missing) {
@@ -1252,6 +1318,7 @@ export class ContentStore implements ContentSink, RetentionGuard {
             bytesFreed += candidate.meta.sizeBytes;
           }
           swept += 1;
+          sweptIds.add(candidate.sourceId);
         } catch {
           warnContent(
             `op=retention-sweep result=blob_delete_failed source=${target.source} ` +
@@ -1273,15 +1340,31 @@ export class ContentStore implements ContentSink, RetentionGuard {
         tombstones,
         storedAtBackfilled: 0,
         unreadableIndex: index === null,
+        overdue: expired.length - sweptIds.size,
+        oldestOverdueAgeMs: expired.reduce(
+          (age, candidate) =>
+            sweptIds.has(candidate.sourceId) ? age : Math.max(age, now - candidate.deadline),
+          0,
+        ),
       };
     });
   }
   async sweepExpiredReplayTombstones(): Promise<number> {
-    this.contentMaster();
+    if (this.retentionKeys === undefined) this.contentMaster();
     const now = this.now();
     const markers = await this.blobs.listReplayTombstones();
     let removed = 0;
     for (const { digest, marker } of markers) {
+      if (this.retentionKeys !== undefined) {
+        const slot = dayReplaySlot(digest);
+        // Retire the v1 master-keyed markers on the first guarded pass.
+        if (slot === null || slot < utcDay(now)) {
+          this.assertMutationAllowed();
+          await this.blobs.removeReplayTombstone(digest);
+          removed += 1;
+        }
+        continue;
+      }
       if (
         marker === null ||
         typeof marker.expiresAt !== "string" ||
@@ -1315,9 +1398,18 @@ export class ContentStore implements ContentSink, RetentionGuard {
     meetingId: string;
     kind?: string;
     sourceTimestamp?: string;
+    receivedAt?: string;
   }): Promise<boolean> {
     const target = normalizeTarget(input.source, input.address, input.meetingId);
     return this.lane(target.source, target.address, async () => {
+      if (this.retentionKeys !== undefined) {
+        const now = this.now();
+        const slot = contentSlotForDelivery(input.sourceTimestamp, input.receivedAt ?? new Date(now).toISOString(), now, this.retentionMs);
+        if (slot === null) return true;
+        if (await this.purgeTombstoned(target.source, target.address, target.sourceId, { ts: input.sourceTimestamp })) return true;
+        return (await this.dayReplayMarker(target.source, target.address, target.sourceId)) !== null &&
+          (await this.findDayMeeting(target.source, target.address, target.sourceId)) === null;
+      }
       const index = await this.openIndex(target.source, target.address);
       if (index.tombstones.some((t) => t.sourceId === target.sourceId)) {
         return true;
@@ -1373,7 +1465,7 @@ export class ContentStore implements ContentSink, RetentionGuard {
           continue;
         }
         this.assertMutationAllowed();
-        await this.blobs.remove(target.source, target.address, meta.sourceId);
+        await this.removeMeeting(target.source, target.address, meta);
         removed.add(meta.sourceId);
       }
       if (removed.size) {
@@ -1393,15 +1485,16 @@ export class ContentStore implements ContentSink, RetentionGuard {
       // so an unavailable master cannot turn an unverified archive into a successful purge.
       this.contentMaster();
       const index = await this.openIndex(target.source, target.address);
-      for (const meta of index.meetings) {
-        this.assertMutationAllowed();
-        await this.blobs.remove(target.source, target.address, meta.sourceId);
+      if (this.retentionKeys === undefined) {
+        for (const meta of index.meetings) {
+          this.assertMutationAllowed();
+          await this.blobs.remove(target.source, target.address, meta.sourceId);
+        }
       }
       this.assertMutationAllowed();
       await this.blobs.removeAll(target.source, target.address, () => this.assertMutationAllowed());
       logContent(
-        `op=purge result=ok source=${target.source} ` +
-          `aid=${hashed(target.address)} removed=${index.meetings.length}`,
+        `op=purge result=ok ${this.contentLogContext(target.source, target.address)} removed=${index.meetings.length}`,
       );
       return { removed: index.meetings.length };
     });
@@ -1432,8 +1525,7 @@ export class ContentStore implements ContentSink, RetentionGuard {
       // Reading an unparseable ledger as empty means "nothing was ever purged", the most
       // dangerous available reading (§6.2). Quarantine belongs to the writers; here it fails.
       warnContent(
-        `op=purge-check result=ledger_unreadable source=${source} ` +
-          `mid=${hashed(sourceId)} aid=${hashed(address)}`,
+        `op=purge-check result=ledger_unreadable ${this.contentLogContext(source, address, sourceId)}`,
       );
       throw new Error("purge ledger is unreadable");
     }
@@ -1451,16 +1543,8 @@ export class ContentStore implements ContentSink, RetentionGuard {
   // ── Caps (delta 8) ─────────────────────────────────────────────────
 
   /**
-   * Oldest-drop until the incoming row fits both per-user caps. Every eviction is counted and
-   * logged with a hashed id — a cap that drops data silently reads, months later, as data that
-   * never arrived.
-   *
-   * Eviction writes NO tombstone, and that is a decision, not an omission: the two permanent
-   * markers (the D2a retention sweep and the §6.2 purge ledger) both mean "the user no longer has
-   * this", while a cap eviction means only "this did not fit today". So a later delivery for an
-   * evicted meeting may re-store it and evict the current oldest in turn — under indefinite replay
-   * the cap behaves as churn rather than a bound. Recorded, with the cost, in
-   * `docs/connector-webhooks-purge-tombstone.md` §5 and pinned by the delta-8 suite.
+   * Oldest-drop until the incoming row fits both per-user caps. Count and log each eviction.
+   * An evicted day-key row retains its original replay marker through its slot's deadline.
    */
   private enforceCaps(
     source: string,
@@ -1480,8 +1564,7 @@ export class ContentStore implements ContentSink, RetentionGuard {
       evicted.push(victim);
       this.counters.droppedOverflow += 1;
       warnContent(
-        `op=overflow-drop reason=${reason} source=${source} ` +
-          `mid=${hashed(victim.sourceId)} aid=${hashed(address)} ` +
+        `op=overflow-drop reason=${reason} ${this.contentLogContext(source, address, victim.sourceId)} ` +
           `bytes=${victim.sizeBytes}`,
       );
     };
@@ -1518,13 +1601,195 @@ export class ContentStore implements ContentSink, RetentionGuard {
 
   // ── Sealed I/O ─────────────────────────────────────────────────────
 
+  private async sweepDayContent(source: string, address: string) {
+    const summary = {
+      swept: 0,
+      bytesFreed: 0,
+      tombstones: 0,
+      storedAtBackfilled: 0,
+      unreadableIndex: false,
+      overdue: 0,
+      oldestOverdueAgeMs: 0,
+    };
+    let index: ContentCleanupIndex;
+    let keys: Map<number, Buffer>;
+    try {
+      this.contentMaster();
+      index = await this.readCleanupIndex(source, address);
+      keys = this.liveDayKeys();
+    } catch (error) {
+      if (!(error instanceof ContentIndexUnreadableError) && !(error instanceof ContentMasterUnavailableError) &&
+          !(error instanceof ContentBlobUnparseableError)) throw error;
+      this.counters.unreadableIndexes += 1;
+      await this.noteRetentionFailure(source, address);
+      return { ...summary, unreadableIndex: true };
+    }
+    const kept: unknown[] = [];
+    for (const raw of index.entries) {
+      const entry = this.verifyCleanupEntry(source, address, raw);
+      if (entry === null) {
+        kept.push(raw);
+        summary.unreadableIndex = true;
+        continue;
+      }
+      if (keys.has(entry.slot) && this.now() < expiryDeadline(entry.expiresAt)!) {
+        kept.push(raw);
+        continue;
+      }
+      this.assertMutationAllowed();
+      await this.blobs.remove(source, address, entry.path);
+      summary.swept += 1;
+    }
+    if (summary.unreadableIndex) {
+      this.counters.unreadableIndexes += 1;
+      await this.noteRetentionFailure(source, address);
+    } else {
+      await this.clearRetentionFailure(source, address);
+    }
+    if (summary.swept > 0) {
+      this.assertMutationAllowed();
+      await this.blobs.writeIndex(source, address, { version: 2, entries: kept });
+      this.counters.swept += summary.swept;
+    }
+    return summary;
+  }
+
+  private liveDayKeys(): Map<number, Buffer> {
+    if (this.retentionKeys === undefined) throw new Error("Content day keys unavailable");
+    return new Map(this.retentionKeys.getLiveDayKeys().map(({ day, key }) => [day, key]));
+  }
+
+  private async readCleanupIndex(source: string, address: string): Promise<ContentCleanupIndex> {
+    const index = await this.blobs.readIndex(source, address);
+    if (index === null && !(await this.blobs.hasLegacyContent(source, address))) {
+      return { version: 2, entries: [] };
+    }
+    if (index !== null && "entries" in index && index.version === 2 && Array.isArray(index.entries)) return index;
+    throw new ContentIndexUnreadableError();
+  }
+
+  private verifyCleanupEntry(source: string, address: string, raw: unknown): ContentCleanupEntry | null {
+    const entry = verifyContentCleanupEntry(this.contentMaster(), source, address, raw);
+    if (entry === null) warnContent("op=content-cleanup-index result=invalid_entry");
+    return entry;
+  }
+
+  private async openDayIndex(source: string, address: string): Promise<ContentIndex> {
+    const index = await this.readCleanupIndex(source, address);
+    const keys = this.liveDayKeys();
+    const meetings: ContentMeta[] = [];
+    for (const raw of index.entries) {
+      const entry = this.verifyCleanupEntry(source, address, raw);
+      if (entry === null) throw new ContentIndexUnreadableError();
+      const key = keys.get(entry.slot);
+      if (!key || this.now() >= expiryDeadline(entry.expiresAt)!) continue;
+      const row = await this.readDayBlob(source, address, entry, key);
+      if (row !== null) meetings.push(row.meta);
+    }
+    return { meetings, tombstones: [] };
+  }
+
+  private async readDayBlob(
+    source: string, address: string, entry: ContentCleanupEntry, key: Buffer, sourceId?: string,
+  ): Promise<StoredMeeting | null> {
+    const blob = await this.blobs.read(source, address, entry.path);
+    if (blob === null || this.now() >= expiryDeadline(entry.expiresAt)!) return null;
+    try {
+      if (blob.version !== 2 || blob.keySlot !== entry.slot || blob.expiresAt !== entry.expiresAt) {
+        throw new Error();
+      }
+      const aad = dayContentAad(source, address, entry);
+      const dek = open(dayContentKek(key, source, address, entry.path), blob.wrappedDEK, aad);
+      const row = parseMeeting(open(dek, blob.ciphertext, aad).toString("utf8"), sourceId);
+      if (row.meta.expiresAt !== entry.expiresAt || dayContentPath(key, row.meta.sourceId) !== entry.path) {
+        throw new Error();
+      }
+      return row;
+    } catch {
+      throw new Error("Content envelope unreadable");
+    }
+  }
+
+  private async findDayMeeting(source: string, address: string, sourceId: string): Promise<StoredMeeting | null> {
+    const index = await this.readCleanupIndex(source, address);
+    const entries = new Map<string, ContentCleanupEntry>();
+    for (const raw of index.entries) {
+      const entry = this.verifyCleanupEntry(source, address, raw);
+      if (entry === null) throw new ContentIndexUnreadableError();
+      entries.set(entry.path, entry);
+    }
+    for (const [slot, key] of this.liveDayKeys()) {
+      const entry = entries.get(dayContentPath(key, sourceId));
+      if (entry === undefined || entry.slot !== slot) continue;
+      const row = await this.readDayBlob(source, address, entry, key, sourceId);
+      if (row !== null) return row;
+    }
+    return null;
+  }
+
+  private async writeDayBlob(source: string, address: string, meta: ContentMeta, content: MeetingContent): Promise<void> {
+    const expiresAt = meta.expiresAt;
+    const end = expiresAt === undefined ? null : expiryDeadline(expiresAt);
+    if (end === null || expiresAt === undefined || this.now() >= end) throw new Error("Content expiry has passed");
+    const slot = slotFor(end);
+    const key = this.liveDayKeys().get(slot);
+    if (!key) throw new Error("Content day key unavailable");
+    const path = dayContentPath(key, meta.sourceId);
+    const entry = signContentCleanupEntry(this.contentMaster(), source, address, { path, slot, expiresAt });
+    const index = await this.readCleanupIndex(source, address);
+    const entries = index.entries.map(raw => {
+      const existing = this.verifyCleanupEntry(source, address, raw);
+      if (existing === null) throw new ContentIndexUnreadableError();
+      return existing;
+    });
+
+    // Reserve authenticated cleanup metadata before a row can become durable.
+    if (!entries.some(existing => existing.path === path)) {
+      this.assertMutationAllowed();
+      await this.blobs.writeIndex(source, address, { version: 2, entries: [...entries, entry] });
+    }
+    if (this.now() >= end) throw new Error("Content expiry has passed");
+    const aad = dayContentAad(source, address, entry);
+    const dek = randomBytes(DEK_BYTES);
+    this.assertMutationAllowed();
+    await this.blobs.write(source, address, path, {
+      version: 2,
+      keySlot: slot,
+      expiresAt,
+      ciphertext: seal(dek, Buffer.from(JSON.stringify({ meta, content })), aad),
+      wrappedDEK: seal(dayContentKek(key, source, address, path), dek, aad),
+      updatedAt: meta.updatedAt,
+    });
+    await this.writeDayReplayMarker(source, address, meta.sourceId, slot, key, end);
+  }
+
+  private async removeMeeting(source: string, address: string, meta: ContentMeta): Promise<void> {
+    if (this.retentionKeys === undefined) {
+      await this.blobs.remove(source, address, meta.sourceId);
+      return;
+    }
+    const end = meta.expiresAt === undefined ? null : expiryDeadline(meta.expiresAt);
+    const key = end === null ? undefined : this.liveDayKeys().get(slotFor(end));
+    if (key === undefined) return; // The metadata sweep removes expired rows.
+    const path = dayContentPath(key, meta.sourceId);
+    const index = await this.readCleanupIndex(source, address);
+    const kept = index.entries.filter(raw => this.verifyCleanupEntry(source, address, raw)?.path !== path);
+    this.assertMutationAllowed();
+    await this.blobs.remove(source, address, path);
+    this.assertMutationAllowed();
+    await this.blobs.writeIndex(source, address, { version: 2, entries: kept });
+  }
+
   private async openIndex(
     source: string,
     address: string,
   ): Promise<ContentIndex> {
+    if (this.retentionKeys !== undefined) return this.openDayIndex(source, address);
     let blob: SealedBlob | null;
     try {
-      blob = await this.blobs.readIndex(source, address);
+      const index = await this.blobs.readIndex(source, address);
+      if (index !== null && "entries" in index) throw new ContentIndexUnreadableError();
+      blob = index;
     } catch (error) {
       if (error instanceof ContentBlobUnparseableError) {
         throw new ContentIndexUnreadableError();
@@ -1565,6 +1830,8 @@ export class ContentStore implements ContentSink, RetentionGuard {
     address: string,
     index: ContentIndex,
   ): Promise<void> {
+    if (this.retentionKeys !== undefined) return;
+    assertConnectorPlaintextTestMode();
     this.assertMutationAllowed();
     await this.blobs.writeIndex(
       source,
@@ -1578,6 +1845,7 @@ export class ContentStore implements ContentSink, RetentionGuard {
     address: string,
     sourceId: string,
   ): Promise<StoredMeeting | null> {
+    if (this.retentionKeys !== undefined) return this.findDayMeeting(source, address, sourceId);
     const blob = await this.blobs.read(source, address, sourceId);
     if (blob === null) return null;
     if (blob.expiresAt !== undefined && !isUtcDate(blob.expiresAt)) {
@@ -1597,6 +1865,8 @@ export class ContentStore implements ContentSink, RetentionGuard {
     meta: ContentMeta,
     content: MeetingContent,
   ): Promise<void> {
+    if (this.retentionKeys !== undefined) return this.writeDayBlob(source, address, meta, content);
+    assertConnectorPlaintextTestMode();
     this.assertMutationAllowed();
     await this.blobs.write(
       source,
@@ -1701,6 +1971,7 @@ function parseMeta(raw: unknown): ContentMeta | null {
     sourceId: value.sourceId,
     ...(typeof value.title === "string" ? { title: value.title } : {}),
     ...(typeof value.ts === "string" ? { ts: value.ts } : {}),
+    ...(typeof value.sourceTimestamp === "string" ? { sourceTimestamp: value.sourceTimestamp } : {}),
     ...(participantNames === undefined ? {} : { participantNames }),
     ...(participantEmails === undefined ? {} : { participantEmails }),
     ...(organizerEmail === undefined ? {} : { organizerEmail }),
@@ -1780,7 +2051,7 @@ function parseIndex(plaintext: string, _now: number): ContentIndex {
   return { meetings, tombstones };
 }
 
-function parseMeeting(plaintext: string, sourceId: string): StoredMeeting {
+function parseMeeting(plaintext: string, sourceId?: string): StoredMeeting {
   let raw: unknown;
   try {
     raw = JSON.parse(plaintext);
@@ -1792,7 +2063,7 @@ function parseMeeting(plaintext: string, sourceId: string): StoredMeeting {
   }
   const value = raw as Record<string, unknown>;
   const meta = parseMeta(value.meta);
-  if (meta === null || meta.sourceId !== sourceId) {
+  if (meta === null || (sourceId !== undefined && meta.sourceId !== sourceId)) {
     // A blob that names a different meeting is not this meeting, whatever key it sits under.
     throw new Error("content payload is unreadable");
   }
@@ -1849,14 +2120,20 @@ export class InMemoryContentBlobStore implements ContentBlobStore {
   private readonly blobs = new Map<string, string>();
   private readonly keyFailures = new Map<string, string>();
 
-  async readIndex(source: string, address: string): Promise<SealedBlob | null> {
-    return this.get(indexSlot(source, address));
+  async readIndex(source: string, address: string): Promise<StoredContentIndex | null> {
+    const raw = this.blobs.get(indexSlot(source, address));
+    return raw === undefined ? null : JSON.parse(raw) as StoredContentIndex;
+  }
+
+  async hasLegacyContent(source: string, address: string): Promise<boolean> {
+    const prefix = contentSlot(source, address, "");
+    return [...this.blobs.keys()].some(key => key.startsWith(prefix) && isValidMeetingId(key.slice(prefix.length)));
   }
 
   async writeIndex(
     source: string,
     address: string,
-    blob: SealedBlob,
+    blob: StoredContentIndex,
   ): Promise<void> {
     this.blobs.set(indexSlot(source, address), JSON.stringify(blob));
   }
@@ -2004,10 +2281,14 @@ function replayTombstoneSlot(digest: string): string {
   return `replay:${digest}`;
 }
 function replayTombstoneKvKey(digest: string): string {
-  if (!/^[a-f0-9]{64}$/.test(digest)) {
-    throw new Error("Invalid replay tombstone digest");
-  }
-  return `${REPLAY_TOMBSTONE_KEY_PREFIX}/${digest}`;
+  if (/^[a-f0-9]{64}$/.test(digest)) return `${REPLAY_TOMBSTONE_KEY_PREFIX}/v1/${digest}`;
+  if (dayReplaySlot(digest) !== null) return `${REPLAY_TOMBSTONE_KEY_PREFIX}/v2/${digest}`;
+  throw new Error("Invalid replay tombstone digest");
+}
+
+function dayReplaySlot(digest: string): number | null {
+  const match = /^(\d{1,8})\/[a-f0-9]{64}$/.exec(digest);
+  return match === null ? null : Number(match[1]);
 }
 
 function keyFailureKey(source: string, address: string): string {
@@ -2083,14 +2364,25 @@ export class KvContentBlobStore implements ContentBlobStore {
     return (await this.firstKey(`${CONTENT_KEY_PREFIX}/`)) !== null;
   }
 
-  readIndex(source: string, address: string): Promise<SealedBlob | null> {
-    return this.run(() => this.readBlob(indexKey(source, address)));
+  readIndex(source: string, address: string): Promise<StoredContentIndex | null> {
+    return this.run(async () => {
+      const value = await this.readRecord(indexKey(source, address));
+      if (value === null) return null;
+      if (value.version === 2 && Array.isArray(value.entries)) return { version: 2, entries: value.entries };
+      return this.parseBlob(value);
+    });
+  }
+
+  async hasLegacyContent(source: string, address: string): Promise<boolean> {
+    const prefix = `${CONTENT_KEY_PREFIX}/${source}/${normalizeWebhookAddress(address)}/`;
+    const result = await listAllContentKeys(this.node, prefix, operation => this.run(operation));
+    return extractKeys(result).some(key => key.startsWith(prefix) && isValidMeetingId(key.slice(prefix.length)));
   }
 
   writeIndex(
     source: string,
     address: string,
-    blob: SealedBlob,
+    blob: StoredContentIndex,
   ): Promise<void> {
     return this.run(() => this.writeBlob(indexKey(source, address), blob));
   }
@@ -2244,11 +2536,10 @@ export class KvContentBlobStore implements ContentBlobStore {
     const keys = extractKeys(response).filter((key) => key.startsWith(prefix));
     const markers: Array<{ digest: string; marker: ReplayTombstoneRecord | null }> = [];
     for (const key of keys) {
-      const digest = key.slice(prefix.length);
-      if (!/^[a-f0-9]{64}$/.test(digest)) {
-        markers.push({ digest, marker: null });
-        continue;
-      }
+      const relative = key.slice(prefix.length);
+      const digest = relative.slice(3);
+      if (relative.startsWith("v1/") ? !/^[a-f0-9]{64}$/.test(digest)
+        : !relative.startsWith("v2/") || dayReplaySlot(digest) === null) continue;
       try {
         markers.push({
           digest,
@@ -2328,7 +2619,7 @@ export class KvContentBlobStore implements ContentBlobStore {
     );
   }
 
-  private async readBlob(key: string): Promise<SealedBlob | null> {
+  private async readRecord(key: string): Promise<Record<string, unknown> | null> {
     const result = await withSessionRefresh(this.node, async () => {
       const r = await this.node.kv.get(key);
       if (isKvMissingKeyResult(r, key)) return null;
@@ -2374,7 +2665,15 @@ export class KvContentBlobStore implements ContentBlobStore {
     ) {
       throw new ContentBlobUnparseableError();
     }
-    const blob = value as Record<string, unknown>;
+    return value as Record<string, unknown>;
+  }
+
+  private async readBlob(key: string): Promise<SealedBlob | null> {
+    const value = await this.readRecord(key);
+    return value === null ? null : this.parseBlob(value);
+  }
+
+  private parseBlob(blob: Record<string, unknown>): SealedBlob {
     if (
       typeof blob.ciphertext !== "string" ||
       typeof blob.wrappedDEK !== "string"
@@ -2385,6 +2684,8 @@ export class KvContentBlobStore implements ContentBlobStore {
     return {
       ciphertext: blob.ciphertext,
       wrappedDEK: blob.wrappedDEK,
+      ...(blob.version === 2 ? { version: 2 as const } : {}),
+      ...(typeof blob.keySlot === "number" ? { keySlot: blob.keySlot } : {}),
       ...(blob.storedAt === undefined
         ? {}
         : { storedAt: typeof blob.storedAt === "string" ? blob.storedAt : "" }),
@@ -2406,7 +2707,7 @@ export class KvContentBlobStore implements ContentBlobStore {
     };
   }
 
-  private async writeBlob(key: string, blob: SealedBlob): Promise<void> {
+  private async writeBlob(key: string, blob: SealedBlob | ContentCleanupIndex): Promise<void> {
     await withSessionRefresh(this.node, async () => {
       assertKvResult(await this.node.kv.put(key, blob));
     });
@@ -2522,13 +2823,15 @@ export function createContentIndexDirectory(
         const parts = key.slice(markerIndex + marker.length).split("/");
         const isIndex = prefix === CONTENT_INDEX_KEY_PREFIX;
         const isFailure = prefix === CONTENT_KEY_FAILURE_PREFIX;
-        if (parts.length !== (isIndex || isFailure ? 2 : 3)) continue;
+        const dayContent = !isIndex && !isFailure && parts.length === 4 &&
+          isDayContentPath(parts.slice(2).join("/"));
+        if (!dayContent && parts.length !== (isIndex || isFailure ? 2 : 3)) continue;
         const [source, rawAddress, sourceId] = parts;
         if (
           source === undefined ||
           rawAddress === undefined ||
           !isValidSource(source) ||
-          (!isIndex &&
+          (!dayContent && !isIndex &&
             !isFailure &&
             (sourceId === undefined || !isValidMeetingId(sourceId)))
         ) continue;
@@ -2551,7 +2854,7 @@ function contentKey(
   sourceId: string,
 ): string {
   if (!isValidSource(source)) throw new Error("Invalid content source");
-  if (!isValidMeetingId(sourceId)) throw new Error("Invalid meeting id");
+  if (!isDayContentPath(sourceId) && !isValidMeetingId(sourceId)) throw new Error("Invalid content path");
   return `${CONTENT_KEY_PREFIX}/${source}/${normalizeWebhookAddress(address)}/${sourceId}`;
 }
 

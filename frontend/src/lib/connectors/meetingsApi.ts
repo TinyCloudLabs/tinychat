@@ -46,6 +46,7 @@ export interface ConnectorMeetingMeta {
   title?: string;
   /** The provider's own meeting timestamp, when it gave one. */
   ts?: string;
+  sourceTimestamp?: string;
   participantNames?: string[];
   participantEmails?: string[];
   organizerEmail?: string;

@@ -99,6 +99,6 @@ export function appCorsOrigins(frontendOrigins: readonly string[]): Array<string
 export function appCorsOptions(frontendOrigins: readonly string[]) {
   return {
     origin: appCorsOrigins(frontendOrigins),
-    exposedHeaders: ["Retry-After", "RateLimit", "RateLimit-Policy", "X-Request-Id", "X-Correlation-Id"],
+    exposedHeaders: ["Retry-After", "RateLimit", "RateLimit-Policy", "X-Request-Id", "X-Correlation-Id", "X-TinyCloud-Session-Rejected", "X-Route-Unavailable"],
   };
 }

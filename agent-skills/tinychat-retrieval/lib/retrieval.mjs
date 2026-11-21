@@ -33,7 +33,7 @@ export function compareSemver(left, right) {
   return Math.sign(a.prerelease.length - b.prerelease.length);
 }
 export const DATABASE = 'xyz.tinycloud.tinychat/connectors';
-const SOURCES = ['fireflies', 'google-meet', 'tinycloud-transcriber', 'exo-local', 'exo-voice-note', 'exo-upload', 'exo-merged'];
+const SOURCES = ['fireflies', 'granola', 'google-meet', 'tinycloud-transcriber', 'exo-local', 'exo-voice-note', 'exo-upload', 'exo-merged'];
 const PENDING_SNAPSHOT_KEY = `${DATABASE}/pending-reconcile-snapshot`;
 const PENDING_SNAPSHOT_MAX_BYTES = 1024 * 1024;
 const PENDING_SNAPSHOT_FIELDS = new Set(['version', 'changed_at', 'checked_at', 'count', 'meetings']);

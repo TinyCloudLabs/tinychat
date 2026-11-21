@@ -5,12 +5,19 @@ import { CardBody, cardClass, CardTextContext, cardTime, chipClass, COMMENT_COPY
 import { MessageCircleIcon } from "lucide-react";
 import { homeFeedSourceFor } from "./feedStore";
 import { HomeFeedEntries } from "./HomeFeedEntries";
+import { useFeedCardLink, type FeedCardLink } from "./feedCardLink";
 import type { HomeFeedSource } from "./feedStoreTypes";
 import { safeUrl, selectFeed, type FeedCard } from "./feedData";
 import { FEED_SKILL_URL, FEED_STRINGS } from "./strings";
 import { AgentDetails, AgentMark, PlatformName, type AgentProfile } from "./AgentMark";
+import { syncCardMd } from "./cardMd";
+import { inBackground } from "../lib/localFirst/requestLanes";
 import { CourierMark, StatusMark, TypeLabel } from "./CompactCard";
 import { ShortTime } from "./ShortTime";
+import { FeedLink, LinkSheetHost } from "./FeedLink";
+
+/** How often a change in the Feed may re-run the card.md check (cardMd.ts syncCardMd); an open always runs it. */
+const CARD_MD_SYNC_MS = 5 * 60_000;
 
 // These keys belong to the bundled sample only. A real card's media key is never a web URL.
 const sampleAssets: Record<string, string> = {
@@ -147,12 +154,12 @@ export function FeedCardView({ card, sample = true, readBody, now, chip, comment
       {expanded && card.render === "article" && card.body && (sample || readBody) && <ArticleBody body={card.body} readBody={readBody ?? readArticleBody} />}
       {card.render === "link" && card.url && <div className="mt-1 min-w-0">
         {safeUrl(card.url)
-          ? <a className="inline-flex min-h-11 max-w-full items-center break-all text-sm underline underline-offset-[3px]" href={card.url} target="_blank" rel="noopener noreferrer">{FEED_STRINGS.openLink}</a>
+          ? <FeedLink className="inline-flex min-h-11 max-w-full items-center break-all text-sm underline underline-offset-[3px]" href={card.url}>{FEED_STRINGS.openLink}</FeedLink>
           : <span className="mt-2 block break-all text-sm text-muted-foreground">{card.url}</span>}
       </div>}
       <CardTextContext.Provider value={full}>{children}</CardTextContext.Provider>
       {expanded && card.source && <p className="mt-3 text-[13px] text-muted-foreground">Source: {card.source.url
-        ? <a href={card.source.url} target="_blank" rel="noopener noreferrer" className="inline-flex min-h-11 max-w-full items-center break-all underline underline-offset-[3px]">{card.source.label}</a>
+        ? <FeedLink href={card.source.url} className="inline-flex min-h-11 max-w-full items-center break-all underline underline-offset-[3px]">{card.source.label}</FeedLink>
         : <span className="break-words">{card.source.label}{card.source.ref && ` · ${card.source.ref}`}</span>}</p>}
     </article>
   );
@@ -164,7 +171,7 @@ export function FeedCardView({ card, sample = true, readBody, now, chip, comment
  * body, then `children` (options, conversation, the foot) inside the same surface. `FeedCardView` above stays for the
  * sample feed and the demo card.
  */
-export function HomeCardView({ card, sample = true, readBody, status, onAuthor, agent, collapse, plain = false, inline = false, children }: {
+export function HomeCardView({ card, sample = true, readBody, status, onAuthor, agent, collapse, post, afterPost, plain = false, inline = false, children }: {
   card: FeedCard;
   sample?: boolean;
   readBody?: (key: string, signal: AbortSignal) => Promise<string>;
@@ -176,6 +183,10 @@ export function HomeCardView({ card, sample = true, readBody, status, onAuthor, 
   agent?: { key: string; profile?: AgentProfile };
   /** A card opened in place from a list: its "Show less" control, at the top right beside the status. */
   collapse?: ReactNode;
+  /** The card's post, the line its row showed: first in the open card, before its title. */
+  post?: string;
+  /** Right under the post: the options control of a card that asks ("Hide options"). */
+  afterPost?: ReactNode;
   /** On a page of its own (a post's page): no card surface around it, so it isn't a card within a card. */
   plain?: boolean;
   /** A card opened inside its row of a list (Sam, 11-17): the row's own padding and nothing else, so it opens into the list instead of floating over it as a second card. */
@@ -189,7 +200,7 @@ export function HomeCardView({ card, sample = true, readBody, status, onAuthor, 
   // Long unbroken tokens (commit hashes, file paths, URLs) wrap instead of running past the card's edge: overflow-wrap is
   // inherited, and `anywhere` breaks a token only where it cannot fit on a line of its own.
   return (
-    <article className={plain ? "min-w-0 text-foreground [overflow-wrap:anywhere]" : inline ? "min-w-0 px-3.5 py-4 text-foreground [overflow-wrap:anywhere] cq:px-5" : `min-w-0 overflow-hidden rounded-2xl border bg-card p-4 text-card-foreground [overflow-wrap:anywhere] cq:p-5 ${agent ? "border-foreground/20 shadow-float" : "border-border shadow-sm"}`} aria-label={`${card.render} by ${card.author.name}`}>
+    <article className={plain ? "min-w-0 text-foreground [overflow-wrap:anywhere]" : inline ? "min-w-0 px-4 py-4 text-foreground [overflow-wrap:anywhere] cq:px-5" : `min-w-0 overflow-hidden rounded-2xl border bg-card p-4 text-card-foreground [overflow-wrap:anywhere] cq:p-5 ${agent ? "border-foreground/20 shadow-float" : "border-border shadow-sm"}`} aria-label={`${card.render} by ${card.author.name}`}>
       {/* One meta line, the compact card's (design round 7), so a card keeps its header row when it opens: the agent's
           mark, its name, its platform's mark, the time, and at the right the status and "Show less". */}
       <div className={`flex min-w-0 ${card.courier ? "items-start" : "items-center"} gap-3`}>
@@ -230,6 +241,8 @@ export function HomeCardView({ card, sample = true, readBody, status, onAuthor, 
         </div>
       </div>
       {agent && about && <div className="mt-3"><AgentDetails name={card.author.name} via={card.author.via} profile={agent.profile} onOpen={onAuthor} /></div>}
+      {post && <p data-card-post className="mt-3 whitespace-pre-wrap break-words text-[15px] leading-[22px] [text-wrap:pretty] cq:text-base cq:leading-6">{post}</p>}
+      {afterPost}
       {/* The card's task type, at the top right of its content, beside the title's first line (as on the row). */}
       {card.type
         ? card.title && card.render !== "article"
@@ -249,11 +262,11 @@ export function HomeCardView({ card, sample = true, readBody, status, onAuthor, 
       </div>}
       {card.render === "link" && card.url && <div className="mt-3 min-w-0">
         {safeUrl(card.url)
-          ? <a className="mt-2 inline-flex min-h-8 max-w-full items-center break-all text-sm font-medium underline underline-offset-4" href={card.url} target="_blank" rel="noopener noreferrer">{FEED_STRINGS.openLink}</a>
+          ? <FeedLink className="mt-2 inline-flex min-h-8 max-w-full items-center break-all text-sm font-medium underline underline-offset-4" href={card.url}>{FEED_STRINGS.openLink}</FeedLink>
           : <span className="mt-2 block break-all text-sm text-muted-foreground">{card.url}</span>}
       </div>}
       {card.source && <p className="mt-4 border-t border-border pt-3 text-xs text-muted-foreground">Source: {card.source.url
-        ? <a href={card.source.url} target="_blank" rel="noopener noreferrer" className="inline-block min-h-7 max-w-full break-all underline underline-offset-2">{card.source.label}</a>
+        ? <FeedLink href={card.source.url} className="inline-block min-h-7 max-w-full break-all underline underline-offset-2">{card.source.label}</FeedLink>
         : <span className="break-words">{card.source.label}{card.source.ref && ` · ${card.source.ref}`}</span>}</p>}
       {children}
     </article>
@@ -316,7 +329,7 @@ function SampleFeedEntries({ realEntries }: { realEntries: unknown }): JSX.Eleme
       {sample && <section className="mb-5 rounded-xl border border-border bg-card p-4 text-sm" aria-label={FEED_STRINGS.getStartedHeading}>
         <h2 className="font-display text-lg font-semibold">{FEED_STRINGS.getStartedHeading}</h2>
         <p className="mt-2">{FEED_STRINGS.getStartedBody}</p>
-        <a href={FEED_SKILL_URL} target="_blank" rel="noopener noreferrer" className="mt-3 inline-flex min-h-8 items-center underline underline-offset-2">{FEED_STRINGS.howAgentsPost}</a>
+        <FeedLink href={FEED_SKILL_URL} className="mt-3 inline-flex min-h-8 items-center underline underline-offset-2">{FEED_STRINGS.howAgentsPost}</FeedLink>
       </section>}
       {error && <div role="status" className="mb-4 rounded-lg bg-muted px-3 py-2 text-sm text-muted-foreground">
         <p>{cards.length ? FEED_STRINGS.stale : FEED_STRINGS.unavailable}</p>
@@ -329,13 +342,31 @@ function SampleFeedEntries({ realEntries }: { realEntries: unknown }): JSX.Eleme
   </main>;
 }
 
-export function FeedViewEntries({ realEntries, source, ask }: { realEntries: unknown; source?: HomeFeedSource; ask?: ReactNode }): JSX.Element {
-  return source ? <HomeFeedEntries source={source} ask={ask} /> : <SampleFeedEntries realEntries={realEntries} />;
+export function FeedViewEntries({ realEntries, source, ask, linked }: { realEntries: unknown; source?: HomeFeedSource; ask?: ReactNode; linked?: FeedCardLink | null }): JSX.Element {
+  // One sheet for every link in the Feed, its cards, briefs and pages included.
+  return <>
+    {source ? <HomeFeedEntries source={source} ask={ask} linked={linked} /> : <SampleFeedEntries realEntries={realEntries} />}
+    <LinkSheetHost />
+  </>;
 }
 
 export function FeedView({ tcw, onReconnect }: { tcw: TinyCloudWeb | null; onReconnect?: () => void }): JSX.Element {
   const source = useMemo(() => tcw ? homeFeedSourceFor(tcw) : null, [tcw]);
+  const linked = useFeedCardLink();
+  // Agents connected since the last run get the owner's card.md the first time the Feed sees them: on open, and on a
+  // change at most every five minutes, behind the Feed's own reads.
+  useEffect(() => {
+    if (!tcw || !source) return;
+    let last = Number.NEGATIVE_INFINITY;
+    const sync = () => {
+      if (Date.now() - last < CARD_MD_SYNC_MS) return;
+      last = Date.now();
+      void inBackground(async () => syncCardMd(tcw)).catch((error: unknown) => console.error("Giving agents card.md failed", error));
+    };
+    sync();
+    return source.subscribe(sync);
+  }, [tcw, source]);
   return source
-    ? <FeedViewEntries key={`${tcw?.did}:${tcw?.spaceId}`} realEntries={[]} source={source} ask={<HomeAskBox tcw={tcw ?? undefined} onReconnect={onReconnect} />} />
+    ? <FeedViewEntries key={`${tcw?.did}:${tcw?.spaceId}`} realEntries={[]} source={source} linked={linked} ask={<HomeAskBox tcw={tcw ?? undefined} onReconnect={onReconnect} />} />
     : <main aria-label="Feed" className="p-6 text-sm text-muted-foreground">Sign in to load your feed.</main>;
 }

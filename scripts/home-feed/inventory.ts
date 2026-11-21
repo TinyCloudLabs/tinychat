@@ -132,7 +132,7 @@ export function boardCard(row: InventoryRow, all: readonly BoardRecord[], now: n
     title: record.title, body: record.body ?? "",
     ...(record.kind === "ask" ? { choices: record.options.map((option) => ({ id: option.id, label: option.label })) } : {}),
     urgency: effectivePriority(record).urgency, createdAt: record.createdAt,
-    payload: { sitrep: { version: 1, record: carried }, source: { label: "Rocinante board", ref: row.key }, ...(record.repo ? { project: record.repo } : {}) },
+    payload: { sitrep: { version: 1, record: carried }, source: { label: "Rocinante board", ref: row.key }, ...(record.repo ? { project: record.repo } : {}), ...(carried.post ? { summary: carried.post } : {}) },
   };
   const typed = parseSitrepCardPayload(card.payload?.sitrep);
   if (!feedCardSchema.safeParse(card).success || !typed || !isDeepStrictEqual(typed.record, carried)) throw homeMirrorRefusal("Home mirror operation refused");

@@ -8,6 +8,7 @@ import { SettingsIcon } from "lucide-react";
 import { CaptureDot } from "@/capture/recorder/final/CaptureDot";
 import { cn } from "@/lib/utils";
 import { useStorageReadOnly } from "@/lib/useStorageReadOnly";
+import { RailBotAvatars } from "@/bots/lazyBotNav";
 import { NavBadge } from "./NavBadge";
 import { NavLink } from "./NavLink";
 import { navTarget } from "./navItems";
@@ -41,7 +42,7 @@ export function NavRail({
           const active = item.id === current;
           const Icon = item.icon;
           return (
-            <li key={item.id} className="flex w-full">
+            <li key={item.id} className="flex w-full flex-col">
               <NavLink
                 item={item}
                 to={navTarget(item, active)}
@@ -69,6 +70,7 @@ export function NavRail({
                   {item.label}
                 </span>
               </NavLink>
+              {item.id === "chat" && <RailBotAvatars />}
             </li>
           );
         })}

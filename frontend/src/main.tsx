@@ -12,7 +12,10 @@ import { RootErrorBoundary } from "./shell/RootErrorBoundary";
 import { OriginMoveHold } from "./shell/OriginMoveNotice";
 import { clearMovedAnswers, decideOriginMove, isLegacyOrigin, type OriginMoveDecision } from "./lib/originMove";
 import { AboutRedirect, RootRoute } from "./landing/RootRoute";
+import { FeedCardAlias } from "./feed/FeedCardAlias";
+import { FEED_ALIAS_PATH } from "./shell/routes";
 import { registerWebCaptureEngine } from "./lib/voiceNotes/web/registerWebEngine";
+import { registerTinyCloudWebMcp } from "./lib/webMcp";
 import { appPlatform } from "./lib/platform";
 import { setIOSDynamicTypeScale } from "./lib/dynamicType";
 import { setupPwa } from "./lib/pwa";
@@ -26,6 +29,12 @@ import { hydrateDurableKeys } from "./lib/durableKeys";
 import { APP_LOCK_PREFS_KEY } from "./lib/appLock";
 import { HIDDEN_FEATURES_KEY } from "./lib/hiddenFeatures";
 import { NATIVE_SESSION_KIND_KEY, NATIVE_SIGN_OUT_PENDING_KEY } from "./lib/openkeyNative";
+import { captureShareLinkFromLocation } from "./lib/nativeShares/link";
+import { ShareAppUrlListener } from "./capture/share/ShareAppUrlListener";
+
+// A share link's key is in its fragment (TC-3195): read it into memory and take it off the address bar before
+// anything else runs, so no log, report or later navigation can carry it.
+captureShareLinkFromLocation();
 
 // False on the web and in the desktop (Tauri) app; true only inside the TinyCloud Home mobile app.
 const nativeShell = Capacitor.isNativePlatform();
@@ -75,6 +84,7 @@ setupPwa({
 });
 
 registerWebCaptureEngine();
+registerTinyCloudWebMcp();
 
 // tinycloud.chat and home.tinycloud.xyz serve this same build; their visitors move to tinycloud.one (path, query and
 // #hash kept) once that origin serves this build, unless recordings or answers saved only in this origin's storage would
@@ -108,9 +118,12 @@ void installEd25519Polyfill().catch((error: unknown) => {
           <Routes>
             <Route path="/" element={<RootRoute />} />
             <Route path="/about" element={<AboutRedirect />} />
+            <Route path={`${FEED_ALIAS_PATH}/:cardId`} element={<FeedCardAlias />} />
             <Route path="/chat/*" element={<CaptureEngineGate><App /></CaptureEngineGate>} />
+            <Route path="/s/:id" element={<CaptureEngineGate><App /></CaptureEngineGate>} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
+          {Capacitor.isNativePlatform() && <ShareAppUrlListener />}
           {/* Inside the router: the notice's counts link to the Library and the Recording tab. */}
           {move.kind === "hold" && <OriginMoveHold />}
         </BrowserRouter>

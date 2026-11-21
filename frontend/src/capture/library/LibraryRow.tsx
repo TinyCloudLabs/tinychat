@@ -16,6 +16,7 @@ import { VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
 import { formatClockDuration, rowWhen } from "./formatters";
 import { RecordingTitleEditField, RenameRecordingButton, useRecordingTitleEdit, useUserTitle } from "./rename/RecordingRename";
 import { RowBadge } from "./RowBadge";
+import { useRecordingShared } from "@/lib/nativeShares/sentShares";
 import { KIND_ICON, libraryKind, librarySourceLabel } from "./libraryKinds";
 import type { NotePipeline } from "@/lib/voiceNotes/notePipeline";
 import type { NotePipelineView } from "@/lib/voiceNotes/useNotePipeline";
@@ -77,7 +78,9 @@ function LibraryRowContent(props: LibraryRowProps & { activityStatus: string | n
   const voiceNote = libraryKind(item.source) === "note";
   const soft = useSoftHome();
   const status = props.activityStatus;
-  const badge = status ? null : libraryRowBadge(item);
+  // The owner is sharing it (TC-3195): "Shared", unless the row has a state of its own to show.
+  const shared = useRecordingShared(item.id);
+  const badge = status ? null : (libraryRowBadge(item) ?? (shared ? "Shared" : null));
   const transcriptStatus = props.pipeline ? pipelineTranscriptStatus(props.pipeline) : null;
   const title = useUserTitle(item) ?? libraryRowTitle(item);
   const edit = useRecordingTitleEdit(item, title);

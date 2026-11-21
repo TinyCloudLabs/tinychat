@@ -1,6 +1,6 @@
 {
   "name": "@tinychat/frontend",
-  "version": "0.15.0-beta.7",
+  "version": "0.15.3-beta.2",
   "private": true,
   "type": "module",
   "scripts": {
@@ -33,11 +33,12 @@
     "@tauri-apps/api": "^2.9.0",
     "@tinyboilerplate/client": "workspace:*",
     "@tinyboilerplate/core": "workspace:*",
-    "@tinycloud/replica": "0.4.5-beta.6",
-    "@tinycloud/sdk-core": "3.12.0-beta.24",
-    "@tinycloud/sdk-services": "3.12.0-beta.20",
+    "@tinycloud/replica": "0.4.6-beta.0",
+    "@tinycloud/sdk-core": "3.13.0-beta.3",
+    "@tinycloud/sdk-services": "3.13.0-beta.3",
     "@tinycloud/share-envelope": "1.6.0-beta.1",
-    "@tinycloud/web-sdk": "3.12.0-beta.26",
+    "@tinycloud/share-sdk": "1.6.0-beta.0",
+    "@tinycloud/web-sdk": "3.13.0-beta.3",
     "@xyflow/react": "^12.8.5",
     "assistant-stream": "0.3.19",
     "class-variance-authority": "^0.7.1",
@@ -56,7 +57,7 @@
   },
   "devDependencies": {
     "@tailwindcss/typography": "^0.5.19",
-    "@tinycloud/web-sdk-wasm": "1.7.8-beta.0",
+    "@tinycloud/web-sdk-wasm": "1.7.8",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^4.3.0",

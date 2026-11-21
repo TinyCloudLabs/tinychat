@@ -7,13 +7,29 @@ import { authorizeBotHistory } from "./historyAuthorization";
 import { readBotHistory } from "./historyRead";
 import { useEffect, useMemo, useState } from "react";
 
+import { openKeyFailureOf } from "../lib/authErrors";
 import { readHistoryNotice, type HistoryNotice } from "./historyNotice";
 import { AskBox } from "./AskBox";
-import { botsApi, type BotsApi } from "./botsApi";
+import { BotsError, botsApi, type BotsApi } from "./botsApi";
 import { MainChat } from "./MainChat";
 import { isWorking, useMainChat } from "./useMainChat";
 
 const RETRY_MS = 60_000;
+
+/** History steps that fail because the session is gone. */
+const SESSION_GONE: Record<string, true> = { history_session_missing: true, history_session_expired: true, history_signed_out: true };
+
+/** Authorizes Main's history before a send. A session that is gone reads as signed out, not as a reply that didn't come. */
+async function prepareHistory(tcw: TinyCloudWeb): Promise<void> {
+  if (!(await botHistoryEnabled())) return;
+  try {
+    await authorizeBotHistory(tcw);
+    await ensureBotHistoryGrant(tcw);
+  } catch (cause) {
+    const gone = (cause instanceof Error && Object.hasOwn(SESSION_GONE, cause.message)) || openKeyFailureOf(cause).kind === "session-ended";
+    throw gone ? new BotsError("signed_out") : cause;
+  }
+}
 
 export function HomeAskBox({ api = botsApi, tcw, onReconnect }: { api?: BotsApi; tcw?: TinyCloudWeb; onReconnect?: () => void }) {
   const [working, setWorking] = useState(false);
@@ -44,7 +60,7 @@ function MainAsk({ api, tcw, onReconnect }: { api: BotsApi; tcw?: TinyCloudWeb; 
     const archived = await readBotHistory(tcw, signal);
     return [...new Map([...archived, ...local].map(message => [message.id, message])).values()];
   } }, [api, tcw]);
-  const chat = useMainChat(client, tcw ? async () => { if (await botHistoryEnabled()) { await authorizeBotHistory(tcw); await ensureBotHistoryGrant(tcw); } } : undefined);
+  const chat = useMainChat(client, tcw ? () => prepareHistory(tcw) : undefined);
   const [open, setOpen] = useState(false);
   const [notice, setNotice] = useState<HistoryNotice | null>(null);
   useEffect(() => {
@@ -82,6 +98,7 @@ function MainAsk({ api, tcw, onReconnect }: { api: BotsApi; tcw?: TinyCloudWeb; 
         onRetryHistory={() => void chat.loadHistory()}
         notice={notice}
         onReconnect={onReconnect}
+        webAccess={client}
       />
     </>
   );
