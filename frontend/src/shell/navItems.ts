@@ -118,11 +118,17 @@ export function navItems(pendingMeetings: number, options?: NavPinOptions): NavI
 /** The items a tab bar shows. */
 export const tabBarItems = (items: readonly NavItem[]): NavItem[] => items.slice(0, TAB_BAR_MAX);
 
+/** The pill holds this many pins, after the main tab, Chat and Apps. */
+export const PILL_PINS_MAX = 2;
+
 /**
- * One's new navigation (ONE_NAV_ENABLED), the phone's pill: the main tab, Chat and Apps, icon-only (You, which opens Settings, follows them). No pins:
- * those live in the launcher. Apps carries Connectors' waiting meetings.
+ * One's new navigation (ONE_NAV_ENABLED), the phone's pill: the main tab, Chat and Apps, then the first PILL_PINS_MAX
+ * of `pinned` (the account's pinned items, in pin order), icon-only (You, which opens Settings, follows them). The rest
+ * of the pins come first in the launcher. Apps carries Connectors' waiting meetings unless Connectors is in the pill.
  */
-export function pillItems(pendingMeetings: number): NavItem[] {
+export function pillItems(pendingMeetings: number, pinned: readonly NavItem[] = []): NavItem[] {
+  const pins = pinned.slice(0, PILL_PINS_MAX);
+  const appsBadge = pins.some((item) => item.id === "connectors") ? 0 : pendingMeetings;
   return [
     { id: "feed", destination: "feed", label: MAIN_TAB_LABEL, icon: HouseIcon, href: PATHS.feed },
     { id: "chat", destination: "chat", label: PILL_LABELS.chat, icon: MessageCircleIcon, href: PATHS.chat },
@@ -133,9 +139,10 @@ export function pillItems(pendingMeetings: number): NavItem[] {
       label: PILL_LABELS.apps,
       icon: LayoutGridIcon,
       href: PATHS.apps,
-      badge: pendingMeetings,
-      ariaLabel: pendingMeetings > 0 ? `${PILL_LABELS.apps}, ${connectorsAriaLabel(pendingMeetings)}` : undefined,
+      badge: appsBadge,
+      ariaLabel: appsBadge > 0 ? `${PILL_LABELS.apps}, ${connectorsAriaLabel(appsBadge)}` : undefined,
     },
+    ...pins,
   ];
 }
 

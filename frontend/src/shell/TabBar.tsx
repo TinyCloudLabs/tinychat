@@ -105,7 +105,8 @@ export function PillTabBar({ items, current, replace, onReselect, settings }: Pi
           const Icon = item.icon;
           return (
             <li key={item.id} className="flex flex-1">
-              <Link
+              <NavLink
+                item={item}
                 to={navTarget(item, active)}
                 replace={replace}
                 aria-current={active ? "page" : undefined}
@@ -121,7 +122,7 @@ export function PillTabBar({ items, current, replace, onReselect, settings }: Pi
                   <Icon aria-hidden className={cn("size-[26px]", active && "[stroke-width:2.25]")} />
                   <NavBadge count={item.badge} className="-right-3 -top-2" />
                 </span>
-              </Link>
+              </NavLink>
             </li>
           );
         })}

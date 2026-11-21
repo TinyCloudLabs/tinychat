@@ -159,8 +159,13 @@ export function AppShellView({
   const oneNav = pinOptions?.oneNav === true;
   const pill = showsPill(nav, shown, oneNav);
   const pillNav = pill
-    ? pillItems(pendingMeetings).filter((item) => (item.id !== "feed" || feed !== null) && (item.destination !== "apps" || apps !== null))
+    ? pillItems(
+        pendingMeetings,
+        items.filter((item) => item.id !== "feed" && item.id !== "chat" && item.id !== "apps"),
+      ).filter((item) => (item.id !== "feed" || feed !== null) && (item.id !== "apps" || apps !== null))
     : [];
+  // A pinned item in the pill is current on its own screen; anything else in Apps marks Apps.
+  const pillNow = current !== null && pillNav.some((item) => item.id === current) ? current : pillCurrent(shown);
 
   return (
     <div className={cn("grid h-full min-h-0", GRID[nav])}>
@@ -234,7 +239,7 @@ export function AppShellView({
         <div className="pointer-events-none relative z-30 col-start-1 row-start-3">
           <PillTabBar
             items={pillNav}
-            current={pillCurrent(shown)}
+            current={pillNow}
             replace={navProps.replace}
             onReselect={onReselect}
             settings={settings !== null}
