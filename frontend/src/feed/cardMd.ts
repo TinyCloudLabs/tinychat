@@ -1,9 +1,11 @@
 // card.md: the owner's one note on how cards are made for their Feed. The owner's master copy is one row (table
-// `card_md`) in the owner-only `threads` database: the signed-in session holds it, and neither an `onboard --with feed`
-// grant nor an agent token covers it. Every connected agent gets a copy of that row in its own response database, which
-// its feed token already reads, so a change reaches agents connected before it without a new grant; the CLI compares
-// the version on publish. Only the owner writes the master; the copies sit under the feed namespace, so each run
-// repairs any that differ. The contract with the CLI is the per-agent table and `cardMdVersion`.
+// `card_md`) in the owner-only `threads` database: the signed-in session holds it. A feed-only grant cannot write it
+// (`onboard --with feed` covers SQL only under `xyz.tinycloud.tinychat/home_feed` and `xyz.tinycloud.tinychat/feed/`),
+// while an apps grant (SQL on the whole applications space) can. Every connected agent gets a copy of that row in its
+// own response database, which its feed token already reads, so a change reaches agents connected before it without a
+// new grant; the CLI compares the version on publish. The owner's session writes the master; the copies sit under the
+// feed namespace, so each run repairs any that differ. The contract with the CLI is the per-agent table and
+// `cardMdVersion`.
 import { sha256 } from "@noble/hashes/sha256";
 import { bytesToHex, utf8ToBytes } from "@noble/hashes/utils";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
@@ -82,13 +84,15 @@ const INSERT_IF_MISSING = "INSERT OR IGNORE INTO card_md (id, text, version, upd
 
 /**
  * One-time move of the owner's card.md from the feed namespace (`LEGACY_CARD_MD_RESOURCE`) to the master table.
- * Where the master has no row: an old row whose version matches its text is copied over, anything else (no table, no
- * row, a mismatch) seeds the default. The copy is INSERT OR IGNORE, so an owner's edit made after it always stands,
- * and a second run changes nothing. Then the old row is deleted, so it stops being a writable source anyone trusts.
+ * Where the master has no row: an old row is copied over with its text as it is, its version recomputed from that text
+ * so the agent copies stay consistent. When the old row's version did not match its text, a warning says so and the
+ * text is carried over. Only where there is no table and no row is the default seeded. The copy is INSERT OR
+ * IGNORE, so an owner's edit made after it always stands, and a second run changes nothing. Then the old row is
+ * deleted, so it stops being a writable source anyone trusts.
  *
- * The version check catches corruption, NOT tampering: anyone can compute a sha256 prefix. A row rewritten before this
- * ran carries over. The owner sees the carried-over text in Settings and can change it. An owner who cleared their
- * card.md (empty text, its own version) keeps it cleared.
+ * The version is not a check on the text: anyone can compute a sha256 prefix, so a row rewritten before this ran
+ * carries over like any other. The owner sees the carried-over text in Settings and can change it. An owner who
+ * cleared their card.md (empty text, its own version) keeps it cleared.
  *
  * The old row is the owner's only copy until the master holds it, so after the insert the master is read back: a row
  * there lets the old row be deleted and the move count as finished (true). No row there (the insert reported success
@@ -101,10 +105,10 @@ export async function migrateCardMd(master: FeedDatabase, legacy: FeedDatabase, 
   let stored = await readCardMd(master);
   if (!stored) {
     const old = legacyTable ? await readCardMd(legacy) : null;
-    if (old && old.version === cardMdVersion(old.text)) {
-      unwrap(await master.execute(INSERT_IF_MISSING, [old.text, old.version, old.updatedAt]));
+    if (old) {
+      if (old.version !== cardMdVersion(old.text)) console.warn("card.md migration: the old row's version did not match its text, and the text was carried over as it is");
+      unwrap(await master.execute(INSERT_IF_MISSING, [old.text, cardMdVersion(old.text), old.updatedAt]));
     } else {
-      if (old) console.warn("card.md migration: the old row's version did not match its text, so the default was used");
       unwrap(await master.execute(INSERT_IF_MISSING, [CARD_MD_DEFAULT, cardMdVersion(CARD_MD_DEFAULT), now.toISOString()]));
     }
     stored = await readCardMd(master);

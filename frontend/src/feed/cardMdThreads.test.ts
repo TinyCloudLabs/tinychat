@@ -49,10 +49,10 @@ test("an edit made after the move survives a second run, even if an old device w
   expect(await count(legacy)).toBe(0);
 });
 
-test("an old row whose version does not match its text is not carried over: the default is seeded and the reason logged", async () => {
+test("an old row whose version does not match its text is carried over as it is, the version recomputed, and the reason logged", async () => {
   const master = sqliteFeedDatabase();
   const legacy = sqliteFeedDatabase();
-  await saveCardMd(legacy, "Original text.");
+  const old = await saveCardMd(legacy, "Original text.");
   await legacy.execute("UPDATE card_md SET text = 'Rewritten text.' WHERE id = 1");
   const warn = spyOn(console, "warn").mockImplementation(() => {});
   try {
@@ -60,7 +60,7 @@ test("an old row whose version does not match its text is not carried over: the 
     expect(warn).toHaveBeenCalledTimes(1);
     expect(String(warn.mock.calls[0]![0])).not.toContain("Rewritten text.");
   } finally { warn.mockRestore(); }
-  expect(await readCardMd(master)).toEqual({ text: CARD_MD_DEFAULT, version: cardMdVersion(CARD_MD_DEFAULT), updatedAt: at.toISOString() });
+  expect(await readCardMd(master)).toEqual({ text: "Rewritten text.", version: cardMdVersion("Rewritten text."), updatedAt: old.updatedAt });
   expect(await count(legacy)).toBe(0);
 });
 
