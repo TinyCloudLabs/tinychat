@@ -169,8 +169,8 @@ Main can use the web only when its owner turns it on: in Main's chat, tap Web ac
 The setting is saved by the supervisor in `/data/bots/<bot id>/web.json` and given to the gateway before each message;
 the gateway applies it on every call. A missing or unreadable file reads as `off`.
 
-- Main's OMP has one MCP server, `web`: the gateway's `POST /v1/mcp` on the egress socket (bot token required). Its
-  tools, `search` and `fetch`, reach OMP as `mcp__web_search` and `mcp__web_fetch`; OMP's own web tools are off.
+- Main's OMP has two MCP servers on the egress socket (bot token required): `web`, the gateway's `POST /v1/mcp`, and
+  `app` (see Questions from Main). The `web` tools, `search` and `fetch`, reach OMP as `mcp__web_search` and `mcp__web_fetch`; OMP's own web tools are off.
 - A search goes to the search provider (Tavily Search; `BOTS_TEST_WEB_URL` is a loopback mock for tests). Without
   `TAVILY_API_KEY` a search answers "isn't available".
 - A page is read by the `bots-fetch` container (`src/fetch-main.ts`, `POST /fetch {"url", "hosts"}`), which reads pages
@@ -178,6 +178,84 @@ the gateway applies it on every call. A missing or unreadable file reads as `off
 - Page HTML becomes plain text (`src/page-text.ts`) before Main sees it.
 - Daily budgets per bot and for all bots, and the call timeout, are set with the `BOTS_WEB_*` variables below.
 - The log and the saved counts hold counts by tool and outcome only.
+
+### Questions from Main
+
+Main can ask its owner one short question and carry on; the answer comes back later as a new message. It ships off:
+the owner turns it on in Main's settings, and until then Main has no tool for it and every call is refused. This is
+the `ask_owner` tool of the `app` MCP server.
+
+- The `app` server is the gateway's `POST /v1/mcp/app` on the egress socket (bot token required), beside `web`. A
+  sandbox's `mcp.json` is written once and always lists both, so the setting is not in it: the gateway lists
+  `ask_owner` only while the setting is on and refuses every `tools/call` while it is off (`tools/list` is then empty).
+  OMP lists a server's tools when the sandbox starts, so a running Main sees a change of the setting at its next
+  start; the gateway applies the setting on every call either way.
+- `ask_owner { question, choices? }` takes a question of 1 to 280 characters and up to 4 choices of up to 60. It is
+  plain text: control, direction and other format characters are removed and whitespace collapses, and a longer text is
+  refused rather than shortened. It answers `{ id, state: "pending" }` at once and nothing else. Refusals are fixed
+  sentences that never repeat what the model or the owner wrote.
+- Limits, applied by the gateway from counts the supervisor pushes: 3 open questions and 10 a day (UTC), for the
+  bot and for its owner; a question the owner said not now to is refused for an hour (compared after dropping
+  punctuation, collapsing whitespace and lowercasing, so rewording by punctuation does not get past it; any other
+  question is still allowed). A question left unanswered for 24 hours expires.
+- The owner's setting is `/data/bots/<bot id>/asks.json` and the requests are `/data/bots/<bot id>/requests.json`, in
+  the data directory beside `web.json`. Neither is under `state/`, which is what gets copied into a sandbox, and no
+  sandbox mount is the data directory or inside it. Their only link to the box is the gateway. A missing or unreadable
+  setting reads as off.
+- The gateway cannot call the supervisor (separate containers), so it holds a validated new question in memory until
+  the supervisor collects it over the control socket: `POST /bots/<id>/asks/drain` answers `{ asks, outside }`, and
+  `PUT /bots/<id>/asks` gives the setting, the counts and the declined hashes. The supervisor does this at sandbox
+  launch, at the start and end of each message, when the owner lists requests and after each decision. A question the
+  box asked that the supervisor has not collected is lost if the gateway restarts.
+- Turning the setting off (`PUT /asks { enabled: false }`, which is also what stopping Main from asking does) closes
+  every pending question at once: it becomes `stopped` with `undelivered: true` and its question and choices are
+  deleted from `requests.json` at that moment, so nothing about it is listed or can come back when the setting is
+  turned on again. Main is told once per switch-off, not once per request, with the `stopped` sentence below: the
+  requests one switch-off stopped share a time, and when the app sends the reply for any of them (`appReply` does not
+  need the setting on) all of them are marked told together, so the others get 409 `no_reply`. A request stopped by a
+  later switch-off is a separate message. A switch-off not told is dropped after the usual 12 hours, all together.
+  A stopped request is not an answer and not a decline: no one-hour cooldown is recorded for its question. Requests
+  already answered, declined or expired are not touched. A question the gateway took but the supervisor had not
+  collected is dropped, never stored: the supervisor collects nothing into the records while the setting is off, the
+  off push empties the gateway's hold, and
+  the closing waits for any collection under way (they run one at a time per bot), so nothing becomes pending after
+  the off. The closing does not depend on the gateway: if the gateway cannot be told, the setting is still off and it
+  is told at the next sync.
+- Each request has `outside`: true when anything from outside the owner's own words has reached Main's conversation
+  before it was asked: a `search` or `fetch` call, a message relayed from another bot, or a reply from another bot to
+  Main's own message. It is a warning for the owner, not a block, and it is sticky: the conversation persists, so a page
+  read in one turn can steer a question in a later one. The supervisor keeps it as `outsideSeen` in `asks.json`, learns
+  of web calls when it collects from the gateway (`{ asks, outside }`, also just before a sandbox stops, while the
+  gateway still holds them) and gives it to the gateway with every push; the gateway only ever turns it on. Only
+  resetting the bot's working state, which removes its data directory, clears it. A web call the gateway saw and the
+  supervisor had not yet collected is lost if the gateway restarts before then.
+- Routes, Main only (any other bot: 404; a service without them answers 404, which the backend passes on):
+  - `GET` and `PUT /v1/bots/main/asks`: `{ enabled }`.
+  - `GET /v1/bots/main/requests`: `{ requests: [{ id, kind: "ask", state, askedAt, expiresAt, outside, resolvedAt?,
+    question?, choices?, answer?, undelivered? }] }` (times are ISO 8601). `state` is `pending`, `answered`,
+    `declined`, `stopped` or `expired`. `question` and `choices` are there only while pending. `undelivered` is `true`
+    for an answered, declined or stopped request until Main has been told, and `answer` is there only then (answered).
+  - `POST /v1/bots/main/requests/<id>/answer`: `{ "decision": "decline" }`, `{ "decision": "answer", "answer": "..." }`
+    (1 to 280 characters) or `{ "decision": "answer", "choice": 0 }`. 400 `{ error: "invalid" }`; 409
+    `{ error: "not_pending" }` for a request that is not pending, expired or not the owner's.
+  - `POST /v1/bots/main/messages` `{ "appReply": { "requestId": "..." } }` delivers the decision to Main. Only the id
+    is read: the service composes the text from what it stored, and a `text` or `from` in the body is ignored. 409
+    `{ error: "no_reply" }` when the request is not decided, already delivered, expired or not the owner's.
+- What Main is told, in a message from the app: `The person answered your question: <answer>` for an answer,
+  `The person chose not to answer now. Carry on without it, and don’t ask again unless they bring it up.` for a
+  decline and `The person turned off questions from you, so your open questions were closed without an answer. Carry
+  on without asking.` for a question closed by turning the setting off (each is one constant in `asks.ts`,
+  `ASK_REPLIES`, and the words are pending approval). An expired question sends nothing. Only this route writes such
+  a message (`from: "app"` inside the service, never taken from a request), so the text is always the composed one,
+  and it teaches the bot no addresses. Its history line carries `origin: "app"` and
+  `decision: "answered" | "declined" | "stopped"`, which `GET /v1/bots/main/messages` returns. This works with the
+  history journal; the fallback that lists OMP's own session cannot mark them.
+- Retention: a question's text is deleted when it is decided or expires. An answer's text is deleted when Main has
+  been told (the turn reached `done`) or 12 hours after the decision if it was not, whichever is first; a turn that
+  does not finish leaves it to send again. Metadata (id, state, times, `outside`) is kept for 7 days, at most 200
+  requests, for the counts. A sweep every 15 minutes applies this even when nobody opens the chat.
+- The log holds counts by outcome (`{gateway:"asks", tool:"ask_owner", outcome}`) and the owner's decision outcome,
+  never a question, a choice, an answer or a request id.
 
 ### Saved state
 
