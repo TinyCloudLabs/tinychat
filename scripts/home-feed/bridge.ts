@@ -4,7 +4,7 @@ import { z } from "zod";
 import { ErrorCodes } from "@tinycloud/sdk-services";
 import type { QueryOptions, Result, SqlValue } from "@tinycloud/sdk-services";
 import {
-  deliverFeedResponse, feedCardSchema, feedResourceNames, getFeedHandoff,
+  deliverFeedResponse, feedCardSchema, feedResourceNames, getFeedCardState, getFeedHandoff,
   listFeedCards, listFeedResponseDeliveries, listFeedResponses,
   projectFeedResponseNotification, publishFeedCard, readFeedResponseHandling, readFeedResponsePayload, recordFeedHandling,
 } from "@tinycloud/sdk-services/feed";
@@ -17,7 +17,7 @@ import {
   validateSitrepAction, validateState,
 } from "@tinyboilerplate/core/feed/sitrep";
 import type { BoardRecord, Patch, SamState } from "@tinyboilerplate/core/feed/sitrep";
-import type { HomeMirrorBinding, HomeMirrorCloseReceipt, HomeMirrorContext, HomeMirrorIdentity } from "./bridge-types";
+import type { HomeMirrorBinding, HomeMirrorCloseReceipt, HomeMirrorContext, HomeMirrorIdentity, HomeMirrorPublishInput } from "./bridge-types";
 
 const OWNER = "xyz.tinycloud.tinychat/home_feed";
 const PREFIX = "xyz.tinycloud.tinychat/feed";
@@ -259,6 +259,48 @@ async function currentCard(ctx: HomeMirrorContext, source: HomeMirrorBinding["so
   const cards = take(await listFeedCards(privateDatabase(ctx.sql.db(source.output.database), ctx)));
   return cards.find((card) => card.cardId === identity.cardId && sameIdentity(card, identity));
 }
+/**
+ * A mirrored card as Home holds it now, for the close-from-board pass: its newest binding's source, Home's newest copy
+ * of the card, and whether the owner has answered that copy in Home (that answer closes the board record itself).
+ */
+export interface HomeMirrorHeld { source: HomeMirrorBinding["source"]; binding: HomeMirrorBinding; card: FeedCard; answered: boolean }
+export async function readHomeMirrorHeld(ctx: HomeMirrorContext, sourceId: string, fullKey: string): Promise<HomeMirrorHeld | undefined> {
+  try {
+    active(ctx);
+    const bindings = (await mirrorRowsFor(ctx, fullKey)).map((row) => stored(ctx, row).binding)
+      .filter((binding) => binding.source.sourceId === sourceId && binding.legacy.fullKey === fullKey && binding.legacy.spaceId === ctx.legacySpaceId);
+    const binding = bindings.sort((a, b) => b.identity.revision - a.identity.revision)[0];
+    if (!binding) return undefined;
+    const source = await registered(ctx, sourceId);
+    if (!isDeepStrictEqual(source, binding.source)) throw failure();
+    const database = source.output.database;
+    let cards = ctx.cache?.cards?.[database];
+    if (!cards) {
+      cards = take(await listFeedCards(privateDatabase(ctx.sql.db(database), ctx)));
+      if (ctx.cache) (ctx.cache.cards ??= {})[database] = cards;
+    }
+    const card = cards.find((candidate) => candidate.cardId === binding.cardUuid);
+    if (!card) return undefined;
+    const state = take(await getFeedCardState(privateDatabase(ctx.sql.db(database), ctx), privateDatabase(ctx.sql.db(source.responses.database), ctx), tuple(card)));
+    return { source, binding, card, answered: state.response !== null };
+  } catch (error) { throw safeFailure(error, "close"); }
+}
+/**
+ * Publishes the closing revision of a mirrored card: the next revision after Home's newest copy, no longer waiting on
+ * the owner, still carrying the board record it was mirrored from. Nothing else is written: the binding and the board's
+ * own copy stay as they are.
+ */
+export async function publishHomeMirrorClosing(ctx: HomeMirrorContext, held: HomeMirrorHeld, card: FeedCard): Promise<void> {
+  try {
+    active(ctx);
+    const typed = parseSitrepCardPayload(card.payload?.sitrep);
+    if (card.cardId !== held.card.cardId || card.revision !== held.card.revision + 1 || card.needsResponse || !typed ||
+      typed.record.kind !== held.binding.legacy.kind || typed.record.id !== held.binding.legacy.id || findRecordSecrets(typed.record.kind, typed.record as unknown as Record<string, unknown>).length) throw failure();
+    take(await publishFeedCard(privateDatabase(ctx.sql.db(held.source.output.database), ctx), card));
+    const database = held.source.output.database;
+    if (ctx.cache?.cards?.[database]) ctx.cache.cards[database] = ctx.cache.cards[database]!.map((candidate) => candidate.cardId === card.cardId ? card : candidate);
+  } catch (error) { throw safeFailure(error, "close"); }
+}
 type LegacyRead = { raw: Record<string, unknown>; record: BoardRecord; etag: string; sha256: string };
 async function readLegacy(ctx: HomeMirrorContext, kind: BoardRecord["kind"], key: string): Promise<LegacyRead | undefined> {
   const result = await ctx.legacy.get<Uint8Array>(key, { binary: true, source: "network", prefix: "", signal: ctx.signal });
@@ -320,6 +362,20 @@ export async function publishHomeMirror(ctx: HomeMirrorContext, value: unknown):
     // A card Home holds but the board was never cut over to (no binding) may have been edited since: its revision in
     // Home is immutable, so its content goes out as the next revision rather than as that one again.
     if (all.length === 0) { card = await revisionToPublish(ctx, source, card); identity = identitySchema.parse(tuple(card)); }
+    // The board's live head is checked before anything is written to Home: a head this card may not replace is refused
+    // here, so a stale card never reaches the feed. (The head is read again after publication and still decides.)
+    const refusesHead = (head: LegacyRead | undefined): boolean => {
+      // A Home close rewrote the board copy after publication: its receipt, not the binding, names that head.
+      const predecessor = head && all.find((row) => row.binding.source.sourceId === source.sourceId && row.binding.cardUuid === identity.cardId && row.binding.legacy.fullKey === input.legacy.fullKey &&
+        ((row.binding.legacy.publishedETag === head.etag && row.binding.legacy.publicationSha256 === head.sha256) ||
+          (row.receipt !== null && row.receipt.closedETag === head.etag && head.raw.cardUuid === identity.cardId && head.record.status === row.receipt.status)));
+      const unboundSameBusiness = head && !Object.hasOwn(head.raw, "cardUuid") && isDeepStrictEqual(head.record, record);
+      return Boolean(head && !predecessor && !unboundSameBusiness);
+    };
+    if (!previous) {
+      const live = await readLegacy(ctx, record.kind, input.legacy.fullKey);
+      if ((!live || live.sha256 !== publicationSha256 || live.raw.cardUuid !== identity.cardId) && refusesHead(live)) throw failure(ErrorCodes.KV_PRECONDITION_FAILED);
+    }
     // Home is canonical and durable before its mirror is published. No schema is created here.
     take(await publishFeedCard(privateDatabase(ctx.sql.db(source.output.database), ctx), card));
     if (!await currentCard(ctx, source, identity)) throw failure();
@@ -330,13 +386,7 @@ export async function publishHomeMirror(ctx: HomeMirrorContext, value: unknown):
       return previous.binding;
     }
     if (!head || head.sha256 !== publicationSha256 || head.raw.cardUuid !== identity.cardId) {
-      const priorHead = head;
-      // A Home close rewrote the board copy after publication: its receipt, not the binding, names that head.
-      const predecessor = priorHead && all.find((row) => row.binding.source.sourceId === source.sourceId && row.binding.cardUuid === identity.cardId && row.binding.legacy.fullKey === input.legacy.fullKey &&
-        ((row.binding.legacy.publishedETag === priorHead.etag && row.binding.legacy.publicationSha256 === priorHead.sha256) ||
-          (row.receipt !== null && row.receipt.closedETag === priorHead.etag && priorHead.raw.cardUuid === identity.cardId && priorHead.record.status === row.receipt.status)));
-      const unboundSameBusiness = head && !Object.hasOwn(head.raw, "cardUuid") && isDeepStrictEqual(head.record, record);
-      if (head && !predecessor && !unboundSameBusiness) throw failure(ErrorCodes.KV_PRECONDITION_FAILED);
+      if (refusesHead(head)) throw failure(ErrorCodes.KV_PRECONDITION_FAILED);
       if (!await currentCard(ctx, source, identity)) throw failure();
       active(ctx);
       take(await ctx.legacy.put(input.legacy.fullKey, body, { ...(head ? { ifMatch: head.etag } : { ifNoneMatch: "*" as const }), prefix: "", contentType: "application/json", signal: ctx.signal }));
@@ -775,7 +825,10 @@ export async function watchHomeMirrors(context: HomeMirrorContext, options: Home
       await draining;
     }
     if (failed) throw safeFailure(failureValue);
-    if (!connection.signal.aborted) return;
+    // Nothing ended this connection (not the renewal timer, not a stop) yet the subscription finished. The hooks service
+    // reconnects a closed stream itself, so this is it giving up on the session. Returning would end the run with exit 0,
+    // which a supervisor reads as the watcher's own choice to stop; fail so it restarts the watcher on a fresh session.
+    if (!connection.signal.aborted) throw failure(ErrorCodes.NETWORK_ERROR);
   }
   if (failed) throw safeFailure(failureValue);
 }

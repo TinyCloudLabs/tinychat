@@ -35,6 +35,7 @@ import { speakerNameScreens } from "./screens/speakerNames";
 import { wordFixesScreens } from "./screens/wordFixes";
 import { localScreens, accountDataScreens } from "./screens/local";
 import { meetingSourcesScreens } from "./screens/meetingSources";
+import { granolaCsvScreens } from "./screens/granolaCsv";
 import { meetingSourcesGmeetScreens } from "./screens/meetingSourcesGmeet";
 import { micRecoveryScreens } from "./screens/micRecovery";
 import { nativeSignInScreens } from "./screens/nativeSignIn";
@@ -56,6 +57,7 @@ import { homeScreens } from "./screens/home";
 import { homeFeedDetailsScreens } from "./screens/homeFeedDetails";
 import { homeFeedCardTypesScreens } from "./screens/homeFeedCardTypes";
 import { botsScreens } from "./screens/bots";
+import { botViewScreens } from "./screens/botView";
 import { waitUntilReady } from "./readiness";
 import { FROZEN_NOW, freezeClock } from "./stubs";
 
@@ -75,6 +77,7 @@ const SCREENS: HarnessScreen[] = [
   ...homeFeedDetailsScreens,
   ...homeFeedCardTypesScreens,
   ...botsScreens,
+  ...botViewScreens,
   ...sheetsScreens,
   ...recorderScreens,
   recorderFinalHaloScreen,
@@ -99,6 +102,7 @@ const SCREENS: HarnessScreen[] = [
   ...accountDataScreens,
   ...meetingSourcesScreens,
   ...meetingSourcesGmeetScreens,
+  ...granolaCsvScreens,
   ...micRecoveryScreens,
   ...nativeSignInScreens,
   ...pipelineScreens,

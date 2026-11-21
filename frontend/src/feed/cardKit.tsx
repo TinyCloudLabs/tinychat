@@ -8,6 +8,8 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState, ty
 import { CheckIcon, TriangleAlertIcon } from "lucide-react";
 import { snoozePresets } from "@tinyboilerplate/core/feed/sitrep";
 import { safeUrl } from "./feedData";
+import { CardWaitContext } from "./cardWait";
+import { FeedLink } from "./FeedLink";
 
 import { ResponsiveSheet, ResponsiveSheetBody } from "@/components/ui/responsive-sheet";
 import { APP_NAME } from "@/lib/homeSite";
@@ -117,7 +119,7 @@ function inline(text: string): ReactNode[] {
     const href = match[2] ?? match[3]!;
     if (match.index > last) parts.push(text.slice(last, match.index));
     parts.push(safeUrl(href)
-      ? <a key={match.index} href={href} target="_blank" rel="noopener noreferrer" className="break-words underline underline-offset-[3px]">{match[1] ?? href}</a>
+      ? <FeedLink key={match.index} href={href} className="break-words underline underline-offset-[3px]">{match[1] ?? href}</FeedLink>
       : match[1] ?? href);
     last = match.index + match[0].length;
   }
@@ -300,7 +302,10 @@ export function usePendingSend(guard: { stale: boolean; onRefused: (label: strin
     if (!send.current) return;
     send.current = null; stop(); setPending(null);
   }, [stop]);
+  const wait = useContext(CardWaitContext);
   const start = useCallback((label: string, run: () => void) => {
+    // One wait at a time: whatever else counts (another card's answer, a Drop or Acknowledge) is sent now.
+    wait?.begin();
     flush();
     send.current = { label, run };
     setPending({ label, seconds: UNDO_SECONDS });
@@ -308,7 +313,7 @@ export function usePendingSend(guard: { stale: boolean; onRefused: (label: strin
       timers.current.push(window.setTimeout(() => setPending((current) => current && { ...current, seconds: UNDO_SECONDS - elapsed }), elapsed * 1000));
     }
     timers.current.push(window.setTimeout(flush, UNDO_SECONDS * 1000));
-  }, [flush]);
+  }, [flush, wait]);
   useEffect(() => {
     registry?.add(flush);
     // Closing the page mid-countdown sends at once; the write holds the answer until it lands.

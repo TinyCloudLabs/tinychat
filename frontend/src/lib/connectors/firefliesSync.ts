@@ -124,6 +124,7 @@ export const FIREFLIES_SUSPECT_PROOF_INTERVAL_MS = 24 * 60 * 60 * 1000;
 export interface SyncFirefliesOptions {
   client: SyncClient;
   store: SyncStore;
+  checkPurge?: import("./webhooksApi").FirefliesPurgeCheck;
   tcw: TinyCloudWeb;
   onProgress?: (progress: SyncProgress) => void;
   signal?: AbortSignal;
@@ -564,6 +565,22 @@ async function runFirefliesSync(
 
               try {
                 const { meeting, sentences } = normalizeFirefliesTranscript(txRes.data);
+                let blocked: boolean | undefined;
+                try {
+                  blocked = await opts.checkPurge?.(meeting.sourceId, meeting.startedAt);
+                } catch {
+                  terminal = { kind: "network", message: "Fireflies sync failed" };
+                  storedPrefix = false;
+                  return false;
+                }
+                if (blocked) {
+                  pendingIds.delete(id);
+                  suspectIds.delete(id);
+                  suspectSeenIds.delete(id);
+                  suspectProofIds.delete(id);
+                  result.skipped += 1;
+                  return true;
+                }
                 const itemWrite = await inSpace("Fireflies store meeting and transcript", async () => {
                   if (!current()) return null;
                   const connectionBeforeWrite = await store.getConnection(tcw, SOURCE);

@@ -74,10 +74,12 @@ CAPS=${CAPS:-SYS_ADMIN SYS_CHROOT SETUID SETGID SETFCAP DAC_OVERRIDE FOWNER FSET
 SUPERVISOR_ARGS=(--cap-drop ALL)
 for cap in $CAPS; do SUPERVISOR_ARGS+=(--cap-add "$cap"); done
 echo "capabilities: $CAPS"
+# The smoke's calls are unsigned, so it sets BOTS_ACCEPT_LEGACY_OWNER_HEADER=1.
 $DOCKER run -d --name "$NAME-supervisor" "${SUPERVISOR_ARGS[@]}" --cgroupns private --memory 7g \
   --security-opt seccomp=unconfined --security-opt apparmor=unconfined -p "127.0.0.1:$PORT:8080" \
   -v "$NAME-data:/data" -v "$NAME-egress:/egress" \
   -e BOTS_SERVICE_SECRET="$SECRET" -e BOTS_TEST_ACCOUNTS="$ADDR_A,$ADDR_B,$ADDR_D" -e BOTS_MAX_RUNNING=2 -e BOTS_IDLE_MS=$IDLE_MS \
+  -e BOTS_ACCEPT_LEGACY_OWNER_HEADER=1 \
   "$IMAGE" >/dev/null
 for _ in $(seq 60); do curl -sf "http://127.0.0.1:$PORT/healthz" >/dev/null && break; sleep 0.5; done
 curl -sf "http://127.0.0.1:$PORT/healthz"; echo

@@ -59,6 +59,7 @@ export const EXO_MERGED_SOURCE_LABEL = "Combined meeting";
  */
 export const EXPLORER_MEETING_SOURCES: readonly string[] = [
   "fireflies",
+  "granola",
   GMEET_MEETING_SOURCE,
   TRANSCRIBER_MEETING_SOURCE,
   LOCAL_MEETING_SOURCE,

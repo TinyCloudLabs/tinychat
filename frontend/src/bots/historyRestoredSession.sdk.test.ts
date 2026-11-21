@@ -6,6 +6,7 @@ import { privateKeyToAccount } from "viem/accounts";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { createTinyCloudWeb, restoreTinyCloudWebSession, type EIP1193Provider } from "@tinyboilerplate/client";
 import { installDom } from "@/test/dom";
+import { atOrigin } from "@/test/productOrigin";
 import { webSignInManifest } from "@/lib/homeFeatures";
 import { readOnlyAccountProvider } from "@/lib/replication/readOnlyAccountProvider";
 import { WEB_APP_MANIFEST } from "@/lib/webSignInPrefetch";
@@ -33,6 +34,7 @@ beforeAll(() => {
 afterAll(() => { globalThis.fetch = realFetch; });
 beforeEach(() => {
   restoreDom = installDom();
+  atOrigin();
   const data = new Map<string, string>();
   const storage = {
     getItem: (key: string) => data.get(key) ?? null,

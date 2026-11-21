@@ -81,8 +81,8 @@ export function captureRoute(source: string, metadata: Record<string, unknown> |
       privateCloud: false,
     };
   }
-  if (source === "fireflies" || source === GMEET_MEETING_SOURCE) {
-    const name = source === "fireflies" ? "Fireflies" : "Google Meet";
+  if (source === "fireflies" || source === "granola" || source === GMEET_MEETING_SOURCE) {
+    const name = source === "fireflies" ? "Fireflies" : source === "granola" ? "Granola" : "Google Meet";
     return { nodes: [{ label: name, kind: "source" }, SPACE], sentence: `Synced from ${name} into your TinyCloud space.`, privateCloud: false };
   }
   if (source === TRANSCRIBER_MEETING_SOURCE) {

@@ -33,7 +33,7 @@ export function compareSemver(left, right) {
   return Math.sign(a.prerelease.length - b.prerelease.length);
 }
 export const DATABASE = 'xyz.tinycloud.tinychat/connectors';
-const SOURCES = ['fireflies', 'google-meet', 'tinycloud-transcriber', 'exo-local', 'exo-voice-note', 'exo-upload', 'exo-merged'];
+const SOURCES = ['fireflies', 'granola', 'google-meet', 'tinycloud-transcriber', 'exo-local', 'exo-voice-note', 'exo-upload', 'exo-merged'];
 const PENDING_SNAPSHOT_KEY = `${DATABASE}/pending-reconcile-snapshot`;
 const PENDING_SNAPSHOT_MAX_BYTES = 1024 * 1024;
 const PENDING_SNAPSHOT_FIELDS = new Set(['version', 'changed_at', 'checked_at', 'count', 'meetings']);
@@ -64,8 +64,8 @@ const MESSAGES = {
   AUTH_REQUIRED: 'The TinyCloud profile has no usable session. Run onboarding again (https://agents.tinycloud.xyz/onboarding), then retry.',
   AUTH_EXPIRED: 'The TinyCloud sign-in has expired. Run onboarding again (https://agents.tinycloud.xyz/onboarding), then retry.',
   AUTH_OR_PERMISSION: 'The server rejected authorization without distinguishing authentication from permission. Run setup.mjs prepare to check the profile; do not assume a new login is needed.',
-  PERMISSION_DENIED: 'The profile lacks permission for this read. Run setup.mjs authorize to ask once for TinyChat access with one OpenKey link.',
-  OWNER_MISMATCH: 'The profile owner differs from --owner. Select the same identity as TinyChat.',
+  PERMISSION_DENIED: 'The profile lacks permission for this read. Run setup.mjs authorize to ask once for TinyCloud One access with one OpenKey link.',
+  OWNER_MISMATCH: 'The profile owner differs from --owner. Select the same identity as TinyCloud One.',
   CONTEXT_MISMATCH: 'This reference or continuation belongs to a different profile, host, or space.',
   SOURCE_CHANGED: 'The catalog identity changed. Discover and select the record again.',
   REVISION_CHANGED: 'The body changed between pages. Restart this exact read or search; do not combine revisions.',

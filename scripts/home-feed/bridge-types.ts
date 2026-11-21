@@ -20,6 +20,8 @@ export interface HomeMirrorContext {
 export interface HomeMirrorCache {
   agents?: unknown[][];
   mirrors?: unknown[][];
+  /** Home's newest copy of each card, by output database: read once by a run that closes many cards (close-many). */
+  cards?: Record<string, FeedCard[]>;
 }
 
 export interface HomeMirrorPublishInput {

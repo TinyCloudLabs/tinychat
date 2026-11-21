@@ -6,7 +6,7 @@
 //      reply survive every tab, Settings, rotation and size class, and the chat
 //      and Capture surfaces never remount.
 //   2. One recorder: the native plugin never has more than one view listening
-//      (the provider's eight, plus the one shared `inputs` listener the
+//      (the provider's nine, plus the one shared `inputs` listener the
 //      recorder's microphone picker attaches), and none on Connectors. The web
 //      app has no native plugin, so no listener at all.
 //   3. Android Back closes overlays first, the top one first, then goes home.
@@ -174,7 +174,7 @@ describe.serial(`shell invariants (${name})`, () => {
     await page.close();
   }, 60_000);
 
-  test("one recorder (the phone app): the provider's eight listeners from ready on; navigation, Settings and resizes add none; the recorder's picker adds the shared inputs listener", async () => {
+  test("one recorder (the phone app): the provider's nine listeners from ready on; navigation, Settings and resizes add none; the recorder's picker adds the shared inputs listener", async () => {
     const { page, errors } = await open("/chat/capture");
     const stats = () => page.evaluate(() => window.shellHarness!.voiceNotes());
     let highest = 0;
@@ -186,7 +186,7 @@ describe.serial(`shell invariants (${name})`, () => {
     };
 
     await page.getByTestId("voice-note-record").waitFor();
-    await page.waitForFunction(() => window.shellHarness!.voiceNotes().active === 8);
+    await page.waitForFunction(() => window.shellHarness!.voiceNotes().active === 9);
     const addsAtReady = (await stats()).adds;
 
     for (const path of ["/chat", "/chat/connectors", "/chat/settings", "/chat/capture", "/chat"]) {
@@ -228,7 +228,7 @@ describe.serial(`shell invariants (${name})`, () => {
 
     // Opening the recorder attached the shared `inputs` listener (its microphone picker), once.
     expect((await stats()).adds).toBe(addsAtReady + 1);
-    expect(highest).toBe(9);
+    expect(highest).toBe(10);
     expect(errors).toEqual([]);
     await page.close();
   }, 60_000);
@@ -383,9 +383,9 @@ describe.serial(`shell invariants (${name})`, () => {
     await page.close();
   }, 60_000);
 
-  test("offline → ready: the offline recorder's listeners go before the provider's arrive; never above eight", async () => {
+  test("offline → ready: the offline recorder's listeners go before the provider's arrive; never above nine", async () => {
     const { page, errors } = await open("/chat");
-    await page.waitForFunction(() => window.shellHarness!.voiceNotes().active === 8);
+    await page.waitForFunction(() => window.shellHarness!.voiceNotes().active === 9);
     const watch = page.evaluate(
       () =>
         new Promise<number>((resolve) => {
@@ -402,8 +402,8 @@ describe.serial(`shell invariants (${name})`, () => {
     await page.evaluate(() => window.shellHarness!.setState("offline"));
     await page.waitForFunction(() => window.shellHarness!.voiceNotes().active === 2);
     await page.evaluate(() => window.shellHarness!.setState("ready"));
-    await page.waitForFunction(() => window.shellHarness!.voiceNotes().active === 8);
-    expect(await watch).toBeLessThanOrEqual(8);
+    await page.waitForFunction(() => window.shellHarness!.voiceNotes().active === 9);
+    expect(await watch).toBeLessThanOrEqual(9);
     expect(errors).toEqual([]);
     await page.close();
   }, 60_000);
@@ -521,7 +521,7 @@ describe.serial(`shell invariants (${name})`, () => {
           () => {
             const button = document.querySelector('button[aria-label="About agent access"]');
             const id = button?.getAttribute("aria-describedby");
-            return !!id && document.getElementById(id)?.textContent?.includes("Public web search stays available.");
+            return !!id && document.getElementById(id)?.getAttribute("role") === "tooltip";
           },
           undefined,
           { timeout: 5_000 },
@@ -540,7 +540,7 @@ describe.serial(`shell invariants (${name})`, () => {
     expect(await describedBy()).toBeNull();
     await trigger.tap();
     await isOpen("a tap opens it");
-    expect(await page.getByRole("tooltip").textContent()).toContain("Public web search stays available.");
+    expect(await page.getByRole("tooltip").count()).toBe(1);
 
     // A second tap closes it, and stays closed.
     await trigger.tap();

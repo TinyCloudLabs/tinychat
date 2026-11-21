@@ -48,11 +48,13 @@
  * responses on one space.
  */
 
-import type {
-  ConnectorPurgeOverflow,
-  ConnectorPurgeRequest,
-  ConnectorWebhookDisabled,
-  ConnectorWebhooksResult,
+import {
+  CREDENTIAL_REVOKE_UNCONFIRMED_MESSAGE,
+  type ConnectorCredentialTeardown,
+  type ConnectorPurgeOverflow,
+  type ConnectorPurgeRequest,
+  type ConnectorWebhookDisabled,
+  type ConnectorWebhooksResult,
 } from "./webhooksApi";
 import type { StoreResult, UpdateSyncStateInput } from "./connectorStore";
 import type { ConnectorConnection, ConnectorId } from "./types";
@@ -70,6 +72,12 @@ export type DisconnectStep =
   | "record-purge"
   /** `DELETE /config` — delivery stops. */
   | "disable-webhooks"
+  /**
+   * `DELETE /api/connectors/credentials/:source` — the stored provider sign-in,
+   * its upstream revoke, held content and queue. Fireflies only, and only when
+   * the webhooks lane carries it (see {@link planFor}).
+   */
+  | "teardown-server-credential"
   /** Remove the provider API key from encrypted secrets. */
   | "delete-key"
   /** Delete the local rows and transcript bodies. */
@@ -89,6 +97,27 @@ export const DISCONNECT_PLANS: Record<DisconnectMode, readonly DisconnectStep[]>
     "purge-local",
   ],
 };
+
+/**
+ * The plan a run actually follows. Fireflies, whose server-ingest path can hold
+ * the owner's sign-in, also runs the server teardown — BEFORE `disable-webhooks`:
+ * the route closes ingress and writes the purge ledger first, so by the time
+ * delivery is switched off there is nothing a late delivery could re-add, and a
+ * failure leaves the API key in place with the retry still possible. For
+ * delete-data it sits after `record-purge`. An owner with no stored sign-in
+ * still gets the full server `DELETE`, and the teardown clears the purge
+ * ledger at its end.
+ * A lane without `teardownCredential` (Google, which has no server sign-in to
+ * remove here, and any caller that does not wire it) has no such step.
+ */
+export function planFor(deps: Pick<DisconnectDeps, "connectorId" | "mode" | "webhooks">): readonly DisconnectStep[] {
+  const plan = DISCONNECT_PLANS[deps.mode];
+  if (deps.connectorId !== "fireflies" || deps.webhooks.teardownCredential === undefined) {
+    return plan;
+  }
+  const at = plan.indexOf("disable-webhooks");
+  return [...plan.slice(0, at), "teardown-server-credential", ...plan.slice(at)];
+}
 
 export interface DisconnectFailure {
   step: DisconnectStep;
@@ -111,6 +140,8 @@ export interface DisconnectProgress {
    * tombstones what existed BEFORE the deletion, never an emptied space.
    */
   ids: string[] | null;
+  /** A message the owner must still read after the run completed, e.g. an unconfirmed revoke. */
+  notice?: string;
 }
 
 export function initialDisconnectProgress(mode: DisconnectMode): DisconnectProgress {
@@ -147,9 +178,11 @@ export function disconnectRetry(progress: DisconnectProgress): DisconnectRetry |
  */
 export function disconnectStatusMessage(progress: DisconnectProgress): string | null {
   if (progress.done) {
-    return progress.mode === "delete-data"
-      ? "Disconnected. Your meetings have been deleted and background notifications are off."
-      : "Disconnected. Your meetings are still in your space and background notifications are off.";
+    const base =
+      progress.mode === "delete-data"
+        ? "Disconnected. Your meetings have been deleted and background notifications are off."
+        : "Disconnected. Your meetings are still in your space and background notifications are off.";
+    return progress.notice ? `${base} ${progress.notice}` : base;
   }
   if (progress.failure) {
     return `${progress.failure.message} Nothing beyond this point was changed.`;
@@ -162,6 +195,7 @@ const RUNNING_LABEL: Record<DisconnectStep, string> = {
   "collect-ids": "Listing the meetings to delete…",
   "record-purge": "Recording that these meetings were deleted…",
   "disable-webhooks": "Turning off background notifications…",
+  "teardown-server-credential": "Removing the saved Fireflies sign-in from our server…",
   "delete-key": "Removing your API key…",
   "purge-local": "Deleting meetings from your space…",
   "clear-sync-continuation": "Clearing the Fireflies listing continuation…",
@@ -179,6 +213,13 @@ export interface DisconnectWebhooks {
   recordPurge(
     request: ConnectorPurgeRequest,
   ): Promise<ConnectorWebhooksResult<ConnectorPurgeOverflow | null>>;
+  /**
+   * Fireflies only. Resolves the server teardown; `ok` with `upstreamRevoked:
+   * false` is the one outcome the owner must be told about.
+   */
+  teardownCredential?(
+    source: string,
+  ): Promise<ConnectorWebhooksResult<ConnectorCredentialTeardown | null>>;
 }
 
 export interface DisconnectSecrets {
@@ -272,7 +313,7 @@ async function runDisconnectSteps(
   emit: DisconnectEmit,
   from?: DisconnectProgress,
 ): Promise<DisconnectProgress> {
-  const plan = DISCONNECT_PLANS[deps.mode];
+  const plan = planFor(deps);
   let progress: DisconnectProgress = from
     ? { ...from, running: null, failure: null, done: false, completed: [...from.completed] }
     : initialDisconnectProgress(deps.mode);
@@ -313,6 +354,7 @@ async function runDisconnectSteps(
       running: null,
       completed: [...progress.completed, step],
       ...(outcome.ids === undefined ? {} : { ids: outcome.ids }),
+      ...(outcome.notice === undefined ? {} : { notice: outcome.notice }),
     });
   }
 
@@ -323,6 +365,7 @@ async function runDisconnectSteps(
 interface StepOutcome {
   failure?: DisconnectFailure;
   ids?: string[];
+  notice?: string;
 }
 
 async function runStep(
@@ -335,6 +378,8 @@ async function runStep(
       return collectIds(deps);
     case "record-purge":
       return recordPurge(deps, progress);
+    case "teardown-server-credential":
+      return teardownServerCredential(deps);
     case "disable-webhooks":
       return disableWebhooks(deps);
     case "delete-key":
@@ -399,6 +444,49 @@ async function disableWebhooks(deps: DisconnectDeps): Promise<StepOutcome> {
       step: "disable-webhooks",
       message: `${webhookFailureMessage(result)} Your API key has not been removed yet.`,
       retryable: isRetryable(result),
+    },
+  };
+}
+
+export type ServerCredentialTeardown =
+  | { status: "done"; notice?: string }
+  | { status: "failed"; failure: WebhookFailure };
+
+/**
+ * A 404 is forgiven here, unlike `record-purge`, only when it carries the backend's own
+ * not-available marker (the credentials router is mounted only behind its flag, and answers
+ * 404 to an owner who is not enrolled): that is "nothing server-held to
+ * remove". An unmarked 404 (a proxy, a wrong path) is a retryable failure. The steps that matter for every connector (tombstone,
+ * `DELETE /config`, key, rows) are separate and strict. A failed read of whether
+ * a sign-in is stored is a failure, never a skip: a cohort owner's sign-in must
+ * not be silently kept. Shared with account deletion, which must not carry a
+ * second implementation.
+ */
+export async function runServerCredentialTeardown(
+  webhooks: Pick<DisconnectWebhooks, "teardownCredential">,
+  source: string,
+): Promise<ServerCredentialTeardown> {
+  if (webhooks.teardownCredential === undefined) return { status: "done" };
+  const result = await webhooks.teardownCredential(source);
+  if (result.status === "ok") {
+    // `null`: no sign-in was stored for this owner, so there is no revoke to confirm.
+    if (result.value === null || result.value.upstreamRevoked) return { status: "done" };
+    return { status: "done", notice: CREDENTIAL_REVOKE_UNCONFIRMED_MESSAGE };
+  }
+  if (result.status === "feature-dark") return { status: "done" };
+  return { status: "failed", failure: result };
+}
+
+async function teardownServerCredential(deps: DisconnectDeps): Promise<StepOutcome> {
+  const outcome = await runServerCredentialTeardown(deps.webhooks, deps.source);
+  if (outcome.status === "done") {
+    return outcome.notice === undefined ? {} : { notice: outcome.notice };
+  }
+  return {
+    failure: {
+      step: "teardown-server-credential",
+      message: `${webhookFailureMessage(outcome.failure)} Your API key has not been removed yet.`,
+      retryable: isRetryable(outcome.failure),
     },
   };
 }
@@ -504,7 +592,7 @@ async function markDisconnected(deps: DisconnectDeps): Promise<StepOutcome> {
 
 // ── Failure translation ──────────────────────────────────────────────
 
-type WebhookFailure = Exclude<ConnectorWebhooksResult<never>, { status: "ok" }>;
+export type WebhookFailure = Exclude<ConnectorWebhooksResult<never>, { status: "ok" }>;
 
 function isRetryable(result: WebhookFailure): boolean {
   // `rejected` is a 4xx a retry cannot fix. Everything else — including a lost
@@ -512,7 +600,7 @@ function isRetryable(result: WebhookFailure): boolean {
   return result.status !== "rejected";
 }
 
-function webhookFailureMessage(result: WebhookFailure): string {
+export function webhookFailureMessage(result: WebhookFailure): string {
   switch (result.status) {
     case "unauthenticated":
       return "Your session expired before we could finish.";

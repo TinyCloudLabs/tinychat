@@ -230,6 +230,12 @@
   gap: 8px;
   align-items: flex-start;
 }
+/* The one line under a row's Connect button (Fireflies): right-aligned beneath the actions. */
+.ms-hint {
+  grid-column: 2 / -1;
+  margin-top: 6px;
+  text-align: right;
+}
 .ms-btn1,
 .ms-btn2 {
   appearance: none;

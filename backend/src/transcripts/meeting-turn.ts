@@ -3,6 +3,7 @@ import { createMeetingLedger, mergeMeetingOutcomes, packMeetingEvidence, type Me
 import { hasUsableMeetingEvidence, renderMeetingAnswer, renderMeetingEvidenceFallback, validateMeetingDraft } from "./meeting-answer.js";
 import { trimConvoToBudget, truncateToolResults } from "../lib/contextGuard.js";
 import type { ChatMsg, OrchestrateParams, OrchestrateResult, StreamErrorCode, ToolDispatchOutcome } from "../routes/agent-chat.js";
+import type { FailureCause } from "../billing/settle.js";
 
 export type MeetingPurpose = "summary" | "actions" | "decisions" | "speaker" | "topic";
 export type RetrievalMode = "selected" | "single" | "range";
@@ -188,6 +189,8 @@ export interface BufferedMeetingModelResult extends OrchestrateResult {
 interface MeetingTurnParams extends OrchestrateParams {
   contextWindowTokens: number;
   streamErrorCode(error: unknown): StreamErrorCode | undefined;
+  /** Whether a thrown failure came from the model's own output; absent means ours. */
+  streamErrorCause?(error: unknown): FailureCause;
   modelCall(request: MeetingModelRequest): Promise<BufferedMeetingModelResult>;
   dispatch(name: string, args: Record<string, unknown>, context: MeetingToolContext, signal: AbortSignal, id: string): Promise<ToolDispatchOutcome>;
   capability(signal: AbortSignal): Promise<unknown>;
@@ -230,11 +233,11 @@ export async function runMeetingTurn(params: MeetingTurnParams): Promise<Orchest
   const toolTrace = trace.tools as Array<Record<string, unknown>>;
   const total: OrchestrateResult = { promptTokens: 0, completionTokens: 0, completionId: "" };
   const account = (result: OrchestrateResult) => { total.promptTokens += result.promptTokens; total.completionTokens += result.completionTokens; };
-  const deliver = async (text: string, errorCode?: OrchestrateResult["errorCode"]) => {
+  const deliver = async (text: string, errorCode?: OrchestrateResult["errorCode"], cause: FailureCause = "ours") => {
     abortCheck(params.signal);
     if (errorCode) trace.terminal = errorCode;
-    await params.write(params.contentFrame(text));
-    if (errorCode) params.onTerminalError?.(errorCode);
+    await params.write(params.contentFrame(text), errorCode !== undefined);
+    if (errorCode) params.onTerminalError?.(errorCode, cause);
     // The text is already the terminal user-facing error; returning errorCode
     // would make the outer stream owner append a second generic error line.
     return { ...total };
@@ -265,10 +268,10 @@ export async function runMeetingTurn(params: MeetingTurnParams): Promise<Orchest
           : code === "upstream_incomplete" ? "The model service returned an incomplete reply. Please try again."
           : code === "result_size_limit" ? "The response was too large to process safely. Try a smaller request or fewer meetings."
           : "This request could not be completed. Please try again.";
-        return await deliver(text, code);
+        return await deliver(text, code, error === interpretationTimeout ? "ours" : params.streamErrorCause?.(error) ?? "ours");
       }
       account(interpreted);
-      if (!interpreted.complete) return await deliver("The model service returned an incomplete reply. Please try again.", "upstream_incomplete");
+      if (!interpreted.complete) return await deliver("The model service returned an incomplete reply. Please try again.", "upstream_incomplete", "model");
       let errors: string[];
       if (interpreted.calls.length !== 1 || interpreted.calls[0].name !== "prepare_meeting_turn") {
         errors = ["Return exactly one prepare_meeting_turn call."];
@@ -286,13 +289,15 @@ export async function runMeetingTurn(params: MeetingTurnParams): Promise<Orchest
       interpretationMessages.push({ role: "system", content: `The previous model plan was invalid: ${errors.join(" ")}. Correct it with exactly one prepare_meeting_turn call using the original conversation. Preserve the user's intent and scope; do not invent missing intent or identifiers. If the user request itself is ambiguous, return a valid clarify plan. Omit unused fields. No prose.` });
       if (JSON.stringify({ messages: interpretationMessages, tools: [PREPARE_MEETING_TURN_TOOL] }).length > params.contextWindowTokens * 4 * 0.7) break;
     }
-    if (!plan) return await deliver(invalidPlanMessage, "interpretation_failed");
+    if (!plan) return await deliver(invalidPlanMessage, "interpretation_failed", "model");
     trace.intent = plan.kind;
     if (plan.kind === "clarify") { trace.terminal = "clarify"; return await deliver(plan.question); }
     if (plan.kind === "general") {
       const general = await params.runGeneral(4 - interpretationCalls); account(general); trace.terminal = general.errorCode ?? "general";
       return { ...general, promptTokens: total.promptTokens, completionTokens: total.completionTokens };
     }
+    // Interpretation can use up the allowance: retrieval and synthesis would then be unaffordable.
+    if (params.budget?.exhausted()) { trace.terminal = "budget_exhausted"; return { ...total, errorCode: "budget_exhausted" }; }
     trace.scope = plan.scope;
     if (plan.kind === "meeting_content" && params.config.meetingContentModelAllowed && !params.config.meetingContentModelAllowed(params.model)) return await deliver("Meeting content answers are not available for this model yet.", "meeting_feature_unavailable");
     const request = { purpose: plan.kind === "meeting_metadata" ? "metadata" as const : plan.purpose, evidenceRequirement: plan.kind === "meeting_metadata" ? "overview" as const : plan.evidenceRequirement };
@@ -395,7 +400,7 @@ export async function runMeetingTurn(params: MeetingTurnParams): Promise<Orchest
       }
     } finally { params.signal?.removeEventListener("abort", parentAbort); }
     abortCheck(params.signal);
-    if (delegationCode) { trace.terminal = "delegation_error"; await params.write(params.delegationErrorFrame(delegationCode)); return await deliver("Meeting access changed during this request. Please reconnect transcript access before trying again."); }
+    if (delegationCode) { trace.terminal = "delegation_error"; await params.write(params.delegationErrorFrame(delegationCode)); return await deliver("Meeting access changed during this request. Reconnect the agent in Settings > Agent access."); }
     if (accessDenied) { trace.terminal = "access_denied"; return await deliver("Access to the requested meeting evidence was denied. No private meeting answer could be completed."); }
     if (resultSizeLimit) return await deliver("The response was too large to process safely. Try a smaller request or fewer meetings.", "result_size_limit");
     if (!data) {

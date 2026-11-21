@@ -10,6 +10,7 @@ import { privateKeyToAccount } from "viem/accounts";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { createTinyCloudWeb, restoreTinyCloudWebSession, type EIP1193Provider } from "@tinyboilerplate/client";
 import { installDom } from "@/test/dom";
+import { atOrigin } from "@/test/productOrigin";
 import { HomeFeatureAccessContext, HomeFeatureGate, useHomeFeatureAccessState } from "@/shell/homeFeatureAccess";
 import { homeFeaturesToRequest, readHomeFeatures, rememberHomeFeature, webSignInManifest, sessionCoversHomeFeature, type HomeFeature } from "./homeFeatures";
 import { reauthorizeHome } from "./homeReauthorize";
@@ -42,6 +43,7 @@ beforeAll(() => {
 afterAll(() => { globalThis.fetch = realFetch; });
 beforeEach(() => {
   restoreDom = installDom();
+  atOrigin();
   data = new Map();
   const storage = {
     getItem: (key: string) => data.get(key) ?? null,

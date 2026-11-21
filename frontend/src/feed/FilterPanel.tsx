@@ -14,7 +14,7 @@ interface FilterPanelProps {
   setAgent: (value: string) => void; setKind: (value: string) => void;
   setProject: (value: string) => void; setPriorityMax: (value: string) => void;
   setSortBy: (value: SortBy) => void; setSnoozedOnly: (value: boolean) => void;
-  setHistory: (value: boolean) => void; clearFilters: () => void;
+  clearFilters: () => void;
   viewMode: FeedViewMode; setViewMode: (value: FeedViewMode) => void;
 }
 
@@ -24,7 +24,7 @@ const VIEWS: readonly { value: FeedViewMode; label: string; Icon: typeof Rows3Ic
   { value: "cards", label: "Cards", Icon: LayoutGridIcon },
 ];
 
-export function FilterPanel({ agents, agent, kinds, kind, taskTypes, taskType, setTaskType, projects, project, priorityMax, sortBy, snoozedOnly, filtersOn, setFilter, setAgent, setKind, setProject, setPriorityMax, setSortBy, setSnoozedOnly, setHistory, clearFilters, viewMode, setViewMode }: FilterPanelProps) {
+export function FilterPanel({ agents, agent, kinds, kind, taskTypes, taskType, setTaskType, projects, project, priorityMax, sortBy, snoozedOnly, filtersOn, setFilter, setAgent, setKind, setProject, setPriorityMax, setSortBy, setSnoozedOnly, clearFilters, viewMode, setViewMode }: FilterPanelProps) {
   const fieldLabelClass = "mb-1 ml-0.5 block text-xs font-semibold text-muted-foreground";
   const selectClass = "h-11 w-full min-w-0 rounded-xl border border-border bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
   const toggleClass = "flex min-h-11 flex-1 items-center justify-center gap-1.5 rounded-xl border border-border px-3 text-sm font-medium aria-pressed:border-foreground aria-pressed:bg-foreground aria-pressed:text-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
@@ -61,7 +61,7 @@ export function FilterPanel({ agents, agent, kinds, kind, taskTypes, taskType, s
     </div>
     <div className="mb-3 mt-1 h-px bg-border" />
     <div className="flex gap-2">
-      <button type="button" aria-pressed={snoozedOnly} onClick={() => setFilter(() => { setSnoozedOnly(!snoozedOnly); setHistory(false); })} className={toggleClass}>Snoozed</button>
+      <button type="button" aria-pressed={snoozedOnly} onClick={() => setFilter(() => setSnoozedOnly(!snoozedOnly))} className={toggleClass}>Snoozed</button>
       {!!filtersOn && <button type="button" className={toggleClass} onClick={clearFilters}>Clear filter</button>}
     </div>
   </div>;

@@ -4,7 +4,7 @@
  * `exo-merged` is a combined meeting (TC-1152): enum only. The model may filter by and cite it; excluding
  * the captures it combines happens in the frontend corpus and the pack, not here.
  */
-export const MEETING_SOURCES = ["fireflies", "google-meet", "tinycloud-transcriber", "exo-local", "exo-merged"] as const;
+export const MEETING_SOURCES = ["fireflies", "granola", "google-meet", "tinycloud-transcriber", "exo-local", "exo-merged"] as const;
 
 const SOURCE_SCHEMA = {
   type: "string",

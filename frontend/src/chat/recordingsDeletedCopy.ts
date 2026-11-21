@@ -1,5 +1,5 @@
 /**
- * TC-3136 owner-facing wording for the "Delete my recordings first" step (Monica, final, no counts).
+ * TC-3136 approved owner-facing wording for the "Delete my recordings first" step.
  *
  * `own` recordings were the account's own and are confirmed deleted at the provider. `shared` were shared
  * with the account by someone else: they are only dropped from this list, and the person who shared them
@@ -31,7 +31,7 @@ export const MEETINGS_ONLY_OWN_DELETED = "Your meeting recordings are deleted, i
 export const SHARED_REMOVED = "Recordings others shared with you are removed from your list; the people who shared them still have them.";
 /** Own entries the provider does not attribute to the account: dropped from the list, copy NOT deleted. */
 export const NOT_DELETED = "Some recordings were removed from your list but are still with the notetaker service. To have them deleted, email team@tinycloud.xyz.";
-/** The same case on a single recording's own row after Remove (Monica): no subject needed. */
+/** The same case on a single recording's own row after Remove. */
 export const ROW_NOT_DELETED = "Removed from your list but still with the notetaker service. To have it deleted, email team@tinycloud.xyz.";
 
 export const OWN_DELETED = "Your meeting recordings, voice notes and uploads are deleted from the notetaker service and TinyCloud Private Transcription.";
@@ -40,9 +40,12 @@ export const DELETE_FAILED = "We couldn't finish deleting your recordings, voice
 /** The step's intro. */
 export const STEP_INTRO = "Before you delete your account, delete your recordings. This permanently deletes your meeting recordings, voice notes and uploads held by the notetaker service and TinyCloud Private Transcription, including their transcripts.";
 
-/** The step's intro and failure line when the deployment does not use private cloud transcription (Monica's #747 lines). */
+/** The step's intro and failure line when the deployment does not use private cloud transcription. */
 export const STEP_INTRO_MEETINGS_ONLY = "Before you delete your account, delete your recordings. This permanently deletes your meeting recordings and transcripts, including the notetaker service's copies.";
 export const DELETE_FAILED_MEETINGS_ONLY = "We couldn't finish deleting your recordings. Some may still be there. Try again in a moment.";
+
+export const ACCOUNT_PENDING_CONTINUE = "You can continue to delete your account; we keep deleting them after it's gone.";
+export const ACCOUNT_FAILED_CONTINUE = "If you continue to delete your account, email team@tinycloud.xyz to have the rest deleted.";
 
 const join = (...parts: Array<string | false>): string => parts.filter((part) => part !== false).join(" ");
 

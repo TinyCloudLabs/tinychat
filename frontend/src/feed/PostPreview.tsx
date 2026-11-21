@@ -11,6 +11,6 @@ export function PostPreview({ entry, page, author, agentKey, platform, status, o
   const card = entry.state.card;
   const blurb = typeof card.payload?.summary === "string" ? card.payload.summary : card.body;
   const films = page.questions.some((question) => question.media?.some((media) => media.type === "video"));
-  return <CompactCard agentKey={agentKey} author={author} platform={platform} createdAt={card.createdAt} status={status} title={card.title} description={blurb}
+  return <CompactCard agentKey={agentKey} author={author} platform={platform} status={status} text={card.title} note={blurb}
     thumb={{ src: page.image, video: films }} onOpen={onOpen} opensPage />;
 }

@@ -608,7 +608,6 @@ async function drainConnectedConnectors(
           if (existing) {
             await existing.promise;
           } else {
-            const catchUp = hooks.catchUpFireflies ?? runFirefliesCatchUp;
             const controller = new AbortController();
             const entry = { tcw, controller, promise: Promise.resolve() };
             const isCurrent = () =>
@@ -617,10 +616,13 @@ async function drainConnectedConnectors(
               && isSecretsUnlocked(tcw);
             activeCatchUps.add(entry);
             try {
-              entry.promise = catchUp(tcw, descriptor, FIREFLIES_CATCH_UP_MAX_TRANSCRIPTS, {
-                signal: controller.signal,
-                isCurrent,
-              });
+              const runOptions = { signal: controller.signal, isCurrent };
+              entry.promise = hooks.catchUpFireflies
+                ? hooks.catchUpFireflies(tcw, descriptor, FIREFLIES_CATCH_UP_MAX_TRANSCRIPTS, runOptions)
+                : runFirefliesCatchUp(tcw, descriptor, FIREFLIES_CATCH_UP_MAX_TRANSCRIPTS, {
+                    ...runOptions,
+                    checkPurge: createConnectorWebhooksClient(backendUrl, { sessionStore }).checkPurge,
+                  });
               await entry.promise;
             } finally {
               activeCatchUps.delete(entry);
@@ -690,6 +692,7 @@ async function runFirefliesCatchUp(
   options: {
     signal: AbortSignal;
     isCurrent: () => boolean;
+    checkPurge: import("@/lib/connectors/webhooksApi").FirefliesPurgeCheck;
   },
 ): Promise<void> {
   const isCurrent = () =>
@@ -706,6 +709,7 @@ async function runFirefliesCatchUp(
     await syncFireflies({
       client,
       store: connectorStore,
+      checkPurge: options.checkPurge,
       tcw,
       detailCap,
       signal: options.signal,

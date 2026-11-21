@@ -1,0 +1,10 @@
+{
+  "applinks": {
+    "details": [
+      {
+        "appIDs": ["R4QVKA785H.xyz.tinycloud.home"],
+        "components": [{ "/": "/s/*", "comment": "Share links open in the app" }]
+      }
+    ]
+  }
+}

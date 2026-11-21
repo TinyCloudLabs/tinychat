@@ -13,22 +13,25 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { openKeyFailureOf } from "../lib/authErrors";
+import { isNativeOpenKeySession } from "../lib/openkeyNative";
 import { useResolvedTheme } from "../lib/theme";
 import { EmbedHost, SpaceNotHostedError, type EmbedTheme } from "./embedHost";
 import { trackEmbed } from "./liveEmbeds";
-import { framedApp, framesAppsHere, frameUrl, ONE_APPS, type FramedOneApp } from "./registry";
+import { framedApp, framesAppHere, frameUrl, ONE_APPS, type FramedOneApp } from "./registry";
 import { stepUpForApp, type StepUpConnect } from "./stepUp";
 import {
   ASK_CLOSE,
   ASK_CONTINUE,
   ASK_NOT_NOW,
   askBody,
-  askDeclined,
+  askNotInApp,
   askTitle,
   COURIER_MISSING,
   courierMissing,
   joinScopes,
   missingSpacesLine,
+  stepUpFailedLine,
   type ScopeId,
 } from "./strings";
 
@@ -72,7 +75,7 @@ export interface FramedAppScreenProps {
 export function FramedAppScreen({ appId, tcw, fallback, connect }: FramedAppScreenProps) {
   const app = framedApp(appId);
   const session = tcw?.session();
-  if (!app || !tcw || !session || !framesAppsHere(window.location.origin)) return <>{fallback}</>;
+  if (!app || !tcw || !session || !framesAppHere(app, window.location.origin)) return <>{fallback}</>;
   return <FramedApp key={`${app.id}:${session.address}:${session.chainId}:${session.sessionKey}`} app={app} tcw={tcw} address={session.address} chainId={session.chainId} connect={connect} />;
 }
 
@@ -91,12 +94,12 @@ function FramedApp({ app, tcw, address, chainId, connect }: FramedAppProps) {
   const themeRef = useRef<EmbedTheme>(theme);
   themeRef.current = theme;
   const [ask, setAsk] = useState<Ask | null>(null);
-  const [declined, setDeclined] = useState(false);
+  const [failedLine, setFailedLine] = useState<string | null>(null);
   const [missing, setMissing] = useState<Missing | null>(null);
   const src = useMemo(() => frameUrl(app), [app]);
   const hostRef = useRef<EmbedHost | null>(null);
 
-  // One host per mount: its close revokes for good, so a remount (StrictMode included) starts a fresh one.
+  // One host per mount: its close ends the frame's grant for good, so a remount (StrictMode included) starts a fresh one.
   useEffect(() => {
     const host = new EmbedHost({
       app,
@@ -121,13 +124,9 @@ function FramedApp({ app, tcw, address, chainId, connect }: FramedAppProps) {
           prompted,
         };
       },
-      revoke: async (cid) => {
-        const result = await tcw.revokeDelegation(cid);
-        if (!result.ok) throw new Error(`one_apps_revoke_failed:${cid}`);
-      },
       stepUp: (scopes, entries, missingSpaces) => askThenStepUp(scopes, entries, missingSpaces),
       missing: (spaces, none) => {
-        setDeclined(false);
+        setFailedLine(null);
         setMissing({ spaces, none });
       },
       theme: () => themeRef.current,
@@ -149,21 +148,32 @@ function FramedApp({ app, tcw, address, chainId, connect }: FramedAppProps) {
   useEffect(() => { hostRef.current?.setTheme(theme); }, [theme]);
 
   function askThenStepUp(scopes: ScopeId[], entries: PermissionEntry[], missingSpaces: string[]): Promise<boolean> {
+    // The phone app's session never signs (OpenKey's canonical key stays out of the app): no OpenKey step-up there.
+    if (isNativeOpenKeySession()) {
+      setMissing(null);
+      setFailedLine(askNotInApp(app.name));
+      return Promise.resolve(false);
+    }
     return new Promise<boolean>((resolve) => {
       let settled = false;
-      setDeclined(false);
+      setFailedLine(null);
       setMissing(null);
       setAsk({ scopes, missing: missingSpaces, answer: (proceed) => {
         if (settled) return;
         settled = true;
         setAsk(null);
         if (!proceed) {
-          setDeclined(true);
+          setFailedLine(stepUpFailedLine(app.name, { kind: "declined" }));
           resolve(false);
           return;
         }
-        stepUpForApp(tcw, entries, connect).then(resolve, (error: unknown) => {
+        stepUpForApp(tcw, entries, connect).then((approved) => {
+          if (!approved) setFailedLine(stepUpFailedLine(app.name, { kind: "declined" }));
+          resolve(approved);
+        }, (error: unknown) => {
           console.warn("[One Apps] step-up failed", app.id, error);
+          const ownerChanged = error instanceof Error && error.message === "one_apps_owner_changed";
+          setFailedLine(stepUpFailedLine(app.name, ownerChanged ? { kind: "wrong-account" } : openKeyFailureOf(error)));
           resolve(false);
         });
       } });
@@ -184,8 +194,8 @@ function FramedApp({ app, tcw, address, chainId, connect }: FramedAppProps) {
 
   return (
     <div className="relative flex h-full min-h-0 flex-1 flex-col" data-testid="one-app-frame">
-      {declined && (
-        <p role="status" className="border-b border-border bg-muted px-4 py-2 text-sm">{askDeclined(app.name)}</p>
+      {failedLine && (
+        <p role="status" className="border-b border-border bg-muted px-4 py-2 text-sm">{failedLine}</p>
       )}
       {missing && !missing.none && (missingLine || courierLine) && (
         <div role="status" className="border-b border-border bg-muted px-4 py-2 text-sm">

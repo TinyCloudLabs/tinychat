@@ -367,12 +367,16 @@ export function _resetConnectorSchemaMemoForTests(): void {
   schemaInFlight.clear();
 }
 
-export async function ensureSchema(tcw: TinyCloudWeb, checkpoint: () => void = () => undefined): Promise<StoreResult<void>> {
-  checkpoint();
+function schemaMemoKey(tcw: TinyCloudWeb): string {
   const did = typeof tcw.did === "string" && tcw.did.length > 0 ? tcw.did : null;
   const space =
     typeof tcw.spaceId === "string" && tcw.spaceId.length > 0 ? tcw.spaceId : null;
-  const memoKey = did ?? space ?? "";
+  return did ?? space ?? "";
+}
+
+export async function ensureSchema(tcw: TinyCloudWeb, checkpoint: () => void = () => undefined): Promise<StoreResult<void>> {
+  checkpoint();
+  const memoKey = schemaMemoKey(tcw);
   if (memoKey && schemaReadySpaces.has(memoKey)) return { ok: true, data: undefined };
 
   const inFlight = memoKey ? schemaInFlight.get(memoKey) : undefined;
@@ -440,7 +444,26 @@ export async function getConnection(
   tcw: TinyCloudWeb,
   connectorId: ConnectorId,
 ): Promise<StoreResult<ConnectorConnection | null>> {
-  const res = await store(tcw).query(
+  const db = store(tcw);
+  // ensureSchema already proved the tables exist for this account: no probe needed.
+  const memoKey = schemaMemoKey(tcw);
+  if (!(memoKey && schemaReadySpaces.has(memoKey))) {
+    const schema = await db.query(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+      ["connector_state"],
+    );
+    if (!schema.ok) {
+      const code = (schema.error as { code?: string }).code ?? "";
+      const msg = (schema.error.message ?? "").toLowerCase();
+      if (code === "AUTH_UNAUTHORIZED" || msg.includes("unauthorized") || msg.includes("not authorized")) {
+        return { ok: true, data: null };
+      }
+      return fail(schema.error, "getConnection schema probe", storageScopeFor(tcw));
+    }
+    if (schema.data.rows.length === 0) return { ok: true, data: null };
+  }
+
+  const res = await db.query(
     `SELECT connector_id, status, last_synced_at, last_sync_status, last_sync_error, item_count
      FROM connector_state WHERE connector_id = ?`,
     [connectorId],
@@ -535,6 +558,33 @@ export async function listKnownSourceIds(
     if (typeof v === "string") ids.push(v);
   }
   return { ok: true, data: ids };
+}
+
+/**
+ * `source_id → metadata[key]` for every meeting of a source. The Granola sync
+ * uses it to skip a note whose upstream `updated_at` matches what we already
+ * stored — an `updated_after` overlap must not re-fetch every transcript.
+ */
+export async function listMeetingMetadataValues(
+  tcw: TinyCloudWeb,
+  source: string,
+  metadataKey: string,
+): Promise<StoreResult<Record<string, string | null>>> {
+  const schema = await ensureSchema(tcw);
+  if (!schema.ok) return schema;
+  const res = await store(tcw).query(
+    "SELECT source_id, metadata FROM connector_meeting WHERE source = ?",
+    [source],
+  );
+  if (!res.ok) return fail(res.error, "listMeetingMetadataValues", storageScopeFor(tcw));
+  const values: Record<string, string | null> = {};
+  for (const row of res.data.rows) {
+    const sourceId = cellStr(row, 0, null);
+    if (sourceId === null) continue;
+    const value = parseJsonObject(row[1])?.[metadataKey];
+    values[sourceId] = typeof value === "string" ? value : null;
+  }
+  return { ok: true, data: values };
 }
 
 export async function countMeetings(
@@ -785,6 +835,12 @@ export async function upsertMeeting(
     && notesOwnedFields.includes(field);
   const existingStartedAt = cellStr(row, 3, null);
   const existingMetadata = parseJsonObject(row[11]);
+  // A CSV cannot replace content already fetched from Granola's API, including its freshness marker.
+  if (meeting.source === "granola"
+    && meeting.metadata.imported_from === "granola_csv"
+    && Object.hasOwn(existingMetadata, "granola_updated_at")) {
+    return { ok: true, data: { id: existingId, inserted: false, createdAt } };
+  }
   const acceptsIncomingDatetime = meeting.startedAt !== null
     && (existingStartedAt === null
       || datetimeConfidence(meeting.metadata, true) >= datetimeConfidence(existingMetadata, true));

@@ -132,6 +132,8 @@ export default {
         "live-pulse": "live-pulse 1.2s ease-in-out infinite",
         "push-in": "push-in 250ms var(--ease-smooth) both",
         "rise-in": "rise-in 150ms var(--ease-smooth) both",
+        // An opened card's parts rising in, one after the other; the first frame only holds while it waits.
+        "grow-in": "rise-in 220ms var(--ease-smooth) backwards",
       },
     },
   },

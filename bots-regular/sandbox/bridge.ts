@@ -1,0 +1,147 @@
+// The stdio bridge: the boot process of every regular bot sandbox. It runs OMP and carries OMP's stdin and stdout over
+// one WebSocket.
+//
+//   127.0.0.1:ARM_PORT  POST /arm  {"bridgeToken","gatewayToken","gatewayUrl","model"}  from `arm.ts`. Kept in memory.
+//                       Arming again replaces them and closes any open connection.
+//   0.0.0.0:BRIDGE_PORT GET /rpc   WebSocket, `Authorization: Bearer <bridgeToken>`. One connection at a time. Opening
+//                       it starts OMP; closing it ends OMP, and OMP ending closes it.
+
+import { createHash, timingSafeEqual } from "node:crypto";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import type { ServerWebSocket, Subprocess } from "bun";
+
+const HEX_64 = /^[0-9a-f]{64}$/;
+const MAX_ARM_BYTES = 4096;
+const BRIDGE_PORT = Number(process.env.BRIDGE_PORT ?? 7070);
+const ARM_PORT = Number(process.env.ARM_PORT ?? 7071);
+const BRIDGE_HOST = process.env.BRIDGE_HOST ?? "0.0.0.0";
+const HOME = process.env.HOME ?? "/root";
+/** The agent to run; tests and the local check pass a stand-in. */
+const AGENT = process.argv.length > 2 ? process.argv.slice(2) : ["omp", "--mode", "rpc", "--no-ui"];
+
+interface Armed {
+  bridgeToken: string;
+  gatewayToken: string;
+  gatewayUrl: string;
+  model: string;
+}
+
+let armed: Armed | undefined;
+let open: { ws: ServerWebSocket<undefined>; agent: Subprocess<"pipe", "pipe", "ignore"> } | undefined;
+
+const digest = (value: string) => createHash("sha256").update(value).digest();
+function log(event: string, extra: Record<string, unknown> = {}): void {
+  console.log(JSON.stringify({ bridge: event, ...extra }));
+}
+
+/** OMP's provider config: the model at the bot's path on the gateway. `apiKey: BOT_TOKEN` names an env var. */
+function modelsYml(gatewayUrl: string, model: string): string {
+  return [
+    "# Written by the bridge. BOT_TOKEN is the bot's own gateway token, never a model key.",
+    "providers:",
+    "  tinycloud:",
+    `    baseUrl: ${JSON.stringify(gatewayUrl)}`,
+    "    api: openai-completions",
+    "    apiKey: BOT_TOKEN",
+    "    models:",
+    `      - id: ${JSON.stringify(model)}`,
+    `        name: ${JSON.stringify(`TinyCloud (${model})`)}`,
+    "        reasoning: false",
+    "",
+  ].join("\n");
+}
+
+function parseArm(value: unknown): Armed | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const { bridgeToken, gatewayToken, gatewayUrl, model } = value as Record<string, unknown>;
+  if (typeof bridgeToken !== "string" || !HEX_64.test(bridgeToken)) return undefined;
+  if (typeof gatewayToken !== "string" || !HEX_64.test(gatewayToken)) return undefined;
+  if (typeof gatewayUrl !== "string" || !/^http:\/\/[^\s"]+\/bots\/[0-9a-f]{64}\/v1$/.test(gatewayUrl)) return undefined;
+  if (typeof model !== "string" || !/^[\w.:/-]{1,128}$/.test(model)) return undefined;
+  return { bridgeToken, gatewayToken, gatewayUrl, model };
+}
+
+function closeOpen(reason: string): void {
+  if (!open) return;
+  const { ws, agent } = open;
+  open = undefined;
+  agent.kill("SIGKILL");
+  ws.close(1000, reason);
+}
+
+const armServer = Bun.serve({
+  hostname: "127.0.0.1",
+  port: ARM_PORT,
+  maxRequestBodySize: MAX_ARM_BYTES,
+  async fetch(req) {
+    if (req.method !== "POST" || new URL(req.url).pathname !== "/arm") return new Response(null, { status: 404 });
+    const next = parseArm(await req.json().catch(() => null));
+    if (!next) return new Response(null, { status: 400 });
+    closeOpen("rearmed");
+    armed = next;
+    log("armed");
+    return new Response(null, { status: 204 });
+  },
+});
+
+const rpcServer = Bun.serve<undefined>({
+  hostname: BRIDGE_HOST,
+  port: BRIDGE_PORT,
+  fetch(req, server) {
+    if (new URL(req.url).pathname !== "/rpc") return new Response(null, { status: 404 });
+    const header = req.headers.get("authorization");
+    if (!armed || !header?.startsWith("Bearer ") || !timingSafeEqual(digest(header.slice(7)), digest(armed.bridgeToken))) {
+      log("refused", { cause: armed ? "token" : "unarmed" });
+      return new Response(null, { status: 401 });
+    }
+    if (open) return new Response(null, { status: 409 });
+    return server.upgrade(req, { data: undefined }) ? undefined : new Response(null, { status: 400 });
+  },
+  websocket: {
+    maxPayloadLength: 1024 * 1024,
+    open(ws) {
+      if (open || !armed) {
+        ws.close(1013, "busy");
+        return;
+      }
+      const config = armed;
+      const agentDir = join(HOME, ".omp", "agent");
+      mkdirSync(agentDir, { recursive: true });
+      writeFileSync(join(agentDir, "models.yml"), modelsYml(config.gatewayUrl, config.model));
+      const agent = Bun.spawn(AGENT, {
+        cwd: HOME,
+        env: { PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin", HOME, BOT_TOKEN: config.gatewayToken, PI_NO_TITLE: "1" },
+        stdin: "pipe",
+        stdout: "pipe",
+        stderr: "ignore",
+      });
+      open = { ws, agent };
+      log("connected");
+      void (async () => {
+        for await (const chunk of agent.stdout) {
+          if (open?.agent !== agent) break;
+          ws.send(chunk);
+        }
+      })().catch(() => {});
+      void agent.exited.then(code => {
+        log("agent_exited", { code });
+        if (open?.agent === agent) closeOpen("agent_exited");
+      });
+    },
+    message(ws, message) {
+      if (open?.ws !== ws) return;
+      open.agent.stdin.write(message);
+      void open.agent.stdin.flush();
+    },
+    close(ws) {
+      if (open?.ws !== ws) return;
+      const { agent } = open;
+      open = undefined;
+      agent.kill("SIGKILL");
+      log("disconnected");
+    },
+  },
+});
+
+log("listening", { port: rpcServer.port, arm: armServer.port });

@@ -97,6 +97,24 @@ export interface ConnectorWebhookDisabled {
   queueDropped: number;
 }
 
+/**
+ * `DELETE /api/connectors/credentials/:source` — the whole server-side teardown
+ * (purge tombstone, stored sign-in, upstream revoke, held content, queue). Both
+ * `ok` shapes mean the sign-in is gone from our server; `upstreamRevoked: false`
+ * on a 502 means the provider did not confirm the revoke.
+ */
+export interface ConnectorCredentialTeardown {
+  deleted: boolean;
+  upstreamRevoked: boolean;
+}
+
+/**
+ * Shown when the server removed the stored sign-in but the provider did not
+ * confirm the revoke, so the owner can revoke it themselves.
+ */
+export const CREDENTIAL_REVOKE_UNCONFIRMED_MESSAGE =
+  "Your Fireflies sign-in was removed from our server, but Fireflies didn't confirm it was revoked. Revoke it yourself in your Fireflies account.";
+
 export interface ConnectorPendingItem {
   meetingId: string;
   kind: ConnectorPendingKind;
@@ -210,6 +228,16 @@ export type ConnectorWebhooksResult<T> =
   /** The request never got an answer (network / abort). */
   | { status: "offline" };
 
+/** The base path of the credential teardown. One segment deep: `/:source`. */
+export const CONNECTOR_CREDENTIALS_BASE_PATH = "/api/connectors/credentials";
+
+/**
+ * The backend's own "this route is not available here" marker on a 404 (not mounted, or the owner
+ * is not enrolled). A 404 without it came from somewhere else and is a failure, not a skip.
+ */
+export const ROUTE_UNAVAILABLE_HEADER = "X-Route-Unavailable";
+export const CREDENTIALS_ROUTE_UNAVAILABLE = "connector-credentials";
+
 /** The base path of the authenticated companions. Every route is ONE segment deep. */
 export const CONNECTOR_WEBHOOKS_BASE_PATH = "/api/connectors/webhooks";
 
@@ -225,7 +253,11 @@ export interface ConnectorWebhooksClientConfig {
   fetchImpl?: typeof fetch;
 }
 
+/** `source` names a ledger-only source such as Granola; absent means Fireflies. */
+export type FirefliesPurgeCheck = (meetingId: string, sourceTimestamp: string | null, source?: string, signal?: AbortSignal) => Promise<boolean>;
+
 export interface ConnectorWebhooksClient {
+  checkPurge?: FirefliesPurgeCheck;
   /** Poll. Never carries the delivery secret — read `hasSecret`. */
   getConfig(): Promise<ConnectorWebhooksResult<ConnectorWebhookConfigPoll>>;
   /**
@@ -239,6 +271,23 @@ export interface ConnectorWebhooksClient {
   }): Promise<ConnectorWebhooksResult<ConnectorWebhookEnabled>>;
   /** The single idempotent teardown. Retry the same call on `retryable`. */
   disable(): Promise<ConnectorWebhooksResult<ConnectorWebhookDisabled>>;
+  /**
+   * Delete the sign-in our server holds for `source` and ask the provider to
+   * revoke it. A bare `DELETE` carrying only the session auth: no provider
+   * token is ever read, held or sent from here. `feature-dark` (a 404 carrying the backend's
+   * not-available marker) means the route is not mounted or the owner is not
+   * enrolled — nothing to do; an unmarked 404 is a retryable failure. A read-only
+   * `GET` comes first; any failed read is a failure, never a skip. The full `DELETE`
+   * follows whether or not a sign-in is still stored, so a retry finishes a
+   * teardown that stopped part-way. With no sign-in stored, a completed `DELETE`
+   * resolves `ok` with `null`.
+   * A failed provider revoke is still an
+   * `ok` (`upstreamRevoked: false`): the local delete happened. Optional so a
+   * lane that has no server-side sign-in (and test doubles) simply omits it.
+   */
+  teardownCredential?(
+    source: string,
+  ): Promise<ConnectorWebhooksResult<ConnectorCredentialTeardown | null>>;
   getPending(): Promise<ConnectorWebhooksResult<ConnectorWebhookPending>>;
   /** The user-visit drain trigger. The response is the drain's OWN surfaced list. */
   drain(): Promise<ConnectorWebhooksResult<ConnectorWebhookPending>>;
@@ -273,14 +322,23 @@ export function readSurfaceBlocked(
 export function createConnectorWebhooksClient(
   backendUrl: string,
   config: ConnectorWebhooksClientConfig,
-): ConnectorWebhooksClient {
+): ConnectorWebhooksClient & { checkPurge: FirefliesPurgeCheck } {
   const { sessionStore } = config;
   // Bound, so calling it as a property does not rebind `this` (firefliesClient.ts).
   const fetchImpl = config.fetchImpl ?? fetch.bind(globalThis);
 
   async function request<T>(
     path: string,
-    init: { method: "GET" | "POST" | "DELETE"; body?: unknown },
+    init: {
+      method: "GET" | "POST" | "DELETE";
+      body?: unknown;
+      basePath?: string;
+      signal?: AbortSignal;
+      /** When set, a 404 is `feature-dark` only if it carries this marker header value; otherwise it is retryable. */
+      darkMarker?: string;
+      /** Reads a non-2xx answer the caller treats as a value; `null` falls through to the default failures. */
+      onFailure?: (response: Response) => Promise<ConnectorWebhooksResult<T> | null>;
+    },
   ): Promise<ConnectorWebhooksResult<T>> {
     // `createApiClient`'s two pre-flight checks. It throws on both; a defined
     // signed-out state is not an exception here, so they resolve instead.
@@ -294,15 +352,19 @@ export function createConnectorWebhooksClient(
     const hasBody = init.body !== undefined;
     let response: Response;
     try {
-      response = await fetchImpl(`${backendUrl}${CONNECTOR_WEBHOOKS_BASE_PATH}${path}`, {
-        method: init.method,
-        headers: {
-          ...(hasBody ? { "Content-Type": "application/json" } : {}),
-          Authorization: `Bearer ${token}`,
-          [REQUEST_HEADER_NAME]: REQUEST_HEADER_VALUE,
+      response = await fetchImpl(
+        `${backendUrl}${init.basePath ?? CONNECTOR_WEBHOOKS_BASE_PATH}${path}`,
+        {
+          method: init.method,
+          headers: {
+            ...(hasBody ? { "Content-Type": "application/json" } : {}),
+            Authorization: `Bearer ${token}`,
+            [REQUEST_HEADER_NAME]: REQUEST_HEADER_VALUE,
+          },
+          ...(hasBody ? { body: JSON.stringify(init.body) } : {}),
+          signal: init.signal,
         },
-        ...(hasBody ? { body: JSON.stringify(init.body) } : {}),
-      });
+      );
     } catch {
       // The error is not narrated: it can carry the delivery URL, and no
       // connector identifier reaches a log from this module (§6.3's browser half).
@@ -318,9 +380,19 @@ export function createConnectorWebhooksClient(
     // The router is mounted only when the feature flag is on, and every path
     // inside it exists. A 404 therefore means DARK, which is a product state:
     // do not show a setup control merely because the bundle contains one.
-    if (response.status === 404) return { status: "feature-dark" };
+    if (response.status === 404) {
+      if (
+        init.darkMarker === undefined ||
+        response.headers.get(ROUTE_UNAVAILABLE_HEADER) === init.darkMarker
+      ) {
+        return { status: "feature-dark" };
+      }
+      return { status: "retryable", httpStatus: 404, code: await readErrorCode(response) };
+    }
 
     if (!response.ok) {
+      const handled = init.onFailure ? await init.onFailure(response.clone()) : null;
+      if (handled !== null) return handled;
       const code = await readErrorCode(response);
       if (response.status === 429 || response.status >= 500) {
         return { status: "retryable", httpStatus: response.status, code };
@@ -348,6 +420,17 @@ export function createConnectorWebhooksClient(
   }
 
   return {
+    async checkPurge(meetingId, sourceTimestamp, source, signal) {
+      const result = await request<{ blocked: boolean }>("/purge-check", {
+        method: "POST",
+        body: source === undefined ? { meetingId, sourceTimestamp } : { meetingId, sourceTimestamp, source },
+        signal,
+      });
+      if (result.status !== "ok" || typeof result.value?.blocked !== "boolean") {
+        throw new Error("Fireflies sync failed");
+      }
+      return result.value.blocked;
+    },
     async getConfig() {
       const result = await request<ConnectorWebhookConfig>("/config", {
         method: "GET",
@@ -369,6 +452,43 @@ export function createConnectorWebhooksClient(
     },
     disable() {
       return request<ConnectorWebhookDisabled>("/config", { method: "DELETE" });
+    },
+    async teardownCredential(source) {
+      const path = `/${encodeURIComponent(source)}`;
+      const stored = await request<{ connected?: unknown }>(path, {
+        method: "GET",
+        basePath: CONNECTOR_CREDENTIALS_BASE_PATH,
+        darkMarker: CREDENTIALS_ROUTE_UNAVAILABLE,
+      });
+      if (stored.status !== "ok") return stored;
+      if (typeof stored.value?.connected !== "boolean") {
+        return { status: "rejected", httpStatus: 200, code: null };
+      }
+      const connected = stored.value.connected;
+      let revokeUnconfirmed = false;
+      const torn = await request<ConnectorCredentialTeardown | null>(path, {
+        method: "DELETE",
+        basePath: CONNECTOR_CREDENTIALS_BASE_PATH,
+        // 502 `upstream_revoke_failed` + `deleted: true`: the local delete
+        // happened and only the provider's confirmation is missing.
+        async onFailure(response) {
+          if (response.status !== 502) return null;
+          try {
+            const body = (await response.json()) as { error?: unknown; deleted?: unknown };
+            if (body?.error === "upstream_revoke_failed" && body.deleted === true) {
+              revokeUnconfirmed = true;
+              return { status: "ok", value: { deleted: true, upstreamRevoked: false } };
+            }
+          } catch {
+            // An unreadable 502 is a plain retryable failure.
+          }
+          return null;
+        },
+      });
+      if (!connected && torn.status === "ok" && !revokeUnconfirmed) {
+        return { status: "ok", value: null };
+      }
+      return torn;
     },
     getPending() {
       return request<ConnectorWebhookPending>("/pending", { method: "GET" });

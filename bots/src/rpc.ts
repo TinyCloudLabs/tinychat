@@ -1,13 +1,24 @@
 import { isRecord } from "./guards";
+import { MESSAGING_STRINGS } from "./messaging-strings";
 
 // Minimal client for OMP's `--mode rpc` JSONL protocol (protocol v1; see OMP docs rpc.md).
 // Everything read from the sandbox is untrusted: lines are length-capped, parsed defensively, and only
-// responses to ids this client sent are matched. UI requests are refused; host tool/URI requests are ignored.
+// responses to ids this client sent are matched. UI requests are refused and host tools are scoped to one turn.
 
 export type Frame = { type: string } & Record<string, unknown>;
 
 /** OMP v1 caps a stdout frame at 1 MiB; anything longer is a protocol violation. */
 export const MAX_LINE_CHARS = 1024 * 1024;
+const MAX_HOST_CALLS_PER_TURN = 256;
+
+export interface HostToolReply { text: string; isError?: true }
+export type HostToolHandler = (name: string, args: unknown, signal: AbortSignal) => Promise<HostToolReply>;
+
+interface HostTools {
+  handle: HostToolHandler;
+  pending: Map<string, AbortController>;
+  seen: Set<string>;
+}
 
 export class RpcError extends Error {
   constructor(
@@ -31,6 +42,7 @@ export class RpcChannel {
   readonly #ready = Promise.withResolvers<void>();
   #seq = 0;
   #closedError: Error | undefined;
+  #hostTools: HostTools | undefined;
   /** Settles when stdout ends or the stream breaks the protocol. */
   readonly closed: Promise<void>;
 
@@ -70,6 +82,50 @@ export class RpcChannel {
   onFrame(listener: (frame: Frame) => void): () => void {
     this.#listeners.add(listener);
     return () => this.#listeners.delete(listener);
+  }
+
+  onHostToolCall(handle: HostToolHandler): () => void {
+    if (this.#hostTools) throw new Error("host tools already active");
+    const tools: HostTools = { handle, pending: new Map(), seen: new Set() };
+    this.#hostTools = tools;
+    return () => {
+      if (this.#hostTools === tools) this.#clearHostTools();
+    };
+  }
+
+  #clearHostTools(): void {
+    const tools = this.#hostTools;
+    this.#hostTools = undefined;
+    for (const call of tools?.pending.values() ?? []) call.abort();
+  }
+
+  #hostToolResult(id: string, reply: HostToolReply): void {
+    if (this.#closedError) return;
+    this.#send({
+      type: "host_tool_result", id, result: { content: [{ type: "text", text: reply.text }] },
+      ...(reply.isError ? { isError: true } : {}),
+    });
+  }
+
+  #hostToolCall(frame: Record<string, unknown>): void {
+    const { id, toolName } = frame;
+    if (typeof id !== "string" || !id || id.length > 200) return;
+    const tools = this.#hostTools;
+    if (tools?.seen.has(id)) return;
+    const refused = { text: MESSAGING_STRINGS.unavailable, isError: true } as const;
+    if (!tools || typeof toolName !== "string" || tools.seen.size >= MAX_HOST_CALLS_PER_TURN) {
+      this.#hostToolResult(id, refused);
+      return;
+    }
+    const controller = new AbortController();
+    tools.seen.add(id);
+    tools.pending.set(id, controller);
+    void Promise.resolve().then(() => controller.signal.aborted ? refused : tools.handle(toolName, frame.arguments, controller.signal))
+      .catch(() => refused)
+      .then(reply => {
+        tools.pending.delete(id);
+        if (!controller.signal.aborted) this.#hostToolResult(id, reply);
+      });
   }
 
   #send(frame: Record<string, unknown>): void {
@@ -125,7 +181,11 @@ export class RpcChannel {
         }
         return;
       case "host_tool_call":
+        this.#hostToolCall(frame);
+        return;
       case "host_tool_cancel":
+        if (typeof frame.targetId === "string") this.#hostTools?.pending.get(frame.targetId)?.abort();
+        return;
       case "host_uri_request":
       case "host_uri_cancel":
         return;
@@ -136,6 +196,7 @@ export class RpcChannel {
   #close(error: Error): void {
     if (this.#closedError) return;
     this.#closedError = error;
+    this.#clearHostTools();
     this.#ready.reject(error);
     for (const pending of this.#pending.values()) {
       clearTimeout(pending.timer);

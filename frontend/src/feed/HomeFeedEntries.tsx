@@ -1,13 +1,15 @@
 import { Link } from "react-router-dom";
 import { PATHS } from "@/shell/routes";
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ChevronRightIcon, SlidersHorizontalIcon, TriangleAlertIcon } from "lucide-react";
-import type { FeedResponse, FeedSelector, NewFeedMessage, NewFeedResponse } from "@tinycloud/sdk-services/feed";
+import { useCallback, useContext, useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { AnimatePresence } from "motion/react";
+import { ChevronRightIcon, InfoIcon, SlidersHorizontalIcon, TriangleAlertIcon } from "lucide-react";
+import type { FeedResponse, NewFeedMessage, NewFeedResponse } from "@tinycloud/sdk-services/feed";
 import type { BoardRecord } from "@tinyboilerplate/core/feed/sitrep";
 import { HomeCardView } from "./FeedView";
 import { CARD_TYPES, courierMessage, parseCardType, safeUrl, type FeedCard } from "./feedData";
 import type { HeldAnswerOutcome, HomeFeedEntry, HomeFeedSnapshot, HomeFeedSource } from "./feedStoreTypes";
-import { SitrepCard } from "./SitrepCard";
+import type { FeedCardLink } from "./feedCardLink";
+import { DROP_LABEL, SitrepCard } from "./SitrepCard";
 import { typedContexts, type TypedCardContext } from "./sitrepProjection";
 import { humanFeedReference, homeFeedKey, homeGroupScope } from "./feedIdentity";
 import { CardConversation, plainConversation } from "./CardConversation";
@@ -21,7 +23,8 @@ import { cardLead } from "./cardLead";
 import { cardStatus } from "./cardStatus";
 import { agentProfile } from "./AgentMark";
 import { HistoryTimeline, historyFromEntry } from "./HistoryTimeline";
-import { FeedTabs, type FeedTab } from "./FeedTabs";
+import { FeedMap } from "./FeedMap";
+import { STREAM_COVER_PX, STREAM_HEADING_CLASS, STREAM_ROOM_CLASS, STREAM_STICKY_TOP, type StreamSection } from "./feedStream";
 import { readFeedViewMode, saveFeedViewMode, type FeedViewMode } from "./feedViewMode";
 import { SEEN_DWELL_MS, SEEN_THRESHOLDS, visibleEnoughToSee } from "./expandedSeen";
 import { FloatingHeader } from "./FloatingHeader";
@@ -29,11 +32,19 @@ import { AgentsPill } from "./AgentMarks";
 import { useShowHiddenFeatures } from "@/lib/hiddenFeatures";
 import { PendingCard, type PendingItem } from "./PendingCard";
 import { MorphConfig, MorphItem, MotionFeatures } from "./densityMorph";
+import { FOCUS_DIM_CLASS, OPEN_STAGGER_CLASS, topInScroller } from "./focusRow";
+import { DesktopCard, DesktopCardClose, rowElement } from "./DesktopCard";
+import { useDesktopCard } from "./openMode";
 import { useUndoBar } from "./UndoBar";
+import { CardWaitContext, useAnnounceWait, type CardWait, type WaitReport } from "./cardWait";
+import { OptionsToggle } from "./OptionsToggle";
+import { SendPills, type PillItem } from "./SendPills";
 import { HeldDrafts } from "./heldDrafts";
 import { BriefButton, LazyBriefSheet } from "./BriefButton";
+import { FeedLink } from "./FeedLink";
 import { briefOf } from "./brief";
 import { shortTime } from "./ShortTime";
+import { ACKNOWLEDGE_ALL, acknowledgeAllLabel, acknowledgedPill, acknowledgingAnnounce } from "./updatesStrings";
 import { PostPreview } from "./PostPreview";
 import { lazyTab } from "@/shell/lazyTab";
 import { labPageOf, postStatus } from "./postAnswers";
@@ -41,7 +52,13 @@ import { cardGroup, cardPriority, compareWaiting, DUE_WINDOW_MS, findSecrets, gr
 import { HOME_EMPTY_BODY, HOME_EMPTY_CHAT, HOME_EMPTY_HOW, HOME_EMPTY_TITLE, NAV_LABEL_HOME } from "@/lib/homeStrings";
 import { markFeedFresh } from "@/lib/localFirst/requestLanes";
 import { AgentPrompt } from "@/home/AgentPromptCard";
-import { FEED_SKILL_URL } from "./strings";
+import { FEED_CARD_LINK_COPY, FEED_SKILL_URL } from "./strings";
+
+/** How long "Sent to <agent>" stays once an answer's held write has landed. */
+const SENT_NOTE_MS = 1400;
+/** The pill's words while a send is written (TC-3299), and the screen-reader line every wait ends with. */
+const SENDING_COPY = "Sending…";
+const UNDO_AVAILABLE = "Undo is available until then.";
 
 const LazyAgentView = lazyTab("your agents", () => import("./AgentView").then((module) => module.AgentView));
 const LazyFilterPanel = lazyTab("Filter", () => import("./FilterPanel").then((module) => module.FilterPanel));
@@ -147,7 +164,7 @@ function ReportLink({ entry }: { entry: HomeFeedEntry }) {
   if (!report || typeof report !== "object") return null;
   const { url, label } = report as Record<string, unknown>;
   if (!safeUrl(url) || !clean(url)) return null;
-  return <a href={url} target="_blank" rel="noopener noreferrer" className="inline-flex min-h-11 max-w-full items-center break-all text-sm underline underline-offset-[3px]">{typeof label === "string" ? label : "Full report"}</a>;
+  return <FeedLink href={url} className="inline-flex min-h-11 max-w-full items-center break-all text-sm underline underline-offset-[3px]">{typeof label === "string" ? label : "Full report"}</FeedLink>;
 }
 
 /** The saved answer in words: the option label, never its id; "got it" only once the agent acknowledged. */
@@ -238,6 +255,7 @@ function AnswerForm({ entry, drafts, draftKey, answered, revisions, source, now,
   const [commenting, setCommenting] = useState(false);
   const [justSaved, setJustSaved] = useState(false);
   const countdown = usePendingSend({ stale, onRefused });
+  const wait = useContext(CardWaitContext);
   const pendingResponse = useRef<{ key: string; response: NewFeedResponse } | null>(null);
   const pendingMessage = useRef<{ text: string; message: NewFeedMessage } | null>(null);
   const card = entry.state.card;
@@ -268,6 +286,7 @@ function AnswerForm({ entry, drafts, draftKey, answered, revisions, source, now,
       // Held until confirmed: a page that closes before this write lands sends it at the next launch.
       const result = await source.saveResponse(target, response, undefined, { hold: true });
       onSaved(target, result);
+      wait?.sent();
       pendingResponse.current = null;
       setText(""); setChoice(undefined); setOwnOpen(false); setFollowup(false); setJustSaved(true);
     } catch {
@@ -300,6 +319,7 @@ function AnswerForm({ entry, drafts, draftKey, answered, revisions, source, now,
     countdown.start(NOT_SENT_COPY.yourAnswer, () => void save(OWN_OPTION.id));
   }
   function undo() { countdown.undo(); setChoice(undefined); }
+  useAnnounceWait(countdown.pending, undo, saving);
   const timing = cardTiming(entry);
   const timingLine = [timing.deadline && `Due ${shortTime(timing.deadline, now)}`, timing.expiresAt && `Matters until ${shortTime(timing.expiresAt, now)}`, timing.priority !== undefined && `Priority P${timing.priority}`].filter(Boolean).join(" · ");
   const thread = <CardConversation lines={plainConversation(entry, revisions)} to={source.sendMessage ? entry.source.label : undefined} stale={stale}
@@ -347,8 +367,11 @@ function updateSnapshotEntry(snapshot: HomeFeedSnapshot | null, key: string, upd
 
 type Row = { kind: "card"; item: HomeFeedEntry; retained?: boolean } | { kind: "group"; name: string; items: HomeFeedEntry[] };
 
-/** `ask`: the tiny bots ask box, shown under the heading when the account has it. */
-export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?: ReactNode }) {
+/**
+ * `ask`: the tiny bots ask box, shown under the heading when the account has it. `linked`: the card the address names
+ * (/chat/feed/<card id>), opened once the feed has loaded, or a note when the feed holds no such card.
+ */
+export function HomeFeedEntries({ source, ask, linked }: { source: HomeFeedSource; ask?: ReactNode; linked?: FeedCardLink | null }) {
   // The ask box and the Agents pill are hidden features (Sam, 11-17): shown only while Settings → Show hidden features is on.
   const showHidden = useShowHiddenFeatures();
   useEffect(() => {
@@ -363,11 +386,10 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     LazyPostPage.preload().catch(() => {});
     LazyBriefSheet.preload().catch(() => {});
   }, [feedShown]);
-  // Needs you | All, the saved default view (the retired Information view reads as All). No tab is chosen until the
-  // saved one arrives, so the island never flips while loading.
-  const [selector, setSelector] = useState<FeedSelector | null>(null);
-  // History is the island's third tab; Snoozed, priority and order live in Filter. Both replace the view's list.
-  const [history, setHistory] = useState(false);
+  // The Feed is one stream (Needs you, Updates, Pending, History); the island over it is its map. `section` is the one
+  // under the pinned row: a tap on the island scrolls to a section, and scrolling moves it. Snoozed, priority and order
+  // live in Filter; Snoozed replaces the stream with its own list.
+  const [section, setSection] = useState<StreamSection>("needs");
   const [snoozedOnly, setSnoozedOnly] = useState(false);
   const [priorityMax, setPriorityMax] = useState("");
   const [sortBy, setSortBy] = useState<"" | "priority" | "due" | "expires">("");
@@ -375,8 +397,13 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
   const [sticky, setSticky] = useState<ReadonlyMap<string, boolean>>(() => new Map());
   // Cards opened in place, by lineage.
   const [opened, setOpened] = useState<ReadonlySet<string>>(() => new Set());
-  // Needs you's first card, folded by the owner: it stays a row until the view changes.
-  const [shut, setShut] = useState<ReadonlySet<string>>(() => new Set());
+  // The id of an open card's wrapper, which its "See N options" / "Hide options" button controls.
+  const cardIds = useRef(new Map<string, string>());
+  const openCardId = (key: string) => {
+    let id = cardIds.current.get(key);
+    if (!id) { id = `feed-card-${cardIds.current.size + 1}`; cardIds.current.set(key, id); }
+    return id;
+  };
   // Answers not sent because the card was replaced during their countdown, by card key.
   const [refused, setRefused] = useState<ReadonlyMap<string, string>>(() => new Map());
   // Answers held when the page closed and settled at this launch, by card.
@@ -384,12 +411,20 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
   // Answers whose agent is no longer connected: no card is left to carry their "Not sent", so each has a notice of its own.
   const [lostAnswers, setLostAnswers] = useState<ReadonlyMap<string, HeldAnswerOutcome>>(() => new Map());
   const [agent, setAgent] = useState("");
+  // Set by a network load (not the device's earlier copy): only that can say a linked card is missing.
+  const [networkLoaded, setNetworkLoaded] = useState(false);
+  // The link's visit that found no card (the note), and the card it opened (outlined for a moment). A visit is handled once.
+  const handledVisit = useRef<string | null>(null);
+  const [missedVisit, setMissedVisit] = useState<string | null>(null);
+  const [outlined, setOutlined] = useState<string | null>(null);
   const [kind, setKind] = useState("");
   const [taskType, setTaskType] = useState("");
   const [project, setProject] = useState("");
   // How the list is drawn (Compact, Expanded, Cards), kept on this device, the same in every tab.
   const [viewMode, setViewModeState] = useState<FeedViewMode>(readFeedViewMode);
   const setViewMode = (mode: FeedViewMode) => { setViewModeState(mode); saveFeedViewMode(mode); };
+  // A wide screen with a mouse lifts an opened card over the stream (DesktopCard.tsx); Expanded keeps every card open in place.
+  const lift = useDesktopCard() && viewMode !== "expanded";
   // Filter opens a popover under the row.
   const [panel, setPanel] = useState<"filter" | null>(null);
   const toolbarRef = useRef<HTMLDivElement>(null);
@@ -402,10 +437,6 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => new Set());
   // The agent view over the list: every agent ("list"), or one agent's page, by its agent key.
   const [agentPage, setAgentPage] = useState<string | null>(null);
-  // The Pending card at the end of the list, open.
-  const [pendingOpen, setPendingOpen] = useState(false);
-  const chosenView = useRef(false);
-  const hasDefault = useRef(false);
   const refreshRef = useRef<() => void>(() => {});
   const committed = useRef(new Map<string, FeedResponse>());
   // Owner actions (Drop, Acknowledge, a later time) the page saved, by card: kept on it until a load shows them, so a
@@ -419,10 +450,62 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
   currentSource.current = source;
   const mainRef = useRef<HTMLElement>(null);
   const headerRef = useRef<HTMLElement>(null);
-  const scrollTo = useRef<string | null>(null);
+  // The card to bring into view once the list has laid out: one just opened (to just under the sticky heading), or one just folded from its foot.
+  const scrollTo = useRef<{ key: string; fold: boolean } | null>(null);
+  /** The card the owner just opened or folded: focus goes to its fold control or to its row once the render has put it there. */
+  const focusAfter = useRef<{ key: string; open: boolean } | null>(null);
   // Drop this card, Acknowledge, Ask me later and Show me later take the card away at once; a bar at the bottom
   // counts the same 5 s as every send, with Undo, and only then is the action written (held in the outbox).
   const undoBar = useUndoBar((message) => setError({ lead: message, text: "Try again." }));
+  // An answer (or a go, a drop of an ask) waiting out its undo window keeps its card, mounted and out of sight, so the
+  // count ends exactly as it did in the card; the card reports the wait here and the pill shows it. By card (lineage).
+  const [waits, setWaits] = useState<ReadonlyMap<string, WaitReport>>(() => new Map());
+  // "Sent to <agent>" lines, each shown for a moment once an answer's held write has landed.
+  const [sentTo, setSentTo] = useState<readonly { id: number; agent: string }[]>([]);
+  const sentId = useRef(0);
+  // On a phone, in the Compact list, one card is open at a time: opening a card folds the one that was open. A card whose
+  // answer is still counting stays open (out of sight, mounted) so its wait can still be refused or sent. Desktop (a card
+  // over the stream) and the Expanded and Cards views keep every card the owner opened.
+  const desktop = useDesktopCard();
+  const single = !desktop && viewMode === "compact";
+  const openingRef = useRef({ single, waits });
+  openingRef.current = { single, waits };
+  const withOpened = (current: ReadonlySet<string>, key: string): ReadonlySet<string> => {
+    const { single: only, waits: counting } = openingRef.current;
+    return only ? new Set([...current].filter((other) => counting.has(other)).concat(key)) : new Set(current).add(key);
+  };
+  const waitControllers = useRef(new Map<string, CardWait & { agent: string }>());
+  /** The only place a new wait sends the others now: another card's answer (same flush as its own count ending) and any bar. */
+  function sendOtherWaits() {
+    undoBar.flushAll();
+    for (const send of [...pendingSends.current]) send();
+  }
+  const sendOtherWaitsRef = useRef(sendOtherWaits);
+  sendOtherWaitsRef.current = sendOtherWaits;
+  /** A card's line to the feed, the same object for the card's life. `agent` is the card's verified author, as its row names it. */
+  function waitFor(key: string, agent: string): CardWait {
+    const existing = waitControllers.current.get(key);
+    if (existing) { existing.agent = agent; return existing; }
+    const controller: CardWait & { agent: string } = {
+      agent,
+      report: (wait) => setWaits((current) => {
+        if (!wait && !current.has(key)) return current;
+        const next = new Map(current);
+        if (wait) next.set(key, wait); else next.delete(key);
+        return next;
+      }),
+      begin: () => sendOtherWaitsRef.current(),
+      sent: () => {
+        // Sent and answered: it folds back to a row, now in Pending.
+        setOpened((current) => { if (!current.has(key)) return current; const next = new Set(current); next.delete(key); return next; });
+        const id = ++sentId.current;
+        setSentTo((current) => [...current, { id, agent: controller.agent }]);
+        window.setTimeout(() => setSentTo((current) => current.filter((line) => line.id !== id)), SENT_NOTE_MS);
+      },
+    };
+    waitControllers.current.set(key, controller);
+    return controller;
+  }
   // An open popover closes on a tap anywhere outside the toolbar and its popovers (Escape: onKeyDown below).
   useEffect(() => {
     if (!panel) return;
@@ -437,11 +520,11 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     let dirty = false;
     let loaded = false;
     let flushed = false;
-    chosenView.current = false; hasDefault.current = false;
     committed.current.clear();
     activeRef.current = null;
-    setSnapshot(null); setSelector(null); setActive(null); setError(null); setSticky(new Map()); setOpened(new Set()); setHeldOutcomes(new Map()); setLostAnswers(new Map());
-    setExpandedGroups(new Set()); setAgentPage(null); setPendingOpen(false); ownDrafts.current.clear();
+    setNetworkLoaded(false);
+    setSnapshot(null); setActive(null); setError(null); setSticky(new Map()); setOpened(new Set()); setHeldOutcomes(new Map()); setLostAnswers(new Map());
+    setExpandedGroups(new Set()); setAgentPage(null); ownDrafts.current.clear();
     const refresh = async () => {
       if (running) { dirty = true; return; }
       running = true;
@@ -469,10 +552,8 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
           if (next.relatedEntries) next.relatedEntries = next.relatedEntries.map(reconcile);
           if (next.historicalEntries) next.historicalEntries = next.historicalEntries.map(reconcile);
           loaded = true;
-          setSnapshot(next); setClock(Date.now()); setError(next.connectionError ? { lead: "You're offline.", text: "Live updates are off, so these cards may be out of date." } : null);
+          setSnapshot(next); setNetworkLoaded(true); setClock(Date.now()); setError(next.connectionError ? { lead: "You're offline.", text: "Live updates are off, so these cards may be out of date." } : null);
           markFeedFresh();
-          if (!hasDefault.current && !chosenView.current) setSelector(next.settings.defaultSelector);
-          hasDefault.current = true;
           // The first load registered the agents: answers held when the page last closed go now.
           if (!flushed && source.flushHeldAnswers) {
             flushed = true;
@@ -502,7 +583,6 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     void (source.cached?.() ?? Promise.resolve(null)).then((local) => {
       if (!alive || loaded || !local) return;
       setSnapshot(local); setClock(Date.now());
-      if (!hasDefault.current && !chosenView.current) setSelector(local.settings.defaultSelector);
     }).catch(() => {});
     const unsubscribe = source.subscribe(refreshRef.current);
     void refresh();
@@ -551,7 +631,7 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
   // agent closed: its earlier revisions (the one Sam answered or dropped among them) give way to the closing one.
   const replaces = (newer: HomeFeedEntry, older: HomeFeedEntry) => newer !== older && newer.state.card.revision > older.state.card.revision
     && (lineageKey(newer) === lineageKey(older) || (isTypedPayload(older) && newer.source.sourceId === older.source.sourceId && newer.state.card.cardId === older.state.card.cardId && closesRecord(newer)));
-  const entries = history || snoozedOnly
+  const entries = snoozedOnly
     ? all.filter((entry) => !all.some((other) => replaces(other, entry)))
     : snapshot?.entries ?? [];
   const contextFor = useMemo(() => {
@@ -589,8 +669,6 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     const timer = window.setTimeout(() => setClock(Date.now()), Math.min(Math.max(0, next - Date.now() + 1), 2_147_483_647));
     return () => window.clearTimeout(timer);
   }, [snapshot, clock, contextFor]);
-  const view: Exclude<FeedSelector, "information"> = selector === "information" ? "both" : selector ?? "needs-action";
-  const tab: FeedTab = history ? "history" : view;
   const timingOf = (entry: HomeFeedEntry) => cardTiming(entry, contextFor(entry));
   const expired = (entry: HomeFeedEntry) => { const at = timingOf(entry).expiresAt; return !!at && Date.parse(at) <= clock; };
   const matchesFilters = (entry: HomeFeedEntry) => (!agent || entry.source.sourceId === agent) && (!kind || kindOf(entry) === kind) && (!taskType || parseCardType(entry.state.card.payload?.type) === taskType) && (!project || projectOf(entry) === project)
@@ -612,12 +690,12 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     return !!record && isClosed(record) && held !== "closed" && held !== "refused";
   };
   const inDone = (entry: HomeFeedEntry) => expired(entry) || !!closureOf(entry) || agentClosed(entry) || entry.state.card.payload?.sitrepThread !== undefined || !!entry.responses?.length || !!entry.state.response || !!answeredIn(entry) || !!entry.viewEvents?.some((event) => event.kind === "snoozed") || !!entry.owner?.answers.length || !!entry.owner?.claimDecisions.length || !!entry.owner?.threads.length || !!entry.owner?.outboundNotes?.length || !!entry.owner?.heldNotes?.length || !!entry.historicalCommands?.length || !!entry.owner?.states.some((state) => state.notes?.length || state.snoozes?.length || state.doneAt || state.dismissedAt || Object.keys(state.steps).length) || snoozedNow(entry, clock);
-  // A card the owner touched in this view keeps its place, so an answer counting down (or a folded step he opened)
-  // stays on screen. In All it stays, with "Change answer", until the view changes; in Needs you only until its
-  // answer is saved, when it moves to Pending and the next card opens in its place.
-  const keepsNeeds = (entry: HomeFeedEntry) => sticky.get(lineageKey(entry)) === true && (history || view !== "needs-action" || attention(entry));
+  // A card the owner touched in this view keeps its place until its answer is saved, so an answer counting down stays
+  // on screen (out of sight, mounted); once saved it moves to Pending, in every view, and the next card opens in its place.
+  const keepsNeeds = (entry: HomeFeedEntry) => sticky.get(lineageKey(entry)) === true && attention(entry);
   const needing = (entry: HomeFeedEntry) => (attention(entry) && !folded(entry)) || keepsNeeds(entry);
-  const needsCount = (snapshot?.entries ?? []).filter((entry) => matchesFilters(entry) && attention(entry) && !folded(entry)).length;
+  // What waits out its undo window no longer counts: the count drops at the tap and comes back on Undo.
+  const needsCount = (snapshot?.entries ?? []).filter((entry) => matchesFilters(entry) && attention(entry) && !folded(entry) && !waits.has(lineageKey(entry)) && !undoBar.hidden(lineageKey(entry))).length;
   /**
    * Answered and still open (Sam, 11-13): Waiting on its agent, Answered (its agent got it), or Done (or Failed) and not
    * yet acknowledged. In Needs you and All these leave the main flow for the Pending card at its end, so only what needs
@@ -628,7 +706,7 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     const status = statusOf(entry, cardAuthor(entry, contextFor(entry)?.record).name);
     return status === "Done" || status === "Failed" || status === "Answered" || status?.startsWith("Waiting on") ? status : undefined;
   };
-  const showsPending = !history && !snoozedOnly;
+  const showsPending = !snoozedOnly;
   const visible = (entry: HomeFeedEntry) => matchesFilters(entry) && !undoBar.hidden(lineageKey(entry));
   // A card whose answer was held when the page closed keeps its place this session, so its "sent" or "not sent" line shows.
   const heldHere = (entry: HomeFeedEntry) => heldOutcomes.has(JSON.stringify([entry.source.sourceId, entry.state.card.cardId]));
@@ -638,42 +716,49 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     if (!visible(entry) || pendingKeys.has(keyOf(entry))) return false;
     // A snoozed card is out of every view until its time comes, except the Filter's "Snoozed" list.
     if (snoozedOnly) return snoozedNow(entry, clock);
-    if (history) return inDone(entry);
     // Dropped, acknowledged, past its "matters until", or closed by its agent: only in History, marked so.
-    if (snoozedNow(entry, clock) || expired(entry) || closureOf(entry) || agentClosed(entry)) return false;
-    return view === "both" || needing(entry);
+    return !(snoozedNow(entry, clock) || expired(entry) || closureOf(entry) || agentClosed(entry));
   }).sort((a, b) => { const first = contextFor(a)?.waiting; const second = contextFor(b)?.waiting; return first && second ? compareWaiting(first, second) || compare(a, b) : compare(a, b); });
-  const grouped = groupCards(matching, (entry) => {
-    const record = contextFor(entry)?.record;
-    const group = record && cardGroup(record);
-    return group ? JSON.stringify([homeGroupScope(entry.source.sourceId, entry.modelScope), group]) : undefined;
-  }, (entry) => { const record = contextFor(entry)?.record; return !!record && !isClosed(record); });
-  const priority = orderPriority(grouped.map((row) => {
-    const members = row.kind === "card" ? [row.item] : row.items;
-    const pinned = members.map((entry) => { const context = contextFor(entry); return !!context && !!cardPriority(context.record, context.projection.state?.priority); });
-    const first = members[0]; const firstRecord = first && contextFor(first)?.record; const group = firstRecord && cardGroup(firstRecord);
-    const flagged = row.kind === "group" && group && first ? groupPriorityFlag(contextFor(first)?.owner.groupPriority?.groups[group], pinned) : pinned.some(Boolean);
-    return { value: row, flagged, blocker: members.some((entry) => { const context = contextFor(entry); return !!context && (!!context.record.blocks || !!context.waiting?.unblockWeight); }) };
-  }));
-  const rows: Row[] = [...priority.priority, ...priority.rest];
+  // History, the stream's last section: what is done, answered or snoozed, and is not already a row above or in Pending.
+  const shownAbove = new Set([...matching.map(keyOf), ...pendingKeys]);
+  const historyList = snoozedOnly ? [] : all.filter((entry) => !all.some((other) => replaces(other, entry)) && visible(entry) && !shownAbove.has(keyOf(entry)) && inDone(entry));
+  const rowsOf = (list: HomeFeedEntry[]): Row[] => {
+    const grouped = groupCards(list, (entry) => {
+      const record = contextFor(entry)?.record;
+      const group = record && cardGroup(record);
+      return group ? JSON.stringify([homeGroupScope(entry.source.sourceId, entry.modelScope), group]) : undefined;
+    }, (entry) => { const record = contextFor(entry)?.record; return !!record && !isClosed(record); });
+    const priority = orderPriority(grouped.map((row) => {
+      const members = row.kind === "card" ? [row.item] : row.items;
+      const pinned = members.map((entry) => { const context = contextFor(entry); return !!context && !!cardPriority(context.record, context.projection.state?.priority); });
+      const first = members[0]; const firstRecord = first && contextFor(first)?.record; const group = firstRecord && cardGroup(firstRecord);
+      const flagged = row.kind === "group" && group && first ? groupPriorityFlag(contextFor(first)?.owner.groupPriority?.groups[group], pinned) : pinned.some(Boolean);
+      return { value: row, flagged, blocker: members.some((entry) => { const context = contextFor(entry); return !!context && (!!context.record.blocks || !!context.waiting?.unblockWeight); }) };
+    }));
+    return [...priority.priority, ...priority.rest];
+  };
+  const rows = rowsOf(matching);
   const activeKey = active ? keyOf(active) : null;
   let selected = entries.find((entry) => keyOf(entry) === activeKey)
     ?? (snapshot?.focusedEntry && keyOf(snapshot.focusedEntry) === activeKey ? snapshot.focusedEntry : active);
   // A card the owner is working on stays bound to its exact issuance when a newer one arrives: it keeps its place (in
-  // place of its successor) until the owner moves on. A successor that only appends agent replies swaps in place.
-  if (selected && !pendingKeys.has(keyOf(selected)) && !rows.some((row) => (row.kind === "card" ? [row.item] : row.items).some((entry) => keyOf(entry) === keyOf(selected!)))) {
+  // place of its successor) until the owner moves on. A successor that only appends agent replies swaps in place. An
+  // answered card has nothing left to work on: its successor is in Pending, so it keeps no place in the list.
+  if (selected && !pendingKeys.has(keyOf(selected)) && !historyList.some((entry) => keyOf(entry) === keyOf(selected!)) && !rows.some((row) => (row.kind === "card" ? [row.item] : row.items).some((entry) => keyOf(entry) === keyOf(selected!)))) {
     const current = selected;
     const successor = rows.findIndex((row) => row.kind === "card" && row.item.source.sourceId === current.source.sourceId && row.item.state.card.cardId === current.state.card.cardId);
     const next = successor >= 0 ? rows[successor] : undefined;
-    if (next?.kind === "card" && !isTypedPayload(current) && isReplyOnlyRevision(current, next.item)) selected = next.item;
+    const answered = waits.has(lineageKey(current)) ? undefined : pendingEntries.find((entry) => entry.source.sourceId === current.source.sourceId && entry.state.card.cardId === current.state.card.cardId);
+    if (answered) { if (!isTypedPayload(current) && isReplyOnlyRevision(current, answered)) selected = answered; }
+    else if (next?.kind === "card" && !isTypedPayload(current) && isReplyOnlyRevision(current, next.item)) selected = next.item;
     else if (successor >= 0) rows[successor] = { kind: "card", item: current, retained: true };
     else if (!entries.some((entry) => keyOf(entry) === keyOf(current)) && !undoBar.hidden(lineageKey(current))) rows.unshift({ kind: "card", item: current, retained: true });
   }
   const selectedKey = selected ? keyOf(selected) : null;
   activeRef.current = selected ?? null;
   useEffect(() => { if (selected && activeKey && selectedKey !== activeKey) setActive(selected); }, [selectedKey, activeKey]);
-  // Needs you: what needs you, by urgency, the first card open and raised. All: Needs you, Updates and Done today
-  // (cards closed today), each as rows. History and Snoozed: newest first.
+  // The stream: Needs you (by urgency, every card folded until the owner opens one), Updates (newest first), Pending,
+  // then History (newest first). Snoozed is one list of its own.
   const rowNeeds = (row: Row) => (row.kind === "card" ? [row.item] : row.items).some(needing);
   const newest = (row: Row) => Math.max(...(row.kind === "card" ? [row.item] : row.items).map((entry) => Date.parse(entry.state.card.createdAt)));
   // The Filter's order, when chosen: highest priority, soonest due, or soonest to expire first; cards without that
@@ -683,28 +768,25 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     return sortBy === "priority" ? timing.priority ?? 9 : sortBy === "due" ? Date.parse(timing.deadline ?? "") || Infinity : Date.parse(timing.expiresAt ?? "") || Infinity;
   }));
   const ordered = (list: Row[]) => sortBy ? [...list].sort((first, second) => sortValue(first) - sortValue(second)) : list;
-  const day = new Date(clock).toDateString();
-  const closedToday = (entry: HomeFeedEntry) => replyChain(entry).flatMap((candidate) => candidate.responses ?? []).some((response) => new Date(response.createdAt).toDateString() === day);
-  const doneToday: Row[] = tab === "both" && !snoozedOnly
-    ? all.filter((entry) => visible(entry) && !!closureOf(entry) && !all.some((other) => other !== entry && other.state.card.revision > entry.state.card.revision && lineageKey(other) === lineageKey(entry)) && closedToday(entry))
-      .sort((a, b) => b.state.card.createdAt.localeCompare(a.state.card.createdAt)).map((item) => ({ kind: "card", item }))
-    : [];
-  const sections: [string, Row[]][] = tab === "needs-action" && !snoozedOnly
-    ? [["", ordered(rows)]]
-    : tab === "both" && !snoozedOnly
-      ? [["Needs you", ordered(rows.filter(rowNeeds))], ["Updates", ordered(rows.filter((row) => !rowNeeds(row)))], ["Done today", doneToday]]
-      : [["", ordered([...rows].sort((first, second) => newest(second) - newest(first)))]];
-  // The cards in the order this view shows them, top to bottom (where focus goes when one is taken away), Pending last.
-  const listed = sections.flatMap(([, list]) => list.flatMap((row) => row.kind === "card" ? [row.item] : row.items));
+  const historyRows = ordered(rowsOf(historyList).sort((first, second) => newest(second) - newest(first)));
+  const needsRows = ordered(rows.filter(rowNeeds));
+  const updateRows = ordered(rows.filter((row) => !rowNeeds(row)).sort((first, second) => newest(second) - newest(first)));
+  const countOf = (list: Row[]) => list.reduce((count, row) => count + (row.kind === "card" ? 1 : row.items.length), 0);
+  type StreamPart = readonly [StreamSection | "", string, Row[]];
+  const sections: StreamPart[] = snoozedOnly
+    ? [["", "", ordered([...rows].sort((first, second) => newest(second) - newest(first)))]]
+    : [["needs", "Needs you", needsRows], ["updates", "Updates", updateRows], ["history", "History", historyRows]];
+  // The cards in the order the stream shows them, top to bottom (where focus goes when one is taken away), Pending before History.
+  const listed = sections.flatMap(([, , list]) => list.flatMap((row) => row.kind === "card" ? [row.item] : row.items));
   const shown = [...listed, ...pendingEntries];
-  // Needs you opens its first card (not a post, which has a page of its own) while no card in it is open and the owner
-  // has folded none. The card it opens stays open (it joins `opened`), so cards moving around it never fold it; once
-  // it is answered and leaves, the next card opens in its place.
-  const firstOpen = tab === "needs-action" && !snoozedOnly && agentPage === null && !shut.size && !listed.some((entry) => opened.has(lineageKey(entry)))
-    ? sections[0]?.[1].flatMap((row) => row.kind === "card" ? [row.item] : []).find((entry) => !labPageOf(entry)) : undefined;
-  const firstOpenKey = firstOpen ? lineageKey(firstOpen) : null;
-  useEffect(() => { if (firstOpenKey) setOpened((current) => current.has(firstOpenKey) ? current : new Set(current).add(firstOpenKey)); }, [firstOpenKey]);
-  const isOpen = (entry: HomeFeedEntry) => opened.has(lineageKey(entry)) || lineageKey(entry) === firstOpenKey;
+  const isOpen = (entry: HomeFeedEntry) => opened.has(lineageKey(entry));
+  // On a phone with a card open, the other rows dim: the open one is the focus (an answer still counting is out of sight, so it is not).
+  const focusing = single && shown.some((entry) => isOpen(entry) && !waits.has(lineageKey(entry)));
+  /** An update the owner can acknowledge: nothing to answer, not closed yet, and drawn as a card (a post opens its own page). */
+  const canAcknowledge = (entry: HomeFeedEntry, retained = false) => !retained && !entry.state.card.needsResponse && !closureOf(entry) && !labPageOf(entry) && !(isTypedPayload(entry) && !contextFor(entry));
+  // What "Acknowledge all" at the Updates heading takes: the cards in that section whose own Acknowledge is allowed.
+  const acknowledgeable = (sections.find(([id]) => id === "updates")?.[2] ?? [])
+    .flatMap((row) => row.kind === "card" ? (row.retained ? [] : [row.item]) : row.items).filter((entry) => canAcknowledge(entry));
 
   // In Expanded every card is open, so opening cannot mark it seen: a card counts as seen once enough of it has stayed
   // on screen for a moment (expandedSeen.ts), not because it is somewhere down the list or was scrolled past. A post
@@ -752,15 +834,30 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
       }).catch(() => { seenAsked.current.delete(key); });
     }
   }, [source, seenNow.map(keyOf).join("|")]);
-  // Only the feed scrolls, never the page around it, and only when the opened card's top is out of view.
+  // Only the feed scrolls, never the page around it. An opened card comes to just under the sticky heading (on a phone,
+  // always; elsewhere only when its top is out of view); a card folded from its foot comes back into view if its row is not.
   useEffect(() => {
-    const key = scrollTo.current, root = mainRef.current;
-    if (!key || !root) return;
+    const target = scrollTo.current, root = mainRef.current;
+    if (!target || !root) return;
     scrollTo.current = null;
-    const node = [...root.querySelectorAll<HTMLElement>("li[data-card-key]")].find((item) => item.dataset.cardKey === key);
+    const node = [...root.querySelectorAll<HTMLElement>("li[data-card-key]")].find((item) => item.dataset.cardKey === target.key);
     if (!node) return;
-    const offset = node.getBoundingClientRect().top - root.getBoundingClientRect().top;
-    if (offset < 0 || offset > root.clientHeight - 80) root.scrollTo({ top: root.scrollTop + offset - 16, behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+    const behavior = window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
+    // From layout, not from where the row is drawn: a row still animating is measured where it will rest.
+    const offset = topInScroller(node, root) - root.scrollTop;
+    const rests = STREAM_COVER_PX + 8;
+    const off = offset < STREAM_COVER_PX || offset > root.clientHeight - 80;
+    if (target.fold ? off : single ? Math.abs(offset - rests) > 2 : off) root.scrollTo({ top: root.scrollTop + offset - rests, behavior });
+  });
+  // Focus follows the card (the row's own button is replaced by the open card, and its Show less by the row): to the open
+  // card's fold control when it opens, to its row when it folds. Not scrolled to: the scroll above decides where it sits.
+  useEffect(() => {
+    const target = focusAfter.current, root = mainRef.current;
+    if (!target || !root) return;
+    focusAfter.current = null;
+    const item = [...root.querySelectorAll<HTMLElement>("li[data-card-key]")].find((candidate) => candidate.dataset.cardKey === target.key);
+    const buttons = item?.querySelectorAll<HTMLElement>(target.open ? "button[data-card-fold]" : "button[data-card-row]");
+    [...(buttons ?? [])].find((button) => !button.closest("[inert]"))?.focus({ preventScroll: true });
   });
 
   const onSaved = useCallback((entry: HomeFeedEntry, response: FeedResponse) => {
@@ -783,7 +880,7 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
   /** Every change of what the list shows: answers still counting down are sent now (the owner chose them). */
   function leaveView() {
     for (const send of [...pendingSends.current]) send();
-    setActive(null); setSticky(new Map()); setOpened(new Set()); setShut(new Set()); setAgentPage(null);
+    setActive(null); setSticky(new Map()); setOpened(new Set()); setAgentPage(null);
   }
   /**
    * A card line on an agent's page: back to the list with that card open in place. It opens where it lives: in the
@@ -793,44 +890,67 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     leaveView();
     setAgent(""); setKind(""); setTaskType(""); setProject(""); setPriorityMax(""); setSortBy("");
     const inFeed = !snoozedNow(entry, clock) && !expired(entry) && !closureOf(entry);
-    setHistory(!inFeed && !snoozedNow(entry, clock)); setSnoozedOnly(!inFeed && snoozedNow(entry, clock));
-    if (inFeed && !attention(entry) && pendingStatus(entry)) setPendingOpen(true);
-    // Showing All for this one tap does not change the saved default view.
-    else if (inFeed && view === "needs-action" && !attention(entry)) { chosenView.current = true; setSelector("both"); }
+    setSnoozedOnly(!inFeed && snoozedNow(entry, clock));
     openCard(entry);
   }
-  function changeSelector(next: FeedSelector) {
-    if (next === view && !history && !snoozedOnly) return;
-    leaveView();
-    chosenView.current = true; setSelector(next); setHistory(false); setSnoozedOnly(false);
-    // The last view is the next session's default; a failed write only loses that preference.
-    if (snapshot?.settings.defaultSelector === next) return;
-    setSnapshot((current) => current ? { ...current, settings: { defaultSelector: next } } : current);
-    source.setDefaultSelector(next).catch(() => {});
-  }
-  function changeTab(next: FeedTab) {
-    if (next !== "history") { changeSelector(next); return; }
-    if (history && !snoozedOnly) return;
-    leaveView(); setHistory(true); setSnoozedOnly(false);
-  }
+  // A link to a card: once the feed has loaded, open that card as a tap on its agent's page would (filters cleared, the tab
+  // it lives in, scrolled into view). Not found (removed, expired, never mirrored, or another account's: all alike) is a
+  // note, but only after a network load that reached the feed: the device's earlier copy or a failed load decides nothing.
+  useEffect(() => {
+    if (!linked || !snapshot || handledVisit.current === linked.visit) return;
+    const matches = snapshot.entries.filter((candidate) => candidate.state.card.cardId.toLowerCase() === linked.cardId);
+    if (matches.length !== 1 && (!networkLoaded || snapshot.connectionError)) return;
+    handledVisit.current = linked.visit;
+    const found = matches.length === 1 ? matches[0] : undefined;
+    if (!found) { setMissedVisit(linked.visit); return; }
+    setMissedVisit(null);
+    openFromAgent(found);
+    setOutlined(lineageKey(found));
+  }, [linked, snapshot, networkLoaded]);
+  useEffect(() => {
+    if (!outlined) return;
+    const timer = setTimeout(() => setOutlined(null), 4000);
+    return () => clearTimeout(timer);
+  }, [outlined]);
   function setFilter(update: () => void) { leaveView(); update(); }
   function engage(entry: HomeFeedEntry) {
     if (keyOf(entry) !== activeKey) setActive(entry);
     const key = lineageKey(entry);
-    if (!sticky.has(key)) setSticky((current) => new Map(current).set(key, !history && attention(entry)));
+    if (!sticky.has(key)) setSticky((current) => new Map(current).set(key, attention(entry)));
   }
-  /** Opens a card in place (in the compact view) and brings it into view. */
-  function openCard(entry: HomeFeedEntry) {
+  /** Marks a card open. On a wide screen one card is lifted at a time: the others fold, except a card whose answer is counting down (kept, out of sight). */
+  function addOpen(key: string) {
+    setOpened((current) => lift ? new Set([...current].filter((other) => waits.has(other))).add(key) : withOpened(current, key));
+  }
+  /** Opens a card (in place, or lifted over the stream on a wide screen) and brings its row into view; in place, focus goes to its fold control, except from "See options", whose next stop is the first option. */
+  function openCard(entry: HomeFeedEntry, moveFocus = true) {
     engage(entry);
-    const key = lineageKey(entry);
-    setOpened((current) => new Set(current).add(key));
-    setShut((current) => { const next = new Set(current); next.delete(key); return next; });
-    scrollTo.current = keyOf(entry);
+    addOpen(lineageKey(entry));
+    scrollTo.current = { key: keyOf(entry), fold: false };
+    if (moveFocus) focusAfter.current = { key: keyOf(entry), open: true };
   }
-  function fold(entry: HomeFeedEntry) {
+  /** Closes the lifted card: the row it came from takes focus back. */
+  function closeLifted(entry: HomeFeedEntry) {
+    fold(entry);
+    // Once the stream is no longer inert.
+    window.setTimeout(() => rowElement(keyOf(entry))?.querySelector<HTMLElement>("button")?.focus(), 0);
+  }
+  function fold(entry: HomeFeedEntry, fromFoot = false) {
     const key = lineageKey(entry);
     setOpened((current) => { const next = new Set(current); next.delete(key); return next; });
-    setShut((current) => new Set(current).add(key));
+    if (fromFoot) scrollTo.current = { key: keyOf(entry), fold: true };
+    focusAfter.current = { key: keyOf(entry), open: false };
+  }
+  /** Escape in an open card folds it, as the X closes a card on a wide screen. Not while typing, and not when a control already took the key (Undo, a popover). */
+  function escapeFolds(event: KeyboardEvent<HTMLElement>) {
+    if (event.key !== "Escape" || event.defaultPrevented || event.nativeEvent.isComposing || viewMode === "expanded") return;
+    const target = event.target as HTMLElement;
+    if (target.closest("input, textarea, select, [contenteditable]")) return;
+    const key = target.closest<HTMLElement>("li[data-card-key]")?.dataset.cardKey;
+    const entry = key ? shown.find((candidate) => keyOf(candidate) === key) : undefined;
+    if (!entry || !isOpen(entry)) return;
+    event.preventDefault();
+    fold(entry);
   }
   function release(entry: HomeFeedEntry) {
     const key = lineageKey(entry);
@@ -845,15 +965,17 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
    * Takes a card away now and shows the undo bar; `commit` runs once its 5 s pass (held in the outbox from then).
    * Focus moves to the card that takes its place, else the one above.
    */
-  function takeAway(entry: HomeFeedEntry, text: string, commit: () => Promise<unknown>, undo?: () => void) {
+  function takeAway(entry: HomeFeedEntry, text: string, announce: string, commit: () => Promise<unknown>, undo?: () => void) {
     const key = lineageKey(entry);
     const index = shown.findIndex((candidate) => lineageKey(candidate) === key);
     const next = index < 0 ? undefined : shown[index + 1] ?? shown[index - 1];
+    // One wait at a time: an answer still counting is sent now (the bar flushes an earlier bar itself).
+    for (const send of [...pendingSends.current]) send();
     release(entry);
-    // Shown again later (as a row in Done today or History), it is folded; Undo puts it back as it was.
+    // Shown again later (as a row in History), it is folded; Undo puts it back as it was.
     const wasOpen = isOpen(entry);
     setOpened((current) => { const remaining = new Set(current); remaining.delete(key); return remaining; });
-    undoBar.push({ key, text, commit, undo: () => { if (wasOpen) setOpened((current) => new Set(current).add(key)); undo?.(); } });
+    undoBar.push({ key, text, announce, commit, undo: () => { if (wasOpen) setOpened((current) => withOpened(current, key)); undo?.(); } });
     if (next) requestAnimationFrame(() => document.querySelector<HTMLElement>(`[data-card-key="${CSS.escape(keyOf(next))}"] button`)?.focus());
   }
   /** The owner's card actions an agent hears about (card guide v2), written once the undo bar's count ends. */
@@ -869,11 +991,38 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
   /** Drop this card (a decision) or Acknowledge (an update): gone now, told to its agent and moved to History after the undo. */
   function closeCard(entry: HomeFeedEntry, kind: "drop" | "acknowledge") {
     const target = answeredIn(entry) ?? entry;
-    takeAway(entry, kind === "drop" ? "Dropped" : "Acknowledged", tell(target, { type: kind === "drop" ? "feed.drop" : "feed.acknowledge" }));
+    takeAway(entry, kind === "drop" ? "Dropped" : "Acknowledged", `${kind === "drop" ? "Dropping" : "Acknowledging"} this card in ${UNDO_SECONDS} seconds. ${UNDO_AVAILABLE}`, tell(target, { type: kind === "drop" ? "feed.drop" : "feed.acknowledge" }));
+  }
+  /**
+   * Acknowledge all (the Updates heading): every card goes now and one pill counts the 5 s with Undo, which brings them
+   * all back. Each card is written once, when the count ends.
+   */
+  function acknowledgeAll(list: readonly HomeFeedEntry[]) {
+    if (list.length < 2) { if (list[0]) closeCard(list[0], "acknowledge"); return; }
+    const keys = list.map(lineageKey);
+    // One wait at a time: an answer still counting is sent now (the bar flushes an earlier bar itself).
+    for (const send of [...pendingSends.current]) send();
+    for (const entry of list) release(entry);
+    const opening = list.filter(isOpen).map(lineageKey);
+    setOpened((current) => { const remaining = new Set(current); for (const key of keys) remaining.delete(key); return remaining; });
+    undoBar.push({
+      key: `acknowledge-all:${keys[0]}`, keys, text: acknowledgedPill(list.length), announce: acknowledgingAnnounce(list.length),
+      // Every write starts at once (each is held in the outbox before its first await), so a page that closes mid-way
+      // loses none; a card whose write failed comes back, the others stay acknowledged.
+      commit: async () => {
+        const results = await Promise.allSettled(list.map((entry) => tell(answeredIn(entry) ?? entry, { type: "feed.acknowledge" })()));
+        const failed = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
+        if (failed) throw failed.reason;
+      },
+      undo: () => setOpened((current) => { const restored = new Set(current); for (const key of opening) restored.add(key); return restored; }),
+    });
+    const next = shown.find((candidate) => !keys.includes(lineageKey(candidate)));
+    if (next) requestAnimationFrame(() => document.querySelector<HTMLElement>(`[data-card-key="${CSS.escape(keyOf(next))}"] button`)?.focus());
   }
   /** Ask me later / Show me later on a plain card: saved, and its agent told, once the undo has passed. */
   function askLater(entry: HomeFeedEntry, until: string) {
-    takeAway(entry, `Back at ${shortTime(until, clock)}`, async () => {
+    const time = shortTime(until, clock);
+    takeAway(entry, `Back at ${time}`, `Snoozing this card until ${time} in ${UNDO_SECONDS} seconds. ${UNDO_AVAILABLE}`, async () => {
       await source.snooze(entry, until);
       setSnapshot((current) => updateSnapshotEntry(current, keyOf(entry), (candidate) => ({ ...candidate, view: { ...candidate.view, snoozedUntil: until } })));
       await tell(entry, { type: "feed.snooze", until })();
@@ -881,7 +1030,8 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
   }
   /** A typed card's Ask me later saves its private snooze itself; the bar offers Undo, then tells the agent. */
   function snoozedTyped(entry: HomeFeedEntry, until: string) {
-    takeAway(entry, `Back at ${shortTime(until, clock)}`, tell(entry, { type: "feed.snooze", until }), () => void unsnooze(entry));
+    const time = shortTime(until, clock);
+    takeAway(entry, `Back at ${time}`, `Snoozing this card until ${time} in ${UNDO_SECONDS} seconds. ${UNDO_AVAILABLE}`, tell(entry, { type: "feed.snooze", until }), () => void unsnooze(entry));
   }
   /** Brings a snoozed card back now (the bar's Undo, or "Bring back now" from the Snoozed list). */
   async function unsnooze(entry: HomeFeedEntry) {
@@ -916,7 +1066,20 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     const seenAt = entry.view.seenAt;
     return { count: theirs.length, unread: theirs.filter((line) => !seenAt || line.at > seenAt).length, from: entry.source.label };
   }
-  /** A card's one or two lines: what was chosen once it is answered, else its summary or body. */
+  /** How many options a folded card that still needs an answer offers: its record's, else its plain choices. 0: none to show. */
+  function optionCountOf(entry: HomeFeedEntry): number {
+    if (!attention(entry) || closureOf(entry)) return 0;
+    const record = contextFor(entry)?.record;
+    if (record) return record.kind === "ask" ? record.options.length : 0;
+    return isTypedPayload(entry) ? 0 : entry.state.card.choices?.length ?? 0;
+  }
+  /** The card's post: its record's, else the summary a plain card carries. Absent when the agent wrote none. */
+  function postOf(entry: HomeFeedEntry): string | undefined {
+    const record = parseSitrepCardPayload(entry.state.card.payload?.sitrep)?.record;
+    const summary = entry.state.card.payload?.summary;
+    return record?.post?.trim() || (typeof summary === "string" && summary.trim() ? summary : undefined);
+  }
+  /** A card's own line: what was chosen once it is answered, when it comes back, else its post, else (a ship card) what moved, else its title. */
   function describe(entry: HomeFeedEntry) {
     const until = entry.view.snoozedUntil;
     if (until && Date.parse(until) > clock) return `Back at ${shortTime(until, clock)}`;
@@ -926,12 +1089,17 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
       if (label) return `You chose ${optionText(label)}`;
       if (response.text) return `You answered “${response.text}”`;
     }
-    if (typeof entry.state.card.payload?.summary === "string") return entry.state.card.payload.summary;
+    const post = postOf(entry);
+    if (post) return post;
     const record = parseSitrepCardPayload(entry.state.card.payload?.sitrep)?.record;
-    return (record && cardLead(record)) ?? entry.state.card.body;
+    return (record && cardLead(record)) ?? entry.state.card.title;
   }
   const dueOf = (entry: HomeFeedEntry) => { const deadline = timingOf(entry).deadline; return deadline && attention(entry) ? deadline : undefined; };
-  /** A card as a short item (compact view): its agent, title, short description and where it stands. Tap opens it. */
+  /**
+   * A card as a folded row: its post, cut at four lines, or its title when the agent wrote none. Where the card has
+   * something more to say about where it stands (answered, snoozed, what a ship moved) that is `note`, one line under it.
+   * Its marks (status, priority, replies, due) sit at the row's end. Tap opens it.
+   */
   function compactCard(entry: HomeFeedEntry) {
     const context = contextFor(entry);
     const author = cardAuthor(entry, context?.record).name;
@@ -941,8 +1109,11 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     const status = statusOf(entry, author);
     const type = parseCardType(entry.state.card.payload?.type);
     const courier = courierMessage(entry.source, entry.state.card.payload);
-    return <CompactCard layout={viewMode === "cards" ? "tile" : "row"} agentKey={agentKey(entry, context?.record)} author={author} platform={agentProfile(entry.state.card.payload)?.platform} createdAt={entry.state.card.createdAt}
-      title={entry.state.card.title} description={describe(entry)} now={clock} onOpen={() => openCard(entry)}
+    const text = postOf(entry) ?? entry.state.card.title;
+    const line = describe(entry);
+    return <CompactCard layout={viewMode === "cards" ? "tile" : "row"} agentKey={agentKey(entry, context?.record)} author={author} platform={agentProfile(entry.state.card.payload)?.platform}
+      text={text} now={clock} onOpen={() => openCard(entry)} controls={openCardId(lineageKey(entry))}
+      {...(line !== text ? { note: line } : {})}
       {...(priority !== undefined ? { priority } : {})} {...(replies ? { replies } : {})} {...(status ? { status } : {})} {...(due ? { due } : {})}
       {...(type ? { type } : {})} {...(courier ? { courier: { ...courier, via: author } } : {})} />;
   }
@@ -956,7 +1127,7 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
       {...(agentProfile(entry.state.card.payload)?.platform ? { platform: agentProfile(entry.state.card.payload)!.platform } : {})} {...(status ? { status } : {})} />;
   }
   /** A card open: its header, body, brief, answers, conversation and foot, with the page's refusal lines. */
-  function fullCard(entry: HomeFeedEntry, retained = false) {
+  function fullCard(entry: HomeFeedEntry, retained = false, lifted = false) {
     const key = lineageKey(entry);
     const held = heldOutcomes.get(JSON.stringify([entry.source.sourceId, entry.state.card.cardId]));
     const unsent = held && (held.outcome === "replaced" || held.outcome === "closed" || held.outcome === "refused") ? held : undefined;
@@ -972,17 +1143,21 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     const author = cardAuthor(entry, context?.record);
     const reference = <Reference title={homeFeedKey(entry)}>{humanFeedReference(entry, entries)}</Reference>;
     const brief = briefOf(entry.state.card.payload);
+    const post = postOf(entry);
     const priority = timingOf(entry).priority;
     const closed = !!closureOf(entry);
-    // Open in place: fold it back to a row from the top right, beside its status. In Expanded every card is open, so there is nothing to fold to.
-    const collapse = viewMode === "expanded" ? undefined : <button type="button" aria-expanded aria-label="Show less" onClick={() => fold(entry)} className="-my-1 flex size-11 items-center justify-center rounded-full text-muted-foreground hover:bg-surface-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring fine:my-0 fine:size-9"><ChevronRightIcon aria-hidden className="size-4 -rotate-90" /></button>;
+    // Open in place: fold it back to a row from the top right, beside its status. In Expanded every card is open, so there is nothing to fold to. Lifted over the stream, the same place holds the X.
+    const collapse = lifted ? <DesktopCardClose onClick={() => closeLifted(entry)} /> : viewMode === "expanded" ? undefined : <button type="button" data-card-fold aria-expanded aria-label="Show less" onClick={() => fold(entry)} className="-my-1 flex size-11 items-center justify-center rounded-full text-muted-foreground hover:bg-surface-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring fine:my-0 fine:size-9"><ChevronRightIcon aria-hidden className="size-4 -rotate-90" /></button>;
     const wake = snoozedNow(entry, clock) ? <button type="button" onClick={() => void unsnooze(entry)} className={footActionClass}>Bring back now</button> : undefined;
     const status = statusOf(entry, author.name);
+    const options = retained || lifted || viewMode === "expanded" ? 0 : optionCountOf(entry);
     // Any touch or focus inside an open card engages it, in every view: a card being answered stays bound to its exact
     // issuance (retained in place when a changed revision arrives mid-countdown, so the countdown is refused, never
     // written to the old identity).
-    return <div className="min-w-0 [container-type:inline-size]" onPointerDownCapture={() => engage(entry)} onFocusCapture={() => engage(entry)}><HomeCardView card={cardView(entry, context)} sample={false} readBody={source.readBody} agent={{ key: agentKey(entry, context?.record), profile: agentProfile(entry.state.card.payload) }}
+    return <CardWaitContext.Provider value={waitFor(key, author.name)}><div className="min-w-0 [container-type:inline-size]" onPointerDownCapture={() => engage(entry)} onFocusCapture={() => engage(entry)}><HomeCardView card={cardView(entry, context)} sample={false} readBody={source.readBody} agent={{ key: agentKey(entry, context?.record), profile: agentProfile(entry.state.card.payload) }}
       {...(unsupported ? {} : { onAuthor: () => { leaveView(); setAgentPage(agentKey(entry, context?.record)); mainRef.current?.scrollTo({ top: 0 }); } })}
+      {...(post ? { post } : {})}
+      {...(options > 0 ? { afterPost: <OptionsToggle count={options} post={postOf(entry) ?? entry.state.card.title} open controls={openCardId(key)} onToggle={() => fold(entry)} /> } : {})}
       {...(status ? { status } : {})} collapse={collapse} inline>
       {retained && <div role={refusedLabel ? "alert" : "status"} className="mt-3 flex flex-wrap items-center gap-x-3 text-[13px] text-muted-foreground"><span>{refusedLabel
         ? <SeenAfterUndo onSeen={seenUnsent}><NotSent label={refusedLabel} changed={refused.has(key) || unsent?.outcome !== "closed"} {...wordsOf(refusedLabel)} /></SeenAfterUndo>
@@ -996,8 +1171,8 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
       {context
         ? <SitrepCard key={key} entry={entry} record={context.record} records={context.records} entries={context.entries} owner={context.owner} projection={context.projection} source={source} now={clock} expanded stale={retained} reference={reference}
           onRefused={onRefused} onSaved={onSaved} onOwnerSaved={() => refreshRef.current()} onSnoozed={(until) => snoozedTyped(entry, until)}
-          onNavigate={(next) => { engage(next); setOpened((current) => new Set(current).add(lineageKey(next))); }}
-          {...(attention(entry) && !retained ? { close: { kind: "drop" as const, onTap: () => closeCard(entry, "drop") } } : {})} {...(wake ? { extra: wake } : {})} />
+          onNavigate={(next) => openCard(next)}
+          {...(attention(entry) && !retained ? { close: { kind: "drop" as const, onTap: () => closeCard(entry, "drop") } } : canAcknowledge(entry, retained) ? { close: { kind: "acknowledge" as const, onTap: () => closeCard(entry, "acknowledge") } } : {})} {...(wake ? { extra: wake } : {})} />
         : unsupported
           ? <><p role="status" className="mt-3.5 text-sm text-muted-foreground">Open Details to see this card's content, exactly as {author.name} sent it.</p>
             <div className="mt-3 border-t border-border pt-2"><CardDetails card={entry.state.card} typed={{}} agent={author.name} publisher={entry.source}>
@@ -1006,7 +1181,9 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
           : <AnswerForm key={key} drafts={ownDrafts.current} draftKey={key} entry={entry} answered={answeredIn(entry)} onRefused={onRefused} revisions={revisionsOf(entry).filter((candidate) => keyOf(candidate) !== keyOf(entry))} source={source} now={clock}
             attention={attention(entry)} closed={closed} stale={retained} reference={reference} onSaved={onSaved} {...(priority !== undefined ? { priority } : {})}
             foot={{ onClose: (kind) => closeCard(entry, kind), onLater: (until) => askLater(entry, until), ...(wake ? { wake } : {}) }} />}
-    </HomeCardView></div>;
+      {/* The foot of a long card: fold it from where reading stopped. */}
+      {collapse && !retained && single && <button type="button" aria-expanded aria-label="Show less" onClick={() => fold(entry, true)} className={`${footActionClass} mt-3 -ml-1.5`}>Show less</button>}
+    </HomeCardView></div></CardWaitContext.Provider>;
   }
   /** A card in the list: a row, or open in place (Needs you's first card is open). A post is a row opening its page. */
   const cardItem = (entry: HomeFeedEntry, retained = false) => {
@@ -1015,10 +1192,20 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     // Each card morphs between a row and its open shape as one item: its box moves and resizes while its content
     // crossfades (densityMorph.tsx).
     // Expanded shows every card open (a post keeps its row: it opens a page of its own).
-    const openHere = isOpen(entry) || retained || (viewMode === "expanded" && !page);
+    // A wide screen lifts the card over the stream instead; its row stays where it is (a card kept in place for a newer version stays open in its row).
+    const openHere = (isOpen(entry) && !lift) || retained || (viewMode === "expanded" && !page);
+    const waiting = waits.has(key);
     const boxed = viewMode === "cards" || viewMode === "expanded";
-    return <MorphItem key={key} contentKey={page ? "post" : openHere ? "full" : "compact"} data-card-key={keyOf(entry)} className={`min-w-0 scroll-mt-4${boxed ? ` rounded-2xl border border-border bg-card${viewMode === "cards" && openHere ? " col-span-full" : ""}` : ""}`}>
-      {page ? postCard(entry) : openHere ? fullCard(entry, retained) : compactCard(entry)}
+    // "See N options" is a second opener of the same card (the mock's): it opens the card in place, as tapping the post does.
+    const options = page || openHere || viewMode === "expanded" ? 0 : optionCountOf(entry);
+    return <MorphItem key={key} hidden={waiting} contentKey={page ? "post" : openHere ? "full" : "compact"} data-card-key={keyOf(entry)} {...(focusing && !openHere ? { "data-dim": "" } : {})} className={`min-w-0 scroll-mt-4${single ? ` ${FOCUS_DIM_CLASS}` : ""}${single && openHere && !page ? ` ${OPEN_STAGGER_CLASS}` : ""}${outlined === key ? " shadow-[inset_0_0_0_2px_hsl(var(--ring))]" : ""}${boxed ? ` rounded-2xl border border-border bg-card${viewMode === "cards" && openHere ? " col-span-full" : ""}` : ""}`}>
+      {page ? postCard(entry) : openHere
+        // Hidden, not removed, while its answer waits: the card keeps its place and its props, so the wait can still be refused or sent.
+        ? <div id={openCardId(key)} hidden={waiting} inert={waiting}>{fullCard(entry, retained)}</div>
+        : <>
+          {compactCard(entry)}
+          {options > 0 && <OptionsToggle inset count={options} post={postOf(entry) ?? entry.state.card.title} open={false} controls={openCardId(key)} onToggle={() => openCard(entry, false)} />}
+        </>}
       {/* The Snoozed list: each card can come back now without opening it. */}
       {snoozedOnly && !openHere && snoozedNow(entry, clock) && <div className="flex justify-end px-2 pb-2"><button type="button" onClick={() => void unsnooze(entry)} className={footActionClass}>Bring back now</button></div>}
     </MorphItem>;
@@ -1030,7 +1217,7 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
     let run: ReactNode[] = [];
     const flush = () => {
       if (!run.length) return;
-      out.push(<li key={`rows-${out.length}`} className="min-w-0"><ul className={viewMode === "cards" ? "grid grid-cols-1 gap-2 min-[560px]:grid-cols-2" : viewMode === "expanded" ? "space-y-3" : "divide-y divide-border overflow-hidden rounded-2xl border border-border bg-card"}>{run}</ul></li>);
+      out.push(<li key={`rows-${out.length}`} className="min-w-0"><ul className={viewMode === "cards" ? "grid grid-cols-1 gap-2 min-[560px]:grid-cols-2" : viewMode === "expanded" ? "space-y-3" : "-mx-3 divide-y divide-border border-y border-border bg-card sm:-mx-6 lg:-mx-8"}>{run}</ul></li>);
       run = [];
     };
     for (const row of list) {
@@ -1074,17 +1261,62 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
   const unreadReplies = (snapshot?.entries ?? []).some((entry) => (repliesOf(entry)?.unread ?? 0) > 0);
   const pageEntry = pageKey ? all.find((entry) => lineageKey(entry) === pageKey && !all.some((other) => other !== entry && other.state.card.revision > entry.state.card.revision && lineageKey(other) === pageKey)) : undefined;
   const pageOpen = pageEntry && labPageOf(pageEntry);
+  // Cards lifted over the stream (a wide screen): one at a time shows, the rest wait out an answer's countdown, mounted and hidden.
+  const retainedKeys = new Set(rows.flatMap((row) => row.kind === "card" && row.retained ? [lineageKey(row.item)] : []));
+  const liftedCards = lift ? [...new Map(shown.filter((entry) => isOpen(entry) && !labPageOf(entry) && !retainedKeys.has(lineageKey(entry))).map((entry) => [lineageKey(entry), entry] as const)).values()] : [];
+  const liftedShown = liftedCards.find((entry) => !waits.has(lineageKey(entry)));
+  // The one place a wait shows: bars (Drop, Acknowledge, later), then an answer waiting or being written, then each send that landed.
+  const pills: PillItem[] = [
+    ...undoBar.pills,
+    ...[...waits.entries()].map(([key, wait]): PillItem => {
+      const drop = wait.label === DROP_LABEL;
+      if (wait.seconds === null) return { id: `wait:${key}`, text: SENDING_COPY, status: SENDING_COPY };
+      return { id: `wait:${key}`, text: drop ? "Dropped" : `${wait.label.charAt(0).toUpperCase()}${wait.label.slice(1)}`, seconds: wait.seconds, onUndo: wait.undo, focus: true,
+        status: `${drop ? "Dropping this card" : `Sending ${wait.label}`} in ${UNDO_SECONDS} seconds. ${UNDO_AVAILABLE}` };
+    }),
+    ...sentTo.map((line): PillItem => ({ id: `sent:${line.id}`, text: `Sent to ${line.agent}`, status: `Sent to ${line.agent}.`, done: true })),
+  ];
   const clearFilters = () => setFilter(() => { setAgent(""); setKind(""); setTaskType(""); setProject(""); setPriorityMax(""); setSortBy(""); setSnoozedOnly(false); });
-  // While undo bars show, the scroll container itself grows at its end by their height, their offset from the bottom
-  // edge and the safe-area inset, so its last cards can scroll clear of them (Clarissa, 75eebec).
-  return <PendingSendContext.Provider value={pendingSends.current}><MotionFeatures><main ref={mainRef} className="h-full min-w-0 overflow-x-hidden overflow-y-auto overscroll-y-contain bg-background text-foreground [overflow-anchor:none]" aria-label={NAV_LABEL_HOME}
-    style={undoBar.height ? { paddingBottom: `calc(${undoBar.height + 32}px + env(safe-area-inset-bottom))` } : undefined}>
-    <div className="mx-auto w-full max-w-[672px] min-w-0 px-3 pb-[calc(var(--tc-bottom-chrome)+2rem)] pt-5 sm:px-6 lg:max-w-[760px] lg:px-8 lg:pt-10" inert={!!pageEntry}>
+  // The island's tap: the section's heading comes up under the pinned row.
+  function goToSection(next: StreamSection) {
+    const root = mainRef.current;
+    const node = root?.querySelector<HTMLElement>(`[data-stream="${next}"]`);
+    if (!root || !node) return;
+    setSection(next);
+    const top = root.scrollTop + node.getBoundingClientRect().top - root.getBoundingClientRect().top - STREAM_STICKY_TOP;
+    root.scrollTo({ top, behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+  }
+  // Scrolling moves the island's highlight to the last section whose top has come up under the pinned row.
+  useEffect(() => {
+    const root = mainRef.current;
+    if (!root) return;
+    const sync = () => {
+      const line = root.getBoundingClientRect().top + STREAM_STICKY_TOP + 8;
+      let current: StreamSection = "needs";
+      for (const node of root.querySelectorAll<HTMLElement>("[data-stream]")) if (node.getBoundingClientRect().top <= line) current = node.dataset.stream as StreamSection;
+      setSection(current);
+    };
+    sync();
+    root.addEventListener("scroll", sync, { passive: true });
+    return () => root.removeEventListener("scroll", sync);
+  }, [listed.length, snoozedOnly]);
+  const sectionNode = ([id, heading, list]: StreamPart) => {
+    if (!list.length && !(id === "needs" && listed.length)) return null;
+    return <section key={id || "cards"} data-stream={id || undefined} aria-label={heading || "Snoozed"}>
+      {id === "updates" && !!acknowledgeable.length && <div className="sticky top-[55px] z-[6] h-0">
+        <button type="button" aria-label={acknowledgeAllLabel(acknowledgeable.length)} onClick={() => acknowledgeAll(acknowledgeable)} className="absolute -top-1.5 right-1 inline-flex min-h-11 items-center rounded-full px-3 text-[13px] font-medium text-foreground transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring fine:min-h-9 fine:top-0">{ACKNOWLEDGE_ALL}</button>
+      </div>}
+      {heading && <h2 className={id === "updates" && acknowledgeable.length ? `${STREAM_HEADING_CLASS} !justify-start gap-2` : STREAM_HEADING_CLASS}><span>{heading}</span><span className="tabular-nums">{countOf(list)}</span></h2>}
+      {list.length ? <ul className="space-y-2">{renderList(list)}</ul> : <p className="px-1 py-1 text-[15px] text-muted-foreground">Nothing needs you.</p>}
+    </section>;
+  };
+  return <PendingSendContext.Provider value={pendingSends.current}><MotionFeatures><main ref={mainRef} className="h-full min-w-0 overflow-x-hidden overflow-y-auto overscroll-y-contain bg-background text-foreground [overflow-anchor:none]" aria-label={NAV_LABEL_HOME} onKeyDown={escapeFolds}>
+    <div className="mx-auto w-full max-w-[672px] min-w-0 px-3 pb-[calc(var(--tc-bottom-chrome)+2rem)] pt-5 sm:px-6 lg:max-w-[760px] lg:px-8 lg:pt-10">
     <MorphConfig>
-      {/* Sam, 11-13: one header for every state, phone and desktop (briefs/feed-lab/design/toprow). "Home" with the
-          Agents pill on its line, the summary, then one row: Needs you · All · History, and the Filter icon. Scrolled,
-          the row stays at the top over the cards; the title comes back on scroll up. */}
-      <FloatingHeader scrollRef={mainRef} className="-mx-3 mb-3 px-3 pb-2 pt-2 sm:-mx-6 sm:px-6 lg:-mx-8 lg:px-8">
+      {/* One header for every state, phone and desktop (briefs/feed-lab/design/toprow). "Feed" with the Agents pill on
+          its line, the summary, then one row: the island (Needs you · Updates · History, the stream's map) and the
+          Filter icon. Scrolled, the row stays at the top over the cards; the title comes back on scroll up. */}
+      <FloatingHeader scrollRef={mainRef} inert={!!pageEntry || !!liftedShown} className="-mx-3 mb-3 px-3 pb-2 pt-2 sm:-mx-6 sm:px-6 lg:-mx-8 lg:px-8">
         <header ref={headerRef} className="scroll-mt-4">
           <div className="flex min-w-0 items-center gap-2">
             <h1 className="min-w-0 flex-1 font-display text-[min(1.75rem,9vw)] font-semibold leading-[2.125rem] tracking-[-0.005em]">{NAV_LABEL_HOME}</h1>
@@ -1102,23 +1334,30 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
           setPanel(null);
           filterButton.current?.focus();
         }}>
-          <FeedTabs className="min-w-0 flex-1" value={tab} needs={needsCount} onValueChange={changeTab} />
+          <FeedMap className="min-w-0 flex-1" value={section} needs={needsCount} updates={countOf(updateRows)} onSelect={goToSection}
+            present={{ needs: !snoozedOnly, updates: !snoozedOnly && !!updateRows.length, history: !!historyRows.length }} />
           <button ref={filterButton} type="button" aria-expanded={panel === "filter"} aria-controls="home-feed-filters" aria-label={filtersOn ? `Filter, ${filtersOn} on` : undefined} onClick={() => setPanel(panel === "filter" ? null : "filter")}
             className={`relative flex size-11 shrink-0 items-center justify-center rounded-full border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${filtersOn ? "border-foreground bg-foreground/[.06]" : "border-border"}`}>
             <SlidersHorizontalIcon aria-hidden className="size-5" /><span className="sr-only">Filter</span>
             {!!filtersOn && <span aria-hidden className="absolute -right-1 -top-1 inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-foreground px-1 text-[11px] font-bold text-background ring-2 ring-background">{filtersOn}</span>}
           </button>
-          {/* Sam, 11-13: the dropdowns on top; Snoozed and Clear under them (History is a tab). */}
+          {/* The dropdowns on top; Snoozed and Clear under them. */}
           {panel === "filter" && <LazyFilterPanel agents={agents} agent={agent} kinds={kinds} kind={kind} taskTypes={taskTypes} taskType={taskType} setTaskType={setTaskType} projects={projects} project={project}
             priorityMax={priorityMax} sortBy={sortBy} snoozedOnly={snoozedOnly} filtersOn={filtersOn} setFilter={setFilter}
             setAgent={setAgent} setKind={setKind} setProject={setProject} setPriorityMax={setPriorityMax} setSortBy={setSortBy}
-            setSnoozedOnly={setSnoozedOnly} setHistory={setHistory} clearFilters={clearFilters} viewMode={viewMode} setViewMode={setViewMode} />}
+            setSnoozedOnly={setSnoozedOnly} clearFilters={clearFilters} viewMode={viewMode} setViewMode={setViewMode} />}
         </div>}
       </FloatingHeader>
+      <SendPills items={pills} />
+      <div inert={!!pageEntry || !!liftedShown}>
       {showHidden && ask}
       {error && <div role="alert" className="mb-4 flex items-start gap-3 rounded-2xl bg-card px-4 py-3 text-sm leading-[1.45] shadow-[inset_0_0_0_1px_hsl(var(--border))]">
         <TriangleAlertIcon aria-hidden className="mt-px size-5 shrink-0 text-warning" />
         <div className="min-w-0"><p><b className="font-semibold">{error.lead}</b> {error.text}</p><button type="button" onClick={() => refreshRef.current()} className="mt-2 min-h-11 underline">Try again</button></div>
+      </div>}
+      {linked && missedVisit === linked.visit && <div role="status" className="mb-4 flex items-start gap-3 rounded-2xl bg-card px-4 py-3 text-sm leading-[1.45] shadow-[inset_0_0_0_1px_hsl(var(--border))]">
+        <InfoIcon aria-hidden className="mt-px size-5 shrink-0 text-muted-foreground" />
+        <div className="min-w-0"><p><b className="font-semibold">{FEED_CARD_LINK_COPY.missingLead}</b> {FEED_CARD_LINK_COPY.missingRest}</p><button type="button" onClick={linked.dismiss} className="mt-2 min-h-11 underline">{FEED_CARD_LINK_COPY.dismiss}</button></div>
       </div>}
       {[...lostAnswers.entries()].map(([lostKey, lost]) => {
         const words = !lost.choiceLabel && lost.text ? quotedWords(lost.text) : undefined;
@@ -1146,28 +1385,33 @@ export function HomeFeedEntries({ source, ask }: { source: HomeFeedSource; ask?:
           <p className="mt-2 max-w-[60ch] text-base leading-[1.5]">{HOME_EMPTY_BODY}</p>
           <Link to={PATHS.chat} className={primaryPillClass}>{HOME_EMPTY_CHAT}</Link>
           <AgentPrompt copyButton={({ onClick, children }) => <button type="button" className={primaryPillClass} onClick={onClick}>{children}</button>}
-            aside={<a href={FEED_SKILL_URL} target="_blank" rel="noopener noreferrer" className={quietClass}>{HOME_EMPTY_HOW}</a>} />
+            aside={<FeedLink href={FEED_SKILL_URL} className={quietClass}>{HOME_EMPTY_HOW}</FeedLink>} />
         </section>
         : <div className="mb-4 rounded-[20px] px-[18px] py-4 text-[15px] text-muted-foreground shadow-[inset_0_0_0_1px_hsl(var(--border))]">
-          <p>{snoozedOnly ? "No snoozed cards." : history ? "Nothing answered or snoozed yet." : filtersOn ? "No cards match this filter." : view === "needs-action" ? "Nothing needs you." : "No cards yet."}</p>
+          <p>{snoozedOnly ? "No snoozed cards." : filtersOn ? "No cards match this filter." : "Nothing needs you."}</p>
           {!!filtersOn && <button type="button" className="mt-2 inline-flex min-h-11 items-center rounded-xl border border-border px-3 text-sm text-foreground" onClick={clearFilters}>Clear filter</button>}
         </div>)}
-      {agentPage === null && !!listed.length && <div className="mb-4 space-y-6">
-        {sections.map(([heading, list]) => !!list.length && <section key={heading || "cards"} aria-label={heading || (history ? "History" : snoozedOnly ? "Snoozed" : "Cards")}>
-          {heading && <h2 className="mb-2 flex items-baseline justify-between px-1 text-label font-semibold uppercase tracking-[0.06em] text-muted-foreground"><span>{heading}</span><span className="tabular-nums">{list.reduce((count, row) => count + (row.kind === "card" ? 1 : row.items.length), 0)}</span></h2>}
-          <ul className="space-y-2">{renderList(list)}</ul>
-        </section>)}
+      {agentPage === null && (!!listed.length || !!pendingEntries.length) && <div className="mb-4 space-y-6">
+        {sections.filter(([id]) => id !== "history").map(sectionNode)}
+        {!!pendingEntries.length && <PendingCard items={pendingEntries.map((entry): PendingItem => {
+          const record = contextFor(entry)?.record;
+          const author = cardAuthor(entry, record).name;
+          const status = pendingStatus(entry)!;
+          const post = postOf(entry);
+          return { key: keyOf(entry), agentKey: agentKey(entry, record), author, title: entry.state.card.title, status, detail: describe(entry), at: (answeredIn(entry) ?? entry).state.response?.createdAt ?? entry.state.card.createdAt,
+            ...(post ? { post } : {}), ...(waits.has(lineageKey(entry)) ? { waiting: true } : {}),
+            onOpen: () => openCard(entry), ...(opened.has(lineageKey(entry)) && !lift ? { open: fullCard(entry) } : {}), ...(focusing && !opened.has(lineageKey(entry)) ? { dimmed: true } : {}),
+            ...(status.startsWith("Waiting") ? {} : { onAcknowledge: () => closeCard(entry, "acknowledge") }) };
+        })} />}
+        {sections.filter(([id]) => id === "history").map(sectionNode)}
       </div>}
-      {agentPage === null && !!pendingEntries.length && <div className="mb-4"><PendingCard expanded={pendingOpen} onToggle={() => setPendingOpen(!pendingOpen)} items={pendingEntries.map((entry): PendingItem => {
-        const record = contextFor(entry)?.record;
-        const author = cardAuthor(entry, record).name;
-        const status = pendingStatus(entry)!;
-        return { key: keyOf(entry), agentKey: agentKey(entry, record), author, title: entry.state.card.title, status, detail: describe(entry), at: (answeredIn(entry) ?? entry).state.response?.createdAt ?? entry.state.card.createdAt,
-          onOpen: () => openCard(entry), ...(opened.has(lineageKey(entry)) ? { open: fullCard(entry) } : {}),
-          ...(status.startsWith("Waiting") ? {} : { onAcknowledge: () => closeCard(entry, "acknowledge") }) };
-      })} /></div>}
+      {/* Room under the stream, so the last section can still come up under the pinned row. */}
+      {agentPage === null && !!listed.length && <div aria-hidden className={STREAM_ROOM_CLASS} />}
+      </div>
+      <AnimatePresence>
+        {liftedCards.map((entry) => <DesktopCard key={lineageKey(entry)} id={openCardId(lineageKey(entry))} rowKey={keyOf(entry)} label={entry.state.card.title} open={entry === liftedShown} onClose={() => closeLifted(entry)}>{fullCard(entry, false, true)}</DesktopCard>)}
+      </AnimatePresence>
     </MorphConfig>
-    {undoBar.bar}
     </div>
     {pageEntry && pageOpen && (() => {
       const author = cardAuthor(pageEntry).name;

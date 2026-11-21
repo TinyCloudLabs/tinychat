@@ -163,7 +163,7 @@ describe("Connectors entry card", () => {
       />,
     );
     expect(html).not.toContain("Checking");
-    expect(html).toContain('class="ms-entry-sub">Fireflies, Google Meet and Granola</span>');
+    expect(html).toContain('class="ms-entry-sub">Fireflies and Google Meet</span>');
     expect(html).toContain("<span>Meeting sources</span>");
   });
 });

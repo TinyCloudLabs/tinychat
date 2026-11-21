@@ -13,6 +13,7 @@ import * as Dialog from "@radix-ui/react-dialog";
 import { XIcon } from "lucide-react";
 import { briefPage, MAX_MARKDOWN, type Brief } from "./brief";
 import { BriefMarkdown } from "./BriefMarkdown";
+import { FeedLink } from "./FeedLink";
 
 // A brief page is read only this far, and only for this long; the rest is cancelled unread (Bobbie's review, #680).
 const MAX_PAGE_BYTES = 1_000_000;
@@ -53,8 +54,9 @@ async function readBriefPage(href: string, signal: AbortSignal): Promise<string>
 function Unavailable({ href }: { href?: string }) {
   return <div className="space-y-3 text-callout text-muted-foreground">
     <p>This brief couldn’t be opened.</p>
-    {/* The one way out of the app: only when the page itself could not be read here. */}
-    {href && <a href={href} target="_blank" rel="noopener noreferrer" className="inline-flex min-h-11 items-center rounded-lg border border-border px-3 text-foreground transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring fine:min-h-10">Open it in a new tab</a>}
+    {/* The one way out of the app: only when the page itself could not be read here. A brief page is on this app's
+        own origin, so FeedLink leaves it a new-tab link. */}
+    {href && <FeedLink href={href} className="inline-flex min-h-11 items-center rounded-lg border border-border px-3 text-foreground transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring fine:min-h-10">Open it in a new tab</FeedLink>}
   </div>;
 }
 

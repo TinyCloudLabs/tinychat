@@ -1,0 +1,636 @@
+{
+  "_about": "Captured on main 3063850e (web-sdk 3.12.0-beta.26) by the flows in sessionGrants.sdk.test.tsx, at https://tinycloud.chat with the anvil #1 test key: the SIWE each flow asks the wallet to sign (per-run lines masked) and the decoded ReCap the resulting session holds. Production today. Details: TC-3030",
+  "signInBase": {
+    "consent": "tinycloud.chat wants you to sign in with your Ethereum account:\n0x70997970C51812dc3A010C7d01b50e0d17dc79C8\n\nI further authorize the stated URI to perform the following actions on my behalf: (1) 'tinycloud.capabilities': 'read' for 'tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/capabilities'. (2) 'tinycloud.hooks': 'subscribe' for 'tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/hooks/sql/xyz.tinycloud.tinychat/feed/'. (3) 'tinycloud.hooks': 'subscribe' for 'tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/hooks/sql/xyz.tinycloud.tinychat/home_feed'. (4) 'tinycloud.hooks': 'subscribe' for 'tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/hooks/sql/xyz.tinycloud.tinychat/threads'. (5) 'tinycloud.kv': 'del', 'get', 'list', 'metadata', 'put' for 'tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/kv'. (6) 'tinycloud.kv': 'del', 'get', 'list', 'put' for 'tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/kv/xyz.tinycloud.tinychat/connectors/'. (7) 'tinycloud.kv': 'del', 'get', 'put' for 'tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/kv/xyz.tinycloud.tinychat/exo/v1/jobs/'. (8) 'tinycloud.kv': 'del', 'get', 'list' for 'tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/kv/xyz.tinycloud.tinychat/exo/v1/requests/'. (9) 'tinycloud.kv': 'del', 'get', 'list', 'put' for 'tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/kv/xyz.tinycloud.tinychat/threads/'. (10) 'tinycloud.space': 'info' for 'tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/space'. (11) 'tinycloud.sql': 'read', 'schema', 'write' for 'tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.sample.healthlog/healthlog'. (12) 'tinycloud.sql': 'read', 'schema', 'write' for 'tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.sample.recipes/recipes'. (13) 'tinycloud.sql': 'read', 'schema', 'write' for 'tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.tinychat/canvas'. (14) 'tinycloud.sql': 'read', 'schema', 'write' for 'tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.tinychat/connectors'. (15) 'tinycloud.sql': 'read', 'schema', 'write' for 'tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.tinychat/details'. (16) 'tinycloud.sql': 'read', 'schema', 'write' for 'tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.tinychat/feed/'. (17) 'tinycloud.sql': 'read', 'schema', 'write' for 'tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.tinychat/home_feed'. (18) 'tinycloud.sql': 'read', 'schema', 'write' for 'tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.tinychat/summaries'. (19) 'tinycloud.sql': 'read', 'schema', 'write' for 'tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.tinychat/threads'. (20) 'tinycloud.sql': 'read', 'schema', 'write' for 'tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.tinychat/transcripts'.\n\nURI: <masked>\nVersion: 1\nChain ID: 1\nNonce: <masked>\nIssued At: <masked>\nExpiration Time: <masked>\nResources:\n- urn:recap:eyJhdHQiOnsidGlueWNsb3VkOnBraDplaXAxNTU6MToweDcwOTk3OTcwQzUxODEyZGMzQTAxMEM3ZDAxYjUwZTBkMTdkYzc5Qzg6YXBwbGljYXRpb25zL2NhcGFiaWxpdGllcyI6eyJ0aW55Y2xvdWQuY2FwYWJpbGl0aWVzL3JlYWQiOlt7fV19LCJ0aW55Y2xvdWQ6cGtoOmVpcDE1NToxOjB4NzA5OTc5NzBDNTE4MTJkYzNBMDEwQzdkMDFiNTBlMGQxN2RjNzlDODphcHBsaWNhdGlvbnMvaG9va3Mvc3FsL3h5ei50aW55Y2xvdWQudGlueWNoYXQvZmVlZC8iOnsidGlueWNsb3VkLmhvb2tzL3N1YnNjcmliZSI6W3t9XX0sInRpbnljbG91ZDpwa2g6ZWlwMTU1OjE6MHg3MDk5Nzk3MEM1MTgxMmRjM0EwMTBDN2QwMWI1MGUwZDE3ZGM3OUM4OmFwcGxpY2F0aW9ucy9ob29rcy9zcWwveHl6LnRpbnljbG91ZC50aW55Y2hhdC9ob21lX2ZlZWQiOnsidGlueWNsb3VkLmhvb2tzL3N1YnNjcmliZSI6W3t9XX0sInRpbnljbG91ZDpwa2g6ZWlwMTU1OjE6MHg3MDk5Nzk3MEM1MTgxMmRjM0EwMTBDN2QwMWI1MGUwZDE3ZGM3OUM4OmFwcGxpY2F0aW9ucy9ob29rcy9zcWwveHl6LnRpbnljbG91ZC50aW55Y2hhdC90aHJlYWRzIjp7InRpbnljbG91ZC5ob29rcy9zdWJzY3JpYmUiOlt7fV19LCJ0aW55Y2xvdWQ6cGtoOmVpcDE1NToxOjB4NzA5OTc5NzBDNTE4MTJkYzNBMDEwQzdkMDFiNTBlMGQxN2RjNzlDODphcHBsaWNhdGlvbnMva3YiOnsidGlueWNsb3VkLmt2L2RlbCI6W3t9XSwidGlueWNsb3VkLmt2L2dldCI6W3t9XSwidGlueWNsb3VkLmt2L2xpc3QiOlt7fV0sInRpbnljbG91ZC5rdi9tZXRhZGF0YSI6W3t9XSwidGlueWNsb3VkLmt2L3B1dCI6W3t9XX0sInRpbnljbG91ZDpwa2g6ZWlwMTU1OjE6MHg3MDk5Nzk3MEM1MTgxMmRjM0EwMTBDN2QwMWI1MGUwZDE3ZGM3OUM4OmFwcGxpY2F0aW9ucy9rdi94eXoudGlueWNsb3VkLnRpbnljaGF0L2Nvbm5lY3RvcnMvIjp7InRpbnljbG91ZC5rdi9kZWwiOlt7fV0sInRpbnljbG91ZC5rdi9nZXQiOlt7fV0sInRpbnljbG91ZC5rdi9saXN0Ijpbe31dLCJ0aW55Y2xvdWQua3YvcHV0Ijpbe31dfSwidGlueWNsb3VkOnBraDplaXAxNTU6MToweDcwOTk3OTcwQzUxODEyZGMzQTAxMEM3ZDAxYjUwZTBkMTdkYzc5Qzg6YXBwbGljYXRpb25zL2t2L3h5ei50aW55Y2xvdWQudGlueWNoYXQvZXhvL3YxL2pvYnMvIjp7InRpbnljbG91ZC5rdi9kZWwiOlt7fV0sInRpbnljbG91ZC5rdi9nZXQiOlt7fV0sInRpbnljbG91ZC5rdi9wdXQiOlt7fV19LCJ0aW55Y2xvdWQ6cGtoOmVpcDE1NToxOjB4NzA5OTc5NzBDNTE4MTJkYzNBMDEwQzdkMDFiNTBlMGQxN2RjNzlDODphcHBsaWNhdGlvbnMva3YveHl6LnRpbnljbG91ZC50aW55Y2hhdC9leG8vdjEvcmVxdWVzdHMvIjp7InRpbnljbG91ZC5rdi9kZWwiOlt7fV0sInRpbnljbG91ZC5rdi9nZXQiOlt7fV0sInRpbnljbG91ZC5rdi9saXN0Ijpbe31dfSwidGlueWNsb3VkOnBraDplaXAxNTU6MToweDcwOTk3OTcwQzUxODEyZGMzQTAxMEM3ZDAxYjUwZTBkMTdkYzc5Qzg6YXBwbGljYXRpb25zL2t2L3h5ei50aW55Y2xvdWQudGlueWNoYXQvdGhyZWFkcy8iOnsidGlueWNsb3VkLmt2L2RlbCI6W3t9XSwidGlueWNsb3VkLmt2L2dldCI6W3t9XSwidGlueWNsb3VkLmt2L2xpc3QiOlt7fV0sInRpbnljbG91ZC5rdi9wdXQiOlt7fV19LCJ0aW55Y2xvdWQ6cGtoOmVpcDE1NToxOjB4NzA5OTc5NzBDNTE4MTJkYzNBMDEwQzdkMDFiNTBlMGQxN2RjNzlDODphcHBsaWNhdGlvbnMvc3BhY2UiOnsidGlueWNsb3VkLnNwYWNlL2luZm8iOlt7fV19LCJ0aW55Y2xvdWQ6cGtoOmVpcDE1NToxOjB4NzA5OTc5NzBDNTE4MTJkYzNBMDEwQzdkMDFiNTBlMGQxN2RjNzlDODphcHBsaWNhdGlvbnMvc3FsL3h5ei50aW55Y2xvdWQuc2FtcGxlLmhlYWx0aGxvZy9oZWFsdGhsb2ciOnsidGlueWNsb3VkLnNxbC9yZWFkIjpbe31dLCJ0aW55Y2xvdWQuc3FsL3NjaGVtYSI6W3t9XSwidGlueWNsb3VkLnNxbC93cml0ZSI6W3t9XX0sInRpbnljbG91ZDpwa2g6ZWlwMTU1OjE6MHg3MDk5Nzk3MEM1MTgxMmRjM0EwMTBDN2QwMWI1MGUwZDE3ZGM3OUM4OmFwcGxpY2F0aW9ucy9zcWwveHl6LnRpbnljbG91ZC5zYW1wbGUucmVjaXBlcy9yZWNpcGVzIjp7InRpbnljbG91ZC5zcWwvcmVhZCI6W3t9XSwidGlueWNsb3VkLnNxbC9zY2hlbWEiOlt7fV0sInRpbnljbG91ZC5zcWwvd3JpdGUiOlt7fV19LCJ0aW55Y2xvdWQ6cGtoOmVpcDE1NToxOjB4NzA5OTc5NzBDNTE4MTJkYzNBMDEwQzdkMDFiNTBlMGQxN2RjNzlDODphcHBsaWNhdGlvbnMvc3FsL3h5ei50aW55Y2xvdWQudGlueWNoYXQvY2FudmFzIjp7InRpbnljbG91ZC5zcWwvcmVhZCI6W3t9XSwidGlueWNsb3VkLnNxbC9zY2hlbWEiOlt7fV0sInRpbnljbG91ZC5zcWwvd3JpdGUiOlt7fV19LCJ0aW55Y2xvdWQ6cGtoOmVpcDE1NToxOjB4NzA5OTc5NzBDNTE4MTJkYzNBMDEwQzdkMDFiNTBlMGQxN2RjNzlDODphcHBsaWNhdGlvbnMvc3FsL3h5ei50aW55Y2xvdWQudGlueWNoYXQvY29ubmVjdG9ycyI6eyJ0aW55Y2xvdWQuc3FsL3JlYWQiOlt7fV0sInRpbnljbG91ZC5zcWwvc2NoZW1hIjpbe31dLCJ0aW55Y2xvdWQuc3FsL3dyaXRlIjpbe31dfSwidGlueWNsb3VkOnBraDplaXAxNTU6MToweDcwOTk3OTcwQzUxODEyZGMzQTAxMEM3ZDAxYjUwZTBkMTdkYzc5Qzg6YXBwbGljYXRpb25zL3NxbC94eXoudGlueWNsb3VkLnRpbnljaGF0L2RldGFpbHMiOnsidGlueWNsb3VkLnNxbC9yZWFkIjpbe31dLCJ0aW55Y2xvdWQuc3FsL3NjaGVtYSI6W3t9XSwidGlueWNsb3VkLnNxbC93cml0ZSI6W3t9XX0sInRpbnljbG91ZDpwa2g6ZWlwMTU1OjE6MHg3MDk5Nzk3MEM1MTgxMmRjM0EwMTBDN2QwMWI1MGUwZDE3ZGM3OUM4OmFwcGxpY2F0aW9ucy9zcWwveHl6LnRpbnljbG91ZC50aW55Y2hhdC9mZWVkLyI6eyJ0aW55Y2xvdWQuc3FsL3JlYWQiOlt7fV0sInRpbnljbG91ZC5zcWwvc2NoZW1hIjpbe31dLCJ0aW55Y2xvdWQuc3FsL3dyaXRlIjpbe31dfSwidGlueWNsb3VkOnBraDplaXAxNTU6MToweDcwOTk3OTcwQzUxODEyZGMzQTAxMEM3ZDAxYjUwZTBkMTdkYzc5Qzg6YXBwbGljYXRpb25zL3NxbC94eXoudGlueWNsb3VkLnRpbnljaGF0L2hvbWVfZmVlZCI6eyJ0aW55Y2xvdWQuc3FsL3JlYWQiOlt7fV0sInRpbnljbG91ZC5zcWwvc2NoZW1hIjpbe31dLCJ0aW55Y2xvdWQuc3FsL3dyaXRlIjpbe31dfSwidGlueWNsb3VkOnBraDplaXAxNTU6MToweDcwOTk3OTcwQzUxODEyZGMzQTAxMEM3ZDAxYjUwZTBkMTdkYzc5Qzg6YXBwbGljYXRpb25zL3NxbC94eXoudGlueWNsb3VkLnRpbnljaGF0L3N1bW1hcmllcyI6eyJ0aW55Y2xvdWQuc3FsL3JlYWQiOlt7fV0sInRpbnljbG91ZC5zcWwvc2NoZW1hIjpbe31dLCJ0aW55Y2xvdWQuc3FsL3dyaXRlIjpbe31dfSwidGlueWNsb3VkOnBraDplaXAxNTU6MToweDcwOTk3OTcwQzUxODEyZGMzQTAxMEM3ZDAxYjUwZTBkMTdkYzc5Qzg6YXBwbGljYXRpb25zL3NxbC94eXoudGlueWNsb3VkLnRpbnljaGF0L3RocmVhZHMiOnsidGlueWNsb3VkLnNxbC9yZWFkIjpbe31dLCJ0aW55Y2xvdWQuc3FsL3NjaGVtYSI6W3t9XSwidGlueWNsb3VkLnNxbC93cml0ZSI6W3t9XX0sInRpbnljbG91ZDpwa2g6ZWlwMTU1OjE6MHg3MDk5Nzk3MEM1MTgxMmRjM0EwMTBDN2QwMWI1MGUwZDE3ZGM3OUM4OmFwcGxpY2F0aW9ucy9zcWwveHl6LnRpbnljbG91ZC50aW55Y2hhdC90cmFuc2NyaXB0cyI6eyJ0aW55Y2xvdWQuc3FsL3JlYWQiOlt7fV0sInRpbnljbG91ZC5zcWwvc2NoZW1hIjpbe31dLCJ0aW55Y2xvdWQuc3FsL3dyaXRlIjpbe31dfX0sInByZiI6W119",
+    "recaps": [
+      {
+        "att": {
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/capabilities": [
+            "tinycloud.capabilities/read"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/hooks/sql/xyz.tinycloud.tinychat/feed/": [
+            "tinycloud.hooks/subscribe"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/hooks/sql/xyz.tinycloud.tinychat/home_feed": [
+            "tinycloud.hooks/subscribe"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/hooks/sql/xyz.tinycloud.tinychat/threads": [
+            "tinycloud.hooks/subscribe"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/kv": [
+            "tinycloud.kv/del",
+            "tinycloud.kv/get",
+            "tinycloud.kv/list",
+            "tinycloud.kv/metadata",
+            "tinycloud.kv/put"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/kv/xyz.tinycloud.tinychat/connectors/": [
+            "tinycloud.kv/del",
+            "tinycloud.kv/get",
+            "tinycloud.kv/list",
+            "tinycloud.kv/put"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/kv/xyz.tinycloud.tinychat/exo/v1/jobs/": [
+            "tinycloud.kv/del",
+            "tinycloud.kv/get",
+            "tinycloud.kv/put"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/kv/xyz.tinycloud.tinychat/exo/v1/requests/": [
+            "tinycloud.kv/del",
+            "tinycloud.kv/get",
+            "tinycloud.kv/list"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/kv/xyz.tinycloud.tinychat/threads/": [
+            "tinycloud.kv/del",
+            "tinycloud.kv/get",
+            "tinycloud.kv/list",
+            "tinycloud.kv/put"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/space": [
+            "tinycloud.space/info"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.sample.healthlog/healthlog": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/schema",
+            "tinycloud.sql/write"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.sample.recipes/recipes": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/schema",
+            "tinycloud.sql/write"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.tinychat/canvas": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/schema",
+            "tinycloud.sql/write"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.tinychat/connectors": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/schema",
+            "tinycloud.sql/write"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.tinychat/details": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/schema",
+            "tinycloud.sql/write"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.tinychat/feed/": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/schema",
+            "tinycloud.sql/write"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.tinychat/home_feed": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/schema",
+            "tinycloud.sql/write"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.tinychat/summaries": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/schema",
+            "tinycloud.sql/write"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.tinychat/threads": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/schema",
+            "tinycloud.sql/write"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.tinychat/transcripts": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/schema",
+            "tinycloud.sql/write"
+          ]
+        },
+        "prf": 0
+      }
+    ]
+  },
+  "restoreBase": {
+    "recaps": [
+      {
+        "att": {
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/capabilities": [
+            "tinycloud.capabilities/read"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/hooks/sql/xyz.tinycloud.tinychat/feed/": [
+            "tinycloud.hooks/subscribe"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/hooks/sql/xyz.tinycloud.tinychat/home_feed": [
+            "tinycloud.hooks/subscribe"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/hooks/sql/xyz.tinycloud.tinychat/threads": [
+            "tinycloud.hooks/subscribe"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/kv": [
+            "tinycloud.kv/del",
+            "tinycloud.kv/get",
+            "tinycloud.kv/list",
+            "tinycloud.kv/metadata",
+            "tinycloud.kv/put"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/kv/xyz.tinycloud.tinychat/connectors/": [
+            "tinycloud.kv/del",
+            "tinycloud.kv/get",
+            "tinycloud.kv/list",
+            "tinycloud.kv/put"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/kv/xyz.tinycloud.tinychat/exo/v1/jobs/": [
+            "tinycloud.kv/del",
+            "tinycloud.kv/get",
+            "tinycloud.kv/put"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/kv/xyz.tinycloud.tinychat/exo/v1/requests/": [
+            "tinycloud.kv/del",
+            "tinycloud.kv/get",
+            "tinycloud.kv/list"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/kv/xyz.tinycloud.tinychat/threads/": [
+            "tinycloud.kv/del",
+            "tinycloud.kv/get",
+            "tinycloud.kv/list",
+            "tinycloud.kv/put"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/space": [
+            "tinycloud.space/info"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.sample.healthlog/healthlog": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/schema",
+            "tinycloud.sql/write"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.sample.recipes/recipes": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/schema",
+            "tinycloud.sql/write"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.tinychat/canvas": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/schema",
+            "tinycloud.sql/write"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.tinychat/connectors": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/schema",
+            "tinycloud.sql/write"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.tinychat/details": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/schema",
+            "tinycloud.sql/write"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.tinychat/feed/": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/schema",
+            "tinycloud.sql/write"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.tinychat/home_feed": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/schema",
+            "tinycloud.sql/write"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.tinychat/summaries": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/schema",
+            "tinycloud.sql/write"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.tinychat/threads": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/schema",
+            "tinycloud.sql/write"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.tinychat/transcripts": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/schema",
+            "tinycloud.sql/write"
+          ]
+        },
+        "prf": 0
+      }
+    ]
+  },
+  "signInConnectors": {
+    "consent": "tinycloud.chat wants you to sign in with your Ethereum account:\n0x70997970C51812dc3A010C7d01b50e0d17dc79C8\n\nI further authorize the stated URI to perform the following actions on my behalf: (1) 'tinycloud.capabilities': 'read' for 'tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/capabilities'. (2) 'tinycloud.hooks': 'subscribe' for 'tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/hooks/sql/xyz.tinycloud.tinychat/feed/'. (3) 'tinycloud.hooks': 'subscribe' for 'tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/hooks/sql/xyz.tinycloud.tinychat/home_feed'. (4) 'tinycloud.hooks': 'subscribe' for 'tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/hooks/sql/xyz.tinycloud.tinychat/threads'. (5) 'tinycloud.kv': 'del', 'get', 'list', 'metadata', 'put' for 'tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/kv'. (6) 'tinycloud.kv': 'del', 'get', 'list', 'put' for 'tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/kv/xyz.tinycloud.tinychat/connectors/'. (7) 'tinycloud.kv': 'del', 'get', 'put' for 'tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/kv/xyz.tinycloud.tinychat/exo/v1/jobs/'. (8) 'tinycloud.kv': 'del', 'get', 'list' for 'tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/kv/xyz.tinycloud.tinychat/exo/v1/requests/'. (9) 'tinycloud.kv': 'del', 'get', 'list', 'put' for 'tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/kv/xyz.tinycloud.tinychat/threads/'. (10) 'tinycloud.space': 'info' for 'tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/space'. (11) 'tinycloud.sql': 'read', 'schema', 'write' for 'tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.sample.healthlog/healthlog'. (12) 'tinycloud.sql': 'read', 'schema', 'write' for 'tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.sample.recipes/recipes'. (13) 'tinycloud.sql': 'read', 'schema', 'write' for 'tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.tinychat/canvas'. (14) 'tinycloud.sql': 'read', 'schema', 'write' for 'tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.tinychat/connectors'. (15) 'tinycloud.sql': 'read', 'schema', 'write' for 'tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.tinychat/details'. (16) 'tinycloud.sql': 'read', 'schema', 'write' for 'tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.tinychat/feed/'. (17) 'tinycloud.sql': 'read', 'schema', 'write' for 'tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.tinychat/home_feed'. (18) 'tinycloud.sql': 'read', 'schema', 'write' for 'tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.tinychat/summaries'. (19) 'tinycloud.sql': 'read', 'schema', 'write' for 'tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.tinychat/threads'. (20) 'tinycloud.sql': 'read', 'schema', 'write' for 'tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.tinychat/transcripts'. (21) 'tinycloud.capabilities': 'read' for 'tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:secrets/capabilities'. (22) 'tinycloud.kv': 'del', 'get', 'put' for 'tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:secrets/kv/vault/secrets/FIREFLIES_API_KEY'. (23) 'tinycloud.kv': 'del', 'get', 'put' for 'tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:secrets/kv/vault/secrets/GRANOLA_API_KEY'. (24) 'tinycloud.kv': 'del', 'get', 'put' for 'tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:secrets/kv/vault/secrets/scoped/google-meet/REFRESH_TOKEN'. (25) 'tinycloud.encryption': 'decrypt', 'network.create' for 'urn:tinycloud:encryption:did:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:default'.\n\nURI: <masked>\nVersion: 1\nChain ID: 1\nNonce: <masked>\nIssued At: <masked>\nExpiration Time: <masked>\nResources:\n- urn:recap:eyJhdHQiOnsidGlueWNsb3VkOnBraDplaXAxNTU6MToweDcwOTk3OTcwQzUxODEyZGMzQTAxMEM3ZDAxYjUwZTBkMTdkYzc5Qzg6YXBwbGljYXRpb25zL2NhcGFiaWxpdGllcyI6eyJ0aW55Y2xvdWQuY2FwYWJpbGl0aWVzL3JlYWQiOlt7fV19LCJ0aW55Y2xvdWQ6cGtoOmVpcDE1NToxOjB4NzA5OTc5NzBDNTE4MTJkYzNBMDEwQzdkMDFiNTBlMGQxN2RjNzlDODphcHBsaWNhdGlvbnMvaG9va3Mvc3FsL3h5ei50aW55Y2xvdWQudGlueWNoYXQvZmVlZC8iOnsidGlueWNsb3VkLmhvb2tzL3N1YnNjcmliZSI6W3t9XX0sInRpbnljbG91ZDpwa2g6ZWlwMTU1OjE6MHg3MDk5Nzk3MEM1MTgxMmRjM0EwMTBDN2QwMWI1MGUwZDE3ZGM3OUM4OmFwcGxpY2F0aW9ucy9ob29rcy9zcWwveHl6LnRpbnljbG91ZC50aW55Y2hhdC9ob21lX2ZlZWQiOnsidGlueWNsb3VkLmhvb2tzL3N1YnNjcmliZSI6W3t9XX0sInRpbnljbG91ZDpwa2g6ZWlwMTU1OjE6MHg3MDk5Nzk3MEM1MTgxMmRjM0EwMTBDN2QwMWI1MGUwZDE3ZGM3OUM4OmFwcGxpY2F0aW9ucy9ob29rcy9zcWwveHl6LnRpbnljbG91ZC50aW55Y2hhdC90aHJlYWRzIjp7InRpbnljbG91ZC5ob29rcy9zdWJzY3JpYmUiOlt7fV19LCJ0aW55Y2xvdWQ6cGtoOmVpcDE1NToxOjB4NzA5OTc5NzBDNTE4MTJkYzNBMDEwQzdkMDFiNTBlMGQxN2RjNzlDODphcHBsaWNhdGlvbnMva3YiOnsidGlueWNsb3VkLmt2L2RlbCI6W3t9XSwidGlueWNsb3VkLmt2L2dldCI6W3t9XSwidGlueWNsb3VkLmt2L2xpc3QiOlt7fV0sInRpbnljbG91ZC5rdi9tZXRhZGF0YSI6W3t9XSwidGlueWNsb3VkLmt2L3B1dCI6W3t9XX0sInRpbnljbG91ZDpwa2g6ZWlwMTU1OjE6MHg3MDk5Nzk3MEM1MTgxMmRjM0EwMTBDN2QwMWI1MGUwZDE3ZGM3OUM4OmFwcGxpY2F0aW9ucy9rdi94eXoudGlueWNsb3VkLnRpbnljaGF0L2Nvbm5lY3RvcnMvIjp7InRpbnljbG91ZC5rdi9kZWwiOlt7fV0sInRpbnljbG91ZC5rdi9nZXQiOlt7fV0sInRpbnljbG91ZC5rdi9saXN0Ijpbe31dLCJ0aW55Y2xvdWQua3YvcHV0Ijpbe31dfSwidGlueWNsb3VkOnBraDplaXAxNTU6MToweDcwOTk3OTcwQzUxODEyZGMzQTAxMEM3ZDAxYjUwZTBkMTdkYzc5Qzg6YXBwbGljYXRpb25zL2t2L3h5ei50aW55Y2xvdWQudGlueWNoYXQvZXhvL3YxL2pvYnMvIjp7InRpbnljbG91ZC5rdi9kZWwiOlt7fV0sInRpbnljbG91ZC5rdi9nZXQiOlt7fV0sInRpbnljbG91ZC5rdi9wdXQiOlt7fV19LCJ0aW55Y2xvdWQ6cGtoOmVpcDE1NToxOjB4NzA5OTc5NzBDNTE4MTJkYzNBMDEwQzdkMDFiNTBlMGQxN2RjNzlDODphcHBsaWNhdGlvbnMva3YveHl6LnRpbnljbG91ZC50aW55Y2hhdC9leG8vdjEvcmVxdWVzdHMvIjp7InRpbnljbG91ZC5rdi9kZWwiOlt7fV0sInRpbnljbG91ZC5rdi9nZXQiOlt7fV0sInRpbnljbG91ZC5rdi9saXN0Ijpbe31dfSwidGlueWNsb3VkOnBraDplaXAxNTU6MToweDcwOTk3OTcwQzUxODEyZGMzQTAxMEM3ZDAxYjUwZTBkMTdkYzc5Qzg6YXBwbGljYXRpb25zL2t2L3h5ei50aW55Y2xvdWQudGlueWNoYXQvdGhyZWFkcy8iOnsidGlueWNsb3VkLmt2L2RlbCI6W3t9XSwidGlueWNsb3VkLmt2L2dldCI6W3t9XSwidGlueWNsb3VkLmt2L2xpc3QiOlt7fV0sInRpbnljbG91ZC5rdi9wdXQiOlt7fV19LCJ0aW55Y2xvdWQ6cGtoOmVpcDE1NToxOjB4NzA5OTc5NzBDNTE4MTJkYzNBMDEwQzdkMDFiNTBlMGQxN2RjNzlDODphcHBsaWNhdGlvbnMvc3BhY2UiOnsidGlueWNsb3VkLnNwYWNlL2luZm8iOlt7fV19LCJ0aW55Y2xvdWQ6cGtoOmVpcDE1NToxOjB4NzA5OTc5NzBDNTE4MTJkYzNBMDEwQzdkMDFiNTBlMGQxN2RjNzlDODphcHBsaWNhdGlvbnMvc3FsL3h5ei50aW55Y2xvdWQuc2FtcGxlLmhlYWx0aGxvZy9oZWFsdGhsb2ciOnsidGlueWNsb3VkLnNxbC9yZWFkIjpbe31dLCJ0aW55Y2xvdWQuc3FsL3NjaGVtYSI6W3t9XSwidGlueWNsb3VkLnNxbC93cml0ZSI6W3t9XX0sInRpbnljbG91ZDpwa2g6ZWlwMTU1OjE6MHg3MDk5Nzk3MEM1MTgxMmRjM0EwMTBDN2QwMWI1MGUwZDE3ZGM3OUM4OmFwcGxpY2F0aW9ucy9zcWwveHl6LnRpbnljbG91ZC5zYW1wbGUucmVjaXBlcy9yZWNpcGVzIjp7InRpbnljbG91ZC5zcWwvcmVhZCI6W3t9XSwidGlueWNsb3VkLnNxbC9zY2hlbWEiOlt7fV0sInRpbnljbG91ZC5zcWwvd3JpdGUiOlt7fV19LCJ0aW55Y2xvdWQ6cGtoOmVpcDE1NToxOjB4NzA5OTc5NzBDNTE4MTJkYzNBMDEwQzdkMDFiNTBlMGQxN2RjNzlDODphcHBsaWNhdGlvbnMvc3FsL3h5ei50aW55Y2xvdWQudGlueWNoYXQvY2FudmFzIjp7InRpbnljbG91ZC5zcWwvcmVhZCI6W3t9XSwidGlueWNsb3VkLnNxbC9zY2hlbWEiOlt7fV0sInRpbnljbG91ZC5zcWwvd3JpdGUiOlt7fV19LCJ0aW55Y2xvdWQ6cGtoOmVpcDE1NToxOjB4NzA5OTc5NzBDNTE4MTJkYzNBMDEwQzdkMDFiNTBlMGQxN2RjNzlDODphcHBsaWNhdGlvbnMvc3FsL3h5ei50aW55Y2xvdWQudGlueWNoYXQvY29ubmVjdG9ycyI6eyJ0aW55Y2xvdWQuc3FsL3JlYWQiOlt7fV0sInRpbnljbG91ZC5zcWwvc2NoZW1hIjpbe31dLCJ0aW55Y2xvdWQuc3FsL3dyaXRlIjpbe31dfSwidGlueWNsb3VkOnBraDplaXAxNTU6MToweDcwOTk3OTcwQzUxODEyZGMzQTAxMEM3ZDAxYjUwZTBkMTdkYzc5Qzg6YXBwbGljYXRpb25zL3NxbC94eXoudGlueWNsb3VkLnRpbnljaGF0L2RldGFpbHMiOnsidGlueWNsb3VkLnNxbC9yZWFkIjpbe31dLCJ0aW55Y2xvdWQuc3FsL3NjaGVtYSI6W3t9XSwidGlueWNsb3VkLnNxbC93cml0ZSI6W3t9XX0sInRpbnljbG91ZDpwa2g6ZWlwMTU1OjE6MHg3MDk5Nzk3MEM1MTgxMmRjM0EwMTBDN2QwMWI1MGUwZDE3ZGM3OUM4OmFwcGxpY2F0aW9ucy9zcWwveHl6LnRpbnljbG91ZC50aW55Y2hhdC9mZWVkLyI6eyJ0aW55Y2xvdWQuc3FsL3JlYWQiOlt7fV0sInRpbnljbG91ZC5zcWwvc2NoZW1hIjpbe31dLCJ0aW55Y2xvdWQuc3FsL3dyaXRlIjpbe31dfSwidGlueWNsb3VkOnBraDplaXAxNTU6MToweDcwOTk3OTcwQzUxODEyZGMzQTAxMEM3ZDAxYjUwZTBkMTdkYzc5Qzg6YXBwbGljYXRpb25zL3NxbC94eXoudGlueWNsb3VkLnRpbnljaGF0L2hvbWVfZmVlZCI6eyJ0aW55Y2xvdWQuc3FsL3JlYWQiOlt7fV0sInRpbnljbG91ZC5zcWwvc2NoZW1hIjpbe31dLCJ0aW55Y2xvdWQuc3FsL3dyaXRlIjpbe31dfSwidGlueWNsb3VkOnBraDplaXAxNTU6MToweDcwOTk3OTcwQzUxODEyZGMzQTAxMEM3ZDAxYjUwZTBkMTdkYzc5Qzg6YXBwbGljYXRpb25zL3NxbC94eXoudGlueWNsb3VkLnRpbnljaGF0L3N1bW1hcmllcyI6eyJ0aW55Y2xvdWQuc3FsL3JlYWQiOlt7fV0sInRpbnljbG91ZC5zcWwvc2NoZW1hIjpbe31dLCJ0aW55Y2xvdWQuc3FsL3dyaXRlIjpbe31dfSwidGlueWNsb3VkOnBraDplaXAxNTU6MToweDcwOTk3OTcwQzUxODEyZGMzQTAxMEM3ZDAxYjUwZTBkMTdkYzc5Qzg6YXBwbGljYXRpb25zL3NxbC94eXoudGlueWNsb3VkLnRpbnljaGF0L3RocmVhZHMiOnsidGlueWNsb3VkLnNxbC9yZWFkIjpbe31dLCJ0aW55Y2xvdWQuc3FsL3NjaGVtYSI6W3t9XSwidGlueWNsb3VkLnNxbC93cml0ZSI6W3t9XX0sInRpbnljbG91ZDpwa2g6ZWlwMTU1OjE6MHg3MDk5Nzk3MEM1MTgxMmRjM0EwMTBDN2QwMWI1MGUwZDE3ZGM3OUM4OmFwcGxpY2F0aW9ucy9zcWwveHl6LnRpbnljbG91ZC50aW55Y2hhdC90cmFuc2NyaXB0cyI6eyJ0aW55Y2xvdWQuc3FsL3JlYWQiOlt7fV0sInRpbnljbG91ZC5zcWwvc2NoZW1hIjpbe31dLCJ0aW55Y2xvdWQuc3FsL3dyaXRlIjpbe31dfSwidGlueWNsb3VkOnBraDplaXAxNTU6MToweDcwOTk3OTcwQzUxODEyZGMzQTAxMEM3ZDAxYjUwZTBkMTdkYzc5Qzg6c2VjcmV0cy9jYXBhYmlsaXRpZXMiOnsidGlueWNsb3VkLmNhcGFiaWxpdGllcy9yZWFkIjpbe31dfSwidGlueWNsb3VkOnBraDplaXAxNTU6MToweDcwOTk3OTcwQzUxODEyZGMzQTAxMEM3ZDAxYjUwZTBkMTdkYzc5Qzg6c2VjcmV0cy9rdi92YXVsdC9zZWNyZXRzL0ZJUkVGTElFU19BUElfS0VZIjp7InRpbnljbG91ZC5rdi9kZWwiOlt7fV0sInRpbnljbG91ZC5rdi9nZXQiOlt7fV0sInRpbnljbG91ZC5rdi9wdXQiOlt7fV19LCJ0aW55Y2xvdWQ6cGtoOmVpcDE1NToxOjB4NzA5OTc5NzBDNTE4MTJkYzNBMDEwQzdkMDFiNTBlMGQxN2RjNzlDODpzZWNyZXRzL2t2L3ZhdWx0L3NlY3JldHMvR1JBTk9MQV9BUElfS0VZIjp7InRpbnljbG91ZC5rdi9kZWwiOlt7fV0sInRpbnljbG91ZC5rdi9nZXQiOlt7fV0sInRpbnljbG91ZC5rdi9wdXQiOlt7fV19LCJ0aW55Y2xvdWQ6cGtoOmVpcDE1NToxOjB4NzA5OTc5NzBDNTE4MTJkYzNBMDEwQzdkMDFiNTBlMGQxN2RjNzlDODpzZWNyZXRzL2t2L3ZhdWx0L3NlY3JldHMvc2NvcGVkL2dvb2dsZS1tZWV0L1JFRlJFU0hfVE9LRU4iOnsidGlueWNsb3VkLmt2L2RlbCI6W3t9XSwidGlueWNsb3VkLmt2L2dldCI6W3t9XSwidGlueWNsb3VkLmt2L3B1dCI6W3t9XX0sInVybjp0aW55Y2xvdWQ6ZW5jcnlwdGlvbjpkaWQ6cGtoOmVpcDE1NToxOjB4NzA5OTc5NzBDNTE4MTJkYzNBMDEwQzdkMDFiNTBlMGQxN2RjNzlDODpkZWZhdWx0Ijp7InRpbnljbG91ZC5lbmNyeXB0aW9uL2RlY3J5cHQiOlt7fV0sInRpbnljbG91ZC5lbmNyeXB0aW9uL25ldHdvcmsuY3JlYXRlIjpbe31dfX0sInByZiI6W119",
+    "recaps": [
+      {
+        "att": {
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/capabilities": [
+            "tinycloud.capabilities/read"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/hooks/sql/xyz.tinycloud.tinychat/feed/": [
+            "tinycloud.hooks/subscribe"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/hooks/sql/xyz.tinycloud.tinychat/home_feed": [
+            "tinycloud.hooks/subscribe"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/hooks/sql/xyz.tinycloud.tinychat/threads": [
+            "tinycloud.hooks/subscribe"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/kv": [
+            "tinycloud.kv/del",
+            "tinycloud.kv/get",
+            "tinycloud.kv/list",
+            "tinycloud.kv/metadata",
+            "tinycloud.kv/put"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/kv/xyz.tinycloud.tinychat/connectors/": [
+            "tinycloud.kv/del",
+            "tinycloud.kv/get",
+            "tinycloud.kv/list",
+            "tinycloud.kv/put"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/kv/xyz.tinycloud.tinychat/exo/v1/jobs/": [
+            "tinycloud.kv/del",
+            "tinycloud.kv/get",
+            "tinycloud.kv/put"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/kv/xyz.tinycloud.tinychat/exo/v1/requests/": [
+            "tinycloud.kv/del",
+            "tinycloud.kv/get",
+            "tinycloud.kv/list"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/kv/xyz.tinycloud.tinychat/threads/": [
+            "tinycloud.kv/del",
+            "tinycloud.kv/get",
+            "tinycloud.kv/list",
+            "tinycloud.kv/put"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/space": [
+            "tinycloud.space/info"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.sample.healthlog/healthlog": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/schema",
+            "tinycloud.sql/write"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.sample.recipes/recipes": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/schema",
+            "tinycloud.sql/write"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.tinychat/canvas": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/schema",
+            "tinycloud.sql/write"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.tinychat/connectors": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/schema",
+            "tinycloud.sql/write"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.tinychat/details": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/schema",
+            "tinycloud.sql/write"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.tinychat/feed/": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/schema",
+            "tinycloud.sql/write"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.tinychat/home_feed": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/schema",
+            "tinycloud.sql/write"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.tinychat/summaries": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/schema",
+            "tinycloud.sql/write"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.tinychat/threads": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/schema",
+            "tinycloud.sql/write"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.tinychat/transcripts": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/schema",
+            "tinycloud.sql/write"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:secrets/capabilities": [
+            "tinycloud.capabilities/read"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:secrets/kv/vault/secrets/FIREFLIES_API_KEY": [
+            "tinycloud.kv/del",
+            "tinycloud.kv/get",
+            "tinycloud.kv/put"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:secrets/kv/vault/secrets/GRANOLA_API_KEY": [
+            "tinycloud.kv/del",
+            "tinycloud.kv/get",
+            "tinycloud.kv/put"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:secrets/kv/vault/secrets/scoped/google-meet/REFRESH_TOKEN": [
+            "tinycloud.kv/del",
+            "tinycloud.kv/get",
+            "tinycloud.kv/put"
+          ],
+          "urn:tinycloud:encryption:did:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:default": [
+            "tinycloud.encryption/decrypt",
+            "tinycloud.encryption/network.create"
+          ]
+        },
+        "prf": 0
+      }
+    ]
+  },
+  "restoreConnectors": {
+    "recaps": [
+      {
+        "att": {
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/capabilities": [
+            "tinycloud.capabilities/read"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/hooks/sql/xyz.tinycloud.tinychat/feed/": [
+            "tinycloud.hooks/subscribe"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/hooks/sql/xyz.tinycloud.tinychat/home_feed": [
+            "tinycloud.hooks/subscribe"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/hooks/sql/xyz.tinycloud.tinychat/threads": [
+            "tinycloud.hooks/subscribe"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/kv": [
+            "tinycloud.kv/del",
+            "tinycloud.kv/get",
+            "tinycloud.kv/list",
+            "tinycloud.kv/metadata",
+            "tinycloud.kv/put"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/kv/xyz.tinycloud.tinychat/connectors/": [
+            "tinycloud.kv/del",
+            "tinycloud.kv/get",
+            "tinycloud.kv/list",
+            "tinycloud.kv/put"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/kv/xyz.tinycloud.tinychat/exo/v1/jobs/": [
+            "tinycloud.kv/del",
+            "tinycloud.kv/get",
+            "tinycloud.kv/put"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/kv/xyz.tinycloud.tinychat/exo/v1/requests/": [
+            "tinycloud.kv/del",
+            "tinycloud.kv/get",
+            "tinycloud.kv/list"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/kv/xyz.tinycloud.tinychat/threads/": [
+            "tinycloud.kv/del",
+            "tinycloud.kv/get",
+            "tinycloud.kv/list",
+            "tinycloud.kv/put"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/space": [
+            "tinycloud.space/info"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.sample.healthlog/healthlog": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/schema",
+            "tinycloud.sql/write"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.sample.recipes/recipes": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/schema",
+            "tinycloud.sql/write"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.tinychat/canvas": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/schema",
+            "tinycloud.sql/write"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.tinychat/connectors": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/schema",
+            "tinycloud.sql/write"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.tinychat/details": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/schema",
+            "tinycloud.sql/write"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.tinychat/feed/": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/schema",
+            "tinycloud.sql/write"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.tinychat/home_feed": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/schema",
+            "tinycloud.sql/write"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.tinychat/summaries": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/schema",
+            "tinycloud.sql/write"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.tinychat/threads": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/schema",
+            "tinycloud.sql/write"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.tinychat/transcripts": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/schema",
+            "tinycloud.sql/write"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:secrets/capabilities": [
+            "tinycloud.capabilities/read"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:secrets/kv/vault/secrets/FIREFLIES_API_KEY": [
+            "tinycloud.kv/del",
+            "tinycloud.kv/get",
+            "tinycloud.kv/put"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:secrets/kv/vault/secrets/GRANOLA_API_KEY": [
+            "tinycloud.kv/del",
+            "tinycloud.kv/get",
+            "tinycloud.kv/put"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:secrets/kv/vault/secrets/scoped/google-meet/REFRESH_TOKEN": [
+            "tinycloud.kv/del",
+            "tinycloud.kv/get",
+            "tinycloud.kv/put"
+          ],
+          "urn:tinycloud:encryption:did:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:default": [
+            "tinycloud.encryption/decrypt",
+            "tinycloud.encryption/network.create"
+          ]
+        },
+        "prf": 0
+      }
+    ]
+  },
+  "stepUpConnectors": {
+    "consent": "tinycloud.chat wants you to sign in with your Ethereum account:\n0x70997970C51812dc3A010C7d01b50e0d17dc79C8\n\nI further authorize the stated URI to perform the following actions on my behalf: (1) 'tinycloud.capabilities': 'read' for 'tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/capabilities'. (2) 'tinycloud.hooks': 'subscribe' for 'tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/hooks/sql/xyz.tinycloud.tinychat/feed/'. (3) 'tinycloud.hooks': 'subscribe' for 'tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/hooks/sql/xyz.tinycloud.tinychat/home_feed'. (4) 'tinycloud.hooks': 'subscribe' for 'tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/hooks/sql/xyz.tinycloud.tinychat/threads'. (5) 'tinycloud.kv': 'del', 'get', 'list', 'metadata', 'put' for 'tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/kv'. (6) 'tinycloud.kv': 'del', 'get', 'list', 'put' for 'tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/kv/xyz.tinycloud.tinychat/connectors/'. (7) 'tinycloud.kv': 'del', 'get', 'put' for 'tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/kv/xyz.tinycloud.tinychat/exo/v1/jobs/'. (8) 'tinycloud.kv': 'del', 'get', 'list' for 'tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/kv/xyz.tinycloud.tinychat/exo/v1/requests/'. (9) 'tinycloud.kv': 'del', 'get', 'list', 'put' for 'tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/kv/xyz.tinycloud.tinychat/threads/'. (10) 'tinycloud.space': 'info' for 'tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/space'. (11) 'tinycloud.sql': 'read', 'schema', 'write' for 'tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.sample.healthlog/healthlog'. (12) 'tinycloud.sql': 'read', 'schema', 'write' for 'tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.sample.recipes/recipes'. (13) 'tinycloud.sql': 'read', 'schema', 'write' for 'tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.tinychat/canvas'. (14) 'tinycloud.sql': 'read', 'schema', 'write' for 'tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.tinychat/connectors'. (15) 'tinycloud.sql': 'read', 'schema', 'write' for 'tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.tinychat/details'. (16) 'tinycloud.sql': 'read', 'schema', 'write' for 'tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.tinychat/feed/'. (17) 'tinycloud.sql': 'read', 'schema', 'write' for 'tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.tinychat/home_feed'. (18) 'tinycloud.sql': 'read', 'schema', 'write' for 'tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.tinychat/summaries'. (19) 'tinycloud.sql': 'read', 'schema', 'write' for 'tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.tinychat/threads'. (20) 'tinycloud.sql': 'read', 'schema', 'write' for 'tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.tinychat/transcripts'. (21) 'tinycloud.capabilities': 'read' for 'tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:secrets/capabilities'. (22) 'tinycloud.kv': 'del', 'get', 'put' for 'tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:secrets/kv/vault/secrets/FIREFLIES_API_KEY'. (23) 'tinycloud.kv': 'del', 'get', 'put' for 'tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:secrets/kv/vault/secrets/GRANOLA_API_KEY'. (24) 'tinycloud.kv': 'del', 'get', 'put' for 'tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:secrets/kv/vault/secrets/scoped/google-meet/REFRESH_TOKEN'. (25) 'tinycloud.encryption': 'decrypt', 'network.create' for 'urn:tinycloud:encryption:did:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:default'.\n\nURI: <masked>\nVersion: 1\nChain ID: 1\nNonce: <masked>\nIssued At: <masked>\nExpiration Time: <masked>\nResources:\n- urn:recap:eyJhdHQiOnsidGlueWNsb3VkOnBraDplaXAxNTU6MToweDcwOTk3OTcwQzUxODEyZGMzQTAxMEM3ZDAxYjUwZTBkMTdkYzc5Qzg6YXBwbGljYXRpb25zL2NhcGFiaWxpdGllcyI6eyJ0aW55Y2xvdWQuY2FwYWJpbGl0aWVzL3JlYWQiOlt7fV19LCJ0aW55Y2xvdWQ6cGtoOmVpcDE1NToxOjB4NzA5OTc5NzBDNTE4MTJkYzNBMDEwQzdkMDFiNTBlMGQxN2RjNzlDODphcHBsaWNhdGlvbnMvaG9va3Mvc3FsL3h5ei50aW55Y2xvdWQudGlueWNoYXQvZmVlZC8iOnsidGlueWNsb3VkLmhvb2tzL3N1YnNjcmliZSI6W3t9XX0sInRpbnljbG91ZDpwa2g6ZWlwMTU1OjE6MHg3MDk5Nzk3MEM1MTgxMmRjM0EwMTBDN2QwMWI1MGUwZDE3ZGM3OUM4OmFwcGxpY2F0aW9ucy9ob29rcy9zcWwveHl6LnRpbnljbG91ZC50aW55Y2hhdC9ob21lX2ZlZWQiOnsidGlueWNsb3VkLmhvb2tzL3N1YnNjcmliZSI6W3t9XX0sInRpbnljbG91ZDpwa2g6ZWlwMTU1OjE6MHg3MDk5Nzk3MEM1MTgxMmRjM0EwMTBDN2QwMWI1MGUwZDE3ZGM3OUM4OmFwcGxpY2F0aW9ucy9ob29rcy9zcWwveHl6LnRpbnljbG91ZC50aW55Y2hhdC90aHJlYWRzIjp7InRpbnljbG91ZC5ob29rcy9zdWJzY3JpYmUiOlt7fV19LCJ0aW55Y2xvdWQ6cGtoOmVpcDE1NToxOjB4NzA5OTc5NzBDNTE4MTJkYzNBMDEwQzdkMDFiNTBlMGQxN2RjNzlDODphcHBsaWNhdGlvbnMva3YiOnsidGlueWNsb3VkLmt2L2RlbCI6W3t9XSwidGlueWNsb3VkLmt2L2dldCI6W3t9XSwidGlueWNsb3VkLmt2L2xpc3QiOlt7fV0sInRpbnljbG91ZC5rdi9tZXRhZGF0YSI6W3t9XSwidGlueWNsb3VkLmt2L3B1dCI6W3t9XX0sInRpbnljbG91ZDpwa2g6ZWlwMTU1OjE6MHg3MDk5Nzk3MEM1MTgxMmRjM0EwMTBDN2QwMWI1MGUwZDE3ZGM3OUM4OmFwcGxpY2F0aW9ucy9rdi94eXoudGlueWNsb3VkLnRpbnljaGF0L2Nvbm5lY3RvcnMvIjp7InRpbnljbG91ZC5rdi9kZWwiOlt7fV0sInRpbnljbG91ZC5rdi9nZXQiOlt7fV0sInRpbnljbG91ZC5rdi9saXN0Ijpbe31dLCJ0aW55Y2xvdWQua3YvcHV0Ijpbe31dfSwidGlueWNsb3VkOnBraDplaXAxNTU6MToweDcwOTk3OTcwQzUxODEyZGMzQTAxMEM3ZDAxYjUwZTBkMTdkYzc5Qzg6YXBwbGljYXRpb25zL2t2L3h5ei50aW55Y2xvdWQudGlueWNoYXQvZXhvL3YxL2pvYnMvIjp7InRpbnljbG91ZC5rdi9kZWwiOlt7fV0sInRpbnljbG91ZC5rdi9nZXQiOlt7fV0sInRpbnljbG91ZC5rdi9wdXQiOlt7fV19LCJ0aW55Y2xvdWQ6cGtoOmVpcDE1NToxOjB4NzA5OTc5NzBDNTE4MTJkYzNBMDEwQzdkMDFiNTBlMGQxN2RjNzlDODphcHBsaWNhdGlvbnMva3YveHl6LnRpbnljbG91ZC50aW55Y2hhdC9leG8vdjEvcmVxdWVzdHMvIjp7InRpbnljbG91ZC5rdi9kZWwiOlt7fV0sInRpbnljbG91ZC5rdi9nZXQiOlt7fV0sInRpbnljbG91ZC5rdi9saXN0Ijpbe31dfSwidGlueWNsb3VkOnBraDplaXAxNTU6MToweDcwOTk3OTcwQzUxODEyZGMzQTAxMEM3ZDAxYjUwZTBkMTdkYzc5Qzg6YXBwbGljYXRpb25zL2t2L3h5ei50aW55Y2xvdWQudGlueWNoYXQvdGhyZWFkcy8iOnsidGlueWNsb3VkLmt2L2RlbCI6W3t9XSwidGlueWNsb3VkLmt2L2dldCI6W3t9XSwidGlueWNsb3VkLmt2L2xpc3QiOlt7fV0sInRpbnljbG91ZC5rdi9wdXQiOlt7fV19LCJ0aW55Y2xvdWQ6cGtoOmVpcDE1NToxOjB4NzA5OTc5NzBDNTE4MTJkYzNBMDEwQzdkMDFiNTBlMGQxN2RjNzlDODphcHBsaWNhdGlvbnMvc3BhY2UiOnsidGlueWNsb3VkLnNwYWNlL2luZm8iOlt7fV19LCJ0aW55Y2xvdWQ6cGtoOmVpcDE1NToxOjB4NzA5OTc5NzBDNTE4MTJkYzNBMDEwQzdkMDFiNTBlMGQxN2RjNzlDODphcHBsaWNhdGlvbnMvc3FsL3h5ei50aW55Y2xvdWQuc2FtcGxlLmhlYWx0aGxvZy9oZWFsdGhsb2ciOnsidGlueWNsb3VkLnNxbC9yZWFkIjpbe31dLCJ0aW55Y2xvdWQuc3FsL3NjaGVtYSI6W3t9XSwidGlueWNsb3VkLnNxbC93cml0ZSI6W3t9XX0sInRpbnljbG91ZDpwa2g6ZWlwMTU1OjE6MHg3MDk5Nzk3MEM1MTgxMmRjM0EwMTBDN2QwMWI1MGUwZDE3ZGM3OUM4OmFwcGxpY2F0aW9ucy9zcWwveHl6LnRpbnljbG91ZC5zYW1wbGUucmVjaXBlcy9yZWNpcGVzIjp7InRpbnljbG91ZC5zcWwvcmVhZCI6W3t9XSwidGlueWNsb3VkLnNxbC9zY2hlbWEiOlt7fV0sInRpbnljbG91ZC5zcWwvd3JpdGUiOlt7fV19LCJ0aW55Y2xvdWQ6cGtoOmVpcDE1NToxOjB4NzA5OTc5NzBDNTE4MTJkYzNBMDEwQzdkMDFiNTBlMGQxN2RjNzlDODphcHBsaWNhdGlvbnMvc3FsL3h5ei50aW55Y2xvdWQudGlueWNoYXQvY2FudmFzIjp7InRpbnljbG91ZC5zcWwvcmVhZCI6W3t9XSwidGlueWNsb3VkLnNxbC9zY2hlbWEiOlt7fV0sInRpbnljbG91ZC5zcWwvd3JpdGUiOlt7fV19LCJ0aW55Y2xvdWQ6cGtoOmVpcDE1NToxOjB4NzA5OTc5NzBDNTE4MTJkYzNBMDEwQzdkMDFiNTBlMGQxN2RjNzlDODphcHBsaWNhdGlvbnMvc3FsL3h5ei50aW55Y2xvdWQudGlueWNoYXQvY29ubmVjdG9ycyI6eyJ0aW55Y2xvdWQuc3FsL3JlYWQiOlt7fV0sInRpbnljbG91ZC5zcWwvc2NoZW1hIjpbe31dLCJ0aW55Y2xvdWQuc3FsL3dyaXRlIjpbe31dfSwidGlueWNsb3VkOnBraDplaXAxNTU6MToweDcwOTk3OTcwQzUxODEyZGMzQTAxMEM3ZDAxYjUwZTBkMTdkYzc5Qzg6YXBwbGljYXRpb25zL3NxbC94eXoudGlueWNsb3VkLnRpbnljaGF0L2RldGFpbHMiOnsidGlueWNsb3VkLnNxbC9yZWFkIjpbe31dLCJ0aW55Y2xvdWQuc3FsL3NjaGVtYSI6W3t9XSwidGlueWNsb3VkLnNxbC93cml0ZSI6W3t9XX0sInRpbnljbG91ZDpwa2g6ZWlwMTU1OjE6MHg3MDk5Nzk3MEM1MTgxMmRjM0EwMTBDN2QwMWI1MGUwZDE3ZGM3OUM4OmFwcGxpY2F0aW9ucy9zcWwveHl6LnRpbnljbG91ZC50aW55Y2hhdC9mZWVkLyI6eyJ0aW55Y2xvdWQuc3FsL3JlYWQiOlt7fV0sInRpbnljbG91ZC5zcWwvc2NoZW1hIjpbe31dLCJ0aW55Y2xvdWQuc3FsL3dyaXRlIjpbe31dfSwidGlueWNsb3VkOnBraDplaXAxNTU6MToweDcwOTk3OTcwQzUxODEyZGMzQTAxMEM3ZDAxYjUwZTBkMTdkYzc5Qzg6YXBwbGljYXRpb25zL3NxbC94eXoudGlueWNsb3VkLnRpbnljaGF0L2hvbWVfZmVlZCI6eyJ0aW55Y2xvdWQuc3FsL3JlYWQiOlt7fV0sInRpbnljbG91ZC5zcWwvc2NoZW1hIjpbe31dLCJ0aW55Y2xvdWQuc3FsL3dyaXRlIjpbe31dfSwidGlueWNsb3VkOnBraDplaXAxNTU6MToweDcwOTk3OTcwQzUxODEyZGMzQTAxMEM3ZDAxYjUwZTBkMTdkYzc5Qzg6YXBwbGljYXRpb25zL3NxbC94eXoudGlueWNsb3VkLnRpbnljaGF0L3N1bW1hcmllcyI6eyJ0aW55Y2xvdWQuc3FsL3JlYWQiOlt7fV0sInRpbnljbG91ZC5zcWwvc2NoZW1hIjpbe31dLCJ0aW55Y2xvdWQuc3FsL3dyaXRlIjpbe31dfSwidGlueWNsb3VkOnBraDplaXAxNTU6MToweDcwOTk3OTcwQzUxODEyZGMzQTAxMEM3ZDAxYjUwZTBkMTdkYzc5Qzg6YXBwbGljYXRpb25zL3NxbC94eXoudGlueWNsb3VkLnRpbnljaGF0L3RocmVhZHMiOnsidGlueWNsb3VkLnNxbC9yZWFkIjpbe31dLCJ0aW55Y2xvdWQuc3FsL3NjaGVtYSI6W3t9XSwidGlueWNsb3VkLnNxbC93cml0ZSI6W3t9XX0sInRpbnljbG91ZDpwa2g6ZWlwMTU1OjE6MHg3MDk5Nzk3MEM1MTgxMmRjM0EwMTBDN2QwMWI1MGUwZDE3ZGM3OUM4OmFwcGxpY2F0aW9ucy9zcWwveHl6LnRpbnljbG91ZC50aW55Y2hhdC90cmFuc2NyaXB0cyI6eyJ0aW55Y2xvdWQuc3FsL3JlYWQiOlt7fV0sInRpbnljbG91ZC5zcWwvc2NoZW1hIjpbe31dLCJ0aW55Y2xvdWQuc3FsL3dyaXRlIjpbe31dfSwidGlueWNsb3VkOnBraDplaXAxNTU6MToweDcwOTk3OTcwQzUxODEyZGMzQTAxMEM3ZDAxYjUwZTBkMTdkYzc5Qzg6c2VjcmV0cy9jYXBhYmlsaXRpZXMiOnsidGlueWNsb3VkLmNhcGFiaWxpdGllcy9yZWFkIjpbe31dfSwidGlueWNsb3VkOnBraDplaXAxNTU6MToweDcwOTk3OTcwQzUxODEyZGMzQTAxMEM3ZDAxYjUwZTBkMTdkYzc5Qzg6c2VjcmV0cy9rdi92YXVsdC9zZWNyZXRzL0ZJUkVGTElFU19BUElfS0VZIjp7InRpbnljbG91ZC5rdi9kZWwiOlt7fV0sInRpbnljbG91ZC5rdi9nZXQiOlt7fV0sInRpbnljbG91ZC5rdi9wdXQiOlt7fV19LCJ0aW55Y2xvdWQ6cGtoOmVpcDE1NToxOjB4NzA5OTc5NzBDNTE4MTJkYzNBMDEwQzdkMDFiNTBlMGQxN2RjNzlDODpzZWNyZXRzL2t2L3ZhdWx0L3NlY3JldHMvR1JBTk9MQV9BUElfS0VZIjp7InRpbnljbG91ZC5rdi9kZWwiOlt7fV0sInRpbnljbG91ZC5rdi9nZXQiOlt7fV0sInRpbnljbG91ZC5rdi9wdXQiOlt7fV19LCJ0aW55Y2xvdWQ6cGtoOmVpcDE1NToxOjB4NzA5OTc5NzBDNTE4MTJkYzNBMDEwQzdkMDFiNTBlMGQxN2RjNzlDODpzZWNyZXRzL2t2L3ZhdWx0L3NlY3JldHMvc2NvcGVkL2dvb2dsZS1tZWV0L1JFRlJFU0hfVE9LRU4iOnsidGlueWNsb3VkLmt2L2RlbCI6W3t9XSwidGlueWNsb3VkLmt2L2dldCI6W3t9XSwidGlueWNsb3VkLmt2L3B1dCI6W3t9XX0sInVybjp0aW55Y2xvdWQ6ZW5jcnlwdGlvbjpkaWQ6cGtoOmVpcDE1NToxOjB4NzA5OTc5NzBDNTE4MTJkYzNBMDEwQzdkMDFiNTBlMGQxN2RjNzlDODpkZWZhdWx0Ijp7InRpbnljbG91ZC5lbmNyeXB0aW9uL2RlY3J5cHQiOlt7fV0sInRpbnljbG91ZC5lbmNyeXB0aW9uL25ldHdvcmsuY3JlYXRlIjpbe31dfX0sInByZiI6W119",
+    "recaps": [
+      {
+        "att": {
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/capabilities": [
+            "tinycloud.capabilities/read"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/hooks/sql/xyz.tinycloud.tinychat/feed/": [
+            "tinycloud.hooks/subscribe"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/hooks/sql/xyz.tinycloud.tinychat/home_feed": [
+            "tinycloud.hooks/subscribe"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/hooks/sql/xyz.tinycloud.tinychat/threads": [
+            "tinycloud.hooks/subscribe"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/kv": [
+            "tinycloud.kv/del",
+            "tinycloud.kv/get",
+            "tinycloud.kv/list",
+            "tinycloud.kv/metadata",
+            "tinycloud.kv/put"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/kv/xyz.tinycloud.tinychat/connectors/": [
+            "tinycloud.kv/del",
+            "tinycloud.kv/get",
+            "tinycloud.kv/list",
+            "tinycloud.kv/put"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/kv/xyz.tinycloud.tinychat/exo/v1/jobs/": [
+            "tinycloud.kv/del",
+            "tinycloud.kv/get",
+            "tinycloud.kv/put"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/kv/xyz.tinycloud.tinychat/exo/v1/requests/": [
+            "tinycloud.kv/del",
+            "tinycloud.kv/get",
+            "tinycloud.kv/list"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/kv/xyz.tinycloud.tinychat/threads/": [
+            "tinycloud.kv/del",
+            "tinycloud.kv/get",
+            "tinycloud.kv/list",
+            "tinycloud.kv/put"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/space": [
+            "tinycloud.space/info"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.sample.healthlog/healthlog": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/schema",
+            "tinycloud.sql/write"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.sample.recipes/recipes": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/schema",
+            "tinycloud.sql/write"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.tinychat/canvas": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/schema",
+            "tinycloud.sql/write"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.tinychat/connectors": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/schema",
+            "tinycloud.sql/write"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.tinychat/details": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/schema",
+            "tinycloud.sql/write"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.tinychat/feed/": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/schema",
+            "tinycloud.sql/write"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.tinychat/home_feed": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/schema",
+            "tinycloud.sql/write"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.tinychat/summaries": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/schema",
+            "tinycloud.sql/write"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.tinychat/threads": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/schema",
+            "tinycloud.sql/write"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.tinychat/transcripts": [
+            "tinycloud.sql/read",
+            "tinycloud.sql/schema",
+            "tinycloud.sql/write"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:secrets/capabilities": [
+            "tinycloud.capabilities/read"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:secrets/kv/vault/secrets/FIREFLIES_API_KEY": [
+            "tinycloud.kv/del",
+            "tinycloud.kv/get",
+            "tinycloud.kv/put"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:secrets/kv/vault/secrets/GRANOLA_API_KEY": [
+            "tinycloud.kv/del",
+            "tinycloud.kv/get",
+            "tinycloud.kv/put"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:secrets/kv/vault/secrets/scoped/google-meet/REFRESH_TOKEN": [
+            "tinycloud.kv/del",
+            "tinycloud.kv/get",
+            "tinycloud.kv/put"
+          ],
+          "urn:tinycloud:encryption:did:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:default": [
+            "tinycloud.encryption/decrypt",
+            "tinycloud.encryption/network.create"
+          ]
+        },
+        "prf": 0
+      }
+    ]
+  },
+  "agentConsent": {
+    "consent": "tinycloud.chat wants you to sign in with your Ethereum account:\n0x70997970C51812dc3A010C7d01b50e0d17dc79C8\n\nI further authorize the stated URI to perform the following actions on my behalf: (1) 'tinycloud.capabilities': 'read' for 'tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/capabilities'. (2) 'tinycloud.kv': 'get', 'list' for 'tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/kv/xyz.tinycloud.tinychat/connectors/'. (3) 'tinycloud.sql': 'read' for 'tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.tinychat/connectors'. (4) 'tinycloud.capabilities': 'read' for 'tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:default/capabilities'. (5) 'tinycloud.sql': 'admin', 'read', 'schema', 'write' for 'tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:default/sql/xyz.tinycloud.eliza/memory'.\n\nURI: <masked>\nVersion: 1\nChain ID: 1\nNonce: <masked>\nIssued At: <masked>\nExpiration Time: <masked>\nResources:\n- urn:recap:eyJhdHQiOnsidGlueWNsb3VkOnBraDplaXAxNTU6MToweDcwOTk3OTcwQzUxODEyZGMzQTAxMEM3ZDAxYjUwZTBkMTdkYzc5Qzg6YXBwbGljYXRpb25zL2NhcGFiaWxpdGllcyI6eyJ0aW55Y2xvdWQuY2FwYWJpbGl0aWVzL3JlYWQiOlt7fV19LCJ0aW55Y2xvdWQ6cGtoOmVpcDE1NToxOjB4NzA5OTc5NzBDNTE4MTJkYzNBMDEwQzdkMDFiNTBlMGQxN2RjNzlDODphcHBsaWNhdGlvbnMva3YveHl6LnRpbnljbG91ZC50aW55Y2hhdC9jb25uZWN0b3JzLyI6eyJ0aW55Y2xvdWQua3YvZ2V0Ijpbe31dLCJ0aW55Y2xvdWQua3YvbGlzdCI6W3t9XX0sInRpbnljbG91ZDpwa2g6ZWlwMTU1OjE6MHg3MDk5Nzk3MEM1MTgxMmRjM0EwMTBDN2QwMWI1MGUwZDE3ZGM3OUM4OmFwcGxpY2F0aW9ucy9zcWwveHl6LnRpbnljbG91ZC50aW55Y2hhdC9jb25uZWN0b3JzIjp7InRpbnljbG91ZC5zcWwvcmVhZCI6W3t9XX0sInRpbnljbG91ZDpwa2g6ZWlwMTU1OjE6MHg3MDk5Nzk3MEM1MTgxMmRjM0EwMTBDN2QwMWI1MGUwZDE3ZGM3OUM4OmRlZmF1bHQvY2FwYWJpbGl0aWVzIjp7InRpbnljbG91ZC5jYXBhYmlsaXRpZXMvcmVhZCI6W3t9XX0sInRpbnljbG91ZDpwa2g6ZWlwMTU1OjE6MHg3MDk5Nzk3MEM1MTgxMmRjM0EwMTBDN2QwMWI1MGUwZDE3ZGM3OUM4OmRlZmF1bHQvc3FsL3h5ei50aW55Y2xvdWQuZWxpemEvbWVtb3J5Ijp7InRpbnljbG91ZC5zcWwvYWRtaW4iOlt7fV0sInRpbnljbG91ZC5zcWwvcmVhZCI6W3t9XSwidGlueWNsb3VkLnNxbC9zY2hlbWEiOlt7fV0sInRpbnljbG91ZC5zcWwvd3JpdGUiOlt7fV19fSwicHJmIjpbXX0",
+    "recaps": [
+      {
+        "att": {
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/capabilities": [
+            "tinycloud.capabilities/read"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/kv/xyz.tinycloud.tinychat/connectors/": [
+            "tinycloud.kv/get",
+            "tinycloud.kv/list"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.tinychat/connectors": [
+            "tinycloud.sql/read"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:default/capabilities": [
+            "tinycloud.capabilities/read"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:default/sql/xyz.tinycloud.eliza/memory": [
+            "tinycloud.sql/admin",
+            "tinycloud.sql/read",
+            "tinycloud.sql/schema",
+            "tinycloud.sql/write"
+          ]
+        },
+        "prf": 0
+      }
+    ]
+  },
+  "mcpConsent": {
+    "consent": "tinycloud.chat wants you to sign in with your Ethereum account:\n0x70997970C51812dc3A010C7d01b50e0d17dc79C8\n\nI further authorize the stated URI to perform the following actions on my behalf: (1) 'tinycloud.capabilities': 'read' for 'tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/capabilities'. (2) 'tinycloud.kv': 'get', 'list' for 'tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/kv/xyz.tinycloud.tinychat/connectors/'. (3) 'tinycloud.sql': 'read' for 'tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.tinychat/connectors'.\n\nURI: <masked>\nVersion: 1\nChain ID: 1\nNonce: <masked>\nIssued At: <masked>\nExpiration Time: <masked>\nResources:\n- urn:recap:eyJhdHQiOnsidGlueWNsb3VkOnBraDplaXAxNTU6MToweDcwOTk3OTcwQzUxODEyZGMzQTAxMEM3ZDAxYjUwZTBkMTdkYzc5Qzg6YXBwbGljYXRpb25zL2NhcGFiaWxpdGllcyI6eyJ0aW55Y2xvdWQuY2FwYWJpbGl0aWVzL3JlYWQiOlt7fV19LCJ0aW55Y2xvdWQ6cGtoOmVpcDE1NToxOjB4NzA5OTc5NzBDNTE4MTJkYzNBMDEwQzdkMDFiNTBlMGQxN2RjNzlDODphcHBsaWNhdGlvbnMva3YveHl6LnRpbnljbG91ZC50aW55Y2hhdC9jb25uZWN0b3JzLyI6eyJ0aW55Y2xvdWQua3YvZ2V0Ijpbe31dLCJ0aW55Y2xvdWQua3YvbGlzdCI6W3t9XX0sInRpbnljbG91ZDpwa2g6ZWlwMTU1OjE6MHg3MDk5Nzk3MEM1MTgxMmRjM0EwMTBDN2QwMWI1MGUwZDE3ZGM3OUM4OmFwcGxpY2F0aW9ucy9zcWwveHl6LnRpbnljbG91ZC50aW55Y2hhdC9jb25uZWN0b3JzIjp7InRpbnljbG91ZC5zcWwvcmVhZCI6W3t9XX19LCJwcmYiOltdfQ",
+    "recaps": [
+      {
+        "att": {
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/capabilities": [
+            "tinycloud.capabilities/read"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/kv/xyz.tinycloud.tinychat/connectors/": [
+            "tinycloud.kv/get",
+            "tinycloud.kv/list"
+          ],
+          "tinycloud:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8:applications/sql/xyz.tinycloud.tinychat/connectors": [
+            "tinycloud.sql/read"
+          ]
+        },
+        "prf": 0
+      }
+    ]
+  }
+}

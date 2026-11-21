@@ -29,8 +29,8 @@ import {
 import { runInWriteLane } from "./write-lane.js";
 // Must match PURGE_LEDGER_KEY_PREFIX in connector-webhooks.ts. Kept local to avoid a runtime
 // cycle: connector-webhooks imports the drain's replay-marker helpers.
-const PURGE_LEDGER_KEY_PREFIX = "webhooks/purged";
-const CORRUPT_PURGE_LEDGER_KEY_PREFIX = "webhooks/corrupt/purged";
+export const PURGE_LEDGER_KEY_PREFIX = "webhooks/purged";
+export const CORRUPT_PURGE_LEDGER_KEY_PREFIX = "webhooks/corrupt/purged";
 
 /**
  * The drain worker (§5.4/§5.5/§6.1 step -1/§3.6) — all four triggers, the per-address
@@ -344,7 +344,7 @@ export function isTombstoned(
   ledger: PurgeLedger | null,
 ): boolean {
   if (ledger === null) return false;
-  if (ledger.recentIds.includes(item.meetingId)) return true;
+  if (ledger.recentIds.includes(item.meetingId) || ledger.matchesRecentIdCode?.(item.meetingId)) return true;
   // The PROVIDER's timestamp, and ONLY it. `receivedAt` is set to `now` on every (re-)delivery
   // and a purge clears the queue, so every post-purge item — replayed capture or genuinely new —
   // carries a `receivedAt` on the safe side of the watermark. Comparing it does not merely weaken
@@ -380,7 +380,7 @@ export function tombstoneReason(
   item: Pick<PendingItem, "meetingId" | "receivedAt" | "sourceTimestamp">,
   ledger: PurgeLedger | null,
 ): string {
-  if (ledger !== null && ledger.recentIds.includes(item.meetingId))
+  if (ledger !== null && (ledger.recentIds.includes(item.meetingId) || ledger.matchesRecentIdCode?.(item.meetingId)))
     return "purged";
   if (item.sourceTimestamp === undefined) return "purged_no_timestamp";
   return "purged";
@@ -1432,7 +1432,7 @@ export function startConnectorQueueMaintenanceTimer(
 
 // ── The timer's address source ───────────────────────────────────────
 
-const CONFIG_KEY_PREFIX = "webhooks/config/";
+export const CONFIG_KEY_PREFIX = "webhooks/config/";
 const ADDRESS_KEY_PATTERN = /^0x[0-9a-f]{40}$/;
 
 /** KV `list` responses have been seen wrapped, doubly wrapped, and as bare arrays. */

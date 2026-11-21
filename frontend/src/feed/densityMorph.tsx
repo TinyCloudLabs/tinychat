@@ -14,7 +14,7 @@ import { AnimatePresence, LayoutGroup, LazyMotion, MotionConfig, type Transition
 import { cn } from "@/lib/utils";
 
 /** One tween for every box in the morph. */
-const LAYOUT_TWEEN: Transition = { duration: 0.4, ease: [0.2, 0, 0, 1] };
+const LAYOUT_TWEEN: Transition = { duration: 0.35, ease: [0.2, 0, 0, 1] };
 /** With reduced motion, boxes jump straight to their new size. */
 const INSTANT: Transition = { duration: 0 };
 /**
@@ -51,6 +51,8 @@ export type MorphItemProps = {
   contentKey: string;
   children: ReactNode;
   className?: string;
+  /** Out of sight but still mounted (a card whose answer waits out its undo window). */
+  hidden?: boolean;
 } & {
   /** `data-*` attributes reach the `<li>` (the feed finds cards by `data-card-key`). */
   [attribute: `data-${string}`]: string | number | boolean | undefined;

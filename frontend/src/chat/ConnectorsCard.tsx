@@ -28,7 +28,20 @@ import {
   FirefliesClient,
 } from "@/lib/connectors/firefliesClient";
 import { isFirefliesSyncInFlight, syncFireflies } from "@/lib/connectors/firefliesSync";
+import { GranolaClient } from "@/lib/connectors/granolaClient";
+import { granolaConnectorEnabled } from "@/lib/connectors/granolaFeature";
+import {
+  GRANOLA_LAST_SYNC_FAILED,
+  GRANOLA_MISSING_KEY_CODE,
+  GRANOLA_RECONNECT_REQUIRED,
+  GRANOLA_SYNC_FAILED,
+  granolaKeyExpired,
+  granolaSummariesOnly,
+  granolaSyncErrorMessage,
+} from "@/lib/connectors/granolaStatus";
+import { syncGranola } from "@/lib/connectors/granolaSync";
 import { readBackgroundDrainGeneration } from "./useBackgroundDrain";
+import { GranolaReconnect, GranolaSummariesNotice } from "./GranolaConnectionNotices";
 import { isFirefliesStale } from "@/lib/connectors/firefliesFreshness";
 import { GmeetClient } from "@/lib/connectors/gmeetClient";
 import {
@@ -138,12 +151,12 @@ const INITIAL_ROW_STATE_MAP: RowStateMap = {
 
 // ── Sync-now engines ───────────────────────────────────────────────────
 //
-// Note that being an INITIAL_ROW_STATE_MAP key forces nothing: `granola` is one
-// too and has no engine. The dispatch in `handleSyncNow` plus the registry's
-// `status` are the forcing functions, and the not-implemented branch is what a
-// row without an engine lands on.
+// Note that being an INITIAL_ROW_STATE_MAP key forces nothing: a connector with
+// no entry in the dispatch below has no engine. The dispatch in `handleSyncNow`
+// plus the registry's `status` are the forcing functions, and the
+// not-implemented branch is what a row without an engine lands on.
 
-type RowSyncEngine = "fireflies" | "gmeet";
+type RowSyncEngine = "fireflies" | "gmeet" | "granola";
 
 /** The two engines' results, flattened to what the row actually renders. */
 type RowSyncOutcome =
@@ -181,6 +194,8 @@ function gmeetRowProgress(p: GmeetSyncProgress): SyncProgress {
 
 export async function runFirefliesSyncNow(opts: {
   tcw: TinyCloudWeb;
+  backendUrl: string;
+  sessionStore: SessionStore;
   apiKey: string;
   signal: AbortSignal;
   onProgress: (p: SyncProgress) => void;
@@ -196,6 +211,7 @@ export async function runFirefliesSyncNow(opts: {
     const res = await syncFireflies({
       client,
       store: connectorStore,
+      checkPurge: createConnectorWebhooksClient(opts.backendUrl, { sessionStore: opts.sessionStore }).checkPurge,
       tcw: opts.tcw,
       onProgress: opts.onProgress,
       signal: opts.signal,
@@ -296,6 +312,48 @@ export async function runGmeetSyncNow(opts: {
     return { ok: false, message: res.error.message, retryAfterMs: res.error.retryAfterMs ?? null };
   } finally {
     signal.removeEventListener("abort", forwardAbort);
+  }
+}
+
+/**
+ * The API key is forwarded in memory to Granola by the backend proxy.
+ */
+export async function runGranolaSyncNow(opts: {
+  tcw: TinyCloudWeb;
+  backendUrl: string;
+  sessionStore: SessionStore;
+  apiKey: string;
+  signal: AbortSignal;
+  onProgress: (p: SyncProgress) => void;
+  isCurrent?: () => boolean;
+}): Promise<RowSyncOutcome> {
+  if (!granolaConnectorEnabled()) {
+    return { ok: false, message: "Granola sync is not available yet.", retryAfterMs: null };
+  }
+  try {
+    const client = new GranolaClient({
+      backendUrl: opts.backendUrl,
+      sessionStore: opts.sessionStore,
+      apiKey: opts.apiKey,
+    });
+    const webhooks = createConnectorWebhooksClient(opts.backendUrl, { sessionStore: opts.sessionStore });
+    const res = await syncGranola({
+      client,
+      store: connectorStore,
+      tcw: opts.tcw,
+      checkPurge: (id, timestamp, signal) => webhooks.checkPurge(id, timestamp, "granola", signal),
+      onProgress: opts.onProgress,
+      signal: opts.signal,
+      isCurrent: opts.isCurrent,
+    });
+    if (res.ok) return { ok: true };
+    return { ok: false, message: res.error.message, retryAfterMs: res.error.retryAfterMs ?? null };
+  } catch {
+    return {
+      ok: false,
+      message: GRANOLA_SYNC_FAILED,
+      retryAfterMs: null,
+    };
   }
 }
 
@@ -423,7 +481,10 @@ export function ConnectorsCard({
       // proxy and runs `syncGoogleMeet`) and never touches FirefliesClient;
       // anything else still gets the explicit not-implemented error.
       const engine: RowSyncEngine | null =
-        d.id === "fireflies" ? "fireflies" : d.id === GMEET_CONNECTOR_ID ? "gmeet" : null;
+        d.id === "fireflies" ? "fireflies"
+        : d.id === GMEET_CONNECTOR_ID ? "gmeet"
+        : d.id === "granola" ? "granola"
+        : null;
       if (engine === null) {
         patchRow(d.id, {
           syncing: false,
@@ -484,10 +545,10 @@ export function ConnectorsCard({
         patchRow(d.id, {
           syncing: false,
           actionError:
-            keyRes.error?.message ??
-            (engine === "gmeet"
-              ? "Could not read the saved Google connection"
-              : "Could not read API key"),
+            engine === "granola" && keyRes.error?.code === GRANOLA_MISSING_KEY_CODE
+              ? GRANOLA_RECONNECT_REQUIRED
+              : keyRes.error?.message ??
+                (engine === "gmeet" ? "Could not read the saved Google connection" : "Could not read API key"),
         });
         return;
       }
@@ -523,14 +584,27 @@ export function ConnectorsCard({
               onProgress,
               onDiagnostics: import.meta.env.DEV ? setGmeetDiagnostics : undefined,
             })
-          : await runFirefliesSyncNow({
-              tcw,
-              apiKey: keyRes.data,
-              signal: ac.signal,
-              onProgress,
-              isCurrent: () => generation === readBackgroundDrainGeneration(),
-              onJoined: () => patchRow(d.id, { joinedBackgroundSync: true }),
-              onJoinSettled: () => patchRow(d.id, { joinedBackgroundSync: false }),
+          : engine === "granola"
+            ? await runGranolaSyncNow({
+                tcw,
+                backendUrl,
+                sessionStore,
+                // Memory only, for this run: the proxy never logs or stores it.
+                apiKey: keyRes.data,
+                signal: ac.signal,
+                onProgress,
+                isCurrent: () => generation === readBackgroundDrainGeneration(),
+              })
+            : await runFirefliesSyncNow({
+                tcw,
+                backendUrl,
+                sessionStore,
+                apiKey: keyRes.data,
+                signal: ac.signal,
+                onProgress,
+                isCurrent: () => generation === readBackgroundDrainGeneration(),
+                onJoined: () => patchRow(d.id, { joinedBackgroundSync: true }),
+                onJoinSettled: () => patchRow(d.id, { joinedBackgroundSync: false }),
             });
       if (syncAbortRefs.current[d.id] === ac) {
         delete syncAbortRefs.current[d.id];
@@ -641,6 +715,11 @@ export function ConnectorsCard({
                   onCancelWait: () => patchRow(d.id, { queuedSync: null, busyOffer: null }),
                 } : undefined}
               >
+                {d.status === "available" && granolaKeyExpired(rows[d.id].connection) && (
+                  <GranolaReconnect tcw={tcw}
+                    className="inline-flex w-fit items-center gap-1 text-sm font-medium hover:underline [&>svg]:size-4"
+                    disabled={rows[d.id].syncing || dialog !== null} onReconnect={() => handleConnect(d)} />
+                )}
                 {d.id === GMEET_CONNECTOR_ID && d.status === "available" && (
                   <CalendarAutojoinSection backendUrl={backendUrl} sessionStore={sessionStore} revision={autojoinRevision}
                     onEnable={() => setDialog({ kind: "autojoin", id: d.id })} />
@@ -747,6 +826,8 @@ const ConnectorRow: FC<{
 }) => {
   const comingSoon = d.status === "coming-soon";
   const connected = state.connection?.status === "connected";
+  const storedErrorCode = state.connection ? state.connection.lastSyncError : null;
+  const storedError = d.id === "granola" ? granolaSyncErrorMessage(storedErrorCode) : storedErrorCode;
   // A coming-soon row dims only its icon and its status dot; its text keeps
   // full contrast (a dimmed row put muted text under 4.5:1).
   const containerCls = "flex flex-col gap-2 py-3";
@@ -884,6 +965,9 @@ const ConnectorRow: FC<{
           {gmeet.hasLog && <CopyGmeetSyncLogButton getLog={gmeet.getLog} />}
         </>
       )}
+      {!comingSoon && granolaSummariesOnly(state.connection) && (
+        <GranolaSummariesNotice className="rounded-md border border-border p-2 text-xs text-muted-foreground" />
+      )}
       {!comingSoon && state.syncing && state.joinedBackgroundSync && (
         <p className="text-xs text-muted-foreground">
           A sync that started when you opened TinyCloud One is still running — this one
@@ -907,9 +991,9 @@ const ConnectorRow: FC<{
         !state.actionError &&
         connected &&
         (state.connection?.lastSyncStatus === "error" || state.connection?.lastSyncStatus === "partial") &&
-        state.connection.lastSyncError && (
+        storedError && (
           <p role="alert" className="text-xs text-destructive">
-            {state.connection.lastSyncError}
+            {storedError}
           </p>
         )}
       {children}
@@ -948,7 +1032,9 @@ function rowStatus(comingSoon: boolean, state: RowState, connectorId: ConnectorI
   if (comingSoon) return { tone: "neutral", label: "Coming soon" };
   if (!state.loaded) return null;
   if (state.connection?.status !== "connected") return { tone: "neutral", label: "Not connected" };
-  if (state.connection.lastSyncStatus === "error") return { tone: "destructive", label: "Last sync failed" };
+  if (state.connection.lastSyncStatus === "error") {
+    return { tone: "destructive", label: connectorId === "granola" ? GRANOLA_LAST_SYNC_FAILED : "Last sync failed" };
+  }
   if (state.connection.lastSyncStatus === "partial") return { tone: "warning", label: "Last sync incomplete" };
   if (connectorId === "fireflies" && state.connection.lastSyncedAt
     && isFirefliesStale(state.connection.lastSyncedAt)) {

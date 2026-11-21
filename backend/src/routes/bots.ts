@@ -1,28 +1,90 @@
 // /api/bots — tiny bots slice 1 (TC-2808): the owner's Main bot, proxied to the bots service.
 //
 // The owner is always the authenticated session address; the body and request headers never choose it.
-// The service secret stays server-side. Message content is neither logged nor stored here.
+// Each call to the service is signed (bots-signed-call.ts). Message content is neither logged nor stored here.
 
 import { botsConnectFetch, validateBotsConnectHost } from "../bots-transport";
+import { type Environment, signedCallHeader } from "../bots-signed-call";
 import { Router } from "express";
 import type { Request, RequestHandler, Response } from "express";
+import { botCaps, CAP_MODE, type CapMode, type PlanName } from "../bot-caps";
+import { isBotActivityRecord } from "../bot-history.js";
+import { BOT_KEY, MAIN_BOT_KEY, orderedBots, publicBot, publicDeleted, type Bot, type BotsRegistry } from "../bots-registry";
 
 export interface BotsConfig {
   serviceUrl: string;
   serviceSecret: string;
+  /** The environment of the service at serviceUrl, signed into every call. Default `private`. */
+  environment?: Environment;
   accountAllowed: (address: string) => boolean;
   /** Overall bound on one POST turn (BOTS_POST_TIMEOUT_MS, default 120000). */
   postTimeoutMs: number;
   fetchImpl?: typeof fetch;
   onTurnFinished?: () => void;
+  /** Current owner-scoped admission for an outgoing turn, supplied by the registry. */
+  listForTurn?: (ownerDid: string, sourceKey: string) => Promise<string[]>;
 }
 
+// Legacy history may restore a sandbox before OMP can answer. Keep this GET bounded independently of turns.
+export const BOTS_HISTORY_GET_TIMEOUT_MS = 300_000;
 const MAX_TEXT = 8000;
 const UNAVAILABLE = { code: "bot_unavailable", message: "Main isn't available. Try again later." };
 
 /** Same canonical owner DID as MCP chat: did:pkh on chain 1 with the lowercased address. */
 export function botOwnerDid(address: string): string {
   return `did:pkh:eip155:1:${address.toLowerCase()}`;
+}
+
+const WEB_MODES = ["off", "listed", "any"] as const;
+type WebMode = (typeof WEB_MODES)[number];
+const MAX_WEB_HOSTS = 50;
+const MAX_WEB_HOST_LENGTH = 253;
+const MAX_WEB_MESSAGE = 200;
+const WEB_INVALID_MESSAGE = "Those sites weren't accepted. Use site names like example.com, one per line, up to 50. Shared domains like github.io or co.uk need your own name in front, like you.github.io.";
+
+const isWebMode = (value: unknown): value is WebMode => WEB_MODES.some(mode => mode === value);
+
+/** The only two fields a browser may set; anything else in the body is dropped. */
+function webSettingsBody(body: unknown): { mode: WebMode; hosts: string[] } | null {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return null;
+  const { mode, hosts } = body as { mode?: unknown; hosts?: unknown };
+  if (!isWebMode(mode) || !Array.isArray(hosts) || hosts.length > MAX_WEB_HOSTS) return null;
+  if (!hosts.every(host => typeof host === "string" && host.length <= MAX_WEB_HOST_LENGTH)) return null;
+  return { mode, hosts: hosts as string[] };
+}
+
+const isCount = (value: unknown): value is number => typeof value === "number" && Number.isInteger(value) && value >= 0;
+
+/** Rebuilds the service's answer from the contract fields; null when it does not have the contract's shape. */
+function toWebSettings(payload: unknown): { mode: WebMode; hosts: string[]; available: boolean; today: { searches: number; pages: number; blocked: number } } | null {
+  if (!payload || typeof payload !== "object") return null;
+  const { mode, hosts, available, today } = payload as { mode?: unknown; hosts?: unknown; available?: unknown; today?: unknown };
+  if (!isWebMode(mode) || !Array.isArray(hosts) || !hosts.every(host => typeof host === "string") || typeof available !== "boolean") return null;
+  if (!today || typeof today !== "object") return null;
+  const { searches, pages, blocked } = today as { searches?: unknown; pages?: unknown; blocked?: unknown };
+  if (!isCount(searches) || !isCount(pages) || !isCount(blocked)) return null;
+  return { mode, hosts: [...hosts], available, today: { searches, pages, blocked } };
+}
+
+/** Builds the internal send body from the authenticated owner and route's admitted bot. */
+export async function botTurnBody(config: BotsConfig, address: string, sourceKey: string, text: string) {
+  try {
+    const messageableBotKeys = await config.listForTurn?.(botOwnerDid(address), sourceKey);
+    if (messageableBotKeys?.length) return { text, messageableBotKeys };
+  } catch { /* A registry read failure leaves the turn without messaging. */ }
+  return { text };
+}
+
+/**
+ * Headers for one signed call to the bots service at `url`, with exactly `body`. Each call needs its own headers.
+ */
+export function botsServiceHeaders(config: BotsConfig, ownerDid: string, method: string, url: string, body?: string): Record<string, string> {
+  const { pathname, search } = new URL(url);
+  const bot = /^\/v1\/bots\/([^/]+)/.exec(pathname)?.[1] ?? "";
+  const authorization = signedCallHeader(config.serviceSecret, {
+    direction: "to-service", environment: config.environment ?? "private", owner: ownerDid, bot, method, path: pathname + search, body,
+  });
+  return body === undefined ? { authorization } : { authorization, "content-type": "application/json" };
 }
 
 /**
@@ -48,45 +110,230 @@ export function botsFromEnv(env: Record<string, string | undefined>): BotsConfig
     accountAllowed: address => accounts.has("*") || accounts.has(address.toLowerCase()) };
 }
 
-export function createBotsRouter(opts: { config?: BotsConfig; authMiddleware: RequestHandler; paidLimiter?: RequestHandler }): Router {
+/**
+ * Tells the service a bot's state under the counter of the owner's record. The service ignores anything older than
+ * what it holds, so a late or repeated call is harmless. Answers whether the service took it.
+ */
+export async function announceBot(config: BotsConfig, address: string, key: string, state: "active" | "suspended" | "deleting", seq: number): Promise<boolean> {
+  try {
+    const url = `${config.serviceUrl}/v1/bots/${key}`;
+    const body = JSON.stringify({ state, seq });
+    const response = await (config.fetchImpl ?? fetch)(url, { method: "PUT", headers: botsServiceHeaders(config, botOwnerDid(address), "PUT", url, body), body, signal: AbortSignal.timeout(10_000) });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Asks the bots service to remove a bot's working state. The service is first told the bot is being deleted, under
+ * the counter of the owner's record, so a removal can never act on an older state. Only an explicit answer counts as
+ * `gone`; anything unclear is `failed`, and the caller tries again later.
+ */
+export async function removeBotFromService(config: BotsConfig, address: string, key: string, seq: number): Promise<"gone" | "waiting" | "failed"> {
+  if (!(await announceBot(config, address, key, "deleting", seq))) return "failed";
+  try {
+    const url = `${config.serviceUrl}/v1/bots/${key}`;
+    const response = await (config.fetchImpl ?? fetch)(url, { method: "DELETE", headers: botsServiceHeaders(config, botOwnerDid(address), "DELETE", url), signal: AbortSignal.timeout(30_000) });
+    // The service was just told about this bot, so "not found" means it has already removed it for good.
+    if (response.status === 404) return "gone";
+    if (!response.ok) return "failed";
+    const answer: unknown = await response.json();
+    const outcome = typeof answer === "object" && answer !== null && "outcome" in answer ? answer.outcome : undefined;
+    return outcome === "gone" || outcome === "waiting" ? outcome : "failed";
+  } catch {
+    return "failed";
+  }
+}
+
+/** The same answer as UNAVAILABLE, for a bot other than Main. */
+const BOT_UNAVAILABLE = { code: "bot_unavailable", message: "This bot can't be reached right now. Try again shortly." };
+
+export function createBotsRouter(opts: {
+  config?: BotsConfig; authMiddleware: RequestHandler; paidLimiter?: RequestHandler; registry?: BotsRegistry; capMode?: CapMode;
+  /** The plan of an account, for the per-plan limit rule. */
+  planOf?: (address: string) => Promise<PlanName | undefined>;
+  /** Called once a bot is recorded as being deleted, to have the deletion carried out. It does not wait for it. */
+  onDeleting?: (address: string, key: string) => void;
+}): Router {
+  const { registry } = opts;
+  const capMode = opts.capMode ?? CAP_MODE;
+  /** The account's plan, asked for only under the per-plan rule. One that cannot be read is undefined: none is guessed. */
+  const accountPlan = async (address: string): Promise<PlanName | undefined> => {
+    if (capMode !== "table") return undefined;
+    try {
+      return await opts.planOf?.(address);
+    } catch {
+      return undefined;
+    }
+  };
   const router = Router();
   const { config } = opts;
   router.use(opts.authMiddleware);
 
   const enabledFor = (req: Request): boolean => Boolean(config && req.user && config.accountAllowed(req.user.address));
-  const upstreamHeaders = (address: string): Record<string, string> => ({
-    authorization: `Bearer ${config!.serviceSecret}`,
-    "x-tinycloud-owner": botOwnerDid(address),
-  });
   const gate = (req: Request, res: Response): string | null => {
     if (!req.user) { res.status(401).json({ error: "unauthenticated", message: "Authentication required" }); return null; }
     if (!enabledFor(req)) { res.status(404).json({ error: "not_found" }); return null; }
     return req.user.address;
   };
 
+  /**
+   * Tells the service a bot's state under the record's counter. The service ignores anything older than what it
+   * holds, so a late or repeated call is harmless. Answers whether the service took it.
+   */
+  const announce = (address: string, key: string, state: "active" | "suspended" | "deleting", seq: number): Promise<boolean> => announceBot(config!, address, key, state, seq);
+
   router.get("/status", (req, res) => {
     res.json({ enabled: enabledFor(req) });
   });
 
-  router.get("/main/messages", async (req, res) => {
+  // The owner's bots, and how many more may be created. The owner is the session address; nothing in the request names one.
+  router.get("/", async (req, res) => {
     const address = gate(req, res);
     if (!address) return;
+    if (!registry) { res.status(404).json({ error: "not_found" }); return; }
     try {
-      const upstream = await (config!.fetchImpl ?? fetch)(`${config!.serviceUrl}/v1/bots/main/messages`, {
-        headers: upstreamHeaders(address),
-        signal: AbortSignal.timeout(10_000),
-      });
-      if (!upstream.ok) { res.status(502).json({ error: UNAVAILABLE.code, message: UNAVAILABLE.message }); return; }
-      res.json(await upstream.json());
+      const row = await registry.read(address);
+      res.json({ bots: orderedBots(row).map(publicBot), deleted: row.deleted.map(publicDeleted), ...botCaps(capMode, await accountPlan(address), row) });
     } catch {
-      res.status(502).json({ error: UNAVAILABLE.code, message: UNAVAILABLE.message });
+      res.status(503).json({ error: "bots_unavailable" });
     }
   });
 
-  // Each send starts a model call in the bot, so it is charged to the paid-chat limiter like /api/agent/chat.
-  router.post("/main/messages", opts.paidLimiter ?? ((_req, _res, next) => next()), async (req, res) => {
+  // Main's web access setting (user-enabled, off by default). The service owns the rules; this only proxies, and
+  // rebuilds the answer from the contract fields so nothing else the service returns reaches the browser.
+  const webUrl = `/v1/bots/main/web`;
+  const callWeb = async (address: string, init: { method: "GET" | "PUT"; body?: string }): Promise<globalThis.Response> =>
+    (config!.fetchImpl ?? fetch)(`${config!.serviceUrl}${webUrl}`, {
+      method: init.method,
+      headers: botsServiceHeaders(config!, botOwnerDid(address), init.method, `${config!.serviceUrl}${webUrl}`, init.body),
+      ...(init.body === undefined ? {} : { body: init.body }),
+      signal: AbortSignal.timeout(10_000),
+    });
+  const sendWeb = async (res: Response, upstream: Promise<globalThis.Response>): Promise<void> => {
+    try {
+      const response = await upstream;
+      if (response.status === 400) {
+        const message: unknown = ((await response.json().catch(() => null)) as { message?: unknown } | null)?.message;
+        res.status(400).json({ error: "invalid", message: typeof message === "string" && message.length > 0 && message.length <= MAX_WEB_MESSAGE ? message : WEB_INVALID_MESSAGE });
+        return;
+      }
+      if (!response.ok) throw new Error("upstream");
+      const settings = toWebSettings(await response.json());
+      if (!settings) throw new Error("shape");
+      res.json(settings);
+    } catch {
+      res.status(502).json({ error: UNAVAILABLE.code, message: UNAVAILABLE.message });
+    }
+  };
+
+  router.get("/main/web", async (req, res) => {
     const address = gate(req, res);
     if (!address) return;
+    await sendWeb(res, callWeb(address, { method: "GET" }));
+  });
+
+  router.put("/main/web", async (req, res) => {
+    const address = gate(req, res);
+    if (!address) return;
+    const body = webSettingsBody(req.body);
+    if (!body) { res.status(400).json({ error: "invalid", message: WEB_INVALID_MESSAGE }); return; }
+    await sendWeb(res, callWeb(address, { method: "PUT", body: JSON.stringify(body) }));
+  });
+
+  // Creates a bot for the signed-in owner. Its key is chosen here; the request names neither an owner nor a key.
+  router.post("/", async (req, res) => {
+    const address = gate(req, res);
+    if (!address) return;
+    if (!registry) { res.status(404).json({ error: "not_found" }); return; }
+    try {
+      const { limits } = botCaps(capMode, await accountPlan(address), await registry.read(address));
+      if (!limits) { res.status(503).json({ error: "bots_unavailable" }); return; }
+      const created = await registry.create(address, { name: req.body?.name, shape: req.body?.shape, colour: req.body?.colour }, limits.private.max);
+      if (!created.ok) {
+        const status = created.error === "name_taken" || created.error === "bot_limit" ? 409 : 400;
+        res.status(status).json(created.error === "bot_limit" ? { error: "bot_limit", environment: "private" } : { error: created.error });
+        return;
+      }
+      // If this fails the bot still exists; a message to it announces it again.
+      await announce(address, created.bot.key, "active", created.seq);
+      res.status(201).json({ bot: created.bot });
+    } catch {
+      res.status(503).json({ error: "bots_unavailable" });
+    }
+  });
+
+  /**
+   * The bot a keyed route acts on, taken from the signed-in owner's own record. A malformed key is refused before
+   * anything is looked up, and a key that is not in that record before the service is called. Answers 404 or 503
+   * itself and returns undefined.
+   */
+  const ownBot = async (res: Response, address: string, key: string): Promise<{ bot: Bot; seq: number } | undefined> => {
+    if (!registry || !BOT_KEY.test(key)) { res.status(404).json({ error: "not_found" }); return undefined; }
+    try {
+      const row = await registry.read(address);
+      const bot = row.bots.find(candidate => candidate.key === key);
+      if (bot) return { bot, seq: row.seq };
+      res.status(404).json({ error: "not_found" });
+    } catch {
+      res.status(503).json({ error: "bots_unavailable" });
+    }
+    return undefined;
+  };
+
+  /**
+   * One call to the service for a bot. Main exists there without being announced; any other bot exists there only
+   * once announced. So if the service does not know a bot the record says is active, it is told again, once, and
+   * the call is made again. `call` builds a fresh request each time. `seq` is the record's counter, absent for Main.
+   */
+  const callBot = async (address: string, key: string, seq: number | undefined, call: () => Promise<globalThis.Response>): Promise<globalThis.Response> => {
+    const first = await call();
+    if (first.status !== 404 || seq === undefined || !(await announce(address, key, "active", seq))) return first;
+    await first.body?.cancel();
+    return call();
+  };
+
+  const readMessages = async (res: Response, address: string, key: string, seq?: number): Promise<void> => {
+    const unavailable = key === MAIN_BOT_KEY ? UNAVAILABLE : BOT_UNAVAILABLE;
+    try {
+      const url = `${config!.serviceUrl}/v1/bots/${key}/messages`;
+      const upstream = await callBot(address, key, seq, () => (config!.fetchImpl ?? fetch)(url, {
+        headers: botsServiceHeaders(config!, botOwnerDid(address), "GET", url),
+        signal: AbortSignal.timeout(key === MAIN_BOT_KEY ? BOTS_HISTORY_GET_TIMEOUT_MS : 10_000),
+      }));
+      if (!upstream.ok) { res.status(502).json({ error: unavailable.code, message: unavailable.message }); return; }
+      const listed = await upstream.json() as { messages: unknown; activity?: unknown };
+      if (listed && Object.hasOwn(listed, "activity")) {
+        const { activity, ...rest } = listed;
+        const records = Array.isArray(activity) ? activity.filter(isBotActivityRecord) : [];
+        res.json({ ...rest, ...(records.length ? { activity: records } : {}) });
+      } else {
+        res.json(listed);
+      }
+    } catch {
+      res.status(502).json({ error: unavailable.code, message: unavailable.message });
+    }
+  };
+
+  router.get("/main/messages", async (req, res) => {
+    const address = gate(req, res);
+    if (!address) return;
+    await readMessages(res, address, MAIN_BOT_KEY);
+  });
+
+  router.get("/:key/messages", async (req, res) => {
+    const address = gate(req, res);
+    if (!address) return;
+    const own = await ownBot(res, address, req.params.key);
+    if (!own) return;
+    // The service answers the same for a bot that is being deleted; say so here, without asking it.
+    if (own.bot.state === "deleting") { res.status(409).json({ error: "bot_not_active", state: own.bot.state }); return; }
+    await readMessages(res, address, own.bot.key, own.seq);
+  });
+
+  // One turn: the owner's text goes to the bot `key` names, and the service's events stream back.
+  const sendMessage = async (req: Request, res: Response, address: string, key: string, seq?: number): Promise<void> => {
     const text: unknown = req.body?.text;
     if (typeof text !== "string" || text.length < 1 || text.length > MAX_TEXT) {
       res.status(400).json({ error: "invalid", message: "Messages can be up to 8,000 characters." });
@@ -106,12 +353,14 @@ export function createBotsRouter(opts: { config?: BotsConfig; authMiddleware: Re
     res.flushHeaders();
 
     try {
-      const upstream = await (config!.fetchImpl ?? fetch)(`${config!.serviceUrl}/v1/bots/main/messages`, {
+      const url = `${config!.serviceUrl}/v1/bots/${key}/messages`;
+      const body = JSON.stringify(await botTurnBody(config!, address, key, text));
+      const upstream = await callBot(address, key, seq, () => (config!.fetchImpl ?? fetch)(url, {
         method: "POST",
-        headers: { ...upstreamHeaders(address), "content-type": "application/json" },
-        body: JSON.stringify({ text }),
+        headers: botsServiceHeaders(config!, botOwnerDid(address), "POST", url, body),
+        body,
         signal: controller.signal,
-      });
+      }));
       if (!upstream.ok || !upstream.body) throw new Error("upstream");
       const reader = upstream.body.getReader();
       // Release a pending read even if the upstream body ignores the abort signal.
@@ -133,13 +382,63 @@ export function createBotsRouter(opts: { config?: BotsConfig; authMiddleware: Re
       }
     } catch {
       if ((timedOut || !controller.signal.aborted) && !res.writableEnded) {
-        res.write(`event: error\ndata: ${JSON.stringify(UNAVAILABLE)}\n\n`);
+        res.write(`event: error\ndata: ${JSON.stringify(key === MAIN_BOT_KEY ? UNAVAILABLE : BOT_UNAVAILABLE)}\n\n`);
       }
     } finally {
       clearTimeout(timer);
       res.off("close", abort);
       if (!res.writableEnded) res.end();
       config!.onTurnFinished?.();
+    }
+  };
+
+  const paidLimiter: RequestHandler = opts.paidLimiter ?? ((_req, _res, next) => next());
+
+  // Each send starts a model call in the bot, so it is charged to the paid-chat limiter like /api/agent/chat.
+  router.post("/main/messages", paidLimiter, async (req, res) => {
+    const address = gate(req, res);
+    if (!address) return;
+    await sendMessage(req, res, address, MAIN_BOT_KEY);
+  });
+
+  router.post("/:key/messages", paidLimiter, async (req, res) => {
+    const address = gate(req, res);
+    if (!address) return;
+    const own = await ownBot(res, address, req.params.key);
+    if (!own) return;
+    if (own.bot.state !== "active") { res.status(409).json({ error: "bot_not_active", state: own.bot.state }); return; }
+    await sendMessage(req, res, address, own.bot.key, own.seq);
+  });
+
+  // Renames or restyles a bot, Main included. Only the name, the shape and the colour are taken from the request.
+  router.patch("/:key", async (req, res) => {
+    const address = gate(req, res);
+    if (!address) return;
+    if (!registry) { res.status(404).json({ error: "not_found" }); return; }
+    try {
+      const updated = await registry.update(address, req.params.key, { name: req.body?.name, shape: req.body?.shape, colour: req.body?.colour });
+      if (updated.ok) { res.json({ bot: updated.bot }); return; }
+      const status = updated.error === "not_found" ? 404 : updated.error === "name_taken" || updated.error === "bot_deleting" ? 409 : 400;
+      res.status(status).json({ error: updated.error });
+    } catch {
+      res.status(503).json({ error: "bots_unavailable" });
+    }
+  });
+
+  // Starts deleting a bot. The record says so before the service is told, and everything after that happens later.
+  router.delete("/:key", async (req, res) => {
+    const address = gate(req, res);
+    if (!address) return;
+    if (!registry) { res.status(404).json({ error: "not_found" }); return; }
+    try {
+      const begun = await registry.beginDelete(address, req.params.key);
+      if (!begun.ok) { res.status(begun.error === "not_found" ? 404 : 409).json({ error: begun.error }); return; }
+      // If this fails the deletion still stands: the service is told again when the deletion is carried out.
+      await announce(address, begun.bot.key, "deleting", begun.seq);
+      opts.onDeleting?.(address, begun.bot.key);
+      res.status(202).json({ bot: publicBot(begun.bot) });
+    } catch {
+      res.status(503).json({ error: "bots_unavailable" });
     }
   });
 

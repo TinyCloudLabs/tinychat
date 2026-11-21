@@ -630,13 +630,16 @@ function normalizeSource(source: unknown): string {
   return source;
 }
 
+export const WEBHOOK_TOKEN_KEY_PREFIX = "webhooks/tokens/";
+export const WEBHOOK_CONFIG_KEY_PREFIX = "webhooks/config/";
+
 function tokenKey(token: string): string {
   if (!isValidToken(token)) throw new Error("Invalid webhook token");
-  return `webhooks/tokens/${token}`;
+  return `${WEBHOOK_TOKEN_KEY_PREFIX}${token}`;
 }
 
 function configKey(address: string): string {
-  return `webhooks/config/${normalizeAddress(address)}`;
+  return `${WEBHOOK_CONFIG_KEY_PREFIX}${normalizeAddress(address)}`;
 }
 
 function parseTokenRecord(raw: unknown): WebhookTokenRecord | null {

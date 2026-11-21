@@ -1,0 +1,76 @@
+name: Native build inputs
+
+# Shared by the native CI callers; releases and merge queues never select paths.
+on:
+  workflow_call:
+    inputs:
+      component:
+        description: Build input set (native, desktop, mobile or metal)
+        type: string
+        default: native
+    outputs:
+      native:
+        value: ${{ jobs.changes.outputs.native }}
+      frontend:
+        value: ${{ jobs.changes.outputs.frontend }}
+
+permissions:
+  contents: read
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      native: ${{ steps.diff.outputs.native }}
+      frontend: ${{ steps.diff.outputs.frontend }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        if: github.event_name == 'pull_request'
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Test native build input selection
+        if: github.event_name == 'pull_request'
+        run: python3 .github/scripts/test-native-changes.py
+      - id: diff
+        name: Select native and WebKit inputs
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          COMPONENT: ${{ inputs.component }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          component=${COMPONENT:-native}
+          case "$component" in native|desktop|mobile|metal) ;; *) exit 1 ;; esac
+          if [[ "$EVENT" != pull_request ]]; then
+            printf 'native=true\nfrontend=true\n' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Compare the whole PR, including both sides of renames. A failed diff fails the job.
+          git diff --no-renames --name-only -z "$BASE...$HEAD" > "$RUNNER_TEMP/native-paths"
+          native=false
+          frontend=false
+          while IFS= read -r -d '' path; do
+            # Root files include workspace definitions, lockfiles and build/install configuration.
+            # Over-include new root inputs rather than accidentally accepting a native skip.
+            if [[ "$path" != */* ]]; then
+              native=true; frontend=true
+              continue
+            fi
+            case "$path" in
+              packages/*|patches/*|scripts/*|test/*|.github/*|agent-skills/*|agent-setup/*|*/package.json|*/bun.lock|*/bun.lockb|*/bunfig.toml|*/package-lock.json|*/npm-shrinkwrap.json|*/pnpm-lock.yaml|*/yarn.lock|*/.npmrc)
+                native=true; frontend=true ;;
+              frontend/*)
+                frontend=true
+                # Metal compiles Rust, not the web app; Rust embeds these two web inputs.
+                if [[ "$component" != metal || "$path" == frontend/.env.production || "$path" == frontend/src/capture/recorder/recordShortcut.ts ]]; then native=true; fi ;;
+              desktop/*|.cargo/*)
+                if [[ "$component" != mobile ]]; then native=true; fi ;;
+              ios/*|android/*|mobile/*)
+                if [[ "$component" == native || "$component" == mobile ]]; then native=true; fi ;;
+            esac
+          done < "$RUNNER_TEMP/native-paths"
+          printf 'native=%s\nfrontend=%s\n' "$native" "$frontend" >> "$GITHUB_OUTPUT"
+          printf '%s inputs: %s; frontend/WebKit inputs: %s\n' "$component" "$native" "$frontend" >> "$GITHUB_STEP_SUMMARY"

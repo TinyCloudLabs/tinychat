@@ -44,6 +44,8 @@ import { inProgressShown, type InProgressRowsViewProps } from "./InProgressRows"
 import { noteBackTarget } from "./library/combine/combinedView";
 import { LibraryScreen } from "./library/LibraryScreen";
 import { NoteDetail } from "./library/NoteDetail";
+import { SharedRecordingDetail } from "./share/SharedRecordingDetail";
+import { sharedRecordId } from "@/lib/nativeShares/receivedShares";
 import { RecentNotePendingSheet } from "./library/RecentNotePendingSheet";
 import { VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
 import { useLibrary } from "./library/useLibrary";
@@ -173,12 +175,19 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
   // Static screen fixtures predate account-scoped pending snapshots; the live store always sets this field.
   const pendingVisible = recorder.pending.accountDid === undefined || recorder.pending.accountDid === tcw.did;
 
+  // A recording shared with you (TC-3195) is not in your own Library: it has a detail of its own.
+  const sharedId = noteScreen ? sharedRecordId(screen.noteId) : null;
   // Recent, the Library and the open note: one reader, through the per-space queue.
   const library = useLibrary(tcw, {
     visible: active,
-    noteId: screen.noteId ?? recentNoteId,
+    noteId: sharedId ? null : (screen.noteId ?? recentNoteId),
     onPhone: pendingVisible ? (recorder.pending.notes ?? null) : null,
   });
+  const { setFilter } = library;
+  // Its row is under Shared with me, so the list beside it shows that.
+  useEffect(() => {
+    if (sharedId) setFilter("shared");
+  }, [sharedId, setFilter]);
   const pipelineEntries = useMemo(() => listPipelineEntries(library.items, tcw), [library.items, tcw]);
   const [activityViews, setActivityViews] = useState<ReadonlyMap<string, NotePipelineView>>(() => new Map());
   const pipelines = useMemo(() => new Map([...activityViews].map(([id, view]) => [id, view.pipeline])), [activityViews]);
@@ -357,7 +366,15 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
         data-scroll-root=""
         data-testid="capture-detail"
       >
-        {noteScreen || (recentNoteId !== null && openNote !== null) ? (
+        {sharedId ? (
+          <SharedRecordingDetail
+            key={sharedId}
+            tcw={tcw}
+            recordId={sharedId}
+            pushed={!wide}
+            onBack={() => goUp(navigate, noteBackTarget(location.state, notePage))}
+          />
+        ) : noteScreen || (recentNoteId !== null && openNote !== null) ? (
           <NoteDetail
             key={screen.noteId ?? recentNoteId}
             library={library}

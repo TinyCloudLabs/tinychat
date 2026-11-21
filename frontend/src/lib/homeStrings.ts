@@ -19,8 +19,8 @@ export const WELCOME_LEAD = "Your agents post updates and ask for decisions here
 export const WELCOME_DEMO_NOTE = "Sample cards from sample agents. Answer one: nothing leaves this page.";
 export const WELCOME_LEARN_MORE = "What is TinyCloud?";
 export const WELCOME_AGENT_TITLE = "Let your agent share to your TinyCloud";
-export const WELCOME_AGENT_BODY = "Paste this into Claude Code, Codex or any agent. It sets you up if you're new and connects the agent to your Home feed.";
-export const WELCOME_AGENT_PROMPT = "Fetch https://agents.tinycloud.xyz/feed with curl and follow it. Post the updates I ask for to my TinyCloud Home feed.";
+export const WELCOME_AGENT_BODY = "Paste this into Claude Code, Codex or any agent. It installs the TinyCloud CLI if needed, sets you up if you're new, and connects the agent to your TinyCloud One Feed.";
+export const WELCOME_AGENT_PROMPT = "Fetch https://agents.tinycloud.xyz/feed with curl and follow it, including running its installer. Post the updates I ask for to my TinyCloud One Feed.";
 export const WELCOME_AGENT_COPY = "Copy prompt";
 export const WELCOME_AGENT_COPIED = "Copied";
 export const WELCOME_AGENT_COPY_FAILED = "Select the prompt and copy it";
@@ -55,7 +55,7 @@ export const LANDING_LINK_LABEL = `About ${APP_NAME}`;
 /** Connectors on the web asks for its own permission in place, when the owner opens it. */
 export const FEATURE_ACCESS_TITLE = { connectors: "Allow Connectors" } as const;
 export const FEATURE_ACCESS_BODY = {
-  connectors: `To sync your meetings, OpenKey will ask you to let ${APP_NAME} keep them in your TinyCloud space, along with the keys and sign-ins you add for Fireflies, Granola and Google Meet, which are stored encrypted.`,
+  connectors: `To sync your meetings, OpenKey will ask you to let ${APP_NAME} keep them in your TinyCloud space, along with the keys and sign-ins you add for Fireflies, Granola and Google Meet, which are stored encrypted. To read those keys, One also asks to unlock everything encrypted to your account, including data other apps saved.`,
 } as const;
 /** The calm state after "Not now": the feature waits for permission, and Continue asks again. */
 export const FEATURE_ACCESS_NEEDED = { connectors: "Connectors need your permission." } as const;
@@ -66,5 +66,7 @@ export const FEATURE_ACCESS_BUSY = "Finish the current recording or upload first
 export const FEATURE_ACCESS_DECLINED = "Permission wasn't given. Nothing changed.";
 export const FEATURE_ACCESS_FAILED = "Couldn't ask for permission. Nothing changed. Try again.";
 export const FEATURE_ACCESS_WRONG_ACCOUNT = "That was a different OpenKey account from the one signed in here. Nothing changed. Try again with the same account.";
+/** Everything but the unlock-encrypted-data permission was allowed: the session was not kept, so nothing changed. */
+export const FEATURE_ACCESS_PARTIAL = "Connectors can't read your saved keys without permission to unlock your encrypted data, so nothing changed. To try again, select Continue and allow that permission.";
 /** A new recording or upload waits while OpenKey is open for one of these asks. */
 export const FEATURE_ACCESS_WAIT_FOR_OPENKEY = "Finish in OpenKey first, then try again.";
