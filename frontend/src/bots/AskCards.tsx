@@ -1,6 +1,6 @@
 // Main's questions as cards. The question and choices come from the box, so they are only ever rendered as text
 // children: no markup, links or images, and hidden or direction-changing characters are removed first (askText.ts).
-import { useEffect, useId, useState } from "react";
+import { Fragment, useEffect, useId, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import type { AskRequest } from "./botsApi";
@@ -99,6 +99,18 @@ function AskCard({ request, asks }: { request: AskRequest; asks: Asks }) {
 }
 
 /**
+ * What the app shows in the chat for the owner's decision on a question card, in a muted style so it is not taken for
+ * words the owner typed. A "not now" the owner just gave is already on the card, which collapses to it; once the
+ * card is gone (a reload), the line is what is left. An expired question has no message to Main: its line is only
+ * for the owner, and only for a question the owner saw in this chat.
+ */
+export function AppLine({ decision, live }: { decision: "answered" | "declined" | "expired"; live: boolean }) {
+  if (decision === "declined" && live) return null;
+  const text = decision === "answered" ? COPY.lineAnswered : decision === "declined" ? COPY.lineDeclined : COPY.lineExpired;
+  return <p className="self-end text-callout text-muted-foreground" data-app-line={decision}>{text}</p>;
+}
+
+/**
  * The cards for Main's pending questions, one per request. `outcomes` is for Main's chat: what became of a card the
  * owner was looking at. Home leaves it out, so a resolved question there just goes away.
  */
@@ -109,8 +121,13 @@ export function AskCards({ asks, outcomes = false }: { asks: Asks; outcomes?: bo
       {asks.stopped ? <p className="text-callout text-muted-foreground" data-ask-stopped="">{COPY.stopped}</p> : null}
       {asks.pending.map((request) => <AskCard key={request.id} request={request} asks={asks} />)}
       {outcomes
-        ? asks.outcomes.map(({ id, kind }) => (
-          <p key={id} className="text-callout text-muted-foreground" data-ask-outcome={kind}>{kind === "declined" ? COPY.declined : COPY.expired}</p>
+        ? asks.outcomes.map(({ id, kind }) => kind === "declined" ? (
+          <p key={id} className="text-callout text-muted-foreground" data-ask-outcome={kind}>{COPY.declined}</p>
+        ) : (
+          <Fragment key={id}>
+            <p className="text-callout text-muted-foreground" data-ask-outcome={kind}>{COPY.expired}</p>
+            <AppLine decision="expired" live />
+          </Fragment>
         ))
         : null}
     </>

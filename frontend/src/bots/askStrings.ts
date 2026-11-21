@@ -47,4 +47,6 @@ export const ASK_STRINGS = {
   /** App-originated lines in the chat: shown to the owner, never taken for words the owner typed. */
   lineAnswered: `You answered ${ASK_MAIN}’s question.`,
   lineDeclined: `You said not now to ${ASK_MAIN}’s question.`,
+  /** UI only: nothing is sent to Main when a question expires. */
+  lineExpired: `${ASK_MAIN}’s question expired without an answer.`,
 } as const;

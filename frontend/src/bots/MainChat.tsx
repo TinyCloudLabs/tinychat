@@ -11,8 +11,7 @@ import { acknowledgeHistoryNotice, historyNoticeDeadline, type HistoryNotice } f
 import { BOTS_STRINGS, botsErrorText, HISTORY_EXPIRY_NOTICE, HISTORY_RECONNECT_LABEL, WEB_ACCESS_STRINGS } from "./botsStrings";
 import { isWorking, type ChatLine, type MainChatState } from "./useMainChat";
 import { WebAccess, type WebAccessApi } from "./WebAccess";
-import { AskCards, AsksToggle } from "./AskCards";
-import { ASK_STRINGS } from "./askStrings";
+import { AppLine, AskCards, AsksToggle } from "./AskCards";
 import type { Asks } from "./useAsks";
 
 export function Line({ role, text }: Pick<ChatLine, "role" | "text">) {
@@ -21,16 +20,6 @@ export function Line({ role, text }: Pick<ChatLine, "role" | "text">) {
   ) : (
     <p className="max-w-[36rem] whitespace-pre-wrap break-words text-body">{text}</p>
   );
-}
-
-/**
- * What the app sent to Main for the owner's decision on a question card, in a muted style so it is not taken for
- * words the owner typed. A "not now" the owner just gave is already on the card, which collapses to it; once the
- * card is gone (a reload), the line is what is left.
- */
-function AppLine({ decision, live }: { decision: "answered" | "declined"; live: boolean }) {
-  if (decision === "declined" && live) return null;
-  return <p className="self-end text-callout text-muted-foreground" data-app-line={decision}>{decision === "answered" ? ASK_STRINGS.lineAnswered : ASK_STRINGS.lineDeclined}</p>;
 }
 
 function ExpiryNotice({ notice, onReconnect }: { notice: HistoryNotice; onReconnect: () => void }) {
