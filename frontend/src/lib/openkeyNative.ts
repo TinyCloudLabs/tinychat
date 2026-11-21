@@ -232,7 +232,7 @@ export const NATIVE_SIGN_IN_NONCE_MESSAGE =
 export const NATIVE_SIGN_IN_SPACE_MESSAGE =
   "Your TinyCloud space is unavailable right now. Please try again later.";
 export const NATIVE_SIGN_IN_NETWORK_MESSAGE =
-  "Can't reach OpenKey right now. Check your connection and try again.";
+  "Sign-in couldn't connect. Check your connection and try again.";
 export const NATIVE_SIGN_IN_STORAGE_MESSAGE =
   "Couldn't access secure storage on this device. Please try again.";
 export const NATIVE_SIGN_IN_SERVER_MESSAGE =
