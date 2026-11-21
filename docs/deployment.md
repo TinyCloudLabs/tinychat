@@ -38,6 +38,18 @@ the `release-push` deploy key may update `production` (see the rulesets below).
 To roll back, dispatch the workflow with the older release tag (`--ref main -f
 tag=@tinychat/frontend@<version> -f backend=false`), or use Pages' own rollback.
 
+The verifier reads every page of check runs with `filter=all`, matching the
+`Cloudflare Pages` check name, `cloudflare-workers-and-pages` app and exact
+deployment SHA. The newest completed noncancelled attempt, ordered by integer
+check-run ID (not completion time), decides: success must supply a deployment URL
+and be production, so an older production success cannot hide a newer preview.
+Older completed nonsuccesses are superseded and each is logged on stderr.
+Cancelled attempts are ignored. A newest completed nonsuccess fails closed unless
+a newer-created matching attempt is unfinished; then the verifier waits within
+the existing build timeout. With no completed noncancelled attempt it also waits.
+Missing, invalid or duplicate matching noncancelled IDs fail closed.
+The live HTML, other-host commit and production-branch tip checks still apply.
+
 In the Cloudflare dashboard → **Workers & Pages → Create → Pages → Connect to Git**:
 
 - Repository: `TinyCloudLabs/tinychat`, production branch **`production`**
@@ -314,8 +326,10 @@ name/hash also fails closed.
 `deploy-production.yml` may explicitly set
 `allow_current_dev_os_until_tc2843=true` (default **false**). Only
 `dstack-dev-0.5.12`, hash
-`e866e987221db357129ebc3f066b6706ef955889ea95e5510acbdf3d3055186b`,
-with `is_dev=true` is permitted. Push, schedule and originating workflow-call
+`e866e987221db357129ebc3f066b6706ef955889ea95e5510acbdf3d3055186b`, and
+`dstack-dev-0.5.15`, hash
+`432b8a1e82ec8a90b3d30bb201e5d20a8bc5c05b69f1d8ba13687232dda5aebd`
+(each name with its own hash, never mixed), with `is_dev=true`, are permitted. Push, schedule and originating workflow-call
 events cannot enable this exception: the guard refuses the override unless
 `github.event_name` is `workflow_dispatch`. The reusable backend workflow
 forwards the dispatch choice; it does not provide an independent non-manual escape.

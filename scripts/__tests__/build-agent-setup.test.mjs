@@ -82,7 +82,7 @@ test('copy surfaces use one sentence while linked instructions retain setup and 
   for (const term of ['tinychat_setup', 'configPath', 'tinychat_authorize', 'tinychat_meetings', 'nextAction', 'tinychat_handoff', '96 KiB', 'tool_output']) {
     assert.ok(instructions.includes(term), term);
   }
-  assert.match(instructions, /Open this link and approve TinyChat access, then send me the short code OpenKey shows \(like ABCD-EFGH\)\./);
+  assert.match(instructions, /Open this link and approve TinyCloud One access, then send me the short code OpenKey shows \(like ABCD-EFGH\)\./);
   assert.match(instructions, /login --code '<the code>'/);
   assert.match(instructions, /last, separate native bash tool call/);
   assert.match(instructions, /scripts\/consume\.mjs/);
@@ -120,7 +120,7 @@ test('first-install activation is a separate final native call with explicit sup
 test('pack and installed reference describe activation while preserving the plain installer distinction', async () => {
   const pack = JSON.parse(await readFile(new URL('agent-skills/tinychat-retrieval/pack.json', root), 'utf8'));
   const config = JSON.parse(await readFile(new URL('frontend/src/lib/agent-setup.json', root), 'utf8'));
-  assert.equal(pack.version, '0.1.1-onboarding.28');
+  assert.equal(pack.version, '0.1.1-onboarding.29');
   assert.equal(config.packVersion, pack.version);
   assert.equal(pack.runtime.node, '>=22.20.0');
   assert.equal(pack.opencode.activation, 'automatic-first-install');
@@ -128,7 +128,7 @@ test('pack and installed reference describe activation while preserving the plai
   assert.deepEqual(pack.opencode.supportedActivationPlatforms, ['macos']);
   assert.equal(pack.opencode.restartRequired, false);
   const skill = await readFile(new URL('agent-skills/tinychat-retrieval/SKILL.md', root), 'utf8');
-  assert.match(skill, /version: "0\.1\.1-onboarding\.28"/);
+  assert.match(skill, /version: "0\.1\.1-onboarding\.29"/);
   assert.match(skill, /--activate/);
   assert.match(skill, /setup or login only, stop at the ready result/);
   assert.match(skill, /exactly as sent/);

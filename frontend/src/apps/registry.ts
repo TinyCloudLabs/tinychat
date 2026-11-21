@@ -63,6 +63,11 @@ export interface FramedOneApp extends OneAppBase {
   origin: string;
   /** Path on the origin the frame opens (One adds `?embed=one`). */
   path: string;
+  /**
+   * Whether the phone app frames this app too. The phone app's session holds only One's own `applications` data and
+   * cannot step up, so only an app that works on that is framed there; the rest open in the in-app browser.
+   */
+  inNativeApp: boolean;
   ceiling(owner: OneAppOwner): readonly CeilingEntry[];
 }
 
@@ -89,6 +94,18 @@ export function framesAppsHere(origin: string): boolean {
   return ONE_HOST_ORIGINS.includes(origin);
 }
 
+/**
+ * The phone app's own origins (Capacitor's defaults; mobile/capacitor.config.ts sets no scheme or hostname): iOS, then
+ * Android. Exact strings: no other scheme, port or host.
+ */
+export const ONE_NATIVE_ORIGINS: readonly string[] = ["capacitor://localhost", "https://localhost"];
+
+/** Whether One frames `app` on this page's origin: any framed app on One's web origins, `inNativeApp` ones in the phone app. */
+export function framesAppHere(app: FramedOneApp, origin: string): boolean {
+  if (!app.framed) return false;
+  return framesAppsHere(origin) || (app.inNativeApp && ONE_NATIVE_ORIGINS.includes(origin));
+}
+
 function ownerDid(owner: OneAppOwner): string {
   return `did:pkh:eip155:${owner.chainId}:${owner.address}`;
 }
@@ -109,6 +126,7 @@ const ALL_APPS: readonly OneApp[] = [
     id: "xyz.tinycloud.secrets",
     kind: "framed",
     framed: false,
+    inNativeApp: false,
     ...text("xyz.tinycloud.secrets"),
     icon: KeyRound,
     origin: KIND === "dev" ? "https://localhost:5191"
@@ -133,6 +151,7 @@ const ALL_APPS: readonly OneApp[] = [
     id: "xyz.tinycloud.opencredentials",
     kind: "framed",
     framed: false, // opens in a new tab
+    inNativeApp: false,
     ...text("xyz.tinycloud.opencredentials"),
     icon: BadgeCheck,
     origin: KIND === "dev" ? "https://localhost:5192"
@@ -151,6 +170,8 @@ const ALL_APPS: readonly OneApp[] = [
     id: "xyz.tinycloud.explorer",
     kind: "framed",
     framed: true,
+    // In the phone app Explorer gets One's `applications` data; its other views ask, and the phone app cannot step up.
+    inNativeApp: true,
     ...text("xyz.tinycloud.explorer"),
     icon: Compass,
     origin: KIND === "dev" ? "https://localhost:5193"
@@ -171,6 +192,7 @@ const ALL_APPS: readonly OneApp[] = [
     id: "xyz.tinycloud.account",
     kind: "framed",
     framed: true,
+    inNativeApp: false, // `account` space: not in the phone app's session
     ...text("xyz.tinycloud.account"),
     icon: CircleUserRound,
     origin: KIND === "dev" ? "https://localhost:5194"
@@ -188,6 +210,7 @@ const ALL_APPS: readonly OneApp[] = [
     id: "xyz.tinycloud.courier",
     kind: "framed",
     framed: true,
+    inNativeApp: false, // `agents` space: not in the phone app's session
     ...text("xyz.tinycloud.courier"),
     icon: MessagesSquare,
     origin: KIND === "dev" ? "https://localhost:5195" : "https://share.tinycloud.xyz",
@@ -223,7 +246,7 @@ export type AppTarget = { kind: "route"; path: string } | { kind: "newTab"; url:
  */
 export function appTarget(app: OneApp, origin: string): AppTarget {
   if (app.kind === "native") return { kind: "route", path: app.route };
-  if (app.framed && framesAppsHere(origin)) return { kind: "route", path: appRoute(app) };
+  if (framesAppHere(app, origin)) return { kind: "route", path: appRoute(app) };
   return { kind: "newTab", url: appUrl(app) };
 }
 

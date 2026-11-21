@@ -8,6 +8,8 @@
 //   EXO_UI_VIEWPORTS=phone,zoom200   viewport ids, or a group (zoom200, text200)
 //   EXO_UI_VIEWPORTS=phone,halo-review  also enables the halo-only review captures
 //   EXO_UI_THEMES=dark               light, dark
+//   CI shards by EXO_UI_THEMES=light/dark; report.expected lists both themes
+//   from the full discovered registry so the merge job can prove capture coverage.
 //   EXO_UI_ENGINE=chromium           webkit (default: Exo's WKWebView) or chromium (CI)
 //   EXO_UI_MOTION=no-preference      reduce (default) or no-preference
 //
@@ -136,6 +138,7 @@ interface ScreenInfo {
   interactive?: boolean;
   /** Not captured at viewports narrower than this. */
   minViewportWidth?: number;
+  viewports?: string[];
 }
 
 interface AllowEntry {
@@ -150,6 +153,13 @@ interface Finding {
   check: string;
   element?: string;
   detail: string;
+}
+
+function screenFitsViewport(screen: ScreenInfo, viewport: Viewport): boolean {
+  return (!viewport.screenPrefixes || viewport.screenPrefixes.some((prefix) => screen.id.startsWith(prefix))) &&
+    !(viewport.textScale !== undefined && viewport.textScale !== 2 && screen.platform !== "ios") &&
+    (!screen.viewports || screen.viewports.includes(viewport.id)) &&
+    (screen.minViewportWidth === undefined || viewport.width >= screen.minViewportWidth);
 }
 
 const list = (value: string | undefined) => value?.split(",").map((part) => part.trim()).filter(Boolean);
@@ -505,7 +515,14 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
       }
     }));
     server?.stop(true);
-    writeFileSync(`${outDir}report.json`, JSON.stringify({ engine: engineName, motion, captures, readinessCapHits }, null, 2));
+    const expected = viewports.flatMap((viewport) => screens
+      .filter((screen) => screenFitsViewport(screen, viewport))
+      .flatMap((screen) => THEMES.map((theme) => `${screen.id}__${viewport.id}__${theme}.png`)));
+    if (screens.some((screen) => screen.id === "recorder-final-halo")) {
+      expected.push(...haloViewports.flatMap((viewport) => THEMES.map((theme) =>
+        `recorder-final-halo__${viewport.id}__${theme}${process.env.EXO_UI_HALO_FORCE_CANVAS === "1" ? "-canvas2d" : ""}.png`)));
+    }
+    writeFileSync(`${outDir}report.json`, JSON.stringify({ engine: engineName, motion, themes, expected, captures, readinessCapHits }, null, 2));
     writeFileSync(`${outDir}index.html`, contactSheet(captures));
     console.log(`exo-ui: ${captures.length} captures in ${outDir}`);
   }, 60_000);
@@ -550,13 +567,7 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
           }
           try {
             for (const screen of screens.slice(start, start + 40)) {
-              if (
-                viewport.screenPrefixes &&
-                !viewport.screenPrefixes.some((prefix) => screen.id.startsWith(prefix))
-              ) continue;
-              if (viewport.textScale !== undefined && viewport.textScale !== 2 && screen.platform !== "ios") continue;
-              if (screen.viewports && !screen.viewports.includes(viewport.id)) continue;
-              if (screen.minViewportWidth !== undefined && viewport.width < screen.minViewportWidth) continue;
+              if (!screenFitsViewport(screen, viewport)) continue;
               const page = await context.newPage();
               const errors: string[] = [];
               const requests = trackInFlightRequestUrls(page);
@@ -842,19 +853,19 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
     !viewportFilter ||
     viewportFilter.some((id) => ["phone", "phone-halo-review"].includes(id));
   const runsHaloReview = viewportFilter?.includes("halo-review") ?? false;
+  const haloViewports: Viewport[] = [
+    ...(runsPhoneHaloReview
+      ? [{ id: "phone-halo-review", width: 390, height: 4400, deviceScaleFactor: 2, isMobile: true, hasTouch: true }]
+      : []),
+    ...(runsHaloReview
+      ? [{ id: "halo-review", width: 1280, height: 2200, deviceScaleFactor: 2 }]
+      : []),
+  ];
   if (runsPhoneHaloReview || runsHaloReview)
     test("recorder halo in tall phone and theme-token review captures", async () => {
       const halo = screens.find((screen) => screen.id === "recorder-final-halo");
       if (!halo) return;
 
-      const haloViewports: Viewport[] = [
-        ...(runsPhoneHaloReview
-          ? [{ id: "phone-halo-review", width: 390, height: 4400, deviceScaleFactor: 2, isMobile: true, hasTouch: true }]
-          : []),
-        ...(viewportFilter?.includes("halo-review")
-          ? [{ id: "halo-review", width: 1280, height: 2200, deviceScaleFactor: 2 }]
-          : []),
-      ];
       const forceCanvas = process.env.EXO_UI_HALO_FORCE_CANVAS === "1";
       const haloBrowser = await engine.launch({ headless: true });
       browsers.push(haloBrowser);

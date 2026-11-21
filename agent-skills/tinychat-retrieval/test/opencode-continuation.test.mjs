@@ -41,7 +41,7 @@ test('loaded adapter resumes the bound chat once with the original model and age
   assert.deepEqual(prompts[0][1].path, { id: f.descriptor.sessionID });
   assert.deepEqual(prompts[0][1].body.model, f.descriptor.model);
   assert.equal(prompts[0][1].body.agent, 'build');
-  assert.match(prompts[0][1].body.parts[0].text, /TinyChat installation completed/);
+  assert.match(prompts[0][1].body.parts[0].text, /TinyCloud One meetings installation completed/);
   assert.match(prompts[0][1].body.parts[0].text, /original request/);
   assert.ok(f.calls.filter(([kind]) => kind === 'message').every(([, args]) => args.path.id === 'ses_original'));
   assert.equal(f.calls.find(([kind]) => kind === 'messages')[1].query.limit, 1);

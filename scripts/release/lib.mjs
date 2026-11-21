@@ -105,24 +105,41 @@ const PAGES_APP = 'cloudflare-workers-and-pages';
 
 /**
  * Classify the Cloudflare Pages check runs GitHub lists for a production-branch commit:
- *  - waiting: no finished run from the Pages app yet;
- *  - failed: the newest run did not succeed;
- *  - preview: it succeeded but as a preview (its summary has a "Branch Preview URL"), so the Pages project's
- *    production branch is not `production`;
- *  - production: it succeeded as a production deployment; `deploymentUrl` is that deployment's unique URL.
+ *  - waiting: no completed noncancelled run, or a failed latest completion has a newer unfinished attempt;
+ *  - failed: the newest completed noncancelled run failed, or creation IDs cannot be ordered safely;
+ *  - preview: the newest completed run succeeded as a preview (its summary has a "Branch Preview URL");
+ *  - production: the newest completed run succeeded as production; `deploymentUrl` is its unique URL.
+ * Creation order is the check-run ID, never completion time. Superseded nonsuccesses are returned for stderr logging.
  */
-export function classifyPagesCheckRuns(checkRuns) {
-  const runs = checkRuns
-    .filter(run => run.name === PAGES_CHECK && run.app?.slug === PAGES_APP)
-    .sort((a, b) => b.id - a.id);
-  const [latest] = runs;
-  if (!latest || latest.status !== 'completed') return { state: 'waiting' };
+export function classifyPagesCheckRuns(checkRuns, commit) {
+  const runs = checkRuns.filter(run => run.name === PAGES_CHECK && run.app?.slug === PAGES_APP && run.head_sha === commit && run.conclusion !== 'cancelled');
+  const ids = new Set();
+  for (const run of runs) {
+    if (!Number.isSafeInteger(run.id) || run.id <= 0) {
+      return { state: 'failed', reason: 'invalid or missing check-run ID; cannot determine newest attempt', detailsUrl: run.details_url };
+    }
+    if (ids.has(run.id)) {
+      return { state: 'failed', reason: `duplicate check-run ID ${run.id}; cannot determine newest attempt`, detailsUrl: run.details_url };
+    }
+    ids.add(run.id);
+  }
+  runs.sort((a, b) => b.id - a.id);
+  const completed = runs.filter(run => run.status === 'completed');
+  const latest = completed[0];
+  if (!latest) return { state: 'waiting' };
+  const supersededFailures = completed
+    .filter(run => run.id < runs[0].id && run.conclusion !== 'success')
+    .map(({ id, conclusion }) => ({ id, conclusion }));
+  const history = supersededFailures.length ? { supersededFailures } : {};
+  if (latest.conclusion !== 'success') {
+    if (runs.some(run => run.id > latest.id && run.status !== 'completed')) return { state: 'waiting', ...history };
+    return { state: 'failed', reason: `${latest.conclusion}: ${latest.output?.title ?? ''}`.trim(), detailsUrl: latest.details_url, ...history };
+  }
   const summary = latest.output?.summary ?? '';
-  if (latest.conclusion !== 'success') return { state: 'failed', reason: `${latest.conclusion}: ${latest.output?.title ?? ''}`.trim(), detailsUrl: latest.details_url };
-  if (/Branch Preview URL/.test(summary)) return { state: 'preview', detailsUrl: latest.details_url };
+  if (/Branch Preview URL/.test(summary)) return { state: 'preview', detailsUrl: latest.details_url, ...history };
   const deploymentUrl = /Preview URL:[\s\S]*?href='(https:\/\/[^']+)'/.exec(summary)?.[1];
-  if (!deploymentUrl) return { state: 'failed', reason: 'no deployment URL in the Cloudflare Pages check run', detailsUrl: latest.details_url };
-  return { state: 'production', deploymentUrl, detailsUrl: latest.details_url };
+  if (!deploymentUrl) return { state: 'failed', reason: 'no deployment URL in the Cloudflare Pages check run', detailsUrl: latest.details_url, ...history };
+  return { state: 'production', deploymentUrl, detailsUrl: latest.details_url, ...history };
 }
 
 /**

@@ -16,6 +16,70 @@
 - TC-2204: Native audience checks accept Home's three exact SQL hook subscriptions only alongside an existing TinyChat data grant.
 - TC-2499: The Home mirror adapter persists close receipts using node-compatible NULL/non-NULL compare-and-set predicates. If the KV mirror is already exactly closed but its receipt is missing, recovery records the original publication ETag without writing the KV copy again, before any gated child handoff. The CLI reports JSON error class, safe message, code, HTTP status when available, and operation step; private SQL bodies and nested causes remain redacted. Exit 2 identifies invalid input, exit 6 known transient failures (including NODE_BUSY and REQUEST_TIMEOUT without HTTP metadata), and exit 1 other runtime failures or OUTCOME_UNKNOWN. Unclassified errors are not labelled bad input; no failure confirms delivery or authorizes an automatic retry.
 
+## 0.15.3
+
+### Patch Changes
+
+- 2b8966c: In the phone app, Explorer opens inside TinyCloud One.
+
+  Details: TC-3568
+
+- 4a67fd5: In the phone app, apps that don't open inside TinyCloud One open in a sheet over it, so you stay in One.
+
+  Details: TC-3568
+
+- 0cd1ccc: The agent setup guide at tinycloud.one/agents/setup.md, the agent setup error messages and the meetings skill name TinyCloud One. The meetings skill is published as version 0.1.1-onboarding.29 and keeps its install name, folders and tool names.
+
+  Details: TC-3659
+
+- 8ba7ee3: The Allow Connectors card says that OpenKey also asks to unlock encrypted data, and says so when that permission is left out.
+
+  Details: TC-3674
+
+- d011402: Your card.md text is carried over as it is when its stored version doesn't match its text.
+
+  Details: TC-3685
+
+## 0.15.3-beta.4
+
+### Patch Changes
+
+- 8ba7ee3: The Allow Connectors card says that OpenKey also asks to unlock encrypted data, and says so when that permission is left out.
+
+  Details: TC-3674
+
+- d011402: Your card.md text is carried over as it is when its stored version doesn't match its text.
+
+  Details: TC-3685
+
+## 0.15.3-beta.3
+
+### Patch Changes
+
+- 0cd1ccc: The agent setup guide at tinycloud.one/agents/setup.md, the agent setup error messages and the meetings skill name TinyCloud One. The meetings skill is published as version 0.1.1-onboarding.29 and keeps its install name, folders and tool names.
+
+  Details: TC-3659
+
+## 0.15.3-beta.2
+
+No changes in this release.
+
+## 0.15.3-beta.1
+
+### Patch Changes
+
+- 2b8966c: In the phone app, Explorer opens inside TinyCloud One.
+
+  Details: TC-3568
+
+## 0.15.3-beta.0
+
+### Patch Changes
+
+- 4a67fd5: In the phone app, apps that don't open inside TinyCloud One open in a sheet over it, so you stay in One.
+
+  Details: TC-3568
+
 ## 0.15.2
 
 ### Patch Changes

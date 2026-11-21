@@ -57,6 +57,8 @@ export const askBody = (app: string, scope: string) => `${app} wants access to $
 export const ASK_CONTINUE = "Continue in OpenKey";
 export const ASK_NOT_NOW = "Not now";
 export const askDeclined = (app: string) => `${app} can't do this without that access.`;
+/** The phone app can't ask OpenKey for more (its session never signs); web One offers "Continue in OpenKey" for the same ask. */
+export const askNotInApp = (app: string) => `${app} needs more access. To allow it, open ${app} in One on the web.`;
 
 /** Why a step-up added nothing: "Not now", OpenKey's own outcome, or another account picked in OpenKey. */
 export type StepUpFailure = OpenKeyFailure | { kind: "declined" } | { kind: "wrong-account" };
