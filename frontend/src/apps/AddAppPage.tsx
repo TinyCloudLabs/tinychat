@@ -6,9 +6,9 @@ import { CheckIcon, CopyIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { PAGE_COLUMN, PageHeader } from "@/shell/PageHeader";
+import { ADD_APP_PROMPT } from "./addAppPrompt";
 import {
   ADD_APP_LEAD,
-  ADD_APP_PROMPT,
   ADD_APP_PROMPT_LABEL,
   ADD_APP_REVIEW_NOTE,
   ADD_APP_TITLE,

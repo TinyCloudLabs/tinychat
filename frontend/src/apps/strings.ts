@@ -4,8 +4,6 @@ import type { OpenKeyFailure } from "../lib/authErrors";
 import { FEATURE_ACCESS_FAILED, FEATURE_ACCESS_WRONG_ACCOUNT } from "../lib/homeStrings";
 import type { GlyphId } from "./icons";
 import type { LinkAppId, OneAppId } from "./registry";
-// The Add an app page's builder prompt, verbatim: a text file because it holds backticks.
-import addAppPrompt from "./addAppPrompt.txt?raw";
 
 export const APP_NAMES: Readonly<Record<OneAppId, string>> = {
   capture: "Recording",
@@ -180,7 +178,6 @@ export const ADD_APP_REVIEW_NOTE = "The TinyCloud team reviews new apps before t
 /** Whether the Add an app page shows ADD_APP_REVIEW_NOTE under its lead line. */
 export const SHOW_REVIEW_NOTE = true;
 export const ADD_APP_PROMPT_LABEL = "Prompt";
-export const ADD_APP_PROMPT: string = addAppPrompt;
 export const COPY_PROMPT = "Copy prompt";
 export const COPIED = "Copied";
 export const COPY_FAILED = "Copy unavailable. Select the prompt above and copy it manually.";

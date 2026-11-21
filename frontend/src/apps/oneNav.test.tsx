@@ -2,8 +2,6 @@
 // the open app's bar on every app screen, the screen for apps One can't frame here, and Add an app (its own flag). The
 // build flags' own wiring is test-fixtures/oneNav.*.fixture.tsx (src/shell/oneNav.flag.test.ts).
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { act, useState, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -19,6 +17,7 @@ import { AppsGrid, LONG_PRESS_MS } from "@/home/AppsGrid";
 import type { PinId } from "@/shell/navPins";
 import { gridTiles, pinnedFirst } from "@/home/AppsPage";
 import { AddAppPage } from "./AddAppPage";
+import { ADD_APP_PROMPT } from "./addAppPrompt";
 import { AppBar } from "./AppBar";
 import { OneAppScreen } from "./FramedAppScreen";
 import { appRoute, appUrl, oneAppsFor } from "./registry";
@@ -385,12 +384,12 @@ describe("mounted", () => {
   });
 
   describe("Add an app", () => {
-    const prompt = readFileSync(join(import.meta.dir, "addAppPrompt.txt"), "utf8");
+    const prompt = ADD_APP_PROMPT;
     const setClipboard = (writeText: (text: string) => Promise<void>) =>
       Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
     const copyButton = () => [...host.querySelectorAll("button")].find((button) => button.textContent === COPY_PROMPT || button.textContent === COPIED)!;
 
-    test("shows the prompt read-only and copies exactly addAppPrompt.txt", async () => {
+    test("shows the prompt read-only and copies it exactly", async () => {
       const copied: string[] = [];
       setClipboard(async (text) => { copied.push(text); });
       mount(<AddAppPage />);
