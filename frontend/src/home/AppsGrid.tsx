@@ -37,9 +37,11 @@ export interface AppsGridProps {
   pins: readonly PinId[];
   /** Pinning needs a signed-in account to keep the pins under. */
   canPin: boolean;
+  /** Ends the grid with Add an app (ONE_ADD_APP_ENABLED). */
+  addApp: boolean;
 }
 
-export function AppsGrid({ tiles, pins, canPin }: AppsGridProps) {
+export function AppsGrid({ tiles, pins, canPin, addApp }: AppsGridProps) {
   return (
     <div className="relative h-full overflow-y-auto" data-scroll-root>
       <PageHeader title={APPS_LAUNCHER_TITLE} className={PAGE_COLUMN} />
@@ -73,14 +75,16 @@ export function AppsGrid({ tiles, pins, canPin }: AppsGridProps) {
             );
           })}
           {/* An action, not an app: an outlined square, never pinned. */}
-          <li style={{ "--i": tiles.length } as CSSProperties} className="flex min-w-0">
-            <Link to={PATHS.addApp} className={TILE}>
-              <span aria-hidden="true" className={`${ICON_SIZE} grid place-items-center rounded-[27%] border-2 border-dashed border-muted-foreground/45 text-muted-foreground`}>
-                <PlusIcon className="size-[38%]" />
-              </span>
-              <span className={NAME}>{ADD_APP_TITLE}</span>
-            </Link>
-          </li>
+          {addApp ? (
+            <li style={{ "--i": tiles.length } as CSSProperties} className="flex min-w-0">
+              <Link to={PATHS.addApp} className={TILE}>
+                <span aria-hidden="true" className={`${ICON_SIZE} grid place-items-center rounded-[27%] border-2 border-dashed border-muted-foreground/45 text-muted-foreground`}>
+                  <PlusIcon className="size-[38%]" />
+                </span>
+                <span className={NAME}>{ADD_APP_TITLE}</span>
+              </Link>
+            </li>
+          ) : null}
         </ul>
       </div>
     </div>

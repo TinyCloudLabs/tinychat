@@ -15,6 +15,7 @@
 
 import { ABOUT_PATH } from "../lib/about";
 import type { SizeClass } from "../lib/sizeClass";
+import { ONE_ADD_APP_ENABLED } from "./navPins";
 
 export const PATHS = {
   chat: "/chat",
@@ -108,15 +109,16 @@ export function legacyRedirectFor(pathname: string): { from: string; to: string 
 /**
  * The screen a pathname shows. Anything under /chat that is not a known screen
  * is the chat workspace (it was before Capture existed). A legacy address shows
- * the screen it forwards to while it waits for sign-in to settle.
+ * the screen it forwards to while it waits for sign-in to settle. `addApp`: the
+ * build's Add an app flag (navPins.ts); off, /chat/apps/add is an app id like any other.
  */
-export function screenFor(pathname: string): Screen {
+export function screenFor(pathname: string, addApp: boolean = ONE_ADD_APP_ENABLED): Screen {
   const legacy = legacyRedirectFor(pathname);
   const path = legacy ? legacy.to : trim(pathname);
   if (path === PATHS.settings) return { id: "settings", destination: null, noteId: null };
   if (path === PATHS.about) return { id: "about", destination: null, noteId: null };
   if (path === PATHS.feed || path.startsWith(`${PATHS.feed}/`)) return { id: "feed", destination: "feed", noteId: null };
-  if (path === PATHS.addApp) return { id: "addApp", destination: "apps", noteId: null };
+  if (addApp && path === PATHS.addApp) return { id: "addApp", destination: "apps", noteId: null };
   if (path.startsWith(`${PATHS.apps}/`)) {
     const raw = path.slice(PATHS.apps.length + 1);
     let appId: string;

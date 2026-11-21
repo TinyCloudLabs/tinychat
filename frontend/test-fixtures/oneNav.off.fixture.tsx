@@ -11,7 +11,7 @@ import { APPS_CONNECTORS_DESCRIPTION, APPS_PIN, NAV_LABEL_APPS, NAV_LABEL_CHAT, 
 import { AppsPage } from "@/home/AppsPage";
 import { AppShell } from "@/shell/AppShell";
 import { NAV_APP_IDS } from "@/shell/navApps";
-import { ONE_APPS_ENABLED, ONE_NAV_ENABLED } from "@/shell/navPins";
+import { ONE_ADD_APP_ENABLED, ONE_APPS_ENABLED, ONE_NAV_ENABLED } from "@/shell/navPins";
 import { PATHS, screenFor } from "@/shell/routes";
 import { installDom } from "@/test/dom";
 
@@ -50,6 +50,7 @@ describe("production today: One Apps on, One's new navigation off", () => {
   test("the build reads the flags as production sets them", () => {
     expect(ONE_APPS_ENABLED).toBe(true);
     expect(ONE_NAV_ENABLED).toBe(false);
+    expect(ONE_ADD_APP_ENABLED).toBe(false);
   });
 
   test("a phone gets today's tab bar, with today's items in today's order, and no pill", () => {

@@ -16,7 +16,7 @@ import { ONE_APPS, appRoute, appTarget, type OneApp } from "@/apps/registry";
 import { APP_CAPTIONS, CONNECTORS_NAME } from "@/apps/strings";
 import { PAGE_COLUMN, PageHeader } from "@/shell/PageHeader";
 import { NAV_APP_IDS } from "@/shell/navApps";
-import { ONE_APPS_ENABLED, ONE_NAV_ENABLED, appPinId, useNavPins } from "@/shell/navPins";
+import { ONE_ADD_APP_ENABLED, ONE_APPS_ENABLED, ONE_NAV_ENABLED, appPinId, useNavPins } from "@/shell/navPins";
 import { PATHS } from "@/shell/routes";
 import { AppsGrid, type GridTile } from "./AppsGrid";
 import { AppsLauncher, type LauncherTile } from "./AppsLauncher";
@@ -53,10 +53,10 @@ export function gridTiles(pendingMeetings: number, apps: readonly OneApp[] = ONE
   return tiles;
 }
 
-function OneAppsPage({ accountDid, pendingMeetings, oneNav }: { accountDid: string | null; pendingMeetings: number; oneNav: boolean }) {
+function OneAppsPage({ accountDid, pendingMeetings }: { accountDid: string | null; pendingMeetings: number }) {
   const { pins, pin, unpin } = useNavPins(accountDid, NAV_APP_IDS);
   const tiles = useMemo(() => launcherTiles(pendingMeetings, window.location.origin), [pendingMeetings]);
-  if (oneNav) return <AppsGrid tiles={gridTiles(pendingMeetings)} pins={pins} canPin={accountDid !== null} />;
+  if (ONE_NAV_ENABLED) return <AppsGrid tiles={gridTiles(pendingMeetings)} pins={pins} canPin={accountDid !== null} addApp={ONE_ADD_APP_ENABLED} />;
   return <AppsLauncher tiles={tiles} pins={pins} canPin={accountDid !== null} onPin={pin} onUnpin={unpin} />;
 }
 
@@ -66,13 +66,10 @@ interface AppsPageProps {
   accountDid?: string | null;
   /** One Apps: meetings waiting in Connectors, for its tile while it is not pinned. */
   pendingMeetings?: number;
-  /** The build's flags (shell/navPins.ts); tests pass them. */
-  oneApps?: boolean;
-  oneNav?: boolean;
 }
 
-export function AppsPage({ apps = SHARE_APPS, accountDid = null, pendingMeetings = 0, oneApps = ONE_APPS_ENABLED, oneNav = ONE_NAV_ENABLED }: AppsPageProps) {
-  if (oneApps) return <OneAppsPage accountDid={accountDid} pendingMeetings={pendingMeetings} oneNav={oneNav} />;
+export function AppsPage({ apps = SHARE_APPS, accountDid = null, pendingMeetings = 0 }: AppsPageProps) {
+  if (ONE_APPS_ENABLED) return <OneAppsPage accountDid={accountDid} pendingMeetings={pendingMeetings} />;
   return (
     <div className="relative h-full overflow-y-auto" data-scroll-root>
       <PageHeader title={APPS_PAGE_TITLE} className={PAGE_COLUMN} />

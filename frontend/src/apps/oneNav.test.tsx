@@ -1,6 +1,6 @@
-// One's new navigation (TC-3650) with the flag passed in, so it runs in any build: the Apps grid, the phone's pill, the
-// open app's bar on every app screen, the screen for apps One can't frame here, and Add an app. The build flag's own
-// wiring is test-fixtures/oneNav.*.fixture.tsx (src/shell/oneNav.flag.test.ts).
+// One's new navigation (TC-3650) with the flags passed in, so it runs in any build: the Apps grid, the phone's pill,
+// the open app's bar on every app screen, the screen for apps One can't frame here, and Add an app (its own flag). The
+// build flags' own wiring is test-fixtures/oneNav.*.fixture.tsx (src/shell/oneNav.flag.test.ts).
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -66,7 +66,7 @@ const ssr = (node: ReactNode, path: string, platform: AppPlatform = "web") =>
 const shell = (path: string, sizeClass: SizeClassState = UPRIGHT) =>
   ssr(
     <AppShellView
-      screen={screenFor(path)}
+      screen={screenFor(path, true)}
       platform="web"
       pendingMeetings={2}
       chat={<p>chat-slot</p>}
@@ -102,15 +102,30 @@ describe("the Apps grid", () => {
     expect(ios).toEqual(web.map((tile) => tile.name).filter((name) => name !== APP_NAMES["xyz.tinycloud.account"]));
   });
 
-  test("ends with Add an app, which no one can pin; tiles carry no Pin control and never leave One", () => {
+  test("with Add an app on, ends with it, which no one can pin; tiles carry no Pin control and never leave One", () => {
     const tiles = gridTiles(0, oneAppsFor("web", true));
-    const markup = ssr(<AppsGrid tiles={tiles} pins={["app:xyz.tinycloud.explorer"]} canPin />, PATHS.apps);
+    const markup = ssr(<AppsGrid tiles={tiles} pins={["app:xyz.tinycloud.explorer"]} canPin addApp />, PATHS.apps);
     const anchors = links(markup, "<ul", "</ul>");
     expect(anchors).toHaveLength(tiles.length + 1);
     expect(anchors.map((tag) => attr(tag, "href"))).toEqual([...tiles.map((tile) => tile.path), PATHS.addApp]);
     expect(markup).toContain(ADD_APP_TITLE);
     for (const tag of anchors) expect(tag).not.toContain("target=");
     expect(markup).not.toContain("<button");
+  });
+
+  test("with Add an app off, the grid ends with Connectors and nothing leads to it", () => {
+    const tiles = gridTiles(0, oneAppsFor("web", true));
+    const markup = ssr(<AppsGrid tiles={tiles} pins={[]} canPin addApp={false} />, PATHS.apps);
+    expect(links(markup, "<ul", "</ul>").map((tag) => attr(tag, "href"))).toEqual(tiles.map((tile) => tile.path));
+    expect(markup).not.toContain(ADD_APP_TITLE);
+  });
+
+  test("with Add an app off, its address is no screen of its own: it is an unknown app, and shows what an unknown app shows", () => {
+    const screen = screenFor(PATHS.addApp, false);
+    expect(screen.id).not.toBe("addApp");
+    expect(screen.appId).toBe("add");
+    expect(ssr(<OneAppScreen appId={screen.appId!} tcw={null} accountDid={ACCOUNT} fallback={<p>fallback</p>} />, PATHS.addApp)).toBe("<p>fallback</p>");
+    expect(screenFor(PATHS.addApp, true).id).toBe("addApp");
   });
 });
 

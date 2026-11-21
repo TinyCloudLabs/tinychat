@@ -131,7 +131,7 @@ import { UploadResumer } from "./capture/upload/UploadResumer";
 import { TinyCloudButtonSync } from "./chat/TinyCloudButtonSync";
 import { useOpenSavedNote } from "./capture/library/useOpenSavedNote";
 import { resetNavigationMemory } from "./shell/navigation";
-import { ONE_NAV_ENABLED } from "./shell/navPins";
+import { ONE_ADD_APP_ENABLED, ONE_NAV_ENABLED } from "./shell/navPins";
 import {
   HOME_PATH,
   legacyRedirectFor,
@@ -1712,7 +1712,7 @@ export function App() {
                 sessionStore={sessionStoreRef.current}
               /></HomeFeatureGate>}
               feed={LOCAL_VALIDATION ? null : <FeedView tcw={tcw} onReconnect={authAction} />}
-              apps={LOCAL_VALIDATION ? null : ONE_NAV_ENABLED && screen.id === "addApp"
+              apps={LOCAL_VALIDATION ? null : ONE_ADD_APP_ENABLED && screen.id === "addApp"
                 ? <AddAppPage />
                 : ONE_NAV_ENABLED && screen.appId
                 ? <OneAppScreen appId={screen.appId} tcw={tcw} accountDid={did} fallback={<AppsPage accountDid={did} pendingMeetings={pendingMeetings} />} />
