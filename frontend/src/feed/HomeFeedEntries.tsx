@@ -368,10 +368,11 @@ function updateSnapshotEntry(snapshot: HomeFeedSnapshot | null, key: string, upd
 type Row = { kind: "card"; item: HomeFeedEntry; retained?: boolean } | { kind: "group"; name: string; items: HomeFeedEntry[] };
 
 /**
+ * `finishSetup`: the registry finish-setup card (TC-3547), under the heading; it renders nothing unless its gate says so.
  * `ask`: the tiny bots ask box, shown under the heading when the account has it. `linked`: the card the address names
  * (/chat/feed/<card id>), opened once the feed has loaded, or a note when the feed holds no such card.
  */
-export function HomeFeedEntries({ source, ask, linked }: { source: HomeFeedSource; ask?: ReactNode; linked?: FeedCardLink | null }) {
+export function HomeFeedEntries({ source, ask, linked, finishSetup }: { source: HomeFeedSource; ask?: ReactNode; linked?: FeedCardLink | null; finishSetup?: ReactNode }) {
   // The ask box and the Agents pill are hidden features (Sam, 11-17): shown only while Settings → Show hidden features is on.
   const showHidden = useShowHiddenFeatures();
   useEffect(() => {
@@ -1351,6 +1352,7 @@ export function HomeFeedEntries({ source, ask, linked }: { source: HomeFeedSourc
       <SendPills items={pills} />
       <div inert={!!pageEntry || !!liftedShown}>
       {showHidden && ask}
+      {finishSetup}
       {error && <div role="alert" className="mb-4 flex items-start gap-3 rounded-2xl bg-card px-4 py-3 text-sm leading-[1.45] shadow-[inset_0_0_0_1px_hsl(var(--border))]">
         <TriangleAlertIcon aria-hidden className="mt-px size-5 shrink-0 text-warning" />
         <div className="min-w-0"><p><b className="font-semibold">{error.lead}</b> {error.text}</p><button type="button" onClick={() => refreshRef.current()} className="mt-2 min-h-11 underline">Try again</button></div>

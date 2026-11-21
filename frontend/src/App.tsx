@@ -1462,12 +1462,6 @@ export function App() {
 
   useEffect(() => { signOutRef.current = signOut; }, [signOut]);
 
-  // A signed-in page opened with ?finish-setup=registry removes the query, then asks to publish (inert while the consent is off).
-  useEffect(() => {
-    if (state !== "ready" || !tcw) return;
-    void runFinishSetupIntent(tcw, { location: window.location, history: window.history });
-  }, [state, tcw]);
-
   const isReady = state === "ready" && tcw !== null;
   useEffect(() => { setSignedIn(isReady); }, [isReady]);
   useEffect(() => { void bindSharedWithMe(isReady && !LOCAL_VALIDATION ? tcw : null); }, [isReady, tcw]);
@@ -1491,6 +1485,12 @@ export function App() {
 
   const navigate = useNavigate();
   const location = useLocation();
+  // A signed-in page opened (or navigated, by the Home card) to ?finish-setup=registry removes the query, then asks to
+  // publish. Inert while the consent is off.
+  useEffect(() => {
+    if (state !== "ready" || !tcw) return;
+    void runFinishSetupIntent(tcw, { location: window.location, history: window.history });
+  }, [state, tcw, location.search]);
   // The recorder's Open: the Library, then the note just saved.
   const openSavedNote = useOpenSavedNote(tcw);
   const loadFirstScreen = useCallback(() => readFirstScreen(tcw!, did), [tcw, did]);

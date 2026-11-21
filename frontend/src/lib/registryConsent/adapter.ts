@@ -2,6 +2,7 @@
 // `ensureOwnerRegistryRecord` (it ships with js-sdk #1107), so every call checks that the method exists and does
 // nothing when it does not. Nothing here fakes the SDK: a missing method is reported as "unsupported".
 import type { RegistryPublishHooks } from "@tinyboilerplate/client";
+import { DEFAULT_TINYCLOUD_LOCATION_REGISTRY_URL, lookupOwnerRegistryVerdict } from "@tinycloud/sdk-core";
 import { logSession } from "../debugLog";
 
 export type RegistryPublishPreview = Parameters<NonNullable<RegistryPublishHooks["onRegistryPublishConsent"]>>[0];
@@ -9,16 +10,11 @@ export type RegistryPublishOutcome = "published" | "already-current" | "declined
 /** The SDK's outcomes, plus "unsupported": the SDK this build pins does not have the method. */
 export type RegistryPublishResult = RegistryPublishOutcome | "unsupported";
 
-/** Where the SDK keeps the owner's "Not now", in the account-registry space's KV. The SDK writes it; TinyChat reads it. */
-export const REGISTRY_PUBLISH_DISMISSED_KEY = "system/registry-publish/dismissed/v1";
-
 /** The slice of the SDK client this adapter touches. Every member is optional: it is checked before use. */
 export interface RegistryPublishClient {
   ensureOwnerRegistryRecord?: (options: { ignoreDismissed?: boolean }) => Promise<RegistryPublishOutcome>;
-  readonly accountSpaceId?: string;
-  kvForSpace?: (spaceId: string) => {
-    get: (key: string) => Promise<{ ok: boolean; data?: { data?: unknown } }>;
-  };
+  /** The owner's did:pkh. */
+  readonly did?: string;
 }
 
 type MaybeClient = RegistryPublishClient | null | undefined;
@@ -47,18 +43,21 @@ export async function ensureRegistryRecord(tcw: MaybeClient, options: { ignoreDi
   }
 }
 
+type VerdictLookup = (subject: string, options: { registryUrl: string }) => Promise<{ status: string; offline?: true }>;
+
 /**
- * Has the owner answered "Not now" before? Read from the flag the SDK stores in the account-registry KV.
- * Fails open (false) when the flag cannot be read: an unreadable flag proves nothing, same as the SDK's own read.
+ * Does the registry hold no record for this owner? Only a genuine "unregistered" answers yes: unreachable, an unusable
+ * record and a cold-outage guess (`offline`) prove nothing, so they answer no and the banner stays away.
  */
-export async function readRegistryPublishDismissed(tcw: MaybeClient): Promise<boolean> {
-  const space = tcw?.accountSpaceId;
-  if (!space || typeof tcw?.kvForSpace !== "function") return false;
+export async function readRegistryUnregistered(
+  tcw: MaybeClient,
+  lookup: VerdictLookup = lookupOwnerRegistryVerdict,
+): Promise<boolean> {
+  const subject = tcw?.did;
+  if (!subject) return false;
   try {
-    const result = await tcw.kvForSpace(space).get(REGISTRY_PUBLISH_DISMISSED_KEY);
-    if (!result.ok) return false;
-    const flag = result.data?.data;
-    return typeof flag === "object" && flag !== null && (flag as { dismissed?: unknown }).dismissed === true;
+    const verdict = await lookup(subject, { registryUrl: DEFAULT_TINYCLOUD_LOCATION_REGISTRY_URL });
+    return verdict.status === "unregistered" && verdict.offline !== true;
   } catch {
     return false;
   }

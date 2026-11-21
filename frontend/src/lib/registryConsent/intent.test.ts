@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { fakeSdk } from "./testClient.fixture";
+import { fakeSdk, memoryDismissedStore } from "./testClient.fixture";
 import {
   hasFinishSetupRegistryIntent,
   runFinishSetupIntent,
@@ -43,8 +43,10 @@ describe("the finish-setup link", () => {
 
   test("it works past a Not now the owner gave earlier", async () => {
     const sdk = fakeSdk(async () => true);
-    sdk.kv.set("system/registry-publish/dismissed/v1", { dismissed: true });
-    expect(await runSignInRegistryPublish(sdk.client, envAt("https://tinycloud.one/"), true)).toBe("declined");
+    const store = memoryDismissedStore();
+    store.write(sdk.client.did);
+    expect(await runSignInRegistryPublish(sdk.client, envAt("https://tinycloud.one/"), true, store)).toBe("dismissed");
+    expect(sdk.calls).toEqual([]);
     expect(await runFinishSetupIntent(sdk.client, envAt("https://tinycloud.one/?finish-setup=registry"), true)).toBe("published");
   });
 
@@ -74,30 +76,37 @@ describe("the finish-setup link", () => {
 
   test("an SDK without ensureOwnerRegistryRecord: no call, and the address is left alone", async () => {
     const env = envAt("https://tinycloud.one/?finish-setup=registry");
-    const withoutMethod = { accountSpaceId: "x" };
+    const withoutMethod = { did: "did:pkh:eip155:1:0xabc" };
     expect(await runFinishSetupIntent(withoutMethod, env, true)).toBe("off");
-    expect(await runSignInRegistryPublish(withoutMethod, env, true)).toBe("off");
+    expect(await runSignInRegistryPublish(withoutMethod, env, true, memoryDismissedStore())).toBe("off");
     expect(env.urls).toEqual([]);
   });
 });
 
 describe("after a fresh sign-in", () => {
+  test("a different owner than the one who said Not now is asked", async () => {
+    const sdk = fakeSdk(async () => true);
+    const store = memoryDismissedStore();
+    store.write("did:pkh:eip155:1:0xsomeoneelse");
+    expect(await runSignInRegistryPublish(sdk.client, envAt("https://tinycloud.one/"), true, store)).toBe("published");
+  });
+
   test("asks once, without ignoring Not now", async () => {
     const sdk = fakeSdk(async () => true);
-    expect(await runSignInRegistryPublish(sdk.client, envAt("https://tinycloud.one/"), true)).toBe("published");
+    expect(await runSignInRegistryPublish(sdk.client, envAt("https://tinycloud.one/"), true, memoryDismissedStore())).toBe("published");
     expect(sdk.calls).toEqual([{ options: {} }]);
   });
 
   test("a finish-setup link on the page is left to the link's own ask", async () => {
     const sdk = fakeSdk(async () => true);
-    expect(await runSignInRegistryPublish(sdk.client, envAt("https://tinycloud.one/?finish-setup=registry"), true)).toBe("deferred-to-link");
+    expect(await runSignInRegistryPublish(sdk.client, envAt("https://tinycloud.one/?finish-setup=registry"), true, memoryDismissedStore())).toBe("deferred-to-link");
     expect(sdk.calls).toEqual([]);
   });
 
   test("the legacy hostnames count as TinyCloud's own pages", async () => {
     for (const url of ["https://tinycloud.chat/", "https://home.tinycloud.xyz/"]) {
       const sdk = fakeSdk(async () => true);
-      expect(await runSignInRegistryPublish(sdk.client, envAt(url), true)).toBe("published");
+      expect(await runSignInRegistryPublish(sdk.client, envAt(url), true, memoryDismissedStore())).toBe("published");
     }
   });
 });

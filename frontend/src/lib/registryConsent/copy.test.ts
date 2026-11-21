@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { debugEvents, setDebugLogEnabledForTests } from "../debugLog";
-import { REGISTRY_CONSENT_COPY, REGISTRY_CONSENT_MODAL_ENABLED } from "./copy";
+import { FINISH_SETUP_BANNER_COPY, REGISTRY_CONSENT_COPY, REGISTRY_CONSENT_MODAL_ENABLED } from "./copy";
 import { registryPublishConfig } from "./config";
 import { requestRegistryConsent } from "./broker";
 
@@ -31,5 +31,19 @@ describe("the consent switch", () => {
   test("the buttons are the ones the draft names", () => {
     expect(REGISTRY_CONSENT_COPY.publish).toBe("Publish and continue");
     expect(REGISTRY_CONSENT_COPY.notNow).toBe("Not now");
+  });
+
+  test("names the product TinyCloud One, never TinyCloud Home", () => {
+    const words = [
+      REGISTRY_CONSENT_COPY.title, REGISTRY_CONSENT_COPY.body, REGISTRY_CONSENT_COPY.publish, REGISTRY_CONSENT_COPY.notNow,
+      ...Object.values(REGISTRY_CONSENT_COPY.previewLabels), ...Object.values(FINISH_SETUP_BANNER_COPY),
+    ].join(" ");
+    expect(words).not.toContain("TinyCloud Home");
+    expect(REGISTRY_CONSENT_COPY.body).toContain("outside TinyCloud One");
+    expect(REGISTRY_CONSENT_COPY.body).toContain("Anyone who knows your account address can see it, along with the names of your spaces.");
+  });
+
+  test("the line the dialog cannot show after Not now is the banner's supporting text", () => {
+    expect(FINISH_SETUP_BANNER_COPY.support).toBe("Apps outside TinyCloud One can't find your space until you publish this.");
   });
 });

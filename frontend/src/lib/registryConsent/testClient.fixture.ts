@@ -1,8 +1,21 @@
 // A fake of the SDK surface TC-3547 touches, with the SDK's documented behavior around the consent callback:
-// consent answered false stores "Not now"; a throw is declined without storing it; and a sign-out between the question
+// consent answered false stores "Not now" in the SDK's own KV (which the host does not read); a throw is declined without storing it; and a sign-out between the question
 // and the answer (the SDK's sign-out counter moved) ends the flow before any write.
 import type { RegistryPublishClient, RegistryPublishOutcome, RegistryPublishPreview } from "./adapter";
-import { REGISTRY_PUBLISH_DISMISSED_KEY } from "./adapter";
+import { createDismissedStore, type DismissedStore } from "./dismissed";
+
+/** Where the SDK itself writes "Not now": ineffective in production (the grant does not cover it), so the host never reads it. */
+const SDK_DISMISSED_KEY = "system/registry-publish/dismissed/v1";
+
+/** A localStorage stand-in, so a test never touches the shared default store. */
+export function memoryStorage(initial: Record<string, string> = {}) {
+  const map = new Map(Object.entries(initial));
+  return { map, getItem: (key: string) => map.get(key) ?? null, setItem: (key: string, value: string) => { map.set(key, value); } };
+}
+export function memoryDismissedStore(): DismissedStore {
+  const storage = memoryStorage();
+  return createDismissedStore(() => storage);
+}
 
 export const PREVIEW: RegistryPublishPreview = {
   subject: "did:pkh:eip155:1:0x00000000000000000000000000000000000abcd1",
@@ -17,15 +30,12 @@ export function fakeSdk(consent?: (preview: RegistryPublishPreview) => Promise<b
   const log: string[] = [];
   let signOutCount = 0;
   const client = {
-    accountSpaceId: "tinycloud:pkh:eip155:1:0x00000000000000000000000000000000000abcd1:account-registry",
-    kvForSpace: () => ({
-      get: async (key: string) => ({ ok: true, data: { data: kv.get(key) } }),
-    }),
+    did: PREVIEW.subject,
     signOut: () => { signOutCount += 1; log.push("sign-out"); return Promise.resolve(); },
     async ensureOwnerRegistryRecord(options: { ignoreDismissed?: boolean }): Promise<RegistryPublishOutcome> {
       calls.push({ options });
       log.push("ensure");
-      if (!options.ignoreDismissed && (kv.get(REGISTRY_PUBLISH_DISMISSED_KEY) as { dismissed?: boolean } | undefined)?.dismissed) return "declined";
+      if (!options.ignoreDismissed && (kv.get(SDK_DISMISSED_KEY) as { dismissed?: boolean } | undefined)?.dismissed) return "declined";
       const signOutsAtEntry = signOutCount;
       let approved: boolean;
       try {
@@ -35,7 +45,7 @@ export function fakeSdk(consent?: (preview: RegistryPublishPreview) => Promise<b
       }
       if (signOutCount !== signOutsAtEntry) return "unavailable";
       if (!approved) {
-        kv.set(REGISTRY_PUBLISH_DISMISSED_KEY, { dismissed: true });
+        kv.set(SDK_DISMISSED_KEY, { dismissed: true });
         return "declined";
       }
       return "published";

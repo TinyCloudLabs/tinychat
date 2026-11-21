@@ -13,7 +13,10 @@ afterAll(() => { mock.module("../components/ui/alert-dialog", () => actualAlert)
 type Kids = { children?: ReactNode };
 mock.module("../components/ui/alert-dialog", () => ({
   ...actualAlert,
-  AlertDialog: (props: { open: boolean } & Kids) => (props.open ? <div role="alertdialog">{props.children}</div> : null),
+  // The stand-in's "dismiss" button is Radix's Escape or outside tap: it asks the dialog to close without an answer.
+  AlertDialog: (props: { open: boolean; onOpenChange?: (open: boolean) => void } & Kids) => (props.open
+    ? <div role="alertdialog">{props.children}<button type="button" onClick={() => props.onOpenChange?.(false)}>dismiss</button></div>
+    : null),
   AlertDialogContent: (props: Kids) => <div>{props.children}</div>,
   AlertDialogHeader: (props: Kids) => <div>{props.children}</div>,
   AlertDialogTitle: (props: Kids) => <h2>{props.children}</h2>,
@@ -22,7 +25,7 @@ mock.module("../components/ui/alert-dialog", () => ({
   AlertDialogCancel: (props: { onClick?: () => void } & Kids) => <button type="button" onClick={props.onClick}>{props.children}</button>,
   AlertDialogAction: (props: { onClick?: () => void } & Kids) => <button type="button" onClick={props.onClick}>{props.children}</button>,
 }));
-const { RegistryConsentDialog, shortSubject } = await import("./RegistryConsentDialog");
+const { RegistryConsentDialog } = await import("./RegistryConsentDialog");
 
 let restore: (() => void) | undefined;
 let root: Root | undefined;
@@ -59,10 +62,11 @@ test("renders the preview with the owner's address short, and answers true on Pu
   await act(async () => { asked = requestRegistryConsent(PREVIEW); });
   expect(view.text()).toContain(REGISTRY_CONSENT_COPY.title);
   expect(view.text()).toContain("0x…bcd1");
-  expect(view.text()).toContain(PREVIEW.nodeDid);
-  expect(view.text()).toContain(PREVIEW.nodeOrigin);
-  expect(view.text()).toContain(PREVIEW.space);
+  expect(view.text()).toContain("node.tinycloud.xyz");
+  expect(view.text()).toContain("Default");
   expect(view.text()).not.toContain(PREVIEW.subject);
+  expect(view.text()).not.toContain(PREVIEW.space);
+  expect(view.text()).not.toContain(REGISTRY_CONSENT_COPY.previewLabels.address);
   await view.click("Publish and continue");
   expect(await asked).toBe(true);
   expect(view.text()).toBe("");
@@ -77,6 +81,16 @@ test("Not now answers false and closes", async () => {
   expect(view.text()).toBe("");
 });
 
+test("Escape or a tap outside closes the dialog and throws: nothing is answered, nothing is stored", async () => {
+  const view = await mount();
+  let asked!: Promise<boolean>;
+  await act(async () => { asked = requestRegistryConsent(PREVIEW); });
+  const outcome = asked.then(() => "answered", () => "threw");
+  await view.click("dismiss");
+  expect(await outcome).toBe("threw");
+  expect(view.text()).toBe("");
+});
+
 test("sign-out closes the dialog and answers false", async () => {
   const view = await mount();
   let asked!: Promise<boolean>;
@@ -86,8 +100,4 @@ test("sign-out closes the dialog and answers false", async () => {
   expect(await asked).toBe(false);
   expect(pendingRegistryConsent()).toBeNull();
   expect(view.text()).toBe("");
-});
-
-test("shortSubject is 0x… and the last four of the address", () => {
-  expect(shortSubject("did:pkh:eip155:1:0x00000000000000000000000000000000000abcd1")).toBe("0x…bcd1");
 });

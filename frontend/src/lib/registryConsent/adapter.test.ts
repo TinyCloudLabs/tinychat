@@ -1,19 +1,18 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { debugEvents, setDebugLogEnabledForTests } from "../debugLog";
-import { REGISTRY_PUBLISH_DISMISSED_KEY, canPublishRegistryRecord, ensureRegistryRecord, readRegistryPublishDismissed } from "./adapter";
+import { canPublishRegistryRecord, ensureRegistryRecord, readRegistryUnregistered } from "./adapter";
 import { finishSetupBannerVisible } from "./bannerGate";
-import { fakeSdk } from "./testClient.fixture";
+import { createDismissedStore } from "./dismissed";
+import { fakeSdk, memoryDismissedStore } from "./testClient.fixture";
 
 afterEach(() => setDebugLogEnabledForTests(false));
 
 describe("the adapter over the SDK client", () => {
   test("an SDK without the method: unsupported, and nothing is called", async () => {
-    let touched = 0;
-    const withoutMethod = { accountSpaceId: "x", kvForSpace: () => { touched += 1; throw new Error("not read"); } };
+    const withoutMethod = { did: "did:pkh:eip155:1:0xabc" };
     expect(canPublishRegistryRecord(withoutMethod)).toBe(false);
     expect(await ensureRegistryRecord(withoutMethod, { ignoreDismissed: true })).toBe("unsupported");
     expect(await ensureRegistryRecord(null)).toBe("unsupported");
-    expect(touched).toBe(0);
   });
 
   test("a non-function member is not the method", () => {
@@ -36,35 +35,68 @@ describe("the adapter over the SDK client", () => {
   });
 });
 
-describe("the dismissed flag read", () => {
-  test("reads the flag the SDK stores", async () => {
+describe("the registry verdict read", () => {
+  test("only a genuine unregistered answer counts", async () => {
     const sdk = fakeSdk();
-    expect(await readRegistryPublishDismissed(sdk.client)).toBe(false);
-    sdk.kv.set(REGISTRY_PUBLISH_DISMISSED_KEY, { dismissed: true, at: "2026-11-21T00:00:00.000Z" });
-    expect(await readRegistryPublishDismissed(sdk.client)).toBe(true);
+    const answers = (verdict: { status: string; offline?: true }) => async () => verdict;
+    expect(await readRegistryUnregistered(sdk.client, answers({ status: "unregistered" }))).toBe(true);
+    expect(await readRegistryUnregistered(sdk.client, answers({ status: "unregistered", offline: true }))).toBe(false);
+    expect(await readRegistryUnregistered(sdk.client, answers({ status: "registered" }))).toBe(false);
+    expect(await readRegistryUnregistered(sdk.client, answers({ status: "unavailable" }))).toBe(false);
+    expect(await readRegistryUnregistered(sdk.client, async () => { throw new Error("registry down"); })).toBe(false);
+    expect(await readRegistryUnregistered({}, answers({ status: "unregistered" }))).toBe(false);
   });
 
-  test("an unreadable flag proves nothing: not dismissed", async () => {
-    const failing = { accountSpaceId: "x", kvForSpace: () => ({ get: async () => { throw new Error("offline"); } }) };
-    const refused = { accountSpaceId: "x", kvForSpace: () => ({ get: async () => ({ ok: false }) }) };
-    const noSpace = { kvForSpace: () => ({ get: async () => ({ ok: true, data: { data: { dismissed: true } } }) }) };
-    expect(await readRegistryPublishDismissed(failing)).toBe(false);
-    expect(await readRegistryPublishDismissed(refused)).toBe(false);
-    expect(await readRegistryPublishDismissed(noSpace)).toBe(false);
+  test("asks about the signed-in owner's DID", async () => {
+    const sdk = fakeSdk();
+    const asked: string[] = [];
+    await readRegistryUnregistered(sdk.client, async (subject) => { asked.push(subject); return { status: "unregistered" }; });
+    expect(asked).toEqual([sdk.client.did]);
   });
 });
 
-describe("the finish-setup banner", () => {
-  test("stays hidden across sign-ins once the owner said Not now", async () => {
+describe("the finish-setup banner gate", () => {
+  const unregistered = async () => true;
+  const registered = async () => false;
+
+  test("visible for an unregistered account that has not said Not now", async () => {
     const sdk = fakeSdk();
-    expect(await finishSetupBannerVisible(sdk.client, true)).toBe(true);
-    sdk.kv.set(REGISTRY_PUBLISH_DISMISSED_KEY, { dismissed: true });
-    expect(await finishSetupBannerVisible(sdk.client, true)).toBe(false);
+    expect(await finishSetupBannerVisible(sdk.client, true, unregistered, memoryDismissedStore())).toBe(true);
   });
 
-  test("never shows while the consent is off or the SDK cannot publish", async () => {
+  test("stays hidden across sign-ins once the owner said Not now, and only for that owner", async () => {
     const sdk = fakeSdk();
-    expect(await finishSetupBannerVisible(sdk.client, false)).toBe(false);
-    expect(await finishSetupBannerVisible({ accountSpaceId: "x" }, true)).toBe(false);
+    const store = memoryDismissedStore();
+    store.write(sdk.client.did);
+    expect(await finishSetupBannerVisible(sdk.client, true, unregistered, store)).toBe(false);
+    expect(await finishSetupBannerVisible({ ...sdk.client, did: "did:pkh:eip155:1:0xother" }, true, unregistered, store)).toBe(true);
+  });
+
+  test("a flag the SDK wrote in its own KV does not hide it: the host does not read the KV", async () => {
+    const sdk = fakeSdk();
+    sdk.kv.set("system/registry-publish/dismissed/v1", { dismissed: true });
+    expect(await finishSetupBannerVisible(sdk.client, true, unregistered, memoryDismissedStore())).toBe(true);
+  });
+
+  test("storage that cannot be read asks (shows) rather than hiding for good", async () => {
+    const sdk = fakeSdk();
+    const broken = createDismissedStore(() => ({ getItem: () => { throw new Error("denied"); }, setItem: () => { throw new Error("denied"); } }));
+    expect(await finishSetupBannerVisible(sdk.client, true, unregistered, broken)).toBe(true);
+  });
+
+  test("hidden for an account that already has its record", async () => {
+    const sdk = fakeSdk();
+    expect(await finishSetupBannerVisible(sdk.client, true, registered, memoryDismissedStore())).toBe(false);
+  });
+
+  test("never shows while the consent is off or the SDK cannot publish, and asks nothing then", async () => {
+    const sdk = fakeSdk();
+    let asked = 0;
+    const counting = async () => { asked += 1; return true; };
+    const store = memoryDismissedStore();
+    expect(await finishSetupBannerVisible(sdk.client, false, counting, store)).toBe(false);
+    expect(await finishSetupBannerVisible({ did: "did:pkh:eip155:1:0xabc" }, true, counting, store)).toBe(false);
+    expect(await finishSetupBannerVisible(sdk.client, undefined, counting, store)).toBe(false);
+    expect(asked).toBe(0);
   });
 });

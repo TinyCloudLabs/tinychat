@@ -4,10 +4,13 @@
 import { isLegacyOrigin, CANONICAL_ORIGIN } from "../originMove";
 import { ensureRegistryRecord, canPublishRegistryRecord, type RegistryPublishClient, type RegistryPublishResult } from "./adapter";
 import { REGISTRY_CONSENT_MODAL_ENABLED } from "./copy";
+import { registryDismissedStore, type DismissedStore } from "./dismissed";
 
 /** The SDK's `FINISH_SETUP_REGISTRY_INTENT` ("finish-setup=registry"), matched as a name and a fixed value. */
 const INTENT_PARAM = "finish-setup";
 const INTENT_VALUE = "registry";
+/** The query the Home card navigates to: this module's own link, so the card runs the same path as a pasted link. */
+export const FINISH_SETUP_INTENT_SEARCH = `?${INTENT_PARAM}=${INTENT_VALUE}`;
 
 export type RegistryPublishEnv = {
   location: Pick<Location, "origin" | "hostname" | "pathname" | "search" | "hash">;
@@ -53,16 +56,19 @@ export async function runFinishSetupIntent(
 /**
  * After a fresh first-party sign-in: ask the SDK to publish if the owner has no record. TinyChat signs in with
  * `autoBootstrapAccount: false`, which is also what stops the SDK from doing this itself at sign-in, so the host asks.
- * The SDK checks the registry, an earlier "Not now" and consent. A `finish-setup` link on the page is left to
+ * The host skips it after a "Not now" (dismissed.ts); the SDK checks the registry and asks consent. A `finish-setup` link on the page is left to
  * `runFinishSetupIntent`, so the two never ask at once.
  */
 export async function runSignInRegistryPublish(
   tcw: RegistryPublishClient | null | undefined,
   env: RegistryPublishEnv,
   enabled: boolean = REGISTRY_CONSENT_MODAL_ENABLED,
-): Promise<RegistryPublishResult | "off" | "not-first-party" | "deferred-to-link"> {
+  dismissed: DismissedStore = registryDismissedStore,
+): Promise<RegistryPublishResult | "off" | "not-first-party" | "deferred-to-link" | "dismissed"> {
   if (!enabled || !canPublishRegistryRecord(tcw)) return "off";
   if (!isFirstPartyPublishOrigin(env.location)) return "not-first-party";
   if (hasFinishSetupRegistryIntent(env.location.search)) return "deferred-to-link";
+  // An owner who pressed "Not now" before is not asked at sign-in again; the finish-setup link is how they come back.
+  if (tcw.did && dismissed.read(tcw.did)) return "dismissed";
   return ensureRegistryRecord(tcw);
 }

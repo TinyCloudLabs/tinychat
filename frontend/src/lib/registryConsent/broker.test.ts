@@ -1,8 +1,11 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { PREVIEW, fakeSdk } from "./testClient.fixture";
+import { PREVIEW, fakeSdk, memoryDismissedStore, memoryStorage } from "./testClient.fixture";
+import { createDismissedStore } from "./dismissed";
 import {
   answerRegistryConsent,
   cancelPendingRegistryConsent,
+  declineRegistryConsent,
+  dismissRegistryConsent,
   pendingRegistryConsent,
   registerRegistryConsentHost,
   requestRegistryConsent,
@@ -55,7 +58,7 @@ describe("the consent callback", () => {
     expect(pendingRegistryConsent()).toBeNull();
   });
 
-  test("through the SDK: Publish publishes, Not now stores the flag, a throw stores nothing", async () => {
+  test("through the SDK: Publish publishes, Not now declines, a throw declines", async () => {
     const accepted = fakeSdk(requestRegistryConsent);
     const accepting = accepted.client.ensureOwnerRegistryRecord({});
     answerRegistryConsent(true);
@@ -63,15 +66,77 @@ describe("the consent callback", () => {
 
     const refused = fakeSdk(requestRegistryConsent);
     const refusing = refused.client.ensureOwnerRegistryRecord({});
-    answerRegistryConsent(false);
+    declineRegistryConsent(memoryDismissedStore());
     expect(await refusing).toBe("declined");
-    expect(refused.kv.size).toBe(1);
 
     unregisterHost();
     const thrown = fakeSdk(requestRegistryConsent);
     expect(await thrown.client.ensureOwnerRegistryRecord({})).toBe("declined");
-    expect(thrown.kv.size).toBe(0);
     unregisterHost = registerRegistryConsentHost();
+  });
+});
+
+describe("Not now", () => {
+  test("answers false and writes the flag for that owner only", async () => {
+    const storage = memoryStorage();
+    const store = createDismissedStore(() => storage);
+    const asked = requestRegistryConsent(PREVIEW);
+    declineRegistryConsent(store);
+    expect(await asked).toBe(false);
+    expect(pendingRegistryConsent()).toBeNull();
+    expect(store.read(PREVIEW.subject)).toBe(true);
+    expect(store.read("did:pkh:eip155:1:0xsomeoneelse")).toBe(false);
+    // A later page load reads the same storage.
+    expect(createDismissedStore(() => storage).read(PREVIEW.subject)).toBe(true);
+  });
+
+  test("with nothing pending it writes nothing", () => {
+    const storage = memoryStorage();
+    declineRegistryConsent(createDismissedStore(() => storage));
+    expect(storage.map.size).toBe(0);
+  });
+
+  test("a sign-out that closes the dialog answers false but is not a Not now", async () => {
+    const storage = memoryStorage();
+    const store = createDismissedStore(() => storage);
+    const asked = requestRegistryConsent(PREVIEW);
+    cancelPendingRegistryConsent();
+    expect(await asked).toBe(false);
+    expect(store.read(PREVIEW.subject)).toBe(false);
+  });
+});
+
+describe("dismissing the dialog without an answer (Escape, a tap outside)", () => {
+  test("throws and clears the question, so the SDK reads it as declined", async () => {
+    const asked = requestRegistryConsent(PREVIEW);
+    dismissRegistryConsent();
+    await expect(asked).rejects.toThrow();
+    expect(pendingRegistryConsent()).toBeNull();
+  });
+
+  test("through the SDK: declined and no Not now is stored", async () => {
+    const sdk = fakeSdk(requestRegistryConsent);
+    const flow = sdk.client.ensureOwnerRegistryRecord({});
+    dismissRegistryConsent();
+    expect(await flow).toBe("declined");
+    expect(sdk.kv.size).toBe(0);
+  });
+
+  test("writes no Not now of the host's own either", async () => {
+    const storage = memoryStorage();
+    const store = createDismissedStore(() => storage);
+    const asked = requestRegistryConsent(PREVIEW);
+    dismissRegistryConsent();
+    await expect(asked).rejects.toThrow();
+    expect(store.read(PREVIEW.subject)).toBe(false);
+    expect(storage.map.size).toBe(0);
+  });
+
+  test("after a button answer it does nothing", async () => {
+    const asked = requestRegistryConsent(PREVIEW);
+    answerRegistryConsent(false);
+    dismissRegistryConsent();
+    expect(await asked).toBe(false);
   });
 });
 
