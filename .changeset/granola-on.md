@@ -2,6 +2,6 @@
 "@tinychat/frontend": patch
 ---
 
-Granola import and sync are on. Connect Granola in Meeting sources to bring in your meetings.
+You can bring your meetings in from Granola and keep them in sync: connect Granola in Meeting sources.
 
 Details: TC-3292
