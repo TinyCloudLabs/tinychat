@@ -1,3 +1,4 @@
+import type { Manifest } from "@tinycloud/node-sdk/core";
 import { TinyCloudNode } from "@tinycloud/node-sdk";
 import { SESSION_EXPIRATION_MS } from "@tinyboilerplate/core";
 
@@ -38,11 +39,37 @@ export function validateBackendPrefix(prefix: string | undefined): string {
 }
 
 /**
+ * What the backend's own session may do. The backend owns the whole space named by
+ * `prefix` and keeps all of its operational state there through `node.kv`
+ * (get, put, delete, list), so the manifest grants exactly those four KV actions on the
+ * whole space. Nothing else is requested: no SQL, DuckDB, hooks, secrets or public
+ * space, none of which the backend uses. Activating a user's delegation (`useDelegation`)
+ * needs no grant here, because it is rooted in the user's signature.
+ *
+ * Without a manifest, newer SDK defaults grant a signed-in app only
+ * `applications/node.app/`, which would refuse every storage call in this space.
+ */
+export function backendIdentityManifest(prefix: string): Manifest {
+  return {
+    app_id: prefix,
+    name: "Backend identity",
+    space: prefix,
+    prefix: "",
+    defaults: false,
+    includePublicSpace: false,
+    permissions: [
+      { service: "tinycloud.kv", path: "", actions: ["get", "put", "del", "list"] },
+    ],
+  };
+}
+
+/**
  * Initialize a TinyCloudNode instance with the given private key,
  * sign in, and return the node + its DID.
  *
  * This is the backend's own identity — used to store delegations
- * and access user data via delegated capabilities.
+ * and access user data via delegated capabilities. Its session holds
+ * only {@link backendIdentityManifest}.
  */
 export async function createBackendIdentity(
   config: BackendIdentityConfig,
@@ -53,6 +80,7 @@ export async function createBackendIdentity(
     host: config.host ?? "https://node.tinycloud.xyz",
     prefix,
     autoCreateSpace: config.autoCreateSpace ?? true,
+    manifest: backendIdentityManifest(prefix),
     includeAccountRegistryPermissions: false,
     sessionExpirationMs: SESSION_EXPIRATION_MS,
   });
