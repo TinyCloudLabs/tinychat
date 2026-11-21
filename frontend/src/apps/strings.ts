@@ -162,11 +162,8 @@ export const unpinApp = (app: string) => `Unpin ${app}`;
 export const opensSeparatelyTitle = (app: string, phone: boolean) => (phone ? `${app} opens in a browser window` : `${app} opens in its own tab`);
 export const openSeparately = (app: string, phone: boolean) => (phone ? `Open ${app}` : "Open in new tab");
 
-/**
- * The first navigation item's name with One Apps on: the pill's spoken label and the sidebar and rail row. Still open
- * (Feed or Home); tests import it, never the word.
- */
-export const MAIN_TAB_LABEL = "Feed";
+/** The first navigation item's name with One Apps on: the pill's spoken label and the sidebar and rail row. Tests import it, never the word. */
+export const MAIN_TAB_LABEL = "Home";
 
 /** The phone pill's other spoken labels (its items are icon-only). */
 export const PILL_LABELS = { chat: "Chat", apps: "Apps", you: "You" } as const;
