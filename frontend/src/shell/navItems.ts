@@ -87,7 +87,11 @@ export function navItems(pendingMeetings: number, options?: NavPinOptions): NavI
     return [feed, chat, apps, capture, connectors];
   }
   // One Apps: Feed, Chat and Apps always; then what the user pinned, in pin order.
-  const items: NavItem[] = [options.oneNav ? { ...feed, label: MAIN_TAB_LABEL } : feed, chat, { ...apps, fixed: true }];
+  const items: NavItem[] = [
+    options.oneNav ? { ...feed, label: MAIN_TAB_LABEL } : feed,
+    chat,
+    options.oneNav ? { ...apps, icon: LayoutGridIcon, fixed: true } : { ...apps, fixed: true },
+  ];
   for (const pin of options.pins) {
     if (pin === "capture") items.push(options.oneNav ? { ...capture, icon: GLYPH_ICONS.recording } : capture);
     else if (pin === "connectors") items.push(options.oneNav ? { ...connectors, icon: GLYPH_ICONS.connectors } : connectors);

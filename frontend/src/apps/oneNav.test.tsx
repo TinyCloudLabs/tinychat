@@ -203,14 +203,19 @@ describe("the phone's pill", () => {
     expect(shell(PATHS.about)).not.toContain('data-testid="pill-bar"');
   });
 
-  test("wider screens keep their navigation and never offer Add an app there; the sidebar's Settings is You", () => {
+  test("wider screens keep their navigation and never offer Add an app there; the sidebar's Apps is the grid and Settings is You", () => {
     const wide = shell(PATHS.chat, { size: "expanded", land: false });
     expect(wide).not.toContain('data-testid="pill-bar"');
     expect(wide).toContain('data-testid="sidebar"');
     expect(wide).not.toContain(ADD_APP_TITLE);
     expect(wide).toContain(`>${MAIN_TAB_LABEL}<`);
-    const settingsRow = links(wide, 'data-testid="sidebar"', "</nav>").find((tag) => attr(tag, "href") === PATHS.settings)!;
-    const row = wide.slice(wide.indexOf(settingsRow), wide.indexOf("</a>", wide.indexOf(settingsRow)));
+    const sidebarLinks = links(wide, 'data-testid="sidebar"', "</nav>");
+    const rowOf = (href: string) => {
+      const tag = sidebarLinks.find((link) => attr(link, "href") === href)!;
+      return wide.slice(wide.indexOf(tag), wide.indexOf("</a>", wide.indexOf(tag)));
+    };
+    expect(rowOf(PATHS.apps)).toContain("lucide-layout-grid");
+    const row = rowOf(PATHS.settings);
     expect(row).toContain(`>${PILL_LABELS.you}<`);
     expect(row).toContain("lucide-user-round");
     expect(row).not.toContain(">Settings<");
