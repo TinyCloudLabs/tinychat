@@ -713,9 +713,9 @@ scheme is unchanged on both phones.
    mode=validate`, then without `-f mode=validate` to upload. The run summary
    names the version and build.
 7. **TestFlight**: App Store Connect → TinyCloud One → TestFlight. The build appears
-   after Apple processes it (usually 5 to 30 minutes). Answer the export
-   compliance question once. To skip it on later builds, add
-   `ITSAppUsesNonExemptEncryption` to Info.plist, which is a legal call.
+   after Apple processes it (usually 5 to 30 minutes). Info.plist sets
+   `ITSAppUsesNonExemptEncryption` to false, the export-compliance answer given
+   for builds 9 to 11, so a build does not wait on that question. Changing it is a legal call.
    Add yourself under Internal Testing, install **TestFlight** from the App
    Store on the iPhone, and install TinyCloud One from it.
 
