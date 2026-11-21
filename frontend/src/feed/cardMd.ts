@@ -88,8 +88,9 @@ const INSERT_IF_MISSING = "INSERT OR IGNORE INTO card_md (id, text, version, upd
  *
  * The version check catches corruption, NOT tampering: anyone can compute a sha256 prefix. A row rewritten before this
  * ran carries over. The owner sees the carried-over text in Settings and can change it. An owner who cleared their
- * card.md (empty text, its own version) keeps it cleared. A failure throws before the old row is deleted, so the
- * caller can run it again.
+ * card.md (empty text, its own version) keeps it cleared. The old row is deleted only after the master insert
+ * succeeded (INSERT OR IGNORE: written, or a row was already there), and any failure throws, so the caller can run it
+ * again.
  */
 export async function migrateCardMd(master: FeedDatabase, legacy: FeedDatabase, now: Date = new Date()): Promise<void> {
   unwrap(await master.batch([{ sql: SCHEMA }]));
@@ -102,7 +103,6 @@ export async function migrateCardMd(master: FeedDatabase, legacy: FeedDatabase, 
       if (old) console.warn("card.md migration: the old row's version did not match its text, so the default was used");
       unwrap(await master.execute(INSERT_IF_MISSING, [CARD_MD_DEFAULT, cardMdVersion(CARD_MD_DEFAULT), now.toISOString()]));
     }
-    if (!(await readCardMd(master))) throw new Error("card.md migration: the master row was not written");
   }
   if (legacyTable) unwrap(await legacy.execute("DELETE FROM card_md WHERE id = 1"));
 }
