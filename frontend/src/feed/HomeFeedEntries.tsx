@@ -15,6 +15,7 @@ import { humanFeedReference, homeFeedKey, homeGroupScope } from "./feedIdentity"
 import { CardConversation, plainConversation } from "./CardConversation";
 import { isReplyOnlyRevision, storedRevisionEntry } from "./replyOnlyRevision";
 import { AnsweredPanel, AnswerFailedLine, cardClass, disconnectedCopy, ErrorLine, HELD_ANSWER_COPY, NOT_SENT_COPY, NotSent, optionText, PendingSendContext, primaryPillClass, quietClass, quotedWords, Reference, UNDO_SECONDS, usePendingSend } from "./cardKit";
+import { retryAfterHide } from "./retryAfterHide";
 import { AnswerOptions, OWN_OPTION, OwnAnswerBox } from "./AnswerOptions";
 import { actionClass, CardDetails, footActionClass } from "./CardActions";
 import { isOwnerAction, ownerClosure } from "./ownerActions";
@@ -284,7 +285,7 @@ function AnswerForm({ entry, drafts, draftKey, answered, revisions, source, now,
     pendingResponse.current = { key, response };
     try {
       // Held until confirmed: a page that closes before this write lands sends it at the next launch.
-      const result = await source.saveResponse(target, response, undefined, { hold: true });
+      const result = await retryAfterHide(() => source.saveResponse(target, response, undefined, { hold: true }), () => !!source.holdsAnswer?.(target, response.responseId));
       onSaved(target, result);
       wait?.sent();
       pendingResponse.current = null;
