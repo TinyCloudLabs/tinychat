@@ -18,7 +18,7 @@ describe("the Not now flag on this device", () => {
     for (const raw of ["", "garbage", "null", "{}", '{"dismissed":false}', '{"dismissed":"yes"}']) {
       const storage = memoryStorage();
       const store = createDismissedStore(() => storage);
-      storage.map.set(`tinychat.registryPublishDismissed:${ALICE}`, raw);
+      storage.map.set(`tcw.tc3547.dismissed.${ALICE.toLowerCase()}`, raw);
       expect(store.read(ALICE)).toBe(false);
     }
   });
@@ -36,5 +36,21 @@ describe("the Not now flag on this device", () => {
     expect(store.read(ALICE)).toBe(true);
     expect(store.read(BOB)).toBe(false);
     expect(createDismissedStore(() => refusing).read(ALICE)).toBe(false);
+  });
+
+  test("uses the key and value the SDK writes, and reads the SDK's own write", () => {
+    const storage = memoryStorage();
+    const store = createDismissedStore(() => storage);
+    const mixed = "did:pkh:eip155:1:0xAbCd000000000000000000000000000000000001";
+    store.write(mixed);
+    expect([...storage.map.keys()]).toEqual(["tcw.tc3547.dismissed.did:pkh:eip155:1:0xabcd000000000000000000000000000000000001"]);
+    const written = JSON.parse([...storage.map.values()][0]!) as { dismissed: boolean; at: string };
+    expect(written.dismissed).toBe(true);
+    expect(Number.isNaN(Date.parse(written.at))).toBe(false);
+    // Case variants of one owner are one owner.
+    expect(createDismissedStore(() => storage).read(mixed.toLowerCase())).toBe(true);
+    // A flag the SDK wrote, with its own shape of value.
+    const sdkStorage = memoryStorage({ [`tcw.tc3547.dismissed.${ALICE}`]: '{"dismissed":true,"at":"2026-11-22T00:00:00.000Z"}' });
+    expect(createDismissedStore(() => sdkStorage).read(ALICE)).toBe(true);
   });
 });

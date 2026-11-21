@@ -5,14 +5,18 @@
 // write is ineffective: the sign-in's account-registry grant does not cover that key, so the node refuses it. Until the
 // SDK changes, the host is the only place the answer lives, and it never reads the KV. The write below happens when the
 // "Not now" button is pressed (broker.ts `declineRegistryConsent`), not on Escape, a tap outside or sign-out.
-import { accountStorageKey } from "../voiceNotes/sourcePins";
-
 export interface DismissedStore {
   read(subject: string): boolean;
   write(subject: string): void;
 }
 
-const DISMISSED_KEY = "tinychat.registryPublishDismissed";
+/**
+ * The key is the contract with the SDK, which writes the same value on a consent answered false (js-sdk #1107):
+ * `tcw.tc3547.dismissed.<did:pkh, lowercased>`, so case variants of one owner share a key and another owner never inherits
+ * it. The value is `{ "dismissed": true, "at": ISO time }`; any value whose `dismissed` is `true` counts. The host does not
+ * import the SDK helper (it is not in the web-sdk root entry); the key format is the whole interface.
+ */
+const dismissedKey = (subject: string) => `tcw.tc3547.dismissed.${subject.toLowerCase()}`;
 
 type StorageLike = Pick<Storage, "getItem" | "setItem">;
 
@@ -27,7 +31,7 @@ export function createDismissedStore(storage: () => StorageLike | undefined = de
     read(subject) {
       if (answeredHere.has(subject)) return true;
       try {
-        const raw = storage()?.getItem(accountStorageKey(DISMISSED_KEY, subject));
+        const raw = storage()?.getItem(dismissedKey(subject));
         if (!raw) return false;
         return (JSON.parse(raw) as { dismissed?: unknown } | null)?.dismissed === true;
       } catch {
@@ -37,7 +41,7 @@ export function createDismissedStore(storage: () => StorageLike | undefined = de
     write(subject) {
       answeredHere.add(subject);
       try {
-        storage()?.setItem(accountStorageKey(DISMISSED_KEY, subject), JSON.stringify({ dismissed: true, at: new Date().toISOString() }));
+        storage()?.setItem(dismissedKey(subject), JSON.stringify({ dismissed: true, at: new Date().toISOString() }));
       } catch { /* Kept in memory for this load. */ }
     },
   };
