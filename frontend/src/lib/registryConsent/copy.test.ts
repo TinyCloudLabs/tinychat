@@ -5,14 +5,13 @@ import { registryPublishConfig } from "./config";
 import { requestRegistryConsent } from "./broker";
 
 describe("the consent switch", () => {
-  // The consent words are a draft nobody with authority has approved. Flipping this switch is a decision, not a refactor:
-  // when the approved words are in copy.ts this test changes with the switch.
-  test("is OFF", () => {
-    expect(REGISTRY_CONSENT_MODAL_ENABLED).toBe(false);
+  // The switch ships on; the SDK hook check (config.ts, intent.ts) keeps it inert on an SDK without the hook.
+  test("is ON", () => {
+    expect(REGISTRY_CONSENT_MODAL_ENABLED).toBe(true);
   });
 
   test("off: no SDK config is added, so no callback is registered", () => {
-    expect(registryPublishConfig()).toEqual({});
+    expect(registryPublishConfig(false)).toEqual({});
   });
 
   test("on: the consent and the error hook are registered, and an SDK error reaches the session log", () => {

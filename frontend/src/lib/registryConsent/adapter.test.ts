@@ -96,7 +96,11 @@ describe("the finish-setup banner gate", () => {
     const store = memoryDismissedStore();
     expect(await finishSetupBannerVisible(sdk.client, false, counting, store)).toBe(false);
     expect(await finishSetupBannerVisible({ did: "did:pkh:eip155:1:0xabc" }, true, counting, store)).toBe(false);
-    expect(await finishSetupBannerVisible(sdk.client, undefined, counting, store)).toBe(false);
     expect(asked).toBe(0);
+  });
+
+  test("with no switch given, the shipped switch (on) shows it for an unregistered account", async () => {
+    const sdk = fakeSdk();
+    expect(await finishSetupBannerVisible(sdk.client, undefined, unregistered, memoryDismissedStore())).toBe(true);
   });
 });
