@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import { createSetup } from '../lib/setup.mjs';
 
-const HELP = `TinyChat setup. It uses your TinyCloud onboarding profile (TC_PROFILE, else default).
+const HELP = `TinyCloud One meetings setup. It uses your TinyCloud onboarding profile (TC_PROFILE, else default).
 
   prepare [--config APP_JSON]   Check the profile. Reports ready, onboarding-required or access-required.
   authorize                     For access-required: prints approvalUrl and a one-line message to send the owner.
@@ -26,7 +26,7 @@ try {
   } else {
     const command = positionals[0];
     if (!['prepare', 'context', 'authorize', 'login'].includes(command) || positionals.length !== 1 || (command !== 'prepare' && values.config) || (command !== 'login' && values.code !== undefined)) throw new Error('Use --help for supported setup commands.');
-    if (!process.env.HOME) throw new Error('Terminal HOME is required to save the TinyChat setup.');
+    if (!process.env.HOME) throw new Error('Terminal HOME is required to save the TinyCloud One meetings setup.');
     const statePath = join(process.env.XDG_CONFIG_HOME || join(process.env.HOME, '.config'), 'tinychat-retrieval/setup.json');
     const setup = createSetup({ statePath });
     let result;

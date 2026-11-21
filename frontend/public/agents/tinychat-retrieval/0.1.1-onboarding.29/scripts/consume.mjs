@@ -4,7 +4,7 @@ import { createSetup } from '../lib/setup.mjs';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 
-const help = `TinyChat compact evidence consumer
+const help = `TinyCloud One meetings evidence consumer
 node scripts/consume.mjs COMMAND --operation HANDLE --session SESSION [OPTIONS]
 latest: --source NAME, --from ISO, --to ISO, --retry (select, acquire once and return evidence)
 next: --chunk N (copy nextAction; repeating a chunk returns identical evidence)
@@ -12,7 +12,7 @@ discover: --page N (default 1), --term TEXT, --source NAME, --from ISO, --to ISO
 read: --meeting N (first selection after discover), --retry (return evidence or retry failed acquisition)
 status: optional acquisition and delivery diagnostics
 restart: --new-operation HANDLE (fresh acquisition and first evidence for the same selected meeting)
-Optional --root ABS_PRIVATE_DIRECTORY must be outside the project. Setup comes from the normal TinyChat setup state.
+Optional --root ABS_PRIVATE_DIRECTORY must be outside the project. Setup comes from the normal TinyCloud One meetings setup state.
 Run actions sequentially. Follow nextAction only when non-null; the final evidence needs no additional call.
 Cite the delivered spans' ref values directly and check meaning and speaker against their exact text.
 A complete returned payload is not proof of model delivery: portable CLI stdout has no client delivery hook.

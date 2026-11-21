@@ -16,7 +16,7 @@ export function createSigninHooks({ setup }) {
   return {
     tool: {
       tinychat_authorize: {
-        description: 'Ask once for TinyChat access when tinychat_setup reports access-required. Without code: returns approvalUrl and a one-line message; send both to the owner. When the owner sends back the code OpenKey shows, call again with code set to it exactly as sent.',
+        description: 'Ask once for TinyCloud One access when tinychat_setup reports access-required. Without code: returns approvalUrl and a one-line message; send both to the owner. When the owner sends back the code OpenKey shows, call again with code set to it exactly as sent.',
         args: {},
         async execute(args = {}) {
           if (Object.keys(args).some(key => key !== 'code') || (args.code !== undefined && typeof args.code !== 'string')) return stringify(failure('INVALID_INPUT'));
@@ -29,7 +29,7 @@ export function createSigninHooks({ setup }) {
   };
 }
 
-const experienceFailure = code => ({ ok: false, exitCode: 1, error: { code, message: 'TinyChat operation failed. Preserve saved progress and inspect the classified code.' } });
+const experienceFailure = code => ({ ok: false, exitCode: 1, error: { code, message: 'TinyCloud One meetings operation failed. Preserve saved progress and inspect the classified code.' } });
 const meetingKeys = new Set(['action', 'operation', 'meeting', 'page', 'chunk', 'retry', 'newOperation', 'term', 'source', 'from', 'to', 'limit']);
 
 export function createExperienceHooks({ setup, consumer, client, outputDirectory, versions = {} }) {
@@ -51,7 +51,7 @@ export function createExperienceHooks({ setup, consumer, client, outputDirectory
     },
     tool: {
     tinychat_setup: {
-      description: 'Check the TinyCloud onboarding profile for TinyChat. Optional configPath is the app JSON file. ready: continue. onboarding-required: set up TinyCloud with https://agents.tinycloud.xyz/onboarding, then call again. access-required: use tinychat_authorize.',
+      description: 'Check the TinyCloud onboarding profile for TinyCloud One meetings. Optional configPath is the app JSON file. ready: continue. onboarding-required: set up TinyCloud with https://agents.tinycloud.xyz/onboarding, then call again. access-required: use tinychat_authorize.',
       args: {},
       async execute(args, { sessionID }) {
         try {
@@ -94,7 +94,7 @@ export function createExperienceHooks({ setup, consumer, client, outputDirectory
 }
 
 export default async function TinyChatSignin({ client, directory } = {}, { schema } = {}) {
-  if (!process.env.HOME) throw new Error('TinyChat sign-in requires HOME.');
+  if (!process.env.HOME) throw new Error('TinyCloud One meetings sign-in requires HOME.');
   if (!schema) throw new Error('Re-run the installed OpenCode adapter installer and restart OpenCode.');
   const setup = createSetup({
     statePath: join(process.env.XDG_CONFIG_HOME || join(process.env.HOME, '.config'), 'tinychat-retrieval/setup.json'),
