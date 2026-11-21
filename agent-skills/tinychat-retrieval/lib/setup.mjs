@@ -10,14 +10,14 @@ export const TINYCHAT_CAPS = Object.freeze([
   'tinycloud.sql:applications:xyz.tinycloud.tinychat/connectors:read',
   'tinycloud.kv:applications:xyz.tinycloud.tinychat/connectors/:get',
 ]);
-const APPROVAL_MESSAGE = 'Open this link and approve TinyChat access, then send me the short code OpenKey shows (like ABCD-EFGH).';
+const APPROVAL_MESSAGE = 'Open this link and approve TinyCloud One access, then send me the short code OpenKey shows (like ABCD-EFGH).';
 
 const messages = {
   SETUP_CONFIG_REQUIRED: 'Run setup.mjs prepare (or tinychat_setup) before starting retrieval.',
-  SETUP_CONFIG_INVALID: 'TinyChat setup metadata or TC_PROFILE is invalid. Correct the app configuration or the profile name.',
+  SETUP_CONFIG_INVALID: 'TinyCloud One meetings setup metadata or TC_PROFILE is invalid. Correct the app configuration or the profile name.',
   INVALID_RESPONSE: 'The CLI returned incomplete or conflicting context.',
-  CONTEXT_MISMATCH: 'The TinyCloud profile uses a different host or space than TinyChat. Run onboarding with the intended account: https://agents.tinycloud.xyz/onboarding',
-  OWNER_MISMATCH: 'This profile is signed in with a different account than TinyChat expects. Run onboarding with the account you use for TinyChat: https://agents.tinycloud.xyz/onboarding',
+  CONTEXT_MISMATCH: 'The TinyCloud profile uses a different host or space than TinyCloud One. Run onboarding with the intended account: https://agents.tinycloud.xyz/onboarding',
+  OWNER_MISMATCH: 'This profile is signed in with a different account than TinyCloud One expects. Run onboarding with the account you use for TinyCloud One: https://agents.tinycloud.xyz/onboarding',
   CLI_VERSION: `This setup needs TinyCloud CLI ${SETUP_CLI_VERSION} or later. https://agents.tinycloud.xyz/onboarding installs it.`,
 };
 const fail = code => { throw Object.assign(new Error(messages[code]), { code }); };

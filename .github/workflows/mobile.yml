@@ -20,6 +20,11 @@ jobs:
   changes:
     uses: ./.github/workflows/native-changes.yml
 
+  ios-paths:
+    uses: ./.github/workflows/native-changes.yml
+    with:
+      component: mobile
+
   android:
     name: Android (debug APK)
     needs: changes
@@ -87,8 +92,8 @@ jobs:
 
   ios:
     name: iOS (simulator build and smoke test)
-    needs: changes
-    if: needs.changes.outputs.native == 'true'
+    needs: ios-paths
+    if: needs.ios-paths.outputs.native == 'true'
     # Same pin as the iOS release build (ios-build.yml) and desktop: macos-26 runner, Xcode 26.6.
     runs-on: macos-26
     timeout-minutes: 45
@@ -241,8 +246,8 @@ jobs:
   # and upload in that job.
   ios-release:
     name: iOS release
-    needs: changes
-    if: needs.changes.outputs.native == 'true'
+    needs: ios-paths
+    if: needs.ios-paths.outputs.native == 'true'
     uses: ./.github/workflows/ios-build.yml
     with:
       build-number: ${{ github.run_number }}
@@ -250,7 +255,7 @@ jobs:
   mobile-check:
     name: Mobile checks
     if: always()
-    needs: [changes, android, ios-smoke-script, ios, ios-release]
+    needs: [changes, ios-paths, android, ios-smoke-script, ios, ios-release]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -258,18 +263,24 @@ jobs:
         env:
           EVENT: ${{ github.event_name }}
           CHANGES: ${{ needs.changes.result }}
+          IOS_CHANGES: ${{ needs.ios-paths.result }}
+          IOS_INPUTS: ${{ needs.ios-paths.outputs.native }}
           NATIVE: ${{ needs.changes.outputs.native }}
           ANDROID: ${{ needs.android.result }}
           SMOKE_SCRIPT: ${{ needs.ios-smoke-script.result }}
           IOS: ${{ needs.ios.result }}
           IOS_RELEASE: ${{ needs.ios-release.result }}
         run: |
-          [[ "$CHANGES" == success ]]
+          [[ "$CHANGES" == success && "$IOS_CHANGES" == success ]]
           case "$NATIVE:$EVENT" in
-            true:*) expected=success ;;
-            false:pull_request) expected=skipped ;;
+            true:*) native_expected=success ;;
+            false:pull_request) native_expected=skipped ;;
             *) exit 1 ;;
           esac
-          for result in "$ANDROID" "$SMOKE_SCRIPT" "$IOS" "$IOS_RELEASE"; do
-            [[ "$result" == "$expected" ]] || exit 1
-          done
+          case "$IOS_INPUTS:$EVENT" in
+            true:*) ios_expected=success ;;
+            false:pull_request) ios_expected=skipped ;;
+            *) exit 1 ;;
+          esac
+          [[ "$ANDROID" == "$native_expected" && "$SMOKE_SCRIPT" == "$native_expected" ]]
+          [[ "$IOS" == "$ios_expected" && "$IOS_RELEASE" == "$ios_expected" ]]

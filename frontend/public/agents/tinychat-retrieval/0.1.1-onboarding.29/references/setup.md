@@ -1,6 +1,6 @@
-# TinyChat sign-in and recovery
+# TinyCloud One meetings: sign-in and recovery
 
-TinyChat uses the owner's TinyCloud onboarding sign-in: the `TC_PROFILE` profile, else `default`, on `https://tee.node.tinycloud.xyz` (a profile on `https://node.tinycloud.xyz`, the same node, also works). It never creates its own profile. Set PACK to this installed skill directory, resolved from terminal HOME, on a preceding line of the same shell invocation. If the app prompt supplies a configuration (schemaVersion 1, one host, `applications` and optional expectedOwner), write it to a temporary JSON file and add `--config "$CONFIG"` the first time. In OpenCode, `tinychat_setup` with `configPath` does the same. Available TinyChat tools identify the installed adapter; broad directory globs are unnecessary.
+This skill uses the owner's TinyCloud onboarding sign-in: the `TC_PROFILE` profile, else `default`, on `https://tee.node.tinycloud.xyz` (a profile on `https://node.tinycloud.xyz`, the same node, also works). It never creates its own profile. Set PACK to this installed skill directory, resolved from terminal HOME, on a preceding line of the same shell invocation. If the app prompt supplies a configuration (schemaVersion 1, one host, `applications` and optional expectedOwner), write it to a temporary JSON file and add `--config "$CONFIG"` the first time. In OpenCode, `tinychat_setup` with `configPath` does the same. Available TinyCloud One meetings tools identify the installed adapter; broad directory globs are unnecessary.
 
 ```sh
 node "$PACK/scripts/setup.mjs" prepare
@@ -10,15 +10,15 @@ It reports one status:
 
 - `ready`: continue with the owner's request.
 - `onboarding-required`: TinyCloud isn't set up here yet, or the sign-in expired. Follow https://agents.tinycloud.xyz/onboarding, then run `prepare` again.
-- `access-required`: the profile can't read TinyChat yet. Ask once, below.
+- `access-required`: the profile can't read TinyCloud One meetings yet. Ask once, below.
 
-## Ask once for TinyChat access
+## Ask once for TinyCloud One access
 
 ```sh
 node "$PACK/scripts/setup.mjs" authorize
 ```
 
-It prints `approvalUrl` and `message`. Send the owner both in one message: “Open this link and approve TinyChat access, then send me the short code OpenKey shows (like ABCD-EFGH).” When they reply with the code, pass it exactly as sent:
+It prints `approvalUrl` and `message`. Send the owner both in one message: “Open this link and approve TinyCloud One access, then send me the short code OpenKey shows (like ABCD-EFGH).” When they reply with the code, pass it exactly as sent:
 
 ```sh
 node "$PACK/scripts/setup.mjs" login --code '<the code>'
@@ -26,11 +26,11 @@ node "$PACK/scripts/setup.mjs" login --code '<the code>'
 
 A long JSON code can go on stdin instead: `printf '%s\n' '<the code>' | node "$PACK/scripts/setup.mjs" login`. In OpenCode, call `tinychat_authorize` with no arguments for the link, then with `code` set to the owner's code.
 
-Under the hood this runs the official CLI's `auth request --cap 'tinycloud.sql:applications:xyz.tinycloud.tinychat/connectors:read' --cap 'tinycloud.kv:applications:xyz.tinycloud.tinychat/connectors/:get' --grant --paste --expiry 30d`, with the code on stdin. The official CLI checks the code against this profile's key. TinyChat only reads the owner's meeting list and transcripts.
+Under the hood this runs the official CLI's `auth request --cap 'tinycloud.sql:applications:xyz.tinycloud.tinychat/connectors:read' --cap 'tinycloud.kv:applications:xyz.tinycloud.tinychat/connectors/:get' --grant --paste --expiry 30d`, with the code on stdin. The official CLI checks the code against this profile's key. TinyCloud One only reads the owner's meeting list and transcripts.
 
 The owner can open the link on any device, their phone included, so this works the same on a remote machine. Each code works once and expires after 5 minutes. If the code is refused, run `authorize` again and send the new link.
 
-`OWNER_MISMATCH` means the approval or profile belongs to a different account than the app expects: approve with the account the owner uses for TinyChat, or run onboarding with that account. Other error codes keep their CLI meaning; report them rather than retrying with other options.
+`OWNER_MISMATCH` means the approval or profile belongs to a different account than the app expects: approve with the account the owner uses for TinyCloud One, or run onboarding with that account. Other error codes keep their CLI meaning; report them rather than retrying with other options.
 
 ## Optional OpenCode adapter
 

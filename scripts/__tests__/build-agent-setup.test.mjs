@@ -82,7 +82,7 @@ test('copy surfaces use one sentence while linked instructions retain setup and 
   for (const term of ['tinychat_setup', 'configPath', 'tinychat_authorize', 'tinychat_meetings', 'nextAction', 'tinychat_handoff', '96 KiB', 'tool_output']) {
     assert.ok(instructions.includes(term), term);
   }
-  assert.match(instructions, /Open this link and approve TinyChat access, then send me the short code OpenKey shows \(like ABCD-EFGH\)\./);
+  assert.match(instructions, /Open this link and approve TinyCloud One access, then send me the short code OpenKey shows \(like ABCD-EFGH\)\./);
   assert.match(instructions, /login --code '<the code>'/);
   assert.match(instructions, /last, separate native bash tool call/);
   assert.match(instructions, /scripts\/consume\.mjs/);

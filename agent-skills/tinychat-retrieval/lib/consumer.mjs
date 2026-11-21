@@ -36,8 +36,8 @@ const messages = {
   STATE_INCOMPLETE: 'Saved operation evidence is missing or invalid. Keep it intact and inspect it before restarting.',
   REVISION_CHANGED: 'The source body changed. Explicitly restart into a new operation; do not combine these revisions.',
   CONSUMER_ERROR: 'The consumer failed. Saved progress remains private and intact.',
-  SETUP_CONFIG_REQUIRED: 'Prepare the installed TinyChat setup before starting retrieval.',
-  SETUP_CONFIG_INVALID: 'The selected TinyChat setup is invalid. Preserve it and inspect the app configuration.',
+  SETUP_CONFIG_REQUIRED: 'Prepare the installed TinyCloud One meetings setup before starting retrieval.',
+  SETUP_CONFIG_INVALID: 'The selected TinyCloud One meetings setup is invalid. Preserve it and inspect the app configuration.',
   NODE_UNAVAILABLE: 'Node.js 22.20 or later must be available as node on the installed client PATH. Restore that runtime; keep the selected TinyCloud profile and authorization.',
 };
 function safeError(code) {

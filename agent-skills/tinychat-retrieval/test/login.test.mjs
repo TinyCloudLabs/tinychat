@@ -78,7 +78,7 @@ test('prepare binds default, then authorize returns the OpenKey link and one lin
   const value = parse(result);
   assert.equal(value.status, 'awaiting-approval');
   assert.equal(value.approvalUrl, approvalUrl);
-  assert.equal(value.message, 'Open this link and approve TinyChat access, then send me the short code OpenKey shows (like ABCD-EFGH).');
+  assert.equal(value.message, 'Open this link and approve TinyCloud One access, then send me the short code OpenKey shows (like ABCD-EFGH).');
   assert.equal(value.delivery, undefined);
   assert.deepEqual(await readdir(tmp), [], 'no approval file');
   await assert.rejects(readFile(join(dir, 'opened')), { code: 'ENOENT' });

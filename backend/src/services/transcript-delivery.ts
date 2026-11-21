@@ -3,7 +3,7 @@ import { makePkhSpaceId } from "@tinycloud/node-sdk/core";
 import { normalizeTranscriberTranscript, transcriberMeetingInSpace, writeTranscriberMeeting } from "@tinyboilerplate/core";
 import { DelegationCache, type DelegationStore } from "@tinyboilerplate/server";
 import { evictStoredGrantVerification, parseStoredGrant, verificationCacheKey, type VerifiedTranscriptWriter } from "../delegation-verify.js";
-import { activateVerifiedDelegation, DelegationActivationError } from "../portable-delegation.js";
+import { activateVerifiedDelegation, DelegationActivationError, nodeRevocationCode } from "../portable-delegation.js";
 import { currentRequestId, runWithRequestId } from "../request-context.js";
 import { BackendStorageLane } from "./backend-storage-lane.js";
 import { TenantCoordinator } from "./calendar-autojoin-store.js";
@@ -142,8 +142,8 @@ const SWEEP_CALL_CAP = 200;
 /** A non-cohort grant check reads once, and once more to compare-and-delete a grant it finds. */
 const GRANT_CHECK_READS = 2;
 
-/** Only the node refusing an activation of the grant itself proves the grant is revoked. */
-function refusedActivation(error: unknown): boolean {
+/** The node answered an activation of the grant with 401/403. That alone does not say why (see `onRefusal`). */
+function refusedActivation(error: unknown): error is DelegationActivationError {
   return error instanceof DelegationActivationError && (error.status === 401 || error.status === 403);
 }
 
@@ -558,8 +558,8 @@ export class TranscriptDeliveryWorker {
       this.done(address, state, id, "written");
       console.info(`[transcript-delivery] op=deliver result=written id=${id}`);
     } catch (error) {
-      if (refusedActivation(error)) await this.removeGrant(address, grant.envelope);
-      else this.retry(address, state, id, this.errorCode(error));
+      if (!refusedActivation(error)) this.retry(address, state, id, this.errorCode(error));
+      else await this.onRefusal(address, state, id, grant, { status: error.status, text: error.body });
     }
     return true;
   }
@@ -568,7 +568,7 @@ export class TranscriptDeliveryWorker {
     result: { code: string; message: string; status?: number }): Promise<void> {
     if (result.status === 401 || result.status === 403 ||
       /^(?:401|403|AUTH_UNAUTHORIZED|AUTH_FORBIDDEN|SQL_PERMISSION_DENIED)$/.test(result.code)) {
-      await this.confirmRefusal(address, state, id, grant);
+      await this.onRefusal(address, state, id, grant, { status: result.status, text: result.message });
       return;
     }
     // SDK 3.1 reports every storage failure with its HTTP status, so the status decides quota: 402
@@ -581,23 +581,20 @@ export class TranscriptDeliveryWorker {
         ? "storage_quota" : "storage_error");
   }
   /**
-   * A storage-time 401/403 may be operational (an ingress, a passing node refusal), and with no tab
-   * open a deleted grant has no recovery. So confirm it: drop the cached activation and activate
-   * the stored grant once more on the configured host. Only a refused activation deletes the
-   * grant; a working one, or a node outage, keeps it and retries with backoff.
+   * The node refused the grant (401/403) on activation or on a storage call. Only the node saying so removes it,
+   * and it says so by its revocation code: a `401` with the JSON body `{"code": "delegation_revoked" |
+   * "parent_revoked" | "ancestor_revoked"}`. A node fault (TC-3076) answers 401 for a valid grant with a plain
+   * text body and no code, so a refusal without the code never deletes: the cached activation is dropped and
+   * the delivery retries with backoff. With no tab open a deleted grant has no recovery. Logs the reason, never
+   * the delegation id.
    */
-  private async confirmRefusal(address: string, state: DeliveryState, id: string,
-    grant: { envelope: string; verified: VerifiedTranscriptWriter }): Promise<void> {
-    const cacheKey = verificationCacheKey(address, grant.envelope, this.options.backendDid, this.options.configuredHost);
-    this.accessCache.evict(cacheKey);
-    try {
-      const access = await activateVerifiedDelegation(this.options.node, grant.verified, {
-        host: this.options.configuredHost, beforeNodeWrite: () => this.governor.take(),
-      });
-      this.accessCache.set(cacheKey, access);
-    } catch (error) {
-      if (refusedActivation(error)) { await this.removeGrant(address, grant.envelope); return; }
-    }
+  private async onRefusal(address: string, state: DeliveryState, id: string,
+    grant: { envelope: string },
+    refusal: { status: number | undefined; text: string }): Promise<void> {
+    const code = refusal.status === 401 ? nodeRevocationCode(refusal.text) : undefined;
+    console.warn(`[transcript-delivery] op=node_refusal reason=${code ?? "uncoded"} result=${code ? "grant_removed" : "grant_kept"}`);
+    if (code) { await this.removeGrant(address, grant.envelope); return; }
+    this.accessCache.evict(verificationCacheKey(address, grant.envelope, this.options.backendDid, this.options.configuredHost));
     this.retry(address, state, id, "storage_error");
   }
 

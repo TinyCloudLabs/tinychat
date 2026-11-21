@@ -26,6 +26,11 @@ jobs:
   paths:
     uses: ./.github/workflows/native-changes.yml
 
+  metal-paths:
+    uses: ./.github/workflows/native-changes.yml
+    with:
+      component: metal
+
   score:
     # A2 runs the A1 scorer and adversarial tests. Goldens/gates baselines arrive in A3.
     runs-on: ubuntu-latest
@@ -134,8 +139,8 @@ jobs:
           if-no-files-found: ignore
 
   metal-parity:
-    needs: paths
-    if: needs.paths.outputs.native == 'true'
+    needs: metal-paths
+    if: needs.metal-paths.outputs.native == 'true'
     runs-on: macos-26
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
@@ -173,15 +178,15 @@ jobs:
   metal-check:
     name: Metal checks
     if: always()
-    needs: [paths, metal-parity]
+    needs: [metal-paths, metal-parity]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: Require successful Metal checks or an intentional non-native PR skip
         env:
           EVENT: ${{ github.event_name }}
-          CHANGES: ${{ needs.paths.result }}
-          NATIVE: ${{ needs.paths.outputs.native }}
+          CHANGES: ${{ needs.metal-paths.result }}
+          NATIVE: ${{ needs.metal-paths.outputs.native }}
           METAL: ${{ needs.metal-parity.result }}
         run: |
           [[ "$CHANGES" == success ]]
