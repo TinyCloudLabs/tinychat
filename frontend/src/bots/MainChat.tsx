@@ -11,6 +11,9 @@ import { acknowledgeHistoryNotice, historyNoticeDeadline, type HistoryNotice } f
 import { BOTS_STRINGS, botsErrorText, HISTORY_EXPIRY_NOTICE, HISTORY_RECONNECT_LABEL, WEB_ACCESS_STRINGS } from "./botsStrings";
 import { isWorking, type ChatLine, type MainChatState } from "./useMainChat";
 import { WebAccess, type WebAccessApi } from "./WebAccess";
+import { AskCards, AsksToggle } from "./AskCards";
+import { ASK_STRINGS } from "./askStrings";
+import type { Asks } from "./useAsks";
 
 export function Line({ role, text }: Pick<ChatLine, "role" | "text">) {
   return role === "user" ? (
@@ -18,6 +21,16 @@ export function Line({ role, text }: Pick<ChatLine, "role" | "text">) {
   ) : (
     <p className="max-w-[36rem] whitespace-pre-wrap break-words text-body">{text}</p>
   );
+}
+
+/**
+ * What the app sent to Main for the owner's decision on a question card, in a muted style so it is not taken for
+ * words the owner typed. A "not now" the owner just gave is already on the card, which collapses to it; once the
+ * card is gone (a reload), the line is what is left.
+ */
+function AppLine({ decision, live }: { decision: "answered" | "declined"; live: boolean }) {
+  if (decision === "declined" && live) return null;
+  return <p className="self-end text-callout text-muted-foreground" data-app-line={decision}>{decision === "answered" ? ASK_STRINGS.lineAnswered : ASK_STRINGS.lineDeclined}</p>;
 }
 
 function ExpiryNotice({ notice, onReconnect }: { notice: HistoryNotice; onReconnect: () => void }) {
@@ -82,6 +95,8 @@ export interface MainChatProps {
   onReconnect?: () => void;
   /** When given, the sheet offers Main's web access setting. */
   webAccess?: WebAccessApi;
+  /** When given, the sheet shows Main's questions as cards and offers the setting for them. */
+  asks?: Asks;
 }
 
 /** Services that answered 404 for web access, so reopening Main's chat does not show the button again. */
@@ -106,7 +121,7 @@ export function WebAccessToggle({ api }: { api: WebAccessApi }) {
   );
 }
 
-export function MainChat({ open, onOpenChange, state, onSend, onRetry, onRetryHistory, notice, onReconnect, webAccess }: MainChatProps) {
+export function MainChat({ open, onOpenChange, state, onSend, onRetry, onRetryHistory, notice, onReconnect, webAccess, asks }: MainChatProps) {
   const { lines, history, turn } = state;
   const working = isWorking(turn);
   const sdkPromptOpen = useSdkPromptOpen();
@@ -119,7 +134,7 @@ export function MainChat({ open, onOpenChange, state, onSend, onRetry, onRetryHi
   const end = useRef<HTMLDivElement>(null);
   useEffect(() => {
     end.current?.scrollIntoView({ block: "end" });
-  }, [open, lines.length, turn?.text, turn?.reply, turn?.state]);
+  }, [open, lines.length, turn?.text, turn?.reply, turn?.state, asks?.pending.length]);
 
   return (
     <ResponsiveSheet
@@ -152,20 +167,22 @@ export function MainChat({ open, onOpenChange, state, onSend, onRetry, onRetryHi
         <div className="mx-auto flex w-full max-w-2xl flex-col gap-5 py-4">
           <p className="text-center text-callout text-muted-foreground">{BOTS_STRINGS.modelLine}</p>
           {open && webAccess ? <WebAccessToggle api={webAccess} /> : null}
+          {open && asks ? <AsksToggle asks={asks} /> : null}
           {open && notice && onReconnect ? <ExpiryNotice key={`${notice.id}:${notice.deliveredAt ?? notice.renderAttemptAt ?? "initial"}`} notice={notice} onReconnect={onReconnect} /> : null}
           {history === "loading" ? <p role="status" className="text-callout text-muted-foreground">{BOTS_STRINGS.historyLoading}</p> : null}
           {history === "failed" && !working ? <Failure text={BOTS_STRINGS.historyFailed} onRetry={onRetryHistory} /> : null}
           {lines.map((line) => (
-            <Line key={line.id} role={line.role} text={line.text} />
+            line.app ? <AppLine key={line.id} decision={line.app} live={line.id.startsWith("local-")} /> : <Line key={line.id} role={line.role} text={line.text} />
           ))}
           {turn ? (
             <>
-              <Line role="user" text={turn.text} />
+              {turn.appReply ? <AppLine decision={turn.appReply.decision} live /> : <Line role="user" text={turn.text} />}
               {turn.reply ? <Line role="bot" text={turn.reply} /> : null}
               {working && !turn.reply ? <BotAvatar bot={MAIN_BOT} working size={28} /> : null}
               {turn.state === "error" ? <Failure text={botsErrorText(turn.error ?? "failed", MAIN_BOT.name)} onRetry={onRetry} /> : null}
             </>
           ) : null}
+          {open && asks ? <AskCards asks={asks} outcomes /> : null}
           <div ref={end} data-bots-chat-end="" />
         </div>
       </ResponsiveSheetBody>

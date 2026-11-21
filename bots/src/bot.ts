@@ -14,6 +14,7 @@ import { type DeleteSkip, lastUsed, markUsed, removeWorkingState } from "./reten
 import { type Frame, type HostToolHandler, type HostToolReply, RpcError } from "./rpc";
 import { addressesIn } from "./web";
 import { readWebPolicy, type WebPolicy, writeWebPolicy } from "./web-policy";
+import { type AnswerInput, type AnswerResult, type AppOrigin, AskStore, type AskReply, type AskRequest, readAsksEnabled, sweepAsks as sweepAskStores, writeAsksEnabled } from "./asks";
 
 export type ErrorCode = "bot_unavailable" | "model_unavailable" | "busy" | "at_capacity" | "invalid";
 
@@ -41,6 +42,15 @@ export interface ListedMessage {
   role: "user" | "bot";
   text: string;
   at: string;
+  /** Set for a message the app wrote (the owner's reply to a question from Main), not typed by the owner. */
+  origin?: "app";
+  /** With `origin: "app"`: what the owner decided, so the app need not read the composed text. */
+  decision?: "answered" | "declined";
+}
+
+/** The owner's setting for questions from Main. */
+export interface AsksSettings {
+  enabled: boolean;
 }
 
 export interface BotMessenger {
@@ -82,6 +92,8 @@ export interface SandboxLauncher {
   webStatus?(layout: BotLayout): Promise<unknown>;
   /** Page addresses the owner typed, which the bot may read. */
   learnAddresses?(layout: BotLayout, urls: string[]): Promise<void>;
+  /** Collects the questions the box asked, then gives the gateway the owner's setting for questions and the counts; `turn` starts a turn. */
+  syncAsks?(layout: BotLayout, turn?: { outside: boolean }): Promise<void>;
   /** Removes what the bot keeps off this host (a remote sandbox and its snapshot) before its directories go. */
   removeState?(layout: BotLayout): Promise<void>;
 }
@@ -304,6 +316,7 @@ export class Bot {
   #stopping: Promise<StopFailure | undefined> | undefined;
   #deleting: Promise<DeleteSkip | undefined> | undefined;
   #webSaves: Promise<void> = Promise.resolve();
+  #askSaves: Promise<void> = Promise.resolve();
   #busy = false;
   #listing = 0;
   #settled = true;
@@ -323,7 +336,7 @@ export class Bot {
   }
 
   /** Runs one message. Reports through `sink` and always ends with exactly one done or error. */
-  async send(text: string, sink: TurnSink, owner?: string, messenger?: BotMessenger, from: "owner" | "bot" = "owner"): Promise<void> {
+  async send(text: string, sink: TurnSink, owner?: string, messenger?: BotMessenger, from: "owner" | "bot" | AppOrigin = "owner"): Promise<void> {
     if (this.#busy) {
       sink.error("busy");
       return;
@@ -342,7 +355,7 @@ export class Bot {
       try {
         this.#history ??= new HistoryJournal(this.layout, this.#options.history);
         this.#history.begin(owner ?? "", this.#options.maxTurnBytes * 16 + 128 * 1024);
-        this.#history.append({ type: "user", text, at: new Date().toISOString() });
+        this.#history.append({ type: "user", text, at: new Date().toISOString(), ...(typeof from === "object" ? { origin: "app", decision: from.app } : {}) });
         this.#history.startDraft();
       } catch { this.#busy = false; sink.error("bot_unavailable"); return; }
     }
@@ -365,7 +378,8 @@ export class Bot {
         sandbox = await this.#ensure();
         this.#markUsed();
         await sandbox.refreshEgress();
-        // Only what the owner typed counts as an address they chose; a message from another bot may carry text a web page put there.
+        await this.#launcher.syncAsks?.(this.layout, { outside: from === "bot" });
+        // Only what the owner typed counts as an address they chose; a message from another bot may carry text a web page put there, and an app reply is composed here.
         const typed = from === "owner" ? addressesIn(text, 50) : [];
         if (typed.length > 0) await this.#launcher.learnAddresses?.(this.layout, typed);
       } catch (error) {
@@ -401,6 +415,8 @@ export class Bot {
       }
     } finally {
       clearInterval(heartbeat);
+      // Questions Main asked during the turn are collected now, while the gateway still holds them.
+      void this.#launcher.syncAsks?.(this.layout).catch(() => {});
       if (this.#history) {
         try { this.#history.append({ type: "provenance", receipts: await this.#launcher.provenance?.(this.layout) ?? [] }); }
         catch { this.#history.append({ type: "provenance", verified: false }); }
@@ -479,6 +495,65 @@ export class Bot {
     });
     this.#webSaves = saved.catch(() => {});
     return saved.then(() => this.webSettings());
+  }
+
+  /** Whether the owner lets Main ask questions. Off until turned on. */
+  async asksSettings(): Promise<AsksSettings> {
+    await this.#deleting;
+    return { enabled: readAsksEnabled(this.layout) };
+  }
+
+  /**
+   * Saves the owner's setting for questions and gives it to the gateway; if the gateway cannot take it the previous
+   * setting is put back and this throws. One at a time, like the web setting. Takes effect at the bot's next call.
+   */
+  setAsksEnabled(enabled: boolean): Promise<AsksSettings> {
+    const saved = this.#askSaves.then(async () => {
+      await this.#deleting;
+      const previous = readAsksEnabled(this.layout);
+      writeAsksEnabled(this.layout, enabled);
+      try {
+        await this.#launcher.syncAsks?.(this.layout);
+      } catch (error) {
+        writeAsksEnabled(this.layout, previous);
+        await this.#launcher.syncAsks?.(this.layout).catch(() => {});
+        throw error;
+      }
+      log("asks_setting", this.layout.botId, { enabled });
+    });
+    this.#askSaves = saved.catch(() => {});
+    return saved.then(() => ({ enabled }));
+  }
+
+  /** The owner's requests from Main: what the box has asked so far (collected from the gateway first), pending first. */
+  async requests(): Promise<AskRequest[]> {
+    await this.#deleting;
+    await this.#launcher.syncAsks?.(this.layout).catch(() => {});
+    return new AskStore(this.layout).list();
+  }
+
+  /** Records the owner's decision on one request. Only a pending, unexpired request can be decided. */
+  async answerRequest(id: string, input: AnswerInput): Promise<AnswerResult> {
+    await this.#deleting;
+    const result = new AskStore(this.layout).answer(id, input);
+    if (result.ok) {
+      log("ask_resolved", this.layout.botId, { outcome: input.decision === "answer" ? "answered" : "declined" });
+      void this.#launcher.syncAsks?.(this.layout).catch(() => {});
+    }
+    return result;
+  }
+
+  /**
+   * The message that tells Main what the owner decided, composed here from the stored decision; undefined unless the
+   * request is decided and Main has not been told. This is the only source of text for an app-originated message.
+   */
+  appReply(requestId: string): AskReply | undefined {
+    return new AskStore(this.layout).reply(requestId);
+  }
+
+  /** Main has been told: the answer text is deleted (the metadata stays). */
+  appReplyDelivered(requestId: string): void {
+    new AskStore(this.layout).delivered(requestId);
   }
 
   /** A message or history request is in flight, including one still starting the sandbox. */
@@ -842,6 +917,15 @@ export class BotManager {
       } catch (error) {
         log("sweep_failed", botId, { error: error instanceof Error ? error.message.slice(0, 300) : "unknown" });
       }
+    }
+  }
+
+  /** Applies the clock to every bot's stored questions, so the text of expired ones and of stale replies goes even if nobody asks. */
+  sweepAsks(now = Date.now()): void {
+    try {
+      sweepAskStores(this.#roots, () => now);
+    } catch (error) {
+      console.log(JSON.stringify({ bots: "asks_sweep_failed", error: error instanceof Error ? error.message.slice(0, 300) : "unknown" }));
     }
   }
 

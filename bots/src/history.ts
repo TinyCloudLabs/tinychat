@@ -124,9 +124,13 @@ export class HistoryJournal {
   get legacyPending(): boolean { return this.#state.legacyPending; }
   messages() {
     return this.#state.batches.flatMap(batch => {
-      const record = batch.record as { type?: string; text?: string; at?: string; outcome?: { messageId?: string } };
+      const record = batch.record as { type?: string; text?: string; at?: string; origin?: string; decision?: string; outcome?: { messageId?: string } };
+      const app = record.type === "user" && record.origin === "app";
+      const decision = app ? (record.decision === "answered" ? "answered" as const : record.decision === "declined" ? "declined" as const : undefined) : undefined;
       return (record.type === "user" || record.type === "assistant") && typeof record.text === "string"
-        ? [{ id: record.type === "assistant" && typeof record.outcome?.messageId === "string" ? record.outcome.messageId : `history-${batch.generation}-${batch.seq}`, role: record.type === "user" ? "user" as const : "bot" as const, text: record.text, at: record.at ?? "" }] : [];
+        ? [{ id: record.type === "assistant" && typeof record.outcome?.messageId === "string" ? record.outcome.messageId : `history-${batch.generation}-${batch.seq}`, role: record.type === "user" ? "user" as const : "bot" as const, text: record.text, at: record.at ?? "",
+          ...(app ? { origin: "app" as const } : {}),
+          ...(decision ? { decision } : {}) }] : [];
     });
   }
   activities(): ActivityRecord[] {

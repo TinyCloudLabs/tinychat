@@ -6,6 +6,9 @@
 //   PUT    /bots/<botId>/web  {"mode", "hosts"}  the owner's web-access setting (applies from the bot's next call)
 //   GET    /bots/<botId>/web                     {"available", "today": {"searches", "pages", "blocked"}}
 //   POST   /bots/<botId>/web/addresses {"urls"}  page addresses the owner typed, which the bot may then read
+//   PUT    /bots/<botId>/asks  {"enabled", "pending", "day", "today", "declined", "turn"?}  the owner's setting for questions and the
+//                         supervisor's counts (applies from the bot's next call)
+//   POST   /bots/<botId>/asks/drain              {"asks"}: the questions the bot has asked since the last drain
 
 import { chmodSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -19,6 +22,7 @@ import { egressPaths } from "./layout";
 import { BOT_ID } from "./owner";
 import { addressKey, readableAddress } from "./web";
 import { parseWebPolicy } from "./web-policy";
+import { parseAsksPush } from "./asks";
 
 const { backendOrigin, backendCallSecret, ...cfg } = gatewayConfig(process.env);
 const admit = createAdmissionRelay(backendOrigin, backendCallSecret);
@@ -88,6 +92,18 @@ const control = Bun.serve({
     if (pathname === ADMISSION_CONTROL_PATH) return admit(req);
     const receiptMatch = /^\/bots\/([0-9a-f]{64})\/receipts$/.exec(pathname);
     if (req.method === "GET" && receiptMatch) return Response.json(aci?.take(receiptMatch[1]!) ?? []);
+    const asksMatch = /^\/bots\/([0-9a-f]{64})\/asks(\/drain)?$/.exec(pathname);
+    if (asksMatch) {
+      const asksBot = asksMatch[1]!;
+      if (asksMatch[2] && req.method === "POST") return Response.json({ asks: gateway.drainAsks(asksBot) });
+      if (!asksMatch[2] && req.method === "PUT") {
+        const push = parseAsksPush(await req.json().catch(() => null));
+        if (!push) return new Response(null, { status: 400 });
+        gateway.setAsks(asksBot, push);
+        return new Response(null, { status: 204 });
+      }
+      return new Response(null, { status: 405 });
+    }
     const webMatch = /^\/bots\/([0-9a-f]{64})\/web(\/addresses)?$/.exec(pathname);
     if (webMatch) {
       const webBot = webMatch[1]!;
