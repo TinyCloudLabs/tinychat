@@ -353,8 +353,8 @@ export function FeedViewEntries({ realEntries, source, ask, linked }: { realEntr
 export function FeedView({ tcw, onReconnect }: { tcw: TinyCloudWeb | null; onReconnect?: () => void }): JSX.Element {
   const source = useMemo(() => tcw ? homeFeedSourceFor(tcw) : null, [tcw]);
   const linked = useFeedCardLink();
-  // Agents connected since the last run get the owner's card.md the first time the Feed sees them: on open, and on a
-  // change at most every five minutes, behind the Feed's own reads.
+  // Agents connected since the last run get the owner's card.md the first time the Feed sees them, and a copy that
+  // differs from it is rewritten: on open, and on a change at most every five minutes, behind the Feed's own reads.
   useEffect(() => {
     if (!tcw || !source) return;
     let last = Number.NEGATIVE_INFINITY;
