@@ -38,6 +38,18 @@ the `release-push` deploy key may update `production` (see the rulesets below).
 To roll back, dispatch the workflow with the older release tag (`--ref main -f
 tag=@tinychat/frontend@<version> -f backend=false`), or use Pages' own rollback.
 
+The verifier reads every page of check runs with `filter=all`, matching the
+`Cloudflare Pages` check name, `cloudflare-workers-and-pages` app and exact
+deployment SHA. The newest completed noncancelled attempt, ordered by integer
+check-run ID (not completion time), decides: success must supply a deployment URL
+and be production, so an older production success cannot hide a newer preview.
+Older completed nonsuccesses are superseded and each is logged on stderr.
+Cancelled attempts are ignored. A newest completed nonsuccess fails closed unless
+a newer-created matching attempt is unfinished; then the verifier waits within
+the existing build timeout. With no completed noncancelled attempt it also waits.
+Missing, invalid or duplicate matching noncancelled IDs fail closed.
+The live HTML, other-host commit and production-branch tip checks still apply.
+
 In the Cloudflare dashboard → **Workers & Pages → Create → Pages → Connect to Git**:
 
 - Repository: `TinyCloudLabs/tinychat`, production branch **`production`**

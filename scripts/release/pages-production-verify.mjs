@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Wait for Cloudflare Pages to deploy a production-branch commit and prove it is live (see classifyPagesCheckRuns):
- *  1. the "Cloudflare Pages" check run on --commit succeeds as a production (not preview) deployment;
+ *  1. the newest completed noncancelled Pages check on --commit succeeds as production;
  *  2. --url (the production domain) serves the same index.html as that deployment's unique URL;
  *  3. the production branch still points at --commit before and after (nothing else moved it meanwhile).
  * Fails loudly on a failed build, a preview build, a moved branch, or a timeout. Needs GH_TOKEN and GITHUB_REPOSITORY.
@@ -41,9 +41,16 @@ async function poll(minutes, attempt) {
   }
 }
 
+const loggedFailures = new Set();
 const pages = await poll(values['build-minutes'], () => {
-  const json = run(repoRoot, 'gh', ['api', `repos/${repo}/commits/${values.commit}/check-runs?per_page=100`]);
-  const status = classifyPagesCheckRuns(JSON.parse(json).check_runs);
+  const json = run(repoRoot, 'gh', ['api', `repos/${repo}/commits/${values.commit}/check-runs?filter=all&per_page=100`, '--paginate', '--slurp']);
+  const status = classifyPagesCheckRuns(JSON.parse(json).flatMap(page => page.check_runs), values.commit);
+  for (const { id, conclusion } of status.supersededFailures ?? []) {
+    if (!loggedFailures.has(id)) {
+      console.error(`Cloudflare Pages superseded check-run ${id}: ${conclusion}`);
+      loggedFailures.add(id);
+    }
+  }
   console.log(`Cloudflare Pages on ${values.commit}: ${status.state}`);
   return status.state === 'waiting' ? undefined : status;
 });
