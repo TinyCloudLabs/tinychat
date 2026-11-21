@@ -207,6 +207,17 @@ the `ask_owner` tool of the `app` MCP server.
   `PUT /bots/<id>/asks` gives the setting, the counts and the declined hashes. The supervisor does this at sandbox
   launch, at the start and end of each message, when the owner lists requests and after each decision. A question the
   box asked that the supervisor has not collected is lost if the gateway restarts.
+- Turning the setting off (`PUT /asks { enabled: false }`, which is also what stopping Main from asking does) closes
+  every pending question at once: it becomes `stopped` with `undelivered: true` and its question and choices are
+  deleted from `requests.json` at that moment, so nothing about it is listed or can come back when the setting is
+  turned on again. Main is told once, with the `stopped` sentence below, when the app sends the reply (`appReply`
+  does not need the setting on); one not told is dropped after the usual 12 hours. A stopped request is not an answer
+  and not a decline: no one-hour cooldown is recorded for its question. Requests already answered, declined or expired
+  are not touched. A question the gateway took but the supervisor had not collected is dropped, never stored: the
+  supervisor collects nothing into the records while the setting is off, the off push empties the gateway's hold, and
+  the closing waits for any collection under way (they run one at a time per bot), so nothing becomes pending after
+  the off. The closing does not depend on the gateway: if the gateway cannot be told, the setting is still off and it
+  is told at the next sync.
 - Each request has `outside`: true when anything from outside the owner's own words has reached Main's conversation
   before it was asked: a `search` or `fetch` call, a message relayed from another bot, or a reply from another bot to
   Main's own message. It is a warning for the owner, not a block, and it is sticky: the conversation persists, so a page
@@ -219,20 +230,23 @@ the `ask_owner` tool of the `app` MCP server.
   - `GET` and `PUT /v1/bots/main/asks`: `{ enabled }`.
   - `GET /v1/bots/main/requests`: `{ requests: [{ id, kind: "ask", state, askedAt, expiresAt, outside, resolvedAt?,
     question?, choices?, answer?, undelivered? }] }` (times are ISO 8601). `state` is `pending`, `answered`,
-    `declined` or `expired`. `question` and `choices` are there only while pending. `undelivered` is `true` for an
-    answered or declined request until Main has been told, and `answer` is there only then.
+    `declined`, `stopped` or `expired`. `question` and `choices` are there only while pending. `undelivered` is `true`
+    for an answered, declined or stopped request until Main has been told, and `answer` is there only then (answered).
   - `POST /v1/bots/main/requests/<id>/answer`: `{ "decision": "decline" }`, `{ "decision": "answer", "answer": "..." }`
     (1 to 280 characters) or `{ "decision": "answer", "choice": 0 }`. 400 `{ error: "invalid" }`; 409
     `{ error: "not_pending" }` for a request that is not pending, expired or not the owner's.
   - `POST /v1/bots/main/messages` `{ "appReply": { "requestId": "..." } }` delivers the decision to Main. Only the id
     is read: the service composes the text from what it stored, and a `text` or `from` in the body is ignored. 409
     `{ error: "no_reply" }` when the request is not decided, already delivered, expired or not the owner's.
-- What Main is told, in a message from the app: `The person answered your question: <answer>` for an answer, and
+- What Main is told, in a message from the app: `The person answered your question: <answer>` for an answer,
   `The person chose not to answer now. Carry on without it, and don’t ask again unless they bring it up.` for a
-  decline. An expired question sends nothing. Only this route writes such a message (`from: "app"` inside the
-  service, never taken from a request), so the text is always the composed one, and it teaches the bot no addresses.
-  Its history line carries `origin: "app"` and `decision: "answered" | "declined"`, which `GET /v1/bots/main/messages`
-  returns. This works with the history journal; the fallback that lists OMP's own session cannot mark them.
+  decline and `The person turned off questions from you, so your open questions were closed without an answer. Carry
+  on without asking.` for a question closed by turning the setting off (each is one constant in `asks.ts`,
+  `ASK_REPLIES`, and the words are pending approval). An expired question sends nothing. Only this route writes such
+  a message (`from: "app"` inside the service, never taken from a request), so the text is always the composed one,
+  and it teaches the bot no addresses. Its history line carries `origin: "app"` and
+  `decision: "answered" | "declined" | "stopped"`, which `GET /v1/bots/main/messages` returns. This works with the
+  history journal; the fallback that lists OMP's own session cannot mark them.
 - Retention: a question's text is deleted when it is decided or expires. An answer's text is deleted when Main has
   been told (the turn reached `done`) or 12 hours after the decision if it was not, whichever is first; a turn that
   does not finish leaves it to send again. Metadata (id, state, times, `outside`) is kept for 7 days, at most 200

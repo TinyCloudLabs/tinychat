@@ -45,7 +45,7 @@ async function readHistory(tcw: TinyCloudWeb, signal?: AbortSignal, botKey?: str
     if ((record?.type === "user" || record?.type === "assistant") && typeof record.text === "string") {
       // A message the app sent for the owner (a decision on a question) keeps its mark, as the service's own listing does.
       const app = record.type === "user" && record.origin === "app";
-      const decision = app && (record.decision === "answered" || record.decision === "declined") ? record.decision : undefined;
+      const decision = app && (record.decision === "answered" || record.decision === "declined" || record.decision === "stopped") ? record.decision : undefined;
       return {
         id: record.type === "assistant" && typeof record.outcome?.messageId === "string" ? record.outcome.messageId : `history-${batch.generation}-${batch.seq}`,
         role: record.type === "user" ? "user" : "bot", text: record.text, at: record.at ?? "",

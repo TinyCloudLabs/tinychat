@@ -70,7 +70,7 @@ const ASK_REQUEST_ID = /^[0-9a-f]{1,64}$/;
 const MAX_ASK_ANSWER = 280;
 const MAX_ASK_CHOICES = 4;
 const MAX_LISTED_REQUESTS = 50;
-const ASK_STATES = ["pending", "answered", "declined", "expired"] as const;
+const ASK_STATES = ["pending", "answered", "declined", "stopped", "expired"] as const;
 type AskState = (typeof ASK_STATES)[number];
 
 /** Which decision to tell Main about. The only thing a browser names for an app-originated message. */

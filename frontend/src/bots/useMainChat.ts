@@ -10,7 +10,7 @@ import { isDeclinedReply } from "./askText";
 /** The app's report of the owner's decision on a question card. */
 export interface AppReply {
   requestId: string;
-  decision: "answered" | "declined";
+  decision: "answered" | "declined" | "stopped";
 }
 
 /** `app` marks a line the app sent for the owner (a decision on a question card), which the owner did not type. */

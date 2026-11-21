@@ -6,7 +6,10 @@ test("control, bidirectional and zero-width characters never reach the card", ()
   const hostile = "pay\u202Eknab\u202C\u2066x\u2069 now\u0000\u0007\u001b[31m\u200b\u200e\u061c\ufeff\u2028done\u0085";
   const shown = plainText(hostile, MAX_QUESTION);
   expect(shown).toBe("pay knab x now [31m done");
-  expect(/[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u2028-\u202e\u2060-\u206f\ufeff]/.test(shown)).toBe(false);
+  // The same ranges as before, checked by code point so the test source holds no control characters in a regex.
+  const banned: Array<[number, number]> = [[0x0, 0x1f], [0x7f, 0x9f], [0x61c, 0x61c], [0x200b, 0x200f], [0x2028, 0x202e], [0x2060, 0x206f], [0xfeff, 0xfeff]];
+  const leaked = [...shown].filter(ch => banned.some(([lo, hi]) => ch.codePointAt(0)! >= lo && ch.codePointAt(0)! <= hi));
+  expect(leaked).toEqual([]);
 });
 
 test("a line break in a question becomes a space, so a quote stays one paragraph", () => {

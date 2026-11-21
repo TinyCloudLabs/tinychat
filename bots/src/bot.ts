@@ -14,7 +14,7 @@ import { type DeleteSkip, lastUsed, markUsed, removeWorkingState } from "./reten
 import { type Frame, type HostToolHandler, type HostToolReply, RpcError } from "./rpc";
 import { addressesIn } from "./web";
 import { readWebPolicy, type WebPolicy, writeWebPolicy } from "./web-policy";
-import { type AnswerInput, type AnswerResult, type AppOrigin, AskStore, type AskReply, type AskRequest, readAsksEnabled, sweepAsks as sweepAskStores, writeAsksEnabled } from "./asks";
+import { type AnswerInput, type AnswerResult, type AppOrigin, AskStore, type AskReply, type AskRequest, cancelAsks, readAsksEnabled, sweepAsks as sweepAskStores, writeAsksEnabled } from "./asks";
 
 export type ErrorCode = "bot_unavailable" | "model_unavailable" | "busy" | "at_capacity" | "invalid";
 
@@ -45,7 +45,7 @@ export interface ListedMessage {
   /** Set for a message the app wrote (the owner's reply to a question from Main), not typed by the owner. */
   origin?: "app";
   /** With `origin: "app"`: what the owner decided, so the app need not read the composed text. */
-  decision?: "answered" | "declined";
+  decision?: "answered" | "declined" | "stopped";
 }
 
 /** The owner's setting for questions from Main. */
@@ -506,12 +506,21 @@ export class Bot {
   /**
    * Saves the owner's setting for questions and gives it to the gateway; if the gateway cannot take it the previous
    * setting is put back and this throws. One at a time, like the web setting. Takes effect at the bot's next call.
+   * Turning it off first closes every pending question (see cancelAsks), which does not depend on the gateway, and
+   * then stays off even if the gateway cannot be told yet: the gateway is told again at its next sync, and what it
+   * collects meanwhile is dropped while the setting is off.
    */
   setAsksEnabled(enabled: boolean): Promise<AsksSettings> {
     const saved = this.#askSaves.then(async () => {
       await this.#deleting;
       const previous = readAsksEnabled(this.layout);
       writeAsksEnabled(this.layout, enabled);
+      if (!enabled) {
+        const stopped = await cancelAsks(this.layout);
+        await this.#launcher.syncAsks?.(this.layout).catch(() => log("asks_setting_push_failed", this.layout.botId));
+        log("asks_setting", this.layout.botId, { enabled, stopped });
+        return;
+      }
       try {
         await this.#launcher.syncAsks?.(this.layout);
       } catch (error) {

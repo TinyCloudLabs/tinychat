@@ -49,4 +49,6 @@ export const ASK_STRINGS = {
   lineDeclined: `You said not now to ${ASK_MAIN}’s question.`,
   /** UI only: nothing is sent to Main when a question expires. */
   lineExpired: `${ASK_MAIN}’s question expired without an answer.`,
+  /** UI only: shown once when the owner turns questions off, however many open questions were closed. */
+  lineStopped: `You turned off questions from ${ASK_MAIN}, so its open questions were closed.`,
 } as const;

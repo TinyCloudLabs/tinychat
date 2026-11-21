@@ -28,8 +28,10 @@ export interface Asks {
   stopped: boolean;
   pending: AskRequest[];
   outcomes: AskOutcome[];
-  /** Web access is on, so the card says what a page could try. */
+  /** Web access is on, so the card says what a page could try. Always the current setting. */
   webOn: boolean;
+  /** Tells the cards the owner just saved this Web access setting. */
+  noteWeb(on: boolean): void;
   setEnabled(enabled: boolean): Promise<AskResult>;
   stop(): Promise<AskResult>;
   decide(request: AskRequest, decision: AskDecision): Promise<AskResult>;
@@ -40,8 +42,10 @@ export interface Asks {
 const attempt = <T>(call: () => Promise<T>): Promise<T> => Promise.resolve().then(call);
 
 export function useAsks(api: AsksApi, { open, onDecided }: { open: boolean; onDecided: (reply: AppReply) => void }): Asks {
+  const enabledRef = useRef(false);
   const [support, setSupport] = useState<Asks["support"]>("unknown");
   const [enabled, setEnabledState] = useState(false);
+  enabledRef.current = enabled;
   const [stopped, setStopped] = useState(false);
   const [requests, setRequests] = useState<AskRequest[]>([]);
   const [outcomes, setOutcomes] = useState<AskOutcome[]>([]);
@@ -72,7 +76,10 @@ export function useAsks(api: AsksApi, { open, onDecided }: { open: boolean; onDe
 
   const apply = useCallback((list: AskRequest[]) => {
     const now = Date.now();
-    const live = list.filter((request) => request.state === "pending" && Date.parse(request.expiresAt) > now && !decided.current.has(request.id));
+    // While asks are off no card is shown, whatever an older read says is pending.
+    const live = enabledRef.current
+      ? list.filter((request) => request.state === "pending" && Date.parse(request.expiresAt) > now && !decided.current.has(request.id))
+      : [];
     const liveIds = new Set(live.map((request) => request.id));
     const gone: AskOutcome[] = [];
     for (const id of watched.current) {
@@ -88,23 +95,28 @@ export function useAsks(api: AsksApi, { open, onDecided }: { open: boolean; onDe
     if (gone.length > 0) setOutcomes((current) => [...current, ...gone.filter((outcome) => !current.some((known) => known.id === outcome.id))]);
     // A decision that was recorded but never reached Main (the page closed first) goes out now.
     for (const request of list) {
-      if ((request.state === "answered" || request.state === "declined") && request.undelivered && !decided.current.has(request.id)) {
+      if ((request.state === "answered" || request.state === "declined" || request.state === "stopped") && request.undelivered && !decided.current.has(request.id)) {
         decided.current.add(request.id);
         onDecidedRef.current({ requestId: request.id, decision: request.state });
       }
     }
   }, []);
 
-  const hasPending = requests.length > 0;
+  // Web access is read again whenever the list of cards changes or the chat opens or closes, and `noteWeb` sets it
+  // the moment the owner saves a change; a read that began before such a change is dropped.
+  const pendingKey = requests.map((request) => request.id).join(",");
+  const webVersion = useRef(0);
+  const noteWeb = useCallback((on: boolean) => { webVersion.current++; setWebOn(on); }, []);
   useEffect(() => {
-    if (support !== "yes" || !enabled || !hasPending) return;
+    if (support !== "yes" || !enabled || pendingKey === "") return;
     const controller = new AbortController();
+    const version = webVersion.current;
     attempt(() => api.getMainWeb(controller.signal)).then(
-      (settings) => { if (!controller.signal.aborted) setWebOn(settings.mode !== "off"); },
+      (settings) => { if (!controller.signal.aborted && version === webVersion.current) setWebOn(settings.mode !== "off"); },
       () => {},
     );
     return () => controller.abort();
-  }, [api, support, enabled, hasPending]);
+  }, [api, support, enabled, pendingKey, open]);
 
   useEffect(() => {
     if (support !== "yes" || !enabled) return;
@@ -128,13 +140,20 @@ export function useAsks(api: AsksApi, { open, onDecided }: { open: boolean; onDe
       const stored = await attempt(() => api.setAsks({ enabled: next }));
       if (!alive.current) return "ok";
       setEnabledState(stored.enabled);
+      enabledRef.current = stored.enabled;
       setStopped(false);
-      if (!stored.enabled) { setRequests([]); watched.current.clear(); }
+      if (!stored.enabled) {
+        setRequests([]);
+        watched.current.clear();
+        // Turning asks off closes what is pending: the service records each as stopped and undelivered. One read
+        // now sends Main its word for each, without waiting for a reload; no card comes back from this read.
+        attempt(() => api.listRequests()).then((list) => { if (alive.current) apply(list); }, () => {});
+      }
       return "ok";
     } catch {
       return "failed";
     }
-  }, [api]);
+  }, [api, apply]);
 
   const stop = useCallback(async (): Promise<AskResult> => {
     const result = await setEnabled(false);
@@ -168,5 +187,5 @@ export function useAsks(api: AsksApi, { open, onDecided }: { open: boolean; onDe
     return "ok";
   }, [api]);
 
-  return { support, enabled, stopped, pending: requests, outcomes, webOn, setEnabled, stop, decide, refresh };
+  return { support, enabled, stopped, pending: requests, outcomes, webOn, noteWeb, setEnabled, stop, decide, refresh };
 }

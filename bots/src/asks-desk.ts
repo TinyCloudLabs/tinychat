@@ -65,6 +65,8 @@ export class AskDesk {
   push(botId: string, push: AsksPush): void {
     const ledger = this.#ledger(botId);
     ledger.enabled = push.enabled;
+    // Off means off: what the box asked before it was told is not collected afterwards.
+    if (!push.enabled) ledger.outbox = [];
     ledger.pending = push.pending;
     ledger.day = push.day;
     ledger.today = push.today;

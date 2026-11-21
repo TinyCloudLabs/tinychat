@@ -12,7 +12,7 @@ export interface BotMessage {
   /** Set by the service on a message the app sent for the owner (a decision on a question card), not typed by the owner. */
   origin?: "app";
   /** On an app message: what the owner decided. */
-  decision?: "answered" | "declined";
+  decision?: "answered" | "declined" | "stopped";
 }
 
 /** What a bot did on its computer, as the service records it: fixed verbs and counts, never words the model wrote. */
@@ -65,7 +65,7 @@ export interface MainWebSettings {
   today: { searches: number; pages: number; blocked: number };
 }
 
-export type AskState = "pending" | "answered" | "declined" | "expired";
+export type AskState = "pending" | "answered" | "declined" | "stopped" | "expired";
 
 /** One question Main asked the owner. The service keeps `question` and `choices` only while pending. */
 export interface AskRequest {
@@ -204,7 +204,7 @@ function toMessages(payload: unknown): BotMessage[] {
       ? [{
         id: value.id, role: value.role, text: value.text, at: typeof value.at === "string" ? value.at : "",
         ...(value.origin === "app" ? { origin: "app" as const } : {}),
-        ...(value.origin === "app" && (value.decision === "answered" || value.decision === "declined") ? { decision: value.decision } : {}),
+        ...(value.origin === "app" && (value.decision === "answered" || value.decision === "declined" || value.decision === "stopped") ? { decision: value.decision } : {}),
       }]
       : [];
   });
@@ -232,7 +232,7 @@ function toRequest(payload: unknown): AskRequest {
   const { id, kind, state, askedAt, expiresAt, question, choices, answer, outside, resolvedAt } = value;
   if (
     typeof id !== "string" || id.length === 0 || id.length > 64 || kind !== "ask" ||
-    (state !== "pending" && state !== "answered" && state !== "declined" && state !== "expired") ||
+    (state !== "pending" && state !== "answered" && state !== "declined" && state !== "stopped" && state !== "expired") ||
     !isoTime(askedAt) || !isoTime(expiresAt)
   ) throw new BotsError("failed");
   return {

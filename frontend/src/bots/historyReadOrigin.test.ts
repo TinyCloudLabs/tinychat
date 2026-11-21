@@ -45,6 +45,12 @@ describe("readBotHistory and messages the app sent for the owner", () => {
     ]);
   });
 
+  test("a message sent when the owner turned questions off keeps its decision", async () => {
+    const text = "The person turned off questions from you, so your open questions were closed without an answer. Carry on without asking.";
+    const messages = await readBotHistory(await threadOf([{ type: "user", text, at: at(1), origin: "app", decision: "stopped" }]));
+    expect(messages).toEqual([{ id: "history-1-0", role: "user", text, at: at(1), origin: "app", decision: "stopped" }]);
+  });
+
   test("an ordinary message is unmarked, and an origin that is not the app's or a decision that is not one is dropped", async () => {
     const messages = await readBotHistory(await threadOf([
       { type: "user", text: "typed by the owner", at: at(1) },

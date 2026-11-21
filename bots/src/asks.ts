@@ -2,7 +2,7 @@
 // directory for the bot, beside web.json and outside anything a sandbox mounts. The gateway takes the box's call,
 // applies the setting and the limits, and holds the new question until the supervisor collects it; the answer
 // comes back to Main only as a message the supervisor itself writes (see composeReply). Nothing here is authority:
-// a question can be answered or declined, and that is all.
+// a question can be answered, declined or closed because the owner turned questions off, and that is all.
 
 import { createHash } from "node:crypto";
 import { closeSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, writeSync } from "node:fs";
@@ -36,11 +36,18 @@ export const ASK_ERRORS = {
 } as const;
 export type AskError = keyof typeof ASK_ERRORS;
 
-/** What the supervisor tells Main once the owner has decided. Fixed text around the owner's answer. */
-export function composeReply(state: "answered" | "declined", answer?: string): string {
-  return state === "answered"
-    ? `The person answered your question: ${answer ?? ""}`
-    : "The person chose not to answer now. Carry on without it, and don’t ask again unless they bring it up.";
+/**
+ * What the supervisor tells Main once a question is closed. Fixed text around the owner's answer. PENDING SAM'S
+ * APPROVAL: every sentence here, each in its own constant, until the final words are given.
+ */
+export const ASK_REPLIES = {
+  answered: "The person answered your question: ",
+  declined: "The person chose not to answer now. Carry on without it, and don’t ask again unless they bring it up.",
+  stopped: "The person turned off questions from you, so your open questions were closed without an answer. Carry on without asking.",
+} as const;
+
+export function composeReply(state: "answered" | "declined" | "stopped", answer?: string): string {
+  return state === "answered" ? `${ASK_REPLIES.answered}${answer ?? ""}` : ASK_REPLIES[state];
 }
 
 const UNSAFE = /[\p{Cc}\p{Cf}\p{Cs}\p{Co}\p{Zl}\p{Zp}]/gu;
@@ -63,7 +70,7 @@ export const normalizedQuestion = (question: string): string =>
 export const questionHash = (question: string): string => createHash("sha256").update(normalizedQuestion(question)).digest("hex");
 export const utcDay = (ms: number): string => new Date(ms).toISOString().slice(0, 10);
 
-export type AskState = "pending" | "answered" | "declined" | "expired";
+export type AskState = "pending" | "answered" | "declined" | "stopped" | "expired";
 
 /** A checked question as the gateway hands it over. */
 export interface NewAsk {
@@ -100,7 +107,7 @@ interface StoredAsk {
   question?: string;
   choices?: string[];
   answer?: string;
-  /** Answered or declined, and Main has not been told yet. */
+  /** Answered, declined or stopped, and Main has not been told yet. */
   undelivered?: true;
 }
 
@@ -116,14 +123,14 @@ export interface AskRequest {
   question?: string;
   choices?: string[];
   answer?: string;
-  /** Answered or declined, and Main has not been told yet (so the app may deliver it). `answer` is present only while answered and undelivered. */
+  /** Answered, declined or stopped, and Main has not been told yet (so the app may deliver it). `answer` is present only while answered and undelivered. */
   undelivered?: true;
 }
 
 /** What a decided request says to Main: the composed message, and which decision it carries. */
 export interface AskReply {
   text: string;
-  decision: "answered" | "declined";
+  decision: "answered" | "declined" | "stopped";
 }
 
 /** The origin of a message the app wrote: the owner's decision on a question from Main. Only this service composes one. */
@@ -195,7 +202,7 @@ export function writeOutsideSeen(layout: BotLayout): void {
 
 function validStored(value: unknown): value is StoredAsk {
   return isRecord(value) && typeof value.id === "string" && /^[0-9a-f]{24}$/.test(value.id)
-    && (value.state === "pending" || value.state === "answered" || value.state === "declined" || value.state === "expired")
+    && (value.state === "pending" || value.state === "answered" || value.state === "declined" || value.state === "stopped" || value.state === "expired")
     && Number.isSafeInteger(value.askedAt) && Number.isSafeInteger(value.expiresAt) && typeof value.hash === "string" && typeof value.outside === "boolean";
 }
 
@@ -365,10 +372,33 @@ export class AskStore {
     return { ok: true, request: this.#view(ask) };
   }
 
+  /**
+   * The owner turned questions off: every pending request becomes `stopped` (not declined, and not an answer) with its
+   * question and choices gone at once, so Main is told once, with its own sentence, when the app sends the reply. A
+   * stopped question is not held against being asked again: only declined requests make a cooldown (see `push`).
+   * Requests already decided or expired are left as they are. Returns how many were stopped.
+   */
+  cancelPending(): number {
+    const asks = this.#load();
+    const now = this.#now();
+    let stopped = 0;
+    for (const ask of asks) {
+      if (ask.state !== "pending") continue;
+      ask.state = "stopped";
+      ask.resolvedAt = now;
+      ask.undelivered = true;
+      delete ask.question;
+      delete ask.choices;
+      stopped++;
+    }
+    if (stopped > 0) this.#save(asks);
+    return stopped;
+  }
+
   /** The message for Main, composed from the stored decision; undefined unless the request is decided and not yet delivered. */
   reply(id: string): AskReply | undefined {
     const ask = this.#load().find(held => held.id === id);
-    if (!ask || !ask.undelivered || (ask.state !== "answered" && ask.state !== "declined")) return undefined;
+    if (!ask || !ask.undelivered || (ask.state !== "answered" && ask.state !== "declined" && ask.state !== "stopped")) return undefined;
     return { text: composeReply(ask.state, ask.answer), decision: ask.state };
   }
 
@@ -407,31 +437,48 @@ export interface AsksGateway {
 
 const chains = new Map<string, Promise<unknown>>();
 
+/** One task at a time per bot, in the order they were asked for. */
+function inOrder<T>(botId: string, task: () => Promise<T>): Promise<T> {
+  const run = (chains.get(botId) ?? Promise.resolve()).catch(() => {}).then(task);
+  chains.set(botId, run);
+  void run.catch(() => {}).finally(() => { if (chains.get(botId) === run) chains.delete(botId); });
+  return run;
+}
+
 /**
  * Brings the supervisor's records and the gateway together: collects new questions, stores them, then gives the
  * gateway the setting, the counts and the cooldowns. One at a time per bot, so a push never overtakes the
- * collection that precedes it. Whether outside text has reached Main's conversation only ever turns on: by a web
- * call the gateway saw, or by `turn.outside` (the turn began with another bot's message, or a bot's reply came
- * back during it). It is kept in asks.json and given to the gateway with every push, so a restart of either side
- * does not lose it; only a reset of the bot's working state (its data directory goes) clears it.
+ * collection that precedes it. While the setting is off, what the gateway had not yet handed over is dropped, not
+ * stored: nothing becomes pending after the owner switched it off. Whether outside text has reached Main's
+ * conversation only ever turns on: by a web call the gateway saw, or by `turn.outside` (the turn began with
+ * another bot's message, or a bot's reply came back during it). It is kept in asks.json and given to the gateway
+ * with every push, so a restart of either side does not lose it; only a reset of the bot's working state (its data
+ * directory goes) clears it.
  */
 export function syncAsks(layout: BotLayout, gateway: AsksGateway, turn?: { outside: boolean }, now: () => number = Date.now): Promise<void> {
-  const run = (chains.get(layout.botId) ?? Promise.resolve()).catch(() => {}).then(async () => {
+  return inOrder(layout.botId, async () => {
     const store = new AskStore(layout, now);
     const drained = await gateway.drain();
+    const enabled = readAsksEnabled(layout);
     const collected = parseNewAsks(drained);
-    if (collected?.length) store.ingest(collected);
+    if (enabled && collected?.length) store.ingest(collected);
     let outside = readOutsideSeen(layout);
     if (!outside && (turn?.outside || (isRecord(drained) && drained.outside === true))) {
       outside = true;
       // A disk that cannot take the flag still lets the gateway have it for as long as it runs.
       try { writeOutsideSeen(layout); } catch { /* the push below carries it */ }
     }
-    await gateway.push({ enabled: readAsksEnabled(layout), ...store.push(), ...(turn || outside ? { turn: { outside } } : {}) });
+    await gateway.push({ enabled, ...store.push(), ...(turn || outside ? { turn: { outside } } : {}) });
   });
-  chains.set(layout.botId, run);
-  void run.catch(() => {}).finally(() => { if (chains.get(layout.botId) === run) chains.delete(layout.botId); });
-  return run;
+}
+
+/**
+ * The owner switched the setting off: every pending question is cancelled, by the path a decline takes (see
+ * AskStore.cancelPending). It waits for any collection already under way, so nothing it stores is left pending, and
+ * what is collected after it is dropped while the setting is off. Resolves to how many were cancelled.
+ */
+export function cancelAsks(layout: BotLayout, now: () => number = Date.now): Promise<number> {
+  return inOrder(layout.botId, async () => new AskStore(layout, now).cancelPending());
 }
 
 /** Applies the clock to every bot's requests: text of expired questions and stale replies goes even if nobody asks. */

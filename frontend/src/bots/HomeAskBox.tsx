@@ -68,6 +68,16 @@ function MainAsk({ api, tcw, onReconnect }: { api: BotsApi; tcw?: TinyCloudWeb; 
   const asks = useAsks(client, { open, onDecided: chat.sendAppReply });
   const refreshAsks = asks.refresh;
   refreshRequests.current = refreshAsks;
+  // Saving a Web access change tells the cards at once, so their note is never stale.
+  const noteWeb = asks.noteWeb;
+  const webAccess = useMemo(() => ({
+    getMainWeb: client.getMainWeb,
+    setMainWeb: async (...args: Parameters<BotsApi["setMainWeb"]>) => {
+      const stored = await client.setMainWeb(...args);
+      noteWeb(stored.mode !== "off");
+      return stored;
+    },
+  }), [client, noteWeb]);
   // A turn is when Main asks: read the requests as it ends.
   const working = isWorking(chat.state.turn);
   const wasWorking = useRef(false);
@@ -115,7 +125,7 @@ function MainAsk({ api, tcw, onReconnect }: { api: BotsApi; tcw?: TinyCloudWeb; 
         onRetryHistory={() => void chat.loadHistory()}
         notice={notice}
         onReconnect={onReconnect}
-        webAccess={client}
+        webAccess={webAccess}
         asks={asks}
       />
     </>

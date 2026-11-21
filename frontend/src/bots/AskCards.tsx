@@ -98,15 +98,17 @@ function AskCard({ request, asks }: { request: AskRequest; asks: Asks }) {
   );
 }
 
+const APP_LINES = { answered: COPY.lineAnswered, declined: COPY.lineDeclined, stopped: COPY.lineStopped, expired: COPY.lineExpired } as const;
+
 /**
  * What the app shows in the chat for the owner's decision on a question card, in a muted style so it is not taken for
  * words the owner typed. A "not now" the owner just gave is already on the card, which collapses to it; once the
  * card is gone (a reload), the line is what is left. An expired question has no message to Main: its line is only
  * for the owner, and only for a question the owner saw in this chat.
  */
-export function AppLine({ decision, live }: { decision: "answered" | "declined" | "expired"; live: boolean }) {
+export function AppLine({ decision, live }: { decision: keyof typeof APP_LINES; live: boolean }) {
   if (decision === "declined" && live) return null;
-  const text = decision === "answered" ? COPY.lineAnswered : decision === "declined" ? COPY.lineDeclined : COPY.lineExpired;
+  const text = APP_LINES[decision];
   return <p className="self-end text-callout text-muted-foreground" data-app-line={decision}>{text}</p>;
 }
 
