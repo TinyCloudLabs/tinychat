@@ -62,6 +62,10 @@ class ExoBridgeViewController: CAPBridgeViewController {
         bridge?.registerPluginInstance(LocationPlugin())
         startSmokeProbe()
         #endif
+        #if EXO_FRAME_PROBE
+        // CI-only frame probe (TC-3677, FrameProbe.swift): only the mobile workflow's Release simulator job compiles it.
+        FrameProbe.install(bridge: bridge, webView: webView)
+        #endif
     }
 
     #if DEBUG
