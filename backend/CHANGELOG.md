@@ -1,5 +1,13 @@
 # @tinychat/backend
 
+## 0.9.3-beta.3
+
+### Patch Changes
+
+- 6759764: The backend accepts requests from the phone apps at `https://app.tinycloud.one` (Android) and `tinycloudone://app.tinycloud.one` (iOS), as well as `https://localhost` and `capacitor://localhost`, which installed builds use.
+
+  Details: TC-3693
+
 ## 0.9.3-beta.2
 
 ### Patch Changes
