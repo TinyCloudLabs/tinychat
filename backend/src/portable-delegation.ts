@@ -134,22 +134,20 @@ const ACTIVATION_FAILURE = "Failed to activate delegated session:";
  * refusal, including a node fault, is plain text with no `code`.
  */
 const REVOCATION_CODES: ReadonlySet<string> = new Set(["delegation_revoked", "parent_revoked", "ancestor_revoked"]);
-const REVOCATION_BODY = /\{[^{}]*"code"\s*:\s*"(?:delegation_revoked|parent_revoked|ancestor_revoked)"[^{}]*\}/;
+/** The SDK's service errors read `<operation> failed: <status> - <body>`; the prefix holds no `{`, so the body starts at the first one. */
+const SDK_MESSAGE_PREFIX = /^[^{]*?: \d{3} - (?=\{)/;
 
 /**
  * The revocation code in a node refusal's text, or undefined. `text` is the node's response body, or an SDK
- * message that embeds it (`<operation> failed: 401 - <body>`). Only a JSON object whose `code` is one of the
- * node's revocation codes counts.
+ * message that embeds it (`<operation> failed: 401 - <body>`). The whole body (after that prefix) must be one
+ * JSON object whose top-level `code` is one of the node's revocation codes: a code nested in another object or
+ * array, or embedded in other text, does not count.
  */
 export function nodeRevocationCode(text: string): string | undefined {
-  const candidates = [text.trim(), REVOCATION_BODY.exec(text)?.[0]];
-  for (const candidate of candidates) {
-    if (!candidate) continue;
-    try {
-      const parsed: unknown = JSON.parse(candidate);
-      if (parsed && typeof parsed === "object" && "code" in parsed && typeof parsed.code === "string" && REVOCATION_CODES.has(parsed.code)) return parsed.code;
-    } catch { /* not JSON */ }
-  }
+  try {
+    const parsed: unknown = JSON.parse(text.trim().replace(SDK_MESSAGE_PREFIX, ""));
+    if (parsed && typeof parsed === "object" && "code" in parsed && typeof parsed.code === "string" && REVOCATION_CODES.has(parsed.code)) return parsed.code;
+  } catch { /* not JSON */ }
   return undefined;
 }
 
