@@ -1,8 +1,8 @@
 // TC-3547: every word the registry-publish consent and the Home finish-setup banner show, and the one switch that lets
 // them show.
 //
-// The words are the policy owner's, with her rulings applied (the product is TinyCloud One; the body names the spaces;
-// the line after "Not now" lives on the banner). The switch is on. The consent callback registers, the SDK publishes
+// The product is TinyCloud One; the body names the spaces; the line after "Not now" is on the banner. The switch is on.
+// The consent callback registers, the SDK publishes
 // on approval, the `finish-setup` link is read and the banner shows, each only when the pinned SDK carries the hook
 // (see intent.ts and config.ts).
 
@@ -12,7 +12,7 @@ export const REGISTRY_CONSENT_MODAL_ENABLED: boolean = true;
 export const REGISTRY_CONSENT_COPY = {
   title: "Let your apps find your space",
   body:
-    "To use TinyCloud apps outside TinyCloud One, we publish a public record that links your account address to the server that holds your space. " +
+    "To use TinyCloud apps outside TinyCloud One, publish a public record that links your account address to the server that holds your space. " +
     "Anyone who knows your account address can see it, along with the names of your spaces. It doesn't include any of your content.",
   publish: "Publish and continue",
   notNow: "Not now",
@@ -28,7 +28,7 @@ export const REGISTRY_CONSENT_COPY = {
 /** The Home card that offers the consent again, shown only to an unregistered account that has not said "Not now". */
 export const FINISH_SETUP_BANNER_COPY = {
   lead: "Let your apps find your space",
-  /** The line the policy owner moved here from the dialog: the dialog has no place to show it after "Not now". */
+  /** On the banner, because the dialog has no place to show it after "Not now". */
   support: "Apps outside TinyCloud One can't find your space until you publish this.",
   action: "Review and publish",
 } as const;

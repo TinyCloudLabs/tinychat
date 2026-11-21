@@ -1,5 +1,5 @@
 // TC-3547: when TinyChat asks the SDK to publish the owner's registry record, and the `finish-setup` link that asks it
-// again after a "Not now". Everything stays inert while REGISTRY_CONSENT_MODAL_ENABLED is false or the pinned SDK has
+// again after a "Not now". Everything stays inert while the pinned SDK has
 // no `ensureOwnerRegistryRecord`.
 import { isLegacyOrigin, CANONICAL_ORIGIN } from "../originMove";
 import { ensureRegistryRecord, canPublishRegistryRecord, type RegistryPublishClient, type RegistryPublishResult } from "./adapter";
