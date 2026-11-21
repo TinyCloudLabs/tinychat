@@ -42,7 +42,7 @@ import {
   logCreditGateDeny,
 } from "../billing/ledger-gate.js";
 import { createTurnBudgetMonitor, MIN_TURN_CREDITS, parseBudgetPreflightMode, parseBudgetStopMode } from "../billing/turn-budget.js";
-import { noteRequestRecord, recordAfterHandler, type StreamOutcome } from "../request-context.js";
+import { noteRequestRecord, recordAfterHandler, recordAgentChatBudgetPreflight, type AgentChatBudgetSource, type StreamOutcome } from "../request-context.js";
 
 import { RECEIPT_AUDIT_TIMEOUT_MS, RedPillAciError, RedPillAttestationError, RedPillResponseLimitError, STREAMED_RESPONSE_UNVERIFIED_MESSAGE, redPillAciFetch } from "../redpill-aci.js";
 // Look up a model in the catalog and resolve its rates. Missing entries get the fallback.
@@ -1426,6 +1426,7 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
     let anchor: number | null = null;
     let rates: ModelRates | null = null;
     let budgetRemaining: number | null = null;
+    let budgetSource: AgentChatBudgetSource = "local";
     // The window and allowance a reply is charged against are those at admission.
     const startedAt = Date.now();
     if (paywallEnabled()) {
@@ -1518,9 +1519,12 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
           });
           return;
         }
-        budgetRemaining = entitlement && !entitlement.isOutage && entitlement.credit_limit !== null && entitlement.committed_credits !== null
+        const ledgerRemaining = entitlement && !entitlement.isOutage && entitlement.credit_limit !== null && entitlement.committed_credits !== null
           ? entitlement.credit_limit - entitlement.committed_credits
-          : (() => { const localUsage = getUsage(address, tierConfig, anchor); return localUsage.limit - localUsage.used; })();
+          : null;
+        // A ledger-authoritative turn that cannot read the ledger falls back to the local counter: that is the outage path.
+        budgetSource = ledgerRemaining !== null ? "ledger" : "outage";
+        budgetRemaining = ledgerRemaining ?? (() => { const localUsage = getUsage(address, tierConfig, anchor); return localUsage.limit - localUsage.used; })();
       } else {
         if (isOverBudget(address, tierConfig, anchor)) {
           const usage = getUsage(address, tierConfig, anchor);
@@ -1552,6 +1556,7 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
         res.status(500).json({ error: "internal_error", message: "Failed to resolve model rates" });
         return;
       }
+      recordAgentChatBudgetPreflight({ address, mode: budgetPreflightMode, remaining: budgetRemaining, minimum: MIN_TURN_CREDITS, tier: gatedTier, source: budgetSource });
       if (budgetRemaining !== null && budgetPreflightMode !== "off" && budgetRemaining < MIN_TURN_CREDITS) {
         console.info("[agent-chat] turn budget", { event: "preflight", mode: budgetPreflightMode, remaining: budgetRemaining, minimum: MIN_TURN_CREDITS });
         if (budgetPreflightMode === "enforce") {

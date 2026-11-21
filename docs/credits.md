@@ -73,6 +73,8 @@ An agent chat turn is kept within the remaining credit budget. Two env vars cont
 
 Invalid values log a warning and fall back to the default. A turn stopped by the in-turn check ends with the stream error code `budget_exhausted`; text produced before the stop remains visible.
 
+Every preflight evaluation also ships a structured `agent_chat_budget_preflight` event (mode, `would_block`, a remaining-credit bucket, tier, source, `account_hash`, `request_id`), so the share of turns under the minimum can be counted before `enforce` is chosen. See `docs/dev-logging.md`.
+
 The two env vars above drive the in-turn monitor of the Eliza `/tasks` path only. Every path (including that one) is also bounded by the reply allowance below.
 
 Agent turns settle observed credit usage before the success or provider-error terminal frame and before ending the response, so an immediate follow-up `/api/chat` request uses the updated usage and returns HTTP 402 `credit_budget_exceeded` when the budget is exhausted. Two orderings differ: `/api/chat` settles right after it ends the response, and an agent turn that times out has its `stream_error` and `[DONE]` written by the stream owner (on the deadline) before the handler settles.
