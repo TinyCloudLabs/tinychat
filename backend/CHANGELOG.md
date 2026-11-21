@@ -1,5 +1,13 @@
 # @tinychat/backend
 
+## 0.9.3-beta.1
+
+### Patch Changes
+
+- 0cd1ccc: The billing error message names TinyCloud One.
+
+  Details: TC-3659
+
 ## 0.9.3-beta.0
 
 ### Patch Changes
