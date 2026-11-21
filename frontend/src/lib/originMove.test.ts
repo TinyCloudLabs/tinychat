@@ -347,12 +347,12 @@ describe("origin move", () => {
   test("the published /agents setup page and tarball links are never moved", async () => {
     const published = [
       agentSetup.setupUrl,
-      ...readFileSync(new URL("../../public/agents/setup.md", import.meta.url), "utf8").match(/https:\/\/tinycloud\.chat\/agents\/\S+/g)!,
+      ...readFileSync(new URL("../../public/agents/setup.md", import.meta.url), "utf8").match(/https:\/\/tinycloud\.one\/agents\/\S+/g)!,
     ].map((url) => new URL(url));
     expect(published.length).toBeGreaterThan(1);
     expect(published.some((url) => url.pathname.endsWith(".tgz"))).toBe(true);
     for (const url of [...published, new URL("https://tinycloud.chat/agents"), new URL("https://tinycloud.chat/agents/setup.md")]) {
-      expect(url.hostname).toBe("tinycloud.chat");
+      expect(url.hostname).toBe(published.includes(url) ? "tinycloud.one" : "tinycloud.chat");
       expect(originMoveExemption(url, false)).toBe("agents");
       expect(await decideOriginMove({ location: url, canonicalReady: ready, countWork: async () => none })).toEqual({ kind: "stay" });
     }
