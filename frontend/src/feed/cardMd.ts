@@ -84,7 +84,7 @@ const INSERT_IF_MISSING = "INSERT OR IGNORE INTO card_md (id, text, version, upd
  * One-time move of the owner's card.md from the feed namespace (`LEGACY_CARD_MD_RESOURCE`) to the master table.
  * Where the master has no row: an old row is copied over with its text as it is, its version recomputed from that text
  * so the agent copies stay consistent. When the old row's version did not match its text, a warning says so and the
- * text is still carried over. Only where there is no table and no row is the default seeded. The copy is INSERT OR
+ * text is carried over. Only where there is no table and no row is the default seeded. The copy is INSERT OR
  * IGNORE, so an owner's edit made after it always stands, and a second run changes nothing. Then the old row is
  * deleted, so it stops being a writable source anyone trusts.
  *
