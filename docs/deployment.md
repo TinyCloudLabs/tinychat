@@ -326,8 +326,10 @@ name/hash also fails closed.
 `deploy-production.yml` may explicitly set
 `allow_current_dev_os_until_tc2843=true` (default **false**). Only
 `dstack-dev-0.5.12`, hash
-`e866e987221db357129ebc3f066b6706ef955889ea95e5510acbdf3d3055186b`,
-with `is_dev=true` is permitted. Push, schedule and originating workflow-call
+`e866e987221db357129ebc3f066b6706ef955889ea95e5510acbdf3d3055186b`, and
+`dstack-dev-0.5.15`, hash
+`432b8a1e82ec8a90b3d30bb201e5d20a8bc5c05b69f1d8ba13687232dda5aebd`
+(each name with its own hash, never mixed), with `is_dev=true`, are permitted. Push, schedule and originating workflow-call
 events cannot enable this exception: the guard refuses the override unless
 `github.event_name` is `workflow_dispatch`. The reusable backend workflow
 forwards the dispatch choice; it does not provide an independent non-manual escape.
