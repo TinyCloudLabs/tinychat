@@ -90,7 +90,9 @@ const CHANNEL_NAME = "exo-held-results";
 const memoryLocks = new Map<string, Promise<void>>();
 
 interface HeldDatabaseEnv extends IdbEnv { storage?: StorageManager }
-function openHeldDb(env: IdbEnv): Promise<IDBDatabase> {
+/** Also opened by the TC-3045 old-origin import (oldOriginImport.ts), so imported rows land in this schema. */
+export { openHeldDb as openHeldResultsDb };
+function openHeldDb(env: IdbEnv = browserIdbEnv()): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const open = env.factory.open(HELD_RESULTS_DB, HELD_RESULTS_DB_VERSION);
     open.onupgradeneeded = () => {

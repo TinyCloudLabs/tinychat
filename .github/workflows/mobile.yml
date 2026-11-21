@@ -57,6 +57,9 @@ jobs:
       - name: Sync Capacitor
         run: bun run --cwd mobile sync android
 
+      - name: Pin the WebView origins (config and synced Android config)
+        run: bun test ./mobile/webview-origin.test.ts
+
       - name: Test and build debug APK
         working-directory: mobile/android
         run: ./gradlew --no-daemon :app:testDebugUnitTest assembleDebug --console=plain
@@ -161,6 +164,9 @@ jobs:
 
       - name: Sync Capacitor
         run: bun run --cwd mobile sync ios
+
+      - name: Pin the WebView origins (config and synced iOS config)
+        run: bun test ./mobile/webview-origin.test.ts
 
       # Debug build: CAPACITOR_DEBUG logging and the EXO_SMOKE probe in ExoBridgeViewController.
       - name: Build for iOS Simulator

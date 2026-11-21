@@ -20,7 +20,7 @@ import { appPlatform } from "./lib/platform";
 import { setIOSDynamicTypeScale } from "./lib/dynamicType";
 import { setupPwa } from "./lib/pwa";
 import { initSizeClass } from "./lib/sizeClass";
-import { initTheme } from "./lib/theme";
+import { initTheme, readThemeChoice, setThemeChoice, THEME_CHOICE_KEY } from "./lib/theme";
 import { registerDesktopVoiceNotes } from "./lib/voiceNotes/desktop/desktopVoiceNotes";
 import { installDebugLog } from "./lib/debugLog";
 import { billingLinksAllowed } from "./lib/openManageStorage";
@@ -29,6 +29,8 @@ import { hydrateDurableKeys } from "./lib/durableKeys";
 import { APP_LOCK_PREFS_KEY } from "./lib/appLock";
 import { HIDDEN_FEATURES_KEY } from "./lib/hiddenFeatures";
 import { NATIVE_SESSION_KIND_KEY, NATIVE_SIGN_OUT_PENDING_KEY } from "./lib/openkeyNative";
+import { importOldOrigin } from "./lib/oldOriginImport";
+import { seedPreferenceFromEngine } from "./lib/voiceNotes/transcriberPreference";
 import { captureShareLinkFromLocation } from "./lib/nativeShares/link";
 import { ShareAppUrlListener } from "./capture/share/ShareAppUrlListener";
 
@@ -105,6 +107,15 @@ void installEd25519Polyfill().catch((error: unknown) => {
     hydrateDurableKeys([APP_LOCK_PREFS_KEY, NATIVE_SESSION_KIND_KEY, NATIVE_SIGN_OUT_PENDING_KEY, HIDDEN_FEATURES_KEY]),
     new Promise((resolve) => setTimeout(resolve, 2000)),
   ]);
+  if (nativeShell) {
+    // TC-3045: the first launch on the phone app's own origin copies in what the old origin kept, and a later one
+    // confirms the copy reached disk (oldOriginImport.ts), before anything reads it; then the recording settings come
+    // from the engine when none came with it. Both run ahead of RecorderProvider pushing the stored settings to the
+    // engine (writeAccountDefaults).
+    const imported = await importOldOrigin();
+    if (imported.kind === "imported" && imported.keys.includes(THEME_CHOICE_KEY)) setThemeChoice(readThemeChoice());
+    void seedPreferenceFromEngine();
+  }
   const move = await originMove;
   if (move.kind === "move") {
     clearMovedAnswers();

@@ -10,6 +10,7 @@ import { Capacitor } from "@capacitor/core";
 import type { PermissionEntry } from "@tinycloud/web-sdk";
 import type { LucideIcon } from "lucide-react";
 import { BadgeCheck, CircleUserRound, Compass, KeyRound, MessagesSquare, Mic } from "lucide-react";
+import { ANDROID_WEBVIEW_ORIGIN, IOS_WEBVIEW_ORIGIN } from "../lib/nativeOrigins";
 import { APP_DESCRIPTIONS, APP_NAMES, type ScopeId } from "./strings";
 
 export type FramedAppId =
@@ -95,10 +96,11 @@ export function framesAppsHere(origin: string): boolean {
 }
 
 /**
- * The phone app's own origins (Capacitor's defaults; mobile/capacitor.config.ts sets no scheme or hostname): iOS, then
- * Android. Exact strings: no other scheme, port or host.
+ * The phone app's own origins: the ones it runs on now (iOS, then Android; frontend/src/lib/nativeOrigins.ts, which
+ * mobile/capacitor.config.ts and the backend's CORS origins must agree with), then the Capacitor defaults it ran on
+ * before TC-3045, which an installed older build still uses. Exact strings: no other scheme, port or host.
  */
-export const ONE_NATIVE_ORIGINS: readonly string[] = ["capacitor://localhost", "https://localhost"];
+export const ONE_NATIVE_ORIGINS: readonly string[] = [IOS_WEBVIEW_ORIGIN, ANDROID_WEBVIEW_ORIGIN, "capacitor://localhost", "https://localhost"];
 
 /** Whether One frames `app` on this page's origin: any framed app on One's web origins, `inNativeApp` ones in the phone app. */
 export function framesAppHere(app: FramedOneApp, origin: string): boolean {
