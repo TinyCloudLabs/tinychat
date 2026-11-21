@@ -1,0 +1,14 @@
+{
+  "versions": {
+    "exo-desktop": "0.15.3",
+    "@tinychat/frontend": "0.15.3"
+  },
+  "changesets": [
+    ".changeset/pre/chromium-screen-ci.md",
+    ".changeset/pre/desktop-csp-ptx-pha1.md",
+    ".changeset/pre/native-ci-input-selection.md",
+    ".changeset/pre/one-apps-explorer-in-phone-app.md",
+    ".changeset/pre/one-apps-in-app-browser.md",
+    ".changeset/pre/pages-exact-sha-verifier.md"
+  ]
+}
