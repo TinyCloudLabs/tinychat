@@ -14,27 +14,28 @@ name: Frontend
 
 on:
   pull_request:
-    paths:
-      - "frontend/**"
-      - "test/**"
-      - "packages/**"
-      - "package.json"
-      - "bun.lock"
-      - ".github/workflows/frontend.yml"
-      - "test/exo-ui/**"
+  merge_group:
+  push:
+    branches: [main, "release/**"]
+    tags: ["exo-desktop@*", "@tinychat/frontend@*", "@tinychat/backend@*"]
 
 permissions:
   contents: read
 
 concurrency:
-  group: frontend-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+  group: frontend-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  changes:
+    uses: ./.github/workflows/native-changes.yml
+
   # Unit tests, lint and the build. The browser work runs in the jobs below, in
   # parallel, so no single job approaches its timeout as the harnesses grow.
   frontend:
     name: Frontend tests, lint and browser harnesses
+    needs: changes
+    if: github.event_name == 'pull_request' && needs.changes.outputs.frontend == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -72,6 +73,8 @@ jobs:
 
   browser:
     name: Browser harnesses (Chromium)
+    needs: changes
+    if: github.event_name == 'pull_request' && needs.changes.outputs.frontend == 'true'
     # Pinned: ubuntu-latest is Ubuntu 26.04, where Playwright cannot install Chromium. Unpin per TC-3071.
     runs-on: ubuntu-24.04
     timeout-minutes: 40
@@ -162,6 +165,8 @@ jobs:
   # nine-viewport matrix, WebKit included, runs locally.
   screens:
     name: Exo UI screens (Chromium, ${{ matrix.viewport }})
+    needs: changes
+    if: github.event_name == 'pull_request' && needs.changes.outputs.frontend == 'true'
     # Pinned: ubuntu-latest is Ubuntu 26.04, where Playwright cannot install Chromium. Unpin per TC-3071.
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -207,6 +212,8 @@ jobs:
 
   halo-webkit:
     name: Recorder halo (macOS WebKit)
+    needs: changes
+    if: needs.changes.outputs.frontend == 'true'
     runs-on: macos-latest
     timeout-minutes: 20
     steps:
@@ -270,6 +277,8 @@ jobs:
   # joins as soon as its file exists.
   followups:
     name: Recorder follow-ups e2e (Chromium)
+    needs: changes
+    if: github.event_name == 'pull_request' && needs.changes.outputs.frontend == 'true'
     # Pinned: ubuntu-latest is Ubuntu 26.04, where Playwright cannot install Chromium. Unpin per TC-3071.
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -301,3 +310,24 @@ jobs:
       - name: Recorder follow-ups interaction suites (Chromium)
         working-directory: test
         run: EXO_UI_ENGINE=chromium bun test recorder-final-desktop recorder-final-notes recorder-final-saved-note recorder-final-web meeting-sources capture-settings capture-home-desktop web-voice-notes-codec mic-recovery
+
+  webkit-check:
+    name: WebKit checks
+    if: always()
+    needs: [changes, halo-webkit]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require successful WebKit checks or an intentional unrelated PR skip
+        env:
+          EVENT: ${{ github.event_name }}
+          CHANGES: ${{ needs.changes.result }}
+          FRONTEND: ${{ needs.changes.outputs.frontend }}
+          WEBKIT: ${{ needs.halo-webkit.result }}
+        run: |
+          [[ "$CHANGES" == success ]]
+          case "$FRONTEND:$EVENT" in
+            true:*) [[ "$WEBKIT" == success ]] ;;
+            false:pull_request) [[ "$WEBKIT" == skipped ]] ;;
+            *) exit 1 ;;
+          esac
