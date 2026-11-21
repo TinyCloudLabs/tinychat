@@ -11,6 +11,8 @@ import { AudioUploadPanel } from "@/chat/AudioUploadPanel";
 import { Button } from "@/components/ui/button";
 import { ResponsiveSheet, ResponsiveSheetBody, ResponsiveSheetFooter } from "@/components/ui/responsive-sheet";
 import { pastedTranscriptProblem, savePastedTranscript, PASTED_TRANSCRIPT_MAX_BYTES } from "./pastedTranscript";
+import { useOriginMoveDeferral } from "@/shell/OriginMoveNotice";
+import { uploadHoldsMove } from "@/shell/unsavedWork";
 
 export interface UploadSheetProps {
   open: boolean;
@@ -32,6 +34,8 @@ export function UploadSheet({ open, onOpenChange, tcw, backendUrl, sessionStore 
   const [text, setText] = useState("");
   const [title, setTitle] = useState("");
   const [date, setDate] = useState("");
+  // A transcript pasted and not yet saved exists only in this page: a held tinycloud.chat page does not move under it.
+  useOriginMoveDeferral(uploadHoldsMove({ pastedText: text, pickedFile: false }));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const problem = pastedTranscriptProblem(text);

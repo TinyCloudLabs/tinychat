@@ -6,6 +6,9 @@ import { formatDuration } from "./duration";
 /** A deadline this close (or already past) outranks everything else but an officer's turn. */
 export const DUE_WINDOW_MS = 48 * 3_600_000;
 
+/** An open card at this urgency or higher leads the owner's list, ahead of every other rule. */
+export const URGENT_URGENCY = 4;
+
 const byId = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 
 /** The scoring fields shared by Waiting items and liftable holds. */
@@ -13,6 +16,9 @@ export type WaitingRank = Pick<WaitingItem, "waitsOnOthers" | "dueSoon" | "deadl
 
 /**
  * Sam's order, first rule that differs wins:
+ *  0. Urgent cards (urgency of URGENT_URGENCY or more) before all others, then by urgency × importance, highest
+ *     first. This outranks the rules below, including a card that waits on an officer, a deadline, a pin and the
+ *     production/security flag; a card below that urgency keeps the order the rules below give it.
  *  1. Items that wait on an officer's card come after every item he can act on now: even a release or deploy go
  *     that waits on an officer, since Sam cannot act on it yet. Its reason line says "blocked: needs <officer> first".
  *  2. Overdue or due within DUE_WINDOW_MS first, the earliest deadline first (overdue ones lead).
@@ -26,7 +32,9 @@ export type WaitingRank = Pick<WaitingItem, "waitsOnOthers" | "dueSoon" | "deadl
  * It reads fields fixed when the report was made, never the clock, so the order cannot flap.
  */
 export function compareWaiting(a: WaitingRank, b: WaitingRank): number {
-  return Number(Boolean(a.waitsOnOthers)) - Number(Boolean(b.waitsOnOthers)) ||
+  return Number(b.urgency >= URGENT_URGENCY) - Number(a.urgency >= URGENT_URGENCY) ||
+    (a.urgency >= URGENT_URGENCY ? b.urgency * b.importance - a.urgency * a.importance : 0) ||
+    Number(Boolean(a.waitsOnOthers)) - Number(Boolean(b.waitsOnOthers)) ||
     Number(b.dueSoon) - Number(a.dueSoon) ||
     (a.dueSoon && b.dueSoon ? (a.deadlineAt ?? 0) - (b.deadlineAt ?? 0) : 0) ||
     Number(b.critical) - Number(a.critical) ||
@@ -40,10 +48,11 @@ export function compareWaiting(a: WaitingRank, b: WaitingRank): number {
 
 /**
  * One short line saying why an item is where it is: the first rule above that applies to it.
- * "blocked: needs Amos first", "overdue 12m", "due in 2h 05m", "production/security", "unblocks 3", "your priority",
+ * "urgent: U4·I3", "blocked: needs Amos first", "overdue 12m", "due in 2h 05m", "production/security", "unblocks 3", "your priority",
  * "needed for your priority", else its U/I.
  */
 export function rankReason(item: WaitingRank & Pick<WaitingItem, "unblocked" | "unblockedCritical" | "blocks">, now: number): string {
+  if (item.urgency >= URGENT_URGENCY) return `urgent: U${item.urgency}·I${item.importance}`;
   if (item.waitsOnOthers) return `blocked: needs ${item.waitsOnOthers.by} first`;
   if (item.dueSoon && item.deadlineAt !== undefined) {
     return item.deadlineAt < now ? `overdue ${formatDuration(now - item.deadlineAt)}` : `due in ${formatDuration(item.deadlineAt - now)}`;

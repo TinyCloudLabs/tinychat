@@ -4,7 +4,7 @@ TinyChat mirrors Listen's production topology:
 
 | Layer | Host | URL |
 | --- | --- | --- |
-| Frontend (Vite SPA) | Cloudflare Pages | `https://tinycloud.chat` |
+| Frontend (Vite SPA) | Cloudflare Pages | `https://tinycloud.one` (also `tinycloud.chat`, `home.tinycloud.xyz`) |
 | Backend (Express on Bun) | Phala Cloud (TEE / dstack) | `https://api.tinycloud.chat` |
 
 The backend runs in a Phala CVM behind a `dstack-ingress` sidecar that
@@ -31,12 +31,24 @@ dispatches for a stable `@tinychat/frontend` release, after the backend deploy.
 It checks that the current `production` tip was made by the workflow (or seeded
 from `main`), creates a commit whose tree is exactly the released commit's,
 fast-forwards `production` to it, waits for the Pages production build (the
-`Cloudflare Pages` check on that commit), checks that `tinycloud.chat` serves
-that deployment, and checks the branch still points at its commit before and
+`Cloudflare Pages` check on that commit), checks that `tinycloud.one` serves
+that deployment and that the other web hosts serve its commit, and checks the branch still points at its commit before and
 after. Every other branch, `main` included, only gets preview builds. Only
 the `release-push` deploy key may update `production` (see the rulesets below).
 To roll back, dispatch the workflow with the older release tag (`--ref main -f
 tag=@tinychat/frontend@<version> -f backend=false`), or use Pages' own rollback.
+
+The verifier reads every page of check runs with `filter=all`, matching the
+`Cloudflare Pages` check name, `cloudflare-workers-and-pages` app and exact
+deployment SHA. The newest completed noncancelled attempt, ordered by integer
+check-run ID (not completion time), decides: success must supply a deployment URL
+and be production, so an older production success cannot hide a newer preview.
+Older completed nonsuccesses are superseded and each is logged on stderr.
+Cancelled attempts are ignored. A newest completed nonsuccess fails closed unless
+a newer-created matching attempt is unfinished; then the verifier waits within
+the existing build timeout. With no completed noncancelled attempt it also waits.
+Missing, invalid or duplicate matching noncancelled IDs fail closed.
+The live HTML, other-host commit and production-branch tip checks still apply.
 
 In the Cloudflare dashboard → **Workers & Pages → Create → Pages → Connect to Git**:
 
@@ -151,86 +163,110 @@ rulesets stop direct pushes, hand-made release tags, branch or tag-controlled
 workflows, accidents and out-of-band deploys; they do not stop a malicious
 writer. Treat write access to this repo as production access.
 
-### One web build: home.tinycloud.xyz (canonical) and tinycloud.chat
+### One web build: tinycloud.one (canonical), tinycloud.chat and home.tinycloud.xyz
 
 There is one frontend build. The web, the desktop app and the mobile apps all
 run it, sign in with the root `manifest.json`, and open on Feed (named Home)
 with the tabs Home, Chat, Apps, Recording, Connectors. There is no build flag
 or host check that changes the product.
 
-- **Pages project:** the Git-integrated `tinychat` project above serves both
-  custom domains, `home.tinycloud.xyz` (canonical; `CNAME` to
-  `tinychat-4jq.pages.dev`) and `tinycloud.chat`. The `web` job in
-  `deploy-production.yml` verifies the URL in the `TINYCHAT_FRONTEND_URL`
-  variable (default `https://tinycloud.chat`); the same deployment serves both
-  domains.
-- **Moving visitors off tinycloud.chat:** origins do not share IndexedDB or
+- **Pages project:** the Git-integrated `tinychat` project above serves all
+  three custom domains: `tinycloud.one` (canonical), `tinycloud.chat` and
+  `home.tinycloud.xyz` (`CNAME` to `tinychat-4jq.pages.dev`). The `web` job in
+  `deploy-production.yml` verifies the URL in `TINYCHAT_FRONTEND_URL` (default
+  `https://tinycloud.one`) and then every host in `TINYCHAT_ALSO_HOSTS`
+  (space-separated, default `tinycloud.chat home.tinycloud.xyz`): each must
+  answer `/version.json` with the deployed commit, or answer a 301, 302, 307 or
+  308 whose `Location` is on the `TINYCHAT_FRONTEND_URL` host; otherwise the
+  release is reported changed and unverified. The check doesn't follow
+  redirects, so it doesn't check a redirecting host for the commit, and its log
+  line says which answer it saw. A domain left on another Pages project (an
+  old build, HTML for `/version.json`) fails that check.
+- **Moving visitors off the legacy hosts:** origins do not share IndexedDB or
   localStorage, so a redirect would strand work kept only in the browser.
-  `frontend/src/lib/originMove.ts` runs only on `tinycloud.chat`. It never moves
-  a Google same-tab OAuth return (`state=tab.…`/`hometab.…` with
-  `google_oauth_code`/`google_oauth_error`; its PKCE verifier is in this
-  origin's sessionStorage), a page opened as a popup, or `/agents` and
-  `/agents/…` (the published setup and tarball links). Otherwise, before the
-  app renders, it counts, across every account, work that exists only in this
-  browser: capture sessions, quarantined recoveries, notes not saved or with
-  local work left, outbox entries, local transcripts not yet saved,
-  `exo-held-results` rows, note Markdown edits the space has not confirmed
-  (`exo-recording-notes`), Private transcription jobs holding or producing a
-  transcript, unsaved Upload-sheet jobs, and notes whose **audio is only local**
-  (no `verifiedInSpace` receipt). The full store inventory, including the
-  stores that are not counted and why, is in the comments of `originMove.ts`.
-  None, and `https://home.tinycloud.xyz/version.json` names this same build's
-  commit: `location.replace` to `https://home.tinycloud.xyz` with the same path,
-  query and `#hash`. Otherwise (or if any check fails) the app runs as usual
-  with a notice (`shell/OriginMoveNotice.tsx`) when work is held, and re-checks
-  every 30 s, on focus and when back online. It never moves while the tab is
-  signing in, re-authorising Connectors, connecting Google, streaming or
-  drafting a chat reply, or editing a note (`deferOriginMove`). A visitor who
-  moves signs in once on home.tinycloud.xyz. The edge 301 for tinycloud.chat
-  waits on TC-2763 (upload local-only audio from the notice, then move).
+  `frontend/src/lib/originMove.ts` runs only on `tinycloud.chat` and
+  `home.tinycloud.xyz`. It never moves a Google same-tab OAuth return
+  (`state=tab.…`/`hometab.…` with `google_oauth_code`/`google_oauth_error`; its
+  PKCE verifier is in this origin's sessionStorage), a page opened as a popup,
+  `/agents` and `/agents/…` (the published setup and tarball links), or a page
+  loaded with `?legacy=1` (below). Otherwise, before the app renders, it
+  counts, across every account, work that exists only in this browser: capture
+  sessions, quarantined recoveries, notes not saved or with local work left,
+  outbox entries, local transcripts not yet saved, `exo-held-results` rows,
+  note Markdown edits the space has not confirmed (`exo-recording-notes`),
+  Private transcription jobs holding or producing a transcript, unsaved
+  Upload-sheet jobs, and notes whose **audio is only local** (no
+  `verifiedInSpace` receipt), plus Home answers and post drafts. The full store
+  inventory, including the stores that are not counted and why, is in the
+  comments of `originMove.ts`. None, and `https://tinycloud.one/version.json`
+  names this same build's commit: `location.replace` to `https://tinycloud.one`
+  with the same path, query and `#hash`. Otherwise (or if any check fails) the
+  app runs as usual with a notice (`shell/OriginMoveNotice.tsx`) when work is
+  held, and re-checks every 30 s, on focus and when back online. It never
+  moves while the tab is signing in, re-authorising Connectors, connecting
+  Google, streaming or drafting a chat reply, or editing a note
+  (`deferOriginMove`). A visitor who moves signs in once on tinycloud.one.
+- **Edge redirect (the `tinycloud-domain-redirects` Cloudflare Worker, TinyCloudLabs/internal
+  `infra/tinycloud-domain-redirects`, routes on `tinycloud.chat/*` and
+  `home.tinycloud.xyz/*` in front of this Pages project; the Pages `_redirects`
+  file matches paths only):** a page load gets a 302 to `https://tinycloud.one`
+  with the same path and query (`no-store`). The Worker's `worker.js` is the
+  source of truth for what it lets through to this app instead: a request with
+  the `tc_hold=1` cookie; `?legacy=1`; the same-tab Google sign-in return
+  (`state` starting `tab.`, `hometab.` or `onetab.` with `google_oauth_code` or
+  `google_oauth_error`); a request the browser says is not a page load
+  (`Sec-Fetch-Dest` other than `document`, `iframe`, `frame`, `embed`,
+  `object`: scripts, styles, images, fonts, `fetch`/XHR, the service worker and
+  its imports); any method but `GET` or `HEAD`; and these paths: `/sw.js`,
+  `/workbox-<hash>.js`, `/assets/*`, `/manifest.webmanifest`, `/version.json`,
+  `/icons/*`, `/fonts/*`, `/agents` and `/agents/*`. Browsers keep the `#hash`
+  across a 302 whose `Location` has none.
+- **`tc_hold` cookie:** the edge redirect runs before the app, so it could
+  strand local-only work. While the app holds work on a legacy host it sets
+  `tc_hold=1` (host-only, `Secure`, `SameSite=Lax`, 400 days) so the rule lets
+  the app load; it clears the cookie when nothing is held. A failed work check
+  counts as held.
+- **Recovering data left on a legacy origin (`?legacy=1`):** open
+  `https://tinycloud.chat/?legacy=1` or `https://home.tinycloud.xyz/?legacy=1`.
+  The Worker lets it through, the app stays on that origin, and it sets `tc_hold`
+  so plain visits keep loading the app there. From that page the visitor
+  uploads or saves their recordings and answers as usual; once nothing local is
+  left, the app clears the cookie and moves them to tinycloud.one on its own.
 - **`version.json`:** every build writes `{"commit": …}` to `/version.json`
   (`frontend/vite.config.ts`), served `no-store` with
-  `Access-Control-Allow-Origin: https://tinycloud.chat` (`frontend/public/_headers`).
-  Because tinycloud.chat moves nobody until home.tinycloud.xyz serves the same
-  commit, deploying this build before the custom domain moves is safe: visitors
-  stay on tinycloud.chat until home.tinycloud.xyz serves it.
+  `Access-Control-Allow-Origin: *` (`frontend/public/_headers`): it holds only a
+  commit hash, and a header can name one origin at most. The legacy hosts read
+  it on tinycloud.one before moving a visitor, so deploying a build never moves
+  anyone until tinycloud.one serves that same commit.
 - **Google OAuth:** a page on `https://home.tinycloud.xyz` tags its `state`
   `home.`/`hometab.`, and a page on `https://tinycloud.one` tags it
   `one.`/`onetab.`, so the backend returns to that origin
   (`HOME_WEB_ORIGIN`); anywhere else the state is untagged and returns to
-  `FRONTEND_URL`, or to `https://tinycloud.chat` once `FRONTEND_URL` is
-  home.tinycloud.xyz, so a flow started on tinycloud.chat finishes there.
+  `FRONTEND_URL`, except that when `FRONTEND_URL` is `https://tinycloud.one` or
+  `https://home.tinycloud.xyz` it returns to `https://tinycloud.chat`, where
+  held visitors (`tc_hold`, `?legacy=1`) start their flows.
 - **Backend:** the backend accepts all three web origins through the
   `FRONTEND_ORIGINS` allowlist (default
   `https://tinycloud.chat,https://home.tinycloud.xyz,https://tinycloud.one`,
   plus `FRONTEND_URL`) for CORS, the SIWE domain check and the OAuth returns,
-  whichever of them `FRONTEND_URL` names. tinycloud.one serves the same web
-  build. See **CORS** under "Notes" in section 2.
-- **Cutover order (once):** this build drops the separate `tinycloud-home`
-  Pages project. After the first production web deploy of it, move the custom
-  domain `home.tinycloud.xyz` from `tinycloud-home` to `tinychat` (remove it
-  from `tinycloud-home`, add it to `tinychat`, point the `CNAME` at
-  `tinychat-4jq.pages.dev`). tinycloud.chat starts moving visitors only once
-  home.tinycloud.xyz serves the same commit (see `version.json`). Until then
-  home.tinycloud.xyz keeps serving the previous Home build. Keep
-  `tinycloud-home` 7 days as a rollback target. Set `TINYCHAT_FRONTEND_URL`
-  only as the next bullet says.
-- **Do not set `TINYCHAT_FRONTEND_URL` to `https://home.tinycloud.xyz` until
-  the backend with the `FRONTEND_ORIGINS` allowlist is deployed.** The one
-  variable drives two things: the `web` job in `deploy-production.yml` verifies
-  that URL, and `deploy-backend-phala.yml` writes it as the backend's
-  `FRONTEND_URL` on the next backend deploy. An older backend accepts only
-  `FRONTEND_URL` and home.tinycloud.xyz, so the switch would drop
-  tinycloud.chat from CORS, sign-in and Google OAuth for every visitor still
-  kept there, and send their OAuth returns to home.tinycloud.xyz, away from the
-  PKCE verifier. Confirm from `backend/CHANGELOG.md` that the deployed backend
-  release includes `FRONTEND_ORIGINS` before changing the variable; a CORS
-  check cannot tell, because an older backend also accepts tinycloud.chat while
-  it is still `FRONTEND_URL`.
+  whichever of them `FRONTEND_URL` names. See **CORS** under "Notes" in
+  section 2.
+- **Cutover order:** (1) deploy OpenKey with tinycloud.one as a first-party
+  origin; (2) move `home.tinycloud.xyz` from the `tinycloud-home` Pages project
+  to `tinychat` (remove it from `tinycloud-home`, add it to `tinychat`, point
+  the `CNAME` at `tinychat-4jq.pages.dev`; keep `tinycloud-home` 7 days as a
+  rollback target and stop deploying it by hand); (3) deploy the backend that
+  carries the untagged-return rule above, with `TINYCHAT_FRONTEND_URL` set to
+  `https://tinycloud.one` just before that deploy and not earlier (the backend
+  writes the variable as `FRONTEND_URL` at deploy: Stripe returns land on
+  tinycloud.one, untagged OAuth returns stay on tinycloud.chat); (4) deploy
+  this web build and confirm all three hosts serve
+  it; (5) check a held visitor stays, a clear visitor moves, and `?legacy=1`
+  works on both legacy hosts; (6) deploy the Worker's forwards (its README, "Turn the forwards on").
 - **Links the backend generates** keep using `FRONTEND_URL`: the Stripe
   checkout and portal returns (`/?billing=…`) and the connector-off link (the
-  bare origin). Both sites serve the same build, so those paths work on
-  either; after the switch they land on home.tinycloud.xyz.
+  bare origin). All three hosts serve the same build, so those paths work on
+  any of them.
 
 ---
 
@@ -290,8 +326,10 @@ name/hash also fails closed.
 `deploy-production.yml` may explicitly set
 `allow_current_dev_os_until_tc2843=true` (default **false**). Only
 `dstack-dev-0.5.12`, hash
-`e866e987221db357129ebc3f066b6706ef955889ea95e5510acbdf3d3055186b`,
-with `is_dev=true` is permitted. Push, schedule and originating workflow-call
+`e866e987221db357129ebc3f066b6706ef955889ea95e5510acbdf3d3055186b`, and
+`dstack-dev-0.5.15`, hash
+`432b8a1e82ec8a90b3d30bb201e5d20a8bc5c05b69f1d8ba13687232dda5aebd`
+(each name with its own hash, never mixed), with `is_dev=true`, are permitted. Push, schedule and originating workflow-call
 events cannot enable this exception: the guard refuses the override unless
 `github.event_name` is `workflow_dispatch`. The reusable backend workflow
 forwards the dispatch choice; it does not provide an independent non-manual escape.
@@ -359,6 +397,8 @@ Repository **variables** (all optional — defaults shown):
 | `ELIZA_SERVICE_URL` | _(required — no default; the workflow's config check fails fast if unset)_ — Eliza agent service URL (agent triad) |
 | `ELIZA_TASKS_ENABLED` | `false` (repo variable; only literal `true` routes admitted agent turns through Eliza `/tasks`) |
 | `ELIZA_TASKS_TEST_ACCOUNTS` | _(empty — repo variable; comma-separated account addresses, trimmed and lowercased)_. **When tasks are enabled, an empty list admits all authenticated accounts.** Set an explicit canary list before enabling. |
+| `GRANOLA_PROXY_ENABLED` | `false` (the `production-api` variable enables the Granola API proxy when set to `true`). To disable it, unset the variable and redeploy. The web import is enabled by `VITE_GRANOLA_CONNECTOR_ENABLED = "true"` in `wrangler.toml` under `[env.production.vars]`; remove that line and rebuild to hide it. Preview builds are unchanged. |
+| `RENEWAL_BACKEND_ORIGIN` / `RENEWAL_NODE_DID` / `RENEWAL_RENEWER_DID` | _(empty — `POST /api/auth/verify-renewal` answers 503)_. Set all three or none (a partial set refuses to boot). The backend's public origin (`https://api.tinycloud.chat`, bound into the holder proof) and the production node's DID and renewer DID exactly as `/.well-known/tinycloud/node-keys` advertises them: the same values as OpenKey's `OPENKEY_RENEWAL_NODE_DID` / `OPENKEY_RENEWAL_RENEWER_DID`. The route relays the session's status invocation to `TINYCLOUD_HOST` and issues a bearer for at most 24 hours, never past the lease or the node-verified renewed end. Each address may renew 5 times a minute, counted only after the request's holder proof passes; nothing is keyed on the IP. The shared `/api/auth` bucket also applies. |
 | `BOTS_ENABLED` | `false` (only literal `true` turns on tiny bots: the Home Main bot chat at `/api/bots`). Off unless `BOTS_SERVICE_URL`, `BOTS_SERVICE_SECRET` and a non-empty `BOTS_TEST_ACCOUNTS` are also set. |
 | `BOTS_TEST_ACCOUNTS` | _(empty — comma-separated account addresses, trimmed and lowercased; the single entry `*` admits every account; an empty list admits nobody)_ |
 | `BOTS_SERVICE_URL` | _(empty)_ — internal URL of the bots service; never exposed to browsers. |
@@ -654,6 +694,14 @@ nothing below may be reported as done on its behalf.
 - **Port:** the container listens on `3001` in production (`PORT=3001` is set in
   the compose/env), matching Listen and the ingress `TARGET_ENDPOINT`. Local dev
   still defaults to `3014`.
+- **Ingress body cap:** the `infra/phala-ingress` image (dstack-ingress plus a
+  cert-bootstrap wrapper) accepts an optional `CLIENT_MAX_BODY_SIZE` (positive
+  integer of at most 6 digits with an optional `k`/`m` suffix, e.g. `2m`). When
+  it is set, the wrapper writes `client_max_body_size` at nginx http level; when
+  it is unset, nginx keeps its 1m default. An invalid value stops the container
+  from starting.
+  TinyChat's own compose leaves it unset. The eliza-service CVM, which uses this
+  image, needs `2m` so it can accept tasks up to the 1,064,960-byte task contract.
 - **No published port (TC-1012):** `docker-compose.phala.yml` does not publish
   `3001`; only `dstack-ingress` reaches it over the compose network. The deploy
   workflow refuses (before `phala deploy`) any ref whose compose publishes

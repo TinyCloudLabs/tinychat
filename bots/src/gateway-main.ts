@@ -1,25 +1,37 @@
 // Gateway process. Owns the shared egress volume: one directory per bot holding only that bot's socket, plus a
 // control socket at the volume root that only the supervisor can reach (bots see their own directory alone).
-//   PUT    /bots/<botId>  {"token": "<64 hex>"}  listen on the bot's socket and accept that token
+//   PUT    /bots/<botId>  {"token": "<64 hex>", "owner": "<64 hex>"}  listen on the bot's socket and accept that
+//                         token; `owner` is the id of its owner's Main (left out, the bot is its own owner)
 //   DELETE /bots/<botId>                         stop listening and remove the directory
+//   PUT    /bots/<botId>/web  {"mode", "hosts"}  the owner's web-access setting (applies from the bot's next call)
+//   GET    /bots/<botId>/web                     {"available", "today": {"searches", "pages", "blocked"}}
+//   POST   /bots/<botId>/web/addresses {"urls"}  page addresses the owner typed, which the bot may then read
 
 import { chmodSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { Server } from "bun";
 import { BotAci } from "./aci";
+import { ADMISSION_CONTROL_PATH, createAdmissionRelay, MAX_ADMISSION_BYTES } from "./bot-admission";
 import { gatewayConfig } from "./config";
-import { fileBudgetStore, Gateway } from "./gateway";
+import { fileBudgetStore, fileOwnerStore, Gateway } from "./gateway";
 import { isRecord } from "./guards";
 import { egressPaths } from "./layout";
 import { BOT_ID } from "./owner";
+import { addressKey, readableAddress } from "./web";
+import { parseWebPolicy } from "./web-policy";
 
-const cfg = gatewayConfig(process.env);
+const { backendOrigin, backendCallSecret, ...cfg } = gatewayConfig(process.env);
+const admit = createAdmissionRelay(backendOrigin, backendCallSecret);
 const aci = process.env.BOTS_HISTORY_ENABLED === "true" ? new BotAci(cfg.upstream) : undefined;
 // Budgets persist on the gateway's own volume. An unreadable budget file stops the start (fails closed) with one
 // operator line naming the file and the recovery; the non-zero exit keeps Docker restarting it, each time logged.
 function startGateway(): Gateway {
   try {
-    return new Gateway(cfg, { store: fileBudgetStore(cfg.budgetFile), verifiedFetch: aci ? (botId, url, init) => aci.fetch(botId, url, init) : undefined });
+    return new Gateway(cfg, {
+      store: fileBudgetStore(cfg.budgetFile),
+      ownerStore: cfg.ownersFile ? fileOwnerStore(cfg.ownersFile) : undefined,
+      verifiedFetch: aci ? (botId, url, init) => aci.fetch(botId, url, init) : undefined,
+    });
   } catch (error) {
     console.error(
       JSON.stringify({
@@ -70,10 +82,37 @@ function unlisten(botId: string): void {
 
 const control = Bun.serve({
   unix: join(cfg.egressRoot, "control.sock"),
+  maxRequestBodySize: MAX_ADMISSION_BYTES,
   async fetch(req) {
-    const receiptMatch = /^\/bots\/([0-9a-f]{64})\/receipts$/.exec(new URL(req.url).pathname);
+    const { pathname } = new URL(req.url);
+    if (pathname === ADMISSION_CONTROL_PATH) return admit(req);
+    const receiptMatch = /^\/bots\/([0-9a-f]{64})\/receipts$/.exec(pathname);
     if (req.method === "GET" && receiptMatch) return Response.json(aci?.take(receiptMatch[1]!) ?? []);
-    const match = /^\/bots\/([0-9a-f]{64})$/.exec(new URL(req.url).pathname);
+    const webMatch = /^\/bots\/([0-9a-f]{64})\/web(\/addresses)?$/.exec(pathname);
+    if (webMatch) {
+      const webBot = webMatch[1]!;
+      if (!webMatch[2] && req.method === "GET") return Response.json({ available: gateway.webAvailable, today: gateway.webUsage(webBot) });
+      const input: unknown = await req.json().catch(() => null);
+      if (!webMatch[2] && req.method === "PUT") {
+        const policy = parseWebPolicy(input);
+        if (!policy) return new Response(null, { status: 400 });
+        gateway.setWebPolicy(webBot, policy);
+        return new Response(null, { status: 204 });
+      }
+      if (webMatch[2] && req.method === "POST") {
+        const urls = isRecord(input) && Array.isArray(input.urls) ? input.urls.slice(0, 50) : undefined;
+        if (!urls) return new Response(null, { status: 400 });
+        const keys = urls.flatMap(url => {
+          const readable = readableAddress(url);
+          const key = readable && addressKey(readable.href);
+          return key ? [key] : [];
+        });
+        gateway.learnAddresses(webBot, keys);
+        return new Response(null, { status: 204 });
+      }
+      return new Response(null, { status: 405 });
+    }
+    const match = /^\/bots\/([0-9a-f]{64})$/.exec(pathname);
     if (!match) return new Response(null, { status: 404 });
     const botId = match[1]!;
     if (req.method === "DELETE") {
@@ -82,11 +121,12 @@ const control = Bun.serve({
     }
     if (req.method !== "PUT") return new Response(null, { status: 405 });
     const body: unknown = await req.json().catch(() => null);
-    if (!isRecord(body) || typeof body.token !== "string" || !/^[0-9a-f]{64}$/.test(body.token)) {
+    if (!isRecord(body) || typeof body.token !== "string" || !/^[0-9a-f]{64}$/.test(body.token)
+      || (body.owner !== undefined && (typeof body.owner !== "string" || !BOT_ID.test(body.owner)))) {
       return new Response(null, { status: 400 });
     }
     listen(botId);
-    gateway.setToken(botId, body.token);
+    gateway.setToken(botId, body.token, body.owner as string | undefined);
     return new Response(null, { status: 204 });
   },
 });

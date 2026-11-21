@@ -5,7 +5,7 @@ import type { NextFunction, Request, Response } from "express";
 import { createAgentRouter } from "../routes/agent.js";
 import { mcpChatFromEnv } from "../mcp-meetings/config.js";
 
-const ADDRESS = "0x7d0333579c19e8fa149c2dbf8405cb6f66c373f2";
+const ADDRESS = "0x4db6e7be716ba504cd103bc16b9329fe6bbe41f2";
 const OTHER_ADDRESS = "0x1111111111111111111111111111111111111111";
 const OWNER_DID = `did:pkh:eip155:1:${ADDRESS}`;
 const SERVICE_DID = "did:key:z6MkServiceDidForTests";

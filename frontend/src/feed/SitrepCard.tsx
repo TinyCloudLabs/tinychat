@@ -1,18 +1,27 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
-import { ExternalLinkIcon } from "lucide-react";
+import { useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import { ArrowUpRightIcon, CheckIcon, ChevronDownIcon, ExternalLinkIcon } from "lucide-react";
 import type { FeedResponse, FeedResponsePayload, NewFeedMessage, NewFeedResponse } from "@tinycloud/sdk-services/feed";
 import { cardPriority, claimDecisionHistory, compactStamp, depGraph, depTitle, expiryHint, isClosed, jsonValue, linkCaption, linkify, nextClaimDecisionAt, ownerThreadResponseKey, parseSitrepCardPayload, partSteps, projectSitrepCard, safeSitrepActionSummary, snoozePresets, steerState, stepState, threadOwner, validateSitrepAction, validateState, type Answer, type Approval, type BoardRecord, type SamState, type SitrepMessageDelivery, type SitrepOwnerData, type SitrepProjection, type StepState, type ThreadMessage, type SitrepHeldNote } from "@tinyboilerplate/core/feed/sitrep";
 import { AnsweredPanel, ANSWER_FAILED_COPY, AnswerFailedLine, ErrorLine, fieldClass as inputClass, NOT_SENT_COPY, PendingAnswer, UNDO_SECONDS, usePendingSend, fineClass, focusRing, kindWord, optionText, pillClass as buttonClass, quietClass } from "./cardKit";
+import { CardWaitContext, useAnnounceWait } from "./cardWait";
 import { AnswerOptions, OWN_OPTION, OwnAnswerBox, type AnswerOption } from "./AnswerOptions";
 import { actionClass, CardDetails, footActionClass, type CardClose } from "./CardActions";
 import { safeUrl } from "./feedData";
 import { homeFeedKey } from "./feedIdentity";
 import type { HomeFeedEntry, HomeFeedOwnerEvent, HomeFeedSource } from "./feedStoreTypes";
 import { HomeCardThread } from "./HomeCardThread";
-import { HistoryTimeline, type HistoryItem } from "./HistoryTimeline";
+import { HistoryTimeline, historyFromEntry, joinHistory, type HistoryItem } from "./HistoryTimeline";
+import { isOwnerAction } from "./ownerActions";
+import { HISTORY, POSTED_TO_BOARD, SHIP_RECORD, SHOW_ME_AGAIN, SHOW_ME_LATER, WENT_LIVE } from "./updatesStrings";
 import { shortTime } from "./ShortTime";
+import { FeedLink } from "./FeedLink";
 
-function prose(text: string, repo?: string) { return linkify(text, repo).map((part, index) => "href" in part ? <a key={index} href={part.href} target="_blank" rel="noopener noreferrer" className="break-words underline underline-offset-[3px]">{part.label}</a> : part.text); }
+/** Text with its links: URLs and GitHub refs underlined; a Linear ticket (TC-1234) in the link colour with a dotted underline, as the design mock's inline references. */
+function prose(text: string, repo?: string) {
+  return linkify(text, repo).map((part, index) => "href" in part
+    ? <FeedLink key={index} href={part.href} className={part.kind === "linear" ? "whitespace-nowrap font-mono text-[0.9em] text-blue-700 underline decoration-dotted decoration-1 underline-offset-[3px] hover:decoration-solid dark:text-blue-400" : "break-words underline underline-offset-[3px]"}>{part.label}</FeedLink>
+    : part.text);
+}
 const MEDIUM_MONTH = new Intl.DateTimeFormat("en-GB", { month: "short" });
 /** A typed card's times, in the feed's medium style: "13 Nov, 09:00", with the year when it isn't this one. */
 function stamp(at: string) {
@@ -22,21 +31,67 @@ function stamp(at: string) {
   const year = date.getFullYear() === new Date().getFullYear() ? "" : ` ${date.getFullYear()}`;
   return `${date.getDate()} ${MEDIUM_MONTH.format(date)}${year}, ${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
 }
+const UTC_MONTH = new Intl.DateTimeFormat("en-GB", { month: "short", timeZone: "UTC" });
+/** A deadline or expiry in UTC, so the line reads the same on every device: "20 Nov, 02:33 UTC", with the year when it isn't this one. */
+function utcStamp(at: string) {
+  const time = Date.parse(at);
+  if (!Number.isFinite(time)) return "";
+  const date = new Date(time);
+  const year = date.getUTCFullYear() === new Date().getUTCFullYear() ? "" : ` ${date.getUTCFullYear()}`;
+  return `${date.getUTCDate()} ${UTC_MONTH.format(date)}${year}, ${String(date.getUTCHours()).padStart(2, "0")}:${String(date.getUTCMinutes()).padStart(2, "0")} UTC`;
+}
 // An approval's kind in an owner's words (Monica, 11-13); a value with no plain word is left out, never shown raw.
 const GO_WORDS: Record<string, string> = { release: "Go-ahead to release", deploy: "Go-ahead to deploy", spend: "Go-ahead to spend", publish: "Go-ahead to publish" };
 const APPROVAL_WORDS: Record<string, string> = { go: "Go-ahead", openkey: "Approval in OpenKey", delegation: "Delegated access", claude: "Access for Claude", secret: "Access to a secret" };
 function approvalWords(type: string, kind?: string): string | undefined {
   return type === "go" && kind && GO_WORDS[kind] ? GO_WORDS[kind] : APPROVAL_WORDS[type];
 }
+/** "1h" → "1 hour", "12h" → "12 hours", "7d" → "7 days": the access length an approval states, in plain words. */
+function lifetimeWords(value: string): string {
+  const count = Number.parseInt(value, 10);
+  const unit = value.endsWith("d") ? "day" : "hour";
+  return `${count} ${unit}${count === 1 ? "" : "s"}`;
+}
 function id() { return crypto.randomUUID().replace(/-/g, ""); }
-/** The countdown label of an ask's "Drop this card": it shows as "Dropping in Ns", and a refusal names the button. */
-const DROP_LABEL = "Drop this card";
+/** The countdown label of an ask's "Drop this card": the feed's pill says "Dropped", and a refusal names the button. */
+export const DROP_LABEL = "Drop this card";
 /** An approval's one action ("Give the go", "Save code", "I've done this step"): a normal-size dark button, as in the lab. */
-const approveClass = "inline-flex min-h-11 items-center rounded-lg bg-primary px-4 text-sm font-medium text-primary-foreground disabled:opacity-50";
+const approveClass = "inline-flex min-h-11 items-center rounded-full bg-foreground px-5 text-sm font-semibold text-background disabled:opacity-50";
 const STEP_WORDS: Record<StepState, string> = { pending: "Waiting for you", done: "Done", "not needed": "Not needed", expired: "Ended", closed: "Closed" };
 /** "A", "A and B", "A, B and C". */
 function names(list: readonly string[]): string {
   return list.length <= 2 ? list.join(" and ") : `${list.slice(0, -1).join(", ")} and ${list.at(-1)}`;
+}
+
+/**
+ * A card's folded section (design mock): a title, a count, a chevron, and the section's content under it. The
+ * same style holds "Known so far" (folded at every width: the answers stay on the first screen) and an approval's
+ * "Steps" (`open`). After it first shows, it is the owner's to open or fold.
+ */
+function Fold({ title, count, open = false, children }: { title: string; count: string; open?: boolean; children: ReactNode }) {
+  return <details open={open} className="group mt-1.5">
+    <summary className="-mx-1.5 flex min-h-11 cursor-pointer list-none items-center gap-2 rounded-[10px] px-1.5 text-[13px] font-semibold hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring fine:min-h-9 [&::-webkit-details-marker]:hidden">
+      {title}<span className="font-normal text-muted-foreground">{count}</span>
+      <ChevronDownIcon aria-hidden className="ml-auto size-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-180" />
+    </summary>
+    {children}
+  </details>;
+}
+function hostOf(url: string): string { try { return new URL(url).hostname.replace(/^www\./, ""); } catch { return ""; } }
+/**
+ * A card's links under its brief (design mock, 11-17): compact one-line chips, "label · host ↗", small mono in the link
+ * colour with a thin edge and a small radius, side by side and wrapping onto new lines. A long label or host is cut
+ * off inside its chip (the full address is its tooltip), so a chip never runs past the card's column.
+ */
+function LinkChips({ links, tight = false }: { links: readonly { url: string; label?: string }[]; tight?: boolean }) {
+  return <nav aria-label="Card reports and sources" className={`${tight ? "mt-1.5" : "mt-3"} flex min-w-0 flex-wrap gap-x-1.5 gap-y-2.5`}>{links.map((link) => {
+    const host = hostOf(link.url);
+    return <FeedLink key={link.url} href={link.url} title={link.url} className={`relative inline-flex h-[26px] min-w-0 max-w-full items-center gap-[5px] whitespace-nowrap rounded border border-blue-700/35 px-[7px] font-mono text-xs leading-none text-blue-700 transition-colors after:absolute after:-inset-x-0.5 after:-inset-y-[5px] after:content-[''] hover:border-blue-700 hover:bg-blue-700/[0.06] dark:border-blue-400/40 dark:text-blue-400 dark:hover:border-blue-400 dark:hover:bg-blue-400/10 ${focusRing}`}>
+      <span className="min-w-0 shrink overflow-hidden text-ellipsis font-semibold">{linkCaption(link as Parameters<typeof linkCaption>[0]).split(" · ")[0]}</span>
+      {host && <><span aria-hidden className="shrink-0 opacity-50">·</span><span className="min-w-0 shrink-[2] overflow-hidden text-ellipsis">{host}</span></>}
+      <ArrowUpRightIcon aria-hidden className="size-3 shrink-0" />
+    </FeedLink>;
+  })}</nav>;
 }
 
 interface Props {
@@ -129,10 +184,16 @@ export function SitrepCard(props: Props) {
   const [chosen, setChosen] = useState<string>();
   const [justSaved, setJustSaved] = useState(false);
   const countdown = usePendingSend({ stale, onRefused });
+  // Once the undo window ends the card stays out of sight until the write settles; an answer then says it was sent.
+  const wait = useContext(CardWaitContext);
+  const [sending, setSending] = useState(false);
+  const ran = (work: Promise<boolean>, announce: boolean) => { setSending(true); void work.then((ok) => { setSending(false); if (ok && announce) wait?.sent(); }); };
+  useAnnounceWait(countdown.pending, () => { countdown.undo(); setChosen(undefined); }, sending);
   const [reason, setReason] = useState("");
   const [claimNote, setClaimNote] = useState("");
   const [followup, setFollowup] = useState(false);
   const [later, setLater] = useState(false);
+  const [commenting, setCommenting] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   // The answer whose send failed: whether it is still held is read when the line renders.
@@ -207,7 +268,7 @@ export function SitrepCard(props: Props) {
     if (stale || busyRef.current || countdown.pending) return;
     setChosen(choice);
     const own = choice === OWN_OPTION.id;
-    countdown.start(own ? NOT_SENT_COPY.yourAnswer : label, () => void perform(() => askAnswer("answer", own ? undefined : choice, true), ANSWER_FAILED_COPY, true));
+    countdown.start(own ? NOT_SENT_COPY.yourAnswer : label, () => ran(perform(() => askAnswer("answer", own ? undefined : choice, true), ANSWER_FAILED_COPY, true), true));
   }
   async function command(patch: Partial<SamState>, key: string) {
     const matching = owner.commands?.filter((event) => patch.doneAt ? !!event.state.doneAt : patch.lift ? !!event.state.lift : patch.clears?.some((request) => event.state.clears?.some((prior) => prior.ref === request.ref))).at(-1);
@@ -227,7 +288,7 @@ export function SitrepCard(props: Props) {
   function afterUndo(label: string, run: () => Promise<unknown>, answer = false) {
     if (stale || busyRef.current || countdown.pending) return;
     setChosen(undefined);
-    countdown.start(label, () => void perform(run, answer ? ANSWER_FAILED_COPY : undefined, answer));
+    countdown.start(label, () => ran(perform(run, answer ? ANSWER_FAILED_COPY : undefined, answer), answer && label !== DROP_LABEL));
   }
   function threadMessage(value: string, resendOf?: string): ThreadMessage {
     const at = new Date().toISOString();
@@ -279,12 +340,16 @@ export function SitrepCard(props: Props) {
   const asking = record.kind === "ask" && responds && (!projection.answer || followup || !!text.trim());
   const snoozed = Date.parse(entry.view.snoozedUntil ?? "") > now;
   const hint = expiryHint(record, now, state);
-  // An ask's or task's timing under its body, in the feed's words (Monica, TC-2982): "Due 13 Nov, 6:00 PM · Expires
-  // 14 Nov, 2:48 PM · in 2 h". A card that never expires says nothing about it.
+  // An ask's or task's timing, in the feed's words (TC-2982), in UTC: "Due 13 Nov, 18:00 UTC · Expires
+  // 14 Nov, 14:48 UTC · in 2 h". It stands on its own line under the answers. A card that never expires says nothing about it.
   const timing = record.kind === "ask" || record.kind === "task"
-    ? [record.deadline && `Due ${shortTime(record.deadline, now)}`, projection.expiryAt && `Expires ${shortTime(new Date(projection.expiryAt).toISOString(), now)}`, hint?.replace(/^expires in (\d+)h$/, "in $1 h")].filter(Boolean).join(" · ")
+    ? [record.deadline && `Due ${utcStamp(record.deadline)}`, projection.expiryAt && `Expires ${utcStamp(new Date(projection.expiryAt).toISOString())}`, hint?.replace(/^expires in (\d+)h$/, "in $1 h")].filter(Boolean).join(" · ")
     : "";
   const receipt = projection.answer && answerReceipt(entry, owner, projection.answer);
+  // The card's source line left its face for Details (design mock, 11-17): "Rocinante board · <where it is stored>".
+  const sourcePayload = entry.state.card.payload?.source;
+  const sourceRecord = sourcePayload && typeof sourcePayload === "object" ? sourcePayload as Record<string, unknown> : undefined;
+  const sourceLine = sourceRecord && typeof sourceRecord.label === "string" ? `${sourceRecord.label}${typeof sourceRecord.ref === "string" && sourceRecord.ref ? ` · ${sourceRecord.ref}` : ""}` : undefined;
   const options: AnswerOption[] = record.kind === "ask" ? record.options.map((option) => ({ id: option.id, label: option.label, ...(option.detail ? { detail: option.detail } : {}), ...(option.cost ? { cost: option.cost } : {}) })) : [];
   const steer = record.kind === "ask" && record.mode === "proceeding" ? steerState(record, now, answers) : undefined;
   const optionLabel = (optionId?: string) => { const option = record.kind === "ask" ? record.options.find((candidate) => candidate.id === optionId) : undefined; return option && optionText(option.label); };
@@ -296,11 +361,20 @@ export function SitrepCard(props: Props) {
       ...(answer.action !== "code" && answer.text ? { detail: answer.text } : {}) })),
     ...(state?.snoozes ?? []).map((snooze) => ({ key: `snooze:${snooze.at}:${snooze.until}`, at: snooze.at, title: `Snoozed until ${stamp(snooze.until)}` })),
   ].sort((a, b) => (Date.parse(a.at) || 0) - (Date.parse(b.at) || 0)).map((item, index, all) => ({ ...item, tone: index === all.length - 1 ? "current" as const : "done" as const }));
+  // An update's face carries its whole life as one rail: the record's own steps, then the owner's (opened, comments,
+  // snoozes). A step both lists once. A question keeps its rail under Details.
+  const update = !entry.state.card.needsResponse;
+  const updateHistory = update ? joinHistory(
+    [...(record.kind === "ship" ? [{ key: "went-live", at: record.at, title: WENT_LIVE }] : []), { key: "posted", at: entry.state.card.createdAt, title: POSTED_TO_BOARD }],
+    historyFromEntry({ ...entry, responses: (entry.responses ?? []).filter((response) => !isOwnerAction(response)) }).filter((item) => item.key !== "posted"),
+    entry.viewEvents?.some((event) => event.kind === "snoozed") ? [] : history.filter((item) => item.key.startsWith("snooze:")),
+  ) : [];
 
-  // Who a comment reaches: the owner-approved recipients; with none approved, who it is kept for privately; else the agent.
+  // Who a comment reaches: the owner-approved recipients; with none approved, who it is kept for privately; else the
+  // officer who posted the card (the connection's name only when the card names none).
   // The conversation keeps its own closed box ("Leave a comment for …") above the foot, as on the lab's cards.
-  const commentTo = closed ? undefined : destinations.length ? names(destinations.map((recipient) => recipient.legacyName)) : route ? names(unresolved.length ? unresolved : [ownerLabel]) : agent;
-  const thread = <HomeCardThread entry={entry} record={record} owner={owner} busy={busy} closed={closed} now={now} open={expanded} stale={stale} to={commentTo}
+  const commentTo = closed ? undefined : destinations.length ? names(destinations.map((recipient) => recipient.legacyName)) : route ? names(unresolved.length ? unresolved : [ownerLabel]) : record.from || agent;
+  const thread = <HomeCardThread entry={entry} record={record} owner={owner} busy={busy} closed={closed} now={now} open={expanded} stale={stale} to={commentTo} {...(update ? { composer: { open: commenting, onOpenChange: setCommenting } } : {})}
     onSend={(value) => perform(() => messageAgent(value))} onResend={(value, resendOf) => perform(() => sendThread(value, resendOf))} />;
   // A non-option action counting down, with "Undo · N"; it stands where the card's controls were. An option's own
   // countdown (`chosen`) shows in its row instead.
@@ -314,26 +388,38 @@ export function SitrepCard(props: Props) {
     </PendingAnswer>);
   const waiting = !!countdown.pending;
   const failed = failedAnswer !== null;
-
   return <div className="text-[15px]" aria-label={`${kindWord(record.kind)} details`}>
-    {/* The agent's context in a shaded panel, ahead of what it asks of you. */}
-    {"context" in record && <div className="mt-4 space-y-2 rounded-xl bg-muted/30 p-4 text-sm"><p>{prose(record.context.background, record.repo)}</p>{record.context.whyNow && <p><strong className="font-semibold">Why now: </strong>{prose(record.context.whyNow, record.repo)}</p>}{record.context.ifNoAnswer && <p><strong className="font-semibold">If no answer: </strong>{prose(record.context.ifNoAnswer, record.repo)}</p>}{!!record.context.known.length && <ul className="list-disc space-y-1 pl-5">{record.context.known.map((known, index) => <li key={index}>{prose(known, record.repo)}</li>)}</ul>}{!!record.context.related.length && <p>Earlier questions: {record.context.related.join(", ")}</p>}</div>}
-    {timing && <p className="mt-3 text-xs text-muted-foreground">{timing}</p>}
+    {/* The brief (design mock, 11-17): what it is, then why now and what happens if you don't answer as two labelled
+        cells, then the facts behind it folded, then the links as chips. */}
+    {"context" in record && <div className="mt-3">
+      <p>{prose(record.context.background, record.repo)}</p>
+      {(record.context.whyNow || record.context.ifNoAnswer) && <div className="mt-3.5 grid gap-0.5 overflow-hidden rounded-xl cq:grid-cols-2 [&>:only-child]:col-span-full">
+        {record.context.whyNow && <div className="bg-muted px-3.5 pb-3 pt-[11px] text-sm leading-[1.45]"><span className="mb-[3px] block text-xs font-semibold leading-4 text-muted-foreground">Why now</span>{prose(record.context.whyNow, record.repo)}</div>}
+        {record.context.ifNoAnswer && <div className="bg-muted px-3.5 pb-3 pt-[11px] text-sm leading-[1.45]"><span className="mb-[3px] block text-xs font-semibold leading-4 text-muted-foreground">If you don’t answer</span>{prose(record.context.ifNoAnswer, record.repo)}</div>}
+      </div>}
+      {!!record.context.known.length && <Fold title="Known so far" count={`${record.context.known.length} ${record.context.known.length === 1 ? "fact" : "facts"}`}><ul className="mb-1.5 mt-0.5 grid list-disc gap-1.5 pl-5 text-sm leading-[1.45] marker:text-muted-foreground">{record.context.known.map((known, index) => <li key={index}>{prose(known, record.repo)}</li>)}</ul></Fold>}
+      {!!record.context.related.length && <p className="mt-2 text-sm">Earlier questions: {record.context.related.join(", ")}</p>}
+    </div>}
+    {/* An update's face: its outcome and what moved, the ship record, the links, then its history as one rail. */}
+    {record.kind === "ship" && <p className="mt-2.5 text-[13px] leading-6 tabular-nums text-muted-foreground"><span className="mr-2 inline-flex h-6 items-center gap-1 whitespace-nowrap rounded-full bg-muted px-2.5 align-middle text-[12.5px] font-semibold text-foreground"><CheckIcon aria-hidden className="size-[13px]" />{record.status.charAt(0).toUpperCase() + record.status.slice(1)}</span><span className="whitespace-nowrap">{record.component} {record.prevVersion ? `${record.prevVersion} → ` : ""}{record.version}</span> · <span className="whitespace-nowrap">{shortTime(record.at, now)}</span></p>}
+    {record.kind === "ship" && entry.state.card.body && <section aria-label="Ship record" className="mt-3.5"><p className="mb-1 text-xs font-medium text-muted-foreground">{SHIP_RECORD}</p><p className="whitespace-pre-wrap">{prose(entry.state.card.body, record.repo)}</p></section>}
+    {!!record.links.length && <LinkChips links={record.links} tight={"context" in record && !!record.context.known.length} />}
+    {update && <section aria-label="Card history" className="mt-4"><p className="mb-2 text-xs font-medium text-muted-foreground">{HISTORY}</p><HistoryTimeline items={updateHistory} /></section>}
+    {timing && !(record.kind === "ask" && asking) && <p className="mt-3 text-xs text-muted-foreground">{timing}</p>}
     {record.kind !== "ask" && record.kind !== "task" && hint && <p className="mt-2 text-[13px] font-medium text-warning">{hint.replace(/^expires/, "Expires")}</p>}
 
     {record.kind === "ask" && <>
       {pendingLine}
       {!countdown.pending && !asking && <TypedAnswerStatus entry={entry} owner={owner} answer={projection.answer} record={record} focusOnMount={justSaved} />}
       {!countdown.pending && asking && followup && <p className="mt-3.5 text-[13px] text-muted-foreground">A new answer replaces your earlier one. It can't undo what {agent} already did.</p>}
-      {asking && <div className="mt-3.5"><AnswerOptions options={options} suggested={record.recommend} disabled={stale}
+      {asking && <div className="mt-4"><AnswerOptions options={options} suggested={record.recommend} disabled={stale} note={timing}
         pending={countdown.pending && chosen ? { choiceId: chosen, seconds: countdown.pending.seconds } : null}
         saving={busy ? chosen : undefined} chosen={failed ? chosen : undefined}
         onChoose={choose} onUndo={() => { countdown.undo(); setChosen(undefined); }}
         own={{ open: ownOpen || !options.length, onOpen: setOwnOpen, box: <OwnAnswerBox text={text} disabled={waiting || busy} onText={setText} onSend={() => { if (text.trim()) choose(OWN_OPTION.id, OWN_OPTION.label); }} onCancel={() => { setText(""); setOwnOpen(false); }}
           state={chosen === OWN_OPTION.id ? (busy ? "sending" : failed ? "error" : "idle") : "idle"} onRetry={() => void perform(() => askAnswer("answer", undefined, true), ANSWER_FAILED_COPY, true)} /> }} /></div>}
-      {!waiting && asking && ((steer === "open" && record.default) || record.recommend) && <div className="mt-3 flex flex-wrap gap-2">
-        {steer === "open" && record.default && <button type="button" className={actionClass} disabled={busy || stale} onClick={() => afterUndo(optionLabel(record.default) ?? "its plan", () => askAnswer("accept-default", record.default, true), true)}>Fine, go ahead</button>}
-        {record.recommend && <button type="button" className={actionClass} disabled={busy || stale} onClick={() => afterUndo(optionLabel(record.recommend) ?? "the recommendation", () => askAnswer("accept-default", record.recommend, true), true)}>Accept recommendation</button>}
+      {!waiting && asking && steer === "open" && record.default && <div className="mt-3 flex flex-wrap gap-2">
+        <button type="button" className={actionClass} disabled={busy || stale} onClick={() => afterUndo(optionLabel(record.default) ?? "its plan", () => askAnswer("accept-default", record.default, true), true)}>Fine, go ahead</button>
       </div>}
       {!waiting && asking && steer === "open" && record.default && <p className={`mt-2 ${fineClass}`}>{agent} goes ahead with {optionLabel(record.default) ?? "its plan"}{record.decideBy && ` at ${stamp(record.decideBy)}`} unless you choose.</p>}
       {!waiting && responds && (!asking || followup) && <div className="mt-1 flex flex-wrap gap-x-[26px]">
@@ -354,7 +440,7 @@ export function SitrepCard(props: Props) {
       <fieldset disabled={busy || closed || !entry.state.card.needsResponse}><legend className="sr-only">{entry.state.card.needsResponse ? "Your steps (private)" : "Steps"}</legend>
         {record.steps.map((step) => <label key={step.id} className="flex min-h-11 items-center gap-3"><input type="checkbox" className="size-5 accent-foreground" checked={!!state?.steps[step.id]} onChange={(event) => { const checked = event.currentTarget.checked; void perform(() => savePrivate({ steps: { [step.id]: checked ? new Date().toISOString() : null } }, `tick:${step.id}:${checked}`)); }} /><span className={state?.steps[step.id] ? "text-muted-foreground line-through" : ""}>{step.text}</span></label>)}
       </fieldset>
-      {record.chatLink && safeUrl(record.chatLink) && <a href={record.chatLink} target="_blank" rel="noopener noreferrer" className={`inline-flex min-h-11 items-center text-sm underline underline-offset-[3px] ${focusRing}`}>Open task context</a>}
+      {record.chatLink && safeUrl(record.chatLink) && <FeedLink href={record.chatLink} className={`inline-flex min-h-11 items-center text-sm underline underline-offset-[3px] ${focusRing}`}>Open task context</FeedLink>}
       {entry.state.card.needsResponse && !waiting && <div className="flex flex-wrap items-center gap-x-3 gap-y-1"><button type="button" className={buttonClass} disabled={busy || closed || stale} onClick={() => afterUndo(state?.doneAt ? "Send “done” again" : "Mark done", () => { const at = new Date().toISOString(); return command({ doneAt: at, dismissedAt: at }, "task-done"); })}>{state?.doneAt ? "Send “done” again" : "Mark done"}</button><span className={fineClass}>Goes to {agent}.</span></div>}
       {pendingLine}
     </div>}
@@ -392,12 +478,12 @@ export function SitrepCard(props: Props) {
       {record.blocks && <p className="text-sm"><strong className="font-semibold">Holds up: </strong>{record.blocks}</p>}
       {record.kind === "incident" && <dl className="space-y-2 text-sm"><div><dt className="font-semibold">Impact · {record.severity ?? "Unrated"}</dt><dd>{record.impact}</dd></div><div><dt className="font-semibold">Started</dt><dd>{stamp(record.startedAt)}{record.resolvedAt && ` · Resolved ${stamp(record.resolvedAt)}`}</dd></div></dl>}
       {record.kind === "work" && <div className="space-y-2 text-sm"><p><strong className="font-semibold">Next: </strong>{record.next ?? "Not reported"}</p>{record.waitsOn && <p><strong className="font-semibold">Waiting on: </strong>{record.waitsOn}</p>}{!!record.askIds.length && <p>Answer its questions on their own cards.</p>}</div>}
-      {record.kind === "ship" && <div className="text-sm"><p className="font-semibold">{record.component} · {record.version}</p>{record.prevVersion && <p>Previous: {record.prevVersion}</p>}<p>{record.status} · {stamp(record.at)}</p></div>}
+      {/* An update's record (the ship's component and versions) is on its face and in Details. */}
       {record.kind === "order" && <div className="space-y-2 text-sm"><blockquote className="whitespace-pre-wrap border-l border-border pl-4">{record.verbatim}</blockquote><p>{record.source} · {stamp(record.at)}</p>{record.appliesTo && <p>Applies to: {record.appliesTo}</p>}</div>}
       {record.kind === "claim" && <div className="space-y-2 text-sm">
-        <p><a href={record.url} target="_blank" rel="noopener noreferrer" className="underline underline-offset-[3px]">{record.site}</a> · {record.location} · {record.severity}</p>
+        <p><FeedLink href={record.url} className="underline underline-offset-[3px]">{record.site}</FeedLink> · {record.location} · {record.severity}</p>
         <blockquote className="border-l border-border pl-4">{record.quote}</blockquote><p><strong className="font-semibold">True today: </strong>{record.trueToday}</p>
-        <ul>{record.evidence.map((evidence) => <li key={evidence.ref}>{safeUrl(evidence.ref) ? <a href={evidence.ref} target="_blank" rel="noopener noreferrer" className="underline underline-offset-[3px]">{evidence.label}</a> : <span>{evidence.label}: {evidence.ref}</span>}</li>)}</ul>
+        <ul>{record.evidence.map((evidence) => <li key={evidence.ref}>{safeUrl(evidence.ref) ? <FeedLink href={evidence.ref} className="underline underline-offset-[3px]">{evidence.label}</FeedLink> : <span>{evidence.label}: {evidence.ref}</span>}</li>)}</ul>
         {!!record.makeTrue.tc?.length && <p>To make it true: {record.makeTrue.tc.join(", ")}{record.makeTrue.effort && ` · ${record.makeTrue.effort}`}</p>}
         {!!claims.length && <ol aria-label="Your decisions" className="space-y-1">{claims.map((decision) => <li key={decision.sourceKey}>{decision.value.choice === "keep" ? "Keep" : decision.value.choice === "remove" ? "Remove" : "Ignore"} · {stamp(decision.value.at)}{decision.value.note && ` · ${decision.value.note}`}</li>)}</ol>}
       </div>}
@@ -407,7 +493,7 @@ export function SitrepCard(props: Props) {
         {record.liftedAt && <p>Lifted {stamp(record.liftedAt)} · {record.liftReason}</p>}
       </div>}
       {record.kind === "progress" && <div className="space-y-2 text-sm"><p className="tabular-nums text-muted-foreground">Step {record.currentStep + 1} of {record.steps.length} · {prose(record.ticket)}</p><ol className="list-decimal space-y-1 pl-5">{record.steps.map((step, index) => <li key={`${index}:${step.name}`} aria-current={index === record.currentStep ? "step" : undefined}>{step.name} · {step.state}</li>)}</ol>{record.note && <p>{record.note}</p>}{record.eta && <p>Expected {stamp(record.eta)}</p>}<p className="text-muted-foreground">Updated by {record.updatedBy ?? record.owner} · {stamp(record.updatedAt)}</p></div>}
-      {!!record.links.length && <nav aria-label="Card reports and sources" className="flex flex-wrap gap-x-4">{record.links.map((link) => <a key={link.url} href={link.url} target="_blank" rel="noopener noreferrer" className={`inline-flex min-h-11 items-center break-all text-sm underline underline-offset-[3px] ${focusRing}`}>{linkCaption(link)}</a>)}</nav>}
+      {/* The card's links are chips under its brief, above. */}
       {owner.commands?.map((command) => { const handling = entry.responseHandling?.[command.eventId]; return <p key={command.eventId} role="status" className={fineClass}>Request saved{handling?.acknowledgement && ` · ${agent} got it`}{handling?.outcome && ` · ${handling.outcome.phase === "succeeded" ? "done" : handling.outcome.phase}`}</p>; })}
       {!!entry.historicalCommands?.length && <section aria-label="Historical owner commands" className="space-y-2 text-sm">
         <h4 className="text-[13px] font-semibold">Earlier requests</h4>
@@ -428,13 +514,19 @@ export function SitrepCard(props: Props) {
     </div>}
 
     {thread}
-    {/* The card's foot, one row: Ask me later, Drop this card (from the page), and Details at the right, which holds
-        who posted the card, its wiring, Pin to top and its history. */}
+    {/* The card's foot. A question, one row: Ask me later, Drop this card (from the page), and Details at the right. An
+        update: Acknowledge, then Show me later, Comment and Details on one line. Details holds who posted the card, its
+        wiring, Pin to top and, on a question, its history. */}
     {!waiting && (projection.request || expanded) && <div className="mt-3 border-t border-border pt-1">
       {/* On an ask, "Drop this card" is an answer: it waits out the undo, then tells the agent to drop the question, so
           the agent hears it (a plain close would only hide the card here). */}
-      <CardDetails card={entry.state.card} typed={{ record }} agent={agent} close={record.kind === "ask" && props.close?.kind === "drop" ? { kind: "drop", onTap: () => afterUndo(DROP_LABEL, () => askAnswer("drop", undefined, true), true) } : props.close} actions={props.extra ?? (projection.needsAction && !snoozed && <button type="button" className={footActionClass} disabled={busy} aria-expanded={later} onClick={() => setLater(!later)}>Ask me later</button>)}>
+      <CardDetails card={entry.state.card} typed={{ record }} agent={agent} publisher={entry.source} close={record.kind === "ask" && props.close?.kind === "drop" ? { kind: "drop", onTap: () => afterUndo(DROP_LABEL, () => askAnswer("drop", undefined, true), true) } : props.close}
+        actions={props.extra ?? (update
+          ? !snoozed && props.close?.kind === "acknowledge" && <button type="button" className={footActionClass} disabled={busy} aria-expanded={later} onClick={() => setLater(!later)}>{SHOW_ME_LATER}</button>
+          : projection.needsAction && !snoozed && <button type="button" className={footActionClass} disabled={busy} aria-expanded={later} onClick={() => setLater(!later)}>Ask me later</button>)}
+        secondary={update && commentTo ? <button type="button" className={footActionClass} aria-expanded={commenting} onClick={() => setCommenting(!commenting)}>Comment</button> : undefined}>
         <dl>{([
+          ...(sourceLine ? [["Source", sourceLine] as [string, ReactNode]] : []),
           ["Agent", record.from !== agent ? `${record.from} (through ${agent})` : agent],
           ["Agent ID", <code className="block truncate select-all text-xs">{entry.source.agentDid}</code>],
           ["Type", `${kindWord(record.kind)} · ${record.status}${pinned ? ` · Priority (${pinned.reason})` : ""}`],
@@ -448,12 +540,12 @@ export function SitrepCard(props: Props) {
         <div><button type="button" className={`${buttonClass} aria-pressed:bg-muted`} disabled={busy} aria-pressed={!!pinned} onClick={() => void perform(() => savePrivate({ priority: { on: !pinned, at: new Date().toISOString() } }, `priority:${!pinned}`))}>{pinned ? "Unpin" : "Pin to top"}</button>
           <p className={fineClass}>Your agents don't see this.</p></div>
         {reference}
-        <section aria-label="Card history" className="mt-2"><p className="mb-2 text-xs font-medium text-muted-foreground">History</p><HistoryTimeline items={history} /></section>
+        {!update && <section aria-label="Card history" className="mt-2"><p className="mb-2 text-xs font-medium text-muted-foreground">History</p><HistoryTimeline items={history} /></section>}
         {(error || notice) && <p role={error ? "alert" : "status"}>{error ?? notice}</p>}
       </CardDetails>
     </div>}
-    {later && <section aria-label="Ask me later" className="mt-2 space-y-2 pb-2">
-      <p className="text-[13px] font-semibold">Ask me again</p>
+    {later && <section aria-label={update ? SHOW_ME_LATER : "Ask me later"} className="mt-2 space-y-2 pb-2">
+      <p className="text-[13px] font-semibold">{update ? SHOW_ME_AGAIN : "Ask me again"}</p>
       <div className="flex flex-wrap gap-2">{snoozePresets(now).slice(0, 3).map((preset) => <button key={preset.id} type="button" className={buttonClass} disabled={busy} onClick={() => void perform(async () => { await source.snooze(entry, preset.until); setLater(false); onOwnerSaved(); onSnoozed?.(preset.until); })}>{preset.label}</button>)}</div>
     </section>}
     {failedAnswer !== null ? <AnswerFailedLine held={!!answerId.current && !!source.holdsAnswer?.(entry, answerId.current)} /> : error && <ErrorLine>{error}</ErrorLine>}{notice && <p role="status" className={`mt-2 ${fineClass}`}>{notice}</p>}
@@ -473,6 +565,10 @@ function ApprovalActions({ entry: incomingEntry, approval: incomingApproval, sou
   const [notSent, setNotSent] = useState<string>();
   const countdown = usePendingSend({ stale, onRefused: () => setNotSent(APPROVAL_CLOSED) });
   const waiting = !!countdown.pending;
+  // The card stays out of sight while the go waits and while it is written (the feed's pill shows both).
+  const wait = useContext(CardWaitContext);
+  const [sending, setSending] = useState(false);
+  useAnnounceWait(countdown.pending, () => countdown.undo(), sending);
   // The response whose write failed: whether it is still held is read when the line renders.
   const [failedId, setFailedId] = useState<string>();
   const pending = useRef<{ key: string; header: NewFeedResponse; payload: FeedResponsePayload } | undefined>(undefined);
@@ -532,7 +628,7 @@ function ApprovalActions({ entry: incomingEntry, approval: incomingApproval, sou
     setError(undefined); setFailedId(undefined); setNotSent(undefined);
     const issuedAt = approval.issuedAt;
     // The latest render's `submit` runs when the window ends, so it sees what changed while it waited.
-    countdown.start(label, () => void submitLatest.current(issuedAt));
+    countdown.start(label, () => { setSending(true); void submitLatest.current(issuedAt).then((written) => { setSending(false); if (written) wait?.sent(); }); });
   }
   async function submit(issuedAt: string) {
     // The undo window has ended. A request that expired, closed or was re-issued meanwhile is not written; the card says so.
@@ -553,6 +649,7 @@ function ApprovalActions({ entry: incomingEntry, approval: incomingApproval, sou
       }
       const result = await source.saveResponse(entry, draft.header, draft.payload, { hold: true });
       pending.current = undefined; setCode(""); onSaved(entry, result); onOwnerSaved();
+      return true;
     } catch { if (draft) setFailedId(draft.header.responseId); else setError("Your approval wasn't saved. Try again."); }
     finally { setBusy(false); }
   }
@@ -566,11 +663,12 @@ function ApprovalActions({ entry: incomingEntry, approval: incomingApproval, sou
   return <div className="mt-3.5 space-y-3 text-sm" onFocusCapture={() => { engagedOnce.current = true; }}>
     {superseded && <div role="status" className="space-y-2 rounded-xl bg-muted px-3 py-2.5"><p>This request was replaced. Use the new one below; a code for this one won't work there.</p><button type="button" className={`${buttonClass} bg-background`} disabled={busy} onClick={() => void openCurrent()}>Open the new request</button></div>}
     {showStatus && <TypedAnswerStatus entry={entry} owner={own} answer={answer} record={approval} />}
-    <p>{[approvalWords(approval.approvalType, approval.approvalKind), expired && "Expired", `Issued ${stamp(approval.issuedAt)}`, approval.expiresAt && `Expires ${stamp(approval.expiresAt)}`].filter(Boolean).join(" · ")}</p>
+    <p>{[approvalWords(approval.approvalType, approval.approvalKind), expired && "Expired", `Issued ${stamp(approval.issuedAt)}`, approval.expiresAt && `Expires ${stamp(approval.expiresAt)}`, approval.redeemedAt && `Used ${stamp(approval.redeemedAt)}`, approval.grantLifetime && `Access lasts ${lifetimeWords(approval.grantLifetime)}`].filter(Boolean).join(" · ")}</p>
     {approval.permissions && <p><strong className="font-semibold">Permissions: </strong>{approval.permissions}</p>}{approval.profile && <p>Profile: {approval.profile}</p>}{approval.target && <p>Target: {approval.target}</p>}{approval.scope && <p>Scope: {approval.scope}{approval.scopeGrant && " · Whole-scope grant"}</p>}
     {approval.names && <p>Names: {approval.names.join(", ")}</p>}{approval.copiedNames && <p>Already copied: {approval.copiedNames.join(", ")}</p>}{approval.keepNames && <p>Also retained: {approval.keepNames.join(", ")}</p>}{approval.warning && <p className="font-medium text-destructive">{approval.warning}</p>}{approval.nameWhy?.map((entry) => <p key={entry.name}>{entry.name}: {entry.why}</p>)}
-    {approval.steps && <ol className="list-decimal space-y-1 pl-5">{approval.steps.map((step, index) => <li key={index}>{step}</li>)}</ol>}
-    {link && <a href={approval.url} target="_blank" rel="noopener noreferrer" onClick={() => { engagedOnce.current = true; }} className="inline-flex min-h-10 items-center gap-1.5 underline underline-offset-2">{/openkey/i.test(link.hostname) ? "Review in OpenKey" : `Review on ${link.hostname}`}<ExternalLinkIcon aria-hidden className="size-4" /></a>}
+    {approval.steps && <Fold title="Steps" count={`${approval.steps.length} ${approval.steps.length === 1 ? "step" : "steps"}`} open><ol className="list-decimal space-y-1 pl-5">{approval.steps.map((step, index) => <li key={index}>{step}</li>)}</ol></Fold>}
+    {/* An approval signs with a passkey on its own page: the phone app's browser can, a frame on the web cannot. */}
+    {link && <FeedLink href={approval.url!} sheet={false} onClick={() => { engagedOnce.current = true; }} className="inline-flex min-h-10 items-center gap-1.5 underline underline-offset-2">{/openkey/i.test(link.hostname) ? "Review in OpenKey" : `Review on ${link.hostname}`}<ExternalLinkIcon aria-hidden className="size-4" /></FeedLink>}
     {visibleForm && approval.codeExpected && !codeShown && <button type="button" className={quietClass} disabled={disabled} onClick={() => { engagedOnce.current = true; setCodeOpen(true); }}>Got a code? Paste it</button>}
     {codeShown && <label className="block font-medium">Approval code<input aria-label="Approval code" type="password" autoComplete="off" autoFocus={codeOpen && !code} value={code} disabled={disabled} onInput={(event) => { engagedOnce.current = true; setCode(event.currentTarget.value); pending.current = undefined; }} className={inputClass} /><span className={`mt-1 block font-normal ${fineClass}`}>Type the exact code, without spaces. Only {entry.source.label} can read it.</span></label>}
     {!waiting && (action || codeShown) && <div className="flex flex-wrap items-center gap-2">

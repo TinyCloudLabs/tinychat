@@ -1,4 +1,5 @@
 import { describe, expect, spyOn, test } from "bun:test";
+import { fakeBackendNode } from "./helpers/fake-backend-node.js";
 import express from "express";
 import type { AddressInfo } from "node:net";
 import type { TinyCloudNode } from "@tinycloud/node-sdk";
@@ -322,13 +323,7 @@ describe("TC-1086 bounded last-good cache", () => {
 describe("TC-1086 store mutation coverage", () => {
   test("only connection policy changes invalidate, through both writers in all three stores", async () => {
     const values = new Map<string, unknown>();
-    const node = { kv: {
-      async get(key: string) { return values.has(key) ? { ok: true, data: { data: values.get(key) } }
-        : { ok: false, error: { code: "KV_NOT_FOUND", service: "kv", message: `Key not found: ${key}` } }; },
-      async put(key: string, value: unknown) { values.set(key, value); return { ok: true, data: {} }; },
-      async delete(key: string) { values.delete(key); return { ok: true, data: {} }; },
-      async list({ prefix }: { prefix: string }) { return { ok: true, data: { keys: [...values.keys()].filter(key => key.startsWith(prefix)) } }; },
-    } } as unknown as TinyCloudNode;
+    const { node } = fakeBackendNode(values);
     const stores = kvCalendarAutojoinStores(node, new BackendStorageLane());
     const cache = stores.request.statusCache;
     expect(stores.worker.statusCache).toBe(cache);

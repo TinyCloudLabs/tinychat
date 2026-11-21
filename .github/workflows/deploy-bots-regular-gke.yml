@@ -1,0 +1,133 @@
+name: Deploy regular bots runtime to GKE (draft)
+
+# DRAFT. Deploys the regular bots runtime (bots-regular/, TC-3325) onto a gke-sandboxes cluster. It runs only by hand,
+# only from main, and deploys `ref`, a full commit SHA on main:
+#   gh workflow run deploy-bots-regular-gke.yml --ref main -f ref=<full main SHA>
+# It signs in to Google Cloud through workload identity federation (no key), builds and pushes the service image and
+# the sandbox image to Artifact Registry, writes both digests into bots-regular/deploy/bots-regular.yaml and applies
+# it. It reads no secret: the cluster Secret "bots-regular" is created by hand (bots-regular/README.md, "Deploying").
+# Configuration lives in the regular-bots environment's variables.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Full 40-character SHA of the commit on main to build and deploy
+        type: string
+        required: true
+
+concurrency:
+  group: tinychat-bots-regular-gke
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment:
+      name: regular-bots
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      DEPLOY_SHA: ${{ inputs.ref }}
+      GCP_PROJECT: ${{ vars.BOTS_REGULAR_GCP_PROJECT }}
+      GCP_REGION: ${{ vars.BOTS_REGULAR_GCP_REGION }}
+      GKE_CLUSTER: ${{ vars.BOTS_REGULAR_GKE_CLUSTER }}
+      REGISTRY: ${{ vars.BOTS_REGULAR_REGISTRY }}
+      WIF_PROVIDER: ${{ vars.BOTS_REGULAR_WIF_PROVIDER }}
+      DEPLOY_SERVICE_ACCOUNT: ${{ vars.BOTS_REGULAR_DEPLOY_SERVICE_ACCOUNT }}
+    steps:
+      - name: Require this workflow from main, a full commit SHA and every setting
+        env:
+          EXPECTED: ${{ github.repository }}/.github/workflows/deploy-bots-regular-gke.yml@refs/heads/main
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+        run: |
+          if [ "$GITHUB_REF" != refs/heads/main ] || [ "$WORKFLOW_REF" != "$EXPECTED" ]; then
+            echo "::error::This deploy runs only from main (got $GITHUB_REF, $WORKFLOW_REF)"
+            exit 1
+          fi
+          if ! [[ "$DEPLOY_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::ref must be a full commit SHA, got '$DEPLOY_SHA'"
+            exit 1
+          fi
+          missing=0
+          for item in GCP_PROJECT GCP_REGION GKE_CLUSTER REGISTRY WIF_PROVIDER DEPLOY_SERVICE_ACCOUNT; do
+            if [ -z "${!item}" ]; then
+              echo "::error title=Missing deployment config::$item is not configured"
+              missing=1
+            fi
+          done
+          exit "$missing"
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Require the deploy commit on main
+        run: |
+          test "$(git rev-parse HEAD)" = "$DEPLOY_SHA"
+          git merge-base --is-ancestor "$DEPLOY_SHA" refs/remotes/origin/main
+
+      - id: auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ vars.BOTS_REGULAR_WIF_PROVIDER }}
+          service_account: ${{ vars.BOTS_REGULAR_DEPLOY_SERVICE_ACCOUNT }}
+          token_format: access_token
+
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ${{ env.GCP_REGION }}-docker.pkg.dev
+          username: oauth2accesstoken
+          password: ${{ steps.auth.outputs.access_token }}
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - id: sandbox
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5.4.0
+        with:
+          context: .
+          file: bots-regular/Dockerfile
+          target: sandbox
+          push: true
+          provenance: false
+          tags: ${{ env.REGISTRY }}/bots-regular-sandbox:${{ env.DEPLOY_SHA }}
+
+      - id: service
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5.4.0
+        with:
+          context: .
+          file: bots-regular/Dockerfile
+          push: true
+          provenance: false
+          tags: ${{ env.REGISTRY }}/bots-regular:${{ env.DEPLOY_SHA }}
+
+      - uses: google-github-actions/get-gke-credentials@3da1e46a907576cefaa90c484278bb5b259dd395 # v3.0.0
+        with:
+          cluster_name: ${{ vars.BOTS_REGULAR_GKE_CLUSTER }}
+          location: ${{ vars.BOTS_REGULAR_GCP_REGION }}
+          project_id: ${{ vars.BOTS_REGULAR_GCP_PROJECT }}
+          use_dns_based_endpoint: true
+
+      - name: Apply the manifests with both digests
+        env:
+          BOTS_REGULAR_IMAGE: ${{ env.REGISTRY }}/bots-regular@${{ steps.service.outputs.digest }}
+          BOTS_REGULAR_SANDBOX_IMAGE: ${{ env.REGISTRY }}/bots-regular-sandbox@${{ steps.sandbox.outputs.digest }}
+        run: |
+          set -euo pipefail
+          kubectl get secret -n bots-regular bots-regular -o name
+          envsubst '${BOTS_REGULAR_IMAGE} ${BOTS_REGULAR_SANDBOX_IMAGE}' < bots-regular/deploy/bots-regular.yaml > "$RUNNER_TEMP/bots-regular.yaml"
+          kubectl apply -f "$RUNNER_TEMP/bots-regular.yaml"
+          kubectl rollout status -n bots-regular deploy/bots-regular --timeout=10m
+          {
+            echo "## Regular bots runtime"
+            echo "- Commit: \`$DEPLOY_SHA\`"
+            echo "- Service: \`$BOTS_REGULAR_IMAGE\`"
+            echo "- Sandbox: \`$BOTS_REGULAR_SANDBOX_IMAGE\`"
+          } >> "$GITHUB_STEP_SUMMARY"

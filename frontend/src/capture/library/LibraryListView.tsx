@@ -14,8 +14,11 @@ import { orphanIssues } from "../home/captureIssues";
 import { SoftIssueRow } from "../home/SoftIssueRow";
 import { useSoftHome } from "../home/softHome";
 import { groupByDay } from "./formatters";
-import { LIBRARY_FILTERS, emptyFilterText, matchesFilter, type LibraryFilter } from "./libraryKinds";
+import { LIBRARY_FILTERS, SHARED_FILTER, emptyFilterText, matchesFilter, type LibraryFilter } from "./libraryKinds";
 import { LibraryRow, type LibraryItem } from "./LibraryRow";
+import type { ReceivedRecordingShare } from "@/lib/nativeShares/receivedShares";
+import type { RecordStoreSnapshot } from "@/lib/nativeShares/spaceRecords";
+import { SharedLibraryRows } from "../share/SharedLibraryRows";
 import type { NotePipeline } from "@/lib/voiceNotes/notePipeline";
 import type { NotePipelineView } from "@/lib/voiceNotes/useNotePipeline";
 import type { AppPlatform } from "@/lib/platform";
@@ -39,6 +42,8 @@ export interface LibraryListViewProps {
    * those are being read). Clearing it brings the kind filter back.
    */
   only?: { label: string; empty: string; ids: ReadonlySet<string> | null; onClear: () => void };
+  /** The signed-in Library: recordings shared with this account, behind the "Shared with me" filter (TC-3195). */
+  shared?: RecordStoreSnapshot<ReceivedRecordingShare>;
 }
 
 /**
@@ -49,7 +54,7 @@ export interface LibraryListViewProps {
  * selected one has the selected tint, a primary edge, a check and a heavier
  * label, so selection never rests on colour alone.
  */
-export function LibraryFilterControl(props: { value: LibraryFilter; onValueChange: (value: LibraryFilter) => void }) {
+export function LibraryFilterControl(props: { value: LibraryFilter; onValueChange: (value: LibraryFilter) => void; withShared?: boolean }) {
   return (
     <ToggleGroup.Root
       type="single"
@@ -61,7 +66,7 @@ export function LibraryFilterControl(props: { value: LibraryFilter; onValueChang
       aria-label="Show"
       className="flex flex-wrap gap-1.5"
     >
-      {LIBRARY_FILTERS.map((option) => {
+      {(props.withShared ? [...LIBRARY_FILTERS, SHARED_FILTER] : LIBRARY_FILTERS).map((option) => {
         const selected = option.value === props.value;
         return (
           <ToggleGroup.Item
@@ -117,8 +122,10 @@ export function LibraryListView(props: LibraryListViewProps) {
       data-state={status}
       {...(soft ? { role: "region", "aria-label": "Library", tabIndex: -1, "data-return-focus": "" } : {})}
     >
-      {only ? <OnlyFilterChip label={only.label} onClear={only.onClear} /> : <LibraryFilterControl value={filter} onValueChange={props.onFilterChange} />}
-      {(status === "loading" && items.length === 0 && orphans.length === 0) || only?.ids === null ? (
+      {only ? <OnlyFilterChip label={only.label} onClear={only.onClear} /> : <LibraryFilterControl value={filter} onValueChange={props.onFilterChange} withShared={props.shared !== undefined} />}
+      {!only && filter === "shared" && props.shared ? (
+        <SharedLibraryRows shared={props.shared} now={now} selectedId={props.selectedId} />
+      ) : (status === "loading" && items.length === 0 && orphans.length === 0) || only?.ids === null ? (
         <div role="status">
           <span className="sr-only">Loading your Library…</span>
           {Array.from({ length: 5 }, (_, i) => (

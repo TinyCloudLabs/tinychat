@@ -1,9 +1,13 @@
-// tinycloud.chat serves the same build as the canonical Home origin. Visitors there move to
-// home.tinycloud.xyz, unless this browser holds recording work or Home answers that exist only on the legacy
-// origin: origins don't share IndexedDB or localStorage, so moving would strand them. Held visitors
-// move on their own once that work is saved to their TinyCloud space (or the answers are sent, seen or expired).
-// A move also waits until home.tinycloud.xyz serves this same build, and never happens to a page that must finish
-// here (an OAuth return, a popup, the static /agents docs) or while this page has work in memory.
+// tinycloud.chat and home.tinycloud.xyz serve the same build as the canonical TinyCloud One origin, tinycloud.one.
+// Visitors on either legacy host move to tinycloud.one, unless this browser holds recording work or Home answers that
+// exist only on that legacy origin: origins don't share IndexedDB or localStorage, so moving would strand them. Held
+// visitors move on their own once that work is saved to their TinyCloud space (or the answers are sent, seen or
+// expired). A move also waits until tinycloud.one serves this same build, and never happens to a page that must finish
+// here (an OAuth return, a popup, the static /agents docs, a `?legacy=1` page) or while this page has work in memory.
+//
+// The edge sends legacy-host visitors to tinycloud.one with a 301 before the app runs, so the app could not hold them.
+// While it holds work here it therefore sets the `tc_hold` cookie (setHoldCookie), which the edge rule skips, and
+// `?legacy=1` is the way back to a legacy origin for anyone whose local data is still on it (both keep the app loading).
 
 import { clearAllHeldAnswers, countStoredAnswers } from "@/feed/answerOutbox";
 import { clearAllPostDrafts, countPostDrafts } from "@/feed/postAnswers";
@@ -18,11 +22,35 @@ import { isAutomaticRetryableCode } from "./voiceNotes/retryableVoiceNoteErrors"
 import { VOICE_NOTE_PENDING_JOBS_KEY } from "./voiceNotes/sourcePins";
 import { STORES } from "./voiceNotes/web/idb";
 
-export const CANONICAL_ORIGIN = "https://home.tinycloud.xyz";
-export const LEGACY_HOSTNAME = "tinycloud.chat";
+export const CANONICAL_ORIGIN = "https://tinycloud.one";
 
-/** Written by every build (vite.config.ts `tinychat-version-json`); public/_headers lets tinycloud.chat read it. */
+/** TinyCloud Home's own site, now a legacy origin like tinycloud.chat. Its Google OAuth return tag stays `home`. */
+export const HOME_ORIGIN = "https://home.tinycloud.xyz";
+
+/** The origins whose visitors move to CANONICAL_ORIGIN. */
+export const LEGACY_HOSTNAMES: readonly string[] = ["tinycloud.chat", "home.tinycloud.xyz"];
+
+/** Written by every build (vite.config.ts `tinychat-version-json`); public/_headers lets the legacy origins read it. */
 export const CANONICAL_VERSION_URL = `${CANONICAL_ORIGIN}/version.json`;
+
+/**
+ * Set on a legacy host while this browser holds local-only work. The edge redirect to tinycloud.one skips requests
+ * that carry it, so the app loads and the hold in this file runs. Host-only (no Domain), Secure, 400 days (the longest
+ * browsers keep), refreshed on every check, cleared as soon as nothing is held.
+ */
+export const HOLD_COOKIE = "tc_hold";
+const HOLD_COOKIE_MAX_AGE_SECONDS = 400 * 86_400;
+
+export function setHoldCookie(hold: boolean, doc: { cookie: string } | undefined = globalThis.document): void {
+  if (!doc) return;
+  try {
+    doc.cookie = hold
+      ? `${HOLD_COOKIE}=1; Path=/; Max-Age=${HOLD_COOKIE_MAX_AGE_SECONDS}; Secure; SameSite=Lax`
+      : `${HOLD_COOKIE}=; Path=/; Max-Age=0; Secure; SameSite=Lax`;
+  } catch {
+    // Cookies unavailable: the move logic still holds; only the edge guard is missing.
+  }
+}
 
 /** The web voice-note store (webStore.ts `openWebStore` default). */
 const VOICE_NOTES_DB = "exo-voice-notes";
@@ -30,7 +58,7 @@ const VOICE_NOTES_DB = "exo-voice-notes";
 /** How often a held visitor re-checks whether the local work has been saved. */
 export const ORIGIN_MOVE_RECHECK_MS = 30_000;
 
-/** How long the move waits for home.tinycloud.xyz's version.json before staying. */
+/** How long the move waits for tinycloud.one's version.json before staying. */
 export const CANONICAL_VERSION_TIMEOUT_MS = 5_000;
 
 /**
@@ -98,7 +126,7 @@ export interface OriginMoveEnv {
 }
 
 export function isLegacyOrigin(loc: Pick<Location, "hostname">): boolean {
-  return loc.hostname === LEGACY_HOSTNAME;
+  return LEGACY_HOSTNAMES.includes(loc.hostname);
 }
 
 export function canonicalUrlFor(loc: Pick<Location, "pathname" | "search" | "hash">): string {
@@ -112,15 +140,19 @@ export function canonicalUrlFor(loc: Pick<Location, "pathname" | "search" | "has
  *   origin's sessionStorage (googleOAuthSameTab.ts `saveSameTabVerifier`), so only this origin can finish it.
  * - `agents`: the static agent setup docs and skill tarballs (public/_redirects, public/agents). The app never
  *   runs there; this keeps it so should a request ever reach it.
+ * - `legacy`: `?legacy=1`, the way back to a legacy origin for anyone whose local data stays on it. The edge redirect
+ *   skips it too. The page stays, and `decideOriginMove` sets the hold cookie so that plain visits keep loading the app
+ *   (and the hold) until nothing local is left.
  */
 export function originMoveExemption(
   loc: Pick<Location, "pathname" | "search">,
   opener: boolean,
-): "popup" | "oauth-return" | "agents" | null {
+): "popup" | "oauth-return" | "agents" | "legacy" | null {
   if (opener) return "popup";
   if (sameTabReturnState(loc.search) !== null) return "oauth-return";
   // Mirrors vite.config.ts navigateFallbackDenylist.
   if (/^\/agents(?:\/|$)/.test(loc.pathname)) return "agents";
+  if (new URLSearchParams(loc.search).get("legacy") === "1") return "legacy";
   return null;
 }
 
@@ -132,7 +164,7 @@ export interface CanonicalBuildCheck {
 }
 
 /**
- * True only when home.tinycloud.xyz serves this exact build: its version.json names this bundle's commit.
+ * True only when tinycloud.one serves this exact build: its version.json names this bundle's commit.
  * A bundle without a commit, a network error, a timeout or another build is false, and the visitor stays.
  */
 export async function canonicalServesThisBuild(check: CanonicalBuildCheck = {}): Promise<boolean> {
@@ -161,8 +193,14 @@ const deferralEnded = new Set<() => void>();
  * Keeps a held page on this origin until the returned function is called: work that lives only in this page's
  * memory (a chat draft or reply, an unsaved Markdown edit, an OAuth popup waiting to post back here, a sign-in)
  * must finish first. Calling the release twice is harmless. A held page re-checks as soon as the last one ends.
+ *
+ * On a legacy origin it also sets the hold cookie at once, not at the next check: a page that closes with work in
+ * memory (or an undo window running) writes an entry here on its way out, and the edge must not send the next plain
+ * visit on before the app has seen it. The check that finds nothing held clears the cookie again.
  */
-export function deferOriginMove(): () => void {
+export function deferOriginMove(env: { location?: Pick<Location, "hostname">; holdCookie?: (hold: boolean) => void } = {}): () => void {
+  const here = env.location ?? globalThis.location;
+  if (here && isLegacyOrigin(here)) (env.holdCookie ?? setHoldCookie)(true);
   const token = {};
   deferrals.add(token);
   return () => {
@@ -407,24 +445,39 @@ export interface OriginMoveOptions {
   /** Whether another page opened this one (`window.opener`). */
   opener?: boolean;
   countWork?: () => Promise<LocalRecordingWork>;
-  /** Whether home.tinycloud.xyz serves this build (default `canonicalServesThisBuild`). */
+  /** Whether tinycloud.one serves this build (default `canonicalServesThisBuild`). */
   canonicalReady?: () => Promise<boolean>;
+  /** Sets or clears the hold cookie (default `setHoldCookie` on this document). */
+  holdCookie?: (hold: boolean) => void;
 }
 
 /**
  * Stay off the legacy origin, and on an exempt page, without touching storage. Otherwise hold while local-only
- * work is left, and move only once home.tinycloud.xyz serves this build.
+ * work is left, and move only once tinycloud.one serves this build.
  */
 export async function decideOriginMove({
   location, opener = false, countWork = countLocalOnlyRecordingWork, canonicalReady = canonicalServesThisBuild,
+  holdCookie = setHoldCookie,
 }: OriginMoveOptions): Promise<OriginMoveDecision> {
-  if (!isLegacyOrigin(location) || originMoveExemption(location, opener) !== null) return { kind: "stay" };
+  if (!isLegacyOrigin(location)) return { kind: "stay" };
+  const exemption = originMoveExemption(location, opener);
+  if (exemption === "legacy") {
+    // Someone came back to this origin on purpose: keep the app loading here for their plain visits too.
+    holdCookie(true);
+    return { kind: "stay" };
+  }
+  if (exemption !== null) return { kind: "stay" };
   let work: LocalRecordingWork;
   try {
     work = await countWork();
   } catch {
     work = UNKNOWN_WORK;
   }
+  // Unknown counts as held (UNKNOWN_WORK), so a failed check keeps the edge guard too. So does work that lives in this
+  // page for now (a deferral): if the page closes, its flush writes an entry here, and the next plain visit must
+  // still load the app on this origin, not be sent on by the edge, or that entry is never seen. (The next visit that
+  // finds nothing held clears the cookie and moves.)
+  holdCookie(holdsOriginMove(work) || isOriginMoveDeferred());
   if (holdsOriginMove(work)) return { kind: "hold", work };
   const ready = await canonicalReady().catch(() => false);
   return ready ? { kind: "move", url: canonicalUrlFor(location) } : { kind: "stay" };
@@ -447,7 +500,7 @@ export interface MoveWhenClearOptions {
   upload?: () => UploadState | null;
   /**
    * The work a notice should show while still held, after each check. Zero (nothing to show) until
-   * home.tinycloud.xyz has served this build once, and whenever nothing local is left but the move is
+   * tinycloud.one has served this build once, and whenever nothing local is left but the move is
    * still blocked (a deferral, or the build check).
    */
   onPending?: (work: LocalRecordingWork) => void;
@@ -461,7 +514,7 @@ export interface MoveWhenClearOptions {
  * the browser comes back online and when the last `deferOriginMove` ends. A visitor kept only by recordings
  * that do not save by themselves (nothing saving) stays put, so once its notice is up the timed re-check pauses until
  * something is saving again. Replaces the location with the canonical URL (computed from the location at that moment) once
- * nothing is left, this tab runs no upload, nothing defers the move and home.tinycloud.xyz serves this
+ * nothing is left, this tab runs no upload, nothing defers the move and tinycloud.one serves this
  * build. Returns a function that stops checking.
  */
 export function moveWhenClear(options: MoveWhenClearOptions = {}): () => void {
@@ -485,7 +538,7 @@ export function moveWhenClear(options: MoveWhenClearOptions = {}): () => void {
   let running = false;
   // A trigger that arrives during a check (a deferral ending, the browser coming online) runs one more after it.
   let again = false;
-  // The notice says the visitor will move; it is shown only once home.tinycloud.xyz has served this build.
+  // The notice says the visitor will move; it is shown only once tinycloud.one has served this build.
   let servedThisBuild = false;
   // Off while nothing is saving and the notice is up: nothing changes by itself, so the timer reads nothing.
   let polling = true;
@@ -514,7 +567,7 @@ export function moveWhenClear(options: MoveWhenClearOptions = {}): () => void {
       if (decision.kind === "hold") {
         const { work } = decision;
         const shown = await buildServed();
-        // Until home.tinycloud.xyz serves this build, keep asking it, so the notice can appear.
+        // Until tinycloud.one serves this build, keep asking it, so the notice can appear.
         polling = work.saving !== 0 || holdsAnswers(work) || !shown;
         if (!stopped) options.onPending?.(shown ? work : NO_LOCAL_WORK);
         return;
@@ -529,6 +582,7 @@ export function moveWhenClear(options: MoveWhenClearOptions = {}): () => void {
       // synchronous, so nothing can land between this recount and the clear; anything found keeps the page held.
       const answers = answersStoredNow();
       if (answers === null || holdsAnswers(answers)) {
+        setHoldCookie(true);
         options.onPending?.(answers ?? NO_LOCAL_WORK);
         return;
       }

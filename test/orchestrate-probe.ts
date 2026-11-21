@@ -14,7 +14,7 @@ const readEnv = (text: string, k: string): string => {
 
 const config = {
   agentId: "tinychat",
-  entityIdFor: (_a: string) => "b7da5202-d81f-0f0f-a602-46f696ae2b8a",
+  entityIdFor: (_a: string) => "03c43cbe-21ca-05ec-b4b2-401bbe407cee",
   elizaServiceUrl: "http://localhost:3000",
   elizaServiceSecret: readEnv(elizaEnvText, "ELIZA_SERVICE_SECRET"),
   redpillApiKey: readEnv(backendEnvText, "REDPILL_API_KEY"),
@@ -33,7 +33,7 @@ const result = await orchestrateToolCalling({
   config,
   model: process.env.PROBE_MODEL ?? "phala/gpt-oss-120b",
   messages: [{ role: "user", content: "Use web search to give me one current news headline today, and cite the source." }],
-  entityId: "b7da5202-d81f-0f0f-a602-46f696ae2b8a",
+  entityId: "03c43cbe-21ca-05ec-b4b2-401bbe407cee",
   write: (frame: string) => {
     const m = frame.match(/^data: (.*)\n\n$/s);
     if (!m || m[1] === "[DONE]") return;

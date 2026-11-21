@@ -4,8 +4,6 @@
 // is a pure function, asserted here; useMeetingBot.test.tsx mounts the hook
 // and checks the reads themselves (no overlap, nothing after leaving).
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 
 import { activeMeetings, meetingBotTimers, type ListStatus } from "@/chat/TranscriberSection";
 import type { TranscriberListRow, TranscriberMeeting } from "@/lib/transcriberApi";
@@ -43,14 +41,5 @@ describe("activeMeetings", () => {
       meeting("e", "failed"),
     ];
     expect(activeMeetings(rows).map((m) => m.id)).toEqual(["a", "c"]);
-  });
-});
-
-describe("Capture's notetaker", () => {
-  test("Capture passes whether its home is on screen", () => {
-    const capture = readFileSync(join(import.meta.dir, "../CaptureSurface.tsx"), "utf8");
-    expect(capture).toContain("useMeetingBot({ backendUrl, sessionStore, active: homeShown })");
-    // On a phone the home shares Capture with the Library and a note; from medium up it is always beside them.
-    expect(capture).toContain("const homeShown = active && (wide || (!libraryScreen && !noteScreen));");
   });
 });

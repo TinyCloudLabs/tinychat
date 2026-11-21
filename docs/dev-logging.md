@@ -139,7 +139,11 @@ optional and admitted only as a UUID from the response header.
 TC-2537 adds four optional fields. The streaming chat routes (`POST /api/chat`,
 `POST /api/agent/chat`) set `stream` (`done`, `error` or `aborted`) and, for an
 error or a server-side transport failure, a fixed `code` (for example
-`upstream_failed`, `turn_timeout`, `transport_failed`). `credits` is the credits
+`upstream_failed`, `turn_timeout`, `transport_failed`). A stream that ended in
+`error` also carries `failure_cause` (TC-3462): `model` when the model's own
+output broke the reply (charged, `docs/credits.md`), else `ours`. It names who
+caused the failure, not whether it was charged: a `turn_timeout` is `ours` and
+still charged what it used, so read `credits` for the charge. `credits` is the credits
 recorded for the request, when any were charged; those handlers are wrapped in
 `recordAfterHandler`, so the record waits until the post-stream charge is
 recorded (at most 30 seconds after the response ended). `account_hash` is
@@ -197,14 +201,17 @@ provider refusal can be read without public Phala logs. Same pattern as tinyclou
   `backend_alert` (`alert=true` lines), `backend_log_error` (other stderr lines and closed calendar failure diagnostics),
   `backend_storage_lane_wait` (typed queue-wait diagnostics), `backend_diagnostic_summary` (bounded interval counts), the four hosted-AssemblyAI
   JSON events (`assemblyai_provider_blocked`, `_provider_recovered`, `_jobs_failed_in_a_row`, `_worker_heartbeat`),
-  and the per-request `tinychat_request` record (TC-2537).
+  the two retention-sweep events (`retention_sweep_stalled`, `alert:true`, with `indexes_unreadable`, `errors`, `overdue_rows` and
+  `consecutive_passes` counts only: the content sweep has failed for about 30 minutes or a row is over an hour past its 14-day
+  deadline, repeated at most every 30 minutes; `retention_sweep_recovered` once it clears; event names stay under 32 characters
+  or the redaction transform rewrites them), and the per-request `tinychat_request` record (TC-2537).
   Everything else is dropped, not redacted: free text, stack frames, lines over 2048 characters.
   A redaction transform (DIDs, `0x` addresses, JWTs, bearer tokens, URLs, emails, long base64) runs first as a second
   barrier, except on `tinychat_request` lines, whose 64-hex `account_hash` it would erase; the allowlist checks each
   of their fields against a strict pattern instead.
 - **Request records (TC-2537).** The allowlist rebuilds each `tinychat_request` from these fields only:
   `request_id`, `method`, `route_template` (the record's `route`), `status`, `duration_ms` (0.1 ms), `stream`, `code`,
-  `credits`, `account_hash`, plus `svc`, `event`, `level` (`error` for a 5xx, else `info`) and `ts`.
+  `failure_cause` (`model` or `ours`), `credits`, `account_hash`, plus `svc`, `event`, `level` (`error` for a 5xx, else `info`) and `ts`.
   `request_id_replaced`, `correlation_id` and any other key are dropped; a malformed `request_id` or `status` drops
   the record; a route that is not in the closed list (below) ships as `unmatched`, and an
   off-shape optional field is omitted. Bodies, prompts, replies, headers, keys, tokens, emails

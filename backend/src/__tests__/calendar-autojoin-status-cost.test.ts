@@ -1,4 +1,5 @@
 import { describe, expect, spyOn, test } from "bun:test";
+import { fakeBackendNode } from "./helpers/fake-backend-node.js";
 import type { TinyCloudNode } from "@tinycloud/node-sdk";
 import { BackendStorageLane, BackendStorageLaneTimeout } from "../services/backend-storage-lane.js";
 import { CalendarAutojoinConnection, GOOGLE_AUTOJOIN_CREDENTIAL_SOURCE } from "../services/calendar-autojoin-connection.js";
@@ -25,18 +26,11 @@ function fixture(values = new Map<string, unknown>()) {
   let now = AT;
   let summaryFailures = 0;
   let revokes = 0;
-  const node = { kv: {
-    async get(key: string) { return values.has(key) ? { ok: true, data: { data: structuredClone(values.get(key)) } }
-      : { ok: false, error: { code: "KV_NOT_FOUND", service: "kv", message: `Key not found: ${key}` } }; },
-    async put(key: string, value: unknown) {
-      if (key.startsWith("calendar-autojoin/v1/status/") && summaryFailures > 0) {
-        summaryFailures--; return { ok: false, error: { code: "FAILED", message: "Synthetic summary write failure" } };
-      }
-      values.set(key, structuredClone(value)); return { ok: true, data: {} };
-    },
-    async delete(key: string) { values.delete(key); return { ok: true, data: {} }; },
-    async list({ prefix }: { prefix: string }) { return { ok: true, data: { keys: [...values.keys()].filter(key => key.startsWith(prefix)) } }; },
-  } } as unknown as TinyCloudNode;
+  const { node } = fakeBackendNode(values, { before(op, key) {
+    if (op === "put" && key.startsWith("calendar-autojoin/v1/status/") && summaryFailures > 0) {
+      summaryFailures--; return { ok: false, error: { code: "FAILED", message: "Synthetic summary write failure" } };
+    }
+  } });
   const lane = new BackendStorageLane();
   const stores = kvCalendarAutojoinStores(node, lane);
   const coordinator = new TenantCoordinator();

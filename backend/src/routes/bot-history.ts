@@ -1,6 +1,15 @@
 import express, { Router, type RequestHandler } from "express";
 import { BotHistory, HistoryPermissionExpired, historyOwner } from "../bot-history.js";
-import type { BotsConfig } from "./bots.js";
+import { botsServiceHeaders, type BotsConfig } from "./bots.js";
+
+/** One signed call to the bots service, bounded at 10 s. `body` is sent as JSON, exactly as signed. */
+function serviceCall(config: BotsConfig, address: string, method: string, url: string, body?: unknown) {
+  const text = body === undefined ? undefined : JSON.stringify(body);
+  return (config.fetchImpl ?? fetch)(url, {
+    method, headers: botsServiceHeaders(config, historyOwner(address), method, url, text), body: text,
+    ...(method === "GET" ? { cache: "no-store" as const } : {}), signal: AbortSignal.timeout(10_000),
+  });
+}
 
 /** Only mounted for the flagged history slice; the owner always comes from authentication. */
 export function createBotHistoryRouter(history: BotHistory, config: BotsConfig, auth: RequestHandler) {
@@ -12,7 +21,7 @@ export function createBotHistoryRouter(history: BotHistory, config: BotsConfig, 
   });
   router.get("/notice", async (req, res) => {
     try {
-      const response = await (config.fetchImpl ?? fetch)(`${config.serviceUrl}/v1/bots/main/history/notice`, { headers: { authorization: `Bearer ${config.serviceSecret}`, "x-tinycloud-owner": historyOwner(req.user!.address) }, cache: "no-store", signal: AbortSignal.timeout(10_000) });
+      const response = await serviceCall(config, req.user!.address, "GET", `${config.serviceUrl}/v1/bots/main/history/notice`);
       if (!response.ok) throw new Error();
       res.json(await response.json());
     } catch { res.status(503).json({ error: "history_notice_unavailable" }); }
@@ -21,7 +30,7 @@ export function createBotHistoryRouter(history: BotHistory, config: BotsConfig, 
     const receivedAt = Date.now();
     if (Object.hasOwn(req.body ?? {}, "deleteAt")) { res.status(400).json({ error: "invalid_notice_ack" }); return; }
     try {
-      const response = await (config.fetchImpl ?? fetch)(`${config.serviceUrl}/v1/bots/main/history/notice`, { method: "POST", headers: { authorization: `Bearer ${config.serviceSecret}`, "x-tinycloud-owner": historyOwner(req.user!.address), "content-type": "application/json" }, body: JSON.stringify({ id: req.body?.id, receivedAt }), signal: AbortSignal.timeout(10_000) });
+      const response = await serviceCall(config, req.user!.address, "POST", `${config.serviceUrl}/v1/bots/main/history/notice`, { id: req.body?.id, receivedAt });
       if (!response.ok) throw new Error();
       res.json(await response.json());
     } catch { res.status(503).json({ error: "history_notice_unavailable" }); }
@@ -32,7 +41,7 @@ export function createBotHistoryRouter(history: BotHistory, config: BotsConfig, 
     if (typeof serialized !== "string" || typeof siwe !== "string" || typeof signature !== "string") { res.status(400).json({ error: "invalid_history_grant" }); return; }
     try {
       const validUntil = await history.accept(req.user!.address, { serialized, siwe, signature });
-      const response = await (config.fetchImpl ?? fetch)(`${config.serviceUrl}/v1/bots/main/history/permission`, { method: "PUT", headers: { authorization: `Bearer ${config.serviceSecret}`, "x-tinycloud-owner": historyOwner(req.user!.address), "content-type": "application/json" }, body: JSON.stringify({ validUntil }), signal: AbortSignal.timeout(10_000) });
+      const response = await serviceCall(config, req.user!.address, "PUT", `${config.serviceUrl}/v1/bots/main/history/permission`, { validUntil });
       if (!response.ok) throw new Error();
       res.status(204).end();
     }
@@ -53,23 +62,22 @@ export function startBotHistoryDrain(history: BotHistory, config: BotsConfig) {
       for (const address of await history.owners()) {
         if ((retries.get(address)?.after ?? 0) > Date.now()) continue;
         for (let i = 0; i < 32 && !closing; i++) {
-          const headers = { authorization: `Bearer ${config.serviceSecret}`, "x-tinycloud-owner": historyOwner(address) };
           const url = `${config.serviceUrl}/v1/bots/main/history`;
-          const response = await (config.fetchImpl ?? fetch)(url, { headers, cache: "no-store", signal: AbortSignal.timeout(10_000) });
+          const response = await serviceCall(config, address, "GET", url);
           if (!response.ok) break;
           const { batch } = await response.json() as { batch: unknown };
           if (!batch) break;
           try {
             const receipt = await history.archive(address, batch, async staged => {
-              const response = await (config.fetchImpl ?? fetch)(url + "/stage", { method: "POST", headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify(staged), signal: AbortSignal.timeout(10_000) });
+              const response = await serviceCall(config, address, "POST", url + "/stage", staged);
               if (!response.ok) throw new Error("history_stage_unavailable");
             });
-            const accepted = await (config.fetchImpl ?? fetch)(url, { method: "POST", headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify(receipt), signal: AbortSignal.timeout(10_000) });
+            const accepted = await serviceCall(config, address, "POST", url, receipt);
             if (!accepted.ok) throw new Error("history_receipt_unavailable");
             retries.delete(address);
           } catch (error) {
             if (error instanceof HistoryPermissionExpired) {
-              await (config.fetchImpl ?? fetch)(`${config.serviceUrl}/v1/bots/main/history/permission`, { method: "PUT", headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify({ expiresAt: error.expiresAt }), signal: AbortSignal.timeout(10_000) });
+              await serviceCall(config, address, "PUT", `${config.serviceUrl}/v1/bots/main/history/permission`, { expiresAt: error.expiresAt });
             }
             const failures = (retries.get(address)?.failures ?? 0) + 1;
             retries.set(address, { failures, after: Date.now() + Math.min(300_000, 1000 * 2 ** Math.min(failures, 12)) * (1 + Math.random() * 0.2) });

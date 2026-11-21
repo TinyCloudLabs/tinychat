@@ -1,4 +1,4 @@
-import { useCallback, useState, type FC } from "react";
+import { useCallback, useState, type ComponentPropsWithoutRef, type FC } from "react";
 import {
   MarkdownTextPrimitive,
   unstable_memoizeMarkdownComponents as memoizeMarkdownComponents,
@@ -9,6 +9,8 @@ import remarkGfm from "remark-gfm";
 import { CheckIcon, CopyIcon } from "lucide-react";
 
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
+import { ImageBudgetScope } from "@/components/assistant-ui/image-budget";
+import { GatedImage } from "@/components/assistant-ui/gated-image";
 import { cn } from "@/lib/utils";
 
 const useCopyToClipboard = ({
@@ -73,15 +75,22 @@ const defaultComponents = memoizeMarkdownComponents({
       />
     );
   },
+  img: GatedImage,
+  // A link in model text sends no referrer and no opener.
+  a: ({ node: _node, ...props }: ComponentPropsWithoutRef<"a"> & { node?: unknown }) => (
+    <a {...props} rel="noopener noreferrer nofollow" referrerPolicy="no-referrer" />
+  ),
 });
 
 const MarkdownTextImpl: FC = () => {
   return (
-    <MarkdownTextPrimitive
-      remarkPlugins={[remarkGfm]}
-      components={defaultComponents}
-      className="prose prose-sm max-w-none break-words text-foreground prose-headings:text-foreground prose-strong:text-foreground prose-a:text-foreground prose-code:text-foreground prose-pre:my-0 prose-pre:bg-transparent prose-pre:p-0 dark:prose-invert"
-    />
+    <ImageBudgetScope>
+      <MarkdownTextPrimitive
+        remarkPlugins={[remarkGfm]}
+        components={defaultComponents}
+        className="prose prose-sm max-w-none break-words text-foreground prose-headings:text-foreground prose-strong:text-foreground prose-a:text-foreground prose-code:text-foreground prose-pre:my-0 prose-pre:bg-transparent prose-pre:p-0 dark:prose-invert"
+      />
+    </ImageBudgetScope>
   );
 };
 

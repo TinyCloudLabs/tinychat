@@ -1,8 +1,10 @@
 import { expect, test } from "bun:test";
 import express from "express";
+import { createHmac } from "node:crypto";
 import { once } from "node:events";
 import { ConnectorQueue } from "../services/connector-queue.js";
 import { ConnectorControlStore, disabledMarkerKey, purgeLedgerKey } from "../routes/connector-webhooks.js";
+import { ConnectorWebhookLimiters, createConnectorWebhookHandler } from "../routes/connector-webhooks.js";
 import { ConnectorTeardownService } from "../services/connector-teardown.js";
 import { WebhookTokenService } from "../services/webhook-tokens.js";
 import { createConnectorCredentialRouter } from "../routes/connector-credentials.js";
@@ -70,6 +72,7 @@ test("DELETE credentials disables notifications, revokes cached callbacks, and t
   const credentials={revoke:async()=>{revoked++;return {deleted:true as const,upstreamRevoked:"ok" as const};}};
   const teardown=new ConnectorTeardownService({credentials,content,queue,control,notifications:{disable:async(s,owner)=>{await control.markDisabled(owner,s);await tokens.revoke(owner);}}},{now:()=>now});
   const app=express();
+  app.post("/callback/:source/:token", express.raw({type:"application/json"}), createConnectorWebhookHandler({tokens,queue,now:()=>now,limiters:new ConnectorWebhookLimiters()}));
   app.use((req,_res,next)=>{req.user={address};next();});
   app.use("/credentials",createConnectorCredentialRouter({credentials:credentials as any,oauth:{} as any,teardown,modes:{mode:async()=>"backend"},now:()=>now}));
   const server=app.listen(0,"127.0.0.1");
@@ -85,20 +88,13 @@ test("DELETE credentials disables notifications, revokes cached callbacks, and t
     expect(await control.readDisabled(other)).toBeNull();
     expect(await content.list(source,address)).toEqual([]);
     expect(await queue.list(source,address)).toEqual([]);
-    const ledger=await control.readLedger(source,address);
-    expect(ledger.status).toBe("ok");
-    if(ledger.status!=="ok")throw new Error("ledger missing");
-    expect(ledger.ledger.recentIds).toEqual(["older","saved"]);
-    expect(ledger.ledger.recentIdsAddedAt).toEqual({older:oldStamp,saved:new Date(initial).toISOString()});
-    now+=day;
-    await teardown.run(source,address); // Retry never restarts an ID clock.
-    expect((f.data.get(purgeLedgerKey(source,address)) as any).recentIdsAddedAt.saved).toBe(new Date(initial).toISOString());
-    now=initial+14*day-1;
-    const before=await control.readLedger(source,address);
-    expect(before.status==="ok"?before.ledger.recentIds:[]).toEqual(["saved"]);
-    now+=1;
-    await control.readLedger(source,address);
-    expect((f.data.get(purgeLedgerKey(source,address)) as any).recentIds).toEqual([]);
+    expect(await control.readLedger(source,address)).toEqual({status:"absent"});
+    expect(f.data.has(purgeLedgerKey(source,address))).toBe(false);
+    const body=JSON.stringify({eventType:"meeting.transcribed",meetingId:"saved"});
+    const signature=`sha256=${createHmac("sha256","fixture-secret").update(body).digest("hex")}`;
+    const replay=await fetch(`http://127.0.0.1:${port}/callback/${source}/${callback}`,{method:"POST",headers:{"content-type":"application/json","x-hub-signature":signature},body});
+    expect(replay.status).toBe(401);
+    expect(await content.list(source,address)).toEqual([]);
     expect(f.data.has(disabledMarkerKey(address))).toBe(true);
   } finally { await new Promise<void>((resolve,reject)=>server.close(error=>error?reject(error):resolve())); }
 });

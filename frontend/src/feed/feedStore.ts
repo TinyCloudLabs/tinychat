@@ -29,6 +29,7 @@ import { emptySitrepOwnerData, isClosed, jsonValue, ownerThreadResponseKey, pars
 import { OWNER_EVENT_SCHEMA, privateOwnerStateFromRows, savePrivateOwnerState, savePrivateHeldNote, savePrivateGroupPriority, combineOwnerData } from "./sitrepOwnerStore";
 import { OWNER_IMPORT_SCHEMA, OwnerArchiveCache } from "./sitrepArchiveStore";
 import { enrichTypedEntry } from "./loadTypedFeed";
+import { redactedCard, redactedState } from "./redactedCard";
 import { OUTPUT_TALLY, readAgent, readRegistry, readTally, REGISTRY_TALLY, RESPONSES_TALLY, type AgentRead, type RegistryRead } from "./feedRead";
 import { ownerCardKey } from "./feedIdentity";
 import { privateFeedDatabase, parseOwnerJSON } from "./privateFeedDatabase";
@@ -516,10 +517,10 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
         if (!state) throw new Error("Card issuance not found");
         const key = JSON.stringify([source.sourceId, identity.cardId, identity.revision, identity.issuanceId]);
         const entry: HomeFeedEntry = {
-          source, state,
+          source, state: redactedState(state),
           currentIssuance: latestKeys.has(key),
           view: views.get(key) ?? { sourceId: source.sourceId, cardId: identity.cardId, revision: identity.revision, issuanceId: identity.issuanceId },
-          earlierRevisions: (revisionsByCard.get(identity.cardId) ?? []).filter((card) => card.revision < identity.revision),
+          earlierRevisions: (revisionsByCard.get(identity.cardId) ?? []).filter((card) => card.revision < identity.revision).map(redactedCard),
           responses: histories.get(key) ?? [],
           viewEvents: events.get(key) ?? [],
         };

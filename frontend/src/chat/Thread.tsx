@@ -33,6 +33,7 @@ import {
   Square,
 } from "lucide-react";
 
+import { ImageBudgetScope } from "@/components/assistant-ui/image-budget";
 import { MarkdownText } from "@/components/assistant-ui/markdown-text";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -622,33 +623,39 @@ const UserMessage: FC = () => (
   </MessagePrimitive.Root>
 );
 
-const AssistantMessage: FC = () => (
-  <MessagePrimitive.Root className="group flex w-full flex-col gap-1">
-    <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
-      <span className="flex size-5 items-center justify-center rounded-full bg-primary text-xs font-semibold text-primary-foreground">
-        T
-      </span>
-      <span>TinyCloud One</span>
-    </div>
-    <div className="pl-7 text-sm leading-relaxed text-foreground">
-      <MessagePrimitive.Parts components={{ Text: MarkdownText }} />
-      <ThinkingIndicator />
-      <StreamingCursor />
-      <ToolActivityChip />
-      <GatewayReceiptMark />
-    </div>
-    <MessagePrimitive.Error>
-      <ErrorPrimitive.Root className="ml-7 mt-1 flex items-start gap-2 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-        <AlertTriangleIcon className="mt-0.5 size-3.5 shrink-0" />
-        <ErrorPrimitive.Message className="leading-relaxed" />
-      </ErrorPrimitive.Root>
-    </MessagePrimitive.Error>
-    <AssistantActionBar />
-    <div className="pl-7">
-      <ModelVerificationBadge />
-    </div>
-  </MessagePrimitive.Root>
-);
+export const AssistantMessage: FC = () => {
+  // Messages are keyed by position, so a component can be reused for another message: its images get a fresh budget.
+  const messageId = useMessage((message) => message.id);
+  return (
+    <MessagePrimitive.Root className="group flex w-full flex-col gap-1">
+      <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
+        <span className="flex size-5 items-center justify-center rounded-full bg-primary text-xs font-semibold text-primary-foreground">
+          T
+        </span>
+        <span>TinyCloud One</span>
+      </div>
+      <div className="pl-7 text-sm leading-relaxed text-foreground">
+        <ImageBudgetScope messageId={messageId}>
+          <MessagePrimitive.Parts components={{ Text: MarkdownText }} />
+        </ImageBudgetScope>
+        <ThinkingIndicator />
+        <StreamingCursor />
+        <ToolActivityChip />
+        <GatewayReceiptMark />
+      </div>
+      <MessagePrimitive.Error>
+        <ErrorPrimitive.Root className="ml-7 mt-1 flex items-start gap-2 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+          <AlertTriangleIcon className="mt-0.5 size-3.5 shrink-0" />
+          <ErrorPrimitive.Message className="leading-relaxed" />
+        </ErrorPrimitive.Root>
+      </MessagePrimitive.Error>
+      <AssistantActionBar />
+      <div className="pl-7">
+        <ModelVerificationBadge />
+      </div>
+    </MessagePrimitive.Root>
+  );
+};
 const GatewayReceiptMark: FC = () => {
   const messageId = useMessage((message) => message.id);
   const verified = useSyncExternalStore(

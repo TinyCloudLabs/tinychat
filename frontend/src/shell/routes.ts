@@ -38,6 +38,8 @@ export interface Screen {
   destination: Destination | null;
   /** The `connector_meeting.id` of an open note (decoded), else null. */
   noteId: string | null;
+  /** One Apps: the app id an `/chat/apps/<appId>` address names (decoded); absent elsewhere. */
+  appId?: string;
 }
 
 /** Connectors, one page (its address before the shell, kept for the links that name it). */
@@ -48,6 +50,33 @@ export const CONNECTORS_LIBRARY_PATH = "/chat/connectors/library";
 /** The address of one note in the Library (the id is URL-encoded). */
 export function notePath(id: string): string {
   return `${PATHS.library}/${encodeURIComponent(id)}`;
+}
+
+const CARD_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const cardIdOf = (segment: string | undefined): string | null => (segment !== undefined && CARD_ID.test(segment) ? segment.toLowerCase() : null);
+
+/**
+ * The address of one Feed card: /chat/feed/<card id>, always the card's latest revision. It is a path under the Feed,
+ * so it needs no screen of its own, survives sign-in in place and keeps Back and reload. There is no return parameter:
+ * the id is only ever compared with loaded cards, never navigated to.
+ */
+export function feedCardPath(cardId: string): string {
+  return `${PATHS.feed}/${cardId}`;
+}
+
+/** The card id a pathname names: exactly /chat/feed/<one UUID>, else null (the plain Feed). Never throws. */
+export function feedCardTarget(pathname: string): string | null {
+  const path = trim(pathname);
+  return path.startsWith(`${PATHS.feed}/`) ? cardIdOf(path.slice(PATHS.feed.length + 1)) : null;
+}
+
+/** The short address, /feed/<card id>, which lands on the same page as feedCardPath. */
+export const FEED_ALIAS_PATH = "/feed";
+
+/** Where /feed/<segment> goes: the card's page when the segment is a card id, else the plain Feed. A constant plus a checked id, never the text. */
+export function feedAliasTarget(segment: string | undefined): string {
+  const cardId = cardIdOf(segment);
+  return cardId ? feedCardPath(cardId) : PATHS.feed;
 }
 
 /** The Library's query that shows only this account's recordings whose audio is only in this browser. */
@@ -86,7 +115,17 @@ export function screenFor(pathname: string): Screen {
   if (path === PATHS.settings) return { id: "settings", destination: null, noteId: null };
   if (path === PATHS.about) return { id: "about", destination: null, noteId: null };
   if (path === PATHS.feed || path.startsWith(`${PATHS.feed}/`)) return { id: "feed", destination: "feed", noteId: null };
-  if (path === PATHS.apps || path.startsWith(`${PATHS.apps}/`)) return { id: "apps", destination: "apps", noteId: null };
+  if (path.startsWith(`${PATHS.apps}/`)) {
+    const raw = path.slice(PATHS.apps.length + 1);
+    let appId: string;
+    try {
+      appId = decodeURIComponent(raw);
+    } catch {
+      appId = raw;
+    }
+    return { id: "apps", destination: "apps", noteId: null, appId };
+  }
+  if (path === PATHS.apps) return { id: "apps", destination: "apps", noteId: null };
   if (path === PATHS.connectors || path.startsWith(`${PATHS.connectors}/`)) {
     return { id: "connectors", destination: "connectors", noteId: null };
   }

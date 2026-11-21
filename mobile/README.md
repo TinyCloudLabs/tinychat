@@ -485,7 +485,7 @@ Xcode 26.6.
   `SceneDelegate` makes that class the window's root. Capacitor 8's template
   builds the window in code with a plain `CAPBridgeViewController`, which
   silently skipped the registration until the smoke test caught it.
-- **Simulator smoke test** (`Mobile (Exo)` → *iOS (simulator build and smoke
+- **Simulator smoke test** (`Mobile (TinyCloud One)` → *iOS (simulator build and smoke
   test)*): a Debug build for the simulator, then
   `mobile/scripts/ios-simulator-smoke.sh`. It boots the newest iPhone
   simulator, installs the app, grants the microphone and launches it. The job
@@ -540,13 +540,13 @@ Xcode 26.6.
   (the 4 bytes after it are padding); when that call is unavailable the run
   records `ps-lstart-etime-coarse`, as the macOS CI run does.
   The script's own cases run against fake `xcrun`, `ps` and `sysctl` binaries on
-  Linux (`Mobile (Exo)` → *iOS smoke script tests (fakes)*):
+  Linux (`Mobile (TinyCloud One)` → *iOS smoke script tests (fakes)*):
   `node --test mobile/scripts/ios-simulator-smoke.test.mjs`. Run it locally the
   same way. `SMOKE_GAP_FAIL_S` (default 30) overrides the hard
   post-publication gap limit so the tests can exercise it quickly.
   To run the smoke against a local build:
   `mobile/scripts/ios-simulator-smoke.sh run <path/to/App.app> /tmp/exo-smoke`.
-- **Release dry run** (`Mobile (Exo)` → *iOS release*): the TestFlight build
+- **Release dry run** (`Mobile (TinyCloud One)` → *iOS release*): the TestFlight build
   (`.github/workflows/ios-build.yml`) without signing. Its archive job produces
   a Release archive of the production frontend and checks:
   - versions and the bundle id;

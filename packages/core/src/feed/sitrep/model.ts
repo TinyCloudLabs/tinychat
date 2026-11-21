@@ -5,6 +5,7 @@ import { goStale } from "./transitions";
 import { decodeOwnerThreadMessage, type OwnerThreadMessage } from "./thread-payload";
 import type { SitrepCardPayload, SitrepOwnerData, SitrepMessageDelivery } from "./model-types";
 import type { PreparedCard } from "./import-bundle";
+import { findRecordSecrets } from "./guard";
 
 export const SITREP_PAYLOAD_TYPES = ["sitrep.answer", "sitrep.state", "sitrep.claim", "sitrep.thread"] as const;
 export type SitrepPayloadType = typeof SITREP_PAYLOAD_TYPES[number];
@@ -59,13 +60,18 @@ export function nextClaimDecisionAt(owner: SitrepOwnerData, id: string, now: num
   return new Date(Math.max(now, latest ? Date.parse(latest) + 1 : 0)).toISOString();
 }
 
-/** An invalid typed record is unsupported, not an actionable generic ask. */
+/**
+ * An invalid typed record is unsupported, not an actionable generic ask. So is one the board's secret guard would have
+ * refused to write (a one-tap approval link, a key, a credential in any field): a card from a connected agent never
+ * went through that guard, and Home must not render it as links or an approval.
+ */
 export function parseSitrepCardPayload(value: unknown): SitrepCardPayload | null {
   if (!value || typeof value !== "object" || !("version" in value) || value.version !== 1 || !("record" in value)) return null;
   const record = value.record;
   if (!record || typeof record !== "object" || !("kind" in record) || typeof record.kind !== "string" || !isKind(record.kind)) return null;
   const checked = validateRecord(record.kind, record);
-  return checked.ok ? { version: 1, record: checked.value } : null;
+  if (!checked.ok || findRecordSecrets(checked.value.kind, checked.value).length) return null;
+  return { version: 1, record: checked.value };
 }
 
 /** State payloads may be deltas. Append-only histories survive concurrent notes/ticks. */

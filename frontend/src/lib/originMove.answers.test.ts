@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, setSystemTime, test } from "bu
 import { HELD_ANSWER_TTL_MS, holdAnswer, recordUnsentAnswer, type HeldAnswer, type UnsentAnswer } from "@/feed/answerOutbox";
 import type { HomeFeedEntry } from "@/feed/feedStoreTypes";
 import { savePostDraft } from "@/feed/postAnswers";
-import { countLocalOnlyRecordingWork, decideOriginMove, moveWhenClear, NO_LOCAL_WORK, type LocalRecordingWork } from "./originMove";
+import { CANONICAL_ORIGIN, countLocalOnlyRecordingWork, decideOriginMove, moveWhenClear, NO_LOCAL_WORK, type LocalRecordingWork } from "./originMove";
 import { localStorageVoiceNotePendingStore } from "./voiceNotes/voiceNoteTranscription";
 
 const legacy = { hostname: "tinycloud.chat", pathname: "/chat", search: "", hash: "" };
@@ -63,7 +63,7 @@ describe("Home answers kept only in this origin's localStorage hold the move", (
 
   test("a post draft with an answer holds; an empty one does not", async () => {
     savePostDraft(post("empty"), { colour: { choices: [], note: "  " } });
-    expect(await decide()).toEqual({ kind: "move", url: "https://home.tinycloud.xyz/chat" });
+    expect(await decide()).toEqual({ kind: "move", url: `${CANONICAL_ORIGIN}/chat` });
     savePostDraft(post(), { colour: { choices: ["Blue"], note: "" } });
     expect(await decide()).toEqual({ kind: "hold", work: counted({ postDrafts: 1 }) });
   });
@@ -84,7 +84,7 @@ describe("Home answers kept only in this origin's localStorage hold the move", (
     holdAnswer("space-one", held());
     expect((await count()).heldAnswers).toBe(1);
     setSystemTime(new Date(Date.now() + HELD_ANSWER_TTL_MS + 1000));
-    expect(await decide()).toEqual({ kind: "move", url: "https://home.tinycloud.xyz/chat" });
+    expect(await decide()).toEqual({ kind: "move", url: `${CANONICAL_ORIGIN}/chat` });
   });
 
   test("recordings and answers are counted together", async () => {
@@ -121,7 +121,7 @@ describe("Home answers kept only in this origin's localStorage hold the move", (
     next = Promise.withResolvers<void>();
     win.dispatchEvent(new Event("online"));
     await next.promise;
-    expect(replaced).toEqual([{ url: "https://home.tinycloud.xyz/chat", left: ["unrelated"] }]);
+    expect(replaced).toEqual([{ url: `${CANONICAL_ORIGIN}/chat`, left: ["unrelated"] }]);
     stop();
   });
 
@@ -153,7 +153,7 @@ describe("Home answers kept only in this origin's localStorage hold the move", (
     next = Promise.withResolvers<void>();
     win.dispatchEvent(new Event("online"));
     await next.promise;
-    expect(replaced).toEqual(["https://home.tinycloud.xyz/chat"]);
+    expect(replaced).toEqual([`${CANONICAL_ORIGIN}/chat`]);
     stop();
   });
 });

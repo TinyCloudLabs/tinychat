@@ -132,6 +132,8 @@ export default {
         "live-pulse": "live-pulse 1.2s ease-in-out infinite",
         "push-in": "push-in 250ms var(--ease-smooth) both",
         "rise-in": "rise-in 150ms var(--ease-smooth) both",
+        // An opened card's parts rising in, one after the other; the first frame only holds while it waits.
+        "grow-in": "rise-in 220ms var(--ease-smooth) backwards",
       },
     },
   },
@@ -149,6 +151,9 @@ export default {
       addVariant("land", "html[data-land] &");
       addVariant("fine", "@media (pointer: fine)");
       addVariant("coarse", "@media (pointer: coarse)");
+      // A card's own width, not the window's: the Feed card sets `[container-type:inline-size]` and switches its
+      // layout (two columns, wider padding) from 520px of card width, so the phone and the desktop column differ.
+      addVariant("cq", "@container (min-width: 520px)");
     }),
   ],
 };

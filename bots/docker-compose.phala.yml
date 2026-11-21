@@ -6,8 +6,7 @@
 # attestation covers exactly what runs.
 #
 # TLS ends inside this CVM (the TC-1012 / dstack-ingress pattern): only dstack-ingress publishes a port; the
-# supervisor has no published port and no outbound network. Only the gateway can reach the internet, and only the
-# gateway holds REDPILL_API_KEY.
+# supervisor has no published port and no outbound network. Only the gateway holds REDPILL_API_KEY and TAVILY_API_KEY.
 services:
   bots-supervisor:
     image: ghcr.io/tinycloudlabs/tinychat-bots@sha256:BOTS_IMAGE_DIGEST
@@ -37,6 +36,9 @@ services:
       PORT: "8080"
       # Unique 256-bit secret shared with the backend only (openssl rand -hex 32).
       BOTS_SERVICE_SECRET: ${BOTS_SERVICE_SECRET}
+      BOTS_ADMISSION_CONTROL_KEY: ${BOTS_ADMISSION_CONTROL_KEY:-}
+      # See bots/README.md, "Deploy order".
+      BOTS_ACCEPT_LEGACY_OWNER_HEADER: ${BOTS_ACCEPT_LEGACY_OWNER_HEADER:-0}
       # Same list as the backend's BOTS_TEST_ACCOUNTS; the service enforces it too. Empty admits nobody.
       BOTS_TEST_ACCOUNTS: ${BOTS_TEST_ACCOUNTS:-}
       # Owner history stays off; enabling requires the receipt signer and node-origin pins.
@@ -76,10 +78,12 @@ services:
     tmpfs:
       - /tmp:size=16m
     mem_limit: 512m
-    networks: [egress]
+    networks: [egress, fetch-link]
     environment:
       # A dedicated RedPill key with its own provider-side budget; never the main chat key.
       REDPILL_API_KEY: ${REDPILL_API_KEY}
+      BOTS_BACKEND_CALL_SECRET: ${BOTS_BACKEND_CALL_SECRET:-}
+      BACKEND_ORIGIN: ${BACKEND_ORIGIN:-https://api.tinycloud.chat}
       BOTS_HISTORY_ENABLED: ${BOTS_HISTORY_ENABLED:-false}
       BOTS_MODEL: ${BOTS_MODEL:-z-ai/glm-5.2}
       BOTS_MODELS: ${BOTS_MODELS:-}
@@ -87,10 +91,30 @@ services:
       BOTS_BOT_DAILY_TOKENS: ${BOTS_BOT_DAILY_TOKENS:-2000000}
       BOTS_GLOBAL_DAILY_TOKENS: ${BOTS_GLOBAL_DAILY_TOKENS:-20000000}
       BOTS_BODY_TIMEOUT_MS: ${BOTS_BODY_TIMEOUT_MS:-30000}
+      # Main's web access: the search provider's key. Empty: every web call is refused as unavailable.
+      TAVILY_API_KEY: ${TAVILY_API_KEY:-}
     volumes:
       - bot-egress:/egress
       # Budget counters survive restarts here; an unreadable file stops the gateway rather than resetting them.
       - bot-budget:/var/lib/bots-gateway
+    restart: unless-stopped
+
+  # Reads web pages for Main.
+  bots-fetch:
+    image: ghcr.io/tinycloudlabs/tinychat-bots@sha256:BOTS_IMAGE_DIGEST
+    platform: linux/amd64
+    command: ["bun", "src/fetch-main.ts"]
+    user: "65532:65532"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs:
+      - /tmp:size=16m
+    mem_limit: 512m
+    pids_limit: 256
+    networks: [fetch-link, fetch-out]
+    environment:
+      BOTS_FETCH_PORT: "8080"
     restart: unless-stopped
 
   dstack-ingress:
@@ -134,4 +158,9 @@ networks:
   bots-internal:
     internal: true
   egress:
+    driver: bridge
+  # Network for the page reader.
+  fetch-link:
+    internal: true
+  fetch-out:
     driver: bridge

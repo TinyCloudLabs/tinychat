@@ -1,7 +1,7 @@
 name: Deploy production
 
 # The only production deploy path: backend (Phala CVM, api.tinycloud.chat) first, then web (Cloudflare Pages project
-# `tinychat`: home.tinycloud.xyz and tinycloud.chat, one build). Web runs only when the backend was not requested, or when the production API proves it serves
+# `tinychat`: tinycloud.one, tinycloud.chat and home.tinycloud.xyz, one build). Web runs only when the backend was not requested, or when the production API proves it serves
 # this commit (server-info backendRevision == the deployed SHA, backendVersion == backend/package.json).
 #
 # It always runs from main (main's workflow code and scripts) and deploys the commit it resolves and gates:
@@ -15,7 +15,7 @@ name: Deploy production
 # Web deploys by fast-forwarding the `production` branch, which the Cloudflare Pages Git integration builds as
 # production. A ruleset lets only deploy keys update `production`, so the push goes over SSH with the release-push
 # deploy key (release-push environment, main only). The job checks the branch tip before and after, waits for that
-# build and checks the production URL (TINYCHAT_FRONTEND_URL) serves it. main only gets Pages preview builds. The final report states what
+# build and checks the production URL (TINYCHAT_FRONTEND_URL, tinycloud.one) and every other web host (TINYCHAT_ALSO_HOSTS) serve it. main only gets Pages preview builds. The final report states what
 # changed in production, including when a later check failed.
 
 on:
@@ -30,7 +30,7 @@ on:
         type: boolean
         default: true
       web:
-        description: Deploy the web app to Cloudflare Pages production (tinycloud.chat), after the backend
+        description: Deploy the web app to Cloudflare Pages production (tinycloud.one), after the backend
         type: boolean
         default: true
       allow_unreleased:
@@ -42,7 +42,7 @@ on:
         type: string
         default: ""
       allow_current_dev_os_until_tc2843:
-        description: "TC-2843 transition ONLY: permit the exact recorded dstack-dev-0.5.12 image; remove with the OS move or first post-move deploy"
+        description: "TC-2843 transition ONLY: permit the exact recorded dstack-dev-0.5.12 or dstack-dev-0.5.15 image; remove with the OS move or first post-move deploy"
         type: boolean
         default: false
 
@@ -164,13 +164,18 @@ jobs:
           COMMIT: ${{ steps.commit.outputs.commit }}
         run: scripts/release/deploy-key-push.sh "$COMMIT:refs/heads/production"
 
-      - name: Wait for Cloudflare Pages and verify tinycloud.chat
+      - name: Wait for Cloudflare Pages and verify tinycloud.one and the legacy hosts
         id: verify
         env:
           GH_TOKEN: ${{ github.token }}
           COMMIT: ${{ steps.commit.outputs.commit }}
-          PRODUCTION_URL: ${{ vars.TINYCHAT_FRONTEND_URL || 'https://tinycloud.chat' }}
-        run: node scripts/release/pages-production-verify.mjs --commit "$COMMIT" --url "$PRODUCTION_URL"
+          PRODUCTION_URL: ${{ vars.TINYCHAT_FRONTEND_URL || 'https://tinycloud.one' }}
+          # Every other web host of the product must name the same commit (space-separated hostnames).
+          ALSO_HOSTS: ${{ vars.TINYCHAT_ALSO_HOSTS || 'tinycloud.chat home.tinycloud.xyz' }}
+        run: |
+          args=()
+          for host in $ALSO_HOSTS; do args+=(--also-host "$host"); done
+          node scripts/release/pages-production-verify.mjs --commit "$COMMIT" --url "$PRODUCTION_URL" "${args[@]}"
 
       - name: Report production web state
         id: state
@@ -183,10 +188,10 @@ jobs:
         run: |
           if [ "$PUSH_OUTCOME" != success ]; then
             state=unchanged
-            detail="The production branch was not moved; tinycloud.chat still serves the previous deployment."
+            detail="The production branch was not moved; the web hosts still serve the previous deployment."
           elif [ "$VERIFY_OUTCOME" = success ]; then
             state=changed-verified
-            detail="production moved ${PREVIOUS:0:12} -> ${COMMIT:0:12} and tinycloud.chat serves that build."
+            detail="production moved ${PREVIOUS:0:12} -> ${COMMIT:0:12} and tinycloud.one, tinycloud.chat and home.tinycloud.xyz serve that build."
           else
             state=changed-unverified
             detail="production moved ${PREVIOUS:0:12} -> ${COMMIT:0:12}, so Cloudflare Pages is building or serving the new web app, but verification did not pass. Production web is CHANGED and UNVERIFIED. Roll back with Pages' own rollback, or: gh workflow run deploy-production.yml --ref main -f tag=@tinychat/frontend@<last good version> -f backend=false."
@@ -233,5 +238,5 @@ jobs:
             echo "| Side | State |"
             echo "|---|---|"
             echo "| Backend (api.tinycloud.chat) | $backend |"
-            echo "| Web (tinycloud.chat, home.tinycloud.xyz) | $web |"
+            echo "| Web (tinycloud.one, tinycloud.chat, home.tinycloud.xyz) | $web |"
           } | tee -a "$GITHUB_STEP_SUMMARY"

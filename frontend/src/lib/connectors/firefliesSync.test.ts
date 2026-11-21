@@ -974,3 +974,45 @@ describe("Fireflies final state guard", () => {
     expect(store.state?.status).toBe("disconnected");
   });
 });
+
+import { createConnectorWebhooksClient } from "./webhooksApi";
+import type { SessionStore } from "@tinyboilerplate/client";
+
+for (const path of ["Sync now", "scheduled sync", "reconnect sync"] as const) {
+  test(`${path} leaves a purged Fireflies meeting absent until the owner allows it back`, async () => {
+    const id = "purged-fireflies-fixture";
+    let blocked = true;
+    const requests: string[] = [];
+    const sessionStore = { getToken: () => "synthetic-session", isExpired: () => false } as unknown as SessionStore;
+    const webhooks = createConnectorWebhooksClient("https://backend.invalid", {
+      sessionStore,
+      fetchImpl: async (input, init) => {
+        const pathname = new URL(input.toString()).pathname;
+        requests.push(`${init?.method} ${pathname}`);
+        if (pathname.endsWith("/purge-check")) {
+          expect(JSON.parse(String(init?.body))).toEqual({ meetingId: id, sourceTimestamp: new Date(1700000000000).toISOString() });
+          return Response.json({ blocked });
+        }
+        expect(init?.method).toBe("DELETE");
+        expect(pathname).toEndWith("/purged");
+        blocked = false;
+        return new Response(null, { status: 204 });
+      },
+    });
+    const store = new FakeStore();
+    if (path === "reconnect sync") store.connectionStatus = "disconnected";
+    const { client } = makeClient({ newIds: [id], getTranscript: () => ({ ok: true, data: transcript(id) }) });
+    const tcw = fakeTcw();
+    const sync = () => syncFireflies({
+      client, store, tcw, checkPurge: webhooks.checkPurge,
+      manualRequest: path !== "scheduled sync", allowMissingConnection: path === "reconnect sync",
+    });
+    expect((await sync()).ok).toBe(true);
+    expect(store.meetings).toEqual([]);
+    expect(store.bodies.size).toBe(0);
+    expect((await webhooks.clearPurgeLedger("fireflies")).status).toBe("ok");
+    expect((await sync()).ok).toBe(true);
+    expect(store.meetings.map(meeting => meeting.sourceId)).toEqual([id]);
+    expect(requests.map(request => request.split(" ")[0])).toEqual(["POST", "DELETE", "POST"]);
+  });
+}

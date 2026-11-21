@@ -105,24 +105,92 @@ const PAGES_APP = 'cloudflare-workers-and-pages';
 
 /**
  * Classify the Cloudflare Pages check runs GitHub lists for a production-branch commit:
- *  - waiting: no finished run from the Pages app yet;
- *  - failed: the newest run did not succeed;
- *  - preview: it succeeded but as a preview (its summary has a "Branch Preview URL"), so the Pages project's
- *    production branch is not `production`;
- *  - production: it succeeded as a production deployment; `deploymentUrl` is that deployment's unique URL.
+ *  - waiting: no completed noncancelled run, or a failed latest completion has a newer unfinished attempt;
+ *  - failed: the newest completed noncancelled run failed, or creation IDs cannot be ordered safely;
+ *  - preview: the newest completed run succeeded as a preview (its summary has a "Branch Preview URL");
+ *  - production: the newest completed run succeeded as production; `deploymentUrl` is its unique URL.
+ * Creation order is the check-run ID, never completion time. Superseded nonsuccesses are returned for stderr logging.
  */
-export function classifyPagesCheckRuns(checkRuns) {
-  const runs = checkRuns
-    .filter(run => run.name === PAGES_CHECK && run.app?.slug === PAGES_APP)
-    .sort((a, b) => b.id - a.id);
-  const [latest] = runs;
-  if (!latest || latest.status !== 'completed') return { state: 'waiting' };
+export function classifyPagesCheckRuns(checkRuns, commit) {
+  const runs = checkRuns.filter(run => run.name === PAGES_CHECK && run.app?.slug === PAGES_APP && run.head_sha === commit && run.conclusion !== 'cancelled');
+  const ids = new Set();
+  for (const run of runs) {
+    if (!Number.isSafeInteger(run.id) || run.id <= 0) {
+      return { state: 'failed', reason: 'invalid or missing check-run ID; cannot determine newest attempt', detailsUrl: run.details_url };
+    }
+    if (ids.has(run.id)) {
+      return { state: 'failed', reason: `duplicate check-run ID ${run.id}; cannot determine newest attempt`, detailsUrl: run.details_url };
+    }
+    ids.add(run.id);
+  }
+  runs.sort((a, b) => b.id - a.id);
+  const completed = runs.filter(run => run.status === 'completed');
+  const latest = completed[0];
+  if (!latest) return { state: 'waiting' };
+  const supersededFailures = completed
+    .filter(run => run.id < runs[0].id && run.conclusion !== 'success')
+    .map(({ id, conclusion }) => ({ id, conclusion }));
+  const history = supersededFailures.length ? { supersededFailures } : {};
+  if (latest.conclusion !== 'success') {
+    if (runs.some(run => run.id > latest.id && run.status !== 'completed')) return { state: 'waiting', ...history };
+    return { state: 'failed', reason: `${latest.conclusion}: ${latest.output?.title ?? ''}`.trim(), detailsUrl: latest.details_url, ...history };
+  }
   const summary = latest.output?.summary ?? '';
-  if (latest.conclusion !== 'success') return { state: 'failed', reason: `${latest.conclusion}: ${latest.output?.title ?? ''}`.trim(), detailsUrl: latest.details_url };
-  if (/Branch Preview URL/.test(summary)) return { state: 'preview', detailsUrl: latest.details_url };
+  if (/Branch Preview URL/.test(summary)) return { state: 'preview', detailsUrl: latest.details_url, ...history };
   const deploymentUrl = /Preview URL:[\s\S]*?href='(https:\/\/[^']+)'/.exec(summary)?.[1];
-  if (!deploymentUrl) return { state: 'failed', reason: 'no deployment URL in the Cloudflare Pages check run', detailsUrl: latest.details_url };
-  return { state: 'production', deploymentUrl, detailsUrl: latest.details_url };
+  if (!deploymentUrl) return { state: 'failed', reason: 'no deployment URL in the Cloudflare Pages check run', detailsUrl: latest.details_url, ...history };
+  return { state: 'production', deploymentUrl, detailsUrl: latest.details_url, ...history };
+}
+
+/**
+ * Whether `https://<host>/version.json` names `commit`: the build every web host must serve after a deploy
+ * (frontend/vite.config.ts writes it). Never throws: a host that is down, answers HTML (a different Pages project) or
+ * names another commit is reported as not serving it, with what it served.
+ *
+ * With `options.productionHost` the redirect is NOT followed: a host that answers a 301, 302, 307 or 308 whose
+ * Location is `https://<productionHost>/…` is also accepted, as `{ ok: true, redirectedTo: <productionHost> }`. That
+ * host hands visitors to the production site (tinycloud.chat does, except for held visitors), and the production
+ * site is verified separately. Following the redirect would report the production site's commit as this host's.
+ * Any other redirect is not ok and says where it went.
+ */
+export async function hostServesCommit(host, commit, fetchImpl = globalThis.fetch, options = {}) {
+  try {
+    const url = new URL(`https://${host}/version.json`);
+    url.searchParams.set('deploy', commit);
+    const { productionHost } = options;
+    const response = await fetchImpl(url, { headers: { 'cache-control': 'no-cache' }, ...(productionHost ? { redirect: 'manual' } : {}) });
+    if (productionHost && [301, 302, 307, 308].includes(response.status)) {
+      const location = response.headers.get('location');
+      let target;
+      try { target = location ? new URL(location, url) : undefined; } catch { target = undefined; }
+      if (target?.protocol === 'https:' && target.host === productionHost) return { ok: true, served: `a ${response.status} redirect to ${productionHost}`, redirectedTo: productionHost };
+      return { ok: false, served: `a ${response.status} redirect to ${target ? target.host : 'no valid Location'}, not ${productionHost}` };
+    }
+    if (!response.ok) return { ok: false, served: `HTTP ${response.status}` };
+    const type = response.headers.get('content-type') ?? '';
+    if (!/json/i.test(type)) return { ok: false, served: `a ${type.split(';')[0] || 'non-JSON'} response, not version.json` };
+    const served = (await response.json())?.commit ?? null;
+    return { ok: served === commit, served: served ?? 'no commit' };
+  } catch (error) {
+    return { ok: false, served: `no answer (${error instanceof Error ? error.message : 'error'})` };
+  }
+}
+
+/**
+ * One sentence for the deploy log when `hostServesCommit` says a host is not serving the commit: what the host did, and
+ * what that usually means. `served` is the `served` field it returned. Only wording; it decides nothing.
+ */
+export function explainUnservedHost(host, served, commit) {
+  if (/^no answer/.test(served)) {
+    return `${host} did not answer (${served.slice('no answer ('.length, -1)}): the domain does not resolve or refuses the connection, so it is probably not attached to the Cloudflare Pages project`;
+  }
+  if (/^HTTP 404\b|response, not version\.json$/.test(served)) {
+    return `${host} answers but has no version.json from this build (${served}): the domain is not bound to the Cloudflare Pages project that built ${commit}, or it is bound to a different project`;
+  }
+  if (/^a \d+ redirect to /.test(served)) return `${host} answered ${served}: it sends visitors somewhere other than the production site`;
+  if (/^HTTP \d+$/.test(served)) return `${host} answered ${served} for version.json: it is up but not serving this build (a Pages or edge error)`;
+  if (served === 'no commit') return `${host} serves a version.json without a commit: it is an older build or another project`;
+  return `${host} serves ${served}, not ${commit}: an older build, so the domain is on another Cloudflare Pages project or its deploy has not propagated`;
 }
 
 export const readJson = (root, rel) => JSON.parse(readFileSync(join(root, rel), 'utf8'));

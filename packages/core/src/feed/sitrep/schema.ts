@@ -37,6 +37,11 @@ export type Kind = (typeof KINDS)[number];
 export const isKind = (value: unknown): value is Kind => typeof value === "string" && (KINDS as readonly string[]).includes(value);
 
 export const BODY_MAX = 600;
+export const POST_MAX = 280;
+/** A UTF-16 surrogate with no partner: what `String.prototype.isWellFormed` rejects (this form runs on every engine the app does). */
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+/** Control, format, line and paragraph separators, except a newline and U+200D (the joiner inside an emoji sequence). */
+const POST_FORBIDDEN = /(?![\n\u200D])[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
 export const ID_RE = /^[a-z0-9][a-z0-9._-]{0,79}$/;
 export const CLAIM_ID_RE = /^[A-Z]-[0-9]{2,}$/;
 export const validRecordId = (kind: Kind, id: string): boolean => kind === "claim" ? id.length <= 80 && CLAIM_ID_RE.test(id) : ID_RE.test(id);
@@ -119,6 +124,19 @@ const common = {
   title: z.string().trim().min(1).max(140),
   /** Markdown, at most 600 characters. Say what changed and what you need, not the whole story. */
   body: z.string().max(BODY_MAX).default(""),
+  /** The card's one-line lead on Home. CRLF becomes LF, then trimmed; well-formed text of 1 to 280 Unicode code points with no control, format, line or paragraph separator characters except a newline and U+200D. The board (roci-board) holds the same rule: a card it accepts is never refused here. */
+  post: z
+    .string()
+    .transform((text) => text.replace(/\r\n/g, "\n").trim())
+    .pipe(
+      z
+        .string()
+        .min(1, "post is empty: leave it out, or say what changed in one line")
+        .refine((text) => !LONE_SURROGATE.test(text), "post is not well-formed text: it has a lone surrogate")
+        .refine((text) => [...text].length <= POST_MAX, `post is too long: keep it to ${POST_MAX} characters`)
+        .refine((text) => !POST_FORBIDDEN.test(text), "post has a control, invisible or line-separator character: use plain text, with newlines only"),
+    )
+    .optional(),
   /** Who owns the work. */
   owner: Name.optional(),
   /** Which officer posted it. */
@@ -288,6 +306,12 @@ export const TaskSchema = z
     if (new Set(ids).size !== ids.length) ctx.addIssue({ code: "custom", path: ["steps"], message: "step ids must be unique" });
   });
 
+/** An approval's grantLifetime: a positive whole number of hours or days, e.g. 1h, 12h, 7d. */
+export const GRANT_LIFETIME_RE = /^[1-9]\d*[hd]$/;
+/** The longest grantLifetime: 30 days. */
+export const GRANT_LIFETIME_MAX_HOURS = 720;
+/** A grantLifetime in hours ("7d" = 168). NaN for text that is not a lifetime. */
+export const grantLifetimeHours = (value: string): number => (GRANT_LIFETIME_RE.test(value) ? Number.parseInt(value, 10) * (value.endsWith("d") ? 24 : 1) : Number.NaN);
 export const APPROVAL_TYPES = ["openkey", "delegation", "claude", "secret", "go"] as const;
 export type ApprovalType = (typeof APPROVAL_TYPES)[number];
 /** What a "go" approval releases: Sam's go on a release, a deploy window, a spend or a publication. */
@@ -332,6 +356,10 @@ export const ApprovalSchema = z
     expiresAt: Iso.optional(),
     /** The time Sam must act by (same format as an ask's); shows in the Next deadline readout. Absent on every older card. */
     deadline: Iso.optional(),
+    /** When the grant or link on this card was used (set by the writer that redeems it); the card shows it as used. */
+    redeemedAt: Iso.optional(),
+    /** How long the approved access lasts once granted: whole hours or days ("1h", "12h", "7d"), at most 30 days. Shown in plain words; never grants anything itself. */
+    grantLifetime: z.string().regex(GRANT_LIFETIME_RE, "a whole number of hours or days: 1h, 12h, 7d").refine((value) => grantLifetimeHours(value) <= GRANT_LIFETIME_MAX_HOURS, "a grant lasts at most 30 days (720h)").optional(),
     /** When the urgency last rose (set by roci-board, shared/upsert.ts): a rise brings a snoozed card back early. */
     urgencyRaisedAt: Iso.optional(),
     /** What approving grants, in plain words. */

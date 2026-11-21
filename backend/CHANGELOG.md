@@ -1,5 +1,390 @@
 # @tinychat/backend
 
+## 0.9.2
+
+### Patch Changes
+
+- 49f8456: Powerful transcriptions that the provider can't take right away wait and finish by themselves. The server keeps the audio and retries (after 1, 2, 5 and 10 minutes, then every 10) for up to 24 hours, and never sends the same paid request twice when the outcome is unclear. While it waits, the note and the upload sheet show "Transcription delayed" and say it will finish automatically.
+
+  Details: TC-2131
+
+- 95b5f15: Main can read web pages and search the web. It's off until you turn it on: in Main's chat, tap Web access and choose a setting. You can limit it to sites you list.
+
+  Details: TC-2808
+
+- d519be5: Background memory extraction asks each model for its lowest reasoning setting, which keeps hidden reasoning tokens down on short turns; the turn's total includes the extraction once it settles.
+
+  Details: TC-2002
+
+## 0.9.2-beta.2
+
+### Patch Changes
+
+- 95b5f15: Main can read web pages and search the web. It's off until you turn it on: in Main's chat, tap Web access and choose a setting. You can limit it to sites you list.
+
+  Details: TC-2808
+
+## 0.9.2-beta.1
+
+### Patch Changes
+
+- d519be5: Background memory extraction asks each model for its lowest reasoning setting, which keeps hidden reasoning tokens down on short turns; the turn's total includes the extraction once it settles.
+
+  Details: TC-2002
+
+## 0.9.2-beta.0
+
+### Patch Changes
+
+- 49f8456: Powerful transcriptions that the provider can't take right away wait and finish by themselves. The server keeps the audio and retries (after 1, 2, 5 and 10 minutes, then every 10) for up to 24 hours, and never sends the same paid request twice when the outcome is unclear. While it waits, the note and the upload sheet show "Transcription delayed" and say it will finish automatically.
+
+  Details: TC-2131
+
+## 0.9.1
+
+### Patch Changes
+
+- 298c5b1: Import meetings from a Granola CSV export. Meetings you've deleted aren't imported again unless you allow them back.
+
+  Details: TC-3292
+
+- 298c5b1: Importing a Granola CSV leaves notes synced from Granola's API unchanged. A meeting you deleted stays out of later Granola syncs and CSV imports until you choose "Allow deleted meetings back" and confirm.
+
+  Details: TC-3292
+
+- 05459bb: Enable Granola imports and API sync in production.
+
+  Details: TC-3292
+
+- 4444996: Main gives earlier messages more time to load when it starts. It shows "Loading earlier messages…" while they load, and you can send a message in the meantime.
+- 2e88e1e: Internal changes for bots; nothing in the app changes.
+
+  Details: TC-3325
+
+- 2bcde9f: Trim oversized web search results instead of failing the reply (TC-3464). A `web_search` result over 64K characters is cut to 64K with the `[...truncated...]` marker and the model answers from it; reading stops at a 256K hard bound, past which the reply still ends with `result_size_limit` (ours, free). Meeting reads keep failing on overflow, since their structured evidence cannot be cut.
+
+## 0.9.1-beta.4
+
+### Patch Changes
+
+- 05459bb: Enable Granola imports and API sync in production.
+
+  Details: TC-3292
+
+## 0.9.1-beta.3
+
+### Patch Changes
+
+- 2e88e1e: Internal changes for bots; nothing in the app changes.
+
+  Details: TC-3325
+
+## 0.9.1-beta.2
+
+### Patch Changes
+
+- 4444996: Main gives earlier messages more time to load when it starts. It shows "Loading earlier messages…" while they load, and you can send a message in the meantime.
+
+## 0.9.1-beta.1
+
+### Patch Changes
+
+- 2bcde9f: Trim oversized web search results instead of failing the reply (TC-3464). A `web_search` result over 64K characters is cut to 64K with the `[...truncated...]` marker and the model answers from it; reading stops at a 256K hard bound, past which the reply still ends with `result_size_limit` (ours, free). Meeting reads keep failing on overflow, since their structured evidence cannot be cut.
+
+## 0.9.1-beta.0
+
+### Patch Changes
+
+- 298c5b1: Import meetings from a Granola CSV export. Meetings you've deleted aren't imported again unless you allow them back.
+
+  Details: TC-3292
+
+- 298c5b1: Importing a Granola CSV leaves notes synced from Granola's API unchanged. A meeting you deleted stays out of later Granola syncs and CSV imports until you choose "Allow deleted meetings back" and confirm.
+
+  Details: TC-3292
+
+## 0.9.0
+
+### Minor Changes
+
+- 8ec6a58: Web sign-in goes through OpenKey's own sign-in window. When that window offers automatic renewal and the owner leaves it on, the session renews for up to 90 days without another sign-in. Otherwise a sign-in lasts its usual 30 days.
+
+  Details: TC-2872
+
+### Patch Changes
+
+- 74889d5: If you disconnect Fireflies and connect it again, Sync now imports your older meetings again.
+
+  Details: TC-2778
+
+- 74889d5: Internal changes for Fireflies sync; nothing in the app changes.
+
+  Details: TC-2778
+
+- 74889d5: Internal changes for Fireflies sync; nothing in the app changes. Details: TC-2778
+- 74889d5: The Granola connection answers a slow, oversized or unreadable response from Granola with a clear error, and passes Retry-After along on rate limits and failures.
+
+  Details: TC-3292
+
+- 74889d5: Internal changes for Granola meeting sync; nothing in the app changes. Details: TC-3292
+- 59e0b09: Import meetings from a Granola CSV export. Meetings you've deleted aren't imported again unless you allow them back.
+
+  Details: TC-3292
+
+- 7973a69: The secret guard reads a one-tap approval link the way a browser opens it.
+
+  Details: TC-3242
+
+- 7e1f3ee: Chat over the hosted MCP now shows the speaker names you set on a note. A rename (for example "Them" to "Sam") is stored on the note as `speaker_names`; the reader applies it to the transcript lines it gives the model, so answers, citations and speaker filters use the shown name. Names are cleaned the same way as in the app (one line, at most 80 characters). A name that is blank, not text, or part of an oversized map is ignored and the stored label is kept. If the names cannot be read, the stored labels are shown. Details: TC-2189
+- 74889d5: Internal changes for deploys; nothing in the app changes.
+
+  Details: TC-2196
+
+- 74889d5: Internal changes for build checks; nothing in the app changes.
+
+  Details: TC-2778
+
+- d3f87c9: Google connections started on tinycloud.chat keep returning to tinycloud.chat after the backend's web app address (`FRONTEND_URL`) moves to https://tinycloud.one. A connection started without a site tag, which is how a visitor still working on tinycloud.chat starts one, now finishes on tinycloud.chat, as it already did when the address was home.tinycloud.xyz. Connections started on tinycloud.one or home.tinycloud.xyz still return to their own site. This release changes no settings. Set `FRONTEND_URL` to https://tinycloud.one only with this backend or after it.
+- 74889d5: Internal changes for sign-in; nothing in the app changes.
+
+  Details: TC-3030
+
+- 74889d5: Internal changes for bots; nothing in the app changes.
+
+  Details: TC-3325
+
+- 74889d5: When TinyCloud is already running as many bots as it can, a message to a bot now says so and that it wasn't sent, with a Try again button, instead of the general "couldn't start" line.
+
+  Details: TC-3325
+
+- 74889d5: Internal changes for bots; nothing in the app changes.
+
+  Details: TC-3325
+
+- 74889d5: Internal changes for bots; nothing in the app changes.
+
+  Details: TC-3325
+
+- 74889d5: Internal changes for bots; nothing in the app changes.
+
+  Details: TC-3325
+
+- 74889d5: The backend can now hold more than one bot per account, each with its own permission to save its history. Every account still has one bot, Main, and it works as before.
+
+  Details: TC-3325
+
+- 74889d5: Internal changes for bots; nothing in the app changes.
+
+  Details: TC-3325
+
+- 74889d5: Deleting a bot now finishes only after its cleanup is done.
+
+  Details: TC-3360
+
+- ad02ee7: Disconnect agent in Settings > Agent access ends the access of an agent connected through the TinyCloud connector, and shows Disconnected once the agent can no longer use it. An agent whose access you removed somewhere else shows as not connected. Settings > Agent access also explains what the access is for.
+
+  Details: TC-2196
+
+- 518be65: Stop a chat reply at the credit limit and never charge above it (TC-2601). Backend-orchestrated replies cap every provider call's `max_tokens` from the allowance the account had when the reply started and end with `budget_exhausted` instead of overshooting; all chat paths (agent chat, Eliza tasks, `/api/chat`) now settle through one clamp: a reply is charged at most its starting allowance and at most what is left of the window it started in, a failed reply is charged only when the model's own output broke it (a tool it was not offered, tool calls that never finished or did not parse, output over its cap) and is otherwise free even after content was delivered, and a timed-out reply is charged at most its starting allowance. The ledger record id is now the reply's execution id. Eliza `/tasks` monitor modes are unchanged. Customer-visible effect: replies near the limit can end early with the existing "reached the limit" notice, overshoot is platform cost, not the user's, and provider or server failures cost nothing. See `docs/credits.md`.
+- 860953b: Record why a chat stream failed (TC-3462). A `tinychat_request` record whose stream ended in `error` now carries `failure_cause`: `model` when the model's own output broke the reply (the charged causes in `docs/credits.md`), otherwise `ours`. It is recorded from the stream terminal, so it is present with paywall gating off, and the log shipper allowlist passes only `model` or `ours`. No ledger change.
+- f4a51c2: Recover when the model calls a tool the turn did not offer (TC-3463). On a public-only turn, a call to any tool but `web_search` (native or inline markup) now gets a `tool_not_found` tool result instead of failing the reply with `routing_mismatch`: nothing is dispatched, no tool activity is shown, and the model answers on its next round. A model that keeps calling unoffered tools until its rounds run out still fails with `routing_mismatch` (model-caused, charged).
+
+## 0.9.0-beta.6
+
+### Patch Changes
+
+- ad02ee7: Disconnect agent in Settings > Agent access ends the access of an agent connected through the TinyCloud connector, and shows Disconnected once the agent can no longer use it. An agent whose access you removed somewhere else shows as not connected. Settings > Agent access also explains what the access is for.
+
+  Details: TC-2196
+
+## 0.9.0-beta.5
+
+### Patch Changes
+
+- f4a51c2: Recover when the model calls a tool the turn did not offer (TC-3463). On a public-only turn, a call to any tool but `web_search` (native or inline markup) now gets a `tool_not_found` tool result instead of failing the reply with `routing_mismatch`: nothing is dispatched, no tool activity is shown, and the model answers on its next round. A model that keeps calling unoffered tools until its rounds run out still fails with `routing_mismatch` (model-caused, charged).
+
+## 0.9.0-beta.4
+
+### Patch Changes
+
+- 59e0b09: Import meetings from a Granola CSV export. Meetings you've deleted aren't imported again unless you allow them back.
+
+  Details: TC-3292
+
+## 0.9.0-beta.3
+
+### Patch Changes
+
+- 860953b: Record why a chat stream failed (TC-3462). A `tinychat_request` record whose stream ended in `error` now carries `failure_cause`: `model` when the model's own output broke the reply (the charged causes in `docs/credits.md`), otherwise `ours`. It is recorded from the stream terminal, so it is present with paywall gating off, and the log shipper allowlist passes only `model` or `ours`. No ledger change.
+
+## 0.9.0-beta.2
+
+### Patch Changes
+
+- 7973a69: The secret guard reads a one-tap approval link the way a browser opens it.
+
+  Details: TC-3242
+
+- 751b563: Google connections started on tinycloud.chat keep returning to tinycloud.chat after the backend's web app address (`FRONTEND_URL`) moves to https://tinycloud.one. A connection started without a site tag, which is how a visitor still working on tinycloud.chat starts one, now finishes on tinycloud.chat, as it already did when the address was home.tinycloud.xyz. Connections started on tinycloud.one or home.tinycloud.xyz still return to their own site. This release changes no settings. Set `FRONTEND_URL` to https://tinycloud.one only with this backend or after it.
+- 518be65: Stop a chat reply at the credit limit and never charge above it (TC-2601). Backend-orchestrated replies cap every provider call's `max_tokens` from the allowance the account had when the reply started and end with `budget_exhausted` instead of overshooting; all chat paths (agent chat, Eliza tasks, `/api/chat`) now settle through one clamp: a reply is charged at most its starting allowance and at most what is left of the window it started in, a failed reply is charged only when the model's own output broke it (a tool it was not offered, tool calls that never finished or did not parse, output over its cap) and is otherwise free even after content was delivered, and a timed-out reply is charged at most its starting allowance. The ledger record id is now the reply's execution id. Eliza `/tasks` monitor modes are unchanged. Customer-visible effect: replies near the limit can end early with the existing "reached the limit" notice, overshoot is platform cost, not the user's, and provider or server failures cost nothing. See `docs/credits.md`.
+
+## 0.9.0-beta.1
+
+### Patch Changes
+
+- 74889d5: If you disconnect Fireflies and connect it again, Sync now imports your older meetings again.
+
+  Details: TC-2778
+
+- 74889d5: Internal changes for Fireflies sync; nothing in the app changes.
+
+  Details: TC-2778
+
+- 74889d5: Internal changes for Fireflies sync; nothing in the app changes. Details: TC-2778
+- 74889d5: The Granola connection answers a slow, oversized or unreadable response from Granola with a clear error, and passes Retry-After along on rate limits and failures.
+
+  Details: TC-3292
+
+- 74889d5: Internal changes for Granola meeting sync; nothing in the app changes. Details: TC-3292
+- 7e1f3ee: Chat over the hosted MCP now shows the speaker names you set on a note. A rename (for example "Them" to "Sam") is stored on the note as `speaker_names`; the reader applies it to the transcript lines it gives the model, so answers, citations and speaker filters use the shown name. Names are cleaned the same way as in the app (one line, at most 80 characters). A name that is blank, not text, or part of an oversized map is ignored and the stored label is kept. If the names cannot be read, the stored labels are shown. Details: TC-2189
+- 74889d5: Internal changes for deploys; nothing in the app changes.
+
+  Details: TC-2196
+
+- 74889d5: Internal changes for build checks; nothing in the app changes.
+
+  Details: TC-2778
+
+- d3f87c9: Google connections started on tinycloud.chat keep returning to tinycloud.chat after the backend's web app address (`FRONTEND_URL`) moves to https://tinycloud.one. A connection started without a site tag, which is how a visitor still working on tinycloud.chat starts one, now finishes on tinycloud.chat, as it already did when the address was home.tinycloud.xyz. Connections started on tinycloud.one or home.tinycloud.xyz still return to their own site. This release changes no settings. Set `FRONTEND_URL` to https://tinycloud.one only with this backend or after it.
+- 74889d5: Internal changes for sign-in; nothing in the app changes.
+
+  Details: TC-3030
+
+- 74889d5: Internal changes for bots; nothing in the app changes.
+
+  Details: TC-3325
+
+- 74889d5: When TinyCloud is already running as many bots as it can, a message to a bot now says so and that it wasn't sent, with a Try again button, instead of the general "couldn't start" line.
+
+  Details: TC-3325
+
+- 74889d5: Internal changes for bots; nothing in the app changes.
+
+  Details: TC-3325
+
+- 74889d5: Internal changes for bots; nothing in the app changes.
+
+  Details: TC-3325
+
+- 74889d5: Internal changes for bots; nothing in the app changes.
+
+  Details: TC-3325
+
+- 74889d5: The backend can now hold more than one bot per account, each with its own permission to save its history. Every account still has one bot, Main, and it works as before.
+
+  Details: TC-3325
+
+- 74889d5: Internal changes for bots; nothing in the app changes.
+
+  Details: TC-3325
+
+- 74889d5: Deleting a bot now finishes only after its cleanup is done.
+
+  Details: TC-3360
+
+## 0.9.0-beta.0
+
+### Minor Changes
+
+- 8ec6a58: Web sign-in goes through OpenKey's own sign-in window. When that window offers automatic renewal and the owner leaves it on, the session renews for up to 90 days without another sign-in. Otherwise a sign-in lasts its usual 30 days.
+
+  Details: TC-2872
+
+## 0.8.0
+
+### Minor Changes
+
+- e31dd71: Ship one metadata record per request to the private log sink: request id, route template, method, status, duration, stream outcome and code, credits charged and a keyed account hash (new optional `REQUEST_LOG_HMAC_KEY`). Records are capped per minute and never carry bodies, headers, keys, emails or IPs. The local `tinychat_request` event's `route` now includes the mount template (for example `/api/chat` instead of `/`).
+- abe8e22: Save bot chat history encrypted in the owner's TinyCloud space, with verified model receipts and storage acknowledgments. Notify the owner in Main's chat when expired TinyCloud permission schedules local history deletion, and resume copying after reconnection. Details: TC-2808.
+- 033a30f: Tiny bots, slice 1 (TC-2808), off by default. For accounts on `BOTS_TEST_ACCOUNTS` with `BOTS_ENABLED=true`, Home shows a "What do you want done?" box that sends to Main, the owner's main bot, and opens Main's chat with the reply streaming in. The backend adds `/api/bots/status` and `/api/bots/main/messages`, which forward to the new bots service (`bots/`). Everyone else sees no change.
+
+### Patch Changes
+
+- 9bf796f: Record legacy agent-turn credit usage before ending either successful or failed responses so immediate follow-up chat requests enforce the updated budget. Preserve the existing soft-cap policy and streamed answer.
+- be21a74: Google connections started on tinycloud.one return to tinycloud.one. The backend accepts two new `state` tags, `one.<nonce>` for the popup return and `onetab.<path>.<nonce>` for the same-tab return; both go to the fixed https://tinycloud.one origin when it is in the `FRONTEND_ORIGINS` allowlist (it is by default), and are refused like any unknown tag when it is not. Untagged, `tab.`, `home.`, `hometab.` and `native.` flows are unchanged.
+- aa036e0: The backend accepts https://tinycloud.one, the Home app's new site, for CORS and the sign-in (SIWE) domain, alongside tinycloud.chat and home.tinycloud.xyz. It is one more exact origin in the default `FRONTEND_ORIGINS` list; `www.tinycloud.one`, other ports, other schemes and lookalike hosts are still refused. Google connections started on tinycloud.one still return to `FRONTEND_URL` until they get their own return tag.
+- 20598f6: The backend accepts both tinycloud.chat and home.tinycloud.xyz for CORS, sign-in (the SIWE domain) and Google OAuth returns, through the new `FRONTEND_ORIGINS` allowlist: comma-separated exact origins, `FRONTEND_URL` always added, defaulting to `https://tinycloud.chat,https://home.tinycloud.xyz`. A Google connection started on tinycloud.chat returns to tinycloud.chat even after `FRONTEND_URL` moves to home.tinycloud.xyz; one started on home.tinycloud.xyz returns there. Stripe and connector-off links still use `FRONTEND_URL`.
+
+  Deploy this backend before setting `TINYCHAT_FRONTEND_URL` to `https://home.tinycloud.xyz`. That variable is also the backend's `FRONTEND_URL`, and an older backend would stop accepting tinycloud.chat, where visitors whose recordings are still only in that browser stay.
+
+- 339a1d2: Route Fireflies ingestion by the user's connection: server OAuth plus cohort eligibility selects backend ingestion; users without server OAuth keep browser access to their queued meetings.
+- 915a8f9: Stop webhook admission on Fireflies disconnect, close the in-flight enqueue race, and retain purge-ledger ID timestamps without extending them on retries.
+- 20484c4: Delete server-held Fireflies meeting IDs within 14 days and enforce authenticated content expiry and bounded replay protection.
+- fc73a24: Remove reconciled server copies when Fireflies sync is disabled, preserving unreadable or unreconciled copies for retention cleanup.
+- e667585: TinyCloud Home and the backend treat `https://node.tinycloud.xyz` and `https://tee.node.tinycloud.xyz` as the same TinyCloud node. Stored backend grants, bot history receipts, native delegations and agent CLI profiles on either name keep working when the default node name changes. The reviewer seed and the TinyChat retrieval skill (now 0.1.1-onboarding.26) default to `https://node.tinycloud.xyz`. Production still runs on `https://tee.node.tinycloud.xyz`; nothing changes for users.
+
+  Details: TC-2923
+
+- 17f9687: TC-3166: "Delete my recordings first" (the bulk `DELETE /api/transcriber/meetings`) now also deletes the account's private cloud transcription jobs, so voice notes and uploads left behind by a failed or cancelled run are cleared on account deletion. Queued or running jobs are cancelled, transcripts are deleted, and the call only succeeds once TinyCloud Private Transcription's own list for the account is empty; otherwise it is a 503 and safe to retry. The response gains `privateCloudDeleted` (a count, or `null` when private cloud transcription is not used), which the step requires, so an older backend can never produce a "deleted" claim for voice notes and uploads; with `null` the step says nothing about them. The bulk delete is also mounted when private cloud transcription is on and the meeting transcriber is off. A new `GET /api/transcriber/meetings/scope` (config only) tells the step whether the deployment keeps private cloud jobs, so its intro and failure line name voice notes and uploads only where they are kept; the step waits for it before showing anything.
+- 7b5db01: TC-3136: removing a notetaker recording now deletes the capture provider's copy (audio, video, transcript and derived artifacts) and only counts it as gone after reading it back not-found. A delete that cannot be confirmed yet stays listed as "deleting" and is retried with backoff, never dropped. Settings → Account gains "Delete my recordings first", a bulk `DELETE /api/transcriber/meetings`, ahead of deleting the OpenKey account. A recording shared with you is only removed from your list. A recording the notetaker service cannot attribute to you is removed from your list but not deleted there, and says so on its row.
+- ae08fc0: Streamed replies from confidential models now show an "Enclave verified" mark once the gateway's signed receipt checks out, or a note if it can't be confirmed. Details: TC-2196
+- f4853a8: Add an explicit exact-email transcript share action to note detail, with read-only immutable encrypted snapshots, SDK-valid note-title filenames capped at 128 UTF-8 bytes with a nonempty fallback, and no audio inclusion.
+
+  Adopt the published TinyCloud Web, Node, Core and Services SDKs at 3.11.0 (Share SDK 1.4.4 and Share Envelope 1.5.0, as pinned by those releases) for exact Share-key runtime consent, and remove the obsolete local NodeSDK sign-in patch now included upstream.
+
+  Keep transcript-share dialogs open through same-owner, same-session runtime-grant refreshes. Reject stale account/content completions and surface interrupted shares without exposing the prior recipient or link. Treat an OpenKey cancellation of exact-key consent as a cancelled share.
+
+  Discard underlying SDK errors at the transcript-share boundary so diagnostic cause chains contain only the sanitized failure message.
+
+  Freeze speaker aliases in the shared copy using the transcript's existing display, Copy and export mapping. Reject semantic alias changes during sharing, including unused labels, and validate the same projection against persisted metadata without rewriting stored sentences.
+
+  Details: TC-2192
+
+- 898ce96: Require a pinned content-master commitment and successful existing-index decrypt before canary enrollment; verify the encrypted canary before ingestion starts. Add an authenticated read-only continuity diagnostic. Existing ingestion deployments must pin CONNECTOR_CONTENT_EXPECTED_SHA256 from their live master before first startup; fresh installations require explicit CONNECTOR_CONTENT_ENROLL_FRESH=true enrollment.
+
+  Take the ingest singleton lease before enrollment and reject blank pins. Require encoded random key material for new enrollment. An unset master permits startup only with empty sealed storage, leaves sealed features disabled, and returns a diagnostic error without a fingerprint.
+
+  Close connections that become idle after an in-flight response finishes during shutdown, so Bun shutdown does not wait for keep-alive expiry. Tighten base64 padding validation and limit the diagnostic exemption to its literal path.
+
+- a4ab606: Adopt the published SDK graph and support browser restore with explicit owner-signed renewal leases. Details: TC-2872
+- c709e31: TC-2917: calendar autojoin row writes are If-Match compare-and-sets on the node, a token refresh writes custody only if no other change happened since it was read, and the cached access-token map is bounded and evicted on expiry, disable or a new generation.
+- c709e31: TC-2917: calendar autojoin reads consent from the node before every Google scan and recording check, and every connection write re-reads the stored row first, so a disable or deletion stored outside the backend is kept. The row cache is bounded, and a cached access token is dropped when any credential store in the process changes that credential.
+
+  Every calendar row and credential write or delete is now conditional on the version it was decided on (If-Match / If-None-Match; a row the node sends without an ETag is refused, never written blind), and each row carries a revision so the node's content-hash ETag changes on every write. Enable and OAuth setup re-decide on the stored row. A token refresh is bound to the grant it read and re-reads custody after writing; cached access tokens serve at most 5 minutes after their custody read, and a status read showing a disable evicts them. markUsed is conditional and never recreates a deleted credential.
+
+- 095dda1: TC-2917: the calendar autojoin worker reads connection and meeting rows from an in-process copy instead of the node every 30 s tick. Idle users, disabled connections and finished meetings no longer cost node calls; scheduling, due-time timers and dispatch policy reads are unchanged.
+- 6d52413: The per-request log record now names its route only from the fixed list of routes the backend serves (anything else is `unmatched`), reports credits as a range (`0`, `1-9`, `10-99`, `100-999`, `1000+`) instead of an exact count, and uses an account pseudonym that changes every calendar month (UTC), so one account's records can be linked within a month but not across months. Details: TC-3031.
+- 78c73f1: Support a bots service connection host with TLS verification against the service URL identity. Details: TC-2808
+- 36f006a: Backend deploys pass the tiny bots settings (BOTS_ENABLED, BOTS_TEST_ACCOUNTS, BOTS_SERVICE_URL, BOTS_SERVICE_SECRET, BOTS_POST_TIMEOUT_MS) to the backend CVM; BOTS_ENABLED defaults to false. A new workflow, deploy-bots-phala.yml, deploys the bots service to its own CVM. Details: TC-2808
+- f8823ef: Exo is now TinyCloud Home everywhere you can see it: the web app's title, install name and sign-in, the desktop app (now `TinyCloud Home.app`), the Android and iOS app names, notifications, permission prompts and error messages. Home opens on Feed on the web, on desktop and on iOS and Android, on a fresh install and after signing in, unless you chose Apps as your first screen in Settings. Feed and Apps are no longer experimental: they are in the navigation for everyone, and Settings › Home holds the first-screen choice. App id, bundle ids, URL schemes and every data path are unchanged. Details: TC-2050, TC-2040
+- 98e2480: TinyCloud Home is now TinyCloud One everywhere you can see it: the web app's title, install name and sign-in, the desktop app (now `TinyCloud One.app`; `exo-update` replaces an existing `TinyCloud Home.app`), the Android and iOS app names, widgets, Siri phrases ("Start recording in TinyCloud One"), notifications, permission prompts and error messages. The main screen is now called Feed, and Settings › Start screen holds the first-screen choice. You stay signed in: the app id, bundle ids, URL schemes, installed web app id and every data path are unchanged, and nobody has to sign in again.
+- 0d8fa35: Distinguish slow storage-lane waits from queue timeouts in private logs and include closed calendar failure classifications without account IDs, storage keys, values or error text. Preserve request-log rate limits and existing storage scheduling.
+
+  Bound every non-request log stream to ten samples per minute and retain pre-sampling outcome counts in one fixed-size summary per minute, without changing the existing request-record limits.
+
+- 761a6ba: The web build includes connector secret permissions and the decrypt permission at sign-in for devices that have used Connectors. First use requests access through OpenKey in place. Remove the unused custom AssemblyAI key permission from the manifest.
+
+## 0.8.0-beta.26
+
+### Patch Changes
+
+- 17f9687: TC-3166: "Delete my recordings first" (the bulk `DELETE /api/transcriber/meetings`) now also deletes the account's private cloud transcription jobs, so voice notes and uploads left behind by a failed or cancelled run are cleared on account deletion. Queued or running jobs are cancelled, transcripts are deleted, and the call only succeeds once TinyCloud Private Transcription's own list for the account is empty; otherwise it is a 503 and safe to retry. The response gains `privateCloudDeleted` (a count, or `null` when private cloud transcription is not used), which the step requires, so an older backend can never produce a "deleted" claim for voice notes and uploads; with `null` the step says nothing about them. The bulk delete is also mounted when private cloud transcription is on and the meeting transcriber is off. A new `GET /api/transcriber/meetings/scope` (config only) tells the step whether the deployment keeps private cloud jobs, so its intro and failure line name voice notes and uploads only where they are kept; the step waits for it before showing anything.
+
+## 0.8.0-beta.25
+
+### Patch Changes
+
+- 7b5db01: TC-3136: removing a notetaker recording now deletes the capture provider's copy (audio, video, transcript and derived artifacts) and only counts it as gone after reading it back not-found. A delete that cannot be confirmed yet stays listed as "deleting" and is retried with backoff, never dropped. Settings → Account gains "Delete my recordings first", a bulk `DELETE /api/transcriber/meetings`, ahead of deleting the OpenKey account. A recording shared with you is only removed from your list. A recording the notetaker service cannot attribute to you is removed from your list but not deleted there, and says so on its row.
+
+## 0.8.0-beta.24
+
+### Patch Changes
+
+- c709e31: TC-2917: calendar autojoin row writes are If-Match compare-and-sets on the node, a token refresh writes custody only if no other change happened since it was read, and the cached access-token map is bounded and evicted on expiry, disable or a new generation.
+- c709e31: TC-2917: calendar autojoin reads consent from the node before every Google scan and recording check, and every connection write re-reads the stored row first, so a disable or deletion stored outside the backend is kept. The row cache is bounded, and a cached access token is dropped when any credential store in the process changes that credential.
+
+  Every calendar row and credential write or delete is now conditional on the version it was decided on (If-Match / If-None-Match; a row the node sends without an ETag is refused, never written blind), and each row carries a revision so the node's content-hash ETag changes on every write. Enable and OAuth setup re-decide on the stored row. A token refresh is bound to the grant it read and re-reads custody after writing; cached access tokens serve at most 5 minutes after their custody read, and a status read showing a disable evicts them. markUsed is conditional and never recreates a deleted credential.
+
 ## 0.8.0-beta.23
 
 ### Patch Changes

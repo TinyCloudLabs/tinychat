@@ -11,6 +11,8 @@
 // has the rest. Private uploads use the account's versioned voice-note disclosure.
 
 import { useCallback, useContext, useEffect, useMemo, useState, useSyncExternalStore, type FC, type ReactNode } from "react";
+import { useOriginMoveDeferral } from "@/shell/OriginMoveNotice";
+import { uploadHoldsMove } from "@/shell/unsavedWork";
 import { useNavigate } from "react-router-dom";
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
@@ -45,6 +47,7 @@ import { privateConsentBody, privateConsentDevice } from "@/capture/recorder/fin
 import { useRecorder } from "@/capture/recorder/RecorderProvider";
 import { localStorageVoiceNoteConsentStore } from "@/lib/voiceNotes/voiceNoteTranscription";
 import { PlatformContext } from "@/lib/platform";
+import { HOSTED_DELAYED_ROW, HOSTED_DELAYED_SHEET_BODY, HOSTED_DELAYED_SHEET_TITLE } from "@/lib/voiceNotes/notePipelineCopy";
 import { FilePicker } from "./FilePicker";
 import { isHomeReauthorizing, subscribeHomeReauthorizing } from "@/lib/homeReauthorizing";
 import { FEATURE_ACCESS_WAIT_FOR_OPENKEY } from "@/lib/homeStrings";
@@ -122,7 +125,7 @@ function stageText(job: UploadState): string {
       return job.uploadPct === null ? `Uploading for ${engine} transcription…` : `Uploading for ${engine} transcription… ${job.uploadPct}%`;
     case "queued":
     case "transcribing":
-      return job.detail ?? "Transcribing…";
+      return job.delayed === true ? HOSTED_DELAYED_ROW : job.detail ?? "Transcribing…";
     case "saving":
       return job.detail ?? "Saving to your TinyCloud space…";
     default:
@@ -284,7 +287,16 @@ export const AudioUploadView: FC<AudioUploadViewProps> = ({
         )}
         {/* The job's own account, as stored with it: Settings may have changed since it started. */}
         <RouteLine nodes={uploadRoute(job.engine, job.assemblyAiMode ?? "own")} landed={saved} />
-        {busy && (
+        {busy && job.delayed === true && (
+          <div className="flex flex-col gap-0.5" role="status" data-testid="upload-delayed">
+            <h3 className="flex items-center gap-2 text-headline">
+              <Loader2Icon className="size-4 shrink-0 animate-spin" />
+              {HOSTED_DELAYED_SHEET_TITLE}
+            </h3>
+            <p className="text-callout text-muted-foreground">{HOSTED_DELAYED_SHEET_BODY}</p>
+          </div>
+        )}
+        {busy && job.delayed !== true && (
           <p className="flex items-center gap-2 text-callout text-muted-foreground" role="status">
             <Loader2Icon className="size-4 shrink-0 animate-spin" />
             {stageText(job)}
@@ -480,6 +492,8 @@ export const AudioUploadPanel: FC<AudioUploadPanelProps> = ({ tcw, backendUrl, s
   const onContinue = useCallback(() => continuePausedUpload(deps), [deps]);
 
   const [file, setFile] = useState<File | null>(null);
+  // A picked file not yet sent exists only in this page: a held tinycloud.chat page does not move under it.
+  useOriginMoveDeferral(uploadHoldsMove({ pastedText: "", pickedFile: file !== null }));
   const [engine, setEngine] = useState<UploadEngine>(readDefaultUploadEngine);
   const [diarize, setDiarize] = useState(true);
   const [privateConsent, setPrivateConsent] = useState(() => consentStore.get());

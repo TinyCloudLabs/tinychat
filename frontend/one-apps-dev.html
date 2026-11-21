@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>One Apps dev harness</title>
+  </head>
+  <body>
+    <!-- Dev only (`bun run dev:apps`): not a build input, so production builds never contain it. -->
+    <div id="root" class="h-dvh"></div>
+    <script type="module" src="/src/apps/dev/harness.tsx"></script>
+  </body>
+</html>

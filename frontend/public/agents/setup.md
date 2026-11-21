@@ -11,7 +11,7 @@ First set up TinyCloud with https://agents.tinycloud.xyz/onboarding. It installs
 Then install the TinyChat skill. Set `CLIENT` to your agent's installer name, for example `claude-code`, `codex` or `opencode`. Run it in the foreground. Inspect any existing same-named skill before replacing it.
 
 ```sh
-npx --yes skills@1.7.0 add https://tinycloud.chat/agents/tinychat-retrieval/0.1.1-onboarding.27/tinychat-retrieval-0.1.1-onboarding.27.tgz --skill tinychat-retrieval --global --copy --agent CLIENT --yes
+npx --yes skills@1.7.0 add https://tinycloud.chat/agents/tinychat-retrieval/0.1.1-onboarding.28/tinychat-retrieval-0.1.1-onboarding.28.tgz --skill tinychat-retrieval --global --copy --agent CLIENT --yes
 ```
 
 The installer places the pack at `$HOME/.agents/skills/tinychat-retrieval` for most agents, including Codex and OpenCode, and at `$HOME/.claude/skills/tinychat-retrieval` for Claude Code. Resolve paths from the current terminal's HOME. Set PACK to that directory on a preceding line of the same shell invocation. Load SKILL.md at that known path once if it is not already loaded; installation directories do not need searching.
@@ -26,7 +26,7 @@ The activation tool interruption is expected while the adapter loads. The same c
 
 The adapter adds a local plugin loader without changing model/provider settings. At startup, it raises the client's in-memory `tool_output` limits to at least 96 KiB and 2,000 lines for the session so compact meeting evidence fits the pinned client. Larger user limits and configuration files are preserved. A valid loaded setup does not need reinstalling.
 
-The release includes [skill instructions](tinychat-retrieval/0.1.1-onboarding.27/SKILL.md), [setup recovery](tinychat-retrieval/0.1.1-onboarding.27/references/setup.md), [meeting commands](tinychat-retrieval/0.1.1-onboarding.27/references/meetings.md), [local session handoff](tinychat-retrieval/0.1.1-onboarding.27/references/session-handoff.md), [permissions](tinychat-retrieval/0.1.1-onboarding.27/assets/permissions.json), [runtime metadata](tinychat-retrieval/0.1.1-onboarding.27/pack.json) and [release hashes](tinychat-retrieval/0.1.1-onboarding.27/release.json).
+The release includes [skill instructions](tinychat-retrieval/0.1.1-onboarding.28/SKILL.md), [setup recovery](tinychat-retrieval/0.1.1-onboarding.28/references/setup.md), [meeting commands](tinychat-retrieval/0.1.1-onboarding.28/references/meetings.md), [local session handoff](tinychat-retrieval/0.1.1-onboarding.28/references/session-handoff.md), [permissions](tinychat-retrieval/0.1.1-onboarding.28/assets/permissions.json), [runtime metadata](tinychat-retrieval/0.1.1-onboarding.28/pack.json) and [release hashes](tinychat-retrieval/0.1.1-onboarding.28/release.json).
 
 ## Sign in and approve access
 
@@ -64,7 +64,7 @@ Cite every substantive point with the delivered span `ref` values, for example `
 
 Later continuation reads private historical evidence, checking local context, expiry and integrity without claiming current remote authority/source/revision checks. Remote revocation or source/body changes are unobserved until an explicit fresh acquisition. `restart` with a new operation reacquires the same selected meeting; a new `latest` reselects. Failures preserve progress without silently switching meeting or account.
 
-Browsing/history uses `discover` with metadata pages and `read` with a displayed 1-based meeting selection, then the same `next` flow. Other clients use `node PACK/scripts/consume.mjs`; see [meeting commands](tinychat-retrieval/0.1.1-onboarding.27/references/meetings.md). Resolve PACK from the known installed directory.
+Browsing/history uses `discover` with metadata pages and `read` with a displayed 1-based meeting selection, then the same `next` flow. Other clients use `node PACK/scripts/consume.mjs`; see [meeting commands](tinychat-retrieval/0.1.1-onboarding.28/references/meetings.md). Resolve PACK from the known installed directory.
 
 Topic discovery needs **body search**, not just title/summary matching:
 
@@ -78,13 +78,13 @@ This is bounded literal passage search. Report the declared scope, examined/unex
 
 This release discovers the existing `connector_meeting` SQL catalog and reads matching connector KV bodies. User-space **KV-only** meeting records remain outside that discovery scope and are listed in `coverage.excludedCatalogs`. `coverage.backendPending` separately reports metadata-only counts for unreconciled backend-ingest meetings and completed or uncertain transcriber IDs not known saved in the user's space. Each source includes an unknown count, `checked_at`, and freshness; backend-ingest becomes stale after 24 hours, while transcriber becomes stale at 1 hour 30 seconds or more. Missing, future-dated, corrupt, or unsupported snapshots are unknown, never zero. The snapshot is not a live backend catalog; the pack returns no pending IDs or titles. A meeting visible in another TinyChat view may therefore be absent here. Do not ask the user to reconnect sources or report that their entire TinyChat library is empty. Missing bodies, unsupported formats, denied permissions, expired sessions and unavailable hosts are distinct failures.
 
-The external agent's chosen model/provider receives the content it reads. TinyChat's internal agent-access toggle controls its own service and does not revoke a separately approved CLI session. Local skill removal or profile logout also does not revoke a signed grant at the node.
+The external agent's chosen model/provider receives the content it reads. TinyCloud One's agent-access setting controls its own service and does not revoke a separately approved CLI session. Local skill removal or profile logout also does not revoke a signed grant at the node.
 
 ## Export this session locally
 
 “Export this session so the next agent can see how it went” means a **local diagnostic handoff**. In OpenCode, call `tinychat_handoff` for the current conversation and report the returned absolute path. It records safe receipts, completed/failed/pending stages, separately available timings, material errors and nonzero helper exits, evidence coverage, local artifact identifiers and the next action. Unavailable observations stay labeled unavailable. Review and add unresolved answer-quality issues as needed; a meeting recap alone is not a session outcome.
 
-Follow the installed [session handoff workflow](tinychat-retrieval/0.1.1-onboarding.27/references/session-handoff.md). This local request does not authorize `tc share publish`, upload retries, extra consent or scope changes. Remote publishing is a separate explicit request. Never put raw messages, command bodies, provider records, keys, signed responses or TUI input history into the handoff.
+Follow the installed [session handoff workflow](tinychat-retrieval/0.1.1-onboarding.28/references/session-handoff.md). This local request does not authorize `tc share publish`, upload retries, extra consent or scope changes. Remote publishing is a separate explicit request. Never put raw messages, command bodies, provider records, keys, signed responses or TUI input history into the handoff.
 
 ## Return, update and remove
 

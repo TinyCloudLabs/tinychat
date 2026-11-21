@@ -18,7 +18,7 @@ import { failure, memoryLocks, recordingFromSession, RECORDING_LOCK, sessionLock
   type WebStore, openWebStore, type WebStoreOptions } from "../web/webStore";
 
 type EventName = "micState" | "level" | "autoStopped" | "committed" | "recovered" | "recoveryFailed" | "audioUploadProgress"
-  | "writeFailure" | "inputs" | "captureAlert" | "presentRecorder";
+  | "writeFailure" | "inputs" | "captureAlert" | "presentRecorder" | "captureFinalized";
 type Listener = (event: never) => void;
 const clampLimitMs = (requested: number | undefined): number =>
   Math.min(VOICE_NOTE_SAFETY_CAP_MS, Math.max(VOICE_NOTE_MIN_DURATION_LIMIT_MS, requested ?? VOICE_NOTE_MAX_DURATION_MS));

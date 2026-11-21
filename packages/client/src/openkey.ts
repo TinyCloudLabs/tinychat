@@ -1,4 +1,5 @@
 import OpenKey from "@openkey/sdk";
+import type { Config as TinyCloudWebSdkConfig } from "@tinycloud/web-sdk";
 
 // ── Configuration ────────────────────────────────────────────────────
 
@@ -69,6 +70,46 @@ function hexToString(hex: string): string {
   const cleaned = hex.startsWith("0x") ? hex.slice(2) : hex;
   const bytes = new Uint8Array(cleaned.match(/.{1,2}/g)!.map((b) => parseInt(b, 16)));
   return new TextDecoder().decode(bytes);
+}
+
+// ── Sign-in with renewal ────────────────────────────────────────────
+
+/** The renewal ask for OpenKey's sign-in window (TC-2872). OpenKey offers it only beside `expiryChangeable: true`. */
+export interface OpenKeyRenewalAsk {
+  version: 1;
+  leaseLifetimeSeconds: number;
+  purpose?: "standing" | "task";
+}
+
+/** What the sign-in result says about renewal. An @openkey/sdk without sign-in renewal leaves both out. */
+export interface OpenKeyRenewalOutcome {
+  renewalChoice?: unknown;
+  /** The lease receipt OpenKey signed, unverified and not yet admitted at the node. */
+  renewal?: unknown;
+}
+
+type OpenKeySignInClient = NonNullable<TinyCloudWebSdkConfig["openkey"]>["client"];
+
+/**
+ * The OpenKey client the SDK's sign-in calls, adding the renewal ask to OpenKey's request and handing what
+ * comes back about renewal to `onOutcome` before the SDK builds the session from the signed result.
+ */
+export function openKeyRenewalClient(
+  openkey: OpenKey,
+  renewal: OpenKeyRenewalAsk,
+  onOutcome: (outcome: OpenKeyRenewalOutcome) => void,
+): OpenKeySignInClient {
+  return {
+    authorizeTinyCloud: async (request, opts) => {
+      const result = await openkey.authorizeTinyCloud(
+        { ...request, renewal } as Parameters<OpenKey["authorizeTinyCloud"]>[0],
+        opts,
+      );
+      const { renewalChoice, renewal: receipt } = result as OpenKeyRenewalOutcome;
+      onOutcome({ renewalChoice, renewal: receipt });
+      return result;
+    },
+  };
 }
 
 // ── Connect Wallet ──────────────────────────────────────────────────

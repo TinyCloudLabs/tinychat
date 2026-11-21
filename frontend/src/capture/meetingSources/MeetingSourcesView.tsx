@@ -146,11 +146,13 @@ function HowItWorks() {
 
 /** The Capture / Connectors entry card. */
 export function MeetingSourcesEntry({
+  subtitle,
   summary,
   connected,
   onClick,
   buttonRef,
 }: {
+  subtitle: string;
   summary: string;
   connected: boolean;
   onClick: () => void;
@@ -165,7 +167,7 @@ export function MeetingSourcesEntry({
         </span>
         <span className="ms-entry-copy">
           <b>Meeting sources</b>
-          <span className="ms-entry-sub">Fireflies, Google Meet and Granola</span>
+          <span className="ms-entry-sub">{subtitle}</span>
           <span className="ms-status" data-tone={connected ? "on" : "off"}>
             <i aria-hidden="true" />
             <span>{summary}</span>
@@ -322,6 +324,9 @@ export function SourceRow(props: SourceRowProps) {
           </button>
         )}
       </div>
+      {id === "fireflies" && !props.comingSoon && props.lookup === "ready" && !props.connected && (
+        <p className="ms-desc ms-hint">Connecting imports your meetings from Fireflies.</p>
+      )}
       {props.connected && props.manageOpen && (
         <div className="ms-panel" id={`msx-${id}`}>
           {props.manage}

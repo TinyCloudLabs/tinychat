@@ -9,12 +9,12 @@ import type { Shape } from "./unshown";
 type Fields = Readonly<Record<string, Shape>>;
 
 /**
- * Drawn on every kind: the title, body and posting time in the card's header (the publisher copies them from the
+ * Drawn on every kind: the post above the title, then the title, body and posting time in the card's header (the publisher copies them from the
  * record), `from` as the author and Details' Agent, the id as Details' Reference, `status` in Details' Type, "Holds
  * up" for `blocks`, and the links (each label with its host, the URL as the link). Never drawn on any kind: `owner`
  * (except as a progress card's updater, below), `urgency`, `importance`, `updatedAt` (except on progress) and `closedAt`.
  */
-const drawn = { kind: true, id: true, title: true, body: true, from: true, createdAt: true, status: true, blocks: true, links: { "[]": { label: true, url: true } } } as const;
+const drawn = { kind: true, id: true, title: true, post: true, body: true, from: true, createdAt: true, status: true, blocks: true, links: { "[]": { label: true, url: true } } } as const;
 
 /** The shaded context panel; `related` as "Earlier questions". */
 const context = { context: { background: true, whyNow: true, ifNoAnswer: true, known: true, related: true } } as const;
@@ -28,14 +28,14 @@ const brief = { ...context, repo: true, priority: { reason: true }, unblockedBy:
 
 const SHAPES: Readonly<Record<BoardRecord["kind"], Fields>> = {
   // Not drawn: askedAt, lastAskedAt, expiredAt, expiryBaseAt, resubmitOf, resubmitCount, supersededBy, mode, group.
-  // recommend as the Suggested tag and "Accept recommendation"; default and decideBy in the "goes ahead" lines.
+  // recommend as the Suggested mark under an option; default and decideBy in the "goes ahead" lines.
   ask: { ...drawn, ...brief, deadline: true, expiresAt: true, options: { "[]": { id: true, label: true, detail: true, cost: true } }, recommend: true, default: true, decideBy: true, proceededAt: true },
   // Not drawn: expiredAt, expiryBaseAt, resubmitOf, resubmitCount, group. expiresAt as "Legacy expiry".
   task: { ...drawn, ...brief, deadline: true, expiresAt: true, steps: { "[]": { id: true, text: true } }, chatLink: true },
   // Not drawn: deadline, urgencyRaisedAt, name (only `names` is listed), wholeScopeApprovedBy, grantMode, partOf, group.
   // forAsk folds the approval into its ask's card, where skipOn marks it not needed.
   approval: { ...drawn, ...brief, approvalType: true, approvalKind: true, url: true, issuedAt: true, expiresAt: true, permissions: true, names: true, copiedNames: true, keepNames: true,
-    steps: true, profile: true, target: true, codeExpected: true, scope: true, scopeGrant: true, nameWhy: { "[]": { name: true, why: true } }, warning: true, forAsk: true },
+    steps: true, profile: true, target: true, codeExpected: true, scope: true, scopeGrant: true, nameWhy: { "[]": { name: true, why: true } }, warning: true, forAsk: true, redeemedAt: true, grantLifetime: true },
   incident: { ...drawn, severity: true, impact: true, startedAt: true, resolvedAt: true },
   // Not drawn: askIds (the card only says to answer its questions on their own cards), standing.
   work: { ...drawn, next: true, waitsOn: true },

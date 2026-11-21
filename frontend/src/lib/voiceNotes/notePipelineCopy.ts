@@ -117,6 +117,15 @@ export const LOCAL_COPY = {
 /** Shown while PTX holds a note until its speech-to-text provider can take it. Not an error: it finishes by itself. */
 export const PROVIDER_DELAYED_COPY = "Transcription is delayed, it will finish automatically.";
 
+/**
+ * Monica's words when Powerful's provider is holding a transcription back and the server keeps retrying it. Not an
+ * error: it finishes by itself. No provider name anywhere in them. The sheet shows the title and the body; a
+ * voice-note row and an activity line show the one-line row.
+ */
+export const HOSTED_DELAYED_SHEET_TITLE = "Transcription delayed";
+export const HOSTED_DELAYED_SHEET_BODY = "It will finish automatically. You don't need to do anything.";
+export const HOSTED_DELAYED_ROW = "Transcription delayed · finishes automatically";
+
 export const PRIVATE_COPY = {
   waiting: (position: number) => `Waiting · ${place(position)}`,
   preparing: "Preparing…",

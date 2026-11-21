@@ -48,8 +48,14 @@ interface ImportMetaEnv {
    * prototype, and only debug builds of the app have the location permissions it needs.
    */
   readonly VITE_EXO_LOCATION_SPIKE?: string;
+  /** One Apps: "true" opens TinyCloud's own apps framed inside One with a silent scoped delegation. Unset = off (today's Apps page). */
+  readonly VITE_ONE_APPS?: string;
   /** "true" registers the PWA service worker under `vite dev` too (src/lib/pwa.ts); off by default. */
   readonly VITE_PWA_DEV?: string;
+  /** TC-3195: the origin recording share links point at (default https://tinycloud.one). */
+  readonly VITE_SHARE_LINK_ORIGIN?: string;
+  /** TC-3195: the links service origin that holds each share link's record (default https://api.tinycloud.xyz). */
+  readonly VITE_SHARE_LINKS_API_ORIGIN?: string;
 }
 
 interface ImportMeta {
@@ -64,3 +70,6 @@ interface ImportMeta {
 declare const __EXO_BUILD_INFO__:
   | { version?: string; commit?: string; build?: string; channel?: string }
   | undefined;
+
+/** One Apps build kind (vite.config.ts; frontend/bunfig.toml for `bun test`). Anything else is treated as production. */
+declare const __ONE_APPS_BUILD_KIND__: string;

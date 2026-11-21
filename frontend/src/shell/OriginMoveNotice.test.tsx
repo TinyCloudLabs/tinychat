@@ -3,11 +3,15 @@ import { readFileSync } from "node:fs";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 import { installReactTestEnv, mount } from "@/capture/recorder/final/shell/hookTestUtil";
-import { isOriginMoveDeferred, NO_LOCAL_WORK, type LocalRecordingWork } from "@/lib/originMove";
+import { CANONICAL_ORIGIN, isOriginMoveDeferred, NO_LOCAL_WORK, type LocalRecordingWork } from "@/lib/originMove";
 import { OriginMoveHold, OriginMoveNotice, originMoveNoticeText, useOriginMoveDeferral } from "./OriginMoveNotice";
 
 const work = (patch: Partial<LocalRecordingWork>): LocalRecordingWork => ({ ...NO_LOCAL_WORK, signedIn: true, ...patch });
-const MOVED = "TinyCloud One has moved to home.tinycloud.xyz.";
+// The notice's opening line (its wording is Monica's); what is pinned is that it names the canonical host.
+const MOVED = originMoveNoticeText(work({}));
+test("the opening line names the canonical host", () => {
+  expect(MOVED).toContain(new URL(CANONICAL_ORIGIN).host);
+});
 const CLOSER = "This tab stays here while these recordings are only in this browser.";
 const CLOSER_ONE = "This tab stays here while this recording is only in this browser.";
 

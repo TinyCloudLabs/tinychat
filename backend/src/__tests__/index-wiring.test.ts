@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { validateAgentStreamPolicy } from "../agent-stream-policy.js";
+import { mcpChatFromEnv } from "../mcp-meetings/config.js";
 import { createHmac, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -148,11 +150,13 @@ async function runIsolatedStartup(
       transcriptionApiConfigFromEnv: () => transcription.transcriptionApiConfigFromEnv(env),
       createTranscriptionApiClient: () => ({}),
     },
-    "./mcp-meetings/config.js": { mcpChatFromEnv: () => ({}) },
+    // Real wiring parser; MCP operations remain inert until a request uses them.
+    "./mcp-meetings/config.js": { mcpChatFromEnv },
     "./redpill-aci.js": load("./redpill-aci.ts"),
     "./routes/agent.js": {
-      createAgentRouter: (config: unknown) => {
+      createAgentRouter: (config: any) => {
         agentConfig = config;
+        if (config.chat) validateAgentStreamPolicy(config.chat.streamPolicy);
         calls.push("agent-router");
         throw stopped;
       },
@@ -252,6 +256,30 @@ describe("agent stream startup policy wiring", () => {
     });
     expect(result.calls).toContain("agent-router");
     expect(result.calls).not.toContain("listen");
+  });
+  test("mounts MCP-only agent chat without Eliza configuration", async () => {
+    const result = await runIsolatedStartup({
+      BACKEND_PRIVATE_KEY: "synthetic-private-key",
+      ...STREAM_ENV,
+      REDPILL_API_KEY: "synthetic-provider-key",
+      MCP_CHAT_ENABLED: "true",
+      MCP_CHAT_TEST_ACCOUNTS: "0x1111111111111111111111111111111111111111",
+      MCP_CHAT_URL: "https://mcp.example/mcp",
+      MCP_CHAT_SERVICE_DID: "did:service",
+      MCP_CHAT_SERVICE_CREDENTIAL: "synthetic-mcp-secret",
+      MCP_CHAT_SERVICE_CREDENTIAL_HEADER: "X-Service-Credential",
+      MCP_CHAT_OWNER_DID_HEADER: "X-Owner-DID",
+    });
+    expect(result.logs).toEqual([]);
+    expect(result.calls).toContain("agent-router");
+    expect(result.agentConfig?.chat?.streamPolicy).toEqual({
+      heartbeatMs: 17,
+      turnTimeoutMs: 251,
+      drainGraceMs: 31,
+    });
+    expect(result.agentConfig?.agentDid).toBeUndefined();
+    expect(result.agentConfig?.elizaServiceUrl).toBeUndefined();
+    expect(result.agentConfig?.elizaServiceSecret).toBeUndefined();
   });
 
   test("wires explicit meeting account and evaluated-model allowlists with rollout off by default", async () => {
@@ -505,6 +533,47 @@ describe("backend index middleware wiring", () => {
     expect(LIMITS).toContain('[GOOGLE_OAUTH_PATHS, "googleOAuth"]');
     // …and the prefix is EXEMPTED from the global bucket, not merely given a second one:
     // `bucketFor` assigns each request exactly one bucket.
+    expect(LIMITS).toContain('bucketFor(req.method, req.path) !== kind');
+  });
+
+  test("the granola proxy mount lives INSIDE the granolaProxyEnabled() branch, behind auth", () => {
+    // Same dark-ship contract as the Google OAuth proxy: flag off ⇒ no mount ⇒ 404, and the
+    // mount sits in the NORMAL window (parser, CSRF, its own rate bucket) after
+    // `applyRateLimiters`. Unlike Google's, EVERY granola route is authenticated — the user's
+    // own key is worthless without our session anyway, and an open proxy would be a Granola
+    // relay anyone could point at a victim account.
+    const gate = INDEX.indexOf("if (granolaProxyEnabled()) {");
+    const mount = INDEX.indexOf('"/api/connectors/granola"');
+    expect(gate).toBeGreaterThan(-1);
+    expect(mount).toBeGreaterThan(gate);
+    expect(INDEX.slice(gate, mount)).not.toMatch(/\n {2}\}/);
+    expect(INDEX.match(/"\/api\/connectors\/granola"/g)).toHaveLength(1);
+    expect(INDEX).toMatch(
+      /app\.use\(\s*\n?\s*"\/api\/connectors\/granola",\s*\n?\s*authMiddleware,\s*\n?\s*createGranolaProxyRouter\(\)\s*\n?\s*\)/,
+    );
+    const limiterIndex = INDEX.indexOf("applyRateLimiters(app, ");
+    expect(mount).toBeGreaterThan(limiterIndex);
+
+    // Exactly the three documented read paths, all GETs. A fourth route cannot silently
+    // inherit the pass-through.
+    const ROUTES = readFileSync(resolve(import.meta.dir, "../routes/granola-proxy.ts"), "utf8");
+    const registered = [...ROUTES.matchAll(/router\.(get|post|delete|put|patch)\(\s*"([^"]+)"/g)]
+      .map((m) => `${m[1]!.toUpperCase()} ${m[2]!}`);
+    expect(registered).toEqual([
+      "GET /v1/notes",
+      "GET /v1/notes/:id",
+      "GET /v1/notes/:id/transcript",
+    ]);
+    // The upstream host is a constant in the route file, never request-derived.
+    expect(ROUTES).toContain('GRANOLA_API_BASE_URL = "https://public-api.granola.ai"');
+    // The key header and the session bearer are separate channels by contract.
+    expect(ROUTES).toContain('GRANOLA_KEY_HEADER = "x-granola-key"');
+  });
+
+  test("the granola proxy prefix carries its own rate-limit bucket, never the global one", () => {
+    const LIMITS = readFileSync(resolve(import.meta.dir, "../rate-limits.ts"), "utf8");
+    expect(LIMITS).toContain('GRANOLA_PROXY_PATHS = ["/api/connectors/granola"]');
+    expect(LIMITS).toContain('[GRANOLA_PROXY_PATHS, "granolaProxy"]');
     expect(LIMITS).toContain('bucketFor(req.method, req.path) !== kind');
   });
 
@@ -786,6 +855,9 @@ const exoMailbox = load("./exo/mailbox.ts");
 const exoGrant = load("./routes/exo-grant.ts");
 const { ASSEMBLYAI_HOSTED_MOUNT, createAssemblyAiHostedRouter } = load("./routes/assemblyai-hosted.ts");
 const { createPrivateCloudTranscriptionRouter } = load("./routes/private-cloud-transcription.ts");
+const transcriberRoutes = load("./routes/transcriber.ts");
+const privateCloudPurge = load("./services/private-cloud-purge.ts");
+const granolaProxyModule = load("./routes/granola-proxy.ts");
 
 interface Boot {
   url: string | null;
@@ -809,6 +881,8 @@ async function bootIndex(patch: Record<string, string | undefined> = {}, options
   requestHandler?: express.RequestHandler;
   capture?: (name: string, config: Record<string, unknown>) => void;
   processLogSink?: boolean;
+  realCsrf?: boolean;
+  connectorControl?: object;
 } = {}): Promise<Boot> {
   const env: Record<string, string | undefined> = { ...envBase, ...patch };
   const logs: string[] = [];
@@ -843,7 +917,9 @@ async function bootIndex(patch: Record<string, string | undefined> = {}, options
     cors: () => (_req: express.Request, _res: express.Response, next: express.NextFunction) => next(),
     "@tinyboilerplate/server": {
       DelegationStore: class {}, DelegationCache: class {}, createNonceStore: () => ({}),
-      createCsrfMiddleware: () => (_req: express.Request, _res: express.Response, next: express.NextFunction) => next(),
+      createCsrfMiddleware: options.realCsrf
+        ? load("@tinyboilerplate/server").createCsrfMiddleware
+        : () => (_req: express.Request, _res: express.Response, next: express.NextFunction) => next(),
       createDelegationMiddleware: () => (_req: express.Request, _res: express.Response, next: express.NextFunction) => next(),
     },
     "@tinyboilerplate/core": { APP_ID: "test-backend" },
@@ -864,6 +940,8 @@ async function bootIndex(patch: Record<string, string | undefined> = {}, options
     },
     "./services/private-cloud-transcription.js": privateCloud,
     "./routes/private-cloud-transcription.js": { createPrivateCloudTranscriptionRouter },
+    "./routes/transcriber.js": transcriberRoutes,
+    "./services/private-cloud-purge.js": privateCloudPurge,
     "./services/assemblyai-hosted.js": { ...hosted, HostedUploadStore: class {
       init() { return Promise.resolve(); }
       shutdown() { return stop.hosted?.() ?? Promise.resolve(); }
@@ -874,6 +952,12 @@ async function bootIndex(patch: Record<string, string | undefined> = {}, options
       googleMeetOAuthEnabled: () => google.googleMeetOAuthEnabled(env),
       googleOAuthConfigFromEnv: () => google.googleOAuthConfigFromEnv(env),
       GoogleOAuthClient: google.GoogleOAuthClient,
+    },
+    // The REAL flag parser reads the harness env (the same contract google-oauth uses), and the
+    // fallback's class-per-property stub would otherwise call a class for `granolaProxyEnabled`.
+    "./routes/granola-proxy.js": {
+      granolaProxyEnabled: () => granolaProxyModule.granolaProxyEnabled(env),
+      createGranolaProxyRouter: router,
     },
     "./routes/google-oauth.js": {
       createGoogleOAuthRouter: (options: Parameters<typeof createGoogleOAuthRouter>[0]) => createGoogleOAuthRouter({
@@ -930,11 +1014,14 @@ async function bootIndex(patch: Record<string, string | undefined> = {}, options
       res.sendStatus(202);
     } },
     "./routes/connector-webhooks.js": {
+      createConnectorPurgeRouter: load("./routes/connector-webhooks.ts").createConnectorPurgeRouter,
       createConnectorWebhookCompanionRouter: (config: Record<string, unknown>) => {
         options.capture?.("connectorWebhooks", config);
         return express.Router();
       },
-      ConnectorControlStore: class {}, ConnectorWebhookLimiters: class {
+      ConnectorControlStore: class {
+        constructor() { if (options.connectorControl) return options.connectorControl; }
+      }, ConnectorWebhookLimiters: class {
         ipPreLimiter(_req: express.Request, _res: express.Response, next: express.NextFunction) { next(); }
       },
       createConnectorWebhookHostGuard: () => (_req: express.Request, _res: express.Response, next: express.NextFunction) => next(),
@@ -951,6 +1038,7 @@ async function bootIndex(patch: Record<string, string | undefined> = {}, options
         return express.Router();
       },
     },
+    "./routes/route-unavailable.js": load("./routes/route-unavailable.ts"),
     "./services/webhook-tokens.js": { assertStrongSecret: () => {}, WebhookTokenService: class {} },
     "./routes/delegations.js": { createDelegationRouter: (config: Record<string, unknown>) => {
       options.capture?.("delegation", config);
@@ -980,6 +1068,7 @@ async function bootIndex(patch: Record<string, string | undefined> = {}, options
     "./routes/exo-mailbox.js": { createExoMailboxRouter: router },
     // TC-2808: the bots routes are off unless BOTS_* are set; this test doesn't arm them.
     "./routes/bots.js": { botsFromEnv: () => undefined, createBotsRouter: router },
+    "./renewal-verify.js": { renewalVerifyConfigFromEnv: () => undefined },
     // TC-1013 S4b: startup wires the grant-holder index and tracked grant store outside the flag.
     "./exo/grant-holders.js": { GrantHolderIndex: class GrantHolderIndex { async refresh() {} }, createTrackedGrantStore: (store: unknown) => store },
     "./security.js": { applySecurityDefaults: noop },
@@ -1087,6 +1176,34 @@ const ptxEnv = {
 };
 
 describe("backend entry-point HTTP and lifecycle guards", () => {
+  test("Granola purge mutations require authentication and CSRF with webhook delivery off", async () => {
+    const ledgers = new Map<string, unknown>();
+    const boot = await bootIndex({ CONNECTOR_WEBHOOKS_ENABLED: "false" }, {
+      realCsrf: true,
+      connectorControl: {
+        async readLedger(source: string, address: string) {
+          const ledger = ledgers.get(`${source}/${address}`);
+          return ledger === undefined ? { status: "absent" } : { status: "ok", ledger };
+        },
+        async writeLedger(source: string, address: string, ledger: unknown) { ledgers.set(`${source}/${address}`, ledger); },
+        async clearLedger(source: string, address: string) { ledgers.delete(`${source}/${address}`); },
+        async clearQuarantinedLedger() {},
+      },
+    });
+    for (const method of ["POST", "DELETE"]) {
+      const request = (headers: Record<string, string>) => fetch(`${boot.url}/api/connectors/webhooks/purged`, {
+        method, headers: { "content-type": "application/json", ...headers },
+        body: JSON.stringify({ source: "granola", ids: ["not_0001"], purgedThrough: "2026-01-01T00:00:00.000Z" }),
+      });
+      expect((await request({ "x-requested-with": "XMLHttpRequest" })).status).toBe(401);
+      const noCsrf = await request({ authorization: "Bearer test-session" });
+      expect(noCsrf.status).toBe(403);
+      expect((await noCsrf.json()).error).toBe("csrf_rejected");
+      expect((await request({ authorization: "Bearer test-session", "x-requested-with": "XMLHttpRequest" })).status).toBe(204);
+      expect(ledgers.size).toBe(method === "POST" ? 1 : 0);
+    }
+  });
+
   test("Stripe receives raw bytes without a CSRF header; unauthenticated NRAS rejects before its large parser", async () => {
     const boot = await bootIndex();
     const body = '{ "event" : "test" }';
@@ -1454,6 +1571,38 @@ describe("TC-959 backend request contract", () => {
     }
   });
 
+  test("private cloud on and the meeting transcriber off still mounts the bulk delete, behind auth (TC-3166)", async () => {
+    const upstream = express();
+    const listed: string[] = [];
+    upstream.get("/v1/transcriptions", (req, res) => {
+      listed.push(String(req.query.limit));
+      res.status(200).json({ data: [] });
+    });
+    const listening = Promise.withResolvers<void>();
+    const server = upstream.listen(0, "127.0.0.1", listening.resolve);
+    await listening.promise;
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Synthetic batch did not listen");
+    const boot = await bootIndex({ ...ptxEnv, PRIVATE_CLOUD_TRANSCRIPTION_API_URL: `http://127.0.0.1:${address.port}` });
+    try {
+      const anonymous = await fetch(boot.url! + "/api/transcriber/meetings", { method: "DELETE" });
+      expect(anonymous.status).toBe(401);
+      const response = await fetch(boot.url! + "/api/transcriber/meetings", { method: "DELETE", headers: { authorization: "Bearer test-session" } });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ removed: 0, deleting: 0, listOnly: 0, notDeleted: 0, privateCloudDeleted: 0 });
+      expect(listed).toEqual(["50"]);
+      const scope = await fetch(boot.url! + "/api/transcriber/meetings/scope", { headers: { authorization: "Bearer test-session" } });
+      expect(scope.status).toBe(200);
+      expect(await scope.json()).toEqual({ privateCloud: true });
+      expect((await fetch(boot.url! + "/api/transcriber/meetings/scope")).status).toBe(401);
+    } finally {
+      server.closeAllConnections();
+      const closed = Promise.withResolvers<void>();
+      server.close(() => closed.resolve());
+      await closed.promise;
+    }
+  });
+
   test("terminal error logs never include raw wallet, tenant, capability or transcript", async () => {
     const forbidden = ["0x" + "a".repeat(40), "tenant-private-canary", "capability-private-canary", "transcript-private-canary"];
     const boot = await bootIndex({}, { requestHandler: () => { throw new Error(forbidden.join(" ")); } });
@@ -1585,5 +1734,24 @@ describe("TC-959 backend request contract", () => {
         await closed.promise;
       }
     }
+  });
+
+  test("an unmounted credential route answers 404 with the backend's own marker; a mounted one does not add it", async () => {
+    const path = "/api/connectors/credentials/fireflies";
+    const marker = "x-route-unavailable";
+    for (const patch of [{}, { CONNECTOR_WEBHOOKS_ENABLED: "true" }]) {
+      const dark = await bootIndex(patch);
+      const response = await fetch(dark.url! + path, { headers: { authorization: "Bearer test-session" } });
+      expect(response.status).toBe(404);
+      expect(response.headers.get(marker)).toBe("connector-credentials");
+    }
+    const mounted = await bootIndex({
+      CONNECTOR_WEBHOOKS_ENABLED: "true", CONNECTOR_BACKEND_INGEST_ENABLED: "true",
+      CONNECTOR_CREDENTIAL_MASTER: randomBytes(32).toString("hex"), CONNECTOR_CONTENT_MASTER: randomBytes(32).toString("hex"),
+      FIREFLIES_OAUTH_CLIENT_ID: "test-fireflies-client", FIREFLIES_OAUTH_CLIENT_SECRET: "test-fireflies-secret",
+      FIREFLIES_OAUTH_REDIRECT_URI: "https://app.invalid/fireflies-callback", CONNECTOR_WEBHOOK_PUBLIC_ORIGIN: "https://app.invalid",
+    });
+    const response = await fetch(mounted.url! + path, { headers: { authorization: "Bearer test-session" } });
+    expect(response.headers.get(marker)).toBeNull();
   });
 });

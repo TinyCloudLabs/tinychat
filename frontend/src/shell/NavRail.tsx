@@ -8,8 +8,10 @@ import { SettingsIcon } from "lucide-react";
 import { CaptureDot } from "@/capture/recorder/final/CaptureDot";
 import { cn } from "@/lib/utils";
 import { useStorageReadOnly } from "@/lib/useStorageReadOnly";
+import { RailBotAvatars } from "@/bots/lazyBotNav";
 import { NavBadge } from "./NavBadge";
-import { tabTarget } from "./navigation";
+import { NavLink } from "./NavLink";
+import { navTarget } from "./navItems";
 import { PATHS } from "./routes";
 import type { NavProps } from "./TabBar";
 
@@ -40,16 +42,17 @@ export function NavRail({
           const active = item.id === current;
           const Icon = item.icon;
           return (
-            <li key={item.id} className="flex w-full">
-              <Link
-                to={tabTarget(item.id, active)}
+            <li key={item.id} className="flex w-full flex-col">
+              <NavLink
+                item={item}
+                to={navTarget(item, active)}
                 replace={replace}
                 aria-current={active ? "page" : undefined}
                 aria-label={item.ariaLabel}
                 onClick={(event: MouseEvent) => {
                   if (!active || pathname !== item.href) return;
                   event.preventDefault();
-                  onReselect(item.id);
+                  onReselect(item.destination);
                 }}
                 className="tap-transparent group flex min-h-14 flex-1 flex-col items-center justify-center gap-1 py-1 land:min-h-11 land:gap-0 land:py-0"
               >
@@ -66,7 +69,8 @@ export function NavRail({
                 <span className={cn("text-label", active ? "font-semibold text-foreground" : "font-medium text-muted-foreground")}>
                   {item.label}
                 </span>
-              </Link>
+              </NavLink>
+              {item.id === "chat" && <RailBotAvatars />}
             </li>
           );
         })}

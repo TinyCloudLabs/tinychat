@@ -7,6 +7,7 @@ import { CheckIcon, XIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { MAX_RECORDING_TITLE_LENGTH } from "@/lib/recordingTitleMeta";
+import { useOriginMoveDeferral } from "@/shell/OriginMoveNotice";
 import {
   RECORDING_RENAME_CANCEL,
   RECORDING_RENAME_FIELD_LABEL,
@@ -25,6 +26,8 @@ export interface RecordingTitleEditorProps {
 
 export const RecordingTitleEditor: FC<RecordingTitleEditorProps> = ({ initial, onSave, onCancel, className }) => {
   const [value, setValue] = useState(initial);
+  // A changed title is not saved until Enter, Save or leaving the field: a held tinycloud.chat page does not move under it.
+  useOriginMoveDeferral(value !== initial);
   const inputRef = useRef<HTMLInputElement>(null);
   // Escape, Save and Cancel each end the edit once; the blur they cause must not save again.
   const done = useRef(false);

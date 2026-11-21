@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { fakeBackendNode } from "./helpers/fake-backend-node.js";
 import { createHash, createHmac, hkdfSync } from "node:crypto";
 import type { AddressInfo } from "node:net";
 import express from "express";
@@ -42,16 +43,7 @@ function fixture() {
   const subjects = new Map<string, string>();
   const revoked = new Set<string>();
   const calls: string[] = [];
-  const node = { kv: {
-    async get(key: string) {
-      reads++;
-      return values.has(key) ? { ok: true, data: { data: structuredClone(values.get(key)) } }
-        : { ok: false, error: { code: "KV_NOT_FOUND", service: "kv", message: `Key not found: ${key}` } };
-    },
-    async put(key: string, value: unknown) { values.set(key, structuredClone(value)); return { ok: true, data: {} }; },
-    async delete(key: string) { values.delete(key); return { ok: true, data: {} }; },
-    async list({ prefix }: { prefix: string }) { reads++; return { ok: true, data: { keys: [...values.keys()].filter(key => key.startsWith(prefix)) } }; },
-  } } as unknown as TinyCloudNode;
+  const { node } = fakeBackendNode(values, { before(op) { if (op === "get" || op === "list") reads++; } });
   const lane = new BackendStorageLane();
   const stores = kvCalendarAutojoinStores(node, lane);
   const coordinator = new TenantCoordinator();

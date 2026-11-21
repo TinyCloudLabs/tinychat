@@ -73,6 +73,15 @@ test("the Account section offers Delete OpenKey account beside Sign out", async 
   expect(section?.textContent).toContain("You'll confirm on openkey.so.");
 });
 
+test("the Account section puts Delete my recordings first above Delete OpenKey account (TC-3136)", async () => {
+  const page = await renderSettings("web");
+  const buttons = [...page.querySelectorAll("button")];
+  const recordings = buttons.find((button) => button.textContent === "Delete my recordings first");
+  const del = buttons.find((button) => button.textContent === "Delete OpenKey account");
+  expect(recordings).toBeDefined();
+  expect(recordings!.compareDocumentPosition(del!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+});
+
 test("desktop, which has no fixed-URL opener for it, shows no deletion row", async () => {
   Object.defineProperty(window, "__TAURI_INTERNALS__", { configurable: true, value: {} });
   try {

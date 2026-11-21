@@ -106,6 +106,7 @@ function metaView(meta: ContentMeta) {
     sourceId: meta.sourceId,
     ...(meta.title === undefined ? {} : { title: meta.title }),
     ...(meta.ts === undefined ? {} : { ts: meta.ts }),
+    ...(meta.sourceTimestamp === undefined ? {} : { sourceTimestamp: meta.sourceTimestamp }),
     ...(meta.participantNames === undefined ? {} : { participantNames: meta.participantNames }),
     ...(meta.participantEmails === undefined ? {} : { participantEmails: meta.participantEmails }),
     ...(meta.organizerEmail === undefined ? {} : { organizerEmail: meta.organizerEmail }),

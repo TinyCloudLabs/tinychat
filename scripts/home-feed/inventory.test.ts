@@ -47,7 +47,7 @@ test("the plan has the open asks, tasks, incidents, progress and work, and says 
     indexRow(answered, {}, 10),
     indexRow(mine, { cardUuid: boardCardIdentity(boardKey("ask", mine.id)).cardId }, 11),
     indexRow(elsewhere, { cardUuid: "00000000-0000-4000-8000-000000000000" }, 12),
-    indexRow(boardRecord("approval", "ap1")), indexRow(boardRecord("hold", "h1")),
+    indexRow(boardRecord("hold", "h1")),
     { key: boardKey("ask", "broken"), kind: "ask", id: "broken", json: "{not json", created: 13 },
     { ...indexRow(boardRecord("ask", "a2"), {}, 14), key: boardKey("ask", "other-key") },
   ]);
@@ -66,8 +66,8 @@ test("the plan has the open asks, tasks, incidents, progress and work, and says 
   expect(inventoryPlan(rows, Date.parse(NOW))).toEqual(plan);
 });
 
-test("approvals, holds and claims stay on the board: asking for them is refused", () => {
-  for (const kinds of ["approval", "ask,hold", "claim"]) expect(() => parseInventoryKinds(kinds)).toThrow("Home mirror inventory leaves approvals, holds and claims on the board");
+test("holds and claims stay on the board: asking for them is refused", () => {
+  for (const kinds of ["hold", "ask,claim", "hold,claim"]) expect(() => parseInventoryKinds(kinds)).toThrow("Home mirror inventory leaves holds and claims on the board");
   expect(parseInventoryKinds("task,ask,task")).toEqual(["task", "ask"]);
 });
 
@@ -138,15 +138,27 @@ test("one card the mirror refuses is reported with its code and the rest are sti
   expect(JSON.parse(f.values.get(boardKey("ask", "a1"))!.text).title).toBe("Edited on the board");
 });
 
-test("postMany and boardCard leave approvals, holds and claims on the board even when a caller passes them", async () => {
+test("postMany and boardCard leave holds on the board even when a caller passes them", async () => {
   const f = await node();
-  const approval = boardRecord("approval", "g1"), hold = boardRecord("hold", "h1"), ask = boardRecord("ask", "a1");
-  await seedBoard(f, [approval, hold, ask]);
-  for (const record of [approval, hold]) expect(() => boardCard({ key: boardKey(record.kind, record.id), record }, [record], Date.parse(NOW))).toThrow("Home mirror inventory leaves approvals, holds and claims on the board");
+  const hold = boardRecord("hold", "h1"), ask = boardRecord("ask", "a1");
+  await seedBoard(f, [hold, ask]);
+  expect(() => boardCard({ key: boardKey(hold.kind, hold.id), record: hold }, [hold], Date.parse(NOW))).toThrow("Home mirror inventory leaves holds and claims on the board");
   f.resetCalls();
-  const results = await postMany(f.ctx, { sourceId: SOURCE, label: "Rocinante", rows: rowsOf([approval, hold, ask]), now: Date.parse(NOW) });
+  const results = await postMany(f.ctx, { sourceId: SOURCE, label: "Rocinante", rows: rowsOf([hold, ask]), now: Date.parse(NOW) });
   expect(results.map((item) => [item.key, item.outcome, item.code])).toEqual([
-    [boardKey("approval", "g1"), "refused", "INVALID_INPUT"], [boardKey("hold", "h1"), "refused", "INVALID_INPUT"], [boardKey("ask", "a1"), "posted", undefined],
+    [boardKey("hold", "h1"), "refused", "INVALID_INPUT"], [boardKey("ask", "a1"), "posted", undefined],
   ]);
   expect(take(await listFeedCardHistory(f.output)).cards.map((card) => card.kind)).toEqual(["ask"]);
+});
+
+test("an open approval is in the default inventory and is posted to Home as an approval card", async () => {
+  expect(parseInventoryKinds(undefined)).toContain("approval");
+  expect(parseInventoryKinds("approval")).toEqual(["approval"]);
+  const f = await node();
+  const approval = boardRecord("approval", "g1");
+  await seedBoard(f, [approval]);
+  f.resetCalls();
+  const results = await postMany(f.ctx, { sourceId: SOURCE, label: "Rocinante", rows: rowsOf([approval]), now: Date.parse(NOW) });
+  expect(results.map((item) => [item.key, item.outcome])).toEqual([[boardKey("approval", "g1"), "posted"]]);
+  expect(take(await listFeedCardHistory(f.output)).cards.map((card) => [card.kind, card.needsResponse])).toEqual([["approval", true]]);
 });

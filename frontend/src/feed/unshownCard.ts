@@ -2,9 +2,10 @@
 // "Not shown on the card" in Details. A plain card is drawn by HomeFeedEntries/FeedView (the card, its post page, its
 // conversation, AgentDetails and CardFacts); a typed card by SitrepCard (its record's shape: unshownSitrep.ts).
 // When a renderer starts drawing a field, its shape here must name it, or Details keeps listing it as not shown.
-import type { FeedCard } from "@tinycloud/sdk-services/feed";
+import type { FeedCard, FeedSource } from "@tinycloud/sdk-services/feed";
 import type { BoardRecord } from "@tinyboilerplate/core/feed/sitrep";
 import { briefOf } from "./brief";
+import { courierMessage, parseCardType } from "./feedData";
 import { unshownFields, type Shape, type UnshownField } from "./unshown";
 import { sitrepRecordShape } from "./unshownSitrep";
 
@@ -25,7 +26,7 @@ const PAGE: Shape = {
  * A plain card's payload (card guide v2), as the card, its page, its conversation and its Details draw it. A brief or
  * page Home cannot read draws nothing, so all of it is listed.
  */
-function plainPayload(payload: Record<string, unknown>): Shape {
+function plainPayload(payload: Record<string, unknown>, publisher?: Publisher): Shape {
   const brief = briefOf(payload);
   const page = payload.page as { image?: unknown; questions?: unknown } | undefined;
   const pageDrawn = typeof page?.image === "string" && Array.isArray(page.questions);
@@ -39,7 +40,19 @@ function plainPayload(payload: Record<string, unknown>): Shape {
     report: { label: true, url: true },
     ...(pageDrawn ? { page: PAGE } : {}),
     replies: { "[]": { text: true, at: true, replyTo: true } },
+    ...drawnMarks(payload, publisher),
   };
+}
+
+/** The registered source a card was read through: whether it may carry the Courier mark (feedData courierMessage). */
+type Publisher = Pick<FeedSource, "sourceId" | "output">;
+
+/**
+ * The type label and the Courier mark: drawn only for a type the app knows, and for channel "courier" only when the
+ * card's publisher is Courier. Any other value, and the channel of a card from any other agent, is listed.
+ */
+function drawnMarks(payload: Record<string, unknown>, publisher?: Publisher): Record<string, Shape> {
+  return { ...(parseCardType(payload.type) ? { type: true } : {}), ...(publisher && courierMessage(publisher, payload) ? { channel: true } : {}) };
 }
 
 /**
@@ -50,14 +63,15 @@ const QUIET = /^payload\.sitrep\.record\.(askedAt|updatedAt|closedAt|expiryBaseA
 
 /**
  * Everything in `card` its open card does not draw. `record`: a typed card's board record, when the app could read it;
- * a typed card it could not read draws none of its payload, so every payload field is listed.
+ * a typed card it could not read draws none of its payload, so every payload field is listed. `publisher`: the source
+ * the card was read through; without it no Courier mark is drawn, so a `channel` is listed.
  */
-export function cardUnshown(card: FeedCard, typed?: { record?: BoardRecord }): UnshownField[] {
+export function cardUnshown(card: FeedCard, typed?: { record?: BoardRecord }, publisher?: Publisher): UnshownField[] {
   const payload = card.payload ?? {};
   const payloadShape: Shape = !typed
-    ? plainPayload(payload)
+    ? plainPayload(payload, publisher)
     : typed.record
-      ? { sitrep: { version: true, record: sitrepRecordShape(typed.record) }, sitrepThread: true, source: { label: true, url: true, ref: true }, project: true }
+      ? { sitrep: { version: true, record: sitrepRecordShape(typed.record) }, sitrepThread: true, source: { label: true, url: true, ref: true }, project: true, ...drawnMarks(payload, publisher) }
       : {};
   return unshownFields(card, { ...BOOKKEEPING, title: true, body: true, choices: { "[]": { id: true, label: true } }, payload: payloadShape })
     .map((field) => typed?.record && QUIET.test(field.path) ? { ...field, quiet: true as const } : field);

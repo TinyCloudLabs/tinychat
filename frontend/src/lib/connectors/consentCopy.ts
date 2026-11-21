@@ -35,7 +35,7 @@ export const BACKEND_INGEST_CONSENT_COPY: BackgroundSyncConsentCopy = {
   variant: "B-ingest",
   heading: "Background sync (server-side)",
   intro:
-    "Our server keeps your Fireflies sign-in and a copy of each finished meeting for up to 90 days, so your meetings are waiting on any device you sign in on. Fireflies can't limit that sign-in, so it gives full access to your Fireflies account. Disconnecting deletes both and asks Fireflies to revoke it.",
+    "Our server keeps your Fireflies sign-in, and a copy of each finished meeting for up to 14 days, so your meetings are waiting on any device you sign in on. Fireflies can't limit that sign-in, so it gives full access to your Fireflies account. Disconnecting deletes both and asks Fireflies to revoke it.",
   disconnectNote:
     "**Disconnecting undoes all of it, in one click.** We revoke the Fireflies token upstream and " +
     "delete it, delete every meeting we are holding for you, and stop accepting notifications. " +
@@ -49,6 +49,7 @@ export const GOOGLE_MEET_CONSENT_COPY: BackgroundSyncConsentCopy = {
   heading: "Connect Google Meet",
   intro:
     "You'll sign in with Google so TinyCloud One can read your Meet transcripts and Gemini notes and turn on transcription for meetings you host. Your browser fetches them from Google and saves them to your space; our server never keeps your Google token or your meetings.",
+  // Keep this name until the Google OAuth app's display name is changed (TinyCloud One consolidation); these lines must match what Google shows.
   disconnectNote:
     "**Disconnecting asks Google to revoke this access and deletes the saved token from your " +
     "secrets.** If Google cannot be reached we say so instead of pretending the revoke worked, " +
@@ -56,6 +57,7 @@ export const GOOGLE_MEET_CONSENT_COPY: BackgroundSyncConsentCopy = {
     "page. Your already-synced meetings stay in your space unless you also choose to delete them.",
 };
 
+// Keep this name until the Google OAuth app's display name is changed (TinyCloud One consolidation); these lines must match what Google shows.
 export const GOOGLE_TESTING_MODE_REAUTH_COPY =
   "While TinyChat's Google app is in testing, Google asks you to reconnect about once a week.";
 

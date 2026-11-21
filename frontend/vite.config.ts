@@ -14,6 +14,11 @@ import { stablelibBrowserCrypto } from "./src/lib/stablelibBrowserCrypto";
 const rootDir = path.dirname(fileURLToPath(import.meta.url));
 const requireFromApp = createRequire(import.meta.url);
 
+/** A polyfill shim's file: the ESM build under `vite dev`, the CommonJS build (as before) for `vite build`. */
+function resolveShim(id: string, command: "serve" | "build"): string {
+  return command === "serve" ? fileURLToPath(import.meta.resolve(id)) : requireFromApp.resolve(id);
+}
+
 // The build line's baseline (TC-840): the shared web/desktop/mobile version
 // frontend/package.json owns, the commit being built, and the channel
 // (VITE_EXO_CHANNEL for the pipeline; `vite dev` reports "dev"). The pipeline
@@ -56,6 +61,11 @@ export default defineConfig(({ command, mode }) => {
   return ({
   define: {
     __EXO_BUILD_INFO__: JSON.stringify({ ...exoBuildInfo, channel: exoBuildInfo.channel ?? (command === "serve" ? "dev" : undefined) }),
+    // One Apps origin lists (src/apps/registry.ts). Fail-closed: production unless `vite dev`, or a Cloudflare Pages
+    // build of exactly the feat/one-apps branch (its alias is the one preview origin the apps accept).
+    __ONE_APPS_BUILD_KIND__: JSON.stringify(
+      command === "serve" ? "dev" : process.env.CF_PAGES_BRANCH === "feat/one-apps" ? "preview" : "production",
+    ),
   },
   // The client-side TEE verifier (@redpill-ai/verifier + @peculiar/x509) is
   // Node-oriented and uses `Buffer` for base64↔bytes and ASN.1/cert parsing.
@@ -172,9 +182,10 @@ export default defineConfig(({ command, mode }) => {
         // first visit never downloads it.
         // The local-replication chunks (kv-storage + its 2.2 MB worker, replica, profile-gate) are only
         // fetched when the replication flag is ON (lazy import in lib/replication); runtime-cached below.
+        // assets/404.html is Pages' answer for a missing build file (public/assets/404.html), never a page to cache.
         globIgnores: [
           "agents/**", "assets/tauri-window-*.js", "**/franken_markdown_bg*.wasm",
-          "assets/kv-storage*.js", "assets/replica-*.js", "assets/profile-gate-*.js",
+          "assets/kv-storage*.js", "assets/replica-*.js", "assets/profile-gate-*.js", "assets/404.html",
         ],
         // The main chunk (~7.4 MB, most of it the TinyCloud SDK) and the SDK's WASM (1.4 MB) are needed to boot;
         // Workbox skips anything over its 2 MiB default, which would leave the shell unable to boot offline.
@@ -182,7 +193,8 @@ export default defineConfig(({ command, mode }) => {
         // App routes (/, /chat/*) are client-side: serve the precached index.html for navigations.
         navigateFallback: "index.html",
         // ...except the static /agents docs (and /api, should one ever be same-origin). Precached files
-        // still win: their route is registered first. Mirrors public/_redirects.
+        // still win: their route is registered first. Mirrors Pages: public/_redirects for /agents, and its
+        // single-page-app fallback for every other path (no top-level 404.html).
         navigateFallbackDenylist: [/^\/agents(?:\/|$)/, /^\/api(?:\/|$)/],
         // The runtime caches are the notes renderer's WASM and the replication chunks, same-origin and content-hashed.
         // Everything else outside the precache is not intercepted, so API and cross-origin traffic
@@ -220,10 +232,13 @@ export default defineConfig(({ command, mode }) => {
   ],
   resolve: {
     alias: {
-      // Linked SDK modules still need the app's installed browser-global polyfills.
-      "vite-plugin-node-polyfills/shims/buffer": requireFromApp.resolve("vite-plugin-node-polyfills/shims/buffer"),
-      "vite-plugin-node-polyfills/shims/global": requireFromApp.resolve("vite-plugin-node-polyfills/shims/global"),
-      "vite-plugin-node-polyfills/shims/process": requireFromApp.resolve("vite-plugin-node-polyfills/shims/process"),
+      // Linked SDK modules still need the app's installed browser-global polyfills. `vite dev` takes the ESM build
+      // (`import` condition): it pre-bundles the CommonJS one with the plugin's own shim-import banner, which imports
+      // itself and throws "Cannot access '__vite__cjsImport0_vitePluginNodePolyfills_shims_buffer' before
+      // initialization" on load. Builds keep the CommonJS one: the ESM one adds a third Buffer copy to the entry chunk.
+      "vite-plugin-node-polyfills/shims/buffer": resolveShim("vite-plugin-node-polyfills/shims/buffer", command),
+      "vite-plugin-node-polyfills/shims/global": resolveShim("vite-plugin-node-polyfills/shims/global", command),
+      "vite-plugin-node-polyfills/shims/process": resolveShim("vite-plugin-node-polyfills/shims/process", command),
       // @tinycloud/replica/profile-gate (pulled in by web-sdk/replica) imports Node's fs/promises at
       // top level; the polyfill plugin only shims `fs`, which breaks the build. See the stub.
       "fs/promises": path.resolve(rootDir, "./src/lib/replication/nodeFsPromisesStub.ts"),

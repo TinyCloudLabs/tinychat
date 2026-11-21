@@ -12,7 +12,8 @@ import type { SessionStore } from "@tinyboilerplate/client";
  *   get()           GET    /api/transcriber/meetings/:id
  *   stop()          POST   /api/transcriber/meetings/:id/stop
  *   transcript()    GET    /api/transcriber/meetings/:id/transcript   (202 = pending)
- *   remove()        DELETE /api/transcriber/meetings/:id
+ *   remove()        DELETE /api/transcriber/meetings/:id (202 = still deleting)
+ *   removeAll()     DELETE /api/transcriber/meetings
  *
  * A 404 on the LIST means the backend has no transcriber configured (`feature-dark`); a 404 on
  * one meeting means that meeting is gone (`not-found`). Same distinction meetingsApi.ts draws.
@@ -75,6 +76,10 @@ export interface TranscriberMeeting {
 export interface TranscriberUnavailableMeeting {
   id: string;
   unavailable: true;
+  /** TC-3136: the owner removed it and the provider's copy is not yet confirmed gone; the server is retrying. */
+  deleting?: true;
+  /** TC-3136: the owner removed it, but the notetaker service still holds the copy and it cannot be deleted from here. */
+  kept?: true;
 }
 
 export type TranscriberListRow = TranscriberMeeting | TranscriberUnavailableMeeting;
@@ -135,7 +140,24 @@ export interface TranscriberClient {
   get(id: string): Promise<TranscriberResult<TranscriberMeeting>>;
   stop(id: string): Promise<TranscriberResult<{ id: string; status: TranscriberMeetingStatus }>>;
   transcript(id: string): Promise<TranscriberResult<TranscriptResult>>;
-  remove(id: string): Promise<TranscriberResult<null>>;
+  /**
+   * Resolves ok once the entry is gone (`deleting: false`) or accepted for retry (`deleting: true`).
+   * `notDeleted`: dropped from the list but the notetaker service still holds the copy.
+   */
+  remove(id: string): Promise<TranscriberResult<{ deleting: boolean; notDeleted: boolean }>>;
+  /**
+   * Removes every recording this account holds, including the provider's copies, and (TC-3166) every private cloud
+   * transcription job (voice notes and uploads). `deleting` counts meeting recordings still being retried; `listOnly`
+   * (shared with this account) and `notDeleted` (own entries the provider did not attribute to it) were only dropped
+   * from the list. Both are subsets of `removed`. `privateCloudDeleted` counts the jobs deleted and read back gone,
+   * or is `null` when the deployment does not use that service (the step then says nothing about it).
+   */
+  removeAll(): Promise<TranscriberResult<{ removed: number; deleting: number; listOnly: number; notDeleted: number; privateCloudDeleted: number | null }>>;
+  /**
+   * TC-3166: whether the deployment keeps private cloud transcription jobs (voice notes and uploads), from config only.
+   * `feature-dark` means neither the meeting transcriber nor private cloud transcription is on.
+   */
+  scope(): Promise<TranscriberResult<{ privateCloud: boolean }>>;
 }
 
 export function createTranscriberClient(
@@ -223,6 +245,16 @@ export function createTranscriberClient(
 
   return {
     list: () => request("", { method: "GET", missing: "feature-dark" }),
+    scope: () =>
+      request<{ privateCloud: boolean }>("/scope", {
+        method: "GET",
+        missing: "feature-dark",
+        read: async (response) => {
+          const { privateCloud } = (await response.json()) as { privateCloud?: unknown };
+          if (typeof privateCloud !== "boolean") throw new Error("incomplete_scope_response");
+          return { privateCloud };
+        },
+      }),
     create: (input, options) => request("", {
       method: "POST",
       body: input,
@@ -246,10 +278,36 @@ export function createTranscriberClient(
         },
       }),
     remove: (value) =>
-      request<null>(`/${id(value)}`, {
+      request<{ deleting: boolean; notDeleted: boolean }>(`/${id(value)}`, {
         method: "DELETE",
         missing: "not-found",
-        read: async () => null,
+        // 202 = the provider's copy is not yet confirmed gone; the server keeps retrying. A 200 with
+        // `not_deleted` = dropped from the list but the provider's copy is not ours to delete.
+        read: async (response) => {
+          if (response.status === 202) return { deleting: true, notDeleted: false };
+          if (response.status !== 200) return { deleting: false, notDeleted: false };
+          const body = (await response.json()) as { status?: unknown };
+          return { deleting: false, notDeleted: body.status === "not_deleted" };
+        },
+      }),
+    removeAll: () =>
+      request<{ removed: number; deleting: number; listOnly: number; notDeleted: number; privateCloudDeleted: number | null }>("", {
+        method: "DELETE",
+        missing: "feature-dark",
+        // A backend that predates `listOnly`/`notDeleted`/`privateCloudDeleted` cannot say which removals were really
+        // deleted, or whether voice notes and uploads were checked (`null` says it did not use that service), so a
+        // missing field is a rejected response (the step shows "couldn't finish"), never a guess.
+        read: async (response) => {
+          const body = (await response.json()) as Record<"removed" | "deleting" | "listOnly" | "notDeleted" | "privateCloudDeleted", unknown>;
+          const { removed, deleting, listOnly, notDeleted, privateCloudDeleted } = body;
+          if (
+            typeof removed !== "number" || typeof deleting !== "number" || typeof listOnly !== "number"
+            || typeof notDeleted !== "number" || (typeof privateCloudDeleted !== "number" && privateCloudDeleted !== null)
+          ) {
+            throw new Error("incomplete_bulk_delete_response");
+          }
+          return { removed, deleting, listOnly, notDeleted, privateCloudDeleted };
+        },
       }),
   };
 }

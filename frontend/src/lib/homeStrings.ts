@@ -19,8 +19,8 @@ export const WELCOME_LEAD = "Your agents post updates and ask for decisions here
 export const WELCOME_DEMO_NOTE = "Sample cards from sample agents. Answer one: nothing leaves this page.";
 export const WELCOME_LEARN_MORE = "What is TinyCloud?";
 export const WELCOME_AGENT_TITLE = "Let your agent share to your TinyCloud";
-export const WELCOME_AGENT_BODY = "Paste this into Claude Code, Codex or any agent. It installs the TinyCloud CLI if needed, sets you up if you're new, and connects the agent to your Home feed.";
-export const WELCOME_AGENT_PROMPT = "Fetch https://agents.tinycloud.xyz/feed with curl and follow it, including running its installer. Post the updates I ask for to my TinyCloud Home feed.";
+export const WELCOME_AGENT_BODY = "Paste this into Claude Code, Codex or any agent. It installs the TinyCloud CLI if needed, sets you up if you're new, and connects the agent to your TinyCloud One Feed.";
+export const WELCOME_AGENT_PROMPT = "Fetch https://agents.tinycloud.xyz/feed with curl and follow it, including running its installer. Post the updates I ask for to my TinyCloud One Feed.";
 export const WELCOME_AGENT_COPY = "Copy prompt";
 export const WELCOME_AGENT_COPIED = "Copied";
 export const WELCOME_AGENT_COPY_FAILED = "Select the prompt and copy it";
@@ -39,6 +39,15 @@ export const APPS_LIST_LABEL = "Apps you can open in TinyCloud Share";
 export const APPS_OPEN_IN_SHARE = "Open in Share";
 export const APPS_OPENS_NEW_TAB = "opens in a new tab";
 export const APPS_EMPTY = "No apps to show yet.";
+
+/** The TinyCloud apps launcher (One Apps). */
+export const APPS_LAUNCHER_TITLE = "TinyCloud apps";
+export const APPS_PIN_HINT = "Pin an app to keep it one tap away.";
+export const APPS_PIN = "Pin";
+export const APPS_UNPIN = "Unpin";
+export const appPinnedToast = (name: string) => `${name} pinned`;
+export const appUnpinnedToast = (name: string) => `${name} unpinned`;
+export const APPS_CONNECTORS_DESCRIPTION = "Connect Fireflies or Google Meet to bring in your meetings.";
 
 /** A plain link on the signed-out sign-in surface to the product page. */
 export const LANDING_LINK_LABEL = `About ${APP_NAME}`;

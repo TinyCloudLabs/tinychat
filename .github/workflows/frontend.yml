@@ -14,27 +14,28 @@ name: Frontend
 
 on:
   pull_request:
-    paths:
-      - "frontend/**"
-      - "test/**"
-      - "packages/**"
-      - "package.json"
-      - "bun.lock"
-      - ".github/workflows/frontend.yml"
-      - "test/exo-ui/**"
+  merge_group:
+  push:
+    branches: [main, "release/**"]
+    tags: ["exo-desktop@*", "@tinychat/frontend@*", "@tinychat/backend@*"]
 
 permissions:
   contents: read
 
 concurrency:
-  group: frontend-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+  group: frontend-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  changes:
+    uses: ./.github/workflows/native-changes.yml
+
   # Unit tests, lint and the build. The browser work runs in the jobs below, in
   # parallel, so no single job approaches its timeout as the harnesses grow.
   frontend:
     name: Frontend tests, lint and browser harnesses
+    needs: changes
+    if: github.event_name == 'pull_request' && needs.changes.outputs.frontend == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -72,6 +73,8 @@ jobs:
 
   browser:
     name: Browser harnesses (Chromium)
+    needs: changes
+    if: github.event_name == 'pull_request' && needs.changes.outputs.frontend == 'true'
     # Pinned: ubuntu-latest is Ubuntu 26.04, where Playwright cannot install Chromium. Unpin per TC-3071.
     runs-on: ubuntu-24.04
     timeout-minutes: 40
@@ -121,6 +124,11 @@ jobs:
         working-directory: test
         run: bun test home-feed-outbox.e2e.test.ts
 
+      - name: Main history read concurrency (Chromium)
+        if: ${{ !cancelled() }}
+        working-directory: test
+        run: bun test bot-history-read.e2e.test.ts
+
       - name: Home feed Details layout (Chromium)
         if: ${{ !cancelled() }}
         working-directory: test
@@ -152,11 +160,12 @@ jobs:
           path: screenshots/exo-ui/
           if-no-files-found: warn
 
-  # One job per viewport: phone, landscape phone, desktop and 200% text on a
-  # phone (where Linux fonts have caught clipping macOS hides). The full
-  # nine-viewport matrix, WebKit included, runs locally.
-  screens:
-    name: Exo UI screens (Chromium, ${{ matrix.viewport }})
+  # Bun's screen harness loops the registry, not Playwright Test files. Its
+  # existing theme filter partitions every viewport without dropping captures.
+  screens-shards:
+    name: Exo UI screen shard (Chromium, ${{ matrix.viewport }}, ${{ matrix.theme }})
+    needs: changes
+    if: github.event_name == 'pull_request' && needs.changes.outputs.frontend == 'true'
     # Pinned: ubuntu-latest is Ubuntu 26.04, where Playwright cannot install Chromium. Unpin per TC-3071.
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -164,6 +173,7 @@ jobs:
       fail-fast: false
       matrix:
         viewport: [phone, phone-land, desktop, text200-phone]
+        theme: [light, dark]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -190,18 +200,88 @@ jobs:
         run: bun run --cwd test install:browsers:ci
 
       - name: Exo UI screens (Chromium)
-        run: EXO_UI_ENGINE=chromium EXO_UI_VIEWPORTS=${{ matrix.viewport }} bun run --cwd test exo-ui:screens
+        working-directory: test
+        env:
+          EXO_UI_ENGINE: chromium
+          EXO_UI_VIEWPORTS: ${{ matrix.viewport }}
+          EXO_UI_THEMES: ${{ matrix.theme }}
+        run: bun test exo-ui-screens.e2e.test.ts --reporter=junit --reporter-outfile=junit.xml
 
-      - name: Upload the Exo UI screenshots
+      - name: Upload shard screenshots and executed-test evidence
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
+          name: screen-shard-${{ matrix.viewport }}--${{ matrix.theme }}-${{ github.run_attempt }}
+          path: |
+            screenshots/exo-ui/
+            test/junit.xml
+          if-no-files-found: error
+
+  screens-coverage:
+    name: Screen shard coverage (${{ matrix.viewport }})
+    needs: [changes, screens-shards]
+    if: ${{ always() && github.event_name == 'pull_request' && needs.changes.outputs.frontend == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        viewport: [phone, phone-land, desktop, text200-phone]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Require successful shards
+        env:
+          SHARDS_RESULT: ${{ needs.screens-shards.result }}
+        run: test "$SHARDS_RESULT" = success
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: screen-shard-${{ matrix.viewport }}--*-${{ github.run_attempt }}
+          path: shard-reports
+      - name: Prove executed-file and full capture coverage; merge reports
+        run: |
+          python3 .github/scripts/test_merge_screen_shards.py
+          python3 .github/scripts/merge_screen_shards.py shard-reports merged-screens
+      - name: Upload merged Exo UI screenshots and reports
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
           name: exo-ui-screens-${{ github.event.pull_request.number }}-${{ matrix.viewport }}-${{ github.run_attempt }}
-          path: screenshots/exo-ui/
-          if-no-files-found: warn
+          path: merged-screens/
+          if-no-files-found: error
+
+  screens:
+    # Preserve the four required check names; intentional path/event skips pass.
+    name: Exo UI screens (Chromium, ${{ matrix.viewport }})
+    needs: [changes, screens-shards, screens-coverage]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    strategy:
+      matrix:
+        viewport: [phone, phone-land, desktop, text200-phone]
+    steps:
+      - name: Require complete screen coverage when selected
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          FRONTEND_CHANGED: ${{ needs.changes.outputs.frontend }}
+          SHARDS_RESULT: ${{ needs.screens-shards.result }}
+          COVERAGE_RESULT: ${{ needs.screens-coverage.result }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          test "$CHANGES_RESULT" = success
+          if [ "$EVENT_NAME" = pull_request ] && [ "$FRONTEND_CHANGED" = true ]; then
+            test "$SHARDS_RESULT" = success
+            test "$COVERAGE_RESULT" = success
+          else
+            test "$SHARDS_RESULT" = skipped
+            test "$COVERAGE_RESULT" = skipped
+          fi
 
   halo-webkit:
     name: Recorder halo (macOS WebKit)
+    needs: changes
+    if: needs.changes.outputs.frontend == 'true'
     runs-on: macos-latest
     timeout-minutes: 20
     steps:
@@ -265,6 +345,8 @@ jobs:
   # joins as soon as its file exists.
   followups:
     name: Recorder follow-ups e2e (Chromium)
+    needs: changes
+    if: github.event_name == 'pull_request' && needs.changes.outputs.frontend == 'true'
     # Pinned: ubuntu-latest is Ubuntu 26.04, where Playwright cannot install Chromium. Unpin per TC-3071.
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -296,3 +378,24 @@ jobs:
       - name: Recorder follow-ups interaction suites (Chromium)
         working-directory: test
         run: EXO_UI_ENGINE=chromium bun test recorder-final-desktop recorder-final-notes recorder-final-saved-note recorder-final-web meeting-sources capture-settings capture-home-desktop web-voice-notes-codec mic-recovery
+
+  webkit-check:
+    name: WebKit checks
+    if: always()
+    needs: [changes, halo-webkit]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require successful WebKit checks or an intentional unrelated PR skip
+        env:
+          EVENT: ${{ github.event_name }}
+          CHANGES: ${{ needs.changes.result }}
+          FRONTEND: ${{ needs.changes.outputs.frontend }}
+          WEBKIT: ${{ needs.halo-webkit.result }}
+        run: |
+          [[ "$CHANGES" == success ]]
+          case "$FRONTEND:$EVENT" in
+            true:*) [[ "$WEBKIT" == success ]] ;;
+            false:pull_request) [[ "$WEBKIT" == skipped ]] ;;
+            *) exit 1 ;;
+          esac

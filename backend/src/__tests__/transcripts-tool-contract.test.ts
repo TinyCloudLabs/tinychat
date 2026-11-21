@@ -41,6 +41,6 @@ test("every source-filtering tool offers Exo local recordings and combined meeti
   expect(filtering.map((tool) => tool.function.name)).toContain("tinycloud_find_meetings");
   for (const tool of filtering) {
     const source = (tool.function.parameters.properties as Record<string, { enum?: readonly string[] }>).source;
-    expect(source.enum).toEqual(["fireflies", "google-meet", "tinycloud-transcriber", "exo-local", "exo-merged"]);
+    expect(source.enum).toEqual(["fireflies", "granola", "google-meet", "tinycloud-transcriber", "exo-local", "exo-merged"]);
   }
 });

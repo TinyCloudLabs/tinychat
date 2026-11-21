@@ -1123,7 +1123,8 @@ describe("TC-581 review 6a: ownership fails closed", () => {
       const stop = await call(base, "/api/transcriber/meetings/mtg_shared/stop", "POST");
       expect(stop.status).toBe(403);
       expect(stop.body).toEqual({ error: "shared_meeting" });
-      expect((await call(base, "/api/transcriber/meetings/mtg_shared", "DELETE")).status).toBe(204);
+      const removed = await call(base, "/api/transcriber/meetings/mtg_shared", "DELETE");
+      expect([removed.status, removed.body]).toEqual([200, { id: "mtg_shared", status: "not_deleted" }]);
     });
     expect(h.calls.filter(c => c.method === "stopMeeting" || c.method === "deleteMeeting")).toEqual([]);
     expect(h.store.has("mtg_shared")).toBe(true);

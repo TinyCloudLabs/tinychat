@@ -45,6 +45,7 @@
 
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type FC } from "react";
 import type { SessionStore } from "@tinyboilerplate/client";
+import { createConnectorWebhooksClient } from "@/lib/connectors/webhooksApi";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import {
   AlertTriangleIcon,
@@ -55,6 +56,7 @@ import {
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { GranolaCsvImport } from "@/chat/GranolaCsvImport";
 import {
   AlertDialog,
   AlertDialogCancel,
@@ -86,6 +88,11 @@ import {
   type FirefliesUser,
 } from "@/lib/connectors/firefliesClient";
 import { syncFireflies } from "@/lib/connectors/firefliesSync";
+import { GranolaClient } from "@/lib/connectors/granolaClient";
+import { granolaConnectorEnabled } from "@/lib/connectors/granolaFeature";
+import { GRANOLA_CSV_STRINGS } from "@/lib/connectors/granolaCsvStrings";
+import { GRANOLA_PLAN_INACTIVE, GRANOLA_SYNC_FAILED } from "@/lib/connectors/granolaStatus";
+import { saveGranolaConnection, syncGranola } from "@/lib/connectors/granolaSync";
 import { GmeetClient } from "@/lib/connectors/gmeetClient";
 import {
   capacitorNativeOAuthPorts,
@@ -223,12 +230,17 @@ interface ConnectorConnectDialogProps {
   purpose?: "browser" | "autojoin";
   tcw: TinyCloudWeb;
   descriptor: ConnectorDescriptor;
-  /** The card's props, handed down. The OAuth machine's proxy calls need both;
-   *  the API-key machine ignores them. */
+  /** Backend session for connectors that proxy requests. */
   backendUrl: string;
   sessionStore: SessionStore;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /** Granola starts connecting on a valid form submission, not on dialog open. */
+  onGranolaConnectingChange?: (connecting: boolean) => void;
+  /** Granola: open on the API key step, as a reconnect does. */
+  startWithKey?: boolean;
+  /** Granola: meetings were imported from a CSV, so the parent can refresh. */
+  onImported?: () => void;
   /**
    * Fires after save+sync finishes (both ok and connected-with-error paths)
    * so the parent card can refetch the persisted connection row.
@@ -236,21 +248,202 @@ interface ConnectorConnectDialogProps {
   onConnected: () => void;
 }
 
-/**
- * The one entry point the card renders. Which machine runs is the registry
- * row's business, not the card's — so the card keeps one `<ConnectorConnectDialog>`
- * and a connector that changes auth style changes nothing there.
- */
-export const ConnectorConnectDialog: FC<ConnectorConnectDialogProps> = (props) =>
-  usesOAuthConnect(props.descriptor) ? (
-    <OAuthConnectDialog {...props} />
-  ) : (
-    <ApiKeyConnectDialog {...props} />
+/** Only connectors with their own credential flow may accept credentials. */
+export const ConnectorConnectDialog: FC<ConnectorConnectDialogProps> = (props) => {
+  if (usesOAuthConnect(props.descriptor)) return <OAuthConnectDialog {...props} />;
+  if (props.descriptor.id === "fireflies") return <FirefliesConnectDialog {...props} />;
+  if (props.descriptor.id === "granola" && granolaConnectorEnabled()) {
+    return <GranolaConnectDialog {...props} />;
+  }
+  return (
+    <Dialog open={props.open} onOpenChange={props.onOpenChange}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>Connect {props.descriptor.name}</DialogTitle>
+          <DialogDescription>This connection is not available yet.</DialogDescription>
+        </DialogHeader>
+      </DialogContent>
+    </Dialog>
   );
+};
 
-const ApiKeyConnectDialog: FC<ConnectorConnectDialogProps> = ({
+const GRANOLA_API_KEY_URL = "https://docs.granola.ai/help-center/sharing/integrations/granola-api";
+const GRANOLA_KEY_DETAILS = "Your API key is kept in TinyCloud's encrypted secrets. Each sync sends it through the TinyCloud One server to Granola, and that server never stores or logs it.";
+
+const GranolaConnectDialog: FC<ConnectorConnectDialogProps> = ({
+  tcw, descriptor, backendUrl, sessionStore, open, onOpenChange, onConnected, onGranolaConnectingChange,
+  startWithKey, onImported,
+}) => {
+  const [phase, setPhase] = useState<Exclude<ConnectPhase, "verified">>("key-entry");
+  const [apiKey, setApiKey] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [progress, setProgress] = useState<SyncProgress | null>(null);
+  const [keyOpen, setKeyOpen] = useState(startWithKey === true);
+  const [csvBusy, setCsvBusy] = useState(false);
+  const [summary, setSummary] = useState<SyncResult | null>(null);
+  const inFlight = useRef<AbortController | null>(null);
+  useEffect(() => () => {
+    inFlight.current?.abort();
+    inFlight.current = null;
+  }, []);
+
+  const busy = phase === "validating" || phase === "saving" || phase === "syncing";
+  const available = secretsAvailable();
+  const submit = async () => {
+    const key = apiKey.trim();
+    if (!open || !available || busy || !key || inFlight.current) return;
+    const controller = new AbortController();
+    inFlight.current = controller;
+    const { signal } = controller;
+    const generation = readBackgroundDrainGeneration();
+    const isCurrent = () => inFlight.current === controller && generation === readBackgroundDrainGeneration();
+    const cancelled = () => signal.aborted || !isCurrent();
+    setError(null);
+    setPhase("validating");
+    onGranolaConnectingChange?.(true);
+
+    try {
+      const client = new GranolaClient({ apiKey: key, backendUrl, sessionStore });
+      const validated = await client.validateKey(signal);
+      if (cancelled()) return;
+      if (!validated.ok) {
+        setError(validated.error.kind === "invalid-key"
+          ? "Granola didn’t accept this key. Check that it’s an active API key, then try again."
+          : validated.error.code === "SUBSCRIPTION_INACTIVE"
+            ? GRANOLA_PLAN_INACTIVE
+            : validated.error.message);
+        setPhase("key-entry");
+        return;
+      }
+
+      setPhase("saving");
+      if (!isSecretsUnlocked(tcw) && !(await unlockSecrets<SecretsErr>(tcw)).ok) {
+        if (!cancelled()) {
+          setError("Couldn't unlock your secrets. Try again.");
+          setPhase("key-entry");
+        }
+        return;
+      }
+      const saved = await saveGranolaConnection(tcw, key, () => !cancelled());
+      if (cancelled()) return;
+      if (!saved) {
+        setError("Couldn't save the API key. Try again.");
+        setPhase("key-entry");
+        return;
+      }
+
+      setApiKey("");
+      setPhase("syncing");
+      const webhooks = createConnectorWebhooksClient(backendUrl, { sessionStore });
+      const synced = await syncGranola({
+        client, tcw, store: connectorStore, signal, isCurrent, onProgress: setProgress,
+        checkPurge: (id, timestamp, signal) => webhooks.checkPurge(id, timestamp, "granola", signal),
+      });
+      if (!isCurrent()) return;
+      onConnected();
+      if (signal.aborted) {
+        onOpenChange(false);
+      } else if (synced.ok) {
+        setSummary(synced.data);
+        setPhase("done");
+      } else {
+        setError(synced.error.message);
+        setPhase("error");
+      }
+    } catch {
+      if (cancelled()) return;
+      setError(GRANOLA_SYNC_FAILED);
+      setPhase("key-entry");
+    } finally {
+      if (isCurrent()) onGranolaConnectingChange?.(false);
+      inFlight.current = null;
+    }
+  };
+
+  const keyStep = phase === "key-entry" || phase === "validating";
+  const showKeyForm = available && keyStep && keyOpen;
+  const closeBlocked = busy || csvBusy;
+  return (
+    <Dialog open={open} onOpenChange={(next) => { if (!closeBlocked) onOpenChange(next); }}>
+      <DialogContent className="max-h-[90dvh] max-w-md overflow-y-auto" hideCloseButton={closeBlocked}>
+        <DialogHeader>
+          <DialogTitle>Connect {descriptor.name}</DialogTitle>
+          <DialogDescription>{GRANOLA_CSV_STRINGS.dialogDescription}</DialogDescription>
+        </DialogHeader>
+        {keyStep && (
+          <GranolaCsvImport
+            tcw={tcw} backendUrl={backendUrl} sessionStore={sessionStore}
+            disabled={busy} onBusyChange={setCsvBusy} onImported={onImported}
+          />
+        )}
+        {keyStep && !keyOpen && (
+          <section aria-labelledby="granola-auto-heading" className="flex flex-col gap-1 border-t border-border pt-3">
+            <strong id="granola-auto-heading" className="text-sm">{GRANOLA_CSV_STRINGS.autoHeading}</strong>
+            <p className="text-xs text-muted-foreground">{GRANOLA_CSV_STRINGS.autoPlan}</p>
+            <Button type="button" variant="outline" size="sm" className="mt-1 self-start" disabled={csvBusy} onClick={() => setKeyOpen(true)}>
+              {GRANOLA_CSV_STRINGS.connectWithKey}
+            </Button>
+          </section>
+        )}
+        {!available && keyOpen ? (
+          <p className="text-xs text-muted-foreground">{SECRETS_UNAVAILABLE_IN_APP_MESSAGE}</p>
+        ) : showKeyForm ? (
+          <form id="granola-key-form" className="flex flex-col gap-2" onSubmit={(event) => {
+            event.preventDefault();
+            void submit();
+          }}>
+            <p className="text-xs text-muted-foreground">{GRANOLA_KEY_DETAILS}</p>
+            <label htmlFor="granola-api-key" className="text-sm font-medium">Granola API key</label>
+            <input
+              id="granola-api-key" type="password" autoComplete="off" spellCheck={false}
+              value={apiKey} onChange={(event) => setApiKey(event.target.value)}
+              disabled={busy} placeholder="grn_…" aria-invalid={error !== null}
+              aria-describedby={error ? "granola-key-help granola-key-error" : "granola-key-help"}
+              className="w-full rounded-md border border-border bg-background px-3 py-2 text-body outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60 fine:text-sm"
+            />
+            <p id="granola-key-help" className="text-xs text-muted-foreground">
+              Paste the key from the Granola desktop app: Settings → Connectors → API keys, with “Personal notes” on. API keys need a Granola Business or Enterprise plan.
+            </p>
+            <p className="text-xs text-muted-foreground">
+              <a href={GRANOLA_API_KEY_URL} target="_blank" rel="noreferrer"
+                className="inline-flex items-center gap-1 text-primary underline-offset-4 hover:underline">
+                Where to find your API key
+                <ExternalLinkIcon className="size-3" aria-hidden />
+              </a>
+            </p>
+            {error && <p id="granola-key-error" role="alert" className="text-xs text-destructive">{error}</p>}
+          </form>
+        ) : phase === "saving" ? <SavingPanel />
+          : phase === "syncing" ? <SyncingPanel progress={progress} />
+          : phase === "done" && summary ? <DonePanel summary={summary} />
+          : phase === "error" && error ? <SyncFailedPanel error={{ kind: "network", message: error }} /> : null}
+        {(keyOpen || !keyStep) && (
+          <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+            {!available || phase === "done" || phase === "error" ? (
+              <Button size="sm" onClick={() => onOpenChange(false)}>Done</Button>
+            ) : phase === "syncing" ? (
+              <Button variant="outline" size="sm" onClick={() => inFlight.current?.abort()}>Stop sync</Button>
+            ) : phase !== "saving" ? (
+              <>
+                <Button variant="outline" size="sm" disabled={busy} onClick={() => onOpenChange(false)}>Cancel</Button>
+                <Button type="submit" form="granola-key-form" size="sm" disabled={busy || !apiKey.trim()} className="gap-1.5">
+                  {busy && <Loader2Icon className="size-4 animate-spin" aria-hidden />}
+                  Continue
+                </Button>
+              </>
+            ) : null}
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+};
+
+const FirefliesConnectDialog: FC<ConnectorConnectDialogProps> = ({
   tcw,
   descriptor,
+  backendUrl,
+  sessionStore,
   open,
   onOpenChange,
   onConnected,
@@ -355,6 +548,7 @@ const ApiKeyConnectDialog: FC<ConnectorConnectDialogProps> = ({
       syncRes = await syncFireflies({
         client,
         store: connectorStore,
+        checkPurge: createConnectorWebhooksClient(backendUrl, { sessionStore }).checkPurge,
         tcw,
         onProgress: setProgress,
         signal: ac.signal,
@@ -395,7 +589,7 @@ const ApiKeyConnectDialog: FC<ConnectorConnectDialogProps> = ({
     }
     setSummary(syncRes.data);
     setPhase("done");
-  }, [apiKey, descriptor, onConnected, tcw]);
+  }, [apiKey, backendUrl, descriptor, onConnected, sessionStore, tcw]);
 
   const handleStopSync = useCallback(() => {
     abortRef.current?.abort();
@@ -2173,6 +2367,9 @@ export const ConnectorDisconnectDialog: FC<ConnectorDisconnectDialogProps> = ({
     // connector connected, and its count still stands.
     removeBackgroundDrainConnectorRecord(descriptor.source);
     onDisconnected();
+    // A Fireflies sign-in the server removed but the provider did not confirm revoked is a warning too:
+    // the dialog stays open so the owner reads it.
+    if (final.notice !== undefined) showRevokeWarning = true;
     if (!showRevokeWarning) onOpenChange(false);
   }, [
     backendUrl,
@@ -2447,8 +2644,10 @@ export function upstreamRevokeMessage(state: UpstreamRevokeState): string | null
     case "revoked":
       return null;
     case "no-token":
+      // Keep this name until the Google OAuth app's display name is changed (TinyCloud One consolidation); these lines must match what Google shows.
       return `We couldn’t read a saved Google connection to revoke — remove TinyChat yourself at ${GOOGLE_THIRD_PARTY_ACCESS_URL}. The rest of the disconnect continues.`;
     case "failed":
+      // Keep this name until the Google OAuth app's display name is changed (TinyCloud One consolidation); these lines must match what Google shows.
       return `We couldn’t ask Google to revoke this access (${state.message ?? "unknown reason"}), so it may still be live. Remove TinyChat at ${GOOGLE_THIRD_PARTY_ACCESS_URL}. Everything else below still ran.`;
     case "server-unavailable":
       return "Could not confirm Calendar autojoin has stopped. Reconnect to TinyCloud One and retry disconnecting.";
@@ -2651,6 +2850,7 @@ function formatOAuthError(error: OAuthErrorState): string {
       return `Google is rate-limiting us.${retry}${detail}`;
     }
     case "no-refresh-token":
+      // Keep this name until the Google OAuth app's display name is changed (TinyCloud One consolidation); these lines must match what Google shows.
       return `Google didn’t return the long-lived permission we need to keep syncing. Remove TinyChat at ${GOOGLE_THIRD_PARTY_ACCESS_URL} and connect again.`;
     case "connection-not-saved":
       return "Google Meet couldn’t save this connection, so it isn’t connected yet. Connect again to finish setting it up.";

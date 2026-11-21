@@ -2,11 +2,15 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
-import { NO_LOCAL_WORK, type LocalRecordingWork } from "@/lib/originMove";
+import { CANONICAL_ORIGIN, NO_LOCAL_WORK, type LocalRecordingWork } from "@/lib/originMove";
 import { OriginMoveNotice, originMoveNoticeText } from "./OriginMoveNotice";
 
 const work = (patch: Partial<LocalRecordingWork>): LocalRecordingWork => ({ ...NO_LOCAL_WORK, signedIn: true, ...patch });
-const MOVED = "TinyCloud One has moved to home.tinycloud.xyz.";
+// The notice's opening line (its wording is Monica's); what is pinned is that it names the canonical host.
+const MOVED = originMoveNoticeText(work({}));
+test("the opening line names the canonical host", () => {
+  expect(MOVED).toContain(new URL(CANONICAL_ORIGIN).host);
+});
 
 test("held answers, unsent answers and post drafts each say why the tab stays", () => {
   expect(originMoveNoticeText(work({ heldAnswers: 1 }))).toBe(`${MOVED} 1 answer is still sending from this tab. The tab moves on its own once it's sent.`);

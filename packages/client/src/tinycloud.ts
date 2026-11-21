@@ -10,6 +10,7 @@ import type {
 } from "@tinycloud/web-sdk";
 import type { ISessionStorage, PersistedSessionData } from "@tinycloud/web-sdk";
 import type { EIP1193Provider } from "./openkey.js";
+import { withSpaceCapabilitiesRead } from "./manifest.js";
 
 // ── Configuration ────────────────────────────────────────────────────
 
@@ -43,9 +44,16 @@ export interface TinyCloudWebConfig {
   /**
    * Optional local KV replication. Omit it (the default) and the SDK config is
    * exactly what it was before replication existed: the key is not present.
-   * Only the web flag in frontend/src/lib/replication sets it.
+   * Only the web flag in frontend/src/lib/replication sets it. When supplied for
+   * a browser SIWE/CACAO grant (which cannot back a replica), the replica
+   * controller stops itself on the first grant refusal instead of retrying.
    */
   replication?: TinyCloudWebSdkConfig["replication"];
+  /**
+   * Sign in through OpenKey's `authorizeTinyCloud` instead of the provider's `personal_sign`. The SIWE nonce then
+   * comes from `nonce` alone: the SDK refuses per-call SIWE overrides on this path.
+   */
+  openkey?: TinyCloudWebSdkConfig["openkey"];
 }
 
 export interface RestoreTinyCloudWebSessionResult {
@@ -64,7 +72,7 @@ export function createTinyCloudWeb(
   web3Provider: EIP1193Provider,
   config?: TinyCloudWebConfig,
 ): TinyCloudWeb {
-  const manifest = config?.manifest ?? config?.capabilityRequest?.manifests;
+  const manifest = config?.manifest ? withSpaceCapabilitiesRead(config.manifest) : config?.capabilityRequest?.manifests;
   const tcwConfig: TinyCloudWebSdkConfig = {
     provider: web3Provider,
     tinycloudHosts: config?.tinycloudHosts,
@@ -82,6 +90,7 @@ export function createTinyCloudWeb(
     // The app owns the floating button (Settings toggle); the SDK default shows it.
     ui: { button: false, platform: config?.uiPlatform ?? "web" },
     ...(config?.replication ? { replication: config.replication } : {}),
+    ...(config?.openkey ? { openkey: config.openkey } : {}),
     autoBootstrapAccount: false,
   };
 
@@ -107,7 +116,7 @@ export async function createAndSignIn(
   if (config?.nonce) {
     await tcw.clearPersistedSession(config.address);
   }
-  const session = await tcw.signIn(config?.nonce ? { nonce: config.nonce } : undefined);
+  const session = await tcw.signIn(config?.nonce && !config.openkey ? { nonce: config.nonce } : undefined);
   return { tcw, session };
 }
 
@@ -214,7 +223,7 @@ export async function restoreTinyCloudWebSession(
   address: string,
   config?: TinyCloudWebConfig & { provider?: EIP1193Provider; renewalLeaseAuthorization?: string },
 ): Promise<RestoreTinyCloudWebSessionResult> {
-  const manifest = config?.manifest ?? config?.capabilityRequest?.manifests;
+  const manifest = config?.manifest ? withSpaceCapabilitiesRead(config.manifest) : config?.capabilityRequest?.manifests;
   const recording = recordRestoredSession(config?.sessionStorage ?? new BrowserSessionStorage());
   const tcwConfig: TinyCloudWebSdkConfig = {
     tinycloudHosts: config?.tinycloudHosts,

@@ -99,8 +99,9 @@ export interface TargetedIngestSecrets {
   ): Promise<{ ok: true; data: string } | { ok: false; error: unknown }>;
 }
 
-/** The only backend call this engine makes. */
+/** Purge check and acknowledgement for queued work. */
 export interface TargetedAckClient {
+  checkPurge?: import("./webhooksApi").FirefliesPurgeCheck;
   acknowledge(
     request: ConnectorAckRequest,
   ): Promise<ConnectorWebhooksResult<ConnectorAckResult>>;
@@ -317,6 +318,7 @@ export async function ingestQueuedMeetings(
   onProgress?.({ phase: "fetching", done: 0, total: groups.length });
 
   // ── 3–6. Fetch each exact id, sequentially and paced ─────────────────
+  let blockedByPurge = 0;
   for (let i = 0; i < groups.length; i++) {
     if (signal?.aborted) break;
     const { meetingId, kinds } = groups[i];
@@ -333,17 +335,20 @@ export async function ingestQueuedMeetings(
     } else {
       try {
         const { meeting, sentences } = normalizeFirefliesTranscript(txRes.data);
-        const upsertRes = await store.upsertMeeting(tcw, meeting, sentences);
-        if (!upsertRes.ok) {
-          // The write did not happen, so this identity is NOT acknowledged and
-          // stays queued. This is the storage-before-ack rule doing its job.
-          recordFailure(kinds, meetingId, "storage", upsertRes.error.message);
+        if (await webhooks.checkPurge?.(meeting.sourceId, meeting.startedAt)) {
+          blockedByPurge += kinds.length;
         } else {
-          stored += 1;
-          if (upsertRes.data.inserted) inserted += 1;
-          else updated += 1;
-          for (const kind of kinds) settled.push({ meetingId, kind, status: "done" });
-          onProgress?.({ phase: "storing", done: i + 1, total: groups.length });
+          const upsertRes = await store.upsertMeeting(tcw, meeting, sentences);
+          if (!upsertRes.ok) {
+            // Only a durable write can be acknowledged. Failures stay queued.
+            recordFailure(kinds, meetingId, "storage", upsertRes.error.message);
+          } else {
+            stored += 1;
+            if (upsertRes.data.inserted) inserted += 1;
+            else updated += 1;
+            for (const kind of kinds) settled.push({ meetingId, kind, status: "done" });
+            onProgress?.({ phase: "storing", done: i + 1, total: groups.length });
+          }
         }
       } catch (err) {
         // normalize() runs synchronously and can throw on a malformed payload —
@@ -392,7 +397,7 @@ export async function ingestQueuedMeetings(
     updated,
     acknowledged: ack.acknowledged,
     alreadySettled: ack.alreadySettled,
-    tombstoned: ack.tombstoned,
+    tombstoned: ack.tombstoned + blockedByPurge,
     failures,
     unacknowledged: ack.unacknowledged,
     ackError: ack.ackError,

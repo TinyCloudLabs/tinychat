@@ -140,6 +140,7 @@ export interface BackendReconcileSecrets {
 }
 
 export interface ReconcileBackendMeetingsOptions {
+  checkPurge?: import("./webhooksApi").FirefliesPurgeCheck;
   tcw: TinyCloudWeb;
   meetings: BackendReconcileMeetingsClient;
   source?: string;
@@ -304,7 +305,7 @@ export async function reconcileBackendMeetings(
       }
       outcome.scanned += 1;
 
-      const step = await copyOne(tcw, meetings, source, meta, now, outcome);
+      const step = await copyOne(tcw, meetings, source, meta, now, outcome, opts.checkPurge);
       if (step === "signed-out") {
         return { ok: true, data: { ...outcome, blocked: "signed-out" } };
       }
@@ -343,6 +344,7 @@ async function copyOne(
   meta: ConnectorMeetingMeta,
   now: () => string,
   outcome: BackendReconcileOutcome,
+  checkPurge: ReconcileBackendMeetingsOptions["checkPurge"],
 ): Promise<"done" | "signed-out"> {
   const sourceId = meta.sourceId;
 
@@ -364,6 +366,12 @@ async function copyOne(
   // rather than sending nulls, so folding it over the list row keeps whatever the
   // list knew (a title, a provider timestamp) instead of dropping it.
   const serverMeta: ConnectorMeetingMeta = { ...meta, ...read.value.meta };
+  try {
+    if (source === DEFAULT_MEETINGS_SOURCE && await checkPurge?.(sourceId, serverMeta.sourceTimestamp ?? null)) return "done";
+  } catch {
+    outcome.failures.push({ sourceId, stage: "read", detail: "unavailable" });
+    return "done";
+  }
 
   // Body first, record second: the record is what a reader discovers, so it must
   // never point at a transcript key that is not there yet.

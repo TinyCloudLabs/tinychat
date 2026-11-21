@@ -7,7 +7,7 @@ import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 
-import { formatRowError, runFirefliesSyncNow, runGmeetSyncNow } from "@/chat/ConnectorsCard";
+import { formatRowError, runFirefliesSyncNow, runGmeetSyncNow, runGranolaSyncNow } from "@/chat/ConnectorsCard";
 import { awaitGmeetSessionSync } from "@/chat/useGmeetSessionSync";
 import {
   getConnectorKey,
@@ -22,6 +22,7 @@ import {
   onGmeetLiveStatus,
 } from "@/lib/connectors/gmeetSync";
 import { readBackgroundDrainGeneration } from "@/chat/useBackgroundDrain";
+import { GRANOLA_MISSING_KEY_CODE, GRANOLA_RECONNECT_REQUIRED } from "@/lib/connectors/granolaStatus";
 import type { ConnectorDescriptor, ConnectorId, SyncProgress } from "@/lib/connectors/types";
 import { SECRETS_UNAVAILABLE_IN_APP_MESSAGE, secretsAvailable } from "@/lib/openkeyNative";
 
@@ -72,7 +73,8 @@ export interface SourceSyncDeps {
       driveMode: DriveMode;
     },
   ) => Promise<SyncOutcome>;
-  runFirefliesSyncNow: (input: SyncEngineInput & { apiKey: string }) => Promise<SyncOutcome>;
+  runFirefliesSyncNow: (input: SyncEngineInput & { apiKey: string; backendUrl: string; sessionStore: SessionStore }) => Promise<SyncOutcome>;
+  runGranolaSyncNow: (input: SyncEngineInput & { backendUrl: string; sessionStore: SessionStore; apiKey: string }) => Promise<SyncOutcome>;
 }
 
 const DEFAULT_DEPS: SourceSyncDeps = {
@@ -85,6 +87,7 @@ const DEFAULT_DEPS: SourceSyncDeps = {
   awaitSessionSync: awaitGmeetSessionSync,
   runGmeetSyncNow,
   runFirefliesSyncNow,
+  runGranolaSyncNow,
 };
 
 export interface SourceSyncRun {
@@ -129,6 +132,7 @@ export async function runSourceSync(
     if (input.isCurrent?.() === false) return null;
     const key = await deps.getConnectorKey<SecretsErr>(tcw, d);
     if (!key.ok) {
+      if (d.id === "granola" && key.error?.code === GRANOLA_MISSING_KEY_CODE) return GRANOLA_RECONNECT_REQUIRED;
       if (key.error?.code === DECRYPTION_FAILED) return reconnectSourceMessage(d.name);
       return (
         key.error?.message ??
@@ -151,15 +155,27 @@ export async function runSourceSync(
             signal,
             onProgress,
           })
-        : await deps.runFirefliesSyncNow({
-            tcw,
-            apiKey: key.data,
-            signal,
-            onProgress,
-            isCurrent: input.isCurrent,
-            onJoined: input.onJoined,
-            onJoinSettled: input.onJoinSettled,
-          });
+        : d.id === "granola"
+          ? await deps.runGranolaSyncNow({
+              tcw,
+              backendUrl,
+              sessionStore,
+              apiKey: key.data,
+              signal,
+              onProgress,
+              isCurrent: input.isCurrent,
+            })
+          : await deps.runFirefliesSyncNow({
+              tcw,
+              backendUrl,
+              sessionStore,
+              apiKey: key.data,
+              signal,
+              onProgress,
+              isCurrent: input.isCurrent,
+              onJoined: input.onJoined,
+              onJoinSettled: input.onJoinSettled,
+            });
     if (outcome.ok) return null;
     if (outcome.busy) return { busy: "queue" };
     return formatRowError(outcome.message, outcome.retryAfterMs ?? null);
@@ -184,6 +200,7 @@ export interface SourceSyncController {
   joined: boolean;
   progress: SyncProgress | null;
   error: { id: ConnectorId; message: string } | null;
+  clearError: (id: ConnectorId) => void;
   /** A press another Google Meet sync refused: offered to wait, or already waiting to start when that sync ends. */
   busy: { id: ConnectorId; mode: DriveMode; queued: boolean } | null;
   /** Accept the offer: start the refused press as soon as nothing is syncing. */
@@ -285,6 +302,7 @@ export function useSourceSync(input: {
     joined,
     progress,
     error,
+    clearError: (id) => setError((last) => last?.id === id ? null : last),
     busy: busyPress !== null && busyPress.did === tcw.did
       ? { id: busyPress.descriptor.id, mode: busyPress.mode, queued: busyPress.queued }
       : null,
