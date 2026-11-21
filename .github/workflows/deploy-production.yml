@@ -42,7 +42,7 @@ on:
         type: string
         default: ""
       allow_current_dev_os_until_tc2843:
-        description: "TC-2843 transition ONLY: permit the exact recorded dstack-dev-0.5.12 image; remove with the OS move or first post-move deploy"
+        description: "TC-2843 transition ONLY: permit the exact recorded dstack-dev-0.5.12 or dstack-dev-0.5.15 image; remove with the OS move or first post-move deploy"
         type: boolean
         default: false
 

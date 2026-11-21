@@ -76,6 +76,20 @@ describe("registry", () => {
       { service: "tinycloud.kv", space: "agents", path: "xyz.tinycloud.courier/", actions: ["get", "list"], skipPrefix: true },
     ]);
   });
+
+  test("the phone app frames only Explorer, only on its exact origins; Account, Courier and the rest open outside", () => {
+    const explorer = oneApp("xyz.tinycloud.explorer")!;
+    for (const origin of ["capacitor://localhost", "https://localhost"]) {
+      expect(appTarget(explorer, origin)).toEqual({ kind: "route", path: "/chat/apps/xyz.tinycloud.explorer" });
+      for (const id of ["xyz.tinycloud.account", "xyz.tinycloud.courier", "xyz.tinycloud.secrets", "xyz.tinycloud.opencredentials"] as const) {
+        expect(appTarget(oneApp(id)!, origin).kind).toBe("newTab");
+      }
+    }
+    // A page elsewhere on a localhost-like origin is not the phone app.
+    for (const origin of ["http://localhost", "https://localhost:8443", "https://evil.localhost", "capacitor://localhost:1", "capacitor://evil", "https://localhost.evil.example"]) {
+      expect(appTarget(explorer, origin)).toEqual({ kind: "newTab", url: "https://explorer.tinycloud.xyz/" });
+    }
+  });
 });
 
 describe("joinScopes", () => {
