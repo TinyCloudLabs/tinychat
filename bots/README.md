@@ -78,6 +78,13 @@ Every event is encoded by the supervisor from checked fields; OMP output never p
 4. After `session_settled` the supervisor saves the bot's state to disk, and the bot stops once it has been idle for
    `BOTS_IDLE_MS`. The next message starts it again on the same session.
 
+What the bot says about itself comes from `src/main-instructions.ts`. At startup the supervisor writes it as OMP's own
+`SYSTEM.md` in the shared rootfs (next to `models.yml`, `mcp.json` and `config.yml`, in `writeAgentFiles`); OMP uses that
+file in place of its default coding-agent prompt. The secrets sentence quotes `BOTS_RETENTION_DAYS`. A bot other than
+Main gets the same words without Main's name, from a second agent directory (`/root/.omp/agent-sibling`) that its
+sandbox selects with `PI_CODING_AGENT_DIR`: this service is not told a sibling's name. The asking-the-owner line is
+rendered only when `ask` is set, which waits for that feature.
+
 ## Working state
 
 Each bot's working state, its state snapshot, stays on the bots server and is deleted after `BOTS_RETENTION_DAYS` days

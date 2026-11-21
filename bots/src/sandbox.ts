@@ -12,7 +12,8 @@ import type { Sandbox, SandboxLauncher } from "./bot";
 import type { SupervisorConfig } from "./config";
 import { isRecord } from "./guards";
 import type { BotLayout } from "./layout";
-import { BOT_START, type OciSpec, SANDBOX_SESSION_DIR, sandboxSpec } from "./oci";
+import { mainInstructions } from "./main-instructions";
+import { BOT_START, type OciSpec, SANDBOX_SESSION_DIR, SIBLING_AGENT_DIR, sandboxSpec } from "./oci";
 import { RpcChannel } from "./rpc";
 import { COPY_FAILURES, type CopyFailure, hasSnapshot, STATE_INODES_PER_MB } from "./state";
 import { readWebPolicy } from "./web-policy";
@@ -99,7 +100,7 @@ export function modelsYml(model: string): string {
     "    apiKey: BOT_TOKEN",
     "    models:",
     `      - id: ${JSON.stringify(model)}`,
-    `        name: ${JSON.stringify(`TinyCloud (${model})`)}`,
+    `        name: ${JSON.stringify(model)}`,
     "        reasoning: false",
     "",
   ].join("\n");
@@ -115,9 +116,29 @@ export function mcpJson(): string {
   });
 }
 
-/** OMP's own settings inside every sandbox: its built-in web tools would only fail without a network, so they are off. */
+/**
+ * OMP's own settings inside every sandbox: its built-in web tools would only fail without a network, so they are off,
+ * and the model's identifier is not put into its prompt (it would read "tinycloud/<model>" and Main would take
+ * TinyCloud for the model provider).
+ */
 export function configYml(): string {
-  return ["# Written by the bots supervisor.", "web_search:", "  enabled: false", "fetch:", "  enabled: false", ""].join("\n");
+  return ["# Written by the bots supervisor.", "web_search:", "  enabled: false", "fetch:", "  enabled: false", "includeModelInPrompt: false", ""].join("\n");
+}
+
+/**
+ * Everything the supervisor puts in OMP's agent directories inside the shared rootfs: Main's, and one for every other
+ * bot (SIBLING_AGENT_DIR, chosen by the sandbox's environment). SYSTEM.md is OMP's own system prompt file: when it
+ * exists, its text replaces the agent's default prompt (the one that makes it a coding agent), so it holds the bot's
+ * instructions (main-instructions.ts). Only the name differs between the two.
+ */
+export function writeAgentFiles(rootfs: string, options: { model: string; retentionDays: number }): void {
+  for (const [agentDir, sibling] of [[join(rootfs, "root", ".omp", "agent"), false], [join(rootfs, SIBLING_AGENT_DIR), true]] as const) {
+    mkdirSync(agentDir, { recursive: true });
+    writeFileSync(join(agentDir, "models.yml"), modelsYml(options.model));
+    writeFileSync(join(agentDir, "mcp.json"), mcpJson());
+    writeFileSync(join(agentDir, "config.yml"), configYml());
+    writeFileSync(join(agentDir, "SYSTEM.md"), mainInstructions({ retentionDays: options.retentionDays, sibling }));
+  }
 }
 
 /** A container's status as `runsc list` reports it; "absent" once runsc no longer knows it. */
@@ -299,11 +320,7 @@ export class RunscHost implements SandboxLauncher {
 
   async init(): Promise<void> {
     await prepareHost(this.#cfg.totalMemoryMb, this.#cfg.totalPids);
-    const agentDir = join(this.#cfg.rootfs, "root", ".omp", "agent");
-    mkdirSync(agentDir, { recursive: true });
-    writeFileSync(join(agentDir, "models.yml"), modelsYml(this.#cfg.model));
-    writeFileSync(join(agentDir, "mcp.json"), mcpJson());
-    writeFileSync(join(agentDir, "config.yml"), configYml());
+    writeAgentFiles(this.#cfg.rootfs, { model: this.#cfg.model, retentionDays: this.#cfg.retentionDays });
     for (const dir of [this.#cfg.dataRoot, this.#cfg.runRoot]) mkdirSync(dir, { recursive: true, mode: 0o700 });
     // Saved state never holds setuid files or devices (state.ts copies neither); its volume refuses both anyway.
     await run(["sh", "-c", 'mount -o remount,bind,nosuid,nodev "$(findmnt -n -o TARGET -T "$1")"', "sh", this.#cfg.dataRoot]);
@@ -414,6 +431,7 @@ export class RunscHost implements SandboxLauncher {
         stateMount: layout.stateMount,
         cgroupsPath: `/bots/${layout.botId}`,
         limits: this.#cfg.limits,
+        ...(layout.botKey ? { agentDir: SIBLING_AGENT_DIR } : {}),
       });
       writeFileSync(join(layout.bundleDir, "config.json"), JSON.stringify(spec), { mode: 0o600 });
       await attempt([...this.#runsc, "delete", "-force", layout.containerId]);

@@ -24,6 +24,8 @@ export const SANDBOX_STATE_DIR = "/root/bot";
 export const SANDBOX_EGRESS_DIR = "/run/egress";
 export const SANDBOX_SESSION_DIR = `${SANDBOX_STATE_DIR}/sessions/main`;
 export const BOT_START = "/usr/local/bin/bot-start.sh";
+/** OMP's agent directory for a bot other than Main: the same files, with instructions that do not name it Main. */
+export const SIBLING_AGENT_DIR = "/root/.omp/agent-sibling";
 
 export interface SandboxSpecInput {
   /** Shared read-only lower layer; runsc gives each sandbox its own in-memory upper layer. */
@@ -35,6 +37,8 @@ export interface SandboxSpecInput {
   stateMount: string;
   cgroupsPath: string;
   limits: SandboxLimits;
+  /** OMP's agent directory when it is not the default one (a bot other than Main has its own, with its own instructions). */
+  agentDir?: string;
 }
 
 const CPU_PERIOD_US = 100_000;
@@ -57,6 +61,7 @@ export function sandboxSpec(base: OciSpec, input: SandboxSpecInput): OciSpec {
         "HOME=/root",
         `BOT_TOKEN=${input.token}`,
         "PI_NO_TITLE=1",
+        ...(input.agentDir ? [`PI_CODING_AGENT_DIR=${input.agentDir}`] : []),
       ],
       noNewPrivileges: true,
     },
