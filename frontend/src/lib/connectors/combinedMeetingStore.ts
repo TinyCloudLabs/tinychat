@@ -139,15 +139,17 @@ function mergeMembers(rawMetadata: unknown): MergeMember[] | null {
  * Members of a combined row, or null when they cannot be determined. The union of the v1
  * `metadata.merge.members` record and every distinct (source, source_id) in the body's per-segment
  * `sources[]` (chosen or not: an unchosen source's text is carried in `alternate`), so a source that
- * only one of them names is still found. Either alone is enough; with neither (read failure,
- * unparseable body, a segment without `sources`, empty `members`) it is null, never a guess.
+ * only one of them names is still found. Either alone is enough; with neither (absent or
+ * unparseable body, a segment without `sources`, empty `members`) it is null. Storage failures
+ * remain errors even when metadata names some members: the body may name additional sources.
  */
-async function membersOf(tcw: TinyCloudWeb, sourceId: string, rawMetadata: unknown): Promise<MeetingRef[] | null> {
+async function membersOf(tcw: TinyCloudWeb, sourceId: string, rawMetadata: unknown): Promise<StoreResult<MeetingRef[] | null>> {
   const seen = new Map<string, MeetingRef>();
   const add = (source: string, sid: string) => seen.set(`${source}\u0000${sid}`, { source, sourceId: sid });
   for (const m of mergeMembers(rawMetadata) ?? []) add(m.source, m.sourceId);
   const key = mergedBodyKey(sourceId);
   const res = key === null ? null : await kv(() => tcw.kv.get(key));
+  if (res && !res.ok && (!res.notFound || res.error.code !== "KV_NOT_FOUND")) return { ok: false, error: res.error };
   if (res?.ok) {
     let body: unknown = res.data;
     if (typeof body === "string") {
@@ -166,7 +168,7 @@ async function membersOf(tcw: TinyCloudWeb, sourceId: string, rawMetadata: unkno
     }
     if (valid) for (const [s, i] of fromBody) add(s, i);
   }
-  return seen.size === 0 ? null : [...seen.values()];
+  return { ok: true, data: seen.size === 0 ? null : [...seen.values()] };
 }
 
 // ═══ 2. Reading members (read-only, I1) ══════════════════════════════════════════════════════
@@ -477,8 +479,9 @@ export async function deleteCombinedReferencing(
     const sid = asString(r[1]);
     if (id === null || sid === null) continue;
     const members = await membersOf(tcw, sid, r[2]);
-    if (members === null) unverifiedIds.push(id);
-    else if (members.some((m) => m.source === source && (sourceId === undefined || m.sourceId === sourceId))) hits.push({ id, sourceId: sid });
+    if (!members.ok) return members;
+    if (members.data === null) unverifiedIds.push(id);
+    else if (members.data.some((m) => m.source === source && (sourceId === undefined || m.sourceId === sourceId))) hits.push({ id, sourceId: sid });
   }
   // One body per source_id (duplicates share it), then every matching row.
   const bodies = new Set(hits.map((h) => h.sourceId));
@@ -520,9 +523,9 @@ export async function sweepCombinedMeeting(tcw: TinyCloudWeb, id: string): Promi
   if (!found.ok) return found;
   if (found.rows.length === 0) return { ok: true, data: { status: "kept" } };
   const members = await membersOf(tcw, String(found.rows[0]![0]), found.rows[0]![1]);
-  if (members === null) return { ok: true, data: { status: "unverified" } };
+  if (!members.ok || members.data === null) return { ok: true, data: { status: "unverified" } };
   let unverified = false;
-  for (const m of members) {
+  for (const m of members.data) {
     const read = await readMemberBody(tcw, m);
     if (read.status === "absent") {
       const del = await deleteCombined(tcw, EXO_MERGED_SOURCE, id);

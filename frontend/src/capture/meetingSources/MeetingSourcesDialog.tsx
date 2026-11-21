@@ -295,7 +295,7 @@ export function MeetingSourcesDialog({
                       <div className="ms-opt">
                         <div className="ms-opt-copy">
                           <p className="ms-opt-text">{GRANOLA_CSV_STRINGS.allowBackNote}</p>
-                          <GranolaAllowBack backendUrl={backendUrl} sessionStore={sessionStore} />
+                          <GranolaAllowBack tcw={tcw} backendUrl={backendUrl} sessionStore={sessionStore} />
                         </div>
                       </div>
                     )}

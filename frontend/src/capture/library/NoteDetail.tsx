@@ -38,6 +38,7 @@ import { captureEvents } from "../captureEvents";
 import { ShareRecordingButton } from "../share/ShareRecordingSheet";
 import { useRecordingShared } from "@/lib/nativeShares/sentShares";
 import { libraryRowTitle } from "./LibraryRow";
+import { GranolaDeleteAction } from "./GranolaDeleteAction";
 
 /** Matches markdown-text's copy button: the tick reverts on its own. */
 const COPIED_DURATION = 1500;
@@ -171,6 +172,9 @@ export function NoteDetail(props: {
     <ShareRecordingButton tcw={props.tcw} recording={{ item, title: libraryRowTitle(item), metadata: reads.metadata.metadata,
       hasTranscript: remoteTranscript?.status === "ok" && remoteTranscript.sentences.length > 0 }} />
   ) : null;
+  const granolaDelete = item?.source === "granola" && !item.onPhone && reads.metadata?.status === "ok" && reads.metadata.metadata.imported_from === "granola_csv" ? (
+    <GranolaDeleteAction tcw={props.tcw} item={item} onChanged={library.refresh} onDeleted={props.onBack} />
+  ) : null;
   return (
     <>
       <NoteDetailView
@@ -195,7 +199,7 @@ export function NoteDetail(props: {
         pushed={props.pushed}
         onBack={props.onBack}
         savedNote={props.savedNote}
-        activityControl={shareButton ? <>{props.activityControl}{shareButton}</> : props.activityControl}
+        activityControl={shareButton || granolaDelete ? <>{props.activityControl}{shareButton}{granolaDelete}</> : props.activityControl}
         shared={shared}
         combine={combine}
         speakerNames={speakerNames}

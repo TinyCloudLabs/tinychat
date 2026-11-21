@@ -24,6 +24,8 @@ import type { AppPlatform } from "@/lib/platform";
 import { activityForNote, noteStatus } from "../activity/activitySelector";
 import { pipelineTranscriptStatus } from "../pipeline/PipelineTrackSummary";
 
+const UNVERIFIED_COMBINED_WARNING = "Couldn't check this combined meeting's sources. Open it to review or delete it.";
+
 export type LibraryItem = MeetingListItem & {
   /** A voice note on this device with no row in the space yet. */
   onPhone?: true;
@@ -35,6 +37,8 @@ export type LibraryItem = MeetingListItem & {
   localAudioReady?: true;
   /** A voice note's own words (its first moment, else its transcript), which title its row. */
   snippet?: string | null;
+  /** A deletion could not verify this combined row's sources; the row stays available to review. */
+  deletionWarning?: "unverified-combined";
 };
 
 const isVoiceNote = (item: LibraryItem): boolean => item.source === VOICE_NOTE_SOURCE;
@@ -78,6 +82,7 @@ function LibraryRowContent(props: LibraryRowProps & { activityStatus: string | n
   const voiceNote = libraryKind(item.source) === "note";
   const soft = useSoftHome();
   const status = props.activityStatus;
+  const deletionWarning = item.deletionWarning === "unverified-combined" ? UNVERIFIED_COMBINED_WARNING : undefined;
   // The owner is sharing it (TC-3195): "Shared", unless the row has a state of its own to show.
   const shared = useRecordingShared(item.id);
   const badge = status ? null : (libraryRowBadge(item) ?? (shared ? "Shared" : null));
@@ -92,6 +97,7 @@ function LibraryRowContent(props: LibraryRowProps & { activityStatus: string | n
         icon={Icon}
         title={title}
         meta={libraryRowMeta(item, props.now, props.grouped)}
+        subMeta={deletionWarning}
         badge={lineReplaced || (isVoiceNote(item) && item.metadata?.audio_stored !== 0) ? undefined : (badge ?? undefined)}
         pipeline={status ? undefined : isVoiceNote(item) ? props.pipeline : undefined}
         activityStatus={status}
@@ -118,7 +124,12 @@ function LibraryRowContent(props: LibraryRowProps & { activityStatus: string | n
       trailing={edit ? <RenameRecordingButton edit={edit} /> : undefined}
       href={notePath(item.id)}
       leading={<Icon />}
-      title={title}
+      title={deletionWarning ? (
+        <>
+          {title}
+          <span role="alert" className="block text-meta font-normal text-destructive" data-testid="library-deletion-warning">{deletionWarning}</span>
+        </>
+      ) : title}
       selected={props.selected}
       meta={
         <>

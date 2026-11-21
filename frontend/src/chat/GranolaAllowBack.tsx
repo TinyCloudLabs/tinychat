@@ -1,8 +1,10 @@
 // "Allow deleted meetings back" for Granola: asks first, then clears Granola's list of
 // deleted meetings. Shared by the CSV import result and the Granola manage row.
 
-import { useState, type FC } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { FC } from "react";
 import type { SessionStore } from "@tinyboilerplate/client";
+import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -11,10 +13,14 @@ import {
   GRANOLA_RESYNC_CONFIRM,
 } from "@/lib/connectors/granolaCsvStrings";
 import { createConnectorWebhooksClient } from "@/lib/connectors/webhooksApi";
+import { clearGranolaDeletedMeetings } from "@/lib/connectors/connectorStore";
+import { runGranolaSpaceWrite } from "@/lib/connectors/granolaSync";
+import { scheduledSpace } from "@/lib/spaceQueue";
 
 type Step = "idle" | "confirming" | "working" | "done" | "failed";
 
 interface GranolaAllowBackProps {
+  tcw: TinyCloudWeb;
   backendUrl: string;
   sessionStore: SessionStore;
   disabled?: boolean;
@@ -22,14 +28,35 @@ interface GranolaAllowBackProps {
   className?: string;
 }
 
-export const GranolaAllowBack: FC<GranolaAllowBackProps> = ({ backendUrl, sessionStore, disabled = false, className }) => {
-  const [step, setStep] = useState<Step>("idle");
+export const GranolaAllowBack: FC<GranolaAllowBackProps> = ({ tcw, backendUrl, sessionStore, disabled = false, className }) => {
+  const scope = useMemo(() => ({
+    space: scheduledSpace(tcw), ownerDid: tcw.did ?? null, spaceId: tcw.spaceId ?? null,
+  }), [tcw, tcw.did, tcw.spaceId, backendUrl, sessionStore]);
+  const current = useRef<typeof scope | null>(scope);
+  current.current = scope;
+  useEffect(() => {
+    current.current = scope;
+    return () => { if (current.current === scope) current.current = null; };
+  }, [scope]);
+  const [state, setState] = useState<{ scope: typeof scope; step: Step }>({ scope, step: "idle" });
+  const step = state.scope === scope ? state.step : "idle";
+  const setStep = (next: Step) => setState({ scope, step: next });
 
   const confirm = async () => {
+    const token = sessionStore.getToken();
+    const active = () => current.current === scope
+      && (scope.space.did ?? null) === scope.ownerDid
+      && (scope.space.spaceId ?? null) === scope.spaceId
+      && sessionStore.getToken() === token;
     setStep("working");
-    const webhooks = createConnectorWebhooksClient(backendUrl, { sessionStore });
-    const result = await webhooks.clearPurgeLedger(GRANOLA_LEDGER_SOURCE).catch(() => null);
-    setStep(result?.status === "ok" ? "done" : "failed");
+    const cleared = await runGranolaSpaceWrite(async () => {
+      if (!token || !active()) return false;
+      const webhooks = createConnectorWebhooksClient(backendUrl, { sessionStore });
+      const result = await webhooks.clearPurgeLedger(GRANOLA_LEDGER_SOURCE);
+      if (result.status !== "ok" || !active()) return false;
+      return (await clearGranolaDeletedMeetings(scope.space)).ok;
+    }).catch(() => false);
+    if (current.current === scope) setStep(cleared ? "done" : "failed");
   };
 
   return (
