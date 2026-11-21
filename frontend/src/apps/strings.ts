@@ -158,12 +158,10 @@ export const pinApp = (app: string) => `Pin ${app}`;
 export const unpinApp = (app: string) => `Unpin ${app}`;
 
 /**
- * An app One can't frame here: its screen's heading, line and button. `phone`: the iOS and Android apps, which open
- * the page in an in-app browser view (feed/inAppLink.ts), not a tab.
+ * An app One can't frame here: its screen's heading and button. `phone`: the iOS and Android apps, which open the page
+ * in an in-app browser view (feed/inAppLink.ts), not a tab.
  */
 export const opensSeparatelyTitle = (app: string, phone: boolean) => (phone ? `${app} opens on its own` : `${app} opens in its own tab`);
-export const opensSeparatelyLine = (app: string) =>
-  `${app} can't be shown inside TinyCloud One, so it opens separately. Your account and data are fine.`;
 export const openSeparately = (app: string, phone: boolean) => (phone ? `Open ${app}` : "Open in new tab");
 
 /**

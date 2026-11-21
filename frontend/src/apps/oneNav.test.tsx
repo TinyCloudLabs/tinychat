@@ -4,19 +4,20 @@
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { act, type ReactNode } from "react";
+import { act, useState, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { installDom } from "@/test/dom";
-import { appPinnedToast, appUnpinnedToast } from "@/lib/homeStrings";
+import { APPS_OPENS_NEW_TAB, APPS_PIN, APPS_UNPIN, appPinnedToast, appUnpinnedToast } from "@/lib/homeStrings";
 import { PlatformContext, type AppPlatform } from "@/lib/platform";
 import type { SizeClassState } from "@/lib/sizeClass";
 import { AppShellView } from "@/shell/AppShell";
 import { PATHS, screenFor } from "@/shell/routes";
-import { AppsGrid } from "@/home/AppsGrid";
-import { gridTiles } from "@/home/AppsPage";
+import { AppsGrid, LONG_PRESS_MS } from "@/home/AppsGrid";
+import type { PinId } from "@/shell/navPins";
+import { gridTiles, pinnedFirst } from "@/home/AppsPage";
 import { AddAppPage } from "./AddAppPage";
 import { AppBar } from "./AppBar";
 import { OneAppScreen } from "./FramedAppScreen";
@@ -30,7 +31,6 @@ import {
   COPY_PROMPT,
   MAIN_TAB_LABEL,
   PILL_LABELS,
-  opensSeparatelyLine,
   opensSeparatelyTitle,
   openSeparately,
   pinApp,
@@ -102,22 +102,63 @@ describe("the Apps grid", () => {
     expect(ios).toEqual(web.map((tile) => tile.name).filter((name) => name !== APP_NAMES["xyz.tinycloud.account"]));
   });
 
-  test("with Add an app on, ends with it, which no one can pin; tiles carry no Pin control and never leave One", () => {
+  const noop = () => {};
+
+  test("with Add an app on, ends with it, which no one can pin; each app tile has its own Pin, and in the phone app no tile leaves One", () => {
     const tiles = gridTiles(0, oneAppsFor("web", true));
-    const markup = ssr(<AppsGrid tiles={tiles} pins={["app:xyz.tinycloud.explorer"]} canPin addApp />, PATHS.apps);
+    const markup = ssr(<AppsGrid tiles={tiles} pins={["app:xyz.tinycloud.explorer"]} canPin onPin={noop} onUnpin={noop} addApp />, PATHS.apps);
     const anchors = links(markup, "<ul", "</ul>");
     expect(anchors).toHaveLength(tiles.length + 1);
     expect(anchors.map((tag) => attr(tag, "href"))).toEqual([...tiles.map((tile) => tile.path), PATHS.addApp]);
     expect(markup).toContain(ADD_APP_TITLE);
     for (const tag of anchors) expect(tag).not.toContain("target=");
-    expect(markup).not.toContain("<button");
+    const pinButtons = [...markup.matchAll(/<button [^>]*aria-label="([^"]*)"/g)].map((match) => match[1]);
+    expect(pinButtons).toEqual(tiles.map((tile) => (tile.pin === "app:xyz.tinycloud.explorer" ? unpinApp(tile.name) : pinApp(tile.name))));
+    expect(ssr(<AppsGrid tiles={tiles} pins={[]} canPin={false} onPin={noop} onUnpin={noop} addApp />, PATHS.apps)).not.toContain("<button");
   });
 
   test("with Add an app off, the grid ends with Connectors and nothing leads to it", () => {
     const tiles = gridTiles(0, oneAppsFor("web", true));
-    const markup = ssr(<AppsGrid tiles={tiles} pins={[]} canPin addApp={false} />, PATHS.apps);
+    const markup = ssr(<AppsGrid tiles={tiles} pins={[]} canPin onPin={noop} onUnpin={noop} addApp={false} />, PATHS.apps);
     expect(links(markup, "<ul", "</ul>").map((tag) => attr(tag, "href"))).toEqual(tiles.map((tile) => tile.path));
     expect(markup).not.toContain(ADD_APP_TITLE);
+  });
+
+  test("on the web an app One can't frame here opens its own page in a new tab straight from its tile, marked, with no screen between", () => {
+    const apps = oneAppsFor("web", true);
+    const tiles = gridTiles(0, apps, "https://tinycloud.one");
+    const anchors = links(ssr(<AppsGrid tiles={tiles} pins={[]} canPin onPin={noop} onUnpin={noop} addApp={false} />, PATHS.apps), "<ul", "</ul>");
+    const framedHere: readonly string[] = ["xyz.tinycloud.explorer", "xyz.tinycloud.account", "xyz.tinycloud.courier"];
+    apps.forEach((app, index) => {
+      const tag = anchors[index]!;
+      if (app.kind === "native" || framedHere.includes(app.id)) {
+        expect(attr(tag, "href")).toBe(appRoute(app));
+        expect(tag).not.toContain("target=");
+      } else {
+        expect(attr(tag, "href")).toBe(appUrl(app));
+        expect(tag).toContain('target="_blank"');
+        expect(tag).toContain('rel="noopener noreferrer"');
+      }
+    });
+    expect(apps.filter((app) => app.kind !== "native" && !framedHere.includes(app.id)).map((app) => app.id)).toEqual([
+      "xyz.tinycloud.secrets",
+      "xyz.tinycloud.opencredentials",
+      "xyz.tinycloud.share",
+    ]);
+    // Each opens-out tile says so to a screen reader and carries the ↗ mark; the others don't.
+    const markup = ssr(<AppsGrid tiles={tiles} pins={[]} canPin={false} onPin={noop} onUnpin={noop} addApp={false} />, PATHS.apps);
+    expect(markup.split(`(${APPS_OPENS_NEW_TAB})`)).toHaveLength(4);
+    expect(markup.split("lucide-arrow-up-right")).toHaveLength(4);
+    // The phone app has no tabs: every tile opens its screen in One.
+    expect(gridTiles(0, oneAppsFor("ios", true), null).every((tile) => tile.newTab === undefined)).toBe(true);
+  });
+
+  test("on a phone, pinned apps come first in grid order, then the rest in theirs", () => {
+    const tiles = gridTiles(0, oneAppsFor("web", true));
+    const order = pinnedFirst(tiles, ["connectors", "app:xyz.tinycloud.explorer"]).map((tile) => tile.pin);
+    expect(order.slice(0, 2)).toEqual(["app:xyz.tinycloud.explorer", "connectors"]);
+    expect(order.slice(2)).toEqual(tiles.map((tile) => tile.pin).filter((pin) => pin !== "connectors" && pin !== "app:xyz.tinycloud.explorer"));
+    expect(pinnedFirst(tiles, []).map((tile) => tile.pin)).toEqual(tiles.map((tile) => tile.pin));
   });
 
   test("with Add an app off, its address is no screen of its own: it is an unknown app, and shows what an unknown app shows", () => {
@@ -132,11 +173,21 @@ describe("the Apps grid", () => {
 describe("the phone's pill", () => {
   const pill = (path: string) => links(shell(path), 'data-testid="pill-bar"', "</nav>");
 
-  test("holds four icon items, main tab, Chat, Apps and You, in place of the tab bar", () => {
+  test("holds four icon items, main tab, Chat, Apps and You, each with its spoken label, in place of the tab bar", () => {
     const markup = shell(PATHS.chat);
     expect(markup).not.toContain('data-testid="tab-bar"');
     expect(pill(PATHS.chat).map((tag) => attr(tag, "aria-label")?.split(",")[0])).toEqual([MAIN_TAB_LABEL, PILL_LABELS.chat, PILL_LABELS.apps, PILL_LABELS.you]);
     expect(pill(PATHS.chat).map((tag) => attr(tag, "href"))).toEqual([PATHS.feed, PATHS.chat, PATHS.apps, PATHS.settings]);
+    // Apps is a 2×2 grid of squares.
+    const bar = markup.slice(markup.indexOf('data-testid="pill-bar"'));
+    expect(bar.slice(bar.indexOf(`href="${PATHS.apps}"`), bar.indexOf(`href="${PATHS.settings}"`))).toContain("lucide-layout-grid");
+  });
+
+  test("the current item sits in the filled pill", () => {
+    const current = pill(PATHS.chat).filter((tag) => tag.includes('aria-current="page"'));
+    expect(current).toHaveLength(1);
+    expect(attr(current[0]!, "class")).toContain("tc-pill-current");
+    expect(pill(PATHS.chat).filter((tag) => attr(tag, "class")?.includes("tc-pill-current"))).toHaveLength(1);
   });
 
   test("Apps carries Connectors' waiting meetings", () => {
@@ -152,12 +203,17 @@ describe("the phone's pill", () => {
     expect(shell(PATHS.about)).not.toContain('data-testid="pill-bar"');
   });
 
-  test("wider screens keep their navigation and never offer Add an app there", () => {
+  test("wider screens keep their navigation and never offer Add an app there; the sidebar's Settings is You", () => {
     const wide = shell(PATHS.chat, { size: "expanded", land: false });
     expect(wide).not.toContain('data-testid="pill-bar"');
     expect(wide).toContain('data-testid="sidebar"');
     expect(wide).not.toContain(ADD_APP_TITLE);
     expect(wide).toContain(`>${MAIN_TAB_LABEL}<`);
+    const settingsRow = links(wide, 'data-testid="sidebar"', "</nav>").find((tag) => attr(tag, "href") === PATHS.settings)!;
+    const row = wide.slice(wide.indexOf(settingsRow), wide.indexOf("</a>", wide.indexOf(settingsRow)));
+    expect(row).toContain(`>${PILL_LABELS.you}<`);
+    expect(row).toContain("lucide-user-round");
+    expect(row).not.toContain(">Settings<");
   });
 });
 
@@ -180,12 +236,14 @@ describe("the open app's bar", () => {
     }
   });
 
-  test("an app One can't frame here opens on its own, from the bar or the screen, in a new tab", () => {
+  test("an app One can't frame here opens on its own, from the bar or the screen, in a new tab; the screen says only that", () => {
     for (const app of oneAppsFor("web", true)) {
       if (app.kind === "native") continue;
       const markup = ssr(<OneAppScreen appId={app.id} tcw={null} accountDid={ACCOUNT} fallback={<p>fallback</p>} />, appRoute(app));
       expect(markup).toContain(opensSeparatelyTitle(app.name, false).replaceAll("'", "&#x27;"));
-      expect(markup).toContain(opensSeparatelyLine(app.name).replaceAll("'", "&#x27;"));
+      const screen = markup.slice(markup.indexOf("</header>"));
+      expect(screen).not.toMatch(/<p[ >]/);
+      expect(screen.replace(/<[^>]*>/g, "")).toBe(`${opensSeparatelyTitle(app.name, false)}${openSeparately(app.name, false)}`.replaceAll("'", "&#x27;"));
       const anchors = [...markup.matchAll(/<a [^>]*>/g)].map((match) => match[0]);
       expect(anchors).toHaveLength(2);
       for (const tag of anchors) {
@@ -193,7 +251,6 @@ describe("the open app's bar", () => {
         expect(tag).toContain('target="_blank"');
         expect(tag).toContain('rel="noopener noreferrer"');
       }
-      expect(markup).toContain(openSeparately(app.name, false));
     }
   });
 
@@ -225,16 +282,18 @@ describe("mounted", () => {
     });
   };
 
-  test("Pin in the bar pins and unpins the app, says so, and survives a remount", async () => {
+  test("Pin in the bar, labelled Pin or Unpin, pins and unpins the app, says so, and survives a remount", async () => {
     const bar = <AppBar name={APP_NAMES["xyz.tinycloud.explorer"]} glyph="explorer" accountDid={ACCOUNT} pin="app:xyz.tinycloud.explorer" url="https://explorer.tinycloud.xyz/" />;
     mount(bar);
     const name = APP_NAMES["xyz.tinycloud.explorer"];
     const toggle = () => host.querySelector("button[aria-pressed]")!;
     expect(toggle().getAttribute("aria-pressed")).toBe("false");
     expect(toggle().getAttribute("aria-label")).toBe(pinApp(name));
+    expect(toggle().textContent).toBe(APPS_PIN);
     await click(toggle());
     expect(toggle().getAttribute("aria-pressed")).toBe("true");
     expect(toggle().getAttribute("aria-label")).toBe(unpinApp(name));
+    expect(toggle().textContent).toBe(APPS_UNPIN);
     expect(host.querySelector('[role="status"]')!.textContent).toBe(appPinnedToast(name));
     act(() => root.unmount());
     root = createRoot(host);
@@ -243,6 +302,81 @@ describe("mounted", () => {
     await click(toggle());
     expect(toggle().getAttribute("aria-pressed")).toBe("false");
     expect(host.querySelector('[role="status"]')!.textContent).toBe(appUnpinnedToast(name));
+  });
+
+  describe("pinning from the grid", () => {
+    const explorer = APP_NAMES["xyz.tinycloud.explorer"];
+    const calls: string[] = [];
+    function Grid() {
+      const [pins, setPins] = useState<PinId[]>([]);
+      return (
+        <>
+          <AppsGrid
+            tiles={gridTiles(0, oneAppsFor("web", true))}
+            pins={pins}
+            canPin
+            onPin={(pin) => { calls.push(`pin ${pin}`); setPins((current) => [...current, pin]); }}
+            onUnpin={(pin) => { calls.push(`unpin ${pin}`); setPins((current) => current.filter((entry) => entry !== pin)); }}
+            addApp={false}
+          />
+          <Where />
+        </>
+      );
+    }
+    function Where() {
+      return <output data-testid="where">{useLocation().pathname}</output>;
+    }
+    const where = () => host.querySelector('[data-testid="where"]')!.textContent;
+    const explorerRoute = appRoute(oneAppsFor("web", true).find((app) => app.id === "xyz.tinycloud.explorer")!);
+    const tile = () => [...host.querySelectorAll("ul a")].find((anchor) => anchor.textContent?.startsWith(explorer))!;
+    /** A press of `holdMs` then the tap that ends it; returns where One is afterwards. */
+    const press = async (pointerType: string, holdMs: number) => {
+      await act(async () => {
+        tile().dispatchEvent(new window.PointerEvent("pointerdown", { bubbles: true, pointerType, clientX: 10, clientY: 10 }) as unknown as Event);
+        await Bun.sleep(holdMs);
+        tile().dispatchEvent(new window.PointerEvent("pointerup", { bubbles: true, pointerType, clientX: 10, clientY: 10 }) as unknown as Event);
+      });
+      await act(async () => {
+        tile().dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true, button: 0 }) as unknown as Event);
+      });
+      return where();
+    };
+    beforeEach(() => {
+      calls.length = 0;
+    });
+
+    test("a long press on a phone pins the app, says so, and the press opens nothing; again unpins it", async () => {
+      mount(<Grid />);
+      expect(await press("touch", LONG_PRESS_MS + 80)).toBe("/");
+      expect(calls).toEqual(["pin app:xyz.tinycloud.explorer"]);
+      expect(host.querySelector('[role="status"]')!.textContent).toBe(appPinnedToast(explorer));
+      expect(tile().hasAttribute("data-pinned")).toBe(true);
+      expect(await press("touch", LONG_PRESS_MS + 80)).toBe("/");
+      expect(calls).toEqual(["pin app:xyz.tinycloud.explorer", "unpin app:xyz.tinycloud.explorer"]);
+      expect(host.querySelector('[role="status"]')!.textContent).toBe(appUnpinnedToast(explorer));
+    });
+
+    test("a short tap opens the app and pins nothing", async () => {
+      mount(<Grid />);
+      expect(await press("touch", 60)).toBe(explorerRoute);
+      expect(calls).toEqual([]);
+    });
+
+    test("a mouse held down never pins; its click opens the app", async () => {
+      mount(<Grid />);
+      expect(await press("mouse", LONG_PRESS_MS + 80)).toBe(explorerRoute);
+      expect(calls).toEqual([]);
+    });
+
+    test("the tile's Pin button (under a pointer) pins and unpins, and says so", async () => {
+      mount(<Grid />);
+      const button = () => host.querySelector(`button[aria-label="${pinApp(explorer)}"], button[aria-label="${unpinApp(explorer)}"]`)!;
+      await click(button());
+      expect(button().getAttribute("aria-pressed")).toBe("true");
+      expect(host.querySelector('[role="status"]')!.textContent).toBe(appPinnedToast(explorer));
+      await click(button());
+      expect(calls).toEqual(["pin app:xyz.tinycloud.explorer", "unpin app:xyz.tinycloud.explorer"]);
+    });
   });
 
   describe("Add an app", () => {

@@ -1,6 +1,6 @@
 // The Apps destination (TC-2040): a list of links that open Share's existing
 // runner in a new tab. Not embedded, and Home grants these apps nothing.
-import { useMemo } from "react";
+import { useContext, useMemo } from "react";
 import { ExternalLinkIcon, PlugIcon } from "lucide-react";
 
 import {
@@ -12,11 +12,14 @@ import {
   APPS_PAGE_LEAD,
   APPS_PAGE_TITLE,
 } from "@/lib/homeStrings";
-import { ONE_APPS, appRoute, appTarget, type OneApp } from "@/apps/registry";
+import { ONE_APPS, appRoute, appTarget, appUrl, framedApp, framesAppHere, type OneApp } from "@/apps/registry";
+import { PlatformContext } from "@/lib/platform";
+import { useSizeClass } from "@/lib/sizeClass";
 import { APP_CAPTIONS, CONNECTORS_NAME } from "@/apps/strings";
 import { PAGE_COLUMN, PageHeader } from "@/shell/PageHeader";
 import { NAV_APP_IDS } from "@/shell/navApps";
-import { ONE_ADD_APP_ENABLED, ONE_APPS_ENABLED, ONE_NAV_ENABLED, appPinId, useNavPins } from "@/shell/navPins";
+import { ONE_ADD_APP_ENABLED, ONE_APPS_ENABLED, ONE_NAV_ENABLED, appPinId, useNavPins, type PinId } from "@/shell/navPins";
+import { navKindFor } from "@/shell/navItems";
 import { PATHS } from "@/shell/routes";
 import { AppsGrid, type GridTile } from "./AppsGrid";
 import { AppsLauncher, type LauncherTile } from "./AppsLauncher";
@@ -40,23 +43,51 @@ export function launcherTiles(pendingMeetings: number, origin: string): Launcher
   return tiles;
 }
 
-/** One's new navigation: the grid's tiles, every TinyCloud app then Connectors (One's own page), each opening its screen in One. */
-export function gridTiles(pendingMeetings: number, apps: readonly OneApp[] = ONE_APPS): GridTile[] {
-  const tiles: GridTile[] = apps.map((app) => ({
-    pin: app.kind === "native" ? "capture" : appPinId(app.id),
-    name: app.name,
-    caption: APP_CAPTIONS[app.glyph],
-    glyph: app.glyph,
-    path: appRoute(app),
-  }));
+/**
+ * One's new navigation: the grid's tiles, every TinyCloud app then Connectors (One's own page), each opening its screen
+ * in One. On the web (`origin`, the page's), an app One doesn't frame here opens its own page in a new tab straight from
+ * the tile instead; the phone app (null) has no tabs, so every tile opens its screen.
+ */
+export function gridTiles(pendingMeetings: number, apps: readonly OneApp[] = ONE_APPS, origin: string | null = null): GridTile[] {
+  const tiles: GridTile[] = apps.map((app) => {
+    const frame = app.kind === "native" ? undefined : framedApp(app.id);
+    const opensOut = origin !== null && app.kind !== "native" && !(frame && framesAppHere(frame, origin));
+    return {
+      pin: app.kind === "native" ? "capture" : appPinId(app.id),
+      name: app.name,
+      caption: APP_CAPTIONS[app.glyph],
+      glyph: app.glyph,
+      path: appRoute(app),
+      newTab: opensOut ? appUrl(app) : undefined,
+    };
+  });
   tiles.push({ pin: "connectors", name: CONNECTORS_NAME, caption: APP_CAPTIONS.connectors, glyph: "connectors", path: PATHS.connectors, pending: pendingMeetings });
   return tiles;
 }
 
+/** The grid on a phone: pinned apps first (in grid order), so a pinned app is one tap away; the rest keep their order. */
+export function pinnedFirst(tiles: readonly GridTile[], pins: readonly PinId[]): GridTile[] {
+  return [...tiles.filter((tile) => pins.includes(tile.pin)), ...tiles.filter((tile) => !pins.includes(tile.pin))];
+}
+
 function OneAppsPage({ accountDid, pendingMeetings }: { accountDid: string | null; pendingMeetings: number }) {
   const { pins, pin, unpin } = useNavPins(accountDid, NAV_APP_IDS);
+  const platform = useContext(PlatformContext);
+  const phone = navKindFor(useSizeClass()) === "tabbar";
   const tiles = useMemo(() => launcherTiles(pendingMeetings, window.location.origin), [pendingMeetings]);
-  if (ONE_NAV_ENABLED) return <AppsGrid tiles={gridTiles(pendingMeetings)} pins={pins} canPin={accountDid !== null} addApp={ONE_ADD_APP_ENABLED} />;
+  if (ONE_NAV_ENABLED) {
+    const grid = gridTiles(pendingMeetings, ONE_APPS, platform === "web" ? window.location.origin : null);
+    return (
+      <AppsGrid
+        tiles={phone ? pinnedFirst(grid, pins) : grid}
+        pins={pins}
+        canPin={accountDid !== null}
+        onPin={pin}
+        onUnpin={unpin}
+        addApp={ONE_ADD_APP_ENABLED}
+      />
+    );
+  }
   return <AppsLauncher tiles={tiles} pins={pins} canPin={accountDid !== null} onPin={pin} onUnpin={unpin} />;
 }
 

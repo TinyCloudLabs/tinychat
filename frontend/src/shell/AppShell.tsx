@@ -166,7 +166,7 @@ export function AppShellView({
     <div className={cn("grid h-full min-h-0", GRID[nav])}>
       {nav === "sidebar" ? (
         <div className="row-span-2 min-h-0">
-          <Sidebar {...navProps} settings={settings !== null} live={sidebarLive} />
+          <Sidebar {...navProps} settings={settings !== null} live={sidebarLive} you={oneNav} />
         </div>
       ) : null}
       {nav === "rail" ? (

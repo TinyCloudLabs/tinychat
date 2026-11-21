@@ -1,21 +1,23 @@
-// The open app's bar (One's new navigation, ONE_NAV_ENABLED): the app's icon and name as the screen's heading, Pin, and the app's own page in a
-// new tab when it has one. Every app screen in One has it: framed apps, the apps One can't frame here, and One's own
-// Recording and Connectors. No Back: the navigation's Apps item is the way back to the grid.
-import { useContext, useEffect, useState } from "react";
+// The open app's bar (One's new navigation, ONE_NAV_ENABLED): the app's icon and name as the screen's heading, Pin
+// (labelled), and the app's own page in a new tab when it has one. Every app screen in One has it: framed apps, the
+// apps One can't frame here, and One's own Recording and Connectors. No Back: the navigation's Apps item is the way
+// back to the grid.
+import { useContext } from "react";
 import { ExternalLinkIcon, PinIcon } from "lucide-react";
 
 import { openLinkInApp } from "@/feed/inAppLink";
-import { appPinnedToast, appUnpinnedToast } from "@/lib/homeStrings";
+import { APPS_PIN, APPS_UNPIN, appPinnedToast, appUnpinnedToast } from "@/lib/homeStrings";
 import { PlatformContext } from "@/lib/platform";
 import { cn } from "@/lib/utils";
 import { NAV_APP_IDS } from "@/shell/navApps";
 import { useNavPins, type PinId } from "@/shell/navPins";
 import { AppTileIcon, type GlyphId } from "./icons";
+import { PinToast, usePinToast } from "./PinToast";
 import { openSeparately, pinApp, unpinApp } from "./strings";
 
-const TOAST_MS = 2400;
-const ICON_BUTTON =
-  "tap-transparent grid size-10 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors duration-150 hover:bg-surface-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
+const BUTTON =
+  "tap-transparent grid h-10 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors duration-150 hover:bg-surface-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
+const ICON_BUTTON = `${BUTTON} w-10`;
 
 export interface AppBarProps {
   name: string;
@@ -31,12 +33,7 @@ export function AppBar({ name, glyph, accountDid, pin, url }: AppBarProps) {
   const { pins, pin: addPin, unpin } = useNavPins(accountDid, NAV_APP_IDS);
   const pinned = pins.includes(pin);
   const platform = useContext(PlatformContext);
-  const [message, setMessage] = useState<string | null>(null);
-  useEffect(() => {
-    if (message === null) return;
-    const timer = setTimeout(() => setMessage(null), TOAST_MS);
-    return () => clearTimeout(timer);
-  }, [message]);
+  const [message, showMessage] = usePinToast();
 
   return (
     <header data-testid="app-bar" className="flex h-12 shrink-0 items-center gap-1 border-b border-border/70 pl-1 pr-1.5">
@@ -52,11 +49,12 @@ export function AppBar({ name, glyph, accountDid, pin, url }: AppBarProps) {
           onClick={() => {
             if (pinned) unpin(pin);
             else addPin(pin);
-            setMessage(pinned ? appUnpinnedToast(name) : appPinnedToast(name));
+            showMessage(pinned ? appUnpinnedToast(name) : appPinnedToast(name));
           }}
-          className={cn(ICON_BUTTON, pinned && "text-foreground")}
+          className={cn(BUTTON, "flex gap-1.5 px-2.5 text-label font-medium", pinned && "text-foreground")}
         >
-          <PinIcon aria-hidden className={cn("size-5", pinned && "fill-current")} />
+          <PinIcon aria-hidden className={cn("size-[18px]", pinned && "fill-current")} />
+          <span aria-hidden>{pinned ? APPS_UNPIN : APPS_PIN}</span>
         </button>
       ) : null}
       {url !== undefined ? (
@@ -71,11 +69,7 @@ export function AppBar({ name, glyph, accountDid, pin, url }: AppBarProps) {
           <ExternalLinkIcon aria-hidden className="size-5" />
         </a>
       ) : null}
-      <div role="status" className="pointer-events-none fixed inset-x-0 bottom-[calc(var(--tc-bottom-chrome,0px)+1rem)] z-40 flex justify-center px-4">
-        {message === null ? null : (
-          <span className="rounded-full bg-foreground px-4 py-2 text-label font-medium text-background shadow-lg">{message}</span>
-        )}
-      </div>
+      <PinToast message={message} />
     </header>
   );
 }

@@ -40,7 +40,6 @@ import {
   joinScopes,
   missingSpacesLine,
   openSeparately,
-  opensSeparatelyLine,
   opensSeparatelyTitle,
   stepUpFailedLine,
   type ScopeId,
@@ -97,14 +96,15 @@ export interface OneAppScreenProps extends FramedAppScreenProps {
 
 /**
  * One's new navigation (ONE_NAV_ENABLED): every web app's screen in One, the open app's bar on top of the framed app,
- * or, where One can't frame it, of a screen that opens it on its own.
+ * or, where One can't frame it, of a screen that opens it on its own. Only `framedApp` (the frame allowlist and its
+ * ceilings) decides what is framed; an app the new navigation lists that it doesn't know opens on its own.
  */
 export function OneAppScreen({ appId, tcw, accountDid = null, fallback, connect }: OneAppScreenProps) {
   const platform = useContext(PlatformContext);
   // Every app the new navigation lists, whatever this build's flag (Share is listed only with it).
   const app = oneAppsFor(platform, true).find((entry) => entry.id === appId);
   if (!app || app.kind === "native") return <>{fallback}</>;
-  const frameable = app.kind === "framed" && app.framed ? app : undefined;
+  const frameable = framedApp(app.id);
   const framed = frameable && framesAppHere(frameable, window.location.origin) ? frameable : undefined;
   const session = tcw?.session();
   if (framed && (!tcw || !session)) return <>{fallback}</>;
@@ -128,7 +128,6 @@ function OpensSeparately({ name, glyph, url, phone }: { name: string; glyph: Gly
       <div className="mx-auto flex min-h-full max-w-sm flex-col items-center justify-center gap-3 px-6 py-10 text-center">
         <AppTileIcon id={glyph} className="mb-2 size-16" />
         <h2 className="text-title-2 text-foreground">{opensSeparatelyTitle(name, phone)}</h2>
-        <p className="text-body text-muted-foreground">{opensSeparatelyLine(name)}</p>
         <Button asChild className="mt-2">
           <a href={url} target="_blank" rel="noopener noreferrer" onClick={(event) => openLinkInApp(url, event.nativeEvent, { sheet: false })}>
             {openSeparately(name, phone)}

@@ -1,6 +1,6 @@
 // The navigation model shared by the tab bar, the rail and the sidebar
 // (TC-761, TC-2040): the same destinations, in the same order, at every size.
-import { AppWindowIcon, AudioLinesIcon, HouseIcon, MessageCircleIcon, PlugIcon } from "lucide-react";
+import { AppWindowIcon, AudioLinesIcon, HouseIcon, LayoutGridIcon, MessageCircleIcon, PlugIcon } from "lucide-react";
 
 import { connectorsAriaLabel } from "../chat/useBackgroundDrain";
 import { NAV_LABEL_APPS, NAV_LABEL_CHAT, NAV_LABEL_HOME, NAV_LABEL_RECORDING } from "../lib/homeStrings";
@@ -127,7 +127,7 @@ export function pillItems(pendingMeetings: number): NavItem[] {
       destination: "apps",
       fixed: true,
       label: PILL_LABELS.apps,
-      icon: AppWindowIcon,
+      icon: LayoutGridIcon,
       href: PATHS.apps,
       badge: pendingMeetings,
       ariaLabel: pendingMeetings > 0 ? `${PILL_LABELS.apps}, ${connectorsAriaLabel(pendingMeetings)}` : undefined,

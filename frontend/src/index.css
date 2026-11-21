@@ -143,12 +143,12 @@
     --tc-bottom-chrome: calc(3.5rem + 4rem + env(safe-area-inset-bottom));
   }
   /* One Apps' floating pill (TabBar.tsx PillTabBar): 10px above the home
-     indicator, 64px tall, 10px clear above it. The page runs under it. */
+     indicator, 66px tall, 10px clear above it. The page runs under it. */
   html[data-nav="tabbar"][data-pill]:not([data-keyboard="open"]) {
-    --tc-bottom-chrome: calc(84px + env(safe-area-inset-bottom));
+    --tc-bottom-chrome: calc(86px + env(safe-area-inset-bottom));
   }
   html[data-nav="tabbar"][data-pill][data-island]:not([data-keyboard="open"]) {
-    --tc-bottom-chrome: calc(84px + 4rem + env(safe-area-inset-bottom));
+    --tc-bottom-chrome: calc(86px + 4rem + env(safe-area-inset-bottom));
   }
   /* The TinyCloud SDK's toasts ("Successfully signed in") sit 56px above the
      SDK's bottom offset. Over a tab bar (and the recording island), that offset
@@ -386,11 +386,14 @@ html [data-vaul-overlay][data-state="closed"] {
   }
 }
 
-/* The phone's floating pill (shell/TabBar.tsx PillTabBar): glass over the page. */
+/* The phone's floating pill (shell/TabBar.tsx PillTabBar): glass over the page, with a strong blur and a heavy tint so
+   the icons stay clear over busy content in either theme; opaque where there is no backdrop blur. The current item
+   sits in a filled inner pill. */
 .tc-pill {
-  background: hsl(var(--chrome) / 0.62);
-  -webkit-backdrop-filter: blur(22px) saturate(180%);
-  backdrop-filter: blur(22px) saturate(180%);
+  background: hsl(var(--chrome) / 0.74);
+  /* 24px: in Chrome at 2x a 36px backdrop blur didn't render and the page showed sharp under the pill; 24px does at 1x-3x. */
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  backdrop-filter: blur(24px) saturate(180%);
   border: 1px solid hsl(var(--foreground) / 0.08);
   box-shadow:
     inset 0 1px 0 rgb(255 255 255 / 0.35),
@@ -398,11 +401,25 @@ html [data-vaul-overlay][data-state="closed"] {
     0 2px 6px -2px rgb(0 0 0 / 0.12);
 }
 .dark .tc-pill {
-  background: hsl(var(--chrome) / 0.58);
+  background: rgb(18 18 22 / 0.72);
   border-color: hsl(0 0% 100% / 0.1);
   box-shadow:
     inset 0 1px 0 rgb(255 255 255 / 0.08),
     0 10px 30px -8px rgb(0 0 0 / 0.7);
+}
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .tc-pill {
+    background: hsl(var(--chrome));
+  }
+  .dark .tc-pill {
+    background: rgb(18 18 22);
+  }
+}
+.tc-pill-current {
+  background: hsl(var(--foreground) / 0.12);
+}
+.dark .tc-pill-current {
+  background: rgb(255 255 255 / 0.17);
 }
 /* Under the pill every scroller ends its content above the pill (and the island), so nothing hides behind it.
    Chat's thread pads its sticky composer instead (data-bottom-chrome="self"). */

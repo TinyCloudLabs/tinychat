@@ -1,11 +1,12 @@
 // The sidebar, from 1024 px (TC-761): the three destinations as full rows on
-// the chrome surface, and Settings at the foot. The live recording card joins
-// the foot above Settings (PR4).
+// the chrome surface, and Settings at the foot (You, with its avatar, in One's
+// new navigation). The live recording card joins the foot above Settings (PR4).
 import { useSyncExternalStore, type MouseEvent, type ReactNode } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { SettingsIcon } from "lucide-react";
 
 import type { AppIcon } from "@/apps/icons";
+import { PILL_LABELS } from "@/apps/strings";
 import { cn } from "@/lib/utils";
 import { useStorageReadOnly } from "@/lib/useStorageReadOnly";
 import { BuildInfoLine } from "@/components/BuildInfoLine";
@@ -18,6 +19,7 @@ import { NavLink } from "./NavLink";
 import { navTarget } from "./navItems";
 import { PATHS } from "./routes";
 import type { NavProps } from "./TabBar";
+import { YouAvatar } from "./YouAvatar";
 
 // Structural spacing in px, so scaled-up text gets the room (the sidebar itself
 // widens with the text, up to 320 px).
@@ -50,11 +52,14 @@ export function Sidebar({
   onReselect,
   settings,
   live = null,
+  you = false,
 }: NavProps & {
   /** Settings is reachable (it is null in local validation). */
   settings: boolean;
   /** The minimised recorder's card, above Settings. */
   live?: ReactNode;
+  /** One's new navigation: Settings is You, with its avatar, as on the phone's pill. */
+  you?: boolean;
 }) {
   const { pathname } = useLocation();
   const onSettings = current === null;
@@ -101,7 +106,14 @@ export function Sidebar({
             aria-current={onSettings ? "page" : undefined}
             className={cn(ROW, rowState(onSettings))}
           >
-            <RowContent icon={SettingsIcon} label="Settings" active={onSettings} />
+            {you ? (
+              <>
+                <YouAvatar active={false} className="-mx-0.5 size-6" />
+                <span className="min-w-0 flex-1 truncate">{PILL_LABELS.you}</span>
+              </>
+            ) : (
+              <RowContent icon={SettingsIcon} label="Settings" active={onSettings} />
+            )}
             {storageFull && <span role="img" aria-label="Storage full" className="absolute right-2 top-2 size-2.5 rounded-full bg-destructive ring-2 ring-background" />}
           </Link>
         </div>
