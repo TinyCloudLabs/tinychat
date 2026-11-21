@@ -202,8 +202,9 @@ const ALL_APPS: readonly OneApp[] = [
       : KIND === "preview" ? "https://feat-one-apps-embed.tinycloud-explorer.pages.dev"
         : "https://explorer.tinycloud.xyz",
     path: "/",
+    // Read only in the frame (TC-3675): writing and deleting open Explorer in its own tab, with its own sign-in.
     ceiling: () => [
-      entry("appsData", { service: "tinycloud.kv", space: "applications", path: "", actions: ["get", "list", "put", "del"] }),
+      entry("appsData", { service: "tinycloud.kv", space: "applications", path: "", actions: ["get", "list"] }),
       entry("appsData", { service: "tinycloud.sql", space: "applications", path: "default", actions: ["read", "schema"] }),
       entry("publicSpace", { service: "tinycloud.kv", space: "public", path: "", actions: ["get", "list", "metadata"] }),
       sql("secretNames", "secrets", "default", ["read"]),
