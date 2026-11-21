@@ -17,6 +17,9 @@ PROD_HASH=8db40cb23008d6213668b5816702d100b37b859a8a5bfd18d938ae3a1b3715bd
 DEV_NAME=dstack-dev-0.5.12
 DEV_HASH=e866e987221db357129ebc3f066b6706ef955889ea95e5510acbdf3d3055186b
 OTHER_HASH="$(printf 'a%.0s' {1..64})"
+# The second recorded dev image (TC-2843): the backend CVM runs it since the 11-21 migration.
+DEV15_NAME=dstack-dev-0.5.15
+DEV15_HASH=432b8a1e82ec8a90b3d30bb201e5d20a8bc5c05b69f1d8ba13687232dda5aebd
 
 os_json() { # <is_dev> <name> <hash>
   jq -nc --argjson dev "$1" --arg name "$2" --arg hash "$3" \
@@ -112,6 +115,50 @@ run "$(os_json false "${PROD_NAME}" "${OTHER_HASH}")" ALLOW_CURRENT_DEV_OS_UNTIL
 expect "the transition input cannot bypass the production pin" 1 "not on the production OS image"
 run "$(os_json true "${DEV_NAME}" UPPERCASE-OR-SHORT)" ALLOW_CURRENT_DEV_OS_UNTIL_TC2843=true
 expect "a malformed dev hash is refused even with the transition input" 1 "not the recorded TC-2843 dev OS image"
+
+# dstack-dev-0.5.15: every dev case above holds for it as well.
+run "$(os_json true "${DEV15_NAME}" "${DEV15_HASH}")"
+expect "the recorded dev-0.5.15 image is refused by default" 1 "dev OS.*refused"
+run "$(os_json true "${DEV15_NAME}" "${DEV15_HASH}")" ALLOW_CURRENT_DEV_OS_UNTIL_TC2843=false
+expect "an explicit false refuses the recorded dev-0.5.15 image" 1 "dev OS.*refused"
+run "$(os_json true "${DEV15_NAME}" "${DEV15_HASH}")" ALLOW_CURRENT_DEV_OS_UNTIL_TC2843=TRUE
+expect "a non-boolean override cannot permit the dev-0.5.15 image" 1 "dev OS.*refused"
+run "$(os_json true "${DEV15_NAME}" "${DEV15_HASH}")" ALLOW_CURRENT_DEV_OS_UNTIL_TC2843=true
+expect "the exact recorded dev-0.5.15 image passes only with a loud transition warning" 0 "::warning::TC-2843.*${DEV15_NAME}.*${DEV15_HASH}.*allow_current_dev_os_until_tc2843=true"
+grep -Eq "TC-2843.*${DEV15_NAME}.*${DEV15_HASH}" "${root}/summary" 2>/dev/null || {
+  echo "FAIL: dev-0.5.15 transition warning missing from run summary"
+  failures=$((failures + 1))
+}
+for event in push schedule workflow_call; do
+  run "$(os_json true "${DEV15_NAME}" "${DEV15_HASH}")" ALLOW_CURRENT_DEV_OS_UNTIL_TC2843=true GITHUB_EVENT_NAME="${event}"
+  expect "${event} cannot enable the dev-0.5.15 transition override" 1 "override requires workflow_dispatch"
+done
+run "$(os_json true "${DEV15_NAME}" "${DEV15_HASH}" | jq -c '.os.name += "\n"')" ALLOW_CURRENT_DEV_OS_UNTIL_TC2843=true
+expect "dev-0.5.15 name with trailing LF is refused" 1 "not the recorded TC-2843 dev OS image"
+run "$(os_json true "${DEV15_NAME}" "${DEV15_HASH}" | jq -c '.os.os_image_hash += "\n"')" ALLOW_CURRENT_DEV_OS_UNTIL_TC2843=true
+expect "dev-0.5.15 hash with trailing LF is refused" 1 "not the recorded TC-2843 dev OS image"
+run "$(os_json true "${DEV15_NAME}" "${DEV15_HASH}" | jq -c '.os.name += "\u0000"')" ALLOW_CURRENT_DEV_OS_UNTIL_TC2843=true
+expect "dev-0.5.15 name with embedded NUL is refused" 1 "not the recorded TC-2843 dev OS image"
+run "$(os_json true "${DEV15_NAME}" "${DEV15_HASH}" | jq -c '.os.os_image_hash += "\u0000"')" ALLOW_CURRENT_DEV_OS_UNTIL_TC2843=true
+expect "dev-0.5.15 hash with embedded NUL is refused" 1 "not the recorded TC-2843 dev OS image"
+run "$(os_json true "${DEV15_NAME} " "${DEV15_HASH}")" ALLOW_CURRENT_DEV_OS_UNTIL_TC2843=true
+expect "dev-0.5.15 name with trailing space is refused" 1 "not the recorded TC-2843 dev OS image"
+run "$(os_json true "${DEV15_NAME}x" "${DEV15_HASH}")" ALLOW_CURRENT_DEV_OS_UNTIL_TC2843=true
+expect "dev-0.5.15 name with suffix is refused" 1 "not the recorded TC-2843 dev OS image"
+run "$(os_json true "${DEV15_NAME}" "${DEV15_HASH}a")" ALLOW_CURRENT_DEV_OS_UNTIL_TC2843=true
+expect "dev-0.5.15 hash with extra hex is refused" 1 "not the recorded TC-2843 dev OS image"
+run "$(os_json true "${DEV15_NAME}" "${DEV15_HASH:0:8}")" ALLOW_CURRENT_DEV_OS_UNTIL_TC2843=true
+expect "a truncated dev-0.5.15 hash is refused" 1 "not the recorded TC-2843 dev OS image"
+run "$(os_json true "${DEV15_NAME}" "${OTHER_HASH}")" ALLOW_CURRENT_DEV_OS_UNTIL_TC2843=true
+expect "the dev-0.5.15 name with an unrecorded hash is refused" 1 "not the recorded TC-2843 dev OS image"
+run "$(os_json true other-dev-image "${DEV15_HASH}")" ALLOW_CURRENT_DEV_OS_UNTIL_TC2843=true
+expect "an unrecorded name with the dev-0.5.15 hash is refused" 1 "not the recorded TC-2843 dev OS image"
+run "$(os_json true "${DEV15_NAME}" "${DEV_HASH}")" ALLOW_CURRENT_DEV_OS_UNTIL_TC2843=true
+expect "the dev-0.5.15 name with the dev-0.5.12 hash is refused (a mismatched pair)" 1 "not the recorded TC-2843 dev OS image"
+run "$(os_json true "${DEV_NAME}" "${DEV15_HASH}")" ALLOW_CURRENT_DEV_OS_UNTIL_TC2843=true
+expect "the dev-0.5.12 name with the dev-0.5.15 hash is refused (a mismatched pair)" 1 "not the recorded TC-2843 dev OS image"
+run "$(os_json false "${DEV15_NAME}" "${DEV15_HASH}")" ALLOW_CURRENT_DEV_OS_UNTIL_TC2843=true
+expect "a non-dev image carrying the dev-0.5.15 tuple is refused as not the production image" 1 "not on the production OS image"
 
 run '{"name":"cvm","os":{"name":"dstack-dev-0.5.12","os_image_hash":"'"${DEV_HASH}"'"}}'
 expect "a missing is_dev is refused" 1 "missing is_dev"
