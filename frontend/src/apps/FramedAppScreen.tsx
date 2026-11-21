@@ -1,8 +1,10 @@
-// `/chat/apps/<appId>`: one of TinyCloud's apps framed inside One, running on a silent, scoped delegation of One's
-// session. Lazy: loads only when the flag is on and an app route is open.
+// `/chat/apps/<appId>`: an app's screen inside One. Its bar (AppBar) on top; under it the app framed, running on a
+// silent, scoped delegation of One's session, or, for an app One can't frame here, a calm page that opens it on its own.
+// Lazy: loads only when the flag is on and an app route is open.
 
 import { serializeDelegation, type PermissionEntry, type TinyCloudWeb } from "@tinycloud/web-sdk";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { ExternalLinkIcon } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -13,12 +15,18 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { Button } from "@/components/ui/button";
+import { openLinkInApp } from "@/feed/inAppLink";
+import { appPinId } from "@/shell/navPins";
 import { openKeyFailureOf } from "../lib/authErrors";
 import { isNativeOpenKeySession } from "../lib/openkeyNative";
+import { PlatformContext } from "../lib/platform";
 import { useResolvedTheme } from "../lib/theme";
+import { AppBar } from "./AppBar";
 import { EmbedHost, SpaceNotHostedError, type EmbedTheme } from "./embedHost";
+import { AppTileIcon, type GlyphId } from "./icons";
 import { trackEmbed } from "./liveEmbeds";
-import { framedApp, framesAppHere, frameUrl, ONE_APPS, type FramedOneApp } from "./registry";
+import { appUrl, framedApp, framesAppHere, frameUrl, ONE_APPS, oneAppsFor, type FramedOneApp } from "./registry";
 import { stepUpForApp, type StepUpConnect } from "./stepUp";
 import {
   ASK_CLOSE,
@@ -31,6 +39,9 @@ import {
   courierMissing,
   joinScopes,
   missingSpacesLine,
+  openSeparately,
+  opensSeparatelyLine,
+  opensSeparatelyTitle,
   stepUpFailedLine,
   type ScopeId,
 } from "./strings";
@@ -66,7 +77,7 @@ function courierPage(): string | undefined {
 export interface FramedAppScreenProps {
   appId: string;
   tcw: TinyCloudWeb | null;
-  /** Shown instead when the app is not framed here (unknown id, opens in a new tab, other origin, no session). */
+  /** Shown instead for an id with no screen here (unknown, or One's own Recording), and for a framed app with no session. */
   fallback: ReactNode;
   /** OpenKey connect for the step-up; One uses the real one. The dev harness (apps/dev) passes a local key. */
   connect?: StepUpConnect;
@@ -77,6 +88,56 @@ export function FramedAppScreen({ appId, tcw, fallback, connect }: FramedAppScre
   const session = tcw?.session();
   if (!app || !tcw || !session || !framesAppHere(app, window.location.origin)) return <>{fallback}</>;
   return <FramedApp key={`${app.id}:${session.address}:${session.chainId}:${session.sessionKey}`} app={app} tcw={tcw} address={session.address} chainId={session.chainId} connect={connect} />;
+}
+
+export interface OneAppScreenProps extends FramedAppScreenProps {
+  /** The signed-in account, whose pins the bar's Pin changes; null hides Pin. */
+  accountDid?: string | null;
+}
+
+/**
+ * One's new navigation (ONE_NAV_ENABLED): every web app's screen in One, the open app's bar on top of the framed app,
+ * or, where One can't frame it, of a screen that opens it on its own.
+ */
+export function OneAppScreen({ appId, tcw, accountDid = null, fallback, connect }: OneAppScreenProps) {
+  const platform = useContext(PlatformContext);
+  // Every app the new navigation lists, whatever this build's flag (Share is listed only with it).
+  const app = oneAppsFor(platform, true).find((entry) => entry.id === appId);
+  if (!app || app.kind === "native") return <>{fallback}</>;
+  const frameable = app.kind === "framed" && app.framed ? app : undefined;
+  const framed = frameable && framesAppHere(frameable, window.location.origin) ? frameable : undefined;
+  const session = tcw?.session();
+  if (framed && (!tcw || !session)) return <>{fallback}</>;
+  const url = appUrl(app);
+  return (
+    <div className="flex h-full min-h-0 flex-col" data-testid="one-app-screen">
+      <AppBar name={app.name} glyph={app.glyph} accountDid={accountDid} pin={appPinId(app.id)} url={url} />
+      {framed && tcw && session ? (
+        <FramedApp key={`${framed.id}:${session.address}:${session.chainId}:${session.sessionKey}`} app={framed} tcw={tcw} address={session.address} chainId={session.chainId} connect={connect} />
+      ) : (
+        <OpensSeparately name={app.name} glyph={app.glyph} url={url} phone={platform === "ios" || platform === "android"} />
+      )}
+    </div>
+  );
+}
+
+/** An app One can't frame here (it is never framed, or not on this origin or platform): it opens on its own. */
+function OpensSeparately({ name, glyph, url, phone }: { name: string; glyph: GlyphId; url: string; phone: boolean }) {
+  return (
+    <div className="min-h-0 flex-1 overflow-y-auto" data-scroll-root>
+      <div className="mx-auto flex min-h-full max-w-sm flex-col items-center justify-center gap-3 px-6 py-10 text-center">
+        <AppTileIcon id={glyph} className="mb-2 size-16" />
+        <h2 className="text-title-2 text-foreground">{opensSeparatelyTitle(name, phone)}</h2>
+        <p className="text-body text-muted-foreground">{opensSeparatelyLine(name)}</p>
+        <Button asChild className="mt-2">
+          <a href={url} target="_blank" rel="noopener noreferrer" onClick={(event) => openLinkInApp(url, event.nativeEvent, { sheet: false })}>
+            {openSeparately(name, phone)}
+            <ExternalLinkIcon aria-hidden />
+          </a>
+        </Button>
+      </div>
+    </div>
+  );
 }
 
 interface FramedAppProps {
@@ -193,7 +254,7 @@ function FramedApp({ app, tcw, address, chainId, connect }: FramedAppProps) {
   );
 
   return (
-    <div className="relative flex h-full min-h-0 flex-1 flex-col" data-testid="one-app-frame">
+    <div className="relative flex h-full min-h-0 flex-1 flex-col [html[data-pill]_&]:pb-[var(--tc-bottom-chrome)]" data-testid="one-app-frame">
       {failedLine && (
         <p role="status" className="border-b border-border bg-muted px-4 py-2 text-sm">{failedLine}</p>
       )}

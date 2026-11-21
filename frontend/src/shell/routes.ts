@@ -4,7 +4,7 @@
 //     Chat     /chat
 //     Connectors /chat/connectors
 //     Feed     /chat/feed (the first screen, entered from `/`)
-//     Apps     /chat/apps
+//     Apps     /chat/apps (One Apps: an app at /chat/apps/<appId>, Add an app at /chat/apps/add)
 //     Settings /chat/settings (global, behind the gear)
 //     How it works /chat/about (global, from Settings and the screens' hints)
 //
@@ -23,6 +23,7 @@ export const PATHS = {
   connectors: "/chat/connectors",
   feed: "/chat/feed",
   apps: "/chat/apps",
+  addApp: "/chat/apps/add",
   settings: "/chat/settings",
   about: ABOUT_PATH,
 } as const;
@@ -30,7 +31,7 @@ export const PATHS = {
 /** The places the navigation leads to, at every size. Settings is global, not one of them. */
 export type Destination = "capture" | "chat" | "connectors" | "feed" | "apps";
 
-export type ScreenId = "chat" | "capture" | "library" | "note" | "connectors" | "feed" | "apps" | "settings" | "about";
+export type ScreenId = "chat" | "capture" | "library" | "note" | "connectors" | "feed" | "apps" | "addApp" | "settings" | "about";
 
 export interface Screen {
   id: ScreenId;
@@ -115,6 +116,7 @@ export function screenFor(pathname: string): Screen {
   if (path === PATHS.settings) return { id: "settings", destination: null, noteId: null };
   if (path === PATHS.about) return { id: "about", destination: null, noteId: null };
   if (path === PATHS.feed || path.startsWith(`${PATHS.feed}/`)) return { id: "feed", destination: "feed", noteId: null };
+  if (path === PATHS.addApp) return { id: "addApp", destination: "apps", noteId: null };
   if (path.startsWith(`${PATHS.apps}/`)) {
     const raw = path.slice(PATHS.apps.length + 1);
     let appId: string;

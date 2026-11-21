@@ -142,12 +142,24 @@
   html[data-nav="tabbar"][data-island]:not([data-keyboard="open"]) {
     --tc-bottom-chrome: calc(3.5rem + 4rem + env(safe-area-inset-bottom));
   }
+  /* One Apps' floating pill (TabBar.tsx PillTabBar): 10px above the home
+     indicator, 64px tall, 10px clear above it. The page runs under it. */
+  html[data-nav="tabbar"][data-pill]:not([data-keyboard="open"]) {
+    --tc-bottom-chrome: calc(84px + env(safe-area-inset-bottom));
+  }
+  html[data-nav="tabbar"][data-pill][data-island]:not([data-keyboard="open"]) {
+    --tc-bottom-chrome: calc(84px + 4rem + env(safe-area-inset-bottom));
+  }
   /* The TinyCloud SDK's toasts ("Successfully signed in") sit 56px above the
      SDK's bottom offset. Over a tab bar (and the recording island), that offset
      lifts them to 12px above the bar's 1px top edge. The variable inherits into
      the SDK's shadow root. */
   html[data-nav="tabbar"]:not([data-keyboard="open"]) {
     --tinycloud-ui-offset-bottom: calc(var(--tc-bottom-chrome) - env(safe-area-inset-bottom) - 56px + 13px);
+  }
+  /* Over the pill the same toasts sit 12px above the pill's top edge. */
+  html[data-nav="tabbar"][data-pill]:not([data-keyboard="open"]) {
+    --tinycloud-ui-offset-bottom: calc(var(--tc-bottom-chrome) - env(safe-area-inset-bottom) - 56px + 2px);
   }
 }
 
@@ -309,4 +321,91 @@ html [data-vaul-overlay][data-state="closed"] {
 
 .aui-root {
   height: 100%;
+}
+
+/* One Apps (TC-3650). The app icon: a navy tile behind a full-colour glyph (apps/icons.tsx). */
+.tc-app-tile {
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  border-radius: 27%;
+  background: radial-gradient(120% 120% at 22% 12%, #343c5f 0%, #282f4b 46%, #20263e 100%);
+  box-shadow:
+    inset 0 0 0 1px rgb(253 249 210 / 0.14),
+    inset 0 -6px 10px -6px rgb(0 0 0 / 0.45);
+}
+
+/* A launcher tile (home/AppsLauncher.tsx): the icon lifts on hover and dips on press. Still with reduced motion. */
+.tc-launcher-tile .tc-app-tile {
+  box-shadow:
+    inset 0 0 0 1px rgb(253 249 210 / 0.14),
+    inset 0 -6px 10px -6px rgb(0 0 0 / 0.45),
+    0 1px 2px rgb(23 27 48 / 0.25);
+}
+@keyframes tc-rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .tc-launcher-tile .tc-app-tile {
+    transition:
+      transform var(--dur-fast) var(--ease-smooth),
+      box-shadow var(--dur-fast) var(--ease-smooth);
+  }
+  .tc-launcher-tile:active .tc-app-tile {
+    transform: scale(0.94);
+  }
+  .tc-launcher-grid > li {
+    animation: tc-rise-in 0.32s var(--ease-smooth) backwards;
+    animation-delay: calc(var(--i, 0) * 28ms);
+  }
+}
+@media (hover: hover) {
+  .tc-launcher-tile:hover {
+    background: hsl(var(--surface-2));
+  }
+  .tc-launcher-tile:hover .tc-app-tile {
+    box-shadow:
+      inset 0 0 0 1px rgb(253 249 210 / 0.14),
+      inset 0 -6px 10px -6px rgb(0 0 0 / 0.45),
+      0 10px 18px -8px rgb(23 27 48 / 0.55);
+  }
+}
+@media (hover: hover) and (prefers-reduced-motion: no-preference) {
+  .tc-launcher-tile:hover .tc-app-tile {
+    transform: translateY(-3px);
+  }
+  .tc-launcher-tile:hover:active .tc-app-tile {
+    transform: scale(0.96);
+  }
+}
+
+/* The phone's floating pill (shell/TabBar.tsx PillTabBar): glass over the page. */
+.tc-pill {
+  background: hsl(var(--chrome) / 0.62);
+  -webkit-backdrop-filter: blur(22px) saturate(180%);
+  backdrop-filter: blur(22px) saturate(180%);
+  border: 1px solid hsl(var(--foreground) / 0.08);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.35),
+    0 10px 30px -8px rgb(0 0 0 / 0.28),
+    0 2px 6px -2px rgb(0 0 0 / 0.12);
+}
+.dark .tc-pill {
+  background: hsl(var(--chrome) / 0.58);
+  border-color: hsl(0 0% 100% / 0.1);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.08),
+    0 10px 30px -8px rgb(0 0 0 / 0.7);
+}
+/* Under the pill every scroller ends its content above the pill (and the island), so nothing hides behind it.
+   Chat's thread pads its sticky composer instead (data-bottom-chrome="self"). */
+html[data-pill] main [data-scroll-root]:not([data-bottom-chrome="self"]) {
+  padding-bottom: var(--tc-bottom-chrome);
 }

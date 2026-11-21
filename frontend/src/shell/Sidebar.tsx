@@ -3,8 +3,9 @@
 // the foot above Settings (PR4).
 import { useSyncExternalStore, type MouseEvent, type ReactNode } from "react";
 import { Link, useLocation } from "react-router-dom";
-import { SettingsIcon, type LucideIcon } from "lucide-react";
+import { SettingsIcon } from "lucide-react";
 
+import type { AppIcon } from "@/apps/icons";
 import { cn } from "@/lib/utils";
 import { useStorageReadOnly } from "@/lib/useStorageReadOnly";
 import { BuildInfoLine } from "@/components/BuildInfoLine";
@@ -23,7 +24,7 @@ import type { NavProps } from "./TabBar";
 const ROW =
   "tap-transparent group relative flex min-h-11 items-center gap-[12px] rounded-md px-[12px] text-callout transition-colors duration-150 fine:min-h-10";
 
-function RowContent({ icon: Icon, label, active }: { icon: LucideIcon; label: string; active: boolean }) {
+function RowContent({ icon: Icon, label, active }: { icon: AppIcon; label: string; active: boolean }) {
   return (
     <>
       <Icon aria-hidden className={cn("size-5 shrink-0", active ? "text-foreground [stroke-width:2.25]" : "text-muted-foreground")} />

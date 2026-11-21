@@ -18,17 +18,29 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { useLocation } from "react-router-dom";
 
+import { AppBar } from "@/apps/AppBar";
+import { APP_NAMES, CONNECTORS_NAME } from "@/apps/strings";
 import { cn } from "@/lib/utils";
 import type { AppPlatform } from "../lib/platform";
 import { useSizeClass, type SizeClassState } from "../lib/sizeClass";
-import { currentItemId, navItems, navKindFor, tabBarItems, type NavItemId, type NavKind, type NavPinOptions } from "./navItems";
+import {
+  currentItemId,
+  navItems,
+  navKindFor,
+  pillCurrent,
+  pillItems,
+  tabBarItems,
+  type NavItemId,
+  type NavKind,
+  type NavPinOptions,
+} from "./navItems";
 import { NAV_APPS, NAV_APP_IDS } from "./navApps";
-import { ONE_APPS_ENABLED, useNavPins } from "./navPins";
+import { ONE_APPS_ENABLED, ONE_NAV_ENABLED, useNavPins } from "./navPins";
 import { NavRail } from "./NavRail";
 import { noteLocation, scrollSurfaceToTop } from "./navigation";
 import type { Destination, Screen } from "./routes";
 import { Sidebar } from "./Sidebar";
-import { TabBar } from "./TabBar";
+import { PillTabBar, TabBar } from "./TabBar";
 import { useAndroidBack } from "./useAndroidBack";
 import { useKeyboardOpen } from "./useKeyboardOpen";
 
@@ -81,6 +93,14 @@ export function shellNavKind(sizeClass: SizeClassState, slots: Pick<AppShellProp
   return slots.capture === null && slots.connectors === null ? "none" : navKindFor(sizeClass);
 }
 
+/**
+ * One's new navigation on a phone held upright: the floating pill replaces the tab bar on every screen but How it works
+ * (Settings is You's tab). The page runs under it.
+ */
+export function showsPill(nav: NavKind | "none", shown: Shown, oneNav: boolean): boolean {
+  return oneNav && nav === "tabbar" && shown !== "about";
+}
+
 const GRID: Record<NavKind | "none", string> = {
   tabbar: "grid-cols-1 grid-rows-[minmax(0,1fr)_auto_auto]",
   rail: "grid-cols-[auto_minmax(0,1fr)] grid-rows-[minmax(0,1fr)_auto]",
@@ -101,6 +121,7 @@ export interface AppShellViewProps extends AppShellProps {
 /** The frame as a pure function of its props (server-rendered in the tests). */
 export function AppShellView({
   screen,
+  accountDid = null,
   platform,
   pendingMeetings,
   chat,
@@ -135,6 +156,11 @@ export function AppShellView({
   const navProps = { items, current, replace: platform === "ios" || platform === "android", onReselect };
   const beside = nav === "rail" || nav === "sidebar";
   const surface = (name: Shown) => (shown === name ? "h-full" : "hidden");
+  const oneNav = pinOptions?.oneNav === true;
+  const pill = showsPill(nav, shown, oneNav);
+  const pillNav = pill
+    ? pillItems(pendingMeetings).filter((item) => (item.id !== "feed" || feed !== null) && (item.destination !== "apps" || apps !== null))
+    : [];
 
   return (
     <div className={cn("grid h-full min-h-0", GRID[nav])}>
@@ -153,16 +179,27 @@ export function AppShellView({
         className={cn(
           "relative row-start-1 min-h-0 min-w-0 pr-[env(safe-area-inset-right)] pt-[env(safe-area-inset-top)]",
           beside ? "col-start-2" : "col-start-1 pl-[env(safe-area-inset-left)]",
+          // Under the pill, <main> runs to the bottom edge: the island and the pill float over it.
+          pill && "row-end-4",
         )}
       >
         <div data-surface="chat" className={surface("chat")}>
           {chat}
         </div>
-        <div data-surface="capture" className={surface("capture")}>
-          {captureMounted ? capture : null}
+        {/* One's new navigation: Recording and Connectors are apps too, with the open app's bar on top (at their roots). */}
+        <div data-surface="capture" className={oneNav && shown === "capture" ? "flex h-full flex-col" : surface("capture")}>
+          {oneNav ? (
+            <>
+              {screen.id === "capture" ? <AppBar name={APP_NAMES.capture} glyph="recording" accountDid={accountDid} pin="capture" /> : null}
+              <div className="min-h-0 flex-1">{captureMounted ? capture : null}</div>
+            </>
+          ) : captureMounted ? (
+            capture
+          ) : null}
         </div>
-        <div data-surface="connectors" className={surface("connectors")}>
-          {shown === "connectors" ? connectors : null}
+        <div data-surface="connectors" className={oneNav && shown === "connectors" ? "flex h-full flex-col" : surface("connectors")}>
+          {oneNav && screen.id === "connectors" ? <AppBar name={CONNECTORS_NAME} glyph="connectors" accountDid={accountDid} pin="connectors" /> : null}
+          {shown === "connectors" ? oneNav ? <div className="min-h-0 flex-1">{connectors}</div> : connectors : null}
         </div>
         <div data-surface="settings" className={surface("settings")}>
           {shown === "settings" ? settings : null}
@@ -184,11 +221,24 @@ export function AppShellView({
         {recorderHost ? <div ref={recorderHost} data-recorder-host="" className="absolute inset-0 z-20 empty:hidden" /> : null}
       </main>
       {island ? (
-        <div className={cn("row-start-2 [html[data-keyboard=open]_&]:hidden", beside ? "col-start-2" : "col-start-1")}>{island}</div>
+        <div className={cn("row-start-2 [html[data-keyboard=open]_&]:hidden", beside ? "col-start-2" : "col-start-1", pill && "relative z-30")}>{island}</div>
       ) : null}
       {nav === "tabbar" && !globalScreen ? (
-        <div className="row-start-3">
-          <TabBar {...navProps} items={tabBarItems(items)} />
+        pill ? null : (
+          <div className="row-start-3">
+            <TabBar {...navProps} items={tabBarItems(items)} />
+          </div>
+        )
+      ) : null}
+      {pill ? (
+        <div className="pointer-events-none relative z-30 col-start-1 row-start-3">
+          <PillTabBar
+            items={pillNav}
+            current={pillCurrent(shown)}
+            replace={navProps.replace}
+            onReselect={onReselect}
+            settings={settings !== null}
+          />
         </div>
       ) : null}
     </div>
@@ -197,13 +247,14 @@ export function AppShellView({
 
 export function AppShell(props: AppShellProps) {
   const { pins } = useNavPins(props.accountDid ?? null, NAV_APP_IDS);
-  const pinOptions = ONE_APPS_ENABLED ? { pins, apps: NAV_APPS } : undefined;
+  const pinOptions = ONE_APPS_ENABLED ? { pins, apps: NAV_APPS, oneNav: ONE_NAV_ENABLED } : undefined;
   const sizeClass = useSizeClass();
   const location = useLocation();
   const mainRef = useRef<HTMLElement>(null);
   const shown = shownSurface(props.screen, props);
   const nav = shellNavKind(sizeClass, props);
   const hasIsland = props.island !== undefined && props.island !== null && props.island !== false;
+  const pill = showsPill(nav, shown, ONE_NAV_ENABLED);
 
   // Mac Capture reads background activity at launch; other platforms mount it on first visit.
   // Mac background jobs need their Capture reader even when the app opens on Chat.
@@ -218,11 +269,14 @@ export function AppShell(props: AppShellProps) {
     else root.dataset.nav = nav;
     if (hasIsland) root.dataset.island = "";
     else delete root.dataset.island;
-  }, [nav, hasIsland]);
+    if (pill) root.dataset.pill = "";
+    else delete root.dataset.pill;
+  }, [nav, hasIsland, pill]);
   useLayoutEffect(
     () => () => {
       delete document.documentElement.dataset.nav;
       delete document.documentElement.dataset.island;
+      delete document.documentElement.dataset.pill;
     },
     [],
   );
