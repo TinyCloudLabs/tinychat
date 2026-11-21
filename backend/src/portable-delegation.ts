@@ -112,41 +112,70 @@ export async function activateVerifiedDelegation(
 
 /**
  * The node refused (or failed) a delegated-session activation, with the HTTP status of its
- * `POST {host}/delegate`, so a revoked grant (401/403) can be told apart from a node outage (5xx).
+ * `POST {host}/delegate` and the body it answered with, so a revoked grant (a 401 carrying the node's
+ * revocation code) can be told apart from a node fault (a plain 401/403) and from an outage (5xx).
  */
 export class DelegationActivationError extends Error {
   readonly status: number;
-  constructor(status: number, options: { cause: unknown }) {
+  readonly body: string;
+  constructor(status: number, options: { cause: unknown; body?: string }) {
     super(`Delegated session activation failed with HTTP ${status}`, options);
     this.name = "DelegationActivationError";
     this.status = status;
+    this.body = options.body ?? "";
   }
 }
 
 const ACTIVATION_FAILURE = "Failed to activate delegated session:";
 
 /**
- * The status the node answered a refused activation with, or undefined. SDK 3.1 `useDelegation()`
- * throws `Error("Failed to activate delegated session: …")` whose `cause` is the activation's
- * `SpaceHostResult` (`{ success: false, status, error }`). Callers that joined a single-flighted
- * identical `POST /delegate` get the same result as their cause, so this needs no request of its
- * own. A network failure, or any other throw, has no such cause and is not a refusal.
+ * The node's stable refusal codes for a revocation (tinycloud-node `RevocationCode`, TC-2381): on `/invoke`
+ * and `/delegate` a `401` caused by a revocation has the JSON body `{"code": …, "error": …}`. Every other
+ * refusal, including a node fault, is plain text with no `code`.
  */
-function refusedActivationStatus(error: unknown): number | undefined {
+const REVOCATION_CODES: ReadonlySet<string> = new Set(["delegation_revoked", "parent_revoked", "ancestor_revoked"]);
+const REVOCATION_BODY = /\{[^{}]*"code"\s*:\s*"(?:delegation_revoked|parent_revoked|ancestor_revoked)"[^{}]*\}/;
+
+/**
+ * The revocation code in a node refusal's text, or undefined. `text` is the node's response body, or an SDK
+ * message that embeds it (`<operation> failed: 401 - <body>`). Only a JSON object whose `code` is one of the
+ * node's revocation codes counts.
+ */
+export function nodeRevocationCode(text: string): string | undefined {
+  const candidates = [text.trim(), REVOCATION_BODY.exec(text)?.[0]];
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    try {
+      const parsed: unknown = JSON.parse(candidate);
+      if (parsed && typeof parsed === "object" && "code" in parsed && typeof parsed.code === "string" && REVOCATION_CODES.has(parsed.code)) return parsed.code;
+    } catch { /* not JSON */ }
+  }
+  return undefined;
+}
+
+/**
+ * The status and body the node answered a refused activation with, or undefined. SDK 3.1 `useDelegation()`
+ * throws `Error("Failed to activate delegated session: …")` whose `cause` is the activation's
+ * `SpaceHostResult` (`{ success: false, status, error }`, `error` being the response body). Callers that
+ * joined a single-flighted identical `POST /delegate` get the same result as their cause, so this needs no
+ * request of its own. A network failure, or any other throw, has no such cause and is not a refusal.
+ */
+function refusedActivationResult(error: unknown): { status: number; body: string } | undefined {
   if (!(error instanceof Error) || !error.message.startsWith(ACTIVATION_FAILURE)) return undefined;
   const cause: unknown = error.cause;
   if (!cause || typeof cause !== "object" || !("success" in cause) || cause.success !== false
     || !("status" in cause) || typeof cause.status !== "number" || !Number.isInteger(cause.status)) return undefined;
-  return cause.status < 200 || cause.status > 299 ? cause.status : undefined;
+  if (cause.status >= 200 && cause.status <= 299) return undefined;
+  return { status: cause.status, body: "error" in cause && typeof cause.error === "string" ? cause.error : "" };
 }
 
-/** Run one activation; if the node answered it non-2xx, rethrow with that status. */
+/** Run one activation; if the node answered it non-2xx, rethrow with that status and body. */
 async function observeActivation<T>(activate: () => Promise<T>): Promise<T> {
   try {
     return await activate();
   } catch (error) {
-    const rejected = refusedActivationStatus(error);
-    if (rejected !== undefined) throw new DelegationActivationError(rejected, { cause: error });
+    const rejected = refusedActivationResult(error);
+    if (rejected !== undefined) throw new DelegationActivationError(rejected.status, { cause: error, body: rejected.body });
     throw error;
   }
 }
