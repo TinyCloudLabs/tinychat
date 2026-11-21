@@ -34,6 +34,7 @@ import { OUTPUT_TALLY, readAgent, readRegistry, readTally, REGISTRY_TALLY, RESPO
 import { ownerCardKey } from "./feedIdentity";
 import { privateFeedDatabase, parseOwnerJSON } from "./privateFeedDatabase";
 import { clearHeldAnswers, clearUnsentAnswer, heldAnswers, holdAnswer, isHeld, recordUnsentAnswer, releaseAnswer, unsentAnswers, type HeldAnswer } from "./answerOutbox";
+import { observeFeedFailures, recordAnswerFailure } from "./feedFailures";
 import { isReplyOnlyRevision, storedRevisionEntry } from "./replyOnlyRevision";
 import { ownerActionMessage, type OwnerAction } from "./ownerActions";
 
@@ -158,7 +159,7 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
   const space: string = sessionSpace;
   function assertAccount() { if (tcw.spaceId !== space) throw new Error("Home account changed; open its current feed"); }
   const scope = storageScopeFor(tcw);
-  const db = (resource: string) => privateFeedDatabase(trackStorageWrites(foregroundDatabase(tcw.sql.db(resource)), scope), assertAccount);
+  const db = (resource: string) => privateFeedDatabase(trackStorageWrites(observeFeedFailures(foregroundDatabase(tcw.sql.db(resource))), scope), assertAccount);
   const registry = db(HOME_FEED_RESOURCE);
   const archives = new OwnerArchiveCache(registry);
   const localKey = accountCacheKey(typeof tcw.did === "string" && tcw.did ? tcw.did : space, "home-feed");
@@ -342,18 +343,24 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
       response = { ...response, text: safeSitrepActionSummary(action) };
     }
     // Before the first await: a page that closes mid-write runs only this synchronous part for certain.
-    if (options?.hold) holdAnswer(space, heldAnswerOf(entry, response, payload));
-    const release = () => { if (options?.hold) releaseAnswer(space, { sourceId: entry.source.sourceId, ...response }); };
-    if (approval) {
-      const latest = unwrap(await listFeedCards(db(entry.source.output.database))).find((card) => card.cardId === response.cardId);
-      if (!latest || latest.revision !== response.revision || latest.issuanceId !== response.issuanceId) throw new Error("Approval was re-issued; open its current issuance");
+    const started = Date.now();
+    try {
+      if (options?.hold) holdAnswer(space, heldAnswerOf(entry, response, payload));
+      const release = () => { if (options?.hold) releaseAnswer(space, { sourceId: entry.source.sourceId, ...response }); };
+      if (approval) {
+        const latest = unwrap(await listFeedCards(db(entry.source.output.database))).find((card) => card.cardId === response.cardId);
+        if (!latest || latest.revision !== response.revision || latest.issuanceId !== response.issuanceId) throw new Error("Approval was re-issued; open its current issuance");
+      }
+      const result = await appendFeedResponse(db(entry.source.output.database), db(entry.source.responses.database), response, payload);
+      // A definitive refusal clears the hold; a failed transport keeps it, so the answer still goes at the next launch.
+      if (!result.ok && result.error.code === "INVALID_INPUT") { release(); throw new RefusedWrite(result.error.message); }
+      const saved = unwrap(result);
+      release();
+      return saved;
+    } catch (error) {
+      if (!(error instanceof RefusedWrite)) recordAnswerFailure(error, started);
+      throw error;
     }
-    const result = await appendFeedResponse(db(entry.source.output.database), db(entry.source.responses.database), response, payload);
-    // A definitive refusal clears the hold; a failed transport keeps it, so the answer still goes at the next launch.
-    if (!result.ok && result.error.code === "INVALID_INPUT") { release(); throw new RefusedWrite(result.error.message); }
-    const saved = unwrap(result);
-    release();
-    return saved;
   }
 
   /**
