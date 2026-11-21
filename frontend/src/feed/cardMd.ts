@@ -88,14 +88,18 @@ const INSERT_IF_MISSING = "INSERT OR IGNORE INTO card_md (id, text, version, upd
  *
  * The version check catches corruption, NOT tampering: anyone can compute a sha256 prefix. A row rewritten before this
  * ran carries over. The owner sees the carried-over text in Settings and can change it. An owner who cleared their
- * card.md (empty text, its own version) keeps it cleared. The old row is deleted only after the master insert
- * succeeded (INSERT OR IGNORE: written, or a row was already there), and any failure throws, so the caller can run it
- * again.
+ * card.md (empty text, its own version) keeps it cleared.
+ *
+ * The old row is the owner's only copy until the master holds it, so after the insert the master is read back: a row
+ * there lets the old row be deleted and the move count as finished (true). No row there (the insert reported success
+ * but nothing is stored) leaves the old row alone, logs nothing and returns false, so the caller does not mark the
+ * move done and the next run tries again. A failure throws before the old row is deleted, for the same retry.
  */
-export async function migrateCardMd(master: FeedDatabase, legacy: FeedDatabase, now: Date = new Date()): Promise<void> {
+export async function migrateCardMd(master: FeedDatabase, legacy: FeedDatabase, now: Date = new Date()): Promise<boolean> {
   unwrap(await master.batch([{ sql: SCHEMA }]));
   const legacyTable = unwrap(await legacy.query<string>(TABLE_PROBE)).rows.length > 0;
-  if (!(await readCardMd(master))) {
+  let stored = await readCardMd(master);
+  if (!stored) {
     const old = legacyTable ? await readCardMd(legacy) : null;
     if (old && old.version === cardMdVersion(old.text)) {
       unwrap(await master.execute(INSERT_IF_MISSING, [old.text, old.version, old.updatedAt]));
@@ -103,8 +107,11 @@ export async function migrateCardMd(master: FeedDatabase, legacy: FeedDatabase, 
       if (old) console.warn("card.md migration: the old row's version did not match its text, so the default was used");
       unwrap(await master.execute(INSERT_IF_MISSING, [CARD_MD_DEFAULT, cardMdVersion(CARD_MD_DEFAULT), now.toISOString()]));
     }
+    stored = await readCardMd(master);
   }
+  if (!stored) return false;
   if (legacyTable) unwrap(await legacy.execute("DELETE FROM card_md WHERE id = 1"));
+  return true;
 }
 
 /** The connected agents in the owner's registry. A row whose databases aren't the feed's own pair is skipped. */
@@ -158,9 +165,9 @@ const NO_SPACE = "card.md needs a signed-in TinyCloud space";
 const seeded = new Map<string, Promise<void>>();
 
 /**
- * Moves the owner's card.md to the master location once per account on this device (`migrateCardMd`). A failed run is
- * forgotten and its marker is not set, so the next call tries again. The marker is new on purpose: a device that
- * seeded under the old location still has to migrate.
+ * Moves the owner's card.md to the master location once per account on this device (`migrateCardMd`). The marker is
+ * set only when the move finished; a failed or unfinished run is forgotten, so the next call tries again. The marker
+ * is new on purpose: a device that seeded under the old location still has to migrate.
  */
 export function ensureCardMdSeeded(tcw: TinyCloudWeb): Promise<void> {
   const space = tcw.spaceId;
@@ -170,7 +177,7 @@ export function ensureCardMdSeeded(tcw: TinyCloudWeb): Promise<void> {
   let pending = seeded.get(space);
   if (!pending) {
     pending = migrateCardMd(cardMdDatabase(tcw), legacyCardMdDatabase(tcw)).then(
-      () => setLocalMarker(marker),
+      (finished) => { if (finished) setLocalMarker(marker); else seeded.delete(space); },
       (error: unknown) => { seeded.delete(space); throw error; },
     );
     seeded.set(space, pending);

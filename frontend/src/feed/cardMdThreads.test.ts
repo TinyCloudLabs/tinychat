@@ -181,3 +181,37 @@ test("one agent failing, on its read or its write, does not stop the others", as
   space.heal();
   expect(await readCardMd(space.db(responsesOf("c")))).toMatchObject({ text: master.text });
 });
+
+test("an insert that reports success but stores nothing keeps the old row, sets no marker and logs nothing at error level, then finishes on the next call", async () => {
+  const real = sqliteFeedDatabase();
+  const legacy = sqliteFeedDatabase();
+  let storing = false;
+  // The harness's database: every call answers ok, and a write stores nothing until `storing` is turned on.
+  const master = {
+    query: real.query.bind(real),
+    batch: real.batch.bind(real),
+    execute: (sql: string, params?: unknown[]) => storing ? real.execute(sql, params) : Promise.resolve({ ok: true, data: { changes: 0, lastInsertRowId: 0 } }),
+  } as unknown as FeedDatabase;
+  const old = await saveCardMd(legacy, "Keep this.", new Date("2026-11-19T02:00:00.000Z"));
+
+  const errors = spyOn(console, "error").mockImplementation(() => {});
+  const warns = spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    expect(await migrateCardMd(master, legacy, at)).toBe(false);
+    expect(await count(legacy)).toBe(1);
+    expect(errors).not.toHaveBeenCalled();
+    expect(warns).not.toHaveBeenCalled();
+  } finally { errors.mockRestore(); warns.mockRestore(); }
+
+  const databases = new Map<string, FeedDatabase>([[THREADS_SQL_DB_NAME, master], [LEGACY, legacy]]);
+  const tcw = { spaceId: "space-unstored", did: "did:test", sql: { db: (resource: string) => databases.get(resource) ?? sqliteFeedDatabase() } } as unknown as TinyCloudWeb;
+  await ensureCardMdSeeded(tcw);
+  expect([...stored.keys()].some((key) => key.includes("space-unstored"))).toBe(false);
+  expect(await count(legacy)).toBe(1);
+
+  storing = true;
+  await ensureCardMdSeeded(tcw);
+  expect([...stored.keys()].some((key) => key.includes("space-unstored"))).toBe(true);
+  expect(await readCardMd(master)).toEqual(old);
+  expect(await count(legacy)).toBe(0);
+});
