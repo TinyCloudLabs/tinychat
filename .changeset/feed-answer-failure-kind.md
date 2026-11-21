@@ -2,6 +2,6 @@
 "@tinychat/frontend": patch
 ---
 
-When an answer on a Feed card fails to send, the device keeps the kind of failure (the error code and the node's HTTP status, never the error text) in its last 20 Feed failures, so a failed send can be traced to its cause.
+When a Feed answer fails to send, the app keeps a short note of why on your device: an error code and status, never what you wrote. It keeps the last 20, so the cause can be traced.
 
 Details: TC-3723
