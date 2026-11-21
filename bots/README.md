@@ -80,9 +80,10 @@ Every event is encoded by the supervisor from checked fields; OMP output never p
 
 What the bot says about itself comes from `src/main-instructions.ts`. At startup the supervisor writes it as OMP's own
 `SYSTEM.md` in the shared rootfs (next to `models.yml`, `mcp.json` and `config.yml`, in `writeAgentFiles`); OMP uses that
-file in place of its default coding-agent prompt. The secrets sentence quotes `BOTS_RETENTION_DAYS`. The text is one
-file for every sandbox, so a sibling bot gets the same words, named Main. The asking-the-owner line is rendered only
-when `ask` is set, which waits for that feature.
+file in place of its default coding-agent prompt. The secrets sentence quotes `BOTS_RETENTION_DAYS`. A bot other than
+Main gets the same words without Main's name, from a second agent directory (`/root/.omp/agent-sibling`) that its
+sandbox selects with `PI_CODING_AGENT_DIR`: this service is not told a sibling's name. The asking-the-owner line is
+rendered only when `ask` is set, which waits for that feature.
 
 ## Working state
 

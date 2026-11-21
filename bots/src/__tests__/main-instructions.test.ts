@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mainInstructions } from "../main-instructions";
+import { type OciSpec, SIBLING_AGENT_DIR, sandboxSpec } from "../oci";
 import { configYml, modelsYml, writeAgentFiles } from "../sandbox";
 
 // What Main must never be told to say about, or be able to read back from, the machine it runs on (TC-3595 QA: it named
@@ -38,7 +39,7 @@ describe("Main's instructions", () => {
   });
 
   test.each(MACHINE_DETAILS)("do not name %s", (_label, pattern) => {
-    for (const options of [{ retentionDays: 30 }, { retentionDays: 30, ask: true }]) {
+    for (const options of [{ retentionDays: 30 }, { retentionDays: 30, ask: true }, { retentionDays: 30, sibling: true }]) {
       expect(mainInstructions(options)).not.toMatch(pattern);
     }
   });
@@ -64,13 +65,34 @@ describe("the agent directory the supervisor writes", () => {
   beforeEach(() => { dir = mkdtempSync(join(tmpdir(), "agent-files-")); });
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
-  test("holds the instructions as the agent's own system prompt file, rendered from the retention setting", () => {
+  test("holds Main's instructions as the agent's own system prompt file, rendered from the retention setting", () => {
+    writeAgentFiles(dir, { model: "some-model", retentionDays: 12 });
     const agentDir = join(dir, "root", ".omp", "agent");
-    writeAgentFiles(agentDir, { model: "some-model", retentionDays: 12 });
     const prompt = readFileSync(join(agentDir, "SYSTEM.md"), "utf8");
     expect(prompt).toBe(mainInstructions({ retentionDays: 12 }));
     expect(prompt).toContain("until 12 days after you last use me");
     for (const file of ["models.yml", "mcp.json", "config.yml"]) expect(readFileSync(join(agentDir, file), "utf8").length).toBeGreaterThan(0);
+  });
+
+  test("holds the same words without Main's name for a bot other than Main", () => {
+    writeAgentFiles(dir, { model: "some-model", retentionDays: 12 });
+    const agentDir = join(dir, SIBLING_AGENT_DIR);
+    const prompt = readFileSync(join(agentDir, "SYSTEM.md"), "utf8");
+    expect(prompt).toStartWith("You are an assistant in its owner's TinyChat app.");
+    expect(prompt).not.toContain("Main");
+    expect(prompt).toContain("**Never name the machine.**");
+    expect(prompt).toContain("until 12 days after you last use me");
+    for (const file of ["models.yml", "mcp.json", "config.yml"]) {
+      expect(readFileSync(join(agentDir, file), "utf8")).toBe(readFileSync(join(dir, "root", ".omp", "agent", file), "utf8"));
+    }
+  });
+
+  test("a sandbox looks in its own agent directory: Main's by default, a sibling's only when told", () => {
+    const base: OciSpec = { ociVersion: "1.0.0", process: { user: { uid: 0, gid: 0 }, args: ["sh"], env: ["PATH=/bin"], cwd: "/" }, root: { path: "rootfs" }, mounts: [] };
+    const input = { rootfs: "/r", token: "t", egressDir: "/e", stateMount: "/s", cgroupsPath: "/bots/x", limits: { memoryMb: 1536, cpus: 1, pids: 256, overlayMb: 512, tmpMb: 256, stateMb: 256 } };
+    const envOf = (agentDir?: string) => sandboxSpec(base, { ...input, ...(agentDir ? { agentDir } : {}) }).process.env ?? [];
+    expect(envOf().some(entry => entry.startsWith("PI_CODING_AGENT_DIR="))).toBe(false);
+    expect(envOf(SIBLING_AGENT_DIR)).toContain(`PI_CODING_AGENT_DIR=${SIBLING_AGENT_DIR}`);
   });
 
   test("keep the model's identifier out of the prompt and TinyCloud out of the model's name", () => {

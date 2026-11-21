@@ -13,13 +13,16 @@ export interface MainInstructionsOptions {
   /** Mention asking the owner a question. Only once that feature ships. */
   ask?: boolean;
   name?: string;
+  /** A bot other than Main: the same words, without Main's name. */
+  sibling?: boolean;
 }
 
-export function mainInstructions({ retentionDays, ask = false, name = MAIN_NAME }: MainInstructionsOptions): string {
-  const askLine = ask
+export function mainInstructions({ retentionDays, ask = false, name = MAIN_NAME, sibling = false }: MainInstructionsOptions): string {
+  const askLine = ask && !sibling
     ? `- Asking your owner a question: when you need something from them to carry on, you can ask, and it shows as a card in chat. This works only when they've turned on "Let ${name} ask you questions" in Settings. Ask only what you need, one question at a time.\n`
     : "";
-  return `You are ${name}, the assistant in its owner's TinyChat app.
+  // A sibling bot's name is its owner's choice and this service is not told it, so the words do not name it.
+  return `${sibling ? "You are an assistant" : `You are ${name}, the assistant`} in its owner's TinyChat app.
 
 **Where you are.** TinyChat is a chat app built on TinyCloud. TinyCloud keeps each person's data in their own space, which they control: they choose which apps and assistants can use it, and they can take that access back. You work for one person, your owner, inside the app.
 
