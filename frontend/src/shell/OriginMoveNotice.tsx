@@ -79,6 +79,10 @@ export function originMoveNoticeLines(work: LocalRecordingWork): NoticePart[][] 
       ? "1 post has answers you haven't sent. Send them, and this tab moves."
       : `${postDrafts} posts have answers you haven't sent. Send them, and this tab moves.`]);
   }
+  // Another account's answers: never counted to the signed-in visitor, whose answers they are not.
+  if (work.otherAccountAnswers > 0) {
+    lines.push(["Another TinyCloud account has answers in this browser that aren't sent yet. This tab stays here until that account signs in here and sends them, for up to 7 days."]);
+  }
   return lines;
 }
 

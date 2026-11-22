@@ -21,11 +21,14 @@ function readFence(): Fence | null {
 /**
  * Persist a global restore fence synchronously before asynchronous sign-out work. `keepsUnsentWork` marks a sign-out
  * of an expired or refused session, so a restart that finishes it keeps the account's unsent work as it would have.
+ * Such a fence never replaces a pending sign-out that clears everything: it returns null and leaves that fence, whose
+ * own sign-out clears it.
  */
 export function setWebSignOutPending(address: string, keepsUnsentWork = false): string | null {
   try {
     const storage = typeof window === "undefined" ? undefined : window.localStorage;
     if (!storage) return null;
+    if (keepsUnsentWork && hasWebSignOutPending() && !webSignOutPendingKeepsUnsentWork()) return null;
     const token = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
     storage.setItem(WEB_SIGN_OUT_PENDING_KEY, `${token}|${address.toLowerCase()}`);
     if (keepsUnsentWork) storage.setItem(WEB_SIGN_OUT_KEEPS_WORK_KEY, token);

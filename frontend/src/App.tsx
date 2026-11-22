@@ -512,7 +512,8 @@ export function App() {
     setState(terminal ? "unauthenticated" : warning ? "recoverableError" : "unauthenticated");
   }, [address, did, tcw, voiceNotePipeline, spaceId]);
   // An expired or refused session (a first-party 401, or the bearer's own expiry): one bounded try to send held answers,
-  // then a sign-out that keeps the account's unsent work. Native renewal is the one renewal tried first; the web has none.
+  // then a sign-out that keeps the account's unsent work. Model selection first tries one native renewal at once
+  // (`renewNow`, nothing inside OpenKey's minimum renewal interval); the web has no renewal in session.
   const expiredSessionHandoff = useCallback(async () => {
     if (!await captureHandoff("credentials")) return false;
     if (tcw) {
@@ -522,7 +523,7 @@ export function App() {
     return true;
   }, [captureHandoff, tcw]);
   const renewExpiredSession = useCallback(async () => {
-    await nativeRenewalRef.current?.check(true);
+    await nativeRenewalRef.current?.renewNow();
   }, []);
   useEffect(() => registerSessionSignedOutHook(sessionStoreRef.current, expiredSessionHandoff,
     () => completeLocalSignOut(null, false, undefined, undefined, "credentials"), renewExpiredSession),
