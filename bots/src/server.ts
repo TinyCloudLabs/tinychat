@@ -4,13 +4,14 @@
 import type { ActivityRecord, StagedHistory } from "./history";
 import type { BotAdmission } from "./bot-admission";
 import { type AsksSettings, type BotMessenger, type ErrorCode, ERROR_MESSAGES, type ListedMessage, MAX_TEXT, type TurnSink, type WebSettings } from "./bot";
+import { type OwnerDate, ownerDateFrom } from "./owner-date";
 import { INVALID_HOSTS, parseWebPolicy, type WebPolicy } from "./web-policy";
 import { type AnswerInput, type AnswerResult, type AppOrigin, type AskReply, type AskRequest, parseAnswerInput } from "./asks";
 import { isRecord } from "./guards";
 import { ANNOUNCED_STATES, type AnnouncedState, type BotState, OwnerBotLimit } from "./manifest";
 import { legacyOwnerHeaderAccepted } from "./config";
 import { MESSAGING_STRINGS } from "./messaging-strings";
-import { authorizedOwner, isBotKey, MAIN_KEY, ownerAllowed } from "./owner";
+import { authorizedOwner, botNameFrom, isBotKey, MAIN_KEY, ownerAllowed } from "./owner";
 import type { DeleteSkip } from "./retention";
 import type { HostToolReply } from "./rpc";
 import { type Environment, NonceGuard, SIGNED_SCHEME, verifyCall } from "./signed-call";
@@ -38,8 +39,14 @@ function operationOf(rest: string, method: string): Operation | undefined {
 }
 
 export interface BotApi {
-  /** `from` says who wrote the text; only the owner's own messages teach the bot which addresses it may read. An `AppOrigin` is only ever this service's own composed reply. */
-  send(text: string, sink: TurnSink, owner?: string, messenger?: BotMessenger, from?: "owner" | "bot" | AppOrigin): Promise<void>;
+  /**
+   * `from` says who wrote the text; only the owner's own messages teach the bot which addresses it may read. An
+   * `AppOrigin` is only ever this service's own composed reply. `date`, the owner's local date and time zone, is put on
+   * the owner's own turns only.
+   */
+  send(text: string, sink: TurnSink, owner?: string, messenger?: BotMessenger, from?: "owner" | "bot" | AppOrigin, date?: OwnerDate): Promise<void>;
+  /** The name the owner sees, for the prompt's wording at the next sandbox start; never a source of trust. */
+  setName?(botName: string): void;
   list(): Promise<ListedMessage[]>;
   listActivities?(): Promise<ActivityRecord[]>;
   historyPending?(): Promise<unknown>;
@@ -330,6 +337,9 @@ export function createApp(options: AppOptions): (req: Request) => Promise<Respon
     if (req.method === "POST") {
       const body: unknown = await req.json().catch(() => null);
       const messenger = signed ? turnMessenger(options, owner, key, isRecord(body) ? body.messageableBotKeys : undefined) : undefined;
+      // Only the backend's signed call names the bot. A name that is not one short line is ignored.
+      const botName = signed && isRecord(body) ? botNameFrom(body.botName) : undefined;
+      if (botName !== undefined) bot.setName?.(botName);
       if (isRecord(body) && body.appReply !== undefined) {
         // The owner's decision reaches Main as a message this service composes from what it stored. Any text or `from`
         // the caller sent is not read; a request that is not decided, not Main's or already delivered sends nothing.
@@ -338,17 +348,19 @@ export function createApp(options: AppOptions): (req: Request) => Promise<Respon
         let reply: AskReply | undefined;
         try { reply = bot.appReply?.(requestId); } catch { return new Response(null, { status: 503 }); }
         if (reply === undefined) return Response.json({ error: "no_reply" }, { status: 409 });
-        const { text: replyText, decision } = reply;
+        const { text: replyText, decision, secret } = reply;
         return eventStream(sink => bot.send(replyText, {
           ...sink,
           done: messageId => { try { bot.appReplyDelivered?.(requestId); } finally { sink.done(messageId); } },
-        }, owner, messenger, { app: decision }));
+        }, owner, messenger, { app: decision, ...(secret ? { secret } : {}) }));
       }
       const text = isRecord(body) ? body.text : undefined;
       if (typeof text !== "string" || text.length < 1 || text.length > MAX_TEXT) {
         return eventStream(async sink => sink.error("invalid"));
       }
-      return eventStream(sink => bot.send(text, sink, owner, messenger));
+      // A malformed date or time zone is dropped; the turn runs without it.
+      const date = ownerDateFrom(isRecord(body) ? body.clientContext : undefined);
+      return eventStream(sink => bot.send(text, sink, owner, messenger, "owner", date));
     }
     if (req.method === "GET") {
       try {

@@ -5,11 +5,24 @@ import { backendDelegationPolicyHash, backendManifestConfig } from "../manifest.
 
 export { backendDelegationPolicyHash };
 
-export function createServerInfoRouter(backendDid: string, build: BackendBuildInfo) {
+export interface ServerInfoCapabilities {
+  firefliesServerImport?: boolean;
+}
+
+export interface ServerInfoOptions {
+  capabilities?: ServerInfoCapabilities;
+}
+
+export function createServerInfoRouter(
+  backendDid: string,
+  build: BackendBuildInfo,
+  options?: ServerInfoOptions,
+) {
   const router = Router();
   router.get("/", (_req, res) => {
     const policy = backendManifestConfig(backendDid);
-    const info: DelegatingServerInfo & BackendBuildInfo = {
+    const includeCapabilities = options?.capabilities?.firefliesServerImport === true;
+    const info: DelegatingServerInfo & BackendBuildInfo & { capabilities?: ServerInfoCapabilities } = {
       did: backendDid,
       status: "ready",
       name: policy.name,
@@ -18,6 +31,9 @@ export function createServerInfoRouter(backendDid: string, build: BackendBuildIn
       policyHash: backendDelegationPolicyHash(backendDid),
       backendRevision: build.backendRevision,
       backendVersion: build.backendVersion,
+      ...(includeCapabilities
+        ? { capabilities: { firefliesServerImport: true } }
+        : {}),
     };
     res.json(info);
   });

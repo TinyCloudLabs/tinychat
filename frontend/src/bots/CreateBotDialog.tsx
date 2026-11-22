@@ -6,7 +6,7 @@ import { useSizeClass } from "@/lib/sizeClass";
 import { BotAvatar } from "./BotAvatar";
 import { BOT_COLOUR_IDS, BOT_SHAPES, BOT_COLOURS, BotShape, type ColourId, type ShapeId } from "./botShapes";
 import { BotRosterError, isBotName, type BotRoster, type CreateBotInput, type RosterBot } from "./botRosterApi";
-import { CREATE_BOT_STRINGS as copy } from "./botsStrings";
+import { CREATE_BOT_STRINGS as copy, MAIN_BOT_NAME, MAIN_BOT_OLD_NAME } from "./botsStrings";
 import { BotHistoryApprovalNeeded } from "./historyGrant";
 
 interface CreateBotDialogProps {
@@ -35,10 +35,11 @@ function CreateBotForm({ onOpenChange, roster, onCreate, onCreated }: Omit<Creat
   const max = roster.limits?.private.max;
   const capCopy = copy.cap[roster.capMode];
   const hasOtherBot = roster.bots.some(bot => bot.key !== "main");
-  const duplicate = roster.bots.some(bot => bot.name.trim().toLowerCase() === trimmed.toLowerCase());
+  const mainName = roster.bots.find(bot => bot.key === "main")?.name ?? MAIN_BOT_NAME;
+  const duplicate = [MAIN_BOT_OLD_NAME, ...roster.bots.map(bot => bot.name)].some(taken => taken.trim().toLowerCase() === trimmed.toLowerCase());
   const nameError = duplicate ? copy.duplicate : name && !isBotName(name) ? copy.invalidName : "";
   const disabled = capped || !trimmed || Boolean(nameError) || creating;
-  const error = serverError || (capped && max !== undefined ? capCopy.atLimit(max, hasOtherBot) : nameError);
+  const error = serverError || (capped && max !== undefined ? capCopy.atLimit(max, hasOtherBot, mainName) : nameError);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -52,7 +53,7 @@ function CreateBotForm({ onOpenChange, roster, onCreate, onCreated }: Omit<Creat
     } catch (cause) {
       // Keep the draft open and restore the form controls in finally.
       if (cause instanceof BotHistoryApprovalNeeded) return;
-      if (cause instanceof BotRosterError && cause.code === "bot_limit" && max !== undefined) setServerError(capCopy.refused(max, hasOtherBot));
+      if (cause instanceof BotRosterError && cause.code === "bot_limit" && max !== undefined) setServerError(capCopy.refused(max, hasOtherBot, mainName));
       else if (cause instanceof BotRosterError && cause.code === "name_taken") setServerError(copy.duplicate);
       else if (cause instanceof BotRosterError && cause.code === "invalid_name") setServerError(copy.invalidName);
       else setServerError(copy.failed);

@@ -96,7 +96,7 @@ const press = async (label: string, scope: ParentNode = document) => {
   await flush();
 };
 const openChat = async () => {
-  await act(async () => { document.querySelector<HTMLButtonElement>('button[aria-label="Open Main\'s chat"]')!.click(); });
+  await act(async () => { document.querySelector<HTMLButtonElement>('button[aria-label="Open TrustBot\'s chat"]')!.click(); });
   await flush();
 };
 const typeAnswer = async (value: string) => {
@@ -196,14 +196,14 @@ test("a question that expires while the chat is open collapses to the expired li
   const expired = { ...pending(), state: "expired" as const, question: undefined };
   api.listRequests = async () => [expired];
   // The chat polls every few seconds while open; a turn ending is the other trigger, so send one.
-  const box = document.querySelector<HTMLTextAreaElement>('[data-bots-main-chat] textarea[placeholder="Message Main"]');
+  const box = document.querySelector<HTMLTextAreaElement>('[data-bots-main-chat] textarea[placeholder="Message TrustBot"]');
   expect(box).not.toBeNull();
   await act(async () => {
     box!.focus();
     Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")!.set!.call(box, "hi");
     box!.dispatchEvent(new KeyboardEvent("keyup", { key: "a", bubbles: true }));
   });
-  await act(async () => { document.querySelector<HTMLButtonElement>('[data-bots-main-chat] button[aria-label="Send to Main"]')!.click(); });
+  await act(async () => { document.querySelector<HTMLButtonElement>('[data-bots-main-chat] button[aria-label="Send to TrustBot"]')!.click(); });
   await flush();
   expect(cards()).toHaveLength(0);
   expect(document.querySelector("[data-ask-outcome]")!.textContent).toBe("This question expired.");
@@ -214,7 +214,7 @@ test("Stop Main from asking turns the setting off, collapses the card and says s
   const { api, log } = service();
   await render(api);
   await openChat();
-  await press("Stop Main from asking", document.querySelector("[data-ask-card]")!);
+  await press("Stop TrustBot from asking", document.querySelector("[data-ask-card]")!);
   expect(log.asks).toEqual([false]);
   expect(cards()).toHaveLength(0);
   expect(document.querySelector("[data-ask-stopped]")!.textContent).toBe(ASK_STRINGS.stopped);

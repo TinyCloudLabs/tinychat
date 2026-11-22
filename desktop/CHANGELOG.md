@@ -1,5 +1,53 @@
 # exo-desktop
 
+## 0.19.0
+
+No changes in this release.
+
+## 0.19.0-beta.1
+
+No changes in this release.
+
+## 0.19.0-beta.0
+
+No changes in this release.
+
+## 0.18.0
+
+No changes in this release.
+
+## 0.18.0-beta.7
+
+No changes in this release.
+
+## 0.18.0-beta.6
+
+No changes in this release.
+
+## 0.18.0-beta.5
+
+No changes in this release.
+
+## 0.18.0-beta.4
+
+No changes in this release.
+
+## 0.18.0-beta.3
+
+No changes in this release.
+
+## 0.18.0-beta.2
+
+No changes in this release.
+
+## 0.17.1-beta.1
+
+No changes in this release.
+
+## 0.17.1-beta.0
+
+No changes in this release.
+
 ## 0.17.0
 
 ### Minor Changes

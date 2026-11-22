@@ -30,7 +30,7 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 1280, height: 900 
         await sheet.getByText("Current answer", { exact: true }).waitFor();
         await page.evaluate(result => (window as unknown as { tc2909: { fail(): void; resolve(): void } }).tc2909[result](), result);
         if (result === "fail") {
-          await sheet.getByRole("alert").filter({ hasText: "Couldn't load your earlier messages with Main." }).waitFor();
+          await sheet.getByRole("alert").filter({ hasText: "Couldn't load your earlier messages with TrustBot." }).waitFor();
           await sheet.getByRole("button", { name: "Try again", exact: true }).click();
           await page.getByRole("status").filter({ hasText: "Loading earlier messages…" }).waitFor();
           expect(await page.evaluate(() => (window as unknown as { tc2909: { reads: number } }).tc2909.reads)).toBe(2);
