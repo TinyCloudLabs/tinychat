@@ -33,9 +33,9 @@ function answer(res: Response, status: number, body: object): void {
 
 /**
  * `POST /api/exo/v1/requests`. A body the strict parser rejects gets the uniform 409 before any lookup. Every other
- * request gets the same 202 `{"status":"accepted"}`, sent before any store read. An owner the holder index does not
- * hold is not queued, so a flood of unknown owners cannot evict a held owner's wake; the index refreshes in the
- * background. A wake for a held owner past the whole-service intake budget is dropped here, after the same 202.
+ * request gets the same 202 `{"status":"accepted"}`, sent before any store read. Every well-formed wake then spends the
+ * whole-service intake budget, held owner or not; one past it is dropped. An owner the holder index does not hold is
+ * not queued, so a flood of unknown owners cannot evict a held owner's wake; the index refreshes in the background.
  * Verification, the owner budget, and the job write run afterwards in the wake queue, so the reply cannot
  * depend on store latency or on whether the owner has a grant. The outcome lives in the job record.
  */
@@ -63,11 +63,12 @@ export function createExoMailboxRouter(
   router.post("/requests", strictBody, (_req, res) => {
     const request: ExoWakeRequest = res.locals.exoRequest;
     answer(res, 202, EXO_ACCEPTED_BODY);
+    // Every well-formed wake spends the budget before the holder check, so held and unknown owners cost the same.
+    if (!intakeBudget.spend("wake", ports.now())) return;
     if (!holders.mayHold(request.owner)) {
       holders.refreshIfStale();
       return;
     }
-    if (!intakeBudget.spend("wake", ports.now())) return;
     // The parser lowercases the owner, so case variants share one lane. verifyWake and startWake are total.
     queue.offer(request.owner, request.requestId, async () => {
       const wake = await verifyWake(ports, request);

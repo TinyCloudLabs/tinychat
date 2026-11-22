@@ -8,6 +8,7 @@ import { createExoMailboxRouter, type ExoWakeOptions } from "../routes/exo-mailb
 
 const OWNER = `0x${"b".repeat(40)}`;
 const OWNER_DID = `did:pkh:eip155:1:${OWNER}`;
+const STRANGER_DID = `did:pkh:eip155:1:0x${"c".repeat(40)}`;
 const T0 = Date.UTC(2026, 0, 1, 12);
 
 /** Counts what reaches the queue: only those wakes can cost grant and node reads. */
@@ -28,11 +29,7 @@ async function withRoute<T>(
   const app = express();
   app.use(
     "/api/exo/v1",
-    createExoMailboxRouter(
-      { ...createUnwiredExoPorts(), now },
-      { mayHold: held, refreshIfStale: () => {} },
-      options,
-    ),
+    createExoMailboxRouter({ ...createUnwiredExoPorts(), now }, { mayHold: held, refreshIfStale: () => {} }, options),
   );
   const listening = Promise.withResolvers<Server>();
   const server = app.listen(0, "127.0.0.1", () => listening.resolve(server));
@@ -55,7 +52,7 @@ const wake = (base: string, owner = OWNER_DID, requestId: string = crypto.random
   });
 
 describe("Exo wake intake budget", () => {
-  test("a wake for a held owner past the budget gets the same 202 and never reaches the queue", async () => {
+  test("a wake past the budget gets the same 202 and never reaches the queue", async () => {
     const queue = new CountingQueue();
     await withRoute({ queue, intakeBudget: new FixedWindowBudget(2, 60_000) }, () => true, async (base) => {
       const answers = [];
@@ -68,16 +65,32 @@ describe("Exo wake intake budget", () => {
     });
   });
 
-  test("wakes for owners the index does not hold do not spend the budget", async () => {
+  test("wakes for owners the index does not hold spend the same budget as wakes for held owners", async () => {
     const queue = new CountingQueue();
-    await withRoute({ queue, intakeBudget: new FixedWindowBudget(1, 60_000) }, (owner) => owner === OWNER, async (base) => {
-      for (let i = 0; i < 20; i++) {
-        expect((await wake(base, `did:pkh:eip155:1:0x${"c".repeat(40)}`)).status).toBe(202);
-      }
+    await withRoute({ queue, intakeBudget: new FixedWindowBudget(3, 60_000) }, (owner) => owner === OWNER, async (base) => {
+      // Three wakes for an address that holds nothing use up the budget, so a held owner's wake is dropped too.
+      for (let i = 0; i < 3; i++) expect((await wake(base, STRANGER_DID)).status).toBe(202);
       expect(queue.offered).toBe(0);
-      expect((await wake(base)).status).toBe(202);
-      expect(queue.offered).toBe(1);
+      const held = await wake(base);
+      expect(held.status).toBe(202);
+      expect(await held.json()).toEqual({ status: "accepted" });
+      expect(queue.offered).toBe(0);
     });
+  });
+
+  test("a sender cannot tell a held owner from an unknown one by whether its own wake is dropped", async () => {
+    const probeQueued: number[] = [];
+    for (const target of [OWNER_DID, STRANGER_DID]) {
+      const queue = new CountingQueue();
+      await withRoute({ queue, intakeBudget: new FixedWindowBudget(5, 60_000) }, (owner) => owner === OWNER, async (base) => {
+        for (let i = 0; i < 5; i++) await wake(base, target);
+        const before = queue.offered;
+        // The sender's own held owner is probed after the target. Whether it is queued must not depend on the target.
+        await wake(base);
+        probeQueued.push(queue.offered - before);
+      });
+    }
+    expect(probeQueued).toEqual([0, 0]);
   });
 
   test("the budget refills when its window ends", async () => {
@@ -98,11 +111,13 @@ describe("Exo wake intake budget", () => {
     );
   });
 
-  test("the router built the way production builds it queues no more than the intake limit in one window", async () => {
+  test("the router built the way production builds it takes no more than the intake limit in one window", async () => {
     const queue = new CountingQueue();
     await withRoute({ queue }, () => true, async (base) => {
-      for (let i = 0; i < EXO_WAKE_INTAKE_LIMIT_PER_MIN + 10; i++) {
-        expect((await wake(base)).status).toBe(202);
+      const total = EXO_WAKE_INTAKE_LIMIT_PER_MIN + 50;
+      for (let sent = 0; sent < total; sent += 250) {
+        const batch = await Promise.all(Array.from({ length: Math.min(250, total - sent) }, () => wake(base)));
+        for (const response of batch) expect(response.status).toBe(202);
       }
       expect(queue.offered).toBe(EXO_WAKE_INTAKE_LIMIT_PER_MIN);
     });
