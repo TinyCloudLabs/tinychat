@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 import { load as loadYaml } from "js-yaml";
 
 // The in-memory credit counter, each reply's allowance and the settlement clamp assume ONE backend
-// instance (docs/credits.md, docs/connector-webhooks-single-instance.md). This fails when the
+// instance (docs/credits.md). This fails when the
 // deployment is scaled out, so adding an instance is a visible decision, not a config accident.
 type Service = { deploy?: { replicas?: number }; scale?: number };
 type Compose = { services?: Record<string, Service> };
