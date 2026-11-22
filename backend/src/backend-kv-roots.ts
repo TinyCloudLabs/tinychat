@@ -1,6 +1,7 @@
 import { EXO_SYNC_GRANT_KIND, TRANSCRIPT_WRITER_GRANT_KIND } from "@tinyboilerplate/server";
 import { BOT_HISTORY_GRANT_KEY_PREFIX } from "./bot-history.js";
 import { BOTS_REGISTRY_KEY_PREFIX } from "./bots-registry.js";
+import { TRUSTBOT_READ_GRANT_KEY_PREFIX } from "./trustbot-reads/grants.js";
 import { EXO_HELD_KEY_PREFIX, EXO_LEDGER_KEY_PREFIX, EXO_SOURCE_LOCK_KEY_PREFIX } from "./exo/durable-ledger.js";
 import { EXO_MIRROR_JOBS_PREFIX } from "./exo/stores.js";
 import { CORRUPT_PURGED_KEY_PREFIX, DISABLED_KEY_PREFIX, PURGE_LEDGER_KEY_PREFIX } from "./routes/connector-webhooks.js";
@@ -59,6 +60,7 @@ export const BACKEND_KV_ROOTS: readonly string[] = [
   CALENDAR_AUTOJOIN_KEY_PREFIX,
   BOT_HISTORY_GRANT_KEY_PREFIX,
   BOTS_REGISTRY_KEY_PREFIX,
+  TRUSTBOT_READ_GRANT_KEY_PREFIX,
   EXO_MIRROR_JOBS_PREFIX,
   EXO_LEDGER_KEY_PREFIX,
   EXO_SOURCE_LOCK_KEY_PREFIX,

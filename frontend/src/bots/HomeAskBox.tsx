@@ -14,6 +14,7 @@ import { BotsError, botsApi, type BotsApi } from "./botsApi";
 import { MainChat } from "./MainChat";
 import { isWorking, useMainChat } from "./useMainChat";
 import { AskCards } from "./AskCards";
+import { readSettings, setReadArea, signReadGrant } from "./trustbotReadGrant";
 import { useAsks } from "./useAsks";
 
 const RETRY_MS = 60_000;
@@ -78,6 +79,11 @@ function MainAsk({ api, tcw, onReconnect }: { api: BotsApi; tcw?: TinyCloudWeb; 
       return stored;
     },
   }), [client, noteWeb]);
+  const meetings = useMemo(() => tcw ? {
+    readSettings,
+    setReadArea,
+    signReadGrant: (serviceDid: string, areas: Parameters<typeof signReadGrant>[2]) => signReadGrant(tcw, serviceDid, areas),
+  } : undefined, [tcw]);
   // A turn is when Main asks: read the requests as it ends.
   const working = isWorking(chat.state.turn);
   const wasWorking = useRef(false);
@@ -126,6 +132,7 @@ function MainAsk({ api, tcw, onReconnect }: { api: BotsApi; tcw?: TinyCloudWeb; 
         notice={notice}
         onReconnect={onReconnect}
         webAccess={webAccess}
+        meetings={meetings}
         asks={asks}
       />
     </>

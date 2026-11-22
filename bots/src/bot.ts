@@ -15,6 +15,7 @@ import { type Frame, type HostToolHandler, type HostToolReply, RpcError } from "
 import { addressesIn } from "./web";
 import { readWebPolicy, type WebPolicy, writeWebPolicy } from "./web-policy";
 import { type AnswerInput, type AnswerResult, type AppOrigin, AskStore, type AskReply, type AskRequest, cancelAsks, readAsksEnabled, sweepAsks as sweepAskStores, writeAsksEnabled } from "./asks";
+import { type ReadArea, type ReadsSetting, writeReads } from "./reads";
 
 export type ErrorCode = "bot_unavailable" | "model_unavailable" | "busy" | "at_capacity" | "invalid";
 
@@ -94,6 +95,8 @@ export interface SandboxLauncher {
   learnAddresses?(layout: BotLayout, urls: string[]): Promise<void>;
   /** Collects the questions the box asked, then gives the gateway the owner's setting for questions and the counts; `turn` starts a turn. */
   syncAsks?(layout: BotLayout, turn?: { outside: boolean }): Promise<void>;
+  /** Gives the gateway the owner's read setting and the bot's conversation id (reads.ts). */
+  pushReads?(layout: BotLayout): Promise<void>;
   /** Removes what the bot keeps off this host (a remote sandbox and its snapshot) before its directories go. */
   removeState?(layout: BotLayout): Promise<void>;
 }
@@ -317,6 +320,7 @@ export class Bot {
   #deleting: Promise<DeleteSkip | undefined> | undefined;
   #webSaves: Promise<void> = Promise.resolve();
   #askSaves: Promise<void> = Promise.resolve();
+  #readSaves: Promise<void> = Promise.resolve();
   #busy = false;
   #listing = 0;
   #settled = true;
@@ -532,6 +536,22 @@ export class Bot {
     });
     this.#askSaves = saved.catch(() => {});
     return saved.then(() => ({ enabled }));
+  }
+
+  /**
+   * Saves which areas the owner lets Main read and gives the gateway the setting. The backend checks the owner's grant
+   * on every read whatever the gateway holds, so a push that fails is logged and sent again at the next message.
+   */
+  setReads(owner: string, areas: ReadArea[]): Promise<ReadsSetting> {
+    const setting: ReadsSetting = areas.length > 0 ? { areas, owner } : { areas: [] };
+    const saved = this.#readSaves.then(async () => {
+      await this.#deleting;
+      writeReads(this.layout, setting);
+      await this.#launcher.pushReads?.(this.layout).catch(() => log("reads_setting_push_failed", this.layout.botId));
+      log("reads_setting", this.layout.botId, { areas: areas.length });
+    });
+    this.#readSaves = saved.catch(() => {});
+    return saved.then(() => ({ areas: setting.areas }));
   }
 
   /** The owner's requests from Main: what the box has asked so far (collected from the gateway first), pending first. */

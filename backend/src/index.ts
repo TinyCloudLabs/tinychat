@@ -27,6 +27,8 @@ import { mcpChatFromEnv } from "./mcp-meetings/config.js";
 import { BotHistory } from "./bot-history.js";
 import { createBotHistoryRouter, startBotHistoryDrain } from "./routes/bot-history.js";
 import { botsFromEnv, createBotsRouter, removeBotFromService } from "./routes/bots.js";
+import { createTrustBotReadsInternalRouter, createTrustBotReadsRouter, TRUSTBOT_READS_INTERNAL_PREFIX } from "./routes/trustbot-reads.js";
+import { startTrustBotReads, trustbotReadsFromEnv } from "./trustbot-reads/setup.js";
 import { capModeFromEnv, planFor } from "./bot-caps.js";
 import { BotsRegistry, turnListHook } from "./bots-registry.js";
 import { botsServiceRouteGuard } from "./bots-service-routes.js";
@@ -1195,6 +1197,17 @@ async function main() {
   if (botDeletions) {
     void botDeletions.sweep();
     setInterval(() => { void botDeletions.sweep(); }, BOT_DELETION_PASS_MS).unref();
+  }
+  // TrustBot's reads (TRUSTBOT_READS_ENABLED): owner routes under /api/bots/main/reads, and the gateway's route for the
+  // meeting tools. Off, neither route exists.
+  const trustbotReadsSettings = botsConfig && !localValidation ? trustbotReadsFromEnv(process.env) : undefined;
+  const trustbotReads = botsConfig && trustbotReadsSettings ? await startTrustBotReads(trustbotReadsSettings, {
+    backendNode: node, backendDid: did, host: TINYCLOUD_HOST, otherDelegateDids: [process.env.MCP_CHAT_SERVICE_DID, AGENT_DID],
+  }) : undefined;
+  if (botsConfig && trustbotReadsSettings && trustbotReads) {
+    app.use("/api/bots/main/reads", createTrustBotReadsRouter({ grants: trustbotReads, config: botsConfig, auth: authMiddleware }));
+    app.use(TRUSTBOT_READS_INTERNAL_PREFIX, createTrustBotReadsInternalRouter({ grants: trustbotReads, config: botsConfig, callSecret: trustbotReadsSettings.callSecret }));
+    console.log("[startup] TrustBot reads enabled.");
   }
   app.use("/api/bots", createBotsRouter({
     config: botsConfig, authMiddleware, paidLimiter: paidChatLimiter, registry: botsRegistry,

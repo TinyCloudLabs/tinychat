@@ -42,6 +42,7 @@ describe("TinyChat backend sign-in manifest", () => {
       "credentials/",
       "delegations/",
       "transcriber/",
+      "trustbot/read-grants/",
       "webhooks/",
       "xyz.tinycloud.tinychat/exo/v1/",
     ]);
