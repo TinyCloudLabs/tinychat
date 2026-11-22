@@ -198,6 +198,15 @@ describe("no read with a grant that could open the network-wrapped copy", () => 
       spy.mockRestore();
     }
   });
+
+  test("the node's legacy_envelope (still sealed to the network key) reads as unavailable", async () => {
+    const client: GrantNode = {
+      restoreSession: async () => undefined,
+      readSecret: async () => ({ status: "legacy_envelope" }),
+    };
+    const reader = nodeSecretReader("https://node.example", () => client);
+    expect(await reader.read(ID, { address: CHECKSUMMED, chainId: 1 } as GrantSession, NAME)).toBe("unavailable");
+  });
 });
 
 describe("the gateway never delegates or attenuates a grant", () => {
