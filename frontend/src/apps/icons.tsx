@@ -9,7 +9,7 @@ import { cn } from "@/lib/utils";
 /** A navigation or launcher icon: a lucide icon or a One Apps glyph. Both take a class and aria-hidden. */
 export type AppIcon = LucideIcon | ComponentType<{ className?: string; "aria-hidden"?: boolean | "true" | "false" }>;
 
-export type GlyphId = "recording" | "secrets" | "credentials" | "explorer" | "account" | "courier" | "share" | "connectors";
+export type GlyphId = "recording" | "secrets" | "credentials" | "explorer" | "account" | "courier" | "ledger" | "share" | "connectors";
 
 const n = (value: number) => Math.round(value * 100) / 100;
 
@@ -116,6 +116,12 @@ const GLYPHS: Readonly<Record<GlyphId, GlyphParts>> = {
       </>
     ),
   },
+  // A list card with the cloud as its clip.
+  ledger: {
+    tool: <rect x="11" y="15" width="26" height="30" rx="3" />,
+    cloud: cloudAt(24, 3.5, 0.62),
+    overInkLine: ["M16.5 27.5h15", "M16.5 33.5h15", "M16.5 39.5h9"].map((d) => line(d, 3)),
+  },
   // The cloud hands out two links.
   share: {
     underTool: [line("M17 21.5L39 10.5", 3.2), line("M17 27L39 37.5", 3.2)],
@@ -218,6 +224,7 @@ export const GLYPH_ICONS: Readonly<Record<GlyphId, AppIcon>> = {
   explorer: monoGlyph("explorer"),
   account: monoGlyph("account"),
   courier: monoGlyph("courier"),
+  ledger: monoGlyph("ledger"),
   share: monoGlyph("share"),
   connectors: monoGlyph("connectors"),
 };

@@ -17,6 +17,7 @@ describe("registry", () => {
       "https://explorer.tinycloud.xyz",
       "https://account.tinycloud.xyz",
       "https://share.tinycloud.xyz",
+      "https://rocinante-ledger.pages.dev",
     ]);
     expect(ONE_HOST_ORIGINS).toEqual(["https://tinycloud.one"]);
   });
@@ -59,7 +60,7 @@ describe("registry", () => {
 
   test("iOS leaves Account out; web and Android keep it", () => {
     expect(oneAppsFor("ios").some((app) => app.id === "xyz.tinycloud.account")).toBe(false);
-    expect(oneAppsFor("ios").map((app) => app.id)).toEqual(["capture", "xyz.tinycloud.secrets", "xyz.tinycloud.opencredentials", "xyz.tinycloud.explorer", "xyz.tinycloud.courier"]);
+    expect(oneAppsFor("ios").map((app) => app.id)).toEqual(["capture", "xyz.tinycloud.secrets", "xyz.tinycloud.opencredentials", "xyz.tinycloud.explorer", "xyz.tinycloud.courier", "xyz.tinycloud.rocinante.ledger"]);
     expect(oneAppsFor("web").some((app) => app.id === "xyz.tinycloud.account")).toBe(true);
     expect(oneAppsFor("android").some((app) => app.id === "xyz.tinycloud.account")).toBe(true);
   });
@@ -77,10 +78,11 @@ describe("registry", () => {
     ]);
   });
 
-  test("the phone app frames only Explorer, only on its exact origins; Account, Courier and the rest open outside", () => {
+  test("the phone app frames only Explorer and the Ship ledger, only on its exact origins; Account, Courier and the rest open outside", () => {
     const explorer = oneApp("xyz.tinycloud.explorer")!;
     for (const origin of ["capacitor://localhost", "https://localhost"]) {
       expect(appTarget(explorer, origin)).toEqual({ kind: "route", path: "/chat/apps/xyz.tinycloud.explorer" });
+      expect(appTarget(oneApp("xyz.tinycloud.rocinante.ledger")!, origin)).toEqual({ kind: "route", path: "/chat/apps/xyz.tinycloud.rocinante.ledger" });
       for (const id of ["xyz.tinycloud.account", "xyz.tinycloud.courier", "xyz.tinycloud.secrets", "xyz.tinycloud.opencredentials"] as const) {
         expect(appTarget(oneApp(id)!, origin).kind).toBe("newTab");
       }
