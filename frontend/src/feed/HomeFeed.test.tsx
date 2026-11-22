@@ -1094,7 +1094,6 @@ test("the top row is Needs you · Updates · History and a Filter icon; Filter s
 test("the Agents pill opens every agent; an agent's page lists its cards and a card opens back in the feed", async () => {
   const store = persistence([decision("open-one"), answered("waiting-one", false)]);
   restore ??= installDom({});
-  localStorage.setItem(HIDDEN_FEATURES_KEY, "1");
   const view = await mount(store.source());
   await act(async () => view.host.querySelector<HTMLButtonElement>('header button[aria-label^="Agents"]')!.click());
   const list = view.host.querySelector<HTMLElement>('section[aria-label="Your agents"]')!;
@@ -1130,26 +1129,14 @@ async function mountWithAsk(source: HomeFeedSource) {
   return host;
 }
 
-test("Home hides the ask box and the Agents pill until Show hidden features is on", async () => {
+test("Home shows the ask box and the Agents pill with Show hidden features off", async () => {
   restore ??= installDom({});
   const store = persistence([decision("open-one")]);
-  const host = await mountWithAsk(store.source());
-  expect(host.querySelector("[data-bots-ask]")).toBeNull();
-  expect(host.querySelector('header button[aria-label^="Agents"]')).toBeNull();
-  // The rest of Home is unchanged: the card is still listed.
-  expect(host.textContent).toContain("Question open-one");
-});
-
-test("Home shows the ask box and the Agents pill while Show hidden features is on, and drops them when it is turned off", async () => {
-  restore ??= installDom({});
-  const store = persistence([decision("open-one")]);
-  localStorage.setItem(HIDDEN_FEATURES_KEY, "1");
   const host = await mountWithAsk(store.source());
   expect(host.querySelector("[data-bots-ask]")).not.toBeNull();
   expect(host.querySelector('header button[aria-label^="Agents"]')).not.toBeNull();
-  await act(async () => { const { setShowHiddenFeatures } = await import("@/lib/hiddenFeatures"); setShowHiddenFeatures(false); });
-  expect(host.querySelector("[data-bots-ask]")).toBeNull();
-  expect(host.querySelector('header button[aria-label^="Agents"]')).toBeNull();
+  // The rest of Home is unchanged: the card is still listed.
+  expect(host.textContent).toContain("Question open-one");
 });
 
 test("a page waiting to move to tinycloud.one stays while an undo-bar action counts, and goes on after Undo or once it is sent", async () => {

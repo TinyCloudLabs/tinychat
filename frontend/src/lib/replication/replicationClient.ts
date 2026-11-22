@@ -1,6 +1,6 @@
 // Builds the `replication` client option, only when replication is ON for the signed-in user
 // (build flag + platform + the user's own switch; replicationFlag.ts) and binding is not paused
-// (production builds, until web-sdk 3.12; isReplicationBindPaused).
+// (production builds only, when REPLICATION_BIND_PAUSED is set; isReplicationBindPaused).
 //
 // OFF (any gate): returns undefined and imports NOTHING. The optional plugin
 // (`@tinycloud/web-sdk/replica`, which in turn lazily loads the encrypted IndexedDB storage

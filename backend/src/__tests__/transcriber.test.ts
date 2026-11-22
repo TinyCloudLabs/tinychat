@@ -1055,6 +1055,10 @@ describe("TC-581 sharing flag deploy environment", () => {
     expect(writer?.run).toContain('"CALENDAR_AUTOJOIN_SHARING=${CALENDAR_AUTOJOIN_SHARING:-false}"');
     expect(compose.services?.["tinychat-backend"]?.environment?.CALENDAR_AUTOJOIN_SHARING).toBe("${CALENDAR_AUTOJOIN_SHARING:-false}");
     expect(example).toContain("\nCALENDAR_AUTOJOIN_SHARING=false\n");
+    expect(String(writer?.env?.CALENDAR_AUTOJOIN_SHARING_ACCOUNTS)).toContain("vars.CALENDAR_AUTOJOIN_SHARING_ACCOUNTS");
+    expect(writer?.run).toContain('"CALENDAR_AUTOJOIN_SHARING_ACCOUNTS=$CALENDAR_AUTOJOIN_SHARING_ACCOUNTS"');
+    expect(compose.services?.["tinychat-backend"]?.environment?.CALENDAR_AUTOJOIN_SHARING_ACCOUNTS).toBe("${CALENDAR_AUTOJOIN_SHARING_ACCOUNTS:-}");
+    expect(example).toContain("\nCALENDAR_AUTOJOIN_SHARING_ACCOUNTS=\n");
   });
 });
 

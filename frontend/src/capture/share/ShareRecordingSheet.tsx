@@ -11,10 +11,9 @@ import { SegmentedControl } from "@/components/ui/segmented-control";
 import { copyText } from "@/lib/copyText";
 import { meetingAudioFrom } from "@/lib/connectors/meetingExplorer";
 import { transcriptKvKey } from "@/lib/connectors/connectorStore";
-import { useShowHiddenFeatures } from "@/lib/hiddenFeatures";
 import { includesLabel, type RecordingShareDisplay, type SharedPart } from "@/lib/nativeShares/display";
 import { countShareClaims, createShare, publishShareLink } from "@/lib/nativeShares/sdk";
-import { sentShareRecord, sentShares, sharesOf, stopSharingRecording, useRecordingShared, type SentRecordingShare } from "@/lib/nativeShares/sentShares";
+import { sentShareRecord, sentShares, sharesOf, stopSharingRecording, type SentRecordingShare } from "@/lib/nativeShares/sentShares";
 import { cn } from "@/lib/utils";
 import { voiceNoteTranscriptLocator } from "@/lib/voiceNotes/voiceNoteCommits";
 import { voiceNoteAudioKvKey, VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
@@ -266,15 +265,9 @@ export function ShareRecordingSheet(props: { tcw: TinyCloudWeb; recording: Share
   );
 }
 
-/**
- * The Share button on a recording's detail (mock: the page header's share icon). Behind Settings → "Show hidden
- * features" until sharing is turned on; a recording already shared keeps it, so Stop sharing stays reachable.
- */
+/** The Share button on a recording's detail (mock: the page header's share icon). */
 export function ShareRecordingButton(props: { tcw: TinyCloudWeb; recording: ShareableRecording }) {
   const [open, setOpen] = useState(false);
-  const showHidden = useShowHiddenFeatures();
-  const shared = useRecordingShared(props.recording.item.id);
-  if (!showHidden && !shared) return null;
   if (!props.recording.hasTranscript && shareAudioBase(props.recording) === null) return null;
   return (
     <>
