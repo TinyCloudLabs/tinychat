@@ -7,6 +7,7 @@ import { installDom } from "@/test/dom";
 import { AppLine } from "./AskCards";
 import { ASK_STRINGS, SECRET_STRINGS, secretDate } from "./askStrings";
 import type { SecretRequest } from "./botsApi";
+import { MAIN_BOT_NAME } from "./botsStrings";
 import { isSavedSignal, SAVED_SIGNAL, SecretCards, SECRETS_ORIGIN } from "./SecretCard";
 import type { Asks } from "./useAsks";
 
@@ -101,9 +102,9 @@ test("a pending request in Main's chat is the card in the design's words, with b
   for (const line of [
     SECRET_STRINGS.title, "“To summarise your notes with your own OpenAI account.”", "Only with: OpenAI (api.openai.com)", "Asked 2 minutes ago",
     SECRET_STRINGS.outside, SECRET_STRINGS.addTitle, SECRET_STRINGS.addHelp, SECRET_STRINGS.approveTitle, SECRET_STRINGS.approveHelp,
-    "Main can use it only with OpenAI and can’t see or show its value.", SECRET_STRINGS.decline, SECRET_STRINGS.message, ASK_STRINGS.stop,
+    `${MAIN_BOT_NAME} can use it only with OpenAI and can’t see or show its value.`, SECRET_STRINGS.decline, SECRET_STRINGS.message, ASK_STRINGS.stop,
   ]) expect(text(host)).toContain(line);
-  expect(SECRET_STRINGS.title).toBe("Main is asking to use a secret");
+  expect(SECRET_STRINGS.title).toBe(`${MAIN_BOT_NAME} is asking to use a secret`);
   // Approving comes after the secret is in TinyCloud Secrets.
   expect(button(host, SECRET_STRINGS.approveButton).disabled).toBe(true);
 });
@@ -113,14 +114,14 @@ test("an unknown secret names its sites: on the card as a list, in sentences joi
   const unknown = request({ name: "ACME_TOKEN", service: undefined, sites: ["api.acme.test", "eu.acme.test", "us.acme.test"] });
   const host = await render(<SecretCards asks={asksWith({ secrets: [unknown] })} chat />);
   expect(text(host)).toContain("Only with: api.acme.test, eu.acme.test, us.acme.test");
-  expect(text(host)).toContain("Main can use it only with api.acme.test, eu.acme.test and us.acme.test and can’t see or show its value.");
+  expect(text(host)).toContain(`${MAIN_BOT_NAME} can use it only with api.acme.test, eu.acme.test and us.acme.test and can’t see or show its value.`);
 });
 
 test("a secret Main may also write with says so; one it can only read with does not", async () => {
   setSecretsAvailableForTests(true);
   const host = await render(<SecretCards asks={asksWith({ secrets: [request({ writes: ["POST"] }), request({ id: "s2", name: "GITHUB_TOKEN", service: "GitHub PAT", sites: ["api.github.com"] })] })} chat />);
   expect([...host.querySelectorAll("[data-secret-writes]")].map((line) => line.textContent)).toEqual([
-    "Main can also send data to OpenAI with it, which may cost money or change things there.",
+    `${MAIN_BOT_NAME} can also send data to OpenAI with it, which may cost money or change things there.`,
   ]);
 });
 
@@ -233,11 +234,11 @@ test("an approved request says until when, and stopping it asks first", async ()
   const asks = asksWith({ secrets: [request({ state: "approved", until: UNTIL, approveUrl: undefined })] });
   const host = await render(<SecretCards asks={asks} />);
   const until = secretDate(UNTIL);
-  expect(host.querySelector("[data-secret-approved]")!.textContent).toBe(`✓ Main can use OPENAI_API_KEY with OpenAI until ${until}.`);
+  expect(host.querySelector("[data-secret-approved]")!.textContent).toBe(`✓ ${MAIN_BOT_NAME} can use OPENAI_API_KEY with OpenAI until ${until}.`);
   expect(text(host)).toContain(SECRET_STRINGS.approvedHelp);
   await click(button(host, SECRET_STRINGS.stopNow));
-  expect(text(host)).toContain("Stop Main using OPENAI_API_KEY now?");
-  expect(text(host)).toContain("Main can’t use it after this. It stays in your TinyCloud Secrets.");
+  expect(text(host)).toContain(`Stop ${MAIN_BOT_NAME} using OPENAI_API_KEY?`);
+  expect(text(host)).toContain(`${MAIN_BOT_NAME} can’t use it after this. It stays in your TinyCloud Secrets.`);
   await click(button(host, SECRET_STRINGS.cancel));
   expect(asks.decisions).toEqual([]);
   await click(button(host, SECRET_STRINGS.stopNow));
@@ -247,11 +248,11 @@ test("an approved request says until when, and stopping it asks first", async ()
 
 test("each resolved state has its words and a Close that closes the card for good", async () => {
   const cases: [Partial<SecretRequest>, string[]][] = [
-    [{ state: "revoked" }, ["Stopped. Main can’t use OPENAI_API_KEY any more."]],
+    [{ state: "revoked" }, [`Stopped. ${MAIN_BOT_NAME} can’t use OPENAI_API_KEY.`]],
     [{ state: "declined" }, ["You declined. Nothing was shared.", "OPENAI_API_KEY · only with OpenAI"]],
     [{ state: "expired" }, ["This request expired. Nothing was shared.", "OPENAI_API_KEY · only with OpenAI"]],
-    [{ state: "ended", until: UNTIL }, [`Main’s access to OPENAI_API_KEY ended on ${secretDate(UNTIL)}.`, "If Main needs it again, you’ll see a new request."]],
-    [{ state: "failed" }, ["Something went wrong, so Main can’t use OPENAI_API_KEY yet. Nothing was shared.", SECRET_STRINGS.tryAgain]],
+    [{ state: "ended", until: UNTIL }, [`${MAIN_BOT_NAME}’s access to OPENAI_API_KEY ended on ${secretDate(UNTIL)}.`, `If ${MAIN_BOT_NAME} needs it later, you’ll see a new request.`]],
+    [{ state: "failed" }, [`Something went wrong, so ${MAIN_BOT_NAME} can’t use OPENAI_API_KEY yet. Nothing was shared.`, SECRET_STRINGS.tryAgain]],
   ];
   for (const [over, lines] of cases) {
     const asks = asksWith({ secrets: [request(over)] });
@@ -276,7 +277,7 @@ test("Try again asks the service to retry a failed request", async () => {
 test("in Main's chat an expired or ended request adds its line for the owner", async () => {
   const host = await render(<SecretCards asks={asksWith({ secrets: [request({ state: "expired" }), request({ id: "s2", state: "ended", until: UNTIL })] })} chat />);
   expect([...host.querySelectorAll("[data-app-line]")].map((line) => line.textContent)).toEqual([
-    "Main’s request for OPENAI_API_KEY expired.", "Main’s access to OPENAI_API_KEY ended.",
+    `${MAIN_BOT_NAME}’s request for OPENAI_API_KEY expired.`, `${MAIN_BOT_NAME}’s access to OPENAI_API_KEY ended.`,
   ]);
 });
 
@@ -285,7 +286,7 @@ test("in Feed a pending request is a Needs you row that opens in place; Open cha
   let opened = 0;
   const host = await render(<SecretCards asks={asksWith({ secrets: [request()] })} onMessage={() => { opened++; }} />);
   const row = host.querySelector("[data-secret-row]")!;
-  expect(row.textContent).toBe("Needs youMain is asking to use OPENAI_API_KEYOnly with OpenAI · asked 2 minutes ago · Open chat");
+  expect(row.textContent).toBe(`Needs you${MAIN_BOT_NAME} is asking to use OPENAI_API_KEYOnly with OpenAI · asked 2 minutes ago · Open chat`);
   await click(button(host, SECRET_STRINGS.openChat));
   expect(opened).toBe(1);
   await click(row.querySelector("button[aria-expanded]") as HTMLButtonElement);
@@ -304,10 +305,10 @@ test("chat lines for secret decisions name the secret; a decline just made is on
     <AppLine decision="stopped" live={false} />
   </>);
   expect([...host.querySelectorAll("[data-app-line]")].map((line) => line.textContent)).toEqual([
-    `You let Main use OPENAI_API_KEY with OpenAI until ${secretDate(UNTIL)}.`,
-    "You stopped Main using OPENAI_API_KEY.",
-    "You declined Main’s request for OPENAI_API_KEY.",
-    "You turned off questions and requests from Main, so its open questions and secret requests were closed.",
+    `You let ${MAIN_BOT_NAME} use OPENAI_API_KEY with OpenAI until ${secretDate(UNTIL)}.`,
+    `You stopped ${MAIN_BOT_NAME} using OPENAI_API_KEY.`,
+    `You declined ${MAIN_BOT_NAME}’s request for OPENAI_API_KEY.`,
+    `You turned off questions and requests from ${MAIN_BOT_NAME}, so its open questions and secret requests were closed.`,
   ]);
 });
 

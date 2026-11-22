@@ -25,7 +25,7 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 1280, height: 900 
         const pageErrors: string[] = [];
         page.on("pageerror", error => pageErrors.push(error.message));
         await page.goto(server.url.origin);
-        const composer = page.getByRole("textbox", { name: "Message Main" });
+        const composer = page.getByRole("textbox", { name: "Message TrustBot" });
         await composer.fill("keep my draft");
         await sheetTrapsFocus(page);
         await page.evaluate(() => { void (window as unknown as { tc2835: { request(): Promise<void> } }).tc2835.request(); });

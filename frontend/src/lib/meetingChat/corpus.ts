@@ -389,12 +389,24 @@ export function mergeMeetingCorpus(discoveries: MeetingCorpusDiscoveries): Meeti
  * another: all three use the same browser-side storage/session resources, and
  * discovery must not introduce concurrent storage work before selection.
  */
+export interface FirefliesKvGate {
+  /** Whether server-imported Fireflies KV discovery and reads are enabled for this session. */
+  enabled: boolean;
+  /** Purge-ledger check keyed by deterministic sourceId and node-supplied KV lastModified header. */
+  isFirefliesPurged?: (meetingId: string, writtenAt?: string) => Promise<boolean> | boolean;
+}
+
+export interface DiscoverMeetingCorpusOptions {
+  firefliesKv?: FirefliesKvGate;
+}
+
 export async function discoverMeetingCorpus(
   tcw: Pick<TinyCloudWeb, "kv" | "sql">,
   meetings: Pick<ConnectorMeetingsClient, "list">,
   source: string = DEFAULT_MEETINGS_SOURCE,
   signal?: AbortSignal,
   selected?: MeetingRef | null,
+  options?: DiscoverMeetingCorpusOptions,
 ): Promise<MeetingCorpus> {
   const sql = await discoverSqlMeetings(tcw, signal);
   // Known limit: if the combined row is past SQL_DISCOVERY_MAX_MEETINGS it is not in the SQL lane, so its
@@ -419,7 +431,7 @@ export async function discoverMeetingCorpus(
   const kvDiscoveries: KvMeetingDiscovery[] = [];
   for (const kvSource of sources) {
     if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
-    kvDiscoveries.push(await discoverKvMeetings(tcw, kvSource, signal));
+    kvDiscoveries.push(await discoverKvMeetings(tcw, kvSource, signal, options));
   }
   const kv: KvMeetingDiscovery = {
     candidates: kvDiscoveries.flatMap((discovery) => discovery.candidates).filter(notMember),
@@ -457,7 +469,10 @@ function combineKvLanes(lanes: readonly MeetingLaneHealth[]): MeetingLaneHealth 
   const failed = lanes.find((lane) => lane.state === "failed");
   if (failed) return failed;
   const partial = lanes.reduce((total, lane) => total + (lane.state === "partial" ? lane.malformedRows : 0), 0);
-  return partial > 0 ? { state: "partial", malformedRows: partial } : { state: "healthy" };
+  const truncated = lanes.some((lane) => lane.state === "partial" && lane.truncated === true);
+  return partial > 0 || truncated
+    ? { state: "partial", malformedRows: partial, ...(truncated ? { truncated: true } : {}) }
+    : { state: "healthy" };
 }
 
 function opaqueKvCandidate(source: string, sourceId: string): MeetingCandidate {
@@ -499,7 +514,7 @@ async function listKvKeys(
   tcw: Pick<TinyCloudWeb, "kv">,
   path: string,
   signal?: AbortSignal,
-): Promise<{ ok: true; keys: string[]; malformed: number } | { ok: false; lane: MeetingLaneHealth }> {
+): Promise<{ ok: true; keys: string[]; malformed: number; truncated: boolean } | { ok: false; lane: MeetingLaneHealth }> {
   const keys: string[] = [];
   let malformed = 0;
   let cursor: string | undefined;
@@ -522,8 +537,11 @@ async function listKvKeys(
       else keys.push(key);
     }
 
-    const nextCursor = (page.data as { cursor?: unknown }).cursor;
-    if (nextCursor === undefined || nextCursor === null) return { ok: true, keys, malformed };
+    const pageData = page.data as { keys: unknown[]; nextCursor?: unknown; cursor?: unknown; truncated?: unknown };
+    const nextCursor = pageData.nextCursor ?? pageData.cursor;
+    if (nextCursor === undefined || nextCursor === null) {
+      return { ok: true, keys, malformed, truncated: pageData.truncated === true };
+    }
     if (typeof nextCursor !== "string" || nextCursor.length === 0 || seenCursors.has(nextCursor)) {
       return { ok: false, lane: { state: "failed", reason: "malformed-response" } };
     }
@@ -574,7 +592,15 @@ export async function discoverKvMeetings(
   tcw: Pick<TinyCloudWeb, "kv">,
   source: string = DEFAULT_MEETINGS_SOURCE,
   signal?: AbortSignal,
+  options?: DiscoverMeetingCorpusOptions,
 ): Promise<KvMeetingDiscovery> {
+  if (
+    source === DEFAULT_MEETINGS_SOURCE &&
+    options?.firefliesKv !== undefined &&
+    (!options.firefliesKv.enabled || !options.firefliesKv.isFirefliesPurged)
+  ) {
+    return { candidates: [], lane: { state: "healthy" } };
+  }
   const meetingPrefix = `${CONNECTORS_KV_PREFIX}/${source}/meeting/`;
   const transcriptPrefix = `${CONNECTORS_KV_PREFIX}/${source}/transcript/`;
   const meetings = await listKvKeys(tcw, meetingPrefix, signal);
@@ -585,6 +611,7 @@ export async function discoverKvMeetings(
 
   const candidates = new Map<string, MeetingCandidate>();
   let malformedRows = meetings.malformed + transcripts.malformed;
+  const truncated = meetings.truncated || transcripts.truncated;
   malformedRows += collectKvIdentities(meetings.keys, meetingPrefix, source, "record", candidates);
   malformedRows += collectKvIdentities(transcripts.keys, transcriptPrefix, source, "transcript", candidates);
 
@@ -592,7 +619,9 @@ export async function discoverKvMeetings(
     candidates: [...candidates.values()].sort((a, b) => (
       a.source.localeCompare(b.source) || a.sourceId.localeCompare(b.sourceId)
     )),
-    lane: malformedRows === 0 ? { state: "healthy" } : { state: "partial", malformedRows },
+    lane: malformedRows === 0 && !truncated
+      ? { state: "healthy" }
+      : { state: "partial", malformedRows, ...(truncated ? { truncated: true } : {}) },
   };
 }
 

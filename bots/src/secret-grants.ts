@@ -20,7 +20,7 @@ import { parseSiweMessage } from "viem/siwe";
 import { MAX_GRANT_MS, MAX_WHY_CHARS, type SecretPush } from "./asks";
 import type { GuardDeps } from "./fetch-guard";
 import { isRecord } from "./guards";
-import { OWNER_DID } from "./owner";
+import { MAIN_BOT_NAME, OWNER_DID } from "./owner";
 import { type ApprovedSecret, DAILY_CALLS_PER_SECRET, DAILY_REPLY_BYTES_PER_SECRET, prepareCall, refusal, secretName, sendCall } from "./secret-call";
 import { allowedMethods, knownSecret, type Method, READ_METHODS, SECRET_NAME, secretSites, writeMethods } from "./secret-catalog";
 import type { GrantStore } from "./secret-store";
@@ -41,6 +41,8 @@ export const LINK_MS = 24 * 3600 * 1000;
 /** OpenKey keeps an approved result this long (APPROVAL_RESULT_RETENTION_SECONDS=600 in its production compose). */
 const RESULT_RETENTION_MS = 600_000;
 const SKEW_MS = 60_000;
+/** How far a grant's length may run past the lifetime asked for. */
+const LENGTH_SLACK_MS = 120_000;
 const HEADER = /^[a-z0-9-]{1,64}$/;
 
 export type GrantState = "pending" | "approved" | "declined" | "expired" | "failed" | "ended";
@@ -194,8 +196,9 @@ export async function verifiedGrant(checked: CheckedApprovalResult, expected: { 
   const issued = siwe.issuedAt?.getTime();
   const expires = siwe.expirationTime?.getTime();
   if (issued === undefined || expires === undefined || new Date(expires).toISOString() !== checked.delegationExpiresAt) throw new Error("the grant's expiry doesn't match");
-  // No slack on the length: one hour is the rule, and an hour and a second is over it.
-  if (expires - issued > expected.maxSeconds * 1000 || expires <= expected.now) throw new Error("the grant is longer than asked or already over");
+  // The length is one hour plus a little: OpenKey signs the issue time when the request is prepared and the expiry when
+  // the approval page renders, so a real hour-long grant came back 6.9 s over. Only the length gets this slack.
+  if (expires - issued > expected.maxSeconds * 1000 + LENGTH_SLACK_MS || expires <= expected.now) throw new Error("the grant is longer than asked or already over");
 
   // Every resource it grants, and the space it opens, must be the owner's own.
   const space = `tinycloud:pkh:eip155:1:${address}:`;
@@ -282,7 +285,7 @@ export class SecretGrants {
     const where = service ? `${service} (${ask.sites.join(", ")})` : ask.sites.join(", ");
     const methods = [...allowedMethods(ask.name)];
     // Monica's words, the same as the secret card's, so the owner sees writes in both places they decide.
-    const writes = service && writeMethods(ask.name).length > 0 ? ` Main can also send data to ${service} with it, which may cost money or change things there.` : "";
+    const writes = service && writeMethods(ask.name).length > 0 ? ` ${MAIN_BOT_NAME} can also send data to ${service} with it, which may cost money or change things there.` : "";
     const request: OpenKeyApprovalRequestV1 = {
       issuer: requester.did,
       requestVersion: 1,

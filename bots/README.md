@@ -4,6 +4,9 @@ Tiny bots, slice 1 (TC-2808): each owner's Main bot is an OMP agent in its own g
 backend calls this service; browsers never do. The interface is piece 1 of
 [`docs/plans/tiny-bots-slice1.md`](../docs/plans/tiny-bots-slice1.md).
 
+The owner sees the Main bot as TrustBot, a default name the owner can change (TC-3790). Its key stays `main` in code,
+addresses, storage and history.
+
 The service runs as its own Phala CVM with three containers (`docker-compose.phala.yml`), all from one image
 except the ingress:
 
@@ -74,7 +77,9 @@ Every event is encoded by the supervisor from checked fields; OMP output never p
    `127.0.0.1:8080` to the egress socket and execs `omp --mode rpc --no-ui --system-prompt <file>`; the sandbox's stdio
    is the RPC channel. The file is Main's or the sibling prompt (`sandbox/prompts/main.md`, `sibling.md`, copied to
    `/opt/tinycloud/prompts`); the sibling prompt is also the image's `/root/.omp/agent/SYSTEM.md`, which OMP reads if
-   the file is missing.
+   the file is missing. Where the prompt says `{{botName}}`, `bot-start.sh` puts the name the owner sees (`BOT_NAME`,
+   from the backend's signed `botName` on the latest turn; default TrustBot) into a copy under `/tmp` and gives OMP
+   that copy. The name only words the prompt: what a bot may do follows from its key, never its name.
 3. The supervisor waits for OMP's `ready`, sets the event filter (assistant deltas only), opens the session in
    `/root/bot/sessions/main`, sends the `prompt`, and maps `message_update` text deltas to `delta` and
    `prompt_result` to `done` / `error`. A prompt the owner did not write (one bot messaging another) starts with the
@@ -169,9 +174,9 @@ OMP also probes `GET /models` and `GET /props` without a token at startup; the g
 Main can use the web only when its owner turns it on: in Main's chat, tap Web access and choose `off` (the default),
 `listed` (only the owner's sites, subdomains included) or `any` public site. Turning it on shows this warning first:
 
-> A web page can hide instructions meant for an AI. Main might follow them and put things you've told it into a search or a web address. Searches go to our search provider, Tavily. Our server fetches pages, so the sites see our server, not you. Don't open or paste links Main gives you unless you trust them.
+> A web page can hide instructions meant for an AI. TrustBot might follow them and put things you've told it into a search or a web address. Searches go to our search provider, Tavily. Our server fetches pages, so the sites see our server, not you. Don't open or paste links TrustBot gives you unless you trust them.
 >
-> This setting lets Main open pages you've never seen, and any of them could try this. "Only sites you list" is safer, but anyone who can post on those sites could still try it.
+> This setting lets TrustBot open pages you've never seen, and any of them could try this. "Only sites you list" is safer, but anyone who can post on those sites could still try it.
 
 The setting is saved by the supervisor in `/data/bots/<bot id>/web.json` and given to the gateway before each message;
 the gateway applies it on every call. A missing or unreadable file reads as `off`.
@@ -281,7 +286,7 @@ call and returns the reply with the value hidden.
   (`src/secret-routes.ts`). The gateway makes a fresh Ed25519 key for that request alone. It signs an OpenKey one-tap
   approval request for `tinycloud.kv/get` on `vault/secrets/<NAME>` plus `tinycloud.encryption/decrypt` on the owner's
   default network. The longest grant it allows is 1 hour (`MAX_GRANT_SECONDS`, from `MAX_GRANT_MS` in `asks.ts`; standing
-  access is a separate design), and a longer delegation is refused with no slack. The same key is both issuer and audience, because share-envelope 1.6.0 requires it. TC-3772
+  access is a separate design), and a delegation more than 120 s longer than that is refused (OpenKey signs a real one-hour grant a few seconds over). The same key is both issuer and audience, because share-envelope 1.6.0 requires it. TC-3772
   will let a stable TinyCloud One key sign instead (`SecretGrantDeps.requester`). The owner the supervisor names must
   be this bot's owner (409 otherwise). A known service's site and header must match `src/secret-catalog.ts`.
 - **Collection.** The gateway collects the result itself every 5 s. Before keeping a grant it checks:

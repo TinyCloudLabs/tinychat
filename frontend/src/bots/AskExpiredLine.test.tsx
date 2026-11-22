@@ -3,7 +3,7 @@ import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 
 import { installDom } from "@/test/dom";
-import { ASK_MAIN } from "./askStrings";
+import { MAIN_BOT_NAME } from "./botsStrings";
 import type { AskRequest, BotsApi, SendOptions } from "./botsApi";
 import { AskCards } from "./AskCards";
 import type { Asks } from "./useAsks";
@@ -29,7 +29,7 @@ afterEach(() => {
   restore = undefined;
 });
 
-const EXPIRED_LINE = "Main’s question expired without an answer.";
+const EXPIRED_LINE = "TrustBot’s question expired without an answer.";
 const flush = async () => { await act(async () => { for (let i = 0; i < 12; i++) await Promise.resolve(); }); };
 
 const pending = (over: Partial<AskRequest> = {}): AskRequest => ({
@@ -50,8 +50,8 @@ const asksWith = (outcomes: Asks["outcomes"]): Asks => ({
 });
 
 test("the line is exactly Monica's words with the curly apostrophe and the Main constant", () => {
-  expect(ASK_MAIN).toBe("Main");
-  expect(EXPIRED_LINE).toBe(`${ASK_MAIN}’s question expired without an answer.`);
+  expect(MAIN_BOT_NAME).toBe("TrustBot");
+  expect(EXPIRED_LINE).toBe(`${MAIN_BOT_NAME}’s question expired without an answer.`);
 });
 
 test("an expired question shows the card text and, once, the app-originated line; a declined one shows no expired line", async () => {
@@ -99,20 +99,20 @@ test("a question that expires under the owner in Main's chat gets the line once,
   mounted = createRoot(host);
   await act(async () => mounted!.render(<HomeAskBox api={api} />));
   await flush();
-  await act(async () => { document.querySelector<HTMLButtonElement>('button[aria-label="Open Main\'s chat"]')!.click(); });
+  await act(async () => { document.querySelector<HTMLButtonElement>('button[aria-label="Open TrustBot\'s chat"]')!.click(); });
   await flush();
   expect(document.querySelectorAll("[data-ask-card]")).toHaveLength(1);
   expect(document.querySelector("[data-app-line]")).toBeNull();
 
   requests = [pending({ state: "expired", question: undefined, resolvedAt: new Date().toISOString() })];
   // A turn ending is one of the triggers for reading the requests again: send a message.
-  const box = document.querySelector<HTMLTextAreaElement>('[data-bots-main-chat] textarea[placeholder="Message Main"]')!;
+  const box = document.querySelector<HTMLTextAreaElement>('[data-bots-main-chat] textarea[placeholder="Message TrustBot"]')!;
   await act(async () => {
     box.focus();
     Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")!.set!.call(box, "hi");
     box.dispatchEvent(new KeyboardEvent("keyup", { key: "a", bubbles: true }));
   });
-  await act(async () => { document.querySelector<HTMLButtonElement>('[data-bots-main-chat] button[aria-label="Send to Main"]')!.click(); });
+  await act(async () => { document.querySelector<HTMLButtonElement>('[data-bots-main-chat] button[aria-label="Send to TrustBot"]')!.click(); });
   await flush();
   const chat = document.querySelector("[data-bots-main-chat]")!;
   expect(document.querySelectorAll("[data-ask-card]")).toHaveLength(0);
@@ -122,7 +122,7 @@ test("a question that expires under the owner in Main's chat gets the line once,
   // Reading the requests again does not add the line a second time.
   const before = listed;
   await act(async () => { box.focus(); Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")!.set!.call(box, "again"); box.dispatchEvent(new KeyboardEvent("keyup", { key: "a", bubbles: true })); });
-  await act(async () => { document.querySelector<HTMLButtonElement>('[data-bots-main-chat] button[aria-label="Send to Main"]')!.click(); });
+  await act(async () => { document.querySelector<HTMLButtonElement>('[data-bots-main-chat] button[aria-label="Send to TrustBot"]')!.click(); });
   await flush();
   expect(listed).toBeGreaterThan(before);
   expect(chat.querySelectorAll('[data-app-line="expired"]')).toHaveLength(1);

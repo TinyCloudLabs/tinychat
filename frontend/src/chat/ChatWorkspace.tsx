@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { AssistantRuntimeProvider } from "@assistant-ui/react";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import type { SessionStore } from "@tinyboilerplate/client";
@@ -19,6 +19,12 @@ import {
 } from "../lib/billingApi";
 import { useSizeClass } from "@/lib/sizeClass";
 import { createConnectorMeetingsClient } from "../lib/connectors/meetingsApi";
+import { createConnectorWebhooksClient } from "../lib/connectors/webhooksApi";
+import {
+  fetchFirefliesServerImportCapability,
+  firefliesServerImportEnabled,
+  type FirefliesServerImportCapabilities,
+} from "../lib/connectors/firefliesServerImportFeature";
 import { createBrowserMeetingTurnRetriever } from "../lib/meetingChat/retriever";
 import { createMeetingMessageRegistry } from "./pendingHandoff";
 import type { ModelSelectionController, SelectionView } from "./modelSelection";
@@ -51,6 +57,20 @@ export function ChatWorkspace(props: {
     agentEnabledRef, activeThreadIdRef, privateAccessRef, waitForInitialProbe, onDelegationError,
   } = useAgentAccess();
   const meetingMessageRegistry = useMemo(() => createMeetingMessageRegistry(), [props.tcw]);
+  const [firefliesCapabilities, setFirefliesCapabilities] = useState<FirefliesServerImportCapabilities | null>(null);
+  useEffect(() => {
+    const controller = new AbortController();
+    void fetchFirefliesServerImportCapability(props.backendUrl, fetch, controller.signal).then((caps) => {
+      if (!controller.signal.aborted) setFirefliesCapabilities(caps);
+    });
+    return () => controller.abort();
+  }, [props.backendUrl]);
+  const firefliesKvAllowed = firefliesServerImportEnabled(undefined, firefliesCapabilities);
+  const firefliesPurgeChecker = useMemo(() => {
+    const webhooks = createConnectorWebhooksClient(props.backendUrl, { sessionStore: props.sessionStore });
+    return (meetingId: string, writtenAt?: string) => webhooks.checkPurge(meetingId, writtenAt ?? null, "fireflies");
+  }, [props.backendUrl, props.sessionStore]);
+
   // One instance per mounted workspace: its thread selection state is
   // intentionally in-memory only, survives render churn, and vanishes on a
   // workspace reload. It receives only browser-local handles and the existing
@@ -61,8 +81,12 @@ export function ChatWorkspace(props: {
       meetings: createConnectorMeetingsClient(props.backendUrl, {
         sessionStore: props.sessionStore,
       }),
+      firefliesKv: {
+        enabled: firefliesKvAllowed,
+        isFirefliesPurged: firefliesPurgeChecker,
+      },
     }),
-    [props.tcw, props.sessionStore, props.backendUrl, privateAccessRef.current],
+    [props.tcw, props.sessionStore, props.backendUrl, privateAccessRef.current, firefliesKvAllowed, firefliesPurgeChecker],
   );
 
   const deps = useMemo(

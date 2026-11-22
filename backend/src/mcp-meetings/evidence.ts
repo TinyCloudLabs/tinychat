@@ -359,7 +359,7 @@ function projectResult(operation: MeetingOperation, outcomes: MeetingOutcome[], 
   };
   const text = operation === "find" ? `Found ${discovery?.countKind === "lower_bound" ? "at least " : ""}${discovery?.matchedCount ?? outcomes.length} matching meetings; returned ${outcomes.length} metadata records. Discovery does not inspect bodies.`
     : `Retrieved ${retained.length} purpose-supported meeting outcomes from ${outcomes.length} included records. Use retained evidence citations; body and coverage outcomes describe retrieval limitations.`;
-  const kvTruncationNote = discovery?.kvTruncated ? " Server-imported meeting listing was truncated." : "";
+  const kvTruncationNote = discovery?.kvTruncated ? " Only some server-imported meetings are listed: the list reached its size limit." : "";
   return { text: text + (truncated || partial ? " Coverage is bounded; narrow the requested scope for more evidence." : "") + kvTruncationNote, data };
 }
 export type MeetingToolResult = ReturnType<typeof projectResult>;

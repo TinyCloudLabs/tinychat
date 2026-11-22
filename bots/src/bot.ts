@@ -9,7 +9,7 @@ import { type ActivityRecord, HistoryJournal, type HistoryOptions, type StagedHi
 import { isRecord } from "./guards";
 import { type BotLayout, botLayout, type LayoutRoots } from "./layout";
 import { MESSAGING_STRINGS } from "./messaging-strings";
-import { BOT_ID, botIdFor, MAIN_KEY } from "./owner";
+import { BOT_ID, botIdFor, MAIN_BOT_NAME, MAIN_KEY } from "./owner";
 import { type DeleteSkip, lastUsed, markUsed, removeWorkingState } from "./retention";
 import { type OwnerDate, ownerDateLine } from "./owner-date";
 import { type Frame, type HostToolHandler, type HostToolReply, RpcError } from "./rpc";
@@ -24,10 +24,10 @@ export const MAX_TEXT = 8000;
 
 /** Owner-visible sentences; never provider text. */
 export const ERROR_MESSAGES: Record<ErrorCode, string> = {
-  bot_unavailable: "Main isn't available. Try again later.",
-  model_unavailable: "Main's model isn't answering. Try again later.",
-  busy: "Main is still working on your last message. Send this one when it replies.",
-  at_capacity: "Main can't start right now because TinyCloud is running as many bots as it can. Your message wasn't sent. Try again shortly.",
+  bot_unavailable: `${MAIN_BOT_NAME} isn't available. Try again later.`,
+  model_unavailable: `${MAIN_BOT_NAME}'s model isn't answering. Try again later.`,
+  busy: `${MAIN_BOT_NAME} is still working on your last message. Send this one when it replies.`,
+  at_capacity: `${MAIN_BOT_NAME} can't start right now because TinyCloud is running as many bots as it can. Your message wasn't sent. Try again shortly.`,
   invalid: "Messages can be up to 8,000 characters.",
 };
 
@@ -84,7 +84,8 @@ export interface SandboxLauncher {
   hasState(layout: BotLayout): boolean;
   /** Unconfirmed sandbox or copier teardown; sandboxOnly counts just sandboxes for running slots. */
   leftover(layout: BotLayout, sandboxOnly?: boolean): boolean;
-  launch(layout: BotLayout): Promise<Sandbox>;
+  /** `botName` is the name the owner sees, for the bot's prompt only; absent, the prompt uses MAIN_BOT_NAME. */
+  launch(layout: BotLayout, botName?: string): Promise<Sandbox>;
   /** Retries cleanup for a stopped bot, including after the supervisor has restarted. */
   cleanupEgress?(layout: BotLayout): Promise<boolean>;
   /** Every mount point the supervisor sees (decoded from /proc/self/mountinfo). */
@@ -375,6 +376,8 @@ export class Bot {
   #retiring = false;
   /** Set once the backend's deletion of this bot has removed its working state. Nothing runs or writes for it again. */
   #retired = false;
+  /** The name the owner sees, as the backend last sent it; the next sandbox start puts it into the prompt. */
+  #name: string | undefined;
   /** Main's owner, once a request named them (see BotManager.forOwner): the account approval links are made for. */
   #ownerDid: string | undefined;
 
@@ -383,6 +386,11 @@ export class Bot {
     this.#launcher = launcher;
     this.#options = options;
     this.#running = running;
+  }
+
+  /** Takes the name the owner sees for the bot. Only the prompt's wording uses it; nothing is trusted by name. */
+  setName(botName: string): void {
+    this.#name = botName;
   }
 
   /** Records Main's owner. Only the DID this bot's id was made from is kept. */
@@ -884,7 +892,7 @@ export class Bot {
       const started = Date.now();
       let sandbox: Sandbox;
       try {
-        sandbox = await this.#launcher.launch(this.layout);
+        sandbox = await this.#launcher.launch(this.layout, this.#name);
       } catch (error) {
         this.#releasePlace();
         throw error;
