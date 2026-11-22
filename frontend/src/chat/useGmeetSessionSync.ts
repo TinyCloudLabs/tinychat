@@ -59,6 +59,7 @@ import {
   upsertMeeting,
   type StoreResult,
 } from "@/lib/connectors/connectorStore";
+import { isDecryptDenied, markConnectorKeyAccessPaused } from "@/lib/connectors/connectorKeyAccess";
 import {
   getConnectorKey,
   isSecretsUnlocked,
@@ -105,6 +106,8 @@ export type GmeetSessionSyncOutcome =
   /** Deferred: the vault is locked. Retriable — the latch was not burned. */
   | "vault-locked"
   | "no-refresh-token"
+  /** The token's own key needs the owner's approval: the row is paused, nothing is asked (TC-3804). */
+  | "key-access-paused"
   | "token-unavailable"
   | "aborted"
   | "synced"
@@ -359,6 +362,11 @@ async function runGmeetSessionSync(
     hooks.readRefreshToken ??
     ((t: TinyCloudWeb, d: ConnectorDescriptor) => getConnectorKey<SecretsErr>(t, d));
   const secretRes = await readSecret(tcw, descriptor);
+  if (!secretRes.ok && isDecryptDenied(secretRes.error)) {
+    breadcrumb("the refresh token's key needs the owner's approval");
+    markConnectorKeyAccessPaused(tcw, descriptor.id);
+    return "key-access-paused";
+  }
   if (!secretRes.ok || typeof secretRes.data !== "string" || secretRes.data.length === 0) {
     breadcrumb("no usable refresh token in the vault");
     return "no-refresh-token";

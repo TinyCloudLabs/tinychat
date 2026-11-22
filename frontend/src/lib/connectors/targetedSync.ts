@@ -33,6 +33,7 @@
 
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
+import { isDecryptDenied, markConnectorKeyAccessPaused } from "./connectorKeyAccess";
 import {
   FirefliesClient,
   type FirefliesResult,
@@ -108,11 +109,13 @@ export interface TargetedAckClient {
 }
 
 /**
- * Why nothing was processed. Both values are DEFINED product states the card
- * renders as an actionable "Sync queued meetings" affordance — neither is an
- * error, and neither triggers a prompt from here.
+ * Why nothing was processed. Each is a DEFINED product state, not an error,
+ * and none triggers a prompt from here. `secrets-locked` and `key-missing` the
+ * card renders as an actionable "Sync queued meetings" affordance;
+ * `key-access` (the key's own grant is missing or ended, TC-3804) pauses the
+ * connector's row until the owner approves it there.
  */
-export type TargetedIngestBlockedReason = "secrets-locked" | "key-missing";
+export type TargetedIngestBlockedReason = "secrets-locked" | "key-missing" | "key-access";
 
 export interface TargetedIngestFailure {
   meetingId: string;
@@ -195,13 +198,15 @@ function fromStore(err: StoreError, context: string): SyncError {
 /**
  * Classify a `tcw.secrets.get` failure.
  *
- * Only two shapes are a no-op: the vault is locked, or this connector has no
- * stored key (disconnected on another device, or never connected). Anything
- * else is a real failure and must surface — a secrets-service outage read as
+ * Only three shapes are a no-op: the vault is locked, this connector has no
+ * stored key (disconnected on another device, or never connected), or the
+ * key's own grant is missing or ended (the row asks the owner). Anything else
+ * is a real failure and must surface — a secrets-service outage read as
  * "no key" would quietly stop ingesting forever.
  */
 function classifySecretsError(err: unknown): TargetedIngestBlockedReason | null {
   if (err === null || typeof err !== "object") return null;
+  if (isDecryptDenied(err)) return "key-access";
   const e = err as { code?: unknown; message?: unknown };
   const code = typeof e.code === "string" ? e.code : "";
   const message = typeof e.message === "string" ? e.message : "";
@@ -282,6 +287,7 @@ export async function ingestQueuedMeetings(
   const keyRes = await secrets.getKey(tcw, descriptor);
   if (!keyRes.ok) {
     const blocked = classifySecretsError(keyRes.error);
+    if (blocked === "key-access") markConnectorKeyAccessPaused(tcw, descriptor.id);
     if (blocked) return { ok: true, data: emptyOutcome({ blocked }) };
     return {
       ok: false,

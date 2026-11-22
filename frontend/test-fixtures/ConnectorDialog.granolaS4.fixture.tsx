@@ -50,6 +50,8 @@ function fixture() {
       get: async (path: string) => ok({ data: kv.get(path), headers: {} }),
       put: async (path: string, value: unknown) => { kv.set(path, value); return ok({ data: undefined, headers: {} }); },
     },
+    session: () => ({ address: "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed", chainId: 1 }),
+    hasPermissions: () => true,
     secrets: {
       isUnlocked: true,
       put: async (name: string, value: string) => { vault.set(name, value); return ok(undefined); },

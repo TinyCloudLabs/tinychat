@@ -10,6 +10,12 @@ import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "
 import { formatRowError, runFirefliesSyncNow, runGmeetSyncNow, runGranolaSyncNow } from "@/chat/ConnectorsCard";
 import { awaitGmeetSessionSync } from "@/chat/useGmeetSessionSync";
 import {
+  askConnectorKeyAccess,
+  connectorPausedMessage,
+  isDecryptDenied,
+  type ConnectorKeyAccessResult,
+} from "@/lib/connectors/connectorKeyAccess";
+import {
   getConnectorKey,
   isSecretsUnlocked,
   unlockSecrets,
@@ -61,6 +67,8 @@ export interface SourceSyncDeps {
   isSecretsUnlocked: (tcw: TinyCloudWeb) => boolean;
   unlockSecrets: typeof unlockSecrets;
   getConnectorKey: typeof getConnectorKey;
+  /** Foreground only: asks OpenKey for the connector's own key after a denied read (TC-3804). */
+  askConnectorKeyAccess: (tcw: TinyCloudWeb, d: ConnectorDescriptor) => Promise<ConnectorKeyAccessResult>;
   isGmeetSyncInFlight: () => boolean;
   isGmeetNotesSyncInFlight: () => boolean;
   /** Resolves once the session-start run's foreground part has finished (at once when none is running). */
@@ -81,6 +89,7 @@ const DEFAULT_DEPS: SourceSyncDeps = {
   secretsAvailable,
   isSecretsUnlocked,
   unlockSecrets,
+  askConnectorKeyAccess: (tcw, d) => askConnectorKeyAccess(tcw, [d]),
   getConnectorKey,
   isGmeetSyncInFlight,
   isGmeetNotesSyncInFlight,
@@ -130,7 +139,17 @@ export async function runSourceSync(
       if (d.id === "google-meet") await deps.awaitSessionSync();
     }
     if (input.isCurrent?.() === false) return null;
-    const key = await deps.getConnectorKey<SecretsErr>(tcw, d);
+    let key = await deps.getConnectorKey<SecretsErr>(tcw, d);
+    if (!key.ok && isDecryptDenied(key.error)) {
+      // Sync now is a press: a denied key asks OpenKey once, then reads again. Background runs never ask.
+      const access = await deps.askConnectorKeyAccess(tcw, d).catch((cause: unknown) => {
+        console.error(`OpenKey approval for ${d.id} failed`, cause);
+        return "declined" as const;
+      });
+      if (input.isCurrent?.() === false) return null;
+      if (access === "granted") key = await deps.getConnectorKey<SecretsErr>(tcw, d);
+      if (!key.ok && isDecryptDenied(key.error)) return connectorPausedMessage(tcw.session()?.address ?? "", d);
+    }
     if (!key.ok) {
       if (d.id === "granola" && key.error?.code === GRANOLA_MISSING_KEY_CODE) return GRANOLA_RECONNECT_REQUIRED;
       if (key.error?.code === DECRYPTION_FAILED) return reconnectSourceMessage(d.name);

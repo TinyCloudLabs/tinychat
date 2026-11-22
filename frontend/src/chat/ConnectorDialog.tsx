@@ -75,6 +75,14 @@ import {
 } from "@/components/ui/dialog";
 import * as connectorStore from "@/lib/connectors/connectorStore";
 import {
+  APPROVE_IN_OPENKEY,
+  approveConnectorKeyAccess,
+  connectorKeyAccessPurpose,
+  connectorNotConnectedMessage,
+  hasConnectorKeyAccess,
+  readWithConnectorKeyAccess,
+} from "@/lib/connectors/connectorKeyAccess";
+import {
   deleteConnectorKey,
   getConnectorKey,
   isSecretsUnlocked,
@@ -324,6 +332,15 @@ const GranolaConnectDialog: FC<ConnectorConnectDialogProps> = ({
         }
         return;
       }
+      // The key is sealed to its own key, which needs the owner's approval in OpenKey (TC-3804).
+      if (!(await approveConnectorKeyAccess(tcw, descriptor))) {
+        if (!cancelled()) {
+          setError(connectorNotConnectedMessage(descriptor));
+          setPhase("key-entry");
+        }
+        return;
+      }
+      if (cancelled()) return;
       const saved = await saveGranolaConnection(tcw, key, () => !cancelled());
       if (cancelled()) return;
       if (!saved) {
@@ -525,6 +542,12 @@ const FirefliesConnectDialog: FC<ConnectorConnectDialogProps> = ({
         setPhase("verified");
         return;
       }
+    }
+    // The key is sealed to its own key, which needs the owner's approval in OpenKey (TC-3804).
+    if (!(await approveConnectorKeyAccess(tcw, descriptor))) {
+      setError({ kind: "storage", message: connectorNotConnectedMessage(descriptor) });
+      setPhase("verified");
+      return;
     }
     const save = await saveConnectorKey<SecretsErr>(tcw, descriptor, apiKey);
     if (!save.ok) {
@@ -896,6 +919,7 @@ type OAuthConnectPhase =
   | "wait-callback"
   | "exchange"
   | "save-token"
+  | "approve-key"
   | "initial-sync"
   | "finishing"
   | "done"
@@ -992,6 +1016,8 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
   const [notesProgress, setNotesProgress] = useState<GmeetSyncProgress | null>(null);
   const [notesSettled, setNotesSettled] = useState<GmeetNotesSettled | null>(null);
   const [canRetrySync, setCanRetrySync] = useState(false);
+  /** The owner didn't approve the Google Meet key in OpenKey; the tokens wait in the refs for another try. */
+  const [keyAccessRefused, setKeyAccessRefused] = useState(false);
   const [autoTranscription, setAutoTranscription] = useState<AutoTranscriptionState>({
     status: "idle",
   });
@@ -1047,6 +1073,7 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
     setNotesProgress(null);
     setNotesSettled(null);
     setCanRetrySync(false);
+    setKeyAccessRefused(false);
     setAutoTranscription({ status: "idle" });
     setMeetingCode("");
     stateRef.current = null;
@@ -1241,24 +1268,12 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
     void runInitialSync(accessToken, refreshToken);
   }, [canRetrySync, runInitialSync]);
 
-  /** save-token → initial-sync. Reached only with both tokens in hand. */
-  const saveAndSync = useCallback(
-    async (accessToken: string, refreshToken: string) => {
+  /** Writes the token, then runs the initial sync. Needs the owner's approval for its key (TC-3804). */
+  const storeAndSync = useCallback(
+    async (accessToken: string, storedRefreshToken: string) => {
       setPhase("save-token");
-      if (!isSecretsUnlocked(tcw)) {
-        const unlock = await unlockSecrets<SecretsErr>(tcw);
-        if (!unlock.ok) {
-          failWith({
-            kind: "storage",
-            message: unlock.error?.message ?? "Could not unlock secrets",
-          });
-          return;
-        }
-      }
       // The registry row names the secret; this file never spells it. That is
       // what lets the flip commit change WHAT is stored without touching here.
-      const storedRefreshToken = desktopRedirectUriRef.current
-        ? encodeDesktopRefreshToken(refreshToken) : refreshToken;
       const save = await saveConnectorKey<SecretsErr>(tcw, descriptor, storedRefreshToken);
       if (!save.ok) {
         failWith({
@@ -1273,6 +1288,50 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
     },
     [descriptor, failWith, runInitialSync, tcw],
   );
+
+  /**
+   * save-token → initial-sync. Reached only with both tokens in hand. Without the owner's approval for the
+   * token's own key, the dialog stops at "Approve in OpenKey": `handleAuthorize` must open Google's window
+   * synchronously, so OpenKey can't be asked before it, and only a click may open OpenKey here.
+   */
+  const saveAndSync = useCallback(
+    async (accessToken: string, refreshToken: string) => {
+      setPhase("save-token");
+      if (!isSecretsUnlocked(tcw)) {
+        const unlock = await unlockSecrets<SecretsErr>(tcw);
+        if (!unlock.ok) {
+          failWith({
+            kind: "storage",
+            message: unlock.error?.message ?? "Could not unlock secrets",
+          });
+          return;
+        }
+      }
+      const storedRefreshToken = desktopRedirectUriRef.current
+        ? encodeDesktopRefreshToken(refreshToken) : refreshToken;
+      if (!hasConnectorKeyAccess(tcw, [descriptor])) {
+        setKeyAccessRefused(false);
+        setPhase("approve-key");
+        return;
+      }
+      await storeAndSync(accessToken, storedRefreshToken);
+    },
+    [descriptor, failWith, storeAndSync, tcw],
+  );
+
+  /** "Approve in OpenKey": asks for the token's key, then saves. A refusal keeps the tokens for another click. */
+  const handleApproveKey = useCallback(async () => {
+    const accessToken = accessTokenRef.current;
+    const storedRefreshToken = refreshTokenRef.current;
+    if (accessToken === null || storedRefreshToken === null) return;
+    setPhase("save-token");
+    if (!(await approveConnectorKeyAccess(tcw, descriptor))) {
+      setKeyAccessRefused(true);
+      setPhase("approve-key");
+      return;
+    }
+    await storeAndSync(accessToken, storedRefreshToken);
+  }, [descriptor, storeAndSync, tcw]);
 
   /**
    * Calendar autojoin's finish. The server already holds the Calendar-only credential, so this
@@ -1709,6 +1768,11 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
         {phase === "save-token" && (
           <OAuthStepPanel label="Saving your Google connection to encrypted secrets…" />
         )}
+        {phase === "approve-key" && (
+          <p className={keyAccessRefused ? "text-sm text-destructive" : "text-sm text-muted-foreground"} role={keyAccessRefused ? "alert" : undefined}>
+            {keyAccessRefused ? connectorNotConnectedMessage(descriptor) : connectorKeyAccessPurpose(descriptor)}
+          </p>
+        )}
         {(phase === "initial-sync" || phase === "finishing") && (
           <GmeetSyncingPanel
             progress={progress}
@@ -1747,6 +1811,7 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
           onClose={handleClose}
           onStopSync={handleStopSync}
           onRetrySync={canRetrySync ? handleRetrySync : undefined}
+          onApproveKey={() => void handleApproveKey()}
         />
       </DialogContent>
     </Dialog>
@@ -2129,7 +2194,8 @@ const OAuthConnectFooter: FC<{
   onClose: () => void;
   onStopSync: () => void;
   onRetrySync?: () => void;
-}> = ({ phase, canAuthorize, onAuthorize, onSameTabAuthorize, onCancelAuthorize, onClose, onStopSync, onRetrySync }) => (
+  onApproveKey: () => void;
+}> = ({ phase, canAuthorize, onAuthorize, onSameTabAuthorize, onCancelAuthorize, onClose, onStopSync, onRetrySync, onApproveKey }) => (
   <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
     {phase === "authorize" && !canAuthorize && (
       <Button size="sm" onClick={onClose}>
@@ -2152,6 +2218,16 @@ const OAuthConnectFooter: FC<{
       <Button variant="outline" size="sm" onClick={onCancelAuthorize}>
         Cancel
       </Button>
+    )}
+    {phase === "approve-key" && (
+      <>
+        <Button variant="outline" size="sm" onClick={onClose}>
+          Cancel
+        </Button>
+        <Button size="sm" onClick={onApproveKey}>
+          {APPROVE_IN_OPENKEY}
+        </Button>
+      </>
     )}
     {(phase === "exchange" || phase === "save-token") && (
       <Button variant="outline" size="sm" disabled className="gap-1.5">
@@ -2600,7 +2676,8 @@ export async function revokeGoogleUpstream(input: {
     if (!unlock.ok) localFailure = { status: "locked", message: unlock.error?.message ?? "unlock was not completed" };
   }
   if (!localFailure) {
-    const stored = await getConnectorKey<SecretsErr>(tcw, descriptor);
+    // A foreground read: a denied key asks OpenKey once, then reads again (TC-3804).
+    const stored = await readWithConnectorKeyAccess(tcw, descriptor, () => getConnectorKey<SecretsErr>(tcw, descriptor));
     if (stored.ok && typeof stored.data === "string" && stored.data.length > 0) browserToken = stored.data;
     else localFailure = { status: "no-token" };
   }

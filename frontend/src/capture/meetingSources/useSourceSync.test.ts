@@ -32,6 +32,7 @@ function deps(patch: Partial<SourceSyncDeps> = {}): SourceSyncDeps {
     isSecretsUnlocked: () => true,
     unlockSecrets: (async () => ({ ok: true, data: undefined })) as SourceSyncDeps["unlockSecrets"],
     getConnectorKey: (async () => ({ ok: true, data: "key" })) as SourceSyncDeps["getConnectorKey"],
+    askConnectorKeyAccess: (async () => "granted") as SourceSyncDeps["askConnectorKeyAccess"],
     isGmeetSyncInFlight: () => false,
     isGmeetNotesSyncInFlight: () => false,
     awaitSessionSync: async () => {},
