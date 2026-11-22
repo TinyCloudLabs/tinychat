@@ -17,7 +17,7 @@ import type { ApprovalRequesterState, CheckedApprovalResult, CreatedLink, Ed2551
 import * as approvalLinks from "@tinycloud/share-envelope/links";
 import { getAddress, verifyMessage } from "viem";
 import { parseSiweMessage } from "viem/siwe";
-import { MAX_WHY_CHARS, type SecretPush } from "./asks";
+import { MAX_GRANT_MS, MAX_WHY_CHARS, type SecretPush } from "./asks";
 import type { GuardDeps } from "./fetch-guard";
 import { isRecord } from "./guards";
 import { OWNER_DID } from "./owner";
@@ -30,9 +30,10 @@ import { toolText } from "./web";
 /**
  * Longest grant the gateway asks for. One delegation can read the secret for this long, and today the decrypt half
  * covers the owner's whole default network, so it is kept short until TC-3284 (per-secret keys) lands (Naomi's
- * ruling, 22 Nov). The owner can pick less; never more.
+ * ruling, 22 Nov). The owner can pick less; never more. The same number the supervisor's store and the secret card
+ * use (asks.ts), so the 7 days are written once.
  */
-export const MAX_GRANT_SECONDS = 7 * 24 * 3600;
+export const MAX_GRANT_SECONDS = MAX_GRANT_MS / 1000;
 /** What the approval screen offers first. */
 export const SUGGESTED_GRANT_SECONDS = 3600;
 /** How long the owner has to open the link. */
