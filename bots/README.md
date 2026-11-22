@@ -527,8 +527,9 @@ The operator points `BOTS_INGRESS_DOMAIN` at the CVM with a DNS CNAME to its Pha
 in the job summary).
 
 The backend picks up `BOTS_ENABLED`, `BOTS_TEST_ACCOUNTS`, `BOTS_SERVICE_URL=https://<BOTS_INGRESS_DOMAIN>` and
-`BOTS_POST_TIMEOUT_MS` from `production-api` variables and `BOTS_SERVICE_SECRET` from a `production-api` secret,
-through `.github/workflows/deploy-backend-phala.yml`. `BOTS_ENABLED` defaults to `false`.
+`BOTS_POST_TIMEOUT_MS` from `production-api` variables and `BOTS_SERVICE_SECRET` and `BOTS_BACKEND_CALL_SECRET` from
+`production-api` secrets, through `.github/workflows/deploy-backend-phala.yml`. `BOTS_ENABLED` defaults to `false`.
+Sibling admission needs `BOTS_BACKEND_CALL_SECRET` set to the same value in `production-bots` and `production-api`.
 
 ### Deploy order
 

@@ -10,6 +10,7 @@ import type { Request, RequestHandler, Response } from "express";
 import { botCaps, CAP_MODE, type CapMode, type PlanName } from "../bot-caps";
 import { isBotActivityRecord } from "../bot-history.js";
 import { BOT_KEY, MAIN_BOT_KEY, orderedBots, publicBot, publicDeleted, type Bot, type BotsRegistry } from "../bots-registry";
+import { clientContextFrom } from "../client-context";
 
 export interface BotsConfig {
   serviceUrl: string;
@@ -206,9 +207,14 @@ function toAskRequests(payload: unknown): { requests: AskRequestView[] } | null 
   return requests.every(request => request !== null) ? { requests: requests as AskRequestView[] } : null;
 }
 
-/** Builds the internal send body from the authenticated owner and route's admitted bot. */
-export async function botTurnBody(config: BotsConfig, address: string, sourceKey: string, text: string, appReply?: AppReply) {
-  const content = appReply ? { appReply } : { text };
+/**
+ * Builds the internal send body from the authenticated owner and route's admitted bot. With a typed message, the
+ * browser's local date and time zone go along only when they are well formed; anything else is dropped and the turn
+ * still runs.
+ */
+export async function botTurnBody(config: BotsConfig, address: string, sourceKey: string, text: string, appReply?: AppReply, clientContext?: unknown) {
+  const context = appReply ? undefined : clientContextFrom(clientContext);
+  const content = appReply ? { appReply } : { text, ...(context ? { clientContext: context } : {}) };
   try {
     const messageableBotKeys = await config.listForTurn?.(botOwnerDid(address), sourceKey);
     if (messageableBotKeys?.length) return { ...content, messageableBotKeys };
@@ -570,7 +576,7 @@ export function createBotsRouter(opts: {
 
     try {
       const url = `${config!.serviceUrl}/v1/bots/${key}/messages`;
-      const body = JSON.stringify(await botTurnBody(config!, address, key, typeof text === "string" ? text : "", appReply));
+      const body = JSON.stringify(await botTurnBody(config!, address, key, typeof text === "string" ? text : "", appReply, req.body?.clientContext));
       const upstream = await callBot(address, key, seq, () => (config!.fetchImpl ?? fetch)(url, {
         method: "POST",
         headers: botsServiceHeaders(config!, botOwnerDid(address), "POST", url, body),

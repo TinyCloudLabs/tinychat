@@ -1,0 +1,12 @@
+# gitleaks config for the production web build (deploy-production.yml `target`, "Gitleaks over the web build").
+# The default rules, plus reviewed allowlists for exact strings that are not secrets. The workflow appends one more at
+# run time: the public OpenKey native OAuth client id, by its exact value from frontend/.env.production.
+# Every entry matches one exact string; never allow a rule, a path or a pattern.
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Code identifier, not a value: ROUTE_UNAVAILABLE_HEADER (frontend/src/lib/connectors/webhooksApi.ts)"
+regexTarget = "secret"
+regexes = ['''^ROUTE_UNAVAILABLE_HEADER=$''']
