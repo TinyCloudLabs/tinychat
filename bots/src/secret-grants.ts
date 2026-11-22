@@ -22,7 +22,7 @@ import type { GuardDeps } from "./fetch-guard";
 import { isRecord } from "./guards";
 import { OWNER_DID } from "./owner";
 import { type ApprovedSecret, DAILY_CALLS_PER_SECRET, DAILY_REPLY_BYTES_PER_SECRET, prepareCall, refusal, secretName, sendCall } from "./secret-call";
-import { knownSecret, SECRET_NAME, secretSites } from "./secret-catalog";
+import { allowedMethods, knownSecret, SECRET_NAME, secretSites, writeMethods } from "./secret-catalog";
 import type { GrantStore } from "./secret-store";
 import { REQUEST_ID } from "./secret-store";
 import { toolText } from "./web";
@@ -273,6 +273,8 @@ export class SecretGrants {
     const relay = this.#links.generateRelayKey();
     const service = knownSecret(ask.name)?.service;
     const where = service ? `${service} (${ask.sites.join(", ")})` : ask.sites.join(", ");
+    // Monica's words, the same as the secret card's, so the owner sees writes in both places they decide.
+    const writes = service && writeMethods(ask.name).length > 0 ? ` Main can also send data to ${service} with it, which may cost money or change things there.` : "";
     const request: OpenKeyApprovalRequestV1 = {
       issuer: requester.did,
       requestVersion: 1,
@@ -280,7 +282,7 @@ export class SecretGrants {
       targetPublicJwk: { kty: "OKP", crv: "Ed25519", x: jwk.x },
       nodeOrigin: this.#origins.node,
       permissions: secretPermissions(ask.name, ask.ownerDid),
-      reason: `Use ${ask.name} with ${where}. ${ask.why}`.trim(),
+      reason: `Use ${ask.name} with ${where}. ${ask.why}${writes}`.trim(),
       grantLifetimeSeconds: MAX_GRANT_SECONDS,
       suggestedLifetimeSeconds: SUGGESTED_GRANT_SECONDS,
       resultEncryptionPublicJwk: relay.publicJwk,
@@ -373,10 +375,10 @@ export class SecretGrants {
       return { result: refusal("ended", { name, until: record.until }), outcome: "ended" };
     }
     if (record.state !== "approved" || !record.keys?.session) return { result: refusal("notAsked", { name }), outcome: "not_asked" };
-    const secret: ApprovedSecret = { name, sites: record.ask.sites, header: record.ask.header, until: record.until! };
+    const secret: ApprovedSecret = { name, sites: record.ask.sites, header: record.ask.header, methods: allowedMethods(name), until: record.until! };
     const prepared = prepareCall(args, secret);
     if ("refused" in prepared) {
-      return { result: refusal(prepared.refused, { name, sites: secret.sites, header: secret.header }), outcome: `refused_${prepared.refused}` };
+      return { result: refusal(prepared.refused, { name, sites: secret.sites, header: secret.header, methods: secret.methods }), outcome: `refused_${prepared.refused}` };
     }
     const day = utcDay(now);
     const today = record.calls.day === day ? record.calls : { day, count: 0, bytes: 0 };

@@ -1,14 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import type { Conn, GuardDeps } from "../fetch-guard";
 import { type ApprovedSecret, MAX_REPLY_CHARS, prepareCall, type PreparedCall, sendCall, sentence } from "../secret-call";
+import { allowedMethods } from "../secret-catalog";
 import { HIDDEN, redactor, redactThenTruncate } from "../secret-redact";
 
 // A fake value: never a real key.
 const VALUE = "sk-test-FAKE/value+with=odd chars~!'é";
 const enc = new TextEncoder();
 
-const OPENAI: ApprovedSecret = { name: "OPENAI_API_KEY", sites: ["api.openai.com"], header: "authorization", until: Date.UTC(2026, 10, 22, 13, 12) };
-const UNKNOWN: ApprovedSecret = { name: "STRIPE_KEY", sites: ["api.stripe.com", "files.stripe.com"], header: "authorization", until: OPENAI.until };
+const OPENAI: ApprovedSecret = { name: "OPENAI_API_KEY", sites: ["api.openai.com"], header: "authorization", methods: allowedMethods("OPENAI_API_KEY"), until: Date.UTC(2026, 10, 22, 13, 12) };
+const UNKNOWN: ApprovedSecret = { name: "STRIPE_KEY", sites: ["api.stripe.com", "files.stripe.com"], header: "authorization", methods: allowedMethods("STRIPE_KEY"), until: OPENAI.until };
 const AUTH = { Authorization: "Bearer {{secret}}" };
 
 function prepared(args: Record<string, unknown>, secret = OPENAI): PreparedCall {
@@ -74,7 +75,7 @@ describe("what a call may contain", () => {
   });
 
   test("a known service's value goes only in that service's header", () => {
-    const anthropic: ApprovedSecret = { name: "ANTHROPIC_API_KEY", sites: ["api.anthropic.com"], header: "x-api-key", until: OPENAI.until };
+    const anthropic: ApprovedSecret = { name: "ANTHROPIC_API_KEY", sites: ["api.anthropic.com"], header: "x-api-key", methods: allowedMethods("ANTHROPIC_API_KEY"), until: OPENAI.until };
     expect(refusedFor({ url: "https://api.anthropic.com/v1/messages", headers: AUTH }, anthropic)).toBe("placeholder");
     expect(refusedFor({ url: "https://api.anthropic.com/v1/messages", headers: { "X-Api-Key": "{{secret}}" } }, anthropic)).toBe("made");
     expect(sentence("placeholder", { name: "ANTHROPIC_API_KEY", header: "x-api-key" })).toBe("{{secret}} can only go in a header. For ANTHROPIC_API_KEY use X-Api-Key: {{secret}}.");
@@ -102,6 +103,12 @@ describe("what a call may contain", () => {
   test("names every approved site when the site is wrong", () => {
     expect(sentence("site", { name: UNKNOWN.name, sites: UNKNOWN.sites })).toBe("STRIPE_KEY is approved only for api.stripe.com and files.stripe.com.");
     expect(sentence("site", { name: OPENAI.name, sites: OPENAI.sites })).toBe("OPENAI_API_KEY is approved only for api.openai.com.");
+  });
+
+  test("an unknown secret is for reading only: GET and HEAD, never a write", () => {
+    for (const method of ["GET", "HEAD"]) expect(refusedFor({ method, url: "https://api.stripe.com/v1/charges" }, UNKNOWN)).toBe("made");
+    for (const method of ["POST", "PUT", "PATCH", "DELETE"]) expect(refusedFor({ method, url: "https://api.stripe.com/v1/charges" }, UNKNOWN)).toBe("method");
+    expect(sentence("method", { name: UNKNOWN.name, methods: UNKNOWN.methods })).toBe("STRIPE_KEY is approved only for GET and HEAD calls.");
   });
 
   test.each([
@@ -174,6 +181,16 @@ describe("making the call", () => {
     const shown = JSON.parse(result.text);
     expect(shown).toMatchObject({ status: 200, contentType: "application/json", truncated: false });
     expect(JSON.parse(shown.body)).toEqual({ auth: `Bearer ${HIDDEN}`, b64: HIDDEN });
+  });
+
+  test("a HEAD reply ends at its head, though it declares a length", async () => {
+    const head = prepared({ method: "HEAD", url: "https://api.openai.com/v1/models", headers: AUTH });
+    const w = world(PUBLIC, { parts: [reply("200 OK", { "content-type": "application/json", "content-length": "5000" }), () => new Promise<void>(() => {})] });
+    const result = await sendCall(head, VALUE, w.deps, { totalMs: 2_000, maxBodyBytes: 1024 });
+    expect(w.written[0]!.startsWith("HEAD /v1/models HTTP/1.1\r\n")).toBe(true);
+    expect(w.written[0]).not.toContain("Content-Length");
+    if (!result.ok) throw new Error(result.reason);
+    expect(JSON.parse(result.text)).toMatchObject({ status: 200, body: "" });
   });
 
   test("hides the value in the content type it returns", async () => {

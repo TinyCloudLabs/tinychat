@@ -41,6 +41,8 @@ interface GrantOptions {
   spaceOwner?: string;
   resourceOwner?: string;
   issuedAt?: number;
+  /** The secret the grant reads; OPENAI_API_KEY unless named. */
+  secret?: string;
 }
 
 function recap(att: Record<string, unknown>): string {
@@ -59,7 +61,7 @@ async function grantFor(request: OpenKeyApprovalRequestV1, options: GrantOptions
     domain: "openkey.so", address: address as `0x${string}`, uri: `${audience}#${audience.slice("did:key:".length)}`, version: "1", chainId: 1,
     nonce: "abcdefgh12345678", issuedAt: new Date(issued), expirationTime: new Date(expires),
     resources: [recap({
-      [`tinycloud:pkh:eip155:1:${resourceOwner}:secrets/kv/vault/secrets/OPENAI_API_KEY`]: { "tinycloud.kv/get": [{}] },
+      [`tinycloud:pkh:eip155:1:${resourceOwner}:secrets/kv/vault/secrets/${options.secret ?? "OPENAI_API_KEY"}`]: { "tinycloud.kv/get": [{}] },
       [`urn:tinycloud:encryption:did:pkh:eip155:1:${resourceOwner}:default`]: { "tinycloud.encryption/decrypt": [{}] },
     })],
   });
@@ -176,11 +178,11 @@ function setup(store = memoryStore(), read = reader()) {
 const CALL = { name: "OPENAI_API_KEY", method: "GET", url: "https://api.openai.com/v1/models", headers: { Authorization: "Bearer {{secret}}" } };
 const textOf = (outcome: { result: { content: Array<{ text: string }> } }) => outcome.result.content[0]!.text;
 
-async function approved(env = setup(), grant: GrantOptions = {}) {
-  await env.grants.ask(BOT, ID, ASK);
+async function approved(env = setup(), grant: GrantOptions = {}, ask = ASK) {
+  await env.grants.ask(BOT, ID, ask);
   env.ok.answers.set("req1", "ready");
   // The grant is signed for the request the gateway made, so the fake OpenKey signs it once it has the request.
-  env.ok.sign(await grantFor(env.ok.requests[0]!, grant));
+  env.ok.sign(await grantFor(env.ok.requests[0]!, { secret: ask.name, ...grant }));
   await env.grants.poll();
   return env;
 }
@@ -208,7 +210,13 @@ describe("asking", () => {
       { service: "tinycloud.kv", space: "secrets", path: "vault/secrets/OPENAI_API_KEY", actions: ["tinycloud.kv/get"] },
       { service: "tinycloud.encryption", space: "encryption", path: `urn:tinycloud:encryption:did:pkh:eip155:1:${OWNER_KEY.address}:default`, actions: ["tinycloud.encryption/decrypt"] },
     ]);
-    expect(request.reason).toBe("Use OPENAI_API_KEY with OpenAI (api.openai.com). To transcribe a call.");
+    expect(request.reason).toBe("Use OPENAI_API_KEY with OpenAI (api.openai.com). To transcribe a call. Main can also send data to OpenAI with it, which may cost money or change things there.");
+  });
+
+  test("names no writes to the owner for a read-only secret", async () => {
+    const { grants, ok } = setup();
+    await grants.ask(BOT, ID, { ...ASK, name: "GITHUB_TOKEN", sites: ["api.github.com"] });
+    expect(ok.requests[0]!.reason).toBe("Use GITHUB_TOKEN with GitHub PAT (api.github.com). To transcribe a call.");
   });
 
   test("gives the same link for the same open request, and a fresh key for each request", async () => {
@@ -367,6 +375,29 @@ describe("calls with an approved secret", () => {
     const outcome = await env.grants.call(BOT, { ...CALL, url: "https://example.com/" }, site().net);
     expect(textOf(outcome)).toBe("OPENAI_API_KEY is approved only for api.openai.com.");
     expect(env.read.sessions).toEqual([]);
+  });
+
+  test("refuses a write on a read-only secret without reading the value", async () => {
+    const env = await approved(setup(), {}, { ...ASK, name: "GITHUB_TOKEN", sites: ["api.github.com"] });
+    const { net, sent } = site();
+    const write = { ...CALL, name: "GITHUB_TOKEN", method: "DELETE", url: "https://api.github.com/repos/owner/repo" };
+    const outcome = await env.grants.call(BOT, write, net);
+    expect(textOf(outcome)).toBe("GITHUB_TOKEN is approved only for GET and HEAD calls.");
+    expect(outcome.outcome).toBe("refused_method");
+    expect(env.read.sessions).toEqual([]);
+    expect(sent).toEqual([]);
+    expect((await env.grants.call(BOT, { ...write, method: "GET" }, net)).outcome).toBe("ok");
+  });
+
+  test("sends a write the secret's entry lists, and refuses one it doesn't", async () => {
+    const env = await approved();
+    const { net, sent } = site();
+    const post = { ...CALL, method: "POST", url: "https://api.openai.com/v1/chat/completions", body: "{}" };
+    expect((await env.grants.call(BOT, post, net)).outcome).toBe("ok");
+    expect(sent[0]!.startsWith("POST /v1/chat/completions HTTP/1.1\r\n")).toBe(true);
+    const outcome = await env.grants.call(BOT, { ...post, method: "DELETE" }, net);
+    expect(textOf(outcome)).toBe("OPENAI_API_KEY is approved only for GET, HEAD and POST calls.");
+    expect(sent.length).toBe(1);
   });
 
   test("stops at the day's call cap, which survives a restart", async () => {

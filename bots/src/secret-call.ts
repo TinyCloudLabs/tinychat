@@ -3,6 +3,7 @@
 //
 // Rules, in the order a call meets them (each refusal is one fixed sentence; nothing the site sent is ever quoted):
 //  - the address is https on port 443, no user info, a real name (no IP literal), exactly one of the approved sites;
+//  - the method is GET or HEAD, or a write the secret's catalog entry lists (never one for an unknown secret);
 //  - {{secret}} appears only in the secret's own header (KNOWN_SECRETS' header for a known service, the one the
 //    supervisor sent otherwise), never in the address, the body, a header name or another header (Naomi's ruling on
 //    Bobbie's review, 22 Nov);
@@ -16,13 +17,12 @@
 import { utcMinute } from "./asks";
 import { blockedAddress, exchange, type GuardDeps, type PageFailure, TIMED_OUT, USER_AGENT } from "./fetch-guard";
 import { isRecord } from "./guards";
-import { joinSites, knownSecret, SECRET_NAME } from "./secret-catalog";
+import { joinSites, knownSecret, type Method, READ_METHODS, SECRET_NAME, WRITE_METHODS } from "./secret-catalog";
 import { redactor, redactThenTruncate } from "./secret-redact";
 import { readableAddress, toolText } from "./web";
 
 export const PLACEHOLDER = "{{secret}}";
-export const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const;
-export type Method = (typeof METHODS)[number];
+export const METHODS: readonly Method[] = [...READ_METHODS, ...WRITE_METHODS];
 /** The request body Main may send (the design's `body.maxLength`). */
 export const MAX_REQUEST_BODY_CHARS = 1024 * 1024;
 const MAX_HEADERS = 32;
@@ -75,21 +75,22 @@ const HEADER_NAME = /^[A-Za-z0-9!#$%&'*+.^_`|~-]{1,64}$/;
 const TEXT_TYPE = /^(text\/[a-z0-9.+-]+|application\/([a-z0-9.+-]+\+)?(json|xml)|application\/x-www-form-urlencoded|application\/x-ndjson)$/;
 
 /**
- * What Main is told, word for word (design section 03; the last four are the gateway's own limits). `{NAME}`,
- * `{SITES}`, `{EXAMPLE}`, `{DATE}`, `{HOST}`, `{ADDRESS}`, `{REASON}` are filled in from our own records; `{ADDRESS}`
- * is the redirect's target with the value hidden.
+ * What Main is told, word for word (design section 03; `method` is Monica's, the last four are the gateway's own
+ * limits). `{NAME}`, `{SITES}`, `{METHODS}`, `{EXAMPLE}`, `{DATE}`, `{HOST}`, `{ADDRESS}`, `{REASON}` are filled in
+ * from our own records; `{ADDRESS}` is the redirect's target with the value hidden.
  */
 export const SECRET_CALL_ERRORS = {
   notAsked: "You can’t use {NAME}. Ask for it with request_secret.",
   pending: "The owner hasn’t approved {NAME} yet.",
   ended: "Your access to {NAME} ended on {DATE}. If you still need it, ask again with request_secret.",
   site: "{NAME} is approved only for {SITES}.",
+  method: "{NAME} is approved only for {METHODS} calls.",
   noPlaceholder: "Put {{secret}} in a header, like {EXAMPLE}.",
   placeholder: "{{secret}} can only go in a header. For {NAME} use {EXAMPLE}.",
   redirect: "{HOST} answered with a redirect to {ADDRESS}. It wasn’t followed; the secret is only sent to approved sites.",
   missing: "{NAME} isn’t in the owner’s TinyCloud Secrets. The request card shows them how to add it.",
   failed: "The call to {HOST} failed: {REASON}.",
-  invalid: "That call can’t be made: use an https address on an approved site, one of GET, POST, PUT, PATCH or DELETE, and plain headers.",
+  invalid: "That call can’t be made: use an https address on an approved site, one of GET, HEAD, POST, PUT, PATCH or DELETE, and plain headers.",
   daily: "Today’s limit for calls with {NAME} is used up.",
   busy: "Another call with a secret is still running. Try again when it ends.",
   unavailable: "{NAME} can’t be used right now. Try again later.",
@@ -105,6 +106,8 @@ export interface ApprovedSecret {
   sites: string[];
   /** Lower-case header name the value may go in. */
   header: string;
+  /** GET and HEAD, then the writes the secret's catalog entry lists. */
+  methods: readonly Method[];
   /** Epoch ms the owner's approval ends. */
   until: number;
 }
@@ -126,6 +129,7 @@ export interface SentenceFill {
   host?: string;
   address?: string;
   reason?: CallFailure;
+  methods?: readonly Method[];
 }
 
 /** How Main should write the header: `Authorization: Bearer {{secret}}`, `X-Api-Key: {{secret}}`. */
@@ -143,7 +147,8 @@ export function sentence(error: SecretCallError, fill: SentenceFill = {}): strin
     .replaceAll("{DATE}", fill.until === undefined ? "" : utcMinute(fill.until))
     .replaceAll("{HOST}", fill.host ?? "")
     .replaceAll("{ADDRESS}", fill.address ?? "")
-    .replaceAll("{REASON}", fill.reason ?? "");
+    .replaceAll("{REASON}", fill.reason ?? "")
+    .replaceAll("{METHODS}", joinSites(fill.methods ?? []));
 }
 
 export const refusal = (error: SecretCallError, fill: SentenceFill = {}) => toolText(sentence(error, fill), true);
@@ -174,6 +179,7 @@ export function prepareCall(args: Record<string, unknown>, secret: ApprovedSecre
   if (!url || url.protocol !== "https:") return { refused: "invalid" };
   const host = url.hostname.toLowerCase().replace(/\.$/, "");
   if (!secret.sites.includes(host)) return { refused: "site" };
+  if (!secret.methods.includes(method as Method)) return { refused: "method" };
   url.hash = "";
 
   let body: string | undefined;
@@ -258,7 +264,8 @@ export async function sendCall(call: PreparedCall, value: string, deps: GuardDep
     const isRedirect = (status: number) => status >= 300 && status < 400;
     const result = await exchange(
       opened, request, { maxRedirects: 0, maxBodyBytes: limits.maxBodyBytes, maxHeaderBytes: 16 * 1024, totalMs: limits.totalMs }, deadline.promise,
-      status => !isRedirect(status),
+      // A HEAD reply declares a length but carries no body.
+      status => call.method !== "HEAD" && !isRedirect(status),
     ).catch((): PageFailure => "network");
     if (typeof result === "string") return { ok: false, reason: failureOf(result), bytes: 0 };
     const bytes = result.body.length;
