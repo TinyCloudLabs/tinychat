@@ -1,0 +1,25 @@
+{
+  "versions": {
+    "exo-desktop": "0.17.0",
+    "@tinychat/frontend": "0.17.0",
+    "@tinychat/backend": "0.10.0"
+  },
+  "changesets": [
+    ".changeset/pre/ask-owner-p1.md",
+    ".changeset/pre/home-composer-default.md",
+    ".changeset/pre/remove-backend-fireflies-ingestion.md",
+    ".changeset/pre/remove-hidden-features-setting.md",
+    ".changeset/pre/ship-ledger-one-app.md",
+    ".changeset/pre/tc-1964-credential-count-workflow.md",
+    ".changeset/pre/tc-2883-replica-bind-unpaused.md",
+    ".changeset/pre/tc-3195-share-recording-button-on.md",
+    ".changeset/pre/tc-3677-ios-frame-guard.md",
+    ".changeset/pre/tc-3734-model-aware-turn-minimum.md",
+    ".changeset/pre/tc-3753-exo-wake-intake.md",
+    ".changeset/pre/tc-3767-silent-input-expected.md",
+    ".changeset/pre/tc-3779-main-system-prompt.md",
+    ".changeset/pre/tc-3795-trustbot-tool-policy.md",
+    ".changeset/pre/tc-3813-sibling-history-off.md",
+    ".changeset/pre/tc-916-sharing-allowlist.md"
+  ]
+}
