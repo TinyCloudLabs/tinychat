@@ -9,14 +9,17 @@
 //!   only), and one class list is read per candidate to pick the marker. A tile with no name, two
 //!   names, no candidate or more than
 //!   [`crate::extract::MAX_MARKER_CANDIDATES`] is not followed, and nothing is
-//!   followed with fewer than [`MIN_SPEAKING_TILES`] tiles.
+//!   followed with fewer than [`MIN_SPEAKING_TILES`] tiles unless the current names tick
+//!   establishes at least that many distinct people in a shorter visible layout.
 //! - **Sampling** ([`Markers::sample`]), between names ticks: one class-list read per followed
 //!   marker and nothing else, so a sample reads no text and no structure. Each sample has
 //!   [`SAMPLE_BUDGET`], checked before every read; a read that times out makes the rest of the
 //!   sample unknown, never quiet; an element that went away is dropped until the next names tick.
 //! - **Classifying** ([`Classifier`]): with the rule's class tokens ("rules" mode), a marker is
 //!   speaking when it has a speaking token, quiet when it has the quiet token, and unknown
-//!   otherwise or without the tokens every marker has. When the window's markers never match the
+//!   otherwise or without the tokens every marker has. If no meter exists, a separately
+//!   configured last-active-speaker signal produces Active/Inactive, never Speaking/Quiet.
+//!   When the window's markers never match the
 //!   tokens (Meet renamed its classes), the quiet marker is learned instead ("learned" mode): the
 //!   most common class set of all tiles over the first [`LEARN_FOR_MS`] of samples is quiet, and
 //!   a marker that lost one of its classes is speaking. A sample in which most tiles change at
@@ -28,7 +31,7 @@
 
 use crate::extract::{Scan, TileCandidates};
 use crate::names::Name;
-use crate::rules::{AppRules, Classes, MIN_SPEAKING_TILES};
+use crate::rules::{ActivityClasses, AppRules, Classes, SpeakingRule, MIN_SPEAKING_TILES};
 use crate::session::{Clock, Discard, Meter};
 use crate::tree::{class_hash, ClassSet, ReadError, Source};
 use serde::{Deserialize, Serialize};
@@ -63,6 +66,10 @@ pub const MISSES_BEFORE_LEARNING: u32 = 3;
 /// What one marker read says about its tile.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mark {
+    /// Last-active-speaker border; never a speech mark.
+    Active,
+    /// A recognized border without its active token.
+    Inactive,
     Speaking,
     Quiet,
     /// The marker could not be read, or its classes say neither.
@@ -94,6 +101,7 @@ pub struct Tokens {
     all: Vec<u64>,
     quiet: Vec<u64>,
     speaking: Vec<u64>,
+    active: Option<ActivityTokens>,
 }
 
 impl Tokens {
@@ -103,26 +111,76 @@ impl Tokens {
             all: hash(&classes.all),
             quiet: hash(&classes.quiet),
             speaking: hash(&classes.speaking),
+            active: None,
         }
     }
 
-    /// The marker as the rule's tokens read it.
+    /// Both recognized signals in one rule; the meter is always preferred.
+    pub fn for_rule(rule: &SpeakingRule) -> Option<Tokens> {
+        let mut tokens = rule.classes.as_ref().map(Tokens::of).unwrap_or(Tokens {
+            all: Vec::new(),
+            quiet: Vec::new(),
+            speaking: Vec::new(),
+            active: None,
+        });
+        tokens.active = rule
+            .active
+            .as_ref()
+            .map(|active| ActivityTokens::of(&active.classes));
+        (rule.classes.is_some() || tokens.active.is_some()).then_some(tokens)
+    }
+
+    /// A recognized border, independently of the learned meter classifier.
+    pub fn activity(&self, set: &ClassSet) -> Option<Mark> {
+        self.active.as_ref().and_then(|active| active.classify(set))
+    }
+
+    /// The marker as the rule's tokens read it. Activity never becomes speech.
     pub fn classify(&self, set: &ClassSet) -> Mark {
-        if !self.all.iter().all(|hash| set.contains(*hash)) {
-            return Mark::Unknown;
+        if !self.all.is_empty() && self.all.iter().all(|hash| set.contains(*hash)) {
+            if self.speaking.iter().any(|hash| set.contains(*hash)) {
+                return Mark::Speaking;
+            }
+            if self.quiet.iter().any(|hash| set.contains(*hash)) {
+                return Mark::Quiet;
+            }
         }
-        if self.speaking.iter().any(|hash| set.contains(*hash)) {
-            Mark::Speaking
-        } else if self.quiet.iter().any(|hash| set.contains(*hash)) {
-            Mark::Quiet
-        } else {
-            Mark::Unknown
-        }
+        self.activity(set).unwrap_or(Mark::Unknown)
+    }
+
+    /// The meter itself remains identifiable during transient states without an on/off token.
+    fn meter_matches(&self, set: &ClassSet) -> bool {
+        !self.all.is_empty() && self.all.iter().all(|hash| set.contains(*hash))
     }
 
     /// True when the rule's tokens can read this element: it is a marker, quiet or speaking.
     pub fn matches(&self, set: &ClassSet) -> bool {
         self.classify(set) != Mark::Unknown
+    }
+}
+
+#[derive(Clone)]
+struct ActivityTokens {
+    all: Vec<u64>,
+    on: Vec<u64>,
+}
+
+impl ActivityTokens {
+    fn of(classes: &ActivityClasses) -> Self {
+        Self {
+            all: classes.all.iter().map(|token| class_hash(token)).collect(),
+            on: classes.on.iter().map(|token| class_hash(token)).collect(),
+        }
+    }
+
+    fn classify(&self, set: &ClassSet) -> Option<Mark> {
+        self.all.iter().all(|hash| set.contains(*hash)).then(|| {
+            if self.on.iter().any(|hash| set.contains(*hash)) {
+                Mark::Active
+            } else {
+                Mark::Inactive
+            }
+        })
     }
 }
 
@@ -179,12 +237,27 @@ pub fn find_markers<S: Source>(
     meter: &mut Meter,
     cost: &mut FindCost,
 ) -> Result<Vec<Marker<S::Node>>, Discard> {
+    find_markers_with_people(scan, source, rules, meter, cost, 0)
+}
+
+/// A short visible layout is eligible only with at least three distinct names in this tick.
+/// Historical roster entries alone cannot prove that people have not left the call.
+pub fn find_markers_with_people<S: Source>(
+    scan: &mut Scan<S::Node>,
+    source: &mut S,
+    rules: &AppRules,
+    meter: &mut Meter,
+    cost: &mut FindCost,
+    people: usize,
+) -> Result<Vec<Marker<S::Node>>, Discard> {
     let Some(rule) = rules.speaking.first() else {
         return Ok(Vec::new());
     };
     let least = rule.min_tiles.max(MIN_SPEAKING_TILES);
     let tiles = scan.speaking_tiles(source, rule, meter)?;
-    if tiles.len() < least {
+    let short_layout = people >= least && scan.speaking_tile_count(source, rule, meter)? < least;
+    let needed = if short_layout { 1 } else { least };
+    if tiles.len() < needed {
         return Ok(Vec::new());
     }
     let tokens = rule.classes.as_ref().map(Tokens::of);
@@ -195,7 +268,7 @@ pub fn find_markers<S: Source>(
         name,
     } in tiles
     {
-        let single = candidates.len() == 1;
+        let mut single = candidates.len() == 1;
         let mut matched = None;
         let mut first = None;
         for candidate in candidates {
@@ -211,14 +284,54 @@ pub fn find_markers<S: Source>(
             let Some(set) = set else {
                 continue;
             };
-            if tokens.as_ref().is_some_and(|tokens| tokens.matches(&set)) {
-                matched = Some(candidate);
+            if tokens
+                .as_ref()
+                .is_some_and(|tokens| tokens.meter_matches(&set))
+            {
+                // Identity and state recognition are separate: keep this meter during
+                // unknown states, but still permit the existing learned-mode fallback
+                // if Meet has renamed its quiet/speaking tokens.
+                let rules_ok = tokens.as_ref().is_some_and(|tokens| tokens.matches(&set));
+                matched = Some((candidate, rules_ok));
                 break;
             }
             first.get_or_insert(candidate);
         }
+        // Only look for activity when the primary candidates have no recognized meter.
+        // Each tick obtains candidates from its new scan. A redrawn tile cannot retain a
+        // previously selected meter/border solely because its name stayed the same.
+        if matched.is_none() {
+            if let Some(active) = &rule.active {
+                let active_tokens = ActivityTokens::of(&active.classes);
+                let candidates = scan.activity_candidates(source, &tile, &active.marker, meter)?;
+                let mut borders = Vec::new();
+                for candidate in candidates {
+                    meter.check_time()?;
+                    cost.class_reads += 1;
+                    let set = match source.class_list(&candidate) {
+                        Ok(set) => set,
+                        Err(ReadError::Gone) => continue,
+                        Err(error) => return Err(Discard::Read(error)),
+                    };
+                    meter.check_time()?;
+                    if set
+                        .as_ref()
+                        .is_some_and(|set| active_tokens.classify(set).is_some())
+                    {
+                        borders.push(candidate);
+                    }
+                }
+                if borders.len() == 1 {
+                    matched = borders.pop().map(|marker| (marker, true));
+                    single = true;
+                } else if borders.len() > 1 {
+                    // Ambiguous activity must not enter a learned speech classifier.
+                    continue;
+                }
+            }
+        }
         let (marker, rules_ok) = match (matched, first) {
-            (Some(marker), _) => (marker, true),
+            (Some((marker, rules_ok)), _) => (marker, rules_ok),
             (None, Some(marker)) => (marker, false),
             (None, None) => continue,
         };
@@ -230,7 +343,7 @@ pub fn find_markers<S: Source>(
             single,
         });
     }
-    if out.len() < least {
+    if out.len() < needed {
         out.clear();
     }
     Ok(out)
@@ -253,6 +366,8 @@ pub struct Found {
     pub tiles: Vec<TileFound>,
     /// The call window is minimised, or its browser shows another tab: the markers may not move.
     pub hidden: bool,
+    /// Distinct names from the current names tick, not the recording's historical roster.
+    pub people: usize,
 }
 
 /// One marker read in a sample.
@@ -477,11 +592,25 @@ impl Classifier {
         let Reading::Classes(set) = reading else {
             return Mark::Unknown;
         };
+        if let Some(mark) = self.tokens.as_ref().and_then(|tokens| tokens.activity(set)) {
+            return mark;
+        }
         match (self.mode, &self.tokens, &self.quiet) {
             (Some(Mode::Rules), Some(tokens), _) => tokens.classify(set),
             (Some(Mode::Learned), _, Some(quiet)) if set.contains_all(quiet) => Mark::Quiet,
             (Some(Mode::Learned), _, Some(_)) => Mark::Speaking,
             _ => Mark::Unknown,
+        }
+    }
+
+    /// Whether this sample read a recognized border, even before a mode is chosen.
+    pub fn is_border(&self, reading: &Reading) -> bool {
+        match reading {
+            Reading::Classes(set) => self
+                .tokens
+                .as_ref()
+                .is_some_and(|tokens| tokens.activity(set).is_some()),
+            _ => false,
         }
     }
 
@@ -493,7 +622,13 @@ impl Classifier {
 
     /// A names tick found these tiles. Returns samples that the decision classified.
     pub fn decide(&mut self, tiles: &[TileFound]) -> Vec<Classified> {
-        if self.mode == Some(Mode::Learned) || tiles.len() < MIN_SPEAKING_TILES {
+        self.decide_with_people(tiles, 0)
+    }
+
+    pub fn decide_with_people(&mut self, tiles: &[TileFound], people: usize) -> Vec<Classified> {
+        if self.mode == Some(Mode::Learned)
+            || (tiles.len() < MIN_SPEAKING_TILES && people < MIN_SPEAKING_TILES)
+        {
             return Vec::new();
         }
         if self.tokens.is_some() && tiles.iter().any(|tile| tile.rules_ok) {
@@ -522,7 +657,11 @@ impl Classifier {
     pub fn push(&mut self, sample: Confirmed) -> Vec<Classified> {
         match (self.mode, &self.tokens, &self.quiet) {
             (Some(Mode::Rules), Some(tokens), _) => vec![classify_rules(tokens, sample)],
-            (Some(Mode::Learned), _, Some(quiet)) => vec![classify_learned(quiet, sample)],
+            (Some(Mode::Learned), _, Some(quiet)) => {
+                vec![with_activity(self.tokens.as_ref(), sample, |sample| {
+                    classify_learned(quiet, sample)
+                })]
+            }
             (Some(Mode::Learned), _, None) => {
                 self.waiting.push(sample);
                 self.learn(false)
@@ -543,7 +682,7 @@ impl Classifier {
         }
         std::mem::take(&mut self.waiting)
             .into_iter()
-            .map(unknown)
+            .map(|sample| with_activity(self.tokens.as_ref(), sample, unknown))
             .collect()
     }
 
@@ -559,6 +698,13 @@ impl Classifier {
         for sample in &self.waiting {
             for (_, reading) in &sample.readings {
                 if let Reading::Classes(set) = reading {
+                    if self
+                        .tokens
+                        .as_ref()
+                        .is_some_and(|tokens| tokens.activity(set).is_some())
+                    {
+                        continue;
+                    }
                     counts.entry(set.fingerprint()).or_insert((set, 0)).1 += 1;
                     total += 1;
                 }
@@ -574,15 +720,52 @@ impl Classifier {
             Some((set, count)) if total >= MIN_LEARN_READINGS && count * 2 > total => {
                 let ready = waiting
                     .into_iter()
-                    .map(|sample| classify_learned(&set, sample))
+                    .map(|sample| {
+                        with_activity(self.tokens.as_ref(), sample, |sample| {
+                            classify_learned(&set, sample)
+                        })
+                    })
                     .collect();
                 self.quiet = Some(set);
                 ready
             }
             // No class set stands out: these samples say nothing; learn from the next ones.
-            _ => waiting.into_iter().map(unknown).collect(),
+            _ => waiting
+                .into_iter()
+                .map(|sample| with_activity(self.tokens.as_ref(), sample, unknown))
+                .collect(),
         }
     }
+}
+
+/// Preserve the separate signal even if the meter classifier is learning or has no decision.
+fn with_activity(
+    tokens: Option<&Tokens>,
+    sample: Confirmed,
+    classify: impl FnOnce(Confirmed) -> Classified,
+) -> Classified {
+    let active: Vec<Option<Mark>> = sample
+        .readings
+        .iter()
+        .map(|(_, reading)| match reading {
+            Reading::Classes(set) => tokens.and_then(|tokens| tokens.activity(set)),
+            _ => None,
+        })
+        .collect();
+    let mut sample = sample;
+    // Border classes cannot participate in the learned meter layout-change vote.
+    for ((_, reading), active) in sample.readings.iter_mut().zip(&active) {
+        if active.is_some() {
+            *reading = Reading::Unknown;
+        }
+    }
+    let mut classified = classify(sample);
+    for ((_, mark), active) in classified.marks.iter_mut().zip(active) {
+        if let Some(active) = active {
+            *mark = active;
+        }
+    }
+    classified
 }
 
 fn unknown(sample: Confirmed) -> Classified {

@@ -308,7 +308,7 @@ impl<P: Platform> Driver<P> {
     ) {
         self.found = None;
         match (result, markers) {
-            (Ok(_), Some(found)) => {
+            (Ok(names), Some(found)) => {
                 let index = trace
                     .in_call
                     .iter()
@@ -323,7 +323,16 @@ impl<P: Platform> Driver<P> {
                     !found.is_empty() && self.hidden(pids[index], &targets[index], apps, meter);
                 let tiles = self.markers.update(&self.platform, found);
                 self.marker_pid = Some(pids[index]);
-                self.found = Some(SpeakingFound { tiles, hidden });
+                let people = names
+                    .entries()
+                    .map(|entry| &entry.name)
+                    .collect::<std::collections::HashSet<_>>()
+                    .len();
+                self.found = Some(SpeakingFound {
+                    tiles,
+                    hidden,
+                    people,
+                });
             }
             (Ok(_), None) | (Err(Skip::Discarded(_)), _) => {}
             (Err(_), _) => {

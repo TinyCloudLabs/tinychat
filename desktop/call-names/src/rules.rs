@@ -108,6 +108,37 @@ pub struct SpeakingRule {
     /// do not match, the quiet marker is learned instead.
     #[serde(default)]
     pub classes: Option<Classes>,
+    /// A last-active-speaker border, used only when no recognized speech meter is present.
+    #[serde(default)]
+    pub active: Option<ActivityRule>,
+}
+
+/// Optional activity fallback. Its intervals are never interpreted as speech.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ActivityRule {
+    /// Structure-only path from a tile to a bounded set of candidates.
+    pub marker: Vec<Step>,
+    pub classes: ActivityClasses,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ActivityClasses {
+    pub all: Vec<String>,
+    /// Present while the tile is the last active speaker. Absence means inactive.
+    pub on: Vec<String>,
+}
+
+impl fmt::Debug for ActivityClasses {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "ActivityClasses(<{} all, {} on>)",
+            self.all.len(),
+            self.on.len()
+        )
+    }
 }
 
 /// How a tile's name is read: a path from the tile, then the first non-empty attribute.
@@ -476,6 +507,32 @@ fn check_speaking(rule: &SpeakingRule) -> Result<(), String> {
         return Err(format!(
             "{at}: marker steps are structure only, without labels"
         ));
+    }
+    if let Some(active) = &rule.active {
+        if active.marker.is_empty() || active.marker.len() > MAX_STEPS {
+            return Err(format!("{at}: active.marker needs 1 to {MAX_STEPS} steps"));
+        }
+        for step in &active.marker {
+            check_step(step, &format!("{at} active.marker"))?;
+            if reads_text(step) {
+                return Err(format!(
+                    "{at}: active marker steps are structure only, without labels"
+                ));
+            }
+        }
+        let mut seen = HashSet::new();
+        for (what, tokens) in [("all", &active.classes.all), ("on", &active.classes.on)] {
+            if tokens.is_empty() || tokens.len() > MAX_CLASS_TOKENS {
+                return Err(format!(
+                    "{at}: active.classes.{what} needs 1 to {MAX_CLASS_TOKENS} tokens"
+                ));
+            }
+            for token in tokens {
+                if !is_class_token(token) || !seen.insert(token.as_str()) {
+                    return Err(format!("{at}: invalid or repeated active class token"));
+                }
+            }
+        }
     }
     let name = &rule.name;
     if name.from.is_empty() || name.from.len() > 3 {

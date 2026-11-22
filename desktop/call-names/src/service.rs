@@ -1403,7 +1403,7 @@ impl<W: Window> Service<W> {
                         app,
                         rules.version,
                         self.sampling.interval.as_millis() as u64,
-                        rule.classes.as_ref().map(Tokens::of),
+                        Tokens::for_rule(rule),
                     ));
                 }
             }
