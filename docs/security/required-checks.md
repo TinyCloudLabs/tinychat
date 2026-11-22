@@ -134,6 +134,22 @@ the clear; only the first 8 hex characters of a sha256.
 - Move to: `production-api`.
 - **STOP rule:** if step 1 finds no copy outside GitHub, or the copy found does not match the live value (step 3's
   check run against the repository copy), stop. Naomi decides. Never delete the only copy.
+- **Status (2026-11-22): step 1 found no recoverable copy outside GitHub.**
+  - The repository secret cannot be read back: GitHub does not export a secret.
+  - The backend CVM holds a sealed copy (`allowed_envs`, `docker-compose.phala.yml`). Every backend deploy rewrites
+    the CVM's encrypted env from the repository secret, so that copy is not a backup. Reading the value out of the
+    CVM would be an export.
+  - No inventory records another copy.
+
+  **Backup gap:** with no copy outside GitHub, losing or overwriting the repository secret loses the key that unwraps
+  every stored connector credential. Rotation is ruled out: it orphans existing envelopes (calendar autojoin's Google
+  credentials among them).
+
+  **Plan (TC-3895):**
+  1. A one-off workflow on `main` copies the value one time into the owner's TinyCloud Secrets. Security reviews that
+     workflow, and it prints no value.
+  2. The GitHub copy then goes from repository secrets into the `production-api` environment with the move steps
+     below, starting at step 2. The TinyCloud Secrets copy is the source of truth for steps 2 and 3.
 
 ### 2. The other repository secrets read only by production deploy jobs
 
@@ -216,8 +232,10 @@ Before: the 24 secrets above are repository secrets. After: each exists only in 
 
 ### Repository secrets no workflow on `main` references
 
-- `QA_MAIL_ADDRESS_SECRET`, `QA_MAIL_READ_TOKEN` (both set 2026-11-22). Not read by any workflow on `main` at
-  28b469e3. If they are for an open PR, that PR should read them from an environment; otherwise remove them.
+- `QA_MAIL_ADDRESS_SECRET`, `QA_MAIL_READ_TOKEN` (both set 2026-11-22). Both are for the TinyChat embed gate (branch
+  `qa/embed-gate-tinychat`). Its job declares a main-only environment, proposed name `qa-embed-gate`. When that
+  workflow lands on `main`, both go into that environment with the move steps above (step 4 is that workflow's first
+  green run on `main`), and the repository copies are deleted. Their source of truth is qa-mail.
 
 Org secrets visible to this repository that no workflow here reads: `NPM_TOKEN`, `CLOUDFLARE_ACCOUNT_ID` (the latter
 also exists in `release-push`, which is what `deploy-production.yml` reads). Removing tinychat from `NPM_TOKEN`'s
