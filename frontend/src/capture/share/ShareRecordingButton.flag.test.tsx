@@ -1,12 +1,10 @@
-// TC-3195: the Share button shows on every shareable recording; Settings → "Show hidden features" no longer gates
-// it.
+// TC-3195: the Share button shows on every shareable recording.
 import { afterEach, expect, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { installDom } from "@/test/dom";
-import { resetHiddenFeaturesForTest } from "@/lib/hiddenFeatures";
 import { sentShares } from "@/lib/nativeShares/sentShares";
 import type { LibraryItem } from "../library/LibraryRow";
 import { ShareRecordingButton, type ShareableRecording } from "./ShareRecordingSheet";
@@ -19,7 +17,6 @@ let root: Root | undefined;
 afterEach(async () => {
   if (root) act(() => root!.unmount());
   root = undefined;
-  resetHiddenFeaturesForTest();
   await sentShares.bind(null);
   restore?.(); restore = undefined;
 });
@@ -33,7 +30,7 @@ async function mount() {
   return () => host.querySelector('[data-testid="share-recording"]');
 }
 
-test("with hidden features off, an unshared recording has a Share button", async () => {
+test("an unshared recording has a Share button", async () => {
   const button = await mount();
   expect(button()).not.toBeNull();
 });
