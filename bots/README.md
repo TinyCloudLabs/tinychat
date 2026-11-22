@@ -4,6 +4,9 @@ Tiny bots, slice 1 (TC-2808): each owner's Main bot is an OMP agent in its own g
 backend calls this service; browsers never do. The interface is piece 1 of
 [`docs/plans/tiny-bots-slice1.md`](../docs/plans/tiny-bots-slice1.md).
 
+The owner sees the Main bot as TrustBot, a default name the owner can change (TC-3790). Its key stays `main` in code,
+addresses, storage and history.
+
 The service runs as its own Phala CVM with three containers (`docker-compose.phala.yml`), all from one image
 except the ingress:
 
@@ -162,9 +165,9 @@ OMP also probes `GET /models` and `GET /props` without a token at startup; the g
 Main can use the web only when its owner turns it on: in Main's chat, tap Web access and choose `off` (the default),
 `listed` (only the owner's sites, subdomains included) or `any` public site. Turning it on shows this warning first:
 
-> A web page can hide instructions meant for an AI. Main might follow them and put things you've told it into a search or a web address. Searches go to our search provider, Tavily. Our server fetches pages, so the sites see our server, not you. Don't open or paste links Main gives you unless you trust them.
+> A web page can hide instructions meant for an AI. TrustBot might follow them and put things you've told it into a search or a web address. Searches go to our search provider, Tavily. Our server fetches pages, so the sites see our server, not you. Don't open or paste links TrustBot gives you unless you trust them.
 >
-> This setting lets Main open pages you've never seen, and any of them could try this. "Only sites you list" is safer, but anyone who can post on those sites could still try it.
+> This setting lets TrustBot open pages you've never seen, and any of them could try this. "Only sites you list" is safer, but anyone who can post on those sites could still try it.
 
 The setting is saved by the supervisor in `/data/bots/<bot id>/web.json` and given to the gateway before each message;
 the gateway applies it on every call. A missing or unreadable file reads as `off`.

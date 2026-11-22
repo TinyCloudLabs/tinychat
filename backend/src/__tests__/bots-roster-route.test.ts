@@ -53,7 +53,7 @@ async function setup(upstream: Upstream = () => Response.json({}), extra: Partia
   return { seen, kv, registry, base, headersFor, close: () => new Promise<void>(resolve => server.close(() => resolve())) };
 }
 
-const main = { key: "main", name: "Main", shape: "pebble", colour: "blue", environment: "private", state: "active", createdAt: T0.toISOString() };
+const main = { key: "main", name: "TrustBot", shape: "pebble", colour: "blue", environment: "private", state: "active", createdAt: T0.toISOString() };
 
 describe("an owner's bots", () => {
   test("a new account's list holds Main, the flat limit of 3 and room to create", async () => {
@@ -623,7 +623,7 @@ describe("a bot that cannot be reached", () => {
       const other = await fetch(`${run.base}/${"1".repeat(32)}/messages`, { headers });
       expect([other.status, await other.json()]).toEqual([502, { error: "bot_unavailable", message: "This bot can't be reached right now. Try again shortly." }]);
       const mainBot = await fetch(`${run.base}/main/messages`, { headers });
-      expect([mainBot.status, await mainBot.json()]).toEqual([502, { error: "bot_unavailable", message: "Main isn't available. Try again later." }]);
+      expect([mainBot.status, await mainBot.json()]).toEqual([502, { error: "bot_unavailable", message: "TrustBot isn't available. Try again later." }]);
     } finally { await run.close(); }
   });
 });

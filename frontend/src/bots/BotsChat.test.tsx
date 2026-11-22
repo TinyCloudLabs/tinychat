@@ -75,10 +75,10 @@ async function sendMessage(host: HTMLElement, text: string) {
 test("Main is shown when the list of bots could not be read, and for a bot the list does not have", async () => {
   const { api } = fakeChatApi();
   const { host, draw } = await render({ controller: { status: "failed", roster: null }, selected: RESEARCH, api });
-  expect(title(host)).toBe("Main");
+  expect(title(host)).toBe("TrustBot");
   await draw("main", ready(bot("main", "Main"), bot(RESEARCH, "Research", { state: "deleting" })));
   await draw(RESEARCH);
-  expect(title(host)).toBe("Main");
+  expect(title(host)).toBe("TrustBot");
 });
 
 test("the confidential-model line shows for a private bot only", async () => {

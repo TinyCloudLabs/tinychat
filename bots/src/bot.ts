@@ -9,7 +9,7 @@ import { type ActivityRecord, HistoryJournal, type HistoryOptions, type StagedHi
 import { isRecord } from "./guards";
 import { type BotLayout, botLayout, type LayoutRoots } from "./layout";
 import { MESSAGING_STRINGS } from "./messaging-strings";
-import { BOT_ID, botIdFor, MAIN_KEY } from "./owner";
+import { BOT_ID, botIdFor, MAIN_BOT_NAME, MAIN_KEY } from "./owner";
 import { type DeleteSkip, lastUsed, markUsed, removeWorkingState } from "./retention";
 import { type Frame, type HostToolHandler, type HostToolReply, RpcError } from "./rpc";
 import { addressesIn } from "./web";
@@ -21,10 +21,10 @@ export const MAX_TEXT = 8000;
 
 /** Owner-visible sentences; never provider text. */
 export const ERROR_MESSAGES: Record<ErrorCode, string> = {
-  bot_unavailable: "Main isn't available. Try again later.",
-  model_unavailable: "Main's model isn't answering. Try again later.",
-  busy: "Main is still working on your last message. Send this one when it replies.",
-  at_capacity: "Main can't start right now because TinyCloud is running as many bots as it can. Your message wasn't sent. Try again shortly.",
+  bot_unavailable: `${MAIN_BOT_NAME} isn't available. Try again later.`,
+  model_unavailable: `${MAIN_BOT_NAME}'s model isn't answering. Try again later.`,
+  busy: `${MAIN_BOT_NAME} is still working on your last message. Send this one when it replies.`,
+  at_capacity: `${MAIN_BOT_NAME} can't start right now because TinyCloud is running as many bots as it can. Your message wasn't sent. Try again shortly.`,
   invalid: "Messages can be up to 8,000 characters.",
 };
 

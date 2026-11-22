@@ -9,7 +9,7 @@ import { Router } from "express";
 import type { Request, RequestHandler, Response } from "express";
 import { botCaps, CAP_MODE, type CapMode, type PlanName } from "../bot-caps";
 import { isBotActivityRecord } from "../bot-history.js";
-import { BOT_KEY, MAIN_BOT_KEY, orderedBots, publicBot, publicDeleted, type Bot, type BotsRegistry } from "../bots-registry";
+import { BOT_KEY, MAIN_BOT_KEY, MAIN_BOT_NAME, orderedBots, publicBot, publicDeleted, type Bot, type BotsRegistry } from "../bots-registry";
 
 export interface BotsConfig {
   serviceUrl: string;
@@ -28,7 +28,7 @@ export interface BotsConfig {
 // Legacy history may restore a sandbox before OMP can answer. Keep this GET bounded independently of turns.
 export const BOTS_HISTORY_GET_TIMEOUT_MS = 300_000;
 const MAX_TEXT = 8000;
-const UNAVAILABLE = { code: "bot_unavailable", message: "Main isn't available. Try again later." };
+const UNAVAILABLE = { code: "bot_unavailable", message: `${MAIN_BOT_NAME} isn't available. Try again later.` };
 
 /** Same canonical owner DID as MCP chat: did:pkh on chain 1 with the lowercased address. */
 export function botOwnerDid(address: string): string {

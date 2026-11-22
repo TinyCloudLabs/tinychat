@@ -11,7 +11,7 @@ import { BriefMarkdown } from "@/feed/BriefMarkdown";
 import { useOriginMoveDeferral } from "@/shell/OriginMoveNotice";
 import { MAX_MESSAGE_LENGTH, SendButton, sendOnEnter } from "./AskBox";
 import { BotAvatar } from "./BotAvatar";
-import { BOT_VIEW_STRINGS, BOTS_STRINGS, HISTORY_EXPIRY_NOTICE, HISTORY_RECONNECT_LABEL } from "./botsStrings";
+import { BOT_VIEW_STRINGS, BOTS_STRINGS, HISTORY_RECONNECT_LABEL } from "./botsStrings";
 import { historyNoticeDeadline, type HistoryNotice } from "./historyNotice";
 import { activityText, BotPanel } from "./BotPanel";
 import { DeleteBotConfirm, EditBotDialog, type BotManagement } from "./BotManage";
@@ -60,7 +60,7 @@ function ExpiryNotice({ bot, notice, acknowledge, onReconnect }: {
   const [renderedAt] = useState(Date.now);
   const [acknowledged, setAcknowledged] = useState<HistoryNotice | null>(null);
   const deleteAt = historyNoticeDeadline(acknowledged ?? notice, renderedAt);
-  const template = bot.key === "main" ? HISTORY_EXPIRY_NOTICE : BOT_VIEW_STRINGS.historyExpiryNotice(bot.name);
+  const template = BOT_VIEW_STRINGS.historyExpiryNotice(bot.name);
   const text = template.replace("{expiryDate}", new Date(notice.expiresAt).toLocaleDateString(undefined, { dateStyle: "medium" }))
     .replace("{deletionDate}", new Date(deleteAt).toLocaleDateString(undefined, { dateStyle: "medium" }));
   useEffect(() => {

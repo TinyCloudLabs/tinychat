@@ -6,6 +6,8 @@ export const BOT_ID = /^[0-9a-f]{64}$/;
 /** How an owner's bots are named: `main`, or the 32 hex characters the backend chose when it created the bot. */
 export const MAIN_KEY = "main";
 export const BOT_KEY = /^[0-9a-f]{32}$/;
+/** The main bot's name as the owner sees it, until the backend sends the name the owner gave it (TC-3790). */
+export const MAIN_BOT_NAME = "TrustBot";
 
 /** A path segment that names a bot: `main` or a sibling key. Checked before any id or path is built from it. */
 export function isBotKey(value: string): boolean {
