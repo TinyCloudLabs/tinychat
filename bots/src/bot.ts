@@ -443,10 +443,11 @@ export class Bot {
       await this.#deleting;
       if (this.#retired) { this.#busy = false; sink.error("bot_unavailable"); return; }
       try {
-        // TC-3933: a bot that has never had an archive grant has nothing to be archived, so it keeps no journal. Journaling
-        // starts when a grant arrives; the turns before it are not archived. Without this the journal only grows (nothing
-        // removes a batch until the working state is deleted, and that waits for the archive), fills at about 3.9 MiB and
-        // fails every turn from then on.
+        // TC-3933: a bot that has never had an archive grant starts no journal. Journaling starts when a grant arrives; the
+        // turns before it are not archived. Without this the journal only grows (nothing removes a batch until the working
+        // state is deleted, and that waits for the archive), fills at about 3.9 MiB and fails every turn from then on. A
+        // journal such a bot already holds is kept as it is, not written to and not deleted; New chat and the sweep still
+        // delete the bot with it.
         const journal = this.#journal();
         const granted = this.#hasGrant();
         if (granted) {
@@ -458,9 +459,6 @@ export class Bot {
           });
           journal.startDraft();
           turnJournal = journal;
-        } else {
-          journal.discard();
-          this.#history = undefined;
         }
       } catch (error) {
         if (error instanceof Error && error.message === "history_full") log("history_full", this.layout.botId);
@@ -808,7 +806,11 @@ export class Bot {
           // Signature checks await: closing or a newly appended message can change eligibility meanwhile.
           if (closing()) cause = "closing";
           else if (!noWorkingState) {
-            cause = this.#options.history && this.#hasGrant() && (!covered || !this.#history?.covered) && !this.#history?.expiryDue()
+            // TC-3933: until the cause of the lost archive is settled, the retention sweep and the expiry sweep do not delete the
+            // state of a bot that never had a grant, as before the journal stopped being kept for it. Only the owner's own
+            // New chat or deletion does.
+            if (this.#options.history && !this.#hasGrant() && reason !== "new_chat" && reason !== "deleted") cause = "ungranted_retained";
+            else cause = this.#options.history && this.#hasGrant() && (!covered || !this.#history?.covered) && !this.#history?.expiryDue()
               ? "archive_pending" : await removeWorkingState(this.layout, this.#launcher);
           }
         }
@@ -879,12 +881,6 @@ export class Bot {
   #hasGrant(): boolean {
     if (!this.#options.history) return false;
     return this.#journal().everGranted || (this.#grantSeen !== undefined && this.#grantSeen > Date.now());
-  }
-  /** Drops the journal of a bot that was never granted, if nothing is using it. For the sweep, which reaches bots that no turn will. */
-  dropUngrantedJournal(): void {
-    if (!this.#options.history || this.inUse || this.#deleting || this.#retired || !existsSync(join(this.layout.dataDir, "history.json")) || this.#hasGrant()) return;
-    this.#journal().discard();
-    this.#history = undefined;
   }
   historyPermission(owner: string, expiresAt?: number, validUntil?: number) {
     if (expiresAt === undefined && typeof validUntil === "number" && Number.isFinite(validUntil) && validUntil > Date.now()) {
@@ -1195,7 +1191,6 @@ export class BotManager {
       if (this.#closing) return;
       try {
         const bot = this.#bot(botId);
-        bot.dropUngrantedJournal();
         if (bot.historyExpiryDue(now) && !bot.inUse) { await this.deleteWorkingState(botId, "permission_expired"); continue; }
         const used = lastUsed(botLayout(botId, this.#roots));
         if (used === undefined || now - used <= retentionMs || this.#bots.get(botId)?.inUse) continue;

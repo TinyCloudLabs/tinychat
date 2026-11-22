@@ -101,21 +101,21 @@ describe("a bot that never had a grant", () => {
     expect(existsSync(journalOf(sibling.layout))).toBe(false);
   });
 
-  test("a sibling past the old cap still works, and the old journal is dropped on the turn", async () => {
+  test("a sibling past the old cap still works, and its old journal is kept", async () => {
     const { manager } = setup();
     const sibling = manager.forBot(OWNER, KEY);
     filled(sibling.layout, false);
     expect(existsSync(journalOf(sibling.layout))).toBe(true);
     expect(await turn(sibling)).toBe("done");
-    expect(existsSync(journalOf(sibling.layout))).toBe(false);
+    expect(existsSync(journalOf(sibling.layout))).toBe(true);
     expect(spy.mock.calls.some(call => String(call[0]).includes("history_full"))).toBe(false);
   });
 
-  test("the sweep drops the journal of an idle bot that no turn will reach", () => {
+  test("the sweep keeps the journal of an idle bot", () => {
     const { manager } = setup();
     const main = manager.forOwner(OWNER);
     filled(main.layout, false);
-    return manager.sweepUnused(30 * DAY).then(() => expect(existsSync(journalOf(main.layout))).toBe(false));
+    return manager.sweepUnused(30 * DAY).then(() => expect(existsSync(journalOf(main.layout))).toBe(true));
   });
 
   test("New chat deletes its state at once, the journal included", async () => {
@@ -127,13 +127,13 @@ describe("a bot that never had a grant", () => {
     expect(existsSync(main.layout.dataDir)).toBe(false);
   });
 
-  test("the unused sweep deletes it", async () => {
+  test("the unused sweep keeps it", async () => {
     const { manager } = setup();
     const main = manager.forOwner(OWNER);
     filled(main.layout, false);
     writeFileSync(main.layout.stateSnapshot, "notes");
     await manager.sweepUnused(30 * DAY, Date.now() + 31 * DAY);
-    expect(existsSync(main.layout.dataDir)).toBe(false);
+    expect(existsSync(main.layout.dataDir)).toBe(true);
   });
 
   test("deleting a sibling goes ahead", async () => {
