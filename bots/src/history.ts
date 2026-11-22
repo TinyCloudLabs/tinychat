@@ -1,5 +1,5 @@
 // TC-2808: supervisor-owned journal and receipt barrier, outside all sandbox binds.
-import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeSync } from "node:fs";
+import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, writeSync } from "node:fs";
 import { createHash, randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { recoverMessageAddress } from "viem";
@@ -131,12 +131,6 @@ export class HistoryJournal {
    * a receipt was accepted (journals from before permissionValidUntil was kept have none), or one has expired and left its notice. A bot that never had one has no archive to be covered by.
    */
   get everGranted(): boolean { return this.#state.permissionValidUntil !== undefined || this.#state.notice !== undefined || this.#state.receipts.length > 0; }
-  /** Removes the journal file and starts over empty. Only for a bot that was never granted: nothing in it was ever to be archived. */
-  discard() {
-    rmSync(this.#path, { force: true });
-    rmSync(this.#path + ".new", { force: true });
-    this.#state = { v: 1, generation: randomBytes(16).toString("hex"), owner: "", ...(this.layout.botKey ? { key: this.layout.botKey } : {}), legacyPending: existsSync(this.layout.stateSnapshot), batches: [], receipts: [] };
-  }
   messages() {
     return this.#state.batches.flatMap(batch => {
       const record = batch.record as { type?: string; text?: string; at?: string; origin?: string; decision?: string; secret?: unknown; outcome?: { messageId?: string } };
