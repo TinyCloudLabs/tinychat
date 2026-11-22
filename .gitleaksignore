@@ -1,7 +1,7 @@
 # gitleaks baseline (.github/workflows/gitleaks.yml). Each line is a finding fingerprint, commit:file:rule:line, that
 # was reviewed and is not a live credential: test fixtures, public identifiers, code constants. A finding not listed
 # here fails the Gitleaks check. Recorded 2026-11-22 with gitleaks 8.30.1 over the full history of main
-# (28b469e3833a863152e9b52d82a83a40316b9760), refreshed to d966da4d808dcb96cd3369934df4ced3cd6b1be3; the review per
+# (28b469e3833a863152e9b52d82a83a40316b9760), refreshed to 11ec789a635c364af481ac83685be98f836a1f1f; the review per
 # file is in docs/security/required-checks.md.
 # To add one: confirm it is not a live secret (anything possibly live goes to security, and gets rotated, never
 # listed), then add the fingerprint gitleaks prints, in a PR of its own. A PR is scanned with its base commit's
@@ -87,8 +87,14 @@ c331beb9c147e7fb1342c374565eced5e48ca002:backend/src/__tests__/webhook-verify.te
 # bots-regular/src/__tests__/regular.test.ts
 2e88e1e9c24967331f54721abfe5538aee07c15c:bots-regular/src/__tests__/regular.test.ts:generic-api-key:10
 
+# bots-regular/src/__tests__/role-prompt.test.ts
+bb8f9ef546047b547539d625ff89a8dfaadeb15f:bots-regular/src/__tests__/role-prompt.test.ts:generic-api-key:5
+
 # bots/src/__tests__/asks-gateway.test.ts
 0a24337004d440509c1f022f6d4b20bc9b361679:bots/src/__tests__/asks-gateway.test.ts:generic-api-key:258
+
+# bots/src/__tests__/role.test.ts
+bb8f9ef546047b547539d625ff89a8dfaadeb15f:bots/src/__tests__/role.test.ts:generic-api-key:11
 
 # frontend/.env.production
 366133749c998ea0d985a7a57ae10a0a16b6ce41:frontend/.env.production:generic-api-key:12

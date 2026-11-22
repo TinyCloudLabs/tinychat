@@ -5,7 +5,7 @@
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import type { Sandbox, SandboxLauncher } from "../../bots/src/bot";
-import type { BotLayout } from "../../bots/src/layout";
+import { type BotLayout, botRole } from "../../bots/src/layout";
 import { SANDBOX_SESSION_DIR } from "../../bots/src/oci";
 import { RpcChannel } from "../../bots/src/rpc";
 import { type BridgeConnection, connectBridge } from "./bridge-client";
@@ -96,6 +96,7 @@ export class RegularLauncher implements SandboxLauncher {
         BOT_TOKEN: gatewayToken,
         BOT_GATEWAY_URL: `${this.#options.gatewayOrigin}/bots/${layout.botId}/v1`,
         BOT_MODEL: this.#options.model,
+        BOT_ROLE: botRole(layout),
       }, 30);
       if (armed.exitCode !== 0) throw new Error("bridge not armed");
       const open = await connectBridge(await this.#provider.endpoint(id, BRIDGE_PORT), bridgeToken, deadline);

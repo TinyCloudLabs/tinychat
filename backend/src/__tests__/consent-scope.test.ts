@@ -14,7 +14,6 @@ import { verifyTranscriptWriterGrant } from "../delegation-verify.js";
 import { activateVerifiedDelegation } from "../portable-delegation.js";
 import { createDelegationRouter } from "../routes/delegations.js";
 import { transcriptDeliveryConfigFromEnv } from "../services/transcription-api.js";
-import { RETENTION_WINDOW_DAYS } from "../services/content-store.js";
 import { GOOGLE_AUTOJOIN_SCOPES, GOOGLE_MEET_SCOPES } from "../services/google-oauth.js";
 import { makeSignedTranscriptGrant, type SignedTranscriptGrant } from "./helpers/transcript-grant.js";
 import {
@@ -439,17 +438,11 @@ describe("the Option-C truth pass — the records describe the selected product"
     expect(doc).toMatch(/flipping the flag is an operator action/i);
   });
 
-  it("describes BOTH server roles in the deploy doc, each scoped to who gets it", () => {
+  it("describes the server role in the deploy doc", () => {
     const doc = readDoc(DEPLOYMENT_DOC);
     expect(doc).toContain("Option C");
     expect(doc).toContain("/api/connectors/webhooks/ack");
-    expect(doc).toMatch(/(?:outside the cohort|non-cohort)[\s\S]{0,400}never receives .{0,40}Fireflies (?:API )?key/i);
-    expect(doc).toMatch(/holds a per-user Fireflies OAuth credential/i);
-    expect(doc).toMatch(/full-account/i);
-    expect(doc).toMatch(/keeps its own copy/i);
-    expect(doc).toMatch(/encrypted under\s+`CONNECTOR_CONTENT_MASTER`/);
-    expect(doc).toMatch(new RegExp(`\\*\\*${RETENTION_WINDOW_DAYS} days\\*\\*`));
-    expect(doc).toMatch(/deletes the stored\s+meetings and the credential/i);
+    expect(doc).toMatch(/never receives .{0,40}Fireflies (?:API )?key/i);
     expect(doc).toMatch(/no connector delegation/i);
   });
 });

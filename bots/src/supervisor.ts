@@ -13,6 +13,7 @@ import { createApp } from "./server";
 
 const DAY_MS = 24 * 60 * 60_000;
 const SWEEP_MS = 6 * 60 * 60_000;
+const ASK_SWEEP_MS = 15 * 60_000;
 
 const cfg = supervisorConfig(process.env);
 // Which siblings the backend has announced, per owner. On the data volume, beside the bots' own directories (which
@@ -51,6 +52,11 @@ const sweep = () => void bots.sweepUnused(cfg.retentionDays * DAY_MS);
 sweep();
 const sweeps = setInterval(sweep, SWEEP_MS);
 sweeps.unref();
+// Owners' questions from Main: the text of an expired question, or of an answer Main was never told, goes on time even if
+// nobody opens the chat (the stores also apply the clock whenever they are touched).
+bots.sweepAsks();
+const askSweeps = setInterval(() => bots.sweepAsks(), ASK_SWEEP_MS);
+askSweeps.unref();
 
 let stopping = false;
 for (const signal of ["SIGTERM", "SIGINT"] as const) {
@@ -58,6 +64,7 @@ for (const signal of ["SIGTERM", "SIGINT"] as const) {
     if (stopping) return;
     stopping = true;
     clearInterval(sweeps);
+    clearInterval(askSweeps);
     void bots.stopAll().finally(() => process.exit(0));
   });
 }

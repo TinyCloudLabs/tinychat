@@ -51,7 +51,7 @@ tests:
       - insert_at: redact
         type: vrl
         source: |
-          . = {"message": "[startup] FATAL: CONNECTOR_CONTENT_MASTER must not reuse WEBHOOK_HMAC_MASTER — one compromise", "level": 3, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+          . = {"message": "[startup] FATAL: CONNECTOR_CREDENTIAL_MASTER must not reuse WEBHOOK_HMAC_MASTER — one compromise", "level": 3, "timestamp": now(), "_tc.logship": "tinychat-backend"}
     outputs:
       - extract_from: allowlist
         conditions:
@@ -932,3 +932,87 @@ tests:
             source: |
               assert_eq!(.event, "agent_chat_budget_preflight")
     no_outputs_from: [other_cap, request_routine_cap, request_problem_cap]
+  - name: "TC-3734 settled turn keeps its declared counts and enums and nothing the backend did not declare"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "{\"event\":\"agent_turn_settled\",\"raw_credits\":412,\"charged\":320,\"window_kind\":\"day\",\"outcome\":\"limit_stop\",\"started_attempts\":3,\"address\":\"0xAbC1230000000000000000000000000000dEf456\",\"message\":\"PROMPT-CANARY\",\"request_id\":\"0b6f2c1e-9d4a-4e7b-8c3f-2a1d5e6f7a8b\"}", "level": 6, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+    outputs:
+      - extract_from: allowlist
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.event, "agent_turn_settled")
+              assert_eq!(.svc, "backend")
+              assert_eq!(.level, "info")
+              assert_eq!(.raw_credits, 412)
+              assert_eq!(.charged, 320)
+              assert_eq!(.window_kind, "day")
+              assert_eq!(.outcome, "limit_stop")
+              assert_eq!(.started_attempts, 3)
+              assert_eq!(keys(.), ["charged", "event", "level", "outcome", "raw_credits", "started_attempts", "svc", "ts", "window_kind"])
+              assert!(!contains(encode_json(.), "CANARY"))
+              assert!(!contains(encode_json(.), "0xAbC"))
+  - name: "TC-3734 settled turn without started_attempts ships; an out-of-range started_attempts is omitted"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "{\"event\":\"agent_turn_settled\",\"raw_credits\":0,\"charged\":0,\"window_kind\":\"week\",\"outcome\":\"cancelled\",\"started_attempts\":5000}", "level": 6, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+    outputs:
+      - extract_from: allowlist
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.window_kind, "week")
+              assert_eq!(.outcome, "cancelled")
+              assert_eq!(keys(.), ["charged", "event", "level", "outcome", "raw_credits", "svc", "ts", "window_kind"])
+  - name: "TC-3734 settled turn with an out-of-set or out-of-range value is dropped"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "{\"event\":\"agent_turn_settled\",\"raw_credits\":10,\"charged\":10,\"window_kind\":\"month\",\"outcome\":\"success\"}", "level": 6, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "{\"event\":\"agent_turn_settled\",\"raw_credits\":10,\"charged\":10,\"window_kind\":\"day\",\"outcome\":\"alice@example.com\"}", "level": 6, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "{\"event\":\"agent_turn_settled\",\"raw_credits\":-1,\"charged\":0,\"window_kind\":\"day\",\"outcome\":\"success\"}", "level": 6, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "{\"event\":\"agent_turn_settled\",\"raw_credits\":10.5,\"charged\":10,\"window_kind\":\"day\",\"outcome\":\"success\"}", "level": 6, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "{\"event\":\"agent_turn_settled\",\"raw_credits\":10,\"charged\":\"10\",\"window_kind\":\"day\",\"outcome\":\"success\"}", "level": 6, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "{\"event\":\"agent_turn_settled\",\"raw_credits\":10000001,\"charged\":10,\"window_kind\":\"day\",\"outcome\":\"success\"}", "level": 6, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "{\"event\":\"agent_turn_settled\",\"raw_credits\":10,\"charged\":1000001,\"window_kind\":\"day\",\"outcome\":\"success\"}", "level": 6, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "{\"event\":\"agent_turn_settled\",\"charged\":10,\"window_kind\":\"day\",\"outcome\":\"success\"}", "level": 6, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+    no_outputs_from: [allowlist]
+  - name: "TC-3734 settled turn has its own lane and never reaches the request or generic caps"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "{\"event\":\"agent_turn_settled\",\"raw_credits\":80,\"charged\":80,\"window_kind\":\"day\",\"outcome\":\"success\"}", "level": 6, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+    outputs:
+      - extract_from: turn_settled_cap
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.event, "agent_turn_settled")
+    no_outputs_from: [other_cap, request_routine_cap, request_problem_cap, budget_preflight_cap]

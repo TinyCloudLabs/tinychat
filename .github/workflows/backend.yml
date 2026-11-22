@@ -62,9 +62,11 @@ jobs:
             relevant=false
             while IFS= read -r file; do
               case "$file" in
-                backend/* | packages/* | patches/* | package.json | bun.lock | turbo.json | docker-compose*.yml \
-                | log-shipper/* | .github/scripts/* | .github/deploy-tools/* | .github/workflows/deploy-backend-phala.yml \
-                | .github/workflows/backend.yml | scripts/home-feed/* | scripts/agent-sync/*)
+                # bots/src/tool-policy.ts: backend/src/__tests__/bots-service-routes.test.ts reads the never-list from it.
+                backend/* | bots/src/tool-policy.ts | packages/* | patches/* | package.json | bun.lock | turbo.json \
+                | docker-compose*.yml | log-shipper/* | .github/scripts/* | .github/deploy-tools/* \
+                | .github/workflows/deploy-backend-phala.yml | .github/workflows/backend.yml | scripts/home-feed/* \
+                | scripts/agent-sync/*)
                   relevant=true
                   echo "relevant=true: $file matches a backend path"
                   break ;;

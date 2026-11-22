@@ -58,7 +58,6 @@ import { FirstScreenControl } from "../home/FirstScreenControl";
 import { ChatViewSetting } from "../bots/ChatViewControl";
 import { TinyCloudSettings } from "./TinyCloudSettings";
 import { AppLockSettings } from "./AppLockSettings";
-import { HiddenFeaturesSettings } from "./HiddenFeaturesSettings";
 import { LegacyDataLinks } from "./LegacyDataLinks";
 import { CardMdSettings } from "@/feed/CardMdSettings";
 
@@ -218,7 +217,6 @@ export function SettingsPage({
             </div>
           </SectionCard>
           <AppLockSettings />
-          <HiddenFeaturesSettings />
           <SectionCard icon={LayoutGridIcon} title="Start screen">
             <FirstScreenControl tcw={tcw} did={did} />
           </SectionCard>
