@@ -114,13 +114,15 @@ export async function askConnectorKeyAccess(
   if (connected.address.toLowerCase() !== owner || !sameSession()) return "session-changed";
   tcw.setRuntimePermissionSigner({ signMessage: async (message) => (await connected.openkey.signMessage({ message })).signature });
   const sessionEnds = Date.parse(/^Expiration Time:\s*(\S+)/im.exec(session.siwe)?.[1] ?? "");
-  const expiryMs = Math.min(CONNECTOR_KEY_ACCESS_MAX_MS, sessionEnds - now());
+  // Read the clock before asking: the node starts the grant at approval, so `requestedAt + expiryMs` never outlives it.
+  const requestedAt = now();
+  const expiryMs = Math.min(CONNECTOR_KEY_ACCESS_MAX_MS, sessionEnds - requestedAt);
   if (!Number.isFinite(expiryMs) || expiryMs <= 0) return "session-expired";
   const result = await tcw.requestPermissions(permissions, { expiryMs });
   if (!result.approved) return "declined";
   if (!sameSession()) return "session-changed";
   if (!tcw.hasPermissions(permissions)) return "declined";
-  const endsAt = now() + expiryMs;
+  const endsAt = requestedAt + expiryMs;
   for (const d of connectors) {
     rememberAccessEnd(owner, d.id, endsAt);
     pausedKeys.delete(pausedKey(owner, d.id));
