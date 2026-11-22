@@ -217,20 +217,24 @@ function cellNum(row: unknown[], idx: number): number | null {
 const FIREFLIES_KV_READ_CONCURRENCY = 8;
 
 /**
- * Extract the node-supplied write timestamp (`last-modified` / `lastModified`) from KV response
- * headers. Never falls back to attacker-controlled JSON body fields (`startedAt` / `importedAt`).
+ * Extract the node-supplied write timestamp (`lastModified` / `last-modified`) from KV response
+ * headers (`@tinycloud/sdk-services` `KVResponseHeaders`). Never falls back to attacker-controlled
+ * JSON body fields (`startedAt` / `importedAt`).
  */
 function nodeLastModifiedFromHeaders(headers: unknown): string | undefined {
   if (!headers || typeof headers !== "object") return undefined;
-  const record = headers as Record<string, unknown>;
+  const record = headers as Record<string, unknown> & { get?: (name: string) => string | null };
+  const fromGetter = typeof record.get === "function" ? record.get("last-modified") : null;
   const raw =
     typeof record.lastModified === "string"
       ? record.lastModified
-      : typeof record["last-modified"] === "string"
-        ? record["last-modified"]
-        : typeof record["Last-Modified"] === "string"
-          ? record["Last-Modified"]
-          : undefined;
+      : typeof fromGetter === "string"
+        ? fromGetter
+        : typeof record["last-modified"] === "string"
+          ? record["last-modified"]
+          : typeof record["Last-Modified"] === "string"
+            ? record["Last-Modified"]
+            : undefined;
   if (!raw) return undefined;
   const parsed = Date.parse(raw);
   return Number.isFinite(parsed) ? new Date(parsed).toISOString() : undefined;

@@ -516,6 +516,32 @@ describe("MCP Fireflies KV reader (PR-3)", () => {
     expect(discovered.discovery.scanLimited).toBe(true);
     expect(discovered.discovery.countKind).toBe("lower_bound");
 
+    // Verify kvTruncated reaches the user-facing MCP tool output (text + structured data).
+    const pagedTools = createMcpMeetingTools(() => pagedPort, {
+      firefliesKvEnabled: true,
+      readFirefliesPurgeLedger: ABSENT_LEDGER,
+    });
+    const pagedFind = await pagedTools.run({
+      name: TINYCLOUD_FIND_MEETINGS,
+      args: { source: "fireflies", limit: 10 },
+      owner: OWNER_DID,
+    });
+    expect(pagedFind.status).toBe(200);
+    const pagedResult = pagedFind.body.result as {
+      text: string;
+      data: {
+        discovery: { kvTruncated?: boolean; scanLimited: boolean; countKind: string };
+        corpus: { truncated: boolean };
+      };
+    };
+    expect(pagedResult.data.discovery.kvTruncated).toBe(true);
+    expect(pagedResult.data.discovery.scanLimited).toBe(true);
+    expect(pagedResult.data.discovery.countKind).toBe("lower_bound");
+    expect(pagedResult.data.corpus.truncated).toBe(true);
+    expect(pagedResult.text).toContain("at least ");
+    expect(pagedResult.text).toContain("Coverage is bounded");
+    expect(pagedResult.text).toContain("Server-imported meeting listing was truncated.");
+
     // HTTP port kvList + NaN limit guard + kvGetWithMeta.
     const rpcCalls: Array<{ name: string; arguments: Record<string, unknown> }> = [];
     const httpPort = createHttpMcpPort(

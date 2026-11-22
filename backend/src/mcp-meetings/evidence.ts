@@ -345,7 +345,7 @@ function projectResult(operation: MeetingOperation, outcomes: MeetingOutcome[], 
     excerpts: operation === "search" ? [...(item.summary ? [item.summary] : []), ...item.actionItems, ...item.excerpts] : [],
   }));
   const partial = outcomes.some(outcome => outcome.state === "unavailable" || outcome.state === "not_read" || outcome.state === "meeting_not_found" || ["invalid_json", "unsupported_shape", "size_limit", "access_denied", "unavailable", "timeout", "cancelled"].includes(outcome.body.state));
-  const truncated = Boolean(discovery?.scanLimited || (discovery && discovery.matchedCount > discovery.returnedCount)) || outcomes.some(outcome => outcome.coverage.omissionReasons.length > 0 || outcome.evidence.some(item => item.truncated));
+  const truncated = Boolean(discovery?.scanLimited || discovery?.kvTruncated || (discovery && discovery.matchedCount > discovery.returnedCount)) || outcomes.some(outcome => outcome.coverage.omissionReasons.length > 0 || outcome.evidence.some(item => item.truncated));
   const first = projected[0];
   const data = {
     contractVersion: 2 as const, outcomes, ...(discovery ? { discovery } : {}),
@@ -359,7 +359,8 @@ function projectResult(operation: MeetingOperation, outcomes: MeetingOutcome[], 
   };
   const text = operation === "find" ? `Found ${discovery?.countKind === "lower_bound" ? "at least " : ""}${discovery?.matchedCount ?? outcomes.length} matching meetings; returned ${outcomes.length} metadata records. Discovery does not inspect bodies.`
     : `Retrieved ${retained.length} purpose-supported meeting outcomes from ${outcomes.length} included records. Use retained evidence citations; body and coverage outcomes describe retrieval limitations.`;
-  return { text: text + (truncated || partial ? " Coverage is bounded; narrow the requested scope for more evidence." : ""), data };
+  const kvTruncationNote = discovery?.kvTruncated ? " Server-imported meeting listing was truncated." : "";
+  return { text: text + (truncated || partial ? " Coverage is bounded; narrow the requested scope for more evidence." : "") + kvTruncationNote, data };
 }
 export type MeetingToolResult = ReturnType<typeof projectResult>;
 /** Fit legacy and v2 together, measuring the real dispatcher wrapper and callback frame. */
