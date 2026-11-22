@@ -32,6 +32,7 @@ function specFor(owner: string, token: string) {
     stateMount: layout.stateMount,
     cgroupsPath: `/bots/${layout.botId}`,
     limits,
+    role: "main",
   });
   return { layout, spec };
 }

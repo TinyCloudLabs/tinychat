@@ -8,6 +8,8 @@ import { BRIDGE_PORT } from "./launcher";
 import { type ExecResult, SANDBOX_ID, type SandboxProvider } from "./provider";
 
 const BRIDGE = join(import.meta.dir, "..", "sandbox", "bridge.ts");
+/** The prompt files the sandbox image holds at /opt/tinycloud/prompts. */
+const PROMPTS = join(import.meta.dir, "..", "..", "bots", "sandbox", "prompts");
 
 interface Running {
   process: Subprocess<"ignore", "pipe", "inherit">;
@@ -74,7 +76,7 @@ export class LocalProvider implements SandboxProvider {
     this.#record(woke ? "wake" : "create", id);
     const child = Bun.spawn(["bun", BRIDGE, ...this.#agent], {
       cwd: files,
-      env: { PATH: process.env.PATH, HOME: files, BRIDGE_HOST: "127.0.0.1", BRIDGE_PORT: "0", ARM_PORT: "0" },
+      env: { PATH: process.env.PATH, HOME: files, BRIDGE_HOST: "127.0.0.1", BRIDGE_PORT: "0", ARM_PORT: "0", BOT_PROMPT_DIR: PROMPTS },
       stdin: "ignore",
       stdout: "pipe",
       stderr: "inherit",
