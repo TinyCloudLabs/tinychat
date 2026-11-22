@@ -8,6 +8,8 @@ import { closeSync, existsSync, fsyncSync, openSync, readFileSync, renameSync, w
 import { dirname } from "node:path";
 import { AskDesk, APP_TOOLS } from "./asks-desk";
 import type { AsksPush, NewAsk } from "./asks";
+import { MeetingDesk } from "./meeting-reads";
+import type { ReadsPush } from "./reads";
 import type { GatewayConfig } from "./config";
 import { isRecord } from "./guards";
 import { bearerMatches } from "./owner";
@@ -290,6 +292,8 @@ export interface GatewayDeps {
   now?: () => number;
   store?: BudgetStore;
   ownerStore?: OwnerStore;
+  /** TrustBot's meeting reads (meeting-reads.ts). Left out, the tools are never offered and every read is refused. */
+  meetings?: MeetingDesk;
 }
 
 /** Which owner each bot belongs to (bot id to owner id), so one owner's bots share a daily total across restarts. */
@@ -350,6 +354,7 @@ export class Gateway {
   readonly #known = new Map<string, Set<string>>();
   readonly #webUsed = new Map<string, WebUse>();
   readonly #asks = new AskDesk(() => this.#now(), botId => this.#owners.get(botId) ?? botId);
+  readonly #meetings: MeetingDesk;
   #webTotal = { searches: 0, pages: 0 };
   readonly #mcpOpen = new Map<string, number>();
   readonly #calling = new Set<string>();
@@ -379,6 +384,7 @@ export class Gateway {
       }
     }
     this.#ownerStore = deps.ownerStore;
+    this.#meetings = deps.meetings ?? new MeetingDesk({ backendOrigin: "", backendCallSecret: undefined });
     for (const [botId, ownerId] of Object.entries(this.#ownerStore?.load() ?? {})) this.#owners.set(botId, ownerId);
   }
 
@@ -401,6 +407,7 @@ export class Gateway {
     this.#tokens.delete(botId);
     this.#policy.delete(botId);
     this.#asks.drop(botId);
+    this.#meetings.drop(botId);
     this.#known.delete(botId);
   }
 
@@ -412,6 +419,11 @@ export class Gateway {
   /** The owner's setting for questions, with the supervisor's counts and cooldowns. Applies from the bot's next call. */
   setAsks(botId: string, push: AsksPush): void {
     this.#asks.push(botId, push);
+  }
+
+  /** The owner's read setting and the conversation it applies to. False when it names another bot's owner. */
+  setReads(botId: string, push: ReadsPush): boolean {
+    return this.#meetings.push(botId, push);
   }
 
   /** The questions the box has asked since the supervisor last collected them. */
@@ -584,9 +596,10 @@ export class Gateway {
   /**
    * Main's tools over MCP (Streamable HTTP, JSON replies, no session): `initialize`, `tools/list` and `tools/call`.
    * Two servers share this: `web` (search, fetch), always listed with the owner's setting applied on each call, and
-   * `app` (ask_owner), listed only while the owner's setting is on and checked again on each call. A setting change
-   * takes effect at the bot's next call, without restarting its sandbox. Both serve only the tools on their allow-list
-   * (tool-policy.ts): tools/list drops any other, and tools/call refuses any other name before dispatch.
+   * `app` (ask_owner and the meeting tools), each listed only while the owner's setting for it is on and checked again
+   * on each call. A setting change takes effect at the bot's next call, without restarting its sandbox. Both serve
+   * only the tools on their allow-list (tool-policy.ts): tools/list drops any other, and tools/call refuses any other
+   * name before dispatch.
    */
   async #mcp(botId: string, req: Request, server: "web" | "app"): Promise<Response> {
     const open = this.#mcpOpen.get(botId) ?? 0;
@@ -622,12 +635,16 @@ export class Gateway {
       }
       if (method === "ping") return Response.json(rpcResult(id, {}));
       // The app tools are offered only while the owner's setting is on; the call is checked again on every call.
-      if (method === "tools/list") return Response.json(rpcResult(id, { tools: servedTools<{ name: string }>(server, server === "app" ? (this.#asks.enabled(botId) ? APP_TOOLS : []) : TOOLS) }));
+      if (method === "tools/list") {
+        const tools = server === "app" ? [...(this.#asks.enabled(botId) ? APP_TOOLS : []), ...this.#meetings.tools(botId)] : TOOLS;
+        return Response.json(rpcResult(id, { tools: servedTools<{ name: string }>(server, tools) }));
+      }
       if (method === "tools/call") {
         const name = params.name;
         if (!toolAllowed(server, name)) return Response.json(rpcFailure(id, -32602, "Unknown tool"));
         const args = isRecord(params.arguments) ? params.arguments : {};
         if (server === "app") {
+          if (this.#meetings.handles(name)) return Response.json(rpcResult(id, await this.#meetings.call(botId, name, args)));
           if (name !== "ask_owner") return Response.json(rpcFailure(id, -32602, "Unknown tool"));
           return Response.json(rpcResult(id, this.#asks.call(botId, args)));
         }
@@ -665,6 +682,9 @@ export class Gateway {
       logCall(outcome);
       return toolText(WEB_ERRORS[error], true);
     };
+
+    // A conversation that holds the owner's data gets no web access until it is cleared (meeting-reads.ts).
+    if (this.#meetings.held(botId)) return refuse("held", "held", true);
 
     // A page needs only our own fetch process; a search needs the provider's key.
     if (!web || (tool === "search" && !web.key)) return refuse("unavailable", "unavailable");

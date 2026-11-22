@@ -11,7 +11,9 @@ export function createApiBodyParser() {
       (req.method === "POST" && (/^\/api\/delegations\/*$/i.test(req.path) || /^\/api\/exo\/v1\/grant\/*$/i.test(req.path))) ||
       req.path === "/api/nras-proxy" ||
       req.path.startsWith("/api/nras-proxy/") ||
-      isHostedPartPath(req.path)
+      isHostedPartPath(req.path) ||
+      // TrustBot's meeting reads verify a signature over the exact body bytes: the route reads them itself.
+      (req.method === "POST" && req.path.startsWith("/api/internal/bots/main/reads/"))
     ) {
       next();
       return;

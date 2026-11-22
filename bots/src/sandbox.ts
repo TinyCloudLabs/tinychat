@@ -17,6 +17,7 @@ import { RpcChannel } from "./rpc";
 import { COPY_FAILURES, type CopyFailure, hasSnapshot, STATE_INODES_PER_MB } from "./state";
 import { readWebPolicy } from "./web-policy";
 import { syncAsks } from "./asks";
+import { readsPush } from "./reads";
 
 const CGROUP_ROOT = "/sys/fs/cgroup";
 const CGROUP_CONTROLLERS = ["cpu", "memory", "pids"];
@@ -411,6 +412,7 @@ export class RunscHost implements SandboxLauncher {
       await this.#mountState(layout);
       restored = true;
       await this.#pushWeb(layout);
+      await this.pushReads(layout);
       await this.syncAsks(layout);
       await register();
       const spec = sandboxSpec(this.#baseSpec, {
@@ -464,6 +466,7 @@ export class RunscHost implements SandboxLauncher {
         exited,
         refreshEgress: async () => {
           await this.#pushWeb(layout);
+          await this.pushReads(layout);
           await register();
         },
         snapshot,
@@ -588,6 +591,14 @@ export class RunscHost implements SandboxLauncher {
 
   async #pushWeb(layout: BotLayout): Promise<void> {
     await this.#gateway("PUT", `/bots/${layout.botId}/web`, readWebPolicy(layout));
+  }
+
+  /**
+   * Gives the gateway the owner's read setting and the bot's conversation id, before the bot's token is registered
+   * and on every message, so the meeting tools are offered as the setting says and a fresh conversation is known.
+   */
+  async pushReads(layout: BotLayout): Promise<void> {
+    await this.#gateway("PUT", `/bots/${layout.botId}/reads`, readsPush(layout));
   }
 
   /** Today's web counts for one bot and whether the gateway has a provider key. */

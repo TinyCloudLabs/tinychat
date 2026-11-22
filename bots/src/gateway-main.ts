@@ -10,14 +10,18 @@
 //                         supervisor's counts (applies from the bot's next call)
 //   POST   /bots/<botId>/asks/drain              {"asks", "outside"}: the questions the bot has asked since the last drain, and
 //                         whether outside text has reached its conversation (a web call)
+//   PUT    /bots/<botId>/reads  {"areas", "owner"?, "conversation"}  the owner's read setting for Main (TrustBot) and the
+//                         id of its conversation (applies from the bot's next call)
 
 import { chmodSync, mkdirSync, readdirSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { Server } from "bun";
 import { BotAci } from "./aci";
 import { ADMISSION_CONTROL_PATH, createAdmissionRelay, MAX_ADMISSION_BYTES } from "./bot-admission";
 import { gatewayConfig } from "./config";
 import { fileBudgetStore, fileOwnerStore, Gateway } from "./gateway";
+import { fileHeldStore, MeetingDesk } from "./meeting-reads";
+import { parseReadsPush } from "./reads";
 import { isRecord } from "./guards";
 import { egressPaths } from "./layout";
 import { BOT_ID } from "./owner";
@@ -35,6 +39,8 @@ function startGateway(): Gateway {
     return new Gateway(cfg, {
       store: fileBudgetStore(cfg.budgetFile),
       ownerStore: cfg.ownersFile ? fileOwnerStore(cfg.ownersFile) : undefined,
+      // Which conversations hold the owner's data, beside the budget file; an unreadable file stops the start.
+      meetings: new MeetingDesk({ backendOrigin, backendCallSecret, store: fileHeldStore(join(dirname(cfg.budgetFile), "held.json")) }),
       verifiedFetch: aci ? (botId, url, init) => aci.fetch(botId, url, init) : undefined,
     });
   } catch (error) {
@@ -93,6 +99,13 @@ const control = Bun.serve({
     if (pathname === ADMISSION_CONTROL_PATH) return admit(req);
     const receiptMatch = /^\/bots\/([0-9a-f]{64})\/receipts$/.exec(pathname);
     if (req.method === "GET" && receiptMatch) return Response.json(aci?.take(receiptMatch[1]!) ?? []);
+    const readsMatch = /^\/bots\/([0-9a-f]{64})\/reads$/.exec(pathname);
+    if (readsMatch) {
+      if (req.method !== "PUT") return new Response(null, { status: 405 });
+      const push = parseReadsPush(await req.json().catch(() => null));
+      if (!push || !gateway.setReads(readsMatch[1]!, push)) return new Response(null, { status: 400 });
+      return new Response(null, { status: 204 });
+    }
     const asksMatch = /^\/bots\/([0-9a-f]{64})\/asks(\/drain)?$/.exec(pathname);
     if (asksMatch) {
       const asksBot = asksMatch[1]!;

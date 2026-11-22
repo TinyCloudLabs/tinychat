@@ -9,7 +9,13 @@ export type McpServer = "web" | "app";
 /** Every tool name the gateway may serve, per MCP server. A new tool is added here, and only if it is on no never-list. */
 export const ALLOWED_TOOLS: Readonly<Record<McpServer, readonly string[]>> = {
   web: ["search", "fetch"],
-  app: ["ask_owner", "request_secret", "list_secrets", "call_with_secret", "list_feed_cards", "read_card", "list_chats", "read_chat"],
+  app: [
+    "ask_owner", "request_secret", "list_secrets", "call_with_secret",
+    // TrustBot's meeting reads (meeting-reads.ts): read-only, through the owner's grant to TrustBot. TC-3792
+    "tinycloud_find_meetings", "tinycloud_read_meeting", "tinycloud_search_transcripts", "tinycloud_list_meeting_actions",
+    // TrustBot's feed and chat reads (feed-chat-tools.ts): read-only, through the same grant. TC-3794
+    "list_feed_cards", "read_card", "list_chats", "read_chat",
+  ],
 };
 
 export function toolAllowed(server: McpServer, name: unknown): name is string {

@@ -6,6 +6,7 @@ import type { BotAdmission } from "./bot-admission";
 import { type AsksSettings, type BotMessenger, type ErrorCode, ERROR_MESSAGES, type ListedMessage, MAX_TEXT, type TurnSink, type WebSettings } from "./bot";
 import { INVALID_HOSTS, parseWebPolicy, type WebPolicy } from "./web-policy";
 import { type AnswerInput, type AnswerResult, type AppOrigin, type AskReply, type AskRequest, parseAnswerInput } from "./asks";
+import { parseAreas, type ReadArea, type ReadsSetting } from "./reads";
 import { isRecord } from "./guards";
 import { ANNOUNCED_STATES, type AnnouncedState, type BotState, OwnerBotLimit } from "./manifest";
 import { legacyOwnerHeaderAccepted } from "./config";
@@ -31,7 +32,7 @@ const ALLOWED: Record<Operation, readonly BotState[]> = {
 };
 
 function operationOf(rest: string, method: string): Operation | undefined {
-  if (rest === "/web" || rest === "/asks" || rest === "/requests" || ANSWER_PATH.test(rest)) return "read";
+  if (rest === "/web" || rest === "/asks" || rest === "/reads" || rest === "/requests" || ANSWER_PATH.test(rest)) return "read";
   if (rest === "/messages") return method === "POST" ? "turn" : "read";
   if (rest === "/history" || rest === "/history/stage" || rest === "/history/permission" || rest === "/history/notice") return "history";
   return undefined;
@@ -53,6 +54,8 @@ export interface BotApi {
   /** The owner's setting for questions from Main, and their requests. Absent: the service does not have them (404). */
   asksSettings?(): Promise<AsksSettings>;
   setAsksEnabled?(enabled: boolean): Promise<AsksSettings>;
+  /** Which areas of the owner's data Main may read (reads.ts). Set by the backend once it holds the owner's grant. */
+  setReads?(owner: string, areas: ReadArea[]): Promise<ReadsSetting>;
   requests?(): Promise<AskRequest[]>;
   answerRequest?(id: string, input: AnswerInput): Promise<AnswerResult>;
   /** The message for Main that tells it what the owner decided; undefined unless decided and not yet delivered. */
@@ -249,7 +252,7 @@ export function createApp(options: AppOptions): (req: Request) => Promise<Respon
       } catch { return new Response(null, { status: 503 }); }
       return new Response(null, { status: 405 });
     }
-    if ((rest === "/web" || rest === "/asks" || rest === "/requests" || ANSWER_PATH.test(rest)) && key !== MAIN_KEY) return new Response(null, { status: 404 });
+    if ((rest === "/web" || rest === "/asks" || rest === "/reads" || rest === "/requests" || ANSWER_PATH.test(rest)) && key !== MAIN_KEY) return new Response(null, { status: 404 });
     const operation = operationOf(rest, req.method);
     if (!operation) return new Response(null, { status: 404 });
     // The state is read before a sibling is looked up, so a key nobody announced never creates anything.
@@ -261,6 +264,17 @@ export function createApp(options: AppOptions): (req: Request) => Promise<Respon
     const found = key === MAIN_KEY ? options.bots.forOwner(owner) : options.bots.forBot?.(owner, key);
     if (!found) return new Response(null, { status: 404 });
     const bot = found;
+    if (rest === "/reads") {
+      if (req.method !== "PUT" || !bot.setReads) return new Response(null, { status: bot.setReads ? 405 : 404 });
+      const input: unknown = await req.json().catch(() => null);
+      const areas = isRecord(input) && Object.keys(input).length === 1 ? parseAreas(input.areas) : undefined;
+      if (!areas) return Response.json({ error: "invalid" }, { status: 400 });
+      try {
+        return Response.json(await bot.setReads(owner, areas));
+      } catch {
+        return Response.json({ error: "bot_unavailable", message: ERROR_MESSAGES.bot_unavailable }, { status: 503 });
+      }
+    }
     if (rest === "/web") {
       try {
         if (req.method === "GET" && bot.webSettings) return Response.json(await bot.webSettings());
