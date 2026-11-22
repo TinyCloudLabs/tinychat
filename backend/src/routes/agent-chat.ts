@@ -42,8 +42,8 @@ import {
   hasMissingWeeklyLedgerAnchor,
   logCreditGateDeny,
 } from "../billing/ledger-gate.js";
-import { createTurnBudgetMonitor, MIN_TURN_CREDITS, parseBudgetPreflightMode, parseBudgetStopMode } from "../billing/turn-budget.js";
-import { noteRequestRecord, recordAfterHandler, recordAgentChatBudgetPreflight, type AgentChatBudgetSource, type StreamOutcome } from "../request-context.js";
+import { createTurnBudgetMonitor, minTurnCredits, parseBudgetPreflightMode, parseBudgetStopMode } from "../billing/turn-budget.js";
+import { noteRequestRecord, recordAfterHandler, recordAgentChatBudgetPreflight, recordAgentTurnSettled, type AgentChatBudgetSource, type StreamOutcome } from "../request-context.js";
 
 import { RECEIPT_AUDIT_TIMEOUT_MS, RedPillAciError, RedPillAttestationError, RedPillResponseLimitError, STREAMED_RESPONSE_UNVERIFIED_MESSAGE, redPillAciFetch } from "../redpill-aci.js";
 // Look up a model in the catalog and resolve its rates. Missing entries get the fallback.
@@ -1540,9 +1540,10 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
         res.status(500).json({ error: "internal_error", message: "Failed to resolve model rates" });
         return;
       }
-      recordAgentChatBudgetPreflight({ address, mode: budgetPreflightMode, remaining: budgetRemaining, minimum: MIN_TURN_CREDITS, tier: gatedTier, source: budgetSource });
-      if (budgetRemaining !== null && budgetPreflightMode !== "off" && budgetRemaining < MIN_TURN_CREDITS) {
-        console.info("[agent-chat] turn budget", { event: "preflight", mode: budgetPreflightMode, remaining: budgetRemaining, minimum: MIN_TURN_CREDITS });
+      const minimum = minTurnCredits(rates);
+      recordAgentChatBudgetPreflight({ address, mode: budgetPreflightMode, remaining: budgetRemaining, minimum, tier: gatedTier, source: budgetSource });
+      if (budgetRemaining !== null && budgetPreflightMode !== "off" && budgetRemaining < minimum) {
+        console.info("[agent-chat] turn budget", { event: "preflight", mode: budgetPreflightMode, remaining: budgetRemaining, minimum });
         if (budgetPreflightMode === "enforce") {
           res.status(402).json({ error: "credit_budget_exceeded", message: `Credit budget for the ${TIERS[gatedTier].name} tier is below the minimum for a turn.`, tier: gatedTier });
           return;
@@ -1648,6 +1649,7 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
             : code === "turn_timeout" || final?.outcome === "timed_out" ? "timed_out"
               : result.cancelled ? "cancelled" : "failed";
         const settled = settleReply({ address, tier: TIERS[gatedTier], anchor, startedAt, allowance, model: resolvedModel, usage: result.usage, rates, outcome, failureCause, deliveredOutput: streamedContent, executionId, flusher: config.flusher });
+        recordAgentTurnSettled({ rawCredits: settled.rawCredits, charged: settled.charged, windowKind: settled.windowKind, outcome, startedAttempts: result.usage.startedAttempts });
         noteRequestRecord(res, { credits: settled.charged });
       }
       console.info("[agent-chat] task accounting", {
@@ -1716,6 +1718,7 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
         : failure === "turn_timeout" ? "timed_out"
           : cancelledByClient ? "cancelled" : failure ? "failed" : "success";
       const settled = settleReply({ address, tier: TIERS[gatedTier], anchor, startedAt, allowance, model: resolvedModel, usage: orchestrateResult, rates, outcome, failureCause, deliveredOutput, executionId, flusher: config.flusher });
+      recordAgentTurnSettled({ rawCredits: settled.rawCredits, charged: settled.charged, windowKind: settled.windowKind, outcome });
       noteRequestRecord(res, { credits: settled.charged });
     }
     // Also await an already claimed timeout/cancellation terminal's drain.
