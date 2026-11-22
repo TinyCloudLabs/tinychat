@@ -51,7 +51,7 @@ tests:
       - insert_at: redact
         type: vrl
         source: |
-          . = {"message": "[startup] FATAL: CONNECTOR_CONTENT_MASTER must not reuse WEBHOOK_HMAC_MASTER — one compromise", "level": 3, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+          . = {"message": "[startup] FATAL: CONNECTOR_CREDENTIAL_MASTER must not reuse WEBHOOK_HMAC_MASTER — one compromise", "level": 3, "timestamp": now(), "_tc.logship": "tinychat-backend"}
     outputs:
       - extract_from: allowlist
         conditions:

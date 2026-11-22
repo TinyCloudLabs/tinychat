@@ -30,7 +30,6 @@ import { readFeedViewMode, saveFeedViewMode, type FeedViewMode } from "./feedVie
 import { SEEN_DWELL_MS, SEEN_THRESHOLDS, visibleEnoughToSee } from "./expandedSeen";
 import { FloatingHeader } from "./FloatingHeader";
 import { AgentsPill } from "./AgentMarks";
-import { useShowHiddenFeatures } from "@/lib/hiddenFeatures";
 import { PendingCard, type PendingItem } from "./PendingCard";
 import { MorphConfig, MorphItem, MotionFeatures } from "./densityMorph";
 import { FOCUS_DIM_CLASS, OPEN_STAGGER_CLASS, topInScroller } from "./focusRow";
@@ -374,8 +373,6 @@ type Row = { kind: "card"; item: HomeFeedEntry; retained?: boolean } | { kind: "
  * (/chat/feed/<card id>), opened once the feed has loaded, or a note when the feed holds no such card.
  */
 export function HomeFeedEntries({ source, ask, linked, finishSetup }: { source: HomeFeedSource; ask?: ReactNode; linked?: FeedCardLink | null; finishSetup?: ReactNode }) {
-  // The ask box and the Agents pill are hidden features (Sam, 11-17): shown only while Settings → Show hidden features is on.
-  const showHidden = useShowHiddenFeatures();
   useEffect(() => {
     void LazyAgentView.preload().catch(() => {});
     void LazyFilterPanel.preload().catch(() => {});
@@ -1322,7 +1319,7 @@ export function HomeFeedEntries({ source, ask, linked, finishSetup }: { source: 
         <header ref={headerRef} className="scroll-mt-4">
           <div className="flex min-w-0 items-center gap-2">
             <h1 className="min-w-0 flex-1 font-display text-[min(1.75rem,9vw)] font-semibold leading-[2.125rem] tracking-[-0.005em]">{NAV_LABEL_HOME}</h1>
-            {showHidden && !bare && pillAgents.length > 0 && <AgentsPill agents={pillAgents} unread={unreadReplies} open={agentPage !== null}
+            {!bare && pillAgents.length > 0 && <AgentsPill agents={pillAgents} unread={unreadReplies} open={agentPage !== null}
               onOpen={() => { if (agentPage !== null) { setAgentPage(null); return; } leaveView(); setAgentPage("list"); }} />}
           </div>
           <p className="mt-0.5 text-sm leading-[1.45] text-muted-foreground">{snapshot && !bare
@@ -1352,7 +1349,7 @@ export function HomeFeedEntries({ source, ask, linked, finishSetup }: { source: 
       </FloatingHeader>
       <SendPills items={pills} />
       <div inert={!!pageEntry || !!liftedShown}>
-      {showHidden && ask}
+      {ask}
       {finishSetup}
       {error && <div role="alert" className="mb-4 flex items-start gap-3 rounded-2xl bg-card px-4 py-3 text-sm leading-[1.45] shadow-[inset_0_0_0_1px_hsl(var(--border))]">
         <TriangleAlertIcon aria-hidden className="mt-px size-5 shrink-0 text-warning" />
