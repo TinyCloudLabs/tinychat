@@ -9,12 +9,13 @@ import {
 import {
   canonicalizeRegistryChangeRequest,
   canRequestRegistryChange,
+  canRequestRegistryUndo,
   countRecordChanges,
+  createRegistryEditorAdapter,
   deriveOpenKeyApiHost,
   displayCanonicalHost,
   fetchRegistryChangeHistory,
   readCurrentLocationRecord,
-  requestFromLocationRecord,
 } from "./adapter";
 
 const TEST_ACCOUNT = privateKeyToAccount("0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d");
@@ -103,7 +104,7 @@ describe("registryEditor adapter", () => {
     expect(wrongOwner).toEqual({ status: "error", reason: "invalid" });
   });
 
-  test("fetchRegistryChangeHistory parses strictly { history: [...] } and rejects unexpected shapes", async () => {
+  test("fetchRegistryChangeHistory verifies every row's previousRecord signature and owner key, and rejects unexpected shapes", async () => {
     const previousRecord = await makeSignedRecord({ sequence: 2 });
     const entry = {
       id: "chg_1",
@@ -115,7 +116,7 @@ describe("registryEditor adapter", () => {
     };
 
     const requests: Array<{ url: string; credentials?: RequestCredentials }> = [];
-    const okResult = await fetchRegistryChangeHistory("https://openkey.so", {
+    const okResult = await fetchRegistryChangeHistory("https://openkey.so", OWNER_DID, {
       fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
         requests.push({ url: String(input), credentials: init?.credentials });
         return new Response(JSON.stringify({ history: [entry] }), { status: 200 });
@@ -126,15 +127,33 @@ describe("registryEditor adapter", () => {
     ]);
     expect(okResult).toEqual({ status: "ok", history: [entry] });
 
+    // Tampered previousRecord signature fails verification -> whole list invalid.
+    const tamperedEntry = {
+      ...entry,
+      previousRecord: { ...previousRecord, sequence: previousRecord.sequence + 10 },
+    };
+    const tamperedRes = await fetchRegistryChangeHistory("https://openkey.so", OWNER_DID, {
+      fetch: (async () => new Response(JSON.stringify({ history: [entry, tamperedEntry] }), { status: 200 })) as unknown as typeof fetch,
+    });
+    expect(tamperedRes).toEqual({ status: "error", reason: "invalid" });
+
+    // Valid signature but different owner -> whole list invalid.
+    const otherOwnerRecord = await makeSignedRecord({ subject: OTHER_DID, sequence: 1 }, OTHER_ACCOUNT);
+    const wrongOwnerRes = await fetchRegistryChangeHistory("https://openkey.so", OWNER_DID, {
+      fetch: (async () =>
+        new Response(JSON.stringify({ history: [{ ...entry, previousRecord: otherOwnerRecord }] }), { status: 200 })) as unknown as typeof fetch,
+    });
+    expect(wrongOwnerRes).toEqual({ status: "error", reason: "invalid" });
+
     // Unexpected shapes must all fail with reason: "invalid" (no defensive multi-shape fallback).
     for (const badBody of [[entry], { items: [entry] }, { history: [{ id: "only-id" }] }, "nope"]) {
-      const res = await fetchRegistryChangeHistory("https://openkey.so", {
+      const res = await fetchRegistryChangeHistory("https://openkey.so", OWNER_DID, {
         fetch: (async () => new Response(JSON.stringify(badBody), { status: 200 })) as unknown as typeof fetch,
       });
       expect(res).toEqual({ status: "error", reason: "invalid" });
     }
 
-    const down = await fetchRegistryChangeHistory("https://openkey.so", {
+    const down = await fetchRegistryChangeHistory("https://openkey.so", OWNER_DID, {
       fetch: (async () => { throw new Error("offline"); }) as unknown as typeof fetch,
     });
     expect(down).toEqual({ status: "error", reason: "unreachable" });
@@ -177,22 +196,43 @@ describe("registryEditor adapter", () => {
     expect(() => canonicalizeRegistryChangeRequest({ nodes: [{ url: "not-a-url" }] })).toThrow();
   });
 
-  test("requestFromLocationRecord maps a signed v2 record to canonical request inputs including encryptionNode URL", async () => {
-    const record = await makeSignedRecord();
-    expect(requestFromLocationRecord(record)).toEqual({
-      nodes: [
-        { url: "https://node.tinycloud.xyz", did: NODE_A_DID },
-        { url: "https://vault.example.com:8443", did: NODE_B_DID },
-      ],
-      spaces: [
-        { space: SPACE_DEFAULT, nodes: [{ url: "https://node.tinycloud.xyz", mode: "read-write" }] },
-        { space: SPACE_FEED, nodes: [{ url: "https://vault.example.com:8443", mode: "read-only" }] },
-      ],
-      encryptionNode: "https://vault.example.com:8443",
-    });
+  test("createRegistryEditorAdapter derives canEdit and canUndo from the OpenKey client and forwards calls", async () => {
+    const noMethods = createRegistryEditorAdapter({ openkey: {} });
+    expect(noMethods.canEdit).toBe(false);
+    expect(noMethods.canUndo).toBe(false);
+    await expect(noMethods.requestChange({ nodes: [{ url: "https://node.tinycloud.xyz" }] })).rejects.toThrow();
+    await expect(noMethods.requestUndo({ historyId: "chg_1" })).rejects.toThrow();
 
-    const noEnc = await makeSignedRecord({ encryptionNode: null });
-    expect(requestFromLocationRecord(noEnc).encryptionNode).toBeNull();
+    const changeOnly = createRegistryEditorAdapter({
+      openkey: { requestRegistryChange: async () => ({ status: "cancelled" }) },
+    });
+    expect(changeOnly.canEdit).toBe(true);
+    expect(changeOnly.canUndo).toBe(false);
+
+    const undoOnly = createRegistryEditorAdapter({
+      openkey: { requestRegistryUndo: async () => ({ status: "cancelled" }) },
+    });
+    expect(undoOnly.canEdit).toBe(false);
+    expect(undoOnly.canUndo).toBe(true);
+
+    const undoCalls: Array<{ historyId: string }> = [];
+    const full = createRegistryEditorAdapter({
+      openkey: {
+        requestRegistryChange: async () => ({ status: "published", sequence: 2, recordHash: "0x2" }),
+        requestRegistryUndo: async (req) => {
+          undoCalls.push(req);
+          return { status: "published", sequence: 3, recordHash: "0x3" };
+        },
+      },
+    });
+    expect(full.canEdit).toBe(true);
+    expect(full.canUndo).toBe(true);
+    expect(await full.requestUndo({ historyId: "chg_42" })).toEqual({
+      status: "published",
+      sequence: 3,
+      recordHash: "0x3",
+    });
+    expect(undoCalls).toEqual([{ historyId: "chg_42" }]);
   });
 
   test("feature detection and host display helpers behave as contracted", async () => {
@@ -200,6 +240,11 @@ describe("registryEditor adapter", () => {
     expect(canRequestRegistryChange({})).toBe(false);
     expect(canRequestRegistryChange({ requestRegistryChange: "no" as never })).toBe(false);
     expect(canRequestRegistryChange({ requestRegistryChange: async () => ({ status: "cancelled" }) })).toBe(true);
+
+    expect(canRequestRegistryUndo(null)).toBe(false);
+    expect(canRequestRegistryUndo({})).toBe(false);
+    expect(canRequestRegistryUndo({ requestRegistryUndo: "no" as never })).toBe(false);
+    expect(canRequestRegistryUndo({ requestRegistryUndo: async () => ({ status: "cancelled" }) })).toBe(true);
 
     expect(deriveOpenKeyApiHost("https://openkey.so")).toBe("https://api.openkey.so");
     expect(deriveOpenKeyApiHost("http://localhost:5183")).toBe("http://localhost:5183");

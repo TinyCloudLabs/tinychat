@@ -1,9 +1,9 @@
 // TC-3892: Settings -> Where your data lives.
 // Shows the owner's verified location-registry v2 record, lets them change node hosts via
-// OpenKey.requestRegistryChange (when available), lists recent changes, and offers Undo for
-// the latest change.
+// OpenKey.requestRegistryChange (when available), lists verified recent changes, and offers
+// server-built Undo / Restore via OpenKey.requestRegistryUndo({ historyId }).
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { RefreshCwIcon, ServerIcon, Undo2Icon } from "lucide-react";
+import { RefreshCwIcon, RotateCcwIcon, ServerIcon, Undo2Icon } from "lucide-react";
 import type { LocationRecordV2 } from "@tinycloud/sdk-core";
 import {
   AlertDialog,
@@ -24,7 +24,6 @@ import {
   createRegistryEditorAdapter,
   displayCanonicalHost,
   formatRegistryDate,
-  requestFromLocationRecord,
   type RegistryChangeClientLike,
   type RegistryChangeHistoryEntry,
   type RegistryEditorAdapter,
@@ -60,6 +59,11 @@ interface EditDraft {
   encryptionUrl: string;
 }
 
+type PendingRestore = {
+  mode: "undo" | "restore";
+  entry: RegistryChangeHistoryEntry;
+};
+
 function buildEditDraft(record: LocationRecordV2): EditDraft {
   const urlByDid = new Map(record.nodes.map((node) => [node.did, node.url]));
   const spaceUrls: Record<string, string> = {};
@@ -91,7 +95,7 @@ export function RegistrySection(props: RegistrySectionProps) {
   const [editError, setEditError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [statusNotice, setStatusNotice] = useState<{ tone: "ok" | "error"; text: string } | null>(null);
-  const [undoConfirmOpen, setUndoConfirmOpen] = useState(false);
+  const [pendingRestore, setPendingRestore] = useState<PendingRestore | null>(null);
 
   const reload = useCallback(() => {
     setReloadTick((n) => n + 1);
@@ -125,11 +129,11 @@ export function RegistrySection(props: RegistrySectionProps) {
       }
     })();
 
-    if (adapter.canEdit) {
+    if (adapter.canEdit || adapter.canUndo) {
       setHistoryState({ phase: "loading" });
       void (async () => {
         try {
-          const result = await adapter.fetchHistory(controller.signal);
+          const result = await adapter.fetchHistory(did, controller.signal);
           if (controller.signal.aborted) return;
           if (result.status === "ok") {
             setHistoryState({ phase: "loaded", entries: result.history });
@@ -156,6 +160,8 @@ export function RegistrySection(props: RegistrySectionProps) {
   );
   const historyEntries = historyState.phase === "loaded" ? historyState.entries : [];
   const latestHistory = historyEntries[0] ?? null;
+  const latestMatchesCurrent =
+    record !== null && latestHistory !== null && latestHistory.newSequence === record.sequence;
 
   const openEditor = () => {
     if (!record) return;
@@ -198,9 +204,13 @@ export function RegistrySection(props: RegistrySectionProps) {
             })
           : undefined;
 
+      // Include all existing record.nodes (even unreferenced ones) alongside edited URLs.
       const rawNodes =
         record.spaces.length > 0
-          ? rawSpaces!.flatMap((s) => s.nodes.map((n) => ({ url: n.url })))
+          ? [
+              ...rawSpaces!.flatMap((s) => s.nodes.map((n) => ({ url: n.url }))),
+              ...record.nodes.map((n) => ({ url: n.url, did: n.did })),
+            ]
           : draft.nodeUrls.map((url) => ({ url }));
 
       canonicalRequest = canonicalizeRegistryChangeRequest(
@@ -232,20 +242,20 @@ export function RegistrySection(props: RegistrySectionProps) {
     }
   };
 
-  const confirmUndo = async () => {
-    if (!latestHistory || submitting) return;
+  const confirmRestore = async () => {
+    if (!pendingRestore || submitting) return;
+    const { entry } = pendingRestore;
     setStatusNotice(null);
     setSubmitting(true);
     try {
-      const request = requestFromLocationRecord(latestHistory.previousRecord);
-      const outcome = await adapter.requestChange(request);
-      setUndoConfirmOpen(false);
+      const outcome = await adapter.requestUndo({ historyId: entry.id });
+      setPendingRestore(null);
       if (outcome.status === "published") {
         setStatusNotice({ tone: "ok", text: REGISTRY_EDITOR_COPY.undoSuccess });
         reload();
       }
     } catch {
-      setUndoConfirmOpen(false);
+      setPendingRestore(null);
       setStatusNotice({ tone: "error", text: REGISTRY_EDITOR_COPY.changeFailure });
     } finally {
       setSubmitting(false);
@@ -270,7 +280,7 @@ export function RegistrySection(props: RegistrySectionProps) {
       )}
 
       {recordState.phase === "loading" && (
-        <p className="mt-3 text-xs text-muted-foreground">Loading…</p>
+        <p className="mt-3 text-xs text-muted-foreground">{REGISTRY_EDITOR_COPY.loading}</p>
       )}
 
       {recordState.phase === "error" && (
@@ -301,11 +311,11 @@ export function RegistrySection(props: RegistrySectionProps) {
             </div>
             {record.spaces.map((space) => {
               const label = spaceDisplayName(space.space).name;
+              const hasReadOnly = space.nodes.some((member) => member.mode === "read-only");
               const hosts = space.nodes
                 .map((member) => {
                   const raw = nodeUrlByDid.get(member.did) ?? member.did;
-                  const host = displayCanonicalHost(raw);
-                  return member.mode === "read-only" ? `${host} (read-only)` : host;
+                  return displayCanonicalHost(raw);
                 })
                 .join(", ");
               return (
@@ -317,7 +327,14 @@ export function RegistrySection(props: RegistrySectionProps) {
                   <span className="truncate font-medium" title={space.space}>
                     {label}
                   </span>
-                  <span className="break-all font-mono">{hosts || REGISTRY_EDITOR_COPY.notSet}</span>
+                  <div className="space-y-0.5">
+                    <span className="block break-all font-mono">{hosts || REGISTRY_EDITOR_COPY.notSet}</span>
+                    {hasReadOnly && (
+                      <span className="block text-[11px] text-muted-foreground">
+                        {REGISTRY_EDITOR_COPY.readOnlyNote}
+                      </span>
+                    )}
+                  </div>
                 </div>
               );
             })}
@@ -335,17 +352,18 @@ export function RegistrySection(props: RegistrySectionProps) {
             </div>
           </div>
 
-          {/* Nodes & sequence metadata */}
+          {/* Hosts & version metadata */}
           <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-muted-foreground">
             <span data-testid="registry-nodes">
-              Nodes: {record.nodes.map((node) => displayCanonicalHost(node.url)).join(", ") || REGISTRY_EDITOR_COPY.notSet}
+              {REGISTRY_EDITOR_COPY.hostsLabel}:{" "}
+              {record.nodes.map((node) => displayCanonicalHost(node.url)).join(", ") || REGISTRY_EDITOR_COPY.notSet}
             </span>
             <span data-testid="registry-sequence" className="tabular-nums">
-              Sequence {record.sequence}
+              {REGISTRY_EDITOR_COPY.versionLabel(record.sequence)}
             </span>
           </div>
 
-          {latestHistory && (
+          {latestMatchesCurrent && latestHistory && (
             <p className="text-[11px] text-muted-foreground" data-testid="registry-last-changed">
               {REGISTRY_EDITOR_COPY.updatedLabel(
                 formatRegistryDate(latestHistory.createdAt),
@@ -364,7 +382,12 @@ export function RegistrySection(props: RegistrySectionProps) {
           )}
 
           {adapter.canEdit && editing && draft && (
-            <form noValidate onSubmit={(e) => void submitChange(e)} className="space-y-3 rounded-md border border-border bg-muted/30 p-3" data-testid="registry-editor-form">
+            <form
+              noValidate
+              onSubmit={(e) => void submitChange(e)}
+              className="space-y-3 rounded-md border border-border bg-muted/30 p-3"
+              data-testid="registry-editor-form"
+            >
               {record.spaces.length > 0 ? (
                 record.spaces.map((space) => {
                   const inputId = `registry-space-${space.space}`;
@@ -422,7 +445,10 @@ export function RegistrySection(props: RegistrySectionProps) {
               )}
 
               <div className="space-y-1">
-                <label htmlFor="registry-encryption-node" className="block text-xs font-medium text-amber-800 dark:text-amber-300">
+                <label
+                  htmlFor="registry-encryption-node"
+                  className="block text-xs font-medium text-amber-800 dark:text-amber-300"
+                >
                   {REGISTRY_EDITOR_COPY.encryptionLabel}
                 </label>
                 <input
@@ -457,72 +483,109 @@ export function RegistrySection(props: RegistrySectionProps) {
         </div>
       )}
 
-      {/* Recent changes + Undo for latest row (only when OpenKey.requestRegistryChange is present) */}
-      {adapter.canEdit && (historyState.phase === "error" || (historyState.phase === "loaded" && historyEntries.length > 0)) && (
-        <div className="mt-4 border-t border-border pt-3" data-testid="registry-history">
-          <h3 className="text-xs font-semibold tracking-tight">{REGISTRY_EDITOR_COPY.historyHeading}</h3>
-          {historyState.phase === "error" && (
-            <p role="alert" className="mt-2 text-xs text-destructive">
-              {REGISTRY_EDITOR_COPY.historyUnavailable}
-            </p>
-          )}
-          {historyState.phase === "loaded" && historyEntries.length > 0 && (
-            <ul className="mt-2 space-y-2">
-              {historyEntries.map((entry, index) => {
-                const nextRecord = index === 0 ? record : (historyEntries[index - 1]?.previousRecord ?? null);
-                const changes = countRecordChanges(entry.previousRecord, nextRecord);
-                const formattedDate = formatRegistryDate(entry.createdAt);
-                return (
-                  <li
-                    key={entry.id}
-                    data-testid="registry-history-row"
-                    className="flex items-center justify-between gap-2 text-xs"
-                  >
-                    <span className="min-w-0 break-words text-muted-foreground">
-                      {REGISTRY_EDITOR_COPY.historyRow(formattedDate, entry.requestingOrigin, changes)}
-                    </span>
-                    {index === 0 && (
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        disabled={submitting}
-                        onClick={() => setUndoConfirmOpen(true)}
-                        className="shrink-0 gap-1"
-                      >
-                        <Undo2Icon className="size-3.5" />
-                        <span>{REGISTRY_EDITOR_COPY.undoButton}</span>
-                      </Button>
-                    )}
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-        </div>
-      )}
+      {/* Recent changes + Undo (latest when sequence matches) / Restore (every other row) */}
+      {(adapter.canEdit || adapter.canUndo) &&
+        (historyState.phase === "error" || (historyState.phase === "loaded" && historyEntries.length > 0)) && (
+          <div className="mt-4 border-t border-border pt-3" data-testid="registry-history">
+            <h3 className="text-xs font-semibold tracking-tight">{REGISTRY_EDITOR_COPY.historyHeading}</h3>
+            {historyState.phase === "error" && (
+              <div className="mt-2 space-y-2">
+                <p role="alert" className="text-xs text-destructive">
+                  {REGISTRY_EDITOR_COPY.historyUnavailable}
+                </p>
+                <Button type="button" variant="outline" size="sm" onClick={reload} className="gap-1.5">
+                  <RefreshCwIcon className="size-3.5" />
+                  <span>{REGISTRY_EDITOR_COPY.retryButton}</span>
+                </Button>
+              </div>
+            )}
+            {historyState.phase === "loaded" && historyEntries.length > 0 && (
+              <ul className="mt-2 space-y-2">
+                {historyEntries.map((entry, index) => {
+                  const nextRecord =
+                    index === 0
+                      ? latestMatchesCurrent
+                        ? record
+                        : null
+                      : (historyEntries[index - 1]?.previousRecord ?? null);
+                  const changes = countRecordChanges(entry.previousRecord, nextRecord);
+                  const formattedDate = formatRegistryDate(entry.createdAt);
+                  const showUndo = adapter.canUndo && record !== null && index === 0 && latestMatchesCurrent;
+                  const showRestore = adapter.canUndo && record !== null && !showUndo;
+                  return (
+                    <li
+                      key={entry.id}
+                      data-testid="registry-history-row"
+                      className="flex flex-wrap items-center justify-between gap-2 text-xs"
+                    >
+                      <span className="min-w-0 break-words text-muted-foreground">
+                        {REGISTRY_EDITOR_COPY.historyRow(formattedDate, entry.requestingOrigin, changes)}
+                      </span>
+                      {showUndo && (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          disabled={submitting}
+                          onClick={() => setPendingRestore({ mode: "undo", entry })}
+                          className="shrink-0 gap-1"
+                        >
+                          <Undo2Icon className="size-3.5" />
+                          <span>{REGISTRY_EDITOR_COPY.undoButton}</span>
+                        </Button>
+                      )}
+                      {showRestore && (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          disabled={submitting}
+                          onClick={() => setPendingRestore({ mode: "restore", entry })}
+                          className="shrink-0 gap-1"
+                        >
+                          <RotateCcwIcon className="size-3.5" />
+                          <span>{REGISTRY_EDITOR_COPY.restoreButton}</span>
+                        </Button>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </div>
+        )}
 
-      {adapter.canEdit && latestHistory && (
-        <AlertDialog open={undoConfirmOpen} onOpenChange={setUndoConfirmOpen}>
+      {adapter.canUndo && pendingRestore && (
+        <AlertDialog open onOpenChange={(open) => { if (!open) setPendingRestore(null); }}>
           <AlertDialogContent>
             <AlertDialogHeader>
-              <AlertDialogTitle>{REGISTRY_EDITOR_COPY.undoConfirmTitle}</AlertDialogTitle>
+              <AlertDialogTitle>
+                {pendingRestore.mode === "undo"
+                  ? REGISTRY_EDITOR_COPY.undoConfirmTitle
+                  : REGISTRY_EDITOR_COPY.restoreConfirmTitle(formatRegistryDate(pendingRestore.entry.createdAt))}
+              </AlertDialogTitle>
               <AlertDialogDescription>
-                {REGISTRY_EDITOR_COPY.undoConfirmBody(formatRegistryDate(latestHistory.createdAt))}
+                {pendingRestore.mode === "undo"
+                  ? REGISTRY_EDITOR_COPY.undoConfirmBody(formatRegistryDate(pendingRestore.entry.createdAt))
+                  : REGISTRY_EDITOR_COPY.restoreConfirmBody}
               </AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>
-              <AlertDialogCancel disabled={submitting}>
-                {REGISTRY_EDITOR_COPY.undoConfirmCancel}
+              <AlertDialogCancel disabled={submitting} onClick={() => setPendingRestore(null)}>
+                {pendingRestore.mode === "undo"
+                  ? REGISTRY_EDITOR_COPY.undoConfirmCancel
+                  : REGISTRY_EDITOR_COPY.restoreConfirmCancel}
               </AlertDialogCancel>
               <AlertDialogAction
                 disabled={submitting}
                 onClick={(event) => {
                   event.preventDefault();
-                  void confirmUndo();
+                  void confirmRestore();
                 }}
               >
-                {REGISTRY_EDITOR_COPY.undoConfirmApprove}
+                {pendingRestore.mode === "undo"
+                  ? REGISTRY_EDITOR_COPY.undoConfirmApprove
+                  : REGISTRY_EDITOR_COPY.restoreConfirmApprove}
               </AlertDialogAction>
             </AlertDialogFooter>
           </AlertDialogContent>

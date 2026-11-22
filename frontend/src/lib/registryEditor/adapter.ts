@@ -1,7 +1,7 @@
 // TC-3892: thin, mockable adapter for reading the owner's location-registry v2 record,
-// listing OpenKey registry-change history, and invoking OpenKey.requestRegistryChange
-// (TC-3890 contract). Feature-detects requestRegistryChange so older SDK builds hide
-// edit/undo cleanly without crashing.
+// listing OpenKey registry-change history, and invoking OpenKey.requestRegistryChange /
+// OpenKey.requestRegistryUndo (TC-3890 contract). Feature-detects both SDK methods so
+// older SDK builds hide edit/undo cleanly without crashing.
 import OpenKey from "@openkey/sdk";
 import {
   DEFAULT_TINYCLOUD_LOCATION_REGISTRY_URL,
@@ -44,6 +44,11 @@ export interface RegistryChangeRequest {
   encryptionNode?: string | null;
 }
 
+/** Request payload for `OpenKey.requestRegistryUndo` (server-built undo/restore by history row ID). */
+export interface RegistryUndoRequest {
+  historyId: string;
+}
+
 export type RegistryChangeOutcome =
   | { status: "published"; sequence: number; recordHash: string }
   | { status: "cancelled" };
@@ -51,9 +56,10 @@ export type RegistryChangeOutcome =
 /** Slice of the OpenKey client SDK used by the Registry editor. */
 export interface RegistryChangeClient {
   requestRegistryChange?: (request: RegistryChangeRequest) => Promise<RegistryChangeOutcome>;
+  requestRegistryUndo?: (request: RegistryUndoRequest) => Promise<RegistryChangeOutcome>;
 }
 
-/** Accepts either an installed `OpenKey` instance (which may predate the method) or a mockable client. */
+/** Accepts either an installed `OpenKey` instance (which may predate the methods) or a mockable client. */
 export type RegistryChangeClientLike = OpenKey | RegistryChangeClient;
 
 export interface RegistryChangeHistoryEntry {
@@ -76,21 +82,35 @@ export type RegistryHistoryResult =
 
 export interface RegistryEditorAdapter {
   readonly canEdit: boolean;
+  readonly canUndo: boolean;
   readCurrentRecord: (did: string, signal?: AbortSignal) => Promise<CurrentLocationRecordResult>;
-  fetchHistory: (signal?: AbortSignal) => Promise<RegistryHistoryResult>;
+  fetchHistory: (did: string, signal?: AbortSignal) => Promise<RegistryHistoryResult>;
   requestChange: (request: RegistryChangeRequest) => Promise<RegistryChangeOutcome>;
+  requestUndo: (request: RegistryUndoRequest) => Promise<RegistryChangeOutcome>;
 }
 
 /** Feature detection: true only when the OpenKey client exposes `requestRegistryChange`. */
 export function canRequestRegistryChange(
   client: RegistryChangeClientLike | null | undefined,
-): client is Required<RegistryChangeClient> {
+): client is RegistryChangeClient & Required<Pick<RegistryChangeClient, "requestRegistryChange">> {
   return typeof (client as RegistryChangeClient | null | undefined)?.requestRegistryChange === "function";
+}
+
+/** Feature detection: true only when the OpenKey client exposes `requestRegistryUndo`. */
+export function canRequestRegistryUndo(
+  client: RegistryChangeClientLike | null | undefined,
+): client is RegistryChangeClient & Required<Pick<RegistryChangeClient, "requestRegistryUndo">> {
+  return typeof (client as RegistryChangeClient | null | undefined)?.requestRegistryUndo === "function";
 }
 
 /** True when the installed `@openkey/sdk` prototype defines `requestRegistryChange`. */
 export function openKeySdkSupportsRegistryChange(): boolean {
   return typeof (OpenKey.prototype as unknown as RegistryChangeClient).requestRegistryChange === "function";
+}
+
+/** True when the installed `@openkey/sdk` prototype defines `requestRegistryUndo`. */
+export function openKeySdkSupportsRegistryUndo(): boolean {
+  return typeof (OpenKey.prototype as unknown as RegistryChangeClient).requestRegistryUndo === "function";
 }
 
 /**
@@ -239,20 +259,30 @@ function parseHistoryEntry(raw: unknown): RegistryChangeHistoryEntry {
 }
 
 /**
- * Fetch the owner's recent registry changes from OpenKey `GET /api/registry-change/history`.
+ * Fetch and cryptographically verify the owner's recent registry changes from OpenKey
+ * `GET /api/registry-change/history`.
  * Strictly parses ONLY `{ history: [{ id, requestingOrigin, previousRecord, newRecordHash, newSequence, createdAt }] }`.
- * Any unexpected shape returns `{ status: "error", reason: "invalid" }`.
+ * Every row's `previousRecord` must pass `verifyLocationRecordV2` and match the caller's owner key;
+ * any invalid shape or failed verification marks the whole list invalid (`{ status: "error", reason: "invalid" }`).
  */
 export async function fetchRegistryChangeHistory(
   openkeyHost: string = DEFAULT_OPENKEY_HOST,
+  did: string,
   options: {
     limit?: number;
     fetch?: typeof fetch;
     signal?: AbortSignal;
+    verify?: (record: LocationRecordV2) => Promise<boolean>;
   } = {},
 ): Promise<RegistryHistoryResult> {
+  if (!isV2LocationSubject(did)) {
+    return { status: "error", reason: "invalid" };
+  }
+  const expectedOwnerKey = registryOwnerKeyV2(did).toLowerCase();
   const limit = options.limit ?? DEFAULT_HISTORY_LIMIT;
   const fetchFn = options.fetch ?? globalThis.fetch.bind(globalThis);
+  const verifyFn = options.verify ?? verifyLocationRecordV2;
+
   let apiOrigin: string;
   try {
     apiOrigin = deriveOpenKeyApiHost(openkeyHost);
@@ -292,6 +322,15 @@ export async function fetchRegistryChangeHistory(
 
   try {
     const history = body.history.map(parseHistoryEntry);
+    for (const entry of history) {
+      if (registryOwnerKeyV2(entry.previousRecord.subject).toLowerCase() !== expectedOwnerKey) {
+        return { status: "error", reason: "invalid" };
+      }
+      const verified = await verifyFn(entry.previousRecord);
+      if (!verified) {
+        return { status: "error", reason: "invalid" };
+      }
+    }
     return { status: "ok", history };
   } catch {
     return { status: "error", reason: "invalid" };
@@ -302,7 +341,7 @@ export async function fetchRegistryChangeHistory(
  * Canonicalize a registry change request before handing it to OpenKey:
  * - Every node URL is canonicalized with `exactHttpOrigin` (`scheme://host[:port]`).
  * - `nodes` is deduplicated by canonical URL and includes every URL referenced by
- *   `spaces` or `encryptionNode`.
+ *   `spaces` or `encryptionNode` as well as all explicitly supplied nodes.
  * - An existing node's `did` is carried over ONLY when its canonical URL is unchanged.
  * - `encryptionNode` is canonicalized to a node URL (equal to one of `nodes[].url`) or `null`.
  */
@@ -361,41 +400,6 @@ export function canonicalizeRegistryChangeRequest(
     result.encryptionNode = encryptionNode;
   }
   return result;
-}
-
-/**
- * Convert a full signed `LocationRecordV2` (such as a history entry's `previousRecord` for Undo)
- * into a canonical `RegistryChangeRequest` with `nodes`, `spaces`, and `encryptionNode` (URL or `null`).
- */
-export function requestFromLocationRecord(record: LocationRecordV2): RegistryChangeRequest {
-  const urlByDid = new Map<string, string>();
-  const nodes: RegistryChangeNodeInput[] = record.nodes.map((node) => {
-    const url = canonicalNodeOrigin(node.url);
-    urlByDid.set(node.did, url);
-    return { url, did: node.did };
-  });
-
-  const spaces: RegistryChangeSpaceInput[] = record.spaces.map((space) => ({
-    space: space.space,
-    nodes: space.nodes.map((member) => {
-      const url = urlByDid.get(member.did);
-      if (!url) {
-        throw new Error(`space ${space.space} references unknown node ${member.did}`);
-      }
-      return { url, mode: member.mode };
-    }),
-  }));
-
-  let encryptionNode: string | null = null;
-  if (record.encryptionNode !== null) {
-    const encUrl = urlByDid.get(record.encryptionNode);
-    if (!encUrl) {
-      throw new Error(`encryptionNode references unknown node ${record.encryptionNode}`);
-    }
-    encryptionNode = encUrl;
-  }
-
-  return { nodes, spaces, encryptionNode };
 }
 
 /**
@@ -461,7 +465,8 @@ export function formatRegistryDate(iso: string): string {
 /**
  * Create the production adapter for `RegistrySection`.
  * If `openkey` is omitted and the installed `@openkey/sdk` exposes `requestRegistryChange`
- * (on non-native web sessions), lazily instantiates an `OpenKey` client for `openkeyHost`.
+ * or `requestRegistryUndo` (on non-native web sessions), lazily instantiates an `OpenKey`
+ * client for `openkeyHost`.
  */
 export function createRegistryEditorAdapter(options: {
   openkey?: RegistryChangeClientLike | null;
@@ -473,7 +478,11 @@ export function createRegistryEditorAdapter(options: {
   const openkeyHost = options.openkeyHost || DEFAULT_OPENKEY_HOST;
 
   let client: RegistryChangeClientLike | null = options.openkey ?? null;
-  if (!client && !isNativeOpenKeySession() && openKeySdkSupportsRegistryChange()) {
+  if (
+    !client &&
+    !isNativeOpenKeySession() &&
+    (openKeySdkSupportsRegistryChange() || openKeySdkSupportsRegistryUndo())
+  ) {
     client = new OpenKey({
       host: openkeyHost,
       appName: options.appName ?? "TinyCloud One",
@@ -482,17 +491,19 @@ export function createRegistryEditorAdapter(options: {
   }
 
   const canEdit = canRequestRegistryChange(client);
+  const canUndo = canRequestRegistryUndo(client);
 
   return {
     canEdit,
+    canUndo,
     readCurrentRecord: (did, signal) =>
       readCurrentLocationRecord(did, {
         registryUrl: options.registryUrl,
         fetch: options.fetch,
         signal,
       }),
-    fetchHistory: (signal) =>
-      fetchRegistryChangeHistory(openkeyHost, {
+    fetchHistory: (did, signal) =>
+      fetchRegistryChangeHistory(openkeyHost, did, {
         fetch: options.fetch,
         signal,
       }),
@@ -501,6 +512,12 @@ export function createRegistryEditorAdapter(options: {
         throw new Error("OpenKey.requestRegistryChange is not available");
       }
       return client.requestRegistryChange(request);
+    },
+    requestUndo: async (request) => {
+      if (!canRequestRegistryUndo(client)) {
+        throw new Error("OpenKey.requestRegistryUndo is not available");
+      }
+      return client.requestRegistryUndo(request);
     },
   };
 }
