@@ -80,6 +80,18 @@ describe("turning meetings on", () => {
     expect(sealed).not.toContain(address.slice(2).toLowerCase());
   });
 
+  test("a read for one path of an area gets only that resource; a path outside the area is refused", async () => {
+    const { grants, activated } = setup();
+    await grants.enable(address, "meetings", await grant());
+    expect(await refusal(grants.access(address, "meetings", `${APP_ID}/connectors/`))).toBe("allowed");
+    expect(activated.at(-1)!.resources.map(({ service, path }) => ({ service, path }))).toEqual([
+      { service: "kv", path: `${APP_ID}/connectors/` },
+    ]);
+    const count = activated.length;
+    expect(await refusal(grants.access(address, "meetings", `${APP_ID}/threads`))).toBe("Error: trustbot_read_path_invalid");
+    expect(activated.length).toBe(count);
+  });
+
   test("refuses a grant made to another identity, such as the backend's own", async () => {
     const { grants, store } = setup();
     expect(await invalid(grants.enable(address, "meetings", await grant({ audience: OTHER_DID })))).toBe("wrong_delegatee");
