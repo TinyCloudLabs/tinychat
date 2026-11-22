@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import type { BotRole } from "./oci";
 import { BOT_ID } from "./owner";
 
 export interface LayoutRoots {
@@ -53,4 +54,9 @@ export function botLayout(botId: string, roots: LayoutRoots, owner: { botKey?: s
     stateMount: join(bundleDir, "state"),
     ...egress,
   };
+}
+
+/** Main has no key; a sibling has the key the backend chose. */
+export function botRole(layout: BotLayout): BotRole {
+  return layout.botKey === undefined ? "main" : "sibling";
 }

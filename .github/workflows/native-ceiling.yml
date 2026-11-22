@@ -6,29 +6,25 @@ name: Native ceiling
 # job sends that exact request to production OpenKey as a throwaway PAR.
 # It fails only when OpenKey refuses the request; an unreachable production
 # is reported as a warning (frontend/scripts/native-ceiling-check.ts).
+#
+# Every pull request and every push to main runs this job, so it can be a
+# required check and the release deploy can require it on the commit it ships
+# (scripts/release/require-green.mjs). The "Decide whether the change touches a
+# native sign-in path" step skips the PAR for a pull request that touches none
+# of them, and the job still reports success. Pushes to main always send it.
 
 on:
   pull_request:
-    paths:
-      - "manifest.json"
-      - "frontend/src/lib/openkeyNative.ts"
-      - "frontend/.env.production"
-      - "frontend/scripts/native-ceiling-check.ts"
-      - ".github/workflows/native-ceiling.yml"
   push:
     branches: [main]
-    paths:
-      - "manifest.json"
-      - "frontend/src/lib/openkeyNative.ts"
-      - "frontend/.env.production"
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: native-ceiling-${{ github.ref }}
-  cancel-in-progress: true
+  group: native-ceiling-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   native-ceiling:
@@ -38,17 +34,50 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
+          fetch-depth: 0
           persist-credentials: false
 
+      - name: Decide whether the change touches a native sign-in path
+        id: relevance
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          # Fails open: only a clean diff with no matching path skips the PAR.
+          relevant=true
+          if [ "$EVENT_NAME" != pull_request ]; then
+            echo "relevant=true: $EVENT_NAME always sends the PAR"
+          elif ! changed="$(git diff --no-renames --name-only "$BASE_SHA...$HEAD_SHA")"; then
+            echo "relevant=true: git diff failed, sending the PAR"
+          else
+            relevant=false
+            while IFS= read -r file; do
+              case "$file" in
+                manifest.json | frontend/src/lib/openkeyNative.ts | frontend/.env.production \
+                | frontend/scripts/native-ceiling-check.ts | .github/workflows/native-ceiling.yml)
+                  relevant=true
+                  echo "relevant=true: $file matches a native sign-in path"
+                  break ;;
+              esac
+            done <<<"$changed"
+            [ "$relevant" = true ] || echo "relevant=false: no native sign-in path changed; skipping the PAR"
+          fi
+          echo "relevant=$relevant" >> "$GITHUB_OUTPUT"
+
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        if: steps.relevance.outputs.relevant == 'true'
         with:
           bun-version-file: package.json
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        if: steps.relevance.outputs.relevant == 'true'
         with:
           path: ~/.bun/install/cache
           key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
       - name: Install JS deps
+        if: steps.relevance.outputs.relevant == 'true'
         run: bun install --frozen-lockfile
 
       - name: PAR the native request against production OpenKey
+        if: steps.relevance.outputs.relevant == 'true'
         run: bun frontend/scripts/native-ceiling-check.ts

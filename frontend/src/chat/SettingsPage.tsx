@@ -57,8 +57,9 @@ import { PATHS } from "../shell/routes";
 import { FirstScreenControl } from "../home/FirstScreenControl";
 import { ChatViewSetting } from "../bots/ChatViewControl";
 import { TinyCloudSettings } from "./TinyCloudSettings";
+import { RegistrySection } from "./RegistrySection";
+import type { RegistryChangeClientLike } from "@/lib/registryEditor/adapter";
 import { AppLockSettings } from "./AppLockSettings";
-import { HiddenFeaturesSettings } from "./HiddenFeaturesSettings";
 import { LegacyDataLinks } from "./LegacyDataLinks";
 import { CardMdSettings } from "@/feed/CardMdSettings";
 
@@ -85,6 +86,8 @@ interface SettingsPageProps {
   onOpenRates: () => void;
   backendUrl: string;
   sessionStore: SessionStore;
+  openkey?: RegistryChangeClientLike | null;
+  openkeyHost?: string;
 }
 
 export function SettingsPage({
@@ -107,6 +110,8 @@ export function SettingsPage({
   onOpenRates,
   backendUrl,
   sessionStore,
+  openkey,
+  openkeyHost,
 }: SettingsPageProps) {
   const { hash } = useLocation();
   const agentAccess = useAgentAccess();
@@ -124,8 +129,8 @@ export function SettingsPage({
   const billingLinks = billingLinksAllowed(useContext(PlatformContext));
   const resetsLabel = usage?.resetsAt ? formatResetsAt(usage.resetsAt) : null;
   useEffect(() => {
-    if (hash !== "#agent-access") return;
-    const card = document.getElementById("agent-access");
+    if (hash !== "#agent-access" && hash !== "#registry") return;
+    const card = document.getElementById(hash.slice(1));
     const heading = card?.querySelector("h2");
     if (!card || !heading) return;
     card.scrollIntoView({ block: "start" });
@@ -217,8 +222,8 @@ export function SettingsPage({
               <PrivacyPolicyLink />
             </div>
           </SectionCard>
+          <RegistrySection did={did} openkey={openkey} openkeyHost={openkeyHost} />
           <AppLockSettings />
-          <HiddenFeaturesSettings />
           <SectionCard icon={LayoutGridIcon} title="Start screen">
             <FirstScreenControl tcw={tcw} did={did} />
           </SectionCard>

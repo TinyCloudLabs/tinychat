@@ -6,7 +6,9 @@ bot states and history journal are the same. Each bot runs as one sandbox on a
 0.3.0).
 
 - A bot's sandbox id is `bot-` and the first 52 characters of its bot id.
-- Each sandbox starts `sandbox/bridge.ts`, which runs OMP and carries its RPC over a WebSocket on port 7070.
+- Each sandbox starts `sandbox/bridge.ts`, which runs OMP and carries its RPC over a WebSocket on port 7070. OMP starts
+  with Main's or the sibling system prompt from `bots/sandbox/prompts` and the same `config.yml` as in `bots/` (the
+  service sends it with each launch), so the same built-in tools and skills are off.
 - The model gateway from `bots/` runs in a second container and listens on port 8081 at `/bots/<bot id>/v1/...`.
 - A bot sleeps after `BOTS_IDLE_MS` without use (default 5 minutes) and wakes from its snapshot on the next call.
 - Deleting a bot's working state deletes its sandbox and snapshots, then its local files.

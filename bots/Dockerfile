@@ -18,6 +18,10 @@ RUN bun install --frozen-lockfile \
  && ln -s /opt/omp/node_modules/.bin/omp /usr/local/bin/omp \
  && omp --version
 COPY sandbox/bot-start.sh /usr/local/bin/bot-start.sh
+# Main's and the siblings' system prompts (bot-start.sh picks one per bot), and the sibling's as the role-neutral
+# fallback OMP finds itself, so a missing prompt never leaves a bot on OMP's stock coding prompt.
+COPY sandbox/prompts/ /opt/tinycloud/prompts/
+COPY sandbox/prompts/sibling.md /root/.omp/agent/SYSTEM.md
 RUN chmod 0755 /usr/local/bin/bot-start.sh
 WORKDIR /root
 

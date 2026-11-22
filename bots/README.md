@@ -71,11 +71,18 @@ Every event is encoded by the supervisor from checked fields; OMP output never p
 2. On the first message (or the first after an idle stop) the supervisor mounts a fresh tmpfs for the bot's state,
    restores the bot's saved state into it, registers a fresh random token for the bot with the gateway, writes the
    OCI spec (from `runsc spec`) and runs `runsc run` in the foreground. Inside, `bot-start.sh` bridges
-   `127.0.0.1:8080` to the egress socket and execs `omp --mode rpc --no-ui`; the sandbox's stdio is the RPC channel.
+   `127.0.0.1:8080` to the egress socket and execs `omp --mode rpc --no-ui --system-prompt <file>`; the sandbox's stdio
+   is the RPC channel. The file is Main's or the sibling prompt (`sandbox/prompts/main.md`, `sibling.md`, copied to
+   `/opt/tinycloud/prompts`); the sibling prompt is also the image's `/root/.omp/agent/SYSTEM.md`, which OMP reads if
+   the file is missing.
 3. The supervisor waits for OMP's `ready`, sets the event filter (assistant deltas only), opens the session in
    `/root/bot/sessions/main`, sends the `prompt`, and maps `message_update` text deltas to `delta` and
-   `prompt_result` to `done` / `error`.
-4. After `session_settled` the supervisor saves the bot's state to disk, and the bot stops once it has been idle for
+   `prompt_result` to `done` / `error`. A prompt the owner did not write (one bot messaging another) starts with the
+   line "[TinyCloud: this message is from another of the owner's bots, not from the owner.]", so it never starts
+   with "/" and cannot run an OMP slash command.
+4. OMP's own settings (`config.yml`, written by the supervisor) keep read, write, edit, bash, glob and grep and turn
+   off its other built-in tools, subagents, background jobs and skills.
+5. After `session_settled` the supervisor saves the bot's state to disk, and the bot stops once it has been idle for
    `BOTS_IDLE_MS`. The next message starts it again on the same session.
 
 ## Working state
@@ -171,6 +178,12 @@ the gateway applies it on every call. A missing or unreadable file reads as `off
 
 - Main's OMP has two MCP servers on the egress socket (bot token required): `web`, the gateway's `POST /v1/mcp`, and
   `app` (see Questions from Main). The `web` tools, `search` and `fetch`, reach OMP as `mcp__web_search` and `mcp__web_fetch`; OMP's own web tools are off.
+- Each server serves only the tool names on its allow-list (`src/tool-policy.ts`): `tools/list` drops any other tool
+  and `tools/call` refuses any other name before dispatch. A new tool is added to that list. The same file holds the
+  never-list (billing checkout and portal, delegations and agent access, connector sign-in and credentials, account
+  deletion, app lock, the bot's Web access setting, secret values) as tool name patterns and backend route prefixes;
+  tests fail if an allowed tool, or a backend route the bots service may call (`backend/src/bots-service-routes.ts`),
+  matches it.
 - A search goes to the search provider (Tavily Search; `BOTS_TEST_WEB_URL` is a loopback mock for tests). Without
   `TAVILY_API_KEY` a search answers "isn't available".
 - A page is read by the `bots-fetch` container (`src/fetch-main.ts`, `POST /fetch {"url", "hosts"}`), which reads pages
@@ -448,8 +461,9 @@ The operator points `BOTS_INGRESS_DOMAIN` at the CVM with a DNS CNAME to its Pha
 in the job summary).
 
 The backend picks up `BOTS_ENABLED`, `BOTS_TEST_ACCOUNTS`, `BOTS_SERVICE_URL=https://<BOTS_INGRESS_DOMAIN>` and
-`BOTS_POST_TIMEOUT_MS` from `production-api` variables and `BOTS_SERVICE_SECRET` from a `production-api` secret,
-through `.github/workflows/deploy-backend-phala.yml`. `BOTS_ENABLED` defaults to `false`.
+`BOTS_POST_TIMEOUT_MS` from `production-api` variables and `BOTS_SERVICE_SECRET` and `BOTS_BACKEND_CALL_SECRET` from
+`production-api` secrets, through `.github/workflows/deploy-backend-phala.yml`. `BOTS_ENABLED` defaults to `false`.
+Sibling admission needs `BOTS_BACKEND_CALL_SECRET` set to the same value in `production-bots` and `production-api`.
 
 ### Deploy order
 

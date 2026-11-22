@@ -5,7 +5,6 @@ import { createRoot, type Root } from "react-dom/client";
 import type { FeedHandling, FeedResponse, FeedSelector, NewFeedResponse } from "@tinycloud/sdk-services/feed";
 import { installDom } from "@/test/dom";
 import { installFakeClock, type FakeClock } from "@/test/fakeClock.fixture";
-import { HIDDEN_FEATURES_KEY, resetHiddenFeaturesForTest } from "@/lib/hiddenFeatures";
 import { isOriginMoveDeferred } from "@/lib/originMove";
 import { FeedViewEntries } from "./FeedView";
 import type { HomeFeedEntriesProps, HomeFeedEntry, HomeFeedSnapshot, HomeFeedSource } from "./feedStoreTypes";
@@ -109,7 +108,6 @@ afterEach(async () => {
   delete (globalThis as { matchMedia?: unknown }).matchMedia;
   MotionGlobalConfig.skipAnimations = false;
   clock?.restore(); clock = undefined;
-  globalThis.localStorage?.removeItem(HIDDEN_FEATURES_KEY); resetHiddenFeaturesForTest();
   restore?.(); restore = undefined;
 });
 async function mount(source: HomeFeedSource) {
@@ -1129,7 +1127,7 @@ async function mountWithAsk(source: HomeFeedSource) {
   return host;
 }
 
-test("Home shows the ask box and the Agents pill with Show hidden features off", async () => {
+test("Home shows the ask box and the Agents pill", async () => {
   restore ??= installDom({});
   const store = persistence([decision("open-one")]);
   const host = await mountWithAsk(store.source());
