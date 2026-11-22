@@ -83,8 +83,9 @@ final class SimulatorSilentInputTests: XCTestCase {
         source.start()
         XCTAssertTrue(source.isRunning)
         Thread.sleep(forTimeInterval: 0.5)
+        let stoppedAt = ProcessInfo.processInfo.systemUptime
         source.stop()
-        let elapsed = ProcessInfo.processInfo.systemUptime - began
+        let elapsed = stoppedAt - began
         XCTAssertFalse(source.isRunning)
         lock.lock()
         let delivered = starts
