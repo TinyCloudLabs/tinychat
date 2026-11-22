@@ -18,6 +18,8 @@ export const BOTS_STRINGS = {
   tryAgain: "Try again",
   historyLoading: "Loading earlier messages…",
   historyFailed: `Couldn't load your earlier messages with ${MAIN_BOT_NAME}.`,
+  // Monica, TC-3887, 2026-11-22. The button reopens the encryption request the owner declined.
+  reviewRequest: "Review request",
   errors: {
     bot_unavailable: `${MAIN_BOT_NAME} couldn't start.`,
     model_unavailable: `${MAIN_BOT_NAME}'s model isn't answering. Try again later.`,
@@ -26,6 +28,7 @@ export const BOTS_STRINGS = {
     invalid: `That message is too long for ${MAIN_BOT_NAME}. Shorten it to 8,000 characters or fewer.`,
     signed_out: `Your session expired. Sign in again to talk to ${MAIN_BOT_NAME}.`,
     failed: `${MAIN_BOT_NAME}'s reply didn't come through.`,
+    history_declined: "Your chat with {name} needs your OK to encrypt it. Nothing is sent until you allow it.",
   },
 } as const;
 
@@ -86,6 +89,7 @@ export const BOT_VIEW_STRINGS = {
     invalid: (name: string) => `That message is too long for ${name}. Shorten it to 8,000 characters or fewer.`,
     signed_out: (name: string) => `Your session expired. Sign in again to talk to ${name}.`,
     failed: (name: string) => `${name}'s reply didn't come through.`,
+    history_declined: (name: string) => botsErrorText("history_declined", name),
   } satisfies Record<BotsErrorCode, (name: string) => string>,
   /** HISTORY_EXPIRY_NOTICE with the bot's own name. */
   historyExpiryNotice: (name: string) => HISTORY_EXPIRY_NOTICE.replace(`${MAIN_BOT_NAME}'s chat history`, `${name}'s chat history`),
@@ -206,7 +210,7 @@ export const FEED_CHATS_ACCESS_STRINGS = {
 export const NEW_CHAT_STRINGS = {
   start: "Start a new chat",
   confirmTitle: `Start a new chat with ${MAIN}?`,
-  confirmBody: `${MAIN} forgets this conversation, and any questions it's waiting on are closed. If web access or messages to other bots were paused here, the new chat lifts that pause. Earlier messages leave this view, and those saved in your TinyCloud show here when you next open the page, though ${MAIN} doesn't remember them. Your settings stay.`,
+  confirmBody: `${MAIN} forgets this conversation, and any questions it's waiting on are closed. If web access, your secrets or messages to other bots were paused here, the new chat lifts that pause. Earlier messages leave this view, and those saved in your TinyCloud show here when you next open the page, though ${MAIN} doesn't remember them. Your settings stay.`,
   confirm: "Start new chat",
   cancel: "Cancel",
   started: "New chat started.",

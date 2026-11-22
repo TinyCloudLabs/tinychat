@@ -6,6 +6,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { BotsError, BotsNoReply, type AppDecision, type BotMessage, type BotsApi, type SecretLine } from "./botsApi";
 import type { BotsErrorCode } from "./botsStrings";
 import { isDeclinedReply } from "./askText";
+import { isHistoryDeclined } from "./historyAuthorization";
 
 /**
  * The app's report of the owner's decision on a request or proposal card. A secret request's report names the secret
@@ -37,7 +38,7 @@ export interface MainTurn {
 
 export interface MainChatState {
   lines: ChatLine[];
-  history: "idle" | "loading" | "loaded" | "failed";
+  history: "idle" | "loading" | "loaded" | "failed" | "declined";
   turn: MainTurn | null;
 }
 
@@ -107,7 +108,7 @@ export function useMainChat(api: BotsApi, prepare?: () => Promise<void>, onNoRep
           ...errorFields(cause),
           cause: cause instanceof Error && cause.cause !== undefined ? errorFields(cause.cause) : undefined,
         });
-        setState((current) => (generation !== cleared.current ? current : { ...current, history: "failed" }));
+        setState((current) => (generation !== cleared.current ? current : { ...current, history: isHistoryDeclined(cause) ? "declined" : "failed" }));
       }
     })();
     history.current = run;
@@ -161,7 +162,7 @@ export function useMainChat(api: BotsApi, prepare?: () => Promise<void>, onNoRep
         // Nothing was left to send for that request (another tab sent it): no error to show, only a fresh read of the requests.
         setState((current) => ({ ...current, turn: null }));
         noReply.current?.();
-      } else setTurn((turn) => ({ ...turn, state: "error", error: cause instanceof BotsError ? cause.code : "failed" }));
+      } else setTurn((turn) => ({ ...turn, state: "error", error: cause instanceof BotsError ? cause.code : isHistoryDeclined(cause) ? "history_declined" : "failed" }));
     } finally {
       if (turnController.current === controller) turnController.current = null;
       // A decision the owner made while a turn was running goes out as soon as that turn ends.
