@@ -156,8 +156,11 @@ export const ORIGIN_LINES: Record<Exclude<TurnOrigin, "owner">, string> = {
 
 /** Where OMP reads `@<path>` as a file to load into the turn: at the start of the text or after a space or opening mark. */
 const FILE_MENTION = /(^|[\s([{<"'`])@/g;
-/** A bracket that would open a TinyCloud line, in text the supervisor did not write (spaces or invisible marks between allowed). */
-const TINYCLOUD_MARK = /\[(?=[^\p{L}\p{N}\]]*tinycloud)/giu;
+/**
+ * A bracket that would open a TinyCloud line, in text the supervisor did not write: spaces or marks may stand before
+ * the word, and invisible format characters (such as a zero-width space) inside it.
+ */
+const TINYCLOUD_MARK = new RegExp(`\\[(?=[^\\p{L}\\p{N}\\]]*${[..."tinycloud"].join("\\p{Cf}*")})`, "giu");
 
 /**
  * What OMP is sent for a turn. A turn the owner did not write starts with its origin line, so it never starts with
