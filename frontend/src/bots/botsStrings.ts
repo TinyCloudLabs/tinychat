@@ -184,7 +184,7 @@ export const MEETINGS_ACCESS_STRINGS = {
 export const NEW_CHAT_STRINGS = {
   start: "Start a new chat",
   confirmTitle: `Start a new chat with ${MAIN}?`,
-  confirmBody: `${MAIN} forgets this conversation, and any questions it's waiting on are closed. If web access or messages to other bots were paused here, the new chat lifts that pause. Your settings and any history saved in your TinyCloud stay.`,
+  confirmBody: `${MAIN} forgets this conversation, and any questions it's waiting on are closed. If web access or messages to other bots were paused here, the new chat lifts that pause. Earlier messages leave this view, and those saved in your TinyCloud show here when you next open the page, though ${MAIN} doesn't remember them. Your settings stay.`,
   confirm: "Start new chat",
   cancel: "Cancel",
   started: "New chat started.",

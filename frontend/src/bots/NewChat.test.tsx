@@ -50,7 +50,7 @@ test("the button asks first, says what is cleared and kept, and Cancel sends not
   await click(host, "Start a new chat");
   const sheet = host.querySelector('[role="alertdialog"]')!;
   expect(sheet.textContent).toContain(`Start a new chat with ${BOT}?`);
-  expect(sheet.textContent).toContain(`${BOT} forgets this conversation, and any questions it's waiting on are closed. If web access or messages to other bots were paused here, the new chat lifts that pause. Your settings and any history saved in your TinyCloud stay.`);
+  expect(sheet.textContent).toContain(`${BOT} forgets this conversation, and any questions it's waiting on are closed. If web access or messages to other bots were paused here, the new chat lifts that pause. Earlier messages leave this view, and those saved in your TinyCloud show here when you next open the page, though ${BOT} doesn't remember them. Your settings stay.`);
   await click(host, "Cancel");
   expect(host.querySelector('[role="alertdialog"]')).toBeNull();
   expect(calls.start).toBe(0);
