@@ -3,7 +3,7 @@
 // exact method and path, with no query. The never-list in bots/src/tool-policy.ts names what none may reach.
 // Details: TC-3795
 
-import type { NextFunction, Request, Response } from "express";
+import express, { type Router } from "express";
 
 export const BOTS_SERVICE_ROUTES: ReadonlyArray<{ method: string; path: string }> = [
   // Sibling admission: may one of the owner's bots message another (bots/src/bot-admission.ts).
@@ -17,11 +17,16 @@ export function botsServiceRouteAllowed(method: string, url: string): boolean {
   return BOTS_SERVICE_ROUTES.some(route => route.method === method && route.path === url);
 }
 
-export function botsServiceRouteGuard(req: Request, res: Response, next: NextFunction): void {
-  const authorization = req.headers.authorization;
-  if (authorization === undefined || !BOTS_SERVICE_SCHEME.test(authorization) || botsServiceRouteAllowed(req.method, req.originalUrl)) {
-    next();
-    return;
-  }
-  res.status(403).json({ error: "forbidden" });
+/** Mounted at the app root, ahead of every other route: passes everything but a bots service call off the list. */
+export function createBotsServiceGuardRouter(): Router {
+  const router = express.Router();
+  router.use((req, res, next) => {
+    const authorization = req.headers.authorization;
+    if (authorization === undefined || !BOTS_SERVICE_SCHEME.test(authorization) || botsServiceRouteAllowed(req.method, req.originalUrl)) {
+      next();
+      return;
+    }
+    res.status(403).json({ error: "forbidden" });
+  });
+  return router;
 }

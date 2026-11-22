@@ -5,7 +5,7 @@ import express from "express";
 import { once } from "node:events";
 import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
-import { BOTS_SERVICE_ROUTES, botsServiceRouteGuard } from "../bots-service-routes.js";
+import { BOTS_SERVICE_ROUTES, createBotsServiceGuardRouter } from "../bots-service-routes.js";
 import { signedCallHeader } from "../bots-signed-call.js";
 import { NEVER, neverRoute } from "../../../bots/src/tool-policy";
 
@@ -19,7 +19,7 @@ const reached: string[] = [];
 
 beforeAll(async () => {
   const app = express();
-  app.use(botsServiceRouteGuard);
+  app.use(createBotsServiceGuardRouter());
   app.use((req, res) => {
     reached.push(`${req.method} ${req.originalUrl}`);
     res.json({ reached: true });
