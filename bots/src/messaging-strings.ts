@@ -6,5 +6,5 @@ export const MESSAGING_STRINGS = {
   busy: "That bot is busy.",
   invalid: "Choose a bot from the list and send a message of up to 8,000 characters.",
   held: "This chat holds the owner's private data, so you can't message other bots from it. If propose_action is offered to you, propose the message there; it goes only after the owner taps Send.",
-  targetHeld: "That bot can't reply to other bots in its current chat.",
+  targetHeld: "That bot isn't taking messages from other bots right now, so it won't reply. Don't send it again.",
 } as const;
