@@ -181,14 +181,17 @@ describe("a feed or chat read", () => {
     expect((await call(gateway, "/v1/mcp/app", "list_chats", {})).text).toStartWith("<<<OWNER DATA: chat.");
   });
 
-  test("any result sets the mark: web access is refused in this conversation until a new one starts", async () => {
+  test("any result sets the hold: web access and sibling messages are refused in this conversation until a new one starts", async () => {
     const { gateway, held } = setup();
     set(gateway, ["feed_chats"]);
     expect((await search(gateway)).isError).toBe(false);
+    expect(gateway.readsHeld(BOT)).toBe(false);
     expect((await call(gateway, "/v1/mcp/app", "read_chat", { chat: "t1" })).isError).toBe(false);
     expect(held.saved).toEqual({ [BOT]: CONVERSATION });
+    expect(gateway.readsHeld(BOT)).toBe(true);
     expect(await search(gateway)).toEqual({ text: WEB_ERRORS.held, isError: true });
     set(gateway, ["feed_chats"], FRESH);
+    expect(gateway.readsHeld(BOT)).toBe(false);
     expect((await search(gateway)).isError).toBe(false);
   });
 

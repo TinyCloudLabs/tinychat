@@ -27,7 +27,7 @@ export const READ_ERRORS = {
   budget: "You've read enough meetings for today. Carry on without them.",
   busy: "A meeting read is already running. Wait for its result before reading again.",
 } as const;
-type ReadError = "off" | "ended" | "unavailable" | "not_found";
+type ReadError = "off" | "ended" | "unavailable" | "budget" | "busy" | "not_found";
 export type ReadToolName = MeetingToolName | FeedChatTool;
 
 /** Each area's tools and the fixed sentences its refusals give; an area without `not_found` says `unavailable`. */
