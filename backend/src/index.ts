@@ -23,7 +23,7 @@ import { createAuthMiddleware } from "./middleware/auth.js";
 import { createAuthRouter } from "./routes/auth.js";
 import { mcpChatFromEnv } from "./mcp-meetings/config.js";
 import { BotHistory } from "./bot-history.js";
-import { createBotHistoryRouter, startBotHistoryDrain } from "./routes/bot-history.js";
+import { createBotHistoryRouter, createSiblingHistoryRouter, startBotHistoryDrain } from "./routes/bot-history.js";
 import { botsFromEnv, createBotsRouter, removeBotFromService } from "./routes/bots.js";
 import { capModeFromEnv, planFor } from "./bot-caps.js";
 import { BotsRegistry, turnListHook } from "./bots-registry.js";
@@ -834,17 +834,19 @@ async function main() {
   // Stored history permissions are read and removed here whether or not the history routes are on, so that deleting
   // a bot always clears one that was stored earlier.
   const botHistory = botsConfig ? new BotHistory(node, backendPrivateKey as `0x${string}`, TINYCLOUD_HOST) : undefined;
-  if (botsConfig && botHistory && process.env.BOTS_HISTORY_ENABLED === "true") {
-    app.use("/api/bots/history", createBotHistoryRouter(botHistory, botsConfig, authMiddleware));
-    const historyDrain = startBotHistoryDrain(botHistory, botsConfig);
-    botsConfig.onTurnFinished = () => { void historyDrain.drain(); };
-    process.once("SIGTERM", historyDrain.stop);
-    process.once("SIGINT", historyDrain.stop);
-  }
   // The record of each owner's bots is kept in the backend's own space and written through the one storage lane.
   // Finding every owner pages through the store's listing.
   const botsRegistry = botsConfig ? new BotsRegistry({ get: exoBackendKv.get, put: exoBackendKv.put, list: options => node.kv.list(options) }) : undefined;
   if (botsConfig && botsRegistry) botsConfig.listForTurn = turnListHook(botsRegistry);
+  if (botsConfig && botHistory && botsRegistry && process.env.BOTS_HISTORY_ENABLED === "true") {
+    app.use("/api/bots/history", createBotHistoryRouter(botHistory, botsConfig, authMiddleware));
+    // Before /api/bots, so the other bots' history routes are answered here; each key is checked against the owner's record.
+    app.use("/api/bots/:key/history", createSiblingHistoryRouter(botHistory, botsConfig, authMiddleware, botsRegistry));
+    const historyDrain = startBotHistoryDrain(botHistory, botsConfig, botsRegistry);
+    botsConfig.onTurnFinished = () => { void historyDrain.drain(); };
+    process.once("SIGTERM", historyDrain.stop);
+    process.once("SIGINT", historyDrain.stop);
+  }
   // A deletion is carried out when it is recorded, and on a pass for whatever is still outstanding, as after a restart.
   const botDeletions = botsConfig && botsRegistry && botHistory ? new BotDeletions({
     registry: botsRegistry,
