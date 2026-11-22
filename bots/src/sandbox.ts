@@ -13,11 +13,13 @@ import type { SupervisorConfig } from "./config";
 import { isRecord } from "./guards";
 import { type BotLayout, botRole } from "./layout";
 import { BOT_START, type OciSpec, SANDBOX_SESSION_DIR, sandboxSpec } from "./oci";
+import { MAIN_BOT_NAME } from "./owner";
 import { RpcChannel } from "./rpc";
 import { COPY_FAILURES, type CopyFailure, hasSnapshot, STATE_INODES_PER_MB } from "./state";
 import { readWebPolicy } from "./web-policy";
 import { syncAsks } from "./asks";
 import { readsPush } from "./reads";
+import { syncActions } from "./actions";
 
 const CGROUP_ROOT = "/sys/fs/cgroup";
 const CGROUP_CONTROLLERS = ["cpu", "memory", "pids"];
@@ -101,7 +103,8 @@ export function modelsYml(model: string): string {
     "    apiKey: BOT_TOKEN",
     "    models:",
     `      - id: ${JSON.stringify(model)}`,
-    `        name: ${JSON.stringify(`TinyCloud (${model})`)}`,
+    // The plain model id: a name like "TinyCloud (<model>)" led the bot to give TinyCloud as its model's maker.
+    `        name: ${JSON.stringify(model)}`,
     "        reasoning: false",
     "",
   ].join("\n");
@@ -379,7 +382,7 @@ export class RunscHost implements SandboxLauncher {
     return false;
   }
 
-  async launch(layout: BotLayout): Promise<Sandbox> {
+  async launch(layout: BotLayout, botName: string = MAIN_BOT_NAME): Promise<Sandbox> {
     if (!this.#baseSpec) throw new Error("sandbox host not initialised");
     // A sandbox whose end was not confirmed still holds its tmpfs; end it first, or refuse to start over it.
     if (this.#copiers.has(layout.botId)) throw new Error("state copier exit unconfirmed");
@@ -437,6 +440,7 @@ export class RunscHost implements SandboxLauncher {
         cgroupsPath: `/bots/${layout.botId}`,
         limits: this.#cfg.limits,
         role: botRole(layout),
+        botName,
       });
       writeFileSync(join(layout.bundleDir, "config.json"), JSON.stringify(spec), { mode: 0o600 });
       await attempt([...this.#runsc, "delete", "-force", layout.containerId]);
@@ -587,7 +591,7 @@ export class RunscHost implements SandboxLauncher {
   }
 
   /** One request on the gateway's control socket; the body is JSON. Throws unless the answer is 2xx. */
-  async #gateway(method: "GET" | "PUT" | "POST", path: string, body?: unknown): Promise<Response> {
+  async #gateway(method: "GET" | "PUT" | "POST" | "DELETE", path: string, body?: unknown): Promise<Response> {
     const response = await fetch(`http://gateway${path}`, {
       unix: join(this.#cfg.egressRoot, "control.sock"),
       method,
@@ -634,16 +638,48 @@ export class RunscHost implements SandboxLauncher {
   }
 
   /**
-   * Collects the questions the box has asked, stores them, and gives the gateway the owner's setting for questions
-   * with the counts and cooldowns (see syncAsks). At launch, so the tools are listed or not as the setting says,
-   * and at the start of each message with `turn`.
+   * Collects the requests the box has made, stores them, settles secret requests with the gateway, and gives the
+   * gateway the owner's setting with the counts and cooldowns (see syncAsks). At launch, so the tools are listed or
+   * not as the setting says, and at the start of each message with `turn`. Approval links are made only for Main's
+   * owner, named by `ownerDid`.
    */
-  syncAsks(layout: BotLayout, turn?: { outside: boolean }): Promise<void> {
+  syncAsks(layout: BotLayout, turn?: { outside: boolean }, ownerDid?: string): Promise<void> {
     const path = `/bots/${layout.botId}/asks`;
+    const secrets = `/bots/${layout.botId}/secrets`;
     return syncAsks(layout, {
       drain: async () => (await this.#gateway("POST", `${path}/drain`)).json(),
       push: async body => void (await this.#gateway("PUT", path, body)),
+      secrets: {
+        drain: async () => (await this.#gateway("POST", `${secrets}/drain`)).json(),
+        forget: async id => void (await this.#gateway("DELETE", `${secrets}/${id}`)),
+        ...(ownerDid ? {
+          link: async (id: string, request: { name: string; sites: string[]; header: string; why: string }) => {
+            const answer: unknown = await (await this.#gateway("PUT", `${secrets}/${id}`, { ...request, ownerDid })).json();
+            if (!isRecord(answer) || typeof answer.approveUrl !== "string") throw new Error("gateway gave no approval link");
+            return { approveUrl: answer.approveUrl };
+          },
+        } : {}),
+      },
     }, turn);
+  }
+
+  /** Collects the proposals the box made and gives the gateway the counts, the final proposals and `keys` when given (see syncActions). */
+  syncActions(layout: BotLayout, keys?: readonly string[]): Promise<void> {
+    const path = `/bots/${layout.botId}/actions`;
+    return syncActions(layout, {
+      drain: async () => (await this.#gateway("POST", `${path}/drain`)).json(),
+      push: async body => void (await this.#gateway("PUT", path, body)),
+    }, keys);
+  }
+
+  /** Has the gateway spend an approval it issued: true once for that id and binding (204), false when it refuses (409). */
+  async spendAction(layout: BotLayout, id: string, binding: string): Promise<boolean> {
+    try {
+      await this.#gateway("POST", `/bots/${layout.botId}/actions/spend`, { id, binding });
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   async #registerEgress(botId: string, token: string, owner: string): Promise<void> {

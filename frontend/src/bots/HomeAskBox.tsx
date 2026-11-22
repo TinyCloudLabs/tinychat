@@ -16,6 +16,7 @@ import { isWorking, useMainChat } from "./useMainChat";
 import { AskCards } from "./AskCards";
 import { readSettings, revokeReadGrant, setReadArea, signReadGrant } from "./trustbotReadGrant";
 import { newMainChat } from "./mainNewChat";
+import { SecretCards } from "./SecretCard";
 import { useAsks } from "./useAsks";
 
 const RETRY_MS = 60_000;
@@ -67,7 +68,7 @@ function MainAsk({ api, tcw, onReconnect }: { api: BotsApi; tcw?: TinyCloudWeb; 
   const refreshRequests = useRef<() => void>(() => {});
   const chat = useMainChat(client, tcw ? () => prepareHistory(tcw) : undefined, () => refreshRequests.current());
   const [open, setOpen] = useState(false);
-  const asks = useAsks(client, { open, onDecided: chat.sendAppReply });
+  const asks = useAsks(client, { open, onDecided: chat.sendAppReply, owner: tcw?.did });
   const refreshAsks = asks.refresh;
   refreshRequests.current = refreshAsks;
   // Saving a Web access change tells the cards at once, so their note is never stale.
@@ -122,9 +123,12 @@ function MainAsk({ api, tcw, onReconnect }: { api: BotsApi; tcw?: TinyCloudWeb; 
   return (
     <>
       <AskBox working={isWorking(chat.state.turn)} onSend={send} onOpenMain={openChat} />
-      {/* The same request as in Main's chat: it is shown here only while the chat is closed. */}
-      {!open && asks.support === "yes" && (asks.pending.length > 0 || asks.stopped) ? (
-        <div className="mb-6 flex flex-col gap-3" data-home-asks=""><AskCards asks={asks} /></div>
+      {/* The same requests as in Main's chat: they are shown here only while the chat is closed. */}
+      {!open && asks.support === "yes" && (asks.pending.length > 0 || asks.stopped || asks.secrets.length > 0) ? (
+        <div className="mb-6 flex flex-col gap-3" data-home-asks="">
+          <AskCards asks={asks} />
+          <SecretCards asks={asks} onMessage={openChat} />
+        </div>
       ) : null}
       <MainChat
         open={open}

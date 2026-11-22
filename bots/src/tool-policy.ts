@@ -10,7 +10,7 @@ export type McpServer = "web" | "app";
 export const ALLOWED_TOOLS: Readonly<Record<McpServer, readonly string[]>> = {
   web: ["search", "fetch"],
   app: [
-    "ask_owner", "request_secret", "list_secrets", "call_with_secret",
+    "ask_owner", "request_secret", "list_secrets", "call_with_secret", "propose_action",
     // TrustBot's meeting reads (meeting-reads.ts): read-only, through the owner's grant to TrustBot. TC-3792
     "tinycloud_find_meetings", "tinycloud_read_meeting", "tinycloud_search_transcripts", "tinycloud_list_meeting_actions",
     // TrustBot's feed and chat reads (feed-chat-tools.ts): read-only, through the same grant. TC-3794

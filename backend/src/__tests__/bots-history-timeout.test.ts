@@ -49,7 +49,7 @@ test("GET remains bounded at 300 seconds and returns a truthful retryable failur
     expect(time.deadlines[0]!.controller.signal.aborted).toBe(true);
     const response = await request;
     expect(response.status).toBe(502);
-    expect(await response.json()).toEqual({ error: "bot_unavailable", message: "Main isn't available. Try again later." });
+    expect(await response.json()).toEqual({ error: "bot_unavailable", message: "TrustBot isn't available. Try again later." });
   } finally { await run.close(); }
 });
 

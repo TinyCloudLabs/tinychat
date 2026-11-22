@@ -146,7 +146,7 @@ describe("a start past BOTS_MAX_RUNNING", () => {
     expect(body).toContain("event: error");
     expect(JSON.parse(body.split("event: error\ndata: ")[1]!.split("\n")[0]!)).toEqual({
       code: "at_capacity",
-      message: "Main can't start right now because TinyCloud is running as many bots as it can. Your message wasn't sent. Try again shortly.",
+      message: "TrustBot can't start right now because TinyCloud is running as many bots as it can. Your message wasn't sent. Try again shortly.",
     });
 
     await sandboxes[0]!.complete();

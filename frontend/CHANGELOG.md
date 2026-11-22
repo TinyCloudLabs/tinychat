@@ -16,6 +16,184 @@
 - TC-2204: Native audience checks accept Home's three exact SQL hook subscriptions only alongside an existing TinyChat data grant.
 - TC-2499: The Home mirror adapter persists close receipts using node-compatible NULL/non-NULL compare-and-set predicates. If the KV mirror is already exactly closed but its receipt is missing, recovery records the original publication ETag without writing the KV copy again, before any gated child handoff. The CLI reports JSON error class, safe message, code, HTTP status when available, and operation step; private SQL bodies and nested causes remain redacted. Exit 2 identifies invalid input, exit 6 known transient failures (including NODE_BUSY and REQUEST_TIMEOUT without HTTP metadata), and exit 1 other runtime failures or OUTCOME_UNKNOWN. Unclassified errors are not labelled bad input; no failure confirms delivery or authorizes an automatic retry.
 
+## 0.20.0-beta.1
+
+### Patch Changes
+
+- 7d2eccc: Main can send one message to several of your bots after you tap Send. The card shows the message and who gets it before anything goes, and Don't send is final. Without your Send, Main messages at most one bot for each message you send. This needs the setting that lets Main ask you questions, which is off until you turn it on.
+
+  Details: TC-3793
+
+## 0.20.0-beta.0
+
+### Minor Changes
+
+- 53d24c2: The secret card's stop and ended messages are shorter: "Stop TrustBot using the secret?", "Stopped. TrustBot can't use the secret." and "If TrustBot needs it later, you'll see a new request."
+
+  Details: TC-3790
+
+## 0.19.0
+
+### Minor Changes
+
+- 03d29de: The bot you've known as Main is called TrustBot. Your chat history stays as it is.
+
+  Details: TC-3790
+
+### Patch Changes
+
+- 99b2305: MCP falls back to Fireflies KV records only when the SQL store is known to be empty. The Library filters and rechecks cached server-imported rows against the flag and the purge ledger, and pages KV with `nextCursor` and `truncated`. MCP's KV truncation text names the size limit.
+
+  Details: TC-3919
+
+## 0.19.0-beta.1
+
+### Patch Changes
+
+- 99b2305: Restrict MCP Fireflies KV fallback to proven-absent SQL stores, filter and revalidate cached server-imported Library rows against the active flag and purge ledger, align Library KV paging with `nextCursor` and `truncated` and update the MCP KV truncation text.
+
+  Details: TC-3919
+
+## 0.19.0-beta.0
+
+### Minor Changes
+
+- 03d29de: The bot you've known as Main is called TrustBot. Your chat history stays as it is.
+
+  Details: TC-3790
+
+## 0.18.0
+
+### Minor Changes
+
+- 323a384: Library and MCP discover and read KV-only Fireflies server-import meeting records with untrusted-data bounds and purge checks, behind a flag that is off by default.
+
+  Details: TC-3905
+
+- 4ce3e19: Add the "Where your data lives" section in Settings to view the owner's signed location-registry v2 record, request node changes through OpenKey when supported, and undo the latest change from recent history.
+
+  Details: TC-3892
+
+### Patch Changes
+
+- 2dc7989: Main can ask to use a secret. You add it to TinyCloud Secrets and approve it in OpenKey for up to 1 hour. Main can use it only with the sites named in the request and can't see or show its value.
+
+  Details: TC-3595
+
+- 6492b1c: The secret request card says the agent can use an approved secret for 1 hour, and that you can choose less in OpenKey.
+
+  Details: TC-3831
+
+- 1c020ce: TinyCloud One's content policy lets the desktop app talk to its own process, and the screen checks play test recordings from blob addresses.
+
+  Details: TC-3878
+
+- 3dedae7: TinyCloud One's web policy names no desktop bridge; only the desktop build's copy of the policy carries it.
+
+  Details: TC-3878
+
+- 8549747: TinyCloud One on the web and in the phone apps runs only its own scripts and connects only to the services it lists.
+
+  Details: TC-3878
+
+- 7559031: Send only hosts referenced by spaces or Secrets and keys when requesting a registry change from Settings, so moved-away hosts are not retained or probed.
+
+  Details: TC-3892
+
+## 0.18.0-beta.7
+
+### Minor Changes
+
+- 323a384: Library and MCP discover and read KV-only Fireflies server-import meeting records with untrusted-data bounds and purge checks, behind a flag that is off by default.
+
+  Details: TC-3905
+
+## 0.18.0-beta.6
+
+### Patch Changes
+
+- 6492b1c: The secret request card says the agent can use an approved secret for 1 hour, and that you can choose less in OpenKey.
+
+  Details: TC-3831
+
+## 0.18.0-beta.5
+
+### Patch Changes
+
+- 2dc7989: Main can ask to use a secret. You add it to TinyCloud Secrets and approve it in OpenKey for as long as you choose. Main can use it only with the sites named in the request and can't see or show its value.
+
+  Details: TC-3595
+
+## 0.18.0-beta.4
+
+### Patch Changes
+
+- 7559031: Send only hosts referenced by spaces or Secrets and keys when requesting a registry change from Settings, so moved-away hosts are not retained or probed.
+
+  Details: TC-3892
+
+## 0.18.0-beta.3
+
+### Patch Changes
+
+- 3dedae7: TinyCloud One's web policy no longer names the desktop app's bridge; only the desktop build's copy of the policy carries it.
+
+  Details: TC-3878
+
+## 0.18.0-beta.2
+
+### Minor Changes
+
+- 4ce3e19: Add the "Where your data lives" section in Settings to view the owner's signed location-registry v2 record, request node changes through OpenKey when supported, and undo the latest change from recent history.
+
+  Details: TC-3892
+
+## 0.17.1-beta.1
+
+### Patch Changes
+
+- 1c020ce: TinyCloud One's content policy lets the desktop app talk to its own process, and the screen checks play test recordings from blob addresses.
+
+  Details: TC-3878
+
+## 0.17.1-beta.0
+
+### Patch Changes
+
+- 8549747: TinyCloud One on the web and in the phone apps runs only its own scripts and connects only to the services it lists.
+
+  Details: TC-3878
+
+## 0.17.0
+
+### Minor Changes
+
+- 1571ac5: Home shows the "What do you want done?" box and the Agents pill without Show hidden features turned on in Settings.
+
+  Details: TC-3119
+
+- 92f5ec2: Settings has no Hidden features section. The Share button on recordings shows for everyone. On Home, the Agents pill shows for every account that has agents, and the "What do you want done?" box shows for accounts that have agents turned on.
+
+  Details: TC-3119
+
+- f0b15c9: In Chrome and other Chromium browsers on a computer or Android, TinyCloud One keeps an encrypted local copy of your transcripts, so they open faster. It starts at your next sign-in. To stop it, turn off "Keep a local copy of my transcripts on this device" in Settings, or use Delete local copy. Production builds paused this copy from 13 November until web-sdk 3.12 removed a wait of about a second and a half on Home's first screen.
+
+  Details: TC-2883
+
+- 2048626: Every recording with a transcript or audio in your space has a Share button on its detail page, with no setting to turn on.
+
+  Details: TC-3195
+
+### Patch Changes
+
+- d3970bf: TinyCloud One can show the Ship ledger, a read-only view of where each task stands and what it is waiting on. The tile appears only for an account whose TinyCloud holds a ship board.
+
+  Details: TC-3768
+
+- 0118643: Opening a bot other than Main doesn't ask you to approve saving its chat history to your TinyCloud. Only Main's chat is saved there. Other bots' chats are kept by the bot service.
+
+  Details: TC-3813
+
 ## 0.17.0-beta.3
 
 ### Minor Changes

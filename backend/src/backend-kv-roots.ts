@@ -14,6 +14,7 @@ import {
 } from "./services/connector-drain.js";
 import { CORRUPT_KEY_PREFIX, DEAD_KEY_PREFIX, PENDING_KEY_PREFIX } from "./services/connector-queue.js";
 import { CREDENTIAL_KEY_PREFIX } from "./services/credential-store.js";
+import { FIREFLIES_IMPORT_GRANT_KEY_PREFIX } from "./services/fireflies-grant-store.js";
 import { TRANSCRIBER_INDEX_KEY_PREFIX } from "./services/transcriber-index.js";
 import { TRANSCRIPT_DELIVERY_KEY_PREFIX } from "./services/transcript-delivery.js";
 import { WEBHOOK_CONFIG_KEY_PREFIX, WEBHOOK_TOKEN_KEY_PREFIX } from "./services/webhook-tokens.js";
@@ -26,6 +27,7 @@ import { WEBHOOK_CONFIG_KEY_PREFIX, WEBHOOK_TOKEN_KEY_PREFIX } from "./services/
 export const BACKEND_KV_ROOTS: readonly string[] = [
   TRANSCRIPT_WRITER_GRANT_KIND.keyPrefix,
   EXO_SYNC_GRANT_KIND.keyPrefix,
+  FIREFLIES_IMPORT_GRANT_KEY_PREFIX,
   WEBHOOK_TOKEN_KEY_PREFIX,
   WEBHOOK_CONFIG_KEY_PREFIX,
   DRAIN_CONFIG_KEY_PREFIX,

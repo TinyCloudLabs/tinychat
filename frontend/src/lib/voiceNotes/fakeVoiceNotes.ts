@@ -534,7 +534,9 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now()): Fake
       note.rev = rev + 1;
       return { rev: note.rev };
     },
-    async localAudioUrl({ id }) { checked(id); return { url: `fake://voice-notes/${id}.m4a` }; },
+    // A blob URL, as the web and desktop stores return: One's Content-Security-Policy allows media only from blob:,
+    // https: and its own origin. The blob is empty (nothing plays it); the fragment names the note.
+    async localAudioUrl({ id }) { checked(id); return { url: `${URL.createObjectURL(new Blob([], { type: "audio/mp4" }))}#${id}` }; },
     async localAudioSize({ id }) { return { size: checked(id).sizeBytes }; },
     async putTranscript({ id, transcript }) {
       checked(id);

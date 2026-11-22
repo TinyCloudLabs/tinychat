@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { recoverMessageAddress } from "viem";
 import { isRecord } from "./guards";
 import type { BotLayout } from "./layout";
+import { APP_DECISIONS, parseSecretLine } from "./asks";
 import { BOT_KEY, botIdFor } from "./owner";
 
 const DOMAIN = "tinychat.bot-history.storage/v1\n";
@@ -124,13 +125,15 @@ export class HistoryJournal {
   get legacyPending(): boolean { return this.#state.legacyPending; }
   messages() {
     return this.#state.batches.flatMap(batch => {
-      const record = batch.record as { type?: string; text?: string; at?: string; origin?: string; decision?: string; outcome?: { messageId?: string } };
+      const record = batch.record as { type?: string; text?: string; at?: string; origin?: string; decision?: string; secret?: unknown; outcome?: { messageId?: string } };
       const app = record.type === "user" && record.origin === "app";
-      const decision = app ? (["answered", "declined", "stopped"] as const).find(known => known === record.decision) : undefined;
+      const decision = app ? ([...APP_DECISIONS, "action_approved", "action_declined"] as const).find(known => known === record.decision) : undefined;
+      const secret = decision ? parseSecretLine(record.secret) : undefined;
       return (record.type === "user" || record.type === "assistant") && typeof record.text === "string"
         ? [{ id: record.type === "assistant" && typeof record.outcome?.messageId === "string" ? record.outcome.messageId : `history-${batch.generation}-${batch.seq}`, role: record.type === "user" ? "user" as const : "bot" as const, text: record.text, at: record.at ?? "",
           ...(app ? { origin: "app" as const } : {}),
-          ...(decision ? { decision } : {}) }] : [];
+          ...(decision ? { decision } : {}),
+          ...(secret ? { secret } : {}) }] : [];
     });
   }
   activities(): ActivityRecord[] {

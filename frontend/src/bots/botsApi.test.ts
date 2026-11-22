@@ -78,6 +78,6 @@ describe("sendToMain", () => {
     await apiReturning(streamed("event: done\ndata: {\"messageId\":\"m\"}\n\n", []), seen).sendToMain("Reply with exactly: pong", () => {});
     const headers = new Headers(seen[0]?.headers);
     expect(headers.get("Authorization")).toBe("Bearer session-token");
-    expect(JSON.parse(String(seen[0]?.body))).toEqual({ text: "Reply with exactly: pong" });
+    expect(JSON.parse(String(seen[0]?.body))).toEqual({ text: "Reply with exactly: pong", clientContext: { localDate: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/), timeZone: expect.any(String) } });
   });
 });

@@ -45,6 +45,8 @@ export interface SandboxSpecInput {
   limits: SandboxLimits;
   /** Picks the system prompt bot-start.sh passes to OMP. */
   role: BotRole;
+  /** The name the owner sees for the bot, which bot-start.sh puts into the prompt. Never a source of trust. */
+  botName?: string;
 }
 
 const CPU_PERIOD_US = 100_000;
@@ -68,6 +70,7 @@ export function sandboxSpec(base: OciSpec, input: SandboxSpecInput): OciSpec {
         `BOT_TOKEN=${input.token}`,
         "PI_NO_TITLE=1",
         `BOT_SYSTEM_PROMPT=${systemPromptPath(input.role)}`,
+        ...(input.botName !== undefined ? [`BOT_NAME=${input.botName}`] : []),
       ],
       noNewPrivileges: true,
     },

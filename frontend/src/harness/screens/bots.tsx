@@ -9,9 +9,12 @@ import { CreateBotDialog } from "@/bots/CreateBotDialog";
 import { BOTS_STRINGS } from "@/bots/botsStrings";
 import type { BotRoster, BotRosterApi, RosterBot } from "@/bots/botRosterApi";
 import { useBots } from "@/bots/useBots";
-import { BotsRouteMissing, type BotsApi } from "@/bots/botsApi";
+import { BotsRouteMissing, type BotsApi, type SecretRequest } from "@/bots/botsApi";
 import { HomeAskBox } from "@/bots/HomeAskBox";
 import { MainChat } from "@/bots/MainChat";
+import { SecretCards } from "@/bots/SecretCard";
+import type { Asks } from "@/bots/useAsks";
+import { setSecretsAvailableForTests } from "@/lib/openkeyNative";
 import type { MainChatState } from "@/bots/useMainChat";
 import { HomeFeedEntries } from "@/feed/HomeFeedEntries";
 import type { HomeFeedEntry, HomeFeedSource } from "@/feed/feedStoreTypes";
@@ -192,6 +195,51 @@ function CreateBotPreview({ cap = null }: { cap?: "flat3" | "table" | null }) {
   </>;
 }
 
+// Main's secret requests (lane B, F1): the card at each step and in each state, the Feed row, and the iPhone line.
+// Synthetic names and links; nothing opens or is sent.
+const SECRET_AT = { askedAt: new Date(FROZEN_NOW - 2 * 60_000).toISOString(), expiresAt: new Date(FROZEN_NOW + 22 * 3_600_000).toISOString() };
+const SECRET_UNTIL = new Date(FROZEN_NOW + 6 * 3_600_000).toISOString();
+const OPENAI = { kind: "secret" as const, name: "OPENAI_API_KEY", sites: ["api.openai.com"], service: "OpenAI", outside: false, undelivered: false, ...SECRET_AT };
+const WHY = "To summarise your meeting notes with your own OpenAI account.";
+const SECRETS_ASKED: SecretRequest[] = [
+  { ...OPENAI, id: "fx-saved", state: "pending", why: WHY, approveUrl: "https://openkey.so/approve/fixture", outside: true, writes: ["POST"] },
+  { ...OPENAI, id: "fx-unknown", state: "pending", name: "ACME_REPORTS_TOKEN", service: "", sites: ["api.acme.example", "eu.acme.example", "us.acme.example"], why: "To post the weekly report to Acme." },
+];
+const SECRETS_DONE: SecretRequest[] = [
+  { ...OPENAI, id: "fx-approved", state: "approved", until: SECRET_UNTIL },
+  { ...OPENAI, id: "fx-failed", state: "failed", name: "RESEND_API_KEY", service: "Resend", sites: ["api.resend.com"] },
+  { ...OPENAI, id: "fx-ended", state: "ended", name: "GITHUB_TOKEN", service: "GitHub PAT", sites: ["api.github.com"], until: SECRET_AT.askedAt },
+  { ...OPENAI, id: "fx-declined", state: "declined", name: "ELEVENLABS_API_KEY", service: "ElevenLabs", sites: ["api.elevenlabs.io"] },
+  { ...OPENAI, id: "fx-expired", state: "expired", name: "FIREFLIES_API_KEY", service: "Fireflies", sites: ["api.fireflies.ai"] },
+  { ...OPENAI, id: "fx-revoked", state: "revoked", name: "ANTHROPIC_API_KEY", service: "Anthropic", sites: ["api.anthropic.com"] },
+];
+
+function fixtureAsks(secrets: SecretRequest[], saved: string[] = []): Asks {
+  const ok = async () => "ok" as const;
+  return {
+    support: "yes", enabled: true, stopped: false, pending: [], outcomes: [], secrets, saved: new Set(saved),
+    owner: "did:pkh:eip155:1:0x0000000000000000000000000000000000000001", webOn: false,
+    noteWeb: () => {}, markSaved: () => {}, dismiss: () => {}, setEnabled: ok, stop: ok, decide: ok, refresh: () => {},
+  };
+}
+
+function SecretChat({ secrets, saved, iphone = false }: { secrets: SecretRequest[]; saved?: string[]; iphone?: boolean }) {
+  setSecretsAvailableForTests(!iphone);
+  return <Home ask={<>
+    <AskBox working={false} onSend={() => {}} onOpenMain={() => {}} />
+    <MainChat open onOpenChange={() => {}} state={{ history: "loaded", lines: [], turn: null }}
+      onSend={() => {}} onRetry={() => {}} onRetryHistory={() => {}} asks={fixtureAsks(secrets, saved)} />
+  </>} />;
+}
+
+function SecretFeed() {
+  setSecretsAvailableForTests(true);
+  return <Home source={FEED} ask={<>
+    <AskBox working={false} onSend={() => {}} onOpenMain={() => {}} />
+    <div className="mb-6 flex flex-col gap-3" data-home-asks=""><SecretCards asks={fixtureAsks([SECRETS_ASKED[0]!, SECRETS_DONE[0]!])} onMessage={() => {}} /></div>
+  </>} />;
+}
+
 const BASE = { group: "bots", layout: "pane", platform: "web", path: "/chat/feed", displayTitle: true } as const;
 
 export const botsScreens: HarnessScreen[] = [
@@ -237,4 +285,11 @@ export const botsScreens: HarnessScreen[] = [
       />
     ),
   },
+  { ...BASE, id: "bots-secret-asked", readyWhen: "[data-secret-card]", viewports: ["phone", "desktop"],
+    render: () => <SecretChat secrets={SECRETS_ASKED} saved={["fx-saved"]} /> },
+  { ...BASE, id: "bots-secret-states", readyWhen: "[data-secret-card]", viewports: ["phone", "desktop"],
+    render: () => <SecretChat secrets={SECRETS_DONE} /> },
+  { ...BASE, id: "bots-secret-iphone", readyWhen: "[data-secret-iphone]", viewports: ["phone"],
+    render: () => <SecretChat secrets={SECRETS_ASKED.slice(0, 1)} iphone /> },
+  { ...BASE, id: "bots-secret-feed", readyWhen: "[data-secret-row]", viewports: ["phone", "desktop"], render: () => <SecretFeed /> },
 ];

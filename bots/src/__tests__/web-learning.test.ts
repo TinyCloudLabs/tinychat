@@ -77,6 +77,7 @@ function setup() {
   const launcher: SandboxLauncher = {
     hasState: () => false,
     leftover: () => false,
+    readsHeld: async () => false,
     launch: async layout => sandboxes.get(layout.botId)!,
     learnAddresses: async (layout, urls) => void learned.push({ botId: layout.botId, urls }),
   };
