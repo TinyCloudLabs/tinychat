@@ -201,8 +201,7 @@ describe.skipIf(!nodeBinary)("a network-sealed connector key on a real node", ()
     const after = await networkDecryptOnly();
     const record = await after.kv.get(VAULT_KEY);
     expect(record.ok).toBe(true);
-    const raw: unknown = record.ok ? record.data : undefined;
-    const envelope = (typeof raw === "string" ? JSON.parse(raw) : raw) as Record<string, unknown>;
+    const envelope = (record.ok ? record.data.data : undefined) as Record<string, unknown>;
     expect(envelope).toMatchObject({ v: 2, keyPath: secretKeyPath(fireflies.secretName), networkId });
     expect(Object.keys(envelope).sort()).toEqual([
       "aad", "alg", "ciphertext", "encryptedSymmetricKey", "encryptedSymmetricKeyHash", "keyPath", "keyVersion", "metadata", "networkId", "v",
