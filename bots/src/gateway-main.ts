@@ -6,17 +6,23 @@
 //   PUT    /bots/<botId>/web  {"mode", "hosts"}  the owner's web-access setting (applies from the bot's next call)
 //   GET    /bots/<botId>/web                     {"available", "today": {"searches", "pages", "blocked"}}
 //   POST   /bots/<botId>/web/addresses {"urls"}  page addresses the owner typed, which the bot may then read
+//   PUT|DELETE /bots/<botId>/secrets/<id>, POST /bots/<botId>/secrets/drain   secret requests (secret-routes.ts)
 
 import { chmodSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { Server } from "bun";
 import { BotAci } from "./aci";
 import { ADMISSION_CONTROL_PATH, createAdmissionRelay, MAX_ADMISSION_BYTES } from "./bot-admission";
-import { gatewayConfig } from "./config";
+import { gatewayConfig, SECRET_ORIGINS } from "./config";
+import { sealKeyFromDstack } from "./dstack-key";
 import { fileBudgetStore, fileOwnerStore, Gateway } from "./gateway";
 import { isRecord } from "./guards";
 import { egressPaths } from "./layout";
 import { BOT_ID } from "./owner";
+import { SecretGrants } from "./secret-grants";
+import { nodeSecretReader } from "./secret-node";
+import { secretRoute, SECRETS_ROUTE } from "./secret-routes";
+import { sealedGrantStore } from "./secret-store";
 import { addressKey, readableAddress } from "./web";
 import { parseWebPolicy } from "./web-policy";
 
@@ -44,6 +50,22 @@ function startGateway(): Gateway {
   }
 }
 const gateway = startGateway();
+
+/** How often open secret requests are checked with OpenKey; it keeps an approval for 10 minutes. */
+const SECRET_POLL_MS = 5_000;
+// Secret requests need the sealing key from the CVM's key service. Without it they are refused (503), never kept
+// unsealed; everything else runs as before.
+async function startSecrets(): Promise<SecretGrants | undefined> {
+  try {
+    const key = await sealKeyFromDstack();
+    return new SecretGrants({ store: sealedGrantStore(cfg.secretGrantsDir!, key), reader: nodeSecretReader(SECRET_ORIGINS.node), origins: SECRET_ORIGINS });
+  } catch (error) {
+    console.error(JSON.stringify({ gateway: "secrets_unavailable", reason: error instanceof Error ? error.message.slice(0, 200) : "unknown" }));
+    return undefined;
+  }
+}
+const secrets = await startSecrets();
+if (secrets) setInterval(() => void secrets.poll().catch(() => undefined), SECRET_POLL_MS);
 const listeners = new Map<string, Server<undefined>>();
 
 // Registrations do not survive a restart; the supervisor registers again before every message. Stale sockets go,
@@ -88,6 +110,8 @@ const control = Bun.serve({
     if (pathname === ADMISSION_CONTROL_PATH) return admit(req);
     const receiptMatch = /^\/bots\/([0-9a-f]{64})\/receipts$/.exec(pathname);
     if (req.method === "GET" && receiptMatch) return Response.json(aci?.take(receiptMatch[1]!) ?? []);
+    const secretMatch = SECRETS_ROUTE.exec(pathname);
+    if (secretMatch) return secretRoute(req, secretMatch[1]!, secretMatch[2]!, secrets, botId => gateway.ownerOf(botId));
     const webMatch = /^\/bots\/([0-9a-f]{64})\/web(\/addresses)?$/.exec(pathname);
     if (webMatch) {
       const webBot = webMatch[1]!;

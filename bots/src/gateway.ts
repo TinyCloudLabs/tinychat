@@ -388,6 +388,11 @@ export class Gateway {
     this.#persistOwners();
   }
 
+  /** The id of the bot's owner's Main: the bot itself for Main. */
+  ownerOf(botId: string): string {
+    return this.#owners.get(botId) ?? botId;
+  }
+
   /**
    * The bot's sandbox is gone: its token, its web setting and the addresses it may read go with it. The supervisor
    * gives the setting again at the next launch. The day's counts stay: stopping and starting must not reset them.
