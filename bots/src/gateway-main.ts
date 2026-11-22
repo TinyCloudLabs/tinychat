@@ -10,17 +10,24 @@
 //                         supervisor's counts (applies from the bot's next call)
 //   POST   /bots/<botId>/asks/drain              {"asks", "outside"}: the questions the bot has asked since the last drain, and
 //                         whether outside text has reached its conversation (a web call)
+//   PUT|DELETE /bots/<botId>/secrets/<id>, POST /bots/<botId>/secrets/drain   secret requests (secret-routes.ts)
 
 import { chmodSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { Server } from "bun";
 import { BotAci } from "./aci";
 import { ADMISSION_CONTROL_PATH, createAdmissionRelay, MAX_ADMISSION_BYTES } from "./bot-admission";
-import { gatewayConfig } from "./config";
+import { gatewayConfig, SECRET_ORIGINS } from "./config";
+import { sealKeyFromDstack } from "./dstack-key";
+import { networkDeps } from "./fetch-net";
 import { fileBudgetStore, fileOwnerStore, Gateway } from "./gateway";
 import { isRecord } from "./guards";
 import { egressPaths } from "./layout";
 import { BOT_ID } from "./owner";
+import { SecretGrants } from "./secret-grants";
+import { nodeSecretReader } from "./secret-node";
+import { secretRoute, SECRETS_ROUTE } from "./secret-routes";
+import { sealedGrantStore } from "./secret-store";
 import { addressKey, readableAddress } from "./web";
 import { parseWebPolicy } from "./web-policy";
 import { parseAsksPush } from "./asks";
@@ -28,6 +35,26 @@ import { parseAsksPush } from "./asks";
 const { backendOrigin, backendCallSecret, ...cfg } = gatewayConfig(process.env);
 const admit = createAdmissionRelay(backendOrigin, backendCallSecret);
 const aci = process.env.BOTS_HISTORY_ENABLED === "true" ? new BotAci(cfg.upstream) : undefined;
+
+/** How often open secret requests are checked with OpenKey; it keeps an approval for 10 minutes. */
+const SECRET_POLL_MS = 5_000;
+// Secret requests need the sealing key from the CVM's key service. Without it they are refused (503) and the secret
+// tools are not offered, never kept unsealed; everything else runs as before.
+async function startSecrets(): Promise<SecretGrants | undefined> {
+  try {
+    const key = await sealKeyFromDstack();
+    const grants = new SecretGrants({ store: sealedGrantStore(cfg.secretGrantsDir!, key), reader: nodeSecretReader(SECRET_ORIGINS.node), origins: SECRET_ORIGINS });
+    // The deploy check looks for this line: the gateway's user reached the key service (bots/README.md, Deploying).
+    console.log(JSON.stringify({ gateway: "secrets_ready" }));
+    return grants;
+  } catch (error) {
+    console.error(JSON.stringify({ gateway: "secrets_unavailable", reason: error instanceof Error ? error.message.slice(0, 200) : "unknown" }));
+    return undefined;
+  }
+}
+const secrets = await startSecrets();
+if (secrets) setInterval(() => void secrets.poll().catch(() => undefined), SECRET_POLL_MS);
+
 // Budgets persist on the gateway's own volume. An unreadable budget file stops the start (fails closed) with one
 // operator line naming the file and the recovery; the non-zero exit keeps Docker restarting it, each time logged.
 function startGateway(): Gateway {
@@ -36,6 +63,8 @@ function startGateway(): Gateway {
       store: fileBudgetStore(cfg.budgetFile),
       ownerStore: cfg.ownersFile ? fileOwnerStore(cfg.ownersFile) : undefined,
       verifiedFetch: aci ? (botId, url, init) => aci.fetch(botId, url, init) : undefined,
+      secrets,
+      secretNet: networkDeps,
     });
   } catch (error) {
     console.error(
@@ -93,6 +122,8 @@ const control = Bun.serve({
     if (pathname === ADMISSION_CONTROL_PATH) return admit(req);
     const receiptMatch = /^\/bots\/([0-9a-f]{64})\/receipts$/.exec(pathname);
     if (req.method === "GET" && receiptMatch) return Response.json(aci?.take(receiptMatch[1]!) ?? []);
+    const secretMatch = SECRETS_ROUTE.exec(pathname);
+    if (secretMatch) return secretRoute(req, secretMatch[1]!, secretMatch[2]!, secrets, botId => gateway.ownerOf(botId));
     const asksMatch = /^\/bots\/([0-9a-f]{64})\/asks(\/drain)?$/.exec(pathname);
     if (asksMatch) {
       const asksBot = asksMatch[1]!;

@@ -54,6 +54,8 @@ export type RequestEvent = {
   account_hash?: string;
   /** The same ID as this request's `tinychat_request` record. */
   request_id?: string;
+  /** Present (true) only when the model had no catalog price and the fallback rates set `minimum`. */
+  unpriced?: true;
 } | {
   event: "agent_turn_settled";
   /** Unclamped credit cost of the settled turn. */
@@ -131,6 +133,8 @@ export function recordAgentChatBudgetPreflight(args: {
   minimum: number;
   tier: AgentChatBudgetTier;
   source: AgentChatBudgetSource;
+  /** The model had no catalog price, so the fallback rates set `minimum`. */
+  unpriced?: boolean;
 }): void {
   const active = context.getStore();
   if (!active) return;
@@ -150,6 +154,7 @@ export function recordAgentChatBudgetPreflight(args: {
       source: args.source,
       ...(accountHash ? { account_hash: accountHash } : {}),
       ...(active.requestId ? { request_id: active.requestId } : {}),
+      ...(args.unpriced === true ? { unpriced: true as const } : {}),
     });
   } catch {
     // Diagnostics only.
