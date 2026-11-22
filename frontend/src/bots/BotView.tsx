@@ -12,6 +12,7 @@ import { useOriginMoveDeferral } from "@/shell/OriginMoveNotice";
 import { MAX_MESSAGE_LENGTH, SendButton, sendOnEnter } from "./AskBox";
 import { BotAvatar } from "./BotAvatar";
 import { BOT_VIEW_STRINGS, BOTS_STRINGS, HISTORY_RECONNECT_LABEL } from "./botsStrings";
+import { clearHistoryDecline } from "./historyAuthorization";
 import { historyNoticeDeadline, type HistoryNotice } from "./historyNotice";
 import { activityText, BotPanel } from "./BotPanel";
 import { DeleteBotConfirm, EditBotDialog, type BotManagement } from "./BotManage";
@@ -40,12 +41,12 @@ function Line({ role, text }: Pick<ChatLine, "role" | "text">) {
   );
 }
 
-function Failure({ text, onRetry }: { text: string; onRetry: () => void }) {
+function Failure({ text, onRetry, declined = false }: { text: string; onRetry: () => void; declined?: boolean }) {
   return (
     <div role="alert" className="flex flex-wrap items-center gap-x-3 gap-y-2 text-callout text-muted-foreground">
       <p>{text}</p>
-      <Button type="button" variant="outline" size="sm" onClick={onRetry}>
-        {BOTS_STRINGS.tryAgain}
+      <Button type="button" variant="outline" size="sm" onClick={declined ? () => { clearHistoryDecline(); onRetry(); } : onRetry}>
+        {declined ? BOTS_STRINGS.reviewRequest : BOTS_STRINGS.tryAgain}
       </Button>
     </div>
   );
@@ -199,6 +200,7 @@ export function BotView({ bot, chats, notice, acknowledgeNotice, onReconnect, st
                   />
                 ) : null}
                 {history === "failed" && !working ? <Failure text={BOT_VIEW_STRINGS.historyFailed(bot.name)} onRetry={() => void chats.loadHistory(bot.key)} /> : null}
+                {history === "declined" && !working ? <Failure text={errors.history_declined(bot.name)} onRetry={() => void chats.loadHistory(bot.key)} declined /> : null}
                 {activity.filter((item) => !item.inTurn && item.after === null).map((item) => <ActivityLine key={item.id} item={item} />)}
                 {lines.map((line) => (
                   <Fragment key={line.id}>
@@ -212,7 +214,7 @@ export function BotView({ bot, chats, notice, acknowledgeNotice, onReconnect, st
                     {activity.filter((item) => item.inTurn).map((item) => <ActivityLine key={item.id} item={item} />)}
                     {turn.reply ? <Line role="bot" text={turn.reply} /> : null}
                     {working && !turn.reply ? <BotAvatar bot={bot.face} working size={28} /> : null}
-                    {turn.state === "error" ? <Failure text={errors[turn.error ?? "failed"](bot.name)} onRetry={() => chats.retry(bot.key)} /> : null}
+                    {turn.state === "error" ? <Failure text={errors[turn.error ?? "failed"](bot.name)} onRetry={() => chats.retry(bot.key)} declined={turn.error === "history_declined"} /> : null}
                   </>
                 ) : null}
                 <div ref={end} data-bots-chat-end="" />
