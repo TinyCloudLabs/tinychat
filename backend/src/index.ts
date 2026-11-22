@@ -565,13 +565,17 @@ async function main() {
     delete: (key) => backendStorageLane.run(() => node.kv.delete(key)),
     list: (prefix) => node.kv.list({ prefix }),
   };
+  // One open of an owner's grant is a stored-grant load plus node calls, and a wake check opens it four times. The
+  // cache keeps one open per owner for a short window; every write or removal of the stored grant drops that owner.
   const openOwnerGrant = createOwnerGrantOpener({
     node,
     backendDid: did,
     configuredHost: TINYCLOUD_HOST,
     grantStore: exoGrantStore,
+    cache: true,
   });
-  const exoGrantTracked = createTrackedGrantStore(exoGrantStore, exoGrantHolders);
+  const forgetOwnerGrant = (owner: string): void => openOwnerGrant.invalidate(owner);
+  const exoGrantTracked = createTrackedGrantStore(exoGrantStore, exoGrantHolders, forgetOwnerGrant);
   const teardownExoOwner: ((owner: string) => Promise<void>) | undefined = exoCapabilitiesEnabled(process.env)
     ? async (owner: string): Promise<void> => {
         // Clear owner rows first, then remove the grant: a failed clear keeps the grant so the retry still has it.
@@ -843,7 +847,7 @@ async function main() {
       node,
       backendDid: did,
       configuredHost: TINYCLOUD_HOST,
-      store: createTrackedGrantStore(exoGrantStore, exoGrantHolders),
+      store: createTrackedGrantStore(exoGrantStore, exoGrantHolders, forgetOwnerGrant),
       teardownExoOwner,
       authMiddleware,
     }));
