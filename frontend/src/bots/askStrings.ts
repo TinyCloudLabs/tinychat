@@ -75,6 +75,8 @@ export const SECRET_STRINGS = {
   title: `${ASK_MAIN} is asking to use a secret`,
   onlyWith: ({ service, sites }: { service?: string; sites: string[] }) =>
     `Only with: ${service ? `${service} (${sites.join(", ")})` : sites.join(", ")}`,
+  /** Only when the catalog lets Main write with it (Monica, 2026-11-22). Writes are for known secrets, so `with` is the service. */
+  writes: (service: string) => `${ASK_MAIN} can also send data to ${service} with it, which may cost money or change things there.`,
   outside: `${ASK_MAIN} read a web page or someone else’s message before asking, so approve only if this request is what you expect.`,
 
   addTitle: "Add it to TinyCloud Secrets",

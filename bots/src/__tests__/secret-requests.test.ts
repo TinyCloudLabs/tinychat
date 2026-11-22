@@ -65,7 +65,7 @@ describe("a secret request in the supervisor's store", () => {
     expect(gw.links).toEqual([{ id: A, request: { name: "OPENAI_API_KEY", sites: ["api.openai.com"], header: "authorization", why: WHY } }]);
     expect(store().list()).toEqual([{
       id: A, kind: "secret", state: "pending", askedAt: new Date(T0).toISOString(), expiresAt: new Date(T0 + EXPIRY_MS).toISOString(), outside: false,
-      name: "OPENAI_API_KEY", sites: ["api.openai.com"], service: "OpenAI", why: WHY, approveUrl: `${LINK}/${A}`,
+      name: "OPENAI_API_KEY", sites: ["api.openai.com"], service: "OpenAI", writes: ["POST"], why: WHY, approveUrl: `${LINK}/${A}`,
     }]);
     expect(gw.pushes.at(-1)!.secrets).toEqual([{ id: A, name: "OPENAI_API_KEY", state: "pending", sites: ["api.openai.com"] }]);
   });

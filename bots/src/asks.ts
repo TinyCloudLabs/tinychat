@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { isRecord } from "./guards";
 import { type BotLayout, botLayout, type LayoutRoots } from "./layout";
 import { BOT_ID } from "./owner";
-import { joinSites, knownSecret, MAX_SITES, SECRET_NAME, secretSites } from "./secret-catalog";
+import { joinSites, knownSecret, MAX_SITES, SECRET_NAME, secretSites, writeMethods } from "./secret-catalog";
 
 export const MAX_QUESTION_CHARS = 280;
 export const MAX_CHOICES = 4;
@@ -226,6 +226,8 @@ export interface SecretRequest {
   sites: string[];
   /** The service's name, for a secret the catalog knows. */
   service?: string;
+  /** The write methods the catalog lets Main use with it (a known secret only); absent when it can only read. */
+  writes?: string[];
   /** Main's sentence, while pending or failed. */
   why?: string;
   /** OpenKey's approval page, while pending and once the gateway has made it. */
@@ -544,9 +546,11 @@ export class AskStore {
     const undelivered = ask.undelivered ? { undelivered: true as const } : {};
     if (ask.kind === "secret") {
       const service = knownSecret(ask.name!)?.service;
+      const writes = writeMethods(ask.name!);
       return {
         ...common, kind: "secret", state: ask.state as SecretState, name: ask.name!, sites: [...ask.sites ?? []],
         ...(service ? { service } : {}),
+        ...(writes.length ? { writes: [...writes] } : {}),
         ...((ask.state === "pending" || ask.state === "failed") && ask.why !== undefined ? { why: ask.why } : {}),
         ...(ask.state === "pending" && ask.approveUrl !== undefined ? { approveUrl: ask.approveUrl } : {}),
         ...(ask.until !== undefined && (ask.state === "approved" || ask.state === "revoked" || ask.state === "ended") ? { until: new Date(ask.until).toISOString() } : {}),

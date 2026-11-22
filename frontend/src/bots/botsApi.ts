@@ -98,6 +98,8 @@ export interface SecretRequest extends SecretLine {
   why?: string;
   /** The OpenKey page where the owner approves it; set once the service has one. */
   approveUrl?: string;
+  /** The write methods Main may use it with (a known secret only); absent when it can only read. */
+  writes?: string[];
   outside: boolean;
   undelivered: boolean;
   resolvedAt?: string;
@@ -277,6 +279,10 @@ const SECRET_STATES: readonly unknown[] = ["pending", "approved", "declined", "s
 const isSites = (value: unknown): value is string[] =>
   Array.isArray(value) && value.length >= 1 && value.length <= MAX_SECRET_SITES && value.every(site => typeof site === "string" && SITE_NAME.test(site));
 
+const WRITE_METHODS: readonly string[] = ["POST", "PUT", "PATCH", "DELETE"];
+const isWrites = (value: unknown): value is string[] =>
+  Array.isArray(value) && value.length >= 1 && value.length <= WRITE_METHODS.length && value.every(method => typeof method === "string" && WRITE_METHODS.includes(method));
+
 /** A secret line from the service or the history: a valid name and sites, or nothing. */
 export function toSecretLine(payload: unknown): SecretLine | undefined {
   if (typeof payload !== "object" || payload === null) return undefined;
@@ -302,11 +308,12 @@ function toRequest(payload: unknown): MainRequest {
   if (kind === "secret") {
     const line = toSecretLine(value);
     if (!line || !SECRET_STATES.includes(state)) throw new BotsError("failed");
-    const { why, approveUrl } = value;
+    const { why, approveUrl, writes } = value;
     return {
       ...common, ...line, kind, state: state as SecretState,
       ...(typeof why === "string" ? { why } : {}),
       ...(typeof approveUrl === "string" && approveUrl.length <= 2048 && approveUrl.startsWith("https://") ? { approveUrl } : {}),
+      ...(isWrites(writes) ? { writes: [...writes] } : {}),
     };
   }
   if (kind !== "ask" || (state !== "pending" && state !== "answered" && state !== "declined" && state !== "stopped" && state !== "expired")) {

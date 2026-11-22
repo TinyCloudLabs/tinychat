@@ -116,6 +116,14 @@ test("an unknown secret names its sites: on the card as a list, in sentences joi
   expect(text(host)).toContain("Main can use it only with api.acme.test, eu.acme.test and us.acme.test and can’t see or show its value.");
 });
 
+test("a secret Main may also write with says so; one it can only read with does not", async () => {
+  setSecretsAvailableForTests(true);
+  const host = await render(<SecretCards asks={asksWith({ secrets: [request({ writes: ["POST"] }), request({ id: "s2", name: "GITHUB_TOKEN", service: "GitHub PAT", sites: ["api.github.com"] })] })} chat />);
+  expect([...host.querySelectorAll("[data-secret-writes]")].map((line) => line.textContent)).toEqual([
+    "Main can also send data to OpenAI with it, which may cost money or change things there.",
+  ]);
+});
+
 test("Open TinyCloud Secrets opens a named pop-up for this secret with a fresh state, and says where to finish", async () => {
   setSecretsAvailableForTests(true);
   const asks = asksWith({ secrets: [request()] });
