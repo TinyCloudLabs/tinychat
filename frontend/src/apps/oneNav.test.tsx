@@ -53,7 +53,7 @@ function memoryStorage(): Storage {
 
 const ACCOUNT = "did:pkh:eip155:1:0x00000000000000000000000000000000000000a1";
 const UPRIGHT: SizeClassState = { size: "compact", land: false };
-const WEB_ORDER = ["capture", "xyz.tinycloud.secrets", "xyz.tinycloud.opencredentials", "xyz.tinycloud.explorer", "xyz.tinycloud.account", "xyz.tinycloud.courier", "xyz.tinycloud.rocinante.ledger", "xyz.tinycloud.share"] as const;
+const WEB_ORDER = ["capture", "xyz.tinycloud.secrets", "xyz.tinycloud.opencredentials", "xyz.tinycloud.explorer", "xyz.tinycloud.account", "xyz.tinycloud.courier", "xyz.tinycloud.rocinante.ledger", "xyz.tinycloud.share", "xyz.tinycloud.tinyapps.contacts"] as const;
 
 const ssr = (node: ReactNode, path: string, platform: AppPlatform = "web") =>
   renderToStaticMarkup(
@@ -143,11 +143,12 @@ describe("the Apps grid", () => {
       "xyz.tinycloud.secrets",
       "xyz.tinycloud.opencredentials",
       "xyz.tinycloud.share",
+      "xyz.tinycloud.tinyapps.contacts",
     ]);
     // Each opens-out tile says so to a screen reader and carries the ↗ mark; the others don't.
     const markup = ssr(<AppsGrid tiles={tiles} pins={[]} canPin={false} onPin={noop} onUnpin={noop} addApp={false} />, PATHS.apps);
-    expect(markup.split(`(${APPS_OPENS_NEW_TAB})`)).toHaveLength(4);
-    expect(markup.split("lucide-arrow-up-right")).toHaveLength(4);
+    expect(markup.split(`(${APPS_OPENS_NEW_TAB})`)).toHaveLength(5);
+    expect(markup.split("lucide-arrow-up-right")).toHaveLength(5);
     // The phone app has no tabs: every tile opens its screen in One.
     expect(gridTiles(0, oneAppsFor("ios", true), null).every((tile) => tile.newTab === undefined)).toBe(true);
   });
