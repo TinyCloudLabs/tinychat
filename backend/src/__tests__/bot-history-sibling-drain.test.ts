@@ -7,10 +7,11 @@ import type { TinyCloudNode } from "@tinycloud/node-sdk";
 import { makePkhSpaceId } from "@tinycloud/sdk-core";
 import { makeSignedTranscriptGrant, computeDelegationCid } from "./helpers/transcript-grant";
 import { BotHistory, HISTORY_PREFIX, historyBotId } from "../bot-history";
-import type { Bot, OwnerBots } from "../bots-registry";
+import { BotsRegistry, registryKey, type Bot } from "../bots-registry";
 import { startBotHistoryDrain } from "../routes/bot-history";
 import type { BotsConfig } from "../routes/bots";
 import * as serviceCalls from "../../../bots/src/signed-call";
+import { fakeRegistryStore } from "./helpers/fake-registry-store";
 
 const ownerKey = `0x${"11".repeat(32)}` as const;
 const owner = privateKeyToAccount(ownerKey).address;
@@ -83,7 +84,12 @@ function service(pending: Record<string, unknown>) {
   const config: BotsConfig = { serviceUrl: "http://bots.test", serviceSecret: secret, accountAllowed: () => true, postTimeoutMs: 1000, fetchImpl };
   return { received, config };
 }
-const registryOf = (bots: Bot[]) => ({ read: async (address: string): Promise<OwnerBots> => ({ v: 1, seq: 4, bots: address.toLowerCase() === owner.toLowerCase() ? [bot("main"), ...bots] : [bot("main"), bot(KEY_OTHERS)], deleted: [] }) });
+/** The real registry, over a store holding this owner's record: Main and `bots`. */
+const registryOf = (bots: Bot[]) => {
+  const kv = fakeRegistryStore();
+  kv.rows.set(registryKey(owner), { value: JSON.stringify({ v: 1, seq: 4, bots: [bot("main"), ...bots], deleted: [] }), version: 1 });
+  return new BotsRegistry(kv);
+};
 async function until(check: () => boolean) {
   for (let i = 0; i < 1000 && !check(); i++) await Bun.sleep(5);
   expect(check()).toBe(true);

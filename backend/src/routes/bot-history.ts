@@ -119,7 +119,7 @@ export function createSiblingHistoryRouter(history: BotHistory, config: BotsConf
  * Bounded, single-flight drain. Batches and challenges remain in the supervisor until it verifies a receipt.
  * Main's grants first, then, with a registry, each other bot's under its own grant once the owner's record still holds it.
  */
-export function startBotHistoryDrain(history: BotHistory, config: BotsConfig, registry?: OwnerRecords) {
+export function startBotHistoryDrain(history: BotHistory, config: BotsConfig, registry?: Pick<BotsRegistry, "read" | "oweRevoke">) {
   let running = false;
   let closing = false;
   const retries = new Map<string, { failures: number; after: number }>();
@@ -165,7 +165,15 @@ export function startBotHistoryDrain(history: BotHistory, config: BotsConfig, re
           try { bot = await siblingOf(registry, address, key); } catch { continue; } // the record is read again next pass
           // A bot that is gone, or whose deletion has closed its permission, never has its grant used; Main's never stands in.
           if (!bot || bot.grantClosed) {
-            try { await history.forget(address, key); } catch { /* removed on a later pass */ }
+            // Its grant is removed only once its delegation is owed in the owner's record, for the owner's browser to
+            // revoke: a node refuses a revocation from the backend. A key the record never held has nowhere to owe it and
+            // was never this owner's bot, so its grant is removed as well. While another delegation is owed for the bot,
+            // the grant stays stored and unused, and is looked at again on the next pass.
+            try {
+              const cid = await history.storedGrantCid(address, key);
+              const owed = cid === undefined ? "owed" : await registry.oweRevoke(address, key, cid);
+              if (owed === "owed" || owed === "unknown") await history.forget(address, key);
+            } catch { /* tried again on a later pass */ }
             continue;
           }
           await drainBot(address, key);
