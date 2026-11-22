@@ -22,7 +22,7 @@ import {
   readTranscript,
 } from "./meetingExplorer.js";
 
-type KvListPage = { keys: string[]; cursor?: string };
+type KvListPage = { keys: string[]; nextCursor?: string; truncated?: boolean };
 
 function makeSpace(opts: {
   sqlRows?: unknown[][];
@@ -307,10 +307,12 @@ describe("Fireflies KV reader in Library (PR-3)", () => {
             firefliesMeetingKvKey("ff-missing"),
             `${FIREFLIES_MEETING_KV_PREFIX}bad.dot`,
           ],
-          cursor: "page-2",
+          nextCursor: "page-2",
+          truncated: true,
         },
         "page-2": {
           keys: [firefliesMeetingKvKey("ff-page-2-capped")],
+          truncated: false,
         },
       },
       kvValues: {
@@ -473,5 +475,86 @@ describe("Fireflies KV reader in Library (PR-3)", () => {
     });
     expect(kvListCalls).toEqual([]);
     expect(kvGetCalls).toEqual([]);
+  });
+
+  it("follows sdk-services nextCursor across pages and marks truncation from data.truncated or maxPages", async () => {
+    const id1 = await connectorMeetingId("fireflies", "ff-p1");
+    const id2 = await connectorMeetingId("fireflies", "ff-p2");
+    const id3 = await connectorMeetingId("fireflies", "ff-p3");
+
+    // 1. Multi-page follow using real KVListResponse (`nextCursor` + `truncated`).
+    const { tcw: pagedTcw, kvListCalls: pagedCalls } = makeSpace({
+      sqlRows: [],
+      kvPages: {
+        "": { keys: [firefliesMeetingKvKey("ff-p1")], nextCursor: "cur-2", truncated: true },
+        "cur-2": { keys: [firefliesMeetingKvKey("ff-p2")], truncated: false },
+      },
+      kvValues: {
+        [firefliesMeetingKvKey("ff-p1")]: await makeKvMeetingJson("ff-p1", { startedAt: "2026-11-22T12:00:00.000Z" }),
+        [firefliesMeetingKvKey("ff-p2")]: await makeKvMeetingJson("ff-p2", { startedAt: "2026-11-22T13:00:00.000Z" }),
+      },
+    });
+    let stats: FirefliesKvDiscoveryStats | undefined;
+    const pagedRead = await listMeetingsRead(pagedTcw, ["fireflies"], {
+      includeFirefliesKv: true,
+      isFirefliesPurged: async () => false,
+      onFirefliesKvStats: (s) => {
+        stats = s;
+      },
+    });
+    expect(pagedRead.status).toBe("ok");
+    if (pagedRead.status !== "ok") throw new Error("expected ok");
+    expect(pagedCalls.map((c) => c.cursor)).toEqual([undefined, "cur-2"]);
+    expect(pagedRead.meetings.map((m) => m.id)).toEqual([id2, id1]);
+    expect(stats).toMatchObject({ listed: 2, promoted: 2, truncated: false });
+
+    // 2. Upstream `truncated: true` without `nextCursor` MUST still mark `stats.truncated = true`.
+    const { tcw: truncNoCursorTcw } = makeSpace({
+      sqlRows: [],
+      kvPages: {
+        "": { keys: [firefliesMeetingKvKey("ff-p1")], truncated: true },
+      },
+      kvValues: {
+        [firefliesMeetingKvKey("ff-p1")]: await makeKvMeetingJson("ff-p1"),
+      },
+    });
+    let truncStats: FirefliesKvDiscoveryStats | undefined;
+    await listMeetingsRead(truncNoCursorTcw, ["fireflies"], {
+      includeFirefliesKv: true,
+      isFirefliesPurged: async () => false,
+      onFirefliesKvStats: (s) => {
+        truncStats = s;
+      },
+    });
+    expect(truncStats).toMatchObject({ listed: 1, promoted: 1, truncated: true });
+
+    // 3. Hitting maxPages while `nextCursor` continues stops and marks `stats.truncated = true`.
+    const { tcw: cappedTcw, kvListCalls: cappedCalls } = makeSpace({
+      sqlRows: [],
+      kvPages: {
+        "": { keys: [firefliesMeetingKvKey("ff-p1")], nextCursor: "cur-2", truncated: true },
+        "cur-2": { keys: [firefliesMeetingKvKey("ff-p2")], nextCursor: "cur-3", truncated: true },
+        "cur-3": { keys: [firefliesMeetingKvKey("ff-p3")], truncated: false },
+      },
+      kvValues: {
+        [firefliesMeetingKvKey("ff-p1")]: await makeKvMeetingJson("ff-p1"),
+        [firefliesMeetingKvKey("ff-p2")]: await makeKvMeetingJson("ff-p2"),
+        [firefliesMeetingKvKey("ff-p3")]: await makeKvMeetingJson("ff-p3"),
+      },
+    });
+    let cappedStats: FirefliesKvDiscoveryStats | undefined;
+    const cappedRead = await listMeetingsRead(cappedTcw, ["fireflies"], {
+      includeFirefliesKv: true,
+      isFirefliesPurged: async () => false,
+      maxFirefliesKvPages: 2,
+      onFirefliesKvStats: (s) => {
+        cappedStats = s;
+      },
+    });
+    expect(cappedRead.status).toBe("ok");
+    if (cappedRead.status !== "ok") throw new Error("expected ok");
+    expect(cappedCalls).toHaveLength(2);
+    expect(cappedRead.meetings.map((m) => m.id)).not.toContain(id3);
+    expect(cappedStats).toMatchObject({ listed: 2, promoted: 2, truncated: true });
   });
 });

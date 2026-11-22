@@ -227,16 +227,50 @@ export function createReader(
     if (code !== "access_denied") invalidateAccess();
     throw new MeetingRetrievalError(code, 409);
   };
-  const query = async (sql: string, params: Array<string | number | null> = [], context: RetrievalContext = {}): Promise<unknown[][]> => {
+  const sqlFailureCause = new WeakMap<MeetingRetrievalError, unknown>();
+  const rawQuery = async (sql: string, params: Array<string | number | null> = [], context: RetrievalContext = {}): Promise<unknown[][]> => {
     assertAccess();
+    const rows = await withinContext(signal => withAccess(signal, active => active.sqlQuery(sql, params, { signal })), context);
+    assertAccess();
+    return rows;
+  };
+  const query = async (sql: string, params: Array<string | number | null> = [], context: RetrievalContext = {}): Promise<unknown[][]> => {
     try {
-      const rows = await withinContext(signal => withAccess(signal, active => active.sqlQuery(sql, params, { signal })), context);
-      assertAccess();
-      return rows;
+      return await rawQuery(sql, params, context);
     } catch (error) {
       if (error instanceof MeetingRetrievalError) throw error;
       enforceAccess(classifyBodyFailure(error));
-      throw new MeetingRetrievalError("transcript_unavailable");
+      const wrapped = new MeetingRetrievalError("transcript_unavailable");
+      sqlFailureCause.set(wrapped, error);
+      throw wrapped;
+    }
+  };
+  /**
+   * Returns true only when the connectors SQLite database or `connector_meeting` table is proven
+   * absent. Any other SQL error (including `SQL_RESULT_LIMIT_EXCEEDED`, `SQL_ERROR` on an existing
+   * table, or unhealthy SQL where `sqlite_schema` also fails) returns false so a KV duplicate can
+   * never replace a real SQL meeting.
+   */
+  const isSqlMeetingStoreProvenAbsent = async (
+    error: unknown,
+    context: RetrievalContext = {},
+  ): Promise<boolean> => {
+    const cause = error instanceof MeetingRetrievalError ? (sqlFailureCause.get(error) ?? error) : error;
+    if (cause instanceof McpPortError) {
+      if (cause.code === "SQL_DATABASE_NOT_FOUND") return true;
+      if (cause.code === "SQL_RESULT_LIMIT_EXCEEDED") return false;
+    }
+    try {
+      const schemaRows = await rawQuery(
+        "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?",
+        ["connector_meeting"],
+        context,
+      );
+      return schemaRows.length === 0;
+    } catch (schemaError) {
+      if (schemaError instanceof MeetingRetrievalError) throw schemaError;
+      enforceAccess(classifyBodyFailure(schemaError));
+      return schemaError instanceof McpPortError && schemaError.code === "SQL_DATABASE_NOT_FOUND";
     }
   };
   // The MCP's SELECT validator (node-sql-parser, sqlite) rejects window functions, so the byte budget is applied in two
@@ -353,6 +387,7 @@ export function createReader(
         hasSqlRow = sqlRows.length > 0;
       } catch (error) {
         if (!(error instanceof MeetingRetrievalError && error.code === "transcript_unavailable")) throw error;
+        if (!(await isSqlMeetingStoreProvenAbsent(error, context))) throw error;
       }
       if (!hasSqlRow) {
         const ledger = await loadPurgeLedger();
@@ -441,6 +476,7 @@ export function createReader(
       }
     } catch (error) {
       if (!(error instanceof MeetingRetrievalError && error.code === "transcript_unavailable")) throw error;
+      if (!(await isSqlMeetingStoreProvenAbsent(error, context))) throw error;
     }
     return { sourceIds, meetingRefs };
   };
@@ -696,6 +732,9 @@ export function createReader(
         if (!firefliesKvEnabled || !(error instanceof MeetingRetrievalError && error.code === "transcript_unavailable")) {
           throw error;
         }
+        if (!(await isSqlMeetingStoreProvenAbsent(error))) {
+          throw error;
+        }
         sqlUnavailable = true;
       }
       logSkippedOversizedIds(rows.filter(row => row[11] === 1).length);
@@ -728,6 +767,9 @@ export function createReader(
         rows = await query(`SELECT ${COLUMNS} FROM connector_meeting WHERE id = ? AND ${readable} LIMIT 1`, [reference], context);
       } catch (error) {
         if (!firefliesKvEnabled || !(error instanceof MeetingRetrievalError && error.code === "transcript_unavailable")) {
+          throw error;
+        }
+        if (!(await isSqlMeetingStoreProvenAbsent(error, context))) {
           throw error;
         }
         sqlUnavailable = true;
@@ -812,6 +854,9 @@ export function createReader(
         }
       } catch (error) {
         if (!includeKv || !(error instanceof MeetingRetrievalError && error.code === "transcript_unavailable")) {
+          throw error;
+        }
+        if (!(await isSqlMeetingStoreProvenAbsent(error, context))) {
           throw error;
         }
         sqlUnavailable = true;

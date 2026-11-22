@@ -324,8 +324,12 @@ export async function discoverFirefliesKvMeetings(
     }
     if (stats.truncated) break;
 
-    const nextCursor = (page.data as { cursor?: unknown }).cursor;
-    if (nextCursor === undefined || nextCursor === null) break;
+    const pageTruncated = page.data.truncated === true;
+    const nextCursor = page.data.nextCursor;
+    if (nextCursor === undefined || nextCursor === null) {
+      if (pageTruncated) stats.truncated = true;
+      break;
+    }
     if (typeof nextCursor !== "string" || nextCursor.length === 0 || seenCursors.has(nextCursor) || page.data.keys.length === 0) {
       stats.truncated = true;
       break;
