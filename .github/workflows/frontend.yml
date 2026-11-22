@@ -23,12 +23,17 @@ permissions:
   contents: read
 
 concurrency:
-  group: frontend-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.event_name == 'push' && github.ref == 'refs/heads/main' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
 jobs:
   changes:
     uses: ./.github/workflows/native-changes.yml
+
+  webkit-paths:
+    uses: ./.github/workflows/native-changes.yml
+    with:
+      component: webkit
 
   # Unit tests, lint and the build. The browser work runs in the jobs below, in
   # parallel, so no single job approaches its timeout as the harnesses grow.
@@ -280,8 +285,8 @@ jobs:
 
   halo-webkit:
     name: Recorder halo (macOS WebKit)
-    needs: changes
-    if: needs.changes.outputs.frontend == 'true'
+    needs: webkit-paths
+    if: needs.webkit-paths.outputs.native == 'true'
     runs-on: macos-latest
     timeout-minutes: 20
     steps:
@@ -382,15 +387,15 @@ jobs:
   webkit-check:
     name: WebKit checks
     if: always()
-    needs: [changes, halo-webkit]
+    needs: [webkit-paths, halo-webkit]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: Require successful WebKit checks or an intentional unrelated PR skip
         env:
           EVENT: ${{ github.event_name }}
-          CHANGES: ${{ needs.changes.result }}
-          FRONTEND: ${{ needs.changes.outputs.frontend }}
+          CHANGES: ${{ needs.webkit-paths.result }}
+          FRONTEND: ${{ needs.webkit-paths.outputs.native }}
           WEBKIT: ${{ needs.halo-webkit.result }}
         run: |
           [[ "$CHANGES" == success ]]

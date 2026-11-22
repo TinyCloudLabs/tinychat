@@ -2,9 +2,9 @@ import { assertKvResult, isKvMissingKeyResult } from "@tinyboilerplate/server";
 import { EXO_JOBS_PREFIX, EXO_REQUESTS_PREFIX } from "../delegation-verify.js";
 import { extractKeys } from "../services/connector-drain.js";
 import type { ExoActivatedGrant } from "./activated-grant.js";
-import { ledgerKey } from "./durable-ledger.js";
+import { EXO_HELD_KEY_PREFIX, EXO_LEDGER_KEY_PREFIX, EXO_SOURCE_LOCK_KEY_PREFIX, ledgerKey } from "./durable-ledger.js";
 import { SOURCES_BY_CAPABILITY } from "./ledger-model.js";
-import { EXO_CAPABILITIES, EXO_NAMESPACE } from "./mailbox.js";
+import { EXO_CAPABILITIES } from "./mailbox.js";
 import { EXO_MIRROR_JOBS_PREFIX, type ExoBackendKv } from "./stores.js";
 
 export interface ExoTeardownDeps {
@@ -34,9 +34,9 @@ export async function clearExoOwnerState(
     for (const path of await grant.jobsList(EXO_JOBS_PREFIX)) await grant.jobsRemove(path);
   }
   await deleteUnder(deps.kv, `${EXO_MIRROR_JOBS_PREFIX}${owner}/`);
-  await deleteUnder(deps.kv, `${EXO_NAMESPACE}/ledger/${owner}/`);
-  await deleteUnder(deps.kv, `${EXO_NAMESPACE}/held/${owner}/`);
-  await deleteUnder(deps.kv, `${EXO_NAMESPACE}/source-lock/${owner}/`);
+  await deleteUnder(deps.kv, `${EXO_LEDGER_KEY_PREFIX}${owner}/`);
+  await deleteUnder(deps.kv, `${EXO_HELD_KEY_PREFIX}${owner}/`);
+  await deleteUnder(deps.kv, `${EXO_SOURCE_LOCK_KEY_PREFIX}${owner}/`);
   return { ownerSpace: grant !== null };
 }
 

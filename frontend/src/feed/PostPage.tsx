@@ -15,6 +15,7 @@ import type { FeedResponse, NewFeedResponse } from "@tinycloud/sdk-services/feed
 import { Button } from "@/components/ui/button";
 import { NAV_LABEL_HOME } from "@/lib/homeStrings";
 import { ANSWER_FAILED_COPY, ANSWER_HELD_COPY, NOT_SENT_COPY, UNDO_SECONDS, usePendingSend } from "./cardKit";
+import { retryAfterHide } from "./retryAfterHide";
 import { FeedLink } from "./FeedLink";
 import type { HomeFeedEntry, HomeFeedSource } from "./feedStoreTypes";
 import {
@@ -179,7 +180,7 @@ export function PostPage({ entry, answered, page, source, author, card, status, 
     pending.current = { key, response };
     try {
       // Held until confirmed: a page that closes before this write lands sends it at the next launch.
-      const result = await source.saveResponse(target, response, payload, { hold: true });
+      const result = await retryAfterHide(() => source.saveResponse(target, response, payload, { hold: true }), () => !!source.holdsAnswer?.(target, response.responseId));
       rememberPageAnswer(result.responseId, payload);
       clearPostDraft(entry);
       pending.current = null; setDirty(false);

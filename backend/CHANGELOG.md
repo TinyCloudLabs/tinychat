@@ -1,5 +1,21 @@
 # @tinychat/backend
 
+## 0.9.4
+
+### Patch Changes
+
+- 13e3e0c: The backend's own TinyCloud session names the keys it uses in its storage space. Its 30-day lifetime is set explicitly. Nothing changes for people using TinyChat.
+
+  Details: TC-3443
+
+## 0.9.4-beta.0
+
+### Patch Changes
+
+- 13e3e0c: The backend's own TinyCloud session names the keys it uses in its storage space. Its 30-day lifetime is set explicitly. Nothing changes for people using TinyChat.
+
+  Details: TC-3443
+
 ## 0.9.3
 
 ### Patch Changes

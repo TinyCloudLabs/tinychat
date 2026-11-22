@@ -41,6 +41,8 @@ const NAME = "max-w-full truncate text-[0.8125rem] font-semibold leading-[1.125r
 export const LONG_PRESS_MS = 500;
 /** A touch that moves further than this is a scroll, not a press. */
 const SLOP_PX = 10;
+/** How long after a long press's finger lifts its tap may still arrive (and is swallowed). */
+const TAP_AFTER_PRESS_MS = 1000;
 
 export interface AppsGridProps {
   tiles: readonly GridTile[];
@@ -55,20 +57,52 @@ export interface AppsGridProps {
 
 export function AppsGrid({ tiles, pins, canPin, onPin, onUnpin, addApp }: AppsGridProps) {
   const [message, showMessage] = usePinToast();
+  // The tap that ends a long press opens nothing, wherever it lands: pinning re-sorts the phone's grid (pinnedFirst), so
+  // the finger is often over another tile by then. Infinity while that finger is still down (its release is heard on the
+  // window, even off the grid), then a short deadline.
+  const swallowTapUntil = useRef(0);
   const toggle = (tile: GridTile) => {
     const pinned = pins.includes(tile.pin);
     if (pinned) onUnpin(tile.pin);
     else onPin(tile.pin);
     showMessage(pinned ? appUnpinnedToast(tile.name) : appPinnedToast(tile.name));
   };
+  const released = () => {
+    window.removeEventListener("pointerup", released, true);
+    window.removeEventListener("pointercancel", released, true);
+    if (swallowTapUntil.current === Infinity) swallowTapUntil.current = performance.now() + TAP_AFTER_PRESS_MS;
+  };
+  const longPressed = (tile: GridTile) => {
+    swallowTapUntil.current = Infinity;
+    window.addEventListener("pointerup", released, true);
+    window.addEventListener("pointercancel", released, true);
+    toggle(tile);
+  };
   return (
     <div className="relative h-full overflow-y-auto" data-scroll-root>
       <PageHeader title={APPS_LAUNCHER_TITLE} className={PAGE_COLUMN} />
       <div className={`${PAGE_COLUMN} flex flex-col gap-4 pb-[max(1.5rem,env(safe-area-inset-bottom))]`}>
         {canPin && pins.length === 0 ? <p className="text-body text-muted-foreground">{APPS_PIN_HINT}</p> : null}
-        <ul aria-label={APPS_LAUNCHER_TITLE} className="tc-launcher-grid grid grid-cols-3 gap-x-1 gap-y-[22px] sm:max-w-[40rem] sm:gap-2">
+        <ul
+          aria-label={APPS_LAUNCHER_TITLE}
+          className="tc-launcher-grid grid grid-cols-3 gap-x-1 gap-y-[22px] sm:max-w-[40rem] sm:gap-2"
+          onPointerDownCapture={() => { swallowTapUntil.current = 0; }}
+          onClickCapture={(event: MouseEvent) => {
+            if (performance.now() > swallowTapUntil.current) return;
+            swallowTapUntil.current = 0;
+            event.preventDefault();
+            event.stopPropagation();
+          }}
+        >
           {tiles.map((tile, index) => (
-            <Tile key={tile.pin} tile={tile} index={index} pinned={pins.includes(tile.pin)} onToggle={canPin ? () => toggle(tile) : null} />
+            <Tile
+              key={tile.pin}
+              tile={tile}
+              index={index}
+              pinned={pins.includes(tile.pin)}
+              onToggle={canPin ? () => toggle(tile) : null}
+              onLongPress={canPin ? () => longPressed(tile) : null}
+            />
           ))}
           {/* An action, not an app: an outlined square, never pinned. */}
           {addApp ? (
@@ -88,11 +122,10 @@ export function AppsGrid({ tiles, pins, canPin, onPin, onUnpin, addApp }: AppsGr
   );
 }
 
-/** A touch resting on a tile pins or unpins it; the tap that ends that press opens nothing. Mouse and pen never do. */
+/** A touch resting on a tile pins or unpins it (the grid swallows the tap that ends it). Mouse and pen never do. */
 function useLongPress(onLongPress: (() => void) | null) {
   const timer = useRef<number | undefined>(undefined);
   const start = useRef({ x: 0, y: 0 });
-  const fired = useRef(false);
   const cancel = () => {
     window.clearTimeout(timer.current);
     timer.current = undefined;
@@ -100,13 +133,11 @@ function useLongPress(onLongPress: (() => void) | null) {
   if (onLongPress === null) return {};
   return {
     onPointerDown: (event: PointerEvent) => {
-      fired.current = false;
       if (event.pointerType !== "touch") return;
       start.current = { x: event.clientX, y: event.clientY };
       cancel();
       timer.current = window.setTimeout(() => {
         timer.current = undefined;
-        fired.current = true;
         onLongPress();
       }, LONG_PRESS_MS);
     },
@@ -116,19 +147,25 @@ function useLongPress(onLongPress: (() => void) | null) {
     onPointerUp: cancel,
     onPointerCancel: cancel,
     onPointerLeave: cancel,
-    onClickCapture: (event: MouseEvent) => {
-      if (!fired.current) return;
-      fired.current = false;
-      event.preventDefault();
-      event.stopPropagation();
-    },
     // The long press is ours: no link menu or preview.
     onContextMenu: (event: MouseEvent) => event.preventDefault(),
   };
 }
 
-function Tile({ tile, index, pinned, onToggle }: { tile: GridTile; index: number; pinned: boolean; onToggle: (() => void) | null }) {
-  const press = useLongPress(onToggle);
+function Tile({
+  tile,
+  index,
+  pinned,
+  onToggle,
+  onLongPress,
+}: {
+  tile: GridTile;
+  index: number;
+  pinned: boolean;
+  onToggle: (() => void) | null;
+  onLongPress: (() => void) | null;
+}) {
+  const press = useLongPress(onLongPress);
   const body = (
     <>
       <span className="relative">

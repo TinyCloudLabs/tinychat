@@ -15,9 +15,9 @@ name: iOS TestFlight (TinyCloud One)
 # number, so every upload is a new TestFlight build. The .ipa that scripts/release/ios-signing.sh verified (an App
 # Store signature from APPLE_TEAM_ID) is the one uploaded; there is no unsigned fallback.
 #
-# Environment `ios-release`: deployment branches main only, and a required reviewer (Sam), because the API key has
-# the Admin role (setup: mobile/README.md, "iOS release"). With the reviewer, each run waits for approval twice: the
-# plan job right after dispatch, the sign job once the archive is built and checked. Secrets:
+# Environment `ios-release`: deployment branches main only, no required reviewer and no wait timer, so a dispatched run
+# goes straight through (read back from the environment settings; the API key has the Admin role, so keep the
+# deployment branch restriction; setup: mobile/README.md, "iOS release"). Secrets:
 #   APPLE_TEAM_ID           10-character Team ID
 #   APPLE_API_KEY           App Store Connect API key ID (Admin role: cloud signing creates the distribution
 #   APPLE_API_ISSUER        issuer ID (UUID)                 certificate and the App Store profile)
