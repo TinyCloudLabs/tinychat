@@ -52,7 +52,7 @@ test("a question asked after a meeting read carries the outside label", async ()
   await call(gateway, "ask_owner", { question: "before" });
   await call(gateway, "tinycloud_read_meeting", { focus: "summary" });
   await call(gateway, "ask_owner", { question: "after" });
-  expect(gateway.drainAsks(BOT).map(entry => [entry.question, entry.outside])).toEqual([["before", false], ["after", true]]);
+  expect(gateway.drainAsks(BOT).map(entry => [entry.kind === "secret" ? undefined : entry.question, entry.outside])).toEqual([["before", false], ["after", true]]);
   expect(gateway.asksOutside(BOT)).toBe(true);
 });
 
