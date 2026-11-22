@@ -9,10 +9,12 @@ export interface BotMessage {
   role: "user" | "bot";
   text: string;
   at: string;
-  /** Set by the service on a message the app sent for the owner (a decision on a question card), not typed by the owner. */
+  /** Set by the service on a message the app sent for the owner (a decision on a request card), not typed by the owner. */
   origin?: "app";
   /** On an app message: what the owner decided. */
-  decision?: "answered" | "declined" | "stopped";
+  decision?: AppDecision;
+  /** On an app message about a secret request: what the owner's chat line names. */
+  secret?: SecretLine;
 }
 
 /** What a bot did on its computer, as the service records it: fixed verbs and counts, never words the model wrote. */
@@ -67,6 +69,42 @@ export interface MainWebSettings {
 
 export type AskState = "pending" | "answered" | "declined" | "stopped" | "expired";
 
+/** What the owner decided, as the service marks the app's message about it. */
+export type AppDecision = "answered" | "declined" | "stopped" | "approved" | "revoked";
+
+/** A secret request names a secret, never carries its value. */
+export const SECRET_NAME = /^[A-Z][A-Z0-9_]{0,63}$/;
+const MAX_SECRET_SITES = 3;
+const SITE_NAME = /^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$/;
+
+/** What a chat line about a secret request names: the secret, its sites, the service for a known one, and an approval's end. */
+export interface SecretLine {
+  name: string;
+  sites: string[];
+  service?: string;
+  until?: string;
+}
+
+export type SecretState = "pending" | "approved" | "declined" | "stopped" | "revoked" | "expired" | "ended" | "failed";
+
+/** One secret Main asked to use. A name, the sites it may be used with and what was decided; never a value. */
+export interface SecretRequest extends SecretLine {
+  id: string;
+  kind: "secret";
+  state: SecretState;
+  askedAt: string;
+  expiresAt: string;
+  /** Main's one sentence on what it is for, while pending. */
+  why?: string;
+  /** The OpenKey page where the owner approves it; set once the service has one. */
+  approveUrl?: string;
+  outside: boolean;
+  undelivered: boolean;
+  resolvedAt?: string;
+}
+
+export type MainRequest = AskRequest | SecretRequest;
+
 /** One question Main asked the owner. The service keeps `question` and `choices` only while pending. */
 export interface AskRequest {
   id: string;
@@ -85,6 +123,9 @@ export interface AskRequest {
 
 export type AskDecision = { decision: "decline" } | { decision: "answer"; answer: string } | { decision: "answer"; choice: number };
 
+/** Decline a pending secret request, stop an approved one, try a failed one again. */
+export type SecretDecision = { decision: "decline" } | { decision: "stop" } | { decision: "retry" };
+
 /** Asks the app sends to Main for the owner's decision on a request; the service composes the words. */
 export interface SendOptions {
   appReply?: { requestId: string };
@@ -99,10 +140,10 @@ export interface BotsApi {
   /** Whether Main may ask the owner things; the service answers 404 when it has no such route. */
   getAsks(signal?: AbortSignal): Promise<{ enabled: boolean }>;
   setAsks(settings: { enabled: boolean }, signal?: AbortSignal): Promise<{ enabled: boolean }>;
-  /** Pending requests first, then recent resolved ones. */
-  listRequests(signal?: AbortSignal): Promise<AskRequest[]>;
-  /** Records the owner's decision; throws when the request is no longer pending. */
-  answerRequest(id: string, decision: AskDecision, signal?: AbortSignal): Promise<AskRequest>;
+  /** Pending requests first, then recent resolved ones: questions and secret requests. */
+  listRequests(signal?: AbortSignal): Promise<MainRequest[]>;
+  /** Records the owner's decision; throws when the request can no longer take it. */
+  answerRequest(id: string, decision: AskDecision | SecretDecision, signal?: AbortSignal): Promise<MainRequest>;
   /**
    * Resolves after the stream's `done` or `error` event; throws BotsError when the stream fails or ends without one.
    * With `options.appReply` the message is the app's report of the owner's decision on that request: no text goes
@@ -200,13 +241,15 @@ function toMessages(payload: unknown): BotMessage[] {
   if (!Array.isArray(list)) throw new BotsError("failed");
   return list.flatMap((item: unknown) => {
     const value = fields(item);
-    return typeof value.id === "string" && (value.role === "user" || value.role === "bot") && typeof value.text === "string"
-      ? [{
-        id: value.id, role: value.role, text: value.text, at: typeof value.at === "string" ? value.at : "",
-        ...(value.origin === "app" ? { origin: "app" as const } : {}),
-        ...(value.origin === "app" && (value.decision === "answered" || value.decision === "declined" || value.decision === "stopped") ? { decision: value.decision } : {}),
-      }]
-      : [];
+    if (typeof value.id !== "string" || (value.role !== "user" && value.role !== "bot") || typeof value.text !== "string") return [];
+    const app = value.origin === "app";
+    const secret = app ? toSecretLine(value.secret) : undefined;
+    return [{
+      id: value.id, role: value.role, text: value.text, at: typeof value.at === "string" ? value.at : "",
+      ...(app ? { origin: "app" as const } : {}),
+      ...(app && isAppDecision(value.decision) ? { decision: value.decision } : {}),
+      ...(secret ? { secret } : {}),
+    }];
   });
 }
 
@@ -227,25 +270,56 @@ function toWebSettings(payload: unknown): MainWebSettings {
 
 const isoTime = (value: unknown): value is string => typeof value === "string" && Number.isFinite(Date.parse(value));
 
-function toRequest(payload: unknown): AskRequest {
-  const value = fields(payload);
-  const { id, kind, state, askedAt, expiresAt, question, choices, answer, outside, resolvedAt } = value;
-  if (
-    typeof id !== "string" || id.length === 0 || id.length > 64 || kind !== "ask" ||
-    (state !== "pending" && state !== "answered" && state !== "declined" && state !== "stopped" && state !== "expired") ||
-    !isoTime(askedAt) || !isoTime(expiresAt)
-  ) throw new BotsError("failed");
+const APP_DECISIONS: readonly unknown[] = ["answered", "declined", "stopped", "approved", "revoked"] satisfies AppDecision[];
+export const isAppDecision = (value: unknown): value is AppDecision => APP_DECISIONS.includes(value);
+
+const SECRET_STATES: readonly unknown[] = ["pending", "approved", "declined", "stopped", "revoked", "expired", "ended", "failed"] satisfies SecretState[];
+const isSites = (value: unknown): value is string[] =>
+  Array.isArray(value) && value.length >= 1 && value.length <= MAX_SECRET_SITES && value.every(site => typeof site === "string" && SITE_NAME.test(site));
+
+/** A secret line from the service or the history: a valid name and sites, or nothing. */
+export function toSecretLine(payload: unknown): SecretLine | undefined {
+  if (typeof payload !== "object" || payload === null) return undefined;
+  const { name, sites, service, until } = fields(payload);
+  if (typeof name !== "string" || !SECRET_NAME.test(name) || !isSites(sites)) return undefined;
   return {
-    id, kind, state, askedAt, expiresAt,
-    outside: outside === true,
-    undelivered: value.undelivered === true || typeof answer === "string",
-    ...(typeof question === "string" ? { question } : {}),
-    ...(Array.isArray(choices) ? { choices: choices.filter((choice): choice is string => typeof choice === "string") } : {}),
-    ...(isoTime(resolvedAt) ? { resolvedAt } : {}),
+    name, sites: [...sites],
+    ...(typeof service === "string" && service.length > 0 && service.length <= 60 ? { service } : {}),
+    ...(isoTime(until) ? { until } : {}),
   };
 }
 
-function toRequests(payload: unknown): AskRequest[] {
+function toRequest(payload: unknown): MainRequest {
+  const value = fields(payload);
+  const { id, kind, state, askedAt, expiresAt, question, choices, answer, outside, resolvedAt } = value;
+  if (typeof id !== "string" || id.length === 0 || id.length > 64 || !isoTime(askedAt) || !isoTime(expiresAt)) throw new BotsError("failed");
+  const common = {
+    id, askedAt, expiresAt,
+    outside: outside === true,
+    undelivered: value.undelivered === true || typeof answer === "string",
+    ...(isoTime(resolvedAt) ? { resolvedAt } : {}),
+  };
+  if (kind === "secret") {
+    const line = toSecretLine(value);
+    if (!line || !SECRET_STATES.includes(state)) throw new BotsError("failed");
+    const { why, approveUrl } = value;
+    return {
+      ...common, ...line, kind, state: state as SecretState,
+      ...(typeof why === "string" ? { why } : {}),
+      ...(typeof approveUrl === "string" && approveUrl.length <= 2048 && approveUrl.startsWith("https://") ? { approveUrl } : {}),
+    };
+  }
+  if (kind !== "ask" || (state !== "pending" && state !== "answered" && state !== "declined" && state !== "stopped" && state !== "expired")) {
+    throw new BotsError("failed");
+  }
+  return {
+    ...common, kind, state,
+    ...(typeof question === "string" ? { question } : {}),
+    ...(Array.isArray(choices) ? { choices: choices.filter((choice): choice is string => typeof choice === "string") } : {}),
+  };
+}
+
+function toRequests(payload: unknown): MainRequest[] {
   const list = fields(payload).requests;
   if (!Array.isArray(list)) throw new BotsError("failed");
   return list.flatMap((item: unknown) => { try { return [toRequest(item)]; } catch { return []; } });

@@ -1,12 +1,29 @@
-// Main's questions to the owner, as one page-wide state: the setting, the pending requests, and what became of the
-// ones the owner watched (said not now, expired). Main's chat and Home both draw from this one state, so a question
-// is one card in one place and answering it anywhere resolves it everywhere.
-import { useCallback, useEffect, useRef, useState } from "react";
+// Main's questions and secret requests to the owner, as one page-wide state: the setting, the pending requests, and
+// what became of the ones the owner watched (said not now, expired). Main's chat and Home both draw from this one
+// state, so a request is one card in one place and deciding it anywhere resolves it everywhere.
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { BotsRouteMissing, type AskDecision, type AskRequest, type BotsApi } from "./botsApi";
+import {
+  BotsRouteMissing, type AskDecision, type AskRequest, type BotsApi, type MainRequest, type SecretDecision, type SecretLine, type SecretRequest,
+} from "./botsApi";
 import type { AppReply } from "./useMainChat";
 
 export type AsksApi = Pick<BotsApi, "getAsks" | "setAsks" | "listRequests" | "answerRequest" | "getMainWeb">;
+
+/** Secret cards the owner closed, by request id: an approved, ended or failed card stays until closed, across reloads. */
+export const CLOSED_SECRETS_KEY = "tinychat:bots:secret-cards-closed";
+const CLOSED_SECRETS_KEEP = 50;
+
+function readClosed(): ReadonlySet<string> {
+  try {
+    const saved: unknown = JSON.parse(localStorage.getItem(CLOSED_SECRETS_KEY) ?? "[]");
+    return new Set(Array.isArray(saved) ? saved.filter((id): id is string => typeof id === "string") : []);
+  } catch {
+    return new Set();
+  }
+}
+
+const lineOf = ({ name, sites, service, until }: SecretRequest): SecretLine => ({ name, sites, ...(service ? { service } : {}), ...(until ? { until } : {}) });
 
 /** Poll while Main's chat is open; Home checks less often. */
 export const OPEN_POLL_MS = 5_000;
@@ -28,20 +45,32 @@ export interface Asks {
   stopped: boolean;
   pending: AskRequest[];
   outcomes: AskOutcome[];
+  /**
+   * The secret cards: pending ones while asks are on; approved, ended and failed ones until the owner closes them;
+   * declined, expired and stopped ones the owner watched in this page, until closed.
+   */
+  secrets: SecretRequest[];
+  /** Secret requests whose secret the owner saved in TinyCloud Secrets in this page (the card's first step is done). */
+  saved: ReadonlySet<string>;
+  markSaved(id: string): void;
+  /** Closes a secret card for good. */
+  dismiss(id: string): void;
+  /** The owner's DID, which TinyCloud Secrets is opened for. */
+  owner?: string;
   /** Web access is on, so the card says what a page could try. Always the current setting. */
   webOn: boolean;
   /** Tells the cards the owner just saved this Web access setting. */
   noteWeb(on: boolean): void;
   setEnabled(enabled: boolean): Promise<AskResult>;
   stop(): Promise<AskResult>;
-  decide(request: AskRequest, decision: AskDecision): Promise<AskResult>;
+  decide(request: MainRequest, decision: AskDecision | SecretDecision): Promise<AskResult>;
   refresh(): void;
 }
 
 /** A call on an api that may not have the route (an older client object): any throw is a failure, never a crash. */
 const attempt = <T>(call: () => Promise<T>): Promise<T> => Promise.resolve().then(call);
 
-export function useAsks(api: AsksApi, { open, onDecided }: { open: boolean; onDecided: (reply: AppReply) => void }): Asks {
+export function useAsks(api: AsksApi, { open, onDecided, owner }: { open: boolean; onDecided: (reply: AppReply) => void; owner?: string }): Asks {
   const enabledRef = useRef(false);
   const [support, setSupport] = useState<Asks["support"]>("unknown");
   const [enabled, setEnabledState] = useState(false);
@@ -49,11 +78,18 @@ export function useAsks(api: AsksApi, { open, onDecided }: { open: boolean; onDe
   const [stopped, setStopped] = useState(false);
   const [requests, setRequests] = useState<AskRequest[]>([]);
   const [outcomes, setOutcomes] = useState<AskOutcome[]>([]);
+  const [secretList, setSecretList] = useState<SecretRequest[]>([]);
+  const [saved, setSaved] = useState<ReadonlySet<string>>(() => new Set());
+  const [closed, setClosed] = useState<ReadonlySet<string>>(readClosed);
   const [webOn, setWebOn] = useState(false);
   const alive = useRef(true);
   const watched = useRef(new Set<string>());
+  /** Secret requests the owner saw pending in this page: what becomes of them is shown until closed. */
+  const watchedSecrets = useRef(new Set<string>());
   /** Requests decided in this page: a poll that started before the decision must not bring the card back. */
   const decided = useRef(new Set<string>());
+  /** Secret decisions already sent to Main from this page, as `id:state` (one request can be approved, then stopped). */
+  const sentSecrets = useRef(new Set<string>());
   const onDecidedRef = useRef(onDecided);
   onDecidedRef.current = onDecided;
   const poll = useRef<() => void>(() => {});
@@ -74,18 +110,44 @@ export function useAsks(api: AsksApi, { open, onDecided }: { open: boolean; onDe
     // A failed read is tried again each time Main's chat opens.
   }, [api, support, open]);
 
-  const apply = useCallback((list: AskRequest[]) => {
+  /** A secret decision in flight or just made, with the state it was made on: a read that still says that state is older. */
+  const localSecrets = useRef(new Map<string, { from: SecretRequest["state"]; stored: SecretRequest }>());
+
+  const applySecrets = useCallback((list: SecretRequest[], now: number) => {
+    const read = list.map((request) => request.state === "pending" && Date.parse(request.expiresAt) <= now ? { ...request, state: "expired" as const } : request);
+    const next = read.map((request) => {
+      const local = localSecrets.current.get(request.id);
+      if (!local) return request;
+      if (request.state === local.from) return local.stored;
+      localSecrets.current.delete(request.id);
+      return request;
+    });
+    if (enabledRef.current) for (const request of next) if (request.state === "pending") watchedSecrets.current.add(request.id);
+    setSecretList(next);
+    // Approved (in OpenKey), declined or stopped, and not yet told to Main (the page closed first): it goes out now.
+    for (const request of read) {
+      if ((request.state !== "approved" && request.state !== "declined" && request.state !== "revoked") || !request.undelivered) continue;
+      const key = `${request.id}:${request.state}`;
+      if (sentSecrets.current.has(key)) continue;
+      sentSecrets.current.add(key);
+      onDecidedRef.current({ requestId: request.id, decision: request.state, secret: lineOf(request) });
+    }
+  }, []);
+
+  const apply = useCallback((list: MainRequest[]) => {
     const now = Date.now();
+    const questions = list.filter((request): request is AskRequest => request.kind === "ask");
+    applySecrets(list.filter((request): request is SecretRequest => request.kind === "secret"), now);
     // While asks are off no card is shown, whatever an older read says is pending.
     const live = enabledRef.current
-      ? list.filter((request) => request.state === "pending" && Date.parse(request.expiresAt) > now && !decided.current.has(request.id))
+      ? questions.filter((request) => request.state === "pending" && Date.parse(request.expiresAt) > now && !decided.current.has(request.id))
       : [];
     const liveIds = new Set(live.map((request) => request.id));
     const gone: AskOutcome[] = [];
     for (const id of watched.current) {
       if (liveIds.has(id)) continue;
       watched.current.delete(id);
-      const request = list.find((candidate) => candidate.id === id);
+      const request = questions.find((candidate) => candidate.id === id);
       if (decided.current.has(id)) continue;
       if (request?.state === "declined") gone.push({ id, kind: "declined" });
       else if (request?.state === "expired" || (request?.state === "pending" && Date.parse(request.expiresAt) <= now)) gone.push({ id, kind: "expired" });
@@ -94,19 +156,19 @@ export function useAsks(api: AsksApi, { open, onDecided }: { open: boolean; onDe
     setRequests(live);
     if (gone.length > 0) setOutcomes((current) => [...current, ...gone.filter((outcome) => !current.some((known) => known.id === outcome.id))]);
     // A decision that was recorded but never reached Main (the page closed first) goes out now.
-    for (const request of list) {
+    for (const request of questions) {
       if ((request.state === "answered" || request.state === "declined") && request.undelivered && !decided.current.has(request.id)) {
         decided.current.add(request.id);
         onDecidedRef.current({ requestId: request.id, decision: request.state });
       }
     }
-    // One switch-off is one message to Main, however many questions it closed: the service marks the whole batch
-    // delivered together, so the first id stands for all, and a batch is not sent again while the page is open.
+    // One switch-off is one message to Main, however many questions and secret requests it closed: the service marks
+    // the whole batch delivered together, so the first id stands for all, and a batch is not sent again while the page is open.
     const stopped = list.filter((request) => request.state === "stopped" && request.undelivered);
     const first = stopped.find((request) => !decided.current.has(request.id));
     for (const request of stopped) decided.current.add(request.id);
     if (first) onDecidedRef.current({ requestId: first.id, decision: "stopped" });
-  }, []);
+  }, [applySecrets]);
 
   // Web access is read again whenever the list of cards changes or the chat opens or closes, and `noteWeb` sets it
   // the moment the owner saves a change; a read that began before such a change is dropped.
@@ -167,8 +229,35 @@ export function useAsks(api: AsksApi, { open, onDecided }: { open: boolean; onDe
     return result;
   }, [setEnabled]);
 
-  const decide = useCallback(async (request: AskRequest, decision: AskDecision): Promise<AskResult> => {
-    let stored: AskRequest;
+  const decideSecret = useCallback(async (request: SecretRequest, decision: SecretDecision): Promise<AskResult> => {
+    let stored: MainRequest;
+    try {
+      stored = await attempt(() => api.answerRequest(request.id, decision));
+    } catch {
+      // Most likely the request has moved on (approved, expired, decided elsewhere): the next read says which.
+      poll.current();
+      return "failed";
+    }
+    if (stored.kind !== "secret") return "failed";
+    const result = stored;
+    watchedSecrets.current.add(request.id);
+    localSecrets.current.set(request.id, { from: request.state, stored: result });
+    if (alive.current) setSecretList((current) => current.map((candidate) => candidate.id === request.id ? result : candidate));
+    if (result.state === "declined" || result.state === "revoked") {
+      sentSecrets.current.add(`${request.id}:${result.state}`);
+      onDecidedRef.current({ requestId: request.id, decision: result.state, secret: lineOf(result) });
+    }
+    return "ok";
+  }, [api]);
+
+  const decide = useCallback(async (request: MainRequest, decision: AskDecision | SecretDecision): Promise<AskResult> => {
+    if (request.kind === "secret") {
+      return decision.decision === "decline" || decision.decision === "stop" || decision.decision === "retry"
+        ? decideSecret(request, { decision: decision.decision })
+        : "failed";
+    }
+    if (decision.decision === "stop" || decision.decision === "retry") return "failed";
+    let stored: MainRequest;
     // Marked first, so a read that lands while the decision is in flight neither brings the card back nor sends the answer twice.
     decided.current.add(request.id);
     try {
@@ -191,7 +280,27 @@ export function useAsks(api: AsksApi, { open, onDecided }: { open: boolean; onDe
     if (stored.state === "answered") onDecidedRef.current({ requestId: request.id, decision: "answered" });
     else if (stored.state === "declined") onDecidedRef.current({ requestId: request.id, decision: "declined" });
     return "ok";
-  }, [api]);
+  }, [api, decideSecret]);
 
-  return { support, enabled, stopped, pending: requests, outcomes, webOn, noteWeb, setEnabled, stop, decide, refresh };
+  const markSaved = useCallback((id: string) => setSaved((current) => new Set([...current, id])), []);
+  const dismiss = useCallback((id: string) => {
+    setClosed((current) => {
+      const next = [...current].filter((known) => known !== id).concat(id).slice(-CLOSED_SECRETS_KEEP);
+      try { localStorage.setItem(CLOSED_SECRETS_KEY, JSON.stringify(next)); } catch { /* Kept for this page only. */ }
+      return new Set(next);
+    });
+  }, []);
+
+  const secrets = useMemo(() => secretList.filter((request) => {
+    if (closed.has(request.id)) return false;
+    if (request.state === "pending") return enabled;
+    if (request.state === "approved" || request.state === "ended" || request.state === "failed") return true;
+    // A switch-off has its own line; a decline, expiry or stop shows only where the owner watched the request.
+    return request.state !== "stopped" && watchedSecrets.current.has(request.id);
+  }), [secretList, closed, enabled]);
+
+  return {
+    support, enabled, stopped, pending: requests, outcomes, secrets, saved, markSaved, dismiss, ...(owner ? { owner } : {}),
+    webOn, noteWeb, setEnabled, stop, decide, refresh,
+  };
 }
