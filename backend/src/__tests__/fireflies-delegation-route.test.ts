@@ -3,10 +3,13 @@ import { generateKeyPairSync, randomBytes, sign } from "node:crypto";
 import { once } from "node:events";
 import { readFileSync } from "node:fs";
 import type { Server } from "node:http";
+import { createRequire } from "node:module";
 import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+import { runInNewContext } from "node:vm";
 import express, { type NextFunction, type Request, type Response } from "express";
 import { load as loadYaml } from "js-yaml";
-import { createCsrfMiddleware } from "@tinyboilerplate/server";
+import { createCsrfMiddleware, issueSessionToken } from "@tinyboilerplate/server";
 import { makePkhSpaceId, SiweMessage } from "@tinycloud/sdk-core";
 import { siweToDelegationHeaders } from "@tinycloud/node-sdk-wasm";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
@@ -519,5 +522,269 @@ describe("deploy workflow and compose keep Fireflies server import OFF and KMS-o
     expect(result.exitCode).toBe(1);
     const stderr = result.stderr.toString();
     expect(stderr).toContain("dstack socket is not available");
+  });
+
+  it("answers GET, POST and DELETE /api/connectors/fireflies/delegation with 404 and never touches KMS when flag is unset or 'false'", async () => {
+    const indexPath = resolve(repoRoot, "backend/src/index.ts");
+    const load = createRequire(indexPath);
+    const compiledBuild = await Bun.build({
+      entrypoints: [indexPath],
+      target: "node",
+      format: "cjs",
+      external: ["*"],
+      plugins: [
+        {
+          name: "fireflies-flag-off-index",
+          setup(builder) {
+            builder.onLoad({ filter: /\/index\.ts$/ }, async () => ({
+              contents:
+                (await Bun.file(indexPath).text()).replaceAll(
+                  "import.meta.url",
+                  JSON.stringify(pathToFileURL(indexPath).href),
+                ) + "\nexport { main as runMain };",
+              loader: "ts",
+            }));
+          },
+        },
+      ],
+    });
+    expect(compiledBuild.success).toBe(true);
+    const compiled = await compiledBuild.outputs[0]!.text();
+
+    const backendPrivateKey = ("0x" + "22".repeat(32)) as `0x${string}`;
+    const userAddress = privateKeyToAccount(generatePrivateKey()).address;
+    const validBearer = issueSessionToken(userAddress, backendPrivateKey);
+    const realAuth = load("./middleware/auth.ts");
+    const realBodyParser = load("./body-parsing.ts");
+    const realServerPkg = load("@tinyboilerplate/server");
+    const realRequestContext = load("./request-context.ts");
+    const realCors = load("./cors-origins.ts");
+    const realRedpill = load("./redpill-aci.ts");
+    const realAgentStream = load("./agent-stream-policy.ts");
+    const realTranscripts = load("./transcripts/meeting-rollout.ts");
+    const realTranscriptionApi = load("./services/transcription-api.ts");
+    const realPrivateCloud = load("./services/private-cloud-transcription.ts");
+    const realAssemblyAi = load("./services/assemblyai-hosted.ts");
+    const realGoogle = load("./services/google-oauth.ts");
+    const realGranola = load("./routes/granola-proxy.ts");
+    const realExoMailbox = load("./exo/mailbox.ts");
+    const realLocalValidation = load("./local-validation.ts");
+
+    for (const flagValue of [undefined, "false"] as const) {
+      let kmsCalls = 0;
+      let server: Server | null = null;
+      const noop = () => {};
+      const emptyRouter = () => express.Router();
+      const expressFactory = Object.assign(() => {
+        const app = express();
+        const origListen = app.listen.bind(app);
+        app.listen = ((_opts: unknown, listener?: () => void) => {
+          server = origListen(0, "127.0.0.1", listener);
+          return server;
+        }) as typeof app.listen;
+        return app;
+      }, express);
+
+      const env: Record<string, string | undefined> = {
+        BACKEND_PRIVATE_KEY: backendPrivateKey,
+        TINYCLOUD_HOST: HOST,
+        FRONTEND_URL: "https://tinycloud.chat",
+        DSTACK_SOCKET: "/var/tmp/tc3905-must-not-open-dstack.sock",
+        ...(flagValue === undefined ? {} : { FIREFLIES_SERVER_IMPORT_ENABLED: flagValue }),
+      };
+
+      const known: Record<string, unknown> = {
+        fs: { existsSync: () => false, readFileSync: () => "{}" },
+        path: load("node:path"),
+        url: load("node:url"),
+        express: expressFactory,
+        cors: () => (_req: Request, _res: Response, next: NextFunction) => next(),
+        "@tinyboilerplate/server": {
+          ...realServerPkg,
+          DelegationStore: class {},
+          DelegationCache: class {},
+          createNonceStore: () => ({}),
+        },
+        "@tinyboilerplate/core": { APP_ID: "xyz.tinycloud.tinychat" },
+        "./startup.js": {
+          createTinychatBackendIdentity: async () => ({
+            node: { kv: { list: async () => ({ data: { keys: [] } }) } },
+            did: "did:pkh:eip155:1:0x" + "33".repeat(20),
+          }),
+        },
+        "./attestation/dstackClient.js": {
+          createDstackKeyClient: () => {
+            kmsCalls++;
+            throw new Error("KMS must not be touched when FIREFLIES_SERVER_IMPORT_ENABLED is off");
+          },
+        },
+        "./fireflies-import-identity.js": {
+          deriveFirefliesImportKeys: async () => {
+            kmsCalls++;
+            throw new Error("KMS derivation must not run when FIREFLIES_SERVER_IMPORT_ENABLED is off");
+          },
+        },
+        "./routes/fireflies-delegation.js": { createFirefliesDelegationRouter },
+        "./services/fireflies-grant-store.js": {
+          createKvFirefliesGrantPort: () => {
+            kmsCalls++;
+            throw new Error("Grant store must not be built when FIREFLIES_SERVER_IMPORT_ENABLED is off");
+          },
+          FirefliesGrantStore,
+        },
+        "./body-parsing.js": realBodyParser,
+        "./middleware/auth.js": realAuth,
+        "./request-context.js": {
+          ...realRequestContext,
+          createRequestContextMiddleware: () => realRequestContext.createRequestContextMiddleware(() => {}),
+        },
+        "./rate-limits.js": {
+          applyRateLimiters: () => ({ globalRoutes: { top: () => ({}) }, paidChatLimiter: noop }),
+          logGlobalBucketRoutes: noop,
+        },
+        "./security.js": { applySecurityDefaults: noop },
+        "./cors-origins.js": {
+          appCorsOptions: () => ({ origin: [] }),
+          frontendOriginsFromEnv: realCors.frontendOriginsFromEnv,
+        },
+        "./local-validation.js": realLocalValidation,
+        "./redpill-aci.js": realRedpill,
+        "./agent-stream-policy.js": realAgentStream,
+        "./transcripts/meeting-rollout.js": realTranscripts,
+        "./mcp-meetings/config.js": { mcpChatFromEnv: () => ({}) },
+        "./services/transcription-api.js": {
+          transcriptDeliveryConfigFromEnv: (e: NodeJS.ProcessEnv) =>
+            realTranscriptionApi.transcriptDeliveryConfigFromEnv(e),
+          transcriptionApiConfigFromEnv: () => realTranscriptionApi.transcriptionApiConfigFromEnv(env),
+          createTranscriptionApiClient: () => ({}),
+        },
+        "./services/private-cloud-transcription.js": realPrivateCloud,
+        "./services/assemblyai-hosted.js": realAssemblyAi,
+        "./routes/assemblyai-hosted.js": {
+          ASSEMBLYAI_HOSTED_MOUNT: "/api/transcriber/assemblyai/hosted",
+          createAssemblyAiHostedRouter: emptyRouter,
+          reconcileHostedJobs: async () => {},
+        },
+        "./routes/private-cloud-transcription.js": {
+          createPrivateCloudTranscriptionRouter: emptyRouter,
+        },
+        "./routes/assemblyai-status.js": { createAssemblyAiStatusRouter: emptyRouter },
+        "./bots-service-routes.js": { createBotsServiceGuardRouter: emptyRouter },
+        "./services/google-oauth.js": {
+          googleMeetOAuthEnabled: () => realGoogle.googleMeetOAuthEnabled(env),
+          googleOAuthConfigFromEnv: () => realGoogle.googleOAuthConfigFromEnv(env),
+        },
+        "./routes/granola-proxy.js": {
+          granolaProxyEnabled: () => realGranola.granolaProxyEnabled(env),
+          createGranolaProxyRouter: emptyRouter,
+        },
+        "./exo/mailbox.js": {
+          exoCapabilitiesEnabled: (e: NodeJS.ProcessEnv) => realExoMailbox.exoCapabilitiesEnabled(e, () => {}),
+        },
+        "./exo/stores.js": { createOwnerGrantOpener: () => Object.assign(async () => null, { invalidate: noop }) },
+        "./exo/grant-holders.js": {
+          GrantHolderIndex: class { async refresh() {} },
+          createTrackedGrantStore: (store: unknown) => store,
+        },
+        "./routes/bots.js": { botsFromEnv: () => undefined, createBotsRouter: emptyRouter },
+        "./renewal-verify.js": { renewalVerifyConfigFromEnv: () => undefined },
+        "./services/connector-drain.js": {
+          ConnectorDrainWorker: class { stop() {} },
+          startConnectorQueueMaintenanceTimer: () => ({ stop() {} }),
+          createWebhookQueueDirectory: () => async () => [],
+          createWebhookPurgeLedgerDirectory: () => async () => [],
+          drainIntervalFromEnv: () => 60_000,
+        },
+        "./routes/route-unavailable.js": load("./routes/route-unavailable.ts"),
+        "./routes/connector-webhooks.js": {
+          ConnectorControlStore: class {},
+          ConnectorWebhookLimiters: class {},
+          createConnectorPurgeRouter: emptyRouter,
+          createConnectorWebhookCompanionRouter: emptyRouter,
+          respondToConnectorPurgeCheck: noop,
+          createConnectorWebhookHandler: () => noop,
+          createConnectorWebhookParserErrorHandler: () => noop,
+          connectorDrainAbort: { aborted: false },
+        },
+        "./routes/chat.js": { createChatRouter: emptyRouter, defaultModel: "test-model" },
+        "./routes/billing-webhook.js": { createBillingWebhookHandler: () => noop },
+        "./services/webhook-tokens.js": { assertStrongSecret: noop, WebhookTokenService: class {} },
+        "./build-info.js": { readBackendBuildInfo: () => ({ backendRevision: "test", backendVersion: "0.0.0" }) },
+        "js-yaml": { load: () => ({}) },
+        "@scalar/express-api-reference": { apiReference: emptyRouter },
+      };
+
+      const fallback = new Proxy(
+        {},
+        {
+          get: (_target, key) => {
+            if (key === "__esModule") return false;
+            if (typeof key === "string" && key.startsWith("create") && key.endsWith("Router")) return emptyRouter;
+            if (typeof key === "string" && /^[a-z]/.test(key)) return noop;
+            return class { start() {} stop() { return Promise.resolve(); } };
+          },
+        },
+      );
+      const moduleExports = {};
+      const context = {
+        module: { exports: moduleExports },
+        exports: moduleExports,
+        Buffer,
+        URL,
+        Promise,
+        setTimeout,
+        setInterval: () => ({ unref() {} }),
+        process: {
+          env,
+          argv: [],
+          cwd: () => resolve(repoRoot, "backend"),
+          on: noop,
+          once: noop,
+          exit: (code: number) => {
+            throw new Error(`unexpected process.exit(${code})`);
+          },
+        },
+        console: { log: noop, warn: noop, error: noop },
+        require: (id: string) => (id in known ? known[id] : fallback),
+      };
+
+      runInNewContext(compiled, context);
+      await (context.module.exports as { runMain: () => Promise<void> }).runMain();
+      expect(server).not.toBeNull();
+      const listening = server!;
+      if (!listening.listening) await once(listening, "listening");
+
+      try {
+        const { port } = listening.address() as { port: number };
+        const base = `http://127.0.0.1:${port}`;
+        const headers = {
+          authorization: `Bearer ${validBearer}`,
+          "x-requested-with": "XMLHttpRequest",
+          "content-type": "application/json",
+        };
+
+        const health = await fetch(`${base}/health`);
+        expect(health.status).toBe(200);
+
+        const getRes = await fetch(`${base}/api/connectors/fireflies/delegation`, { method: "GET", headers });
+        expect(getRes.status).toBe(404);
+
+        const postRes = await fetch(`${base}/api/connectors/fireflies/delegation`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({}),
+        });
+        expect(postRes.status).toBe(404);
+
+        const delRes = await fetch(`${base}/api/connectors/fireflies/delegation`, { method: "DELETE", headers });
+        expect(delRes.status).toBe(404);
+
+        expect(kmsCalls).toBe(0);
+      } finally {
+        const closed = once(listening, "close");
+        listening.close();
+        await closed;
+      }
+    }
   });
 });
