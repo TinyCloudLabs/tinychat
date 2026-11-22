@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { BotAdmission } from "../bot-admission";
-import { BotManager, type Sandbox, type SandboxLauncher } from "../bot";
+import { BotManager, ORIGIN_LINES, type Sandbox, type SandboxLauncher } from "../bot";
 import type { BotLayout } from "../layout";
 import { OwnerManifests } from "../manifest";
 import { MeetingDesk, type HeldStore } from "../meeting-reads";
@@ -168,7 +168,7 @@ test("after a meeting read, message_bot is refused and reaches neither admission
     expect(run.desk.held(mainId)).toBe(false);
     run.main().call("fresh", { targetKey: sibling, text: callText });
     const targetPrompt = await run.target().take("prompt");
-    expect(targetPrompt.message).toBe(callText);
+    expect(targetPrompt.message).toBe(`${ORIGIN_LINES.bot}\n${callText}`);
     run.target().finish(targetPrompt, replyText);
     expect(await run.main().take("host_tool_result")).toEqual({
       type: "host_tool_result", id: "fresh", result: { content: [{ type: "text", text: replyText }] },
