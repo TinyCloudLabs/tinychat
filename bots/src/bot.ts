@@ -178,6 +178,7 @@ export type TurnOrigin = "owner" | "bot" | AppSource;
 export const ORIGIN_LINES = {
   bot: "[TinyCloud: this message is from another of the owner's bots, not from the owner.]",
   app: "[TinyCloud: the owner responded in the app to your question. Their response follows.]",
+  action: "[TinyCloud: the app reports the outcome of your proposal. It follows.]",
 } as const;
 
 /** Where OMP reads `@<path>` as a file to load into the turn: at the start of the text or after a space or opening mark. */
@@ -191,7 +192,8 @@ const FILE_MENTION = /(^|[\s([{<"'`])@/g;
  */
 export function promptText(text: string, from: TurnOrigin): string {
   if (from === "owner") return text;
-  const line = from === "bot" ? ORIGIN_LINES.bot : ORIGIN_LINES.app;
+  const line = from === "bot" ? ORIGIN_LINES.bot
+    : from.app === "action_approved" || from.app === "action_declined" ? ORIGIN_LINES.action : ORIGIN_LINES.app;
   return `${line}\n${text.replace(FILE_MENTION, "$1@\u2060")}`;
 }
 

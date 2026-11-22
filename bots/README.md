@@ -302,8 +302,9 @@ owner message (the same bot again is fine); a message for more bots goes through
     `outcomes` (`[{ key, delivered }]`) once done. The backend adds each recipient's current name.
   - `POST /v1/bots/main/requests/<id>/answer`: `{ "decision": "approve", "binding": "<64 hex>", "messageableBotKeys":
     [...] }` (the backend fills the keys) or `{ "decision": "decline" }`.
-  - `appReply` tells Main the outcome with a fixed sentence around the recipients' keys (`ACTION_REPLIES`); its history
-    line has `decision: "action_approved" | "action_declined"`.
+  - `appReply` tells Main the outcome with a fixed sentence around the recipients' keys (`ACTION_REPLIES`), under its
+    own first line (`ORIGIN_LINES.action`); its history line has `decision: "action_approved" | "action_declined"`.
+    Each recipient gets Main's message under the line for a message from another bot (`ORIGIN_LINES.bot`).
 - Retention: the text goes when the proposal is decided or expires; metadata stays 7 days, at most 200.
 
 ### Saved state

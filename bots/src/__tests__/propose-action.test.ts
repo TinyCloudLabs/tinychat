@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { ACTION_ERRORS, ACTION_REPLIES, actionBinding, actionsFile, syncActions } from "../actions";
 import { type AsksGateway, syncAsks } from "../asks";
 import type { BotAdmission } from "../bot-admission";
-import { BotManager, promptText, type Sandbox, type SandboxLauncher } from "../bot";
+import { BotManager, ORIGIN_LINES, promptText, type Sandbox, type SandboxLauncher } from "../bot";
 import { type GatewayConfig, PINNED_FETCH_URL, PINNED_UPSTREAM, PINNED_WEB_API } from "../config";
 import { Gateway } from "../gateway";
 import { type BotLayout, botLayout } from "../layout";
@@ -245,7 +245,7 @@ describe("propose_action, end to end", () => {
     // Main is told in fixed words around the recipients' keys, never words from the card.
     const told = await run.call("POST", "main", "/messages", { appReply: { requestId: pending.id } });
     const prompt = await run.box("main").take("prompt");
-    expect(prompt.message).toBe(promptText(ACTION_REPLIES.sent([first, second]), { app: "action_approved" }));
+    expect(prompt.message).toBe(`${ORIGIN_LINES.action}\n${ACTION_REPLIES.sent([first, second])}`);
     run.box("main").finish(prompt, "noted");
     await told.text();
   });
