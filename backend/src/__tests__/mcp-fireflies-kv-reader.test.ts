@@ -41,7 +41,14 @@ function makeMcpPort(opts: {
   sqlRows?: FakeSqlRow[];
   /** Optional hidden SQL rows returned only by exact-ID collision queries (simulating rows beyond first 501). */
   hiddenCollisionRows?: FakeSqlRow[];
-  sqlUnavailable?: boolean;
+  /** Models a proven-absent `connector_meeting` table (`sqlite_schema` returns `[]`). */
+  sqlTableAbsent?: boolean;
+  /** Models a proven-absent SQLite database (`SQL_DATABASE_NOT_FOUND`). */
+  sqlDbNotFound?: boolean;
+  /** Models a real SQL error on an existing `connector_meeting` table (e.g. `SQL_RESULT_LIMIT_EXCEEDED`, `SQL_ERROR`). */
+  sqlErrorCode?: string;
+  /** When true alongside `sqlErrorCode`, `sqlite_schema` also fails with `sqlErrorCode`. */
+  sqlSchemaAlsoFails?: boolean;
   kvKeys?: string[];
   kvPages?: Record<string, { keys: string[]; truncated?: boolean; cursor?: string }>;
   kvTruncated?: boolean;
@@ -98,8 +105,16 @@ function makeMcpPort(opts: {
 
   const port: McpMeetingPort = {
     async sqlQuery(sql, params) {
-      if (opts.sqlUnavailable) throw new McpPortError("SQL_ERROR");
-      if (sql.includes("sqlite_schema")) return [];
+      if (opts.sqlDbNotFound) throw new McpPortError("SQL_DATABASE_NOT_FOUND");
+      if (sql.includes("sqlite_schema")) {
+        if (opts.sqlErrorCode && opts.sqlSchemaAlsoFails) throw new McpPortError(opts.sqlErrorCode);
+        if (params[0] === "connector_meeting") {
+          return opts.sqlTableAbsent ? [] : [[1]];
+        }
+        return [];
+      }
+      if (opts.sqlTableAbsent) throw new McpPortError("NODE_ERROR");
+      if (opts.sqlErrorCode) throw new McpPortError(opts.sqlErrorCode);
       if (sql.includes("source = ?") && sql.includes("source_id = ?") && sql.startsWith("SELECT 1 FROM connector_meeting")) {
         return allSqlRows.some((r) => r.source === params[0] && r.sourceId === params[1]) ? [[1]] : [];
       }
@@ -208,7 +223,7 @@ describe("MCP Fireflies KV reader (PR-3)", () => {
   it("discovers, reads (O(1) cached getMetadata) and searches KV-only Fireflies meetings without a SQL table", async () => {
     const meetingRef = await connectorMeetingId("fireflies", "ff-mcp-1");
     const { port, kvListCalls } = makeMcpPort({
-      sqlUnavailable: true,
+      sqlTableAbsent: true,
       kvKeys: [firefliesMeetingKvKey("ff-mcp-1")],
       kvValues: {
         [firefliesMeetingKvKey("ff-mcp-1")]: await makeKvRecord("ff-mcp-1"),
@@ -540,7 +555,7 @@ describe("MCP Fireflies KV reader (PR-3)", () => {
     expect(pagedResult.data.corpus.truncated).toBe(true);
     expect(pagedResult.text).toContain("at least ");
     expect(pagedResult.text).toContain("Coverage is bounded");
-    expect(pagedResult.text).toContain("Server-imported meeting listing was truncated.");
+    expect(pagedResult.text).toContain("Only some server-imported meetings are listed: the list reached its size limit.");
 
     // HTTP port kvList + NaN limit guard + kvGetWithMeta.
     const rpcCalls: Array<{ name: string; arguments: Record<string, unknown> }> = [];
@@ -679,5 +694,86 @@ describe("MCP Fireflies KV reader (PR-3)", () => {
       server.close();
       await once(server, "close");
     }
+  });
+
+  it("refuses planted KV duplicates on SQL errors (SQL_RESULT_LIMIT_EXCEEDED and SQL_ERROR) and falls back only on proven-absent DB/table", async () => {
+    const meetingRef = await connectorMeetingId("fireflies", "ff-real-sql");
+    const plantedKv = await makeKvRecord("ff-real-sql", {
+      title: "PLANTED KV DUPLICATE TITLE",
+      summaryOverview: "Planted KV summary must never replace real SQL meeting.",
+    });
+    const plantedTranscript = JSON.stringify([
+      { index: 0, speaker_name: "Mallory", text: "Planted KV transcript", start_time: 0, end_time: 2 },
+    ]);
+
+    // 1. SQL_RESULT_LIMIT_EXCEEDED on existing table: MUST fail and NEVER return planted KV duplicate.
+    const { port: limitPort, kvListCalls: limitKvLists, kvGetCalls: limitKvGets } = makeMcpPort({
+      sqlErrorCode: "SQL_RESULT_LIMIT_EXCEEDED",
+      kvKeys: [firefliesMeetingKvKey("ff-real-sql")],
+      kvValues: {
+        [firefliesMeetingKvKey("ff-real-sql")]: plantedKv,
+        [transcriptKvKey("fireflies", "ff-real-sql")]: plantedTranscript,
+      },
+    });
+    const limitReader = createReader(limitPort, undefined, undefined, {
+      firefliesKvEnabled: true,
+      readFirefliesPurgeLedger: ABSENT_LEDGER,
+    });
+    await expect(limitReader.getMetadata!(meetingRef)).rejects.toThrow("transcript_unavailable");
+    await expect(limitReader.getMetadata!("fireflies:ff-real-sql")).rejects.toThrow("transcript_unavailable");
+    await expect(limitReader.listMetadata()).rejects.toThrow("transcript_unavailable");
+    await expect(limitReader.discoverMetadata!({ source: "fireflies" })).rejects.toThrow("transcript_unavailable");
+    await expect(limitReader.readBody!("fireflies", "ff-real-sql")).rejects.toThrow("transcript_unavailable");
+    expect(limitKvLists).toEqual([]);
+    expect(limitKvGets).toEqual([]);
+
+    // End-to-end tool call under SQL_RESULT_LIMIT_EXCEEDED must never expose the planted KV title.
+    const limitTools = createMcpMeetingTools(() => limitPort, {
+      firefliesKvEnabled: true,
+      readFirefliesPurgeLedger: ABSENT_LEDGER,
+    });
+    const readFailed = await limitTools.run({
+      name: TINYCLOUD_READ_MEETING,
+      args: { meetingRef, focus: "summary" },
+      owner: OWNER_DID,
+    });
+    expect(JSON.stringify(readFailed.body)).not.toContain("PLANTED KV DUPLICATE TITLE");
+    const findFailed = await limitTools.run({
+      name: TINYCLOUD_FIND_MEETINGS,
+      args: { source: "fireflies" },
+      owner: OWNER_DID,
+    });
+    expect(JSON.stringify(findFailed.body)).not.toContain("PLANTED KV DUPLICATE TITLE");
+
+    // 2. Generic SQL_ERROR when connector_meeting exists (or when sqlite_schema also fails): MUST refuse KV fallback.
+    for (const sqlSchemaAlsoFails of [false, true]) {
+      const { port: errPort, kvListCalls: errKvLists } = makeMcpPort({
+        sqlErrorCode: "SQL_ERROR",
+        sqlSchemaAlsoFails,
+        kvKeys: [firefliesMeetingKvKey("ff-real-sql")],
+        kvValues: { [firefliesMeetingKvKey("ff-real-sql")]: plantedKv },
+      });
+      const errReader = createReader(errPort, undefined, undefined, {
+        firefliesKvEnabled: true,
+        readFirefliesPurgeLedger: ABSENT_LEDGER,
+      });
+      await expect(errReader.getMetadata!(meetingRef)).rejects.toThrow("transcript_unavailable");
+      await expect(errReader.listMetadata()).rejects.toThrow("transcript_unavailable");
+      await expect(errReader.discoverMetadata!({ source: "fireflies" })).rejects.toThrow("transcript_unavailable");
+      expect(errKvLists).toEqual([]);
+    }
+
+    // 3. Proven-absent database (SQL_DATABASE_NOT_FOUND): KV fallback succeeds.
+    const { port: absentDbPort } = makeMcpPort({
+      sqlDbNotFound: true,
+      kvKeys: [firefliesMeetingKvKey("ff-real-sql")],
+      kvValues: { [firefliesMeetingKvKey("ff-real-sql")]: plantedKv },
+    });
+    const absentDbReader = createReader(absentDbPort, undefined, undefined, {
+      firefliesKvEnabled: true,
+      readFirefliesPurgeLedger: ABSENT_LEDGER,
+    });
+    expect((await absentDbReader.listMetadata()).map((r) => r.meetingRef)).toEqual([meetingRef]);
+    expect((await absentDbReader.getMetadata!(meetingRef))?.meetingRef).toBe(meetingRef);
   });
 });

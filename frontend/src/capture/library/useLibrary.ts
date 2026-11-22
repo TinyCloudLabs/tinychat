@@ -28,6 +28,7 @@
 // later; it is dropped at once when the phone's notes become unknown or the
 // space changes, and for a note that was discarded rather than uploaded.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { FIREFLIES_SERVER_IMPORT_TAG } from "@tinyboilerplate/core";
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
@@ -178,6 +179,10 @@ interface LocalLibrary {
 }
 
 const settled = (read: { status: string } | undefined) => read !== undefined && read.status !== "failed";
+const isServerImportedItem = (entry: Pick<LibraryItem, "importSource" | "metadata">): boolean =>
+  entry.importSource === FIREFLIES_SERVER_IMPORT_TAG || entry.metadata?.import_source === FIREFLIES_SERVER_IMPORT_TAG;
+const withoutServerImported = (entries: readonly LibraryItem[]): LibraryItem[] =>
+  entries.filter((entry) => !isServerImportedItem(entry));
 const noop = () => undefined;
 
 export function useLibrary(
@@ -303,7 +308,7 @@ export function useLibrary(
       setList((current) =>
         read.status === "ok"
           ? { status: "ready", items: read.meetings, previews: previews ?? current.previews }
-          : { status: "failed", items: current.items, previews: current.previews },
+          : { status: "failed", items: withoutServerImported(current.items), previews: current.previews },
       );
       if (read.status === "ok") {
         setHandoff((current) => {
@@ -323,18 +328,22 @@ export function useLibrary(
   }, [enqueue, firefliesKvAllowed, firefliesPurgeChecker, space]);
 
   // The device's last copy of the list shows at once; the read below replaces it.
+  // Server-imported rows require the active flag and a fresh purge verdict, so they are never restored from cache.
   useEffect(() => {
     if (!localKey) return;
     let alive = true;
     void readLocal<LocalLibrary>(localKey).then((local) => {
       if (!alive || !local || loadedFromNetwork.current) return;
-      setList((current) => (current.status === "loading" ? { status: "ready", items: local.value.items, previews: local.value.previews } : current));
+      const safeItems = withoutServerImported(local.value.items);
+      setList((current) => (current.status === "loading" ? { status: "ready", items: safeItems, previews: local.value.previews } : current));
     });
     return () => { alive = false; };
   }, [localKey]);
-  // Every list the network answered becomes the device's copy for the next open.
+  // Every list the network answered becomes the device's copy for the next open (excluding server-imported rows).
   useEffect(() => {
-    if (localKey && loadedFromNetwork.current && list.status === "ready") void writeLocal<LocalLibrary>(localKey, { items: list.items, previews: list.previews });
+    if (localKey && loadedFromNetwork.current && list.status === "ready") {
+      void writeLocal<LocalLibrary>(localKey, { items: withoutServerImported(list.items), previews: list.previews });
+    }
   }, [list, localKey]);
 
   // The first mount (Capture's first visit).
@@ -377,15 +386,19 @@ export function useLibrary(
     if (handoff.departures > 0) refresh();
   }, [handoff.departures, refresh]);
 
+  const authorizedListItems = useMemo(
+    () => (firefliesKvAllowed && firefliesPurgeChecker ? list.items : withoutServerImported(list.items)),
+    [firefliesKvAllowed, firefliesPurgeChecker, list.items],
+  );
   // A voice note's first moment titles its row, ahead of its transcript.
   const voiceSourceIds = useMemo(
-    () => list.items.filter((entry) => entry.source === VOICE_NOTE_SOURCE && entry.metadata?.capture !== "pasted").map((entry) => entry.sourceId)
+    () => authorizedListItems.filter((entry) => entry.source === VOICE_NOTE_SOURCE && entry.metadata?.capture !== "pasted").map((entry) => entry.sourceId)
       .concat((onPhoneNotes ?? []).map((note) => note.id)),
-    [list.items, onPhoneNotes],
+    [authorizedListItems, onPhoneNotes],
   );
   const everyItem = useMemo(() => {
     const merged = withOnPhone(
-      list.items,
+      authorizedListItems,
       onPhoneNotes ?? [],
       [...currentHandoff.lingering.values()].map((entry) => entry.note).filter((note) => !wasDiscarded(note.id)),
     );
@@ -396,7 +409,7 @@ export function useLibrary(
         ...(localAudioIds.has(entry.sourceId) ? { hasLocalAudio: true as const } : {}),
         ...(localAudioReadyIds.has(entry.sourceId) ? { localAudioReady: true as const } : {}) };
     });
-  }, [list.items, list.previews, moments, onPhoneNotes, currentHandoff.lingering, localAudioIds, localAudioReadyIds]);
+  }, [authorizedListItems, list.previews, moments, onPhoneNotes, currentHandoff.lingering, localAudioIds, localAudioReadyIds]);
 
   // Captures a combined meeting stands in for, derived from the combined rows of this list read.
   const hiddenKeys = useMemo(() => hiddenMemberKeys(list.items), [list.items]);
@@ -500,15 +513,29 @@ export function useLibrary(
     (note: LibraryItem) => {
       // A note only on this phone has nothing in the space to read.
       if (note.onPhone) return;
+      const imported = isServerImportedItem(note);
+      if (imported && (!firefliesKvAllowed || !firefliesPurgeChecker)) {
+        reads.current.set(note.id, {
+          metadata: { status: "absent" },
+          transcript: { transcript: { status: "absent" }, provenance: null },
+        });
+        bump();
+        return;
+      }
       const cached = reads.current.get(note.id) ?? {};
       const version = readVersions.current.get(note.id) ?? 0;
       if (reading.current.has(note.id)) return;
       const stale = invalidated.current.delete(note.id);
       const staleFields = staleReads.current.get(note.id);
       staleReads.current.delete(note.id);
-      if (!stale && !staleFields?.size && settled(cached.metadata) && settled(cached.transcript?.transcript)) return;
-      // A saved note retains its reads during revalidation; only prior failures show loading.
-      if (!stale) {
+      // Prior success is not current authorization for server-imported rows: always revalidate both
+      // metadata and transcript against the active flag and a fresh purge verdict.
+      if (!imported && !stale && !staleFields?.size && settled(cached.metadata) && settled(cached.transcript?.transcript)) return;
+      // A saved note retains its reads during revalidation; server-imported rows clear prior reads
+      // until the fresh purge check lands.
+      if (imported) {
+        reads.current.set(note.id, { metadata: undefined, transcript: undefined });
+      } else if (!stale) {
         reads.current.set(note.id, {
           metadata: settled(cached.metadata) ? cached.metadata : undefined,
           transcript: settled(cached.transcript?.transcript) ? cached.transcript : undefined,
@@ -520,16 +547,16 @@ export function useLibrary(
         try {
           const locator = note.source === VOICE_NOTE_SOURCE
             ? await voiceNoteTranscriptLocator(space, note.sourceId) : null;
-          if (version === (readVersions.current.get(note.id) ?? 0) && (stale || staleFields?.has("metadata") || !settled(reads.current.get(note.id)?.metadata))) {
+          if (version === (readVersions.current.get(note.id) ?? 0) && (imported || stale || staleFields?.has("metadata") || !settled(reads.current.get(note.id)?.metadata))) {
             let metadata = await readMeetingMetadata(
               space,
               note.id,
-              note.importSource === "server-import"
+              imported
                 ? {
-                    includeFirefliesKv: true,
+                    includeFirefliesKv: firefliesKvAllowed,
                     source: note.source,
                     sourceId: note.sourceId,
-                    isFirefliesPurged: firefliesPurgeChecker,
+                    isFirefliesPurged: firefliesKvAllowed ? firefliesPurgeChecker : undefined,
                   }
                 : undefined,
             );
@@ -545,7 +572,7 @@ export function useLibrary(
               // The preview is bounded; only the body read may supply full transcript text.
               transcript_text: locator.committed ? null : locator.expectedText,
             } };
-            if (version === (readVersions.current.get(note.id) ?? 0) && metadata.status === "failed" && cached.metadata?.status === "ok") {
+            if (!imported && version === (readVersions.current.get(note.id) ?? 0) && metadata.status === "failed" && cached.metadata?.status === "ok") {
               const fields = staleReads.current.get(note.id) ?? new Set<keyof NoteReads>();
               fields.add("metadata");
               staleReads.current.set(note.id, fields);
@@ -553,13 +580,13 @@ export function useLibrary(
             if (version === (readVersions.current.get(note.id) ?? 0)) {
               reads.current.set(note.id, {
                 ...reads.current.get(note.id),
-                metadata: metadata.status === "failed" && cached.metadata?.status === "ok"
+                metadata: !imported && metadata.status === "failed" && cached.metadata?.status === "ok"
                   ? cached.metadata : metadata,
               });
               if (mounted.current) bump();
             }
           }
-          if (version === (readVersions.current.get(note.id) ?? 0) && (stale || staleFields?.has("transcript") || !settled(reads.current.get(note.id)?.transcript?.transcript))) {
+          if (version === (readVersions.current.get(note.id) ?? 0) && (imported || stale || staleFields?.has("transcript") || !settled(reads.current.get(note.id)?.transcript?.transcript))) {
             const transcript = locator
               ? locator.bodyKey ? await readTranscript(space, note.source, note.sourceId, locator.bodyKey, locator.expectedText)
                 : { status: "absent" as const }
@@ -569,17 +596,17 @@ export function useLibrary(
                   note.sourceId,
                   undefined,
                   undefined,
-                  note.importSource === "server-import"
-                    ? { requirePurgeCheck: true, isFirefliesPurged: firefliesPurgeChecker }
+                  imported
+                    ? { requirePurgeCheck: true, isFirefliesPurged: firefliesKvAllowed ? firefliesPurgeChecker : undefined }
                     : undefined,
                 );
-            if (version === (readVersions.current.get(note.id) ?? 0) && transcript.status === "failed" && cached.transcript?.transcript.status === "ok") {
+            if (!imported && version === (readVersions.current.get(note.id) ?? 0) && transcript.status === "failed" && cached.transcript?.transcript.status === "ok") {
               const fields = staleReads.current.get(note.id) ?? new Set<keyof NoteReads>();
               fields.add("transcript");
               staleReads.current.set(note.id, fields);
             }
             if (version === (readVersions.current.get(note.id) ?? 0)) {
-              const keepCachedTranscript = transcript.status === "failed" && cached.transcript?.transcript.status === "ok";
+              const keepCachedTranscript = !imported && transcript.status === "failed" && cached.transcript?.transcript.status === "ok";
               reads.current.set(note.id, {
                 ...reads.current.get(note.id),
                 transcript: keepCachedTranscript ? cached.transcript : {
@@ -596,7 +623,7 @@ export function useLibrary(
         }
       });
     },
-    [bump, enqueue, firefliesPurgeChecker, space],
+    [bump, enqueue, firefliesKvAllowed, firefliesPurgeChecker, space],
   );
 
   // An invalidation that arrives during an in-flight read is retried once that

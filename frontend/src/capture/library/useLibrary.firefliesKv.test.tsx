@@ -1,6 +1,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { IDBFactory } from "fake-indexeddb";
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import {
@@ -9,6 +10,7 @@ import {
   transcriptKvKey,
 } from "@tinyboilerplate/core";
 
+import { accountCacheKey, readLocal, writeLocal } from "@/lib/localFirst/localCache";
 import { beginStorageAccountSession, endStorageAccountSession } from "@/lib/storageStatus";
 import { resetLanesForTests } from "@/lib/localFirst/requestLanes";
 import { useLibrary, type Library } from "./useLibrary";
@@ -408,5 +410,358 @@ describe("useLibrary Fireflies KV production wiring", () => {
     expect(seen.at(-1)!.items).toEqual([]);
     expect(kvListCalls).toEqual([]);
     expect(kvGetCalls).toEqual([]);
+  });
+
+  test("filters cached server-imported rows out of local cache read/write and never forces KV opt-in when flag is off", async () => {
+    const savedIdb = (globalThis as { indexedDB?: unknown }).indexedDB;
+    (globalThis as { indexedDB?: unknown }).indexedDB = new IDBFactory();
+    try {
+      const cachedImportedId = await connectorMeetingId("fireflies", "ff-cached-old");
+      const sqlRowId = "sql-kept-1";
+      const did = "did:test:fireflies-cache-isolation";
+      const localKey = accountCacheKey(did, "library");
+
+      await writeLocal(localKey, {
+        items: [
+          {
+            id: cachedImportedId,
+            source: "fireflies",
+            importSource: "server-import",
+            sourceId: "ff-cached-old",
+            title: "Stale Cached Server Import",
+            startedAt: "2026-11-20T10:00:00.000Z",
+            durationSecs: 600,
+            metadata: { import_source: "server-import" },
+          },
+          {
+            id: sqlRowId,
+            source: "fireflies",
+            sourceId: "ff-sql-1",
+            title: "Cached Browser SQL Row",
+            startedAt: "2026-11-20T09:00:00.000Z",
+            durationSecs: 300,
+          },
+        ],
+        previews: new Map<string, string>(),
+      });
+
+      const kvListCalls: unknown[] = [];
+      const kvGetCalls: string[] = [];
+      let releaseList!: () => void;
+      const listGate = new Promise<void>((resolve) => {
+        releaseList = resolve;
+      });
+      const tcw = {
+        did,
+        spaceId: "fireflies-cache-isolation",
+        sql: {
+          db: () => ({
+            query: async (sql: string) => {
+              if (sql.includes("sqlite_schema")) return { ok: true, data: { rows: [] } };
+              await listGate;
+              return {
+                ok: true,
+                data: {
+                  rows: [[sqlRowId, "fireflies", "ff-sql-1", "Cached Browser SQL Row", "2026-11-20T09:00:00.000Z", 300]],
+                },
+              };
+            },
+          }),
+        },
+        kv: {
+          list: async (opts: unknown) => {
+            kvListCalls.push(opts);
+            return { ok: true, data: { keys: [firefliesMeetingKvKey("ff-cached-old")] } };
+          },
+          get: async (key: string) => {
+            kvGetCalls.push(key);
+            return {
+              ok: true,
+              data: {
+                data: await makeMeetingPayload("ff-cached-old", "Stale Cached Server Import"),
+                headers: makeKvHeaders("2026-11-20T10:00:00.000Z"),
+              },
+            };
+          },
+        },
+      } as unknown as TinyCloudWeb;
+      beginStorageAccountSession(tcw, tcw.did ?? null, tcw.spaceId ?? null);
+
+      const seen: Library[] = [];
+      // 1. Flag is OFF (no backendUrl): pre-seeded cache loads before network finishes.
+      await renderProbe({ tcw, visible: true, noteId: cachedImportedId, seen });
+
+      await waitFor(
+        () => seen.some((lib) => lib.status === "ready" && lib.items.some((i) => i.id === sqlRowId)),
+        "local cache hydrates non-imported SQL row",
+      );
+
+      // Cached server-imported row MUST NEVER appear before a live flag + purge verdict, and opening its ID makes zero KV calls.
+      expect(seen.every((lib) => lib.items.every((i) => i.id !== cachedImportedId))).toBe(true);
+      expect(seen.at(-1)!.note.item).toBeNull();
+      expect(kvListCalls).toEqual([]);
+      expect(kvGetCalls).toEqual([]);
+
+      // 2. Flag is ON (backendUrl + sessionStore) while network list is still pending: pre-seeded
+      //    cached server-imported row MUST STILL NEVER render before a fresh purge verdict lands.
+      const backendUrlForGate = "https://backend-gate.example";
+      globalThis.fetch = (async (input: string | URL | Request) => {
+        const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+        if (url === `${backendUrlForGate}/api/server-info`) {
+          return new Response(JSON.stringify({ capabilities: { firefliesServerImport: true } }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        if (url === `${backendUrlForGate}/api/connectors/webhooks/purge-check`) {
+          return new Response(JSON.stringify({ blocked: true }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        return new Response("not found", { status: 404 });
+      }) as typeof fetch;
+
+      await act(async () => {
+        root!.unmount();
+      });
+      root = null;
+      const seenGateOn: Library[] = [];
+      await renderProbe({
+        tcw,
+        visible: true,
+        noteId: cachedImportedId,
+        backendUrl: backendUrlForGate,
+        sessionStore: makeFakeSessionStore(),
+        seen: seenGateOn,
+      });
+      await waitFor(
+        () => seenGateOn.some((lib) => lib.status === "ready" && lib.items.some((i) => i.id === sqlRowId)),
+        "local cache hydrates SQL row while ON network list is pending",
+      );
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      });
+      expect(seenGateOn.every((lib) => lib.items.every((i) => i.id !== cachedImportedId))).toBe(true);
+      expect(seenGateOn.at(-1)!.note.item).toBeNull();
+
+      releaseList();
+      await waitFor(
+        () => Boolean(seenGateOn.at(-1) && !seenGateOn.at(-1)!.listing),
+        "network list finishes",
+      );
+      expect(seenGateOn.at(-1)!.items.every((i) => i.id !== cachedImportedId)).toBe(true);
+
+      // Now verify writeLocal also excludes server-imported rows after an ON network list.
+      const backendUrl = "https://backend.example";
+      const liveId = await connectorMeetingId("fireflies", "ff-live-nocache");
+      const kvEntries: Record<string, { data: string; lastModified: string }> = {
+        [firefliesMeetingKvKey("ff-live-nocache")]: {
+          data: await makeMeetingPayload("ff-live-nocache", "Live Imported Row"),
+          lastModified: "2026-11-22T15:00:00.000Z",
+        },
+      };
+      const tcwOn = {
+        did: "did:test:fireflies-nocache-write",
+        spaceId: "fireflies-nocache-write",
+        sql: {
+          db: () => ({
+            query: async (sql: string) => {
+              if (sql.includes("sqlite_schema")) return { ok: true, data: { rows: [] } };
+              return {
+                ok: true,
+                data: {
+                  rows: [[sqlRowId, "fireflies", "ff-sql-1", "SQL Row", "2026-11-22T10:00:00.000Z", 100]],
+                },
+              };
+            },
+          }),
+        },
+        kv: {
+          list: async () => ({ ok: true, data: { keys: Object.keys(kvEntries) } }),
+          get: async (key: string) => ({
+            ok: true,
+            data: { data: kvEntries[key]!.data, headers: makeKvHeaders(kvEntries[key]!.lastModified) },
+          }),
+        },
+      } as unknown as TinyCloudWeb;
+      beginStorageAccountSession(tcwOn, tcwOn.did ?? null, tcwOn.spaceId ?? null);
+
+      globalThis.fetch = (async (input: string | URL | Request) => {
+        const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+        if (url === `${backendUrl}/api/server-info`) {
+          return new Response(JSON.stringify({ capabilities: { firefliesServerImport: true } }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        if (url === `${backendUrl}/api/connectors/webhooks/purge-check`) {
+          return new Response(JSON.stringify({ blocked: false }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        return new Response("not found", { status: 404 });
+      }) as typeof fetch;
+
+      const seenOn: Library[] = [];
+      await renderProbe({
+        tcw: tcwOn,
+        visible: true,
+        noteId: null,
+        backendUrl,
+        sessionStore: makeFakeSessionStore(),
+        seen: seenOn,
+      });
+      await waitFor(
+        () => Boolean(seenOn.at(-1)?.items.some((i) => i.id === liveId)),
+        "live imported row shown in memory",
+      );
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 30));
+      });
+      const persisted = await readLocal<{ items: Array<{ id: string }> }>(
+        accountCacheKey(tcwOn.did!, "library"),
+      );
+      expect(persisted?.value.items.map((i) => i.id)).toEqual([sqlRowId]);
+    } finally {
+      (globalThis as { indexedDB?: unknown }).indexedDB = savedIdb;
+    }
+  });
+
+  test("strips prior server-imported rows on failed refresh and revalidates settled imported transcripts on reopen", async () => {
+    const backendUrl = "https://backend.example";
+    const liveId = await connectorMeetingId("fireflies", "ff-reval");
+    const sqlRowId = "sql-survives-1";
+    let failSql = false;
+    let purged = false;
+    let failPurge = false;
+    let purgeCalls = 0;
+
+    const kvEntries: Record<string, { data: string; lastModified: string }> = {
+      [firefliesMeetingKvKey("ff-reval")]: {
+        data: await makeMeetingPayload("ff-reval", "Revalidated Fireflies Meeting"),
+        lastModified: "2026-11-22T15:00:00.000Z",
+      },
+      [transcriptKvKey("fireflies", "ff-reval")]: {
+        data: JSON.stringify([
+          { index: 0, speaker_name: "Jordan", text: "Secret transcript line.", start_time: 0, end_time: 5 },
+        ]),
+        lastModified: "2026-11-22T15:01:00.000Z",
+      },
+    };
+
+    const tcw = {
+      did: "did:test:fireflies-reval-fail-refresh",
+      spaceId: "fireflies-reval-fail-refresh",
+      sql: {
+        db: () => ({
+          query: async (sql: string) => {
+            if (sql.includes("sqlite_schema")) return { ok: true, data: { rows: [] } };
+            if (failSql) return { ok: false, error: { code: "NETWORK_ERROR", message: "offline" } };
+            if (sql.includes("SELECT metadata FROM connector_meeting")) {
+              return { ok: true, data: { rows: [] } };
+            }
+            return {
+              ok: true,
+              data: {
+                rows: [[sqlRowId, "fireflies", "ff-sql-keep", "Browser SQL Row", "2026-11-22T12:00:00.000Z", 120]],
+              },
+            };
+          },
+        }),
+      },
+      kv: {
+        list: async () => ({ ok: true, data: { keys: [firefliesMeetingKvKey("ff-reval")] } }),
+        get: async (key: string) => {
+          const entry = kvEntries[key];
+          if (!entry) return { ok: false, error: { code: "KV_NOT_FOUND", message: "missing" } };
+          return { ok: true, data: { data: entry.data, headers: makeKvHeaders(entry.lastModified) } };
+        },
+      },
+    } as unknown as TinyCloudWeb;
+    beginStorageAccountSession(tcw, tcw.did ?? null, tcw.spaceId ?? null);
+
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url === `${backendUrl}/api/server-info`) {
+        return new Response(JSON.stringify({ capabilities: { firefliesServerImport: true } }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url === `${backendUrl}/api/connectors/webhooks/purge-check`) {
+        purgeCalls += 1;
+        if (failPurge) return new Response("unavailable", { status: 503 });
+        return new Response(JSON.stringify({ blocked: purged }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response("not found", { status: 404 });
+    }) as typeof fetch;
+
+    const sessionStore = makeFakeSessionStore();
+    const seen: Library[] = [];
+
+    // 1. Initial load + open settles metadata & transcript as ok.
+    await renderProbe({ tcw, visible: true, noteId: liveId, backendUrl, sessionStore, seen });
+    await waitFor(
+      () => {
+        const latest = seen.at(-1);
+        return Boolean(
+          latest &&
+            latest.items.some((i) => i.id === liveId) &&
+            latest.note.reads.metadata?.status === "ok" &&
+            latest.note.reads.transcript?.transcript.status === "ok",
+        );
+      },
+      "initial open settles imported metadata and transcript",
+    );
+
+    // 2. Close, mark purged on backend, then reopen: MUST revalidate settled reads and hide both!
+    await renderProbe({ tcw, visible: true, noteId: null, backendUrl, sessionStore, seen });
+    purged = true;
+    const callsBeforeReopen = purgeCalls;
+    await renderProbe({ tcw, visible: true, noteId: liveId, backendUrl, sessionStore, seen });
+    await waitFor(
+      () => {
+        const reads = seen.at(-1)?.note.reads;
+        return reads?.metadata?.status === "absent" && reads?.transcript?.transcript.status === "absent";
+      },
+      "reopening settled imported note revalidates and returns absent once purged",
+    );
+    expect(purgeCalls).toBeGreaterThanOrEqual(callsBeforeReopen + 2);
+
+    // 3. Unpurge, settle again, then make purge-check fail with 503 on reopen: MUST NOT keep stale transcript!
+    purged = false;
+    await renderProbe({ tcw, visible: true, noteId: null, backendUrl, sessionStore, seen });
+    await renderProbe({ tcw, visible: true, noteId: liveId, backendUrl, sessionStore, seen });
+    await waitFor(
+      () => seen.at(-1)?.note.reads.transcript?.transcript.status === "ok",
+      "re-settled imported note is ok again",
+    );
+    failPurge = true;
+    await renderProbe({ tcw, visible: true, noteId: null, backendUrl, sessionStore, seen });
+    await renderProbe({ tcw, visible: true, noteId: liveId, backendUrl, sessionStore, seen });
+    await waitFor(
+      () => {
+        const reads = seen.at(-1)?.note.reads;
+        return reads?.metadata?.status === "absent" && reads?.transcript?.transcript.status === "absent";
+      },
+      "failed purge check on reopen does not keep stale settled transcript",
+    );
+
+    // 4. Failed refresh MUST strip prior server-imported rows while leaving ordinary SQL rows alone.
+    failPurge = false;
+    failSql = true;
+    await act(async () => {
+      seen.at(-1)!.refresh();
+    });
+    await waitFor(
+      () => Boolean(seen.at(-1) && seen.at(-1)!.status === "failed" && !seen.at(-1)!.listing),
+      "failed refresh settles",
+    );
+    expect(seen.at(-1)!.items.map((i) => i.id)).toEqual([sqlRowId]);
   });
 });
