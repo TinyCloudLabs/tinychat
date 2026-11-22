@@ -126,6 +126,21 @@ export default defineConfig(({ command, mode }) => {
       transformIndexHtml: (html) => html.replace(/<meta\s+http-equiv="Content-Security-Policy"[^>]*>/i, ""),
     },
     {
+      // The desktop app (Tauri) builds this same index.html, and a browser enforces the meta policy alongside the
+      // desktop app's own (desktop/src-tauri/tauri.conf.json). Its webview reaches its own process over ipc: (or
+      // http://ipc.localhost on Windows), so only a desktop build's copy of the meta policy names those sources;
+      // the web header and the web and phone builds never do. The Tauri CLI sets TAURI_ENV_PLATFORM for
+      // beforeBuildCommand and beforeDevCommand.
+      name: "tinychat-desktop-ipc-csp",
+      apply: "build",
+      transformIndexHtml(html) {
+        if (!process.env.TAURI_ENV_PLATFORM) return html;
+        const marker = "connect-src 'self' ";
+        if (html.split(marker).length !== 2) throw new Error("index.html's Content-Security-Policy must carry exactly one connect-src 'self'");
+        return html.replace(marker, `${marker}ipc: http://ipc.localhost `);
+      },
+    },
+    {
       // Open the connections to the TinyCloud node and the backend while the bundle loads, so the
       // first request after sign-in restore does not also pay DNS, TCP and TLS (two round trips to
       // the node's gateway). Only origins this build is configured with; dev without them adds none.

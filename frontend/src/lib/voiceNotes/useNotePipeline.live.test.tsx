@@ -113,7 +113,14 @@ async function installPhone() {
   __setVoiceNotesForTests(
     {
       getCaptureDefaults: async () => ({ accountDid: SPACE.did, status: "signed_in", transitionGen: 1, transcriber: "on-device", identifySpeakers: false }),
-      listPending: async () => { phone.reads += 1; if (phone.listError) throw phone.listError; return { recordings: phone.recordings }; },
+      listPending: async () => {
+        // TC-2860: bun test shares one module registry across files, so deferred work an earlier test file left
+        // behind (retry timers, transcriber chains, stall polls) can call this fake while a test here runs. Count
+        // only the reads the pipeline hooks issue; load() in useNotePipeline.ts calls listPending synchronously.
+        if ((new Error().stack ?? "").includes("useNotePipeline.ts")) phone.reads += 1;
+        if (phone.listError) throw phone.listError;
+        return { recordings: phone.recordings };
+      },
       getTranscript: async ({ id }: { id: string }) => {
         phone.transcriptReads.push(id);
         return phone.transcriptRead ? phone.transcriptRead() : { transcript: phone.transcript };

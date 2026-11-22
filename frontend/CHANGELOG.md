@@ -16,6 +16,22 @@
 - TC-2204: Native audience checks accept Home's three exact SQL hook subscriptions only alongside an existing TinyChat data grant.
 - TC-2499: The Home mirror adapter persists close receipts using node-compatible NULL/non-NULL compare-and-set predicates. If the KV mirror is already exactly closed but its receipt is missing, recovery records the original publication ETag without writing the KV copy again, before any gated child handoff. The CLI reports JSON error class, safe message, code, HTTP status when available, and operation step; private SQL bodies and nested causes remain redacted. Exit 2 identifies invalid input, exit 6 known transient failures (including NODE_BUSY and REQUEST_TIMEOUT without HTTP metadata), and exit 1 other runtime failures or OUTCOME_UNKNOWN. Unclassified errors are not labelled bad input; no failure confirms delivery or authorizes an automatic retry.
 
+## 0.18.0-beta.3
+
+### Patch Changes
+
+- 3dedae7: TinyCloud One's web policy no longer names the desktop app's bridge; only the desktop build's copy of the policy carries it.
+
+  Details: TC-3878
+
+## 0.18.0-beta.2
+
+### Minor Changes
+
+- 4ce3e19: Add the "Where your data lives" section in Settings to view the owner's signed location-registry v2 record, request node changes through OpenKey when supported, and undo the latest change from recent history.
+
+  Details: TC-3892
+
 ## 0.17.1-beta.1
 
 ### Patch Changes
