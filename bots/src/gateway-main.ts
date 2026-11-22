@@ -10,13 +10,19 @@
 //                         supervisor's counts (applies from the bot's next call)
 //   POST   /bots/<botId>/asks/drain              {"asks", "outside"}: the questions the bot has asked since the last drain, and
 //                         whether outside text has reached its conversation (a web call)
+//   PUT    /bots/<botId>/actions  {"keys"?, "pending", "day", "today", "final"}  for `propose_action`: the recipients Main may
+//                         name this turn, the supervisor's counts and the proposals that are final
+//   POST   /bots/<botId>/actions/drain           {"actions"}: the proposals the bot has made since the last drain
+//   POST   /bots/<botId>/actions/spend {"id", "binding"}  204 once for an approval the gateway issued with that binding, else 409
 //   PUT|DELETE /bots/<botId>/secrets/<id>, POST /bots/<botId>/secrets/drain   secret requests (secret-routes.ts)
 
 import { chmodSync, mkdirSync, readdirSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { Server } from "bun";
 import { BotAci } from "./aci";
 import { ADMISSION_CONTROL_PATH, createAdmissionRelay, MAX_ADMISSION_BYTES } from "./bot-admission";
+import { fileActionLedgerStore } from "./actions-desk";
+import { parseActionsPush } from "./actions";
 import { gatewayConfig, SECRET_ORIGINS } from "./config";
 import { sealKeyFromDstack } from "./dstack-key";
 import { networkDeps } from "./fetch-net";
@@ -62,6 +68,7 @@ function startGateway(): Gateway {
     return new Gateway(cfg, {
       store: fileBudgetStore(cfg.budgetFile),
       ownerStore: cfg.ownersFile ? fileOwnerStore(cfg.ownersFile) : undefined,
+      actionStore: fileActionLedgerStore(join(dirname(cfg.budgetFile), "actions.json")),
       verifiedFetch: aci ? (botId, url, init) => aci.fetch(botId, url, init) : undefined,
       secrets,
       secretNet: networkDeps,
@@ -132,6 +139,23 @@ const control = Bun.serve({
         const push = parseAsksPush(await req.json().catch(() => null));
         if (!push) return new Response(null, { status: 400 });
         gateway.setAsks(asksBot, push);
+        return new Response(null, { status: 204 });
+      }
+      return new Response(null, { status: 405 });
+    }
+    const actionsMatch = /^\/bots\/([0-9a-f]{64})\/actions(\/drain|\/spend)?$/.exec(pathname);
+    if (actionsMatch) {
+      const actionsBot = actionsMatch[1]!;
+      if (actionsMatch[2] === "/drain" && req.method === "POST") return Response.json({ actions: gateway.drainActions(actionsBot) });
+      if (actionsMatch[2] === "/spend" && req.method === "POST") {
+        const input: unknown = await req.json().catch(() => null);
+        if (!isRecord(input) || typeof input.id !== "string" || typeof input.binding !== "string") return new Response(null, { status: 400 });
+        return new Response(null, { status: gateway.spendAction(actionsBot, input.id, input.binding) ? 204 : 409 });
+      }
+      if (!actionsMatch[2] && req.method === "PUT") {
+        const push = parseActionsPush(await req.json().catch(() => null));
+        if (!push) return new Response(null, { status: 400 });
+        gateway.setActions(actionsBot, push);
         return new Response(null, { status: 204 });
       }
       return new Response(null, { status: 405 });

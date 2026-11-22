@@ -11,7 +11,7 @@ export interface BotMessage {
   role: "user" | "bot";
   text: string;
   at: string;
-  /** Set by the service on a message the app sent for the owner (a decision on a request card), not typed by the owner. */
+  /** Set by the service on a message the app sent for the owner (a decision on a request or proposal card), not typed by the owner. */
   origin?: "app";
   /** On an app message: what the owner decided. */
   decision?: AppDecision;
@@ -72,7 +72,7 @@ export interface MainWebSettings {
 export type AskState = "pending" | "answered" | "declined" | "stopped" | "expired";
 
 /** What the owner decided, as the service marks the app's message about it. */
-export type AppDecision = "answered" | "declined" | "stopped" | "approved" | "revoked";
+export type AppDecision = "answered" | "declined" | "stopped" | "approved" | "revoked" | "action_approved" | "action_declined";
 
 /** A secret request names a secret, never carries its value. */
 export const SECRET_NAME = /^[A-Z][A-Z0-9_]{0,63}$/;
@@ -107,7 +107,7 @@ export interface SecretRequest extends SecretLine {
   resolvedAt?: string;
 }
 
-export type MainRequest = AskRequest | SecretRequest;
+export type MainRequest = AskRequest | SecretRequest | ActionRequest;
 
 /** One question Main asked the owner. The service keeps `question` and `choices` only while pending. */
 export interface AskRequest {
@@ -125,7 +125,28 @@ export interface AskRequest {
   resolvedAt?: string;
 }
 
-export type AskDecision = { decision: "decline" } | { decision: "answer"; answer: string } | { decision: "answer"; choice: number };
+/** One message Main proposed sending to two or more of the owner's other bots. The card is made from these fields. */
+export interface ActionRequest {
+  id: string;
+  kind: "action";
+  action: "message_bots";
+  state: "pending" | "sending" | "done" | "declined" | "expired" | "stopped";
+  askedAt: string;
+  expiresAt: string;
+  outside: boolean;
+  undelivered: boolean;
+  resolvedAt?: string;
+  /** Each recipient with its current name; null when the bot is gone. */
+  targets: { key: string; name: string | null }[];
+  /** Main's message, while pending. */
+  text?: string;
+  /** While pending: what Send must name, so only the message on the card is sent. */
+  binding?: string;
+  /** Once done: which recipients got it. */
+  outcomes?: { key: string; delivered: boolean }[];
+}
+
+export type AskDecision = { decision: "decline" } | { decision: "answer"; answer: string } | { decision: "answer"; choice: number } | { decision: "approve"; binding: string };
 
 /** Decline a pending secret request, stop an approved one, try a failed one again. */
 export type SecretDecision = { decision: "decline" } | { decision: "stop" } | { decision: "retry" };
@@ -144,7 +165,7 @@ export interface BotsApi {
   /** Whether Main may ask the owner things; the service answers 404 when it has no such route. */
   getAsks(signal?: AbortSignal): Promise<{ enabled: boolean }>;
   setAsks(settings: { enabled: boolean }, signal?: AbortSignal): Promise<{ enabled: boolean }>;
-  /** Pending requests first, then recent resolved ones: questions and secret requests. */
+  /** Pending requests first, then recent resolved ones: questions, secret requests and proposals. */
   listRequests(signal?: AbortSignal): Promise<MainRequest[]>;
   /** Records the owner's decision; throws when the request can no longer take it. */
   answerRequest(id: string, decision: AskDecision | SecretDecision, signal?: AbortSignal): Promise<MainRequest>;
@@ -274,7 +295,34 @@ function toWebSettings(payload: unknown): MainWebSettings {
 
 const isoTime = (value: unknown): value is string => typeof value === "string" && Number.isFinite(Date.parse(value));
 
-const APP_DECISIONS: readonly unknown[] = ["answered", "declined", "stopped", "approved", "revoked"] satisfies AppDecision[];
+const ACTION_STATES: readonly ActionRequest["state"][] = ["pending", "sending", "done", "declined", "expired", "stopped"];
+
+function toActionRequest(value: Record<string, unknown>): ActionRequest {
+  const { id, state, askedAt, expiresAt, outside, resolvedAt, targets, text, binding, outcomes } = value;
+  const known = ACTION_STATES.find((candidate) => candidate === state);
+  if (typeof id !== "string" || id.length === 0 || id.length > 64 || value.action !== "message_bots" || !known
+    || !isoTime(askedAt) || !isoTime(expiresAt) || !Array.isArray(targets)) throw new BotsError("failed");
+  return {
+    id, kind: "action", action: "message_bots", state: known, askedAt, expiresAt,
+    outside: outside === true,
+    undelivered: value.undelivered === true,
+    ...(isoTime(resolvedAt) ? { resolvedAt } : {}),
+    targets: targets.flatMap((target: unknown) => {
+      const { key, name } = fields(target);
+      return typeof key === "string" ? [{ key, name: typeof name === "string" ? name : null }] : [];
+    }),
+    ...(typeof text === "string" ? { text } : {}),
+    ...(typeof binding === "string" ? { binding } : {}),
+    ...(Array.isArray(outcomes) ? {
+      outcomes: outcomes.flatMap((outcome: unknown) => {
+        const { key, delivered } = fields(outcome);
+        return typeof key === "string" && typeof delivered === "boolean" ? [{ key, delivered }] : [];
+      }),
+    } : {}),
+  };
+}
+
+const APP_DECISIONS: readonly unknown[] = ["answered", "declined", "stopped", "approved", "revoked", "action_approved", "action_declined"] satisfies AppDecision[];
 export const isAppDecision = (value: unknown): value is AppDecision => APP_DECISIONS.includes(value);
 
 const SECRET_STATES: readonly unknown[] = ["pending", "approved", "declined", "stopped", "revoked", "expired", "ended", "failed"] satisfies SecretState[];
@@ -299,6 +347,7 @@ export function toSecretLine(payload: unknown): SecretLine | undefined {
 
 function toRequest(payload: unknown): MainRequest {
   const value = fields(payload);
+  if (value.kind === "action") return toActionRequest(value);
   const { id, kind, state, askedAt, expiresAt, question, choices, answer, outside, resolvedAt } = value;
   if (typeof id !== "string" || id.length === 0 || id.length > 64 || !isoTime(askedAt) || !isoTime(expiresAt)) throw new BotsError("failed");
   const common = {

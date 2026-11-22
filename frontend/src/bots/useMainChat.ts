@@ -7,18 +7,24 @@ import { BotsError, BotsNoReply, type AppDecision, type BotMessage, type BotsApi
 import type { BotsErrorCode } from "./botsStrings";
 import { isDeclinedReply } from "./askText";
 
-/** The app's report of the owner's decision on a request card; a secret request's report names the secret for the chat line. */
+/**
+ * The app's report of the owner's decision on a request or proposal card. A secret request's report names the secret
+ * for the chat line; a proposal's names the recipients the card showed. Neither is sent.
+ */
 export interface AppReply {
   requestId: string;
   decision: AppDecision;
   secret?: SecretLine;
+  names?: string[];
 }
 
-/** `app` marks a line the app sent for the owner (a decision on a request card), which the owner did not type. */
-export type ChatLine = Pick<BotMessage, "id" | "role" | "text"> & { app?: AppDecision; secret?: SecretLine };
+/** `app` marks a line the app sent for the owner (a decision on a request or proposal card), which the owner did not type. */
+export type ChatLine = Pick<BotMessage, "id" | "role" | "text"> & { app?: AppDecision; secret?: SecretLine; names?: string[] };
 
 /** What a line the app sent for this decision carries. */
-const appMark = (reply: AppReply | undefined) => reply ? { app: reply.decision, ...(reply.secret ? { secret: reply.secret } : {}) } : {};
+const appMark = (reply: AppReply | undefined) => reply
+  ? { app: reply.decision, ...(reply.secret ? { secret: reply.secret } : {}), ...(reply.names ? { names: reply.names } : {}) }
+  : {};
 
 export interface MainTurn {
   text: string;

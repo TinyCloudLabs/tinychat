@@ -43,7 +43,7 @@ async function readHistory(tcw: TinyCloudWeb, signal?: AbortSignal, botKey?: str
     if (key !== `${prefix}${batch.generation}/${batch.seq}-${batch.challenge}`) throw new Error("history_binding_mismatch");
     const record = batch.record;
     if ((record?.type === "user" || record?.type === "assistant") && typeof record.text === "string") {
-      // A message the app sent for the owner (a decision on a request) keeps its mark, as the service's own listing does.
+      // A message the app sent for the owner (a decision on a request or proposal) keeps its mark, as the service's own listing does.
       const app = record.type === "user" && record.origin === "app";
       const decision = app && isAppDecision(record.decision) ? record.decision : undefined;
       const secret = decision ? toSecretLine(record.secret) : undefined;

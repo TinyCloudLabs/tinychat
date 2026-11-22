@@ -9,7 +9,7 @@ export type McpServer = "web" | "app";
 /** Every tool name the gateway may serve, per MCP server. A new tool is added here, and only if it is on no never-list. */
 export const ALLOWED_TOOLS: Readonly<Record<McpServer, readonly string[]>> = {
   web: ["search", "fetch"],
-  app: ["ask_owner", "request_secret", "list_secrets", "call_with_secret"],
+  app: ["ask_owner", "request_secret", "list_secrets", "call_with_secret", "propose_action"],
 };
 
 export function toolAllowed(server: McpServer, name: unknown): name is string {

@@ -18,6 +18,7 @@ import { RpcChannel } from "./rpc";
 import { COPY_FAILURES, type CopyFailure, hasSnapshot, STATE_INODES_PER_MB } from "./state";
 import { readWebPolicy } from "./web-policy";
 import { syncAsks } from "./asks";
+import { syncActions } from "./actions";
 
 const CGROUP_ROOT = "/sys/fs/cgroup";
 const CGROUP_CONTROLLERS = ["cpu", "memory", "pids"];
@@ -642,6 +643,25 @@ export class RunscHost implements SandboxLauncher {
         } : {}),
       },
     }, turn);
+  }
+
+  /** Collects the proposals the box made and gives the gateway the counts, the final proposals and `keys` when given (see syncActions). */
+  syncActions(layout: BotLayout, keys?: readonly string[]): Promise<void> {
+    const path = `/bots/${layout.botId}/actions`;
+    return syncActions(layout, {
+      drain: async () => (await this.#gateway("POST", `${path}/drain`)).json(),
+      push: async body => void (await this.#gateway("PUT", path, body)),
+    }, keys);
+  }
+
+  /** Has the gateway spend an approval it issued: true once for that id and binding (204), false when it refuses (409). */
+  async spendAction(layout: BotLayout, id: string, binding: string): Promise<boolean> {
+    try {
+      await this.#gateway("POST", `/bots/${layout.botId}/actions/spend`, { id, binding });
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   async #registerEgress(botId: string, token: string, owner: string): Promise<void> {

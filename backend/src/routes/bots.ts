@@ -100,16 +100,20 @@ function asksSettingsBody(body: unknown): { enabled: boolean } | null {
   return isPlainObject(body) && Object.keys(body).length === 1 && typeof body.enabled === "boolean" ? { enabled: body.enabled } : null;
 }
 
-type AskAnswerBody = { decision: "decline" | "stop" | "retry" } | { decision: "answer"; answer: string } | { decision: "answer"; choice: number };
+type AskAnswerBody = { decision: "decline" | "stop" | "retry" } | { decision: "answer"; answer: string } | { decision: "answer"; choice: number } | { decision: "approve"; binding: string };
+
+const ACTION_BINDING = /^[0-9a-f]{64}$/;
 
 /**
- * A decline, stop (an approved secret request) or retry (a failed one), or an answer given as text (1 to 280
- * characters) or as the index of one of the choices; nothing else is taken. The service checks which fits the request.
+ * A decline, stop (an approved secret request) or retry (a failed one), an answer given as text (1 to 280 characters)
+ * or as the index of one of the choices, or the owner's Send on a proposal card naming the binding the card showed;
+ * nothing else is taken. The service checks which fits the request.
  */
 function askAnswerBody(body: unknown): AskAnswerBody | null {
   if (!isPlainObject(body)) return null;
   const keys = Object.keys(body);
   if (body.decision === "decline" || body.decision === "stop" || body.decision === "retry") return keys.length === 1 ? { decision: body.decision } : null;
+  if (body.decision === "approve") return keys.length === 2 && typeof body.binding === "string" && ACTION_BINDING.test(body.binding) ? { decision: "approve", binding: body.binding } : null;
   if (body.decision !== "answer" || keys.length !== 2) return null;
   if (typeof body.answer === "string") return body.answer.length >= 1 && body.answer.length <= MAX_ASK_ANSWER * 2 ? { decision: "answer", answer: body.answer } : null;
   return typeof body.choice === "number" && Number.isInteger(body.choice) && body.choice >= 0 && body.choice < MAX_ASK_CHOICES ? { decision: "answer", choice: body.choice } : null;
@@ -203,10 +207,60 @@ function toAskRequest(value: unknown): AskRequestView | null {
   };
 }
 
-function toAskRequests(payload: unknown): { requests: AskRequestView[] } | null {
+const ACTION_STATES = ["pending", "sending", "done", "declined", "expired", "stopped"] as const;
+const MAX_ACTION_TARGETS = 8;
+const MAX_ACTION_TEXT = 2000;
+
+/** A proposal from Main for the owner's card. `targets` carries each recipient's current name, null when it is gone. */
+interface ActionRequestView {
+  id: string;
+  kind: "action";
+  action: "message_bots";
+  state: (typeof ACTION_STATES)[number];
+  askedAt: string;
+  expiresAt: string;
+  outside: boolean;
+  resolvedAt?: string;
+  targets: { key: string; name: string | null }[];
+  text?: string;
+  binding?: string;
+  outcomes?: { key: string; delivered: boolean }[];
+  undelivered?: true;
+}
+
+/** Rebuilds one proposal from the contract fields, with recipients' names from `names`; null when the shape is wrong. */
+function toActionRequest(value: Record<string, unknown>, names: ReadonlyMap<string, string>): ActionRequestView | null {
+  const { id, action, state, askedAt, expiresAt, outside, resolvedAt, targets, text, binding, outcomes, undelivered } = value;
+  if (typeof id !== "string" || !ASK_REQUEST_ID.test(id) || action !== "message_bots" || !ACTION_STATES.some(known => known === state)) return null;
+  if (!shortText(askedAt, 40) || !shortText(expiresAt, 40) || typeof outside !== "boolean") return null;
+  if (resolvedAt !== undefined && !shortText(resolvedAt, 40)) return null;
+  if (!Array.isArray(targets) || targets.length > MAX_ACTION_TARGETS || !targets.every(key => typeof key === "string" && BOT_KEY.test(key))) return null;
+  if (text !== undefined && !shortText(text, MAX_ACTION_TEXT * 2)) return null;
+  if (binding !== undefined && (typeof binding !== "string" || !ACTION_BINDING.test(binding))) return null;
+  if (undelivered !== undefined && undelivered !== true) return null;
+  if (outcomes !== undefined && (!Array.isArray(outcomes) || outcomes.length > MAX_ACTION_TARGETS
+    || !outcomes.every(outcome => isPlainObject(outcome) && typeof outcome.key === "string" && BOT_KEY.test(outcome.key) && typeof outcome.delivered === "boolean"))) return null;
+  return {
+    id, kind: "action", action: "message_bots", state: state as ActionRequestView["state"], askedAt, expiresAt, outside,
+    ...(resolvedAt !== undefined ? { resolvedAt } : {}),
+    targets: (targets as string[]).map(key => ({ key, name: names.get(key) ?? null })),
+    ...(text !== undefined ? { text } : {}),
+    ...(binding !== undefined ? { binding } : {}),
+    ...(outcomes !== undefined ? { outcomes: (outcomes as { key: string; delivered: boolean }[]).map(({ key, delivered }) => ({ key, delivered })) } : {}),
+    ...(undelivered ? { undelivered: true as const } : {}),
+  };
+}
+
+/** One question or proposal, by its kind. */
+function toRequest(value: unknown, names: ReadonlyMap<string, string>): AskRequestView | ActionRequestView | null {
+  if (isPlainObject(value) && value.kind === "action") return toActionRequest(value, names);
+  return toAskRequest(value);
+}
+
+function toAskRequests(payload: unknown, names: ReadonlyMap<string, string>): { requests: (AskRequestView | ActionRequestView)[] } | null {
   if (!isPlainObject(payload) || !Array.isArray(payload.requests) || payload.requests.length > MAX_LISTED_REQUESTS) return null;
-  const requests = payload.requests.map(toAskRequest);
-  return requests.every(request => request !== null) ? { requests: requests as AskRequestView[] } : null;
+  const requests = payload.requests.map(request => toRequest(request, names));
+  return requests.every(request => request !== null) ? { requests: requests as (AskRequestView | ActionRequestView)[] } : null;
 }
 
 /**
@@ -405,7 +459,7 @@ export function createBotsRouter(opts: {
       signal: AbortSignal.timeout(10_000),
     });
   };
-  const sendAsks = async (res: Response, upstream: Promise<globalThis.Response>, rebuild: (payload: unknown) => unknown, decided = false): Promise<void> => {
+  const sendAsks = async (res: Response, upstream: Promise<globalThis.Response>, rebuild: (payload: unknown) => unknown | Promise<unknown>, decided = false): Promise<void> => {
     try {
       const response = await upstream;
       const refused = response.status === 404 ? { status: 404, error: "not_found" } : decided && response.status === 409 ? { status: 409, error: "not_pending" }
@@ -416,7 +470,7 @@ export function createBotsRouter(opts: {
         return;
       }
       if (!response.ok) throw new Error("upstream");
-      const shaped = rebuild(await response.json());
+      const shaped = await rebuild(await response.json());
       if (shaped === null) throw new Error("shape");
       res.json(shaped);
     } catch {
@@ -438,10 +492,19 @@ export function createBotsRouter(opts: {
     await sendAsks(res, callAsks(address, { method: "PUT", path: "/asks", body: JSON.stringify(body) }), toAsksSettings);
   });
 
+  /** The owner's bots' names by key, for proposal cards; empty when there is no registry or it cannot be read. */
+  const botNames = async (address: string): Promise<Map<string, string>> => {
+    try {
+      return new Map(registry ? (await registry.read(address)).bots.map(bot => [bot.key, bot.name]) : []);
+    } catch {
+      return new Map();
+    }
+  };
+
   router.get("/main/requests", async (req, res) => {
     const address = gate(req, res);
     if (!address) return;
-    await sendAsks(res, callAsks(address, { method: "GET", path: "/requests" }), toAskRequests);
+    await sendAsks(res, callAsks(address, { method: "GET", path: "/requests" }), async payload => toAskRequests(payload, await botNames(address)));
   });
 
   router.post("/main/requests/:id/answer", async (req, res) => {
@@ -451,7 +514,17 @@ export function createBotsRouter(opts: {
     if (!ASK_REQUEST_ID.test(id)) { res.status(404).json({ error: "not_found" }); return; }
     const body = askAnswerBody(req.body);
     if (!body) { res.status(400).json({ error: "invalid" }); return; }
-    await sendAsks(res, callAsks(address, { method: "POST", path: `/requests/${id}/answer`, body: JSON.stringify(body) }), toAskRequest, true);
+    // A Send reaches only the bots the registry admits for Main now; the service checks each again as it delivers.
+    let sent: Record<string, unknown> = body;
+    if (body.decision === "approve") {
+      try {
+        sent = { ...body, messageableBotKeys: await config!.listForTurn?.(botOwnerDid(address), MAIN_BOT_KEY) ?? [] };
+      } catch {
+        res.status(502).json({ error: UNAVAILABLE.code, message: UNAVAILABLE.message });
+        return;
+      }
+    }
+    await sendAsks(res, callAsks(address, { method: "POST", path: `/requests/${id}/answer`, body: JSON.stringify(sent) }), async payload => toRequest(payload, await botNames(address)), true);
   });
 
   // Creates a bot for the signed-in owner. Its key is chosen here; the request names neither an owner nor a key.
