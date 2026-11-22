@@ -2,7 +2,10 @@
 
 What has to be green before a change merges to `main` and before a commit ships to production, and the repository
 settings that enforce it. The workflows and scripts in this repo do the checking; the ruleset and environment changes
-below are applied by an org admin (Amos), never by a workflow.
+below are applied by an org admin (Amos), never by a workflow. Secret scanning is gitleaks only (Sam, 2026-11-22): no
+paid GitHub Secret Protection, and nothing here depends on GitHub push protection.
+
+No agent merges with --admin or uses the ruleset bypass to pass red or pending checks, except a rollback on Naomi's word.
 
 ## The checks
 
@@ -99,10 +102,9 @@ gh api -X PUT "$R" --input "$dir/after.json"
 
 Undo: `gh api -X PUT "$R" --input "$dir/before.json"`.
 
-Separate line, not part of the change above. **Sam decision pending:** remove the `OrganizationAdmin` bypass
-(`bypass_mode: always`) from ruleset 25069687, so org admins can no longer merge past the required checks. Undo: add
-`{"actor_id": null, "actor_type": "OrganizationAdmin", "bypass_mode": "always"}` back to `bypass_actors`. The
-`DeployKey` bypass stays: the Release workflow pushes the version commit and tags over the release-push deploy key.
+Bypass actors stay as they are (Sam, 2026-11-22: "Keep the bypass"): the `OrganizationAdmin` `always` bypass is
+neither removed nor narrowed, and the `DeployKey` bypass stays for the Release workflow's pushes over the
+release-push deploy key. The rule at the top of this document governs its use.
 
 ## Deploy secrets: environments only (Naomi's ruling, 2026-11-22)
 
