@@ -31,7 +31,7 @@ import { createTrustBotReadsInternalRouter, createTrustBotReadsRouter, TRUSTBOT_
 import { startTrustBotReads, trustbotReadsFromEnv } from "./trustbot-reads/setup.js";
 import { capModeFromEnv, planFor } from "./bot-caps.js";
 import { BotsRegistry, turnListHook } from "./bots-registry.js";
-import { botsServiceRouteGuard } from "./bots-service-routes.js";
+import { createBotsServiceGuardRouter } from "./bots-service-routes.js";
 import { BOT_DELETION_PASS_MS, BotDeletions } from "./bot-deletion.js";
 import { resolveTier } from "./billing/stripe.js";
 import { createDelegationRouter } from "./routes/delegations.js";
@@ -546,7 +546,7 @@ async function main() {
   applySecurityDefaults(app);
   app.use(cors(appCorsOptions(frontendOrigins)));
   // The bots service's signed credential reaches only its allow-listed routes (bots-service-routes.ts).
-  app.use(botsServiceRouteGuard);
+  app.use(createBotsServiceGuardRouter());
 
   // Stripe webhook MUST be mounted before the JSON body parser and CSRF
   // middleware: it needs the raw request bytes for signature verification, and
