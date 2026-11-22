@@ -20,7 +20,7 @@ import { parseSiweMessage } from "viem/siwe";
 import { MAX_GRANT_MS, MAX_WHY_CHARS, type SecretPush } from "./asks";
 import type { GuardDeps } from "./fetch-guard";
 import { isRecord } from "./guards";
-import { OWNER_DID } from "./owner";
+import { MAIN_BOT_NAME, OWNER_DID } from "./owner";
 import { type ApprovedSecret, DAILY_CALLS_PER_SECRET, DAILY_REPLY_BYTES_PER_SECRET, prepareCall, refusal, secretName, sendCall } from "./secret-call";
 import { allowedMethods, knownSecret, type Method, READ_METHODS, SECRET_NAME, secretSites, writeMethods } from "./secret-catalog";
 import type { GrantStore } from "./secret-store";
@@ -282,7 +282,7 @@ export class SecretGrants {
     const where = service ? `${service} (${ask.sites.join(", ")})` : ask.sites.join(", ");
     const methods = [...allowedMethods(ask.name)];
     // Monica's words, the same as the secret card's, so the owner sees writes in both places they decide.
-    const writes = service && writeMethods(ask.name).length > 0 ? ` Main can also send data to ${service} with it, which may cost money or change things there.` : "";
+    const writes = service && writeMethods(ask.name).length > 0 ? ` ${MAIN_BOT_NAME} can also send data to ${service} with it, which may cost money or change things there.` : "";
     const request: OpenKeyApprovalRequestV1 = {
       issuer: requester.did,
       requestVersion: 1,

@@ -10,7 +10,7 @@ import { createSiweMessage } from "viem/siwe";
 import type { SecretPush } from "../asks";
 import type { Conn, GuardDeps } from "../fetch-guard";
 import { isRecord } from "../guards";
-import { botIdFor } from "../owner";
+import { botIdFor, MAIN_BOT_NAME } from "../owner";
 import { DAILY_CALLS_PER_SECRET } from "../secret-call";
 import { KNOWN_SECRETS, type KnownSecret } from "../secret-catalog";
 import {
@@ -211,7 +211,7 @@ describe("asking", () => {
       { service: "tinycloud.kv", space: "secrets", path: "vault/secrets/OPENAI_API_KEY", actions: ["tinycloud.kv/get"] },
       { service: "tinycloud.encryption", space: "encryption", path: `urn:tinycloud:encryption:did:pkh:eip155:1:${OWNER_KEY.address}:default`, actions: ["tinycloud.encryption/decrypt"] },
     ]);
-    expect(request.reason).toBe("Use OPENAI_API_KEY with OpenAI (api.openai.com). To transcribe a call. Main can also send data to OpenAI with it, which may cost money or change things there.");
+    expect(request.reason).toBe(`Use OPENAI_API_KEY with OpenAI (api.openai.com). To transcribe a call. ${MAIN_BOT_NAME} can also send data to OpenAI with it, which may cost money or change things there.`);
   });
 
   test("names no writes to the owner for a read-only secret", async () => {
