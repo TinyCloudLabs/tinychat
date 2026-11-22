@@ -475,7 +475,8 @@ export function queueNotices(state: BackgroundSyncState): QueueNotice[] {
       });
     }
   }
-  if (state.ingestBlocked) {
+  // A key that needs the owner's approval pauses the connector's own row (TC-3804); no second notice here.
+  if (state.ingestBlocked && state.ingestBlocked !== "key-access") {
     notices.push({
       kind: "ingest-blocked",
       title:

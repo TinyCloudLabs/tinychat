@@ -55,7 +55,8 @@ export const GRANOLA_SOURCE = "granola" as const;
 export const GRANOLA_INCREMENTAL_OVERLAP_MS = 60_000;
 /** Detail fetches a single run will make — the page budget's own bound. */
 export const GRANOLA_MAX_DETAILS_PER_RUN = 250;
-const GRANOLA_SECRET = { secretName: GRANOLA_SECRET_NAME };
+// The id ties a cached copy of the key to Granola's own approval, so it is dropped when that ends (TC-3804).
+const GRANOLA_SECRET = { id: "granola" as const, secretName: GRANOLA_SECRET_NAME };
 const PURGE_CHECK_TIMEOUT_MS = 20_000;
 
 /** Serialize credential and connection writes with Granola's sync writes. */

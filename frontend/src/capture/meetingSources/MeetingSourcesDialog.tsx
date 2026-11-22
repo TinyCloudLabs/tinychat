@@ -21,6 +21,8 @@ import {
 import { ConnectorConnectDialog } from "@/chat/ConnectorDialog";
 import { GranolaAllowBack } from "@/chat/GranolaAllowBack";
 import { GranolaReconnect, GranolaSummariesNotice } from "@/chat/GranolaConnectionNotices";
+import { ConnectorKeyAccessPaused } from "@/chat/ConnectorKeyAccessPaused";
+import { CONNECTOR_KEY_ACCESS_NOTE } from "@/lib/connectors/connectorKeyAccess";
 import { GRANOLA_CSV_STRINGS } from "@/lib/connectors/granolaCsvStrings";
 import { describeGmeetLive, gmeetPressLabel } from "@/chat/GmeetCardStatus";
 import { useBackgroundSync } from "@/chat/useBackgroundSync";
@@ -243,22 +245,33 @@ export function MeetingSourcesDialog({
               onStop={sourceSync.stop}
               onToggleManage={() => setManageOpen((old) => ({ ...old, [d.id]: !old[d.id] }))}
               notices={
-                d.id === "google-meet" && connected ? (
-                  <GmeetNotices
-                    liveLine={describeGmeetLive(gmeetStatus.live)}
-                    busy={busy && {
-                      label: gmeetPressLabel(busy.mode),
-                      queued: busy.queued,
-                      onWait: sourceSync.wait,
-                      onCancel: sourceSync.cancelWait,
-                    }}
-                    interrupted={syncing ? null : gmeetStatus.interrupted}
-                    getLog={gmeetStatus.hasLog ? () => {
-                      const log = gmeetStatus.getLog();
-                      return log === null ? null : JSON.stringify(log, null, 2);
-                    } : null}
-                  />
-                ) : granolaSummariesOnly(connection) ? <GranolaSummariesNotice className="ms-note" /> : undefined
+                <>
+                  {d.status === "available" && connected && (
+                    <ConnectorKeyAccessPaused
+                      tcw={tcw}
+                      descriptor={d}
+                      onApproved={() => void sourceSync.sync(d)}
+                      className="ms-note"
+                      buttonClassName="ms-btn2"
+                    />
+                  )}
+                  {d.id === "google-meet" && connected ? (
+                    <GmeetNotices
+                      liveLine={describeGmeetLive(gmeetStatus.live)}
+                      busy={busy && {
+                        label: gmeetPressLabel(busy.mode),
+                        queued: busy.queued,
+                        onWait: sourceSync.wait,
+                        onCancel: sourceSync.cancelWait,
+                      }}
+                      interrupted={syncing ? null : gmeetStatus.interrupted}
+                      getLog={gmeetStatus.hasLog ? () => {
+                        const log = gmeetStatus.getLog();
+                        return log === null ? null : JSON.stringify(log, null, 2);
+                      } : null}
+                    />
+                  ) : granolaSummariesOnly(connection) ? <GranolaSummariesNotice className="ms-note" /> : undefined}
+                </>
               }
               manage={
                 d.id === "fireflies" ? (
@@ -322,6 +335,7 @@ export function MeetingSourcesDialog({
             />
           );
         })}
+        <p className="ms-desc ms-hint">{CONNECTOR_KEY_ACCESS_NOTE}</p>
       </MeetingSourcesWindow>
 
       {disconnectDescriptor && (

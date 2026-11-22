@@ -66,6 +66,13 @@ import {
 import { awaitGmeetSessionSync } from "./useGmeetSessionSync";
 import { useGmeetRowStatus } from "./useGmeetRowStatus";
 import {
+  CONNECTOR_KEY_ACCESS_NOTE,
+  connectorPausedMessage,
+  needsConnectorKeyApproval,
+  readWithConnectorKeyAccess,
+} from "@/lib/connectors/connectorKeyAccess";
+import { ConnectorKeyAccessPaused } from "./ConnectorKeyAccessPaused";
+import {
   getConnectorKey,
   isSecretsUnlocked,
   unlockSecrets,
@@ -540,12 +547,14 @@ export function ConnectorsCard({
       // The registry row names the secret — API key for Fireflies, refresh
       // token for Google Meet. This file spells neither, which is what lets the
       // flip commit change what is read without touching here.
-      const keyRes = await getConnectorKey<SecretsErr>(tcw, d);
+      // A press: a denied key asks OpenKey once, then reads again (TC-3804). Background runs never ask.
+      const keyRes = await readWithConnectorKeyAccess(tcw, d, () => getConnectorKey<SecretsErr>(tcw, d));
       if (!keyRes.ok) {
         patchRow(d.id, {
           syncing: false,
-          actionError:
-            engine === "granola" && keyRes.error?.code === GRANOLA_MISSING_KEY_CODE
+          actionError: needsConnectorKeyApproval(keyRes.error)
+            ? connectorPausedMessage(tcw.session()?.address ?? "", d)
+            : engine === "granola" && keyRes.error?.code === GRANOLA_MISSING_KEY_CODE
               ? GRANOLA_RECONNECT_REQUIRED
               : keyRes.error?.message ??
                 (engine === "gmeet" ? "Could not read the saved Google connection" : "Could not read API key"),
@@ -715,6 +724,20 @@ export function ConnectorsCard({
                   onCancelWait: () => patchRow(d.id, { queuedSync: null, busyOffer: null }),
                 } : undefined}
               >
+                {d.status === "available" && rows[d.id].connection?.status === "connected" && (
+                  <ConnectorKeyAccessPaused
+                    tcw={tcw}
+                    descriptor={d}
+                    onApproved={() => handleSyncNow(d)}
+                    className="flex flex-col gap-1.5"
+                    textClassName="text-xs text-destructive"
+                    renderButton={({ onClick, disabled, label }) => (
+                      <Button size="sm" variant="outline" className="w-fit" disabled={disabled} onClick={onClick}>
+                        {label}
+                      </Button>
+                    )}
+                  />
+                )}
                 {d.status === "available" && granolaKeyExpired(rows[d.id].connection) && (
                   <GranolaReconnect tcw={tcw}
                     className="inline-flex w-fit items-center gap-1 text-sm font-medium hover:underline [&>svg]:size-4"
@@ -739,6 +762,9 @@ export function ConnectorsCard({
               </ConnectorRow>
             </li>
           ))}
+          <li className="px-4 py-3">
+            <p className="text-xs text-muted-foreground">{CONNECTOR_KEY_ACCESS_NOTE}</p>
+          </li>
         </ul>
         {import.meta.env.DEV && gmeetDiagnostics && (
           <pre

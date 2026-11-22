@@ -57,6 +57,7 @@ import {
   syncFireflies,
 } from "@/lib/connectors/firefliesSync";
 import { isFirefliesStale } from "@/lib/connectors/firefliesFreshness";
+import { markConnectorKeyAccessPaused, needsConnectorKeyApproval } from "@/lib/connectors/connectorKeyAccess";
 import {
   getConnectorKey,
   isSecretsUnlocked,
@@ -700,6 +701,9 @@ async function runFirefliesCatchUp(
   try {
     if (!isCurrent()) return;
     const key = await getConnectorKey<unknown>(tcw, descriptor);
+    // Never a prompt and never a reseal: a key that needs the owner's approval, or an old network-sealed copy,
+    // pauses the row, which asks (TC-3804).
+    if (isCurrent() && !key.ok && needsConnectorKeyApproval(key.error)) markConnectorKeyAccessPaused(tcw, descriptor.id);
     if (!isCurrent() || !key.ok || !key.data) return;
 
     const client = new FirefliesClient({

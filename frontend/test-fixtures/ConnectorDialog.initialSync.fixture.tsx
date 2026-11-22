@@ -165,6 +165,8 @@ class MemoryBoundaries {
       delete: async (key: string) => { this.kv.delete(key); return ok(undefined); },
       list: async ({ path }: { path: string }) => ok({ keys: [...this.kv.keys()].filter((key) => key.startsWith(path)), truncated: false }),
     },
+    session: () => ({ address: "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed", chainId: 1 }),
+    hasPermissions: () => true,
     secrets: {
       isUnlocked: true,
       unlock: async () => { this.secretUnlocks++; return ok(undefined); },

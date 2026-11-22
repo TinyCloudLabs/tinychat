@@ -622,7 +622,9 @@ export async function readKeyWithCli(tc: string, profile: string): Promise<strin
   const value = stdout.trim();
   if (code === 0 && value.length > 0) return value;
   const errorCode = /"code"\s*:\s*"([A-Z_]+)"/.exec(stderr)?.[1] ?? `exit-${code}`;
-  throw new RunnerError(/AUTH|PERMISSION|EXPIRED|PROFILE/.test(errorCode) ? "needs_renewal" : "error", `secrets get: ${errorCode}`);
+  // DECRYPT_DENIED: the key is sealed to its own key (TC-3284) and this profile holds no exact-key grant for it. It
+  // needs that grant, never a wider one.
+  throw new RunnerError(/AUTH|PERMISSION|EXPIRED|PROFILE|DECRYPT_DENIED/.test(errorCode) ? "needs_renewal" : "error", `secrets get: ${errorCode}`);
 }
 
 // ── CLI ─────────────────────────────────────────────────────────────────

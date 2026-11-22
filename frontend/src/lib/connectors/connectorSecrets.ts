@@ -5,10 +5,11 @@
 // we call `tcw.ensureOwnedSpaceHosted?.("secrets")` (if the SDK exposes it) and retry
 // ONCE. If the method doesn't exist we surface the original error — no silent fallback.
 
-import type { TinyCloudWeb } from "@tinycloud/web-sdk";
+import type { SecretGetOptions, TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { secretsAvailable, SECRETS_UNAVAILABLE_IN_APP_MESSAGE } from "../openkeyNative";
-import type { ConnectorDescriptor } from "./types";
+import { connectorKeyAccessEndsAt } from "./connectorKeyAccess";
+import type { ConnectorDescriptor, ConnectorId } from "./types";
 
 /** Same Result shape the SDK uses. Errors propagate untouched. */
 export type SecretsResult<T, E> =
@@ -23,6 +24,7 @@ export type SecretsErr = { code?: string; message?: string };
 /** Minimum surface we invoke on tcw. Kept structural so tests can supply a fake. */
 type SecretsTcw = Pick<TinyCloudWeb, "secrets"> & {
   ensureOwnedSpaceHosted?: TinyCloudWeb["ensureOwnedSpaceHosted"];
+  session?: TinyCloudWeb["session"];
 };
 
 /**
@@ -175,11 +177,14 @@ export type SecretLocation = Pick<ConnectorDescriptor, "secretName" | "secretSco
 //   - put stores the written value on success and evicts the entry on
 //     failure; delete evicts. Any invalidation bumps `epoch`, so a read that
 //     was already in flight cannot repopulate the cache with a stale value.
+//   - A connector's value is kept only until the owner's approval of its own
+//     key ends (TC-3804), and not at all when that end isn't known.
 
 type CacheBinding = { tcw: object; identity: string };
 let cacheBinding: CacheBinding | null = null;
 let cacheEpoch = 0;
-const secretCache = new Map<string, string>();
+const secretCache = new Map<string, { value: string; until: number }>();
+const expiryTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const inflightReads = new Map<string, Promise<unknown>>();
 
 /** Drop every cached secret and forget the bound session. Safe to call any time. */
@@ -187,6 +192,8 @@ export function clearVaultSecretCache(): void {
   cacheBinding = null;
   cacheEpoch++;
   secretCache.clear();
+  for (const timer of expiryTimers.values()) clearTimeout(timer);
+  expiryTimers.clear();
   inflightReads.clear();
 }
 
@@ -216,16 +223,51 @@ function cacheKeyFor(tcw: SecretsTcw, descriptor: SecretLocation): string | null
   return JSON.stringify([identity, descriptor.secretScope ?? "", descriptor.secretName]);
 }
 
+/** A connector's own key: its value may be kept only while the owner's approval lasts. */
+type CachedLocation = SecretLocation & { id?: ConnectorId };
+
+/** Until when a read value may be kept: a connector's approval end (null when unknown or over), else no end. */
+function cacheUntil(tcw: SecretsTcw, descriptor: CachedLocation): number | null {
+  if (descriptor.id === undefined) return Number.POSITIVE_INFINITY;
+  const owner = tcw.session?.()?.address;
+  const endsAt = owner ? connectorKeyAccessEndsAt(owner, descriptor.id) : null;
+  return endsAt !== null && endsAt > Date.now() ? endsAt : null;
+}
+
+function remember(key: string, value: string, until: number | null): void {
+  clearTimeout(expiryTimers.get(key));
+  expiryTimers.delete(key);
+  if (until === null) {
+    secretCache.delete(key);
+    return;
+  }
+  secretCache.set(key, { value, until });
+  if (!Number.isFinite(until)) return;
+  const timer = setTimeout(() => {
+    expiryTimers.delete(key);
+    if (secretCache.get(key)?.until === until) secretCache.delete(key);
+  }, Math.min(until - Date.now(), 2 ** 31 - 1));
+  (timer as { unref?: () => void }).unref?.();
+  expiryTimers.set(key, timer);
+}
+
+function cached(key: string): string | undefined {
+  const entry = secretCache.get(key);
+  if (entry && entry.until > Date.now()) return entry.value;
+  if (entry) remember(key, entry.value, null);
+  return undefined;
+}
+
 function evict(key: string | null): void {
   cacheEpoch++;
   if (key === null) return;
-  secretCache.delete(key);
+  remember(key, "", null);
   inflightReads.delete(key);
 }
 
 export async function saveConnectorKey<E>(
   tcw: SecretsTcw,
-  descriptor: SecretLocation,
+  descriptor: CachedLocation,
   key: string,
 ): Promise<SecretsResult<void, E>> {
   const cacheKey = cacheKeyFor(tcw, descriptor);
@@ -247,23 +289,29 @@ export async function saveConnectorKey<E>(
     )) as SecretsResult<void, E>;
   }
   evict(cacheKey);
-  if (result.ok && cacheKey !== null) secretCache.set(cacheKey, key);
+  if (result.ok && cacheKey !== null) remember(cacheKey, key, cacheUntil(tcw, descriptor));
   return result;
 }
 
+/**
+ * Read a connector's key. Only its own key opens it (`namedKeyOnly`, TC-3804): a copy still sealed to the network
+ * key fails with LEGACY_ENVELOPE, and a missing or ended approval with DECRYPT_DENIED. Never asks for anything.
+ */
 export async function getConnectorKey<E>(
   tcw: SecretsTcw,
-  descriptor: SecretLocation,
+  descriptor: CachedLocation,
 ): Promise<SecretsResult<string, E>> {
-  const options = descriptor.secretScope
-    ? { scope: descriptor.secretScope }
-    : undefined;
+  // Never `requestPermission`: a read never asks. The foreground asks explicitly (askConnectorKeyAccess).
+  const options: SecretGetOptions = {
+    ...(descriptor.secretScope ? { scope: descriptor.secretScope } : {}),
+    namedKeyOnly: true,
+  };
   const read = async () =>
     (await tcw.secrets.get(descriptor.secretName, options)) as SecretsResult<string, E>;
   const cacheKey = cacheKeyFor(tcw, descriptor);
   if (cacheKey === null) return read();
 
-  const hit = secretCache.get(cacheKey);
+  const hit = cached(cacheKey);
   if (hit !== undefined) return { ok: true, data: hit };
   const pending = inflightReads.get(cacheKey);
   if (pending) return pending as Promise<SecretsResult<string, E>>;
@@ -272,7 +320,7 @@ export async function getConnectorKey<E>(
   const promise = read().then(
     (result) => {
       if (inflightReads.get(cacheKey) === promise) inflightReads.delete(cacheKey);
-      if (result.ok && epoch === cacheEpoch) secretCache.set(cacheKey, result.data);
+      if (result.ok && epoch === cacheEpoch) remember(cacheKey, result.data, cacheUntil(tcw, descriptor));
       return result;
     },
     (caught: unknown) => {
