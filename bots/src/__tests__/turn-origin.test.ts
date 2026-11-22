@@ -60,6 +60,14 @@ test("another bot's turn reaches OMP under a first line naming its origin, so it
   expect(prompt.startsWith("/")).toBe(false);
 });
 
+test("the owner's response in the app reaches Main under the app's first line, not the other bots' one", async () => {
+  const prompt = await promptFor("The person answered your question: yes", { app: "answered" });
+  expect(prompt.split("\n")).toEqual([
+    "[TinyCloud: the owner responded in the app to your question. Their response follows.]",
+    "The person answered your question: yes",
+  ]);
+});
+
 test("another bot's @ file mentions arrive as text OMP does not load, and an email address arrives unchanged", async () => {
   const text = "see @/root/bot/sessions/main (@'notes.md') and write to ana@example.com";
   const body = (await promptFor(text, "bot")).split("\n").slice(1).join("\n");

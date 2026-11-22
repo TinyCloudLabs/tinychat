@@ -16,6 +16,7 @@ import { BOT_START, type OciSpec, SANDBOX_SESSION_DIR, sandboxSpec } from "./oci
 import { RpcChannel } from "./rpc";
 import { COPY_FAILURES, type CopyFailure, hasSnapshot, STATE_INODES_PER_MB } from "./state";
 import { readWebPolicy } from "./web-policy";
+import { syncAsks } from "./asks";
 
 const CGROUP_ROOT = "/sys/fs/cgroup";
 const CGROUP_CONTROLLERS = ["cpu", "memory", "pids"];
@@ -106,12 +107,16 @@ export function modelsYml(model: string): string {
 }
 
 /**
- * OMP's MCP config inside every sandbox: Main's web tools, served by the gateway on the same egress socket. The
- * server is always configured; whether a call does anything is the owner's setting, applied by the gateway.
+ * OMP's MCP config inside every sandbox: Main's web tools (`web`) and its question tool (`app`, `ask_owner`), both served
+ * by the gateway on the same egress socket. Both servers are always configured; whether a call does anything, and
+ * whether `app` lists its tool, is the owner's setting, applied by the gateway.
  */
 export function mcpJson(): string {
   return JSON.stringify({
-    mcpServers: { web: { type: "http", url: "http://127.0.0.1:8080/v1/mcp", headers: { Authorization: "Bearer ${BOT_TOKEN}" }, timeout: 60_000 } },
+    mcpServers: {
+      web: { type: "http", url: "http://127.0.0.1:8080/v1/mcp", headers: { Authorization: "Bearer ${BOT_TOKEN}" }, timeout: 60_000 },
+      app: { type: "http", url: "http://127.0.0.1:8080/v1/mcp/app", headers: { Authorization: "Bearer ${BOT_TOKEN}" }, timeout: 60_000 },
+    },
   });
 }
 
@@ -420,6 +425,7 @@ export class RunscHost implements SandboxLauncher {
       await this.#mountState(layout);
       restored = true;
       await this.#pushWeb(layout);
+      await this.syncAsks(layout);
       await register();
       const spec = sandboxSpec(this.#baseSpec, {
         rootfs: this.#cfg.rootfs,
@@ -607,6 +613,19 @@ export class RunscHost implements SandboxLauncher {
   /** Page addresses the owner typed in a message: the bot may read them. */
   async learnAddresses(layout: BotLayout, urls: string[]): Promise<void> {
     await this.#gateway("POST", `/bots/${layout.botId}/web/addresses`, { urls });
+  }
+
+  /**
+   * Collects the questions the box has asked, stores them, and gives the gateway the owner's setting for questions
+   * with the counts and cooldowns (see syncAsks). At launch, so the tools are listed or not as the setting says,
+   * and at the start of each message with `turn`.
+   */
+  syncAsks(layout: BotLayout, turn?: { outside: boolean }): Promise<void> {
+    const path = `/bots/${layout.botId}/asks`;
+    return syncAsks(layout, {
+      drain: async () => (await this.#gateway("POST", `${path}/drain`)).json(),
+      push: async body => void (await this.#gateway("PUT", path, body)),
+    }, turn);
   }
 
   async #registerEgress(botId: string, token: string, owner: string): Promise<void> {
