@@ -1,5 +1,13 @@
 # @tinychat/backend
 
+## 0.10.1-beta.0
+
+### Patch Changes
+
+- 4309437: The server can save the chat history of bots other than Main and serve their expiry notice, each under that bot's own permission. The app doesn't ask for it until a separate change turns it on.
+
+  Details: TC-3813
+
 ## 0.10.0
 
 ### Minor Changes
