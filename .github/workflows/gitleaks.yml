@@ -1,9 +1,11 @@
 name: Gitleaks
 
 # Secret scan (pinned gitleaks, sha256-verified; .github/scripts/install-security-tool.sh). Fails closed.
-# - Pull requests: the PR's own commits (base..head). A PR that also changes the baseline (.gitleaksignore) or this
-#   workflow scans the full history of its head too, so a baseline change is proven before it merges.
-# - main: the full history of main against the reviewed baseline (.gitleaksignore). The release deploy requires this
+# - Pull requests: the PR's own commits (base..head), judged by the BASE commit's .gitleaksignore and .gitleaks.toml
+#   (default rules when absent), so a PR cannot allowlist its own leak; inline `gitleaks:allow` comments are ignored.
+#   A baseline change therefore goes in its own PR, merged first. A PR that changes the baseline, a gitleaks config or
+#   this workflow also scans the full history of its head with its own baseline, proving the change before it merges.
+# - main: the full history of main against main's own baseline (.gitleaksignore). The release deploy requires this
 #   check to be green on the commit it ships (scripts/release/require-green.mjs).
 # A finding is never a value in the log (--redact). A real secret is rotated, never baselined; see .gitleaksignore.
 
@@ -34,12 +36,31 @@ jobs:
       - name: Install pinned gitleaks
         run: .github/scripts/install-security-tool.sh gitleaks
 
-      - name: Scan the commits in this pull request
+      # Base-commit policy only. gitleaks also reads .gitleaksignore and .gitleaks.toml from the directory it scans,
+      # so the scan runs in a worktree of the base commit (same object store, so base..head resolves) and gets the
+      # base files explicitly too.
+      - name: Scan the commits in this pull request (base commit's baseline and config)
         if: github.event_name == 'pull_request'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: gitleaks git --log-opts="${BASE_SHA}..${HEAD_SHA}" --redact --exit-code 1 .
+        run: |
+          policy="$RUNNER_TEMP/gitleaks-base-policy"
+          mkdir -p "$policy"
+          if git cat-file -e "$BASE_SHA:.gitleaksignore" 2>/dev/null; then
+            git show "$BASE_SHA:.gitleaksignore" > "$policy/.gitleaksignore"
+          else
+            : > "$policy/.gitleaksignore"
+          fi
+          if git cat-file -e "$BASE_SHA:.gitleaks.toml" 2>/dev/null; then
+            git show "$BASE_SHA:.gitleaks.toml" > "$policy/gitleaks.toml"
+          else
+            printf '[extend]\nuseDefault = true\n' > "$policy/gitleaks.toml"
+          fi
+          git worktree add --detach "$RUNNER_TEMP/gitleaks-base-tree" "$BASE_SHA"
+          gitleaks git --log-opts="${BASE_SHA}..${HEAD_SHA}" --config "$policy/gitleaks.toml" \
+            --gitleaks-ignore-path "$policy/.gitleaksignore" --ignore-gitleaks-allow --redact --exit-code 1 \
+            "$RUNNER_TEMP/gitleaks-base-tree"
 
       - name: Decide whether to scan the full history
         id: full
@@ -48,10 +69,10 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          # Fails closed: only a clean diff that leaves the baseline and this workflow alone skips the full scan.
+          # Fails closed: only a clean diff that leaves the baseline, the configs and this workflow alone skips it.
           full=true
           if [ "$EVENT_NAME" = pull_request ] && changed="$(git diff --no-renames --name-only "$BASE_SHA...$HEAD_SHA")" \
-            && ! grep -qxE '\.gitleaksignore|\.github/workflows/gitleaks\.yml|\.github/scripts/install-security-tool\.sh' <<<"$changed"; then
+            && ! grep -qxE '\.gitleaksignore|\.gitleaks\.toml|\.github/workflows/gitleaks\.yml|\.github/scripts/install-security-tool\.sh' <<<"$changed"; then
             full=false
           fi
           echo "full=$full" >> "$GITHUB_OUTPUT"
@@ -60,4 +81,4 @@ jobs:
         if: steps.full.outputs.full == 'true'
         env:
           REF: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: gitleaks git --log-opts="$REF" --redact --exit-code 1 .
+        run: gitleaks git --log-opts="$REF" --ignore-gitleaks-allow --redact --exit-code 1 .

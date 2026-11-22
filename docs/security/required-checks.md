@@ -8,7 +8,7 @@ below are applied by an org admin (Amos), never by a workflow.
 
 | Check name (job) | Workflow | Runs on | Fails when |
 | --- | --- | --- | --- |
-| `Gitleaks` | `.github/workflows/gitleaks.yml` | every PR; every push to `main` | PR: a secret-shaped string in the PR's own commits. `main`: any finding in the full history of `main` that is not in the reviewed baseline (`.gitleaksignore`). A PR that changes the baseline also scans its full head history. |
+| `Gitleaks` | `.github/workflows/gitleaks.yml` | every PR; every push to `main` | PR: a secret-shaped string in the PR's own commits, judged by the base commit's `.gitleaksignore` and `.gitleaks.toml` (default rules when absent) with inline `gitleaks:allow` ignored, so a PR cannot allowlist its own leak. `main`: any finding in the full history of `main` not in main's reviewed baseline (`.gitleaksignore`). A PR that changes the baseline, a gitleaks config or the workflow also scans its full head history with its own baseline. |
 | `Backend and package tests` | `.github/workflows/backend.yml` | every PR; every push to `main` | the backend suite (auth, consent scope, CORS, exo-grant and the rest), the shared-package suites, the Home mirror tests or the Vector config fail. A PR that touches no backend path reports success without running them; `main` always runs them. |
 | `Native sign-in request fits OpenKey's ceiling` | `.github/workflows/native-ceiling.yml` | every PR; every push to `main` | production OpenKey refuses the native sign-in request. Same skip rule as Backend. |
 | `Frontend tests, lint and browser harnesses` | `.github/workflows/frontend.yml` | PRs that touch the frontend; every push to `main` | frontend unit tests, lint, typecheck or the build fail. |
@@ -245,7 +245,11 @@ fixture value appears outside tests and harness screens. Line numbers are those 
 | `frontend/src/` `apps/embedHost.test.ts:11,13`, `apps/ledgerCeiling.test.ts:20`, `bots/botChatApi.test.ts:19`, `bots/botPath.test.ts:12`, `bots/historyRestoredSession.sdk.test.ts:28`, `lib/connectors/serverCredentialTeardownRetry.test.ts:32`, `lib/debugLog.test.ts:20,50`, `lib/firstPartySignIn.sdk.test.ts:27`, `lib/homeReauthorize.sdk.test.tsx:35`, `lib/replication/readOnlyAccountProvider.sdk.test.ts:26`, `lib/sessionGrants.sdk.test.tsx:33`, `lib/webConnectorsGrant.sdk.test.tsx:37`; `frontend/test-fixtures/ConnectorDialog.granolaS4.fixture.tsx:20,21` | generic-api-key | Test fixtures: `did:key` ids and placeholder keys. |
 
 Adding an entry: confirm the finding is not live (anything possibly live goes to security and is rotated, never
-listed). For a fixture a PR adds, list `file:rule:line` without the commit, since a squash merge changes the commit.
+listed). Baseline changes go in their own PR, merged before the PR that adds the fixture (PRs are judged by their
+base commit's baseline). List a new fixture as `file:rule:line` without the commit, since a squash merge changes it.
+
+Limit: `pull_request` runs the workflow file from the PR, so a PR that edits `.github/workflows/gitleaks.yml` can
+change its own scan. Review workflow edits as code that holds the gate.
 
 ### `.trivyignore` (82 vulnerability ids, backend image)
 

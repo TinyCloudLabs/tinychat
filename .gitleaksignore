@@ -3,8 +3,8 @@
 # here fails the Gitleaks check. Recorded 2026-11-22 with gitleaks 8.30.1 over the full history of main
 # (28b469e3833a863152e9b52d82a83a40316b9760); the review per file is in docs/security/required-checks.md.
 # To add one: confirm it is not a live secret (anything possibly live goes to security, and gets rotated, never
-# listed), then add the fingerprint gitleaks prints. For a fixture a PR adds, prefer file:rule:line (no commit):
-# a squash merge changes the commit, so a commit fingerprint from the PR would not match on main.
+# listed), then add the fingerprint gitleaks prints, in a PR of its own. A PR is scanned with its base commit's
+# baseline, so a fixture needs its entry merged first, as file:rule:line (no commit: a squash merge changes it).
 
 # backend/src/__tests__/assemblyai-hosted-alerts.test.ts
 8b3b8197a5ae642cb8e07fea7161dbcdf4775d6b:backend/src/__tests__/assemblyai-hosted-alerts.test.ts:generic-api-key:52
