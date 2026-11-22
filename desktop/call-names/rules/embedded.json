@@ -1,6 +1,6 @@
 {
   "format": 1,
-  "version": 3,
+  "version": 4,
   "apps": [
     {
       "app": "google-meet",
@@ -45,7 +45,7 @@
       "speaking": [
         {
           "id": "meet-tile-speaking",
-          "note": "Fixture meet-speaking-s56 (a three-connection call in Chrome 158 on macOS 26.3, 2026-11-20, default layout, cameras off): each participant tile is a child of the main landmark that holds its name. Below the tile, first child three times, then the child that has children, then its first child is an empty group whose classes are the marker. In all 811 samples it was exactly quiet or speaking, and it followed each speaker within 0.64 to 0.88 s. Its sibling adds nothing. Other layouts, cameras on, screen sharing, a background tab and other Chrome or Meet versions are untested.",
+          "note": "Camera-off fixture meet-speaking-s56: the meter followed all eight turns within 0.64–0.88 s in Chrome 158 on macOS 26.3. Prefer its base classes even during transient states without an on/off token. Camera-on fixture meet-video-r79: the tile root carries last-active-speaker state, exists before the optional border child, and matches it except up to two samples of handoff lag. Muted hover did not activate it. Activity stays on through silence until another speaker; it produces active intervals, never speaking. Covered, background or minimised Meet windows can freeze these signals. Other browser and Meet versions need validation.",
           "min_tiles": 3,
           "tile": [
             { "find": "descendant", "role": "AXGroup", "subrole": "AXLandmarkMain" },
@@ -76,6 +76,10 @@
             "all": ["DYfzY", "cYKTje"],
             "quiet": ["gjg47c"],
             "speaking": ["Oaajhc", "HX2H7", "wEsLMd", "OgVli"]
+          },
+          "active": {
+            "marker": [{ "find": "self", "role": "AXGroup" }],
+            "classes": { "all": ["dkjMxf"], "on": ["kssMZb"] }
           }
         }
       ]

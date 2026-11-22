@@ -65,6 +65,7 @@ fn play_with(
             let found = found.map(|found| Found {
                 tiles: markers.update(&replay, found),
                 hidden: false,
+                people: 0,
             });
             tracker.tick(at, found.as_ref(), |name| person(tick, &roster, name));
             tick += 1;
@@ -146,7 +147,7 @@ fn check_turns(timeline: &Timeline, roster: &Roster) -> (Vec<(u64, f64, u64)>, u
 fn the_replay_gives_each_turn_to_its_speaker_and_nothing_in_the_silences() {
     let (timeline, roster) = play(&token_rules());
     assert_eq!(timeline.mode, Mode::Rules);
-    assert_eq!(timeline.rules_version, 3);
+    assert_eq!(timeline.rules_version, 4);
     // Tiles in order: Test Guest A, Test Guest B, then the user, whom the People panel marks.
     assert_eq!(id_of(&roster, "Test Guest A"), "p1");
     assert_eq!(id_of(&roster, "Test Guest B"), "p2");

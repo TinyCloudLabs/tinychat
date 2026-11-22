@@ -429,6 +429,7 @@ impl call_names::service::Window for ReplayWindow {
         self.found = found.map(|found| call_names::speaking::Found {
             tiles: self.markers.update(&*replay, found),
             hidden: false,
+            people: 0,
         });
         call_names::ax::TickReport {
             outcome: names.map_err(call_names::ax::NoNames::from),

@@ -545,6 +545,8 @@ mod mac {
                     .iter()
                     .map(|(tile, person, mark)| {
                         let mark = match mark {
+                            Mark::Active => "active",
+                            Mark::Inactive => "inactive",
                             Mark::Speaking => "on",
                             Mark::Quiet => "off",
                             Mark::Unknown => "unknown",

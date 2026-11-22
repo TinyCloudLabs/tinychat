@@ -160,9 +160,9 @@ fn expected_owners() -> Vec<Option<&'static str>> {
 }
 
 #[test]
-fn the_embedded_rules_have_the_meet_speaking_rule_at_version_3() {
+fn the_embedded_rules_have_the_meet_speaking_rule_at_version_4() {
     let rules = Rules::embedded().unwrap();
-    assert_eq!(rules.version, 3);
+    assert_eq!(rules.version, 4);
     let meet = rules.app(App::GoogleMeet).unwrap();
     assert_eq!(meet.speaking.len(), 1);
     assert_eq!(meet.speaking[0].min_tiles, 3);
@@ -268,7 +268,7 @@ fn a_speaking_rule_is_checked_when_it_loads() {
     assert!(rules.app(App::GoogleMeet).unwrap().speaking[0]
         .classes
         .is_none());
-    assert!(EMBEDDED_JSON.contains("\"version\": 3,"));
+    assert!(EMBEDDED_JSON.contains("\"version\": 4,"));
 }
 
 #[test]

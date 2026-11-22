@@ -297,6 +297,8 @@ fn the_service_turns_the_replay_into_a_timeline_with_eight_of_eight_turns() {
                 .iter()
                 .map(|(tile, person, mark)| {
                     let mark = match mark {
+                        call_names::speaking::Mark::Active => "active",
+                        call_names::speaking::Mark::Inactive => "inactive",
                         call_names::speaking::Mark::Speaking => "on",
                         call_names::speaking::Mark::Quiet => "off",
                         call_names::speaking::Mark::Unknown => "unknown",
@@ -459,6 +461,7 @@ impl Window for Scripted {
                 })
                 .collect(),
             hidden: false,
+            people: 0,
         })
     }
 

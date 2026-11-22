@@ -315,7 +315,9 @@ impl<H: Clone> Scan<H> {
                 .into_iter()
                 .map(|(index, _)| index)
                 .collect();
-            if candidates.is_empty() || candidates.len() > MAX_MARKER_CANDIDATES {
+            if (candidates.is_empty() && rule.active.is_none())
+                || candidates.len() > MAX_MARKER_CANDIDATES
+            {
                 continue;
             }
             out.push(TileCandidates {
@@ -328,6 +330,42 @@ impl<H: Clone> Scan<H> {
             });
         }
         Ok(out)
+    }
+
+    /// How many tile containers are drawn, before rejecting ambiguous names or markers.
+    pub fn speaking_tile_count<S: Source<Node = H>>(
+        &mut self,
+        source: &mut S,
+        rule: &SpeakingRule,
+        meter: &mut Meter,
+    ) -> Result<usize, Discard> {
+        Ok(self.eval_path(source, &rule.tile, meter)?.len())
+    }
+
+    /// Activity candidates from the current scan, never an element retained from an older tree.
+    pub fn activity_candidates<S: Source<Node = H>>(
+        &mut self,
+        source: &mut S,
+        tile: &H,
+        steps: &[Step],
+        meter: &mut Meter,
+    ) -> Result<Vec<H>, Discard> {
+        const MAX_ACTIVITY_CANDIDATES: usize = 8;
+        let Some(index) = self
+            .nodes
+            .iter()
+            .position(|node| source.same(&node.handle, tile))
+        else {
+            return Ok(Vec::new());
+        };
+        let candidates = self.eval_path_from(source, index, steps, meter)?;
+        if candidates.len() > MAX_ACTIVITY_CANDIDATES {
+            return Ok(Vec::new());
+        }
+        Ok(candidates
+            .into_iter()
+            .map(|(index, _)| self.nodes[index].handle.clone())
+            .collect())
     }
 
     /// Nodes reached by a path from the root, each with the node the previous step matched.
