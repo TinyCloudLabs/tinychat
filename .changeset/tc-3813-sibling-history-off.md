@@ -2,6 +2,6 @@
 "@tinychat/frontend": patch
 ---
 
-A bot other than Main asks for no history grant and no expiry notice, so opening one makes no request that the server refuses.
+Opening a bot other than Main doesn't ask you to approve saving its chat history to your TinyCloud. Only Main's chat is saved there. Other bots' chats are kept by the bot service.
 
 Details: TC-3813
