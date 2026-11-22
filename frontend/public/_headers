@@ -16,7 +16,7 @@
 #                               lib/imageUrlFilter.ts); data: and blob: for inline and captured images.
 #   media-src https: blob:      feed videos (any https host) and the meeting audio player (blob: URLs).
 #   font-src data:              data: for inlined font files; the fonts themselves are served from this origin.
-#   worker-src blob:            same-origin workers (stitch, audio hash, SDK replica) and blob workers.
+#   worker-src 'self'           same-origin module workers (stitch, audio hash, SDK storage); no blob workers.
 #   frame-src https:            the OpenKey sign-in frame (openkey.so), the TinyCloud apps One frames (src/apps/registry.ts:
 #                               secrets.tinycloud.xyz, credentials.org, explorer.tinycloud.xyz, account.tinycloud.xyz and
 #                               the Ledger app's host) and the Feed's page sheet (feed/LinkSheet.tsx), which shows any
@@ -43,7 +43,7 @@
 # not reach them. The apps TinyCloud One frames are the other direction and are not affected.
 /*
   Content-Security-Policy: frame-ancestors 'self'
-  Content-Security-Policy: default-src 'self'; script-src 'self' 'sha256-EyjtwYacqqfVLyzPVyH1wIN86Cu5JWq24fP1VH01WDw=' 'wasm-unsafe-eval'; object-src 'none'; base-uri 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; media-src 'self' blob: https:; worker-src 'self' blob:; manifest-src 'self'; frame-src https:; form-action 'self'; connect-src 'self' https://api.tinycloud.chat https://tee.node.tinycloud.xyz https://node.tinycloud.xyz https://registry.tinycloud.xyz https://api.tinycloud.xyz https://openkey.so https://api.openkey.so https://api.redpill.ai https://rpc.ata.network https://search.sigstore.dev https://api-github-proxy.tinfoil.sh https://gh-attestation-proxy.tinfoil.sh https://cloud-api.phala.network https://api.trustauthority.intel.com https://api.fireflies.ai https://www.googleapis.com https://docs.googleapis.com https://meet.googleapis.com https://api.assemblyai.com https://f6663e38e8fc0a7d706ec2facb861246ae0077d8-8080.dstack-pha1-prod5.phala.network
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'sha256-EyjtwYacqqfVLyzPVyH1wIN86Cu5JWq24fP1VH01WDw=' 'wasm-unsafe-eval'; object-src 'none'; base-uri 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; media-src 'self' blob: https:; worker-src 'self'; manifest-src 'self'; frame-src https:; form-action 'self'; connect-src 'self' https://api.tinycloud.chat https://tee.node.tinycloud.xyz https://node.tinycloud.xyz https://registry.tinycloud.xyz https://api.tinycloud.xyz https://openkey.so https://api.openkey.so https://api.redpill.ai https://rpc.ata.network https://search.sigstore.dev https://api-github-proxy.tinfoil.sh https://gh-attestation-proxy.tinfoil.sh https://cloud-api.phala.network https://api.trustauthority.intel.com https://api.fireflies.ai https://www.googleapis.com https://docs.googleapis.com https://meet.googleapis.com https://api.assemblyai.com https://f6663e38e8fc0a7d706ec2facb861246ae0077d8-8080.dstack-pha1-prod5.phala.network
 
 # Agent discovery. These headers don't change the SPA route or response body.
 /
