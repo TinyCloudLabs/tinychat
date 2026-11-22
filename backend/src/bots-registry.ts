@@ -237,6 +237,15 @@ export class BotsRegistry {
     }
   }
 
+  /** The name the owner sees for `key`; undefined when there is no such bot or the record cannot be read. */
+  async nameOf(address: string, key: string): Promise<string | undefined> {
+    try {
+      return (await this.read(address)).bots.find(bot => bot.key === key)?.name;
+    } catch {
+      return undefined;
+    }
+  }
+
   /** Renames or restyles a bot. Main too: its key, its id, its directory and its permission do not depend on its name or look. */
   async update(address: string, key: string, input: { name?: unknown; shape?: unknown; colour?: unknown }): Promise<UpdateResult> {
     if (input.name === undefined && input.shape === undefined && input.colour === undefined) return { ok: false, error: "invalid" };
@@ -382,6 +391,14 @@ export function turnListHook(registry: BotsRegistry): (ownerDid: string, sourceK
   return async (ownerDid, sourceKey) => {
     const address = addressFromOwnerDid(ownerDid);
     return address === undefined ? [] : registry.listForTurn(address, sourceKey);
+  };
+}
+
+/** The registry's name for the bot a turn goes to, from the owner's DID (see BotsConfig.nameForTurn). */
+export function turnNameHook(registry: BotsRegistry): (ownerDid: string, key: string) => Promise<string | undefined> {
+  return async (ownerDid, key) => {
+    const address = addressFromOwnerDid(ownerDid);
+    return address === undefined ? undefined : registry.nameOf(address, key);
   };
 }
 

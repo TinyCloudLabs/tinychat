@@ -80,7 +80,8 @@ export interface SandboxLauncher {
   hasState(layout: BotLayout): boolean;
   /** Unconfirmed sandbox or copier teardown; sandboxOnly counts just sandboxes for running slots. */
   leftover(layout: BotLayout, sandboxOnly?: boolean): boolean;
-  launch(layout: BotLayout): Promise<Sandbox>;
+  /** `botName` is the name the owner sees, for the bot's prompt only; absent, the prompt uses MAIN_BOT_NAME. */
+  launch(layout: BotLayout, botName?: string): Promise<Sandbox>;
   /** Retries cleanup for a stopped bot, including after the supervisor has restarted. */
   cleanupEgress?(layout: BotLayout): Promise<boolean>;
   /** Every mount point the supervisor sees (decoded from /proc/self/mountinfo). */
@@ -354,12 +355,19 @@ export class Bot {
   #retiring = false;
   /** Set once the backend's deletion of this bot has removed its working state. Nothing runs or writes for it again. */
   #retired = false;
+  /** The name the owner sees, as the backend last sent it; the next sandbox start puts it into the prompt. */
+  #name: string | undefined;
 
   constructor(layout: BotLayout, launcher: SandboxLauncher, options: BotOptions, running: RunningLimit) {
     this.layout = layout;
     this.#launcher = launcher;
     this.#options = options;
     this.#running = running;
+  }
+
+  /** Takes the name the owner sees for the bot. Only the prompt's wording uses it; nothing is trusted by name. */
+  setName(botName: string): void {
+    this.#name = botName;
   }
 
   /** Runs one message. Reports through `sink` and always ends with exactly one done or error. */
@@ -817,7 +825,7 @@ export class Bot {
       const started = Date.now();
       let sandbox: Sandbox;
       try {
-        sandbox = await this.#launcher.launch(this.layout);
+        sandbox = await this.#launcher.launch(this.layout, this.#name);
       } catch (error) {
         this.#releasePlace();
         throw error;

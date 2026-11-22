@@ -23,6 +23,8 @@ export interface BotsConfig {
   onTurnFinished?: () => void;
   /** Current owner-scoped admission for an outgoing turn, supplied by the registry. */
   listForTurn?: (ownerDid: string, sourceKey: string) => Promise<string[]>;
+  /** The name the owner sees for the bot a turn goes to, supplied by the registry; it only words the bot's prompt. */
+  nameForTurn?: (ownerDid: string, key: string) => Promise<string | undefined>;
 }
 
 // Legacy history may restore a sandbox before OMP can answer. Keep this GET bounded independently of turns.
@@ -152,11 +154,13 @@ function toAskRequests(payload: unknown): { requests: AskRequestView[] } | null 
 /** Builds the internal send body from the authenticated owner and route's admitted bot. */
 export async function botTurnBody(config: BotsConfig, address: string, sourceKey: string, text: string, appReply?: AppReply) {
   const content = appReply ? { appReply } : { text };
-  try {
-    const messageableBotKeys = await config.listForTurn?.(botOwnerDid(address), sourceKey);
-    if (messageableBotKeys?.length) return { ...content, messageableBotKeys };
-  } catch { /* A registry read failure leaves the turn without messaging. */ }
-  return content;
+  const ownerDid = botOwnerDid(address);
+  // A registry read failure leaves the turn without messaging, and the bot's prompt with its default name.
+  const [messageableBotKeys, botName] = await Promise.all([
+    config.listForTurn?.(ownerDid, sourceKey).catch(() => undefined),
+    config.nameForTurn?.(ownerDid, sourceKey).catch(() => undefined),
+  ]);
+  return { ...content, ...(messageableBotKeys?.length ? { messageableBotKeys } : {}), ...(botName !== undefined ? { botName } : {}) };
 }
 
 /**

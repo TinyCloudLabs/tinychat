@@ -26,7 +26,7 @@ import { BotHistory } from "./bot-history.js";
 import { createBotHistoryRouter, startBotHistoryDrain } from "./routes/bot-history.js";
 import { botsFromEnv, createBotsRouter, removeBotFromService } from "./routes/bots.js";
 import { capModeFromEnv, planFor } from "./bot-caps.js";
-import { BotsRegistry, turnListHook } from "./bots-registry.js";
+import { BotsRegistry, turnListHook, turnNameHook } from "./bots-registry.js";
 import { createBotsServiceGuardRouter } from "./bots-service-routes.js";
 import { BOT_DELETION_PASS_MS, BotDeletions } from "./bot-deletion.js";
 import { resolveTier } from "./billing/stripe.js";
@@ -847,7 +847,10 @@ async function main() {
   // The record of each owner's bots is kept in the backend's own space and written through the one storage lane.
   // Finding every owner pages through the store's listing.
   const botsRegistry = botsConfig ? new BotsRegistry({ get: exoBackendKv.get, put: exoBackendKv.put, list: options => node.kv.list(options) }) : undefined;
-  if (botsConfig && botsRegistry) botsConfig.listForTurn = turnListHook(botsRegistry);
+  if (botsConfig && botsRegistry) {
+    botsConfig.listForTurn = turnListHook(botsRegistry);
+    botsConfig.nameForTurn = turnNameHook(botsRegistry);
+  }
   // A deletion is carried out when it is recorded, and on a pass for whatever is still outstanding, as after a restart.
   const botDeletions = botsConfig && botsRegistry && botHistory ? new BotDeletions({
     registry: botsRegistry,

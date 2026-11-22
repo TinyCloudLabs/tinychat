@@ -7,7 +7,8 @@ bot states and history journal are the same. Each bot runs as one sandbox on a
 
 - A bot's sandbox id is `bot-` and the first 52 characters of its bot id.
 - Each sandbox starts `sandbox/bridge.ts`, which runs OMP and carries its RPC over a WebSocket on port 7070. OMP starts
-  with Main's or the sibling system prompt from `bots/sandbox/prompts`, as in `bots/`. OMP's own settings are not
+  with Main's or the sibling system prompt from `bots/sandbox/prompts`, as in `bots/`, with the bot's name filled in
+  by the bridge (`BOT_NAME` from the arm call). OMP's own settings are not
   trimmed here: no `config.yml` is written, so OMP's built-in tools stay on.
 - The model gateway from `bots/` runs in a second container and listens on port 8081 at `/bots/<bot id>/v1/...`.
 - A bot sleeps after `BOTS_IDLE_MS` without use (default 5 minutes) and wakes from its snapshot on the next call.

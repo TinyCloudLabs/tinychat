@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { BotsRegistry, MAIN_BOT_NAME, type RegistryKv } from "../bots-registry.js";
+import { BotsRegistry, MAIN_BOT_NAME, type RegistryKv, turnNameHook } from "../bots-registry.js";
+import { type BotsConfig, botTurnBody } from "../routes/bots.js";
 
 // TC-3790: the main bot's default name is TrustBot. A record written before that still holds "Main" on it.
 const ADDRESS = `0x${"Cd".repeat(20)}`;
@@ -61,4 +62,14 @@ test("no other bot can take the old name, so none is mistaken for TrustBot", asy
   const registry = new BotsRegistry(kv);
   expect(await registry.create(ADDRESS, { name: " MAIN ", shape: "pebble", colour: "blue" }, 5)).toEqual({ ok: false, error: "name_taken" });
   expect(await registry.update(ADDRESS, SIBLING, { name: "Main" })).toEqual({ ok: false, error: "name_taken" });
+});
+
+test("a turn tells the bots service the name the owner sees, read from the registry for the turn's key", async () => {
+  const { kv } = store([bot("main", "Main"), bot(SIBLING, "Research")]);
+  const config = { nameForTurn: turnNameHook(new BotsRegistry(kv)) } as BotsConfig;
+  expect(await botTurnBody(config, ADDRESS, "main", "hi")).toEqual({ text: "hi", botName: "TrustBot" });
+  expect(await botTurnBody(config, ADDRESS, SIBLING, "hi")).toEqual({ text: "hi", botName: "Research" });
+  // An unreadable record sends no name, and the bot's prompt keeps its default.
+  const broken = { nameForTurn: async () => { throw new Error("kv down"); } } as unknown as BotsConfig;
+  expect(await botTurnBody(broken, ADDRESS, "main", "hi")).toEqual({ text: "hi" });
 });

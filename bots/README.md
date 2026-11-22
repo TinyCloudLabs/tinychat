@@ -77,7 +77,9 @@ Every event is encoded by the supervisor from checked fields; OMP output never p
    `127.0.0.1:8080` to the egress socket and execs `omp --mode rpc --no-ui --system-prompt <file>`; the sandbox's stdio
    is the RPC channel. The file is Main's or the sibling prompt (`sandbox/prompts/main.md`, `sibling.md`, copied to
    `/opt/tinycloud/prompts`); the sibling prompt is also the image's `/root/.omp/agent/SYSTEM.md`, which OMP reads if
-   the file is missing.
+   the file is missing. Where the prompt says `{{botName}}`, `bot-start.sh` puts the name the owner sees (`BOT_NAME`,
+   from the backend's signed `botName` on the latest turn; default TrustBot) into a copy under `/tmp` and gives OMP
+   that copy. The name only words the prompt: what a bot may do follows from its key, never its name.
 3. The supervisor waits for OMP's `ready`, sets the event filter (assistant deltas only), opens the session in
    `/root/bot/sessions/main`, sends the `prompt`, and maps `message_update` text deltas to `delta` and
    `prompt_result` to `done` / `error`. A prompt the owner did not write (one bot messaging another) starts with the
