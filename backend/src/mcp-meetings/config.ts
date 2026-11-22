@@ -2,6 +2,19 @@ import { createMcpMeetingTools } from "./dispatch.js";
 import { createHttpMcpPort, postNativeGrant } from "./port.js";
 import type { McpMeetingTools } from "./dispatch.js";
 import type { NativeGrantAccepted } from "./port.js";
+import type { FirefliesPurgeLedgerRead } from "./reader.js";
+import { firefliesServerImportEnabled } from "../fireflies-import-identity.js";
+
+export interface McpChatFromEnvOptions {
+  /** Optional purge-ledger reader keyed by lowercase Ethereum address for Fireflies KV discovery. */
+  readFirefliesPurgeLedger?: (address: string) => Promise<FirefliesPurgeLedgerRead>;
+}
+
+function addressFromMcpOwner(owner: string): string | null {
+  const trimmed = owner.trim();
+  const segment = trimmed.includes(":") ? trimmed.slice(trimmed.lastIndexOf(":") + 1) : trimmed;
+  return /^0x[0-9a-f]{40}$/i.test(segment) ? segment.toLowerCase() : null;
+}
 
 export interface McpGrantClient {
   /** The service DID users delegate to (MCP_CHAT_SERVICE_DID); it must equal the value the MCP publishes in its server card. */
@@ -23,7 +36,11 @@ const CONNECTORS_DATABASE = "xyz.tinycloud.tinychat/connectors";
  * header names are configured AND MCP_CHAT_TEST_ACCOUNTS names at least one account (an empty list admits nobody).
  * Header names and the two optional 401 error values come from the MCP's native-auth contract; none is assumed here.
  */
-export function mcpChatFromEnv(env: Record<string, string | undefined>, fetchImpl?: typeof fetch): McpChatWiring {
+export function mcpChatFromEnv(
+  env: Record<string, string | undefined>,
+  fetchImpl?: typeof fetch,
+  options?: McpChatFromEnvOptions,
+): McpChatWiring {
   if (env.MCP_CHAT_ENABLED !== "true") return {};
   const url = env.MCP_CHAT_URL?.trim();
   const serviceCredential = env.MCP_CHAT_SERVICE_CREDENTIAL;
@@ -46,9 +63,23 @@ export function mcpChatFromEnv(env: Record<string, string | undefined>, fetchImp
     database: CONNECTORS_DATABASE,
     ...(fetchImpl ? { fetchImpl } : {}),
   };
+  const firefliesKvEnabled = firefliesServerImportEnabled(env);
+  const readFirefliesPurgeLedger =
+    firefliesKvEnabled && options?.readFirefliesPurgeLedger
+      ? async (owner: string): Promise<FirefliesPurgeLedgerRead> => {
+          const address = addressFromMcpOwner(owner);
+          if (!address) return { status: "unparseable", raw: null };
+          return options.readFirefliesPurgeLedger!(address);
+        }
+      : undefined;
   return {
     mcpGrants: { serviceDid, accept: delegation => postNativeGrant(config, delegation) },
-    mcpMeetings: createMcpMeetingTools(owner => createHttpMcpPort(config, owner), { tavilyApiKey: env.TAVILY_API_KEY, ...(fetchImpl ? { fetchImpl } : {}) }),
+    mcpMeetings: createMcpMeetingTools(owner => createHttpMcpPort(config, owner), {
+      tavilyApiKey: env.TAVILY_API_KEY,
+      ...(fetchImpl ? { fetchImpl } : {}),
+      ...(firefliesKvEnabled ? { firefliesKvEnabled: true } : {}),
+      ...(readFirefliesPurgeLedger ? { readFirefliesPurgeLedger } : {}),
+    }),
     // The explicit `*` entry is the final all-accounts switch; an empty list never admits anyone.
     mcpChatAccountAllowed: address => accounts.has("*") || accounts.has(address.toLowerCase()),
     // The MCP canonicalizes the owner DID with a lowercase address (js-sdk packages/mcp native-auth canonicalOwnerDid).

@@ -310,7 +310,21 @@ async function main() {
     return;
   }
   const redpillApiKey = process.env.REDPILL_API_KEY;
-  const mcpChat = mcpChatFromEnv(process.env);
+  let readFirefliesPurgeLedgerForMcp:
+    | ((address: string) => Promise<Awaited<ReturnType<ConnectorControlStore["readLedger"]>>>)
+    | undefined;
+  const mcpChat = mcpChatFromEnv(
+    process.env,
+    undefined,
+    firefliesServerImportEnabled(process.env)
+      ? {
+          readFirefliesPurgeLedger: async (address) =>
+            readFirefliesPurgeLedgerForMcp
+              ? readFirefliesPurgeLedgerForMcp(address)
+              : { status: "unparseable", raw: null },
+        }
+      : undefined,
+  );
   let agentStreamPolicy: AgentStreamPolicy | undefined;
   try {
     agentStreamPolicy = agentStreamPolicyFromEnv(
@@ -515,6 +529,9 @@ async function main() {
     : undefined;
   const connectorKeyStore = connectorRetention?.store;
   const connectorControl = new ConnectorControlStore(node, undefined, connectorKeyStore);
+  if (firefliesServerImportEnabled(process.env)) {
+    readFirefliesPurgeLedgerForMcp = (address) => connectorControl.readLedger("fireflies", address);
+  }
   const firefliesImport = firefliesImportKeys
     ? (() => {
         const coordinator = new TenantCoordinator();
@@ -702,7 +719,16 @@ async function main() {
     res.json({ ok: true, app: APP_ID, globalBucketRoutes: globalRoutes.top(10) });
   });
   app.use("/api/manifest", createManifestRouter());
-  app.use("/api/server-info", createServerInfoRouter(did, readBackendBuildInfo()));
+  app.use(
+    "/api/server-info",
+    createServerInfoRouter(
+      did,
+      readBackendBuildInfo(),
+      firefliesServerImportEnabled(process.env)
+        ? { capabilities: { firefliesServerImport: true } }
+        : undefined,
+    ),
+  );
   // Operator view of hosted AssemblyAI: the events, the heartbeat and the status route read this one monitor.
   const assemblyAiMonitor = new HostedProviderMonitor();
   // TC-1964: optional authenticated count of stored credential rows. Not registered (404) unless
