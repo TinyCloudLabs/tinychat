@@ -67,6 +67,7 @@ export const REQUEST_LOG_ROUTE_TEMPLATES: readonly string[] = [
   "/api/exo/v1/requests",
   "/api/internal/assemblyai-status",
   "/api/internal/bots/admit",
+  "/api/internal/calendar-autojoin-counts",
   "/api/internal/credential-row-count",
   "/api/manifest",
   "/api/nras-proxy",
