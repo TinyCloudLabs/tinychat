@@ -208,7 +208,7 @@ export async function startWebhookLoopBackend(
     limiters.ipPreLimiter,
     express.raw({ type: "application/json", limit: "64kb", inflate: false }),
     createConnectorWebhookParserErrorHandler(limiters),
-    // OPTION C: no `onDelivery` kick. Enqueueing the id is the whole server-side job.
+    // OPTION C: Enqueueing the id is the whole server-side job.
     createConnectorWebhookHandler({ tokens, queue, limiters }),
   );
 

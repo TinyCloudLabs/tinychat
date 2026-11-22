@@ -43,7 +43,15 @@ async function readHistory(tcw: TinyCloudWeb, signal?: AbortSignal, botKey?: str
     if (key !== `${prefix}${batch.generation}/${batch.seq}-${batch.challenge}`) throw new Error("history_binding_mismatch");
     const record = batch.record;
     if ((record?.type === "user" || record?.type === "assistant") && typeof record.text === "string") {
-      return { id: record.type === "assistant" && typeof record.outcome?.messageId === "string" ? record.outcome.messageId : `history-${batch.generation}-${batch.seq}`, role: record.type === "user" ? "user" : "bot", text: record.text, at: record.at ?? "" };
+      // A message the app sent for the owner (a decision on a question) keeps its mark, as the service's own listing does.
+      const app = record.type === "user" && record.origin === "app";
+      const decision = app && (record.decision === "answered" || record.decision === "declined" || record.decision === "stopped") ? record.decision : undefined;
+      return {
+        id: record.type === "assistant" && typeof record.outcome?.messageId === "string" ? record.outcome.messageId : `history-${batch.generation}-${batch.seq}`,
+        role: record.type === "user" ? "user" : "bot", text: record.text, at: record.at ?? "",
+        ...(app ? { origin: "app" as const } : {}),
+        ...(decision ? { decision } : {}),
+      };
     }
     return null;
   };

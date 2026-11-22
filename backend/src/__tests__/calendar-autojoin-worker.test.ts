@@ -838,7 +838,7 @@ const B_EMAIL = "bee@example.test";
 const A_EMAIL = "owner@example.test";
 const ROOM = "https://meet.google.com/abc-defg-hij";
 
-async function twoTenants(options: { sharing?: boolean; bResponse?: string | null; bEmail?: string; aEmail?: string | null }
+async function twoTenants(options: { sharing?: boolean; sharingAccounts?: ReadonlySet<string>; bResponse?: string | null; bEmail?: string; aEmail?: string | null }
   & Pick<CalendarAutojoinWorkerOptions, "onRecordingCompleted"> = {}) {
   let now = START - 30_000;
   const store = new MemoryCalendarAutojoinStore();
@@ -910,7 +910,7 @@ async function twoTenants(options: { sharing?: boolean; bResponse?: string | nul
     },
   };
   const worker = () => new CalendarAutojoinWorker({ store, index, coordinator, meetingCoordinator, calendar, api, connection,
-    sharingEnabled: options.sharing ?? true, onRecordingCompleted: options.onRecordingCompleted,
+    sharingEnabled: options.sharing ?? true, sharingAccounts: options.sharingAccounts, onRecordingCompleted: options.onRecordingCompleted,
     now: () => now, random: () => 0, sleep: async ms => { now += ms; } });
   const connect = (tenant: string, subject: string, patch: Partial<CalendarConnection> = {}) => store.putConnection({
     tenant, subject, state: "enabled", generation: 1, scopes: [], nextScanAt: 0, scanComplete: true, ...patch });
@@ -1605,6 +1605,32 @@ describe("TC-581 shared capture across tenants", () => {
     expect(Object.keys(await f.index.shares(B))).toEqual(["mtg_1"]);
     expect(await f.rowB()).toMatchObject({ phase: "terminal", disposition: "shared" });
   });
+});
+
+describe("TC-916 sharing allow-list with the flag off", () => {
+  test("owner and recipient both listed: a corroborated attach promises the transcript and the grant lands", async () => {
+    const f = await twoTenants({ sharing: false, sharingAccounts: new Set([A, B]) });
+    await f.attach();
+    expect((await f.rowB())?.errorCode).toBe("shared_capture_pending");
+    f.meeting().status = "completed";
+    f.afterWindow();
+    await f.worker().tick();
+    expect(await f.index.list(B)).toEqual(["mtg_1"]);
+    expect(await f.rowB()).toMatchObject({ phase: "terminal", disposition: "shared", sharedCapture: { result: "shared" } });
+  });
+
+  for (const [label, listed] of [["an empty list", []], ["no list", undefined], ["only the recipient listed", [B]], ["only the owner listed", [A]]] as const) {
+    test(`${label}: no promise, the grant is denied`, async () => {
+      const f = await twoTenants({ sharing: false, sharingAccounts: listed && new Set<string>(listed) });
+      await f.attach();
+      expect((await f.rowB())?.errorCode).toBe("capture_in_progress");
+      f.meeting().status = "completed";
+      f.afterWindow();
+      await f.worker().tick();
+      expect(await f.rowB()).toMatchObject({ disposition: "already_recorded", sharedCapture: { reason: "sharing_disabled" } });
+      expect(await f.index.list(B)).toEqual([]);
+    });
+  }
 });
 
 describe("calendar failure diagnostics", () => {
