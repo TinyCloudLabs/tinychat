@@ -2,8 +2,7 @@
 // chat lines after a decision, and the Settings toggle. Nothing else in the app writes these words.
 // Monica's words (agent-ask-owner-words); Sam reviews them in parallel, and changes come as fast follow-ups.
 
-/** The bot's name in every sentence below: one constant, so a rename is one edit. */
-export const ASK_MAIN = "Main";
+import { MAIN_BOT_NAME } from "./botsStrings";
 
 const plural = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
 
@@ -19,24 +18,24 @@ export function askedAgo(elapsedMs: number): string {
 
 export const ASK_STRINGS = {
   /** The Settings toggle. */
-  toggleLabel: `Let ${ASK_MAIN} ask you questions`,
-  toggleHelp: `${ASK_MAIN} can ask you a question in chat when it needs something from you. Off until you turn it on.`,
+  toggleLabel: `Let ${MAIN_BOT_NAME} ask you questions`,
+  toggleHelp: `${MAIN_BOT_NAME} can ask you a question in chat when it needs something from you. Off until you turn it on.`,
   toggleFailed: "Couldn’t save that, so the setting is unchanged. Try again.",
 
   /** The card. */
-  asking: `${ASK_MAIN} is asking:`,
+  asking: `${MAIN_BOT_NAME} is asking:`,
   quote: (question: string) => `“${question}”`,
-  footer: `Your answer goes to ${ASK_MAIN} and the AI model service, like everything else in this chat.`,
+  footer: `Your answer goes to ${MAIN_BOT_NAME} and the AI model service, like everything else in this chat.`,
   answerLabel: "Your answer",
-  answerHint: `Don’t paste passwords or keys here. To give ${ASK_MAIN} access to an account, use Connectors.`,
+  answerHint: `Don’t paste passwords or keys here. To give ${MAIN_BOT_NAME} access to an account, use Connectors.`,
   /** Shown under the answer box only while Web access is on. */
-  webAccessOn: `Web access is on, so a page ${ASK_MAIN} reads could try to get it to send your answer to a website.`,
+  webAccessOn: `Web access is on, so a page ${MAIN_BOT_NAME} reads could try to get it to send your answer to a website.`,
   /** Shown above the answer box only when the request says Main read something from outside the chat. */
-  outside: `${ASK_MAIN} read a web page or someone else’s message before asking, so answer only if this question is what you expect.`,
+  outside: `${MAIN_BOT_NAME} read a web page or someone else’s message before asking, so answer only if this question is what you expect.`,
   answer: "Answer",
   notNow: "Not now",
-  stop: `Stop ${ASK_MAIN} from asking`,
-  stopped: `${ASK_MAIN} won’t ask you questions. You can turn this back on in Settings.`,
+  stop: `Stop ${MAIN_BOT_NAME} from asking`,
+  stopped: `${MAIN_BOT_NAME} won’t ask you questions. You can turn this back on in Settings.`,
   sendFailed: "Couldn’t send that. Try again.",
   gone: "This question can’t be answered any more.",
 
@@ -45,10 +44,10 @@ export const ASK_STRINGS = {
   expired: "This question expired.",
 
   /** App-originated lines in the chat: shown to the owner, never taken for words the owner typed. */
-  lineAnswered: `You answered ${ASK_MAIN}’s question.`,
-  lineDeclined: `You said not now to ${ASK_MAIN}’s question.`,
+  lineAnswered: `You answered ${MAIN_BOT_NAME}’s question.`,
+  lineDeclined: `You said not now to ${MAIN_BOT_NAME}’s question.`,
   /** UI only: nothing is sent to Main when a question expires. */
-  lineExpired: `${ASK_MAIN}’s question expired without an answer.`,
+  lineExpired: `${MAIN_BOT_NAME}’s question expired without an answer.`,
   /** UI only: shown once when the owner turns questions off, however many open questions were closed. */
-  lineStopped: `You turned off questions from ${ASK_MAIN}, so its open questions were closed.`,
+  lineStopped: `You turned off questions from ${MAIN_BOT_NAME}, so its open questions were closed.`,
 } as const;

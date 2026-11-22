@@ -3,7 +3,8 @@ import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 
 import { installDom } from "@/test/dom";
-import { ASK_MAIN, ASK_STRINGS } from "./askStrings";
+import { ASK_STRINGS } from "./askStrings";
+import { MAIN_BOT_NAME } from "./botsStrings";
 import { BotsNoReply, createBotsApi, type AskRequest, type BotMessage, type BotsApi } from "./botsApi";
 
 // Radix portals do not attach in happy-dom: the sheet's chrome is an inline stand-in with a Close button; everything
@@ -27,7 +28,7 @@ afterEach(() => {
   restore = undefined;
 });
 
-const STOPPED_LINE = `You turned off questions from ${ASK_MAIN}, so its open questions were closed.`;
+const STOPPED_LINE = `You turned off questions from ${MAIN_BOT_NAME}, so its open questions were closed.`;
 
 const pending = (id: string): AskRequest => ({
   id,
@@ -94,7 +95,7 @@ function service() {
 const flush = async () => { await act(async () => { for (let i = 0; i < 16; i++) await Promise.resolve(); }); };
 const click = async (node: Element) => { await act(async () => { (node as HTMLElement).click(); }); await flush(); };
 const button = (label: string) => [...document.querySelectorAll("button")].find((node) => node.textContent === label)!;
-const openChat = () => click(document.querySelector('button[aria-label="Open Main\'s chat"]')!);
+const openChat = () => click(document.querySelector('button[aria-label="Open TrustBot\'s chat"]')!);
 const cards = () => document.querySelectorAll("[data-ask-card]");
 const chatLines = (kind: string) => [...document.querySelectorAll(`[data-bots-main-chat] [data-app-line="${kind}"]`)].map((node) => node.textContent);
 
@@ -111,7 +112,7 @@ test("Stop Main from asking on Home removes the cards now and sends Main ONE mes
   const { api, state } = service();
   await render(api);
   expect(cards()).toHaveLength(3);
-  await click(button("Stop Main from asking"));
+  await click(button("Stop TrustBot from asking"));
   expect(state.asks).toEqual([false]);
   expect(cards()).toHaveLength(0);
   expect(document.querySelector("[data-ask-stopped]")!.textContent).toBe(ASK_STRINGS.stopped);
@@ -127,7 +128,7 @@ test("the chat says once that questions were turned off, however many were close
   const { api } = service();
   await render(api);
   await openChat();
-  await click(button("Stop Main from asking"));
+  await click(button("Stop TrustBot from asking"));
   expect(chatLines("stopped")).toEqual([STOPPED_LINE]);
   expect(chatLines("declined")).toEqual([]);
   expect(document.querySelector("[data-ask-outcome]")).toBeNull();
@@ -187,7 +188,7 @@ test("no question text from before the stop is shown after it, even when a read 
   // The read made when the chat opens is the one held back; it saw both questions pending.
   state.hold = { nth: state.lists + 1, until: promise };
   await openChat();
-  await click(button("Stop Main from asking"));
+  await click(button("Stop TrustBot from asking"));
   expect(cards()).toHaveLength(0);
   await act(async () => { resolve(); });
   await flush();

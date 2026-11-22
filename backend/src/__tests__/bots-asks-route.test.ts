@@ -100,7 +100,7 @@ describe("bots questions routes", () => {
     try {
       const response = await run.send("GET", "/asks");
       expect(response.status).toBe(502);
-      expect(await response.json()).toEqual({ error: "bot_unavailable", message: "Main isn't available. Try again later." });
+      expect(await response.json()).toEqual({ error: "bot_unavailable", message: "TrustBot isn't available. Try again later." });
       const failing = await setup(() => { throw new Error("down"); });
       try { expect((await failing.send("GET", "/requests")).status).toBe(502); } finally { await failing.close(); }
     } finally { await run.close(); }
