@@ -7,7 +7,7 @@
 import { closeSync, existsSync, fsyncSync, openSync, readFileSync, renameSync, writeSync } from "node:fs";
 import { dirname } from "node:path";
 import { AskDesk, APP_TOOLS } from "./asks-desk";
-import type { AsksPush, NewAsk } from "./asks";
+import type { AsksPush, NewRequest } from "./asks";
 import type { GatewayConfig } from "./config";
 import { isRecord } from "./guards";
 import { bearerMatches } from "./owner";
@@ -413,8 +413,8 @@ export class Gateway {
     this.#asks.push(botId, push);
   }
 
-  /** The questions the box has asked since the supervisor last collected them. */
-  drainAsks(botId: string): NewAsk[] {
+  /** The requests the box has made since the supervisor last collected them. */
+  drainAsks(botId: string): NewRequest[] {
     return this.#asks.drain(botId);
   }
 
@@ -583,7 +583,7 @@ export class Gateway {
   /**
    * Main's tools over MCP (Streamable HTTP, JSON replies, no session): `initialize`, `tools/list` and `tools/call`.
    * Two servers share this: `web` (search, fetch), always listed with the owner's setting applied on each call, and
-   * `app` (ask_owner), listed only while the owner's setting is on and checked again on each call. A setting change
+   * `app` (ask_owner, request_secret), listed only while the owner's setting is on and checked again on each call. A setting change
    * takes effect at the bot's next call, without restarting its sandbox.
    */
   async #mcp(botId: string, req: Request, server: "web" | "app"): Promise<Response> {
@@ -625,8 +625,9 @@ export class Gateway {
         const name = params.name;
         const args = isRecord(params.arguments) ? params.arguments : {};
         if (server === "app") {
-          if (name !== "ask_owner") return Response.json(rpcFailure(id, -32602, "Unknown tool"));
-          return Response.json(rpcResult(id, this.#asks.call(botId, args)));
+          if (name === "ask_owner") return Response.json(rpcResult(id, this.#asks.call(botId, args)));
+          if (name === "request_secret") return Response.json(rpcResult(id, this.#asks.callSecret(botId, args)));
+          return Response.json(rpcFailure(id, -32602, "Unknown tool"));
         }
         if (name !== "search" && name !== "fetch") return Response.json(rpcFailure(id, -32602, "Unknown tool"));
         return Response.json(rpcResult(id, await this.#webCall(botId, name, args)));

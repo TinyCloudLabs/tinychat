@@ -19,7 +19,7 @@ const secret = "ask-off-" + "x".repeat(64);
 const TOKEN = "1".repeat(64);
 const QUESTION = "SECRET-QUESTION-text-4c1e";
 const CHOICE = "SECRET-CHOICE-text-0b7a";
-const STOPPED_SENTENCE = "The person turned off questions from you, so your open questions were closed without an answer. Carry on without asking.";
+const STOPPED_SENTENCE = "The person turned off questions and requests from you, so your open questions and secret requests were closed without an answer. Carry on without asking.";
 const DAY = 24 * 3_600_000;
 
 /** Stands in for OMP behind the RPC channel: records the frames it is sent and lets the test answer them. */
