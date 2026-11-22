@@ -1,0 +1,35 @@
+name: Read calendar auto-join counts
+
+# Operator-only and read-only (TC-916). A person starts it by hand from main; nothing else triggers it. It runs in
+# the production-api environment, which holds CREDENTIAL_COUNT_ADMIN_KEY, calls the backend's calendar auto-join
+# counts route and prints one line of five counts. The key and the response body are never printed.
+#   gh workflow run calendar-autojoin-counts.yml --ref main
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: calendar-autojoin-counts
+  cancel-in-progress: false
+
+jobs:
+  read:
+    # The environment's secret is only for main. A dispatch from any other ref is skipped before it reaches the environment.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment:
+      name: production-api
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts/ops
+      - name: Read the counts
+        env:
+          CREDENTIAL_COUNT_ADMIN_KEY: ${{ secrets.CREDENTIAL_COUNT_ADMIN_KEY }}
+          API_URL: ${{ vars.TINYCHAT_BACKEND_URL || 'https://api.tinycloud.chat' }}
+        run: bash scripts/ops/read-calendar-autojoin-counts.sh
