@@ -379,10 +379,58 @@ describe("POST/GET/DELETE /api/connectors/fireflies/delegation", () => {
     });
   });
 
-  it("rate limits POST accepts to 6 per address per hour", async () => {
-    const fixture = await createRouteFixture();
+  it("rate limits POST accepts to 6 per address per hour and prunes expired window entries", async () => {
+    const nowRef = { current: Date.UTC(2026, 10, 22, 17, 0, 0) };
+    const fixture = await createRouteFixture({ nowRef });
     const cidOf = fixture.keys.delegate.node.computeDelegationCid.bind(fixture.keys.delegate.node);
-    const pair = await mintPair(fixture.keys.delegate.did, cidOf);
+    const pairA = await mintPair(fixture.keys.delegate.did, cidOf, { now: nowRef.current });
+    const pairB = await mintPair(fixture.keys.delegate.did, cidOf, { now: nowRef.current });
+    fixture.setAddress(pairA.address);
+
+    await withServer(fixture.app, async (base) => {
+      const headers = {
+        authorization: "Bearer valid-session",
+        "x-requested-with": "XMLHttpRequest",
+        "content-type": "application/json",
+      };
+      const bodyA = JSON.stringify({
+        secretsGrant: pairA.secretsGrant,
+        meetingsGrant: pairA.meetingsGrant,
+        siwe: pairA.siwe,
+        signature: pairA.signature,
+      });
+      for (let i = 0; i < 6; i++) {
+        const res = await fetch(`${base}/api/connectors/fireflies/delegation`, { method: "POST", headers, body: bodyA });
+        expect(res.status).toBe(200);
+      }
+      const seventh = await fetch(`${base}/api/connectors/fireflies/delegation`, { method: "POST", headers, body: bodyA });
+      expect(seventh.status).toBe(429);
+      expect(await seventh.json()).toEqual({ error: "delegation_rate_limited" });
+
+      // Advance past the 1-hour window: a request from another address prunes expired entries,
+      // and address A can accept again.
+      nowRef.current += 3_600_001;
+      fixture.setAddress(pairB.address);
+      const bodyB = JSON.stringify({
+        secretsGrant: pairB.secretsGrant,
+        meetingsGrant: pairB.meetingsGrant,
+        siwe: pairB.siwe,
+        signature: pairB.signature,
+      });
+      const resB = await fetch(`${base}/api/connectors/fireflies/delegation`, { method: "POST", headers, body: bodyB });
+      expect(resB.status).toBe(200);
+
+      fixture.setAddress(pairA.address);
+      const resAAfterWindow = await fetch(`${base}/api/connectors/fireflies/delegation`, { method: "POST", headers, body: bodyA });
+      expect(resAAfterWindow.status).toBe(200);
+    });
+  });
+
+  it("keeps GET strictly read-only without destroying stored ciphertext on transient CID failure", async () => {
+    const nowRef = { current: Date.UTC(2026, 10, 22, 17, 0, 0) };
+    const fixture = await createRouteFixture({ nowRef });
+    const realCid = fixture.keys.delegate.node.computeDelegationCid.bind(fixture.keys.delegate.node);
+    const pair = await mintPair(fixture.keys.delegate.did, realCid, { now: nowRef.current });
     fixture.setAddress(pair.address);
 
     await withServer(fixture.app, async (base) => {
@@ -391,19 +439,36 @@ describe("POST/GET/DELETE /api/connectors/fireflies/delegation", () => {
         "x-requested-with": "XMLHttpRequest",
         "content-type": "application/json",
       };
-      const body = JSON.stringify({
-        secretsGrant: pair.secretsGrant,
-        meetingsGrant: pair.meetingsGrant,
-        siwe: pair.siwe,
-        signature: pair.signature,
+      const postRes = await fetch(`${base}/api/connectors/fireflies/delegation`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          secretsGrant: pair.secretsGrant,
+          meetingsGrant: pair.meetingsGrant,
+          siwe: pair.siwe,
+          signature: pair.signature,
+        }),
       });
-      for (let i = 0; i < 6; i++) {
-        const res = await fetch(`${base}/api/connectors/fireflies/delegation`, { method: "POST", headers, body });
-        expect(res.status).toBe(200);
-      }
-      const seventh = await fetch(`${base}/api/connectors/fireflies/delegation`, { method: "POST", headers, body });
-      expect(seventh.status).toBe(429);
-      expect(await seventh.json()).toEqual({ error: "delegation_rate_limited" });
+      expect(postRes.status).toBe(200);
+
+      const key = fixture.store.keyFor(pair.address);
+      const storedBefore = structuredClone(fixture.rows.get(key));
+
+      // Simulate transient corrupt read via tampered IV on GET: GET must not overwrite KV.
+      const originalGet = fixture.rows.get(key);
+      fixture.rows.set(key, { ...(originalGet as Record<string, unknown>), iv: "AAAA" });
+      const corruptGet = await fetch(`${base}/api/connectors/fireflies/delegation`, { headers });
+      expect(corruptGet.status).toBe(200);
+      expect(await corruptGet.json()).toEqual({ state: "needs_renewal", expiresAt: null });
+      expect((fixture.rows.get(key) as Record<string, unknown>).ciphertext).toBe(
+        (storedBefore as Record<string, unknown>).ciphertext,
+      );
+
+      // Restore original record: GET returns active again.
+      fixture.rows.set(key, storedBefore);
+      const recovered = await fetch(`${base}/api/connectors/fireflies/delegation`, { headers });
+      expect(recovered.status).toBe(200);
+      expect(await recovered.json()).toEqual({ state: "active", expiresAt: pair.expiresAt.toISOString() });
     });
   });
 });

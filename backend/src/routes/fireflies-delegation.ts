@@ -73,6 +73,14 @@ export function createFirefliesDelegationRouter(config: FirefliesDelegationRoute
   const coordinator = config.coordinator ?? new TenantCoordinator();
   const accepts = new Map<string, number[]>();
   const nowFn = config.now ?? Date.now;
+
+  function pruneAccepts(now: number): void {
+    for (const [key, timestamps] of accepts) {
+      const live = timestamps.filter((time) => now - time < ACCEPT_WINDOW_MS);
+      if (live.length === 0) accepts.delete(key);
+      else if (live.length !== timestamps.length) accepts.set(key, live);
+    }
+  }
   const deps = {
     computeDelegationCid: config.delegate.node.computeDelegationCid.bind(config.delegate.node),
   };
@@ -110,7 +118,8 @@ export function createFirefliesDelegationRouter(config: FirefliesDelegationRoute
       if (!user) return;
       const address = user.address.toLowerCase();
       const now = nowFn();
-      const recent = (accepts.get(address) ?? []).filter((time) => now - time < ACCEPT_WINDOW_MS);
+      pruneAccepts(now);
+      const recent = accepts.get(address) ?? [];
       if (recent.length >= MAX_ACCEPTS_PER_HOUR) {
         res.status(429).json({ error: "delegation_rate_limited" });
         return;

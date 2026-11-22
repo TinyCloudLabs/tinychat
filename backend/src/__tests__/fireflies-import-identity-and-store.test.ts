@@ -127,18 +127,26 @@ async function mintGrantPair(delegateDid: string, options: { now?: number; ttlMs
 
 function createMemoryKv() {
   const rows = new Map<string, unknown>();
+  let puts = 0;
+  let deletes = 0;
   const kv: FirefliesGrantKvPort = {
     async get(key) {
       return (rows.get(key) as never) ?? null;
     },
     async put(key, value) {
+      puts++;
       rows.set(key, structuredClone(value));
     },
     async delete(key) {
+      deletes++;
       rows.delete(key);
     },
   };
-  return { rows, kv };
+  return {
+    rows,
+    kv,
+    writeCounts: () => ({ puts, deletes }),
+  };
 }
 
 describe("dstack KMS getKey and fireflies-import identity", () => {
@@ -284,7 +292,7 @@ describe("encrypted FirefliesGrantStore", () => {
       },
       { host: HOST, env: {} },
     );
-    const { rows, kv } = createMemoryKv();
+    const { rows, kv, writeCounts } = createMemoryKv();
     const store = new FirefliesGrantStore({ kv, kek: grantKek, delegateDid: delegate.did });
     const userA = await mintGrantPair(delegate.did);
     const userBAddress = privateKeyToAccount(generatePrivateKey()).address;
@@ -295,17 +303,18 @@ describe("encrypted FirefliesGrantStore", () => {
     const keyB = store.keyFor(userBAddress);
     rows.set(keyB, structuredClone(rows.get(keyA)));
 
+    const beforeWrites = writeCounts();
     const statusB = await store.status(userBAddress, {
       configuredHost: HOST,
       deps: { computeDelegationCid },
       now: userA.now,
     });
     expect(statusB).toEqual({ state: "needs_renewal", expiresAt: null });
-    // Stale ciphertext is purged on failed open.
-    expect(JSON.stringify(rows.get(keyB))).not.toContain("ciphertext");
+    // GET status is strictly read-only and never overwrites KV.
+    expect(writeCounts()).toEqual(beforeWrites);
   });
 
-  it("invalidates stored grants when the backend delegate key or KEK rotates", async () => {
+  it("invalidates stored grants when the backend delegate key or KEK rotates, while keeping status read-only", async () => {
     const keys1 = await deriveFirefliesImportKeys(
       {
         getKey: async (path) =>
@@ -320,13 +329,14 @@ describe("encrypted FirefliesGrantStore", () => {
       },
       { host: HOST, env: {} },
     );
-    const { rows, kv } = createMemoryKv();
+    const { rows, kv, writeCounts } = createMemoryKv();
     const store1 = new FirefliesGrantStore({ kv, kek: keys1.grantKek, delegateDid: keys1.delegate.did });
     const pair = await mintGrantPair(keys1.delegate.did);
     await store1.store(pair.address, pair, pair.expiresAt);
 
-    // Delegate DID rotated (same KEK, new delegate DID): must invalidate and clear ciphertext.
+    // Delegate DID rotated (same KEK, new delegate DID): status is read-only and reports needs_renewal.
     const storeRotatedDid = new FirefliesGrantStore({ kv, kek: keys1.grantKek, delegateDid: keys2.delegate.did });
+    const writesBeforeStatus = writeCounts();
     expect(
       await storeRotatedDid.status(pair.address, {
         configuredHost: HOST,
@@ -334,11 +344,22 @@ describe("encrypted FirefliesGrantStore", () => {
         now: pair.now,
       }),
     ).toEqual({ state: "needs_renewal", expiresAt: null });
+    expect(writeCounts()).toEqual(writesBeforeStatus);
+
+    // loadActive purges ciphertext on definitive delegate rotation.
+    expect(
+      await storeRotatedDid.loadActive(pair.address, {
+        configuredHost: HOST,
+        deps: { computeDelegationCid },
+        now: pair.now,
+      }),
+    ).toEqual({ state: "needs_renewal", expiresAt: null });
     expect(JSON.stringify(rows.get(store1.keyFor(pair.address)))).not.toContain("ciphertext");
 
-    // KEK rotated (same delegate DID, new KEK): must fail GCM decryption and clear ciphertext.
+    // KEK rotated (same delegate DID, new KEK): fails GCM decryption cleanly without destroying ciphertext on read.
     await store1.store(pair.address, pair, pair.expiresAt);
     const storeRotatedKek = new FirefliesGrantStore({ kv, kek: keys2.grantKek, delegateDid: keys1.delegate.did });
+    const beforeKekStatus = writeCounts();
     expect(
       await storeRotatedKek.status(pair.address, {
         configuredHost: HOST,
@@ -346,10 +367,55 @@ describe("encrypted FirefliesGrantStore", () => {
         now: pair.now,
       }),
     ).toEqual({ state: "needs_renewal", expiresAt: null });
-    expect(JSON.stringify(rows.get(store1.keyFor(pair.address)))).not.toContain("ciphertext");
+    expect(writeCounts()).toEqual(beforeKekStatus);
   });
 
-  it("transitions expired grants to needs_renewal, supports revoked markers and deletes cleanly", async () => {
+  it("preserves stored ciphertext on transient CID/verify exceptions and corrupt reads", async () => {
+    const { delegate, grantKek } = await deriveFirefliesImportKeys(
+      {
+        getKey: async (path) =>
+          Buffer.alloc(32, path === FIREFLIES_DELEGATE_KMS_PATH ? 0x95 : 0x96),
+      },
+      { host: HOST, env: {} },
+    );
+    const { rows, kv, writeCounts } = createMemoryKv();
+    const store = new FirefliesGrantStore({ kv, kek: grantKek, delegateDid: delegate.did });
+    const pair = await mintGrantPair(delegate.did);
+    await store.store(pair.address, pair, pair.expiresAt);
+    const key = store.keyFor(pair.address);
+    const originalRecord = structuredClone(rows.get(key));
+
+    const throwingCid = () => {
+      throw new Error("transient wasm cid failure");
+    };
+    const writesBefore = writeCounts();
+    expect(
+      await store.status(pair.address, {
+        configuredHost: HOST,
+        deps: { computeDelegationCid: throwingCid },
+        now: pair.now,
+      }),
+    ).toEqual({ state: "needs_renewal", expiresAt: null });
+    expect(
+      await store.loadActive(pair.address, {
+        configuredHost: HOST,
+        deps: { computeDelegationCid: throwingCid },
+        now: pair.now,
+      }),
+    ).toEqual({ state: "needs_renewal", expiresAt: null });
+    // Stored ciphertext is completely untouched; subsequent valid read recovers active state.
+    expect(writeCounts()).toEqual(writesBefore);
+    expect(rows.get(key)).toEqual(originalRecord);
+    expect(
+      await store.status(pair.address, {
+        configuredHost: HOST,
+        deps: { computeDelegationCid },
+        now: pair.now,
+      }),
+    ).toEqual({ state: "active", expiresAt: pair.expiresAt.toISOString() });
+  });
+
+  it("transitions expired grants to needs_renewal on loadActive, keeps status read-only, supports revoked markers and deletes cleanly", async () => {
     const { delegate, grantKek } = await deriveFirefliesImportKeys(
       {
         getKey: async (path) =>
@@ -357,17 +423,28 @@ describe("encrypted FirefliesGrantStore", () => {
       },
       { host: HOST, env: {} },
     );
-    const { rows, kv } = createMemoryKv();
+    const { rows, kv, writeCounts } = createMemoryKv();
     const store = new FirefliesGrantStore({ kv, kek: grantKek, delegateDid: delegate.did });
     const pair = await mintGrantPair(delegate.did, { ttlMs: 2 * 86_400_000 });
 
     await store.store(pair.address, pair, pair.expiresAt);
+    const beforeExpiredStatus = writeCounts();
     const afterExpiry = await store.status(pair.address, {
       configuredHost: HOST,
       deps: { computeDelegationCid },
       now: pair.expiresAt.getTime() + 1_000,
     });
     expect(afterExpiry).toEqual({ state: "needs_renewal", expiresAt: pair.expiresAt.toISOString() });
+    expect(writeCounts()).toEqual(beforeExpiredStatus);
+
+    // loadActive purges the definitively expired ciphertext.
+    expect(
+      await store.loadActive(pair.address, {
+        configuredHost: HOST,
+        deps: { computeDelegationCid },
+        now: pair.expiresAt.getTime() + 1_000,
+      }),
+    ).toEqual({ state: "needs_renewal", expiresAt: pair.expiresAt.toISOString() });
     expect(JSON.stringify(rows.get(store.keyFor(pair.address)))).not.toContain("ciphertext");
 
     await store.markState(pair.address, "revoked", null);

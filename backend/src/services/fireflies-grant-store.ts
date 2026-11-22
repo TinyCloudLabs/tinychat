@@ -15,6 +15,13 @@ export const FIREFLIES_GRANT_AAD_PURPOSE = "fireflies-import-grant";
 const ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
 const GCM_IV_BYTES = 12;
 const GCM_TAG_BYTES = 16;
+const DEFINITIVE_PURGE_CODES: ReadonlySet<string> = new Set([
+  "expired",
+  "wrong_delegatee",
+  "bad_signature",
+  "bad_session_signature",
+  "wrong_delegator",
+]);
 
 export type FirefliesGrantState = "none" | "active" | "needs_renewal" | "revoked";
 
@@ -268,12 +275,36 @@ export class FirefliesGrantStore {
 
   /**
    * Load, decrypt and re-verify an owner's active Fireflies import grant pair.
-   * If the stored grant is expired, bound to a rotated delegate DID, unreadable or invalid,
-   * clears its ciphertext and transitions the slot to `needs_renewal`.
+   * Destroys stored ciphertext only on definitive invalidation (expired, rotated delegate,
+   * wrong_delegatee, bad_signature, bad_session_signature or wrong_delegator). Transient errors
+   * (such as CID/verification exceptions or corrupt KV reads) never wipe the stored ciphertext.
    */
   async loadActive(
     address: string,
     options: FirefliesGrantVerifyOptions,
+  ): Promise<LoadedFirefliesGrant> {
+    return this.#inspect(address, options, { purgeDefinitive: true });
+  }
+
+  /**
+   * Strictly read-only, content-free status for `GET /api/connectors/fireflies/delegation`.
+   * Never mutates or deletes stored KV records.
+   */
+  async status(
+    address: string,
+    options: FirefliesGrantVerifyOptions,
+  ): Promise<FirefliesGrantStatus> {
+    const loaded = await this.#inspect(address, options, { purgeDefinitive: false });
+    if (loaded.state === "active") {
+      return { state: "active", expiresAt: loaded.verified.expiresAt.toISOString() };
+    }
+    return { state: loaded.state, expiresAt: loaded.expiresAt };
+  }
+
+  async #inspect(
+    address: string,
+    options: FirefliesGrantVerifyOptions,
+    mode: { purgeDefinitive: boolean },
   ): Promise<LoadedFirefliesGrant> {
     const normalized = normalizeOwnerAddress(address);
     const now = options.now ?? Date.now();
@@ -296,19 +327,22 @@ export class FirefliesGrantStore {
       typeof stored.delegateDid !== "string" ||
       typeof stored.expiresAt !== "string"
     ) {
-      await this.markState(normalized, "needs_renewal", null);
       return { state: "needs_renewal", expiresAt: null };
     }
 
     const storedExpiryMs = Date.parse(stored.expiresAt);
     if (!Number.isFinite(storedExpiryMs) || storedExpiryMs <= now) {
       const reportedExpiry = Number.isFinite(storedExpiryMs) ? stored.expiresAt : null;
-      await this.markState(normalized, "needs_renewal", reportedExpiry);
+      if (mode.purgeDefinitive && Number.isFinite(storedExpiryMs)) {
+        await this.markState(normalized, "needs_renewal", reportedExpiry);
+      }
       return { state: "needs_renewal", expiresAt: reportedExpiry };
     }
 
     if (stored.delegateDid !== this.#delegateDid) {
-      await this.markState(normalized, "needs_renewal", null);
+      if (mode.purgeDefinitive) {
+        await this.markState(normalized, "needs_renewal", null);
+      }
       return { state: "needs_renewal", expiresAt: null };
     }
 
@@ -316,7 +350,6 @@ export class FirefliesGrantStore {
     try {
       envelope = this.#open(stored as StoredActiveGrantRecord, normalized);
     } catch {
-      await this.markState(normalized, "needs_renewal", null);
       return { state: "needs_renewal", expiresAt: null };
     }
 
@@ -335,22 +368,12 @@ export class FirefliesGrantStore {
     );
     if (!verified.ok) {
       const reportedExpiry = verified.code === "expired" ? stored.expiresAt : null;
-      await this.markState(normalized, "needs_renewal", reportedExpiry);
+      if (mode.purgeDefinitive && DEFINITIVE_PURGE_CODES.has(verified.code)) {
+        await this.markState(normalized, "needs_renewal", reportedExpiry);
+      }
       return { state: "needs_renewal", expiresAt: reportedExpiry };
     }
 
     return { state: "active", envelope, verified: verified.verified };
-  }
-
-  /** Content-free status for `GET /api/connectors/fireflies/delegation`. */
-  async status(
-    address: string,
-    options: FirefliesGrantVerifyOptions,
-  ): Promise<FirefliesGrantStatus> {
-    const loaded = await this.loadActive(address, options);
-    if (loaded.state === "active") {
-      return { state: "active", expiresAt: loaded.verified.expiresAt.toISOString() };
-    }
-    return { state: loaded.state, expiresAt: loaded.expiresAt };
   }
 }
