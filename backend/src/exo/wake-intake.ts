@@ -14,6 +14,15 @@ export const WAKE_QUEUE_CONCURRENCY = 4;
 export const EXO_WAKE_OWNER_LIMIT_PER_MIN = 30;
 export const EXO_WAKE_OWNER_WINDOW_MS = 60_000;
 
+/**
+ * Wakes queued per fixed window across all owners. Only a wake for an owner the holder index holds can reach the
+ * queue, and each one costs grant and node reads, so this is the ceiling on that work. A wake past it is dropped after
+ * the usual 202, so the answer does not tell a sender whether the owner holds a grant. The owner limit above is
+ * charged later, per verified owner, and stays the tighter bound for any one owner.
+ */
+export const EXO_WAKE_INTAKE_LIMIT_PER_MIN = 600;
+export const EXO_WAKE_INTAKE_WINDOW_MS = 60_000;
+
 /** Bound on the shutdown wait for queued and running wakes. Past it, shutdown exits non-zero. */
 export const WAKE_DRAIN_TIMEOUT_MS = 30_000;
 
