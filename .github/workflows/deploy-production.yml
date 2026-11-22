@@ -14,7 +14,7 @@ name: Deploy production
 #
 # Every path, rollback and hotfix included, passes two gates in `target` before anything deploys: for web, an audit of
 # a production build of the commit, and main's CI green on the commit (the release gate). The backend image is then
-# scanned by trivy in deploy-backend-phala.yml before it reaches the CVM. docs/security/required-checks.md lists them.
+# scanned by trivy in deploy-backend-phala.yml before it is pushed. docs/security/required-checks.md lists them.
 #
 # Web deploys by fast-forwarding the `production` branch, which the Cloudflare Pages Git integration builds as
 # production. A ruleset lets only deploy keys update `production`, so the push goes over SSH with the release-push
@@ -170,6 +170,7 @@ jobs:
       # Release gate: every check the deploy requires (scripts/release/require-green.mjs: Gitleaks, Backend, Native
       # ceiling, Frontend) must be green on the commit being shipped. For a stable tag on the Release workflow's
       # [skip ci] version commit, that is its parent, provided the version commit changes only release metadata.
+      # A release from before the gate existed (on main, ahead of the commit that added the script) needs none.
       - name: Require green CI on the commit being shipped
         env:
           GH_TOKEN: ${{ github.token }}

@@ -42,17 +42,19 @@ All of these run before anything changes in production; any failure deploys noth
    `Frontend tests, lint and browser harnesses` are `success` on the commit being shipped (GitHub Actions runs only;
    the newest run of each name decides; skipped, cancelled or missing fails). A stable tag sits on the Release
    workflow's `[skip ci]` version commit; the gate then checks its parent, and only if the version commit changes
-   release metadata alone (changesets, changelogs, `version` fields).
-3. **Backend image scan** (`deploy-backend-phala.yml`, before the CVM is touched): trivy 0.76.2 on the pushed image
-   by digest, `--severity CRITICAL,HIGH --ignore-unfixed`, against the reviewed `.trivyignore` from the workflow
-   commit. Any fixable HIGH or CRITICAL not in the baseline fails the deploy.
+   release metadata alone (changesets, changelogs, `version` fields). A release from before the gate (an ancestor of
+   the parent of the first `main` commit that added `require-green.mjs`, and an ancestor of `main`) never ran these
+   checks on push, so it deploys without them and the log says `pre-gate release: checks not required`; this keeps
+   rollbacks to earlier releases possible. Every later commit needs them green, and a commit off `main` never
+   qualifies.
+3. **Backend image scan** (`deploy-backend-phala.yml`): build, scan, then push. trivy 0.76.2 scans the built image
+   before it is pushed, `--severity CRITICAL,HIGH --ignore-unfixed`, against the reviewed `.trivyignore` from the
+   workflow commit. Any fixable HIGH or CRITICAL not in the baseline fails the deploy, and nothing reaches GHCR
+   (neither the commit tag nor `:latest`) or the CVM. `build-images.yml` (manual seeding of a new CVM) still pushes
+   unscanned images, `:latest` included; the production deploy never reads `:latest` (it pins the commit tag).
 
 gitleaks 8.30.1 and trivy 0.76.2 are installed by `.github/scripts/install-security-tool.sh`, pinned by version and
 sha256. A missing tool, a checksum mismatch or an API error fails the job.
-
-Known limit: a release made before the gate existed has no `Gitleaks` or `Backend` run on its commit, so the gate
-refuses to redeploy it (for example as a rollback). Pages' own rollback is unaffected. After this merges, the first
-stable release gives a gated commit to roll back to.
 
 ## Ruleset change: `main: release PRs only` (id 25069687)
 
