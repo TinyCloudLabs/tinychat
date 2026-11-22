@@ -171,6 +171,12 @@ the gateway applies it on every call. A missing or unreadable file reads as `off
 
 - Main's OMP has two MCP servers on the egress socket (bot token required): `web`, the gateway's `POST /v1/mcp`, and
   `app` (see Questions from Main). The `web` tools, `search` and `fetch`, reach OMP as `mcp__web_search` and `mcp__web_fetch`; OMP's own web tools are off.
+- Each server serves only the tool names on its allow-list (`src/tool-policy.ts`): `tools/list` drops any other tool
+  and `tools/call` refuses any other name before dispatch. A new tool is added to that list. The same file holds the
+  never-list (billing checkout and portal, delegations and agent access, connector sign-in and credentials, account
+  deletion, app lock, the bot's Web access setting, secret values) as tool name patterns and backend route prefixes;
+  tests fail if an allowed tool, or a backend route the bots service may call (`backend/src/bots-service-routes.ts`),
+  matches it.
 - A search goes to the search provider (Tavily Search; `BOTS_TEST_WEB_URL` is a loopback mock for tests). Without
   `TAVILY_API_KEY` a search answers "isn't available".
 - A page is read by the `bots-fetch` container (`src/fetch-main.ts`, `POST /fetch {"url", "hosts"}`), which reads pages
