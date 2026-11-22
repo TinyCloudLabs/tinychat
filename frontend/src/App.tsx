@@ -177,6 +177,10 @@ import { clearAgentSessionCache } from "./lib/agentDelegation";
 import { clearVaultSecretCache } from "./lib/connectors/connectorSecrets";
 import { isSignInCancelled, UserFacingError } from "./lib/authErrors";
 import { signOutOpenKeySession } from "./lib/openkeySignOut";
+import { registryPublishConfig } from "./lib/registryConsent/config";
+import { startSignOutClosingRegistryConsent, cancelPendingRegistryConsent } from "./lib/registryConsent/broker";
+import { runFinishSetupIntent, runSignInRegistryPublish } from "./lib/registryConsent/intent";
+import { RegistryConsentDialog } from "./shell/RegistryConsentDialog";
 import { clearSessionAfterHandoff, registerSessionSignedOutHook } from "./lib/sessionSignedOut";
 import {
   describeAuthFailure, isNativeOpenKeySession, isNativeOpenKeySignIn, isNativeStorageError, logNativeOpenKeyError,
@@ -318,6 +322,7 @@ export function App() {
       config: {
         autoCreateSpace: true, includeAccountRegistryPermissions: false, tinycloudHosts: TINYCLOUD_HOSTS, uiPlatform: sdkUiPlatform(),
         ...(LOCAL_VALIDATION ? {} : await replicationConfigPatch(replicationPrincipalFor(address))),
+        ...registryPublishConfig(),
       },
       // Checked before and after the snapshot of what is saved, immediately before the new session is written.
       canCommit: () => (signedOut() ? "signed-out" : busy() ? "busy" : null),
@@ -476,7 +481,8 @@ export function App() {
     // The Home features flag stays: it holds no secrets and lets the next sign-in ask for those sets.
     if (tcw) {
       const cleanup = () => { try { tcw.cleanup(); } catch { /* Continue local cleanup. */ } };
-      const localSignOut = signOutReplicaAware(tcw);
+      // The SDK's sign-out starts first, then the registry consent closes (answered false): see broker.ts.
+      const localSignOut = startSignOutClosingRegistryConsent(() => signOutReplicaAware(tcw));
       // Binding paused: this client never bound the saved copy, so its signOut cannot erase it. Erase it
       // now instead of at the next page load (replicationOffPurge.ts); a failure warns like a bound
       // sign-out's and leaves the retry markers for the next load.
@@ -496,6 +502,8 @@ export function App() {
           setError(WEB_SIGN_OUT_RECOVERY_WARNING);
         })
         .finally(cleanup);
+    } else {
+      cancelPendingRegistryConsent();
     }
     selectionControllerRef.current = null;
     memoryRef.current = null;
@@ -828,6 +836,7 @@ export function App() {
             provider: readOnlyAccountProvider(storedAddress),
             // Local copy ON adds the replication option (and the same provider). See replicationRestore.ts.
             ...(LOCAL_VALIDATION ? {} : await replicationRestorePatch(storedAddress)),
+            ...registryPublishConfig(),
             ...(renewalRestore ? { renewalLeaseAuthorization: renewalRestore.leaseAuthorization } : {}),
           }),
         ...(renewalRestore ? {
@@ -1220,6 +1229,7 @@ export function App() {
         nonce,
         autoCreateSpace: !LOCAL_VALIDATION,
         includeAccountRegistryPermissions: false as const,
+        ...registryPublishConfig(),
         tinycloudHosts: TINYCLOUD_HOSTS,
         uiPlatform: sdkUiPlatform(),
         // The web asks for connector secrets and the decrypt grant only once this device has used Connectors (opening
@@ -1287,6 +1297,8 @@ export function App() {
       setSpaceId(signedTcw.spaceId ?? null);
       void ensureTranscriptWriterDelegation({ tcw: signedTcw, backendUrl: BACKEND_URL, sessionStore: sessionStoreRef.current });
       setState("ready");
+      // TinyChat signs in with autoBootstrapAccount off, so the SDK does not publish at sign-in on its own: ask it here.
+      void runSignInRegistryPublish(signedTcw, { location: window.location, history: window.history });
     } catch (caught) {
       if (isSignInCancelled(caught)) {
         setError(null);
@@ -1476,6 +1488,12 @@ export function App() {
 
   const navigate = useNavigate();
   const location = useLocation();
+  // A signed-in page opened (or navigated, by the Home card) to ?finish-setup=registry removes the query, then asks to
+  // publish. Inert while the consent is off.
+  useEffect(() => {
+    if (state !== "ready" || !tcw) return;
+    void runFinishSetupIntent(tcw, { location: window.location, history: window.history });
+  }, [state, tcw, location.search]);
   // The recorder's Open: the Library, then the note just saved.
   const openSavedNote = useOpenSavedNote(tcw);
   const loadFirstScreen = useCallback(() => readFirstScreen(tcw!, did), [tcw, did]);
@@ -1772,6 +1790,7 @@ export function App() {
         nativeSignInScreenShown: nativeSignInFlow.screenShown, shareTokenPresent: !!shareToken }) && <RecordingOverlay />}
       {/* Face ID / passcode over everything in the phone app (TC-2738); the app keeps loading underneath. */}
       <AppLockGate />
+      <RegistryConsentDialog />
       {captureFailClosed && <div role="alert" className="fixed inset-x-4 bottom-4 z-[60] rounded-xl border bg-card p-4 shadow-lg">
         Recordings are being kept unassigned until TinyCloud One can update this phone.
         <button type="button" className="ml-3 underline" onClick={() => void signOut()}>Retry</button>
