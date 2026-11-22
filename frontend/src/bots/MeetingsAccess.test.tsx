@@ -22,22 +22,32 @@ const BOT = BOTS_STRINGS.mainName;
 const DID = "did:pkh:eip155:1:0x" + "11".repeat(20);
 const UNTIL = Date.UTC(2026, 10, 29, 12);
 const GRANT: ReadGrant = { serialized: "s", siwe: "w", signature: "g" };
-const settings = (meetings: "off" | "on" | "ended", expiresAt: number | null = null, extra: Record<string, string> = {}) =>
-  ({ serviceDid: DID, expiresAt, areas: { meetings, ...extra } }) as ReadSettings;
+const OLD_CID = "bafy-old-grant";
+const NEW_CID = "bafy-new-grant";
+const settings = (meetings: "off" | "on" | "ended", expiresAt: number | null = null, extra: Record<string, string> = {}, grantCid: string | null = null) =>
+  ({ serviceDid: DID, expiresAt, grantCid, areas: { meetings, ...extra } }) as ReadSettings;
 
-function fake(initial: ReadSettings | Error, options: { sign?: () => Promise<ReadGrant>; set?: () => Promise<ReadSettings> } = {}) {
+function fake(initial: ReadSettings | Error, options: { sign?: () => Promise<ReadGrant>; set?: () => Promise<ReadSettings>; revoke?: () => Promise<void> } = {}) {
+  const calls: string[] = [];
   const puts: { area: ReadArea; enabled: boolean; grant?: ReadGrant }[] = [];
   const signed: { did: string; areas: ReadArea[] }[] = [];
+  const revoked: string[] = [];
   const api: MeetingsAccessApi = {
     readSettings: async () => { if (initial instanceof Error) throw initial; return initial; },
     signReadGrant: async (did, areas) => { signed.push({ did, areas }); return options.sign ? options.sign() : GRANT; },
     setReadArea: async (area, enabled, grant) => {
+      calls.push(`put ${enabled ? "on" : "off"}`);
       puts.push({ area, enabled, grant });
       if (options.set) return options.set();
-      return enabled ? settings("on", UNTIL) : settings("off");
+      return enabled ? settings("on", UNTIL, {}, NEW_CID) : settings("off");
+    },
+    revokeReadGrant: async (cid) => {
+      calls.push(`revoke ${cid}`);
+      revoked.push(cid);
+      if (options.revoke) await options.revoke();
     },
   };
-  return { api, puts, signed };
+  return { api, puts, signed, revoked, calls };
 }
 
 const flush = () => act(async () => { for (let i = 0; i < 6; i++) await Promise.resolve(); });
@@ -122,5 +132,49 @@ test("a refused signature sends nothing and shows the failure line", async () =>
   await click(host, `Let ${BOT} read them`);
   await click(host, "Allow for 7 days");
   expect(puts).toHaveLength(0);
+  expect(host.querySelector('[role="alert"]')?.textContent).toBe("Couldn't change this. Try again.");
+});
+
+test("Turn off revokes the stored grant as the owner, then turns meetings off", async () => {
+  const { api, revoked, calls } = fake(settings("on", UNTIL, {}, OLD_CID));
+  const host = await render(api);
+  await click(host, "Turn off");
+  expect(revoked).toEqual([OLD_CID]);
+  expect(calls).toEqual([`revoke ${OLD_CID}`, "put off"]);
+  expect(host.textContent).toContain(`${BOT} can't read your meetings.`);
+});
+
+test("Turn off completes when the revoke fails", async () => {
+  const { api, calls } = fake(settings("on", UNTIL, {}, OLD_CID), { revoke: async () => { throw new Error("read_revoke_failed"); } });
+  const host = await render(api);
+  await click(host, "Turn off");
+  expect(calls).toEqual([`revoke ${OLD_CID}`, "put off"]);
+  expect(host.textContent).toContain(`${BOT} can't read your meetings.`);
+  expect(host.querySelector('[role="alert"]')).toBeNull();
+});
+
+test("Turn off keeps the grant while another area stays on with it", async () => {
+  const { api, revoked, puts } = fake(settings("on", UNTIL, { feed: "on" }, OLD_CID));
+  const host = await render(api);
+  await click(host, "Turn off");
+  expect(revoked).toEqual([]);
+  expect(puts).toEqual([{ area: "meetings", enabled: false, grant: undefined }]);
+});
+
+test("a new grant revokes the one it replaced, after the new one is stored", async () => {
+  const { api, calls } = fake(settings("ended", UNTIL, {}, OLD_CID));
+  const host = await render(api);
+  await click(host, `Let ${BOT} read them`);
+  await click(host, "Allow for 7 days");
+  expect(calls).toEqual(["put on", `revoke ${OLD_CID}`]);
+  expect(host.textContent).toContain(`${BOT} can read your meetings until ${date(UNTIL)}.`);
+});
+
+test("a refused new grant revokes nothing", async () => {
+  const { api, calls } = fake(settings("ended", UNTIL, {}, OLD_CID), { set: async () => { throw new BotsError("failed"); } });
+  const host = await render(api);
+  await click(host, `Let ${BOT} read them`);
+  await click(host, "Allow for 7 days");
+  expect(calls).toEqual(["put on"]);
   expect(host.querySelector('[role="alert"]')?.textContent).toBe("Couldn't change this. Try again.");
 });

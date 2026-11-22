@@ -6,13 +6,9 @@ import { Button } from "@/components/ui/button";
 import { BotsRouteMissing } from "./botsApi";
 import { MEETINGS_ACCESS_STRINGS as COPY } from "./botsStrings";
 import type { ReadArea } from "./trustbotReadAreas";
-import type { ReadGrant, ReadSettings } from "./trustbotReadGrant";
+import { changeReadArea, type ReadAreaApi, type ReadSettings } from "./trustbotReadGrant";
 
-export interface MeetingsAccessApi {
-  readSettings(): Promise<ReadSettings>;
-  setReadArea(area: ReadArea, enabled: boolean, grant?: ReadGrant): Promise<ReadSettings>;
-  signReadGrant(serviceDid: string, areas: ReadArea[]): Promise<ReadGrant>;
-}
+export type MeetingsAccessApi = ReadAreaApi;
 
 const AREA: ReadArea = "meetings";
 const dateOf = (at: number) => new Date(at).toLocaleDateString(undefined, { dateStyle: "medium" });
@@ -83,14 +79,7 @@ export function MeetingsAccess({ api }: { api: MeetingsAccessApi }) {
     setFailed(false);
     setSaving(true);
     try {
-      let stored: ReadSettings;
-      if (enabled) {
-        const areas = (Object.keys(saved.areas) as ReadArea[]).filter((area) => area === AREA || saved.areas[area] === "on");
-        const grant = await api.signReadGrant(saved.serviceDid, areas);
-        stored = await api.setReadArea(AREA, true, grant);
-      } else {
-        stored = await api.setReadArea(AREA, false);
-      }
+      const stored = await changeReadArea(api, saved, AREA, enabled);
       if (!alive.current) return;
       setSaved(stored);
       setConfirming(false);
