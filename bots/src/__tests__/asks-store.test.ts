@@ -67,6 +67,22 @@ describe("the owner's setting", () => {
     }
   });
 
+  test("a saved file without `enabled` reads as on, without a log; only a saved false is off", () => {
+    const logs = spyOn(console, "log").mockImplementation(() => {});
+    try {
+      mkdirSync(layout().dataDir, { recursive: true });
+      writeFileSync(asksFile(layout()), JSON.stringify({ outsideSeen: true }));
+      expect(readAsksEnabled(layout())).toBe(true);
+      writeFileSync(asksFile(layout()), JSON.stringify({}));
+      expect(readAsksEnabled(layout())).toBe(true);
+      writeFileSync(asksFile(layout()), JSON.stringify({ enabled: false, outsideSeen: true }));
+      expect(readAsksEnabled(layout())).toBe(false);
+      expect(logs).not.toHaveBeenCalled();
+    } finally {
+      logs.mockRestore();
+    }
+  });
+
   test("lives in the bot's data directory beside the web setting, never under the state that goes into a sandbox", () => {
     const { dataDir, stateSnapshot } = layout();
     expect(asksFile(layout())).toBe(join(dataDir, "asks.json"));

@@ -200,8 +200,9 @@ This is the `ask_owner` tool of the `app` MCP server.
   question is still allowed). A question left unanswered for 24 hours expires.
 - The owner's setting is `/data/bots/<bot id>/asks.json` and the requests are `/data/bots/<bot id>/requests.json`, in
   the data directory beside `web.json`. Neither is under `state/`, which is what gets copied into a sandbox, and no
-  sandbox mount is the data directory or inside it. Their only link to the box is the gateway. A missing setting reads
-  as on (the default); an unreadable or malformed one reads as off and is logged (`asks_setting_unreadable`).
+  sandbox mount is the data directory or inside it. Their only link to the box is the gateway. A missing setting, or
+  one saved without `enabled`, reads as on (the default); only a saved `false` is off. An unreadable or malformed one
+  reads as off and is logged (`asks_setting_unreadable`).
 - The gateway cannot call the supervisor (separate containers), so it holds a validated new question in memory until
   the supervisor collects it over the control socket: `POST /bots/<id>/asks/drain` answers `{ asks, outside }`, and
   `PUT /bots/<id>/asks` gives the setting, the counts and the declined hashes. The supervisor does this at sandbox
