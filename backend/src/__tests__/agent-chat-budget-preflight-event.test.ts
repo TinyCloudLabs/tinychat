@@ -40,7 +40,7 @@ beforeEach(() => {
   _setStripeClient({ customers: { search: async () => ({ data: [] }) } } as unknown as Stripe);
   globalThis.fetch = (async (input: unknown) => {
     if (!String(input).endsWith("/models")) throw new Error("Unexpected global network request");
-    return Response.json({ data: [{ id: model, context_length: 100_000, pricing: { prompt: "0.000001", completion: "0.000001" } }] });
+    return Response.json({ data: [{ id: model, context_length: 100_000, pricing: { prompt: "0.000003", completion: "0.000008" } }] });
   }) as typeof fetch;
   info = spyOn(console, "info").mockImplementation(() => {});
   warn = spyOn(console, "warn").mockImplementation(() => {});
