@@ -9,11 +9,16 @@ export interface BotMessage {
   role: "user" | "bot";
   text: string;
   at: string;
-  /** Set by the service on a message the app sent for the owner (a decision on a question card), not typed by the owner. */
+  /** Set by the service on a message the app sent for the owner (a decision on a question or proposal card), not typed by the owner. */
   origin?: "app";
   /** On an app message: what the owner decided. */
-  decision?: "answered" | "declined" | "stopped";
+  decision?: AppDecision;
 }
+
+/** What an app message to Main reports: a decision on a question card, or on a proposal card. */
+export type AppDecision = "answered" | "declined" | "stopped" | "action_approved" | "action_declined";
+export const APP_DECISIONS: readonly AppDecision[] = ["answered", "declined", "stopped", "action_approved", "action_declined"];
+export const appDecision = (value: unknown): AppDecision | undefined => APP_DECISIONS.find((known) => known === value);
 
 /** What a bot did on its computer, as the service records it: fixed verbs and counts, never words the model wrote. */
 export interface BotActivity {
@@ -83,7 +88,30 @@ export interface AskRequest {
   resolvedAt?: string;
 }
 
-export type AskDecision = { decision: "decline" } | { decision: "answer"; answer: string } | { decision: "answer"; choice: number };
+/** One message Main proposed sending to two or more of the owner's other bots. The card is made from these fields. */
+export interface ActionRequest {
+  id: string;
+  kind: "action";
+  action: "message_bots";
+  state: "pending" | "sending" | "done" | "declined" | "expired" | "stopped";
+  askedAt: string;
+  expiresAt: string;
+  outside: boolean;
+  undelivered: boolean;
+  resolvedAt?: string;
+  /** Each recipient with its current name; null when the bot is gone. */
+  targets: { key: string; name: string | null }[];
+  /** Main's message, while pending. */
+  text?: string;
+  /** While pending: what Send must name, so only the message on the card is sent. */
+  binding?: string;
+  /** Once done: which recipients got it. */
+  outcomes?: { key: string; delivered: boolean }[];
+}
+
+export type BotRequest = AskRequest | ActionRequest;
+
+export type AskDecision = { decision: "decline" } | { decision: "answer"; answer: string } | { decision: "answer"; choice: number } | { decision: "approve"; binding: string };
 
 /** Asks the app sends to Main for the owner's decision on a request; the service composes the words. */
 export interface SendOptions {
@@ -100,9 +128,9 @@ export interface BotsApi {
   getAsks(signal?: AbortSignal): Promise<{ enabled: boolean }>;
   setAsks(settings: { enabled: boolean }, signal?: AbortSignal): Promise<{ enabled: boolean }>;
   /** Pending requests first, then recent resolved ones. */
-  listRequests(signal?: AbortSignal): Promise<AskRequest[]>;
+  listRequests(signal?: AbortSignal): Promise<BotRequest[]>;
   /** Records the owner's decision; throws when the request is no longer pending. */
-  answerRequest(id: string, decision: AskDecision, signal?: AbortSignal): Promise<AskRequest>;
+  answerRequest(id: string, decision: AskDecision, signal?: AbortSignal): Promise<BotRequest>;
   /**
    * Resolves after the stream's `done` or `error` event; throws BotsError when the stream fails or ends without one.
    * With `options.appReply` the message is the app's report of the owner's decision on that request: no text goes
@@ -204,7 +232,7 @@ function toMessages(payload: unknown): BotMessage[] {
       ? [{
         id: value.id, role: value.role, text: value.text, at: typeof value.at === "string" ? value.at : "",
         ...(value.origin === "app" ? { origin: "app" as const } : {}),
-        ...(value.origin === "app" && (value.decision === "answered" || value.decision === "declined" || value.decision === "stopped") ? { decision: value.decision } : {}),
+        ...(value.origin === "app" && appDecision(value.decision) ? { decision: appDecision(value.decision) } : {}),
       }]
       : [];
   });
@@ -227,8 +255,36 @@ function toWebSettings(payload: unknown): MainWebSettings {
 
 const isoTime = (value: unknown): value is string => typeof value === "string" && Number.isFinite(Date.parse(value));
 
-function toRequest(payload: unknown): AskRequest {
+const ACTION_STATES: readonly ActionRequest["state"][] = ["pending", "sending", "done", "declined", "expired", "stopped"];
+
+function toActionRequest(value: Record<string, unknown>): ActionRequest {
+  const { id, state, askedAt, expiresAt, outside, resolvedAt, targets, text, binding, outcomes } = value;
+  const known = ACTION_STATES.find((candidate) => candidate === state);
+  if (typeof id !== "string" || id.length === 0 || id.length > 64 || value.action !== "message_bots" || !known
+    || !isoTime(askedAt) || !isoTime(expiresAt) || !Array.isArray(targets)) throw new BotsError("failed");
+  return {
+    id, kind: "action", action: "message_bots", state: known, askedAt, expiresAt,
+    outside: outside === true,
+    undelivered: value.undelivered === true,
+    ...(isoTime(resolvedAt) ? { resolvedAt } : {}),
+    targets: targets.flatMap((target: unknown) => {
+      const { key, name } = fields(target);
+      return typeof key === "string" ? [{ key, name: typeof name === "string" ? name : null }] : [];
+    }),
+    ...(typeof text === "string" ? { text } : {}),
+    ...(typeof binding === "string" ? { binding } : {}),
+    ...(Array.isArray(outcomes) ? {
+      outcomes: outcomes.flatMap((outcome: unknown) => {
+        const { key, delivered } = fields(outcome);
+        return typeof key === "string" && typeof delivered === "boolean" ? [{ key, delivered }] : [];
+      }),
+    } : {}),
+  };
+}
+
+function toRequest(payload: unknown): BotRequest {
   const value = fields(payload);
+  if (value.kind === "action") return toActionRequest(value);
   const { id, kind, state, askedAt, expiresAt, question, choices, answer, outside, resolvedAt } = value;
   if (
     typeof id !== "string" || id.length === 0 || id.length > 64 || kind !== "ask" ||
@@ -245,7 +301,7 @@ function toRequest(payload: unknown): AskRequest {
   };
 }
 
-function toRequests(payload: unknown): AskRequest[] {
+function toRequests(payload: unknown): BotRequest[] {
   const list = fields(payload).requests;
   if (!Array.isArray(list)) throw new BotsError("failed");
   return list.flatMap((item: unknown) => { try { return [toRequest(item)]; } catch { return []; } });

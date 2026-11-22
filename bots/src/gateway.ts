@@ -6,6 +6,8 @@
 
 import { closeSync, existsSync, fsyncSync, openSync, readFileSync, renameSync, writeSync } from "node:fs";
 import { dirname } from "node:path";
+import { ActionDesk, type ActionLedgerStore, PROPOSE_TOOL } from "./actions-desk";
+import { ACTION_ERRORS, type ActionsPush, type NewAction } from "./actions";
 import { AskDesk, APP_TOOLS } from "./asks-desk";
 import type { AsksPush, NewAsk } from "./asks";
 import type { GatewayConfig } from "./config";
@@ -290,6 +292,8 @@ export interface GatewayDeps {
   now?: () => number;
   store?: BudgetStore;
   ownerStore?: OwnerStore;
+  /** The approvals `propose_action` issued; in memory only without it. */
+  actionStore?: ActionLedgerStore;
 }
 
 /** Which owner each bot belongs to (bot id to owner id), so one owner's bots share a daily total across restarts. */
@@ -350,6 +354,7 @@ export class Gateway {
   readonly #known = new Map<string, Set<string>>();
   readonly #webUsed = new Map<string, WebUse>();
   readonly #asks = new AskDesk(() => this.#now(), botId => this.#owners.get(botId) ?? botId);
+  readonly #actions: ActionDesk;
   #webTotal = { searches: 0, pages: 0 };
   readonly #mcpOpen = new Map<string, number>();
   readonly #calling = new Set<string>();
@@ -380,6 +385,7 @@ export class Gateway {
     }
     this.#ownerStore = deps.ownerStore;
     for (const [botId, ownerId] of Object.entries(this.#ownerStore?.load() ?? {})) this.#owners.set(botId, ownerId);
+    this.#actions = new ActionDesk(() => this.#now(), botId => this.#owners.get(botId) ?? botId, botId => this.#asks.outside(botId), deps.actionStore);
   }
 
   /**
@@ -401,6 +407,7 @@ export class Gateway {
     this.#tokens.delete(botId);
     this.#policy.delete(botId);
     this.#asks.drop(botId);
+    this.#actions.drop(botId);
     this.#known.delete(botId);
   }
 
@@ -422,6 +429,21 @@ export class Gateway {
   /** Whether outside text has reached Main's conversation while the bot's sandbox has run (the supervisor keeps it). */
   asksOutside(botId: string): boolean {
     return this.#asks.outside(botId);
+  }
+
+  /** The supervisor's counts and final proposals for `propose_action`, and at a turn's start the recipients Main may name. */
+  setActions(botId: string, push: ActionsPush): void {
+    this.#actions.push(botId, push);
+  }
+
+  /** The proposals the box has made since the supervisor last collected them. */
+  drainActions(botId: string): NewAction[] {
+    return this.#actions.drain(botId);
+  }
+
+  /** Spends an approval after the owner's tap: once, for that bot and binding. The supervisor alone reaches this. */
+  spendAction(botId: string, id: string, binding: string): boolean {
+    return this.#actions.spend(botId, id, binding);
   }
 
   /** Whether a search provider key is configured at all. */
@@ -622,14 +644,16 @@ export class Gateway {
       }
       if (method === "ping") return Response.json(rpcResult(id, {}));
       // The app tools are offered only while the owner's setting is on; the call is checked again on every call.
-      if (method === "tools/list") return Response.json(rpcResult(id, { tools: servedTools<{ name: string }>(server, server === "app" ? (this.#asks.enabled(botId) ? APP_TOOLS : []) : TOOLS) }));
+      if (method === "tools/list") return Response.json(rpcResult(id, { tools: servedTools<{ name: string }>(server, server === "app" ? (this.#asks.enabled(botId) ? [...APP_TOOLS, PROPOSE_TOOL] : []) : TOOLS) }));
       if (method === "tools/call") {
         const name = params.name;
         if (!toolAllowed(server, name)) return Response.json(rpcFailure(id, -32602, "Unknown tool"));
         const args = isRecord(params.arguments) ? params.arguments : {};
         if (server === "app") {
-          if (name !== "ask_owner") return Response.json(rpcFailure(id, -32602, "Unknown tool"));
-          return Response.json(rpcResult(id, this.#asks.call(botId, args)));
+          if (name === "ask_owner") return Response.json(rpcResult(id, this.#asks.call(botId, args)));
+          if (name !== "propose_action") return Response.json(rpcFailure(id, -32602, "Unknown tool"));
+          if (!this.#asks.enabled(botId)) return Response.json(rpcResult(id, toolText(ACTION_ERRORS.off, true)));
+          return Response.json(rpcResult(id, this.#actions.call(botId, args)));
         }
         if (name !== "search" && name !== "fetch") return Response.json(rpcFailure(id, -32602, "Unknown tool"));
         return Response.json(rpcResult(id, await this.#webCall(botId, name, args)));

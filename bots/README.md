@@ -264,6 +264,41 @@ This is the `ask_owner` tool of the `app` MCP server.
 - The log holds counts by outcome (`{gateway:"asks", tool:"ask_owner", outcome}`) and the owner's decision outcome,
   never a question, a choice, an answer or a request id.
 
+### Proposals from Main
+
+Main can propose an action for the owner to approve with one tap; the service then does it, exactly once. The first
+kind is `message_bots`: one message to 2 to 8 of the owner's other bots. It is the `propose_action` tool of the `app`
+MCP server, listed and served under the same setting as `ask_owner` (on by default). `message_bot` reaches one bot per
+owner message (the same bot again is fine); a message for more bots goes through a proposal.
+
+- `propose_action { kind: "message_bots", targets, text }`: `targets` are 2 to 8 distinct keys of bots Main may
+  message in this turn (never `main`), `text` is 1 to 2000 characters, kept as plain text with its lines (control,
+  direction and format characters removed). A turn relayed from another bot may message no bot, so it cannot propose.
+  It answers `{ id, state: "pending" }` at once. Refusals are fixed sentences (`ACTION_ERRORS` in `actions.ts`).
+- Limits, owner-wide: 3 open proposals and 10 a day (UTC). A proposal the owner declined or that expired is final:
+  the same kind, recipients and text (whitespace-normalized) is refused while its metadata is kept.
+- The gateway issues each proposal a binding, `sha256(["tinycloud-action/1", owner, bot, kind, targets, text])`, and
+  keeps it in `actions.json` beside the budget file. The owner's Send names that binding; the supervisor checks it
+  against the stored proposal and recomputes it from the stored fields, marks the proposal `sending` (so a second Send
+  is 409), then has the gateway spend it (`POST /bots/<id>/actions/spend { id, binding }`: 204 once, 409 for any other
+  binding, bot, a second spend or after expiry plus an hour). Only after a spend does it deliver, by the path
+  `message_bot` takes, to the recipients the backend admits for Main at that moment. A chat message is never an
+  approval: the only way is the signed answer route.
+- The supervisor collects proposals like questions (`POST /bots/<id>/actions/drain`, `PUT /bots/<id>/actions` with the
+  counts, the final hashes and, at a turn's start, the recipients Main may name) into
+  `/data/bots/<bot id>/actions.json`. Turning the setting off closes pending proposals as `stopped`, with nothing sent
+  to Main.
+- Routes, Main only:
+  - `GET /v1/bots/main/requests` lists proposals beside questions: `{ id, kind: "action", action: "message_bots", state,
+    askedAt, expiresAt, outside, resolvedAt?, targets, text?, binding?, outcomes?, undelivered? }`. `state` is
+    `pending`, `sending`, `done`, `declined`, `expired` or `stopped`; `text` and `binding` are there only while pending;
+    `outcomes` (`[{ key, delivered }]`) once done. The backend adds each recipient's current name.
+  - `POST /v1/bots/main/requests/<id>/answer`: `{ "decision": "approve", "binding": "<64 hex>", "messageableBotKeys":
+    [...] }` (the backend fills the keys) or `{ "decision": "decline" }`.
+  - `appReply` tells Main the outcome with a fixed sentence around the recipients' keys (`ACTION_REPLIES`); its history
+    line has `decision: "action_approved" | "action_declined"`.
+- Retention: the text goes when the proposal is decided or expires; metadata stays 7 days, at most 200.
+
 ### Saved state
 
 The supervisor saves each bot's tmpfs to `/data/bots/<bot id>/state`: when a turn settles, with the sandbox paused

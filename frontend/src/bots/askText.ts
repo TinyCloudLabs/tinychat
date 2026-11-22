@@ -13,6 +13,13 @@ export function plainText(value: string, max: number): string {
   return points.length > max ? `${points.slice(0, max - 1).join("")}…` : text;
 }
 
+/** Plain text that keeps its lines (a proposed message): each line as `plainText`, at most two line breaks in a row, `max` characters in all. */
+export function plainLines(value: string, max: number): string {
+  const text = value.replace(/\r\n?/g, "\n").split("\n").map((line) => plainText(line, max)).join("\n").replace(/\n{3,}/g, "\n\n").trim();
+  const points = [...text];
+  return points.length > max ? `${points.slice(0, max - 1).join("")}…` : text;
+}
+
 export const MAX_QUESTION = 280;
 export const MAX_CHOICE = 60;
 export const MAX_CHOICES = 4;

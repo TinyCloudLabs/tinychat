@@ -15,6 +15,10 @@ import { type Frame, type HostToolHandler, type HostToolReply, RpcError } from "
 import { addressesIn } from "./web";
 import { readWebPolicy, type WebPolicy, writeWebPolicy } from "./web-policy";
 import { type AnswerInput, type AnswerResult, type AppOrigin, AskStore, type AskReply, type AskRequest, cancelAsks, readAsksEnabled, sweepAsks as sweepAskStores, writeAsksEnabled } from "./asks";
+import { type ActionOutcome, type ActionReply, type ActionRequest, type ActionResult, ActionStore, actionBinding } from "./actions";
+
+/** Where a message the app sends Main comes from: a decided question or a decided proposal. */
+export type AppSource = AppOrigin | { app: ActionReply["decision"] };
 
 export type ErrorCode = "bot_unavailable" | "model_unavailable" | "busy" | "at_capacity" | "invalid";
 
@@ -45,7 +49,7 @@ export interface ListedMessage {
   /** Set for a message the app wrote (the owner's reply to a question from Main), not typed by the owner. */
   origin?: "app";
   /** With `origin: "app"`: what the owner decided, so the app need not read the composed text. */
-  decision?: "answered" | "declined" | "stopped";
+  decision?: "answered" | "declined" | "stopped" | "action_approved" | "action_declined";
 }
 
 /** The owner's setting for questions from Main. */
@@ -94,6 +98,13 @@ export interface SandboxLauncher {
   learnAddresses?(layout: BotLayout, urls: string[]): Promise<void>;
   /** Collects the questions the box asked, then gives the gateway the owner's setting for questions and the counts; `turn` starts a turn. */
   syncAsks?(layout: BotLayout, turn?: { outside: boolean }): Promise<void>;
+  /**
+   * Collects the proposals the box made, then gives the gateway the counts, the final proposals and, when given, the
+   * recipients Main may name from now (an empty list: none).
+   */
+  syncActions?(layout: BotLayout, keys?: readonly string[]): Promise<void>;
+  /** Has the gateway spend an approval it issued: true once for that id and binding, else false. */
+  spendAction?(layout: BotLayout, id: string, binding: string): Promise<boolean>;
   /** Removes what the bot keeps off this host (a remote sandbox and its snapshot) before its directories go. */
   removeState?(layout: BotLayout): Promise<void>;
 }
@@ -336,7 +347,7 @@ export class Bot {
   }
 
   /** Runs one message. Reports through `sink` and always ends with exactly one done or error. */
-  async send(text: string, sink: TurnSink, owner?: string, messenger?: BotMessenger, from: "owner" | "bot" | AppOrigin = "owner"): Promise<void> {
+  async send(text: string, sink: TurnSink, owner?: string, messenger?: BotMessenger, from: "owner" | "bot" | AppSource = "owner"): Promise<void> {
     if (this.#busy) {
       sink.error("busy");
       return;
@@ -379,6 +390,8 @@ export class Bot {
         this.#markUsed();
         await sandbox.refreshEgress();
         await this.#launcher.syncAsks?.(this.layout, { outside: from === "bot" });
+        // Main may propose sending to the bots it may message in this turn; a turn another bot started names none.
+        await this.#launcher.syncActions?.(this.layout, from === "bot" ? [] : messenger?.keys ?? []);
         // Only what the owner typed counts as an address they chose; a message from another bot may carry text a web page put there, and an app reply is composed here.
         const typed = from === "owner" ? addressesIn(text, 50) : [];
         if (typed.length > 0) await this.#launcher.learnAddresses?.(this.layout, typed);
@@ -417,6 +430,7 @@ export class Bot {
       clearInterval(heartbeat);
       // Questions Main asked during the turn are collected now, while the gateway still holds them.
       void this.#launcher.syncAsks?.(this.layout).catch(() => {});
+      void this.#launcher.syncActions?.(this.layout, []).catch(() => {});
       if (this.#history) {
         try { this.#history.append({ type: "provenance", receipts: await this.#launcher.provenance?.(this.layout) ?? [] }); }
         catch { this.#history.append({ type: "provenance", verified: false }); }
@@ -517,7 +531,9 @@ export class Bot {
       writeAsksEnabled(this.layout, enabled);
       if (!enabled) {
         const stopped = await cancelAsks(this.layout);
+        new ActionStore(this.layout).cancelPending();
         await this.#launcher.syncAsks?.(this.layout).catch(() => log("asks_setting_push_failed", this.layout.botId));
+        await this.#launcher.syncActions?.(this.layout).catch(() => {});
         log("asks_setting", this.layout.botId, { enabled, stopped });
         return;
       }
@@ -534,16 +550,30 @@ export class Bot {
     return saved.then(() => ({ enabled }));
   }
 
-  /** The owner's requests from Main: what the box has asked so far (collected from the gateway first), pending first. */
-  async requests(): Promise<AskRequest[]> {
+  /** The owner's requests from Main: questions and proposals so far (collected from the gateway first), open first. */
+  async requests(): Promise<(AskRequest | ActionRequest)[]> {
     await this.#deleting;
     await this.#launcher.syncAsks?.(this.layout).catch(() => {});
-    return new AskStore(this.layout).list();
+    await this.#launcher.syncActions?.(this.layout).catch(() => {});
+    const asks = new AskStore(this.layout).list();
+    const actions = new ActionStore(this.layout).list();
+    const open = (request: AskRequest | ActionRequest) => request.state === "pending" || request.state === "sending";
+    return [...asks.filter(open), ...actions.filter(open), ...asks.filter(request => !open(request)), ...actions.filter(request => !open(request))];
   }
 
-  /** Records the owner's decision on one request. Only a pending, unexpired request can be decided. */
-  async answerRequest(id: string, input: AnswerInput): Promise<AnswerResult> {
+  /** Records the owner's decision on one request. Only a pending, unexpired request can be decided; a proposal only declined here. */
+  async answerRequest(id: string, input: AnswerInput): Promise<AnswerResult | ActionResult> {
     await this.#deleting;
+    const actions = new ActionStore(this.layout);
+    if (actions.has(id)) {
+      if (input.decision !== "decline") return { ok: false, error: "invalid" };
+      const result = actions.decline(id);
+      if (result.ok) {
+        log("action_resolved", this.layout.botId, { outcome: "declined" });
+        void this.#launcher.syncActions?.(this.layout).catch(() => {});
+      }
+      return result;
+    }
     const result = new AskStore(this.layout).answer(id, input);
     if (result.ok) {
       log("ask_resolved", this.layout.botId, { outcome: input.decision === "answer" ? "answered" : "declined" });
@@ -553,16 +583,67 @@ export class Bot {
   }
 
   /**
+   * The owner's Send on a proposal card, naming the binding the card showed. Checked and marked sending here, so a
+   * second Send is refused; the send itself runs after this returns: the gateway spends the approval (once, for
+   * that binding), then each recipient gets the message by the path `message_bot` takes, admitted for this owner.
+   * Recipients outside `messenger.keys` are not sent to. Main is told the outcome by an app message.
+   */
+  async approveRequest(id: string, binding: string, messenger: BotMessenger): Promise<ActionResult> {
+    await this.#deleting;
+    const store = new ActionStore(this.layout);
+    const approved = store.approve(id, binding, this.layout.ownerId);
+    if (!approved.ok) return approved;
+    log("action_resolved", this.layout.botId, { outcome: "approved", recipients: approved.payload.targets.length });
+    void this.#sendApproved(id, binding, approved.payload, messenger).catch(() => log("action_send_failed", this.layout.botId));
+    return { ok: true, request: approved.request };
+  }
+
+  async #sendApproved(id: string, binding: string, payload: { kind: "message_bots"; targets: readonly string[]; text: string }, messenger: BotMessenger): Promise<void> {
+    const store = new ActionStore(this.layout);
+    const failed = payload.targets.map(key => ({ key, delivered: false }));
+    // What is about to go out must be exactly what the owner approved and the gateway issued.
+    if (actionBinding(this.layout.ownerId, this.layout.botId, payload) !== binding) {
+      store.finish(id, failed);
+      return;
+    }
+    let spent: boolean;
+    try {
+      spent = await this.#launcher.spendAction?.(this.layout, id, binding) ?? false;
+    } catch {
+      spent = false;
+    }
+    if (!spent) {
+      log("action_sent", this.layout.botId, { outcome: "spend_refused" });
+      store.finish(id, failed);
+      return;
+    }
+    const signal = AbortSignal.timeout(this.#options.turnTimeoutMs);
+    const outcomes: ActionOutcome[] = await Promise.all(payload.targets.map(async key => {
+      if (!messenger.keys.includes(key)) return { key, delivered: false };
+      try {
+        const reply = await messenger.dispatch(key, payload.text, signal);
+        return { key, delivered: !reply.isError };
+      } catch {
+        return { key, delivered: false };
+      }
+    }));
+    store.finish(id, outcomes);
+    log("action_sent", this.layout.botId, { delivered: outcomes.filter(outcome => outcome.delivered).length, failed: outcomes.filter(outcome => !outcome.delivered).length });
+  }
+
+  /**
    * The message that tells Main what the owner decided, composed here from the stored decision; undefined unless the
    * request is decided and Main has not been told. This is the only source of text for an app-originated message.
    */
-  appReply(requestId: string): AskReply | undefined {
-    return new AskStore(this.layout).reply(requestId);
+  appReply(requestId: string): AskReply | ActionReply | undefined {
+    const actions = new ActionStore(this.layout);
+    return actions.has(requestId) ? actions.reply(requestId) : new AskStore(this.layout).reply(requestId);
   }
 
   /** Main has been told: the answer text is deleted (the metadata stays). */
   appReplyDelivered(requestId: string): void {
     new AskStore(this.layout).delivered(requestId);
+    new ActionStore(this.layout).delivered(requestId);
   }
 
   /** A message or history request is in flight, including one still starting the sandbox. */
@@ -680,6 +761,8 @@ export class Bot {
     const { promise, resolve, reject } = Promise.withResolvers<void>();
     const activity = new TurnActivity();
     const reaching = new Set<string>();
+    // One recipient per turn: the first bot `message_bot` sends to. Sending to more takes the owner's tap (propose_action).
+    let recipient: string | undefined;
     const offHost = messenger && sandbox.onHostToolCall?.(async (name, args, signal) => {
       if (name !== MESSAGE_BOT) return { text: MESSAGING_STRINGS.unavailable, isError: true };
       if (!isRecord(args) || Object.keys(args).length !== 2
@@ -688,7 +771,9 @@ export class Bot {
         return { text: MESSAGING_STRINGS.invalid, isError: true };
       }
       const { targetKey } = args;
+      if (recipient !== undefined && recipient !== targetKey) return { text: MESSAGING_STRINGS.oneBot, isError: true };
       if (reaching.has(targetKey)) return { text: MESSAGING_STRINGS.busy, isError: true };
+      recipient = targetKey;
       reaching.add(targetKey);
       try {
         const reply = await messenger.dispatch(targetKey, args.text, signal);
@@ -830,8 +915,8 @@ export class Bot {
   async #stop(sandbox: Sandbox): Promise<StopFailure | undefined> {
     if (this.#sandbox === sandbox) this.#sandbox = undefined;
     // What the gateway holds about this sandbox (questions, whether outside text came in) is collected before it forgets it.
-    const collected = this.#launcher.syncAsks?.(this.layout).catch(() => {});
-    this.#stopping = (collected ? collected.then(() => sandbox.stop()) : sandbox.stop())
+    const collected = Promise.all([this.#launcher.syncAsks?.(this.layout).catch(() => {}), this.#launcher.syncActions?.(this.layout, []).catch(() => {})]);
+    this.#stopping = collected.then(() => sandbox.stop())
       .then(cause => cause || undefined)
       .catch(error => {
         log("stop_failed", this.layout.botId, { error: error instanceof Error ? error.message.slice(0, 300) : "unknown" });

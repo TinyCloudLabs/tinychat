@@ -3,18 +3,22 @@
 // the turn going; leaving Home stops it.
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { BotsError, BotsNoReply, type BotMessage, type BotsApi } from "./botsApi";
+import { type AppDecision, BotsError, BotsNoReply, type BotMessage, type BotsApi } from "./botsApi";
 import type { BotsErrorCode } from "./botsStrings";
 import { isDeclinedReply } from "./askText";
 
-/** The app's report of the owner's decision on a question card. */
+/** The app's report of the owner's decision on a question or proposal card. */
 export interface AppReply {
   requestId: string;
-  decision: "answered" | "declined" | "stopped";
+  decision: AppDecision;
+  /** For a proposal: the recipients' names the card showed, for the owner's line in the chat. Never sent. */
+  names?: string[];
 }
 
-/** `app` marks a line the app sent for the owner (a decision on a question card), which the owner did not type. */
-export type ChatLine = Pick<BotMessage, "id" | "role" | "text"> & { app?: AppReply["decision"] };
+/** `app` marks a line the app sent for the owner (a decision on a card), which the owner did not type. */
+export type ChatLine = Pick<BotMessage, "id" | "role" | "text"> & { app?: AppReply["decision"]; names?: string[] };
+
+const appLine = (reply: AppReply | undefined) => reply ? { app: reply.decision, ...(reply.names ? { names: reply.names } : {}) } : {};
 
 export interface MainTurn {
   text: string;
@@ -110,7 +114,7 @@ export function useMainChat(api: BotsApi, prepare?: () => Promise<void>, onNoRep
       setState((current) => (current.turn ? { ...current, turn: update(current.turn) } : current));
     setState((current) => {
       const failed = keepFailed && current.turn?.state === "error"
-        ? [{ id: `local-${++localId.current}`, role: "user" as const, text: current.turn.text, ...(current.turn.appReply ? { app: current.turn.appReply.decision } : {}) }]
+        ? [{ id: `local-${++localId.current}`, role: "user" as const, text: current.turn.text, ...appLine(current.turn.appReply) }]
         : [];
       return { ...current, lines: [...current.lines, ...failed], turn: { text, reply: "", state: "starting", ...(appReply ? { appReply } : {}) } };
     });
@@ -129,7 +133,7 @@ export function useMainChat(api: BotsApi, prepare?: () => Promise<void>, onNoRep
           setState((current) => ({
             ...current,
             lines: current.lines.some(line => line.id === event.messageId) ? current.lines
-              : [...current.lines, { id: `local-${++localId.current}`, role: "user", text, ...(appReply ? { app: appReply.decision } : {}) }, { id: event.messageId, role: "bot", text: reply }],
+              : [...current.lines, { id: `local-${++localId.current}`, role: "user", text, ...appLine(appReply) }, { id: event.messageId, role: "bot", text: reply }],
             turn: null,
           }));
         } else if (event.type === "error") setTurn((turn) => ({ ...turn, state: "error", error: event.code }));
