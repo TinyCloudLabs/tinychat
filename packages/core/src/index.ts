@@ -25,6 +25,30 @@ export {
   type NormalizedTranscriberMeeting,
   type WrittenTranscriberMeeting,
 } from "./connector-meeting.js";
+export {
+  FIREFLIES_MEETING_SOURCE,
+  FIREFLIES_SERVER_IMPORT_TAG,
+  FIREFLIES_MEETING_KV_PREFIX,
+  FIREFLIES_TRANSCRIPT_KV_PREFIX,
+  FIREFLIES_KV_RECORD_MAX_BYTES,
+  FIREFLIES_KV_LIST_MAX_RECORDS,
+  FIREFLIES_KV_LIST_MAX_PAGES,
+  FIREFLIES_KV_TITLE_MAX_LENGTH,
+  FIREFLIES_KV_SUMMARY_MAX_LENGTH,
+  FIREFLIES_KV_ORGANIZER_MAX_LENGTH,
+  FIREFLIES_KV_PARTICIPANTS_MAX_COUNT,
+  FIREFLIES_KV_PARTICIPANT_NAME_MAX_LENGTH,
+  FIREFLIES_KV_PARTICIPANT_EMAIL_MAX_LENGTH,
+  FIREFLIES_KV_MAX_DURATION_SECS,
+  emptyFirefliesKvDiscoveryStats,
+  firefliesMeetingKvKey,
+  isSafeFirefliesSourceId,
+  extractFirefliesMeetingSourceId,
+  parseFirefliesKvMeetingRecord,
+  type FirefliesKvDiscoveryStats,
+  type PromotedFirefliesKvRecord,
+  type ParseFirefliesKvRecordResult,
+} from "./fireflies-kv-record.js";
 
 // ── Sign-in manifest bundle (revision "2") ───────────────────────────
 

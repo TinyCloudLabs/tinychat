@@ -1,5 +1,75 @@
 # @tinychat/backend
 
+## 0.11.0
+
+### Minor Changes
+
+- 1d0a5e0: The backend has encrypted Fireflies import grant storage, a KMS-derived delegate identity, a strict grant verifier and delegation routes, behind a flag that is off by default.
+
+  Details: TC-3905
+
+- 897efaf: The backend has a stateless Fireflies meeting fetcher and direct-write webhook executor behind FIREFLIES_SERVER_IMPORT_ENABLED (off by default).
+
+  Details: TC-3905
+
+- 323a384: Library and MCP discover and read KV-only Fireflies server-import meeting records with untrusted-data bounds and purge checks, behind a flag that is off by default.
+
+  Details: TC-3905
+
+### Patch Changes
+
+- 18b4ecd: The agent can use a secret you approved for up to 1 hour, and only with the sites named in the request. It can send data only to OpenAI, Anthropic, Gemini, ElevenLabs or Fireflies, and only when you approved that site. It never sees the secret's value.
+
+  Details: TC-3595
+
+- 2dc7989: Main can ask to use a secret. You add it to TinyCloud Secrets and approve it in OpenKey for up to 1 hour. Main can use it only with the sites named in the request and can't see or show its value.
+
+  Details: TC-3595
+
+- 4309437: The server can save the chat history of bots other than Main and serve their expiry notice, each under that bot's own permission. The app doesn't ask for it until a separate change turns it on.
+
+  Details: TC-3813
+
+- 94681f9: An agent turn on a model with no catalog price must be covered by the fallback minimum of 2,600 credits. Its preflight log event carries `unpriced: true`, so an unpriced model shows in the logs even when every turn on it is refused. Priced models leave the field out.
+
+  Details: TC-3734
+
+- ca86545: Bots on the regular runtime now have the same tools switched off as other bots, skills included.
+
+  Details: TC-3779
+
+- ba1415e: Your bots know your local date and time zone each time you write to them, so "today" and "last week" mean what you mean. Messages one bot sends another don't carry it. Your bots don't describe the machine they run on. If you paste a password or key into a chat, the bot tells you once that it's part of the chat and suggests changing it.
+
+  Details: TC-3791
+
+- 1284bef: The backend serves `POST /api/internal/bots/admit` for the bots gateway's sibling admission. The call is signed `to-backend` with `BOTS_BACKEND_CALL_SECRET`; the owner comes from the signed owner DID and the source from the signed bot, and both bots are looked up in that owner's registry record. Without the secret the route is not mounted.
+
+  Details: TC-3809
+
+- 915a825: One browser can make 600 general API requests per 15 minutes, so a normal page load with polling doesn't hit "Too many requests". Chat sends and signed-out clients have their own limits.
+
+  Details: TC-3916
+
+- 0f26b1a: An operator can read five counts of calendar auto-join connections: all connections, those turned on, those turned on with the Google email permission, those turned on with a verified Google email and those turned on that need a reconnect. A workflow run by hand from main prints the counts without printing the key. No addresses or emails are returned.
+
+  Details: TC-916
+
+## 0.11.0-beta.10
+
+### Minor Changes
+
+- 323a384: Library and MCP discover and read KV-only Fireflies server-import meeting records with untrusted-data bounds and purge checks, behind a flag that is off by default.
+
+  Details: TC-3905
+
+## 0.11.0-beta.9
+
+### Patch Changes
+
+- 915a825: One browser can make 600 general API requests per 15 minutes, so a normal page load with polling doesn't hit "Too many requests". Chat sends and signed-out clients have their own limits.
+
+  Details: TC-3916
+
 ## 0.11.0-beta.8
 
 ### Patch Changes
