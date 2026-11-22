@@ -1,5 +1,18 @@
 // Ported from tinycloud-agents eliza-service transcript-registry.ts (ed320bd, TC-2163 projection and
 // byte-bounded paging), reading through the hosted MCP instead of a delegated node session.
+import {
+  FIREFLIES_KV_LIST_MAX_RECORDS,
+  FIREFLIES_KV_RECORD_MAX_BYTES,
+  FIREFLIES_MEETING_KV_PREFIX,
+  FIREFLIES_MEETING_SOURCE,
+  FIREFLIES_SERVER_IMPORT_TAG,
+  emptyFirefliesKvDiscoveryStats,
+  extractFirefliesMeetingSourceId,
+  firefliesMeetingKvKey,
+  parseFirefliesKvMeetingRecord,
+  type FirefliesKvDiscoveryStats,
+} from "@tinyboilerplate/core";
+import { isTombstoned } from "../services/connector-drain.js";
 import { TRANSCRIPT_SOURCES } from "./tools.js";
 import type { TranscriptMetadata, TranscriptReader } from "./tools.js";
 import { checkContext, decodeBody, discoveryResult, MeetingRetrievalError, scopedRows, withinContext } from "./evidence.js";
@@ -7,6 +20,26 @@ import type { BodyResult, RetrievalContext } from "./evidence.js";
 import { COMBINED_SOURCE, combinedMemberKeys, isCombinedMember, readCombinedMembers } from "./combined.js";
 import { McpPortError, MCP_SQL_PAGE_BYTE_BUDGET } from "./port.js";
 import type { McpMeetingPort } from "./port.js";
+
+type FirefliesPurgeLedger = NonNullable<Parameters<typeof isTombstoned>[1]>;
+
+export type FirefliesPurgeLedgerRead =
+  | { status: "absent" }
+  | { status: "unparseable"; raw: unknown }
+  | { status: "ok"; ledger: FirefliesPurgeLedger };
+
+export interface ReaderOptions {
+  /** Opt-in KV discovery for server-imported Fireflies records (default false). */
+  firefliesKvEnabled?: boolean;
+  /** Optional purge-ledger reader for the owner; corrupt or throwing ledger fails closed and hides KV records. */
+  readFirefliesPurgeLedger?: () => Promise<FirefliesPurgeLedgerRead>;
+  /** Optional observer for numeric KV discovery/skip counts (never receives titles or text). */
+  onFirefliesKvStats?: (stats: FirefliesKvDiscoveryStats) => void;
+  /** Per-record max UTF-8 byte cap override (defaults to FIREFLIES_KV_RECORD_MAX_BYTES). */
+  maxFirefliesKvRecordBytes?: number;
+  /** Max KV records per list scan override (defaults to FIREFLIES_KV_LIST_MAX_RECORDS). */
+  maxFirefliesKvRecords?: number;
+}
 
 export const SQL_PATH = "xyz.tinycloud.tinychat/connectors";
 const METADATA_ROW_LIMIT = 501;
@@ -124,7 +157,15 @@ function renameSpeakers(item: unknown, names: ReadonlyMap<string, string>): unkn
   return renamed;
 }
 
-export function createReader(port: McpMeetingPort, assertAccess: () => void = () => {}, invalidateAccess: () => void = () => {}): TranscriptReader {
+export function createReader(
+  port: McpMeetingPort,
+  assertAccess: () => void = () => {},
+  invalidateAccess: () => void = () => {},
+  options: ReaderOptions = {},
+): TranscriptReader {
+  const firefliesKvEnabled = options.firefliesKvEnabled === true;
+  const maxFirefliesKvRecordBytes = options.maxFirefliesKvRecordBytes ?? FIREFLIES_KV_RECORD_MAX_BYTES;
+  const maxFirefliesKvRecords = Math.max(1, options.maxFirefliesKvRecords ?? FIREFLIES_KV_LIST_MAX_RECORDS);
   const withAccess = async <T>(signal: AbortSignal | undefined, operation: (active: McpMeetingPort) => Promise<T>) => {
     checkContext({ signal });
     assertAccess();
@@ -217,6 +258,45 @@ export function createReader(port: McpMeetingPort, assertAccess: () => void = ()
   const readBody = async (source: TranscriptMetadata["source"], sourceId: string, context: RetrievalContext = {}): Promise<BodyResult> => {
     if (!isSource(source) || !safeSegment(sourceId)) throw new MeetingRetrievalError("invalid_stored_metadata");
     assertAccess();
+    if (source === FIREFLIES_MEETING_SOURCE && firefliesKvEnabled && options.readFirefliesPurgeLedger) {
+      let hasSqlRow = false;
+      try {
+        const sqlRows = await query(
+          "SELECT 1 FROM connector_meeting WHERE source = ? AND source_id = ? LIMIT 1",
+          [FIREFLIES_MEETING_SOURCE, sourceId],
+          context,
+        );
+        hasSqlRow = sqlRows.length > 0;
+      } catch (error) {
+        if (!(error instanceof MeetingRetrievalError && error.code === "transcript_unavailable")) throw error;
+      }
+      if (!hasSqlRow) {
+        const ledger = await loadPurgeLedger();
+        if (ledger.status === "fail_closed") return { state: "missing" };
+        if (ledger.status === "ok") {
+          const metaKey = firefliesMeetingKvKey(sourceId);
+          let metaText: string;
+          try {
+            metaText = await withinContext(
+              signal => withAccess(signal, active => active.kvGetText(metaKey, { signal })),
+              context,
+            );
+          } catch (error) {
+            if (error instanceof MeetingRetrievalError) throw error;
+            enforceAccess(classifyBodyFailure(error));
+            return { state: "missing" };
+          }
+          const parsed = await parseFirefliesKvMeetingRecord(metaText, sourceId, { maxBytes: maxFirefliesKvRecordBytes });
+          if (!parsed.ok) return { state: "missing" };
+          const item = {
+            meetingId: sourceId,
+            receivedAt: parsed.record.importedAt ?? parsed.record.startedAt ?? new Date(0).toISOString(),
+            ...(parsed.record.startedAt ? { sourceTimestamp: parsed.record.startedAt } : {}),
+          };
+          if (isTombstoned(item, ledger.ledger)) return { state: "missing" };
+        }
+      }
+    }
     if (source === VOICE_NOTE_SOURCE && await hasVoiceNoteIndex(context)) {
       const [commit] = await query(`SELECT outcome, hash, body_key FROM ${VOICE_NOTE_INDEX} WHERE source_id = ? LIMIT 1`, [sourceId], context);
       // The index names the one committed revision. No commit row, or any outcome other than transcribed, has no readable body.
@@ -228,6 +308,140 @@ export function createReader(port: McpMeetingPort, assertAccess: () => void = ()
       return withSpeakerNames(await readKey(bodyKey, context), source, sourceId, context);
     }
     return withSpeakerNames(await readKey(`${SQL_PATH}/${source}/transcript/${sourceId}`, context), source, sourceId, context);
+  };
+  const loadPurgeLedger = async (): Promise<
+    { status: "none" } | { status: "fail_closed" } | { status: "ok"; ledger: FirefliesPurgeLedger }
+  > => {
+    if (!options.readFirefliesPurgeLedger) return { status: "none" };
+    let read: FirefliesPurgeLedgerRead;
+    try {
+      read = await options.readFirefliesPurgeLedger();
+    } catch {
+      return { status: "fail_closed" };
+    }
+    if (read.status === "unparseable") return { status: "fail_closed" };
+    if (read.status === "ok") return { status: "ok", ledger: read.ledger };
+    return { status: "none" };
+  };
+  const loadSqlFirefliesCollisions = async (
+    context: RetrievalContext = {},
+  ): Promise<{ sourceIds: Set<string>; meetingRefs: Set<string> }> => {
+    const sourceIds = new Set<string>();
+    const meetingRefs = new Set<string>();
+    try {
+      const rows = await query(
+        `SELECT id, source_id FROM connector_meeting WHERE source = ? LIMIT ${METADATA_ROW_LIMIT}`,
+        [FIREFLIES_MEETING_SOURCE],
+        context,
+      );
+      for (const row of rows) {
+        if (typeof row[0] === "string") meetingRefs.add(row[0]);
+        if (typeof row[1] === "string") sourceIds.add(row[1]);
+      }
+    } catch (error) {
+      if (!(error instanceof MeetingRetrievalError && error.code === "transcript_unavailable")) throw error;
+    }
+    return { sourceIds, meetingRefs };
+  };
+  const listFirefliesKvMetadata = async (
+    sqlSourceIds: ReadonlySet<string>,
+    sqlMeetingRefs: ReadonlySet<string>,
+    context: RetrievalContext = {},
+  ): Promise<{ rows: TranscriptMetadata[]; stats: FirefliesKvDiscoveryStats }> => {
+    const stats = emptyFirefliesKvDiscoveryStats();
+    if (!firefliesKvEnabled || typeof port.kvList !== "function") {
+      return { rows: [], stats };
+    }
+    const ledgerState = await loadPurgeLedger();
+    if (ledgerState.status === "fail_closed") {
+      options.onFirefliesKvStats?.(stats);
+      return { rows: [], stats };
+    }
+    let listed: { keys: string[]; truncated: boolean };
+    try {
+      listed = await withinContext(
+        signal => withAccess(signal, active => active.kvList!(FIREFLIES_MEETING_KV_PREFIX, { limit: maxFirefliesKvRecords, signal })),
+        context,
+      );
+    } catch (error) {
+      if (error instanceof MeetingRetrievalError) throw error;
+      enforceAccess(classifyBodyFailure(error));
+      options.onFirefliesKvStats?.(stats);
+      return { rows: [], stats };
+    }
+    const keys = listed.keys.slice(0, maxFirefliesKvRecords);
+    stats.listed = keys.length;
+    stats.truncated = listed.truncated || listed.keys.length > maxFirefliesKvRecords;
+
+    const promoted: TranscriptMetadata[] = [];
+    const seenRefs = new Set<string>();
+    for (const key of keys) {
+      const sourceId = extractFirefliesMeetingSourceId(key);
+      if (!sourceId) {
+        stats.garbled += 1;
+        continue;
+      }
+      if (sqlSourceIds.has(sourceId)) {
+        stats.shadowedBySql += 1;
+        continue;
+      }
+      let text: string;
+      try {
+        text = await withinContext(
+          signal => withAccess(signal, active => active.kvGetText(key, { signal })),
+          context,
+        );
+      } catch (error) {
+        if (error instanceof MeetingRetrievalError) throw error;
+        const failed = classifyBodyFailure(error);
+        enforceAccess(failed);
+        if (failed.state === "missing") stats.missing += 1;
+        else if (failed.state === "size_limit") stats.oversize += 1;
+        else stats.garbled += 1;
+        continue;
+      }
+      const parsed = await parseFirefliesKvMeetingRecord(text, sourceId, { maxBytes: maxFirefliesKvRecordBytes });
+      if (!parsed.ok) {
+        if (parsed.reason === "oversize") stats.oversize += 1;
+        else stats.garbled += 1;
+        continue;
+      }
+      const record = parsed.record;
+      if (sqlMeetingRefs.has(record.id) || seenRefs.has(record.id)) {
+        stats.shadowedBySql += 1;
+        continue;
+      }
+      if (ledgerState.status === "ok") {
+        const item = {
+          meetingId: record.sourceId,
+          receivedAt: record.importedAt ?? record.startedAt ?? new Date(0).toISOString(),
+          ...(record.startedAt ? { sourceTimestamp: record.startedAt } : {}),
+        };
+        if (isTombstoned(item, ledgerState.ledger)) {
+          stats.purged += 1;
+          continue;
+        }
+      }
+      seenRefs.add(record.id);
+      promoted.push({
+        meetingRef: record.id,
+        source: FIREFLIES_MEETING_SOURCE,
+        sourceId: record.sourceId,
+        title: record.title,
+        startedAt: record.startedAt,
+        participantNames: record.participantNames,
+        participantEmails: record.participantEmails,
+        metadataLimited: record.participantsLimited,
+        organizerEmail: record.organizerEmail,
+        summaryOverview: record.summaryOverview,
+        summaryActionItems: record.summaryActionItems,
+        listingTruncated: false,
+        metadata: { import_source: FIREFLIES_SERVER_IMPORT_TAG },
+      });
+      stats.promoted += 1;
+    }
+    options.onFirefliesKvStats?.(stats);
+    return { rows: promoted, stats };
   };
   // Member keys come from every combined row, never from the page being listed: a source filter or
   // date window could otherwise return members whose combined row is outside the result.
@@ -289,25 +503,68 @@ export function createReader(port: McpMeetingPort, assertAccess: () => void = ()
       const order = "julianday(started_at) IS NULL ASC, julianday(started_at) DESC, id ASC";
       const rows: unknown[][] = [];
       let cursor = 0;
-      while (rows.length < METADATA_ROW_LIMIT) {
-        const pageRows = Math.min(SQL_PAGE_MAX_ROWS, METADATA_ROW_LIMIT - rows.length);
-        const page = await queryPage(LISTING_COLUMNS, 12, readable, [], order, cursor, pageRows);
-        rows.push(...page.rows);
-        if (page.cursor === null) break;
-        cursor = page.cursor;
+      let sqlUnavailable = false;
+      try {
+        while (rows.length < METADATA_ROW_LIMIT) {
+          const pageRows = Math.min(SQL_PAGE_MAX_ROWS, METADATA_ROW_LIMIT - rows.length);
+          const page = await queryPage(LISTING_COLUMNS, 12, readable, [], order, cursor, pageRows);
+          rows.push(...page.rows);
+          if (page.cursor === null) break;
+          cursor = page.cursor;
+        }
+      } catch (error) {
+        if (!firefliesKvEnabled || !(error instanceof MeetingRetrievalError && error.code === "transcript_unavailable")) {
+          throw error;
+        }
+        sqlUnavailable = true;
       }
       logSkippedOversizedIds(rows.filter(row => row[11] === 1).length);
       const usableRows = rows.filter(row => row[11] !== 1);
-      const hidden = await combinedKeys();
-      return visibleRows(await commitReadable(usableRows), hidden).flatMap(row => { const decoded = decodeMetadata(row); return decoded ? [decoded] : []; });
+      const hidden = sqlUnavailable ? new Set<string>() : await combinedKeys();
+      const sqlMetadata = sqlUnavailable
+        ? []
+        : visibleRows(await commitReadable(usableRows), hidden).flatMap(row => {
+            const decoded = decodeMetadata(row);
+            return decoded ? [decoded] : [];
+          });
+      if (!firefliesKvEnabled) return sqlMetadata;
+      const sqlSourceIds = new Set(
+        sqlMetadata.filter(row => row.source === FIREFLIES_MEETING_SOURCE).map(row => row.sourceId),
+      );
+      const sqlMeetingRefs = new Set(sqlMetadata.map(row => row.meetingRef));
+      const kv = await listFirefliesKvMetadata(sqlSourceIds, sqlMeetingRefs);
+      const visibleKv = kv.rows.filter(
+        row => !hidden.has(JSON.stringify([row.source, row.sourceId])),
+      );
+      if (visibleKv.length === 0) return sqlMetadata;
+      return scopedRows([...sqlMetadata, ...visibleKv], {}, undefined, "newest");
     },
     async getMetadata(reference, context = {}) {
       if (!safeMeetingRef(reference)) throw new MeetingRetrievalError("invalid_args", 400);
       const readable = readableClause();
-      const rows = await query(`SELECT ${COLUMNS} FROM connector_meeting WHERE id = ? AND ${readable} LIMIT 1`, [reference], context);
-      const hidden = await combinedKeys(context);
+      let sqlUnavailable = false;
+      let rows: unknown[][] = [];
+      try {
+        rows = await query(`SELECT ${COLUMNS} FROM connector_meeting WHERE id = ? AND ${readable} LIMIT 1`, [reference], context);
+      } catch (error) {
+        if (!firefliesKvEnabled || !(error instanceof MeetingRetrievalError && error.code === "transcript_unavailable")) {
+          throw error;
+        }
+        sqlUnavailable = true;
+      }
+      const hidden = sqlUnavailable ? new Set<string>() : await combinedKeys(context);
       // Check identity even when a faulty upstream ignores its predicate.
-      return visibleRows(await commitReadable(rows, context), hidden).map(decodeMetadata).find(row => row?.meetingRef === reference) ?? null;
+      const sqlMatch = sqlUnavailable
+        ? null
+        : (visibleRows(await commitReadable(rows, context), hidden).map(decodeMetadata).find(row => row?.meetingRef === reference) ?? null);
+      if (sqlMatch || !firefliesKvEnabled) return sqlMatch;
+      const collisions = sqlUnavailable
+        ? { sourceIds: new Set<string>(), meetingRefs: new Set<string>() }
+        : await loadSqlFirefliesCollisions(context);
+      const kv = await listFirefliesKvMetadata(collisions.sourceIds, collisions.meetingRefs, context);
+      return kv.rows.find(
+        row => row.meetingRef === reference && !hidden.has(JSON.stringify([row.source, row.sourceId])),
+      ) ?? null;
     },
     async discoverMetadata(args, context = {}) {
       const clauses: string[] = []; const params: Array<string | number | null> = [];
@@ -317,6 +574,8 @@ export function createReader(port: McpMeetingPort, assertAccess: () => void = ()
       if (args.to) { clauses.push("julianday(started_at) < julianday(?)"); params.push(new Date(Date.parse(args.to) + 2 * 86_400_000).toISOString()); }
       clauses.push(readableClause());
       const order = `julianday(started_at) IS NULL ASC, julianday(started_at) ${args.sort === "oldest" ? "ASC" : "DESC"}, id ASC`;
+      const includeKv = firefliesKvEnabled && (args.source === undefined || args.source === FIREFLIES_MEETING_SOURCE);
+      let sqlUnavailable = false;
       const hidden = await combinedKeys(context);
       const scanStart = args.cursor ?? 0;
       let scannedRows = 0;
@@ -324,25 +583,49 @@ export function createReader(port: McpMeetingPort, assertAccess: () => void = ()
       let cursor: number | null = scanStart;
       const decoded: TranscriptMetadata[] = [];
       const requestedCount = args.limit ?? 5;
-      while (scannedRows < METADATA_DISCOVERY_SCAN_LIMIT && cursor !== null
-        && scopedRows(decoded, args, context.timeZone, args.sort).length < requestedCount) {
-        const visibleCount = scopedRows(decoded, args, context.timeZone, args.sort).length;
-        const page = await queryPage(
-          LISTING_COLUMNS, 12, clauses.join(" AND "), params, order, cursor,
-          Math.min(requestedCount - visibleCount, SQL_PAGE_MAX_ROWS, METADATA_DISCOVERY_SCAN_LIMIT - scannedRows), context);
-        scannedRows += page.rows.length;
-        cursor = page.cursor;
-        skippedIds += page.rows.filter(row => row[11] === 1).length;
-        const usableRows = page.rows.filter(row => row[11] !== 1);
-        const visible = visibleRows(await commitReadable(usableRows, context), hidden);
-        for (const row of visible) {
-          const value = decodeMetadata(row);
-          if (value) decoded.push(value);
+      try {
+        while (scannedRows < METADATA_DISCOVERY_SCAN_LIMIT && cursor !== null
+          && scopedRows(decoded, args, context.timeZone, args.sort).length < requestedCount) {
+          const visibleCount = scopedRows(decoded, args, context.timeZone, args.sort).length;
+          const page = await queryPage(
+            LISTING_COLUMNS, 12, clauses.join(" AND "), params, order, cursor,
+            Math.min(requestedCount - visibleCount, SQL_PAGE_MAX_ROWS, METADATA_DISCOVERY_SCAN_LIMIT - scannedRows), context);
+          scannedRows += page.rows.length;
+          cursor = page.cursor;
+          skippedIds += page.rows.filter(row => row[11] === 1).length;
+          const usableRows = page.rows.filter(row => row[11] !== 1);
+          const visible = visibleRows(await commitReadable(usableRows, context), hidden);
+          for (const row of visible) {
+            const value = decodeMetadata(row);
+            if (value) decoded.push(value);
+          }
         }
+      } catch (error) {
+        if (!includeKv || !(error instanceof MeetingRetrievalError && error.code === "transcript_unavailable")) {
+          throw error;
+        }
+        sqlUnavailable = true;
+        cursor = null;
       }
       logSkippedOversizedIds(skippedIds);
+      let kvCount = 0;
+      if (includeKv && scanStart === 0) {
+        const collisions = sqlUnavailable
+          ? { sourceIds: new Set<string>(), meetingRefs: new Set<string>() }
+          : await loadSqlFirefliesCollisions(context);
+        for (const row of decoded) {
+          collisions.meetingRefs.add(row.meetingRef);
+          if (row.source === FIREFLIES_MEETING_SOURCE) collisions.sourceIds.add(row.sourceId);
+        }
+        const kv = await listFirefliesKvMetadata(collisions.sourceIds, collisions.meetingRefs, context);
+        const visibleKv = kv.rows.filter(
+          row => !hidden.has(JSON.stringify([row.source, row.sourceId])),
+        );
+        decoded.push(...visibleKv);
+        kvCount = visibleKv.length;
+      }
       // Discovery fills the requested visible result count across byte-bounded SQL pages; callers may continue.
-      const rawCount = cursor !== null || scanStart > 0 ? METADATA_ROW_LIMIT : scannedRows;
+      const rawCount = cursor !== null || scanStart > 0 ? METADATA_ROW_LIMIT : scannedRows + kvCount;
       const result = discoveryResult(decoded, rawCount, args, context);
       return { ...result, discovery: { ...result.discovery, ...(cursor === null ? {} : { nextCursor: cursor }) } };
     },

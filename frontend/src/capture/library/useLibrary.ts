@@ -485,7 +485,13 @@ export function useLibrary(
           const locator = note.source === VOICE_NOTE_SOURCE
             ? await voiceNoteTranscriptLocator(space, note.sourceId) : null;
           if (version === (readVersions.current.get(note.id) ?? 0) && (stale || staleFields?.has("metadata") || !settled(reads.current.get(note.id)?.metadata))) {
-            let metadata = await readMeetingMetadata(space, note.id);
+            let metadata = await readMeetingMetadata(
+              space,
+              note.id,
+              note.importSource === "server-import"
+                ? { includeFirefliesKv: true, source: note.source, sourceId: note.sourceId }
+                : undefined,
+            );
             if (locator && metadata.status === "ok") metadata = { status: "ok", metadata: {
               ...metadata.metadata,
               ...(locator.committed ? {

@@ -5,7 +5,8 @@
  */
 import { checkContext, isAccessError, MeetingRetrievalError, safeMeetingRef, withinContext } from "./evidence.js";
 import type { MeetingSelection, RetrievalContext } from "./evidence.js";
-import { createReader } from "./reader.js";
+import { createReader, type FirefliesPurgeLedgerRead } from "./reader.js";
+import type { FirefliesKvDiscoveryStats } from "@tinyboilerplate/core";
 import { McpPortError } from "./port.js";
 import type { McpMeetingPort } from "./port.js";
 import { webSearch } from "./web-search.js";
@@ -52,8 +53,19 @@ export interface McpMeetingTools {
   status(owner: string, signal?: AbortSignal): Promise<McpGrantStatus>;
 }
 
+export interface McpMeetingToolsOptions {
+  tavilyApiKey?: string;
+  fetchImpl?: typeof fetch;
+  /** Opt-in KV discovery for server-imported Fireflies records (default false). */
+  firefliesKvEnabled?: boolean;
+  /** Optional purge-ledger reader keyed by MCP owner identity. */
+  readFirefliesPurgeLedger?: (owner: string) => Promise<FirefliesPurgeLedgerRead>;
+  /** Optional observer for numeric KV discovery/skip counts. */
+  onFirefliesKvStats?: (stats: FirefliesKvDiscoveryStats) => void;
+}
+
 /** `portFor` builds the read-only port for one owner on every call; nothing about the grant is retained here. */
-export function createMcpMeetingTools(portFor: (owner: string) => McpMeetingPort, options: { tavilyApiKey?: string; fetchImpl?: typeof fetch } = {}): McpMeetingTools {
+export function createMcpMeetingTools(portFor: (owner: string) => McpMeetingPort, options: McpMeetingToolsOptions = {}): McpMeetingTools {
   // Content-free follow-up state (a meeting reference or scope state per owner and room); bounded, never holds text.
   const selections = new Map<string, MeetingSelection>();
   const keyOf = (owner: string, roomId?: string) => `${owner.toLowerCase()}\u0000${roomId ?? ""}`;
@@ -111,7 +123,20 @@ export function createMcpMeetingTools(portFor: (owner: string) => McpMeetingPort
     const args = parse(request.args);
     if (!args) throw new ToolError("invalid meeting arguments", 400, "invalid_args");
     const context = retrievalContext(request.context, request.signal);
-    const reader = createReader(portFor(request.owner));
+    const reader = createReader(
+      portFor(request.owner),
+      undefined,
+      undefined,
+      options.firefliesKvEnabled === true
+        ? {
+            firefliesKvEnabled: true,
+            ...(options.readFirefliesPurgeLedger
+              ? { readFirefliesPurgeLedger: () => options.readFirefliesPurgeLedger!(request.owner) }
+              : {}),
+            ...(options.onFirefliesKvStats ? { onFirefliesKvStats: options.onFirefliesKvStats } : {}),
+          }
+        : undefined,
+    );
     const reference = scopeReference(request, args, context, operation);
     try {
       const result = await withinContext(async () => operation === "find"

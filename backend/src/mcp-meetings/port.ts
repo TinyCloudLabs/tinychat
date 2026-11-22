@@ -19,6 +19,8 @@ export interface McpMeetingPort {
   sqlQuery(sql: string, params: Array<string | number | null>, options?: { signal?: AbortSignal }): Promise<unknown[][]>;
   /** One KV key under the connectors prefix, as text. */
   kvGetText(key: string, options?: { signal?: AbortSignal }): Promise<string>;
+  /** Optional bounded KV prefix listing (`tinycloud_kv_list`), used only when Fireflies KV discovery is enabled. */
+  kvList?(prefix: string, options?: { limit?: number; signal?: AbortSignal }): Promise<{ keys: string[]; truncated: boolean }>;
 }
 
 export interface McpHttpConfig {
@@ -100,6 +102,13 @@ export function createHttpMcpPort(config: McpHttpConfig, ownerDid: string): McpM
       const output = await call("tinycloud_kv_get", { space: config.space, key, representation: "text" }, options?.signal);
       if (typeof output.value !== "string") throw new McpPortError("MCP_BAD_RESPONSE");
       return output.value;
+    },
+    async kvList(prefix, options) {
+      const limit = Math.max(1, Math.min(1000, Math.trunc(options?.limit ?? 100)));
+      const output = await call("tinycloud_kv_list", { space: config.space, prefix, limit }, options?.signal);
+      if (!Array.isArray(output.keys)) throw new McpPortError("MCP_BAD_RESPONSE");
+      const keys = output.keys.filter((key): key is string => typeof key === "string");
+      return { keys, truncated: output.truncated === true };
     },
   };
 }
