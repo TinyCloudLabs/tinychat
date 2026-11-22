@@ -28,6 +28,7 @@ export const REQUEST_LOG_ROUTE_TEMPLATES: readonly string[] = [
   "/api/bots/history/status",
   "/api/bots/main/asks",
   "/api/bots/main/messages",
+  "/api/bots/main/new-chat",
   "/api/bots/main/reads",
   "/api/bots/main/reads/:area",
   "/api/bots/main/requests",

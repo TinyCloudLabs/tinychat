@@ -15,7 +15,7 @@ import { type Frame, type HostToolHandler, type HostToolReply, RpcError } from "
 import { addressesIn } from "./web";
 import { readWebPolicy, type WebPolicy, writeWebPolicy } from "./web-policy";
 import { type AnswerInput, type AnswerResult, type AppOrigin, AskStore, type AskReply, type AskRequest, cancelAsks, readAsksEnabled, sweepAsks as sweepAskStores, writeAsksEnabled } from "./asks";
-import { type ReadArea, type ReadsSetting, writeReads } from "./reads";
+import { type ReadArea, type ReadsSetting, readReads, writeReads } from "./reads";
 
 export type ErrorCode = "bot_unavailable" | "model_unavailable" | "busy" | "at_capacity" | "invalid";
 
@@ -654,6 +654,35 @@ export class Bot {
     return this.#deleting;
   }
 
+  /**
+   * The owner's "Start a new chat": deletes the working state (deleteWorkingState), so the conversation, its pending
+   * questions and the mark of owner data it read are gone, then saves the owner's settings again: web access, the
+   * questions setting and the read areas. Only their on/off fields come back; nothing about the old conversation does.
+   * Refused while a request is in flight or a deletion is under way. The settings are saved again by a callback on the
+   * deletion itself, registered before any request can wait on it, so a fresh sandbox always starts with them.
+   */
+  newChat(closing: () => boolean): Promise<DeleteSkip | "busy" | undefined> {
+    if (this.inUse || this.#deleting) return Promise.resolve("busy");
+    const web = readWebPolicy(this.layout);
+    const asks = readAsksEnabled(this.layout);
+    const reads = readReads(this.layout);
+    return this.deleteWorkingState("new_chat", closing).then(cause => {
+      if (cause) return cause;
+      try {
+        if (web.mode !== "off") {
+          mkdirSync(this.layout.dataDir, { recursive: true, mode: 0o700 });
+          writeWebPolicy(this.layout, web);
+        }
+        if (asks) writeAsksEnabled(this.layout, true);
+        if (reads.areas.length > 0) writeReads(this.layout, reads);
+      } catch {
+        // A setting that is not saved reads as off.
+        log("new_chat_settings_failed", this.layout.botId);
+      }
+      return undefined;
+    });
+  }
+
   #journal() {
     if (!this.#options.history) throw new Error("history_disabled");
     return this.#history ??= new HistoryJournal(this.layout, this.#options.history);
@@ -928,6 +957,15 @@ export class BotManager {
     this.#deletions.add(deletion);
     void deletion.finally(() => this.#deletions.delete(deletion));
     return deletion;
+  }
+
+  /** Starts a new chat with the owner's Main; see Bot.newChat. stopAll waits for it to finish. */
+  newChat(ownerDid: string): Promise<DeleteSkip | "busy" | undefined> {
+    if (this.#closing) return Promise.resolve("closing");
+    const chat = this.forOwner(ownerDid).newChat(() => this.#closing);
+    this.#deletions.add(chat);
+    void chat.finally(() => this.#deletions.delete(chat));
+    return chat;
   }
 
   /**

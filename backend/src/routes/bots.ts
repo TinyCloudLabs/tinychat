@@ -387,6 +387,21 @@ export function createBotsRouter(opts: {
     await sendAsks(res, callAsks(address, { method: "POST", path: `/requests/${id}/answer`, body: JSON.stringify(body) }), toAskRequest, true);
   });
 
+  // The owner's "Start a new chat" with Main: the service clears the conversation and its pending questions, and keeps
+  // the owner's settings. Only this route asks for it, with the owner taken from the session; no bot, tool or turn can.
+  router.post("/main/new-chat", async (req, res) => {
+    const address = gate(req, res);
+    if (!address) return;
+    try {
+      const response = await callAsks(address, { method: "POST", path: "/new-chat" });
+      const payload = (await response.json().catch(() => null)) as { outcome?: unknown; error?: unknown } | null;
+      if (response.ok && payload?.outcome === "cleared") { res.json({ outcome: "cleared" }); return; }
+      if (response.status === 409 && (payload?.error === "busy" || payload?.error === "archive_pending")) { res.status(409).json({ error: payload.error }); return; }
+      if (response.status === 404) { res.status(404).json({ error: "not_found" }); return; }
+    } catch { /* answered below */ }
+    res.status(502).json({ error: UNAVAILABLE.code, message: UNAVAILABLE.message });
+  });
+
   // Creates a bot for the signed-in owner. Its key is chosen here; the request names neither an owner nor a key.
   router.post("/", async (req, res) => {
     const address = gate(req, res);
