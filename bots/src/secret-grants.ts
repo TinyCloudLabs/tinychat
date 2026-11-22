@@ -17,10 +17,12 @@ import type { ApprovalRequesterState, CheckedApprovalResult, CreatedLink, Ed2551
 import * as approvalLinks from "@tinycloud/share-envelope/links";
 import { getAddress, verifyMessage } from "viem";
 import { parseSiweMessage } from "viem/siwe";
+import { MAX_WHY_CHARS, type SecretPush } from "./asks";
 import type { GuardDeps } from "./fetch-guard";
 import { isRecord } from "./guards";
 import { OWNER_DID } from "./owner";
-import { type ApprovedSecret, DAILY_CALLS_PER_SECRET, prepareCall, refusal, SECRET_NAME, secretName, sendCall } from "./secret-call";
+import { type ApprovedSecret, DAILY_CALLS_PER_SECRET, DAILY_REPLY_BYTES_PER_SECRET, prepareCall, refusal, secretName, sendCall } from "./secret-call";
+import { knownSecret, SECRET_NAME, secretSites } from "./secret-catalog";
 import type { GrantStore } from "./secret-store";
 import { REQUEST_ID } from "./secret-store";
 import { toolText } from "./web";
@@ -38,21 +40,17 @@ export const LINK_MS = 24 * 3600 * 1000;
 /** OpenKey keeps an approved result this long (APPROVAL_RESULT_RETENTION_SECONDS=600 in its production compose). */
 const RESULT_RETENTION_MS = 600_000;
 const SKEW_MS = 60_000;
-const MAX_SITES = 3;
-const MAX_WHY_CHARS = 200;
-const HOST = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
 const HEADER = /^[a-z0-9-]{1,64}$/;
 
 export type GrantState = "pending" | "approved" | "declined" | "expired" | "failed" | "ended";
 export type Outcome = { id: string; outcome: "approved"; until: number } | { id: string; outcome: "declined" | "expired" | "failed" };
 
-/** What the supervisor asks for: the request's name, sites and header come from its own catalog, `why` from Main. */
+/** What the supervisor asks for: name and sites as the owner approves them, the header the value goes in, `why` from Main. */
 export interface SecretAsk {
   name: string;
   sites: string[];
   header: string;
   why: string;
-  service?: string;
   ownerDid: string;
 }
 
@@ -80,7 +78,7 @@ interface GrantRecord {
   approveUrl: string;
   linkExpiresAt: number;
   until?: number;
-  calls: { day: string; count: number };
+  calls: { day: string; count: number; bytes: number };
   keys?: {
     jwk: Ed25519PrivateJwk;
     relayPrivateKey: string;
@@ -148,17 +146,21 @@ export function secretPermissions(name: string, ownerDid: string): OpenKeyApprov
   ];
 }
 
-/** The supervisor's request body, checked. */
+/**
+ * The supervisor's request body, checked. A known service's sites and header must be the catalog's own: the
+ * supervisor sends them from the same table, and a mismatch means something sent what it shouldn't.
+ */
 export function parseAsk(input: unknown): SecretAsk | undefined {
   if (!isRecord(input)) return undefined;
-  const { name, sites, header, why, service, ownerDid } = input;
+  const { name, header, why, ownerDid } = input;
   if (typeof name !== "string" || !SECRET_NAME.test(name)) return undefined;
-  if (!Array.isArray(sites) || sites.length === 0 || sites.length > MAX_SITES || !sites.every(site => typeof site === "string" && HOST.test(site))) return undefined;
-  if (typeof header !== "string" || !HEADER.test(header)) return undefined;
+  const sites = secretSites(input.sites);
+  if (!sites || typeof header !== "string" || !HEADER.test(header)) return undefined;
+  const known = knownSecret(name);
+  if (known && (header !== known.header.name || sites.length !== 1 || sites[0] !== known.site)) return undefined;
   if (typeof why !== "string" || why.length > MAX_WHY_CHARS) return undefined;
-  if (service !== undefined && (typeof service !== "string" || service.length > 60)) return undefined;
   if (typeof ownerDid !== "string" || !OWNER_DID.test(ownerDid)) return undefined;
-  return { name, sites: [...new Set(sites as string[])], header, why, service: service as string | undefined, ownerDid };
+  return { name, sites, header, why, ownerDid };
 }
 
 /**
@@ -247,7 +249,7 @@ export class SecretGrants {
       const record = entry.record as GrantRecord | undefined;
       // A record that no longer opens (the app id, and so the key, changed) can't be used: it ends as failed.
       if (!isRecord(record) || record.botId !== entry.botId) {
-        this.#records.set(entry.id, { botId: entry.botId, ask: { name: "", sites: [], header: "", why: "", ownerDid: "" }, state: "failed", reported: false, approveUrl: "", linkExpiresAt: 0, calls: { day: "", count: 0 } });
+        this.#records.set(entry.id, { botId: entry.botId, ask: { name: "", sites: [], header: "", why: "", ownerDid: "" }, state: "failed", reported: false, approveUrl: "", linkExpiresAt: 0, calls: { day: "", count: 0, bytes: 0 } });
         continue;
       }
       this.#records.set(entry.id, record);
@@ -269,7 +271,8 @@ export class SecretGrants {
     const target = this.#links.signerFromJwk(jwk);
     const requester = this.#requester(target);
     const relay = this.#links.generateRelayKey();
-    const where = ask.service ? `${ask.service} (${ask.sites.join(", ")})` : ask.sites.join(", ");
+    const service = knownSecret(ask.name)?.service;
+    const where = service ? `${service} (${ask.sites.join(", ")})` : ask.sites.join(", ");
     const request: OpenKeyApprovalRequestV1 = {
       issuer: requester.did,
       requestVersion: 1,
@@ -294,7 +297,7 @@ export class SecretGrants {
     if (this.#records.has(id)) return { refused: "conflict" };
     const linkExpiresAt = Date.parse(created.expiresAt);
     const record: GrantRecord = {
-      botId, ask, state: "pending", reported: false, approveUrl: created.link, linkExpiresAt, calls: { day: "", count: 0 },
+      botId, ask, state: "pending", reported: false, approveUrl: created.link, linkExpiresAt, calls: { day: "", count: 0, bytes: 0 },
       keys: { jwk, relayPrivateKey: relay.privateKey, request, requestId: created.id, bodyCid: created.bodyCid, record: { header: created.record.header, signature: created.record.signature }, ackId: randomUUID() },
     };
     try {
@@ -344,28 +347,27 @@ export class SecretGrants {
     return true;
   }
 
-  /** Every request of this bot, for list_secrets: names, sites, states and end times; never a value. */
-  list(botId: string): Array<{ name: string; state: GrantState; sites: string[]; until?: number }> {
-    const now = this.#now();
-    return [...this.#records.values()]
-      .filter(record => record.botId === botId && record.ask.name !== "")
-      .map(record => {
-        const state = record.state === "approved" && (record.until ?? 0) <= now ? "ended" : record.state;
-        return { name: record.ask.name, state, sites: record.ask.sites, ...(record.until !== undefined ? { until: record.until } : {}) };
-      });
-  }
-
   /**
-   * One call_with_secret call. Returns the tool result and a one-word outcome to log; neither ever holds the value,
-   * the call's address, headers or body.
+   * One call_with_secret call. `pushed` is the supervisor's list for the bot, which knows of requests the gateway
+   * hasn't been sent yet. Returns the tool result and a one-word outcome to log; neither ever holds the value, the
+   * call's address, headers or body.
    */
-  async call(botId: string, args: Record<string, unknown>, net: GuardDeps): Promise<SecretCallOutcome> {
+  async call(botId: string, args: Record<string, unknown>, net: GuardDeps, pushed: readonly SecretPush[] = []): Promise<SecretCallOutcome> {
     const name = secretName(args);
     if (!name) return { result: refusal("invalid"), outcome: "invalid" };
     const found = this.#forName(botId, name);
     const now = this.#now();
-    if (!found) return { result: refusal("notAsked", { name }), outcome: "not_asked" };
+    if (!found) {
+      const listed = pushed.find(secret => secret.name === name);
+      if (listed?.state === "pending") return { result: refusal("pending", { name }), outcome: "pending" };
+      if (listed?.state === "ended" && listed.until !== undefined) return { result: refusal("ended", { name, until: listed.until }), outcome: "ended" };
+      return { result: refusal("notAsked", { name }), outcome: "not_asked" };
+    }
     const [id, record] = found;
+    // The supervisor's word is final once it has one: Stop now holds even before its DELETE reaches this gateway.
+    const told = pushed.find(secret => secret.id === id)?.state;
+    if (told === "ended") return { result: refusal("ended", { name, until: record.until }), outcome: "ended" };
+    if (told !== undefined && told !== "pending" && told !== "approved") return { result: refusal("notAsked", { name }), outcome: "not_asked" };
     if (record.state === "pending") return { result: refusal("pending", { name }), outcome: "pending" };
     if (record.state === "ended" || (record.state === "approved" && (record.until ?? 0) <= now)) {
       return { result: refusal("ended", { name, until: record.until }), outcome: "ended" };
@@ -377,7 +379,8 @@ export class SecretGrants {
       return { result: refusal(prepared.refused, { name, sites: secret.sites, header: secret.header }), outcome: `refused_${prepared.refused}` };
     }
     const day = utcDay(now);
-    if (record.calls.day === day && record.calls.count >= DAILY_CALLS_PER_SECRET) return { result: refusal("daily", { name }), outcome: "daily" };
+    const today = record.calls.day === day ? record.calls : { day, count: 0, bytes: 0 };
+    if (today.count >= DAILY_CALLS_PER_SECRET || today.bytes >= DAILY_REPLY_BYTES_PER_SECRET) return { result: refusal("daily", { name }), outcome: "daily" };
     if (this.#calling.has(botId)) return { result: refusal("busy"), outcome: "busy" };
     this.#calling.add(botId);
     try {
@@ -385,14 +388,18 @@ export class SecretGrants {
       if (read === "missing") return { result: refusal("missing", { name }), outcome: "missing" };
       if (read === "unavailable") return { result: refusal("unavailable", { name }), outcome: "unavailable" };
       // Counted before the call: a call that fails or times out was still made with the value.
-      record.calls = { day, count: record.calls.day === day ? record.calls.count + 1 : 1 };
+      record.calls = { ...today, count: today.count + 1 };
       if (!this.#save(id, record)) return { result: refusal("unavailable", { name }), outcome: "store" };
       const sent = await sendCall(prepared, read.value, net);
-      if (!sent.ok) {
-        if (sent.reason === "value") return { result: refusal("unavailable", { name }), outcome: "bad_value" };
-        return { result: refusal("failed", { host: prepared.url.hostname, reason: sent.reason }), outcome: "call_failed" };
+      if (sent.bytes > 0) {
+        record.calls = { ...record.calls, bytes: record.calls.bytes + sent.bytes };
+        this.#save(id, record); // a lost byte count only lets a day's cap run a little late
       }
-      return { result: toolText(sent.text), outcome: "ok" };
+      const host = prepared.url.hostname;
+      if (sent.ok) return { result: toolText(sent.text), outcome: "ok" };
+      if (sent.reason === "value") return { result: refusal("unavailable", { name }), outcome: "bad_value" };
+      if (sent.reason === "redirect") return { result: refusal("redirect", { host, address: sent.address }), outcome: "redirect" };
+      return { result: refusal("failed", { host, reason: sent.reason }), outcome: "call_failed" };
     } finally {
       this.#calling.delete(botId);
     }

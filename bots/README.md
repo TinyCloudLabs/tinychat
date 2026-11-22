@@ -10,7 +10,7 @@ except the ingress:
 | Container | Privileges | Holds | Does |
 | --- | --- | --- | --- |
 | `bots-supervisor` | capability set below, no published port, no outbound network | `BOTS_SERVICE_SECRET` | internal API, starts and stops the sandboxes, talks to OMP over each sandbox's stdio |
-| `bots-gateway` | unprivileged user, read-only, no capabilities | `REDPILL_API_KEY` | one Unix socket per bot for allowed model calls and a control socket for bot admission |
+| `bots-gateway` | unprivileged user, read-only, no capabilities | `REDPILL_API_KEY`; the dstack socket, for the secret-request sealing key only | one Unix socket per bot for allowed model calls and a control socket for bot admission |
 | `dstack-ingress` | the backend's ingress image | `CLOUDFLARE_API_TOKEN` (DNS for the certificate) | ends TLS inside the CVM, forwards to the supervisor |
 
 Treat every sandbox as hostile: OMP has a shell, so each owner can run any code as root inside their sandbox.
@@ -256,6 +256,53 @@ the `ask_owner` tool of the `app` MCP server.
   requests, for the counts. A sweep every 15 minutes applies this even when nobody opens the chat.
 - The log holds counts by outcome (`{gateway:"asks", tool:"ask_owner", outcome}`) and the owner's decision outcome,
   never a question, a choice, an answer or a request id.
+
+### Secrets Main asks for
+
+Main can ask its owner to let it use one secret from TinyCloud Secrets, by name, with named sites
+(`request_secret`). The value never enters the sandbox: the gateway holds the grant, reads the value, makes the
+call and returns the reply with the value hidden.
+
+- **Request.** For each request the supervisor sends `PUT /bots/<id>/secrets/<request id>` on the control socket
+  (`src/secret-routes.ts`). The gateway makes a fresh Ed25519 key for that request alone. It signs an OpenKey one-tap
+  approval request for `tinycloud.kv/get` on `vault/secrets/<NAME>` plus `tinycloud.encryption/decrypt` on the owner's
+  default network. The longest grant it allows is 7 days (`MAX_GRANT_SECONDS`, until per-secret keys, TC-3284);
+  1 hour is suggested. The same key is both issuer and audience, because share-envelope 1.6.0 requires it. TC-3772
+  will let a stable TinyCloud One key sign instead (`SecretGrantDeps.requester`). The owner the supervisor names must
+  be this bot's owner (409 otherwise). A known service's site and header must match `src/secret-catalog.ts`.
+- **Collection.** The gateway collects the result itself every 5 s. Before keeping a grant it checks:
+  - the owner's SIWE signature;
+  - the audience is this request's key;
+  - the space owner and every resource owner are the owner;
+  - the expiry, and that the grant is no longer than asked.
+
+  The supervisor collects outcomes with `POST /bots/<id>/secrets/drain`. A decline, expiry or failure drops the
+  request's key at once.
+- **Storage.** Each record is sealed with AES-256-GCM in `secret-grants/` on the gateway volume. The sealing key comes
+  from the CVM's key service (dstack `GetKey`, path `tinychat-bots/secret-seal` only, `src/dstack-key.ts`) and is
+  never on a disk. `/var/run/dstack.sock` is mounted into `bots-gateway` only (and the ingress, as before), never the
+  supervisor, the sandboxes or `bots-fetch`. The gateway restricts itself to that one path in code, which is not a
+  boundary: TC-3773 adds a proxy that enforces it before access opens beyond Sam. Without the key service, every
+  secret route answers 503 and the secret tools aren't offered. The gateway runs as uid 65532, so the socket must be
+  readable by it; check this at deploy.
+- **Stop now.** `DELETE /bots/<id>/secrets/<request id>` unlinks the sealed file and drops the gateway's in-memory
+  copy (the grant and any cached TinyCloud session). Memory isn't zeroed. The volume has no backups. Until the
+  DELETE lands, a request the supervisor lists as stopped, revoked, declined, expired or failed is refused anyway.
+- **`call_with_secret { name, method, url, headers?, body? }`.**
+  - `{{secret}}` may go only in the secret's own header (the catalog's header for a known service). It is refused in
+    the address, the body, a header name or any other header.
+  - The address must be https on port 443, an exact approved host, with no user info and no IP literal. Every
+    address the name resolves to must be public; the connection is pinned to one of them on every call.
+  - Redirects aren't followed: Main is told where one pointed, with the value hidden.
+  - The reply is read whole, up to 1 MiB (anything larger is refused) within 45 s; compressed replies are refused.
+  - The value is hidden as written and in base64, base64url, URL-encoded, hex and JSON-escaped forms. This covers
+    the body, the content type and the redirect target, and happens before the reply is cut to 100,000 characters.
+  - Caps per secret per UTC day: 200 calls and 50 MiB of replies. Each bot makes one call at a time.
+  - Approved access keeps working with questions off, until its date or Stop now.
+- **`list_secrets`** gives `{ secrets: [{ name, state, sites, until? }] }` from the supervisor's list. `until` is
+  `YYYY-MM-DD HH:MM UTC`. Approved access past its date shows as `ended`.
+- **Logs** hold `{gateway:"secret", tool, outcome}` and result-check failures, never a name, an address, a header,
+  a body or a value.
 
 ### Saved state
 

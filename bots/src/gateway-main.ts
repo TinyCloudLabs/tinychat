@@ -19,6 +19,7 @@ import { BotAci } from "./aci";
 import { ADMISSION_CONTROL_PATH, createAdmissionRelay, MAX_ADMISSION_BYTES } from "./bot-admission";
 import { gatewayConfig, SECRET_ORIGINS } from "./config";
 import { sealKeyFromDstack } from "./dstack-key";
+import { networkDeps } from "./fetch-net";
 import { fileBudgetStore, fileOwnerStore, Gateway } from "./gateway";
 import { isRecord } from "./guards";
 import { egressPaths } from "./layout";
@@ -34,6 +35,23 @@ import { parseAsksPush } from "./asks";
 const { backendOrigin, backendCallSecret, ...cfg } = gatewayConfig(process.env);
 const admit = createAdmissionRelay(backendOrigin, backendCallSecret);
 const aci = process.env.BOTS_HISTORY_ENABLED === "true" ? new BotAci(cfg.upstream) : undefined;
+
+/** How often open secret requests are checked with OpenKey; it keeps an approval for 10 minutes. */
+const SECRET_POLL_MS = 5_000;
+// Secret requests need the sealing key from the CVM's key service. Without it they are refused (503) and the secret
+// tools are not offered, never kept unsealed; everything else runs as before.
+async function startSecrets(): Promise<SecretGrants | undefined> {
+  try {
+    const key = await sealKeyFromDstack();
+    return new SecretGrants({ store: sealedGrantStore(cfg.secretGrantsDir!, key), reader: nodeSecretReader(SECRET_ORIGINS.node), origins: SECRET_ORIGINS });
+  } catch (error) {
+    console.error(JSON.stringify({ gateway: "secrets_unavailable", reason: error instanceof Error ? error.message.slice(0, 200) : "unknown" }));
+    return undefined;
+  }
+}
+const secrets = await startSecrets();
+if (secrets) setInterval(() => void secrets.poll().catch(() => undefined), SECRET_POLL_MS);
+
 // Budgets persist on the gateway's own volume. An unreadable budget file stops the start (fails closed) with one
 // operator line naming the file and the recovery; the non-zero exit keeps Docker restarting it, each time logged.
 function startGateway(): Gateway {
@@ -42,6 +60,8 @@ function startGateway(): Gateway {
       store: fileBudgetStore(cfg.budgetFile),
       ownerStore: cfg.ownersFile ? fileOwnerStore(cfg.ownersFile) : undefined,
       verifiedFetch: aci ? (botId, url, init) => aci.fetch(botId, url, init) : undefined,
+      secrets,
+      secretNet: networkDeps,
     });
   } catch (error) {
     console.error(
@@ -55,22 +75,6 @@ function startGateway(): Gateway {
   }
 }
 const gateway = startGateway();
-
-/** How often open secret requests are checked with OpenKey; it keeps an approval for 10 minutes. */
-const SECRET_POLL_MS = 5_000;
-// Secret requests need the sealing key from the CVM's key service. Without it they are refused (503), never kept
-// unsealed; everything else runs as before.
-async function startSecrets(): Promise<SecretGrants | undefined> {
-  try {
-    const key = await sealKeyFromDstack();
-    return new SecretGrants({ store: sealedGrantStore(cfg.secretGrantsDir!, key), reader: nodeSecretReader(SECRET_ORIGINS.node), origins: SECRET_ORIGINS });
-  } catch (error) {
-    console.error(JSON.stringify({ gateway: "secrets_unavailable", reason: error instanceof Error ? error.message.slice(0, 200) : "unknown" }));
-    return undefined;
-  }
-}
-const secrets = await startSecrets();
-if (secrets) setInterval(() => void secrets.poll().catch(() => undefined), SECRET_POLL_MS);
 const listeners = new Map<string, Server<undefined>>();
 
 // Registrations do not survive a restart; the supervisor registers again before every message. Stale sockets go,

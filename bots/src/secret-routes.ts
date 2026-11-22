@@ -1,5 +1,5 @@
 // The supervisor's secret-request routes on the gateway's control socket (only the supervisor reaches it):
-//   PUT    /bots/<botId>/secrets/<id>  {name, sites, header, why, service?, ownerDid}
+//   PUT    /bots/<botId>/secrets/<id>  {name, sites, header, why, ownerDid}
 //            → 200 {approveUrl, expiresAt}; the same id while open → the same link; 400 malformed; 409 the owner
 //              isn't this bot's owner, or the id is taken; 503 OpenKey or the sealed store can't be reached
 //   POST   /bots/<botId>/secrets/drain  → 200 {outcomes: [{id, outcome: "approved", until} | {id, outcome}]}

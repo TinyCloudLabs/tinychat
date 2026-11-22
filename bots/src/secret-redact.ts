@@ -27,7 +27,7 @@ function base64Cores(value: Uint8Array): string[] {
 export function secretForms(value: string): string[] {
   if (value === "") return [];
   const bytes = new TextEncoder().encode(value);
-  const forms = new Set<string>([value]);
+  const forms = new Set<string>([value, Buffer.from(bytes).toString("base64"), Buffer.from(bytes).toString("base64url")]);
   for (const core of base64Cores(bytes)) {
     forms.add(core);
     forms.add(core.replaceAll("+", "-").replaceAll("/", "_"));
@@ -36,8 +36,11 @@ export function secretForms(value: string): string[] {
   forms.add(percent);
   forms.add(percent.replace(/%[0-9A-F]{2}/g, match => match.toLowerCase()));
   forms.add(percent.replaceAll("%20", "+"));
-  // Characters encodeURIComponent keeps but stricter encoders escape.
-  forms.add(percent.replace(/[!'()*~]/g, char => `%${char.charCodeAt(0).toString(16).toUpperCase()}`));
+  // Characters encodeURIComponent keeps but stricter encoders escape, and the form spelling of that (URLSearchParams).
+  const strict = percent.replace(/[!'()*~]/g, char => `%${char.charCodeAt(0).toString(16).toUpperCase()}`);
+  forms.add(strict);
+  forms.add(strict.replaceAll("%20", "+"));
+  forms.add(new URLSearchParams({ v: value }).toString().slice(2));
   const hex = Buffer.from(bytes).toString("hex");
   if (hex.length >= MIN_FRAGMENT_CHARS) {
     forms.add(hex);
