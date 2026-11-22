@@ -43,14 +43,18 @@ if jq -e '.os.is_dev == false' <<<"${cvm}" >/dev/null; then
   exit 0
 fi
 [ "${allow_dev}" = true ] || fail "The dev OS image is refused; production OS is required by default (TC-2843)"
-if ! jq -e --arg n dstack-dev-0.5.12 \
-    --arg h e866e987221db357129ebc3f066b6706ef955889ea95e5510acbdf3d3055186b \
-    '.os.is_dev == true and .os.name == $n and .os.os_image_hash == $h' \
+# The exact dev images the transition permits, as [name, hash] pairs. A pair is matched whole, so a recorded name
+# with another recorded hash is refused.
+if ! jq -e '
+    [["dstack-dev-0.5.12", "e866e987221db357129ebc3f066b6706ef955889ea95e5510acbdf3d3055186b"],
+     ["dstack-dev-0.5.15", "432b8a1e82ec8a90b3d30bb201e5d20a8bc5c05b69f1d8ba13687232dda5aebd"]] as $recorded
+    | .os.is_dev == true and ([.os.name, .os.os_image_hash] as $got | any($recorded[]; . == $got))' \
     <<<"${cvm}" >/dev/null; then
   fail "The CVM is not the recorded TC-2843 dev OS image. Found: ${os}"
 fi
-name=dstack-dev-0.5.12
-hash=e866e987221db357129ebc3f066b6706ef955889ea95e5510acbdf3d3055186b
+# The pair matched exactly above, so these are the recorded name and hash.
+name="$(jq -r '.os.name' <<<"${cvm}")"
+hash="$(jq -r '.os.os_image_hash' <<<"${cvm}")"
 warning="TC-2843: permitting DEV OS ${name} (${hash}) ONLY because allow_current_dev_os_until_tc2843=true was explicitly selected for this manual dispatch. This is NOT a production OS; remove this input with the OS move or first post-move deploy."
 echo "::warning::${warning}"
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then

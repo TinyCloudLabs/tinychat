@@ -5,6 +5,7 @@ import { CardBody, cardClass, CardTextContext, cardTime, chipClass, COMMENT_COPY
 import { MessageCircleIcon } from "lucide-react";
 import { homeFeedSourceFor } from "./feedStore";
 import { HomeFeedEntries } from "./HomeFeedEntries";
+import { FinishSetupBanner } from "./FinishSetupBanner";
 import { useFeedCardLink, type FeedCardLink } from "./feedCardLink";
 import type { HomeFeedSource } from "./feedStoreTypes";
 import { safeUrl, selectFeed, type FeedCard } from "./feedData";
@@ -342,10 +343,10 @@ function SampleFeedEntries({ realEntries }: { realEntries: unknown }): JSX.Eleme
   </main>;
 }
 
-export function FeedViewEntries({ realEntries, source, ask, linked }: { realEntries: unknown; source?: HomeFeedSource; ask?: ReactNode; linked?: FeedCardLink | null }): JSX.Element {
+export function FeedViewEntries({ realEntries, source, ask, linked, finishSetup }: { realEntries: unknown; source?: HomeFeedSource; ask?: ReactNode; linked?: FeedCardLink | null; finishSetup?: ReactNode }): JSX.Element {
   // One sheet for every link in the Feed, its cards, briefs and pages included.
   return <>
-    {source ? <HomeFeedEntries source={source} ask={ask} linked={linked} /> : <SampleFeedEntries realEntries={realEntries} />}
+    {source ? <HomeFeedEntries source={source} ask={ask} linked={linked} finishSetup={finishSetup} /> : <SampleFeedEntries realEntries={realEntries} />}
     <LinkSheetHost />
   </>;
 }
@@ -353,8 +354,8 @@ export function FeedViewEntries({ realEntries, source, ask, linked }: { realEntr
 export function FeedView({ tcw, onReconnect }: { tcw: TinyCloudWeb | null; onReconnect?: () => void }): JSX.Element {
   const source = useMemo(() => tcw ? homeFeedSourceFor(tcw) : null, [tcw]);
   const linked = useFeedCardLink();
-  // Agents connected since the last run get the owner's card.md the first time the Feed sees them: on open, and on a
-  // change at most every five minutes, behind the Feed's own reads.
+  // Agents connected since the last run get the owner's card.md the first time the Feed sees them, and a copy that
+  // differs from it is rewritten: on open, and on a change at most every five minutes, behind the Feed's own reads.
   useEffect(() => {
     if (!tcw || !source) return;
     let last = Number.NEGATIVE_INFINITY;
@@ -367,6 +368,6 @@ export function FeedView({ tcw, onReconnect }: { tcw: TinyCloudWeb | null; onRec
     return source.subscribe(sync);
   }, [tcw, source]);
   return source
-    ? <FeedViewEntries key={`${tcw?.did}:${tcw?.spaceId}`} realEntries={[]} source={source} linked={linked} ask={<HomeAskBox tcw={tcw ?? undefined} onReconnect={onReconnect} />} />
+    ? <FeedViewEntries key={`${tcw?.did}:${tcw?.spaceId}`} realEntries={[]} source={source} linked={linked} ask={<HomeAskBox tcw={tcw ?? undefined} onReconnect={onReconnect} />} finishSetup={<FinishSetupBanner tcw={tcw} />} />
     : <main aria-label="Feed" className="p-6 text-sm text-muted-foreground">Sign in to load your feed.</main>;
 }

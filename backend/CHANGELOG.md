@@ -1,5 +1,73 @@
 # @tinychat/backend
 
+## 0.9.3
+
+### Patch Changes
+
+- 6759764: The backend accepts requests from the phone apps at `https://app.tinycloud.one` (Android) and `tinycloudone://app.tinycloud.one` (iOS), as well as `https://localhost` and `capacitor://localhost`, which installed builds use.
+
+  Details: TC-3693
+
+- e52b520: The backend now states the storage access it needs in its own space when it signs in, so a later upgrade of the TinyCloud library cannot cut it off from its own data. It asks to read, write, delete and list there and for nothing else.
+
+  Details: TC-3671
+
+- 0cd1ccc: The billing error message names TinyCloud One.
+
+  Details: TC-3659
+
+- 69fba34: Background transcript delivery keeps a person's saved delivery permission through temporary errors. It removes the permission only when the TinyCloud node reports it as revoked; any other refusal is retried and logged.
+
+  Details: TC-3076
+
+## 0.9.3-beta.3
+
+### Patch Changes
+
+- 6759764: The backend accepts requests from the phone apps at `https://app.tinycloud.one` (Android) and `tinycloudone://app.tinycloud.one` (iOS), as well as `https://localhost` and `capacitor://localhost`, which installed builds use.
+
+  Details: TC-3693
+
+## 0.9.3-beta.2
+
+### Patch Changes
+
+- e52b520: The backend now states the storage access it needs in its own space when it signs in, so a later upgrade of the TinyCloud library cannot cut it off from its own data. It asks to read, write, delete and list there and for nothing else.
+
+  Details: TC-3671
+
+## 0.9.3-beta.1
+
+### Patch Changes
+
+- 0cd1ccc: The billing error message names TinyCloud One.
+
+  Details: TC-3659
+
+## 0.9.3-beta.0
+
+### Patch Changes
+
+- 69fba34: Background transcript delivery removes a user's stored delivery grant only when the TinyCloud node reports it revoked or expired. When activating the grant gets 401 or 403, it asks the node for the grant's status. For any other answer it keeps the grant, retries and logs the reason (never the delegation id).
+
+  Details: TC-3076
+
+## 0.9.2
+
+### Patch Changes
+
+- 49f8456: Powerful transcriptions that the provider can't take right away wait and finish by themselves. The server keeps the audio and retries (after 1, 2, 5 and 10 minutes, then every 10) for up to 24 hours, and never sends the same paid request twice when the outcome is unclear. While it waits, the note and the upload sheet show "Transcription delayed" and say it will finish automatically.
+
+  Details: TC-2131
+
+- 95b5f15: Main can read web pages and search the web. It's off until you turn it on: in Main's chat, tap Web access and choose a setting. You can limit it to sites you list.
+
+  Details: TC-2808
+
+- d519be5: Background memory extraction asks each model for its lowest reasoning setting, which keeps hidden reasoning tokens down on short turns; the turn's total includes the extraction once it settles.
+
+  Details: TC-2002
+
 ## 0.9.2-beta.2
 
 ### Patch Changes

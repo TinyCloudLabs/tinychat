@@ -3,35 +3,10 @@ name: Transcript quality eval
 # desktop.yml independently builds the macOS app for A2's desktop changes.
 on:
   pull_request:
-    paths: &eval_inputs
-      # P: production transcription inputs.
-      - "desktop/vendor/**"
-      - "desktop/.cargo/**"
-      - "desktop/local-transcription/**"
-      - "desktop/transcription-vocabulary.json"
-      - "desktop/Cargo.toml"
-      - "desktop/Cargo.lock"
-      - "desktop/src-tauri/Cargo.toml"
-      - "desktop/src-tauri/Cargo.lock"
-      - "desktop/src-tauri/.cargo/**"
-      - "desktop/src-tauri/src/local.rs"
-      - "desktop/src-tauri/src/session_audio.rs"
-      - "desktop/src-tauri/src/recorder/session_audio.rs"
-      - "desktop/src-tauri/src/recorder/files.rs"
-      - "desktop/src-tauri/src/recorder/engine.rs"
-      - "desktop/eval/**"
-      - ".github/workflows/transcript-eval.yml"
-      # F: frontend scoring inputs.
-      - "frontend/src/lib/localTranscriptTurns.ts"
-      - "frontend/src/lib/transcriptEval*.ts"
-      - "frontend/src/lib/voiceNotes/desktop/whisperTranscript.ts"
-      - "frontend/src/lib/voiceNotes/desktop/desktopWhisper.ts"
-      - "frontend/src/lib/voiceNotes/voiceNoteStore.ts"
-      - "frontend/src/lib/voiceNotes/nativeVoiceNotes.ts"
-      - "frontend/src/lib/anarlog/transcription.gen.ts"
+  merge_group:
   push:
-    branches: [main]
-    paths: *eval_inputs
+    branches: [main, "release/**"]
+    tags: ["exo-desktop@*", "@tinychat/frontend@*", "@tinychat/backend@*"]
   workflow_dispatch:
     inputs:
       model:
@@ -44,37 +19,17 @@ permissions:
   contents: read
 
 concurrency:
-  group: transcript-eval-${{ github.ref }}
+  group: transcript-eval-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   paths:
-    runs-on: ubuntu-latest
-    outputs:
-      native: ${{ steps.changed.outputs.native }}
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with:
-          persist-credentials: false
-          fetch-depth: 0
-      - id: changed
-        name: Detect changes to production inputs (P)
-        shell: bash
-        env:
-          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
-        run: |
-          if [[ "${{ github.event_name }}" == workflow_dispatch ]]; then
-            echo 'native=true' >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          native=false
-          while IFS= read -r -d '' path; do
-            case "$path" in
-              desktop/vendor/*|desktop/local-transcription/*|desktop/transcription-vocabulary.json|desktop/Cargo.toml|desktop/Cargo.lock|desktop/.cargo/*|desktop/src-tauri/Cargo.toml|desktop/src-tauri/Cargo.lock|desktop/src-tauri/.cargo/*|desktop/src-tauri/src/local.rs|desktop/src-tauri/src/session_audio.rs|desktop/src-tauri/src/recorder/session_audio.rs|desktop/src-tauri/src/recorder/files.rs|desktop/src-tauri/src/recorder/engine.rs|desktop/eval/*|.github/workflows/transcript-eval.yml)
-                native=true; break ;;
-            esac
-          done < <(git diff --name-only -z "$BASE" "$GITHUB_SHA")
-          echo "native=$native" >> "$GITHUB_OUTPUT"
+    uses: ./.github/workflows/native-changes.yml
+
+  metal-paths:
+    uses: ./.github/workflows/native-changes.yml
+    with:
+      component: metal
 
   score:
     # A2 runs the A1 scorer and adversarial tests. Goldens/gates baselines arrive in A3.
@@ -184,8 +139,8 @@ jobs:
           if-no-files-found: ignore
 
   metal-parity:
-    needs: paths
-    if: needs.paths.outputs.native == 'true'
+    needs: metal-paths
+    if: needs.metal-paths.outputs.native == 'true'
     runs-on: macos-26
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
@@ -219,3 +174,24 @@ jobs:
       - name: Recorder files and request-parity unit tests (macOS app)
         working-directory: desktop/src-tauri
         run: cargo test --release --lib --locked
+
+  metal-check:
+    name: Metal checks
+    if: always()
+    needs: [metal-paths, metal-parity]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require successful Metal checks or an intentional non-native PR skip
+        env:
+          EVENT: ${{ github.event_name }}
+          CHANGES: ${{ needs.metal-paths.result }}
+          NATIVE: ${{ needs.metal-paths.outputs.native }}
+          METAL: ${{ needs.metal-parity.result }}
+        run: |
+          [[ "$CHANGES" == success ]]
+          case "$NATIVE:$EVENT" in
+            true:*) [[ "$METAL" == success ]] ;;
+            false:pull_request) [[ "$METAL" == skipped ]] ;;
+            *) exit 1 ;;
+          esac

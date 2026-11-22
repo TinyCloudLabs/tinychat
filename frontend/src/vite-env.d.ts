@@ -50,6 +50,10 @@ interface ImportMetaEnv {
   readonly VITE_EXO_LOCATION_SPIKE?: string;
   /** One Apps: "true" opens TinyCloud's own apps framed inside One with a silent scoped delegation. Unset = off (today's Apps page). */
   readonly VITE_ONE_APPS?: string;
+  /** With VITE_ONE_APPS: "true" turns on One's new navigation (pill, Apps grid, app bar; shell/navPins.ts). Unset = off. */
+  readonly VITE_ONE_NAV?: string;
+  /** With VITE_ONE_NAV: "true" turns on Add an app (the grid's last tile and /chat/apps/add; shell/navPins.ts). Unset = off. */
+  readonly VITE_ONE_ADD_APP?: string;
   /** "true" registers the PWA service worker under `vite dev` too (src/lib/pwa.ts); off by default. */
   readonly VITE_PWA_DEV?: string;
   /** TC-3195: the origin recording share links point at (default https://tinycloud.one). */

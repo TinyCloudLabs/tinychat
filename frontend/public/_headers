@@ -1,3 +1,10 @@
+# No other site may put a TinyCloud page in a frame (TC-3547): the registry consent is a tap on a button, and a page that
+# can be framed could be clicked for the owner. TinyCloud's own pages (this origin) may still frame each other. The phone
+# and desktop apps load the bundle from the device, not from here, and open it as the top-level page, so this header does
+# not reach them. The apps TinyCloud One frames are the other direction and are not affected.
+/*
+  Content-Security-Policy: frame-ancestors 'self'
+
 # Agent discovery. These headers don't change the SPA route or response body.
 /
   Link: </llms.txt>; rel="llms-txt"; type="text/plain", </.well-known/agent-skills/index.json>; rel="describedby"; type="application/json", </.well-known/api-catalog>; rel="api-catalog"; type="application/linkset+json"; profile="https://www.rfc-editor.org/info/rfc9727", </.well-known/ai-catalog.json>; rel="describedby"; type="application/json", </mcp/server-card>; rel="service-desc"; type="application/mcp-server-card+json", </sitemap.xml>; rel="sitemap"; type="application/xml"

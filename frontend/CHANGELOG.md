@@ -16,6 +16,121 @@
 - TC-2204: Native audience checks accept Home's three exact SQL hook subscriptions only alongside an existing TinyChat data grant.
 - TC-2499: The Home mirror adapter persists close receipts using node-compatible NULL/non-NULL compare-and-set predicates. If the KV mirror is already exactly closed but its receipt is missing, recovery records the original publication ETag without writing the KV copy again, before any gated child handoff. The CLI reports JSON error class, safe message, code, HTTP status when available, and operation step; private SQL bodies and nested causes remain redacted. Exit 2 identifies invalid input, exit 6 known transient failures (including NODE_BUSY and REQUEST_TIMEOUT without HTTP metadata), and exit 1 other runtime failures or OUTCOME_UNKNOWN. Unclassified errors are not labelled bad input; no failure confirms delivery or authorizes an automatic retry.
 
+## 0.16.0-beta.2
+
+### Minor Changes
+
+- 764dd74: On the web, TinyCloud One has an Apps grid and a bar with Pin on every open app. On a phone-sized screen the bar is a floating tab bar that holds your first two pinned apps. The phone and desktop apps get the same in their next builds.
+
+  Details: TC-3650
+
+## 0.15.4-beta.1
+
+### Patch Changes
+
+- c04a852: TinyCloud One pages can't be shown inside another site's frame.
+
+  Details: TC-3547
+
+## 0.15.4-beta.0
+
+### Patch Changes
+
+- cd2f663: If you use the desktop app on version 0.13.0 or older, or on a beta of 0.14.0, update to 0.15 or later before November 25. If you test on TestFlight, update to the latest build. From November 25, older versions stop working with your data.
+
+  Details: TC-2518
+
+## 0.15.3
+
+### Patch Changes
+
+- 2b8966c: In the phone app, Explorer opens inside TinyCloud One.
+
+  Details: TC-3568
+
+- 4a67fd5: In the phone app, apps that don't open inside TinyCloud One open in a sheet over it, so you stay in One.
+
+  Details: TC-3568
+
+- 0cd1ccc: The agent setup guide at tinycloud.one/agents/setup.md, the agent setup error messages and the meetings skill name TinyCloud One. The meetings skill is published as version 0.1.1-onboarding.29 and keeps its install name, folders and tool names.
+
+  Details: TC-3659
+
+- 8ba7ee3: The Allow Connectors card says that OpenKey also asks to unlock encrypted data, and says so when that permission is left out.
+
+  Details: TC-3674
+
+- d011402: Your card.md text is carried over as it is when its stored version doesn't match its text.
+
+  Details: TC-3685
+
+## 0.15.3-beta.4
+
+### Patch Changes
+
+- 8ba7ee3: The Allow Connectors card says that OpenKey also asks to unlock encrypted data, and says so when that permission is left out.
+
+  Details: TC-3674
+
+- d011402: Your card.md text is carried over as it is when its stored version doesn't match its text.
+
+  Details: TC-3685
+
+## 0.15.3-beta.3
+
+### Patch Changes
+
+- 0cd1ccc: The agent setup guide at tinycloud.one/agents/setup.md, the agent setup error messages and the meetings skill name TinyCloud One. The meetings skill is published as version 0.1.1-onboarding.29 and keeps its install name, folders and tool names.
+
+  Details: TC-3659
+
+## 0.15.3-beta.2
+
+No changes in this release.
+
+## 0.15.3-beta.1
+
+### Patch Changes
+
+- 2b8966c: In the phone app, Explorer opens inside TinyCloud One.
+
+  Details: TC-3568
+
+## 0.15.3-beta.0
+
+### Patch Changes
+
+- 4a67fd5: In the phone app, apps that don't open inside TinyCloud One open in a sheet over it, so you stay in One.
+
+  Details: TC-3568
+
+## 0.15.2
+
+### Patch Changes
+
+- defebb9: The agent guides are built from the latest published set of TinyCloud guides.
+
+  Details: TC-3278
+
+- c8d1e5d: The agent guides are built from the latest published set of TinyCloud guides.
+
+  Details: TC-3558
+
+- 49f8456: Powerful transcriptions that the provider can't take right away wait and finish by themselves. The server keeps the audio and retries (after 1, 2, 5 and 10 minutes, then every 10) for up to 24 hours, and never sends the same paid request twice when the outcome is unclear. While it waits, the note and the upload sheet show "Transcription delayed" and say it will finish automatically.
+
+  Details: TC-2131
+
+- 95b5f15: Main can read web pages and search the web. It's off until you turn it on: in Main's chat, tap Web access and choose a setting. You can limit it to sites you list.
+
+  Details: TC-2808
+
+- 36ba6ff: Private Transcription uploads reach the transcription service at its current address.
+- d519be5: Background memory extraction asks each model for its lowest reasoning setting, which keeps hidden reasoning tokens down on short turns; the turn's total includes the extraction once it settles.
+
+  Details: TC-2002
+
+- 15e207c: Main's Web access setting stays out of sight until the service it talks to supports it.
+
 ## 0.15.2-beta.5
 
 ### Patch Changes
