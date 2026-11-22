@@ -1,7 +1,7 @@
 # gitleaks baseline (.github/workflows/gitleaks.yml). Each line is a finding fingerprint, commit:file:rule:line, that
 # was reviewed and is not a live credential: test fixtures, public identifiers, code constants. A finding not listed
 # here fails the Gitleaks check. Recorded 2026-11-22 with gitleaks 8.30.1 over the full history of main
-# (28b469e3833a863152e9b52d82a83a40316b9760), refreshed to 11ec789a635c364af481ac83685be98f836a1f1f; the review per
+# (28b469e3833a863152e9b52d82a83a40316b9760), refreshed to 8e0c7e0c03ba2d57b1df2674b432515481682f60; the review per
 # file is in docs/security/required-checks.md.
 # To add one: confirm it is not a live secret (anything possibly live goes to security, and gets rotated, never
 # listed), then add the fingerprint gitleaks prints, in a PR of its own. A PR is scanned with its base commit's
@@ -24,6 +24,9 @@
 91a7981c21a2ee89605fc4a667e37725b63ba87c:backend/src/__tests__/auth-session.test.ts:generic-api-key:286
 91a7981c21a2ee89605fc4a667e37725b63ba87c:backend/src/__tests__/auth-session.test.ts:generic-api-key:296
 91a7981c21a2ee89605fc4a667e37725b63ba87c:backend/src/__tests__/auth-session.test.ts:generic-api-key:315
+
+# backend/src/__tests__/bot-history-sibling-routes.test.ts
+43094377d31765bf38d5522d6bdae215399ad5ac:backend/src/__tests__/bot-history-sibling-routes.test.ts:generic-api-key:130
 
 # backend/src/__tests__/chat-gating.test.ts
 210f47770c76875af64ea5251502590c6337921f:backend/src/__tests__/chat-gating.test.ts:generic-api-key:21
@@ -83,6 +86,9 @@ c331beb9c147e7fb1342c374565eced5e48ca002:backend/src/__tests__/webhook-verify.te
 
 # backend/src/services/transcript-delivery.ts
 13e3e0ca87edd3a307dbb5e6f7b3f1809851010a:backend/src/services/transcript-delivery.ts:generic-api-key:44
+
+# bots-regular/src/__tests__/omp-config.test.ts
+ca865456e066ca73589fce2d195cb8e1c4c74c1a:bots-regular/src/__tests__/omp-config.test.ts:generic-api-key:9
 
 # bots-regular/src/__tests__/regular.test.ts
 2e88e1e9c24967331f54721abfe5538aee07c15c:bots-regular/src/__tests__/regular.test.ts:generic-api-key:10
