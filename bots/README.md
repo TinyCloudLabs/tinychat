@@ -268,7 +268,7 @@ the `ask_owner` tool of the `app` MCP server.
 
 Main can propose an action for the owner to approve with one tap; the service then does it, exactly once. The first
 kind is `message_bots`: one message to 2 to 8 of the owner's other bots. It is the `propose_action` tool of the `app`
-MCP server, listed and served under the same setting as `ask_owner` (on by default). `message_bot` reaches one bot per
+MCP server, listed and served under the same setting as `ask_owner` (off until the owner turns it on). `message_bot` reaches one bot per
 owner message (the same bot again is fine); a message for more bots goes through a proposal.
 
 - `propose_action { kind: "message_bots", targets, text }`: `targets` are 2 to 8 distinct keys of bots Main may
