@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import yaml from "js-yaml";
 
@@ -10,6 +10,7 @@ const WORKFLOW = join(REPO_ROOT, ".github/workflows/backup-connector-master.yml"
 
 const OWNER_DID = "did:pkh:eip155:1:0xAbCdEf0123456789aBcDeF0123456789AbCdEf01";
 const OWNER_DID_LOWER = "did:pkh:eip155:1:0xabcdef0123456789abcdef0123456789abcdef01";
+const OWNER_DID_OTHER_CHAIN = "did:pkh:eip155:10:0xabcdef0123456789abcdef0123456789abcdef01";
 const WRONG_OWNER_DID = "did:pkh:eip155:1:0x9999999999999999999999999999999999999999";
 const APPROVAL_URL = "https://openkey.so/a/req_abc12345#frag-token-xyz";
 // Includes special characters to prove stdin preserves exact bytes without escaping or trimming.
@@ -35,52 +36,75 @@ afterEach(() => {
 interface FakeCliConfig {
   approvalUrl?: string;
   loginMode?: "ok" | "pending_then_ok" | "ok_with_decrypt" | "declined" | "expired" | "refused" | "bad_url" | "hang";
+  whoamiMode?: "ok" | "exit_nonzero" | "garbage_json" | "missing_owner";
   whoamiOwnerDid?: string;
   whoamiAuthenticated?: boolean;
   exists?: boolean;
   storedValue?: string;
   putFails?: boolean;
+  hangPidFile?: string;
 }
 
 interface RecordedCall {
+  npxPrefix: string[];
   argv: string[];
   stdin: string;
   tcHome: string | undefined;
   hasPrivateKey: boolean;
+  hasSecretEnv: boolean;
   manifest?: Record<string, unknown>;
 }
 
-function createFakeTinycloud(dir: string, config: FakeCliConfig = {}): { binDir: string; logFile: string } {
+function createFakeNpx(dir: string, config: FakeCliConfig = {}): { binDir: string; logFile: string; rogueFlagFile: string } {
   const binDir = join(dir, "bin");
   const stateDir = join(dir, "fake-state");
   const logFile = join(dir, "calls.jsonl");
+  const rogueFlagFile = join(dir, "rogue-tinycloud-called");
   const configFile = join(dir, "config.json");
-  const fakeScript = join(binDir, "tinycloud");
+  const fakeNpx = join(binDir, "npx");
+  const rogueTinycloud = join(binDir, "tinycloud");
   mkdirSync(binDir, { recursive: true });
   mkdirSync(stateDir, { recursive: true });
+
   writeFileSync(
     configFile,
     JSON.stringify({
       approvalUrl: config.approvalUrl ?? APPROVAL_URL,
       loginMode: config.loginMode ?? "ok",
+      whoamiMode: config.whoamiMode ?? "ok",
       whoamiOwnerDid: config.whoamiOwnerDid ?? OWNER_DID_LOWER,
       whoamiAuthenticated: config.whoamiAuthenticated ?? true,
       exists: config.exists ?? false,
       storedValue: config.storedValue ?? SECRET_VALUE,
       putFails: config.putFails ?? false,
+      hangPidFile: config.hangPidFile ?? null,
       stateDir,
     }),
   );
 
+  // Put a rogue tinycloud binary first on PATH to prove the script never bypasses pinned npx.
   writeFileSync(
-    fakeScript,
+    rogueTinycloud,
+    `#!/usr/bin/env bash
+touch ${JSON.stringify(rogueFlagFile)}
+exit 99
+`,
+    "utf8",
+  );
+  chmodSync(rogueTinycloud, 0o755);
+
+  writeFileSync(
+    fakeNpx,
     `#!/usr/bin/env node
 const fs = require("node:fs");
 const path = require("node:path");
+const { spawn } = require("node:child_process");
 
 const cfg = JSON.parse(fs.readFileSync(${JSON.stringify(configFile)}, "utf8"));
 const logFile = ${JSON.stringify(logFile)};
-const argv = process.argv.slice(2);
+const rawArgv = process.argv.slice(2);
+const npxPrefix = rawArgv.slice(0, 4);
+const argv = rawArgv.slice(4);
 const stdin = fs.readFileSync(0, "utf8");
 
 let manifest;
@@ -92,10 +116,12 @@ if (mIdx >= 0 && argv[mIdx + 1] && fs.existsSync(argv[mIdx + 1])) {
 fs.appendFileSync(
   logFile,
   JSON.stringify({
+    npxPrefix,
     argv,
     stdin,
     tcHome: process.env.TC_HOME,
     hasPrivateKey: Object.prototype.hasOwnProperty.call(process.env, "TC_PRIVATE_KEY"),
+    hasSecretEnv: Object.prototype.hasOwnProperty.call(process.env, "CONNECTOR_CREDENTIAL_MASTER"),
     manifest,
   }) + "\\n",
 );
@@ -131,7 +157,12 @@ if (cmd[0] === "auth" && cmd[1] === "login") {
   process.stderr.write(\`Approve this request in OpenKey (open the complete link):\\n\${cfg.approvalUrl}\\nThe link is valid until 2099-01-01T00:00:00.000Z.\\n\`);
 
   if (cfg.loginMode === "hang") {
-    setTimeout(() => process.exit(0), 30000);
+    // Spawn a grandchild process in the same process group to prove process-group kill reaches descendants.
+    const grandchild = spawn("sleep", ["60"], { stdio: "ignore" });
+    if (cfg.hangPidFile) {
+      fs.writeFileSync(cfg.hangPidFile, JSON.stringify({ cliPid: process.pid, grandchildPid: grandchild.pid }), "utf8");
+    }
+    setTimeout(() => process.exit(0), 60000);
     return;
   }
 
@@ -180,6 +211,22 @@ if (cmd[0] === "auth" && cmd[1] === "login") {
 }
 
 if (cmd[0] === "auth" && cmd[1] === "whoami") {
+  if (cfg.whoamiMode === "exit_nonzero") {
+    process.stderr.write(JSON.stringify({ error: { code: "AUTH_REQUIRED", message: "not signed in" } }) + "\\n");
+    process.exit(3);
+  }
+  if (cfg.whoamiMode === "garbage_json") {
+    process.stdout.write("not valid json {{{");
+    process.exit(0);
+  }
+  if (cfg.whoamiMode === "missing_owner") {
+    process.stdout.write(JSON.stringify({
+      profile: "connector-master-backup",
+      ownerDid: null,
+      authenticated: true,
+    }) + "\\n");
+    process.exit(0);
+  }
   process.stdout.write(JSON.stringify({
     profile: "connector-master-backup",
     ownerDid: cfg.whoamiOwnerDid,
@@ -228,8 +275,8 @@ process.exit(2);
 `,
     "utf8",
   );
-  chmodSync(fakeScript, 0o755);
-  return { binDir, logFile };
+  chmodSync(fakeNpx, 0o755);
+  return { binDir, logFile, rogueFlagFile };
 }
 
 function readCalls(logFile: string): RecordedCall[] {
@@ -243,6 +290,15 @@ function readCalls(logFile: string): RecordedCall[] {
   }
 }
 
+function isPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function runScript(
   envOverrides: Record<string, string | undefined>,
   fakeConfig?: FakeCliConfig,
@@ -252,11 +308,12 @@ async function runScript(
   code: number;
   calls: RecordedCall[];
   tmpRoot: string;
+  rogueCalled: boolean;
 }> {
   const sandbox = makeTempDir("tc3895-test-");
   const tmpRoot = join(sandbox, "tmp");
   mkdirSync(tmpRoot, { recursive: true });
-  const { binDir, logFile } = createFakeTinycloud(sandbox, fakeConfig);
+  const { binDir, logFile, rogueFlagFile } = createFakeNpx(sandbox, fakeConfig);
 
   const env: Record<string, string> = {
     PATH: `${binDir}:${process.env.PATH ?? ""}`,
@@ -283,15 +340,23 @@ async function runScript(
     proc.exited,
   ]);
 
-  return { stdout, stderr, code, calls: readCalls(logFile), tmpRoot };
+  return {
+    stdout,
+    stderr,
+    code,
+    calls: readCalls(logFile),
+    tmpRoot,
+    rogueCalled: existsSync(rogueFlagFile),
+  };
 }
 
 describe("backup-connector-master.sh", () => {
-  test("writes the secret via stdin only, uses the exact narrow manifest, logs fixed lines + 8-hex prefix, logs out and removes temp dir", async () => {
+  test("writes via stdin only through pinned npx, unsets secret env for children, logs fixed lines + 8-hex prefix, logs out and removes temp dir", async () => {
     const result = await runScript({ TC_PRIVATE_KEY: "0xdeadbeef" });
 
     expect(result.code).toBe(0);
     expect(result.stderr).toBe("");
+    expect(result.rogueCalled).toBe(false);
     expect(result.stdout).toBe(
       `status=approval_required\n${APPROVAL_URL}\nsecret=CONNECTOR_CREDENTIAL_MASTER sha256_prefix=${SECRET_PREFIX_8} match=unverified\n`,
     );
@@ -305,10 +370,12 @@ describe("backup-connector-master.sh", () => {
     // Temp dir created by the script must be removed by the trap.
     expect(readdirSync(result.tmpRoot)).toEqual([]);
 
-    // Never forwards TC_PRIVATE_KEY to any CLI call.
+    // Always uses pinned @tinycloud/cli@1.8.0 via npx; never forwards TC_PRIVATE_KEY or CONNECTOR_CREDENTIAL_MASTER.
     expect(result.calls.length).toBeGreaterThanOrEqual(6);
     for (const call of result.calls) {
+      expect(call.npxPrefix).toEqual(["-y", "-p", "@tinycloud/cli@1.8.0", "tinycloud"]);
       expect(call.hasPrivateKey).toBe(false);
+      expect(call.hasSecretEnv).toBe(false);
       expect(call.argv.join(" ")).not.toContain(SECRET_VALUE);
       expect(call.tcHome).toMatch(/tc-backup-cmk\.[^/]+\/tc-home$/);
     }
@@ -356,15 +423,32 @@ describe("backup-connector-master.sh", () => {
     expect(lastCall.argv).toContain("logout");
   });
 
-  test("masks the secret first via ::add-mask:: when GITHUB_ACTIONS=true", async () => {
-    const result = await runScript({ GITHUB_ACTIONS: "true" });
-    expect(result.code).toBe(0);
-    const lines = result.stdout.split("\n");
-    expect(lines[0]).toBe(`::add-mask::${SECRET_VALUE}`);
-    expect(lines[1]).toBe("status=approval_required");
-    expect(lines[2]).toBe(APPROVAL_URL);
-    expect(lines[3]).toBe(`secret=CONNECTOR_CREDENTIAL_MASTER sha256_prefix=${SECRET_PREFIX_8} match=unverified`);
-    expect(readdirSync(result.tmpRoot)).toEqual([]);
+  test("masks single-line and multi-line values via ::add-mask:: when GITHUB_ACTIONS=true and preserves exact bytes on stdin", async () => {
+    const single = await runScript({ GITHUB_ACTIONS: "true" });
+    expect(single.code).toBe(0);
+    const singleLines = single.stdout.split("\n");
+    expect(singleLines[0]).toBe(`::add-mask::${SECRET_VALUE}`);
+    expect(singleLines[1]).toBe("status=approval_required");
+    expect(singleLines[2]).toBe(APPROVAL_URL);
+    expect(singleLines[3]).toBe(`secret=CONNECTOR_CREDENTIAL_MASTER sha256_prefix=${SECRET_PREFIX_8} match=unverified`);
+    expect(readdirSync(single.tmpRoot)).toEqual([]);
+
+    const multiValue = "first-secret-line\n\nsecond-secret-line\nthird-secret-line";
+    const multiSha = createHash("sha256").update(multiValue, "utf8").digest("hex");
+    const multi = await runScript({ GITHUB_ACTIONS: "true", CONNECTOR_CREDENTIAL_MASTER: multiValue });
+    expect(multi.code).toBe(0);
+    const multiLines = multi.stdout.split("\n");
+    expect(multiLines.slice(0, 3)).toEqual([
+      "::add-mask::first-secret-line",
+      "::add-mask::second-secret-line",
+      "::add-mask::third-secret-line",
+    ]);
+    expect(multiLines[3]).toBe("status=approval_required");
+    expect(multiLines[4]).toBe(APPROVAL_URL);
+    expect(multiLines[5]).toBe(`secret=CONNECTOR_CREDENTIAL_MASTER sha256_prefix=${multiSha.slice(0, 8)} match=unverified`);
+    const putCall = multi.calls.find((c) => c.argv.includes("put"));
+    expect(putCall?.stdin).toBe(multiValue);
+    expect(readdirSync(multi.tmpRoot)).toEqual([]);
   });
 
   test("resumes when auth login exits 8 while pending without duplicating the approval link", async () => {
@@ -416,16 +500,43 @@ describe("backup-connector-master.sh", () => {
     expect(missingSecret.calls).toEqual([]);
   });
 
-  test("refuses when whoami ownerDid differs from OWNER_DID, never calls secrets put, logs out and cleans up", async () => {
-    const result = await runScript({}, { whoamiOwnerDid: WRONG_OWNER_DID });
-    expect(result.code).toBe(1);
-    expect(result.stdout).toBe(`status=approval_required\n${APPROVAL_URL}\nstatus=owner_mismatch\n`);
-    expect(result.stderr).toBe("");
-    expect(result.stdout + result.stderr).not.toContain(SECRET_VALUE);
-    expect(result.stdout + result.stderr).not.toContain(WRONG_OWNER_DID);
-    expect(result.calls.some((c) => c.argv.includes("put"))).toBe(false);
-    expect(result.calls.some((c) => c.argv.includes("logout"))).toBe(true);
-    expect(readdirSync(result.tmpRoot)).toEqual([]);
+  test("refuses wrong owner, same address on a different chain id, missing ownerDid, garbage JSON and non-zero whoami", async () => {
+    const wrongOwner = await runScript({}, { whoamiOwnerDid: WRONG_OWNER_DID });
+    expect(wrongOwner.code).toBe(1);
+    expect(wrongOwner.stdout).toBe(`status=approval_required\n${APPROVAL_URL}\nstatus=owner_mismatch\n`);
+    expect(wrongOwner.stdout + wrongOwner.stderr).not.toContain(SECRET_VALUE);
+    expect(wrongOwner.stdout + wrongOwner.stderr).not.toContain(WRONG_OWNER_DID);
+    expect(wrongOwner.calls.some((c) => c.argv.includes("put"))).toBe(false);
+    expect(wrongOwner.calls.some((c) => c.argv.includes("logout"))).toBe(true);
+    expect(readdirSync(wrongOwner.tmpRoot)).toEqual([]);
+
+    const wrongChain = await runScript({}, { whoamiOwnerDid: OWNER_DID_OTHER_CHAIN });
+    expect(wrongChain.code).toBe(1);
+    expect(wrongChain.stdout).toBe(`status=approval_required\n${APPROVAL_URL}\nstatus=owner_mismatch\n`);
+    expect(wrongChain.calls.some((c) => c.argv.includes("put"))).toBe(false);
+    expect(wrongChain.calls.some((c) => c.argv.includes("logout"))).toBe(true);
+    expect(readdirSync(wrongChain.tmpRoot)).toEqual([]);
+
+    const missingOwner = await runScript({}, { whoamiMode: "missing_owner" });
+    expect(missingOwner.code).toBe(1);
+    expect(missingOwner.stdout).toBe(`status=approval_required\n${APPROVAL_URL}\nstatus=owner_mismatch\n`);
+    expect(missingOwner.calls.some((c) => c.argv.includes("put"))).toBe(false);
+    expect(missingOwner.calls.some((c) => c.argv.includes("logout"))).toBe(true);
+    expect(readdirSync(missingOwner.tmpRoot)).toEqual([]);
+
+    const garbage = await runScript({}, { whoamiMode: "garbage_json" });
+    expect(garbage.code).toBe(1);
+    expect(garbage.stdout).toBe(`status=approval_required\n${APPROVAL_URL}\nstatus=owner_mismatch\n`);
+    expect(garbage.calls.some((c) => c.argv.includes("put"))).toBe(false);
+    expect(garbage.calls.some((c) => c.argv.includes("logout"))).toBe(true);
+    expect(readdirSync(garbage.tmpRoot)).toEqual([]);
+
+    const nonZero = await runScript({}, { whoamiMode: "exit_nonzero" });
+    expect(nonZero.code).toBe(1);
+    expect(nonZero.stdout).toBe(`status=approval_required\n${APPROVAL_URL}\nstatus=owner_check_failed\n`);
+    expect(nonZero.calls.some((c) => c.argv.includes("put"))).toBe(false);
+    expect(nonZero.calls.some((c) => c.argv.includes("logout"))).toBe(true);
+    expect(readdirSync(nonZero.tmpRoot)).toEqual([]);
   });
 
   test("refuses to overwrite an existing secret (add-only) and never calls secrets put", async () => {
@@ -452,12 +563,13 @@ describe("backup-connector-master.sh", () => {
     expect(readdirSync(result.tmpRoot)).toEqual([]);
   });
 
-  test("refuses non-OpenKey approval links and removes temp dir on failure", async () => {
+  test("refuses non-OpenKey approval links, runs auth logout unconditionally and removes temp dir on failure", async () => {
     const result = await runScript({}, { loginMode: "bad_url" });
     expect(result.code).toBe(1);
     expect(result.stdout).toBe("status=approval_link_refused\n");
     expect(result.stdout).not.toContain("evil.example");
     expect(result.calls.some((c) => c.argv.includes("put"))).toBe(false);
+    expect(result.calls.some((c) => c.argv.includes("logout"))).toBe(true);
     expect(readdirSync(result.tmpRoot)).toEqual([]);
   });
 
@@ -470,16 +582,27 @@ describe("backup-connector-master.sh", () => {
     expect(readdirSync(result.tmpRoot)).toEqual([]);
   });
 
-  test("times out cleanly when approval never arrives, stops login and removes temp dir", async () => {
+  test("kills the login CLI child process group on timeout, runs auth logout and removes temp dir", async () => {
+    const pidDir = makeTempDir("tc3895-pids-");
+    const hangPidFile = join(pidDir, "pids.json");
     const result = await runScript(
       { TC_BACKUP_APPROVAL_TIMEOUT_SECONDS: "1", TC_BACKUP_POLL_SLEEP_SECONDS: "0.05" },
-      { loginMode: "hang" },
+      { loginMode: "hang", hangPidFile },
     );
     expect(result.code).toBe(1);
     expect(result.stdout).toBe(`status=approval_required\n${APPROVAL_URL}\nstatus=approval_timeout\n`);
     expect(result.stderr).toBe("");
     expect(result.calls.some((c) => c.argv.includes("put"))).toBe(false);
+    expect(result.calls.some((c) => c.argv.includes("logout"))).toBe(true);
     expect(readdirSync(result.tmpRoot)).toEqual([]);
+
+    expect(existsSync(hangPidFile)).toBe(true);
+    const { cliPid, grandchildPid } = JSON.parse(readFileSync(hangPidFile, "utf8")) as {
+      cliPid: number;
+      grandchildPid: number;
+    };
+    expect(isPidAlive(cliPid)).toBe(false);
+    expect(isPidAlive(grandchildPid)).toBe(false);
   });
 
   test("logs fixed error, logs out and removes temp dir when secrets put fails", async () => {
@@ -493,8 +616,15 @@ describe("backup-connector-master.sh", () => {
   });
 });
 
+function stripShellComments(text: string): string {
+  return text
+    .split("\n")
+    .filter((line) => !/^\s*#/.test(line))
+    .join("\n");
+}
+
 describe("backup-connector-master.yml workflow structure", () => {
-  test("enforces dispatch-only, main-only, production-api, read permissions, pinned SHAs, sparse-checkout and no artifacts or set -x", () => {
+  test("enforces dispatch-only, main-only before checkout, production-api, read permissions, pinned SHAs, sparse-checkout and no artifacts or set -x", () => {
     const raw = readFileSync(WORKFLOW, "utf8");
     const doc = yaml.load(raw) as Record<string, any>;
 
@@ -515,16 +645,20 @@ describe("backup-connector-master.yml workflow structure", () => {
     expect(job["timeout-minutes"]).toBeGreaterThanOrEqual(15);
     expect(job["timeout-minutes"]).toBeLessThanOrEqual(30);
 
-    // First step explicitly refuses any ref other than refs/heads/main.
+    // Main-ref guard step runs BEFORE checkout.
     const steps = job.steps as Array<Record<string, any>>;
-    expect(steps.length).toBeGreaterThanOrEqual(3);
-    expect(steps[0]!.run).toContain("refs/heads/main");
-    expect(steps[0]!.run).toContain("exit 1");
+    const guardIndex = steps.findIndex(
+      (s) => typeof s.run === "string" && s.run.includes("refs/heads/main") && s.run.includes("exit 1"),
+    );
+    const checkoutIndex = steps.findIndex(
+      (s) => typeof s.uses === "string" && s.uses.startsWith("actions/checkout@"),
+    );
+    expect(guardIndex).toBe(0);
+    expect(checkoutIndex).toBeGreaterThan(guardIndex);
 
     // Checkout uses sparse-checkout for scripts/ops only and disables credential persistence.
-    const checkoutStep = steps.find((s) => typeof s.uses === "string" && s.uses.startsWith("actions/checkout@"));
-    expect(checkoutStep).toBeDefined();
-    expect(checkoutStep!.with).toEqual({
+    const checkoutStep = steps[checkoutIndex]!;
+    expect(checkoutStep.with).toEqual({
       "persist-credentials": false,
       "sparse-checkout": "scripts/ops",
     });
@@ -546,9 +680,15 @@ describe("backup-connector-master.yml workflow structure", () => {
     );
     expect(stepsReferencingSecret[0]!.env?.OWNER_DID).toBe("${{ vars.TC_BACKUP_OWNER_DID }}");
 
-    // No artifact uploads and no shell tracing.
+    // No artifact uploads and no shell tracing (ignoring comments).
     expect(raw).not.toMatch(/upload-artifact/i);
-    expect(raw).not.toMatch(/set\s+-[a-zA-Z]*x/);
-    expect(readFileSync(SCRIPT, "utf8")).not.toMatch(/set\s+-[a-zA-Z]*x/);
+    for (const step of steps) {
+      if (typeof step.run === "string") {
+        expect(stripShellComments(step.run)).not.toMatch(/\bset\s+-[a-zA-Z]*x\b/);
+      }
+    }
+    const scriptBody = stripShellComments(readFileSync(SCRIPT, "utf8"));
+    expect(scriptBody).not.toMatch(/\bset\s+-[a-zA-Z]*x\b/);
+    expect(scriptBody).not.toContain("<<<");
   });
 });

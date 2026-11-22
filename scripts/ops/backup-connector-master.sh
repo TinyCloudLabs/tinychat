@@ -3,9 +3,14 @@
 #
 # Security contract:
 # - Never prints, echoes, logs, writes to a file or passes as a command-line argument the secret value.
-# - Runs only on refs/heads/main and only after verifying auth whoami ownerDid == OWNER_DID (case-insensitive address).
-# - Uses an ephemeral TC_HOME and profile (connector-master-backup), never sets TC_PRIVATE_KEY,
-#   directs all CLI stdout/stderr to private temp files deleted in a trap, and finishes with auth logout.
+# - Copies CONNECTOR_CREDENTIAL_MASTER into a non-exported shell variable and unsets the env var before
+#   spawning any child process, so npx/node/tinycloud never inherit it.
+# - Runs only on refs/heads/main and only after verifying auth whoami ownerDid == OWNER_DID
+#   (exact chain ID and case-insensitive address).
+# - Always uses pinned `npx -y -p @tinycloud/cli@1.8.0 tinycloud` with an ephemeral TC_HOME and profile
+#   (connector-master-backup), never sets TC_PRIVATE_KEY, directs all CLI stdout/stderr to private temp
+#   files deleted in a trap, kills the login process group on timeout/exit and runs auth logout
+#   unconditionally in the EXIT trap.
 # - Requests the narrowest single-name manifest: tinycloud.kv get+put on vault/secrets/CONNECTOR_CREDENTIAL_MASTER
 #   and tinycloud.capabilities read on the secrets space root; no network-wide decrypt and no vault listing.
 # - Add-only: refuses to overwrite an existing secret.
@@ -16,15 +21,28 @@ set -u
 set +e
 umask 077
 
-# Mask the secret value in GitHub Actions logs before anything else runs.
-if [[ "${GITHUB_ACTIONS:-}" == "true" && -n "${CONNECTOR_CREDENTIAL_MASTER:-}" ]]; then
-  while IFS= read -r secret_line || [[ -n "$secret_line" ]]; do
-    [[ -n "$secret_line" ]] && printf '::add-mask::%s\n' "$secret_line"
-  done <<< "$CONNECTOR_CREDENTIAL_MASTER"
-  unset secret_line
-fi
-
+# Capture the secret into a non-exported shell variable and unset the exported env var immediately
+# so no child process (npx, node, tinycloud, sha256sum) inherits CONNECTOR_CREDENTIAL_MASTER.
+secret_value="${CONNECTOR_CREDENTIAL_MASTER:-}"
+unset CONNECTOR_CREDENTIAL_MASTER
 unset TC_PRIVATE_KEY
+
+# Mask every non-empty line in GitHub Actions logs before anything else runs, using pure shell
+# parameter expansion (no here-string temp file).
+if [[ "${GITHUB_ACTIONS:-}" == "true" && -n "$secret_value" ]]; then
+  mask_rem="$secret_value"
+  while :; do
+    if [[ "$mask_rem" == *$'\n'* ]]; then
+      mask_line="${mask_rem%%$'\n'*}"
+      mask_rem="${mask_rem#*$'\n'}"
+      [[ -n "$mask_line" ]] && printf '::add-mask::%s\n' "$mask_line"
+    else
+      [[ -n "$mask_rem" ]] && printf '::add-mask::%s\n' "$mask_rem"
+      break
+    fi
+  done
+  unset mask_rem mask_line
+fi
 
 secret_name="CONNECTOR_CREDENTIAL_MASTER"
 profile="connector-master-backup"
@@ -40,12 +58,12 @@ if [[ ! "$owner_did" =~ ^did:pkh:eip155:[0-9]+:0x[0-9a-fA-F]{40}$ ]]; then
   exit 1
 fi
 
-if [[ -z "${CONNECTOR_CREDENTIAL_MASTER:-}" ]]; then
+if [[ -z "$secret_value" ]]; then
   echo "secret=${secret_name} value=missing"
   exit 1
 fi
 
-source_sha256="$(printf '%s' "$CONNECTOR_CREDENTIAL_MASTER" | sha256sum | awk '{print $1}')"
+source_sha256="$(printf '%s' "$secret_value" | sha256sum | awk '{print $1}')"
 if [[ ! "$source_sha256" =~ ^[0-9a-f]{64}$ ]]; then
   echo "status=hash_failed"
   exit 1
@@ -65,29 +83,34 @@ export TC_HOME="$work_dir/tc-home"
 mkdir -p "$TC_HOME"
 chmod 700 "$TC_HOME"
 
-if command -v tinycloud >/dev/null 2>&1; then
-  tc_cmd=(tinycloud)
-else
-  tc_cmd=(npx -y -p @tinycloud/cli@1.8.0 tinycloud)
-fi
+# Always run the pinned CLI version through npx; never pick up an unpinned tinycloud on PATH.
+tc_cmd=(npx -y -p @tinycloud/cli@1.8.0 tinycloud)
 
 login_pid=""
-signed_in=0
+login_pgid=""
+
+stop_login() {
+  if [[ -n "$login_pgid" ]]; then
+    kill -TERM -- "-$login_pgid" 2>/dev/null || true
+  fi
+  if [[ -n "$login_pid" ]]; then
+    kill -TERM "$login_pid" 2>/dev/null || true
+    wait "$login_pid" 2>/dev/null || true
+  fi
+  if [[ -n "$login_pgid" ]]; then
+    kill -KILL -- "-$login_pgid" 2>/dev/null || true
+  fi
+  login_pid=""
+  login_pgid=""
+}
 
 cleanup() {
   local exit_status=$?
   trap - EXIT
-  if [[ -n "$login_pid" ]]; then
-    kill -TERM "$login_pid" 2>/dev/null || true
-    wait "$login_pid" 2>/dev/null || true
-    login_pid=""
-  fi
-  if [[ "$signed_in" -eq 1 ]]; then
-    env -u TC_PRIVATE_KEY "${tc_cmd[@]}" --no-diagnostic-logs --profile "$profile" auth logout \
-      < /dev/null > /dev/null 2>&1 || true
-    signed_in=0
-  fi
+  stop_login
   if [[ -n "${work_dir:-}" && -d "$work_dir" ]]; then
+    env -u TC_PRIVATE_KEY -u CONNECTOR_CREDENTIAL_MASTER "${tc_cmd[@]}" --no-diagnostic-logs --profile "$profile" auth logout \
+      < /dev/null > /dev/null 2>&1 || true
     rm -rf "$work_dir"
   fi
   exit "$exit_status"
@@ -97,7 +120,7 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 # 1. Create the ephemeral key-only profile in the ephemeral TC_HOME.
-env -u TC_PRIVATE_KEY "${tc_cmd[@]}" --no-diagnostic-logs init --name "$profile" --key-only --json \
+env -u TC_PRIVATE_KEY -u CONNECTOR_CREDENTIAL_MASTER "${tc_cmd[@]}" --no-diagnostic-logs init --name "$profile" --key-only --json \
   < /dev/null > "$work_dir/init.out" 2> "$work_dir/init.err"
 if [[ $? -ne 0 ]]; then
   echo "status=init_failed"
@@ -140,23 +163,42 @@ if [[ $? -ne 0 ]]; then
   exit 1
 fi
 
-# 3. Start one-tap OpenKey auth login in the background, emit the one approval URL, and wait for approval.
+# 3. Start one-tap OpenKey auth login in its own process group, emit the one approval URL, and wait for approval.
 start_login() {
   : > "$work_dir/login.out"
   : > "$work_dir/login.err"
   : > "$work_dir/login.rc"
-  (
-    env -u TC_PRIVATE_KEY "${tc_cmd[@]}" --no-diagnostic-logs --profile "$profile" auth login \
-      --method openkey \
-      --manifest "$manifest_path" \
-      --owner "$owner_did" \
-      --expiry 1h \
-      --no-popup \
-      --json \
-      < /dev/null > "$work_dir/login.out" 2> "$work_dir/login.err"
-    printf '%s\n' "$?" > "$work_dir/login.rc"
-  ) &
-  login_pid=$!
+  if command -v setsid >/dev/null 2>&1; then
+    setsid bash -c '
+      rc_file="$1"; out_file="$2"; err_file="$3"; shift 3
+      env -u TC_PRIVATE_KEY -u CONNECTOR_CREDENTIAL_MASTER "$@" < /dev/null > "$out_file" 2> "$err_file"
+      printf "%s\n" "$?" > "$rc_file"
+    ' _ "$work_dir/login.rc" "$work_dir/login.out" "$work_dir/login.err" \
+      "${tc_cmd[@]}" --no-diagnostic-logs --profile "$profile" auth login \
+        --method openkey \
+        --manifest "$manifest_path" \
+        --owner "$owner_did" \
+        --expiry 1h \
+        --no-popup \
+        --json \
+      < /dev/null > /dev/null 2>&1 &
+    login_pid=$!
+    login_pgid="$login_pid"
+  else
+    (
+      env -u TC_PRIVATE_KEY -u CONNECTOR_CREDENTIAL_MASTER "${tc_cmd[@]}" --no-diagnostic-logs --profile "$profile" auth login \
+        --method openkey \
+        --manifest "$manifest_path" \
+        --owner "$owner_did" \
+        --expiry 1h \
+        --no-popup \
+        --json \
+        < /dev/null > "$work_dir/login.out" 2> "$work_dir/login.err"
+      printf '%s\n' "$?" > "$work_dir/login.rc"
+    ) &
+    login_pid=$!
+    login_pgid=""
+  fi
 }
 
 extract_approval_link() {
@@ -268,6 +310,7 @@ start_login
 while true; do
   link_state="$(extract_approval_link)"
   if [[ "$link_state" == "INVALID" ]]; then
+    stop_login
     echo "status=approval_link_refused"
     exit 1
   elif [[ "$link_state" == OK\ * ]]; then
@@ -282,6 +325,7 @@ while true; do
   if [[ -s "$work_dir/login.rc" ]] || ! kill -0 "$login_pid" 2>/dev/null; then
     wait "$login_pid" 2>/dev/null || true
     login_pid=""
+    login_pgid=""
     # Re-check for any approval link flushed just before exit (e.g. exit 8 with pending.approvalUrl).
     link_state="$(extract_approval_link)"
     if [[ "$link_state" == "INVALID" ]]; then
@@ -301,17 +345,14 @@ while true; do
     outcome="$(classify_login_exit "$rc")"
     case "$outcome" in
       SIGNED_IN_WITH_DECRYPT)
-        signed_in=1
         has_decrypt=1
         break
         ;;
       SIGNED_IN_NO_DECRYPT)
-        signed_in=1
         has_decrypt=0
         break
         ;;
       DECLINED)
-        signed_in=1
         echo "status=permission_declined"
         exit 1
         ;;
@@ -359,14 +400,15 @@ while true; do
   fi
 
   if [[ "$(date +%s)" -ge "$deadline" ]]; then
+    stop_login
     echo "status=approval_timeout"
     exit 1
   fi
   sleep "$poll_sleep_seconds"
 done
 
-# 4. After approval and before any write, verify whoami ownerDid == OWNER_DID (case-insensitive address).
-env -u TC_PRIVATE_KEY "${tc_cmd[@]}" --no-diagnostic-logs --profile "$profile" auth whoami --json \
+# 4. After approval and before any write, verify whoami ownerDid == OWNER_DID (exact chain ID, case-insensitive address).
+env -u TC_PRIVATE_KEY -u CONNECTOR_CREDENTIAL_MASTER "${tc_cmd[@]}" --no-diagnostic-logs --profile "$profile" auth whoami --json \
   < /dev/null > "$work_dir/whoami.out" 2> "$work_dir/whoami.err"
 if [[ $? -ne 0 ]]; then
   echo "status=owner_check_failed"
@@ -410,7 +452,7 @@ if [[ "$owner_check" != "MATCH" ]]; then
 fi
 
 # 5. Add-only existence check before writing: uses tinycloud.kv/get only, never lists other secrets and never decrypts.
-env -u TC_PRIVATE_KEY "${tc_cmd[@]}" --no-diagnostic-logs --profile "$profile" secrets wait "$secret_name" \
+env -u TC_PRIVATE_KEY -u CONNECTOR_CREDENTIAL_MASTER "${tc_cmd[@]}" --no-diagnostic-logs --profile "$profile" secrets wait "$secret_name" \
   --timeout 0 --owner "$owner_did" --json \
   < /dev/null > "$work_dir/exists.out" 2> "$work_dir/exists.err"
 exists_rc=$?
@@ -437,7 +479,7 @@ verify_readback() {
   local stored_sha256 get_rc
   stored_sha256="$(
     set -o pipefail
-    env -u TC_PRIVATE_KEY "${tc_cmd[@]}" --no-diagnostic-logs --profile "$profile" secrets get "$secret_name" --raw \
+    env -u TC_PRIVATE_KEY -u CONNECTOR_CREDENTIAL_MASTER "${tc_cmd[@]}" --no-diagnostic-logs --profile "$profile" secrets get "$secret_name" --raw \
       < /dev/null 2> "$work_dir/get.err" | sha256sum | awk '{print $1}'
   )"
   get_rc=$?
@@ -462,9 +504,9 @@ elif [[ "$exists_state" != "ABSENT" ]]; then
   exit 1
 fi
 
-# 6. Write the secret via stdin only (never argv, never a file).
-printf '%s' "$CONNECTOR_CREDENTIAL_MASTER" \
-  | env -u TC_PRIVATE_KEY "${tc_cmd[@]}" --no-diagnostic-logs --profile "$profile" secrets put "$secret_name" --stdin \
+# 6. Write the secret via stdin only (never argv, never a file, never exported env).
+printf '%s' "$secret_value" \
+  | env -u TC_PRIVATE_KEY -u CONNECTOR_CREDENTIAL_MASTER "${tc_cmd[@]}" --no-diagnostic-logs --profile "$profile" secrets put "$secret_name" --stdin \
     > "$work_dir/put.out" 2> "$work_dir/put.err"
 if [[ $? -ne 0 ]]; then
   echo "status=write_failed"
