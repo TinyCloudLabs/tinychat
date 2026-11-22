@@ -23,8 +23,8 @@
 #                               https page in a sandboxed frame. A frame runs on its own origin, not on this one.
 #   form-action 'self'          no form posts anywhere else.
 #   connect-src: each host is one the code fetches (the desktop app's policy, desktop/src-tauri/tauri.conf.json, lists most of them):
-#     ipc:, ipc.localhost                         the desktop app's bridge to its own process (Tauri); the desktop app
-#                                                 loads this bundle with index.html's copy of the policy
+#     (the desktop app's bridge to its own process is added only to the desktop build's copy of the policy:
+#     frontend/vite.config.ts, tinychat-desktop-ipc-csp)
 #     api.tinycloud.chat                          the backend
 #     tee.node.tinycloud.xyz, node.tinycloud.xyz  TinyCloud nodes (SDK)
 #     registry.tinycloud.xyz                      the registry
@@ -45,7 +45,7 @@
 # not reach them. The apps TinyCloud One frames are the other direction and are not affected.
 /*
   Content-Security-Policy: frame-ancestors 'self'
-  Content-Security-Policy: default-src 'self'; script-src 'self' 'sha256-EyjtwYacqqfVLyzPVyH1wIN86Cu5JWq24fP1VH01WDw=' 'wasm-unsafe-eval'; object-src 'none'; base-uri 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; media-src 'self' blob: https:; worker-src 'self'; manifest-src 'self'; frame-src https:; form-action 'self'; connect-src 'self' ipc: http://ipc.localhost https://api.tinycloud.chat https://tee.node.tinycloud.xyz https://node.tinycloud.xyz https://registry.tinycloud.xyz https://api.tinycloud.xyz https://openkey.so https://api.openkey.so https://api.redpill.ai https://rpc.ata.network https://search.sigstore.dev https://api-github-proxy.tinfoil.sh https://gh-attestation-proxy.tinfoil.sh https://cloud-api.phala.network https://api.trustauthority.intel.com https://api.fireflies.ai https://www.googleapis.com https://docs.googleapis.com https://meet.googleapis.com https://api.assemblyai.com https://f6663e38e8fc0a7d706ec2facb861246ae0077d8-8080.dstack-pha1-prod5.phala.network
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'sha256-EyjtwYacqqfVLyzPVyH1wIN86Cu5JWq24fP1VH01WDw=' 'wasm-unsafe-eval'; object-src 'none'; base-uri 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; media-src 'self' blob: https:; worker-src 'self'; manifest-src 'self'; frame-src https:; form-action 'self'; connect-src 'self' https://api.tinycloud.chat https://tee.node.tinycloud.xyz https://node.tinycloud.xyz https://registry.tinycloud.xyz https://api.tinycloud.xyz https://openkey.so https://api.openkey.so https://api.redpill.ai https://rpc.ata.network https://search.sigstore.dev https://api-github-proxy.tinfoil.sh https://gh-attestation-proxy.tinfoil.sh https://cloud-api.phala.network https://api.trustauthority.intel.com https://api.fireflies.ai https://www.googleapis.com https://docs.googleapis.com https://meet.googleapis.com https://api.assemblyai.com https://f6663e38e8fc0a7d706ec2facb861246ae0077d8-8080.dstack-pha1-prod5.phala.network
 
 # Agent discovery. These headers don't change the SPA route or response body.
 /

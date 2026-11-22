@@ -28,7 +28,7 @@ afterEach(() => {
   restore = undefined;
 });
 
-const STOPPED_LINE = `You turned off questions from ${MAIN_BOT_NAME}, so its open questions were closed.`;
+const STOPPED_LINE = `You turned off questions and requests from ${MAIN_BOT_NAME}, so its open questions and secret requests were closed.`;
 
 const pending = (id: string): AskRequest => ({
   id,

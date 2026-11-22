@@ -24,8 +24,39 @@ interface RawDstackQuote {
   event_log?: unknown;
 }
 
-export class DstackUnixClient implements DstackClient {
+interface RawDstackKey {
+  key?: unknown;
+}
+
+export interface DstackKeyClient {
+  getKey(path: string): Promise<Buffer>;
+}
+
+const MIN_DERIVED_KEY_BYTES = 32;
+
+export class DstackUnixClient implements DstackClient, DstackKeyClient {
   constructor(private readonly socketPath = process.env.DSTACK_SOCKET ?? DEFAULT_DSTACK_SOCKET) {}
+
+  async getKey(path: string): Promise<Buffer> {
+    if (typeof path !== "string" || path.trim().length === 0) {
+      throw createDstackUnavailableError("dstack key derivation path must be non-empty");
+    }
+    const raw = await this.request<RawDstackKey>("/GetKey", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ path }),
+    });
+    const hex = stringField(raw.key, "key").replace(/^0x/i, "");
+    if (hex.length === 0 || hex.length % 2 !== 0 || !/^[0-9a-fA-F]+$/.test(hex)) {
+      throw createDstackUnavailableError("dstack agent returned invalid key encoding");
+    }
+    const bytes = Buffer.from(hex, "hex");
+    if (bytes.length < MIN_DERIVED_KEY_BYTES) {
+      bytes.fill(0);
+      throw createDstackUnavailableError("dstack agent returned too few key bytes");
+    }
+    return bytes;
+  }
 
   async getQuote(reportDataHex: string): Promise<DstackQuote> {
     const raw = await this.request<RawDstackQuote>("/GetQuote", {
@@ -84,6 +115,10 @@ export class DstackUnixClient implements DstackClient {
 }
 
 export function createDstackClient(): DstackClient {
+  return new DstackUnixClient();
+}
+
+export function createDstackKeyClient(): DstackKeyClient {
   return new DstackUnixClient();
 }
 
