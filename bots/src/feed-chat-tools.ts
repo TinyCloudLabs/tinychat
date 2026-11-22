@@ -65,12 +65,11 @@ export const FEED_CHAT_RECORD_KIND: Readonly<Record<FeedChatTool, "feed card" | 
   read_chat: "chat",
 };
 
-/** What a refused or failed call says to the model: fixed sentences, never backend or stored text. */
+/** What a refused or failed call says to the model: fixed sentences, never backend or stored text. The daily count and
+ * one-at-a-time sentences are shared by every area (meeting-reads.ts READ_LIMIT_ERRORS). */
 export const FEED_CHAT_ERRORS = {
   off: "Reading the feed and chats is off. The owner can turn it on in this chat under Feed and chats.",
   ended: "Your access to the owner's feed and chats has ended. They can turn it on in this chat under Feed and chats.",
   not_found: "That card or chat isn't there.",
   unavailable: "The feed and chats can't be read right now.",
-  budget: "You've used today's reads of the owner's data. Carry on without them.",
-  busy: "Another read of the owner's data is already running. Wait for its result before reading again.",
 } as const;

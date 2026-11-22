@@ -195,6 +195,16 @@ describe("a feed or chat read", () => {
     expect((await search(gateway)).isError).toBe(false);
   });
 
+  test("a successful read labels what TrustBot asks the owner from then on as shaped by outside text", async () => {
+    for (const name of FEED_CHAT_TOOL_NAMES) {
+      const { gateway } = setup();
+      set(gateway, ["feed_chats"]);
+      expect(gateway.asksOutside(BOT)).toBe(false);
+      expect((await call(gateway, "/v1/mcp/app", name, { agent: "trip", card: "c1", chat: "t1" })).isError).toBe(false);
+      expect(gateway.asksOutside(BOT)).toBe(true);
+    }
+  });
+
   test("a result whose mark cannot be saved is withheld", async () => {
     const held = memoryHeld();
     held.fail = true;
@@ -210,6 +220,7 @@ describe("a feed or chat read", () => {
       set(gateway, ["feed_chats"]);
       expect(await call(gateway, "/v1/mcp/app", "read_card", { agent: "trip", card: "c1" })).toEqual({ text: sentence, isError: true });
       expect(held.saved).toBeUndefined();
+      expect(gateway.asksOutside(BOT)).toBe(false);
       expect((await search(gateway)).isError).toBe(false);
     }
   });

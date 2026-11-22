@@ -20,12 +20,17 @@ import type { ReadArea, ReadsPush } from "./reads";
 import { signedCallHeader } from "./signed-call";
 import { toolText, untrustedRecord } from "./web";
 
+/** The daily count and the one-at-a-time rule cover every area together, so their sentences name no area. */
+export const READ_LIMIT_ERRORS = {
+  budget: "You've used today's reads of the owner's data. Carry on without them.",
+  busy: "Another read of the owner's data is already running. Wait for its result before reading again.",
+} as const;
+
 export const READ_ERRORS = {
   off: "Reading meetings is off. The owner can turn it on in this chat under Meetings.",
   ended: "Your access to the owner's meetings has ended. They can turn it on in this chat under Meetings.",
   unavailable: "Meetings can't be read right now.",
-  budget: "You've read enough meetings for today. Carry on without them.",
-  busy: "A meeting read is already running. Wait for its result before reading again.",
+  ...READ_LIMIT_ERRORS,
 } as const;
 type ReadError = "off" | "ended" | "unavailable" | "budget" | "busy" | "not_found";
 export type ReadToolName = MeetingToolName | FeedChatTool;
@@ -33,7 +38,7 @@ export type ReadToolName = MeetingToolName | FeedChatTool;
 /** Each area's tools and the fixed sentences its refusals give; an area without `not_found` says `unavailable`. */
 const AREA_TOOLS: Readonly<Record<ReadArea, { tools: ReadonlyArray<{ name: string }>; errors: Record<Exclude<ReadError, "not_found">, string> & { not_found?: string } }>> = {
   meetings: { tools: MEETING_TOOLS, errors: READ_ERRORS },
-  feed_chats: { tools: FEED_CHAT_TOOLS, errors: FEED_CHAT_ERRORS },
+  feed_chats: { tools: FEED_CHAT_TOOLS, errors: { ...FEED_CHAT_ERRORS, ...READ_LIMIT_ERRORS } },
 };
 const isFeedChatTool = (name: ReadToolName): name is FeedChatTool => FEED_CHAT_TOOL_NAMES.some(tool => tool === name);
 const areaOf = (name: ReadToolName): ReadArea => isFeedChatTool(name) ? "feed_chats" : "meetings";
