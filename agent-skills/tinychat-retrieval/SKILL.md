@@ -2,7 +2,7 @@
 name: tinychat-retrieval
 description: Find and read existing TinyCloud One meetings and search literal transcript passages through TinyCloud CLI. Use for meeting recaps, exact meeting follow-ups, and topic searches in the user's connected TinyCloud One data.
 metadata:
-  version: "0.1.1-onboarding.29"
+  version: "0.1.1-onboarding.30"
 ---
 
 # TinyCloud One meetings retrieval

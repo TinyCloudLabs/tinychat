@@ -14,6 +14,7 @@ export {
   createTinyCloudWeb,
   createAndSignIn,
   restoreTinyCloudWebSession,
+  type RegistryPublishHooks,
   type RestoreTinyCloudWebSessionResult,
   type TinyCloudWebConfig,
 } from "./tinycloud.js";
