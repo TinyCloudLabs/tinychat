@@ -171,11 +171,24 @@ export const MEETINGS_ACCESS_STRINGS = {
   off: `${MAIN} can't read your meetings.`,
   allow: `Let ${MAIN} read them`,
   confirmTitle: `Let ${MAIN} read your meetings?`,
-  confirmBody: `${MAIN} can read your recordings, transcripts and meeting notes for 7 days, then it stops. It can't change them. What it reads goes to the AI model service to write its answer. Once ${MAIN} reads a meeting, it can't use the web in this chat until the chat is cleared after 30 days without use.`,
+  confirmBody: `${MAIN} can read your recordings, transcripts and meeting notes for 7 days, then it stops. It can't change them. What it reads goes to the AI model service to write its answer. Once ${MAIN} reads a meeting, it can't use the web in this chat until you start a new chat.`,
   confirm: "Allow for 7 days",
   cancel: "Not now",
   on: (date: string) => `${MAIN} can read your meetings until ${date}.`,
   turnOff: "Turn off",
   ended: `${MAIN}'s access to your meetings has ended.`,
+  failed: "Couldn't change this. Try again.",
+} as const;
+
+// The owner's "Start a new chat" with Main (TC-3808).
+export const NEW_CHAT_STRINGS = {
+  start: "Start a new chat",
+  confirmTitle: `Start a new chat with ${MAIN}?`,
+  confirmBody: `${MAIN} forgets this conversation, and any questions it's waiting on are closed. Web access and messages to other bots work in the new chat. Your settings and any history saved in your TinyCloud stay.`,
+  confirm: "Start new chat",
+  cancel: "Cancel",
+  started: "New chat started.",
+  busy: `${MAIN} is replying. Try again when it's done.`,
+  archivePending: `${MAIN} is saving this chat to your history. Try again in a moment.`,
   failed: "Couldn't change this. Try again.",
 } as const;
