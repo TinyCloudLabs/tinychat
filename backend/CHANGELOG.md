@@ -1,5 +1,13 @@
 # @tinychat/backend
 
+## 0.9.5-beta.0
+
+### Patch Changes
+
+- fcdb738: The backend records each agent chat credit check as a structured event, so how many chats fall below the credit floor can be counted.
+
+  Details: TC-3734
+
 ## 0.9.4
 
 ### Patch Changes
