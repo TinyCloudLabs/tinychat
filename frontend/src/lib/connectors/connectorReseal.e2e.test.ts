@@ -12,10 +12,13 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import type * as NodeSdk from "@tinycloud/node-sdk";
 import { secretKeyPath } from "@tinycloud/sdk-services";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
+import type { SessionStore } from "@tinyboilerplate/client";
 
-import { readWithConnectorKeyAccess, resetConnectorKeyAccessForTests } from "./connectorKeyAccess";
+import { runSourceSync, type SourceSyncDeps } from "@/capture/meetingSources/useSourceSync";
+import { isConnectorKeyAccessPaused, resetConnectorKeyAccessForTests } from "./connectorKeyAccess";
 import { getConnectorKey, resetVaultSecretCacheForTests } from "./connectorSecrets";
 import { CONNECTORS } from "./registry";
+import { ingestQueuedMeetings, type TargetedAckClient, type TargetedIngestStore } from "./targetedSync";
 
 // Never touch a real home.
 const testHome = mkdtempSync("/var/tmp/tc-3804-reseal.");
@@ -168,45 +171,110 @@ describe.skipIf(!nodeBinary)("a network-sealed connector key on a real node", ()
     registry?.stop(true);
   });
 
-  test("the owner's foreground read reseals it to its own key; network decrypt alone no longer opens it", async () => {
-    resetConnectorKeyAccessForTests();
-    resetVaultSecretCacheForTests();
-
-    // Before: the sign-in's network decrypt opens the old copy.
-    const before = await networkDecryptOnly();
-    expect(await before.readSecret({ name: fireflies.secretName })).toEqual({ status: "ok", value: V1_VALUE });
-
-    // TinyChat's read, through the SDK's secrets service for the owner's secrets space.
-    const secrets = owner.secretsForSpace(secretsSpace);
+  /** TinyChat's tcw over the owner's real secrets service, recording every secrets call. */
+  function connectorTcw() {
     const gets: unknown[] = [];
+    const touched: string[] = [];
+    const secrets = owner.secretsForSpace(secretsSpace);
+    const vault = new Proxy(secrets.vault, {
+      get(target, property, receiver) {
+        if (property === "resealToKey") touched.push("resealToKey");
+        return Reflect.get(target, property, receiver);
+      },
+    });
     const tcw = {
       did: owner.did,
       session: () => ({ address, chainId: 1 }),
       secrets: new Proxy(secrets, {
         get(target, property, receiver) {
-          if (property !== "get") return Reflect.get(target, property, receiver);
-          return (name: string, options?: unknown) => (gets.push(options), target.get(name, options as never));
+          if (property === "get") {
+            return (name: string, options?: unknown) => (gets.push(options), target.get(name, options as never));
+          }
+          if (property === "put" || property === "delete" || property === "list") touched.push(property);
+          if (property === "vault") return vault;
+          return Reflect.get(target, property, receiver);
         },
       }),
     } as unknown as TinyCloudWeb;
-    let asks = 0;
-    const read = await readWithConnectorKeyAccess(tcw, fireflies, () => getConnectorKey<unknown>(tcw, fireflies), {
-      ask: async () => (asks++, "granted"),
+    return { tcw, gets, touched };
+  }
+
+  async function storedEnvelope(): Promise<Record<string, unknown>> {
+    const record = await (await networkDecryptOnly()).kv.get(VAULT_KEY);
+    expect(record.ok).toBe(true);
+    return (record.ok ? record.data.data : undefined) as Record<string, unknown>;
+  }
+
+  test("a background ingest with the key's grant held pauses and leaves the old copy as it was", async () => {
+    resetConnectorKeyAccessForTests();
+    resetVaultSecretCacheForTests();
+    const { tcw, gets, touched } = connectorTcw();
+    const never = (name: string) => async () => {
+      touched.push(name);
+      throw new Error(`${name} must not run`);
+    };
+    const res = await ingestQueuedMeetings({
+      tcw,
+      descriptor: fireflies,
+      items: [{ meetingId: "m1", kind: "transcript" }],
+      webhooks: { acknowledge: never("acknowledge") } as unknown as TargetedAckClient,
+      store: {
+        upsertMeeting: never("upsertMeeting"),
+        updateSyncState: never("updateSyncState"),
+        countMeetings: never("countMeetings"),
+      } as unknown as TargetedIngestStore,
+      secrets: { isUnlocked: () => true, getKey: (t, d) => getConnectorKey<unknown>(t, d) },
+      createClient: () => {
+        touched.push("createClient");
+        throw new Error("createClient must not run");
+      },
     });
-    expect(read).toEqual({ ok: true, data: V1_VALUE });
+    expect(res.ok && res.data.blocked).toBe("key-access");
+    expect(isConnectorKeyAccessPaused(address, "fireflies")).toBe(true);
+    expect(gets).toEqual([{ namedKeyOnly: true }]);
+    expect(touched).toEqual([]);
+
+    // Still the old copy: no key path, and the sign-in's network decrypt still opens it.
+    expect((await storedEnvelope()).keyPath).toBeUndefined();
+    expect(await (await networkDecryptOnly()).readSecret({ name: fireflies.secretName })).toEqual({ status: "ok", value: V1_VALUE });
+  }, 180_000);
+
+  test("Sync now reseals it to its own key; network decrypt alone no longer opens it", async () => {
+    resetConnectorKeyAccessForTests();
+    resetVaultSecretCacheForTests();
+    const { tcw, gets, touched } = connectorTcw();
+
+    // Sync now's own entry point with production reads and reseal; the owner's session already holds the exact-key
+    // grant, so the read comes back LEGACY_ENVELOPE (not DECRYPT_DENIED) and there is nothing to ask for.
+    let asks = 0;
+    const synced: string[] = [];
+    const deps: SourceSyncDeps = {
+      secretsAvailable: () => true,
+      isSecretsUnlocked: () => true,
+      unlockSecrets: (async () => ({ ok: true, data: undefined })) as SourceSyncDeps["unlockSecrets"],
+      getConnectorKey,
+      askConnectorKeyAccess: async () => (asks++, "granted"),
+      isGmeetSyncInFlight: () => false,
+      isGmeetNotesSyncInFlight: () => false,
+      awaitSessionSync: async () => {},
+      runGmeetSyncNow: async () => ({ ok: true }),
+      runFirefliesSyncNow: async ({ apiKey }) => (synced.push(apiKey), { ok: true }),
+      runGranolaSyncNow: async () => ({ ok: true }),
+    };
+    const error = await runSourceSync(fireflies, { tcw, backendUrl: "https://backend.test", sessionStore: {} as SessionStore }, deps);
+    expect(error).toBeNull();
+    expect(synced).toEqual([V1_VALUE]);
     expect(asks).toBe(0);
     expect(gets).toEqual([{ namedKeyOnly: true }, { namedKeyOnly: true }]);
+    expect(touched).toEqual(["resealToKey"]);
 
     // After: one wrap, to the connector's own key; network decrypt alone is refused.
-    const after = await networkDecryptOnly();
-    const record = await after.kv.get(VAULT_KEY);
-    expect(record.ok).toBe(true);
-    const envelope = (record.ok ? record.data.data : undefined) as Record<string, unknown>;
+    const envelope = await storedEnvelope();
     expect(envelope).toMatchObject({ v: 2, keyPath: secretKeyPath(fireflies.secretName), networkId });
     expect(Object.keys(envelope).sort()).toEqual([
       "aad", "alg", "ciphertext", "encryptedSymmetricKey", "encryptedSymmetricKeyHash", "keyPath", "keyVersion", "metadata", "networkId", "v",
     ]);
-    const refused = await after.readSecret({ name: fireflies.secretName });
+    const refused = await (await networkDecryptOnly()).readSecret({ name: fireflies.secretName });
     expect(refused).not.toHaveProperty("value");
     expect(refused.status).toBe("permission_required");
 
@@ -215,5 +283,6 @@ describe.skipIf(!nodeBinary)("a network-sealed connector key on a real node", ()
     gets.length = 0;
     expect(await getConnectorKey<unknown>(tcw, fireflies)).toEqual({ ok: true, data: V1_VALUE });
     expect(gets).toEqual([{ namedKeyOnly: true }]);
+    expect(touched).toEqual(["resealToKey"]);
   }, 180_000);
 });
