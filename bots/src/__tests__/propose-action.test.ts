@@ -126,6 +126,7 @@ function setup() {
   const launcher: SandboxLauncher = {
     hasState: () => false,
     leftover: () => false,
+    readsHeld: async () => false,
     mountPoints: () => [],
     launch: async layout => boxes.get(layout.botId)!,
     syncAsks: (layout, turn) => {

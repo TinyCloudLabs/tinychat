@@ -15,6 +15,7 @@ import { MainChat } from "./MainChat";
 import { isWorking, useMainChat } from "./useMainChat";
 import { AskCards } from "./AskCards";
 import { readSettings, revokeReadGrant, setReadArea, signReadGrant } from "./trustbotReadGrant";
+import { newMainChat } from "./mainNewChat";
 import { SecretCards } from "./SecretCard";
 import { useAsks } from "./useAsks";
 
@@ -86,6 +87,8 @@ function MainAsk({ api, tcw, onReconnect }: { api: BotsApi; tcw?: TinyCloudWeb; 
     signReadGrant: (serviceDid: string, areas: Parameters<typeof signReadGrant>[2]) => signReadGrant(tcw, serviceDid, areas),
     revokeReadGrant: (cid: string) => revokeReadGrant(tcw, cid),
   } : undefined, [tcw]);
+  const clearChat = chat.clear;
+  const newChat = useMemo(() => ({ start: () => newMainChat(), onStarted: () => { clearChat(); refreshAsks(); } }), [clearChat, refreshAsks]);
   // A turn is when Main asks: read the requests as it ends.
   const working = isWorking(chat.state.turn);
   const wasWorking = useRef(false);
@@ -139,6 +142,7 @@ function MainAsk({ api, tcw, onReconnect }: { api: BotsApi; tcw?: TinyCloudWeb; 
         webAccess={webAccess}
         meetings={meetings}
         asks={asks}
+        newChat={newChat}
       />
     </>
   );

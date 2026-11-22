@@ -80,7 +80,7 @@ test("off shows the line and the button, and the sheet shows the confirmation wi
   await click(host, `Let ${BOT} read them`);
   const sheet = host.querySelector('[role="alertdialog"]')!;
   expect(sheet.textContent).toContain(`Let ${BOT} read your meetings?`);
-  expect(sheet.textContent).toContain(`${BOT} can read your recordings, transcripts and meeting notes for 7 days, then it stops. It can't change them. What it reads goes to the AI model service to write its answer. Once ${BOT} reads a meeting, it can't use the web in this chat until the chat is cleared after 30 days without use.`);
+  expect(sheet.textContent).toContain(`${BOT} can read your recordings, transcripts and meeting notes for 7 days, then it stops. It can't change them. What it reads goes to the AI model service to write its answer. Once ${BOT} reads a meeting, it can't use the web or your secrets, or send messages to other bots, in this chat until you start a new chat.`);
   expect(button(host, "Allow for 7 days")).toBeDefined();
   await click(host, "Not now");
   expect(host.querySelector('[role="alertdialog"]')).toBeNull();
