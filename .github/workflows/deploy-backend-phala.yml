@@ -289,7 +289,9 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
-      - name: Build and push Docker image
+      # Build, scan the exact image, then push it: an image with a fixable HIGH or CRITICAL vulnerability that is not
+      # in the reviewed baseline never reaches GHCR (neither its commit tag nor :latest) or the CVM.
+      - name: Build Docker image
         id: build
         uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5.4.0
         with:
@@ -298,7 +300,8 @@ jobs:
           build-args: |
             BUILD_REVISION=${{ inputs.ref }}
           platforms: linux/amd64
-          push: true
+          load: true
+          push: false
           cache-from: type=gha,scope=tinychat-backend
           cache-to: ${{ (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')) && 'type=gha,mode=max,scope=tinychat-backend' || '' }}
           tags: |
@@ -308,6 +311,34 @@ jobs:
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ inputs.ref }}
             org.opencontainers.image.description=TinyChat backend
+
+      # Scan policy (pinned trivy installer and the reviewed .trivyignore baseline) comes from the workflow commit,
+      # never the application/rollback ref, like the OS guard.
+      - name: Check out trusted image scan policy
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .scan-policy
+          sparse-checkout: |
+            /.github/scripts/install-security-tool.sh
+            /.trivyignore
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      # A failure here stops the deploy before the push: production and GHCR stay unchanged.
+      - name: Scan the backend image (trivy)
+        run: |
+          bash .scan-policy/.github/scripts/install-security-tool.sh trivy
+          "$RUNNER_TEMP/trivy/trivy" image --image-src docker --severity CRITICAL,HIGH --ignore-unfixed \
+            --ignorefile .scan-policy/.trivyignore --exit-code 1 "${DOCKER_IMAGE}:${DEPLOY_SHA}"
+
+      - name: Push Docker image
+        id: push
+        run: |
+          docker push "${DOCKER_IMAGE}:${DEPLOY_SHA}"
+          docker push "${DOCKER_IMAGE}:latest"
+          ref=$(docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "${DOCKER_IMAGE}:${DEPLOY_SHA}" | grep -m1 "^${DOCKER_IMAGE}@sha256:")
+          echo "digest=${ref#*@}" >> "$GITHUB_OUTPUT"
 
       - name: Build and push ingress image
         id: ingress-build
@@ -334,7 +365,7 @@ jobs:
             echo "### Container image"
             echo
             echo "- Tag: \`${DOCKER_IMAGE}:${DEPLOY_SHA}\`"
-            echo "- Digest: \`${{ steps.build.outputs.digest }}\`"
+            echo "- Digest: \`${{ steps.push.outputs.digest }}\`"
             echo "- Ingress tag: \`${INGRESS_IMAGE}:ingress-${DEPLOY_SHA}\`"
             echo "- Ingress digest: \`${{ steps.ingress-build.outputs.digest }}\`"
           } >> "$GITHUB_STEP_SUMMARY"
