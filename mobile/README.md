@@ -551,7 +551,7 @@ Xcode 26.6.
   `VITE_ONE_APPS` and `VITE_ONE_NAV` on) for the simulator, plus a probe
   (`App/FrameProbe.swift`) compiled only with the CI-only `EXO_FRAME_PROBE`
   condition. Once the app has mounted, the probe adds three frames: a
-  cross-origin srcdoc frame with One's sandbox, a srcdoc frame with no sandbox,
+  cross-origin srcdoc frame with One's sandbox, a srcdoc frame with no sandbox
   and One's real Explorer frame (`https://explorer.tinycloud.xyz/?embed=one`,
   One's sandbox) when it loads. Each frame posts a plugin call straight to
   `window.webkit.messageHandlers.bridge`, then calls `window.open` and clicks a
