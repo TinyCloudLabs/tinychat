@@ -32,7 +32,7 @@ export const ASK_STRINGS = {
   /** Shown under the answer box only while Web access is on. */
   webAccessOn: `Web access is on, so a page ${ASK_MAIN} reads could try to get it to send your answer to a website.`,
   /** Shown above the answer box only when the request says Main read something from outside the chat. */
-  outside: `${ASK_MAIN} read a web page or someone else’s message before asking, so answer only if this question is what you expect.`,
+  outside: `Before asking, ${ASK_MAIN} read something you didn’t write here, such as a web page, a meeting transcript or someone else’s message. Answer only if this question is what you expect.`,
   answer: "Answer",
   notNow: "Not now",
   stop: `Stop ${ASK_MAIN} from asking`,
