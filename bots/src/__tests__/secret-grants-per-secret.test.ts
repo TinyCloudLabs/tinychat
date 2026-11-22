@@ -97,9 +97,10 @@ describe("verifiedGrant takes exactly the two entries asked for", () => {
     await expect(verifiedGrant(await grant([ASKED]), { ...expected, name: "ANTHROPIC_API_KEY" })).rejects.toThrow("not exactly what was asked for");
   });
 
-  test("never keeps a grant over 7 days, even if a longer one was asked for", async () => {
+  test("never keeps a grant over 7 days (plus the 60 s clock skew), even if a longer one was asked for", async () => {
     const asked = { ...expected, maxSeconds: 30 * 24 * 3600 };
-    await expect(verifiedGrant(await grant([ASKED], 7 * DAY), asked)).resolves.toBeDefined();
+    await expect(verifiedGrant(await grant([ASKED], 7 * DAY + 60_000), asked)).resolves.toBeDefined();
+    await expect(verifiedGrant(await grant([ASKED], 7 * DAY + 61_000), asked)).rejects.toThrow("longer than asked");
     await expect(verifiedGrant(await grant([ASKED], 7 * DAY + HOUR), asked)).rejects.toThrow("longer than asked");
   });
 });
