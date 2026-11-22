@@ -34,11 +34,6 @@ describe("TinyChat backend sign-in manifest", () => {
       "bot-history/grants/",
       "bots/registry/",
       "calendar-autojoin/v1/",
-      "connector-content-continuity/v1",
-      "connector-content-index/",
-      "connector-content-key-failure/",
-      "connector-content-replay-tombstone/",
-      "connector-content/",
       "credentials/",
       "delegations/",
       "transcriber/",
@@ -55,7 +50,7 @@ describe("TinyChat backend sign-in manifest", () => {
       "does not cover key roots the backend uses: bots/registry/.",
     );
     expect(() => assertBackendManifestCoversKvRoots(withoutRoot("webhooks/"))).toThrow(
-      /webhooks\/tokens\/.*webhooks\/pending.*webhooks\/ingest\/instance-lease/,
+      /webhooks\/tokens\/.*webhooks\/pending.*webhooks\/corrupt\/purged/,
     );
   });
 

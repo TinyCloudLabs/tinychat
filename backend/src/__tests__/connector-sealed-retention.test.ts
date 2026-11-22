@@ -4,12 +4,10 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync, unlinkSync } from "node:fs";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { ConnectorControlStore, corruptPurgeLedgerKey, mergePurgeLedgerIds, purgeLedgerKey } from "../routes/connector-webhooks.js";
+import { ConnectorControlStore, mergePurgeLedgerIds, purgeLedgerKey } from "../routes/connector-webhooks.js";
 import { isTombstoned } from "../services/connector-drain.js";
 import { ConnectorKeyStore, utcDay } from "../services/connector-key-store.js";
 import { ConnectorQueue, deadLetterKey, pendingQueueKey } from "../services/connector-queue.js";
-import { ConnectorTeardownService } from "../services/connector-teardown.js";
-import { ContentStore, InMemoryContentBlobStore, PURGE_TOMBSTONED } from "../services/content-store.js";
 import { useRealConnectorStorageInTests } from "./connector-real-storage-test-setup.js";
 
 useRealConnectorStorageInTests();
@@ -158,17 +156,9 @@ test("ledger migration stores only codes; the midnight sweep leaves the watermar
   expect(after.status === "ok" && isTombstoned(replay, after.ledger)).toBe(true);
   expect(after.status === "ok" && isTombstoned({ ...replay, sourceTimestamp: undefined }, after.ledger)).toBe(true);
   expect(after.status === "ok" && isTombstoned({ ...replay, sourceTimestamp: "invalid" }, after.ledger)).toBe(true);
-
-  const content = new ContentStore(new InMemoryContentBlobStore(), { master: () => "R29vZE1hc3RlckZvckNvbnRlbnRFbnZlbG9wZXNBQTA9", now: f.now, purgeLedger: control });
-  for (const ts of [replay.sourceTimestamp, undefined, "invalid"]) {
-    expect(await content.upsert({
-      source: SOURCE, address: ADDRESS, sourceId: OLD_ID, kind: "summary", content: { text: "fixture" },
-      fetchedAt: iso(f.now()), receivedAt: iso(f.now()), ts,
-    })).toEqual({ ok: false, code: PURGE_TOMBSTONED });
-  }
 });
 
-test("a tampered ledger code fails closed in ContentStore and is quarantined by teardown", async () => {
+test("a tampered ledger code reads as unparseable", async () => {
   const f = fixture();
   f.data.set(f.ledger, f.plain);
   await merge(f, []);
@@ -176,22 +166,6 @@ test("a tampered ledger code fails closed in ContentStore and is quarantined by 
   raw.recentIdCodes[0]!.mac = "A".repeat(43);
   const control = f.control();
   expect((await control.readLedger(SOURCE, ADDRESS)).status).toBe("unparseable");
-  const content = new ContentStore(new InMemoryContentBlobStore(), { master: () => "R29vZE1hc3RlckZvckNvbnRlbnRFbnZlbG9wZXNBQTA9", now: f.now, purgeLedger: control });
-  expect(await content.upsert({
-    source: SOURCE, address: ADDRESS, sourceId: NEW_ID, kind: "summary", content: { text: "fixture" },
-    fetchedAt: iso(f.now()), receivedAt: iso(f.now()), ts: iso(f.now()),
-  })).toEqual({ ok: false, code: "content_store_failed" });
-  const teardown = new ConnectorTeardownService({
-    control,
-    notifications: { disable: async () => {} },
-    credentials: { revoke: async () => ({ deleted: true, upstreamRevoked: "not_applicable" }) },
-    content: { list: async () => [], purge: async () => ({ removed: 0 }) },
-    queue: { clear: async () => ({ cleared: 0, superseded: 0 }) },
-  }, { now: f.now });
-  await teardown.run(SOURCE, ADDRESS);
-  const quarantined = f.data.get(corruptPurgeLedgerKey(SOURCE, ADDRESS));
-  expect(quarantined).toMatchObject({ reason: "unparseable" });
-  expect(JSON.stringify(quarantined).includes(OLD_ID)).toBe(false);
 });
 
 test("a replaced key file leaves old queue entries unreadable and the live ledger fails closed", async () => {

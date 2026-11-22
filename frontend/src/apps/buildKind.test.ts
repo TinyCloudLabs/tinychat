@@ -22,6 +22,7 @@ console.log(JSON.stringify({ kind: r.ONE_APPS_BUILD_KIND, hosts: r.ONE_HOST_ORIG
         "https://explorer.tinycloud.xyz",
         "https://account.tinycloud.xyz",
         "https://share.tinycloud.xyz",
+        "https://rocinante-ledger.pages.dev",
       ],
     });
   } finally {

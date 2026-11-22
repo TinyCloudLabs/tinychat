@@ -22,8 +22,10 @@ import { toolText, untrustedRecord } from "./web";
 
 export const READ_ERRORS = {
   off: "Reading meetings is off. The owner can turn it on in this chat under Meetings.",
-  ended: "The owner's permission to read meetings has ended. They can renew it in this chat under Meetings.",
+  ended: "Your access to the owner's meetings has ended. They can turn it on in this chat under Meetings.",
   unavailable: "Meetings can't be read right now.",
+  budget: "You've read enough meetings for today. Carry on without them.",
+  busy: "A meeting read is already running. Wait for its result before reading again.",
 } as const;
 type ReadError = "off" | "ended" | "unavailable" | "not_found";
 export type ReadToolName = MeetingToolName | FeedChatTool;
@@ -159,8 +161,8 @@ export class MeetingDesk {
     const day = new Date(this.#now()).toISOString().slice(0, 10);
     const today = this.#today.get(botId);
     const used = today?.day === day ? today.count : 0;
-    if (used >= READS_PER_DAY) return refuse("unavailable", "budget");
-    if (this.#calling.has(botId)) return refuse("unavailable", "busy");
+    if (used >= READS_PER_DAY) return refuse("budget");
+    if (this.#calling.has(botId)) return refuse("busy");
     this.#calling.add(botId);
     this.#today.set(botId, { day, count: used + 1 });
     try {

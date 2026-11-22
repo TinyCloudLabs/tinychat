@@ -126,7 +126,6 @@ Revoking the exo grant, revoking a transcript delegation, and disconnecting cale
 - `DELETE /api/exo/v1/grant`: `backend/src/routes/exo-grant.ts`.
 - Transcript delegation `DELETE`: `backend/src/routes/delegations.ts`.
 - Calendar autojoin disconnect: `backend/src/services/calendar-autojoin-connection.ts`, after custody, enablement, and revocation.
-- Connector teardown for one source: `backend/src/services/connector-teardown.ts`, step 5.
 - Webhook config `DELETE /webhooks/config`: `backend/src/routes/connector-webhooks.ts`. Clears each source's ledger rows after the disabled marker, config, token, and queue are removed. A failure is logged and the request still succeeds.
 
 Owner teardown (`clearExoOwnerState`, `backend/src/exo/teardown.ts`) runs in this order:
