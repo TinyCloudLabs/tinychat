@@ -97,6 +97,8 @@ export interface SandboxLauncher {
   syncAsks?(layout: BotLayout, turn?: { outside: boolean }): Promise<void>;
   /** Gives the gateway the owner's read setting and the bot's conversation id (reads.ts). */
   pushReads?(layout: BotLayout): Promise<void>;
+  /** Whether the bot's current conversation holds owner data it read; message_bot is refused while it does. */
+  readsHeld?(layout: BotLayout): Promise<boolean>;
   /** Removes what the bot keeps off this host (a remote sandbox and its snapshot) before its directories go. */
   removeState?(layout: BotLayout): Promise<void>;
 }
@@ -695,6 +697,17 @@ export class Bot {
     }
   }
 
+  /** Asks the gateway whether this conversation holds owner data it read. An answer that cannot be had counts as held. */
+  async #holdsOwnerData(): Promise<boolean> {
+    if (!this.#launcher.readsHeld) return false;
+    try {
+      return await this.#launcher.readsHeld(this.layout);
+    } catch {
+      log("reads_held_check_failed", this.layout.botId);
+      return true;
+    }
+  }
+
   #turn(sandbox: Sandbox, text: string, sink: TurnSink, messenger?: BotMessenger): Promise<void> {
     const id = sandbox.nextId();
     const { promise, resolve, reject } = Promise.withResolvers<void>();
@@ -708,6 +721,8 @@ export class Bot {
         return { text: MESSAGING_STRINGS.invalid, isError: true };
       }
       const { targetKey } = args;
+      // Owner data read in this conversation reaches another bot only through the owner's tap (propose_action).
+      if (await this.#holdsOwnerData()) return { text: MESSAGING_STRINGS.held, isError: true };
       if (reaching.has(targetKey)) return { text: MESSAGING_STRINGS.busy, isError: true };
       reaching.add(targetKey);
       try {

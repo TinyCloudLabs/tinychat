@@ -426,6 +426,11 @@ export class Gateway {
     return this.#meetings.push(botId, push);
   }
 
+  /** Whether this bot's current conversation holds owner data it read: its web tools and message_bot are refused. */
+  readsHeld(botId: string): boolean {
+    return this.#meetings.held(botId);
+  }
+
   /** The questions the box has asked since the supervisor last collected them. */
   drainAsks(botId: string): NewAsk[] {
     return this.#asks.drain(botId);

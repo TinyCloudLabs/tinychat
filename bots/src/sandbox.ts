@@ -601,6 +601,13 @@ export class RunscHost implements SandboxLauncher {
     await this.#gateway("PUT", `/bots/${layout.botId}/reads`, readsPush(layout));
   }
 
+  /** Whether the bot's current conversation holds owner data it read (meeting-reads.ts). */
+  async readsHeld(layout: BotLayout): Promise<boolean> {
+    const body: unknown = await (await this.#gateway("GET", `/bots/${layout.botId}/reads`)).json();
+    if (!isRecord(body) || typeof body.held !== "boolean") throw new Error("gateway reads answer invalid");
+    return body.held;
+  }
+
   /** Today's web counts for one bot and whether the gateway has a provider key. */
   async webStatus(layout: BotLayout): Promise<unknown> {
     return (await this.#gateway("GET", `/bots/${layout.botId}/web`)).json();

@@ -12,6 +12,7 @@
 //                         whether outside text has reached its conversation (a web call)
 //   PUT    /bots/<botId>/reads  {"areas", "owner"?, "conversation"}  the owner's read setting for Main (TrustBot) and the
 //                         id of its conversation (applies from the bot's next call)
+//   GET    /bots/<botId>/reads                   {"held"}: whether its current conversation holds owner data it read
 
 import { chmodSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -101,6 +102,7 @@ const control = Bun.serve({
     if (req.method === "GET" && receiptMatch) return Response.json(aci?.take(receiptMatch[1]!) ?? []);
     const readsMatch = /^\/bots\/([0-9a-f]{64})\/reads$/.exec(pathname);
     if (readsMatch) {
+      if (req.method === "GET") return Response.json({ held: gateway.readsHeld(readsMatch[1]!) });
       if (req.method !== "PUT") return new Response(null, { status: 405 });
       const push = parseReadsPush(await req.json().catch(() => null));
       if (!push || !gateway.setReads(readsMatch[1]!, push)) return new Response(null, { status: 400 });
