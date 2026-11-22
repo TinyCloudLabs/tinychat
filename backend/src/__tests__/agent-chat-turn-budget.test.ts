@@ -137,7 +137,7 @@ function fixture(rounds: Round[], tail: "final" | "none") {
 describe("agent chat turn budget", () => {
   test("enforce pre-flight rejects a turn one credit below the minimum before any task starts", async () => {
     process.env.AGENT_CHAT_BUDGET_PREFLIGHT = "enforce";
-    seedRemaining(319);
+    seedRemaining(89);
     const run = fixture([], "final");
     const local = browser();
     await createAgentChatHandler(run.config)(local.req, local.res, () => {});
@@ -148,7 +148,7 @@ describe("agent chat turn budget", () => {
 
   test("enforce pre-flight admits a turn exactly at the minimum", async () => {
     process.env.AGENT_CHAT_BUDGET_PREFLIGHT = "enforce";
-    seedRemaining(320);
+    seedRemaining(90);
     const run = fixture([], "final");
     const local = browser();
     await createAgentChatHandler(run.config)(local.req, local.res, () => {});
@@ -157,7 +157,7 @@ describe("agent chat turn budget", () => {
   });
 
   test("default log pre-flight admits a turn below the minimum", async () => {
-    seedRemaining(319);
+    seedRemaining(89);
     const run = fixture([], "final");
     const local = browser();
     await createAgentChatHandler(run.config)(local.req, local.res, () => {});

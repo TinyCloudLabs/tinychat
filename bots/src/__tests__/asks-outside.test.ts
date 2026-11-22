@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type AsksGateway, asksFile, readOutsideSeen, syncAsks } from "../asks";
 import type { BotAdmission } from "../bot-admission";
-import { BotManager, type Sandbox, type SandboxLauncher } from "../bot";
+import { BotManager, ORIGIN_LINES, type Sandbox, type SandboxLauncher } from "../bot";
 import { type GatewayConfig, PINNED_FETCH_URL, PINNED_UPSTREAM, PINNED_WEB_API } from "../config";
 import { Gateway } from "../gateway";
 import { type BotLayout, botLayout } from "../layout";
@@ -214,7 +214,7 @@ describe("whether outside text has reached Main's conversation", () => {
     const siblingPrompt = await run.sibling.take("prompt");
     run.sibling.emit({ type: "host_tool_call", id: "relay", toolCallId: "relay", toolName: "message_bot", arguments: { targetKey: "main", text: "a note from the other bot" } });
     const mainPrompt = await run.main.take("prompt");
-    expect(mainPrompt.message).toBe("a note from the other bot");
+    expect(mainPrompt.message).toBe(`${ORIGIN_LINES.bot}\na note from the other bot`);
     run.main.finish(mainPrompt, "noted");
     await run.sibling.take("host_tool_result");
     run.sibling.finish(siblingPrompt, "done");
