@@ -97,7 +97,7 @@ A reply's **allowance** is the credits the account still had in its window when 
 
 ### Single instance
 
-The in-memory usage counter, each reply's allowance and the settlement clamp assume **one backend instance** (see `docs/connector-webhooks-single-instance.md`). With a second instance each keeps its own counter, so the clamp can read stale and two replies on different instances could both be charged up to the limit. Running more than one instance is a design decision, not a config change: the fix would be an atomic conditional debit in the ledger. `backend/src/__tests__/single-instance-credit-counter.test.ts` fails if `docker-compose.phala.yml` defines more than one `tinychat-backend` or replicates it.
+The in-memory usage counter, each reply's allowance and the settlement clamp assume **one backend instance**. With a second instance each keeps its own counter, so the clamp can read stale and two replies on different instances could both be charged up to the limit. Running more than one instance is a design decision, not a config change: the fix would be an atomic conditional debit in the ledger. `backend/src/__tests__/single-instance-credit-counter.test.ts` fails if `docker-compose.phala.yml` defines more than one `tinychat-backend` or replicates it.
 
 ## Paid windows are anchored, not calendar
 

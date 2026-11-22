@@ -1,6 +1,5 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type JSX, type ReactNode } from "react";
+import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState, type JSX, type ReactNode } from "react";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
-import { HomeAskBox } from "@/bots/HomeAskBox";
 import { CardBody, cardClass, CardTextContext, cardTime, chipClass, COMMENT_COPY, focusRing, quietClass } from "./cardKit";
 import { MessageCircleIcon } from "lucide-react";
 import { homeFeedSourceFor } from "./feedStore";
@@ -16,6 +15,10 @@ import { inBackground } from "../lib/localFirst/requestLanes";
 import { CourierMark, StatusMark, TypeLabel } from "./CompactCard";
 import { ShortTime } from "./ShortTime";
 import { FeedLink, LinkSheetHost } from "./FeedLink";
+
+// Home's ask box, Main's chat and its question cards are a chunk of their own, out of the entry chunk (TC-2882). The box
+// shows nothing until the bots service has answered anyway, so loading it after boot shows nothing later than before.
+const HomeAskBox = lazy(() => import("@/bots/HomeAskBox").then((m) => ({ default: m.HomeAskBox })));
 
 /** How often a change in the Feed may re-run the card.md check (cardMd.ts syncCardMd); an open always runs it. */
 const CARD_MD_SYNC_MS = 5 * 60_000;
@@ -368,6 +371,6 @@ export function FeedView({ tcw, onReconnect }: { tcw: TinyCloudWeb | null; onRec
     return source.subscribe(sync);
   }, [tcw, source]);
   return source
-    ? <FeedViewEntries key={`${tcw?.did}:${tcw?.spaceId}`} realEntries={[]} source={source} linked={linked} ask={<HomeAskBox tcw={tcw ?? undefined} onReconnect={onReconnect} />} finishSetup={<FinishSetupBanner tcw={tcw} />} />
+    ? <FeedViewEntries key={`${tcw?.did}:${tcw?.spaceId}`} realEntries={[]} source={source} linked={linked} ask={<Suspense fallback={null}><HomeAskBox tcw={tcw ?? undefined} onReconnect={onReconnect} /></Suspense>} finishSetup={<FinishSetupBanner tcw={tcw} />} />
     : <main aria-label="Feed" className="p-6 text-sm text-muted-foreground">Sign in to load your feed.</main>;
 }
