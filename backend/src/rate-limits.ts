@@ -220,6 +220,9 @@ export const ASSEMBLYAI_STATUS_FAILURE_LIMIT = 5;
 export const ASSEMBLYAI_STATUS_SUCCESS_LIMIT = 60;
 export const ASSEMBLYAI_STATUS_PATHS = ["/api/internal/assemblyai-status"] as const;
 
+/** TC-916: the calendar auto-join connection counts (routes/calendar-autojoin-counts.ts) use the credential count's limits. */
+export const CALENDAR_AUTOJOIN_COUNTS_PATHS = ["/api/internal/calendar-autojoin-counts"] as const;
+
 /** Liveness probes, matched exactly (`/health` or `/health/`). Exempt from every bucket: the
  *  handler only serializes in-memory state, and a drained bucket must never make monitors report
  *  the backend down. */
@@ -259,6 +262,7 @@ const PREFIX_BUCKETS: ReadonlyArray<readonly [readonly string[], Bucket]> = [
   [AUTH_PATHS, "auth"],
   [CREDENTIAL_COUNT_PATHS, "credentialCount"],
   [ASSEMBLYAI_STATUS_PATHS, "credentialCount"],
+  [CALENDAR_AUTOJOIN_COUNTS_PATHS, "credentialCount"],
 ];
 
 function matchesMountPath(path: string, mount: string): boolean {

@@ -125,6 +125,7 @@ import {
 } from "./services/credential-store.js";
 import { CREDENTIAL_COUNT_ADMIN_KEY_ENV, mountCredentialCountRoute } from "./routes/credential-count.js";
 import { createAssemblyAiStatusRouter } from "./routes/assemblyai-status.js";
+import { createCalendarAutojoinCountsRouter } from "./routes/calendar-autojoin-counts.js";
 import { CREDENTIAL_ROW_COUNT_ENV, logCredentialRowCounts } from "./services/credential-row-count.js";
 import {
   createRefreshingCredentialLookup,
@@ -1114,6 +1115,8 @@ async function main() {
         : undefined,
     });
     app.use("/api/connectors/google/autojoin", authMiddleware, createCalendarAutojoinRouter({ connection: calendarAutojoin }));
+    // TC-916: operator counts of auto-join connections; no routes (404) unless CREDENTIAL_COUNT_ADMIN_KEY is set.
+    app.use(createCalendarAutojoinCountsRouter(process.env, stores.worker));
     console.log("[startup] calendar-autojoin enabled; deployment requires one backend writer, with stop-and-drain replacement.");
   }
 
