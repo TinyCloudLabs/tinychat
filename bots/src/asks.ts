@@ -23,8 +23,8 @@ export const MAX_PER_DAY = 10;
 export const DECLINE_COOLDOWN_MS = 60 * 60_000;
 export const EXPIRY_MS = 24 * 60 * 60_000;
 export const MAX_WHY_CHARS = 200;
-/** The longest an approval may last: 30 days, now that each secret has its own key (TC-3284). */
-export const MAX_GRANT_MS = 30 * 24 * 60 * 60_000;
+/** The longest an approval may last: 7 days (Sam's cap on standing secret access, D7). */
+export const MAX_GRANT_MS = 7 * 24 * 60 * 60_000;
 /** Where the gateway's approval links point: OpenKey's one-tap page. */
 export const OPENKEY_ORIGIN = "https://openkey.so";
 /** How long an answer that Main has not been told yet is kept; well inside the 24 hours the text may live. */

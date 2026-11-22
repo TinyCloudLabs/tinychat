@@ -268,8 +268,10 @@ call and returns the reply with the value hidden.
   (`src/secret-routes.ts`). The gateway makes a fresh Ed25519 key for that request alone. It signs an OpenKey one-tap
   approval request for `tinycloud.kv/get` on `vault/secrets/<NAME>` plus `tinycloud.encryption/decrypt` on that
   secret's own key, `urn:tinycloud:encryption:<owner>:default/secrets/<name in lowercase>` (per-secret keys,
-  TC-3284), never the whole network. 7 days is suggested (`SUGGESTED_GRANT_SECONDS`); the longest grant it allows is
-  30 days (`MAX_GRANT_SECONDS`). The same key is both issuer and audience, because share-envelope 1.6.0 requires it.
+  TC-3284), never the whole network. 1 hour is suggested (`SUGGESTED_GRANT_SECONDS`); the longest grant it allows is
+  7 days (`MAX_GRANT_SECONDS`, Sam's cap on standing secret access). It never asks for a renewal, so share-envelope
+  refuses a result that carries one; a longer use needs a new request. The same key is both issuer and audience,
+  because share-envelope 1.6.0 requires it.
   TC-3772 will let a stable TinyCloud One key sign instead (`SecretGrantDeps.requester`). The owner the supervisor
   names must be this bot's owner (409 otherwise). A known service's site and header must match
   `src/secret-catalog.ts`.
@@ -279,7 +281,7 @@ call and returns the reply with the value hidden.
   - the space owner and every resource owner are the owner;
   - it grants exactly the two entries asked for, each with its one ability, compared with the owner's address in
     lowercase: no prefix, no network, nothing else;
-  - the expiry, and that the grant is no longer than asked and never over 30 days.
+  - the expiry, and that the grant is no longer than asked and never over 7 days.
 
   A grant kept from before per-secret keys (its request asked for the whole network) is never used: at start a
   waiting one fails and an approved one ends. A secret still wrapped with the network's key can't be opened with its

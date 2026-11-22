@@ -97,10 +97,10 @@ describe("verifiedGrant takes exactly the two entries asked for", () => {
     await expect(verifiedGrant(await grant([ASKED]), { ...expected, name: "ANTHROPIC_API_KEY" })).rejects.toThrow("not exactly what was asked for");
   });
 
-  test("never keeps a grant over 30 days, even if a longer one was asked for", async () => {
-    const asked = { ...expected, maxSeconds: 60 * 24 * 3600 };
-    await expect(verifiedGrant(await grant([ASKED], 30 * DAY), asked)).resolves.toBeDefined();
-    await expect(verifiedGrant(await grant([ASKED], 31 * DAY), asked)).rejects.toThrow("longer than asked");
+  test("never keeps a grant over 7 days, even if a longer one was asked for", async () => {
+    const asked = { ...expected, maxSeconds: 30 * 24 * 3600 };
+    await expect(verifiedGrant(await grant([ASKED], 7 * DAY), asked)).resolves.toBeDefined();
+    await expect(verifiedGrant(await grant([ASKED], 7 * DAY + HOUR), asked)).rejects.toThrow("longer than asked");
   });
 });
 
@@ -191,6 +191,8 @@ describe("no read with a grant that could open the network-wrapped copy", () => 
       expect(h.reads).toHaveLength(1);
       expect(h.requests).toHaveLength(1);
       expect(h.requests[0]!.permissions).toEqual(secretPermissions(NAME, OWNER));
+      // No renewal is asked for, so share-envelope refuses a result that carries one.
+      expect(h.requests[0]).not.toHaveProperty("renewal");
     } finally {
       spy.mockRestore();
     }

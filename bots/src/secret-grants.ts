@@ -1,7 +1,7 @@
 // Secret requests, gateway side. For each request the supervisor sends (PUT /bots/<botId>/secrets/<id>), the gateway:
 //  1. makes a fresh Ed25519 key that will hold the grant, and a P-256 key OpenKey encrypts the result to;
 //  2. signs a one-tap OpenKey approval request: read ONE secret (kv get vault/secrets/NAME in the owner's "secrets"
-//     space) and decrypt with that secret's own key (TC-3284), for at most MAX_GRANT_SECONDS, suggesting a week;
+//     space) and decrypt with that secret's own key (TC-3284), for at most MAX_GRANT_SECONDS, suggesting an hour;
 //  3. polls OpenKey for the result itself, checks it (below), seals it with the key and keeps it on its own volume;
 //  4. reports approved / declined / expired / failed to the supervisor when it drains (POST .../secrets/drain);
 //  5. reads the value only to make a call_with_secret call (secret-call.ts), and never returns it.
@@ -10,7 +10,7 @@
 //
 // Before a result is kept (Bobbie's review, 22 Nov): it must answer exactly this request (share-envelope's binding
 // check), the SIWE must be signed by the owner the supervisor named, it must grant exactly the two entries asked for,
-// its audience must be this request's key, and it must end no later than the lifetime asked for (never over 30 days).
+// its audience must be this request's key, and it must end no later than the lifetime asked for (never over 7 days).
 //
 // The gateway never delegates or attenuates a grant (secret-node.ts holds only restoreSession and readSecret): the
 // OpenKey grant is a SIWE CACAO, which the node can't mark terminal (TC-3810).
@@ -31,12 +31,13 @@ import { REQUEST_ID } from "./secret-store";
 import { toolText } from "./web";
 
 /**
- * Longest grant the gateway asks for, and the longest it keeps. Each secret has its own key (TC-3284), so a grant
- * opens only the secret it names. The owner can pick less; never more.
+ * Longest grant the gateway asks for, and the longest it keeps: 7 days, Sam's cap on standing secret access (D7).
+ * Each secret has its own key (TC-3284), so a grant opens only the secret it names. The owner can pick less; never
+ * more, and the gateway never asks for or accepts a renewal: a new grant means a new request.
  */
-export const MAX_GRANT_SECONDS = 30 * 24 * 3600;
+export const MAX_GRANT_SECONDS = 7 * 24 * 3600;
 /** What the approval screen offers first. */
-export const SUGGESTED_GRANT_SECONDS = 7 * 24 * 3600;
+export const SUGGESTED_GRANT_SECONDS = 3600;
 /** How long the owner has to open the link. */
 export const LINK_MS = 24 * 3600 * 1000;
 /** OpenKey keeps an approved result this long (APPROVAL_RESULT_RETENTION_SECONDS=600 in its production compose). */

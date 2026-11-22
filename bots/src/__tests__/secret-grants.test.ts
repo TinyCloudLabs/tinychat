@@ -196,7 +196,7 @@ function saved(store: ReturnType<typeof memoryStore>, id: string): Record<string
 }
 
 describe("asking", () => {
-  test("signs one request with a fresh key that is both issuer and audience, for one secret and decrypt, 30 days at most, 7 days suggested", async () => {
+  test("signs one request with a fresh key that is both issuer and audience, for one secret and decrypt, 7 days at most, 1 hour suggested", async () => {
     const { grants, ok } = setup();
     const result = await grants.ask(BOT, ID, ASK);
     expect(result).toEqual({ approveUrl: "https://openkey.so/a/req1#k", expiresAt: new Date(T0 + LINK_MS).toISOString() });
@@ -204,9 +204,9 @@ describe("asking", () => {
     expect(request.issuer).toBe(request.targetDid);
     expect(request.targetDid).toMatch(/^did:key:z6Mk/);
     expect(request.grantLifetimeSeconds).toBe(MAX_GRANT_SECONDS);
-    expect(MAX_GRANT_SECONDS).toBe(30 * 24 * 3600);
+    expect(MAX_GRANT_SECONDS).toBe(7 * 24 * 3600);
     expect(request.suggestedLifetimeSeconds).toBe(SUGGESTED_GRANT_SECONDS);
-    expect(SUGGESTED_GRANT_SECONDS).toBe(7 * 24 * 3600);
+    expect(SUGGESTED_GRANT_SECONDS).toBe(3600);
     expect(request.permissions).toEqual([
       { service: "tinycloud.kv", space: "secrets", path: "vault/secrets/OPENAI_API_KEY", actions: ["tinycloud.kv/get"] },
       { service: "tinycloud.encryption", space: "encryption", path: `urn:tinycloud:encryption:did:pkh:eip155:1:${OWNER_KEY.address}:default/secrets/openai_api_key`, actions: ["tinycloud.encryption/decrypt"] },
@@ -301,7 +301,7 @@ describe("verifiedGrant", () => {
     ["for another account", { address: OTHER_KEY.address, signer: OTHER_KEY }, "names another owner"],
     ["naming another owner", { ownerDid: `did:pkh:eip155:1:${OTHER_KEY.address.toLowerCase()}` }, "names another owner"],
     ["for another key", { audience: "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK" }, "for another key"],
-    ["longer than 30 days", { lifetimeMs: (MAX_GRANT_SECONDS + 3600) * 1000 }, "longer than asked"],
+    ["longer than 7 days", { lifetimeMs: (MAX_GRANT_SECONDS + 3600) * 1000 }, "longer than asked"],
     ["opening another owner's space", { spaceOwner: OTHER_KEY.address }, "another owner's space"],
     ["naming another owner's resource", { resourceOwner: OTHER_KEY.address }, "another owner's resource"],
   ])("refuses a grant %s", async (_, grant, message) => {

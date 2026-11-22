@@ -84,7 +84,7 @@ export const SECRET_STRINGS = {
   addButton: "Open TinyCloud Secrets",
   addDone: "In your TinyCloud Secrets",
   approveTitle: "Approve in OpenKey",
-  approveHelp: `You choose how long ${ASK_MAIN} can use it: 7 days unless you change it, up to 30 days.`,
+  approveHelp: `You choose how long ${ASK_MAIN} can use it: 1 hour unless you change it, up to 7 days.`,
   approveButton: "Approve in OpenKey",
   windowOpen: "Finish in the window that opened.",
   windowBlocked: "The window was blocked. Allow pop-ups for this page and try again.",
