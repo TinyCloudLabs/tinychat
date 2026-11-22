@@ -6,7 +6,7 @@ import type { Server } from "bun";
 import { DSTACK_SOCKET, SEAL_KEY_PATH, sealKeyFromDstack } from "../dstack-key";
 
 interface Compose {
-  services: Record<string, { volumes?: string[] }>;
+  services: Record<string, { volumes?: string[]; user?: string; group_add?: unknown }>;
 }
 const compose = Bun.YAML.parse(readFileSync(new URL("../../docker-compose.phala.yml", import.meta.url), "utf8")) as Compose;
 
@@ -16,6 +16,17 @@ test("only the gateway and the TLS ingress mount the key service; the sandboxes'
     .map(([name]) => name)
     .sort();
   expect(mounting).toEqual(["bots-gateway", "dstack-ingress"]);
+});
+
+// The gateway runs as uid 65532 with no extra group. That reaches the key service only because the pinned OS creates
+// the socket world-writable: dstack-0.5.12 (meta-dstack v0.5.12 → dstack 43f69f4) has `SocketMode=0777` in
+// basefiles/dstack-guest-agent.socket, and the guest agent doesn't check the caller's uid. Another OS image must be
+// checked again before this pin moves (bots/README.md, Deploying).
+test("the gateway's user reaches the key service on the OS image it was checked against", () => {
+  expect(compose.services["bots-gateway"]).toMatchObject({ user: "65532:65532" });
+  expect(compose.services["bots-gateway"]!.group_add).toBeUndefined();
+  const workflow = readFileSync(new URL("../../../.github/workflows/deploy-bots-phala.yml", import.meta.url), "utf8");
+  expect(workflow).toContain("PHALA_OS_IMAGE: dstack-0.5.12\n");
 });
 
 let server: Server<undefined> | undefined;

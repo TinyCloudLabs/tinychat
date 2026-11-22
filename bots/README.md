@@ -471,6 +471,20 @@ node .github/scripts/bots-healthz.mjs <APP_ID>-443s.<gateway> bots.tinycloud.xyz
 `<APP_ID>-443s.<gateway>` is the CVM's TLS-passthrough host (the backend's `BOTS_SERVICE_CONNECT_HOST`), and the
 certificate is checked against `bots.tinycloud.xyz`. The public name bots.tinycloud.xyz does not route; never probe it.
 
+After the first deploy that carries secret requests, and after any OS image change, check that the gateway's user
+(uid 65532) reached the key service:
+
+```bash
+phala logs dstack-bots-gateway-1 --cvm-id <BOTS_PHALA_CVM_ID> --stderr --since 15m -n 5000 | grep -E '"gateway":"secrets_(ready|unavailable)"'
+```
+
+Expect `{"gateway":"secrets_ready"}`. A `secrets_unavailable` line (for example `EACCES`) means secret requests stay
+off: the routes answer 503, Main is offered no secret tools, and everything else runs as before. No group or root is
+needed: on the pinned `dstack-0.5.12`, systemd creates `/run/dstack.sock` with `SocketMode=0777`
+(meta-dstack v0.5.12 → dstack 43f69f4, `basefiles/dstack-guest-agent.socket`). The guest agent doesn't check the
+caller's uid, and `GetKey` is served at `/GetKey` on that socket with a hex `key`. `secret-dstack.test.ts` fails when
+the pinned OS image changes, so this gets checked again.
+
 Its configuration lives in the `production-bots` GitHub environment:
 
 | Name | Kind | |
