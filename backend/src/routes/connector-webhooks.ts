@@ -1187,9 +1187,9 @@ function signatureValue(req: Request): string {
 // these routes own and the drain (W5) only reads.
 
 /** §5.1-shaped, backend-own keys — auto-prefixed under `ops.tinychat.backend`, NOT `xyz.tinycloud.tinychat/…`. */
-const DISABLED_KEY_PREFIX = "webhooks/disabled";
+export const DISABLED_KEY_PREFIX = "webhooks/disabled";
 export const PURGE_LEDGER_KEY_PREFIX = "webhooks/purged";
-const CORRUPT_PURGED_KEY_PREFIX = "webhooks/corrupt/purged";
+export const CORRUPT_PURGED_KEY_PREFIX = "webhooks/corrupt/purged";
 
 /** §6.2: `recentIds` is forensics only and stays capped; `purgedThrough` is what protects. */
 export const PURGE_RECENT_ID_CAP = 200;

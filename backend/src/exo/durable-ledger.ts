@@ -32,16 +32,20 @@ const MAX_RECORD_RESPONSE_BYTES = 16 * 1024;
 /** Compare-and-set attempts per mutation. Exhausting them throws, so the mailbox settles the job unavailable. */
 const MAX_ATTEMPTS = 8;
 
+export const EXO_LEDGER_KEY_PREFIX = `${EXO_NAMESPACE}/ledger/`;
+export const EXO_SOURCE_LOCK_KEY_PREFIX = `${EXO_NAMESPACE}/source-lock/`;
+export const EXO_HELD_KEY_PREFIX = `${EXO_NAMESPACE}/held/`;
+
 export function ledgerKey(owner: string, capability: ExoCapability): string {
-  return `${EXO_NAMESPACE}/ledger/${owner}/${capability}`;
+  return `${EXO_LEDGER_KEY_PREFIX}${owner}/${capability}`;
 }
 
 function sourceLockKey(owner: string, source: ConnectorSource): string {
-  return `${EXO_NAMESPACE}/source-lock/${owner}/${source}`;
+  return `${EXO_SOURCE_LOCK_KEY_PREFIX}${owner}/${source}`;
 }
 
 function heldKey(owner: string, jobId: string): string {
-  return `${EXO_NAMESPACE}/held/${owner}/${jobId}`;
+  return `${EXO_HELD_KEY_PREFIX}${owner}/${jobId}`;
 }
 
 /** The held job record, or null once released. The mailbox validates the record before use. */
@@ -179,7 +183,7 @@ export function createDurableExoLedger(kv: ExoLedgerKv): ExoLedger {
       }));
     },
     async heldJobIds(owner) {
-      const prefix = `${EXO_NAMESPACE}/held/${owner}/`;
+      const prefix = `${EXO_HELD_KEY_PREFIX}${owner}/`;
       const keys = extractKeys(assertKvResult(await kv.list(prefix)));
       return keys.filter((key) => key.startsWith(prefix)).map((key) => key.slice(prefix.length));
     },
