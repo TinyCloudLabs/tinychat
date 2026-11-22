@@ -50,6 +50,7 @@ import { createDstackKeyClient } from "./attestation/dstackClient.js";
 import { deriveFirefliesImportKeys, type FirefliesImportKeys } from "./fireflies-import-identity.js";
 import { createFirefliesDelegationRouter } from "./routes/fireflies-delegation.js";
 import { createKvFirefliesGrantPort, FirefliesGrantStore } from "./services/fireflies-grant-store.js";
+import { FirefliesDirectImporter } from "./services/fireflies-import-executor.js";
 import { createServerInfoRouter } from "./routes/server-info.js";
 import { readBackendBuildInfo } from "./build-info.js";
 import { createBillingRouter } from "./routes/billing.js";
@@ -115,6 +116,7 @@ import {
 } from "./services/credential-store.js";
 import { CREDENTIAL_COUNT_ADMIN_KEY_ENV, mountCredentialCountRoute } from "./routes/credential-count.js";
 import { createAssemblyAiStatusRouter } from "./routes/assemblyai-status.js";
+import { createCalendarAutojoinCountsRouter } from "./routes/calendar-autojoin-counts.js";
 import { CREDENTIAL_ROW_COUNT_ENV, logCredentialRowCounts } from "./services/credential-row-count.js";
 import {
   GoogleOAuthClient,
@@ -530,6 +532,24 @@ async function main() {
   if (firefliesServerImportEnabled(process.env)) {
     readFirefliesPurgeLedgerForMcp = (address) => connectorControl.readLedger("fireflies", address);
   }
+  const firefliesImport = firefliesImportKeys
+    ? (() => {
+        const coordinator = new TenantCoordinator();
+        const grantStore = new FirefliesGrantStore({
+          kv: createKvFirefliesGrantPort(node, backendStorageLane),
+          kek: firefliesImportKeys.grantKek,
+          delegateDid: firefliesImportKeys.delegate.did,
+        });
+        const importer = new FirefliesDirectImporter({
+          delegate: firefliesImportKeys.delegate,
+          grantStore,
+          configuredHost: TINYCLOUD_HOST,
+          control: connectorControl,
+          coordinator,
+        });
+        return { delegate: firefliesImportKeys.delegate, grantStore, coordinator, importer };
+      })()
+    : null;
   const connectorQueue = new ConnectorQueue(node, {
     storageLane: backendStorageLane,
     retentionKeys: connectorKeyStore,
@@ -664,6 +684,7 @@ async function main() {
         queue: connectorWebhooks.queue,
         control: connectorWebhooks.control,
         limiters: connectorWebhookLimiters,
+        ...(firefliesImport ? { firefliesDirectImport: firefliesImport.importer } : {}),
       }),
     );
   }
@@ -768,7 +789,19 @@ async function main() {
   // Direct imports consult the ledger even when notification delivery is disabled.
   app.post("/api/connectors/webhooks/purge-check", authMiddleware, (req, res) =>
     respondToConnectorPurgeCheck(connectorControl, req, res));
-  app.use("/api/connectors/webhooks", createConnectorPurgeRouter({ control: connectorControl, authMiddleware }));
+  const onFirefliesLedgerCleared = firefliesImport
+    ? (source: string, address: string) => {
+        if (source === "fireflies") firefliesImport.importer.recordReset(address);
+      }
+    : undefined;
+  app.use(
+    "/api/connectors/webhooks",
+    createConnectorPurgeRouter({
+      control: connectorControl,
+      authMiddleware,
+      ...(onFirefliesLedgerCleared ? { onLedgerCleared: onFirefliesLedgerCleared } : {}),
+    }),
+  );
   if (connectorWebhooks) {
     app.use(
       "/api/connectors/webhooks",
@@ -797,6 +830,13 @@ async function main() {
         // singleton. Under B/C the route then returns the pending ids; nothing was written.
         drain: ({ source, address }) =>
           connectorWebhooks.drain.kick({ source, address, force: true }),
+        ...(firefliesImport
+          ? {
+              onLedgerCleared: (source: string, address: string) => {
+                if (source === "fireflies") firefliesImport.importer.recordReset(address);
+              },
+            }
+          : {}),
       }),
     );
   }
@@ -806,18 +846,14 @@ async function main() {
 
   // TC-3905: delegation-based Fireflies import grant routes. Mounted only when explicitly enabled
   // and after dstack KMS derivation succeeded above; otherwise falls through to 404.
-  if (firefliesImportKeys) {
-    const firefliesGrantStore = new FirefliesGrantStore({
-      kv: createKvFirefliesGrantPort(node, backendStorageLane),
-      kek: firefliesImportKeys.grantKek,
-      delegateDid: firefliesImportKeys.delegate.did,
-    });
+  if (firefliesImport) {
     app.use(
       "/api/connectors/fireflies/delegation",
       createFirefliesDelegationRouter({
-        delegate: firefliesImportKeys.delegate,
+        delegate: firefliesImport.delegate,
         configuredHost: TINYCLOUD_HOST,
-        store: firefliesGrantStore,
+        store: firefliesImport.grantStore,
+        coordinator: firefliesImport.coordinator,
         authMiddleware,
       }),
     );
@@ -860,6 +896,8 @@ async function main() {
         : undefined,
     });
     app.use("/api/connectors/google/autojoin", authMiddleware, createCalendarAutojoinRouter({ connection: calendarAutojoin }));
+    // TC-916: operator counts of auto-join connections; no routes (404) unless CREDENTIAL_COUNT_ADMIN_KEY is set.
+    app.use(createCalendarAutojoinCountsRouter(process.env, stores.worker));
     console.log("[startup] calendar-autojoin enabled; deployment requires one backend writer, with stop-and-drain replacement.");
   }
 
