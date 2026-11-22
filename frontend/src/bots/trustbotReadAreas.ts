@@ -1,4 +1,5 @@
-// What Main may read in each area the owner turns on. Matches TRANSCRIPT_PERMISSIONS in lib/agentDelegation.ts.
+// What Main may read in each area the owner turns on. Matches READ_AREAS in backend/src/trustbot-reads/areas.ts;
+// meetings matches TRANSCRIPT_PERMISSIONS in lib/agentDelegation.ts.
 import type { PermissionEntry } from "@tinycloud/web-sdk";
 
 const TINYCHAT_DATA_SPACE = "applications";
@@ -7,6 +8,11 @@ export const READ_AREAS = {
   meetings: [
     { service: "tinycloud.sql", space: TINYCHAT_DATA_SPACE, path: "xyz.tinycloud.tinychat/connectors", actions: ["read"], skipPrefix: true },
     { service: "tinycloud.kv", space: TINYCHAT_DATA_SPACE, path: "xyz.tinycloud.tinychat/connectors/", actions: ["get", "list"], skipPrefix: true },
+  ],
+  feed_chats: [
+    { service: "tinycloud.sql", space: TINYCHAT_DATA_SPACE, path: "xyz.tinycloud.tinychat/home_feed", actions: ["read"], skipPrefix: true },
+    { service: "tinycloud.sql", space: TINYCHAT_DATA_SPACE, path: "xyz.tinycloud.tinychat/feed/", actions: ["read"], skipPrefix: true },
+    { service: "tinycloud.sql", space: TINYCHAT_DATA_SPACE, path: "xyz.tinycloud.tinychat/threads", actions: ["read"], skipPrefix: true },
   ],
 } satisfies Record<string, PermissionEntry[]>;
 

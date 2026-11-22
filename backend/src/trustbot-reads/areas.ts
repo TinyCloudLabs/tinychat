@@ -1,7 +1,7 @@
 // The owner's data TrustBot may read, by area. Each area is a fixed list of resources in the owner's applications
 // space, read actions only; the owner turns each area on separately and one grant covers the areas that are on.
 // frontend/src/bots/trustbotReadAreas.ts asks for the same resources when the owner signs.
-// Details: TC-3792
+// Details: TC-3792, TC-3794
 import { APP_ID } from "@tinyboilerplate/core";
 
 export interface ReadResource {
@@ -18,6 +18,13 @@ export const READ_AREAS = {
   meetings: [
     { service: "sql", path: `${APP_ID}/connectors`, actions: ["tinycloud.sql/read"] },
     { service: "kv", path: `${APP_ID}/connectors/`, actions: ["tinycloud.kv/get", "tinycloud.kv/list"] },
+  ],
+  // The feed and chat tools (feed-chat.ts) read the feed registry, each feed agent's card database under feed/ and the
+  // threads database; three SQL databases, so each read activates the one resource it needs.
+  feed_chats: [
+    { service: "sql", path: `${APP_ID}/home_feed`, actions: ["tinycloud.sql/read"] },
+    { service: "sql", path: `${APP_ID}/feed/`, actions: ["tinycloud.sql/read"] },
+    { service: "sql", path: `${APP_ID}/threads`, actions: ["tinycloud.sql/read"] },
   ],
 } as const satisfies Record<string, readonly ReadResource[]>;
 

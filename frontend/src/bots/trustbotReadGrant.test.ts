@@ -61,7 +61,7 @@ test("a delegation that prompted the owner is refused and sends nothing", async 
 
 test("settings come from GET /api/bots/main/reads with the session token", async () => {
   setup();
-  expect(await readSettings()).toEqual(BODY as never);
+  expect(await readSettings()).toEqual({ ...BODY, areas: { ...BODY.areas, feed_chats: "off" } } as never);
   const [url, init] = fetchSpy!.mock.calls[0] as [string, RequestInit];
   expect(url.endsWith("/api/bots/main/reads")).toBe(true);
   expect((init.headers as Record<string, string>).authorization).toBe("Bearer fixture-token");
