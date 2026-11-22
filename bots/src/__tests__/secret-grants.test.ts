@@ -63,7 +63,7 @@ async function grantFor(request: OpenKeyApprovalRequestV1, options: GrantOptions
     nonce: "abcdefgh12345678", issuedAt: new Date(issued), expirationTime: new Date(expires),
     resources: [recap({
       [`tinycloud:pkh:eip155:1:${resourceOwner}:secrets/kv/vault/secrets/${options.secret ?? "OPENAI_API_KEY"}`]: { "tinycloud.kv/get": [{}] },
-      [`urn:tinycloud:encryption:did:pkh:eip155:1:${resourceOwner}:default`]: { "tinycloud.encryption/decrypt": [{}] },
+      [`urn:tinycloud:encryption:did:pkh:eip155:1:${resourceOwner}:default/secrets/${(options.secret ?? "OPENAI_API_KEY").toLowerCase()}`]: { "tinycloud.encryption/decrypt": [{}] },
     })],
   });
   const signature = await (options.signer ?? OWNER_KEY).signMessage({ message: siwe });
@@ -196,7 +196,7 @@ function saved(store: ReturnType<typeof memoryStore>, id: string): Record<string
 }
 
 describe("asking", () => {
-  test("signs one request with a fresh key that is both issuer and audience, for one secret and decrypt, 7 days at most, 1 hour suggested", async () => {
+  test("signs one request with a fresh key that is both issuer and audience, for one secret and decrypt, 30 days at most, 7 days suggested", async () => {
     const { grants, ok } = setup();
     const result = await grants.ask(BOT, ID, ASK);
     expect(result).toEqual({ approveUrl: "https://openkey.so/a/req1#k", expiresAt: new Date(T0 + LINK_MS).toISOString() });
@@ -204,12 +204,12 @@ describe("asking", () => {
     expect(request.issuer).toBe(request.targetDid);
     expect(request.targetDid).toMatch(/^did:key:z6Mk/);
     expect(request.grantLifetimeSeconds).toBe(MAX_GRANT_SECONDS);
-    expect(MAX_GRANT_SECONDS).toBe(7 * 24 * 3600);
+    expect(MAX_GRANT_SECONDS).toBe(30 * 24 * 3600);
     expect(request.suggestedLifetimeSeconds).toBe(SUGGESTED_GRANT_SECONDS);
-    expect(SUGGESTED_GRANT_SECONDS).toBe(3600);
+    expect(SUGGESTED_GRANT_SECONDS).toBe(7 * 24 * 3600);
     expect(request.permissions).toEqual([
       { service: "tinycloud.kv", space: "secrets", path: "vault/secrets/OPENAI_API_KEY", actions: ["tinycloud.kv/get"] },
-      { service: "tinycloud.encryption", space: "encryption", path: `urn:tinycloud:encryption:did:pkh:eip155:1:${OWNER_KEY.address}:default`, actions: ["tinycloud.encryption/decrypt"] },
+      { service: "tinycloud.encryption", space: "encryption", path: `urn:tinycloud:encryption:did:pkh:eip155:1:${OWNER_KEY.address}:default/secrets/openai_api_key`, actions: ["tinycloud.encryption/decrypt"] },
     ]);
     expect(request.reason).toBe("Use OPENAI_API_KEY with OpenAI (api.openai.com). To transcribe a call. Main can also send data to OpenAI with it, which may cost money or change things there.");
   });
@@ -284,7 +284,7 @@ describe("verifiedGrant", () => {
   const jwk = generateKeyPairSync("ed25519").privateKey.export({ format: "jwk" }) as Ed25519PrivateJwk;
   const target = realLinks.signerFromJwk(jwk).did;
   const request = { targetDid: target } as OpenKeyApprovalRequestV1;
-  const expected = { ownerDid: OWNER, targetDid: target, jwk, maxSeconds: MAX_GRANT_SECONDS, now: T0 };
+  const expected = { ownerDid: OWNER, name: "OPENAI_API_KEY", targetDid: target, jwk, maxSeconds: MAX_GRANT_SECONDS, now: T0 };
 
   test("accepts the owner's grant for this key", async () => {
     const session = await verifiedGrant(await grantFor(request), expected);
@@ -301,7 +301,7 @@ describe("verifiedGrant", () => {
     ["for another account", { address: OTHER_KEY.address, signer: OTHER_KEY }, "names another owner"],
     ["naming another owner", { ownerDid: `did:pkh:eip155:1:${OTHER_KEY.address.toLowerCase()}` }, "names another owner"],
     ["for another key", { audience: "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK" }, "for another key"],
-    ["longer than 7 days", { lifetimeMs: (MAX_GRANT_SECONDS + 3600) * 1000 }, "longer than asked"],
+    ["longer than 30 days", { lifetimeMs: (MAX_GRANT_SECONDS + 3600) * 1000 }, "longer than asked"],
     ["opening another owner's space", { spaceOwner: OTHER_KEY.address }, "another owner's space"],
     ["naming another owner's resource", { resourceOwner: OTHER_KEY.address }, "another owner's resource"],
   ])("refuses a grant %s", async (_, grant, message) => {

@@ -114,7 +114,7 @@ describe("a secret request in the supervisor's store", () => {
     expect(gw.forgotten).toEqual([A]);
   });
 
-  test("an approval longer than 7 days is not kept: the request fails and its key is forgotten", async () => {
+  test("an approval longer than 30 days is not kept: the request fails and its key is forgotten", async () => {
     writeAsksEnabled(layout(), true);
     const gw = fakeGateway([secret(A)]);
     await sync(gw.adapter);
