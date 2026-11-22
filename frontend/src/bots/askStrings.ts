@@ -20,7 +20,7 @@ export function askedAgo(elapsedMs: number): string {
 export const ASK_STRINGS = {
   /** The Settings toggle. */
   toggleLabel: `Let ${ASK_MAIN} ask you questions`,
-  toggleHelp: `${ASK_MAIN} can ask you a question in chat when it needs something from you.`,
+  toggleHelp: `${ASK_MAIN} can ask you a question in chat when it needs something from you. Off until you turn it on.`,
   toggleFailed: "Couldn’t save that, so the setting is unchanged. Try again.",
 
   /** The card. */

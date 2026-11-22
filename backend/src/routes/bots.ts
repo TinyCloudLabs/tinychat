@@ -383,7 +383,7 @@ export function createBotsRouter(opts: {
     await sendWeb(res, callWeb(address, { method: "PUT", body: JSON.stringify(body) }));
   });
 
-  // Questions from Main (on by default; the owner can turn them off). The service holds the setting and the requests; this proxies them
+  // Questions from Main (user-enabled, off by default). The service holds the setting and the requests; this proxies them
   // with the owner taken from the session, and rebuilds each answer from the contract fields. A service that does not
   // have them answers 404, which is passed on so the app can leave the feature out.
   const callAsks = async (address: string, init: { method: "GET" | "PUT" | "POST"; path: string; body?: string }): Promise<globalThis.Response> => {

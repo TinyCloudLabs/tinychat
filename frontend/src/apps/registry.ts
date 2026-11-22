@@ -9,7 +9,7 @@
 import { Capacitor } from "@capacitor/core";
 import type { PermissionEntry } from "@tinycloud/web-sdk";
 import type { LucideIcon } from "lucide-react";
-import { BadgeCheck, CircleUserRound, Compass, KeyRound, MessagesSquare, Mic } from "lucide-react";
+import { BadgeCheck, CircleUserRound, ClipboardList, Compass, KeyRound, MessagesSquare, Mic } from "lucide-react";
 import { ONE_NAV_ENABLED } from "../shell/navPins";
 import type { GlyphId } from "./icons";
 import { APP_DESCRIPTIONS, APP_NAMES, type ScopeId } from "./strings";
@@ -19,7 +19,8 @@ export type FramedAppId =
   | "xyz.tinycloud.opencredentials"
   | "xyz.tinycloud.explorer"
   | "xyz.tinycloud.account"
-  | "xyz.tinycloud.courier";
+  | "xyz.tinycloud.courier"
+  | "xyz.tinycloud.rocinante.ledger";
 
 /** A TinyCloud site One links to but never frames (it refuses frames): its screen in One opens it in a new tab. */
 export type LinkAppId = "xyz.tinycloud.share";
@@ -82,6 +83,12 @@ export interface FramedOneApp extends ListedOneApp {
    * cannot step up, so only an app that works on that is framed there; the rest offer the in-app browser.
    */
   inNativeApp: boolean;
+  /**
+   * Listed (tile, launcher) only for an account whose own `applications` space holds this KV key: One checks with one
+   * metadata read on its own session (listedApps.ts), which grants nothing. A fixed key, never an account identifier.
+   * Unset: always listed.
+   */
+  listedIf?: string;
   ceiling(owner: OneAppOwner): readonly CeilingEntry[];
 }
 
@@ -149,6 +156,19 @@ const ACCOUNT_CEILING: readonly CeilingEntry[] = [
   kv("spaces", "account", "spaces/", ["get", "list"]),
 ];
 const COURIER_CEILING: readonly CeilingEntry[] = [kv("courier", "agents", "xyz.tinycloud.courier/", ["get", "list"])];
+/**
+ * The Rocinante sitrep's prefixes the Ledger reads (TC-3768), read only. Not `board/approval/` (approval links are bearer
+ * links) and not `board/` as a whole. Kept equal to the sitrep's own list (ONE_LEDGER_PREFIXES); ledgerCeiling.test.ts
+ * holds the agreed copy.
+ */
+const LEDGER_PREFIXES = [
+  "board/ask/", "board/task/", "board/incident/", "board/work/", "board/ship/", "board/order/", "board/claim/",
+  "board/hold/", "board/progress/", "board/report/", "board/sam-ask/", "board/release/", "board/release-off/",
+  "board/release-blocker/", "board/sam-ask-check/", "board/ledger-inventory/", "board/ledger-dispatch/", "sam/answers/",
+  "sam/state/",
+] as const;
+const LEDGER_CEILING: readonly CeilingEntry[] = LEDGER_PREFIXES.map((prefix) =>
+  kv("shipLedger", "applications", `xyz.tinycloud.rocinante/${prefix}`, ["get", "list", "metadata"]));
 
 const ALL_APPS: readonly OneApp[] = [
   { id: "capture", kind: "native", ...text("capture"), icon: Mic, glyph: "recording", route: "/chat/capture" },
@@ -249,6 +269,20 @@ const ALL_APPS: readonly OneApp[] = [
     origin: KIND === "dev" ? "https://localhost:5195" : "https://share.tinycloud.xyz",
     path: "/courier",
     ceiling: () => COURIER_CEILING,
+  },
+  {
+    // The Rocinante sitrep's ship ledger, read only. Listed only for an account that keeps the board (TC-3768).
+    id: "xyz.tinycloud.rocinante.ledger",
+    kind: "framed",
+    framed: true,
+    inNativeApp: true, // `applications` data only: the phone app's session holds it
+    ...text("xyz.tinycloud.rocinante.ledger"),
+    icon: ClipboardList,
+    glyph: "ledger",
+    origin: KIND === "dev" ? "https://localhost:5196" : "https://rocinante-ledger.pages.dev",
+    path: "/",
+    listedIf: "xyz.tinycloud.rocinante/board/release-relay.json",
+    ceiling: () => LEDGER_CEILING,
   },
   // One's new navigation only. Share is a plain link: One holds no delegation for it, so its screen offers its site in a
   // new tab.
