@@ -49,6 +49,8 @@ export function useMainChat(api: BotsApi, prepare?: () => Promise<void>, onNoRep
   const history = useRef<Promise<void> | null>(null);
   const localId = useRef(0);
   const queued = useRef<(() => void)[]>([]);
+  // Counts the owner's new chats, so a history read that started before one never brings the earlier lines back.
+  const cleared = useRef(0);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -64,11 +66,13 @@ export function useMainChat(api: BotsApi, prepare?: () => Promise<void>, onNoRep
   /** A slow history read must not erase turns completed while it was in flight. */
   const loadHistory = useCallback((): Promise<void> => {
     const signal = lifetime.current?.signal;
+    const generation = cleared.current;
     const run = (async () => {
       setState((current) => ({ ...current, history: "loading" }));
       try {
         const messages = await api.listMainMessages(signal);
         setState((current) => {
+          if (generation !== cleared.current) return current;
           const listed = messages.map(({ id, role, text, origin, decision }): ChatLine => ({
             id, role, text,
             // The service says what was decided; the words of its message are only a fallback for a service that does not.
@@ -93,7 +97,7 @@ export function useMainChat(api: BotsApi, prepare?: () => Promise<void>, onNoRep
           ...errorFields(cause),
           cause: cause instanceof Error && cause.cause !== undefined ? errorFields(cause.cause) : undefined,
         });
-        setState((current) => ({ ...current, history: "failed" }));
+        setState((current) => (generation !== cleared.current ? current : { ...current, history: "failed" }));
       }
     })();
     history.current = run;
@@ -101,6 +105,13 @@ export function useMainChat(api: BotsApi, prepare?: () => Promise<void>, onNoRep
   }, [api]);
 
   const ensureHistory = useCallback(() => history.current ?? loadHistory(), [loadHistory]);
+
+  /** After the owner starts a new chat: the earlier lines leave the view. Saved history is read again on the next visit. */
+  const clear = useCallback(() => {
+    cleared.current += 1;
+    history.current = Promise.resolve();
+    setState((current) => ({ ...current, lines: [], history: "loaded" }));
+  }, []);
 
   const run = useCallback(async (text: string, keepFailed: boolean, appReply?: AppReply) => {
     if (turnController.current) return;
@@ -158,5 +169,5 @@ export function useMainChat(api: BotsApi, prepare?: () => Promise<void>, onNoRep
     else void run("", true, reply);
   }, [run]);
 
-  return { state, send, retry, sendAppReply, ensureHistory, loadHistory };
+  return { state, send, retry, sendAppReply, ensureHistory, loadHistory, clear };
 }
