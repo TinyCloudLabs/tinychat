@@ -141,6 +141,7 @@ export class KvJsonKv implements JsonKv {
     });
   }
 
+  // The backend manifest grants no del on transcriber/; a first caller must add it (the startup check covers roots, not actions).
   async remove(key: string): Promise<void> {
     await withSessionRefresh(this.node, async () => {
       const response = await this.node.kv.delete(key);
