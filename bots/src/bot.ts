@@ -497,7 +497,7 @@ export class Bot {
     return saved.then(() => this.webSettings());
   }
 
-  /** Whether the owner lets Main ask questions. Off until turned on. */
+  /** Whether the owner lets Main ask questions. On until turned off. */
   async asksSettings(): Promise<AsksSettings> {
     await this.#deleting;
     return { enabled: readAsksEnabled(this.layout) };
