@@ -368,6 +368,22 @@ services:
                   if length(account_hash) == 64 && match(account_hash, r'^[0-9a-f]{64}$$') { out.account_hash = account_hash }
                   request_id = string(j.request_id) ?? ""
                   if length(request_id) == 36 && match(request_id, r'^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$$') { out.request_id = request_id }
+                } else if name == "agent_turn_settled" {
+                  # TC-3734: per-turn settled credit cost. Closed enums and bounded integers; no ID, address, model or text is a field.
+                  window_kind = string(j.window_kind) ?? ""
+                  if !includes(["day", "week"], window_kind) { abort }
+                  outcome = string(j.outcome) ?? ""
+                  if !includes(["success", "limit_stop", "failed", "timed_out", "cancelled"], outcome) { abort }
+                  if !is_integer(j.raw_credits) || !is_integer(j.charged) { abort }
+                  raw_credits = int(j.raw_credits) ?? -1
+                  if raw_credits < 0 || raw_credits > 10000000 { abort }
+                  charged = int(j.charged) ?? -1
+                  if charged < 0 || charged > 1000000 { abort }
+                  out = {"svc": "backend", "event": name, "level": "info", "ts": ts, "raw_credits": raw_credits, "charged": charged, "window_kind": window_kind, "outcome": outcome}
+                  if is_integer(j.started_attempts) {
+                    started_attempts = int(j.started_attempts) ?? -1
+                    if started_attempts >= 0 && started_attempts <= 1000 { out.started_attempts = started_attempts }
+                  }
                 } else if name == "backend_log_error" && j.component == "calendar-autojoin" {
                   phase = string(j.phase) ?? ""
                   if !includes(["tick", "tenant_reconcile", "due_timer", "dispatch_lag_status"], phase) { abort }
@@ -512,6 +528,7 @@ services:
               problem: '.event == "tinychat_request" && ((int(.status) ?? 0) >= 500 || .stream == "error" || .stream == "aborted")'
               routine: '.event == "tinychat_request" && !((int(.status) ?? 0) >= 500 || .stream == "error" || .stream == "aborted")'
               budget: '.event == "agent_chat_budget_preflight"'
+              settled: '.event == "agent_turn_settled"'
           request_problem_cap:
             type: throttle
             inputs: [request_split.problem]
@@ -527,6 +544,12 @@ services:
           budget_preflight_cap:
             type: throttle
             inputs: [request_split.budget]
+            threshold: 60
+            window_secs: 60
+          # TC-3734: settled agent chat turns (one per turn) have their own cap of 60 per minute, like the preflight above.
+          turn_settled_cap:
+            type: throttle
+            inputs: [request_split.settled]
             threshold: 60
             window_secs: 60
           # TC-2546: every non-request sample has a finite global budget, including legacy events.
@@ -615,7 +638,7 @@ services:
         sinks:
           betterstack:
             type: http
-            inputs: [request_problem_cap, request_routine_cap, budget_preflight_cap, lane_cap, calendar_cap, other_cap, diagnostic_summary_cap]
+            inputs: [request_problem_cap, request_routine_cap, budget_preflight_cap, turn_settled_cap, lane_cap, calendar_cap, other_cap, diagnostic_summary_cap]
             method: post
             uri: "https://s2795438.us-west-2a.betterstackdata.com/"
             encoding: { codec: json }
