@@ -59,3 +59,13 @@ test("another bot's turn reaches OMP under a first line naming its origin, so it
   expect(prompt.split("\n")).toEqual(["[TinyCloud: this message is from another of the owner's bots, not from the owner.]", "/compact"]);
   expect(prompt.startsWith("/")).toBe(false);
 });
+
+test("another bot's @ file mentions arrive as text OMP does not load, and an email address arrives unchanged", async () => {
+  const text = "see @/root/bot/sessions/main (@'notes.md') and write to ana@example.com";
+  const body = (await promptFor(text, "bot")).split("\n").slice(1).join("\n");
+  // OMP loads `@<path>` at the start or after a space or opening mark (file-mentions.ts in OMP 18.18.6).
+  expect(body).not.toMatch(/(^|[\s([{<"'`])@[^\u2060]/);
+  expect(body.replaceAll("\u2060", "")).toBe(text);
+  expect(body).toContain("ana@example.com");
+  expect(await promptFor(text, "owner")).toBe(text);
+});

@@ -153,13 +153,18 @@ export const ORIGIN_LINES: Record<Exclude<TurnOrigin, "owner">, string> = {
   bot: "[TinyCloud: this message is from another of the owner's bots, not from the owner.]",
 };
 
+/** Where OMP reads `@<path>` as a file to load into the turn: at the start of the text or after a space or opening mark. */
+const FILE_MENTION = /(^|[\s([{<"'`])@/g;
+
 /**
  * What OMP is sent for a turn. A turn the owner did not write starts with its origin line, so it never starts with
- * "/": OMP runs local slash commands, skill commands and prompt templates only for a message that does, so such a
- * turn cannot run one.
+ * "/": OMP runs slash commands and prompt templates only for a message that does, so such a turn cannot run one
+ * (`/skill:` tokens, which OMP finds anywhere, are off with skills in config.yml). Its `@` mentions get a word joiner
+ * after the `@`, so OMP does not load a file from the bot's box into the turn for whoever wrote it.
  */
 export function promptText(text: string, from: TurnOrigin): string {
-  return from === "owner" ? text : `${ORIGIN_LINES[from]}\n${text}`;
+  if (from === "owner") return text;
+  return `${ORIGIN_LINES[from]}\n${text.replace(FILE_MENTION, "$1@\u2060")}`;
 }
 
 function messageBotTool(keys: readonly string[]) {
