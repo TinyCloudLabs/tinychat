@@ -167,6 +167,8 @@ describe("a refused start with history on", () => {
     const manager = new BotManager(launcher, roots, { ...OPTIONS, history }, 1);
     const first = manager.forOwner(OWNER_A);
     const second = manager.forOwner(OWNER_B);
+    void first.historyPermission(OWNER_A, undefined, Date.now() + 3_600_000);
+    void second.historyPermission(OWNER_B, undefined, Date.now() + 3_600_000);
 
     const firstRun = first.send("one", recorder().sink, OWNER_A);
     await sandboxes[0]!.prompted.promise;
