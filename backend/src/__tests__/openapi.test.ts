@@ -113,18 +113,9 @@ describe("TinyChat OpenAPI spec", () => {
     expect(paths()["/api/attestation/self"].get.security).toEqual([{ bearerAuth: [] }]);
   });
 
-  test("documents connector meeting reads as authenticated, excluding the public ptx webhook", () => {
+  test("documents the connector surface as authenticated by default, excluding the public ptx webhook", () => {
     const bearer = [{ bearerAuth: [] }];
     expect(spec.security).toEqual(bearer);
-    for (const [path, method] of [
-      ["/api/connectors/meetings", "get"],
-      ["/api/connectors/meetings/{source}/{sourceId}", "get"],
-      ["/api/connectors/meetings/{source}/{sourceId}/reconciled", "post"],
-    ] as const) {
-      const operation = paths()[path]?.[method];
-      expect(operation).toBeDefined();
-      expect(operation?.security ?? spec.security).toEqual(bearer);
-    }
     expect(paths()["/api/transcriber/webhooks/ptx"].post.security).toEqual([]);
   });
 
@@ -344,33 +335,21 @@ describe("connector webhook paths", () => {
   });
 
   /**
-   * INGEST-CUTOVER(plan §11) — the delivery route's description is the ONE place in this spec that
-   * still stated the retired invariant flatly. Every other connector description was scoped in the
-   * cutover, so this one was an omission, not a deliberate carve-out: for a cohort address the
-   * same route nudges the fetch worker and the server DOES hold that user's Fireflies credential.
-   * Both halves are pinned, in the same shape as the deploy-doc regex in consent-scope.test.ts, so
-   * neither can go stale on its own.
+   * The delivery route's description states the Option-C invariant flatly, with no per-address
+   * scope: no address has a backend-held credential or a server-side copy.
    */
-  test("the delivery description scopes the retired invariant to non-cohort addresses", () => {
+  test("the delivery description states the Option C invariant for every address", () => {
     const delivery = paths()["/api/connectors/webhooks/{source}/{token}"].post;
 
-    // Half 1 — the Option-C claim survives WITH its scope attached (plan §5.3 keeps that path
-    // byte-identical), never as an unqualified promise about every address.
+    // The Option-C claim: the server never receives the connector API key.
     expect(delivery.description).toMatch(
-      /(?:outside the backend-ingest cohort|non-cohort)[\s\S]{0,400}never receives the user's connector API key/i,
+      /never receives the user's connector API key/i,
     );
     expect(delivery.description).not.toMatch(
       /nothing is written to the user's space\.\s+This server never receives/i,
     );
 
-    // Half 2 — the cohort truth, stated on the route that triggers it.
-    expect(delivery.description).toMatch(/cohort address/i);
-    expect(delivery.description).toMatch(/nudges the backend\s+fetch worker/i);
-    expect(delivery.description).toMatch(/per-user Fireflies OAuth credential/i);
-    expect(delivery.description).toMatch(/encrypted server-side copy/i);
-    expect(delivery.description).toMatch(/90 days/);
-
-    // And the invariant that did NOT reverse, so the scoping cannot be read as "everything went".
+    // And the delegation invariant: no connector delegation is held for any address.
     expect(delivery.description).toMatch(/holds no connector\s+delegation for any address/i);
   });
 

@@ -87,8 +87,8 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "22"
-      - name: Test ios-simulator-smoke.sh
-        run: node --test mobile/scripts/ios-simulator-smoke.test.mjs
+      - name: Test ios-simulator-smoke.sh and ios-frame-probe.sh
+        run: node --test mobile/scripts/ios-simulator-smoke.test.mjs mobile/scripts/ios-frame-probe.test.mjs
 
   ios:
     name: iOS (simulator build and smoke test)
@@ -240,6 +240,90 @@ jobs:
             ${{ runner.temp }}/ios-health
             ${{ runner.temp }}/health-build.log
 
+  # TC-3677: on the build One ships (Release, the production frontend with One Apps and One's new navigation on), an
+  # app in a frame inside One cannot reach the native bridge, and its links and window.open open outside One (the
+  # system browser) without replacing One's main view. The probe (mobile/ios/App/App/FrameProbe.swift) is compiled
+  # only here, with EXO_FRAME_PROBE; the release archive check (ios-build.yml) fails if a shipped binary has it.
+  ios-frame-guard:
+    name: iOS (Release simulator frame guard)
+    needs: ios-paths
+    if: needs.ios-paths.outputs.native == 'true'
+    runs-on: macos-26
+    timeout-minutes: 45
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+    steps:
+      # As in the ios job (TC-2880): Spotlight competes for the disk while the simulator's first boot pages in.
+      - name: Stop Spotlight indexing
+        run: |
+          for attempt in 1 2 3; do
+            sudo mdutil -a -i off && break
+            sleep 5
+          done
+          sudo mdutil -i off /System/Volumes/Data || true
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: "1.3.9"
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+      - name: Require pinned Xcode
+        run: test -d "$DEVELOPER_DIR"
+
+      - name: Install JS deps
+        run: bun install --frozen-lockfile
+
+      # The production frontend (frontend/.env.production). The two One Apps flags are its values too; they are set
+      # here as well so this check keeps covering the phone's framed apps whatever that file says.
+      - name: Build workspace packages and the production frontend with One Apps on
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+          VITE_ONE_APPS: "true"
+          VITE_ONE_NAV: "true"
+        run: bun run build:packages && bun run build:frontend
+
+      - name: Start booting an iOS Simulator
+        run: mobile/scripts/ios-simulator-smoke.sh boot "$RUNNER_TEMP/ios-frame-probe"
+
+      - name: Sync Capacitor
+        run: env -u EXO_DEV_SERVER_URL bun run --cwd mobile sync ios
+
+      # Release, as shipped, plus the CI-only probe, for the runner's own architecture only (a Release build otherwise
+      # compiles every simulator architecture). The binary must have the probe and none of the Debug-only code.
+      - name: Build Release for iOS Simulator with the frame probe
+        working-directory: mobile/ios/App
+        run: |
+          if ! xcodebuild -project App.xcodeproj -scheme App -configuration Release \
+            -sdk iphonesimulator -destination "generic/platform=iOS Simulator" ARCHS="$(uname -m)" \
+            -derivedDataPath build CODE_SIGNING_ALLOWED=NO \
+            SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) EXO_FRAME_PROBE' build >"$RUNNER_TEMP/frame-probe-build.log" 2>&1; then
+            grep -E 'error:' "$RUNNER_TEMP/frame-probe-build.log" | head -40
+            tail -60 "$RUNNER_TEMP/frame-probe-build.log"
+            exit 1
+          fi
+          binary=build/Build/Products/Release-iphonesimulator/App.app/App
+          grep -a -q EXO_FRAME_PROBE "$binary" || { echo "::error::the build has no frame probe"; exit 1; }
+          if grep -a -q EXO_SMOKE "$binary"; then echo "::error::the Release build has the Debug-only smoke probe"; exit 1; fi
+
+      - name: Frame guard on an iOS Simulator
+        timeout-minutes: 15
+        run: |
+          mobile/scripts/ios-frame-probe.sh mobile/ios/App/build/Build/Products/Release-iphonesimulator/App.app \
+            "$RUNNER_TEMP/ios-frame-probe"
+
+      - name: Upload frame probe screenshots and results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: exo-ios-frame-probe-${{ github.sha }}
+          if-no-files-found: warn
+          path: ${{ runner.temp }}/ios-frame-probe
+
   # The TestFlight build (ios-build.yml) minus signing: Release archive of the production frontend, versions,
   # privacy manifest and bundle checks, then the sign job's dry run (no environment, no secrets): it downloads and
   # unpacks the archive from the release tooling checkout. ios-testflight.yml adds only the export, signature check
@@ -255,7 +339,7 @@ jobs:
   mobile-check:
     name: Mobile checks
     if: always()
-    needs: [changes, ios-paths, android, ios-smoke-script, ios, ios-release]
+    needs: [changes, ios-paths, android, ios-smoke-script, ios, ios-frame-guard, ios-release]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -269,6 +353,7 @@ jobs:
           ANDROID: ${{ needs.android.result }}
           SMOKE_SCRIPT: ${{ needs.ios-smoke-script.result }}
           IOS: ${{ needs.ios.result }}
+          IOS_FRAME_GUARD: ${{ needs.ios-frame-guard.result }}
           IOS_RELEASE: ${{ needs.ios-release.result }}
         run: |
           [[ "$CHANGES" == success && "$IOS_CHANGES" == success ]]
@@ -283,4 +368,4 @@ jobs:
             *) exit 1 ;;
           esac
           [[ "$ANDROID" == "$native_expected" && "$SMOKE_SCRIPT" == "$native_expected" ]]
-          [[ "$IOS" == "$ios_expected" && "$IOS_RELEASE" == "$ios_expected" ]]
+          [[ "$IOS" == "$ios_expected" && "$IOS_FRAME_GUARD" == "$ios_expected" && "$IOS_RELEASE" == "$ios_expected" ]]

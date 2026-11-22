@@ -2,21 +2,20 @@
 // new test account sees it) under the real navigation, with the ask box on top; then Main's chat over
 // it, mid-reply. Synthetic content; nothing is sent anywhere. `bots-home-feed`: the same Home with cards from three
 // agents, two of them answered (Sam's top bar, 11-13: the slider beside Filter and View, and Pending at the end).
-import { useEffect, useLayoutEffect, useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 
 import { AskBox } from "@/bots/AskBox";
 import { CreateBotDialog } from "@/bots/CreateBotDialog";
 import { BOTS_STRINGS } from "@/bots/botsStrings";
 import type { BotRoster, BotRosterApi, RosterBot } from "@/bots/botRosterApi";
 import { useBots } from "@/bots/useBots";
-import type { BotsApi } from "@/bots/botsApi";
+import { BotsRouteMissing, type BotsApi } from "@/bots/botsApi";
 import { HomeAskBox } from "@/bots/HomeAskBox";
 import { MainChat } from "@/bots/MainChat";
 import type { MainChatState } from "@/bots/useMainChat";
 import { HomeFeedEntries } from "@/feed/HomeFeedEntries";
 import type { HomeFeedEntry, HomeFeedSource } from "@/feed/feedStoreTypes";
 import { DEFAULT_FEED_VIEW_MODE, saveFeedViewMode, type FeedViewMode } from "@/feed/feedViewMode";
-import { setShowHiddenFeatures } from "@/lib/hiddenFeatures";
 import { useSizeClass } from "@/lib/sizeClass";
 import { cn } from "@/lib/utils";
 import { NavRail } from "@/shell/NavRail";
@@ -92,6 +91,11 @@ const ENABLED: BotsApi = {
   getMainWeb: async () => ({ mode: "off", hosts: [], available: true, today: { searches: 0, pages: 0, blocked: 0 } }),
   setMainWeb: () => new Promise(() => {}),
   sendToMain: () => new Promise(() => {}),
+  // This service has no questions route, so the screens show no Main questions.
+  getAsks: () => Promise.reject(new BotsRouteMissing()),
+  setAsks: () => Promise.reject(new BotsRouteMissing()),
+  listRequests: () => Promise.reject(new BotsRouteMissing()),
+  answerRequest: () => Promise.reject(new BotsRouteMissing()),
 };
 
 const MID_REPLY: MainChatState = {
@@ -127,15 +131,6 @@ function Home({ ask, source = EMPTY_FEED }: { ask: ReactNode; source?: HomeFeedS
       {nav === "tabbar" ? <TabBar {...navProps} /> : null}
     </div>
   );
-}
-
-/** Home as it is by default: Settings → Show hidden features is off, so no ask box and no Agents pill. */
-function HiddenFeaturesOff() {
-  useLayoutEffect(() => {
-    setShowHiddenFeatures(false);
-    return () => setShowHiddenFeatures(true);
-  }, []);
-  return <Home source={FEED} ask={<HomeAskBox api={ENABLED} />} />;
 }
 
 /**
@@ -220,7 +215,6 @@ export const botsScreens: HarnessScreen[] = [
   // Layout viewports only: at 200% text the compact cards truncate long agent names by design (CompactCard).
   { ...BASE, id: "bots-home-feed", readyWhen: 'section[aria-label="Pending"]', viewports: ["phone", "phone-402", "phone-land", "tablet", "tablet-land", "desktop-min", "desktop", "zoom200"],
     render: () => <Home source={FEED} ask={<HomeAskBox api={ENABLED} />} /> },
-  { ...BASE, id: "home-hidden-features-off", readyWhen: 'section[aria-label="Pending"]', viewports: ["phone", "desktop-min"], render: () => <HiddenFeaturesOff /> },
   // The feed's three views, each with its choice saved before the feed renders (FeedIn).
   { ...BASE, id: "bots-home-feed-compact", readyWhen: 'section[aria-label="Pending"]', viewports: ["phone", "desktop"],
     render: () => <FeedIn mode="compact"><Home source={MANY} ask={<HomeAskBox api={ENABLED} />} /></FeedIn> },

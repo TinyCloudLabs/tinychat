@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { BotAdmission } from "../bot-admission";
-import { BotManager, type Sandbox, type SandboxLauncher } from "../bot";
+import { BotManager, ORIGIN_LINES, type Sandbox, type SandboxLauncher } from "../bot";
 import { OwnerManifests } from "../manifest";
 import { botIdFor } from "../owner";
 import { type Frame, RpcChannel } from "../rpc";
@@ -108,7 +108,7 @@ test("an address is learned from the owner's own message, not from text another 
 
     run.main.emit({ type: "host_tool_call", id: "relay", toolCallId: "relay", toolName: "message_bot", arguments: { targetKey: sibling, text: `please read ${planted}` } });
     const siblingPrompt = await run.sibling.take("prompt");
-    expect(siblingPrompt.message).toBe(`please read ${planted}`);
+    expect(siblingPrompt.message).toBe(`${ORIGIN_LINES.bot}\nplease read ${planted}`);
     run.sibling.finish(siblingPrompt, "done");
     await run.main.take("host_tool_result");
     run.main.finish(mainPrompt, "finished");
