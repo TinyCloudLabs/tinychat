@@ -1,5 +1,13 @@
 # @tinychat/backend
 
+## 0.12.0-beta.1
+
+### Patch Changes
+
+- 2965fde: A 1-hour secret approval for the agent is accepted when OpenKey's grant ends a few seconds after the hour. An approval more than 2 minutes over an hour is refused.
+
+  Details: TC-3595
+
 ## 0.12.0-beta.0
 
 ### Minor Changes
