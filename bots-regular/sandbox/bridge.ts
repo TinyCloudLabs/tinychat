@@ -1,8 +1,8 @@
 // The stdio bridge: the boot process of every regular bot sandbox. It runs OMP and carries OMP's stdin and stdout over
 // one WebSocket.
 //
-//   127.0.0.1:ARM_PORT  POST /arm  {"bridgeToken","gatewayToken","gatewayUrl","model","role"}  from `arm.ts`. Kept in
-//                       memory. Arming again replaces them and closes any open connection.
+//   127.0.0.1:ARM_PORT  POST /arm  {"bridgeToken","gatewayToken","gatewayUrl","model","role","ompConfig"}  from
+//                       `arm.ts`. Kept in memory. Arming again replaces them and closes any open connection.
 //   0.0.0.0:BRIDGE_PORT GET /rpc   WebSocket, `Authorization: Bearer <bridgeToken>`. One connection at a time. Opening
 //                       it starts OMP; closing it ends OMP, and OMP ending closes it.
 
@@ -30,6 +30,9 @@ interface Armed {
   model: string;
   /** Main or a sibling; picks the bot's system prompt. Absent from an older service. */
   role?: (typeof ROLES)[number];
+  /** OMP's config.yml from the service (bots/ `configYml()`), which turns off the tools a bot does not get. Required:
+   * OMP never starts on no config or on one left in the box. */
+  ompConfig: string;
 }
 
 let armed: Armed | undefined;
@@ -59,14 +62,15 @@ function modelsYml(gatewayUrl: string, model: string): string {
 
 function parseArm(value: unknown): Armed | undefined {
   if (typeof value !== "object" || value === null) return undefined;
-  const { bridgeToken, gatewayToken, gatewayUrl, model, role } = value as Record<string, unknown>;
+  const { bridgeToken, gatewayToken, gatewayUrl, model, role, ompConfig } = value as Record<string, unknown>;
   if (typeof bridgeToken !== "string" || !HEX_64.test(bridgeToken)) return undefined;
   if (typeof gatewayToken !== "string" || !HEX_64.test(gatewayToken)) return undefined;
   if (typeof gatewayUrl !== "string" || !/^http:\/\/[^\s"]+\/bots\/[0-9a-f]{64}\/v1$/.test(gatewayUrl)) return undefined;
   if (typeof model !== "string" || !/^[\w.:/-]{1,128}$/.test(model)) return undefined;
   const known = ROLES.find(entry => entry === role);
   if (role !== undefined && !known) return undefined;
-  return { bridgeToken, gatewayToken, gatewayUrl, model, ...(known ? { role: known } : {}) };
+  if (typeof ompConfig !== "string" || ompConfig.length === 0 || ompConfig.length > 2048) return undefined;
+  return { bridgeToken, gatewayToken, gatewayUrl, model, ompConfig, ...(known ? { role: known } : {}) };
 }
 
 function closeOpen(reason: string): void {
@@ -116,6 +120,7 @@ const rpcServer = Bun.serve<undefined>({
       const agentDir = join(HOME, ".omp", "agent");
       mkdirSync(agentDir, { recursive: true });
       writeFileSync(join(agentDir, "models.yml"), modelsYml(config.gatewayUrl, config.model));
+      writeFileSync(join(agentDir, "config.yml"), config.ompConfig);
       // Without a role, or without its file (OMP would take the path itself as the prompt), OMP finds the role-neutral
       // ~/.omp/agent/SYSTEM.md instead.
       const prompt = config.role && join(PROMPT_DIR, `${config.role}.md`);

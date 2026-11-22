@@ -1,6 +1,6 @@
 {
   "name": "@tinychat/backend",
-  "version": "0.9.6-beta.3",
+  "version": "0.10.1-beta.2",
   "private": true,
   "type": "module",
   "scripts": {
