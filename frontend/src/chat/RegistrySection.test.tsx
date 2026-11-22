@@ -357,7 +357,7 @@ describe("Settings -> Where your data lives (RegistrySection)", () => {
     expect(buttonByText(rows[1]!, REGISTRY_EDITOR_COPY.undoButton)).toBeUndefined();
     expect(buttonByText(rows[1]!, REGISTRY_EDITOR_COPY.restoreButton)).toBeDefined();
 
-    // 1. Undo on latest row sends { historyId: "chg_latest" }.
+    // 1. Undo on latest row sends { historyId: "chg_latest" } and shows undoSuccess.
     await act(async () => {
       buttonByText(rows[0]!, REGISTRY_EDITOR_COPY.undoButton)!.click();
     });
@@ -365,11 +365,12 @@ describe("Settings -> Where your data lives (RegistrySection)", () => {
     expect(host.textContent).toContain(REGISTRY_EDITOR_COPY.undoConfirmTitle);
     expect(host.textContent).toContain("Data saved at the new hosts in the meantime stays there.");
     await act(async () => {
-      buttonByText(host, REGISTRY_EDITOR_COPY.undoConfirmApprove)!.click();
+      buttonByText(host, "Continue in OpenKey")!.click();
     });
     await flush();
+    expect(host.textContent).toContain("Undone. Your apps use your previous hosts from their next sign-in.");
 
-    // 2. Restore on older row sends { historyId: "chg_older" }.
+    // 2. Restore on older row sends { historyId: "chg_older" } and shows restoreSuccess.
     const refreshedRows = [...host.querySelectorAll('[data-testid="registry-history-row"]')];
     await act(async () => {
       buttonByText(refreshedRows[1]!, REGISTRY_EDITOR_COPY.restoreButton)!.click();
@@ -383,7 +384,9 @@ describe("Settings -> Where your data lives (RegistrySection)", () => {
     await flush();
 
     expect(undoCalls).toEqual([{ historyId: "chg_latest" }, { historyId: "chg_older" }]);
-    expect(host.textContent).toContain(REGISTRY_EDITOR_COPY.undoSuccess);
+    expect(host.textContent).toContain("Restored. Your apps use the hosts you had before");
+    expect(host.textContent).toContain("from their next sign-in.");
+    expect(host.textContent).not.toContain(REGISTRY_EDITOR_COPY.undoSuccess);
   });
 
   test("mismatched sequence hides Undo and Last changed while still offering Restore on history rows", async () => {
@@ -422,8 +425,10 @@ describe("Settings -> Where your data lives (RegistrySection)", () => {
     expect(buttonByText(row, REGISTRY_EDITOR_COPY.restoreButton)).toBeDefined();
   });
 
-  test("absent OpenKey methods hide edit, undo, and restore while keeping the read-only view", async () => {
-    const record = await makeRecord();
+  test("absent OpenKey methods keep the editor read-only: no edit/undo/restore controls, plus the read-only line", async () => {
+    const record = await makeRecord({
+      spaces: [{ space: SPACE_DEFAULT, nodes: [{ did: NODE_A_DID, mode: "read-write" }] }],
+    });
     let historyFetched = 0;
     const adapter: RegistryEditorAdapter = {
       canEdit: false,
@@ -449,9 +454,13 @@ describe("Settings -> Where your data lives (RegistrySection)", () => {
 
     expect(host.querySelector('[data-testid="registry-record"]')).not.toBeNull();
     expect(host.querySelector('[data-testid="registry-encryption-row"]')?.textContent).toContain("keys.example.com:8443");
+    expect(host.querySelector('[data-testid="registry-read-only-note"]')?.textContent).toBe(
+      "You can see this here, but not change it.",
+    );
     expect(buttonByText(host, REGISTRY_EDITOR_COPY.changeButton)).toBeUndefined();
     expect(buttonByText(host, REGISTRY_EDITOR_COPY.undoButton)).toBeUndefined();
     expect(buttonByText(host, REGISTRY_EDITOR_COPY.restoreButton)).toBeUndefined();
+    expect(host.querySelector('[data-testid="registry-editor-form"]')).toBeNull();
     expect(host.querySelector('[data-testid="registry-history"]')).toBeNull();
     expect(historyFetched).toBe(0);
   });

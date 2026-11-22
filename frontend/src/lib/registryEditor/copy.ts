@@ -26,7 +26,7 @@ export const REGISTRY_EDITOR_COPY = {
   undoConfirmTitle: "Undo this change?",
   undoConfirmBody: (date: string) =>
     `Your apps go back to the hosts you had before ${date}. Data saved at the new hosts in the meantime stays there.`,
-  undoConfirmApprove: "Undo with passkey",
+  undoConfirmApprove: "Continue in OpenKey",
   undoConfirmCancel: "Cancel",
   undoSuccess: "Undone. Your apps use your previous hosts from their next sign-in.",
   restoreButton: "Restore the version before this",
@@ -35,6 +35,8 @@ export const REGISTRY_EDITOR_COPY = {
     "Your apps go back to the hosts you had before this change, which also undoes every change after it. Data saved at those hosts in the meantime stays there.",
   restoreConfirmApprove: "Continue in OpenKey",
   restoreConfirmCancel: "Cancel",
+  restoreSuccess: (date: string) =>
+    `Restored. Your apps use the hosts you had before ${date} from their next sign-in.`,
   changeSuccess: "Done. Your apps use the new hosts from their next sign-in.",
   changeFailure: "Couldn't change this. Nothing was changed. Try again.",
   registryUnreachable: "Couldn't load where your data lives. Try again in a moment.",

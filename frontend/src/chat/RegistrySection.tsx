@@ -244,14 +244,18 @@ export function RegistrySection(props: RegistrySectionProps) {
 
   const confirmRestore = async () => {
     if (!pendingRestore || submitting) return;
-    const { entry } = pendingRestore;
+    const { mode, entry } = pendingRestore;
     setStatusNotice(null);
     setSubmitting(true);
     try {
       const outcome = await adapter.requestUndo({ historyId: entry.id });
       setPendingRestore(null);
       if (outcome.status === "published") {
-        setStatusNotice({ tone: "ok", text: REGISTRY_EDITOR_COPY.undoSuccess });
+        const text =
+          mode === "undo"
+            ? REGISTRY_EDITOR_COPY.undoSuccess
+            : REGISTRY_EDITOR_COPY.restoreSuccess(formatRegistryDate(entry.createdAt));
+        setStatusNotice({ tone: "ok", text });
         reload();
       }
     } catch {
@@ -311,13 +315,6 @@ export function RegistrySection(props: RegistrySectionProps) {
             </div>
             {record.spaces.map((space) => {
               const label = spaceDisplayName(space.space).name;
-              const hasReadOnly = space.nodes.some((member) => member.mode === "read-only");
-              const hosts = space.nodes
-                .map((member) => {
-                  const raw = nodeUrlByDid.get(member.did) ?? member.did;
-                  return displayCanonicalHost(raw);
-                })
-                .join(", ");
               return (
                 <div
                   key={space.space}
@@ -327,12 +324,23 @@ export function RegistrySection(props: RegistrySectionProps) {
                   <span className="truncate font-medium" title={space.space}>
                     {label}
                   </span>
-                  <div className="space-y-0.5">
-                    <span className="block break-all font-mono">{hosts || REGISTRY_EDITOR_COPY.notSet}</span>
-                    {hasReadOnly && (
-                      <span className="block text-[11px] text-muted-foreground">
-                        {REGISTRY_EDITOR_COPY.readOnlyNote}
-                      </span>
+                  <div className="space-y-1">
+                    {space.nodes.length === 0 ? (
+                      <span className="block break-all font-mono">{REGISTRY_EDITOR_COPY.notSet}</span>
+                    ) : (
+                      space.nodes.map((member) => {
+                        const host = displayCanonicalHost(nodeUrlByDid.get(member.did) ?? member.did);
+                        return (
+                          <div key={`${member.did}:${member.mode}`} className="space-y-0.5">
+                            <span className="block break-all font-mono">{host}</span>
+                            {member.mode === "read-only" && (
+                              <span className="block text-[11px] text-muted-foreground">
+                                {REGISTRY_EDITOR_COPY.readOnlyNote}
+                              </span>
+                            )}
+                          </div>
+                        );
+                      })
                     )}
                   </div>
                 </div>
@@ -369,6 +377,13 @@ export function RegistrySection(props: RegistrySectionProps) {
                 formatRegistryDate(latestHistory.createdAt),
                 latestHistory.requestingOrigin,
               )}
+            </p>
+          )}
+
+          {/* Read-only notice when OpenKey lacks requestRegistryChange and requestRegistryUndo */}
+          {!adapter.canEdit && !adapter.canUndo && (
+            <p className="text-xs text-muted-foreground" data-testid="registry-read-only-note">
+              {REGISTRY_EDITOR_COPY.readOnlyNote}
             </p>
           )}
 
