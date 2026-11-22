@@ -111,7 +111,13 @@ export const DISCONNECT_PLANS: Record<DisconnectMode, readonly DisconnectStep[]>
  * remove here, and any caller that does not wire it) has no such step.
  */
 export function planFor(deps: Pick<DisconnectDeps, "connectorId" | "mode" | "webhooks">): readonly DisconnectStep[] {
-  const plan = DISCONNECT_PLANS[deps.mode];
+  // Granola has no push lane. `DELETE /config` is owner-wide (it revokes the one webhook token and
+  // clears every source's queue), so a Granola disconnect must not run it: it would also switch off
+  // Fireflies instant updates for the same owner.
+  const plan =
+    deps.connectorId === "granola"
+      ? DISCONNECT_PLANS[deps.mode].filter((step) => step !== "disable-webhooks")
+      : DISCONNECT_PLANS[deps.mode];
   if (deps.connectorId !== "fireflies" || deps.webhooks.teardownCredential === undefined) {
     return plan;
   }
