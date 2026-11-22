@@ -14,7 +14,7 @@ import { BotsError, botsApi, type BotsApi } from "./botsApi";
 import { MainChat } from "./MainChat";
 import { isWorking, useMainChat } from "./useMainChat";
 import { AskCards } from "./AskCards";
-import { readSettings, setReadArea, signReadGrant } from "./trustbotReadGrant";
+import { readSettings, revokeReadGrant, setReadArea, signReadGrant } from "./trustbotReadGrant";
 import { useAsks } from "./useAsks";
 
 const RETRY_MS = 60_000;
@@ -83,6 +83,7 @@ function MainAsk({ api, tcw, onReconnect }: { api: BotsApi; tcw?: TinyCloudWeb; 
     readSettings,
     setReadArea,
     signReadGrant: (serviceDid: string, areas: Parameters<typeof signReadGrant>[2]) => signReadGrant(tcw, serviceDid, areas),
+    revokeReadGrant: (cid: string) => revokeReadGrant(tcw, cid),
   } : undefined, [tcw]);
   // A turn is when Main asks: read the requests as it ends.
   const working = isWorking(chat.state.turn);

@@ -12,7 +12,7 @@ let fetchSpy: ReturnType<typeof spyOn> | undefined;
 afterEach(() => { fetchSpy?.mockRestore(); fetchSpy = undefined; restore?.(); });
 
 const DID = "did:pkh:eip155:1:0x" + "11".repeat(20);
-const BODY = { serviceDid: DID, expiresAt: 123, areas: { meetings: "on" } };
+const BODY = { serviceDid: DID, expiresAt: 123, grantCid: "bafy-grant", areas: { meetings: "on" } };
 
 function setup(response: Response = Response.json(BODY)) {
   restore = installDom({});

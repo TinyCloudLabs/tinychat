@@ -12,7 +12,18 @@ export interface ReadSettings {
   serviceDid: string;
   /** When the signed grant ends, in ms since the epoch; null when there is none. */
   expiresAt: number | null;
+  /** The stored grant, for the owner's own revoke at the node; null when there is none. */
+  grantCid: string | null;
   areas: Record<ReadArea, ReadAreaState>;
+}
+
+/** What turning a read area on or off needs. */
+export interface ReadAreaApi {
+  readSettings(): Promise<ReadSettings>;
+  setReadArea(area: ReadArea, enabled: boolean, grant?: ReadGrant): Promise<ReadSettings>;
+  signReadGrant(serviceDid: string, areas: ReadArea[]): Promise<ReadGrant>;
+  /** Revokes a grant the owner signed, at the node; throws when the node does not confirm it. */
+  revokeReadGrant(cid: string): Promise<void>;
 }
 
 export interface ReadGrant {
@@ -36,14 +47,14 @@ function grantLifetime(siwe: string): number {
 }
 
 function toReadSettings(payload: unknown): ReadSettings {
-  const value = (payload ?? {}) as { serviceDid?: unknown; expiresAt?: unknown; areas?: Record<string, unknown> };
+  const value = (payload ?? {}) as { serviceDid?: unknown; expiresAt?: unknown; grantCid?: unknown; areas?: Record<string, unknown> };
   if (typeof value.serviceDid !== "string" || (value.expiresAt !== null && typeof value.expiresAt !== "number")) throw new BotsError("failed");
   const areas = {} as Record<ReadArea, ReadAreaState>;
   for (const area of Object.keys(READ_AREAS) as ReadArea[]) {
     const state = value.areas?.[area];
     areas[area] = STATES.includes(state as ReadAreaState) ? state as ReadAreaState : "off";
   }
-  return { serviceDid: value.serviceDid, expiresAt: value.expiresAt, areas };
+  return { serviceDid: value.serviceDid, expiresAt: value.expiresAt, grantCid: typeof value.grantCid === "string" ? value.grantCid : null, areas };
 }
 
 async function request(method: "GET" | "PUT", path: string, body?: unknown): Promise<ReadSettings> {
@@ -81,6 +92,34 @@ export function readSettings(): Promise<ReadSettings> {
 export async function setReadArea(area: ReadArea, enabled: boolean, grant?: ReadGrant): Promise<ReadSettings> {
   if (enabled && !grant) throw new Error("read_grant_missing");
   return request("PUT", `/api/bots/main/reads/${area}`, enabled ? { enabled: true, grant } : { enabled: false });
+}
+
+/** Revokes a read grant at the node, as the owner who signed it: the node takes a revocation only from them. */
+export async function revokeReadGrant(tcw: TinyCloudWeb, cid: string): Promise<void> {
+  const revoked = await tcw.revokeDelegation(cid);
+  if (!revoked.ok) throw new Error("read_revoke_failed");
+}
+
+/** A revoke that fails leaves the grant to its end date (7 days at most); the change the owner asked for still happens. */
+async function revokeQuietly(api: ReadAreaApi, cid: string): Promise<void> {
+  try { await api.revokeReadGrant(cid); } catch { /* the backend has deleted or replaced its copy either way */ }
+}
+
+/**
+ * Turns `area` on or off from the settings last read. On: signs one grant for every area that will be on, stores it,
+ * then revokes the grant it replaced. Off: when no other area stays on, revokes the grant, then turns the area off.
+ */
+export async function changeReadArea(api: ReadAreaApi, saved: ReadSettings, area: ReadArea, enabled: boolean): Promise<ReadSettings> {
+  const names = Object.keys(saved.areas) as ReadArea[];
+  const others = names.filter((name) => name !== area && saved.areas[name] === "on");
+  if (enabled) {
+    const grant = await api.signReadGrant(saved.serviceDid, names.filter((name) => name === area || others.includes(name)));
+    const stored = await api.setReadArea(area, true, grant);
+    if (saved.grantCid && saved.grantCid !== stored.grantCid) await revokeQuietly(api, saved.grantCid);
+    return stored;
+  }
+  if (others.length === 0 && saved.grantCid) await revokeQuietly(api, saved.grantCid);
+  return api.setReadArea(area, false);
 }
 
 /**
