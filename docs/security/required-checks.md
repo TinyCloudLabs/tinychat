@@ -11,7 +11,7 @@ No agent merges with --admin or uses the ruleset bypass to pass red or pending c
 
 | Check name (job) | Workflow | Runs on | Fails when |
 | --- | --- | --- | --- |
-| `Gitleaks` | `.github/workflows/gitleaks.yml` | every PR; every push to `main` | PR: a secret-shaped string in the PR's own commits, judged by the base commit's `.gitleaksignore` and `.gitleaks.toml` (default rules when absent) with inline `gitleaks:allow` ignored, so a PR cannot allowlist its own leak. `main`: any finding in the full history of `main` not in main's reviewed baseline (`.gitleaksignore`). A PR that changes the baseline, a gitleaks config or the workflow also scans its full head history with its own baseline. |
+| `Gitleaks` | `.github/workflows/gitleaks.yml` | every PR; every push to `main` | PR: a secret-shaped string in the PR's own commits, judged by the base commit's `.gitleaksignore` and `.gitleaks.toml` (default rules when absent) with inline `gitleaks:allow` ignored, so a PR cannot allowlist its own leak. `main`: any finding in the full history of `main` not in main's reviewed baseline (`.gitleaksignore`) or its `.gitleaks.toml` allowlist. A PR that changes the baseline, a gitleaks config or the workflow also scans its full head history with its own baseline and config. |
 | `Backend and package tests` | `.github/workflows/backend.yml` | every PR; every push to `main` | the backend suite (auth, consent scope, CORS, exo-grant and the rest), the shared-package suites, the Home mirror tests or the Vector config fail. A PR that touches no backend path reports success without running them; `main` always runs them. |
 | `Native sign-in request fits OpenKey's ceiling` | `.github/workflows/native-ceiling.yml` | every PR; every push to `main` | production OpenKey refuses the native sign-in request. Same skip rule as Backend. |
 | `Frontend tests, lint and browser harnesses` | `.github/workflows/frontend.yml` | every PR; every push to `main` | frontend unit tests, lint, typecheck or the build fail. A PR whose `changes` job selects no frontend input reports success without running them; `main` always runs them. |
@@ -271,6 +271,20 @@ fixture value appears outside tests and harness screens. Line numbers are those 
 Adding an entry: confirm the finding is not live (anything possibly live goes to security and is rotated, never
 listed). Baseline changes go in their own PR, merged before the PR that adds the fixture (PRs are judged by their
 base commit's baseline). List a new fixture as `file:rule:line` without the commit, since a squash merge changes it.
+
+### `.gitleaks.toml` allowlist
+
+The default rules apply, with one allowlist for two fixture classes the generic-api-key rule flags in tests. A finding
+is allowlisted only when both hold:
+
+- the file is a test file or test fixture (`__tests__/`, `test-fixtures/` or a name ending `.test.ts`, `.test.tsx`
+  or `.test.mjs`);
+- the whole secret is a `did:key` Ed25519 identifier (`z6Mk` and 44 base58 characters, a public key) or
+  `0123456789abcdef` repeated (a placeholder).
+
+Over the full history of `main` to `704ed01f` the allowlist covers 36 of the findings the baseline lists, each one
+reviewed as one of these two classes. Those baseline entries stay. A change to the allowlist is a security
+review like a baseline change, in its own PR.
 
 Limit: `pull_request` runs the workflow file from the PR, so a PR that edits `.github/workflows/gitleaks.yml` can
 change its own scan. Review workflow edits as code that holds the gate.
