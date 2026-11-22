@@ -141,6 +141,15 @@ const capabilities = (space: string): CeilingEntry =>
 
 const text = (id: Exclude<OneAppId, LinkAppId>) => ({ name: APP_NAMES[id], description: APP_DESCRIPTIONS[id] });
 
+// Ceiling entries the phone app's step-up ceilings (below) reuse verbatim.
+const EXPLORER_APPS_SQL = entry("appsData", { service: "tinycloud.sql", space: "applications", path: "default", actions: ["read", "schema"] });
+const EXPLORER_PUBLIC = entry("publicSpace", { service: "tinycloud.kv", space: "public", path: "", actions: ["get", "list", "metadata"] });
+const ACCOUNT_CEILING: readonly CeilingEntry[] = [
+  kv("installedApps", "account", "applications/", ["get", "list"]),
+  kv("spaces", "account", "spaces/", ["get", "list"]),
+];
+const COURIER_CEILING: readonly CeilingEntry[] = [kv("courier", "agents", "xyz.tinycloud.courier/", ["get", "list"])];
+
 const ALL_APPS: readonly OneApp[] = [
   { id: "capture", kind: "native", ...text("capture"), icon: Mic, glyph: "recording", route: "/chat/capture" },
   {
@@ -205,8 +214,8 @@ const ALL_APPS: readonly OneApp[] = [
     // Read only in the frame (TC-3675): writing and deleting open Explorer in its own tab, with its own sign-in.
     ceiling: () => [
       entry("appsData", { service: "tinycloud.kv", space: "applications", path: "", actions: ["get", "list"] }),
-      entry("appsData", { service: "tinycloud.sql", space: "applications", path: "default", actions: ["read", "schema"] }),
-      entry("publicSpace", { service: "tinycloud.kv", space: "public", path: "", actions: ["get", "list", "metadata"] }),
+      EXPLORER_APPS_SQL,
+      EXPLORER_PUBLIC,
       sql("secretNames", "secrets", "default", ["read"]),
       kv("secretNames", "secrets", "", ["list"]),
       kv("secretNames", "secrets", "vault/secrets", ["get", "list", "metadata"]),
@@ -225,10 +234,7 @@ const ALL_APPS: readonly OneApp[] = [
       : KIND === "preview" ? "https://feat-one-apps-embed.tinycloud-account.pages.dev"
         : "https://account.tinycloud.xyz",
     path: "/",
-    ceiling: () => [
-      kv("installedApps", "account", "applications/", ["get", "list"]),
-      kv("spaces", "account", "spaces/", ["get", "list"]),
-    ],
+    ceiling: () => ACCOUNT_CEILING,
   },
   {
     // Courier's data view lives on the share site; only its `/courier` pages may be framed (share repo headers).
@@ -242,12 +248,24 @@ const ALL_APPS: readonly OneApp[] = [
     glyph: "courier",
     origin: KIND === "dev" ? "https://localhost:5195" : "https://share.tinycloud.xyz",
     path: "/courier",
-    ceiling: () => [kv("courier", "agents", "xyz.tinycloud.courier/", ["get", "list"])],
+    ceiling: () => COURIER_CEILING,
   },
   // One's new navigation only. Share is a plain link: One holds no delegation for it, so its screen offers its site in a
   // new tab.
   { id: "xyz.tinycloud.share", kind: "link", name: APP_NAMES["xyz.tinycloud.share"], glyph: "share", url: "https://share.tinycloud.xyz/" },
 ];
+
+/**
+ * What the phone app may ask OpenKey for on an app's behalf, beyond One's sign-in (TC-3568 S1b, phase 1): read-only,
+ * each entry copied from the app's ceiling. No secrets, vault or encryption entry: those need their own ruling.
+ * OpenKey enforces exactly these per app on the Home client; `native-step-up-ceilings.json` is the copy its CI
+ * compares against, kept equal to this by the registry test.
+ */
+export const NATIVE_STEP_UP_CEILINGS: Readonly<Partial<Record<FramedAppId, readonly CeilingEntry[]>>> = Object.freeze({
+  "xyz.tinycloud.explorer": [EXPLORER_PUBLIC, EXPLORER_APPS_SQL],
+  "xyz.tinycloud.account": ACCOUNT_CEILING,
+  "xyz.tinycloud.courier": COURIER_CEILING,
+});
 
 /**
  * The apps a platform offers. iOS leaves Account out: its tile would open account.tinycloud.xyz, which has Billing.
