@@ -660,8 +660,8 @@ Versions: `CFBundleShortVersionString` is `frontend/package.json`'s product
 version without the beta suffix (`0.2.0-beta.2` → `0.2.0`).
 `CFBundleVersion` is the workflow run number, so every upload is a new build.
 
-Environment `ios-release` (deployment branches: `main` only; **required
-reviewer: Sam**, because the API key has the Admin role), secrets:
+Environment `ios-release` (deployment branches: `main` only, no required
+reviewer and no wait timer), secrets:
 
 | Secret | Value |
 |---|---|
@@ -670,9 +670,8 @@ reviewer: Sam**, because the API key has the Admin role), secrets:
 | `APPLE_API_ISSUER` | App Store Connect issuer ID (UUID) |
 | `APPLE_API_PRIVATE_KEY` | the `AuthKey_<key id>.p8` file. It may arrive as is, collapsed onto one line (a masked single-line prompt), or base64; the workflow rewrites it as a PEM file and checks it with `openssl` |
 
-With the reviewer, a run waits for approval twice: the `plan` job right after
-dispatch, and the `sign` job once the archive is built and checked. Approve the
-second only for a run you dispatched.
+A dispatched run goes straight through: no job waits for approval. The API key
+has the Admin role, so keep the `main`-only deployment branch restriction.
 
 #### After enrollment completes (Sam)
 

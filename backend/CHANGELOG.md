@@ -1,5 +1,57 @@
 # @tinychat/backend
 
+## 0.9.5-beta.1
+
+### Patch Changes
+
+- 49239bf: The agent session check waits up to 8 seconds for the MCP before it answers 502 mcp_unavailable, and logs the error code, the upstream HTTP status and the elapsed milliseconds when it fails, so the cause of that answer can be read in the logs.
+
+  Details: TC-3739
+
+## 0.9.5-beta.0
+
+### Patch Changes
+
+- fcdb738: The backend records each agent chat credit check as a structured event, so how many chats fall below the credit floor can be counted.
+
+  Details: TC-3734
+
+## 0.9.4
+
+### Patch Changes
+
+- 13e3e0c: The backend's own TinyCloud session names the keys it uses in its storage space. Its 30-day lifetime is set explicitly. Nothing changes for people using TinyChat.
+
+  Details: TC-3443
+
+## 0.9.4-beta.0
+
+### Patch Changes
+
+- 13e3e0c: The backend's own TinyCloud session names the keys it uses in its storage space. Its 30-day lifetime is set explicitly. Nothing changes for people using TinyChat.
+
+  Details: TC-3443
+
+## 0.9.3
+
+### Patch Changes
+
+- 6759764: The backend accepts requests from the phone apps at `https://app.tinycloud.one` (Android) and `tinycloudone://app.tinycloud.one` (iOS), as well as `https://localhost` and `capacitor://localhost`, which installed builds use.
+
+  Details: TC-3693
+
+- e52b520: The backend now states the storage access it needs in its own space when it signs in, so a later upgrade of the TinyCloud library cannot cut it off from its own data. It asks to read, write, delete and list there and for nothing else.
+
+  Details: TC-3671
+
+- 0cd1ccc: The billing error message names TinyCloud One.
+
+  Details: TC-3659
+
+- 69fba34: Background transcript delivery keeps a person's saved delivery permission through temporary errors. It removes the permission only when the TinyCloud node reports it as revoked; any other refusal is retried and logged.
+
+  Details: TC-3076
+
 ## 0.9.3-beta.3
 
 ### Patch Changes

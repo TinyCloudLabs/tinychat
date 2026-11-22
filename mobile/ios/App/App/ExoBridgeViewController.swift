@@ -32,6 +32,11 @@ final class MainFrameBridgeMessages: NSObject, WKScriptMessageHandler {
 /// SceneDelegate makes this the window's root (Main.storyboard names it too).
 class ExoBridgeViewController: CAPBridgeViewController {
     private var webViewRecovery: WebViewRecovery?
+    private var statusBarTapObserver: NSObjectProtocol?
+
+    deinit {
+        if let statusBarTapObserver { NotificationCenter.default.removeObserver(statusBarTapObserver) }
+    }
 
     override open func capacitorDidLoad() {
         // Before the first page load (loadWebView runs from viewDidLoad). Capacitor's cleanUp() removes by this name.
@@ -43,6 +48,12 @@ class ExoBridgeViewController: CAPBridgeViewController {
         }
         if let webView = webView, let start = bridge?.config.appStartServerURL, let original = webView.navigationDelegate {
             webViewRecovery = WebViewRecovery(webView: webView, startURL: start, original: original)
+        }
+        // The web app scrolls inside its own boxes, so UIKit's status-bar scroll-to-top (document only) does nothing there.
+        // Capacitor swizzles UIStatusBarManager and posts this on every status-bar tap; the page answers the `statusTap`
+        // window event (frontend/src/lib/statusTapScroll.ts), as @capacitor/status-bar would for Ionic.
+        statusBarTapObserver = NotificationCenter.default.addObserver(forName: .capacitorStatusBarTapped, object: nil, queue: .main) { [weak self] _ in
+            self?.bridge?.triggerWindowJSEvent(eventName: "statusTap")
         }
         bridge?.registerPluginInstance(VoiceNotesPlugin())
         bridge?.registerPluginInstance(OnDeviceSttPlugin())

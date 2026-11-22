@@ -146,15 +146,16 @@ export function clearAllPostDrafts(): void {
 }
 
 /**
- * How many post drafts on this device, whatever space they belong to, hold at least one answer and are still within
- * HELD_ANSWER_TTL_MS at `now`. Reads only; a malformed, expired or empty draft is not counted. For the move off
- * tinycloud.chat (originMove.ts), which must not strand them.
+ * How many post drafts on this device hold at least one answer and are still within HELD_ANSWER_TTL_MS at `now`:
+ * those of `space` when it is given, else whatever space they belong to. Reads only; a malformed, expired or empty
+ * draft is not counted. For the move off tinycloud.chat (originMove.ts), which must not strand them.
  */
-export function countPostDrafts(storage: Pick<Storage, "length" | "key" | "getItem">, now = Date.now()): number {
+export function countPostDrafts(storage: Pick<Storage, "length" | "key" | "getItem">, now = Date.now(), space?: string): number {
+  const prefix = space === undefined ? DRAFT_PREFIX : `${DRAFT_PREFIX}${space}:`;
   let drafts = 0;
   for (let index = 0; index < storage.length; index++) {
     const key = storage.key(index);
-    if (!key?.startsWith(DRAFT_PREFIX)) continue;
+    if (!key?.startsWith(prefix)) continue;
     try {
       const value = JSON.parse(storage.getItem(key) ?? "null") as Partial<StoredDraft> | null;
       if (!value || typeof value.at !== "string" || !value.answers || typeof value.answers !== "object") continue;

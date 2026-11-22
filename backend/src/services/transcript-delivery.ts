@@ -41,7 +41,8 @@ export interface DeliveryState {
   confirm?: Record<string, { attempts: number; nextAt: number }>;
 }
 const emptyState = (): DeliveryState => ({ v: 1, done: {}, watch: {}, retry: {}, confirm: {} });
-const stateKey = (address: string) => `transcriber/delivery/${address.toLowerCase()}`;
+export const TRANSCRIPT_DELIVERY_KEY_PREFIX = "transcriber/delivery/";
+const stateKey = (address: string) => `${TRANSCRIPT_DELIVERY_KEY_PREFIX}${address.toLowerCase()}`;
 
 /** Backend-owned KV; reads (including missing records) are cached for 60 seconds. */
 export class KvTranscriptDeliveryStore {

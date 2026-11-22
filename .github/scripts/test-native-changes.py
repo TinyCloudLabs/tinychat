@@ -66,6 +66,68 @@ class NativeInputsTest(unittest.TestCase):
                     self.assertEqual(result.returncode, 0, result.stderr)
                     self.assertEqual(output.read_text(), f"native={native}\nfrontend={frontend}\n")
 
+    def test_macos_input_diffs(self):
+        script = textwrap.dedent(WORKFLOW.read_text().split("        run: |\n", 1)[1])
+        cases = [
+            ("metal", "desktop/vendor/anarlog-whisper-local/src/lib.rs", "true", "false"),
+            ("metal", "desktop/src-tauri/Cargo.lock", "true", "false"),
+            ("metal", "desktop/eval/transcript-quality/check-workspace-sync.ts", "true", "false"),
+            ("metal", ".cargo/config.toml", "true", "false"),
+            ("metal", "rust-toolchain.toml", "true", "false"),
+            ("metal", "bun.lock", "true", "false"),
+            ("metal", "frontend/.env.production", "true", "false"),
+            ("metal", "frontend/src/capture/recorder/recordShortcut.ts", "true", "false"),
+            ("metal", ".github/workflows/transcript-eval.yml", "true", "false"),
+            ("metal", ".github/workflows/native-changes.yml", "true", "false"),
+            ("metal", ".github/scripts/test-native-changes.py", "true", "false"),
+            ("metal", "frontend/src/App.tsx", "false", "false"),
+            ("metal", "packages/core/src/chatModels.ts", "false", "false"),
+            ("metal", "test/recorder-final-halo.e2e.test.ts", "false", "false"),
+            ("metal", "scripts/release/desktop-signing.sh", "false", "false"),
+            ("metal", "mobile/ios/App/Package.resolved", "false", "false"),
+            ("metal", "backend/package.json", "false", "false"),
+            ("metal", "README.md", "false", "false"),
+            ("webkit", "frontend/src/capture/recorder/final/halo/renderer.ts", "true", "true"),
+            ("webkit", "frontend/src/harness/exoUiHarness.tsx", "true", "true"),
+            ("webkit", "frontend/src/index.css", "true", "true"),
+            ("webkit", "frontend/tailwind.config.js", "true", "true"),
+            ("webkit", "packages/core/src/chatModels.ts", "true", "true"),
+            ("webkit", "test/exo-ui/harness-server.ts", "true", "true"),
+            ("webkit", "test/no-horizontal-drag.e2e.test.ts", "true", "true"),
+            ("webkit", "test/recorder-final-halo.e2e.test.ts", "true", "true"),
+            ("webkit", "patches/sdk.patch", "true", "true"),
+            ("webkit", "packages/server/scripts/fix-wasm-esm.mjs", "true", "true"),
+            ("webkit", "bun.lock", "true", "true"),
+            ("webkit", "turbo.json", "true", "true"),
+            ("webkit", ".github/workflows/frontend.yml", "true", "true"),
+            ("webkit", ".github/workflows/native-changes.yml", "true", "true"),
+            ("webkit", "backend/package.json", "true", "true"),
+            ("webkit", "mobile/bunfig.toml", "true", "true"),
+            ("webkit", "scripts/release/desktop-signing.sh", "false", "false"),
+            ("webkit", "desktop/src-tauri/Cargo.lock", "false", "false"),
+            ("webkit", "mobile/ios/App/Package.resolved", "false", "false"),
+            ("webkit", "backend/src/health.ts", "false", "false"),
+            ("webkit", "docs/deployment.md", "false", "false"),
+            ("webkit", "README.md", "false", "false"),
+        ]
+        with tempfile.TemporaryDirectory(prefix="native-input-fixtures-") as directory:
+            cwd = Path(directory)
+            subprocess.run(["git", "init", "-q", directory], check=True)
+            stream = bytearray(b"commit refs/heads/base\nmark :1\ncommitter CI <ci@example.invalid> 1 +0000\ndata 4\nbase\n\n")
+            for index, (_, path, _, _) in enumerate(cases, 2):
+                stream.extend(f"commit refs/heads/case{index}\ncommitter CI <ci@example.invalid> 2 +0000\ndata 4\ncase\nfrom :1\nM 100644 inline {json.dumps(path)}\ndata 1\nx\n\n".encode())
+            subprocess.run(["git", "fast-import", "--quiet"], cwd=cwd, input=stream, check=True)
+            for index, (component, path, native, frontend) in enumerate(cases, 2):
+                with self.subTest(component=component, path=path):
+                    output = cwd / "output"
+                    output.write_text("")
+                    result = subprocess.run(["bash", "-e", "-o", "pipefail", "-c", script], cwd=cwd, env={
+                        **os.environ, "EVENT": "pull_request", "COMPONENT": component, "BASE": "base", "HEAD": f"case{index}",
+                        "RUNNER_TEMP": directory, "GITHUB_OUTPUT": str(output), "GITHUB_STEP_SUMMARY": str(cwd / "summary"),
+                    }, capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(output.read_text(), f"native={native}\nfrontend={frontend}\n")
+
 
 if __name__ == "__main__":
     unittest.main()

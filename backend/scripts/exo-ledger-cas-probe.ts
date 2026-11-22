@@ -83,7 +83,22 @@ const manifest: Manifest = {
 const owner = new TinyCloudNode({ privateKey: ownerKey, host, prefix: "probe.cas.owner", autoCreateSpace: true, manifest, includeAccountRegistryPermissions: false });
 const backendKey = generatePrivateKey();
 const backendDid = `did:pkh:eip155:1:${privateKeyToAccount(backendKey).address.toLowerCase()}`;
-const backend = new TinyCloudNode({ privateKey: backendKey, host, prefix: "probe.cas.backend", autoCreateSpace: false, includeAccountRegistryPermissions: false });
+// The probe backend writes only its own `probe-cas/` keys, in its applications space.
+const backendManifest: Manifest = {
+  manifest_version: 1,
+  app_id: "xyz.tinycloud.tinychat.exo-cas-probe.backend",
+  name: "TinyCloud exo CAS probe backend",
+  defaults: false,
+  includePublicSpace: false,
+  space: "applications",
+  prefix: "",
+  expiry: "30d",
+  permissions: [
+    { service: "tinycloud.kv", space: "applications", path: "probe-cas/", actions: ["get", "put", "del"], skipPrefix: true },
+  ],
+};
+// The SDK default (30 days), stated so the lifetime does not move with the SDK.
+const backend = new TinyCloudNode({ privateKey: backendKey, host, prefix: "probe.cas.backend", autoCreateSpace: false, manifest: backendManifest, includeAccountRegistryPermissions: false, sessionExpirationMs: 30 * 24 * 60 * 60 * 1000 });
 
 // Cleanup closures, so each key is deleted through the same handle that wrote it.
 const written: Array<{ label: string; remove: () => Promise<unknown> }> = [];

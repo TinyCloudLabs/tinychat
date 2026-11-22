@@ -24,6 +24,11 @@ import XCTest
     /// matters when the test is already failing; shared CI runners have stalled for tens of seconds.
     private let eventTimeout: TimeInterval = 30
 
+    /// Upper bound for the launch recovery that adopts a parked pause. On a loaded runner it has
+    /// started 43 s late (CI run 44969486162, job 137094057742), after the 30 s event bound; only the
+    /// parked-pause test waits this long, and the wait returns as soon as the adoption fires.
+    private let recoveryTimeout: TimeInterval = 120
+
     /// Deterministic stand-in for the AVFoundation MPEG-4 remux. Tests of Stop, recovery and
     /// journal orchestration do not depend on encoder output, and on a shared simulator runner the
     /// real remux has taken 10 to 36 s per note (CI run 42464459435), which made every 10 s Stop wait
@@ -280,7 +285,7 @@ import XCTest
             try? resumed.awaitRecovery()
             recoveryCompleted.fulfill()
         }
-        wait(for: [adopted, recoveryCompleted], timeout: eventTimeout)
+        wait(for: [adopted, recoveryCompleted], timeout: recoveryTimeout)
         XCTAssertEqual(resumed.status()["id"] as? String, id)
         XCTAssertEqual(resumed.status()["state"] as? String, "paused")
         XCTAssertEqual(resumed.status()["pausedMs"] as? Int64, 5_000)

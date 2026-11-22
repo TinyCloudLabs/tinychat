@@ -13,6 +13,11 @@ export interface BackendIdentityConfig {
   prefix: string;
   /** Automatically create a space if one doesn't exist */
   autoCreateSpace?: boolean;
+  /**
+   * Replaces {@link backendIdentityManifest} as what the backend's session may do, for an
+   * app that names the exact keys it uses in its own space. Omitted: the whole-space default.
+   */
+  manifest?: Manifest;
 }
 
 export interface BackendIdentity {
@@ -69,7 +74,7 @@ export function backendIdentityManifest(prefix: string): Manifest {
  *
  * This is the backend's own identity — used to store delegations
  * and access user data via delegated capabilities. Its session holds
- * only {@link backendIdentityManifest}.
+ * only `config.manifest`, or {@link backendIdentityManifest} when none is given.
  */
 export async function createBackendIdentity(
   config: BackendIdentityConfig,
@@ -80,7 +85,7 @@ export async function createBackendIdentity(
     host: config.host ?? "https://node.tinycloud.xyz",
     prefix,
     autoCreateSpace: config.autoCreateSpace ?? true,
-    manifest: backendIdentityManifest(prefix),
+    manifest: config.manifest ?? backendIdentityManifest(prefix),
     includeAccountRegistryPermissions: false,
     sessionExpirationMs: SESSION_EXPIRATION_MS,
   });

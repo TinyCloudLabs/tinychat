@@ -1,0 +1,12 @@
+{
+  "xyz.tinycloud.explorer": {
+    "public": { "kv": { "paths": [""], "actions": ["get", "list", "metadata"] } },
+    "applications": { "sql": { "databases": ["default"], "actions": ["read", "schema"] } }
+  },
+  "xyz.tinycloud.account": {
+    "account": { "kv": { "paths": ["applications/", "spaces/"], "actions": ["get", "list"] } }
+  },
+  "xyz.tinycloud.courier": {
+    "agents": { "kv": { "paths": ["xyz.tinycloud.courier/"], "actions": ["get", "list"] } }
+  }
+}

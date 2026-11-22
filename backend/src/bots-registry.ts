@@ -60,10 +60,12 @@ export class RegistryUnavailable extends Error {
   constructor(cause: string) { super(`bots_registry_unavailable: ${cause}`); }
 }
 
+export const BOTS_REGISTRY_KEY_PREFIX = "bots/registry/";
+
 /** Where an owner's record is stored. The address is checked before it becomes part of a key. */
 export function registryKey(address: string): string {
   if (!ADDRESS.test(address)) throw new RegistryUnavailable("address");
-  return `bots/registry/${address.toLowerCase()}`;
+  return `${BOTS_REGISTRY_KEY_PREFIX}${address.toLowerCase()}`;
 }
 
 /** The trimmed name, or undefined when it is not 1 to 24 characters of text or holds a control character. */
@@ -310,7 +312,7 @@ export class BotsRegistry {
     const owners: string[] = [];
     let cursor: string | undefined;
     for (let page = 0; page < MAX_LIST_PAGES; page += 1) {
-      const listed = listPage(assertKvResult(await this.#kv.list({ prefix: "bots/registry/", ...(cursor === undefined ? {} : { cursor }) })));
+      const listed = listPage(assertKvResult(await this.#kv.list({ prefix: BOTS_REGISTRY_KEY_PREFIX, ...(cursor === undefined ? {} : { cursor }) })));
       for (const key of listed.keys) {
         const address = /(?:^|\/)bots\/registry\/(0x[0-9a-f]{40})$/.exec(key)?.[1];
         if (address) owners.push(address);

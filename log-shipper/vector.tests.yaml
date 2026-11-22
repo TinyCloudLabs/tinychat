@@ -215,6 +215,37 @@ tests:
               assert!(!exists(.code))
               assert!(!exists(.cid))
               assert_eq!(.component, "assemblyai-hosted")
+  - name: "mcp unavailable line ships route, code, upstream status and duration only"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "[agent] mcp_unavailable route=get code=timeout upstream_status=503 duration_ms=3371", "level": 3, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+    outputs:
+      - extract_from: allowlist
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.event, "backend_log_error")
+              assert_eq!(.component, "agent")
+              assert_eq!(.route, "get")
+              assert_eq!(.code, "timeout")
+              assert_eq!(.upstream_status, 503)
+              assert_eq!(.duration_ms, 3371)
+              assert_eq!(.level, "error")
+  - name: "off-shape duration is dropped"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "[agent] mcp_unavailable route=post code=timeout duration_ms=999999999", "level": 3, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+    outputs:
+      - extract_from: allowlist
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.code, "timeout")
+              assert!(!exists(.duration_ms))
   - name: "alert on stdout is level info"
     inputs:
       - insert_at: redact
@@ -827,3 +858,77 @@ tests:
               assert_eq!(.counts_saturated, true)
               assert_eq!(keys(.), ["calendar_dispatch_lag_status_count", "calendar_due_timer_count", "calendar_tenant_reconcile_count", "calendar_tick_count", "counts_saturated", "event", "level", "other_count", "slow_wait_count", "svc", "ts", "wait_timeout_count"])
               assert!(!contains(encode_json(.), "CANARY"))
+  - name: "TC-3734 budget preflight keeps its 64-hex account hash and request id and nothing the backend did not declare"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "{\"event\":\"agent_chat_budget_preflight\",\"mode\":\"log\",\"would_block\":true,\"blocked\":false,\"remaining_known\":true,\"remaining_bucket\":\"100-319\",\"minimum\":320,\"tier\":\"free\",\"source\":\"ledger\",\"account_hash\":\"3f1c0d9e8b7a6f5e4d3c2b1a0f9e8d7c6b5a4f3e2d1c0b9a8f7e6d5c4b3a2f10\",\"request_id\":\"0b6f2c1e-9d4a-4e7b-8c3f-2a1d5e6f7a8b\",\"address\":\"0xAbC1230000000000000000000000000000dEf456\",\"message\":\"PROMPT-CANARY\",\"remaining\":212}", "level": 6, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+    outputs:
+      - extract_from: allowlist
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.event, "agent_chat_budget_preflight")
+              assert_eq!(.svc, "backend")
+              assert_eq!(.level, "info")
+              assert_eq!(.mode, "log")
+              assert_eq!(.would_block, true)
+              assert_eq!(.blocked, false)
+              assert_eq!(.remaining_known, true)
+              assert_eq!(.remaining_bucket, "100-319")
+              assert_eq!(.minimum, 320)
+              assert_eq!(.tier, "free")
+              assert_eq!(.source, "ledger")
+              assert_eq!(.account_hash, "3f1c0d9e8b7a6f5e4d3c2b1a0f9e8d7c6b5a4f3e2d1c0b9a8f7e6d5c4b3a2f10")
+              assert_eq!(.request_id, "0b6f2c1e-9d4a-4e7b-8c3f-2a1d5e6f7a8b")
+              assert_eq!(keys(.), ["account_hash", "blocked", "event", "level", "minimum", "mode", "remaining_bucket", "remaining_known", "request_id", "source", "svc", "tier", "ts", "would_block"])
+              assert!(!contains(encode_json(.), "CANARY"))
+              assert!(!contains(encode_json(.), "0xAbC"))
+  - name: "TC-3734 budget preflight with mode off and an unknown remaining budget still ships; off-shape hash and id are omitted"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "{\"event\":\"agent_chat_budget_preflight\",\"mode\":\"off\",\"would_block\":false,\"blocked\":false,\"remaining_known\":false,\"remaining_bucket\":\"unknown\",\"minimum\":320,\"tier\":\"pro\",\"source\":\"outage\",\"account_hash\":\"0xAbC1230000000000000000000000000000dEf456\",\"request_id\":\"alice@example.com\"}", "level": 6, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+    outputs:
+      - extract_from: allowlist
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.mode, "off")
+              assert_eq!(.remaining_bucket, "unknown")
+              assert_eq!(.source, "outage")
+              assert_eq!(keys(.), ["blocked", "event", "level", "minimum", "mode", "remaining_bucket", "remaining_known", "source", "svc", "tier", "ts", "would_block"])
+  - name: "TC-3734 budget preflight with an out-of-set value is dropped"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "{\"event\":\"agent_chat_budget_preflight\",\"mode\":\"alice@example.com\",\"would_block\":true,\"blocked\":false,\"remaining_known\":true,\"remaining_bucket\":\"0-99\",\"minimum\":320,\"tier\":\"free\",\"source\":\"local\"}", "level": 6, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "{\"event\":\"agent_chat_budget_preflight\",\"mode\":\"log\",\"would_block\":\"yes\",\"blocked\":false,\"remaining_known\":true,\"remaining_bucket\":\"0-99\",\"minimum\":320,\"tier\":\"free\",\"source\":\"local\"}", "level": 6, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "{\"event\":\"agent_chat_budget_preflight\",\"mode\":\"log\",\"would_block\":true,\"blocked\":false,\"remaining_known\":true,\"remaining_bucket\":\"212\",\"minimum\":320,\"tier\":\"free\",\"source\":\"local\"}", "level": 6, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "{\"event\":\"agent_chat_budget_preflight\",\"mode\":\"log\",\"would_block\":true,\"blocked\":false,\"remaining_known\":true,\"remaining_bucket\":\"0-99\",\"minimum\":320,\"tier\":\"0xAbC1230000000000000000000000000000dEf456\",\"source\":\"local\"}", "level": 6, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+    no_outputs_from: [allowlist]
+  - name: "TC-3734 budget preflight is not dropped by the request caps: it has its own lane and never reaches the generic cap"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "{\"event\":\"agent_chat_budget_preflight\",\"mode\":\"log\",\"would_block\":false,\"blocked\":false,\"remaining_known\":true,\"remaining_bucket\":\"1000+\",\"minimum\":320,\"tier\":\"plus\",\"source\":\"local\"}", "level": 6, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+    outputs:
+      - extract_from: budget_preflight_cap
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.event, "agent_chat_budget_preflight")
+    no_outputs_from: [other_cap, request_routine_cap, request_problem_cap]

@@ -3,6 +3,7 @@ import { ArrowUpRightIcon, CheckIcon, ChevronDownIcon, ExternalLinkIcon } from "
 import type { FeedResponse, FeedResponsePayload, NewFeedMessage, NewFeedResponse } from "@tinycloud/sdk-services/feed";
 import { cardPriority, claimDecisionHistory, compactStamp, depGraph, depTitle, expiryHint, isClosed, jsonValue, linkCaption, linkify, nextClaimDecisionAt, ownerThreadResponseKey, parseSitrepCardPayload, partSteps, projectSitrepCard, safeSitrepActionSummary, snoozePresets, steerState, stepState, threadOwner, validateSitrepAction, validateState, type Answer, type Approval, type BoardRecord, type SamState, type SitrepMessageDelivery, type SitrepOwnerData, type SitrepProjection, type StepState, type ThreadMessage, type SitrepHeldNote } from "@tinyboilerplate/core/feed/sitrep";
 import { AnsweredPanel, ANSWER_FAILED_COPY, AnswerFailedLine, ErrorLine, fieldClass as inputClass, NOT_SENT_COPY, PendingAnswer, UNDO_SECONDS, usePendingSend, fineClass, focusRing, kindWord, optionText, pillClass as buttonClass, quietClass } from "./cardKit";
+import { retryAfterHide } from "./retryAfterHide";
 import { CardWaitContext, useAnnounceWait } from "./cardWait";
 import { AnswerOptions, OWN_OPTION, OwnAnswerBox, type AnswerOption } from "./AnswerOptions";
 import { actionClass, CardDetails, footActionClass, type CardClose } from "./CardActions";
@@ -236,7 +237,11 @@ export function SitrepCard(props: Props) {
     if (draft.header.kind === "message") {
       if (!source.sendMessage) throw new Error("This feed source does not provide durable card messaging");
       result = await source.sendMessage(entry, draft.header, draft.payload);
-    } else { answerId.current = draft.header.responseId; result = await source.saveResponse(entry, draft.header, draft.payload, { hold }); }
+    } else {
+      const { header, payload } = draft;
+      answerId.current = header.responseId;
+      result = await retryAfterHide(() => source.saveResponse(entry, header, payload, { hold }), () => !!source.holdsAnswer?.(entry, header.responseId));
+    }
     pending.current = undefined;
     onSaved(entry, result);
     onOwnerSaved();
@@ -647,7 +652,8 @@ function ApprovalActions({ entry: incomingEntry, approval: incomingApproval, sou
         draft = { key, header: { cardId: card.cardId, revision: card.revision, issuanceId: card.issuanceId, responseId: crypto.randomUUID(), kind: saved ? "followup" : "answer", ...(saved ? { supersedesResponseId: saved.responseId } : {}), text: safeSitrepActionSummary(action), createdAt: value.at }, payload: { type: "sitrep.answer", version: 1, data: jsonValue(value) } };
         pending.current = draft;
       }
-      const result = await source.saveResponse(entry, draft.header, draft.payload, { hold: true });
+      const { header, payload } = draft;
+      const result = await retryAfterHide(() => source.saveResponse(entry, header, payload, { hold: true }), () => !!source.holdsAnswer?.(entry, header.responseId));
       pending.current = undefined; setCode(""); onSaved(entry, result); onOwnerSaved();
       return true;
     } catch { if (draft) setFailedId(draft.header.responseId); else setError("Your approval wasn't saved. Try again."); }
