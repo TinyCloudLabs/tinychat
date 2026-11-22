@@ -59,6 +59,8 @@ const UNSAFE = /[\p{Cc}\p{Cf}\p{Cs}\p{Co}\p{Zl}\p{Zp}]/gu;
  */
 export function plainAskText(input: unknown, max: number): string | undefined {
   if (typeof input !== "string" || input.length > max * 8) return undefined;
+  // Matching vertical tab and form feed is the point: every line-breaking control becomes a space before UNSAFE strips the rest.
+  // eslint-disable-next-line no-control-regex
   const text = input.replace(/[\t\n\r\u000b\u000c\u0085\u2028\u2029]/g, " ").replace(UNSAFE, "").replace(/\s+/g, " ").trim();
   const length = [...text].length;
   return length >= 1 && length <= max ? text : undefined;
