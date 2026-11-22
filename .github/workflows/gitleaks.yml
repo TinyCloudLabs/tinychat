@@ -1,0 +1,63 @@
+name: Gitleaks
+
+# Secret scan (pinned gitleaks, sha256-verified; .github/scripts/install-security-tool.sh). Fails closed.
+# - Pull requests: the PR's own commits (base..head). A PR that also changes the baseline (.gitleaksignore) or this
+#   workflow scans the full history of its head too, so a baseline change is proven before it merges.
+# - main: the full history of main against the reviewed baseline (.gitleaksignore). The release deploy requires this
+#   check to be green on the commit it ships (scripts/release/require-green.mjs).
+# A finding is never a value in the log (--redact). A real secret is rotated, never baselined; see .gitleaksignore.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gitleaks-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  gitleaks:
+    name: Gitleaks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install pinned gitleaks
+        run: .github/scripts/install-security-tool.sh gitleaks
+
+      - name: Scan the commits in this pull request
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: gitleaks git --log-opts="${BASE_SHA}..${HEAD_SHA}" --redact --exit-code 1 .
+
+      - name: Decide whether to scan the full history
+        id: full
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          # Fails closed: only a clean diff that leaves the baseline and this workflow alone skips the full scan.
+          full=true
+          if [ "$EVENT_NAME" = pull_request ] && changed="$(git diff --no-renames --name-only "$BASE_SHA...$HEAD_SHA")" \
+            && ! grep -qxE '\.gitleaksignore|\.github/workflows/gitleaks\.yml|\.github/scripts/install-security-tool\.sh' <<<"$changed"; then
+            full=false
+          fi
+          echo "full=$full" >> "$GITHUB_OUTPUT"
+
+      - name: Scan the full history against the baseline
+        if: steps.full.outputs.full == 'true'
+        env:
+          REF: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: gitleaks git --log-opts="$REF" --redact --exit-code 1 .

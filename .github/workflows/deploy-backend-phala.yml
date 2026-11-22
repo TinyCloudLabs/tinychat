@@ -339,6 +339,31 @@ jobs:
             echo "- Ingress digest: \`${{ steps.ingress-build.outputs.digest }}\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # Scan policy (pinned trivy installer and the reviewed .trivyignore baseline) comes from the workflow commit,
+      # never the application/rollback ref, like the OS guard.
+      - name: Check out trusted image scan policy
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .scan-policy
+          sparse-checkout: |
+            /.github/scripts/install-security-tool.sh
+            /.trivyignore
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      # Before anything reaches the CVM: a fixable HIGH or CRITICAL vulnerability in the pushed image that is not in
+      # the reviewed baseline fails the deploy (production stays unchanged). The image is already in GHCR under its
+      # commit tag (and :latest), but nothing deploys it.
+      - name: Scan the backend image (trivy)
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::no image digest from the build step"; exit 1; }
+          bash .scan-policy/.github/scripts/install-security-tool.sh trivy
+          "$RUNNER_TEMP/trivy/trivy" image --image-src remote --severity CRITICAL,HIGH --ignore-unfixed \
+            --ignorefile .scan-policy/.trivyignore --exit-code 1 "${DOCKER_IMAGE}@${DIGEST}"
+
       - name: Pin deployed image tag
         run: |
           sed -i "s|\${TINYCHAT_BACKEND_IMAGE:-ghcr.io/tinycloudlabs/tinychat-backend:latest}|${DOCKER_IMAGE}:${DEPLOY_SHA}|g" docker-compose.phala.yml

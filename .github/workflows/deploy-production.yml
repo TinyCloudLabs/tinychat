@@ -12,6 +12,10 @@ name: Deploy production
 #   tag per selected unit on that commit, and the commit on main), e.g. -f tag=@tinychat/backend@0.1.1 -f web=false
 # - Unreleased hotfix: only with -f allow_unreleased=true -f confirm_sha=<full SHA of the commit to deploy>, no tag.
 #
+# Every path, rollback and hotfix included, passes two gates in `target` before anything deploys: for web, an audit of
+# a production build of the commit, and main's CI green on the commit (the release gate). The backend image is then
+# scanned by trivy in deploy-backend-phala.yml before it reaches the CVM. docs/security/required-checks.md lists them.
+#
 # Web deploys by fast-forwarding the `production` branch, which the Cloudflare Pages Git integration builds as
 # production. A ruleset lets only deploy keys update `production`, so the push goes over SSH with the release-push
 # deploy key (release-push environment, main only). The job checks the branch tip before and after, waits for that
@@ -57,7 +61,12 @@ jobs:
   target:
     name: Target
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    # The web build and audit, then the release gate, which waits for main's CI on the commit (it may still be running
+    # when Release dispatches).
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      checks: read # the release gate reads the commit's check runs
     outputs:
       sha: ${{ steps.target.outputs.sha }}
       label: ${{ steps.target.outputs.label }}
@@ -102,6 +111,70 @@ jobs:
             exit 1
           fi
           node scripts/release/deploy-target.mjs --commit "$commit" --backend "$BACKEND" --web "$WEB" --allow-unreleased "$ALLOW_UNRELEASED" --confirm-sha "$CONFIRM_SHA"
+
+      # Web audit: the build Cloudflare Pages will make from this commit, built here the same way and audited before
+      # anything deploys: no sourcemaps, only listed file types, no credential-shaped strings
+      # (scripts/release/audit-artifact.mjs), then gitleaks over the files and inside the .tgz archives. Audit code and
+      # policy come from main (this checkout); only the build comes from the target. A failed audit deploys nothing.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        if: inputs.web
+        with:
+          ref: ${{ steps.target.outputs.sha }}
+          path: .web-build
+          persist-credentials: false
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        if: inputs.web
+        with:
+          bun-version-file: .web-build/package.json
+
+      - name: Install pinned gitleaks
+        if: inputs.web
+        run: .github/scripts/install-security-tool.sh gitleaks
+
+      # As the Pages production build does (docs/deployment.md): the [env.production.vars] of wrangler.toml, CF_PAGES=1
+      # (adds the agent surface), then build:packages and build:frontend.
+      - name: Build the web app as Cloudflare Pages builds production
+        if: inputs.web
+        working-directory: .web-build
+        env:
+          TARGET: ${{ steps.target.outputs.sha }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$TARGET"
+          bun install --frozen-lockfile
+          vars=$(bun -e 'const t = (await import("./wrangler.toml")).default; for (const [k, v] of Object.entries(t.env.production.vars)) console.log(`${k}=${v}`)')
+          while IFS= read -r line; do
+            [[ "$line" =~ ^VITE_[A-Z0-9_]+= ]] || { echo "::error::unexpected production var line in wrangler.toml"; exit 1; }
+            export "$line"
+          done <<<"$vars"
+          export CF_PAGES=1 CF_PAGES_BRANCH=production CF_PAGES_COMMIT_SHA="$TARGET"
+          bun run build:packages
+          bun run build:frontend
+
+      - name: Audit the web build (sourcemaps, file types, credential shapes)
+        if: inputs.web
+        run: node scripts/release/audit-artifact.mjs --config .github/security/web-dist-audit.json .web-build/frontend/dist
+
+      # The OpenKey native OAuth client id is public by design (frontend/.env.production, sent in every native sign-in);
+      # it is allowed by its exact value only, read from the build commit.
+      - name: Gitleaks over the web build
+        if: inputs.web
+        run: |
+          id=$(sed -n 's/^VITE_OPENKEY_NATIVE_CLIENT_ID=//p' .web-build/frontend/.env.production)
+          [[ "$id" =~ ^ok_[A-Za-z0-9_-]+$ ]] || { echo "::error::VITE_OPENKEY_NATIVE_CLIENT_ID missing or unexpected in frontend/.env.production"; exit 1; }
+          config="$RUNNER_TEMP/gitleaks-web-dist.toml"
+          cp .github/security/gitleaks-web-dist.toml "$config"
+          printf "\n[[allowlists]]\ndescription = \"OpenKey native OAuth client id (public)\"\nregexTarget = \"secret\"\nregexes = ['''^%s\$''']\n" "$id" >> "$config"
+          gitleaks dir --config "$config" --redact --max-archive-depth 2 --exit-code 1 .web-build/frontend/dist
+
+      # Release gate: every check the deploy requires (scripts/release/require-green.mjs: Gitleaks, Backend, Native
+      # ceiling, Frontend) must be green on the commit being shipped. For a stable tag on the Release workflow's
+      # [skip ci] version commit, that is its parent, provided the version commit changes only release metadata.
+      - name: Require green CI on the commit being shipped
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ steps.target.outputs.sha }}
+        run: node scripts/release/require-green.mjs --sha "$SHA" --timeout-minutes 40
 
   backend:
     name: Backend
