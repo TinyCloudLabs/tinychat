@@ -15,6 +15,7 @@ import { type OwnerDate, ownerDateLine } from "./owner-date";
 import { type Frame, type HostToolHandler, type HostToolReply, RpcError } from "./rpc";
 import { addressesIn } from "./web";
 import { readWebPolicy, type WebPolicy, writeWebPolicy } from "./web-policy";
+import { type AnswerInput, type AnswerResult, type AppOrigin, AskStore, type AskReply, type AskRequest, cancelAsks, readAsksEnabled, sweepAsks as sweepAskStores, writeAsksEnabled } from "./asks";
 
 export type ErrorCode = "bot_unavailable" | "model_unavailable" | "busy" | "at_capacity" | "invalid";
 
@@ -42,6 +43,15 @@ export interface ListedMessage {
   role: "user" | "bot";
   text: string;
   at: string;
+  /** Set for a message the app wrote (the owner's reply to a question from Main), not typed by the owner. */
+  origin?: "app";
+  /** With `origin: "app"`: what the owner decided, so the app need not read the composed text. */
+  decision?: "answered" | "declined" | "stopped";
+}
+
+/** The owner's setting for questions from Main. */
+export interface AsksSettings {
+  enabled: boolean;
 }
 
 export interface BotMessenger {
@@ -83,6 +93,8 @@ export interface SandboxLauncher {
   webStatus?(layout: BotLayout): Promise<unknown>;
   /** Page addresses the owner typed, which the bot may read. */
   learnAddresses?(layout: BotLayout, urls: string[]): Promise<void>;
+  /** Collects the questions the box asked, then gives the gateway the owner's setting for questions and the counts; `turn` starts a turn. */
+  syncAsks?(layout: BotLayout, turn?: { outside: boolean }): Promise<void>;
   /** Removes what the bot keeps off this host (a remote sandbox and its snapshot) before its directories go. */
   removeState?(layout: BotLayout): Promise<void>;
 }
@@ -146,13 +158,17 @@ const MAX_ACTIVITY_COUNT = 256;
 const HOST_TOOLS_TIMEOUT_MS = 5_000;
 const MESSAGE_BOT = "message_bot";
 
-/** Who wrote a turn's text: the owner, or another of the owner's bots through message_bot. */
-export type TurnOrigin = "owner" | "bot";
+/**
+ * Who wrote a turn's text: the owner in chat, another of the owner's bots through message_bot, or the app, from the
+ * owner's response there to a question from Main.
+ */
+export type TurnOrigin = "owner" | "bot" | AppOrigin;
 
-/** The first line of every turn the owner did not write, saying where it came from (the bots' prompts rely on it). */
-export const ORIGIN_LINES: Record<Exclude<TurnOrigin, "owner">, string> = {
+/** The first line of every turn that did not come straight from the owner's chat (the bots' prompts rely on it). */
+export const ORIGIN_LINES = {
   bot: "[TinyCloud: this message is from another of the owner's bots, not from the owner.]",
-};
+  app: "[TinyCloud: the owner responded in the app to your question. Their response follows.]",
+} as const;
 
 /** Where OMP reads `@<path>` as a file to load into the turn: at the start of the text or after a space or opening mark. */
 const FILE_MENTION = /(^|[\s([{<"'`])@/g;
@@ -163,17 +179,18 @@ const FILE_MENTION = /(^|[\s([{<"'`])@/g;
 const TINYCLOUD_MARK = new RegExp(`\\[(?=[^\\p{L}\\p{N}\\]]*${[..."tinycloud"].join("\\p{Cf}*")})`, "giu");
 
 /**
- * What OMP is sent for a turn. A turn the owner did not write starts with its origin line, so it never starts with
- * "/": OMP runs slash commands and prompt templates only for a message that does, so such a turn cannot run one
- * (`/skill:` tokens, which OMP finds anywhere, are off with skills in config.yml). Its `@` mentions get a word joiner
- * after the `@`, so OMP does not load a file from the bot's box into the turn for whoever wrote it.
+ * What OMP is sent for a turn. A turn that did not come straight from the owner's chat starts with its origin line, so
+ * it never starts with "/": OMP runs slash commands and prompt templates only for a message that does, so such a turn
+ * cannot run one (`/skill:` tokens, which OMP finds anywhere, are off with skills in config.yml). Its `@` mentions get a
+ * word joiner after the `@`, so OMP does not load a file from the bot's box into the turn for whoever wrote it.
  * An owner's turn starts with their local date line when `date` is given, unless it is a slash command.
  * In every turn a `[` that would open a TinyCloud line gets a word joiner after it, so only the supervisor writes one.
  */
 export function promptText(text: string, from: TurnOrigin, date?: OwnerDate): string {
   const written = text.replace(TINYCLOUD_MARK, "[\u2060");
   if (from === "owner") return date && !written.startsWith("/") ? `${ownerDateLine(date)}\n${written}` : written;
-  return `${ORIGIN_LINES[from]}\n${written.replace(FILE_MENTION, "$1@\u2060")}`;
+  const line = from === "bot" ? ORIGIN_LINES.bot : ORIGIN_LINES.app;
+  return `${line}\n${written.replace(FILE_MENTION, "$1@\u2060")}`;
 }
 
 function messageBotTool(keys: readonly string[]) {
@@ -335,6 +352,7 @@ export class Bot {
   #stopping: Promise<StopFailure | undefined> | undefined;
   #deleting: Promise<DeleteSkip | undefined> | undefined;
   #webSaves: Promise<void> = Promise.resolve();
+  #askSaves: Promise<void> = Promise.resolve();
   #busy = false;
   #listing = 0;
   #settled = true;
@@ -376,7 +394,7 @@ export class Bot {
       try {
         this.#history ??= new HistoryJournal(this.layout, this.#options.history);
         this.#history.begin(owner ?? "", this.#options.maxTurnBytes * 16 + 128 * 1024);
-        this.#history.append({ type: "user", text, at: new Date().toISOString() });
+        this.#history.append({ type: "user", text, at: new Date().toISOString(), ...(typeof from === "object" ? { origin: "app", decision: from.app } : {}) });
         this.#history.startDraft();
       } catch { this.#busy = false; sink.error("bot_unavailable"); return; }
     }
@@ -399,7 +417,8 @@ export class Bot {
         sandbox = await this.#ensure();
         this.#markUsed();
         await sandbox.refreshEgress();
-        // Only what the owner typed counts as an address they chose; a message from another bot may carry text a web page put there.
+        await this.#launcher.syncAsks?.(this.layout, { outside: from === "bot" });
+        // Only what the owner typed counts as an address they chose; a message from another bot may carry text a web page put there, and an app reply is composed here.
         const typed = from === "owner" ? addressesIn(text, 50) : [];
         if (typed.length > 0) await this.#launcher.learnAddresses?.(this.layout, typed);
       } catch (error) {
@@ -435,6 +454,8 @@ export class Bot {
       }
     } finally {
       clearInterval(heartbeat);
+      // Questions Main asked during the turn are collected now, while the gateway still holds them.
+      void this.#launcher.syncAsks?.(this.layout).catch(() => {});
       if (this.#history) {
         try { this.#history.append({ type: "provenance", receipts: await this.#launcher.provenance?.(this.layout) ?? [] }); }
         catch { this.#history.append({ type: "provenance", verified: false }); }
@@ -513,6 +534,74 @@ export class Bot {
     });
     this.#webSaves = saved.catch(() => {});
     return saved.then(() => this.webSettings());
+  }
+
+  /** Whether the owner lets Main ask questions. Off until turned on. */
+  async asksSettings(): Promise<AsksSettings> {
+    await this.#deleting;
+    return { enabled: readAsksEnabled(this.layout) };
+  }
+
+  /**
+   * Saves the owner's setting for questions and gives it to the gateway; if the gateway cannot take it the previous
+   * setting is put back and this throws. One at a time, like the web setting. Takes effect at the bot's next call.
+   * Turning it off first closes every pending question (see cancelAsks), which does not depend on the gateway, and
+   * then stays off even if the gateway cannot be told yet: the gateway is told again at its next sync, and what it
+   * collects meanwhile is dropped while the setting is off.
+   */
+  setAsksEnabled(enabled: boolean): Promise<AsksSettings> {
+    const saved = this.#askSaves.then(async () => {
+      await this.#deleting;
+      const previous = readAsksEnabled(this.layout);
+      writeAsksEnabled(this.layout, enabled);
+      if (!enabled) {
+        const stopped = await cancelAsks(this.layout);
+        await this.#launcher.syncAsks?.(this.layout).catch(() => log("asks_setting_push_failed", this.layout.botId));
+        log("asks_setting", this.layout.botId, { enabled, stopped });
+        return;
+      }
+      try {
+        await this.#launcher.syncAsks?.(this.layout);
+      } catch (error) {
+        writeAsksEnabled(this.layout, previous);
+        await this.#launcher.syncAsks?.(this.layout).catch(() => {});
+        throw error;
+      }
+      log("asks_setting", this.layout.botId, { enabled });
+    });
+    this.#askSaves = saved.catch(() => {});
+    return saved.then(() => ({ enabled }));
+  }
+
+  /** The owner's requests from Main: what the box has asked so far (collected from the gateway first), pending first. */
+  async requests(): Promise<AskRequest[]> {
+    await this.#deleting;
+    await this.#launcher.syncAsks?.(this.layout).catch(() => {});
+    return new AskStore(this.layout).list();
+  }
+
+  /** Records the owner's decision on one request. Only a pending, unexpired request can be decided. */
+  async answerRequest(id: string, input: AnswerInput): Promise<AnswerResult> {
+    await this.#deleting;
+    const result = new AskStore(this.layout).answer(id, input);
+    if (result.ok) {
+      log("ask_resolved", this.layout.botId, { outcome: input.decision === "answer" ? "answered" : "declined" });
+      void this.#launcher.syncAsks?.(this.layout).catch(() => {});
+    }
+    return result;
+  }
+
+  /**
+   * The message that tells Main what the owner decided, composed here from the stored decision; undefined unless the
+   * request is decided and Main has not been told. This is the only source of text for an app-originated message.
+   */
+  appReply(requestId: string): AskReply | undefined {
+    return new AskStore(this.layout).reply(requestId);
+  }
+
+  /** Main has been told: the answer text is deleted (the metadata stays). */
+  appReplyDelivered(requestId: string): void {
+    new AskStore(this.layout).delivered(requestId);
   }
 
   /** A message or history request is in flight, including one still starting the sandbox. */
@@ -642,7 +731,11 @@ export class Bot {
       reaching.add(targetKey);
       try {
         const reply = await messenger.dispatch(targetKey, args.text, signal);
-        if (!signal.aborted && !reply.isError) activity.messaged(targetKey);
+        if (!signal.aborted && !reply.isError) {
+          activity.messaged(targetKey);
+          // Another bot's words are now in Main's conversation: what it asks from here on says so.
+          await this.#launcher.syncAsks?.(this.layout, { outside: true }).catch(() => {});
+        }
         return reply;
       } finally {
         reaching.delete(targetKey);
@@ -775,8 +868,9 @@ export class Bot {
 
   async #stop(sandbox: Sandbox): Promise<StopFailure | undefined> {
     if (this.#sandbox === sandbox) this.#sandbox = undefined;
-    this.#stopping = sandbox
-      .stop()
+    // What the gateway holds about this sandbox (questions, whether outside text came in) is collected before it forgets it.
+    const collected = this.#launcher.syncAsks?.(this.layout).catch(() => {});
+    this.#stopping = (collected ? collected.then(() => sandbox.stop()) : sandbox.stop())
       .then(cause => cause || undefined)
       .catch(error => {
         log("stop_failed", this.layout.botId, { error: error instanceof Error ? error.message.slice(0, 300) : "unknown" });
@@ -876,6 +970,15 @@ export class BotManager {
       } catch (error) {
         log("sweep_failed", botId, { error: error instanceof Error ? error.message.slice(0, 300) : "unknown" });
       }
+    }
+  }
+
+  /** Applies the clock to every bot's stored questions, so the text of expired ones and of stale replies goes even if nobody asks. */
+  sweepAsks(now = Date.now()): void {
+    try {
+      sweepAskStores(this.#roots, () => now);
+    } catch (error) {
+      console.log(JSON.stringify({ bots: "asks_sweep_failed", error: error instanceof Error ? error.message.slice(0, 300) : "unknown" }));
     }
   }
 

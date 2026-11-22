@@ -67,18 +67,102 @@ function toWebSettings(payload: unknown): { mode: WebMode; hosts: string[]; avai
   return { mode, hosts: [...hosts], available, today: { searches, pages, blocked } };
 }
 
+const ASK_REQUEST_ID = /^[0-9a-f]{1,64}$/;
+const MAX_ASK_ANSWER = 280;
+const MAX_ASK_CHOICES = 4;
+const MAX_LISTED_REQUESTS = 50;
+const ASK_STATES = ["pending", "answered", "declined", "stopped", "expired"] as const;
+type AskState = (typeof ASK_STATES)[number];
+
+/** Which decision to tell Main about. The only thing a browser names for an app-originated message. */
+export interface AppReply {
+  requestId: string;
+}
+
+const isPlainObject = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
+
+function appReplyBody(value: unknown): AppReply | null {
+  if (!isPlainObject(value) || Object.keys(value).length !== 1) return null;
+  return typeof value.requestId === "string" && ASK_REQUEST_ID.test(value.requestId) ? { requestId: value.requestId } : null;
+}
+
+/** `{ enabled }` and nothing else. */
+function asksSettingsBody(body: unknown): { enabled: boolean } | null {
+  return isPlainObject(body) && Object.keys(body).length === 1 && typeof body.enabled === "boolean" ? { enabled: body.enabled } : null;
+}
+
+type AskAnswerBody = { decision: "decline" } | { decision: "answer"; answer: string } | { decision: "answer"; choice: number };
+
+/** A decline, or an answer given as text (1 to 280 characters) or as the index of one of the choices; nothing else is taken. */
+function askAnswerBody(body: unknown): AskAnswerBody | null {
+  if (!isPlainObject(body)) return null;
+  const keys = Object.keys(body);
+  if (body.decision === "decline") return keys.length === 1 ? { decision: "decline" } : null;
+  if (body.decision !== "answer" || keys.length !== 2) return null;
+  if (typeof body.answer === "string") return body.answer.length >= 1 && body.answer.length <= MAX_ASK_ANSWER * 2 ? { decision: "answer", answer: body.answer } : null;
+  return typeof body.choice === "number" && Number.isInteger(body.choice) && body.choice >= 0 && body.choice < MAX_ASK_CHOICES ? { decision: "answer", choice: body.choice } : null;
+}
+
+function toAsksSettings(payload: unknown): { enabled: boolean } | null {
+  return isPlainObject(payload) && typeof payload.enabled === "boolean" ? { enabled: payload.enabled } : null;
+}
+
+interface AskRequestView {
+  id: string;
+  kind: "ask";
+  state: AskState;
+  askedAt: string;
+  expiresAt: string;
+  outside: boolean;
+  resolvedAt?: string;
+  question?: string;
+  choices?: string[];
+  answer?: string;
+  undelivered?: true;
+}
+
+const shortText = (value: unknown, max: number): value is string => typeof value === "string" && value.length <= max;
+
+/** Rebuilds one request from the contract fields; null when the service's answer does not have the contract's shape. */
+function toAskRequest(value: unknown): AskRequestView | null {
+  if (!isPlainObject(value)) return null;
+  const { id, kind, state, askedAt, expiresAt, outside, resolvedAt, question, choices, answer, undelivered } = value;
+  if (typeof id !== "string" || !ASK_REQUEST_ID.test(id) || kind !== "ask" || !ASK_STATES.some(known => known === state)) return null;
+  if (!shortText(askedAt, 40) || !shortText(expiresAt, 40) || typeof outside !== "boolean") return null;
+  if (resolvedAt !== undefined && !shortText(resolvedAt, 40)) return null;
+  if (question !== undefined && !shortText(question, MAX_ASK_ANSWER * 2)) return null;
+  if (answer !== undefined && !shortText(answer, MAX_ASK_ANSWER * 2)) return null;
+  if (undelivered !== undefined && undelivered !== true) return null;
+  if (choices !== undefined && (!Array.isArray(choices) || choices.length > MAX_ASK_CHOICES || !choices.every(choice => shortText(choice, 120)))) return null;
+  return {
+    id, kind: "ask", state: state as AskState, askedAt, expiresAt, outside,
+    ...(resolvedAt !== undefined ? { resolvedAt } : {}),
+    ...(question !== undefined ? { question } : {}),
+    ...(choices !== undefined ? { choices: [...(choices as string[])] } : {}),
+    ...(answer !== undefined ? { answer } : {}),
+    ...(undelivered ? { undelivered: true as const } : {}),
+  };
+}
+
+function toAskRequests(payload: unknown): { requests: AskRequestView[] } | null {
+  if (!isPlainObject(payload) || !Array.isArray(payload.requests) || payload.requests.length > MAX_LISTED_REQUESTS) return null;
+  const requests = payload.requests.map(toAskRequest);
+  return requests.every(request => request !== null) ? { requests: requests as AskRequestView[] } : null;
+}
+
 /**
- * Builds the internal send body from the authenticated owner and route's admitted bot. The browser's local date and
- * time zone go along only when they are well formed; anything else is dropped and the turn still runs.
+ * Builds the internal send body from the authenticated owner and route's admitted bot. With a typed message, the
+ * browser's local date and time zone go along only when they are well formed; anything else is dropped and the turn
+ * still runs.
  */
-export async function botTurnBody(config: BotsConfig, address: string, sourceKey: string, text: string, clientContext?: unknown) {
-  const context = clientContextFrom(clientContext);
-  const extra = context ? { clientContext: context } : {};
+export async function botTurnBody(config: BotsConfig, address: string, sourceKey: string, text: string, appReply?: AppReply, clientContext?: unknown) {
+  const context = appReply ? undefined : clientContextFrom(clientContext);
+  const content = appReply ? { appReply } : { text, ...(context ? { clientContext: context } : {}) };
   try {
     const messageableBotKeys = await config.listForTurn?.(botOwnerDid(address), sourceKey);
-    if (messageableBotKeys?.length) return { text, messageableBotKeys, ...extra };
+    if (messageableBotKeys?.length) return { ...content, messageableBotKeys };
   } catch { /* A registry read failure leaves the turn without messaging. */ }
-  return { text, ...extra };
+  return content;
 }
 
 /**
@@ -248,6 +332,67 @@ export function createBotsRouter(opts: {
     await sendWeb(res, callWeb(address, { method: "PUT", body: JSON.stringify(body) }));
   });
 
+  // Questions from Main (user-enabled, off by default). The service holds the setting and the requests; this proxies them
+  // with the owner taken from the session, and rebuilds each answer from the contract fields. A service that does not
+  // have them answers 404, which is passed on so the app can leave the feature out.
+  const callAsks = async (address: string, init: { method: "GET" | "PUT" | "POST"; path: string; body?: string }): Promise<globalThis.Response> => {
+    const url = `${config!.serviceUrl}/v1/bots/main${init.path}`;
+    return (config!.fetchImpl ?? fetch)(url, {
+      method: init.method,
+      headers: botsServiceHeaders(config!, botOwnerDid(address), init.method, url, init.body),
+      ...(init.body === undefined ? {} : { body: init.body }),
+      signal: AbortSignal.timeout(10_000),
+    });
+  };
+  const sendAsks = async (res: Response, upstream: Promise<globalThis.Response>, rebuild: (payload: unknown) => unknown, decided = false): Promise<void> => {
+    try {
+      const response = await upstream;
+      const refused = response.status === 404 ? { status: 404, error: "not_found" } : decided && response.status === 409 ? { status: 409, error: "not_pending" }
+        : response.status === 400 ? { status: 400, error: "invalid" } : undefined;
+      if (refused) {
+        await response.body?.cancel();
+        res.status(refused.status).json({ error: refused.error });
+        return;
+      }
+      if (!response.ok) throw new Error("upstream");
+      const shaped = rebuild(await response.json());
+      if (shaped === null) throw new Error("shape");
+      res.json(shaped);
+    } catch {
+      res.status(502).json({ error: UNAVAILABLE.code, message: UNAVAILABLE.message });
+    }
+  };
+
+  router.get("/main/asks", async (req, res) => {
+    const address = gate(req, res);
+    if (!address) return;
+    await sendAsks(res, callAsks(address, { method: "GET", path: "/asks" }), toAsksSettings);
+  });
+
+  router.put("/main/asks", async (req, res) => {
+    const address = gate(req, res);
+    if (!address) return;
+    const body = asksSettingsBody(req.body);
+    if (!body) { res.status(400).json({ error: "invalid" }); return; }
+    await sendAsks(res, callAsks(address, { method: "PUT", path: "/asks", body: JSON.stringify(body) }), toAsksSettings);
+  });
+
+  router.get("/main/requests", async (req, res) => {
+    const address = gate(req, res);
+    if (!address) return;
+    await sendAsks(res, callAsks(address, { method: "GET", path: "/requests" }), toAskRequests);
+  });
+
+  router.post("/main/requests/:id/answer", async (req, res) => {
+    const address = gate(req, res);
+    if (!address) return;
+    const id = req.params.id;
+    if (!ASK_REQUEST_ID.test(id)) { res.status(404).json({ error: "not_found" }); return; }
+    const body = askAnswerBody(req.body);
+    if (!body) { res.status(400).json({ error: "invalid" }); return; }
+    await sendAsks(res, callAsks(address, { method: "POST", path: `/requests/${id}/answer`, body: JSON.stringify(body) }), toAskRequest, true);
+  });
+
   // Creates a bot for the signed-in owner. Its key is chosen here; the request names neither an owner nor a key.
   router.post("/", async (req, res) => {
     const address = gate(req, res);
@@ -340,8 +485,17 @@ export function createBotsRouter(opts: {
 
   // One turn: the owner's text goes to the bot `key` names, and the service's events stream back.
   const sendMessage = async (req: Request, res: Response, address: string, key: string, seq?: number): Promise<void> => {
+    // An owner's decision on a question from Main goes to Main as `appReply`: only the request's id is taken from the
+    // browser. The text Main receives is composed by the service from what it stored; any `text` sent with it is not forwarded.
+    const rawReply: unknown = req.body?.appReply;
+    const checkedReply = rawReply === undefined ? undefined : appReplyBody(rawReply);
+    if (checkedReply === null || (rawReply !== undefined && key !== MAIN_BOT_KEY)) {
+      res.status(400).json({ error: "invalid", message: "That reply can't be sent." });
+      return;
+    }
+    const appReply = checkedReply;
     const text: unknown = req.body?.text;
-    if (typeof text !== "string" || text.length < 1 || text.length > MAX_TEXT) {
+    if (!appReply && (typeof text !== "string" || text.length < 1 || text.length > MAX_TEXT)) {
       res.status(400).json({ error: "invalid", message: "Messages can be up to 8,000 characters." });
       return;
     }
@@ -352,22 +506,34 @@ export function createBotsRouter(opts: {
     let timedOut = false;
     const timer = setTimeout(() => { timedOut = true; abort(); }, config!.postTimeoutMs);
 
-    res.status(200);
-    res.setHeader("content-type", "text/event-stream");
-    res.setHeader("cache-control", "no-cache, no-transform");
-    res.setHeader("x-accel-buffering", "no");
-    res.flushHeaders();
+    const open = () => {
+      if (res.headersSent) return;
+      res.status(200);
+      res.setHeader("content-type", "text/event-stream");
+      res.setHeader("cache-control", "no-cache, no-transform");
+      res.setHeader("x-accel-buffering", "no");
+      res.flushHeaders();
+    };
+    // A normal turn opens its stream at once; a reply waits for the service's answer so a refusal can be a plain 409.
+    if (!appReply) open();
 
     try {
       const url = `${config!.serviceUrl}/v1/bots/${key}/messages`;
-      const body = JSON.stringify(await botTurnBody(config!, address, key, text, req.body?.clientContext));
+      const body = JSON.stringify(await botTurnBody(config!, address, key, typeof text === "string" ? text : "", appReply, req.body?.clientContext));
       const upstream = await callBot(address, key, seq, () => (config!.fetchImpl ?? fetch)(url, {
         method: "POST",
         headers: botsServiceHeaders(config!, botOwnerDid(address), "POST", url, body),
         body,
         signal: controller.signal,
       }));
+      // A decision that cannot be delivered (not decided, already delivered, not this owner's) is a plain 409, before any stream is opened.
+      if (appReply && upstream.status === 409) {
+        await upstream.body?.cancel();
+        res.status(409).json({ error: "no_reply" });
+        return;
+      }
       if (!upstream.ok || !upstream.body) throw new Error("upstream");
+      open();
       const reader = upstream.body.getReader();
       // Release a pending read even if the upstream body ignores the abort signal.
       controller.signal.addEventListener("abort", () => { reader.cancel().catch(() => {}); }, { once: true });
@@ -387,6 +553,7 @@ export function createBotsRouter(opts: {
         }
       }
     } catch {
+      open();
       if ((timedOut || !controller.signal.aborted) && !res.writableEnded) {
         res.write(`event: error\ndata: ${JSON.stringify(key === MAIN_BOT_KEY ? UNAVAILABLE : BOT_UNAVAILABLE)}\n\n`);
       }

@@ -41,8 +41,9 @@ describe("what OMP is sent", () => {
     expect(promptText("/compact", "owner", LISBON)).toBe("/compact");
   });
 
-  test("another bot's turn never carries the date line, even when one is passed", () => {
+  test("a turn from another bot or from the app never carries the date line, even when one is passed", () => {
     expect(promptText("hello", "bot", LISBON)).toBe(`${ORIGIN_LINES.bot}\nhello`);
+    expect(promptText("Yes", { app: "answered" }, LISBON)).toBe(`${ORIGIN_LINES.app}\nYes`);
   });
 
   test("text cannot forge a TinyCloud line, in any case, spacing or with invisible characters", () => {
