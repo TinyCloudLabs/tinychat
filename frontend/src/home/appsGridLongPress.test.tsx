@@ -95,4 +95,18 @@ describe("long press on the phone's re-sorting grid", () => {
     expect(await pressAt(1, 60)).toBe(TILES[0]!.path);
     expect(calls).toEqual([`pin ${TILES[last]!.pin}`]);
   });
+
+  test("a finger lifted off the grid still ends the press: a keyboard Enter a moment later opens its app", async () => {
+    const pressed = tiles()[TILES.length - 1]!;
+    await act(async () => {
+      touch("pointerdown", pressed);
+      await Bun.sleep(LONG_PRESS_MS + 80);
+      touch("pointerup", document.body);
+    });
+    await Bun.sleep(1100);
+    await act(async () => {
+      tiles()[1]!.dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true, button: 0, detail: 0 }) as unknown as Event);
+    });
+    expect(where()).toBe(TILES[0]!.path);
+  });
 });

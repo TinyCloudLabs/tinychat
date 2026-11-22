@@ -58,7 +58,8 @@ export interface AppsGridProps {
 export function AppsGrid({ tiles, pins, canPin, onPin, onUnpin, addApp }: AppsGridProps) {
   const [message, showMessage] = usePinToast();
   // The tap that ends a long press opens nothing, wherever it lands: pinning re-sorts the phone's grid (pinnedFirst), so
-  // the finger is often over another tile by then. Infinity while that finger is still down, then a short deadline.
+  // the finger is often over another tile by then. Infinity while that finger is still down (its release is heard on the
+  // window, even off the grid), then a short deadline.
   const swallowTapUntil = useRef(0);
   const toggle = (tile: GridTile) => {
     const pinned = pins.includes(tile.pin);
@@ -67,7 +68,15 @@ export function AppsGrid({ tiles, pins, canPin, onPin, onUnpin, addApp }: AppsGr
     showMessage(pinned ? appUnpinnedToast(tile.name) : appPinnedToast(tile.name));
   };
   const released = () => {
+    window.removeEventListener("pointerup", released, true);
+    window.removeEventListener("pointercancel", released, true);
     if (swallowTapUntil.current === Infinity) swallowTapUntil.current = performance.now() + TAP_AFTER_PRESS_MS;
+  };
+  const longPressed = (tile: GridTile) => {
+    swallowTapUntil.current = Infinity;
+    window.addEventListener("pointerup", released, true);
+    window.addEventListener("pointercancel", released, true);
+    toggle(tile);
   };
   return (
     <div className="relative h-full overflow-y-auto" data-scroll-root>
@@ -78,8 +87,6 @@ export function AppsGrid({ tiles, pins, canPin, onPin, onUnpin, addApp }: AppsGr
           aria-label={APPS_LAUNCHER_TITLE}
           className="tc-launcher-grid grid grid-cols-3 gap-x-1 gap-y-[22px] sm:max-w-[40rem] sm:gap-2"
           onPointerDownCapture={() => { swallowTapUntil.current = 0; }}
-          onPointerUpCapture={released}
-          onPointerCancelCapture={released}
           onClickCapture={(event: MouseEvent) => {
             if (performance.now() > swallowTapUntil.current) return;
             swallowTapUntil.current = 0;
@@ -94,7 +101,7 @@ export function AppsGrid({ tiles, pins, canPin, onPin, onUnpin, addApp }: AppsGr
               index={index}
               pinned={pins.includes(tile.pin)}
               onToggle={canPin ? () => toggle(tile) : null}
-              onLongPress={canPin ? () => { swallowTapUntil.current = Infinity; toggle(tile); } : null}
+              onLongPress={canPin ? () => longPressed(tile) : null}
             />
           ))}
           {/* An action, not an app: an outlined square, never pinned. */}
