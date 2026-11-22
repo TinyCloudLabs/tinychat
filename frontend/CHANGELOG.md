@@ -16,6 +16,82 @@
 - TC-2204: Native audience checks accept Home's three exact SQL hook subscriptions only alongside an existing TinyChat data grant.
 - TC-2499: The Home mirror adapter persists close receipts using node-compatible NULL/non-NULL compare-and-set predicates. If the KV mirror is already exactly closed but its receipt is missing, recovery records the original publication ETag without writing the KV copy again, before any gated child handoff. The CLI reports JSON error class, safe message, code, HTTP status when available, and operation step; private SQL bodies and nested causes remain redacted. Exit 2 identifies invalid input, exit 6 known transient failures (including NODE_BUSY and REQUEST_TIMEOUT without HTTP metadata), and exit 1 other runtime failures or OUTCOME_UNKNOWN. Unclassified errors are not labelled bad input; no failure confirms delivery or authorizes an automatic retry.
 
+## 0.19.0
+
+### Minor Changes
+
+- 03d29de: The bot you've known as Main is called TrustBot. Your chat history stays as it is.
+
+  Details: TC-3790
+
+### Patch Changes
+
+- 99b2305: Restrict MCP Fireflies KV fallback to proven-absent SQL stores, filter and revalidate cached server-imported Library rows against the active flag and purge ledger, align Library KV paging with `nextCursor` and `truncated` and update the MCP KV truncation text.
+
+  Details: TC-3919
+
+## 0.19.0-beta.1
+
+### Patch Changes
+
+- 99b2305: Restrict MCP Fireflies KV fallback to proven-absent SQL stores, filter and revalidate cached server-imported Library rows against the active flag and purge ledger, align Library KV paging with `nextCursor` and `truncated` and update the MCP KV truncation text.
+
+  Details: TC-3919
+
+## 0.19.0-beta.0
+
+### Minor Changes
+
+- 03d29de: The bot you've known as Main is called TrustBot. Your chat history stays as it is.
+
+  Details: TC-3790
+
+## 0.18.0
+
+### Minor Changes
+
+- 323a384: Library and MCP discover and read KV-only Fireflies server-import meeting records with untrusted-data bounds and purge checks, behind a flag that is off by default.
+
+  Details: TC-3905
+
+- 4ce3e19: Add the "Where your data lives" section in Settings to view the owner's signed location-registry v2 record, request node changes through OpenKey when supported, and undo the latest change from recent history.
+
+  Details: TC-3892
+
+### Patch Changes
+
+- 2dc7989: Main can ask to use a secret. You add it to TinyCloud Secrets and approve it in OpenKey for up to 1 hour. Main can use it only with the sites named in the request and can't see or show its value.
+
+  Details: TC-3595
+
+- 6492b1c: The secret request card says the agent can use an approved secret for 1 hour, and that you can choose less in OpenKey.
+
+  Details: TC-3831
+
+- 1c020ce: TinyCloud One's content policy lets the desktop app talk to its own process, and the screen checks play test recordings from blob addresses.
+
+  Details: TC-3878
+
+- 3dedae7: TinyCloud One's web policy names no desktop bridge; only the desktop build's copy of the policy carries it.
+
+  Details: TC-3878
+
+- 8549747: TinyCloud One on the web and in the phone apps runs only its own scripts and connects only to the services it lists.
+
+  Details: TC-3878
+
+- 7559031: Send only hosts referenced by spaces or Secrets and keys when requesting a registry change from Settings, so moved-away hosts are not retained or probed.
+
+  Details: TC-3892
+
+## 0.18.0-beta.7
+
+### Minor Changes
+
+- 323a384: Library and MCP discover and read KV-only Fireflies server-import meeting records with untrusted-data bounds and purge checks, behind a flag that is off by default.
+
+  Details: TC-3905
+
 ## 0.18.0-beta.6
 
 ### Patch Changes

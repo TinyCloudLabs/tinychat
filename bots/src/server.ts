@@ -12,7 +12,7 @@ import { isRecord } from "./guards";
 import { ANNOUNCED_STATES, type AnnouncedState, type BotState, OwnerBotLimit } from "./manifest";
 import { legacyOwnerHeaderAccepted } from "./config";
 import { MESSAGING_STRINGS } from "./messaging-strings";
-import { authorizedOwner, isBotKey, MAIN_KEY, ownerAllowed } from "./owner";
+import { authorizedOwner, botNameFrom, isBotKey, MAIN_KEY, ownerAllowed } from "./owner";
 import type { DeleteSkip } from "./retention";
 import type { HostToolReply } from "./rpc";
 import { type Environment, NonceGuard, SIGNED_SCHEME, verifyCall } from "./signed-call";
@@ -46,6 +46,8 @@ export interface BotApi {
    * the owner's own turns only.
    */
   send(text: string, sink: TurnSink, owner?: string, messenger?: BotMessenger, from?: "owner" | "bot" | AppSource, date?: OwnerDate): Promise<void>;
+  /** The name the owner sees, for the prompt's wording at the next sandbox start; never a source of trust. */
+  setName?(botName: string): void;
   list(): Promise<ListedMessage[]>;
   listActivities?(): Promise<ActivityRecord[]>;
   historyPending?(): Promise<unknown>;
@@ -349,6 +351,9 @@ export function createApp(options: AppOptions): (req: Request) => Promise<Respon
     if (req.method === "POST") {
       const body: unknown = await req.json().catch(() => null);
       const messenger = signed ? turnMessenger(options, owner, key, isRecord(body) ? body.messageableBotKeys : undefined) : undefined;
+      // Only the backend's signed call names the bot. A name that is not one short line is ignored.
+      const botName = signed && isRecord(body) ? botNameFrom(body.botName) : undefined;
+      if (botName !== undefined) bot.setName?.(botName);
       if (isRecord(body) && body.appReply !== undefined) {
         // The owner's decision reaches Main as a message this service composes from what it stored. Any text or `from`
         // the caller sent is not read; a request that is not decided, not Main's or already delivered sends nothing.

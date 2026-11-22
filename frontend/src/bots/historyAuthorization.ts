@@ -4,10 +4,11 @@ import { APP_NAME } from "../lib/homeSite";
 import { openkeyPasskeysSupported } from "../lib/openkeyPasskeys";
 import { encryptionNetworkId } from "../lib/connectors/encryptionGrant";
 import { botsApi } from "./botsApi";
+import { MAIN_BOT_NAME } from "./botsStrings";
 
 export function botHistoryOwnerPermissions(address: string): PermissionEntry[] {
   return [{ service: "tinycloud.encryption", path: encryptionNetworkId(address), skipPrefix: true,
-    actions: ["network.create", "decrypt"], description: "Set up encryption and read Main's chat history in your TinyCloud." }];
+    actions: ["network.create", "decrypt"], description: `Set up encryption and read ${MAIN_BOT_NAME}'s chat history in your TinyCloud.` }];
 }
 
 /** Foreground only: first bot use/history read. Background renewal never calls this. */

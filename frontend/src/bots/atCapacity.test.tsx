@@ -16,7 +16,7 @@ mock.module("../components/ui/responsive-sheet", () => ({
 }));
 const { MainChat } = await import("./MainChat");
 
-const LINE = "Main can't start right now because TinyCloud is running as many bots as it can. Your message wasn't sent. Try again shortly.";
+const LINE = "TrustBot can't start right now because TinyCloud is running as many bots as it can. Your message wasn't sent. Try again shortly.";
 
 let restore: (() => void) | undefined;
 let mounted: Root | undefined;
@@ -42,7 +42,7 @@ test("the service's at_capacity error event keeps its own code", async () => {
 test("the line names the bot, and Main when no name is given", () => {
   expect(botsErrorText("at_capacity")).toBe(LINE);
   expect(botsErrorText("at_capacity", "Scout")).toStartWith("Scout can't start right now");
-  expect(botsErrorText("bot_unavailable")).toBe("Main couldn't start.");
+  expect(botsErrorText("bot_unavailable")).toBe("TrustBot couldn't start.");
 });
 
 function Harness({ api, sent }: { api: BotsApi; sent: string[] }) {

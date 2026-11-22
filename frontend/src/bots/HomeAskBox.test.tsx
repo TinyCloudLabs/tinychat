@@ -46,7 +46,7 @@ test("the ask box renders nothing when the status call fails", async () => {
 test("an enabled account sees the ask box with Main's chip", async () => {
   const host = await render(api(async () => ({ enabled: true })));
   expect(host.querySelector("textarea")?.getAttribute("placeholder")).toBe("What do you want done?");
-  expect(host.querySelector('button[aria-label="Open Main\'s chat"]')).not.toBeNull();
+  expect(host.querySelector('button[aria-label="Open TrustBot\'s chat"]')).not.toBeNull();
 });
 
 test("an enabled account whose Main chat does not answer sees no ask box", async () => {

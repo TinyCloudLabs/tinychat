@@ -19,7 +19,7 @@ import {
   normalizeAndChunkTranscript,
   rankMeetingExcerptsWithStatus,
 } from "./context";
-import { discoverMeetingCorpus } from "./corpus";
+import { discoverMeetingCorpus, type FirefliesKvGate } from "./corpus";
 import {
   MAX_EVIDENCE_READS,
   type MeetingCandidate,
@@ -72,6 +72,8 @@ export interface MeetingEvidenceReadOptions {
   signal?: AbortSignal;
   /** Transcript-specific requests cannot be grounded by a summary alone. */
   requireTranscript?: boolean;
+  /** Flag and purge-ledger gate for Fireflies KV reads. */
+  firefliesKv?: FirefliesKvGate;
 }
 
 /**
@@ -82,6 +84,8 @@ export interface MeetingEvidenceReadOptions {
 export interface BrowserMeetingTurnRetrieverOptions {
   tcw: Pick<TinyCloudWeb, "kv" | "sql">;
   meetings: Pick<ConnectorMeetingsClient, "list" | "read">;
+  /** Flag and purge-ledger gate for Fireflies KV discovery and evidence reads. */
+  firefliesKv?: FirefliesKvGate;
 }
 
 interface ResultError {
@@ -90,8 +94,27 @@ interface ResultError {
 
 interface LocalReadResult {
   ok: boolean;
-  data?: { data?: unknown; rows?: unknown };
+  data?: { data?: unknown; rows?: unknown; headers?: unknown };
   error?: ResultError;
+}
+
+function nodeLastModifiedFromHeaders(headers: unknown): string | undefined {
+  if (!headers || typeof headers !== "object") return undefined;
+  const record = headers as Record<string, unknown> & { get?: (name: string) => string | null };
+  const fromGetter = typeof record.get === "function" ? record.get("last-modified") : null;
+  const raw =
+    typeof record.lastModified === "string"
+      ? record.lastModified
+      : typeof fromGetter === "string"
+        ? fromGetter
+        : typeof record["last-modified"] === "string"
+          ? record["last-modified"]
+          : typeof record["Last-Modified"] === "string"
+            ? record["Last-Modified"]
+            : undefined;
+  if (!raw) return undefined;
+  const parsed = Date.parse(raw);
+  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : undefined;
 }
 
 export interface MeetingIntentOptions {
@@ -272,6 +295,7 @@ export function createBrowserMeetingTurnRetriever(
             undefined,
             signal,
             state.getThreadState(threadId).selected,
+            options.firefliesKv ? { firefliesKv: options.firefliesKv } : undefined,
           );
         } catch {
           if (isAborted(signal)) return { status: "aborted" };
@@ -292,6 +316,7 @@ export function createBrowserMeetingTurnRetriever(
         meetings: options.meetings,
         signal,
         requireTranscript: requiresTranscript(question),
+        ...(options.firefliesKv ? { firefliesKv: options.firefliesKv } : {}),
       });
       if (evidenceOutcome.status === "aborted") return evidenceOutcome;
       if (evidenceOutcome.status === "storage-error") return evidenceOutcome;
@@ -539,36 +564,56 @@ export async function readMeetingEvidence(
     }
   }
 
+  const firefliesKvGate = meeting.source === "fireflies" ? options.firefliesKv : undefined;
+  const firefliesKvDisallowed =
+    firefliesKvGate !== undefined && (!firefliesKvGate.enabled || !firefliesKvGate.isFirefliesPurged);
+  const checkFirefliesPurged = async (headers: unknown): Promise<boolean> => {
+    if (!firefliesKvGate) return false;
+    if (!firefliesKvGate.enabled || !firefliesKvGate.isFirefliesPurged) return true;
+    const writtenAt = nodeLastModifiedFromHeaders(headers);
+    try {
+      return Boolean(await firefliesKvGate.isFirefliesPurged(meeting.sourceId, writtenAt));
+    } catch {
+      return true;
+    }
+  };
+
   // 2. A reconciled record can carry a server-originated summary. It is parsed
   // only here, after exact-identity selection, never while building a corpus.
   // A reconciled record contains only summary fields. Transcript turns keep a
   // readable SQL summary for honest no-content copy, but never spend another
   // read on this redundant summary-only locator.
   if (meeting.hasLocalRecord && canRead() && (!options.requireTranscript || evidence.summary === null)) {
-    readStarted();
-    let result: LocalReadResult;
-    try {
-      result = await options.tcw.kv.get(meetingKvKey(meeting.source, meeting.sourceId), { signal: options.signal }) as LocalReadResult;
-    } catch {
-      if (aborted(options.signal)) return { status: "aborted" };
-      return { status: "storage-error", partial: true };
-    }
-    if (aborted(options.signal)) return { status: "aborted" };
-    if (!result || result.ok !== true) {
-      if (errorIsNotFound(result)) {
-        markPartial();
-        evidence = withUnavailable(evidence, "local-kv-record");
-      } else {
+    if (firefliesKvDisallowed) {
+      evidence = withUnavailable(evidence, "local-kv-record");
+    } else {
+      readStarted();
+      let result: LocalReadResult;
+      try {
+        result = await options.tcw.kv.get(meetingKvKey(meeting.source, meeting.sourceId), { signal: options.signal }) as LocalReadResult;
+      } catch {
+        if (aborted(options.signal)) return { status: "aborted" };
         return { status: "storage-error", partial: true };
       }
-    } else {
-      const decoded = decodeStoredValue(result.data?.data);
-      const parsed = decoded.ok ? parseReconciledRecord(decoded.value, meeting) : { summary: null, malformed: true };
-      if (parsed.malformed) markPartial();
-      if (parsed.summary === null) {
+      if (aborted(options.signal)) return { status: "aborted" };
+      if (!result || result.ok !== true) {
+        if (errorIsNotFound(result)) {
+          markPartial();
+          evidence = withUnavailable(evidence, "local-kv-record");
+        } else {
+          return { status: "storage-error", partial: true };
+        }
+      } else if (await checkFirefliesPurged(result.data?.headers)) {
         evidence = withUnavailable(evidence, "local-kv-record");
       } else {
-        evidence = { ...evidence, summary: parsed.summary, summaryLocator: locator("local-kv-record", meeting) };
+        const decoded = decodeStoredValue(result.data?.data);
+        const parsed = decoded.ok ? parseReconciledRecord(decoded.value, meeting) : { summary: null, malformed: true };
+        if (parsed.malformed) markPartial();
+        if (parsed.summary === null) {
+          evidence = withUnavailable(evidence, "local-kv-record");
+        } else {
+          evidence = { ...evidence, summary: parsed.summary, summaryLocator: locator("local-kv-record", meeting) };
+        }
       }
     }
   }
@@ -582,55 +627,61 @@ export async function readMeetingEvidence(
     catch { return { status: "storage-error", partial: true }; }
   }
   if (meeting.hasLocalTranscript && (meeting.source !== "exo-voice-note" || voiceLocator?.bodyKey) && canRead()) {
-    readStarted();
-    let result: LocalReadResult;
-    try {
-      result = await options.tcw.kv.get(voiceLocator?.bodyKey ?? transcriptKvKey(meeting.source, meeting.sourceId), { signal: options.signal }) as LocalReadResult;
-    } catch {
-      if (aborted(options.signal)) return { status: "aborted" };
-      return { status: "storage-error", partial: true };
-    }
-    if (aborted(options.signal)) return { status: "aborted" };
-    if (voiceLocator?.expectedText && result && result.ok !== true && errorIsNotFound(result)) {
-      result = { ok: true, data: { data: [{ index: 0, text: voiceLocator.expectedText,
-        speaker_name: null, start_time: 0, end_time: 0 }] } };
-    }
-    if (!result || result.ok !== true) {
-      if (errorIsNotFound(result)) {
-        markPartial();
-        evidence = withUnavailable(evidence, "local-kv-transcript");
-      } else {
+    if (firefliesKvDisallowed) {
+      evidence = withUnavailable(evidence, "local-kv-transcript");
+    } else {
+      readStarted();
+      let result: LocalReadResult;
+      try {
+        result = await options.tcw.kv.get(voiceLocator?.bodyKey ?? transcriptKvKey(meeting.source, meeting.sourceId), { signal: options.signal }) as LocalReadResult;
+      } catch {
+        if (aborted(options.signal)) return { status: "aborted" };
         return { status: "storage-error", partial: true };
       }
-    } else {
-      const decoded = decodeStoredValue(result.data?.data);
-      if (!decoded.ok) {
-        markPartial();
+      if (aborted(options.signal)) return { status: "aborted" };
+      if (voiceLocator?.expectedText && result && result.ok !== true && errorIsNotFound(result)) {
+        result = { ok: true, data: { data: [{ index: 0, text: voiceLocator.expectedText,
+          speaker_name: null, start_time: 0, end_time: 0 }] } };
+      }
+      if (!result || result.ok !== true) {
+        if (errorIsNotFound(result)) {
+          markPartial();
+          evidence = withUnavailable(evidence, "local-kv-transcript");
+        } else {
+          return { status: "storage-error", partial: true };
+        }
+      } else if (await checkFirefliesPurged(result.data?.headers)) {
         evidence = withUnavailable(evidence, "local-kv-transcript");
       } else {
-        let transcriptValue = decoded.value;
-        if (voiceLocator?.expectedText != null) {
-          const text = Array.isArray(transcriptValue) ? transcriptValue.map((s) =>
-            s && typeof s === "object" && "text" in s ? String(s.text) : "").join(" ") : "";
-          if (normalizeTranscriptText(text) !== normalizeTranscriptText(voiceLocator.expectedText)) {
-            console.info("[VoiceNotes] legacy_body_mismatch", { sourceId: meeting.sourceId });
-            transcriptValue = [{ index: 0, text: voiceLocator.expectedText, speaker_name: null, start_time: 0, end_time: 0 }];
+        const decoded = decodeStoredValue(result.data?.data);
+        if (!decoded.ok) {
+          markPartial();
+          evidence = withUnavailable(evidence, "local-kv-transcript");
+        } else {
+          let transcriptValue = decoded.value;
+          if (voiceLocator?.expectedText != null) {
+            const text = Array.isArray(transcriptValue) ? transcriptValue.map((s) =>
+              s && typeof s === "object" && "text" in s ? String(s.text) : "").join(" ") : "";
+            if (normalizeTranscriptText(text) !== normalizeTranscriptText(voiceLocator.expectedText)) {
+              console.info("[VoiceNotes] legacy_body_mismatch", { sourceId: meeting.sourceId });
+              transcriptValue = [{ index: 0, text: voiceLocator.expectedText, speaker_name: null, start_time: 0, end_time: 0 }];
+            }
+          }
+          const normalized = normalizedTranscript(transcriptValue);
+          const readability = normalized.readability;
+          if (normalized.partial) markPartial();
+          if (readability !== "readable") {
+            if (readability === "malformed") markPartial();
+            evidence = withUnavailable(evidence, "local-kv-transcript");
+          } else {
+            evidence = {
+              ...evidence,
+              transcript: transcriptValue,
+              transcriptChunks: normalized.chunks,
+              transcriptLocator: locator("local-kv-transcript", meeting),
+            };
           }
         }
-        const normalized = normalizedTranscript(transcriptValue);
-        const readability = normalized.readability;
-      if (normalized.partial) markPartial();
-      if (readability !== "readable") {
-        if (readability === "malformed") markPartial();
-        evidence = withUnavailable(evidence, "local-kv-transcript");
-      } else {
-        evidence = {
-          ...evidence,
-          transcript: transcriptValue,
-          transcriptChunks: normalized.chunks,
-          transcriptLocator: locator("local-kv-transcript", meeting),
-        };
-      }
       }
     }
   }

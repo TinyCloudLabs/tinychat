@@ -524,7 +524,7 @@ describe("per-session keying", () => {
 
   it("pins the per-session ceilings", () => {
     expect(SESSION_LIMITS).toEqual({
-      global: 120,
+      global: 600,
       verification: 600,
       connectorCompanion: 600,
       transcriber: 600,
