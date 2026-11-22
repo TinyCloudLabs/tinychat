@@ -1,12 +1,17 @@
-// Main's questions as cards. The question and choices come from the box, so they are only ever rendered as text
-// children: no markup, links or images, and hidden or direction-changing characters are removed first (askText.ts).
+// Main's questions and proposals as cards. The question, choices and proposed message come from the box, so they are
+// only ever rendered as text children: no markup, links or images, and hidden or direction-changing characters are
+// removed first (askText.ts). A proposal card is made from its fields alone; the bot writes none of the card's words.
 import { Fragment, useEffect, useId, useState } from "react";
 
 import { Button } from "@/components/ui/button";
-import type { AskRequest, SecretLine } from "./botsApi";
+import type { ActionRequest, AskRequest, SecretLine } from "./botsApi";
+import { ACTION_STRINGS, joinNames } from "./actionStrings";
 import { ASK_STRINGS as COPY, SECRET_STRINGS, askedAgo, secretDate, secretWith } from "./askStrings";
-import { MAX_ANSWER, MAX_CHOICE, MAX_CHOICES, MAX_QUESTION, plainText } from "./askText";
-import type { Asks } from "./useAsks";
+import { MAX_ANSWER, MAX_CHOICE, MAX_CHOICES, MAX_QUESTION, plainLines, plainText } from "./askText";
+import { actionNames, type Asks } from "./useAsks";
+
+/** The longest proposed message the service keeps; anything longer is cut where the card shows it. */
+const MAX_ACTION_TEXT = 2000;
 
 const MINUTE_MS = 60_000;
 
@@ -98,6 +103,72 @@ function AskCard({ request, asks }: { request: AskRequest; asks: Asks }) {
   );
 }
 
+/**
+ * One proposal: who it goes to, Main's message as written, and Send or Don't send. Send names the binding the
+ * service gave with this card, so only this message to these bots can go.
+ */
+function ActionCard({ request, asks }: { request: ActionRequest; asks: Asks }) {
+  const id = useId();
+  const [now, setNow] = useState(Date.now);
+  const [busy, setBusy] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const [held, setHeld] = useState(false);
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), MINUTE_MS);
+    return () => clearInterval(timer);
+  }, []);
+
+  const names = actionNames(request).map((name) => plainText(name, 120) || ACTION_STRINGS.missing);
+  const message = plainLines(request.text ?? "", MAX_ACTION_TEXT);
+  const binding = request.binding;
+
+  const submit = async (decision: Parameters<Asks["decide"]>[1]) => {
+    if (busy) return;
+    setBusy(true);
+    setFailed(false);
+    const result = await asks.decide(request, decision);
+    setBusy(false);
+    if (result === "failed") setFailed(true);
+    if (result === "held") setHeld(true);
+  };
+
+  return (
+    <section
+      aria-labelledby={`${id}-title`}
+      data-action-card=""
+      data-ask-id={request.id}
+      className="flex flex-col gap-3 rounded-2xl border border-border bg-card p-4"
+    >
+      <p id={`${id}-title`} className="text-headline">{ACTION_STRINGS.title(joinNames(names))}</p>
+      <p className="text-callout text-muted-foreground">{ACTION_STRINGS.label}</p>
+      <p className="whitespace-pre-wrap break-words rounded-xl border border-border px-3 py-2 text-body" data-action-text="">{message}</p>
+      <p className="text-callout text-muted-foreground">{askedAgo(now - Date.parse(request.askedAt))}</p>
+      {request.outside ? <p className="text-callout" data-action-outside="">{ACTION_STRINGS.outside}</p> : null}
+      <p className="text-callout text-muted-foreground">{ACTION_STRINGS.footer}</p>
+      <div className="flex flex-wrap gap-2">
+        <Button type="button" disabled={busy || held || !binding || !message} onClick={() => { if (binding) void submit({ decision: "approve", binding }); }}>{ACTION_STRINGS.send}</Button>
+        <Button type="button" variant="outline" disabled={busy} onClick={() => void submit({ decision: "decline" })}>{ACTION_STRINGS.decline}</Button>
+      </div>
+      {failed ? <p role="alert" className="text-callout text-muted-foreground">{ACTION_STRINGS.sendFailed}</p> : null}
+      {held ? <p role="alert" className="text-callout" data-action-held="">{ACTION_STRINGS.held}</p> : null}
+    </section>
+  );
+}
+
+/** What a proposal card collapses to, from the latest read of its request. */
+function actionOutcomeText(request: ActionRequest): string | null {
+  const nameOf = new Map(request.targets.map((target) => [target.key, plainText(target.name ?? "", 120) || ACTION_STRINGS.missing]));
+  if (request.state === "sending") return ACTION_STRINGS.sending;
+  if (request.state === "declined") return ACTION_STRINGS.declined;
+  if (request.state === "expired") return ACTION_STRINGS.expired;
+  if (request.state !== "done") return null;
+  const outcomes = request.outcomes ?? [];
+  const sent = outcomes.filter((outcome) => outcome.delivered).map((outcome) => nameOf.get(outcome.key) ?? ACTION_STRINGS.missing);
+  const failed = outcomes.filter((outcome) => !outcome.delivered).map((outcome) => nameOf.get(outcome.key) ?? ACTION_STRINGS.missing);
+  if (sent.length === 0) return ACTION_STRINGS.notSent;
+  return failed.length === 0 ? ACTION_STRINGS.sent(joinNames(sent)) : ACTION_STRINGS.partly(joinNames(sent), joinNames(failed));
+}
+
 const APP_LINES = { answered: COPY.lineAnswered, declined: COPY.lineDeclined, stopped: COPY.lineStopped, expired: COPY.lineExpired } as const;
 
 export type AppLineDecision = keyof typeof APP_LINES | "approved" | "revoked" | "ended";
@@ -115,12 +186,18 @@ function secretLineText(decision: AppLineDecision, secret: SecretLine): string |
 }
 
 /**
- * What the app shows in the chat for the owner's decision on a request card, in a muted style so it is not taken for
- * words the owner typed. A "not now" or decline the owner just gave is already on the card, which collapses to it; once
- * the card is gone (a reload), the line is what is left. An expired request, or a secret's access that ended, has no
- * message to Main: its line is only for the owner, and only for a request the owner saw in this chat.
+ * What the app shows in the chat for the owner's decision on a request or proposal card, in a muted style so it is not
+ * taken for words the owner typed. A "not now" or decline the owner just gave is already on the card, which collapses
+ * to it; once the card is gone (a reload), the line is what is left. An expired request, or a secret's access that
+ * ended, has no message to Main: its line is only for the owner, and only for a request the owner saw in this chat. A
+ * proposal's line names its recipients when this page knows them.
  */
-export function AppLine({ decision, live, secret }: { decision: AppLineDecision; live: boolean; secret?: SecretLine }) {
+export function AppLine({ decision, live, secret, names }: { decision: AppLineDecision | "action_approved" | "action_declined"; live: boolean; secret?: SecretLine; names?: readonly string[] }) {
+  if (decision === "action_approved" || decision === "action_declined") {
+    const recipients = names?.length ? joinNames(names.map((name) => plainText(name, 120) || ACTION_STRINGS.missing)) : ACTION_STRINGS.otherBots;
+    const text = decision === "action_approved" ? ACTION_STRINGS.lineSent(recipients) : ACTION_STRINGS.lineDeclined(recipients);
+    return <p className="self-end text-callout text-muted-foreground" data-app-line={decision}>{text}</p>;
+  }
   if (decision === "declined" && live) return null;
   const text = secret ? secretLineText(decision, secret) : decision in APP_LINES ? APP_LINES[decision as keyof typeof APP_LINES] : null;
   if (!text) return null;
@@ -128,24 +205,33 @@ export function AppLine({ decision, live, secret }: { decision: AppLineDecision;
 }
 
 /**
- * The cards for Main's pending questions, one per request. `outcomes` is for Main's chat: what became of a card the
- * owner was looking at. Home leaves it out, so a resolved question there just goes away.
+ * The cards for Main's pending questions and proposals, one per request. `outcomes` is for Main's chat: what became
+ * of a card the owner was looking at. Home leaves it out, so a resolved request there just goes away.
  */
 export function AskCards({ asks, outcomes = false }: { asks: Asks; outcomes?: boolean }) {
   if (asks.support !== "yes") return null;
   return (
     <>
       {asks.stopped ? <p className="text-callout text-muted-foreground" data-ask-stopped="">{COPY.stopped}</p> : null}
-      {asks.pending.map((request) => <AskCard key={request.id} request={request} asks={asks} />)}
+      {asks.pending.map((request) => request.kind === "action"
+        ? <ActionCard key={request.id} request={request} asks={asks} />
+        : <AskCard key={request.id} request={request} asks={asks} />)}
       {outcomes
-        ? asks.outcomes.map(({ id, kind }) => kind === "declined" ? (
-          <p key={id} className="text-callout text-muted-foreground" data-ask-outcome={kind}>{COPY.declined}</p>
-        ) : (
-          <Fragment key={id}>
-            <p className="text-callout text-muted-foreground" data-ask-outcome={kind}>{COPY.expired}</p>
-            <AppLine decision="expired" live />
-          </Fragment>
-        ))
+        ? asks.outcomes.map((outcome) => {
+          if (outcome.kind === "action") {
+            const text = actionOutcomeText(outcome.request);
+            return text ? <p key={outcome.id} className="text-callout text-muted-foreground" data-action-outcome={outcome.request.state}>{text}</p> : null;
+          }
+          const { id, kind } = outcome;
+          return kind === "declined" ? (
+            <p key={id} className="text-callout text-muted-foreground" data-ask-outcome={kind}>{COPY.declined}</p>
+          ) : (
+            <Fragment key={id}>
+              <p className="text-callout text-muted-foreground" data-ask-outcome={kind}>{COPY.expired}</p>
+              <AppLine decision="expired" live />
+            </Fragment>
+          );
+        })
         : null}
     </>
   );

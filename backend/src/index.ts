@@ -25,9 +25,11 @@ import { mcpChatFromEnv } from "./mcp-meetings/config.js";
 import { BotHistory } from "./bot-history.js";
 import { createBotHistoryRouter, createSiblingHistoryRouter, startBotHistoryDrain } from "./routes/bot-history.js";
 import { botsFromEnv, createBotsRouter, removeBotFromService } from "./routes/bots.js";
+import { createTrustBotReadsInternalRouter, createTrustBotReadsRouter, TRUSTBOT_READS_INTERNAL_PREFIX } from "./routes/trustbot-reads.js";
+import { startTrustBotReads, trustbotReadsFromEnv } from "./trustbot-reads/setup.js";
 import { botAdmissionSecret, mountBotAdmissionRoute } from "./routes/bot-admission.js";
 import { capModeFromEnv, planFor } from "./bot-caps.js";
-import { BotsRegistry, turnListHook } from "./bots-registry.js";
+import { BotsRegistry, turnListHook, turnNameHook } from "./bots-registry.js";
 import { createBotsServiceGuardRouter } from "./bots-service-routes.js";
 import { BOT_DELETION_PASS_MS, BotDeletions } from "./bot-deletion.js";
 import { resolveTier } from "./billing/stripe.js";
@@ -310,7 +312,21 @@ async function main() {
     return;
   }
   const redpillApiKey = process.env.REDPILL_API_KEY;
-  const mcpChat = mcpChatFromEnv(process.env);
+  let readFirefliesPurgeLedgerForMcp:
+    | ((address: string) => Promise<Awaited<ReturnType<ConnectorControlStore["readLedger"]>>>)
+    | undefined;
+  const mcpChat = mcpChatFromEnv(
+    process.env,
+    undefined,
+    firefliesServerImportEnabled(process.env)
+      ? {
+          readFirefliesPurgeLedger: async (address) =>
+            readFirefliesPurgeLedgerForMcp
+              ? readFirefliesPurgeLedgerForMcp(address)
+              : { status: "unparseable", raw: null },
+        }
+      : undefined,
+  );
   let agentStreamPolicy: AgentStreamPolicy | undefined;
   try {
     agentStreamPolicy = agentStreamPolicyFromEnv(
@@ -515,6 +531,9 @@ async function main() {
     : undefined;
   const connectorKeyStore = connectorRetention?.store;
   const connectorControl = new ConnectorControlStore(node, undefined, connectorKeyStore);
+  if (firefliesServerImportEnabled(process.env)) {
+    readFirefliesPurgeLedgerForMcp = (address) => connectorControl.readLedger("fireflies", address);
+  }
   const firefliesImport = firefliesImportKeys
     ? (() => {
         const coordinator = new TenantCoordinator();
@@ -702,7 +721,16 @@ async function main() {
     res.json({ ok: true, app: APP_ID, globalBucketRoutes: globalRoutes.top(10) });
   });
   app.use("/api/manifest", createManifestRouter());
-  app.use("/api/server-info", createServerInfoRouter(did, readBackendBuildInfo()));
+  app.use(
+    "/api/server-info",
+    createServerInfoRouter(
+      did,
+      readBackendBuildInfo(),
+      firefliesServerImportEnabled(process.env)
+        ? { capabilities: { firefliesServerImport: true } }
+        : undefined,
+    ),
+  );
   // Operator view of hosted AssemblyAI: the events, the heartbeat and the status route read this one monitor.
   const assemblyAiMonitor = new HostedProviderMonitor();
   // TC-1964: optional authenticated count of stored credential rows. Not registered (404) unless
@@ -930,7 +958,10 @@ async function main() {
   // Stored history permissions are read and removed here whether or not the history routes are on, so that deleting
   // a bot always clears one that was stored earlier.
   const botHistory = botsConfig ? new BotHistory(node, backendPrivateKey as `0x${string}`, TINYCLOUD_HOST) : undefined;
-  if (botsConfig && botsRegistry) botsConfig.listForTurn = turnListHook(botsRegistry);
+  if (botsConfig && botsRegistry) {
+    botsConfig.listForTurn = turnListHook(botsRegistry);
+    botsConfig.nameForTurn = turnNameHook(botsRegistry);
+  }
   if (botsConfig && botHistory && botsRegistry && process.env.BOTS_HISTORY_ENABLED === "true") {
     app.use("/api/bots/history", createBotHistoryRouter(botHistory, botsConfig, authMiddleware));
     // Before /api/bots, so the other bots' history routes are answered here; each key is checked against the owner's record.
@@ -951,6 +982,17 @@ async function main() {
   if (botDeletions) {
     void botDeletions.sweep();
     setInterval(() => { void botDeletions.sweep(); }, BOT_DELETION_PASS_MS).unref();
+  }
+  // TrustBot's reads (TRUSTBOT_READS_ENABLED): owner routes under /api/bots/main/reads, and the gateway's route for the
+  // meeting tools. Off, neither route exists.
+  const trustbotReadsSettings = botsConfig && !localValidation ? trustbotReadsFromEnv(process.env) : undefined;
+  const trustbotReads = botsConfig && trustbotReadsSettings ? await startTrustBotReads(trustbotReadsSettings, {
+    backendNode: node, backendDid: did, host: TINYCLOUD_HOST, otherDelegateDids: [process.env.MCP_CHAT_SERVICE_DID, AGENT_DID],
+  }) : undefined;
+  if (botsConfig && trustbotReadsSettings && trustbotReads) {
+    app.use("/api/bots/main/reads", createTrustBotReadsRouter({ grants: trustbotReads, config: botsConfig, auth: authMiddleware }));
+    app.use(TRUSTBOT_READS_INTERNAL_PREFIX, createTrustBotReadsInternalRouter({ grants: trustbotReads, config: botsConfig, callSecret: trustbotReadsSettings.callSecret }));
+    console.log("[startup] TrustBot reads enabled.");
   }
   app.use("/api/bots", createBotsRouter({
     config: botsConfig, authMiddleware, paidLimiter: paidChatLimiter, registry: botsRegistry,

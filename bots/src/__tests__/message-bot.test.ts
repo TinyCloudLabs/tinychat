@@ -92,6 +92,7 @@ function setup(onLaunch?: (layout: BotLayout) => void) {
   const started: string[] = [];
   const launcher: SandboxLauncher = {
     hasState: () => false, leftover: () => false,
+    readsHeld: async () => false,
     launch: async layout => {
       started.push(layout.botId);
       onLaunch?.(layout);

@@ -7,18 +7,24 @@ import { BotsError, BotsNoReply, type AppDecision, type BotMessage, type BotsApi
 import type { BotsErrorCode } from "./botsStrings";
 import { isDeclinedReply } from "./askText";
 
-/** The app's report of the owner's decision on a request card; a secret request's report names the secret for the chat line. */
+/**
+ * The app's report of the owner's decision on a request or proposal card. A secret request's report names the secret
+ * for the chat line; a proposal's names the recipients the card showed. Neither is sent.
+ */
 export interface AppReply {
   requestId: string;
   decision: AppDecision;
   secret?: SecretLine;
+  names?: string[];
 }
 
-/** `app` marks a line the app sent for the owner (a decision on a request card), which the owner did not type. */
-export type ChatLine = Pick<BotMessage, "id" | "role" | "text"> & { app?: AppDecision; secret?: SecretLine };
+/** `app` marks a line the app sent for the owner (a decision on a request or proposal card), which the owner did not type. */
+export type ChatLine = Pick<BotMessage, "id" | "role" | "text"> & { app?: AppDecision; secret?: SecretLine; names?: string[] };
 
 /** What a line the app sent for this decision carries. */
-const appMark = (reply: AppReply | undefined) => reply ? { app: reply.decision, ...(reply.secret ? { secret: reply.secret } : {}) } : {};
+const appMark = (reply: AppReply | undefined) => reply
+  ? { app: reply.decision, ...(reply.secret ? { secret: reply.secret } : {}), ...(reply.names ? { names: reply.names } : {}) }
+  : {};
 
 export interface MainTurn {
   text: string;
@@ -53,6 +59,8 @@ export function useMainChat(api: BotsApi, prepare?: () => Promise<void>, onNoRep
   const history = useRef<Promise<void> | null>(null);
   const localId = useRef(0);
   const queued = useRef<(() => void)[]>([]);
+  // Counts the owner's new chats, so a history read that started before one never brings the earlier lines back.
+  const cleared = useRef(0);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -68,11 +76,13 @@ export function useMainChat(api: BotsApi, prepare?: () => Promise<void>, onNoRep
   /** A slow history read must not erase turns completed while it was in flight. */
   const loadHistory = useCallback((): Promise<void> => {
     const signal = lifetime.current?.signal;
+    const generation = cleared.current;
     const run = (async () => {
       setState((current) => ({ ...current, history: "loading" }));
       try {
         const messages = await api.listMainMessages(signal);
         setState((current) => {
+          if (generation !== cleared.current) return current;
           const listed = messages.map(({ id, role, text, origin, decision, secret }): ChatLine => ({
             id, role, text,
             // The service says what was decided; the words of its message are only a fallback for a service that does not.
@@ -97,7 +107,7 @@ export function useMainChat(api: BotsApi, prepare?: () => Promise<void>, onNoRep
           ...errorFields(cause),
           cause: cause instanceof Error && cause.cause !== undefined ? errorFields(cause.cause) : undefined,
         });
-        setState((current) => ({ ...current, history: "failed" }));
+        setState((current) => (generation !== cleared.current ? current : { ...current, history: "failed" }));
       }
     })();
     history.current = run;
@@ -105,6 +115,13 @@ export function useMainChat(api: BotsApi, prepare?: () => Promise<void>, onNoRep
   }, [api]);
 
   const ensureHistory = useCallback(() => history.current ?? loadHistory(), [loadHistory]);
+
+  /** After the owner starts a new chat: the earlier lines leave the view. Saved history is read again on the next visit. */
+  const clear = useCallback(() => {
+    cleared.current += 1;
+    history.current = Promise.resolve();
+    setState((current) => ({ ...current, lines: [], history: "loaded" }));
+  }, []);
 
   const run = useCallback(async (text: string, keepFailed: boolean, appReply?: AppReply) => {
     if (turnController.current) return;
@@ -162,5 +179,5 @@ export function useMainChat(api: BotsApi, prepare?: () => Promise<void>, onNoRep
     else void run("", true, reply);
   }, [run]);
 
-  return { state, send, retry, sendAppReply, ensureHistory, loadHistory };
+  return { state, send, retry, sendAppReply, ensureHistory, loadHistory, clear };
 }

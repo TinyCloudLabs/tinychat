@@ -12,7 +12,7 @@ import { botForPath, botPath, saveLastBot } from "./botPath";
 import type { BotRosterApi, CreateBotInput, RosterBot } from "./botRosterApi";
 import { BotsChat, viewableBots, type BotHistoryAccess, type ControllerBot } from "./BotsChat";
 import { botsNavStore, type BotsNavState } from "./botsNav";
-import { CREATE_BOT_STRINGS } from "./botsStrings";
+import { CREATE_BOT_STRINGS, MAIN_BOT_NAME } from "./botsStrings";
 import { CreateBotDialog } from "./CreateBotDialog";
 import type { BotChats } from "./useBotChat";
 import { useBots } from "./useBots";
@@ -58,7 +58,8 @@ export function BotsSurface({ account, active, onReconnect, chatApi = defaultCha
     const limit = roster?.limits?.private;
     if (!roster || !limit) return { enabled, counter: null, reason: null, open: openCreate };
     const copy = CREATE_BOT_STRINGS.cap[roster.capMode];
-    const reason = enabled ? null : copy.atLimit(limit.max, roster.bots.some((bot) => bot.key !== "main")) || null;
+    const mainName = roster.bots.find((bot) => bot.key === "main")?.name ?? MAIN_BOT_NAME;
+    const reason = enabled ? null : copy.atLimit(limit.max, roster.bots.some((bot) => bot.key !== "main"), mainName) || null;
     return { enabled, counter: copy.count(limit.used, limit.max), reason, open: openCreate };
   }, [roster, openCreate]);
   const navBots = useMemo(() => viewable.map((bot) => ({ key: bot.key, name: bot.name, face: faceOf(bot) })), [viewable]);

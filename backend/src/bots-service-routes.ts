@@ -8,6 +8,16 @@ import express, { type Router } from "express";
 export const BOTS_SERVICE_ROUTES: ReadonlyArray<{ method: string; path: string }> = [
   // Sibling admission: may one of the owner's bots message another (bots/src/bot-admission.ts).
   { method: "POST", path: "/api/internal/bots/admit" },
+  // TrustBot's meeting tools, one route each (routes/trustbot-reads.ts).
+  { method: "POST", path: "/api/internal/bots/main/reads/tinycloud_find_meetings" },
+  { method: "POST", path: "/api/internal/bots/main/reads/tinycloud_read_meeting" },
+  { method: "POST", path: "/api/internal/bots/main/reads/tinycloud_search_transcripts" },
+  { method: "POST", path: "/api/internal/bots/main/reads/tinycloud_list_meeting_actions" },
+  // TrustBot's feed and chat tools, one route each (routes/trustbot-reads.ts).
+  { method: "POST", path: "/api/internal/bots/main/reads/list_feed_cards" },
+  { method: "POST", path: "/api/internal/bots/main/reads/read_card" },
+  { method: "POST", path: "/api/internal/bots/main/reads/list_chats" },
+  { method: "POST", path: "/api/internal/bots/main/reads/read_chat" },
 ];
 
 /** The bots service's scheme (SIGNED_SCHEME), in any case: HTTP schemes are case-insensitive. */

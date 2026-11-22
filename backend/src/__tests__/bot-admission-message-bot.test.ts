@@ -118,6 +118,7 @@ test("message_bot is admitted between the owner's two active bots, and refused f
   const sandboxes = new Map([[botIdFor(owner), source], [botIdFor(owner, sibling), target]]);
   const launcher: SandboxLauncher = {
     hasState: () => false, leftover: () => false,
+    readsHeld: async () => false,
     launch: async layout => {
       const sandbox = sandboxes.get(layout.botId);
       if (!sandbox) throw new Error("unexpected launch");
@@ -149,13 +150,19 @@ test("message_bot is admitted between the owner's two active bots, and refused f
     type: "host_tool_result", id: "to-sibling", result: { content: [{ type: "text", text: "hello back" }] },
   });
 
+  source.finish(sourcePrompt, "done");
+  expect(await response.text()).toContain("event: done");
+
+  // A turn reaches one recipient, so the other owner's bot is asked for in the owner's next turn.
+  const nextAuthorization = signedCallHeader(serviceSecret, { direction: "to-service", environment: "private", owner, bot: "main", method: "POST", path, body });
+  const next = await app(new Request(`http://bots.test${path}`, { method: "POST", headers: { authorization: nextAuthorization, "content-type": "application/json" }, body }));
+  const nextPrompt = await source.take("prompt");
   source.call("to-other-owners-bot", { targetKey: othersBot, text: "hello" });
   expect(await source.take("host_tool_result")).toMatchObject({
     id: "to-other-owners-bot", isError: true, result: { content: [{ type: "text", text: "That bot is unavailable." }] },
   });
-
-  source.finish(sourcePrompt, "done");
-  expect(await response.text()).toContain("event: done");
+  source.finish(nextPrompt, "done");
+  expect(await next.text()).toContain("event: done");
   // Both answers came from the backend: the manifest held both keys as active.
   expect(backendCalls).toEqual(["POST /api/internal/bots/admit", "POST /api/internal/bots/admit"]);
 }, 15_000);

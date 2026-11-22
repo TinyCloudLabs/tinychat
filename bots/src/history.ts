@@ -127,7 +127,7 @@ export class HistoryJournal {
     return this.#state.batches.flatMap(batch => {
       const record = batch.record as { type?: string; text?: string; at?: string; origin?: string; decision?: string; secret?: unknown; outcome?: { messageId?: string } };
       const app = record.type === "user" && record.origin === "app";
-      const decision = app ? APP_DECISIONS.find(known => known === record.decision) : undefined;
+      const decision = app ? ([...APP_DECISIONS, "action_approved", "action_declined"] as const).find(known => known === record.decision) : undefined;
       const secret = decision ? parseSecretLine(record.secret) : undefined;
       return (record.type === "user" || record.type === "assistant") && typeof record.text === "string"
         ? [{ id: record.type === "assistant" && typeof record.outcome?.messageId === "string" ? record.outcome.messageId : `history-${batch.generation}-${batch.seq}`, role: record.type === "user" ? "user" as const : "bot" as const, text: record.text, at: record.at ?? "",

@@ -96,7 +96,11 @@ services:
     volumes:
       - bot-egress:/egress
       # Budget counters survive restarts here; an unreadable file stops the gateway rather than resetting them.
+      # Sealed secret-request records live here too (secret-grants/); their key is never on this volume.
       - bot-budget:/var/lib/bots-gateway
+      # Only for the key that seals secret-request records (dstack-key.ts: GetKey on one path). No other service
+      # but dstack-ingress mounts it; TC-3773 replaces this with a proxy that enforces the path.
+      - /var/run/dstack.sock:/var/run/dstack.sock
     restart: unless-stopped
 
   # Reads web pages for Main.
