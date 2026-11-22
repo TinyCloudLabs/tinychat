@@ -1,5 +1,31 @@
 # @tinychat/backend
 
+## 0.13.0
+
+### Minor Changes
+
+- 4c7529b: TrustBot can read your meetings when you turn on Meetings in its chat. Access is read-only and lasts 7 days. Once TrustBot reads a meeting, it has no web access, cannot use a secret and cannot send or propose messages to other bots in that chat until the chat is cleared after 30 days without use.
+
+  Details: TC-3792
+
+- 9f74c25: TrustBot can read your feed cards and your chats with AI models when you turn on Feed and chats in its chat. Access is read-only and lasts 7 days. Once TrustBot reads a card or a chat, it has no web access, cannot use a secret and cannot send or propose messages to other bots in that chat until you start a new chat.
+
+  Details: TC-3794
+
+- 6b4538d: You can start a new chat with TrustBot from its chat. It clears the conversation and any questions it's waiting on, and keeps your settings and saved history. After TrustBot reads a meeting, it has no web access, cannot use a secret and cannot send or propose messages to other bots in that chat until you start a new chat.
+
+  Details: TC-3808
+
+### Patch Changes
+
+- 7d2eccc: Main can send one message to several of your bots after you tap Send. The card shows the message and who gets it before anything goes, and Don't send is final. Without your Send, Main messages at most one bot for each message you send. This needs the setting that lets Main ask you questions, which is off until you turn it on.
+
+  Details: TC-3793
+
+- 69b85e8: If you haven't approved saving a bot's chat history to TinyCloud, the chat keeps no saved copy: long chats with TrustBot and your other bots work, and New chat clears at once. Saving starts when you approve it, and messages from before your approval aren't saved.
+
+  Details: TC-3933
+
 ## 0.13.0-beta.4
 
 ### Patch Changes
