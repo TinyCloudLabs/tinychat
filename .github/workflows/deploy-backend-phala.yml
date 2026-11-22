@@ -581,6 +581,8 @@ jobs:
           GOOGLE_MEET_OAUTH_ENABLED: ${{ secrets.GOOGLE_MEET_OAUTH_ENABLED }}
           # TC-581 calendar auto-join transcript sharing (repo variable). Unset = off.
           CALENDAR_AUTOJOIN_SHARING: ${{ vars.CALENDAR_AUTOJOIN_SHARING }}
+          # TC-916: with the flag off, sharing only between two accounts both on this list (repo variable). Unset = nobody.
+          CALENDAR_AUTOJOIN_SHARING_ACCOUNTS: ${{ vars.CALENDAR_AUTOJOIN_SHARING_ACCOUNTS }}
           # Tunables (repo variables). Unset = the code defaults; a non-positive value is a
           # hard boot error, never a silent revert to the default.
           CONNECTOR_DRAIN_INTERVAL_MS: ${{ vars.CONNECTOR_DRAIN_INTERVAL_MS }}
@@ -731,6 +733,7 @@ jobs:
             printf '%s\n' "GOOGLE_OAUTH_REDIRECT_URI=$GOOGLE_OAUTH_REDIRECT_URI"
             printf '%s\n' "GOOGLE_MEET_OAUTH_ENABLED=${GOOGLE_MEET_OAUTH_ENABLED:-false}"
             printf '%s\n' "CALENDAR_AUTOJOIN_SHARING=${CALENDAR_AUTOJOIN_SHARING:-false}"
+            printf '%s\n' "CALENDAR_AUTOJOIN_SHARING_ACCOUNTS=$CALENDAR_AUTOJOIN_SHARING_ACCOUNTS"
             printf '%s\n' "CONNECTOR_DRAIN_INTERVAL_MS=$CONNECTOR_DRAIN_INTERVAL_MS"
             printf '%s\n' "CONNECTOR_A_FETCH_CEILING_PER_HOUR=$CONNECTOR_A_FETCH_CEILING_PER_HOUR"
             printf '%s\n' "CONNECTOR_A_SECRET_READ_CEILING_PER_HOUR=$CONNECTOR_A_SECRET_READ_CEILING_PER_HOUR"

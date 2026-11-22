@@ -1108,6 +1108,7 @@ async function main() {
       // TC-581: one capture per Meet across tenants. The flag gates only sharing the transcript.
       meetingCoordinator: new TenantCoordinator(),
       sharingEnabled: process.env.CALENDAR_AUTOJOIN_SHARING === "true",
+      sharingAccounts: new Set((process.env.CALENDAR_AUTOJOIN_SHARING_ACCOUNTS ?? "").split(",").map(value => value.trim().toLowerCase()).filter(Boolean)),
       webhookUrl: transcriptDeliveryConfig.enabled ? transcriptDeliveryConfig.webhookUrl : undefined,
       onRecordingCompleted: transcriptWorker
         ? async (tenant, meetingId) => { await transcriptWorker.wake(tenant, meetingId, "completed"); }
