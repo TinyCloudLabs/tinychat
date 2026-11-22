@@ -97,7 +97,7 @@ describe("the secret tools on the app server", () => {
     const { gateway } = setup();
     expect(await tools(gateway)).toEqual([]);
     push(gateway, true);
-    expect(await tools(gateway)).toEqual(["ask_owner", "request_secret", "call_with_secret", "list_secrets"]);
+    expect(await tools(gateway)).toEqual(["ask_owner", "request_secret", "propose_action", "call_with_secret", "list_secrets"]);
     push(gateway, false, [APPROVED]);
     expect(await tools(gateway)).toEqual(["call_with_secret", "list_secrets"]);
     push(gateway, false, [{ ...APPROVED, until: NOW - 1 }]);
@@ -107,7 +107,7 @@ describe("the secret tools on the app server", () => {
   test("are neither offered nor answered without the sealing key", async () => {
     const { gateway } = setup({ secrets: false });
     push(gateway, true, [APPROVED]);
-    expect(await tools(gateway)).toEqual(["ask_owner", "request_secret"]);
+    expect(await tools(gateway)).toEqual(["ask_owner", "request_secret", "propose_action"]);
     expect((await call(gateway, "call_with_secret", CALL)).error?.code).toBe(-32602);
     expect((await call(gateway, "list_secrets", {})).error?.code).toBe(-32602);
   });

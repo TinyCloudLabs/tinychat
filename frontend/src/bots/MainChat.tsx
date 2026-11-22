@@ -166,11 +166,11 @@ export function MainChat({ open, onOpenChange, state, onSend, onRetry, onRetryHi
           {history === "loading" ? <p role="status" className="text-callout text-muted-foreground">{BOTS_STRINGS.historyLoading}</p> : null}
           {history === "failed" && !working ? <Failure text={BOTS_STRINGS.historyFailed} onRetry={onRetryHistory} /> : null}
           {lines.map((line) => (
-            line.app ? <AppLine key={line.id} decision={line.app} live={line.id.startsWith("local-")} secret={line.secret} /> : <Line key={line.id} role={line.role} text={line.text} />
+            line.app ? <AppLine key={line.id} decision={line.app} names={line.names} live={line.id.startsWith("local-")} secret={line.secret} /> : <Line key={line.id} role={line.role} text={line.text} />
           ))}
           {turn ? (
             <>
-              {turn.appReply ? <AppLine decision={turn.appReply.decision} live secret={turn.appReply.secret} /> : <Line role="user" text={turn.text} />}
+              {turn.appReply ? <AppLine decision={turn.appReply.decision} names={turn.appReply.names} live secret={turn.appReply.secret} /> : <Line role="user" text={turn.text} />}
               {turn.reply ? <Line role="bot" text={turn.reply} /> : null}
               {working && !turn.reply ? <BotAvatar bot={MAIN_BOT} working size={28} /> : null}
               {turn.state === "error" ? <Failure text={botsErrorText(turn.error ?? "failed", MAIN_BOT.name)} onRetry={onRetry} /> : null}

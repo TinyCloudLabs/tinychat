@@ -70,7 +70,7 @@ describe("the app MCP server while the owner's setting is off", () => {
   test("is still off after the owner switches it on and off again, and for a bot nobody has pushed a setting for", async () => {
     const gateway = setup();
     on(gateway);
-    expect(await tools(gateway)).toEqual(["ask_owner", "request_secret"]);
+    expect(await tools(gateway)).toEqual(["ask_owner", "request_secret", "propose_action"]);
     gateway.setAsks(BOT, { enabled: false, ...idle });
     expect(await tools(gateway)).toEqual([]);
     expect(await ask(gateway, { question: "Which city?" })).toEqual({ text: ASK_ERRORS.off, isError: true });

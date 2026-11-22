@@ -3,10 +3,11 @@
 
 import type { ActivityRecord, StagedHistory } from "./history";
 import type { BotAdmission } from "./bot-admission";
-import { type AsksSettings, type BotMessenger, type ErrorCode, ERROR_MESSAGES, type ListedMessage, MAX_TEXT, type TurnSink, type WebSettings } from "./bot";
+import { type AppSource, type AsksSettings, type BotMessenger, type ErrorCode, ERROR_MESSAGES, type ListedMessage, MAX_TEXT, type TurnSink, type WebSettings } from "./bot";
 import { type OwnerDate, ownerDateFrom } from "./owner-date";
 import { INVALID_HOSTS, parseWebPolicy, type WebPolicy } from "./web-policy";
 import { type AnswerInput, type AnswerResult, type AppOrigin, type AskReply, type AskRequest, parseAnswerInput } from "./asks";
+import { type ActionReply, type ActionRequest, type ActionResult, type ApproveResult, parseApproveInput } from "./actions";
 import { parseAreas, type ReadArea, type ReadsSetting } from "./reads";
 import { isRecord } from "./guards";
 import { ANNOUNCED_STATES, type AnnouncedState, type BotState, OwnerBotLimit } from "./manifest";
@@ -42,10 +43,10 @@ function operationOf(rest: string, method: string): Operation | undefined {
 export interface BotApi {
   /**
    * `from` says who wrote the text; only the owner's own messages teach the bot which addresses it may read. An
-   * `AppOrigin` is only ever this service's own composed reply. `date`, the owner's local date and time zone, is put on
+   * `AppSource` is only ever this service's own composed reply. `date`, the owner's local date and time zone, is put on
    * the owner's own turns only.
    */
-  send(text: string, sink: TurnSink, owner?: string, messenger?: BotMessenger, from?: "owner" | "bot" | AppOrigin, date?: OwnerDate): Promise<void>;
+  send(text: string, sink: TurnSink, owner?: string, messenger?: BotMessenger, from?: "owner" | "bot" | AppSource, date?: OwnerDate): Promise<void>;
   /** The name the owner sees, for the prompt's wording at the next sandbox start; never a source of trust. */
   setName?(botName: string): void;
   list(): Promise<ListedMessage[]>;
@@ -65,10 +66,12 @@ export interface BotApi {
   setReads?(owner: string, areas: ReadArea[]): Promise<ReadsSetting>;
   /** Whether this bot's current conversation holds owner data it read; it then sends nothing to other bots. */
   holdsOwnerData?(): Promise<boolean>;
-  requests?(): Promise<AskRequest[]>;
-  answerRequest?(id: string, input: AnswerInput): Promise<AnswerResult>;
+  requests?(): Promise<(AskRequest | ActionRequest)[]>;
+  answerRequest?(id: string, input: AnswerInput): Promise<AnswerResult | ActionResult>;
+  /** The owner's Send on a proposal card. The send runs after it returns; Main is told the outcome by an app message. */
+  approveRequest?(id: string, binding: string, messenger: BotMessenger): Promise<ApproveResult>;
   /** The message for Main that tells it what the owner decided; undefined unless decided and not yet delivered. */
-  appReply?(requestId: string): AskReply | undefined;
+  appReply?(requestId: string): AskReply | ActionReply | undefined;
   appReplyDelivered?(requestId: string): void;
 }
 
@@ -314,9 +317,21 @@ export function createApp(options: AppOptions): (req: Request) => Promise<Respon
         }
         if (rest === "/requests" && req.method === "GET" && bot.requests) return Response.json({ requests: await bot.requests() });
         if (req.method === "POST" && bot.answerRequest && ANSWER_PATH.test(rest)) {
-          const decision = parseAnswerInput(await req.json().catch(() => null));
+          const input: unknown = await req.json().catch(() => null);
+          const requestId = ANSWER_PATH.exec(rest)![1]!;
+          const approve = parseApproveInput(input);
+          if (approve) {
+            // Sending reaches only the bots the backend admits for Main now, by the path message_bot takes.
+            const messenger = signed ? turnMessenger(options, owner, key, approve.keys) : undefined;
+            if (!messenger || !bot.approveRequest) return Response.json({ error: "invalid" }, { status: 400 });
+            const result = await bot.approveRequest(requestId, approve.binding, messenger);
+            if (result.ok) return Response.json(result.request);
+            if (result.error === "held") return Response.json({ error: "held" }, { status: 409 });
+            return result.error === "invalid" ? Response.json({ error: "invalid" }, { status: 400 }) : Response.json({ error: "not_pending" }, { status: 409 });
+          }
+          const decision = parseAnswerInput(input);
           if (!decision) return Response.json({ error: "invalid" }, { status: 400 });
-          const result = await bot.answerRequest(ANSWER_PATH.exec(rest)![1]!, decision);
+          const result = await bot.answerRequest(requestId, decision);
           if (result.ok) return Response.json(result.request);
           // One answer for a request that is gone, decided, expired or never existed: no way to tell which.
           return result.error === "invalid" ? Response.json({ error: "invalid" }, { status: 400 }) : Response.json({ error: "not_pending" }, { status: 409 });
@@ -368,10 +383,11 @@ export function createApp(options: AppOptions): (req: Request) => Promise<Respon
         // the caller sent is not read; a request that is not decided, not Main's or already delivered sends nothing.
         const requestId = isRecord(body.appReply) ? body.appReply.requestId : undefined;
         if (typeof requestId !== "string" || !REQUEST_ID.test(requestId)) return eventStream(async sink => sink.error("invalid"));
-        let reply: AskReply | undefined;
+        let reply: AskReply | ActionReply | undefined;
         try { reply = bot.appReply?.(requestId); } catch { return new Response(null, { status: 503 }); }
         if (reply === undefined) return Response.json({ error: "no_reply" }, { status: 409 });
-        const { text: replyText, decision, secret } = reply;
+        const { text: replyText, decision } = reply;
+        const secret = "secret" in reply ? reply.secret : undefined;
         return eventStream(sink => bot.send(replyText, {
           ...sink,
           done: messageId => { try { bot.appReplyDelivered?.(requestId); } finally { sink.done(messageId); } },
