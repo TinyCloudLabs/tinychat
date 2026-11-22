@@ -13,7 +13,7 @@ import { BotsRegistry } from "../bots-registry.js";
 import { mountBotAdmissionRoute } from "../routes/bot-admission.js";
 import { fakeRegistryStore } from "./helpers/fake-registry-store.js";
 import { admissionControlKey, createAdmissionClient, createAdmissionRelay } from "../../../bots/src/bot-admission";
-import { BotManager, type Sandbox, type SandboxLauncher } from "../../../bots/src/bot";
+import { BotManager, promptText, type Sandbox, type SandboxLauncher } from "../../../bots/src/bot";
 import { OwnerManifests } from "../../../bots/src/manifest";
 import { botIdFor } from "../../../bots/src/owner";
 import { type Frame, RpcChannel } from "../../../bots/src/rpc";
@@ -143,7 +143,7 @@ test("message_bot is admitted between the owner's two active bots, and refused f
 
   source.call("to-sibling", { targetKey: sibling, text: "hello from Main" });
   const targetPrompt = await target.take("prompt");
-  expect(targetPrompt.message).toBe("hello from Main");
+  expect(targetPrompt.message).toBe(promptText("hello from Main", "bot"));
   target.finish(targetPrompt, "hello back");
   expect(await source.take("host_tool_result")).toEqual({
     type: "host_tool_result", id: "to-sibling", result: { content: [{ type: "text", text: "hello back" }] },
