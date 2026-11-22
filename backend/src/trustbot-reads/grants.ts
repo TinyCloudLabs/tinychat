@@ -69,6 +69,15 @@ function isStored(value: unknown): value is StoredReads {
     && typeof v.serialized === "string" && typeof v.siwe === "string" && typeof v.signature === "string";
 }
 
+/**
+ * The activations an area needs: one for the whole area, or one per resource when it names more than one SQL
+ * database, since one activation takes at most one.
+ */
+function activationPaths(area: ReadArea): (string | undefined)[] {
+  const resources = READ_AREAS[area] as readonly ReadResource[];
+  return resources.filter(entry => entry.service === "sql").length <= 1 ? [undefined] : resources.map(entry => entry.path);
+}
+
 export class TrustBotReadGrants {
   readonly #reader: TrustBotReadGrantsOptions["reader"];
   readonly #store: ReadGrantStore;
@@ -118,7 +127,7 @@ export class TrustBotReadGrants {
     if (!verified.ok) throw new ReadGrantInvalid(verified.code);
     if (verified.verified.expiresAt.getTime() > now + READ_GRANT_MAX_MS + CLOCK_SLACK_MS) throw new ReadGrantInvalid("expiry_too_long");
     try {
-      await this.#activate(this.#only(verified.verified, area));
+      for (const path of activationPaths(area)) await this.#activate(this.#only(verified.verified, area, path));
     } catch (error) {
       throw new ReadGrantInvalid(error instanceof DelegationActivationError && error.status < 500 ? "rejected" : "unavailable");
     }
@@ -146,9 +155,13 @@ export class TrustBotReadGrants {
 
   /**
    * Access to one area's resources for one read. Refused unless the owner turned the area on and the stored grant
-   * still passes every check: owner-signed, delegated to TrustBot's read identity, read-only, unexpired.
+   * still passes every check: owner-signed, delegated to TrustBot's read identity, read-only, unexpired. `path`
+   * narrows the access to that one resource of the area; an area with more than one SQL database needs it.
    */
-  async access(address: string, area: ReadArea): Promise<ReadAccess> {
+  async access(address: string, area: ReadArea, path?: string): Promise<ReadAccess> {
+    if (path === undefined ? activationPaths(area)[0] !== undefined : !(READ_AREAS[area] as readonly ReadResource[]).some(entry => entry.path === path)) {
+      throw new Error("trustbot_read_path_invalid");
+    }
     const owner = checkAddress(address);
     let stored: StoredReads | undefined;
     try { stored = await this.#load(owner); } catch { throw new ReadGrantRefused("unavailable"); }
@@ -158,11 +171,11 @@ export class TrustBotReadGrants {
     if (stored.expiresAt <= now) throw new ReadGrantRefused("ended");
     const verified = await this.#check(owner, stored, stored.areas, now);
     if (!verified.ok) throw new ReadGrantRefused(verified.code === "expired" || verified.code === "session_expired" ? "ended" : "rejected");
-    const cacheKey = `${owner}\n${verified.verified.cid}\n${area}`;
+    const cacheKey = `${owner}\n${verified.verified.cid}\n${area}\n${path ?? ""}`;
     const cached = this.#activations.get(cacheKey);
     if (cached && cached.until > now) return cached.access;
     try {
-      const access = await this.#activate(this.#only(verified.verified, area));
+      const access = await this.#activate(this.#only(verified.verified, area, path));
       this.#activations.set(cacheKey, { access, until: Math.min(now + ACTIVATION_REUSE_MS, verified.verified.expiresAt.getTime()) });
       return access;
     } catch (error) {
@@ -183,9 +196,9 @@ export class TrustBotReadGrants {
     }, { computeDelegationCid: authorization => this.#reader.computeDelegationCid(authorization) });
   }
 
-  /** The checked grant, narrowed to the resources one area reads. */
-  #only(verified: VerifiedTranscriptWriter, area: ReadArea): VerifiedTranscriptWriter {
-    const wanted: readonly ReadResource[] = READ_AREAS[area];
+  /** The checked grant, narrowed to the resources one area reads, or to one of them when `path` is given. */
+  #only(verified: VerifiedTranscriptWriter, area: ReadArea, path?: string): VerifiedTranscriptWriter {
+    const wanted = (READ_AREAS[area] as readonly ReadResource[]).filter(entry => path === undefined || entry.path === path);
     const resources = verified.resources
       .filter(resource => wanted.some(entry => entry.service === resource.service && entry.path === resource.path))
       .map(resource => ({ ...resource, actions: resource.actions.filter(action => wanted.some(entry =>

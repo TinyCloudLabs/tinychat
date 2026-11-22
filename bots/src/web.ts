@@ -61,7 +61,7 @@ export const WEB_ERRORS = {
   provider: "The web service didn't answer. Try again later.",
   pageDown: "That page didn't answer. Try again later.",
   unreadable: "This page couldn't be read: it may be a PDF, or need JavaScript.",
-  held: "Web access is paused in this chat because it holds the owner's meeting data. It stays paused until the chat is cleared after 30 days without use.",
+  held: "Web access is paused in this chat because it holds the owner's private data. It stays paused until the chat is cleared after 30 days without use.",
 } as const;
 export type WebError = keyof typeof WEB_ERRORS;
 
