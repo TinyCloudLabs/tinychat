@@ -15,31 +15,24 @@ name: Backend
 #
 # Lint stays out: the repo-wide `bun run lint` still has errors in backend/
 # and artifacts/.
+#
+# Every pull request and every push to main runs this job, so it can be a
+# required check and the release deploy can require it on the commit it ships
+# (scripts/release/require-green.mjs). The "Decide whether the change touches a
+# backend path" step skips the work for a pull request that touches none of
+# them, and the job still reports success. Pushes to main always run it.
 
 on:
   pull_request:
-    paths:
-      - "backend/**"
-      - "packages/**"
-      - "patches/**"
-      - "package.json"
-      - "bun.lock"
-      - "turbo.json"
-      - "docker-compose*.yml"
-      - "log-shipper/**"
-      - ".github/scripts/**"
-      - ".github/deploy-tools/**"
-      - ".github/workflows/deploy-backend-phala.yml"
-      - ".github/workflows/backend.yml"
-      - "scripts/home-feed/**"
-      - "scripts/agent-sync/**"
+  push:
+    branches: [main]
 
 permissions:
   contents: read
 
 concurrency:
-  group: backend-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+  group: backend-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   backend:
@@ -49,30 +42,70 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
+          fetch-depth: 0
           persist-credentials: false
 
+      - name: Decide whether the change touches a backend path
+        id: relevance
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          # Fails open: only a clean diff with no matching path skips the work.
+          relevant=true
+          if [ "$EVENT_NAME" != pull_request ]; then
+            echo "relevant=true: $EVENT_NAME always runs the backend suite"
+          elif ! changed="$(git diff --no-renames --name-only "$BASE_SHA...$HEAD_SHA")"; then
+            echo "relevant=true: git diff failed, running the backend suite"
+          else
+            relevant=false
+            while IFS= read -r file; do
+              case "$file" in
+                # bots/src/tool-policy.ts: backend/src/__tests__/bots-service-routes.test.ts reads the never-list from it.
+                backend/* | bots/src/tool-policy.ts | packages/* | patches/* | package.json | bun.lock | turbo.json \
+                | docker-compose*.yml | log-shipper/* | .github/scripts/* | .github/deploy-tools/* \
+                | .github/workflows/deploy-backend-phala.yml | .github/workflows/backend.yml | scripts/home-feed/* \
+                | scripts/agent-sync/*)
+                  relevant=true
+                  echo "relevant=true: $file matches a backend path"
+                  break ;;
+              esac
+            done <<<"$changed"
+            [ "$relevant" = true ] || echo "relevant=false: no backend path changed; skipping the suite"
+          fi
+          echo "relevant=$relevant" >> "$GITHUB_OUTPUT"
+
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        if: steps.relevance.outputs.relevant == 'true'
         with:
           bun-version-file: package.json
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        if: steps.relevance.outputs.relevant == 'true'
         with:
           path: ~/.bun/install/cache
           key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
       - name: Install JS deps
+        if: steps.relevance.outputs.relevant == 'true'
         run: bun install --frozen-lockfile
 
       - name: Build workspace packages
+        if: steps.relevance.outputs.relevant == 'true'
         run: bun run build:packages
       - name: Typecheck backend
+        if: steps.relevance.outputs.relevant == 'true'
         run: bun run --cwd backend build
 
       - name: Package tests (core, client, server incl. node-sdk renewal)
+        if: steps.relevance.outputs.relevant == 'true'
         run: bun run test:packages
 
       - name: Home mirror tests (scripts/home-feed)
+        if: steps.relevance.outputs.relevant == 'true'
         run: bun test scripts/home-feed
 
       - name: Install checksum-pinned Vector (same release as the log-shipper image)
+        if: steps.relevance.outputs.relevant == 'true'
         run: |
           set -euo pipefail
           curl --fail --location --silent --show-error https://github.com/vectordotdev/vector/releases/download/v0.59.0/vector-0.59.0-x86_64-unknown-linux-gnu.tar.gz --output "$RUNNER_TEMP/vector.tar.gz"
@@ -80,12 +113,14 @@ jobs:
           tar -xzf "$RUNNER_TEMP/vector.tar.gz" -C "$RUNNER_TEMP"
 
       - name: Backend tests
+        if: steps.relevance.outputs.relevant == 'true'
         # VECTOR_BIN runs the request-record test through the real shipper pipeline (TC-2537).
         env:
           VECTOR_BIN: ${{ runner.temp }}/vector-x86_64-unknown-linux-gnu/bin/vector
         run: bun run --cwd backend test
 
       - name: Vector config (log-shipper, pinned image)
+        if: steps.relevance.outputs.relevant == 'true'
         run: |
           set -euo pipefail
           image="$(grep -o 'timberio/vector:[^"[:space:]]*@sha256:[0-9a-f]*' docker-compose.phala.yml | head -n 1)"
