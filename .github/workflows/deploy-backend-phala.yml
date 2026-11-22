@@ -578,6 +578,10 @@ jobs:
           # must SURVIVE redeploys: stripping it orphans every stored credential (cf. the
           # tee-node ingress-secret-strip incident).
           CONNECTOR_CREDENTIAL_MASTER: ${{ secrets.CONNECTOR_CREDENTIAL_MASTER }}
+          # Fireflies server-side import (TC-3905): ships OFF by default. When "true", the backend
+          # derives its dedicated did:key delegate key and grant-store KEK inside the CVM via dstack
+          # KMS (/var/run/dstack.sock POST /GetKey) and never takes either key from env secrets.
+          FIREFLIES_SERVER_IMPORT_ENABLED: ${{ vars.FIREFLIES_SERVER_IMPORT_ENABLED || 'false' }}
           # WP-A — the Google Meet OAuth proxy (gmeet plan §6 WP-A / §11). Ships DARK, and the
           # dark state is the ABSENCE of these repo secrets rather than a deliberate 'false':
           # unset ⇒ empty string ⇒ GOOGLE_MEET_OAUTH_ENABLED != 'true' ⇒ the five
@@ -647,6 +651,7 @@ jobs:
           for item in MCP_CHAT_ENABLED MCP_CHAT_TEST_ACCOUNTS MCP_CHAT_URL MCP_CHAT_SERVICE_DID MCP_CHAT_SERVICE_CREDENTIAL \
             MCP_CHAT_SERVICE_CREDENTIAL_HEADER MCP_CHAT_OWNER_DID_HEADER MCP_CHAT_GRANT_EXPIRED_ERROR MCP_CHAT_GRANT_REJECTED_ERROR TAVILY_API_KEY \
             GRANOLA_PROXY_ENABLED \
+            FIREFLIES_SERVER_IMPORT_ENABLED \
             BOTS_ENABLED BOTS_TEST_ACCOUNTS BOTS_SERVICE_CONNECT_HOST BOTS_SERVICE_URL BOTS_SERVICE_SECRET BOTS_BACKEND_CALL_SECRET BOTS_POST_TIMEOUT_MS \
             BOTS_HISTORY_ENABLED BOTS_HISTORY_SIGNER_DID BOTS_HISTORY_NODE_ORIGIN BOTS_UNARCHIVED_HISTORY_POLICY \
             RENEWAL_BACKEND_ORIGIN RENEWAL_NODE_DID RENEWAL_RENEWER_DID; do
@@ -733,6 +738,7 @@ jobs:
             printf '%s\n' "LOG_HASH_SALT=$LOG_HASH_SALT"
             printf '%s\n' "CONNECTOR_WEBHOOK_PUBLIC_ORIGIN=$CONNECTOR_WEBHOOK_PUBLIC_ORIGIN"
             printf '%s\n' "CONNECTOR_CREDENTIAL_MASTER=$CONNECTOR_CREDENTIAL_MASTER"
+            printf '%s\n' "FIREFLIES_SERVER_IMPORT_ENABLED=${FIREFLIES_SERVER_IMPORT_ENABLED:-false}"
             printf '%s\n' "GOOGLE_OAUTH_CLIENT_ID=$GOOGLE_OAUTH_CLIENT_ID"
             printf '%s\n' "GOOGLE_OAUTH_DESKTOP_CLIENT_ID=$GOOGLE_OAUTH_DESKTOP_CLIENT_ID"
             printf '%s\n' "GOOGLE_OAUTH_CLIENT_SECRET=$GOOGLE_OAUTH_CLIENT_SECRET"

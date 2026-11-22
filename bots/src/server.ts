@@ -343,11 +343,11 @@ export function createApp(options: AppOptions): (req: Request) => Promise<Respon
         let reply: AskReply | undefined;
         try { reply = bot.appReply?.(requestId); } catch { return new Response(null, { status: 503 }); }
         if (reply === undefined) return Response.json({ error: "no_reply" }, { status: 409 });
-        const { text: replyText, decision } = reply;
+        const { text: replyText, decision, secret } = reply;
         return eventStream(sink => bot.send(replyText, {
           ...sink,
           done: messageId => { try { bot.appReplyDelivered?.(requestId); } finally { sink.done(messageId); } },
-        }, owner, messenger, { app: decision }));
+        }, owner, messenger, { app: decision, ...(secret ? { secret } : {}) }));
       }
       const text = isRecord(body) ? body.text : undefined;
       if (typeof text !== "string" || text.length < 1 || text.length > MAX_TEXT) {
