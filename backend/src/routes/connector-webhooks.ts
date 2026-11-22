@@ -17,6 +17,7 @@ import {
 // the cycle is erased at compile time. Shared on purpose: a second copy of the tombstone rule is
 // a second thing to forget to update.
 import { isTombstoned } from "../services/connector-drain.js";
+import type { FirefliesDirectImporter } from "../services/fireflies-import-executor.js";
 import { withConnectorConnectionChange } from "../services/connector-connection-lane.js";
 import {
   assertConnectorPlaintextTestMode,
@@ -572,6 +573,11 @@ export interface ConnectorWebhookHandlerOptions {
   control?: Pick<ConnectorControl, "readDisabled">;
   registry?: ReadonlySet<string>;
   now?: () => number;
+  /**
+   * Optional TC-3905 delegation-based direct-write executor for Fireflies. Wired only when
+   * `FIREFLIES_SERVER_IMPORT_ENABLED === "true"`; undefined keeps Option C unchanged.
+   */
+  firefliesDirectImport?: Pick<FirefliesDirectImporter, "handleWebhook">;
 }
 
 interface NormalizedPayload {
@@ -930,6 +936,22 @@ export function createConnectorWebhookHandler(
           );
           // 400, never a 5xx: a retry cannot fix a stale delivery and we must not invite one.
           respond(400, { error: "stale_delivery" });
+          return;
+        }
+      }
+
+      // 7b. TC-3905 direct-write Fireflies import (flag ON + active/paused/revoked grant).
+      // Browser-only owners (`state: "none"`) return `{ handled: false }` and fall through to
+      // Option C queue enqueue below. Server-import owners never enqueue into `webhooks/pending`.
+      if (source === "fireflies" && options.firefliesDirectImport) {
+        const direct = await options.firefliesDirectImport.handleWebhook({
+          address: record.address,
+          meetingId,
+          receivedAt: new Date(now()).toISOString(),
+          ...(stamped !== null ? { sourceTimestamp: new Date(stamped).toISOString() } : {}),
+        });
+        if (direct.handled) {
+          respond(direct.httpStatus, direct.body);
           return;
         }
       }
@@ -1578,6 +1600,8 @@ export interface ConnectorCompanionOptions {
   abort?: ConnectorDrainAbortFlags;
   registry?: ReadonlySet<string>;
   now?: () => number;
+  /** Optional TC-3344 reset notification fired when `DELETE /purged` clears a source ledger. */
+  onLedgerCleared?: (source: string, address: string) => void;
   /**
    * `CONNECTOR_WEBHOOK_PUBLIC_ORIGIN` — the public HTTPS origin every minted callback URL must
    * carry. Omitted (local QA, tests) the host stays request-derived; see {@link deliveryUrl}.
@@ -1826,7 +1850,7 @@ function pendingView(item: PendingItem) {
 
 /** Deletion ledgers do not depend on webhook delivery being enabled. */
 export function createConnectorPurgeRouter(
-  options: Pick<ConnectorCompanionOptions, "control" | "now"> & {
+  options: Pick<ConnectorCompanionOptions, "control" | "now" | "onLedgerCleared"> & {
     webhooks?: Pick<ConnectorCompanionOptions, "tokens" | "queue" | "registry">;
     authMiddleware?: RequestHandler;
   },
@@ -2022,6 +2046,7 @@ export function createConnectorPurgeRouter(
 
     try {
       await control.clearLedger(source, user.address);
+      options.onLedgerCleared?.(source, user.address);
 
       logWebhook(
         `op=ledger-clear source=${source} aid=${hashedField(user.address)}`,
@@ -2709,7 +2734,14 @@ export function createConnectorWebhookCompanionRouter(
     }
   });
 
-  router.use(createConnectorPurgeRouter({ control, now, webhooks: { tokens, queue, registry } }));
+  router.use(
+    createConnectorPurgeRouter({
+      control,
+      now,
+      onLedgerCleared: options.onLedgerCleared,
+      webhooks: { tokens, queue, registry },
+    }),
+  );
 
   return router;
 }
