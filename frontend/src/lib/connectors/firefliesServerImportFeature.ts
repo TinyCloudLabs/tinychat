@@ -16,6 +16,31 @@ export function firefliesServerImportEnabled(
   );
 }
 
+/**
+ * Fetch the backend's `/api/server-info` capability flag. Tolerates any network or JSON error by
+ * failing closed (`{ firefliesServerImport: false }`).
+ */
+export async function fetchFirefliesServerImportCapability(
+  backendUrl: string,
+  fetchImpl: typeof fetch = fetch,
+  signal?: AbortSignal,
+): Promise<FirefliesServerImportCapabilities> {
+  const base = backendUrl.replace(/\/+$/, "");
+  if (!base) return { firefliesServerImport: false };
+  try {
+    const response = await fetchImpl(`${base}/api/server-info`, {
+      method: "GET",
+      headers: { accept: "application/json" },
+      ...(signal ? { signal } : {}),
+    });
+    if (!response.ok) return { firefliesServerImport: false };
+    const body = (await response.json()) as { capabilities?: { firefliesServerImport?: unknown } } | null;
+    return { firefliesServerImport: body?.capabilities?.firefliesServerImport === true };
+  } catch {
+    return { firefliesServerImport: false };
+  }
+}
+
 function readViteEnv(): Record<string, unknown> {
   try {
     return (import.meta.env ?? {}) as Record<string, unknown>;

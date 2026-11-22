@@ -20,44 +20,55 @@ export const FIREFLIES_KV_PARTICIPANT_NAME_MAX_LENGTH = 160;
 export const FIREFLIES_KV_PARTICIPANT_EMAIL_MAX_LENGTH = 254;
 export const FIREFLIES_KV_MAX_DURATION_SECS = 7 * 86_400;
 
-const SOURCE_ID_MAX_LENGTH = 512;
+const SAFE_FIREFLIES_SOURCE_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
 const ISO_MAX_LENGTH = 64;
 
-function isBidiOrDeleteChar(code: number): boolean {
-  return (
-    code === 0x7f ||
-    code === 0x200e ||
-    code === 0x200f ||
-    (code >= 0x202a && code <= 0x202e) ||
-    (code >= 0x2066 && code <= 0x2069)
-  );
-}
-
-function hasDisallowedControlChar(value: string): boolean {
-  for (let i = 0; i < value.length; i += 1) {
-    const code = value.charCodeAt(i);
-    if (code <= 0x1f || isBidiOrDeleteChar(code)) return true;
+function isDisallowedCodePoint(cp: number, allowNewlinesAndTabs: boolean): boolean {
+  // Lone UTF-16 surrogates.
+  if (cp >= 0xd800 && cp <= 0xdfff) return true;
+  // C0 controls (optionally keep HT, LF, CR for multiline summaries).
+  if (cp <= 0x1f) {
+    return !(allowNewlinesAndTabs && (cp === 0x09 || cp === 0x0a || cp === 0x0d));
   }
+  // DEL + C1 controls (0x7f-0x9f).
+  if (cp >= 0x7f && cp <= 0x9f) return true;
+  // Zero-width chars, word joiner, BOM, bidi marks/overrides, line/paragraph separators.
+  if (
+    (cp >= 0x200b && cp <= 0x200f) ||
+    cp === 0x2028 ||
+    cp === 0x2029 ||
+    (cp >= 0x202a && cp <= 0x202e) ||
+    cp === 0x2060 ||
+    (cp >= 0x2066 && cp <= 0x2069) ||
+    cp === 0xfeff
+  ) {
+    return true;
+  }
+  // Unicode Tag characters (U+E0000-U+E007F).
+  if (cp >= 0xe0000 && cp <= 0xe007f) return true;
   return false;
 }
 
 function stripDisallowedChars(value: string, allowNewlinesAndTabs: boolean): string {
   let out = "";
   for (let i = 0; i < value.length; i += 1) {
-    const code = value.charCodeAt(i);
-    if (isBidiOrDeleteChar(code)) {
-      if (!allowNewlinesAndTabs) out += " ";
-      continue;
-    }
-    if (code <= 0x1f) {
-      if (allowNewlinesAndTabs && (code === 0x09 || code === 0x0a || code === 0x0d)) {
-        out += value[i]!;
-      } else if (!allowNewlinesAndTabs) {
-        out += " ";
+    const unit = value.charCodeAt(i);
+    let cp = unit;
+    let step = 1;
+    // Decode valid surrogate pairs so astral Tag chars (U+E0000-U+E007F) are caught and lone surrogates stay 0xd800-0xdfff.
+    if (unit >= 0xd800 && unit <= 0xdbff && i + 1 < value.length) {
+      const next = value.charCodeAt(i + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        cp = ((unit - 0xd800) << 10) + (next - 0xdc00) + 0x10000;
+        step = 2;
       }
-      continue;
     }
-    out += value[i]!;
+    if (isDisallowedCodePoint(cp, allowNewlinesAndTabs)) {
+      if (!allowNewlinesAndTabs) out += " ";
+    } else {
+      out += step === 2 ? value.slice(i, i + 2) : value[i]!;
+    }
+    if (step === 2) i += 1;
   }
   return out;
 }
@@ -116,14 +127,7 @@ export function firefliesMeetingKvKey(sourceId: string): string {
 }
 
 export function isSafeFirefliesSourceId(value: string): boolean {
-  return (
-    value.length > 0 &&
-    value.length <= SOURCE_ID_MAX_LENGTH &&
-    !value.includes("/") &&
-    !value.includes("\\") &&
-    !value.includes("..") &&
-    !hasDisallowedControlChar(value)
-  );
+  return SAFE_FIREFLIES_SOURCE_ID_RE.test(value);
 }
 
 /** Extract and validate the meeting sourceId from a Fireflies KV meeting key, or null. */

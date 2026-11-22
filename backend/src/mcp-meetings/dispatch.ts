@@ -68,6 +68,19 @@ export interface McpMeetingToolsOptions {
 export function createMcpMeetingTools(portFor: (owner: string) => McpMeetingPort, options: McpMeetingToolsOptions = {}): McpMeetingTools {
   // Content-free follow-up state (a meeting reference or scope state per owner and room); bounded, never holds text.
   const selections = new Map<string, MeetingSelection>();
+  // Content-free bounded lookup cache `(owner, meetingRef) -> sourceId` so `read_meeting` after
+  // `find_meetings` resolves Fireflies KV records in O(1) without re-listing KV.
+  const kvRefs = new Map<string, string>();
+  const kvRefKey = (owner: string, meetingRef: string) => `${owner.toLowerCase()}\u0000${meetingRef}`;
+  const kvRefCacheFor = (owner: string) => ({
+    get: (meetingRef: string) => kvRefs.get(kvRefKey(owner, meetingRef)),
+    set: (meetingRef: string, sourceId: string) => {
+      const key = kvRefKey(owner, meetingRef);
+      kvRefs.delete(key);
+      kvRefs.set(key, sourceId);
+      if (kvRefs.size > MAX_SELECTIONS) kvRefs.delete(kvRefs.keys().next().value as string);
+    },
+  });
   const keyOf = (owner: string, roomId?: string) => `${owner.toLowerCase()}\u0000${roomId ?? ""}`;
   const setSelection = (owner: string, roomId: string | undefined, selection: MeetingSelection) => {
     if (!roomId) return;
@@ -130,6 +143,7 @@ export function createMcpMeetingTools(portFor: (owner: string) => McpMeetingPort
       options.firefliesKvEnabled === true
         ? {
             firefliesKvEnabled: true,
+            kvRefCache: kvRefCacheFor(request.owner),
             ...(options.readFirefliesPurgeLedger
               ? { readFirefliesPurgeLedger: () => options.readFirefliesPurgeLedger!(request.owner) }
               : {}),

@@ -28,10 +28,17 @@
 // later; it is dropped at once when the phone's notes become unknown or the
 // space changes, and for a note that was discarded rather than uploaded.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { PHONE_AUDIO_UNAVAILABLE } from "@/chat/audioPlayback";
 import { getAudio, getAudioManifest, manifestReceipt, type StoredAudioManifest } from "@/lib/audio/audioStore";
+import {
+  fetchFirefliesServerImportCapability,
+  firefliesServerImportEnabled,
+  type FirefliesServerImportCapabilities,
+} from "@/lib/connectors/firefliesServerImportFeature";
+import { createConnectorWebhooksClient } from "@/lib/connectors/webhooksApi";
 import {
   hiddenMemberKeys,
   listMeetingsRead,
@@ -181,11 +188,34 @@ export function useLibrary(
     noteId: string | null;
     /** Voice notes this account still holds on the device; null when not known (not listed, listing failed, other account). */
     onPhone?: readonly PendingNote[] | null;
+    /** Backend origin for `/api/server-info` capability and purge-ledger verification. */
+    backendUrl?: string;
+    /** Signed-in session store for authenticated Fireflies purge-ledger checks. */
+    sessionStore?: SessionStore;
     /** The clock (tests). */
     now?: () => number;
   },
 ): Library {
   const space = useMemo(() => scheduledSpace(tcw), [tcw]);
+  const [serverCapabilities, setServerCapabilities] = useState<FirefliesServerImportCapabilities | null>(null);
+  const firefliesKvAllowed = firefliesServerImportEnabled(undefined, serverCapabilities);
+  const firefliesPurgeChecker = useMemo(() => {
+    if (!options.backendUrl || !options.sessionStore) return undefined;
+    const webhooks = createConnectorWebhooksClient(options.backendUrl, { sessionStore: options.sessionStore });
+    return (meetingId: string, writtenAt?: string) => webhooks.checkPurge(meetingId, writtenAt ?? null, "fireflies");
+  }, [options.backendUrl, options.sessionStore]);
+
+  useEffect(() => {
+    if (!options.backendUrl) {
+      setServerCapabilities(null);
+      return;
+    }
+    const controller = new AbortController();
+    void fetchFirefliesServerImportCapability(options.backendUrl, fetch, controller.signal).then((caps) => {
+      if (!controller.signal.aborted) setServerCapabilities(caps);
+    });
+    return () => controller.abort();
+  }, [options.backendUrl]);
   const localKey = typeof tcw.did === "string" && tcw.did ? accountCacheKey(tcw.did, "library") : null;
   const loadedFromNetwork = useRef(false);
   const [list, setList] = useState<{ status: LibraryStatus; items: LibraryItem[]; previews: ReadonlyMap<string, string> }>({
@@ -253,7 +283,13 @@ export function useLibrary(
     setList((current) => (current.status === "failed" ? { ...current, status: "loading" } : current));
     const readList = async (): Promise<void> => {
       const started = ++readsStarted.current;
-      const read = await listMeetingsRead(space);
+      const read = await listMeetingsRead(
+        space,
+        undefined,
+        firefliesKvAllowed
+          ? { includeFirefliesKv: true, isFirefliesPurged: firefliesPurgeChecker }
+          : undefined,
+      );
       let previews: ReadonlyMap<string, string> | null = null;
       if (read.status === "ok") {
         try {
@@ -284,7 +320,7 @@ export function useLibrary(
       setListing(false);
     };
     void enqueue(readList);
-  }, [enqueue, space]);
+  }, [enqueue, firefliesKvAllowed, firefliesPurgeChecker, space]);
 
   // The device's last copy of the list shows at once; the read below replaces it.
   useEffect(() => {
@@ -489,7 +525,12 @@ export function useLibrary(
               space,
               note.id,
               note.importSource === "server-import"
-                ? { includeFirefliesKv: true, source: note.source, sourceId: note.sourceId }
+                ? {
+                    includeFirefliesKv: true,
+                    source: note.source,
+                    sourceId: note.sourceId,
+                    isFirefliesPurged: firefliesPurgeChecker,
+                  }
                 : undefined,
             );
             if (locator && metadata.status === "ok") metadata = { status: "ok", metadata: {
@@ -522,7 +563,16 @@ export function useLibrary(
             const transcript = locator
               ? locator.bodyKey ? await readTranscript(space, note.source, note.sourceId, locator.bodyKey, locator.expectedText)
                 : { status: "absent" as const }
-              : await readTranscript(space, note.source, note.sourceId);
+              : await readTranscript(
+                  space,
+                  note.source,
+                  note.sourceId,
+                  undefined,
+                  undefined,
+                  note.importSource === "server-import"
+                    ? { requirePurgeCheck: true, isFirefliesPurged: firefliesPurgeChecker }
+                    : undefined,
+                );
             if (version === (readVersions.current.get(note.id) ?? 0) && transcript.status === "failed" && cached.transcript?.transcript.status === "ok") {
               const fields = staleReads.current.get(note.id) ?? new Set<keyof NoteReads>();
               fields.add("transcript");
@@ -546,7 +596,7 @@ export function useLibrary(
         }
       });
     },
-    [bump, enqueue, space],
+    [bump, enqueue, firefliesPurgeChecker, space],
   );
 
   // An invalidation that arrives during an in-flight read is retried once that

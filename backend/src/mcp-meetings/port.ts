@@ -19,8 +19,13 @@ export interface McpMeetingPort {
   sqlQuery(sql: string, params: Array<string | number | null>, options?: { signal?: AbortSignal }): Promise<unknown[][]>;
   /** One KV key under the connectors prefix, as text. */
   kvGetText(key: string, options?: { signal?: AbortSignal }): Promise<string>;
+  /** Optional KV text read returning node-supplied metadata (`lastModified`), used for purge checks. */
+  kvGetWithMeta?(key: string, options?: { signal?: AbortSignal }): Promise<{ value: string; lastModified?: string }>;
   /** Optional bounded KV prefix listing (`tinycloud_kv_list`), used only when Fireflies KV discovery is enabled. */
-  kvList?(prefix: string, options?: { limit?: number; signal?: AbortSignal }): Promise<{ keys: string[]; truncated: boolean }>;
+  kvList?(
+    prefix: string,
+    options?: { limit?: number; cursor?: string; signal?: AbortSignal },
+  ): Promise<{ keys: string[]; truncated: boolean; cursor?: string }>;
 }
 
 export interface McpHttpConfig {
@@ -103,12 +108,44 @@ export function createHttpMcpPort(config: McpHttpConfig, ownerDid: string): McpM
       if (typeof output.value !== "string") throw new McpPortError("MCP_BAD_RESPONSE");
       return output.value;
     },
+    async kvGetWithMeta(key, options) {
+      const output = await call("tinycloud_kv_get", { space: config.space, key, representation: "text" }, options?.signal);
+      if (typeof output.value !== "string") throw new McpPortError("MCP_BAD_RESPONSE");
+      const rawLastMod = (output.metadata as { lastModified?: unknown } | undefined)?.lastModified;
+      const lastModified =
+        typeof rawLastMod === "string" && Number.isFinite(Date.parse(rawLastMod))
+          ? new Date(Date.parse(rawLastMod)).toISOString()
+          : undefined;
+      return { value: output.value, ...(lastModified ? { lastModified } : {}) };
+    },
     async kvList(prefix, options) {
-      const limit = Math.max(1, Math.min(1000, Math.trunc(options?.limit ?? 100)));
-      const output = await call("tinycloud_kv_list", { space: config.space, prefix, limit }, options?.signal);
+      // Upstream `tinycloud_kv_list` (js-sdk packages/operations/src/operations/exploration.ts:212-223)
+      // uses a `.strict()` schema accepting `{ space, prefix?, limit? }` (`limit` integer 1..1000).
+      // Guard against NaN/non-finite limits and omit `cursor` unless explicitly provided.
+      const rawLimit = options?.limit;
+      const limit =
+        typeof rawLimit === "number" && Number.isFinite(rawLimit)
+          ? Math.max(1, Math.min(1000, Math.trunc(rawLimit)))
+          : 100;
+      const output = await call(
+        "tinycloud_kv_list",
+        {
+          space: config.space,
+          prefix,
+          limit,
+          ...(options?.cursor !== undefined ? { cursor: options.cursor } : {}),
+        },
+        options?.signal,
+      );
       if (!Array.isArray(output.keys)) throw new McpPortError("MCP_BAD_RESPONSE");
       const keys = output.keys.filter((key): key is string => typeof key === "string");
-      return { keys, truncated: output.truncated === true };
+      const nextCursor =
+        typeof output.cursor === "string" && output.cursor.length > 0 ? output.cursor : undefined;
+      return {
+        keys,
+        truncated: output.truncated === true,
+        ...(nextCursor ? { cursor: nextCursor } : {}),
+      };
     },
   };
 }

@@ -29,6 +29,8 @@ export interface Discovery {
   observedAt: string; omittedMeetingRefs: string[];
   /** Offset for a continuation page; find answers intentionally return this page without following it. */
   nextCursor?: number;
+  /** True when KV meeting discovery hit a page, limit or upstream truncation ceiling. */
+  kvTruncated?: boolean;
 }
 export interface DiscoveryResult { rows: TranscriptMetadata[]; discovery: Discovery }
 export class MeetingRetrievalError extends Error {

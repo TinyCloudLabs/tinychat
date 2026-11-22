@@ -214,14 +214,58 @@ function cellNum(row: unknown[], idx: number): number | null {
   return typeof v === "number" && Number.isFinite(v) ? v : null;
 }
 
+const FIREFLIES_KV_READ_CONCURRENCY = 8;
+
 /**
- * Discover and promote KV-only Fireflies server-import records sequentially and read-only.
+ * Extract the node-supplied write timestamp (`last-modified` / `lastModified`) from KV response
+ * headers. Never falls back to attacker-controlled JSON body fields (`startedAt` / `importedAt`).
+ */
+function nodeLastModifiedFromHeaders(headers: unknown): string | undefined {
+  if (!headers || typeof headers !== "object") return undefined;
+  const record = headers as Record<string, unknown>;
+  const raw =
+    typeof record.lastModified === "string"
+      ? record.lastModified
+      : typeof record["last-modified"] === "string"
+        ? record["last-modified"]
+        : typeof record["Last-Modified"] === "string"
+          ? record["Last-Modified"]
+          : undefined;
+  if (!raw) return undefined;
+  const parsed = Date.parse(raw);
+  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : undefined;
+}
+
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  limit: number,
+  worker: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+  const workers = Array.from({ length: Math.min(Math.max(1, limit), items.length) }, async () => {
+    while (nextIndex < items.length) {
+      const idx = nextIndex;
+      nextIndex += 1;
+      results[idx] = await worker(items[idx]!);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
+/**
+ * Discover and promote KV-only Fireflies server-import records read-only.
  *
- * Untrusted-data posture:
- * - Bounded pages, bounded record count, bounded per-record byte size.
+ * Security & untrusted-data posture:
+ * - FAIL CLOSED on purge: when `isFirefliesPurged` is not supplied, returns empty with zero KV calls.
+ * - Purge check uses ONLY the deterministic `sourceId` (from the key) and node-supplied KV
+ *   `lastModified` header (never attacker-controlled JSON `startedAt`/`importedAt`). When
+ *   `lastModified` is absent and a purge ledger stands, the backend purge check fails closed.
+ * - Bounded pages, bounded record count, bounded per-record byte size, bounded concurrency (8;
+ *   `scheduledSpace(tcw)` serializes when required by the per-space queue).
  * - Tolerates missing/garbled/oversize records (skips and counts; never throws).
  * - Browser-imported SQL rows win on `sourceId` or `id` collision.
- * - Honors purge-ledger tombstones (fails closed if the purge check throws).
  */
 export async function discoverFirefliesKvMeetings(
   tcw: TinyCloudWeb,
@@ -232,12 +276,18 @@ export async function discoverFirefliesKvMeetings(
     maxRecordBytes?: number;
     maxRecords?: number;
     maxPages?: number;
+    concurrency?: number;
   } = {},
 ): Promise<{ items: MeetingListItem[]; stats: FirefliesKvDiscoveryStats }> {
   const stats = emptyFirefliesKvDiscoveryStats();
+  // Fail closed: never list or surface KV records without a live purge-ledger checker.
+  if (!options.isFirefliesPurged) {
+    return { items: [], stats };
+  }
   const maxRecordBytes = options.maxRecordBytes ?? FIREFLIES_KV_RECORD_MAX_BYTES;
   const maxRecords = Math.max(1, options.maxRecords ?? FIREFLIES_KV_LIST_MAX_RECORDS);
   const maxPages = Math.max(1, options.maxPages ?? FIREFLIES_KV_LIST_MAX_PAGES);
+  const concurrency = Math.max(1, options.concurrency ?? FIREFLIES_KV_READ_CONCURRENCY);
   const kv = (tcw as { kv?: { list?: TinyCloudWeb["kv"]["list"]; get?: TinyCloudWeb["kv"]["get"] } }).kv;
   if (typeof kv?.list !== "function" || typeof kv?.get !== "function") {
     return { items: [], stats };
@@ -285,69 +335,75 @@ export async function discoverFirefliesKvMeetings(
   }
 
   stats.listed = keys.length;
-  const items: MeetingListItem[] = [];
-  const seenPromotedIds = new Set<string>();
+  const checkPurged = options.isFirefliesPurged;
 
-  for (const key of keys) {
+  type KeyOutcome =
+    | { kind: "promoted"; item: MeetingListItem }
+    | { kind: "shadowed" | "purged" | "garbled" | "oversize" | "missing" };
+
+  const outcomes = await mapWithConcurrency(keys, concurrency, async (key): Promise<KeyOutcome> => {
     const sourceId = extractFirefliesMeetingSourceId(key);
-    if (!sourceId) {
-      stats.garbled += 1;
-      continue;
-    }
-    if (options.existingFirefliesSourceIds?.has(sourceId)) {
-      stats.shadowedBySql += 1;
-      continue;
-    }
+    if (!sourceId) return { kind: "garbled" };
+    if (options.existingFirefliesSourceIds?.has(sourceId)) return { kind: "shadowed" };
+
     const read = await tolerate(() => kv.get!(key));
     if (!read || !read.ok) {
-      if (read && /NOT_FOUND/i.test(errorCode(read))) stats.missing += 1;
-      else if (read && /TOO_LARGE/i.test(errorCode(read))) stats.oversize += 1;
-      else stats.garbled += 1;
-      continue;
+      if (read && /NOT_FOUND/i.test(errorCode(read))) return { kind: "missing" };
+      if (read && /TOO_LARGE/i.test(errorCode(read))) return { kind: "oversize" };
+      return { kind: "garbled" };
     }
     const parsed = await parseFirefliesKvMeetingRecord(read.data?.data, sourceId, {
       maxBytes: maxRecordBytes,
     });
     if (!parsed.ok) {
-      if (parsed.reason === "oversize") stats.oversize += 1;
-      else stats.garbled += 1;
-      continue;
+      return { kind: parsed.reason === "oversize" ? "oversize" : "garbled" };
     }
     const record = parsed.record;
-    if (options.existingMeetingIds?.has(record.id) || seenPromotedIds.has(record.id)) {
-      stats.shadowedBySql += 1;
-      continue;
+    if (options.existingMeetingIds?.has(record.id)) return { kind: "shadowed" };
+
+    // Bobbie binding rule: purge check uses ONLY the deterministic sourceId + node-supplied KV
+    // lastModified header, NEVER attacker-controlled JSON startedAt/importedAt.
+    const writtenAt = nodeLastModifiedFromHeaders(read.data?.headers);
+    let purged: boolean;
+    try {
+      purged = Boolean(await checkPurged(record.sourceId, writtenAt));
+    } catch {
+      // Fail closed: never surface a KV meeting when the purge ledger cannot be verified.
+      purged = true;
     }
-    if (options.isFirefliesPurged) {
-      let purged: boolean;
-      try {
-        purged = Boolean(
-          await options.isFirefliesPurged(
-            record.sourceId,
-            record.startedAt ?? record.importedAt ?? undefined,
-          ),
-        );
-      } catch {
-        // Fail closed: never surface a KV meeting when the purge ledger cannot be verified.
-        purged = true;
+    if (purged) return { kind: "purged" };
+
+    return {
+      kind: "promoted",
+      item: {
+        id: record.id,
+        source: FIREFLIES_MEETING_SOURCE,
+        importSource: FIREFLIES_SERVER_IMPORT_TAG,
+        sourceId: record.sourceId,
+        title: record.title,
+        startedAt: record.startedAt,
+        durationSecs: record.durationSecs,
+        metadata: record.metadata,
+      },
+    };
+  });
+
+  const items: MeetingListItem[] = [];
+  const seenPromotedIds = new Set<string>();
+  for (const outcome of outcomes) {
+    if (outcome.kind === "promoted") {
+      if (seenPromotedIds.has(outcome.item.id)) {
+        stats.shadowedBySql += 1;
+      } else {
+        seenPromotedIds.add(outcome.item.id);
+        items.push(outcome.item);
+        stats.promoted += 1;
       }
-      if (purged) {
-        stats.purged += 1;
-        continue;
-      }
-    }
-    seenPromotedIds.add(record.id);
-    items.push({
-      id: record.id,
-      source: FIREFLIES_MEETING_SOURCE,
-      importSource: FIREFLIES_SERVER_IMPORT_TAG,
-      sourceId: record.sourceId,
-      title: record.title,
-      startedAt: record.startedAt,
-      durationSecs: record.durationSecs,
-      metadata: record.metadata,
-    });
-    stats.promoted += 1;
+    } else if (outcome.kind === "shadowed") stats.shadowedBySql += 1;
+    else if (outcome.kind === "purged") stats.purged += 1;
+    else if (outcome.kind === "garbled") stats.garbled += 1;
+    else if (outcome.kind === "oversize") stats.oversize += 1;
+    else stats.missing += 1;
   }
 
   return { items, stats };
@@ -623,9 +679,16 @@ export async function readTranscript(
   sourceId: string,
   bodyKey: string = transcriptKvKey(source, sourceId),
   expectedText?: string | null,
+  options?: {
+    requirePurgeCheck?: boolean;
+    isFirefliesPurged?: ListMeetingsOptions["isFirefliesPurged"];
+  },
 ): Promise<TranscriptRead> {
   const untimed = (): TranscriptRead => ({ status: "ok", sentences: [{ index: 0, speaker_name: null,
     text: expectedText ?? "", start_time: 0, end_time: 0 }] });
+  if (options?.requirePurgeCheck && source === FIREFLIES_MEETING_SOURCE) {
+    if (!options.isFirefliesPurged) return { status: "absent" };
+  }
   const res = await tolerate(() => tcw.kv.get(bodyKey));
   if (!res) return { status: "failed" };
   if (!res.ok) {
@@ -634,6 +697,17 @@ export async function readTranscript(
     return /NOT_FOUND/i.test(errorCode(res))
       ? expectedText ? untimed() : { status: "absent" }
       : { status: "failed" };
+  }
+  if (options?.requirePurgeCheck && source === FIREFLIES_MEETING_SOURCE) {
+    // Check purge using ONLY deterministic sourceId + node-supplied KV lastModified header.
+    const writtenAt = nodeLastModifiedFromHeaders(res.data?.headers);
+    let purged: boolean;
+    try {
+      purged = Boolean(await options.isFirefliesPurged!(sourceId, writtenAt));
+    } catch {
+      purged = true;
+    }
+    if (purged) return { status: "absent" };
   }
 
   let payload: unknown = res.data?.data;
@@ -688,7 +762,12 @@ export type MeetingMetadataRead =
 export async function readMeetingMetadata(
   tcw: TinyCloudWeb,
   id: string,
-  options?: { includeFirefliesKv?: boolean; source?: string; sourceId?: string },
+  options?: {
+    includeFirefliesKv?: boolean;
+    source?: string;
+    sourceId?: string;
+    isFirefliesPurged?: ListMeetingsOptions["isFirefliesPurged"];
+  },
 ): Promise<MeetingMetadataRead> {
   const includeFirefliesKv =
     (options?.includeFirefliesKv ?? firefliesServerImportEnabled()) &&
@@ -704,7 +783,7 @@ export async function readMeetingMetadata(
   if (!res) return { status: "failed" };
   if (!res.ok) {
     if (includeFirefliesKv && notStoredYet(res)) {
-      return readFirefliesKvMetadata(tcw, id, options!.sourceId!);
+      return readFirefliesKvMetadata(tcw, id, options!.sourceId!, options?.isFirefliesPurged);
     }
     return { status: "failed" };
   }
@@ -712,7 +791,7 @@ export async function readMeetingMetadata(
   const raw = Array.isArray(row) ? cellStr(row, 0) : null;
   if (raw === null) {
     if (includeFirefliesKv) {
-      return readFirefliesKvMetadata(tcw, id, options!.sourceId!);
+      return readFirefliesKvMetadata(tcw, id, options!.sourceId!, options?.isFirefliesPurged);
     }
     return { status: "absent" };
   }
@@ -731,7 +810,10 @@ async function readFirefliesKvMetadata(
   tcw: TinyCloudWeb,
   expectedId: string,
   sourceId: string,
+  isFirefliesPurged?: ListMeetingsOptions["isFirefliesPurged"],
 ): Promise<MeetingMetadataRead> {
+  // Fail closed: never read or return KV metadata without a live purge-ledger checker.
+  if (!isFirefliesPurged) return { status: "absent" };
   const kvRes = await tolerate(() => tcw.kv.get(firefliesMeetingKvKey(sourceId)));
   if (!kvRes) return { status: "failed" };
   if (!kvRes.ok) {
@@ -739,6 +821,14 @@ async function readFirefliesKvMetadata(
   }
   const parsed = await parseFirefliesKvMeetingRecord(kvRes.data?.data, sourceId);
   if (!parsed.ok || parsed.record.id !== expectedId) return { status: "absent" };
+  const writtenAt = nodeLastModifiedFromHeaders(kvRes.data?.headers);
+  let purged: boolean;
+  try {
+    purged = Boolean(await isFirefliesPurged(sourceId, writtenAt));
+  } catch {
+    purged = true;
+  }
+  if (purged) return { status: "absent" };
   return { status: "ok", metadata: parsed.record.metadata };
 }
 
