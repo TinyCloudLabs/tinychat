@@ -138,6 +138,11 @@ export class BotHistory {
     if (typeof envelope.expiresAt === "number" && Date.now() >= envelope.expiresAt) throw new HistoryPermissionExpired(envelope.expiresAt);
     return this.#verify(address, envelope, botKey);
   }
+  /** When a bot's stored grant ends, or undefined once it has. Any other failure is thrown. */
+  async grantValidUntil(address: string, botKey?: string): Promise<number | undefined> {
+    try { return (await this.#grant(address, botKey)).expiresAt.getTime(); }
+    catch (error) { if (error instanceof HistoryPermissionExpired) return undefined; throw error; }
+  }
   /** Every stored grant's key, page by page. A listing that ends without a cursor while truncated is refused. */
   async #grantKeys(): Promise<string[]> {
     const keys: string[] = [];

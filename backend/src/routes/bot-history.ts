@@ -116,6 +116,12 @@ export function createSiblingHistoryRouter(history: BotHistory, config: BotsConf
 }
 
 /**
+ * How often a live bot's grant is sent to the bots service again. The service keeps a grant for a bot that has not run
+ * yet in memory only, so one lost to a restart there is restored by the next send.
+ */
+export const GRANT_RESEND_MS = 300_000;
+
+/**
  * Bounded, single-flight drain. Batches and challenges remain in the supervisor until it verifies a receipt.
  * Main's grants first, then, with a registry, each other bot's under its own grant once the owner's record still holds it.
  */
@@ -150,6 +156,19 @@ export function startBotHistoryDrain(history: BotHistory, config: BotsConfig, re
       } // next drain retries the same persisted batch, never a new generation
     }
   };
+  const resendAt = new Map<string, number>();
+  /** Sends a live bot's grant end again, once each GRANT_RESEND_MS (the first time one interval after it was first seen). */
+  const resendGrant = async (address: string, key: string) => {
+    const id = `${address}/${key}`;
+    const due = resendAt.get(id);
+    if (due === undefined) { resendAt.set(id, Date.now() + GRANT_RESEND_MS); return; }
+    if (due > Date.now()) return;
+    resendAt.set(id, Date.now() + GRANT_RESEND_MS);
+    try {
+      const validUntil = await history.grantValidUntil(address, key);
+      if (validUntil !== undefined) await serviceCall(config, address, "PUT", `${config.serviceUrl}/v1/bots/${key}/history/permission`, { validUntil });
+    } catch { /* sent again after the next interval */ }
+  };
   const drain = async () => {
     if (running || closing) return;
     running = true;
@@ -176,6 +195,7 @@ export function startBotHistoryDrain(history: BotHistory, config: BotsConfig, re
             } catch { /* tried again on a later pass */ }
             continue;
           }
+          await resendGrant(address, key);
           await drainBot(address, key);
         }
       }

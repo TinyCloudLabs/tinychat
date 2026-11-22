@@ -10,6 +10,10 @@ import { botLayout } from "../layout";
 import { botIdFor } from "../owner";
 import type { Frame } from "../rpc";
 
+/** Run by the sandbox when a prompt arrives, so a test can act in the middle of a turn. */
+let duringTurn: (() => Promise<void>) | undefined;
+afterEach(() => { duringTurn = undefined; });
+
 class FakeSandbox implements Sandbox {
   readonly #listeners = new Set<(frame: Frame) => void>();
   readonly #exit = Promise.withResolvers<void>();
@@ -18,6 +22,7 @@ class FakeSandbox implements Sandbox {
   nextId(): string { return `p-${++this.#seq}`; }
   async request(command: Record<string, unknown>): Promise<unknown> {
     if (command.type === "prompt") {
+      await duringTurn?.();
       const id = command.id as string;
       queueMicrotask(() => { for (const listener of this.#listeners) listener({ type: "prompt_result", id, status: "completed", agentInvoked: true, sessionSettled: true }); });
     }
@@ -46,12 +51,15 @@ afterAll(() => rmSync(tmp, { recursive: true, force: true }));
 function setup() {
   const root = mkdtempSync(join(tmp, "case-"));
   const roots = { dataRoot: join(root, "data"), runRoot: join(root, "run"), egressRoot: join(root, "egress") };
+  return { manager: managerOn(roots), roots, managerOn };
+}
+
+function managerOn(roots: { dataRoot: string; runRoot: string; egressRoot: string }) {
   const launcher: SandboxLauncher = {
     hasState: () => false, leftover: () => false, mountPoints: () => [],
     launch: async () => new FakeSandbox(),
   };
-  const manager = new BotManager(launcher, roots, { idleMs: 60_000, turnTimeoutMs: 5_000, maxTurnBytes: MAX_TURN_BYTES, history: HISTORY }, 4);
-  return { manager, roots };
+  return new BotManager(launcher, roots, { idleMs: 60_000, turnTimeoutMs: 5_000, maxTurnBytes: MAX_TURN_BYTES, history: HISTORY }, 4);
 }
 
 async function turn(bot: Bot, text = "hello", owner = OWNER) {
@@ -180,6 +188,35 @@ describe("a bot that has a grant", () => {
     expect(existsSync(journalOf(main.layout))).toBe(true);
     expect(await turn(main, "next")).toBe("done");
     expect(new HistoryJournal(main.layout, HISTORY).messages().map(message => message.text)).toEqual(["archived long ago", "next", ""]);
+  });
+
+  test("a grant that arrives in the middle of a turn on a bot that began it without one does not fail the turn", async () => {
+    const { manager } = setup();
+    const main = manager.forOwner(OWNER);
+    duringTurn = () => main.historyPermission(OWNER, undefined, Date.now() + DAY);
+    expect(await turn(main, "granted while it ran")).toBe("done");
+    duringTurn = undefined;
+    // The turn began before the grant, so it is not archived; the next one is.
+    expect(await turn(main, "after")).toBe("done");
+    expect(new HistoryJournal(main.layout, HISTORY).messages().map(message => message.text)).toContain("after");
+  });
+
+  test("a sibling's grant sent again after a restart of the service is what makes its first turn journal", async () => {
+    const { manager, roots, managerOn } = setup();
+    await manager.forBot(OWNER, KEY).historyPermission(OWNER, undefined, Date.now() + DAY);
+    // The service restarts before the sibling has run: the grant was held in memory only.
+    const restarted = managerOn(roots);
+    const sibling = restarted.forBot(OWNER, KEY);
+    expect(await turn(sibling, "before the grant is sent again")).toBe("done");
+    expect(existsSync(journalOf(sibling.layout))).toBe(false);
+    // The backend's drain sends the grant again.
+    await sibling.historyPermission(OWNER, undefined, Date.now() + DAY);
+    expect(await turn(sibling, "after")).toBe("done");
+    expect(new HistoryJournal(sibling.layout, HISTORY).messages().map(message => message.text)).toContain("after");
+    // Once the sibling has a journal the grant is on disk and survives the next restart.
+    const again = managerOn(roots).forBot(OWNER, KEY);
+    expect(await turn(again, "later")).toBe("done");
+    expect(new HistoryJournal(again.layout, HISTORY).messages().map(message => message.text)).toContain("later");
   });
 
   test("a sibling that was granted before it ran journals from its first turn", async () => {

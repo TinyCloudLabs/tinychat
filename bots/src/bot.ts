@@ -373,7 +373,8 @@ export class Bot {
   readonly #running: RunningLimit;
   #history: HistoryJournal | undefined;
   /** The newest archive grant seen by a bot that has no journal to record it in (a sibling that has not run yet). */
-  // In memory only: a client that grants siblings must persist the grant or send it again after a restart (siblings do not grant today).
+  // In memory only (a journal or directory made for it would break the rule that a sibling that never ran leaves none): the
+  // backend drain sends a sibling's grant again every few minutes, so one lost to a restart is picked up again.
   #grantSeen: number | undefined;
   #sandbox: Sandbox | undefined;
   #starting: Promise<Sandbox> | undefined;
@@ -434,6 +435,9 @@ export class Bot {
       sink.error("at_capacity");
       return;
     }
+    // The journal of this turn, fixed at its start: a grant that arrives mid-turn on a bot that began it without one makes
+    // #history exist with no draft, and the turn's sink must not write to that.
+    let turnJournal: HistoryJournal | undefined;
     if (this.#options.history) {
       this.#busy = true;
       await this.#deleting;
@@ -453,6 +457,7 @@ export class Bot {
             ...(typeof from === "object" ? { origin: "app", decision: from.app, ...(from.secret ? { secret: from.secret } : {}) } : {}),
           });
           journal.startDraft();
+          turnJournal = journal;
         } else {
           journal.discard();
           this.#history = undefined;
@@ -465,10 +470,10 @@ export class Bot {
     const output = sink;
     sink = {
       status: state => output.status(state),
-      delta: text => { this.#history?.delta(text); output.delta(text); },
-      activity: record => { this.#history?.append(record); output.activity?.(record); },
-      done: messageId => { this.#history?.finishDraft({ type: "done", messageId }); output.done(messageId); },
-      error: code => { this.#history?.finishDraft({ type: "error", code }); output.error(code); },
+      delta: text => { turnJournal?.delta(text); output.delta(text); },
+      activity: record => { turnJournal?.append(record); output.activity?.(record); },
+      done: messageId => { turnJournal?.finishDraft({ type: "done", messageId }); output.done(messageId); },
+      error: code => { turnJournal?.finishDraft({ type: "error", code }); output.error(code); },
     };
     this.#busy = true;
     this.#clearIdle();
@@ -523,9 +528,9 @@ export class Bot {
       // Questions Main asked during the turn are collected now, while the gateway still holds them.
       void this.#syncAsks().catch(() => {});
       void this.#launcher.syncActions?.(this.layout, []).catch(() => {});
-      if (this.#history) {
-        try { this.#history.append({ type: "provenance", receipts: await this.#launcher.provenance?.(this.layout) ?? [] }); }
-        catch { this.#history.append({ type: "provenance", verified: false }); }
+      if (turnJournal) {
+        try { turnJournal.append({ type: "provenance", receipts: await this.#launcher.provenance?.(this.layout) ?? [] }); }
+        catch { turnJournal.append({ type: "provenance", verified: false }); }
       }
       this.#busy = false;
       this.#armIdle();
