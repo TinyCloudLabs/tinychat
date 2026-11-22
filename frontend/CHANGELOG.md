@@ -20,7 +20,7 @@
 
 ### Patch Changes
 
-- 49239bf: The app retries a failed agent status check after 10 seconds, then after 4 minutes and 5 minutes.
+- 49239bf: The app retries a failed agent status check after 10 seconds. A second failure waits 4 minutes; later failures wait 5 minutes.
 
   Details: TC-3739
 
