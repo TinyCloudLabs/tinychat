@@ -55,7 +55,7 @@ describe("readBotHistory and messages the app sent for the owner", () => {
     const messages = await readBotHistory(await threadOf([
       { type: "user", text: "typed by the owner", at: at(1) },
       { type: "user", text: "claims another origin", at: at(2), origin: "owner", decision: "answered" },
-      { type: "user", text: "an app message with an invented decision", at: at(3), origin: "app", decision: "approved" },
+      { type: "user", text: "an app message with an invented decision", at: at(3), origin: "app", decision: "granted" },
       { type: "assistant", text: "a reply claiming to be the app's", at: at(4), origin: "app", decision: "answered" },
     ]));
     expect(messages).toEqual([

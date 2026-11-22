@@ -1,0 +1,46 @@
+name: Back up CONNECTOR_CREDENTIAL_MASTER
+
+# One-off, operator-only backup of CONNECTOR_CREDENTIAL_MASTER into the owner's TinyCloud Secrets (TC-3895).
+# Dispatched by hand from main only; deleted in a follow-up PR after a successful run.
+#   gh workflow run backup-connector-master.yml --ref main
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backup-connector-master
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    # The environment's secret is only for main. A dispatch from any other ref is skipped before it reaches the environment.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: production-api
+    steps:
+      - name: Require main ref
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          if [[ "$REF" != "refs/heads/main" ]]; then
+            echo "ref=refused"
+            exit 1
+          fi
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts/ops
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+      - name: Copy secret into TinyCloud Secrets
+        env:
+          CONNECTOR_CREDENTIAL_MASTER: ${{ secrets.CONNECTOR_CREDENTIAL_MASTER }}
+          OWNER_DID: ${{ vars.TC_BACKUP_OWNER_DID }}
+          GITHUB_REF: ${{ github.ref }}
+        run: bash scripts/ops/backup-connector-master.sh

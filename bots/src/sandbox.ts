@@ -100,7 +100,8 @@ export function modelsYml(model: string): string {
     "    apiKey: BOT_TOKEN",
     "    models:",
     `      - id: ${JSON.stringify(model)}`,
-    `        name: ${JSON.stringify(`TinyCloud (${model})`)}`,
+    // The plain model id: a name like "TinyCloud (<model>)" led the bot to give TinyCloud as its model's maker.
+    `        name: ${JSON.stringify(model)}`,
     "        reasoning: false",
     "",
   ].join("\n");
@@ -584,7 +585,7 @@ export class RunscHost implements SandboxLauncher {
   }
 
   /** One request on the gateway's control socket; the body is JSON. Throws unless the answer is 2xx. */
-  async #gateway(method: "GET" | "PUT" | "POST", path: string, body?: unknown): Promise<Response> {
+  async #gateway(method: "GET" | "PUT" | "POST" | "DELETE", path: string, body?: unknown): Promise<Response> {
     const response = await fetch(`http://gateway${path}`, {
       unix: join(this.#cfg.egressRoot, "control.sock"),
       method,
@@ -616,15 +617,28 @@ export class RunscHost implements SandboxLauncher {
   }
 
   /**
-   * Collects the questions the box has asked, stores them, and gives the gateway the owner's setting for questions
-   * with the counts and cooldowns (see syncAsks). At launch, so the tools are listed or not as the setting says,
-   * and at the start of each message with `turn`.
+   * Collects the requests the box has made, stores them, settles secret requests with the gateway, and gives the
+   * gateway the owner's setting with the counts and cooldowns (see syncAsks). At launch, so the tools are listed or
+   * not as the setting says, and at the start of each message with `turn`. Approval links are made only for Main's
+   * owner, named by `ownerDid`.
    */
-  syncAsks(layout: BotLayout, turn?: { outside: boolean }): Promise<void> {
+  syncAsks(layout: BotLayout, turn?: { outside: boolean }, ownerDid?: string): Promise<void> {
     const path = `/bots/${layout.botId}/asks`;
+    const secrets = `/bots/${layout.botId}/secrets`;
     return syncAsks(layout, {
       drain: async () => (await this.#gateway("POST", `${path}/drain`)).json(),
       push: async body => void (await this.#gateway("PUT", path, body)),
+      secrets: {
+        drain: async () => (await this.#gateway("POST", `${secrets}/drain`)).json(),
+        forget: async id => void (await this.#gateway("DELETE", `${secrets}/${id}`)),
+        ...(ownerDid ? {
+          link: async (id: string, request: { name: string; sites: string[]; header: string; why: string }) => {
+            const answer: unknown = await (await this.#gateway("PUT", `${secrets}/${id}`, { ...request, ownerDid })).json();
+            if (!isRecord(answer) || typeof answer.approveUrl !== "string") throw new Error("gateway gave no approval link");
+            return { approveUrl: answer.approveUrl };
+          },
+        } : {}),
+      },
     }, turn);
   }
 

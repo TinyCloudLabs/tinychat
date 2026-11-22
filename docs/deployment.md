@@ -398,6 +398,7 @@ Repository **variables** (all optional — defaults shown):
 | `BOTS_TEST_ACCOUNTS` | _(empty — comma-separated account addresses, trimmed and lowercased; the single entry `*` admits every account; an empty list admits nobody)_ |
 | `BOTS_SERVICE_URL` | _(empty)_ — internal URL of the bots service; never exposed to browsers. |
 | `BOTS_SERVICE_SECRET` | _(empty — repo **secret**)_ — bearer the backend sends to the bots service; never returned to clients. |
+| `BOTS_BACKEND_CALL_SECRET` | _(empty — `production-api` environment **secret**; `POST /api/internal/bots/admit` is not mounted)_ — the key the bots gateway signs sibling-admission calls with; the same value as the `production-bots` environment secret of the same name, 32 random bytes (base64url) of its own, different from `BOTS_SERVICE_SECRET`. |
 | `BOTS_POST_TIMEOUT_MS` | `120000` — overall bound on one Main bot message turn; when it fires the backend aborts the bots service request and sends a `bot_unavailable` error event. |
 | `MEETING_CONTENT_RETRIEVAL_ENABLED` | `false` (optional; only literal `true` enables controller routing for admitted accounts) |
 | `MEETING_CONTENT_TEST_ACCOUNTS` | _(empty — optional comma-separated account allowlist; entries are trimmed and lowercased)_. For turns served by MCP chat (`MCP_CHAT_ENABLED`), a `*` entry admits every MCP account; the eliza-service path never honors `*`, and an empty list admits nobody on either path. |
