@@ -1,5 +1,23 @@
 # exo-desktop
 
+## 0.16.0-beta.2
+
+No changes in this release.
+
+## 0.15.4-beta.1
+
+No changes in this release.
+
+## 0.15.4-beta.0
+
+No changes in this release.
+
+## 0.15.3
+
+### Patch Changes
+
+- 70d434e: Upload audio with Private Transcription works again in the desktop app, which allows the transcription service's current address.
+
 ## 0.15.3-beta.4
 
 No changes in this release.
