@@ -1,5 +1,13 @@
 # @tinychat/backend
 
+## 0.10.1-beta.1
+
+### Patch Changes
+
+- ca86545: Bots on the regular runtime now have the same tools switched off as other bots, skills included.
+
+  Details: TC-3779
+
 ## 0.10.1-beta.0
 
 ### Patch Changes
