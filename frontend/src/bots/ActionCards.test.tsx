@@ -5,7 +5,8 @@ import { createRoot, type Root } from "react-dom/client";
 import { installDom } from "@/test/dom";
 import { ACTION_STRINGS } from "./actionStrings";
 import { AppLine, AskCards } from "./AskCards";
-import type { ActionRequest, BotRequest } from "./botsApi";
+import { BOTS_STRINGS } from "./botsStrings";
+import type { ActionRequest, MainRequest } from "./botsApi";
 import type { Asks } from "./useAsks";
 
 let restore: (() => void) | undefined;
@@ -40,12 +41,12 @@ function asksWith(over: Partial<Asks> = {}): Asks & { decisions: unknown[] } {
     support: "yes" as const,
     enabled: true,
     stopped: false,
-    pending: [] as BotRequest[],
+    pending: [] as MainRequest[],
     outcomes: [],
     webOn: false,
     setEnabled: async () => "ok" as const,
     stop: async () => "ok" as const,
-    decide: async (_request: BotRequest, decision: unknown) => { state.decisions.push(decision); return "ok" as const; },
+    decide: async (_request: MainRequest, decision: unknown) => { state.decisions.push(decision); return "ok" as const; },
     refresh: () => {},
     ...over,
   };
@@ -64,11 +65,11 @@ async function render(node: React.ReactElement) {
 
 const button = (host: Element, label: string) => [...host.querySelectorAll("button")].find((node) => node.textContent === label)!;
 
-test("the card's words are the app's, around the recipients' names and Main's message as written", async () => {
+test("the card's words are the app's, around the recipients' names and the bot's message as written", async () => {
   const host = await render(<AskCards asks={asksWith({ pending: [proposal()] })} />);
   const card = host.querySelector("[data-action-card]")!;
-  expect(card.textContent).toContain("Main wants to send this message to Scout and Ledger:");
-  expect(card.textContent).toContain("Written by Main");
+  expect(card.textContent).toContain(`${BOTS_STRINGS.mainName} wants to send this message to Scout and Ledger:`);
+  expect(card.textContent).toContain(`Written by ${BOTS_STRINGS.mainName}`);
   expect(host.querySelector("[data-action-text]")!.textContent).toBe("Please each send me\nyour status by noon.");
   expect(card.textContent).toContain(ACTION_STRINGS.footer);
   expect(host.querySelector("[data-action-outside]")).toBeNull();
@@ -85,7 +86,7 @@ test("hidden and direction-changing characters in the message or a name do not r
     })],
   })} />);
   expect(host.querySelector("[data-action-text]")!.textContent).toBe("Pay now please");
-  expect(host.textContent).toContain("Main wants to send this message to Sc out and a deleted bot:");
+  expect(host.textContent).toContain(`${BOTS_STRINGS.mainName} wants to send this message to Sc out and a deleted bot:`);
   expect(host.querySelector("[data-action-outside]")!.textContent).toBe(ACTION_STRINGS.outside);
 });
 
@@ -102,7 +103,7 @@ test("a card without its binding cannot be sent", async () => {
   expect(button(host, "Send").disabled).toBe(true);
 });
 
-test("in Main's chat a decided card collapses to what happened, by recipient", async () => {
+test("in the bot's chat a decided card collapses to what happened, by recipient", async () => {
   const done = proposal({
     state: "done", text: undefined, binding: undefined,
     outcomes: [{ key: "a".repeat(32), delivered: true }, { key: "b".repeat(32), delivered: false }],
@@ -124,7 +125,7 @@ test("the chat line for a decision names the recipients when known, and says oth
     <AppLine decision="action_declined" live={false} />
   </>);
   expect([...host.querySelectorAll("[data-app-line]")].map((node) => node.textContent)).toEqual([
-    "You sent Main’s message to Scout and Ledger.",
-    "You chose not to send Main’s message to other bots.",
+    `You sent ${BOTS_STRINGS.mainName}’s message to Scout and Ledger.`,
+    `You chose not to send ${BOTS_STRINGS.mainName}’s message to other bots.`,
   ]);
 });

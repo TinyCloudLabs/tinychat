@@ -3,6 +3,7 @@ import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 
 import { installDom } from "@/test/dom";
+import { BOTS_STRINGS } from "./botsStrings";
 import { BotsNoReply, type ActionRequest, type AskDecision, type BotsApi } from "./botsApi";
 
 // Radix portals do not attach in happy-dom: the sheet's chrome is an inline stand-in with a Close button; everything
@@ -81,7 +82,7 @@ function service() {
 const flush = async () => { await act(async () => { for (let i = 0; i < 16; i++) await Promise.resolve(); }); };
 const click = async (node: Element) => { await act(async () => { (node as HTMLElement).click(); }); await flush(); };
 const button = (label: string) => [...document.querySelectorAll("button")].find((node) => node.textContent === label)!;
-const openChat = () => click(document.querySelector('button[aria-label="Open Main\'s chat"]')!);
+const openChat = () => click(document.querySelector(`button[aria-label="Open ${BOTS_STRINGS.mainName}'s chat"]`)!);
 const chatLines = () => [...document.querySelectorAll("[data-bots-main-chat] [data-app-line]")].map((node) => node.textContent);
 const outcomes = () => [...document.querySelectorAll("[data-action-outcome]")].map((node) => node.textContent);
 
@@ -94,7 +95,7 @@ async function render(api: BotsApi) {
   await flush();
 }
 
-test("Don't send closes the card and tells Main once, with the recipients in the owner's line", async () => {
+test("Don't send closes the card and tells the bot once, with the recipients in the owner's line", async () => {
   const { api, state } = service();
   await render(api);
   await openChat();
@@ -103,10 +104,10 @@ test("Don't send closes the card and tells Main once, with the recipients in the
   expect(document.querySelector("[data-action-card]")).toBeNull();
   expect(outcomes()).toEqual(["You chose not to send it."]);
   expect(state.sends).toEqual(["p1"]);
-  expect(chatLines()).toEqual(["You chose not to send Main’s message to Scout and Ledger."]);
+  expect(chatLines()).toEqual([`You chose not to send ${BOTS_STRINGS.mainName}’s message to Scout and Ledger.`]);
 });
 
-test("Send names the card's binding; Main hears of it only once the service has sent it, and only once", async () => {
+test("Send names the card's binding; the bot hears of it only once the service has sent it, and only once", async () => {
   const { api, state } = service();
   await render(api);
   await openChat();
@@ -120,7 +121,7 @@ test("Send names the card's binding; Main hears of it only once the service has 
   await openChat();
   expect(state.sends).toEqual(["p1"]);
   expect(outcomes()).toEqual(["Sent to Scout and Ledger."]);
-  expect(chatLines()).toEqual(["You sent Main’s message to Scout and Ledger."]);
+  expect(chatLines()).toEqual([`You sent ${BOTS_STRINGS.mainName}’s message to Scout and Ledger.`]);
   await click(button("Close"));
   await openChat();
   expect(state.sends).toEqual(["p1"]);
