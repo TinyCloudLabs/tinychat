@@ -1,7 +1,7 @@
 // TC-3792: a conversation that read the owner's meetings gets no web access, and call_with_secret is web access with a
 // request body: it is refused too, and nothing is sent to the site.
 import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
-import { type SecretPush, utcDay } from "../asks";
+import { SECRET_ERRORS, type SecretPush, utcDay } from "../asks";
 import { type GatewayConfig, PINNED_UPSTREAM } from "../config";
 import type { Conn, GuardDeps } from "../fetch-guard";
 import { type BudgetSnapshot, type BudgetStore, Gateway } from "../gateway";
@@ -9,7 +9,6 @@ import { type HeldStore, MeetingDesk } from "../meeting-reads";
 import { botIdFor } from "../owner";
 import { SecretGrants } from "../secret-grants";
 import type { GrantStore } from "../secret-store";
-import { WEB_ERRORS } from "../web";
 
 // Fake values only.
 const VALUE = "sk-test-FAKE-held-0123";
@@ -98,6 +97,6 @@ test("call_with_secret works before a meeting read and is refused after it, with
 
   await call(gateway, "tinycloud_read_meeting", { focus: "summary" });
   const refused = await call(gateway, "call_with_secret", CALL);
-  expect(refused).toEqual({ text: WEB_ERRORS.held, isError: true });
+  expect(refused).toEqual({ text: SECRET_ERRORS.held(), isError: true });
   expect(sent.length).toBe(before);
 });

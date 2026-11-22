@@ -7,7 +7,7 @@
 import { closeSync, existsSync, fsyncSync, openSync, readFileSync, renameSync, writeSync } from "node:fs";
 import { dirname } from "node:path";
 import { AskDesk, APP_TOOLS } from "./asks-desk";
-import { type AsksPush, type NewRequest, utcMinute } from "./asks";
+import { type AsksPush, type NewRequest, SECRET_ERRORS, utcMinute } from "./asks";
 import { MeetingDesk } from "./meeting-reads";
 import type { ReadsPush } from "./reads";
 import type { GatewayConfig } from "./config";
@@ -712,7 +712,7 @@ export class Gateway {
   async #secretCall(botId: string, secrets: SecretGrants, args: Record<string, unknown>) {
     if (this.#meetings.held(botId)) {
       console.log(JSON.stringify({ gateway: "secret", bot: botId.slice(0, 12), tool: "call_with_secret", outcome: "held" }));
-      return toolText(WEB_ERRORS.held, true);
+      return toolText(SECRET_ERRORS.held(), true);
     }
     // A site's reply is outside text, like a page: a question Main asks later in this turn says so.
     this.#asks.markOutside(botId);

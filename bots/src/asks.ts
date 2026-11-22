@@ -71,6 +71,7 @@ export const SECRET_ERRORS = {
   pending: (name: string) => `You already asked for ${name}. Wait for the owner; don’t ask in chat.`,
   recent: (name: string) => `The owner declined ${name} recently. Don’t ask again unless they bring it up.`,
   many: () => "Too many open requests for now. Carry on without asking.",
+  held: () => "Using a secret is paused in this chat because it holds the owner’s private data, and a secret call sends data to a site. It stays paused until the chat is cleared after 30 days without use.",
 } as const;
 
 /** What the supervisor tells Main about a secret request: fixed text around its name, sites and end time. */
