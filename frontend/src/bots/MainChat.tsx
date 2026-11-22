@@ -11,6 +11,7 @@ import { acknowledgeHistoryNotice, historyNoticeDeadline, type HistoryNotice } f
 import { BOTS_STRINGS, botsErrorText, HISTORY_EXPIRY_NOTICE, HISTORY_RECONNECT_LABEL, WEB_ACCESS_STRINGS } from "./botsStrings";
 import { isWorking, type ChatLine, type MainChatState } from "./useMainChat";
 import { WebAccess, type WebAccessApi } from "./WebAccess";
+import { MeetingsAccess, type MeetingsAccessApi } from "./MeetingsAccess";
 import { AppLine, AskCards, AsksToggle } from "./AskCards";
 import { SecretCards } from "./SecretCard";
 import type { Asks } from "./useAsks";
@@ -85,6 +86,8 @@ export interface MainChatProps {
   onReconnect?: () => void;
   /** When given, the sheet offers Main's web access setting. */
   webAccess?: WebAccessApi;
+  /** When given, the sheet offers Main's Meetings read setting. */
+  meetings?: MeetingsAccessApi;
   /** When given, the sheet shows Main's questions as cards and offers the setting for them. */
   asks?: Asks;
 }
@@ -111,7 +114,7 @@ export function WebAccessToggle({ api }: { api: WebAccessApi }) {
   );
 }
 
-export function MainChat({ open, onOpenChange, state, onSend, onRetry, onRetryHistory, notice, onReconnect, webAccess, asks }: MainChatProps) {
+export function MainChat({ open, onOpenChange, state, onSend, onRetry, onRetryHistory, notice, onReconnect, webAccess, meetings, asks }: MainChatProps) {
   const { lines, history, turn } = state;
   const working = isWorking(turn);
   const sdkPromptOpen = useSdkPromptOpen();
@@ -157,6 +160,7 @@ export function MainChat({ open, onOpenChange, state, onSend, onRetry, onRetryHi
         <div className="mx-auto flex w-full max-w-2xl flex-col gap-5 py-4">
           <p className="text-center text-callout text-muted-foreground">{BOTS_STRINGS.modelLine}</p>
           {open && webAccess ? <WebAccessToggle api={webAccess} /> : null}
+          {open && meetings ? <MeetingsAccess api={meetings} /> : null}
           {open && asks ? <AsksToggle asks={asks} /> : null}
           {open && notice && onReconnect ? <ExpiryNotice key={`${notice.id}:${notice.deliveredAt ?? notice.renderAttemptAt ?? "initial"}`} notice={notice} onReconnect={onReconnect} /> : null}
           {history === "loading" ? <p role="status" className="text-callout text-muted-foreground">{BOTS_STRINGS.historyLoading}</p> : null}

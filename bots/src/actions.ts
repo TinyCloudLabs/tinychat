@@ -39,6 +39,7 @@ export const ACTION_ERRORS = {
   final: "The owner already declined this, or it expired. Don't propose it again, reword it or send it bot by bot.",
   pending: "Too many open requests for now. Carry on without proposing.",
   daily: "You've made enough requests for today. Carry on without proposing.",
+  held: "Proposing a message to another bot is paused in this chat because it holds the owner’s private data. It stays paused until the chat is cleared after 30 days without use.",
 } as const;
 
 const listKeys = (keys: readonly string[]): string => keys.length < 2 ? keys.join("") : `${keys.slice(0, -1).join(", ")} and ${keys.at(-1)}`;
@@ -205,6 +206,9 @@ export interface ActionReply {
 }
 
 export type ActionResult = { ok: true; request: ActionRequest } | { ok: false; error: "not_pending" | "invalid" };
+
+/** The owner's Send: also refused while the chat holds the owner's private data, before anything is marked sending. */
+export type ApproveResult = ActionResult | { ok: false; error: "held" };
 
 /** The owner's tap on Send: `{ decision: "approve", binding }`, and the recipients the backend admits for Main's turn. */
 export function parseApproveInput(input: unknown): { binding: string; keys: unknown } | undefined {

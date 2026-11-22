@@ -20,6 +20,8 @@ export const ACTION_STRINGS = {
   send: "Send",
   decline: "Don’t send",
   sendFailed: "Couldn’t send that. Try again.",
+  /** A Send tapped after the chat read the owner's meetings: nothing goes out, and the card says why. */
+  held: "Not sent. This chat has your meeting data in it, so messages from it to other bots are paused until the chat is cleared after 30 days without use.",
 
   /** What a card collapses to. */
   sending: "Sending…",

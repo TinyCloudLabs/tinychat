@@ -5,7 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { ACTION_STRINGS } from "./actionStrings";
 import {
-  BotsRouteMissing, type ActionRequest, type AskDecision, type AskRequest, type BotsApi, type MainRequest, type SecretDecision, type SecretLine, type SecretRequest,
+  BotsHeld, BotsRouteMissing, type ActionRequest, type AskDecision, type AskRequest, type BotsApi, type MainRequest, type SecretDecision, type SecretLine, type SecretRequest,
 } from "./botsApi";
 import type { AppReply } from "./useMainChat";
 
@@ -36,7 +36,8 @@ export type AskOutcome = { id: string; kind: "declined" | "expired" } | { id: st
 /** The recipients' names as the card shows them. */
 export const actionNames = (request: ActionRequest): string[] => request.targets.map((target) => target.name ?? ACTION_STRINGS.missing);
 
-export type AskResult = "ok" | "failed";
+/** `held`: a Send for a chat that holds the owner's meeting data; the proposal stays as it is. */
+export type AskResult = "ok" | "failed" | "held";
 
 export interface Asks {
   /** `unknown` until the service answers; `no` when it has no such route (nothing about asks is shown). */
@@ -283,10 +284,11 @@ export function useAsks(api: AsksApi, { open, onDecided, owner }: { open: boolea
     if (request.kind === "action") told.current.add(request.id);
     try {
       stored = await attempt(() => api.answerRequest(request.id, decision));
-    } catch {
+    } catch (cause) {
       // Most likely the request is no longer pending (answered elsewhere, expired): the next read says which.
       decided.current.delete(request.id);
       told.current.delete(request.id);
+      if (cause instanceof BotsHeld) return "held";
       poll.current();
       return "failed";
     }

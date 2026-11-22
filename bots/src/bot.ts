@@ -16,7 +16,8 @@ import { type Frame, type HostToolHandler, type HostToolReply, RpcError } from "
 import { addressesIn } from "./web";
 import { readWebPolicy, type WebPolicy, writeWebPolicy } from "./web-policy";
 import { type AnswerInput, type AnswerResult, type AppOrigin, AskStore, type AskReply, type AskRequest, cancelAsks, readAsksEnabled, type SecretLine, sweepAsks as sweepAskStores, writeAsksEnabled } from "./asks";
-import { type ActionOutcome, type ActionReply, type ActionRequest, type ActionResult, ActionStore, actionBinding } from "./actions";
+import { type ReadArea, type ReadsSetting, writeReads } from "./reads";
+import { type ActionOutcome, type ActionReply, type ActionRequest, type ActionResult, ActionStore, type ApproveResult, actionBinding } from "./actions";
 
 /** Where a message the app sends Main comes from: a decided question or secret request, or a decided proposal. */
 export type AppSource = { app: AppOrigin["app"] | ActionReply["decision"]; secret?: SecretLine };
@@ -106,6 +107,10 @@ export interface SandboxLauncher {
    * approval links, which OpenKey checks against that account.
    */
   syncAsks?(layout: BotLayout, turn?: { outside: boolean }, ownerDid?: string): Promise<void>;
+  /** Gives the gateway the owner's read setting and the bot's conversation id (reads.ts). */
+  pushReads?(layout: BotLayout): Promise<void>;
+  /** Whether the bot's current conversation holds owner data it read; message_bot is refused while it does. */
+  readsHeld?(layout: BotLayout): Promise<boolean>;
   /**
    * Collects the proposals the box made, then gives the gateway the counts, the final proposals and, when given, the
    * recipients Main may name from now (an empty list: none).
@@ -373,6 +378,7 @@ export class Bot {
   #deleting: Promise<DeleteSkip | undefined> | undefined;
   #webSaves: Promise<void> = Promise.resolve();
   #askSaves: Promise<void> = Promise.resolve();
+  #readSaves: Promise<void> = Promise.resolve();
   #busy = false;
   #listing = 0;
   #settled = true;
@@ -619,6 +625,22 @@ export class Bot {
     return saved.then(() => ({ enabled }));
   }
 
+  /**
+   * Saves which areas the owner lets Main read and gives the gateway the setting. The backend checks the owner's grant
+   * on every read whatever the gateway holds, so a push that fails is logged and sent again at the next message.
+   */
+  setReads(owner: string, areas: ReadArea[]): Promise<ReadsSetting> {
+    const setting: ReadsSetting = areas.length > 0 ? { areas, owner } : { areas: [] };
+    const saved = this.#readSaves.then(async () => {
+      await this.#deleting;
+      writeReads(this.layout, setting);
+      await this.#launcher.pushReads?.(this.layout).catch(() => log("reads_setting_push_failed", this.layout.botId));
+      log("reads_setting", this.layout.botId, { areas: areas.length });
+    });
+    this.#readSaves = saved.catch(() => {});
+    return saved.then(() => ({ areas: setting.areas }));
+  }
+
   /** The owner's requests from Main: questions and proposals so far (collected from the gateway first), open first. */
   async requests(): Promise<(AskRequest | ActionRequest)[]> {
     await this.#deleting;
@@ -657,8 +679,10 @@ export class Bot {
    * that binding), then each recipient gets the message by the path `message_bot` takes, admitted for this owner.
    * Recipients outside `messenger.keys` are not sent to. Main is told the outcome by an app message.
    */
-  async approveRequest(id: string, binding: string, messenger: BotMessenger): Promise<ActionResult> {
+  async approveRequest(id: string, binding: string, messenger: BotMessenger): Promise<ApproveResult> {
     await this.#deleting;
+    // A chat that read the owner's meetings sends nothing to other bots: the proposal stays as it is and the card says why.
+    if (await this.holdsOwnerData()) return { ok: false, error: "held" };
     const store = new ActionStore(this.layout);
     const approved = store.approve(id, binding, this.layout.ownerId);
     if (!approved.ok) return approved;
@@ -825,6 +849,17 @@ export class Bot {
     }
   }
 
+  /** Asks the gateway whether this conversation holds owner data it read. An answer that cannot be had counts as held. */
+  async holdsOwnerData(): Promise<boolean> {
+    if (!this.#launcher.readsHeld) return false;
+    try {
+      return await this.#launcher.readsHeld(this.layout);
+    } catch {
+      log("reads_held_check_failed", this.layout.botId);
+      return true;
+    }
+  }
+
   #turn(sandbox: Sandbox, text: string, sink: TurnSink, messenger?: BotMessenger): Promise<void> {
     const id = sandbox.nextId();
     const { promise, resolve, reject } = Promise.withResolvers<void>();
@@ -840,6 +875,8 @@ export class Bot {
         return { text: MESSAGING_STRINGS.invalid, isError: true };
       }
       const { targetKey } = args;
+      // Owner data read in this conversation reaches another bot only through the owner's tap (propose_action).
+      if (await this.holdsOwnerData()) return { text: MESSAGING_STRINGS.held, isError: true };
       if (recipient !== undefined && recipient !== targetKey) return { text: MESSAGING_STRINGS.oneBot, isError: true };
       if (reaching.has(targetKey)) return { text: MESSAGING_STRINGS.busy, isError: true };
       recipient = targetKey;

@@ -6,8 +6,9 @@ import type { BotAdmission } from "./bot-admission";
 import { type AppSource, type AsksSettings, type BotMessenger, type ErrorCode, ERROR_MESSAGES, type ListedMessage, MAX_TEXT, type TurnSink, type WebSettings } from "./bot";
 import { type OwnerDate, ownerDateFrom } from "./owner-date";
 import { INVALID_HOSTS, parseWebPolicy, type WebPolicy } from "./web-policy";
-import { type AnswerInput, type AnswerResult, type AskReply, type AskRequest, parseAnswerInput } from "./asks";
-import { type ActionReply, type ActionRequest, type ActionResult, parseApproveInput } from "./actions";
+import { type AnswerInput, type AnswerResult, type AppOrigin, type AskReply, type AskRequest, parseAnswerInput } from "./asks";
+import { type ActionReply, type ActionRequest, type ActionResult, type ApproveResult, parseApproveInput } from "./actions";
+import { parseAreas, type ReadArea, type ReadsSetting } from "./reads";
 import { isRecord } from "./guards";
 import { ANNOUNCED_STATES, type AnnouncedState, type BotState, OwnerBotLimit } from "./manifest";
 import { legacyOwnerHeaderAccepted } from "./config";
@@ -33,7 +34,7 @@ const ALLOWED: Record<Operation, readonly BotState[]> = {
 };
 
 function operationOf(rest: string, method: string): Operation | undefined {
-  if (rest === "/web" || rest === "/asks" || rest === "/requests" || ANSWER_PATH.test(rest)) return "read";
+  if (rest === "/web" || rest === "/asks" || rest === "/reads" || rest === "/requests" || ANSWER_PATH.test(rest)) return "read";
   if (rest === "/messages") return method === "POST" ? "turn" : "read";
   if (rest === "/history" || rest === "/history/stage" || rest === "/history/permission" || rest === "/history/notice") return "history";
   return undefined;
@@ -61,10 +62,14 @@ export interface BotApi {
   /** The owner's setting for questions from Main, and their requests. Absent: the service does not have them (404). */
   asksSettings?(): Promise<AsksSettings>;
   setAsksEnabled?(enabled: boolean): Promise<AsksSettings>;
+  /** Which areas of the owner's data Main may read (reads.ts). Set by the backend once it holds the owner's grant. */
+  setReads?(owner: string, areas: ReadArea[]): Promise<ReadsSetting>;
+  /** Whether this bot's current conversation holds owner data it read; it then sends nothing to other bots. */
+  holdsOwnerData?(): Promise<boolean>;
   requests?(): Promise<(AskRequest | ActionRequest)[]>;
   answerRequest?(id: string, input: AnswerInput): Promise<AnswerResult | ActionResult>;
   /** The owner's Send on a proposal card. The send runs after it returns; Main is told the outcome by an app message. */
-  approveRequest?(id: string, binding: string, messenger: BotMessenger): Promise<ActionResult>;
+  approveRequest?(id: string, binding: string, messenger: BotMessenger): Promise<ApproveResult>;
   /** The message for Main that tells it what the owner decided; undefined unless decided and not yet delivered. */
   appReply?(requestId: string): AskReply | ActionReply | undefined;
   appReplyDelivered?(requestId: string): void;
@@ -99,8 +104,14 @@ const MAX_QUEUED_BYTES = 1024 * 1024;
 // Keeps one tool reply well below the RPC frame limit even when JSON escapes its characters.
 const MAX_BOT_REPLY_BYTES = 32 * 1024;
 const UNAVAILABLE_REPLY = { text: MESSAGING_STRINGS.unavailable, isError: true } as const;
+const HELD_REPLY = { text: MESSAGING_STRINGS.targetHeld, isError: true } as const;
 
+/**
+ * Runs a turn in the target and returns its reply. A target whose conversation holds owner data it read, before the
+ * turn or after it, sends no reply: what it answers could carry that data to the asking bot.
+ */
 async function relayMessage(target: BotApi, owner: string, text: string): Promise<HostToolReply> {
+  if (await target.holdsOwnerData?.()) return HELD_REPLY;
   let reply = "";
   let bytes = 0;
   let complete = false;
@@ -117,6 +128,7 @@ async function relayMessage(target: BotApi, owner: string, text: string): Promis
   }, owner, undefined, "bot");
   if (errorCode === "busy") return { text: MESSAGING_STRINGS.busy, isError: true };
   if (errorCode || !complete || !reply || bytes > MAX_BOT_REPLY_BYTES) return UNAVAILABLE_REPLY;
+  if (await target.holdsOwnerData?.()) return HELD_REPLY;
   return { text: reply };
 }
 
@@ -259,7 +271,7 @@ export function createApp(options: AppOptions): (req: Request) => Promise<Respon
       } catch { return new Response(null, { status: 503 }); }
       return new Response(null, { status: 405 });
     }
-    if ((rest === "/web" || rest === "/asks" || rest === "/requests" || ANSWER_PATH.test(rest)) && key !== MAIN_KEY) return new Response(null, { status: 404 });
+    if ((rest === "/web" || rest === "/asks" || rest === "/reads" || rest === "/requests" || ANSWER_PATH.test(rest)) && key !== MAIN_KEY) return new Response(null, { status: 404 });
     const operation = operationOf(rest, req.method);
     if (!operation) return new Response(null, { status: 404 });
     // The state is read before a sibling is looked up, so a key nobody announced never creates anything.
@@ -271,6 +283,17 @@ export function createApp(options: AppOptions): (req: Request) => Promise<Respon
     const found = key === MAIN_KEY ? options.bots.forOwner(owner) : options.bots.forBot?.(owner, key);
     if (!found) return new Response(null, { status: 404 });
     const bot = found;
+    if (rest === "/reads") {
+      if (req.method !== "PUT" || !bot.setReads) return new Response(null, { status: bot.setReads ? 405 : 404 });
+      const input: unknown = await req.json().catch(() => null);
+      const areas = isRecord(input) && Object.keys(input).length === 1 ? parseAreas(input.areas) : undefined;
+      if (!areas) return Response.json({ error: "invalid" }, { status: 400 });
+      try {
+        return Response.json(await bot.setReads(owner, areas));
+      } catch {
+        return Response.json({ error: "bot_unavailable", message: ERROR_MESSAGES.bot_unavailable }, { status: 503 });
+      }
+    }
     if (rest === "/web") {
       try {
         if (req.method === "GET" && bot.webSettings) return Response.json(await bot.webSettings());
@@ -303,6 +326,7 @@ export function createApp(options: AppOptions): (req: Request) => Promise<Respon
             if (!messenger || !bot.approveRequest) return Response.json({ error: "invalid" }, { status: 400 });
             const result = await bot.approveRequest(requestId, approve.binding, messenger);
             if (result.ok) return Response.json(result.request);
+            if (result.error === "held") return Response.json({ error: "held" }, { status: 409 });
             return result.error === "invalid" ? Response.json({ error: "invalid" }, { status: 400 }) : Response.json({ error: "not_pending" }, { status: 409 });
           }
           const decision = parseAnswerInput(input);

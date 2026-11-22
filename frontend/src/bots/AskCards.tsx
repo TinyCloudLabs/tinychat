@@ -112,6 +112,7 @@ function ActionCard({ request, asks }: { request: ActionRequest; asks: Asks }) {
   const [now, setNow] = useState(Date.now);
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState(false);
+  const [held, setHeld] = useState(false);
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), MINUTE_MS);
     return () => clearInterval(timer);
@@ -128,6 +129,7 @@ function ActionCard({ request, asks }: { request: ActionRequest; asks: Asks }) {
     const result = await asks.decide(request, decision);
     setBusy(false);
     if (result === "failed") setFailed(true);
+    if (result === "held") setHeld(true);
   };
 
   return (
@@ -144,10 +146,11 @@ function ActionCard({ request, asks }: { request: ActionRequest; asks: Asks }) {
       {request.outside ? <p className="text-callout" data-action-outside="">{ACTION_STRINGS.outside}</p> : null}
       <p className="text-callout text-muted-foreground">{ACTION_STRINGS.footer}</p>
       <div className="flex flex-wrap gap-2">
-        <Button type="button" disabled={busy || !binding || !message} onClick={() => { if (binding) void submit({ decision: "approve", binding }); }}>{ACTION_STRINGS.send}</Button>
+        <Button type="button" disabled={busy || held || !binding || !message} onClick={() => { if (binding) void submit({ decision: "approve", binding }); }}>{ACTION_STRINGS.send}</Button>
         <Button type="button" variant="outline" disabled={busy} onClick={() => void submit({ decision: "decline" })}>{ACTION_STRINGS.decline}</Button>
       </div>
       {failed ? <p role="alert" className="text-callout text-muted-foreground">{ACTION_STRINGS.sendFailed}</p> : null}
+      {held ? <p role="alert" className="text-callout" data-action-held="">{ACTION_STRINGS.held}</p> : null}
     </section>
   );
 }

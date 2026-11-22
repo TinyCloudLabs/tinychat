@@ -58,6 +58,14 @@ export class BotsNoReply extends BotsError {
   }
 }
 
+/** The service answered 409 `held` to a Send: the chat holds the owner's meeting data, so nothing goes to other bots. */
+export class BotsHeld extends BotsError {
+  constructor() {
+    super("failed");
+    this.name = "BotsHeld";
+  }
+}
+
 export type MainWebMode = "off" | "listed" | "any";
 
 /** Main's web access setting, as the service reports it. `hosts` is the owner's list, used only in `listed` mode. */
@@ -421,7 +429,11 @@ export function createBotsApi({ baseUrl, getToken, fetch: fetchImpl = (input, in
     if (response.status === 400) throw new BotsError("invalid");
     if (response.status === 404) throw new BotsRouteMissing();
     // The service refuses an app reply for a request that has nothing to deliver (already sent, or not decided).
-    if (response.status === 409 && fields(await response.json().catch(() => null)).error === "no_reply") throw new BotsNoReply();
+    if (response.status === 409) {
+      const refusal = fields(await response.json().catch(() => null)).error;
+      if (refusal === "no_reply") throw new BotsNoReply();
+      if (refusal === "held") throw new BotsHeld();
+    }
     if (!response.ok) throw new BotsError("failed");
     return response;
   }

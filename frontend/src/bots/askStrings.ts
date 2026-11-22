@@ -31,7 +31,7 @@ export const ASK_STRINGS = {
   /** Shown under the answer box only while Web access is on. */
   webAccessOn: `Web access is on, so a page ${MAIN_BOT_NAME} reads could try to get it to send your answer to a website.`,
   /** Shown above the answer box only when the request says Main read something from outside the chat. */
-  outside: `${MAIN_BOT_NAME} read a web page or someone else’s message before asking, so answer only if this question is what you expect.`,
+  outside: `Before asking, ${MAIN_BOT_NAME} read something you didn’t write here, such as a web page, a meeting transcript or someone else’s message. Answer only if this question is what you expect.`,
   answer: "Answer",
   notNow: "Not now",
   stop: `Stop ${MAIN_BOT_NAME} from asking`,
@@ -76,7 +76,7 @@ export const SECRET_STRINGS = {
     `Only with: ${service ? `${service} (${sites.join(", ")})` : sites.join(", ")}`,
   /** Only when the catalog lets Main write with it (Monica, 2026-11-22). Writes are for known secrets, so `with` is the service. */
   writes: (service: string) => `${MAIN_BOT_NAME} can also send data to ${service} with it, which may cost money or change things there.`,
-  outside: `${MAIN_BOT_NAME} read a web page or someone else’s message before asking, so approve only if this request is what you expect.`,
+  outside: `Before asking, ${MAIN_BOT_NAME} read something you didn’t write here, such as a web page, a meeting transcript or someone else’s message. Approve only if this request is what you expect.`,
 
   addTitle: "Add it to TinyCloud Secrets",
   addHelp: "You type the value there, not here. If it’s already there, this only checks that it is.",

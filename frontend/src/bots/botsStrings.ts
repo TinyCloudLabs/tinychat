@@ -170,3 +170,19 @@ export const BOT_MANAGE_STRINGS = {
   deleting: "Deleting…",
   deleteFailed: "Couldn't delete your bot. Try again.",
 } as const;
+
+// Main's Meetings read setting (TC-3792). Dates arrive already formatted.
+const MAIN = BOTS_STRINGS.mainName;
+export const MEETINGS_ACCESS_STRINGS = {
+  title: "Meetings",
+  off: `${MAIN} can't read your meetings.`,
+  allow: `Let ${MAIN} read them`,
+  confirmTitle: `Let ${MAIN} read your meetings?`,
+  confirmBody: `${MAIN} can read your recordings, transcripts and meeting notes for 7 days, then it stops. It can't change them. What it reads goes to the AI model service to write its answer. Once ${MAIN} reads a meeting, it can't use the web in this chat until the chat is cleared after 30 days without use.`,
+  confirm: "Allow for 7 days",
+  cancel: "Not now",
+  on: (date: string) => `${MAIN} can read your meetings until ${date}.`,
+  turnOff: "Turn off",
+  ended: `${MAIN}'s access to your meetings has ended.`,
+  failed: "Couldn't change this. Try again.",
+} as const;

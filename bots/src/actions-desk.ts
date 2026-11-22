@@ -110,8 +110,11 @@ export class ActionDesk {
   readonly #ledgers = new Map<string, Ledger>();
   readonly #issued = new Map<string, IssuedAction>();
   readonly #store: ActionLedgerStore | undefined;
+  readonly #held: (botId: string) => boolean;
 
-  constructor(now: () => number, ownerOf: (botId: string) => string, outside: (botId: string) => boolean, store?: ActionLedgerStore) {
+  /** `held`: whether the bot's chat holds the owner's private data, which sends nothing to other bots (meeting-reads.ts). */
+  constructor(now: () => number, ownerOf: (botId: string) => string, outside: (botId: string) => boolean, store?: ActionLedgerStore, held: (botId: string) => boolean = () => false) {
+    this.#held = held;
     this.#now = now;
     this.#ownerOf = ownerOf;
     this.#outside = outside;
@@ -171,6 +174,11 @@ export class ActionDesk {
    * it lapses. Only the supervisor's control socket reaches this. A spend that cannot be saved is refused.
    */
   spend(botId: string, id: string, binding: string): boolean {
+    // An approval issued before a meeting read cannot be sent after it; it is left unspent.
+    if (this.#held(botId)) {
+      console.log(JSON.stringify({ gateway: "actions", bot: botId.slice(0, 12), outcome: "spend_held" }));
+      return false;
+    }
     const entry = this.#issued.get(id);
     const ok = entry !== undefined && entry.bot === botId && entry.binding === binding && !entry.spent && this.#now() < entry.expiresAt + SPEND_GRACE_MS;
     if (ok) {
@@ -191,6 +199,7 @@ export class ActionDesk {
       log(outcome);
       return toolText(ACTION_ERRORS[error], true);
     };
+    if (this.#held(botId)) return refuse("held", "held");
     const ledger = this.#ledger(botId);
     const extra = Object.keys(args).some(key => key !== "kind" && key !== "targets" && key !== "text");
     const targets = checkedTargets(args.targets);

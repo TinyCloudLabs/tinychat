@@ -462,7 +462,10 @@ export function createBotsRouter(opts: {
   const sendAsks = async (res: Response, upstream: Promise<globalThis.Response>, rebuild: (payload: unknown) => unknown | Promise<unknown>, decided = false): Promise<void> => {
     try {
       const response = await upstream;
-      const refused = response.status === 404 ? { status: 404, error: "not_found" } : decided && response.status === 409 ? { status: 409, error: "not_pending" }
+      // A Send for a chat that holds the owner's private data is refused with `held`; any other 409 is a decided request.
+      const held = decided && response.status === 409 && (await response.clone().json().catch(() => null) as { error?: unknown } | null)?.error === "held";
+      const refused = response.status === 404 ? { status: 404, error: "not_found" } : held ? { status: 409, error: "held" }
+        : decided && response.status === 409 ? { status: 409, error: "not_pending" }
         : response.status === 400 ? { status: 400, error: "invalid" } : undefined;
       if (refused) {
         await response.body?.cancel();
