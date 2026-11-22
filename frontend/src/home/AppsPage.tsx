@@ -13,6 +13,7 @@ import {
   APPS_PAGE_TITLE,
 } from "@/lib/homeStrings";
 import { ONE_APPS, appRoute, appTarget, appUrl, framedApp, framesAppHere, type OneApp } from "@/apps/registry";
+import { useListedApps, type ListedAppsReader } from "@/apps/listedApps";
 import { PlatformContext } from "@/lib/platform";
 import { useSizeClass } from "@/lib/sizeClass";
 import { APP_CAPTIONS, CONNECTORS_NAME } from "@/apps/strings";
@@ -26,8 +27,8 @@ import { AppsLauncher, type LauncherTile } from "./AppsLauncher";
 import { SHARE_APPS, shareRunUrl, type ShareApp } from "./shareApps";
 
 /** The launcher's tiles: every TinyCloud app, then Connectors (which has its own page, not a frame). */
-export function launcherTiles(pendingMeetings: number, origin: string): LauncherTile[] {
-  const tiles: LauncherTile[] = ONE_APPS.flatMap((app) =>
+export function launcherTiles(pendingMeetings: number, origin: string, apps: readonly OneApp[] = ONE_APPS): LauncherTile[] {
+  const tiles: LauncherTile[] = apps.flatMap((app) =>
     app.kind === "link"
       ? []
       : [{ pin: app.kind === "native" ? "capture" : appPinId(app.id), name: app.name, description: app.description, icon: app.icon, target: appTarget(app, origin) }],
@@ -70,13 +71,14 @@ export function pinnedFirst(tiles: readonly GridTile[], pins: readonly PinId[]):
   return [...tiles.filter((tile) => pins.includes(tile.pin)), ...tiles.filter((tile) => !pins.includes(tile.pin))];
 }
 
-function OneAppsPage({ accountDid, pendingMeetings }: { accountDid: string | null; pendingMeetings: number }) {
+function OneAppsPage({ accountDid, pendingMeetings, tcw }: { accountDid: string | null; pendingMeetings: number; tcw: ListedAppsReader | null }) {
   const { pins, pin, unpin } = useNavPins(accountDid, NAV_APP_IDS);
   const platform = useContext(PlatformContext);
   const phone = navKindFor(useSizeClass()) === "tabbar";
-  const tiles = useMemo(() => launcherTiles(pendingMeetings, window.location.origin), [pendingMeetings]);
+  const apps = useListedApps(tcw);
+  const tiles = useMemo(() => launcherTiles(pendingMeetings, window.location.origin, apps), [pendingMeetings, apps]);
   if (ONE_NAV_ENABLED) {
-    const grid = gridTiles(pendingMeetings, ONE_APPS, platform === "web" ? window.location.origin : null);
+    const grid = gridTiles(pendingMeetings, apps, platform === "web" ? window.location.origin : null);
     return (
       <AppsGrid
         tiles={phone ? pinnedFirst(grid, pins) : grid}
@@ -97,10 +99,12 @@ interface AppsPageProps {
   accountDid?: string | null;
   /** One Apps: meetings waiting in Connectors, for its tile while it is not pinned. */
   pendingMeetings?: number;
+  /** One Apps: One's session, which checks for the apps listed only for some accounts (listedApps.ts). */
+  tcw?: ListedAppsReader | null;
 }
 
-export function AppsPage({ apps = SHARE_APPS, accountDid = null, pendingMeetings = 0 }: AppsPageProps) {
-  if (ONE_APPS_ENABLED) return <OneAppsPage accountDid={accountDid} pendingMeetings={pendingMeetings} />;
+export function AppsPage({ apps = SHARE_APPS, accountDid = null, pendingMeetings = 0, tcw = null }: AppsPageProps) {
+  if (ONE_APPS_ENABLED) return <OneAppsPage accountDid={accountDid} pendingMeetings={pendingMeetings} tcw={tcw} />;
   return (
     <div className="relative h-full overflow-y-auto" data-scroll-root>
       <PageHeader title={APPS_PAGE_TITLE} className={PAGE_COLUMN} />

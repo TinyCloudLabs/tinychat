@@ -12,6 +12,7 @@ export const APP_NAMES: Readonly<Record<OneAppId, string>> = {
   "xyz.tinycloud.explorer": "Explorer",
   "xyz.tinycloud.account": "Account",
   "xyz.tinycloud.courier": "Courier",
+  "xyz.tinycloud.rocinante.ledger": "Ship ledger",
   "xyz.tinycloud.share": "Share",
 };
 
@@ -23,6 +24,7 @@ export const APP_DESCRIPTIONS: Readonly<Record<Exclude<OneAppId, LinkAppId>, str
   // Web. iOS leaves Account out of ONE_APPS (registry.ts), so its iOS wording is unused.
   "xyz.tinycloud.account": "See your account, billing, spaces, installed apps and the access you've given.",
   "xyz.tinycloud.courier": "See what your agents send each other, and answer what needs you.",
+  "xyz.tinycloud.rocinante.ledger": "Every task on the ship, where it stands and what it is waiting on.",
 };
 
 /** The `<scope>` phrase for each group of ceiling entries (registry.ts tags every entry with one). */
@@ -38,6 +40,7 @@ export const SCOPE_PHRASES = {
   installedApps: "your installed apps",
   spaces: "the list of your spaces",
   courier: "your Courier threads and messages, the agents you've paired and requests waiting for you",
+  shipLedger: "your Rocinante sitrep's cards, answers and check-offs, read only",
 } as const;
 
 export type ScopeId = keyof typeof SCOPE_PHRASES;
@@ -146,6 +149,7 @@ export const APP_CAPTIONS: Readonly<Record<GlyphId, string>> = {
   explorer: "Browse your data",
   account: "Plan, spaces and access",
   courier: "Messages with agents",
+  ledger: "Where every task stands",
   share: "Share files by link",
   connectors: "Bring in your meetings",
 };
