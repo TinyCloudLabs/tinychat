@@ -11,7 +11,7 @@ import type { Subprocess } from "bun";
 import type { Sandbox, SandboxLauncher } from "./bot";
 import type { SupervisorConfig } from "./config";
 import { isRecord } from "./guards";
-import type { BotLayout } from "./layout";
+import { type BotLayout, botRole } from "./layout";
 import { BOT_START, type OciSpec, SANDBOX_SESSION_DIR, sandboxSpec } from "./oci";
 import { RpcChannel } from "./rpc";
 import { COPY_FAILURES, type CopyFailure, hasSnapshot, STATE_INODES_PER_MB } from "./state";
@@ -121,9 +121,23 @@ export function mcpJson(): string {
   });
 }
 
-/** OMP's own settings inside every sandbox: its built-in web tools would only fail without a network, so they are off. */
+/**
+ * OMP's own settings inside every sandbox. Its built-in web tools would only fail without a network, so they are off.
+ * Of the other built-ins, a bot keeps read, write, edit, bash, glob and grep. Off: `ask` (the supervisor cancels every
+ * question OMP asks), `todo`, the code tools (`lsp`, `debug`, `astGrep`, `astEdit`), `browser`, `eval` (both
+ * runtimes), subagents (`task`, at depth 0) and background work (`async`, `launch`; with them, `wait`), which would
+ * outlive the turn. Skills are off too: OMP runs a `/skill:<name>` token anywhere in a message, so with them on another
+ * bot's text could start one.
+ */
 export function configYml(): string {
-  return ["# Written by the bots supervisor.", "web_search:", "  enabled: false", "fetch:", "  enabled: false", ""].join("\n");
+  const off = ["web_search", "fetch", "ask", "todo", "lsp", "debug", "astGrep", "astEdit", "browser", "async", "launch", "skills"];
+  return [
+    "# Written by the bots supervisor.",
+    ...off.flatMap(name => [`${name}:`, "  enabled: false"]),
+    "eval:", "  py: false", "  js: false",
+    "task:", "  maxRecursionDepth: 0",
+    "",
+  ].join("\n");
 }
 
 /** A container's status as `runsc list` reports it; "absent" once runsc no longer knows it. */
@@ -421,6 +435,7 @@ export class RunscHost implements SandboxLauncher {
         stateMount: layout.stateMount,
         cgroupsPath: `/bots/${layout.botId}`,
         limits: this.#cfg.limits,
+        role: botRole(layout),
       });
       writeFileSync(join(layout.bundleDir, "config.json"), JSON.stringify(spec), { mode: 0o600 });
       await attempt([...this.#runsc, "delete", "-force", layout.containerId]);

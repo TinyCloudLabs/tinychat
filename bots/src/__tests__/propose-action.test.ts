@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { ACTION_ERRORS, ACTION_REPLIES, actionBinding, actionsFile, syncActions } from "../actions";
 import { type AsksGateway, syncAsks } from "../asks";
 import type { BotAdmission } from "../bot-admission";
-import { BotManager, type Sandbox, type SandboxLauncher } from "../bot";
+import { BotManager, promptText, type Sandbox, type SandboxLauncher } from "../bot";
 import { type GatewayConfig, PINNED_FETCH_URL, PINNED_UPSTREAM, PINNED_WEB_API } from "../config";
 import { Gateway } from "../gateway";
 import { type BotLayout, botLayout } from "../layout";
@@ -234,7 +234,8 @@ describe("propose_action, end to end", () => {
 
     const approved = await run.approve(pending.id, pending.binding!);
     expect(approved.status).toBe(200);
-    expect(await run.replyAsOthers()).toEqual([MESSAGE, MESSAGE]);
+    // Each bot gets Main's message as written, marked as from another of the owner's bots.
+    expect(await run.replyAsOthers()).toEqual([promptText(MESSAGE, "bot"), promptText(MESSAGE, "bot")]);
     const done = await run.settled(pending.id);
     expect(done.state).toBe("done");
     expect(done.text).toBeUndefined();
@@ -244,7 +245,7 @@ describe("propose_action, end to end", () => {
     // Main is told in fixed words around the recipients' keys, never words from the card.
     const told = await run.call("POST", "main", "/messages", { appReply: { requestId: pending.id } });
     const prompt = await run.box("main").take("prompt");
-    expect(prompt.message).toBe(ACTION_REPLIES.sent([first, second]));
+    expect(prompt.message).toBe(promptText(ACTION_REPLIES.sent([first, second]), { app: "action_approved" }));
     run.box("main").finish(prompt, "noted");
     await told.text();
   });
