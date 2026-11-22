@@ -192,7 +192,13 @@ export async function readWithConnectorKeyAccess<R extends { ok: boolean; error?
 export async function resealConnectorKey(tcw: Pick<TinyCloudWeb, "secrets">, d: Connector): Promise<boolean> {
   try {
     const { vaultKey } = resolveSecretPath(d.secretName, d.secretScope === undefined ? {} : { scope: d.secretScope });
-    const result = await tcw.secrets.vault.resealToKey(vaultKey, secretKeyPath(d.secretName, d.secretScope));
+    const vault = tcw.secrets.vault;
+    // An SDK without the method cannot move the copy: refuse, never report it as moved.
+    if (typeof vault.resealToKey !== "function") {
+      console.warn(`[connector-key] ${d.id}: kept its network-sealed copy (this SDK has no resealToKey)`);
+      return false;
+    }
+    const result = await vault.resealToKey(vaultKey, secretKeyPath(d.secretName, d.secretScope));
     if (result.status === "moved" || result.status === "already") return true;
     console.warn(`[connector-key] ${d.id}: kept its network-sealed copy (${result.status === "skipped" ? result.reason : result.status})`);
     return false;

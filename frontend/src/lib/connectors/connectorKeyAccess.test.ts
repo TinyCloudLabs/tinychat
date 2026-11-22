@@ -8,7 +8,9 @@ import {
   connectorKeyPermissions,
   connectorPausedMessage,
   isConnectorKeyAccessPaused,
+  LEGACY_ENVELOPE,
   markConnectorKeyAccessPaused,
+  readWithConnectorKeyAccess,
   resealConnectorKey,
   resetConnectorKeyAccessForTests,
 } from "./connectorKeyAccess";
@@ -211,5 +213,24 @@ test("reseal moves the connector's own record onto its own key; anything short o
   } finally {
     warn.mockRestore();
     error.mockRestore();
+  }
+});
+
+test("an SDK without resealToKey refuses: the copy is not reported as moved and the row is paused", async () => {
+  const warn = spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    const f = fixture();
+    const tcw = { ...(f.tcw as object), secrets: { vault: {} } } as unknown as TinyCloudWeb;
+    expect(await resealConnectorKey(tcw, FIREFLIES)).toBe(false);
+    expect(warn).toHaveBeenCalledTimes(1);
+
+    let reads = 0;
+    const legacy = { ok: false as const, error: { code: LEGACY_ENVELOPE } };
+    const result = await readWithConnectorKeyAccess(tcw, FIREFLIES, async () => (reads++, legacy));
+    expect(result).toBe(legacy);
+    expect(reads).toBe(1);
+    expect(isConnectorKeyAccessPaused(ADDRESS, "fireflies")).toBe(true);
+  } finally {
+    warn.mockRestore();
   }
 });
