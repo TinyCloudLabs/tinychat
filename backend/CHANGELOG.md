@@ -1,5 +1,17 @@
 # @tinychat/backend
 
+## 0.11.0-beta.8
+
+### Patch Changes
+
+- 18b4ecd: The agent can use a secret you approved for up to 1 hour, and only with the sites named in the request. It can send data only to OpenAI, Anthropic, Gemini, ElevenLabs or Fireflies, and only when you approved that site. It never sees the secret's value.
+
+  Details: TC-3595
+
+- 94681f9: An agent turn on a model with no catalog price must be covered by the fallback minimum of 2,600 credits. Its preflight log event carries `unpriced: true`, so an unpriced model shows in the logs even when every turn on it is refused. Priced models leave the field out.
+
+  Details: TC-3734
+
 ## 0.11.0-beta.7
 
 ### Minor Changes
