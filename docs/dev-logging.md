@@ -225,6 +225,17 @@ provider refusal can be read without public Phala logs. Same pattern as tinyclou
   `ops/logging/pseudonyms.md` in `tinycloud-dev`.
   `backend/src/__tests__/request-record.test.ts` sends a chat turn carrying each kind of sensitive value and checks
   the emitted record and, with `VECTOR_BIN`, what the real pipeline passes to the sink.
+- **Agent chat credit checks (TC-3734).** Every agent chat turn that reaches the budget check ships one
+  `agent_chat_budget_preflight` record, whatever `AGENT_CHAT_BUDGET_PREFLIGHT` is: `mode` (`log`, `enforce` or `off`),
+  `would_block` (the remaining budget is known and under the per-turn minimum), `blocked` (`would_block` under
+  `enforce`), `remaining_known`, `remaining_bucket` (`lt0`, `0-99`, `100-319`, `320-999`, `1000+` or `unknown`),
+  `minimum`, `tier` (`free`, `plus` or `pro`), `source` (`ledger`, `local`, or `outage` when the ledger was
+  unreadable and the local counter stood in), `account_hash` (the same keyed monthly pseudonym as above; omitted when
+  no key is set) and `request_id` (the ID on that request's `tinychat_request` record), plus `svc`, `event`, `level`
+  (`info`) and `ts`. It is emitted through the typed request sink beside the plain `[agent-chat] turn budget` line,
+  which the log boundary reduces to a level inside a request. No address, message text or exact credit count is a
+  field. It is not a 4xx or 5xx record, so the request caps do not apply; it has its own Vector `throttle` of 60 per
+  minute, so read `would_block` as a ratio and `account_hash` as a lower bound of distinct accounts.
 - **Storage and calendar diagnostics (TC-2546).** A `[storage-lane]` line projects exactly `svc`, `event`, `component`,
   `level`, `ts`, `op`, `priority` and `waited_ms`. The closed operations are `slow-wait` (warning: queued at least one
   second before starting, not evidence that the operation failed) and `wait-timeout` (error: the queued operation
