@@ -22,21 +22,30 @@ const DID = "did:pkh:eip155:1:0x" + "11".repeat(20);
 const UNTIL = Date.UTC(2026, 10, 29, 12);
 const GRANT: ReadGrant = { serialized: "s", siwe: "w", signature: "g" };
 
-/** A service holding one settings value: each PUT changes it, as the backend does. */
-function service(areas: Record<ReadArea, ReadAreaState>) {
-  let current: ReadSettings = { serviceDid: DID, expiresAt: null, areas: { ...areas } };
+/** A service holding one settings value: each PUT changes it, as the backend does; each stored grant gets a new cid. */
+function service(areas: Record<ReadArea, ReadAreaState>, grantCid: string | null = null) {
+  let current: ReadSettings = { serviceDid: DID, expiresAt: null, grantCid, areas: { ...areas } };
   const signed: ReadArea[][] = [];
   const puts: { area: ReadArea; enabled: boolean }[] = [];
+  const revoked: string[] = [];
   const api: MeetingsAccessApi = {
     readSettings: async () => current,
     signReadGrant: async (_did, signedAreas) => { signed.push(signedAreas); return GRANT; },
     setReadArea: async (area, enabled) => {
       puts.push({ area, enabled });
-      current = { serviceDid: DID, expiresAt: enabled ? UNTIL : current.expiresAt, areas: { ...current.areas, [area]: enabled ? "on" : "off" } };
+      const next = { ...current.areas, [area]: enabled ? "on" : "off" } as Record<ReadArea, ReadAreaState>;
+      const anyOn = Object.values(next).includes("on");
+      current = {
+        serviceDid: DID,
+        expiresAt: enabled ? UNTIL : anyOn ? current.expiresAt : null,
+        grantCid: enabled ? `cid-${signed.length}` : anyOn ? current.grantCid : null,
+        areas: next,
+      };
       return current;
     },
+    revokeReadGrant: async (cid) => { revoked.push(cid); },
   };
-  return { api, signed, puts };
+  return { api, signed, puts, revoked };
 }
 
 const flush = () => act(async () => { for (let i = 0; i < 6; i++) await Promise.resolve(); });
@@ -82,6 +91,19 @@ test("Allow signs over feed_chats plus the areas on now, even when another secti
   expect(puts).toEqual([{ area: "meetings", enabled: true }, { area: "feed_chats", enabled: true }]);
   const date = new Date(UNTIL).toLocaleDateString(undefined, { dateStyle: "medium" });
   expect(section(host, "feed_chats").textContent).toContain(`${BOT} can read your feed and chats until ${date}.`);
+});
+
+test("turning feed and chats off keeps the shared grant while meetings, turned on in the other section after load, stays on", async () => {
+  const { api, puts, revoked } = service({ meetings: "off", feed_chats: "on" }, "cid-0");
+  const host = await render(<><MeetingsAccess api={api} /><FeedChatsAccess api={api} /></>);
+  await click(section(host, "meetings"), `Let ${BOT} read them`);
+  await click(section(host, "meetings"), "Allow for 7 days");
+  expect(revoked).toEqual(["cid-0"]);
+  await click(section(host, "feed_chats"), "Turn off");
+  expect(puts.at(-1)).toEqual({ area: "feed_chats", enabled: false });
+  expect(revoked).toEqual(["cid-0"]);
+  await click(section(host, "meetings"), "Turn off");
+  expect(revoked).toEqual(["cid-0", "cid-1"]);
 });
 
 test("ended shows its own line", async () => {
