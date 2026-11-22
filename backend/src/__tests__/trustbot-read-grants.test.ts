@@ -46,18 +46,16 @@ function memoryStore(): ReadGrantStore & { values: Map<string, string> } {
 function setup(options: { did?: string; store?: ReturnType<typeof memoryStore> } = {}) {
   let now = NOW;
   const activated: VerifiedTranscriptWriter[] = [];
-  const revoked: string[] = [];
   const store = options.store ?? memoryStore();
   const reader = {
     did: options.did ?? TRUSTBOT_DID, computeDelegationCid,
     useDelegation: async () => { throw new Error("unused"); },
-    revokeDelegation: async (cid: string) => { revoked.push(cid); return { ok: true, data: undefined }; },
-  } as unknown as Pick<TinyCloudNode, "did" | "useDelegation" | "computeDelegationCid" | "revokeDelegation">;
+  } as unknown as Pick<TinyCloudNode, "did" | "useDelegation" | "computeDelegationCid">;
   const grants = new TrustBotReadGrants({
     reader, store, host: HOST, sealSecret: new Uint8Array(32).fill(7), now: () => now,
     activate: async verified => { activated.push(verified); return { access: verified.cid } as never; },
   });
-  return { grants, store, activated, revoked, advance: (ms: number) => void (now += ms) };
+  return { grants, store, activated, advance: (ms: number) => void (now += ms) };
 }
 
 const refusal = (promise: Promise<unknown>) => promise.then(() => "allowed", (error: unknown) => error instanceof ReadGrantRefused ? error.code : String(error));
@@ -68,7 +66,7 @@ describe("turning meetings on", () => {
     const { grants, activated, store } = setup();
     expect((await grants.status(address)).areas.meetings).toBe("off");
     const status = await grants.enable(address, "meetings", await grant());
-    expect(status).toEqual({ expiresAt: NOW + 7 * DAY, areas: { meetings: "on", feed_chats: "off" } });
+    expect(status).toEqual({ expiresAt: NOW + 7 * DAY, grantCid: activated[0]!.cid, areas: { meetings: "on", feed_chats: "off" } });
     expect(await refusal(grants.access(address, "meetings"))).toBe("allowed");
     expect(activated.at(-1)!.resources.map(({ service, path, actions }) => ({ service, path, actions }))).toEqual([
       { service: "sql", path: `${APP_ID}/connectors`, actions: ["tinycloud.sql/read"] },
@@ -144,21 +142,22 @@ describe("each read", () => {
     expect(other.activated).toEqual([]);
   });
 
-  test("is refused once the owner turns meetings off, and the grant is revoked and deleted", async () => {
-    const { grants, store, revoked, activated } = setup();
+  // The node takes a revocation only from the owner who delegated, so the owner's browser revokes; this deletes.
+  test("is refused once the owner turns meetings off, and the stored grant is deleted", async () => {
+    const { grants, store, activated } = setup();
     await grants.enable(address, "meetings", await grant());
-    const cid = activated[0]!.cid;
-    expect(await grants.disable(address, "meetings")).toEqual({ expiresAt: null, areas: { meetings: "off", feed_chats: "off" } });
-    expect(revoked).toEqual([cid]);
+    expect((await grants.status(address)).grantCid).toBe(activated[0]!.cid);
+    expect(await grants.disable(address, "meetings")).toEqual({ expiresAt: null, grantCid: null, areas: { meetings: "off", feed_chats: "off" } });
     expect(store.values.size).toBe(0);
     expect(await refusal(grants.access(address, "meetings"))).toBe("none");
   });
 
-  test("a new grant replaces the old one, which is revoked", async () => {
-    const { grants, revoked, activated } = setup();
+  test("a new grant replaces the old one, and the status names the new one for the owner to revoke the old", async () => {
+    const { grants, activated } = setup();
     await grants.enable(address, "meetings", await grant());
     const old = activated[0]!.cid;
-    await grants.enable(address, "meetings", await grant());
-    expect(revoked).toEqual([old]);
+    const replaced = await grants.enable(address, "meetings", await grant());
+    expect(replaced.grantCid).toBe(activated[1]!.cid);
+    expect(replaced.grantCid).not.toBe(old);
   });
 });

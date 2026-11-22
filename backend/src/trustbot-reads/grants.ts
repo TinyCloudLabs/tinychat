@@ -19,7 +19,11 @@ const ACTIVATION_REUSE_MS = 5 * 60_000;
 
 export type ReadAccess = DelegatedAccess;
 export type AreaState = "off" | "on" | "ended";
-export interface ReadStatus { expiresAt: number | null; areas: Record<ReadArea, AreaState> }
+/**
+ * `grantCid` names the stored grant so the owner's browser can revoke it at the node: the node accepts a revocation
+ * only from the owner who delegated, never from TrustBot's read identity that received it.
+ */
+export interface ReadStatus { expiresAt: number | null; grantCid: string | null; areas: Record<ReadArea, AreaState> }
 export interface GrantEnvelope { serialized: string; siwe: string; signature: string }
 
 /** `none`: nothing stored. `off`: the owner has not turned this area on. `ended`: the grant expired. */
@@ -43,7 +47,7 @@ export interface ReadGrantStore {
 
 export interface TrustBotReadGrantsOptions {
   /** Signed in as TrustBot's read identity, and used for nothing else. */
-  reader: Pick<TinyCloudNode, "did" | "useDelegation" | "computeDelegationCid" | "revokeDelegation">;
+  reader: Pick<TinyCloudNode, "did" | "useDelegation" | "computeDelegationCid">;
   store: ReadGrantStore;
   /** The configured TinyCloud node. */
   host: string;
@@ -110,12 +114,13 @@ export class TrustBotReadGrants {
     const areas = Object.fromEntries(READ_AREA_NAMES.map(area => [
       area, !stored?.areas.includes(area) ? "off" : ended ? "ended" : "on",
     ])) as Record<ReadArea, AreaState>;
-    return { expiresAt: stored ? stored.expiresAt : null, areas };
+    return { expiresAt: stored ? stored.expiresAt : null, grantCid: stored ? stored.cid : null, areas };
   }
 
   /**
    * Turns `area` on with a grant the owner signed for it and every area that is on. The grant is checked, then
-   * activated once so the node confirms the owner's authority, then stored. A grant it replaces is revoked.
+   * activated once so the node confirms the owner's authority, then stored in place of any earlier one. The owner's
+   * browser revokes the grant it replaces.
    */
   async enable(address: string, area: ReadArea, envelope: GrantEnvelope): Promise<ReadStatus> {
     const owner = checkAddress(address);
@@ -133,11 +138,10 @@ export class TrustBotReadGrants {
     }
     await this.#save(owner, { v: 1, areas, cid: verified.verified.cid, expiresAt: verified.verified.expiresAt.getTime(), ...envelope });
     this.#activations.clear();
-    if (previous && previous.cid !== verified.verified.cid) await this.#revoke(previous.cid);
     return this.status(owner);
   }
 
-  /** Turns `area` off. With no area left on, the grant is revoked and its stored copy deleted. */
+  /** Turns `area` off. With no area left on, the stored grant is deleted; the owner's browser revokes it at the node. */
   async disable(address: string, area: ReadArea): Promise<ReadStatus> {
     const owner = checkAddress(address);
     const stored = await this.#load(owner);
@@ -145,10 +149,7 @@ export class TrustBotReadGrants {
       const areas = stored.areas.filter(name => name !== area);
       this.#activations.clear();
       if (areas.length > 0) await this.#save(owner, { ...stored, areas });
-      else {
-        await this.#revoke(stored.cid);
-        await this.#store.delete(this.#keyFor(owner));
-      }
+      else await this.#store.delete(this.#keyFor(owner));
     }
     return this.status(owner);
   }
@@ -204,15 +205,6 @@ export class TrustBotReadGrants {
       .map(resource => ({ ...resource, actions: resource.actions.filter(action => wanted.some(entry =>
         entry.service === resource.service && entry.path === resource.path && entry.actions.includes(action))) }));
     return { ...verified, resources };
-  }
-
-  async #revoke(cid: string): Promise<void> {
-    try {
-      const result = await this.#reader.revokeDelegation(cid);
-      if (!result.ok) console.warn("[trustbot-reads] revoke=failed");
-    } catch {
-      console.warn("[trustbot-reads] revoke=failed");
-    }
   }
 
   #keyFor(owner: string): string {

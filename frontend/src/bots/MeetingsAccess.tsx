@@ -7,13 +7,9 @@ import { Button } from "@/components/ui/button";
 import { BotsRouteMissing } from "./botsApi";
 import { FEED_CHATS_ACCESS_STRINGS, MEETINGS_ACCESS_STRINGS } from "./botsStrings";
 import type { ReadArea } from "./trustbotReadAreas";
-import type { ReadGrant, ReadSettings } from "./trustbotReadGrant";
+import { changeReadArea, type ReadAreaApi, type ReadSettings } from "./trustbotReadGrant";
 
-export interface MeetingsAccessApi {
-  readSettings(): Promise<ReadSettings>;
-  setReadArea(area: ReadArea, enabled: boolean, grant?: ReadGrant): Promise<ReadSettings>;
-  signReadGrant(serviceDid: string, areas: ReadArea[]): Promise<ReadGrant>;
-}
+export type MeetingsAccessApi = ReadAreaApi;
 
 type AccessCopy = Record<Exclude<keyof typeof MEETINGS_ACCESS_STRINGS, "on">, string> & { on(date: string): string };
 const dateOf = (at: number) => new Date(at).toLocaleDateString(undefined, { dateStyle: "medium" });
@@ -92,16 +88,8 @@ function ReadAreaAccess({ api, area: AREA, copy: COPY }: { api: MeetingsAccessAp
     setFailed(false);
     setSaving(true);
     try {
-      let stored: ReadSettings;
-      if (enabled) {
-        // Read again: the other area's section may have changed which areas are on since this one loaded.
-        const latest = await api.readSettings();
-        const areas = (Object.keys(latest.areas) as ReadArea[]).filter((area) => area === AREA || latest.areas[area] === "on");
-        const grant = await api.signReadGrant(latest.serviceDid, areas);
-        stored = await api.setReadArea(AREA, true, grant);
-      } else {
-        stored = await api.setReadArea(AREA, false);
-      }
+      // Read again: another area's section may have changed which areas are on, and the stored grant, since this one loaded.
+      const stored = await changeReadArea(api, await api.readSettings(), AREA, enabled);
       if (!alive.current) return;
       setSaved(stored);
       setConfirming(false);
