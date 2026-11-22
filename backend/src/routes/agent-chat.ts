@@ -1557,7 +1557,7 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
         return;
       }
       const minimum = minTurnCredits(rates);
-      recordAgentChatBudgetPreflight({ address, mode: budgetPreflightMode, remaining: budgetRemaining, minimum, tier: gatedTier, source: budgetSource });
+      recordAgentChatBudgetPreflight({ address, mode: budgetPreflightMode, remaining: budgetRemaining, minimum, tier: gatedTier, source: budgetSource, unpriced: rates.fallback });
       if (budgetRemaining !== null && budgetPreflightMode !== "off" && budgetRemaining < minimum) {
         console.info("[agent-chat] turn budget", { event: "preflight", mode: budgetPreflightMode, remaining: budgetRemaining, minimum });
         if (budgetPreflightMode === "enforce") {

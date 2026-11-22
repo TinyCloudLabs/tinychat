@@ -118,6 +118,7 @@ transforms:
           if length(account_hash) == 64 && match(account_hash, r'^[0-9a-f]{64}$') { out.account_hash = account_hash }
           request_id = string(j.request_id) ?? ""
           if length(request_id) == 36 && match(request_id, r'^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$') { out.request_id = request_id }
+          if j.unpriced == true { out.unpriced = true }
         } else if name == "agent_turn_settled" {
           # TC-3734: per-turn settled credit cost. Closed enums and bounded integers; no ID, address, model or text is a field.
           window_kind = string(j.window_kind) ?? ""
