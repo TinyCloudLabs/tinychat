@@ -1,5 +1,33 @@
 # exo-desktop
 
+## 0.18.0-beta.3
+
+No changes in this release.
+
+## 0.18.0-beta.2
+
+No changes in this release.
+
+## 0.17.1-beta.1
+
+No changes in this release.
+
+## 0.17.1-beta.0
+
+No changes in this release.
+
+## 0.17.0
+
+### Minor Changes
+
+- f0b15c9: In Chrome and other Chromium browsers on a computer or Android, TinyCloud One keeps an encrypted local copy of your transcripts, so they open faster. It starts at your next sign-in. To stop it, turn off "Keep a local copy of my transcripts on this device" in Settings, or use Delete local copy. Production builds paused this copy from 13 November until web-sdk 3.12 removed a wait of about a second and a half on Home's first screen.
+
+  Details: TC-2883
+
+- 2048626: Every recording with a transcript or audio in your space has a Share button on its detail page, with no setting to turn on.
+
+  Details: TC-3195
+
 ## 0.17.0-beta.3
 
 No changes in this release.
