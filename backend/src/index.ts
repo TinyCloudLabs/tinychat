@@ -1,7 +1,5 @@
 import "./types/index.js";
 
-import { mountContentContinuityRoute } from "./routes/content-continuity.js";
-
 import { existsSync, readFileSync } from "fs";
 import { createServer as createHttpsServer } from "https";
 import { dirname, resolve } from "path";
@@ -57,15 +55,10 @@ import {
   createConnectorPurgeRouter,
   respondToConnectorPurgeCheck,
   createConnectorWebhookHandler,
-  createConnectorWebhookHostGuard,
   createConnectorWebhookParserErrorHandler,
   connectorDrainAbort,
-  resolveWebhookHostAllowlist,
-  DEFAULT_CONNECTOR_SOURCE,
 } from "./routes/connector-webhooks.js";
-import { createConnectorCredentialRouter } from "./routes/connector-credentials.js";
 import { credentialRouteUnavailable } from "./routes/route-unavailable.js";
-import { createConnectorMeetingsRouter } from "./routes/connector-meetings.js";
 import { createGoogleOAuthRouter, normalizeAppOrigin } from "./routes/google-oauth.js";
 import { createPrivateCloudOnlyBulkDeleteRouter, createTranscriberRouter } from "./routes/transcriber.js";
 import { createTranscriberWebhookRouter } from "./routes/transcriber-webhook.js";
@@ -109,15 +102,6 @@ import { createPrivateCloudPurger } from "./services/private-cloud-purge.js";
 import { BackendStorageLane } from "./services/backend-storage-lane.js";
 import { runInWriteLane } from "./services/write-lane.js";
 import { ConnectorQueue } from "./services/connector-queue.js";
-import { ConnectorTeardownService } from "./services/connector-teardown.js";
-import {
-  ContentStore,
-  currentContentMaster,
-  assertNoContentKey,
-  KvContentBlobStore,
-  createContentIndexDirectory,
-  validateContentCustodyConfig,
-} from "./services/content-store.js";
 import {
   CredentialStore,
   KvCredentialRowStore,
@@ -127,27 +111,11 @@ import { CREDENTIAL_COUNT_ADMIN_KEY_ENV, mountCredentialCountRoute } from "./rou
 import { createAssemblyAiStatusRouter } from "./routes/assemblyai-status.js";
 import { CREDENTIAL_ROW_COUNT_ENV, logCredentialRowCounts } from "./services/credential-row-count.js";
 import {
-  createRefreshingCredentialLookup,
-  FirefliesOAuthClient,
-  firefliesOAuthConfigFromEnv,
-} from "./services/fireflies-oauth.js";
-import {
   GoogleOAuthClient,
   googleMeetOAuthEnabled,
   googleOAuthConfigFromEnv,
 } from "./services/google-oauth.js";
 import { createGranolaProxyRouter, granolaProxyEnabled } from "./routes/granola-proxy.js";
-import { ConnectorFetchWorker } from "./services/fetch-worker.js";
-import { FirefliesMeetingFetcher } from "./services/fireflies-fetch.js";
-import { backendIngestEnabled as ingestFlagEnabled, IngestModeService } from "./services/ingest-mode.js";
-import {
-  IngestInstanceGuard,
-  IngestInstanceSupervisor,
-  KvInstanceLeaseStore,
-} from "./services/ingest-instance.js";
-import { createIngestOnDelivery } from "./services/ingest-nudge.js";
-import { IngestRetentionSweeper } from "./services/ingest-retention.js";
-import { IngestObservabilityReporter } from "./services/ingest-observability.js";
 import {
   ConnectorDrainWorker,
   createWebhookQueueDirectory,
@@ -200,17 +168,6 @@ type LedgerStartupEnv = {
 };
 
 const VALID_LEDGER_OUTAGE_POLICIES = new Set(["bounded_k", "fail_open", "fail_closed"]);
-
-/**
- * The Fireflies OAuth client (custody branch b1), built once and only when the dark ingest flag
- * is armed — `firefliesOAuthConfigFromEnv` throws on an unregistered app, and boot has already
- * checked it above, so this cannot fail later at request time for a config reason.
- */
-let firefliesOAuthClient: FirefliesOAuthClient | null = null;
-function firefliesOAuth(): FirefliesOAuthClient {
-  firefliesOAuthClient ??= new FirefliesOAuthClient(firefliesOAuthConfigFromEnv());
-  return firefliesOAuthClient;
-}
 
 /**
  * Connector webhooks ship dark (§7.1): flag off means the public route is not mounted (404 —
@@ -307,8 +264,6 @@ export function validateLedgerStartupConfig(
 }
 
 async function main() {
-  const hasContentMaster = Boolean(process.env.CONNECTOR_CONTENT_MASTER?.trim());
-  const backendIngestEnabled = () => ingestFlagEnabled() && hasContentMaster;
   const localValidation = localValidationFromEnv(process.env);
   const requestIdFirstPartyOrigins = parseRequestIdFirstPartyOrigins(process.env.REQUEST_ID_FIRST_PARTY_ORIGINS);
   // CORS, SIWE domains and Google OAuth returns: FRONTEND_URL plus FRONTEND_ORIGINS (default: both
@@ -390,7 +345,6 @@ async function main() {
     console.warn(`[startup] hosted AssemblyAI is off (${assemblyAiHosted.reason}); clients can still use their own key.`);
   }
 
-  let credentialRouteMounted = false;
   if (connectorWebhooksEnabled()) {
     const webhookSecrets = validateConnectorWebhookSecrets(process.env);
     if (!webhookSecrets.ok) {
@@ -400,8 +354,7 @@ async function main() {
     }
   }
 
-  // WP-A — armed-but-unregistered is a BOOT failure, the same posture the Fireflies config check
-  // below has (`firefliesOAuthConfigFromEnv`, :236). An operator who sets GOOGLE_MEET_OAUTH_ENABLED
+  // WP-A — armed-but-unregistered is a BOOT failure. An operator who sets GOOGLE_MEET_OAUTH_ENABLED
   // and forgets a client var must learn it from a refused start, never from a user stranded on a
   // half-finished consent screen — and the message names the missing VARS only, never a value,
   // because one of them is the client secret and this CVM logs publicly.
@@ -425,68 +378,6 @@ async function main() {
     }
   }
 
-  // W4 — retained indexes still need their content-envelope master after ingest is disabled,
-  // so maintenance can decrypt and remove every server-held meeting at its retention boundary.
-  const contentCustody = validateContentCustodyConfig(process.env);
-  if (hasContentMaster && !contentCustody.ok) {
-    console.error(contentCustody.error);
-    process.exit(1);
-    return;
-  }
-
-  // W2 — the credential-custody master (backend-ingest plan §6.2). Gated on the DARK ingest flag,
-  // so a deployment that never enables backend ingestion needs none of this; armed, it gets the
-  // same refuse-boot-on-weak-master posture WEBHOOK_HMAC_MASTER has, because from that moment the
-  // backend holds a full-scope Fireflies credential per cohort user.
-  if (backendIngestEnabled()) {
-    const custody = validateCredentialCustodyConfig(process.env);
-    if (!custody.ok) {
-      console.error(custody.error);
-      process.exit(1);
-      return;
-    }
-    try {
-      firefliesOAuthConfigFromEnv(process.env);
-    } catch (error) {
-      console.error(error instanceof Error ? error.message : String(error));
-      process.exit(1);
-      return;
-    }
-    // W9 (findings §6 control 6) — the Host-header allowlist is a Gate 5 control under backend
-    // ingest, so its ABSENCE at boot must be as loud as an absent master. Silent-null is the same
-    // fallback-that-hides-an-error posture the two masters explicitly refuse. Either a resolvable
-    // allowlist (explicit list or a parseable public origin) or the loud "*" opt-out.
-    let hostAllowlist: ReadonlySet<string> | null;
-    try {
-      hostAllowlist = resolveWebhookHostAllowlist(process.env);
-    } catch (error) {
-      console.error(error instanceof Error ? error.message : String(error));
-      process.exit(1);
-      return;
-    }
-    const hostArm =
-      process.env.CONNECTOR_WEBHOOK_HOST_ALLOWLIST?.trim() === "*"
-        ? "disabled_explicit"
-        : hostAllowlist === null
-          ? "absent"
-          : process.env.CONNECTOR_WEBHOOK_HOST_ALLOWLIST?.trim()
-            ? "explicit"
-            : "derived";
-    if (hostArm === "absent") {
-      console.error(
-        "CONNECTOR_WEBHOOK_HOST_ALLOWLIST or CONNECTOR_WEBHOOK_PUBLIC_ORIGIN must be set " +
-          "when CONNECTOR_BACKEND_INGEST_ENABLED=true (use CONNECTOR_WEBHOOK_HOST_ALLOWLIST=\"*\" " +
-          "to disable explicitly).",
-      );
-      process.exit(1);
-      return;
-    }
-    console.log(
-      `[startup] op=host-allowlist result=ok arm=${hostArm} ` +
-        `t=${new Date().toISOString()}`,
-    );
-  }
-
   if (!BACKEND_PRIVATE_KEY) {
     console.error(
       "BACKEND_PRIVATE_KEY is required. Generate one from the repo root with `bun run generate-key`.",
@@ -501,11 +392,6 @@ async function main() {
     host: TINYCLOUD_HOST,
     localValidation,
   });
-
-  if (!hasContentMaster) {
-    const noKeyBlobs = new KvContentBlobStore(node);
-    await assertNoContentKey(noKeyBlobs);
-  }
 
   // §E.6/E.7 — construct and start the ledger flusher + rehydrator when configured.
   let ledgerFlusher: LedgerFlusher | undefined;
@@ -553,8 +439,8 @@ async function main() {
   );
 
   // §9.3 — one shared lane for every component that writes to the backend space (connector
-  // queue, content store, credential store, exo job mirror). TinyCloud drops concurrent responses
-  // on one space, so cross-component writes MUST funnel through the same lane; two lanes are no lane.
+  // queue, credential store, exo job mirror). TinyCloud drops concurrent responses on one space,
+  // so cross-component writes MUST funnel through the same lane; two lanes are no lane.
   const backendStorageLane = new BackendStorageLane();
 
   // TC-1013 S4b: owner teardown exists only when the exo flag is on. With the flag off, the DELETE
@@ -565,13 +451,17 @@ async function main() {
     delete: (key) => backendStorageLane.run(() => node.kv.delete(key)),
     list: (prefix) => node.kv.list({ prefix }),
   };
+  // One open of an owner's grant is a stored-grant load plus node calls, and a wake check opens it four times. The
+  // cache keeps one open per owner for a short window; every write or removal of the stored grant drops that owner.
   const openOwnerGrant = createOwnerGrantOpener({
     node,
     backendDid: did,
     configuredHost: TINYCLOUD_HOST,
     grantStore: exoGrantStore,
+    cache: true,
   });
-  const exoGrantTracked = createTrackedGrantStore(exoGrantStore, exoGrantHolders);
+  const forgetOwnerGrant = (owner: string): void => openOwnerGrant.invalidate(owner);
+  const exoGrantTracked = createTrackedGrantStore(exoGrantStore, exoGrantHolders, forgetOwnerGrant);
   const teardownExoOwner: ((owner: string) => Promise<void>) | undefined = exoCapabilitiesEnabled(process.env)
     ? async (owner: string): Promise<void> => {
         // Clear owner rows first, then remove the grant: a failed clear keeps the grant so the retry still has it.
@@ -605,29 +495,11 @@ async function main() {
         const tokens = new WebhookTokenService(node);
         const queue = connectorQueue;
         const control = connectorControl;
-        // W1 — ONE ingest-mode service for both mounts, for the same reason the token cache and
-        // the queue are shared: the delivery path's "is this address the worker's?" and the
-        // companions' "may this browser drain?" must never disagree. Dark by default
-        // (CONNECTOR_BACKEND_INGEST_ENABLED); with the flag off it makes no node call at all.
-        const credentialRows = new KvCredentialRowStore(node, backendStorageLane);
-        const credentials = new CredentialStore(credentialRows, {
-          credentialKeys: connectorKeyStore,
-          upstreamRevoker: secret => firefliesOAuth().revoke(secret),
-        });
-        const modes = new IngestModeService(node, {
-          enabled: backendIngestEnabled,
-          hasOAuthCredential: async (source, address) => {
-            const row = await credentials.status(source, address);
-            return row?.kind === "oauth" && !row.revokedAt;
-          },
-        });
         return {
           limiters: new ConnectorWebhookLimiters(),
           tokens,
           queue,
           control,
-          credentials,
-          modes,
           backendStorageLane,
           // §5.4/§4.7 — the drain worker. Under OPTION C it surfaces the pending id list to the
           // user who is right here and writes NOTHING to the user's space; no writer is wired
@@ -704,13 +576,6 @@ async function main() {
     exoRetentionSweep = startExoRetentionSweepTimer({ kv: exoBackendKv, ports: exoPorts });
   }
 
-  // W9 / D4 — the process that actually CONSUMES the cohort queues, or nothing at all. Assigned
-  // below only when the dark flag is armed; `shutdown` releases its lease so a rolling deploy
-  // hands the seat over instead of idling out the TTL.
-  let ingestSupervisor: IngestInstanceSupervisor | null = null;
-  let connectorContent: ContentStore | null = null;
-  const contentIndexDirectory = createContentIndexDirectory(node);
-
   // The connectors webhook MUST be mounted before the JSON body parser and CSRF middleware:
   // the HMAC is computed over the exact bytes Fireflies signed, and Fireflies does not send
   // the X-Requested-With CSRF header. It also mounts before applyRateLimiters, so it carries
@@ -733,23 +598,6 @@ async function main() {
     // user into one bucket. Companion routes must stay ONE segment deep.
     app.post(
       "/api/connectors/webhooks/:source/:token",
-      // W9 (plan §8.1 W9 / §10; findings §6 control 6) — the Host-header allowlist, FIRST on the
-      // chain: ahead of the pre-limiter, ahead of `express.raw`, so a delivery that did not arrive
-      // at the hostname we minted into the provider's dashboard is refused before a byte of its
-      // body is read. It is load-bearing under backend ingest — where an off-target delivery
-      // would cost a credentialed upstream fetch and a server-side content row rather than one
-      // enqueue — and STRICTLY GATED on `backendIngestEnabled()`. Plan §5.3 / §8.1 W1 require
-      // non-cohort behavior to be byte-identical; the ingress-presented host is UNDETERMINED in
-      // this repo (see docs/connector-webhooks-trust-proxy.md), so under Option C the guard
-      // would risk fail-closing every existing user's deliveries. Off ⇒ pure pass-through.
-      // Derived from CONNECTOR_WEBHOOK_PUBLIC_ORIGIN unless CONNECTOR_WEBHOOK_HOST_ALLOWLIST
-      // overrides it, so the host we answer on cannot drift from the URL we hand out.
-      createConnectorWebhookHostGuard({
-        allowlist: backendIngestEnabled()
-          ? resolveWebhookHostAllowlist(process.env)
-          : null,
-        limiters: connectorWebhookLimiters,
-      }),
       connectorWebhookIpPreLimiter,
       // inflate:false is deliberate: body-parser would otherwise decompress a gzip/deflate
       // body and apply the 64 kb cap to the DECOMPRESSED stream — free pre-auth CPU and one
@@ -761,13 +609,12 @@ async function main() {
       // every other increment lives inside the handler below. 4-arity, so it only ever sees a
       // parser error, and it re-throws unless a bucket is already tripped.
       createConnectorWebhookParserErrorHandler(connectorWebhookLimiters),
-      // Strictly after the 202 — the ack waits on the durable enqueue and nothing else.
+      // The ack waits on the durable enqueue and nothing else.
       createConnectorWebhookHandler({
         tokens: connectorWebhooks.tokens,
         queue: connectorWebhooks.queue,
         control: connectorWebhooks.control,
         limiters: connectorWebhookLimiters,
-        onDelivery: createIngestOnDelivery({ modes: connectorWebhooks.modes }),
       }),
     );
   }
@@ -787,9 +634,6 @@ async function main() {
   // What the global bucket is charged for, per route, until the log shipper (TC-959) lands.
   logGlobalBucketRoutes(globalRoutes);
 
-  if (!hasContentMaster) {
-    mountContentContinuityRoute(app, process.env, "", did, async () => ({ ok: false, id: null }));
-  }
   app.get("/health", (_req, res) => {
     // TEMPORARY: aggregate route templates and counts only, our one view of the global bucket
     // until the tinychat log shipper (TC-959) is live. Remove this field then.
@@ -843,7 +687,7 @@ async function main() {
       node,
       backendDid: did,
       configuredHost: TINYCLOUD_HOST,
-      store: createTrackedGrantStore(exoGrantStore, exoGrantHolders),
+      store: createTrackedGrantStore(exoGrantStore, exoGrantHolders, forgetOwnerGrant),
       teardownExoOwner,
       authMiddleware,
     }));
@@ -863,19 +707,10 @@ async function main() {
       "/api/connectors/webhooks",
       authMiddleware,
       createConnectorWebhookCompanionRouter({
-        deleteReconciled: async (source, address) => {
-          if (!hasContentMaster) return;
-          if (!connectorContent) throw new Error("content cleanup unavailable");
-          return connectorContent.deleteReconciled(source, address);
-        },
         tokens: connectorWebhooks.tokens,
         queue: connectorWebhooks.queue,
         control: connectorWebhooks.control,
         limiters: connectorWebhooks.limiters,
-        // W1 — the same ingest-mode service the delivery path reads. For a cohort address the
-        // fetch worker is the queue's SOLE consumer, so /drain surfaces nothing and /ack is an
-        // idempotent no-op here; every non-cohort address is untouched Option C.
-        modes: connectorWebhooks.modes,
         // The public HTTPS origin every minted callback URL carries. Pinned rather than derived
         // from the request's Host header + forwarded scheme: a wrong host or an http:// scheme
         // mints a webhook that silently never delivers. A malformed value throws here, at
@@ -897,182 +732,10 @@ async function main() {
           connectorWebhooks.drain.kick({ source, address, force: true }),
       }),
     );
-
-    // W2 — the credential-custody surface (plan §6.2 obtain/revoke). Mounted ONLY with the dark
-    // ingest flag armed, and 404 inside the router for every non-cohort address: a deployment
-    // that has not enabled backend ingestion has no credential route to probe, and a signed-in
-    // user outside the cohort cannot tell the mount exists. The store's row adapter is the D3
-    // substrate seam — it sees ciphertext and a wrapped DEK, never a credential.
-    if (backendIngestEnabled()) {
-      // W4/W5 — ONE content store for the whole process, for the same reason the token cache and
-      // the queue are shared above: two instances are two sets of per-tenant lanes over one
-      // substrate, which is exactly the interleaved read-modify-write the lanes exist to prevent.
-      // W3's fetch worker takes THIS instance when it is wired; it must not build its own.
-      // W7 — the SHIPPED §6.2 purge ledger is the content store's second tombstone input, so a
-      // disconnect (or a user purge) that writes the watermark also stops a replayed delivery
-      // from re-creating rows the user tore down. Same `control` the drain and `POST …/purged`
-      // use: one ledger, one rule, two consumers.
-      const contentBlobs = new KvContentBlobStore(node, connectorWebhooks.backendStorageLane);
-      const contentMaster = currentContentMaster();
-      const ingestGuard = new IngestInstanceGuard(new KvInstanceLeaseStore(node));
-      const contentStore = new ContentStore(contentBlobs, {
-        retentionKeys: connectorKeyStore,
-        purgeLedger: connectorWebhooks.control,
-        master: () => contentMaster,
-        mutationGuard: ingestGuard,
-      });
-      connectorContent = contentStore;
-      await contentStore.assertContinuity(contentBlobs, process.env, ingestGuard);
-      mountContentContinuityRoute(app, process.env, contentMaster, did, async () =>
-        contentStore.probeIndex(await contentBlobs.findIndex()),
-      );
-      const credentialStore = connectorWebhooks.credentials;
-
-      credentialRouteMounted = true;
-      app.use(
-        "/api/connectors/credentials",
-        authMiddleware,
-        createConnectorCredentialRouter({
-          credentials: credentialStore,
-          // W7 — `DELETE /:source` is the FULL disconnect: purge tombstone, credential (+
-          // upstream revoke), every content row, the queue. A disconnect that left the server's
-          // copy of the meetings behind is §9 anti-pattern 8.
-          teardown: new ConnectorTeardownService({
-            notifications: {
-              disable: async (source, address) => {
-                connectorDrainAbort.abort(address);
-                await connectorWebhooks.control.markDisabled(address, source, true);
-                await connectorWebhooks.tokens.revoke(address);
-              },
-            },
-            credentials: credentialStore,
-            content: contentStore,
-            queue: connectorWebhooks.queue,
-            control: connectorWebhooks.control,
-            ...(exoCapabilitiesEnabled(process.env)
-              ? { exo: { clearSource: (source: string, address: string) => clearExoSourceState(exoBackendKv, address, source) } }
-              : {}),
-          }),
-          oauth: {
-            authorizeUrl: ({ state, challenge }) =>
-              firefliesOAuth().authorizeUrl({ state, challenge }),
-            exchangeCode: ({ code, verifier }) =>
-              firefliesOAuth().exchangeCode({ code, verifier }),
-            revoke: (secret) => firefliesOAuth().revoke(secret),
-          },
-          modes: connectorWebhooks.modes,
-        }),
-      );
-
-      // W5 — the authenticated READ API (plan §8.1 W5): the surface the goal is stated in. A
-      // device that has never opened the app has no vault and no Fireflies key, so these routes
-      // are the only way it can see a meeting the backend ingested while nobody was looking.
-      // Same two gates as the credential surface (dark flag decides the mount, per-address cohort
-      // decides visibility), same session `authMiddleware`, and the tenant is ALWAYS the session
-      // address. Both GETs are strictly side-effect-free (§9 anti-pattern 5); the ONE mutation is
-      // `POST /:source/:sourceId/reconciled`, W6's reconcile-ack.
-      app.use(
-        "/api/connectors/meetings",
-        authMiddleware,
-        createConnectorMeetingsRouter({
-          isDisabled: async address => (await connectorControl.readDisabled(address)) !== null,
-          deleteReconciled: (source, address) => contentStore.deleteReconciled(source, address),
-          content: contentStore,
-          modes: connectorWebhooks.modes,
-        }),
-      );
-
-      // one worker per DEPLOYMENT, because the queue's mutual exclusion is a per-address
-      // in-process mutex over a per-instance storage lane — neither crosses a process boundary, so
-      // a second instance is not throughput, it is interleaved read-modify-writes on one array
-      // (findings §2.2/§2.5). An instance that cannot take the lease keeps serving HTTP and
-      // ingests NOTHING; an unreadable lease refuses too, because "I could not tell who holds it"
-      // must never resolve to "nobody does". Constraint and its exit:
-      // `docs/connector-webhooks-single-instance.md`.
-      const supervisor = new IngestInstanceSupervisor({
-        guard: ingestGuard,
-        worker: new ConnectorFetchWorker({
-          queue: connectorWebhooks.queue,
-          modes: connectorWebhooks.modes,
-          // §6.2 "rotate": the worker reads credentials through the REFRESHING lookup, so an
-          // OAuth access token that is about to expire is rotated (and re-sealed) before it is
-          // presented upstream. Handing it the bare store made expiry — the routine case under
-          // `V-a-branch: b1` — a permanent stall behind a 5-minute credential hold.
-          credentials: createRefreshingCredentialLookup({
-            store: credentialStore,
-            client: () => firefliesOAuth(),
-          }),
-          fetcher: new FirefliesMeetingFetcher(),
-          content: contentStore,
-          // W4's retention + purge tombstones: a swept or purged id is never re-stored by a
-          // replayed delivery.
-          retention: contentStore,
-        }),
-        retention: new IngestRetentionSweeper({
-          content: contentStore,
-          indexes: contentIndexDirectory,
-        }),
-      });
-      ingestSupervisor = supervisor;
-      ingestSupervisor.start();
-
-      // W8 — the operator surface (plan §8.1 W8; §8.2 delta 9). One periodic line carrying the
-      // system numbers no single module can see: dead-letter depth across the cohort, fetch
-      // ok/fail, overflow drops, reconcile lag, the credential-op audit — plus an alert line when
-      // the DLQ grows or the fetch SLA is breached. Numbers ONLY: nothing it emits identifies a
-      // tenant or a meeting, which is why it is safe on a `public_logs=true` CVM. Same dark gate
-      // as everything else here, and its timer is unref'd, so a deployment without backend
-      // ingestion neither starts it nor is held open by it. The worker's counters are looked up
-      // per emit, so the seat can be claimed after this is constructed and the numbers still
-      // arrive. Exactly ONE process reports (D4): the emit is gated on the lease, so an instance
-      // that refused the seat neither narrates a system it is not part of nor spends a cohort read
-      // per emit against the shared single-writer node.
-      new IngestObservabilityReporter(
-        {
-          content: () => contentStore.stats(),
-          deadLetters: connectorWebhooks.queue,
-          cohort: () => connectorWebhooks.modes.cohort(),
-          sources: [DEFAULT_CONNECTOR_SOURCE],
-        },
-        { enabled: () => supervisor.guard.isHolder() },
-      ).start();
-    }
   }
-  // An unmounted credential route answers 404 with the backend's own marker, so a client can tell
-  // "this deployment does not have it" from a 404 that came from somewhere else.
-  if (!credentialRouteMounted) {
-    app.use("/api/connectors/credentials", (_req, res) => credentialRouteUnavailable(res));
-  }
-  // Retention runs independently of ingest flags and cohort membership. The sweeper owns index
-  // enumeration inside each guarded pass so a KV list failure is logged and retried next interval,
-  // never a reason to prevent backend startup.
-  if (ingestSupervisor === null && hasContentMaster) {
-    const retentionBlobs = new KvContentBlobStore(node, backendStorageLane);
-    const retentionGuard = new IngestInstanceGuard(
-      new KvInstanceLeaseStore(node),
-    );
-    const retentionContent = new ContentStore(retentionBlobs, {
-      retentionKeys: connectorKeyStore,
-      purgeLedger: connectorControl,
-      mutationGuard: retentionGuard,
-    });
-    connectorContent = retentionContent;
-    await retentionContent.assertContinuity(
-      retentionBlobs,
-      process.env,
-      retentionGuard,
-    );
-    const retention = new IngestRetentionSweeper({
-      content: retentionContent,
-      indexes: contentIndexDirectory,
-    });
-    const supervisor = new IngestInstanceSupervisor({
-      guard: retentionGuard,
-      worker: retention,
-    });
-    ingestSupervisor = supervisor;
-    ingestSupervisor.start();
-  }
+  // The credential route is not mounted. It answers 404 with the backend's own marker, so a client
+  // can tell "this deployment does not have it" from a 404 that came from somewhere else.
+  app.use("/api/connectors/credentials", (_req, res) => credentialRouteUnavailable(res));
 
   let calendarAutojoin: CalendarAutojoinConnection | undefined;
   let calendarAutojoinWorker: CalendarAutojoinWorker | undefined;
@@ -1104,6 +767,7 @@ async function main() {
       // TC-581: one capture per Meet across tenants. The flag gates only sharing the transcript.
       meetingCoordinator: new TenantCoordinator(),
       sharingEnabled: process.env.CALENDAR_AUTOJOIN_SHARING === "true",
+      sharingAccounts: new Set((process.env.CALENDAR_AUTOJOIN_SHARING_ACCOUNTS ?? "").split(",").map(value => value.trim().toLowerCase()).filter(Boolean)),
       webhookUrl: transcriptDeliveryConfig.enabled ? transcriptDeliveryConfig.webhookUrl : undefined,
       onRecordingCompleted: transcriptWorker
         ? async (tenant, meetingId) => { await transcriptWorker.wake(tenant, meetingId, "completed"); }
@@ -1388,7 +1052,7 @@ async function main() {
         console.log(`TinyChat backend ready: http://localhost:${PORT}`);
       });
 
-  // Queue and purge-ledger retention is not an ingestion feature: disconnected records must
+  // Queue and purge-ledger retention is not a delivery feature: disconnected records must
   // expire even while webhook routes are disabled. This timer only deletes expired state and
   // reports counts; it never drains or surfaces meeting IDs.
   // The unref'd rotation stays active through shutdown so the drain cannot delay key erasure.
@@ -1438,16 +1102,15 @@ async function main() {
     ledgerFlusher?.stop();
     connectorWebhooks?.drain.stop();
     connectorQueueMaintenance?.stop();
-    // Stop the ingest worker and release its lease as part of the same drain.
     // Stop accepting HTTP writes, then drain BOTH HTTP and scheduling before replacement.
-    // Deployment must wait for this process to exit; the KV lease is not a distributed lock.
+    // Deployment must wait for this process to exit.
     const httpDrained = new Promise<void>(resolve => server.close(() => resolve()));
     server.closeIdleConnections();
     // Hosted AssemblyAI submits in flight are aborted; each deletes its own spool as it settles.
     // Wakes are acknowledged with 202 before their job record is written. Drain them only after HTTP has closed,
     // so no new wake can enqueue; past the bound, the drain rejects and the process exits non-zero.
     const wakesDrained = httpDrained.then(() => exoWakeQueue?.drain());
-    void Promise.allSettled([httpDrained, wakesDrained, exoRetentionSweep?.stop(), transcriptWorker?.stop(), calendarAutojoinWorker?.stop(), ingestSupervisor?.stop(), hostedUploads?.shutdown()])
+    void Promise.allSettled([httpDrained, wakesDrained, exoRetentionSweep?.stop(), transcriptWorker?.stop(), calendarAutojoinWorker?.stop(), hostedUploads?.shutdown()])
       .then((results) => process.exit(results.some((result) => result.status === "rejected") ? 1 : 0));
     setTimeout(() => process.exit(1), 120_000).unref();
   };

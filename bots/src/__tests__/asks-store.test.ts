@@ -36,8 +36,8 @@ const A = "a".repeat(24);
 const B = "b".repeat(24);
 
 describe("the owner's setting", () => {
-  test("is on when nothing is saved, off when the file is damaged, and as saved otherwise", () => {
-    expect(readAsksEnabled(layout())).toBe(true);
+  test("is off when nothing is saved or the file is damaged, and as saved otherwise", () => {
+    expect(readAsksEnabled(layout())).toBe(false);
     writeAsksEnabled(layout(), true);
     expect(readAsksEnabled(layout())).toBe(true);
     writeFileSync(asksFile(layout()), "{not json");
@@ -67,16 +67,16 @@ describe("the owner's setting", () => {
     }
   });
 
-  test("a saved file without `enabled` reads as on, without a log; only a saved false is off", () => {
+  test("a saved file without `enabled` reads as off, without a log; only a saved true is on", () => {
     const logs = spyOn(console, "log").mockImplementation(() => {});
     try {
       mkdirSync(layout().dataDir, { recursive: true });
       writeFileSync(asksFile(layout()), JSON.stringify({ outsideSeen: true }));
-      expect(readAsksEnabled(layout())).toBe(true);
-      writeFileSync(asksFile(layout()), JSON.stringify({}));
-      expect(readAsksEnabled(layout())).toBe(true);
-      writeFileSync(asksFile(layout()), JSON.stringify({ enabled: false, outsideSeen: true }));
       expect(readAsksEnabled(layout())).toBe(false);
+      writeFileSync(asksFile(layout()), JSON.stringify({}));
+      expect(readAsksEnabled(layout())).toBe(false);
+      writeFileSync(asksFile(layout()), JSON.stringify({ enabled: true, outsideSeen: true }));
+      expect(readAsksEnabled(layout())).toBe(true);
       expect(logs).not.toHaveBeenCalled();
     } finally {
       logs.mockRestore();
