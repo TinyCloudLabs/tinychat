@@ -30,8 +30,9 @@ interface Armed {
   model: string;
   /** Main or a sibling; picks the bot's system prompt. Absent from an older service. */
   role?: (typeof ROLES)[number];
-  /** OMP's config.yml from the service (bots/ `configYml()`), which turns off the tools a bot does not get. */
-  ompConfig?: string;
+  /** OMP's config.yml from the service (bots/ `configYml()`), which turns off the tools a bot does not get. Required:
+   * OMP never starts on no config or on one left in the box. */
+  ompConfig: string;
 }
 
 let armed: Armed | undefined;
@@ -68,8 +69,8 @@ function parseArm(value: unknown): Armed | undefined {
   if (typeof model !== "string" || !/^[\w.:/-]{1,128}$/.test(model)) return undefined;
   const known = ROLES.find(entry => entry === role);
   if (role !== undefined && !known) return undefined;
-  if (ompConfig !== undefined && (typeof ompConfig !== "string" || ompConfig.length > 2048)) return undefined;
-  return { bridgeToken, gatewayToken, gatewayUrl, model, ...(known ? { role: known } : {}), ...(ompConfig === undefined ? {} : { ompConfig }) };
+  if (typeof ompConfig !== "string" || ompConfig.length === 0 || ompConfig.length > 2048) return undefined;
+  return { bridgeToken, gatewayToken, gatewayUrl, model, ompConfig, ...(known ? { role: known } : {}) };
 }
 
 function closeOpen(reason: string): void {
@@ -119,7 +120,7 @@ const rpcServer = Bun.serve<undefined>({
       const agentDir = join(HOME, ".omp", "agent");
       mkdirSync(agentDir, { recursive: true });
       writeFileSync(join(agentDir, "models.yml"), modelsYml(config.gatewayUrl, config.model));
-      if (config.ompConfig !== undefined) writeFileSync(join(agentDir, "config.yml"), config.ompConfig);
+      writeFileSync(join(agentDir, "config.yml"), config.ompConfig);
       // Without a role, or without its file (OMP would take the path itself as the prompt), OMP finds the role-neutral
       // ~/.omp/agent/SYSTEM.md instead.
       const prompt = config.role && join(PROMPT_DIR, `${config.role}.md`);
