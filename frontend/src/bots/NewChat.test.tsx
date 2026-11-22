@@ -50,7 +50,7 @@ test("the button asks first, says what is cleared and kept, and Cancel sends not
   await click(host, "Start a new chat");
   const sheet = host.querySelector('[role="alertdialog"]')!;
   expect(sheet.textContent).toContain(`Start a new chat with ${BOT}?`);
-  expect(sheet.textContent).toContain(`${BOT} forgets this conversation, and any questions it's waiting on are closed. Web access and messages to other bots work in the new chat. Your settings and any history saved in your TinyCloud stay.`);
+  expect(sheet.textContent).toContain(`${BOT} forgets this conversation, and any questions it's waiting on are closed. If web access or messages to other bots were paused here, the new chat lifts that pause. Your settings and any history saved in your TinyCloud stay.`);
   await click(host, "Cancel");
   expect(host.querySelector('[role="alertdialog"]')).toBeNull();
   expect(calls.start).toBe(0);
@@ -68,7 +68,7 @@ test("confirming starts the new chat, says so and reads the questions again", as
 
 test("a reply in progress, unsaved history or a failure each get their line and start nothing", async () => {
   const cases: [() => Promise<NewChatOutcome>, string][] = [
-    [async () => "busy", `${BOT} is replying. Try again when it's done.`],
+    [async () => "busy", `${BOT} is busy. Try again in a moment.`],
     [async () => "archive_pending", `${BOT} is saving this chat to your history. Try again in a moment.`],
     [async () => { throw new BotsError("failed"); }, "Couldn't change this. Try again."],
   ];

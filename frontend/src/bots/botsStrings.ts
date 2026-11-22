@@ -184,11 +184,11 @@ export const MEETINGS_ACCESS_STRINGS = {
 export const NEW_CHAT_STRINGS = {
   start: "Start a new chat",
   confirmTitle: `Start a new chat with ${MAIN}?`,
-  confirmBody: `${MAIN} forgets this conversation, and any questions it's waiting on are closed. Web access and messages to other bots work in the new chat. Your settings and any history saved in your TinyCloud stay.`,
+  confirmBody: `${MAIN} forgets this conversation, and any questions it's waiting on are closed. If web access or messages to other bots were paused here, the new chat lifts that pause. Your settings and any history saved in your TinyCloud stay.`,
   confirm: "Start new chat",
   cancel: "Cancel",
   started: "New chat started.",
-  busy: `${MAIN} is replying. Try again when it's done.`,
+  busy: `${MAIN} is busy. Try again in a moment.`,
   archivePending: `${MAIN} is saving this chat to your history. Try again in a moment.`,
   failed: "Couldn't change this. Try again.",
 } as const;
