@@ -138,16 +138,28 @@ export class BotHistory {
     if (typeof envelope.expiresAt === "number" && Date.now() >= envelope.expiresAt) throw new HistoryPermissionExpired(envelope.expiresAt);
     return this.#verify(address, envelope, botKey);
   }
-  async owners(): Promise<string[]> {
-    const owners: string[] = [];
+  /** Every stored grant's key, page by page. A listing that ends without a cursor while truncated is refused. */
+  async #grantKeys(): Promise<string[]> {
+    const keys: string[] = [];
     let cursor: string | undefined;
     do {
       const result = resultData(await withSessionRefresh(this.node, async () => assertKvResult(await this.node.kv.list({ prefix: BOT_HISTORY_GRANT_KEY_PREFIX, cursor }))));
-      owners.push(...result.keys.map(key => /(?:^|\/)grants\/(0x[a-f0-9]{40})$/.exec(key)?.[1]).filter((key): key is string => !!key));
+      keys.push(...result.keys);
       cursor = result.nextCursor;
       if (result.truncated && !cursor) throw new Error("history_owner_pagination_unavailable");
     } while (cursor);
-    return owners;
+    return keys;
+  }
+  /** Owners with a stored grant for Main: the address alone, nothing after it. */
+  async owners(): Promise<string[]> {
+    return (await this.#grantKeys()).map(key => /(?:^|\/)grants\/(0x[a-f0-9]{40})$/.exec(key)?.[1]).filter((key): key is string => !!key);
+  }
+  /** Stored grants of bots other than Main: the address and exactly one 32 hex key after it, nothing else. */
+  async siblings(): Promise<Array<{ address: string; key: string }>> {
+    return (await this.#grantKeys()).flatMap(key => {
+      const match = /(?:^|\/)grants\/(0x[a-f0-9]{40})\/([0-9a-f]{32})$/.exec(key);
+      return match ? [{ address: match[1]!, key: match[2]! }] : [];
+    });
   }
   /**
    * The delegation id of a bot's stored grant, so it can be revoked when the bot is deleted. Undefined when nothing is

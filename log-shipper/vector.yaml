@@ -79,7 +79,7 @@ transforms:
           method = string(j.method) ?? ""
           if !includes(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "CONNECT", "TRACE", "OTHER"], method) { abort }
           route = string(j.route) ?? ""
-          if !includes(["/api/agent/chat", "/api/agent/session", "/api/attestation/self", "/api/auth/nonce", "/api/auth/verify", "/api/auth/verify-renewal", "/api/billing/checkout", "/api/billing/config", "/api/billing/portal", "/api/billing/rates", "/api/billing/status", "/api/billing/webhook", "/api/bots", "/api/bots/:key", "/api/bots/:key/messages", "/api/bots/history/grant", "/api/bots/history/notice", "/api/bots/history/notice/ack", "/api/bots/history/status", "/api/bots/main/asks", "/api/bots/main/messages", "/api/bots/main/requests", "/api/bots/main/requests/:id/answer", "/api/bots/main/web", "/api/bots/status", "/api/chat", "/api/chat/model-selection", "/api/chat/models", "/api/connectors/google/autojoin/begin", "/api/connectors/google/autojoin/disable", "/api/connectors/google/autojoin/disconnect", "/api/connectors/google/autojoin/enable", "/api/connectors/google/autojoin/exchange", "/api/connectors/google/autojoin/status", "/api/connectors/google/oauth/callback", "/api/connectors/google/oauth/desktop/start", "/api/connectors/google/oauth/exchange", "/api/connectors/google/oauth/refresh", "/api/connectors/google/oauth/revoke", "/api/connectors/google/oauth/start", "/api/connectors/granola/v1/notes", "/api/connectors/granola/v1/notes/:id", "/api/connectors/granola/v1/notes/:id/transcript", "/api/connectors/webhooks/:source/:token", "/api/connectors/webhooks/ack", "/api/connectors/webhooks/config", "/api/connectors/webhooks/drain", "/api/connectors/webhooks/pending", "/api/connectors/webhooks/purge-check", "/api/connectors/webhooks/purged", "/api/delegations", "/api/delegations/status", "/api/exo/v1/grant", "/api/exo/v1/requests", "/api/internal/assemblyai-status", "/api/internal/credential-row-count", "/api/manifest", "/api/nras-proxy", "/api/nras-proxy/jwks", "/api/openapi.json", "/api/phala-verify", "/api/server-info", "/api/signature/:id", "/api/transcriber/assemblyai/capabilities", "/api/transcriber/assemblyai/hosted/admin/reconcile", "/api/transcriber/assemblyai/hosted/jobs/:source_id", "/api/transcriber/assemblyai/hosted/transcripts", "/api/transcriber/assemblyai/hosted/transcripts/:handle", "/api/transcriber/assemblyai/hosted/transcripts/:handle/sentences", "/api/transcriber/assemblyai/hosted/uploads", "/api/transcriber/assemblyai/hosted/uploads/:upload_id", "/api/transcriber/assemblyai/hosted/uploads/:upload_id/parts/:index", "/api/transcriber/assemblyai/transcripts/:id", "/api/transcriber/meetings", "/api/transcriber/meetings/:id", "/api/transcriber/meetings/:id/stop", "/api/transcriber/meetings/:id/transcript", "/api/transcriber/meetings/scope", "/api/transcriber/private-cloud/capabilities", "/api/transcriber/private-cloud/transcriptions", "/api/transcriber/private-cloud/transcriptions/:id", "/api/transcriber/private-cloud/transcriptions/:id/cancel", "/api/transcriber/private-cloud/transcriptions/:id/result", "/api/transcriber/webhooks/ptx", "/health", "unmatched"], route) { route = "unmatched" }
+          if !includes(["/api/agent/chat", "/api/agent/session", "/api/attestation/self", "/api/auth/nonce", "/api/auth/verify", "/api/auth/verify-renewal", "/api/billing/checkout", "/api/billing/config", "/api/billing/portal", "/api/billing/rates", "/api/billing/status", "/api/billing/webhook", "/api/bots", "/api/bots/:key", "/api/bots/:key/history/grant", "/api/bots/:key/history/notice", "/api/bots/:key/history/notice/ack", "/api/bots/:key/messages", "/api/bots/history/grant", "/api/bots/history/notice", "/api/bots/history/notice/ack", "/api/bots/history/status", "/api/bots/main/asks", "/api/bots/main/messages", "/api/bots/main/requests", "/api/bots/main/requests/:id/answer", "/api/bots/main/web", "/api/bots/status", "/api/chat", "/api/chat/model-selection", "/api/chat/models", "/api/connectors/google/autojoin/begin", "/api/connectors/google/autojoin/disable", "/api/connectors/google/autojoin/disconnect", "/api/connectors/google/autojoin/enable", "/api/connectors/google/autojoin/exchange", "/api/connectors/google/autojoin/status", "/api/connectors/google/oauth/callback", "/api/connectors/google/oauth/desktop/start", "/api/connectors/google/oauth/exchange", "/api/connectors/google/oauth/refresh", "/api/connectors/google/oauth/revoke", "/api/connectors/google/oauth/start", "/api/connectors/granola/v1/notes", "/api/connectors/granola/v1/notes/:id", "/api/connectors/granola/v1/notes/:id/transcript", "/api/connectors/webhooks/:source/:token", "/api/connectors/webhooks/ack", "/api/connectors/webhooks/config", "/api/connectors/webhooks/drain", "/api/connectors/webhooks/pending", "/api/connectors/webhooks/purge-check", "/api/connectors/webhooks/purged", "/api/delegations", "/api/delegations/status", "/api/exo/v1/grant", "/api/exo/v1/requests", "/api/internal/assemblyai-status", "/api/internal/credential-row-count", "/api/manifest", "/api/nras-proxy", "/api/nras-proxy/jwks", "/api/openapi.json", "/api/phala-verify", "/api/server-info", "/api/signature/:id", "/api/transcriber/assemblyai/capabilities", "/api/transcriber/assemblyai/hosted/admin/reconcile", "/api/transcriber/assemblyai/hosted/jobs/:source_id", "/api/transcriber/assemblyai/hosted/transcripts", "/api/transcriber/assemblyai/hosted/transcripts/:handle", "/api/transcriber/assemblyai/hosted/transcripts/:handle/sentences", "/api/transcriber/assemblyai/hosted/uploads", "/api/transcriber/assemblyai/hosted/uploads/:upload_id", "/api/transcriber/assemblyai/hosted/uploads/:upload_id/parts/:index", "/api/transcriber/assemblyai/transcripts/:id", "/api/transcriber/meetings", "/api/transcriber/meetings/:id", "/api/transcriber/meetings/:id/stop", "/api/transcriber/meetings/:id/transcript", "/api/transcriber/meetings/scope", "/api/transcriber/private-cloud/capabilities", "/api/transcriber/private-cloud/transcriptions", "/api/transcriber/private-cloud/transcriptions/:id", "/api/transcriber/private-cloud/transcriptions/:id/cancel", "/api/transcriber/private-cloud/transcriptions/:id/result", "/api/transcriber/webhooks/ptx", "/health", "unmatched"], route) { route = "unmatched" }
           if !is_integer(j.status) { abort }
           status = int(j.status) ?? 0
           if status < 100 || status > 599 { abort }
@@ -118,6 +118,22 @@ transforms:
           if length(account_hash) == 64 && match(account_hash, r'^[0-9a-f]{64}$') { out.account_hash = account_hash }
           request_id = string(j.request_id) ?? ""
           if length(request_id) == 36 && match(request_id, r'^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$') { out.request_id = request_id }
+        } else if name == "agent_turn_settled" {
+          # TC-3734: per-turn settled credit cost. Closed enums and bounded integers; no ID, address, model or text is a field.
+          window_kind = string(j.window_kind) ?? ""
+          if !includes(["day", "week"], window_kind) { abort }
+          outcome = string(j.outcome) ?? ""
+          if !includes(["success", "limit_stop", "failed", "timed_out", "cancelled"], outcome) { abort }
+          if !is_integer(j.raw_credits) || !is_integer(j.charged) { abort }
+          raw_credits = int(j.raw_credits) ?? -1
+          if raw_credits < 0 || raw_credits > 10000000 { abort }
+          charged = int(j.charged) ?? -1
+          if charged < 0 || charged > 1000000 { abort }
+          out = {"svc": "backend", "event": name, "level": "info", "ts": ts, "raw_credits": raw_credits, "charged": charged, "window_kind": window_kind, "outcome": outcome}
+          if is_integer(j.started_attempts) {
+            started_attempts = int(j.started_attempts) ?? -1
+            if started_attempts >= 0 && started_attempts <= 1000 { out.started_attempts = started_attempts }
+          }
         } else if name == "backend_log_error" && j.component == "calendar-autojoin" {
           phase = string(j.phase) ?? ""
           if !includes(["tick", "tenant_reconcile", "due_timer", "dispatch_lag_status"], phase) { abort }
@@ -261,6 +277,7 @@ transforms:
       problem: '.event == "tinychat_request" && ((int(.status) ?? 0) >= 500 || .stream == "error" || .stream == "aborted")'
       routine: '.event == "tinychat_request" && !((int(.status) ?? 0) >= 500 || .stream == "error" || .stream == "aborted")'
       budget: '.event == "agent_chat_budget_preflight"'
+      settled: '.event == "agent_turn_settled"'
   request_problem_cap:
     type: throttle
     inputs: [request_split.problem]
@@ -276,6 +293,12 @@ transforms:
   budget_preflight_cap:
     type: throttle
     inputs: [request_split.budget]
+    threshold: 60
+    window_secs: 60
+  # TC-3734: settled agent chat turns (one per turn) have their own cap of 60 per minute, like the preflight above.
+  turn_settled_cap:
+    type: throttle
+    inputs: [request_split.settled]
     threshold: 60
     window_secs: 60
   # TC-2546: every non-request sample has a finite global budget, including legacy events.
@@ -364,7 +387,7 @@ transforms:
 sinks:
   betterstack:
     type: http
-    inputs: [request_problem_cap, request_routine_cap, budget_preflight_cap, lane_cap, calendar_cap, other_cap, diagnostic_summary_cap]
+    inputs: [request_problem_cap, request_routine_cap, budget_preflight_cap, turn_settled_cap, lane_cap, calendar_cap, other_cap, diagnostic_summary_cap]
     method: post
     uri: "https://s2795438.us-west-2a.betterstackdata.com/"
     encoding: { codec: json }

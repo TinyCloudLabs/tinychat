@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHmac, randomUUID } from "node:crypto";
 import type { Express, NextFunction, Request, RequestHandler, Response } from "express";
-import type { FailureCause } from "./billing/settle.js";
+import type { FailureCause, ReplyOutcome } from "./billing/settle.js";
 
 // Legacy Private/hosted correlation headers intentionally keep their existing broader UUID syntax.
 const LEGACY_CORRELATION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -54,6 +54,16 @@ export type RequestEvent = {
   account_hash?: string;
   /** The same ID as this request's `tinychat_request` record. */
   request_id?: string;
+} | {
+  event: "agent_turn_settled";
+  /** Unclamped credit cost of the settled turn. */
+  raw_credits: number;
+  /** Credits actually charged after clamping to the budget. */
+  charged: number;
+  window_kind: "day" | "week";
+  outcome: ReplyOutcome;
+  /** Provider rounds started; only the Eliza task path knows it. */
+  started_attempts?: number;
 } | {
   event: "tinychat_request_diagnostic";
   request_id: string;
@@ -144,6 +154,40 @@ export function recordAgentChatBudgetPreflight(args: {
   } catch {
     // Diagnostics only.
   }
+}
+
+/** One settled agent chat turn (TC-3734): the real per-turn credit cost beside what was charged, so the per-turn
+ * minimum can be checked against observed costs. No ID, address, model or text is a field. Emitted through the typed
+ * sink; outside a request scope nothing is emitted. A non-integer or negative cost skips the event; an invalid
+ * started_attempts is omitted. Best effort: it never breaks a turn.
+ */
+export function recordAgentTurnSettled(args: {
+  rawCredits: number;
+  charged: number;
+  windowKind: "day" | "week";
+  outcome: ReplyOutcome;
+  startedAttempts?: number;
+}): void {
+  const active = context.getStore();
+  if (!active) return;
+  try {
+    const { rawCredits, charged, startedAttempts } = args;
+    if (!isCount(rawCredits) || !isCount(charged)) return;
+    active.emit({
+      event: "agent_turn_settled",
+      raw_credits: rawCredits,
+      charged,
+      window_kind: args.windowKind,
+      outcome: args.outcome,
+      ...(isCount(startedAttempts) ? { started_attempts: startedAttempts } : {}),
+    });
+  } catch {
+    // Diagnostics only.
+  }
+}
+
+function isCount(value: number | undefined): value is number {
+  return Number.isSafeInteger(value) && (value as number) >= 0;
 }
 
 function budgetRemainingBucket(remaining: number | null): AgentChatBudgetBucket {
