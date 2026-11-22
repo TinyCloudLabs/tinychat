@@ -186,7 +186,7 @@ export const FEED_CHATS_ACCESS_STRINGS = {
   off: `${MAIN} can't read your feed or your chats.`,
   allow: `Let ${MAIN} read them`,
   confirmTitle: `Let ${MAIN} read your feed and chats?`,
-  confirmBody: `${MAIN} can read your feed cards and your chats with AI models for 7 days, then it stops. It can't answer cards or change anything. What it reads goes to the AI model service to write its answer. Once ${MAIN} reads a card or a chat, it can't use the web in this chat until the chat is cleared after 30 days without use.`,
+  confirmBody: `${MAIN} can read your feed cards and your chats with AI models for 7 days, then it stops. It can't answer cards or change anything. What it reads goes to the AI model service to write its answer. Once ${MAIN} reads a card or a chat, it can't use the web in this chat until you start a new chat.`,
   confirm: "Allow for 7 days",
   cancel: "Not now",
   on: (date: string) => `${MAIN} can read your feed and chats until ${date}.`,
