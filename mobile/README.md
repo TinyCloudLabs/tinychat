@@ -546,6 +546,26 @@ Xcode 26.6.
   post-publication gap limit so the tests can exercise it quickly.
   To run the smoke against a local build:
   `mobile/scripts/ios-simulator-smoke.sh run <path/to/App.app> /tmp/exo-smoke`.
+- **Frame guard** (`Mobile (TinyCloud One)` → *iOS (Release simulator frame guard)*,
+  TC-3677): the build One ships (Release, the production frontend with
+  `VITE_ONE_APPS` and `VITE_ONE_NAV` on) for the simulator, plus a probe
+  (`App/FrameProbe.swift`) compiled only with the CI-only `EXO_FRAME_PROBE`
+  condition. Once the app has mounted, the probe adds three frames: a
+  cross-origin srcdoc frame with One's sandbox, a srcdoc frame with no sandbox
+  and One's real Explorer frame (`https://explorer.tinycloud.xyz/?embed=one`,
+  One's sandbox) when it loads. Each frame posts a plugin call straight to
+  `window.webkit.messageHandlers.bridge`, then calls `window.open` and clicks a
+  `target=_blank` and a `target=_top` link. `mobile/scripts/ios-frame-probe.sh`
+  fails unless the probe's `EXO_FRAME_PROBE {…}` line shows no framed bridge
+  message reaching Capacitor, no answer to a frame, every `window.open` and
+  `target=_blank` URL (and the unsandboxed frame's `target=_top` URL; One's
+  sandbox blocks the others) handed to the system browser (the probe holds
+  `UIApplication.open` until the end, then lets the system open one) and One's
+  main frame on the same page throughout. Explorer
+  needs the network: when it does not load, the job warns and checks the local
+  frames. The `exo-ios-frame-probe-<sha>` artifact has `one.png`, `outside.png`,
+  `probe.json`, `handoff.json` and `summary.md`. The script's tests run on Linux:
+  `node --test mobile/scripts/ios-frame-probe.test.mjs`.
 - **Release dry run** (`Mobile (TinyCloud One)` → *iOS release*): the TestFlight build
   (`.github/workflows/ios-build.yml`) without signing. Its archive job produces
   a Release archive of the production frontend and checks:
@@ -553,7 +573,8 @@ Xcode 26.6.
   - `PrivacyInfo.xcprivacy`, the microphone string and the `audio` background
     mode;
   - that `capacitor.config.json` has no dev-server `server.url`;
-  - that the Release binary does not contain the smoke probe.
+  - that the Release binary does not contain the smoke probe or the CI-only
+    frame probe.
 
   Its sign job then runs as a dry run (no environment, no secrets): it checks
   out only `scripts/release`, downloads and unpacks the archive, and re-checks
