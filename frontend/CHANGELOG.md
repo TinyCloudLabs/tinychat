@@ -16,6 +16,44 @@
 - TC-2204: Native audience checks accept Home's three exact SQL hook subscriptions only alongside an existing TinyChat data grant.
 - TC-2499: The Home mirror adapter persists close receipts using node-compatible NULL/non-NULL compare-and-set predicates. If the KV mirror is already exactly closed but its receipt is missing, recovery records the original publication ETag without writing the KV copy again, before any gated child handoff. The CLI reports JSON error class, safe message, code, HTTP status when available, and operation step; private SQL bodies and nested causes remain redacted. Exit 2 identifies invalid input, exit 6 known transient failures (including NODE_BUSY and REQUEST_TIMEOUT without HTTP metadata), and exit 1 other runtime failures or OUTCOME_UNKNOWN. Unclassified errors are not labelled bad input; no failure confirms delivery or authorizes an automatic retry.
 
+## 0.17.1-beta.0
+
+### Patch Changes
+
+- 8549747: TinyCloud One on the web and in the phone apps runs only its own scripts and connects only to the services it lists.
+
+  Details: TC-3878
+
+## 0.17.0
+
+### Minor Changes
+
+- 1571ac5: Home shows the "What do you want done?" box and the Agents pill without Show hidden features turned on in Settings.
+
+  Details: TC-3119
+
+- 92f5ec2: Settings has no Hidden features section. The Share button on recordings shows for everyone. On Home, the Agents pill shows for every account that has agents, and the "What do you want done?" box shows for accounts that have agents turned on.
+
+  Details: TC-3119
+
+- f0b15c9: In Chrome and other Chromium browsers on a computer or Android, TinyCloud One keeps an encrypted local copy of your transcripts, so they open faster. It starts at your next sign-in. To stop it, turn off "Keep a local copy of my transcripts on this device" in Settings, or use Delete local copy. Production builds paused this copy from 13 November until web-sdk 3.12 removed a wait of about a second and a half on Home's first screen.
+
+  Details: TC-2883
+
+- 2048626: Every recording with a transcript or audio in your space has a Share button on its detail page, with no setting to turn on.
+
+  Details: TC-3195
+
+### Patch Changes
+
+- d3970bf: TinyCloud One can show the Ship ledger, a read-only view of where each task stands and what it is waiting on. The tile appears only for an account whose TinyCloud holds a ship board.
+
+  Details: TC-3768
+
+- 0118643: Opening a bot other than Main doesn't ask you to approve saving its chat history to your TinyCloud. Only Main's chat is saved there. Other bots' chats are kept by the bot service.
+
+  Details: TC-3813
+
 ## 0.17.0-beta.3
 
 ### Minor Changes
