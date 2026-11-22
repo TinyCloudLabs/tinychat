@@ -25,6 +25,14 @@ export const SANDBOX_EGRESS_DIR = "/run/egress";
 export const SANDBOX_SESSION_DIR = `${SANDBOX_STATE_DIR}/sessions/main`;
 export const BOT_START = "/usr/local/bin/bot-start.sh";
 
+/** Main and each sibling get their own system prompt; they share one rootfs, so one global file would mislabel them. */
+export type BotRole = "main" | "sibling";
+/** Where the bot rootfs holds the prompt files from bots/sandbox/prompts (see the Dockerfile). */
+export const SYSTEM_PROMPT_DIR = "/opt/tinycloud/prompts";
+export function systemPromptPath(role: BotRole): string {
+  return `${SYSTEM_PROMPT_DIR}/${role}.md`;
+}
+
 export interface SandboxSpecInput {
   /** Shared read-only lower layer; runsc gives each sandbox its own in-memory upper layer. */
   rootfs: string;
@@ -35,6 +43,8 @@ export interface SandboxSpecInput {
   stateMount: string;
   cgroupsPath: string;
   limits: SandboxLimits;
+  /** Picks the system prompt bot-start.sh passes to OMP. */
+  role: BotRole;
 }
 
 const CPU_PERIOD_US = 100_000;
@@ -57,6 +67,7 @@ export function sandboxSpec(base: OciSpec, input: SandboxSpecInput): OciSpec {
         "HOME=/root",
         `BOT_TOKEN=${input.token}`,
         "PI_NO_TITLE=1",
+        `BOT_SYSTEM_PROMPT=${systemPromptPath(input.role)}`,
       ],
       noNewPrivileges: true,
     },

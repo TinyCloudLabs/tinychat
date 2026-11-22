@@ -1,13 +1,13 @@
 // The stdio bridge: the boot process of every regular bot sandbox. It runs OMP and carries OMP's stdin and stdout over
 // one WebSocket.
 //
-//   127.0.0.1:ARM_PORT  POST /arm  {"bridgeToken","gatewayToken","gatewayUrl","model"}  from `arm.ts`. Kept in memory.
-//                       Arming again replaces them and closes any open connection.
+//   127.0.0.1:ARM_PORT  POST /arm  {"bridgeToken","gatewayToken","gatewayUrl","model","role"}  from `arm.ts`. Kept in
+//                       memory. Arming again replaces them and closes any open connection.
 //   0.0.0.0:BRIDGE_PORT GET /rpc   WebSocket, `Authorization: Bearer <bridgeToken>`. One connection at a time. Opening
 //                       it starts OMP; closing it ends OMP, and OMP ending closes it.
 
 import { createHash, timingSafeEqual } from "node:crypto";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ServerWebSocket, Subprocess } from "bun";
 
@@ -19,12 +19,17 @@ const BRIDGE_HOST = process.env.BRIDGE_HOST ?? "0.0.0.0";
 const HOME = process.env.HOME ?? "/root";
 /** The agent to run; tests and the local check pass a stand-in. */
 const AGENT = process.argv.length > 2 ? process.argv.slice(2) : ["omp", "--mode", "rpc", "--no-ui"];
+/** The prompt files from bots/sandbox/prompts, one per role; the sandbox image holds them here. */
+const PROMPT_DIR = process.env.BOT_PROMPT_DIR ?? "/opt/tinycloud/prompts";
+const ROLES = ["main", "sibling"] as const;
 
 interface Armed {
   bridgeToken: string;
   gatewayToken: string;
   gatewayUrl: string;
   model: string;
+  /** Main or a sibling; picks the bot's system prompt. Absent from an older service. */
+  role?: (typeof ROLES)[number];
 }
 
 let armed: Armed | undefined;
@@ -54,12 +59,14 @@ function modelsYml(gatewayUrl: string, model: string): string {
 
 function parseArm(value: unknown): Armed | undefined {
   if (typeof value !== "object" || value === null) return undefined;
-  const { bridgeToken, gatewayToken, gatewayUrl, model } = value as Record<string, unknown>;
+  const { bridgeToken, gatewayToken, gatewayUrl, model, role } = value as Record<string, unknown>;
   if (typeof bridgeToken !== "string" || !HEX_64.test(bridgeToken)) return undefined;
   if (typeof gatewayToken !== "string" || !HEX_64.test(gatewayToken)) return undefined;
   if (typeof gatewayUrl !== "string" || !/^http:\/\/[^\s"]+\/bots\/[0-9a-f]{64}\/v1$/.test(gatewayUrl)) return undefined;
   if (typeof model !== "string" || !/^[\w.:/-]{1,128}$/.test(model)) return undefined;
-  return { bridgeToken, gatewayToken, gatewayUrl, model };
+  const known = ROLES.find(entry => entry === role);
+  if (role !== undefined && !known) return undefined;
+  return { bridgeToken, gatewayToken, gatewayUrl, model, ...(known ? { role: known } : {}) };
 }
 
 function closeOpen(reason: string): void {
@@ -109,7 +116,10 @@ const rpcServer = Bun.serve<undefined>({
       const agentDir = join(HOME, ".omp", "agent");
       mkdirSync(agentDir, { recursive: true });
       writeFileSync(join(agentDir, "models.yml"), modelsYml(config.gatewayUrl, config.model));
-      const agent = Bun.spawn(AGENT, {
+      // Without a role, or without its file (OMP would take the path itself as the prompt), OMP finds the role-neutral
+      // ~/.omp/agent/SYSTEM.md instead.
+      const prompt = config.role && join(PROMPT_DIR, `${config.role}.md`);
+      const agent = Bun.spawn(prompt && existsSync(prompt) ? [...AGENT, "--system-prompt", prompt] : AGENT, {
         cwd: HOME,
         env: { PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin", HOME, BOT_TOKEN: config.gatewayToken, PI_NO_TITLE: "1" },
         stdin: "pipe",

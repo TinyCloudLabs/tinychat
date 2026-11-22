@@ -162,6 +162,33 @@ const MAX_ACTIVITY_COUNT = 256;
 const HOST_TOOLS_TIMEOUT_MS = 5_000;
 const MESSAGE_BOT = "message_bot";
 
+/**
+ * Who wrote a turn's text: the owner in chat, another of the owner's bots through message_bot, or the app, from the
+ * owner's response there to a question from Main.
+ */
+export type TurnOrigin = "owner" | "bot" | AppOrigin;
+
+/** The first line of every turn that did not come straight from the owner's chat (the bots' prompts rely on it). */
+export const ORIGIN_LINES = {
+  bot: "[TinyCloud: this message is from another of the owner's bots, not from the owner.]",
+  app: "[TinyCloud: the owner responded in the app to your question. Their response follows.]",
+} as const;
+
+/** Where OMP reads `@<path>` as a file to load into the turn: at the start of the text or after a space or opening mark. */
+const FILE_MENTION = /(^|[\s([{<"'`])@/g;
+
+/**
+ * What OMP is sent for a turn. A turn that did not come straight from the owner's chat starts with its origin line, so
+ * it never starts with "/": OMP runs slash commands and prompt templates only for a message that does, so such a turn
+ * cannot run one (`/skill:` tokens, which OMP finds anywhere, are off with skills in config.yml). Its `@` mentions get a
+ * word joiner after the `@`, so OMP does not load a file from the bot's box into the turn for whoever wrote it.
+ */
+export function promptText(text: string, from: TurnOrigin): string {
+  if (from === "owner") return text;
+  const line = from === "bot" ? ORIGIN_LINES.bot : ORIGIN_LINES.app;
+  return `${line}\n${text.replace(FILE_MENTION, "$1@\u2060")}`;
+}
+
 function messageBotTool(keys: readonly string[]) {
   return {
     name: MESSAGE_BOT,
@@ -342,7 +369,7 @@ export class Bot {
   }
 
   /** Runs one message. Reports through `sink` and always ends with exactly one done or error. */
-  async send(text: string, sink: TurnSink, owner?: string, messenger?: BotMessenger, from: "owner" | "bot" | AppOrigin = "owner"): Promise<void> {
+  async send(text: string, sink: TurnSink, owner?: string, messenger?: BotMessenger, from: TurnOrigin = "owner"): Promise<void> {
     if (this.#busy) {
       sink.error("busy");
       return;
@@ -403,7 +430,7 @@ export class Bot {
         sink.status(state);
       }
       if (!messenger || !sandbox.onHostToolCall) {
-        await this.#turn(sandbox, text, sink);
+        await this.#turn(sandbox, promptText(text, from), sink);
         return;
       }
       try {
@@ -414,7 +441,7 @@ export class Bot {
         return;
       }
       try {
-        await this.#turn(sandbox, text, sink, messenger);
+        await this.#turn(sandbox, promptText(text, from), sink, messenger);
       } finally {
         try { await sandbox.request({ type: "set_host_tools", tools: [] }, HOST_TOOLS_TIMEOUT_MS); }
         catch { if (this.#sandbox === sandbox) await this.#stop(sandbox); }
