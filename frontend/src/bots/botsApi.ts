@@ -2,6 +2,8 @@
 // to the bots service with the owner taken from the session, so these calls carry only the session bearer.
 import { DEFAULT_REQUEST_HEADER_NAME, DEFAULT_REQUEST_HEADER_VALUE, SessionStore } from "@tinyboilerplate/client";
 
+import { currentAgentClientContext } from "../lib/agentChatApi";
+
 import type { BotsErrorCode } from "./botsStrings";
 
 export interface BotMessage {
@@ -236,7 +238,9 @@ export function createBotsApi({ baseUrl, getToken, fetch: fetchImpl = (input, in
     },
 
     async sendToMain(text, onEvent, signal) {
-      const response = await request("POST", "/api/bots/main/messages", signal, JSON.stringify({ text }));
+      // The owner's local date and time zone, as the meeting chat sends them, so the bot reads "today" as the owner does.
+      const body = JSON.stringify({ text, clientContext: currentAgentClientContext() });
+      const response = await request("POST", "/api/bots/main/messages", signal, body);
       if (!response.body) throw new BotsError("failed");
       const reader = response.body.getReader();
       const decoder = new TextDecoder();

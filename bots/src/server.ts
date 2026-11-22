@@ -3,7 +3,8 @@
 
 import type { ActivityRecord, StagedHistory } from "./history";
 import type { BotAdmission } from "./bot-admission";
-import { type BotMessenger, type ErrorCode, ERROR_MESSAGES, type ListedMessage, MAX_TEXT, type TurnSink, type WebSettings } from "./bot";
+import { type BotMessenger, type ErrorCode, ERROR_MESSAGES, type ListedMessage, MAX_TEXT, type TurnOrigin, type TurnSink, type WebSettings } from "./bot";
+import { type OwnerDate, ownerDateFrom } from "./owner-date";
 import { INVALID_HOSTS, parseWebPolicy, type WebPolicy } from "./web-policy";
 import { isRecord } from "./guards";
 import { ANNOUNCED_STATES, type AnnouncedState, type BotState, OwnerBotLimit } from "./manifest";
@@ -35,8 +36,11 @@ function operationOf(rest: string, method: string): Operation | undefined {
 }
 
 export interface BotApi {
-  /** `from` says who wrote the text; only the owner's own messages teach the bot which addresses it may read. */
-  send(text: string, sink: TurnSink, owner?: string, messenger?: BotMessenger, from?: "owner" | "bot"): Promise<void>;
+  /**
+   * `from` says who wrote the text; only the owner's own messages teach the bot which addresses it may read. `date`,
+   * the owner's local date and time zone, is put on the owner's own turns only.
+   */
+  send(text: string, sink: TurnSink, owner?: string, messenger?: BotMessenger, from?: TurnOrigin, date?: OwnerDate): Promise<void>;
   list(): Promise<ListedMessage[]>;
   listActivities?(): Promise<ActivityRecord[]>;
   historyPending?(): Promise<unknown>;
@@ -300,7 +304,9 @@ export function createApp(options: AppOptions): (req: Request) => Promise<Respon
         return eventStream(async sink => sink.error("invalid"));
       }
       const messenger = signed ? turnMessenger(options, owner, key, isRecord(body) ? body.messageableBotKeys : undefined) : undefined;
-      return eventStream(sink => bot.send(text, sink, owner, messenger));
+      // A malformed date or time zone is dropped; the turn runs without it.
+      const date = ownerDateFrom(isRecord(body) ? body.clientContext : undefined);
+      return eventStream(sink => bot.send(text, sink, owner, messenger, "owner", date));
     }
     if (req.method === "GET") {
       try {

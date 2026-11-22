@@ -43,7 +43,8 @@ test("a reply streams to the bot's events and ends at done", async () => {
   const { api, calls } = recorder(() => new Response(body, { headers: { "content-type": "text/event-stream" } }));
   const events: MainEvent[] = [];
   await api.send(KEY, "Hi", (event) => events.push(event));
-  expect(calls[0]).toMatchObject({ url: `https://api.example/api/bots/${KEY}/messages`, method: "POST", body: JSON.stringify({ text: "Hi" }) });
+  expect(calls[0]).toMatchObject({ url: `https://api.example/api/bots/${KEY}/messages`, method: "POST" });
+  expect(JSON.parse(String(calls[0]?.body))).toEqual({ text: "Hi", clientContext: { localDate: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/), timeZone: expect.any(String) } });
   expect(events).toEqual([
     { type: "status", state: "working" },
     { type: "delta", text: "Hel" },
