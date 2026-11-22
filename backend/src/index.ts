@@ -46,6 +46,10 @@ import { createSignatureRouter } from "./routes/signature.js";
 import { createNrasProxyRouter } from "./routes/nras-proxy.js";
 import { createPhalaVerifyRouter } from "./routes/phala-verify.js";
 import { createAttestationSelfRouter } from "./routes/attestation-self.js";
+import { createDstackKeyClient } from "./attestation/dstackClient.js";
+import { deriveFirefliesImportKeys, type FirefliesImportKeys } from "./fireflies-import-identity.js";
+import { createFirefliesDelegationRouter } from "./routes/fireflies-delegation.js";
+import { createKvFirefliesGrantPort, FirefliesGrantStore } from "./services/fireflies-grant-store.js";
 import { createServerInfoRouter } from "./routes/server-info.js";
 import { readBackendBuildInfo } from "./build-info.js";
 import { createBillingRouter } from "./routes/billing.js";
@@ -178,6 +182,14 @@ const VALID_LEDGER_OUTAGE_POLICIES = new Set(["bounded_k", "fail_open", "fail_cl
  */
 export function connectorWebhooksEnabled(): boolean {
   return process.env.CONNECTOR_WEBHOOKS_ENABLED === "true";
+}
+
+/**
+ * Fireflies server-side import ships OFF by default (TC-3905): only literal "true" derives the
+ * KMS delegate key and grant-store KEK inside the CVM and mounts `/api/connectors/fireflies/delegation`.
+ */
+export function firefliesServerImportEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.FIREFLIES_SERVER_IMPORT_ENABLED === "true";
 }
 
 /**
@@ -352,6 +364,22 @@ async function main() {
     const webhookSecrets = validateConnectorWebhookSecrets(process.env);
     if (!webhookSecrets.ok) {
       console.error(webhookSecrets.error);
+      process.exit(1);
+      return;
+    }
+  }
+
+  // TC-3905: fail closed at boot when Fireflies server import is enabled and dstack KMS cannot
+  // derive the dedicated did:key delegate identity and separate grant-store KEK inside the CVM.
+  let firefliesImportKeys: FirefliesImportKeys | null = null;
+  if (firefliesServerImportEnabled(process.env)) {
+    try {
+      firefliesImportKeys = await deriveFirefliesImportKeys(createDstackKeyClient(), {
+        host: TINYCLOUD_HOST,
+        env: process.env,
+      });
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : "Invalid fireflies-import KMS configuration");
       process.exit(1);
       return;
     }
@@ -750,6 +778,25 @@ async function main() {
   // The credential route is not mounted. It answers 404 with the backend's own marker, so a client
   // can tell "this deployment does not have it" from a 404 that came from somewhere else.
   app.use("/api/connectors/credentials", (_req, res) => credentialRouteUnavailable(res));
+
+  // TC-3905: delegation-based Fireflies import grant routes. Mounted only when explicitly enabled
+  // and after dstack KMS derivation succeeded above; otherwise falls through to 404.
+  if (firefliesImportKeys) {
+    const firefliesGrantStore = new FirefliesGrantStore({
+      kv: createKvFirefliesGrantPort(node, backendStorageLane),
+      kek: firefliesImportKeys.grantKek,
+      delegateDid: firefliesImportKeys.delegate.did,
+    });
+    app.use(
+      "/api/connectors/fireflies/delegation",
+      createFirefliesDelegationRouter({
+        delegate: firefliesImportKeys.delegate,
+        configuredHost: TINYCLOUD_HOST,
+        store: firefliesGrantStore,
+        authMiddleware,
+      }),
+    );
+  }
 
   let calendarAutojoin: CalendarAutojoinConnection | undefined;
   let calendarAutojoinWorker: CalendarAutojoinWorker | undefined;

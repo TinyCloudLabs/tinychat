@@ -38,6 +38,7 @@ export const REQUEST_LOG_ROUTE_TEMPLATES: readonly string[] = [
   "/api/chat",
   "/api/chat/model-selection",
   "/api/chat/models",
+  "/api/connectors/fireflies/delegation",
   "/api/connectors/google/autojoin/begin",
   "/api/connectors/google/autojoin/disable",
   "/api/connectors/google/autojoin/disconnect",

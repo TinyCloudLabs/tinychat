@@ -157,7 +157,7 @@ describe("Settings -> Where your data lives (RegistrySection)", () => {
     expect(host.querySelector('[data-testid="registry-sequence"]')?.textContent).toBe("Version 4");
   });
 
-  test("change calls the adapter with canonical input, drops stale DIDs on changed hosts, and preserves all record.nodes including unreferenced ones", async () => {
+  test("change calls the adapter with canonical input, drops stale DIDs on changed hosts, and sends only referenced nodes", async () => {
     const record = await makeRecord({
       nodes: [
         { did: NODE_A_DID, url: "https://node.tinycloud.xyz" },
@@ -209,7 +209,6 @@ describe("Settings -> Where your data lives (RegistrySection)", () => {
           { url: "https://new-node.example.com" },
           { url: "https://node.tinycloud.xyz", did: NODE_A_DID },
           { url: "https://keys.example.com:8443", did: NODE_B_DID },
-          { url: "https://standby.example.com", did: NODE_C_DID },
         ],
         spaces: [
           { space: SPACE_DEFAULT, nodes: [{ url: "https://new-node.example.com", mode: "read-write" }] },
@@ -219,6 +218,59 @@ describe("Settings -> Where your data lives (RegistrySection)", () => {
       },
     ]);
     expect(host.textContent).toContain(REGISTRY_EDITOR_COPY.changeSuccess);
+  });
+
+  test("moving away from a host omits the moved-away host from nodes", async () => {
+    const record = await makeRecord();
+    const submitted: RegistryChangeRequest[] = [];
+    const adapter: RegistryEditorAdapter = {
+      canEdit: true,
+      canUndo: true,
+      readCurrentRecord: async () => ({ status: "found", record }),
+      fetchHistory: async () => ({ status: "ok", history: [] }),
+      requestChange: async (req): Promise<RegistryChangeOutcome> => {
+        submitted.push(req);
+        return { status: "published", sequence: 5, recordHash: "0xhash5" };
+      },
+      requestUndo: async () => ({ status: "cancelled" }),
+    };
+
+    root = createRootFn(host);
+    await act(async () => {
+      root!.render(<RegistrySection did={OWNER_DID} adapter={adapter} />);
+    });
+    await flush();
+
+    await act(async () => {
+      buttonByText(host, REGISTRY_EDITOR_COPY.changeButton)!.click();
+    });
+
+    const defaultSpaceInput = host.querySelector<HTMLInputElement>(`input[id="registry-space-${SPACE_DEFAULT}"]`)!;
+    const feedSpaceInput = host.querySelector<HTMLInputElement>(`input[id="registry-space-${SPACE_FEED}"]`)!;
+    const encryptionInput = host.querySelector<HTMLInputElement>('input[id="registry-encryption-node"]')!;
+
+    await act(async () => {
+      setInputValue(defaultSpaceInput, "https://new-node.example.com");
+      setInputValue(feedSpaceInput, "https://new-node.example.com");
+      setInputValue(encryptionInput, "https://new-node.example.com");
+    });
+
+    const form = host.querySelector<HTMLFormElement>('[data-testid="registry-editor-form"]')!;
+    await act(async () => {
+      form.dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }));
+    });
+    await flush();
+
+    expect(submitted).toEqual([
+      {
+        nodes: [{ url: "https://new-node.example.com" }],
+        spaces: [
+          { space: SPACE_DEFAULT, nodes: [{ url: "https://new-node.example.com", mode: "read-write" }] },
+          { space: SPACE_FEED, nodes: [{ url: "https://new-node.example.com", mode: "read-only" }] },
+        ],
+        encryptionNode: "https://new-node.example.com",
+      },
+    ]);
   });
 
   test("invalid node URL shows inline validation error without calling adapter", async () => {
