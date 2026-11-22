@@ -37,6 +37,8 @@ function operationOf(rest: string, method: string): Operation | undefined {
   if (rest === "/web" || rest === "/asks" || rest === "/reads" || rest === "/requests" || ANSWER_PATH.test(rest)) return "read";
   if (rest === "/messages") return method === "POST" ? "turn" : "read";
   if (rest === "/history" || rest === "/history/stage" || rest === "/history/permission" || rest === "/history/notice") return "history";
+  // Only the owner's signed call reaches this: no tool, turn or other bot has a path to it.
+  if (rest === "/new-chat") return method === "POST" ? "turn" : undefined;
   return undefined;
 }
 
@@ -89,6 +91,8 @@ export interface AppOptions {
     /** A sibling by key. Without it the service has only Main. */
     forBot?(ownerDid: string, key: string): BotApi;
     deleteBot?(ownerDid: string, key: string): Promise<DeleteSkip | undefined>;
+    /** The owner's "Start a new chat" for Main (BotManager.newChat). Without it the service has none (404). */
+    newChat?(ownerDid: string): Promise<DeleteSkip | "busy" | undefined>;
   };
   /** Which siblings the backend has announced. Without it the service has only Main, always active. */
   manifest?: {
@@ -271,7 +275,7 @@ export function createApp(options: AppOptions): (req: Request) => Promise<Respon
       } catch { return new Response(null, { status: 503 }); }
       return new Response(null, { status: 405 });
     }
-    if ((rest === "/web" || rest === "/asks" || rest === "/reads" || rest === "/requests" || ANSWER_PATH.test(rest)) && key !== MAIN_KEY) return new Response(null, { status: 404 });
+    if ((rest === "/web" || rest === "/asks" || rest === "/reads" || rest === "/requests" || rest === "/new-chat" || ANSWER_PATH.test(rest)) && key !== MAIN_KEY) return new Response(null, { status: 404 });
     const operation = operationOf(rest, req.method);
     if (!operation) return new Response(null, { status: 404 });
     // The state is read before a sibling is looked up, so a key nobody announced never creates anything.
@@ -283,6 +287,16 @@ export function createApp(options: AppOptions): (req: Request) => Promise<Respon
     const found = key === MAIN_KEY ? options.bots.forOwner(owner) : options.bots.forBot?.(owner, key);
     if (!found) return new Response(null, { status: 404 });
     const bot = found;
+    if (rest === "/new-chat") {
+      if (!options.bots.newChat) return new Response(null, { status: 404 });
+      try {
+        const cause = await options.bots.newChat(owner);
+        if (cause === undefined) return Response.json({ outcome: "cleared" });
+        // A turn in flight, or messages not yet saved to the owner's history: nothing was deleted.
+        if (cause === "busy" || cause === "archive_pending") return Response.json({ error: cause }, { status: 409 });
+      } catch { /* answered below */ }
+      return Response.json({ error: "bot_unavailable", message: ERROR_MESSAGES.bot_unavailable }, { status: 503 });
+    }
     if (rest === "/reads") {
       if (req.method !== "PUT" || !bot.setReads) return new Response(null, { status: bot.setReads ? 405 : 404 });
       const input: unknown = await req.json().catch(() => null);
