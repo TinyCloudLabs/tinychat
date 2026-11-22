@@ -1,5 +1,23 @@
 # @tinychat/backend
 
+## 0.12.0
+
+### Minor Changes
+
+- 03d29de: The bot you've known as Main is called TrustBot. Your chat history stays as it is.
+
+  Details: TC-3790
+
+### Patch Changes
+
+- 99b2305: Restrict MCP Fireflies KV fallback to proven-absent SQL stores, filter and revalidate cached server-imported Library rows against the active flag and purge ledger, align Library KV paging with `nextCursor` and `truncated` and update the MCP KV truncation text.
+
+  Details: TC-3919
+
+- 2965fde: A 1-hour secret approval for the agent is accepted when OpenKey's grant ends a few seconds after the hour. An approval more than 2 minutes over an hour is refused.
+
+  Details: TC-3595
+
 ## 0.12.0-beta.2
 
 ### Patch Changes
