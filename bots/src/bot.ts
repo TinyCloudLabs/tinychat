@@ -11,10 +11,11 @@ import { type BotLayout, botLayout, type LayoutRoots } from "./layout";
 import { MESSAGING_STRINGS } from "./messaging-strings";
 import { BOT_ID, botIdFor, MAIN_KEY } from "./owner";
 import { type DeleteSkip, lastUsed, markUsed, removeWorkingState } from "./retention";
+import { type OwnerDate, ownerDateLine } from "./owner-date";
 import { type Frame, type HostToolHandler, type HostToolReply, RpcError } from "./rpc";
 import { addressesIn } from "./web";
 import { readWebPolicy, type WebPolicy, writeWebPolicy } from "./web-policy";
-import { type AnswerInput, type AnswerResult, type AppOrigin, AskStore, type AskReply, type AskRequest, cancelAsks, readAsksEnabled, sweepAsks as sweepAskStores, writeAsksEnabled } from "./asks";
+import { type AnswerInput, type AnswerResult, type AppOrigin, AskStore, type AskReply, type AskRequest, cancelAsks, readAsksEnabled, type SecretLine, sweepAsks as sweepAskStores, writeAsksEnabled } from "./asks";
 import { type ReadArea, type ReadsSetting, writeReads } from "./reads";
 
 export type ErrorCode = "bot_unavailable" | "model_unavailable" | "busy" | "at_capacity" | "invalid";
@@ -43,10 +44,12 @@ export interface ListedMessage {
   role: "user" | "bot";
   text: string;
   at: string;
-  /** Set for a message the app wrote (the owner's reply to a question from Main), not typed by the owner. */
+  /** Set for a message the app wrote (the owner's decision on a request from Main), not typed by the owner. */
   origin?: "app";
   /** With `origin: "app"`: what the owner decided, so the app need not read the composed text. */
-  decision?: "answered" | "declined" | "stopped";
+  decision?: AskReply["decision"];
+  /** With a decision on a secret request: what the owner's chat line names. */
+  secret?: SecretLine;
 }
 
 /** The owner's setting for questions from Main. */
@@ -93,8 +96,12 @@ export interface SandboxLauncher {
   webStatus?(layout: BotLayout): Promise<unknown>;
   /** Page addresses the owner typed, which the bot may read. */
   learnAddresses?(layout: BotLayout, urls: string[]): Promise<void>;
-  /** Collects the questions the box asked, then gives the gateway the owner's setting for questions and the counts; `turn` starts a turn. */
-  syncAsks?(layout: BotLayout, turn?: { outside: boolean }): Promise<void>;
+  /**
+   * Collects the requests the box made, settles secret requests with the gateway, then gives the gateway the owner's
+   * setting and the counts; `turn` starts a turn. `ownerDid` (Main's owner, when known) lets the gateway make
+   * approval links, which OpenKey checks against that account.
+   */
+  syncAsks?(layout: BotLayout, turn?: { outside: boolean }, ownerDid?: string): Promise<void>;
   /** Gives the gateway the owner's read setting and the bot's conversation id (reads.ts). */
   pushReads?(layout: BotLayout): Promise<void>;
   /** Whether the bot's current conversation holds owner data it read; message_bot is refused while it does. */
@@ -176,17 +183,25 @@ export const ORIGIN_LINES = {
 
 /** Where OMP reads `@<path>` as a file to load into the turn: at the start of the text or after a space or opening mark. */
 const FILE_MENTION = /(^|[\s([{<"'`])@/g;
+/**
+ * A bracket that would open a TinyCloud line, in text the supervisor did not write: spaces or marks may stand before
+ * the word, and invisible format characters (such as a zero-width space) inside it.
+ */
+const TINYCLOUD_MARK = new RegExp(`\\[(?=[^\\p{L}\\p{N}\\]]*${[..."tinycloud"].join("\\p{Cf}*")})`, "giu");
 
 /**
  * What OMP is sent for a turn. A turn that did not come straight from the owner's chat starts with its origin line, so
  * it never starts with "/": OMP runs slash commands and prompt templates only for a message that does, so such a turn
  * cannot run one (`/skill:` tokens, which OMP finds anywhere, are off with skills in config.yml). Its `@` mentions get a
  * word joiner after the `@`, so OMP does not load a file from the bot's box into the turn for whoever wrote it.
+ * An owner's turn starts with their local date line when `date` is given, unless it is a slash command.
+ * In every turn a `[` that would open a TinyCloud line gets a word joiner after it, so only the supervisor writes one.
  */
-export function promptText(text: string, from: TurnOrigin): string {
-  if (from === "owner") return text;
+export function promptText(text: string, from: TurnOrigin, date?: OwnerDate): string {
+  const written = text.replace(TINYCLOUD_MARK, "[\u2060");
+  if (from === "owner") return date && !written.startsWith("/") ? `${ownerDateLine(date)}\n${written}` : written;
   const line = from === "bot" ? ORIGIN_LINES.bot : ORIGIN_LINES.app;
-  return `${line}\n${text.replace(FILE_MENTION, "$1@\u2060")}`;
+  return `${line}\n${written.replace(FILE_MENTION, "$1@\u2060")}`;
 }
 
 function messageBotTool(keys: readonly string[]) {
@@ -360,6 +375,8 @@ export class Bot {
   #retiring = false;
   /** Set once the backend's deletion of this bot has removed its working state. Nothing runs or writes for it again. */
   #retired = false;
+  /** Main's owner, once a request named them (see BotManager.forOwner): the account approval links are made for. */
+  #ownerDid: string | undefined;
 
   constructor(layout: BotLayout, launcher: SandboxLauncher, options: BotOptions, running: RunningLimit) {
     this.layout = layout;
@@ -368,8 +385,20 @@ export class Bot {
     this.#running = running;
   }
 
-  /** Runs one message. Reports through `sink` and always ends with exactly one done or error. */
-  async send(text: string, sink: TurnSink, owner?: string, messenger?: BotMessenger, from: TurnOrigin = "owner"): Promise<void> {
+  /** Records Main's owner. Only the DID this bot's id was made from is kept. */
+  knowOwner(ownerDid: string): void {
+    if (this.layout.botKey === undefined && botIdFor(ownerDid) === this.layout.botId) this.#ownerDid = ownerDid;
+  }
+
+  #syncAsks(turn?: { outside: boolean }): Promise<void> {
+    return this.#launcher.syncAsks?.(this.layout, turn, this.#ownerDid) ?? Promise.resolve();
+  }
+
+  /**
+   * Runs one message. Reports through `sink` and always ends with exactly one done or error. `date` is the owner's
+   * local date and time zone, used only on the owner's own turns.
+   */
+  async send(text: string, sink: TurnSink, owner?: string, messenger?: BotMessenger, from: TurnOrigin = "owner", date?: OwnerDate): Promise<void> {
     if (this.#busy) {
       sink.error("busy");
       return;
@@ -388,7 +417,10 @@ export class Bot {
       try {
         this.#history ??= new HistoryJournal(this.layout, this.#options.history);
         this.#history.begin(owner ?? "", this.#options.maxTurnBytes * 16 + 128 * 1024);
-        this.#history.append({ type: "user", text, at: new Date().toISOString(), ...(typeof from === "object" ? { origin: "app", decision: from.app } : {}) });
+        this.#history.append({
+          type: "user", text, at: new Date().toISOString(),
+          ...(typeof from === "object" ? { origin: "app", decision: from.app, ...(from.secret ? { secret: from.secret } : {}) } : {}),
+        });
         this.#history.startDraft();
       } catch { this.#busy = false; sink.error("bot_unavailable"); return; }
     }
@@ -411,7 +443,7 @@ export class Bot {
         sandbox = await this.#ensure();
         this.#markUsed();
         await sandbox.refreshEgress();
-        await this.#launcher.syncAsks?.(this.layout, { outside: from === "bot" });
+        await this.#syncAsks({ outside: from === "bot" });
         // Only what the owner typed counts as an address they chose; a message from another bot may carry text a web page put there, and an app reply is composed here.
         const typed = from === "owner" ? addressesIn(text, 50) : [];
         if (typed.length > 0) await this.#launcher.learnAddresses?.(this.layout, typed);
@@ -430,7 +462,7 @@ export class Bot {
         sink.status(state);
       }
       if (!messenger || !sandbox.onHostToolCall) {
-        await this.#turn(sandbox, promptText(text, from), sink);
+        await this.#turn(sandbox, promptText(text, from, date), sink);
         return;
       }
       try {
@@ -441,7 +473,7 @@ export class Bot {
         return;
       }
       try {
-        await this.#turn(sandbox, promptText(text, from), sink, messenger);
+        await this.#turn(sandbox, promptText(text, from, date), sink, messenger);
       } finally {
         try { await sandbox.request({ type: "set_host_tools", tools: [] }, HOST_TOOLS_TIMEOUT_MS); }
         catch { if (this.#sandbox === sandbox) await this.#stop(sandbox); }
@@ -449,7 +481,7 @@ export class Bot {
     } finally {
       clearInterval(heartbeat);
       // Questions Main asked during the turn are collected now, while the gateway still holds them.
-      void this.#launcher.syncAsks?.(this.layout).catch(() => {});
+      void this.#syncAsks().catch(() => {});
       if (this.#history) {
         try { this.#history.append({ type: "provenance", receipts: await this.#launcher.provenance?.(this.layout) ?? [] }); }
         catch { this.#history.append({ type: "provenance", verified: false }); }
@@ -550,15 +582,15 @@ export class Bot {
       writeAsksEnabled(this.layout, enabled);
       if (!enabled) {
         const stopped = await cancelAsks(this.layout);
-        await this.#launcher.syncAsks?.(this.layout).catch(() => log("asks_setting_push_failed", this.layout.botId));
+        await this.#syncAsks().catch(() => log("asks_setting_push_failed", this.layout.botId));
         log("asks_setting", this.layout.botId, { enabled, stopped });
         return;
       }
       try {
-        await this.#launcher.syncAsks?.(this.layout);
+        await this.#syncAsks();
       } catch (error) {
         writeAsksEnabled(this.layout, previous);
-        await this.#launcher.syncAsks?.(this.layout).catch(() => {});
+        await this.#syncAsks().catch(() => {});
         throw error;
       }
       log("asks_setting", this.layout.botId, { enabled });
@@ -586,7 +618,7 @@ export class Bot {
   /** The owner's requests from Main: what the box has asked so far (collected from the gateway first), pending first. */
   async requests(): Promise<AskRequest[]> {
     await this.#deleting;
-    await this.#launcher.syncAsks?.(this.layout).catch(() => {});
+    await this.#syncAsks().catch(() => {});
     return new AskStore(this.layout).list();
   }
 
@@ -595,8 +627,8 @@ export class Bot {
     await this.#deleting;
     const result = new AskStore(this.layout).answer(id, input);
     if (result.ok) {
-      log("ask_resolved", this.layout.botId, { outcome: input.decision === "answer" ? "answered" : "declined" });
-      void this.#launcher.syncAsks?.(this.layout).catch(() => {});
+      log("ask_resolved", this.layout.botId, { outcome: result.request.state });
+      void this.#syncAsks().catch(() => {});
     }
     return result;
   }
@@ -757,7 +789,7 @@ export class Bot {
         if (!signal.aborted && !reply.isError) {
           activity.messaged(targetKey);
           // Another bot's words are now in Main's conversation: what it asks from here on says so.
-          await this.#launcher.syncAsks?.(this.layout, { outside: true }).catch(() => {});
+          await this.#syncAsks({ outside: true }).catch(() => {});
         }
         return reply;
       } finally {
@@ -892,8 +924,8 @@ export class Bot {
   async #stop(sandbox: Sandbox): Promise<StopFailure | undefined> {
     if (this.#sandbox === sandbox) this.#sandbox = undefined;
     // What the gateway holds about this sandbox (questions, whether outside text came in) is collected before it forgets it.
-    const collected = this.#launcher.syncAsks?.(this.layout).catch(() => {});
-    this.#stopping = (collected ? collected.then(() => sandbox.stop()) : sandbox.stop())
+    const collected = this.#syncAsks().catch(() => {});
+    this.#stopping = collected.then(() => sandbox.stop())
       .then(cause => cause || undefined)
       .catch(error => {
         log("stop_failed", this.layout.botId, { error: error instanceof Error ? error.message.slice(0, 300) : "unknown" });
@@ -939,7 +971,9 @@ export class BotManager {
   }
 
   forOwner(ownerDid: string): Bot {
-    return this.#bot(botIdFor(ownerDid));
+    const bot = this.#bot(botIdFor(ownerDid));
+    bot.knowOwner(ownerDid);
+    return bot;
   }
 
   /** One of the owner's bots by key. The caller has already checked the key's form and that the bot is announced. */

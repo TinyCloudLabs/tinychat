@@ -7,7 +7,7 @@
 import { closeSync, existsSync, fsyncSync, openSync, readFileSync, renameSync, writeSync } from "node:fs";
 import { dirname } from "node:path";
 import { AskDesk, APP_TOOLS } from "./asks-desk";
-import type { AsksPush, NewAsk } from "./asks";
+import type { AsksPush, NewRequest } from "./asks";
 import { MeetingDesk } from "./meeting-reads";
 import type { ReadsPush } from "./reads";
 import type { GatewayConfig } from "./config";
@@ -431,8 +431,8 @@ export class Gateway {
     return this.#meetings.held(botId);
   }
 
-  /** The questions the box has asked since the supervisor last collected them. */
-  drainAsks(botId: string): NewAsk[] {
+  /** The requests the box has made since the supervisor last collected them. */
+  drainAsks(botId: string): NewRequest[] {
     return this.#asks.drain(botId);
   }
 
@@ -601,10 +601,10 @@ export class Gateway {
   /**
    * Main's tools over MCP (Streamable HTTP, JSON replies, no session): `initialize`, `tools/list` and `tools/call`.
    * Two servers share this: `web` (search, fetch), always listed with the owner's setting applied on each call, and
-   * `app` (ask_owner and the meeting tools), each listed only while the owner's setting for it is on and checked again
-   * on each call. A setting change takes effect at the bot's next call, without restarting its sandbox. Both serve
-   * only the tools on their allow-list (tool-policy.ts): tools/list drops any other, and tools/call refuses any other
-   * name before dispatch.
+   * `app` (ask_owner, request_secret and the meeting tools), each listed only while the owner's setting for it is on and
+   * checked again on each call. A setting change takes effect at the bot's next call, without restarting its sandbox.
+   * Both serve only the tools on their allow-list (tool-policy.ts): tools/list drops any other, and tools/call refuses
+   * any other name before dispatch.
    */
   async #mcp(botId: string, req: Request, server: "web" | "app"): Promise<Response> {
     const open = this.#mcpOpen.get(botId) ?? 0;
@@ -655,8 +655,9 @@ export class Gateway {
             if (!result.isError) this.#asks.markOutside(botId);
             return Response.json(rpcResult(id, result));
           }
-          if (name !== "ask_owner") return Response.json(rpcFailure(id, -32602, "Unknown tool"));
-          return Response.json(rpcResult(id, this.#asks.call(botId, args)));
+          if (name === "ask_owner") return Response.json(rpcResult(id, this.#asks.call(botId, args)));
+          if (name === "request_secret") return Response.json(rpcResult(id, this.#asks.callSecret(botId, args)));
+          return Response.json(rpcFailure(id, -32602, "Unknown tool"));
         }
         if (name !== "search" && name !== "fetch") return Response.json(rpcFailure(id, -32602, "Unknown tool"));
         return Response.json(rpcResult(id, await this.#webCall(botId, name, args)));

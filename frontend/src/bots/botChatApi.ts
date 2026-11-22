@@ -3,6 +3,8 @@
 // the session's: these calls carry only the session bearer.
 import { DEFAULT_REQUEST_HEADER_NAME, DEFAULT_REQUEST_HEADER_VALUE, SessionStore } from "@tinyboilerplate/client";
 
+import { currentAgentClientContext } from "../lib/agentChatApi";
+
 import { BotsError, createMainEventParser, toActivity, type BotActivity, type BotMessage, type MainEvent } from "./botsApi";
 import type { HistoryNotice } from "./historyNotice";
 import { createBotRosterApi, type BotRosterApi } from "./botRosterApi";
@@ -132,7 +134,9 @@ export function createBotChatApi({ baseUrl, getToken, fetch: fetchImpl = (input,
     listConversation,
 
     async send(key, text, onEvent, signal) {
-      const response = await request("POST", `${botPath(key)}/messages`, { signal, body: { text } });
+      // The owner's local date and time zone, as the meeting chat sends them, so the bot reads "today" as the owner does.
+      const body = { text, clientContext: currentAgentClientContext() };
+      const response = await request("POST", `${botPath(key)}/messages`, { signal, body });
       if (response.status === 400) throw new BotsError("invalid");
       // The backend's own `message` is never shown: only its code picks the owner's line (botsStrings.ts).
       if (!response.ok) {

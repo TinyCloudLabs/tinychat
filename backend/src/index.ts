@@ -23,10 +23,11 @@ import { createAuthMiddleware } from "./middleware/auth.js";
 import { createAuthRouter } from "./routes/auth.js";
 import { mcpChatFromEnv } from "./mcp-meetings/config.js";
 import { BotHistory } from "./bot-history.js";
-import { createBotHistoryRouter, startBotHistoryDrain } from "./routes/bot-history.js";
+import { createBotHistoryRouter, createSiblingHistoryRouter, startBotHistoryDrain } from "./routes/bot-history.js";
 import { botsFromEnv, createBotsRouter, removeBotFromService } from "./routes/bots.js";
 import { createTrustBotReadsInternalRouter, createTrustBotReadsRouter, TRUSTBOT_READS_INTERNAL_PREFIX } from "./routes/trustbot-reads.js";
 import { startTrustBotReads, trustbotReadsFromEnv } from "./trustbot-reads/setup.js";
+import { botAdmissionSecret, mountBotAdmissionRoute } from "./routes/bot-admission.js";
 import { capModeFromEnv, planFor } from "./bot-caps.js";
 import { BotsRegistry, turnListHook } from "./bots-registry.js";
 import { createBotsServiceGuardRouter } from "./bots-service-routes.js";
@@ -47,6 +48,10 @@ import { createSignatureRouter } from "./routes/signature.js";
 import { createNrasProxyRouter } from "./routes/nras-proxy.js";
 import { createPhalaVerifyRouter } from "./routes/phala-verify.js";
 import { createAttestationSelfRouter } from "./routes/attestation-self.js";
+import { createDstackKeyClient } from "./attestation/dstackClient.js";
+import { deriveFirefliesImportKeys, type FirefliesImportKeys } from "./fireflies-import-identity.js";
+import { createFirefliesDelegationRouter } from "./routes/fireflies-delegation.js";
+import { createKvFirefliesGrantPort, FirefliesGrantStore } from "./services/fireflies-grant-store.js";
 import { createServerInfoRouter } from "./routes/server-info.js";
 import { readBackendBuildInfo } from "./build-info.js";
 import { createBillingRouter } from "./routes/billing.js";
@@ -178,6 +183,14 @@ const VALID_LEDGER_OUTAGE_POLICIES = new Set(["bounded_k", "fail_open", "fail_cl
  */
 export function connectorWebhooksEnabled(): boolean {
   return process.env.CONNECTOR_WEBHOOKS_ENABLED === "true";
+}
+
+/**
+ * Fireflies server-side import ships OFF by default (TC-3905): only literal "true" derives the
+ * KMS delegate key and grant-store KEK inside the CVM and mounts `/api/connectors/fireflies/delegation`.
+ */
+export function firefliesServerImportEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.FIREFLIES_SERVER_IMPORT_ENABLED === "true";
 }
 
 /**
@@ -352,6 +365,22 @@ async function main() {
     const webhookSecrets = validateConnectorWebhookSecrets(process.env);
     if (!webhookSecrets.ok) {
       console.error(webhookSecrets.error);
+      process.exit(1);
+      return;
+    }
+  }
+
+  // TC-3905: fail closed at boot when Fireflies server import is enabled and dstack KMS cannot
+  // derive the dedicated did:key delegate identity and separate grant-store KEK inside the CVM.
+  let firefliesImportKeys: FirefliesImportKeys | null = null;
+  if (firefliesServerImportEnabled(process.env)) {
+    try {
+      firefliesImportKeys = await deriveFirefliesImportKeys(createDstackKeyClient(), {
+        host: TINYCLOUD_HOST,
+        env: process.env,
+      });
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : "Invalid fireflies-import KMS configuration");
       process.exit(1);
       return;
     }
@@ -624,6 +653,15 @@ async function main() {
     );
   }
 
+  // Tiny bots (BOTS_ENABLED): Main bot chat proxied to the bots service for listed accounts; status always answers.
+  const botsConfig = botsFromEnv(process.env);
+  // The record of each owner's bots is kept in the backend's own space and written through the one storage lane.
+  // Finding every owner pages through the store's listing.
+  const botsRegistry = botsConfig ? new BotsRegistry({ get: exoBackendKv.get, put: exoBackendKv.put, list: options => node.kv.list(options) }) : undefined;
+  // Sibling admission for the bots gateway: a signed call over its exact body bytes, so it mounts before the parser.
+  const botAdmissionCallSecret = botsRegistry ? botAdmissionSecret(process.env) : undefined;
+  if (botsRegistry && botAdmissionCallSecret) mountBotAdmissionRoute(app, botAdmissionCallSecret, botsRegistry);
+
   // The Phala TDX-verify passthrough carries a hex quote (a few KB); give it
   // headroom over the global 64 KB parser. Registered before the global parser
   // so it applies to that mount specifically (like the nras-proxy mount above).
@@ -742,6 +780,25 @@ async function main() {
   // can tell "this deployment does not have it" from a 404 that came from somewhere else.
   app.use("/api/connectors/credentials", (_req, res) => credentialRouteUnavailable(res));
 
+  // TC-3905: delegation-based Fireflies import grant routes. Mounted only when explicitly enabled
+  // and after dstack KMS derivation succeeded above; otherwise falls through to 404.
+  if (firefliesImportKeys) {
+    const firefliesGrantStore = new FirefliesGrantStore({
+      kv: createKvFirefliesGrantPort(node, backendStorageLane),
+      kek: firefliesImportKeys.grantKek,
+      delegateDid: firefliesImportKeys.delegate.did,
+    });
+    app.use(
+      "/api/connectors/fireflies/delegation",
+      createFirefliesDelegationRouter({
+        delegate: firefliesImportKeys.delegate,
+        configuredHost: TINYCLOUD_HOST,
+        store: firefliesGrantStore,
+        authMiddleware,
+      }),
+    );
+  }
+
   let calendarAutojoin: CalendarAutojoinConnection | undefined;
   let calendarAutojoinWorker: CalendarAutojoinWorker | undefined;
   if (googleMeetOAuthEnabled() && transcriberApi && process.env.CONNECTOR_CREDENTIAL_MASTER) {
@@ -834,22 +891,19 @@ async function main() {
     app.use("/api/connectors/granola", authMiddleware, createGranolaProxyRouter());
   }
 
-  // Tiny bots (BOTS_ENABLED): Main bot chat proxied to the bots service for listed accounts; status always answers.
-  const botsConfig = botsFromEnv(process.env);
   // Stored history permissions are read and removed here whether or not the history routes are on, so that deleting
   // a bot always clears one that was stored earlier.
   const botHistory = botsConfig ? new BotHistory(node, backendPrivateKey as `0x${string}`, TINYCLOUD_HOST) : undefined;
-  if (botsConfig && botHistory && process.env.BOTS_HISTORY_ENABLED === "true") {
+  if (botsConfig && botsRegistry) botsConfig.listForTurn = turnListHook(botsRegistry);
+  if (botsConfig && botHistory && botsRegistry && process.env.BOTS_HISTORY_ENABLED === "true") {
     app.use("/api/bots/history", createBotHistoryRouter(botHistory, botsConfig, authMiddleware));
-    const historyDrain = startBotHistoryDrain(botHistory, botsConfig);
+    // Before /api/bots, so the other bots' history routes are answered here; each key is checked against the owner's record.
+    app.use("/api/bots/:key/history", createSiblingHistoryRouter(botHistory, botsConfig, authMiddleware, botsRegistry));
+    const historyDrain = startBotHistoryDrain(botHistory, botsConfig, botsRegistry);
     botsConfig.onTurnFinished = () => { void historyDrain.drain(); };
     process.once("SIGTERM", historyDrain.stop);
     process.once("SIGINT", historyDrain.stop);
   }
-  // The record of each owner's bots is kept in the backend's own space and written through the one storage lane.
-  // Finding every owner pages through the store's listing.
-  const botsRegistry = botsConfig ? new BotsRegistry({ get: exoBackendKv.get, put: exoBackendKv.put, list: options => node.kv.list(options) }) : undefined;
-  if (botsConfig && botsRegistry) botsConfig.listForTurn = turnListHook(botsRegistry);
   // A deletion is carried out when it is recorded, and on a pass for whatever is still outstanding, as after a restart.
   const botDeletions = botsConfig && botsRegistry && botHistory ? new BotDeletions({
     registry: botsRegistry,

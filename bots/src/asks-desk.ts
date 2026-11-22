@@ -1,13 +1,15 @@
-// The gateway's side of `ask_owner`: the `app` MCP server's tool, the owner's setting as pushed by the supervisor,
-// and the limits. Every call is checked here, so the sandbox cannot get past the setting or the caps by anything it
-// sends. The gateway only holds a new question until the supervisor collects it; the records are the supervisor's.
-// Log lines carry counts by outcome and nothing the model or the owner wrote.
+// The gateway's side of `ask_owner` and `request_secret`: the `app` MCP server's tools, the owner's setting as pushed
+// by the supervisor, and the limits (one set for both kinds). Every call is checked here, so the sandbox cannot get
+// past the setting or the caps by anything it sends. The gateway only holds a new request until the supervisor
+// collects it; the records are the supervisor's. Log lines carry counts by outcome and nothing the model or the owner
+// wrote.
 
 import { randomBytes } from "node:crypto";
 import {
-  ASK_ERRORS, type AsksPush, DECLINE_COOLDOWN_MS, MAX_CHOICE_CHARS, MAX_CHOICES, MAX_PENDING, MAX_PER_DAY, MAX_QUESTION_CHARS, type NewAsk,
-  plainAskText, questionHash, utcDay,
+  ASK_ERRORS, type AsksPush, DECLINE_COOLDOWN_MS, MAX_CHOICE_CHARS, MAX_CHOICES, MAX_PENDING, MAX_PER_DAY, MAX_QUESTION_CHARS, MAX_WHY_CHARS,
+  type NewRequest, plainAskText, questionHash, SECRET_ERRORS, type SecretPush, secretHash, sitesFor, utcDay,
 } from "./asks";
+import { MAX_SITES, SECRET_NAME } from "./secret-catalog";
 import { toolText } from "./web";
 
 export const APP_TOOLS = [
@@ -30,17 +32,38 @@ export const APP_TOOLS = [
       additionalProperties: false,
     },
   },
+  {
+    name: "request_secret",
+    description:
+      "Ask the owner to let you use one secret, by name, with the sites you name. It returns an id and the state \"pending\" at once; " +
+      "do not wait for it. If the owner approves or declines, you get a new message from the app. You never see the secret's value.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", pattern: SECRET_NAME.source },
+        why: { type: "string", minLength: 1, maxLength: MAX_WHY_CHARS, description: "One sentence the owner sees." },
+        sites: {
+          type: "array", maxItems: MAX_SITES, items: { type: "string" },
+          description: "Host names, like api.example.com. Ignored for known services; their sites come from TinyCloud Secrets.",
+        },
+      },
+      required: ["name", "why"],
+      additionalProperties: false,
+    },
+  },
 ] as const;
 
 interface Ledger {
   enabled: boolean;
-  /** The supervisor's counts at its last push (they include every question it has collected). */
+  /** The supervisor's counts at its last push (they include every request it has collected). */
   pending: number;
   day: string;
   today: number;
   declined: Map<string, number>;
-  /** Questions asked since the supervisor last collected. */
-  outbox: NewAsk[];
+  /** The latest secret request for each name, as of the last push (and what was collected since). */
+  secrets: SecretPush[];
+  /** Requests made since the supervisor last collected. */
+  outbox: NewRequest[];
   /** Something from outside the owner's own words has reached Main's conversation: asks from now on say so. */
   outside: boolean;
 }
@@ -57,7 +80,7 @@ export class AskDesk {
 
   #ledger(botId: string): Ledger {
     let ledger = this.#ledgers.get(botId);
-    if (!ledger) this.#ledgers.set(botId, (ledger = { enabled: false, pending: 0, day: "", today: 0, declined: new Map(), outbox: [], outside: false }));
+    if (!ledger) this.#ledgers.set(botId, (ledger = { enabled: false, pending: 0, day: "", today: 0, declined: new Map(), secrets: [], outbox: [], outside: false }));
     return ledger;
   }
 
@@ -71,22 +94,32 @@ export class AskDesk {
     ledger.day = push.day;
     ledger.today = push.today;
     ledger.declined = new Map(push.declined.map(entry => [entry.hash, entry.until]));
+    ledger.secrets = push.secrets ?? [];
     // Only ever turned on here: a later push cannot say the conversation is clean again. The supervisor keeps the truth.
     if (push.turn?.outside) ledger.outside = true;
   }
 
   /**
-   * Hands the supervisor the questions asked since its last collection. They count as the supervisor's from now,
+   * Hands the supervisor the requests made since its last collection. They count as the supervisor's from now,
    * until its next push says what it holds, so the limits never dip between the two.
    */
-  drain(botId: string): NewAsk[] {
+  drain(botId: string): NewRequest[] {
     const ledger = this.#ledgers.get(botId);
     if (!ledger) return [];
     const asks = ledger.outbox;
     ledger.outbox = [];
     ledger.pending += asks.length;
     ledger.today += asks.filter(ask => utcDay(ask.askedAt) === ledger.day).length;
+    for (const ask of asks) {
+      if (ask.kind !== "secret") continue;
+      ledger.secrets = [...ledger.secrets.filter(secret => secret.name !== ask.name), { id: ask.id, name: ask.name, state: "pending", sites: ask.sites }];
+    }
     return asks;
+  }
+
+  /** The latest secret request for each name, as the supervisor last said (for `call_with_secret` and `list_secrets`). */
+  secrets(botId: string): readonly SecretPush[] {
+    return this.#ledgers.get(botId)?.secrets ?? [];
   }
 
   /**
@@ -148,9 +181,25 @@ export class AskDesk {
     }
 
     const now = this.#now();
-    const until = ledger.declined.get(questionHash(question));
-    if (until !== undefined && until > now && until - DECLINE_COOLDOWN_MS <= now) return refuse("recent", "recent");
+    if (this.#cooling(ledger, questionHash(question), now)) return refuse("recent", "recent");
+    const capped = this.#capped(botId, ledger, now);
+    if (capped === "pending") return refuse("pending", "too_many_pending");
+    if (capped === "daily") return refuse("daily", "daily_limit");
 
+    const id = randomBytes(12).toString("hex");
+    ledger.outbox.push({ id, question, choices, askedAt: now, outside: ledger.outside });
+    log("asked");
+    return toolText(JSON.stringify({ id, state: "pending" }));
+  }
+
+  /** Whether the owner declined this request (by its hash) within the cooldown. */
+  #cooling(ledger: Ledger, hash: string, now: number): boolean {
+    const until = ledger.declined.get(hash);
+    return until !== undefined && until > now && until - DECLINE_COOLDOWN_MS <= now;
+  }
+
+  /** Which cap a new request would pass, counting questions and secret requests together. */
+  #capped(botId: string, ledger: Ledger, now: number): "pending" | "daily" | undefined {
     // Per bot and per owner: today an owner has one bot, so the two agree, but the cap is on the owner.
     const day = utcDay(now);
     const owner = this.#ownerOf(botId);
@@ -161,12 +210,44 @@ export class AskDesk {
       ownerPending += this.#pending(held);
       ownerToday += this.#today(held, day);
     }
-    if (this.#pending(ledger) >= MAX_PENDING || ownerPending >= MAX_PENDING) return refuse("pending", "too_many_pending");
-    if (this.#today(ledger, day) >= MAX_PER_DAY || ownerToday >= MAX_PER_DAY) return refuse("daily", "daily_limit");
+    if (this.#pending(ledger) >= MAX_PENDING || ownerPending >= MAX_PENDING) return "pending";
+    if (this.#today(ledger, day) >= MAX_PER_DAY || ownerToday >= MAX_PER_DAY) return "daily";
+    return undefined;
+  }
+
+  /**
+   * One `request_secret` call. Never throws and never answers with anything but a fixed sentence (naming only the
+   * secret, its sites and an end time) or `{id, state, name, sites}`. A known secret's sites are the catalog's,
+   * whatever Main named.
+   */
+  callSecret(botId: string, args: Record<string, unknown>) {
+    const log = (outcome: string) => console.log(JSON.stringify({ gateway: "asks", bot: botId.slice(0, 12), tool: "request_secret", outcome }));
+    const refuse = (text: string, outcome: string) => {
+      log(outcome);
+      return toolText(text, true);
+    };
+    const ledger = this.#ledgers.get(botId);
+    if (!ledger?.enabled) return refuse(SECRET_ERRORS.off(), "off");
+
+    const name = args.name;
+    const extra = Object.keys(args).some(key => key !== "name" && key !== "why" && key !== "sites");
+    if (typeof name !== "string" || !SECRET_NAME.test(name) || extra) return refuse(SECRET_ERRORS.name(), "invalid");
+    const why = plainAskText(args.why, MAX_WHY_CHARS);
+    if (why === undefined) return refuse(SECRET_ERRORS.why(), "invalid");
+    const sites = sitesFor(name, args.sites);
+    if (!sites) return refuse(SECRET_ERRORS.sites(), "invalid");
+
+    const now = this.#now();
+    const held = ledger.secrets.find(secret => secret.name === name);
+    if (held?.state === "approved" && held.until !== undefined && held.until > now) return refuse(SECRET_ERRORS.approved(name, held.sites, held.until), "approved");
+    if (held?.state === "pending" || ledger.outbox.some(ask => ask.kind === "secret" && ask.name === name)) return refuse(SECRET_ERRORS.pending(name), "already_pending");
+    if (this.#cooling(ledger, secretHash(name), now)) return refuse(SECRET_ERRORS.recent(name), "recent");
+    const capped = this.#capped(botId, ledger, now);
+    if (capped) return refuse(SECRET_ERRORS.many(), capped === "pending" ? "too_many_pending" : "daily_limit");
 
     const id = randomBytes(12).toString("hex");
-    ledger.outbox.push({ id, question, choices, askedAt: now, outside: ledger.outside });
+    ledger.outbox.push({ kind: "secret", id, name, why, sites, askedAt: now, outside: ledger.outside });
     log("asked");
-    return toolText(JSON.stringify({ id, state: "pending" }));
+    return toolText(JSON.stringify({ id, state: "pending", name, sites }));
   }
 }

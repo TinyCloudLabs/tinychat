@@ -1,5 +1,102 @@
 # @tinychat/backend
 
+## 0.11.0-beta.5
+
+### Patch Changes
+
+- 2dc7989: Main can ask to use a secret. You add it to TinyCloud Secrets and approve it in OpenKey for as long as you choose. Main can use it only with the sites named in the request and can't see or show its value.
+
+  Details: TC-3595
+
+## 0.11.0-beta.4
+
+### Minor Changes
+
+- 1d0a5e0: The backend has encrypted Fireflies import grant storage, a KMS-derived delegate identity, a strict grant verifier and delegation routes, behind a flag that is off by default.
+
+  Details: TC-3905
+
+## 0.10.1-beta.3
+
+### Patch Changes
+
+- ba1415e: Your bots know your local date and time zone each time you write to them, so "today" and "last week" mean what you mean. Messages one bot sends another don't carry it. Your bots don't describe the machine they run on. If you paste a password or key into a chat, the bot tells you once that it's part of the chat and suggests changing it.
+
+  Details: TC-3791
+
+## 0.10.1-beta.2
+
+### Patch Changes
+
+- 1284bef: The backend serves `POST /api/internal/bots/admit` for the bots gateway's sibling admission. The call is signed `to-backend` with `BOTS_BACKEND_CALL_SECRET`; the owner comes from the signed owner DID and the source from the signed bot, and both bots are looked up in that owner's registry record. Without the secret the route is not mounted.
+
+  Details: TC-3809
+
+## 0.10.1-beta.1
+
+### Patch Changes
+
+- ca86545: Bots on the regular runtime now have the same tools switched off as other bots, skills included.
+
+  Details: TC-3779
+
+## 0.10.1-beta.0
+
+### Patch Changes
+
+- 4309437: The server can save the chat history of bots other than Main and serve their expiry notice, each under that bot's own permission. The app doesn't ask for it until a separate change turns it on.
+
+  Details: TC-3813
+
+## 0.10.0
+
+### Minor Changes
+
+- 11ec789: Before an agent turn starts, the credit check uses that turn's model: the remaining credits must cover one short turn on it (8,000 input and 1,000 output tokens). That is 150 credits on GLM 5.2, 31 on Qwen 3.6 35B and 390 on Kimi K3. A turn the credits can't cover is refused. Each settled turn records its credit cost in the logs, without IDs.
+
+  Details: TC-3734
+
+### Patch Changes
+
+- 0a24337: Main can ask you a question and wait for your answer. It's off until you turn it on in Main's settings.
+- 3cec963: The backend does not fetch or store Fireflies meetings itself. It holds no Fireflies sign-in and keeps no copy of any meeting, and the switch, keys and routes for that path are gone from the code, the deploy files and the example settings. Fireflies meetings sync in the browser, and webhook deliveries wait in the queue for the browser to collect. Production never turned the backend path on, so no stored meeting is affected.
+
+  Details: TC-1964
+
+- ae14910: The Exo wake route takes at most 6000 wakes a minute across all owners, whether or not the owner holds a grant. A wake past that gets the usual answer and is dropped. The backend reuses an owner's opened grant for 30 seconds, so one wake check makes one grant lookup, and a grant that is stored or removed through the backend is forgotten at once.
+
+  Details: TC-3753
+
+- bb8f9ef: Your bots now get instructions written for TinyCloud One instead of a coding assistant's. Main and your other bots each get their own, so only Main points you to its Web access setting. A message one of your bots sends another is marked as not from you, and it can't run a command. Bots also lose tools a chat bot doesn't need.
+
+  Details: TC-3779
+
+- 0b1c2ee: Main can use only the tools and app services on its allow-list. These stay with you in the app: checkout and the billing portal, delegations and agent access, connector sign-in, account deletion, app lock, Main's own Web access setting and secret values.
+
+  Details: TC-3795
+
+- 0849fa2: Calendar auto-join can share a meeting transcript between test accounts listed in `CALENDAR_AUTOJOIN_SHARING_ACCOUNTS`. Sharing is off for every other account. Both accounts must be on the list, and an empty list turns sharing off.
+
+  Details: TC-916
+
+## 0.10.0-beta.4
+
+### Minor Changes
+
+- 11ec789: Before an agent turn starts, the credit check uses that turn's model: the remaining credits must cover one short turn on it (8,000 input and 1,000 output tokens). That is 150 credits on GLM 5.2, 31 on Qwen 3.6 35B and 390 on Kimi K3. A turn the credits can't cover is refused. Each settled turn records its credit cost in the logs, without IDs.
+
+  Details: TC-3734
+
+### Patch Changes
+
+- bb8f9ef: Your bots now get instructions written for TinyCloud One instead of a coding assistant's. Main and your other bots each get their own, so only Main points you to its Web access setting. A message one of your bots sends another is marked as not from you, and it can't run a command. Bots also lose tools a chat bot doesn't need.
+
+  Details: TC-3779
+
+- 0b1c2ee: Main can use only the tools and app services on its allow-list. These stay with you in the app: checkout and the billing portal, delegations and agent access, connector sign-in, account deletion, app lock, Main's own Web access setting and secret values.
+
+  Details: TC-3795
+
 ## 0.9.6-beta.3
 
 ### Patch Changes
