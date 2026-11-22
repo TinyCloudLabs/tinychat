@@ -1,5 +1,13 @@
 # @tinychat/backend
 
+## 0.12.0-beta.0
+
+### Minor Changes
+
+- 03d29de: The bot you've known as Main is called TrustBot. Your chat history stays as it is.
+
+  Details: TC-3790
+
 ## 0.11.0
 
 ### Minor Changes
