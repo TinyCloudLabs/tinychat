@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ASK_REPLIES, type AsksGateway, requestsFile, syncAsks, writeAsksEnabled } from "../asks";
 import type { BotAdmission } from "../bot-admission";
-import { BotManager, type Sandbox, type SandboxLauncher } from "../bot";
+import { BotManager, ORIGIN_LINES, type Sandbox, type SandboxLauncher } from "../bot";
 import { type GatewayConfig, PINNED_FETCH_URL, PINNED_UPSTREAM, PINNED_WEB_API } from "../config";
 import { Gateway } from "../gateway";
 import { type BotLayout, botLayout } from "../layout";
@@ -208,8 +208,8 @@ describe("turning the setting off", () => {
 
     const one = await run.reply(ids[1]!);
     expect(one.status).toBe(200);
-    expect(one.prompt).toBe(STOPPED_SENTENCE);
-    expect(one.prompt).toBe(ASK_REPLIES.stopped);
+    expect(one.prompt).toBe(`${ORIGIN_LINES.app}\n${STOPPED_SENTENCE}`);
+    expect(one.prompt).toBe(`${ORIGIN_LINES.app}\n${ASK_REPLIES.stopped}`);
     for (const id of ids) expect(await run.reply(id)).toMatchObject({ status: 409, body: JSON.stringify({ error: "no_reply" }) });
 
     const told = (await run.history()).filter(message => message.origin === "app");
@@ -226,10 +226,10 @@ describe("turning the setting off", () => {
     await run.setting(false);
     expect((await run.requests()).map(request => request.undelivered)).toEqual([true, true, true]);
 
-    expect((await run.reply(late)).prompt).toBe(STOPPED_SENTENCE);
+    expect((await run.reply(late)).prompt).toBe(`${ORIGIN_LINES.app}\n${STOPPED_SENTENCE}`);
     // The earlier switch-off is still untold: it is not covered by the later one's message.
     expect((await run.requests()).filter(request => request.undelivered).map(request => request.id).sort()).toEqual([...early].sort());
-    expect((await run.reply(early[0]!)).prompt).toBe(STOPPED_SENTENCE);
+    expect((await run.reply(early[0]!)).prompt).toBe(`${ORIGIN_LINES.app}\n${STOPPED_SENTENCE}`);
     expect((await run.reply(early[1]!)).status).toBe(409);
     expect((await run.reply(late)).status).toBe(409);
     expect((await run.history()).filter(message => message.origin === "app")).toHaveLength(2);
