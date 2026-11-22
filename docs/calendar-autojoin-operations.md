@@ -139,6 +139,12 @@ caller's own address. The owner's address and occurrence id are never sent to th
 account's browser. Otherwise the attached account sees "Already being recorded" and gets nothing;
 it never learns whether or how the owner's capture finished.
 
+**Test accounts only (TC-916).** With the flag off, `CALENDAR_AUTOJOIN_SHARING_ACCOUNTS` (a
+comma-separated list of account addresses, a repo variable) turns sharing on only between two
+accounts that are BOTH listed: the bot owner and the attached account. Everyone else behaves as if
+sharing is off. Empty or unset means nobody. With the flag on, the list is ignored and sharing is on
+for everyone.
+
 The check fails closed when:
 - the owner's Google access is revoked or needs a reconnect;
 - the owner turned auto-join off;

@@ -143,6 +143,8 @@ services:
       GOOGLE_OAUTH_REDIRECT_URI: ${GOOGLE_OAUTH_REDIRECT_URI:-}
       # TC-581: share a colliding calendar capture with accepted invitees. Off unless exactly "true".
       CALENDAR_AUTOJOIN_SHARING: ${CALENDAR_AUTOJOIN_SHARING:-false}
+      # TC-916: comma-separated accounts; with the flag off, sharing runs only when owner and recipient are both listed.
+      CALENDAR_AUTOJOIN_SHARING_ACCOUNTS: ${CALENDAR_AUTOJOIN_SHARING_ACCOUNTS:-}
       # Unset = code defaults (5 min drain, 20/hour per address on each Option-A ceiling).
       CONNECTOR_DRAIN_INTERVAL_MS: ${CONNECTOR_DRAIN_INTERVAL_MS:-}
       CONNECTOR_A_FETCH_CEILING_PER_HOUR: ${CONNECTOR_A_FETCH_CEILING_PER_HOUR:-}
