@@ -31,6 +31,7 @@ import { HIDDEN_FEATURES_KEY } from "./lib/hiddenFeatures";
 import { NATIVE_SESSION_KIND_KEY, NATIVE_SIGN_OUT_PENDING_KEY } from "./lib/openkeyNative";
 import { captureShareLinkFromLocation } from "./lib/nativeShares/link";
 import { ShareAppUrlListener } from "./capture/share/ShareAppUrlListener";
+import { installStatusTapScroll } from "./lib/statusTapScroll";
 
 // A share link's key is in its fragment (TC-3195): read it into memory and take it off the address bar before
 // anything else runs, so no log, report or later navigation can carry it.
@@ -64,6 +65,8 @@ if (platform === "ios") {
   }).catch((error: unknown) => {
     console.error("[DynamicType] Could not listen for app resume", error);
   });
+  // The screens scroll inside their own boxes, not the document: the native status-bar tap arrives as a `statusTap` event.
+  installStatusTapScroll();
 }
 initSizeClass();
 initTheme();
