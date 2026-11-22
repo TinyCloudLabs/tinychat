@@ -16,6 +16,60 @@
 - TC-2204: Native audience checks accept Home's three exact SQL hook subscriptions only alongside an existing TinyChat data grant.
 - TC-2499: The Home mirror adapter persists close receipts using node-compatible NULL/non-NULL compare-and-set predicates. If the KV mirror is already exactly closed but its receipt is missing, recovery records the original publication ETag without writing the KV copy again, before any gated child handoff. The CLI reports JSON error class, safe message, code, HTTP status when available, and operation step; private SQL bodies and nested causes remain redacted. Exit 2 identifies invalid input, exit 6 known transient failures (including NODE_BUSY and REQUEST_TIMEOUT without HTTP metadata), and exit 1 other runtime failures or OUTCOME_UNKNOWN. Unclassified errors are not labelled bad input; no failure confirms delivery or authorizes an automatic retry.
 
+## 0.16.1-beta.0
+
+### Patch Changes
+
+- 2abe7e5: Inside One, Explorer can read your apps' data but can't change or delete it. Editing stays in Explorer's own tab.
+
+  Details: TC-3675
+
+## 0.16.0
+
+### Minor Changes
+
+- 764dd74: On the web, TinyCloud One has an Apps grid and a bar with Pin on every open app. On a phone-sized screen the bar is a floating tab bar that holds your first two pinned apps. The phone and desktop apps get the same in their next builds.
+
+  Details: TC-3650
+
+### Patch Changes
+
+- 09f336a: When a Feed answer fails to send, the app keeps a short note of why on your device: an error code and status, never what you wrote. It keeps the last 20, so the cause can be traced.
+
+  Details: TC-3723
+
+- 09f336a: A Feed answer that fails to send while you're in another app is sent once more when you come back, and it's never recorded twice.
+
+  Details: TC-3723
+
+- d818fd0: You can bring your meetings in from Granola and keep them in sync: connect Granola in Meeting sources.
+
+  Details: TC-3292
+
+- c12869d: When your session expires, signing you out keeps the work this device has not sent yet: post drafts, answers waiting to be sent, finished transcripts waiting to be saved and the records of uploads and transcriptions in progress. It is kept for your account only. Another account that signs in on the same device can't see it or send it, and it is there again when you sign back in. Signing out yourself removes all of it, even while an expired session is signing out. Opening a new chat signs you out only when the server refuses your session. On the phone apps it first tries once to renew the session, unless the session began or was renewed in the last minute or a failed renewal is waiting to retry. On tinycloud.chat and home.tinycloud.xyz, the notice that holds a tab before it moves to the new address counts only your own unsent answers; another account's unsent answers get a line of their own and keep the tab there for up to 7 days.
+
+  Details: TC-3743
+
+- c04a852: TinyCloud One pages can't be shown inside another site's frame.
+
+  Details: TC-3547
+
+- 7817452: Tapping the status bar in the iPhone app scrolls the screen you are on back to the top.
+
+  Details: TC-3722
+
+- 8f8ca25: The TinyChat retrieval skill's setup treats a `tc context` session in the `renewed` state (the original grant has ended but the owner's renewal is still running) like a `present` one.
+
+  Details: TC-2904
+
+- cd2f663: If you use the desktop app on version 0.13.0 or older, or on a beta of 0.14.0, update to 0.15 or later before November 25. If you test on TestFlight, update to the latest build. From November 25, older versions can't open your saved bot chat history and show an error. Nothing is deleted, and updating the app brings the history back.
+
+  Details: TC-2518
+
+- b9bf1e9: On a phone, lifting your finger after pinning or unpinning an app with a long press in Apps opens no app.
+
+  Details: TC-3752
+
 ## 0.16.0-beta.7
 
 ### Patch Changes
