@@ -40,6 +40,11 @@ const MAX_TRANSCRIPT_EXPIRY_MS = SESSION_EXPIRATION_MS;
  * unbounded: activation and teardown reach the TinyCloud node (666b5c8).
  */
 const SESSION_STATUS_TIMEOUT_MS = 3_000;
+/**
+ * Bound on the MCP status call behind GET /session. The MCP answers a normal status check in up to about 3 s, so the
+ * eliza bound above would cut it off; this stays under the MCP port's own 10 s timeout.
+ */
+const MCP_STATUS_TIMEOUT_MS = 8_000;
 
 export interface AgentRoutesConfig {
   /** The agent did:pkh all users delegate to (eliza-service's stable identity). Absent when eliza-service is not configured. */
@@ -71,6 +76,23 @@ export interface AgentRoutesConfig {
 interface ElizaResponse {
   status: number;
   body: Record<string, unknown>;
+}
+
+/**
+ * One line per MCP failure answered as 502 mcp_unavailable: the route, the port error code, the upstream HTTP status
+ * and the milliseconds spent in the MCP call.
+ * The code is lowercased so the log shipper's `code=` token accepts it. No message, header, address or grant is logged.
+ */
+function logMcpUnavailable(route: "get" | "post", error: unknown, startedAt: number): void {
+  let code = "non_port_error";
+  let upstream = "";
+  if (error instanceof McpPortError) {
+    const lower = error.code.toLowerCase();
+    code = /^[a-z][a-z0-9_]{0,59}$/.test(lower) ? lower : "invalid_code";
+    if (Number.isInteger(error.status) && error.status! >= 100 && error.status! <= 599) upstream = ` upstream_status=${error.status}`;
+  }
+  const durationMs = Math.max(0, Math.round(performance.now() - startedAt));
+  console.error(`[agent] mcp_unavailable route=${route} code=${code}${upstream} duration_ms=${durationMs}`);
 }
 
 export function createAgentRouter(config: AgentRoutesConfig) {
@@ -180,6 +202,7 @@ export function createAgentRouter(config: AgentRoutesConfig) {
       if (normalizeAddress(mcpIdentity.ownerAddress) !== normalizeAddress(user.address)) { res.status(400).json({ error: "wrong_delegator" }); return; }
       const checked = validateSignedMcpGrant(delegation, mcp.mcpOwnerDidFor(user.address), mcp.mcpGrants.serviceDid);
       if (!checked.ok) { res.status(400).json({ error: checked.error }); return; }
+      const startedAt = performance.now();
       try {
         const accepted = await mcp.mcpGrants.accept(delegation);
         // The MCP derives the owner from the signed grant: it must be this session's owner and our service DID.
@@ -192,7 +215,10 @@ export function createAgentRouter(config: AgentRoutesConfig) {
         const code = error instanceof McpPortError ? error.code : "";
         if (code === "GRANT_EXPIRED") res.status(400).json({ error: "delegation_expired" });
         else if (code === "GRANT_REJECTED" || code === "GRANT_REQUIRED") res.status(400).json({ error: "delegation_rejected" });
-        else res.status(502).json({ error: "mcp_unavailable" });
+        else {
+          logMcpUnavailable("post", error, startedAt);
+          res.status(502).json({ error: "mcp_unavailable" });
+        }
       }
       return;
     }
@@ -320,10 +346,12 @@ export function createAgentRouter(config: AgentRoutesConfig) {
     if (!user) return;
     const mcp = mcpWiring(user.address);
     if (mcp) {
+      const startedAt = performance.now();
       try {
-        const status = await mcp.mcpMeetings.status(mcp.mcpOwnerDidFor(user.address), AbortSignal.timeout(statusTimeoutMs));
+        const status = await mcp.mcpMeetings.status(mcp.mcpOwnerDidFor(user.address), AbortSignal.timeout(config.sessionStatusTimeoutMs ?? MCP_STATUS_TIMEOUT_MS));
         res.status(200).json({ ...status, mcp: { serviceDid: mcp.mcpGrants.serviceDid } });
-      } catch {
+      } catch (error) {
+        logMcpUnavailable("get", error, startedAt);
         res.status(502).json({ error: "mcp_unavailable" });
       }
       return;

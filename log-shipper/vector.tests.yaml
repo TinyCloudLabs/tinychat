@@ -215,6 +215,37 @@ tests:
               assert!(!exists(.code))
               assert!(!exists(.cid))
               assert_eq!(.component, "assemblyai-hosted")
+  - name: "mcp unavailable line ships route, code, upstream status and duration only"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "[agent] mcp_unavailable route=get code=timeout upstream_status=503 duration_ms=3371", "level": 3, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+    outputs:
+      - extract_from: allowlist
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.event, "backend_log_error")
+              assert_eq!(.component, "agent")
+              assert_eq!(.route, "get")
+              assert_eq!(.code, "timeout")
+              assert_eq!(.upstream_status, 503)
+              assert_eq!(.duration_ms, 3371)
+              assert_eq!(.level, "error")
+  - name: "off-shape duration is dropped"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "[agent] mcp_unavailable route=post code=timeout duration_ms=999999999", "level": 3, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+    outputs:
+      - extract_from: allowlist
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.code, "timeout")
+              assert!(!exists(.duration_ms))
   - name: "alert on stdout is level info"
     inputs:
       - insert_at: redact
