@@ -6,7 +6,7 @@ import { once } from "node:events";
 import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
 import { createApiBodyParser } from "../body-parsing.js";
-import { botsServiceRouteGuard } from "../bots-service-routes.js";
+import { createBotsServiceGuardRouter } from "../bots-service-routes.js";
 import { signedCallHeader } from "../bots-signed-call.js";
 import { TINYCLOUD_MEETING_TOOLS } from "../transcripts/tool-contract.js";
 import { createTrustBotReadsInternalRouter, TRUSTBOT_MEETING_TOOLS, TRUSTBOT_READS_INTERNAL_PREFIX } from "../routes/trustbot-reads.js";
@@ -38,7 +38,7 @@ let server: Server;
 let base: string;
 beforeAll(async () => {
   const app = express();
-  app.use(botsServiceRouteGuard);
+  app.use(createBotsServiceGuardRouter());
   app.use(createApiBodyParser());
   app.use(TRUSTBOT_READS_INTERNAL_PREFIX, createTrustBotReadsInternalRouter({ grants, config, callSecret: secret }));
   server = app.listen(0);
