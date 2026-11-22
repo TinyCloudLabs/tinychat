@@ -1,6 +1,6 @@
 // Every owner-visible word of Main's questions to the owner (TC-3595): the card in Main's chat and on Home, the
 // chat lines after a decision, and the Settings toggle. Nothing else in the app writes these words.
-// words pending Sam's approval (Monica drafts)
+// Monica's words (agent-ask-owner-words); Sam reviews them in parallel, and changes come as fast follow-ups.
 
 /** The bot's name in every sentence below: one constant, so a rename is one edit. */
 export const ASK_MAIN = "Main";
@@ -20,7 +20,7 @@ export function askedAgo(elapsedMs: number): string {
 export const ASK_STRINGS = {
   /** The Settings toggle. */
   toggleLabel: `Let ${ASK_MAIN} ask you questions`,
-  toggleHelp: `${ASK_MAIN} can ask you a question in chat when it needs something from you. Off until you turn it on.`,
+  toggleHelp: `${ASK_MAIN} can ask you a question in chat when it needs something from you.`,
   toggleFailed: "Couldn’t save that, so the setting is unchanged. Try again.",
 
   /** The card. */

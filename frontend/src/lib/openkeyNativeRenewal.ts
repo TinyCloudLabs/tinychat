@@ -23,11 +23,15 @@ export function renewalLeadMs(delegation: Pick<Delegation, "issuedAt" | "expires
   return Math.min(600_000, Number.isFinite(issued) && issued < expires ? (expires - issued) / 4 : 600_000);
 }
 
+/** OpenKey's minimum renewal interval: the earliest a renewal may run, counted from the delegation's issue time. */
+function nativeMinimumRenewAt(delegation: Pick<Delegation, "issuedAt" | "expiresAt">): number {
+  const issued = delegation.issuedAt ? Date.parse(delegation.issuedAt) : NaN;
+  return Number.isFinite(issued) ? issued + Math.min(60_000, renewalLeadMs(delegation)) : 0;
+}
+
 export function nativeRenewAt(session: NativeSession, jitterMs = 0): number {
   const delegation = session.delegation;
-  const issued = delegation.issuedAt ? Date.parse(delegation.issuedAt) : NaN;
-  const minimum = Number.isFinite(issued) ? issued + Math.min(60_000, renewalLeadMs(delegation)) : 0;
-  return Math.max(expiryMs(delegation.expiresAt) - renewalLeadMs(delegation), minimum) + Math.max(0, Math.min(10_000, jitterMs));
+  return Math.max(expiryMs(delegation.expiresAt) - renewalLeadMs(delegation), nativeMinimumRenewAt(delegation)) + Math.max(0, Math.min(10_000, jitterMs));
 }
 
 export function nativeRetryDelay(error: unknown, attempt: number, remainingMs: number): number | null {
@@ -142,6 +146,20 @@ export class NativeRenewal {
         throw new Error("OpenKey renewal is temporarily unavailable");
       }
     });
+  }
+  /**
+   * Renews at once, whatever the schedule, for a session the backend refused: joins a renewal in flight, else starts
+   * one. Inside OpenKey's minimum renewal interval, or while a failed renewal waits to retry, it renews nothing.
+   */
+  renewNow(): Promise<void> {
+    if (this.stopped) return Promise.reject(new Error("OpenKey session is signed out"));
+    if (!this.flight) {
+      if (this.now() < Math.max(this.retryNotBefore, nativeMinimumRenewAt(this.session.delegation))) return Promise.resolve();
+      const generation = this.generation;
+      const flight = this.run(generation).finally(() => { if (this.flight === flight) this.flight = null; });
+      this.flight = flight;
+    }
+    return this.flight;
   }
 
   private schedule(at: number): void {

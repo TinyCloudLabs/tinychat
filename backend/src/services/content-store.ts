@@ -135,10 +135,11 @@ const GCM_IV_BYTES = 12;
 const GCM_TAG_BYTES = 16;
 const DEK_BYTES = 32;
 
-const CONTENT_KEY_PREFIX = "connector-content";
-const CONTENT_INDEX_KEY_PREFIX = "connector-content-index";
-const CONTENT_KEY_FAILURE_PREFIX = "connector-content-key-failure";
-const REPLAY_TOMBSTONE_KEY_PREFIX = "connector-content-replay-tombstone";
+export const CONTENT_KEY_PREFIX = "connector-content";
+export const CONTENT_INDEX_KEY_PREFIX = "connector-content-index";
+export const CONTENT_KEY_FAILURE_PREFIX = "connector-content-key-failure";
+export const REPLAY_TOMBSTONE_KEY_PREFIX = "connector-content-replay-tombstone";
+export const CONTINUITY_CANARY_KEY = "connector-content-continuity/v1";
 
 // ── Result / row shapes ──────────────────────────────────────────────
 
@@ -2320,11 +2321,11 @@ export class KvContentBlobStore implements ContentBlobStore {
   }
 
   readCanary(): Promise<SealedBlob | null> {
-    return this.run(() => this.readBlob("connector-content-continuity/v1"));
+    return this.run(() => this.readBlob(CONTINUITY_CANARY_KEY));
   }
 
   writeCanary(blob: SealedBlob): Promise<void> {
-    return this.run(() => this.writeBlob("connector-content-continuity/v1", blob));
+    return this.run(() => this.writeBlob(CONTINUITY_CANARY_KEY, blob));
   }
 
   private async firstKey(prefix: string): Promise<string | null> {

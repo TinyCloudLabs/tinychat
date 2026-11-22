@@ -1,11 +1,13 @@
 // The navigation model shared by the tab bar, the rail and the sidebar
 // (TC-761, TC-2040): the same destinations, in the same order, at every size.
-import { AppWindowIcon, AudioLinesIcon, HouseIcon, MessageCircleIcon, PlugIcon, type LucideIcon } from "lucide-react";
+import { AppWindowIcon, AudioLinesIcon, HouseIcon, LayoutGridIcon, MessageCircleIcon, PlugIcon } from "lucide-react";
 
 import { connectorsAriaLabel } from "../chat/useBackgroundDrain";
 import { NAV_LABEL_APPS, NAV_LABEL_CHAT, NAV_LABEL_HOME, NAV_LABEL_RECORDING } from "../lib/homeStrings";
 import { useSizeClass, type SizeClassState } from "../lib/sizeClass";
+import { GLYPH_ICONS, type AppIcon } from "@/apps/icons";
 import type { AppTarget } from "@/apps/registry";
+import { MAIN_TAB_LABEL, PILL_LABELS } from "@/apps/strings";
 import { tabTarget } from "./navigation";
 import { appIdOfPin, appPinId, type PinId } from "./navPins";
 import { PATHS, type Destination, type Screen } from "./routes";
@@ -36,7 +38,7 @@ export interface NavItem {
   /** Opens this address in a new tab (noopener, noreferrer) instead of routing. */
   newTab?: string;
   label: string;
-  icon: LucideIcon;
+  icon: AppIcon;
   /** The destination's root. */
   href: string;
   /** A count shown on the item (NavBadge). */
@@ -49,7 +51,7 @@ export interface NavItem {
 export interface NavApp {
   id: string;
   name: string;
-  icon?: LucideIcon;
+  icon?: AppIcon;
   /** Where the app opens (the registry's appTarget): One's route, or its own page in a new tab. */
   target: AppTarget;
 }
@@ -58,6 +60,8 @@ export interface NavApp {
 export interface NavPinOptions {
   pins: readonly PinId[];
   apps: readonly NavApp[];
+  /** One's new navigation: the first item is named MAIN_TAB_LABEL, and pinned Recording and Connectors show their glyphs. */
+  oneNav?: boolean;
 }
 
 /** The tab bar holds the three defaults and the first two pins. */
@@ -83,10 +87,14 @@ export function navItems(pendingMeetings: number, options?: NavPinOptions): NavI
     return [feed, chat, apps, capture, connectors];
   }
   // One Apps: Feed, Chat and Apps always; then what the user pinned, in pin order.
-  const items: NavItem[] = [feed, chat, { ...apps, fixed: true }];
+  const items: NavItem[] = [
+    options.oneNav ? { ...feed, label: MAIN_TAB_LABEL } : feed,
+    chat,
+    options.oneNav ? { ...apps, icon: LayoutGridIcon, fixed: true } : { ...apps, fixed: true },
+  ];
   for (const pin of options.pins) {
-    if (pin === "capture") items.push(capture);
-    else if (pin === "connectors") items.push(connectors);
+    if (pin === "capture") items.push(options.oneNav ? { ...capture, icon: GLYPH_ICONS.recording } : capture);
+    else if (pin === "connectors") items.push(options.oneNav ? { ...connectors, icon: GLYPH_ICONS.connectors } : connectors);
     else {
       const appId = appIdOfPin(pin);
       const app = appId === null ? undefined : options.apps.find((candidate) => candidate.id === appId);
@@ -109,6 +117,41 @@ export function navItems(pendingMeetings: number, options?: NavPinOptions): NavI
 
 /** The items a tab bar shows. */
 export const tabBarItems = (items: readonly NavItem[]): NavItem[] => items.slice(0, TAB_BAR_MAX);
+
+/** The pill holds this many pins, after the main tab, Chat and Apps. */
+export const PILL_PINS_MAX = 2;
+
+/**
+ * One's new navigation (ONE_NAV_ENABLED), the phone's pill: the main tab, Chat and Apps, then the first PILL_PINS_MAX
+ * of `pinned` (the account's pinned items, in pin order), icon-only (You, which opens Settings, follows them). The rest
+ * of the pins come first in the launcher. Apps carries Connectors' waiting meetings unless Connectors is in the pill.
+ */
+export function pillItems(pendingMeetings: number, pinned: readonly NavItem[] = []): NavItem[] {
+  const pins = pinned.slice(0, PILL_PINS_MAX);
+  const appsBadge = pins.some((item) => item.id === "connectors") ? 0 : pendingMeetings;
+  return [
+    { id: "feed", destination: "feed", label: MAIN_TAB_LABEL, icon: HouseIcon, href: PATHS.feed },
+    { id: "chat", destination: "chat", label: PILL_LABELS.chat, icon: MessageCircleIcon, href: PATHS.chat },
+    {
+      id: "apps",
+      destination: "apps",
+      fixed: true,
+      label: PILL_LABELS.apps,
+      icon: LayoutGridIcon,
+      href: PATHS.apps,
+      badge: appsBadge,
+      ariaLabel: appsBadge > 0 ? `${PILL_LABELS.apps}, ${connectorsAriaLabel(appsBadge)}` : undefined,
+    },
+    ...pins,
+  ];
+}
+
+/** The pill's current item: You on Settings, and Apps for every app and the Add an app page (Recording and Connectors too). */
+export function pillCurrent(shown: Destination | "settings" | "about"): NavItemId | "you" | null {
+  if (shown === "settings") return "you";
+  if (shown === "about") return null;
+  return shown === "feed" || shown === "chat" ? shown : "apps";
+}
 
 /** Which item is current. A pinned app is current on its own screen; Apps is current on any other app screen. */
 export function currentItemId(destination: Destination | null, screen: Screen & { appId?: string }, items: readonly NavItem[]): NavItemId | null {

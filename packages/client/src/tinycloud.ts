@@ -14,6 +14,21 @@ import { withSpaceCapabilitiesRead } from "./manifest.js";
 
 // ── Configuration ────────────────────────────────────────────────────
 
+/**
+ * TC-3547: the host's two callbacks for publishing the owner's registry record. They are handed to the SDK as `Config`
+ * fields of the same names. The pinned SDK predates them and ignores them (nothing reads them until a release that
+ * carries them); the host feature-checks `ensureOwnerRegistryRecord` before it relies on them.
+ */
+export interface RegistryPublishHooks {
+  onRegistryPublishConsent?: (preview: {
+    readonly subject: string;
+    readonly nodeDid: string;
+    readonly nodeOrigin: string;
+    readonly space: string;
+  }) => Promise<boolean>;
+  onRegistryPublishError?: (error: unknown) => void;
+}
+
 export interface TinyCloudWebConfig {
   tinycloudHosts?: string[];
   tinycloudRegistryUrl?: string | null;
@@ -54,6 +69,8 @@ export interface TinyCloudWebConfig {
    * comes from `nonce` alone: the SDK refuses per-call SIWE overrides on this path.
    */
   openkey?: TinyCloudWebSdkConfig["openkey"];
+  /** Omit it and the SDK config is exactly what it was before: the keys are not present. */
+  registryPublish?: RegistryPublishHooks;
 }
 
 export interface RestoreTinyCloudWebSessionResult {
@@ -91,6 +108,7 @@ export function createTinyCloudWeb(
     ui: { button: false, platform: config?.uiPlatform ?? "web" },
     ...(config?.replication ? { replication: config.replication } : {}),
     ...(config?.openkey ? { openkey: config.openkey } : {}),
+    ...(config?.registryPublish ?? {}),
     autoBootstrapAccount: false,
   };
 
@@ -239,6 +257,7 @@ export async function restoreTinyCloudWebSession(
     // The app owns the floating button (Settings toggle); the SDK default shows it.
     ui: { button: false, platform: config?.uiPlatform ?? "web" },
     ...(config?.replication ? { replication: config.replication } : {}),
+    ...(config?.registryPublish ?? {}),
     // A restore never sets up an account, whatever page it runs on (as createTinyCloudWeb). Details: TC-3019
     autoBootstrapAccount: false,
   };

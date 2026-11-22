@@ -108,6 +108,10 @@ let accountSessionManaged = false;
 let activeStorageScope: StorageAccountScope = {
   did: null, spaceId: null, epoch: storageEpoch, state: newStorageState(),
 };
+/** The space of the account signed in in this tab; null when none is. */
+export function currentStorageAccountSpace(): string | null {
+  return activeStorageScope.spaceId;
+}
 /** The active app account, including when the recorder feature is not enabled. */
 const RECORDING_ACCOUNT_KEY = "exo.recordingNotes.account";
 export function currentStorageAccountDid(): string | null {
