@@ -109,7 +109,7 @@ cleanup() {
   trap - EXIT
   stop_login
   if [[ -n "${work_dir:-}" && -d "$work_dir" ]]; then
-    env -u TC_PRIVATE_KEY -u CONNECTOR_CREDENTIAL_MASTER "${tc_cmd[@]}" --no-diagnostic-logs --profile "$profile" auth logout \
+    timeout 30 env -u TC_PRIVATE_KEY -u CONNECTOR_CREDENTIAL_MASTER "${tc_cmd[@]}" --no-diagnostic-logs --profile "$profile" auth logout \
       < /dev/null > /dev/null 2>&1 || true
     rm -rf "$work_dir"
   fi
@@ -165,40 +165,28 @@ fi
 
 # 3. Start one-tap OpenKey auth login in its own process group, emit the one approval URL, and wait for approval.
 start_login() {
+  if ! command -v setsid >/dev/null 2>&1; then
+    echo "status=setsid_missing"
+    exit 1
+  fi
   : > "$work_dir/login.out"
   : > "$work_dir/login.err"
   : > "$work_dir/login.rc"
-  if command -v setsid >/dev/null 2>&1; then
-    setsid bash -c '
-      rc_file="$1"; out_file="$2"; err_file="$3"; shift 3
-      env -u TC_PRIVATE_KEY -u CONNECTOR_CREDENTIAL_MASTER "$@" < /dev/null > "$out_file" 2> "$err_file"
-      printf "%s\n" "$?" > "$rc_file"
-    ' _ "$work_dir/login.rc" "$work_dir/login.out" "$work_dir/login.err" \
-      "${tc_cmd[@]}" --no-diagnostic-logs --profile "$profile" auth login \
-        --method openkey \
-        --manifest "$manifest_path" \
-        --owner "$owner_did" \
-        --expiry 1h \
-        --no-popup \
-        --json \
-      < /dev/null > /dev/null 2>&1 &
-    login_pid=$!
-    login_pgid="$login_pid"
-  else
-    (
-      env -u TC_PRIVATE_KEY -u CONNECTOR_CREDENTIAL_MASTER "${tc_cmd[@]}" --no-diagnostic-logs --profile "$profile" auth login \
-        --method openkey \
-        --manifest "$manifest_path" \
-        --owner "$owner_did" \
-        --expiry 1h \
-        --no-popup \
-        --json \
-        < /dev/null > "$work_dir/login.out" 2> "$work_dir/login.err"
-      printf '%s\n' "$?" > "$work_dir/login.rc"
-    ) &
-    login_pid=$!
-    login_pgid=""
-  fi
+  setsid bash -c '
+    rc_file="$1"; out_file="$2"; err_file="$3"; shift 3
+    env -u TC_PRIVATE_KEY -u CONNECTOR_CREDENTIAL_MASTER "$@" < /dev/null > "$out_file" 2> "$err_file"
+    printf "%s\n" "$?" > "$rc_file"
+  ' _ "$work_dir/login.rc" "$work_dir/login.out" "$work_dir/login.err" \
+    "${tc_cmd[@]}" --no-diagnostic-logs --profile "$profile" auth login \
+      --method openkey \
+      --manifest "$manifest_path" \
+      --owner "$owner_did" \
+      --expiry 1h \
+      --no-popup \
+      --json \
+    < /dev/null > /dev/null 2>&1 &
+  login_pid=$!
+  login_pgid="$login_pid"
 }
 
 extract_approval_link() {

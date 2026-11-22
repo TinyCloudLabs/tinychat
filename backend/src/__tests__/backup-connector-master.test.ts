@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import yaml from "js-yaml";
 
@@ -293,10 +293,29 @@ function readCalls(logFile: string): RecordedCall[] {
 function isPidAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
-    return true;
   } catch {
     return false;
   }
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const closeParen = stat.lastIndexOf(")");
+    if (closeParen >= 0) {
+      const state = stat.slice(closeParen + 2).trimStart()[0];
+      if (state === "Z") return false;
+    }
+  } catch {
+    return false;
+  }
+  return true;
+}
+
+async function waitUntilDead(pid: number, timeoutMs = 2000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!isPidAlive(pid)) return true;
+    await Bun.sleep(25);
+  }
+  return !isPidAlive(pid);
 }
 
 async function runScript(
@@ -586,7 +605,7 @@ describe("backup-connector-master.sh", () => {
     const pidDir = makeTempDir("tc3895-pids-");
     const hangPidFile = join(pidDir, "pids.json");
     const result = await runScript(
-      { TC_BACKUP_APPROVAL_TIMEOUT_SECONDS: "1", TC_BACKUP_POLL_SLEEP_SECONDS: "0.05" },
+      { TC_BACKUP_APPROVAL_TIMEOUT_SECONDS: "2", TC_BACKUP_POLL_SLEEP_SECONDS: "0.05" },
       { loginMode: "hang", hangPidFile },
     );
     expect(result.code).toBe(1);
@@ -601,8 +620,46 @@ describe("backup-connector-master.sh", () => {
       cliPid: number;
       grandchildPid: number;
     };
-    expect(isPidAlive(cliPid)).toBe(false);
-    expect(isPidAlive(grandchildPid)).toBe(false);
+    expect(await waitUntilDead(cliPid)).toBe(true);
+    expect(await waitUntilDead(grandchildPid)).toBe(true);
+  });
+
+  test("fails closed with status=setsid_missing when setsid is unavailable", async () => {
+    const sandbox = makeTempDir("tc3895-nosetsid-");
+    const restrictedBin = join(sandbox, "no-setsid-bin");
+    const tmpRoot = join(sandbox, "tmp");
+    mkdirSync(restrictedBin, { recursive: true });
+    mkdirSync(tmpRoot, { recursive: true });
+    const { binDir, logFile } = createFakeNpx(sandbox);
+
+    for (const tool of ["bash", "node", "sha256sum", "awk", "mktemp", "chmod", "mkdir", "rm", "date", "sleep", "tr", "timeout", "env"]) {
+      const resolved = Bun.which(tool);
+      if (resolved) symlinkSync(resolved, join(restrictedBin, tool));
+    }
+
+    const proc = Bun.spawn(["bash", SCRIPT], {
+      env: {
+        PATH: `${binDir}:${restrictedBin}`,
+        TMPDIR: tmpRoot,
+        GITHUB_REF: "refs/heads/main",
+        OWNER_DID,
+        CONNECTOR_CREDENTIAL_MASTER: SECRET_VALUE,
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [stdout, stderr, code] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]);
+    const calls = readCalls(logFile);
+    expect(code).toBe(1);
+    expect(stdout).toBe("status=setsid_missing\n");
+    expect(stderr).toBe("");
+    expect(calls.some((c) => c.argv.includes("put"))).toBe(false);
+    expect(calls.some((c) => c.argv.includes("logout"))).toBe(true);
+    expect(readdirSync(tmpRoot)).toEqual([]);
   });
 
   test("logs fixed error, logs out and removes temp dir when secrets put fails", async () => {
