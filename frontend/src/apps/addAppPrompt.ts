@@ -1,0 +1,22 @@
+// The Add an app page's builder prompt, verbatim, in a file of its own. A template string (backticks escaped), not a
+// `?raw` text import: the test harnesses' Bun.build can't resolve Vite's `?raw`.
+export const ADD_APP_PROMPT = `Build the TinyCloud app I describe in this conversation; if I have not described it yet, ask me one concise question.
+Work only in this project. Do not use sudo or global installs. Never put secret values, private keys or tokens in code, manifests, logs or docs; the manifest may hold secret references.
+Read the app shape at https://github.com/TinyCloudLabs/tinycloud-app-kit/blob/main/guides/build-mini-apps.md and the complete sample at https://github.com/TinyCloudLabs/tinycloud-app-kit/tree/main/examples/sample-healthlog.
+Use project-local packages: @tinycloud/web-sdk@3.13.0 and @openkey/sdk@0.12.2.
+Create an OpenKey client for https://openkey.so, pass it as \`openkey: { client: openkey, mode: "popup" }\` when constructing \`TinyCloudWeb\` with the app manifest, and call \`TinyCloudWeb.signIn()\` from a user action (SDK 3.13.0 then uses OpenKey's versioned \`authorizeTinyCloud\` request, \`protocolVersion: 1\`).
+Do not use delegate links, \`OpenKeyProvider\`, raw \`signMessage\` or an OAuth flow for TinyCloud sign-in.
+Use the pinned current implementations for exact API details: https://github.com/TinyCloudLabs/js-sdk/blob/36eeefbc32b956f8f48359d1fdcafc202e5ad397/packages/web-sdk/src/modules/tcw.ts and https://github.com/TinyCloudLabs/openkey/blob/%40openkey%2Fsdk%400.12.2/packages/sdk/src/index.ts.
+Put \`manifest.json\` at the repository root and validate it against https://schemas.tinycloud.xyz/app-manifest/v1.json.
+Follow https://docs.tinycloud.xyz/reference/protocol/app-manifests.md: declare a stable \`app_id\`, name, description, data space and prefix, and only the permissions the code actually uses.
+Add \`knowledge/\` documentation for the app's data.
+Build and test the real storage path plus a human-in-the-loop OpenKey sign-in; do not claim auth works from a shell-only smoke test.
+Test with a TinyCloud account that has already been set up in TinyCloud One; apps outside TinyCloud One can't set up new accounts.
+Host the static frontend on Cloudflare Pages and any delegated backend in a Phala Cloud CVM, following https://github.com/TinyCloudLabs/tinyboilerplate/blob/main/DEPLOYMENT.md.
+Use the canonical hosted TinyCloud node; do not ask the user to run a node.
+TinyCloud One registration is not self-service; do not claim the app is registered or visible.
+Prepare a review-ready TinyCloud One registry change against https://github.com/TinyCloudLabs/tinychat/blob/main/frontend/src/apps/registry.ts.
+Include the exact production origin and path, whether the app opens framed or in a new tab, mobile behavior and a capability ceiling copied from the reviewed manifest.
+Do not deploy, publish, or open a pull request until I approve the app, manifest, permission list and target registry.
+Return the working source, tests run and results, deployment plan, final URL shape, manifest permission summary and the exact registry change still awaiting review.
+`;

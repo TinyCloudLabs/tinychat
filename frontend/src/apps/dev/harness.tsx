@@ -12,11 +12,14 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import type { Hex } from "viem";
 import { installEd25519Polyfill } from "../../lib/ed25519Polyfill";
+import { initSizeClass } from "../../lib/sizeClass";
 import { initTheme } from "../../lib/theme";
-import { FramedAppScreen } from "../FramedAppScreen";
+import { AddAppPage } from "../AddAppPage";
+import { FramedAppScreen, OneAppScreen } from "../FramedAppScreen";
 import { AppsPage } from "../../home/AppsPage";
 import { AppShell } from "../../shell/AppShell";
 import { PATHS, screenFor } from "../../shell/routes";
+import { ONE_NAV_ENABLED } from "../../shell/navPins";
 import type { StepUpConnect } from "../stepUp";
 
 if (!import.meta.env.DEV || import.meta.env.VITE_ONE_APPS !== "true") throw new Error("Run the One Apps dev harness with `bun run dev:apps`.");
@@ -29,6 +32,9 @@ const registry = params.get("registry");
 // `?spaces=applications,account,credentials,secrets,public`: spaces to host and create for the throwaway key right after sign-in
 // (the sign-in creates only the default ones), so an app whose space exists gets a real grant. Default none: the missing-space path.
 const spaces = (params.get("spaces") ?? "").split(",").map((name) => name.trim()).filter(Boolean);
+// `?path=/chat/apps/add`: the route the shell opens on. `?bare`: the harness's own header only for screen readers (screenshots).
+const startPath = params.get("path") ?? PATHS.apps;
+const bare = params.has("bare");
 const account = privateKeyToAccount(generatePrivateKey());
 
 /** A minimal EIP-1193 wallet over the throwaway key: accounts, chain 1 and personal_sign. */
@@ -62,7 +68,7 @@ const MANIFEST = { manifest_version: 1, app_id: "xyz.tinycloud.one-apps-dev", na
 
 const ACCOUNT_DID = `did:pkh:eip155:1:${account.address}`;
 
-/** One's shell around the apps as App.tsx wires it: the nav, the launcher and the framed route. Chat, Recording and Connectors are not part of this harness. */
+/** One's shell around the apps as App.tsx wires it: the nav, the launcher, the app screens and Add an app. Chat, Recording, Connectors and Settings are stand-ins. */
 function HarnessShell({ tcw }: { tcw: TinyCloudWeb | null }) {
   const { pathname } = useLocation();
   const screen = useMemo(() => screenFor(pathname), [pathname]);
@@ -77,9 +83,11 @@ function HarnessShell({ tcw }: { tcw: TinyCloudWeb | null }) {
       chat={notHere}
       capture={notHere}
       connectors={notHere}
-      settings={null}
+      settings={ONE_NAV_ENABLED ? notHere : null}
       feed={notHere}
-      apps={screen.appId ? <FramedAppScreen appId={screen.appId} tcw={tcw} connect={connect} fallback={launcher} /> : launcher}
+      apps={ONE_NAV_ENABLED
+        ? screen.id === "addApp" ? <AddAppPage /> : screen.appId ? <OneAppScreen appId={screen.appId} tcw={tcw} accountDid={ACCOUNT_DID} connect={connect} fallback={launcher} /> : launcher
+        : screen.appId ? <FramedAppScreen appId={screen.appId} tcw={tcw} connect={connect} fallback={launcher} /> : launcher}
     />
   );
 }
@@ -113,13 +121,13 @@ function Harness() {
 
   return (
     <div className="flex h-full flex-col">
-      <header className="flex flex-wrap items-center gap-2 border-b border-border p-2 text-sm">
+      <header className={bare ? "sr-only" : "flex flex-wrap items-center gap-2 border-b border-border p-2 text-sm"}>
         <strong>One Apps dev harness</strong>
         <button type="button" className="rounded border border-border px-2 py-1" onClick={() => void signIn()} disabled={!node || !!tcw}>Sign in (throwaway key)</button>
         <span data-testid="harness-status" className="text-muted-foreground">{status}</span>
       </header>
       <main className="min-h-0 flex-1">
-        <MemoryRouter initialEntries={[PATHS.apps]}>
+        <MemoryRouter initialEntries={[startPath]}>
           <HarnessShell tcw={tcw} />
         </MemoryRouter>
       </main>
@@ -127,6 +135,8 @@ function Harness() {
   );
 }
 
+// The size class as One measures it, so the harness shows the pill, rail or sidebar the window gets.
+initSizeClass();
 initTheme();
 void installEd25519Polyfill().finally(() => {
   createRoot(document.getElementById("root")!).render(<StrictMode><Harness /></StrictMode>);
