@@ -1,5 +1,13 @@
 # @tinychat/backend
 
+## 0.13.0-beta.4
+
+### Patch Changes
+
+- 69b85e8: If you haven't approved saving a bot's chat history to TinyCloud, the chat keeps no saved copy: long chats with TrustBot and your other bots work, and New chat clears at once. Saving starts when you approve it, and messages from before your approval aren't saved.
+
+  Details: TC-3933
+
 ## 0.13.0-beta.3
 
 ### Minor Changes
