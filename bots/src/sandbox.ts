@@ -101,7 +101,8 @@ export function modelsYml(model: string): string {
     "    apiKey: BOT_TOKEN",
     "    models:",
     `      - id: ${JSON.stringify(model)}`,
-    `        name: ${JSON.stringify(`TinyCloud (${model})`)}`,
+    // The plain model id: a name like "TinyCloud (<model>)" led the bot to give TinyCloud as its model's maker.
+    `        name: ${JSON.stringify(model)}`,
     "        reasoning: false",
     "",
   ].join("\n");

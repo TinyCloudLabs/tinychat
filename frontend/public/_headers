@@ -1,9 +1,51 @@
+# Content-Security-Policy (TC-3878): one policy, enforced, sent as the second Content-Security-Policy line of the `/*`
+# block below and also carried by the <meta http-equiv> in index.html (the phone apps load the bundle from the device,
+# so no header reaches them; the tag is their policy). The two are the same text: src/lib/contentSecurityPolicy.test.ts
+# checks that and the inline script's hash. frame-ancestors, which only a header can carry, keeps its own line (TC-3547,
+# below). Pages joins two lines of one header with a comma, and a browser enforces each policy of such a header.
+#
+# Scripts: this origin's own files, the one inline script in index.html (theme and size class before first paint) by
+# its hash, and WebAssembly ('wasm-unsafe-eval': the TinyCloud SDK and the notes renderer are WASM). No 'unsafe-inline'
+# or 'unsafe-eval', and no script host. Change index.html's inline script and the hash changes in both places.
+# (The bundle contains one eval(): vm-browserify's Script.runInThisContext, reached only through asn1.js's named-entity
+# helper, which wraps it in try/catch and falls back to a plain function. It does not run in any flow checked.)
+#
+# Why each other source is listed:
+#   style-src 'unsafe-inline'   React style attributes and the style element the OpenKey SDK adds. Style only, never script.
+#   img-src https: data: blob:  images in replies, feed cards and notes come from any https host (filtered in
+#                               lib/imageUrlFilter.ts); data: and blob: for inline and captured images.
+#   media-src https: blob:      feed videos (any https host) and the meeting audio player (blob: URLs).
+#   font-src data:              data: for inlined font files; the fonts themselves are served from this origin.
+#   worker-src 'self'           same-origin module workers (stitch, audio hash, SDK storage); no blob workers.
+#   frame-src https:            the OpenKey sign-in frame (openkey.so), the TinyCloud apps One frames (src/apps/registry.ts:
+#                               secrets.tinycloud.xyz, credentials.org, explorer.tinycloud.xyz, account.tinycloud.xyz and
+#                               the Ledger app's host) and the Feed's page sheet (feed/LinkSheet.tsx), which shows any
+#                               https page in a sandboxed frame. A frame runs on its own origin, not on this one.
+#   form-action 'self'          no form posts anywhere else.
+#   connect-src: each host is one the code fetches (the desktop app's policy, desktop/src-tauri/tauri.conf.json, lists most of them):
+#     ipc:, ipc.localhost                         the desktop app's bridge to its own process (Tauri); the desktop app
+#                                                 loads this bundle with index.html's copy of the policy
+#     api.tinycloud.chat                          the backend
+#     tee.node.tinycloud.xyz, node.tinycloud.xyz  TinyCloud nodes (SDK)
+#     registry.tinycloud.xyz                      the registry
+#     api.tinycloud.xyz                           the share links API (lib/nativeShares/sdk.ts)
+#     openkey.so, api.openkey.so                  OpenKey sign-in
+#     api.redpill.ai, rpc.ata.network, search.sigstore.dev, api-github-proxy.tinfoil.sh, gh-attestation-proxy.tinfoil.sh,
+#       cloud-api.phala.network, api.trustauthority.intel.com
+#                                               the "verify this reply" check (lib/vendor/redpill-verifier)
+#     api.fireflies.ai                            the Fireflies connector
+#     www.googleapis.com, docs.googleapis.com, meet.googleapis.com   the Google Meet connector
+#     api.assemblyai.com                          transcription
+#     f6663e38...-8080.dstack-pha1-prod5.phala.network   private cloud transcription uploads (VITE_EXO_PTX_UPLOAD_ORIGIN in .env.production)
+# A new service One talks to needs its host added here, in index.html and in the desktop policy.
+#
 # No other site may put a TinyCloud page in a frame (TC-3547): the registry consent is a tap on a button, and a page that
 # can be framed could be clicked for the owner. TinyCloud's own pages (this origin) may still frame each other. The phone
 # and desktop apps load the bundle from the device, not from here, and open it as the top-level page, so this header does
 # not reach them. The apps TinyCloud One frames are the other direction and are not affected.
 /*
   Content-Security-Policy: frame-ancestors 'self'
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'sha256-EyjtwYacqqfVLyzPVyH1wIN86Cu5JWq24fP1VH01WDw=' 'wasm-unsafe-eval'; object-src 'none'; base-uri 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; media-src 'self' blob: https:; worker-src 'self'; manifest-src 'self'; frame-src https:; form-action 'self'; connect-src 'self' ipc: http://ipc.localhost https://api.tinycloud.chat https://tee.node.tinycloud.xyz https://node.tinycloud.xyz https://registry.tinycloud.xyz https://api.tinycloud.xyz https://openkey.so https://api.openkey.so https://api.redpill.ai https://rpc.ata.network https://search.sigstore.dev https://api-github-proxy.tinfoil.sh https://gh-attestation-proxy.tinfoil.sh https://cloud-api.phala.network https://api.trustauthority.intel.com https://api.fireflies.ai https://www.googleapis.com https://docs.googleapis.com https://meet.googleapis.com https://api.assemblyai.com https://f6663e38e8fc0a7d706ec2facb861246ae0077d8-8080.dstack-pha1-prod5.phala.network
 
 # Agent discovery. These headers don't change the SPA route or response body.
 /

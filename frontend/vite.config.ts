@@ -118,6 +118,14 @@ export default defineConfig(({ command, mode }) => {
       } satisfies Plugin;
     })(),
     {
+      // index.html carries the Content-Security-Policy for the phone apps (TC-3878). `vite dev` injects an inline
+      // React-refresh script and opens an HMR socket, which that policy blocks, and the phone live-reload shell
+      // (EXO_DEV_SERVER_URL) loads this dev server: so dev serves the page without the tag. Builds keep it.
+      name: "tinychat-dev-no-csp",
+      apply: "serve",
+      transformIndexHtml: (html) => html.replace(/<meta\s+http-equiv="Content-Security-Policy"[^>]*>/i, ""),
+    },
+    {
       // Open the connections to the TinyCloud node and the backend while the bundle loads, so the
       // first request after sign-in restore does not also pay DNS, TCP and TLS (two round trips to
       // the node's gateway). Only origins this build is configured with; dev without them adds none.

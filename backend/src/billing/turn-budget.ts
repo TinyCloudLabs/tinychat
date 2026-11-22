@@ -11,10 +11,16 @@ export type BudgetStopMode = "finish_answer" | "hard_stop" | "predict_next_round
 export type BudgetPreflightMode = "log" | "enforce" | "off";
 
 /**
- * Minimum credits a turn must be able to spend before it is admitted.
- * Placeholder ceiling for a short turn at fallback rates; to be refined from measured turns.
+ * Tokens of one short agent turn: the turn is admitted only if the account can still pay for this much at the turn's
+ * own model rates. Measured on production with controlled turns on 2026-11-22 (TC-3734).
  */
-export const MIN_TURN_CREDITS = 320;
+export const MIN_TURN_PROMPT_TOKENS = 8_000;
+export const MIN_TURN_COMPLETION_TOKENS = 1_000;
+
+/** Minimum credits a turn must be able to spend before it is admitted: one short turn at the turn's model rates. */
+export function minTurnCredits(rates: ModelRates): number {
+  return creditsFor(rates, MIN_TURN_PROMPT_TOKENS, MIN_TURN_COMPLETION_TOKENS);
+}
 
 const STOP_MODES: readonly BudgetStopMode[] = ["finish_answer", "hard_stop", "predict_next_round", "off"];
 const PREFLIGHT_MODES: readonly BudgetPreflightMode[] = ["log", "enforce", "off"];

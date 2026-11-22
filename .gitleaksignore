@@ -1,0 +1,192 @@
+# gitleaks baseline (.github/workflows/gitleaks.yml). Each line is a finding fingerprint, commit:file:rule:line, that
+# was reviewed and is not a live credential: test fixtures, public identifiers, code constants. A finding not listed
+# here fails the Gitleaks check. Recorded 2026-11-22 with gitleaks 8.30.1 over the full history of main
+# (28b469e3833a863152e9b52d82a83a40316b9760), refreshed to 4ce3e190acfdb6cb62d5de0163a139c491e5846a; the review per
+# file is in docs/security/required-checks.md.
+# To add one: confirm it is not a live secret (anything possibly live goes to security, and gets rotated, never
+# listed), then add the fingerprint gitleaks prints, in a PR of its own. A PR is scanned with its base commit's
+# baseline, so a fixture needs its entry merged first, as file:rule:line (no commit: a squash merge changes it).
+
+# backend/src/__tests__/assemblyai-hosted-alerts.test.ts
+8b3b8197a5ae642cb8e07fea7161dbcdf4775d6b:backend/src/__tests__/assemblyai-hosted-alerts.test.ts:generic-api-key:52
+
+# backend/src/__tests__/assemblyai-hosted.test.ts
+874ad74cc703e0f37881ff71f0d54509840f1734:backend/src/__tests__/assemblyai-hosted.test.ts:generic-api-key:44
+
+# backend/src/__tests__/auth-session.test.ts
+2bfec5bb2ca8cec2f9068836ed507e2d3c2f8420:backend/src/__tests__/auth-session.test.ts:generic-api-key:255
+2bfec5bb2ca8cec2f9068836ed507e2d3c2f8420:backend/src/__tests__/auth-session.test.ts:generic-api-key:269
+2bfec5bb2ca8cec2f9068836ed507e2d3c2f8420:backend/src/__tests__/auth-session.test.ts:generic-api-key:286
+2bfec5bb2ca8cec2f9068836ed507e2d3c2f8420:backend/src/__tests__/auth-session.test.ts:generic-api-key:296
+2bfec5bb2ca8cec2f9068836ed507e2d3c2f8420:backend/src/__tests__/auth-session.test.ts:generic-api-key:315
+91a7981c21a2ee89605fc4a667e37725b63ba87c:backend/src/__tests__/auth-session.test.ts:generic-api-key:255
+91a7981c21a2ee89605fc4a667e37725b63ba87c:backend/src/__tests__/auth-session.test.ts:generic-api-key:269
+91a7981c21a2ee89605fc4a667e37725b63ba87c:backend/src/__tests__/auth-session.test.ts:generic-api-key:286
+91a7981c21a2ee89605fc4a667e37725b63ba87c:backend/src/__tests__/auth-session.test.ts:generic-api-key:296
+91a7981c21a2ee89605fc4a667e37725b63ba87c:backend/src/__tests__/auth-session.test.ts:generic-api-key:315
+
+# backend/src/__tests__/bot-history-sibling-routes.test.ts
+43094377d31765bf38d5522d6bdae215399ad5ac:backend/src/__tests__/bot-history-sibling-routes.test.ts:generic-api-key:130
+
+# backend/src/__tests__/chat-gating.test.ts
+210f47770c76875af64ea5251502590c6337921f:backend/src/__tests__/chat-gating.test.ts:generic-api-key:21
+f7ec3d7790b464bd61808614d9c92c48133e23dc:backend/src/__tests__/chat-gating.test.ts:generic-api-key:21
+
+# backend/src/__tests__/chat-relay-signature.test.ts
+210f47770c76875af64ea5251502590c6337921f:backend/src/__tests__/chat-relay-signature.test.ts:generic-api-key:36
+f7ec3d7790b464bd61808614d9c92c48133e23dc:backend/src/__tests__/chat-relay-signature.test.ts:generic-api-key:36
+
+# backend/src/__tests__/connector-content-store.test.ts
+c331beb9c147e7fb1342c374565eced5e48ca002:backend/src/__tests__/connector-content-store.test.ts:generic-api-key:64
+
+# backend/src/__tests__/connector-credentials.test.ts
+c331beb9c147e7fb1342c374565eced5e48ca002:backend/src/__tests__/connector-credentials.test.ts:generic-api-key:43
+
+# backend/src/__tests__/connector-observability.test.ts
+c331beb9c147e7fb1342c374565eced5e48ca002:backend/src/__tests__/connector-observability.test.ts:generic-api-key:85
+c331beb9c147e7fb1342c374565eced5e48ca002:backend/src/__tests__/connector-observability.test.ts:stripe-access-token:751
+
+# backend/src/__tests__/connector-teardown.test.ts
+c331beb9c147e7fb1342c374565eced5e48ca002:backend/src/__tests__/connector-teardown.test.ts:generic-api-key:60
+
+# backend/src/__tests__/consent-scope.test.ts
+c331beb9c147e7fb1342c374565eced5e48ca002:backend/src/__tests__/consent-scope.test.ts:generic-api-key:64
+
+# backend/src/__tests__/fixtures/mcp-native-grant.json
+1714a70482be83e36920764de64fd2c03c543455:backend/src/__tests__/fixtures/mcp-native-grant.json:generic-api-key:3
+1714a70482be83e36920764de64fd2c03c543455:backend/src/__tests__/fixtures/mcp-native-grant.json:generic-api-key:7
+1714a70482be83e36920764de64fd2c03c543455:backend/src/__tests__/fixtures/mcp-native-grant.json:jwt:7
+
+# backend/src/__tests__/granola-proxy-hardening.test.ts
+74889d533b876d96965a6053cf80ff7d442e395d:backend/src/__tests__/granola-proxy-hardening.test.ts:generic-api-key:19
+74889d533b876d96965a6053cf80ff7d442e395d:backend/src/__tests__/granola-proxy-hardening.test.ts:generic-api-key:493
+
+# backend/src/__tests__/index-wiring.test.ts
+2eecb3862a962fe52b5ad28ae57eff410043b2ad:backend/src/__tests__/index-wiring.test.ts:generic-api-key:463
+c65d24f80225607b22d3d2846d1c0086bfea2a1c:backend/src/__tests__/index-wiring.test.ts:generic-api-key:834
+
+# backend/src/__tests__/mcp-grant-real-sdk.test.ts
+1714a70482be83e36920764de64fd2c03c543455:backend/src/__tests__/mcp-grant-real-sdk.test.ts:generic-api-key:87
+
+# backend/src/__tests__/private-cloud-transcription.test.ts
+2eecb3862a962fe52b5ad28ae57eff410043b2ad:backend/src/__tests__/private-cloud-transcription.test.ts:generic-api-key:45
+
+# backend/src/__tests__/rate-limits-bot-send.test.ts
+74889d533b876d96965a6053cf80ff7d442e395d:backend/src/__tests__/rate-limits-bot-send.test.ts:generic-api-key:4
+
+# backend/src/__tests__/request-record.test.ts
+e31dd718641662c8805ad88fd48c3049051ead2a:backend/src/__tests__/request-record.test.ts:generic-api-key:26
+e31dd718641662c8805ad88fd48c3049051ead2a:backend/src/__tests__/request-record.test.ts:generic-api-key:34
+
+# backend/src/__tests__/webhook-tokens.test.ts
+3cec9638b8d91623ddc95d222cde4d9e7e95779f:backend/src/__tests__/webhook-tokens.test.ts:stripe-access-token:1464
+
+# backend/src/__tests__/webhook-verify.test.ts
+c331beb9c147e7fb1342c374565eced5e48ca002:backend/src/__tests__/webhook-verify.test.ts:generic-api-key:10
+
+# backend/src/services/transcript-delivery.ts
+13e3e0ca87edd3a307dbb5e6f7b3f1809851010a:backend/src/services/transcript-delivery.ts:generic-api-key:44
+
+# bots-regular/src/__tests__/omp-config.test.ts
+ca865456e066ca73589fce2d195cb8e1c4c74c1a:bots-regular/src/__tests__/omp-config.test.ts:generic-api-key:9
+
+# bots-regular/src/__tests__/regular.test.ts
+2e88e1e9c24967331f54721abfe5538aee07c15c:bots-regular/src/__tests__/regular.test.ts:generic-api-key:10
+
+# bots-regular/src/__tests__/role-prompt.test.ts
+bb8f9ef546047b547539d625ff89a8dfaadeb15f:bots-regular/src/__tests__/role-prompt.test.ts:generic-api-key:5
+
+# bots/src/__tests__/asks-gateway.test.ts
+0a24337004d440509c1f022f6d4b20bc9b361679:bots/src/__tests__/asks-gateway.test.ts:generic-api-key:258
+
+# bots/src/__tests__/role.test.ts
+bb8f9ef546047b547539d625ff89a8dfaadeb15f:bots/src/__tests__/role.test.ts:generic-api-key:11
+
+# frontend/.env.production
+366133749c998ea0d985a7a57ae10a0a16b6ce41:frontend/.env.production:generic-api-key:12
+
+# frontend/src/apps/embedHost.test.ts
+27e564169a24d407a26c69e12b2f54724721f012:frontend/src/apps/embedHost.test.ts:generic-api-key:11
+27e564169a24d407a26c69e12b2f54724721f012:frontend/src/apps/embedHost.test.ts:generic-api-key:13
+
+# frontend/src/apps/ledgerCeiling.test.ts
+d3970bffcc85402aefc5f38a9c424e583a6d0850:frontend/src/apps/ledgerCeiling.test.ts:generic-api-key:20
+
+# frontend/src/bots/botChatApi.test.ts
+74889d533b876d96965a6053cf80ff7d442e395d:frontend/src/bots/botChatApi.test.ts:generic-api-key:19
+
+# frontend/src/bots/botPath.test.ts
+74889d533b876d96965a6053cf80ff7d442e395d:frontend/src/bots/botPath.test.ts:generic-api-key:12
+
+# frontend/src/bots/historyRestoredSession.sdk.test.ts
+1160a72bb0c8fc23c354b32638867170dbc53630:frontend/src/bots/historyRestoredSession.sdk.test.ts:generic-api-key:28
+
+# frontend/src/chat/RegistrySection.test.tsx
+4ce3e190acfdb6cb62d5de0163a139c491e5846a:frontend/src/chat/RegistrySection.test.tsx:generic-api-key:31
+4ce3e190acfdb6cb62d5de0163a139c491e5846a:frontend/src/chat/RegistrySection.test.tsx:generic-api-key:32
+4ce3e190acfdb6cb62d5de0163a139c491e5846a:frontend/src/chat/RegistrySection.test.tsx:generic-api-key:33
+
+# frontend/src/chat/verification-predicates.test.ts
+210f47770c76875af64ea5251502590c6337921f:frontend/src/chat/verification-predicates.test.ts:generic-api-key:246
+210f47770c76875af64ea5251502590c6337921f:frontend/src/chat/verification-predicates.test.ts:generic-api-key:247
+f7ec3d7790b464bd61808614d9c92c48133e23dc:frontend/src/chat/verification-predicates.test.ts:generic-api-key:246
+f7ec3d7790b464bd61808614d9c92c48133e23dc:frontend/src/chat/verification-predicates.test.ts:generic-api-key:247
+
+# frontend/src/harness/screens/botView.tsx
+74889d533b876d96965a6053cf80ff7d442e395d:frontend/src/harness/screens/botView.tsx:generic-api-key:72
+
+# frontend/src/harness/screens/homeFeedDetails.tsx
+2742693a75d734b250dd8908b5d650d73ced9966:frontend/src/harness/screens/homeFeedDetails.tsx:generic-api-key:14
+
+# frontend/src/lib/connectors/serverCredentialTeardownRetry.test.ts
+74889d533b876d96965a6053cf80ff7d442e395d:frontend/src/lib/connectors/serverCredentialTeardownRetry.test.ts:generic-api-key:32
+
+# frontend/src/lib/debugLog.test.ts
+5918a341cd9499401585623e3cdb4e31bd999408:frontend/src/lib/debugLog.test.ts:generic-api-key:20
+5918a341cd9499401585623e3cdb4e31bd999408:frontend/src/lib/debugLog.test.ts:generic-api-key:50
+
+# frontend/src/lib/firstPartySignIn.sdk.test.ts
+74889d533b876d96965a6053cf80ff7d442e395d:frontend/src/lib/firstPartySignIn.sdk.test.ts:generic-api-key:27
+
+# frontend/src/lib/homeReauthorize.sdk.test.tsx
+7a01bcdf7986ae89a8b3b681dc387030faafd6af:frontend/src/lib/homeReauthorize.sdk.test.tsx:generic-api-key:35
+
+# frontend/src/lib/imageUrlFilter.corpus.test.ts
+22e42aa9ca0cae886e2ce3208316f1d35595b846:frontend/src/lib/imageUrlFilter.corpus.test.ts:aws-access-token:102
+
+# frontend/src/lib/registryEditor/adapter.test.ts
+4ce3e190acfdb6cb62d5de0163a139c491e5846a:frontend/src/lib/registryEditor/adapter.test.ts:generic-api-key:25
+4ce3e190acfdb6cb62d5de0163a139c491e5846a:frontend/src/lib/registryEditor/adapter.test.ts:generic-api-key:26
+
+# frontend/src/lib/renewalReceipt.fixture.ts
+8ec6a58866125abbf33995ae3cef12e4660e6682:frontend/src/lib/renewalReceipt.fixture.ts:generic-api-key:10
+8ec6a58866125abbf33995ae3cef12e4660e6682:frontend/src/lib/renewalReceipt.fixture.ts:generic-api-key:8
+8ec6a58866125abbf33995ae3cef12e4660e6682:frontend/src/lib/renewalReceipt.fixture.ts:generic-api-key:9
+
+# frontend/src/lib/replication/readOnlyAccountProvider.sdk.test.ts
+fae976b06f15ce456cc3f37b0918f1445541ddd1:frontend/src/lib/replication/readOnlyAccountProvider.sdk.test.ts:generic-api-key:26
+
+# frontend/src/lib/sessionGrants.sdk.test.tsx
+74889d533b876d96965a6053cf80ff7d442e395d:frontend/src/lib/sessionGrants.sdk.test.tsx:generic-api-key:33
+
+# frontend/src/lib/webConnectorsGrant.sdk.test.tsx
+7a01bcdf7986ae89a8b3b681dc387030faafd6af:frontend/src/lib/webConnectorsGrant.sdk.test.tsx:generic-api-key:37
+
+# frontend/test-fixtures/ConnectorDialog.granolaS4.fixture.tsx
+74889d533b876d96965a6053cf80ff7d442e395d:frontend/test-fixtures/ConnectorDialog.granolaS4.fixture.tsx:generic-api-key:20
+74889d533b876d96965a6053cf80ff7d442e395d:frontend/test-fixtures/ConnectorDialog.granolaS4.fixture.tsx:generic-api-key:21
+
+# log-shipper/vector.tests.yaml
+3ac6081087a78c1210ed6a97f9cd0df8d9de7cec:log-shipper/vector.tests.yaml:jwt:236
+
+# packages/server/src/__tests__/delegation-store.test.ts
+c331beb9c147e7fb1342c374565eced5e48ca002:packages/server/src/__tests__/delegation-store.test.ts:generic-api-key:386
+c331beb9c147e7fb1342c374565eced5e48ca002:packages/server/src/__tests__/delegation-store.test.ts:generic-api-key:403
+c331beb9c147e7fb1342c374565eced5e48ca002:packages/server/src/__tests__/delegation-store.test.ts:generic-api-key:440
+
+# scripts/__tests__/release.test.mjs
+5e29975f0da1ded8a5831ebd28cf3c5a73c55f65:scripts/__tests__/release.test.mjs:generic-api-key:1518
+5f3d6d5c6597a3686ff7677b48840f48a5f3c474:scripts/__tests__/release.test.mjs:generic-api-key:1119
+
+# scripts/release/ios-signing.sh
+5f3d6d5c6597a3686ff7677b48840f48a5f3c474:scripts/release/ios-signing.sh:private-key:44

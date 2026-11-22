@@ -300,6 +300,27 @@ export class BotsRegistry {
     })).result;
   }
 
+  /**
+   * A delegation the backend still held for a bot whose permission is closed, kept as owed in this owner's record so
+   * the owner's browser revokes it: a node takes a revocation only from the owner. The bot is either deleted, or
+   * still being deleted with its permission closed. One delegation is owed at a time: "busy" while another is, and
+   * nothing is written. "open" for a bot whose permission is not closed, "unknown" for a key this record never held.
+   */
+  async oweRevoke(address: string, key: string, cid: string): Promise<"owed" | "busy" | "open" | "unknown"> {
+    if (!BOT_KEY.test(key) || cid === "") return "unknown";
+    return (await this.#mutate<"owed" | "busy" | "open" | "unknown">(address, current => {
+      const bot = current.bots.find(candidate => candidate.key === key);
+      if (bot && !bot.grantClosed) return { result: "open" };
+      const entry = bot ?? current.deleted.find(candidate => candidate.key === key);
+      if (!entry) return { result: "unknown" };
+      if (entry.revoke) return { result: entry.revoke.cid === cid ? "owed" : "busy" };
+      const revoke = { cid };
+      return { result: "owed", next: bot
+        ? { bots: current.bots.map(other => (other.key === key ? { ...bot, revoke } : other)), deleted: current.deleted }
+        : { bots: current.bots, deleted: current.deleted.map(other => (other.key === key ? { ...other, revoke } : other)) } };
+    })).result;
+  }
+
   /** The delegation has been revoked, or never can be: nothing is left to retry. */
   async clearRevoke(address: string, key: string): Promise<void> {
     if (!BOT_KEY.test(key)) return;
