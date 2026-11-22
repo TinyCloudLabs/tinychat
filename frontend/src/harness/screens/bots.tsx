@@ -9,7 +9,7 @@ import { CreateBotDialog } from "@/bots/CreateBotDialog";
 import { BOTS_STRINGS } from "@/bots/botsStrings";
 import type { BotRoster, BotRosterApi, RosterBot } from "@/bots/botRosterApi";
 import { useBots } from "@/bots/useBots";
-import type { BotsApi } from "@/bots/botsApi";
+import { BotsRouteMissing, type BotsApi } from "@/bots/botsApi";
 import { HomeAskBox } from "@/bots/HomeAskBox";
 import { MainChat } from "@/bots/MainChat";
 import type { MainChatState } from "@/bots/useMainChat";
@@ -92,6 +92,11 @@ const ENABLED: BotsApi = {
   getMainWeb: async () => ({ mode: "off", hosts: [], available: true, today: { searches: 0, pages: 0, blocked: 0 } }),
   setMainWeb: () => new Promise(() => {}),
   sendToMain: () => new Promise(() => {}),
+  // This service has no questions route, so the screens show no Main questions.
+  getAsks: () => Promise.reject(new BotsRouteMissing()),
+  setAsks: () => Promise.reject(new BotsRouteMissing()),
+  listRequests: () => Promise.reject(new BotsRouteMissing()),
+  answerRequest: () => Promise.reject(new BotsRouteMissing()),
 };
 
 const MID_REPLY: MainChatState = {

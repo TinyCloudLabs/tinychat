@@ -16,6 +16,7 @@ import { BOT_START, type OciSpec, SANDBOX_SESSION_DIR, sandboxSpec } from "./oci
 import { RpcChannel } from "./rpc";
 import { COPY_FAILURES, type CopyFailure, hasSnapshot, STATE_INODES_PER_MB } from "./state";
 import { readWebPolicy } from "./web-policy";
+import { syncAsks } from "./asks";
 
 const CGROUP_ROOT = "/sys/fs/cgroup";
 const CGROUP_CONTROLLERS = ["cpu", "memory", "pids"];
@@ -106,12 +107,16 @@ export function modelsYml(model: string): string {
 }
 
 /**
- * OMP's MCP config inside every sandbox: Main's web tools, served by the gateway on the same egress socket. The
- * server is always configured; whether a call does anything is the owner's setting, applied by the gateway.
+ * OMP's MCP config inside every sandbox: Main's web tools (`web`) and its question tool (`app`, `ask_owner`), both served
+ * by the gateway on the same egress socket. Both servers are always configured; whether a call does anything, and
+ * whether `app` lists its tool, is the owner's setting, applied by the gateway.
  */
 export function mcpJson(): string {
   return JSON.stringify({
-    mcpServers: { web: { type: "http", url: "http://127.0.0.1:8080/v1/mcp", headers: { Authorization: "Bearer ${BOT_TOKEN}" }, timeout: 60_000 } },
+    mcpServers: {
+      web: { type: "http", url: "http://127.0.0.1:8080/v1/mcp", headers: { Authorization: "Bearer ${BOT_TOKEN}" }, timeout: 60_000 },
+      app: { type: "http", url: "http://127.0.0.1:8080/v1/mcp/app", headers: { Authorization: "Bearer ${BOT_TOKEN}" }, timeout: 60_000 },
+    },
   });
 }
 
@@ -406,6 +411,7 @@ export class RunscHost implements SandboxLauncher {
       await this.#mountState(layout);
       restored = true;
       await this.#pushWeb(layout);
+      await this.syncAsks(layout);
       await register();
       const spec = sandboxSpec(this.#baseSpec, {
         rootfs: this.#cfg.rootfs,
@@ -563,7 +569,7 @@ export class RunscHost implements SandboxLauncher {
   }
 
   /** One request on the gateway's control socket; the body is JSON. Throws unless the answer is 2xx. */
-  async #gateway(method: "GET" | "PUT" | "POST", path: string, body?: unknown): Promise<Response> {
+  async #gateway(method: "GET" | "PUT" | "POST" | "DELETE", path: string, body?: unknown): Promise<Response> {
     const response = await fetch(`http://gateway${path}`, {
       unix: join(this.#cfg.egressRoot, "control.sock"),
       method,
@@ -592,6 +598,32 @@ export class RunscHost implements SandboxLauncher {
   /** Page addresses the owner typed in a message: the bot may read them. */
   async learnAddresses(layout: BotLayout, urls: string[]): Promise<void> {
     await this.#gateway("POST", `/bots/${layout.botId}/web/addresses`, { urls });
+  }
+
+  /**
+   * Collects the requests the box has made, stores them, settles secret requests with the gateway, and gives the
+   * gateway the owner's setting with the counts and cooldowns (see syncAsks). At launch, so the tools are listed or
+   * not as the setting says, and at the start of each message with `turn`. Approval links are made only for Main's
+   * owner, named by `ownerDid`.
+   */
+  syncAsks(layout: BotLayout, turn?: { outside: boolean }, ownerDid?: string): Promise<void> {
+    const path = `/bots/${layout.botId}/asks`;
+    const secrets = `/bots/${layout.botId}/secrets`;
+    return syncAsks(layout, {
+      drain: async () => (await this.#gateway("POST", `${path}/drain`)).json(),
+      push: async body => void (await this.#gateway("PUT", path, body)),
+      secrets: {
+        drain: async () => (await this.#gateway("POST", `${secrets}/drain`)).json(),
+        forget: async id => void (await this.#gateway("DELETE", `${secrets}/${id}`)),
+        ...(ownerDid ? {
+          link: async (id: string, request: { name: string; sites: string[]; header: string; why: string }) => {
+            const answer: unknown = await (await this.#gateway("PUT", `${secrets}/${id}`, { ...request, ownerDid })).json();
+            if (!isRecord(answer) || typeof answer.approveUrl !== "string") throw new Error("gateway gave no approval link");
+            return { approveUrl: answer.approveUrl };
+          },
+        } : {}),
+      },
+    }, turn);
   }
 
   async #registerEgress(botId: string, token: string, owner: string): Promise<void> {
