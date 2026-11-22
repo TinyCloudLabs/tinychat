@@ -47,6 +47,8 @@ function makeMcpPort(opts: {
   sqlDbNotFound?: boolean;
   /** Models a real SQL error on an existing `connector_meeting` table (e.g. `SQL_RESULT_LIMIT_EXCEEDED`, `SQL_ERROR`). */
   sqlErrorCode?: string;
+  /** When set, ONLY exact-ID collision queries (`WHERE source = ? AND source_id IN` / `WHERE id IN`) fail with this code. */
+  sqlCollisionErrorCode?: string;
   /** When true alongside `sqlErrorCode`, `sqlite_schema` also fails with `sqlErrorCode`. */
   sqlSchemaAlsoFails?: boolean;
   kvKeys?: string[];
@@ -119,11 +121,13 @@ function makeMcpPort(opts: {
         return allSqlRows.some((r) => r.source === params[0] && r.sourceId === params[1]) ? [[1]] : [];
       }
       if (sql.includes("SELECT id, source_id FROM connector_meeting WHERE source = ? AND source_id IN")) {
+        if (opts.sqlCollisionErrorCode) throw new McpPortError(opts.sqlCollisionErrorCode);
         const source = params[0];
         const ids = new Set(params.slice(1));
         return allSqlRows.filter((r) => r.source === source && ids.has(r.sourceId)).map((r) => [r.id, r.sourceId]);
       }
       if (sql.includes("SELECT id FROM connector_meeting WHERE id IN")) {
+        if (opts.sqlCollisionErrorCode) throw new McpPortError(opts.sqlCollisionErrorCode);
         const ids = new Set(params);
         return allSqlRows.filter((r) => ids.has(r.id)).map((r) => [r.id]);
       }
@@ -775,5 +779,24 @@ describe("MCP Fireflies KV reader (PR-3)", () => {
     });
     expect((await absentDbReader.listMetadata()).map((r) => r.meetingRef)).toEqual([meetingRef]);
     expect((await absentDbReader.getMetadata!(meetingRef))?.meetingRef).toBe(meetingRef);
+
+    // 4. Isolated loadExactSqlCollisions guard: main SQL queries return 0 rows, ONLY the exact-ID
+    //    collision probe fails on an existing table -> MUST refuse KV promotion across all entry points.
+    for (const collisionCode of ["SQL_RESULT_LIMIT_EXCEEDED", "SQL_ERROR"]) {
+      const { port: collisionPort, kvGetCalls: collisionKvGets } = makeMcpPort({
+        sqlRows: [],
+        sqlCollisionErrorCode: collisionCode,
+        kvKeys: [firefliesMeetingKvKey("ff-real-sql")],
+        kvValues: { [firefliesMeetingKvKey("ff-real-sql")]: plantedKv },
+      });
+      const collisionReader = createReader(collisionPort, undefined, undefined, {
+        firefliesKvEnabled: true,
+        readFirefliesPurgeLedger: ABSENT_LEDGER,
+      });
+      await expect(collisionReader.listMetadata()).rejects.toThrow("transcript_unavailable");
+      await expect(collisionReader.discoverMetadata!({ source: "fireflies" })).rejects.toThrow("transcript_unavailable");
+      await expect(collisionReader.getMetadata!("fireflies:ff-real-sql")).rejects.toThrow("transcript_unavailable");
+      expect(collisionKvGets).toEqual([]);
+    }
   });
 });

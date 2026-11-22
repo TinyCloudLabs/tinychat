@@ -221,9 +221,12 @@ export function useLibrary(
     });
     return () => controller.abort();
   }, [options.backendUrl]);
+  const accountScope = `${typeof tcw.did === "string" ? tcw.did : ""}::${typeof tcw.spaceId === "string" ? tcw.spaceId : ""}`;
+  const activeScopeRef = useRef<{ scope: string; space: TinyCloudWeb }>({ scope: accountScope, space });
   const localKey = typeof tcw.did === "string" && tcw.did ? accountCacheKey(tcw.did, "library") : null;
   const loadedFromNetwork = useRef(false);
-  const [list, setList] = useState<{ status: LibraryStatus; items: LibraryItem[]; previews: ReadonlyMap<string, string> }>({
+  const [list, setList] = useState<{ scope: string; status: LibraryStatus; items: LibraryItem[]; previews: ReadonlyMap<string, string> }>({
+    scope: accountScope,
     status: "loading",
     items: [],
     previews: new Map(),
@@ -262,6 +265,26 @@ export function useLibrary(
   const clock = useRef(options.now ?? Date.now);
   clock.current = options.now ?? Date.now;
 
+  // Account/space switch resets list and cached reads synchronously on render so Account A's
+  // imported or SQL rows never flash for Account B.
+  const scopeChanged = activeScopeRef.current.scope !== accountScope || activeScopeRef.current.space !== space;
+  if (scopeChanged) {
+    activeScopeRef.current = { scope: accountScope, space };
+    loadedFromNetwork.current = false;
+    listRun.current = { out: false, again: false };
+    reads.current.clear();
+    reading.current.clear();
+    readVersions.current.clear();
+    invalidated.current.clear();
+    staleReads.current.clear();
+    momentsLoaded.current.clear();
+  }
+  let currentList = list;
+  if (list.scope !== accountScope || scopeChanged) {
+    currentList = { scope: accountScope, status: "loading", items: [], previews: new Map() };
+    setList(currentList);
+  }
+
   useEffect(() => {
     mounted.current = true;
     return () => {
@@ -276,7 +299,20 @@ export function useLibrary(
     return run;
   }, []);
 
+  const firefliesListOptionsRef = useRef<
+    { includeFirefliesKv: true; isFirefliesPurged: typeof firefliesPurgeChecker } | undefined
+  >(undefined);
+  firefliesListOptionsRef.current = firefliesKvAllowed
+    ? { includeFirefliesKv: true, isFirefliesPurged: firefliesPurgeChecker }
+    : undefined;
+
   const refresh = useCallback(() => {
+    const startedScope = accountScope;
+    const startedSpace = space;
+    const stillCurrent = () =>
+      mounted.current &&
+      activeScopeRef.current.scope === startedScope &&
+      activeScopeRef.current.space === startedSpace;
     // A read is out: one more after it covers every ask that arrived meanwhile.
     if (listRun.current.out) {
       listRun.current.again = true;
@@ -285,30 +321,32 @@ export function useLibrary(
     listRun.current.out = true;
     setListing(true);
     // Try again shows the skeleton; rows already on screen stay until the list answers.
-    setList((current) => (current.status === "failed" ? { ...current, status: "loading" } : current));
+    setList((current) =>
+      current.scope === startedScope && current.status === "failed"
+        ? { ...current, status: "loading" }
+        : current,
+    );
     const readList = async (): Promise<void> => {
       const started = ++readsStarted.current;
       const read = await listMeetingsRead(
-        space,
+        startedSpace,
         undefined,
-        firefliesKvAllowed
-          ? { includeFirefliesKv: true, isFirefliesPurged: firefliesPurgeChecker }
-          : undefined,
+        firefliesListOptionsRef.current,
       );
       let previews: ReadonlyMap<string, string> | null = null;
-      if (read.status === "ok") {
+      if (read.status === "ok" && stillCurrent()) {
         try {
-          previews = await readTranscriptPreviews(space);
+          previews = await readTranscriptPreviews(startedSpace);
         } catch (caught) {
           console.error("Library: could not read transcript previews; voice notes without a moment keep the generic title", caught);
         }
       }
-      if (!mounted.current) return;
+      if (!stillCurrent()) return;
       if (read.status === "ok") loadedFromNetwork.current = true;
       setList((current) =>
         read.status === "ok"
-          ? { status: "ready", items: read.meetings, previews: previews ?? current.previews }
-          : { status: "failed", items: withoutServerImported(current.items), previews: current.previews },
+          ? { scope: startedScope, status: "ready", items: read.meetings, previews: previews ?? current.previews }
+          : { scope: startedScope, status: "failed", items: withoutServerImported(current.items), previews: current.previews },
       );
       if (read.status === "ok") {
         setHandoff((current) => {
@@ -325,33 +363,42 @@ export function useLibrary(
       setListing(false);
     };
     void enqueue(readList);
-  }, [enqueue, firefliesKvAllowed, firefliesPurgeChecker, space]);
+  }, [accountScope, enqueue, firefliesKvAllowed, firefliesPurgeChecker, space]);
 
   // The device's last copy of the list shows at once; the read below replaces it.
   // Server-imported rows require the active flag and a fresh purge verdict, so they are never restored from cache.
   useEffect(() => {
     if (!localKey) return;
+    const startedScope = accountScope;
     let alive = true;
     void readLocal<LocalLibrary>(localKey).then((local) => {
-      if (!alive || !local || loadedFromNetwork.current) return;
+      if (!alive || !local || loadedFromNetwork.current || activeScopeRef.current.scope !== startedScope) return;
       const safeItems = withoutServerImported(local.value.items);
-      setList((current) => (current.status === "loading" ? { status: "ready", items: safeItems, previews: local.value.previews } : current));
+      setList((current) =>
+        current.scope === startedScope && current.status === "loading"
+          ? { scope: startedScope, status: "ready", items: safeItems, previews: local.value.previews }
+          : current,
+      );
     });
     return () => { alive = false; };
-  }, [localKey]);
+  }, [accountScope, localKey]);
   // Every list the network answered becomes the device's copy for the next open (excluding server-imported rows).
   useEffect(() => {
-    if (localKey && loadedFromNetwork.current && list.status === "ready") {
-      void writeLocal<LocalLibrary>(localKey, { items: withoutServerImported(list.items), previews: list.previews });
+    if (localKey && loadedFromNetwork.current && currentList.scope === accountScope && currentList.status === "ready") {
+      void writeLocal<LocalLibrary>(localKey, { items: withoutServerImported(currentList.items), previews: currentList.previews });
     }
-  }, [list, localKey]);
+  }, [accountScope, currentList, localKey]);
 
   // The first mount (Capture's first visit).
   useEffect(() => {
     refresh();
   }, [refresh]);
 
-  // Coming back to Capture after more than two minutes away.
+  const itemsRef = useRef(currentList.items);
+  itemsRef.current = currentList.items;
+
+  // Coming back to Capture after more than two minutes away, or immediately when server-imported
+  // rows are visible so a purge that landed while away clears on return.
   const leftAt = useRef<number | null>(options.visible ? null : clock.current());
   useEffect(() => {
     if (!options.visible) {
@@ -359,12 +406,32 @@ export function useLibrary(
       return;
     }
     const away = leftAt.current === null ? 0 : clock.current() - leftAt.current;
+    const wasAway = leftAt.current !== null;
     leftAt.current = null;
-    if (away > RELIST_AFTER_MS) refresh();
+    if (away > RELIST_AFTER_MS || (wasAway && itemsRef.current.some(isServerImportedItem))) refresh();
   }, [options.visible, refresh]);
 
-  const itemsRef = useRef(list.items);
-  itemsRef.current = list.items;
+  // Re-run the purge verdict when the browser window regains focus or tab visibility returns while
+  // server-imported rows are on screen.
+  const hasServerImported = useMemo(
+    () => Boolean(firefliesKvAllowed && firefliesPurgeChecker) && currentList.items.some(isServerImportedItem),
+    [currentList.items, firefliesKvAllowed, firefliesPurgeChecker],
+  );
+  useEffect(() => {
+    if (!options.visible || !hasServerImported) return;
+    const onFocus = () => refresh();
+    const onVisibility = () => {
+      if (typeof document !== "undefined" && document.visibilityState === "visible") refresh();
+    };
+    const hasWindowEvents = typeof window !== "undefined" && typeof window.addEventListener === "function";
+    const hasDocEvents = typeof document !== "undefined" && typeof document.addEventListener === "function";
+    if (hasWindowEvents) window.addEventListener("focus", onFocus);
+    if (hasDocEvents) document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      if (hasWindowEvents) window.removeEventListener("focus", onFocus);
+      if (hasDocEvents) document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [hasServerImported, options.visible, refresh]);
   // The open note as the sheet resolved it: a stand-in route (`on-phone:<id>`) and its saved row are one note.
   const openItemId = useRef<string | null>(null);
   // Only the saved row's reads are stale. A list-only change never interrupts
@@ -387,8 +454,8 @@ export function useLibrary(
   }, [handoff.departures, refresh]);
 
   const authorizedListItems = useMemo(
-    () => (firefliesKvAllowed && firefliesPurgeChecker ? list.items : withoutServerImported(list.items)),
-    [firefliesKvAllowed, firefliesPurgeChecker, list.items],
+    () => (firefliesKvAllowed && firefliesPurgeChecker ? currentList.items : withoutServerImported(currentList.items)),
+    [firefliesKvAllowed, firefliesPurgeChecker, currentList.items],
   );
   // A voice note's first moment titles its row, ahead of its transcript.
   const voiceSourceIds = useMemo(
@@ -404,15 +471,15 @@ export function useLibrary(
     );
     return merged.map((entry) => {
       if (entry.source !== VOICE_NOTE_SOURCE || entry.metadata?.capture === "pasted") return entry;
-      const snippet = moments.get(entry.sourceId) ?? noteSnippet(list.previews.get(entry.sourceId));
+      const snippet = moments.get(entry.sourceId) ?? noteSnippet(currentList.previews.get(entry.sourceId));
       return { ...entry, ...(snippet === null ? {} : { snippet }),
         ...(localAudioIds.has(entry.sourceId) ? { hasLocalAudio: true as const } : {}),
         ...(localAudioReadyIds.has(entry.sourceId) ? { localAudioReady: true as const } : {}) };
     });
-  }, [authorizedListItems, list.previews, moments, onPhoneNotes, currentHandoff.lingering, localAudioIds, localAudioReadyIds]);
+  }, [authorizedListItems, currentList.previews, moments, onPhoneNotes, currentHandoff.lingering, localAudioIds, localAudioReadyIds]);
 
   // Captures a combined meeting stands in for, derived from the combined rows of this list read.
-  const hiddenKeys = useMemo(() => hiddenMemberKeys(list.items), [list.items]);
+  const hiddenKeys = useMemo(() => hiddenMemberKeys(currentList.items), [currentList.items]);
   const isCombinedMember = useCallback(
     (entry: Pick<LibraryItem, "source" | "sourceId">) => hiddenKeys.has(memberKey(entry.source, entry.sourceId)),
     [hiddenKeys],
@@ -543,13 +610,20 @@ export function useLibrary(
       }
       reading.current.add(note.id);
       bump();
+      const startedScope = accountScope;
+      const startedSpace = space;
+      const stillCurrent = () =>
+        mounted.current &&
+        activeScopeRef.current.scope === startedScope &&
+        activeScopeRef.current.space === startedSpace;
       void enqueue(async () => {
         try {
           const locator = note.source === VOICE_NOTE_SOURCE
-            ? await voiceNoteTranscriptLocator(space, note.sourceId) : null;
+            ? await voiceNoteTranscriptLocator(startedSpace, note.sourceId) : null;
+          if (!stillCurrent()) return;
           if (version === (readVersions.current.get(note.id) ?? 0) && (imported || stale || staleFields?.has("metadata") || !settled(reads.current.get(note.id)?.metadata))) {
             let metadata = await readMeetingMetadata(
-              space,
+              startedSpace,
               note.id,
               imported
                 ? {
@@ -560,6 +634,7 @@ export function useLibrary(
                   }
                 : undefined,
             );
+            if (!stillCurrent()) return;
             if (locator && metadata.status === "ok") metadata = { status: "ok", metadata: {
               ...metadata.metadata,
               ...(locator.committed ? {
@@ -583,15 +658,15 @@ export function useLibrary(
                 metadata: !imported && metadata.status === "failed" && cached.metadata?.status === "ok"
                   ? cached.metadata : metadata,
               });
-              if (mounted.current) bump();
+              if (stillCurrent()) bump();
             }
           }
           if (version === (readVersions.current.get(note.id) ?? 0) && (imported || stale || staleFields?.has("transcript") || !settled(reads.current.get(note.id)?.transcript?.transcript))) {
             const transcript = locator
-              ? locator.bodyKey ? await readTranscript(space, note.source, note.sourceId, locator.bodyKey, locator.expectedText)
+              ? locator.bodyKey ? await readTranscript(startedSpace, note.source, note.sourceId, locator.bodyKey, locator.expectedText)
                 : { status: "absent" as const }
               : await readTranscript(
-                  space,
+                  startedSpace,
                   note.source,
                   note.sourceId,
                   undefined,
@@ -600,6 +675,7 @@ export function useLibrary(
                     ? { requirePurgeCheck: true, isFirefliesPurged: firefliesKvAllowed ? firefliesPurgeChecker : undefined }
                     : undefined,
                 );
+            if (!stillCurrent()) return;
             if (!imported && version === (readVersions.current.get(note.id) ?? 0) && transcript.status === "failed" && cached.transcript?.transcript.status === "ok") {
               const fields = staleReads.current.get(note.id) ?? new Set<keyof NoteReads>();
               fields.add("transcript");
@@ -614,16 +690,18 @@ export function useLibrary(
                   provenance: locator?.committed ? locator.provenance ?? { engine: null, provider: null, model: null } : null,
                 },
               });
-              if (mounted.current) bump();
+              if (stillCurrent()) bump();
             }
           }
         } finally {
-          reading.current.delete(note.id);
-          if (mounted.current && version !== (readVersions.current.get(note.id) ?? 0)) setInvalidationRevision((n) => n + 1);
+          if (activeScopeRef.current.scope === startedScope && activeScopeRef.current.space === startedSpace) {
+            reading.current.delete(note.id);
+            if (mounted.current && version !== (readVersions.current.get(note.id) ?? 0)) setInvalidationRevision((n) => n + 1);
+          }
         }
       });
     },
-    [bump, enqueue, firefliesKvAllowed, firefliesPurgeChecker, space],
+    [accountScope, bump, enqueue, firefliesKvAllowed, firefliesPurgeChecker, space],
   );
 
   // An invalidation that arrives during an in-flight read is retried once that
@@ -726,7 +804,7 @@ export function useLibrary(
   }, [audioBase, item?.saving, item?.metadata, phoneFirst, phoneChannels, localOnlyAudio, metadataLoaded, pendingAudioRow, space, voiceSourceId]);
 
   const retry = useCallback(() => {
-    if (list.status === "failed") refresh();
+    if (currentList.status === "failed") refresh();
     if (item) {
       if (reads.current.get(item.id)?.transcript?.transcript.status === "absent") {
         const fields = staleReads.current.get(item.id) ?? new Set<keyof NoteReads>();
@@ -735,10 +813,10 @@ export function useLibrary(
       }
       readNote(item);
     }
-  }, [item, list.status, readNote, refresh]);
+  }, [currentList.status, item, readNote, refresh]);
 
   return {
-    status: list.status,
+    status: currentList.status,
     items,
     all: everyItem,
     isCombinedMember,

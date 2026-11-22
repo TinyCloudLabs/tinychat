@@ -11,6 +11,7 @@ import {
 } from "@tinyboilerplate/core";
 
 import { accountCacheKey, readLocal, writeLocal } from "@/lib/localFirst/localCache";
+import { runOnSpace } from "@/lib/spaceQueue";
 import { beginStorageAccountSession, endStorageAccountSession } from "@/lib/storageStatus";
 import { resetLanesForTests } from "@/lib/localFirst/requestLanes";
 import { useLibrary, type Library } from "./useLibrary";
@@ -21,6 +22,8 @@ const saved = {
   fetch: globalThis.fetch,
 };
 
+const windowEvents = new EventTarget();
+
 beforeAll(() => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   (globalThis as { window?: unknown }).window = {
@@ -28,6 +31,9 @@ beforeAll(() => {
     clearTimeout,
     event: undefined,
     HTMLIFrameElement: class {},
+    addEventListener: windowEvents.addEventListener.bind(windowEvents),
+    removeEventListener: windowEvents.removeEventListener.bind(windowEvents),
+    dispatchEvent: windowEvents.dispatchEvent.bind(windowEvents),
   };
 });
 
@@ -763,5 +769,319 @@ describe("useLibrary Fireflies KV production wiring", () => {
       "failed refresh settles",
     );
     expect(seen.at(-1)!.items.map((i) => i.id)).toEqual([sqlRowId]);
+  });
+
+  test("re-runs purge verdict for visible imported rows on visibility return and window focus", async () => {
+    const backendUrl = "https://backend-vis.example";
+    const visId = await connectorMeetingId("fireflies", "ff-vis-purge");
+    const focusId = await connectorMeetingId("fireflies", "ff-focus-purge");
+    const purgedIds = new Set<string>();
+
+    const { tcw } = makeFakeTcw({
+      [firefliesMeetingKvKey("ff-vis-purge")]: {
+        data: await makeMeetingPayload("ff-vis-purge", "Purged Before Visibility Return"),
+        lastModified: "2026-11-22T15:00:00.000Z",
+      },
+      [firefliesMeetingKvKey("ff-focus-purge")]: {
+        data: await makeMeetingPayload("ff-focus-purge", "Purged Before Window Focus"),
+        lastModified: "2026-11-22T15:05:00.000Z",
+      },
+    });
+
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url === `${backendUrl}/api/server-info`) {
+        return new Response(JSON.stringify({ capabilities: { firefliesServerImport: true } }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url === `${backendUrl}/api/connectors/webhooks/purge-check`) {
+        const body = JSON.parse(String(init?.body ?? "{}")) as { meetingId: string };
+        return new Response(JSON.stringify({ blocked: purgedIds.has(body.meetingId) }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response("not found", { status: 404 });
+    }) as typeof fetch;
+
+    const sessionStore = makeFakeSessionStore();
+    const seen: Library[] = [];
+
+    await renderProbe({ tcw, visible: true, noteId: null, backendUrl, sessionStore, seen });
+    await waitFor(
+      () => Boolean(seen.at(-1) && !seen.at(-1)!.listing && seen.at(-1)!.items.length === 2),
+      "both imported meetings listed",
+    );
+
+    // 1. Purge one meeting while away for < RELIST_AFTER_MS: returning to visible immediately re-runs purge check.
+    await renderProbe({ tcw, visible: false, noteId: null, backendUrl, sessionStore, seen });
+    purgedIds.add("ff-vis-purge");
+    await renderProbe({ tcw, visible: true, noteId: null, backendUrl, sessionStore, seen });
+    await waitFor(
+      () => Boolean(seen.at(-1) && !seen.at(-1)!.listing && seen.at(-1)!.items.every((i) => i.id !== visId)),
+      "purged imported row removed on visibility return",
+    );
+    expect(seen.at(-1)!.items.map((i) => i.id)).toEqual([focusId]);
+
+    // 2. Purge the remaining visible meeting while on screen, then dispatch window focus: row clears immediately.
+    purgedIds.add("ff-focus-purge");
+    await act(async () => {
+      windowEvents.dispatchEvent(new Event("focus"));
+    });
+    await waitFor(
+      () => Boolean(seen.at(-1) && !seen.at(-1)!.listing && seen.at(-1)!.items.length === 0),
+      "purged imported row removed on window focus",
+    );
+  });
+
+  test("resets list and cached reads on account switch so Account A imported rows never show for Account B", async () => {
+    const backendUrl = "https://backend-acct.example";
+    const acctAId = await connectorMeetingId("fireflies", "ff-acct-a");
+
+    const { tcw: tcwA } = makeFakeTcw({
+      [firefliesMeetingKvKey("ff-acct-a")]: {
+        data: await makeMeetingPayload("ff-acct-a", "Account A Private Meeting"),
+        lastModified: "2026-11-22T15:00:00.000Z",
+      },
+      [transcriptKvKey("fireflies", "ff-acct-a")]: {
+        data: JSON.stringify([
+          { index: 0, speaker_name: "Alice", text: "Account A private transcript.", start_time: 0, end_time: 4 },
+        ]),
+        lastModified: "2026-11-22T15:01:00.000Z",
+      },
+    });
+
+    // Account B has a gated SQL/KV read so we observe the very first render after switching accounts.
+    let releaseB!: () => void;
+    const gateB = new Promise<void>((resolve) => {
+      releaseB = resolve;
+    });
+    const tcwB = {
+      did: "did:test:account-b-isolated",
+      spaceId: "space-account-b",
+      sql: {
+        db: () => ({
+          query: async (sql: string) => {
+            if (sql.includes("sqlite_schema")) return { ok: true, data: { rows: [] } };
+            await gateB;
+            return { ok: false, error: { code: "NOT_FOUND", message: "no such table: connector_meeting" } };
+          },
+        }),
+      },
+      kv: {
+        list: async () => ({ ok: true, data: { keys: [] } }),
+        get: async () => ({ ok: false, error: { code: "KV_NOT_FOUND", message: "missing" } }),
+      },
+    } as unknown as TinyCloudWeb;
+
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url === `${backendUrl}/api/server-info`) {
+        return new Response(JSON.stringify({ capabilities: { firefliesServerImport: true } }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url === `${backendUrl}/api/connectors/webhooks/purge-check`) {
+        return new Response(JSON.stringify({ blocked: false }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response("not found", { status: 404 });
+    }) as typeof fetch;
+
+    const sessionStoreA = makeFakeSessionStore("token-a");
+    const sessionStoreB = makeFakeSessionStore("token-b");
+    const seen: Library[] = [];
+
+    // 1. Mount Account A and settle both list and open note reads.
+    await renderProbe({ tcw: tcwA, visible: true, noteId: acctAId, backendUrl, sessionStore: sessionStoreA, seen });
+    await waitFor(
+      () => {
+        const latest = seen.at(-1);
+        return Boolean(
+          latest &&
+            latest.items.some((i) => i.id === acctAId) &&
+            latest.note.reads.transcript?.transcript.status === "ok",
+        );
+      },
+      "Account A loads imported meeting and transcript",
+    );
+
+    // 2. Switch mounted useLibrary from Account A to Account B without unmounting.
+    const rendersBeforeSwitch = seen.length;
+    beginStorageAccountSession(tcwB, tcwB.did ?? null, tcwB.spaceId ?? null);
+    await renderProbe({ tcw: tcwB, visible: true, noteId: acctAId, backendUrl, sessionStore: sessionStoreB, seen });
+
+    const rendersAfterSwitch = seen.slice(rendersBeforeSwitch);
+    expect(rendersAfterSwitch.length).toBeGreaterThanOrEqual(1);
+    // ZERO renders after switching to Account B may ever expose Account A's row or cached transcript!
+    for (const snapshot of rendersAfterSwitch) {
+      expect(snapshot.items.every((i) => i.id !== acctAId)).toBe(true);
+      expect(snapshot.note.item).toBeNull();
+      expect(snapshot.note.reads.transcript).toBeUndefined();
+    }
+
+    releaseB();
+    await waitFor(
+      () => Boolean(seen.at(-1) && seen.at(-1)!.status === "ready" && !seen.at(-1)!.listing),
+      "Account B list settles empty",
+    );
+    expect(seen.at(-1)!.items).toEqual([]);
+  });
+
+  test("routes list, metadata and transcript reads through the per-space queue with Fireflies on and off (never raw tcw.kv/tcw.sql)", async () => {
+    const assertQueuedMode = async (mode: "on" | "off") => {
+      const spaceId = `per-space-queue-${mode}`;
+      const did = `did:test:${spaceId}`;
+      const liveId = mode === "on" ? await connectorMeetingId("fireflies", "ff-queued") : "sql-queued-1";
+      const storageEvents: string[] = [];
+      let inFlight = 0;
+      let maxInFlight = 0;
+
+      const track = async <T,>(label: string, fn: () => Promise<T>): Promise<T> => {
+        storageEvents.push(label);
+        inFlight += 1;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        try {
+          return await fn();
+        } finally {
+          inFlight -= 1;
+        }
+      };
+
+      const kvEntries: Record<string, { data: string; lastModified: string }> = {
+        [firefliesMeetingKvKey("ff-queued")]: {
+          data: await makeMeetingPayload("ff-queued", "Queued Fireflies Meeting"),
+          lastModified: "2026-11-22T15:00:00.000Z",
+        },
+        [transcriptKvKey("fireflies", mode === "on" ? "ff-queued" : "ff-sql-queued")]: {
+          data: JSON.stringify([
+            { index: 0, speaker_name: "Jordan", text: "Queued transcript line.", start_time: 0, end_time: 3 },
+          ]),
+          lastModified: "2026-11-22T15:01:00.000Z",
+        },
+      };
+
+      const tcw = {
+        did,
+        spaceId,
+        sql: {
+          db: () => ({
+            query: (sql: string) =>
+              track("sql", async () => {
+                if (sql.includes("sqlite_schema")) return { ok: true, data: { rows: [] } };
+                if (mode === "on") {
+                  return { ok: false, error: { code: "NOT_FOUND", message: "no such table: connector_meeting" } };
+                }
+                if (sql.includes("SELECT metadata FROM connector_meeting")) {
+                  return { ok: true, data: { rows: [[JSON.stringify({ source: "browser" })]] } };
+                }
+                return {
+                  ok: true,
+                  data: {
+                    rows: [[liveId, "fireflies", "ff-sql-queued", "Queued SQL Meeting", "2026-11-22T15:00:00.000Z", 120]],
+                  },
+                };
+              }),
+          }),
+        },
+        kv: {
+          list: (opts?: { path?: string; prefix?: string }) =>
+            track("kv.list", async () => {
+              const prefix = opts?.path ?? opts?.prefix ?? "";
+              return { ok: true, data: { keys: Object.keys(kvEntries).filter((k) => k.startsWith(prefix)) } };
+            }),
+          get: (key: string) =>
+            track(`kv.get:${key}`, async () => {
+              const entry = kvEntries[key];
+              if (!entry) return { ok: false, error: { code: "KV_NOT_FOUND", message: "missing" } };
+              return { ok: true, data: { data: entry.data, headers: makeKvHeaders(entry.lastModified) } };
+            }),
+        },
+      } as unknown as TinyCloudWeb;
+
+      beginStorageAccountSession(tcw, did, spaceId);
+
+      const backendUrl = mode === "on" ? "https://backend-queue.example" : undefined;
+      const sessionStore = mode === "on" ? makeFakeSessionStore() : undefined;
+      if (backendUrl) {
+        globalThis.fetch = (async (input: string | URL | Request) => {
+          const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+          if (url === `${backendUrl}/api/server-info`) {
+            return new Response(JSON.stringify({ capabilities: { firefliesServerImport: true } }), {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            });
+          }
+          if (url === `${backendUrl}/api/connectors/webhooks/purge-check`) {
+            return new Response(JSON.stringify({ blocked: false }), {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            });
+          }
+          return new Response("not found", { status: 404 });
+        }) as typeof fetch;
+      }
+
+      // Hold the per-space queue BEFORE mounting useLibrary: no list read may hit raw tcw.sql/tcw.kv yet.
+      let releaseListBarrier!: () => void;
+      const listBarrierPromise = runOnSpace(spaceId, () => new Promise<void>((resolve) => {
+        releaseListBarrier = resolve;
+      }));
+
+      const seen: Library[] = [];
+      await renderProbe({ tcw, visible: true, noteId: null, backendUrl, sessionStore, seen });
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      });
+      expect(storageEvents).toEqual([]);
+
+      releaseListBarrier();
+      await listBarrierPromise;
+
+      await waitFor(
+        () => Boolean(seen.at(-1) && !seen.at(-1)!.listing && seen.at(-1)!.items.some((i) => i.id === liveId)),
+        `list completes through per-space queue (${mode})`,
+      );
+
+      // Hold the per-space queue BEFORE opening the note: neither metadata nor transcript may bypass it.
+      const eventsBeforeOpen = storageEvents.length;
+      let releaseOpenBarrier!: () => void;
+      const openBarrierPromise = runOnSpace(spaceId, () => new Promise<void>((resolve) => {
+        releaseOpenBarrier = resolve;
+      }));
+
+      await renderProbe({ tcw, visible: true, noteId: liveId, backendUrl, sessionStore, seen });
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      });
+      expect(storageEvents.slice(eventsBeforeOpen)).toEqual([]);
+
+      releaseOpenBarrier();
+      await openBarrierPromise;
+
+      await waitFor(
+        () => {
+          const reads = seen.at(-1)?.note.reads;
+          return reads?.metadata?.status === "ok" && reads?.transcript?.transcript.status === "ok";
+        },
+        `metadata and transcript complete through per-space queue (${mode})`,
+      );
+      expect(maxInFlight).toBe(1);
+      expect(storageEvents.slice(eventsBeforeOpen).some((e) => e.startsWith("kv.get:"))).toBe(true);
+
+      await act(async () => {
+        root!.unmount();
+      });
+      root = null;
+      endStorageAccountSession();
+    };
+
+    await assertQueuedMode("off");
+    await assertQueuedMode("on");
   });
 });
