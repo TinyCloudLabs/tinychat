@@ -27,7 +27,7 @@ import { createBotHistoryRouter, createSiblingHistoryRouter, startBotHistoryDrai
 import { botsFromEnv, createBotsRouter, removeBotFromService } from "./routes/bots.js";
 import { botAdmissionSecret, mountBotAdmissionRoute } from "./routes/bot-admission.js";
 import { capModeFromEnv, planFor } from "./bot-caps.js";
-import { BotsRegistry, turnListHook } from "./bots-registry.js";
+import { BotsRegistry, turnListHook, turnNameHook } from "./bots-registry.js";
 import { createBotsServiceGuardRouter } from "./bots-service-routes.js";
 import { BOT_DELETION_PASS_MS, BotDeletions } from "./bot-deletion.js";
 import { resolveTier } from "./billing/stripe.js";
@@ -956,7 +956,10 @@ async function main() {
   // Stored history permissions are read and removed here whether or not the history routes are on, so that deleting
   // a bot always clears one that was stored earlier.
   const botHistory = botsConfig ? new BotHistory(node, backendPrivateKey as `0x${string}`, TINYCLOUD_HOST) : undefined;
-  if (botsConfig && botsRegistry) botsConfig.listForTurn = turnListHook(botsRegistry);
+  if (botsConfig && botsRegistry) {
+    botsConfig.listForTurn = turnListHook(botsRegistry);
+    botsConfig.nameForTurn = turnNameHook(botsRegistry);
+  }
   if (botsConfig && botHistory && botsRegistry && process.env.BOTS_HISTORY_ENABLED === "true") {
     app.use("/api/bots/history", createBotHistoryRouter(botHistory, botsConfig, authMiddleware));
     // Before /api/bots, so the other bots' history routes are answered here; each key is checked against the owner's record.

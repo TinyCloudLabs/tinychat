@@ -28,7 +28,7 @@ test("Main acknowledges the expiry notice only after opening it, with the deleti
         ? (window as unknown as { nativeFetch: typeof fetch }).nativeFetch(input, init) : harnessFetch(input, init);
     });
     expect(calls).toBe(0);
-    await page.getByRole("button", { name: "Open Main's chat" }).click();
+    await page.getByRole("button", { name: "Open TrustBot's chat" }).click();
     await page.waitForSelector("[data-history-expiry-notice]");
     const ack = await acknowledged.promise;
     expect(ack.id).toBe("f".repeat(64));

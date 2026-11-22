@@ -2,8 +2,7 @@
 // chat lines after a decision, and the Settings toggle. Nothing else in the app writes these words.
 // Monica's words (agent-ask-owner-words); Sam reviews them in parallel, and changes come as fast follow-ups.
 
-/** The bot's name in every sentence below: one constant, so a rename is one edit. */
-export const ASK_MAIN = "Main";
+import { MAIN_BOT_NAME } from "./botsStrings";
 
 const plural = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
 
@@ -19,24 +18,24 @@ export function askedAgo(elapsedMs: number): string {
 
 export const ASK_STRINGS = {
   /** The Settings toggle. */
-  toggleLabel: `Let ${ASK_MAIN} ask you questions`,
-  toggleHelp: `${ASK_MAIN} can ask you a question in chat when it needs something from you. Off until you turn it on.`,
+  toggleLabel: `Let ${MAIN_BOT_NAME} ask you questions`,
+  toggleHelp: `${MAIN_BOT_NAME} can ask you a question in chat when it needs something from you. Off until you turn it on.`,
   toggleFailed: "Couldn’t save that, so the setting is unchanged. Try again.",
 
   /** The card. */
-  asking: `${ASK_MAIN} is asking:`,
+  asking: `${MAIN_BOT_NAME} is asking:`,
   quote: (question: string) => `“${question}”`,
-  footer: `Your answer goes to ${ASK_MAIN} and the AI model service, like everything else in this chat.`,
+  footer: `Your answer goes to ${MAIN_BOT_NAME} and the AI model service, like everything else in this chat.`,
   answerLabel: "Your answer",
-  answerHint: `Don’t paste passwords or keys here. To give ${ASK_MAIN} access to an account, use Connectors.`,
+  answerHint: `Don’t paste passwords or keys here. To give ${MAIN_BOT_NAME} access to an account, use Connectors.`,
   /** Shown under the answer box only while Web access is on. */
-  webAccessOn: `Web access is on, so a page ${ASK_MAIN} reads could try to get it to send your answer to a website.`,
+  webAccessOn: `Web access is on, so a page ${MAIN_BOT_NAME} reads could try to get it to send your answer to a website.`,
   /** Shown above the answer box only when the request says Main read something from outside the chat. */
-  outside: `${ASK_MAIN} read a web page or someone else’s message before asking, so answer only if this question is what you expect.`,
+  outside: `${MAIN_BOT_NAME} read a web page or someone else’s message before asking, so answer only if this question is what you expect.`,
   answer: "Answer",
   notNow: "Not now",
-  stop: `Stop ${ASK_MAIN} from asking`,
-  stopped: `${ASK_MAIN} won’t ask you questions. You can turn this back on in Settings.`,
+  stop: `Stop ${MAIN_BOT_NAME} from asking`,
+  stopped: `${MAIN_BOT_NAME} won’t ask you questions. You can turn this back on in Settings.`,
   sendFailed: "Couldn’t send that. Try again.",
   gone: "This question can’t be answered any more.",
 
@@ -45,12 +44,12 @@ export const ASK_STRINGS = {
   expired: "This question expired.",
 
   /** App-originated lines in the chat: shown to the owner, never taken for words the owner typed. */
-  lineAnswered: `You answered ${ASK_MAIN}’s question.`,
-  lineDeclined: `You said not now to ${ASK_MAIN}’s question.`,
+  lineAnswered: `You answered ${MAIN_BOT_NAME}’s question.`,
+  lineDeclined: `You said not now to ${MAIN_BOT_NAME}’s question.`,
   /** UI only: nothing is sent to Main when a question expires. */
-  lineExpired: `${ASK_MAIN}’s question expired without an answer.`,
+  lineExpired: `${MAIN_BOT_NAME}’s question expired without an answer.`,
   /** UI only: shown once when the owner turns questions off, however many open questions and requests were closed. */
-  lineStopped: `You turned off questions and requests from ${ASK_MAIN}, so its open questions and secret requests were closed.`,
+  lineStopped: `You turned off questions and requests from ${MAIN_BOT_NAME}, so its open questions and secret requests were closed.`,
 } as const;
 
 /** A secret's sites in a sentence: the service for a known secret, else the sites ("a and b", "a, b and c"). */
@@ -72,12 +71,12 @@ export function secretDate(iso: string): string {
  * lines. A function that takes `name` returns parts, so the card can set the secret's name in code style.
  */
 export const SECRET_STRINGS = {
-  title: `${ASK_MAIN} is asking to use a secret`,
+  title: `${MAIN_BOT_NAME} is asking to use a secret`,
   onlyWith: ({ service, sites }: { service?: string; sites: string[] }) =>
     `Only with: ${service ? `${service} (${sites.join(", ")})` : sites.join(", ")}`,
   /** Only when the catalog lets Main write with it (Monica, 2026-11-22). Writes are for known secrets, so `with` is the service. */
-  writes: (service: string) => `${ASK_MAIN} can also send data to ${service} with it, which may cost money or change things there.`,
-  outside: `${ASK_MAIN} read a web page or someone else’s message before asking, so approve only if this request is what you expect.`,
+  writes: (service: string) => `${MAIN_BOT_NAME} can also send data to ${service} with it, which may cost money or change things there.`,
+  outside: `${MAIN_BOT_NAME} read a web page or someone else’s message before asking, so approve only if this request is what you expect.`,
 
   addTitle: "Add it to TinyCloud Secrets",
   addHelp: "You type the value there, not here. If it’s already there, this only checks that it is.",
@@ -85,41 +84,41 @@ export const SECRET_STRINGS = {
   addDone: "In your TinyCloud Secrets",
   approveTitle: "Approve in OpenKey",
   // OpenKey only shortens the 1 hour today; the 7-day wording comes back with openkey #696 (TC-3831).
-  approveHelp: `${ASK_MAIN} can use it for 1 hour. You can choose less in OpenKey.`,
+  approveHelp: `${MAIN_BOT_NAME} can use it for 1 hour. You can choose less in OpenKey.`,
   approveButton: "Approve in OpenKey",
   windowOpen: "Finish in the window that opened.",
   windowBlocked: "The window was blocked. Allow pop-ups for this page and try again.",
-  footer: (sites: string) => `${ASK_MAIN} can use it only with ${sites} and can’t see or show its value.`,
+  footer: (sites: string) => `${MAIN_BOT_NAME} can use it only with ${sites} and can’t see or show its value.`,
   decline: "Decline",
-  message: `Message ${ASK_MAIN}`,
+  message: `Message ${MAIN_BOT_NAME}`,
   /** On iPhone, where TinyCloud Secrets can't open: shown with Decline only. */
   iphone: "To add or approve a secret, open TinyCloud One on the web or desktop.",
 
   needsYou: "Needs you",
-  rowTitle: <N>(name: N) => [`${ASK_MAIN} is asking to use `, name],
+  rowTitle: <N>(name: N) => [`${MAIN_BOT_NAME} is asking to use `, name],
   rowLine: (sites: string, asked: string) => `Only with ${sites} · ${asked.charAt(0).toLowerCase()}${asked.slice(1)} · `,
   openChat: "Open chat",
 
-  approved: <N>(name: N, sites: string, until: string) => [`✓ ${ASK_MAIN} can use `, name, ` with ${sites} until ${until}.`],
+  approved: <N>(name: N, sites: string, until: string) => [`✓ ${MAIN_BOT_NAME} can use `, name, ` with ${sites} until ${until}.`],
   approvedHelp: "It can’t see or show the value. You can stop it sooner.",
   stopNow: "Stop now",
   close: "Close",
   cancel: "Cancel",
-  stopConfirm: <N>(name: N) => [`Stop ${ASK_MAIN} using `, name, " now?"],
-  stopConfirmHelp: `${ASK_MAIN} can’t use it after this. It stays in your TinyCloud Secrets.`,
-  stopped: (name: string) => `Stopped. ${ASK_MAIN} can’t use ${name} any more.`,
+  stopConfirm: <N>(name: N) => [`Stop ${MAIN_BOT_NAME} using `, name, " now?"],
+  stopConfirmHelp: `${MAIN_BOT_NAME} can’t use it after this. It stays in your TinyCloud Secrets.`,
+  stopped: (name: string) => `Stopped. ${MAIN_BOT_NAME} can’t use ${name} any more.`,
   declined: "You declined. Nothing was shared.",
   expired: "This request expired. Nothing was shared.",
   nameOnlyWith: <N>(name: N, sites: string) => [name, ` · only with ${sites}`],
-  ended: <N>(name: N, until: string) => [`${ASK_MAIN}’s access to `, name, ` ended on ${until}.`],
-  endedHelp: `If ${ASK_MAIN} needs it again, you’ll see a new request.`,
-  failed: <N>(name: N) => [`Something went wrong, so ${ASK_MAIN} can’t use `, name, " yet. Nothing was shared."],
+  ended: <N>(name: N, until: string) => [`${MAIN_BOT_NAME}’s access to `, name, ` ended on ${until}.`],
+  endedHelp: `If ${MAIN_BOT_NAME} needs it again, you’ll see a new request.`,
+  failed: <N>(name: N) => [`Something went wrong, so ${MAIN_BOT_NAME} can’t use `, name, " yet. Nothing was shared."],
   tryAgain: "Try again",
 
   /** App-originated lines in the chat. Expired and ended are UI only: nothing is sent to Main. */
-  lineApproved: (name: string, sites: string, until: string) => `You let ${ASK_MAIN} use ${name} with ${sites} until ${until}.`,
-  lineRevoked: (name: string) => `You stopped ${ASK_MAIN} using ${name}.`,
-  lineDeclined: (name: string) => `You declined ${ASK_MAIN}’s request for ${name}.`,
-  lineExpired: (name: string) => `${ASK_MAIN}’s request for ${name} expired.`,
-  lineEnded: (name: string) => `${ASK_MAIN}’s access to ${name} ended.`,
+  lineApproved: (name: string, sites: string, until: string) => `You let ${MAIN_BOT_NAME} use ${name} with ${sites} until ${until}.`,
+  lineRevoked: (name: string) => `You stopped ${MAIN_BOT_NAME} using ${name}.`,
+  lineDeclined: (name: string) => `You declined ${MAIN_BOT_NAME}’s request for ${name}.`,
+  lineExpired: (name: string) => `${MAIN_BOT_NAME}’s request for ${name} expired.`,
+  lineEnded: (name: string) => `${MAIN_BOT_NAME}’s access to ${name} ended.`,
 } as const;

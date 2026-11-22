@@ -52,7 +52,7 @@ describe("the bots registry", () => {
   test("the first read for an owner stores a record that holds only Main", async () => {
     const kv = store();
     const row = await new BotsRegistry(kv, { now: () => T0 }).read(ADDRESS);
-    const main = { key: "main", name: "Main", shape: "pebble", colour: "blue", environment: "private", state: "active", createdAt: T0.toISOString() };
+    const main = { key: "main", name: "TrustBot", shape: "pebble", colour: "blue", environment: "private", state: "active", createdAt: T0.toISOString() };
     expect(row.bots).toEqual([main]);
     expect(row.deleted).toEqual([]);
     expect(stored(kv)).toEqual({ v: 1, seq: 1, bots: [main], deleted: [] });
@@ -136,7 +136,7 @@ describe("the bots registry", () => {
     const before = kv.rows.get(KEY);
     expect(await registry.create(ADDRESS, input("Three"), 3)).toEqual({ ok: false, error: "bot_limit" });
     expect(kv.rows.get(KEY)).toEqual(before);
-    expect((await registry.read(ADDRESS)).bots.map(bot => bot.name)).toEqual(["Main", "One", "Two"]);
+    expect((await registry.read(ADDRESS)).bots.map(bot => bot.name)).toEqual(["TrustBot", "One", "Two"]);
   });
 
   test("four creates at once for a new owner, across two registries, give two bots and two refusals", async () => {
@@ -349,7 +349,7 @@ describe("renaming and restyling a bot", () => {
     expect(await registry.update(ADDRESS, KEY_A, { shape: "moon", colour: "indigo" })).toEqual({ ok: true, bot: restyled });
     const row = await registry.read(ADDRESS);
     expect(row.seq).toBe(6);
-    expect(row.bots).toEqual([bot("main", "Main"), restyled, bot(KEY_B, "Notes"), bot(LEAVING, "Leaving", "deleting")]);
+    expect(row.bots).toEqual([bot("main", "TrustBot"), restyled, bot(KEY_B, "Notes"), bot(LEAVING, "Leaving", "deleting")]);
   });
 
   test("Main can be renamed and restyled, and stays Main", async () => {

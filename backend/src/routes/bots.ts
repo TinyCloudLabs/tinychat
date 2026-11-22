@@ -9,7 +9,7 @@ import { Router } from "express";
 import type { Request, RequestHandler, Response } from "express";
 import { botCaps, CAP_MODE, type CapMode, type PlanName } from "../bot-caps";
 import { isBotActivityRecord } from "../bot-history.js";
-import { BOT_KEY, MAIN_BOT_KEY, orderedBots, publicBot, publicDeleted, type Bot, type BotsRegistry } from "../bots-registry";
+import { BOT_KEY, MAIN_BOT_KEY, MAIN_BOT_NAME, orderedBots, publicBot, publicDeleted, type Bot, type BotsRegistry } from "../bots-registry";
 import { clientContextFrom } from "../client-context";
 
 export interface BotsConfig {
@@ -24,12 +24,14 @@ export interface BotsConfig {
   onTurnFinished?: () => void;
   /** Current owner-scoped admission for an outgoing turn, supplied by the registry. */
   listForTurn?: (ownerDid: string, sourceKey: string) => Promise<string[]>;
+  /** The name the owner sees for the bot a turn goes to, supplied by the registry; it only words the bot's prompt. */
+  nameForTurn?: (ownerDid: string, key: string) => Promise<string | undefined>;
 }
 
 // Legacy history may restore a sandbox before OMP can answer. Keep this GET bounded independently of turns.
 export const BOTS_HISTORY_GET_TIMEOUT_MS = 300_000;
 const MAX_TEXT = 8000;
-const UNAVAILABLE = { code: "bot_unavailable", message: "Main isn't available. Try again later." };
+const UNAVAILABLE = { code: "bot_unavailable", message: `${MAIN_BOT_NAME} isn't available. Try again later.` };
 
 /** Same canonical owner DID as MCP chat: did:pkh on chain 1 with the lowercased address. */
 export function botOwnerDid(address: string): string {
@@ -210,16 +212,18 @@ function toAskRequests(payload: unknown): { requests: AskRequestView[] } | null 
 /**
  * Builds the internal send body from the authenticated owner and route's admitted bot. With a typed message, the
  * browser's local date and time zone go along only when they are well formed; anything else is dropped and the turn
- * still runs.
+ * still runs. The bot's name goes along as `botName`, which only words its prompt.
  */
 export async function botTurnBody(config: BotsConfig, address: string, sourceKey: string, text: string, appReply?: AppReply, clientContext?: unknown) {
   const context = appReply ? undefined : clientContextFrom(clientContext);
   const content = appReply ? { appReply } : { text, ...(context ? { clientContext: context } : {}) };
-  try {
-    const messageableBotKeys = await config.listForTurn?.(botOwnerDid(address), sourceKey);
-    if (messageableBotKeys?.length) return { ...content, messageableBotKeys };
-  } catch { /* A registry read failure leaves the turn without messaging. */ }
-  return content;
+  const ownerDid = botOwnerDid(address);
+  // A registry read failure leaves the turn without messaging, and the bot's prompt with its default name.
+  const [messageableBotKeys, botName] = await Promise.all([
+    config.listForTurn?.(ownerDid, sourceKey).catch(() => undefined),
+    config.nameForTurn?.(ownerDid, sourceKey).catch(() => undefined),
+  ]);
+  return { ...content, ...(messageableBotKeys?.length ? { messageableBotKeys } : {}), ...(botName !== undefined ? { botName } : {}) };
 }
 
 /**

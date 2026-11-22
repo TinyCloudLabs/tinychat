@@ -13,6 +13,7 @@ import type { SupervisorConfig } from "./config";
 import { isRecord } from "./guards";
 import { type BotLayout, botRole } from "./layout";
 import { BOT_START, type OciSpec, SANDBOX_SESSION_DIR, sandboxSpec } from "./oci";
+import { MAIN_BOT_NAME } from "./owner";
 import { RpcChannel } from "./rpc";
 import { COPY_FAILURES, type CopyFailure, hasSnapshot, STATE_INODES_PER_MB } from "./state";
 import { readWebPolicy } from "./web-policy";
@@ -379,7 +380,7 @@ export class RunscHost implements SandboxLauncher {
     return false;
   }
 
-  async launch(layout: BotLayout): Promise<Sandbox> {
+  async launch(layout: BotLayout, botName: string = MAIN_BOT_NAME): Promise<Sandbox> {
     if (!this.#baseSpec) throw new Error("sandbox host not initialised");
     // A sandbox whose end was not confirmed still holds its tmpfs; end it first, or refuse to start over it.
     if (this.#copiers.has(layout.botId)) throw new Error("state copier exit unconfirmed");
@@ -436,6 +437,7 @@ export class RunscHost implements SandboxLauncher {
         cgroupsPath: `/bots/${layout.botId}`,
         limits: this.#cfg.limits,
         role: botRole(layout),
+        botName,
       });
       writeFileSync(join(layout.bundleDir, "config.json"), JSON.stringify(spec), { mode: 0o600 });
       await attempt([...this.#runsc, "delete", "-force", layout.containerId]);
