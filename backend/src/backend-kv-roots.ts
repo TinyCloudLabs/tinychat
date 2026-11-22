@@ -12,16 +12,7 @@ import {
   PURGE_LEDGER_KEY_PREFIX as DRAIN_PURGE_LEDGER_KEY_PREFIX,
 } from "./services/connector-drain.js";
 import { CORRUPT_KEY_PREFIX, DEAD_KEY_PREFIX, PENDING_KEY_PREFIX } from "./services/connector-queue.js";
-import {
-  CONTENT_INDEX_KEY_PREFIX,
-  CONTENT_KEY_FAILURE_PREFIX,
-  CONTENT_KEY_PREFIX,
-  CONTINUITY_CANARY_KEY,
-  REPLAY_TOMBSTONE_KEY_PREFIX,
-} from "./services/content-store.js";
 import { CREDENTIAL_KEY_PREFIX } from "./services/credential-store.js";
-import { INGEST_INSTANCE_LEASE_KEY } from "./services/ingest-instance.js";
-import { INGEST_COHORT_KEY } from "./services/ingest-mode.js";
 import { TRANSCRIBER_INDEX_KEY_PREFIX } from "./services/transcriber-index.js";
 import { TRANSCRIPT_DELIVERY_KEY_PREFIX } from "./services/transcript-delivery.js";
 import { WEBHOOK_CONFIG_KEY_PREFIX, WEBHOOK_TOKEN_KEY_PREFIX } from "./services/webhook-tokens.js";
@@ -45,13 +36,6 @@ export const BACKEND_KV_ROOTS: readonly string[] = [
   CORRUPT_PURGED_KEY_PREFIX,
   DRAIN_PURGE_LEDGER_KEY_PREFIX,
   DRAIN_CORRUPT_PURGE_LEDGER_KEY_PREFIX,
-  INGEST_COHORT_KEY,
-  INGEST_INSTANCE_LEASE_KEY,
-  `${CONTENT_KEY_PREFIX}/`,
-  `${CONTENT_INDEX_KEY_PREFIX}/`,
-  `${CONTENT_KEY_FAILURE_PREFIX}/`,
-  `${REPLAY_TOMBSTONE_KEY_PREFIX}/`,
-  CONTINUITY_CANARY_KEY,
   CREDENTIAL_KEY_PREFIX,
   TRANSCRIBER_INDEX_KEY_PREFIX,
   TRANSCRIPT_DELIVERY_KEY_PREFIX,
