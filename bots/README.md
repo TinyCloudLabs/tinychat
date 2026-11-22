@@ -286,7 +286,7 @@ call and returns the reply with the value hidden.
   (`src/secret-routes.ts`). The gateway makes a fresh Ed25519 key for that request alone. It signs an OpenKey one-tap
   approval request for `tinycloud.kv/get` on `vault/secrets/<NAME>` plus `tinycloud.encryption/decrypt` on the owner's
   default network. The longest grant it allows is 1 hour (`MAX_GRANT_SECONDS`, from `MAX_GRANT_MS` in `asks.ts`; standing
-  access is a separate design), and a longer delegation is refused with no slack. The same key is both issuer and audience, because share-envelope 1.6.0 requires it. TC-3772
+  access is a separate design), and a delegation more than 120 s longer than that is refused (OpenKey signs a real one-hour grant a few seconds over). The same key is both issuer and audience, because share-envelope 1.6.0 requires it. TC-3772
   will let a stable TinyCloud One key sign instead (`SecretGrantDeps.requester`). The owner the supervisor names must
   be this bot's owner (409 otherwise). A known service's site and header must match `src/secret-catalog.ts`.
 - **Collection.** The gateway collects the result itself every 5 s. Before keeping a grant it checks:
