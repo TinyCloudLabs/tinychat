@@ -112,7 +112,7 @@ export const SECRET_STRINGS = {
   nameOnlyWith: <N>(name: N, sites: string) => [name, ` · only with ${sites}`],
   ended: <N>(name: N, until: string) => [`${MAIN_BOT_NAME}’s access to `, name, ` ended on ${until}.`],
   endedHelp: `If ${MAIN_BOT_NAME} needs it later, you’ll see a new request.`,
-  failed: <N>(name: N) => [`Something went wrong, so ${MAIN_BOT_NAME} can’t use `, name, " yet. Nothing was shared."],
+  failed: <N>(name: N) => [`Something went wrong, and ${MAIN_BOT_NAME} can’t use `, name, ". Nothing was shared."],
   tryAgain: "Try again",
 
   /** App-originated lines in the chat. Expired and ended are UI only: nothing is sent to Main. */
