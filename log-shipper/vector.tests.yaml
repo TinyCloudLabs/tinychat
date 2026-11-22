@@ -885,6 +885,33 @@ tests:
               assert_eq!(keys(.), ["account_hash", "blocked", "event", "level", "minimum", "mode", "remaining_bucket", "remaining_known", "request_id", "source", "svc", "tier", "ts", "would_block"])
               assert!(!contains(encode_json(.), "CANARY"))
               assert!(!contains(encode_json(.), "0xAbC"))
+  - name: "TC-3734 budget preflight keeps unpriced only when it is true"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "{\"event\":\"agent_chat_budget_preflight\",\"mode\":\"enforce\",\"would_block\":true,\"blocked\":true,\"remaining_known\":true,\"remaining_bucket\":\"1000+\",\"minimum\":2600,\"tier\":\"pro\",\"source\":\"ledger\",\"unpriced\":true}", "level": 6, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+    outputs:
+      - extract_from: allowlist
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.unpriced, true)
+              assert_eq!(.minimum, 2600)
+              assert_eq!(keys(.), ["blocked", "event", "level", "minimum", "mode", "remaining_bucket", "remaining_known", "source", "svc", "tier", "ts", "unpriced", "would_block"])
+  - name: "TC-3734 budget preflight drops an unpriced value that is not true"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "{\"event\":\"agent_chat_budget_preflight\",\"mode\":\"log\",\"would_block\":false,\"blocked\":false,\"remaining_known\":true,\"remaining_bucket\":\"1000+\",\"minimum\":150,\"tier\":\"free\",\"source\":\"local\",\"unpriced\":\"z-ai/glm-5.2\"}", "level": 6, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+    outputs:
+      - extract_from: allowlist
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(keys(.), ["blocked", "event", "level", "minimum", "mode", "remaining_bucket", "remaining_known", "source", "svc", "tier", "ts", "would_block"])
+              assert!(!contains(encode_json(.), "glm"))
   - name: "TC-3734 budget preflight with mode off and an unknown remaining budget still ships; off-shape hash and id are omitted"
     inputs:
       - insert_at: redact
