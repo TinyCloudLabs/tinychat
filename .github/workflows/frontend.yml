@@ -37,10 +37,12 @@ jobs:
 
   # Unit tests, lint and the build. The browser work runs in the jobs below, in
   # parallel, so no single job approaches its timeout as the harnesses grow.
+  # Pushes run this job too (`changes` selects everything outside pull requests):
+  # the release deploy requires it on the commit it ships (scripts/release/require-green.mjs).
   frontend:
     name: Frontend tests, lint and browser harnesses
     needs: changes
-    if: github.event_name == 'pull_request' && needs.changes.outputs.frontend == 'true'
+    if: needs.changes.outputs.frontend == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
