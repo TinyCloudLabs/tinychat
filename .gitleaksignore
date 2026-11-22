@@ -1,7 +1,7 @@
 # gitleaks baseline (.github/workflows/gitleaks.yml). Each line is a finding fingerprint, commit:file:rule:line, that
 # was reviewed and is not a live credential: test fixtures, public identifiers, code constants. A finding not listed
 # here fails the Gitleaks check. Recorded 2026-11-22 with gitleaks 8.30.1 over the full history of main
-# (28b469e3833a863152e9b52d82a83a40316b9760), refreshed to 8e0c7e0c03ba2d57b1df2674b432515481682f60; the review per
+# (28b469e3833a863152e9b52d82a83a40316b9760), refreshed to 4ce3e190acfdb6cb62d5de0163a139c491e5846a; the review per
 # file is in docs/security/required-checks.md.
 # To add one: confirm it is not a live secret (anything possibly live goes to security, and gets rotated, never
 # listed), then add the fingerprint gitleaks prints, in a PR of its own. A PR is scanned with its base commit's
@@ -121,6 +121,11 @@ d3970bffcc85402aefc5f38a9c424e583a6d0850:frontend/src/apps/ledgerCeiling.test.ts
 # frontend/src/bots/historyRestoredSession.sdk.test.ts
 1160a72bb0c8fc23c354b32638867170dbc53630:frontend/src/bots/historyRestoredSession.sdk.test.ts:generic-api-key:28
 
+# frontend/src/chat/RegistrySection.test.tsx
+4ce3e190acfdb6cb62d5de0163a139c491e5846a:frontend/src/chat/RegistrySection.test.tsx:generic-api-key:31
+4ce3e190acfdb6cb62d5de0163a139c491e5846a:frontend/src/chat/RegistrySection.test.tsx:generic-api-key:32
+4ce3e190acfdb6cb62d5de0163a139c491e5846a:frontend/src/chat/RegistrySection.test.tsx:generic-api-key:33
+
 # frontend/src/chat/verification-predicates.test.ts
 210f47770c76875af64ea5251502590c6337921f:frontend/src/chat/verification-predicates.test.ts:generic-api-key:246
 210f47770c76875af64ea5251502590c6337921f:frontend/src/chat/verification-predicates.test.ts:generic-api-key:247
@@ -148,6 +153,10 @@ f7ec3d7790b464bd61808614d9c92c48133e23dc:frontend/src/chat/verification-predicat
 
 # frontend/src/lib/imageUrlFilter.corpus.test.ts
 22e42aa9ca0cae886e2ce3208316f1d35595b846:frontend/src/lib/imageUrlFilter.corpus.test.ts:aws-access-token:102
+
+# frontend/src/lib/registryEditor/adapter.test.ts
+4ce3e190acfdb6cb62d5de0163a139c491e5846a:frontend/src/lib/registryEditor/adapter.test.ts:generic-api-key:25
+4ce3e190acfdb6cb62d5de0163a139c491e5846a:frontend/src/lib/registryEditor/adapter.test.ts:generic-api-key:26
 
 # frontend/src/lib/renewalReceipt.fixture.ts
 8ec6a58866125abbf33995ae3cef12e4660e6682:frontend/src/lib/renewalReceipt.fixture.ts:generic-api-key:10
