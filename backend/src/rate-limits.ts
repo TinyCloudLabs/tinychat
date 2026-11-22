@@ -397,7 +397,9 @@ export function logGlobalBucketRoutes(counter: GlobalBucketRouteCounter, everyMs
  * set on their own.
  */
 export const SESSION_LIMITS: Record<Exclude<Bucket, "none" | "auth" | "credentialCount">, number> = {
-  global: GLOBAL_LIMIT / SHARED_KEY_HEADROOM,
+  // One ordinary browser peaked at 148 requests per window (TC-3916), which 429s a 120 allowance on a
+  // normal page load. 600 is four times that peak; the anonymous ceiling (GLOBAL_LIMIT) stays whole-service.
+  global: 600,
   verification: VERIFICATION_LIMIT / SHARED_KEY_HEADROOM,
   connectorCompanion: CONNECTOR_COMPANION_LIMIT / SHARED_KEY_HEADROOM,
   transcriber: TRANSCRIBER_LIMIT / SHARED_KEY_HEADROOM,
