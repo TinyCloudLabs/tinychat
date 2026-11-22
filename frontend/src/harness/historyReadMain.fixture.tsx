@@ -1,7 +1,7 @@
 // TC-2909: real Home/Main UI with a controllable supervisor history response; no wallet or network calls.
 import { createRoot } from "react-dom/client";
 import { HomeAskBox } from "../bots/HomeAskBox";
-import type { BotMessage, MainEvent } from "../bots/botsApi";
+import { BotsRouteMissing, type BotMessage, type MainEvent } from "../bots/botsApi";
 import { initSizeClass } from "../lib/sizeClass";
 
 function pendingHistory() {
@@ -27,6 +27,10 @@ createRoot(document.getElementById("root")!).render(<HomeAskBox api={{
   getBotsStatus: async () => ({ enabled: true }),
   getMainWeb: async () => ({ mode: "off", hosts: [], available: false, today: { searches: 0, pages: 0, blocked: 0 } }),
   setMainWeb: async () => ({ mode: "off", hosts: [], available: false, today: { searches: 0, pages: 0, blocked: 0 } }),
+  getAsks: () => Promise.reject(new BotsRouteMissing()),
+  setAsks: () => Promise.reject(new BotsRouteMissing()),
+  listRequests: () => Promise.reject(new BotsRouteMissing()),
+  answerRequest: () => Promise.reject(new BotsRouteMissing()),
   listMainMessages: () => {
     if (!shown) { shown = true; return Promise.resolve([]); }
     if (probe.reads++) history = pendingHistory();

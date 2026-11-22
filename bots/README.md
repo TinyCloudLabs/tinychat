@@ -10,7 +10,7 @@ except the ingress:
 | Container | Privileges | Holds | Does |
 | --- | --- | --- | --- |
 | `bots-supervisor` | capability set below, no published port, no outbound network | `BOTS_SERVICE_SECRET` | internal API, starts and stops the sandboxes, talks to OMP over each sandbox's stdio |
-| `bots-gateway` | unprivileged user, read-only, no capabilities | `REDPILL_API_KEY` | one Unix socket per bot for allowed model calls and a control socket for bot admission |
+| `bots-gateway` | unprivileged user, read-only, no capabilities | `REDPILL_API_KEY`; the dstack socket, for the secret-request sealing key only | one Unix socket per bot for allowed model calls and a control socket for bot admission |
 | `dstack-ingress` | the backend's ingress image | `CLOUDFLARE_API_TOKEN` (DNS for the certificate) | ends TLS inside the CVM, forwards to the supervisor |
 
 Treat every sandbox as hostile: OMP has a shell, so each owner can run any code as root inside their sandbox.
@@ -169,8 +169,8 @@ Main can use the web only when its owner turns it on: in Main's chat, tap Web ac
 The setting is saved by the supervisor in `/data/bots/<bot id>/web.json` and given to the gateway before each message;
 the gateway applies it on every call. A missing or unreadable file reads as `off`.
 
-- Main's OMP has one MCP server, `web`: the gateway's `POST /v1/mcp` on the egress socket (bot token required). Its
-  tools, `search` and `fetch`, reach OMP as `mcp__web_search` and `mcp__web_fetch`; OMP's own web tools are off.
+- Main's OMP has two MCP servers on the egress socket (bot token required): `web`, the gateway's `POST /v1/mcp`, and
+  `app` (see Questions from Main). The `web` tools, `search` and `fetch`, reach OMP as `mcp__web_search` and `mcp__web_fetch`; OMP's own web tools are off.
 - A search goes to the search provider (Tavily Search; `BOTS_TEST_WEB_URL` is a loopback mock for tests). Without
   `TAVILY_API_KEY` a search answers "isn't available".
 - A page is read by the `bots-fetch` container (`src/fetch-main.ts`, `POST /fetch {"url", "hosts"}`), which reads pages
@@ -178,6 +178,137 @@ the gateway applies it on every call. A missing or unreadable file reads as `off
 - Page HTML becomes plain text (`src/page-text.ts`) before Main sees it.
 - Daily budgets per bot and for all bots, and the call timeout, are set with the `BOTS_WEB_*` variables below.
 - The log and the saved counts hold counts by tool and outcome only.
+
+### Questions from Main
+
+Main can ask its owner one short question and carry on; the answer comes back later as a new message. It ships on:
+the owner can turn it off in Main's settings, and while it is off Main has no tool for it and every call is refused.
+This is the `ask_owner` tool of the `app` MCP server.
+
+- The `app` server is the gateway's `POST /v1/mcp/app` on the egress socket (bot token required), beside `web`. A
+  sandbox's `mcp.json` is written once and always lists both, so the setting is not in it: the gateway lists
+  `ask_owner` only while the setting is on and refuses every `tools/call` while it is off (`tools/list` is then empty).
+  OMP lists a server's tools when the sandbox starts, so a running Main sees a change of the setting at its next
+  start; the gateway applies the setting on every call either way.
+- `ask_owner { question, choices? }` takes a question of 1 to 280 characters and up to 4 choices of up to 60. It is
+  plain text: control, direction and other format characters are removed and whitespace collapses, and a longer text is
+  refused rather than shortened. It answers `{ id, state: "pending" }` at once and nothing else. Refusals are fixed
+  sentences that never repeat what the model or the owner wrote.
+- Limits, applied by the gateway from counts the supervisor pushes: 3 open questions and 10 a day (UTC), for the
+  bot and for its owner; a question the owner said not now to is refused for an hour (compared after dropping
+  punctuation, collapsing whitespace and lowercasing, so rewording by punctuation does not get past it; any other
+  question is still allowed). A question left unanswered for 24 hours expires.
+- The owner's setting is `/data/bots/<bot id>/asks.json` and the requests are `/data/bots/<bot id>/requests.json`, in
+  the data directory beside `web.json`. Neither is under `state/`, which is what gets copied into a sandbox, and no
+  sandbox mount is the data directory or inside it. Their only link to the box is the gateway. A missing setting, or
+  one saved without `enabled`, reads as on (the default); only a saved `false` is off. An unreadable or malformed one
+  reads as off and is logged (`asks_setting_unreadable`).
+- The gateway cannot call the supervisor (separate containers), so it holds a validated new question in memory until
+  the supervisor collects it over the control socket: `POST /bots/<id>/asks/drain` answers `{ asks, outside }`, and
+  `PUT /bots/<id>/asks` gives the setting, the counts and the declined hashes. The supervisor does this at sandbox
+  launch, at the start and end of each message, when the owner lists requests and after each decision. A question the
+  box asked that the supervisor has not collected is lost if the gateway restarts.
+- Turning the setting off (`PUT /asks { enabled: false }`, which is also what stopping Main from asking does) closes
+  every pending question at once: it becomes `stopped` with `undelivered: true` and its question and choices are
+  deleted from `requests.json` at that moment, so nothing about it is listed or can come back when the setting is
+  turned on again. Main is told once per switch-off, not once per request, with the `stopped` sentence below: the
+  requests one switch-off stopped share a time, and when the app sends the reply for any of them (`appReply` does not
+  need the setting on) all of them are marked told together, so the others get 409 `no_reply`. A request stopped by a
+  later switch-off is a separate message. A switch-off not told is dropped after the usual 12 hours, all together.
+  A stopped request is not an answer and not a decline: no one-hour cooldown is recorded for its question. Requests
+  already answered, declined or expired are not touched. A question the gateway took but the supervisor had not
+  collected is dropped, never stored: the supervisor collects nothing into the records while the setting is off, the
+  off push empties the gateway's hold, and
+  the closing waits for any collection under way (they run one at a time per bot), so nothing becomes pending after
+  the off. The closing does not depend on the gateway: if the gateway cannot be told, the setting is still off and it
+  is told at the next sync.
+- Each request has `outside`: true when anything from outside the owner's own words has reached Main's conversation
+  before it was asked: a `search` or `fetch` call, a message relayed from another bot, or a reply from another bot to
+  Main's own message. It is a warning for the owner, not a block, and it is sticky: the conversation persists, so a page
+  read in one turn can steer a question in a later one. The supervisor keeps it as `outsideSeen` in `asks.json`, learns
+  of web calls when it collects from the gateway (`{ asks, outside }`, also just before a sandbox stops, while the
+  gateway still holds them) and gives it to the gateway with every push; the gateway only ever turns it on. Only
+  resetting the bot's working state, which removes its data directory, clears it. A web call the gateway saw and the
+  supervisor had not yet collected is lost if the gateway restarts before then.
+- Routes, Main only (any other bot: 404; a service without them answers 404, which the backend passes on):
+  - `GET` and `PUT /v1/bots/main/asks`: `{ enabled }`.
+  - `GET /v1/bots/main/requests`: `{ requests: [{ id, kind: "ask", state, askedAt, expiresAt, outside, resolvedAt?,
+    question?, choices?, answer?, undelivered? }] }` (times are ISO 8601). `state` is `pending`, `answered`,
+    `declined`, `stopped` or `expired`. `question` and `choices` are there only while pending. `undelivered` is `true`
+    for an answered, declined or stopped request until Main has been told, and `answer` is there only then (answered).
+  - `POST /v1/bots/main/requests/<id>/answer`: `{ "decision": "decline" }`, `{ "decision": "answer", "answer": "..." }`
+    (1 to 280 characters) or `{ "decision": "answer", "choice": 0 }`. 400 `{ error: "invalid" }`; 409
+    `{ error: "not_pending" }` for a request that is not pending, expired or not the owner's.
+  - `POST /v1/bots/main/messages` `{ "appReply": { "requestId": "..." } }` delivers the decision to Main. Only the id
+    is read: the service composes the text from what it stored, and a `text` or `from` in the body is ignored. 409
+    `{ error: "no_reply" }` when the request is not decided, already delivered, expired or not the owner's.
+- What Main is told, in a message from the app: `The person answered your question: <answer>` for an answer,
+  `The person chose not to answer now. Carry on without it, and don’t ask again unless they bring it up.` for a
+  decline and `The person turned off questions from you, so your open questions were closed without an answer. Carry
+  on without asking.` for a question closed by turning the setting off (each is one constant in `asks.ts`,
+  `ASK_REPLIES`, and the words are pending approval). An expired question sends nothing. Only this route writes such
+  a message (`from: "app"` inside the service, never taken from a request), so the text is always the composed one,
+  and it teaches the bot no addresses. Its history line carries `origin: "app"` and
+  `decision: "answered" | "declined" | "stopped"`, which `GET /v1/bots/main/messages` returns. This works with the
+  history journal; the fallback that lists OMP's own session cannot mark them.
+- Retention: a question's text is deleted when it is decided or expires. An answer's text is deleted when Main has
+  been told (the turn reached `done`) or 12 hours after the decision if it was not, whichever is first; a turn that
+  does not finish leaves it to send again. Metadata (id, state, times, `outside`) is kept for 7 days, at most 200
+  requests, for the counts. A sweep every 15 minutes applies this even when nobody opens the chat.
+- The log holds counts by outcome (`{gateway:"asks", tool:"ask_owner", outcome}`) and the owner's decision outcome,
+  never a question, a choice, an answer or a request id.
+
+### Secrets Main asks for
+
+Main can ask its owner to let it use one secret from TinyCloud Secrets, by name, with named sites
+(`request_secret`). The value never enters the sandbox: the gateway holds the grant, reads the value, makes the
+call and returns the reply with the value hidden.
+
+- **Request.** For each request the supervisor sends `PUT /bots/<id>/secrets/<request id>` on the control socket
+  (`src/secret-routes.ts`). The gateway makes a fresh Ed25519 key for that request alone. It signs an OpenKey one-tap
+  approval request for `tinycloud.kv/get` on `vault/secrets/<NAME>` plus `tinycloud.encryption/decrypt` on the owner's
+  default network. The longest grant it allows is 7 days (`MAX_GRANT_SECONDS`, until per-secret keys, TC-3284);
+  1 hour is suggested. The same key is both issuer and audience, because share-envelope 1.6.0 requires it. TC-3772
+  will let a stable TinyCloud One key sign instead (`SecretGrantDeps.requester`). The owner the supervisor names must
+  be this bot's owner (409 otherwise). A known service's site and header must match `src/secret-catalog.ts`.
+- **Collection.** The gateway collects the result itself every 5 s. Before keeping a grant it checks:
+  - the owner's SIWE signature;
+  - the audience is this request's key;
+  - the space owner and every resource owner are the owner;
+  - the expiry, and that the grant is no longer than asked.
+
+  The supervisor collects outcomes with `POST /bots/<id>/secrets/drain`. A decline, expiry or failure drops the
+  request's key at once.
+- **Storage.** Each record is sealed with AES-256-GCM in `secret-grants/` on the gateway volume. The sealing key comes
+  from the CVM's key service (dstack `GetKey`, path `tinychat-bots/secret-seal` only, `src/dstack-key.ts`) and is
+  never on a disk. `/var/run/dstack.sock` is mounted into `bots-gateway` only (and the ingress, as before), never the
+  supervisor, the sandboxes or `bots-fetch`. The gateway restricts itself to that one path in code, which is not a
+  boundary: TC-3773 adds a proxy that enforces it before access opens beyond Sam. Without the key service, every
+  secret route answers 503 and the secret tools aren't offered. The gateway runs as uid 65532, so the socket must be
+  readable by it; check this at deploy.
+- **Stop now.** `DELETE /bots/<id>/secrets/<request id>` unlinks the sealed file and drops the gateway's in-memory
+  copy (the grant and any cached TinyCloud session). Memory isn't zeroed. The volume has no backups. Until the
+  DELETE lands, a request the supervisor lists as stopped, revoked, declined, expired or failed is refused anyway.
+- **`call_with_secret { name, method, url, headers?, body? }`.**
+  - `{{secret}}` may go only in the secret's own header (the catalog's header for a known service). It is refused in
+    the address, the body, a header name or any other header.
+  - The address must be https on port 443, an exact approved host, with no user info and no IP literal. Every
+    address the name resolves to must be public; the connection is pinned to one of them on every call.
+  - GET and HEAD always; a write method only where the secret's catalog entry lists it (`writes`, today POST for
+    OpenAI, Anthropic, Google Gemini, ElevenLabs and Fireflies), never for an unknown secret. When writes are listed,
+    the OpenKey reason and the secret card say so. The methods are saved with the request when it is made, and a
+    call may use only those still in the catalog: a later widening never reaches an existing grant, a narrowing
+    applies at once. A record saved without them is read-only.
+  - Redirects aren't followed: Main is told where one pointed, with the value hidden.
+  - The reply is read whole, up to 1 MiB (anything larger is refused) within 45 s; compressed replies are refused.
+  - The value is hidden as written and in base64, base64url, URL-encoded, hex and JSON-escaped forms. This covers
+    the body, the content type and the redirect target, and happens before the reply is cut to 100,000 characters.
+  - Caps per secret per UTC day: 200 calls and 50 MiB of replies. Each bot makes one call at a time.
+  - Approved access keeps working with questions off, until its date or Stop now.
+- **`list_secrets`** gives `{ secrets: [{ name, state, sites, until? }] }` from the supervisor's list. `until` is
+  `YYYY-MM-DD HH:MM UTC`. Approved access past its date shows as `ended`.
+- **Logs** hold `{gateway:"secret", tool, outcome}` and result-check failures, never a name, an address, a header,
+  a body or a value.
 
 ### Saved state
 
@@ -345,6 +476,20 @@ node .github/scripts/bots-healthz.mjs <APP_ID>-443s.<gateway> bots.tinycloud.xyz
 
 `<APP_ID>-443s.<gateway>` is the CVM's TLS-passthrough host (the backend's `BOTS_SERVICE_CONNECT_HOST`), and the
 certificate is checked against `bots.tinycloud.xyz`. The public name bots.tinycloud.xyz does not route; never probe it.
+
+After the first deploy that carries secret requests, and after any OS image change, check that the gateway's user
+(uid 65532) reached the key service:
+
+```bash
+phala logs dstack-bots-gateway-1 --cvm-id <BOTS_PHALA_CVM_ID> --stderr --since 15m -n 5000 | grep -E '"gateway":"secrets_(ready|unavailable)"'
+```
+
+Expect `{"gateway":"secrets_ready"}`. A `secrets_unavailable` line (for example `EACCES`) means secret requests stay
+off: the routes answer 503, Main is offered no secret tools, and everything else runs as before. No group or root is
+needed: on the pinned `dstack-0.5.12`, systemd creates `/run/dstack.sock` with `SocketMode=0777`
+(meta-dstack v0.5.12 → dstack 43f69f4, `basefiles/dstack-guest-agent.socket`). The guest agent doesn't check the
+caller's uid, and `GetKey` is served at `/GetKey` on that socket with a hex `key`. `secret-dstack.test.ts` fails when
+the pinned OS image changes, so this gets checked again.
 
 Its configuration lives in the `production-bots` GitHub environment:
 

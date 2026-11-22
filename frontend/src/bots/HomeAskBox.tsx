@@ -5,7 +5,7 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { ensureBotHistoryGrant, botHistoryEnabled } from "./historyGrant";
 import { authorizeBotHistory } from "./historyAuthorization";
 import { readBotHistory } from "./historyRead";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { openKeyFailureOf } from "../lib/authErrors";
 import { readHistoryNotice, type HistoryNotice } from "./historyNotice";
@@ -13,6 +13,9 @@ import { AskBox } from "./AskBox";
 import { BotsError, botsApi, type BotsApi } from "./botsApi";
 import { MainChat } from "./MainChat";
 import { isWorking, useMainChat } from "./useMainChat";
+import { AskCards } from "./AskCards";
+import { SecretCards } from "./SecretCard";
+import { useAsks } from "./useAsks";
 
 const RETRY_MS = 60_000;
 
@@ -60,8 +63,29 @@ function MainAsk({ api, tcw, onReconnect }: { api: BotsApi; tcw?: TinyCloudWeb; 
     const archived = await readBotHistory(tcw, signal);
     return [...new Map([...archived, ...local].map(message => [message.id, message])).values()];
   } }, [api, tcw]);
-  const chat = useMainChat(client, tcw ? () => prepareHistory(tcw) : undefined);
+  const refreshRequests = useRef<() => void>(() => {});
+  const chat = useMainChat(client, tcw ? () => prepareHistory(tcw) : undefined, () => refreshRequests.current());
   const [open, setOpen] = useState(false);
+  const asks = useAsks(client, { open, onDecided: chat.sendAppReply, owner: tcw?.did });
+  const refreshAsks = asks.refresh;
+  refreshRequests.current = refreshAsks;
+  // Saving a Web access change tells the cards at once, so their note is never stale.
+  const noteWeb = asks.noteWeb;
+  const webAccess = useMemo(() => ({
+    getMainWeb: client.getMainWeb,
+    setMainWeb: async (...args: Parameters<BotsApi["setMainWeb"]>) => {
+      const stored = await client.setMainWeb(...args);
+      noteWeb(stored.mode !== "off");
+      return stored;
+    },
+  }), [client, noteWeb]);
+  // A turn is when Main asks: read the requests as it ends.
+  const working = isWorking(chat.state.turn);
+  const wasWorking = useRef(false);
+  useEffect(() => {
+    if (wasWorking.current && !working) refreshAsks();
+    wasWorking.current = working;
+  }, [working, refreshAsks]);
   const [notice, setNotice] = useState<HistoryNotice | null>(null);
   useEffect(() => {
     if (!tcw) return;
@@ -89,6 +113,13 @@ function MainAsk({ api, tcw, onReconnect }: { api: BotsApi; tcw?: TinyCloudWeb; 
   return (
     <>
       <AskBox working={isWorking(chat.state.turn)} onSend={send} onOpenMain={openChat} />
+      {/* The same requests as in Main's chat: they are shown here only while the chat is closed. */}
+      {!open && asks.support === "yes" && (asks.pending.length > 0 || asks.stopped || asks.secrets.length > 0) ? (
+        <div className="mb-6 flex flex-col gap-3" data-home-asks="">
+          <AskCards asks={asks} />
+          <SecretCards asks={asks} onMessage={openChat} />
+        </div>
+      ) : null}
       <MainChat
         open={open}
         onOpenChange={setOpen}
@@ -98,7 +129,8 @@ function MainAsk({ api, tcw, onReconnect }: { api: BotsApi; tcw?: TinyCloudWeb; 
         onRetryHistory={() => void chat.loadHistory()}
         notice={notice}
         onReconnect={onReconnect}
-        webAccess={client}
+        webAccess={webAccess}
+        asks={asks}
       />
     </>
   );

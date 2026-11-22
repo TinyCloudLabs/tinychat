@@ -3,16 +3,30 @@
 // the turn going; leaving Home stops it.
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { BotsError, type BotMessage, type BotsApi } from "./botsApi";
+import { BotsError, BotsNoReply, type AppDecision, type BotMessage, type BotsApi, type SecretLine } from "./botsApi";
 import type { BotsErrorCode } from "./botsStrings";
+import { isDeclinedReply } from "./askText";
 
-export type ChatLine = Pick<BotMessage, "id" | "role" | "text">;
+/** The app's report of the owner's decision on a request card; a secret request's report names the secret for the chat line. */
+export interface AppReply {
+  requestId: string;
+  decision: AppDecision;
+  secret?: SecretLine;
+}
+
+/** `app` marks a line the app sent for the owner (a decision on a request card), which the owner did not type. */
+export type ChatLine = Pick<BotMessage, "id" | "role" | "text"> & { app?: AppDecision; secret?: SecretLine };
+
+/** What a line the app sent for this decision carries. */
+const appMark = (reply: AppReply | undefined) => reply ? { app: reply.decision, ...(reply.secret ? { secret: reply.secret } : {}) } : {};
 
 export interface MainTurn {
   text: string;
   reply: string;
   state: "starting" | "working" | "error";
   error?: BotsErrorCode;
+  /** Set when the turn reports a decision on a question card; `text` is then empty. */
+  appReply?: AppReply;
 }
 
 export interface MainChatState {
@@ -30,12 +44,15 @@ function errorFields(value: unknown): Record<string, unknown> {
   return { name: value.name, message: value.message, code, stack: value.stack };
 }
 
-export function useMainChat(api: BotsApi, prepare?: () => Promise<void>) {
+export function useMainChat(api: BotsApi, prepare?: () => Promise<void>, onNoReply?: () => void) {
+  const noReply = useRef(onNoReply);
+  noReply.current = onNoReply;
   const [state, setState] = useState<MainChatState>({ lines: [], history: "idle", turn: null });
   const lifetime = useRef<AbortController | null>(null);
   const turnController = useRef<AbortController | null>(null);
   const history = useRef<Promise<void> | null>(null);
   const localId = useRef(0);
+  const queued = useRef<(() => void)[]>([]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -44,6 +61,7 @@ export function useMainChat(api: BotsApi, prepare?: () => Promise<void>) {
       controller.abort();
       turnController.current?.abort();
       history.current = null;
+      queued.current = [];
     };
   }, []);
 
@@ -55,7 +73,11 @@ export function useMainChat(api: BotsApi, prepare?: () => Promise<void>) {
       try {
         const messages = await api.listMainMessages(signal);
         setState((current) => {
-          const listed = messages.map(({ id, role, text }) => ({ id, role, text }));
+          const listed = messages.map(({ id, role, text, origin, decision, secret }): ChatLine => ({
+            id, role, text,
+            // The service says what was decided; the words of its message are only a fallback for a service that does not.
+            ...(origin === "app" ? { app: decision ?? (isDeclinedReply(text) ? "declined" as const : "answered" as const), ...(secret ? { secret } : {}) } : {}),
+          }));
           const ids = new Set(listed.map(line => line.id));
           const pending: ChatLine[] = [];
           for (let i = 0; i < current.lines.length; i++) {
@@ -84,7 +106,7 @@ export function useMainChat(api: BotsApi, prepare?: () => Promise<void>) {
 
   const ensureHistory = useCallback(() => history.current ?? loadHistory(), [loadHistory]);
 
-  const run = useCallback(async (text: string, keepFailed: boolean) => {
+  const run = useCallback(async (text: string, keepFailed: boolean, appReply?: AppReply) => {
     if (turnController.current) return;
     const controller = new AbortController();
     turnController.current = controller;
@@ -92,9 +114,9 @@ export function useMainChat(api: BotsApi, prepare?: () => Promise<void>) {
       setState((current) => (current.turn ? { ...current, turn: update(current.turn) } : current));
     setState((current) => {
       const failed = keepFailed && current.turn?.state === "error"
-        ? [{ id: `local-${++localId.current}`, role: "user" as const, text: current.turn.text }]
+        ? [{ id: `local-${++localId.current}`, role: "user" as const, text: current.turn.text, ...appMark(current.turn.appReply) }]
         : [];
-      return { ...current, lines: [...current.lines, ...failed], turn: { text, reply: "", state: "starting" } };
+      return { ...current, lines: [...current.lines, ...failed], turn: { text, reply: "", state: "starting", ...(appReply ? { appReply } : {}) } };
     });
     try {
       // Authorization still gates sending; a slow or failed history read does not.
@@ -111,23 +133,34 @@ export function useMainChat(api: BotsApi, prepare?: () => Promise<void>) {
           setState((current) => ({
             ...current,
             lines: current.lines.some(line => line.id === event.messageId) ? current.lines
-              : [...current.lines, { id: `local-${++localId.current}`, role: "user", text }, { id: event.messageId, role: "bot", text: reply }],
+              : [...current.lines, { id: `local-${++localId.current}`, role: "user", text, ...appMark(appReply) }, { id: event.messageId, role: "bot", text: reply }],
             turn: null,
           }));
         } else if (event.type === "error") setTurn((turn) => ({ ...turn, state: "error", error: event.code }));
-      }, controller.signal);
+      }, controller.signal, appReply ? { appReply: { requestId: appReply.requestId } } : undefined);
     } catch (cause) {
       if (controller.signal.aborted) return;
-      setTurn((turn) => ({ ...turn, state: "error", error: cause instanceof BotsError ? cause.code : "failed" }));
+      if (cause instanceof BotsNoReply) {
+        // Nothing was left to send for that request (another tab sent it): no error to show, only a fresh read of the requests.
+        setState((current) => ({ ...current, turn: null }));
+        noReply.current?.();
+      } else setTurn((turn) => ({ ...turn, state: "error", error: cause instanceof BotsError ? cause.code : "failed" }));
     } finally {
       if (turnController.current === controller) turnController.current = null;
+      // A decision the owner made while a turn was running goes out as soon as that turn ends.
+      if (!controller.signal.aborted) queued.current.shift()?.();
     }
   }, [api, ensureHistory, prepare]);
 
   const send = useCallback((text: string) => run(text, true), [run]);
   const retry = useCallback(() => {
-    if (state.turn?.state === "error") void run(state.turn.text, false);
+    if (state.turn?.state === "error") void run(state.turn.text, false, state.turn.appReply);
   }, [run, state.turn]);
+  /** Tells Main what the owner decided on a question card; the service composes the words, none go from here. */
+  const sendAppReply = useCallback((reply: AppReply) => {
+    if (turnController.current) queued.current.push(() => void run("", true, reply));
+    else void run("", true, reply);
+  }, [run]);
 
-  return { state, send, retry, ensureHistory, loadHistory };
+  return { state, send, retry, sendAppReply, ensureHistory, loadHistory };
 }

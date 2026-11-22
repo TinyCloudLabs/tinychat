@@ -2,7 +2,7 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import type { InlineEncryptedEnvelope } from "@tinycloud/sdk-services";
 import { makePkhSpaceId } from "@tinycloud/sdk-core";
 import { botHistoryDirectory } from "./botHistoryPath";
-import type { BotMessage } from "./botsApi";
+import { isAppDecision, toSecretLine, type BotMessage } from "./botsApi";
 
 /** Records of one page fetched and decrypted at once. Each decrypt is a round trip to the node (TC-3054). */
 export const HISTORY_READ_CONCURRENCY = 4;
@@ -43,7 +43,17 @@ async function readHistory(tcw: TinyCloudWeb, signal?: AbortSignal, botKey?: str
     if (key !== `${prefix}${batch.generation}/${batch.seq}-${batch.challenge}`) throw new Error("history_binding_mismatch");
     const record = batch.record;
     if ((record?.type === "user" || record?.type === "assistant") && typeof record.text === "string") {
-      return { id: record.type === "assistant" && typeof record.outcome?.messageId === "string" ? record.outcome.messageId : `history-${batch.generation}-${batch.seq}`, role: record.type === "user" ? "user" : "bot", text: record.text, at: record.at ?? "" };
+      // A message the app sent for the owner (a decision on a request) keeps its mark, as the service's own listing does.
+      const app = record.type === "user" && record.origin === "app";
+      const decision = app && isAppDecision(record.decision) ? record.decision : undefined;
+      const secret = decision ? toSecretLine(record.secret) : undefined;
+      return {
+        id: record.type === "assistant" && typeof record.outcome?.messageId === "string" ? record.outcome.messageId : `history-${batch.generation}-${batch.seq}`,
+        role: record.type === "user" ? "user" : "bot", text: record.text, at: record.at ?? "",
+        ...(app ? { origin: "app" as const } : {}),
+        ...(decision ? { decision } : {}),
+        ...(secret ? { secret } : {}),
+      };
     }
     return null;
   };
