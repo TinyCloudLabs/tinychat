@@ -1,7 +1,8 @@
 # gitleaks baseline (.github/workflows/gitleaks.yml). Each line is a finding fingerprint, commit:file:rule:line, that
 # was reviewed and is not a live credential: test fixtures, public identifiers, code constants. A finding not listed
 # here fails the Gitleaks check. Recorded 2026-11-22 with gitleaks 8.30.1 over the full history of main
-# (28b469e3833a863152e9b52d82a83a40316b9760); the review per file is in docs/security/required-checks.md.
+# (28b469e3833a863152e9b52d82a83a40316b9760), refreshed to d966da4d808dcb96cd3369934df4ced3cd6b1be3; the review per
+# file is in docs/security/required-checks.md.
 # To add one: confirm it is not a live secret (anything possibly live goes to security, and gets rotated, never
 # listed), then add the fingerprint gitleaks prints, in a PR of its own. A PR is scanned with its base commit's
 # baseline, so a fixture needs its entry merged first, as file:rule:line (no commit: a squash merge changes it).
@@ -74,6 +75,9 @@ c65d24f80225607b22d3d2846d1c0086bfea2a1c:backend/src/__tests__/index-wiring.test
 e31dd718641662c8805ad88fd48c3049051ead2a:backend/src/__tests__/request-record.test.ts:generic-api-key:26
 e31dd718641662c8805ad88fd48c3049051ead2a:backend/src/__tests__/request-record.test.ts:generic-api-key:34
 
+# backend/src/__tests__/webhook-tokens.test.ts
+3cec9638b8d91623ddc95d222cde4d9e7e95779f:backend/src/__tests__/webhook-tokens.test.ts:stripe-access-token:1464
+
 # backend/src/__tests__/webhook-verify.test.ts
 c331beb9c147e7fb1342c374565eced5e48ca002:backend/src/__tests__/webhook-verify.test.ts:generic-api-key:10
 
@@ -82,6 +86,9 @@ c331beb9c147e7fb1342c374565eced5e48ca002:backend/src/__tests__/webhook-verify.te
 
 # bots-regular/src/__tests__/regular.test.ts
 2e88e1e9c24967331f54721abfe5538aee07c15c:bots-regular/src/__tests__/regular.test.ts:generic-api-key:10
+
+# bots/src/__tests__/asks-gateway.test.ts
+0a24337004d440509c1f022f6d4b20bc9b361679:bots/src/__tests__/asks-gateway.test.ts:generic-api-key:258
 
 # frontend/.env.production
 366133749c998ea0d985a7a57ae10a0a16b6ce41:frontend/.env.production:generic-api-key:12

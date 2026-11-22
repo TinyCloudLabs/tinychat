@@ -225,7 +225,7 @@ selected repositories closes that path (undo: add it back).
 
 ## Baselines
 
-### `.gitleaksignore` (71 fingerprints over the full history of `main`)
+### `.gitleaksignore` (73 fingerprints over the full history of `main` to `d966da4d`)
 
 Every entry was read in place. None is a live credential; each is a test fixture, a public identifier or code. No
 fixture value appears outside tests and harness screens. Line numbers are those of the fingerprinted commit.
@@ -240,11 +240,12 @@ fixture value appears outside tests and harness screens. Line numbers are those 
 | `log-shipper/vector.tests.yaml:236` | jwt | Dummy HS256 JWT (`{"sub":"123456"}`) that the redaction test checks is stripped. |
 | `scripts/release/ios-signing.sh:44` | private-key | The literal `BEGIN PRIVATE KEY` marker in parsing code, no key material. |
 | `backend/src/__tests__/fixtures/mcp-native-grant.json:3,7` | generic-api-key, jwt | Captured test delegation from the js-sdk hermetic node, signed by a test key for the well-known private-key-1 address (`0x7e5f…`); expired 2026-10-28. |
-| `backend/src/__tests__/connector-observability.test.ts:751` | stripe-access-token | `sk_live_` placeholder with a synthetic body, used to prove redaction. |
+| `backend/src/__tests__/connector-observability.test.ts:751`, `backend/src/__tests__/webhook-tokens.test.ts:1464` | stripe-access-token | `sk_live_` placeholder with a synthetic body, used to prove redaction. |
 | `frontend/src/lib/imageUrlFilter.corpus.test.ts:102` | aws-access-token | Synthetic `AKIA` id in a URL-filter corpus. |
 | `backend/src/__tests__/chat-gating.test.ts:21`, `chat-relay-signature.test.ts:36`, `frontend/src/chat/verification-predicates.test.ts:246,247` | generic-api-key | The public Hardhat/anvil development key. |
 | `backend/src/__tests__/` `assemblyai-hosted-alerts:52`, `assemblyai-hosted:44`, `auth-session:255,269,286,296,315`, `connector-content-store:64`, `connector-credentials:43`, `connector-observability:85`, `connector-teardown:60`, `consent-scope:64`, `granola-proxy-hardening:19,493`, `index-wiring:463,834`, `mcp-grant-real-sdk:87`, `private-cloud-transcription:45`, `rate-limits-bot-send:4`, `request-record:26,34`, `webhook-verify:10` (`.test.ts`) | generic-api-key | Test constants declared in the test: `did:key` ids (public keys), made-up handle, tenant, master and HMAC keys the test passes to the code under test, `grn_` and `0123456789…` placeholder keys, and redaction canaries. |
 | `bots-regular/src/__tests__/regular.test.ts:10`, `packages/server/src/__tests__/delegation-store.test.ts:386,403,440` | generic-api-key | Placeholder key and storage-path strings (`0123456789…`, `delegations/0x…`). |
+| `bots/src/__tests__/asks-gateway.test.ts:258` | generic-api-key | A made-up `SECRET-QUESTION-…` canary the logging test checks never appears in a log line. |
 | `scripts/__tests__/release.test.mjs:1119,1518` | generic-api-key | Fake Apple signing env: Apple's documentation example issuer id and `ABCDE12345`-style placeholders. |
 | `frontend/src/` `apps/embedHost.test.ts:11,13`, `apps/ledgerCeiling.test.ts:20`, `bots/botChatApi.test.ts:19`, `bots/botPath.test.ts:12`, `bots/historyRestoredSession.sdk.test.ts:28`, `lib/connectors/serverCredentialTeardownRetry.test.ts:32`, `lib/debugLog.test.ts:20,50`, `lib/firstPartySignIn.sdk.test.ts:27`, `lib/homeReauthorize.sdk.test.tsx:35`, `lib/replication/readOnlyAccountProvider.sdk.test.ts:26`, `lib/sessionGrants.sdk.test.tsx:33`, `lib/webConnectorsGrant.sdk.test.tsx:37`; `frontend/test-fixtures/ConnectorDialog.granolaS4.fixture.tsx:20,21` | generic-api-key | Test fixtures: `did:key` ids and placeholder keys. |
 
