@@ -21,6 +21,11 @@ export interface SpeakingPerson {
   speaking: Intervals;
   /** When the person's marker could be read. */
   seen: Intervals;
+  /**
+   * When the person's tile had the active-speaker border (tiles that show video have no meter). The border stays on
+   * the last person who spoke until someone else speaks, so it is never speech by itself.
+   */
+  active: Intervals;
 }
 
 /** The timeline as `call_names_speaking_read` returns it, checked (`parseSpeakingTimeline`). */
@@ -35,6 +40,8 @@ export interface SpeakingTimeline {
   self: string | null;
   people: ReadonlyMap<string, SpeakingPerson>;
   selfSpeaking: Intervals;
+  /** When the user's own tile had the active-speaker border. */
+  selfActive: Intervals;
   /** When the meeting window could not be seen (minimised, or no longer the meeting). */
   hidden: Intervals;
   /** The recorded time of each resume after a pause: where each recording segment starts. */
@@ -76,6 +83,10 @@ export const CALL_SPEAKER_RULES = Object.freeze({
   secondBest: 0.5,
   /** A person whose marker is on mostly (more than this share) while the user speaks is the user. */
   selfShare: 0.5,
+  /** How far the active-speaker border lags behind the audio (it comes on after about 0.6 s and changes hands after about 1.4 s). */
+  activeDelayMs: 1_000,
+  /** A line the meter did not name gets the person whose border covers at least this share of it. */
+  activeLineOverlap: 0.5,
 });
 
 /** Person ids as the roster gives them: short, no spaces. Anything else means the timeline is not ours. */
@@ -145,12 +156,15 @@ export function parseSpeakingTimeline(value: unknown): SpeakingTimeline | null {
     if (!PERSON_ID.test(id) || id === self || !isRecord(entry)) return null;
     const speaking = parseIntervals(entry.speaking, budget);
     const seen = parseIntervals(entry.seen, budget);
-    if (speaking === null || seen === null) return null;
-    people.set(id, { speaking, seen });
+    // Optional: a reader before rules version 4 does not write it.
+    const active = entry.active === undefined ? [] : parseIntervals(entry.active, budget);
+    if (speaking === null || seen === null || active === null) return null;
+    people.set(id, { speaking, seen, active });
   }
   const selfSpeaking = parseIntervals(value.self_speaking, budget);
+  const selfActive = value.self_active === undefined ? [] : parseIntervals(value.self_active, budget);
   const hidden = parseIntervals(value.hidden, budget);
-  if (selfSpeaking === null || hidden === null) return null;
+  if (selfSpeaking === null || selfActive === null || hidden === null) return null;
   const breaks = value.breaks;
   if (!Array.isArray(breaks) || breaks.length > MAX_BREAKS) return null;
   let previous = -1;
@@ -159,7 +173,7 @@ export function parseSpeakingTimeline(value: unknown): SpeakingTimeline | null {
     previous = at;
   }
   // An `order` not in the agreed shape does not refuse the timeline: the people are then numbered as the roster has them.
-  return { v: 1, app: value.app, mode: value.mode, rulesVersion, sampleMs, self, people, selfSpeaking, hidden,
+  return { v: 1, app: value.app, mode: value.mode, rulesVersion, sampleMs, self, people, selfSpeaking, selfActive, hidden,
     breaks: breaks as number[], truncated: value.truncated, order: parseOrder(value.order) };
 }
 
@@ -358,15 +372,27 @@ export function assignCallSpeakers(input: {
   // Nothing is known after the last interval a truncated timeline kept.
   let horizon = Number.POSITIVE_INFINITY;
   if (timeline.truncated) {
-    horizon = timeline.selfSpeaking.at(-1)?.[1] ?? 0;
-    for (const person of timeline.people.values()) horizon = Math.max(horizon, person.speaking.at(-1)?.[1] ?? 0);
+    horizon = Math.max(timeline.selfSpeaking.at(-1)?.[1] ?? 0, timeline.selfActive.at(-1)?.[1] ?? 0);
+    for (const person of timeline.people.values()) horizon = Math.max(horizon, person.speaking.at(-1)?.[1] ?? 0, person.active.at(-1)?.[1] ?? 0);
   }
+
+  // Tiles that show video have no meter: their border marks the last person who spoke. In audio time (the border lags
+  // by a fixed delay), a line the meter does not name goes to the person whose border covers it. A person whose border
+  // covers more of the user's own lines than of the other side's is the user's tile, and takes no line.
+  const borderInAudio = (list: Intervals) => bounds.slice(0, -1).flatMap((from, k) => shiftWithin(list, from, bounds[k + 1]!, rules.activeDelayMs));
+  const border = new Map<string, Interval[]>();
+  for (const id of candidates) {
+    const list = borderInAudio(timeline.people.get(id)!.active);
+    if (list.length > 0 && overlap(list, meLines) <= overlap(list, themLines)) border.set(id, list);
+  }
+  const borderOn = union([...border.values()]);
 
   // The audio check: within `range` the markers are on while the other side speaks, and on for enough of what they
   // could see. Each person's "on" time counts on its own, so markers on together (as markers that show who is quiet
   // would be) count against the check, not for it.
   const checkPasses = (range: Intervals): boolean => {
-    const speech = intersect(themLines, range);
+    // Speech under someone's border belongs to a tile with no meter: it does not count against the meters.
+    const speech = subtract(intersect(themLines, range), borderOn);
     let onTime = 0;
     let onInSpeech = 0;
     for (const list of speaking.values()) {
@@ -391,29 +417,52 @@ export function assignCallSpeakers(input: {
   // A timeline whose marker classes were learned from the call is trusted only if the whole call passes the check too.
   if (timeline.mode === "learned" && !checkPasses([[0, Number.MAX_SAFE_INTEGER]])) return { ...unchanged, delaysMs: audio.delays };
 
-  let assigned = 0;
-  const segments = input.segments.map((segment) => {
-    if (!remoteLine(segment) || segment.end > horizon) return segment;
-    const { start, end } = segment;
-    const length = end - start;
-    for (let index = Math.floor(start / rules.windowMs); index * rules.windowMs < end; index++) {
-      if (!windowPasses(index)) return segment;
-    }
-    if (overlapWith(seen, start, end) < rules.lineSeen * length || overlapWith(hidden, start, end) > 0) return segment;
+  /** The person whose intervals in `lists` cover `[start, end]` best, if that cover is at least `least` and clear of the second best. */
+  const clearBest = (lists: ReadonlyMap<string, Intervals>, start: number, end: number, least: number): string | null => {
     let best: { id: string; time: number } | null = null;
     let second = 0;
-    for (const [id, list] of speaking) {
+    for (const [id, list] of lists) {
       const time = overlapWith(list, start, end);
       if (best === null || time > best.time) {
         second = best?.time ?? 0;
         best = { id, time };
       } else if (time > second) second = time;
     }
-    const n = best === null ? undefined : rank.get(best.id);
-    if (best === null || n === undefined || best.time < Math.max(rules.lineOverlap * length, rules.lineOverlapMinMs)
-      || second > rules.secondBest * best.time) return segment;
+    if (best === null || !rank.has(best.id) || best.time < least || second > rules.secondBest * best.time) return null;
+    return best.id;
+  };
+  /** By the meter: the line's windows pass the audio check, the line was seen, and one person's meter clearly covers it. */
+  const byMeter = (start: number, end: number): string | null => {
+    const length = end - start;
+    for (let index = Math.floor(start / rules.windowMs); index * rules.windowMs < end; index++) {
+      if (!windowPasses(index)) return null;
+    }
+    if (overlapWith(seen, start, end) < rules.lineSeen * length) return null;
+    return clearBest(speaking, start, end, Math.max(rules.lineOverlap * length, rules.lineOverlapMinMs));
+  };
+  /**
+   * By the border: one person was clearly the active speaker for most of the line. The border changes hands late, so
+   * when another person's border comes on during the line, the line may be theirs: it is then left unnamed.
+   */
+  const byBorder = (start: number, end: number): string | null => {
+    if (border.size === 0) return null;
+    const id = clearBest(border, start, end, Math.max(rules.activeLineOverlap * (end - start), rules.lineOverlapMinMs));
+    if (id === null) return null;
+    for (const [other, list] of border) {
+      if (other !== id && list.some(([from]) => from > start && from < end)) return null;
+    }
+    return id;
+  };
+
+  let assigned = 0;
+  const segments = input.segments.map((segment) => {
+    if (!remoteLine(segment) || segment.end > horizon) return segment;
+    const { start, end } = segment;
+    if (overlapWith(hidden, start, end) > 0) return segment;
+    const id = byMeter(start, end) ?? byBorder(start, end);
+    if (id === null) return segment;
     assigned++;
-    return { ...segment, speaker: `Them ${n}`, speakerId: `call:${best.id}`, channel: 1 as const };
+    return { ...segment, speaker: `Them ${rank.get(id)!}`, speakerId: `call:${id}`, channel: 1 as const };
   });
   return { segments: assigned === 0 ? input.segments : segments, assigned, delaysMs: audio.delays };
 }

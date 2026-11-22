@@ -12,7 +12,7 @@
 
 use crate::extract::{Extraction, Scan};
 use crate::rules::{App, Rules};
-use crate::speaking::{find_markers, FindCost, Marker};
+use crate::speaking::{find_markers_with_people, FindCost, Marker};
 use crate::tree::{Node, ReadError, Source};
 use std::time::{Duration, Instant};
 
@@ -273,12 +273,19 @@ pub(crate) fn read_tick_full<S: Source>(
         None if several == 0 => Err(Skip::NotInCall),
         None => Err(Skip::SeveralInCall(several)),
     };
-    if let (Some(markers), Some((_, scan, app_rules)), Ok(_)) = (markers, only.as_mut(), &result) {
+    if let (Some(markers), Some((_, scan, app_rules)), Ok(names)) =
+        (markers, only.as_mut(), &result)
+    {
         // After the names, on the same scan: a search that fails or runs out of time finds no
         // markers and leaves the names as they are.
         let began = meter.elapsed();
         let mut cost = FindCost::default();
-        *markers = find_markers(scan, source, app_rules, meter, &mut cost).ok();
+        let people = names
+            .entries()
+            .map(|entry| &entry.name)
+            .collect::<std::collections::HashSet<_>>()
+            .len();
+        *markers = find_markers_with_people(scan, source, app_rules, meter, &mut cost, people).ok();
         trace.speaking_time += meter.elapsed().saturating_sub(began);
         trace.class_reads += cost.class_reads;
     }

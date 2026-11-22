@@ -32,6 +32,9 @@
 //!
 //! It holds no name and no class token: people are roster ids, and nothing else is text.
 //!
+//! `active` and `self_active` (optional, added within version 1) hold last-active-speaker
+//! intervals from video tile borders. They can persist through silence and are never speech.
+//!
 //! `order` (optional, added within version 1): every roster person id of the recording, the
 //! user's own included, in roster order (first seen first). The frontend numbers the other side
 //! ("Them 1", "Them 2", …) by it after the names file is gone. A file without it is still read.
@@ -48,7 +51,7 @@ use std::collections::BTreeMap;
 pub const VERSION: u32 = 1;
 /// Two intervals of one person closer than this are one.
 pub const MERGE_GAP_MS: u64 = 1_000;
-/// Most intervals in one timeline (speaking, seen, the user's own and hidden together).
+/// Most intervals in one timeline (speaking, active, seen, the user's own and hidden together).
 pub const MAX_INTERVALS: usize = 20_000;
 /// Most breaks in one timeline.
 pub const MAX_BREAKS: usize = 1_000;
@@ -75,6 +78,9 @@ pub struct Timeline {
     /// Everybody but the user, by roster id.
     pub people: BTreeMap<String, PersonTimeline>,
     pub self_speaking: Vec<Span>,
+    /// Last-active-speaker intervals for the local user, never speech.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub self_active: Vec<Span>,
     pub hidden: Vec<Span>,
     pub breaks: Vec<u64>,
     pub truncated: bool,
@@ -88,6 +94,9 @@ pub struct Timeline {
 #[serde(deny_unknown_fields)]
 pub struct PersonTimeline {
     pub speaking: Vec<Span>,
+    /// Border activity can extend through silence; consumers must not count it as speech.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub active: Vec<Span>,
     pub seen: Vec<Span>,
 }
 
@@ -124,17 +133,24 @@ impl Timeline {
         {
             return Err("self is not a person id".into());
         }
-        let mut intervals = parsed.self_speaking.len() + parsed.hidden.len();
+        let mut intervals =
+            parsed.self_speaking.len() + parsed.self_active.len() + parsed.hidden.len();
         for (id, person) in &parsed.people {
             if !is_person_id(id) || parsed.self_id.as_deref() == Some(id.as_str()) {
                 return Err("a key of people is not another person's id".into());
             }
-            if !well_ordered(&person.speaking) || !well_ordered(&person.seen) {
+            if !well_ordered(&person.speaking)
+                || !well_ordered(&person.active)
+                || !well_ordered(&person.seen)
+            {
                 return Err("spans out of order".into());
             }
-            intervals += person.speaking.len() + person.seen.len();
+            intervals += person.speaking.len() + person.active.len() + person.seen.len();
         }
-        if !well_ordered(&parsed.self_speaking) || !well_ordered(&parsed.hidden) {
+        if !well_ordered(&parsed.self_speaking)
+            || !well_ordered(&parsed.self_active)
+            || !well_ordered(&parsed.hidden)
+        {
             return Err("spans out of order".into());
         }
         if intervals > MAX_INTERVALS || parsed.breaks.len() > MAX_BREAKS {
@@ -222,58 +238,82 @@ struct Run {
     samples: u32,
 }
 
+/// One signal's runs. Speech and activity use independent instances and share the file cap.
 #[derive(Clone, Debug, Default)]
-struct Track {
-    speaking: Vec<Span>,
-    run: Option<Run>,
-    seen: Spans,
+struct Runs {
+    closed: Vec<Span>,
+    open: Option<Run>,
 }
 
-impl Track {
-    fn observe(&mut self, at: u64, period: u64, mark: Mark, count: &mut Count) {
-        if mark == Mark::Unknown {
-            return;
-        }
+impl Runs {
+    fn observe(&mut self, at: u64, period: u64, on: bool, count: &mut Count) {
         let end = at.saturating_add(period);
-        self.seen.add(at, end, count);
-        match (&mut self.run, mark) {
-            (Some(run), Mark::Speaking) if at <= run.end.saturating_add(MERGE_GAP_MS) => {
+        match (&mut self.open, on) {
+            (Some(run), true) if at <= run.end.saturating_add(MERGE_GAP_MS) => {
                 run.end = run.end.max(end);
                 run.samples += 1;
             }
-            (_, Mark::Speaking) => {
-                self.close_run(count);
-                self.run = Some(Run {
+            (_, true) => {
+                self.close(count);
+                self.open = Some(Run {
                     start: at,
                     end,
                     samples: 1,
                 });
             }
-            (Some(run), _) if at > run.end.saturating_add(MERGE_GAP_MS) => self.close_run(count),
+            (Some(run), false) if at > run.end.saturating_add(MERGE_GAP_MS) => self.close(count),
             _ => {}
         }
     }
 
-    /// A run of one sample is dropped: a lone "on" with no other within the merge gap.
-    fn close_run(&mut self, count: &mut Count) {
-        if let Some(run) = self.run.take() {
+    fn close(&mut self, count: &mut Count) {
+        if let Some(run) = self.open.take() {
             if run.samples >= 2 {
-                count.push(&mut self.speaking, [run.start, run.end]);
+                count.push(&mut self.closed, [run.start, run.end]);
             }
         }
     }
 
-    fn close(&mut self, count: &mut Count) {
-        self.close_run(count);
-        self.seen.close(count);
-    }
-
-    fn speaking_now(&self) -> Vec<Span> {
+    fn all(&self) -> Vec<Span> {
         let open = self
-            .run
+            .open
             .filter(|run| run.samples >= 2)
             .map(|run| [run.start, run.end]);
-        self.speaking.iter().copied().chain(open).collect()
+        self.closed.iter().copied().chain(open).collect()
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+struct Track {
+    speech: Runs,
+    active: Runs,
+    seen: Spans,
+}
+
+impl Track {
+    fn observe(&mut self, at: u64, period: u64, speech: Mark, active: Mark, count: &mut Count) {
+        if speech == Mark::Unknown && active == Mark::Unknown {
+            return;
+        }
+        self.seen.add(at, at.saturating_add(period), count);
+        if speech != Mark::Unknown {
+            self.speech
+                .observe(at, period, speech == Mark::Speaking, count);
+        } else if active != Mark::Unknown {
+            self.speech.close(count);
+        }
+        if active != Mark::Unknown {
+            self.active
+                .observe(at, period, active == Mark::Speaking, count);
+        } else if speech != Mark::Unknown {
+            self.active.close(count);
+        }
+    }
+
+    fn close(&mut self, count: &mut Count) {
+        self.speech.close(count);
+        self.active.close(count);
+        self.seen.close(count);
     }
 }
 
@@ -330,21 +370,36 @@ impl TimelineBuilder {
 
     /// One classified sample. A person in two tiles speaks when either tile does.
     pub fn observe(&mut self, sample: &Classified) {
-        let mut marks: BTreeMap<&str, Mark> = BTreeMap::new();
+        // One person can occupy both a video tile and a camera-off tile. Combine within each
+        // channel independently: activity must not hide real speech or become speech itself.
+        let mut marks: BTreeMap<&str, (Mark, Mark)> = BTreeMap::new();
         for (person, mark) in &sample.marks {
-            let best = marks.entry(person.as_str()).or_insert(Mark::Unknown);
-            *best = match (*best, *mark) {
+            let pair = marks
+                .entry(person.as_str())
+                .or_insert((Mark::Unknown, Mark::Unknown));
+            let (best, value) = match mark {
+                Mark::Active => (&mut pair.1, Mark::Speaking),
+                Mark::Inactive => (&mut pair.1, Mark::Quiet),
+                _ => (&mut pair.0, *mark),
+            };
+            *best = match (*best, value) {
                 (Mark::Speaking, _) | (_, Mark::Speaking) => Mark::Speaking,
                 (Mark::Quiet, _) | (_, Mark::Quiet) => Mark::Quiet,
                 _ => Mark::Unknown,
             };
         }
-        for (person, mark) in marks {
-            if mark == Mark::Unknown {
+        for (person, (speech, active)) in marks {
+            if speech == Mark::Unknown && active == Mark::Unknown {
                 continue;
             }
             let track = self.people.entry(person.to_owned()).or_default();
-            track.observe(sample.at_ms, sample.period_ms, mark, &mut self.count);
+            track.observe(
+                sample.at_ms,
+                sample.period_ms,
+                speech,
+                active,
+                &mut self.count,
+            );
             self.changed = true;
         }
     }
@@ -412,6 +467,7 @@ impl TimelineBuilder {
         }
         let mut people = BTreeMap::new();
         let mut self_speaking = Vec::new();
+        let mut self_active = Vec::new();
         let mut intervals = self.count.intervals;
         let mut truncated = self.count.truncated;
         let mut room = |spans: Vec<Span>, closed: usize| -> Vec<Span> {
@@ -425,12 +481,21 @@ impl TimelineBuilder {
             spans
         };
         for (id, track) in &self.people {
-            let speaking = room(track.speaking_now(), track.speaking.len());
+            let speaking = room(track.speech.all(), track.speech.closed.len());
+            let active = room(track.active.all(), track.active.closed.len());
             let seen = room(track.seen.all(), track.seen.closed.len());
             if Some(id.as_str()) == self_id {
                 self_speaking = speaking;
+                self_active = active;
             } else {
-                people.insert(id.clone(), PersonTimeline { speaking, seen });
+                people.insert(
+                    id.clone(),
+                    PersonTimeline {
+                        speaking,
+                        active,
+                        seen,
+                    },
+                );
             }
         }
         let hidden = room(self.hidden.all(), self.hidden.closed.len());
@@ -443,6 +508,7 @@ impl TimelineBuilder {
             self_id: self_id.filter(|id| is_person_id(id)).map(str::to_owned),
             people,
             self_speaking,
+            self_active,
             hidden,
             breaks: self.breaks.clone(),
             truncated,
@@ -458,6 +524,8 @@ pub struct Counts {
     pub samples: u64,
     /// Samples with at least one marker not read, or out of time.
     pub unknown: u64,
+    /// Samples containing at least one recognized activity-border reading (on or off).
+    pub border: u64,
     /// Tiles followed after the last names tick.
     pub tiles: usize,
     pub mode: Option<Mode>,
@@ -483,6 +551,7 @@ pub struct Tracker {
     pending: Vec<Pending>,
     paused: bool,
     counts: Counts,
+    eligible: bool,
 }
 
 impl Tracker {
@@ -495,6 +564,7 @@ impl Tracker {
             pending: Vec::new(),
             paused: false,
             counts: Counts::default(),
+            eligible: false,
         }
     }
 
@@ -536,7 +606,9 @@ impl Tracker {
             });
             self.observe(ready);
         }
-        let ready = self.classifier.decide(&found.tiles);
+        let ready = self
+            .classifier
+            .decide_with_people(&found.tiles, found.people);
         self.observe(ready);
         self.builder.set_mode(self.classifier.mode());
         self.builder.hidden(at_ms, found.hidden);
@@ -557,13 +629,16 @@ impl Tracker {
             .zip(ids)
             .map(|(tile, id)| id.filter(|_| self.classifier.follows(tile)))
             .collect();
+        self.eligible = self.slots.iter().filter(|id| id.is_some()).count()
+            >= crate::rules::MIN_SPEAKING_TILES
+            || found.people >= crate::rules::MIN_SPEAKING_TILES;
         self.counts.tiles = self.followed().len();
         self.counts.mode = self.classifier.mode();
     }
 
     /// The tiles a sample reads now, by their index in the last names tick.
     pub fn followed(&self) -> Vec<usize> {
-        if self.slots.iter().flatten().count() < crate::rules::MIN_SPEAKING_TILES {
+        if !self.eligible {
             return Vec::new();
         }
         (0..self.slots.len())
@@ -576,6 +651,7 @@ impl Tracker {
     pub fn unfollow(&mut self) {
         self.slots.clear();
         self.confirmed.clear();
+        self.eligible = false;
         self.counts.tiles = 0;
     }
 
@@ -585,6 +661,13 @@ impl Tracker {
             return;
         }
         self.counts.samples += 1;
+        if read
+            .readings
+            .iter()
+            .any(|(_, reading)| self.classifier.is_border(reading))
+        {
+            self.counts.border += 1;
+        }
         if read
             .readings
             .iter()
