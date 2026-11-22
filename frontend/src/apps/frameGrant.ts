@@ -1,4 +1,4 @@
-// The grant One gives a framed app's own session key: one per space, an hour long, and never re-delegable. In the
+// The grant One gives a framed app's own session key: one per space, an hour long and never re-delegable. In the
 // phone app it comes from that app's step-up (TC-3568 S1b); the node refuses a child of it
 // (`terminal-parent-cannot-redelegate`).
 import { serializeDelegation, type TinyCloudWeb } from "@tinycloud/web-sdk";
