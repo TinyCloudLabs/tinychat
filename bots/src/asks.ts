@@ -45,8 +45,8 @@ export const ASK_ERRORS = {
 export type AskError = keyof typeof ASK_ERRORS;
 
 /**
- * What the supervisor tells Main once a question is closed. Fixed text around the owner's answer. PENDING SAM'S
- * APPROVAL: every sentence here, each in its own constant, until the final words are given.
+ * What the supervisor tells Main once a question is closed. Fixed text around the owner's answer: Monica's words
+ * (agent-ask-owner-words), each in its own constant.
  */
 export const ASK_REPLIES = {
   answered: "The person answered your question: ",
@@ -93,6 +93,8 @@ const UNSAFE = /[\p{Cc}\p{Cf}\p{Cs}\p{Co}\p{Zl}\p{Zp}]/gu;
  */
 export function plainAskText(input: unknown, max: number): string | undefined {
   if (typeof input !== "string" || input.length > max * 8) return undefined;
+  // Matching vertical tab and form feed is the point: every line-breaking control becomes a space before UNSAFE strips the rest.
+  // eslint-disable-next-line no-control-regex
   const text = input.replace(/[\t\n\r\u000b\u000c\u0085\u2028\u2029]/g, " ").replace(UNSAFE, "").replace(/\s+/g, " ").trim();
   const length = [...text].length;
   return length >= 1 && length <= max ? text : undefined;
@@ -305,22 +307,39 @@ function writeFileAtomic(layout: BotLayout, file: string, content: string): void
   renameSync(fresh, file);
 }
 
-function readAsksFile(layout: BotLayout): Record<string, unknown> {
+/** The saved settings file: `missing` when there is none, `unreadable` when it cannot be read or is not a JSON object. */
+function readAsksFile(layout: BotLayout): Record<string, unknown> | "missing" | "unreadable" {
   const file = asksFile(layout);
   try {
-    if (!lstatSync(file, { throwIfNoEntry: false })?.isFile()) return {};
+    const stat = lstatSync(file, { throwIfNoEntry: false });
+    if (!stat) return "missing";
+    if (!stat.isFile()) return "unreadable";
     const saved: unknown = JSON.parse(readFileSync(file, "utf8"));
-    return isRecord(saved) ? saved : {};
+    return isRecord(saved) ? saved : "unreadable";
   } catch {
-    return {};
+    return "unreadable";
   }
 }
 
-/** The owner's setting. Missing, unreadable or malformed reads as off: the safe reading, never an error. */
-export const readAsksEnabled = (layout: BotLayout): boolean => readAsksFile(layout).enabled === true;
+/**
+ * The owner's setting. Nothing saved, or a saved file without `enabled`, reads as on (the default: the owner never
+ * chose off). A file that is unreadable or malformed reads as off and is logged: a fault never brings questions the
+ * owner didn't expect. Never an error.
+ */
+export function readAsksEnabled(layout: BotLayout): boolean {
+  const saved = readAsksFile(layout);
+  if (saved === "missing") return true;
+  if (saved !== "unreadable" && !Object.hasOwn(saved, "enabled")) return true;
+  if (saved !== "unreadable" && typeof saved.enabled === "boolean") return saved.enabled;
+  console.log(JSON.stringify({ bots: "asks_setting_unreadable", bot: layout.botId.slice(0, 12) }));
+  return false;
+}
 
 /** Whether anything from outside the owner's own words has reached Main's conversation since it began. */
-export const readOutsideSeen = (layout: BotLayout): boolean => readAsksFile(layout).outsideSeen === true;
+export function readOutsideSeen(layout: BotLayout): boolean {
+  const saved = readAsksFile(layout);
+  return typeof saved !== "string" && saved.outsideSeen === true;
+}
 
 function writeAsksFile(layout: BotLayout, enabled: boolean, outsideSeen: boolean): void {
   writeFileAtomic(layout, asksFile(layout), JSON.stringify({ enabled, ...(outsideSeen ? { outsideSeen } : {}) }));

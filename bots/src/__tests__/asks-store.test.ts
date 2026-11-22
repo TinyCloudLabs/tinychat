@@ -36,8 +36,8 @@ const A = "a".repeat(24);
 const B = "b".repeat(24);
 
 describe("the owner's setting", () => {
-  test("is off when nothing is saved or the file is damaged, and on only when saved as on", () => {
-    expect(readAsksEnabled(layout())).toBe(false);
+  test("is on when nothing is saved, off when the file is damaged, and as saved otherwise", () => {
+    expect(readAsksEnabled(layout())).toBe(true);
     writeAsksEnabled(layout(), true);
     expect(readAsksEnabled(layout())).toBe(true);
     writeFileSync(asksFile(layout()), "{not json");
@@ -46,6 +46,41 @@ describe("the owner's setting", () => {
     expect(readAsksEnabled(layout())).toBe(false);
     writeAsksEnabled(layout(), false);
     expect(readAsksEnabled(layout())).toBe(false);
+  });
+
+  test("reads as off and is logged when the saved setting can't be read, without logging what the file holds", () => {
+    const logs = spyOn(console, "log").mockImplementation(() => {});
+    try {
+      mkdirSync(asksFile(layout()), { recursive: true });
+      expect(readAsksEnabled(layout())).toBe(false);
+      rmSync(asksFile(layout()), { recursive: true });
+      writeFileSync(asksFile(layout()), JSON.stringify(["UNIQUE-SAVED-CONTENT"]));
+      expect(readAsksEnabled(layout())).toBe(false);
+      const lines = logs.mock.calls.map(call => String(call[0]));
+      expect(lines).toEqual([
+        JSON.stringify({ bots: "asks_setting_unreadable", bot: BOT_ID.slice(0, 12) }),
+        JSON.stringify({ bots: "asks_setting_unreadable", bot: BOT_ID.slice(0, 12) }),
+      ]);
+      expect(lines.join("\n")).not.toContain("UNIQUE-SAVED-CONTENT");
+    } finally {
+      logs.mockRestore();
+    }
+  });
+
+  test("a saved file without `enabled` reads as on, without a log; only a saved false is off", () => {
+    const logs = spyOn(console, "log").mockImplementation(() => {});
+    try {
+      mkdirSync(layout().dataDir, { recursive: true });
+      writeFileSync(asksFile(layout()), JSON.stringify({ outsideSeen: true }));
+      expect(readAsksEnabled(layout())).toBe(true);
+      writeFileSync(asksFile(layout()), JSON.stringify({}));
+      expect(readAsksEnabled(layout())).toBe(true);
+      writeFileSync(asksFile(layout()), JSON.stringify({ enabled: false, outsideSeen: true }));
+      expect(readAsksEnabled(layout())).toBe(false);
+      expect(logs).not.toHaveBeenCalled();
+    } finally {
+      logs.mockRestore();
+    }
   });
 
   test("lives in the bot's data directory beside the web setting, never under the state that goes into a sandbox", () => {
