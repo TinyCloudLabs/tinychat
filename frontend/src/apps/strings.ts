@@ -14,7 +14,7 @@ export const APP_NAMES: Readonly<Record<OneAppId, string>> = {
   "xyz.tinycloud.courier": "Courier",
   "xyz.tinycloud.rocinante.ledger": "Ship ledger",
   "xyz.tinycloud.share": "Share",
-  "xyz.tinycloud.tinyapps.contacts": "Contacts",
+  "xyz.tinycloud.contacts": "Contacts",
 };
 
 export const APP_DESCRIPTIONS: Readonly<Record<Exclude<OneAppId, LinkAppId>, string>> = {

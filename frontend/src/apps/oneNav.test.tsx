@@ -53,7 +53,7 @@ function memoryStorage(): Storage {
 
 const ACCOUNT = "did:pkh:eip155:1:0x00000000000000000000000000000000000000a1";
 const UPRIGHT: SizeClassState = { size: "compact", land: false };
-const WEB_ORDER = ["capture", "xyz.tinycloud.secrets", "xyz.tinycloud.opencredentials", "xyz.tinycloud.explorer", "xyz.tinycloud.account", "xyz.tinycloud.courier", "xyz.tinycloud.rocinante.ledger", "xyz.tinycloud.share", "xyz.tinycloud.tinyapps.contacts"] as const;
+const WEB_ORDER = ["capture", "xyz.tinycloud.secrets", "xyz.tinycloud.opencredentials", "xyz.tinycloud.explorer", "xyz.tinycloud.account", "xyz.tinycloud.courier", "xyz.tinycloud.rocinante.ledger", "xyz.tinycloud.share", "xyz.tinycloud.contacts"] as const;
 
 const ssr = (node: ReactNode, path: string, platform: AppPlatform = "web") =>
   renderToStaticMarkup(
@@ -143,7 +143,7 @@ describe("the Apps grid", () => {
       "xyz.tinycloud.secrets",
       "xyz.tinycloud.opencredentials",
       "xyz.tinycloud.share",
-      "xyz.tinycloud.tinyapps.contacts",
+      "xyz.tinycloud.contacts",
     ]);
     // Each opens-out tile says so to a screen reader and carries the ↗ mark; the others don't.
     const markup = ssr(<AppsGrid tiles={tiles} pins={[]} canPin={false} onPin={noop} onUnpin={noop} addApp={false} />, PATHS.apps);
