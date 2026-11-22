@@ -71,6 +71,6 @@ export const FEED_CHAT_ERRORS = {
   ended: "Your access to the owner's feed and chats has ended. They can turn it on in this chat under Feed and chats.",
   not_found: "That card or chat isn't there.",
   unavailable: "The feed and chats can't be read right now.",
-  budget: "You've read enough of the feed and chats for today. Carry on without them.",
-  busy: "A feed or chat read is already running. Wait for its result before reading again.",
+  budget: "You've used today's reads of the owner's data. Carry on without them.",
+  busy: "Another read of the owner's data is already running. Wait for its result before reading again.",
 } as const;
