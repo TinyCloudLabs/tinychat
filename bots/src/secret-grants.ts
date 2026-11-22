@@ -1,7 +1,7 @@
 // Secret requests, gateway side. For each request the supervisor sends (PUT /bots/<botId>/secrets/<id>), the gateway:
 //  1. makes a fresh Ed25519 key that will hold the grant, and a P-256 key OpenKey encrypts the result to;
 //  2. signs a one-tap OpenKey approval request: read ONE secret (kv get vault/secrets/NAME in the owner's "secrets"
-//     space) and decrypt with the owner's default network, for at most MAX_GRANT_SECONDS, suggesting an hour;
+//     space) and decrypt with the owner's default network, for at most MAX_GRANT_SECONDS (one hour);
 //  3. polls OpenKey for the result itself, checks it (below), seals it with the key and keeps it on its own volume;
 //  4. reports approved / declined / expired / failed to the supervisor when it drains (POST .../secrets/drain);
 //  5. reads the value only to make a call_with_secret call (secret-call.ts), and never returns it.
@@ -28,10 +28,10 @@ import { REQUEST_ID } from "./secret-store";
 import { toolText } from "./web";
 
 /**
- * Longest grant the gateway asks for. One delegation can read the secret for this long, and today the decrypt half
- * covers the owner's whole default network, so it is kept short until TC-3284 (per-secret keys) lands (Naomi's
- * ruling, 22 Nov). The owner can pick less; never more. The same number the supervisor's store and the secret card
- * use (asks.ts), so the 7 days are written once.
+ * Longest grant the gateway asks for: one hour (Naomi, 22 Nov, matching the secret card). One delegation can read the
+ * secret for this long, and today the decrypt half covers the owner's whole default network, so it stays short; standing
+ * access is a separate design. The owner can pick less; never more. The same number the supervisor's store and the
+ * secret card use (asks.ts), so it is written once.
  */
 export const MAX_GRANT_SECONDS = MAX_GRANT_MS / 1000;
 /** What the approval screen offers first. */
@@ -194,7 +194,8 @@ export async function verifiedGrant(checked: CheckedApprovalResult, expected: { 
   const issued = siwe.issuedAt?.getTime();
   const expires = siwe.expirationTime?.getTime();
   if (issued === undefined || expires === undefined || new Date(expires).toISOString() !== checked.delegationExpiresAt) throw new Error("the grant's expiry doesn't match");
-  if (expires - issued > expected.maxSeconds * 1000 + SKEW_MS || expires <= expected.now) throw new Error("the grant is longer than asked or already over");
+  // No slack on the length: one hour is the rule, and an hour and a second is over it.
+  if (expires - issued > expected.maxSeconds * 1000 || expires <= expected.now) throw new Error("the grant is longer than asked or already over");
 
   // Every resource it grants, and the space it opens, must be the owner's own.
   const space = `tinycloud:pkh:eip155:1:${address}:`;
