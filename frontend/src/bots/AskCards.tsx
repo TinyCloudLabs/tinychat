@@ -3,8 +3,8 @@
 import { Fragment, useEffect, useId, useState } from "react";
 
 import { Button } from "@/components/ui/button";
-import type { AskRequest } from "./botsApi";
-import { ASK_STRINGS as COPY, askedAgo } from "./askStrings";
+import type { AskRequest, SecretLine } from "./botsApi";
+import { ASK_STRINGS as COPY, SECRET_STRINGS, askedAgo, secretDate, secretWith } from "./askStrings";
 import { MAX_ANSWER, MAX_CHOICE, MAX_CHOICES, MAX_QUESTION, plainText } from "./askText";
 import type { Asks } from "./useAsks";
 
@@ -100,15 +100,30 @@ function AskCard({ request, asks }: { request: AskRequest; asks: Asks }) {
 
 const APP_LINES = { answered: COPY.lineAnswered, declined: COPY.lineDeclined, stopped: COPY.lineStopped, expired: COPY.lineExpired } as const;
 
+export type AppLineDecision = keyof typeof APP_LINES | "approved" | "revoked" | "ended";
+
+/** A secret request's chat line, which names the secret; null when the line has nothing to name. */
+function secretLineText(decision: AppLineDecision, secret: SecretLine): string | null {
+  switch (decision) {
+    case "approved": return secret.until ? SECRET_STRINGS.lineApproved(secret.name, secretWith(secret), secretDate(secret.until)) : null;
+    case "revoked": return SECRET_STRINGS.lineRevoked(secret.name);
+    case "declined": return SECRET_STRINGS.lineDeclined(secret.name);
+    case "expired": return SECRET_STRINGS.lineExpired(secret.name);
+    case "ended": return SECRET_STRINGS.lineEnded(secret.name);
+    default: return null;
+  }
+}
+
 /**
- * What the app shows in the chat for the owner's decision on a question card, in a muted style so it is not taken for
- * words the owner typed. A "not now" the owner just gave is already on the card, which collapses to it; once the
- * card is gone (a reload), the line is what is left. An expired question has no message to Main: its line is only
- * for the owner, and only for a question the owner saw in this chat.
+ * What the app shows in the chat for the owner's decision on a request card, in a muted style so it is not taken for
+ * words the owner typed. A "not now" or decline the owner just gave is already on the card, which collapses to it; once
+ * the card is gone (a reload), the line is what is left. An expired request, or a secret's access that ended, has no
+ * message to Main: its line is only for the owner, and only for a request the owner saw in this chat.
  */
-export function AppLine({ decision, live }: { decision: keyof typeof APP_LINES; live: boolean }) {
+export function AppLine({ decision, live, secret }: { decision: AppLineDecision; live: boolean; secret?: SecretLine }) {
   if (decision === "declined" && live) return null;
-  const text = APP_LINES[decision];
+  const text = secret ? secretLineText(decision, secret) : decision in APP_LINES ? APP_LINES[decision as keyof typeof APP_LINES] : null;
+  if (!text) return null;
   return <p className="self-end text-callout text-muted-foreground" data-app-line={decision}>{text}</p>;
 }
 
@@ -144,7 +159,7 @@ export function AsksToggle({ asks }: { asks: Asks }) {
   if (asks.support !== "yes") return null;
   return (
     <div className="flex flex-col gap-1" data-bots-asks="">
-      <label className="flex cursor-pointer items-start gap-3">
+      <label className="flex min-h-11 cursor-pointer items-start gap-3">
         <input
           type="checkbox"
           checked={asks.enabled}
