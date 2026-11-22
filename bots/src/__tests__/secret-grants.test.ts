@@ -291,6 +291,12 @@ describe("verifiedGrant", () => {
     expect(session).toMatchObject({ address: OWNER_KEY.address, chainId: 1, expiresAt: new Date(T0 + HOUR).toISOString(), jwk });
   });
 
+  // OpenKey signs the issue time when the request is prepared and the expiry when the page renders: a live 1 h grant was 6.9 s over.
+  test("accepts a one-hour grant whose length runs a few seconds over, up to 120 seconds", async () => {
+    await expect(verifiedGrant(await grantFor(request, { lifetimeMs: HOUR + 7_000 }), expected)).resolves.toMatchObject({ address: OWNER_KEY.address });
+    await expect(verifiedGrant(await grantFor(request, { lifetimeMs: HOUR + 120_000 }), expected)).resolves.toMatchObject({ address: OWNER_KEY.address });
+  });
+
   test("refuses a grant that is already over", async () => {
     await expect(verifiedGrant(await grantFor(request), { ...expected, now: T0 + 2 * HOUR })).rejects.toThrow("already over");
   });
@@ -302,7 +308,7 @@ describe("verifiedGrant", () => {
     ["naming another owner", { ownerDid: `did:pkh:eip155:1:${OTHER_KEY.address.toLowerCase()}` }, "names another owner"],
     ["for another key", { audience: "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK" }, "for another key"],
     ["longer than an hour", { lifetimeMs: (MAX_GRANT_SECONDS + 3600) * 1000 }, "longer than asked"],
-    ["one second over an hour", { lifetimeMs: 3_601_000 }, "longer than asked"],
+    ["121 seconds over an hour", { lifetimeMs: 3_721_000 }, "longer than asked"],
     ["opening another owner's space", { spaceOwner: OTHER_KEY.address }, "another owner's space"],
     ["naming another owner's resource", { resourceOwner: OTHER_KEY.address }, "another owner's resource"],
   ])("refuses a grant %s", async (_, grant, message) => {
