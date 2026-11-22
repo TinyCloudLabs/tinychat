@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { createRetrieval, PACK_VERSION } from '../lib/retrieval.mjs';
 
-const HELP = `TinyChat retrieval ${PACK_VERSION} (Node >=22.20, TinyCloud CLI >=0.9.0)
+const HELP = `TinyCloud One meetings retrieval ${PACK_VERSION} (Node >=22.20, TinyCloud CLI >=0.9.0)
 
 node scripts/retrieve.mjs COMMAND --profile NAME --host URL --space NAME_OR_URI --owner OWNER_DID [OPTIONS]
 

@@ -287,7 +287,7 @@ export class CalendarAutojoinRowCache {
   /** `json` read through this cache. `freshReads` stores (request and dispatch) read every row and
    *  listing from the node, and keep the cache current with what they read. */
   view(json: JsonStore, freshReads = false): JsonStore {
-    const cached = (key: string) => !key.startsWith(`${PREFIX}status/`);
+    const cached = (key: string) => !key.startsWith(`${CALENDAR_AUTOJOIN_KEY_PREFIX}status/`);
     const fresh = async <T>(key: string) => this.observe(key, await json.read<T>(key));
     const keys = async (prefix: string) => {
       const listing = freshReads ? undefined : this.touch(this.listings, prefix);
@@ -391,14 +391,14 @@ export class CalendarAutojoinRowCache {
     this.listed(key, true);
   }
 }
-const PREFIX = "calendar-autojoin/v1/";
+export const CALENDAR_AUTOJOIN_KEY_PREFIX = "calendar-autojoin/v1/";
 const tenantKey = (tenant: string) => createHash("sha256").update(tenant.toLowerCase()).digest("hex");
-const connectionKey = (tenant: string) => `${PREFIX}connections/${tenantKey(tenant)}`;
-const statusKey = (tenant: string) => `${PREFIX}status/${tenantKey(tenant)}`;
-const occurrencePrefix = (tenant: string) => `${PREFIX}occurrences/${tenantKey(tenant)}/`;
-const markerKey = (tenant: string, id: string) => `${PREFIX}sent/${tenantKey(tenant)}/${id}`;
+const connectionKey = (tenant: string) => `${CALENDAR_AUTOJOIN_KEY_PREFIX}connections/${tenantKey(tenant)}`;
+const statusKey = (tenant: string) => `${CALENDAR_AUTOJOIN_KEY_PREFIX}status/${tenantKey(tenant)}`;
+const occurrencePrefix = (tenant: string) => `${CALENDAR_AUTOJOIN_KEY_PREFIX}occurrences/${tenantKey(tenant)}/`;
+const markerKey = (tenant: string, id: string) => `${CALENDAR_AUTOJOIN_KEY_PREFIX}sent/${tenantKey(tenant)}/${id}`;
 const captureKey = (meetingUrl: string) =>
-  `${PREFIX}captures/${createHash("sha256").update(normalizeGoogleMeetUrl(meetingUrl) ?? meetingUrl).digest("hex")}`;
+  `${CALENDAR_AUTOJOIN_KEY_PREFIX}captures/${createHash("sha256").update(normalizeGoogleMeetUrl(meetingUrl) ?? meetingUrl).digest("hex")}`;
 const CLAIM_RETENTION_MS = 86_400_000;
 // The three stores already share a cache identity. Keep committed summary digests coherent across
 // worker publication and user teardown without extra KV reads, with the same bounded tenant cap.
@@ -481,8 +481,8 @@ class JsonCalendarAutojoinStore implements CalendarAutojoinStore {
     const key = connectionKey(tenant);
     return this.read(async () => (await this.json.read<CalendarConnection>(key))?.value ?? null);
   }
-  listConnections() { return this.list<CalendarConnection>(`${PREFIX}connections/`); }
-  rereadConnections(): void { this.json.rereadRows?.(`${PREFIX}connections/`); }
+  listConnections() { return this.list<CalendarConnection>(`${CALENDAR_AUTOJOIN_KEY_PREFIX}connections/`); }
+  rereadConnections(): void { this.json.rereadRows?.(`${CALENDAR_AUTOJOIN_KEY_PREFIX}connections/`); }
   getStatusSummary(tenant: string, deadline?: number, metrics?: CalendarAutojoinReadMetrics) {
     return this.read(() => this.readSummary(tenant), deadline, metrics);
   }

@@ -6,6 +6,7 @@ import {
   type OfferedModelId,
 } from "@tinyboilerplate/core";
 import { getThreadModel, setThreadModel } from "../lib/threadStore";
+import { renewSessionOnce } from "../lib/sessionSignedOut";
 
 export type SelectionReason = "healthy" | "health-unverified" | "restored" | "manual";
 export type SelectionPhase = "choosing" | "ready" | "needs-manual-choice";
@@ -142,8 +143,8 @@ interface SharedLookup {
  */
 const lookupsInFlight = new Map<string, SharedLookup>();
 
-function requestAutomaticChoice(backendUrl: string, token: string | null): SharedLookup {
-  const key = `${backendUrl}\u0000${token ?? ""}`;
+function requestAutomaticChoice(backendUrl: string, token: string): SharedLookup {
+  const key = `${backendUrl}\u0000${token}`;
   const shared = lookupsInFlight.get(key);
   if (shared) return shared;
   const controller = new AbortController();
@@ -159,13 +160,14 @@ function requestAutomaticChoice(backendUrl: string, token: string | null): Share
     (async () => {
       const response = await fetch(`${backendUrl}/api/chat/model-selection`, {
         headers: {
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          Authorization: `Bearer ${token}`,
           "X-Requested-With": "XMLHttpRequest",
         },
         signal: controller.signal,
         cache: "no-store",
       });
-      if (response.status === 401 || response.status === 403) throw new SelectionAuthError();
+      // Only a 401 is the session's refusal; any other failure (a 403 included) leaves the choice unverified.
+      if (response.status === 401) throw new SelectionAuthError();
       if (!response.ok) throw new Error("Health unavailable");
       return await response.json() as AutomaticChoiceBody;
     })(),
@@ -181,15 +183,40 @@ function requestAutomaticChoice(backendUrl: string, token: string | null): Share
   return lookup;
 }
 
+/**
+ * The server's automatic choice. No bearer: no request, and the choice is unverified (nothing here signs the user
+ * out). A 401 gets one session renewal; a renewed bearer asks once more, and only a second 401 is an auth failure.
+ */
 async function fetchAutomaticChoice(
   backendUrl: string,
   sessionStore: SessionStore,
   signal: AbortSignal,
 ): Promise<{ model: OfferedModelId; reason: "healthy" | "health-unverified" } | null> {
+  const token = sessionStore.getToken();
+  if (!token) {
+    if (signal.aborted) throw new TurnCancelledError();
+    return { model: DEFAULT_CHAT_MODEL, reason: "health-unverified" };
+  }
+  try {
+    return await lookupAutomaticChoice(backendUrl, token, signal);
+  } catch (error) {
+    if (!(error instanceof SelectionAuthError)) throw error;
+    const renewed = await renewSessionOnce(sessionStore, token);
+    if (signal.aborted) throw new TurnCancelledError();
+    if (!renewed) throw error;
+    return await lookupAutomaticChoice(backendUrl, renewed, signal);
+  }
+}
+
+async function lookupAutomaticChoice(
+  backendUrl: string,
+  token: string,
+  signal: AbortSignal,
+): Promise<{ model: OfferedModelId; reason: "healthy" | "health-unverified" } | null> {
   let cancelled = () => {};
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    const lookup = requestAutomaticChoice(backendUrl, sessionStore.getToken());
+    const lookup = requestAutomaticChoice(backendUrl, token);
     lookup.holdUntil(Date.now() + LOOKUP_DEADLINE_MS);
     // A cancelled lookup stops waiting; the shared request still ends at its own deadline.
     const body = await Promise.race([

@@ -34,6 +34,7 @@ import { OUTPUT_TALLY, readAgent, readRegistry, readTally, REGISTRY_TALLY, RESPO
 import { ownerCardKey } from "./feedIdentity";
 import { privateFeedDatabase, parseOwnerJSON } from "./privateFeedDatabase";
 import { clearHeldAnswers, clearUnsentAnswer, heldAnswers, holdAnswer, isHeld, recordUnsentAnswer, releaseAnswer, unsentAnswers, type HeldAnswer } from "./answerOutbox";
+import { observeFeedFailures, recordAnswerFailure } from "./feedFailures";
 import { isReplyOnlyRevision, storedRevisionEntry } from "./replyOnlyRevision";
 import { ownerActionMessage, type OwnerAction } from "./ownerActions";
 
@@ -158,7 +159,7 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
   const space: string = sessionSpace;
   function assertAccount() { if (tcw.spaceId !== space) throw new Error("Home account changed; open its current feed"); }
   const scope = storageScopeFor(tcw);
-  const db = (resource: string) => privateFeedDatabase(trackStorageWrites(foregroundDatabase(tcw.sql.db(resource)), scope), assertAccount);
+  const db = (resource: string) => privateFeedDatabase(trackStorageWrites(observeFeedFailures(foregroundDatabase(tcw.sql.db(resource))), scope), assertAccount);
   const registry = db(HOME_FEED_RESOURCE);
   const archives = new OwnerArchiveCache(registry);
   const localKey = accountCacheKey(typeof tcw.did === "string" && tcw.did ? tcw.did : space, "home-feed");
@@ -342,18 +343,24 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
       response = { ...response, text: safeSitrepActionSummary(action) };
     }
     // Before the first await: a page that closes mid-write runs only this synchronous part for certain.
-    if (options?.hold) holdAnswer(space, heldAnswerOf(entry, response, payload));
-    const release = () => { if (options?.hold) releaseAnswer(space, { sourceId: entry.source.sourceId, ...response }); };
-    if (approval) {
-      const latest = unwrap(await listFeedCards(db(entry.source.output.database))).find((card) => card.cardId === response.cardId);
-      if (!latest || latest.revision !== response.revision || latest.issuanceId !== response.issuanceId) throw new Error("Approval was re-issued; open its current issuance");
+    const started = Date.now();
+    try {
+      if (options?.hold) holdAnswer(space, heldAnswerOf(entry, response, payload));
+      const release = () => { if (options?.hold) releaseAnswer(space, { sourceId: entry.source.sourceId, ...response }); };
+      if (approval) {
+        const latest = unwrap(await listFeedCards(db(entry.source.output.database))).find((card) => card.cardId === response.cardId);
+        if (!latest || latest.revision !== response.revision || latest.issuanceId !== response.issuanceId) throw new Error("Approval was re-issued; open its current issuance");
+      }
+      const result = await appendFeedResponse(db(entry.source.output.database), db(entry.source.responses.database), response, payload);
+      // A definitive refusal clears the hold; a failed transport keeps it, so the answer still goes at the next launch.
+      if (!result.ok && result.error.code === "INVALID_INPUT") { release(); throw new RefusedWrite(result.error.message); }
+      const saved = unwrap(result);
+      release();
+      return saved;
+    } catch (error) {
+      if (!(error instanceof RefusedWrite)) recordAnswerFailure(error, started);
+      throw error;
     }
-    const result = await appendFeedResponse(db(entry.source.output.database), db(entry.source.responses.database), response, payload);
-    // A definitive refusal clears the hold; a failed transport keeps it, so the answer still goes at the next launch.
-    if (!result.ok && result.error.code === "INVALID_INPUT") { release(); throw new RefusedWrite(result.error.message); }
-    const saved = unwrap(result);
-    release();
-    return saved;
   }
 
   /**
@@ -800,8 +807,12 @@ export const SIGN_OUT_FLUSH_MS = 3000;
  * cleared, sent or not, also after a failure or the bound. Nothing held: no request at all.
  * A flush still running at the bound finishes only the write it already started: the flush skips
  * every entry that is no longer held, so clearing the outbox stops the rest.
+ *
+ * `keepUnsent` (an expired or refused session): what the try does not send stays held under this
+ * space, for this account's next launch. A flush still running at the bound goes on with this
+ * account's own client, into this space only, until it ends or that client's writes fail.
  */
-export async function settleHeldAnswersForSignOut(tcw: TinyCloudWeb, boundMs = SIGN_OUT_FLUSH_MS): Promise<void> {
+export async function settleHeldAnswersForSignOut(tcw: TinyCloudWeb, boundMs = SIGN_OUT_FLUSH_MS, options: { keepUnsent?: boolean } = {}): Promise<void> {
   const space = tcw.spaceId;
   if (!space) return;
   let timer: number | undefined;
@@ -815,9 +826,9 @@ export async function settleHeldAnswersForSignOut(tcw: TinyCloudWeb, boundMs = S
       })(),
       new Promise<void>((resolve) => { timer = window.setTimeout(resolve, boundMs); }),
     ]);
-  } catch { /* Not sent: cleared below all the same. */ }
+  } catch { /* Not sent: cleared below all the same, or kept for the next launch. */ }
   finally {
     window.clearTimeout(timer);
-    clearHeldAnswers(space);
+    if (!options.keepUnsent) clearHeldAnswers(space);
   }
 }

@@ -260,6 +260,37 @@ describe("EmbedHost: requests", () => {
   });
 });
 
+describe("EmbedHost: two apps' step-ups on one session key (TC-3568)", () => {
+  // In the phone app every step-up is signed to One's one session key, so One holds Explorer's and Courier's at once.
+  const courier = framedApp("xyz.tinycloud.courier")!;
+  const explorerStepUp = (entry: PermissionEntry) =>
+    entry.space === space("public") || (entry.space === space("applications") && entry.service === "tinycloud.sql");
+  const courierStepUp = (entry: PermissionEntry) => entry.space === space("agents") && entry.path === "xyz.tinycloud.courier/";
+  const bothHeld = (entry: PermissionEntry) =>
+    entry.space === space("applications") || explorerStepUp(entry) || courierStepUp(entry);
+
+  test("Courier's frame gets only Courier's entries, and asking for Explorer's is denied without a step-up", async () => {
+    const run = setup({ app: courier, held: bothHeld });
+    await run.send(hello({ appId: courier.id }));
+    expect(run.delegated.flatMap(({ entries }) => entries)).toEqual(
+      courier.ceiling(owner).map(({ permission }) => ({ ...permission, space: space("agents") })),
+    );
+    await run.send(request([{ service: "tinycloud.kv", space: "public", path: "", actions: ["get", "list"] }]));
+    await run.send(request([{ service: "tinycloud.sql", space: "applications", path: "default", actions: ["read"] }], "nonce-request-00002"));
+    expect(run.stepUps).toEqual([]);
+    expect(run.delegated.flatMap(({ entries }) => entries).every(courierStepUp)).toBe(true);
+    expect(run.posted.filter((message) => message.type === "tc-embed/denied")).toHaveLength(2);
+  });
+
+  test("Explorer's frame never gets Courier's entries", async () => {
+    const run = setup({ held: bothHeld });
+    await run.send(hello());
+    await run.send(request([{ service: "tinycloud.kv", space: "agents", path: "xyz.tinycloud.courier/", actions: ["get"] }]));
+    expect(run.delegated.flatMap(({ entries }) => entries).some(courierStepUp)).toBe(false);
+    expect(run.posted.filter((message) => message.type === "tc-embed/denied")).toHaveLength(1);
+  });
+});
+
 describe("EmbedHost: spaces that aren't set up", () => {
   // Courier is framed inside One; the host's behaviour for its entry is what this block checks.
   const courier = oneApp("xyz.tinycloud.courier");

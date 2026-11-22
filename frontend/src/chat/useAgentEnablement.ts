@@ -89,6 +89,8 @@ export async function probeAgentCapability(backendUrl: string, token: string): P
 
 const AGENT_PROBE_INTERVAL_MS = 60_000;
 const AGENT_PROBE_MAX_BACKOFF_MS = 5 * 60_000;
+/** The first retry after a failed probe is quick: a single timeout is usually a slow answer, not an outage. */
+const AGENT_PROBE_FIRST_RETRY_MS = 10_000;
 
 /** One account's controller is shared by Settings and the persistent chat runtime. */
 export function createAgentAccessController(opts: UseAgentEnablementOptions) {
@@ -130,9 +132,10 @@ export function createAgentAccessController(opts: UseAgentEnablementOptions) {
     clearPollTimer();
     if (!listening || !isVisible() || !isOnline()) return;
     if (probeFailed !== undefined) consecutiveProbeFailures = probeFailed ? consecutiveProbeFailures + 1 : 0;
-    const delay = consecutiveProbeFailures > 0
-      ? Math.min(AGENT_PROBE_INTERVAL_MS * 2 ** consecutiveProbeFailures, AGENT_PROBE_MAX_BACKOFF_MS)
-      : AGENT_PROBE_INTERVAL_MS;
+    const delay = consecutiveProbeFailures === 1 ? AGENT_PROBE_FIRST_RETRY_MS
+      : consecutiveProbeFailures > 1
+        ? Math.min(AGENT_PROBE_INTERVAL_MS * 2 ** consecutiveProbeFailures, AGENT_PROBE_MAX_BACKOFF_MS)
+        : AGENT_PROBE_INTERVAL_MS;
     pollTimer = window.setTimeout(() => {
       pollTimer = undefined;
       if (isVisible() && isOnline()) void refresh();

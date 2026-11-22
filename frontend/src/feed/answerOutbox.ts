@@ -147,20 +147,24 @@ export function clearAllHeldAnswers(): void {
 }
 
 /**
- * How many held and unsent answers on this device, whatever space they belong to, are still within
- * HELD_ANSWER_TTL_MS at `now`. Reads only: a malformed or expired entry is not counted (its owner's
- * next read removes it). For the move off tinycloud.chat (originMove.ts), which must not strand them.
+ * How many held and unsent answers on this device are still within HELD_ANSWER_TTL_MS at `now`: those of `space`
+ * when it is given, else whatever space they belong to. Reads only: a malformed or expired entry is not counted
+ * (its owner's next read removes it). For the move off tinycloud.chat (originMove.ts), which must not strand them.
  */
-export function countStoredAnswers(storage: Pick<Storage, "length" | "key" | "getItem">, now = Date.now()): { held: number; unsent: number } {
+export function countStoredAnswers(
+  storage: Pick<Storage, "length" | "key" | "getItem">, now = Date.now(), space?: string,
+): { held: number; unsent: number } {
   let held = 0;
   let unsent = 0;
   const fresh = (at: string) => now - Date.parse(at) <= HELD_ANSWER_TTL_MS;
+  const heldPrefix = space === undefined ? PREFIX : `${PREFIX}${space}:`;
+  const unsentPrefix = space === undefined ? UNSENT_PREFIX : `${UNSENT_PREFIX}${space}:`;
   for (let index = 0; index < storage.length; index++) {
     const key = storage.key(index);
-    if (key?.startsWith(PREFIX)) {
+    if (key?.startsWith(heldPrefix)) {
       const entry = parse(storage.getItem(key));
       if (entry && fresh(entry.at)) held++;
-    } else if (key?.startsWith(UNSENT_PREFIX)) {
+    } else if (key?.startsWith(unsentPrefix)) {
       const entry = parseUnsent(storage.getItem(key));
       if (entry && fresh(entry.at)) unsent++;
     }

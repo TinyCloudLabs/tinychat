@@ -2,11 +2,16 @@ import { sharedWithMeLocalKey, signOutSharedWithMe } from "./sharedWithMe";
 
 export type AccountSignOutStorage = Pick<Storage, "length" | "key" | "removeItem">;
 
-/** Remove local metadata that belongs only to the account being signed out. */
+/**
+ * Remove local metadata that belongs only to the account being signed out. `keepUnsentWork` (an expired or refused
+ * session) keeps the account's `exo.*` and `exo-*` keys: upload and transcription job records and voice-note state,
+ * each named by the account's DID, so its next sign-in finds them. Caches and the manifest revision go either way.
+ */
 export function clearAccountSignOutStorage(
   did: string,
   address: string,
   storage: AccountSignOutStorage | undefined = browserStorage(),
+  options: { keepUnsentWork?: boolean } = {},
 ): void {
   // First, so a shared-list sync still in flight cannot write the copy back.
   signOutSharedWithMe();
@@ -24,7 +29,7 @@ export function clearAccountSignOutStorage(
     try { key = storage.key(index); } catch { continue; }
     if (key === null) continue;
     const normalizedKey = key.toLowerCase();
-    const accountExoKey = (normalizedKey.startsWith("exo.") || normalizedKey.startsWith("exo-"))
+    const accountExoKey = !options.keepUnsentWork && (normalizedKey.startsWith("exo.") || normalizedKey.startsWith("exo-"))
       && (normalizedKey.includes(normalizedDid) || normalizedKey.includes(encodedDid));
     if (normalizedKey.startsWith(indexPrefix) || normalizedKey.startsWith(memoryPrefix)
       || normalizedKey.startsWith(manifestRevisionPrefix) || normalizedKey === sharedWithMeKey || accountExoKey) {

@@ -10,6 +10,8 @@ import { Capacitor } from "@capacitor/core";
 import type { PermissionEntry } from "@tinycloud/web-sdk";
 import type { LucideIcon } from "lucide-react";
 import { BadgeCheck, CircleUserRound, Compass, KeyRound, MessagesSquare, Mic } from "lucide-react";
+import { ONE_NAV_ENABLED } from "../shell/navPins";
+import type { GlyphId } from "./icons";
 import { APP_DESCRIPTIONS, APP_NAMES, type ScopeId } from "./strings";
 
 export type FramedAppId =
@@ -19,7 +21,10 @@ export type FramedAppId =
   | "xyz.tinycloud.account"
   | "xyz.tinycloud.courier";
 
-export type OneAppId = FramedAppId | "capture";
+/** A TinyCloud site One links to but never frames (it refuses frames): its screen in One opens it in a new tab. */
+export type LinkAppId = "xyz.tinycloud.share";
+
+export type OneAppId = FramedAppId | LinkAppId | "capture";
 
 /** The signed-in owner the owner-bound ceiling entries are built for. */
 export interface OneAppOwner {
@@ -35,25 +40,34 @@ export interface CeilingEntry {
 
 interface OneAppBase {
   name: string;
+  /** The launcher tile's and the open app bar's full-colour icon (One's new navigation). */
+  glyph: GlyphId;
+}
+
+/** An app the launcher lists as it was before One's new navigation: with a line and a one-colour icon. */
+interface ListedOneApp extends OneAppBase {
   description: string;
   icon: LucideIcon;
 }
 
 /** One's own screen, shown in the launcher but not framed. */
-export interface NativeOneApp extends OneAppBase {
+export interface NativeOneApp extends ListedOneApp {
   id: "capture";
   kind: "native";
   /** One's route. */
   route: string;
 }
 
-/** A TinyCloud web app: framed at `/chat/apps/<id>` when `framed`, else opened in a new tab. */
-export interface FramedOneApp extends OneAppBase {
+/**
+ * A TinyCloud web app at `/chat/apps/<id>`: framed there when One frames it on this origin (`framesAppHere`), else that
+ * screen offers its page in a new tab, with no delegation.
+ */
+export interface FramedOneApp extends ListedOneApp {
   id: FramedAppId;
   kind: "framed";
   /**
-   * Whether One frames this app (with a delegation). False → its tile always opens `appUrl` in a new tab with no
-   * delegation. Secrets is false.
+   * Whether One frames this app (with a delegation). False → its screen in One always offers `appUrl` in a new tab
+   * with no delegation. Secrets is false.
    */
   framed: boolean;
   /**
@@ -63,10 +77,22 @@ export interface FramedOneApp extends OneAppBase {
   origin: string;
   /** Path on the origin the frame opens (One adds `?embed=one`). */
   path: string;
+  /**
+   * Whether the phone app frames this app too. The phone app's session holds only One's own `applications` data and
+   * cannot step up, so only an app that works on that is framed there; the rest offer the in-app browser.
+   */
+  inNativeApp: boolean;
   ceiling(owner: OneAppOwner): readonly CeilingEntry[];
 }
 
-export type OneApp = NativeOneApp | FramedOneApp;
+/** A TinyCloud site at `/chat/apps/<id>` that One never frames: its screen offers `url` in a new tab. */
+export interface LinkOneApp extends OneAppBase {
+  id: LinkAppId;
+  kind: "link";
+  url: string;
+}
+
+export type OneApp = NativeOneApp | FramedOneApp | LinkOneApp;
 
 // `__ONE_APPS_BUILD_KIND__` is replaced at build time (vite.config.ts; bunfig.toml for tests). Bundlers that don't
 // define it (a test's Bun.build) read it as undefined, which is production. Each origin below is a ternary on
@@ -89,6 +115,18 @@ export function framesAppsHere(origin: string): boolean {
   return ONE_HOST_ORIGINS.includes(origin);
 }
 
+/**
+ * The phone app's own origins (Capacitor's defaults; mobile/capacitor.config.ts sets no scheme or hostname): iOS, then
+ * Android. Exact strings: no other scheme, port or host.
+ */
+export const ONE_NATIVE_ORIGINS: readonly string[] = ["capacitor://localhost", "https://localhost"];
+
+/** Whether One frames `app` on this page's origin: any framed app on One's web origins, `inNativeApp` ones in the phone app. */
+export function framesAppHere(app: FramedOneApp, origin: string): boolean {
+  if (!app.framed) return false;
+  return framesAppsHere(origin) || (app.inNativeApp && ONE_NATIVE_ORIGINS.includes(origin));
+}
+
 function ownerDid(owner: OneAppOwner): string {
   return `did:pkh:eip155:${owner.chainId}:${owner.address}`;
 }
@@ -101,16 +139,27 @@ const sql = (scope: ScopeId, space: string, path: string, actions: string[]): Ce
 const capabilities = (space: string): CeilingEntry =>
   entry("capabilityList", { service: "tinycloud.capabilities", space, path: "", actions: ["read"], skipPrefix: true });
 
-const text = (id: OneAppId) => ({ name: APP_NAMES[id], description: APP_DESCRIPTIONS[id] });
+const text = (id: Exclude<OneAppId, LinkAppId>) => ({ name: APP_NAMES[id], description: APP_DESCRIPTIONS[id] });
+
+// Ceiling entries the phone app's step-up ceilings (below) reuse verbatim.
+const EXPLORER_APPS_SQL = entry("appsData", { service: "tinycloud.sql", space: "applications", path: "default", actions: ["read", "schema"] });
+const EXPLORER_PUBLIC = entry("publicSpace", { service: "tinycloud.kv", space: "public", path: "", actions: ["get", "list", "metadata"] });
+const ACCOUNT_CEILING: readonly CeilingEntry[] = [
+  kv("installedApps", "account", "applications/", ["get", "list"]),
+  kv("spaces", "account", "spaces/", ["get", "list"]),
+];
+const COURIER_CEILING: readonly CeilingEntry[] = [kv("courier", "agents", "xyz.tinycloud.courier/", ["get", "list"])];
 
 const ALL_APPS: readonly OneApp[] = [
-  { id: "capture", kind: "native", ...text("capture"), icon: Mic, route: "/chat/capture" },
+  { id: "capture", kind: "native", ...text("capture"), icon: Mic, glyph: "recording", route: "/chat/capture" },
   {
     id: "xyz.tinycloud.secrets",
     kind: "framed",
     framed: false,
+    inNativeApp: false,
     ...text("xyz.tinycloud.secrets"),
     icon: KeyRound,
+    glyph: "secrets",
     origin: KIND === "dev" ? "https://localhost:5191"
       : KIND === "preview" ? "https://feat-one-apps-embed.tinycloud-secrets.pages.dev"
         : "https://secrets.tinycloud.xyz",
@@ -133,8 +182,10 @@ const ALL_APPS: readonly OneApp[] = [
     id: "xyz.tinycloud.opencredentials",
     kind: "framed",
     framed: false, // opens in a new tab
+    inNativeApp: false,
     ...text("xyz.tinycloud.opencredentials"),
     icon: BadgeCheck,
+    glyph: "credentials",
     origin: KIND === "dev" ? "https://localhost:5192"
       : KIND === "preview" ? "https://feat-one-apps-embed.open-credentials.pages.dev"
         : "https://credentials.org",
@@ -151,16 +202,20 @@ const ALL_APPS: readonly OneApp[] = [
     id: "xyz.tinycloud.explorer",
     kind: "framed",
     framed: true,
+    // In the phone app Explorer gets One's `applications` data; its other views ask, and the phone app cannot step up.
+    inNativeApp: true,
     ...text("xyz.tinycloud.explorer"),
     icon: Compass,
+    glyph: "explorer",
     origin: KIND === "dev" ? "https://localhost:5193"
       : KIND === "preview" ? "https://feat-one-apps-embed.tinycloud-explorer.pages.dev"
         : "https://explorer.tinycloud.xyz",
     path: "/",
+    // Read only in the frame (TC-3675): writing and deleting open Explorer in its own tab, with its own sign-in.
     ceiling: () => [
-      entry("appsData", { service: "tinycloud.kv", space: "applications", path: "", actions: ["get", "list", "put", "del"] }),
-      entry("appsData", { service: "tinycloud.sql", space: "applications", path: "default", actions: ["read", "schema"] }),
-      entry("publicSpace", { service: "tinycloud.kv", space: "public", path: "", actions: ["get", "list", "metadata"] }),
+      entry("appsData", { service: "tinycloud.kv", space: "applications", path: "", actions: ["get", "list"] }),
+      EXPLORER_APPS_SQL,
+      EXPLORER_PUBLIC,
       sql("secretNames", "secrets", "default", ["read"]),
       kv("secretNames", "secrets", "", ["list"]),
       kv("secretNames", "secrets", "vault/secrets", ["get", "list", "metadata"]),
@@ -171,16 +226,15 @@ const ALL_APPS: readonly OneApp[] = [
     id: "xyz.tinycloud.account",
     kind: "framed",
     framed: true,
+    inNativeApp: false, // `account` space: not in the phone app's session
     ...text("xyz.tinycloud.account"),
     icon: CircleUserRound,
+    glyph: "account",
     origin: KIND === "dev" ? "https://localhost:5194"
       : KIND === "preview" ? "https://feat-one-apps-embed.tinycloud-account.pages.dev"
         : "https://account.tinycloud.xyz",
     path: "/",
-    ceiling: () => [
-      kv("installedApps", "account", "applications/", ["get", "list"]),
-      kv("spaces", "account", "spaces/", ["get", "list"]),
-    ],
+    ceiling: () => ACCOUNT_CEILING,
   },
   {
     // Courier's data view lives on the share site; only its `/courier` pages may be framed (share repo headers).
@@ -188,19 +242,39 @@ const ALL_APPS: readonly OneApp[] = [
     id: "xyz.tinycloud.courier",
     kind: "framed",
     framed: true,
+    inNativeApp: false, // `agents` space: not in the phone app's session
     ...text("xyz.tinycloud.courier"),
     icon: MessagesSquare,
+    glyph: "courier",
     origin: KIND === "dev" ? "https://localhost:5195" : "https://share.tinycloud.xyz",
     path: "/courier",
-    ceiling: () => [kv("courier", "agents", "xyz.tinycloud.courier/", ["get", "list"])],
+    ceiling: () => COURIER_CEILING,
   },
+  // One's new navigation only. Share is a plain link: One holds no delegation for it, so its screen offers its site in a
+  // new tab.
+  { id: "xyz.tinycloud.share", kind: "link", name: APP_NAMES["xyz.tinycloud.share"], glyph: "share", url: "https://share.tinycloud.xyz/" },
 ];
 
 /**
- * The apps a platform offers. iOS leaves Account out: its tile would open account.tinycloud.xyz, which has Billing.
+ * What the phone app may ask OpenKey for on an app's behalf, beyond One's sign-in (TC-3568 S1b, phase 1): read-only,
+ * each entry copied from the app's ceiling. No secrets, vault or encryption entry: those need their own ruling.
+ * OpenKey enforces exactly these per app on the Home client; `native-step-up-ceilings.json` is the copy its CI
+ * compares against, kept equal to this by the registry test.
  */
-export function oneAppsFor(platform: string): readonly OneApp[] {
-  return Object.freeze(ALL_APPS.filter((app) => !(platform === "ios" && app.id === "xyz.tinycloud.account")));
+export const NATIVE_STEP_UP_CEILINGS: Readonly<Partial<Record<FramedAppId, readonly CeilingEntry[]>>> = Object.freeze({
+  "xyz.tinycloud.explorer": [EXPLORER_PUBLIC, EXPLORER_APPS_SQL],
+  "xyz.tinycloud.account": ACCOUNT_CEILING,
+  "xyz.tinycloud.courier": COURIER_CEILING,
+});
+
+/**
+ * The apps a platform offers. iOS leaves Account out: its tile would open account.tinycloud.xyz, which has Billing.
+ * Share is listed only with One's new navigation (`oneNav`).
+ */
+export function oneAppsFor(platform: string, oneNav: boolean = ONE_NAV_ENABLED): readonly OneApp[] {
+  return Object.freeze(
+    ALL_APPS.filter((app) => !(platform === "ios" && app.id === "xyz.tinycloud.account") && (oneNav || app.kind !== "link")),
+  );
 }
 
 export const ONE_APPS: readonly OneApp[] = oneAppsFor(Capacitor.getPlatform());
@@ -209,7 +283,7 @@ export function oneApp(id: string): OneApp | undefined {
   return ONE_APPS.find((app) => app.id === id);
 }
 
-/** The app One frames for `id`, or undefined (unknown id, native app, or an app that opens in a new tab). */
+/** The app One frames for `id`, or undefined (unknown id, native or link app, or an app that is never framed). */
 export function framedApp(id: string): FramedOneApp | undefined {
   const app = oneApp(id);
   return app?.kind === "framed" && app.framed ? app : undefined;
@@ -218,21 +292,21 @@ export function framedApp(id: string): FramedOneApp | undefined {
 export type AppTarget = { kind: "route"; path: string } | { kind: "newTab"; url: string };
 
 /**
- * Where a tile goes on a page at `origin` (`window.location.origin`): One's route for native apps and for apps One
- * frames here; otherwise the app's own page in a new tab, with no delegation.
+ * Where a tile goes on a page at `origin` (`window.location.origin`) before One's new navigation: One's route for
+ * native apps and for apps One frames here; otherwise the app's own page in a new tab, with no delegation.
  */
 export function appTarget(app: OneApp, origin: string): AppTarget {
   if (app.kind === "native") return { kind: "route", path: app.route };
-  if (app.framed && framesAppsHere(origin)) return { kind: "route", path: appRoute(app) };
+  if (app.kind === "framed" && framesAppHere(app, origin)) return { kind: "route", path: appRoute(app) };
   return { kind: "newTab", url: appUrl(app) };
 }
 
-/** The page the app opens outside One's frame (a new tab, no delegation). */
-export function appUrl(app: FramedOneApp): string {
-  return new URL(app.path, app.origin).toString();
+/** The app's own page, outside One (a new tab, no delegation). */
+export function appUrl(app: FramedOneApp | LinkOneApp): string {
+  return app.kind === "link" ? app.url : new URL(app.path, app.origin).toString();
 }
 
-/** One's route for an app: its own screen for a native app, else the framed surface. */
+/** One's route for an app: its own screen for a native app, else `/chat/apps/<id>` (framed there, or its new-tab page). */
 export function appRoute(app: OneApp): string {
   return app.kind === "native" ? app.route : `/chat/apps/${encodeURIComponent(app.id)}`;
 }

@@ -16,6 +16,7 @@ import {
   appUnpinnedToast,
 } from "@/lib/homeStrings";
 import { cn } from "@/lib/utils";
+import { openLinkInApp } from "@/feed/inAppLink";
 import type { AppTarget } from "@/apps/registry";
 import { NavBadge } from "@/shell/NavBadge";
 import type { PinId } from "@/shell/navPins";
@@ -33,10 +34,11 @@ export interface LauncherTile {
   pending?: number;
 }
 
+/** A new-tab target leaves One on the web; in the phone app it opens in the system's in-app browser (no delegation). */
 function TileLink({ opens, children, ...rest }: { opens: AppTarget } & Omit<ComponentProps<"a">, "href" | "target">) {
   if (opens.kind === "newTab") {
     return (
-      <a href={opens.url} target="_blank" rel="noopener noreferrer" {...rest}>
+      <a href={opens.url} target="_blank" rel="noopener noreferrer" onClick={(event) => openLinkInApp(opens.url, event.nativeEvent, { sheet: false })} {...rest}>
         {children}
       </a>
     );

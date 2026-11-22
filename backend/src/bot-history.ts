@@ -12,6 +12,8 @@ function resultData<T>(result: { ok: true; data: T } | { ok: false; error: unkno
 }
 export const HISTORY_PREFIX = "xyz.tinycloud.tinychat/threads/bots/v1/";
 export const HISTORY_DOMAIN = "tinychat.bot-history.storage/v1\n";
+/** Where the backend keeps each bot's history grant, in its own space. */
+export const BOT_HISTORY_GRANT_KEY_PREFIX = "bot-history/grants/";
 export const historyHash = (value: string) => createHash("sha256").update(value).digest("hex");
 export const historyOwner = (address: string) => `did:pkh:eip155:1:${address.toLowerCase()}`;
 /** How a bot other than Main is named: 32 hex characters chosen by the backend. Checked before it enters any id, path or storage key. */
@@ -92,7 +94,7 @@ export class BotHistory {
   #keyFor(address: string, key?: string) {
     checkAddress(address);
     const sibling = siblingKey(key);
-    return `bot-history/grants/${address.toLowerCase()}${sibling ? `/${sibling}` : ""}`;
+    return `${BOT_HISTORY_GRANT_KEY_PREFIX}${address.toLowerCase()}${sibling ? `/${sibling}` : ""}`;
   }
   #seal(value: unknown, aad: string) {
     const nonce = randomBytes(12);
@@ -140,7 +142,7 @@ export class BotHistory {
     const owners: string[] = [];
     let cursor: string | undefined;
     do {
-      const result = resultData(await withSessionRefresh(this.node, async () => assertKvResult(await this.node.kv.list({ prefix: "bot-history/grants/", cursor }))));
+      const result = resultData(await withSessionRefresh(this.node, async () => assertKvResult(await this.node.kv.list({ prefix: BOT_HISTORY_GRANT_KEY_PREFIX, cursor }))));
       owners.push(...result.keys.map(key => /(?:^|\/)grants\/(0x[a-f0-9]{40})$/.exec(key)?.[1]).filter((key): key is string => !!key));
       cursor = result.nextCursor;
       if (result.truncated && !cursor) throw new Error("history_owner_pagination_unavailable");

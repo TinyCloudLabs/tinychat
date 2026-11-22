@@ -8,6 +8,17 @@ import { useCallback, useMemo, useSyncExternalStore } from "react";
 
 /** One Apps is on only when the build says exactly "true". Off means today's navigation and Apps page. */
 export const ONE_APPS_ENABLED = import.meta.env.VITE_ONE_APPS === "true";
+/**
+ * One's new navigation over One Apps (TC-3650): the phone's floating pill, Feed, Chat and Apps plus You, the Apps grid
+ * and the open app's bar on every app screen. Only with One Apps on and the build saying exactly "true"; off is One
+ * Apps as it was.
+ */
+export const ONE_NAV_ENABLED = ONE_APPS_ENABLED && import.meta.env.VITE_ONE_NAV === "true";
+/**
+ * Add an app (the grid's last tile and `/chat/apps/add`), still being worked out: only with the new navigation on and
+ * the build saying exactly "true". Off, nothing links to it and the address is no screen of its own.
+ */
+export const ONE_ADD_APP_ENABLED = ONE_NAV_ENABLED && import.meta.env.VITE_ONE_ADD_APP === "true";
 
 export type NativePinId = "capture" | "connectors";
 export type AppPinId = `app:${string}`;
