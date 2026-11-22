@@ -1,5 +1,13 @@
 # @tinychat/backend
 
+## 0.11.0-beta.10
+
+### Minor Changes
+
+- 323a384: Library and MCP discover and read KV-only Fireflies server-import meeting records with untrusted-data bounds and purge checks, behind a flag that is off by default.
+
+  Details: TC-3905
+
 ## 0.11.0-beta.9
 
 ### Patch Changes
