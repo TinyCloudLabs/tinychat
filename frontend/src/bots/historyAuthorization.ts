@@ -11,6 +11,15 @@ export function botHistoryOwnerPermissions(address: string): PermissionEntry[] {
     actions: ["network.create", "decrypt"], description: `Set up encryption and read ${MAIN_BOT_NAME}'s chat history in your TinyCloud.` }];
 }
 
+/** The cause of an owner's decline of the encryption request. */
+export const HISTORY_DECLINED = "history_approval_declined";
+export const isHistoryDeclined = (cause: unknown): boolean => cause instanceof Error && cause.message === HISTORY_DECLINED;
+
+// The owner who declined the request in this page session: no further request is made until they ask for it.
+let declined: string | undefined;
+/** Forgets the decline, so the next authorization asks again (the "Review request" button). */
+export const clearHistoryDecline = (): void => { declined = undefined; };
+
 /** Foreground only: first bot use/history read. Background renewal never calls this. */
 export async function authorizeBotHistory(tcw: TinyCloudWeb, connect = connectWallet, status = botsApi.getBotsStatus): Promise<void> {
   if (!(await status()).enabled) throw new Error("history_disabled");
@@ -19,6 +28,7 @@ export async function authorizeBotHistory(tcw: TinyCloudWeb, connect = connectWa
   const permissions = botHistoryOwnerPermissions(session.address);
   if (!tcw.hasPermissions(permissions)) {
     const owner = session.address.toLowerCase();
+    if (declined === `${owner}:${session.sessionKey}`) throw new Error(HISTORY_DECLINED);
     const chainId = session.chainId;
     const sessionKey = session.sessionKey;
     // session() returns fresh snapshots; bind the flow to the owner and session key, not the wrapper object.
@@ -34,7 +44,10 @@ export async function authorizeBotHistory(tcw: TinyCloudWeb, connect = connectWa
     const expiryMs = expires - Date.now();
     if (!Number.isFinite(expiryMs) || expiryMs <= 0) throw new Error("history_session_expired");
     const result = await tcw.requestPermissions(permissions, { expiryMs });
-    if (!result.approved) throw new Error("history_approval_declined");
+    if (!result.approved) {
+      declined = `${owner}:${sessionKey}`;
+      throw new Error(HISTORY_DECLINED);
+    }
     if (!sameSession() || !tcw.hasPermissions(permissions)) throw new Error("history_authority_missing");
   }
   await tcw.ensureEncryptionNetwork();
