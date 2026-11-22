@@ -1,5 +1,17 @@
 # @tinychat/backend
 
+## 0.9.5
+
+### Patch Changes
+
+- fcdb738: The backend records each agent chat credit check as a structured event, so how many chats fall below the credit floor can be counted.
+
+  Details: TC-3734
+
+- 49239bf: The agent session check waits up to 8 seconds for the MCP before it answers 502 mcp_unavailable, and logs the error code, the upstream HTTP status and the elapsed milliseconds when it fails, so the cause of that answer can be read in the logs.
+
+  Details: TC-3739
+
 ## 0.9.5-beta.1
 
 ### Patch Changes
