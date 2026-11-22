@@ -31,6 +31,7 @@ function storeWithApproval(): GrantStore {
   const record = {
     botId: BOT, state: "approved", reported: true, approveUrl: "https://openkey.so/a/x", linkExpiresAt: NOW, until: NOW + HOUR,
     ask: { name: "OPENAI_API_KEY", sites: ["api.openai.com"], header: "authorization", why: "To transcribe a call.", ownerDid: "did:pkh:eip155:1:0x" + "1".repeat(40) },
+    methods: ["GET", "HEAD", "POST"],
     calls: { day: "", count: 0, bytes: 0 }, keys: { session: { delegationCid: "bafy" } },
   };
   return { load: () => [{ id: ID, botId: BOT, record }], save: () => undefined, remove: () => undefined };

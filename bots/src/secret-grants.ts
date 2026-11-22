@@ -22,7 +22,7 @@ import type { GuardDeps } from "./fetch-guard";
 import { isRecord } from "./guards";
 import { OWNER_DID } from "./owner";
 import { type ApprovedSecret, DAILY_CALLS_PER_SECRET, DAILY_REPLY_BYTES_PER_SECRET, prepareCall, refusal, secretName, sendCall } from "./secret-call";
-import { allowedMethods, knownSecret, SECRET_NAME, secretSites, writeMethods } from "./secret-catalog";
+import { allowedMethods, knownSecret, type Method, READ_METHODS, SECRET_NAME, secretSites, writeMethods } from "./secret-catalog";
 import type { GrantStore } from "./secret-store";
 import { REQUEST_ID } from "./secret-store";
 import { toolText } from "./web";
@@ -72,6 +72,11 @@ export interface GrantSession {
 interface GrantRecord {
   botId: string;
   ask: SecretAsk;
+  /**
+   * The methods the owner was asked to approve, fixed at ask time. A call may use only those still in the catalog:
+   * a later widening never reaches this grant, a narrowing applies at once. Missing: GET and HEAD only.
+   */
+  methods?: Method[];
   state: GrantState;
   /** The outcome was given to the supervisor. */
   reported: boolean;
@@ -273,6 +278,7 @@ export class SecretGrants {
     const relay = this.#links.generateRelayKey();
     const service = knownSecret(ask.name)?.service;
     const where = service ? `${service} (${ask.sites.join(", ")})` : ask.sites.join(", ");
+    const methods = [...allowedMethods(ask.name)];
     // Monica's words, the same as the secret card's, so the owner sees writes in both places they decide.
     const writes = service && writeMethods(ask.name).length > 0 ? ` Main can also send data to ${service} with it, which may cost money or change things there.` : "";
     const request: OpenKeyApprovalRequestV1 = {
@@ -299,7 +305,7 @@ export class SecretGrants {
     if (this.#records.has(id)) return { refused: "conflict" };
     const linkExpiresAt = Date.parse(created.expiresAt);
     const record: GrantRecord = {
-      botId, ask, state: "pending", reported: false, approveUrl: created.link, linkExpiresAt, calls: { day: "", count: 0, bytes: 0 },
+      botId, ask, methods, state: "pending", reported: false, approveUrl: created.link, linkExpiresAt, calls: { day: "", count: 0, bytes: 0 },
       keys: { jwk, relayPrivateKey: relay.privateKey, request, requestId: created.id, bodyCid: created.bodyCid, record: { header: created.record.header, signature: created.record.signature }, ackId: randomUUID() },
     };
     try {
@@ -375,7 +381,10 @@ export class SecretGrants {
       return { result: refusal("ended", { name, until: record.until }), outcome: "ended" };
     }
     if (record.state !== "approved" || !record.keys?.session) return { result: refusal("notAsked", { name }), outcome: "not_asked" };
-    const secret: ApprovedSecret = { name, sites: record.ask.sites, header: record.ask.header, methods: allowedMethods(name), until: record.until! };
+    // What the owner approved, less anything the catalog has since taken away.
+    const current = allowedMethods(name);
+    const methods = (record.methods ?? READ_METHODS).filter(method => current.includes(method));
+    const secret: ApprovedSecret = { name, sites: record.ask.sites, header: record.ask.header, methods, until: record.until! };
     const prepared = prepareCall(args, secret);
     if ("refused" in prepared) {
       return { result: refusal(prepared.refused, { name, sites: secret.sites, header: secret.header, methods: secret.methods }), outcome: `refused_${prepared.refused}` };

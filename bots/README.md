@@ -296,7 +296,9 @@ call and returns the reply with the value hidden.
     address the name resolves to must be public; the connection is pinned to one of them on every call.
   - GET and HEAD always; a write method only where the secret's catalog entry lists it (`writes`, today POST for
     OpenAI, Anthropic, Google Gemini, ElevenLabs and Fireflies), never for an unknown secret. When writes are listed,
-    the OpenKey reason and the secret card say so.
+    the OpenKey reason and the secret card say so. The methods are saved with the request when it is made, and a
+    call may use only those still in the catalog: a later widening never reaches an existing grant, a narrowing
+    applies at once. A record saved without them is read-only.
   - Redirects aren't followed: Main is told where one pointed, with the value hidden.
   - The reply is read whole, up to 1 MiB (anything larger is refused) within 45 s; compressed replies are refused.
   - The value is hidden as written and in base64, base64url, URL-encoded, hex and JSON-escaped forms. This covers

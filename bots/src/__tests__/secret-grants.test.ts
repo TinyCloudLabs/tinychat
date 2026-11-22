@@ -12,6 +12,7 @@ import type { Conn, GuardDeps } from "../fetch-guard";
 import { isRecord } from "../guards";
 import { botIdFor } from "../owner";
 import { DAILY_CALLS_PER_SECRET } from "../secret-call";
+import { KNOWN_SECRETS, type KnownSecret } from "../secret-catalog";
 import {
   type ApprovalLinks, type GrantSession, LINK_MS, MAX_GRANT_SECONDS, type ReadValue, SecretGrants, type SecretReader, SUGGESTED_GRANT_SECONDS, verifiedGrant,
 } from "../secret-grants";
@@ -398,6 +399,52 @@ describe("calls with an approved secret", () => {
     const outcome = await env.grants.call(BOT, { ...post, method: "DELETE" }, net);
     expect(textOf(outcome)).toBe("OPENAI_API_KEY is approved only for GET, HEAD and POST calls.");
     expect(sent.length).toBe(1);
+  });
+
+  /** Runs `body` with one catalog entry's writes changed, as a later deploy would; restores the entry after. */
+  async function withWrites(name: string, writes: KnownSecret["writes"], body: () => Promise<void>) {
+    const entry = KNOWN_SECRETS[name] as { writes?: KnownSecret["writes"] };
+    const before = entry.writes;
+    entry.writes = writes;
+    try {
+      await body();
+    } finally {
+      entry.writes = before;
+    }
+  }
+
+  test("a catalog that later lists a write never widens a grant already asked for", async () => {
+    const env = await approved(setup(), {}, { ...ASK, name: "GITHUB_TOKEN", sites: ["api.github.com"] });
+    const { net, sent } = site();
+    const post = { ...CALL, name: "GITHUB_TOKEN", method: "POST", url: "https://api.github.com/repos/owner/repo/issues", body: "{}" };
+    await withWrites("GITHUB_TOKEN", ["POST"], async () => {
+      const outcome = await env.grants.call(BOT, post, net);
+      expect(textOf(outcome)).toBe("GITHUB_TOKEN is approved only for GET and HEAD calls.");
+      expect(sent).toEqual([]);
+      // The same grant, reloaded from its sealed record, still holds only what the owner was asked.
+      expect((await setup(env.store).grants.call(BOT, post, net)).outcome).toBe("refused_method");
+    });
+  });
+
+  test("a catalog that later drops a write takes it from a grant at once", async () => {
+    const env = await approved();
+    const { net, sent } = site();
+    const post = { ...CALL, method: "POST", url: "https://api.openai.com/v1/chat/completions", body: "{}" };
+    await withWrites("OPENAI_API_KEY", undefined, async () => {
+      expect(textOf(await env.grants.call(BOT, post, net))).toBe("OPENAI_API_KEY is approved only for GET and HEAD calls.");
+      expect(sent).toEqual([]);
+    });
+    expect((await env.grants.call(BOT, post, net)).outcome).toBe("ok");
+  });
+
+  test("a record saved without methods is for reading only, even for a secret the catalog lets write", async () => {
+    const store = memoryStore();
+    await approved(setup(store));
+    delete saved(store, ID).methods;
+    const { net, sent } = site();
+    const post = { ...CALL, method: "POST", url: "https://api.openai.com/v1/chat/completions", body: "{}" };
+    expect(textOf(await setup(store).grants.call(BOT, post, net))).toBe("OPENAI_API_KEY is approved only for GET and HEAD calls.");
+    expect(sent).toEqual([]);
   });
 
   test("stops at the day's call cap, which survives a restart", async () => {
