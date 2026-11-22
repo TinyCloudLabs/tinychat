@@ -26,7 +26,7 @@
 
 ### Patch Changes
 
-- 99b2305: Restrict MCP Fireflies KV fallback to proven-absent SQL stores, filter and revalidate cached server-imported Library rows against the active flag and purge ledger, align Library KV paging with `nextCursor` and `truncated` and update the MCP KV truncation text.
+- 99b2305: MCP falls back to Fireflies KV records only when the SQL store is known to be empty. The Library filters and rechecks cached server-imported rows against the flag and the purge ledger, and pages KV with `nextCursor` and `truncated`. MCP's KV truncation text names the size limit.
 
   Details: TC-3919
 
