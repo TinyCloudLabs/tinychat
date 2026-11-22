@@ -38,18 +38,24 @@ including deleted files and both sides of renames. Native inputs include all of
 `scripts/`, `test/`, `.github/`, `agent-skills/` and `agent-setup/`. Every root-level
 file and every nested workspace manifest, lockfile and install configuration is
 included, even outside the frontend (for example `backend/package.json`).
-This deliberately runs native checks for root README-only edits too.
-WebKit keeps broad frontend/test/shared-package coverage; Swift/Rust-only changes
-do not require it. Backend-source-only and nested documentation-only PRs skip
-macOS work. Run the real-git input fixtures with
+This deliberately runs the broad native checks for root README-only edits too.
+Metal instead selects `desktop/`, Cargo/toolchain inputs, Bun configuration, its
+workflow/detector, and the two web files embedded by Rust (`frontend/.env.production`
+and `frontend/src/capture/recorder/recordShortcut.ts`). It skips JS package and browser-test edits.
+WebKit selects `frontend/`, `test/`, `packages/`, `patches/`, workspace install/build
+configuration and its workflow/detector: it tests screen overflow as well as the halo.
+Swift/Rust-only, backend-source-only and documentation-only PRs skip WebKit.
+Run the real-git input fixtures with
 `python3 .github/scripts/test-native-changes.py`; PR input jobs run them too.
 
 All macOS checks run without path selection on `merge_group`, every push to
 `main` or `release/**`, and the repository's `exo-desktop@*`,
 `@tinychat/frontend@*` and `@tinychat/backend@*` release tags. Signing and release
-publication remain in their existing workflows. Only superseded PR runs are
-cancelled. Main currently has no merge queue; enabling one is a repository-admin
-decision. Until then, the unconditional main push runs provide the full check.
+publication remain in their existing workflows. These four CI workflows cancel
+superseded PR runs and superseded pushes to `main`, grouped by workflow and PR/ref.
+Manual, scheduled, tag, release-branch and merge-queue runs stay independent and
+are not cancelled. Main currently has no merge queue; enabling one is a
+repository-admin decision. The latest main push still runs the full checks.
 
 ## Local TLS
 
