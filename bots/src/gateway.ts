@@ -649,7 +649,12 @@ export class Gateway {
         if (!toolAllowed(server, name)) return Response.json(rpcFailure(id, -32602, "Unknown tool"));
         const args = isRecord(params.arguments) ? params.arguments : {};
         if (server === "app") {
-          if (this.#meetings.handles(name)) return Response.json(rpcResult(id, await this.#meetings.call(botId, name, args)));
+          if (this.#meetings.handles(name)) {
+            const result = await this.#meetings.call(botId, name, args);
+            // A read's result is outside text: a question Main asks from now on may have been shaped by it.
+            if (!result.isError) this.#asks.markOutside(botId);
+            return Response.json(rpcResult(id, result));
+          }
           if (name !== "ask_owner") return Response.json(rpcFailure(id, -32602, "Unknown tool"));
           return Response.json(rpcResult(id, this.#asks.call(botId, args)));
         }
