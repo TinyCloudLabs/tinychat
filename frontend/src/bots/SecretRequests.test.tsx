@@ -127,10 +127,15 @@ test("the client keeps well-formed secret requests and drops the rest", async ()
       { ...base, id: "s4", sites: ["https://api.openai.com/x"] },
       { ...base, id: "s5", state: "granted" },
       { ...base, id: "s6", approveUrl: "javascript:alert(1)" },
+      { ...base, id: "s7", writes: ["POST"] },
+      { ...base, id: "s8", writes: ["GET"] },
+      { ...base, id: "s9", writes: [] },
     ] }),
   });
   const list = await api.listRequests();
-  expect(list.map((request) => request.id)).toEqual(["s1", "s6"]);
+  expect(list.map((request) => request.id)).toEqual(["s1", "s6", "s7", "s8", "s9"]);
   expect(list[0]).toMatchObject({ kind: "secret", name: "OPENAI_API_KEY", approveUrl: "https://openkey.so/a" });
   expect(list[1]).not.toHaveProperty("approveUrl");
+  // Writes are kept only as a list of write methods; anything else reads as read-only.
+  expect(list.slice(2).map((request) => (request.kind === "secret" ? request.writes : undefined))).toEqual([["POST"], undefined, undefined]);
 });

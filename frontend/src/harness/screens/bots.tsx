@@ -212,7 +212,7 @@ const SECRET_UNTIL = new Date(FROZEN_NOW + 6 * 3_600_000).toISOString();
 const OPENAI = { kind: "secret" as const, name: "OPENAI_API_KEY", sites: ["api.openai.com"], service: "OpenAI", outside: false, undelivered: false, ...SECRET_AT };
 const WHY = "To summarise your meeting notes with your own OpenAI account.";
 const SECRETS_ASKED: SecretRequest[] = [
-  { ...OPENAI, id: "fx-saved", state: "pending", why: WHY, approveUrl: "https://openkey.so/approve/fixture", outside: true },
+  { ...OPENAI, id: "fx-saved", state: "pending", why: WHY, approveUrl: "https://openkey.so/approve/fixture", outside: true, writes: ["POST"] },
   { ...OPENAI, id: "fx-unknown", state: "pending", name: "ACME_REPORTS_TOKEN", service: "", sites: ["api.acme.example", "eu.acme.example", "us.acme.example"], why: "To post the weekly report to Acme." },
 ];
 const SECRETS_DONE: SecretRequest[] = [

@@ -200,6 +200,7 @@ function PendingCard({ request, asks, onMessage, labelledBy }: Omit<CardProps, "
       <p id={labelledBy} className="text-headline">{S.title}</p>
       {why ? <p className="whitespace-pre-wrap break-words text-body" data-secret-why="">{ASK_STRINGS.quote(why)}</p> : null}
       <p className="text-callout" data-secret-sites="">{S.onlyWith(request)}</p>
+      {request.writes?.length ? <p className="text-callout" data-secret-writes="">{S.writes(secretWith(request))}</p> : null}
       <p className="text-callout text-muted-foreground">{askedAgo(now - Date.parse(request.askedAt))}</p>
       {request.outside ? <p className="text-callout" data-secret-outside="">{S.outside}</p> : null}
       {native ? <p className="text-callout" data-secret-iphone="">{S.iphone}</p> : (
