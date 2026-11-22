@@ -128,9 +128,9 @@ export class HistoryJournal {
   get legacyPending(): boolean { return this.#state.legacyPending; }
   /**
    * TC-3933: the owner has granted archiving at least once, so the journal is owed to the archive: a grant is on record,
-   * or one has expired and left its notice. A bot that never had one has no archive to be covered by.
+   * a receipt was accepted (journals from before permissionValidUntil was kept have none), or one has expired and left its notice. A bot that never had one has no archive to be covered by.
    */
-  get everGranted(): boolean { return this.#state.permissionValidUntil !== undefined || this.#state.notice !== undefined; }
+  get everGranted(): boolean { return this.#state.permissionValidUntil !== undefined || this.#state.notice !== undefined || this.#state.receipts.length > 0; }
   /** Removes the journal file and starts over empty. Only for a bot that was never granted: nothing in it was ever to be archived. */
   discard() {
     rmSync(this.#path, { force: true });

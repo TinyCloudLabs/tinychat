@@ -373,6 +373,7 @@ export class Bot {
   readonly #running: RunningLimit;
   #history: HistoryJournal | undefined;
   /** The newest archive grant seen by a bot that has no journal to record it in (a sibling that has not run yet). */
+  // In memory only: a client that grants siblings must persist the grant or send it again after a restart (siblings do not grant today).
   #grantSeen: number | undefined;
   #sandbox: Sandbox | undefined;
   #starting: Promise<Sandbox> | undefined;

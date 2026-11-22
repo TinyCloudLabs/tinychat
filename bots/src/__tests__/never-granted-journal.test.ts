@@ -1,7 +1,7 @@
 // TC-3933: a bot that has never had an archive grant keeps no history journal. The journal used to grow until it filled
 // (about 3.9 MiB of use), then failed every turn and blocked New chat, the sweep and deletion for good.
 import { afterAll, afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type Bot, BotManager, type ErrorCode, type Sandbox, type SandboxLauncher, type TurnSink } from "../bot";
@@ -164,6 +164,22 @@ describe("a bot that has a grant", () => {
     expect(new HistoryJournal(main.layout, HISTORY).legacyPending).toBe(false);
     expect(await manager.deleteWorkingState(botIdFor(OWNER), "new_chat")).toBeUndefined();
     expect(existsSync(main.layout.dataDir)).toBe(false);
+  });
+
+  test("a journal that holds a receipt counts as granted, so it is kept even with no grant on record", async () => {
+    const { manager } = setup();
+    const main = manager.forOwner(OWNER);
+    const journal = new HistoryJournal(main.layout, HISTORY);
+    journal.begin(OWNER, 0);
+    journal.append({ type: "user", text: "archived long ago" });
+    const state = JSON.parse(readFileSync(journalOf(main.layout), "utf8"));
+    state.receipts = [{ body: {}, signature: "0x" }];
+    writeFileSync(journalOf(main.layout), JSON.stringify(state));
+    expect(new HistoryJournal(main.layout, HISTORY).everGranted).toBe(true);
+    await manager.sweepUnused(30 * DAY);
+    expect(existsSync(journalOf(main.layout))).toBe(true);
+    expect(await turn(main, "next")).toBe("done");
+    expect(new HistoryJournal(main.layout, HISTORY).messages().map(message => message.text)).toEqual(["archived long ago", "next", ""]);
   });
 
   test("a sibling that was granted before it ran journals from its first turn", async () => {
