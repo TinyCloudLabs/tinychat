@@ -1,5 +1,13 @@
 # exo-desktop
 
+## 0.16.1
+
+No changes in this release.
+
+## 0.16.1-beta.1
+
+No changes in this release.
+
 ## 0.16.1-beta.0
 
 No changes in this release.
