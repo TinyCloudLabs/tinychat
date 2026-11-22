@@ -11,6 +11,7 @@ import { type BotLayout, botLayout, type LayoutRoots } from "./layout";
 import { MESSAGING_STRINGS } from "./messaging-strings";
 import { BOT_ID, botIdFor, MAIN_KEY } from "./owner";
 import { type DeleteSkip, lastUsed, markUsed, removeWorkingState } from "./retention";
+import { type OwnerDate, ownerDateLine } from "./owner-date";
 import { type Frame, type HostToolHandler, type HostToolReply, RpcError } from "./rpc";
 import { addressesIn } from "./web";
 import { readWebPolicy, type WebPolicy, writeWebPolicy } from "./web-policy";
@@ -177,17 +178,25 @@ export const ORIGIN_LINES = {
 
 /** Where OMP reads `@<path>` as a file to load into the turn: at the start of the text or after a space or opening mark. */
 const FILE_MENTION = /(^|[\s([{<"'`])@/g;
+/**
+ * A bracket that would open a TinyCloud line, in text the supervisor did not write: spaces or marks may stand before
+ * the word, and invisible format characters (such as a zero-width space) inside it.
+ */
+const TINYCLOUD_MARK = new RegExp(`\\[(?=[^\\p{L}\\p{N}\\]]*${[..."tinycloud"].join("\\p{Cf}*")})`, "giu");
 
 /**
  * What OMP is sent for a turn. A turn that did not come straight from the owner's chat starts with its origin line, so
  * it never starts with "/": OMP runs slash commands and prompt templates only for a message that does, so such a turn
  * cannot run one (`/skill:` tokens, which OMP finds anywhere, are off with skills in config.yml). Its `@` mentions get a
  * word joiner after the `@`, so OMP does not load a file from the bot's box into the turn for whoever wrote it.
+ * An owner's turn starts with their local date line when `date` is given, unless it is a slash command.
+ * In every turn a `[` that would open a TinyCloud line gets a word joiner after it, so only the supervisor writes one.
  */
-export function promptText(text: string, from: TurnOrigin): string {
-  if (from === "owner") return text;
+export function promptText(text: string, from: TurnOrigin, date?: OwnerDate): string {
+  const written = text.replace(TINYCLOUD_MARK, "[\u2060");
+  if (from === "owner") return date && !written.startsWith("/") ? `${ownerDateLine(date)}\n${written}` : written;
   const line = from === "bot" ? ORIGIN_LINES.bot : ORIGIN_LINES.app;
-  return `${line}\n${text.replace(FILE_MENTION, "$1@\u2060")}`;
+  return `${line}\n${written.replace(FILE_MENTION, "$1@\u2060")}`;
 }
 
 function messageBotTool(keys: readonly string[]) {
@@ -379,8 +388,11 @@ export class Bot {
     return this.#launcher.syncAsks?.(this.layout, turn, this.#ownerDid) ?? Promise.resolve();
   }
 
-  /** Runs one message. Reports through `sink` and always ends with exactly one done or error. */
-  async send(text: string, sink: TurnSink, owner?: string, messenger?: BotMessenger, from: TurnOrigin = "owner"): Promise<void> {
+  /**
+   * Runs one message. Reports through `sink` and always ends with exactly one done or error. `date` is the owner's
+   * local date and time zone, used only on the owner's own turns.
+   */
+  async send(text: string, sink: TurnSink, owner?: string, messenger?: BotMessenger, from: TurnOrigin = "owner", date?: OwnerDate): Promise<void> {
     if (this.#busy) {
       sink.error("busy");
       return;
@@ -444,7 +456,7 @@ export class Bot {
         sink.status(state);
       }
       if (!messenger || !sandbox.onHostToolCall) {
-        await this.#turn(sandbox, promptText(text, from), sink);
+        await this.#turn(sandbox, promptText(text, from, date), sink);
         return;
       }
       try {
@@ -455,7 +467,7 @@ export class Bot {
         return;
       }
       try {
-        await this.#turn(sandbox, promptText(text, from), sink, messenger);
+        await this.#turn(sandbox, promptText(text, from, date), sink, messenger);
       } finally {
         try { await sandbox.request({ type: "set_host_tools", tools: [] }, HOST_TOOLS_TIMEOUT_MS); }
         catch { if (this.#sandbox === sandbox) await this.#stop(sandbox); }

@@ -59,7 +59,7 @@ describe("main questions", () => {
   test("an ordinary send is unchanged", async () => {
     const seen: Seen[] = [];
     await apiReturning(new Response("event: done\ndata: {\"messageId\":\"m1\"}\n\n"), seen).sendToMain("hello", () => {});
-    expect(JSON.parse(String(seen[0]!.init.body))).toEqual({ text: "hello" });
+    expect(JSON.parse(String(seen[0]!.init.body))).toEqual({ text: "hello", clientContext: { localDate: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/), timeZone: expect.any(String) } });
   });
 
   test("a message from the app keeps the origin mark and the decision; others do not get one", async () => {

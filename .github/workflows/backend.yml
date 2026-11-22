@@ -62,8 +62,9 @@ jobs:
             relevant=false
             while IFS= read -r file; do
               case "$file" in
-                # bots/src/tool-policy.ts: backend/src/__tests__/bots-service-routes.test.ts reads the never-list from it.
-                backend/* | bots/src/tool-policy.ts | packages/* | patches/* | package.json | bun.lock | turbo.json \
+                # bots/src/*: backend/src/__tests__/bot-admission-message-bot.test.ts runs the bots service's code against the backend's admission route.
+                # (This includes bots/src/tool-policy.ts: backend/src/__tests__/bots-service-routes.test.ts reads the never-list from it.)
+                backend/* | bots/src/* | bots/bun.lock | packages/* | patches/* | package.json | bun.lock | turbo.json \
                 | docker-compose*.yml | log-shipper/* | .github/scripts/* | .github/deploy-tools/* \
                 | .github/workflows/deploy-backend-phala.yml | .github/workflows/backend.yml | scripts/home-feed/* \
                 | scripts/agent-sync/*)
@@ -88,6 +89,10 @@ jobs:
       - name: Install JS deps
         if: steps.relevance.outputs.relevant == 'true'
         run: bun install --frozen-lockfile
+
+      - name: Install bots service deps (the admission end-to-end test imports bots/src)
+        if: steps.relevance.outputs.relevant == 'true'
+        run: bun install --frozen-lockfile --cwd bots
 
       - name: Build workspace packages
         if: steps.relevance.outputs.relevant == 'true'
