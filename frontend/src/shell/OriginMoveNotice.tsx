@@ -81,7 +81,7 @@ export function originMoveNoticeLines(work: LocalRecordingWork): NoticePart[][] 
   }
   // Another account's answers: never counted to the signed-in visitor, whose answers they are not.
   if (work.otherAccountAnswers > 0) {
-    lines.push(["Another TinyCloud account has answers in this browser that aren't sent yet. This tab stays here until that account signs in here and sends them, for up to 7 days."]);
+    lines.push(["Another TinyCloud account has unsent answers in this browser. This tab moves once that account signs in here and sends them, or 7 days after they were written."]);
   }
   return lines;
 }

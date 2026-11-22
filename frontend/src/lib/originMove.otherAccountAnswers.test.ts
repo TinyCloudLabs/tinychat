@@ -1,9 +1,9 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { holdAnswer, recordUnsentAnswer, type HeldAnswer, type UnsentAnswer } from "@/feed/answerOutbox";
+import { afterEach, beforeEach, describe, expect, setSystemTime, test } from "bun:test";
+import { HELD_ANSWER_TTL_MS, holdAnswer, recordUnsentAnswer, type HeldAnswer, type UnsentAnswer } from "@/feed/answerOutbox";
 import type { HomeFeedEntry } from "@/feed/feedStoreTypes";
 import { savePostDraft } from "@/feed/postAnswers";
 import { originMoveNoticeText } from "@/shell/OriginMoveNotice";
-import { countLocalOnlyRecordingWork, decideOriginMove, NO_LOCAL_WORK, type LocalRecordingWork } from "./originMove";
+import { CANONICAL_ORIGIN, countLocalOnlyRecordingWork, decideOriginMove, NO_LOCAL_WORK, type LocalRecordingWork } from "./originMove";
 
 // Account A's session expired on this device and kept its unsent answers; account B is signed in. The legacy-origin
 // move counts B's answers as B's and never shows A's to B as B's own, but A's still keep the tab here.
@@ -68,7 +68,7 @@ describe("the legacy-origin move counts Home answers by the signed-in account", 
     expect(text).not.toContain("still sending");
     expect(text).not.toContain("wasn't sent");
     expect(text).not.toContain("you haven't sent");
-    expect(text).toContain("Another TinyCloud account has answers in this browser");
+    expect(text).toContain("Another TinyCloud account has unsent answers in this browser. This tab moves once that account signs in here and sends them, or 7 days after they were written.");
   });
 
   test("B's own answers count as B's, apart from A's", async () => {
@@ -85,5 +85,16 @@ describe("the legacy-origin move counts Home answers by the signed-in account", 
     leaveAccountAWork();
     expect(await countLocalOnlyRecordingWork({ factory: null, storage, space: SPACE_A }))
       .toEqual(counted({ heldAnswers: 1, unsentAnswers: 1, postDrafts: 1 }));
+  });
+
+  test("A's answers stop holding B's tab once they are older than the 7 days", async () => {
+    leaveAccountAWork();
+    const countAsB = () => countLocalOnlyRecordingWork({ factory: null, storage, space: SPACE_B });
+    setSystemTime(new Date(Date.now() + HELD_ANSWER_TTL_MS + 1000));
+    try {
+      expect(await countAsB()).toEqual(NO_LOCAL_WORK);
+      expect(await decideOriginMove({ location: legacy, countWork: countAsB, canonicalReady: async () => true }))
+        .toEqual({ kind: "move", url: `${CANONICAL_ORIGIN}/chat` });
+    } finally { setSystemTime(); }
   });
 });
