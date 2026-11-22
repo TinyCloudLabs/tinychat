@@ -29,6 +29,7 @@ import { createBotHistoryRouter, startBotHistoryDrain } from "./routes/bot-histo
 import { botsFromEnv, createBotsRouter, removeBotFromService } from "./routes/bots.js";
 import { capModeFromEnv, planFor } from "./bot-caps.js";
 import { BotsRegistry, turnListHook } from "./bots-registry.js";
+import { botsServiceRouteGuard } from "./bots-service-routes.js";
 import { BOT_DELETION_PASS_MS, BotDeletions } from "./bot-deletion.js";
 import { resolveTier } from "./billing/stripe.js";
 import { createDelegationRouter } from "./routes/delegations.js";
@@ -542,6 +543,8 @@ async function main() {
   app.set("trust proxy", 1);
   applySecurityDefaults(app);
   app.use(cors(appCorsOptions(frontendOrigins)));
+  // The bots service's signed credential reaches only its allow-listed routes (bots-service-routes.ts).
+  app.use(botsServiceRouteGuard);
 
   // Stripe webhook MUST be mounted before the JSON body parser and CSRF
   // middleware: it needs the raw request bytes for signature verification, and

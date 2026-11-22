@@ -16,6 +16,7 @@ import {
   toolText, type WebError, type WebProvider, WEB_ERRORS,
 } from "./web";
 import { hostListed, OFF, type WebPolicy } from "./web-policy";
+import { servedTools, toolAllowed } from "./tool-policy";
 
 const CHAT_PATH = "/v1/chat/completions";
 const MODELS_PATH = "/v1/models";
@@ -584,7 +585,8 @@ export class Gateway {
    * Main's tools over MCP (Streamable HTTP, JSON replies, no session): `initialize`, `tools/list` and `tools/call`.
    * Two servers share this: `web` (search, fetch), always listed with the owner's setting applied on each call, and
    * `app` (ask_owner), listed only while the owner's setting is on and checked again on each call. A setting change
-   * takes effect at the bot's next call, without restarting its sandbox.
+   * takes effect at the bot's next call, without restarting its sandbox. Both serve only the tools on their allow-list
+   * (tool-policy.ts): tools/list drops any other, and tools/call refuses any other name before dispatch.
    */
   async #mcp(botId: string, req: Request, server: "web" | "app"): Promise<Response> {
     const open = this.#mcpOpen.get(botId) ?? 0;
@@ -620,9 +622,10 @@ export class Gateway {
       }
       if (method === "ping") return Response.json(rpcResult(id, {}));
       // The app tools are offered only while the owner's setting is on; the call is checked again on every call.
-      if (method === "tools/list") return Response.json(rpcResult(id, { tools: server === "app" ? (this.#asks.enabled(botId) ? APP_TOOLS : []) : TOOLS }));
+      if (method === "tools/list") return Response.json(rpcResult(id, { tools: servedTools<{ name: string }>(server, server === "app" ? (this.#asks.enabled(botId) ? APP_TOOLS : []) : TOOLS) }));
       if (method === "tools/call") {
         const name = params.name;
+        if (!toolAllowed(server, name)) return Response.json(rpcFailure(id, -32602, "Unknown tool"));
         const args = isRecord(params.arguments) ? params.arguments : {};
         if (server === "app") {
           if (name !== "ask_owner") return Response.json(rpcFailure(id, -32602, "Unknown tool"));
