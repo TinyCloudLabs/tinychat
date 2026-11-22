@@ -1751,10 +1751,10 @@ export function App() {
               apps={LOCAL_VALIDATION ? null : ONE_ADD_APP_ENABLED && screen.id === "addApp"
                 ? <AddAppPage />
                 : ONE_NAV_ENABLED && screen.appId
-                ? <OneAppScreen appId={screen.appId} tcw={tcw} accountDid={did} fallback={<AppsPage accountDid={did} pendingMeetings={pendingMeetings} />} />
+                ? <OneAppScreen appId={screen.appId} tcw={tcw} accountDid={did} fallback={<AppsPage accountDid={did} pendingMeetings={pendingMeetings} tcw={tcw} />} />
                 : ONE_APPS_ENABLED && screen.appId
-                ? <FramedAppScreen appId={screen.appId} tcw={tcw} fallback={<AppsPage accountDid={did} pendingMeetings={pendingMeetings} />} />
-                : <AppsPage accountDid={did} pendingMeetings={pendingMeetings} />}
+                ? <FramedAppScreen appId={screen.appId} tcw={tcw} fallback={<AppsPage accountDid={did} pendingMeetings={pendingMeetings} tcw={tcw} />} />
+                : <AppsPage accountDid={did} pendingMeetings={pendingMeetings} tcw={tcw} />}
               settings={LOCAL_VALIDATION ? null : <SettingsPage
                 address={address}
                 did={did}

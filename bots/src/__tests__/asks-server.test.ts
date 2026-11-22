@@ -183,13 +183,13 @@ beforeEach(() => {
 afterEach(async () => { await run.close(); dateNow.mockRestore(); });
 
 describe("the owner's setting and requests", () => {
-  test("Main's setting starts on, takes only { enabled }, and reaches the gateway at once", async () => {
-    expect(await (await run.call("GET", "main", "/asks")).json()).toEqual({ enabled: true });
+  test("Main's setting starts off, takes only { enabled }, and reaches the gateway at once", async () => {
+    expect(await (await run.call("GET", "main", "/asks")).json()).toEqual({ enabled: false });
     expect((await run.boxAsks("Which city?")).isError).toBe(true);
     for (const bad of [{}, { enabled: "yes" }, { enabled: true, extra: 1 }, [true], null]) {
       expect((await run.call("PUT", "main", "/asks", bad)).status).toBe(400);
     }
-    expect(await (await run.call("GET", "main", "/asks")).json()).toEqual({ enabled: true });
+    expect(await (await run.call("GET", "main", "/asks")).json()).toEqual({ enabled: false });
     expect(await (await run.call("PUT", "main", "/asks", { enabled: true })).json()).toEqual({ enabled: true });
     expect((await run.boxAsks("Which city?")).isError).toBe(false);
     await run.call("PUT", "main", "/asks", { enabled: false });

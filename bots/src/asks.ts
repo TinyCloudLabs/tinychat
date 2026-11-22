@@ -186,14 +186,13 @@ function readAsksFile(layout: BotLayout): Record<string, unknown> | "missing" | 
 }
 
 /**
- * The owner's setting. Nothing saved, or a saved file without `enabled`, reads as on (the default: the owner never
- * chose off). A file that is unreadable or malformed reads as off and is logged: a fault never brings questions the
- * owner didn't expect. Never an error.
+ * The owner's setting. Off until the owner turns it on: nothing saved, or a saved file without `enabled`, reads as off.
+ * A file that is unreadable or malformed also reads as off, and is logged. Never an error.
  */
 export function readAsksEnabled(layout: BotLayout): boolean {
   const saved = readAsksFile(layout);
-  if (saved === "missing") return true;
-  if (saved !== "unreadable" && !Object.hasOwn(saved, "enabled")) return true;
+  if (saved === "missing") return false;
+  if (saved !== "unreadable" && !Object.hasOwn(saved, "enabled")) return false;
   if (saved !== "unreadable" && typeof saved.enabled === "boolean") return saved.enabled;
   console.log(JSON.stringify({ bots: "asks_setting_unreadable", bot: layout.botId.slice(0, 12) }));
   return false;

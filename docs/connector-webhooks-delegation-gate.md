@@ -144,33 +144,6 @@ removed, in both directions:
 | An accepted delegation kicked the connector drain (`onDelegationAccepted`, §5.4 trigger 4) | Nothing. There is no server-side writer to drain into; the browser drains on the user's next usable visit. |
 | `DELETE /api/connectors/webhooks/config` removed + evicted the app's backend delegation (steps 3-4 of §3.6 rule 5) | Teardown is marker → config/token delete → queue drop. The chat delegation is untouched. |
 
-> **INGEST-CUTOVER(plan §11), 2026-08-10 — what this decision still covers, and what it no longer
-> describes.** The 2026-08-04 decision above stands as written **for every address outside the
-> backend-ingest dark cohort**, and plan §5.3 requires that path to stay byte-identical; nothing in
-> the historical text above has been edited. For a **cohort** address
-> (`CONNECTOR_BACKEND_INGEST_ENABLED` + the per-address allowlist) two of its halves are
-> deliberately reversed and one survives:
->
-> - *"never receives or reads the Fireflies API key"* → **reversed.** The backend holds a per-user
->   Fireflies OAuth credential (DECISIONS `V-a-branch: b1`), encrypted under
->   `CONNECTOR_CREDENTIAL_MASTER`. Fireflies publishes no data scope, so it is full-account; the
->   operator's signed blast-radius acceptance is what carries it.
-> - *"never writes meeting content"* / *"there is no server-side writer to drain into"* →
->   **reversed for the server's own store.** The fetch worker fetches the meeting and keeps an
->   encrypted 90-day copy (`RETENTION_WINDOW_DAYS`, `services/content-store.ts`), and the delivery
->   route nudges it. The Now-column rationale in the table above is therefore *dated*, not current,
->   for cohort addresses — `backend/src/__tests__/delegations.test.ts` carries the rewritten
->   rationale.
-> - *"holds no connector delegation"* → **survives, unchanged, for everyone.** Custody is
->   out-of-band (plan §6, §9 row 3), so no new permission is minted in any user's space and
->   `backendDelegationPermissions()` stays `threads/`-only. This is the half the cutover did *not*
->   touch, and `consent-scope.test.ts` still fails the build on any connector SQL/KV/secrets entry.
->
-> What a cohort user is told is `BACKEND_INGEST_CONSENT_COPY`
-> (`docs/connector-webhooks-backend-ingest-consent-copy.md`) — **not yet rendered**; see residual
-> F011 and operator pre-rollout gate 4 in `docs/deployment.md`. The cohort enable is an operator
-> action and has not been performed.
-
 The design's §3.6 rule 4 and rule 5 steps 3-4 protected a connector delegation that does not
 exist under C; what was left was an optional notification connector able to refuse or revoke the
 delegation every authenticated TinyChat write depends on.

@@ -1,5 +1,29 @@
 # @tinychat/backend
 
+## 0.9.6-beta.2
+
+### Patch Changes
+
+- 3cec963: The backend does not fetch or store Fireflies meetings itself. It holds no Fireflies sign-in and keeps no copy of any meeting, and the switch, keys and routes for that path are gone from the code, the deploy files and the example settings. Fireflies meetings sync in the browser, and webhook deliveries wait in the queue for the browser to collect. Production never turned the backend path on, so no stored meeting is affected.
+
+  Details: TC-1964
+
+## 0.9.6-beta.1
+
+### Patch Changes
+
+- 0849fa2: Calendar auto-join can share a meeting transcript between test accounts listed in `CALENDAR_AUTOJOIN_SHARING_ACCOUNTS`. Sharing is off for every other account. Both accounts must be on the list, and an empty list turns sharing off.
+
+  Details: TC-916
+
+## 0.9.6-beta.0
+
+### Patch Changes
+
+- ae14910: The Exo wake route takes at most 6000 wakes a minute across all owners, whether or not the owner holds a grant. A wake past that gets the usual answer and is dropped. The backend reuses an owner's opened grant for 30 seconds, so one wake check makes one grant lookup, and a grant that is stored or removed through the backend is forgotten at once.
+
+  Details: TC-3753
+
 ## 0.9.5
 
 ### Patch Changes
