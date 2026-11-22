@@ -5,7 +5,7 @@
 // we call `tcw.ensureOwnedSpaceHosted?.("secrets")` (if the SDK exposes it) and retry
 // ONCE. If the method doesn't exist we surface the original error — no silent fallback.
 
-import type { TinyCloudWeb } from "@tinycloud/web-sdk";
+import type { SecretGetOptions, TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { secretsAvailable, SECRETS_UNAVAILABLE_IN_APP_MESSAGE } from "../openkeyNative";
 import { connectorKeyAccessEndsAt } from "./connectorKeyAccess";
@@ -301,7 +301,8 @@ export async function getConnectorKey<E>(
   tcw: SecretsTcw,
   descriptor: CachedLocation,
 ): Promise<SecretsResult<string, E>> {
-  const options = {
+  // Never `requestPermission`: a read never asks. The foreground asks explicitly (askConnectorKeyAccess).
+  const options: SecretGetOptions = {
     ...(descriptor.secretScope ? { scope: descriptor.secretScope } : {}),
     namedKeyOnly: true,
   };
