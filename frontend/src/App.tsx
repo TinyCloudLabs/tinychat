@@ -1775,6 +1775,8 @@ export function App() {
                 onOpenRates={openRates}
                 backendUrl={BACKEND_URL}
                 sessionStore={sessionStoreRef.current}
+                openkey={openkeyRef.current}
+                openkeyHost={OPENKEY_HOST}
               />}
               about={<AboutPage onBack={onBack} />}
             />

@@ -29,7 +29,7 @@ function promptFileFor(botKey?: string): string {
 
 describe("each bot starts with its own system prompt", () => {
   test("Main's sandbox is given Main's prompt", () => {
-    expect(readFileSync(promptFileFor(), "utf8")).toStartWith("You are Main, the owner's main bot");
+    expect(readFileSync(promptFileFor(), "utf8")).toStartWith("You are {{botName}}, the owner's main bot");
   });
 
   test("a sibling's sandbox is given the sibling prompt, which never points at Main's Web access setting", () => {
@@ -48,7 +48,7 @@ describe("bot-start.sh", () => {
   for (const name of ["socat", "omp"]) chmodSync(join(dir, name), 0o755);
 
   async function ompArgs(prompt?: string): Promise<string> {
-    const env: Record<string, string> = { PATH: `${dir}:/usr/bin:/bin` };
+    const env: Record<string, string> = { PATH: `${dir}:/usr/bin:/bin`, TMPDIR: dir };
     if (prompt !== undefined) env.BOT_SYSTEM_PROMPT = prompt;
     const run = Bun.spawn(["sh", BOT_START], { env, stdout: "pipe", stderr: "pipe" });
     const [output] = await Promise.all([new Response(run.stdout).text(), run.exited]);
@@ -57,7 +57,7 @@ describe("bot-start.sh", () => {
 
   test("starts OMP with the prompt file it is given", async () => {
     const main = join(PROMPTS, "main.md");
-    expect(await ompArgs(main)).toBe(`--mode rpc --no-ui --system-prompt ${main}`);
+    expect(await ompArgs(main)).toBe(`--mode rpc --no-ui --system-prompt ${join(dir, "system-prompt.md")}`);
   });
 
   test("without a prompt file, starts OMP without one rather than passing a path OMP would read as the prompt", async () => {

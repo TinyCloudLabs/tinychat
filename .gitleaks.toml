@@ -1,0 +1,17 @@
+# Gitleaks configuration: the default rules plus one reviewed allowlist (TC-3783).
+# The PR scan judges a pull request by its base commit's copy of this file, so a PR cannot allowlist its own leak.
+# Review per class: docs/security/required-checks.md.
+
+[extend]
+useDefault = true
+
+# Two fixture classes recur in tests and are never credentials:
+# - a did:key Ed25519 identifier (z6Mk + 44 base58 characters) is a public key;
+# - 0123456789abcdef repeated is a placeholder.
+# Both conditions apply: the file is a test file or test fixture, and the whole secret is one of the two shapes.
+[[allowlists]]
+description = "Reviewed test fixtures: did:key public identifiers and the 0123456789abcdef placeholder"
+condition = "AND"
+regexTarget = "secret"
+paths = ['''(^|/)(__tests__|test-fixtures)/|\.test\.(ts|tsx|mjs)$''']
+regexes = ['''^z6Mk[1-9A-HJ-NP-Za-km-z]{44}$''', '''^(0123456789abcdef){2,}$''']

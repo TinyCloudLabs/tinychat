@@ -230,9 +230,10 @@ provider refusal can be read without public Phala logs. Same pattern as tinyclou
   `would_block` (the remaining budget is known and under the per-turn minimum), `blocked` (`would_block` under
   `enforce`), `remaining_known`, `remaining_bucket` (`lt0`, `0-99`, `100-319`, `320-999`, `1000+` or `unknown`),
   `minimum`, `tier` (`free`, `plus` or `pro`), `source` (`ledger`, `local`, or `outage` when the ledger was
-  unreadable and the local counter stood in), `account_hash` (the same keyed monthly pseudonym as above; omitted when
-  no key is set) and `request_id` (the ID on that request's `tinychat_request` record), plus `svc`, `event`, `level`
-  (`info`) and `ts`. It is emitted through the typed request sink beside the plain `[agent-chat] turn budget` line,
+  unreadable and the local counter stood in), `unpriced` (`true` only when the turn's model had no catalog price and
+  the fallback rates set `minimum`; absent otherwise), `account_hash` (the same keyed monthly pseudonym as above;
+  omitted when no key is set) and `request_id` (the ID on that request's `tinychat_request` record), plus `svc`,
+  `event`, `level` (`info`) and `ts`. It is emitted through the typed request sink beside the plain `[agent-chat] turn budget` line,
   which the log boundary reduces to a level inside a request. No address, message text or exact credit count is a
   field. It is not a 4xx or 5xx record, so the request caps do not apply; it has its own Vector `throttle` of 60 per
   minute, so read `would_block` as a ratio and `account_hash` as a lower bound of distinct accounts.

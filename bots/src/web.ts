@@ -6,6 +6,7 @@
 // before and around these.
 
 import { isRecord } from "./guards";
+import { MAIN_BOT_NAME } from "./owner";
 import { hostListed, type WebPolicy } from "./web-policy";
 
 export const MCP_PROTOCOLS = ["2025-11-25", "2025-06-18", "2025-03-26"] as const;
@@ -50,7 +51,7 @@ export const TOOLS = [
 
 /** What a refused or failed call says to the model: fixed sentences, never provider or page text. */
 export const WEB_ERRORS = {
-  off: "Web access is off. The owner can turn it on in Main's chat: tap Web access and choose a setting.",
+  off: `Web access is off. The owner can turn it on in ${MAIN_BOT_NAME}'s chat: tap Web access and choose a setting.`,
   unavailable: "Web access isn't available right now.",
   query: `A search must be 1 to ${MAX_QUERY_CHARS} characters.`,
   address: "That address can't be read.",

@@ -1,0 +1,95 @@
+# Trivy baseline for the TinyChat backend image (deploy-backend-phala.yml, "Scan the backend image").
+# The deploy scans with --severity CRITICAL,HIGH --ignore-unfixed and fails on any finding NOT listed here.
+# Recorded 2026-11-22 with trivy 0.76.2 against the production image
+# ghcr.io/tinycloudlabs/tinychat-backend@sha256:4cb7e82acdf7c59d46e47143d2208426289e9991120e974f1273791f4350353d
+# (revision a499c7c2f4bd705907ed400a8a7f14f4a7268ca7, @tinychat/backend@0.9.5; bun.lock and backend/Dockerfile are
+# unchanged on main since). These are known, fixable findings that ship today; listing them here is not acceptance.
+# Remove an entry once the image no longer has it. Never add one without a security review.
+
+# Debian 13 base packages (oven/bun:1.4.0 base and the apt-installed nodejs layer)
+CVE-2026-8376 # CRITICAL perl-base
+CVE-2026-11822 # HIGH libsqlite3-0
+CVE-2026-11824 # HIGH libsqlite3-0
+CVE-2026-13221 # CRITICAL perl-base
+CVE-2026-14456 # HIGH libssl3t64, openssl, openssl-provider-legacy
+CVE-2026-41992 # HIGH gzip
+CVE-2026-42496 # CRITICAL perl-base
+CVE-2026-42497 # HIGH perl-base
+CVE-2026-48962 # HIGH perl-base
+CVE-2026-53612 # HIGH bsdutils, libblkid1, liblastlog2-2, libmount1, libsmartcols1, libuuid1, login, mount, util-linux
+CVE-2026-53613 # HIGH bsdutils, libblkid1, liblastlog2-2, libmount1, libsmartcols1, libuuid1, login, mount, util-linux
+CVE-2026-53614 # HIGH bsdutils, libblkid1, liblastlog2-2, libmount1, libsmartcols1, libuuid1, login, mount, util-linux
+CVE-2026-53615 # HIGH bsdutils, libblkid1, liblastlog2-2, libmount1, libsmartcols1, libuuid1, login, mount, util-linux
+CVE-2026-57432 # HIGH perl-base
+CVE-2026-57433 # HIGH perl-base
+CVE-2026-84782 # HIGH libssl3t64, openssl, openssl-provider-legacy
+CVE-2026-85091 # HIGH zlib1g
+CVE-2026-86145 # HIGH libpcre2-8-0
+CVE-2026-89157 # HIGH libpcre2-8-0
+CVE-2026-89161 # HIGH libpcre2-8-0
+CVE-2026-103111 # HIGH libpcre2-8-0
+CVE-2026-109518 # HIGH apt, libapt-pkg7.0
+
+# npm packages installed by bun install --frozen-lockfile (bun.lock); several are dev tools (vite, happy-dom, esbuild)
+CVE-2026-12143 # HIGH form-data
+CVE-2026-13149 # HIGH brace-expansion
+CVE-2026-14257 # HIGH brace-expansion
+CVE-2026-48779 # HIGH ws
+CVE-2026-55685 # HIGH react-router
+CVE-2026-59869 # HIGH js-yaml
+CVE-2026-67213 # HIGH nanoid
+CVE-2026-67214 # HIGH nanoid
+CVE-2026-67320 # HIGH axios
+CVE-2026-69152 # HIGH brace-expansion
+CVE-2026-69192 # HIGH ip-address
+CVE-2026-73088 # HIGH browserslist
+CVE-2026-73089 # HIGH browserslist
+CVE-2026-73646 # HIGH postcss
+CVE-2026-84375 # HIGH js-yaml
+CVE-2026-90711 # CRITICAL proxy-addr
+CVE-2026-93749 # HIGH source-map-js
+CVE-2026-101898 # HIGH axios
+CVE-2026-101901 # HIGH axios
+CVE-2026-101903 # HIGH axios
+CVE-2026-101905 # HIGH axios
+CVE-2026-101906 # HIGH axios
+CVE-2026-101909 # HIGH axios
+CVE-2026-102276 # HIGH brace-expansion
+CVE-2026-102278 # HIGH brace-expansion
+CVE-2026-111181 # HIGH body-parser
+CVE-2026-111755 # HIGH follow-redirects
+CVE-2026-111756 # HIGH follow-redirects
+CVE-2026-112942 # HIGH launch-editor, vite
+CVE-2026-115895 # HIGH happy-dom
+CVE-2026-116689 # HIGH follow-redirects
+CVE-2026-118660 # HIGH happy-dom
+GHSA-5p4m-2wfm-xmqj # HIGH js-yaml
+GHSA-qwww-vcr4-c8h2 # HIGH react-router
+
+# Go stdlib in the esbuild 0.25.12 binary (app/node_modules/.bun/@esbuild+linux-x64)
+CVE-2025-61726 # HIGH stdlib
+CVE-2025-61729 # HIGH stdlib
+CVE-2025-68121 # CRITICAL stdlib
+CVE-2026-25679 # HIGH stdlib
+CVE-2026-27145 # HIGH stdlib
+CVE-2026-32280 # HIGH stdlib
+CVE-2026-32281 # HIGH stdlib
+CVE-2026-32283 # HIGH stdlib
+CVE-2026-33811 # HIGH stdlib
+CVE-2026-33814 # HIGH stdlib
+CVE-2026-33818 # HIGH stdlib
+CVE-2026-39820 # HIGH stdlib
+CVE-2026-39821 # HIGH stdlib
+CVE-2026-39822 # HIGH stdlib
+CVE-2026-39836 # HIGH stdlib
+CVE-2026-42499 # HIGH stdlib
+CVE-2026-42504 # HIGH stdlib
+CVE-2026-56853 # HIGH stdlib
+CVE-2026-56858 # HIGH stdlib
+CVE-2026-56859 # HIGH stdlib
+CVE-2026-56860 # HIGH stdlib
+CVE-2026-56862 # HIGH stdlib
+CVE-2026-78667 # HIGH stdlib
+CVE-2026-78669 # HIGH stdlib
+CVE-2026-97031 # HIGH stdlib
+CVE-2026-111943 # HIGH stdlib

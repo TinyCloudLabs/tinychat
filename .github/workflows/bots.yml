@@ -9,6 +9,8 @@ on:
     paths:
       - "bots/**"
       - ".github/workflows/bots.yml"
+      # A change of the pinned OS image must re-run secret-dstack.test.ts (the key service's socket mode).
+      - ".github/workflows/deploy-bots-phala.yml"
 
 permissions:
   contents: read
