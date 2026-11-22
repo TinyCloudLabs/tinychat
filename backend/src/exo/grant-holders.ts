@@ -85,16 +85,19 @@ export class GrantHolderIndex {
 
 /**
  * Keeps the index in step with the grant store: a stored grant is added, a removed grant is
- * dropped, and a load updates membership from what the store returned.
+ * dropped, and a load updates membership from what the store returned. `onWritten` hears every
+ * owner whose stored grant was just written or removed, so a cache of opened grants can forget it.
  */
 export function createTrackedGrantStore(
   store: Pick<DelegationStore, "store" | "load" | "remove">,
   holders: Pick<GrantHolderIndex, "add" | "remove">,
+  onWritten?: (identifier: string) => void,
 ): Pick<DelegationStore, "store" | "load" | "remove"> {
   return {
     store: async (identifier, serialized, metadata) => {
       await store.store(identifier, serialized, metadata);
       holders.add(identifier);
+      onWritten?.(identifier);
     },
     load: async (identifier) => {
       const stored = await store.load(identifier);
@@ -105,6 +108,7 @@ export function createTrackedGrantStore(
     remove: async (identifier) => {
       await store.remove(identifier);
       holders.remove(identifier);
+      onWritten?.(identifier);
     },
   };
 }

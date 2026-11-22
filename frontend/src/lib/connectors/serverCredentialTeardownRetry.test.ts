@@ -1,6 +1,6 @@
-// TC-2778: a disconnect whose server teardown stopped part-way is finished by the retry. The real
-// webhooks client talks over loopback HTTP to the real credential router and the real
-// ConnectorTeardownService, with in-memory content, queue, ledger and Exo state.
+// TC-2778: an owner whose backend has no credential route. The real webhooks client talks over
+// loopback HTTP to the backend's marked 404 and reads it as feature-dark: no DELETE is sent and
+// the owner's in-memory credential, content, queue and Exo state stay as they were.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { once } from "node:events";
@@ -11,11 +11,8 @@ import type { SessionStore } from "@tinyboilerplate/client";
 import type createExpressApp from "express";
 import type { Express as App } from "express";
 
-import { createConnectorCredentialRouter } from "../../../../backend/src/routes/connector-credentials.js";
-import type { PurgeLedger, PurgeLedgerRead } from "../../../../backend/src/routes/connector-webhooks.js";
+import type { PurgeLedger } from "../../../../backend/src/routes/connector-webhooks.js";
 import { credentialRouteUnavailable } from "../../../../backend/src/routes/route-unavailable.js";
-import { ConnectorTeardownService } from "../../../../backend/src/services/connector-teardown.js";
-import type { ContentMeta } from "../../../../backend/src/services/content-store.js";
 import {
   CREDENTIAL_MASTER_ENV,
   CredentialStore,
@@ -71,53 +68,6 @@ function backend(): Backend {
 
 const key = (source: string, address: string) => `${source} ${address.toLowerCase()}`;
 
-function teardownFor(b: Backend): ConnectorTeardownService {
-  return new ConnectorTeardownService({
-    notifications: { disable: async () => { b.disabled += 1; } },
-    credentials: b.credentials,
-    content: {
-      list: async (source, address) =>
-        (b.content.get(key(source, address)) ?? []).map(
-          (sourceId) => ({ sourceId, sizeBytes: 1, storedAt: new Date(0).toISOString() }) as ContentMeta,
-        ),
-      purge: async (source, address) => {
-        if (b.failNextPurge) {
-          b.failNextPurge = false;
-          throw new Error("content store unavailable");
-        }
-        const removed = b.content.get(key(source, address))?.length ?? 0;
-        b.content.delete(key(source, address));
-        return { removed };
-      },
-    },
-    queue: {
-      clear: async (source, address) => {
-        const cleared = b.queue.get(key(source, address)) ?? 0;
-        b.queue.delete(key(source, address));
-        return { cleared, superseded: 0 };
-      },
-    },
-    control: {
-      readLedger: async (source, address): Promise<PurgeLedgerRead> => {
-        const ledger = b.ledgers.get(key(source, address));
-        return ledger === undefined ? { status: "absent" } : { status: "ok", ledger };
-      },
-      writeLedger: async (source, address, ledger) => {
-        b.ledgers.set(key(source, address), ledger);
-      },
-      quarantineLedger: async () => {},
-      clearLedger: async (source, address) => {
-        b.ledgers.delete(key(source, address));
-      },
-    },
-    exo: {
-      clearSource: async (source, address) => {
-        b.exo.delete(key(source, address));
-      },
-    },
-  });
-}
-
 async function serve(b: Backend, mount: (app: App) => void): Promise<{ base: string; server: Server }> {
   const app = express();
   app.use(express.json(), (req, _res, next) => {
@@ -130,22 +80,6 @@ async function serve(b: Backend, mount: (app: App) => void): Promise<{ base: str
   await once(server, "listening");
   const { port } = server.address() as AddressInfo;
   return { base: `http://127.0.0.1:${port}`, server };
-}
-
-function credentialRouter(b: Backend, cohort: ReadonlySet<string>) {
-  return createConnectorCredentialRouter({
-    credentials: b.credentials,
-    oauth: {
-      authorizeUrl: () => "https://example.test/authorize",
-      exchangeCode: async () => ({ kind: "oauth", accessToken: "unused" }),
-      revoke: async () => {},
-    },
-    teardown: teardownFor(b),
-    modes: {
-      mode: async () => "backend",
-      eligible: async (address) => cohort.has(address.toLowerCase()),
-    },
-  });
 }
 
 async function withServer<T>(
@@ -170,42 +104,8 @@ async function seedConnectedOwner(b: Backend): Promise<void> {
   b.exo.add(key(SOURCE, ADDRESS));
 }
 
-describe("retrying a disconnect whose server teardown stopped part-way", () => {
-  test("the retry reaches the full DELETE and leaves no credential, content, queue, Exo state or ledger", async () => {
-    const b = backend();
-    await seedConnectedOwner(b);
-    b.failNextPurge = true;
-
-    await withServer(
-      b,
-      (app) => app.use("/api/connectors/credentials", credentialRouter(b, new Set([ADDRESS.toLowerCase()]))),
-      async (base) => {
-        const client = createConnectorWebhooksClient(base, { sessionStore });
-
-        expect(await client.teardownCredential!(SOURCE)).toEqual({
-          status: "retryable",
-          httpStatus: 503,
-          code: "revoke_failed",
-        });
-        expect(await b.credentials.status(SOURCE, ADDRESS)).toBeNull();
-        expect(b.content.get(key(SOURCE, ADDRESS))).toEqual(["mtg-1", "mtg-2"]);
-
-        expect(await client.teardownCredential!(SOURCE)).toEqual({ status: "ok", value: null });
-      },
-    );
-
-    expect(b.requests).toEqual(["GET", "DELETE", "GET", "DELETE"]);
-    expect(await b.credentials.status(SOURCE, ADDRESS)).toBeNull();
-    expect(b.content.has(key(SOURCE, ADDRESS))).toBe(false);
-    expect(b.queue.has(key(SOURCE, ADDRESS))).toBe(false);
-    expect(b.exo.has(key(SOURCE, ADDRESS))).toBe(false);
-    expect(b.ledgers.has(key(SOURCE, ADDRESS))).toBe(false);
-  });
-});
-
 describe("an owner the backend does not handle", () => {
   const shapes: Array<[string, (b: Backend) => (app: App) => void]> = [
-    ["not enrolled", (b) => (app) => app.use("/api/connectors/credentials", credentialRouter(b, new Set()))],
     ["route not mounted", () => (app) => app.use("/api/connectors/credentials", (_req, res) => credentialRouteUnavailable(res))],
   ];
 
