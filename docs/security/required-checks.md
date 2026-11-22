@@ -244,7 +244,7 @@ selected repositories closes that path (undo: add it back).
 
 ## Baselines
 
-### `.gitleaksignore` (75 fingerprints over the full history of `main` to `11ec789a`)
+### `.gitleaksignore` (82 fingerprints over the full history of `main` to `4ce3e190`)
 
 Every entry was read in place. None is a live credential; each is a test fixture, a public identifier or code. No
 fixture value appears outside tests and harness screens. Line numbers are those of the fingerprinted commit.
@@ -263,10 +263,10 @@ fixture value appears outside tests and harness screens. Line numbers are those 
 | `frontend/src/lib/imageUrlFilter.corpus.test.ts:102` | aws-access-token | Synthetic `AKIA` id in a URL-filter corpus. |
 | `backend/src/__tests__/chat-gating.test.ts:21`, `chat-relay-signature.test.ts:36`, `frontend/src/chat/verification-predicates.test.ts:246,247` | generic-api-key | The public Hardhat/anvil development key. |
 | `backend/src/__tests__/` `assemblyai-hosted-alerts:52`, `assemblyai-hosted:44`, `auth-session:255,269,286,296,315`, `connector-content-store:64`, `connector-credentials:43`, `connector-observability:85`, `connector-teardown:60`, `consent-scope:64`, `granola-proxy-hardening:19,493`, `index-wiring:463,834`, `mcp-grant-real-sdk:87`, `private-cloud-transcription:45`, `rate-limits-bot-send:4`, `request-record:26,34`, `webhook-verify:10` (`.test.ts`) | generic-api-key | Test constants declared in the test: `did:key` ids (public keys), made-up handle, tenant, master and HMAC keys the test passes to the code under test, `grn_` and `0123456789…` placeholder keys, and redaction canaries. |
-| `bots-regular/src/__tests__/regular.test.ts:10`, `bots-regular/src/__tests__/role-prompt.test.ts:5`, `bots/src/__tests__/role.test.ts:11`, `packages/server/src/__tests__/delegation-store.test.ts:386,403,440` | generic-api-key | Placeholder key and storage-path strings (`0123456789…`, `delegations/0x…`). |
+| `bots-regular/src/__tests__/regular.test.ts:10`, `bots-regular/src/__tests__/role-prompt.test.ts:5`, `bots-regular/src/__tests__/omp-config.test.ts:9`, `bots/src/__tests__/role.test.ts:11`, `backend/src/__tests__/bot-history-sibling-routes.test.ts:130`, `packages/server/src/__tests__/delegation-store.test.ts:386,403,440` | generic-api-key | Placeholder key and storage-path strings (`0123456789…`, `delegations/0x…`). |
 | `bots/src/__tests__/asks-gateway.test.ts:258` | generic-api-key | A made-up `SECRET-QUESTION-…` canary the logging test checks never appears in a log line. |
 | `scripts/__tests__/release.test.mjs:1119,1518` | generic-api-key | Fake Apple signing env: Apple's documentation example issuer id and `ABCDE12345`-style placeholders. |
-| `frontend/src/` `apps/embedHost.test.ts:11,13`, `apps/ledgerCeiling.test.ts:20`, `bots/botChatApi.test.ts:19`, `bots/botPath.test.ts:12`, `bots/historyRestoredSession.sdk.test.ts:28`, `lib/connectors/serverCredentialTeardownRetry.test.ts:32`, `lib/debugLog.test.ts:20,50`, `lib/firstPartySignIn.sdk.test.ts:27`, `lib/homeReauthorize.sdk.test.tsx:35`, `lib/replication/readOnlyAccountProvider.sdk.test.ts:26`, `lib/sessionGrants.sdk.test.tsx:33`, `lib/webConnectorsGrant.sdk.test.tsx:37`; `frontend/test-fixtures/ConnectorDialog.granolaS4.fixture.tsx:20,21` | generic-api-key | Test fixtures: `did:key` ids and placeholder keys. |
+| `frontend/src/` `apps/embedHost.test.ts:11,13`, `apps/ledgerCeiling.test.ts:20`, `bots/botChatApi.test.ts:19`, `bots/botPath.test.ts:12`, `bots/historyRestoredSession.sdk.test.ts:28`, `chat/RegistrySection.test.tsx:31,32,33`, `lib/connectors/serverCredentialTeardownRetry.test.ts:32`, `lib/debugLog.test.ts:20,50`, `lib/firstPartySignIn.sdk.test.ts:27`, `lib/homeReauthorize.sdk.test.tsx:35`, `lib/registryEditor/adapter.test.ts:25,26`, `lib/replication/readOnlyAccountProvider.sdk.test.ts:26`, `lib/sessionGrants.sdk.test.tsx:33`, `lib/webConnectorsGrant.sdk.test.tsx:37`; `frontend/test-fixtures/ConnectorDialog.granolaS4.fixture.tsx:20,21` | generic-api-key | Test fixtures: `did:key` ids and placeholder keys. |
 
 Adding an entry: confirm the finding is not live (anything possibly live goes to security and is rotated, never
 listed). Baseline changes go in their own PR, merged before the PR that adds the fixture (PRs are judged by their
