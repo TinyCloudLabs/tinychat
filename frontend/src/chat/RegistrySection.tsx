@@ -204,13 +204,10 @@ export function RegistrySection(props: RegistrySectionProps) {
             })
           : undefined;
 
-      // Include all existing record.nodes (even unreferenced ones) alongside edited URLs.
+      // Send only nodes referenced by spaces or encryptionNode so moved-away/unreferenced hosts aren't kept or probed.
       const rawNodes =
         record.spaces.length > 0
-          ? [
-              ...rawSpaces!.flatMap((s) => s.nodes.map((n) => ({ url: n.url }))),
-              ...record.nodes.map((n) => ({ url: n.url, did: n.did })),
-            ]
+          ? rawSpaces!.flatMap((s) => s.nodes.map((n) => ({ url: n.url })))
           : draft.nodeUrls.map((url) => ({ url }));
 
       canonicalRequest = canonicalizeRegistryChangeRequest(

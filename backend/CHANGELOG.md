@@ -1,5 +1,13 @@
 # @tinychat/backend
 
+## 0.11.0-beta.4
+
+### Minor Changes
+
+- 1d0a5e0: The backend has encrypted Fireflies import grant storage, a KMS-derived delegate identity, a strict grant verifier and delegation routes, behind a flag that is off by default.
+
+  Details: TC-3905
+
 ## 0.10.1-beta.3
 
 ### Patch Changes
