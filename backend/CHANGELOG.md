@@ -1,5 +1,36 @@
 # @tinychat/backend
 
+## 0.10.0
+
+### Minor Changes
+
+- 11ec789: Before an agent turn starts, the credit check uses that turn's model: the remaining credits must cover one short turn on it (8,000 input and 1,000 output tokens). That is 150 credits on GLM 5.2, 31 on Qwen 3.6 35B and 390 on Kimi K3. A turn the credits can't cover is refused. Each settled turn records its credit cost in the logs, without IDs.
+
+  Details: TC-3734
+
+### Patch Changes
+
+- 0a24337: Main can ask you a question and wait for your answer. It's off until you turn it on in Main's settings.
+- 3cec963: The backend does not fetch or store Fireflies meetings itself. It holds no Fireflies sign-in and keeps no copy of any meeting, and the switch, keys and routes for that path are gone from the code, the deploy files and the example settings. Fireflies meetings sync in the browser, and webhook deliveries wait in the queue for the browser to collect. Production never turned the backend path on, so no stored meeting is affected.
+
+  Details: TC-1964
+
+- ae14910: The Exo wake route takes at most 6000 wakes a minute across all owners, whether or not the owner holds a grant. A wake past that gets the usual answer and is dropped. The backend reuses an owner's opened grant for 30 seconds, so one wake check makes one grant lookup, and a grant that is stored or removed through the backend is forgotten at once.
+
+  Details: TC-3753
+
+- bb8f9ef: Your bots now get instructions written for TinyCloud One instead of a coding assistant's. Main and your other bots each get their own, so only Main points you to its Web access setting. A message one of your bots sends another is marked as not from you, and it can't run a command. Bots also lose tools a chat bot doesn't need.
+
+  Details: TC-3779
+
+- 0b1c2ee: Main can use only the tools and app services on its allow-list. These stay with you in the app: checkout and the billing portal, delegations and agent access, connector sign-in, account deletion, app lock, Main's own Web access setting and secret values.
+
+  Details: TC-3795
+
+- 0849fa2: Calendar auto-join can share a meeting transcript between test accounts listed in `CALENDAR_AUTOJOIN_SHARING_ACCOUNTS`. Sharing is off for every other account. Both accounts must be on the list, and an empty list turns sharing off.
+
+  Details: TC-916
+
 ## 0.10.0-beta.4
 
 ### Minor Changes
