@@ -115,7 +115,8 @@ export const Thread: FC<ThreadProps> = ({ tcw, selection, onRetrySelection, onRe
     <TooltipProvider delayDuration={300}>
       <ShareThreadProvider tcw={tcw}>
         <ThreadPrimitive.Root className="flex h-full flex-col bg-background">
-          <ThreadPrimitive.Viewport ref={viewportRef} autoScroll={!isEmpty} data-scroll-root className="relative flex flex-1 flex-col items-center overflow-y-auto scroll-smooth px-4">
+          {/* data-bottom-chrome="self": under One Apps' pill the composer, not the scroller, keeps clear of it (index.css). */}
+          <ThreadPrimitive.Viewport ref={viewportRef} autoScroll={!isEmpty} data-scroll-root data-bottom-chrome="self" className="relative flex flex-1 flex-col items-center overflow-y-auto scroll-smooth px-4">
             <div className="flex w-full max-w-[46rem] flex-1 flex-col gap-6 pt-8">
               <CompactionIndicator />
               {!selection.canSend && selection.message && (
@@ -568,7 +569,7 @@ const Composer: FC<{ selection: SelectionView; toolbar?: ReactNode; isEmpty: boo
   // A typed draft and a reply being written live only in this page: a held tinycloud.chat page must not move under them.
   useOriginMoveDeferral(useAuiState((s) => s.thread.isRunning || s.composer.text.trim() !== ""));
   return (
-    <div className="sticky bottom-0 z-10 w-full max-w-[46rem] bg-gradient-to-t from-background via-background to-transparent pb-[max(1rem,env(safe-area-inset-bottom))] pt-2 [html[data-keyboard=open]_&]:pb-2 [html[data-nav=tabbar]:not([data-keyboard=open])_&]:pb-3">
+    <div className="sticky bottom-0 z-10 w-full max-w-[46rem] bg-gradient-to-t from-background via-background to-transparent pb-[max(1rem,env(safe-area-inset-bottom))] pt-2 [html[data-keyboard=open]_&]:pb-2 [html[data-nav=tabbar]:not([data-keyboard=open]):not([data-pill])_&]:pb-3 [html[data-pill]:not([data-keyboard=open])_&]:pb-[calc(var(--tc-bottom-chrome)+0.75rem)]">
       <div className="relative">
         <ScrollToBottom hidden={isEmpty} />
       </div>

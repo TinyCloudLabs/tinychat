@@ -52,6 +52,7 @@ import { nativeVoiceNotesAvailable } from "../lib/voiceNotes/nativeVoiceNotes";
 import { appPlatform } from "../lib/platform";
 import { useSizeClass } from "../lib/sizeClass";
 import { PageHeader } from "../shell/PageHeader";
+import { ONE_NAV_ENABLED } from "../shell/navPins";
 import { PATHS } from "../shell/routes";
 import { FirstScreenControl } from "../home/FirstScreenControl";
 import { ChatViewSetting } from "../bots/ChatViewControl";
@@ -136,8 +137,9 @@ export function SettingsPage({
     // ConnectorsPage).
     <div className="relative h-full overflow-y-auto" data-scroll-root>
       {/* Pushed over the app on a phone (Back, no tab bar); a pane beside the
-          navigation on wider screens, so no Back there. */}
-      <PageHeader title="Settings" back={compact ? onBack : undefined} className="mx-auto w-full max-w-2xl px-4 sm:px-6" />
+          navigation on wider screens, so no Back there. One Apps: You's tab on
+          a phone (the pill shows), so no Back either. */}
+      <PageHeader title="Settings" back={compact && !ONE_NAV_ENABLED ? onBack : undefined} className="mx-auto w-full max-w-2xl px-4 sm:px-6" />
       <div className="mx-auto w-full max-w-2xl px-4 pb-[max(1.5rem,env(safe-area-inset-bottom))] pt-2 sm:px-6">
         {storageFull && (
           <div role="region" aria-label="Storage full" className="mb-4 rounded-xl border border-border bg-muted p-4 text-sm">

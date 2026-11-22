@@ -131,6 +131,7 @@ import { UploadResumer } from "./capture/upload/UploadResumer";
 import { TinyCloudButtonSync } from "./chat/TinyCloudButtonSync";
 import { useOpenSavedNote } from "./capture/library/useOpenSavedNote";
 import { resetNavigationMemory } from "./shell/navigation";
+import { ONE_ADD_APP_ENABLED, ONE_NAV_ENABLED } from "./shell/navPins";
 import {
   HOME_PATH,
   legacyRedirectFor,
@@ -222,6 +223,8 @@ const AppsPage = lazyTab("Apps", () => import("./home/AppsPage").then((m) => m.A
 // One Apps: on only when VITE_ONE_APPS is exactly "true"; off is exactly the old Apps page.
 const ONE_APPS_ENABLED = import.meta.env.VITE_ONE_APPS === "true";
 const FramedAppScreen = lazyTab("Apps", () => import("./apps/FramedAppScreen").then((m) => m.FramedAppScreen));
+const OneAppScreen = lazyTab("Apps", () => import("./apps/FramedAppScreen").then((m) => m.OneAppScreen));
+const AddAppPage = lazyTab("Apps", () => import("./apps/AddAppPage").then((m) => m.AddAppPage));
 const SettingsPage = lazyTab("Settings", () => import("./chat/SettingsPage").then((m) => m.SettingsPage));
 const AboutPage = lazyTab("How it works", () => import("./chat/AboutPage").then((m) => m.AboutPage));
 const LAZY_SCREENS = [ChatWorkspace, CaptureSurface, MeetingsSection, ConnectorsPage, AppsPage, SettingsPage, AboutPage];
@@ -1727,7 +1730,11 @@ export function App() {
                 sessionStore={sessionStoreRef.current}
               /></HomeFeatureGate>}
               feed={LOCAL_VALIDATION ? null : <FeedView tcw={tcw} onReconnect={authAction} />}
-              apps={LOCAL_VALIDATION ? null : ONE_APPS_ENABLED && screen.appId
+              apps={LOCAL_VALIDATION ? null : ONE_ADD_APP_ENABLED && screen.id === "addApp"
+                ? <AddAppPage />
+                : ONE_NAV_ENABLED && screen.appId
+                ? <OneAppScreen appId={screen.appId} tcw={tcw} accountDid={did} fallback={<AppsPage accountDid={did} pendingMeetings={pendingMeetings} />} />
+                : ONE_APPS_ENABLED && screen.appId
                 ? <FramedAppScreen appId={screen.appId} tcw={tcw} fallback={<AppsPage accountDid={did} pendingMeetings={pendingMeetings} />} />
                 : <AppsPage accountDid={did} pendingMeetings={pendingMeetings} />}
               settings={LOCAL_VALIDATION ? null : <SettingsPage
