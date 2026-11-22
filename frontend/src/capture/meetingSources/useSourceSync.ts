@@ -12,7 +12,8 @@ import { awaitGmeetSessionSync } from "@/chat/useGmeetSessionSync";
 import {
   askConnectorKeyAccess,
   connectorPausedMessage,
-  isDecryptDenied,
+  needsConnectorKeyApproval,
+  readWithConnectorKeyAccess,
   type ConnectorKeyAccessResult,
 } from "@/lib/connectors/connectorKeyAccess";
 import {
@@ -69,6 +70,8 @@ export interface SourceSyncDeps {
   getConnectorKey: typeof getConnectorKey;
   /** Foreground only: asks OpenKey for the connector's own key after a denied read (TC-3804). */
   askConnectorKeyAccess: (tcw: TinyCloudWeb, d: ConnectorDescriptor) => Promise<ConnectorKeyAccessResult>;
+  /** Foreground only: moves an old network-sealed copy onto the connector's own key. Defaults to the SDK's reseal. */
+  resealConnectorKey?: (tcw: TinyCloudWeb, d: ConnectorDescriptor) => Promise<boolean>;
   isGmeetSyncInFlight: () => boolean;
   isGmeetNotesSyncInFlight: () => boolean;
   /** Resolves once the session-start run's foreground part has finished (at once when none is running). */
@@ -139,17 +142,15 @@ export async function runSourceSync(
       if (d.id === "google-meet") await deps.awaitSessionSync();
     }
     if (input.isCurrent?.() === false) return null;
-    let key = await deps.getConnectorKey<SecretsErr>(tcw, d);
-    if (!key.ok && isDecryptDenied(key.error)) {
-      // Sync now is a press: a denied key asks OpenKey once, then reads again. Background runs never ask.
-      const access = await deps.askConnectorKeyAccess(tcw, d).catch((cause: unknown) => {
-        console.error(`OpenKey approval for ${d.id} failed`, cause);
-        return "declined" as const;
-      });
-      if (input.isCurrent?.() === false) return null;
-      if (access === "granted") key = await deps.getConnectorKey<SecretsErr>(tcw, d);
-      if (!key.ok && isDecryptDenied(key.error)) return connectorPausedMessage(tcw.session()?.address ?? "", d);
-    }
+    // Sync now is a press: a key that needs approval asks OpenKey once, an old network-sealed copy is resealed to its
+    // own key, then it reads again. Background runs never do either (TC-3804).
+    const reseal = deps.resealConnectorKey;
+    const key = await readWithConnectorKeyAccess(tcw, d, () => deps.getConnectorKey<SecretsErr>(tcw, d), {
+      ask: () => deps.askConnectorKeyAccess(tcw, d),
+      ...(reseal ? { reseal: () => reseal(tcw, d) } : {}),
+    });
+    if (input.isCurrent?.() === false) return null;
+    if (!key.ok && needsConnectorKeyApproval(key.error)) return connectorPausedMessage(tcw.session()?.address ?? "", d);
     if (!key.ok) {
       if (d.id === "granola" && key.error?.code === GRANOLA_MISSING_KEY_CODE) return GRANOLA_RECONNECT_REQUIRED;
       if (key.error?.code === DECRYPTION_FAILED) return reconnectSourceMessage(d.name);

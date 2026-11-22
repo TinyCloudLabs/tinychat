@@ -59,7 +59,7 @@ import {
   upsertMeeting,
   type StoreResult,
 } from "@/lib/connectors/connectorStore";
-import { isDecryptDenied, markConnectorKeyAccessPaused } from "@/lib/connectors/connectorKeyAccess";
+import { markConnectorKeyAccessPaused, needsConnectorKeyApproval } from "@/lib/connectors/connectorKeyAccess";
 import {
   getConnectorKey,
   isSecretsUnlocked,
@@ -362,8 +362,8 @@ async function runGmeetSessionSync(
     hooks.readRefreshToken ??
     ((t: TinyCloudWeb, d: ConnectorDescriptor) => getConnectorKey<SecretsErr>(t, d));
   const secretRes = await readSecret(tcw, descriptor);
-  if (!secretRes.ok && isDecryptDenied(secretRes.error)) {
-    breadcrumb("the refresh token's key needs the owner's approval");
+  if (!secretRes.ok && needsConnectorKeyApproval(secretRes.error)) {
+    breadcrumb("the refresh token's key needs the owner's approval or a foreground reseal");
     markConnectorKeyAccessPaused(tcw, descriptor.id);
     return "key-access-paused";
   }

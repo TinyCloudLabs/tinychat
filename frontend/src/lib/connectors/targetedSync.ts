@@ -33,7 +33,7 @@
 
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
-import { isDecryptDenied, markConnectorKeyAccessPaused } from "./connectorKeyAccess";
+import { markConnectorKeyAccessPaused, needsConnectorKeyApproval } from "./connectorKeyAccess";
 import {
   FirefliesClient,
   type FirefliesResult,
@@ -200,13 +200,14 @@ function fromStore(err: StoreError, context: string): SyncError {
  *
  * Only three shapes are a no-op: the vault is locked, this connector has no
  * stored key (disconnected on another device, or never connected), or the
- * key's own grant is missing or ended (the row asks the owner). Anything else
- * is a real failure and must surface — a secrets-service outage read as
- * "no key" would quietly stop ingesting forever.
+ * key's own grant is missing or ended, or its copy is still sealed to the
+ * network key (the row asks the owner; only a foreground read reseals it).
+ * Anything else is a real failure and must surface — a secrets-service outage
+ * read as "no key" would quietly stop ingesting forever.
  */
 function classifySecretsError(err: unknown): TargetedIngestBlockedReason | null {
   if (err === null || typeof err !== "object") return null;
-  if (isDecryptDenied(err)) return "key-access";
+  if (needsConnectorKeyApproval(err)) return "key-access";
   const e = err as { code?: unknown; message?: unknown };
   const code = typeof e.code === "string" ? e.code : "";
   const message = typeof e.message === "string" ? e.message : "";

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import type { connectWallet } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
@@ -9,8 +9,10 @@ import {
   connectorPausedMessage,
   isConnectorKeyAccessPaused,
   markConnectorKeyAccessPaused,
+  resealConnectorKey,
   resetConnectorKeyAccessForTests,
 } from "./connectorKeyAccess";
+import { getConnectorKey, resetVaultSecretCacheForTests } from "./connectorSecrets";
 import { CONNECTORS } from "./registry";
 
 const ADDRESS = "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed";
@@ -142,4 +144,72 @@ test("a paused connector says access ended once an approval has run out, and tha
   expect(connectorPausedMessage(ADDRESS, MEET, NOW + 8 * DAY)).toBe(
     "Paused. Approve TinyChat's access to keep your Google Meet meetings coming in.",
   );
+});
+
+test("a connector's key is kept in memory only until its approval ends, and not at all without one", async () => {
+  let now = NOW;
+  const clock = spyOn(Date, "now").mockImplementation(() => now);
+  resetVaultSecretCacheForTests();
+  try {
+    const f = fixture();
+    let gets = 0;
+    const tcw = Object.assign(f.tcw, {
+      did: `did:pkh:eip155:1:${ADDRESS}`,
+      secrets: { isUnlocked: true, get: async () => (gets++, { ok: true, data: "ff-key" }) },
+    });
+    const read = async () => expect(await getConnectorKey(tcw, FIREFLIES)).toEqual({ ok: true, data: "ff-key" });
+
+    await read();
+    await read();
+    expect(gets).toBe(2);
+
+    await askConnectorKeyAccess(tcw, [FIREFLIES], { connect: f.connect, now: () => now });
+    await read();
+    now = NOW + CONNECTOR_KEY_ACCESS_MAX_MS - 1;
+    await read();
+    expect(gets).toBe(3);
+
+    now = NOW + CONNECTOR_KEY_ACCESS_MAX_MS;
+    await read();
+    await read();
+    expect(gets).toBe(5);
+  } finally {
+    clock.mockRestore();
+    resetVaultSecretCacheForTests();
+  }
+});
+
+test("reseal moves the connector's own record onto its own key; anything short of that keeps the old copy", async () => {
+  const warn = spyOn(console, "warn").mockImplementation(() => {});
+  const error = spyOn(console, "error").mockImplementation(() => {});
+  try {
+    const calls: unknown[][] = [];
+    let outcome: () => unknown = () => ({ status: "moved" });
+    const tcw = {
+      secrets: { vault: { resealToKey: async (...args: unknown[]) => (calls.push(args), outcome()) } },
+    } as unknown as TinyCloudWeb;
+
+    expect(await resealConnectorKey(tcw, MEET)).toBe(true);
+    expect(await resealConnectorKey(tcw, FIREFLIES)).toBe(true);
+    expect(calls).toEqual([
+      ["secrets/scoped/google-meet/REFRESH_TOKEN", "secrets/scoped/google-meet/refresh_token"],
+      ["secrets/FIREFLIES_API_KEY", "secrets/fireflies_api_key"],
+    ]);
+
+    outcome = () => ({ status: "already" });
+    expect(await resealConnectorKey(tcw, FIREFLIES)).toBe(true);
+    for (const kept of [{ status: "pending" }, { status: "skipped", reason: "conflict" }, { status: "skipped", reason: "verify_failed" }]) {
+      outcome = () => kept;
+      expect(await resealConnectorKey(tcw, FIREFLIES)).toBe(false);
+    }
+    outcome = () => {
+      throw new Error("node unreachable");
+    };
+    expect(await resealConnectorKey(tcw, FIREFLIES)).toBe(false);
+    expect(warn).toHaveBeenCalledTimes(3);
+    expect(error).toHaveBeenCalledTimes(1);
+  } finally {
+    warn.mockRestore();
+    error.mockRestore();
+  }
 });

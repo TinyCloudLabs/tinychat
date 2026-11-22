@@ -7,7 +7,7 @@
 // paused row can say whether access ended or was never given; and which connectors a background read found paused.
 
 import type { PermissionEntry, TinyCloudWeb } from "@tinycloud/web-sdk";
-import { secretKeyPath } from "@tinycloud/sdk-services";
+import { resolveSecretPath, secretKeyPath } from "@tinycloud/sdk-services";
 import { connectWallet } from "@tinyboilerplate/client";
 
 import { APP_NAME } from "../homeSite";
@@ -18,8 +18,11 @@ import type { ConnectorDescriptor, ConnectorId } from "./types";
 /** The longest approval TinyChat asks for: 7 days, less 5 minutes of clock skew. */
 export const CONNECTOR_KEY_ACCESS_MAX_MS = 7 * 24 * 60 * 60_000 - 5 * 60_000;
 
-/** The node's code for a read of a key this session has no grant for (missing, lapsed or revoked). */
+/** The SDK's code for a read of a key this session has no live grant for (missing, ended, or refused by the node). */
 export const DECRYPT_DENIED = "DECRYPT_DENIED";
+
+/** The SDK's code for a `namedKeyOnly` read of a copy still sealed to the network key. */
+export const LEGACY_ENVELOPE = "LEGACY_ENVELOPE";
 
 export const APPROVE_IN_OPENKEY = "Approve in OpenKey";
 export const CONNECTOR_KEY_ACCESS_NOTE = "Each approval lasts up to 7 days.";
@@ -51,8 +54,19 @@ export function connectorKeyPermissions(address: string, chainId: number, connec
   }));
 }
 
+/** The SDK's one code for a read this session has no live grant for: missing, ended, or refused by the node. */
 export function isDecryptDenied(err: unknown): boolean {
   return typeof err === "object" && err !== null && (err as { code?: unknown }).code === DECRYPT_DENIED;
+}
+
+/** A copy still sealed to the network key, read with this key's grant held (`namedKeyOnly`). */
+export function isLegacyEnvelope(err: unknown): boolean {
+  return typeof err === "object" && err !== null && (err as { code?: unknown }).code === LEGACY_ENVELOPE;
+}
+
+/** A connector read that only the owner's approval (and, for an old copy, a foreground reseal) can fix. */
+export function needsConnectorKeyApproval(err: unknown): boolean {
+  return isDecryptDenied(err) || isLegacyEnvelope(err);
 }
 
 /** True when this session holds access to every connector's key. Never prompts. */
@@ -129,17 +143,61 @@ export async function approveConnectorKeyAccess(
   }
 }
 
-/** Foreground reads only: a read denied for `d`'s key asks OpenKey once and reads again; otherwise the first result. */
+/** Test seams for a foreground read; production passes none. */
+export interface ConnectorKeyReadOptions extends ConnectorKeyAccessOptions {
+  ask?: (tcw: AccessTcw, d: Connector) => Promise<ConnectorKeyAccessResult>;
+  reseal?: (d: Connector) => Promise<boolean>;
+}
+
+/**
+ * Foreground reads only: Sync now, a paused row's Approve and the disconnect read. `read` is a namedKeyOnly read.
+ * A key that needs approval asks OpenKey once and reads again. A copy still sealed to the network key
+ * (LEGACY_ENVELOPE, which the SDK returns only once this key's grant is held) is resealed to its own key and read
+ * again; this is the only path that opens a network-sealed copy. A failed reseal keeps that copy, pauses the
+ * connector and is logged.
+ */
 export async function readWithConnectorKeyAccess<R extends { ok: boolean; error?: unknown }>(
-  tcw: AccessTcw,
+  tcw: AccessTcw & Pick<TinyCloudWeb, "secrets">,
   d: Connector,
   read: () => Promise<R>,
-  options?: ConnectorKeyAccessOptions,
+  options: ConnectorKeyReadOptions = {},
 ): Promise<R> {
-  const first = await read();
-  if (first.ok || !isDecryptDenied(first.error)) return first;
-  if (!(await approveConnectorKeyAccess(tcw, d, options))) return first;
+  let result = await read();
+  if (result.ok || !needsConnectorKeyApproval(result.error)) return result;
+  if (isDecryptDenied(result.error)) {
+    const ask = options.ask ?? ((t: AccessTcw, c: Connector) => askConnectorKeyAccess(t, [c], options));
+    const access = await ask(tcw, d).catch((cause: unknown) => {
+      console.error(`OpenKey approval for ${d.id} failed`, cause);
+      return "declined" as const;
+    });
+    if (access !== "granted") return result;
+    result = await read();
+    if (result.ok || !isLegacyEnvelope(result.error)) return result;
+  }
+  const reseal = options.reseal ?? ((c: Connector) => resealConnectorKey(tcw, c));
+  if (!(await reseal(d))) {
+    markConnectorKeyAccessPaused(tcw, d.id);
+    return result;
+  }
   return read();
+}
+
+/**
+ * Move `d`'s network-sealed copy onto its own key. The SDK reads it with its ETag, seals it to the key, decrypts the
+ * new copy under the exact-key grant and compares bytes, and only then replaces the old copy (`ifMatch`). Any
+ * failure leaves the old copy in place. True when the key now holds a copy sealed to its own key.
+ */
+export async function resealConnectorKey(tcw: Pick<TinyCloudWeb, "secrets">, d: Connector): Promise<boolean> {
+  try {
+    const { vaultKey } = resolveSecretPath(d.secretName, d.secretScope === undefined ? {} : { scope: d.secretScope });
+    const result = await tcw.secrets.vault.resealToKey(vaultKey, secretKeyPath(d.secretName, d.secretScope));
+    if (result.status === "moved" || result.status === "already") return true;
+    console.warn(`[connector-key] ${d.id}: kept its network-sealed copy (${result.status === "skipped" ? result.reason : result.status})`);
+    return false;
+  } catch (cause) {
+    console.error(`[connector-key] ${d.id}: kept its network-sealed copy`, cause);
+    return false;
+  }
 }
 
 // ── When access ends, per owner and connector ────────────────────────
@@ -181,10 +239,15 @@ function rememberAccessEnd(owner: string, id: ConnectorId, endsAt: number): void
   }
 }
 
+/** When the owner's last approval for this connector ends or ended, or null when none was recorded. */
+export function connectorKeyAccessEndsAt(owner: string, id: ConnectorId): number | null {
+  return loadAccessEnds()[pausedKey(owner.toLowerCase(), id)] ?? null;
+}
+
 /** When the owner's last approval for this connector ended, or null when none has ended (or none was given). */
 export function connectorKeyAccessEndedAt(owner: string, id: ConnectorId, now = Date.now()): Date | null {
-  const endsAt = loadAccessEnds()[pausedKey(owner.toLowerCase(), id)];
-  return endsAt !== undefined && endsAt <= now ? new Date(endsAt) : null;
+  const endsAt = connectorKeyAccessEndsAt(owner, id);
+  return endsAt !== null && endsAt <= now ? new Date(endsAt) : null;
 }
 
 // ── Connectors a background read found paused ────────────────────────

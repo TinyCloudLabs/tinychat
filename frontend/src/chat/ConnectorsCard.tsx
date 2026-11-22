@@ -68,7 +68,7 @@ import { useGmeetRowStatus } from "./useGmeetRowStatus";
 import {
   CONNECTOR_KEY_ACCESS_NOTE,
   connectorPausedMessage,
-  isDecryptDenied,
+  needsConnectorKeyApproval,
   readWithConnectorKeyAccess,
 } from "@/lib/connectors/connectorKeyAccess";
 import { ConnectorKeyAccessPaused } from "./ConnectorKeyAccessPaused";
@@ -552,7 +552,7 @@ export function ConnectorsCard({
       if (!keyRes.ok) {
         patchRow(d.id, {
           syncing: false,
-          actionError: isDecryptDenied(keyRes.error)
+          actionError: needsConnectorKeyApproval(keyRes.error)
             ? connectorPausedMessage(tcw.session()?.address ?? "", d)
             : engine === "granola" && keyRes.error?.code === GRANOLA_MISSING_KEY_CODE
               ? GRANOLA_RECONNECT_REQUIRED
