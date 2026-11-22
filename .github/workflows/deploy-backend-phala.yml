@@ -507,6 +507,9 @@ jobs:
           BOTS_SERVICE_CONNECT_HOST: ${{ vars.BOTS_SERVICE_CONNECT_HOST }}
           BOTS_SERVICE_URL: ${{ vars.BOTS_SERVICE_URL }}
           BOTS_SERVICE_SECRET: ${{ secrets.BOTS_SERVICE_SECRET }}
+          # Sibling admission (backend/src/routes/bot-admission.ts): the same value the bots CVM holds as
+          # BOTS_BACKEND_CALL_SECRET (deploy-bots-phala.yml). Unset, the route is not mounted.
+          BOTS_BACKEND_CALL_SECRET: ${{ secrets.BOTS_BACKEND_CALL_SECRET }}
           # Empty means the backend default (120000).
           BOTS_POST_TIMEOUT_MS: ${{ vars.BOTS_POST_TIMEOUT_MS }}
           # Owner-history variables; off until explicitly enabled in production-api.
@@ -644,7 +647,7 @@ jobs:
           for item in MCP_CHAT_ENABLED MCP_CHAT_TEST_ACCOUNTS MCP_CHAT_URL MCP_CHAT_SERVICE_DID MCP_CHAT_SERVICE_CREDENTIAL \
             MCP_CHAT_SERVICE_CREDENTIAL_HEADER MCP_CHAT_OWNER_DID_HEADER MCP_CHAT_GRANT_EXPIRED_ERROR MCP_CHAT_GRANT_REJECTED_ERROR TAVILY_API_KEY \
             GRANOLA_PROXY_ENABLED \
-            BOTS_ENABLED BOTS_TEST_ACCOUNTS BOTS_SERVICE_CONNECT_HOST BOTS_SERVICE_URL BOTS_SERVICE_SECRET BOTS_POST_TIMEOUT_MS \
+            BOTS_ENABLED BOTS_TEST_ACCOUNTS BOTS_SERVICE_CONNECT_HOST BOTS_SERVICE_URL BOTS_SERVICE_SECRET BOTS_BACKEND_CALL_SECRET BOTS_POST_TIMEOUT_MS \
             BOTS_HISTORY_ENABLED BOTS_HISTORY_SIGNER_DID BOTS_HISTORY_NODE_ORIGIN BOTS_UNARCHIVED_HISTORY_POLICY \
             RENEWAL_BACKEND_ORIGIN RENEWAL_NODE_DID RENEWAL_RENEWER_DID; do
             case "${!item-}" in
@@ -680,6 +683,7 @@ jobs:
             printf '%s\n' "BOTS_SERVICE_CONNECT_HOST=${BOTS_SERVICE_CONNECT_HOST:-}"
             printf '%s\n' "BOTS_SERVICE_URL=${BOTS_SERVICE_URL:-}"
             printf '%s\n' "BOTS_SERVICE_SECRET=${BOTS_SERVICE_SECRET:-}"
+            printf '%s\n' "BOTS_BACKEND_CALL_SECRET=${BOTS_BACKEND_CALL_SECRET:-}"
             printf '%s\n' "BOTS_POST_TIMEOUT_MS=${BOTS_POST_TIMEOUT_MS:-}"
             printf '%s\n' "BOTS_HISTORY_ENABLED=${BOTS_HISTORY_ENABLED:-false}"
             printf '%s\n' "BOTS_HISTORY_SIGNER_DID=${BOTS_HISTORY_SIGNER_DID:-}"
