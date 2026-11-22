@@ -19,7 +19,7 @@
 #   worker-src blob:            same-origin workers (stitch, audio hash, SDK replica) and blob workers.
 #   frame-src https:            the OpenKey sign-in frame (openkey.so), the TinyCloud apps One frames (src/apps/registry.ts:
 #                               secrets.tinycloud.xyz, credentials.org, explorer.tinycloud.xyz, account.tinycloud.xyz and
-#                               the Ship ledger's host) and the Feed's page sheet (feed/LinkSheet.tsx), which shows any
+#                               the Ledger app's host) and the Feed's page sheet (feed/LinkSheet.tsx), which shows any
 #                               https page in a sandboxed frame. A frame runs on its own origin, not on this one.
 #   form-action 'self'          no form posts anywhere else.
 #   connect-src: each host is one the code fetches (the desktop app's policy, desktop/src-tauri/tauri.conf.json, lists most of them):
