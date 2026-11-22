@@ -12,7 +12,7 @@ import type { BotLayout } from "./layout";
 import { OWNER_DID } from "./owner";
 
 /** The areas the backend's registry names (backend/src/trustbot-reads/areas.ts). */
-export const READ_AREAS = ["meetings"] as const;
+export const READ_AREAS = ["meetings", "feed_chats"] as const;
 export type ReadArea = (typeof READ_AREAS)[number];
 const CONVERSATION_ID = /^[0-9a-f]{32}$/;
 
