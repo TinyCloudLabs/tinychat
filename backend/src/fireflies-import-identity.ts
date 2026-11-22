@@ -26,6 +26,32 @@ export interface FirefliesDelegateIdentity {
   readonly sessionDid: string;
   /** Session-only TinyCloudNode holding the KMS-derived Ed25519 delegate key in memory. */
   readonly node: TinyCloudNode;
+  /**
+   * Build a fresh, isolated session-only TinyCloudNode bound to the same KMS-derived Ed25519
+   * identity so one owner's activated delegations never touch another owner's runtime state.
+   */
+  createScopedNode(): TinyCloudNode;
+}
+
+/**
+ * Evict all runtime delegations and per-space caches from a session-only delegate TinyCloudNode
+ * so no tenant grant or vault handle survives past a single activation or import run.
+ */
+export function evictDelegateNodeGrants(node: TinyCloudNode): void {
+  const internal = node as unknown as {
+    runtimePermissionGrants?: unknown[];
+    _capabilityRegistry?: { clear?: () => void };
+    _baseVaults?: Map<unknown, unknown>;
+    _baseSecrets?: Map<unknown, unknown>;
+    _secrets?: Map<unknown, unknown>;
+  };
+  if (Array.isArray(internal.runtimePermissionGrants)) {
+    internal.runtimePermissionGrants.length = 0;
+  }
+  internal._capabilityRegistry?.clear?.();
+  internal._baseVaults?.clear();
+  internal._baseSecrets?.clear();
+  internal._secrets?.clear();
 }
 
 export interface FirefliesImportKeys {
@@ -106,13 +132,14 @@ export function createFirefliesDelegateFromSeed(seed: Buffer, host: string): Fir
         return manager;
       },
     });
-    const node = new TinyCloudNode({ host, wasmBindings });
+    const createScopedNode = () => new TinyCloudNode({ host, wasmBindings });
+    const node = createScopedNode();
     const sessionDid = node.sessionDid;
     const did = node.did.split("#", 1)[0] ?? "";
     if (!node.isSessionOnly || !did.startsWith("did:key:")) {
       throw new Error("[startup] FATAL: fireflies-import delegate must be a session-only did:key identity");
     }
-    return { did, sessionDid, node };
+    return { did, sessionDid, node, createScopedNode };
   } finally {
     pkcs8.fill(0);
   }

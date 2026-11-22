@@ -180,6 +180,7 @@
         "minimum": { "type": "integer", "min": 0, "max": 1000000 },
         "tier": { "type": "enum", "values": ["free", "plus", "pro"] },
         "source": { "type": "enum", "values": ["ledger", "local", "outage"] },
+        "unpriced": { "type": "boolean" },
         "raw_credits": { "type": "integer", "min": 0, "max": 10000000 },
         "charged": { "type": "integer", "min": 0, "max": 1000000 },
         "window_kind": { "type": "enum", "values": ["day", "week"] },

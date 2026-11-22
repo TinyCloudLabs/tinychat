@@ -1,6 +1,9 @@
 import express, { Router } from "express";
 import type { Request, RequestHandler, Response } from "express";
-import type { FirefliesDelegateIdentity } from "../fireflies-import-identity.js";
+import {
+  evictDelegateNodeGrants,
+  type FirefliesDelegateIdentity,
+} from "../fireflies-import-identity.js";
 import {
   verifyFirefliesImportGrants,
   type VerifiedFirefliesImportGrants,
@@ -34,29 +37,36 @@ async function defaultActivateFirefliesGrants(
   verified: VerifiedFirefliesImportGrants,
   configuredHost: string,
 ): Promise<void> {
-  const activateOne = async (grant: VerifiedFirefliesImportGrants["secrets"]) => {
-    const primary = grant.resources[0]!;
-    await delegate.node.useDelegation({
-      cid: grant.cid,
-      delegationHeader: { Authorization: grant.authorization },
-      spaceId: grant.spaceId,
-      path: primary.path,
-      actions: [...primary.actions],
-      resources: grant.resources.map((resource) => ({
-        service: resource.service,
-        space: resource.space,
-        path: resource.path,
-        actions: [...resource.actions],
-      })),
-      expiry: grant.expiresAt,
-      delegateDID: verified.delegateDid,
-      ownerAddress: verified.ownerAddress,
-      chainId: verified.chainId,
-      host: configuredHost,
-    });
-  };
-  await activateOne(verified.secrets);
-  await activateOne(verified.meetings);
+  // Dry-activate on an isolated scoped node and evict immediately in finally so the shared
+  // delegate identity retains zero cross-tenant state.
+  const scopedNode = delegate.createScopedNode();
+  try {
+    const activateOne = async (grant: VerifiedFirefliesImportGrants["secrets"]) => {
+      const primary = grant.resources[0]!;
+      await scopedNode.useDelegation({
+        cid: grant.cid,
+        delegationHeader: { Authorization: grant.authorization },
+        spaceId: grant.spaceId,
+        path: primary.path,
+        actions: [...primary.actions],
+        resources: grant.resources.map((resource) => ({
+          service: resource.service,
+          space: resource.space,
+          path: resource.path,
+          actions: [...resource.actions],
+        })),
+        expiry: grant.expiresAt,
+        delegateDID: verified.delegateDid,
+        ownerAddress: verified.ownerAddress,
+        chainId: verified.chainId,
+        host: configuredHost,
+      });
+    };
+    await activateOne(verified.secrets);
+    await activateOne(verified.meetings);
+  } finally {
+    evictDelegateNodeGrants(scopedNode);
+  }
 }
 
 /**

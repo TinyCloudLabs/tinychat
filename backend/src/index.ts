@@ -52,6 +52,7 @@ import { createDstackKeyClient } from "./attestation/dstackClient.js";
 import { deriveFirefliesImportKeys, type FirefliesImportKeys } from "./fireflies-import-identity.js";
 import { createFirefliesDelegationRouter } from "./routes/fireflies-delegation.js";
 import { createKvFirefliesGrantPort, FirefliesGrantStore } from "./services/fireflies-grant-store.js";
+import { FirefliesDirectImporter } from "./services/fireflies-import-executor.js";
 import { createServerInfoRouter } from "./routes/server-info.js";
 import { readBackendBuildInfo } from "./build-info.js";
 import { createBillingRouter } from "./routes/billing.js";
@@ -311,7 +312,21 @@ async function main() {
     return;
   }
   const redpillApiKey = process.env.REDPILL_API_KEY;
-  const mcpChat = mcpChatFromEnv(process.env);
+  let readFirefliesPurgeLedgerForMcp:
+    | ((address: string) => Promise<Awaited<ReturnType<ConnectorControlStore["readLedger"]>>>)
+    | undefined;
+  const mcpChat = mcpChatFromEnv(
+    process.env,
+    undefined,
+    firefliesServerImportEnabled(process.env)
+      ? {
+          readFirefliesPurgeLedger: async (address) =>
+            readFirefliesPurgeLedgerForMcp
+              ? readFirefliesPurgeLedgerForMcp(address)
+              : { status: "unparseable", raw: null },
+        }
+      : undefined,
+  );
   let agentStreamPolicy: AgentStreamPolicy | undefined;
   try {
     agentStreamPolicy = agentStreamPolicyFromEnv(
@@ -516,6 +531,27 @@ async function main() {
     : undefined;
   const connectorKeyStore = connectorRetention?.store;
   const connectorControl = new ConnectorControlStore(node, undefined, connectorKeyStore);
+  if (firefliesServerImportEnabled(process.env)) {
+    readFirefliesPurgeLedgerForMcp = (address) => connectorControl.readLedger("fireflies", address);
+  }
+  const firefliesImport = firefliesImportKeys
+    ? (() => {
+        const coordinator = new TenantCoordinator();
+        const grantStore = new FirefliesGrantStore({
+          kv: createKvFirefliesGrantPort(node, backendStorageLane),
+          kek: firefliesImportKeys.grantKek,
+          delegateDid: firefliesImportKeys.delegate.did,
+        });
+        const importer = new FirefliesDirectImporter({
+          delegate: firefliesImportKeys.delegate,
+          grantStore,
+          configuredHost: TINYCLOUD_HOST,
+          control: connectorControl,
+          coordinator,
+        });
+        return { delegate: firefliesImportKeys.delegate, grantStore, coordinator, importer };
+      })()
+    : null;
   const connectorQueue = new ConnectorQueue(node, {
     storageLane: backendStorageLane,
     retentionKeys: connectorKeyStore,
@@ -650,6 +686,7 @@ async function main() {
         queue: connectorWebhooks.queue,
         control: connectorWebhooks.control,
         limiters: connectorWebhookLimiters,
+        ...(firefliesImport ? { firefliesDirectImport: firefliesImport.importer } : {}),
       }),
     );
   }
@@ -684,7 +721,16 @@ async function main() {
     res.json({ ok: true, app: APP_ID, globalBucketRoutes: globalRoutes.top(10) });
   });
   app.use("/api/manifest", createManifestRouter());
-  app.use("/api/server-info", createServerInfoRouter(did, readBackendBuildInfo()));
+  app.use(
+    "/api/server-info",
+    createServerInfoRouter(
+      did,
+      readBackendBuildInfo(),
+      firefliesServerImportEnabled(process.env)
+        ? { capabilities: { firefliesServerImport: true } }
+        : undefined,
+    ),
+  );
   // Operator view of hosted AssemblyAI: the events, the heartbeat and the status route read this one monitor.
   const assemblyAiMonitor = new HostedProviderMonitor();
   // TC-1964: optional authenticated count of stored credential rows. Not registered (404) unless
@@ -745,7 +791,19 @@ async function main() {
   // Direct imports consult the ledger even when notification delivery is disabled.
   app.post("/api/connectors/webhooks/purge-check", authMiddleware, (req, res) =>
     respondToConnectorPurgeCheck(connectorControl, req, res));
-  app.use("/api/connectors/webhooks", createConnectorPurgeRouter({ control: connectorControl, authMiddleware }));
+  const onFirefliesLedgerCleared = firefliesImport
+    ? (source: string, address: string) => {
+        if (source === "fireflies") firefliesImport.importer.recordReset(address);
+      }
+    : undefined;
+  app.use(
+    "/api/connectors/webhooks",
+    createConnectorPurgeRouter({
+      control: connectorControl,
+      authMiddleware,
+      ...(onFirefliesLedgerCleared ? { onLedgerCleared: onFirefliesLedgerCleared } : {}),
+    }),
+  );
   if (connectorWebhooks) {
     app.use(
       "/api/connectors/webhooks",
@@ -774,6 +832,13 @@ async function main() {
         // singleton. Under B/C the route then returns the pending ids; nothing was written.
         drain: ({ source, address }) =>
           connectorWebhooks.drain.kick({ source, address, force: true }),
+        ...(firefliesImport
+          ? {
+              onLedgerCleared: (source: string, address: string) => {
+                if (source === "fireflies") firefliesImport.importer.recordReset(address);
+              },
+            }
+          : {}),
       }),
     );
   }
@@ -783,18 +848,14 @@ async function main() {
 
   // TC-3905: delegation-based Fireflies import grant routes. Mounted only when explicitly enabled
   // and after dstack KMS derivation succeeded above; otherwise falls through to 404.
-  if (firefliesImportKeys) {
-    const firefliesGrantStore = new FirefliesGrantStore({
-      kv: createKvFirefliesGrantPort(node, backendStorageLane),
-      kek: firefliesImportKeys.grantKek,
-      delegateDid: firefliesImportKeys.delegate.did,
-    });
+  if (firefliesImport) {
     app.use(
       "/api/connectors/fireflies/delegation",
       createFirefliesDelegationRouter({
-        delegate: firefliesImportKeys.delegate,
+        delegate: firefliesImport.delegate,
         configuredHost: TINYCLOUD_HOST,
-        store: firefliesGrantStore,
+        store: firefliesImport.grantStore,
+        coordinator: firefliesImport.coordinator,
         authMiddleware,
       }),
     );

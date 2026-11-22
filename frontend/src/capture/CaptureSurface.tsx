@@ -182,6 +182,8 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
     visible: active,
     noteId: sharedId ? null : (screen.noteId ?? recentNoteId),
     onPhone: pendingVisible ? (recorder.pending.notes ?? null) : null,
+    backendUrl,
+    sessionStore,
   });
   const { setFilter } = library;
   // Its row is under Shared with me, so the list beside it shows that.
