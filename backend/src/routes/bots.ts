@@ -10,6 +10,7 @@ import type { Request, RequestHandler, Response } from "express";
 import { botCaps, CAP_MODE, type CapMode, type PlanName } from "../bot-caps";
 import { isBotActivityRecord } from "../bot-history.js";
 import { BOT_KEY, MAIN_BOT_KEY, orderedBots, publicBot, publicDeleted, type Bot, type BotsRegistry } from "../bots-registry";
+import { clientContextFrom } from "../client-context";
 
 export interface BotsConfig {
   serviceUrl: string;
@@ -72,6 +73,13 @@ const MAX_ASK_CHOICES = 4;
 const MAX_LISTED_REQUESTS = 50;
 const ASK_STATES = ["pending", "answered", "declined", "stopped", "expired"] as const;
 type AskState = (typeof ASK_STATES)[number];
+const SECRET_STATES = ["pending", "approved", "declined", "stopped", "revoked", "expired", "ended", "failed"] as const;
+type SecretState = (typeof SECRET_STATES)[number];
+const SECRET_NAME = /^[A-Z][A-Z0-9_]{0,63}$/;
+const MAX_SECRET_SITES = 3;
+const MAX_SECRET_WHY = 200;
+/** The only page a secret request's approval may open. */
+const OPENKEY_APPROVE = "https://openkey.so/";
 
 /** Which decision to tell Main about. The only thing a browser names for an app-originated message. */
 export interface AppReply {
@@ -90,18 +98,19 @@ function asksSettingsBody(body: unknown): { enabled: boolean } | null {
   return isPlainObject(body) && Object.keys(body).length === 1 && typeof body.enabled === "boolean" ? { enabled: body.enabled } : null;
 }
 
-type AskAnswerBody = { decision: "decline" } | { decision: "answer"; answer: string } | { decision: "answer"; choice: number } | { decision: "approve"; binding: string };
+type AskAnswerBody = { decision: "decline" | "stop" | "retry" } | { decision: "answer"; answer: string } | { decision: "answer"; choice: number } | { decision: "approve"; binding: string };
 
 const ACTION_BINDING = /^[0-9a-f]{64}$/;
 
 /**
- * A decline, an answer given as text (1 to 280 characters) or as the index of one of the choices, or the owner's Send
- * on a proposal card naming the binding the card showed; nothing else is taken.
+ * A decline, stop (an approved secret request) or retry (a failed one), an answer given as text (1 to 280 characters)
+ * or as the index of one of the choices, or the owner's Send on a proposal card naming the binding the card showed;
+ * nothing else is taken. The service checks which fits the request.
  */
 function askAnswerBody(body: unknown): AskAnswerBody | null {
   if (!isPlainObject(body)) return null;
   const keys = Object.keys(body);
-  if (body.decision === "decline") return keys.length === 1 ? { decision: "decline" } : null;
+  if (body.decision === "decline" || body.decision === "stop" || body.decision === "retry") return keys.length === 1 ? { decision: body.decision } : null;
   if (body.decision === "approve") return keys.length === 2 && typeof body.binding === "string" && ACTION_BINDING.test(body.binding) ? { decision: "approve", binding: body.binding } : null;
   if (body.decision !== "answer" || keys.length !== 2) return null;
   if (typeof body.answer === "string") return body.answer.length >= 1 && body.answer.length <= MAX_ASK_ANSWER * 2 ? { decision: "answer", answer: body.answer } : null;
@@ -112,7 +121,7 @@ function toAsksSettings(payload: unknown): { enabled: boolean } | null {
   return isPlainObject(payload) && typeof payload.enabled === "boolean" ? { enabled: payload.enabled } : null;
 }
 
-interface AskRequestView {
+interface QuestionRequestView {
   id: string;
   kind: "ask";
   state: AskState;
@@ -126,18 +135,65 @@ interface AskRequestView {
   undelivered?: true;
 }
 
+/** A secret request: a name, sites and what was decided; never a value. */
+interface SecretRequestView {
+  id: string;
+  kind: "secret";
+  state: SecretState;
+  askedAt: string;
+  expiresAt: string;
+  outside: boolean;
+  resolvedAt?: string;
+  name: string;
+  sites: string[];
+  service?: string;
+  why?: string;
+  approveUrl?: string;
+  until?: string;
+  undelivered?: true;
+}
+
+type AskRequestView = QuestionRequestView | SecretRequestView;
+
 const shortText = (value: unknown, max: number): value is string => typeof value === "string" && value.length <= max;
+
+/** A site the service named for a secret: a lowercase host name, nothing a browser could take for an address with a path. */
+const isSiteName = (value: unknown): value is string => typeof value === "string" && /^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$/.test(value);
+
+function toSecretRequest(value: Record<string, unknown>, common: Omit<SecretRequestView, "kind" | "state" | "name" | "sites">): SecretRequestView | null {
+  const { state, name, sites, service, why, approveUrl, until } = value;
+  if (!SECRET_STATES.some(known => known === state) || typeof name !== "string" || !SECRET_NAME.test(name)) return null;
+  if (!Array.isArray(sites) || sites.length < 1 || sites.length > MAX_SECRET_SITES || !sites.every(isSiteName)) return null;
+  if (service !== undefined && !shortText(service, 60)) return null;
+  if (why !== undefined && !shortText(why, MAX_SECRET_WHY * 2)) return null;
+  if (approveUrl !== undefined && (!shortText(approveUrl, 2048) || !approveUrl.startsWith(OPENKEY_APPROVE))) return null;
+  if (until !== undefined && (!shortText(until, 40) || Number.isNaN(Date.parse(until)))) return null;
+  return {
+    ...common, kind: "secret", state: state as SecretState, name, sites: [...sites as string[]],
+    ...(service !== undefined ? { service } : {}),
+    ...(why !== undefined ? { why } : {}),
+    ...(approveUrl !== undefined ? { approveUrl } : {}),
+    ...(until !== undefined ? { until } : {}),
+  };
+}
 
 /** Rebuilds one request from the contract fields; null when the service's answer does not have the contract's shape. */
 function toAskRequest(value: unknown): AskRequestView | null {
   if (!isPlainObject(value)) return null;
   const { id, kind, state, askedAt, expiresAt, outside, resolvedAt, question, choices, answer, undelivered } = value;
-  if (typeof id !== "string" || !ASK_REQUEST_ID.test(id) || kind !== "ask" || !ASK_STATES.some(known => known === state)) return null;
+  if (typeof id !== "string" || !ASK_REQUEST_ID.test(id)) return null;
   if (!shortText(askedAt, 40) || !shortText(expiresAt, 40) || typeof outside !== "boolean") return null;
   if (resolvedAt !== undefined && !shortText(resolvedAt, 40)) return null;
+  if (undelivered !== undefined && undelivered !== true) return null;
+  const common = {
+    id, askedAt, expiresAt, outside,
+    ...(resolvedAt !== undefined ? { resolvedAt } : {}),
+    ...(undelivered ? { undelivered: true as const } : {}),
+  };
+  if (kind === "secret") return toSecretRequest(value, common);
+  if (kind !== "ask" || !ASK_STATES.some(known => known === state)) return null;
   if (question !== undefined && !shortText(question, MAX_ASK_ANSWER * 2)) return null;
   if (answer !== undefined && !shortText(answer, MAX_ASK_ANSWER * 2)) return null;
-  if (undelivered !== undefined && undelivered !== true) return null;
   if (choices !== undefined && (!Array.isArray(choices) || choices.length > MAX_ASK_CHOICES || !choices.every(choice => shortText(choice, 120)))) return null;
   return {
     id, kind: "ask", state: state as AskState, askedAt, expiresAt, outside,
@@ -205,9 +261,14 @@ function toAskRequests(payload: unknown, names: ReadonlyMap<string, string>): { 
   return requests.every(request => request !== null) ? { requests: requests as (AskRequestView | ActionRequestView)[] } : null;
 }
 
-/** Builds the internal send body from the authenticated owner and route's admitted bot. */
-export async function botTurnBody(config: BotsConfig, address: string, sourceKey: string, text: string, appReply?: AppReply) {
-  const content = appReply ? { appReply } : { text };
+/**
+ * Builds the internal send body from the authenticated owner and route's admitted bot. With a typed message, the
+ * browser's local date and time zone go along only when they are well formed; anything else is dropped and the turn
+ * still runs.
+ */
+export async function botTurnBody(config: BotsConfig, address: string, sourceKey: string, text: string, appReply?: AppReply, clientContext?: unknown) {
+  const context = appReply ? undefined : clientContextFrom(clientContext);
+  const content = appReply ? { appReply } : { text, ...(context ? { clientContext: context } : {}) };
   try {
     const messageableBotKeys = await config.listForTurn?.(botOwnerDid(address), sourceKey);
     if (messageableBotKeys?.length) return { ...content, messageableBotKeys };
@@ -588,7 +649,7 @@ export function createBotsRouter(opts: {
 
     try {
       const url = `${config!.serviceUrl}/v1/bots/${key}/messages`;
-      const body = JSON.stringify(await botTurnBody(config!, address, key, typeof text === "string" ? text : "", appReply));
+      const body = JSON.stringify(await botTurnBody(config!, address, key, typeof text === "string" ? text : "", appReply, req.body?.clientContext));
       const upstream = await callBot(address, key, seq, () => (config!.fetchImpl ?? fetch)(url, {
         method: "POST",
         headers: botsServiceHeaders(config!, botOwnerDid(address), "POST", url, body),

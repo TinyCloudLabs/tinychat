@@ -11,15 +11,16 @@ No agent merges with --admin or uses the ruleset bypass to pass red or pending c
 
 | Check name (job) | Workflow | Runs on | Fails when |
 | --- | --- | --- | --- |
-| `Gitleaks` | `.github/workflows/gitleaks.yml` | every PR; every push to `main` | PR: a secret-shaped string in the PR's own commits, judged by the base commit's `.gitleaksignore` and `.gitleaks.toml` (default rules when absent) with inline `gitleaks:allow` ignored, so a PR cannot allowlist its own leak. `main`: any finding in the full history of `main` not in main's reviewed baseline (`.gitleaksignore`). A PR that changes the baseline, a gitleaks config or the workflow also scans its full head history with its own baseline. |
+| `Gitleaks` | `.github/workflows/gitleaks.yml` | every PR; every push to `main` | PR: a secret-shaped string in the PR's own commits, judged by the base commit's `.gitleaksignore` and `.gitleaks.toml` (default rules when absent) with inline `gitleaks:allow` ignored, so a PR cannot allowlist its own leak. `main`: any finding in the full history of `main` not in main's reviewed baseline (`.gitleaksignore`) or its `.gitleaks.toml` allowlist. A PR that changes the baseline, a gitleaks config or the workflow also scans its full head history with its own baseline and config. |
 | `Backend and package tests` | `.github/workflows/backend.yml` | every PR; every push to `main` | the backend suite (auth, consent scope, CORS, exo-grant and the rest), the shared-package suites, the Home mirror tests or the Vector config fail. A PR that touches no backend path reports success without running them; `main` always runs them. |
 | `Native sign-in request fits OpenKey's ceiling` | `.github/workflows/native-ceiling.yml` | every PR; every push to `main` | production OpenKey refuses the native sign-in request. Same skip rule as Backend. |
-| `Frontend tests, lint and browser harnesses` | `.github/workflows/frontend.yml` | PRs that touch the frontend; every push to `main` | frontend unit tests, lint, typecheck or the build fail. |
+| `Frontend tests, lint and browser harnesses` | `.github/workflows/frontend.yml` | every PR; every push to `main` | frontend unit tests, lint, typecheck or the build fail. A PR whose `changes` job selects no frontend input reports success without running them; `main` always runs them. |
 | `No unruled edits to existing tests` | `.github/workflows/test-edit-guard.yml` | every PR | a PR edits an existing test without a `test-ruling:` line. |
 | `Changeset`, `Cloudflare Pages` | existing | every PR | unchanged (already required). |
 
-The skip inside Backend and Native ceiling fails open: the work is skipped only when `git diff base...head` succeeds
-and lists no relevant path. That keeps the job present on every PR, so it can be required.
+The skip inside Backend, Native ceiling and Frontend fails open: Backend and Native ceiling skip the work only when
+`git diff base...head` succeeds and lists no relevant path; Frontend skips it only when its `changes` job succeeds and
+selects no frontend input. That keeps each job present on every PR, so it can be required.
 
 ### Release gates (`.github/workflows/deploy-production.yml`, every deploy, rollbacks and hotfixes included)
 
@@ -243,10 +244,12 @@ selected repositories closes that path (undo: add it back).
 
 ## Baselines
 
-### `.gitleaksignore` (75 fingerprints over the full history of `main` to `11ec789a`)
+### `.gitleaksignore` (84 fingerprints over the full history of `main` to `4ce3e190` and open-branch commits)
 
 Every entry was read in place. None is a live credential; each is a test fixture, a public identifier or code. No
-fixture value appears outside tests and harness screens. Line numbers are those of the fingerprinted commit.
+fixture value appears outside tests and harness screens. Line numbers are those of the fingerprinted commit. Two
+entries are commits that open branches carry and `main` does not hold (the pre-squash history of a merged PR, and a
+branch's own commit): `asks-gateway.test.ts:245` (31c85e56) and `secret-grants.test.ts:294` (4e7dfe4b).
 
 | File:line | Rule | Why it is safe |
 | --- | --- | --- |
@@ -262,14 +265,28 @@ fixture value appears outside tests and harness screens. Line numbers are those 
 | `frontend/src/lib/imageUrlFilter.corpus.test.ts:102` | aws-access-token | Synthetic `AKIA` id in a URL-filter corpus. |
 | `backend/src/__tests__/chat-gating.test.ts:21`, `chat-relay-signature.test.ts:36`, `frontend/src/chat/verification-predicates.test.ts:246,247` | generic-api-key | The public Hardhat/anvil development key. |
 | `backend/src/__tests__/` `assemblyai-hosted-alerts:52`, `assemblyai-hosted:44`, `auth-session:255,269,286,296,315`, `connector-content-store:64`, `connector-credentials:43`, `connector-observability:85`, `connector-teardown:60`, `consent-scope:64`, `granola-proxy-hardening:19,493`, `index-wiring:463,834`, `mcp-grant-real-sdk:87`, `private-cloud-transcription:45`, `rate-limits-bot-send:4`, `request-record:26,34`, `webhook-verify:10` (`.test.ts`) | generic-api-key | Test constants declared in the test: `did:key` ids (public keys), made-up handle, tenant, master and HMAC keys the test passes to the code under test, `grn_` and `0123456789…` placeholder keys, and redaction canaries. |
-| `bots-regular/src/__tests__/regular.test.ts:10`, `bots-regular/src/__tests__/role-prompt.test.ts:5`, `bots/src/__tests__/role.test.ts:11`, `packages/server/src/__tests__/delegation-store.test.ts:386,403,440` | generic-api-key | Placeholder key and storage-path strings (`0123456789…`, `delegations/0x…`). |
-| `bots/src/__tests__/asks-gateway.test.ts:258` | generic-api-key | A made-up `SECRET-QUESTION-…` canary the logging test checks never appears in a log line. |
+| `bots-regular/src/__tests__/regular.test.ts:10`, `bots-regular/src/__tests__/role-prompt.test.ts:5`, `bots-regular/src/__tests__/omp-config.test.ts:9`, `bots/src/__tests__/role.test.ts:11`, `backend/src/__tests__/bot-history-sibling-routes.test.ts:130`, `packages/server/src/__tests__/delegation-store.test.ts:386,403,440` | generic-api-key | Placeholder key and storage-path strings (`0123456789…`, `delegations/0x…`). |
+| `bots/src/__tests__/asks-gateway.test.ts:245,258` | generic-api-key | A made-up `SECRET-QUESTION-…` canary the logging test checks never appears in a log line. |
 | `scripts/__tests__/release.test.mjs:1119,1518` | generic-api-key | Fake Apple signing env: Apple's documentation example issuer id and `ABCDE12345`-style placeholders. |
-| `frontend/src/` `apps/embedHost.test.ts:11,13`, `apps/ledgerCeiling.test.ts:20`, `bots/botChatApi.test.ts:19`, `bots/botPath.test.ts:12`, `bots/historyRestoredSession.sdk.test.ts:28`, `lib/connectors/serverCredentialTeardownRetry.test.ts:32`, `lib/debugLog.test.ts:20,50`, `lib/firstPartySignIn.sdk.test.ts:27`, `lib/homeReauthorize.sdk.test.tsx:35`, `lib/replication/readOnlyAccountProvider.sdk.test.ts:26`, `lib/sessionGrants.sdk.test.tsx:33`, `lib/webConnectorsGrant.sdk.test.tsx:37`; `frontend/test-fixtures/ConnectorDialog.granolaS4.fixture.tsx:20,21` | generic-api-key | Test fixtures: `did:key` ids and placeholder keys. |
+| `frontend/src/` `apps/embedHost.test.ts:11,13`, `apps/ledgerCeiling.test.ts:20`, `bots/botChatApi.test.ts:19`, `bots/botPath.test.ts:12`, `bots/historyRestoredSession.sdk.test.ts:28`, `chat/RegistrySection.test.tsx:31,32,33`, `lib/connectors/serverCredentialTeardownRetry.test.ts:32`, `lib/debugLog.test.ts:20,50`, `lib/firstPartySignIn.sdk.test.ts:27`, `lib/homeReauthorize.sdk.test.tsx:35`, `lib/registryEditor/adapter.test.ts:25,26`, `lib/replication/readOnlyAccountProvider.sdk.test.ts:26`, `lib/sessionGrants.sdk.test.tsx:33`, `lib/webConnectorsGrant.sdk.test.tsx:37`; `frontend/test-fixtures/ConnectorDialog.granolaS4.fixture.tsx:20,21`; `bots/src/__tests__/secret-grants.test.ts:294` | generic-api-key | Test fixtures: `did:key` ids and placeholder keys. |
 
 Adding an entry: confirm the finding is not live (anything possibly live goes to security and is rotated, never
 listed). Baseline changes go in their own PR, merged before the PR that adds the fixture (PRs are judged by their
 base commit's baseline). List a new fixture as `file:rule:line` without the commit, since a squash merge changes it.
+
+### `.gitleaks.toml` allowlist
+
+The default rules apply, with one allowlist for two fixture classes the generic-api-key rule flags in tests. A finding
+is allowlisted only when both hold:
+
+- the file is a test file or test fixture (`__tests__/`, `test-fixtures/` or a name ending `.test.ts`, `.test.tsx`
+  or `.test.mjs`);
+- the whole secret is a `did:key` Ed25519 identifier (`z6Mk` and 44 base58 characters, a public key) or
+  `0123456789abcdef` repeated (a placeholder).
+
+Over the full history of `main` to `704ed01f` the allowlist covers 36 of the findings the baseline lists, each one
+reviewed as one of these two classes. Those baseline entries stay. A change to the allowlist is a security
+review like a baseline change, in its own PR.
 
 Limit: `pull_request` runs the workflow file from the PR, so a PR that edits `.github/workflows/gitleaks.yml` can
 change its own scan. Review workflow edits as code that holds the gate.

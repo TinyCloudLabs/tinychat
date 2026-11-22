@@ -70,7 +70,7 @@ describe("the app MCP server while the owner's setting is off", () => {
   test("is still off after the owner switches it on and off again, and for a bot nobody has pushed a setting for", async () => {
     const gateway = setup();
     on(gateway);
-    expect(await tools(gateway)).toEqual(["ask_owner", "propose_action"]);
+    expect(await tools(gateway)).toEqual(["ask_owner", "request_secret", "propose_action"]);
     gateway.setAsks(BOT, { enabled: false, ...idle });
     expect(await tools(gateway)).toEqual([]);
     expect(await ask(gateway, { question: "Which city?" })).toEqual({ text: ASK_ERRORS.off, isError: true });
@@ -136,7 +136,7 @@ describe("ask_owner with the setting on", () => {
     expect(gateway.drainAsks(BOT)).toEqual([]);
     expect((await ask(gateway, { question: "x".repeat(280), choices: ["a", "b", "c", "d"] })).isError).toBe(false);
     expect((await ask(gateway, { question: "y", choices: ["z".repeat(60)] })).isError).toBe(false);
-    expect(gateway.drainAsks(BOT).map(entry => entry.question.length)).toEqual([280, 1]);
+    expect(gateway.drainAsks(BOT).map(entry => entry.kind === undefined ? entry.question.length : -1)).toEqual([280, 1]);
   });
 
   test("the limits count characters, not bytes", async () => {

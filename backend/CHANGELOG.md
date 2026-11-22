@@ -1,5 +1,29 @@
 # @tinychat/backend
 
+## 0.11.0-beta.5
+
+### Patch Changes
+
+- 2dc7989: Main can ask to use a secret. You add it to TinyCloud Secrets and approve it in OpenKey for as long as you choose. Main can use it only with the sites named in the request and can't see or show its value.
+
+  Details: TC-3595
+
+## 0.11.0-beta.4
+
+### Minor Changes
+
+- 1d0a5e0: The backend has encrypted Fireflies import grant storage, a KMS-derived delegate identity, a strict grant verifier and delegation routes, behind a flag that is off by default.
+
+  Details: TC-3905
+
+## 0.10.1-beta.3
+
+### Patch Changes
+
+- ba1415e: Your bots know your local date and time zone each time you write to them, so "today" and "last week" mean what you mean. Messages one bot sends another don't carry it. Your bots don't describe the machine they run on. If you paste a password or key into a chat, the bot tells you once that it's part of the chat and suggests changing it.
+
+  Details: TC-3791
+
 ## 0.10.1-beta.2
 
 ### Patch Changes

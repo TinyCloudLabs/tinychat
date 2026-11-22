@@ -9,7 +9,7 @@ import { dirname } from "node:path";
 import { ActionDesk, type ActionLedgerStore, PROPOSE_TOOL } from "./actions-desk";
 import { ACTION_ERRORS, type ActionsPush, type NewAction } from "./actions";
 import { AskDesk, APP_TOOLS } from "./asks-desk";
-import type { AsksPush, NewAsk } from "./asks";
+import type { AsksPush, NewRequest } from "./asks";
 import type { GatewayConfig } from "./config";
 import { isRecord } from "./guards";
 import { bearerMatches } from "./owner";
@@ -421,8 +421,8 @@ export class Gateway {
     this.#asks.push(botId, push);
   }
 
-  /** The questions the box has asked since the supervisor last collected them. */
-  drainAsks(botId: string): NewAsk[] {
+  /** The requests the box has made since the supervisor last collected them. */
+  drainAsks(botId: string): NewRequest[] {
     return this.#asks.drain(botId);
   }
 
@@ -606,7 +606,7 @@ export class Gateway {
   /**
    * Main's tools over MCP (Streamable HTTP, JSON replies, no session): `initialize`, `tools/list` and `tools/call`.
    * Two servers share this: `web` (search, fetch), always listed with the owner's setting applied on each call, and
-   * `app` (ask_owner), listed only while the owner's setting is on and checked again on each call. A setting change
+   * `app` (ask_owner, request_secret), listed only while the owner's setting is on and checked again on each call. A setting change
    * takes effect at the bot's next call, without restarting its sandbox. Both serve only the tools on their allow-list
    * (tool-policy.ts): tools/list drops any other, and tools/call refuses any other name before dispatch.
    */
@@ -651,6 +651,7 @@ export class Gateway {
         const args = isRecord(params.arguments) ? params.arguments : {};
         if (server === "app") {
           if (name === "ask_owner") return Response.json(rpcResult(id, this.#asks.call(botId, args)));
+          if (name === "request_secret") return Response.json(rpcResult(id, this.#asks.callSecret(botId, args)));
           if (name !== "propose_action") return Response.json(rpcFailure(id, -32602, "Unknown tool"));
           if (!this.#asks.enabled(botId)) return Response.json(rpcResult(id, toolText(ACTION_ERRORS.off, true)));
           return Response.json(rpcResult(id, this.#actions.call(botId, args)));

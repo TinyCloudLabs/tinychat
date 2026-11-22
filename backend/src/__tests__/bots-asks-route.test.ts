@@ -237,3 +237,50 @@ describe("a reply to a question, sent as a message", () => {
     } finally { await run.close(); }
   });
 });
+
+describe("secret requests", () => {
+  const SECRET = {
+    id: ID, kind: "secret", state: "pending", askedAt: "2026-11-22T12:00:00.000Z", expiresAt: "2026-11-23T12:00:00.000Z", outside: true,
+    name: "OPENAI_API_KEY", sites: ["api.openai.com"], service: "OpenAI", why: "To summarize your notes.", approveUrl: "https://openkey.so/approve/abc",
+  };
+  const APPROVED = {
+    id: ID, kind: "secret", state: "approved", askedAt: "2026-11-22T12:00:00.000Z", expiresAt: "2026-11-23T12:00:00.000Z", outside: false,
+    resolvedAt: "2026-11-22T12:05:00.000Z", name: "STRIPE_KEY", sites: ["api.stripe.com", "files.stripe.com"], until: "2026-11-22T13:12:00.000Z", undelivered: true,
+  };
+
+  it("are listed beside questions, rebuilt from the contract fields and nothing else", async () => {
+    const run = await setup(() => Response.json({ requests: [{ ...SECRET, value: "sk-leak", key: "x" }, APPROVED, REQUEST] }));
+    try {
+      const response = await run.send("GET", "/requests");
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ requests: [SECRET, APPROVED, REQUEST] });
+    } finally { await run.close(); }
+  });
+
+  it("are refused when a field is not in the contract's shape, an approval link above all", async () => {
+    for (const bad of [
+      { approveUrl: "https://evil.example/openkey.so/" }, { approveUrl: "javascript:alert(1)" }, { approveUrl: "http://openkey.so/x" }, { approveUrl: "https://openkey.so.evil.example/" },
+      { name: "openai" }, { sites: [] }, { sites: ["a.com", "b.com", "c.com", "d.com"] }, { sites: ["https://api.openai.com/"] }, { state: "answered" },
+      { until: "soon" }, { why: "x".repeat(401) },
+    ]) {
+      const run = await setup(() => Response.json({ requests: [{ ...SECRET, ...bad }] }));
+      try { expect((await run.send("GET", "/requests")).status).toBe(502); } finally { await run.close(); }
+    }
+  });
+
+  it("take stop and retry as decisions, exactly, and send them on", async () => {
+    const run = await setup(() => Response.json({ ...APPROVED, state: "revoked", undelivered: true }));
+    try {
+      const stopped = await run.send("POST", `/requests/${ID}/answer`, { decision: "stop" });
+      expect(stopped.status).toBe(200);
+      expect(await stopped.json()).toMatchObject({ state: "revoked", name: "STRIPE_KEY" });
+      expect(run.seen[0]!.body).toBe(JSON.stringify({ decision: "stop" }));
+      await run.send("POST", `/requests/${ID}/answer`, { decision: "retry" });
+      expect(run.seen[1]!.body).toBe(JSON.stringify({ decision: "retry" }));
+      for (const bad of [{ decision: "stop", until: "x" }, { decision: "retry", name: "X" }, { decision: "approve" }]) {
+        expect((await run.send("POST", `/requests/${ID}/answer`, bad)).status).toBe(400);
+      }
+      expect(run.seen).toHaveLength(2);
+    } finally { await run.close(); }
+  });
+});
