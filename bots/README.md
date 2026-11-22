@@ -71,11 +71,18 @@ Every event is encoded by the supervisor from checked fields; OMP output never p
 2. On the first message (or the first after an idle stop) the supervisor mounts a fresh tmpfs for the bot's state,
    restores the bot's saved state into it, registers a fresh random token for the bot with the gateway, writes the
    OCI spec (from `runsc spec`) and runs `runsc run` in the foreground. Inside, `bot-start.sh` bridges
-   `127.0.0.1:8080` to the egress socket and execs `omp --mode rpc --no-ui`; the sandbox's stdio is the RPC channel.
+   `127.0.0.1:8080` to the egress socket and execs `omp --mode rpc --no-ui --system-prompt <file>`; the sandbox's stdio
+   is the RPC channel. The file is Main's or the sibling prompt (`sandbox/prompts/main.md`, `sibling.md`, copied to
+   `/opt/tinycloud/prompts`); the sibling prompt is also the image's `/root/.omp/agent/SYSTEM.md`, which OMP reads if
+   the file is missing.
 3. The supervisor waits for OMP's `ready`, sets the event filter (assistant deltas only), opens the session in
    `/root/bot/sessions/main`, sends the `prompt`, and maps `message_update` text deltas to `delta` and
-   `prompt_result` to `done` / `error`.
-4. After `session_settled` the supervisor saves the bot's state to disk, and the bot stops once it has been idle for
+   `prompt_result` to `done` / `error`. A prompt the owner did not write (one bot messaging another) starts with the
+   line "[TinyCloud: this message is from another of the owner's bots, not from the owner.]", so it never starts
+   with "/" and cannot run an OMP slash command.
+4. OMP's own settings (`config.yml`, written by the supervisor) keep read, write, edit, bash, glob and grep and turn
+   off its other built-in tools, subagents, background jobs and skills.
+5. After `session_settled` the supervisor saves the bot's state to disk, and the bot stops once it has been idle for
    `BOTS_IDLE_MS`. The next message starts it again on the same session.
 
 ## Working state

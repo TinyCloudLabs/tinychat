@@ -145,6 +145,23 @@ const MAX_ACTIVITY_COUNT = 256;
 const HOST_TOOLS_TIMEOUT_MS = 5_000;
 const MESSAGE_BOT = "message_bot";
 
+/** Who wrote a turn's text: the owner, or another of the owner's bots through message_bot. */
+export type TurnOrigin = "owner" | "bot";
+
+/** The first line of every turn the owner did not write, saying where it came from (the bots' prompts rely on it). */
+export const ORIGIN_LINES: Record<Exclude<TurnOrigin, "owner">, string> = {
+  bot: "[TinyCloud: this message is from another of the owner's bots, not from the owner.]",
+};
+
+/**
+ * What OMP is sent for a turn. A turn the owner did not write starts with its origin line, so it never starts with
+ * "/": OMP runs local slash commands, skill commands and prompt templates only for a message that does, so such a
+ * turn cannot run one.
+ */
+export function promptText(text: string, from: TurnOrigin): string {
+  return from === "owner" ? text : `${ORIGIN_LINES[from]}\n${text}`;
+}
+
 function messageBotTool(keys: readonly string[]) {
   return {
     name: MESSAGE_BOT,
@@ -323,7 +340,7 @@ export class Bot {
   }
 
   /** Runs one message. Reports through `sink` and always ends with exactly one done or error. */
-  async send(text: string, sink: TurnSink, owner?: string, messenger?: BotMessenger, from: "owner" | "bot" = "owner"): Promise<void> {
+  async send(text: string, sink: TurnSink, owner?: string, messenger?: BotMessenger, from: TurnOrigin = "owner"): Promise<void> {
     if (this.#busy) {
       sink.error("busy");
       return;
@@ -383,7 +400,7 @@ export class Bot {
         sink.status(state);
       }
       if (!messenger || !sandbox.onHostToolCall) {
-        await this.#turn(sandbox, text, sink);
+        await this.#turn(sandbox, promptText(text, from), sink);
         return;
       }
       try {
@@ -394,7 +411,7 @@ export class Bot {
         return;
       }
       try {
-        await this.#turn(sandbox, text, sink, messenger);
+        await this.#turn(sandbox, promptText(text, from), sink, messenger);
       } finally {
         try { await sandbox.request({ type: "set_host_tools", tools: [] }, HOST_TOOLS_TIMEOUT_MS); }
         catch { if (this.#sandbox === sandbox) await this.#stop(sandbox); }
