@@ -762,7 +762,19 @@ async function main() {
   // Direct imports consult the ledger even when notification delivery is disabled.
   app.post("/api/connectors/webhooks/purge-check", authMiddleware, (req, res) =>
     respondToConnectorPurgeCheck(connectorControl, req, res));
-  app.use("/api/connectors/webhooks", createConnectorPurgeRouter({ control: connectorControl, authMiddleware }));
+  const onFirefliesLedgerCleared = firefliesImport
+    ? (source: string, address: string) => {
+        if (source === "fireflies") firefliesImport.importer.recordReset(address);
+      }
+    : undefined;
+  app.use(
+    "/api/connectors/webhooks",
+    createConnectorPurgeRouter({
+      control: connectorControl,
+      authMiddleware,
+      ...(onFirefliesLedgerCleared ? { onLedgerCleared: onFirefliesLedgerCleared } : {}),
+    }),
+  );
   if (connectorWebhooks) {
     app.use(
       "/api/connectors/webhooks",

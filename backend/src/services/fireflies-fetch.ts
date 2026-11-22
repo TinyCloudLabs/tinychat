@@ -297,7 +297,17 @@ export async function normalizeFirefliesTranscript(
 async function readBoundedText(
   response: Response,
   maxBytes: number,
-): Promise<{ ok: true; text: string } | { ok: false; code: "response_too_large" | "network_error" }> {
+  signal: AbortSignal,
+): Promise<{ ok: true; text: string } | { ok: false; code: "response_too_large" | "network_error" | "aborted" }> {
+  if (signal.aborted) {
+    try {
+      await response.body?.cancel();
+    } catch {
+      // Ignore cancel errors when already aborted.
+    }
+    return { ok: false, code: "aborted" };
+  }
+
   const contentLength = response.headers.get("content-length");
   if (contentLength !== null) {
     const parsedLength = Number.parseInt(contentLength, 10);
@@ -315,9 +325,25 @@ async function readBoundedText(
     const reader = response.body.getReader();
     const chunks: Uint8Array[] = [];
     let total = 0;
+    let rejectAbort: ((reason?: unknown) => void) | null = null;
+    const abortPromise = new Promise<never>((_resolve, reject) => {
+      rejectAbort = reject;
+    });
+    // Prevent unhandled rejections if abort fires outside an active race iteration.
+    abortPromise.catch(() => {});
+    const onAbort = () => {
+      rejectAbort?.(new Error("aborted"));
+      void reader.cancel().catch(() => {});
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
     try {
       for (;;) {
-        const { done, value } = await reader.read();
+        if (signal.aborted) {
+          await reader.cancel().catch(() => {});
+          return { ok: false, code: "aborted" };
+        }
+        const { done, value } = await Promise.race([reader.read(), abortPromise]);
+        if (signal.aborted) return { ok: false, code: "aborted" };
         if (done) break;
         if (!value) continue;
         total += value.byteLength;
@@ -327,18 +353,31 @@ async function readBoundedText(
         }
         chunks.push(value);
       }
+      if (signal.aborted) return { ok: false, code: "aborted" };
     } catch {
-      return { ok: false, code: "network_error" };
+      return { ok: false, code: signal.aborted ? "aborted" : "network_error" };
+    } finally {
+      signal.removeEventListener("abort", onAbort);
     }
     return { ok: true, text: Buffer.concat(chunks, total).toString("utf8") };
   }
 
+  let rejectAbort: ((reason?: unknown) => void) | null = null;
+  const abortPromise = new Promise<never>((_resolve, reject) => {
+    rejectAbort = reject;
+  });
+  abortPromise.catch(() => {});
+  const onAbort = () => rejectAbort?.(new Error("aborted"));
+  signal.addEventListener("abort", onAbort, { once: true });
   try {
-    const buf = Buffer.from(await response.arrayBuffer());
+    const buf = Buffer.from(await Promise.race([response.arrayBuffer(), abortPromise]));
+    if (signal.aborted) return { ok: false, code: "aborted" };
     if (buf.byteLength > maxBytes) return { ok: false, code: "response_too_large" };
     return { ok: true, text: buf.toString("utf8") };
   } catch {
-    return { ok: false, code: "network_error" };
+    return { ok: false, code: signal.aborted ? "aborted" : "network_error" };
+  } finally {
+    signal.removeEventListener("abort", onAbort);
   }
 }
 
@@ -407,53 +446,62 @@ export async function fetchFirefliesMeeting(
   const onCallerAbort = () => controller.abort();
   request.signal?.addEventListener("abort", onCallerAbort, { once: true });
 
-  let response: Response;
+  let bodyRead: { ok: true; text: string } | { ok: false; code: "response_too_large" | "network_error" | "aborted" };
   try {
-    response = await fetchImpl(targetUrl, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        query: FIREFLIES_TRANSCRIPT_QUERY,
-        variables: { id: meetingId },
-      }),
-      redirect: "manual",
-      signal: controller.signal,
-    });
-  } catch {
-    return { ok: false, code: timedOut ? "timeout" : "network_error" };
+    let response: Response;
+    try {
+      response = await fetchImpl(targetUrl, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          query: FIREFLIES_TRANSCRIPT_QUERY,
+          variables: { id: meetingId },
+        }),
+        redirect: "manual",
+        signal: controller.signal,
+      });
+    } catch {
+      return { ok: false, code: timedOut ? "timeout" : "network_error" };
+    }
+
+    // Never follow redirects (prevents off-host redirects or Bearer header leakage).
+    if (
+      response.type === "opaqueredirect" ||
+      (response.status >= 300 && response.status < 400)
+    ) {
+      try {
+        await response.body?.cancel();
+      } catch {
+        // Ignore cancel errors on refused redirects.
+      }
+      return { ok: false, code: "redirect_refused" };
+    }
+
+    if (!response.ok) {
+      try {
+        await response.body?.cancel();
+      } catch {
+        // Ignore cancel errors on error responses.
+      }
+      const classified = classifyHttpStatus(response.status, response.headers.get("retry-after"), now());
+      return { ok: false, ...classified };
+    }
+
+    // Keep the timeout timer armed across the entire body read so a stalled body aborts cleanly.
+    bodyRead = await readBoundedText(response, maxBytes, controller.signal);
   } finally {
     clearTimeout(timer);
     request.signal?.removeEventListener("abort", onCallerAbort);
   }
-
-  // Never follow redirects (prevents off-host redirects or Bearer header leakage).
-  if (
-    response.type === "opaqueredirect" ||
-    (response.status >= 300 && response.status < 400)
-  ) {
-    try {
-      await response.body?.cancel();
-    } catch {
-      // Ignore cancel errors on refused redirects.
-    }
-    return { ok: false, code: "redirect_refused" };
+  if (!bodyRead.ok) {
+    return {
+      ok: false,
+      code: bodyRead.code === "aborted" ? (timedOut ? "timeout" : "network_error") : bodyRead.code,
+    };
   }
-
-  if (!response.ok) {
-    try {
-      await response.body?.cancel();
-    } catch {
-      // Ignore cancel errors on error responses.
-    }
-    const classified = classifyHttpStatus(response.status, response.headers.get("retry-after"), now());
-    return { ok: false, ...classified };
-  }
-
-  const bodyRead = await readBoundedText(response, maxBytes);
-  if (!bodyRead.ok) return { ok: false, code: bodyRead.code };
 
   let parsed: unknown;
   try {

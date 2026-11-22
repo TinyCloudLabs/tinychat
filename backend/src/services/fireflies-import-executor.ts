@@ -1,6 +1,6 @@
 import { CONNECTORS_KV_PREFIX } from "@tinyboilerplate/core";
 import type { TinyCloudNode } from "@tinycloud/node-sdk";
-import { isStorageFullError } from "@tinycloud/sdk-core";
+import { activateSessionWithHost, isStorageFullError } from "@tinycloud/sdk-core";
 import {
   evictDelegateNodeGrants,
   type FirefliesDelegateIdentity,
@@ -8,6 +8,7 @@ import {
 import type { VerifiedFirefliesImportGrants } from "../fireflies-import-verify.js";
 import { DelegationActivationError, nodeRevocationCode } from "../portable-delegation.js";
 import { TenantCoordinator } from "./calendar-autojoin-store.js";
+import { withConnectorConnectionChange } from "./connector-connection-lane.js";
 import { isTombstoned, tombstoneReason } from "./connector-drain.js";
 
 type FirefliesPurgeLedger = NonNullable<Parameters<typeof isTombstoned>[1]>;
@@ -31,6 +32,17 @@ export const FIREFLIES_SOURCE = "fireflies" as const;
 export const FIREFLIES_SECRET_NAME = "FIREFLIES_API_KEY" as const;
 export const DEFAULT_FIREFLIES_MAX_CONCURRENT = 3;
 export const DEFAULT_FIREFLIES_PER_USER_SPACING_MS = 800;
+const MAX_TRACKED_TENANTS = 10_000;
+
+function setBoundedMap<V>(map: Map<string, V>, key: string, value: V, maxSize = MAX_TRACKED_TENANTS): void {
+  if (map.has(key)) map.delete(key);
+  map.set(key, value);
+  while (map.size > maxSize) {
+    const oldest = map.keys().next().value;
+    if (oldest === undefined) break;
+    map.delete(oldest);
+  }
+}
 
 export function firefliesMeetingKvKey(meetingId: string): string {
   return `${CONNECTORS_KV_PREFIX}/${FIREFLIES_SOURCE}/meeting/${meetingId}`;
@@ -75,6 +87,12 @@ export interface FirefliesImportMetrics {
   responseTooLarge: number;
 }
 
+export type FirefliesGrantCheckOutcome =
+  | { status: "ok" }
+  | { status: "revoked" }
+  | { status: "unauthorized" }
+  | { status: "error" };
+
 export type FirefliesSecretReadOutcome =
   | { status: "ok"; value: string }
   | { status: "revoked" }
@@ -85,10 +103,15 @@ export type FirefliesSecretReadOutcome =
 export type FirefliesMeetingWriteOutcome =
   | { status: "written" }
   | { status: "already_present" }
+  | { status: "tombstoned" }
   | { status: "revoked" }
   | { status: "unauthorized" }
   | { status: "storage_full" }
   | { status: "error" };
+
+export type FirefliesWriteGuard = <T>(
+  writeOp: () => Promise<T>,
+) => Promise<{ guarded: true; result: T } | { guarded: false; status: "tombstoned" | "error" }>;
 
 export interface FirefliesDirectImporterOptions {
   delegate: FirefliesDelegateIdentity;
@@ -108,6 +131,11 @@ export interface FirefliesDirectImporterOptions {
     options?: FirefliesFetchOptions,
   ) => Promise<FirefliesFetchResult>;
   fetchOptions?: FirefliesFetchOptions;
+  /** Override for live G2 grant validation before Fireflies fetch; defaults to POST {host}/delegate. */
+  checkMeetingsGrant?: (
+    scopedNode: TinyCloudNode,
+    verified: VerifiedFirefliesImportGrants,
+  ) => Promise<FirefliesGrantCheckOutcome>;
   /** Override for G1 secret read; defaults to scoped delegate node activation + readSecret. */
   readSecretKey?: (
     scopedNode: TinyCloudNode,
@@ -283,7 +311,45 @@ async function activateGrantOnNode(
   });
 }
 
-async function defaultReadSecretKey(
+const DEFAULT_G2_ACTIVATE_TIMEOUT_MS = 5_000;
+
+/**
+ * Validate G2 live at the TinyCloud node (`POST {host}/delegate`) before calling Fireflies so a
+ * revoked or refused G2 stops with zero Fireflies API calls even when G1 is still valid.
+ */
+export async function defaultCheckMeetingsGrant(
+  scopedNode: TinyCloudNode,
+  verified: VerifiedFirefliesImportGrants,
+  configuredHost: string,
+  activateWithHost: typeof activateSessionWithHost = activateSessionWithHost,
+): Promise<FirefliesGrantCheckOutcome> {
+  try {
+    await activateGrantOnNode(scopedNode, verified, verified.meetings, configuredHost);
+    const result = await activateWithHost(
+      configuredHost,
+      { Authorization: verified.meetings.authorization },
+      AbortSignal.timeout(DEFAULT_G2_ACTIVATE_TIMEOUT_MS),
+    );
+    if (!result.success) {
+      const kind = classifyNodeFailure({ status: result.status, message: result.error ?? "" });
+      if (kind === "revoked") return { status: "revoked" };
+      if (kind === "unauthorized") return { status: "unauthorized" };
+      return { status: "error" };
+    }
+    const targetSpace = verified.meetings.spaceId.toLowerCase();
+    if (Array.isArray(result.skipped) && result.skipped.some((space) => space.toLowerCase() === targetSpace)) {
+      return { status: "error" };
+    }
+    return { status: "ok" };
+  } catch (error) {
+    const kind = classifyNodeFailure(error);
+    if (kind === "revoked") return { status: "revoked" };
+    if (kind === "unauthorized") return { status: "unauthorized" };
+    return { status: "error" };
+  }
+}
+
+export async function defaultReadSecretKey(
   scopedNode: TinyCloudNode,
   verified: VerifiedFirefliesImportGrants,
   configuredHost: string,
@@ -308,12 +374,18 @@ async function defaultReadSecretKey(
   }
 }
 
-async function putIfAbsent(
+export async function putIfAbsent(
   kv: Awaited<ReturnType<TinyCloudNode["useDelegation"]>>["kv"],
   key: string,
   value: string,
 ): Promise<"written" | "already_present" | "revoked" | "unauthorized" | "storage_full" | "error"> {
   try {
+    // G2 is a single-resource KV-only delegation, so DelegatedAccess constructs KVService with
+    // `prefix = this._delegation.path.replace(/\/$/, "")` (@tinycloud/node-sdk/dist/core.js:3340-3341),
+    // unlike multi-resource SQL+KV grants (e.g. user-space-port.ts) where `prefix` is `undefined`.
+    // KVService.getFullPath(key, options?.prefix) uses `prefixOverride ?? this._config.prefix ?? ""`
+    // (@tinycloud/sdk-services/dist/kv/index.cjs:1084-1087), so passing `prefix: ""` prevents
+    // double-prefixing our already-full key (`xyz.tinycloud.tinychat/connectors/fireflies/...`).
     const result = await kv.put(key, value, { ifNoneMatch: "*", prefix: "" });
     if (result && typeof result === "object" && "ok" in result) {
       if (result.ok === true) return "written";
@@ -329,11 +401,12 @@ async function putIfAbsent(
   }
 }
 
-async function defaultWriteMeeting(
+export async function defaultWriteMeeting(
   scopedNode: TinyCloudNode,
   verified: VerifiedFirefliesImportGrants,
   normalized: NormalizedFirefliesImport,
   configuredHost: string,
+  guardWrite?: FirefliesWriteGuard,
 ): Promise<FirefliesMeetingWriteOutcome> {
   let access;
   try {
@@ -345,10 +418,22 @@ async function defaultWriteMeeting(
     return { status: "error" };
   }
 
+  const runGuardedPut = async (
+    key: string,
+    value: string,
+  ): Promise<
+    "written" | "already_present" | "tombstoned" | "revoked" | "unauthorized" | "storage_full" | "error"
+  > => {
+    if (!guardWrite) return putIfAbsent(access.kv, key, value);
+    const guarded = await guardWrite(() => putIfAbsent(access.kv, key, value));
+    if (!guarded.guarded) return guarded.status;
+    return guarded.result;
+  };
+
   const meetingId = normalized.meeting.sourceId;
   // Sequential writes on one space: transcript body first, then meeting record, both create-only.
-  const transcriptRes = await putIfAbsent(
-    access.kv,
+  // Each write re-checks the purge ledger inside the connector connection lane when guarded.
+  const transcriptRes = await runGuardedPut(
     firefliesTranscriptKvKey(meetingId),
     normalized.transcriptBody,
   );
@@ -356,8 +441,7 @@ async function defaultWriteMeeting(
     return { status: transcriptRes };
   }
 
-  const meetingRes = await putIfAbsent(
-    access.kv,
+  const meetingRes = await runGuardedPut(
     firefliesMeetingKvKey(meetingId),
     JSON.stringify(normalized.meetingRecord),
   );
@@ -394,8 +478,9 @@ export class FirefliesDirectImporter {
   private readonly resetTimestampFor?: FirefliesDirectImporterOptions["resetTimestampFor"];
   private readonly fetchMeetingImpl: NonNullable<FirefliesDirectImporterOptions["fetchMeeting"]>;
   private readonly fetchOptions?: FirefliesFetchOptions;
+  private readonly checkMeetingsGrantImpl: NonNullable<FirefliesDirectImporterOptions["checkMeetingsGrant"]>;
   private readonly readSecretKeyImpl: NonNullable<FirefliesDirectImporterOptions["readSecretKey"]>;
-  private readonly writeMeetingImpl: NonNullable<FirefliesDirectImporterOptions["writeMeeting"]>;
+  private readonly customWriteMeetingImpl?: FirefliesDirectImporterOptions["writeMeeting"];
   private readonly coordinator: TenantCoordinator;
   private readonly semaphore: Semaphore;
   private readonly perUserSpacingMs: number;
@@ -432,13 +517,13 @@ export class FirefliesDirectImporter {
     this.resetTimestampFor = options.resetTimestampFor;
     this.fetchMeetingImpl = options.fetchMeeting ?? fetchFirefliesMeeting;
     this.fetchOptions = options.fetchOptions;
+    this.checkMeetingsGrantImpl =
+      options.checkMeetingsGrant ??
+      ((scopedNode, verified) => defaultCheckMeetingsGrant(scopedNode, verified, this.configuredHost));
     this.readSecretKeyImpl =
       options.readSecretKey ??
       ((scopedNode, verified) => defaultReadSecretKey(scopedNode, verified, this.configuredHost));
-    this.writeMeetingImpl =
-      options.writeMeeting ??
-      ((scopedNode, verified, normalized) =>
-        defaultWriteMeeting(scopedNode, verified, normalized, this.configuredHost));
+    this.customWriteMeetingImpl = options.writeMeeting;
     this.coordinator = options.coordinator ?? new TenantCoordinator();
     this.semaphore = new Semaphore(options.maxConcurrent ?? DEFAULT_FIREFLIES_MAX_CONCURRENT);
     this.perUserSpacingMs = options.perUserSpacingMs ?? DEFAULT_FIREFLIES_PER_USER_SPACING_MS;
@@ -457,13 +542,16 @@ export class FirefliesDirectImporter {
   }
 
   /**
-   * Record a TC-3344 per-tenant reset timestamp (e.g. when `DELETE /purged` runs).
+   * Record a TC-3344 per-tenant reset timestamp in memory (wired to `DELETE /purged` in index.ts).
    * Markers recorded strictly before this instant are ignored so eligible re-imports proceed.
+   * Note: `ConnectorControlStore` does not persist a reset timestamp across restarts; across a
+   * restart the in-memory `importedMarkers` map is already empty, the cleared purge ledger allows
+   * re-import, and `ifNoneMatch: "*"` continues to block overwriting existing KV records.
    */
   recordReset(address: string, atMs: number = this.nowFn()): void {
     const normalized = address.toLowerCase();
     const prev = this.resetAtByAddress.get(normalized) ?? 0;
-    if (atMs > prev) this.resetAtByAddress.set(normalized, atMs);
+    if (atMs > prev) setBoundedMap(this.resetAtByAddress, normalized, atMs);
   }
 
   private async effectiveResetMs(address: string): Promise<number | null> {
@@ -498,8 +586,8 @@ export class FirefliesDirectImporter {
     let markers = this.importedMarkers.get(address);
     if (!markers) {
       markers = new Map<string, number>();
-      this.importedMarkers.set(address, markers);
     }
+    setBoundedMap(this.importedMarkers, address, markers);
     markers.set(meetingId, atMs);
     if (markers.size > 200) {
       const oldest = markers.keys().next().value;
@@ -522,11 +610,36 @@ export class FirefliesDirectImporter {
     );
   }
 
+  private async checkPurgeLedger(
+    address: string,
+    item: { meetingId: string; receivedAt: string; sourceTimestamp?: string },
+  ): Promise<{ ok: true } | { ok: false; status: "tombstoned"; reason: string } | { ok: false; status: "error" }> {
+    if (!this.control) return { ok: true };
+    let ledgerRead: FirefliesPurgeLedgerRead;
+    try {
+      ledgerRead = await this.control.readLedger(FIREFLIES_SOURCE, address);
+    } catch {
+      return { ok: false, status: "error" };
+    }
+    if (ledgerRead.status === "unparseable") {
+      return { ok: false, status: "tombstoned", reason: "corrupt_ledger" };
+    }
+    if (ledgerRead.status === "ok" && isTombstoned(item, ledgerRead.ledger)) {
+      return { ok: false, status: "tombstoned", reason: tombstoneReason(item, ledgerRead.ledger) };
+    }
+    return { ok: true };
+  }
+
   async handleWebhook(
     input: FirefliesWebhookDeliveryInput,
   ): Promise<FirefliesWebhookExecutionResult> {
     const address = input.address.toLowerCase();
     const { meetingId, receivedAt, sourceTimestamp } = input;
+    const ledgerItem = {
+      meetingId,
+      receivedAt,
+      ...(sourceTimestamp !== undefined ? { sourceTimestamp } : {}),
+    };
 
     return this.coordinator.run(address, async () => {
       const nowMs = this.nowFn();
@@ -568,12 +681,10 @@ export class FirefliesDirectImporter {
       }
       const verified = loaded.verified;
 
-      // Check purge ledger BEFORE any Fireflies call or user-space write.
-      if (this.control) {
-        let ledgerRead: FirefliesPurgeLedgerRead;
-        try {
-          ledgerRead = await this.control.readLedger(FIREFLIES_SOURCE, address);
-        } catch {
+      // Fast-path purge ledger check before any node or Fireflies call.
+      const preFetchLedger = await this.checkPurgeLedger(address, ledgerItem);
+      if (!preFetchLedger.ok) {
+        if (preFetchLedger.status === "error") {
           this.counts.nodeErrors += 1;
           this.emitLog(address, meetingId, "ledger_read_error");
           return {
@@ -583,35 +694,14 @@ export class FirefliesDirectImporter {
             outcome: "node_error",
           };
         }
-        if (ledgerRead.status === "unparseable") {
-          this.counts.tombstoned += 1;
-          this.emitLog(address, meetingId, "tombstoned", { reason: "corrupt_ledger" });
-          return {
-            handled: true,
-            httpStatus: 200,
-            body: { status: "ignored" },
-            outcome: "tombstoned",
-          };
-        }
-        if (ledgerRead.status === "ok") {
-          const item = {
-            meetingId,
-            receivedAt,
-            ...(sourceTimestamp !== undefined ? { sourceTimestamp } : {}),
-          };
-          if (isTombstoned(item, ledgerRead.ledger)) {
-            this.counts.tombstoned += 1;
-            this.emitLog(address, meetingId, "tombstoned", {
-              reason: tombstoneReason(item, ledgerRead.ledger),
-            });
-            return {
-              handled: true,
-              httpStatus: 200,
-              body: { status: "ignored" },
-              outcome: "tombstoned",
-            };
-          }
-        }
+        this.counts.tombstoned += 1;
+        this.emitLog(address, meetingId, "tombstoned", { reason: preFetchLedger.reason });
+        return {
+          handled: true,
+          httpStatus: 200,
+          body: { status: "ignored" },
+          outcome: "tombstoned",
+        };
       }
 
       // TC-3344 reset-aware replay dedupe.
@@ -637,15 +727,53 @@ export class FirefliesDirectImporter {
       }
 
       const release = await this.semaphore.acquire();
-      const startedAt = this.nowFn();
-      this.lastRunAtByAddress.set(address, startedAt);
-      const scopedNode = this.delegate.createScopedNode();
+      let scopedNode: TinyCloudNode | null = null;
       const ephemeral: { apiKey: string; fetched: FirefliesFetchResult | null } = {
         apiKey: "",
         fetched: null,
       };
       try {
-        // Step 1 (G1): Read FIREFLIES_API_KEY into memory for this run only.
+        const startedAt = this.nowFn();
+        setBoundedMap(this.lastRunAtByAddress, address, startedAt);
+        scopedNode = this.delegate.createScopedNode();
+
+        // Step 1a (G2): Validate the meetings write grant live at the node BEFORE reading G1 or
+        // calling Fireflies so a revoked/refused G2 makes zero Fireflies calls.
+        const g2Check = await this.checkMeetingsGrantImpl(scopedNode, verified);
+        if (g2Check.status === "revoked") {
+          await this.grantStore.markState(address, "revoked", null);
+          this.counts.stoppedRevoked += 1;
+          this.emitLog(address, meetingId, "stopped_revoked", { stage: "meetings_check" });
+          return {
+            handled: true,
+            httpStatus: 200,
+            body: { status: "revoked" },
+            outcome: "stopped_revoked",
+          };
+        }
+        if (g2Check.status === "unauthorized") {
+          await this.grantStore.markState(address, "needs_renewal", null);
+          this.counts.stoppedNeedsRenewal += 1;
+          this.emitLog(address, meetingId, "stopped_needs_renewal", { stage: "meetings_check" });
+          return {
+            handled: true,
+            httpStatus: 200,
+            body: { status: "paused" },
+            outcome: "stopped_needs_renewal",
+          };
+        }
+        if (g2Check.status !== "ok") {
+          this.counts.nodeErrors += 1;
+          this.emitLog(address, meetingId, "node_error", { stage: "meetings_check" });
+          return {
+            handled: true,
+            httpStatus: 503,
+            body: { error: "unavailable" },
+            outcome: "node_error",
+          };
+        }
+
+        // Step 1b (G1): Read FIREFLIES_API_KEY into memory for this run only.
         const secret = await this.readSecretKeyImpl(scopedNode, verified);
         if (secret.status === "revoked") {
           await this.grantStore.markState(address, "revoked", null);
@@ -719,7 +847,49 @@ export class FirefliesDirectImporter {
         }
 
         // Step 3 (G2): Write straight to owner KV with ifNoneMatch: "*" (no SQL, no overwrite).
-        const writeResult = await this.writeMeetingImpl(scopedNode, verified, fetched.data);
+        // Each write re-checks the purge ledger inside `withConnectorConnectionChange` (the same
+        // per-owner lane POST /purged uses) so a purge landing during fetch or between writes
+        // prevents deleted meetings from coming back.
+        let lastTombstoneReason = "tombstoned";
+        const guardWrite: FirefliesWriteGuard = async (writeOp) =>
+          withConnectorConnectionChange(address, async () => {
+            const verdict = await this.checkPurgeLedger(address, ledgerItem);
+            if (!verdict.ok) {
+              if (verdict.status === "tombstoned") lastTombstoneReason = verdict.reason;
+              return { guarded: false as const, status: verdict.status };
+            }
+            return { guarded: true as const, result: await writeOp() };
+          });
+
+        let writeResult: FirefliesMeetingWriteOutcome;
+        if (this.customWriteMeetingImpl) {
+          const guarded = await guardWrite(() =>
+            this.customWriteMeetingImpl!(scopedNode!, verified, fetched.data),
+          );
+          writeResult = guarded.guarded ? guarded.result : { status: guarded.status };
+        } else {
+          writeResult = await defaultWriteMeeting(
+            scopedNode,
+            verified,
+            fetched.data,
+            this.configuredHost,
+            guardWrite,
+          );
+        }
+
+        if (writeResult.status === "tombstoned") {
+          this.counts.tombstoned += 1;
+          this.emitLog(address, meetingId, "tombstoned", {
+            reason: lastTombstoneReason,
+            stage: "pre_write",
+          });
+          return {
+            handled: true,
+            httpStatus: 200,
+            body: { status: "ignored" },
+            outcome: "tombstoned",
+          };
+        }
         if (writeResult.status === "revoked") {
           await this.grantStore.markState(address, "revoked", null);
           this.counts.stoppedRevoked += 1;
@@ -784,7 +954,7 @@ export class FirefliesDirectImporter {
         }
 
         const syncedIso = new Date(finishedAt).toISOString();
-        this.lastSyncedAtByAddress.set(address, syncedIso);
+        setBoundedMap(this.lastSyncedAtByAddress, address, syncedIso);
         this.onSynced?.(address, syncedIso);
         this.counts.imported += 1;
         this.emitLog(address, meetingId, "imported", {
@@ -801,7 +971,7 @@ export class FirefliesDirectImporter {
       } finally {
         ephemeral.apiKey = "";
         ephemeral.fetched = null;
-        evictDelegateNodeGrants(scopedNode);
+        if (scopedNode) evictDelegateNodeGrants(scopedNode);
         release();
       }
     });

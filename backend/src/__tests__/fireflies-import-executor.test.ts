@@ -25,12 +25,19 @@ import {
 } from "../routes/connector-webhooks.js";
 import { createFirefliesDelegationRouter } from "../routes/fireflies-delegation.js";
 import {
+  defaultCheckMeetingsGrant,
+  defaultReadSecretKey,
+  defaultWriteMeeting,
   FirefliesDirectImporter,
   firefliesMeetingKvKey,
   firefliesTranscriptKvKey,
+  type FirefliesGrantCheckOutcome,
   type FirefliesPurgeLedgerRead,
   type FirefliesSecretReadOutcome,
 } from "../services/fireflies-import-executor.js";
+import { withConnectorConnectionChange } from "../services/connector-connection-lane.js";
+import { normalizeFirefliesTranscript } from "../services/fireflies-fetch.js";
+import type { TinyCloudNode } from "@tinycloud/node-sdk";
 import {
   FirefliesGrantStore,
   type FirefliesGrantKvPort,
@@ -269,6 +276,7 @@ describe("Fireflies direct-write webhook executor (PR-2)", () => {
       configuredHost: HOST,
       control: { readLedger: async () => ({ status: "absent" }) },
       fetchOptions: { fetchImpl: firefliesOkFetch(firefliesCalls), now: () => nowMs },
+      checkMeetingsGrant: async () => ({ status: "ok" }),
       readSecretKey: async () => ({ status: "ok", value: FAKE_FIREFLIES_KEY }),
       writeMeeting: userKv.writeMeeting,
       perUserSpacingMs: 0,
@@ -377,6 +385,7 @@ describe("Fireflies direct-write webhook executor (PR-2)", () => {
       grantStore,
       configuredHost: HOST,
       fetchOptions: { fetchImpl: firefliesOkFetch(firefliesCalls), now: () => nowMs },
+      checkMeetingsGrant: async () => ({ status: "ok" }),
       readSecretKey: async () => ({ status: "ok", value: FAKE_FIREFLIES_KEY }),
       writeMeeting: userKv.writeMeeting,
       perUserSpacingMs: 0,
@@ -428,6 +437,7 @@ describe("Fireflies direct-write webhook executor (PR-2)", () => {
       configuredHost: HOST,
       control: { readLedger: async () => ledgerState },
       fetchOptions: { fetchImpl: firefliesOkFetch(firefliesCalls), now: () => nowRef.current },
+      checkMeetingsGrant: async () => ({ status: "ok" }),
       readSecretKey: async () => ({ status: "ok", value: FAKE_FIREFLIES_KEY }),
       writeMeeting: userKv.writeMeeting,
       perUserSpacingMs: 0,
@@ -504,6 +514,7 @@ describe("Fireflies direct-write webhook executor (PR-2)", () => {
       grantStore,
       configuredHost: HOST,
       fetchOptions: { fetchImpl: firefliesOkFetch(firefliesCalls), now: () => nowMs },
+      checkMeetingsGrant: async () => ({ status: "ok" }),
       readSecretKey: async () => secretOutcome,
       perUserSpacingMs: 0,
       now: () => nowMs,
@@ -550,6 +561,7 @@ describe("Fireflies direct-write webhook executor (PR-2)", () => {
       grantStore,
       configuredHost: HOST,
       fetchOptions: { fetchImpl: firefliesOkFetch(firefliesCalls) },
+      checkMeetingsGrant: async () => ({ status: "ok" }),
       readSecretKey: async () => ({ status: "ok", value: FAKE_FIREFLIES_KEY }),
       perUserSpacingMs: 0,
       now: () => pair.expiresAt.getTime() + 5_000,
@@ -590,6 +602,7 @@ describe("Fireflies direct-write webhook executor (PR-2)", () => {
       grantStore,
       configuredHost: HOST,
       fetchOptions: { fetchImpl: firefliesOkFetch([]), now: () => nowMs },
+      checkMeetingsGrant: async () => ({ status: "ok" }),
       readSecretKey: async () => ({ status: "ok", value: FAKE_FIREFLIES_KEY }),
       writeMeeting: userKv.writeMeeting,
       perUserSpacingMs: 0,
@@ -673,6 +686,7 @@ describe("Fireflies direct-write webhook executor (PR-2)", () => {
       grantStore,
       configuredHost: HOST,
       fetchOptions: { fetchImpl: firefliesOkFetch([]), now: () => nowMs },
+      checkMeetingsGrant: async () => ({ status: "ok" }),
       readSecretKey: async (scopedNode, verified) => {
         // Activate G1 on the isolated scopedNode, assert zero prior tenant grants exist on it!
         const primary = verified.secrets.resources[0]!;
@@ -773,5 +787,565 @@ describe("Fireflies direct-write webhook executor (PR-2)", () => {
       expect(await res.json()).toEqual({ status: "queued" });
     });
     expect(enqueued).toHaveLength(1);
+  });
+
+  it("releases semaphore permits when createScopedNode throws 4 times so a 5th import still runs", async () => {
+    const nowMs = Date.UTC(2026, 10, 22, 17, 30, 0);
+    const keys = await deriveFirefliesImportKeys(
+      { getKey: async (p) => Buffer.alloc(32, p === FIREFLIES_DELEGATE_KMS_PATH ? 0xd1 : 0xd2) },
+      { host: HOST, env: {} },
+    );
+    const cidOf = keys.delegate.node.computeDelegationCid.bind(keys.delegate.node);
+    const pair = await mintGrantPair(keys.delegate.did, cidOf, { now: nowMs });
+    const { kv } = createMemoryGrantKv();
+    const grantStore = new FirefliesGrantStore({ kv, kek: keys.grantKek, delegateDid: keys.delegate.did });
+    await grantStore.store(pair.address, pair, pair.expiresAt);
+
+    let scopedCalls = 0;
+    const flakyDelegate = {
+      ...keys.delegate,
+      createScopedNode: () => {
+        scopedCalls += 1;
+        if (scopedCalls <= 4) throw new Error(`transient scoped node failure #${scopedCalls}`);
+        return keys.delegate.createScopedNode();
+      },
+    };
+    const userKv = createUserSpaceKvMock();
+    const importer = new FirefliesDirectImporter({
+      delegate: flakyDelegate,
+      grantStore,
+      configuredHost: HOST,
+      maxConcurrent: 3,
+      fetchOptions: { fetchImpl: firefliesOkFetch([]), now: () => nowMs },
+      checkMeetingsGrant: async () => ({ status: "ok" }),
+      readSecretKey: async () => ({ status: "ok", value: FAKE_FIREFLIES_KEY }),
+      writeMeeting: userKv.writeMeeting,
+      perUserSpacingMs: 0,
+      now: () => nowMs,
+      log: () => {},
+    });
+
+    for (let i = 1; i <= 4; i++) {
+      await expect(
+        importer.handleWebhook({
+          address: pair.address,
+          meetingId: `ff-permit-${i}`,
+          receivedAt: new Date(nowMs).toISOString(),
+        }),
+      ).rejects.toThrow(`transient scoped node failure #${i}`);
+    }
+
+    // Semaphore has cap 3; if any permit leaked on the 4 throws above, this 5th call would hang.
+    const fifth = await importer.handleWebhook({
+      address: pair.address,
+      meetingId: "ff-permit-5",
+      receivedAt: new Date(nowMs).toISOString(),
+    });
+    expect(scopedCalls).toBe(5);
+    expect(fifth).toMatchObject({ handled: true, httpStatus: 200, outcome: "imported" });
+  });
+
+  it("drives defaultWriteMeeting and putIfAbsent asserting exact keys, options and KV_PRECONDITION_FAILED", async () => {
+    const nowMs = Date.UTC(2026, 10, 22, 17, 30, 0);
+    const keys = await deriveFirefliesImportKeys(
+      { getKey: async (p) => Buffer.alloc(32, p === FIREFLIES_DELEGATE_KMS_PATH ? 0xd3 : 0xd4) },
+      { host: HOST, env: {} },
+    );
+    const cidOf = keys.delegate.node.computeDelegationCid.bind(keys.delegate.node);
+    const pair = await mintGrantPair(keys.delegate.did, cidOf, { now: nowMs });
+    const { kv } = createMemoryGrantKv();
+    const grantStore = new FirefliesGrantStore({ kv, kek: keys.grantKek, delegateDid: keys.delegate.did });
+    await grantStore.store(pair.address, pair, pair.expiresAt);
+    const loaded = await grantStore.loadActive(pair.address, {
+      configuredHost: HOST,
+      deps: { computeDelegationCid: cidOf },
+      now: nowMs,
+    });
+    expect(loaded.state).toBe("active");
+    if (loaded.state !== "active") throw new Error("expected active grant");
+
+    const normalized = await normalizeFirefliesTranscript(
+      {
+        id: "ff-default-write-1",
+        title: "Write Test",
+        date: nowMs,
+        duration: 60,
+        sentences: [{ index: 0, speaker_name: "A", text: "Hello", start_time: 0, end_time: 2 }],
+      },
+      { importedAt: new Date(nowMs).toISOString() },
+    );
+
+    const calls: Array<{ key: string; value: string; options: unknown }> = [];
+    const makeFakeNode = (
+      putImpl: (key: string, value: string, options?: unknown) => Promise<unknown>,
+    ): TinyCloudNode =>
+      ({
+        useDelegation: async () => ({
+          kv: {
+            put: async (key: string, value: string, options?: unknown) => {
+              calls.push({ key, value, options });
+              return putImpl(key, value, options);
+            },
+          },
+        }),
+      }) as unknown as TinyCloudNode;
+
+    // 1. Precondition failed on both keys -> already_present with exact keys and options.
+    const precondRes = await defaultWriteMeeting(
+      makeFakeNode(async () => ({ ok: false, error: { code: "KV_PRECONDITION_FAILED" } })),
+      loaded.verified,
+      normalized,
+      HOST,
+    );
+    expect(precondRes).toEqual({ status: "already_present" });
+    expect(calls).toHaveLength(2);
+    expect(calls[0]!.key).toBe(firefliesTranscriptKvKey("ff-default-write-1"));
+    expect(calls[0]!.options).toEqual({ ifNoneMatch: "*", prefix: "" });
+    expect(calls[1]!.key).toBe(firefliesMeetingKvKey("ff-default-write-1"));
+    expect(calls[1]!.options).toEqual({ ifNoneMatch: "*", prefix: "" });
+
+    // 2. Happy path -> written.
+    calls.length = 0;
+    const okRes = await defaultWriteMeeting(
+      makeFakeNode(async () => ({ ok: true })),
+      loaded.verified,
+      normalized,
+      HOST,
+    );
+    expect(okRes).toEqual({ status: "written" });
+    expect(calls.map((c) => c.key)).toEqual([
+      firefliesTranscriptKvKey("ff-default-write-1"),
+      firefliesMeetingKvKey("ff-default-write-1"),
+    ]);
+    expect(calls.every((c) => JSON.stringify(c.options) === JSON.stringify({ ifNoneMatch: "*", prefix: "" }))).toBe(true);
+
+    // 3. Storage full -> storage_full; 403 -> unauthorized; revocation -> revoked; transient -> error.
+    expect(
+      await defaultWriteMeeting(
+        makeFakeNode(async () => ({ ok: false, error: { code: "STORAGE_QUOTA_EXCEEDED", meta: { status: 402 } } })),
+        loaded.verified,
+        normalized,
+        HOST,
+      ),
+    ).toEqual({ status: "storage_full" });
+    expect(
+      await defaultWriteMeeting(
+        makeFakeNode(async () => ({ ok: false, error: { code: "AUTH_UNAUTHORIZED", meta: { status: 403 } } })),
+        loaded.verified,
+        normalized,
+        HOST,
+      ),
+    ).toEqual({ status: "unauthorized" });
+    expect(
+      await defaultWriteMeeting(
+        makeFakeNode(async () => ({ ok: false, error: { code: "delegation_revoked", meta: { status: 401 } } })),
+        loaded.verified,
+        normalized,
+        HOST,
+      ),
+    ).toEqual({ status: "revoked" });
+    expect(
+      await defaultWriteMeeting(
+        makeFakeNode(async () => ({ ok: false, error: { code: "NETWORK_ERROR", meta: { status: 503 } } })),
+        loaded.verified,
+        normalized,
+        HOST,
+      ),
+    ).toEqual({ status: "error" });
+  });
+
+  it("drives defaultReadSecretKey across ok, not_found, 401/403, revoked and transient errors", async () => {
+    const nowMs = Date.UTC(2026, 10, 22, 17, 30, 0);
+    const keys = await deriveFirefliesImportKeys(
+      { getKey: async (p) => Buffer.alloc(32, p === FIREFLIES_DELEGATE_KMS_PATH ? 0xd5 : 0xd6) },
+      { host: HOST, env: {} },
+    );
+    const cidOf = keys.delegate.node.computeDelegationCid.bind(keys.delegate.node);
+    const pair = await mintGrantPair(keys.delegate.did, cidOf, { now: nowMs });
+    const { kv } = createMemoryGrantKv();
+    const grantStore = new FirefliesGrantStore({ kv, kek: keys.grantKek, delegateDid: keys.delegate.did });
+    await grantStore.store(pair.address, pair, pair.expiresAt);
+    const loaded = await grantStore.loadActive(pair.address, {
+      configuredHost: HOST,
+      deps: { computeDelegationCid: cidOf },
+      now: nowMs,
+    });
+    expect(loaded.state).toBe("active");
+    if (loaded.state !== "active") throw new Error("expected active grant");
+
+    const makeFakeNode = (readSecret: () => Promise<unknown>): TinyCloudNode =>
+      ({
+        useDelegation: async () => ({}),
+        readSecret,
+      }) as unknown as TinyCloudNode;
+
+    // ok (trims surrounding whitespace)
+    expect(
+      await defaultReadSecretKey(
+        makeFakeNode(async () => ({ status: "ok", value: `  ${FAKE_FIREFLIES_KEY}\n` })),
+        loaded.verified,
+        HOST,
+      ),
+    ).toEqual({ status: "ok", value: FAKE_FIREFLIES_KEY });
+
+    // not_found -> missing
+    expect(
+      await defaultReadSecretKey(makeFakeNode(async () => ({ status: "not_found" })), loaded.verified, HOST),
+    ).toEqual({ status: "missing" });
+
+    // permission_required -> unauthorized
+    expect(
+      await defaultReadSecretKey(
+        makeFakeNode(async () => ({ status: "permission_required" })),
+        loaded.verified,
+        HOST,
+      ),
+    ).toEqual({ status: "unauthorized" });
+
+    // thrown 401 / 403 -> unauthorized
+    expect(
+      await defaultReadSecretKey(
+        makeFakeNode(async () => {
+          throw Object.assign(new Error("forbidden"), { status: 403 });
+        }),
+        loaded.verified,
+        HOST,
+      ),
+    ).toEqual({ status: "unauthorized" });
+    expect(
+      await defaultReadSecretKey(
+        makeFakeNode(async () => {
+          throw Object.assign(new Error("unauthorized"), { status: 401 });
+        }),
+        loaded.verified,
+        HOST,
+      ),
+    ).toEqual({ status: "unauthorized" });
+
+    // thrown revocation -> revoked
+    expect(
+      await defaultReadSecretKey(
+        makeFakeNode(async () => {
+          throw Object.assign(new Error('{"code":"delegation_revoked"}'), { status: 401 });
+        }),
+        loaded.verified,
+        HOST,
+      ),
+    ).toEqual({ status: "revoked" });
+
+    // transient / other error -> error (keeps grant intact and answers 503 in executor)
+    expect(
+      await defaultReadSecretKey(
+        makeFakeNode(async () => {
+          throw new Error("socket hang up");
+        }),
+        loaded.verified,
+        HOST,
+      ),
+    ).toEqual({ status: "error" });
+
+    const importer = new FirefliesDirectImporter({
+      delegate: keys.delegate,
+      grantStore,
+      configuredHost: HOST,
+      fetchOptions: { fetchImpl: firefliesOkFetch([]), now: () => nowMs },
+      checkMeetingsGrant: async () => ({ status: "ok" }),
+      readSecretKey: async () => ({ status: "error" }),
+      writeMeeting: createUserSpaceKvMock().writeMeeting,
+      perUserSpacingMs: 0,
+      now: () => nowMs,
+      log: () => {},
+    });
+    const transientRes = await importer.handleWebhook({
+      address: pair.address,
+      meetingId: "ff-transient",
+      receivedAt: new Date(nowMs).toISOString(),
+    });
+    expect(transientRes).toMatchObject({ handled: true, httpStatus: 503, outcome: "node_error" });
+    expect(
+      (await grantStore.status(pair.address, { configuredHost: HOST, deps: { computeDelegationCid: cidOf }, now: nowMs }))
+        .state,
+    ).toBe("active");
+  });
+
+  it("blocks writes when a purge or corrupt ledger lands between fetch and write (purge race)", async () => {
+    const nowMs = Date.UTC(2026, 10, 22, 17, 30, 0);
+    const keys = await deriveFirefliesImportKeys(
+      { getKey: async (p) => Buffer.alloc(32, p === FIREFLIES_DELEGATE_KMS_PATH ? 0xd7 : 0xd8) },
+      { host: HOST, env: {} },
+    );
+    const cidOf = keys.delegate.node.computeDelegationCid.bind(keys.delegate.node);
+    const pair = await mintGrantPair(keys.delegate.did, cidOf, { now: nowMs });
+    const { kv } = createMemoryGrantKv();
+    const grantStore = new FirefliesGrantStore({ kv, kek: keys.grantKek, delegateDid: keys.delegate.did });
+    await grantStore.store(pair.address, pair, pair.expiresAt);
+
+    // Case 1: Purge arrives on the connector connection lane while Fireflies fetch is in flight -> zero KV writes.
+    let ledgerState: FirefliesPurgeLedgerRead = { status: "absent" };
+    const putCalls: string[] = [];
+    const fakeScopedNode = {
+      useDelegation: async () => ({
+        kv: {
+          put: async (key: string) => {
+            putCalls.push(key);
+            return { ok: true };
+          },
+        },
+      }),
+    } as unknown as TinyCloudNode;
+    const raceDelegate = {
+      ...keys.delegate,
+      createScopedNode: () => fakeScopedNode,
+    };
+
+    const firefliesCalls: Array<{ meetingId: string; auth: string }> = [];
+    const okFetch = firefliesOkFetch(firefliesCalls);
+    const racingFetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const response = await okFetch(input, init);
+      // Simulate POST /purged winning the connector connection lane while fetch was running.
+      await withConnectorConnectionChange(pair.address, async () => {
+        ledgerState = {
+          status: "ok",
+          ledger: {
+            purgedThrough: new Date(nowMs + 1_000).toISOString(),
+            recentIds: ["ff-race-1"],
+            updatedAt: new Date(nowMs + 1_000).toISOString(),
+          },
+        };
+      });
+      return response;
+    }) as typeof fetch;
+
+    const importer = new FirefliesDirectImporter({
+      delegate: raceDelegate,
+      grantStore,
+      configuredHost: HOST,
+      control: { readLedger: async () => ledgerState },
+      fetchOptions: { fetchImpl: racingFetch, now: () => nowMs },
+      checkMeetingsGrant: async () => ({ status: "ok" }),
+      readSecretKey: async () => ({ status: "ok", value: FAKE_FIREFLIES_KEY }),
+      perUserSpacingMs: 0,
+      now: () => nowMs,
+      log: () => {},
+    });
+
+    const raceRes = await importer.handleWebhook({
+      address: pair.address,
+      meetingId: "ff-race-1",
+      receivedAt: new Date(nowMs).toISOString(),
+    });
+    expect(raceRes).toEqual({
+      handled: true,
+      httpStatus: 200,
+      body: { status: "ignored" },
+      outcome: "tombstoned",
+    });
+    expect(firefliesCalls).toHaveLength(1);
+    expect(putCalls).toEqual([]);
+
+    // Case 2: Corrupt ledger lands between fetch and write -> fails closed with zero KV writes.
+    ledgerState = { status: "absent" };
+    const corruptRacingFetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const response = await okFetch(input, init);
+      await withConnectorConnectionChange(pair.address, async () => {
+        ledgerState = { status: "unparseable", raw: "{bad json" };
+      });
+      return response;
+    }) as typeof fetch;
+    const corruptImporter = new FirefliesDirectImporter({
+      delegate: raceDelegate,
+      grantStore,
+      configuredHost: HOST,
+      control: { readLedger: async () => ledgerState },
+      fetchOptions: { fetchImpl: corruptRacingFetch, now: () => nowMs },
+      checkMeetingsGrant: async () => ({ status: "ok" }),
+      readSecretKey: async () => ({ status: "ok", value: FAKE_FIREFLIES_KEY }),
+      perUserSpacingMs: 0,
+      now: () => nowMs,
+      log: () => {},
+    });
+    const corruptRes = await corruptImporter.handleWebhook({
+      address: pair.address,
+      meetingId: "ff-race-corrupt",
+      receivedAt: new Date(nowMs).toISOString(),
+    });
+    expect(corruptRes).toEqual({
+      handled: true,
+      httpStatus: 200,
+      body: { status: "ignored" },
+      outcome: "tombstoned",
+    });
+    expect(putCalls).toEqual([]);
+
+    // Case 3: Purge lands between transcript put and meeting put -> meeting put is skipped.
+    ledgerState = { status: "absent" };
+    const splitPutCalls: string[] = [];
+    const splitScopedNode = {
+      useDelegation: async () => ({
+        kv: {
+          put: async (key: string) => {
+            splitPutCalls.push(key);
+            // Ledger flips to tombstoned right after the first put completes.
+            ledgerState = {
+              status: "ok",
+              ledger: {
+                purgedThrough: new Date(nowMs + 1_000).toISOString(),
+                recentIds: ["ff-race-split"],
+                updatedAt: new Date(nowMs + 1_000).toISOString(),
+              },
+            };
+            return { ok: true };
+          },
+        },
+      }),
+    } as unknown as TinyCloudNode;
+    const splitImporter = new FirefliesDirectImporter({
+      delegate: { ...keys.delegate, createScopedNode: () => splitScopedNode },
+      grantStore,
+      configuredHost: HOST,
+      control: { readLedger: async () => ledgerState },
+      fetchOptions: { fetchImpl: okFetch, now: () => nowMs },
+      checkMeetingsGrant: async () => ({ status: "ok" }),
+      readSecretKey: async () => ({ status: "ok", value: FAKE_FIREFLIES_KEY }),
+      perUserSpacingMs: 0,
+      now: () => nowMs,
+      log: () => {},
+    });
+    const splitRes = await splitImporter.handleWebhook({
+      address: pair.address,
+      meetingId: "ff-race-split",
+      receivedAt: new Date(nowMs).toISOString(),
+    });
+    expect(splitRes.handled && splitRes.outcome).toBe("tombstoned");
+    expect(splitPutCalls).toEqual([firefliesTranscriptKvKey("ff-race-split")]);
+  });
+
+  it("validates G2 live before Fireflies fetch so a revoked or refused G2 makes zero Fireflies calls even when G1 is valid", async () => {
+    const nowMs = Date.UTC(2026, 10, 22, 17, 30, 0);
+    const keys = await deriveFirefliesImportKeys(
+      { getKey: async (p) => Buffer.alloc(32, p === FIREFLIES_DELEGATE_KMS_PATH ? 0xd9 : 0xda) },
+      { host: HOST, env: {} },
+    );
+    const cidOf = keys.delegate.node.computeDelegationCid.bind(keys.delegate.node);
+    const pair = await mintGrantPair(keys.delegate.did, cidOf, { now: nowMs });
+    const { rows, kv } = createMemoryGrantKv();
+    const grantStore = new FirefliesGrantStore({ kv, kek: keys.grantKek, delegateDid: keys.delegate.did });
+
+    const firefliesCalls: Array<{ meetingId: string; auth: string }> = [];
+    let g2Outcome: FirefliesGrantCheckOutcome = { status: "revoked" };
+
+    const importer = new FirefliesDirectImporter({
+      delegate: keys.delegate,
+      grantStore,
+      configuredHost: HOST,
+      fetchOptions: { fetchImpl: firefliesOkFetch(firefliesCalls), now: () => nowMs },
+      checkMeetingsGrant: async () => g2Outcome,
+      // G1 is completely valid and returns a working key.
+      readSecretKey: async () => ({ status: "ok", value: FAKE_FIREFLIES_KEY }),
+      writeMeeting: createUserSpaceKvMock().writeMeeting,
+      perUserSpacingMs: 0,
+      now: () => nowMs,
+      log: () => {},
+    });
+
+    // 1. G2 revoked while G1 is valid -> 0 Fireflies calls, ciphertext cleared, marked revoked.
+    await grantStore.store(pair.address, pair, pair.expiresAt);
+    const revRes = await importer.handleWebhook({
+      address: pair.address,
+      meetingId: "ff-g2-revoked",
+      receivedAt: new Date(nowMs).toISOString(),
+    });
+    expect(revRes).toEqual({
+      handled: true,
+      httpStatus: 200,
+      body: { status: "revoked" },
+      outcome: "stopped_revoked",
+    });
+    expect(firefliesCalls).toHaveLength(0);
+    expect(JSON.stringify(rows.get(grantStore.keyFor(pair.address)))).not.toContain("ciphertext");
+
+    // 2. G2 403 unauthorized -> 0 Fireflies calls, ciphertext cleared, marked needs_renewal.
+    g2Outcome = { status: "unauthorized" };
+    await grantStore.store(pair.address, pair, pair.expiresAt);
+    const unauthRes = await importer.handleWebhook({
+      address: pair.address,
+      meetingId: "ff-g2-unauth",
+      receivedAt: new Date(nowMs).toISOString(),
+    });
+    expect(unauthRes).toEqual({
+      handled: true,
+      httpStatus: 200,
+      body: { status: "paused" },
+      outcome: "stopped_needs_renewal",
+    });
+    expect(firefliesCalls).toHaveLength(0);
+    expect(JSON.stringify(rows.get(grantStore.keyFor(pair.address)))).not.toContain("ciphertext");
+
+    // 3. G2 transient node error -> 0 Fireflies calls, HTTP 503, stored grant untouched (still active).
+    g2Outcome = { status: "error" };
+    await grantStore.store(pair.address, pair, pair.expiresAt);
+    const transientRes = await importer.handleWebhook({
+      address: pair.address,
+      meetingId: "ff-g2-transient",
+      receivedAt: new Date(nowMs).toISOString(),
+    });
+    expect(transientRes).toEqual({
+      handled: true,
+      httpStatus: 503,
+      body: { error: "unavailable" },
+      outcome: "node_error",
+    });
+    expect(firefliesCalls).toHaveLength(0);
+    expect(
+      (await grantStore.status(pair.address, { configuredHost: HOST, deps: { computeDelegationCid: cidOf }, now: nowMs }))
+        .state,
+    ).toBe("active");
+
+    // 4. Unit-test defaultCheckMeetingsGrant directly against fake POST /delegate responses.
+    const loaded = await grantStore.loadActive(pair.address, {
+      configuredHost: HOST,
+      deps: { computeDelegationCid: cidOf },
+      now: nowMs,
+    });
+    expect(loaded.state).toBe("active");
+    if (loaded.state !== "active") throw new Error("expected active");
+    const fakeNode = { useDelegation: async () => ({}) } as unknown as TinyCloudNode;
+    const seenAuthHeaders: string[] = [];
+    expect(
+      await defaultCheckMeetingsGrant(fakeNode, loaded.verified, HOST, async (_host, header) => {
+        seenAuthHeaders.push(header.Authorization);
+        return { success: true, status: 200, activated: [loaded.verified.meetings.spaceId], skipped: [] };
+      }),
+    ).toEqual({ status: "ok" });
+    expect(seenAuthHeaders).toEqual([loaded.verified.meetings.authorization]);
+    expect(
+      await defaultCheckMeetingsGrant(fakeNode, loaded.verified, HOST, async () => ({
+        success: false,
+        status: 401,
+        error: '{"code":"delegation_revoked","error":"revoked"}',
+      })),
+    ).toEqual({ status: "revoked" });
+    expect(
+      await defaultCheckMeetingsGrant(fakeNode, loaded.verified, HOST, async () => ({
+        success: false,
+        status: 403,
+        error: "forbidden",
+      })),
+    ).toEqual({ status: "unauthorized" });
+    expect(
+      await defaultCheckMeetingsGrant(fakeNode, loaded.verified, HOST, async () => ({
+        success: false,
+        status: 503,
+        error: "node overloaded",
+      })),
+    ).toEqual({ status: "error" });
+    expect(
+      await defaultCheckMeetingsGrant(fakeNode, loaded.verified, HOST, async () => ({
+        success: true,
+        status: 200,
+        activated: [],
+        skipped: [loaded.verified.meetings.spaceId],
+      })),
+    ).toEqual({ status: "error" });
   });
 });

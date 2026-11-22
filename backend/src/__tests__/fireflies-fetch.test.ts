@@ -215,4 +215,30 @@ describe("stateless fireflies-fetch", () => {
       ),
     ).toEqual({ ok: false, code: "invalid_response" });
   });
+
+  it("aborts and returns timeout when response headers arrive promptly but the body stalls", async () => {
+    let streamCancelled = false;
+    const stalledBodyFetch = (async () => {
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('{"data":{"transcript":'));
+        },
+        pull() {
+          // Never resolves: simulates a stalled upstream body after 200 headers.
+          return new Promise<void>(() => {});
+        },
+        cancel() {
+          streamCancelled = true;
+        },
+      });
+      return new Response(stream, { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+
+    const result = await fetchFirefliesMeeting(
+      { meetingId: "m-stalled-body", apiKey: FAKE_API_KEY },
+      { fetchImpl: stalledBodyFetch, timeoutMs: 30 },
+    );
+    expect(result).toEqual({ ok: false, code: "timeout" });
+    expect(streamCancelled).toBe(true);
+  });
 });
