@@ -16,6 +16,14 @@
 - TC-2204: Native audience checks accept Home's three exact SQL hook subscriptions only alongside an existing TinyChat data grant.
 - TC-2499: The Home mirror adapter persists close receipts using node-compatible NULL/non-NULL compare-and-set predicates. If the KV mirror is already exactly closed but its receipt is missing, recovery records the original publication ETag without writing the KV copy again, before any gated child handoff. The CLI reports JSON error class, safe message, code, HTTP status when available, and operation step; private SQL bodies and nested causes remain redacted. Exit 2 identifies invalid input, exit 6 known transient failures (including NODE_BUSY and REQUEST_TIMEOUT without HTTP metadata), and exit 1 other runtime failures or OUTCOME_UNKNOWN. Unclassified errors are not labelled bad input; no failure confirms delivery or authorizes an automatic retry.
 
+## 0.20.0-beta.0
+
+### Minor Changes
+
+- 53d24c2: The secret card's stop and ended messages are shorter: "Stop TrustBot using the secret?", "Stopped. TrustBot can't use the secret." and "If TrustBot needs it later, you'll see a new request."
+
+  Details: TC-3790
+
 ## 0.19.0
 
 ### Minor Changes
@@ -26,7 +34,7 @@
 
 ### Patch Changes
 
-- 99b2305: Restrict MCP Fireflies KV fallback to proven-absent SQL stores, filter and revalidate cached server-imported Library rows against the active flag and purge ledger, align Library KV paging with `nextCursor` and `truncated` and update the MCP KV truncation text.
+- 99b2305: MCP falls back to Fireflies KV records only when the SQL store is known to be empty. The Library filters and rechecks cached server-imported rows against the flag and the purge ledger, and pages KV with `nextCursor` and `truncated`. MCP's KV truncation text names the size limit.
 
   Details: TC-3919
 
