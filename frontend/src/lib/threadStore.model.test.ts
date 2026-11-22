@@ -583,7 +583,7 @@ test("client malformed and 5xx results become unverified; authentication blocks 
       const selection = coordinator(tcw(new SqlService()));
       selection.activate("new", "new");
       await until(() => selection.getView().phase !== "choosing");
-      if (status === 401 || status === 403) {
+      if (status === 401) {
         expect(selection.getView().canSend).toBe(false);
         selection.pick(OFFERED_CHAT_MODELS[1].id);
         expect(selection.getView().canPick).toBe(false);

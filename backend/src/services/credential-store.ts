@@ -973,7 +973,7 @@ export class KvCredentialRowStore implements CredentialRowStore {
   async countRows(source: string, maxPages: number = CREDENTIAL_ROW_COUNT_MAX_PAGES): Promise<number> {
     let prefix: string;
     try {
-      prefix = `credentials/${normalizeSource(source)}/`;
+      prefix = `${CREDENTIAL_KEY_PREFIX}${normalizeSource(source)}/`;
     } catch {
       throw new CredentialRowCountError(CREDENTIAL_ROW_COUNT_INVALID_SOURCE);
     }
@@ -1036,6 +1036,8 @@ function rowKey(source: string, address: string): string {
   return `${normalizeSource(source)} ${normalizeWebhookAddress(address)}`;
 }
 
+export const CREDENTIAL_KEY_PREFIX = "credentials/";
+
 function kvKey(source: string, address: string): string {
-  return `credentials/${normalizeSource(source)}/${normalizeWebhookAddress(address)}`;
+  return `${CREDENTIAL_KEY_PREFIX}${normalizeSource(source)}/${normalizeWebhookAddress(address)}`;
 }
