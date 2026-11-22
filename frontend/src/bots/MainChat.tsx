@@ -11,7 +11,7 @@ import { acknowledgeHistoryNotice, historyNoticeDeadline, type HistoryNotice } f
 import { BOTS_STRINGS, botsErrorText, HISTORY_EXPIRY_NOTICE, HISTORY_RECONNECT_LABEL, WEB_ACCESS_STRINGS } from "./botsStrings";
 import { isWorking, type ChatLine, type MainChatState } from "./useMainChat";
 import { WebAccess, type WebAccessApi } from "./WebAccess";
-import { MeetingsAccess, type MeetingsAccessApi } from "./MeetingsAccess";
+import { FeedChatsAccess, MeetingsAccess, type MeetingsAccessApi } from "./MeetingsAccess";
 import { AppLine, AskCards, AsksToggle } from "./AskCards";
 import type { Asks } from "./useAsks";
 
@@ -85,7 +85,7 @@ export interface MainChatProps {
   onReconnect?: () => void;
   /** When given, the sheet offers Main's web access setting. */
   webAccess?: WebAccessApi;
-  /** When given, the sheet offers Main's Meetings read setting. */
+  /** When given, the sheet offers Main's read settings: Meetings, and Feed and chats. */
   meetings?: MeetingsAccessApi;
   /** When given, the sheet shows Main's questions as cards and offers the setting for them. */
   asks?: Asks;
@@ -160,6 +160,7 @@ export function MainChat({ open, onOpenChange, state, onSend, onRetry, onRetryHi
           <p className="text-center text-callout text-muted-foreground">{BOTS_STRINGS.modelLine}</p>
           {open && webAccess ? <WebAccessToggle api={webAccess} /> : null}
           {open && meetings ? <MeetingsAccess api={meetings} /> : null}
+          {open && meetings ? <FeedChatsAccess api={meetings} /> : null}
           {open && asks ? <AsksToggle asks={asks} /> : null}
           {open && notice && onReconnect ? <ExpiryNotice key={`${notice.id}:${notice.deliveredAt ?? notice.renderAttemptAt ?? "initial"}`} notice={notice} onReconnect={onReconnect} /> : null}
           {history === "loading" ? <p role="status" className="text-callout text-muted-foreground">{BOTS_STRINGS.historyLoading}</p> : null}

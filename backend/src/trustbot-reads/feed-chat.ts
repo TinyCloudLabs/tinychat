@@ -1,5 +1,5 @@
 // TrustBot's reads of the owner's feed cards and chats. Read only, through the owner's grant to TrustBot (areas.ts:
-// `feed` and `chats`). The feed's agent registry is `home_feed`; each agent's cards sit in its own output database
+// `feed_chats`). The feed's agent registry is `home_feed`; each agent's cards sit in its own output database
 // under `feed/`; chats are the `threads` database. Every statement is a fixed SELECT that projects and caps what it
 // returns, and every database name is checked against those three places before a query is sent.
 // Details: TC-3794
@@ -35,7 +35,7 @@ export interface FeedChatSql {
 }
 
 export class FeedChatReadError extends Error {
-  constructor(readonly code: "invalid" | "not_found" | "out_of_scope") {
+  constructor(readonly code: "invalid" | "not_found" | "out_of_scope" | "rejected") {
     super(code);
     this.name = "FeedChatReadError";
   }
@@ -233,30 +233,45 @@ FROM messages WHERE thread_id = ? AND json_valid(payload) AND json_type(payload,
   return { chat, title: text(thread[0], TITLE_CHARS), updated_at: text(thread[1], TIME_CHARS), messages, earlier_messages: Number(thread[2]) > limit };
 }
 
-/** The port over the owner's grant: each query runs in the named database through the activated delegation. */
-export function delegatedFeedChatSql(access: DelegatedAccess): FeedChatSql {
+/** The grant resource a database is read through: the database itself, or the feed/ prefix for a card database. */
+export function feedChatResource(database: string): string {
+  return isFeedOutputDatabase(database) ? `${FEED_PREFIX}/` : database;
+}
+
+/**
+ * The port over the owner's grant: each query activates the one resource its database sits under (`access` is
+ * grants.access for that path) and runs there. A node refusal (401/403) is `rejected`.
+ */
+export function delegatedFeedChatSql(access: (resource: string) => Promise<DelegatedAccess>): FeedChatSql {
   return scopedFeedChatSql({
     async query(database, sql, params) {
-      const result = await access.sql.db(database).query<unknown>(sql, params);
-      if (!result.ok) throw new Error(`feed_chat_query_failed:${result.error.code}`);
+      const delegated = await access(feedChatResource(database));
+      const result = await delegated.sql.db(database).query<unknown>(sql, params);
+      if (!result.ok) {
+        const status = (result.error as { meta?: { status?: unknown } }).meta?.status;
+        if (status === 401 || status === 403) throw new FeedChatReadError("rejected");
+        throw new Error(`feed_chat_query_failed:${result.error.code}`);
+      }
       return result.data.rows;
     },
   });
 }
 
-/** Which grant area each tool reads. */
-export const FEED_CHAT_TOOL_AREAS = {
-  list_feed_cards: "feed",
-  read_card: "feed",
-  list_chats: "chats",
-  read_chat: "chats",
-} as const;
-
-export type FeedChatTool = keyof typeof FEED_CHAT_TOOL_AREAS;
+/** The tools, by the names the gateway serves them under (bots/src/feed-chat-tools.ts). */
+export const FEED_CHAT_TOOLS = ["list_feed_cards", "read_card", "list_chats", "read_chat"] as const;
+export type FeedChatTool = (typeof FEED_CHAT_TOOLS)[number];
 
 export function isFeedChatTool(name: string): name is FeedChatTool {
-  return Object.hasOwn(FEED_CHAT_TOOL_AREAS, name);
+  return FEED_CHAT_TOOLS.some(tool => tool === name);
 }
+
+/** The database each tool reads first; the route checks the owner's grant for it before the tool runs. */
+export const FEED_CHAT_FIRST_DATABASE: Readonly<Record<FeedChatTool, string>> = {
+  list_feed_cards: HOME_FEED_DATABASE,
+  read_card: HOME_FEED_DATABASE,
+  list_chats: THREADS_DATABASE,
+  read_chat: THREADS_DATABASE,
+};
 
 /** Runs one tool; the result is the JSON text the gateway wraps as untrusted. */
 export async function runFeedChatTool(tool: FeedChatTool, args: Record<string, unknown>, sql: FeedChatSql): Promise<string> {

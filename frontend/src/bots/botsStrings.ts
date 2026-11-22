@@ -179,3 +179,18 @@ export const MEETINGS_ACCESS_STRINGS = {
   ended: `${MAIN}'s access to your meetings has ended.`,
   failed: "Couldn't change this. Try again.",
 } as const;
+
+// Main's Feed and chats read setting (TC-3794): the same shape as MEETINGS_ACCESS_STRINGS.
+export const FEED_CHATS_ACCESS_STRINGS = {
+  title: "Feed and chats",
+  off: `${MAIN} can't read your feed or your chats.`,
+  allow: `Let ${MAIN} read them`,
+  confirmTitle: `Let ${MAIN} read your feed and chats?`,
+  confirmBody: `${MAIN} can read your feed cards and your chats with AI models for 7 days, then it stops. It can't answer cards or change anything. What it reads goes to the AI model service to write its answer. Once ${MAIN} reads a card or a chat, it can't use the web in this chat until the chat is cleared after 30 days without use.`,
+  confirm: "Allow for 7 days",
+  cancel: "Not now",
+  on: (date: string) => `${MAIN} can read your feed and chats until ${date}.`,
+  turnOff: "Turn off",
+  ended: `${MAIN}'s access to your feed and chats has ended.`,
+  failed: "Couldn't change this. Try again.",
+} as const;

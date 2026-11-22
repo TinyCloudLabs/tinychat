@@ -68,7 +68,7 @@ describe("turning meetings on", () => {
     const { grants, activated, store } = setup();
     expect((await grants.status(address)).areas.meetings).toBe("off");
     const status = await grants.enable(address, "meetings", await grant());
-    expect(status).toEqual({ expiresAt: NOW + 7 * DAY, areas: { meetings: "on" } });
+    expect(status).toEqual({ expiresAt: NOW + 7 * DAY, areas: { meetings: "on", feed_chats: "off" } });
     expect(await refusal(grants.access(address, "meetings"))).toBe("allowed");
     expect(activated.at(-1)!.resources.map(({ service, path, actions }) => ({ service, path, actions }))).toEqual([
       { service: "sql", path: `${APP_ID}/connectors`, actions: ["tinycloud.sql/read"] },
@@ -148,7 +148,7 @@ describe("each read", () => {
     const { grants, store, revoked, activated } = setup();
     await grants.enable(address, "meetings", await grant());
     const cid = activated[0]!.cid;
-    expect(await grants.disable(address, "meetings")).toEqual({ expiresAt: null, areas: { meetings: "off" } });
+    expect(await grants.disable(address, "meetings")).toEqual({ expiresAt: null, areas: { meetings: "off", feed_chats: "off" } });
     expect(revoked).toEqual([cid]);
     expect(store.values.size).toBe(0);
     expect(await refusal(grants.access(address, "meetings"))).toBe("none");

@@ -1,20 +1,22 @@
-// The gateway's side of TrustBot's meeting reads: the `app` MCP server's four meeting tools, offered only while the
-// owner's setting is on, and the web pause that follows a read. Each call is signed to the backend, which checks the
-// owner's grant to TrustBot's read identity again before it reads anything. The gateway holds no grant and no data.
+// The gateway's side of TrustBot's reads of owner data: the `app` MCP server's read tools (four meeting tools, and
+// four feed and chat tools), each area's tools offered only while the owner's setting for that area is on, and the
+// web pause that follows a read. Each call is signed to the backend, which checks the owner's grant to TrustBot's
+// read identity again before it reads anything. The gateway holds no grant and no data.
 //
-// The pause: once a meeting result reaches Main's conversation, web search and page fetch are refused in that
+// The pause: once a result from any area reaches Main's conversation, web search and page fetch are refused in that
 // conversation. The mark is saved (bot id to conversation id) before the result is returned, and a result whose mark
 // cannot be saved is not returned. A new conversation id from the supervisor (the conversation was cleared) ends it.
 // Log lines carry the tool, the outcome and counts, never arguments or results.
-// Details: TC-3792
+// Details: TC-3792, TC-3794
 
 import { closeSync, existsSync, fsyncSync, openSync, readFileSync, renameSync, writeSync } from "node:fs";
 import { dirname } from "node:path";
 import { readBody, type UpstreamFetch } from "./gateway";
+import { FEED_CHAT_ERRORS, FEED_CHAT_RECORD_KIND, FEED_CHAT_TOOL_NAMES, FEED_CHAT_TOOLS, type FeedChatTool } from "./feed-chat-tools";
 import { isRecord } from "./guards";
 import { MEETING_TOOL_NAMES, MEETING_TOOLS, type MeetingToolName } from "./meeting-tools";
 import { botIdFor, BOT_ID } from "./owner";
-import type { ReadsPush } from "./reads";
+import type { ReadArea, ReadsPush } from "./reads";
 import { signedCallHeader } from "./signed-call";
 import { toolText, untrustedRecord } from "./web";
 
@@ -23,7 +25,16 @@ export const READ_ERRORS = {
   ended: "The owner's permission to read meetings has ended. They can renew it in this chat under Meetings.",
   unavailable: "Meetings can't be read right now.",
 } as const;
-type ReadError = keyof typeof READ_ERRORS;
+type ReadError = "off" | "ended" | "unavailable" | "not_found";
+export type ReadToolName = MeetingToolName | FeedChatTool;
+
+/** Each area's tools and the fixed sentences its refusals give; an area without `not_found` says `unavailable`. */
+const AREA_TOOLS: Readonly<Record<ReadArea, { tools: ReadonlyArray<{ name: string }>; errors: Record<Exclude<ReadError, "not_found">, string> & { not_found?: string } }>> = {
+  meetings: { tools: MEETING_TOOLS, errors: READ_ERRORS },
+  feed_chats: { tools: FEED_CHAT_TOOLS, errors: FEED_CHAT_ERRORS },
+};
+const isFeedChatTool = (name: ReadToolName): name is FeedChatTool => FEED_CHAT_TOOL_NAMES.some(tool => tool === name);
+const areaOf = (name: ReadToolName): ReadArea => isFeedChatTool(name) ? "feed_chats" : "meetings";
 
 /** Reads per bot per UTC day. */
 export const READS_PER_DAY = 200;
@@ -114,13 +125,13 @@ export class MeetingDesk {
     this.#settings.delete(botId);
   }
 
-  /** The meeting tools, while the owner's setting is on. */
-  tools(botId: string): typeof MEETING_TOOLS | readonly [] {
-    return this.#settings.get(botId)?.areas.includes("meetings") ? MEETING_TOOLS : [];
+  /** The tools of each area the owner's setting has on. */
+  tools(botId: string): ReadonlyArray<{ name: string }> {
+    return (this.#settings.get(botId)?.areas ?? []).flatMap(area => AREA_TOOLS[area].tools);
   }
 
-  handles(name: unknown): name is MeetingToolName {
-    return MEETING_TOOL_NAMES.some(tool => tool === name);
+  handles(name: unknown): name is ReadToolName {
+    return MEETING_TOOL_NAMES.some(tool => tool === name) || FEED_CHAT_TOOL_NAMES.some(tool => tool === name);
   }
 
   /**
@@ -134,14 +145,16 @@ export class MeetingDesk {
     return current === undefined || current === mark;
   }
 
-  async call(botId: string, name: MeetingToolName, args: Record<string, unknown>) {
+  async call(botId: string, name: ReadToolName, args: Record<string, unknown>) {
+    const area = areaOf(name);
+    const errors = AREA_TOOLS[area].errors;
     const log = (outcome: string) => console.log(JSON.stringify({ gateway: "reads", bot: botId.slice(0, 12), tool: name, outcome }));
     const refuse = (error: ReadError, outcome: string = error) => {
       log(outcome);
-      return toolText(READ_ERRORS[error], true);
+      return toolText(error === "not_found" ? errors.not_found ?? errors.unavailable : errors[error], true);
     };
     const setting = this.#settings.get(botId);
-    if (!setting?.areas.includes("meetings") || !setting.owner) return refuse("off");
+    if (!setting?.areas.includes(area) || !setting.owner) return refuse("off");
     if (!this.#options.backendCallSecret) return refuse("unavailable", "no_secret");
     const day = new Date(this.#now()).toISOString().slice(0, 10);
     const today = this.#today.get(botId);
@@ -156,7 +169,7 @@ export class MeetingDesk {
       // The conversation is marked before the result reaches it; a mark that cannot be kept withholds the result.
       if (this.#marks.get(botId) !== setting.conversation && !this.#mark(botId, setting.conversation)) return refuse("unavailable", "held_store");
       log("ok");
-      return toolText(untrustedRecord("meeting", answer.text));
+      return toolText(untrustedRecord(isFeedChatTool(name) ? FEED_CHAT_RECORD_KIND[name] : "meeting", answer.text));
     } finally {
       this.#calling.delete(botId);
     }
@@ -175,7 +188,7 @@ export class MeetingDesk {
     }
   }
 
-  async #ask(owner: string, name: MeetingToolName, args: Record<string, unknown>): Promise<Answer> {
+  async #ask(owner: string, name: ReadToolName, args: Record<string, unknown>): Promise<Answer> {
     const path = `${BACKEND_PATH}${name}`;
     const body = JSON.stringify({ args });
     const authorization = signedCallHeader(this.#options.backendCallSecret!, {
@@ -195,7 +208,8 @@ export class MeetingDesk {
       const answer: unknown = JSON.parse(new TextDecoder().decode(bytes));
       if (!isRecord(answer)) return { ok: false, error: "unavailable" };
       if (answer.ok === true && typeof answer.text === "string") return { ok: true, text: answer.text };
-      return { ok: false, error: answer.error === "off" || answer.error === "ended" ? answer.error : "unavailable" };
+      const error = answer.error === "off" || answer.error === "ended" || answer.error === "not_found" ? answer.error : "unavailable";
+      return { ok: false, error };
     } catch {
       return { ok: false, error: "unavailable" };
     }

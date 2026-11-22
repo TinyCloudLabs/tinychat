@@ -55,11 +55,20 @@ export const FEED_CHAT_TOOLS = [
 
 export type FeedChatTool = (typeof FEED_CHAT_TOOLS)[number]["name"];
 
-export const FEED_CHAT_TOOL_NAMES: readonly string[] = FEED_CHAT_TOOLS.map(tool => tool.name);
+export const FEED_CHAT_TOOL_NAMES: readonly FeedChatTool[] = FEED_CHAT_TOOLS.map(tool => tool.name);
+
+/** How each tool's result is labelled when it is wrapped as owner data for the model (web.ts untrustedRecord). */
+export const FEED_CHAT_RECORD_KIND: Readonly<Record<FeedChatTool, "feed card" | "chat">> = {
+  list_feed_cards: "feed card",
+  read_card: "feed card",
+  list_chats: "chat",
+  read_chat: "chat",
+};
 
 /** What a refused or failed call says to the model: fixed sentences, never backend or stored text. */
 export const FEED_CHAT_ERRORS = {
-  off: "Reading the feed and chats is off. The owner can turn it on in Settings.",
+  off: "Reading the feed and chats is off. The owner can turn it on in this chat under Feed and chats.",
+  ended: "Your access to the owner's feed and chats has ended. They can turn it on in this chat under Feed and chats.",
   not_found: "That card or chat isn't there.",
   unavailable: "The feed and chats can't be read right now.",
 } as const;

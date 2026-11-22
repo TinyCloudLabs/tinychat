@@ -1,12 +1,13 @@
-// TrustBot's reads of the owner's data (TC-3792).
+// TrustBot's reads of the owner's data (TC-3792, TC-3794).
 //
 // Owner routes, under /api/bots/main/reads: the state of each area and turning one on (with a grant the owner signed in
 // the browser) or off. The owner is always the authenticated session address.
 //
-// Internal route, POST /api/internal/bots/main/reads/<tool>: the bots gateway runs one meeting tool for Main. It is a
+// Internal route, POST /api/internal/bots/main/reads/<tool>: the bots gateway runs one read tool for Main. It is a
 // signed call (bots-signed-call.ts, `to-backend`) whose claims name the owner; the body is `{ "args": {…} }`. Only the
-// four meeting tools are served, and each read uses the owner's grant to TrustBot's read identity, checked again here.
-// Details: TC-3792
+// four meeting tools and the four feed and chat tools are served, and each read uses the owner's grant to TrustBot's
+// read identity, checked again here.
+// Details: TC-3792, TC-3794
 
 import express, { Router, type RequestHandler } from "express";
 import { NonceGuard, verifyCall } from "../bots-signed-call.js";
@@ -16,6 +17,7 @@ import { compactLegacyMeetingResult } from "../transcripts/legacy-meeting-projec
 import { parseMeetingToolData } from "../transcripts/meeting-evidence.js";
 import { isReadArea, READ_AREA_NAMES } from "../trustbot-reads/areas.js";
 import { ReadGrantInvalid, ReadGrantRefused, type ReadStatus, type TrustBotReadGrants } from "../trustbot-reads/grants.js";
+import { delegatedFeedChatSql, FEED_CHAT_FIRST_DATABASE, FeedChatReadError, isFeedChatTool, runFeedChatTool } from "../trustbot-reads/feed-chat.js";
 import { delegatedMeetingPort } from "../trustbot-reads/meeting-port.js";
 import { botOwnerDid, botsServiceHeaders, type BotsConfig } from "./bots.js";
 
@@ -97,7 +99,13 @@ export function createTrustBotReadsRouter({ grants, config, auth }: Pick<TrustBo
   return router;
 }
 
-type ToolAnswer = { ok: true; text: string } | { ok: false; error: "off" | "ended" | "unavailable" | "invalid"; code?: string };
+type ToolAnswer = { ok: true; text: string } | { ok: false; error: "off" | "ended" | "unavailable" | "invalid" | "not_found"; code?: string };
+
+/** A refused grant as the gateway reports it: the owner's setting, an ended grant, or the service being down. */
+function refusal(error: unknown): ToolAnswer {
+  const code = error instanceof ReadGrantRefused ? error.code : "unavailable";
+  return { ok: false, error: code === "none" || code === "off" ? "off" : code === "ended" || code === "rejected" ? "ended" : "unavailable" };
+}
 
 /** The text the model reads: the summary and one cited projection of the result, as meeting chat gives it. */
 function toolText(result: { text?: unknown; data?: unknown }): string {
@@ -125,17 +133,35 @@ export function createTrustBotReadsInternalRouter({ grants, config, callSecret }
     if (!claims || claims.bot !== "main") { res.status(401).end(); return; }
     const address = claims.owner.slice(claims.owner.lastIndexOf(":") + 1);
     if (!config.accountAllowed(address)) { res.status(404).end(); return; }
-    const tool = TRUSTBOT_MEETING_TOOLS.find(name => name === req.params.tool);
+    const feedChat = isFeedChatTool(req.params.tool) ? req.params.tool : undefined;
+    const tool = feedChat ?? TRUSTBOT_MEETING_TOOLS.find(name => name === req.params.tool);
     if (!tool) { res.status(404).end(); return; }
     let args: unknown;
     try { args = (JSON.parse(bytes.toString("utf8")) as { args?: unknown }).args; } catch { args = undefined; }
     if (!args || typeof args !== "object" || Array.isArray(args)) { answer(400, { ok: false, error: "invalid" }); return; }
     // Checked before the tool runs, so a refusal answers with the owner's setting rather than a failed read.
     try {
-      await grants.access(address, "meetings");
+      if (feedChat) await grants.access(address, "feed_chats", FEED_CHAT_FIRST_DATABASE[feedChat]);
+      else await grants.access(address, "meetings");
     } catch (error) {
-      const code = error instanceof ReadGrantRefused ? error.code : "unavailable";
-      answer(200, { ok: false, error: code === "none" || code === "off" ? "off" : code === "ended" || code === "rejected" ? "ended" : "unavailable" });
+      answer(200, refusal(error));
+      return;
+    }
+    if (feedChat) {
+      // Each query activates only the resource its database sits under (feed-chat.ts feedChatResource).
+      try {
+        const sql = delegatedFeedChatSql(resource => grants.access(address, "feed_chats", resource));
+        answer(200, { ok: true, text: await runFeedChatTool(feedChat, args as Record<string, unknown>, sql) });
+      } catch (error) {
+        if (error instanceof ReadGrantRefused) { answer(200, refusal(error)); return; }
+        if (!(error instanceof FeedChatReadError)) { answer(200, { ok: false, error: "unavailable" }); return; }
+        if (error.code === "rejected") {
+          grants.forgetActivation(address);
+          answer(200, { ok: false, error: "unavailable" });
+          return;
+        }
+        answer(200, { ok: false, error: error.code === "not_found" ? "not_found" : "invalid", code: error.code });
+      }
       return;
     }
     const owner = claims.owner;
