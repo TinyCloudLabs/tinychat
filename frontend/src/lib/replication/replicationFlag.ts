@@ -10,8 +10,8 @@
 // "Enabled" (a replica is built) additionally requires
 //   4. the user's own opt-in for the signed-in principal (replicationOptIn.ts; ON unless the user explicitly opted out).
 // The build flag stays the master: an OFF build can never replicate, whatever the user setting says.
-// Production builds can also pause binding (REPLICATION_BIND_PAUSED below, off): replication stays "enabled", so
-// an existing copy is kept, but no sign-in or restore binds or syncs it.
+// Production builds pause binding (REPLICATION_BIND_PAUSED below, on): replication stays "enabled", so
+// an existing copy is kept until the next sign-out erases it, but no sign-in or restore binds or syncs it.
 // Pattern: chat/useExperimentalFeatures.ts (hard-coded kill switch + opt-in cache).
 import { appPlatform, type AppPlatform } from "../platform";
 import { readReplicationOptIn } from "./replicationOptIn";
@@ -20,13 +20,12 @@ import { readReplicationOptIn } from "./replicationOptIn";
 export const REPLICATION_AVAILABLE = true;
 
 /**
- * Binding pause for production builds, off since web-sdk 3.12 (TC-2773: restore no longer awaits the node's
- * /info and the replica bind, which held Home's first card back by 1.1 to 1.9 s on 3.11.2). Set to true to
- * pause again: production sign-in and restore then build no replication option. Unlike the kill switch this
- * does not make replication OFF, so the page-load purge (replicationOffPurge.ts) keeps an existing copy.
- * Dev and test builds always bind.
+ * Binding pause for production builds, on until sign-out erases the local copy and each account keeps its own
+ * copy (TC-2883). Production sign-in and restore then build no replication option. Unlike the kill switch this
+ * does not make replication OFF, so the page-load purge (replicationOffPurge.ts) keeps an existing copy, and a
+ * sign-out erases it (App.tsx). Dev and test builds always bind.
  */
-export const REPLICATION_BIND_PAUSED = false;
+export const REPLICATION_BIND_PAUSED = true;
 
 /** True when sign-in/restore must not bind a replica in this build. */
 export function isReplicationBindPaused(inputs: { paused?: boolean; production?: boolean } = {}): boolean {
