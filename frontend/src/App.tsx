@@ -53,13 +53,14 @@ import { replicationPrincipalFor } from "./lib/replication/replicationOptIn";
 import { clientHasReplication, REPLICA_PURGE_FAILED_WARNING, signOutReplicaAware } from "./lib/replication/replicationSignOut";
 import { wipeNativeReplicaOnSignOut } from "./lib/replication/nativeReplicaStore";
 import { removeLocalCopyNow } from "./lib/replication/replicationSwitch";
-import { clearAccountSignOutStorage } from "./lib/accountSignOutStorage";
+import { clearSignedOutAccountStorage, clearSignedOutHeldResults, type SignOutScope } from "./lib/signOutLocalData";
 import { uploadRunner } from "./lib/audioUpload";
 import {
   clearWebSignOutPending,
   hasWebSignOutPending,
   setWebSignOutPending,
   webSignOutPendingAddress,
+  webSignOutPendingKeepsUnsentWork,
 } from "./lib/sessionSignOutFence";
 import { openkeyPasskeysSupported } from "./lib/openkeyPasskeys";
 import { useVisualViewportFit } from "./lib/useVisualViewport";
@@ -118,9 +119,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { FeedView } from "./feed/FeedView";
 import { ChatSlot } from "./bots/ChatSlot";
-import { clearAllHeldAnswers, clearHeldAnswers } from "./feed/answerOutbox";
-import { clearAllPostDrafts, clearPostDrafts } from "./feed/postAnswers";
-import { homeFeedSourceFor, settleHeldAnswersForSignOut } from "./feed/feedStore";
+import { homeFeedSourceFor, settleHeldAnswersForSignOut, SIGN_OUT_FLUSH_MS } from "./feed/feedStore";
 import { HomeEntryGate } from "./home/HomeEntryGate";
 import { readCachedFirstScreen, readFirstScreen } from "./home/firstScreenStore";
 import { HeaderLiveChip } from "./capture/recorder/HeaderLiveChip";
@@ -158,7 +157,6 @@ import { PendingVoiceNotesSaver } from "./chat/PendingVoiceNotesSaver";
 import { VoiceNotes } from "./lib/voiceNotes/nativeVoiceNotes";
 import { captureCapabilities, captureEngineAvailable, subscribeCaptureCapabilities } from "./lib/voiceNotes/captureEngine";
 import { deletePendingRecordings, savePendingRecordings } from "./lib/voiceNotes/recorderSaves";
-import { clearHeldResultsForSignOut } from "./lib/voiceNotes/heldResults";
 import { clearPlaybackCacheForSignOut, hasVerifiedSpaceCopy } from "./lib/voiceNotes/audioPlaybackCache";
 import { PendingVoiceNoteSignOutDialog } from "./chat/PendingVoiceNoteSignOutDialog";
 import { RecordingOverlay } from "./capture/recorder/RecordingOverlay";
@@ -376,14 +374,14 @@ export function App() {
       void rememberExistingWebConnectors(homeFeatureStore, tcw, address);
     }
   }, [connectorsAsk, state, tcw, address, homeFeatureStore]);
-  const captureHandoffInFlight = useRef<Promise<boolean> | null>(null);
-  const performCaptureHandoff = useCallback(async () => {
+  const captureHandoffInFlight = useRef<{ task: Promise<boolean>; scope: SignOutScope } | null>(null);
+  const performCaptureHandoff = useCallback(async (scope: SignOutScope) => {
     if (LOCAL_VALIDATION) return true;
     try {
       const storedAddress = sessionStoreRef.current.getAddress();
       const signingOutDid = tcw?.did ?? did ?? (storedAddress ? `did:pkh:eip155:1:${storedAddress}` : null);
       const clearLocalResults = async () => {
-        await Promise.all([signingOutDid ? clearHeldResultsForSignOut(signingOutDid) : Promise.resolve(), clearPlaybackCacheForSignOut()]);
+        await Promise.all([clearSignedOutHeldResults(scope, signingOutDid), clearPlaybackCacheForSignOut()]);
       };
       if (!captureEngineAvailable()) {
         if (signingOutDid) {
@@ -436,21 +434,30 @@ export function App() {
       return false;
     }
   }, [did, tcw, voiceNotePipeline]);
-  const captureHandoff = useCallback((): Promise<boolean> => {
-    if (captureHandoffInFlight.current) return captureHandoffInFlight.current;
-    const task = performCaptureHandoff();
-    captureHandoffInFlight.current = task;
-    void task.finally(() => { if (captureHandoffInFlight.current === task) captureHandoffInFlight.current = null; })
+  /** "credentials" (an expired or refused session) keeps the account's held transcripts; "everything" removes them. */
+  const captureHandoff = useCallback((scope: SignOutScope = "everything"): Promise<boolean> => {
+    const inFlight = captureHandoffInFlight.current;
+    if (inFlight) {
+      if (inFlight.scope === scope || inFlight.scope === "everything") return inFlight.task;
+      // Joining a handoff that keeps held transcripts: once it is done, this one's removal runs.
+      return inFlight.task.then((ok) => ok && performCaptureHandoff(scope));
+    }
+    const task = performCaptureHandoff(scope);
+    const entry = { task, scope };
+    captureHandoffInFlight.current = entry;
+    void task.finally(() => { if (captureHandoffInFlight.current === entry) captureHandoffInFlight.current = null; })
       .catch(() => undefined);
     return task;
   }, [performCaptureHandoff]);
-  const completeLocalSignOut = useCallback((warning: string | null, terminal = false, webFenceToken?: string, addressOverride?: string | null) => {
+  // `scope` "credentials": an expired or refused session. Credentials and caches go; the account's unsent work stays.
+  const completeLocalSignOut = useCallback((warning: string | null, terminal = false, webFenceToken?: string, addressOverride?: string | null,
+    scope: SignOutScope = "everything") => {
     sessionEpochRef.current += 1;
     nativeRenewalRef.current?.stop();
     nativeRenewalRef.current = null;
     const storedAddress = addressOverride ?? sessionStoreRef.current.getAddress() ?? address;
     const fenceToken = webFenceToken ?? (storedAddress && !isNativeOpenKeySession()
-      ? setWebSignOutPending(storedAddress) ?? undefined
+      ? setWebSignOutPending(storedAddress, scope === "credentials") ?? undefined
       : undefined);
     const accountDid = tcw?.did ?? did ?? (storedAddress ? `did:pkh:eip155:1:${storedAddress}` : null);
     if (tcw && clientHasReplication(tcw)) stopReplicationFill(tcw);
@@ -459,12 +466,7 @@ export function App() {
     uploadRunner.reset();
     voiceNotePipeline?.cancelAll();
     endStorageAccountSession();
-    const accountSpace = tcw?.spaceId ?? spaceId;
-    // The page-close outbox and post drafts hold the owner's words in this device's storage; both go with the account.
-    // A sign-out that finds no client and no space (a restart with a sign-out still pending) clears the answers device-wide.
-    if (accountSpace) { clearHeldAnswers(accountSpace); clearPostDrafts(accountSpace); } else { clearAllHeldAnswers(); clearAllPostDrafts(); }
-    if (storedAddress) clearPersistedSession(storedAddress);
-    if (accountDid && storedAddress) clearAccountSignOutStorage(accountDid, storedAddress);
+    clearSignedOutAccountStorage(scope, { space: tcw?.spaceId ?? spaceId, did: accountDid, address: storedAddress });
     // TC-2862: the phone app's native local copy goes with the account, whether or not this build uses it.
     void wipeNativeReplicaOnSignOut(accountDid).then((result) => {
       if (!result.ok) console.warn("[Replica] Could not delete the native local copy at sign-out", result.code);
@@ -520,8 +522,23 @@ export function App() {
     setError(warning);
     setState(terminal ? "unauthenticated" : warning ? "recoverableError" : "unauthenticated");
   }, [address, did, tcw, voiceNotePipeline, spaceId]);
-  useEffect(() => registerSessionSignedOutHook(sessionStoreRef.current, captureHandoff,
-    () => completeLocalSignOut(null)), [captureHandoff, completeLocalSignOut]);
+  // An expired or refused session (a first-party 401, or the bearer's own expiry): one bounded try to send held answers,
+  // then a sign-out that keeps the account's unsent work. Model selection first tries one native renewal at once
+  // (`renewNow`, nothing inside OpenKey's minimum renewal interval); the web has no renewal in session.
+  const expiredSessionHandoff = useCallback(async () => {
+    if (!await captureHandoff("credentials")) return false;
+    if (tcw) {
+      try { await settleHeldAnswersForSignOut(tcw, SIGN_OUT_FLUSH_MS, { keepUnsent: true }); }
+      catch { /* Kept for the next launch. */ }
+    }
+    return true;
+  }, [captureHandoff, tcw]);
+  const renewExpiredSession = useCallback(async () => {
+    await nativeRenewalRef.current?.renewNow();
+  }, []);
+  useEffect(() => registerSessionSignedOutHook(sessionStoreRef.current, expiredSessionHandoff,
+    () => completeLocalSignOut(null, false, undefined, undefined, "credentials"), renewExpiredSession),
+  [expiredSessionHandoff, completeLocalSignOut, renewExpiredSession]);
   const [models, setModels] = useState<ModelOption[]>(() =>
     OFFERED_CHAT_MODELS.map(({ id, contextTokens }) => ({ id, contextLength: contextTokens })),
   );
@@ -686,6 +703,7 @@ export function App() {
         false,
         undefined,
         webSignOutPendingAddress() ?? storedAccount,
+        webSignOutPendingKeepsUnsentWork() ? "credentials" : "everything",
       );
       return;
     }

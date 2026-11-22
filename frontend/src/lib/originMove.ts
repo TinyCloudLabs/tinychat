@@ -13,6 +13,7 @@ import { clearAllHeldAnswers, countStoredAnswers } from "@/feed/answerOutbox";
 import { clearAllPostDrafts, countPostDrafts } from "@/feed/postAnswers";
 import { UPLOAD_PENDING_STORAGE_KEY, uploadRunner, type UploadState } from "./audioUpload";
 import { sameTabReturnState } from "./connectors/googleOAuthReturn";
+import { currentStorageAccountSpace } from "./storageStatus";
 import { hasVerifiedSpaceCopy } from "./voiceNotes/audioPlaybackCache";
 import { HELD_RESULTS_DB, HELD_RESULTS_STORE } from "./voiceNotes/heldResults";
 import { hasLocalWorkInProgress } from "./voiceNotes/localWork";
@@ -74,7 +75,10 @@ export const CANONICAL_VERSION_TIMEOUT_MS = 5_000;
  * `signedIn`: an account is signed in here.
  * `heldAnswers`, `unsentAnswers`, `postDrafts`: Home's answers kept only in this origin's localStorage, younger than
  * HELD_ANSWER_TTL_MS: answers waiting to be sent (the feed sends them from here), answers the feed did not take that
- * the owner has not yet seen as "Not sent", and post drafts with at least one answer.
+ * the owner has not yet seen as "Not sent", and post drafts with at least one answer. With an account signed in,
+ * only that account's space; with none, every space's.
+ * `otherAccountAnswers`: all three of those, together, of spaces other than the signed-in account's (an account whose
+ * session expired here keeps them until it signs back in). They keep the visitor here: the move would strand them.
  */
 export interface LocalRecordingWork {
   saving: number;
@@ -85,11 +89,13 @@ export interface LocalRecordingWork {
   heldAnswers: number;
   unsentAnswers: number;
   postDrafts: number;
+  otherAccountAnswers: number;
 }
 
 /** Nothing local-only: the move may go ahead, and no notice shows. */
 export const NO_LOCAL_WORK: LocalRecordingWork = {
   saving: 0, localAudio: [], unclaimed: 0, otherAccount: 0, signedIn: false, heldAnswers: 0, unsentAnswers: 0, postDrafts: 0,
+  otherAccountAnswers: 0,
 };
 
 /** Whether anything in `work` keeps the visitor on this origin. */
@@ -98,7 +104,20 @@ export function holdsOriginMove(work: LocalRecordingWork): boolean {
 }
 
 function holdsAnswers(work: LocalRecordingWork): boolean {
-  return work.heldAnswers > 0 || work.unsentAnswers > 0 || work.postDrafts > 0;
+  return work.heldAnswers > 0 || work.unsentAnswers > 0 || work.postDrafts > 0 || work.otherAccountAnswers > 0;
+}
+
+/** Home's answers in `storage`, split by `space` (the signed-in account's; null when none is, and all are counted as its). */
+function storedAnswerWork(storage: Pick<Storage, "length" | "key" | "getItem">, space: string | null):
+  Pick<LocalRecordingWork, "heldAnswers" | "unsentAnswers" | "postDrafts" | "otherAccountAnswers"> {
+  const own = countStoredAnswers(storage, undefined, space ?? undefined);
+  const postDrafts = countPostDrafts(storage, undefined, space ?? undefined);
+  let otherAccountAnswers = 0;
+  if (space !== null) {
+    const all = countStoredAnswers(storage);
+    otherAccountAnswers = all.held + all.unsent + countPostDrafts(storage) - own.held - own.unsent - postDrafts;
+  }
+  return { heldAnswers: own.held, unsentAnswers: own.unsent, postDrafts, otherAccountAnswers };
 }
 
 /**
@@ -123,6 +142,8 @@ export interface OriginMoveEnv {
   factory?: IDBFactory | null;
   /** Defaults to the global localStorage; null for none. */
   storage?: Pick<Storage, "length" | "key" | "getItem"> | null;
+  /** The signed-in account's space, which Home's answer counts are split by. Defaults to this tab's; null for none. */
+  space?: string | null;
 }
 
 export function isLegacyOrigin(loc: Pick<Location, "hostname">): boolean {
@@ -429,10 +450,10 @@ export async function countLocalOnlyRecordingWork(env: OriginMoveEnv = {}): Prom
       else if (owner !== signedIn) otherAccount++;
       else localAudio.push(id);
     }
-    const answers = storage ? countStoredAnswers(storage) : { held: 0, unsent: 0 };
+    const space = env.space !== undefined ? env.space : currentStorageAccountSpace();
     return {
       saving: saving.size + local.uploads, localAudio, unclaimed, otherAccount, signedIn: signedIn !== null,
-      heldAnswers: answers.held, unsentAnswers: answers.unsent, postDrafts: storage ? countPostDrafts(storage) : 0,
+      ...(storage ? storedAnswerWork(storage, space) : { heldAnswers: 0, unsentAnswers: 0, postDrafts: 0, otherAccountAnswers: 0 }),
     };
   } catch (error) {
     console.warn("[originMove] Could not check local recordings; staying on this origin", error);
@@ -618,8 +639,7 @@ function answersStoredNow(): LocalRecordingWork | null {
   try {
     const storage = globalThis.localStorage;
     if (!storage) return NO_LOCAL_WORK;
-    const { held, unsent } = countStoredAnswers(storage);
-    return { ...NO_LOCAL_WORK, heldAnswers: held, unsentAnswers: unsent, postDrafts: countPostDrafts(storage) };
+    return { ...NO_LOCAL_WORK, ...storedAnswerWork(storage, currentStorageAccountSpace()) };
   } catch (error) {
     console.warn("[originMove] Could not re-check stored answers; staying on this origin", error);
     return null;

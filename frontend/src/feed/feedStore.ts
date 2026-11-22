@@ -807,8 +807,12 @@ export const SIGN_OUT_FLUSH_MS = 3000;
  * cleared, sent or not, also after a failure or the bound. Nothing held: no request at all.
  * A flush still running at the bound finishes only the write it already started: the flush skips
  * every entry that is no longer held, so clearing the outbox stops the rest.
+ *
+ * `keepUnsent` (an expired or refused session): what the try does not send stays held under this
+ * space, for this account's next launch. A flush still running at the bound goes on with this
+ * account's own client, into this space only, until it ends or that client's writes fail.
  */
-export async function settleHeldAnswersForSignOut(tcw: TinyCloudWeb, boundMs = SIGN_OUT_FLUSH_MS): Promise<void> {
+export async function settleHeldAnswersForSignOut(tcw: TinyCloudWeb, boundMs = SIGN_OUT_FLUSH_MS, options: { keepUnsent?: boolean } = {}): Promise<void> {
   const space = tcw.spaceId;
   if (!space) return;
   let timer: number | undefined;
@@ -822,9 +826,9 @@ export async function settleHeldAnswersForSignOut(tcw: TinyCloudWeb, boundMs = S
       })(),
       new Promise<void>((resolve) => { timer = window.setTimeout(resolve, boundMs); }),
     ]);
-  } catch { /* Not sent: cleared below all the same. */ }
+  } catch { /* Not sent: cleared below all the same, or kept for the next launch. */ }
   finally {
     window.clearTimeout(timer);
-    clearHeldAnswers(space);
+    if (!options.keepUnsent) clearHeldAnswers(space);
   }
 }
