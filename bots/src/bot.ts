@@ -698,7 +698,7 @@ export class Bot {
   }
 
   /** Asks the gateway whether this conversation holds owner data it read. An answer that cannot be had counts as held. */
-  async #holdsOwnerData(): Promise<boolean> {
+  async holdsOwnerData(): Promise<boolean> {
     if (!this.#launcher.readsHeld) return false;
     try {
       return await this.#launcher.readsHeld(this.layout);
@@ -722,7 +722,7 @@ export class Bot {
       }
       const { targetKey } = args;
       // Owner data read in this conversation reaches another bot only through the owner's tap (propose_action).
-      if (await this.#holdsOwnerData()) return { text: MESSAGING_STRINGS.held, isError: true };
+      if (await this.holdsOwnerData()) return { text: MESSAGING_STRINGS.held, isError: true };
       if (reaching.has(targetKey)) return { text: MESSAGING_STRINGS.busy, isError: true };
       reaching.add(targetKey);
       try {

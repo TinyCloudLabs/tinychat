@@ -56,6 +56,8 @@ export interface BotApi {
   setAsksEnabled?(enabled: boolean): Promise<AsksSettings>;
   /** Which areas of the owner's data Main may read (reads.ts). Set by the backend once it holds the owner's grant. */
   setReads?(owner: string, areas: ReadArea[]): Promise<ReadsSetting>;
+  /** Whether this bot's current conversation holds owner data it read; it then sends nothing to other bots. */
+  holdsOwnerData?(): Promise<boolean>;
   requests?(): Promise<AskRequest[]>;
   answerRequest?(id: string, input: AnswerInput): Promise<AnswerResult>;
   /** The message for Main that tells it what the owner decided; undefined unless decided and not yet delivered. */
@@ -92,8 +94,14 @@ const MAX_QUEUED_BYTES = 1024 * 1024;
 // Keeps one tool reply well below the RPC frame limit even when JSON escapes its characters.
 const MAX_BOT_REPLY_BYTES = 32 * 1024;
 const UNAVAILABLE_REPLY = { text: MESSAGING_STRINGS.unavailable, isError: true } as const;
+const HELD_REPLY = { text: MESSAGING_STRINGS.targetHeld, isError: true } as const;
 
+/**
+ * Runs a turn in the target and returns its reply. A target whose conversation holds owner data it read, before the
+ * turn or after it, sends no reply: what it answers could carry that data to the asking bot.
+ */
 async function relayMessage(target: BotApi, owner: string, text: string): Promise<HostToolReply> {
+  if (await target.holdsOwnerData?.()) return HELD_REPLY;
   let reply = "";
   let bytes = 0;
   let complete = false;
@@ -110,6 +118,7 @@ async function relayMessage(target: BotApi, owner: string, text: string): Promis
   }, owner, undefined, "bot");
   if (errorCode === "busy") return { text: MESSAGING_STRINGS.busy, isError: true };
   if (errorCode || !complete || !reply || bytes > MAX_BOT_REPLY_BYTES) return UNAVAILABLE_REPLY;
+  if (await target.holdsOwnerData?.()) return HELD_REPLY;
   return { text: reply };
 }
 
