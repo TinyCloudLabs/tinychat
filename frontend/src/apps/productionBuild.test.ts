@@ -5,7 +5,8 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import path from "node:path";
 
 const frontend = path.join(import.meta.dir, "../..");
-const FORBIDDEN = [/pages\.dev/, /localhost:5\d{3}/, /feat-one-apps/, /one-apps-dev/];
+// The Ship ledger's production origin is the one pages.dev host allowed; its previews and branch aliases are not.
+const FORBIDDEN = [/(?<!\/\/rocinante-ledger\.)pages\.dev/, /localhost:5\d{3}/, /feat-one-apps/, /one-apps-dev/];
 
 function files(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) =>
@@ -25,6 +26,7 @@ describe("One Apps production build", () => {
       // The registry is in the bundle, so the absence below is not vacuous.
       expect(bundle).toContain("https://explorer.tinycloud.xyz");
       expect(bundle).toContain("https://share.tinycloud.xyz");
+      expect(bundle).toContain("https://rocinante-ledger.pages.dev");
       for (const pattern of FORBIDDEN) {
         expect(shipped.filter((file) => pattern.test(readFileSync(file, "utf8"))).map((file) => path.relative(outDir, file))).toEqual([]);
       }

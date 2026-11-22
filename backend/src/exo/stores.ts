@@ -19,6 +19,7 @@ import {
   type ExoMailboxPorts,
 } from "./mailbox.js";
 import { createDurableExoLedger } from "./durable-ledger.js";
+import { createOwnerGrantCache } from "./grant-cache.js";
 
 /** Backend-space KV for job mirrors and the durable ledger. The owner space stays authoritative. */
 export interface ExoBackendKv {
@@ -185,17 +186,22 @@ export interface OwnerGrantOpenerConfig {
   configuredHost: string;
   grantStore: { load(address: string): Promise<StoredGrantRecord | null | undefined> };
   now?: () => number;
+  /** Reuse an opened grant per owner for a short window (grant-cache.ts). Off by default. */
+  cache?: boolean;
 }
+
+/** The opener, plus a way to drop one owner's cached grant. `invalidate` does nothing when the cache is off. */
+export type OwnerGrantOpener = ((owner: string) => Promise<ExoActivatedGrant | null>) & { invalidate(owner: string): void };
 
 /**
  * Resolves an owner's stored exo grant into an activated accessor. Mirrors the GET route's checks
  * (expiry, backend match, verification) but never removes a stale grant; the route owns removal.
  * Any failure yields null, so the owner reads as inactive.
  */
-export function createOwnerGrantOpener(config: OwnerGrantOpenerConfig): (owner: string) => Promise<ExoActivatedGrant | null> {
+export function createOwnerGrantOpener(config: OwnerGrantOpenerConfig): OwnerGrantOpener {
   const now = config.now ?? Date.now;
   const deps = { computeDelegationCid: config.node.computeDelegationCid.bind(config.node) };
-  return async (owner) => {
+  const openOnce = async (owner: string): Promise<ExoActivatedGrant | null> => {
     try {
       const address = normalizeOwner(owner);
       const stored = await config.grantStore.load(address);
@@ -216,4 +222,8 @@ export function createOwnerGrantOpener(config: OwnerGrantOpenerConfig): (owner: 
       return null;
     }
   };
+  const cache = config.cache ? createOwnerGrantCache(openOnce, { now: config.now }) : undefined;
+  return Object.assign((owner: string) => (cache ? cache.open(owner) : openOnce(owner)), {
+    invalidate: (owner: string) => cache?.invalidate(owner),
+  });
 }

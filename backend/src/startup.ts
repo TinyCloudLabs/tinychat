@@ -36,14 +36,8 @@ export const TINYCHAT_BACKEND_MANIFEST: Manifest = {
   permissions: [
     // Users' transcript-writer and exo-sync grants (delegation-store, exo/grant-holders).
     backendKv("delegations/", ["get", "put", "del", "list"]),
-    // Webhook tokens, config, queues (pending/dead/corrupt), purge ledger, disabled flags, ingest lease and cohort.
+    // Webhook tokens, config, queues (pending/dead/corrupt), purge ledger and disabled flags.
     backendKv("webhooks/", ["get", "put", "del", "list"]),
-    // Connector content store (services/content-store).
-    backendKv("connector-content/", ["get", "put", "del", "list"]),
-    backendKv("connector-content-index/", ["get", "put", "del", "list"]),
-    backendKv("connector-content-key-failure/", ["get", "put", "del", "list"]),
-    backendKv("connector-content-replay-tombstone/", ["get", "put", "del", "list"]),
-    backendKv("connector-content-continuity/v1", ["get", "put"]),
     // Connector credentials (services/credential-store).
     backendKv("credentials/", ["get", "put", "del", "list"]),
     // Transcriber index and delivery state.

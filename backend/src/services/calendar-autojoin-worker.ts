@@ -50,6 +50,9 @@ export interface CalendarAutojoinWorkerOptions {
   meetingCoordinator?: TenantCoordinator;
   /** TC-581 `CALENDAR_AUTOJOIN_SHARING`: gates only the transcript grant. Default off. */
   sharingEnabled?: boolean;
+  /** TC-916 `CALENDAR_AUTOJOIN_SHARING_ACCOUNTS` (lowercased): with the flag off, sharing still runs
+   *  between two accounts that are both listed. Empty = nobody. */
+  sharingAccounts?: ReadonlySet<string>;
   calendar: GoogleCalendarPort;
   connection: {
     accessToken(tenant: string, forceRefresh?: boolean): Promise<string>;
@@ -645,7 +648,7 @@ export class CalendarAutojoinWorker {
         const sharedCapture: SharedCapture = { ownerTenant: claim.tenant, ownerOccurrenceId: claim.occurrenceId, attachedAt: now, corroborated };
         await store.updateOccurrence(row.tenant, row.id, current => current && {
           ...current, start: row.start, end: row.end, meetingUrl: row.meetingUrl, title: row.title, generation: connection.generation,
-          sharedCapture, errorCode: this.pendingCode(sharedCapture), nextAttemptAt: now + 30_000, updatedAt: now,
+          sharedCapture, errorCode: this.pendingCode(row.tenant, sharedCapture), nextAttemptAt: now + 30_000, updatedAt: now,
         });
         console.log(`[calendar-autojoin] code=shared_capture_attached corroborated=${corroborated}`);
         return true;
@@ -689,7 +692,7 @@ export class CalendarAutojoinWorker {
   }
   /** The single grant-time check (TC-581). Fails closed on anything but an affirmative answer. */
   private async authorizeShare(row: CalendarOccurrence, owner: CalendarOccurrence, recipient: CalendarConnection): Promise<ShareDecision | "deferred"> {
-    if (this.options.sharingEnabled !== true) return { ok: false, reason: "sharing_disabled" };
+    if (!this.sharingAllowed(row.tenant, owner.tenant)) return { ok: false, reason: "sharing_disabled" };
     if (!recipient.verifiedEmail) return { ok: false, reason: "no_verified_email" };
     const ownerConnection = await this.options.store.getConnectionFresh(owner.tenant);
     if (ownerConnection?.state !== "enabled" || !ownerConnection.subject || ownerConnection.subject !== owner.subject) {
@@ -708,7 +711,7 @@ export class CalendarAutojoinWorker {
       await this.options.store.updateOccurrence(row.tenant, row.id, current => {
         if (!current || current.phase === "terminal") return current;
         const count = current.attemptCount + 1;
-        return { ...current, attemptCount: count, errorCode: this.pendingCode(current.sharedCapture), updatedAt: this.now(),
+        return { ...current, attemptCount: count, errorCode: this.pendingCode(row.tenant, current.sharedCapture), updatedAt: this.now(),
           nextAttemptAt: Math.max(current.nextAttemptAt, this.now() + Math.max(60_000, this.retryDelay(error, count))) };
       });
       return "deferred";
@@ -723,13 +726,19 @@ export class CalendarAutojoinWorker {
     else console.log(`[calendar-autojoin] code=share_denied reason=${decision.ok ? "unknown" : decision.reason}`);
     await this.finish(row, disposition);
   }
+  /** Sharing is on for everyone with the flag, else only between two accounts that are both listed. */
+  private sharingAllowed(recipientTenant: string, ownerTenant: string): boolean {
+    if (this.options.sharingEnabled === true) return true;
+    const listed = this.options.sharingAccounts;
+    return !!listed && listed.has(recipientTenant.toLowerCase()) && listed.has(ownerTenant.toLowerCase());
+  }
   /**
    * The visible state of an attached row. Unverified captures never promise a transcript, and with
-   * sharing off neither does a corroborated one.
+   * sharing off for this pair neither does a corroborated one.
    */
-  private pendingCode(shared: SharedCapture | undefined): string {
+  private pendingCode(tenant: string, shared: SharedCapture | undefined): string {
     if (shared?.corroborated !== true) return "unverified_capture";
-    return this.options.sharingEnabled === true ? "shared_capture_pending" : "capture_in_progress";
+    return this.sharingAllowed(tenant, shared.ownerTenant) ? "shared_capture_pending" : "capture_in_progress";
   }
   /** TC-581: back to a plain pending row. B never sent a bot: nothing to unwind upstream, no marker. */
   private async detach(row: CalendarOccurrence): Promise<void> {
@@ -758,7 +767,7 @@ export class CalendarAutojoinWorker {
   }
   private async retryShared(row: CalendarOccurrence, delay: number): Promise<void> {
     await this.options.store.updateOccurrence(row.tenant, row.id, current => current && current.phase !== "terminal" ? {
-      ...current, errorCode: this.pendingCode(current.sharedCapture), nextAttemptAt: this.now() + delay, updatedAt: this.now(),
+      ...current, errorCode: this.pendingCode(row.tenant, current.sharedCapture), nextAttemptAt: this.now() + delay, updatedAt: this.now(),
     } : current);
   }
   private async alreadyCaptured(row: CalendarOccurrence): Promise<void> {
