@@ -151,6 +151,7 @@ async function setup() {
   const spends: boolean[] = [];
   const launcher: SandboxLauncher = {
     hasState: () => false, leftover: () => false, mountPoints: () => [],
+    readsHeld: async () => false,
     launch: async layout => {
       const sandbox = boxes.get(layout.botId);
       if (!sandbox) throw new Error("unexpected launch");

@@ -118,6 +118,7 @@ test("message_bot is admitted between the owner's two active bots, and refused f
   const sandboxes = new Map([[botIdFor(owner), source], [botIdFor(owner, sibling), target]]);
   const launcher: SandboxLauncher = {
     hasState: () => false, leftover: () => false,
+    readsHeld: async () => false,
     launch: async layout => {
       const sandbox = sandboxes.get(layout.botId);
       if (!sandbox) throw new Error("unexpected launch");
