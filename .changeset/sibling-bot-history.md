@@ -2,4 +2,6 @@
 "@tinychat/backend": patch
 ---
 
-Bots other than Main can save their chat history and show its expiry notice. Each bot's history is saved only under that bot's own permission.
+The server can save the chat history of bots other than Main and serve their expiry notice, each under that bot's own permission. The app doesn't ask for it until a separate change turns it on.
+
+Details: TC-3813
