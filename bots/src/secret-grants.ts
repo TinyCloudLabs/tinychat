@@ -20,7 +20,7 @@ import type { ApprovalRequesterState, CheckedApprovalResult, CreatedLink, Ed2551
 import * as approvalLinks from "@tinycloud/share-envelope/links";
 import { getAddress, verifyMessage } from "viem";
 import { parseSiweMessage } from "viem/siwe";
-import { MAX_WHY_CHARS, type SecretPush } from "./asks";
+import { MAX_GRANT_MS, MAX_WHY_CHARS, type SecretPush } from "./asks";
 import type { GuardDeps } from "./fetch-guard";
 import { isRecord } from "./guards";
 import { OWNER_DID } from "./owner";
@@ -33,9 +33,10 @@ import { toolText } from "./web";
 /**
  * Longest grant the gateway asks for, and the longest it keeps: 7 days, Sam's cap on standing secret access (D7).
  * Each secret has its own key (TC-3284), so a grant opens only the secret it names. The owner can pick less; never
- * more, and the gateway never asks for or accepts a renewal: a new grant means a new request.
+ * more, and the gateway never asks for or accepts a renewal: a new grant means a new request. The same number the
+ * supervisor's store and the secret card use (asks.ts), so the 7 days are written once.
  */
-export const MAX_GRANT_SECONDS = 7 * 24 * 3600;
+export const MAX_GRANT_SECONDS = MAX_GRANT_MS / 1000;
 /** What the approval screen offers first. */
 export const SUGGESTED_GRANT_SECONDS = 3600;
 /** How long the owner has to open the link. */

@@ -20,6 +20,8 @@ on:
   pull_request:
     paths:
       - "backend/**"
+      # backend/src/__tests__/bots-service-routes.test.ts reads the never-list from here.
+      - "bots/src/tool-policy.ts"
       - "packages/**"
       - "patches/**"
       - "package.json"

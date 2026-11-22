@@ -71,11 +71,18 @@ Every event is encoded by the supervisor from checked fields; OMP output never p
 2. On the first message (or the first after an idle stop) the supervisor mounts a fresh tmpfs for the bot's state,
    restores the bot's saved state into it, registers a fresh random token for the bot with the gateway, writes the
    OCI spec (from `runsc spec`) and runs `runsc run` in the foreground. Inside, `bot-start.sh` bridges
-   `127.0.0.1:8080` to the egress socket and execs `omp --mode rpc --no-ui`; the sandbox's stdio is the RPC channel.
+   `127.0.0.1:8080` to the egress socket and execs `omp --mode rpc --no-ui --system-prompt <file>`; the sandbox's stdio
+   is the RPC channel. The file is Main's or the sibling prompt (`sandbox/prompts/main.md`, `sibling.md`, copied to
+   `/opt/tinycloud/prompts`); the sibling prompt is also the image's `/root/.omp/agent/SYSTEM.md`, which OMP reads if
+   the file is missing.
 3. The supervisor waits for OMP's `ready`, sets the event filter (assistant deltas only), opens the session in
    `/root/bot/sessions/main`, sends the `prompt`, and maps `message_update` text deltas to `delta` and
-   `prompt_result` to `done` / `error`.
-4. After `session_settled` the supervisor saves the bot's state to disk, and the bot stops once it has been idle for
+   `prompt_result` to `done` / `error`. A prompt the owner did not write (one bot messaging another) starts with the
+   line "[TinyCloud: this message is from another of the owner's bots, not from the owner.]", so it never starts
+   with "/" and cannot run an OMP slash command.
+4. OMP's own settings (`config.yml`, written by the supervisor) keep read, write, edit, bash, glob and grep and turn
+   off its other built-in tools, subagents, background jobs and skills.
+5. After `session_settled` the supervisor saves the bot's state to disk, and the bot stops once it has been idle for
    `BOTS_IDLE_MS`. The next message starts it again on the same session.
 
 ## Working state
@@ -171,6 +178,12 @@ the gateway applies it on every call. A missing or unreadable file reads as `off
 
 - Main's OMP has two MCP servers on the egress socket (bot token required): `web`, the gateway's `POST /v1/mcp`, and
   `app` (see Questions from Main). The `web` tools, `search` and `fetch`, reach OMP as `mcp__web_search` and `mcp__web_fetch`; OMP's own web tools are off.
+- Each server serves only the tool names on its allow-list (`src/tool-policy.ts`): `tools/list` drops any other tool
+  and `tools/call` refuses any other name before dispatch. A new tool is added to that list. The same file holds the
+  never-list (billing checkout and portal, delegations and agent access, connector sign-in and credentials, account
+  deletion, app lock, the bot's Web access setting, secret values) as tool name patterns and backend route prefixes;
+  tests fail if an allowed tool, or a backend route the bots service may call (`backend/src/bots-service-routes.ts`),
+  matches it.
 - A search goes to the search provider (Tavily Search; `BOTS_TEST_WEB_URL` is a loopback mock for tests). Without
   `TAVILY_API_KEY` a search answers "isn't available".
 - A page is read by the `bots-fetch` container (`src/fetch-main.ts`, `POST /fetch {"url", "hosts"}`), which reads pages
@@ -181,9 +194,9 @@ the gateway applies it on every call. A missing or unreadable file reads as `off
 
 ### Questions from Main
 
-Main can ask its owner one short question and carry on; the answer comes back later as a new message. It ships on:
-the owner can turn it off in Main's settings, and while it is off Main has no tool for it and every call is refused.
-This is the `ask_owner` tool of the `app` MCP server.
+Main can ask its owner one short question and carry on; the answer comes back later as a new message. It ships off:
+the owner turns it on in Main's settings, and until then Main has no tool for it and every call is refused. This is
+the `ask_owner` tool of the `app` MCP server.
 
 - The `app` server is the gateway's `POST /v1/mcp/app` on the egress socket (bot token required), beside `web`. A
   sandbox's `mcp.json` is written once and always lists both, so the setting is not in it: the gateway lists
@@ -201,8 +214,8 @@ This is the `ask_owner` tool of the `app` MCP server.
 - The owner's setting is `/data/bots/<bot id>/asks.json` and the requests are `/data/bots/<bot id>/requests.json`, in
   the data directory beside `web.json`. Neither is under `state/`, which is what gets copied into a sandbox, and no
   sandbox mount is the data directory or inside it. Their only link to the box is the gateway. A missing setting, or
-  one saved without `enabled`, reads as on (the default); only a saved `false` is off. An unreadable or malformed one
-  reads as off and is logged (`asks_setting_unreadable`).
+  one saved without `enabled`, reads as off (the default); only a saved `true` is on. An unreadable or malformed one
+  also reads as off and is logged (`asks_setting_unreadable`).
 - The gateway cannot call the supervisor (separate containers), so it holds a validated new question in memory until
   the supervisor collects it over the control socket: `POST /bots/<id>/asks/drain` answers `{ asks, outside }`, and
   `PUT /bots/<id>/asks` gives the setting, the counts and the declined hashes. The supervisor does this at sandbox

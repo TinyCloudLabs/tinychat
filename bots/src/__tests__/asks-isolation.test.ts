@@ -22,7 +22,7 @@ const base: OciSpec = {
 };
 
 const layout = botLayout(botIdFor(owner), roots);
-const spec = sandboxSpec(base, { rootfs: "/bot-rootfs", token: "1".repeat(64), egressDir: layout.egressDir, stateMount: layout.stateMount, cgroupsPath: `/bots/${layout.botId}`, limits });
+const spec = sandboxSpec(base, { rootfs: "/bot-rootfs", token: "1".repeat(64), egressDir: layout.egressDir, stateMount: layout.stateMount, cgroupsPath: `/bots/${layout.botId}`, limits, role: "main" });
 
 const inside = (path: string, dir: string) => path === dir || path.startsWith(`${dir}/`);
 

@@ -16,6 +16,9 @@ RUN bun install --frozen-lockfile \
  && ln -s /opt/omp/node_modules/.bin/omp /usr/local/bin/omp \
  && omp --version
 COPY bots-regular/sandbox/bridge.ts bots-regular/sandbox/arm.ts /opt/bridge/
+# The bots' system prompts (the bridge picks one per bot) and the role-neutral fallback, as in bots/Dockerfile.
+COPY bots/sandbox/prompts/ /opt/tinycloud/prompts/
+COPY bots/sandbox/prompts/sibling.md /root/.omp/agent/SYSTEM.md
 WORKDIR /root
 
 FROM ${BUN_IMAGE}
