@@ -61,6 +61,7 @@ test("deleting a bot stops its sandbox and removes its state and journal files",
   };
   const manager = new BotManager(launcher, roots, { history, idleMs: 60_000, turnTimeoutMs: 5000, maxTurnBytes: 512 }, 3);
   const bot = manager.forBot(owner, key);
+  void bot.historyPermission(owner, undefined, Date.now() + 3_600_000);
   const manifest = new OwnerManifests(join(roots.dataRoot, "owners"));
   const app = createApp({ secret, accounts: "*", bots: manager, manifest, acceptLegacyOwnerHeader: false });
   const call = (method: string, suffix = "", data?: unknown) => {

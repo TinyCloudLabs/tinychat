@@ -16,6 +16,11 @@ import { type Frame, type HostToolHandler, type HostToolReply, RpcError } from "
 import { addressesIn } from "./web";
 import { readWebPolicy, type WebPolicy, writeWebPolicy } from "./web-policy";
 import { type AnswerInput, type AnswerResult, type AppOrigin, AskStore, type AskReply, type AskRequest, cancelAsks, readAsksEnabled, type SecretLine, sweepAsks as sweepAskStores, writeAsksEnabled } from "./asks";
+import { type ReadArea, type ReadsSetting, readReads, writeReads } from "./reads";
+import { type ActionOutcome, type ActionReply, type ActionRequest, type ActionResult, ActionStore, type ApproveResult, actionBinding } from "./actions";
+
+/** Where a message the app sends Main comes from: a decided question or secret request, or a decided proposal. */
+export type AppSource = { app: AppOrigin["app"] | ActionReply["decision"]; secret?: SecretLine };
 
 export type ErrorCode = "bot_unavailable" | "model_unavailable" | "busy" | "at_capacity" | "invalid";
 
@@ -46,7 +51,7 @@ export interface ListedMessage {
   /** Set for a message the app wrote (the owner's decision on a request from Main), not typed by the owner. */
   origin?: "app";
   /** With `origin: "app"`: what the owner decided, so the app need not read the composed text. */
-  decision?: AskReply["decision"];
+  decision?: AskReply["decision"] | ActionReply["decision"];
   /** With a decision on a secret request: what the owner's chat line names. */
   secret?: SecretLine;
 }
@@ -102,6 +107,17 @@ export interface SandboxLauncher {
    * approval links, which OpenKey checks against that account.
    */
   syncAsks?(layout: BotLayout, turn?: { outside: boolean }, ownerDid?: string): Promise<void>;
+  /** Gives the gateway the owner's read setting and the bot's conversation id (reads.ts). */
+  pushReads?(layout: BotLayout): Promise<void>;
+  /** Whether the bot's current conversation holds owner data it read; message_bot is refused while it does. */
+  readsHeld?(layout: BotLayout): Promise<boolean>;
+  /**
+   * Collects the proposals the box made, then gives the gateway the counts, the final proposals and, when given, the
+   * recipients Main may name from now (an empty list: none).
+   */
+  syncActions?(layout: BotLayout, keys?: readonly string[]): Promise<void>;
+  /** Has the gateway spend an approval it issued: true once for that id and binding, else false. */
+  spendAction?(layout: BotLayout, id: string, binding: string): Promise<boolean>;
   /** Removes what the bot keeps off this host (a remote sandbox and its snapshot) before its directories go. */
   removeState?(layout: BotLayout): Promise<void>;
 }
@@ -167,14 +183,15 @@ const MESSAGE_BOT = "message_bot";
 
 /**
  * Who wrote a turn's text: the owner in chat, another of the owner's bots through message_bot, or the app, from the
- * owner's response there to a question from Main.
+ * owner's response there to a question from Main or the outcome of a proposal from Main.
  */
-export type TurnOrigin = "owner" | "bot" | AppOrigin;
+export type TurnOrigin = "owner" | "bot" | AppSource;
 
 /** The first line of every turn that did not come straight from the owner's chat (the bots' prompts rely on it). */
 export const ORIGIN_LINES = {
   bot: "[TinyCloud: this message is from another of the owner's bots, not from the owner.]",
   app: "[TinyCloud: the owner responded in the app to your question. Their response follows.]",
+  action: "[TinyCloud: the app reports the outcome of your proposal. It follows.]",
 } as const;
 
 /** Where OMP reads `@<path>` as a file to load into the turn: at the start of the text or after a space or opening mark. */
@@ -196,7 +213,8 @@ const TINYCLOUD_MARK = new RegExp(`\\[(?=[^\\p{L}\\p{N}\\]]*${[..."tinycloud"].j
 export function promptText(text: string, from: TurnOrigin, date?: OwnerDate): string {
   const written = text.replace(TINYCLOUD_MARK, "[\u2060");
   if (from === "owner") return date && !written.startsWith("/") ? `${ownerDateLine(date)}\n${written}` : written;
-  const line = from === "bot" ? ORIGIN_LINES.bot : ORIGIN_LINES.app;
+  const line = from === "bot" ? ORIGIN_LINES.bot
+    : from.app === "action_approved" || from.app === "action_declined" ? ORIGIN_LINES.action : ORIGIN_LINES.app;
   return `${line}\n${written.replace(FILE_MENTION, "$1@\u2060")}`;
 }
 
@@ -354,12 +372,17 @@ export class Bot {
   readonly #options: BotOptions;
   readonly #running: RunningLimit;
   #history: HistoryJournal | undefined;
+  /** The newest archive grant seen by a bot that has no journal to record it in (a sibling that has not run yet). */
+  // In memory only (a journal or directory made for it would break the rule that a sibling that never ran leaves none): the
+  // backend drain sends a sibling's grant again every few minutes, so one lost to a restart is picked up again.
+  #grantSeen: number | undefined;
   #sandbox: Sandbox | undefined;
   #starting: Promise<Sandbox> | undefined;
   #stopping: Promise<StopFailure | undefined> | undefined;
   #deleting: Promise<DeleteSkip | undefined> | undefined;
   #webSaves: Promise<void> = Promise.resolve();
   #askSaves: Promise<void> = Promise.resolve();
+  #readSaves: Promise<void> = Promise.resolve();
   #busy = false;
   #listing = 0;
   #settled = true;
@@ -412,27 +435,45 @@ export class Bot {
       sink.error("at_capacity");
       return;
     }
+    // The journal of this turn, fixed at its start: a grant that arrives mid-turn on a bot that began it without one makes
+    // #history exist with no draft, and the turn's sink must not write to that.
+    let turnJournal: HistoryJournal | undefined;
     if (this.#options.history) {
       this.#busy = true;
       await this.#deleting;
       if (this.#retired) { this.#busy = false; sink.error("bot_unavailable"); return; }
       try {
-        this.#history ??= new HistoryJournal(this.layout, this.#options.history);
-        this.#history.begin(owner ?? "", this.#options.maxTurnBytes * 16 + 128 * 1024);
-        this.#history.append({
-          type: "user", text, at: new Date().toISOString(),
-          ...(typeof from === "object" ? { origin: "app", decision: from.app, ...(from.secret ? { secret: from.secret } : {}) } : {}),
-        });
-        this.#history.startDraft();
-      } catch { this.#busy = false; sink.error("bot_unavailable"); return; }
+        // TC-3933: a bot that has never had an archive grant has nothing to be archived, so it keeps no journal. Journaling
+        // starts when a grant arrives; the turns before it are not archived. Without this the journal only grows (nothing
+        // removes a batch until the working state is deleted, and that waits for the archive), fills at about 3.9 MiB and
+        // fails every turn from then on.
+        const journal = this.#journal();
+        const granted = this.#hasGrant();
+        if (granted) {
+          journal.begin(owner ?? "", this.#options.maxTurnBytes * 16 + 128 * 1024);
+          if (!journal.everGranted) journal.permissionActive(this.#grantSeen!);
+          journal.append({
+            type: "user", text, at: new Date().toISOString(),
+            ...(typeof from === "object" ? { origin: "app", decision: from.app, ...(from.secret ? { secret: from.secret } : {}) } : {}),
+          });
+          journal.startDraft();
+          turnJournal = journal;
+        } else {
+          journal.discard();
+          this.#history = undefined;
+        }
+      } catch (error) {
+        if (error instanceof Error && error.message === "history_full") log("history_full", this.layout.botId);
+        this.#busy = false; sink.error("bot_unavailable"); return;
+      }
     }
     const output = sink;
     sink = {
       status: state => output.status(state),
-      delta: text => { this.#history?.delta(text); output.delta(text); },
-      activity: record => { this.#history?.append(record); output.activity?.(record); },
-      done: messageId => { this.#history?.finishDraft({ type: "done", messageId }); output.done(messageId); },
-      error: code => { this.#history?.finishDraft({ type: "error", code }); output.error(code); },
+      delta: text => { turnJournal?.delta(text); output.delta(text); },
+      activity: record => { turnJournal?.append(record); output.activity?.(record); },
+      done: messageId => { turnJournal?.finishDraft({ type: "done", messageId }); output.done(messageId); },
+      error: code => { turnJournal?.finishDraft({ type: "error", code }); output.error(code); },
     };
     this.#busy = true;
     this.#clearIdle();
@@ -446,6 +487,8 @@ export class Bot {
         this.#markUsed();
         await sandbox.refreshEgress();
         await this.#syncAsks({ outside: from === "bot" });
+        // Main may propose sending to the bots it may message in this turn; a turn another bot started names none.
+        await this.#launcher.syncActions?.(this.layout, from === "bot" ? [] : messenger?.keys ?? []);
         // Only what the owner typed counts as an address they chose; a message from another bot may carry text a web page put there, and an app reply is composed here.
         const typed = from === "owner" ? addressesIn(text, 50) : [];
         if (typed.length > 0) await this.#launcher.learnAddresses?.(this.layout, typed);
@@ -484,9 +527,10 @@ export class Bot {
       clearInterval(heartbeat);
       // Questions Main asked during the turn are collected now, while the gateway still holds them.
       void this.#syncAsks().catch(() => {});
-      if (this.#history) {
-        try { this.#history.append({ type: "provenance", receipts: await this.#launcher.provenance?.(this.layout) ?? [] }); }
-        catch { this.#history.append({ type: "provenance", verified: false }); }
+      void this.#launcher.syncActions?.(this.layout, []).catch(() => {});
+      if (turnJournal) {
+        try { turnJournal.append({ type: "provenance", receipts: await this.#launcher.provenance?.(this.layout) ?? [] }); }
+        catch { turnJournal.append({ type: "provenance", verified: false }); }
       }
       this.#busy = false;
       this.#armIdle();
@@ -499,7 +543,8 @@ export class Bot {
       await this.#deleting;
       if (this.#retired) throw new Error("bot_retired");
       this.#history ??= new HistoryJournal(this.layout, this.#options.history);
-      if (!this.#history.legacyPending) {
+      // A bot that keeps no journal (TC-3933) shows what its own state holds, as a bot without history does.
+      if (this.#hasGrant() && !this.#history.legacyPending) {
         const messages = this.#history.messages();
         if (messages.length) this.#markUsed();
         return messages;
@@ -584,7 +629,9 @@ export class Bot {
       writeAsksEnabled(this.layout, enabled);
       if (!enabled) {
         const stopped = await cancelAsks(this.layout);
+        new ActionStore(this.layout).cancelPending();
         await this.#syncAsks().catch(() => log("asks_setting_push_failed", this.layout.botId));
+        await this.#launcher.syncActions?.(this.layout).catch(() => {});
         log("asks_setting", this.layout.botId, { enabled, stopped });
         return;
       }
@@ -601,16 +648,46 @@ export class Bot {
     return saved.then(() => ({ enabled }));
   }
 
-  /** The owner's requests from Main: what the box has asked so far (collected from the gateway first), pending first. */
-  async requests(): Promise<AskRequest[]> {
-    await this.#deleting;
-    await this.#syncAsks().catch(() => {});
-    return new AskStore(this.layout).list();
+  /**
+   * Saves which areas the owner lets Main read and gives the gateway the setting. The backend checks the owner's grant
+   * on every read whatever the gateway holds, so a push that fails is logged and sent again at the next message.
+   */
+  setReads(owner: string, areas: ReadArea[]): Promise<ReadsSetting> {
+    const setting: ReadsSetting = areas.length > 0 ? { areas, owner } : { areas: [] };
+    const saved = this.#readSaves.then(async () => {
+      await this.#deleting;
+      writeReads(this.layout, setting);
+      await this.#launcher.pushReads?.(this.layout).catch(() => log("reads_setting_push_failed", this.layout.botId));
+      log("reads_setting", this.layout.botId, { areas: areas.length });
+    });
+    this.#readSaves = saved.catch(() => {});
+    return saved.then(() => ({ areas: setting.areas }));
   }
 
-  /** Records the owner's decision on one request. Only a pending, unexpired request can be decided. */
-  async answerRequest(id: string, input: AnswerInput): Promise<AnswerResult> {
+  /** The owner's requests from Main: questions and proposals so far (collected from the gateway first), open first. */
+  async requests(): Promise<(AskRequest | ActionRequest)[]> {
     await this.#deleting;
+    await this.#syncAsks().catch(() => {});
+    await this.#launcher.syncActions?.(this.layout).catch(() => {});
+    const asks = new AskStore(this.layout).list();
+    const actions = new ActionStore(this.layout).list();
+    const open = (request: AskRequest | ActionRequest) => request.state === "pending" || request.state === "sending";
+    return [...asks.filter(open), ...actions.filter(open), ...asks.filter(request => !open(request)), ...actions.filter(request => !open(request))];
+  }
+
+  /** Records the owner's decision on one request. Only a pending, unexpired request can be decided; a proposal only declined here. */
+  async answerRequest(id: string, input: AnswerInput): Promise<AnswerResult | ActionResult> {
+    await this.#deleting;
+    const actions = new ActionStore(this.layout);
+    if (actions.has(id)) {
+      if (input.decision !== "decline") return { ok: false, error: "invalid" };
+      const result = actions.decline(id);
+      if (result.ok) {
+        log("action_resolved", this.layout.botId, { outcome: "declined" });
+        void this.#launcher.syncActions?.(this.layout).catch(() => {});
+      }
+      return result;
+    }
     const result = new AskStore(this.layout).answer(id, input);
     if (result.ok) {
       log("ask_resolved", this.layout.botId, { outcome: result.request.state });
@@ -620,16 +697,69 @@ export class Bot {
   }
 
   /**
+   * The owner's Send on a proposal card, naming the binding the card showed. Checked and marked sending here, so a
+   * second Send is refused; the send itself runs after this returns: the gateway spends the approval (once, for
+   * that binding), then each recipient gets the message by the path `message_bot` takes, admitted for this owner.
+   * Recipients outside `messenger.keys` are not sent to. Main is told the outcome by an app message.
+   */
+  async approveRequest(id: string, binding: string, messenger: BotMessenger): Promise<ApproveResult> {
+    await this.#deleting;
+    // A chat that read the owner's meetings sends nothing to other bots: the proposal stays as it is and the card says why.
+    if (await this.holdsOwnerData()) return { ok: false, error: "held" };
+    const store = new ActionStore(this.layout);
+    const approved = store.approve(id, binding, this.layout.ownerId);
+    if (!approved.ok) return approved;
+    log("action_resolved", this.layout.botId, { outcome: "approved", recipients: approved.payload.targets.length });
+    void this.#sendApproved(id, binding, approved.payload, messenger).catch(() => log("action_send_failed", this.layout.botId));
+    return { ok: true, request: approved.request };
+  }
+
+  async #sendApproved(id: string, binding: string, payload: { kind: "message_bots"; targets: readonly string[]; text: string }, messenger: BotMessenger): Promise<void> {
+    const store = new ActionStore(this.layout);
+    const failed = payload.targets.map(key => ({ key, delivered: false }));
+    // What is about to go out must be exactly what the owner approved and the gateway issued.
+    if (actionBinding(this.layout.ownerId, this.layout.botId, payload) !== binding) {
+      store.finish(id, failed);
+      return;
+    }
+    let spent: boolean;
+    try {
+      spent = await this.#launcher.spendAction?.(this.layout, id, binding) ?? false;
+    } catch {
+      spent = false;
+    }
+    if (!spent) {
+      log("action_sent", this.layout.botId, { outcome: "spend_refused" });
+      store.finish(id, failed);
+      return;
+    }
+    const signal = AbortSignal.timeout(this.#options.turnTimeoutMs);
+    const outcomes: ActionOutcome[] = await Promise.all(payload.targets.map(async key => {
+      if (!messenger.keys.includes(key)) return { key, delivered: false };
+      try {
+        const reply = await messenger.dispatch(key, payload.text, signal);
+        return { key, delivered: !reply.isError };
+      } catch {
+        return { key, delivered: false };
+      }
+    }));
+    store.finish(id, outcomes);
+    log("action_sent", this.layout.botId, { delivered: outcomes.filter(outcome => outcome.delivered).length, failed: outcomes.filter(outcome => !outcome.delivered).length });
+  }
+
+  /**
    * The message that tells Main what the owner decided, composed here from the stored decision; undefined unless the
    * request is decided and Main has not been told. This is the only source of text for an app-originated message.
    */
-  appReply(requestId: string): AskReply | undefined {
-    return new AskStore(this.layout).reply(requestId);
+  appReply(requestId: string): AskReply | ActionReply | undefined {
+    const actions = new ActionStore(this.layout);
+    return actions.has(requestId) ? actions.reply(requestId) : new AskStore(this.layout).reply(requestId);
   }
 
   /** Main has been told: the answer text is deleted (the metadata stays). */
   appReplyDelivered(requestId: string): void {
     new AskStore(this.layout).delivered(requestId);
+    new ActionStore(this.layout).delivered(requestId);
   }
 
   /** A message or history request is in flight, including one still starting the sandbox. */
@@ -678,7 +808,7 @@ export class Bot {
           // Signature checks await: closing or a newly appended message can change eligibility meanwhile.
           if (closing()) cause = "closing";
           else if (!noWorkingState) {
-            cause = this.#options.history && (!covered || !this.#history?.covered) && !this.#history?.expiryDue()
+            cause = this.#options.history && this.#hasGrant() && (!covered || !this.#history?.covered) && !this.#history?.expiryDue()
               ? "archive_pending" : await removeWorkingState(this.layout, this.#launcher);
           }
         }
@@ -699,6 +829,35 @@ export class Bot {
     return this.#deleting;
   }
 
+  /**
+   * The owner's "Start a new chat": deletes the working state (deleteWorkingState), so the conversation, its pending
+   * questions and the mark of owner data it read are gone, then saves the owner's settings again: web access, the
+   * questions setting and the read areas. Only their on/off fields come back; nothing about the old conversation does.
+   * Refused while a request is in flight or a deletion is under way. The settings are saved again by a callback on the
+   * deletion itself, registered before any request can wait on it, so a fresh sandbox always starts with them.
+   */
+  newChat(closing: () => boolean): Promise<DeleteSkip | "busy" | undefined> {
+    if (this.inUse || this.#deleting) return Promise.resolve("busy");
+    const web = readWebPolicy(this.layout);
+    const asks = readAsksEnabled(this.layout);
+    const reads = readReads(this.layout);
+    return this.deleteWorkingState("new_chat", closing).then(cause => {
+      if (cause) return cause;
+      try {
+        if (web.mode !== "off") {
+          mkdirSync(this.layout.dataDir, { recursive: true, mode: 0o700 });
+          writeWebPolicy(this.layout, web);
+        }
+        if (asks) writeAsksEnabled(this.layout, true);
+        if (reads.areas.length > 0) writeReads(this.layout, reads);
+      } catch {
+        // A setting that is not saved reads as off.
+        log("new_chat_settings_failed", this.layout.botId);
+      }
+      return undefined;
+    });
+  }
+
   #journal() {
     if (!this.#options.history) throw new Error("history_disabled");
     return this.#history ??= new HistoryJournal(this.layout, this.#options.history);
@@ -713,7 +872,24 @@ export class Bot {
       return await run(this.#journal());
     } finally { this.#listing--; }
   }
+  /**
+   * TC-3933: whether this bot has ever had an archive grant: one on record in its journal, an expired one that left a
+   * notice, or one just received by a bot with no journal yet. Only a bot with a grant keeps a journal.
+   */
+  #hasGrant(): boolean {
+    if (!this.#options.history) return false;
+    return this.#journal().everGranted || (this.#grantSeen !== undefined && this.#grantSeen > Date.now());
+  }
+  /** Drops the journal of a bot that was never granted, if nothing is using it. For the sweep, which reaches bots that no turn will. */
+  dropUngrantedJournal(): void {
+    if (!this.#options.history || this.inUse || this.#deleting || this.#retired || !existsSync(join(this.layout.dataDir, "history.json")) || this.#hasGrant()) return;
+    this.#journal().discard();
+    this.#history = undefined;
+  }
   historyPermission(owner: string, expiresAt?: number, validUntil?: number) {
+    if (expiresAt === undefined && typeof validUntil === "number" && Number.isFinite(validUntil) && validUntil > Date.now()) {
+      this.#grantSeen = Math.max(this.#grantSeen ?? 0, validUntil);
+    }
     // A sibling that has never run has no journal, and a change of permission must not make one (or its directory).
     return this.#historyOperation(journal => {
       if (expiresAt === undefined) { journal.begin(owner, 0); journal.permissionActive(validUntil!); }
@@ -742,11 +918,24 @@ export class Bot {
     }
   }
 
+  /** Asks the gateway whether this conversation holds owner data it read. A launcher that cannot answer, or an answer that cannot be had, counts as held. */
+  async holdsOwnerData(): Promise<boolean> {
+    if (!this.#launcher.readsHeld) return true;
+    try {
+      return await this.#launcher.readsHeld(this.layout);
+    } catch {
+      log("reads_held_check_failed", this.layout.botId);
+      return true;
+    }
+  }
+
   #turn(sandbox: Sandbox, text: string, sink: TurnSink, messenger?: BotMessenger): Promise<void> {
     const id = sandbox.nextId();
     const { promise, resolve, reject } = Promise.withResolvers<void>();
     const activity = new TurnActivity();
     const reaching = new Set<string>();
+    // One recipient per turn: the first bot `message_bot` sends to. Sending to more takes the owner's tap (propose_action).
+    let recipient: string | undefined;
     const offHost = messenger && sandbox.onHostToolCall?.(async (name, args, signal) => {
       if (name !== MESSAGE_BOT) return { text: MESSAGING_STRINGS.unavailable, isError: true };
       if (!isRecord(args) || Object.keys(args).length !== 2
@@ -755,7 +944,11 @@ export class Bot {
         return { text: MESSAGING_STRINGS.invalid, isError: true };
       }
       const { targetKey } = args;
+      // Owner data read in this conversation reaches another bot only through the owner's tap (propose_action).
+      if (await this.holdsOwnerData()) return { text: MESSAGING_STRINGS.held, isError: true };
+      if (recipient !== undefined && recipient !== targetKey) return { text: MESSAGING_STRINGS.oneBot, isError: true };
       if (reaching.has(targetKey)) return { text: MESSAGING_STRINGS.busy, isError: true };
+      recipient = targetKey;
       reaching.add(targetKey);
       try {
         const reply = await messenger.dispatch(targetKey, args.text, signal);
@@ -897,7 +1090,7 @@ export class Bot {
   async #stop(sandbox: Sandbox): Promise<StopFailure | undefined> {
     if (this.#sandbox === sandbox) this.#sandbox = undefined;
     // What the gateway holds about this sandbox (questions, whether outside text came in) is collected before it forgets it.
-    const collected = this.#syncAsks().catch(() => {});
+    const collected = Promise.all([this.#syncAsks().catch(() => {}), this.#launcher.syncActions?.(this.layout, []).catch(() => {})]);
     this.#stopping = collected.then(() => sandbox.stop())
       .then(cause => cause || undefined)
       .catch(error => {
@@ -964,6 +1157,15 @@ export class BotManager {
     return deletion;
   }
 
+  /** Starts a new chat with the owner's Main; see Bot.newChat. stopAll waits for it to finish. */
+  newChat(ownerDid: string): Promise<DeleteSkip | "busy" | undefined> {
+    if (this.#closing) return Promise.resolve("closing");
+    const chat = this.forOwner(ownerDid).newChat(() => this.#closing);
+    this.#deletions.add(chat);
+    void chat.finally(() => this.#deletions.delete(chat));
+    return chat;
+  }
+
   /**
    * Deletes the working state of a sibling the backend is deleting, and retires the bot: a request that was already
    * waiting is refused instead of starting it again. A bot that never ran has no working state.
@@ -993,6 +1195,7 @@ export class BotManager {
       if (this.#closing) return;
       try {
         const bot = this.#bot(botId);
+        bot.dropUngrantedJournal();
         if (bot.historyExpiryDue(now) && !bot.inUse) { await this.deleteWorkingState(botId, "permission_expired"); continue; }
         const used = lastUsed(botLayout(botId, this.#roots));
         if (used === undefined || now - used <= retentionMs || this.#bots.get(botId)?.inUse) continue;

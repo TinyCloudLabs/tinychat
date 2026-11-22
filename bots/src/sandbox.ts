@@ -18,6 +18,8 @@ import { RpcChannel } from "./rpc";
 import { COPY_FAILURES, type CopyFailure, hasSnapshot, STATE_INODES_PER_MB } from "./state";
 import { readWebPolicy } from "./web-policy";
 import { syncAsks } from "./asks";
+import { readsPush } from "./reads";
+import { syncActions } from "./actions";
 
 const CGROUP_ROOT = "/sys/fs/cgroup";
 const CGROUP_CONTROLLERS = ["cpu", "memory", "pids"];
@@ -427,6 +429,7 @@ export class RunscHost implements SandboxLauncher {
       await this.#mountState(layout);
       restored = true;
       await this.#pushWeb(layout);
+      await this.pushReads(layout);
       await this.syncAsks(layout);
       await register();
       const spec = sandboxSpec(this.#baseSpec, {
@@ -482,6 +485,7 @@ export class RunscHost implements SandboxLauncher {
         exited,
         refreshEgress: async () => {
           await this.#pushWeb(layout);
+          await this.pushReads(layout);
           await register();
         },
         snapshot,
@@ -608,6 +612,21 @@ export class RunscHost implements SandboxLauncher {
     await this.#gateway("PUT", `/bots/${layout.botId}/web`, readWebPolicy(layout));
   }
 
+  /**
+   * Gives the gateway the owner's read setting and the bot's conversation id, before the bot's token is registered
+   * and on every message, so the meeting tools are offered as the setting says and a fresh conversation is known.
+   */
+  async pushReads(layout: BotLayout): Promise<void> {
+    await this.#gateway("PUT", `/bots/${layout.botId}/reads`, readsPush(layout));
+  }
+
+  /** Whether the bot's current conversation holds owner data it read (meeting-reads.ts). */
+  async readsHeld(layout: BotLayout): Promise<boolean> {
+    const body: unknown = await (await this.#gateway("GET", `/bots/${layout.botId}/reads`)).json();
+    if (!isRecord(body) || typeof body.held !== "boolean") throw new Error("gateway reads answer invalid");
+    return body.held;
+  }
+
   /** Today's web counts for one bot and whether the gateway has a provider key. */
   async webStatus(layout: BotLayout): Promise<unknown> {
     return (await this.#gateway("GET", `/bots/${layout.botId}/web`)).json();
@@ -642,6 +661,25 @@ export class RunscHost implements SandboxLauncher {
         } : {}),
       },
     }, turn);
+  }
+
+  /** Collects the proposals the box made and gives the gateway the counts, the final proposals and `keys` when given (see syncActions). */
+  syncActions(layout: BotLayout, keys?: readonly string[]): Promise<void> {
+    const path = `/bots/${layout.botId}/actions`;
+    return syncActions(layout, {
+      drain: async () => (await this.#gateway("POST", `${path}/drain`)).json(),
+      push: async body => void (await this.#gateway("PUT", path, body)),
+    }, keys);
+  }
+
+  /** Has the gateway spend an approval it issued: true once for that id and binding (204), false when it refuses (409). */
+  async spendAction(layout: BotLayout, id: string, binding: string): Promise<boolean> {
+    try {
+      await this.#gateway("POST", `/bots/${layout.botId}/actions/spend`, { id, binding });
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   async #registerEgress(botId: string, token: string, owner: string): Promise<void> {

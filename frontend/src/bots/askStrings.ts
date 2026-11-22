@@ -31,7 +31,7 @@ export const ASK_STRINGS = {
   /** Shown under the answer box only while Web access is on. */
   webAccessOn: `Web access is on, so a page ${MAIN_BOT_NAME} reads could try to get it to send your answer to a website.`,
   /** Shown above the answer box only when the request says Main read something from outside the chat. */
-  outside: `${MAIN_BOT_NAME} read a web page or someone else’s message before asking, so answer only if this question is what you expect.`,
+  outside: `Before asking, ${MAIN_BOT_NAME} read something you didn’t write here, such as a web page, a meeting transcript, a feed card, another chat or someone else’s message. Answer only if this question is what you expect.`,
   answer: "Answer",
   notNow: "Not now",
   stop: `Stop ${MAIN_BOT_NAME} from asking`,
@@ -76,7 +76,7 @@ export const SECRET_STRINGS = {
     `Only with: ${service ? `${service} (${sites.join(", ")})` : sites.join(", ")}`,
   /** Only when the catalog lets Main write with it (Monica, 2026-11-22). Writes are for known secrets, so `with` is the service. */
   writes: (service: string) => `${MAIN_BOT_NAME} can also send data to ${service} with it, which may cost money or change things there.`,
-  outside: `${MAIN_BOT_NAME} read a web page or someone else’s message before asking, so approve only if this request is what you expect.`,
+  outside: `Before asking, ${MAIN_BOT_NAME} read something you didn’t write here, such as a web page, a meeting transcript, a feed card, another chat or someone else’s message. Approve only if this request is what you expect.`,
 
   addTitle: "Add it to TinyCloud Secrets",
   addHelp: "You type the value there, not here. If it’s already there, this only checks that it is.",
@@ -104,15 +104,15 @@ export const SECRET_STRINGS = {
   stopNow: "Stop now",
   close: "Close",
   cancel: "Cancel",
-  stopConfirm: <N>(name: N) => [`Stop ${MAIN_BOT_NAME} using `, name, " now?"],
+  stopConfirm: <N>(name: N) => [`Stop ${MAIN_BOT_NAME} using `, name, "?"],
   stopConfirmHelp: `${MAIN_BOT_NAME} can’t use it after this. It stays in your TinyCloud Secrets.`,
-  stopped: (name: string) => `Stopped. ${MAIN_BOT_NAME} can’t use ${name} any more.`,
+  stopped: (name: string) => `Stopped. ${MAIN_BOT_NAME} can’t use ${name}.`,
   declined: "You declined. Nothing was shared.",
   expired: "This request expired. Nothing was shared.",
   nameOnlyWith: <N>(name: N, sites: string) => [name, ` · only with ${sites}`],
   ended: <N>(name: N, until: string) => [`${MAIN_BOT_NAME}’s access to `, name, ` ended on ${until}.`],
-  endedHelp: `If ${MAIN_BOT_NAME} needs it again, you’ll see a new request.`,
-  failed: <N>(name: N) => [`Something went wrong, so ${MAIN_BOT_NAME} can’t use `, name, " yet. Nothing was shared."],
+  endedHelp: `If ${MAIN_BOT_NAME} needs it later, you’ll see a new request.`,
+  failed: <N>(name: N) => [`Something went wrong, and ${MAIN_BOT_NAME} can’t use `, name, ". Nothing was shared."],
   tryAgain: "Try again",
 
   /** App-originated lines in the chat. Expired and ended are UI only: nothing is sent to Main. */

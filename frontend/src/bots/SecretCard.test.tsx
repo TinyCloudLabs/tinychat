@@ -237,7 +237,7 @@ test("an approved request says until when, and stopping it asks first", async ()
   expect(host.querySelector("[data-secret-approved]")!.textContent).toBe(`✓ ${MAIN_BOT_NAME} can use OPENAI_API_KEY with OpenAI until ${until}.`);
   expect(text(host)).toContain(SECRET_STRINGS.approvedHelp);
   await click(button(host, SECRET_STRINGS.stopNow));
-  expect(text(host)).toContain(`Stop ${MAIN_BOT_NAME} using OPENAI_API_KEY now?`);
+  expect(text(host)).toContain(`Stop ${MAIN_BOT_NAME} using OPENAI_API_KEY?`);
   expect(text(host)).toContain(`${MAIN_BOT_NAME} can’t use it after this. It stays in your TinyCloud Secrets.`);
   await click(button(host, SECRET_STRINGS.cancel));
   expect(asks.decisions).toEqual([]);
@@ -248,11 +248,11 @@ test("an approved request says until when, and stopping it asks first", async ()
 
 test("each resolved state has its words and a Close that closes the card for good", async () => {
   const cases: [Partial<SecretRequest>, string[]][] = [
-    [{ state: "revoked" }, [`Stopped. ${MAIN_BOT_NAME} can’t use OPENAI_API_KEY any more.`]],
+    [{ state: "revoked" }, [`Stopped. ${MAIN_BOT_NAME} can’t use OPENAI_API_KEY.`]],
     [{ state: "declined" }, ["You declined. Nothing was shared.", "OPENAI_API_KEY · only with OpenAI"]],
     [{ state: "expired" }, ["This request expired. Nothing was shared.", "OPENAI_API_KEY · only with OpenAI"]],
-    [{ state: "ended", until: UNTIL }, [`${MAIN_BOT_NAME}’s access to OPENAI_API_KEY ended on ${secretDate(UNTIL)}.`, `If ${MAIN_BOT_NAME} needs it again, you’ll see a new request.`]],
-    [{ state: "failed" }, [`Something went wrong, so ${MAIN_BOT_NAME} can’t use OPENAI_API_KEY yet. Nothing was shared.`, SECRET_STRINGS.tryAgain]],
+    [{ state: "ended", until: UNTIL }, [`${MAIN_BOT_NAME}’s access to OPENAI_API_KEY ended on ${secretDate(UNTIL)}.`, `If ${MAIN_BOT_NAME} needs it later, you’ll see a new request.`]],
+    [{ state: "failed" }, [`Something went wrong, and ${MAIN_BOT_NAME} can’t use OPENAI_API_KEY. Nothing was shared.`, SECRET_STRINGS.tryAgain]],
   ];
   for (const [over, lines] of cases) {
     const asks = asksWith({ secrets: [request(over)] });

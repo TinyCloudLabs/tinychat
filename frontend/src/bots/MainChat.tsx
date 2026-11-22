@@ -11,7 +11,10 @@ import { acknowledgeHistoryNotice, historyNoticeDeadline, type HistoryNotice } f
 import { BOTS_STRINGS, botsErrorText, HISTORY_EXPIRY_NOTICE, HISTORY_RECONNECT_LABEL, WEB_ACCESS_STRINGS } from "./botsStrings";
 import { isWorking, type ChatLine, type MainChatState } from "./useMainChat";
 import { WebAccess, type WebAccessApi } from "./WebAccess";
+import { FeedChatsAccess, MeetingsAccess, type MeetingsAccessApi } from "./MeetingsAccess";
+import { NewChat, type NewChatApi } from "./NewChat";
 import { AppLine, AskCards, AsksToggle } from "./AskCards";
+import { clearHistoryDecline } from "./historyAuthorization";
 import { SecretCards } from "./SecretCard";
 import type { Asks } from "./useAsks";
 
@@ -38,12 +41,12 @@ function ExpiryNotice({ notice, onReconnect }: { notice: HistoryNotice; onReconn
   </div>;
 }
 
-function Failure({ text, onRetry }: { text: string; onRetry: () => void }) {
+function Failure({ text, onRetry, declined = false }: { text: string; onRetry: () => void; declined?: boolean }) {
   return (
     <div role="alert" className="flex flex-wrap items-center gap-x-3 gap-y-2 text-callout text-muted-foreground">
       <p>{text}</p>
-      <Button type="button" variant="outline" size="sm" onClick={onRetry}>
-        {BOTS_STRINGS.tryAgain}
+      <Button type="button" variant="outline" size="sm" onClick={declined ? () => { clearHistoryDecline(); onRetry(); } : onRetry}>
+        {declined ? BOTS_STRINGS.reviewRequest : BOTS_STRINGS.tryAgain}
       </Button>
     </div>
   );
@@ -85,8 +88,12 @@ export interface MainChatProps {
   onReconnect?: () => void;
   /** When given, the sheet offers Main's web access setting. */
   webAccess?: WebAccessApi;
+  /** When given, the sheet offers Main's read settings: Meetings, and Feed and chats. */
+  meetings?: MeetingsAccessApi;
   /** When given, the sheet shows Main's questions as cards and offers the setting for them. */
   asks?: Asks;
+  /** When given, the sheet offers the owner's "Start a new chat". */
+  newChat?: NewChatApi;
 }
 
 /** Services that answered 404 for web access, so reopening Main's chat does not show the button again. */
@@ -111,7 +118,7 @@ export function WebAccessToggle({ api }: { api: WebAccessApi }) {
   );
 }
 
-export function MainChat({ open, onOpenChange, state, onSend, onRetry, onRetryHistory, notice, onReconnect, webAccess, asks }: MainChatProps) {
+export function MainChat({ open, onOpenChange, state, onSend, onRetry, onRetryHistory, notice, onReconnect, webAccess, meetings, asks, newChat }: MainChatProps) {
   const { lines, history, turn } = state;
   const working = isWorking(turn);
   const sdkPromptOpen = useSdkPromptOpen();
@@ -157,19 +164,23 @@ export function MainChat({ open, onOpenChange, state, onSend, onRetry, onRetryHi
         <div className="mx-auto flex w-full max-w-2xl flex-col gap-5 py-4">
           <p className="text-center text-callout text-muted-foreground">{BOTS_STRINGS.modelLine}</p>
           {open && webAccess ? <WebAccessToggle api={webAccess} /> : null}
+          {open && meetings ? <MeetingsAccess api={meetings} /> : null}
+          {open && meetings ? <FeedChatsAccess api={meetings} /> : null}
           {open && asks ? <AsksToggle asks={asks} /> : null}
+          {open && newChat ? <NewChat api={newChat} /> : null}
           {open && notice && onReconnect ? <ExpiryNotice key={`${notice.id}:${notice.deliveredAt ?? notice.renderAttemptAt ?? "initial"}`} notice={notice} onReconnect={onReconnect} /> : null}
           {history === "loading" ? <p role="status" className="text-callout text-muted-foreground">{BOTS_STRINGS.historyLoading}</p> : null}
           {history === "failed" && !working ? <Failure text={BOTS_STRINGS.historyFailed} onRetry={onRetryHistory} /> : null}
+          {history === "declined" && !working ? <Failure text={botsErrorText("history_declined", MAIN_BOT.name)} onRetry={onRetryHistory} declined /> : null}
           {lines.map((line) => (
-            line.app ? <AppLine key={line.id} decision={line.app} live={line.id.startsWith("local-")} secret={line.secret} /> : <Line key={line.id} role={line.role} text={line.text} />
+            line.app ? <AppLine key={line.id} decision={line.app} names={line.names} live={line.id.startsWith("local-")} secret={line.secret} /> : <Line key={line.id} role={line.role} text={line.text} />
           ))}
           {turn ? (
             <>
-              {turn.appReply ? <AppLine decision={turn.appReply.decision} live secret={turn.appReply.secret} /> : <Line role="user" text={turn.text} />}
+              {turn.appReply ? <AppLine decision={turn.appReply.decision} names={turn.appReply.names} live secret={turn.appReply.secret} /> : <Line role="user" text={turn.text} />}
               {turn.reply ? <Line role="bot" text={turn.reply} /> : null}
               {working && !turn.reply ? <BotAvatar bot={MAIN_BOT} working size={28} /> : null}
-              {turn.state === "error" ? <Failure text={botsErrorText(turn.error ?? "failed", MAIN_BOT.name)} onRetry={onRetry} /> : null}
+              {turn.state === "error" ? <Failure text={botsErrorText(turn.error ?? "failed", MAIN_BOT.name)} onRetry={onRetry} declined={turn.error === "history_declined"} /> : null}
             </>
           ) : null}
           {open && asks ? <AskCards asks={asks} outcomes /> : null}

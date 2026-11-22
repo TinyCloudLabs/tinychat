@@ -69,7 +69,12 @@ export async function removeWorkingState(
   }
   if (host.mountPoints!().some(point => dirs.some(dir => point === dir || point.startsWith(`${dir}${sep}`)))) return "mounted";
   await host.removeState?.(layout);
-  for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
+  for (const dir of dirs) {
+    // The conversation's state goes before anything else in the directory, so a delete that stops part-way leaves the
+    // conversation id, and with it the mark of owner data that conversation read.
+    rmSync(join(dir, "state"), { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true });
+  }
   return undefined;
 }
 

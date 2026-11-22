@@ -29,6 +29,8 @@ export interface GrantInput {
   configuredHost: string;
   now?: number;
   policy?: GrantPolicy;
+  /** For "trustbot-read" only: the exact resources the grant must name (trustbot-reads/areas.ts). */
+  expected?: ReadonlyArray<{ service: string; path: string; actions: readonly string[] }>;
 }
 export interface GrantDependencies {
   computeDelegationCid: TinyCloudNode["computeDelegationCid"];
@@ -50,11 +52,13 @@ export const EXO_SYNC_RESOURCES = [
   { service: "kv", path: EXO_REQUESTS_PREFIX, actions: ["tinycloud.kv/get", "tinycloud.kv/list", "tinycloud.kv/del"] },
   { service: "kv", path: EXO_JOBS_PREFIX, actions: ["tinycloud.kv/get", "tinycloud.kv/put", "tinycloud.kv/del"] },
 ];
-export type GrantPolicy = "transcript-writer" | "exo-sync";
+export type GrantPolicy = "transcript-writer" | "exo-sync" | "trustbot-read";
 // Each policy admits only its own resources. A grant that mixes policies fails the other policy's table.
-const policies: Record<GrantPolicy, { envelopeFormat: string; expected: typeof expected }> = {
+// A TrustBot read grant names the resources of the areas its owner turned on, given by the caller as `expected`.
+const policies: Record<GrantPolicy, { envelopeFormat: string; expected: ReadonlyArray<{ service: string; path: string; actions: readonly string[] }> }> = {
   "transcript-writer": { envelopeFormat: TRANSCRIPT_WRITER_GRANT_KIND.envelopeFormat, expected },
   "exo-sync": { envelopeFormat: EXO_SYNC_GRANT_KIND.envelopeFormat, expected: EXO_SYNC_RESOURCES },
+  "trustbot-read": { envelopeFormat: "tinychat.trustbot-read-grant", expected: [] },
 };
 const verificationCache = new Map<string, { verified: VerifiedTranscriptWriter; until: number }>();
 
@@ -69,7 +73,8 @@ export function evictStoredGrantVerification(address: string, envelope: string, 
 export async function verifyTranscriptWriterGrant(input: GrantInput, deps: GrantDependencies): Promise<GrantResult> {
   const now = input.now ?? Date.now();
   const policy = input.policy ?? "transcript-writer";
-  const policyExpected = policies[policy].expected;
+  const policyExpected = policy === "trustbot-read" ? input.expected ?? [] : policies[policy].expected;
+  if (policyExpected.length === 0) return failure("insufficient_delegation");
   let bundle: unknown;
   try { bundle = JSON.parse(input.serialized); } catch { return failure("unsupported_bundle_shape"); }
   if (!isRecord(bundle) || bundle.format === "tinycloud.delegation-bundle" || Array.isArray(bundle.delegations)) return failure("unsupported_bundle_shape");

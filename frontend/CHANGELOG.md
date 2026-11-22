@@ -16,6 +16,88 @@
 - TC-2204: Native audience checks accept Home's three exact SQL hook subscriptions only alongside an existing TinyChat data grant.
 - TC-2499: The Home mirror adapter persists close receipts using node-compatible NULL/non-NULL compare-and-set predicates. If the KV mirror is already exactly closed but its receipt is missing, recovery records the original publication ETag without writing the KV copy again, before any gated child handoff. The CLI reports JSON error class, safe message, code, HTTP status when available, and operation step; private SQL bodies and nested causes remain redacted. Exit 2 identifies invalid input, exit 6 known transient failures (including NODE_BUSY and REQUEST_TIMEOUT without HTTP metadata), and exit 1 other runtime failures or OUTCOME_UNKNOWN. Unclassified errors are not labelled bad input; no failure confirms delivery or authorizes an automatic retry.
 
+## 0.20.0
+
+### Minor Changes
+
+- 7c59928: When approving a secret fails, the card says TrustBot can't use it and that nothing was shared, with a Try again button.
+
+  Details: TC-3790
+
+- 53d24c2: The secret card's stop and ended messages are shorter: "Stop TrustBot using the secret?", "Stopped. TrustBot can't use the secret." and "If TrustBot needs it later, you'll see a new request."
+
+  Details: TC-3790
+
+- 6b4538d: TrustBot's chat has a Meetings switch that grants read-only access to your meetings. Once TrustBot reads a meeting, its secret and question cards name meeting transcripts in their warning, and a proposal card in that chat shows "Not sent." with Send off.
+
+  Details: TC-3792
+
+### Patch Changes
+
+- 7d2eccc: Main can send one message to several of your bots after you tap Send. The card shows the message and who gets it before anything goes, and Don't send is final. Without your Send, Main messages at most one bot for each message you send. This needs the setting that lets Main ask you questions, which is off until you turn it on.
+
+  Details: TC-3793
+
+- d758ec3: If you decline encryption for your chat with TrustBot, the chat says so once and offers a button to review the request, and nothing is sent until you allow it.
+
+  Starting a new chat with TrustBot says it lifts a pause on secrets too.
+
+  Details: TC-3887
+
+- 8da798f: One Apps lists Contacts, which opens contacts.tinycloud.xyz in a new tab.
+
+  Details: TC-3889
+
+## 0.20.0-beta.5
+
+### Patch Changes
+
+- 8da798f: One Apps lists Contacts, which opens contacts.tinycloud.xyz in a new tab.
+
+  Details: TC-3889
+
+## 0.20.0-beta.4
+
+### Patch Changes
+
+- d758ec3: If you decline encryption for your chat with TrustBot, the chat says so once and offers a button to review the request, and nothing is sent until you allow it.
+
+  Starting a new chat with TrustBot says it lifts a pause on secrets too.
+
+  Details: TC-3887
+
+## 0.20.0-beta.3
+
+### Minor Changes
+
+- 7c59928: When approving a secret fails, the card says TrustBot can't use it and that nothing was shared, with a Try again button.
+
+  Details: TC-3790
+
+## 0.20.0-beta.2
+
+### Minor Changes
+
+- 6b4538d: TrustBot's chat has a Meetings switch that grants read-only access to your meetings. Once TrustBot reads a meeting, its secret and question cards name meeting transcripts in their warning, and a proposal card in that chat shows "Not sent." with Send off.
+
+  Details: TC-3792
+
+## 0.20.0-beta.1
+
+### Patch Changes
+
+- 7d2eccc: Main can send one message to several of your bots after you tap Send. The card shows the message and who gets it before anything goes, and Don't send is final. Without your Send, Main messages at most one bot for each message you send. This needs the setting that lets Main ask you questions, which is off until you turn it on.
+
+  Details: TC-3793
+
+## 0.20.0-beta.0
+
+### Minor Changes
+
+- 53d24c2: The secret card's stop and ended messages are shorter: "Stop TrustBot using the secret?", "Stopped. TrustBot can't use the secret." and "If TrustBot needs it later, you'll see a new request."
+
+  Details: TC-3790
+
 ## 0.19.0
 
 ### Minor Changes
@@ -26,7 +108,7 @@
 
 ### Patch Changes
 
-- 99b2305: Restrict MCP Fireflies KV fallback to proven-absent SQL stores, filter and revalidate cached server-imported Library rows against the active flag and purge ledger, align Library KV paging with `nextCursor` and `truncated` and update the MCP KV truncation text.
+- 99b2305: MCP falls back to Fireflies KV records only when the SQL store is known to be empty. The Library filters and rechecks cached server-imported rows against the flag and the purge ledger, and pages KV with `nextCursor` and `truncated`. MCP's KV truncation text names the size limit.
 
   Details: TC-3919
 

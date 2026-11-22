@@ -50,6 +50,8 @@ export const TINYCHAT_BACKEND_MANIFEST: Manifest = {
     backendKv("bot-history/grants/", ["get", "put", "del", "list"]),
     // Which bots each owner has (bots-registry).
     backendKv("bots/registry/", ["get", "put", "list"]),
+    // TrustBot's read grants, sealed (trustbot-reads/grants.ts).
+    backendKv("trustbot/read-grants/", ["get", "put", "del"]),
     // Exo mirror jobs, ledger, held jobs and source locks (exoBackendKv).
     backendKv("xyz.tinycloud.tinychat/exo/v1/", ["get", "put", "del", "list"]),
   ],

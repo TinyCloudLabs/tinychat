@@ -9,7 +9,7 @@ import { cn } from "@/lib/utils";
 /** A navigation or launcher icon: a lucide icon or a One Apps glyph. Both take a class and aria-hidden. */
 export type AppIcon = LucideIcon | ComponentType<{ className?: string; "aria-hidden"?: boolean | "true" | "false" }>;
 
-export type GlyphId = "recording" | "secrets" | "credentials" | "explorer" | "account" | "courier" | "ledger" | "share" | "connectors";
+export type GlyphId = "recording" | "secrets" | "credentials" | "explorer" | "account" | "courier" | "ledger" | "share" | "contacts" | "connectors";
 
 const n = (value: number) => Math.round(value * 100) / 100;
 
@@ -133,6 +133,12 @@ const GLYPHS: Readonly<Record<GlyphId, GlyphParts>> = {
     ),
     cloud: cloud(-2.6, 8.8, 0.66),
   },
+  // A contact card: the cloud is the portrait, beside two lines of detail.
+  contacts: {
+    tool: <rect x="8" y="12" width="32" height="25" rx="3" />,
+    cloud: cloudAt(17.5, 16.5, 0.38),
+    overInkLine: ["M26 21h9", "M26 27h9", "M13 32h22"].map((d) => line(d, 3)),
+  },
   // A plug on the cloud's lead.
   connectors: {
     tool: (
@@ -226,5 +232,6 @@ export const GLYPH_ICONS: Readonly<Record<GlyphId, AppIcon>> = {
   courier: monoGlyph("courier"),
   ledger: monoGlyph("ledger"),
   share: monoGlyph("share"),
+  contacts: monoGlyph("contacts"),
   connectors: monoGlyph("connectors"),
 };
