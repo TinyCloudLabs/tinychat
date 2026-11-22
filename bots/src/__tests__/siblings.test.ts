@@ -253,6 +253,7 @@ describe("the manager's bots", () => {
     const journal = new HistoryJournal(layout, HISTORY);
     journal.begin(OWNER, 1000);
     journal.append({ type: "user", text: "hello" });
+    journal.permissionActive(Date.now() + 3_600_000);
     expect(await first.deleteBot(OWNER, KEY_A)).toBe("archive_pending");
     // A new process finds the same bot and gives the same answer.
     const second = new BotManager(launcher, at, { ...OPTIONS, history: HISTORY }, 3);

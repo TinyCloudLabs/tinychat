@@ -1,5 +1,5 @@
 // TC-2808: supervisor-owned journal and receipt barrier, outside all sandbox binds.
-import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, writeSync } from "node:fs";
+import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeSync } from "node:fs";
 import { createHash, randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { recoverMessageAddress } from "viem";
@@ -105,6 +105,9 @@ export class HistoryJournal {
   permissionActive(validUntil: number, now = Date.now()) {
     if (!Number.isFinite(validUntil) || validUntil <= now) throw new Error("invalid_permission_expiry");
     if (validUntil < (this.#state.permissionValidUntil ?? 0)) return;
+    // TC-3933: the first grant starts the archive. What the bot held before it was never to be archived, so it must not keep
+    // the journal uncovered for good (and New chat locked): the turns before the first grant are deliberately not saved.
+    if (!this.everGranted) this.#state.legacyPending = false;
     this.#state.permissionValidUntil = validUntil;
     delete this.#state.notice; this.#save();
   }
@@ -123,6 +126,17 @@ export class HistoryJournal {
     return !!notice && notice.deliveredAt !== undefined && notice.deleteAt !== undefined && now >= notice.deleteAt;
   }
   get legacyPending(): boolean { return this.#state.legacyPending; }
+  /**
+   * TC-3933: the owner has granted archiving at least once, so the journal is owed to the archive: a grant is on record,
+   * a receipt was accepted (journals from before permissionValidUntil was kept have none), or one has expired and left its notice. A bot that never had one has no archive to be covered by.
+   */
+  get everGranted(): boolean { return this.#state.permissionValidUntil !== undefined || this.#state.notice !== undefined || this.#state.receipts.length > 0; }
+  /** Removes the journal file and starts over empty. Only for a bot that was never granted: nothing in it was ever to be archived. */
+  discard() {
+    rmSync(this.#path, { force: true });
+    rmSync(this.#path + ".new", { force: true });
+    this.#state = { v: 1, generation: randomBytes(16).toString("hex"), owner: "", ...(this.layout.botKey ? { key: this.layout.botKey } : {}), legacyPending: existsSync(this.layout.stateSnapshot), batches: [], receipts: [] };
+  }
   messages() {
     return this.#state.batches.flatMap(batch => {
       const record = batch.record as { type?: string; text?: string; at?: string; origin?: string; decision?: string; secret?: unknown; outcome?: { messageId?: string } };
@@ -151,7 +165,7 @@ export class HistoryJournal {
     const batch = this.#state.batches[this.#state.receipts.length];
     return batch ? { ...batch, ...(this.#state.staged?.seq === batch.seq ? { staged: this.#state.staged } : {}) } : undefined;
   }
-  get covered(): boolean { return !this.#state.draft && !this.#state.legacyPending && this.#state.batches.length > 0 && this.#state.receipts.length === this.#state.batches.length; }
+  get covered(): boolean { return !this.#state.draft && !this.#state.legacyPending && this.#state.receipts.length === this.#state.batches.length; }
   async verifyCoverage(): Promise<boolean> {
     if (!this.covered) return false;
     for (let i = 0; i < this.#state.receipts.length; i++) await this.#verify(this.#state.receipts[i], this.#state.batches[i]);
