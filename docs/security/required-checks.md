@@ -14,12 +14,13 @@ No agent merges with --admin or uses the ruleset bypass to pass red or pending c
 | `Gitleaks` | `.github/workflows/gitleaks.yml` | every PR; every push to `main` | PR: a secret-shaped string in the PR's own commits, judged by the base commit's `.gitleaksignore` and `.gitleaks.toml` (default rules when absent) with inline `gitleaks:allow` ignored, so a PR cannot allowlist its own leak. `main`: any finding in the full history of `main` not in main's reviewed baseline (`.gitleaksignore`). A PR that changes the baseline, a gitleaks config or the workflow also scans its full head history with its own baseline. |
 | `Backend and package tests` | `.github/workflows/backend.yml` | every PR; every push to `main` | the backend suite (auth, consent scope, CORS, exo-grant and the rest), the shared-package suites, the Home mirror tests or the Vector config fail. A PR that touches no backend path reports success without running them; `main` always runs them. |
 | `Native sign-in request fits OpenKey's ceiling` | `.github/workflows/native-ceiling.yml` | every PR; every push to `main` | production OpenKey refuses the native sign-in request. Same skip rule as Backend. |
-| `Frontend tests, lint and browser harnesses` | `.github/workflows/frontend.yml` | PRs that touch the frontend; every push to `main` | frontend unit tests, lint, typecheck or the build fail. |
+| `Frontend tests, lint and browser harnesses` | `.github/workflows/frontend.yml` | every PR; every push to `main` | frontend unit tests, lint, typecheck or the build fail. A PR whose `changes` job selects no frontend input reports success without running them; `main` always runs them. |
 | `No unruled edits to existing tests` | `.github/workflows/test-edit-guard.yml` | every PR | a PR edits an existing test without a `test-ruling:` line. |
 | `Changeset`, `Cloudflare Pages` | existing | every PR | unchanged (already required). |
 
-The skip inside Backend and Native ceiling fails open: the work is skipped only when `git diff base...head` succeeds
-and lists no relevant path. That keeps the job present on every PR, so it can be required.
+The skip inside Backend, Native ceiling and Frontend fails open: Backend and Native ceiling skip the work only when
+`git diff base...head` succeeds and lists no relevant path; Frontend skips it only when its `changes` job succeeds and
+selects no frontend input. That keeps each job present on every PR, so it can be required.
 
 ### Release gates (`.github/workflows/deploy-production.yml`, every deploy, rollbacks and hotfixes included)
 
