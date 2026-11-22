@@ -86,7 +86,8 @@ function MainAsk({ api, tcw, onReconnect }: { api: BotsApi; tcw?: TinyCloudWeb; 
     signReadGrant: (serviceDid: string, areas: Parameters<typeof signReadGrant>[2]) => signReadGrant(tcw, serviceDid, areas),
     revokeReadGrant: (cid: string) => revokeReadGrant(tcw, cid),
   } : undefined, [tcw]);
-  const newChat = useMemo(() => ({ start: () => newMainChat(), onStarted: refreshAsks }), [refreshAsks]);
+  const clearChat = chat.clear;
+  const newChat = useMemo(() => ({ start: () => newMainChat(), onStarted: () => { clearChat(); refreshAsks(); } }), [clearChat, refreshAsks]);
   // A turn is when Main asks: read the requests as it ends.
   const working = isWorking(chat.state.turn);
   const wasWorking = useRef(false);
