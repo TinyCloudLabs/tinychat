@@ -7,7 +7,7 @@ import { NodeWasmBindings, PrivateKeySigner } from "@tinycloud/node-sdk";
 import { courierIdentity } from "../courier/identity";
 import { createCourierGrantStore } from "../courier/grant-store";
 import { createCourierControl } from "../courier/control";
-import { acceptPairing, courierContext, listInbound, renewPeer, sendMessage, type PairedPeer } from "../courier/lib-adapter";
+import { acceptPairing, courierContext, CourierUpdateRequired, listInbound, normalizeCourierError, renewPeer, sendMessage, type PairedPeer } from "../courier/lib-adapter";
 
 const signingKey = "4f3edf983ac636a65a842ce7c78d9aa706d3b113bce036f4d9c5c1b5605dce6f";
 const dirs: string[] = [];
@@ -141,4 +141,12 @@ test("renewal is a typed refusal and replies must carry the bound idempotency ke
   const peer: PairedPeer = { handle: ref.handle, peerDid: ref.peerDid, delegationExpiresAt: Date.now() + 86_400_000, proof: { cid: "bafy" }, delegation: { ref, record: {} } };
   await expect(renewPeer(context, peer)).rejects.toMatchObject({ code: "renewal_unavailable" });
   await expect(sendMessage(context, peer, "t1", "hi", { inReplyTo: "m1", idempotencyKey: "0".repeat(64) })).rejects.toThrow("invalid Courier reply binding");
+});
+
+test("the library's hyphenated update refusal reaches callers as the single typed CourierUpdateRequired", () => {
+  const mapped = normalizeCourierError(Object.assign(new Error("pre-challenge pair artifact"), { code: "courier-update-required" }));
+  expect(mapped).toBeInstanceOf(CourierUpdateRequired);
+  expect(mapped).toMatchObject({ code: "courier_update_required" });
+  const other = Object.assign(new Error("bad signature"), { code: "bad-delegation" });
+  expect(normalizeCourierError(other)).toBe(other);
 });

@@ -61,12 +61,20 @@ export class RenewalUnavailable extends Error {
   constructor() { super("renewal_unavailable"); }
 }
 
+/** The library's own refusal of pre-challenge artifacts uses a hyphenated code; downstream sees one spelling. */
+export function normalizeCourierError(error: unknown): unknown {
+  return isRecord(error) && error.code === "courier-update-required" ? new CourierUpdateRequired() : error;
+}
+
 /** beta.17 is development-only: missing headless exports refuse, never fall back to unsigned pairing or CLI state. */
 function library<K extends keyof LibraryApi>(name: K): LibraryApi[K] {
   // Pinned beta lacks these exports, so a named import cannot link; detect on the namespace at call time.
   const value: unknown = (courier as Record<string, unknown>)[name];
   if (typeof value !== "function") throw new CourierUpdateRequired();
-  return value as LibraryApi[K];
+  const call = async (...args: unknown[]) => {
+    try { return await value(...args); } catch (error) { throw normalizeCourierError(error); }
+  };
+  return call as LibraryApi[K];
 }
 
 export async function courierContext(owner: string, grant: CourierGrant, store: CourierLibraryStore): Promise<CourierContext> {
