@@ -143,7 +143,9 @@ beforeAll(async () => {
   async function remote(name: string) {
     const manager = wasm.createSessionManager();
     const keyId = manager.createSessionKey(name);
-    const key = { v: 1, jwk: JSON.parse(manager.jwk(keyId)), did: manager.getDID(keyId), createdAt: new Date().toISOString() };
+    const jwk = keyId && manager.jwk(keyId);
+    if (!keyId || !jwk) throw new Error("session key was not created");
+    const key = { v: 1, jwk: JSON.parse(jwk), did: manager.getDID(keyId), createdAt: new Date().toISOString() };
     const theirs = await session(randomBytes(32).toString("hex"), key.jwk);
     const ownerDid = `did:pkh:eip155:1:${theirs.address}`;
     const grantJson = { v: 1, delegationHeader: theirs.done.delegationHeader, delegationCid: theirs.done.delegationCid, spaceId: theirs.spaceId, ownerDid, address: theirs.address, chainId: 1, siwe: theirs.prepared.siwe, signature: theirs.signature, verificationMethod: key.did, expiresAt: new Date(theirs.expiresAt).toISOString(), receivedAt: new Date().toISOString() };

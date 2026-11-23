@@ -179,3 +179,54 @@ test("an unsupported peer's update-required code stays fixed at the control boun
   expect(response!.status).toBe(426);
   expect(await response!.json()).toEqual({ error: "courier_update_required" });
 });
+
+const stuck = { handle: "reader", peerDid: start.from.courier, pairingId: "01JSTUCK000000000000000000" };
+const pairPending = () => Object.assign(new Error("private text"), { code: "pair_pending", reference: stuck });
+
+test("an SDK attempt whose grant never activated is revoked by its exact reference, then A is accepted", async () => {
+  const { pairing, adapter, store } = setup();
+  const accept = adapter.acceptPairing;
+  let attempts = 0;
+  adapter.acceptPairing = async (ctx, artifact) => { if (attempts++ === 0) throw pairPending(); return accept(ctx, artifact); };
+  const revoked: unknown[] = [];
+  adapter.unpair = async (_ctx, peer) => { revoked.push(peer); };
+  expect(await pairing.pair(owner, JSON.stringify(start))).toMatchObject({ pending: true, handle: "reader" });
+  expect(revoked).toEqual([{ handle: "reader", peerDid: start.from.courier, delegation: { pending: stuck } }]);
+  expect(attempts).toBe(2);
+  expect(await store.listRetired(owner)).toEqual([]);
+});
+
+test("a pending revocation keeps the sealed reference and retries it unchanged until it succeeds", async () => {
+  const { pairing, adapter, store } = setup();
+  const accept = adapter.acceptPairing;
+  let attempts = 0;
+  adapter.acceptPairing = async (ctx, artifact) => { if (attempts++ === 0) throw pairPending(); return accept(ctx, artifact); };
+  const revoked: unknown[] = [];
+  let revocationPending = true;
+  adapter.unpair = async (_ctx, peer) => {
+    revoked.push(peer);
+    if (revocationPending) throw Object.assign(new Error("private text"), { code: "unpair_pending" });
+  };
+  expect(await pairing.pair(owner, JSON.stringify(start)).catch(error => error)).toMatchObject({ code: "courier_unavailable", status: 503 });
+  expect(attempts).toBe(1);
+  expect(await store.getPending(owner, "reader")).toBeUndefined();
+  // Restart: the reference survives in the sealed store, and maintenance retries the same one.
+  const restarted = createCourierPairing({ store, grants: { async get() { return { raw: {}, expiresAt: Date.now() * 2 }; }, async put() {}, async delete() {} }, adapter });
+  await restarted.maintain(owner);
+  expect(await store.listRetired(owner)).toEqual([{ handle: "reader", peerDid: start.from.courier, delegation: { pending: stuck } }]);
+  revocationPending = false;
+  await restarted.maintain(owner);
+  expect(await store.listRetired(owner)).toEqual([]);
+  expect(revoked).toEqual(Array(3).fill({ handle: "reader", peerDid: start.from.courier, delegation: { pending: stuck } }));
+});
+
+test("an unconfirmed peer grant at finalize keeps the pending row for a retry of the same C", async () => {
+  const { pairing, adapter, store } = setup();
+  await pairing.pair(owner, JSON.stringify(start));
+  const finalize = adapter.finalizePairing;
+  adapter.finalizePairing = async () => { throw pairPending(); };
+  expect(await pairing.pair(owner, JSON.stringify(final)).catch(error => error)).toMatchObject({ code: "courier_unavailable", status: 503 });
+  expect((await store.getPending(owner, "reader"))?.pending.handle).toBe("reader");
+  adapter.finalizePairing = finalize;
+  expect(await pairing.pair(owner, JSON.stringify(final))).toMatchObject({ peer: { handle: "reader", status: "paired" } });
+});

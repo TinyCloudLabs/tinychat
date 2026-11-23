@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { parseArtifact, validateArtifactIdentity, type PairArtifact } from "@tinycloud/courier";
 import { isRecord } from "../guards";
 import type { CourierGrant, CourierGrantStore } from "./grant-store";
-import type { CourierContext, PairedPeer, PairPending } from "./lib-adapter";
+import type { CourierContext, CourierPeerReference, PairedPeer, PairPending } from "./lib-adapter";
 import { COURIER_HANDLE, type CourierPeer, type CourierPeerStore, type RetiredCourierPeer } from "./peer-store";
 
 export const COURIER_PAIRING_TTL_MS = 15 * 60_000;
@@ -30,6 +30,14 @@ class PairingError extends Error {
 function pairingFailure(error: unknown): PairingError {
   return isRecord(error) && error.code === "courier_update_required"
     ? new PairingError("courier_update_required", 426) : new PairingError("invalid", 400);
+}
+
+/** C1's typed refusal when the SDK saved a pending attempt whose node grant never activated. */
+function pendingReference(error: unknown): CourierPeerReference | undefined {
+  if (!isRecord(error) || error.code !== "pair_pending" || !isRecord(error.reference)) return undefined;
+  const ref = error.reference;
+  return typeof ref.handle === "string" && typeof ref.peerDid === "string" && typeof ref.pairingId === "string"
+    ? { handle: ref.handle, peerDid: ref.peerDid, pairingId: ref.pairingId } : undefined;
 }
 
 function checkedArtifact(input: string): PairArtifact {
@@ -116,7 +124,17 @@ export function createCourierPairing(options: { store: CourierPeerStore; grants:
           }
           const startedAt = now();
           let pending: PairPending;
-          try { pending = await api.acceptPairing(ctx, input); } catch (error) { throw pairingFailure(error); }
+          try { pending = await api.acceptPairing(ctx, input); } catch (error) {
+            const ref = pendingReference(error);
+            if (!ref) throw pairingFailure(error);
+            if (ref.handle !== handle || ref.peerDid !== artifact.from.courier) throw new PairingError("invalid", 400);
+            // Revoke that exact attempt before accepting once more. If revocation stays pending, the sealed reference
+            // is retried unchanged by cleanup and maintenance; the handle stays unavailable until it succeeds.
+            await store.retireReference(owner, { handle, peerDid: ref.peerDid, delegation: { pending: ref } });
+            await cleanRetired(owner);
+            if ((await store.listRetired(owner)).some(peer => peer.handle === handle)) throw new PairingError("courier_unavailable", 503);
+            try { pending = await api.acceptPairing(ctx, input); } catch (retry) { throw pairingFailure(retry); }
+          }
           // createdAt is the SDK's own pending checkpoint time; finalize verifies it unchanged.
           if (pending.handle !== handle || pending.peerDid !== artifact.from.courier || pending.expiresAt <= now()
             || !Number.isSafeInteger(pending.createdAt) || pending.createdAt < startedAt - 60_000 || pending.createdAt > now()
@@ -135,7 +153,11 @@ export function createCourierPairing(options: { store: CourierPeerStore; grants:
         if (artifact.from.owner !== start.from.owner || artifact.from.courier !== start.from.courier
           || artifact.spaceId !== start.spaceId || artifact.peer !== start.peer || artifact.callMe !== start.callMe) throw new PairingError("invalid", 400);
         let peer: PairedPeer;
-        try { peer = await api.finalizePairing(ctx, saved.pending, input); } catch (error) { throw pairingFailure(error); }
+        try { peer = await api.finalizePairing(ctx, saved.pending, input); } catch (error) {
+          // The peer's grant could not be confirmed yet: keep the pending row so the same C can be retried.
+          if (pendingReference(error)) throw new PairingError("courier_unavailable", 503);
+          throw pairingFailure(error);
+        }
         if (peer.handle !== handle || peer.peerDid !== start.from.courier || !Number.isSafeInteger(peer.delegationExpiresAt)
           || peer.delegationExpiresAt <= now() || peer.delegationExpiresAt > now() + COURIER_PEER_MAX_MS) throw new PairingError("invalid", 400);
         // Verification can wait on the node; do not let its latency extend the pending window.
