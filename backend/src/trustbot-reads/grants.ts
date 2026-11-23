@@ -125,6 +125,12 @@ export class TrustBotReadGrants {
     return this.#status((await this.#load(checkAddress(address)))?.record);
   }
 
+  /** One sealed-record read keeps the area switches and chat exclusions in the same snapshot. */
+  async readStatus(address: string): Promise<ReadStatus & { deniedChatIds: Set<string> }> {
+    const stored = (await this.#load(checkAddress(address)))?.record;
+    return { ...this.#status(stored), deniedChatIds: new Set(stored?.deniedChatIds ?? []) };
+  }
+
   /** Authoritative per-chat settings, loaded afresh for each read; corrupt records fail closed. */
   async deniedChatIds(address: string): Promise<Set<string>> {
     return new Set((await this.#load(checkAddress(address)))?.record.deniedChatIds ?? []);
@@ -206,8 +212,10 @@ export class TrustBotReadGrants {
     }
     const cid = verified.verified.cid;
     const record: StoredReads = { v: 1, areas, cid, expiresAt, mintedAt: now, ...envelope, deniedChatIds: previous?.record.deniedChatIds ?? [] };
-    // Keep the superseded CID with the committed grant so the owner can revoke it if the response was lost.
-    record.replacedGrantCid = previous?.record.cid === cid ? previous.record.replacedGrantCid : previous?.record.cid;
+    // A retained off-only record has no active grant left for the owner to revoke.
+    if (previous?.record.cid && previous.record.areas.length > 0) {
+      record.replacedGrantCid = previous.record.cid === cid ? previous.record.replacedGrantCid : previous.record.cid;
+    }
     if (await this.#save(owner, record, previous?.etag) === false) throw new ReadGrantInvalid("changed");
     this.#activations.clear();
     return this.#status(record);

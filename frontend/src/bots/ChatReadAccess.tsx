@@ -67,7 +67,7 @@ export function ChatReadAccess({ api }: { api: ChatReadAccessApi }) {
                   type="button"
                   role="switch"
                   aria-label={COPY.switchLabel}
-                  aria-describedby={`${id}-chat-${index}`}
+                  aria-describedby={`${id}-chat-${index} ${id}-scope ${id}-future`}
                   aria-checked={allowed}
                   disabled={pending}
                   onClick={() => void change(chat.id)}
@@ -82,6 +82,12 @@ export function ChatReadAccess({ api }: { api: ChatReadAccessApi }) {
           })}
         </ul>
       )}
+      {ready && ready.chats.length > 0 ? (
+        <>
+          <p id={`${id}-scope`} className="text-callout text-muted-foreground">{COPY.scopeHint}</p>
+          <p id={`${id}-future`} className="text-callout text-muted-foreground">{COPY.futureReadsHint}</p>
+        </>
+      ) : null}
       {saveFailed ? <p role="alert" className="text-callout text-muted-foreground">{COPY.saveError}</p> : null}
     </section>
   );

@@ -154,3 +154,15 @@ test("the owner settings and signed gateway lookup return the same fresh deny li
   const response = await fetch(`${base}${TRUSTBOT_READS_INTERNAL_PREFIX}/read_status`, { method: "POST" });
   expect(response.status).toBe(401);
 });
+
+test("denial-only settings and all-areas-off records never advertise a superseded grant to revoke", async () => {
+  const { node } = fakeBackendNode();
+  const isolated = new TrustBotReadGrants({ ...options, store: backendGrantStore(node) });
+  await isolated.setChatDenied(address, "denied", true);
+  await isolated.enable(address, "feed_chats", await sign(1));
+  expect((await isolated.renewalStatus(address)).replacedGrantCid).toBeNull();
+  await isolated.disable(address, "feed_chats");
+  await isolated.enable(address, "feed_chats", await sign(2));
+  expect((await isolated.renewalStatus(address)).replacedGrantCid).toBeNull();
+  expect(await isolated.deniedChatIds(address)).toEqual(new Set(["denied"]));
+});
