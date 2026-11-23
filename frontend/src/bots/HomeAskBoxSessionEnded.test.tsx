@@ -8,7 +8,7 @@ import { BOT_HISTORY_KEY_PATH } from "@tinycloud/sdk-services";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { installDom } from "@/test/dom";
-import type { BotsApi } from "./botsApi";
+import { BotsError, type BotsApi } from "./botsApi";
 import { encryptionNetworkId } from "../lib/connectors/encryptionGrant";
 
 // Radix portals do not attach in happy-dom: the dialog shell is rendered inline; the real body and footer stay.
@@ -57,14 +57,15 @@ function pastItsFirstSignedEnd(noSession = false, failure?: unknown): TinyCloudW
   } as unknown as TinyCloudWeb;
 }
 
-async function openWithEndedSession(onReconnect?: () => void, noSession = false, failure?: unknown) {
+async function openWithEndedSession(onReconnect?: () => void, noSession = false, failure?: unknown, listFailure?: unknown) {
   restore = installDom({});
   new SessionStore("xyz.tinycloud.tinychat:session").setSession("fixture-token", 3600, address);
   globalThis.fetch = (async (input: RequestInfo | URL) => {
     const url = String(input);
     return new Response(JSON.stringify(url.endsWith("/api/bots/status") ? { enabled: true } : {}), { status: url.includes("/api/bots/history/status") ? 200 : url.endsWith("/api/bots/status") ? 200 : 404 });
   }) as typeof fetch;
-  const api: BotsApi = { getBotsStatus: async () => ({ enabled: true }), listMainMessages: async () => [], sendToMain: async () => {} };
+  let listCalls = 0; // the first read only finds out whether Main answers; the history load is the next
+  const api: BotsApi = { getBotsStatus: async () => ({ enabled: true }), listMainMessages: async () => { if (listFailure !== undefined && listCalls++ > 0) throw listFailure; return []; }, sendToMain: async () => {} };
   const host = document.createElement("div");
   document.body.append(host);
   const root = createRoot(host);
@@ -152,4 +153,48 @@ test("the console keeps the original failure of a history that reads as signed o
   } finally {
     warn.mockRestore();
   }
+});
+
+const SECRETS = "https://node.example/x?sig=SECRET123 Bearer TOKEN456";
+/** A failure with a signed address and a token in its message, name, code and stack, and in the failure inside it. */
+const seeded = (message: string, inner = true): Error => {
+  const error = new Error(message, inner ? { cause: seeded(`inner ${SECRETS}`, false) } : undefined);
+  return Object.assign(error, { name: SECRETS, code: SECRETS, stack: `${SECRETS}\n    at ${SECRETS}` });
+};
+
+/** Every argument the console was given while the history loaded, as text. */
+async function loggedWhileLoading(...open: Parameters<typeof openWithEndedSession>) {
+  const warn = spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    await openWithEndedSession(...open);
+    return warn.mock.calls.map(call => call.map(argument => JSON.stringify(argument) ?? "").join(" ")).join("\n");
+  } finally {
+    warn.mockRestore();
+  }
+}
+
+const expectNoSecrets = (logged: string) => {
+  expect(logged).not.toContain("SECRET123");
+  expect(logged).not.toContain("TOKEN456");
+};
+
+test("the console keeps no text, name, code or stack of a network failure or of the failure inside it", async () => {
+  const logged = await loggedWhileLoading(() => {}, false, seeded(`request to ${SECRETS} failed`));
+  expect(logged).toContain("did not load");
+  expect(logged).toContain('"name":"unknown"');
+  expectNoSecrets(logged);
+});
+
+test("the console keeps only the known code of a signed-out history, and nothing else of its original failure", async () => {
+  const logged = await loggedWhileLoading(() => {}, false, seeded("history_session_expired"));
+  expect(logged).toContain("history_session_expired");
+  expect(logged).toContain('"name":"unknown"');
+  expectNoSecrets(logged);
+});
+
+test("the console keeps no text, name, code or stack of a failure inside a bots error", async () => {
+  const logged = await loggedWhileLoading(() => {}, false, undefined, new BotsError("failed", { cause: seeded(`request to ${SECRETS} failed`) }));
+  expect(logged).toContain("did not load");
+  expect(logged).toContain("Bots request failed: failed");
+  expectNoSecrets(logged);
 });

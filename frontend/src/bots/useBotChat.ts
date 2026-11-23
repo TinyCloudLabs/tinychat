@@ -5,6 +5,7 @@ import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 
 import { BotsError, type BotActivity, type BotMessage, type MainEvent } from "./botsApi";
 import { isHistoryDeclined } from "./historyAuthorization";
+import { loggedFailure } from "./failureLog";
 import type { ChatLine, MainChatState, MainTurn } from "./useMainChat";
 
 /** How the view reaches one bot. */
@@ -60,13 +61,6 @@ interface Entry {
 
 const EMPTY: BotChatState = { lines: [], history: "idle", turn: null, unseen: false };
 const NO_ACTIVITY: ActivityItem[] = [];
-
-/** What the console keeps of a failure: never the object itself, which may carry a session or delegation. */
-function errorFields(value: unknown): Record<string, unknown> {
-  if (!(value instanceof Error)) return { type: typeof value };
-  const code = "code" in value && (typeof value.code === "string" || typeof value.code === "number") ? value.code : undefined;
-  return { name: value.name, message: value.message, code, stack: value.stack };
-}
 
 /**
  * The activity lines of a loaded conversation, each placed after the last message sent at or before it. A message with
@@ -145,8 +139,8 @@ export function createBotChats(sourceFor: (key: string) => BotChatSource): BotCh
         if (signal.aborted) return;
         // The failure row says only that it failed; the console keeps why, for support.
         console.warn("[bots] a bot's earlier messages did not load", {
-          ...errorFields(cause),
-          cause: cause instanceof Error && cause.cause !== undefined ? errorFields(cause.cause) : undefined,
+          ...loggedFailure(cause),
+          cause: cause instanceof Error && cause.cause !== undefined ? loggedFailure(cause.cause) : undefined,
         });
         update(key, (state) => ({ ...state, history: isHistoryDeclined(cause) ? "declined" : "failed" }));
       }
