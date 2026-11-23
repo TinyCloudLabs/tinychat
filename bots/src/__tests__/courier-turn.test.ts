@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { COURIER_ANSWER_BUDGET, COURIER_BUSY, COURIER_SUMMARY_REFUSAL, CourierFixedReply, copiesReadRecord, guardReply, isCourierReply, replyText } from "../courier/guard";
+import { COURIER_ANSWER_BUDGET, COURIER_BUSY, COURIER_SUMMARY_REFUSAL, CourierFixedReply, copiesReadRecord, guardReply, isCourierReply, openTurnReadLog, replyText } from "../courier/guard";
 import { courierTurn, COURIER_READ_TOOL_NAMES } from "../courier/turn";
 import { MeetingDesk } from "../meeting-reads";
 import { botIdFor } from "../owner";
@@ -95,10 +95,12 @@ test("unavailable area status fails closed before any read", async () => {
   expect(s.inputs[0]!.tools).toEqual([]); expect(s.reads).toEqual([]);
 });
 
-test("the send path accepts only guard-issued text or a fixed sentence", () => {
-  expect(isCourierReply(guardReply("A summary in new words.", [allowed]))).toBe(true);
-  expect(isCourierReply(guardReply(allowed, [allowed]))).toBe(false);
-  expect(guardReply(allowed, [allowed])).toBeUndefined();
+test("a reply cannot be guarded without a read log courierTurn opened; the send path takes only guard output or fixed sentences", () => {
+  // @ts-expect-error No caller may pass an empty list of records to skip the real check.
+  expect(() => guardReply("A summary in new words.", [])).toThrow("courier_guard_unissued");
+  const log = openTurnReadLog(); log.record([allowed]);
+  expect(isCourierReply(guardReply("A summary in new words.", log))).toBe(true);
+  expect(guardReply(allowed, log)).toBeUndefined();
   expect(isCourierReply(allowed)).toBe(false);
   expect(isCourierReply({ kind: "guarded", text: allowed })).toBe(false);
   expect(isCourierReply(COURIER_BUSY) && isCourierReply(COURIER_ANSWER_BUDGET) && isCourierReply(COURIER_SUMMARY_REFUSAL)).toBe(true);
