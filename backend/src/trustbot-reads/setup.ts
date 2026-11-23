@@ -4,6 +4,7 @@
 // Details: TC-3792
 import { assertKvResult, createBackendIdentity, isKvMissingKeyResult, withSessionRefresh } from "@tinyboilerplate/server";
 import type { TinyCloudNode } from "@tinycloud/node-sdk";
+import { isKvPreconditionFailed } from "../exo/activated-grant.js";
 import { TrustBotReadGrants, type ReadGrantStore } from "./grants.js";
 
 /** The read identity's own space prefix. It keeps nothing there; the prefix only names its session. */
@@ -32,21 +33,31 @@ export function trustbotReadsFromEnv(env: Record<string, string | undefined>): T
 export function backendGrantStore(node: TinyCloudNode): ReadGrantStore {
   return {
     async get(key) {
-      const result = await withSessionRefresh(node, async () => {
-        const read = await node.kv.get<string>(key);
-        if (!isKvMissingKeyResult(read, key)) assertKvResult(read);
-        return read;
+      return withSessionRefresh(node, async () => {
+        const result = await node.kv.get<string>(key, { source: "network", maxResponseBytes: 256 * 1024 });
+        if (isKvMissingKeyResult(result, key)) return undefined;
+        assertKvResult(result);
+        if (!result.ok) return undefined;
+        const { data: value, headers } = result.data;
+        const etag = headers?.etag;
+        if (typeof value !== "string" || !etag || etag.startsWith("W/")) throw new Error("trustbot_read_record_invalid");
+        return { value, etag };
       });
-      if (isKvMissingKeyResult(result, key) || !result.ok) return undefined;
-      return typeof result.data.data === "string" ? result.data.data : undefined;
     },
-    async put(key, value) {
-      await withSessionRefresh(node, async () => assertKvResult(await node.kv.put(key, value)));
+    async put(key, value, condition) {
+      return withSessionRefresh(node, async () => {
+        const result = await node.kv.put(key, value, condition);
+        if (isKvPreconditionFailed(result)) return false;
+        assertKvResult(result);
+        return true;
+      });
     },
-    async delete(key) {
-      await withSessionRefresh(node, async () => {
-        const result = await node.kv.delete(key);
-        if (!isKvMissingKeyResult(result, key)) assertKvResult(result);
+    async delete(key, condition) {
+      return withSessionRefresh(node, async () => {
+        const result = await node.kv.delete(key, condition);
+        if (isKvPreconditionFailed(result) || isKvMissingKeyResult(result, key)) return false;
+        assertKvResult(result);
+        return true;
       });
     },
   };

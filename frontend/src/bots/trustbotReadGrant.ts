@@ -2,6 +2,7 @@
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { DEFAULT_REQUEST_HEADER_NAME, DEFAULT_REQUEST_HEADER_VALUE, SessionStore } from "@tinyboilerplate/client";
 import { serializePortableDelegation, toPortableDelegation } from "../lib/agentDelegation";
+import { botGrantLifetime } from "./botGrantLifetime";
 
 import { BotsError, BotsRouteMissing } from "./botsApi";
 import { READ_AREAS, readAreaPermissions, type ReadArea } from "./trustbotReadAreas";
@@ -32,17 +33,14 @@ export interface ReadGrant {
   signature: string;
 }
 
-const MAX_LIFETIME_MS = 7 * 86_400_000;
-const MIN_LIFETIME_MS = 60_000;
 const STATES: readonly ReadAreaState[] = ["off", "on", "ended"];
 
 const base = import.meta.env.VITE_BACKEND_URL || `${globalThis.location?.protocol ?? "http:"}//localhost:3014`;
 const currentSession = () => new SessionStore("xyz.tinycloud.tinychat:session");
 
 function grantLifetime(siwe: string): number {
-  const expires = Date.parse(/^Expiration Time:\s*(\S+)/im.exec(siwe)?.[1] ?? "");
-  const lifetime = Math.min(MAX_LIFETIME_MS, expires - Date.now());
-  if (!Number.isFinite(lifetime) || lifetime < MIN_LIFETIME_MS) throw new Error("read_session_expired");
+  const lifetime = botGrantLifetime(siwe);
+  if (!Number.isFinite(lifetime) || lifetime < 60_000) throw new Error("read_session_expired");
   return lifetime;
 }
 
@@ -57,7 +55,7 @@ function toReadSettings(payload: unknown): ReadSettings {
   return { serviceDid: value.serviceDid, expiresAt: value.expiresAt, grantCid: typeof value.grantCid === "string" ? value.grantCid : null, areas };
 }
 
-async function request(method: "GET" | "PUT", path: string, body?: unknown): Promise<ReadSettings> {
+async function request(method: "GET" | "PUT", path: string, body?: unknown): Promise<unknown> {
   const token = currentSession().getToken();
   if (!token) throw new BotsError("signed_out");
   let response: Response;
@@ -80,18 +78,18 @@ async function request(method: "GET" | "PUT", path: string, body?: unknown): Pro
   if (response.status === 400) throw new BotsError("invalid");
   if (response.status === 404) throw new BotsRouteMissing();
   if (!response.ok) throw new BotsError("failed");
-  return toReadSettings(await response.json().catch(() => null));
+  return response.json().catch(() => null);
 }
 
 /** Main's read settings; throws BotsRouteMissing when the account has no such feature. */
 export function readSettings(): Promise<ReadSettings> {
-  return request("GET", "/api/bots/main/reads");
+  return request("GET", "/api/bots/main/reads").then(toReadSettings);
 }
 
 /** Turns one area on (with a grant covering every area that will be on) or off. */
 export async function setReadArea(area: ReadArea, enabled: boolean, grant?: ReadGrant): Promise<ReadSettings> {
   if (enabled && !grant) throw new Error("read_grant_missing");
-  return request("PUT", `/api/bots/main/reads/${area}`, enabled ? { enabled: true, grant } : { enabled: false });
+  return request("PUT", `/api/bots/main/reads/${area}`, enabled ? { enabled: true, grant } : { enabled: false }).then(toReadSettings);
 }
 
 /** Revokes a read grant at the node, as the owner who signed it: the node takes a revocation only from them. */
@@ -101,8 +99,65 @@ export async function revokeReadGrant(tcw: TinyCloudWeb, cid: string): Promise<v
 }
 
 /** A revoke that fails leaves the grant to its end date (7 days at most); the change the owner asked for still happens. */
-async function revokeQuietly(api: ReadAreaApi, cid: string): Promise<void> {
+async function revokeQuietly(api: Pick<ReadAreaApi, "revokeReadGrant">, cid: string): Promise<void> {
   try { await api.revokeReadGrant(cid); } catch { /* the backend has deleted or replaced its copy either way */ }
+}
+
+async function replaceReadGrant(
+  api: Pick<ReadAreaApi, "signReadGrant" | "revokeReadGrant">,
+  saved: ReadSettings,
+  areas: ReadArea[],
+  store: (grant: ReadGrant) => Promise<ReadSettings>,
+): Promise<ReadSettings> {
+  const grant = await api.signReadGrant(saved.serviceDid, areas);
+  const stored = await store(grant);
+  if (saved.grantCid && saved.grantCid !== stored.grantCid) await revokeQuietly(api, saved.grantCid);
+  return stored;
+}
+
+export function readAreasDueForRenewal(
+  saved: ReadSettings, renewAfter: number, siwe: string, now = Date.now(),
+): ReadArea[] {
+  if (!saved.grantCid || saved.expiresAt === null) return [];
+  const lifetime = botGrantLifetime(siwe, now);
+  if (!Number.isFinite(lifetime) || lifetime < 60_000 ||
+      Math.floor((now + lifetime) / 1000) * 1000 <= saved.expiresAt) return [];
+  const areas = Object.keys(saved.areas) as ReadArea[];
+  return areas.filter(area => saved.areas[area] === "ended" || (saved.areas[area] === "on" && now > renewAfter));
+}
+
+let renewing = false;
+
+/** The Home renewal tick silently replaces a grant only when the current session can extend it. */
+export async function ensureTrustBotReadGrant(tcw: TinyCloudWeb): Promise<boolean> {
+  if (renewing) return false;
+  renewing = true;
+  try {
+    const token = currentSession().getToken();
+    if (!token) return false;
+    const payload = await request("GET", "/api/bots/main/reads/renewal");
+    const saved = toReadSettings(payload);
+    const renewAfter = (payload as { renewAfter?: unknown }).renewAfter;
+    const session = tcw.session();
+    if (typeof renewAfter !== "number" || !session?.siwe || !session.signature ||
+        currentSession().getToken() !== token) return false;
+    const areas = readAreasDueForRenewal(saved, renewAfter, session.siwe);
+    if (areas.length === 0) return false;
+    await replaceReadGrant({
+      signReadGrant: (did, areas) => signReadGrant(tcw, did, areas),
+      revokeReadGrant: cid => revokeReadGrant(tcw, cid),
+    }, saved, areas, grant => {
+      if (currentSession().getToken() !== token) throw new Error("read_session_changed");
+      return request("PUT", "/api/bots/main/reads/renewal", {
+        enabled: true, grant, replaces: saved.grantCid,
+      }).then(toReadSettings);
+    });
+    return true;
+  } catch {
+    return false;
+  } finally {
+    renewing = false;
+  }
 }
 
 /**
@@ -113,10 +168,8 @@ export async function changeReadArea(api: ReadAreaApi, saved: ReadSettings, area
   const names = Object.keys(saved.areas) as ReadArea[];
   const others = names.filter((name) => name !== area && saved.areas[name] === "on");
   if (enabled) {
-    const grant = await api.signReadGrant(saved.serviceDid, names.filter((name) => name === area || others.includes(name)));
-    const stored = await api.setReadArea(area, true, grant);
-    if (saved.grantCid && saved.grantCid !== stored.grantCid) await revokeQuietly(api, saved.grantCid);
-    return stored;
+    const areas = names.filter(name => name === area || others.includes(name));
+    return replaceReadGrant(api, saved, areas, grant => api.setReadArea(area, true, grant));
   }
   if (others.length === 0 && saved.grantCid) await revokeQuietly(api, saved.grantCid);
   return api.setReadArea(area, false);

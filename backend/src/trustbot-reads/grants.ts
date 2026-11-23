@@ -36,13 +36,15 @@ export class ReadGrantInvalid extends Error {
   constructor(readonly code: string) { super(`trustbot_read_grant_${code}`); this.name = "ReadGrantInvalid"; }
 }
 
-interface StoredReads extends GrantEnvelope { v: 1; areas: ReadArea[]; cid: string; expiresAt: number }
+interface StoredReads extends GrantEnvelope { v: 1; areas: ReadArea[]; cid: string; expiresAt: number; mintedAt?: number }
+interface ReadGrantRecord { record: StoredReads; etag: string }
+type WriteCondition = { ifMatch: string } | { ifNoneMatch: "*" };
 
-/** The backend's own key-value store, holding the sealed record. */
+/** The backend store supplies an ETag for conditional writes. In-memory stores may supply just the sealed value. */
 export interface ReadGrantStore {
-  get(key: string): Promise<string | undefined>;
-  put(key: string, value: string): Promise<void>;
-  delete(key: string): Promise<void>;
+  get(key: string): Promise<string | { value: string; etag: string } | undefined>;
+  put(key: string, value: string, condition: WriteCondition): Promise<boolean | void>;
+  delete(key: string, condition: { ifMatch: string }): Promise<boolean | void>;
 }
 
 export interface TrustBotReadGrantsOptions {
@@ -109,7 +111,18 @@ export class TrustBotReadGrants {
 
   /** Each area's state for this owner, and when the grant ends. */
   async status(address: string): Promise<ReadStatus> {
-    const stored = await this.#load(checkAddress(address));
+    return this.#status((await this.#load(checkAddress(address)))?.record);
+  }
+
+  async renewalStatus(address: string): Promise<ReadStatus & { renewAfter: number | null }> {
+    const stored = (await this.#load(checkAddress(address)))?.record;
+    // Existing records predate mintedAt. The seven-day cap gives an early bound for those grants.
+    const lifetime = stored?.mintedAt === undefined ? READ_GRANT_MAX_MS : stored.expiresAt - stored.mintedAt;
+    const renewAfter = stored ? stored.expiresAt - lifetime / 2 : null;
+    return { ...this.#status(stored), renewAfter };
+  }
+
+  #status(stored: StoredReads | undefined): ReadStatus {
     const ended = stored !== undefined && stored.expiresAt <= this.#now();
     const areas = Object.fromEntries(READ_AREA_NAMES.map(area => [
       area, !stored?.areas.includes(area) ? "off" : ended ? "ended" : "on",
@@ -126,32 +139,59 @@ export class TrustBotReadGrants {
     const owner = checkAddress(address);
     const now = this.#now();
     const previous = await this.#load(owner);
-    const kept = previous && previous.expiresAt > now ? previous.areas : [];
+    const kept = previous && previous.record.expiresAt > now ? previous.record.areas : [];
     const areas = READ_AREA_NAMES.filter(name => name === area || kept.includes(name));
+    return this.#replace(owner, envelope, { areas, activateAreas: [area], now, previous });
+  }
+
+  /** Replaces the current grant for exactly the areas the owner has left enabled. */
+  async renew(address: string, cid: string, envelope: GrantEnvelope): Promise<ReadStatus> {
+    const owner = checkAddress(address);
+    const previous = await this.#load(owner);
+    if (!previous || previous.record.cid !== cid) throw new ReadGrantInvalid("changed");
+    const areas = previous.record.areas;
+    return this.#replace(owner, envelope, { areas, activateAreas: areas, now: this.#now(), previous, renewing: true });
+  }
+
+  async #replace(owner: string, envelope: GrantEnvelope, options: {
+    areas: ReadArea[]; activateAreas: ReadArea[]; now: number; previous?: ReadGrantRecord; renewing?: boolean;
+  }): Promise<ReadStatus> {
+    const { areas, activateAreas, now, previous, renewing } = options;
     const verified = await this.#check(owner, envelope, areas, now);
     if (!verified.ok) throw new ReadGrantInvalid(verified.code);
-    if (verified.verified.expiresAt.getTime() > now + READ_GRANT_MAX_MS + CLOCK_SLACK_MS) throw new ReadGrantInvalid("expiry_too_long");
+    const expiresAt = verified.verified.expiresAt.getTime();
+    const maxExpiry = now + READ_GRANT_MAX_MS + (renewing ? 0 : CLOCK_SLACK_MS);
+    if (expiresAt > maxExpiry) throw new ReadGrantInvalid("expiry_too_long");
+    if (renewing && previous && expiresAt <= previous.record.expiresAt) throw new ReadGrantInvalid("expiry_not_extended");
     try {
-      for (const path of activationPaths(area)) await this.#activate(this.#only(verified.verified, area, path));
+      for (const area of activateAreas) {
+        for (const path of activationPaths(area)) await this.#activate(this.#only(verified.verified, area, path));
+      }
     } catch (error) {
       throw new ReadGrantInvalid(error instanceof DelegationActivationError && error.status < 500 ? "rejected" : "unavailable");
     }
-    await this.#save(owner, { v: 1, areas, cid: verified.verified.cid, expiresAt: verified.verified.expiresAt.getTime(), ...envelope });
+    const record: StoredReads = { v: 1, areas, cid: verified.verified.cid, expiresAt, mintedAt: now, ...envelope };
+    if (await this.#save(owner, record, previous?.etag) === false) throw new ReadGrantInvalid("changed");
     this.#activations.clear();
-    return this.status(owner);
+    return this.#status(record);
   }
 
   /** Turns `area` off. With no area left on, the stored grant is deleted; the owner's browser revokes it at the node. */
   async disable(address: string, area: ReadArea): Promise<ReadStatus> {
     const owner = checkAddress(address);
-    const stored = await this.#load(owner);
-    if (stored) {
-      const areas = stored.areas.filter(name => name !== area);
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const stored = await this.#load(owner);
+      if (!stored || !stored.record.areas.includes(area)) return this.#status(stored?.record);
+      const areas = stored.record.areas.filter(name => name !== area);
+      const next = { ...stored.record, areas };
+      const written = areas.length > 0
+        ? await this.#save(owner, next, stored.etag)
+        : await this.#store.delete(this.#keyFor(owner), { ifMatch: stored.etag });
+      if (written === false) continue;
       this.#activations.clear();
-      if (areas.length > 0) await this.#save(owner, { ...stored, areas });
-      else await this.#store.delete(this.#keyFor(owner));
+      return this.#status(areas.length > 0 ? next : undefined);
     }
-    return this.status(owner);
+    throw new ReadGrantInvalid("changed");
   }
 
   /**
@@ -165,7 +205,7 @@ export class TrustBotReadGrants {
     }
     const owner = checkAddress(address);
     let stored: StoredReads | undefined;
-    try { stored = await this.#load(owner); } catch { throw new ReadGrantRefused("unavailable"); }
+    try { stored = (await this.#load(owner))?.record; } catch { throw new ReadGrantRefused("unavailable"); }
     if (!stored) throw new ReadGrantRefused("none");
     if (!stored.areas.includes(area)) throw new ReadGrantRefused("off");
     const now = this.#now();
@@ -211,25 +251,26 @@ export class TrustBotReadGrants {
     return `${TRUSTBOT_READ_GRANT_KEY_PREFIX}${owner}`;
   }
 
-  async #load(owner: string): Promise<StoredReads | undefined> {
+  async #load(owner: string): Promise<ReadGrantRecord | undefined> {
     const key = this.#keyFor(owner);
-    const sealed = await this.#store.get(key);
-    if (sealed === undefined) return undefined;
+    const stored = await this.#store.get(key);
+    if (stored === undefined) return undefined;
+    const { value: sealed, etag } = typeof stored === "string" ? { value: stored, etag: "" } : stored;
     const bytes = Buffer.from(sealed, "base64");
     const decipher = createDecipheriv("aes-256-gcm", this.#key, bytes.subarray(0, 12));
     decipher.setAAD(Buffer.from(key));
     decipher.setAuthTag(bytes.subarray(-16));
     const value: unknown = JSON.parse(Buffer.concat([decipher.update(bytes.subarray(12, -16)), decipher.final()]).toString());
     if (!isStored(value)) throw new Error("trustbot_read_record_invalid");
-    return value;
+    return { record: value, etag };
   }
 
-  async #save(owner: string, record: StoredReads): Promise<void> {
+  async #save(owner: string, record: StoredReads, etag?: string): Promise<boolean | void> {
     const key = this.#keyFor(owner);
     const nonce = randomBytes(12);
     const cipher = createCipheriv("aes-256-gcm", this.#key, nonce);
     cipher.setAAD(Buffer.from(key));
     const sealed = Buffer.concat([nonce, cipher.update(JSON.stringify(record)), cipher.final(), cipher.getAuthTag()]);
-    await this.#store.put(key, sealed.toString("base64"));
+    return this.#store.put(key, sealed.toString("base64"), etag === undefined ? { ifNoneMatch: "*" } : { ifMatch: etag });
   }
 }
