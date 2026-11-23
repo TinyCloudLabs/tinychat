@@ -58,14 +58,6 @@ async function freePort() {
   return port;
 }
 
-async function rejected(run: Promise<unknown>) {
-  try { await run; } catch (error) {
-    if (error instanceof Error && "code" in error && "status" in error) return { code: error.code, status: error.status };
-    throw error;
-  }
-  throw new Error("expected a refusal");
-}
-
 beforeAll(async () => {
   if (!bin || !pkg) return;
   root = mkdtempSync(join(tmpdir(), "c3-loopback-"));

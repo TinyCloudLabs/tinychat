@@ -1,4 +1,5 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,7 +12,8 @@ import { createCourierPairing } from "../courier/pairing";
 import { createCourierPeerStore } from "../courier/peer-store";
 import { courierContext, courierLibraryReady, CourierUnpairPending, CourierUpdateRequired, normalizeCourierError, renewPeer, sendMessage, verifiedCourierContext, type PairedPeer } from "../courier/lib-adapter";
 
-const signingKey = "4f3edf983ac636a65a842ce7c78d9aa706d3b113bce036f4d9c5c1b5605dce6f";
+// A fixed test-only signer, derived at runtime so no key literal lives in the source.
+const signingKey = createHash("sha256").update("tinychat courier grant-store test signer").digest("hex");
 const dirs: string[] = [];
 let fetchSpy: { mockRestore(): void } | undefined;
 afterEach(() => { fetchSpy?.mockRestore(); for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });

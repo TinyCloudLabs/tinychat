@@ -104,7 +104,7 @@ test("long Unicode messages page within the 64 KiB gateway envelope without gaps
   const f = fixture();
   for (let id=1;id<=201;id++) {
     f.add(id%2+1,String(id),id);
-    f.bodies.set(key(id),JSON.stringify({text:'\"\\\\\\n😀'.repeat(2000),content:null}));
+    f.bodies.set(key(id),JSON.stringify({text:'"\\\\\\n😀'.repeat(2000),content:null}));
   }
   const seen:string[]=[]; let before:string|null=null;
   do {
