@@ -1,5 +1,5 @@
 // A session that was renewed past the end of its first signed time still works for the app, but Main's history cannot be
-// authorized with the first signed time. The owner is told to sign in again, in the words a send already uses.
+// authorized with the first signed time. The owner is told to sign in, with a Sign in button when the box has an action for it.
 import { afterEach, expect, mock, test } from "bun:test";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -20,7 +20,7 @@ mock.module("../components/ui/responsive-sheet", () => ({
 }));
 const { HomeAskBox } = await import("./HomeAskBox");
 
-const SIGN_IN_LINE = "Your session expired. Sign in again to talk to TrustBot.";
+const SIGN_IN_LINE = "To see your earlier messages with TrustBot, sign in to TinyCloud One.";
 const address = `0x${"66".repeat(20)}`;
 const realFetch = globalThis.fetch;
 
@@ -57,7 +57,7 @@ function pastItsFirstSignedEnd(): TinyCloudWeb {
   } as unknown as TinyCloudWeb;
 }
 
-test("Main's history, loaded with a session past its first signed end, asks the owner to sign in instead of failing quietly", async () => {
+async function openWithEndedSession(onReconnect?: () => void) {
   restore = installDom({});
   new SessionStore("xyz.tinycloud.tinychat:session").setSession("fixture-token", 3600, address);
   globalThis.fetch = (async (input: RequestInfo | URL) => {
@@ -69,14 +69,29 @@ test("Main's history, loaded with a session past its first signed end, asks the 
   document.body.append(host);
   const root = createRoot(host);
   mounted = root;
-  await act(async () => root.render(<HomeAskBox api={api} tcw={pastItsFirstSignedEnd()} />));
+  await act(async () => root.render(<HomeAskBox api={api} tcw={pastItsFirstSignedEnd()} onReconnect={onReconnect} />));
   await act(async () => { for (let i = 0; i < 6; i++) await Promise.resolve(); });
 
   const chip = document.querySelector('button[aria-label="Open TrustBot\'s chat"]') as HTMLButtonElement;
   await act(async () => { chip.click(); });
   await act(async () => { for (let i = 0; i < 12; i++) await new Promise(resolve => setTimeout(resolve, 5)); });
+}
 
+const signInButton = () => [...document.querySelectorAll("button")].find(node => node.textContent === "Sign in");
+
+test("Main's history, loaded with a session past its first signed end, asks the owner to sign in instead of failing quietly", async () => {
+  await openWithEndedSession();
   const text = document.body.textContent ?? "";
   expect(text).toContain(SIGN_IN_LINE);
-  expect(text).not.toContain("earlier messages");
+  expect(text).not.toContain("earlier messages with TrustBot.");
+  expect(text).not.toContain("Try again");
+  expect(signInButton()).toBeUndefined();
+});
+
+test("with a sign-in action available, the line has a Sign in button that runs it", async () => {
+  let reconnects = 0;
+  await openWithEndedSession(() => { reconnects++; });
+  expect(document.body.textContent).toContain(SIGN_IN_LINE);
+  await act(async () => { signInButton()!.click(); });
+  expect(reconnects).toBe(1);
 });

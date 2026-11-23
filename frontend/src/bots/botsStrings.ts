@@ -18,6 +18,9 @@ export const BOTS_STRINGS = {
   tryAgain: "Try again",
   historyLoading: "Loading earlier messages…",
   historyFailed: `Couldn't load your earlier messages with ${MAIN_BOT_NAME}.`,
+  // Monica, TC-4138, 2026-11-23. Only for the load of earlier messages; a send keeps the signed_out error line.
+  historySignedOut: `To see your earlier messages with ${MAIN_BOT_NAME}, sign in to TinyCloud One.`,
+  signIn: "Sign in",
   // Monica, TC-3823, 2026-11-23.
   historyUnreadable: `Some earlier messages with ${MAIN_BOT_NAME} can't be opened with your current encryption key.`,
   // Monica, TC-3887, 2026-11-22. The button reopens the encryption request the owner declined.
