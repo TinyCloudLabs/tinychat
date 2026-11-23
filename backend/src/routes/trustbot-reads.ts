@@ -15,6 +15,7 @@ import { createMcpMeetingTools } from "../mcp-meetings/dispatch.js";
 import { TINYCLOUD_FIND_MEETINGS, TINYCLOUD_LIST_MEETING_ACTIONS, TINYCLOUD_READ_MEETING, TINYCLOUD_SEARCH_TRANSCRIPTS } from "../mcp-meetings/tools.js";
 import { compactLegacyMeetingResult } from "../transcripts/legacy-meeting-projection.js";
 import { parseMeetingToolData } from "../transcripts/meeting-evidence.js";
+import type { ReadAudit } from "../trustbot-reads/audit.js";
 import { isReadArea, READ_AREA_NAMES } from "../trustbot-reads/areas.js";
 import { ReadGrantInvalid, ReadGrantRefused, type ReadStatus, type TrustBotReadGrants } from "../trustbot-reads/grants.js";
 import { delegatedFeedChatSql, FEED_CHAT_FIRST_DATABASE, FeedChatReadError, isFeedChatTool, runFeedChatTool } from "../trustbot-reads/feed-chat.js";
@@ -43,6 +44,7 @@ export interface TrustBotReadsOptions {
   callSecret: string;
   standing?: StandingReadControl;
   standingEnabled?: boolean;
+  audit?: ReadAudit;
 }
 
 /** Tells the bots service which areas are on, so the gateway offers those tools. False when it did not answer. */
@@ -61,8 +63,18 @@ async function pushToService(config: BotsConfig, address: string, status: ReadSt
 
 const view = (grants: TrustBotReadGrants, status: ReadStatus) => ({ serviceDid: grants.serviceDid, ...status });
 
+const DAY_MS = 86_400_000;
+
+/** Accept UTC timestamps and reject impossible dates before normalizing them for the audit store. */
+function summaryTime(value: unknown): number {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/.test(value)) return NaN;
+  const ms = Date.parse(value);
+  return Number.isFinite(ms) && new Date(ms).toISOString().slice(0, 19) === value.slice(0, 19) ? ms : NaN;
+}
+
 export function createTrustBotReadsRouter(
-  { grants, config, auth, standingEnabled, standing: control }: Pick<TrustBotReadsOptions, "grants" | "config" | "auth" | "standingEnabled" | "standing">,
+  { grants, config, auth, standingEnabled, standing: control, audit }:
+    Pick<TrustBotReadsOptions, "grants" | "config" | "auth" | "standingEnabled" | "standing" | "audit">,
 ) {
   const standing = standingEnabled ? control : undefined;
   const router = Router();
@@ -84,6 +96,22 @@ export function createTrustBotReadsRouter(
       res.status(503).json({ error: "reads_unavailable" });
     }
   });
+  if (standingEnabled && audit) {
+    router.get("/standing/summary", async (req, res) => {
+      res.set("Cache-Control", "no-store");
+      const to = req.query.to === undefined ? Date.now() : summaryTime(req.query.to);
+      const from = req.query.from === undefined ? to - 7 * DAY_MS : summaryTime(req.query.from);
+      if (!Number.isFinite(from) || !Number.isFinite(to) || from >= to || to - from > 90 * DAY_MS) {
+        res.status(400).json({ error: "invalid_range" });
+        return;
+      }
+      try {
+        res.json(await audit.summary(botOwnerDid(req.user!.address), new Date(from).toISOString(), new Date(to).toISOString()));
+      } catch {
+        res.status(503).json({ error: "reads_unavailable" });
+      }
+    });
+  }
   if (standing) {
     const currentAreas = async (owner: string) => {
       const status = await grants.status(owner);
