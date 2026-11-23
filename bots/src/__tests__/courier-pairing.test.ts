@@ -1,4 +1,5 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -304,4 +305,22 @@ test("a local failure while storing a library-verified C revokes it by its exact
   expect(await store.getPending(owner, "reader")).toBeUndefined();
   expect(await store.listRetired(owner)).toEqual([]);
   expect(await pairing.list(owner)).toEqual([]);
+});
+
+test("when the cleanup duty cannot be sealed, a verified C is revoked directly once and only a fixed outcome is logged", async () => {
+  const { pairing, adapter, store } = setup();
+  const finalize = adapter.finalizePairing;
+  adapter.finalizePairing = async (ctx, pending, artifact) => ({ ...await finalize(ctx, pending, artifact), proof: { cid: "" } });
+  const revoked: unknown[] = [];
+  adapter.unpair = async (_ctx, peer) => { revoked.push(peer); };
+  await pairing.pair(owner, JSON.stringify(start));
+  store.retire = async () => { throw new Error("disk_full"); };
+  const log = spyOn(console, "log").mockImplementation(() => {});
+  try {
+    await expect(pairing.pair(owner, JSON.stringify(final))).rejects.toThrow("disk_full");
+    expect(revoked).toEqual([{ handle: "reader", peerDid: start.from.courier, delegation: { pending: { handle: "reader", peerDid: start.from.courier, pairingId: "01J00000000000000000000000" } } }]);
+    expect(log.mock.calls.map(call => JSON.parse(String(call[0])))).toEqual([
+      { gateway: "courier", peer: createHash("sha256").update(start.from.courier).digest("hex").slice(0, 12), outcome: "revoked_unsealed" },
+    ]);
+  } finally { log.mockRestore(); }
 });
