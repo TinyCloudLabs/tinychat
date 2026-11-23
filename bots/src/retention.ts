@@ -19,7 +19,7 @@ import type { SandboxLauncher } from "./bot";
 import type { BotLayout } from "./layout";
 
 /** Why a deletion kept the bot's working state: a fixed code, logged as `cause`. */
-export type DeleteSkip = "archive_pending" | "closing" | "gateway_cleanup_pending" | "teardown_failed" | "unsafe_path" | "mounted" | "error";
+export type DeleteSkip = "archive_pending" | "ungranted_retained" | "closing" | "gateway_cleanup_pending" | "teardown_failed" | "unsafe_path" | "mounted" | "error";
 
 /** Records that the bot served a request at `at`: a temporary file, fsynced, renamed over the marker. */
 export function markUsed(layout: BotLayout, at = Date.now()): void {
@@ -69,7 +69,12 @@ export async function removeWorkingState(
   }
   if (host.mountPoints!().some(point => dirs.some(dir => point === dir || point.startsWith(`${dir}${sep}`)))) return "mounted";
   await host.removeState?.(layout);
-  for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
+  for (const dir of dirs) {
+    // The conversation's state goes before anything else in the directory, so a delete that stops part-way leaves the
+    // conversation id, and with it the mark of owner data that conversation read.
+    rmSync(join(dir, "state"), { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true });
+  }
   return undefined;
 }
 

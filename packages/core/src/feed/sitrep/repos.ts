@@ -121,7 +121,6 @@ export const KNOWN_REPOS: Record<string, string> = {
   "technology-map": "TinyCloudLabs/technology-map",
   "telegram-gate": "TinyCloudLabs/telegram-gate",
   "test-audio-recorder": "TinyCloudLabs/test-audio-recorder",
-  "tinyapps": "TinyCloudLabs/tinyapps",
   "tinyboilerplate": "TinyCloudLabs/tinyboilerplate",
   "tinychat": "TinyCloudLabs/tinychat",
   "tinycloud-agents": "TinyCloudLabs/tinycloud-agents",

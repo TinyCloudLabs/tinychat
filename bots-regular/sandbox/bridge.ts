@@ -1,13 +1,13 @@
 // The stdio bridge: the boot process of every regular bot sandbox. It runs OMP and carries OMP's stdin and stdout over
 // one WebSocket.
 //
-//   127.0.0.1:ARM_PORT  POST /arm  {"bridgeToken","gatewayToken","gatewayUrl","model"}  from `arm.ts`. Kept in memory.
-//                       Arming again replaces them and closes any open connection.
+//   127.0.0.1:ARM_PORT  POST /arm  {"bridgeToken","gatewayToken","gatewayUrl","model","role","ompConfig","botName"}
+//                       from `arm.ts`. Kept in memory. Arming again replaces them and closes any open connection.
 //   0.0.0.0:BRIDGE_PORT GET /rpc   WebSocket, `Authorization: Bearer <bridgeToken>`. One connection at a time. Opening
 //                       it starts OMP; closing it ends OMP, and OMP ending closes it.
 
 import { createHash, timingSafeEqual } from "node:crypto";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ServerWebSocket, Subprocess } from "bun";
 
@@ -19,12 +19,27 @@ const BRIDGE_HOST = process.env.BRIDGE_HOST ?? "0.0.0.0";
 const HOME = process.env.HOME ?? "/root";
 /** The agent to run; tests and the local check pass a stand-in. */
 const AGENT = process.argv.length > 2 ? process.argv.slice(2) : ["omp", "--mode", "rpc", "--no-ui"];
+/** The prompt files from bots/sandbox/prompts, one per role; the sandbox image holds them here. */
+const PROMPT_DIR = process.env.BOT_PROMPT_DIR ?? "/opt/tinycloud/prompts";
+const ROLES = ["main", "sibling"] as const;
+/** The name the owner sees, as bots/src/owner.ts botNameFrom takes it: one line of 1 to 24 characters. */
+// eslint-disable-next-line no-control-regex
+const BOT_NAME = /^[^\u0000-\u001f\u007f-\u009f\u2028\u2029]{1,24}$/u;
+/** Where a prompt puts the bot's name (TC-3790). */
+const NAME_TAG = "{{botName}}";
 
 interface Armed {
   bridgeToken: string;
   gatewayToken: string;
   gatewayUrl: string;
   model: string;
+  /** Main or a sibling; picks the bot's system prompt. Absent from an older service. */
+  role?: (typeof ROLES)[number];
+  /** OMP's config.yml from the service (bots/ `configYml()`), which turns off the tools a bot does not get. Required:
+   * OMP never starts on no config or on one left in the box. */
+  ompConfig: string;
+  /** The name the owner sees, for the prompt's wording only. Absent from an older service: the prompt says TrustBot. */
+  botName?: string;
 }
 
 let armed: Armed | undefined;
@@ -46,7 +61,7 @@ function modelsYml(gatewayUrl: string, model: string): string {
     "    apiKey: BOT_TOKEN",
     "    models:",
     `      - id: ${JSON.stringify(model)}`,
-    `        name: ${JSON.stringify(`TinyCloud (${model})`)}`,
+    `        name: ${JSON.stringify(model)}`,
     "        reasoning: false",
     "",
   ].join("\n");
@@ -54,12 +69,16 @@ function modelsYml(gatewayUrl: string, model: string): string {
 
 function parseArm(value: unknown): Armed | undefined {
   if (typeof value !== "object" || value === null) return undefined;
-  const { bridgeToken, gatewayToken, gatewayUrl, model } = value as Record<string, unknown>;
+  const { bridgeToken, gatewayToken, gatewayUrl, model, role, ompConfig, botName } = value as Record<string, unknown>;
   if (typeof bridgeToken !== "string" || !HEX_64.test(bridgeToken)) return undefined;
   if (typeof gatewayToken !== "string" || !HEX_64.test(gatewayToken)) return undefined;
   if (typeof gatewayUrl !== "string" || !/^http:\/\/[^\s"]+\/bots\/[0-9a-f]{64}\/v1$/.test(gatewayUrl)) return undefined;
   if (typeof model !== "string" || !/^[\w.:/-]{1,128}$/.test(model)) return undefined;
-  return { bridgeToken, gatewayToken, gatewayUrl, model };
+  const known = ROLES.find(entry => entry === role);
+  if (role !== undefined && !known) return undefined;
+  if (typeof ompConfig !== "string" || ompConfig.length === 0 || ompConfig.length > 2048) return undefined;
+  if (botName !== undefined && (typeof botName !== "string" || botName.trim() !== botName || !BOT_NAME.test(botName))) return undefined;
+  return { bridgeToken, gatewayToken, gatewayUrl, model, ompConfig, ...(known ? { role: known } : {}), ...(botName !== undefined ? { botName } : {}) };
 }
 
 function closeOpen(reason: string): void {
@@ -109,7 +128,16 @@ const rpcServer = Bun.serve<undefined>({
       const agentDir = join(HOME, ".omp", "agent");
       mkdirSync(agentDir, { recursive: true });
       writeFileSync(join(agentDir, "models.yml"), modelsYml(config.gatewayUrl, config.model));
-      const agent = Bun.spawn(AGENT, {
+      writeFileSync(join(agentDir, "config.yml"), config.ompConfig);
+      // Without a role, or without its file (OMP would take the path itself as the prompt), OMP finds the role-neutral
+      // ~/.omp/agent/SYSTEM.md instead. The bot's name goes where the prompt says {{botName}}, in a copy.
+      const template = config.role && join(PROMPT_DIR, `${config.role}.md`);
+      let prompt: string | undefined;
+      if (template && existsSync(template)) {
+        prompt = join(agentDir, "system-prompt.md");
+        writeFileSync(prompt, readFileSync(template, "utf8").split(NAME_TAG).join(config.botName ?? "TrustBot"));
+      }
+      const agent = Bun.spawn(prompt ? [...AGENT, "--system-prompt", prompt] : AGENT, {
         cwd: HOME,
         env: { PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin", HOME, BOT_TOKEN: config.gatewayToken, PI_NO_TITLE: "1" },
         stdin: "pipe",

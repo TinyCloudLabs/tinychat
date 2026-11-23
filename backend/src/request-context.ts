@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHmac, randomUUID } from "node:crypto";
 import type { Express, NextFunction, Request, RequestHandler, Response } from "express";
-import type { FailureCause } from "./billing/settle.js";
+import type { FailureCause, ReplyOutcome } from "./billing/settle.js";
 
 // Legacy Private/hosted correlation headers intentionally keep their existing broader UUID syntax.
 const LEGACY_CORRELATION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -13,6 +13,11 @@ const METHODS: Record<string, true> = {
 
 export type StreamOutcome = "done" | "error" | "aborted";
 export type CreditsBucket = "0" | "1-9" | "10-99" | "100-999" | "1000+";
+export type AgentChatBudgetMode = "log" | "enforce" | "off";
+export type AgentChatBudgetBucket = "lt0" | "0-99" | "100-319" | "320-999" | "1000+" | "unknown";
+export type AgentChatBudgetTier = "free" | "plus" | "pro";
+/** Which path set the remaining budget: the ledger, the local counter, or the local counter standing in for an unreadable ledger. */
+export type AgentChatBudgetSource = "ledger" | "local" | "outage";
 
 export type RequestEvent = {
   event: "tinychat_request";
@@ -33,6 +38,34 @@ export type RequestEvent = {
   credits?: CreditsBucket;
   /** Keyed HMAC of the authenticated account and the record's UTC month; omitted when unauthenticated or no key is configured. */
   account_hash?: string;
+} | {
+  event: "agent_chat_budget_preflight";
+  mode: AgentChatBudgetMode;
+  /** The remaining budget is known and under the per-turn minimum, whatever the mode. */
+  would_block: boolean;
+  /** would_block under `enforce`: the turn was refused. */
+  blocked: boolean;
+  remaining_known: boolean;
+  remaining_bucket: AgentChatBudgetBucket;
+  minimum: number;
+  tier: AgentChatBudgetTier;
+  source: AgentChatBudgetSource;
+  /** Keyed monthly pseudonym of the authenticated account; omitted when no key is configured. */
+  account_hash?: string;
+  /** The same ID as this request's `tinychat_request` record. */
+  request_id?: string;
+  /** Present (true) only when the model had no catalog price and the fallback rates set `minimum`. */
+  unpriced?: true;
+} | {
+  event: "agent_turn_settled";
+  /** Unclamped credit cost of the settled turn. */
+  raw_credits: number;
+  /** Credits actually charged after clamping to the budget. */
+  charged: number;
+  window_kind: "day" | "week";
+  outcome: ReplyOutcome;
+  /** Provider rounds started; only the Eliza task path knows it. */
+  started_attempts?: number;
 } | {
   event: "tinychat_request_diagnostic";
   request_id: string;
@@ -84,6 +117,90 @@ export function requestLogCreditsBucket(credits: number): CreditsBucket {
   if (credits < 10) return "1-9";
   if (credits < 100) return "10-99";
   if (credits < 1000) return "100-999";
+  return "1000+";
+}
+
+/** One agent chat credit check (TC-3734), emitted for every turn that reaches the budget check, whatever the mode.
+ * It carries the decision inputs as buckets and flags, the request's own ID and the keyed account pseudonym, never an
+ * address, message text or exact credit count. Like the request record it goes through the typed sink, because the log
+ * boundary reduces any console output inside a request to a level. Outside a request scope nothing is emitted.
+ * Best effort: it never breaks a turn.
+ */
+export function recordAgentChatBudgetPreflight(args: {
+  address: string;
+  mode: AgentChatBudgetMode;
+  remaining: number | null;
+  minimum: number;
+  tier: AgentChatBudgetTier;
+  source: AgentChatBudgetSource;
+  /** The model had no catalog price, so the fallback rates set `minimum`. */
+  unpriced?: boolean;
+}): void {
+  const active = context.getStore();
+  if (!active) return;
+  try {
+    const { mode, remaining, minimum } = args;
+    const wouldBlock = remaining !== null && remaining < minimum;
+    const accountHash = requestLogAccountHash(args.address);
+    active.emit({
+      event: "agent_chat_budget_preflight",
+      mode,
+      would_block: wouldBlock,
+      blocked: wouldBlock && mode === "enforce",
+      remaining_known: remaining !== null,
+      remaining_bucket: budgetRemainingBucket(remaining),
+      minimum,
+      tier: args.tier,
+      source: args.source,
+      ...(accountHash ? { account_hash: accountHash } : {}),
+      ...(active.requestId ? { request_id: active.requestId } : {}),
+      ...(args.unpriced === true ? { unpriced: true as const } : {}),
+    });
+  } catch {
+    // Diagnostics only.
+  }
+}
+
+/** One settled agent chat turn (TC-3734): the real per-turn credit cost beside what was charged, so the per-turn
+ * minimum can be checked against observed costs. No ID, address, model or text is a field. Emitted through the typed
+ * sink; outside a request scope nothing is emitted. A non-integer or negative cost skips the event; an invalid
+ * started_attempts is omitted. Best effort: it never breaks a turn.
+ */
+export function recordAgentTurnSettled(args: {
+  rawCredits: number;
+  charged: number;
+  windowKind: "day" | "week";
+  outcome: ReplyOutcome;
+  startedAttempts?: number;
+}): void {
+  const active = context.getStore();
+  if (!active) return;
+  try {
+    const { rawCredits, charged, startedAttempts } = args;
+    if (!isCount(rawCredits) || !isCount(charged)) return;
+    active.emit({
+      event: "agent_turn_settled",
+      raw_credits: rawCredits,
+      charged,
+      window_kind: args.windowKind,
+      outcome: args.outcome,
+      ...(isCount(startedAttempts) ? { started_attempts: startedAttempts } : {}),
+    });
+  } catch {
+    // Diagnostics only.
+  }
+}
+
+function isCount(value: number | undefined): value is number {
+  return Number.isSafeInteger(value) && (value as number) >= 0;
+}
+
+function budgetRemainingBucket(remaining: number | null): AgentChatBudgetBucket {
+  if (remaining === null || Number.isNaN(remaining)) return "unknown";
+  if (remaining < 0) return "lt0";
+  if (remaining < 100) return "0-99";
+  if (remaining < 320) return "100-319";
+  if (remaining < 1000) return "320-999";
   return "1000+";
 }
 

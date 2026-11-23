@@ -1,10 +1,10 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type JSX, type ReactNode } from "react";
+import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState, type JSX, type ReactNode } from "react";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
-import { HomeAskBox } from "@/bots/HomeAskBox";
 import { CardBody, cardClass, CardTextContext, cardTime, chipClass, COMMENT_COPY, focusRing, quietClass } from "./cardKit";
 import { MessageCircleIcon } from "lucide-react";
 import { homeFeedSourceFor } from "./feedStore";
 import { HomeFeedEntries } from "./HomeFeedEntries";
+import { FinishSetupBanner } from "./FinishSetupBanner";
 import { useFeedCardLink, type FeedCardLink } from "./feedCardLink";
 import type { HomeFeedSource } from "./feedStoreTypes";
 import { safeUrl, selectFeed, type FeedCard } from "./feedData";
@@ -15,6 +15,10 @@ import { inBackground } from "../lib/localFirst/requestLanes";
 import { CourierMark, StatusMark, TypeLabel } from "./CompactCard";
 import { ShortTime } from "./ShortTime";
 import { FeedLink, LinkSheetHost } from "./FeedLink";
+
+// Home's ask box, Main's chat and its question cards are a chunk of their own, out of the entry chunk (TC-2882). The box
+// shows nothing until the bots service has answered anyway, so loading it after boot shows nothing later than before.
+const HomeAskBox = lazy(() => import("@/bots/HomeAskBox").then((m) => ({ default: m.HomeAskBox })));
 
 /** How often a change in the Feed may re-run the card.md check (cardMd.ts syncCardMd); an open always runs it. */
 const CARD_MD_SYNC_MS = 5 * 60_000;
@@ -342,10 +346,10 @@ function SampleFeedEntries({ realEntries }: { realEntries: unknown }): JSX.Eleme
   </main>;
 }
 
-export function FeedViewEntries({ realEntries, source, ask, linked }: { realEntries: unknown; source?: HomeFeedSource; ask?: ReactNode; linked?: FeedCardLink | null }): JSX.Element {
+export function FeedViewEntries({ realEntries, source, ask, linked, finishSetup }: { realEntries: unknown; source?: HomeFeedSource; ask?: ReactNode; linked?: FeedCardLink | null; finishSetup?: ReactNode }): JSX.Element {
   // One sheet for every link in the Feed, its cards, briefs and pages included.
   return <>
-    {source ? <HomeFeedEntries source={source} ask={ask} linked={linked} /> : <SampleFeedEntries realEntries={realEntries} />}
+    {source ? <HomeFeedEntries source={source} ask={ask} linked={linked} finishSetup={finishSetup} /> : <SampleFeedEntries realEntries={realEntries} />}
     <LinkSheetHost />
   </>;
 }
@@ -353,8 +357,8 @@ export function FeedViewEntries({ realEntries, source, ask, linked }: { realEntr
 export function FeedView({ tcw, onReconnect }: { tcw: TinyCloudWeb | null; onReconnect?: () => void }): JSX.Element {
   const source = useMemo(() => tcw ? homeFeedSourceFor(tcw) : null, [tcw]);
   const linked = useFeedCardLink();
-  // Agents connected since the last run get the owner's card.md the first time the Feed sees them: on open, and on a
-  // change at most every five minutes, behind the Feed's own reads.
+  // Agents connected since the last run get the owner's card.md the first time the Feed sees them, and a copy that
+  // differs from it is rewritten: on open, and on a change at most every five minutes, behind the Feed's own reads.
   useEffect(() => {
     if (!tcw || !source) return;
     let last = Number.NEGATIVE_INFINITY;
@@ -367,6 +371,6 @@ export function FeedView({ tcw, onReconnect }: { tcw: TinyCloudWeb | null; onRec
     return source.subscribe(sync);
   }, [tcw, source]);
   return source
-    ? <FeedViewEntries key={`${tcw?.did}:${tcw?.spaceId}`} realEntries={[]} source={source} linked={linked} ask={<HomeAskBox tcw={tcw ?? undefined} onReconnect={onReconnect} />} />
+    ? <FeedViewEntries key={`${tcw?.did}:${tcw?.spaceId}`} realEntries={[]} source={source} linked={linked} ask={<Suspense fallback={null}><HomeAskBox tcw={tcw ?? undefined} onReconnect={onReconnect} /></Suspense>} finishSetup={<FinishSetupBanner tcw={tcw} />} />
     : <main aria-label="Feed" className="p-6 text-sm text-muted-foreground">Sign in to load your feed.</main>;
 }

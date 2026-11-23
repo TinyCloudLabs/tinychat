@@ -1,4 +1,4 @@
-import { StrictMode } from "react";
+import { lazy, StrictMode, Suspense } from "react";
 import { createRoot } from "react-dom/client";
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { App as CapacitorApp } from "@capacitor/app";
@@ -27,10 +27,16 @@ import { billingLinksAllowed } from "./lib/openManageStorage";
 import { hideSdkPurchaseLinks } from "./lib/sdkPanelPurchaseLinks";
 import { hydrateDurableKeys } from "./lib/durableKeys";
 import { APP_LOCK_PREFS_KEY } from "./lib/appLock";
-import { HIDDEN_FEATURES_KEY } from "./lib/hiddenFeatures";
 import { NATIVE_SESSION_KIND_KEY, NATIVE_SIGN_OUT_PENDING_KEY } from "./lib/openkeyNative";
 import { captureShareLinkFromLocation } from "./lib/nativeShares/link";
 import { ShareAppUrlListener } from "./capture/share/ShareAppUrlListener";
+import { installStatusTapScroll } from "./lib/statusTapScroll";
+
+const HandoffRoute = lazy(() => import("./handoff/HandoffPage").catch(() => {
+  // The route could not mount to consume the fragment captured by index.html.
+  window.takeHandoffFragment?.();
+  return { default: () => <Navigate to="/" replace /> };
+}));
 
 // A share link's key is in its fragment (TC-3195): read it into memory and take it off the address bar before
 // anything else runs, so no log, report or later navigation can carry it.
@@ -64,6 +70,8 @@ if (platform === "ios") {
   }).catch((error: unknown) => {
     console.error("[DynamicType] Could not listen for app resume", error);
   });
+  // The screens scroll inside their own boxes, not the document: the native status-bar tap arrives as a `statusTap` event.
+  installStatusTapScroll();
 }
 initSizeClass();
 initTheme();
@@ -102,7 +110,7 @@ void installEd25519Polyfill().catch((error: unknown) => {
   // The phone app's settings that outlive its WebView storage (durableKeys.ts), in place before anything reads
   // them. A local file read; the bound only keeps a stuck bridge from holding the app at a blank screen.
   await Promise.race([
-    hydrateDurableKeys([APP_LOCK_PREFS_KEY, NATIVE_SESSION_KIND_KEY, NATIVE_SIGN_OUT_PENDING_KEY, HIDDEN_FEATURES_KEY]),
+    hydrateDurableKeys([APP_LOCK_PREFS_KEY, NATIVE_SESSION_KIND_KEY, NATIVE_SIGN_OUT_PENDING_KEY]),
     new Promise((resolve) => setTimeout(resolve, 2000)),
   ]);
   const move = await originMove;
@@ -117,6 +125,7 @@ void installEd25519Polyfill().catch((error: unknown) => {
         <BrowserRouter>
           <Routes>
             <Route path="/" element={<RootRoute />} />
+            <Route path="/handoff" element={<Suspense><HandoffRoute /></Suspense>} />
             <Route path="/about" element={<AboutRedirect />} />
             <Route path={`${FEED_ALIAS_PATH}/:cardId`} element={<FeedCardAlias />} />
             <Route path="/chat/*" element={<CaptureEngineGate><App /></CaptureEngineGate>} />

@@ -73,6 +73,12 @@ An agent chat turn is kept within the remaining credit budget. Two env vars cont
 
 Invalid values log a warning and fall back to the default. A turn stopped by the in-turn check ends with the stream error code `budget_exhausted`; text produced before the stop remains visible.
 
+The pre-flight minimum is the cost of one short turn at the turn's own model rates: 8,000 input and 1,000 output tokens (`minTurnCredits` in `backend/src/billing/turn-budget.ts`). On 2026-11-22 rates that is 150 credits on `z-ai/glm-5.2`, 31 on `qwen/qwen3.6-35b-a3b` and 390 on `moonshotai/kimi-k3`. A model without catalog pricing uses the fallback rates, so its minimum is 2,600. Ten controlled production turns on 2026-11-22 (TC-3734, free tier, no delegation) cost 4 to 110 credits: a short answer about 300 input tokens, a one-search turn about 2,000, a three-search research turn up to 3,775 input and 1,936 output. Every `z-ai/glm-5.2` turn stayed under its minimum; one `qwen/qwen3.6-35b-a3b` search turn wrote 2,266 output tokens and cost 39, above its 31. Turns that read private data were not measured and may cost more.
+
+Every preflight evaluation also ships a structured `agent_chat_budget_preflight` event (mode, `would_block`, a remaining-credit bucket, tier, source, `account_hash`, `request_id`, and `unpriced: true` when the model had no catalog price and the 2,600 fallback minimum applied), so the share of turns under the minimum can be counted before `enforce` is chosen. See `docs/dev-logging.md`.
+
+Every settled agent turn also ships an `agent_turn_settled` event (`raw_credits`, `charged`, `window_kind`, `outcome`, and `started_attempts` on the Eliza task path), with no IDs, so real per-turn cost can be compared with the per-turn minimum. See `docs/dev-logging.md`.
+
 The two env vars above drive the in-turn monitor of the Eliza `/tasks` path only. Every path (including that one) is also bounded by the reply allowance below.
 
 Agent turns settle observed credit usage before the success or provider-error terminal frame and before ending the response, so an immediate follow-up `/api/chat` request uses the updated usage and returns HTTP 402 `credit_budget_exceeded` when the budget is exhausted. Two orderings differ: `/api/chat` settles right after it ends the response, and an agent turn that times out has its `stream_error` and `[DONE]` written by the stream owner (on the deadline) before the handler settles.
@@ -91,7 +97,7 @@ A reply's **allowance** is the credits the account still had in its window when 
 
 ### Single instance
 
-The in-memory usage counter, each reply's allowance and the settlement clamp assume **one backend instance** (see `docs/connector-webhooks-single-instance.md`). With a second instance each keeps its own counter, so the clamp can read stale and two replies on different instances could both be charged up to the limit. Running more than one instance is a design decision, not a config change: the fix would be an atomic conditional debit in the ledger. `backend/src/__tests__/single-instance-credit-counter.test.ts` fails if `docker-compose.phala.yml` defines more than one `tinychat-backend` or replicates it.
+The in-memory usage counter, each reply's allowance and the settlement clamp assume **one backend instance**. With a second instance each keeps its own counter, so the clamp can read stale and two replies on different instances could both be charged up to the limit. Running more than one instance is a design decision, not a config change: the fix would be an atomic conditional debit in the ledger. `backend/src/__tests__/single-instance-credit-counter.test.ts` fails if `docker-compose.phala.yml` defines more than one `tinychat-backend` or replicates it.
 
 ## Paid windows are anchored, not calendar
 

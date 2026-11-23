@@ -16,6 +16,581 @@
 - TC-2204: Native audience checks accept Home's three exact SQL hook subscriptions only alongside an existing TinyChat data grant.
 - TC-2499: The Home mirror adapter persists close receipts using node-compatible NULL/non-NULL compare-and-set predicates. If the KV mirror is already exactly closed but its receipt is missing, recovery records the original publication ETag without writing the KV copy again, before any gated child handoff. The CLI reports JSON error class, safe message, code, HTTP status when available, and operation step; private SQL bodies and nested causes remain redacted. Exit 2 identifies invalid input, exit 6 known transient failures (including NODE_BUSY and REQUEST_TIMEOUT without HTTP metadata), and exit 1 other runtime failures or OUTCOME_UNKNOWN. Unclassified errors are not labelled bad input; no failure confirms delivery or authorizes an automatic retry.
 
+## 0.20.2
+
+### Patch Changes
+
+- 98b74de: Bot chat history in TinyChat is sealed with its own encryption key. Saving new history needs your approval for that one key. When you open earlier messages, TinyChat can move them to that key.
+
+  Details: TC-3823
+
+- b3cbf13: Web sign-in and Connectors can renew access with your approval in OpenKey. When the approval includes access to your secrets, each renewal lasts up to seven days.
+
+  Details: TC-4000
+
+- 472f192: Desktop sign-in can renew access with your approval in OpenKey. Each renewal of access to your secrets lasts up to seven days.
+
+  Details: TC-4000
+
+- afc5b2e: The Contacts tile no longer appears in One Apps.
+- ed8f146: Keep TrustBot read access active in Home by quietly renewing the read grant for enabled areas while the owner session can extend it.
+
+  Details: TC-4000
+
+- c12c58e: The sign-in for Connectors now asks for access to each connector key's own encryption key, next to the access that already covers your whole account. Connector keys you save are still stored the same way for now; saving them under their own key is built behind a switch that stays off. If you already use Connectors, you sign in once more the next time you open them so the new access can be approved.
+
+  Details: TC-3284
+
+- cab6b24: Open the agent setup handoff in TinyCloud One with a connection summary, an app list and prompts to try in your agent chat.
+
+  Details: TC-3302
+
+## 0.20.2-beta.6
+
+### Patch Changes
+
+- ed8f146: Keep TrustBot read access active in Home by quietly renewing the read grant for enabled areas while the owner session can extend it.
+
+  Details: TC-4000
+
+## 0.20.2-beta.5
+
+### Patch Changes
+
+- cab6b24: Open the agent setup handoff in TinyCloud One with a connection summary, an app list and prompts to try in your agent chat.
+
+  Details: TC-3302
+
+## 0.20.2-beta.4
+
+### Patch Changes
+
+- 472f192: Desktop sign-in can renew access with your approval in OpenKey. Each renewal of access to your secrets lasts up to seven days.
+
+  Details: TC-4000
+
+## 0.20.2-beta.3
+
+### Patch Changes
+
+- b3cbf13: Web sign-in and Connectors can renew access with your approval in OpenKey. When the approval includes access to your secrets, each renewal lasts up to seven days.
+
+  Details: TC-4000
+
+## 0.20.2-beta.2
+
+### Patch Changes
+
+- 98b74de: Bot chat history in TinyChat is sealed with its own encryption key. Saving new history needs your approval for that one key. When you open earlier messages, TinyChat can move them to that key.
+
+  Details: TC-3823
+
+## 0.20.2-beta.1
+
+### Patch Changes
+
+- afc5b2e: The Contacts tile no longer appears in One Apps.
+
+## 0.20.2-beta.0
+
+### Patch Changes
+
+- c12c58e: The sign-in for Connectors now asks for access to each connector key's own encryption key, next to the access that already covers your whole account. Connector keys you save are still stored the same way for now; saving them under their own key is built behind a switch that stays off. If you already use Connectors, you sign in once more the next time you open them so the new access can be approved.
+
+  Details: TC-3284
+
+## 0.20.1
+
+### Patch Changes
+
+- 860822f: The copy of your data kept in this browser clears itself when the access behind it is revoked. The app reads the revocation from the TinyCloud node's current refusal message. The server and the bots service use the same TinyCloud SDK release, and sign-ins keep their 30 day length.
+
+  Details: TC-3947
+
+## 0.20.1-beta.0
+
+### Patch Changes
+
+- 860822f: The copy of your data kept in this browser clears itself when the access behind it is revoked. The app reads the revocation from the TinyCloud node's current refusal message. The server and the bots service use the same TinyCloud SDK release, and sign-ins keep their 30 day length.
+
+  Details: TC-3947
+
+## 0.20.0
+
+### Minor Changes
+
+- 7c59928: When approving a secret fails, the card says TrustBot can't use it and that nothing was shared, with a Try again button.
+
+  Details: TC-3790
+
+- 53d24c2: The secret card's stop and ended messages are shorter: "Stop TrustBot using the secret?", "Stopped. TrustBot can't use the secret." and "If TrustBot needs it later, you'll see a new request."
+
+  Details: TC-3790
+
+- 6b4538d: TrustBot's chat has a Meetings switch that grants read-only access to your meetings. Once TrustBot reads a meeting, its secret and question cards name meeting transcripts in their warning, and a proposal card in that chat shows "Not sent." with Send off.
+
+  Details: TC-3792
+
+### Patch Changes
+
+- 7d2eccc: Main can send one message to several of your bots after you tap Send. The card shows the message and who gets it before anything goes, and Don't send is final. Without your Send, Main messages at most one bot for each message you send. This needs the setting that lets Main ask you questions, which is off until you turn it on.
+
+  Details: TC-3793
+
+- d758ec3: If you decline encryption for your chat with TrustBot, the chat says so once and offers a button to review the request, and nothing is sent until you allow it.
+
+  Starting a new chat with TrustBot says it lifts a pause on secrets too.
+
+  Details: TC-3887
+
+- 8da798f: One Apps lists Contacts, which opens contacts.tinycloud.xyz in a new tab.
+
+  Details: TC-3889
+
+## 0.20.0-beta.5
+
+### Patch Changes
+
+- 8da798f: One Apps lists Contacts, which opens contacts.tinycloud.xyz in a new tab.
+
+  Details: TC-3889
+
+## 0.20.0-beta.4
+
+### Patch Changes
+
+- d758ec3: If you decline encryption for your chat with TrustBot, the chat says so once and offers a button to review the request, and nothing is sent until you allow it.
+
+  Starting a new chat with TrustBot says it lifts a pause on secrets too.
+
+  Details: TC-3887
+
+## 0.20.0-beta.3
+
+### Minor Changes
+
+- 7c59928: When approving a secret fails, the card says TrustBot can't use it and that nothing was shared, with a Try again button.
+
+  Details: TC-3790
+
+## 0.20.0-beta.2
+
+### Minor Changes
+
+- 6b4538d: TrustBot's chat has a Meetings switch that grants read-only access to your meetings. Once TrustBot reads a meeting, its secret and question cards name meeting transcripts in their warning, and a proposal card in that chat shows "Not sent." with Send off.
+
+  Details: TC-3792
+
+## 0.20.0-beta.1
+
+### Patch Changes
+
+- 7d2eccc: Main can send one message to several of your bots after you tap Send. The card shows the message and who gets it before anything goes, and Don't send is final. Without your Send, Main messages at most one bot for each message you send. This needs the setting that lets Main ask you questions, which is off until you turn it on.
+
+  Details: TC-3793
+
+## 0.20.0-beta.0
+
+### Minor Changes
+
+- 53d24c2: The secret card's stop and ended messages are shorter: "Stop TrustBot using the secret?", "Stopped. TrustBot can't use the secret." and "If TrustBot needs it later, you'll see a new request."
+
+  Details: TC-3790
+
+## 0.19.0
+
+### Minor Changes
+
+- 03d29de: The bot you've known as Main is called TrustBot. Your chat history stays as it is.
+
+  Details: TC-3790
+
+### Patch Changes
+
+- 99b2305: MCP falls back to Fireflies KV records only when the SQL store is known to be empty. The Library filters and rechecks cached server-imported rows against the flag and the purge ledger, and pages KV with `nextCursor` and `truncated`. MCP's KV truncation text names the size limit.
+
+  Details: TC-3919
+
+## 0.19.0-beta.1
+
+### Patch Changes
+
+- 99b2305: Restrict MCP Fireflies KV fallback to proven-absent SQL stores, filter and revalidate cached server-imported Library rows against the active flag and purge ledger, align Library KV paging with `nextCursor` and `truncated` and update the MCP KV truncation text.
+
+  Details: TC-3919
+
+## 0.19.0-beta.0
+
+### Minor Changes
+
+- 03d29de: The bot you've known as Main is called TrustBot. Your chat history stays as it is.
+
+  Details: TC-3790
+
+## 0.18.0
+
+### Minor Changes
+
+- 323a384: Library and MCP discover and read KV-only Fireflies server-import meeting records with untrusted-data bounds and purge checks, behind a flag that is off by default.
+
+  Details: TC-3905
+
+- 4ce3e19: Add the "Where your data lives" section in Settings to view the owner's signed location-registry v2 record, request node changes through OpenKey when supported, and undo the latest change from recent history.
+
+  Details: TC-3892
+
+### Patch Changes
+
+- 2dc7989: Main can ask to use a secret. You add it to TinyCloud Secrets and approve it in OpenKey for up to 1 hour. Main can use it only with the sites named in the request and can't see or show its value.
+
+  Details: TC-3595
+
+- 6492b1c: The secret request card says the agent can use an approved secret for 1 hour, and that you can choose less in OpenKey.
+
+  Details: TC-3831
+
+- 1c020ce: TinyCloud One's content policy lets the desktop app talk to its own process, and the screen checks play test recordings from blob addresses.
+
+  Details: TC-3878
+
+- 3dedae7: TinyCloud One's web policy names no desktop bridge; only the desktop build's copy of the policy carries it.
+
+  Details: TC-3878
+
+- 8549747: TinyCloud One on the web and in the phone apps runs only its own scripts and connects only to the services it lists.
+
+  Details: TC-3878
+
+- 7559031: Send only hosts referenced by spaces or Secrets and keys when requesting a registry change from Settings, so moved-away hosts are not retained or probed.
+
+  Details: TC-3892
+
+## 0.18.0-beta.7
+
+### Minor Changes
+
+- 323a384: Library and MCP discover and read KV-only Fireflies server-import meeting records with untrusted-data bounds and purge checks, behind a flag that is off by default.
+
+  Details: TC-3905
+
+## 0.18.0-beta.6
+
+### Patch Changes
+
+- 6492b1c: The secret request card says the agent can use an approved secret for 1 hour, and that you can choose less in OpenKey.
+
+  Details: TC-3831
+
+## 0.18.0-beta.5
+
+### Patch Changes
+
+- 2dc7989: Main can ask to use a secret. You add it to TinyCloud Secrets and approve it in OpenKey for as long as you choose. Main can use it only with the sites named in the request and can't see or show its value.
+
+  Details: TC-3595
+
+## 0.18.0-beta.4
+
+### Patch Changes
+
+- 7559031: Send only hosts referenced by spaces or Secrets and keys when requesting a registry change from Settings, so moved-away hosts are not retained or probed.
+
+  Details: TC-3892
+
+## 0.18.0-beta.3
+
+### Patch Changes
+
+- 3dedae7: TinyCloud One's web policy no longer names the desktop app's bridge; only the desktop build's copy of the policy carries it.
+
+  Details: TC-3878
+
+## 0.18.0-beta.2
+
+### Minor Changes
+
+- 4ce3e19: Add the "Where your data lives" section in Settings to view the owner's signed location-registry v2 record, request node changes through OpenKey when supported, and undo the latest change from recent history.
+
+  Details: TC-3892
+
+## 0.17.1-beta.1
+
+### Patch Changes
+
+- 1c020ce: TinyCloud One's content policy lets the desktop app talk to its own process, and the screen checks play test recordings from blob addresses.
+
+  Details: TC-3878
+
+## 0.17.1-beta.0
+
+### Patch Changes
+
+- 8549747: TinyCloud One on the web and in the phone apps runs only its own scripts and connects only to the services it lists.
+
+  Details: TC-3878
+
+## 0.17.0
+
+### Minor Changes
+
+- 1571ac5: Home shows the "What do you want done?" box and the Agents pill without Show hidden features turned on in Settings.
+
+  Details: TC-3119
+
+- 92f5ec2: Settings has no Hidden features section. The Share button on recordings shows for everyone. On Home, the Agents pill shows for every account that has agents, and the "What do you want done?" box shows for accounts that have agents turned on.
+
+  Details: TC-3119
+
+- f0b15c9: In Chrome and other Chromium browsers on a computer or Android, TinyCloud One keeps an encrypted local copy of your transcripts, so they open faster. It starts at your next sign-in. To stop it, turn off "Keep a local copy of my transcripts on this device" in Settings, or use Delete local copy. Production builds paused this copy from 13 November until web-sdk 3.12 removed a wait of about a second and a half on Home's first screen.
+
+  Details: TC-2883
+
+- 2048626: Every recording with a transcript or audio in your space has a Share button on its detail page, with no setting to turn on.
+
+  Details: TC-3195
+
+### Patch Changes
+
+- d3970bf: TinyCloud One can show the Ship ledger, a read-only view of where each task stands and what it is waiting on. The tile appears only for an account whose TinyCloud holds a ship board.
+
+  Details: TC-3768
+
+- 0118643: Opening a bot other than Main doesn't ask you to approve saving its chat history to your TinyCloud. Only Main's chat is saved there. Other bots' chats are kept by the bot service.
+
+  Details: TC-3813
+
+## 0.17.0-beta.3
+
+### Minor Changes
+
+- 92f5ec2: Settings has no Hidden features section. The Share button on recordings shows for everyone. On Home, the Agents pill shows for every account that has agents, and the "What do you want done?" box shows for accounts that have agents turned on.
+
+  Details: TC-3119
+
+### Patch Changes
+
+- 0118643: Opening a bot other than Main doesn't ask you to approve saving its chat history to your TinyCloud. Only Main's chat is saved there. Other bots' chats are kept by the bot service.
+
+  Details: TC-3813
+
+## 0.17.0-beta.2
+
+### Minor Changes
+
+- f0b15c9: In Chrome and other Chromium browsers on a computer or Android, TinyCloud One keeps an encrypted local copy of your transcripts, so they open faster. It starts at your next sign-in. To stop it, turn off "Keep a local copy of my transcripts on this device" in Settings, or use Delete local copy. Production builds paused this copy from 13 November until web-sdk 3.12 removed a wait of about a second and a half on Home's first screen.
+
+  Details: TC-2883
+
+- 2048626: Every recording with a transcript or audio in your space has a Share button on its detail page, with no setting to turn on.
+
+  Details: TC-3195
+
+## 0.17.0-beta.1
+
+### Minor Changes
+
+- 1571ac5: Home shows the "What do you want done?" box and the Agents pill without Show hidden features turned on in Settings.
+
+  Details: TC-3119
+
+## 0.16.2-beta.0
+
+### Patch Changes
+
+- d3970bf: TinyCloud One can show the Ship ledger, a read-only view of where each task stands and what it is waiting on. The tile appears only for an account whose TinyCloud holds a ship board.
+
+  Details: TC-3768
+
+## 0.16.1
+
+### Patch Changes
+
+- 49239bf: The app retries a failed agent status check after 10 seconds. A second failure waits 4 minutes; later failures wait 5 minutes.
+
+  Details: TC-3739
+
+- 2abe7e5: Inside One, Explorer can read your apps' data but can't change or delete it. Editing stays in Explorer's own tab.
+
+  Details: TC-3675
+
+## 0.16.1-beta.1
+
+### Patch Changes
+
+- 49239bf: The app retries a failed agent status check after 10 seconds. A second failure waits 4 minutes; later failures wait 5 minutes.
+
+  Details: TC-3739
+
+## 0.16.1-beta.0
+
+### Patch Changes
+
+- 2abe7e5: Inside One, Explorer can read your apps' data but can't change or delete it. Editing stays in Explorer's own tab.
+
+  Details: TC-3675
+
+## 0.16.0
+
+### Minor Changes
+
+- 764dd74: On the web, TinyCloud One has an Apps grid and a bar with Pin on every open app. On a phone-sized screen the bar is a floating tab bar that holds your first two pinned apps. The phone and desktop apps get the same in their next builds.
+
+  Details: TC-3650
+
+### Patch Changes
+
+- 09f336a: When a Feed answer fails to send, the app keeps a short note of why on your device: an error code and status, never what you wrote. It keeps the last 20, so the cause can be traced.
+
+  Details: TC-3723
+
+- 09f336a: A Feed answer that fails to send while you're in another app is sent once more when you come back, and it's never recorded twice.
+
+  Details: TC-3723
+
+- d818fd0: You can bring your meetings in from Granola and keep them in sync: connect Granola in Meeting sources.
+
+  Details: TC-3292
+
+- c12869d: When your session expires, signing you out keeps the work this device has not sent yet: post drafts, answers waiting to be sent, finished transcripts waiting to be saved and the records of uploads and transcriptions in progress. It is kept for your account only. Another account that signs in on the same device can't see it or send it, and it is there again when you sign back in. Signing out yourself removes all of it, even while an expired session is signing out. Opening a new chat signs you out only when the server refuses your session. On the phone apps it first tries once to renew the session, unless the session began or was renewed in the last minute or a failed renewal is waiting to retry. On tinycloud.chat and home.tinycloud.xyz, the notice that holds a tab before it moves to the new address counts only your own unsent answers; another account's unsent answers get a line of their own and keep the tab there for up to 7 days.
+
+  Details: TC-3743
+
+- c04a852: TinyCloud One pages can't be shown inside another site's frame.
+
+  Details: TC-3547
+
+- 7817452: Tapping the status bar in the iPhone app scrolls the screen you are on back to the top.
+
+  Details: TC-3722
+
+- 8f8ca25: The TinyChat retrieval skill's setup treats a `tc context` session in the `renewed` state (the original grant has ended but the owner's renewal is still running) like a `present` one.
+
+  Details: TC-2904
+
+- cd2f663: If you use the desktop app on version 0.13.0 or older, or on a beta of 0.14.0, update to 0.15 or later before November 25. If you test on TestFlight, update to the latest build. From November 25, older versions can't open your saved bot chat history and show an error. Nothing is deleted, and updating the app brings the history back.
+
+  Details: TC-2518
+
+- b9bf1e9: On a phone, lifting your finger after pinning or unpinning an app with a long press in Apps opens no app.
+
+  Details: TC-3752
+
+## 0.16.0-beta.7
+
+### Patch Changes
+
+- d818fd0: You can bring your meetings in from Granola and keep them in sync: connect Granola in Meeting sources.
+
+  Details: TC-3292
+
+## 0.16.0-beta.6
+
+### Patch Changes
+
+- b9bf1e9: On a phone, lifting your finger after pinning or unpinning an app with a long press in Apps opens no app.
+
+  Details: TC-3752
+
+## 0.16.0-beta.5
+
+### Patch Changes
+
+- c12869d: When your session expires, signing you out keeps the work this device has not sent yet: post drafts, answers waiting to be sent, finished transcripts waiting to be saved and the records of uploads and transcriptions in progress. It is kept for your account only. Another account that signs in on the same device can't see it or send it, and it is there again when you sign back in. Signing out yourself removes all of it, even while an expired session is signing out. Opening a new chat signs you out only when the server refuses your session. On the phone apps it first tries once to renew the session, unless the session began or was renewed in the last minute or a failed renewal is waiting to retry. On tinycloud.chat and home.tinycloud.xyz, the notice that holds a tab before it moves to the new address counts only your own unsent answers; another account's unsent answers get a line of their own and keep the tab there for up to 7 days.
+
+  Details: TC-3743
+
+## 0.16.0-beta.4
+
+### Patch Changes
+
+- 09f336a: When a Feed answer fails to send, the app keeps a short note of why on your device: an error code and status, never what you wrote. It keeps the last 20, so the cause can be traced.
+
+  Details: TC-3723
+
+- 09f336a: A Feed answer that fails to send while you're in another app is sent once more when you come back, and it's never recorded twice.
+
+  Details: TC-3723
+
+- 7817452: Tapping the status bar in the iPhone app scrolls the screen you are on back to the top.
+
+  Details: TC-3722
+
+## 0.16.0-beta.3
+
+### Patch Changes
+
+- 8f8ca25: The TinyChat retrieval skill's setup treats a `tc context` session in the `renewed` state (the original grant has ended but the owner's renewal is still running) like a `present` one.
+
+  Details: TC-2904
+
+## 0.16.0-beta.2
+
+### Minor Changes
+
+- 764dd74: On the web, TinyCloud One has an Apps grid and a bar with Pin on every open app. On a phone-sized screen the bar is a floating tab bar that holds your first two pinned apps. The phone and desktop apps get the same in their next builds.
+
+  Details: TC-3650
+
+## 0.15.4-beta.1
+
+### Patch Changes
+
+- c04a852: TinyCloud One pages can't be shown inside another site's frame.
+
+  Details: TC-3547
+
+## 0.15.4-beta.0
+
+### Patch Changes
+
+- cd2f663: If you use the desktop app on version 0.13.0 or older, or on a beta of 0.14.0, update to 0.15 or later before November 25. If you test on TestFlight, update to the latest build. From November 25, older versions stop working with your data.
+
+  Details: TC-2518
+
+## 0.15.3
+
+### Patch Changes
+
+- 2b8966c: In the phone app, Explorer opens inside TinyCloud One.
+
+  Details: TC-3568
+
+- 4a67fd5: In the phone app, apps that don't open inside TinyCloud One open in a sheet over it, so you stay in One.
+
+  Details: TC-3568
+
+- 0cd1ccc: The agent setup guide at tinycloud.one/agents/setup.md, the agent setup error messages and the meetings skill name TinyCloud One. The meetings skill is published as version 0.1.1-onboarding.29 and keeps its install name, folders and tool names.
+
+  Details: TC-3659
+
+- 8ba7ee3: The Allow Connectors card says that OpenKey also asks to unlock encrypted data, and says so when that permission is left out.
+
+  Details: TC-3674
+
+- d011402: Your card.md text is carried over as it is when its stored version doesn't match its text.
+
+  Details: TC-3685
+
+## 0.15.3-beta.4
+
+### Patch Changes
+
+- 8ba7ee3: The Allow Connectors card says that OpenKey also asks to unlock encrypted data, and says so when that permission is left out.
+
+  Details: TC-3674
+
+- d011402: Your card.md text is carried over as it is when its stored version doesn't match its text.
+
+  Details: TC-3685
+
+## 0.15.3-beta.3
+
+### Patch Changes
+
+- 0cd1ccc: The agent setup guide at tinycloud.one/agents/setup.md, the agent setup error messages and the meetings skill name TinyCloud One. The meetings skill is published as version 0.1.1-onboarding.29 and keeps its install name, folders and tool names.
+
+  Details: TC-3659
+
 ## 0.15.3-beta.2
 
 No changes in this release.

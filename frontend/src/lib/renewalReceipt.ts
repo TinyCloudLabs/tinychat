@@ -1,8 +1,10 @@
-import { loadRenewalReceipt, saveRenewalReceipt } from "@tinyboilerplate/client";
+import { loadRenewalReceipt, openKeyRenewalClient, saveRenewalReceipt, type ConnectWalletResult, type TinyCloudWebConfig } from "@tinyboilerplate/client";
+import { SESSION_EXPIRATION_MS } from "@tinyboilerplate/core";
 import { parseSignedSiweCacao, pkhDid, principalDidEquals } from "@tinycloud/sdk-core";
 import { admitOwnerRenewalLease } from "@tinycloud/sdk-core/delegations/renewal";
 import { parseApprovalRenewal, type ApprovalRenewal } from "@tinycloud/share-envelope/links";
-import { BrowserSessionStorage, type PersistedSessionData, type TinyCloudWeb } from "@tinycloud/web-sdk";
+import { BrowserSessionStorage, composeManifestRequest, type Manifest, type PersistedSessionData, type TinyCloudWeb } from "@tinycloud/web-sdk";
+import { openKeyFailureOf } from "./authErrors";
 
 /**
  * TC-2872: the renewal lease OpenKey signs when the owner leaves renewal on at sign-in. OpenKey records it, so the
@@ -15,6 +17,80 @@ import { BrowserSessionStorage, type PersistedSessionData, type TinyCloudWeb } f
 
 /** The 90-day renewal TinyCloud One asks OpenKey to offer at sign-in. */
 export const SIGN_IN_RENEWAL_ASK = { version: 1, leaseLifetimeSeconds: 90 * 24 * 60 * 60, purpose: "standing" } as const;
+
+const SENSITIVE_RENEWAL_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** OpenKey limits each renewed window that can reach secrets to seven days. */
+export function webSignInGrantWindow(manifest: Manifest): number {
+  const { resources } = composeManifestRequest([manifest], { includeAccountRegistryPermissions: false });
+  const reachesSecrets = resources.some(({ service, space, path, actions }) => {
+    if (space === "secrets" || space?.endsWith(":secrets")) return true;
+    if (service !== "tinycloud.encryption") return false;
+    const keyPathStart = path.indexOf("/");
+    return keyPathStart === -1
+      ? actions.some((action) => action === "tinycloud.encryption/decrypt" || action === "tinycloud.encryption/*")
+      : path.slice(keyPathStart + 1).startsWith("secrets/");
+  });
+  return reachesSecrets ? Math.min(SESSION_EXPIRATION_MS, SENSITIVE_RENEWAL_WINDOW_MS) : SESSION_EXPIRATION_MS;
+}
+
+/** Keep the draft and accepted expiry in the same window, and track when OpenKey's receipt arrived. */
+export function webSignInRenewal(openkey: ConnectWalletResult["openkey"], manifest: Manifest) {
+  const sessionExpirationMs = webSignInGrantWindow(manifest);
+  let renewal: unknown;
+  let arrivedAt: number | undefined;
+  const config = {
+    sessionExpirationMs,
+    openkey: {
+      client: openKeyRenewalClient(openkey, SIGN_IN_RENEWAL_ASK, (outcome) => {
+        renewal = outcome.renewal;
+        arrivedAt = performance.now();
+      }),
+      mode: "iframe",
+      expiryChangeable: true,
+      maxExpiresAt: () => Date.now() + sessionExpirationMs,
+    },
+  } satisfies TinyCloudWebConfig;
+  return {
+    config,
+    admit: (tcw: Pick<TinyCloudWeb, "activeNodeIdentity">, address: string, storage?: Pick<BrowserSessionStorage, "load">) =>
+      admitSignInRenewal({ tcw, address, renewal, arrivedAt, storage }),
+  };
+}
+
+/** Retry a failed desktop authorization through the finite wallet sign-in. */
+export async function desktopSignInWithRenewal<T>(
+  config: ReturnType<typeof webSignInRenewal>["config"],
+  signIn: (config?: TinyCloudWebConfig) => Promise<T>,
+): Promise<T> {
+  const client = config.openkey.client;
+  let authorizationFailure: { error: unknown } | undefined;
+  try {
+    return await signIn({
+      ...config,
+      openkey: {
+        ...config.openkey,
+        client: {
+          async authorizeTinyCloud(request, options) {
+            try {
+              return await client.authorizeTinyCloud(request, options);
+            } catch (error) {
+              authorizationFailure = { error };
+              throw error;
+            }
+          },
+        },
+      },
+    });
+  } catch (error) {
+    if (!authorizationFailure || authorizationFailure.error !== error) throw error;
+    const failure = openKeyFailureOf(error);
+    const walletCode = (error as { code?: unknown } | null)?.code;
+    if (walletCode === 4001 || walletCode === "ACTION_REJECTED") throw error;
+    if (failure.kind !== "failed" && failure.kind !== "popup-blocked") throw error;
+    return signIn();
+  }
+}
 
 const RENEW = "tinycloud.delegation/renew";
 

@@ -52,12 +52,14 @@ import { nativeVoiceNotesAvailable } from "../lib/voiceNotes/nativeVoiceNotes";
 import { appPlatform } from "../lib/platform";
 import { useSizeClass } from "../lib/sizeClass";
 import { PageHeader } from "../shell/PageHeader";
+import { ONE_NAV_ENABLED } from "../shell/navPins";
 import { PATHS } from "../shell/routes";
 import { FirstScreenControl } from "../home/FirstScreenControl";
 import { ChatViewSetting } from "../bots/ChatViewControl";
 import { TinyCloudSettings } from "./TinyCloudSettings";
+import { RegistrySection } from "./RegistrySection";
+import type { RegistryChangeClientLike } from "@/lib/registryEditor/adapter";
 import { AppLockSettings } from "./AppLockSettings";
-import { HiddenFeaturesSettings } from "./HiddenFeaturesSettings";
 import { LegacyDataLinks } from "./LegacyDataLinks";
 import { CardMdSettings } from "@/feed/CardMdSettings";
 
@@ -84,6 +86,8 @@ interface SettingsPageProps {
   onOpenRates: () => void;
   backendUrl: string;
   sessionStore: SessionStore;
+  openkey?: RegistryChangeClientLike | null;
+  openkeyHost?: string;
 }
 
 export function SettingsPage({
@@ -106,6 +110,8 @@ export function SettingsPage({
   onOpenRates,
   backendUrl,
   sessionStore,
+  openkey,
+  openkeyHost,
 }: SettingsPageProps) {
   const { hash } = useLocation();
   const agentAccess = useAgentAccess();
@@ -123,8 +129,8 @@ export function SettingsPage({
   const billingLinks = billingLinksAllowed(useContext(PlatformContext));
   const resetsLabel = usage?.resetsAt ? formatResetsAt(usage.resetsAt) : null;
   useEffect(() => {
-    if (hash !== "#agent-access") return;
-    const card = document.getElementById("agent-access");
+    if (hash !== "#agent-access" && hash !== "#registry") return;
+    const card = document.getElementById(hash.slice(1));
     const heading = card?.querySelector("h2");
     if (!card || !heading) return;
     card.scrollIntoView({ block: "start" });
@@ -136,8 +142,9 @@ export function SettingsPage({
     // ConnectorsPage).
     <div className="relative h-full overflow-y-auto" data-scroll-root>
       {/* Pushed over the app on a phone (Back, no tab bar); a pane beside the
-          navigation on wider screens, so no Back there. */}
-      <PageHeader title="Settings" back={compact ? onBack : undefined} className="mx-auto w-full max-w-2xl px-4 sm:px-6" />
+          navigation on wider screens, so no Back there. One Apps: You's tab on
+          a phone (the pill shows), so no Back either. */}
+      <PageHeader title="Settings" back={compact && !ONE_NAV_ENABLED ? onBack : undefined} className="mx-auto w-full max-w-2xl px-4 sm:px-6" />
       <div className="mx-auto w-full max-w-2xl px-4 pb-[max(1.5rem,env(safe-area-inset-bottom))] pt-2 sm:px-6">
         {storageFull && (
           <div role="region" aria-label="Storage full" className="mb-4 rounded-xl border border-border bg-muted p-4 text-sm">
@@ -215,8 +222,8 @@ export function SettingsPage({
               <PrivacyPolicyLink />
             </div>
           </SectionCard>
+          <RegistrySection did={did} openkey={openkey} openkeyHost={openkeyHost} />
           <AppLockSettings />
-          <HiddenFeaturesSettings />
           <SectionCard icon={LayoutGridIcon} title="Start screen">
             <FirstScreenControl tcw={tcw} did={did} />
           </SectionCard>

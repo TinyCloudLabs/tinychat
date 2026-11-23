@@ -15,6 +15,7 @@ import { humanFeedReference, homeFeedKey, homeGroupScope } from "./feedIdentity"
 import { CardConversation, plainConversation } from "./CardConversation";
 import { isReplyOnlyRevision, storedRevisionEntry } from "./replyOnlyRevision";
 import { AnsweredPanel, AnswerFailedLine, cardClass, disconnectedCopy, ErrorLine, HELD_ANSWER_COPY, NOT_SENT_COPY, NotSent, optionText, PendingSendContext, primaryPillClass, quietClass, quotedWords, Reference, UNDO_SECONDS, usePendingSend } from "./cardKit";
+import { retryAfterHide } from "./retryAfterHide";
 import { AnswerOptions, OWN_OPTION, OwnAnswerBox } from "./AnswerOptions";
 import { actionClass, CardDetails, footActionClass } from "./CardActions";
 import { isOwnerAction, ownerClosure } from "./ownerActions";
@@ -29,7 +30,6 @@ import { readFeedViewMode, saveFeedViewMode, type FeedViewMode } from "./feedVie
 import { SEEN_DWELL_MS, SEEN_THRESHOLDS, visibleEnoughToSee } from "./expandedSeen";
 import { FloatingHeader } from "./FloatingHeader";
 import { AgentsPill } from "./AgentMarks";
-import { useShowHiddenFeatures } from "@/lib/hiddenFeatures";
 import { PendingCard, type PendingItem } from "./PendingCard";
 import { MorphConfig, MorphItem, MotionFeatures } from "./densityMorph";
 import { FOCUS_DIM_CLASS, OPEN_STAGGER_CLASS, topInScroller } from "./focusRow";
@@ -284,7 +284,7 @@ function AnswerForm({ entry, drafts, draftKey, answered, revisions, source, now,
     pendingResponse.current = { key, response };
     try {
       // Held until confirmed: a page that closes before this write lands sends it at the next launch.
-      const result = await source.saveResponse(target, response, undefined, { hold: true });
+      const result = await retryAfterHide(() => source.saveResponse(target, response, undefined, { hold: true }), () => !!source.holdsAnswer?.(target, response.responseId));
       onSaved(target, result);
       wait?.sent();
       pendingResponse.current = null;
@@ -368,12 +368,11 @@ function updateSnapshotEntry(snapshot: HomeFeedSnapshot | null, key: string, upd
 type Row = { kind: "card"; item: HomeFeedEntry; retained?: boolean } | { kind: "group"; name: string; items: HomeFeedEntry[] };
 
 /**
+ * `finishSetup`: the registry finish-setup card (TC-3547), under the heading; it renders nothing unless its gate says so.
  * `ask`: the tiny bots ask box, shown under the heading when the account has it. `linked`: the card the address names
  * (/chat/feed/<card id>), opened once the feed has loaded, or a note when the feed holds no such card.
  */
-export function HomeFeedEntries({ source, ask, linked }: { source: HomeFeedSource; ask?: ReactNode; linked?: FeedCardLink | null }) {
-  // The ask box and the Agents pill are hidden features (Sam, 11-17): shown only while Settings → Show hidden features is on.
-  const showHidden = useShowHiddenFeatures();
+export function HomeFeedEntries({ source, ask, linked, finishSetup }: { source: HomeFeedSource; ask?: ReactNode; linked?: FeedCardLink | null; finishSetup?: ReactNode }) {
   useEffect(() => {
     void LazyAgentView.preload().catch(() => {});
     void LazyFilterPanel.preload().catch(() => {});
@@ -1320,7 +1319,7 @@ export function HomeFeedEntries({ source, ask, linked }: { source: HomeFeedSourc
         <header ref={headerRef} className="scroll-mt-4">
           <div className="flex min-w-0 items-center gap-2">
             <h1 className="min-w-0 flex-1 font-display text-[min(1.75rem,9vw)] font-semibold leading-[2.125rem] tracking-[-0.005em]">{NAV_LABEL_HOME}</h1>
-            {showHidden && !bare && pillAgents.length > 0 && <AgentsPill agents={pillAgents} unread={unreadReplies} open={agentPage !== null}
+            {!bare && pillAgents.length > 0 && <AgentsPill agents={pillAgents} unread={unreadReplies} open={agentPage !== null}
               onOpen={() => { if (agentPage !== null) { setAgentPage(null); return; } leaveView(); setAgentPage("list"); }} />}
           </div>
           <p className="mt-0.5 text-sm leading-[1.45] text-muted-foreground">{snapshot && !bare
@@ -1350,7 +1349,8 @@ export function HomeFeedEntries({ source, ask, linked }: { source: HomeFeedSourc
       </FloatingHeader>
       <SendPills items={pills} />
       <div inert={!!pageEntry || !!liftedShown}>
-      {showHidden && ask}
+      {ask}
+      {finishSetup}
       {error && <div role="alert" className="mb-4 flex items-start gap-3 rounded-2xl bg-card px-4 py-3 text-sm leading-[1.45] shadow-[inset_0_0_0_1px_hsl(var(--border))]">
         <TriangleAlertIcon aria-hidden className="mt-px size-5 shrink-0 text-warning" />
         <div className="min-w-0"><p><b className="font-semibold">{error.lead}</b> {error.text}</p><button type="button" onClick={() => refreshRef.current()} className="mt-2 min-h-11 underline">Try again</button></div>

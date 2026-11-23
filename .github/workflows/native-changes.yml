@@ -3,6 +3,11 @@ name: Native build inputs
 # Shared by the native CI callers; releases and merge queues never select paths.
 on:
   workflow_call:
+    inputs:
+      component:
+        description: Build input set (native, desktop, mobile, metal or webkit)
+        type: string
+        default: native
     outputs:
       native:
         value: ${{ jobs.changes.outputs.native }}
@@ -33,9 +38,12 @@ jobs:
         shell: bash
         env:
           EVENT: ${{ github.event_name }}
+          COMPONENT: ${{ inputs.component }}
           BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
+          component=${COMPONENT:-native}
+          case "$component" in native|desktop|mobile|metal|webkit) ;; *) exit 1 ;; esac
           if [[ "$EVENT" != pull_request ]]; then
             printf 'native=true\nfrontend=true\n' >> "$GITHUB_OUTPUT"
             exit 0
@@ -45,6 +53,22 @@ jobs:
           native=false
           frontend=false
           while IFS= read -r -d '' path; do
+            # Metal builds the Rust workspaces and their two embedded web inputs, not JS packages or browser tests.
+            # WebKit builds the full screen harness (including overflow tests), not just the recorder halo.
+            case "$component" in
+              metal)
+                case "$path" in
+                  desktop/*|.cargo/*|rust-toolchain*|Cargo.toml|Cargo.lock|package.json|bun.lock|bun.lockb|bunfig.toml|frontend/.env.production|frontend/src/capture/recorder/recordShortcut.ts|.github/workflows/transcript-eval.yml|.github/workflows/native-changes.yml|.github/scripts/test-native-changes.py)
+                    native=true ;;
+                esac
+                continue ;;
+              webkit)
+                case "$path" in
+                  frontend/*|test/*|packages/*|patches/*|package.json|bun.lock|bun.lockb|bunfig.toml|.npmrc|package-lock.json|npm-shrinkwrap.json|pnpm-lock.yaml|pnpm-workspace.yaml|yarn.lock|turbo.json|tsconfig*.json|*/package.json|*/bunfig.toml|*/bun.lock|*/bun.lockb|*/.npmrc|*/package-lock.json|*/npm-shrinkwrap.json|*/pnpm-lock.yaml|*/yarn.lock|.github/workflows/frontend.yml|.github/workflows/native-changes.yml|.github/scripts/test-native-changes.py)
+                    native=true; frontend=true ;;
+                esac
+                continue ;;
+            esac
             # Root files include workspace definitions, lockfiles and build/install configuration.
             # Over-include new root inputs rather than accidentally accepting a native skip.
             if [[ "$path" != */* ]]; then
@@ -52,11 +76,15 @@ jobs:
               continue
             fi
             case "$path" in
-              frontend/*|packages/*|patches/*|scripts/*|test/*|.github/*|agent-skills/*|agent-setup/*|*/package.json|*/bun.lock|*/bun.lockb|*/bunfig.toml|*/package-lock.json|*/npm-shrinkwrap.json|*/pnpm-lock.yaml|*/yarn.lock|*/.npmrc)
+              packages/*|patches/*|scripts/*|test/*|.github/*|agent-skills/*|agent-setup/*|*/package.json|*/bun.lock|*/bun.lockb|*/bunfig.toml|*/package-lock.json|*/npm-shrinkwrap.json|*/pnpm-lock.yaml|*/yarn.lock|*/.npmrc)
                 native=true; frontend=true ;;
-              ios/*|android/*|mobile/*|desktop/*|.cargo/*)
-                native=true ;;
+              frontend/*)
+                native=true; frontend=true ;;
+              desktop/*|.cargo/*)
+                if [[ "$component" != mobile ]]; then native=true; fi ;;
+              ios/*|android/*|mobile/*)
+                if [[ "$component" == native || "$component" == mobile ]]; then native=true; fi ;;
             esac
           done < "$RUNNER_TEMP/native-paths"
           printf 'native=%s\nfrontend=%s\n' "$native" "$frontend" >> "$GITHUB_OUTPUT"
-          printf 'Native inputs: %s; frontend/WebKit inputs: %s\n' "$native" "$frontend" >> "$GITHUB_STEP_SUMMARY"
+          printf '%s inputs: %s; frontend/WebKit inputs: %s\n' "$component" "$native" "$frontend" >> "$GITHUB_STEP_SUMMARY"

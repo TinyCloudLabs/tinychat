@@ -2,13 +2,16 @@
 // surface, one hairline, and the current tab marked by a tinted pill behind
 // its icon plus a heavier label and icon stroke (never colour alone).
 import type { MouseEvent } from "react";
-import { useLocation } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 
+import { PILL_LABELS } from "@/apps/strings";
 import { cn } from "@/lib/utils";
+import { useStorageReadOnly } from "@/lib/useStorageReadOnly";
 import { NavBadge } from "./NavBadge";
 import { NavLink } from "./NavLink";
 import { navTarget, type NavItem, type NavItemId } from "./navItems";
-import type { Destination } from "./routes";
+import { PATHS, type Destination } from "./routes";
+import { YouAvatar } from "./YouAvatar";
 
 export interface NavProps {
   items: NavItem[];
@@ -63,6 +66,76 @@ export function TabBar({ items, current, replace, onReselect }: NavProps) {
             </li>
           );
         })}
+      </ul>
+    </nav>
+  );
+}
+
+export interface PillTabBarProps extends Omit<NavProps, "current"> {
+  /** The current item; "you" on Settings, null where nothing is (How it works hides the pill). */
+  current: NavItemId | "you" | null;
+  /** You leads to Settings (null in local validation, then there is no You). */
+  settings: boolean;
+}
+
+/**
+ * One's new navigation (ONE_NAV_ENABLED) on a phone held upright: a glass pill floating over the page, inset from the
+ * edges and above the home indicator, icon-only (each item has a spoken label), You's avatar last. The current item
+ * sits in a filled inner pill. The page scrolls under it: the shell sets `data-pill`, which pads every scroller by
+ * --tc-bottom-chrome (index.css), so the last line scrolls clear.
+ */
+export function PillTabBar({ items, current, replace, onReselect, settings }: PillTabBarProps) {
+  const { pathname } = useLocation();
+  const storageFull = useStorageReadOnly();
+  const onYou = current === "you";
+  const itemClass = (active: boolean) =>
+    cn(
+      "tap-transparent relative flex h-[52px] w-full items-center justify-center rounded-full transition-colors duration-150",
+      active ? "tc-pill-current text-foreground" : "text-foreground/75 active:bg-foreground/[.08]",
+    );
+  return (
+    <nav
+      aria-label="Primary"
+      data-testid="pill-bar"
+      className="pointer-events-none flex justify-center pb-[calc(10px+env(safe-area-inset-bottom))] pl-[max(12px,env(safe-area-inset-left))] pr-[max(12px,env(safe-area-inset-right))] pt-2.5 [html[data-keyboard=open]_&]:hidden"
+    >
+      <ul className="tc-pill pointer-events-auto flex w-full max-w-[440px] rounded-full p-1.5">
+        {items.map((item) => {
+          const active = item.id === current;
+          const Icon = item.icon;
+          return (
+            <li key={item.id} className="flex flex-1">
+              <NavLink
+                item={item}
+                to={navTarget(item, active)}
+                replace={replace}
+                aria-current={active ? "page" : undefined}
+                aria-label={item.ariaLabel ?? item.label}
+                onClick={(event: MouseEvent) => {
+                  if (!active || pathname !== item.href) return;
+                  event.preventDefault();
+                  onReselect(item.destination);
+                }}
+                className={itemClass(active)}
+              >
+                <span className="relative">
+                  <Icon aria-hidden className={cn("size-[26px]", active && "[stroke-width:2.25]")} />
+                  <NavBadge count={item.badge} className="-right-3 -top-2" />
+                </span>
+              </NavLink>
+            </li>
+          );
+        })}
+        {settings ? (
+          <li className="flex flex-1">
+            <Link to={PATHS.settings} replace={replace} aria-label={PILL_LABELS.you} aria-current={onYou ? "page" : undefined} className={itemClass(onYou)}>
+              <span className="relative">
+                <YouAvatar active={onYou} />
+                {storageFull && <span role="img" aria-label="Storage full" className="absolute -right-1 -top-1 size-2.5 rounded-full bg-destructive ring-2 ring-background" />}
+              </span>
+            </Link>
+          </li>
+        ) : null}
       </ul>
     </nav>
   );

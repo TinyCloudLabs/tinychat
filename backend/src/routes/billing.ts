@@ -69,7 +69,7 @@ function requireUser(req: Request, res: Response): { address: string } | null {
 function retiredBillingResponse(res: Response): void {
   res.status(410).json({
     error: "billing_retired",
-    message: "TinyChat billing checkout and portal have moved to the account app.",
+    message: "TinyCloud One billing checkout and portal are in the Account app.",
     accountAppUrl: ACCOUNT_APP_URL,
   });
 }

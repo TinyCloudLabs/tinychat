@@ -15,6 +15,7 @@ import type { McpMeetingTools } from "../mcp-meetings/dispatch.js";
 import type { RetrievalContext } from "../mcp-meetings/evidence.js";
 import type { Request, RequestHandler, Response } from "express";
 import { createAgentTaskClient } from "../agent-task-client.js";
+import { clientContextFrom } from "../client-context.js";
 import { validateAgentStreamPolicy, type AgentStreamPolicy } from "../agent-stream-policy.js";
 import { TINYCLOUD_MEETING_TOOLS } from "../transcripts/tool-contract.js";
 import { runMeetingTurn, type BufferedMeetingModelResult, type MeetingModelRequest, type MeetingToolContext } from "../transcripts/meeting-turn.js";
@@ -41,8 +42,8 @@ import {
   hasMissingWeeklyLedgerAnchor,
   logCreditGateDeny,
 } from "../billing/ledger-gate.js";
-import { createTurnBudgetMonitor, MIN_TURN_CREDITS, parseBudgetPreflightMode, parseBudgetStopMode } from "../billing/turn-budget.js";
-import { noteRequestRecord, recordAfterHandler, type StreamOutcome } from "../request-context.js";
+import { createTurnBudgetMonitor, minTurnCredits, parseBudgetPreflightMode, parseBudgetStopMode } from "../billing/turn-budget.js";
+import { noteRequestRecord, recordAfterHandler, recordAgentChatBudgetPreflight, recordAgentTurnSettled, type AgentChatBudgetSource, type StreamOutcome } from "../request-context.js";
 
 import { RECEIPT_AUDIT_TIMEOUT_MS, RedPillAciError, RedPillAttestationError, RedPillResponseLimitError, STREAMED_RESPONSE_UNVERIFIED_MESSAGE, redPillAciFetch } from "../redpill-aci.js";
 // Look up a model in the catalog and resolve its rates. Missing entries get the fallback.
@@ -1388,27 +1389,10 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
       res.status(400).json({ error: "invalid_body", message: "roomId must be a string" });
       return;
     }
-    let turnContext: AgentTurnContext | undefined;
-    if (clientContext !== undefined) {
-      if (!clientContext || typeof clientContext !== "object") {
-        res.status(400).json({ error: "invalid_body", message: "clientContext must contain localDate and timeZone" });
-        return;
-      }
-      const candidate = clientContext as { localDate?: unknown; timeZone?: unknown };
-      if (
-        typeof candidate.localDate !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(candidate.localDate)
-        || typeof candidate.timeZone !== "string" || candidate.timeZone.length === 0 || candidate.timeZone.length > 100
-      ) {
-        res.status(400).json({ error: "invalid_body", message: "clientContext must contain a YYYY-MM-DD localDate and IANA timeZone" });
-        return;
-      }
-      try {
-        new Intl.DateTimeFormat("en", { timeZone: candidate.timeZone }).format(new Date());
-      } catch {
-        res.status(400).json({ error: "invalid_body", message: "clientContext timeZone is invalid" });
-        return;
-      }
-      turnContext = { localDate: candidate.localDate, timeZone: candidate.timeZone };
+    const turnContext: AgentTurnContext | undefined = clientContextFrom(clientContext);
+    if (clientContext !== undefined && !turnContext) {
+      res.status(400).json({ error: "invalid_body", message: "clientContext must contain a YYYY-MM-DD localDate and IANA timeZone" });
+      return;
     }
 
     const resolvedModel = typeof model === "string" && model.trim() ? model : config.defaultModel();
@@ -1426,6 +1410,7 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
     let anchor: number | null = null;
     let rates: ModelRates | null = null;
     let budgetRemaining: number | null = null;
+    let budgetSource: AgentChatBudgetSource = "local";
     // The window and allowance a reply is charged against are those at admission.
     const startedAt = Date.now();
     if (paywallEnabled()) {
@@ -1518,9 +1503,12 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
           });
           return;
         }
-        budgetRemaining = entitlement && !entitlement.isOutage && entitlement.credit_limit !== null && entitlement.committed_credits !== null
+        const ledgerRemaining = entitlement && !entitlement.isOutage && entitlement.credit_limit !== null && entitlement.committed_credits !== null
           ? entitlement.credit_limit - entitlement.committed_credits
-          : (() => { const localUsage = getUsage(address, tierConfig, anchor); return localUsage.limit - localUsage.used; })();
+          : null;
+        // A ledger-authoritative turn that cannot read the ledger falls back to the local counter: that is the outage path.
+        budgetSource = ledgerRemaining !== null ? "ledger" : "outage";
+        budgetRemaining = ledgerRemaining ?? (() => { const localUsage = getUsage(address, tierConfig, anchor); return localUsage.limit - localUsage.used; })();
       } else {
         if (isOverBudget(address, tierConfig, anchor)) {
           const usage = getUsage(address, tierConfig, anchor);
@@ -1552,8 +1540,10 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
         res.status(500).json({ error: "internal_error", message: "Failed to resolve model rates" });
         return;
       }
-      if (budgetRemaining !== null && budgetPreflightMode !== "off" && budgetRemaining < MIN_TURN_CREDITS) {
-        console.info("[agent-chat] turn budget", { event: "preflight", mode: budgetPreflightMode, remaining: budgetRemaining, minimum: MIN_TURN_CREDITS });
+      const minimum = minTurnCredits(rates);
+      recordAgentChatBudgetPreflight({ address, mode: budgetPreflightMode, remaining: budgetRemaining, minimum, tier: gatedTier, source: budgetSource, unpriced: rates.fallback });
+      if (budgetRemaining !== null && budgetPreflightMode !== "off" && budgetRemaining < minimum) {
+        console.info("[agent-chat] turn budget", { event: "preflight", mode: budgetPreflightMode, remaining: budgetRemaining, minimum });
         if (budgetPreflightMode === "enforce") {
           res.status(402).json({ error: "credit_budget_exceeded", message: `Credit budget for the ${TIERS[gatedTier].name} tier is below the minimum for a turn.`, tier: gatedTier });
           return;
@@ -1659,6 +1649,7 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
             : code === "turn_timeout" || final?.outcome === "timed_out" ? "timed_out"
               : result.cancelled ? "cancelled" : "failed";
         const settled = settleReply({ address, tier: TIERS[gatedTier], anchor, startedAt, allowance, model: resolvedModel, usage: result.usage, rates, outcome, failureCause, deliveredOutput: streamedContent, executionId, flusher: config.flusher });
+        recordAgentTurnSettled({ rawCredits: settled.rawCredits, charged: settled.charged, windowKind: settled.windowKind, outcome, startedAttempts: result.usage.startedAttempts });
         noteRequestRecord(res, { credits: settled.charged });
       }
       console.info("[agent-chat] task accounting", {
@@ -1727,6 +1718,7 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
         : failure === "turn_timeout" ? "timed_out"
           : cancelledByClient ? "cancelled" : failure ? "failed" : "success";
       const settled = settleReply({ address, tier: TIERS[gatedTier], anchor, startedAt, allowance, model: resolvedModel, usage: orchestrateResult, rates, outcome, failureCause, deliveredOutput, executionId, flusher: config.flusher });
+      recordAgentTurnSettled({ rawCredits: settled.rawCredits, charged: settled.charged, windowKind: settled.windowKind, outcome });
       noteRequestRecord(res, { credits: settled.charged });
     }
     // Also await an already claimed timeout/cancellation terminal's drain.

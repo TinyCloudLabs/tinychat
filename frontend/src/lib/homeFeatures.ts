@@ -1,6 +1,6 @@
 import { APP_ID, type RequiredManifestEntry } from "@tinyboilerplate/core";
 import { composeManifestRequest, type Manifest, type PermissionEntry, type TinyCloudWeb } from "@tinycloud/web-sdk";
-import { encryptionDecryptGrant, withEncryptionDecryptGrant } from "./connectors/encryptionGrant";
+import { connectorKeyDecryptGrants, encryptionDecryptGrant, withConnectorDecryptGrants } from "./connectors/encryptionGrant";
 
 /**
  * The one feature the web sign-in leaves out until it is used: Connectors, which keeps the owner's connector keys and
@@ -66,7 +66,7 @@ const CONNECTORS_ENTRIES: readonly RequiredManifestEntry[] = [
  * decrypt and default-network abilities the SDK derives from them are asked for.
  */
 export function webSignInManifest(base: Manifest, flags: readonly HomeFeature[], address: string): Manifest {
-  return flags.includes("connectors") ? withEncryptionDecryptGrant(base, address) : { ...base, secrets: {} };
+  return flags.includes("connectors") ? withConnectorDecryptGrants(base, address) : { ...base, secrets: {} };
 }
 
 /**
@@ -79,7 +79,7 @@ export function homeFeatureCoverageEntries(_feature: HomeFeature, address: strin
     app_id: APP_ID,
     name: "TinyCloud One",
     defaults: false,
-    permissions: [...CONNECTORS_ENTRIES, encryptionDecryptGrant(address)],
+    permissions: [...CONNECTORS_ENTRIES, encryptionDecryptGrant(address), ...connectorKeyDecryptGrants(address)],
   } as Manifest], { includeAccountRegistryPermissions: false });
   return request.resources as PermissionEntry[];
 }

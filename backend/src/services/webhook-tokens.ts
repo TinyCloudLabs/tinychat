@@ -170,26 +170,6 @@ export function assertStrongSecret(
   return bytes;
 }
 
-/** New content-key enrollment requires encoded random key material.
- * Encoding/byte checks reject obvious low-entropy inputs; operators must generate random bytes.
- */
-export function assertNewContentMaster(value: string): void {
-  const key = value.trim();
-  const hex = /^(?:[0-9a-fA-F]{2}){32,}$/.test(key);
-  const normalized = key.replace(/-/g, "+").replace(/_/g, "/");
-  const bytes = Buffer.from(key, hex ? "hex" : "base64");
-  const canonicalBase64 = /^[A-Za-z0-9+/_-]+={0,2}$/.test(key)
-    && (bytes.toString("base64") === normalized
-      || (!key.includes("=") && bytes.toString("base64").replace(/=+$/, "") === normalized));
-  let repeated = false;
-  for (let period = 1; period <= bytes.length / 2; period++) {
-    if (bytes.every((byte, index) => byte === bytes[index % period])) { repeated = true; break; }
-  }
-  if ((!hex && !canonicalBase64) || bytes.length < 32 || new Set(bytes).size < 16 || repeated) {
-    throw new Error("[startup] FATAL: new content master must encode at least 32 random bytes as hex or base64");
-  }
-}
-
 // ── Master keys + HKDF derivation (§4.2) ─────────────────────────────
 
 const validatedMasters = new Set<string>();
@@ -224,11 +204,10 @@ export function previousWebhookMaster(): string | null {
 
 // ── V-b: the secret-LENGTH amendment ─────────────────────────────────
 //
-// Fireflies' dashboard webhook-secret field accepts **16-32 characters** (backend-ingest
-// DECISIONS "Research provenance" -> V-b). The shipped derivation emitted the base64url of a
+// Fireflies' dashboard webhook-secret field accepts **16-32 characters** (V-b research finding).
+// The shipped derivation emitted the base64url of a
 // 32-byte HKDF output = **43 characters**, which cannot be registered at all — so this is a
-// correctness fix for the SHIPPED Option-C registration as much as a pre-req for anything the
-// backend-ingest build registers.
+// correctness fix for the SHIPPED Option-C registration.
 //
 // THE CHOSEN SCHEME, stated once and used everywhere: take **24 bytes** of the same HKDF stream
 // and base64url them. 24 is divisible by 3, so the encoding is exactly 32 characters with no
@@ -542,8 +521,8 @@ const WEBHOOK_KEY_MEETING_LIKE =
   /(webhooks\/(?:pending|dead|corrupt|purged|corrupt\/purged)\/[a-z0-9-]+\/<address>\/)([A-Za-z0-9_-]+)/g;
 /**
  * W8 (plan §8.1 W8; §9 anti-pattern 7). The three passes above are a DENYLIST of shapes we
- * already knew about — a 40-hex address, a 43-char token, our own KV key layout. Backend ingest
- * put two new classes of string into the reach of an error message: a provider credential
+ * already knew about — a 40-hex address, a 43-char token, our own KV key layout. Provider credential
+ * custody put two new classes of string into the reach of an error message: a provider credential
  * (`ff-access-token-…`, a refresh token, an API key) and a meeting id in any position that is not
  * one of our KV keys. Neither matches a pass above, and both would ship raw onto the
  * `public_logs=true` stream from any `err=${redactedErrorMessage(error)}` field.
@@ -630,13 +609,16 @@ function normalizeSource(source: unknown): string {
   return source;
 }
 
+export const WEBHOOK_TOKEN_KEY_PREFIX = "webhooks/tokens/";
+export const WEBHOOK_CONFIG_KEY_PREFIX = "webhooks/config/";
+
 function tokenKey(token: string): string {
   if (!isValidToken(token)) throw new Error("Invalid webhook token");
-  return `webhooks/tokens/${token}`;
+  return `${WEBHOOK_TOKEN_KEY_PREFIX}${token}`;
 }
 
 function configKey(address: string): string {
-  return `webhooks/config/${normalizeAddress(address)}`;
+  return `${WEBHOOK_CONFIG_KEY_PREFIX}${normalizeAddress(address)}`;
 }
 
 function parseTokenRecord(raw: unknown): WebhookTokenRecord | null {

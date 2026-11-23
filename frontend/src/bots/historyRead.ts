@@ -1,49 +1,283 @@
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import type { InlineEncryptedEnvelope } from "@tinycloud/sdk-services";
+import type { KeyDescriptor, NamedKeyEnvelope } from "@tinycloud/sdk-services/encryption/named-keys";
 import { makePkhSpaceId } from "@tinycloud/sdk-core";
-import { botHistoryDirectory } from "./botHistoryPath";
-import type { BotMessage } from "./botsApi";
+import { encryptionNetworkId } from "../lib/connectors/encryptionGrant";
+import {
+  BOT_HISTORY_KEY_PATH,
+  isCurrentHistorySession,
+  publishBotHistoryKeyDescriptor,
+} from "./botHistoryKey";
+import { botHistoryOwnerPermissions } from "./historyAuthorization";
+import { BOT_HISTORY_RECORD_PREFIX, BOT_HISTORY_RECORD_SUFFIX, botHistoryDirectory } from "./botHistoryPath";
+import { isAppDecision, toSecretLine, type BotMessage } from "./botsApi";
+import { BOTS_STRINGS } from "./botsStrings";
 
 /** Records of one page fetched and decrypted at once. Each decrypt is a round trip to the node (TC-3054). */
 export const HISTORY_READ_CONCURRENCY = 4;
 
+export type ResealFailureReason =
+  | "exact_key_unavailable"
+  | "descriptor_unavailable"
+  | "encrypt_failed"
+  | "missing_etag"
+  | "write_failed"
+  | "readback_failed"
+  | "commit_failed";
+
+export interface BotHistoryResealFailure {
+  reason: ResealFailureReason;
+}
+
+export interface BotHistoryResealReport {
+  resealed: number;
+  failed: BotHistoryResealFailure[];
+}
+
+export interface ReadBotHistoryOptions {
+  /**
+   * Foreground-only: reseal any v1 records read to the exact named key
+   * (write v2, read back with exact-key grant, then retire v1; keep v1 on any failure).
+   */
+  reseal?: boolean;
+  /** Receives counts and failure codes when reseal runs. Never includes plaintext or keys. */
+  onResealReport?: (report: BotHistoryResealReport) => void;
+}
+
 /** Owner-authorized reads remain separate from the backend's write-only encryption role. */
-export async function readBotHistory(tcw: TinyCloudWeb, signal?: AbortSignal): Promise<BotMessage[]> {
-  return readHistory(tcw, signal);
+export async function readBotHistory(
+  tcw: TinyCloudWeb,
+  signal?: AbortSignal,
+  options?: ReadBotHistoryOptions,
+): Promise<BotMessage[]> {
+  return readHistory(tcw, signal, undefined, options);
 }
 
 /** For callers selecting a bot from the roster, including Main. */
-export async function readHistoryForBot(tcw: TinyCloudWeb, botKey: string, signal?: AbortSignal): Promise<BotMessage[]> {
-  return readHistory(tcw, signal, botKey);
+export async function readHistoryForBot(
+  tcw: TinyCloudWeb,
+  botKey: string,
+  signal?: AbortSignal,
+  options?: ReadBotHistoryOptions,
+): Promise<BotMessage[]> {
+  return readHistory(tcw, signal, botKey, options);
 }
 
-const RECORD_PATH = /^[0-9a-f]{32}\/[1-9][0-9]*-[0-9a-f]{64}$/;
+type StoredHistoryEnvelope = (InlineEncryptedEnvelope | NamedKeyEnvelope) & {
+  v?: number;
+  keyPath?: unknown;
+  networkId?: string;
+  aad?: string;
+};
 
-async function readHistory(tcw: TinyCloudWeb, signal?: AbortSignal, botKey?: string): Promise<BotMessage[]> {
+function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a[i]! ^ b[i]!;
+  return diff === 0;
+}
+
+function isUnreadableKeyError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const code = (error as { code?: unknown }).code;
+  return (
+    code === "KEY_UNAVAILABLE" ||
+    code === "KEY_NOT_FOUND" ||
+    code === "KEY_BLOCKED" ||
+    code === "KEY_UNWRAP_FAILED" ||
+    code === "DECRYPT_FAILED"
+  );
+}
+
+async function readHistory(
+  tcw: TinyCloudWeb,
+  signal?: AbortSignal,
+  botKey?: string,
+  options?: ReadBotHistoryOptions,
+): Promise<BotMessage[]> {
   const session = tcw.session();
   if (!session) throw new Error("history_session_missing");
   const address = session.address.toLowerCase();
+  const chainId = session.chainId ?? 1;
   const owner = `did:pkh:eip155:1:${address}`;
-  const spaceId = makePkhSpaceId(session.address, session.chainId, "applications");
+  const networkId = encryptionNetworkId(session.address, chainId);
+  const spaceId = makePkhSpaceId(session.address, chainId, "applications");
   const kv = tcw.kvForSpace(spaceId);
   const prefix = await botHistoryDirectory(address, botKey ?? "main");
 
+  const resealEnabled = options?.reseal === true;
+  const resealReport: BotHistoryResealReport = { resealed: 0, failed: [] };
+  let sawV1 = false;
+  let cachedDescriptor: Promise<KeyDescriptor> | null = null;
+
+  const ensureActiveDescriptor = async (): Promise<KeyDescriptor> => {
+    if (!cachedDescriptor) {
+      cachedDescriptor = (async () => {
+        const descriptor = await tcw.keys.ensureKey(BOT_HISTORY_KEY_PATH, { networkId });
+        if (descriptor.state !== "active" || descriptor.kind !== "deletable") {
+          throw new Error("history_key_descriptor_invalid");
+        }
+        if (!isCurrentHistorySession(tcw, session)) throw new Error("history_session_changed");
+        await publishBotHistoryKeyDescriptor(tcw, descriptor);
+        return descriptor;
+      })();
+    }
+    return cachedDescriptor;
+  };
+
+  const resealV1Record = async (
+    key: string,
+    etag: string | undefined,
+    plaintext: Uint8Array,
+    expectedAad: string,
+    expectedAadBytes: Uint8Array,
+    recordSignal: AbortSignal,
+  ): Promise<void> => {
+    const fail = (reason: ResealFailureReason) => { resealReport.failed.push({ reason }); };
+    const current = () => {
+      recordSignal.throwIfAborted();
+      if (!isCurrentHistorySession(tcw, session)) throw new Error("history_session_changed");
+    };
+    if (!tcw.hasPermissions(botHistoryOwnerPermissions(session.address))) return fail("exact_key_unavailable");
+    if (!etag) return fail("missing_etag");
+
+    let descriptor: KeyDescriptor;
+    try {
+      current();
+      descriptor = await ensureActiveDescriptor();
+    } catch {
+      return fail("descriptor_unavailable");
+    }
+
+    let v2Envelope: NamedKeyEnvelope;
+    try {
+      current();
+      v2Envelope = await tcw.keys.encrypt(BOT_HISTORY_KEY_PATH, plaintext, {
+        networkId, aad: expectedAadBytes, descriptor,
+      });
+    } catch {
+      return fail("encrypt_failed");
+    }
+
+    // Only the canonical path is listed as history. Stage a separate encrypted copy
+    // with the canonical AAD so readback failure leaves v1 intact.
+    const stagedKey = `xyz.tinycloud.tinychat/threads/bots/reseal/${key.slice(BOT_HISTORY_RECORD_PREFIX.length)}-${crypto.randomUUID()}`;
+    const options = { prefix: "", signal: recordSignal };
+    let stageWritten = false;
+    let reason: ResealFailureReason = "write_failed";
+    try {
+      current();
+      const written = await kv.put(stagedKey, v2Envelope, { ...options, ifNoneMatch: "*" });
+      if (!written.ok) return fail(reason);
+      stageWritten = true;
+      reason = "readback_failed";
+      current();
+      const readback = await kv.get<NamedKeyEnvelope>(stagedKey, { ...options, source: "network" });
+      if (!readback.ok) return fail(reason);
+      const stored = readback.data.data;
+      if (
+        stored?.v !== 2 || stored.keyPath !== BOT_HISTORY_KEY_PATH ||
+        stored.keyVersion !== descriptor.keyVersion || stored.networkId !== networkId || stored.aad !== expectedAad
+      ) return fail(reason);
+      const opened = await tcw.keys.decrypt(stored);
+      if (!bytesEqual(opened, plaintext)) return fail(reason);
+
+      reason = "commit_failed";
+      current();
+      const replaced = await kv.put(key, stored, { ...options, ifMatch: etag });
+      if (!replaced.ok) return fail(reason);
+      resealReport.resealed++;
+    } catch {
+      fail(reason);
+    } finally {
+      if (stageWritten && isCurrentHistorySession(tcw, session)) {
+        await kv.delete(stagedKey, { prefix: "" }).catch(() => {});
+      }
+    }
+  };
+
   const readRecord = async (key: string, recordSignal: AbortSignal): Promise<BotMessage | null> => {
-    const stored = await kv.get<InlineEncryptedEnvelope>(key, { prefix: "", signal: recordSignal });
+    const stored = await kv.get<StoredHistoryEnvelope>(key, { prefix: "", signal: recordSignal });
     if (!stored.ok) throw new Error("history_read_unavailable");
-    const expectedAad = btoa(JSON.stringify({ owner, spaceId, path: key }));
-    if (stored.data.data.aad !== expectedAad) throw new Error("history_binding_mismatch");
+    const envelope = stored.data.data;
+    const expectedAadJson = JSON.stringify({ owner, spaceId, path: key });
+    const expectedAad = btoa(expectedAadJson);
+    if (!envelope || typeof envelope !== "object" || envelope.aad !== expectedAad) {
+      throw new Error("history_binding_mismatch");
+    }
     recordSignal.throwIfAborted();
-    const opened = await tcw.encryption.decryptEnvelope(stored.data.data, { proofs: [] });
-    if (!opened.ok) throw new Error("history_decrypt_unavailable");
-    const batch = JSON.parse(new TextDecoder().decode(opened.data));
-    if (botKey !== undefined && (batch?.v !== 1 || typeof batch.generation !== "string"
-      || typeof batch.challenge !== "string" || !Number.isSafeInteger(batch.seq)
-      || batch.bot !== (botKey === "main" ? undefined : botKey))) throw new Error("history_binding_mismatch");
-    if (key !== `${prefix}${batch.generation}/${batch.seq}-${batch.challenge}`) throw new Error("history_binding_mismatch");
+
+    // Choose decrypt path strictly by the envelope's own `keyPath` — never by KV metadata.
+    let plaintext: Uint8Array;
+    let isV1 = false;
+    if (envelope.keyPath !== undefined) {
+      if (
+        envelope.v !== 2 ||
+        typeof envelope.keyPath !== "string" ||
+        envelope.keyPath !== BOT_HISTORY_KEY_PATH ||
+        envelope.networkId !== networkId
+      ) {
+        throw new Error("history_binding_mismatch");
+      }
+      try {
+        plaintext = await tcw.keys.decrypt(envelope as NamedKeyEnvelope);
+      } catch (error) {
+        if (isUnreadableKeyError(error)) {
+          return { id: `unreadable-${key.slice(prefix.length)}`, role: "bot", text: BOTS_STRINGS.historyUnreadable, at: "", unreadableHistory: true };
+        }
+        throw new Error("history_decrypt_unavailable", { cause: error });
+      }
+    } else {
+      if (envelope.v !== undefined && envelope.v !== 1) {
+        throw new Error("history_binding_mismatch");
+      }
+      isV1 = true;
+      sawV1 = true;
+      const opened = await tcw.encryption.decryptEnvelope(envelope as InlineEncryptedEnvelope, { proofs: [] });
+      if (!opened.ok) throw new Error("history_decrypt_unavailable");
+      plaintext = opened.data;
+    }
+
+    const batch = JSON.parse(new TextDecoder().decode(plaintext));
+    if (
+      botKey !== undefined &&
+      (batch?.v !== 1 ||
+        typeof batch.generation !== "string" ||
+        typeof batch.challenge !== "string" ||
+        !Number.isSafeInteger(batch.seq) ||
+        batch.bot !== (botKey === "main" ? undefined : botKey))
+    ) {
+      throw new Error("history_binding_mismatch");
+    }
+    if (key !== `${prefix}${batch.generation}/${batch.seq}-${batch.challenge}`) {
+      throw new Error("history_binding_mismatch");
+    }
+
+    if (isV1 && resealEnabled) {
+      const etag = stored.data.headers?.etag;
+      await resealV1Record(
+        key,
+        etag,
+        plaintext,
+        expectedAad,
+        new TextEncoder().encode(expectedAadJson),
+        recordSignal,
+      );
+    }
+
     const record = batch.record;
     if ((record?.type === "user" || record?.type === "assistant") && typeof record.text === "string") {
-      return { id: record.type === "assistant" && typeof record.outcome?.messageId === "string" ? record.outcome.messageId : `history-${batch.generation}-${batch.seq}`, role: record.type === "user" ? "user" : "bot", text: record.text, at: record.at ?? "" };
+      // A message the app sent for the owner (a decision on a request or proposal) keeps its mark, as the service's own listing does.
+      const app = record.type === "user" && record.origin === "app";
+      const decision = app && isAppDecision(record.decision) ? record.decision : undefined;
+      const secret = decision ? toSecretLine(record.secret) : undefined;
+      return {
+        id: record.type === "assistant" && typeof record.outcome?.messageId === "string" ? record.outcome.messageId : `history-${batch.generation}-${batch.seq}`,
+        role: record.type === "user" ? "user" : "bot", text: record.text, at: record.at ?? "",
+        ...(app ? { origin: "app" as const } : {}),
+        ...(decision ? { decision } : {}),
+        ...(secret ? { secret } : {}),
+      };
     }
     return null;
   };
@@ -55,7 +289,7 @@ async function readHistory(tcw: TinyCloudWeb, signal?: AbortSignal, botKey?: str
     const listed = await kv.list({ prefix, cursor, signal });
     if (!listed.ok) throw new Error("history_read_unavailable");
     for (const key of listed.data.keys) {
-      if (!key.startsWith(prefix) || (botKey !== undefined && !RECORD_PATH.test(key.slice(prefix.length)))) throw new Error("history_path_mismatch");
+      if (!key.startsWith(prefix) || (botKey !== undefined && !BOT_HISTORY_RECORD_SUFFIX.test(key.slice(prefix.length)))) throw new Error("history_path_mismatch");
     }
     for (const message of await readEach(listed.data.keys, HISTORY_READ_CONCURRENCY, signal, readRecord)) {
       if (message) messages.push(message);
@@ -63,6 +297,18 @@ async function readHistory(tcw: TinyCloudWeb, signal?: AbortSignal, botKey?: str
     cursor = listed.data.nextCursor;
     if (listed.data.truncated && !cursor) throw new Error("history_pagination_unavailable");
   } while (cursor);
+
+  if (resealEnabled && sawV1) {
+    if (resealReport.failed.length > 0) {
+      console.warn("[bots] bot history reseal did not complete", {
+        resealed: resealReport.resealed,
+        failedCount: resealReport.failed.length,
+        reasons: [...new Set(resealReport.failed.map((f) => f.reason))],
+      });
+    }
+    options?.onResealReport?.(resealReport);
+  }
+
   return messages.sort((a, b) => a.at.localeCompare(b.at) || a.id.localeCompare(b.id, undefined, { numeric: true }));
 }
 

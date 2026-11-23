@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { BotAdmission } from "../bot-admission";
-import { BotManager, type Sandbox, type SandboxLauncher } from "../bot";
+import { BotManager, ORIGIN_LINES, type Sandbox, type SandboxLauncher } from "../bot";
 import { gatewayConfig } from "../config";
 import { Gateway } from "../gateway";
 import type { BotLayout } from "../layout";
@@ -92,6 +92,7 @@ function setup(onLaunch?: (layout: BotLayout) => void) {
   const started: string[] = [];
   const launcher: SandboxLauncher = {
     hasState: () => false, leftover: () => false,
+    readsHeld: async () => false,
     launch: async layout => {
       started.push(layout.botId);
       onLaunch?.(layout);
@@ -108,6 +109,8 @@ function setup(onLaunch?: (layout: BotLayout) => void) {
     idleMs: 60_000, turnTimeoutMs: 4_000, maxTurnBytes: 64_000,
     history: { signerDid: owner, host: "http://127.0.0.1:9573", policy: "notice-then-expiry-30-days" },
   }, 3);
+  void bots.forOwner(owner).historyPermission(owner, undefined, Date.now() + 3_600_000);
+  void bots.forBot(owner, sibling).historyPermission(owner, undefined, Date.now() + 3_600_000);
   const decisions: string[][] = [];
   let registryState: "allowed" | keyof typeof statusRefusals = "allowed";
   const admission: BotAdmission = async (account, from, to) => {
@@ -156,7 +159,7 @@ test("message_bot delivers a sibling reply, records only a key and count, and ca
     for (const id of ["first", "second"]) {
       run.source.call(id, { targetKey: sibling, text: callText });
       const targetPrompt = await run.target.take("prompt");
-      expect(targetPrompt.message).toBe(callText);
+      expect(targetPrompt.message).toBe(`${ORIGIN_LINES.bot}\n${callText}`);
       expect(run.target.seen("set_host_tools")).toBe(0);
       run.target.call("second-hop", { targetKey: "main", text: replyText });
       expect(await run.target.take("host_tool_result")).toMatchObject({ id: "second-hop", isError: true });

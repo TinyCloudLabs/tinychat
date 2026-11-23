@@ -5,9 +5,11 @@
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import type { Sandbox, SandboxLauncher } from "../../bots/src/bot";
-import type { BotLayout } from "../../bots/src/layout";
+import { type BotLayout, botRole } from "../../bots/src/layout";
 import { SANDBOX_SESSION_DIR } from "../../bots/src/oci";
+import { configYml } from "../../bots/src/sandbox";
 import { RpcChannel } from "../../bots/src/rpc";
+import { MAIN_BOT_NAME } from "../../bots/src/owner";
 import { type BridgeConnection, connectBridge } from "./bridge-client";
 import type { GatewayControl } from "./gateway-front";
 import { sandboxIdFor, type SandboxProvider } from "./provider";
@@ -66,7 +68,7 @@ export class RegularLauncher implements SandboxLauncher {
     await this.#gateway.drop(layout.botId);
   }
 
-  async launch(layout: BotLayout): Promise<Sandbox> {
+  async launch(layout: BotLayout, botName: string = MAIN_BOT_NAME): Promise<Sandbox> {
     const id = sandboxIdFor(layout.botId);
     const deadline = Date.now() + this.#options.startTimeoutMs;
     const bridgeToken = randomBytes(32).toString("hex");
@@ -96,6 +98,9 @@ export class RegularLauncher implements SandboxLauncher {
         BOT_TOKEN: gatewayToken,
         BOT_GATEWAY_URL: `${this.#options.gatewayOrigin}/bots/${layout.botId}/v1`,
         BOT_MODEL: this.#options.model,
+        BOT_ROLE: botRole(layout),
+        BOT_OMP_CONFIG: Buffer.from(configYml()).toString("base64"),
+        BOT_NAME: botName,
       }, 30);
       if (armed.exitCode !== 0) throw new Error("bridge not armed");
       const open = await connectBridge(await this.#provider.endpoint(id, BRIDGE_PORT), bridgeToken, deadline);

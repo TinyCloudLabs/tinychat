@@ -1,8 +1,8 @@
 {
   "manifest_version": 1,
   "app_id": "xyz.tinycloud.tinychat.retrieval",
-  "name": "TinyChat retrieval",
-  "description": "Read existing TinyChat meeting metadata and stored transcript bodies.",
+  "name": "TinyCloud One meetings",
+  "description": "Read existing TinyCloud One meeting metadata and stored transcript bodies.",
   "defaults": false,
   "includePublicSpace": false,
   "space": "applications",

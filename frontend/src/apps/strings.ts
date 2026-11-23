@@ -2,7 +2,8 @@
 
 import type { OpenKeyFailure } from "../lib/authErrors";
 import { FEATURE_ACCESS_FAILED, FEATURE_ACCESS_WRONG_ACCOUNT } from "../lib/homeStrings";
-import type { OneAppId } from "./registry";
+import type { GlyphId } from "./icons";
+import type { LinkAppId, OneAppId } from "./registry";
 
 export const APP_NAMES: Readonly<Record<OneAppId, string>> = {
   capture: "Recording",
@@ -11,9 +12,11 @@ export const APP_NAMES: Readonly<Record<OneAppId, string>> = {
   "xyz.tinycloud.explorer": "Explorer",
   "xyz.tinycloud.account": "Account",
   "xyz.tinycloud.courier": "Courier",
+  "xyz.tinycloud.rocinante.ledger": "Ship ledger",
+  "xyz.tinycloud.share": "Share",
 };
 
-export const APP_DESCRIPTIONS: Readonly<Record<OneAppId, string>> = {
+export const APP_DESCRIPTIONS: Readonly<Record<Exclude<OneAppId, LinkAppId>, string>> = {
   capture: "Record or upload a meeting and get its transcript.",
   "xyz.tinycloud.secrets": "Keep API keys, passwords and environment variables encrypted.",
   "xyz.tinycloud.opencredentials": "Store and share verifiable credentials with OpenCredentials.",
@@ -21,6 +24,7 @@ export const APP_DESCRIPTIONS: Readonly<Record<OneAppId, string>> = {
   // Web. iOS leaves Account out of ONE_APPS (registry.ts), so its iOS wording is unused.
   "xyz.tinycloud.account": "See your account, billing, spaces, installed apps and the access you've given.",
   "xyz.tinycloud.courier": "See what your agents send each other, and answer what needs you.",
+  "xyz.tinycloud.rocinante.ledger": "Every task on the ship, where it stands and what it is waiting on.",
 };
 
 /** The `<scope>` phrase for each group of ceiling entries (registry.ts tags every entry with one). */
@@ -36,6 +40,7 @@ export const SCOPE_PHRASES = {
   installedApps: "your installed apps",
   spaces: "the list of your spaces",
   courier: "your Courier threads and messages, the agents you've paired and requests waiting for you",
+  shipLedger: "your Rocinante sitrep's cards, answers and check-offs, read only",
 } as const;
 
 export type ScopeId = keyof typeof SCOPE_PHRASES;
@@ -133,3 +138,47 @@ export const COURIER_MISSING = {
 } as const;
 
 export const courierMissing = (spaces: readonly string[]) => spaces.some((space) => MISSING_SPACE_COPY[space]?.kind === "courier");
+
+// The launcher, the open app bar, the phone's pill and the Add an app page (TC-3650).
+
+/** The launcher tile's short line under the name, from 640 px. */
+export const APP_CAPTIONS: Readonly<Record<GlyphId, string>> = {
+  recording: "Record and transcribe",
+  secrets: "Keys and passwords",
+  credentials: "Proofs you hold",
+  explorer: "Browse your data",
+  account: "Plan, spaces and access",
+  courier: "Messages with agents",
+  ledger: "Where every task stands",
+  share: "Share files by link",
+  connectors: "Bring in your meetings",
+};
+
+export const CONNECTORS_NAME = "Connectors";
+
+export const pinApp = (app: string) => `Pin ${app}`;
+export const unpinApp = (app: string) => `Unpin ${app}`;
+
+/**
+ * An app One can't frame here: its screen's heading and button. `phone`: the iOS and Android apps, which open the page
+ * in an in-app browser view (feed/inAppLink.ts), not a tab.
+ */
+export const opensSeparatelyTitle = (app: string, phone: boolean) => (phone ? `${app} opens in a browser window` : `${app} opens in its own tab`);
+export const openSeparately = (app: string, phone: boolean) => (phone ? `Open ${app}` : "Open in new tab");
+
+/** The first navigation item's name with One Apps on: the pill's spoken label and the sidebar and rail row. Tests import it, never the word. */
+export const MAIN_TAB_LABEL = "Home";
+
+/** The phone pill's other spoken labels (its items are icon-only). */
+export const PILL_LABELS = { chat: "Chat", apps: "Apps", you: "You" } as const;
+
+export const ADD_APP_TITLE = "Add an app";
+export const ADD_APP_LEAD =
+  "Build your own TinyCloud app with the coding agent you already use. Copy this prompt into Claude Code, Codex or another agent and tell it what the app should do.";
+export const ADD_APP_REVIEW_NOTE = "The TinyCloud team reviews new apps before they're listed.";
+/** Whether the Add an app page shows ADD_APP_REVIEW_NOTE under its lead line. */
+export const SHOW_REVIEW_NOTE = true;
+export const ADD_APP_PROMPT_LABEL = "Prompt";
+export const COPY_PROMPT = "Copy prompt";
+export const COPIED = "Copied";
+export const COPY_FAILED = "Copy unavailable. Select the prompt above and copy it manually.";

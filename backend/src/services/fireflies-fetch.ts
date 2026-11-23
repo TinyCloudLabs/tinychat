@@ -1,38 +1,11 @@
-import type { CredentialSecret } from "./credential-store.js";
-import {
-  stripExpiringLinks,
-  type FetchedMeeting,
-  type MeetingFetchRequest,
-  type MeetingFetchResult,
-  type MeetingFetcher,
-} from "./fetch-worker.js";
-
-/**
- * W3's upstream half — the Fireflies side of the fetch worker (backend-ingest plan §8.1 W3;
- * §8.2 delta items 4, 7, 8).
- *
- * This module does ONE thing: `(meetingId, credential)` → content, or a short fixed error code.
- * It owns no schedule, no retry, no queue and no store — the worker owns those, and keeping them
- * out of here is what makes "the provider is slow/hostile" a value the worker can reason about
- * rather than a control-flow surprise.
- *
- * Two non-negotiables:
- *
- *  - **REFETCH BY ID (delta 7).** The request is a GraphQL query with an `id` variable. No stored
- *    URL, no provider-minted link, nothing that expires between the webhook and the fetch. The
- *    shipped browser client (`frontend/src/lib/connectors/firefliesClient.ts`) uses the same
- *    query for the same reason.
- *  - **The provider's words never escape (delta 4, §6.3).** A Fireflies error message can quote
- *    the query, the meeting title, or the credential that failed. Callers get a code from a
- *    CLOSED set; the message is not logged, not returned, and not stored.
- */
+import { connectorMeetingId, type NormalizedMeeting, type TranscriptSentence } from "@tinyboilerplate/core";
 
 export const FIREFLIES_GRAPHQL_URL = "https://api.fireflies.ai/graphql";
+export const FIREFLIES_ALLOWED_HOST = "api.fireflies.ai";
+export const DEFAULT_FIREFLIES_TIMEOUT_MS = 30_000;
+export const MAX_FIREFLIES_RESPONSE_BYTES = 2 * 1024 * 1024;
+export const FIREFLIES_RATE_LIMIT_FALLBACK_MS = 60_000;
 
-/**
- * Verbatim from the shipped browser client, minus nothing: the backend copy of a meeting must be
- * the same meeting Option C would have written, or the two ingest paths diverge for one user.
- */
 export const FIREFLIES_TRANSCRIPT_QUERY = `query GetTranscript($id: String!) {
   transcript(id: $id) {
     id title date duration organizer_email
@@ -43,25 +16,73 @@ export const FIREFLIES_TRANSCRIPT_QUERY = `query GetTranscript($id: String!) {
   }
 }`;
 
-/** Matches the browser client's fallback: a 429 with no header still pauses for a minute. */
-export const FIREFLIES_RATE_LIMIT_FALLBACK_MS = 60_000;
-
 const NOT_FOUND_RE = /not found|does not exist|no such transcript/i;
 const RATE_LIMIT_RE = /rate limit|too many requests|retry after/i;
 const UNAUTHORIZED_RE = /unauthori[sz]ed|forbidden|invalid api key|invalid token/i;
+const PURE_URL_RE = /^https?:\/\/\S+$/i;
+const LINK_KEY_RE = /(?:url|link|audio|video|transcript_url)$/i;
+const LINK_SENTINEL = "[link-removed]";
 
-export interface FirefliesMeetingFetcherOptions {
-  /** Injected so tests never touch the network and the e2e lane can retarget its mock. */
+export type FirefliesFetchErrorCode =
+  | "invalid_input"
+  | "invalid_url"
+  | "redirect_refused"
+  | "response_too_large"
+  | "timeout"
+  | "network_error"
+  | "unauthorized"
+  | "rate_limited"
+  | "not_found"
+  | "upstream_error"
+  | "invalid_response";
+
+export interface RawFirefliesTranscript {
+  id: string;
+  title?: unknown;
+  date?: unknown;
+  duration?: unknown;
+  organizer_email?: unknown;
+  speakers?: unknown;
+  meeting_attendees?: unknown;
+  sentences?: unknown;
+  summary?: unknown;
+}
+
+export interface FirefliesMeetingKvRecord extends NormalizedMeeting {
+  hasTranscript: boolean;
+  hasSummary: boolean;
+  origin: "fireflies-delegation-import";
+  importedAt: string;
+}
+
+export interface NormalizedFirefliesImport {
+  meeting: NormalizedMeeting;
+  meetingRecord: FirefliesMeetingKvRecord;
+  sentences: TranscriptSentence[];
+  transcriptBody: string;
+  bytes: number;
+}
+
+export interface FirefliesFetchOptions {
   fetchImpl?: typeof fetch;
   apiUrl?: string;
+  /** Test-only escape hatch for local mock servers; production leaves this false. */
+  allowCustomUrl?: boolean;
+  timeoutMs?: number;
+  maxBytes?: number;
   now?: () => number;
 }
 
-/**
- * `Retry-After` is either delta-seconds or an HTTP-date (RFC 9110 §10.2.3). Anything else — and
- * any value that has already elapsed — is NOT a wait: the caller falls back to its own documented
- * pause rather than trusting a header it could not read.
- */
+export interface FirefliesFetchRequest {
+  meetingId: string;
+  apiKey: string;
+  signal?: AbortSignal;
+}
+
+export type FirefliesFetchResult =
+  | { ok: true; data: NormalizedFirefliesImport }
+  | { ok: false; code: FirefliesFetchErrorCode; retryAfterMs?: number };
+
 export function parseRetryAfterMs(
   header: string | null | undefined,
   now: number = Date.now(),
@@ -80,172 +101,446 @@ export function parseRetryAfterMs(
   return delta > 0 ? delta : undefined;
 }
 
-export class FirefliesMeetingFetcher implements MeetingFetcher {
-  private readonly fetchImpl: typeof fetch;
-  private readonly apiUrl: string;
-  private readonly now: () => number;
-
-  constructor(options: FirefliesMeetingFetcherOptions = {}) {
-    this.fetchImpl = options.fetchImpl ?? fetch;
-    this.apiUrl = options.apiUrl ?? FIREFLIES_GRAPHQL_URL;
-    this.now = options.now ?? (() => Date.now());
+function validateFirefliesUrl(rawUrl: string, allowCustomUrl: boolean): string | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    return null;
   }
-
-  async fetchMeeting(request: MeetingFetchRequest): Promise<MeetingFetchResult> {
-    let response: Response;
-    try {
-      response = await this.fetchImpl(this.apiUrl, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          authorization: `Bearer ${bearer(request.secret)}`,
-        },
-        body: JSON.stringify({
-          query: FIREFLIES_TRANSCRIPT_QUERY,
-          variables: { id: request.meetingId },
-        }),
-        // The worker's 30 s timeout aborts through this.
-        signal: request.signal,
-      });
-    } catch {
-      // Includes the abort: from here it is indistinguishable from any other transport failure,
-      // and the worker has already recorded the timeout on its own side.
-      return { ok: false, error: { code: "network_error" } };
-    }
-
-    if (!response.ok) {
-      return { ok: false, error: this.classifyStatus(response) };
-    }
-
-    let body: unknown;
-    try {
-      body = await response.json();
-    } catch {
-      return { ok: false, error: { code: "invalid_response" } };
-    }
-
-    const envelope = body as {
-      data?: { transcript?: unknown } | null;
-      errors?: Array<{ message?: unknown }> | null;
-    } | null;
-
-    if (Array.isArray(envelope?.errors) && envelope.errors.length > 0) {
-      return { ok: false, error: classifyGraphQlError(envelope.errors) };
-    }
-    const transcript = envelope?.data?.transcript;
-    if (transcript === null || transcript === undefined) {
-      // The provider announced this id and now does not have it: terminal on the first attempt
-      // (§5.4/T5 — a 404 for an id we never wrote is a fabrication until proven otherwise).
-      return { ok: false, error: { code: "not_found", terminal: true } };
-    }
-    if (typeof transcript !== "object" || Array.isArray(transcript)) {
-      return { ok: false, error: { code: "invalid_response" } };
-    }
-
-    const row = transcript as Record<string, unknown>;
-    if (row.id !== request.meetingId) {
-      // An answer for a DIFFERENT meeting. Never stored under this user, never merged, never
-      // retried into existence — the worker quarantines it.
-      return { ok: false, error: { code: "invalid_response" } };
-    }
-
-    return { ok: true, content: toFetchedMeeting(row) };
+  if (parsed.username || parsed.password) return null;
+  if (allowCustomUrl) {
+    return parsed.protocol === "https:" || parsed.protocol === "http:" ? parsed.toString() : null;
   }
-
-  private classifyStatus(response: Response): {
-    code: string;
-    retryAfterMs?: number;
-    terminal?: boolean;
-  } {
-    if (response.status === 429) {
-      const retryAfterMs = parseRetryAfterMs(
-        response.headers.get("retry-after"),
-        this.now(),
-      );
-      return {
-        code: "rate_limited",
-        retryAfterMs: retryAfterMs ?? FIREFLIES_RATE_LIMIT_FALLBACK_MS,
-      };
-    }
-    if (response.status === 401 || response.status === 403) {
-      return { code: "unauthorized" };
-    }
-    if (response.status === 404) return { code: "not_found", terminal: true };
-    // Everything else — 5xx and any unexpected 4xx — is a retryable upstream failure. The body is
-    // deliberately never read: it is the provider's prose, and it can quote the request.
-    return { code: "upstream_error" };
-  }
+  if (parsed.protocol !== "https:") return null;
+  if (parsed.hostname.toLowerCase() !== FIREFLIES_ALLOWED_HOST) return null;
+  if (parsed.port !== "" && parsed.port !== "443") return null;
+  return parsed.toString();
 }
 
-function bearer(secret: CredentialSecret): string {
-  return secret.kind === "oauth" ? secret.accessToken : secret.apiKey;
+export function stripExpiringLinks(value: unknown, keyHint = ""): unknown {
+  if (typeof value === "string") {
+    if (PURE_URL_RE.test(value) || (LINK_KEY_RE.test(keyHint) && PURE_URL_RE.test(value.trim()))) {
+      return LINK_SENTINEL;
+    }
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry) => stripExpiringLinks(entry, ""));
+  }
+  if (typeof value === "object" && value !== null) {
+    const out: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+      out[key] = stripExpiringLinks(entry, key);
+    }
+    return out;
+  }
+  return value;
+}
+
+function durationMismatch(computed: number, sentenceEnd: number): boolean {
+  if (!(sentenceEnd > 0)) return false;
+  const tolerance = Math.max(120, 0.5 * sentenceEnd);
+  return Math.abs(computed - sentenceEnd) > tolerance;
+}
+
+function coerceStartedAt(raw: unknown): string | null {
+  if (raw == null) return null;
+  if (typeof raw === "number") {
+    if (!Number.isFinite(raw)) return null;
+    return new Date(raw).toISOString();
+  }
+  if (typeof raw === "string") {
+    const t = Date.parse(raw);
+    if (!Number.isFinite(t)) return null;
+    return new Date(t).toISOString();
+  }
+  return null;
 }
 
 /**
- * Classify by CLASS, never by quotation. The message is inspected here and discarded here; only
- * the resulting code leaves this function.
+ * Normalize a raw Fireflies `GetTranscript` payload into the TC-1192 `NormalizedMeeting` +
+ * `TranscriptSentence[]` KV shapes. Expiring links are stripped first.
  */
-function classifyGraphQlError(errors: Array<{ message?: unknown }>): {
-  code: string;
-  retryAfterMs?: number;
-  terminal?: boolean;
-} {
-  const messages = errors
-    .map((entry) => (typeof entry.message === "string" ? entry.message : ""))
-    .join(" ");
-  if (RATE_LIMIT_RE.test(messages)) return { code: "rate_limited" };
-  if (UNAUTHORIZED_RE.test(messages)) return { code: "unauthorized" };
-  if (NOT_FOUND_RE.test(messages)) return { code: "not_found", terminal: true };
+export async function normalizeFirefliesTranscript(
+  rawInput: RawFirefliesTranscript,
+  options: { importedAt?: string } = {},
+): Promise<NormalizedFirefliesImport> {
+  const raw = stripExpiringLinks(rawInput) as RawFirefliesTranscript;
+  const rawSentences = Array.isArray(raw.sentences) ? raw.sentences : [];
+  const sentences: TranscriptSentence[] = [];
+  for (let i = 0; i < rawSentences.length; i++) {
+    const entry = rawSentences[i];
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) continue;
+    const row = entry as Record<string, unknown>;
+    const text = typeof row.text === "string" ? row.text : "";
+    const index =
+      typeof row.index === "number" && Number.isFinite(row.index) ? row.index : i;
+    const speakerName =
+      typeof row.speaker_name === "string" && row.speaker_name.trim().length > 0
+        ? row.speaker_name.trim()
+        : null;
+    const startTime =
+      typeof row.start_time === "number" && Number.isFinite(row.start_time) ? row.start_time : 0;
+    const endTime =
+      typeof row.end_time === "number" && Number.isFinite(row.end_time) ? row.end_time : 0;
+    sentences.push({
+      index,
+      speaker_name: speakerName,
+      text,
+      start_time: startTime,
+      end_time: endTime,
+    });
+  }
+
+  const lastEnd = sentences.length > 0 ? sentences[sentences.length - 1]!.end_time : 0;
+  const metadata: Record<string, unknown> = {};
+  let durationSecs: number | null = null;
+  if (typeof raw.duration === "number" && Number.isFinite(raw.duration)) {
+    const computed = Math.round(raw.duration * 60);
+    if (durationMismatch(computed, lastEnd)) {
+      durationSecs = Math.round(lastEnd);
+      metadata.duration_source = "sentences";
+    } else {
+      durationSecs = computed;
+    }
+  } else if (lastEnd > 0) {
+    durationSecs = Math.round(lastEnd);
+    metadata.duration_source = "sentences";
+  }
+
+  const participants: { name: string; email: string | null }[] = [];
+  const seenNames = new Set<string>();
+  const pushParticipant = (name: unknown, email: unknown) => {
+    if (typeof name !== "string") return;
+    const trimmed = name.trim();
+    if (trimmed.length === 0 || seenNames.has(trimmed)) return;
+    seenNames.add(trimmed);
+    participants.push({
+      name: trimmed,
+      email: typeof email === "string" && email.length > 0 ? email : null,
+    });
+  };
+  if (Array.isArray(raw.meeting_attendees)) {
+    for (const att of raw.meeting_attendees) {
+      if (typeof att === "object" && att !== null && !Array.isArray(att)) {
+        const row = att as Record<string, unknown>;
+        pushParticipant(row.displayName, row.email);
+      }
+    }
+  }
+  if (Array.isArray(raw.speakers)) {
+    for (const sp of raw.speakers) {
+      if (typeof sp === "object" && sp !== null && !Array.isArray(sp)) {
+        const row = sp as Record<string, unknown>;
+        pushParticipant(row.name, null);
+      }
+    }
+  }
+
+  const summary =
+    typeof raw.summary === "object" && raw.summary !== null && !Array.isArray(raw.summary)
+      ? (raw.summary as Record<string, unknown>)
+      : null;
+  const summaryOverview =
+    summary && typeof summary.overview === "string" ? summary.overview : null;
+  const summaryActionItems =
+    summary && typeof summary.action_items === "string" ? summary.action_items : null;
+  const keywords =
+    summary && Array.isArray(summary.keywords)
+      ? summary.keywords.filter((item): item is string => typeof item === "string")
+      : null;
+  const meetingType =
+    summary && typeof summary.meeting_type === "string" ? summary.meeting_type : null;
+
+  const id = await connectorMeetingId("fireflies", raw.id);
+  const meeting: NormalizedMeeting = {
+    id,
+    source: "fireflies",
+    sourceId: raw.id,
+    title: typeof raw.title === "string" ? raw.title : null,
+    startedAt: coerceStartedAt(raw.date),
+    durationSecs,
+    organizerEmail:
+      typeof raw.organizer_email === "string" && raw.organizer_email.length > 0
+        ? raw.organizer_email
+        : null,
+    participants,
+    summaryOverview,
+    summaryActionItems,
+    keywords,
+    meetingType,
+    metadata,
+  };
+
+  const importedAt = options.importedAt ?? new Date().toISOString();
+  const hasSummary =
+    summaryOverview !== null ||
+    summaryActionItems !== null ||
+    (keywords !== null && keywords.length > 0) ||
+    meetingType !== null;
+  const meetingRecord: FirefliesMeetingKvRecord = {
+    ...meeting,
+    hasTranscript: sentences.length > 0,
+    hasSummary,
+    origin: "fireflies-delegation-import",
+    importedAt,
+  };
+  const transcriptBody = JSON.stringify(sentences);
+  const bytes =
+    Buffer.byteLength(transcriptBody, "utf8") +
+    Buffer.byteLength(JSON.stringify(meetingRecord), "utf8");
+
+  return { meeting, meetingRecord, sentences, transcriptBody, bytes };
+}
+
+async function readBoundedText(
+  response: Response,
+  maxBytes: number,
+  signal: AbortSignal,
+): Promise<{ ok: true; text: string } | { ok: false; code: "response_too_large" | "network_error" | "aborted" }> {
+  if (signal.aborted) {
+    try {
+      await response.body?.cancel();
+    } catch {
+      // Ignore cancel errors when already aborted.
+    }
+    return { ok: false, code: "aborted" };
+  }
+
+  const contentLength = response.headers.get("content-length");
+  if (contentLength !== null) {
+    const parsedLength = Number.parseInt(contentLength, 10);
+    if (Number.isFinite(parsedLength) && parsedLength > maxBytes) {
+      try {
+        await response.body?.cancel();
+      } catch {
+        // Ignore cancel errors after refusing an oversize response.
+      }
+      return { ok: false, code: "response_too_large" };
+    }
+  }
+
+  if (response.body) {
+    const reader = response.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    let rejectAbort: ((reason?: unknown) => void) | null = null;
+    const abortPromise = new Promise<never>((_resolve, reject) => {
+      rejectAbort = reject;
+    });
+    // Prevent unhandled rejections if abort fires outside an active race iteration.
+    abortPromise.catch(() => {});
+    const onAbort = () => {
+      rejectAbort?.(new Error("aborted"));
+      void reader.cancel().catch(() => {});
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    try {
+      for (;;) {
+        if (signal.aborted) {
+          await reader.cancel().catch(() => {});
+          return { ok: false, code: "aborted" };
+        }
+        const { done, value } = await Promise.race([reader.read(), abortPromise]);
+        if (signal.aborted) return { ok: false, code: "aborted" };
+        if (done) break;
+        if (!value) continue;
+        total += value.byteLength;
+        if (total > maxBytes) {
+          await reader.cancel();
+          return { ok: false, code: "response_too_large" };
+        }
+        chunks.push(value);
+      }
+      if (signal.aborted) return { ok: false, code: "aborted" };
+    } catch {
+      return { ok: false, code: signal.aborted ? "aborted" : "network_error" };
+    } finally {
+      signal.removeEventListener("abort", onAbort);
+    }
+    return { ok: true, text: Buffer.concat(chunks, total).toString("utf8") };
+  }
+
+  let rejectAbort: ((reason?: unknown) => void) | null = null;
+  const abortPromise = new Promise<never>((_resolve, reject) => {
+    rejectAbort = reject;
+  });
+  abortPromise.catch(() => {});
+  const onAbort = () => rejectAbort?.(new Error("aborted"));
+  signal.addEventListener("abort", onAbort, { once: true });
+  try {
+    const buf = Buffer.from(await Promise.race([response.arrayBuffer(), abortPromise]));
+    if (signal.aborted) return { ok: false, code: "aborted" };
+    if (buf.byteLength > maxBytes) return { ok: false, code: "response_too_large" };
+    return { ok: true, text: buf.toString("utf8") };
+  } catch {
+    return { ok: false, code: signal.aborted ? "aborted" : "network_error" };
+  } finally {
+    signal.removeEventListener("abort", onAbort);
+  }
+}
+
+function classifyHttpStatus(
+  status: number,
+  retryAfterHeader: string | null,
+  now: number,
+): { code: FirefliesFetchErrorCode; retryAfterMs?: number } {
+  if (status === 401 || status === 403) return { code: "unauthorized" };
+  if (status === 404) return { code: "not_found" };
+  if (status === 429) {
+    return {
+      code: "rate_limited",
+      retryAfterMs: parseRetryAfterMs(retryAfterHeader, now) ?? FIREFLIES_RATE_LIMIT_FALLBACK_MS,
+    };
+  }
   return { code: "upstream_error" };
 }
 
-function toFetchedMeeting(row: Record<string, unknown>): FetchedMeeting {
-  const content: FetchedMeeting = {
-    sourceId: row.id as string,
-    // Stripped HERE as well as at the store boundary. The query asks for no URL field, so this
-    // is defense against the provider adding one: an expiring link must not exist as a value
-    // anywhere downstream, and the cheapest place to guarantee that is where the bytes arrive.
-    payload: stripExpiringLinks(row),
-  };
-  if (typeof row.title === "string") content.title = row.title;
-  const ts = normalizeTimestamp(row.date);
-  if (ts !== undefined) content.ts = ts;
-  const organizerEmail = boundedEmail(row.organizer_email);
-  if (organizerEmail) content.organizerEmail = organizerEmail;
-  const names: string[] = [];
-  const emails: string[] = [];
-  if (Array.isArray(row.meeting_attendees)) {
-    for (const attendee of row.meeting_attendees.slice(0, 100)) {
-      if (typeof attendee !== "object" || attendee === null || Array.isArray(attendee)) continue;
-      const value = attendee as Record<string, unknown>;
-      const name = boundedString(value.displayName);
-      const email = boundedEmail(value.email);
-      if (name && !names.some((existing) => existing.toLocaleLowerCase() === name.toLocaleLowerCase())) names.push(name);
-      if (email && !emails.includes(email)) emails.push(email);
+function classifyGraphqlErrors(errors: unknown[]): FirefliesFetchErrorCode {
+  const combined = errors
+    .map((entry) =>
+      typeof entry === "object" && entry !== null && "message" in entry && typeof entry.message === "string"
+        ? entry.message
+        : "",
+    )
+    .join(" ");
+  if (UNAUTHORIZED_RE.test(combined)) return "unauthorized";
+  if (RATE_LIMIT_RE.test(combined)) return "rate_limited";
+  if (NOT_FOUND_RE.test(combined)) return "not_found";
+  return "upstream_error";
+}
+
+/**
+ * Stateless Fireflies meeting fetcher:
+ * - HTTPS only on fixed host `api.fireflies.ai`
+ * - `redirect: "manual"` (any 3xx / redirect refused immediately)
+ * - Bounded time (`timeoutMs`, default 30 s) and response size (`maxBytes`, default 2 MiB)
+ * - Closed error codes only (Fireflies words and the caller's API key never escape)
+ */
+export async function fetchFirefliesMeeting(
+  request: FirefliesFetchRequest,
+  options: FirefliesFetchOptions = {},
+): Promise<FirefliesFetchResult> {
+  const meetingId = request.meetingId.trim();
+  const apiKey = request.apiKey.trim();
+  if (!meetingId || !apiKey) return { ok: false, code: "invalid_input" };
+
+  const targetUrl = validateFirefliesUrl(
+    options.apiUrl ?? FIREFLIES_GRAPHQL_URL,
+    options.allowCustomUrl === true,
+  );
+  if (!targetUrl) return { ok: false, code: "invalid_url" };
+
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const timeoutMs = options.timeoutMs ?? DEFAULT_FIREFLIES_TIMEOUT_MS;
+  const maxBytes = options.maxBytes ?? MAX_FIREFLIES_RESPONSE_BYTES;
+  const now = options.now ?? Date.now;
+
+  const controller = new AbortController();
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+  const onCallerAbort = () => controller.abort();
+  request.signal?.addEventListener("abort", onCallerAbort, { once: true });
+
+  let bodyRead: { ok: true; text: string } | { ok: false; code: "response_too_large" | "network_error" | "aborted" };
+  try {
+    let response: Response;
+    try {
+      response = await fetchImpl(targetUrl, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          query: FIREFLIES_TRANSCRIPT_QUERY,
+          variables: { id: meetingId },
+        }),
+        redirect: "manual",
+        signal: controller.signal,
+      });
+    } catch {
+      return { ok: false, code: timedOut ? "timeout" : "network_error" };
     }
+
+    // Never follow redirects (prevents off-host redirects or Bearer header leakage).
+    if (
+      response.type === "opaqueredirect" ||
+      (response.status >= 300 && response.status < 400)
+    ) {
+      try {
+        await response.body?.cancel();
+      } catch {
+        // Ignore cancel errors on refused redirects.
+      }
+      return { ok: false, code: "redirect_refused" };
+    }
+
+    if (!response.ok) {
+      try {
+        await response.body?.cancel();
+      } catch {
+        // Ignore cancel errors on error responses.
+      }
+      const classified = classifyHttpStatus(response.status, response.headers.get("retry-after"), now());
+      return { ok: false, ...classified };
+    }
+
+    // Keep the timeout timer armed across the entire body read so a stalled body aborts cleanly.
+    bodyRead = await readBoundedText(response, maxBytes, controller.signal);
+  } finally {
+    clearTimeout(timer);
+    request.signal?.removeEventListener("abort", onCallerAbort);
   }
-  if (names.length > 0) content.participantNames = names;
-  if (emails.length > 0) content.participantEmails = emails;
-  return content;
-}
-
-function boundedString(value: unknown): string | undefined {
-  if (typeof value !== "string") return undefined;
-  const normalized = value.trim().replace(/\s+/g, " ");
-  return normalized.length > 0 && normalized.length <= 256 ? normalized : undefined;
-}
-
-function boundedEmail(value: unknown): string | undefined {
-  const normalized = boundedString(value)?.toLocaleLowerCase();
-  return normalized && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized) ? normalized : undefined;
-}
-
-/** Fireflies dates arrive as an ISO string or epoch millis; the store wants one shape. */
-function normalizeTimestamp(value: unknown): string | undefined {
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return new Date(value).toISOString();
+  if (!bodyRead.ok) {
+    return {
+      ok: false,
+      code: bodyRead.code === "aborted" ? (timedOut ? "timeout" : "network_error") : bodyRead.code,
+    };
   }
-  if (typeof value !== "string") return undefined;
-  const parsed = Date.parse(value);
-  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : undefined;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(bodyRead.text);
+  } catch {
+    return { ok: false, code: "invalid_response" };
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    return { ok: false, code: "invalid_response" };
+  }
+
+  const envelope = parsed as { data?: unknown; errors?: unknown };
+  if (Array.isArray(envelope.errors) && envelope.errors.length > 0) {
+    const code = classifyGraphqlErrors(envelope.errors);
+    return {
+      ok: false,
+      code,
+      ...(code === "rate_limited" ? { retryAfterMs: FIREFLIES_RATE_LIMIT_FALLBACK_MS } : {}),
+    };
+  }
+
+  const data =
+    typeof envelope.data === "object" && envelope.data !== null && !Array.isArray(envelope.data)
+      ? (envelope.data as { transcript?: unknown })
+      : null;
+  if (!data) return { ok: false, code: "invalid_response" };
+  if (data.transcript === null || data.transcript === undefined) {
+    return { ok: false, code: "not_found" };
+  }
+  if (typeof data.transcript !== "object" || Array.isArray(data.transcript)) {
+    return { ok: false, code: "invalid_response" };
+  }
+  const transcript = data.transcript as RawFirefliesTranscript;
+  if (typeof transcript.id !== "string" || transcript.id !== meetingId) {
+    return { ok: false, code: "invalid_response" };
+  }
+
+  const normalized = await normalizeFirefliesTranscript(transcript, {
+    importedAt: new Date(now()).toISOString(),
+  });
+  return { ok: true, data: normalized };
 }

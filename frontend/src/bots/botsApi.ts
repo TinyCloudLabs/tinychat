@@ -2,6 +2,8 @@
 // to the bots service with the owner taken from the session, so these calls carry only the session bearer.
 import { DEFAULT_REQUEST_HEADER_NAME, DEFAULT_REQUEST_HEADER_VALUE, SessionStore } from "@tinyboilerplate/client";
 
+import { currentAgentClientContext } from "../lib/agentChatApi";
+
 import type { BotsErrorCode } from "./botsStrings";
 
 export interface BotMessage {
@@ -9,6 +11,14 @@ export interface BotMessage {
   role: "user" | "bot";
   text: string;
   at: string;
+  /** Set locally for an archived batch that cannot be opened with its key. */
+  unreadableHistory?: true;
+  /** Set by the service on a message the app sent for the owner (a decision on a request or proposal card), not typed by the owner. */
+  origin?: "app";
+  /** On an app message: what the owner decided. */
+  decision?: AppDecision;
+  /** On an app message about a secret request: what the owner's chat line names. */
+  secret?: SecretLine;
 }
 
 /** What a bot did on its computer, as the service records it: fixed verbs and counts, never words the model wrote. */
@@ -42,6 +52,22 @@ export class BotsRouteMissing extends BotsError {
   }
 }
 
+/** The service answered 409 `no_reply` to an app reply: nothing was left to send for that request. Not a failure to show. */
+export class BotsNoReply extends BotsError {
+  constructor() {
+    super("failed");
+    this.name = "BotsNoReply";
+  }
+}
+
+/** The service answered 409 `held` to a Send: the chat holds the owner's meeting data, so nothing goes to other bots. */
+export class BotsHeld extends BotsError {
+  constructor() {
+    super("failed");
+    this.name = "BotsHeld";
+  }
+}
+
 export type MainWebMode = "off" | "listed" | "any";
 
 /** Main's web access setting, as the service reports it. `hosts` is the owner's list, used only in `listed` mode. */
@@ -53,14 +79,112 @@ export interface MainWebSettings {
   today: { searches: number; pages: number; blocked: number };
 }
 
+export type AskState = "pending" | "answered" | "declined" | "stopped" | "expired";
+
+/** What the owner decided, as the service marks the app's message about it. */
+export type AppDecision = "answered" | "declined" | "stopped" | "approved" | "revoked" | "action_approved" | "action_declined";
+
+/** A secret request names a secret, never carries its value. */
+export const SECRET_NAME = /^[A-Z][A-Z0-9_]{0,63}$/;
+const MAX_SECRET_SITES = 3;
+const SITE_NAME = /^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$/;
+
+/** What a chat line about a secret request names: the secret, its sites, the service for a known one, and an approval's end. */
+export interface SecretLine {
+  name: string;
+  sites: string[];
+  service?: string;
+  until?: string;
+}
+
+export type SecretState = "pending" | "approved" | "declined" | "stopped" | "revoked" | "expired" | "ended" | "failed";
+
+/** One secret Main asked to use. A name, the sites it may be used with and what was decided; never a value. */
+export interface SecretRequest extends SecretLine {
+  id: string;
+  kind: "secret";
+  state: SecretState;
+  askedAt: string;
+  expiresAt: string;
+  /** Main's one sentence on what it is for, while pending. */
+  why?: string;
+  /** The OpenKey page where the owner approves it; set once the service has one. */
+  approveUrl?: string;
+  /** The write methods Main may use it with (a known secret only); absent when it can only read. */
+  writes?: string[];
+  outside: boolean;
+  undelivered: boolean;
+  resolvedAt?: string;
+}
+
+export type MainRequest = AskRequest | SecretRequest | ActionRequest;
+
+/** One question Main asked the owner. The service keeps `question` and `choices` only while pending. */
+export interface AskRequest {
+  id: string;
+  kind: "ask";
+  state: AskState;
+  askedAt: string;
+  expiresAt: string;
+  question?: string;
+  choices?: string[];
+  /** True when Main read something from outside the chat in the turn that asked. */
+  outside: boolean;
+  /** True while the owner's decision has not yet reached Main. */
+  undelivered: boolean;
+  resolvedAt?: string;
+}
+
+/** One message Main proposed sending to two or more of the owner's other bots. The card is made from these fields. */
+export interface ActionRequest {
+  id: string;
+  kind: "action";
+  action: "message_bots";
+  state: "pending" | "sending" | "done" | "declined" | "expired" | "stopped";
+  askedAt: string;
+  expiresAt: string;
+  outside: boolean;
+  undelivered: boolean;
+  resolvedAt?: string;
+  /** Each recipient with its current name; null when the bot is gone. */
+  targets: { key: string; name: string | null }[];
+  /** Main's message, while pending. */
+  text?: string;
+  /** While pending: what Send must name, so only the message on the card is sent. */
+  binding?: string;
+  /** Once done: which recipients got it. */
+  outcomes?: { key: string; delivered: boolean }[];
+}
+
+export type AskDecision = { decision: "decline" } | { decision: "answer"; answer: string } | { decision: "answer"; choice: number } | { decision: "approve"; binding: string };
+
+/** Decline a pending secret request, stop an approved one, try a failed one again. */
+export type SecretDecision = { decision: "decline" } | { decision: "stop" } | { decision: "retry" };
+
+/** Asks the app sends to Main for the owner's decision on a request; the service composes the words. */
+export interface SendOptions {
+  appReply?: { requestId: string };
+}
+
 export interface BotsApi {
   getBotsStatus(signal?: AbortSignal): Promise<{ enabled: boolean }>;
   listMainMessages(signal?: AbortSignal): Promise<BotMessage[]>;
   getMainWeb(signal?: AbortSignal): Promise<MainWebSettings>;
   /** Resolves with the stored setting; throws BotsError("invalid") when the service refuses the list. */
   setMainWeb(settings: Pick<MainWebSettings, "mode" | "hosts">, signal?: AbortSignal): Promise<MainWebSettings>;
-  /** Resolves after the stream's `done` or `error` event; throws BotsError when the stream fails or ends without one. */
-  sendToMain(text: string, onEvent: (event: MainEvent) => void, signal?: AbortSignal): Promise<void>;
+  /** Whether Main may ask the owner things; the service answers 404 when it has no such route. */
+  getAsks(signal?: AbortSignal): Promise<{ enabled: boolean }>;
+  setAsks(settings: { enabled: boolean }, signal?: AbortSignal): Promise<{ enabled: boolean }>;
+  /** Pending requests first, then recent resolved ones: questions, secret requests and proposals. */
+  listRequests(signal?: AbortSignal): Promise<MainRequest[]>;
+  /** Records the owner's decision; throws when the request can no longer take it. */
+  answerRequest(id: string, decision: AskDecision | SecretDecision, signal?: AbortSignal): Promise<MainRequest>;
+  /**
+   * Resolves after the stream's `done` or `error` event; throws BotsError when the stream fails or ends without one.
+   * With `options.appReply` the message is the app's report of the owner's decision on that request: no text goes
+   * with it (the service composes it), and `text` is ignored.
+   */
+  sendToMain(text: string, onEvent: (event: MainEvent) => void, signal?: AbortSignal, options?: SendOptions): Promise<void>;
 }
 
 const STREAM_ERROR_CODES: Record<string, BotsErrorCode> = {
@@ -152,9 +276,15 @@ function toMessages(payload: unknown): BotMessage[] {
   if (!Array.isArray(list)) throw new BotsError("failed");
   return list.flatMap((item: unknown) => {
     const value = fields(item);
-    return typeof value.id === "string" && (value.role === "user" || value.role === "bot") && typeof value.text === "string"
-      ? [{ id: value.id, role: value.role, text: value.text, at: typeof value.at === "string" ? value.at : "" }]
-      : [];
+    if (typeof value.id !== "string" || (value.role !== "user" && value.role !== "bot") || typeof value.text !== "string") return [];
+    const app = value.origin === "app";
+    const secret = app ? toSecretLine(value.secret) : undefined;
+    return [{
+      id: value.id, role: value.role, text: value.text, at: typeof value.at === "string" ? value.at : "",
+      ...(app ? { origin: "app" as const } : {}),
+      ...(app && isAppDecision(value.decision) ? { decision: value.decision } : {}),
+      ...(secret ? { secret } : {}),
+    }];
   });
 }
 
@@ -171,6 +301,102 @@ function toWebSettings(payload: unknown): MainWebSettings {
     !isCount(today.searches) || !isCount(today.pages) || !isCount(today.blocked)
   ) throw new BotsError("failed");
   return { mode, hosts: [...hosts], available, today: { searches: today.searches, pages: today.pages, blocked: today.blocked } };
+}
+
+const isoTime = (value: unknown): value is string => typeof value === "string" && Number.isFinite(Date.parse(value));
+
+const ACTION_STATES: readonly ActionRequest["state"][] = ["pending", "sending", "done", "declined", "expired", "stopped"];
+
+function toActionRequest(value: Record<string, unknown>): ActionRequest {
+  const { id, state, askedAt, expiresAt, outside, resolvedAt, targets, text, binding, outcomes } = value;
+  const known = ACTION_STATES.find((candidate) => candidate === state);
+  if (typeof id !== "string" || id.length === 0 || id.length > 64 || value.action !== "message_bots" || !known
+    || !isoTime(askedAt) || !isoTime(expiresAt) || !Array.isArray(targets)) throw new BotsError("failed");
+  return {
+    id, kind: "action", action: "message_bots", state: known, askedAt, expiresAt,
+    outside: outside === true,
+    undelivered: value.undelivered === true,
+    ...(isoTime(resolvedAt) ? { resolvedAt } : {}),
+    targets: targets.flatMap((target: unknown) => {
+      const { key, name } = fields(target);
+      return typeof key === "string" ? [{ key, name: typeof name === "string" ? name : null }] : [];
+    }),
+    ...(typeof text === "string" ? { text } : {}),
+    ...(typeof binding === "string" ? { binding } : {}),
+    ...(Array.isArray(outcomes) ? {
+      outcomes: outcomes.flatMap((outcome: unknown) => {
+        const { key, delivered } = fields(outcome);
+        return typeof key === "string" && typeof delivered === "boolean" ? [{ key, delivered }] : [];
+      }),
+    } : {}),
+  };
+}
+
+const APP_DECISIONS: readonly unknown[] = ["answered", "declined", "stopped", "approved", "revoked", "action_approved", "action_declined"] satisfies AppDecision[];
+export const isAppDecision = (value: unknown): value is AppDecision => APP_DECISIONS.includes(value);
+
+const SECRET_STATES: readonly unknown[] = ["pending", "approved", "declined", "stopped", "revoked", "expired", "ended", "failed"] satisfies SecretState[];
+const isSites = (value: unknown): value is string[] =>
+  Array.isArray(value) && value.length >= 1 && value.length <= MAX_SECRET_SITES && value.every(site => typeof site === "string" && SITE_NAME.test(site));
+
+const WRITE_METHODS: readonly string[] = ["POST", "PUT", "PATCH", "DELETE"];
+const isWrites = (value: unknown): value is string[] =>
+  Array.isArray(value) && value.length >= 1 && value.length <= WRITE_METHODS.length && value.every(method => typeof method === "string" && WRITE_METHODS.includes(method));
+
+/** A secret line from the service or the history: a valid name and sites, or nothing. */
+export function toSecretLine(payload: unknown): SecretLine | undefined {
+  if (typeof payload !== "object" || payload === null) return undefined;
+  const { name, sites, service, until } = fields(payload);
+  if (typeof name !== "string" || !SECRET_NAME.test(name) || !isSites(sites)) return undefined;
+  return {
+    name, sites: [...sites],
+    ...(typeof service === "string" && service.length > 0 && service.length <= 60 ? { service } : {}),
+    ...(isoTime(until) ? { until } : {}),
+  };
+}
+
+function toRequest(payload: unknown): MainRequest {
+  const value = fields(payload);
+  if (value.kind === "action") return toActionRequest(value);
+  const { id, kind, state, askedAt, expiresAt, question, choices, answer, outside, resolvedAt } = value;
+  if (typeof id !== "string" || id.length === 0 || id.length > 64 || !isoTime(askedAt) || !isoTime(expiresAt)) throw new BotsError("failed");
+  const common = {
+    id, askedAt, expiresAt,
+    outside: outside === true,
+    undelivered: value.undelivered === true || typeof answer === "string",
+    ...(isoTime(resolvedAt) ? { resolvedAt } : {}),
+  };
+  if (kind === "secret") {
+    const line = toSecretLine(value);
+    if (!line || !SECRET_STATES.includes(state)) throw new BotsError("failed");
+    const { why, approveUrl, writes } = value;
+    return {
+      ...common, ...line, kind, state: state as SecretState,
+      ...(typeof why === "string" ? { why } : {}),
+      ...(typeof approveUrl === "string" && approveUrl.length <= 2048 && approveUrl.startsWith("https://") ? { approveUrl } : {}),
+      ...(isWrites(writes) ? { writes: [...writes] } : {}),
+    };
+  }
+  if (kind !== "ask" || (state !== "pending" && state !== "answered" && state !== "declined" && state !== "stopped" && state !== "expired")) {
+    throw new BotsError("failed");
+  }
+  return {
+    ...common, kind, state,
+    ...(typeof question === "string" ? { question } : {}),
+    ...(Array.isArray(choices) ? { choices: choices.filter((choice): choice is string => typeof choice === "string") } : {}),
+  };
+}
+
+function toRequests(payload: unknown): MainRequest[] {
+  const list = fields(payload).requests;
+  if (!Array.isArray(list)) throw new BotsError("failed");
+  return list.flatMap((item: unknown) => { try { return [toRequest(item)]; } catch { return []; } });
+}
+
+function toAsks(payload: unknown): { enabled: boolean } {
+  const { enabled } = fields(payload);
+  if (typeof enabled !== "boolean") throw new BotsError("failed");
+  return { enabled };
 }
 
 export interface BotsApiOptions {
@@ -204,6 +430,12 @@ export function createBotsApi({ baseUrl, getToken, fetch: fetchImpl = (input, in
     if (response.status === 401) throw new BotsError("signed_out");
     if (response.status === 400) throw new BotsError("invalid");
     if (response.status === 404) throw new BotsRouteMissing();
+    // The service refuses an app reply for a request that has nothing to deliver (already sent, or not decided).
+    if (response.status === 409) {
+      const refusal = fields(await response.json().catch(() => null)).error;
+      if (refusal === "no_reply") throw new BotsNoReply();
+      if (refusal === "held") throw new BotsHeld();
+    }
     if (!response.ok) throw new BotsError("failed");
     return response;
   }
@@ -235,8 +467,28 @@ export function createBotsApi({ baseUrl, getToken, fetch: fetchImpl = (input, in
       return toWebSettings(await readJson(await request("PUT", "/api/bots/main/web", signal, JSON.stringify({ mode, hosts }))));
     },
 
-    async sendToMain(text, onEvent, signal) {
-      const response = await request("POST", "/api/bots/main/messages", signal, JSON.stringify({ text }));
+    async getAsks(signal) {
+      return toAsks(await readJson(await request("GET", "/api/bots/main/asks", signal)));
+    },
+
+    async setAsks({ enabled }, signal) {
+      return toAsks(await readJson(await request("PUT", "/api/bots/main/asks", signal, JSON.stringify({ enabled }))));
+    },
+
+    async listRequests(signal) {
+      return toRequests(await readJson(await request("GET", "/api/bots/main/requests", signal)));
+    },
+
+    async answerRequest(id, decision, signal) {
+      const path = `/api/bots/main/requests/${encodeURIComponent(id)}/answer`;
+      return toRequest(await readJson(await request("POST", path, signal, JSON.stringify(decision))));
+    },
+
+    async sendToMain(text, onEvent, signal, options) {
+      // A typed message carries the owner's local date and time zone, as the meeting chat sends them, so the bot reads
+      // "today" as the owner does.
+      const body = options?.appReply ? { appReply: { requestId: options.appReply.requestId } } : { text, clientContext: currentAgentClientContext() };
+      const response = await request("POST", "/api/bots/main/messages", signal, JSON.stringify(body));
       if (!response.body) throw new BotsError("failed");
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
@@ -275,4 +527,4 @@ export const botsApi: BotsApi = createBotsApi({
   getToken: () => new SessionStore(SESSION_STORE_KEY).getToken(),
 });
 
-export const { getBotsStatus, listMainMessages, getMainWeb, setMainWeb, sendToMain } = botsApi;
+export const { getBotsStatus, listMainMessages, getMainWeb, setMainWeb, getAsks, setAsks, listRequests, answerRequest, sendToMain } = botsApi;

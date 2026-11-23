@@ -29,8 +29,8 @@ import {
 import { runInWriteLane } from "./write-lane.js";
 // Must match PURGE_LEDGER_KEY_PREFIX in connector-webhooks.ts. Kept local to avoid a runtime
 // cycle: connector-webhooks imports the drain's replay-marker helpers.
-const PURGE_LEDGER_KEY_PREFIX = "webhooks/purged";
-const CORRUPT_PURGE_LEDGER_KEY_PREFIX = "webhooks/corrupt/purged";
+export const PURGE_LEDGER_KEY_PREFIX = "webhooks/purged";
+export const CORRUPT_PURGE_LEDGER_KEY_PREFIX = "webhooks/corrupt/purged";
 
 /**
  * The drain worker (§5.4/§5.5/§6.1 step -1/§3.6) — all four triggers, the per-address
@@ -578,8 +578,8 @@ export class ConnectorDrainWorker {
    *   3. user visit — `POST /api/connectors/webhooks/drain` (passes `force`, because the user
    *      is right here and the 2 s anti-tight-loop interval is not aimed at them)
    *
-   * The other three are retired deliberately, not by omission. 1 (the post-ack `onDelivery`
-   * kick) and 2 (the five-minute timer) ran a full pass to hand ids to nobody — under C the
+   * The other three are retired deliberately, not by omission. 1 (a post-ack kick) and 2 (the
+   * five-minute timer) ran a full pass to hand ids to nobody — under C the
    * browser is the writer and nothing is listening between visits, so the background half of
    * the timer is now a bounded queue-maintenance sweep instead
    * ({@link startConnectorQueueMaintenanceTimer}). 4 (the fresh-grant kick from
@@ -1432,7 +1432,7 @@ export function startConnectorQueueMaintenanceTimer(
 
 // ── The timer's address source ───────────────────────────────────────
 
-const CONFIG_KEY_PREFIX = "webhooks/config/";
+export const CONFIG_KEY_PREFIX = "webhooks/config/";
 const ADDRESS_KEY_PATTERN = /^0x[0-9a-f]{40}$/;
 
 /** KV `list` responses have been seen wrapped, doubly wrapped, and as bare arrays. */

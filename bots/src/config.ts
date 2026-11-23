@@ -174,7 +174,17 @@ export interface GatewayConfig {
   ownersFile?: string;
   /** Web access for Main. Absent in a config that predates it; without a key every web call is refused. */
   web?: WebConfig;
+  /** Sealed secret-request records (secret-store.ts), beside the budget file. */
+  secretGrantsDir?: string;
 }
+
+/** Where secret requests go: TinyCloud's own node, links API and OpenKey. Pinned like the model's upstream. */
+export const SECRET_ORIGINS = {
+  node: "https://node.tinycloud.xyz",
+  linksApi: "https://api.tinycloud.xyz",
+  openkey: "https://openkey.so",
+  openkeyApi: "https://api.openkey.so",
+} as const;
 
 /** The search provider behind Main's web tools and what one bot, and all bots, may use of it per UTC day. */
 export interface WebConfig {
@@ -267,6 +277,7 @@ export function gatewayConfig(env: Env): GatewayConfig & { backendOrigin: string
     bodyTimeoutMs: int(env, "BOTS_BODY_TIMEOUT_MS", 30_000, 100),
     budgetFile,
     ownersFile: env.BOTS_OWNERS_FILE ?? join(dirname(budgetFile), "owners.json"),
+    secretGrantsDir: join(dirname(budgetFile), "secret-grants"),
     web: {
       key: env.TAVILY_API_KEY?.trim() || undefined,
       apiUrl: webApi(env),

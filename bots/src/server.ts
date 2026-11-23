@@ -1,21 +1,27 @@
 // Internal HTTP API, called only by the TinyChat backend (docs/plans/tiny-bots-slice1.md, piece 1).
 // Every SSE event is encoded here from checked fields; nothing from a sandbox is passed through raw.
 
-import type { ActivityRecord, StagedHistory } from "./history";
+import type { ActivityRecord, HistoryGrantUpdate, StagedHistory } from "./history";
 import type { BotAdmission } from "./bot-admission";
-import { type BotMessenger, type ErrorCode, ERROR_MESSAGES, type ListedMessage, MAX_TEXT, type TurnSink, type WebSettings } from "./bot";
+import { type AppSource, type AsksSettings, type BotMessenger, type ErrorCode, ERROR_MESSAGES, type ListedMessage, MAX_TEXT, type TurnSink, type WebSettings } from "./bot";
+import { type OwnerDate, ownerDateFrom } from "./owner-date";
 import { INVALID_HOSTS, parseWebPolicy, type WebPolicy } from "./web-policy";
+import { type AnswerInput, type AnswerResult, type AppOrigin, type AskReply, type AskRequest, parseAnswerInput } from "./asks";
+import { type ActionReply, type ActionRequest, type ActionResult, type ApproveResult, parseApproveInput } from "./actions";
+import { parseAreas, type ReadArea, type ReadsSetting } from "./reads";
 import { isRecord } from "./guards";
 import { ANNOUNCED_STATES, type AnnouncedState, type BotState, OwnerBotLimit } from "./manifest";
 import { legacyOwnerHeaderAccepted } from "./config";
 import { MESSAGING_STRINGS } from "./messaging-strings";
-import { authorizedOwner, isBotKey, MAIN_KEY, ownerAllowed } from "./owner";
+import { authorizedOwner, botNameFrom, isBotKey, MAIN_KEY, ownerAllowed } from "./owner";
 import type { DeleteSkip } from "./retention";
 import type { HostToolReply } from "./rpc";
 import { type Environment, NonceGuard, SIGNED_SCHEME, verifyCall } from "./signed-call";
 
 /** `/v1/bots/<key>` and what follows it. The key is checked before anything is built from it. */
 const BOT_PATH = /^\/v1\/bots\/([^/]+)(\/.*)?$/;
+const REQUEST_ID = /^[0-9a-f]{1,64}$/;
+const ANSWER_PATH = /^\/requests\/([0-9a-f]{1,64})\/answer$/;
 
 /** What a request does to a bot, which decides the states it is allowed in. */
 type Operation = "turn" | "read" | "history";
@@ -28,25 +34,48 @@ const ALLOWED: Record<Operation, readonly BotState[]> = {
 };
 
 function operationOf(rest: string, method: string): Operation | undefined {
-  if (rest === "/web") return "read";
+  if (rest === "/web" || rest === "/asks" || rest === "/reads" || rest === "/requests" || ANSWER_PATH.test(rest)) return "read";
   if (rest === "/messages") return method === "POST" ? "turn" : "read";
   if (rest === "/history" || rest === "/history/stage" || rest === "/history/permission" || rest === "/history/notice") return "history";
+  // Only the owner's signed call reaches this: no tool, turn or other bot has a path to it.
+  if (rest === "/new-chat") return method === "POST" ? "turn" : undefined;
   return undefined;
 }
 
 export interface BotApi {
-  /** `from` says who wrote the text; only the owner's own messages teach the bot which addresses it may read. */
-  send(text: string, sink: TurnSink, owner?: string, messenger?: BotMessenger, from?: "owner" | "bot"): Promise<void>;
+  /**
+   * `from` says who wrote the text; only the owner's own messages teach the bot which addresses it may read. An
+   * `AppSource` is only ever this service's own composed reply. `date`, the owner's local date and time zone, is put on
+   * the owner's own turns only.
+   */
+  send(text: string, sink: TurnSink, owner?: string, messenger?: BotMessenger, from?: "owner" | "bot" | AppSource, date?: OwnerDate): Promise<void>;
+  /** The name the owner sees, for the prompt's wording at the next sandbox start; never a source of trust. */
+  setName?(botName: string): void;
   list(): Promise<ListedMessage[]>;
   listActivities?(): Promise<ActivityRecord[]>;
   historyPending?(): Promise<unknown>;
+  historyNeedsGrantTag?(): boolean;
   historyStage?(staged: StagedHistory): Promise<void>;
-  historyPermission?(owner: string, expiresAt?: number, validUntil?: number): Promise<void>;
+  historyPermission?(owner: string, expiresAt?: number, validUntil?: number, grant?: HistoryGrantUpdate): Promise<void>;
   historyNotice?(): Promise<unknown>;
   historyNoticeAck?(id: string, receivedAt: number): Promise<void>;
   historyReceipt?(receipt: unknown): Promise<void>;
   webSettings?(): Promise<WebSettings>;
   setWebPolicy?(policy: WebPolicy): Promise<WebSettings>;
+  /** The owner's setting for questions from Main, and their requests. Absent: the service does not have them (404). */
+  asksSettings?(): Promise<AsksSettings>;
+  setAsksEnabled?(enabled: boolean): Promise<AsksSettings>;
+  /** Which areas of the owner's data Main may read (reads.ts). Set by the backend once it holds the owner's grant. */
+  setReads?(owner: string, areas: ReadArea[]): Promise<ReadsSetting>;
+  /** Whether this bot's current conversation holds owner data it read; it then sends nothing to other bots. */
+  holdsOwnerData?(): Promise<boolean>;
+  requests?(): Promise<(AskRequest | ActionRequest)[]>;
+  answerRequest?(id: string, input: AnswerInput): Promise<AnswerResult | ActionResult>;
+  /** The owner's Send on a proposal card. The send runs after it returns; Main is told the outcome by an app message. */
+  approveRequest?(id: string, binding: string, messenger: BotMessenger): Promise<ApproveResult>;
+  /** The message for Main that tells it what the owner decided; undefined unless decided and not yet delivered. */
+  appReply?(requestId: string): AskReply | ActionReply | undefined;
+  appReplyDelivered?(requestId: string): void;
 }
 
 export interface AppOptions {
@@ -63,6 +92,8 @@ export interface AppOptions {
     /** A sibling by key. Without it the service has only Main. */
     forBot?(ownerDid: string, key: string): BotApi;
     deleteBot?(ownerDid: string, key: string): Promise<DeleteSkip | undefined>;
+    /** The owner's "Start a new chat" for Main (BotManager.newChat). Without it the service has none (404). */
+    newChat?(ownerDid: string): Promise<DeleteSkip | "busy" | undefined>;
   };
   /** Which siblings the backend has announced. Without it the service has only Main, always active. */
   manifest?: {
@@ -78,8 +109,14 @@ const MAX_QUEUED_BYTES = 1024 * 1024;
 // Keeps one tool reply well below the RPC frame limit even when JSON escapes its characters.
 const MAX_BOT_REPLY_BYTES = 32 * 1024;
 const UNAVAILABLE_REPLY = { text: MESSAGING_STRINGS.unavailable, isError: true } as const;
+const HELD_REPLY = { text: MESSAGING_STRINGS.targetHeld, isError: true } as const;
 
+/**
+ * Runs a turn in the target and returns its reply. A target whose conversation holds owner data it read, before the
+ * turn or after it, sends no reply: what it answers could carry that data to the asking bot.
+ */
 async function relayMessage(target: BotApi, owner: string, text: string): Promise<HostToolReply> {
+  if (await target.holdsOwnerData?.()) return HELD_REPLY;
   let reply = "";
   let bytes = 0;
   let complete = false;
@@ -96,6 +133,7 @@ async function relayMessage(target: BotApi, owner: string, text: string): Promis
   }, owner, undefined, "bot");
   if (errorCode === "busy") return { text: MESSAGING_STRINGS.busy, isError: true };
   if (errorCode || !complete || !reply || bytes > MAX_BOT_REPLY_BYTES) return UNAVAILABLE_REPLY;
+  if (await target.holdsOwnerData?.()) return HELD_REPLY;
   return { text: reply };
 }
 
@@ -238,7 +276,7 @@ export function createApp(options: AppOptions): (req: Request) => Promise<Respon
       } catch { return new Response(null, { status: 503 }); }
       return new Response(null, { status: 405 });
     }
-    if (rest === "/web" && key !== MAIN_KEY) return new Response(null, { status: 404 });
+    if ((rest === "/web" || rest === "/asks" || rest === "/reads" || rest === "/requests" || rest === "/new-chat" || ANSWER_PATH.test(rest)) && key !== MAIN_KEY) return new Response(null, { status: 404 });
     const operation = operationOf(rest, req.method);
     if (!operation) return new Response(null, { status: 404 });
     // The state is read before a sibling is looked up, so a key nobody announced never creates anything.
@@ -250,6 +288,27 @@ export function createApp(options: AppOptions): (req: Request) => Promise<Respon
     const found = key === MAIN_KEY ? options.bots.forOwner(owner) : options.bots.forBot?.(owner, key);
     if (!found) return new Response(null, { status: 404 });
     const bot = found;
+    if (rest === "/new-chat") {
+      if (!options.bots.newChat) return new Response(null, { status: 404 });
+      try {
+        const cause = await options.bots.newChat(owner);
+        if (cause === undefined) return Response.json({ outcome: "cleared" });
+        // A turn in flight, or messages not yet saved to the owner's history: nothing was deleted.
+        if (cause === "busy" || cause === "archive_pending") return Response.json({ error: cause }, { status: 409 });
+      } catch { /* answered below */ }
+      return Response.json({ error: "bot_unavailable", message: ERROR_MESSAGES.bot_unavailable }, { status: 503 });
+    }
+    if (rest === "/reads") {
+      if (req.method !== "PUT" || !bot.setReads) return new Response(null, { status: bot.setReads ? 405 : 404 });
+      const input: unknown = await req.json().catch(() => null);
+      const areas = isRecord(input) && Object.keys(input).length === 1 ? parseAreas(input.areas) : undefined;
+      if (!areas) return Response.json({ error: "invalid" }, { status: 400 });
+      try {
+        return Response.json(await bot.setReads(owner, areas));
+      } catch {
+        return Response.json({ error: "bot_unavailable", message: ERROR_MESSAGES.bot_unavailable }, { status: 503 });
+      }
+    }
     if (rest === "/web") {
       try {
         if (req.method === "GET" && bot.webSettings) return Response.json(await bot.webSettings());
@@ -263,6 +322,41 @@ export function createApp(options: AppOptions): (req: Request) => Promise<Respon
       }
       return new Response(null, { status: 405 });
     }
+    if (rest === "/asks" || rest === "/requests" || ANSWER_PATH.test(rest)) {
+      try {
+        if (rest === "/asks" && req.method === "GET" && bot.asksSettings) return Response.json(await bot.asksSettings());
+        if (rest === "/asks" && req.method === "PUT" && bot.setAsksEnabled) {
+          const input: unknown = await req.json().catch(() => null);
+          if (!isRecord(input) || Object.keys(input).length !== 1 || typeof input.enabled !== "boolean") return Response.json({ error: "invalid" }, { status: 400 });
+          return Response.json(await bot.setAsksEnabled(input.enabled));
+        }
+        if (rest === "/requests" && req.method === "GET" && bot.requests) return Response.json({ requests: await bot.requests() });
+        if (req.method === "POST" && bot.answerRequest && ANSWER_PATH.test(rest)) {
+          const input: unknown = await req.json().catch(() => null);
+          const requestId = ANSWER_PATH.exec(rest)![1]!;
+          const approve = parseApproveInput(input);
+          if (approve) {
+            // Sending reaches only the bots the backend admits for Main now, by the path message_bot takes.
+            const messenger = signed ? turnMessenger(options, owner, key, approve.keys) : undefined;
+            if (!messenger || !bot.approveRequest) return Response.json({ error: "invalid" }, { status: 400 });
+            const result = await bot.approveRequest(requestId, approve.binding, messenger);
+            if (result.ok) return Response.json(result.request);
+            if (result.error === "held") return Response.json({ error: "held" }, { status: 409 });
+            return result.error === "invalid" ? Response.json({ error: "invalid" }, { status: 400 }) : Response.json({ error: "not_pending" }, { status: 409 });
+          }
+          const decision = parseAnswerInput(input);
+          if (!decision) return Response.json({ error: "invalid" }, { status: 400 });
+          const result = await bot.answerRequest(requestId, decision);
+          if (result.ok) return Response.json(result.request);
+          // One answer for a request that is gone, decided, expired or never existed: no way to tell which.
+          return result.error === "invalid" ? Response.json({ error: "invalid" }, { status: 400 }) : Response.json({ error: "not_pending" }, { status: 409 });
+        }
+      } catch {
+        return Response.json({ error: "bot_unavailable", message: ERROR_MESSAGES.bot_unavailable }, { status: 503 });
+      }
+      // A bot that does not serve questions reads as a service that does not have them.
+      return new Response(null, { status: bot.asksSettings ? 405 : 404 });
+    }
     if (rest === "/history/stage" && req.method === "POST") {
       try { await bot.historyStage?.(await req.json()); return new Response(null, { status: 204 }); }
       catch { return new Response(null, { status: 503 }); }
@@ -270,7 +364,21 @@ export function createApp(options: AppOptions): (req: Request) => Promise<Respon
     if (rest === "/history/permission" && req.method === "PUT") {
       try {
         const body = await req.json();
-        await bot.historyPermission?.(owner, body.expiresAt, body.validUntil);
+        const { searchParams } = url;
+        let grant: HistoryGrantUpdate | undefined;
+        if (searchParams.has("kind") || searchParams.has("cid") || searchParams.has("revision")) {
+          const kind = searchParams.get("kind");
+          const cid = searchParams.get("cid");
+          const revision = searchParams.get("revision");
+          if (!signed || (kind !== "extend" && kind !== "revoke" && kind !== "expire") ||
+            !cid || !revision || !/^\d+$/.test(revision) || !Number.isSafeInteger(Number(revision)) ||
+            (kind === "extend" ? !Number.isFinite(body.validUntil) || body.expiresAt !== undefined
+              : !Number.isFinite(body.expiresAt) || body.validUntil !== undefined)) {
+            return new Response(null, { status: 400 });
+          }
+          grant = { kind, cid, revision: Number(revision) };
+        }
+        await bot.historyPermission?.(owner, body.expiresAt, body.validUntil, grant);
         return new Response(null, { status: 204 });
       } catch { return new Response(null, { status: 503 }); }
     }
@@ -286,7 +394,11 @@ export function createApp(options: AppOptions): (req: Request) => Promise<Respon
     }
     if (rest === "/history") {
       try {
-        if (req.method === "GET") return Response.json({ batch: await bot.historyPending?.() ?? null });
+        if (req.method === "GET") {
+          const batch = await bot.historyPending?.() ?? null;
+          const needsGrantTag = signed && key === MAIN_KEY && bot.historyNeedsGrantTag?.();
+          return Response.json({ batch, ...(needsGrantTag ? { needsGrantTag: true } : {}) });
+        }
         if (req.method === "POST" && bot.historyReceipt) { await bot.historyReceipt(await req.json()); return new Response(null, { status: 204 }); }
       } catch { return Response.json({ error: "history_unavailable" }, { status: 503 }); }
       return new Response(null, { status: 405 });
@@ -295,12 +407,32 @@ export function createApp(options: AppOptions): (req: Request) => Promise<Respon
 
     if (req.method === "POST") {
       const body: unknown = await req.json().catch(() => null);
+      const messenger = signed ? turnMessenger(options, owner, key, isRecord(body) ? body.messageableBotKeys : undefined) : undefined;
+      // Only the backend's signed call names the bot. A name that is not one short line is ignored.
+      const botName = signed && isRecord(body) ? botNameFrom(body.botName) : undefined;
+      if (botName !== undefined) bot.setName?.(botName);
+      if (isRecord(body) && body.appReply !== undefined) {
+        // The owner's decision reaches Main as a message this service composes from what it stored. Any text or `from`
+        // the caller sent is not read; a request that is not decided, not Main's or already delivered sends nothing.
+        const requestId = isRecord(body.appReply) ? body.appReply.requestId : undefined;
+        if (typeof requestId !== "string" || !REQUEST_ID.test(requestId)) return eventStream(async sink => sink.error("invalid"));
+        let reply: AskReply | ActionReply | undefined;
+        try { reply = bot.appReply?.(requestId); } catch { return new Response(null, { status: 503 }); }
+        if (reply === undefined) return Response.json({ error: "no_reply" }, { status: 409 });
+        const { text: replyText, decision } = reply;
+        const secret = "secret" in reply ? reply.secret : undefined;
+        return eventStream(sink => bot.send(replyText, {
+          ...sink,
+          done: messageId => { try { bot.appReplyDelivered?.(requestId); } finally { sink.done(messageId); } },
+        }, owner, messenger, { app: decision, ...(secret ? { secret } : {}) }));
+      }
       const text = isRecord(body) ? body.text : undefined;
       if (typeof text !== "string" || text.length < 1 || text.length > MAX_TEXT) {
         return eventStream(async sink => sink.error("invalid"));
       }
-      const messenger = signed ? turnMessenger(options, owner, key, isRecord(body) ? body.messageableBotKeys : undefined) : undefined;
-      return eventStream(sink => bot.send(text, sink, owner, messenger));
+      // A malformed date or time zone is dropped; the turn runs without it.
+      const date = ownerDateFrom(isRecord(body) ? body.clientContext : undefined);
+      return eventStream(sink => bot.send(text, sink, owner, messenger, "owner", date));
     }
     if (req.method === "GET") {
       try {

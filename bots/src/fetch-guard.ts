@@ -167,7 +167,7 @@ function parseHead(raw: Uint8Array): Head | undefined {
   return { status: Number(status[1]), headers };
 }
 
-const TIMED_OUT = Symbol("timed out");
+export const TIMED_OUT = Symbol("timed out");
 
 function concat(parts: Uint8Array[], total: number): Uint8Array {
   const out = new Uint8Array(total);
@@ -276,12 +276,15 @@ export interface OneHop {
   truncated: boolean;
 }
 
-/** One request to one checked address; a failure is a PageFailure. The deadline covers connecting and reading. */
-async function hop(conn: Conn, url: URL, limits: GuardLimits, until: Promise<typeof TIMED_OUT>): Promise<OneHop | PageFailure> {
-  conn.write(
-    `GET ${url.pathname}${url.search} HTTP/1.1\r\nHost: ${url.host}\r\nUser-Agent: ${USER_AGENT}\r\n` +
-      `Accept: text/html,application/xhtml+xml,text/plain;q=0.9\r\nAccept-Encoding: identity\r\nConnection: close\r\n\r\n`,
-  );
+/**
+ * Sends one whole request (`request`: head and body, already built) on one checked connection and reads the reply. The
+ * body is read only when `bodyWanted(status)`; otherwise the head alone comes back. A failure is a PageFailure. The
+ * deadline covers connecting and reading. The page reader and call_with_secret (secret-call.ts) both use it.
+ */
+export async function exchange(
+  conn: Conn, request: string, limits: GuardLimits, until: Promise<typeof TIMED_OUT>, bodyWanted: (status: number) => boolean,
+): Promise<OneHop | PageFailure> {
+  conn.write(request);
   const iterator = conn.read()[Symbol.asyncIterator]();
   let pending = new Uint8Array(0);
   let head: Head | undefined;
@@ -312,7 +315,7 @@ async function hop(conn: Conn, url: URL, limits: GuardLimits, until: Promise<typ
       const transfer = head.headers.get("transfer-encoding")?.toLowerCase();
       if (encoding && encoding.toLowerCase() !== "identity") return "type";
       if (transfer && transfer !== "chunked") return "protocol";
-      if (REDIRECTS.has(head.status) || head.status !== 200) return { head, body: new Uint8Array(0), truncated: false };
+      if (!bodyWanted(head.status)) return { head, body: new Uint8Array(0), truncated: false };
       if (transfer === "chunked") chunked = new Chunked(limits.maxBodyBytes);
       else if (head.headers.has("content-length")) {
         const declared = head.headers.get("content-length")!;
@@ -388,7 +391,10 @@ export async function fetchGuarded(raw: string, allowed: ((host: string) => bool
       }
       if (!opened) return { ok: false, reason: "network" };
       current = opened;
-      const result = await hop(opened, url, limits, until).catch((): PageFailure => "network");
+      const request =
+        `GET ${url.pathname}${url.search} HTTP/1.1\r\nHost: ${url.host}\r\nUser-Agent: ${USER_AGENT}\r\n` +
+        `Accept: text/html,application/xhtml+xml,text/plain;q=0.9\r\nAccept-Encoding: identity\r\nConnection: close\r\n\r\n`;
+      const result = await exchange(opened, request, limits, until, status => status === 200).catch((): PageFailure => "network");
       opened.destroy();
       current = undefined;
       if (typeof result === "string") return { ok: false, reason: result };

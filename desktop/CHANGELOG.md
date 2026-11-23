@@ -1,5 +1,227 @@
 # exo-desktop
 
+## 0.20.2
+
+### Patch Changes
+
+- 472f192: Desktop sign-in can renew access with your approval in OpenKey. Each renewal of access to your secrets lasts up to seven days.
+
+  Details: TC-4000
+
+## 0.20.2-beta.6
+
+No changes in this release.
+
+## 0.20.2-beta.5
+
+No changes in this release.
+
+## 0.20.2-beta.4
+
+### Patch Changes
+
+- 472f192: Desktop sign-in can renew access with your approval in OpenKey. Each renewal of access to your secrets lasts up to seven days.
+
+  Details: TC-4000
+
+## 0.20.2-beta.3
+
+No changes in this release.
+
+## 0.20.2-beta.2
+
+No changes in this release.
+
+## 0.20.2-beta.1
+
+No changes in this release.
+
+## 0.20.2-beta.0
+
+No changes in this release.
+
+## 0.20.1
+
+No changes in this release.
+
+## 0.20.1-beta.0
+
+No changes in this release.
+
+## 0.20.0
+
+No changes in this release.
+
+## 0.20.0-beta.5
+
+No changes in this release.
+
+## 0.20.0-beta.4
+
+No changes in this release.
+
+## 0.20.0-beta.3
+
+No changes in this release.
+
+## 0.20.0-beta.2
+
+No changes in this release.
+
+## 0.20.0-beta.1
+
+No changes in this release.
+
+## 0.20.0-beta.0
+
+No changes in this release.
+
+## 0.19.0
+
+No changes in this release.
+
+## 0.19.0-beta.1
+
+No changes in this release.
+
+## 0.19.0-beta.0
+
+No changes in this release.
+
+## 0.18.0
+
+No changes in this release.
+
+## 0.18.0-beta.7
+
+No changes in this release.
+
+## 0.18.0-beta.6
+
+No changes in this release.
+
+## 0.18.0-beta.5
+
+No changes in this release.
+
+## 0.18.0-beta.4
+
+No changes in this release.
+
+## 0.18.0-beta.3
+
+No changes in this release.
+
+## 0.18.0-beta.2
+
+No changes in this release.
+
+## 0.17.1-beta.1
+
+No changes in this release.
+
+## 0.17.1-beta.0
+
+No changes in this release.
+
+## 0.17.0
+
+### Minor Changes
+
+- f0b15c9: In Chrome and other Chromium browsers on a computer or Android, TinyCloud One keeps an encrypted local copy of your transcripts, so they open faster. It starts at your next sign-in. To stop it, turn off "Keep a local copy of my transcripts on this device" in Settings, or use Delete local copy. Production builds paused this copy from 13 November until web-sdk 3.12 removed a wait of about a second and a half on Home's first screen.
+
+  Details: TC-2883
+
+- 2048626: Every recording with a transcript or audio in your space has a Share button on its detail page, with no setting to turn on.
+
+  Details: TC-3195
+
+## 0.17.0-beta.3
+
+No changes in this release.
+
+## 0.17.0-beta.2
+
+### Minor Changes
+
+- f0b15c9: In Chrome and other Chromium browsers on a computer or Android, TinyCloud One keeps an encrypted local copy of your transcripts, so they open faster. It starts at your next sign-in. To stop it, turn off "Keep a local copy of my transcripts on this device" in Settings, or use Delete local copy. Production builds paused this copy from 13 November until web-sdk 3.12 removed a wait of about a second and a half on Home's first screen.
+
+  Details: TC-2883
+
+- 2048626: Every recording with a transcript or audio in your space has a Share button on its detail page, with no setting to turn on.
+
+  Details: TC-3195
+
+## 0.17.0-beta.1
+
+No changes in this release.
+
+## 0.16.2-beta.0
+
+No changes in this release.
+
+## 0.16.1
+
+No changes in this release.
+
+## 0.16.1-beta.1
+
+No changes in this release.
+
+## 0.16.1-beta.0
+
+No changes in this release.
+
+## 0.16.0
+
+No changes in this release.
+
+## 0.16.0-beta.7
+
+No changes in this release.
+
+## 0.16.0-beta.6
+
+No changes in this release.
+
+## 0.16.0-beta.5
+
+No changes in this release.
+
+## 0.16.0-beta.4
+
+No changes in this release.
+
+## 0.16.0-beta.3
+
+No changes in this release.
+
+## 0.16.0-beta.2
+
+No changes in this release.
+
+## 0.15.4-beta.1
+
+No changes in this release.
+
+## 0.15.4-beta.0
+
+No changes in this release.
+
+## 0.15.3
+
+### Patch Changes
+
+- 70d434e: Upload audio with Private Transcription works again in the desktop app, which allows the transcription service's current address.
+
+## 0.15.3-beta.4
+
+No changes in this release.
+
+## 0.15.3-beta.3
+
+No changes in this release.
+
 ## 0.15.3-beta.2
 
 ### Patch Changes

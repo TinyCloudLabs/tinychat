@@ -4,6 +4,8 @@
 // Replies: "pong <n>: <text>", n counting this session's turns. Two commands show what a bot can reach:
 //   probe <64 hex bot id>   calls that bot's path on the gateway with this bot's own token and replies with the status
 //   probe self              the same for its own path
+//   probe prompt            replies with the first line of the system prompt file it was started with, or "none"
+//   probe config            replies with its ~/.omp/agent/config.yml, base64, or "none"
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -22,6 +24,14 @@ function gatewayUrl(): string {
 }
 
 async function replyTo(text: string): Promise<string> {
+  if (text.trim() === "probe prompt") {
+    const at = process.argv.indexOf("--system-prompt");
+    return `system prompt: ${at === -1 ? "none" : readFileSync(process.argv[at + 1]!, "utf8").split("\n")[0]}`;
+  }
+  if (text.trim() === "probe config") {
+    const path = join(home, ".omp", "agent", "config.yml");
+    return `config: ${existsSync(path) ? readFileSync(path).toString("base64") : "none"}`;
+  }
   const probe = /^probe (self|[0-9a-f]{64})$/.exec(text.trim());
   if (!probe) return `pong ${messages.filter(m => m.role === "user").length}: ${text}`;
   const own = gatewayUrl();

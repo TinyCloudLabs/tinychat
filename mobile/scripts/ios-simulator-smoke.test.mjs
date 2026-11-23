@@ -141,12 +141,13 @@ on_heartbeat() {
   if [[ "$FAKE_HEARTBEAT_STALL" == 1 && "$1" == 'time_stage heartbeat sample_liveness' && "$2" == watch_liveness ]]; then
     heartbeat_calls=$((\${heartbeat_calls:-0} + 1))
     if [[ "$heartbeat_calls" -eq "$FAKE_HEARTBEAT_STALL_CALL" ]]; then
-      local started=$SECONDS ignored
+      local started=$SECONDS ignored read_status=0 timeout_s=0
       : >"$FAKE_SIM_STATE/heartbeat-stall.started"
       exec 9<>"$FAKE_SIM_STATE/heartbeat.fifo"
-      IFS= read -r -t "$FAKE_HEARTBEAT_STALL_SECONDS" -u 9 ignored || :
+      IFS= read -r -t "$FAKE_HEARTBEAT_STALL_SECONDS" -u 9 ignored || read_status=$?
       exec 9>&-
-      printf 'heartbeat-shell-read duration_s=%s\\n' "$((SECONDS - started))" >"$FAKE_SIM_STATE/heartbeat-stall.log"
+      if [[ "$read_status" -eq 142 ]]; then timeout_s=$FAKE_HEARTBEAT_STALL_SECONDS; fi
+      printf 'heartbeat-shell-read duration_s=%s timeout_s=%s\\n' "$((SECONDS - started))" "$timeout_s" >"$FAKE_SIM_STATE/heartbeat-stall.log"
     fi
   fi
 }
@@ -558,7 +559,9 @@ describe("ios-simulator-smoke.sh", { concurrency: 24 }, () => {
       heartbeatShellStall: true, heartbeatStallCall: 1, heartbeatStallSeconds: 9, timeout: 18,
     });
     const timeline = artifact("launch-timeline.log");
-    assert.match(artifact("../heartbeat-stall.log"), /heartbeat-shell-read duration_s=[9]/);
+    const stall = artifact("../heartbeat-stall.log").match(/^heartbeat-shell-read duration_s=(\d+) timeout_s=9$/m);
+    assert.ok(stall, "the heartbeat FIFO read reached its nine-second timeout");
+    assert.ok(Number(stall[1]) >= 9, "the heartbeat was blocked for at least nine measured seconds");
     assert.match(timeline, /^pid \d+ observed \S+/m);
     assert.match(timeline, /simctl launch pid \d+ observed/);
     assert.match(timeline, /start-time source ps-lstart-etime-coarse/);

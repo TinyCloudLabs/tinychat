@@ -11,11 +11,15 @@ import type { Subprocess } from "bun";
 import type { Sandbox, SandboxLauncher } from "./bot";
 import type { SupervisorConfig } from "./config";
 import { isRecord } from "./guards";
-import type { BotLayout } from "./layout";
+import { type BotLayout, botRole } from "./layout";
 import { BOT_START, type OciSpec, SANDBOX_SESSION_DIR, sandboxSpec } from "./oci";
+import { MAIN_BOT_NAME } from "./owner";
 import { RpcChannel } from "./rpc";
 import { COPY_FAILURES, type CopyFailure, hasSnapshot, STATE_INODES_PER_MB } from "./state";
 import { readWebPolicy } from "./web-policy";
+import { syncAsks } from "./asks";
+import { readsPush } from "./reads";
+import { syncActions } from "./actions";
 
 const CGROUP_ROOT = "/sys/fs/cgroup";
 const CGROUP_CONTROLLERS = ["cpu", "memory", "pids"];
@@ -99,25 +103,44 @@ export function modelsYml(model: string): string {
     "    apiKey: BOT_TOKEN",
     "    models:",
     `      - id: ${JSON.stringify(model)}`,
-    `        name: ${JSON.stringify(`TinyCloud (${model})`)}`,
+    // The plain model id: a name like "TinyCloud (<model>)" led the bot to give TinyCloud as its model's maker.
+    `        name: ${JSON.stringify(model)}`,
     "        reasoning: false",
     "",
   ].join("\n");
 }
 
 /**
- * OMP's MCP config inside every sandbox: Main's web tools, served by the gateway on the same egress socket. The
- * server is always configured; whether a call does anything is the owner's setting, applied by the gateway.
+ * OMP's MCP config inside every sandbox: Main's web tools (`web`) and its question tool (`app`, `ask_owner`), both served
+ * by the gateway on the same egress socket. Both servers are always configured; whether a call does anything, and
+ * whether `app` lists its tool, is the owner's setting, applied by the gateway.
  */
 export function mcpJson(): string {
   return JSON.stringify({
-    mcpServers: { web: { type: "http", url: "http://127.0.0.1:8080/v1/mcp", headers: { Authorization: "Bearer ${BOT_TOKEN}" }, timeout: 60_000 } },
+    mcpServers: {
+      web: { type: "http", url: "http://127.0.0.1:8080/v1/mcp", headers: { Authorization: "Bearer ${BOT_TOKEN}" }, timeout: 60_000 },
+      app: { type: "http", url: "http://127.0.0.1:8080/v1/mcp/app", headers: { Authorization: "Bearer ${BOT_TOKEN}" }, timeout: 60_000 },
+    },
   });
 }
 
-/** OMP's own settings inside every sandbox: its built-in web tools would only fail without a network, so they are off. */
+/**
+ * OMP's own settings inside every sandbox. Its built-in web tools would only fail without a network, so they are off.
+ * Of the other built-ins, a bot keeps read, write, edit, bash, glob and grep. Off: `ask` (the supervisor cancels every
+ * question OMP asks), `todo`, the code tools (`lsp`, `debug`, `astGrep`, `astEdit`), `browser`, `eval` (both
+ * runtimes), subagents (`task`, at depth 0) and background work (`async`, `launch`; with them, `wait`), which would
+ * outlive the turn. Skills are off too: OMP runs a `/skill:<name>` token anywhere in a message, so with them on another
+ * bot's text could start one.
+ */
 export function configYml(): string {
-  return ["# Written by the bots supervisor.", "web_search:", "  enabled: false", "fetch:", "  enabled: false", ""].join("\n");
+  const off = ["web_search", "fetch", "ask", "todo", "lsp", "debug", "astGrep", "astEdit", "browser", "async", "launch", "skills"];
+  return [
+    "# Written by the bots supervisor.",
+    ...off.flatMap(name => [`${name}:`, "  enabled: false"]),
+    "eval:", "  py: false", "  js: false",
+    "task:", "  maxRecursionDepth: 0",
+    "",
+  ].join("\n");
 }
 
 /** A container's status as `runsc list` reports it; "absent" once runsc no longer knows it. */
@@ -359,7 +382,7 @@ export class RunscHost implements SandboxLauncher {
     return false;
   }
 
-  async launch(layout: BotLayout): Promise<Sandbox> {
+  async launch(layout: BotLayout, botName: string = MAIN_BOT_NAME): Promise<Sandbox> {
     if (!this.#baseSpec) throw new Error("sandbox host not initialised");
     // A sandbox whose end was not confirmed still holds its tmpfs; end it first, or refuse to start over it.
     if (this.#copiers.has(layout.botId)) throw new Error("state copier exit unconfirmed");
@@ -406,6 +429,8 @@ export class RunscHost implements SandboxLauncher {
       await this.#mountState(layout);
       restored = true;
       await this.#pushWeb(layout);
+      await this.pushReads(layout);
+      await this.syncAsks(layout);
       await register();
       const spec = sandboxSpec(this.#baseSpec, {
         rootfs: this.#cfg.rootfs,
@@ -414,6 +439,8 @@ export class RunscHost implements SandboxLauncher {
         stateMount: layout.stateMount,
         cgroupsPath: `/bots/${layout.botId}`,
         limits: this.#cfg.limits,
+        role: botRole(layout),
+        botName,
       });
       writeFileSync(join(layout.bundleDir, "config.json"), JSON.stringify(spec), { mode: 0o600 });
       await attempt([...this.#runsc, "delete", "-force", layout.containerId]);
@@ -458,6 +485,7 @@ export class RunscHost implements SandboxLauncher {
         exited,
         refreshEgress: async () => {
           await this.#pushWeb(layout);
+          await this.pushReads(layout);
           await register();
         },
         snapshot,
@@ -563,7 +591,7 @@ export class RunscHost implements SandboxLauncher {
   }
 
   /** One request on the gateway's control socket; the body is JSON. Throws unless the answer is 2xx. */
-  async #gateway(method: "GET" | "PUT" | "POST", path: string, body?: unknown): Promise<Response> {
+  async #gateway(method: "GET" | "PUT" | "POST" | "DELETE", path: string, body?: unknown): Promise<Response> {
     const response = await fetch(`http://gateway${path}`, {
       unix: join(this.#cfg.egressRoot, "control.sock"),
       method,
@@ -584,6 +612,21 @@ export class RunscHost implements SandboxLauncher {
     await this.#gateway("PUT", `/bots/${layout.botId}/web`, readWebPolicy(layout));
   }
 
+  /**
+   * Gives the gateway the owner's read setting and the bot's conversation id, before the bot's token is registered
+   * and on every message, so the meeting tools are offered as the setting says and a fresh conversation is known.
+   */
+  async pushReads(layout: BotLayout): Promise<void> {
+    await this.#gateway("PUT", `/bots/${layout.botId}/reads`, readsPush(layout));
+  }
+
+  /** Whether the bot's current conversation holds owner data it read (meeting-reads.ts). */
+  async readsHeld(layout: BotLayout): Promise<boolean> {
+    const body: unknown = await (await this.#gateway("GET", `/bots/${layout.botId}/reads`)).json();
+    if (!isRecord(body) || typeof body.held !== "boolean") throw new Error("gateway reads answer invalid");
+    return body.held;
+  }
+
   /** Today's web counts for one bot and whether the gateway has a provider key. */
   async webStatus(layout: BotLayout): Promise<unknown> {
     return (await this.#gateway("GET", `/bots/${layout.botId}/web`)).json();
@@ -592,6 +635,51 @@ export class RunscHost implements SandboxLauncher {
   /** Page addresses the owner typed in a message: the bot may read them. */
   async learnAddresses(layout: BotLayout, urls: string[]): Promise<void> {
     await this.#gateway("POST", `/bots/${layout.botId}/web/addresses`, { urls });
+  }
+
+  /**
+   * Collects the requests the box has made, stores them, settles secret requests with the gateway, and gives the
+   * gateway the owner's setting with the counts and cooldowns (see syncAsks). At launch, so the tools are listed or
+   * not as the setting says, and at the start of each message with `turn`. Approval links are made only for Main's
+   * owner, named by `ownerDid`.
+   */
+  syncAsks(layout: BotLayout, turn?: { outside: boolean }, ownerDid?: string): Promise<void> {
+    const path = `/bots/${layout.botId}/asks`;
+    const secrets = `/bots/${layout.botId}/secrets`;
+    return syncAsks(layout, {
+      drain: async () => (await this.#gateway("POST", `${path}/drain`)).json(),
+      push: async body => void (await this.#gateway("PUT", path, body)),
+      secrets: {
+        drain: async () => (await this.#gateway("POST", `${secrets}/drain`)).json(),
+        forget: async id => void (await this.#gateway("DELETE", `${secrets}/${id}`)),
+        ...(ownerDid ? {
+          link: async (id: string, request: { name: string; sites: string[]; header: string; why: string }) => {
+            const answer: unknown = await (await this.#gateway("PUT", `${secrets}/${id}`, { ...request, ownerDid })).json();
+            if (!isRecord(answer) || typeof answer.approveUrl !== "string") throw new Error("gateway gave no approval link");
+            return { approveUrl: answer.approveUrl };
+          },
+        } : {}),
+      },
+    }, turn);
+  }
+
+  /** Collects the proposals the box made and gives the gateway the counts, the final proposals and `keys` when given (see syncActions). */
+  syncActions(layout: BotLayout, keys?: readonly string[]): Promise<void> {
+    const path = `/bots/${layout.botId}/actions`;
+    return syncActions(layout, {
+      drain: async () => (await this.#gateway("POST", `${path}/drain`)).json(),
+      push: async body => void (await this.#gateway("PUT", path, body)),
+    }, keys);
+  }
+
+  /** Has the gateway spend an approval it issued: true once for that id and binding (204), false when it refuses (409). */
+  async spendAction(layout: BotLayout, id: string, binding: string): Promise<boolean> {
+    try {
+      await this.#gateway("POST", `/bots/${layout.botId}/actions/spend`, { id, binding });
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   async #registerEgress(botId: string, token: string, owner: string): Promise<void> {

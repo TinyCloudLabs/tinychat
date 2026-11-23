@@ -11,6 +11,7 @@ import type { CreateBotInput } from "./botRosterApi";
 import type { ColourId, ShapeId } from "./botShapes";
 import { BotView, type ViewBot } from "./BotView";
 import type { BotManagement } from "./BotManage";
+import { MAIN_BOT_OLD_NAME } from "./botsStrings";
 import type { HistoryNotice } from "./historyNotice";
 import { useBotChats, type BotChatSource, type BotChats } from "./useBotChat";
 
@@ -44,6 +45,8 @@ export interface BotHistoryAccess {
   authorize(): Promise<void>;
   /** Hands the backend this bot's permission to save into its own directory; never asks the owner. */
   grant(key: string): Promise<void>;
+  /** Whether this bot's history is saved at all; omitted means every bot's is. A bot that saves none is never authorised, granted, read or asked for a notice. */
+  saves?(key: string): boolean;
   read(key: string, signal?: AbortSignal): Promise<BotMessage[]>;
 }
 
@@ -81,7 +84,7 @@ export function BotsChat<Bot extends ControllerBot>({
 }: BotsChatProps<Bot>) {
   const sourceFor = useCallback((key: string): BotChatSource => {
     const authorize = async () => {
-      if (!history || !(await history.enabled())) return false;
+      if (!history || history.saves?.(key) === false || !(await history.enabled())) return false;
       await history.authorize();
       await history.grant(key);
       return true;
@@ -114,7 +117,7 @@ export function BotsChat<Bot extends ControllerBot>({
   // handed over first, as Main's chat over Home does, so a notice that a renewal settles goes away.
   const [notice, setNotice] = useState<{ key: string; notice: HistoryNotice | null } | null>(null);
   useEffect(() => {
-    if (!active || !history || waiting) return;
+    if (!active || !history || waiting || history.saves?.(shown.key) === false) return;
     let current = true;
     const key = shown.key;
     const load = async () => {
@@ -150,7 +153,8 @@ export function BotsChat<Bot extends ControllerBot>({
     ? {
       shape: shown.shape,
       colour: shown.colour,
-      takenNames: bots.filter((bot) => bot.key !== shown.key).map((bot) => bot.name),
+      // The main bot's old name is taken for every other bot (TC-3790).
+      takenNames: [...bots.filter((bot) => bot.key !== shown.key).map((bot) => bot.name), ...(shown.key === "main" ? [] : [MAIN_BOT_OLD_NAME])],
       update: (input) => actions.update(shown.key, input),
       remove: shown.key === "main" ? undefined : () => actions.remove(shown.key),
     }

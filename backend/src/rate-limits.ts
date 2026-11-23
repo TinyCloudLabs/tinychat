@@ -57,17 +57,6 @@ export const CONNECTOR_COMPANION_LIMIT = 600 * SHARED_KEY_HEADROOM;
 export const CONNECTOR_COMPANION_PATHS = ["/api/connectors/webhooks"] as const;
 
 /**
- * W5's authenticated READ API (backend-ingest plan §8.1 W5) gets its own bucket for exactly the
- * reason above: it is the cohort's meetings view, so ONE visit is a list plus a content GET per
- * meeting opened, and sharing `globalLimiter`'s 120/15min would let scrolling an archive 429 the
- * next chat send. Kept separate from the companions' bucket rather than folded into it — the two
- * surfaces have different callers (the drain card vs. the meetings view) and a busy archive must
- * not be able to exhaust the drain path either.
- */
-export const CONNECTOR_MEETINGS_LIMIT = 600 * SHARED_KEY_HEADROOM;
-export const CONNECTOR_MEETINGS_PATHS = ["/api/connectors/meetings"] as const;
-
-/**
  * `/api/delegations` gets its OWN bucket, not a share of the companions' (§4.4 names the route;
  * S2e bounds one *request*, a bucket bounds a caller). Smaller than the companions': the visit
  * path costs one `GET /status` and, rarely, one mint, and a mint is the most expensive
@@ -220,6 +209,9 @@ export const ASSEMBLYAI_STATUS_FAILURE_LIMIT = 5;
 export const ASSEMBLYAI_STATUS_SUCCESS_LIMIT = 60;
 export const ASSEMBLYAI_STATUS_PATHS = ["/api/internal/assemblyai-status"] as const;
 
+/** TC-916: the calendar auto-join connection counts (routes/calendar-autojoin-counts.ts) use the credential count's limits. */
+export const CALENDAR_AUTOJOIN_COUNTS_PATHS = ["/api/internal/calendar-autojoin-counts"] as const;
+
 /** Liveness probes, matched exactly (`/health` or `/health/`). Exempt from every bucket: the
  *  handler only serializes in-memory state, and a drained bucket must never make monitors report
  *  the backend down. */
@@ -228,7 +220,6 @@ export const UNLIMITED_PATHS = ["/health"] as const;
 export type Bucket =
   | "verification"
   | "connectorCompanion"
-  | "connectorMeetings"
   | "delegation"
   | "googleOAuth"
   | "calendarAutojoin"
@@ -251,7 +242,6 @@ const PREFIX_BUCKETS: ReadonlyArray<readonly [readonly string[], Bucket]> = [
   [TRANSCRIBER_PATHS, "transcriber"],
   [VERIFICATION_PATHS, "verification"],
   [CONNECTOR_COMPANION_PATHS, "connectorCompanion"],
-  [CONNECTOR_MEETINGS_PATHS, "connectorMeetings"],
   [DELEGATION_PATHS, "delegation"],
   [GOOGLE_OAUTH_PATHS, "googleOAuth"],
   [CALENDAR_AUTOJOIN_PATHS, "calendarAutojoin"],
@@ -259,6 +249,7 @@ const PREFIX_BUCKETS: ReadonlyArray<readonly [readonly string[], Bucket]> = [
   [AUTH_PATHS, "auth"],
   [CREDENTIAL_COUNT_PATHS, "credentialCount"],
   [ASSEMBLYAI_STATUS_PATHS, "credentialCount"],
+  [CALENDAR_AUTOJOIN_COUNTS_PATHS, "credentialCount"],
 ];
 
 function matchesMountPath(path: string, mount: string): boolean {
@@ -297,7 +288,6 @@ const MUTATION_BUCKETS: Partial<Record<Bucket, Bucket>> = {
  */
 export function bucketFor(method: string, rawPath: string): Bucket {
   if (isUnlimitedPath(rawPath.toLowerCase())) return "none";
-  if (rawPath === "/api/ops/content-continuity") return "credentialCount";
   const path = collapseSlashes(rawPath.toLowerCase());
   if (method === "POST" && (PAID_CHAT_PATHS.some((p) => withoutTrailingSlash(path) === p) || PAID_BOT_SEND_PATH.test(withoutTrailingSlash(path)))) return "paidChat";
   for (const [mounts, bucket] of PREFIX_BUCKETS) {
@@ -332,7 +322,6 @@ const GLOBAL_ROUTE_TEMPLATES = [
   "/api/auth",
   "/api/manifest",
   "/api/server-info",
-  "/api/connectors/credentials",
   "/api/connectors",
   "/api/openapi.json",
   "/api/docs",
@@ -408,10 +397,11 @@ export function logGlobalBucketRoutes(counter: GlobalBucketRouteCounter, everyMs
  * set on their own.
  */
 export const SESSION_LIMITS: Record<Exclude<Bucket, "none" | "auth" | "credentialCount">, number> = {
-  global: GLOBAL_LIMIT / SHARED_KEY_HEADROOM,
+  // One ordinary browser peaked at 148 requests per window (TC-3916), which 429s a 120 allowance on a
+  // normal page load. 600 is four times that peak; the anonymous ceiling (GLOBAL_LIMIT) stays whole-service.
+  global: 600,
   verification: VERIFICATION_LIMIT / SHARED_KEY_HEADROOM,
   connectorCompanion: CONNECTOR_COMPANION_LIMIT / SHARED_KEY_HEADROOM,
-  connectorMeetings: CONNECTOR_MEETINGS_LIMIT / SHARED_KEY_HEADROOM,
   transcriber: TRANSCRIBER_LIMIT / SHARED_KEY_HEADROOM,
   privateCloudTranscription: PRIVATE_CLOUD_TRANSCRIPTION_LIMIT / SHARED_KEY_HEADROOM,
   hostedUpload: ASSEMBLYAI_HOSTED_UPLOAD_LIMIT / SHARED_KEY_HEADROOM,
@@ -553,7 +543,6 @@ export function applyRateLimiters(app: Express, { sessionKey }: RateLimitOptions
   const limits: Record<Exclude<Bucket, "none" | "paidChat" | "credentialCount">, number> = {
     verification: VERIFICATION_LIMIT,
     connectorCompanion: CONNECTOR_COMPANION_LIMIT,
-    connectorMeetings: CONNECTOR_MEETINGS_LIMIT,
     delegation: DELEGATION_LIMIT,
     googleOAuth: GOOGLE_OAUTH_LIMIT,
     calendarAutojoin: CALENDAR_AUTOJOIN_LIMIT,

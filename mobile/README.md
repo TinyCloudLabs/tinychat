@@ -546,6 +546,26 @@ Xcode 26.6.
   post-publication gap limit so the tests can exercise it quickly.
   To run the smoke against a local build:
   `mobile/scripts/ios-simulator-smoke.sh run <path/to/App.app> /tmp/exo-smoke`.
+- **Frame guard** (`Mobile (TinyCloud One)` → *iOS (Release simulator frame guard)*,
+  TC-3677): the build One ships (Release, the production frontend with
+  `VITE_ONE_APPS` and `VITE_ONE_NAV` on) for the simulator, plus a probe
+  (`App/FrameProbe.swift`) compiled only with the CI-only `EXO_FRAME_PROBE`
+  condition. Once the app has mounted, the probe adds three frames: a
+  cross-origin srcdoc frame with One's sandbox, a srcdoc frame with no sandbox
+  and One's real Explorer frame (`https://explorer.tinycloud.xyz/?embed=one`,
+  One's sandbox) when it loads. Each frame posts a plugin call straight to
+  `window.webkit.messageHandlers.bridge`, then calls `window.open` and clicks a
+  `target=_blank` and a `target=_top` link. `mobile/scripts/ios-frame-probe.sh`
+  fails unless the probe's `EXO_FRAME_PROBE {…}` line shows no framed bridge
+  message reaching Capacitor, no answer to a frame, every `window.open` and
+  `target=_blank` URL (and the unsandboxed frame's `target=_top` URL; One's
+  sandbox blocks the others) handed to the system browser (the probe holds
+  `UIApplication.open` until the end, then lets the system open one) and One's
+  main frame on the same page throughout. Explorer
+  needs the network: when it does not load, the job warns and checks the local
+  frames. The `exo-ios-frame-probe-<sha>` artifact has `one.png`, `outside.png`,
+  `probe.json`, `handoff.json` and `summary.md`. The script's tests run on Linux:
+  `node --test mobile/scripts/ios-frame-probe.test.mjs`.
 - **Release dry run** (`Mobile (TinyCloud One)` → *iOS release*): the TestFlight build
   (`.github/workflows/ios-build.yml`) without signing. Its archive job produces
   a Release archive of the production frontend and checks:
@@ -553,7 +573,8 @@ Xcode 26.6.
   - `PrivacyInfo.xcprivacy`, the microphone string and the `audio` background
     mode;
   - that `capacitor.config.json` has no dev-server `server.url`;
-  - that the Release binary does not contain the smoke probe.
+  - that the Release binary does not contain the smoke probe or the CI-only
+    frame probe.
 
   Its sign job then runs as a dry run (no environment, no secrets): it checks
   out only `scripts/release`, downloads and unpacks the archive, and re-checks
@@ -639,8 +660,8 @@ Versions: `CFBundleShortVersionString` is `frontend/package.json`'s product
 version without the beta suffix (`0.2.0-beta.2` → `0.2.0`).
 `CFBundleVersion` is the workflow run number, so every upload is a new build.
 
-Environment `ios-release` (deployment branches: `main` only; **required
-reviewer: Sam**, because the API key has the Admin role), secrets:
+Environment `ios-release` (deployment branches: `main` only, no required
+reviewer and no wait timer), secrets:
 
 | Secret | Value |
 |---|---|
@@ -649,9 +670,8 @@ reviewer: Sam**, because the API key has the Admin role), secrets:
 | `APPLE_API_ISSUER` | App Store Connect issuer ID (UUID) |
 | `APPLE_API_PRIVATE_KEY` | the `AuthKey_<key id>.p8` file. It may arrive as is, collapsed onto one line (a masked single-line prompt), or base64; the workflow rewrites it as a PEM file and checks it with `openssl` |
 
-With the reviewer, a run waits for approval twice: the `plan` job right after
-dispatch, and the `sign` job once the archive is built and checked. Approve the
-second only for a run you dispatched.
+A dispatched run goes straight through: no job waits for approval. The API key
+has the Admin role, so keep the `main`-only deployment branch restriction.
 
 #### After enrollment completes (Sam)
 
@@ -713,9 +733,9 @@ scheme is unchanged on both phones.
    mode=validate`, then without `-f mode=validate` to upload. The run summary
    names the version and build.
 7. **TestFlight**: App Store Connect → TinyCloud One → TestFlight. The build appears
-   after Apple processes it (usually 5 to 30 minutes). Answer the export
-   compliance question once. To skip it on later builds, add
-   `ITSAppUsesNonExemptEncryption` to Info.plist, which is a legal call.
+   after Apple processes it (usually 5 to 30 minutes). Info.plist sets
+   `ITSAppUsesNonExemptEncryption` to false, the export-compliance answer given
+   for builds 9 to 11, so a build does not wait on that question. Changing it is a legal call.
    Add yourself under Internal Testing, install **TestFlight** from the App
    Store on the iPhone, and install TinyCloud One from it.
 

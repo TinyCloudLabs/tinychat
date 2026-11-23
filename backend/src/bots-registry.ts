@@ -45,6 +45,13 @@ export type UpdateResult = { ok: true; bot: Bot } | { ok: false; error: "invalid
 export type DeleteResult = { ok: true; bot: Bot; seq: number } | { ok: false; error: "main_fixed" | "delete_limit" | "not_found" };
 
 export const MAIN_BOT_KEY = "main";
+/** The main bot's name until the owner renames it (TC-3790). */
+export const MAIN_BOT_NAME = "TrustBot";
+/**
+ * The main bot's name before TC-3790. A record that still holds it on the main bot reads as MAIN_BOT_NAME, and no
+ * other bot may take it, so no other bot is mistaken for the main one.
+ */
+const MAIN_BOT_OLD_NAME = "Main";
 /** Deletions in progress per owner, so deleting cannot be used to pile up working state. */
 export const BOT_DELETING_MAX = 3;
 export const BOT_NAME_MAX = 24;
@@ -60,10 +67,12 @@ export class RegistryUnavailable extends Error {
   constructor(cause: string) { super(`bots_registry_unavailable: ${cause}`); }
 }
 
+export const BOTS_REGISTRY_KEY_PREFIX = "bots/registry/";
+
 /** Where an owner's record is stored. The address is checked before it becomes part of a key. */
 export function registryKey(address: string): string {
   if (!ADDRESS.test(address)) throw new RegistryUnavailable("address");
-  return `bots/registry/${address.toLowerCase()}`;
+  return `${BOTS_REGISTRY_KEY_PREFIX}${address.toLowerCase()}`;
 }
 
 /** The trimmed name, or undefined when it is not 1 to 24 characters of text or holds a control character. */
@@ -133,7 +142,14 @@ export function parseOwnerBots(raw: unknown): OwnerBots {
   const deleted = storedDeleted.map(parseDeleted);
   const keys = [...bots, ...deleted].map(entry => entry.key);
   if (new Set(keys).size !== keys.length || !bots.some(bot => bot.key === MAIN_BOT_KEY)) throw new RegistryUnavailable("keys");
-  return { v: 1, seq, bots, deleted };
+  return { v: 1, seq, bots: renamedMain(bots), deleted };
+}
+
+/** The old default name on the main bot reads as the new one, unless another bot already has the new name. */
+function renamedMain(bots: Bot[]): Bot[] {
+  const taken = bots.some(bot => bot.key !== MAIN_BOT_KEY && bot.name.toLowerCase() === MAIN_BOT_NAME.toLowerCase());
+  if (taken) return bots;
+  return bots.map(bot => (bot.key === MAIN_BOT_KEY && bot.name === MAIN_BOT_OLD_NAME ? { ...bot, name: MAIN_BOT_NAME } : bot));
 }
 
 /** What a step decides from the record it was shown: its answer, and the bots and deleted list to store, if anything changes. */
@@ -159,7 +175,7 @@ export class BotsRegistry {
     const key = registryKey(address);
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
       const found = readVersionedKv(await this.#kv.get(key, { source: "network", maxResponseBytes: MAX_RECORD_RESPONSE_BYTES }), key);
-      const main: Bot = { key: MAIN_BOT_KEY, name: "Main", shape: "pebble", colour: "blue", environment: "private", state: "active", createdAt: this.#now().toISOString() };
+      const main: Bot = { key: MAIN_BOT_KEY, name: MAIN_BOT_NAME, shape: "pebble", colour: "blue", environment: "private", state: "active", createdAt: this.#now().toISOString() };
       const current: OwnerBots = found === undefined ? { v: 1, seq: 0, bots: [main], deleted: [] } : parseOwnerBots(found.value);
       const { result, next } = step(current);
       if (next === undefined && found !== undefined) return { result, row: current };
@@ -186,7 +202,7 @@ export class BotsRegistry {
     if (!isBotShape(shape)) return { ok: false, error: "invalid_shape" };
     if (!isBotColour(colour)) return { ok: false, error: "invalid_colour" };
     const { result, row } = await this.#mutate<{ ok: true; bot: Bot } | Extract<CreateResult, { ok: false }>>(address, current => {
-      if (current.bots.some(bot => bot.name.toLowerCase() === name.toLowerCase())) return { result: { ok: false, error: "name_taken" } };
+      if (name.toLowerCase() === MAIN_BOT_OLD_NAME.toLowerCase() || current.bots.some(bot => bot.name.toLowerCase() === name.toLowerCase())) return { result: { ok: false, error: "name_taken" } };
       // Counted on every attempt, against the record just read: a count taken earlier may already be out of date.
       if (current.bots.filter(bot => bot.environment === "private" && bot.state !== "deleting").length >= privateLimit) return { result: { ok: false, error: "bot_limit" } };
       // A key is never used twice, and what the generator returns is checked like any other key.
@@ -221,6 +237,15 @@ export class BotsRegistry {
     }
   }
 
+  /** The name the owner sees for `key`; undefined when there is no such bot or the record cannot be read. */
+  async nameOf(address: string, key: string): Promise<string | undefined> {
+    try {
+      return (await this.read(address)).bots.find(bot => bot.key === key)?.name;
+    } catch {
+      return undefined;
+    }
+  }
+
   /** Renames or restyles a bot. Main too: its key, its id, its directory and its permission do not depend on its name or look. */
   async update(address: string, key: string, input: { name?: unknown; shape?: unknown; colour?: unknown }): Promise<UpdateResult> {
     if (input.name === undefined && input.shape === undefined && input.colour === undefined) return { ok: false, error: "invalid" };
@@ -234,8 +259,9 @@ export class BotsRegistry {
       const bot = current.bots.find(candidate => candidate.key === key);
       if (!bot) return { result: { ok: false, error: "not_found" } };
       if (bot.state === "deleting") return { result: { ok: false, error: "bot_deleting" } };
-      // Another bot's name, ignoring case. A bot may keep its own, or change only its case.
-      if (name !== undefined && current.bots.some(other => other.key !== key && other.name.toLowerCase() === name.toLowerCase())) return { result: { ok: false, error: "name_taken" } };
+      // Another bot's name, ignoring case, or the main bot's old name on another bot. A bot may keep its own, or change only its case.
+      if (name !== undefined && ((key !== MAIN_BOT_KEY && name.toLowerCase() === MAIN_BOT_OLD_NAME.toLowerCase())
+        || current.bots.some(other => other.key !== key && other.name.toLowerCase() === name.toLowerCase()))) return { result: { ok: false, error: "name_taken" } };
       const changed: Bot = { ...bot, ...(name !== undefined ? { name } : {}), ...(shape !== undefined ? { shape } : {}), ...(colour !== undefined ? { colour } : {}) };
       if (changed.name === bot.name && changed.shape === bot.shape && changed.colour === bot.colour) return { result: { ok: true, bot } };
       return { result: { ok: true, bot: changed }, next: { bots: current.bots.map(other => (other.key === key ? changed : other)), deleted: current.deleted } };
@@ -271,6 +297,27 @@ export class BotsRegistry {
       if (bot.grantClosed) return { result: bot };
       const changed: Bot = { ...bot, grantClosed: true, ...(cid ? { revoke: { cid } } : {}) };
       return { result: changed, next: { bots: current.bots.map(other => (other.key === key ? changed : other)), deleted: current.deleted } };
+    })).result;
+  }
+
+  /**
+   * A delegation the backend still held for a bot whose permission is closed, kept as owed in this owner's record so
+   * the owner's browser revokes it: a node takes a revocation only from the owner. The bot is either deleted, or
+   * still being deleted with its permission closed. One delegation is owed at a time: "busy" while another is, and
+   * nothing is written. "open" for a bot whose permission is not closed, "unknown" for a key this record never held.
+   */
+  async oweRevoke(address: string, key: string, cid: string): Promise<"owed" | "busy" | "open" | "unknown"> {
+    if (!BOT_KEY.test(key) || cid === "") return "unknown";
+    return (await this.#mutate<"owed" | "busy" | "open" | "unknown">(address, current => {
+      const bot = current.bots.find(candidate => candidate.key === key);
+      if (bot && !bot.grantClosed) return { result: "open" };
+      const entry = bot ?? current.deleted.find(candidate => candidate.key === key);
+      if (!entry) return { result: "unknown" };
+      if (entry.revoke) return { result: entry.revoke.cid === cid ? "owed" : "busy" };
+      const revoke = { cid };
+      return { result: "owed", next: bot
+        ? { bots: current.bots.map(other => (other.key === key ? { ...bot, revoke } : other)), deleted: current.deleted }
+        : { bots: current.bots, deleted: current.deleted.map(other => (other.key === key ? { ...other, revoke } : other)) } };
     })).result;
   }
 
@@ -310,7 +357,7 @@ export class BotsRegistry {
     const owners: string[] = [];
     let cursor: string | undefined;
     for (let page = 0; page < MAX_LIST_PAGES; page += 1) {
-      const listed = listPage(assertKvResult(await this.#kv.list({ prefix: "bots/registry/", ...(cursor === undefined ? {} : { cursor }) })));
+      const listed = listPage(assertKvResult(await this.#kv.list({ prefix: BOTS_REGISTRY_KEY_PREFIX, ...(cursor === undefined ? {} : { cursor }) })));
       for (const key of listed.keys) {
         const address = /(?:^|\/)bots\/registry\/(0x[0-9a-f]{40})$/.exec(key)?.[1];
         if (address) owners.push(address);
@@ -365,6 +412,14 @@ export function turnListHook(registry: BotsRegistry): (ownerDid: string, sourceK
   return async (ownerDid, sourceKey) => {
     const address = addressFromOwnerDid(ownerDid);
     return address === undefined ? [] : registry.listForTurn(address, sourceKey);
+  };
+}
+
+/** The registry's name for the bot a turn goes to, from the owner's DID (see BotsConfig.nameForTurn). */
+export function turnNameHook(registry: BotsRegistry): (ownerDid: string, key: string) => Promise<string | undefined> {
+  return async (ownerDid, key) => {
+    const address = addressFromOwnerDid(ownerDid);
+    return address === undefined ? undefined : registry.nameOf(address, key);
   };
 }
 

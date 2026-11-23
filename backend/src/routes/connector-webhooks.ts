@@ -17,6 +17,7 @@ import {
 // the cycle is erased at compile time. Shared on purpose: a second copy of the tombstone rule is
 // a second thing to forget to update.
 import { isTombstoned } from "../services/connector-drain.js";
+import type { FirefliesDirectImporter } from "../services/fireflies-import-executor.js";
 import { withConnectorConnectionChange } from "../services/connector-connection-lane.js";
 import {
   assertConnectorPlaintextTestMode,
@@ -28,7 +29,6 @@ import {
   type ConnectorRetentionKeys,
   type LedgerIdCode,
 } from "../services/connector-retention-keys.js";
-import type { IngestModeLookup } from "../services/ingest-mode.js";
 import {
   deriveWebhookSecret,
   isValidMeetingId,
@@ -574,19 +574,10 @@ export interface ConnectorWebhookHandlerOptions {
   registry?: ReadonlySet<string>;
   now?: () => number;
   /**
-   * Fire-and-forget post-ack hook, invoked AFTER the response is written (§4.6's fast-ack
-   * discipline: the 202 never waits on a delegation activation or a write to the user's space).
-   *
-   * UNWIRED UNDER OPTION C, deliberately (index.ts is pinned against it). It used to kick a
-   * drain, which under C meant a full pass — config, disabled marker, queue and purge-ledger
-   * reads — to surface ids to nobody, since the browser is the writer and nothing is listening
-   * between visits. Enqueueing the id is the entire server-side job; processing happens on the
-   * user's next authenticated visit. The seam stays for an Option-A writer.
+   * Optional TC-3905 delegation-based direct-write executor for Fireflies. Wired only when
+   * `FIREFLIES_SERVER_IMPORT_ENABLED === "true"`; undefined keeps Option C unchanged.
    */
-  onDelivery?: (input: {
-    source: string;
-    address: string;
-  }) => void | Promise<void>;
+  firefliesDirectImport?: Pick<FirefliesDirectImporter, "handleWebhook">;
 }
 
 interface NormalizedPayload {
@@ -681,144 +672,6 @@ export function createConnectorWebhookParserErrorHandler(
         `reason=${safeField((error as { type?: unknown } | null)?.type)}`,
     );
     next(error);
-  };
-}
-
-// ── W9: the Host-header allowlist (plan §8.1 W9 / §10; findings §6 control 6) ──
-//
-// Control 6 is called out as becoming LOAD-BEARING the moment the server fetches on webhooks.
-// Under Option C an off-target delivery cost one enqueue; for a cohort address the same delivery
-// now costs a credentialed upstream fetch and an encrypted server-side content row. So a request
-// that did not arrive at the hostname we minted into the user's provider dashboard is rejected at
-// the cheapest possible point — ahead of the pre-limiter, ahead of `express.raw`, ahead of any
-// bucket keyed on request content, and long ahead of any KV call.
-//
-// What this is NOT: an authentication boundary. The HMAC is.
-// `docs/connector-webhooks-trust-proxy.md` records the ingress hop count as UNDETERMINED, so a
-// forwarded host is only as trustworthy as the proxy in front of it. This control removes
-// untargeted surface — raw-IP probing, a stale domain still pointed at the CVM, a rebinding
-// attempt — and nothing in this file claims more than that.
-
-/** Comma-separated hosts. Unset ⇒ derive from the pinned public origin (one source of truth). */
-export const WEBHOOK_HOST_ALLOWLIST_ENV = "CONNECTOR_WEBHOOK_HOST_ALLOWLIST";
-
-/**
- * The ONE documented escape hatch, for an ingress that rewrites both `Host` and
- * `X-Forwarded-Host` to something internal. Explicit and loud: a value that merely *looked* wrong
- * silently disabling the control is the fallback-that-hides-an-error this build refuses.
- */
-export const WEBHOOK_HOST_ALLOWLIST_OFF = "*";
-
-/** No `/`, no whitespace, no CR/LF: the value is an attacker-controlled header. */
-const HOST_VALUE_PATTERN = /^[A-Za-z0-9._-]+(?::\d{1,5})?$/;
-
-/**
- * Lowercase, and drop an explicit default port so `example.com` and `example.com:443` are the same
- * host. Returns null for anything that is not a bare host[:port] — a header carrying a path, a
- * space or a CRLF is rejected rather than sanitized into something that might match.
- */
-export function normalizeWebhookHost(value: unknown): string | null {
-  if (typeof value !== "string") return null;
-  const trimmed = value.trim();
-  if (trimmed.length === 0 || !HOST_VALUE_PATTERN.test(trimmed)) return null;
-  return trimmed.toLowerCase().replace(/:(?:80|443)$/, "");
-}
-
-/**
- * The allowlist, in precedence order:
- *
- *  1. `CONNECTOR_WEBHOOK_HOST_ALLOWLIST` — explicit, comma-separated (or `*` to disable).
- *  2. the host of `CONNECTOR_WEBHOOK_PUBLIC_ORIGIN` — the origin we already pin into every minted
- *     callback URL, so the host we answer on and the host we hand the provider cannot drift.
- *  3. `null` — no enforcement. Local QA, where the callback origin is request-derived anyway.
- *
- * `null` and "empty set" are deliberately different: an empty set would reject every delivery, so
- * a config omission must never produce one. A PRESENT but entirely unusable explicit list throws
- * here, at construction, rather than at the first delivery — the same posture
- * `validatePublicOrigin` takes.
- */
-export function resolveWebhookHostAllowlist(
-  env: NodeJS.ProcessEnv = process.env,
-): ReadonlySet<string> | null {
-  const explicit = env[WEBHOOK_HOST_ALLOWLIST_ENV];
-  if (typeof explicit === "string" && explicit.trim().length > 0) {
-    if (explicit.trim() === WEBHOOK_HOST_ALLOWLIST_OFF) {
-      console.warn(
-        `[connector-webhook] op=host-allowlist result=disabled reason=explicit_off ` +
-          `t=${new Date().toISOString()}`,
-      );
-      return null;
-    }
-    const hosts = explicit
-      .split(",")
-      .map((entry) => normalizeWebhookHost(entry))
-      .filter((entry): entry is string => entry !== null);
-    if (hosts.length === 0) {
-      throw new Error(
-        `${WEBHOOK_HOST_ALLOWLIST_ENV} contains no usable host (use "${WEBHOOK_HOST_ALLOWLIST_OFF}" to disable)`,
-      );
-    }
-    return new Set(hosts);
-  }
-
-  const origin = env.CONNECTOR_WEBHOOK_PUBLIC_ORIGIN;
-  if (typeof origin !== "string" || origin.trim().length === 0) return null;
-  let host: string | null;
-  try {
-    host = normalizeWebhookHost(new URL(origin.trim()).host);
-  } catch {
-    // A malformed origin is already a hard error where it is USED (validatePublicOrigin); it must
-    // not additionally become a one-entry allowlist of something that is not a host.
-    host = null;
-  }
-  return host === null ? null : new Set([host]);
-}
-
-export interface ConnectorWebhookHostGuardOptions {
-  allowlist: ReadonlySet<string> | null;
-  limiters: ConnectorWebhookLimiters;
-}
-
-function forwardedOrDirectHost(req: Request): string | undefined {
-  const raw = req.headers["x-forwarded-host"] ?? req.headers.host;
-  const value = Array.isArray(raw) ? raw[0] : raw;
-  if (typeof value !== "string") return undefined;
-  // Only the FIRST entry of a comma list: a chain whose later hop happens to be allowed must not
-  // launder the first one, which is the value that actually addressed us.
-  return value.split(",")[0];
-}
-
-/**
- * The guard middleware. Rejection is the SAME generic 401 every other pre-verify path returns — a
- * host-shaped oracle is still an oracle — and it lands in the same scanner buckets a format-fail
- * does, because §4.4's own lesson is that a rejection reaching no bucket is free traffic. The
- * offending host is never echoed: it is attacker-chosen and the CVM runs `public_logs=true`.
- */
-export function createConnectorWebhookHostGuard(
-  options: ConnectorWebhookHostGuardOptions,
-): RequestHandler {
-  const { allowlist, limiters } = options;
-  if (allowlist === null) {
-    // A pure pass-through, built once: the unconfigured path costs one closure call per delivery.
-    return (_req: Request, _res: Response, next: NextFunction) => next();
-  }
-
-  return (req: Request, res: Response, next: NextFunction): void => {
-    const host = normalizeWebhookHost(forwardedOrDirectHost(req));
-    if (host !== null && allowlist.has(host)) {
-      next();
-      return;
-    }
-
-    // Consulted BEFORE counting, exactly as the parser-error handler and the handler's own scanner
-    // paths do, so an already-tripped bucket short-circuits without growing.
-    const bucket = limiters.scannerIpLimited(req) ? "ip" : null;
-    if (bucket === null) limiters.countScannerFailure(req);
-    logWebhook(
-      `recv source=${safeField(req.params.source)} result=invalid_signature reason=host` +
-        (bucket === null ? "" : ` bucket=${bucket}`),
-    );
-    if (!res.headersSent) res.status(401).json({ error: "invalid_signature" });
   };
 }
 
@@ -1087,6 +940,22 @@ export function createConnectorWebhookHandler(
         }
       }
 
+      // 7b. TC-3905 direct-write Fireflies import (flag ON + active/paused/revoked grant).
+      // Browser-only owners (`state: "none"`) return `{ handled: false }` and fall through to
+      // Option C queue enqueue below. Server-import owners never enqueue into `webhooks/pending`.
+      if (source === "fireflies" && options.firefliesDirectImport) {
+        const direct = await options.firefliesDirectImport.handleWebhook({
+          address: record.address,
+          meetingId,
+          receivedAt: new Date(now()).toISOString(),
+          ...(stamped !== null ? { sourceTimestamp: new Date(stamped).toISOString() } : {}),
+        });
+        if (direct.handled) {
+          respond(direct.httpStatus, direct.body);
+          return;
+        }
+      }
+
       // 8. Enqueue. The 202 is gated on this durable write and nothing else (§4.6).
       let result: EnqueueResult;
       try {
@@ -1125,29 +994,6 @@ export function createConnectorWebhookHandler(
       // victim's queue is saturated. The drop count goes to the log (above, and
       // `op=drop-oldest` from the queue) and to the authenticated `GET …/webhooks/pending`.
       respond(202, { status: "queued" });
-
-      // Fast-ack: the drain kick is fire-and-forget, strictly after the response.
-      if (options.onDelivery) {
-        try {
-          const kicked = options.onDelivery({
-            source,
-            address: record.address,
-          });
-          if (kicked && typeof (kicked as Promise<void>).catch === "function") {
-            (kicked as Promise<void>).catch((error: unknown) => {
-              console.warn(
-                "[connector-webhook] drain kick failed:",
-                redactedErrorMessage(error),
-              );
-            });
-          }
-        } catch (error) {
-          console.warn(
-            "[connector-webhook] drain kick failed:",
-            redactedErrorMessage(error),
-          );
-        }
-      }
     } catch (error) {
       // The backstop §4.3 requires: no path leaves the request unanswered. Token-independent
       // by construction (every token-dependent failure is handled above), so it is not an
@@ -1187,9 +1033,9 @@ function signatureValue(req: Request): string {
 // these routes own and the drain (W5) only reads.
 
 /** §5.1-shaped, backend-own keys — auto-prefixed under `ops.tinychat.backend`, NOT `xyz.tinycloud.tinychat/…`. */
-const DISABLED_KEY_PREFIX = "webhooks/disabled";
+export const DISABLED_KEY_PREFIX = "webhooks/disabled";
 export const PURGE_LEDGER_KEY_PREFIX = "webhooks/purged";
-const CORRUPT_PURGED_KEY_PREFIX = "webhooks/corrupt/purged";
+export const CORRUPT_PURGED_KEY_PREFIX = "webhooks/corrupt/purged";
 
 /** §6.2: `recentIds` is forensics only and stays capped; `purgedThrough` is what protects. */
 export const PURGE_RECENT_ID_CAP = 200;
@@ -1754,27 +1600,14 @@ export interface ConnectorCompanionOptions {
   abort?: ConnectorDrainAbortFlags;
   registry?: ReadonlySet<string>;
   now?: () => number;
+  /** Optional TC-3344 reset notification fired when `DELETE /purged` clears a source ledger. */
+  onLedgerCleared?: (source: string, address: string) => void;
   /**
    * `CONNECTOR_WEBHOOK_PUBLIC_ORIGIN` — the public HTTPS origin every minted callback URL must
    * carry. Omitted (local QA, tests) the host stays request-derived; see {@link deliveryUrl}.
    * A malformed value throws HERE, at construction, rather than minting dead webhooks.
    */
   publicOrigin?: string;
-  /**
-   * W1 — the per-address ingest mode (backend-ingest plan §5.3 "Changed"). ABSENT means every
-   * address is Option C, which is also what the service answers with the flag dark; the option
-   * exists so a harness can leave the collaborator out entirely and prove that.
-   *
-   * For a COHORT address the browser is no longer the queue's consumer — W3's fetch worker is,
-   * and it is the SOLE one. So `POST /drain` runs no drain pass and surfaces nothing, `POST
-   * /ack` is an idempotent no-op, and `GET /pending` surfaces nothing: two consumers settling
-   * the same items is the double-drain race, and a browser that "acks" an item the worker has
-   * not fetched deletes it. Non-cohort behaviour is byte-identical.
-   *
-   * A mode read that FAILS blocks the route (503) rather than falling back to the browser path —
-   * see `IngestModeService`'s fail-closed note. Guessing "browser" is precisely the race.
-   */
-  modes?: IngestModeLookup;
   /**
    * §5.4 trigger 3 (user visit). When ABSENT the route answers 503 rather than a 200 that would
    * read as "nothing pending" — the silence §4.4 forbids. The production wiring in `index.ts`
@@ -1791,7 +1624,6 @@ export interface ConnectorCompanionOptions {
    * The exo ledger rows of each disconnected source. ABSENT when the exo flag is off, so a flag-off
    * disconnect makes no exo call. Best-effort: a failure is logged and never becomes a 503.
    */
-  deleteReconciled?: (source: string, address: string) => Promise<unknown>;
   exo?: { clearSource: (source: string, address: string) => Promise<void> };
 }
 
@@ -2018,7 +1850,7 @@ function pendingView(item: PendingItem) {
 
 /** Deletion ledgers do not depend on webhook delivery being enabled. */
 export function createConnectorPurgeRouter(
-  options: Pick<ConnectorCompanionOptions, "control" | "now"> & {
+  options: Pick<ConnectorCompanionOptions, "control" | "now" | "onLedgerCleared"> & {
     webhooks?: Pick<ConnectorCompanionOptions, "tokens" | "queue" | "registry">;
     authMiddleware?: RequestHandler;
   },
@@ -2214,6 +2046,7 @@ export function createConnectorPurgeRouter(
 
     try {
       await control.clearLedger(source, user.address);
+      options.onLedgerCleared?.(source, user.address);
 
       logWebhook(
         `op=ledger-clear source=${source} aid=${hashedField(user.address)}`,
@@ -2240,22 +2073,12 @@ export function createConnectorPurgeRouter(
 export function createConnectorWebhookCompanionRouter(
   options: ConnectorCompanionOptions,
 ): Router {
-  const { tokens, queue, control, limiters, exo, deleteReconciled } = options;
+  const { tokens, queue, control, limiters, exo } = options;
   const registry = options.registry ?? CONNECTOR_REGISTRY;
   const abort = options.abort ?? connectorDrainAbort;
   const now = options.now ?? (() => Date.now());
   const publicOrigin = validatePublicOrigin(options.publicOrigin);
   const router = Router();
-
-  /**
-   * W1 — is this address's queue owned by the backend fetch worker? With no `modes`
-   * collaborator, or with the flag dark, this is a pure `false` that costs the node nothing.
-   * It REJECTS on an unreadable cohort; every caller lets that reach its 503 arm.
-   */
-  async function backendIngest(address: string, source: string): Promise<boolean> {
-    if (!options.modes) return false;
-    return (await options.modes.mode(address, source)) === "backend";
-  }
 
   /** A body-supplied source is validated against the registry before any KV call. */
   function namedSourceIsInvalid(raw: unknown): boolean {
@@ -2352,13 +2175,6 @@ export function createConnectorWebhookCompanionRouter(
     // §3.6 rules 4/5: the durable marker is authoritative. A teardown that crashed between step 1
     // (marker) and step 5 (queue drop) leaves this user's ids queued for an account that revoked.
     if (marker !== null) return surfaceNothing("revoked");
-
-    // W1 — the cohort gate, at the SAME choke point every other surfacing rule uses. Surfacing
-    // an id is what turns a delivery into a meeting, so an address whose queue the fetch worker
-    // owns must not have ids handed to the browser from ANY of the three routes that reach this
-    // helper. Told, not silenced: the reason rides back as a card state (W5 gives the cohort its
-    // own meetings view; until then the card says "this is not yours to drain", not "empty").
-    if (await backendIngest(address, config.source)) return surfaceNothing("backend_ingest");
 
     // §6.2: the ledger is an AUTHORIZATION input and FAILS CLOSED. An unparseable value read as
     // an empty ledger means "nothing was ever purged" — the most dangerous available reading.
@@ -2579,9 +2395,6 @@ export function createConnectorWebhookCompanionRouter(
         const { cleared } = await queue.clear(source, user.address);
         dropped += cleared;
       }
-      for (const source of sources) {
-        await deleteReconciled?.(source, user.address);
-      }
       // (4) The exo ledger rows of each source. Best-effort: the marker, config, token and queue are
       // already torn down, so a failure is logged rather than answered with a 503 that the client would
       // retry into a second, different call. The owner's exo DELETE clears what remains.
@@ -2645,24 +2458,6 @@ export function createConnectorWebhookCompanionRouter(
         // Nothing to drain for a disabled address, and a drain must never be the thing that
         // resurrects one: the marker is authoritative (§3.6 rule 4).
         res.json(await pendingPayload(req, user.address));
-        return;
-      }
-
-      // W1: a cohort address's queue belongs to the fetch worker. No drain pass runs — not even
-      // a read-only one — because a second consumer is the double-drain race §5.3 excludes, and
-      // the ids go nowhere (`pendingPayload` applies the same gate).
-      if (await backendIngest(user.address, config.source)) {
-        logWebhook(
-          `op=drain result=backend_ingest source=${config.source} ` +
-            `aid=${hashedField(user.address)}`,
-        );
-        res.json(
-          await pendingPayload(req, user.address, null, {
-            config,
-            marker,
-            ledger: null,
-          }),
-        );
         return;
       }
 
@@ -2825,19 +2620,6 @@ export function createConnectorWebhookCompanionRouter(
         return;
       }
 
-      // W1: for a cohort address the fetch worker owns the `pending`→`fetched` transition and
-      // the queue removal that used to be `/drain`+`/ack`'s job. A browser ack here would delete
-      // an item the worker has not fetched yet, so it is accepted as an IDEMPOTENT NO-OP — a 4xx
-      // would only make a stale client retry forever, and the browser has nothing to settle.
-      if (await backendIngest(user.address, config.source)) {
-        logWebhook(
-          `op=ack result=backend_ingest source=${config.source} ` +
-            `aid=${hashedField(user.address)} submitted=${acks.length}`,
-        );
-        await settled(0, acks.length, 0, { config, marker, ledger: null });
-        return;
-      }
-
       // Registry-parameterized: a body source may confirm the configured one, never redirect the
       // settlement at another connector's queue.
       if (isValidSource(body.source) && body.source !== config.source) {
@@ -2952,7 +2734,14 @@ export function createConnectorWebhookCompanionRouter(
     }
   });
 
-  router.use(createConnectorPurgeRouter({ control, now, webhooks: { tokens, queue, registry } }));
+  router.use(
+    createConnectorPurgeRouter({
+      control,
+      now,
+      onLedgerCleared: options.onLedgerCleared,
+      webhooks: { tokens, queue, registry },
+    }),
+  );
 
   return router;
 }
