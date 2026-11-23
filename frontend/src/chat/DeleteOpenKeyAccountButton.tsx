@@ -7,7 +7,8 @@ import {
   webhookFailureMessage,
   type WebhookFailure,
 } from "@/lib/connectors/connectorLifecycle";
-import { clearPurgeLedgersForAccountDeletion } from "@/lib/connectors/accountLedgerClear";
+import { stopServerAccessForAccountDeletion } from "@/lib/connectors/accountServerStops";
+import { retireTranscriptDelegation } from "@/lib/transcriptDelegation";
 import {
   CALENDAR_NOT_STOPPED_MESSAGE,
   GOOGLE_CONNECTIONS_LINK_TEXT,
@@ -28,15 +29,9 @@ export function accountDeletionTeardownFailure(failure: WebhookFailure): string 
   return `${webhookFailureMessage(failure)} We couldn't confirm your Fireflies sign-in was removed from our server. Try again, or continue to OpenKey and revoke it yourself in your Fireflies account.`;
 }
 
-/**
- * What the owner is told when the record of their deleted meetings could not be erased. It says the record may
- * remain: nothing here claims the data is gone.
- */
-export function accountDeletionLedgerFailure(failure: WebhookFailure, step: "fence" | "clear"): string {
-  const lead = step === "fence"
-    ? "We couldn't stop our server from delivering or importing meetings for your account, so the record of your deleted meetings wasn't erased and may stay on our server."
-    : "We couldn't confirm the record of your deleted meetings was erased from our server. It may stay there.";
-  return `${webhookFailureMessage(failure)} ${lead} Try again, or continue to OpenKey.`;
+/** What the owner is told when our server could not be confirmed stopped for the account. */
+export function accountDeletionStopFailure(failure: WebhookFailure): string {
+  return `${webhookFailureMessage(failure)} We couldn't confirm that our server stopped delivering and importing meetings for your account. Try again, or continue to OpenKey.`;
 }
 
 /** What the owner is told when Calendar autojoin could not be stopped or its Google sign-in removed from our server. */
@@ -44,7 +39,7 @@ export function accountDeletionCalendarFailure(failure: WebhookFailure): string 
   return `${webhookFailureMessage(failure)} ${CALENDAR_NOT_STOPPED_MESSAGE}`;
 }
 
-type Stage = "calendar" | "recordings" | "credentials" | "ledger";
+type Stage = "calendar" | "recordings" | "credentials" | "stops";
 
 type State =
   | { phase: "idle" }
@@ -55,9 +50,10 @@ type State =
  * "Delete OpenKey account". In order: stops Calendar autojoin and removes its Google sign-in from our server
  * (a recorder it sends would otherwise add a recording the next step has passed), requests the existing
  * recordings purge, removes the Fireflies sign-in, then stops what could still deliver or import for the
- * owner and erases the deleted-meeting record, and finally opens OpenKey. The server steps need the owner's
- * session, which OpenKey's page ends, so they all run before it. Unconfirmed steps are disclosed first; the
- * owner can retry a stage or continue without being told the data was deleted.
+ * owner (and keeps every open tab from writing the transcript grant again), signs this device out and opens
+ * OpenKey. The server steps use the owner's TinyChat sign-in, which is why they run first. Unconfirmed steps
+ * are disclosed first; the owner can retry a stage or continue without being told the data was deleted.
+ * Nothing here erases the record of deleted meetings or the owner's space.
  */
 export function DeleteOpenKeyAccountButton(props: {
   backendUrl: string;
@@ -65,6 +61,8 @@ export function DeleteOpenKeyAccountButton(props: {
   /** Injectable for tests. */
   webhooks?: ConnectorWebhooksClient;
   openDeletionPage?: () => Promise<void>;
+  /** Signs this device out. Called before OpenKey's page opens. */
+  onSignOut?: () => void;
 }) {
   const { backendUrl, sessionStore } = props;
   const webhooks = useMemo(
@@ -80,6 +78,8 @@ export function DeleteOpenKeyAccountButton(props: {
 
   const proceed = async () => {
     setState({ phase: "idle" });
+    // Signed out here before OpenKey opens, so this tab cannot keep acting for the account while it is deleted.
+    props.onSignOut?.();
     await open();
   };
 
@@ -94,14 +94,16 @@ export function DeleteOpenKeyAccountButton(props: {
       setState({ phase: "blocked", message: outcome.notice, retryable: false, stage: "credentials" });
       return;
     }
-    await clearLedgers();
+    await stopServer();
   };
 
-  const clearLedgers = async () => {
+  const stopServer = async () => {
     setState({ phase: "working" });
-    const outcome = await clearPurgeLedgersForAccountDeletion(webhooks);
+    // First, so no open tab writes the transcript grant again once it is removed.
+    await retireTranscriptDelegation(sessionStore);
+    const outcome = await stopServerAccessForAccountDeletion(webhooks);
     if (outcome.status === "failed") {
-      setState({ phase: "blocked", message: accountDeletionLedgerFailure(outcome.failure, outcome.step), retryable: true, stage: "ledger" });
+      setState({ phase: "blocked", message: accountDeletionStopFailure(outcome.failure), retryable: true, stage: "stops" });
       return;
     }
     await proceed();
@@ -142,8 +144,8 @@ export function DeleteOpenKeyAccountButton(props: {
   };
 
   // "Continue to OpenKey" moves to the next stage without retrying the failed one; "Try again" repeats it.
-  const next: Record<Stage, () => Promise<void>> = { calendar: start, recordings: teardownCredentials, credentials: clearLedgers, ledger: proceed };
-  const again: Record<Stage, () => Promise<void>> = { calendar: begin, recordings: start, credentials: teardownCredentials, ledger: clearLedgers };
+  const next: Record<Stage, () => Promise<void>> = { calendar: start, recordings: teardownCredentials, credentials: stopServer, stops: proceed };
+  const again: Record<Stage, () => Promise<void>> = { calendar: begin, recordings: start, credentials: teardownCredentials, stops: stopServer };
 
   return (
     <>

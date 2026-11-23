@@ -2,7 +2,7 @@
  * Account deletion stops Calendar autojoin and deletes the Google sign-in our server holds
  * (`POST /api/connectors/google/autojoin/disconnect` with `{}`, the body the connector dialog sends). It runs
  * first, ahead of the recordings: while autojoin is on it can still send a recorder into a meeting and create
- * a recording the recordings step has already passed. It needs the owner's session, which OpenKey's page ends.
+ * a recording the recordings step has already passed. It uses the owner's TinyChat sign-in, so it runs while that sign-in works.
  *
  * The browser's own copy of the Google token is not touched here. Our server asks Google to revoke the grant
  * and reports whether Google confirmed it.

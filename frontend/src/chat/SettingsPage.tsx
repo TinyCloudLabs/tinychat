@@ -212,7 +212,7 @@ export function SettingsPage({
                 <div className="mb-4">
                   <DeleteRecordingsStep backendUrl={backendUrl} sessionStore={sessionStore} />
                 </div>
-                <DeleteOpenKeyAccountButton backendUrl={backendUrl} sessionStore={sessionStore} />
+                <DeleteOpenKeyAccountButton backendUrl={backendUrl} sessionStore={sessionStore} onSignOut={onSignOut} />
                 <p className="mt-2 text-xs text-muted-foreground">
                   Permanently deletes your OpenKey account and destroys its keys. You'll confirm on openkey.so.
                 </p>

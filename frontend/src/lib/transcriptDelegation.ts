@@ -82,6 +82,40 @@ export function clearTranscriptDelegationSchedule(address: string | null): void 
   clearTranscriptConsentStatus(address);
 }
 
+const RETIRED_KEY = "tinychat.transcriptWriter.retired";
+const retiredHere = new Set<string>();
+
+async function tokenDigest(token: string): Promise<string> {
+  const bytes = new TextEncoder().encode(token);
+  return [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/**
+ * Whether this sign-in was retired by account deletion, here or in another tab. The marker is a digest of the
+ * sign-in token in `localStorage`, so every tab holding that sign-in sees it. A later sign-in has a different
+ * token and is not held back. A tab that holds an older, different token is not covered.
+ */
+async function sessionRetired(sessionStore: SessionStore): Promise<boolean> {
+  const token = sessionStore.getToken();
+  if (!token) return false;
+  const digest = await tokenDigest(token);
+  if (retiredHere.has(digest)) return true;
+  try { return storage().getItem(RETIRED_KEY) === digest; } catch { return false; }
+}
+
+/**
+ * Account deletion removes the grant this module writes (`DELETE /api/delegations`). Every tab that still holds
+ * the sign-in re-checks the grant on focus, so each would write it again. This stops them all, for the rest of
+ * that sign-in, before the grant is removed. Call it first.
+ */
+export async function retireTranscriptDelegation(sessionStore: SessionStore): Promise<void> {
+  const token = sessionStore.getToken();
+  if (!token) return;
+  const digest = await tokenDigest(token);
+  retiredHere.add(digest);
+  try { storage().setItem(RETIRED_KEY, digest); } catch { /* This tab is still held back by the set above. */ }
+}
+
 function schedule(key: string, at: number, options: Options): void {
   cancel(key);
   timers.set(key, setTimeout(() => {
@@ -188,6 +222,8 @@ async function underLock(options: Options, address: string, key: string, session
         if (options.sessionStore.getToken() !== token || options.sessionStore.getAddress()?.toLowerCase() !== address) {
           throw new Error("Session changed during transcript delegation");
         }
+        // Account deletion may have started in another tab since this attempt began: check again before the grant is sent.
+        if (await sessionRetired(options.sessionStore)) return "disabled";
         // A lost POST response can follow a successful store; disclose until status is known again.
         resolveTranscriptConsentStatus(address, null);
         const accepted = await sendDelegation(options.backendUrl, { serialized, siwe: session.siwe, signature: session.signature }, token, signal);
@@ -259,6 +295,7 @@ export async function ensureTranscriptWriterDelegation(options: Options): Promis
   const address = options.tcw.address()?.toLowerCase();
   if (!address) return "unavailable";
   const key = `tinychat.transcriptWriter.${address}`;
+  if (await sessionRetired(options.sessionStore)) { cancel(key); return "disabled"; }
   const ongoing = pending.get(key);
   if (ongoing) return ongoing;
   beginTranscriptConsentStatus(address);
