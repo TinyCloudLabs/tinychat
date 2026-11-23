@@ -31,7 +31,7 @@ import {
   OFFERED_CHAT_MODELS,
   offeredChatModelContextTokens,
 } from "@tinyboilerplate/core";
-import { renewalRestoreFor, webSignInRenewal } from "./lib/renewalReceipt";
+import { desktopSignInWithRenewal, renewalRestoreFor, webSignInRenewal } from "./lib/renewalReceipt";
 import { withConnectorDecryptGrants } from "./lib/connectors/encryptionGrant";
 import { homeFeaturesToRequest, webSignInManifest, readHomeFeatures, type HomeFeature } from "./lib/homeFeatures";
 import { rememberExistingWebConnectors } from "./lib/rememberWebConnectors";
@@ -804,9 +804,10 @@ export function App() {
         setState("unauthenticated");
         return;
       }
-      // TC-2872: past the saved session's signed end, its own verified renewal receipt carries it (web only). With the
+      // Past the saved session's signed end, its own verified renewal receipt carries it. With the
       // bearer gone too, the receipt's account is the one restored, and the backend reissues the bearer from it.
-      const renewalRestore = appPlatform() === "web" && !LOCAL_VALIDATION
+      const platform = appPlatform();
+      const renewalRestore = !LOCAL_VALIDATION && (platform === "web" || platform === "tauri")
         ? await renewalRestoreFor(sessionStoreRef.current.getAddress())
         : null;
       if (!mayCommitRestore()) return;
@@ -1242,6 +1243,7 @@ export function App() {
       setState("signing");
       // setupSpaceSession + ensureSpaceExists happen inside the SDK when
       // autoCreateSpace is true; the manifest grants tinycloud.kv on the space.
+      const platform = appPlatform();
       const signInConfig = {
         address: connectedAddress,
         nonce,
@@ -1252,7 +1254,7 @@ export function App() {
         uiPlatform: sdkUiPlatform(),
         // The web asks for connector secrets and the decrypt grant only once this device has used Connectors (opening
         // it asks in place otherwise). The desktop app signs in with them; the phone app signs in above, natively.
-        manifest: appPlatform() === "web"
+        manifest: platform === "web"
           ? webSignInManifest(manifest, readHomeFeatures(browserRevisionStore(), connectedAddress), connectedAddress)
           : withConnectorDecryptGrants(manifest, connectedAddress),
         // The dev WebView runs at localhost:5186, whose port the SDK signs into
@@ -1262,19 +1264,29 @@ export function App() {
         // replica prefixes at this sign-in; see lib/replication/replicationClient.ts.
         ...(LOCAL_VALIDATION ? {} : await replicationConfigPatch(replicationPrincipalFor(connectedAddress))),
       };
-      // TC-2872: the web signs in through OpenKey's own window, which offers renewal beside the session it signs.
-      // The desktop app keeps the wallet signature. The nonce reaches OpenKey through the config.
-      const renewal = appPlatform() === "web" && !LOCAL_VALIDATION
+      // OpenKey offers renewal alongside sign-in on web and desktop.
+      const renewal = !LOCAL_VALIDATION && (platform === "web" || platform === "tauri")
         ? webSignInRenewal(openkey, signInConfig.manifest)
         : undefined;
+      const signingProvider = prefetch.guardSigning(web3Provider);
       const { tcw: signedTcw, session } = LOCAL_VALIDATION
         ? await (async () => {
-            const localTcw = createTinyCloudWeb(prefetch.guardSigning(web3Provider), { ...signInConfig, siweConfig: { nonce } });
+            const localTcw = createTinyCloudWeb(signingProvider, { ...signInConfig, siweConfig: { nonce } });
             await prepareLocalSignIn(localTcw);
             await localTcw.clearPersistedSession(connectedAddress);
             return { tcw: localTcw, session: await localTcw.signIn({ nonce }) };
           })()
-        : await createAndSignIn(prefetch.guardSigning(web3Provider), { ...signInConfig, ...renewal?.config });
+        : platform === "tauri" && renewal
+          ? await desktopSignInWithRenewal(renewal.config, async (config) => {
+              if (config) return createAndSignIn(signingProvider, { ...signInConfig, ...config });
+              prefetch?.cancel();
+              prefetch = createWebSignInPrefetch(BACKEND_URL, {
+                requestNonce: (url) => requestNonce(url, connectedAddress),
+              });
+              const nonce = await prefetch.nonceForSigning(connectedAddress);
+              return createAndSignIn(prefetch.guardSigning(web3Provider), { ...signInConfig, nonce });
+            })
+          : await createAndSignIn(signingProvider, { ...signInConfig, ...renewal?.config });
 
       rememberReplicationPrincipal(signedTcw);
       // Exchange the SIWE message for a backend Bearer token (for /api/chat).
