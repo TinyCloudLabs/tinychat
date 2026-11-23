@@ -38,7 +38,7 @@ export interface MainTurn {
 
 export interface MainChatState {
   lines: ChatLine[];
-  history: "idle" | "loading" | "loaded" | "failed" | "declined";
+  history: "idle" | "loading" | "loaded" | "failed" | "declined" | "signed_out";
   turn: MainTurn | null;
 }
 
@@ -111,7 +111,7 @@ export function useMainChat(api: BotsApi, prepare?: () => Promise<void>, onNoRep
         });
         setState((current) => (generation !== cleared.current ? current : {
           ...current,
-          history: isHistoryDeclined(cause) ? "declined" : "failed",
+          history: isHistoryDeclined(cause) ? "declined" : cause instanceof BotsError && cause.code === "signed_out" ? "signed_out" : "failed",
         }));
       }
     })();

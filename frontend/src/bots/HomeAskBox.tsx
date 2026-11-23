@@ -24,15 +24,20 @@ const RETRY_MS = 60_000;
 /** History steps that fail because the session is gone. */
 const SESSION_GONE: Record<string, true> = { history_session_missing: true, history_session_expired: true, history_signed_out: true };
 
-/** Authorizes Main's history before a send. A session that is gone reads as signed out, not as a reply that didn't come. */
+/** A session that is gone reads as signed out, not as a reply or a history that didn't come. Anything else is returned as it is. */
+function signedOutIfGone(cause: unknown): unknown {
+  const gone = (cause instanceof Error && Object.hasOwn(SESSION_GONE, cause.message)) || openKeyFailureOf(cause).kind === "session-ended";
+  return gone ? new BotsError("signed_out") : cause;
+}
+
+/** Authorizes Main's history for a send. */
 async function prepareHistory(tcw: TinyCloudWeb): Promise<void> {
   if (!(await botHistoryEnabled())) return;
   try {
     await authorizeBotHistory(tcw, undefined, undefined, { includeLegacyNetwork: false });
     await ensureBotHistoryGrant(tcw);
   } catch (cause) {
-    const gone = (cause instanceof Error && Object.hasOwn(SESSION_GONE, cause.message)) || openKeyFailureOf(cause).kind === "session-ended";
-    throw gone ? new BotsError("signed_out") : cause;
+    throw signedOutIfGone(cause);
   }
 }
 
@@ -60,8 +65,12 @@ function MainAsk({ api, tcw, onReconnect }: { api: BotsApi; tcw?: TinyCloudWeb; 
   const client = useMemo(() => !tcw ? api : { ...api, listMainMessages: async (signal?: AbortSignal) => {
     const local = await api.listMainMessages(signal);
     if (!(await botHistoryEnabled())) return local;
-    await authorizeBotHistory(tcw);
-    await ensureBotHistoryGrant(tcw);
+    try {
+      await authorizeBotHistory(tcw);
+      await ensureBotHistoryGrant(tcw);
+    } catch (cause) {
+      throw signedOutIfGone(cause);
+    }
     const archived = await readBotHistory(tcw, signal, { reseal: true });
     return [...new Map([...archived, ...local].map(message => [message.id, message])).values()];
   } }, [api, tcw]);
