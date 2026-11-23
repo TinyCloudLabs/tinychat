@@ -21,9 +21,10 @@ export type ReadAccess = DelegatedAccess;
 export type AreaState = "off" | "on" | "ended";
 /**
  * `grantCid` names the stored grant so the owner's browser can revoke it at the node: the node accepts a revocation
- * only from the owner who delegated, never from TrustBot's read identity that received it.
+ * only from the owner who delegated, never from TrustBot's read identity that received it. `areas` holds only the
+ * areas this instance manages (see `TrustBotReadGrantsOptions.areas`).
  */
-export interface ReadStatus { expiresAt: number | null; grantCid: string | null; areas: Record<ReadArea, AreaState> }
+export interface ReadStatus { expiresAt: number | null; grantCid: string | null; areas: Partial<Record<ReadArea, AreaState>> }
 export interface GrantEnvelope { serialized: string; siwe: string; signature: string }
 
 /** `none`: nothing stored. `off`: the owner has not turned this area on. `ended`: the grant expired. */
@@ -69,6 +70,8 @@ export interface TrustBotReadGrantsOptions {
   verify?: typeof verifyTranscriptWriterGrant;
   /** Activates a checked grant at the node; the default is activateVerifiedDelegation. */
   activate?: (verified: VerifiedTranscriptWriter) => Promise<ReadAccess>;
+  /** Areas this instance holds. Telegram has its own instance and record, so the default leaves it out. */
+  areas?: readonly ReadArea[];
 }
 
 function checkAddress(address: string): string {
@@ -104,6 +107,7 @@ export class TrustBotReadGrants {
   readonly #verify: typeof verifyTranscriptWriterGrant;
   readonly #activate: (verified: VerifiedTranscriptWriter) => Promise<ReadAccess>;
   readonly #activations = new Map<string, { access: ReadAccess; until: number }>();
+  readonly #areas: readonly ReadArea[];
 
   constructor(options: TrustBotReadGrantsOptions) {
     this.#reader = options.reader;
@@ -111,6 +115,7 @@ export class TrustBotReadGrants {
     this.#host = options.host;
     this.#key = Buffer.from(hkdfSync("sha256", options.sealSecret, Buffer.alloc(0), "tinychat.trustbot-reads.grants/v1", 32));
     this.#now = options.now ?? Date.now;
+    this.#areas = options.areas ?? READ_AREA_NAMES.filter(area => area !== "telegram");
     this.#verify = options.verify ?? verifyTranscriptWriterGrant;
     this.#activate = options.activate ?? (verified => activateVerifiedDelegation(this.#reader as TinyCloudNode, verified, { host: this.#host }));
   }
@@ -164,9 +169,9 @@ export class TrustBotReadGrants {
   #status(stored: StoredReads | undefined): ReadStatus {
     if (stored?.areas.length === 0) stored = undefined;
     const ended = stored !== undefined && stored.expiresAt <= this.#now();
-    const areas = Object.fromEntries(READ_AREA_NAMES.map(area => [
+    const areas = Object.fromEntries(this.#areas.map(area => [
       area, !stored?.areas.includes(area) ? "off" : ended ? "ended" : "on",
-    ])) as Record<ReadArea, AreaState>;
+    ])) as Partial<Record<ReadArea, AreaState>>;
     return { expiresAt: stored ? stored.expiresAt : null, grantCid: stored ? stored.cid : null, areas };
   }
 
@@ -180,7 +185,8 @@ export class TrustBotReadGrants {
     const now = this.#now();
     const previous = await this.#load(owner);
     const kept = previous && previous.record.expiresAt > now ? previous.record.areas : [];
-    const areas = READ_AREA_NAMES.filter(name => name === area || kept.includes(name));
+    if (!this.#areas.includes(area)) throw new ReadGrantInvalid("area");
+    const areas = this.#areas.filter(name => name === area || kept.includes(name));
     return this.#replace(owner, envelope, { areas, activateAreas: [area], now, previous });
   }
 

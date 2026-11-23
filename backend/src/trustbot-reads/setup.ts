@@ -94,7 +94,7 @@ export async function startTrustBotReads(settings: TrustBotReadsEnv, options: {
     delete: (key, condition) => store.delete(key.replace("trustbot/read-grants/", "trustbot/telegram-read-grants/"), condition),
   };
   const telegram = new TrustBotReadGrants({
-    reader, store: telegramStore, host: options.host,
+    reader, store: telegramStore, host: options.host, areas: ["telegram"],
     sealSecret: new Uint8Array(hkdfSync("sha256", sealSecret, Buffer.alloc(0), "tinychat.trustbot-telegram-grant/v1", 32)),
   });
   return Object.assign(new TrustBotReadGrants({ reader, store, host: options.host, sealSecret }), { telegram });

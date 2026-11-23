@@ -52,12 +52,16 @@ function renewalLifetime(siwe: string, now = Date.now()): number {
 function toReadSettings(payload: unknown): ReadSettings {
   const value = (payload ?? {}) as { serviceDid?: unknown; expiresAt?: unknown; grantCid?: unknown; areas?: Record<string, unknown>; telegramGrantCid?: unknown; telegramExpiresAt?: unknown };
   if (typeof value.serviceDid !== "string" || (value.expiresAt !== null && typeof value.expiresAt !== "number")) throw new BotsError("failed");
-  const areas = {} as Record<ReadArea, ReadAreaState>;
+  const areas = {} as ReadSettings["areas"];
   for (const area of Object.keys(READ_AREAS) as ReadArea[]) {
     const state = value.areas?.[area];
+    // Telegram is reported only by backends that hold its separate grant.
+    if (area === "telegram" && state === undefined) continue;
     areas[area] = STATES.includes(state as ReadAreaState) ? state as ReadAreaState : "off";
   }
-  return { serviceDid: value.serviceDid, expiresAt: value.expiresAt, grantCid: typeof value.grantCid === "string" ? value.grantCid : null, areas,
+  const settings: ReadSettings = { serviceDid: value.serviceDid, expiresAt: value.expiresAt, grantCid: typeof value.grantCid === "string" ? value.grantCid : null, areas };
+  if (areas.telegram === undefined) return settings;
+  return { ...settings,
     telegramGrantCid: typeof value.telegramGrantCid === "string" ? value.telegramGrantCid : null,
     telegramExpiresAt: typeof value.telegramExpiresAt === "number" ? value.telegramExpiresAt : null };
 }

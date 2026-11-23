@@ -18,7 +18,8 @@ test('signed Telegram route gates area and denial; owner settings use independen
   const body=`xyz.tinycloud.inbox/media/${account}/bodies/${'1'.repeat(64)}`;
   main.run("INSERT INTO messages VALUES(?,'123','10','42',1234,NULL,NULL,?)",[account,body]);
   let enabled=false;const denied=new Set<string>();const queries:string[]=[];const fetched:string[]=[];const disabled:string[]=[];
-  const primary={serviceDid:'did:pkh:eip155:1:'+address,status:async()=>({grantCid:'primary',expiresAt:111,areas:{meetings:'on',feed_chats:'off',telegram:'off'}}),deniedChatIds:async()=>new Set(denied),disable:async()=>{throw new Error('must not disable primary');}} as unknown as TrustBotReadGrants;
+  const primaryStatus={grantCid:'primary',expiresAt:111,areas:{meetings:'on',feed_chats:'off'}};
+  const primary={serviceDid:'did:pkh:eip155:1:'+address,status:async()=>primaryStatus,readStatus:async()=>({...primaryStatus,deniedChatIds:new Set(denied)}),deniedChatIds:async()=>new Set(denied),disable:async()=>{throw new Error('must not disable primary');}} as unknown as TrustBotReadGrants;
   const telegram={status:async()=>({grantCid:enabled?'telegram':null,expiresAt:enabled?222:null,areas:{telegram:enabled?'on':'off'}}),disable:async(_address:string,area:string)=>{disabled.push(area);enabled=false;},access:async()=>{
     if(!enabled)throw new ReadGrantRefused('off');
     return{sql:{db:(database:string)=>({query:async(sql:string,params:Array<string|number|null>)=>{queries.push(database);return{ok:true,data:{rows:(database.endsWith('/state')?state:main).query(sql).values(...params)}};}})},kv:{get:async(key:string)=>{fetched.push(key);return{ok:true,data:{data:JSON.stringify({text:'synthetic body',content:null})}};}}};

@@ -89,6 +89,8 @@ function ReadAreaAccess({ api, area: AREA, copy: COPY }: { api: MeetingsAccessAp
   }
 
   const state = saved.areas[AREA];
+  // Only Telegram is optional: a backend without its separate grant does not report it.
+  if (state === undefined) return null;
 
   const change = async (enabled: boolean) => {
     setFailed(false);
