@@ -10,6 +10,8 @@ export const COURIER_PAIRING_TTL_MS = 15 * 60_000;
 export const COURIER_PEER_MAX_MS = 7 * 86_400_000;
 export const COURIER_MAX_ARTIFACT = 64 * 1024;
 export const COURIER_MAX_PENDING = 10;
+/** Each accepted A signs and activates a peer grant, so accepts are rate-limited per owner as well as capped. */
+export const COURIER_ACCEPTS_PER_HOUR = 20;
 const RENEWAL_LOG_INTERVAL_MS = 86_400_000;
 export interface PairingAdapter {
   context(owner: string, grant: CourierGrant, store: CourierPeerStore): Promise<CourierContext>;
@@ -17,6 +19,7 @@ export interface PairingAdapter {
   finalizePairing(ctx: CourierContext, pending: PairPending, artifact: string): Promise<PairedPeer>;
   unpair(ctx: CourierContext, peer: RetiredCourierPeer): Promise<void>;
   renewPeer(ctx: CourierContext, peer: PairedPeer): Promise<PairedPeer>;
+  peerReference(record: unknown): CourierPeerReference;
 }
 export type CourierPairResult = { pending: true; handle: string; acceptArtifact: string; pendingExpiresAt: number } | { peer: CourierPeer };
 export interface CourierPairing {
@@ -32,6 +35,16 @@ class PairingError extends Error {
 function pairingFailure(error: unknown): PairingError {
   return isRecord(error) && error.code === "courier_update_required"
     ? new PairingError("courier_update_required", 426) : new PairingError("invalid", 400);
+}
+
+/**
+ * acceptPairing's mailbox refusals arrive with the library's own codes. In use: a live grant this agent issued over that
+ * mailbox exists; nothing was saved and nothing is revoked. Unconfirmed: the node's grant list was unreadable; retry.
+ */
+function acceptFailure(error: unknown): PairingError {
+  if (isRecord(error) && error.code === "mailbox-in-use") return new PairingError("duplicate", 409);
+  if (isRecord(error) && error.code === "mailbox-unconfirmed") return new PairingError("courier_unavailable", 503);
+  return pairingFailure(error);
 }
 
 /** C1's typed refusal when the SDK saved a pending attempt whose node grant never activated. */
@@ -84,6 +97,14 @@ export function createCourierPairing(options: { store: CourierPeerStore; grants:
   const queues = new Map<string, Promise<void>>();
   // renewal_unavailable is logged at most once per owner and peer per day, not on every gateway tick.
   const renewalLogged = new Map<string, number>();
+  const accepts = new Map<string, number[]>();
+  /** Records one accept attempt, or refuses when this owner used up the hour. In memory: one gateway per state dir. */
+  function takeAccept(owner: string) {
+    const key = owner.toLowerCase();
+    const recent = (accepts.get(key) ?? []).filter(at => now() - at < 3_600_000);
+    if (recent.length >= COURIER_ACCEPTS_PER_HOUR) { accepts.set(key, recent); throw new PairingError("too_many_pending", 429); }
+    accepts.set(key, [...recent, now()]);
+  }
   async function serial<T>(owner: string, run: () => Promise<T>): Promise<T> {
     const key = owner.toLowerCase();
     const previous = queues.get(key) ?? Promise.resolve();
@@ -98,7 +119,10 @@ export function createCourierPairing(options: { store: CourierPeerStore; grants:
     const lib = await import("./lib-adapter");
     // Before any grant lookup: on a library without the headless API, no grant session is ever restored.
     lib.courierLibraryReady();
-    return { context: lib.courierContext, acceptPairing: lib.acceptPairing, finalizePairing: lib.finalizePairing, unpair: lib.unpair, renewPeer: lib.renewPeer };
+    return {
+      context: lib.courierContext, acceptPairing: lib.acceptPairing, finalizePairing: lib.finalizePairing, unpair: lib.unpair,
+      renewPeer: lib.renewPeer, peerReference: lib.peerReference,
+    };
   }
   async function context(api: PairingAdapter, owner: string) {
     const grant = await grants.get(owner);
@@ -165,24 +189,32 @@ export function createCourierPairing(options: { store: CourierPeerStore; grants:
           if ((await store.listPending(owner)).filter(row => row.pending.expiresAt > now()).length >= COURIER_MAX_PENDING) {
             throw new PairingError("too_many_pending", 429);
           }
+          takeAccept(owner);
           const startedAt = now();
           let pending: PairPending;
           try { pending = await api.acceptPairing(ctx, input); } catch (error) {
             const ref = pendingReference(error);
-            if (!ref) throw pairingFailure(error);
+            if (!ref) throw acceptFailure(error);
             if (ref.handle !== handle || ref.peerDid !== artifact.from.courier) throw new PairingError("invalid", 400);
             // Revoke that exact attempt before accepting once more. If revocation stays pending, the sealed reference
             // is retried unchanged by cleanup and maintenance; the handle stays unavailable until it succeeds.
             await store.retireReference(owner, { handle, peerDid: ref.peerDid, delegation: { pending: ref } });
             await cleanRetired(owner);
             if ((await store.listRetired(owner)).some(peer => peer.handle === handle)) throw new PairingError("courier_unavailable", 503);
-            try { pending = await api.acceptPairing(ctx, input); } catch (retry) { throw pairingFailure(retry); }
+            try { pending = await api.acceptPairing(ctx, input); } catch (retry) { throw acceptFailure(retry); }
           }
           // createdAt is the SDK's own pending checkpoint time; finalize verifies it unchanged.
           if (pending.handle !== handle || pending.peerDid !== artifact.from.courier || pending.expiresAt <= now()
             || !Number.isSafeInteger(pending.createdAt) || pending.createdAt < startedAt - 60_000 || pending.createdAt > now()
             || pending.expiresAt > pending.createdAt + COURIER_PAIRING_TTL_MS
-            || !pending.artifactB || pending.artifactB.length > COURIER_MAX_ARTIFACT) throw new PairingError("invalid", 400);
+            || !pending.artifactB || pending.artifactB.length > COURIER_MAX_ARTIFACT) {
+            // The library already saved and signed this attempt: revoke it now. Maintenance's SDK sweep is the fallback.
+            const ref = { handle: pending.handle, peerDid: pending.peerDid, pairingId: pending.pairingId };
+            try { await store.retireReference(owner, { handle: ref.handle, peerDid: ref.peerDid, delegation: { pending: ref } }); }
+            catch { /* A local row owns that handle; it is never overwritten. */ }
+            await cleanRetired(owner);
+            throw new PairingError("invalid", 400);
+          }
           await store.putPending(owner, { pending, artifactA: input, startedAt: pending.createdAt });
           return { pending: true, handle, acceptArtifact: pending.artifactB, pendingExpiresAt: pending.expiresAt };
         }
@@ -236,11 +268,24 @@ export function createCourierPairing(options: { store: CourierPeerStore; grants:
           if (pending.pending.expiresAt <= now()) await store.retire(owner, pending.pending.handle);
         }
         await cleanRetired(owner);
-        const peers = await store.listRuntime(owner);
-        if (!peers.some(peer => peer.delegationExpiresAt > now())) return;
         let api: PairingAdapter;
         let ctx: CourierContext;
         try { api = await adapter(); ctx = await context(api, owner); } catch { return; }
+        // Sweep SDK records no local row accounts for (a crash or refusal after the library saved and signed): revoke
+        // each by its own reference, so no activated grant outlives its pending window unseen.
+        if (ctx.identity?.did) {
+          let orphans = 0;
+          for (const { handle, record } of await store.sdkRecords(owner, ctx.identity.did)) {
+            let ref: CourierPeerReference;
+            try { ref = api.peerReference(record); } catch { continue; }
+            if (ref.handle !== handle) continue;
+            try { await store.retireReference(owner, { handle, peerDid: ref.peerDid, delegation: { pending: ref } }); orphans++; }
+            catch { /* A local runtime, pending or cleanup row owns this handle. */ }
+          }
+          if (orphans) await cleanRetired(owner);
+        }
+        const peers = await store.listRuntime(owner);
+        if (!peers.some(peer => peer.delegationExpiresAt > now())) return;
         for (const peer of peers) {
           if (peer.delegationExpiresAt <= now()) continue;
           const logKey = `${owner.toLowerCase()} ${peer.peerDid}`;

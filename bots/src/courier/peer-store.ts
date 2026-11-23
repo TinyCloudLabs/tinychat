@@ -1,7 +1,7 @@
 // Gateway-only sealed peer state. Public records never contain portable delegations or pending authority.
 import { createHash } from "node:crypto";
-import { closeSync, constants, existsSync, mkdirSync, openSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { closeSync, constants, existsSync, fsyncSync, mkdirSync, openSync, readdirSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { dlopen, FFIType } from "bun:ffi";
 import type { CourierLibraryStore, PairedPeer, PairPending } from "./lib-adapter";
 import { isRecord } from "../guards";
@@ -32,6 +32,8 @@ export interface CourierPeerStore {
   listRetired(owner: string): Promise<RetiredCourierPeer[]>;
   clearRetired(owner: string, handle: string): Promise<void>;
   transaction: CourierLibraryStore["transaction"];
+  /** The SDK's opaque records for this owner and Courier identity, read under the same per-owner mutex. */
+  sdkRecords(owner: string, courierDid: string): Promise<Array<{ handle: string; record: Record<string, unknown> }>>;
   /** Releases the state-dir writer lock. */
   close(): void;
 }
@@ -46,6 +48,12 @@ const time = (value: unknown): value is number => typeof value === "number" && N
 const artifact = (value: unknown): value is string => typeof value === "string" && value.length > 0 && value.length <= 64 * 1024;
 const LOCK_EXCLUSIVE = 2;
 const LOCK_NONBLOCKING = 4;
+const COURIER_HOST = "https://node.tinycloud.xyz";
+
+function syncDir(path: string) {
+  const handle = openSync(path, "r");
+  try { fsyncSync(handle); } finally { closeSync(handle); }
+}
 
 export function isCourierPeer(value: unknown): value is CourierPeer {
   return isRecord(value) && typeof value.handle === "string" && COURIER_HANDLE.test(value.handle)
@@ -142,11 +150,43 @@ export function createCourierPeerStore(dir: string, sealKey: Uint8Array, now: ()
     throw error;
   }
   function writable() { if (lock === undefined) throw new Error("courier_state_closed"); }
+  // A save is durable once it resolves: the sealed store fsyncs the file and its directory, and a directory created
+  // for the first record is itself made durable in its parents.
+  const durableDirs = new Set<string>();
+  function durableDir(path: string) {
+    if (durableDirs.has(path)) return;
+    if (!existsSync(path)) {
+      mkdirSync(path, { recursive: true, mode: 0o700 });
+      for (let at = path; at !== dir; at = dirname(at)) syncDir(dirname(at));
+    }
+    durableDirs.add(path);
+  }
   function save(owner: string, record: PeerRecord) {
     writable();
     const { ownerId, store } = records(owner);
     const used = record.used ?? entries(owner).find(entry => entry.handle === record.handle)?.used;
+    durableDir(join(dir, ownerId));
     store.save(hash(record.handle), ownerId, { ...record, ...(used ? { used: used.filter(item => item.expiresAt > now()) } : {}) });
+  }
+  /** The SDK store contract's mutex: one queue per owner, and one process per state dir (the flock above). */
+  async function sdkSerial<T>(owner: string, run: () => Promise<T>): Promise<T> {
+    const previous = sdkQueues.get(owner) ?? Promise.resolve();
+    const next = previous.catch(() => {}).then(run);
+    const settled = next.then(() => {}, () => {});
+    sdkQueues.set(owner, settled);
+    try { return await next; } finally { if (sdkQueues.get(owner) === settled) sdkQueues.delete(owner); }
+  }
+  function tenantOf(owner: string, courierDid: string, spaceId: string, host: string) {
+    const binding = JSON.stringify([owner, courierDid, spaceId.toLowerCase(), host]);
+    const tenant = hash(binding);
+    const sdkDir = join(dir, "sdk", tenant);
+    return { binding, tenant, sdkDir, sdkStore: sealedGrantStore(sdkDir, sealKey) };
+  }
+  function sdkValue(entry: { id: string; botId: string; record?: unknown }, tenant: string, binding: string) {
+    const value = entry.record;
+    if (entry.botId !== tenant || !isRecord(value) || value.v !== 1 || value.binding !== binding || typeof value.handle !== "string"
+      || !COURIER_HANDLE.test(value.handle) || entry.id !== hash(value.handle) || !isRecord(value.record)) throw new Error("invalid_courier_sdk_seal");
+    return { handle: value.handle, record: value.record };
   }
   return {
     close() {
@@ -156,14 +196,10 @@ export function createCourierPeerStore(dir: string, sealKey: Uint8Array, now: ()
     },
     async transaction(scope, operation) {
       const owner = scope.ownerDid.toLowerCase();
-      if (!OWNER.test(owner) || !DID.test(scope.courierDid) || scope.host !== "https://node.tinycloud.xyz"
+      if (!OWNER.test(owner) || !DID.test(scope.courierDid) || scope.host !== COURIER_HOST
         || scope.spaceId.toLowerCase() !== `tinycloud:${owner.slice(4)}:agents`) throw new Error("invalid_courier_scope");
-      const binding = JSON.stringify([owner, scope.courierDid, scope.spaceId.toLowerCase(), scope.host]);
-      const tenant = hash(binding);
-      const sdkDir = join(dir, "sdk", tenant);
-      const sdkStore = sealedGrantStore(sdkDir, sealKey);
-      const previous = sdkQueues.get(owner) ?? Promise.resolve();
-      const next = previous.catch(() => {}).then(async () => {
+      const { binding, tenant, sdkDir, sdkStore } = tenantOf(owner, scope.courierDid, scope.spaceId, scope.host);
+      return sdkSerial(owner, async () => {
         let open = true;
         const checkedId = (handle: string) => {
           if (!open || !COURIER_HANDLE.test(handle) || handle === "__proto__") throw new Error("invalid_courier_transaction");
@@ -175,9 +211,8 @@ export function createCourierPeerStore(dir: string, sealKey: Uint8Array, now: ()
               const id = checkedId(handle);
               const entry = sdkStore.load().find(value => value.id === id);
               if (!entry && !existsSync(join(sdkDir, `${id}.json`))) return undefined;
-              const value = entry?.record;
-              if (entry?.botId !== tenant || !isRecord(value) || value.v !== 1 || value.binding !== binding
-                || value.handle !== handle || !isRecord(value.record)) throw new Error("invalid_courier_sdk_seal");
+              const value = entry ? sdkValue(entry, tenant, binding) : undefined;
+              if (value?.handle !== handle) throw new Error("invalid_courier_sdk_seal");
               // SDK state is opaque here; the SDK validates its record, scope and signatures on every use.
               return value.record;
             },
@@ -187,15 +222,24 @@ export function createCourierPeerStore(dir: string, sealKey: Uint8Array, now: ()
               if (record === undefined) sdkStore.remove(id);
               else {
                 if (!isRecord(record)) throw new Error("invalid_courier_sdk_record");
+                durableDir(sdkDir);
                 sdkStore.save(id, tenant, { v: 1, binding, handle, record });
               }
             },
           });
         } finally { open = false; }
       });
-      const settled = next.then(() => {}, () => {});
-      sdkQueues.set(owner, settled);
-      try { return await next; } finally { if (sdkQueues.get(owner) === settled) sdkQueues.delete(owner); }
+    },
+    async sdkRecords(owner, courierDid) {
+      const lower = owner.toLowerCase();
+      if (!OWNER.test(lower) || !DID.test(courierDid)) throw new Error("invalid_courier_scope");
+      const { binding, tenant, sdkDir, sdkStore } = tenantOf(lower, courierDid, `tinycloud:${lower.slice(4)}:agents`, COURIER_HOST);
+      return sdkSerial(lower, async () => {
+        const loaded = sdkStore.load();
+        const files = existsSync(sdkDir) ? readdirSync(sdkDir).filter(name => name.endsWith(".json")) : [];
+        if (files.length !== loaded.length) throw new Error("invalid_courier_sdk_seal");
+        return loaded.map(entry => sdkValue(entry, tenant, binding));
+      });
     },
     async list(owner) {
       return entries(owner).flatMap(entry => !entry.retired && entry.peer

@@ -36,6 +36,11 @@ function setup() {
     },
     async unpair() {},
     async renewPeer(_ctx, peer) { return peer; },
+    peerReference(record) {
+      const value = record as { handle?: unknown; peerDid?: unknown; pairingId?: unknown };
+      if (typeof value.handle !== "string" || typeof value.peerDid !== "string" || typeof value.pairingId !== "string") throw new Error("invalid Courier peer reference");
+      return { handle: value.handle, peerDid: value.peerDid, pairingId: value.pairingId };
+    },
   };
   const grants = { async get() { return { raw: {}, expiresAt: now + 30 * 86_400_000 }; }, async put() {}, async delete() {} };
   const pairing = createCourierPairing({ store, grants, adapter, now: () => now });
@@ -354,4 +359,73 @@ test("renewal_unavailable is logged once per peer per 24 hours, not on every mai
     expect(log).toHaveBeenCalledTimes(2);
     expect(JSON.parse(String(log.mock.calls[1]![0]))).toEqual({ gateway: "courier", peer: createHash("sha256").update(start.from.courier).digest("hex").slice(0, 12), outcome: "renewal_unavailable" });
   } finally { log.mockRestore(); }
+});
+
+test("mailbox-in-use refuses A with 409: nothing pending, nothing revoked", async () => {
+  const { pairing, adapter, store } = setup();
+  let revoked = 0;
+  adapter.unpair = async () => { revoked++; };
+  adapter.acceptPairing = async () => { throw Object.assign(new Error("An earlier grant for this Courier mailbox is still live"), { code: "mailbox-in-use" }); };
+  expect(await pairing.pair(owner, JSON.stringify(start)).catch(error => error)).toMatchObject({ code: "duplicate", status: 409 });
+  expect(await store.getPending(owner, "reader")).toBeUndefined();
+  expect(await store.listRetired(owner)).toEqual([]);
+  await pairing.maintain(owner);
+  expect(revoked).toBe(0);
+});
+
+test("mailbox-unconfirmed is retryable: 503 creates no pending row, other rows stay, and the same A succeeds later", async () => {
+  const { pairing, adapter, store } = setup();
+  const accept = adapter.acceptPairing;
+  adapter.acceptPairing = async (ctx, artifact) => ({ ...await accept(ctx, artifact), handle: JSON.parse(artifact).callMe });
+  await pairing.pair(owner, JSON.stringify({ ...start, callMe: "other" }));
+  adapter.acceptPairing = async () => { throw Object.assign(new Error("Courier could not confirm the mailbox is unshared"), { code: "mailbox-unconfirmed" }); };
+  expect(await pairing.pair(owner, JSON.stringify(start)).catch(error => error)).toMatchObject({ code: "courier_unavailable", status: 503 });
+  expect(await store.getPending(owner, "reader")).toBeUndefined();
+  expect((await store.getPending(owner, "other"))?.pending.handle).toBe("other");
+  adapter.acceptPairing = accept;
+  expect(await pairing.pair(owner, JSON.stringify(start))).toMatchObject({ pending: true, handle: "reader" });
+});
+
+test("accepts are rate-limited per owner per hour even when no pending row is created", async () => {
+  const { pairing, adapter, advance } = setup();
+  let calls = 0;
+  const accept = adapter.acceptPairing;
+  adapter.acceptPairing = async () => { calls++; throw Object.assign(new Error("unconfirmed"), { code: "mailbox-unconfirmed" }); };
+  for (let attempt = 0; attempt < 20; attempt++) expect(await pairing.pair(owner, JSON.stringify(start)).catch(error => error)).toMatchObject({ status: 503 });
+  expect(await pairing.pair(owner, JSON.stringify(start)).catch(error => error)).toMatchObject({ code: "too_many_pending", status: 429 });
+  expect(calls).toBe(20);
+  expect(await pairing.pair(`did:pkh:eip155:1:0x${"3".repeat(40)}`, JSON.stringify(start)).catch(error => error)).toMatchObject({ status: 503 });
+  advance(3_600_000);
+  adapter.acceptPairing = accept;
+  expect(await pairing.pair(owner, JSON.stringify(start))).toMatchObject({ pending: true, handle: "reader" });
+});
+
+test("an accepted pending the gateway rejects is revoked at once by its reference", async () => {
+  const { pairing, adapter, store } = setup();
+  const accept = adapter.acceptPairing;
+  adapter.acceptPairing = async (ctx, artifact) => { const pending = await accept(ctx, artifact); return { ...pending, expiresAt: pending.createdAt + 16 * 60_000 }; };
+  const revoked: unknown[] = [];
+  adapter.unpair = async (_ctx, peer) => { revoked.push(peer); };
+  expect(await pairing.pair(owner, JSON.stringify(start)).catch(error => error)).toMatchObject({ code: "invalid", status: 400 });
+  expect(revoked).toEqual([{ handle: "reader", peerDid: start.from.courier, delegation: { pending: { handle: "reader", peerDid: start.from.courier, pairingId: "01J00000000000000000000000" } } }]);
+  expect(await store.getPending(owner, "reader")).toBeUndefined();
+  expect(await store.listRetired(owner)).toEqual([]);
+});
+
+test("maintenance revokes SDK records no local row accounts for, and leaves owned handles alone", async () => {
+  const { pairing, adapter, store } = setup();
+  const trustbot = "did:key:zTrustBot";
+  adapter.context = async () => ({ identity: { did: trustbot } }) as unknown as CourierContext;
+  const revoked: unknown[] = [];
+  adapter.unpair = async (_ctx, peer) => { revoked.push(peer); };
+  await pairing.pair(owner, JSON.stringify(start));
+  const scope = { ownerDid: owner, courierDid: trustbot, spaceId: `tinycloud:pkh:eip155:1:0x${"1".repeat(40)}:agents`, host: "https://node.tinycloud.xyz" };
+  await store.transaction(scope, async tx => {
+    await tx.save("reader", { handle: "reader", peerDid: start.from.courier, pairingId: "01J00000000000000000000000" });
+    await tx.save("ghost", { handle: "ghost", peerDid: "did:key:zGhost", pairingId: "ghost-attempt" });
+  });
+  await pairing.maintain(owner);
+  expect(revoked).toEqual([{ handle: "ghost", peerDid: "did:key:zGhost", delegation: { pending: { handle: "ghost", peerDid: "did:key:zGhost", pairingId: "ghost-attempt" } } }]);
+  expect((await store.getPending(owner, "reader"))?.pending.handle).toBe("reader");
+  expect(await store.listRetired(owner)).toEqual([]);
 });
