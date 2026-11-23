@@ -228,6 +228,9 @@ export type ConnectorWebhooksResult<T> =
   /** The request never got an answer (network / abort). */
   | { status: "offline" };
 
+/** The server-side Fireflies import grant: `DELETE` removes it. */
+export const FIREFLIES_IMPORT_GRANT_BASE_PATH = "/api/connectors/fireflies/delegation";
+
 /** The base path of the credential teardown. One segment deep: `/:source`. */
 export const CONNECTOR_CREDENTIALS_BASE_PATH = "/api/connectors/credentials";
 
@@ -288,6 +291,12 @@ export interface ConnectorWebhooksClient {
   teardownCredential?(
     source: string,
   ): Promise<ConnectorWebhooksResult<ConnectorCredentialTeardown | null>>;
+  /**
+   * Remove the import grant our server holds for the owner's Fireflies account, so it can no longer
+   * import into the owner's space. `feature-dark` (a 404) means the server import is not mounted.
+   * Optional so test doubles omit it.
+   */
+  removeFirefliesImportGrant?(): Promise<ConnectorWebhooksResult<{ state: string }>>;
   getPending(): Promise<ConnectorWebhooksResult<ConnectorWebhookPending>>;
   /** The user-visit drain trigger. The response is the drain's OWN surfaced list. */
   drain(): Promise<ConnectorWebhooksResult<ConnectorWebhookPending>>;
@@ -489,6 +498,9 @@ export function createConnectorWebhooksClient(
         return { status: "ok", value: null };
       }
       return torn;
+    },
+    removeFirefliesImportGrant() {
+      return request<{ state: string }>("", { method: "DELETE", basePath: FIREFLIES_IMPORT_GRANT_BASE_PATH });
     },
     getPending() {
       return request<ConnectorWebhookPending>("/pending", { method: "GET" });

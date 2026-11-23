@@ -7,6 +7,7 @@ import {
   webhookFailureMessage,
   type WebhookFailure,
 } from "@/lib/connectors/connectorLifecycle";
+import { clearPurgeLedgersForAccountDeletion } from "@/lib/connectors/accountLedgerClear";
 import {
   createConnectorWebhooksClient,
   type ConnectorWebhooksClient,
@@ -20,15 +21,28 @@ export function accountDeletionTeardownFailure(failure: WebhookFailure): string 
   return `${webhookFailureMessage(failure)} We couldn't confirm your Fireflies sign-in was removed from our server. Try again, or continue to OpenKey and revoke it yourself in your Fireflies account.`;
 }
 
+/**
+ * What the owner is told when the record of their deleted meetings could not be erased. It says the record may
+ * remain: nothing here claims the data is gone.
+ */
+export function accountDeletionLedgerFailure(failure: WebhookFailure, step: "fence" | "clear"): string {
+  const lead = step === "fence"
+    ? "We couldn't stop new meeting notifications for your account, so we did not erase the record of your deleted meetings. That record may stay on our server."
+    : "We couldn't confirm the record of your deleted meetings was erased from our server. It may stay there.";
+  return `${webhookFailureMessage(failure)} ${lead} Try again, or continue to OpenKey.`;
+}
+
 type State =
   | { phase: "idle" }
   | { phase: "working" }
-  | { phase: "blocked"; message: string; retryable: boolean; stage: "recordings" | "credentials"; pending?: boolean };
+  | { phase: "blocked"; message: string; retryable: boolean; stage: "recordings" | "credentials" | "ledger"; pending?: boolean };
 
 /**
  * "Delete OpenKey account". Requests the existing recordings purge before removing the Fireflies
- * sign-in and opening OpenKey. Unconfirmed recordings or credential cleanup is disclosed first;
- * the owner can retry that stage or continue without being told the data was deleted.
+ * sign-in, erasing the deleted-meeting record and opening OpenKey. The last of these needs the owner's
+ * session, which OpenKey's page ends, so it runs just before that page opens. Unconfirmed recordings,
+ * credential or record cleanup is disclosed first; the owner can retry that stage or continue without
+ * being told the data was deleted.
  */
 export function DeleteOpenKeyAccountButton(props: {
   backendUrl: string;
@@ -65,6 +79,16 @@ export function DeleteOpenKeyAccountButton(props: {
       setState({ phase: "blocked", message: outcome.notice, retryable: false, stage: "credentials" });
       return;
     }
+    await clearLedgers();
+  };
+
+  const clearLedgers = async () => {
+    setState({ phase: "working" });
+    const outcome = await clearPurgeLedgersForAccountDeletion(webhooks);
+    if (outcome.status === "failed") {
+      setState({ phase: "blocked", message: accountDeletionLedgerFailure(outcome.failure, outcome.step), retryable: true, stage: "ledger" });
+      return;
+    }
     await proceed();
   };
 
@@ -94,11 +118,11 @@ export function DeleteOpenKeyAccountButton(props: {
         <div>
           <p className={`mb-2 text-xs ${state.pending ? "text-muted-foreground" : "text-destructive"}`} role="alert">{state.message}</p>
           <div className="flex flex-wrap items-center gap-2">
-            <Button variant="outline" size="sm" onClick={() => void (state.stage === "recordings" ? teardownCredentials() : proceed())} className="text-destructive">
+            <Button variant="outline" size="sm" onClick={() => void (state.stage === "recordings" ? teardownCredentials() : state.stage === "credentials" ? clearLedgers() : proceed())} className="text-destructive">
               Continue to OpenKey
             </Button>
             {state.retryable && (
-              <Button variant="ghost" size="sm" onClick={() => void (state.stage === "recordings" ? start() : teardownCredentials())}>
+              <Button variant="ghost" size="sm" onClick={() => void (state.stage === "recordings" ? start() : state.stage === "credentials" ? teardownCredentials() : clearLedgers())}>
                 Try again
               </Button>
             )}
