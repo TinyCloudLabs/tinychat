@@ -9,13 +9,17 @@ export interface StandingReadsView {
   outcome: "declined" | "expired" | "failed" | null;
 }
 
+export interface ReadSummary {
+  days: { day: string; area: ReadArea; tool: string; ok: number; refused: number }[];
+}
+
 const backend = import.meta.env.VITE_BACKEND_URL || `${globalThis.location?.protocol ?? "http:"}//localhost:3014`;
 const route = `${backend}/api/bots/main/reads/standing`;
 
-async function request(method: "GET" | "POST" | "DELETE", cid?: string): Promise<Response> {
+async function request(method: "GET" | "POST" | "DELETE", suffix = ""): Promise<Response> {
   const token = new SessionStore("xyz.tinycloud.tinychat:session").getToken();
   if (!token) throw new Error("signed_out");
-  const response = await fetch(cid ? `${route}/${encodeURIComponent(cid)}` : route, {
+  const response = await fetch(`${route}${suffix}`, {
     method,
     headers: {
       authorization: `Bearer ${token}`,
@@ -33,9 +37,15 @@ export async function standingReadsView(method: "GET" | "POST" = "GET"): Promise
   return response.status === 404 ? null : response.json();
 }
 
+export async function standingReadSummary(): Promise<ReadSummary> {
+  const response = await request("GET", "/summary");
+  if (!response.ok) throw new Error("standing_reads_unavailable");
+  return response.json();
+}
+
 export async function stopStandingReads(cid: string, revoke: (originalCid: string) => Promise<void>): Promise<void> {
   await revoke(cid);
-  const response = await request("DELETE", cid);
+  const response = await request("DELETE", `/${encodeURIComponent(cid)}`);
   if (!response.ok) throw new Error("standing_reads_unavailable");
 }
 
