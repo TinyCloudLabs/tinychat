@@ -1,5 +1,21 @@
 # @tinychat/backend
 
+## 0.13.2-beta.4
+
+### Patch Changes
+
+- 8aae6b9: Count node errors when retiring replaced bot history grants.
+
+  Details: TC-4013
+
+## 0.13.2-beta.3
+
+### Patch Changes
+
+- df28ad2: Send grant-specific bot history permission updates.
+
+  Details: TC-4006
+
 ## 0.13.2-beta.2
 
 ### Patch Changes
