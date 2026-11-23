@@ -175,16 +175,21 @@ export function createCourierPairing(options: { store: CourierPeerStore; grants:
           if (pendingReference(error)) throw new PairingError("courier_unavailable", 503);
           throw pairingFailure(error);
         }
-        // From here the library has verified C and activated the peer: every local refusal must also revoke it.
-        if (peer.handle !== handle || peer.peerDid !== start.from.courier || !Number.isSafeInteger(peer.delegationExpiresAt)
-          || peer.delegationExpiresAt <= now() || peer.delegationExpiresAt > now() + COURIER_PEER_MAX_MS) {
+        // From here the library has verified C and activated the peer: every local refusal, and any local failure
+        // before the peer is stored, must also revoke it.
+        let refusal: PairingError | undefined;
+        try {
+          if (peer.handle !== handle || peer.peerDid !== start.from.courier || !Number.isSafeInteger(peer.delegationExpiresAt)
+            || peer.delegationExpiresAt <= now() || peer.delegationExpiresAt > now() + COURIER_PEER_MAX_MS) refusal = new PairingError("invalid", 400);
+          // Verification can wait on the node; do not let its latency extend the pending window.
+          else if (saved.pending.expiresAt <= now()) refusal = new PairingError("pending_expired", 410);
+          // A used proof CID or a changed pending row refuses the CAS.
+          else if (!await store.finalizePending(owner, saved, peer)) refusal = new PairingError("invalid", 400);
+        } catch (error) {
           await revokeVerified(owner, saved);
-          throw new PairingError("invalid", 400);
+          throw error;
         }
-        // Verification can wait on the node; do not let its latency extend the pending window.
-        if (saved.pending.expiresAt <= now()) { await revokeVerified(owner, saved); throw new PairingError("pending_expired", 410); }
-        // A used proof CID or a changed pending row refuses the CAS; the activated grant is revoked either way.
-        if (!await store.finalizePending(owner, saved, peer)) { await revokeVerified(owner, saved); throw new PairingError("invalid", 400); }
+        if (refusal) { await revokeVerified(owner, saved); throw refusal; }
         const publicPeer = (await store.list(owner)).find(item => item.handle === handle)!;
         return { peer: publicPeer };
       });

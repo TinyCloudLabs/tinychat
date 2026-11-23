@@ -118,7 +118,9 @@ test("one gateway per state dir: a second writer is refused at start, in this pr
   createCourierPeerStore(dir, key).close();
 });
 
-test("the finalize check-and-set admits exactly one of two finalizations that both passed the runtime check", async () => {
+// finalizePending has no await between its check and its save, so in one process two calls run back to back;
+// cross-process races are excluded by the state-dir lock above. This pins the check-and-set itself.
+test("the finalize check-and-set consumes the pending row once: the second of two finalizations for it is refused", async () => {
   const store = createCourierPeerStore(directory(), key, () => peer.pairedAt);
   const pending = { pending: { handle: peer.handle, peerDid: peer.peerDid, artifactB: "signed-B", pairingId: "01J00000000000000000000000", createdAt: peer.pairedAt, expiresAt: peer.pairedAt + 900_000 }, artifactA: "A", startedAt: peer.pairedAt };
   const runtime = (cid: string) => ({ handle: peer.handle, peerDid: peer.peerDid, delegation: { signed: cid }, proof: { cid, issuedAt: peer.pairedAt }, delegationExpiresAt: peer.delegationExpiresAt });
