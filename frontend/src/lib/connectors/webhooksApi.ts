@@ -228,6 +228,23 @@ export type ConnectorWebhooksResult<T> =
   /** The request never got an answer (network / abort). */
   | { status: "offline" };
 
+/** The connector grant the backend holds for the owner: `DELETE` removes it. */
+export const BACKEND_DELEGATION_BASE_PATH = "/api/delegations";
+
+/** The exo sync grant: `DELETE` removes it. */
+export const EXO_GRANT_BASE_PATH = "/api/exo/v1/grant";
+
+/** Calendar autojoin: `POST /disconnect`. */
+const CALENDAR_AUTOJOIN_BASE_PATH = "/api/connectors/google/autojoin";
+
+/** `upstreamRevoked`: `ok` Google confirmed, `failed` Google did not, `not_applicable` nothing was stored. */
+export interface CalendarAutojoinDisconnect {
+  upstreamRevoked: "ok" | "failed" | "not_applicable";
+}
+
+/** The server-side Fireflies import grant: `DELETE` removes it. */
+export const FIREFLIES_IMPORT_GRANT_BASE_PATH = "/api/connectors/fireflies/delegation";
+
 /** The base path of the credential teardown. One segment deep: `/:source`. */
 export const CONNECTOR_CREDENTIALS_BASE_PATH = "/api/connectors/credentials";
 
@@ -288,6 +305,25 @@ export interface ConnectorWebhooksClient {
   teardownCredential?(
     source: string,
   ): Promise<ConnectorWebhooksResult<ConnectorCredentialTeardown | null>>;
+  /**
+   * Remove the import grant our server holds for the owner's Fireflies account, so it can no longer
+   * import into the owner's space. `feature-dark` (a 404) means the server import is not mounted.
+   * Optional so test doubles omit it.
+   */
+  removeFirefliesImportGrant?(): Promise<ConnectorWebhooksResult<{ state: string }>>;
+  /**
+   * Remove the connector grant our server holds for the owner (`DELETE /api/delegations`), which also clears
+   * the owner's exo state. `feature-dark` (a 404) means nothing is mounted. Optional so test doubles omit it.
+   */
+  removeBackendDelegation?(): Promise<ConnectorWebhooksResult<{ status: string }>>;
+  /** Remove the exo sync grant (`DELETE /api/exo/v1/grant`); a 404 (not mounted) is `feature-dark`. Optional like the above. */
+  removeExoGrant?(): Promise<ConnectorWebhooksResult<{ status: string }>>;
+  /**
+   * Stop Calendar autojoin and delete the Google sign-in our server holds (`POST /disconnect` with `{}`).
+   * `ok` with `upstreamRevoked: "failed"` (a 502) means the local delete happened and Google did not confirm
+   * the revoke. A 404 is `feature-dark` (not mounted). Optional like the above.
+   */
+  disconnectCalendarAutojoin?(): Promise<ConnectorWebhooksResult<CalendarAutojoinDisconnect>>;
   getPending(): Promise<ConnectorWebhooksResult<ConnectorWebhookPending>>;
   /** The user-visit drain trigger. The response is the drain's OWN surfaced list. */
   drain(): Promise<ConnectorWebhooksResult<ConnectorWebhookPending>>;
@@ -489,6 +525,33 @@ export function createConnectorWebhooksClient(
         return { status: "ok", value: null };
       }
       return torn;
+    },
+    removeFirefliesImportGrant() {
+      return request<{ state: string }>("", { method: "DELETE", basePath: FIREFLIES_IMPORT_GRANT_BASE_PATH });
+    },
+    removeBackendDelegation() {
+      return request<{ status: string }>("", { method: "DELETE", basePath: BACKEND_DELEGATION_BASE_PATH });
+    },
+    removeExoGrant() {
+      return request<{ status: string }>("", { method: "DELETE", basePath: EXO_GRANT_BASE_PATH });
+    },
+    disconnectCalendarAutojoin() {
+      return request<CalendarAutojoinDisconnect>("/disconnect", {
+        method: "POST",
+        body: {},
+        basePath: CALENDAR_AUTOJOIN_BASE_PATH,
+        // 502 `upstreamRevoked: "failed"`: the stored sign-in was deleted here and only Google's confirmation is missing.
+        async onFailure(response) {
+          if (response.status !== 502) return null;
+          try {
+            const body = (await response.json()) as { upstreamRevoked?: unknown };
+            if (body?.upstreamRevoked === "failed") return { status: "ok", value: { upstreamRevoked: "failed" } };
+          } catch {
+            // An unreadable 502 is a plain retryable failure.
+          }
+          return null;
+        },
+      });
     },
     getPending() {
       return request<ConnectorWebhookPending>("/pending", { method: "GET" });

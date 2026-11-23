@@ -6,6 +6,11 @@ import { installDom } from "@/test/dom";
 
 const RECORDINGS = "https://api.example/api/transcriber/meetings";
 const CREDS = "https://api.example/api/connectors/credentials/fireflies";
+const DISCONNECT = "https://api.example/api/connectors/google/autojoin/disconnect";
+const CONFIG = "https://api.example/api/connectors/webhooks/config";
+const GRANT = "https://api.example/api/connectors/fireflies/delegation";
+const DELEGATION = "https://api.example/api/delegations";
+const EXO = "https://api.example/api/exo/v1/grant";
 const TOKEN = "private-recording-session-sentinel";
 const success = { removed: 2, deleting: 0, listOnly: 0, notDeleted: 0, privateCloudDeleted: 1 };
 let cleanDom: (() => void) | undefined;
@@ -53,7 +58,7 @@ async function page(run: (view: { host: HTMLElement; opens: () => number; click:
 test("account deletion purges recordings before credential teardown and OpenKey", async () => {
   await page(async (view) => {
     await view.click("Delete OpenKey account");
-    expect(calls).toEqual([`DELETE ${RECORDINGS}`, `GET ${CREDS}`, `DELETE ${CREDS}`]);
+    expect(calls).toEqual([`POST ${DISCONNECT}`, `DELETE ${RECORDINGS}`, `GET ${CREDS}`, `DELETE ${CREDS}`, `DELETE ${CONFIG}`, `DELETE ${GRANT}`, `DELETE ${DELEGATION}`, `DELETE ${EXO}`]);
     expect(view.opens()).toBe(1);
   });
 });
@@ -68,13 +73,13 @@ for (const [name, response] of [
     await page(async (view) => {
       await view.click("Delete OpenKey account");
       expect(view.opens()).toBe(0);
-      expect(calls).toEqual([`DELETE ${RECORDINGS}`]);
+      expect(calls).toEqual([`POST ${DISCONNECT}`, `DELETE ${RECORDINGS}`]);
       expect(view.host.querySelector("[role=alert]")?.textContent).toBeTruthy();
       if (name === "pending") expect(view.host.textContent).toContain("we keep deleting them after it's gone");
       if (name === "failed") expect(view.host.textContent).toContain("Some may still be there");
       if (name === "not attributed") expect(view.host.textContent).toContain("still with the notetaker service");
       await view.click("Continue to OpenKey");
-      expect(calls).toEqual([`DELETE ${RECORDINGS}`, `GET ${CREDS}`, `DELETE ${CREDS}`]);
+      expect(calls).toEqual([`POST ${DISCONNECT}`, `DELETE ${RECORDINGS}`, `GET ${CREDS}`, `DELETE ${CREDS}`, `DELETE ${CONFIG}`, `DELETE ${GRANT}`, `DELETE ${DELEGATION}`, `DELETE ${EXO}`]);
       expect(view.opens()).toBe(1);
     });
   });
@@ -85,7 +90,7 @@ test("retry reissues the recordings purge before advancing", async () => {
   await page(async (view) => {
     await view.click("Delete OpenKey account");
     await view.click("Try again");
-    expect(calls).toEqual([`DELETE ${RECORDINGS}`, `DELETE ${RECORDINGS}`, `GET ${CREDS}`, `DELETE ${CREDS}`]);
+    expect(calls).toEqual([`POST ${DISCONNECT}`, `DELETE ${RECORDINGS}`, `DELETE ${RECORDINGS}`, `GET ${CREDS}`, `DELETE ${CREDS}`, `DELETE ${CONFIG}`, `DELETE ${GRANT}`, `DELETE ${DELEGATION}`, `DELETE ${EXO}`]);
     expect(view.opens()).toBe(1);
   });
 });
