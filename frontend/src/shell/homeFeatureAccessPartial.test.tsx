@@ -43,7 +43,7 @@ test("the card says OpenKey also asks to unlock encrypted data", async () => {
   }
   await act(async () => root.render(<Page />));
   expect(host.textContent).toContain(FEATURE_ACCESS_BODY.connectors);
-  expect(host.textContent).toContain("To read those keys, One also asks to unlock everything encrypted to your account, including data other apps saved.");
+  expect(host.textContent).toContain("To read those keys, TinyCloud One also asks to use your master key, which opens everything encrypted to your account, including data other apps saved.");
 });
 
 test("when everything but unlocking encrypted data was allowed, the card says so, keeps waiting, marks nothing allowed, and Continue asks again", async () => {
