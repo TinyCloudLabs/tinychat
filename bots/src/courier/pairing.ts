@@ -96,6 +96,8 @@ export function createCourierPairing(options: { store: CourierPeerStore; grants:
     if (options.adapter) return options.adapter;
     // C1's current integration checkpoint declares this boundary; load implementations only for live operations.
     const lib = await import("./lib-adapter");
+    // Before any grant lookup: on a library without the headless API, no grant session is ever restored.
+    lib.courierLibraryReady();
     return { context: lib.courierContext, acceptPairing: lib.acceptPairing, finalizePairing: lib.finalizePairing, unpair: lib.unpair, renewPeer: lib.renewPeer };
   }
   async function context(api: PairingAdapter, owner: string) {
