@@ -16,6 +16,35 @@
 - TC-2204: Native audience checks accept Home's three exact SQL hook subscriptions only alongside an existing TinyChat data grant.
 - TC-2499: The Home mirror adapter persists close receipts using node-compatible NULL/non-NULL compare-and-set predicates. If the KV mirror is already exactly closed but its receipt is missing, recovery records the original publication ETag without writing the KV copy again, before any gated child handoff. The CLI reports JSON error class, safe message, code, HTTP status when available, and operation step; private SQL bodies and nested causes remain redacted. Exit 2 identifies invalid input, exit 6 known transient failures (including NODE_BUSY and REQUEST_TIMEOUT without HTTP metadata), and exit 1 other runtime failures or OUTCOME_UNKNOWN. Unclassified errors are not labelled bad input; no failure confirms delivery or authorizes an automatic retry.
 
+## 0.20.2
+
+### Patch Changes
+
+- 98b74de: Bot chat history in TinyChat is sealed with its own encryption key. Saving new history needs your approval for that one key. When you open earlier messages, TinyChat can move them to that key.
+
+  Details: TC-3823
+
+- b3cbf13: Web sign-in and Connectors can renew access with your approval in OpenKey. When the approval includes access to your secrets, each renewal lasts up to seven days.
+
+  Details: TC-4000
+
+- 472f192: Desktop sign-in can renew access with your approval in OpenKey. Each renewal of access to your secrets lasts up to seven days.
+
+  Details: TC-4000
+
+- afc5b2e: The Contacts tile no longer appears in One Apps.
+- ed8f146: Keep TrustBot read access active in Home by quietly renewing the read grant for enabled areas while the owner session can extend it.
+
+  Details: TC-4000
+
+- c12c58e: The sign-in for Connectors now asks for access to each connector key's own encryption key, next to the access that already covers your whole account. Connector keys you save are still stored the same way for now; saving them under their own key is built behind a switch that stays off. If you already use Connectors, you sign in once more the next time you open them so the new access can be approved.
+
+  Details: TC-3284
+
+- cab6b24: Open the agent setup handoff in TinyCloud One with a connection summary, an app list and prompts to try in your agent chat.
+
+  Details: TC-3302
+
 ## 0.20.2-beta.6
 
 ### Patch Changes

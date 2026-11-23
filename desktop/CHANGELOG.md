@@ -1,5 +1,13 @@
 # exo-desktop
 
+## 0.20.2
+
+### Patch Changes
+
+- 472f192: Desktop sign-in can renew access with your approval in OpenKey. Each renewal of access to your secrets lasts up to seven days.
+
+  Details: TC-4000
+
 ## 0.20.2-beta.6
 
 No changes in this release.
