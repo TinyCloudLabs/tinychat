@@ -13,6 +13,7 @@ import { isWorking, type ChatLine, type MainChatState } from "./useMainChat";
 import { WebAccess, type WebAccessApi } from "./WebAccess";
 import { FeedChatsAccess, MeetingsAccess, type MeetingsAccessApi } from "./MeetingsAccess";
 import { NewChat, type NewChatApi } from "./NewChat";
+import { DeleteChats, type DeleteChatsApi } from "./DeleteChats";
 import { AppLine, AskCards, AsksToggle } from "./AskCards";
 import { clearHistoryDecline } from "./historyAuthorization";
 import { SecretCards } from "./SecretCard";
@@ -94,6 +95,8 @@ export interface MainChatProps {
   asks?: Asks;
   /** When given, the sheet offers the owner's "Start a new chat". */
   newChat?: NewChatApi;
+  /** When given, the sheet offers the owner's "Delete chats": the conversation and the saved history. */
+  deleteChats?: DeleteChatsApi;
 }
 
 /** Services that answered 404 for web access, so reopening Main's chat does not show the button again. */
@@ -118,12 +121,14 @@ export function WebAccessToggle({ api }: { api: WebAccessApi }) {
   );
 }
 
-export function MainChat({ open, onOpenChange, state, onSend, onRetry, onRetryHistory, notice, onReconnect, webAccess, meetings, asks, newChat }: MainChatProps) {
+export function MainChat({ open, onOpenChange, state, onSend, onRetry, onRetryHistory, notice, onReconnect, webAccess, meetings, asks, newChat, deleteChats }: MainChatProps) {
   const { lines, history, turn } = state;
   const working = isWorking(turn);
   const sdkPromptOpen = useSdkPromptOpen();
   // Modal content remounts when yielding to the SDK; keep the draft above that boundary.
-  const composer = useDraft(onSend, working);
+  // While the chats are being deleted nothing is sent, so a message never lands in the history being emptied.
+  const [deleting, setDeleting] = useState(false);
+  const composer = useDraft(onSend, working || deleting);
   const composerInput = useRef<HTMLTextAreaElement>(null);
   const promptHadFocus = useRef(false);
   const setDraft = composer.setDraft;
@@ -168,6 +173,7 @@ export function MainChat({ open, onOpenChange, state, onSend, onRetry, onRetryHi
           {open && meetings ? <FeedChatsAccess api={meetings} /> : null}
           {open && asks ? <AsksToggle asks={asks} /> : null}
           {open && newChat ? <NewChat api={newChat} /> : null}
+          {open && deleteChats ? <DeleteChats api={deleteChats} onWorking={setDeleting} /> : null}
           {open && notice && onReconnect ? <ExpiryNotice key={`${notice.id}:${notice.deliveredAt ?? notice.renderAttemptAt ?? "initial"}`} notice={notice} onReconnect={onReconnect} /> : null}
           {history === "loading" ? <p role="status" className="text-callout text-muted-foreground">{BOTS_STRINGS.historyLoading}</p> : null}
           {history === "failed" && !working ? <Failure text={BOTS_STRINGS.historyFailed} onRetry={onRetryHistory} /> : null}

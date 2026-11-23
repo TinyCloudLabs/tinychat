@@ -221,3 +221,19 @@ export const NEW_CHAT_STRINGS = {
   archivePending: `${MAIN} is saving this chat to your history. Try again in a moment.`,
   failed: "Couldn't change this. Try again.",
 } as const;
+
+/** The owner's "Delete chats" with Main: the live conversation and the saved history in their space. TC-4080 */
+export const DELETE_CHATS_STRINGS = {
+  start: "Delete chats",
+  confirmTitle: `Delete your chats with ${MAIN}?`,
+  confirmBody: `${MAIN} forgets this conversation, and your saved chat history with ${MAIN} is deleted from your TinyCloud. This can't be undone. Your settings stay, and other bots and Courier conversations aren't affected.`,
+  confirm: "Delete chats",
+  cancel: "Cancel",
+  deleting: "Deleting…",
+  deleted: "Chats deleted.",
+  busy: `${MAIN} is busy. Try again in a moment. Nothing was deleted.`,
+  archivePending: `${MAIN} is saving this chat to your history. Try again in a moment. Nothing was deleted.`,
+  historyIncomplete: "This conversation was cleared, but some saved history couldn't be deleted. Try again to delete the rest.",
+  failed: "Couldn't delete your chats. Nothing was deleted. Try again.",
+  signedOut: "Your sign-in has ended. Sign in to delete your chats. Nothing was deleted.",
+} as const;

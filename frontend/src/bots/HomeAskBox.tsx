@@ -16,6 +16,7 @@ import { isWorking, useMainChat } from "./useMainChat";
 import { AskCards } from "./AskCards";
 import { ensureTrustBotReadGrant, readSettings, revokeReadGrant, setReadArea, signReadGrant } from "./trustbotReadGrant";
 import { newMainChat } from "./mainNewChat";
+import { deleteMainChats } from "./mainDeleteChats";
 import { SecretCards } from "./SecretCard";
 import { useAsks } from "./useAsks";
 
@@ -90,6 +91,7 @@ function MainAsk({ api, tcw, onReconnect }: { api: BotsApi; tcw?: TinyCloudWeb; 
   } : undefined, [tcw, readRevision]);
   const clearChat = chat.clear;
   const newChat = useMemo(() => ({ start: () => newMainChat(), onStarted: () => { clearChat(); refreshAsks(); } }), [clearChat, refreshAsks]);
+  const deleteChats = useMemo(() => ({ run: () => deleteMainChats(tcw), onCleared: () => { clearChat(); refreshAsks(); } }), [tcw, clearChat, refreshAsks]);
   // A turn is when Main asks: read the requests as it ends.
   const working = isWorking(chat.state.turn);
   const wasWorking = useRef(false);
@@ -150,6 +152,7 @@ function MainAsk({ api, tcw, onReconnect }: { api: BotsApi; tcw?: TinyCloudWeb; 
         meetings={meetings}
         asks={asks}
         newChat={newChat}
+        deleteChats={deleteChats}
       />
     </>
   );
