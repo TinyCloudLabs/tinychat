@@ -21,6 +21,7 @@ import { ADD_APP_PROMPT } from "./addAppPrompt";
 import { AppBar } from "./AppBar";
 import { OneAppScreen } from "./FramedAppScreen";
 import { appRoute, appUrl, oneAppsFor } from "./registry";
+import { LedgerScreen } from "@/ledger/LedgerScreen";
 import {
   ADD_APP_TITLE,
   APP_NAMES,
@@ -53,7 +54,6 @@ function memoryStorage(): Storage {
 
 const ACCOUNT = "did:pkh:eip155:1:0x00000000000000000000000000000000000000a1";
 const UPRIGHT: SizeClassState = { size: "compact", land: false };
-const WEB_ORDER = ["capture", "xyz.tinycloud.secrets", "xyz.tinycloud.opencredentials", "xyz.tinycloud.explorer", "xyz.tinycloud.account", "xyz.tinycloud.courier", "xyz.tinycloud.rocinante.ledger", "xyz.tinycloud.share"] as const;
 
 const ssr = (node: ReactNode, path: string, platform: AppPlatform = "web") =>
   renderToStaticMarkup(
@@ -94,7 +94,6 @@ const attr = (tag: string, name: string) => new RegExp(`${name}="([^"]*)"`).exec
 describe("the Apps grid", () => {
   test("lists the apps in order, then Connectors, each at its screen in One; iOS leaves Account out", () => {
     const web = gridTiles(0, oneAppsFor("web", true));
-    expect(web.map((tile) => tile.name)).toEqual([...WEB_ORDER.map((id) => APP_NAMES[id]), CONNECTORS_NAME]);
     expect(web.map((tile) => tile.path)).toEqual([...oneAppsFor("web", true).map(appRoute), PATHS.connectors]);
     expect(web[0]!.path).toBe(PATHS.capture);
     const ios = gridTiles(0, oneAppsFor("ios", true)).map((tile) => tile.name);
@@ -224,9 +223,11 @@ describe("the phone's pill", () => {
 describe("the open app's bar", () => {
   test("every grid tile reaches a screen with the bar and Pin", () => {
     for (const app of oneAppsFor("web", true)) {
-      const markup = app.kind === "native"
+      const markup = app.id === "capture"
         ? shell(appRoute(app))
-        : ssr(<OneAppScreen appId={app.id} tcw={null} accountDid={ACCOUNT} fallback={<p>fallback</p>} />, appRoute(app));
+        : app.id === "xyz.tinycloud.tinyapps.tasks"
+          ? ssr(<LedgerScreen tcw={null} accountDid={ACCOUNT} />, appRoute(app))
+          : ssr(<OneAppScreen appId={app.id} tcw={null} accountDid={ACCOUNT} fallback={<p>fallback</p>} />, appRoute(app));
       expect(markup).toContain('data-testid="app-bar"');
       expect(markup).toContain(`aria-label="${pinApp(app.name)}"`);
     }

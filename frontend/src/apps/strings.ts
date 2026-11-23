@@ -7,6 +7,7 @@ import type { LinkAppId, OneAppId } from "./registry";
 
 export const APP_NAMES: Readonly<Record<OneAppId, string>> = {
   capture: "Recording",
+  "xyz.tinycloud.tinyapps.tasks": "Ledger",
   "xyz.tinycloud.secrets": "Secrets",
   "xyz.tinycloud.opencredentials": "Credentials",
   "xyz.tinycloud.explorer": "Explorer",
@@ -18,6 +19,7 @@ export const APP_NAMES: Readonly<Record<OneAppId, string>> = {
 
 export const APP_DESCRIPTIONS: Readonly<Record<Exclude<OneAppId, LinkAppId>, string>> = {
   capture: "Record or upload a meeting and get its transcript.",
+  "xyz.tinycloud.tinyapps.tasks": "What your agents are doing",
   "xyz.tinycloud.secrets": "Keep API keys, passwords and environment variables encrypted.",
   "xyz.tinycloud.opencredentials": "Store and share verifiable credentials with OpenCredentials.",
   "xyz.tinycloud.explorer": "Browse what's in your TinyCloud: spaces, tables and stored items.",
@@ -41,6 +43,7 @@ export const SCOPE_PHRASES = {
   spaces: "the list of your spaces",
   courier: "your Courier threads and messages, the agents you've paired and requests waiting for you",
   shipLedger: "your Rocinante sitrep's cards, answers and check-offs, read only",
+  tasks: "your agents' tasks, read only",
 } as const;
 
 export type ScopeId = keyof typeof SCOPE_PHRASES;
@@ -150,6 +153,7 @@ export const APP_CAPTIONS: Readonly<Record<GlyphId, string>> = {
   account: "Plan, spaces and access",
   courier: "Messages with agents",
   ledger: "Where every task stands",
+  tasks: "What your agents are doing",
   share: "Share files by link",
   connectors: "Bring in your meetings",
 };
