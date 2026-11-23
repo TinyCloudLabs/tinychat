@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { guardReply, replyText, type CourierReplyText } from "../courier/guard";
 import { CourierIntake, courierIntakeStore } from "../courier/intake";
 
 const dirs: string[] = [];
@@ -17,22 +18,27 @@ async function setup() {
   const peer = { handle: "cli", peerDid: "did:key:cli", status: "paired" as const, pairedAt: now - 1000, delegationExpiresAt: now + 86_400_000 };
   const messages: Array<{ id: string; threadId: string; kind: string; text: string }> = [];
   const sent: Array<{ thread: string; text: string }> = [];
-  const outcomes: unknown[] = [];
+  const outcomes: Array<{ gateway: "courier"; peer: string; outcome: string }> = [];
   let reads = 0;
   let turns = 0;
   let crash = false;
+  let acks = 0;
+  let ackFails = false;
+  const second = { ...peer, handle: "cli2", peerDid: "did:key:cli2" };
+  const secondMessages: Array<{ id: string; threadId: string; kind: string; text: string }> = [];
   const options = {
     owners: [owner], grants: { get: async () => grantValid ? { raw: {}, expiresAt: now + 60_000 } : undefined },
-    peers: { list: async () => paired ? [peer] : [] },
-    transport: async () => ({
-      inbox: async () => { reads++; return messages; },
-      reply: async (message: { threadId: string }, text: string) => { sent.push({ thread: message.threadId, text }); if (crash) throw new Error("lost ack"); },
+    peers: { list: async () => paired ? [peer, ...(secondMessages.length ? [second] : [])] : [] },
+    transport: async (_owner: string, _grant: unknown, who: { handle: string }) => ({
+      inbox: async () => { reads++; return who.handle === "cli" ? messages : secondMessages; },
+      reply: async (message: { threadId: string }, text: CourierReplyText) => { sent.push({ thread: message.threadId, text: replyText(text) }); if (crash) throw new Error("lost ack"); },
+      acknowledge: async () => { acks++; if (ackFails) throw new Error("offline"); },
     }),
-    turn: async () => { turns++; return "answer"; },
-    now: () => now, log: (entry: unknown) => outcomes.push(entry),
+    turn: async () => { turns++; return guardReply("answer", [])!; },
+    now: () => now, log: (entry: { gateway: "courier"; peer: string; outcome: string }) => outcomes.push(entry),
   };
   const start = () => new CourierIntake({ ...options, store: courierIntakeStore(dir, key) });
-  return { start, messages, sent, outcomes, owner, peer, advance: (ms: number) => { now += ms; }, unpair: () => { paired = false; }, expire: () => { grantValid = false; }, crash: () => { crash = true; }, counts: () => ({ reads, turns }) };
+  return { start, messages, secondMessages, sent, outcomes, owner, peer, advance: (ms: number) => { now += ms; }, unpair: () => { paired = false; }, expire: () => { grantValid = false; }, crash: () => { crash = true; }, failAcks: () => { ackFails = true; }, counts: () => ({ reads, turns, acks }) };
 }
 
 test("same-thread reply, separate conversations and inform stored without a reply", async () => {
@@ -117,4 +123,32 @@ test("retention evicts the oldest messages and conversations at their caps", asy
   await intake.poll();
   const threads = intake.threads(s.owner);
   expect(threads).toHaveLength(50); expect(threads.some(t => t.threadId === "long")).toBe(false); expect(threads.some(t => t.threadId === "new-0")).toBe(false);
+});
+
+test("the 100 per hour cap is per owner across peers: two peers sending 60 each get 100 answers", async () => {
+  const s = await setup();
+  for (let i = 0; i < 60; i++) { s.messages.push({ id: `a${i}`, threadId: "t", kind: "ask", text: "hi" }); s.secondMessages.push({ id: `b${i}`, threadId: "t", kind: "ask", text: "hi" }); }
+  await s.start().poll();
+  expect(s.sent).toHaveLength(100);
+  expect(s.outcomes.filter(entry => entry.outcome === "rate_limited")).toHaveLength(20);
+  await s.start().poll(); expect(s.sent).toHaveLength(100);
+  s.advance(3_600_001); s.messages.push({ id: "fresh", threadId: "t", kind: "ask", text: "hi" });
+  await s.start().poll(); expect(s.sent).toHaveLength(101);
+});
+
+test("receipts of acknowledged messages are pruned after 30 days; unacknowledged ones are kept", async () => {
+  const pruned = await setup(); pruned.peer.delegationExpiresAt += 90 * 24 * 3_600_000; pruned.messages.push({ id: "m", threadId: "t", kind: "ask", text: "hi" });
+  await pruned.start().poll(); expect(pruned.sent).toHaveLength(1); expect(pruned.counts().acks).toBe(1);
+  pruned.advance(30 * 24 * 3_600_000 - 1_000); await pruned.start().poll(); expect(pruned.sent).toHaveLength(1);
+  pruned.advance(2_000);
+  // The sender's inbox no longer lists an acknowledged message; relisting it proves its receipt is gone.
+  await pruned.start().poll(); expect(pruned.sent).toHaveLength(2);
+
+  const kept = await setup(); kept.peer.delegationExpiresAt += 90 * 24 * 3_600_000; kept.messages.push({ id: "m", threadId: "t", kind: "ask", text: "hi" }); kept.failAcks();
+  await kept.start().poll(); expect(kept.sent).toHaveLength(1);
+  kept.advance(31 * 24 * 3_600_000);
+  const acksBefore = kept.counts().acks;
+  await kept.start().poll(); expect(kept.sent).toHaveLength(1);
+  expect(kept.counts().acks).toBeGreaterThan(acksBefore);
+  expect(kept.outcomes).toContainEqual({ gateway: "courier", peer: expect.stringMatching(/^[0-9a-f]{12}$/), outcome: "receipt_unavailable" });
 });

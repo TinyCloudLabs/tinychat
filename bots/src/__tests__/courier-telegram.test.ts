@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { replyText } from "../courier/guard";
 import { courierTurn, COURIER_READ_OFF } from "../courier/turn";
 import { MeetingDesk } from "../meeting-reads";
 
@@ -19,7 +20,7 @@ function setup(areas: Array<"telegram" | "feed_chats">, steps: Array<Record<stri
 
 test("Telegram tools reach a Courier turn only when the owner has Telegram on", async () => {
   const on = setup(["telegram"], [{ content: null, tool_calls: [call("read_telegram_chat", { chat: "a:1" })] }, { content: "The release moved." }]);
-  expect(await on.run()).toBe("The release moved.");
+  expect(replyText(await on.run())).toBe("The release moved.");
   expect((on.inputs[0]!.tools as Array<{ function: { name: string } }>).map(t => t.function.name)).toEqual(["list_telegram_chats", "read_telegram_chat"]);
   expect(on.reads).toEqual(["https://backend.test/api/internal/bots/main/reads/read_telegram_chat"]);
   expect(JSON.stringify(on.inputs[1]!.messages)).toContain("Release moved to Friday.");

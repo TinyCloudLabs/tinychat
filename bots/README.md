@@ -28,23 +28,33 @@ stops intake. No CLI, wake adapter or sandbox is used.
 The gateway seals `courier-intake/` beside its budget file with the dstack sealing key. A receipt is saved
 before the model or send runs. A crash can lose a reply; a claimed receipt restored at startup is logged
 as `reply_lost` and never retried. Malformed or unreadable receipt state disables Courier rather than
-resetting replay protection. Deleting a conversation never deletes its receipts.
+resetting replay protection. Deleting a conversation never deletes its receipts. A receipt is pruned 30
+days after its claim, and only once the sender's inbox acknowledged the message; an unacknowledged receipt
+is kept and its acknowledgement retried when the message is listed again. The sealed file is rewritten
+whole on each change; this is accepted for v1 under the caps below.
 
-Each peer is limited to 100 inbound messages per rolling hour, across restarts. Conversations retain the
+The owner is limited to 100 inbound messages per rolling hour in total across all paired peers, across
+restarts. Conversations retain the
 latest 200 messages each, at most 50 conversations per owner, with oldest entries removed first and a
 30-day text TTL. The owner reads and deletes them from **Courier conversations** in TrustBot's panel.
 The backend proxies owner-authenticated thread list, read and delete routes under
 `/api/bots/main/courier/threads`; these routes cannot send a reply.
 
 Every Courier turn pulls the owner's enabled read areas from the signed backend status route; failure
-means no reads. Read tools share Main's daily allowance and model budget. Peer text uses the existing
+means no reads, and the areas stay fixed for that turn. Read tools share Main's daily allowance and
+model budget. A Courier model call takes Main's one request slot for its duration, so a Main chat in
+flight makes it answer with the fixed "busy" sentence, and an exhausted model allowance gets the fixed
+"allowance" sentence; neither is silence. Peer text uses the existing
 untrusted-record wrapper. Web, secret, question, action and bot-message tools are absent and refused at
 dispatch. Requests and tasks get the fixed refusal; informs are stored without a reply.
 
-Replies are bound to the admitted peer, thread and inbound message, including an idempotency key. A
-reply copying 12 consecutive words or 80 consecutive characters from a read result, after whitespace
-and case normalization, is regenerated once without tools; another match produces the fixed summary
-refusal. Courier logs contain only `gateway`, a 12-character SHA-256 peer prefix and `outcome`.
+Replies are bound to the admitted peer, thread and inbound message, including an idempotency key. Only a
+fixed sentence or text issued by the copy guard (`guard.ts`) can be sent: `replyToCourierThread` refuses
+anything else. The guard matches literal runs of 12 consecutive words or 80 consecutive characters
+copied from this turn's read results, after whitespace and case normalization; the first hit is
+regenerated once without tools, another produces the fixed summary refusal. It does not catch re-encoded,
+translated or interleaved copies, so it is not leak-proof. Courier logs contain only `gateway`, a
+12-character SHA-256 peer prefix and `outcome`.
 
 ## Internal API
 

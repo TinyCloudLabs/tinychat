@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { courierTurn, copiesReadRecord, COURIER_READ_TOOL_NAMES, COURIER_SUMMARY_REFUSAL } from "../courier/turn";
+import { COURIER_ANSWER_BUDGET, COURIER_BUSY, COURIER_SUMMARY_REFUSAL, CourierFixedReply, copiesReadRecord, guardReply, isCourierReply, replyText } from "../courier/guard";
+import { courierTurn, COURIER_READ_TOOL_NAMES } from "../courier/turn";
 import { MeetingDesk } from "../meeting-reads";
 import { botIdFor } from "../owner";
 
@@ -15,7 +16,7 @@ function setup(areas: Array<"meetings" | "feed_chats">, steps: Array<Record<stri
     return Response.json({ ok: true, text: JSON.stringify({ messages: [{ text: args.chat === "private" ? denied : allowed }] }) });
   } });
   const model = async (input: Record<string, unknown>) => { inputs.push(structuredClone(input)); return steps.shift()!; };
-  const run = (text = "Report on Ada") => courierTurn({ owner, handle: "cli", peerDid: "did:key:cli", threadId: "thread", text, reads: desk, model, deniedChatIds: async () => new Set(["private"]), enabledReadAreas: async () => areas });
+  const run = async (text = "Report on Ada") => replyText(await courierTurn({ owner, handle: "cli", peerDid: "did:key:cli", threadId: "thread", text, reads: desk, model, deniedChatIds: async () => new Set(["private"]), enabledReadAreas: async () => areas }));
   return { run, inputs, reads, desk };
 }
 const call = (name: string, args = {}) => ({ id: name, type: "function", function: { name, arguments: JSON.stringify(args) } });
@@ -92,4 +93,23 @@ test("unavailable area status fails closed before any read", async () => {
   const s = setup([], [{ content: "Access is off." }]);
   await courierTurn({ owner, handle: "cli", peerDid: "did:key:cli", threadId: "t", text: "Home?", reads: s.desk, model: async body => { s.inputs.push(body); return { content: "Access is off." }; }, deniedChatIds: async () => new Set(), enabledReadAreas: async () => { throw new Error("offline"); } });
   expect(s.inputs[0]!.tools).toEqual([]); expect(s.reads).toEqual([]);
+});
+
+test("the send path accepts only guard-issued text or a fixed sentence", () => {
+  expect(isCourierReply(guardReply("A summary in new words.", [allowed]))).toBe(true);
+  expect(isCourierReply(guardReply(allowed, [allowed]))).toBe(false);
+  expect(guardReply(allowed, [allowed])).toBeUndefined();
+  expect(isCourierReply(allowed)).toBe(false);
+  expect(isCourierReply({ kind: "guarded", text: allowed })).toBe(false);
+  expect(isCourierReply(COURIER_BUSY) && isCourierReply(COURIER_ANSWER_BUDGET) && isCourierReply(COURIER_SUMMARY_REFUSAL)).toBe(true);
+});
+
+test("a model refusal for the shared allowance or slot becomes its fixed reply, not silence", async () => {
+  for (const fixed of [COURIER_BUSY, COURIER_ANSWER_BUDGET] as const) {
+    const s = setup([], []);
+    const reply = await courierTurn({ owner, handle: "cli", peerDid: "did:key:cli", threadId: "t", text: "Home?", reads: s.desk, model: async () => { throw new CourierFixedReply(fixed); }, deniedChatIds: async () => new Set(), enabledReadAreas: async () => [] });
+    expect(reply).toBe(fixed);
+  }
+  const s = setup([], []);
+  await expect(courierTurn({ owner, handle: "cli", peerDid: "did:key:cli", threadId: "t", text: "Home?", reads: s.desk, model: async () => { throw new Error("courier_model_unavailable"); }, deniedChatIds: async () => new Set(), enabledReadAreas: async () => [] })).rejects.toThrow("courier_model_unavailable");
 });
