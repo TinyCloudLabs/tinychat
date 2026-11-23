@@ -554,8 +554,10 @@ async function main() {
     : null;
   // A grant a disconnect or purge could not remove would outlive the owner's choice, so these calls fail (503) rather than skip.
   // Runs inside the connection-change lane, so it must NOT take the per-owner lock: the importer takes the per-owner lock and
-  // then the connection-change lane, and the reverse order would deadlock. The disabled marker and the purge ledger already stop
-  // an import that is in flight.
+  // then the connection-change lane, and the reverse order would deadlock. The grant store orders its own writes per owner, so
+  // this removal is never undone by a marker an import wrote from an earlier read. A purge's ledger entry stops the meetings of
+  // an import in flight; a disconnect that keeps the meetings does not, so an import already past its checks can still write
+  // the one meeting it holds before it ends.
   const removeFirefliesGrant = firefliesImport
     ? (address: string) => firefliesImport.grantStore.remove(address)
     : undefined;

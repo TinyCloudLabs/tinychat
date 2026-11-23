@@ -1,8 +1,10 @@
 import { useMemo, useState } from "react";
 import type { SessionStore } from "@tinyboilerplate/client";
+import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { Trash2Icon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
+  IMPORT_GRANT_REVOKE_UNCONFIRMED_MESSAGE,
   runServerCredentialTeardown,
   webhookFailureMessage,
   type WebhookFailure,
@@ -11,7 +13,11 @@ import {
   createConnectorWebhooksClient,
   type ConnectorWebhooksClient,
 } from "@/lib/connectors/webhooksApi";
-import { createFirefliesImportGrantsClient } from "@/lib/connectors/firefliesImportGrantsApi";
+import {
+  createFirefliesImportGrantsClient,
+  createFirefliesImportGrantsTeardown,
+  removeFirefliesImportForAccountDeletion,
+} from "@/lib/connectors/firefliesImportGrantsApi";
 import { openOpenKeyAccountDeletion } from "@/lib/openOpenKeyAccountDeletion";
 import { createTranscriberClient } from "@/lib/transcriberApi";
 import { ACCOUNT_FAILED_CONTINUE, ACCOUNT_PENDING_CONTINUE, DELETE_FAILED, NOT_DELETED, SHARED_REMOVED, pendingText } from "./recordingsDeletedCopy";
@@ -19,6 +25,11 @@ import { ACCOUNT_FAILED_CONTINUE, ACCOUNT_PENDING_CONTINUE, DELETE_FAILED, NOT_D
 /** What the owner is told when the saved Fireflies sign-in could not be removed from our server. */
 export function accountDeletionTeardownFailure(failure: WebhookFailure): string {
   return `${webhookFailureMessage(failure)} We couldn't confirm your Fireflies sign-in was removed from our server. Try again, or continue to OpenKey and revoke it yourself in your Fireflies account.`;
+}
+
+/** What the owner is told when our server's permission to import Fireflies meetings could not be removed. */
+export function accountDeletionGrantFailure(failure: WebhookFailure): string {
+  return `${webhookFailureMessage(failure)} We couldn't confirm our server dropped its permission to import your Fireflies meetings. Try again, or continue to OpenKey; the permission ends on its own within 7 days.`;
 }
 
 type State =
@@ -36,6 +47,8 @@ export function DeleteOpenKeyAccountButton(props: {
   sessionStore: SessionStore;
   /** Injectable for tests. */
   webhooks?: ConnectorWebhooksClient;
+  /** The owner's TinyCloud client, to revoke the import permissions at the node. */
+  tcw?: Pick<TinyCloudWeb, "revokeDelegation">;
   openDeletionPage?: () => Promise<void>;
 }) {
   const { backendUrl, sessionStore } = props;
@@ -48,11 +61,15 @@ export function DeleteOpenKeyAccountButton(props: {
     () => createTranscriberClient(backendUrl, { sessionStore }),
     [backendUrl, sessionStore],
   );
-  // The server-held import permissions are removed with the saved sign-in. A failure never blocks the deletion:
-  // the permissions end on their own within 7 days.
+  // The import permissions are taken from the server and revoked at the node before OpenKey opens. Without the owner's
+  // TinyCloud client only the server's copy can be removed.
   const importGrants = useMemo(
     () => createFirefliesImportGrantsClient(backendUrl, { sessionStore }),
     [backendUrl, sessionStore],
+  );
+  const importTeardown = useMemo(
+    () => (props.tcw ? createFirefliesImportGrantsTeardown(props.tcw, backendUrl, sessionStore) : undefined),
+    [props.tcw, backendUrl, sessionStore],
   );
   const [state, setState] = useState<State>({ phase: "idle" });
 
@@ -63,14 +80,21 @@ export function DeleteOpenKeyAccountButton(props: {
 
   const teardownCredentials = async () => {
     setState({ phase: "working" });
-    await importGrants.removeGrant();
+    const grants = await removeFirefliesImportForAccountDeletion(importGrants, importTeardown);
+    if (grants.status === "failed") {
+      setState({ phase: "blocked", message: accountDeletionGrantFailure(grants.failure), retryable: true, stage: "credentials" });
+      return;
+    }
     const outcome = await runServerCredentialTeardown(webhooks, "fireflies");
     if (outcome.status === "failed") {
       setState({ phase: "blocked", message: accountDeletionTeardownFailure(outcome.failure), retryable: true, stage: "credentials" });
       return;
     }
-    if (outcome.notice !== undefined) {
-      setState({ phase: "blocked", message: outcome.notice, retryable: false, stage: "credentials" });
+    const notice = [outcome.notice, grants.unconfirmed ? IMPORT_GRANT_REVOKE_UNCONFIRMED_MESSAGE : undefined]
+      .filter((part): part is string => part !== undefined)
+      .join(" ");
+    if (notice !== "") {
+      setState({ phase: "blocked", message: notice, retryable: false, stage: "credentials" });
       return;
     }
     await proceed();

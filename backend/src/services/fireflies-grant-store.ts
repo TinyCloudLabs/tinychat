@@ -25,6 +25,14 @@ const DEFINITIVE_PURGE_CODES: ReadonlySet<string> = new Set([
   "wrong_delegator",
 ]);
 
+/** `store` refused the write: the ids the caller named are not the ids held now. */
+export class FirefliesGrantReplacesMismatchError extends Error {
+  constructor() {
+    super("fireflies_grant_replaces_mismatch");
+    this.name = "FirefliesGrantReplacesMismatchError";
+  }
+}
+
 export type FirefliesGrantState = "none" | "active" | "needs_renewal" | "revoked";
 
 export interface FirefliesGrantStatus {
@@ -203,6 +211,7 @@ export class FirefliesGrantStore {
   readonly #kek: Buffer;
   readonly #delegateDid: string;
   readonly #kv: FirefliesGrantKvPort;
+  readonly #tails = new Map<string, Promise<void>>();
 
   constructor(options: { kv: FirefliesGrantKvPort; kek: Buffer; delegateDid: string }) {
     if (!Buffer.isBuffer(options.kek) || options.kek.length !== 32 || isAllZero(options.kek)) {
@@ -276,10 +285,17 @@ export class FirefliesGrantStore {
     return parsed as unknown as FirefliesGrantEnvelope;
   }
 
+  /**
+   * Seals and stores the pair. `replaces` names the two permission ids the caller believes are stored now (none when
+   * it believes nothing is); the write is refused when the stored ids differ, so a renewal that raced a turn off, a
+   * removal or another renewal never brings back or overwrites what the owner just changed. The accept route always
+   * passes it; without it the write is unconditional.
+   */
   async store(
     address: string,
     payload: { secretsGrant: string; meetingsGrant: string; siwe: string; signature: string },
     expiresAt: Date,
+    replaces?: readonly string[],
   ): Promise<void> {
     const normalized = normalizeOwnerAddress(address);
     const isoExpiry = expiresAt.toISOString();
@@ -306,33 +322,71 @@ export class FirefliesGrantStore {
       updatedAt: new Date().toISOString(),
       ...(grantCids ? { grantCids } : {}),
     };
-    await this.#kv.put(this.keyFor(normalized), record);
+    await this.#serialized(normalized, async () => {
+      if (replaces !== undefined) {
+        const held = readStoredGrantCids(await this.#kv.get(this.keyFor(normalized)));
+        const heldIds = held ? [held.secrets, held.meetings] : [];
+        if (heldIds.length !== replaces.length || !heldIds.every((id) => replaces.includes(id))) {
+          throw new FirefliesGrantReplacesMismatchError();
+        }
+      }
+      await this.#kv.put(this.keyFor(normalized), record);
+    });
+  }
+
+  /**
+   * Runs the store's own read-then-write steps for one owner one after another. Held only across KV calls and never
+   * across the owner lock or any other lock, so it cannot join a lock cycle; it is what keeps a removal from being
+   * undone by a marker or a grant that read the record before the removal.
+   */
+  #serialized<T>(normalizedAddress: string, fn: () => Promise<T>): Promise<T> {
+    const previous = this.#tails.get(normalizedAddress) ?? Promise.resolve();
+    const run = previous.then(fn, fn);
+    const tail = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.#tails.set(normalizedAddress, tail);
+    void tail.then(() => {
+      if (this.#tails.get(normalizedAddress) === tail) this.#tails.delete(normalizedAddress);
+    });
+    return run;
   }
 
   /**
    * Purge any stored grant ciphertext and record a content-free non-active status marker.
    * Used on lapse, delegate rotation or node-reported revocation.
+   *
+   * Only ever replaces a record that is still there, and when `seenUpdatedAt` is given only that exact record: a
+   * removal, or a newer grant, that landed since the caller read it is never undone by a marker for the old one.
    */
   async markState(
     address: string,
     state: "needs_renewal" | "revoked",
     expiresAt: string | null = null,
+    seenUpdatedAt?: string,
   ): Promise<void> {
     const normalized = normalizeOwnerAddress(address);
-    // The two permission ids are public and stay on the marker, so the owner's browser can still revoke them at the node.
-    const grantCids = readStoredGrantCids(await this.#kv.get(this.keyFor(normalized)));
-    const record: StoredInactiveGrantRecord = {
-      v: 1,
-      state,
-      expiresAt,
-      updatedAt: new Date().toISOString(),
-      ...(grantCids ? { grantCids } : {}),
-    };
-    await this.#kv.put(this.keyFor(normalized), record);
+    await this.#serialized(normalized, async () => {
+      const current = await this.#kv.get(this.keyFor(normalized));
+      if (!isRecord(current)) return;
+      if (seenUpdatedAt !== undefined && current.updatedAt !== seenUpdatedAt) return;
+      // The two permission ids are public and stay on the marker, so the owner's browser can still revoke them at the node.
+      const grantCids = readStoredGrantCids(current);
+      const record: StoredInactiveGrantRecord = {
+        v: 1,
+        state,
+        expiresAt,
+        updatedAt: new Date().toISOString(),
+        ...(grantCids ? { grantCids } : {}),
+      };
+      await this.#kv.put(this.keyFor(normalized), record);
+    });
   }
 
   async remove(address: string): Promise<void> {
-    await this.#kv.delete(this.keyFor(address));
+    const normalized = normalizeOwnerAddress(address);
+    await this.#serialized(normalized, () => this.#kv.delete(this.keyFor(normalized)));
   }
 
   /**
@@ -357,7 +411,12 @@ export class FirefliesGrantStore {
         const expiresAt = typeof stored.expiresAt === "string" ? Date.parse(stored.expiresAt) : Number.NaN;
         const otherDelegate = stored.delegateDid !== this.#delegateDid;
         if (Number.isFinite(expiresAt) && expiresAt > options.now && !otherDelegate) return 0;
-        await this.markState(address, "needs_renewal", Number.isFinite(expiresAt) && !otherDelegate ? String(stored.expiresAt) : null);
+        await this.markState(
+          address,
+          "needs_renewal",
+          Number.isFinite(expiresAt) && !otherDelegate ? String(stored.expiresAt) : null,
+          typeof stored.updatedAt === "string" ? stored.updatedAt : undefined,
+        );
         return 1;
       });
     }
@@ -434,14 +493,14 @@ export class FirefliesGrantStore {
     if (!Number.isFinite(storedExpiryMs) || storedExpiryMs <= now) {
       const reportedExpiry = Number.isFinite(storedExpiryMs) ? stored.expiresAt : null;
       if (mode.purgeDefinitive && Number.isFinite(storedExpiryMs)) {
-        await this.markState(normalized, "needs_renewal", reportedExpiry);
+        await this.markState(normalized, "needs_renewal", reportedExpiry, typeof stored.updatedAt === "string" ? stored.updatedAt : undefined);
       }
       return { state: "needs_renewal", expiresAt: reportedExpiry };
     }
 
     if (stored.delegateDid !== this.#delegateDid) {
       if (mode.purgeDefinitive) {
-        await this.markState(normalized, "needs_renewal", null);
+        await this.markState(normalized, "needs_renewal", null, typeof stored.updatedAt === "string" ? stored.updatedAt : undefined);
       }
       return { state: "needs_renewal", expiresAt: null };
     }
@@ -469,7 +528,7 @@ export class FirefliesGrantStore {
     if (!verified.ok) {
       const reportedExpiry = verified.code === "expired" ? stored.expiresAt : null;
       if (mode.purgeDefinitive && DEFINITIVE_PURGE_CODES.has(verified.code)) {
-        await this.markState(normalized, "needs_renewal", reportedExpiry);
+        await this.markState(normalized, "needs_renewal", reportedExpiry, typeof stored.updatedAt === "string" ? stored.updatedAt : undefined);
       }
       return { state: "needs_renewal", expiresAt: reportedExpiry };
     }
