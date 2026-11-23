@@ -1,5 +1,13 @@
 # @tinychat/backend
 
+## 0.13.3-beta.1
+
+### Patch Changes
+
+- 7f1399f: Accept multi-stamp renewal histories from the node, so a lease renewed more than once verifies.
+
+  Details: TC-4000
+
 ## 0.13.3-beta.0
 
 ### Patch Changes
