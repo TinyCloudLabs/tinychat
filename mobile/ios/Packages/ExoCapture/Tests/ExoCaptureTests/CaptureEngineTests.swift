@@ -710,6 +710,12 @@ import XCTest
             let id = try XCTUnwrap(engine.start(requestedLimitMs: 1_000)["id"] as? String)
             try enqueueTone(engine)
             let failed = expectation(description: "Stop reports mux timeout")
+            let retryScheduled = expectation(description: "automatic timeout recovery scheduled")
+            let retry = Locked<(() -> Void)?>(nil)
+            engine.debugScheduleTimedOutRetry = { _, _, run in
+                retry.update { $0 = run }
+                retryScheduled.fulfill()
+            }
             let recovered = expectation(description: "recovery publishes recording")
             let committed = expectation(description: "recovery commits recording")
             var failure: [String: Any]?
@@ -733,7 +739,7 @@ import XCTest
             clock.advance(by: 1_000)
             engine.debugWatchdogTick()
             // The cancel hook is deliberately blocked; Stop must still return.
-            wait(for: [cancelEntered, failed], timeout: 15)
+            wait(for: [cancelEntered, failed, retryScheduled], timeout: eventTimeout)
             XCTAssertEqual(failure?["error"] as? String, CaptureError.finalizationTimedOut("ready_wait").code)
             XCTAssertEqual(failure?["at"] as? Int64, clock.nowMilliseconds())
             XCTAssertTrue(failure?["recording"] is NSNull)
@@ -747,6 +753,8 @@ import XCTest
             useStubMux(engine)
             engine.debugMuxWaitTimeout = nil
             cancelGate.signal()
+            let runRetry = try XCTUnwrap(retry.value)
+            DispatchQueue.global(qos: .utility).async { runRetry() }
             wait(for: [recovered, committed], timeout: 30)
             XCTAssertEqual(recoveredNote?["id"] as? String, id)
             XCTAssertEqual(committedNote?["id"] as? String, id)
