@@ -82,6 +82,7 @@ export function mountCourierPairing(router: Router, deps: CourierRouterDeps): vo
         else if (upstream.status === 409) res.status(409).json({ error: "duplicate" });
         else if (upstream.status === 410) res.status(410).json({ error: "pending_expired" });
         else if (upstream.status === 426) res.status(426).json({ error: "courier_update_required" });
+        else if (upstream.status === 429) res.status(429).json({ error: "too_many_pending" });
         else res.status(502).json(UNAVAILABLE);
         return;
       }

@@ -14,6 +14,7 @@ function setup() { const dir = mkdtempSync(join(tmpdir(), "trustbot-sdk-store-")
 test("SDK checkpoints survive a later callback failure and a sealed restart", async () => {
   const { dir, store } = setup();
   await expect(store.transaction(scope, async tx => { await tx.save("reader", record); throw new Error("node unavailable after durable preparation"); })).rejects.toThrow("node unavailable");
+  store.close();
   const restarted = createCourierPeerStore(dir, new Uint8Array(32).fill(7));
   expect(await restarted.transaction(scope, tx => tx.get("reader"))).toEqual(record);
   expect(await restarted.list(scope.ownerDid)).toEqual([]);
@@ -42,6 +43,7 @@ test("SDK opaque state is isolated by owner, courier identity and host binding",
 test("a damaged SDK seal fails closed rather than resetting consumed challenge state", async () => {
   const { dir, store } = setup();
   await store.transaction(scope, tx => tx.save("reader", record));
+  store.close();
   const wrongKey = createCourierPeerStore(dir, new Uint8Array(32).fill(8));
   await expect(wrongKey.transaction(scope, tx => tx.get("reader"))).rejects.toThrow();
 });

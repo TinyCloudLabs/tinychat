@@ -10,8 +10,9 @@ const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 const owner = `did:pkh:eip155:1:0x${"1".repeat(40)}`;
 const remoteOwner = `did:pkh:eip155:1:0x${"2".repeat(40)}`;
-const start = { type: "courier-pair", v: 0, step: "A", from: { owner: remoteOwner, courier: "did:key:zReader" }, spaceId: `tinycloud:pkh:eip155:1:0x${"2".repeat(40)}:agents`, peer: "trustbot", callMe: "reader", issuedAt: "2026-11-23T12:00:00.000Z" };
-const final = { ...start, step: "C", delegation: "signed-peer-delegation" };
+const start = { type: "courier-pair", v: 0, step: "A", from: { owner: remoteOwner, courier: "did:key:zReader" }, spaceId: `tinycloud:pkh:eip155:1:0x${"2".repeat(40)}:agents`, peer: "trustbot", callMe: "reader", issuedAt: "2026-11-23T12:00:00.000Z", challengeVersion: 1 };
+const { challengeVersion: _version, ...startFields } = start;
+const final = { ...startFields, step: "C", delegation: "signed-peer-delegation", completion: { x: "x".repeat(43), signature: "s".repeat(86) } };
 function setup() {
   const dir = mkdtempSync(join(tmpdir(), "trustbot-pairing-")); dirs.push(dir);
   let now = Date.parse("2026-11-23T12:00:00.000Z");
@@ -178,4 +179,129 @@ test("an unsupported peer's update-required code stays fixed at the control boun
   const response = await courierPeerControl(new Request("http://gateway/courier/owner/peers", { method: "POST", body: JSON.stringify({ artifact: JSON.stringify(start) }) }), owner, "/peers", pairing);
   expect(response!.status).toBe(426);
   expect(await response!.json()).toEqual({ error: "courier_update_required" });
+});
+
+const stuck = { handle: "reader", peerDid: start.from.courier, pairingId: "01JSTUCK000000000000000000" };
+const pairPending = () => Object.assign(new Error("private text"), { code: "pair_pending", reference: stuck });
+
+test("an SDK attempt whose grant never activated is revoked by its exact reference, then A is accepted", async () => {
+  const { pairing, adapter, store } = setup();
+  const accept = adapter.acceptPairing;
+  let attempts = 0;
+  adapter.acceptPairing = async (ctx, artifact) => { if (attempts++ === 0) throw pairPending(); return accept(ctx, artifact); };
+  const revoked: unknown[] = [];
+  adapter.unpair = async (_ctx, peer) => { revoked.push(peer); };
+  expect(await pairing.pair(owner, JSON.stringify(start))).toMatchObject({ pending: true, handle: "reader" });
+  expect(revoked).toEqual([{ handle: "reader", peerDid: start.from.courier, delegation: { pending: stuck } }]);
+  expect(attempts).toBe(2);
+  expect(await store.listRetired(owner)).toEqual([]);
+});
+
+test("a pending revocation keeps the sealed reference and retries it unchanged until it succeeds", async () => {
+  const { pairing, adapter, store } = setup();
+  const accept = adapter.acceptPairing;
+  let attempts = 0;
+  adapter.acceptPairing = async (ctx, artifact) => { if (attempts++ === 0) throw pairPending(); return accept(ctx, artifact); };
+  const revoked: unknown[] = [];
+  let revocationPending = true;
+  adapter.unpair = async (_ctx, peer) => {
+    revoked.push(peer);
+    if (revocationPending) throw Object.assign(new Error("private text"), { code: "unpair_pending" });
+  };
+  expect(await pairing.pair(owner, JSON.stringify(start)).catch(error => error)).toMatchObject({ code: "courier_unavailable", status: 503 });
+  expect(attempts).toBe(1);
+  expect(await store.getPending(owner, "reader")).toBeUndefined();
+  // Restart: the reference survives in the sealed store, and maintenance retries the same one.
+  const restarted = createCourierPairing({ store, grants: { async get() { return { raw: {}, expiresAt: Date.now() * 2 }; }, async put() {}, async delete() {} }, adapter });
+  await restarted.maintain(owner);
+  expect(await store.listRetired(owner)).toEqual([{ handle: "reader", peerDid: start.from.courier, delegation: { pending: stuck } }]);
+  revocationPending = false;
+  await restarted.maintain(owner);
+  expect(await store.listRetired(owner)).toEqual([]);
+  expect(revoked).toEqual(Array(3).fill({ handle: "reader", peerDid: start.from.courier, delegation: { pending: stuck } }));
+});
+
+test("an unconfirmed peer grant at finalize keeps the pending row for a retry of the same C", async () => {
+  const { pairing, adapter, store } = setup();
+  await pairing.pair(owner, JSON.stringify(start));
+  const finalize = adapter.finalizePairing;
+  adapter.finalizePairing = async () => { throw pairPending(); };
+  expect(await pairing.pair(owner, JSON.stringify(final)).catch(error => error)).toMatchObject({ code: "courier_unavailable", status: 503 });
+  expect((await store.getPending(owner, "reader"))?.pending.handle).toBe("reader");
+  adapter.finalizePairing = finalize;
+  expect(await pairing.pair(owner, JSON.stringify(final))).toMatchObject({ peer: { handle: "reader", status: "paired" } });
+});
+
+test("signed-challenge pairing is enforced before the library: old A gets 426, C without completion never verifies", async () => {
+  const { pairing, adapter, store, finalized } = setup();
+  let accepted = 0;
+  const accept = adapter.acceptPairing;
+  adapter.acceptPairing = async (ctx, artifact) => { accepted++; return accept(ctx, artifact); };
+  expect(await pairing.pair(owner, JSON.stringify(startFields)).catch(error => error)).toMatchObject({ code: "courier_update_required", status: 426 });
+  expect(accepted).toBe(0);
+  await pairing.pair(owner, JSON.stringify(start));
+  const { completion: _completion, ...unsigned } = final;
+  expect(await pairing.pair(owner, JSON.stringify(unsigned)).catch(error => error)).toMatchObject({ code: "invalid", status: 400 });
+  expect(finalized()).toBe(0);
+  expect((await store.getPending(owner, "reader"))?.pending.handle).toBe("reader");
+});
+
+test("a C the library verified but the CAS refuses (used proof CID) is revoked by its exact reference", async () => {
+  const { pairing, adapter, store } = setup();
+  const revoked: unknown[] = [];
+  adapter.unpair = async (_ctx, peer) => { revoked.push(peer); };
+  await pairing.pair(owner, JSON.stringify(start));
+  await pairing.pair(owner, JSON.stringify(final));
+  await pairing.unpair(owner, "reader");
+  revoked.length = 0;
+  await pairing.pair(owner, JSON.stringify(start));
+  expect(await pairing.pair(owner, JSON.stringify(final)).catch(error => error)).toMatchObject({ code: "invalid", status: 400 });
+  expect(revoked).toEqual([{ handle: "reader", peerDid: start.from.courier, delegation: { pending: expect.objectContaining({ pairingId: "01J00000000000000000000000" }) } }]);
+  expect(await pairing.list(owner)).toEqual([]);
+  expect(await store.getPending(owner, "reader")).toBeUndefined();
+  expect(await store.listRetired(owner)).toEqual([]);
+});
+
+test("a C verified after the pending window closed is revoked, and a failed revocation is retried by maintenance", async () => {
+  const { pairing, adapter, store, advance } = setup();
+  const finalize = adapter.finalizePairing;
+  adapter.finalizePairing = async (ctx, pending, artifact) => { const peer = await finalize(ctx, pending, artifact); advance(16 * 60_000); return peer; };
+  let failures = 1;
+  const revoked: unknown[] = [];
+  adapter.unpair = async (_ctx, peer) => { revoked.push(peer); if (failures-- > 0) throw new Error("node_unavailable"); };
+  await pairing.pair(owner, JSON.stringify(start));
+  expect(await pairing.pair(owner, JSON.stringify(final)).catch(error => error)).toMatchObject({ code: "pending_expired", status: 410 });
+  expect(await store.getRuntime(owner, "reader")).toBeUndefined();
+  expect(await store.listRetired(owner)).toHaveLength(1);
+  await pairing.maintain(owner);
+  expect(revoked).toHaveLength(2);
+  expect(revoked[1]).toEqual(revoked[0]);
+  expect(await store.listRetired(owner)).toEqual([]);
+  expect(await pairing.list(owner)).toEqual([]);
+});
+
+test("at most ten live pending pairings per owner; the eleventh A is refused before the library", async () => {
+  const { pairing, adapter, advance } = setup();
+  const accept = adapter.acceptPairing;
+  let accepted = 0;
+  adapter.acceptPairing = async (ctx, artifact) => { accepted++; return { ...await accept(ctx, artifact), handle: JSON.parse(artifact).callMe }; };
+  for (let index = 0; index < 10; index++) await pairing.pair(owner, JSON.stringify({ ...start, callMe: `reader${index}` }));
+  expect(await pairing.pair(owner, JSON.stringify({ ...start, callMe: "reader10" })).catch(error => error)).toMatchObject({ code: "too_many_pending", status: 429 });
+  expect(accepted).toBe(10);
+  advance(15 * 60_000);
+  expect(await pairing.pair(owner, JSON.stringify({ ...start, callMe: "reader10" }))).toMatchObject({ pending: true, handle: "reader10" });
+});
+
+test("a local failure while storing a library-verified C revokes it by its exact reference and leaves no live pending", async () => {
+  const { pairing, adapter, store } = setup();
+  const finalize = adapter.finalizePairing;
+  adapter.finalizePairing = async (ctx, pending, artifact) => ({ ...await finalize(ctx, pending, artifact), proof: { cid: "" } });
+  const revoked: unknown[] = [];
+  adapter.unpair = async (_ctx, peer) => { revoked.push(peer); };
+  await pairing.pair(owner, JSON.stringify(start));
+  await expect(pairing.pair(owner, JSON.stringify(final))).rejects.toThrow("invalid_courier_proof");
+  expect(revoked).toEqual([{ handle: "reader", peerDid: start.from.courier, delegation: { pending: expect.objectContaining({ pairingId: "01J00000000000000000000000" }) } }]);
+  expect(await store.getPending(owner, "reader")).toBeUndefined();
+  expect(await store.listRetired(owner)).toEqual([]);
+  expect(await pairing.list(owner)).toEqual([]);
 });

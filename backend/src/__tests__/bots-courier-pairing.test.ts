@@ -167,7 +167,7 @@ describe("Courier pairing browser boundary", () => {
   });
 
   it("maps pairing validation, duplicate and expired failures to fixed codes", async () => {
-    for (const [status, error] of [[400, "invalid"], [409, "duplicate"], [410, "pending_expired"], [426, "courier_update_required"]] as const) {
+    for (const [status, error] of [[400, "invalid"], [409, "duplicate"], [410, "pending_expired"], [426, "courier_update_required"], [429, "too_many_pending"]] as const) {
       const run = await setup(() => Response.json({ error: "private grant must-not-leak" }, { status }));
       try {
         const response = await run.request("POST", { artifact: "pair-code" });
