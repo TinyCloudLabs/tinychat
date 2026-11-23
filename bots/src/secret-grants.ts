@@ -48,9 +48,9 @@ const HEADER = /^[a-z0-9-]{1,64}$/;
 
 export type GrantState = "pending" | "approved" | "declined" | "expired" | "failed" | "ended";
 /**
- * How long a renewing approval may run in all (TC-4000, Naomi 13:09Z): 30 days. Each window of it is at most the 7 days
+ * How long a renewing approval may run in all (TC-4000): 30 days. Each window of it is at most the 7 days
  * above, renewed by OpenKey's renewer under the owner's signed lease; the owner picks renewal on OpenKey's screen,
- * where it starts unticked and needs the "Renew sensitive access?" confirm. The 1-hour suggestion stays.
+ * where it starts unticked and needs the "Renew sensitive access?" confirm. The 1-hour suggestion is the default.
  */
 export const LEASE_SECONDS = MAX_LEASED_GRANT_MS / 1000;
 /** How often a renewing approval is checked with the node while nothing is using it. */
