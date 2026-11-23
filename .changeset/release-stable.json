@@ -1,0 +1,17 @@
+{
+  "versions": {
+    "exo-desktop": "0.20.3",
+    "@tinychat/frontend": "0.20.3",
+    "@tinychat/backend": "0.13.3"
+  },
+  "changesets": [
+    ".changeset/pre/accept-multistamp-renewal.md",
+    ".changeset/pre/connector-keys-saved-as-today.md",
+    ".changeset/pre/first-feed-choice.md",
+    ".changeset/pre/pages-verify-retry.md",
+    ".changeset/pre/purple-goats-worry.md",
+    ".changeset/pre/tc-4077-history-decline-flake.md",
+    ".changeset/pre/trustbot-finite-enclave-reader.md",
+    ".changeset/pre/trustbot-reads-deploy-env.md"
+  ]
+}
