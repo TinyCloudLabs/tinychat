@@ -32,11 +32,16 @@ function pushPermission(config: BotsConfig, address: string, key: string, kind: 
   return serviceCall(config, address, "PUT", url.href, body);
 }
 
+let replacedGrantRevokeFailures = 0;
+
 async function acceptAndPush(history: BotHistory, config: BotsConfig, address: string,
   envelope: Parameters<BotHistory["accept"]>[1], key: string) {
   const { active, replaced } = await history.accept(address, envelope, key);
   if (replaced) {
-    const revoked = await history.revoke(replaced.cid).then(() => true, () => false);
+    const revoked = await history.revoke(replaced.cid).then(() => true, () => {
+      console.warn(JSON.stringify({ event: "bot_history_replaced_grant_revoke_failed", count: ++replacedGrantRevokeFailures }));
+      return false;
+    });
     if (revoked) await pushPermission(config, address, key, "revoke", { expiresAt: Date.now() }, replaced).catch(() => {});
   }
   const response = await pushPermission(config, address, key, "extend", { validUntil: active.validUntil }, active);
@@ -182,7 +187,14 @@ export function startBotHistoryDrain(history: BotHistory, config: BotsConfig, re
     for (let i = 0; i < 32 && !closing; i++) {
       const response = await serviceCall(config, address, "GET", url);
       if (!response.ok) break;
-      const { batch } = await response.json() as { batch: unknown };
+      const { batch, needsGrantTag } = await response.json() as { batch: unknown; needsGrantTag?: boolean };
+      if (i === 0 && key === undefined && needsGrantTag === true) {
+        // Main's journal asks for its tag until a signed update reaches disk.
+        try {
+          const permission = await history.grantPermission(address);
+          if (permission) await pushPermission(config, address, "main", "extend", { validUntil: permission.validUntil }, permission);
+        } catch { /* read the journal's request again on the next pass */ }
+      }
       if (!batch) break;
       try {
         const receipt = await history.archive(address, batch, async staged => {
