@@ -4,7 +4,7 @@
  * 90 or 180 times has 90 or 180 stamps with the SAME `generation`. Nothing here is mocked: the verifier
  * is the installed sdk-core, the stamps are real Ed25519-signed canonical DAG-CBOR in the
  * `tinycloud/node/renewal-stamp/v1` format, the owner signatures and leases are real, and the node is a
- * loopback HTTP server. These tests pass only with an sdk-core that pins the generation to the lease.
+ * loopback HTTP server. These tests pass only with an sdk-core that accepts several stamps of one lease.
  */
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { createPrivateKey, randomBytes, sign as signEd25519 } from "node:crypto";
@@ -382,9 +382,11 @@ describe("verifyRenewalHistory on histories as the node returns them", () => {
     expect(() => verify(build(), lastEnd)).toThrow(/^Renewal/);
   });
 
-  // TC-4091: pending the SDK rule that pins one generation across the chain; see the endpoint case below.
-  test.failing("refuses a generation that rises mid-chain", () => {
-    expect(() => verify(mutated(4, (index, fields) => ({ ...fields, generation: index < 2 ? 1 : 2 }))(), lastEnd)).toThrow(/^Renewal/);
+  // The contract: a rise in generation is accepted, a fall is refused.
+  test("accepts a generation that rises mid-chain", () => {
+    const lastEnd = nowSeconds() + 2 * HOUR;
+    const history = chain(grant, lease, 4, lastEnd, HOUR, (index, fields) => ({ ...fields, generation: index < 2 ? 1 : 2 }));
+    expect(verify(history, lastEnd).effectiveExpiry).toBe(lastEnd);
   });
 
   test("refuses an entry whose generation differs from the signed one", () => {
@@ -437,13 +439,13 @@ describe("POST /api/auth/verify-renewal with a multi-stamp history from the node
     expect(await postHistory(grant, lease, chain(grant, lease, 90, newEnd, DAY, (_, fields) => ({ ...fields, generation: 0 })), newEnd)).toEqual(refusedHistory);
   });
 
-  // TC-4091: the intended rule is one equal generation for the whole chain. The pinned sdk-core does not
-  // enforce that yet, so this case is expected to fail. When the SDK pins the generation across the chain
-  // `test.failing` starts failing: change it to a plain `test` then.
-  test.failing("a generation that rises mid-chain is refused", async () => {
+  // The contract: a rise in generation is accepted, a fall is refused.
+  test("a generation that rises mid-chain is accepted", async () => {
     const newEnd = nowSeconds() + 2 * HOUR;
     const history = chain(grant, lease, 90, newEnd, DAY, (index, fields) => ({ ...fields, generation: index < 45 ? 1 : 2 }));
-    expect(await postHistory(grant, lease, history, newEnd)).toEqual(refusedHistory);
+    const result = await postHistory(grant, lease, history, newEnd);
+    expect(result.status).toBe(200);
+    expect(result.body.renewal).toEqual({ effectiveEnd: newEnd });
   });
 
   test("a generation that falls mid-chain is refused", async () => {
