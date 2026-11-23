@@ -45,4 +45,4 @@ export function createCourierThreadsApi(baseUrl: string, token: () => string | n
   };
 }
 const BACKEND = import.meta.env.VITE_BACKEND_URL || `${globalThis.location?.protocol ?? "http:"}//localhost:3014`;
-export const courierThreadsApi = createCourierThreadsApi(BACKEND, () => SessionStore.load("xyz.tinycloud.tinychat:session")?.token);
+export const courierThreadsApi = createCourierThreadsApi(BACKEND, () => new SessionStore("xyz.tinycloud.tinychat:session").getToken());
