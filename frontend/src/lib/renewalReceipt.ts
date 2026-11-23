@@ -4,6 +4,7 @@ import { parseSignedSiweCacao, pkhDid, principalDidEquals } from "@tinycloud/sdk
 import { admitOwnerRenewalLease } from "@tinycloud/sdk-core/delegations/renewal";
 import { parseApprovalRenewal, type ApprovalRenewal } from "@tinycloud/share-envelope/links";
 import { BrowserSessionStorage, composeManifestRequest, type Manifest, type PersistedSessionData, type TinyCloudWeb } from "@tinycloud/web-sdk";
+import { openKeyFailureOf } from "./authErrors";
 
 /**
  * TC-2872: the renewal lease OpenKey signs when the owner leaves renewal on at sign-in. OpenKey records it, so the
@@ -55,6 +56,40 @@ export function webSignInRenewal(openkey: ConnectWalletResult["openkey"], manife
     admit: (tcw: Pick<TinyCloudWeb, "activeNodeIdentity">, address: string, storage?: Pick<BrowserSessionStorage, "load">) =>
       admitSignInRenewal({ tcw, address, renewal, arrivedAt, storage }),
   };
+}
+
+/** Retry a failed desktop authorization through the finite wallet sign-in. */
+export async function desktopSignInWithRenewal<T>(
+  config: ReturnType<typeof webSignInRenewal>["config"],
+  signIn: (config?: TinyCloudWebConfig) => Promise<T>,
+): Promise<T> {
+  const client = config.openkey.client;
+  let authorizationFailure: { error: unknown } | undefined;
+  try {
+    return await signIn({
+      ...config,
+      openkey: {
+        ...config.openkey,
+        client: {
+          async authorizeTinyCloud(request, options) {
+            try {
+              return await client.authorizeTinyCloud(request, options);
+            } catch (error) {
+              authorizationFailure = { error };
+              throw error;
+            }
+          },
+        },
+      },
+    });
+  } catch (error) {
+    if (!authorizationFailure || authorizationFailure.error !== error) throw error;
+    const failure = openKeyFailureOf(error);
+    const walletCode = (error as { code?: unknown } | null)?.code;
+    if (walletCode === 4001 || walletCode === "ACTION_REJECTED") throw error;
+    if (failure.kind !== "failed" && failure.kind !== "popup-blocked") throw error;
+    return signIn();
+  }
 }
 
 const RENEW = "tinycloud.delegation/renew";
