@@ -12,9 +12,17 @@ import { botHistoryOwnerPermissions } from "./historyAuthorization";
 import { BOT_HISTORY_RECORD_PREFIX, BOT_HISTORY_RECORD_SUFFIX, botHistoryDirectory } from "./botHistoryPath";
 import { isAppDecision, toSecretLine, type BotMessage } from "./botsApi";
 import { BOTS_STRINGS } from "./botsStrings";
+import { checkBotHistoryContext } from "./historyContext";
 
 /** Records of one page fetched and decrypted at once. Each decrypt is a round trip to the node (TC-3054). */
 export const HISTORY_READ_CONCURRENCY = 4;
+
+export interface BotHistoryContextReport {
+  /** Records whose full record context was present and matched. */
+  bound: number;
+  /** Stored keys of legacy records: opened by the earlier rule, no full record context. */
+  legacy: string[];
+}
 
 export type ResealFailureReason =
   | "exact_key_unavailable"
@@ -42,6 +50,11 @@ export interface ReadBotHistoryOptions {
   reseal?: boolean;
   /** Receives counts and failure codes when reseal runs. Never includes plaintext or keys. */
   onResealReport?: (report: BotHistoryResealReport) => void;
+  /**
+   * Receives the stored keys of records that carry no full record context (written earlier) and the count of
+   * records whose context was verified. Called after a read that returned. Never includes plaintext.
+   */
+  onContextReport?: (report: BotHistoryContextReport) => void;
 }
 
 /** Owner-authorized reads remain separate from the backend's write-only encryption role. */
@@ -108,6 +121,8 @@ async function readHistory(
   const resealEnabled = options?.reseal === true;
   const resealReport: BotHistoryResealReport = { resealed: 0, failed: [] };
   let sawV1 = false;
+  let boundCount = 0;
+  const legacyKeys: string[] = [];
   let cachedDescriptor: Promise<KeyDescriptor> | null = null;
 
   const ensureActiveDescriptor = async (): Promise<KeyDescriptor> => {
@@ -252,6 +267,9 @@ async function readHistory(
     if (key !== `${prefix}${batch.generation}/${batch.seq}-${batch.challenge}`) {
       throw new Error("history_binding_mismatch");
     }
+    // Before anything is returned or resealed: a ctx that is present must match; no ctx is a legacy record.
+    if (checkBotHistoryContext(batch, { owner, spaceId, path: key, bot: botKey ?? "main" }) === "legacy") legacyKeys.push(key);
+    else boundCount++;
 
     if (isV1 && resealEnabled) {
       const etag = stored.data.headers?.etag;
@@ -308,6 +326,7 @@ async function readHistory(
     }
     options?.onResealReport?.(resealReport);
   }
+  options?.onContextReport?.({ bound: boundCount, legacy: legacyKeys });
 
   return messages.sort((a, b) => a.at.localeCompare(b.at) || a.id.localeCompare(b.id, undefined, { numeric: true }));
 }

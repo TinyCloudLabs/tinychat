@@ -13,6 +13,7 @@ import {
   type VerifiedBotHistoryKeyDescriptor,
   verifyBotHistoryKeyDescriptor,
 } from "./bot-history-key.js";
+import { bindBotHistoryContext, openBotHistoryBatch } from "./bot-history-context.js";
 import { sealBotHistoryBatch } from "./bot-history-seal.js";
 import { DelegationActivationError, nodeRevocationCode, observeActivation } from "./portable-delegation.js";
 
@@ -336,8 +337,11 @@ export class BotHistory {
     const encodedAad = aad.toString("base64");
     // Recipient network and exact key path are derived exclusively from the verified owner, never from the batch.
     const network = botHistoryNetworkId(address);
-    const batchJson = JSON.stringify(batch);
-    const batchHash = historyHash(batchJson);
+    const batchHash = historyHash(JSON.stringify(batch));
+    // The sealed bytes carry the full record context; the receipt hash stays over the batch alone.
+    const scope = { owner, spaceId: grant.spaceId, path, bot: sibling ?? "main" };
+    const plaintext = bindBotHistoryContext(batch, scope);
+    if (openBotHistoryBatch(plaintext, scope).context !== "bound") throw new Error("history_integrity_failure");
     const staged = (input as { staged?: StagedHistory }).staged;
     const saved = staged?.envelope;
     const bound = (value: unknown): value is Record<string, unknown> =>
@@ -366,7 +370,7 @@ export class BotHistory {
       if (!named(saved) || saved.keyVersion < descriptor.keyVersion) {
         envelope = await sealBotHistoryBatch(this.node, {
           networkId: network,
-          plaintext: Buffer.from(batchJson),
+          plaintext,
           aad,
           descriptor,
         });
