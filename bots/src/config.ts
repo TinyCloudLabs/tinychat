@@ -176,6 +176,12 @@ export interface GatewayConfig {
   web?: WebConfig;
   /** Sealed secret-request records (secret-store.ts), beside the budget file. */
   secretGrantsDir?: string;
+  /**
+   * The node and renewer a renewing secret approval must be for (TC-4000): BOTS_RENEWAL_NODE_DID and
+   * BOTS_RENEWAL_RENEWER_DID, the same values as the backend's RENEWAL_NODE_DID and RENEWAL_RENEWER_DID. Both or none:
+   * without them no request offers renewal and a renewing result is refused.
+   */
+  renewal?: { nodeDid: string; renewerDid: string };
 }
 
 /** Where secret requests go: TinyCloud's own node, links API and OpenKey. Pinned like the model's upstream. */
@@ -254,6 +260,18 @@ function backendOrigin(env: Env): string {
   return url.origin;
 }
 
+const RENEWAL_DID = /^did:[a-z0-9]+:[A-Za-z0-9._:%-]{1,200}$/;
+function renewalPin(env: Env): GatewayConfig["renewal"] {
+  const nodeDid = env.BOTS_RENEWAL_NODE_DID?.trim();
+  const renewerDid = env.BOTS_RENEWAL_RENEWER_DID?.trim();
+  if (!nodeDid && !renewerDid) return undefined;
+  if (!nodeDid || !renewerDid || !RENEWAL_DID.test(nodeDid) || !RENEWAL_DID.test(renewerDid)) {
+    console.error(JSON.stringify({ gateway: "renewal_pin_invalid" })); // renewal stays off; nothing else changes
+    return undefined;
+  }
+  return { nodeDid, renewerDid };
+}
+
 export function gatewayConfig(env: Env): GatewayConfig & { backendOrigin: string; backendCallSecret?: string } {
   const model = env.BOTS_MODEL?.trim() || DEFAULT_MODEL;
   const models = (env.BOTS_MODELS ?? "").split(",").map(value => value.trim()).filter(Boolean);
@@ -278,6 +296,7 @@ export function gatewayConfig(env: Env): GatewayConfig & { backendOrigin: string
     budgetFile,
     ownersFile: env.BOTS_OWNERS_FILE ?? join(dirname(budgetFile), "owners.json"),
     secretGrantsDir: join(dirname(budgetFile), "secret-grants"),
+    renewal: renewalPin(env),
     web: {
       key: env.TAVILY_API_KEY?.trim() || undefined,
       apiUrl: webApi(env),

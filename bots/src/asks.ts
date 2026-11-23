@@ -25,6 +25,8 @@ export const EXPIRY_MS = 24 * 60 * 60_000;
 export const MAX_WHY_CHARS = 200;
 /** The longest an approval may last: 7 days (Sam's cap on standing secret access, D7). */
 export const MAX_GRANT_MS = 7 * 24 * 60 * 60_000;
+/** The longest a renewing (leased) approval may run in all: 30 days of 7-day windows the owner chose on OpenKey's screen (TC-4000). */
+export const MAX_LEASED_GRANT_MS = 30 * 24 * 60 * 60_000;
 /** Where the gateway's approval links point: OpenKey's one-tap page. */
 export const OPENKEY_ORIGIN = "https://openkey.so";
 /** How long an answer that Main has not been told yet is kept; well inside the 24 hours the text may live. */
@@ -731,15 +733,26 @@ export class AskStore {
   }
 
   /** The owner approved in OpenKey and the gateway kept the approval, which ends at `until` (at most MAX_GRANT_MS from now). */
-  approved(id: string, until: number): boolean {
+  approved(id: string, until: number, leased = false): boolean {
     return this.#secret(id, "pending", (ask, now) => {
-      if (!Number.isSafeInteger(until) || until <= now || until > now + MAX_GRANT_MS) return false;
+      if (!Number.isSafeInteger(until) || until <= now || until > now + (leased ? MAX_LEASED_GRANT_MS : MAX_GRANT_MS)) return false;
       ask.state = "approved";
       ask.resolvedAt = now;
       ask.until = until;
       ask.undelivered = true;
       delete ask.why;
       delete ask.approveUrl;
+      return true;
+    });
+  }
+
+  /** The gateway found a renewing approval over before its last known end (revoked, ended or not verifiable): the same as reaching `until`. */
+  endedInGateway(id: string): boolean {
+    return this.#secret(id, "approved", (ask, now) => {
+      ask.state = "ended";
+      ask.resolvedAt = now;
+      delete ask.undelivered;
+      closeSecret(ask);
       return true;
     });
   }
@@ -829,14 +842,14 @@ function inOrder<T>(botId: string, task: () => Promise<T>): Promise<T> {
   return run;
 }
 
-type SecretOutcome = { id: string; outcome: "approved"; until: number } | { id: string; outcome: "declined" | "expired" | "failed" };
+type SecretOutcome = { id: string; outcome: "approved"; until: number; leased: boolean } | { id: string; outcome: "declined" | "expired" | "failed" | "ended" };
 
 function parseOutcomes(input: unknown): SecretOutcome[] {
   if (!isRecord(input) || !Array.isArray(input.outcomes)) return [];
   return input.outcomes.flatMap((entry: unknown): SecretOutcome[] => {
     if (!isRecord(entry) || typeof entry.id !== "string" || !/^[0-9a-f]{24}$/.test(entry.id)) return [];
-    if (entry.outcome === "approved") return Number.isSafeInteger(entry.until) ? [{ id: entry.id, outcome: "approved", until: entry.until as number }] : [];
-    return entry.outcome === "declined" || entry.outcome === "expired" || entry.outcome === "failed" ? [{ id: entry.id, outcome: entry.outcome }] : [];
+    if (entry.outcome === "approved") return Number.isSafeInteger(entry.until) ? [{ id: entry.id, outcome: "approved", until: entry.until as number, leased: entry.leased === true }] : [];
+    return entry.outcome === "declined" || entry.outcome === "expired" || entry.outcome === "failed" || entry.outcome === "ended" ? [{ id: entry.id, outcome: entry.outcome }] : [];
   });
 }
 
@@ -849,8 +862,9 @@ async function syncSecrets(store: AskStore, gateway: SecretsGateway): Promise<vo
   for (const outcome of parseOutcomes(await gateway.drain())) {
     if (outcome.outcome === "approved") {
       // An approval longer than allowed is not kept: the request fails and its key is forgotten.
-      if (!store.approved(outcome.id, outcome.until)) store.failed(outcome.id);
-    } else if (outcome.outcome === "declined") store.declinedInOpenKey(outcome.id);
+      if (!store.approved(outcome.id, outcome.until, outcome.leased)) store.failed(outcome.id);
+    } else if (outcome.outcome === "ended") store.endedInGateway(outcome.id);
+    else if (outcome.outcome === "declined") store.declinedInOpenKey(outcome.id);
     else if (outcome.outcome === "expired") store.expiredInOpenKey(outcome.id);
     else store.failed(outcome.id);
   }
