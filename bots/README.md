@@ -236,9 +236,10 @@ before querying a denied chat. This applies to all TrustBot read entry points, n
 lookup refuses the read rather than treating it as an empty deny list.
 
 `bots/src/courier/denied-chats.ts` exports `readStatus(owner)`, `enabledReadAreas(owner)` and `deniedChatIds(owner)`.
-They use the signed internal `POST /api/internal/bots/main/reads/read_status` response:
+They send signed `POST /api/internal/bots/main/reads/read_status` requests and receive plain HTTPS JSON:
 `{ enabledReadAreas, deniedChatIds }`. The backend returns only areas whose grants are on and unexpired. These helpers
-do not cache; a lookup failure throws so Courier can leave reads off.
+do not cache; a lookup failure throws so Courier can leave reads off. Feed cards have no chat provenance and can quote
+chat text; per-chat denial covers chat-source reads, while the Feed and chats area switch controls card reads.
 
 ### Questions from Main
 
