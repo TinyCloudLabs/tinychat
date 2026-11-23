@@ -184,9 +184,15 @@ describe("a leased approval is checked with the node, never by its stored end", 
     const h = harness({ read: () => "ended" });
     await approvedLeased(h);
     h.grants.drain(BOT);
-    expect((await h.grants.call(BOT, CALL, net)).outcome).toBe("ended");
+    h.state.now += 5 * DAY;
+    const refused = await h.grants.call(BOT, CALL, net);
+    expect(refused.outcome).toBe("ended");
+    // The refusal's date is the day of the check, not the lease's last day (T0 + 30 days).
+    expect(JSON.stringify(refused.result)).toContain("2026-12-13");
+    expect(JSON.stringify(refused.result)).not.toContain("2027-01-07");
     expect(h.saved.get(ID)).toMatchObject({ state: "ended", keys: undefined });
     expect(h.grants.drain(BOT)).toEqual([{ id: ID, outcome: "ended" }]);
+    expect((h.saved.get(ID) as { until: number }).until).toBeLessThanOrEqual(h.state.now);
     expect(h.grants.drain(BOT)).toEqual([]);
     // A fresh ask, not a use, is what the next call needs.
     expect((await h.grants.call(BOT, CALL, net)).outcome).toBe("ended");

@@ -499,6 +499,8 @@ export class SecretGrants {
       if (read === "missing") return { result: refusal("missing", { name }), outcome: "missing" };
       if (read === "unavailable") return { result: refusal("unavailable", { name }), outcome: "unavailable" };
       if (read === "ended") {
+        // The node found it over early: the owner reads the day of this check, not the lease's last day.
+        record.until = Math.min(record.until ?? this.#now(), this.#now());
         this.#settle(id, record, "ended");
         return { result: refusal("ended", { name, until: record.until }), outcome: "ended" };
       }
