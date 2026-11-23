@@ -3,6 +3,8 @@ import { makePkhSpaceId } from "@tinycloud/sdk-core";
 import { BOT_HISTORY_KEY_PATH } from "@tinycloud/sdk-services";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { botHistoryDirectory } from "./botHistoryPath";
+import { historyAccessFor } from "./botHistoryAccess";
+import { historyContextStatus } from "./historyContextStatus";
 import { readBotHistory, readHistoryForBot, type BotHistoryContextReport } from "./historyRead";
 import { encryptionNetworkId } from "../lib/connectors/encryptionGrant";
 
@@ -46,7 +48,7 @@ interface Row { path: string; plaintext: Uint8Array; inline?: boolean; storedAt?
  * A synthetic node holding sealed records. `storedAt` stores a record's ciphertext at another path,
  * with the envelope binding that path would have.
  */
-async function read(rows: Row[], botKey?: string): Promise<{ texts: string[]; report: BotHistoryContextReport }> {
+function tcwFor(rows: Row[]): TinyCloudWeb {
   const stored = new Map<string, { envelope: Plain; plaintext: Uint8Array }>();
   rows.forEach((row, index) => {
     const at = row.storedAt ?? row.path;
@@ -55,7 +57,7 @@ async function read(rows: Row[], botKey?: string): Promise<{ texts: string[]; re
     stored.set(at, { envelope, plaintext: row.plaintext });
   });
   const open = (envelope: { ct: number }) => rows[envelope.ct]!.plaintext;
-  const tcw = {
+  return {
     session: () => ({ address, chainId: 1 }),
     kvForSpace: () => ({
       list: async () => ({ ok: true, data: { keys: [...stored.keys()], truncated: false } }),
@@ -64,6 +66,10 @@ async function read(rows: Row[], botKey?: string): Promise<{ texts: string[]; re
     keys: { decrypt: async (envelope: { ct: number }) => open(envelope) },
     encryption: { decryptEnvelope: async (envelope: { ct: number }) => ({ ok: true, data: open(envelope) }) },
   } as unknown as TinyCloudWeb;
+}
+
+async function read(rows: Row[], botKey?: string): Promise<{ texts: string[]; report: BotHistoryContextReport }> {
+  const tcw = tcwFor(rows);
   let report: BotHistoryContextReport | undefined;
   const options = { onContextReport: (value: BotHistoryContextReport) => { report = value; } };
   const messages = botKey === undefined ? await readBotHistory(tcw, undefined, options) : await readHistoryForBot(tcw, botKey, undefined, options);
@@ -133,5 +139,31 @@ describe("opening bot history verifies the full record context", () => {
     const good = await bound("main", 1, "good")();
     const bad = await bound("main", 2, "bad", ({ ctx }) => { ctx.seq = 3; })();
     await expect(read([good, bad])).rejects.toThrow("history_binding_mismatch");
+  });
+
+  test("a sibling bot's earlier record stored in Main's history is refused, and so is an unknown batch version", async () => {
+    const mainPrefix = await botHistoryDirectory(address, "main");
+    const siblingRecord = await earlier(sibling, 1, "sibling earlier")();
+    await expect(read([{ ...siblingRecord, storedAt: `${mainPrefix}${generation}/1-${challenge}` }])).rejects.toThrow("history_binding_mismatch");
+    const unknown = await earlier("main", 2, "unknown version")();
+    unknown.plaintext = encode({ ...JSON.parse(new TextDecoder().decode(unknown.plaintext)), v: 2 });
+    await expect(read([unknown])).rejects.toThrow("history_binding_mismatch");
+  });
+
+  test("Main's own earlier record still opens", async () => {
+    const row = await earlier("main", 1, "main earlier")();
+    expect(await read([row])).toEqual({ texts: ["main earlier"], report: { bound: 0, legacy: [row.path] } });
+  });
+});
+
+describe("the history access records what each read found", () => {
+  test("counts of verified and earlier records are kept per bot, without keys", async () => {
+    const fresh = await bound("main", 1, "new")();
+    const old = await earlier("main", 2, "old")();
+    await historyAccessFor(tcwFor([fresh, old])).read("main");
+    expect(historyContextStatus("main")).toEqual({ bound: 1, legacy: 1 });
+    const siblingRecord = await earlier(sibling, 1, "sibling old")();
+    await historyAccessFor(tcwFor([siblingRecord])).read(sibling);
+    expect(historyContextStatus(sibling)).toEqual({ bound: 0, legacy: 1 });
   });
 });

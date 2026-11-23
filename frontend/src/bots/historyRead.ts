@@ -254,13 +254,15 @@ async function readHistory(
     }
 
     const batch = JSON.parse(new TextDecoder().decode(plaintext));
+    // Main is read with no bot key: its records must still name no other bot.
     if (
-      botKey !== undefined &&
-      (batch?.v !== 1 ||
+      batch?.bot !== (botKey === undefined || botKey === "main" ? undefined : botKey) ||
+      (botKey === undefined ? batch?.v !== undefined && batch.v !== 1 : (
+        batch?.v !== 1 ||
         typeof batch.generation !== "string" ||
         typeof batch.challenge !== "string" ||
-        !Number.isSafeInteger(batch.seq) ||
-        batch.bot !== (botKey === "main" ? undefined : botKey))
+        !Number.isSafeInteger(batch.seq)
+      ))
     ) {
       throw new Error("history_binding_mismatch");
     }
