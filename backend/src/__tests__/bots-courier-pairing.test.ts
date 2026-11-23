@@ -167,7 +167,7 @@ describe("Courier pairing browser boundary", () => {
   });
 
   it("maps pairing validation, duplicate and expired failures to fixed codes", async () => {
-    for (const [status, error] of [[400, "invalid"], [409, "duplicate"], [410, "pending_expired"]] as const) {
+    for (const [status, error] of [[400, "invalid"], [409, "duplicate"], [410, "pending_expired"], [426, "courier_update_required"], [429, "too_many_pending"]] as const) {
       const run = await setup(() => Response.json({ error: "private grant must-not-leak" }, { status }));
       try {
         const response = await run.request("POST", { artifact: "pair-code" });
@@ -175,6 +175,15 @@ describe("Courier pairing browser boundary", () => {
         expect(await response.json()).toEqual({ error });
       } finally { await run.close(); }
     }
+  });
+
+  it("returns expired peers as a successful public state without proof metadata", async () => {
+    const run = await setup(() => Response.json({ peers: [{ ...peer, status: "expired", proof: { cid: "private-cid", issuedAt: 1 } }] }));
+    try {
+      const response = await run.request("GET");
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ peers: [{ ...peer, status: "expired" }] });
+    } finally { await run.close(); }
   });
 
   it("does not expose upstream error text or exceptions on any operation", async () => {

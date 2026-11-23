@@ -4,7 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 
 import { installDom } from "@/test/dom";
 import { BotsRouteMissing } from "../botsApi";
-import type { CourierPeer, CourierPeersApi } from "./courierPeersApi";
+import { CourierUpdateRequired, type CourierPeer, type CourierPeersApi } from "./courierPeersApi";
 
 // Radix portals do not attach in happy-dom. Match BotManage's test seam for dialog chrome;
 // the confirmation copy, buttons and API workflow remain the real CourierPeers component.
@@ -224,4 +224,59 @@ test("unpair leaves other paired agents intact", async () => {
   expect(host.querySelectorAll("li")).toHaveLength(1);
   expect(host.textContent).toContain(other.handle);
   expect(host.textContent).not.toContain(PEER.handle);
+});
+
+test("delegation expiry updates the row without reloading and Pair again focuses the start-code input", async () => {
+  const clock = spyOn(Date, "now").mockReturnValue(Date.UTC(2026, 10, 23));
+  const expiresAt = Date.now() + 25;
+  const peer = { ...PEER, delegationExpiresAt: expiresAt };
+  const { api, paired } = fixture({ listPeers: async () => ({ peers: [peer] }) });
+  try {
+    const host = await render(api);
+    expect(host.querySelector("li")!.getAttribute("data-courier-peer-status")).toBe("paired");
+    clock.mockReturnValue(expiresAt);
+    await act(async () => {
+      const { promise, resolve } = Promise.withResolvers<void>();
+      setTimeout(resolve, 60);
+      await promise;
+    });
+    const row = host.querySelector("li")!;
+    expect(row.getAttribute("data-courier-peer-status")).toBe("expired");
+    expect(row.textContent).not.toContain("Paired until");
+    expect(row.textContent).toContain(`Pairing ended on ${date(expiresAt)}. TrustBot doesn't answer this agent.`);
+    expect(button(row, "Pair again")).toBeDefined();
+    expect(host.querySelector("[role=alert]")).toBeNull();
+    await click(row, "Pair again");
+    expect(document.activeElement).toBe(host.querySelector("textarea:not([readonly])"));
+    expect(host.querySelector("label")!.textContent).toBe("Pair code from your agent");
+    expect(paired).toEqual([]);
+    expect(row.getAttribute("data-courier-peer-status")).toBe("expired");
+  } finally { clock.mockRestore(); }
+});
+
+test("server-reported expired peers remain visible and Pair again leaves final-code mode", async () => {
+  const { api, paired } = fixture({ listPeers: async () => ({ peers: [{ ...PEER, status: "expired" }] }) });
+  const host = await render(api);
+  await paste(host);
+  await click(host, "Pair agent");
+  expect(button(host, "Finish pairing")).toBeDefined();
+  await click(host.querySelector("li")!, "Pair again");
+  expect(button(host, "Pair agent")).toBeDefined();
+  expect(host.querySelector("textarea[readonly]")).toBeNull();
+  expect(document.activeElement).toBe(host.querySelector("textarea"));
+  expect(paired).toHaveLength(1);
+  expect(host.querySelector("li")!.getAttribute("data-courier-peer-status")).toBe("expired");
+});
+
+test("an old Courier peer shows approved update guidance and Start over resets the code field", async () => {
+  const host = await render(fixture({ pairPeer: async () => { throw new CourierUpdateRequired(); } }).api);
+  await paste(host);
+  await click(host, "Pair agent");
+  expect(host.querySelector("[role=alert]")!.textContent).toBe("This agent's Courier is too old to pair with TrustBot. Update Courier on the agent, then start pairing with a new code.");
+  expect(host.textContent).not.toContain("Bots request failed");
+  expect(host.querySelectorAll("li")).toHaveLength(0);
+  await click(host, "Start over");
+  expect(host.querySelector("[role=alert]")).toBeNull();
+  expect(host.querySelector<HTMLTextAreaElement>("textarea")!.value).toBe("");
+  expect(document.activeElement).toBe(host.querySelector("textarea"));
 });

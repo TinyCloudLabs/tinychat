@@ -3,7 +3,7 @@ import { DEFAULT_REQUEST_HEADER_NAME, DEFAULT_REQUEST_HEADER_VALUE, SessionStore
 
 import { installDom } from "@/test/dom";
 import { BotsError, BotsRouteMissing } from "../botsApi";
-import { courierPeersApi } from "./courierPeersApi";
+import { courierPeersApi, CourierUpdateRequired } from "./courierPeersApi";
 
 const PEER = { handle: "agent/a", peerDid: "did:key:peer", status: "paired", pairedAt: 123, delegationExpiresAt: 456 };
 const PENDING = { acceptArtifact: "accept-code", pending: true, handle: "agent/a", pendingExpiresAt: 999 };
@@ -79,4 +79,18 @@ test("network and server errors expose only the shared failed code", async () =>
   await expect(courierPeersApi.listPeers()).rejects.toMatchObject({ code: "failed" });
   fetchSpy!.mockResolvedValue(new Response(null, { status: 500 }));
   await expect(courierPeersApi.listPeers()).rejects.toMatchObject({ code: "failed" });
+});
+
+test("expired peer status is accepted from the server", async () => {
+  const peer = { ...PEER, status: "expired" };
+  setup({ peers: [peer] });
+  expect(await courierPeersApi.listPeers()).toEqual({ peers: [peer] });
+});
+
+test("HTTP 426 becomes a fixed update-required error without exposing SDK details", async () => {
+  setup();
+  fetchSpy!.mockResolvedValue(Response.json({ error: "courier_update_required", detail: "private fixture detail" }, { status: 426 }));
+  await expect(courierPeersApi.pairPeer({ artifact: "start-code" })).rejects.toBeInstanceOf(CourierUpdateRequired);
+  fetchSpy!.mockResolvedValue(Response.json({ error: "courier_update_required" }, { status: 426 }));
+  await expect(courierPeersApi.pairPeer({ artifact: "start-code" })).rejects.toMatchObject({ message: "Bots request failed: failed" });
 });

@@ -3,7 +3,7 @@ import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 import { AlertDialog, AlertDialogContent, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { BotsRouteMissing } from "../botsApi";
-import { courierPeersApi, type CourierPairPending, type CourierPeer, type CourierPeersApi } from "./courierPeersApi";
+import { courierPeersApi, CourierUpdateRequired, type CourierPairPending, type CourierPeer, type CourierPeersApi } from "./courierPeersApi";
 
 const COPY = {
   title: "Paired agents",
@@ -18,6 +18,7 @@ const COPY = {
   loading: "Loading paired agents…",
   loadFailed: "Paired agents couldn't be loaded. Try again.",
   pairFailed: "This agent couldn't be paired. Check the code and try again.",
+  updateRequired: "This agent's Courier is too old to pair with TrustBot. Update Courier on the agent, then start pairing with a new code.",
   unpairFailed: "This agent couldn't be unpaired. Try again.",
   copyFailed: "The code couldn't be copied. Select it and copy it yourself.",
   waiting: "Waiting for your agent's final code.",
@@ -41,6 +42,7 @@ export function CourierPeers({ api = courierPeersApi }: { api?: CourierPeersApi 
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
   const [confirming, setConfirming] = useState<CourierPeer | null>(null);
+  const [focusStart, setFocusStart] = useState(false);
 
   useEffect(() => {
     alive.current = true;
@@ -65,11 +67,31 @@ export function CourierPeers({ api = courierPeersApi }: { api?: CourierPeersApi 
   }, [api]);
 
   useEffect(() => {
-    if (!pending) return;
-    setNow(Date.now());
-    const timer = setTimeout(() => setNow(Date.now()), Math.max(0, pending.pendingExpiresAt - Date.now()));
+    const deadlines = [
+      ...(pending ? [pending.pendingExpiresAt] : []),
+      ...(peers ?? []).filter((peer) => peer.status === "paired").map((peer) => peer.delegationExpiresAt),
+    ].filter((at) => at > now);
+    if (deadlines.length === 0) return;
+    const next = Math.min(...deadlines);
+    const timer = setTimeout(() => setNow(Date.now()), Math.max(0, Math.min(next - Date.now(), 2_147_483_647)));
     return () => clearTimeout(timer);
-  }, [pending]);
+  }, [pending, peers, now]);
+
+  useEffect(() => {
+    if (!focusStart) return;
+    if (artifact.current) {
+      artifact.current.value = "";
+      artifact.current.focus();
+    }
+    setFocusStart(false);
+  }, [focusStart]);
+
+  function restartPairing() {
+    setPending(null);
+    setError(null);
+    setCopied(false);
+    setFocusStart(true);
+  }
 
   const expired = pending !== null && now >= pending.pendingExpiresAt;
 
@@ -95,7 +117,7 @@ export function CourierPeers({ api = courierPeersApi }: { api?: CourierPeersApi 
     } catch (cause) {
       if (!alive.current) return;
       if (cause instanceof BotsRouteMissing) setMissing(true);
-      else setError(COPY.pairFailed);
+      else setError(cause instanceof CourierUpdateRequired ? COPY.updateRequired : COPY.pairFailed);
     } finally {
       if (alive.current) setBusy(false);
     }
@@ -151,7 +173,7 @@ export function CourierPeers({ api = courierPeersApi }: { api?: CourierPeersApi 
           {expired ? (
             <div className="flex flex-col gap-2">
               <p role="status" className="text-callout text-muted-foreground">{COPY.expired}</p>
-              <div><Button type="button" variant="outline" size="sm" onClick={() => { setPending(null); setError(null); setCopied(false); }}>{COPY.restart}</Button></div>
+              <div><Button type="button" variant="outline" size="sm" onClick={restartPairing}>{COPY.restart}</Button></div>
             </div>
           ) : (
             <form onSubmit={(event) => void pair(event)} className="flex min-w-0 flex-col gap-2">
@@ -162,20 +184,30 @@ export function CourierPeers({ api = courierPeersApi }: { api?: CourierPeersApi 
           )}
           {peers.length === 0 ? <p className="text-callout text-muted-foreground">{COPY.empty}</p> : (
             <ul className="flex min-w-0 flex-col divide-y divide-border">
-              {peers.map((peer) => (
-                <li key={peer.handle} className="flex min-w-0 items-center justify-between gap-3 py-3">
-                  <div className="min-w-0">
-                    <p className="break-words text-callout">{peer.handle}</p>
-                    <p className="text-caption text-muted-foreground">{`Paired until ${new Date(peer.delegationExpiresAt).toLocaleDateString(undefined, { dateStyle: "medium" })}`}</p>
-                  </div>
-                  <Button type="button" variant="outline" size="sm" disabled={busy} onClick={() => { setError(null); setConfirming(peer); }}>{COPY.unpair}</Button>
-                </li>
-              ))}
+              {peers.map((peer) => {
+                const peerExpired = peer.status === "expired" || now >= peer.delegationExpiresAt;
+                const date = new Date(peer.delegationExpiresAt).toLocaleDateString(undefined, { dateStyle: "medium" });
+                return (
+                  <li key={peer.handle} className="flex min-w-0 items-center justify-between gap-3 py-3" data-courier-peer-status={peerExpired ? "expired" : "paired"}>
+                    <div className="min-w-0">
+                      <p className="break-words text-callout">{peer.handle}</p>
+                      <p className="text-caption text-muted-foreground">{peerExpired
+                        ? `Pairing ended on ${date}. TrustBot doesn't answer this agent.`
+                        : `Paired until ${date}`}</p>
+                    </div>
+                    <div className="flex shrink-0 flex-col gap-2 sm:flex-row">
+                      {peerExpired ? <Button type="button" variant="outline" size="sm" disabled={busy} onClick={restartPairing}>Pair again</Button> : null}
+                      <Button type="button" variant="outline" size="sm" disabled={busy} onClick={() => { setError(null); setConfirming(peer); }}>{COPY.unpair}</Button>
+                    </div>
+                  </li>
+                );
+              })}
             </ul>
           )}
         </>
       )}
       {error && !confirming ? <p role="alert" className="text-callout text-destructive">{error}</p> : null}
+      {error === COPY.updateRequired ? <div><Button type="button" variant="outline" size="sm" onClick={restartPairing}>{COPY.restart}</Button></div> : null}
       {confirming ? (
         <AlertDialog open onOpenChange={(open) => { if (!open && !busy) setConfirming(null); }}>
           <AlertDialogContent aria-describedby={undefined}>

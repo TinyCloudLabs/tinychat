@@ -17,6 +17,7 @@ import { AppLine, AskCards, AsksToggle } from "./AskCards";
 import { clearHistoryDecline } from "./historyAuthorization";
 import { SecretCards } from "./SecretCard";
 import type { Asks } from "./useAsks";
+import { CourierSetup } from "./courier/CourierSetup";
 
 export function Line({ role, text }: Pick<ChatLine, "role" | "text">) {
   return role === "user" ? (
@@ -167,6 +168,7 @@ export function MainChat({ open, onOpenChange, state, onSend, onRetry, onRetryHi
           {open && meetings ? <MeetingsAccess api={meetings} /> : null}
           {open && meetings ? <FeedChatsAccess api={meetings} /> : null}
           {open && meetings ? <TelegramAccess api={meetings} /> : null}
+          {open ? <CourierSetup /> : null}
           {open && asks ? <AsksToggle asks={asks} /> : null}
           {open && newChat ? <NewChat api={newChat} /> : null}
           {open && notice && onReconnect ? <ExpiryNotice key={`${notice.id}:${notice.deliveredAt ?? notice.renderAttemptAt ?? "initial"}`} notice={notice} onReconnect={onReconnect} /> : null}

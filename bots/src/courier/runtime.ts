@@ -6,7 +6,7 @@ import { sealKeyFromDstack } from "../dstack-key";
 import { type Gateway, readBody } from "../gateway";
 import { isRecord } from "../guards";
 import type { MeetingDesk } from "../meeting-reads";
-import { botIdFor, OWNER_DID } from "../owner";
+import { OWNER_DID } from "../owner";
 import { createCourierControl } from "./control";
 import { deniedChatIds, enabledReadAreas } from "./denied-chats";
 import { createCourierGrantStore } from "./grant-store";
@@ -19,20 +19,27 @@ import { replyToCourierThread } from "./reply";
 import { courierTurn } from "./turn";
 
 export interface CourierGateway {
+  /** One pass over pairing upkeep and intake; joins a pass already running. */
+  tick(): Promise<void>;
   stop(): void;
   control(req: Request): Promise<Response | undefined>;
 }
 
-export async function startCourierGateway(options: { cfg: GatewayConfig; gateway: Gateway; reads: MeetingDesk; env: Record<string, string | undefined> }): Promise<CourierGateway> {
+/** The peer store holds an exclusive lock on its directory: a failed start must release it. */
+function closeOnThrow<T>(peers: { close(): void }, make: () => T): T {
+  try { return make(); } catch (error) { peers.close(); throw error; }
+}
+
+export async function startCourierGateway(options: { cfg: GatewayConfig; gateway: Gateway; reads: MeetingDesk; env: Record<string, string | undefined>; sealKey?: () => Promise<Uint8Array> }): Promise<CourierGateway> {
   const owners = [...new Set((options.env.BOTS_TEST_ACCOUNTS ?? "").split(",").map(address => address.trim().toLowerCase()).filter(address => /^0x[0-9a-f]{40}$/.test(address)).map(address => `did:pkh:eip155:1:${address}`))];
   const allowed = new Set(owners);
-  const key = await sealKeyFromDstack();
+  const key = await (options.sealKey ?? sealKeyFromDstack)();
   const root = dirname(options.cfg.budgetFile);
   const grants = createCourierGrantStore(join(root, "courier-grants"), key);
   const peers = createCourierPeerStore(join(root, "courier-peers"), key);
   const pairing = createCourierPairing({ store: peers, grants });
   const control = createCourierControl(grants);
-  const intake = new CourierIntake({
+  const intake = closeOnThrow(peers, () => new CourierIntake({
     owners, grants, peers, store: courierIntakeStore(join(root, "courier-intake"), key),
     async transport(owner, grant, peer) {
       const runtime = await peers.getRuntime(owner, peer.handle);
@@ -52,10 +59,10 @@ export async function startCourierGateway(options: { cfg: GatewayConfig; gateway
         },
       };
     },
-    async turn(owner, peer, message) {
-      return courierTurn({ owner, handle: peer.handle, peerDid: peer.peerDid, threadId: message.threadId, text: message.text, reads: options.reads, deniedChatIds, enabledReadAreas,
+    async turn(owner, peer, message, signal) {
+      return courierTurn({ owner, handle: peer.handle, peerDid: peer.peerDid, threadId: message.threadId, text: message.text, signal, reads: options.reads, deniedChatIds, enabledReadAreas,
         async model(body) {
-          const response = await options.gateway.courierModel(botIdFor(owner), courierPeerHash(peer.peerDid), { ...body, model: options.cfg.models[0], max_tokens: options.cfg.maxTokens });
+          const response = await options.gateway.courierModel(owner, courierPeerHash(peer.peerDid), { ...body, model: options.cfg.models[0], max_tokens: options.cfg.maxTokens });
           if (!response.ok) {
             await response.body?.cancel();
             // Main's shared allowance or its one slot: the asking agent gets a fixed sentence, not silence.
@@ -73,21 +80,21 @@ export async function startCourierGateway(options: { cfg: GatewayConfig; gateway
         },
       });
     },
-  });
-  let ticking = false;
-  const tick = async () => {
-    if (ticking) return;
-    ticking = true;
+  }));
+  let running: Promise<void> | undefined;
+  // One pass at a time: a caller during a pass joins it. The 15 s timer and the loopback test share this.
+  const tick = () => running ??= (async () => {
     try {
       for (const owner of owners) await pairing.maintain(owner).catch(() => {});
       await intake.poll();
-    } finally { ticking = false; }
-  };
+    } finally { running = undefined; }
+  })();
   void tick().catch(() => {});
   const timer = setInterval(() => void tick().catch(() => {}), 15_000);
   timer.unref();
   return {
-    stop() { clearInterval(timer); },
+    tick,
+    stop() { clearInterval(timer); peers.close(); },
     async control(req: Request): Promise<Response | undefined> {
       const match = /^\/courier\/([^/]+)(\/.*)$/.exec(new URL(req.url).pathname);
       if (!match) return undefined;

@@ -6,11 +6,18 @@ import { isRecord } from "../guards";
 import { botIdFor, OWNER_DID } from "../owner";
 import { sealedGrantStore } from "../secret-store";
 import { COURIER_REFUSAL, type CourierReplyText, replyText } from "./guard";
+import { courierLibraryReady } from "./lib-adapter";
 
 const HOUR = 3_600_000;
 /** One window for transcripts and for receipts of acknowledged messages. */
 const RETENTION = 30 * 24 * HOUR;
 const RATE_PER_HOUR = 100;
+const PEER_RATE_PER_HOUR = 20;
+/** Receipts kept per owner. */
+const RECEIPT_CAP = 5000;
+const TURN_TIMEOUT_MS = 90_000;
+const OWNER_CONCURRENCY = 2;
+const ID = /^[0-9A-Za-z_-]{1,64}$/;
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
 export const courierPeerHash = (did: string) => hash(did).slice(0, 12);
 
@@ -32,13 +39,15 @@ export interface CourierThread {
 /** `at` is when the message was claimed; `acked` is whether the sender's inbox no longer lists it. */
 interface Receipt { peer: string; status: "claimed" | "done" | "lost"; at: number; acked: boolean }
 /** `rate` holds the admission times of the last hour across every peer: the cap is per owner. */
-interface OwnerState { receipts: Record<string, Receipt>; rate: number[]; threads: Record<string, CourierThread> }
+interface OwnerState { receipts: Record<string, Receipt>; rate: number[]; peerRates: Record<string, number[]>; threads: Record<string, CourierThread> }
 export interface IntakeStore { load(): Map<string, OwnerState>; save(ownerId: string, state: OwnerState): void }
 
 function validState(value: unknown): value is OwnerState {
-  if (!isRecord(value) || !isRecord(value.receipts) || !Array.isArray(value.rate) || !isRecord(value.threads)) return false;
+  if (!isRecord(value) || !isRecord(value.receipts) || !Array.isArray(value.rate) || !isRecord(value.peerRates) || !isRecord(value.threads)) return false;
   return Object.entries(value.receipts).every(([id, r]) => /^[0-9a-f]{64}$/.test(id) && isRecord(r) && typeof r.peer === "string" && /^[0-9a-f]{12}$/.test(r.peer) && ["claimed", "done", "lost"].includes(String(r.status)) && Number.isSafeInteger(r.at) && Number(r.at) > 0 && typeof r.acked === "boolean")
+    && Object.keys(value.receipts).length <= RECEIPT_CAP
     && value.rate.length <= RATE_PER_HOUR && value.rate.every(t => Number.isSafeInteger(t) && t > 0)
+    && Object.entries(value.peerRates).every(([id, times]) => /^[0-9a-f]{12}$/.test(id) && Array.isArray(times) && times.length <= PEER_RATE_PER_HOUR && times.every(t => Number.isSafeInteger(t) && t > 0))
     && Object.entries(value.threads).every(([id, t]) => /^[0-9a-f]{64}$/.test(id) && isRecord(t) && t.id === id && typeof t.threadId === "string" && typeof t.title === "string" && typeof t.peer === "string" && Array.isArray(t.messages) && t.messages.every(m => isRecord(m) && ["peer", "bot"].includes(String(m.role)) && typeof m.text === "string" && Number.isSafeInteger(m.at) && Number(m.at) > 0));
 }
 
@@ -66,9 +75,14 @@ export interface CourierIntakeOptions {
   grants: { get(owner: string): Promise<IntakeGrant | undefined> };
   peers: { list(owner: string): Promise<IntakePeer[]> };
   transport(owner: string, grant: IntakeGrant, peer: IntakePeer): Promise<CourierTransport>;
-  turn(owner: string, peer: IntakePeer, message: CourierInbound): Promise<CourierReplyText>;
+  turn(owner: string, peer: IntakePeer, message: CourierInbound, signal: AbortSignal): Promise<CourierReplyText>;
   store: IntakeStore;
   now?: () => number;
+  /** Throws when the installed Courier library cannot run headless; the default is C1's `courierLibraryReady`. */
+  libraryReady?: () => void;
+  /** A deadline for one turn; the default is AbortSignal.timeout. Owners polled at once; default 2. */
+  turnSignal?: (ms: number) => AbortSignal;
+  concurrency?: number;
   log?: (entry: { gateway: "courier"; peer: string; outcome: string }) => void;
 }
 
@@ -95,11 +109,11 @@ export class CourierIntake {
   #state(owner: string) {
     const id = botIdFor(owner);
     let state = this.#states.get(id);
-    if (!state) { state = { receipts: {}, rate: [], threads: {} }; this.#states.set(id, state); }
+    if (!state) { state = { receipts: {}, rate: [], peerRates: {}, threads: {} }; this.#states.set(id, state); }
     return state;
   }
   #save(owner: string, state: OwnerState) { this.options.store.save(botIdFor(owner), state); }
-  #expire(state: OwnerState): boolean {
+  #expire(state: OwnerState, reserve = 0): boolean {
     let changed = false;
     for (const thread of Object.values(state.threads)) {
       const kept = thread.messages.filter(message => message.at > this.#now() - RETENTION).slice(-200);
@@ -112,6 +126,18 @@ export class CourierIntake {
     // unacknowledged receipt is kept, or a later re-listing would be answered twice.
     for (const [id, receipt] of Object.entries(state.receipts)) {
       if (receipt.acked && receipt.status !== "claimed" && receipt.at <= this.#now() - RETENTION) { delete state.receipts[id]; changed = true; }
+    }
+    // Over the bound, the oldest acknowledged receipts go first; unacknowledged and claimed ones never do.
+    const ids = Object.keys(state.receipts);
+    if (ids.length + reserve > RECEIPT_CAP) {
+      const droppable = ids.filter(id => state.receipts[id]!.acked && state.receipts[id]!.status !== "claimed").sort((a, b) => state.receipts[a]!.at - state.receipts[b]!.at);
+      for (const id of droppable.slice(0, ids.length + reserve - RECEIPT_CAP)) { delete state.receipts[id]; changed = true; }
+    }
+    for (const [peer, times] of Object.entries(state.peerRates)) {
+      const recent = times.filter(t => t > this.#now() - HOUR);
+      if (recent.length === times.length) continue;
+      if (recent.length) state.peerRates[peer] = recent; else delete state.peerRates[peer];
+      changed = true;
     }
     return changed;
   }
@@ -145,70 +171,95 @@ export class CourierIntake {
     if (this.#polling) return;
     this.#polling = true;
     try {
+      // Before any grant lookup: a library without the headless API refuses here, and a grant lookup restores a session.
+      (this.options.libraryReady ?? courierLibraryReady)();
       for (const [ownerId, state] of this.#states) if (this.#expire(state)) this.options.store.save(ownerId, state);
-      for (const owner of this.options.owners) {
-        if (!OWNER_DID.test(owner)) continue;
-        const grant = await this.options.grants.get(owner);
-        if (!grant || !Number.isFinite(grant.expiresAt) || grant.expiresAt <= this.#now()) continue;
-        for (const peer of await this.options.peers.list(owner)) {
-          const peerHash = courierPeerHash(peer.peerDid);
-          if (peer.status !== "paired" || !Number.isFinite(peer.delegationExpiresAt) || peer.delegationExpiresAt <= this.#now()) continue;
-          try {
-            if (!(await this.#authorized(owner, peer))) continue;
-            const transport = await this.options.transport(owner, grant, peer);
-            if (!(await this.#authorized(owner, peer))) continue;
-            for (const message of (await transport.inbox()).slice(-200)) {
-              if (!(await this.#authorized(owner, peer))) break;
-              if (!message.id || !message.threadId || typeof message.text !== "string" || message.text.length > 8000) continue;
-              const state = this.#state(owner);
-              const receiptId = hash(`${peer.peerDid}\n${message.threadId}\n${message.id}`);
-              const known = state.receipts[receiptId];
-              if (known) {
-                // A re-listed message is never answered again; retry telling the sender's inbox to drop it.
-                if (!known.acked && await this.#acknowledged(transport, message, peerHash)) { known.acked = true; this.#save(owner, state); }
-                continue;
-              }
-              // One cap for the owner across all peers, so pairing more agents cannot raise the answer rate.
-              state.rate = state.rate.filter(t => t > this.#now() - HOUR);
-              const limited = state.rate.length >= RATE_PER_HOUR;
-              const receipt: Receipt = { peer: peerHash, status: limited || message.kind === "inform" ? "done" : "claimed", at: this.#now(), acked: false };
-              state.receipts[receiptId] = receipt;
-              if (!limited) state.rate.push(this.#now());
-              this.#expire(state);
-              const threadId = hash(`${peer.peerDid}\n${message.threadId}`);
-              if (!limited) {
-                const thread = state.threads[threadId] ??= { id: threadId, threadId: message.threadId, peer: peer.handle, title: `${peer.handle} (Courier)`, messages: [] };
-                thread.messages.push({ role: "peer", text: message.text, at: this.#now() });
-                this.#expire(state);
-              }
-              // A save failure aborts this intake instance: no turn or send may run on an uncommitted claim.
-              this.#save(owner, state);
-              receipt.acked = await this.#acknowledged(transport, message, peerHash);
-              if (limited || message.kind === "inform") {
-                this.#save(owner, state);
-                this.#log(peerHash, limited ? "rate_limited" : "stored");
-                continue;
-              }
-              try {
-                const reply = message.kind === "ask" ? await this.options.turn(owner, peer, message) : COURIER_REFUSAL;
-                if (!(await this.#authorized(owner, peer)) || !state.threads[threadId]) {
-                  receipt.status = "done"; this.#save(owner, state); this.#log(peerHash, "skipped"); continue;
-                }
-                await transport.reply(message, reply);
-                state.threads[threadId]!.messages.push({ role: "bot", text: replyText(reply), at: this.#now() });
-                this.#expire(state);
-                receipt.status = "done";
-                this.#save(owner, state);
-                this.#log(peerHash, "replied");
-              } catch {
-                receipt.status = "lost";
-                this.#log(peerHash, "reply_lost");
-                this.#save(owner, state);
-              }
-            }
-          } catch { this.#log(peerHash, "unavailable"); }
-        }
-      }
+      // Owners are polled with a small concurrency; one owner's slow peer cannot hold the others for the whole tick.
+      const queue = [...this.options.owners];
+      const worker = async () => { for (let owner = queue.shift(); owner !== undefined; owner = queue.shift()) await this.#pollOwner(owner); };
+      await Promise.all(Array.from({ length: this.options.concurrency ?? OWNER_CONCURRENCY }, worker));
     } finally { this.#polling = false; }
+  }
+
+  /** Settles when the turn does, or throws when its deadline passes; the late result is dropped and nothing is retried. */
+  async #within<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+    const expired = Promise.withResolvers<never>();
+    const onAbort = () => expired.reject(new Error("courier_turn_timeout"));
+    if (signal.aborted) onAbort(); else signal.addEventListener("abort", onAbort, { once: true });
+    work.catch(() => {});
+    try { return await Promise.race([work, expired.promise]); } finally { signal.removeEventListener("abort", onAbort); }
+  }
+
+  async #pollOwner(owner: string): Promise<void> {
+    if (!OWNER_DID.test(owner)) return;
+    const grant = await this.options.grants.get(owner);
+    if (!grant || !Number.isFinite(grant.expiresAt) || grant.expiresAt <= this.#now()) return;
+    for (const peer of await this.options.peers.list(owner)) {
+      const peerHash = courierPeerHash(peer.peerDid);
+      if (peer.status !== "paired" || !Number.isFinite(peer.delegationExpiresAt) || peer.delegationExpiresAt <= this.#now()) continue;
+      try {
+        if (!(await this.#authorized(owner, peer))) continue;
+        const transport = await this.options.transport(owner, grant, peer);
+        if (!(await this.#authorized(owner, peer))) continue;
+        for (const message of (await transport.inbox()).slice(-200)) {
+          if (!(await this.#authorized(owner, peer))) break;
+          // The ids end up in a reply's thread and in-reply-to: only the library's own id alphabet gets as far as a turn.
+          if (!ID.test(message.id) || !ID.test(message.threadId) || typeof message.text !== "string" || message.text.length > 8000) { this.#log(peerHash, "invalid"); continue; }
+          const state = this.#state(owner);
+          const receiptId = hash(`${peer.peerDid}\n${message.threadId}\n${message.id}`);
+          const known = state.receipts[receiptId];
+          if (known) {
+            // A re-listed message is never answered again; retry telling the sender's inbox to drop it.
+            if (!known.acked && await this.#acknowledged(transport, message, peerHash)) { known.acked = true; this.#save(owner, state); }
+            continue;
+          }
+          this.#expire(state, 1);
+          // Unacknowledged receipts are never dropped, so a full set of them refuses new intake instead of its replay guard.
+          if (Object.keys(state.receipts).length >= RECEIPT_CAP) { this.#log(peerHash, "receipts_full"); continue; }
+          // One cap for the owner across all peers, and a smaller one per peer inside it: pairing more agents cannot
+          // raise the answer rate, and one peer cannot use all of it.
+          const now = this.#now();
+          state.rate = state.rate.filter(t => t > now - HOUR);
+          const peerRate = (state.peerRates[peerHash] ?? []).filter(t => t > now - HOUR);
+          const limited = state.rate.length >= RATE_PER_HOUR || peerRate.length >= PEER_RATE_PER_HOUR;
+          const receipt: Receipt = { peer: peerHash, status: limited || message.kind === "inform" ? "done" : "claimed", at: now, acked: false };
+          state.receipts[receiptId] = receipt;
+          if (!limited) { state.rate.push(now); peerRate.push(now); }
+          if (peerRate.length) state.peerRates[peerHash] = peerRate; else delete state.peerRates[peerHash];
+          this.#expire(state);
+          const threadId = hash(`${peer.peerDid}\n${message.threadId}`);
+          if (!limited) {
+            const thread = state.threads[threadId] ??= { id: threadId, threadId: message.threadId, peer: peer.handle, title: `${peer.handle} (Courier)`, messages: [] };
+            thread.messages.push({ role: "peer", text: message.text, at: this.#now() });
+            this.#expire(state);
+          }
+          // A save failure aborts this intake instance: no turn or send may run on an uncommitted claim.
+          this.#save(owner, state);
+          receipt.acked = await this.#acknowledged(transport, message, peerHash);
+          if (limited || message.kind === "inform") {
+            this.#save(owner, state);
+            this.#log(peerHash, limited ? "rate_limited" : "stored");
+            continue;
+          }
+          try {
+            const signal = (this.options.turnSignal ?? AbortSignal.timeout)(TURN_TIMEOUT_MS);
+            const reply = message.kind === "ask" ? await this.#within(this.options.turn(owner, peer, message, signal), signal) : COURIER_REFUSAL;
+            if (!(await this.#authorized(owner, peer)) || !state.threads[threadId]) {
+              receipt.status = "done"; this.#save(owner, state); this.#log(peerHash, "skipped"); continue;
+            }
+            await transport.reply(message, reply);
+            state.threads[threadId]!.messages.push({ role: "bot", text: replyText(reply), at: this.#now() });
+            this.#expire(state);
+            receipt.status = "done";
+            this.#save(owner, state);
+            this.#log(peerHash, "replied");
+          } catch {
+            receipt.status = "lost";
+            this.#log(peerHash, "reply_lost");
+            this.#save(owner, state);
+          }
+        }
+      } catch { this.#log(peerHash, "unavailable"); }
+    }
   }
 }

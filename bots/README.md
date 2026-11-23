@@ -33,18 +33,25 @@ days after its claim, and only once the sender's inbox acknowledged the message;
 is kept and its acknowledgement retried when the message is listed again. The sealed file is rewritten
 whole on each change; this is accepted for v1 under the caps below.
 
-The owner is limited to 100 inbound messages per rolling hour in total across all paired peers, across
-restarts. Conversations retain the
+The owner is limited to 100 inbound messages per rolling hour in total across all paired peers, and each
+peer to 20 of them, across restarts. A message or thread id outside `[0-9A-Za-z_-]{1,64}` is skipped before
+any turn. At most 5,000 receipts are kept per owner: over the bound the oldest acknowledged ones go first,
+unacknowledged ones are never dropped, and when all 5,000 are unacknowledged new intake is refused and
+logged as `receipts_full`. Conversations retain the
 latest 200 messages each, at most 50 conversations per owner, with oldest entries removed first and a
 30-day text TTL. The owner reads and deletes them from **Courier conversations** in TrustBot's panel.
 The backend proxies owner-authenticated thread list, read and delete routes under
 `/api/bots/main/courier/threads`; these routes cannot send a reply.
 
 Every Courier turn pulls the owner's enabled read areas from the signed backend status route; failure
-means no reads, and the areas stay fixed for that turn. Read tools share Main's daily allowance and
-model budget. A Courier model call takes Main's one request slot for its duration, so a Main chat in
-flight makes it answer with the fixed "busy" sentence, and an exhausted model allowance gets the fixed
-"allowance" sentence; neither is silence. Peer text uses the existing
+means no reads, and the areas stay fixed for that turn. Courier turns are isolated from Main chat: they
+run as the owner's own Courier bot id (`courier/bot-id.ts`) with their own request slot and their own model
+token budget, so a peer cannot use up Main's chat. A second Courier call while one is in flight, or an
+exhausted Courier model allowance, gets the fixed "busy" or "allowance" sentence; neither is silence. Read
+tools count toward Main's 200 reads a day, and Courier reads also have a sub-cap of 50 a day per owner;
+Courier reads add no held mark, since a Courier turn has no tool that acts on one. A turn that runs
+past 90 seconds is recorded as `reply_lost` and never retried, so one peer cannot hold the tick; owners are
+polled two at a time. Peer text uses the existing
 untrusted-record wrapper. Web, secret, question, action and bot-message tools are absent and refused at
 dispatch. Requests and tasks get the fixed refusal; informs are stored without a reply.
 
