@@ -15,7 +15,18 @@ on:
         required: false
   schedule:
     - cron: "17 5 * * 1"
+  # A PR that changes only docs or Markdown does not start this workflow. Markdown that is a build input stays:
+  # agent-setup/, agent-skills/ and frontend/public/ feed the web build and its tests. Pushes, tags, release/*, the
+  # schedule and the merge queue are never filtered. This workflow's checks must not become required: a skipped run
+  # reports nothing.
   pull_request:
+    paths:
+      - "**"
+      - "!docs/**"
+      - "!**/*.md"
+      - "agent-setup/**"
+      - "agent-skills/**"
+      - "frontend/public/**"
   merge_group:
   push:
     branches: [main, "release/**"]

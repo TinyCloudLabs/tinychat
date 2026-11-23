@@ -13,7 +13,18 @@ name: Frontend
 # failures on main (since #107, stream before save).
 
 on:
+  # A PR that changes only docs or Markdown does not start this workflow. Markdown that is a build input stays:
+  # agent-setup/, agent-skills/ and frontend/public/ feed the web build and its tests. Pushes, tags, release/* and the
+  # merge queue are never filtered. The `frontend` job's always-report design below only covers PRs that start the
+  # workflow, so none of this workflow's checks may become required without removing this filter.
   pull_request:
+    paths:
+      - "**"
+      - "!docs/**"
+      - "!**/*.md"
+      - "agent-setup/**"
+      - "agent-skills/**"
+      - "frontend/public/**"
   merge_group:
   push:
     branches: [main, "release/**"]
