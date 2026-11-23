@@ -18,10 +18,12 @@ const TC_RUNTIME_GRANTS_KEY_PREFIX = "tinycloud:session:runtime-grants:";
 /** The OpenKey renewal receipt for the session record (TC-2872). Outside the SDK's own prefix, which it scans. */
 const RENEWAL_RECEIPT_KEY_PREFIX = "tinychat:renewal-receipt:";
 
-/** Keep the renewal receipt OpenKey returned at sign-in. Unverified here: check it before every use. */
+/** Keep the unverified receipt OpenKey returned at sign-in, or remove the saved receipt with null. */
 export function saveRenewalReceipt(address: string, receipt: unknown): void {
   try {
-    localStorage.setItem(RENEWAL_RECEIPT_KEY_PREFIX + address.toLowerCase(), JSON.stringify(receipt));
+    const key = RENEWAL_RECEIPT_KEY_PREFIX + address.toLowerCase();
+    if (receipt === null) localStorage.removeItem(key);
+    else localStorage.setItem(key, JSON.stringify(receipt));
   } catch {
     // localStorage unavailable or full: the session then lasts until its signed end.
   }

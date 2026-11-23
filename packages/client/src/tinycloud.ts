@@ -56,6 +56,8 @@ export interface TinyCloudWebConfig {
   uiPlatform?: "native" | "web";
   /** SIWE nonce override. If set, `siweConfig.nonce` still wins inside the SDK. */
   nonce?: string;
+  /** Lifetime of the draft sign-in grant. Defaults to SESSION_EXPIRATION_MS. */
+  sessionExpirationMs?: number;
   /**
    * Optional local KV replication. Omit it (the default) and the SDK config is
    * exactly what it was before replication existed: the key is not present.
@@ -97,7 +99,7 @@ export function createTinyCloudWeb(
     newUserHost: config?.newUserHost,
     autoCreateSpace: config?.autoCreateSpace ?? true,
     sessionStorage: config?.sessionStorage ?? new BrowserSessionStorage(),
-    sessionExpirationMs: SESSION_EXPIRATION_MS,
+    sessionExpirationMs: config?.sessionExpirationMs ?? SESSION_EXPIRATION_MS,
     nonce: config?.nonce,
     siweConfig: config?.siweConfig,
     ...(config?.domain ? { domain: config.domain } : {}),
