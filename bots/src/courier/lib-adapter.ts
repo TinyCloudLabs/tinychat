@@ -90,7 +90,7 @@ function context(ctx: CourierContext): LibraryContext {
   return value as unknown as LibraryContext;
 }
 
-function reference(peer: PairedPeer): CourierPeerReference {
+function reference(peer: Pick<PairedPeer, "handle" | "peerDid" | "delegation">): CourierPeerReference {
   const value = peer.delegation;
   const ref = isRecord(value) && isRecord(value.pending) ? value.pending : isRecord(value) ? value.ref : undefined;
   if (!isRecord(ref) || ref.handle !== peer.handle || ref.peerDid !== peer.peerDid
@@ -143,7 +143,8 @@ export async function finalizePairing(ctx: CourierContext, pending: PairPending,
   };
 }
 
-export async function unpair(ctx: CourierContext, peer: PairedPeer): Promise<void> {
+/** Accepts a retired pending pairing too ({pending} delegation, no verified proof yet). */
+export async function unpair(ctx: CourierContext, peer: Pick<PairedPeer, "handle" | "peerDid" | "delegation">): Promise<void> {
   await library("unpair")(context(ctx), reference(peer));
 }
 
