@@ -3,11 +3,11 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AGENT_GRANT } from "@tinycloud/courier";
-import { NodeWasmBindings, PrivateKeySigner } from "@tinycloud/node-sdk";
+import { NodeWasmBindings, PrivateKeySigner, TinyCloudNode } from "@tinycloud/node-sdk";
 import { courierIdentity } from "../courier/identity";
 import { createCourierGrantStore } from "../courier/grant-store";
 import { createCourierControl } from "../courier/control";
-import { acceptPairing, courierContext, CourierUpdateRequired, listInbound, normalizeCourierError, renewPeer, sendMessage, type PairedPeer } from "../courier/lib-adapter";
+import { courierContext, CourierUpdateRequired, listInbound, normalizeCourierError, renewPeer, sendMessage, verifiedCourierContext, type PairedPeer } from "../courier/lib-adapter";
 
 const signingKey = "4f3edf983ac636a65a842ce7c78d9aa706d3b113bce036f4d9c5c1b5605dce6f";
 const dirs: string[] = [];
@@ -97,26 +97,24 @@ test("a tampered owner signature is refused before sealing", async () => {
   expect(await f.store.get(f.owner)).toBeUndefined();
 });
 
-test("legacy pair artifacts without the signed challenge protocol are refused before issuing authority", async () => {
+test("a library without the headless API refuses the context before restoring any grant session", async () => {
   const f = await fixture();
-  let saves = 0;
-  const context = await courierContext(f.owner, f.grant, {
-    async transaction(_scope, operation) {
-      return operation({ async get() { return undefined; }, async save() { saves++; } });
-    },
-  });
-  const legacy = JSON.stringify({
-    type: "courier-pair", v: 0, step: "A", from: { owner: f.owner, courier: "did:key:zLegacyPeer" },
-    spaceId: f.grant.raw.spaceId, peer: "trustbot", callMe: "peer", issuedAt: new Date().toISOString(),
-  });
-  await expect(acceptPairing(context, legacy)).rejects.toMatchObject({ code: "courier_update_required" });
-  expect(saves).toBe(0);
+  const restore = spyOn(TinyCloudNode.prototype, "restoreSession");
+  let opened = 0;
+  try {
+    await expect(courierContext(f.owner, f.grant, { async transaction(_s, op) { opened++; return op({ async get() { return undefined; }, async save() {} }); } }))
+      .rejects.toMatchObject({ code: "courier_update_required" });
+    expect(restore).not.toHaveBeenCalled();
+    expect(opened).toBe(0);
+  } finally {
+    restore.mockRestore();
+  }
 });
 
 test("the context handed to the library holds only the courier-key session restored from the agent grant", async () => {
   const f = await fixture();
   const store = { async transaction<T>(_s: unknown, op: (tx: never) => Promise<T>) { return op({} as never); } };
-  const context = await courierContext(f.owner, f.grant, store);
+  const context = await verifiedCourierContext(f.owner, f.grant, store);
   // courierContext's kv is passed to every headless call verbatim; no owner-primary session or ambient fetch rides along.
   const handed = context.kv as Record<string, unknown>;
   expect(Object.keys(handed).sort()).toEqual(["courierDid", "createReader", "host", "node", "ownerDid", "store"]);
@@ -136,7 +134,7 @@ test("the context handed to the library holds only the courier-key session resto
 
 test("renewal is a typed refusal and replies must carry the bound idempotency key", async () => {
   const f = await fixture();
-  const context = await courierContext(f.owner, f.grant, { async transaction(_s, op) { return op({ async get() { return undefined; }, async save() {} }); } });
+  const context = await verifiedCourierContext(f.owner, f.grant, { async transaction(_s, op) { return op({ async get() { return undefined; }, async save() {} }); } });
   const ref = { handle: "peer", peerDid: "did:key:zPeer", pairingId: "p1" };
   const peer: PairedPeer = { handle: ref.handle, peerDid: ref.peerDid, delegationExpiresAt: Date.now() + 86_400_000, proof: { cid: "bafy" }, delegation: { ref, record: {} } };
   await expect(renewPeer(context, peer)).rejects.toMatchObject({ code: "renewal_unavailable" });

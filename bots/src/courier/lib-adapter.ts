@@ -77,7 +77,16 @@ function library<K extends keyof LibraryApi>(name: K): LibraryApi[K] {
   return call as LibraryApi[K];
 }
 
+const HEADLESS: (keyof LibraryApi)[] = ["acceptPairing", "finalizePairing", "unpair", "listInbound", "acknowledgeInbound", "sendMessage"];
+
+/** Production entry: refuses on a library without the headless API before restoring any grant session. */
 export async function courierContext(owner: string, grant: CourierGrant, store: CourierLibraryStore): Promise<CourierContext> {
+  for (const name of HEADLESS) library(name);
+  return verifiedCourierContext(owner, grant, store);
+}
+
+/** Builds the context without the library probe; every call through it still refuses when an export is missing. */
+export async function verifiedCourierContext(owner: string, grant: CourierGrant, store: CourierLibraryStore): Promise<CourierContext> {
   if (!store || typeof store.transaction !== "function") throw new Error("Courier requires its sealed transaction store");
   const verified = await verifyCourierGrant(owner, grant);
   const value: LibraryContext = {
