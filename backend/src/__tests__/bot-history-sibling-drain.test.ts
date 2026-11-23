@@ -48,10 +48,11 @@ function backend() {
         put: async (key: string, value: unknown) => { written.set(key, value); return { ok: true, data: {} }; },
       } };
     },
-    getEncryptionNetworkIdForSpace: () => "network",
-    encryption: {
-      discoverNetwork: async () => ({ ok: true, data: { ownerDid: `did:pkh:eip155:1:${owner}`, state: "active", networkId: "network" } }),
-      encryptToNetwork: async (_network: string, _bytes: Uint8Array, { aad }: { aad: Buffer }) => ({ ok: true, data: { networkId: "network", aad: aad.toString("base64"), ciphertext: "c" } }),
+    getEncryptionNetworkIdForSpace: () => `urn:tinycloud:encryption:did:pkh:eip155:1:${owner}:default`,
+    keys: {
+      encrypt: async (keyPath: string, _bytes: Uint8Array, { networkId, aad, descriptor }: { networkId: string; aad: Buffer; descriptor: { keyVersion: number } }) => ({
+        v: 2, networkId, keyPath, keyVersion: descriptor.keyVersion, aad: Buffer.from(aad).toString("base64"), ciphertext: "c",
+      }),
     },
     kv: {
       put: async (key: string, value: unknown) => { grants.set(key, value); return { ok: true, data: {} }; },
@@ -100,7 +101,9 @@ afterEach(() => { setSystemTime(); });
 describe("the drain for a bot other than Main", () => {
   test("archives the bot's batch under the bot's own grant, never Main's, and skips malformed stored keys", async () => {
     const { grants, written, activated, history } = backend();
-    await history.accept(owner, await grantFor());
+    const mainGrant = await makeSignedTranscriptGrant({ privateKey: ownerKey, att: { [`${space}/kv/${directory()}`]: { "tinycloud.kv/get": [{}], "tinycloud.kv/put": [{}] } } });
+    await history.accept(owner, { serialized: mainGrant.serialized, siwe: mainGrant.siwe, signature: mainGrant.signature });
+    await history.acceptKeyDescriptor(owner, mainGrant.signKeyDescriptor());
     await history.accept(owner, await grantFor(KEY_A), KEY_A);
     // Not one key after the address: never listed as a bot.
     for (const odd of [`${ownerEntry}/main`, `${ownerEntry}/${"AB".repeat(16)}`, `${ownerEntry}/${KEY_A}/x`, `${ownerEntry}/${KEY_A}0`]) grants.set(odd, "x");
@@ -144,7 +147,9 @@ describe("the drain for a bot other than Main", () => {
 
   test("drains a bot being deleted whose permission is still open", async () => {
     const { activated, history } = backend();
-    await history.accept(owner, await grantFor(KEY_A), KEY_A);
+    const signedA = await makeSignedTranscriptGrant({ privateKey: ownerKey, att: { [`${space}/kv/${directory(KEY_A)}`]: { "tinycloud.kv/get": [{}], "tinycloud.kv/put": [{}] } } });
+    await history.accept(owner, { serialized: signedA.serialized, siwe: signedA.siwe, signature: signedA.signature }, KEY_A);
+    await history.acceptKeyDescriptor(owner, signedA.signKeyDescriptor());
     const { received, config } = service({ [KEY_A]: batchFor(KEY_A) });
     activated.length = 0;
     const drain = startBotHistoryDrain(history, config, registryOf([bot(KEY_A, { state: "deleting", deletingSince: "2026-11-02T00:00:00.000Z" })]));

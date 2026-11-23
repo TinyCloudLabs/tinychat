@@ -92,7 +92,7 @@ test("messaging activity makes a byte-for-byte owner-space archive round trip", 
   const directory = `${HISTORY_PREFIX}${historyBotId(address)}/`;
   const path = `${directory}${batch.generation}/${batch.seq}-${batch.challenge}`;
   const spaceId = makePkhSpaceId(address, 1, "applications");
-  const networkId = "fixture-network";
+  const networkId = `urn:tinycloud:encryption:did:pkh:eip155:1:${address}:default`;
   const storage = new Map<string, unknown>();
   let reads = 0;
   const get = async (key: string) => storage.has(key)
@@ -103,17 +103,18 @@ test("messaging activity makes a byte-for-byte owner-space archive round trip", 
     did: backendDid, computeDelegationCid, kv: { get, put },
     useDelegation: async () => ({ kv: { put, get: async (key: string) => { reads++; return get(key); } } }),
     getEncryptionNetworkIdForSpace: () => networkId,
-    encryption: {
-      discoverNetwork: async () => ({ ok: true, data: { ownerDid: `did:pkh:eip155:1:${address}`, networkId, state: "active" } }),
-      encryptToNetwork: async (_network: string, payload: Buffer, { aad }: { aad: Buffer }) => ({
-        ok: true, data: { networkId, aad: aad.toString("base64"), payload: payload.toString("base64") },
+    keys: {
+      encrypt: async (keyPath: string, payload: Buffer, { networkId: net, aad, descriptor }: { networkId: string; aad: Buffer; descriptor: { keyVersion: number } }) => ({
+        v: 2, networkId: net, keyPath, keyVersion: descriptor.keyVersion, aad: Buffer.from(aad).toString("base64"), payload: Buffer.from(payload).toString("base64"),
       }),
     },
   } as unknown as TinyCloudNode;
   const writer = new BotHistory(node, backendKey, "http://127.0.0.1:9137");
-  await writer.accept(address, await makeSignedTranscriptGrant({ privateKey: ownerKey, audience: backendDid, att: {
+  const signedGrant = await makeSignedTranscriptGrant({ privateKey: ownerKey, audience: backendDid, att: {
     [`${spaceId}/kv/${directory}`]: { "tinycloud.kv/get": [{}], "tinycloud.kv/put": [{}] },
-  } }));
+  } });
+  await writer.accept(address, signedGrant);
+  await writer.acceptKeyDescriptor(address, signedGrant.signKeyDescriptor());
   const receipt = await writer.archive(address, batch, async staged => {
     expect(staged.batchHash).toBe(historyHash(JSON.stringify(batch)));
     expect(storage.has(path)).toBe(false);

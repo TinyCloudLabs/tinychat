@@ -14,7 +14,7 @@ import { BotsError, botsApi, type BotsApi } from "./botsApi";
 import { MainChat } from "./MainChat";
 import { isWorking, useMainChat } from "./useMainChat";
 import { AskCards } from "./AskCards";
-import { readSettings, revokeReadGrant, setReadArea, signReadGrant } from "./trustbotReadGrant";
+import { ensureTrustBotReadGrant, readSettings, revokeReadGrant, setReadArea, signReadGrant } from "./trustbotReadGrant";
 import { newMainChat } from "./mainNewChat";
 import { SecretCards } from "./SecretCard";
 import { useAsks } from "./useAsks";
@@ -28,7 +28,7 @@ const SESSION_GONE: Record<string, true> = { history_session_missing: true, hist
 async function prepareHistory(tcw: TinyCloudWeb): Promise<void> {
   if (!(await botHistoryEnabled())) return;
   try {
-    await authorizeBotHistory(tcw);
+    await authorizeBotHistory(tcw, undefined, undefined, { includeLegacyNetwork: false });
     await ensureBotHistoryGrant(tcw);
   } catch (cause) {
     const gone = (cause instanceof Error && Object.hasOwn(SESSION_GONE, cause.message)) || openKeyFailureOf(cause).kind === "session-ended";
@@ -62,7 +62,7 @@ function MainAsk({ api, tcw, onReconnect }: { api: BotsApi; tcw?: TinyCloudWeb; 
     if (!(await botHistoryEnabled())) return local;
     await authorizeBotHistory(tcw);
     await ensureBotHistoryGrant(tcw);
-    const archived = await readBotHistory(tcw, signal);
+    const archived = await readBotHistory(tcw, signal, { reseal: true });
     return [...new Map([...archived, ...local].map(message => [message.id, message])).values()];
   } }, [api, tcw]);
   const refreshRequests = useRef<() => void>(() => {});
@@ -81,12 +81,13 @@ function MainAsk({ api, tcw, onReconnect }: { api: BotsApi; tcw?: TinyCloudWeb; 
       return stored;
     },
   }), [client, noteWeb]);
+  const [readRevision, setReadRevision] = useState(0);
   const meetings = useMemo(() => tcw ? {
     readSettings,
     setReadArea,
     signReadGrant: (serviceDid: string, areas: Parameters<typeof signReadGrant>[2]) => signReadGrant(tcw, serviceDid, areas),
     revokeReadGrant: (cid: string) => revokeReadGrant(tcw, cid),
-  } : undefined, [tcw]);
+  } : undefined, [tcw, readRevision]);
   const clearChat = chat.clear;
   const newChat = useMemo(() => ({ start: () => newMainChat(), onStarted: () => { clearChat(); refreshAsks(); } }), [clearChat, refreshAsks]);
   // A turn is when Main asks: read the requests as it ends.
@@ -99,10 +100,16 @@ function MainAsk({ api, tcw, onReconnect }: { api: BotsApi; tcw?: TinyCloudWeb; 
   const [notice, setNotice] = useState<HistoryNotice | null>(null);
   useEffect(() => {
     if (!tcw) return;
-    const renew = () => { void ensureBotHistoryGrant(tcw).then(() => readHistoryNotice()).then(setNotice, () => {}); };
+    let current = true;
+    const renew = () => {
+      void ensureBotHistoryGrant(tcw).then(() => readHistoryNotice()).then(setNotice, () => {});
+      void ensureTrustBotReadGrant(tcw).then(renewed => {
+        if (current && renewed) setReadRevision(revision => revision + 1);
+      });
+    };
     renew();
     const refresh = setInterval(renew, 30_000);
-    return () => clearInterval(refresh);
+    return () => { current = false; clearInterval(refresh); };
   }, [tcw]);
   useEffect(() => {
     if (!open || !tcw) return;

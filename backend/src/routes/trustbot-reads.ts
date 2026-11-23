@@ -75,19 +75,30 @@ export function createTrustBotReadsRouter({ grants, config, auth }: Pick<TrustBo
       res.status(503).json({ error: "reads_unavailable" });
     }
   });
+  router.get("/renewal", async (req, res) => {
+    try {
+      res.json({ serviceDid: grants.serviceDid, ...await grants.renewalStatus(req.user!.address) });
+    } catch {
+      res.status(503).json({ error: "reads_unavailable" });
+    }
+  });
   router.put("/:area", express.json({ limit: "96kb" }), async (req, res) => {
     const area = req.params.area;
+    const renewing = area === "renewal";
     const input: unknown = req.body;
-    if (!isReadArea(area) || !input || typeof input !== "object" || Array.isArray(input)) { res.status(400).json({ error: "invalid_reads" }); return; }
-    const { enabled, grant } = input as { enabled?: unknown; grant?: unknown };
+    if ((!renewing && !isReadArea(area)) || !input || typeof input !== "object" || Array.isArray(input)) { res.status(400).json({ error: "invalid_reads" }); return; }
+    const { enabled, grant, replaces } = input as { enabled?: unknown; grant?: unknown; replaces?: unknown };
     const address = req.user!.address;
     try {
       let status: ReadStatus;
-      if (enabled === false) status = await grants.disable(address, area);
+      if (enabled === false && isReadArea(area)) status = await grants.disable(address, area);
       else if (enabled === true && grant && typeof grant === "object") {
         const { serialized, siwe, signature } = grant as Record<string, unknown>;
         if (typeof serialized !== "string" || typeof siwe !== "string" || typeof signature !== "string") { res.status(400).json({ error: "invalid_reads" }); return; }
-        status = await grants.enable(address, area, { serialized, siwe, signature });
+        const envelope = { serialized, siwe, signature };
+        if (renewing && typeof replaces === "string") status = await grants.renew(address, replaces, envelope);
+        else if (isReadArea(area)) status = await grants.enable(address, area, envelope);
+        else { res.status(400).json({ error: "invalid_reads" }); return; }
       } else { res.status(400).json({ error: "invalid_reads" }); return; }
       if (!await pushToService(config, address, status)) console.warn("[trustbot-reads] service_push=failed");
       res.json(view(grants, status));

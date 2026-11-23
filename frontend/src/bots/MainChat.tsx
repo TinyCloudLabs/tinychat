@@ -173,7 +173,8 @@ export function MainChat({ open, onOpenChange, state, onSend, onRetry, onRetryHi
           {history === "failed" && !working ? <Failure text={BOTS_STRINGS.historyFailed} onRetry={onRetryHistory} /> : null}
           {history === "declined" && !working ? <Failure text={botsErrorText("history_declined", MAIN_BOT.name)} onRetry={onRetryHistory} declined /> : null}
           {lines.map((line) => (
-            line.app ? <AppLine key={line.id} decision={line.app} names={line.names} live={line.id.startsWith("local-")} secret={line.secret} /> : <Line key={line.id} role={line.role} text={line.text} />
+            line.unreadableHistory ? <p key={line.id} className="text-callout text-muted-foreground">{line.text}</p>
+              : line.app ? <AppLine key={line.id} decision={line.app} names={line.names} live={line.id.startsWith("local-")} secret={line.secret} /> : <Line key={line.id} role={line.role} text={line.text} />
           ))}
           {turn ? (
             <>

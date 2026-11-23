@@ -20,7 +20,7 @@ export interface AppReply {
 }
 
 /** `app` marks a line the app sent for the owner (a decision on a request or proposal card), which the owner did not type. */
-export type ChatLine = Pick<BotMessage, "id" | "role" | "text"> & { app?: AppDecision; secret?: SecretLine; names?: string[] };
+export type ChatLine = Pick<BotMessage, "id" | "role" | "text" | "unreadableHistory"> & { app?: AppDecision; secret?: SecretLine; names?: string[] };
 
 /** What a line the app sent for this decision carries. */
 const appMark = (reply: AppReply | undefined) => reply
@@ -84,8 +84,9 @@ export function useMainChat(api: BotsApi, prepare?: () => Promise<void>, onNoRep
         const messages = await api.listMainMessages(signal);
         setState((current) => {
           if (generation !== cleared.current) return current;
-          const listed = messages.map(({ id, role, text, origin, decision, secret }): ChatLine => ({
+          const listed = messages.map(({ id, role, text, origin, decision, secret, unreadableHistory }): ChatLine => ({
             id, role, text,
+            ...(unreadableHistory ? { unreadableHistory } : {}),
             // The service says what was decided; the words of its message are only a fallback for a service that does not.
             ...(origin === "app" ? { app: decision ?? (isDeclinedReply(text) ? "declined" as const : "answered" as const), ...(secret ? { secret } : {}) } : {}),
           }));
@@ -108,7 +109,10 @@ export function useMainChat(api: BotsApi, prepare?: () => Promise<void>, onNoRep
           ...errorFields(cause),
           cause: cause instanceof Error && cause.cause !== undefined ? errorFields(cause.cause) : undefined,
         });
-        setState((current) => (generation !== cleared.current ? current : { ...current, history: isHistoryDeclined(cause) ? "declined" : "failed" }));
+        setState((current) => (generation !== cleared.current ? current : {
+          ...current,
+          history: isHistoryDeclined(cause) ? "declined" : "failed",
+        }));
       }
     })();
     history.current = run;

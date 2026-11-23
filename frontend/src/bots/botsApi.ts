@@ -11,6 +11,8 @@ export interface BotMessage {
   role: "user" | "bot";
   text: string;
   at: string;
+  /** Set locally for an archived batch that cannot be opened with its key. */
+  unreadableHistory?: true;
   /** Set by the service on a message the app sent for the owner (a decision on a request or proposal card), not typed by the owner. */
   origin?: "app";
   /** On an app message: what the owner decided. */
