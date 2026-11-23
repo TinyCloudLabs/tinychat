@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runs both bot-history suites against an isolated TinyCloud node. Details: TC-3968
+# Runs the Main, sibling, and legacy bot-history suites against an isolated TinyCloud node. Details: TC-3968
 set -euo pipefail
 
 image=ghcr.io/tinycloudlabs/tinycloud-node:1.26.21@sha256:fc9fd4efa884be75d05fe61dd55ffa6559a48df824647ce8c10739c7553afc26
@@ -62,7 +62,7 @@ echo "TinyCloud node ready at $host"
 
 cd backend
 status=0
-for suite in bot-history-network.test.ts bot-history-siblings-network.test.ts; do
+for suite in bot-history-network.test.ts bot-history-siblings-network.test.ts bot-history-legacy-network.test.ts; do
   log="$run/$suite.log"
   if ! env -i PATH="$PATH" HOME="$run/home" TMPDIR="$run/tmp" BOT_HISTORY_TEST_NODE="$host" \
     bun --no-env-file test "./src/__tests__/$suite" 2>&1 | tee "$log"; then
