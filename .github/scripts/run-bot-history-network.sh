@@ -2,7 +2,7 @@
 # Runs the Main, sibling, and legacy bot-history suites against an isolated TinyCloud node. Details: TC-3968
 set -euo pipefail
 
-image=ghcr.io/tinycloudlabs/tinycloud-node:1.26.21@sha256:fc9fd4efa884be75d05fe61dd55ffa6559a48df824647ce8c10739c7553afc26
+image=ghcr.io/tinycloudlabs/tinycloud-node:1.26.22@sha256:03ea20ea9136b47cf6cf1f6b05ebae262dadda297d23d568c98fccf9c86f0c62
 run=$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/bot-history.XXXXXX")
 container=
 node_pid=
