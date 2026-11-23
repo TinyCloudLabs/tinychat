@@ -1,5 +1,13 @@
 # @tinychat/backend
 
+## 0.13.2-beta.3
+
+### Patch Changes
+
+- df28ad2: Send grant-specific bot history permission updates.
+
+  Details: TC-4006
+
 ## 0.13.2-beta.2
 
 ### Patch Changes
