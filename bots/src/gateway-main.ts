@@ -74,7 +74,10 @@ function startGateway(): Gateway {
       store: fileBudgetStore(cfg.budgetFile),
       ownerStore: cfg.ownersFile ? fileOwnerStore(cfg.ownersFile) : undefined,
       // Which conversations hold the owner's data, beside the budget file; an unreadable file stops the start.
-      meetings: new MeetingDesk({ backendOrigin, backendCallSecret, store: fileHeldStore(join(dirname(cfg.budgetFile), "held.json")) }),
+      meetings: new MeetingDesk({
+        backendOrigin, backendCallSecret, forwardRefusals: true,
+        store: fileHeldStore(join(dirname(cfg.budgetFile), "held.json")),
+      }),
       actionStore: fileActionLedgerStore(join(dirname(cfg.budgetFile), "actions.json")),
       verifiedFetch: aci ? (botId, url, init) => aci.fetch(botId, url, init) : undefined,
       secrets,

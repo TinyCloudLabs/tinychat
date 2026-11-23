@@ -9,13 +9,12 @@
 // read identity, checked again here.
 // Details: TC-3792, TC-3794
 
-import express, { Router, type RequestHandler } from "express";
+import express, { Router, type Request, type RequestHandler } from "express";
 import { NonceGuard, verifyCall } from "../bots-signed-call.js";
 import { createMcpMeetingTools } from "../mcp-meetings/dispatch.js";
-import { TINYCLOUD_FIND_MEETINGS, TINYCLOUD_LIST_MEETING_ACTIONS, TINYCLOUD_READ_MEETING, TINYCLOUD_SEARCH_TRANSCRIPTS } from "../mcp-meetings/tools.js";
 import { compactLegacyMeetingResult } from "../transcripts/legacy-meeting-projection.js";
 import { parseMeetingToolData } from "../transcripts/meeting-evidence.js";
-import type { ReadAudit } from "../trustbot-reads/audit.js";
+import { readAuditArea, TRUSTBOT_MEETING_TOOLS, type ReadAudit, type ReadOutcome } from "../trustbot-reads/audit.js";
 import { isReadArea, READ_AREA_NAMES } from "../trustbot-reads/areas.js";
 import { ReadGrantInvalid, ReadGrantRefused, type ReadStatus, type TrustBotReadGrants } from "../trustbot-reads/grants.js";
 import { delegatedFeedChatSql, FEED_CHAT_FIRST_DATABASE, FeedChatReadError, isFeedChatTool, runFeedChatTool } from "../trustbot-reads/feed-chat.js";
@@ -23,10 +22,7 @@ import type { StandingReadControl } from "../trustbot-reads/standing.js";
 import { delegatedMeetingPort } from "../trustbot-reads/meeting-port.js";
 import { botOwnerDid, botsServiceHeaders, type BotsConfig } from "./bots.js";
 
-/** The meeting tools TrustBot may run, by the names the gateway serves them under. */
-export const TRUSTBOT_MEETING_TOOLS = [
-  TINYCLOUD_FIND_MEETINGS, TINYCLOUD_READ_MEETING, TINYCLOUD_SEARCH_TRANSCRIPTS, TINYCLOUD_LIST_MEETING_ACTIONS,
-] as const;
+export { TRUSTBOT_MEETING_TOOLS };
 export const TRUSTBOT_READS_INTERNAL_PREFIX = "/api/internal/bots/main/reads";
 /** The internal route's request body is `{ "args": {…} }`; meeting tool arguments are short. */
 export const TRUSTBOT_READS_BODY_LIMIT = 16 * 1024;
@@ -42,9 +38,9 @@ export interface TrustBotReadsOptions {
   auth: RequestHandler;
   /** Shared with the bots service's gateway (BOTS_BACKEND_CALL_SECRET). */
   callSecret: string;
+  audit?: ReadAudit;
   standing?: StandingReadControl;
   standingEnabled?: boolean;
-  audit?: ReadAudit;
 }
 
 /** Tells the bots service which areas are on, so the gateway offers those tools. False when it did not answer. */
@@ -184,6 +180,19 @@ function refusal(error: unknown): ToolAnswer {
   return { ok: false, error: code === "none" || code === "off" ? "off" : code === "ended" || code === "rejected" ? "ended" : "unavailable" };
 }
 
+function grantAuditOutcome(error: unknown): ReadOutcome {
+  if (!(error instanceof ReadGrantRefused)) return "error";
+  const policy = "auditOutcome" in error ? error.auditOutcome : undefined;
+  if (policy === "not_owner" || policy === "no_grant" || policy === "expired" || policy === "revoked" || policy === "unavailable") return policy;
+  switch (error.code) {
+    case "none": return "no_grant";
+    case "off": return "off";
+    case "ended": return "expired";
+    case "rejected": return "unavailable";
+    case "unavailable": return "unavailable";
+  }
+}
+
 /** The text the model reads: the summary and one cited projection of the result, as meeting chat gives it. */
 function toolText(result: { text?: unknown; data?: unknown }): string {
   const summary = typeof result.text === "string" ? result.text : "";
@@ -195,49 +204,96 @@ function toolText(result: { text?: unknown; data?: unknown }): string {
   return summary && data ? `${summary}\n\nTool data:\n${data}` : summary || data;
 }
 
-export function createTrustBotReadsInternalRouter({ grants, config, callSecret }: Pick<TrustBotReadsOptions, "grants" | "config" | "callSecret">) {
+export function createTrustBotReadsInternalRouter(
+  { grants, config, callSecret, audit }: Pick<TrustBotReadsOptions, "grants" | "config" | "callSecret" | "audit">,
+) {
   const router = Router();
   const nonces = new NonceGuard();
+  const bytesOf = (req: Request): Buffer => Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+  const verify = (req: Request) => verifyCall(req.headers.authorization, { method: req.method, path: req.originalUrl, body: bytesOf(req) }, {
+    secret: callSecret, direction: "to-backend", environment: config.environment ?? "private", nonces,
+  });
+
+  router.post("/audit/refusal", express.raw({ type: () => true, limit: "1kb" }), async (req, res) => {
+    const claims = verify(req);
+    if (!claims || claims.bot !== "main") { res.status(401).end(); return; }
+    let report: unknown;
+    try { report = JSON.parse(bytesOf(req).toString("utf8")); } catch { /* Invalid report. */ }
+    if (!report || typeof report !== "object" || Object.keys(report).length !== 4) { res.status(400).end(); return; }
+    const { owner, area, tool, outcome } = report as Record<string, unknown>;
+    const expectedArea = typeof tool === "string" ? readAuditArea(tool) : undefined;
+    if (!expectedArea || area !== expectedArea || owner !== claims.owner || typeof tool !== "string" ||
+      (outcome !== "off" && outcome !== "budget" && outcome !== "busy")) {
+      res.status(400).end();
+      return;
+    }
+    const allowed = config.accountAllowed(claims.owner.slice(claims.owner.lastIndexOf(":") + 1));
+    try {
+      if (audit) {
+        const id = await audit.begin({ at: new Date().toISOString(), owner: claims.owner, area: expectedArea, tool });
+        await audit.settle(id, allowed ? outcome : "not_owner");
+      }
+      res.status(allowed ? 204 : 404).end();
+    } catch {
+      res.status(503).end();
+    }
+  });
   // Every read goes through the owner's grant, checked again by grants.access; nothing about it is kept here.
   const tools = createMcpMeetingTools(owner =>
     delegatedMeetingPort(() => grants.access(owner.slice(owner.lastIndexOf(":") + 1), "meetings")));
   router.post("/:tool", express.raw({ type: () => true, limit: TRUSTBOT_READS_BODY_LIMIT }), async (req, res) => {
-    const answer = (status: number, body: ToolAnswer) => res.status(status).json(body);
-    const bytes = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
-    const claims = verifyCall(req.headers.authorization, { method: req.method, path: req.originalUrl, body: bytes }, {
-      secret: callSecret, direction: "to-backend", environment: config.environment ?? "private", nonces,
-    });
+    const claims = verify(req);
     if (!claims || claims.bot !== "main") { res.status(401).end(); return; }
     const address = claims.owner.slice(claims.owner.lastIndexOf(":") + 1);
-    if (!config.accountAllowed(address)) { res.status(404).end(); return; }
-    const feedChat = isFeedChatTool(req.params.tool) ? req.params.tool : undefined;
-    const tool = feedChat ?? TRUSTBOT_MEETING_TOOLS.find(name => name === req.params.tool);
-    if (!tool) { res.status(404).end(); return; }
+    const tool = req.params.tool;
+    const area = readAuditArea(tool);
+    if (!area) { res.status(404).end(); return; }
+    let id: string | undefined;
+    try {
+      id = await audit?.begin({ at: new Date().toISOString(), owner: claims.owner, area, tool });
+    } catch {
+      res.status(200).json({ ok: false, error: "unavailable" });
+      return;
+    }
+    const settle = async (outcome: ReadOutcome) => {
+      if (id !== undefined) await audit!.settle(id, outcome);
+    };
+    const answer = async (status: number, body: ToolAnswer, outcome: ReadOutcome) => {
+      try { await settle(outcome); }
+      catch { res.status(200).json({ ok: false, error: "unavailable" }); return; }
+      res.status(status).json(body);
+    };
+    if (!config.accountAllowed(address)) {
+      await settle("not_owner").catch(() => {});
+      res.status(404).end();
+      return;
+    }
+    const feedChat = isFeedChatTool(tool) ? tool : undefined;
     let args: unknown;
-    try { args = (JSON.parse(bytes.toString("utf8")) as { args?: unknown }).args; } catch { args = undefined; }
-    if (!args || typeof args !== "object" || Array.isArray(args)) { answer(400, { ok: false, error: "invalid" }); return; }
+    try { args = (JSON.parse(bytesOf(req).toString("utf8")) as { args?: unknown }).args; } catch { args = undefined; }
+    if (!args || typeof args !== "object" || Array.isArray(args)) { await answer(400, { ok: false, error: "invalid" }, "error"); return; }
     // Checked before the tool runs, so a refusal answers with the owner's setting rather than a failed read.
     try {
       if (feedChat) await grants.access(address, "feed_chats", FEED_CHAT_FIRST_DATABASE[feedChat]);
       else await grants.access(address, "meetings");
     } catch (error) {
-      answer(200, refusal(error));
+      await answer(200, refusal(error), grantAuditOutcome(error));
       return;
     }
     if (feedChat) {
       // Each query activates only the resource its database sits under (feed-chat.ts feedChatResource).
       try {
         const sql = delegatedFeedChatSql(resource => grants.access(address, "feed_chats", resource));
-        answer(200, { ok: true, text: await runFeedChatTool(feedChat, args as Record<string, unknown>, sql) });
+        await answer(200, { ok: true, text: await runFeedChatTool(feedChat, args as Record<string, unknown>, sql) }, "ok");
       } catch (error) {
-        if (error instanceof ReadGrantRefused) { answer(200, refusal(error)); return; }
-        if (!(error instanceof FeedChatReadError)) { answer(200, { ok: false, error: "unavailable" }); return; }
+        if (error instanceof ReadGrantRefused) { await answer(200, refusal(error), grantAuditOutcome(error)); return; }
+        if (!(error instanceof FeedChatReadError)) { await answer(200, { ok: false, error: "unavailable" }, "error"); return; }
         if (error.code === "rejected") {
           grants.forgetActivation(address);
-          answer(200, { ok: false, error: "unavailable" });
+          await answer(200, { ok: false, error: "unavailable" }, "unavailable");
           return;
         }
-        answer(200, { ok: false, error: error.code === "not_found" ? "not_found" : "invalid", code: error.code });
+        await answer(200, { ok: false, error: error.code === "not_found" ? "not_found" : "invalid", code: error.code }, error.code === "not_found" ? "not_found" : "error");
       }
       return;
     }
@@ -245,16 +301,19 @@ export function createTrustBotReadsInternalRouter({ grants, config, callSecret }
     try {
       const result = await tools.run({ name: tool, args: args as Record<string, unknown>, owner, roomId: TRUSTBOT_ROOM });
       const body = result.body as { result?: { text?: unknown; data?: unknown }; error?: unknown; code?: unknown };
-      if (result.status === 200 && body.result) { answer(200, { ok: true, text: toolText(body.result) }); return; }
+      if (result.status === 200 && body.result) { await answer(200, { ok: true, text: toolText(body.result) }, "ok"); return; }
       const code = typeof body.error === "string" ? body.error : typeof body.code === "string" ? body.code : "tool_failed";
       if (GRANT_ENDED.has(code) || GRANT_REFUSED.has(code)) {
         grants.forgetActivation(address);
-        answer(200, { ok: false, error: GRANT_ENDED.has(code) ? "ended" : "unavailable" });
+        await answer(200, { ok: false, error: GRANT_ENDED.has(code) ? "ended" : "unavailable" },
+          code === "delegation_expired" ? "expired" : code === "delegation_revoked" ? "revoked" :
+          code === "delegation_required" ? "no_grant" : "unavailable");
         return;
       }
-      answer(200, { ok: false, error: result.status >= 500 ? "unavailable" : "invalid", code: /^[a-z0-9_]{1,64}$/.test(code) ? code : "tool_failed" });
+      await answer(200, { ok: false, error: result.status >= 500 ? "unavailable" : "invalid", code: /^[a-z0-9_]{1,64}$/.test(code) ? code : "tool_failed" },
+        result.status === 404 ? "not_found" : code === "mcp_unavailable" ? "unavailable" : "error");
     } catch {
-      answer(200, { ok: false, error: "unavailable" });
+      await answer(200, { ok: false, error: "unavailable" }, "error");
     }
   });
   return router;

@@ -46,6 +46,7 @@ const areaOf = (name: ReadToolName): ReadArea => isFeedChatTool(name) ? "feed_ch
 /** Reads per bot per UTC day. */
 export const READS_PER_DAY = 200;
 const CALL_TIMEOUT_MS = 20_000;
+const AUDIT_TIMEOUT_MS = 2_000;
 /** The backend answers at most 16,000 characters of tool text; JSON escaping can roughly double it. */
 const ANSWER_BYTES = 64 * 1024;
 const BACKEND_PATH = "/api/internal/bots/main/reads/";
@@ -97,6 +98,8 @@ export interface MeetingDeskOptions {
   /** The backend's origin and the secret its calls are signed with; without a secret every read is refused. */
   backendOrigin: string;
   backendCallSecret: string | undefined;
+  /** Send refusals to the backend that serves the standing-read audit. */
+  forwardRefusals?: boolean;
   store?: HeldStore;
   fetch?: UpstreamFetch;
   now?: () => number;
@@ -161,13 +164,20 @@ export class MeetingDesk {
       return toolText(error === "not_found" ? errors.not_found ?? errors.unavailable : errors[error], true);
     };
     const setting = this.#settings.get(botId);
-    if (!setting?.areas.includes(area) || !setting.owner) return refuse("off");
+    const refuseLocally = (outcome: "off" | "budget" | "busy") => {
+      const secret = this.#options.backendCallSecret;
+      if (this.#options.forwardRefusals && setting?.owner && secret) {
+        void this.#forwardRefusal(secret, setting.owner, area, name, outcome);
+      }
+      return refuse(outcome);
+    };
+    if (!setting?.areas.includes(area) || !setting.owner) return refuseLocally("off");
     if (!this.#options.backendCallSecret) return refuse("unavailable", "no_secret");
     const day = new Date(this.#now()).toISOString().slice(0, 10);
     const today = this.#today.get(botId);
     const used = today?.day === day ? today.count : 0;
-    if (used >= READS_PER_DAY) return refuse("budget");
-    if (this.#calling.has(botId)) return refuse("busy");
+    if (used >= READS_PER_DAY) return refuseLocally("budget");
+    if (this.#calling.has(botId)) return refuseLocally("busy");
     this.#calling.add(botId);
     this.#today.set(botId, { day, count: used + 1 });
     try {
@@ -193,6 +203,25 @@ export class MeetingDesk {
       else this.#marks.set(botId, before);
       return false;
     }
+  }
+
+  async #forwardRefusal(secret: string, owner: string, area: ReadArea, tool: ReadToolName, outcome: "off" | "budget" | "busy"): Promise<void> {
+    const path = `${BACKEND_PATH}audit/refusal`;
+    const body = JSON.stringify({ owner, area, tool, outcome });
+    try {
+      const authorization = signedCallHeader(secret, {
+        direction: "to-backend", environment: "private", owner, bot: "main", method: "POST", path, body,
+      });
+      const response = await this.#fetch(`${this.#options.backendOrigin}${path}`, {
+        method: "POST", redirect: "error", signal: AbortSignal.timeout(AUDIT_TIMEOUT_MS),
+        headers: { authorization, "content-type": "application/json" }, body,
+      });
+      void response.body?.cancel().catch(() => {});
+      if (response.status === 204) return;
+    } catch {
+      // The refusal is already decided. The report cannot affect its reply.
+    }
+    console.log(JSON.stringify({ gateway: "reads", outcome: "audit_forward_failed" }));
   }
 
   async #ask(owner: string, name: ReadToolName, args: Record<string, unknown>): Promise<Answer> {
