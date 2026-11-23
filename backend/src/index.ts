@@ -26,6 +26,7 @@ import { BotHistory } from "./bot-history.js";
 import { createBotHistoryRouter, createSiblingHistoryRouter, startBotHistoryDrain } from "./routes/bot-history.js";
 import { botsFromEnv, createBotsRouter, removeBotFromService } from "./routes/bots.js";
 import { createTrustBotReadsInternalRouter, createTrustBotReadsRouter, TRUSTBOT_READS_INTERNAL_PREFIX } from "./routes/trustbot-reads.js";
+import { createReadAudit, purgeReadAudit } from "./trustbot-reads/audit.js";
 import { startTrustBotReads, trustbotReadsFromEnv } from "./trustbot-reads/setup.js";
 import { botAdmissionSecret, mountBotAdmissionRoute } from "./routes/bot-admission.js";
 import { capModeFromEnv, planFor } from "./bot-caps.js";
@@ -989,12 +990,28 @@ async function main() {
   const trustbotReads = botsConfig && trustbotReadsSettings ? await startTrustBotReads(trustbotReadsSettings, {
     backendNode: node, backendDid: did, host: TINYCLOUD_HOST, otherDelegateDids: [process.env.MCP_CHAT_SERVICE_DID, AGENT_DID],
   }) : undefined;
+  // Retention also runs after standing reads are turned off.
+  if (!localValidation) {
+    let purging = false;
+    const purge = async () => {
+      if (purging) return;
+      purging = true;
+      try { await purgeReadAudit(node); }
+      finally { purging = false; }
+    };
+    const sweep = () => { void purge().catch(() => {}); };
+    sweep();
+    setInterval(sweep, 60 * 60_000).unref();
+  }
   if (botsConfig && trustbotReadsSettings && trustbotReads) {
-    app.use("/api/bots/main/reads", createTrustBotReadsRouter({
+    const standingEnabled = process.env.TRUSTBOT_STANDING_READS_ENABLED === "true";
+    const audit = standingEnabled ? createReadAudit(node) : undefined;
+    const readsOptions = {
       grants: trustbotReads, config: botsConfig, auth: authMiddleware,
-      standingEnabled: process.env.TRUSTBOT_STANDING_READS_ENABLED === "true",
-    }));
-    app.use(TRUSTBOT_READS_INTERNAL_PREFIX, createTrustBotReadsInternalRouter({ grants: trustbotReads, config: botsConfig, callSecret: trustbotReadsSettings.callSecret }));
+      callSecret: trustbotReadsSettings.callSecret, standingEnabled, audit,
+    };
+    app.use("/api/bots/main/reads", createTrustBotReadsRouter(readsOptions));
+    app.use(TRUSTBOT_READS_INTERNAL_PREFIX, createTrustBotReadsInternalRouter(readsOptions));
     console.log("[startup] TrustBot reads enabled.");
   }
   app.use("/api/bots", createBotsRouter({

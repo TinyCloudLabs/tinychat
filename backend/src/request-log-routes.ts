@@ -72,6 +72,7 @@ export const REQUEST_LOG_ROUTE_TEMPLATES: readonly string[] = [
   "/api/internal/assemblyai-status",
   "/api/internal/bots/admit",
   "/api/internal/bots/main/reads/:tool",
+  "/api/internal/bots/main/reads/audit/refusal",
   "/api/internal/calendar-autojoin-counts",
   "/api/internal/credential-row-count",
   "/api/manifest",
