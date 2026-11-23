@@ -8,6 +8,7 @@
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { secretsAvailable, SECRETS_UNAVAILABLE_IN_APP_MESSAGE } from "../openkeyNative";
+import { connectorNamedKeyWritesEnabled } from "./namedKeyWrites";
 import type { ConnectorDescriptor } from "./types";
 
 /** Same Result shape the SDK uses. Errors propagate untouched. */
@@ -229,9 +230,13 @@ export async function saveConnectorKey<E>(
   key: string,
 ): Promise<SecretsResult<void, E>> {
   const cacheKey = cacheKeyFor(tcw, descriptor);
-  const options = descriptor.secretScope
-    ? { scope: descriptor.secretScope }
-    : undefined;
+  // With the switch on, a new secret is written under its own key, so reading it needs only that key's grant.
+  // Off (the default), the put is the plain one that readers of every age can open.
+  const options = connectorNamedKeyWritesEnabled()
+    ? { ...(descriptor.secretScope ? { scope: descriptor.secretScope } : {}), namedKey: true as const }
+    : descriptor.secretScope
+      ? { scope: descriptor.secretScope }
+      : undefined;
   const first = (await tcw.secrets.put(
     descriptor.secretName,
     key,
