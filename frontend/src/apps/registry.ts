@@ -23,7 +23,7 @@ export type FramedAppId =
   | "xyz.tinycloud.rocinante.ledger";
 
 /** A TinyCloud site One links to but never frames (it refuses frames): its screen in One opens it in a new tab. */
-export type LinkAppId = "xyz.tinycloud.share" | "xyz.tinycloud.contacts";
+export type LinkAppId = "xyz.tinycloud.share";
 
 export type OneAppId = FramedAppId | LinkAppId | "capture";
 
@@ -287,7 +287,6 @@ const ALL_APPS: readonly OneApp[] = [
   // One's new navigation only. Share is a plain link: One holds no delegation for it, so its screen offers its site in a
   // new tab.
   { id: "xyz.tinycloud.share", kind: "link", name: APP_NAMES["xyz.tinycloud.share"], glyph: "share", url: "https://share.tinycloud.xyz/" },
-  { id: "xyz.tinycloud.contacts", kind: "link", name: APP_NAMES["xyz.tinycloud.contacts"], glyph: "contacts", url: "https://contacts.tinycloud.xyz/" },
 ];
 
 /**
