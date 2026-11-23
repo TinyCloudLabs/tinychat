@@ -1,4 +1,5 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -30,7 +31,7 @@ function setup() {
     async finalizePairing(_ctx, pending, artifactC) {
       finalized++;
       const artifact = JSON.parse(artifactC);
-      if (artifact.delegation !== "signed-peer-delegation") throw new Error("forged_signature");
+      if (artifact.delegation !== "signed-peer-delegation") throw Object.assign(new Error("forged_signature"), { code: "bad-artifact" });
       return { handle: pending.handle, peerDid: pending.peerDid, delegation: { signed: artifact.delegation }, proof: { cid: "verified-C", issuedAt: now }, delegationExpiresAt: now + 7 * 86_400_000 };
     },
     async unpair() {},
@@ -304,4 +305,53 @@ test("a local failure while storing a library-verified C revokes it by its exact
   expect(await store.getPending(owner, "reader")).toBeUndefined();
   expect(await store.listRetired(owner)).toEqual([]);
   expect(await pairing.list(owner)).toEqual([]);
+});
+
+test("when the cleanup duty cannot be sealed, a verified C is revoked directly once and only a fixed outcome is logged", async () => {
+  const { pairing, adapter, store } = setup();
+  const finalize = adapter.finalizePairing;
+  adapter.finalizePairing = async (ctx, pending, artifact) => ({ ...await finalize(ctx, pending, artifact), proof: { cid: "" } });
+  const revoked: unknown[] = [];
+  adapter.unpair = async (_ctx, peer) => { revoked.push(peer); };
+  await pairing.pair(owner, JSON.stringify(start));
+  store.retire = async () => { throw new Error("disk_full"); };
+  const log = spyOn(console, "log").mockImplementation(() => {});
+  try {
+    await expect(pairing.pair(owner, JSON.stringify(final))).rejects.toThrow("disk_full");
+    expect(revoked).toEqual([{ handle: "reader", peerDid: start.from.courier, delegation: { pending: { handle: "reader", peerDid: start.from.courier, pairingId: "01J00000000000000000000000" } } }]);
+    expect(log.mock.calls.map(call => JSON.parse(String(call[0])))).toEqual([
+      { gateway: "courier", peer: createHash("sha256").update(start.from.courier).digest("hex").slice(0, 12), outcome: "revoked_unsealed" },
+    ]);
+  } finally { log.mockRestore(); }
+});
+
+test("an adapter failure after the library finalized C answers 400 and revokes the attempt by its exact reference", async () => {
+  const { pairing, adapter, store } = setup();
+  const finalize = adapter.finalizePairing;
+  adapter.finalizePairing = async (ctx, pending, artifact) => { await finalize(ctx, pending, artifact); throw new Error("Courier stored pairing mismatch"); };
+  const revoked: unknown[] = [];
+  adapter.unpair = async (_ctx, peer) => { revoked.push(peer); };
+  await pairing.pair(owner, JSON.stringify(start));
+  expect(await pairing.pair(owner, JSON.stringify(final)).catch(error => error)).toMatchObject({ code: "invalid", status: 400 });
+  expect(revoked).toEqual([{ handle: "reader", peerDid: start.from.courier, delegation: { pending: expect.objectContaining({ pairingId: "01J00000000000000000000000" }) } }]);
+  expect(await store.getPending(owner, "reader")).toBeUndefined();
+  expect(await store.listRetired(owner)).toEqual([]);
+  expect(await pairing.list(owner)).toEqual([]);
+});
+
+test("renewal_unavailable is logged once per peer per 24 hours, not on every maintenance tick", async () => {
+  const { pairing, adapter, advance } = setup();
+  adapter.renewPeer = async () => { throw new Error("renewal_unavailable"); };
+  await pairing.pair(owner, JSON.stringify(start));
+  await pairing.pair(owner, JSON.stringify(final));
+  const log = spyOn(console, "log").mockImplementation(() => {});
+  try {
+    for (let tick = 0; tick < 5; tick++) { await pairing.maintain(owner); advance(15_000); }
+    expect(log).toHaveBeenCalledTimes(1);
+    advance(86_400_000);
+    await pairing.maintain(owner);
+    await pairing.maintain(owner);
+    expect(log).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(String(log.mock.calls[1]![0]))).toEqual({ gateway: "courier", peer: createHash("sha256").update(start.from.courier).digest("hex").slice(0, 12), outcome: "renewal_unavailable" });
+  } finally { log.mockRestore(); }
 });

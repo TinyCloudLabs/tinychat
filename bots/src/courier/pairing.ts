@@ -10,6 +10,7 @@ export const COURIER_PAIRING_TTL_MS = 15 * 60_000;
 export const COURIER_PEER_MAX_MS = 7 * 86_400_000;
 export const COURIER_MAX_ARTIFACT = 64 * 1024;
 export const COURIER_MAX_PENDING = 10;
+const RENEWAL_LOG_INTERVAL_MS = 86_400_000;
 export interface PairingAdapter {
   context(owner: string, grant: CourierGrant, store: CourierPeerStore): Promise<CourierContext>;
   acceptPairing(ctx: CourierContext, artifact: string): Promise<PairPending>;
@@ -39,6 +40,16 @@ function pendingReference(error: unknown): CourierPeerReference | undefined {
   const ref = error.reference;
   return typeof ref.handle === "string" && typeof ref.peerDid === "string" && typeof ref.pairingId === "string"
     ? { handle: ref.handle, peerDid: ref.peerDid, pairingId: ref.pairingId } : undefined;
+}
+
+/** The library's own refusals are coded CourierErrors; C1's adapter failures after the library resolved are plain errors. */
+function libraryRefusal(error: unknown): boolean {
+  return isRecord(error) && typeof error.code === "string" && error.code.length > 0;
+}
+
+/** The only log line Courier pairing writes: a fixed outcome and a 12-hex peer hash. */
+function logOutcome(peerDid: string, outcome: string) {
+  console.log(JSON.stringify({ gateway: "courier", peer: createHash("sha256").update(peerDid).digest("hex").slice(0, 12), outcome }));
 }
 
 function checkedArtifact(input: string): PairArtifact {
@@ -71,6 +82,8 @@ export function createCourierPairing(options: { store: CourierPeerStore; grants:
   const { store, grants } = options;
   const now = options.now ?? Date.now;
   const queues = new Map<string, Promise<void>>();
+  // renewal_unavailable is logged at most once per owner and peer per day, not on every gateway tick.
+  const renewalLogged = new Map<string, number>();
   async function serial<T>(owner: string, run: () => Promise<T>): Promise<T> {
     const key = owner.toLowerCase();
     const previous = queues.get(key) ?? Promise.resolve();
@@ -83,6 +96,8 @@ export function createCourierPairing(options: { store: CourierPeerStore; grants:
     if (options.adapter) return options.adapter;
     // C1's current integration checkpoint declares this boundary; load implementations only for live operations.
     const lib = await import("./lib-adapter");
+    // Before any grant lookup: on a library without the headless API, no grant session is ever restored.
+    lib.courierLibraryReady();
     return { context: lib.courierContext, acceptPairing: lib.acceptPairing, finalizePairing: lib.finalizePairing, unpair: lib.unpair, renewPeer: lib.renewPeer };
   }
   async function context(api: PairingAdapter, owner: string) {
@@ -102,12 +117,23 @@ export function createCourierPairing(options: { store: CourierPeerStore; grants:
       }
     } catch { /* A disconnected owner still has no active peers after unpair. */ }
   }
-  /** Revokes a peer the library verified but the gateway refused, by the pending row's exact SDK reference. */
-  async function revokeVerified(owner: string, saved: PendingPairing) {
+  /**
+   * Revokes a peer the library verified but the gateway refused, by the pending row's exact SDK reference. When the
+   * cleanup duty cannot be sealed, the grant is revoked directly once before the store error is rethrown.
+   */
+  async function revokeVerified(owner: string, saved: PendingPairing, api: PairingAdapter, ctx: CourierContext) {
     const ref = { handle: saved.pending.handle, peerDid: saved.pending.peerDid, pairingId: saved.pending.pairingId };
-    const local = await store.getPending(owner, ref.handle);
-    if (local?.pending.pairingId === ref.pairingId) await store.retire(owner, ref.handle);
-    else await store.retireReference(owner, { handle: ref.handle, peerDid: ref.peerDid, delegation: { pending: ref } });
+    const target: RetiredCourierPeer = { handle: ref.handle, peerDid: ref.peerDid, delegation: { pending: ref } };
+    try {
+      const local = await store.getPending(owner, ref.handle);
+      if (local?.pending.pairingId === ref.pairingId) await store.retire(owner, ref.handle);
+      else await store.retireReference(owner, target);
+    } catch (error) {
+      let outcome = "revoked_unsealed";
+      try { await api.unpair(ctx, target); } catch { outcome = "revoke_unsealed_failed"; }
+      logOutcome(ref.peerDid, outcome);
+      throw error;
+    }
     await cleanRetired(owner);
   }
   return {
@@ -173,6 +199,9 @@ export function createCourierPairing(options: { store: CourierPeerStore; grants:
         try { peer = await api.finalizePairing(ctx, saved.pending, input); } catch (error) {
           // The peer's grant could not be confirmed yet: keep the pending row so the same C can be retried.
           if (pendingReference(error)) throw new PairingError("courier_unavailable", 503);
+          // A coded library refusal leaves its record unpaired, so the pending row stays for a corrected C. Any other
+          // failure may follow a verified C (e.g. the adapter rejecting the stored record), so revoke it now.
+          if (!libraryRefusal(error)) await revokeVerified(owner, saved, api, ctx);
           throw pairingFailure(error);
         }
         // From here the library has verified C and activated the peer: every local refusal, and any local failure
@@ -186,10 +215,10 @@ export function createCourierPairing(options: { store: CourierPeerStore; grants:
           // A used proof CID or a changed pending row refuses the CAS.
           else if (!await store.finalizePending(owner, saved, peer)) refusal = new PairingError("invalid", 400);
         } catch (error) {
-          await revokeVerified(owner, saved);
+          await revokeVerified(owner, saved, api, ctx);
           throw error;
         }
-        if (refusal) { await revokeVerified(owner, saved); throw refusal; }
+        if (refusal) { await revokeVerified(owner, saved, api, ctx); throw refusal; }
         const publicPeer = (await store.list(owner)).find(item => item.handle === handle)!;
         return { peer: publicPeer };
       });
@@ -214,12 +243,19 @@ export function createCourierPairing(options: { store: CourierPeerStore; grants:
         try { api = await adapter(); ctx = await context(api, owner); } catch { return; }
         for (const peer of peers) {
           if (peer.delegationExpiresAt <= now()) continue;
+          const logKey = `${owner.toLowerCase()} ${peer.peerDid}`;
           try {
             const renewed = await api.renewPeer(ctx, peer);
             if (renewed.delegationExpiresAt > now() + COURIER_PEER_MAX_MS) throw new Error("invalid_courier_successor");
             if (renewed.delegationExpiresAt > peer.delegationExpiresAt) await store.renewRuntime(owner, peer, renewed);
+            renewalLogged.delete(logKey);
           } catch {
-            console.log(JSON.stringify({ gateway: "courier", peer: createHash("sha256").update(peer.peerDid).digest("hex").slice(0, 12), outcome: "renewal_unavailable" }));
+            const last = renewalLogged.get(logKey);
+            if (last === undefined || now() - last >= RENEWAL_LOG_INTERVAL_MS) {
+              for (const [key, at] of renewalLogged) if (now() - at >= RENEWAL_LOG_INTERVAL_MS) renewalLogged.delete(key);
+              renewalLogged.set(logKey, now());
+              logOutcome(peer.peerDid, "renewal_unavailable");
+            }
           }
         }
       });
