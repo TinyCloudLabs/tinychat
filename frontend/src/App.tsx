@@ -190,7 +190,7 @@ import {
 } from "./lib/openkeyNative";
 import { NativeRenewal, guardNativeTinyCloudCalls, NATIVE_SESSION_ENDED_MESSAGE, NATIVE_STORAGE_MESSAGE } from "./lib/openkeyNativeRenewal";
 import { isAuthSettledSignedOut } from "./lib/authRouting";
-import { clearSendIntentsForOwner } from "./chat/TranscriberSection";
+import { clearSendIntentsForOwner } from "./chat/notetakerSendIntents";
 import { browserIsOffline, restorePersistedSession } from "./lib/sessionRestore";
 import { applyManifestRevisionGate, browserRevisionStore, createResignPromptGuard, MANIFEST_RESIGN_NOTICE, recordManifestRevisionIfSigned } from "./lib/manifestRevision";
 import { clearTranscriptDelegationSchedule, ensureTranscriptWriterDelegation } from "./lib/transcriptDelegation";
