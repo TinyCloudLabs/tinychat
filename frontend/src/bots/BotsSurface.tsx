@@ -2,6 +2,7 @@
 // slot (ChatSlot.tsx) loads it once the account has picked Bots, so an account on Classic never fetches it.
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
+import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { useSizeClass } from "@/lib/sizeClass";
 import { navKindFor } from "@/shell/navItems";
@@ -14,19 +15,22 @@ import { BotsChat, viewableBots, type BotHistoryAccess, type ControllerBot } fro
 import { botsNavStore, type BotsNavState } from "./botsNav";
 import { CREATE_BOT_STRINGS, MAIN_BOT_NAME } from "./botsStrings";
 import { CreateBotDialog } from "./CreateBotDialog";
+import { historyAccessFor } from "./botHistoryAccess";
 import type { BotChats } from "./useBotChat";
 import { useBots } from "./useBots";
 
 const faceOf = ({ key, name, shape, colour }: RosterBot | ControllerBot) => (shape && colour ? { key, name, shape, colour } : MAIN_BOT);
 
-export function BotsSurface({ account, active, onReconnect, chatApi = defaultChatApi, rosterApi = defaultRosterApi, history }: {
+export function BotsSurface({ account, active, onReconnect, chatApi = defaultChatApi, rosterApi = defaultRosterApi, tcw, history }: {
   account: string;
   active: boolean;
   onReconnect?: () => void;
   chatApi?: BotChatApi;
   rosterApi?: BotRosterApi;
-  history: BotHistoryAccess | null;
+  tcw: TinyCloudWeb;
+  history?: BotHistoryAccess | null;
 }) {
+  const sessionHistory = useMemo(() => historyAccessFor(tcw), [tcw]);
   const { status, roster, reload, create } = useBots(rosterApi);
   // Edit and Delete bot (the bot panel) change the list, which does not update live, so it is read again after each.
   const manage = useMemo(() => ({
@@ -71,7 +75,7 @@ export function BotsSurface({ account, active, onReconnect, chatApi = defaultCha
   const phone = navKindFor(useSizeClass()) === "tabbar";
   return (
     <div className="h-full" data-chat-view="bots">
-      <BotsChat controller={controller} selected={selected} faceOf={faceOf} history={history} active={active} onReconnect={onReconnect}
+      <BotsChat controller={controller} selected={selected} faceOf={faceOf} history={history === undefined ? sessionHistory : history} active={active} onReconnect={onReconnect}
         chatApi={chatApi} onChats={setChats} strip={phone ? <PhoneBotStrip /> : null} />
       {roster ? (
         <CreateBotDialog open={creating} onOpenChange={setCreating} roster={roster} onCreate={create}

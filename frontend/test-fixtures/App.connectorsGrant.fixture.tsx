@@ -160,7 +160,7 @@ mock.module("@/lib/sessionRestore", () => ({
 mock.module("@/lib/openkeySignOut", () => ({ ...signOutApi, signOutOpenKeySession: async () => ({ status: "cancelled" }) }));
 mock.module("@/lib/connectors/encryptionGrant", () => ({
   ...grantApi,
-  withEncryptionDecryptGrant: (manifest: object) => { decryptGrantCalls += 1; return { ...manifest, decryptGrant: true }; },
+  withConnectorDecryptGrants: (manifest: object) => { decryptGrantCalls += 1; return { ...manifest, decryptGrant: true }; },
 }));
 mock.module("@/lib/transcriptDelegation", () => ({
   ...delegationApi,

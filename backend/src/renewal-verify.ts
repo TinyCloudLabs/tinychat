@@ -17,6 +17,7 @@ import {
 } from "@tinycloud/sdk-core/delegations/renewal";
 import { siweToDelegationHeaders } from "@tinycloud/node-sdk-wasm";
 import { isExpectedSiweOrigin } from "./cors-origins.js";
+import { hasTinyChatNativeAudience } from "./native-siwe-audience.js";
 
 /**
  * D2 (TC-2872): a lease-renewed TinyCloud session gets a fresh backend bearer. The owner grant, the
@@ -219,8 +220,9 @@ export async function verifyRenewal(input: RenewalVerifyInput, deps: RenewalVeri
   let session: VerifiedSiweSession;
   try { session = await verifySiweSession(input.delegation.message, input.delegation.signature); } catch { return refuse("invalid_grant"); }
   if (session.address.toLowerCase() !== input.address.toLowerCase()) return refuse("wrong_owner");
-  // Native sign-in keeps its own renewal (D3): only web grants are renewed here.
-  if (session.domain === deps.nativeDomain || !isExpectedSiweOrigin(session.domain, session.uri, deps.webDomains, deps.nativeDomain)) {
+  if (!isExpectedSiweOrigin(session.domain, session.uri, deps.webDomains, deps.nativeDomain) ||
+    (session.domain === deps.nativeDomain &&
+      !hasTinyChatNativeAudience(input.delegation.message, session.address, session.chainId, session.resources))) {
     return refuse("invalid_origin");
   }
   if (!session.expirationTime || !session.uri.startsWith("did:key:")) return refuse("invalid_grant");

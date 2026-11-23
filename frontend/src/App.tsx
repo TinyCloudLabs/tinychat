@@ -19,23 +19,20 @@ import {
   createAndSignIn,
   createTinyCloudWeb,
   createApiClient,
-  openKeyRenewalClient,
   renewalVerifyProof,
   requestNonce,
   restoreTinyCloudWebSession,
   verifyRenewedSession,
   verifySession,
-  type OpenKeyRenewalOutcome,
 } from "@tinyboilerplate/client";
 import {
   CONNECTORS_KV_PREFIX,
   manifestCarriesBundle,
   OFFERED_CHAT_MODELS,
   offeredChatModelContextTokens,
-  SESSION_EXPIRATION_MS,
 } from "@tinyboilerplate/core";
-import { SIGN_IN_RENEWAL_ASK, admitSignInRenewal, renewalRestoreFor } from "./lib/renewalReceipt";
-import { withEncryptionDecryptGrant } from "./lib/connectors/encryptionGrant";
+import { desktopSignInWithRenewal, renewalRestoreFor, webSignInRenewal } from "./lib/renewalReceipt";
+import { withConnectorDecryptGrants } from "./lib/connectors/encryptionGrant";
 import { homeFeaturesToRequest, webSignInManifest, readHomeFeatures, type HomeFeature } from "./lib/homeFeatures";
 import { rememberExistingWebConnectors } from "./lib/rememberWebConnectors";
 import { reauthorizeHome } from "./lib/homeReauthorize";
@@ -119,6 +116,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { FeedView } from "./feed/FeedView";
 import { ChatSlot } from "./bots/ChatSlot";
+import { useBotHistoryDescriptorRenewal } from "./bots/historyAuthorization";
 import { homeFeedSourceFor, settleHeldAnswersForSignOut, SIGN_OUT_FLUSH_MS } from "./feed/feedStore";
 import { HomeEntryGate } from "./home/HomeEntryGate";
 import { readCachedFirstScreen, readFirstScreen } from "./home/firstScreenStore";
@@ -189,7 +187,7 @@ import {
 } from "./lib/openkeyNative";
 import { NativeRenewal, guardNativeTinyCloudCalls, NATIVE_SESSION_ENDED_MESSAGE, NATIVE_STORAGE_MESSAGE } from "./lib/openkeyNativeRenewal";
 import { isAuthSettledSignedOut } from "./lib/authRouting";
-import { clearSendIntentsForOwner } from "./chat/TranscriberSection";
+import { clearSendIntentsForOwner } from "./chat/notetakerSendIntents";
 import { browserIsOffline, restorePersistedSession } from "./lib/sessionRestore";
 import { applyManifestRevisionGate, browserRevisionStore, createResignPromptGuard, MANIFEST_RESIGN_NOTICE, recordManifestRevisionIfSigned } from "./lib/manifestRevision";
 import { clearTranscriptDelegationSchedule, ensureTranscriptWriterDelegation } from "./lib/transcriptDelegation";
@@ -278,6 +276,7 @@ export function App() {
   const [did, setDid] = useState<string | null>(null);
   const [spaceId, setSpaceId] = useState<string | null>(null);
   const [tcw, setTcw] = useState<TinyCloudWeb | null>(null);
+  useBotHistoryDescriptorRenewal(state === "ready" && !LOCAL_VALIDATION ? tcw : null);
   useEffect(() => {
     if (!tinyCloudWebMcpFeedEnabled()) return;
     setTinyCloudWebMcpFeedLoader(
@@ -312,6 +311,7 @@ export function App() {
       connect: () => connectWallet({ appName: APP_NAME, host: OPENKEY_HOST, passkeysSupported: openkeyPasskeysSupported() }),
       prefetch: createWebSignInPrefetch(BACKEND_URL, { requestNonce }),
       createTcw: createTinyCloudWeb,
+      renewalSignIn: webSignInRenewal,
       verify: (siwe, signature) => verifySession(BACKEND_URL, siwe, signature),
     }, {
       address,
@@ -804,9 +804,10 @@ export function App() {
         setState("unauthenticated");
         return;
       }
-      // TC-2872: past the saved session's signed end, its own verified renewal receipt carries it (web only). With the
+      // Past the saved session's signed end, its own verified renewal receipt carries it. With the
       // bearer gone too, the receipt's account is the one restored, and the backend reissues the bearer from it.
-      const renewalRestore = appPlatform() === "web" && !LOCAL_VALIDATION
+      const platform = appPlatform();
+      const renewalRestore = !LOCAL_VALIDATION && (platform === "web" || platform === "tauri")
         ? await renewalRestoreFor(sessionStoreRef.current.getAddress())
         : null;
       if (!mayCommitRestore()) return;
@@ -1242,6 +1243,7 @@ export function App() {
       setState("signing");
       // setupSpaceSession + ensureSpaceExists happen inside the SDK when
       // autoCreateSpace is true; the manifest grants tinycloud.kv on the space.
+      const platform = appPlatform();
       const signInConfig = {
         address: connectedAddress,
         nonce,
@@ -1252,9 +1254,9 @@ export function App() {
         uiPlatform: sdkUiPlatform(),
         // The web asks for connector secrets and the decrypt grant only once this device has used Connectors (opening
         // it asks in place otherwise). The desktop app signs in with them; the phone app signs in above, natively.
-        manifest: appPlatform() === "web"
+        manifest: platform === "web"
           ? webSignInManifest(manifest, readHomeFeatures(browserRevisionStore(), connectedAddress), connectedAddress)
-          : withEncryptionDecryptGrant(manifest, connectedAddress),
+          : withConnectorDecryptGrants(manifest, connectedAddress),
         // The dev WebView runs at localhost:5186, whose port the SDK signs into
         // SIWE's domain. Production accepts the fixed Tauri hostname instead.
         ...(import.meta.env.DEV && "__TAURI_INTERNALS__" in globalThis ? { domain: "localhost" } : {}),
@@ -1262,32 +1264,29 @@ export function App() {
         // replica prefixes at this sign-in; see lib/replication/replicationClient.ts.
         ...(LOCAL_VALIDATION ? {} : await replicationConfigPatch(replicationPrincipalFor(connectedAddress))),
       };
-      // TC-2872: the web signs in through OpenKey's own window, which offers renewal beside the session it signs.
-      // The desktop app keeps the wallet signature. The nonce reaches OpenKey through the config.
-      let renewalOutcome: OpenKeyRenewalOutcome = {};
-      // When the lease arrived, on this device's monotonic clock: it is sent to the node only within a minute of it.
-      let renewalArrivedAt: number | undefined;
-      const openkeySignIn = appPlatform() === "web"
-        ? {
-            openkey: {
-              client: openKeyRenewalClient(openkey, SIGN_IN_RENEWAL_ASK, (outcome) => {
-                renewalOutcome = outcome;
-                renewalArrivedAt = performance.now();
-              }),
-              mode: "iframe" as const,
-              expiryChangeable: true,
-              maxExpiresAt: () => Date.now() + SESSION_EXPIRATION_MS,
-            },
-          }
-        : {};
+      // OpenKey offers renewal alongside sign-in on web and desktop.
+      const renewal = !LOCAL_VALIDATION && (platform === "web" || platform === "tauri")
+        ? webSignInRenewal(openkey, signInConfig.manifest)
+        : undefined;
+      const signingProvider = prefetch.guardSigning(web3Provider);
       const { tcw: signedTcw, session } = LOCAL_VALIDATION
         ? await (async () => {
-            const localTcw = createTinyCloudWeb(prefetch.guardSigning(web3Provider), { ...signInConfig, siweConfig: { nonce } });
+            const localTcw = createTinyCloudWeb(signingProvider, { ...signInConfig, siweConfig: { nonce } });
             await prepareLocalSignIn(localTcw);
             await localTcw.clearPersistedSession(connectedAddress);
             return { tcw: localTcw, session: await localTcw.signIn({ nonce }) };
           })()
-        : await createAndSignIn(prefetch.guardSigning(web3Provider), { ...signInConfig, ...openkeySignIn });
+        : platform === "tauri" && renewal
+          ? await desktopSignInWithRenewal(renewal.config, async (config) => {
+              if (config) return createAndSignIn(signingProvider, { ...signInConfig, ...config });
+              prefetch?.cancel();
+              prefetch = createWebSignInPrefetch(BACKEND_URL, {
+                requestNonce: (url) => requestNonce(url, connectedAddress),
+              });
+              const nonce = await prefetch.nonceForSigning(connectedAddress);
+              return createAndSignIn(prefetch.guardSigning(web3Provider), { ...signInConfig, nonce });
+            })
+          : await createAndSignIn(signingProvider, { ...signInConfig, ...renewal?.config });
 
       rememberReplicationPrincipal(signedTcw);
       // Exchange the SIWE message for a backend Bearer token (for /api/chat).
@@ -1298,7 +1297,7 @@ export function App() {
       sessionStoreRef.current.setSession(verified.token, verified.expiresIn, connectedAddress);
       // OpenKey signed and recorded the lease but doesn't send it to the node: the session's node admits it here,
       // within a minute of its arrival, else this sign-in runs to its signed end without renewal (lib/renewalReceipt.ts).
-      await admitSignInRenewal({ tcw: signedTcw, address: connectedAddress, renewal: renewalOutcome.renewal, arrivedAt: renewalArrivedAt });
+      await renewal?.admit(signedTcw, connectedAddress);
       // Marked current only if the manifest this sign-in used carries the bundle (an older served manifest does not).
       recordManifestRevisionIfSigned(browserRevisionStore(), connectedAddress, manifest);
       // The SDK keeps this provider for later user-authorized operations;

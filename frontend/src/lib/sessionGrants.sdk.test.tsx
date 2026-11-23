@@ -30,7 +30,7 @@ beforeAll(() => {
     const url = new URL(typeof input === "string" || input instanceof URL ? String(input) : input.url);
     if (url.pathname.includes("/locations/")) return Response.json({ error: "location record not found" }, { status: 404 });
     return new Response(
-      url.pathname.endsWith("/info") ? JSON.stringify({ protocol: 1, version: "test", nodeId: "did:key:z6MkvSbonMn1Xgewrb4EsbjTmvMT8T9Y3PTb5PcnQcQUbzjc" }) : "{}",
+      url.pathname.endsWith("/info") ? JSON.stringify({ protocol: 1, version: "test", features: ["kv", "delegation", "sql", "hooks", "encryption", "encryption-named-keys-v1"], nodeId: "did:key:z6MkvSbonMn1Xgewrb4EsbjTmvMT8T9Y3PTb5PcnQcQUbzjc" }) : "{}",
       { status: 200, headers: { "content-type": "application/json" } },
     );
   }) as typeof fetch;

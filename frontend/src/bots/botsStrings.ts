@@ -18,6 +18,8 @@ export const BOTS_STRINGS = {
   tryAgain: "Try again",
   historyLoading: "Loading earlier messages…",
   historyFailed: `Couldn't load your earlier messages with ${MAIN_BOT_NAME}.`,
+  // Monica, TC-3823, 2026-11-23.
+  historyUnreadable: `Some earlier messages with ${MAIN_BOT_NAME} can't be opened with your current encryption key.`,
   // Monica, TC-3887, 2026-11-22. The button reopens the encryption request the owner declined.
   reviewRequest: "Review request",
   errors: {
@@ -81,6 +83,7 @@ export const BOT_VIEW_STRINGS = {
   messageBot: (name: string) => `Message ${name}`,
   sendToBot: (name: string) => `Send to ${name}`,
   historyFailed: (name: string) => `Couldn't load your earlier messages with ${name}.`,
+  historyUnreadable: (name: string) => `Some earlier messages with ${name} can't be opened with your current encryption key.`,
   errors: {
     bot_unavailable: (name: string) => `${name} couldn't start.`,
     model_unavailable: (name: string) => `${name}'s model isn't answering. Try again later.`,

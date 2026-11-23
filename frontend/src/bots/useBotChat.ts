@@ -139,7 +139,7 @@ export function createBotChats(sourceFor: (key: string) => BotChatSource): BotCh
         const { messages, activity } = source.listConversation
           ? await source.listConversation(signal)
           : { messages: await source.list(signal), activity: [] };
-        update(key, (state) => ({ ...state, history: "loaded", lines: messages.map(({ id, role, text }): ChatLine => ({ id, role, text })) }));
+        update(key, (state) => ({ ...state, history: "loaded", lines: messages.map(({ id, role, text, unreadableHistory }): ChatLine => ({ id, role, text, ...(unreadableHistory ? { unreadableHistory } : {}) })) }));
         setActivity(key, anchorActivity(messages, activity));
       } catch (cause) {
         if (signal.aborted) return;

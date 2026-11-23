@@ -35,7 +35,7 @@ beforeAll(() => {
       path === "/v1/locations/did:pkh:eip155:1:" + ADDRESS.toLowerCase()
     )) return Response.json({ error: "location record not found" }, { status: 404 });
     return new Response(
-      String(input).endsWith("/info") ? JSON.stringify({ protocol: 1, version: "test", nodeId: "did:key:z6MkvSbonMn1Xgewrb4EsbjTmvMT8T9Y3PTb5PcnQcQUbzjc" }) : "{}",
+      String(input).endsWith("/info") ? JSON.stringify({ protocol: 1, version: "test", features: ["kv", "delegation", "sql", "hooks", "encryption", "encryption-named-keys-v1"], nodeId: "did:key:z6MkvSbonMn1Xgewrb4EsbjTmvMT8T9Y3PTb5PcnQcQUbzjc" }) : "{}",
       { status: 200, headers: { "content-type": "application/json" } },
     );
   }) as typeof fetch;
@@ -101,7 +101,7 @@ test("a new web account has no decrypt grant, while a device that used Connector
   expect(base.permissions?.some((entry) => entry.service === "tinycloud.encryption")).toBe(false);
   expect(rememberHomeFeature(localStorage, ADDRESS, "connectors")).toBe(true);
   const manifest = webSignInManifest(base, readHomeFeatures(localStorage, ADDRESS.toLowerCase()), ADDRESS);
-  expect(manifest.permissions?.filter((entry) => entry.service === "tinycloud.encryption")).toHaveLength(1);
+  expect(manifest.permissions?.filter((entry) => entry.service === "tinycloud.encryption")).toHaveLength(4);
   expect(readHomeFeatures(localStorage, "0x00000000000000000000000000000000000000a1")).toEqual([]);
   expect(base.secrets).not.toHaveProperty("ASSEMBLYAI_API_KEY");
 });
@@ -237,6 +237,9 @@ test("web sign-in mirrors Home's secret KV and default-network abilities for unu
     if (!used) expect(Object.keys(capabilities.spaceAbilities).filter((space) => space.endsWith(":secrets"))).toEqual([]);
     expect(capabilities.rawAbilities ?? {}).toEqual(used ? {
       [encryptionDecryptGrant(ADDRESS).path]: ["tinycloud.encryption/decrypt", "tinycloud.encryption/network.create"],
+      [`${encryptionDecryptGrant(ADDRESS).path}/secrets/fireflies_api_key`]: ["tinycloud.encryption/decrypt", "tinycloud.encryption/key.create"],
+      [`${encryptionDecryptGrant(ADDRESS).path}/secrets/granola_api_key`]: ["tinycloud.encryption/decrypt", "tinycloud.encryption/key.create"],
+      [`${encryptionDecryptGrant(ADDRESS).path}/secrets/scoped/google-meet/refresh_token`]: ["tinycloud.encryption/decrypt", "tinycloud.encryption/key.create"],
     } : {});
   }
 });
@@ -250,4 +253,31 @@ test("a newly signed non-Connectors web session reloads with its reduced base re
   expect(restored.hasPermissions([{ service: "tinycloud.sql", space: "applications", path: "xyz.tinycloud.tinychat/threads", skipPrefix: true, actions: ["read"] }])).toBe(true);
   initial.cleanup();
   restored.cleanup();
+}, 30_000);
+
+test("a node that does not advertise named keys drops the exact connector keys, and the grant reports partial", async () => {
+  const withNamedKeys = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (String(input).endsWith("/info")) {
+      return Response.json({ protocol: 1, version: "test", features: ["kv", "delegation", "sql", "hooks", "encryption"], nodeId: "did:key:z6MkvSbonMn1Xgewrb4EsbjTmvMT8T9Y3PTb5PcnQcQUbzjc" });
+    }
+    return withNamedKeys(input, init);
+  }) as typeof fetch;
+  try {
+    const tcw = createTinyCloudWeb(wallet("approve"), { ...config, manifest: webSignInManifest(base, ["connectors"], ADDRESS) });
+    await tcw.signIn();
+    const asked = composeManifestRequest([webSignInManifest(base, ["connectors"], ADDRESS)], { includeAccountRegistryPermissions: false }).resources;
+    const exactKeys = asked.filter((entry) => entry.service === "tinycloud.encryption" && entry.path.includes("/secrets/"));
+    expect(exactKeys).toHaveLength(3);
+    // The whole-account decrypt is still signed; the three exact keys are not, so a Connectors step-up cannot be granted.
+    const network = asked.filter((entry) => entry.service === "tinycloud.encryption" && !entry.path.includes("/secrets/"));
+    expect(network).toHaveLength(1);
+    expect(tcw.hasPermissions(network)).toBe(true);
+    for (const entry of exactKeys) expect(tcw.hasPermissions([entry])).toBe(false);
+    expect(sessionCoversHomeFeature(tcw, "connectors", ADDRESS)).toBe(false);
+    expect((await reauthorize(["connectors"])).outcome).toBe("partial");
+    tcw.cleanup();
+  } finally {
+    globalThis.fetch = withNamedKeys;
+  }
 }, 30_000);

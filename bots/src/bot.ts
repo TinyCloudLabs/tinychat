@@ -5,7 +5,7 @@
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, lstatSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { type ActivityRecord, HistoryJournal, type HistoryOptions, type StagedHistory } from "./history";
+import { type ActivityRecord, HistoryJournal, type HistoryGrantUpdate, type HistoryOptions, type HistoryPermission, readHistoryRevocation, removeHistoryRevocation, saveHistoryRevocation, type StagedHistory, updateHistoryPermission } from "./history";
 import { isRecord } from "./guards";
 import { type BotLayout, botLayout, type LayoutRoots } from "./layout";
 import { MESSAGING_STRINGS } from "./messaging-strings";
@@ -373,9 +373,8 @@ export class Bot {
   readonly #running: RunningLimit;
   #history: HistoryJournal | undefined;
   /** The newest archive grant seen by a bot that has no journal to record it in (a sibling that has not run yet). */
-  // In memory only (a journal or directory made for it would break the rule that a sibling that never ran leaves none): the
-  // backend drain sends a sibling's grant again every few minutes, so one lost to a restart is picked up again.
-  #grantSeen: number | undefined;
+  // The backend resends live grants. A confirmed revoke also has a durable marker outside the working directory.
+  #grantSeen: HistoryPermission | undefined;
   #sandbox: Sandbox | undefined;
   #starting: Promise<Sandbox> | undefined;
   #stopping: Promise<StopFailure | undefined> | undefined;
@@ -443,24 +442,24 @@ export class Bot {
       await this.#deleting;
       if (this.#retired) { this.#busy = false; sink.error("bot_unavailable"); return; }
       try {
-        // TC-3933: a bot that has never had an archive grant has nothing to be archived, so it keeps no journal. Journaling
-        // starts when a grant arrives; the turns before it are not archived. Without this the journal only grows (nothing
-        // removes a batch until the working state is deleted, and that waits for the archive), fills at about 3.9 MiB and
-        // fails every turn from then on.
+        // TC-3933: a bot that has never had an archive grant starts no journal. Journaling starts when a grant arrives; the
+        // turns before it are not archived. Without this the journal only grows (nothing removes a batch until the working
+        // state is deleted, and that waits for the archive), fills at about 3.9 MiB and fails every turn from then on. A
+        // journal such a bot already holds is kept as it is, not written to and not deleted; New chat and the sweep still
+        // delete the bot with it.
         const journal = this.#journal();
         const granted = this.#hasGrant();
-        if (granted) {
+        if (granted && !(journal.permission ?? this.#grantSeen)?.revoked) {
           journal.begin(owner ?? "", this.#options.maxTurnBytes * 16 + 128 * 1024);
-          if (!journal.everGranted) journal.permissionActive(this.#grantSeen!);
+          if (!journal.everGranted && this.#grantSeen) {
+            journal.permissionActive(this.#grantSeen.validUntil, Date.now(), this.#grantSeen.grant);
+          }
           journal.append({
             type: "user", text, at: new Date().toISOString(),
             ...(typeof from === "object" ? { origin: "app", decision: from.app, ...(from.secret ? { secret: from.secret } : {}) } : {}),
           });
           journal.startDraft();
           turnJournal = journal;
-        } else {
-          journal.discard();
-          this.#history = undefined;
         }
       } catch (error) {
         if (error instanceof Error && error.message === "history_full") log("history_full", this.layout.botId);
@@ -544,7 +543,7 @@ export class Bot {
       if (this.#retired) throw new Error("bot_retired");
       this.#history ??= new HistoryJournal(this.layout, this.#options.history);
       // A bot that keeps no journal (TC-3933) shows what its own state holds, as a bot without history does.
-      if (this.#hasGrant() && !this.#history.legacyPending) {
+      if (this.#hasGrant() && !this.#history.permission?.revoked && !this.#history.legacyPending) {
         const messages = this.#history.messages();
         if (messages.length) this.#markUsed();
         return messages;
@@ -808,10 +807,15 @@ export class Bot {
           // Signature checks await: closing or a newly appended message can change eligibility meanwhile.
           if (closing()) cause = "closing";
           else if (!noWorkingState) {
-            cause = this.#options.history && this.#hasGrant() && (!covered || !this.#history?.covered) && !this.#history?.expiryDue()
+            // TC-3933: until the cause of the lost archive is settled, the retention sweep and the expiry sweep do not delete the
+            // state of a bot that never had a grant, as before the journal stopped being kept for it. Only the owner's own
+            // New chat or deletion does.
+            if (this.#options.history && !this.#hasGrant() && reason !== "new_chat" && reason !== "deleted") cause = "ungranted_retained";
+            else cause = this.#options.history && this.#hasGrant() && (!covered || !this.#history?.covered) && !this.#history?.expiryDue()
               ? "archive_pending" : await removeWorkingState(this.layout, this.#launcher);
           }
         }
+        if (!cause && this.#retiring && this.layout.botKey !== undefined) removeHistoryRevocation(this.layout);
       } catch {
         cause = "error";
       }
@@ -878,23 +882,33 @@ export class Bot {
    */
   #hasGrant(): boolean {
     if (!this.#options.history) return false;
-    return this.#journal().everGranted || (this.#grantSeen !== undefined && this.#grantSeen > Date.now());
+    return this.#journal().everGranted || (this.#grantSeen !== undefined && !this.#grantSeen.revoked && this.#grantSeen.validUntil > Date.now());
   }
-  /** Drops the journal of a bot that was never granted, if nothing is using it. For the sweep, which reaches bots that no turn will. */
-  dropUngrantedJournal(): void {
-    if (!this.#options.history || this.inUse || this.#deleting || this.#retired || !existsSync(join(this.layout.dataDir, "history.json")) || this.#hasGrant()) return;
-    this.#journal().discard();
-    this.#history = undefined;
-  }
-  historyPermission(owner: string, expiresAt?: number, validUntil?: number) {
-    if (expiresAt === undefined && typeof validUntil === "number" && Number.isFinite(validUntil) && validUntil > Date.now()) {
-      this.#grantSeen = Math.max(this.#grantSeen ?? 0, validUntil);
-    }
-    // A sibling that has never run has no journal, and a change of permission must not make one (or its directory).
-    return this.#historyOperation(journal => {
-      if (expiresAt === undefined) { journal.begin(owner, 0); journal.permissionActive(validUntil!); }
-      else journal.permissionExpired(expiresAt, owner);
-    }, this.layout.botKey !== undefined);
+  async historyPermission(owner: string, expiresAt?: number, validUntil?: number, grant?: HistoryGrantUpdate) {
+    // A sibling that has never run holds permission in memory so that it creates no journal or directory.
+    await this.#historyOperation(journal => {
+      const now = Date.now();
+      // A confirmed revocation takes effect on receipt even if the backend clock runs ahead.
+      const expiry = grant?.kind === "revoke" && expiresAt !== undefined ? Math.min(expiresAt, now) : expiresAt;
+      if (this.layout.botKey !== undefined && !existsSync(join(this.layout.dataDir, "history.json"))) {
+        if (expiry === undefined || grant?.kind === "revoke") {
+          const current = this.#grantSeen ?? readHistoryRevocation(this.layout);
+          // A restart can lose the live grant. Record a signed revoke when there is no
+          // active permission to displace and the tag advances any saved revoke.
+          const end = expiry ?? validUntil!;
+          const canRecord = grant?.kind === "revoke" &&
+            (!current || (current.revoked && current.grant && grant.revision > current.grant.revision));
+          const baseline = canRecord ? { validUntil: end, grant } : current;
+          const next = updateHistoryPermission(baseline, end, grant, now);
+          if (next?.revoked && next !== current) saveHistoryRevocation(this.layout, next);
+          this.#grantSeen = next;
+        }
+      } else {
+        if (expiry === undefined) { journal.begin(owner, 0); journal.permissionActive(validUntil!, now, grant); }
+        else journal.permissionExpired(expiry, owner, now, grant);
+        this.#grantSeen = journal.permission;
+      }
+    });
   }
   historyStage(staged: StagedHistory) { return this.#historyOperation(journal => journal.stage(staged)); }
   historyNotice() { return this.#options.history ? this.#historyOperation(journal => journal.notice()) : Promise.resolve(undefined); }
@@ -902,6 +916,10 @@ export class Bot {
   historyExpiryDue(now = Date.now()) { return this.#options.history ? this.#journal().expiryDue(now) : false; }
   historyPending() {
     return this.#options.history ? this.#historyOperation(journal => journal.pending()) : Promise.resolve(undefined);
+  }
+  historyNeedsGrantTag(): boolean {
+    const permission = this.#options.history && this.#journal().permission;
+    return !!permission && !permission.grant && permission.validUntil > Date.now();
   }
   historyReceipt(receipt: unknown) { return this.#historyOperation(journal => journal.accept(receipt)); }
   async historyCovered(): Promise<boolean> {
@@ -1195,7 +1213,6 @@ export class BotManager {
       if (this.#closing) return;
       try {
         const bot = this.#bot(botId);
-        bot.dropUngrantedJournal();
         if (bot.historyExpiryDue(now) && !bot.inUse) { await this.deleteWorkingState(botId, "permission_expired"); continue; }
         const used = lastUsed(botLayout(botId, this.#roots));
         if (used === undefined || now - used <= retentionMs || this.#bots.get(botId)?.inUse) continue;

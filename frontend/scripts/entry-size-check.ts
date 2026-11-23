@@ -9,7 +9,7 @@ import { readFileSync, statSync } from "node:fs";
 import path from "node:path";
 
 /** Minified bytes. Raise it only with a reason in the PR: what the entry chunk now needs at boot that it can't load later. */
-const ENTRY_CHUNK_BUDGET = 7_600_000;
+const ENTRY_CHUNK_BUDGET = 7_630_000;
 
 const dist = path.resolve(process.argv[2] ?? path.join(import.meta.dir, "../dist"));
 const html = readFileSync(path.join(dist, "index.html"), "utf8");

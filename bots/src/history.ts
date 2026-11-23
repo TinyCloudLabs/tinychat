@@ -1,7 +1,7 @@
 // TC-2808: supervisor-owned journal and receipt barrier, outside all sandbox binds.
 import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeSync } from "node:fs";
 import { createHash, randomBytes } from "node:crypto";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { recoverMessageAddress } from "viem";
 import { isRecord } from "./guards";
 import type { BotLayout } from "./layout";
@@ -34,7 +34,67 @@ export function noticeDeadline(notice: ExpiryNotice, renderedAt: number): number
   return renderedAt > base ? renderedAt + 30 * 86_400_000 : base;
 }
 export interface StagedHistory { seq: number; challenge: string; batchHash: string; envelope: unknown }
-interface Journal { v: 1; generation: string; owner: string; key?: string; legacyPending: boolean; batches: JournalBatch[]; receipts: unknown[]; draft?: { text: string }; notice?: ExpiryNotice; permissionValidUntil?: number; staged?: StagedHistory }
+export interface HistoryGrantUpdate { kind: "extend" | "revoke" | "expire"; cid: string; revision: number }
+export interface HistoryPermission { validUntil: number; grant?: HistoryGrantUpdate; revoked?: true }
+
+export function matchesHistoryGrant(permission: HistoryPermission | undefined, grant: HistoryGrantUpdate): boolean {
+  return permission?.grant?.cid === grant.cid && permission.grant.revision === grant.revision;
+}
+
+export function updateHistoryPermission(current: HistoryPermission | undefined, validUntil: number,
+  grant?: HistoryGrantUpdate, now = Date.now()): HistoryPermission | undefined {
+  if (grant?.kind === "revoke") {
+    if (!Number.isFinite(validUntil) || validUntil > now) throw new Error("invalid_permission_expiry");
+    if (!matchesHistoryGrant(current, grant) || current?.revoked) return current;
+    return { validUntil, grant, revoked: true };
+  }
+  if (!Number.isFinite(validUntil) || validUntil <= now) throw new Error("invalid_permission_expiry");
+  if (current?.grant) {
+    if (!grant || grant.revision < current.grant.revision) return current;
+    if (grant.revision === current.grant.revision &&
+      (!matchesHistoryGrant(current, grant) || current.revoked || validUntil < current.validUntil)) return current;
+  } else if (!grant && validUntil < (current?.validUntil ?? 0)) return current;
+  return { validUntil, grant };
+}
+
+/** A sibling can receive a revoke while it still has no working directory or history journal. */
+const revocationPath = (layout: BotLayout) => layout.dataDir + ".history-revocation.json";
+
+export function readHistoryRevocation(layout: BotLayout): HistoryPermission | undefined {
+  const path = revocationPath(layout);
+  const entry = lstatSync(path, { throwIfNoEntry: false });
+  if (!entry) return undefined;
+  if (!entry.isFile()) throw new Error("invalid_history_revocation");
+  const saved: unknown = JSON.parse(readFileSync(path, "utf8"));
+  if (!isRecord(saved) || typeof saved.validUntil !== "number" || !Number.isFinite(saved.validUntil) ||
+    !isRecord(saved.grant) || saved.grant.kind !== "revoke" || typeof saved.grant.cid !== "string" ||
+    saved.grant.cid === "" || typeof saved.grant.revision !== "number" ||
+    !Number.isSafeInteger(saved.grant.revision) || saved.grant.revision < 0) {
+    throw new Error("invalid_history_revocation");
+  }
+  const { cid, revision } = saved.grant;
+  return { validUntil: saved.validUntil, grant: { cid, revision, kind: "revoke" }, revoked: true };
+}
+
+export function saveHistoryRevocation(layout: BotLayout, permission: HistoryPermission): void {
+  saveHistoryFile(revocationPath(layout), permission);
+}
+
+export function removeHistoryRevocation(layout: BotLayout): void {
+  rmSync(revocationPath(layout), { force: true });
+}
+
+function saveHistoryFile(path: string, value: object): void {
+  const directory = dirname(path);
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const file = openSync(path + ".new", "w", 0o600);
+  try { writeSync(file, JSON.stringify(value)); fsyncSync(file); } finally { closeSync(file); }
+  renameSync(path + ".new", path);
+  const dir = openSync(directory, "r");
+  try { fsyncSync(dir); } finally { closeSync(dir); }
+}
+
+interface Journal { v: 1; generation: string; owner: string; key?: string; legacyPending: boolean; batches: JournalBatch[]; receipts: unknown[]; draft?: { text: string }; notice?: ExpiryNotice; permissionValidUntil?: number; permissionGrant?: HistoryGrantUpdate; staged?: StagedHistory }
 const MAX_JOURNAL_BYTES = 8 * 1024 * 1024;
 export class HistoryJournal {
   readonly #path: string;
@@ -61,12 +121,7 @@ export class HistoryJournal {
     }
   }
   #save() {
-    mkdirSync(this.layout.dataDir, { recursive: true, mode: 0o700 });
-    const file = openSync(this.#path + ".new", "w", 0o600);
-    try { writeSync(file, JSON.stringify(this.#state)); fsyncSync(file); } finally { closeSync(file); }
-    renameSync(this.#path + ".new", this.#path);
-    const dir = openSync(this.layout.dataDir, "r");
-    try { fsyncSync(dir); } finally { closeSync(dir); }
+    saveHistoryFile(this.#path, this.#state);
   }
   begin(owner: string, reserve: number) {
     if (botIdFor(owner, this.#state.key) !== this.layout.botId || (this.#state.owner && this.#state.owner !== owner)) throw new Error("history_owner_mismatch");
@@ -93,22 +148,42 @@ export class HistoryJournal {
     delete this.#state.draft;
     this.append({ type: "assistant", text, outcome, at: new Date().toISOString() });
   }
-  permissionExpired(expiresAt: number, owner: string, now = Date.now()) {
+  get permission(): HistoryPermission | undefined {
+    const { permissionValidUntil, permissionGrant } = this.#state;
+    return permissionValidUntil === undefined ? undefined : {
+      validUntil: permissionValidUntil,
+      grant: permissionGrant,
+      ...(permissionGrant?.kind === "revoke" ? { revoked: true } : {}),
+    };
+  }
+  permissionExpired(expiresAt: number, owner: string, now = Date.now(), grant?: HistoryGrantUpdate) {
     if (!Number.isFinite(expiresAt) || expiresAt > now) throw new Error("invalid_permission_expiry");
+    const current = this.permission;
+    if (grant?.kind === "revoke") {
+      const next = updateHistoryPermission(current, expiresAt, grant, now);
+      if (next === current) return;
+    } else {
+      if (grant && current?.grant && !matchesHistoryGrant(current, grant)) return;
+      if (current?.revoked || (current?.validUntil ?? 0) > expiresAt) return;
+    }
     this.begin(owner, 0);
-    if ((this.#state.permissionValidUntil ?? 0) > expiresAt) return;
+    if (grant?.kind === "revoke") {
+      this.#state.permissionValidUntil = expiresAt;
+      this.#state.permissionGrant = grant;
+    }
     if (!this.#state.notice || this.#state.notice.expiresAt !== expiresAt) {
       this.#state.notice = { id: randomBytes(32).toString("hex"), expiresAt, firstAttemptAt: now };
-      this.#save();
     }
+    this.#save();
   }
-  permissionActive(validUntil: number, now = Date.now()) {
-    if (!Number.isFinite(validUntil) || validUntil <= now) throw new Error("invalid_permission_expiry");
-    if (validUntil < (this.#state.permissionValidUntil ?? 0)) return;
-    // TC-3933: the first grant starts the archive. What the bot held before it was never to be archived, so it must not keep
-    // the journal uncovered for good (and New chat locked): the turns before the first grant are deliberately not saved.
+  permissionActive(validUntil: number, now = Date.now(), grant?: HistoryGrantUpdate) {
+    const current = this.permission;
+    const next = updateHistoryPermission(current, validUntil, grant, now);
+    if (!next || next === current) return;
+    // TC-3933: the first grant starts the archive.
     if (!this.everGranted) this.#state.legacyPending = false;
-    this.#state.permissionValidUntil = validUntil;
+    this.#state.permissionValidUntil = next.validUntil;
+    this.#state.permissionGrant = next.grant;
     delete this.#state.notice; this.#save();
   }
   notice(): ExpiryNotice | undefined { return this.#state.notice ? { ...this.#state.notice } : undefined; }
@@ -131,12 +206,6 @@ export class HistoryJournal {
    * a receipt was accepted (journals from before permissionValidUntil was kept have none), or one has expired and left its notice. A bot that never had one has no archive to be covered by.
    */
   get everGranted(): boolean { return this.#state.permissionValidUntil !== undefined || this.#state.notice !== undefined || this.#state.receipts.length > 0; }
-  /** Removes the journal file and starts over empty. Only for a bot that was never granted: nothing in it was ever to be archived. */
-  discard() {
-    rmSync(this.#path, { force: true });
-    rmSync(this.#path + ".new", { force: true });
-    this.#state = { v: 1, generation: randomBytes(16).toString("hex"), owner: "", ...(this.layout.botKey ? { key: this.layout.botKey } : {}), legacyPending: existsSync(this.layout.stateSnapshot), batches: [], receipts: [] };
-  }
   messages() {
     return this.#state.batches.flatMap(batch => {
       const record = batch.record as { type?: string; text?: string; at?: string; origin?: string; decision?: string; secret?: unknown; outcome?: { messageId?: string } };
@@ -158,7 +227,22 @@ export class HistoryJournal {
     const batch = this.#state.batches[this.#state.receipts.length];
     if (!batch || staged.seq !== batch.seq || staged.challenge !== batch.challenge || staged.batchHash !== hash(JSON.stringify(batch))) throw new Error("history_stage_mismatch");
     if (Buffer.byteLength(JSON.stringify(this.#state)) + Buffer.byteLength(JSON.stringify(staged)) > MAX_JOURNAL_BYTES) throw new Error("history_full");
-    if (this.#state.staged && JSON.stringify(this.#state.staged) !== JSON.stringify(staged)) throw new Error("history_stage_conflict");
+    const previous = this.#state.staged;
+    // The backend only requests a replacement while the old ciphertext is absent from KV.
+    // Allow the rollout transition or a newer version of the same named key.
+    if (previous && JSON.stringify(previous) !== JSON.stringify(staged)) {
+      const from = previous.envelope;
+      const to = staged.envelope;
+      if (!isRecord(from) || !isRecord(to) || to.v !== 2 || typeof to.keyPath !== "string" ||
+          to.networkId !== from.networkId || to.aad !== from.aad ||
+          typeof to.keyVersion !== "number" || !Number.isSafeInteger(to.keyVersion) || to.keyVersion < 1) {
+        throw new Error("history_stage_conflict");
+      }
+      const legacy = from.v === 1 && from.keyPath === undefined;
+      const rotated = from.v === 2 && from.keyPath === to.keyPath && typeof from.keyVersion === "number" &&
+        Number.isSafeInteger(from.keyVersion) && from.keyVersion > 0 && to.keyVersion > from.keyVersion;
+      if (!legacy && !rotated) throw new Error("history_stage_conflict");
+    }
     this.#state.staged = staged; this.#save();
   }
   pending(): (JournalBatch & { staged?: StagedHistory }) | undefined {
