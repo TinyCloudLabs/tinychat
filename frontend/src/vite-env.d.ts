@@ -25,6 +25,7 @@ interface ImportMetaEnv {
    * and desktop are unaffected.
    */
   readonly VITE_OPENKEY_NATIVE_CLIENT_ID?: string;
+  readonly VITE_OPENKEY_NATIVE_RENEWAL?: string;
   /**
    * The TinyCloud Private Transcription (ptx-batch) origin that voice notes (Exo mobile) and Upload
    * audio (every platform) upload to, e.g. `https://<app_id>-8080.<gateway>`. Unset = neither offers

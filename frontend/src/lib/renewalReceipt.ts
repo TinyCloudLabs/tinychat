@@ -5,6 +5,7 @@ import { admitOwnerRenewalLease } from "@tinycloud/sdk-core/delegations/renewal"
 import { parseApprovalRenewal, type ApprovalRenewal } from "@tinycloud/share-envelope/links";
 import { BrowserSessionStorage, composeManifestRequest, type Manifest, type PersistedSessionData, type TinyCloudWeb } from "@tinycloud/web-sdk";
 import { openKeyFailureOf } from "./authErrors";
+import { withAbortTimeout } from "./abortTimeout";
 
 /**
  * TC-2872: the renewal lease OpenKey signs when the owner leaves renewal on at sign-in. OpenKey records it, so the
@@ -151,6 +152,7 @@ export async function admitSignInRenewal(input: {
   renewal: unknown;
   arrivedAt: number | undefined;
   storage?: Pick<BrowserSessionStorage, "load">;
+  persist?: (record: PersistedSessionData, renewal: ApprovalRenewal) => Promise<void>;
 }): Promise<boolean> {
   const { tcw, address, renewal, arrivedAt } = input;
   if (renewal === undefined || renewal === null || arrivedAt === undefined) return false;
@@ -160,11 +162,12 @@ export async function admitSignInRenewal(input: {
     const grant = record?.tinycloudSession;
     const leaseAuthorization = record ? await verifiedRenewalLease(renewal, record) : null;
     if (!record || !grant || !leaseAuthorization) return false;
-    const { receipt } = parseApprovalRenewal(renewal);
+    const approved = parseApprovalRenewal(renewal);
+    const { receipt } = approved;
     const { origin } = await tcw.activeNodeIdentity();
     const remaining = arrivedAt + ADMIT_DEADLINE_MS - performance.now();
     if (!(remaining > 0)) return false;
-    await admitOwnerRenewalLease({
+    await withAbortTimeout(Math.min(ADMIT_TIMEOUT_MS, remaining), (signal) => admitOwnerRenewalLease({
       host: origin,
       originalAuthorization: grant.delegationHeader.Authorization.replace(/^Bearer\s+/i, ""),
       originalCid: grant.delegationCid,
@@ -175,11 +178,13 @@ export async function admitSignInRenewal(input: {
       leaseAuthorization,
       leaseCid: receipt.leaseCid,
       leaseExpiresAt: receipt.leaseExpiresAt,
-      signal: AbortSignal.timeout(Math.min(ADMIT_TIMEOUT_MS, remaining)),
-    });
+      signal,
+    }));
     // A sign-out during the admission cleared the record: keep no receipt beside a session that is gone.
-    if ((await storage.load(address))?.tinycloudSession?.delegationCid !== grant.delegationCid) return false;
-    saveRenewalReceipt(address, renewal);
+    const current = await storage.load(address);
+    if (current?.tinycloudSession?.delegationCid !== grant.delegationCid) return false;
+    if (input.persist) await input.persist(current, approved);
+    else saveRenewalReceipt(address, approved);
     return true;
   } catch {
     return false;

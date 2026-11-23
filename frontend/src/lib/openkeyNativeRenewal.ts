@@ -68,6 +68,7 @@ export interface NativeRenewalDeps {
   requestNonce: (address: string) => Promise<string>;
   verifySession: (siwe: string, signature: string) => Promise<Verified>;
   install: (session: NativeSession, tcw: TinyCloudWeb) => Promise<void>;
+  refreshLease?: (tcw: TinyCloudWeb) => Promise<Verified & { renewal: { effectiveEnd: number } }>;
   onTerminal: (message: string) => void;
   onStorage: (message: string) => void;
   onUnavailable?: (message: string) => void;
@@ -88,6 +89,7 @@ export class NativeRenewal {
   private stopped = false;
   private generation = 0;
   private renewAtOverride: number | null = null;
+  private effectiveEnd: number;
   private readonly now: () => number;
   private readonly saveBusy: () => boolean;
   private readonly whenSaveIdle: () => Promise<void>;
@@ -95,13 +97,15 @@ export class NativeRenewal {
 
   constructor(private readonly deps: NativeRenewalDeps) {
     this.session = deps.session;
+    this.effectiveEnd = expiryMs(deps.session.delegation.expiresAt);
     this.now = deps.now ?? Date.now;
     this.saveBusy = deps.saveBusy ?? voiceNoteSaveBusy;
     this.whenSaveIdle = deps.whenSaveIdle ?? whenVoiceNoteSavesIdle;
     this.recoverPendingSave = deps.recoverPendingSave ?? schedulePendingVoiceNotesRecovery;
   }
 
-  start(renewAtOverride?: number): void {
+  start(renewAtOverride?: number, effectiveEnd?: number): void {
+    if (effectiveEnd !== undefined) this.effectiveEnd = effectiveEnd * 1000;
     this.renewAtOverride = renewAtOverride ?? null;
     this.schedule(this.nextRenewAt());
   }
@@ -110,6 +114,11 @@ export class NativeRenewal {
     this.stopped = false;
     this.generation++;
     const generation = this.generation;
+    if (this.deps.refreshLease) {
+      await this.flight;
+      if (!this.stopped && generation === this.generation) this.schedule(Math.max(this.nextRenewAt(), this.retryNotBefore));
+      return;
+    }
     this.flight = null;
     try {
       const current = await this.deps.openkey.current();
@@ -124,15 +133,18 @@ export class NativeRenewal {
     }
     this.schedule(this.pendingInstall ? this.now() : Math.max(this.nextRenewAt(), this.retryNotBefore));
   }
-  private nextRenewAt(): number { return Math.min(nativeRenewAt(this.session, this.deps.jitter?.() ?? Math.random() * 10_000), this.renewAtOverride ?? Infinity); }
+  private nextRenewAt(jitter = this.deps.jitter?.() ?? Math.random() * 10_000): number {
+    if (this.deps.refreshLease) return this.renewAtOverride ?? this.effectiveEnd - 30_000;
+    return Math.min(nativeRenewAt(this.session, jitter), this.renewAtOverride ?? Infinity);
+  }
   /** Foreground and guarded TinyCloud calls use the same single flight as the timer. */
   check(_force = false): Promise<void> {
     if (this.stopped) return Promise.reject(new Error("OpenKey session is signed out"));
     if (this.now() < this.retryNotBefore) {
-      return this.now() >= expiryMs(this.session.delegation.expiresAt)
+      return this.now() >= this.effectiveEnd
         ? Promise.reject(new Error("OpenKey renewal is temporarily unavailable")) : Promise.resolve();
     }
-    if (this.retryNotBefore === 0 && this.now() < Math.min(nativeRenewAt(this.session), this.renewAtOverride ?? Infinity) && !this.pendingInstall) return Promise.resolve();
+    if (this.retryNotBefore === 0 && this.now() < this.nextRenewAt(0) && !this.pendingInstall) return Promise.resolve();
     if (!this.flight) {
       const generation = this.generation;
       const flight = this.run(generation).finally(() => { if (this.flight === flight) this.flight = null; });
@@ -140,9 +152,9 @@ export class NativeRenewal {
     }
     // A save's next part must be able to use the old, still-valid graph while
     // network renewal and the deferred install continue in the background.
-    if (this.saveBusy() && this.now() < expiryMs(this.session.delegation.expiresAt) - 60_000) return Promise.resolve();
+    if (this.saveBusy() && this.now() < this.effectiveEnd - 60_000) return Promise.resolve();
     return this.flight.then(() => {
-      if (this.now() >= expiryMs(this.session.delegation.expiresAt)) {
+      if (this.now() >= this.effectiveEnd) {
         throw new Error("OpenKey renewal is temporarily unavailable");
       }
     });
@@ -154,13 +166,15 @@ export class NativeRenewal {
   renewNow(): Promise<void> {
     if (this.stopped) return Promise.reject(new Error("OpenKey session is signed out"));
     if (!this.flight) {
-      if (this.now() < Math.max(this.retryNotBefore, nativeMinimumRenewAt(this.session.delegation))) return Promise.resolve();
+      if (this.now() < Math.max(this.retryNotBefore, this.deps.refreshLease ? 0 : nativeMinimumRenewAt(this.session.delegation))) return Promise.resolve();
       const generation = this.generation;
       const flight = this.run(generation).finally(() => { if (this.flight === flight) this.flight = null; });
       this.flight = flight;
     }
     return this.flight;
   }
+
+  get leaseSelected(): boolean { return this.deps.refreshLease !== undefined; }
 
   private schedule(at: number): void {
     if (this.stopped) return;
@@ -171,7 +185,7 @@ export class NativeRenewal {
   private async run(generation: number): Promise<void> {
     const active = () => !this.stopped && generation === this.generation;
     try {
-      if (!this.pendingInstall) {
+      if (!this.pendingInstall && !this.deps.refreshLease) {
         let nonce: string | undefined;
         try { nonce = await this.deps.requestNonce(this.session.delegation.address!); }
         catch { /* A backend outage must not block OpenKey renewal. */ }
@@ -180,8 +194,7 @@ export class NativeRenewal {
         this.pendingInstall = await this.deps.openkey.renew(nonce ? { siweNonce: nonce } : {});
         if (!active()) return;
       }
-      const next = this.pendingInstall;
-      const forceAt = expiryMs(this.session.delegation.expiresAt) - 60_000;
+      const forceAt = this.effectiveEnd - 60_000;
       if (this.saveBusy() && this.now() < forceAt) {
         let deadline: ReturnType<typeof setTimeout> | undefined;
         try {
@@ -193,32 +206,53 @@ export class NativeRenewal {
       }
       if (!active()) return;
       const forced = this.saveBusy();
-      await this.deps.install(next, this.deps.tcw);
-      if (!active()) return;
-      this.session = next;
-      this.pendingInstall = null;
-      this.renewAtOverride = null;
-      if (forced) void this.whenSaveIdle().then(() => this.recoverPendingSave());
-      const verified = await this.deps.verifySession(next.delegation.siwe!, next.delegation.signature!);
-      if (!active()) return;
+      let verified: Verified;
+      if (this.deps.refreshLease) {
+        const renewed = await this.deps.refreshLease(this.deps.tcw);
+        if (!active()) return;
+        verified = renewed;
+        this.effectiveEnd = renewed.renewal.effectiveEnd * 1000;
+        const now = this.now();
+        const remaining = Math.min(this.effectiveEnd - now, renewed.expiresIn * 1000);
+        this.renewAtOverride = now + Math.max(1_000, remaining - Math.min(30_000, remaining / 4));
+        if (forced) void this.whenSaveIdle().then(() => this.recoverPendingSave());
+      } else {
+        const next = this.pendingInstall!;
+        await this.deps.install(next, this.deps.tcw);
+        if (!active()) return;
+        this.session = next;
+        this.effectiveEnd = expiryMs(next.delegation.expiresAt);
+        this.pendingInstall = null;
+        this.renewAtOverride = null;
+        if (forced) void this.whenSaveIdle().then(() => this.recoverPendingSave());
+        verified = await this.deps.verifySession(next.delegation.siwe!, next.delegation.signature!);
+        if (!active()) return;
+      }
+
       this.deps.sessionStore.setSession(verified.token, verified.expiresIn, verified.address);
       this.retryAttempt = 0;
       this.retryNotBefore = 0;
       if (!active()) return;
       const nextAt = this.nextRenewAt();
       logSession("renew", "done");
-      console.info("[OpenKey native] renewal", { code: "OK", expiresAt: next.delegation.expiresAt, nextSchedule: new Date(nextAt).toISOString() });
+      console.info("[OpenKey native] renewal", { code: "OK", expiresAt: this.deps.refreshLease ? new Date(this.effectiveEnd).toISOString() : this.session.delegation.expiresAt, nextSchedule: new Date(nextAt).toISOString() });
       this.schedule(nextAt);
     } catch (error) {
       if (!active()) return;
-      if (terminalRenewalError(error)) {
+      const leaseInactive = ["LEASE_INACTIVE", "LEASE_NOT_ADMITTED"].includes(nativeCode(error) ?? "");
+      if (leaseInactive && this.now() < expiryMs(this.session.delegation.expiresAt)) {
+        // The first stamp may still be pending. Keep the signed session.
+        this.retryNotBefore = nativeCode(error) === "LEASE_NOT_ADMITTED"
+          ? this.effectiveEnd : Math.min(this.effectiveEnd, this.now() + 15_000);
+        this.schedule(this.retryNotBefore);
+      } else if (terminalRenewalError(error) || leaseInactive) {
         logSession("renew", "failed", error);
         console.warn("[OpenKey native] renewal", { code: nativeCode(error), expiresAt: this.session.delegation.expiresAt, nextSchedule: null });
         this.stop();
         this.deps.onTerminal(NATIVE_SESSION_ENDED_MESSAGE);
-        // A local handoff failure can carry SPACE_UNAVAILABLE without the SDK
-        // having wiped its own grant, so revoke that one explicitly.
-        if (nativeCode(error) === "SPACE_UNAVAILABLE") {
+        // The SDK only wipes the grant for terminal rotating refresh errors.
+        // Clear a lease verdict or a local space failure through native sign-out.
+        if (nativeCode(error) === "SPACE_UNAVAILABLE" || leaseInactive) {
           void this.deps.openkey.signOut?.().catch((signOutError: unknown) => {
             if (nativeCode(signOutError) === "STORAGE") this.deps.onStorage(NATIVE_STORAGE_MESSAGE);
           });
@@ -229,7 +263,7 @@ export class NativeRenewal {
         console.warn("[OpenKey native] renewal", { code: "STORAGE", expiresAt: this.session.delegation.expiresAt, nextSchedule: new Date(this.retryNotBefore).toISOString() });
         this.schedule(this.retryNotBefore);
       } else {
-        const remaining = expiryMs(this.session.delegation.expiresAt) - this.now();
+        const remaining = this.effectiveEnd - this.now();
         const delay = nativeRetryDelay(error, this.retryAttempt++, remaining);
         this.deps.onUnavailable?.(NATIVE_RENEWAL_UNAVAILABLE_MESSAGE);
         this.retryNotBefore = this.now() + (delay ?? 15_000);
