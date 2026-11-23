@@ -193,6 +193,31 @@ export function explainUnservedHost(host, served, commit) {
   return `${host} serves ${served}, not ${commit}: an older build, so the domain is on another Cloudflare Pages project or its deploy has not propagated`;
 }
 
+/**
+ * The text of `url` (cache-busted with the commit). A page that is not up yet (Cloudflare Pages promotes a deployment
+ * before its unique URL answers, so the first request can be a 404 or a connection error) is asked again every
+ * `intervalMs`, up to `attempts` times in all. Throws the last error when it never answers ok.
+ */
+export async function fetchTextWhenReady(url, commit, { fetchImpl = globalThis.fetch, attempts = 20, intervalMs = 15_000, sleepImpl = ms => new Promise(done => setTimeout(done, ms)), onRetry = () => {} } = {}) {
+  const bust = new URL(url);
+  bust.searchParams.set('deploy', commit);
+  let last;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      const response = await fetchImpl(bust, { headers: { 'cache-control': 'no-cache' } });
+      if (response.ok) return await response.text();
+      last = new Error(`GET ${bust} -> ${response.status}`);
+    } catch (error) {
+      last = error instanceof Error ? error : new Error(String(error));
+    }
+    if (attempt < attempts) {
+      onRetry(last, attempt);
+      await sleepImpl(intervalMs);
+    }
+  }
+  throw last;
+}
+
 export const readJson = (root, rel) => JSON.parse(readFileSync(join(root, rel), 'utf8'));
 
 export function readPreState(root) {

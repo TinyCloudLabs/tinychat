@@ -146,6 +146,9 @@ export function HandoffContent({ view, now }: { view: HandoffView; now: number }
       <div className={`${desktopColumns} border-t pt-5`}>
         <section aria-labelledby="handoff-prompts">
           <h2 id="handoff-prompts" className={sectionHeading}>{copy.tryThese}</h2>
+          {view.setupChoicePath && <Button asChild className={`mt-3 ${buttonSize}`}>
+            <Link to={view.setupChoicePath}>{copy.openSetupChoice}<ArrowRight aria-hidden /></Link>
+          </Button>}
           <p className="mt-1 text-muted-foreground">{copy.promptIntro}</p>
           <ul className="mt-3 border-t">
             {copy.prompts.map((item) => <PromptRow key={item.icon} item={item} />)}

@@ -2,6 +2,7 @@
 import type { PermissionEntry, TinyCloudWeb } from "@tinycloud/web-sdk";
 import { DEFAULT_REQUEST_HEADER_NAME, DEFAULT_REQUEST_HEADER_VALUE, SessionStore } from "@tinyboilerplate/client";
 import { serializePortableDelegation, toPortableDelegation } from "../lib/agentDelegation";
+import { botGrantLifetime } from "./botGrantLifetime";
 
 import { botHistoryDirectory, SIBLING_BOT_KEY } from "./botHistoryPath";
 
@@ -17,8 +18,7 @@ function grantPermissions(path: string): PermissionEntry[] {
 }
 
 function grantLifetime(siwe: string): number {
-  const expires = Date.parse(/^Expiration Time:\s*(\S+)/im.exec(siwe)?.[1] ?? "");
-  const lifetime = Math.min(7 * 86_400_000, expires - Date.now());
+  const lifetime = botGrantLifetime(siwe);
   if (!Number.isFinite(lifetime) || lifetime < 60_000) throw new Error("history_session_expired");
   return lifetime;
 }
