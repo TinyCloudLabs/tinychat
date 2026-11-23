@@ -10,7 +10,8 @@ export function backendStandingMetadataStore(node: TinyCloudNode): StandingMetad
     async read(owner) {
       const key = PREFIX + owner;
       return withSessionRefresh(node, async () => {
-        const result = await node.kv.get<string>(key, { source: "network", maxResponseBytes: 128 * 1024 });
+        // Raw: the stored value is JSON text, which the client would otherwise return parsed.
+        const result = await node.kv.get<string>(key, { source: "network", maxResponseBytes: 128 * 1024, raw: true });
         if (isKvMissingKeyResult(result, key)) return { state: { generation: 0 } };
         assertKvResult(result);
         if (!result.ok) throw new Error("standing_read_metadata_unavailable");
