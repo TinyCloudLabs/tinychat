@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import type { SessionStore } from "@tinyboilerplate/client";
-import { createFirefliesImportGrantsClient } from "./firefliesImportGrantsApi";
+import type { DisconnectImportGrants } from "./connectorLifecycle";
+import { createFirefliesImportGrantsClient, withPendingRevokes } from "./firefliesImportGrantsApi";
+import type { ConnectorWebhooksResult } from "./webhooksApi";
 
 const BACKEND = "https://api.example";
 const sessionStore = { getToken: () => "t0ken", isExpired: () => false } as unknown as SessionStore;
@@ -39,5 +41,69 @@ describe("Fireflies import grants client", () => {
 
     expect(await client.removeGrant()).toEqual({ status: "ok", value: null });
     expect(requests).toEqual([{ url: `${BACKEND}/api/connectors/fireflies/delegation`, method: "DELETE" }]);
+  });
+});
+
+describe("ids kept in this browser until each permission is withdrawn", () => {
+  function memoryStore() {
+    const map = new Map<string, string>();
+    return {
+      map,
+      getItem: (key: string) => map.get(key) ?? null,
+      setItem: (key: string, value: string) => void map.set(key, value),
+      removeItem: (key: string) => void map.delete(key),
+    };
+  }
+  function inner(listed: ConnectorWebhooksResult<string[]>, revoked: (cid: string) => boolean) {
+    const revokeCalls: string[] = [];
+    const grants: DisconnectImportGrants = {
+      listGrantCids: async () => listed,
+      revoke: async (cid) => {
+        revokeCalls.push(cid);
+        return revoked(cid);
+      },
+    };
+    return { grants, revokeCalls };
+  }
+
+  test("an unconfirmed revoke is offered again on the next run, even when the server then lists nothing", async () => {
+    const store = memoryStore();
+    const first = inner({ status: "ok", value: ["a", "b"] }, (cid) => cid === "a");
+    const run1 = withPendingRevokes(first.grants, { accountKey: "0xabc", store });
+    expect(await run1.listGrantCids()).toEqual({ status: "ok", value: ["a", "b"] });
+    await run1.revoke("a");
+    await run1.revoke("b");
+
+    // The server already dropped its copy, so it lists nothing; the browser still knows "b" is open.
+    const second = inner({ status: "ok", value: [] }, () => true);
+    const run2 = withPendingRevokes(second.grants, { accountKey: "0xabc", store });
+    expect(await run2.listGrantCids()).toEqual({ status: "ok", value: ["b"] });
+    await run2.revoke("b");
+    expect(store.map.size).toBe(0);
+  });
+
+  test("a run abandoned after listing keeps the ids; a server with the import off still yields them", async () => {
+    const store = memoryStore();
+    await withPendingRevokes(inner({ status: "ok", value: ["a", "b"] }, () => true).grants, { accountKey: "0xabc", store }).listGrantCids();
+
+    const off = withPendingRevokes(inner({ status: "feature-dark" }, () => true).grants, { accountKey: "0xabc", store });
+    expect(await off.listGrantCids()).toEqual({ status: "ok", value: ["a", "b"] });
+  });
+
+  test("ids are per account, a failed listing stays a failure, and entries older than 8 days are dropped", async () => {
+    const store = memoryStore();
+    let now = 1_000;
+    const mine = withPendingRevokes(inner({ status: "ok", value: ["a"] }, () => false).grants, { accountKey: "0xabc", store, now: () => now });
+    await mine.listGrantCids();
+
+    const other = withPendingRevokes(inner({ status: "ok", value: [] }, () => true).grants, { accountKey: "0xdef", store, now: () => now });
+    expect(await other.listGrantCids()).toEqual({ status: "ok", value: [] });
+
+    const failing = withPendingRevokes(inner({ status: "retryable", httpStatus: 503, code: null }, () => true).grants, { accountKey: "0xabc", store });
+    expect((await failing.listGrantCids()).status).toBe("retryable");
+
+    now += 8 * 24 * 60 * 60 * 1000 + 1;
+    const later = withPendingRevokes(inner({ status: "ok", value: [] }, () => true).grants, { accountKey: "0xabc", store, now: () => now });
+    expect(await later.listGrantCids()).toEqual({ status: "ok", value: [] });
   });
 });

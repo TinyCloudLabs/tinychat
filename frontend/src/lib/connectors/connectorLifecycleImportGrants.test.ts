@@ -16,6 +16,7 @@ function setup(options: {
   list?: () => ConnectorWebhooksResult<string[]>;
   revoke?: (cid: string, attempt: number) => boolean;
   disable?: () => ConnectorWebhooksResult<{ status: "disabled"; queueDropped: number }>;
+  purge?: () => ConnectorWebhooksResult<null>;
 }) {
   const ops: string[] = [];
   const attempts = new Map<string, number>();
@@ -43,7 +44,7 @@ function setup(options: {
       },
       recordPurge: async () => {
         ops.push("record-purge");
-        return { status: "ok", value: null };
+        return options.purge ? options.purge() : { status: "ok", value: null };
       },
     },
     secrets: {
@@ -118,6 +119,17 @@ describe("disconnect withdraws the Fireflies import permissions", () => {
     expect(result.notice).toContain(IMPORT_GRANT_REVOKE_UNCONFIRMED_MESSAGE);
     expect(t.attempts.get(CIDS[0])).toBe(1);
     expect(t.attempts.get(CIDS[1])).toBe(2);
+  });
+
+  test("a failed tombstone says the server may already have dropped its permission, not that nothing changed", async () => {
+    const t = setup({ mode: "delete-data", purge: () => ({ status: "retryable", httpStatus: 503, code: null }) });
+
+    const result = await runDisconnect(t.deps, t.emit);
+
+    expect(result.failure?.step).toBe("record-purge");
+    expect(result.failure?.message).toContain("may already have dropped its permission");
+    expect(result.failure?.message).not.toContain("Nothing has been deleted");
+    expect(t.ops.filter((op) => op.startsWith("revoke:"))).toEqual([]);
   });
 
   test("a failed listing stops before anything is changed", async () => {

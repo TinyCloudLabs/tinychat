@@ -42,6 +42,33 @@ export interface FirefliesGrantEnvelope {
   expiresAt: string;
 }
 
+/** The ids of the two stored permissions. Public values kept in plain fields, so they outlive the sealed grant. */
+interface StoredGrantCids {
+  secrets: string;
+  meetings: string;
+}
+
+function cidOfSerializedGrant(serialized: string): string | null {
+  try {
+    const parsed: unknown = JSON.parse(serialized);
+    return isRecord(parsed) && typeof parsed.cid === "string" && parsed.cid.length > 0 ? parsed.cid : null;
+  } catch {
+    return null;
+  }
+}
+
+function storedGrantCids(payload: { secretsGrant: string; meetingsGrant: string }): StoredGrantCids | null {
+  const secrets = cidOfSerializedGrant(payload.secretsGrant);
+  const meetings = cidOfSerializedGrant(payload.meetingsGrant);
+  return secrets && meetings ? { secrets, meetings } : null;
+}
+
+function readStoredGrantCids(record: unknown): StoredGrantCids | null {
+  if (!isRecord(record) || !isRecord(record.grantCids)) return null;
+  const { secrets, meetings } = record.grantCids;
+  return typeof secrets === "string" && typeof meetings === "string" ? { secrets, meetings } : null;
+}
+
 interface StoredActiveGrantRecord {
   v: 1;
   alg: "aes-256-gcm";
@@ -52,6 +79,7 @@ interface StoredActiveGrantRecord {
   delegateDid: string;
   expiresAt: string;
   updatedAt: string;
+  grantCids?: StoredGrantCids;
 }
 
 interface StoredInactiveGrantRecord {
@@ -59,6 +87,7 @@ interface StoredInactiveGrantRecord {
   state: "needs_renewal" | "revoked";
   expiresAt: string | null;
   updatedAt: string;
+  grantCids?: StoredGrantCids;
 }
 
 type StoredFirefliesGrantRecord = StoredActiveGrantRecord | StoredInactiveGrantRecord;
@@ -264,6 +293,7 @@ export class FirefliesGrantStore {
       expiresAt: isoExpiry,
     };
     const sealed = this.#seal(envelope, normalized);
+    const grantCids = storedGrantCids(payload);
     const record: StoredActiveGrantRecord = {
       v: 1,
       alg: "aes-256-gcm",
@@ -274,6 +304,7 @@ export class FirefliesGrantStore {
       delegateDid: this.#delegateDid,
       expiresAt: isoExpiry,
       updatedAt: new Date().toISOString(),
+      ...(grantCids ? { grantCids } : {}),
     };
     await this.#kv.put(this.keyFor(normalized), record);
   }
@@ -288,11 +319,14 @@ export class FirefliesGrantStore {
     expiresAt: string | null = null,
   ): Promise<void> {
     const normalized = normalizeOwnerAddress(address);
+    // The two permission ids are public and stay on the marker, so the owner's browser can still revoke them at the node.
+    const grantCids = readStoredGrantCids(await this.#kv.get(this.keyFor(normalized)));
     const record: StoredInactiveGrantRecord = {
       v: 1,
       state,
       expiresAt,
       updatedAt: new Date().toISOString(),
+      ...(grantCids ? { grantCids } : {}),
     };
     await this.#kv.put(this.keyFor(normalized), record);
   }
@@ -344,16 +378,12 @@ export class FirefliesGrantStore {
   }
 
   /**
-   * The ids (CIDs) of the two stored grants while they are active, so the owner's browser can revoke exactly those at
-   * the node. Ids are not secrets and no grant material is returned. Read-only; null unless the pair is active.
+   * The ids (CIDs) of the two permissions stored for the owner, so their browser can revoke exactly those at the node.
+   * Kept as plain public fields from the moment the pair is accepted until it is removed, so a lapsed or unreadable
+   * grant still reports them. No grant material is returned. Read-only; null when nothing is stored.
    */
-  async activeGrantCids(
-    address: string,
-    options: FirefliesGrantVerifyOptions,
-  ): Promise<{ secrets: string; meetings: string } | null> {
-    const loaded = await this.#inspect(address, options, { purgeDefinitive: false });
-    if (loaded.state !== "active") return null;
-    return { secrets: loaded.verified.secrets.cid, meetings: loaded.verified.meetings.cid };
+  async grantCids(address: string): Promise<{ secrets: string; meetings: string } | null> {
+    return readStoredGrantCids(await this.#kv.get(this.keyFor(normalizeOwnerAddress(address))));
   }
 
   /**
