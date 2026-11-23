@@ -36,6 +36,17 @@
 
 import { getAddress } from "viem";
 import type { Manifest } from "@tinycloud/web-sdk";
+import { LEGACY_KEYS_APPROVAL_DESCRIPTION } from "../homeStrings";
+import { connectorOwnKeyGrants } from "./namedKeyWrites";
+
+/** A permission entry this app asks the SDK for on the owner's encryption network. */
+export interface ConnectorGrantEntry {
+  service: string;
+  path: string;
+  actions: string[];
+  skipPrefix: true;
+  description: string;
+}
 
 /** The network name node-sdk uses when none is given. */
 const DEFAULT_ENCRYPTION_NETWORK_NAME = "default";
@@ -133,4 +144,38 @@ export function withConnectorDecryptGrants(manifest: Manifest, address: string, 
     (grant) => !existing.some((entry) => entry.service === grant.service && entry.path === grant.path),
   );
   return added.length === 0 ? base : ({ ...base, permissions: [...existing, ...added] } as Manifest);
+}
+
+/**
+ * `manifest` plus the exact-key grants only: nothing here reaches the whole network, so a grant built from it can carry
+ * the renewal lease. Older secrets still sealed to the whole network are opened through
+ * {@link legacyNetworkDecryptRequest}, in a separate short approval.
+ */
+export function withConnectorKeyGrants(manifest: Manifest, address: string, chainId = 1): Manifest {
+  const existing = manifest.permissions ?? [];
+  const added = connectorKeyDecryptGrants(address, chainId).filter(
+    (grant) => !existing.some((entry) => entry.service === grant.service && entry.path === grant.path),
+  );
+  return added.length === 0 ? manifest : ({ ...manifest, permissions: [...existing, ...added] } as Manifest);
+}
+
+/** The longest the separate approval for older, whole-network secrets lasts: one hour. It is never renewed. */
+export const LEGACY_NETWORK_APPROVAL_MAX_MS = 60 * 60 * 1000;
+
+/** The one permission the separate approval asks for: decrypt on the owner's whole network. */
+export function legacyNetworkDecryptRequest(address: string, chainId = 1): ConnectorGrantEntry[] {
+  return [{ ...encryptionDecryptGrant(address, chainId), description: LEGACY_KEYS_APPROVAL_DESCRIPTION }];
+}
+
+/**
+ * The Connectors grants a sign-in asks for: the exact keys only when Connectors opens its secrets with their own keys,
+ * else the whole-network grant beside them, as it has always been ({@link connectorOwnKeyGrants}).
+ */
+export function withConnectorGrants(manifest: Manifest, address: string, chainId = 1): Manifest {
+  return connectorOwnKeyGrants() ? withConnectorKeyGrants(manifest, address, chainId) : withConnectorDecryptGrants(manifest, address, chainId);
+}
+
+/** The entries a session must cover for Connectors: the grants {@link withConnectorGrants} would ask for. */
+export function connectorCoverageGrants(address: string, chainId = 1): ConnectorGrantEntry[] {
+  return connectorOwnKeyGrants() ? connectorKeyDecryptGrants(address, chainId) : [encryptionDecryptGrant(address, chainId), ...connectorKeyDecryptGrants(address, chainId)];
 }

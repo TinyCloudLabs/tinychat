@@ -3,7 +3,7 @@ import { SESSION_EXPIRATION_MS } from "@tinyboilerplate/core";
 import { parseSignedSiweCacao, pkhDid, principalDidEquals } from "@tinycloud/sdk-core";
 import { admitOwnerRenewalLease } from "@tinycloud/sdk-core/delegations/renewal";
 import { parseApprovalRenewal, type ApprovalRenewal } from "@tinycloud/share-envelope/links";
-import { BrowserSessionStorage, composeManifestRequest, type Manifest, type PersistedSessionData, type TinyCloudWeb } from "@tinycloud/web-sdk";
+import { BrowserSessionStorage, composeManifestRequest, type Manifest, type PermissionEntry, type PersistedSessionData, type TinyCloudWeb } from "@tinycloud/web-sdk";
 import { openKeyFailureOf } from "./authErrors";
 
 /**
@@ -20,21 +20,38 @@ export const SIGN_IN_RENEWAL_ASK = { version: 1, leaseLifetimeSeconds: 90 * 24 *
 
 const SENSITIVE_RENEWAL_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 
+/** A request for decrypt on a whole encryption network (its path has no key part), not on one named key. */
+function isWholeNetworkDecrypt({ service, path, actions }: PermissionEntry): boolean {
+  return service === "tinycloud.encryption" && !path.includes("/")
+    && actions.some((action) => action === "tinycloud.encryption/decrypt" || action === "tinycloud.encryption/*");
+}
+
+function composedResources(manifest: Manifest): PermissionEntry[] {
+  return composeManifestRequest([manifest], { includeAccountRegistryPermissions: false }).resources as PermissionEntry[];
+}
+
+/** Whether the grant `manifest` asks for would include decrypt on a whole encryption network. */
+export function carriesWholeNetworkDecrypt(manifest: Manifest): boolean {
+  return composedResources(manifest).some(isWholeNetworkDecrypt);
+}
+
 /** OpenKey limits each renewed window that can reach secrets to seven days. */
 export function webSignInGrantWindow(manifest: Manifest): number {
-  const { resources } = composeManifestRequest([manifest], { includeAccountRegistryPermissions: false });
-  const reachesSecrets = resources.some(({ service, space, path, actions }) => {
+  const reachesSecrets = composedResources(manifest).some((resource) => {
+    const { service, space, path } = resource;
     if (space === "secrets" || space?.endsWith(":secrets")) return true;
     if (service !== "tinycloud.encryption") return false;
     const keyPathStart = path.indexOf("/");
-    return keyPathStart === -1
-      ? actions.some((action) => action === "tinycloud.encryption/decrypt" || action === "tinycloud.encryption/*")
-      : path.slice(keyPathStart + 1).startsWith("secrets/");
+    return keyPathStart === -1 ? isWholeNetworkDecrypt(resource) : path.slice(keyPathStart + 1).startsWith("secrets/");
   });
   return reachesSecrets ? Math.min(SESSION_EXPIRATION_MS, SENSITIVE_RENEWAL_WINDOW_MS) : SESSION_EXPIRATION_MS;
 }
 
-/** Keep the draft and accepted expiry in the same window, and track when OpenKey's receipt arrived. */
+/**
+ * Keep the draft and accepted expiry in the same window, and track when OpenKey's receipt arrived. A grant that
+ * includes decrypt on a whole encryption network is asked without the renewal lease: OpenKey is not asked to offer
+ * one, and nothing it returns about renewal is kept.
+ */
 export function webSignInRenewal(openkey: ConnectWalletResult["openkey"], manifest: Manifest) {
   const sessionExpirationMs = webSignInGrantWindow(manifest);
   let renewal: unknown;
@@ -42,15 +59,18 @@ export function webSignInRenewal(openkey: ConnectWalletResult["openkey"], manife
   const config = {
     sessionExpirationMs,
     openkey: {
-      client: openKeyRenewalClient(openkey, SIGN_IN_RENEWAL_ASK, (outcome) => {
-        renewal = outcome.renewal;
-        arrivedAt = performance.now();
-      }),
+      client: carriesWholeNetworkDecrypt(manifest)
+        ? openkey
+        : openKeyRenewalClient(openkey, SIGN_IN_RENEWAL_ASK, (outcome) => {
+          renewal = outcome.renewal;
+          arrivedAt = performance.now();
+        }),
       mode: "iframe",
       expiryChangeable: true,
       maxExpiresAt: () => Date.now() + sessionExpirationMs,
     },
   } satisfies TinyCloudWebConfig;
+
   return {
     config,
     admit: (tcw: Pick<TinyCloudWeb, "activeNodeIdentity">, address: string, storage?: Pick<BrowserSessionStorage, "load">) =>

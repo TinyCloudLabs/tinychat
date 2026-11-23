@@ -32,12 +32,13 @@ import {
   offeredChatModelContextTokens,
 } from "@tinyboilerplate/core";
 import { desktopSignInWithRenewal, renewalRestoreFor, webSignInRenewal } from "./lib/renewalReceipt";
-import { withConnectorDecryptGrants } from "./lib/connectors/encryptionGrant";
+import { withConnectorGrants } from "./lib/connectors/encryptionGrant";
 import { homeFeaturesToRequest, webSignInManifest, readHomeFeatures, type HomeFeature } from "./lib/homeFeatures";
 import { rememberExistingWebConnectors } from "./lib/rememberWebConnectors";
 import { reauthorizeHome } from "./lib/homeReauthorize";
 import { homeWorkBusyNow, useInFlightWork, type InFlightWork } from "./lib/inFlightWork";
 import { HomeFeatureAccessContext, HomeFeatureGate, useHomeFeatureAccessState, type FeatureAccessOutcome, type RequestFeatureAccess } from "./shell/homeFeatureAccess";
+import { LegacyConnectorKeys } from "./shell/LegacyConnectorKeys";
 import { deferOriginMove } from "./lib/originMove";
 import { enableWebCaptureEngine } from "./lib/voiceNotes/web/registerWebEngine";
 import { replicationConfigPatch, startReplicationFill, stopReplicationFill } from "./lib/replication/replicationClient";
@@ -1252,11 +1253,11 @@ export function App() {
         ...registryPublishConfig(),
         tinycloudHosts: TINYCLOUD_HOSTS,
         uiPlatform: sdkUiPlatform(),
-        // The web asks for connector secrets and the decrypt grant only once this device has used Connectors (opening
+        // The web asks for connector secrets and their decrypt grants only once this device has used Connectors (opening
         // it asks in place otherwise). The desktop app signs in with them; the phone app signs in above, natively.
         manifest: platform === "web"
           ? webSignInManifest(manifest, readHomeFeatures(browserRevisionStore(), connectedAddress), connectedAddress)
-          : withConnectorDecryptGrants(manifest, connectedAddress),
+          : withConnectorGrants(manifest, connectedAddress),
         // The dev WebView runs at localhost:5186, whose port the SDK signs into
         // SIWE's domain. Production accepts the fixed Tauri hostname instead.
         ...(import.meta.env.DEV && "__TAURI_INTERNALS__" in globalThis ? { domain: "localhost" } : {}),
@@ -1741,11 +1742,14 @@ export function App() {
                   />
                 }
               />}
-              connectors={LOCAL_VALIDATION ? null : <HomeFeatureGate feature="connectors"><ConnectorsPage
-                tcw={tcw}
-                backendUrl={BACKEND_URL}
-                sessionStore={sessionStoreRef.current}
-              /></HomeFeatureGate>}
+              connectors={LOCAL_VALIDATION ? null : <HomeFeatureGate feature="connectors">
+                {tcw && address ? <LegacyConnectorKeys tcw={tcw} address={address} /> : null}
+                <ConnectorsPage
+                  tcw={tcw}
+                  backendUrl={BACKEND_URL}
+                  sessionStore={sessionStoreRef.current}
+                />
+              </HomeFeatureGate>}
               feed={LOCAL_VALIDATION ? null : <FeedView tcw={tcw} onReconnect={authAction} />}
               apps={LOCAL_VALIDATION ? null : ONE_ADD_APP_ENABLED && screen.id === "addApp"
                 ? <AddAppPage />

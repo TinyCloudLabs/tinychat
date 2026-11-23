@@ -55,7 +55,7 @@ export const LANDING_LINK_LABEL = `About ${APP_NAME}`;
 /** Connectors on the web asks for its own permission in place, when the owner opens it. */
 export const FEATURE_ACCESS_TITLE = { connectors: "Allow Connectors" } as const;
 export const FEATURE_ACCESS_BODY = {
-  connectors: `To sync your meetings, OpenKey will ask you to let ${APP_NAME} keep them in your TinyCloud space, along with the keys and sign-ins you add for Fireflies, Granola and Google Meet, which are stored encrypted. To read those keys, One also asks to unlock everything encrypted to your account, including data other apps saved. If you turn on renewal in OpenKey, it will ask “Renew sensitive access?” Confirming keeps your secrets readable for up to 7 days at a time.`,
+  connectors: `To sync your meetings, OpenKey will ask you to let ${APP_NAME} keep them in your TinyCloud space, along with the keys and sign-ins you add for Fireflies, Granola and Google Meet. Each is stored encrypted with its own key, and this approval opens only those keys.`,
 } as const;
 /** The calm state after "Not now": the feature waits for permission, and Continue asks again. */
 export const FEATURE_ACCESS_NEEDED = { connectors: "Connectors need your permission." } as const;
@@ -70,3 +70,14 @@ export const FEATURE_ACCESS_WRONG_ACCOUNT = "That was a different OpenKey accoun
 export const FEATURE_ACCESS_PARTIAL = "Connectors can't read your saved keys without permission to unlock your encrypted data, so nothing changed. To try again, select Continue and allow that permission.";
 /** A new recording or upload waits while OpenKey is open for one of these asks. */
 export const FEATURE_ACCESS_WAIT_FOR_OPENKEY = "Finish in OpenKey first, then try again.";
+
+/** Older connector keys: saved before each had its own encryption key, so opening them takes one short approval (words: Monica). */
+export const LEGACY_KEYS_TITLE = "Move your older connector keys";
+export const LEGACY_KEYS_BODY = `Connector keys and secrets you saved earlier are encrypted with your account's main key. To move them to their own encryption keys, OpenKey asks you to let ${APP_NAME} open everything encrypted with your main key for 1 hour. This is asked once: after the move, Connectors uses only their own keys.`;
+export const LEGACY_KEYS_MOVED = "Your older connector keys and secrets are moved to their own encryption keys.";
+export const LEGACY_KEYS_NOTHING = "There were no older connector keys to move.";
+export const LEGACY_KEYS_DECLINED = "Your older connector keys weren't moved. Connectors asks next time you open it.";
+export const LEGACY_KEYS_FAILED = "Your older connector keys couldn't be moved.";
+export const LEGACY_KEYS_RETRY = "Try again";
+/** The words OpenKey shows beside the one-hour permission. */
+export const LEGACY_KEYS_APPROVAL_DESCRIPTION = "Open everything encrypted with your account's main key for 1 hour, including older connector keys and saved secrets, so they can move to their own encryption keys.";
