@@ -21,7 +21,8 @@ function fakeTcw(results: Array<{ ok: true } | { ok: false; error: unknown }>) {
 }
 
 const BUILD_FLAG = "VITE_CONNECTOR_NAMED_KEY_WRITES";
-const realBuildFlag = process.env[BUILD_FLAG];
+const buildEnv = import.meta.env as Record<string, unknown>;
+const realBuildFlag = buildEnv[BUILD_FLAG];
 const realStorage = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
 /** This browser's runtime flag (what a person could set from the page). */
 function setRuntimeFlag(value: string | null) {
@@ -32,16 +33,16 @@ function setRuntimeFlag(value: string | null) {
     value: { getItem: (key: string) => data.get(key) ?? null },
   });
 }
-/** The build variable, as the bundler injects it into import.meta.env (bun reads it from the process environment). */
-function setBuildFlag(value: string | null) {
-  if (value === null) delete process.env[BUILD_FLAG];
-  else process.env[BUILD_FLAG] = value;
+/** The build variable, as the bundler injects it into import.meta.env. */
+function setBuildFlag(value: unknown) {
+  if (value === undefined) delete buildEnv[BUILD_FLAG];
+  else buildEnv[BUILD_FLAG] = value;
 }
-beforeEach(() => { setRuntimeFlag(null); setBuildFlag(null); });
+beforeEach(() => { setRuntimeFlag(null); setBuildFlag(undefined); });
 afterEach(() => {
   if (realStorage) Object.defineProperty(globalThis, "localStorage", realStorage);
   else Reflect.deleteProperty(globalThis, "localStorage");
-  setBuildFlag(realBuildFlag ?? null);
+  setBuildFlag(realBuildFlag);
 });
 
 describe("the named-key write switch", () => {
