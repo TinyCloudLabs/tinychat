@@ -12,16 +12,19 @@ import {
   type PersistedSessionData,
   type TinyCloudWeb,
 } from "@tinycloud/web-sdk";
-import type { ConnectWalletResult, EIP1193Provider, TinyCloudWebConfig } from "@tinyboilerplate/client";
+import { loadRenewalReceipt, saveRenewalReceipt, type ConnectWalletResult, type EIP1193Provider, type TinyCloudWebConfig } from "@tinyboilerplate/client";
 import { isSignInCancelled } from "./authErrors";
 import { webSignInManifest, type HomeFeature } from "./homeFeatures";
 import { setHomeReauthorizing } from "./homeReauthorizing";
+import type { webSignInRenewal } from "./renewalReceipt";
 import type { WebSignInPrefetch } from "./webSignInPrefetch";
 
 export interface HomeReauthorizeDeps {
   connect(): Promise<Pick<ConnectWalletResult, "address" | "openkey"> & { web3Provider: EIP1193Provider }>;
   prefetch: WebSignInPrefetch;
   createTcw(provider: EIP1193Provider, config: TinyCloudWebConfig): TinyCloudWeb;
+  /** The web app signs through OpenKey's renewal-aware approval transport. */
+  renewalSignIn?: typeof webSignInRenewal;
   verify(siwe: string, signature: string): Promise<{ token: string; expiresIn: number }>;
   /** Where the live session is saved; the new one is written there only once verified. */
   sessionStorage?: ISessionStorage;
@@ -76,6 +79,7 @@ function stagedSessionStorage(saved: ISessionStorage): {
     async commit(gate) {
       const sessions = [...(staged ?? new Map<string, PersistedSessionData>())];
       const before = await Promise.all(sessions.map(([address]) => saved.load(address)));
+      const receipts = sessions.map(([address]) => loadRenewalReceipt(address));
       // The snapshot took time: ask again now, with nothing written yet.
       const blocked = gate();
       if (blocked) return blocked;
@@ -87,11 +91,15 @@ function stagedSessionStorage(saved: ISessionStorage): {
         for (const [index, [address]] of sessions.entries()) {
           const previous = before[index];
           await (previous ? saved.save(address, previous) : saved.clear(address)).catch(() => undefined);
+          saveRenewalReceipt(address, receipts[index]);
         }
         return true;
       };
       try {
-        for (const [address, session] of sessions) await saved.save(address, session);
+        for (const [address, session] of sessions) {
+          await saved.save(address, session);
+          saveRenewalReceipt(address, null);
+        }
       } catch (caught) {
         await restore();
         throw caught;
@@ -112,7 +120,7 @@ export async function reauthorizeHome(
   input: {
     address: string;
     features: readonly HomeFeature[];
-    config: Omit<TinyCloudWebConfig, "manifest" | "sessionStorage" | "siweConfig" | "nonce">;
+    config: Omit<TinyCloudWebConfig, "manifest" | "sessionStorage" | "siweConfig" | "nonce" | "openkey">;
     canCommit(): CommitBlocked | null;
   },
 ): Promise<HomeReauthorizeResult> {
@@ -124,16 +132,19 @@ export async function reauthorizeHome(
     // Another account in OpenKey would sign in as someone else: refuse before anything is signed.
     if (address.toLowerCase() !== input.address.toLowerCase()) return { outcome: "wrong-account" };
     const manifest = webSignInManifest(await prefetch.manifest(), input.features, address);
+    const renewal = deps.renewalSignIn?.(openkey, manifest);
     const nonce = await prefetch.nonceForSigning(address);
-    const staged = stagedSessionStorage(deps.sessionStorage ?? new BrowserSessionStorage());
+    const saved = deps.sessionStorage ?? new BrowserSessionStorage();
+    const staged = stagedSessionStorage(saved);
     const created = deps.createTcw(prefetch.guardSigning(web3Provider), {
       ...input.config,
+      ...renewal?.config,
       manifest,
       sessionStorage: staged.storage,
       siweConfig: { nonce },
     });
     next = created;
-    const session = await created.signIn({ nonce });
+    const session = await created.signIn(renewal ? undefined : { nonce });
     // An approval of less than was asked (the base, or some of the sets) is not kept.
     const asked = composeManifestRequest([manifest], { includeAccountRegistryPermissions: false }).resources as PermissionEntry[];
     if (!created.hasPermissions(asked)) {
@@ -151,6 +162,7 @@ export async function reauthorizeHome(
       return { outcome: committed };
     }
     prefetch.complete();
+    await renewal?.admit(created, address, saved);
     return { outcome: "granted", tcw: created, manifest, verified, openkey, rollback: committed };
   } catch (caught) {
     next?.cleanup();

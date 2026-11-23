@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { composeManifestRequest, resolveManifest, validateManifest, type Manifest } from "@tinycloud/sdk-core";
 import { NodeUserAuthorization } from "@tinycloud/node-sdk";
-import { encryptionDecryptGrant } from "./connectors/encryptionGrant";
+import { connectorKeyDecryptGrants, encryptionDecryptGrant } from "./connectors/encryptionGrant";
 import { WEB_APP_MANIFEST } from "./webSignInPrefetch";
 import {
   homeFeatureCoverageEntries,
@@ -47,9 +47,12 @@ describe("webSignInManifest", () => {
 
   test("Connectors flagged: the base and the decrypt grant, and the SDK asks exactly decrypt and network.create on the owner's default network", () => {
     const manifest = webSignInManifest(base, ["connectors"], ADDRESS);
-    expect(manifest.permissions).toEqual([...base.permissions!, decrypt]);
+    expect(manifest.permissions).toEqual([...base.permissions!, decrypt, ...connectorKeyDecryptGrants(ADDRESS)]);
     expect(signInRawAbilities(manifest)).toEqual({
       [decrypt.path]: ["tinycloud.encryption/decrypt", "tinycloud.encryption/network.create"],
+      [`${decrypt.path}/secrets/fireflies_api_key`]: ["tinycloud.encryption/decrypt", "tinycloud.encryption/key.create"],
+      [`${decrypt.path}/secrets/granola_api_key`]: ["tinycloud.encryption/decrypt", "tinycloud.encryption/key.create"],
+      [`${decrypt.path}/secrets/scoped/google-meet/refresh_token`]: ["tinycloud.encryption/decrypt", "tinycloud.encryption/key.create"],
     });
   });
 

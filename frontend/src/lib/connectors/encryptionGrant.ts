@@ -91,3 +91,46 @@ export function withEncryptionDecryptGrant(
     permissions: [...existing, grant],
   } as Manifest;
 }
+
+/**
+ * The secrets this app keeps for Connectors, as the named keys they are sealed to (TC-3284): `secrets/<name lowercased>`,
+ * or `secrets/scoped/<scope>/<name lowercased>`. A secret saved with its own key is opened only by a grant for that exact
+ * key, and saving one creates the key; the whole-network grant above still opens the older ones. Kept in step with the
+ * connector rows by a test.
+ */
+export const CONNECTOR_SECRET_KEYS: readonly { keyPath: string; description: string }[] = [
+  { keyPath: "secrets/fireflies_api_key", description: "Keep your Fireflies API key encrypted." },
+  { keyPath: "secrets/granola_api_key", description: "Keep your Granola API key encrypted." },
+  { keyPath: "secrets/scoped/google-meet/refresh_token", description: "Keep your Google sign-in for Google Meet encrypted." },
+];
+
+/**
+ * One entry per connector secret key, on the owner's network: `<network>/<key path>` with decrypt (read it) and
+ * key.create (a save makes the key). These are the only actions the SDK accepts on a secret's key.
+ */
+export function connectorKeyDecryptGrants(
+  address: string,
+  chainId = 1,
+): { service: string; path: string; actions: string[]; skipPrefix: true; description: string }[] {
+  const network = encryptionNetworkId(address, chainId);
+  return CONNECTOR_SECRET_KEYS.map(({ keyPath, description }) => ({
+    service: "tinycloud.encryption",
+    path: `${network}/${keyPath}`,
+    actions: ["decrypt", "key.create"],
+    skipPrefix: true,
+    description,
+  }));
+}
+
+/**
+ * `manifest` plus the whole-network decrypt grant (older secrets) and the exact-key grants (secrets saved with their own
+ * key). Sign-in only, like {@link withEncryptionDecryptGrant}; entries already present are left as they are.
+ */
+export function withConnectorDecryptGrants(manifest: Manifest, address: string, chainId = 1): Manifest {
+  const base = withEncryptionDecryptGrant(manifest, address, chainId);
+  const existing = base.permissions ?? [];
+  const added = connectorKeyDecryptGrants(address, chainId).filter(
+    (grant) => !existing.some((entry) => entry.service === grant.service && entry.path === grant.path),
+  );
+  return added.length === 0 ? base : ({ ...base, permissions: [...existing, ...added] } as Manifest);
+}

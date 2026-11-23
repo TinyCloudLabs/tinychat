@@ -3,18 +3,18 @@
 // uses a stale end.
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { generateKeyPairSync } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CheckedApprovalResult, Ed25519PrivateJwk, OpenKeyApprovalRequestV1 } from "@tinycloud/share-envelope/links";
 import * as realLinks from "@tinycloud/share-envelope/links";
 import { privateKeyToAccount } from "viem/accounts";
 import { createSiweMessage } from "viem/siwe";
-import { AskStore, MAX_GRANT_MS, MAX_LEASED_GRANT_MS, type NewSecret } from "../asks";
+import { AskStore, MAX_GRANT_MS, requestsFile, MAX_LEASED_GRANT_MS, type NewSecret } from "../asks";
 import { gatewayConfig } from "../config";
 import type { GuardDeps } from "../fetch-guard";
 import { botLayout } from "../layout";
-import { type ApprovalLinks, type GrantSession, LEASE_SECONDS, type LeaseCheck, type ReadValue, renewable, SecretGrants } from "../secret-grants";
+import { type ApprovalLinks, type GrantSession, LEASE_SECONDS, type LeaseCheck, type ReadValue, renewable, SecretGrants, secretPermissions } from "../secret-grants";
 import { type GrantNode, type LeaseNode, nodeSecretReader } from "../secret-node";
 import type { GrantStore } from "../secret-store";
 
@@ -42,8 +42,8 @@ const receipt = (over: Partial<Receipt> = {}): Receipt => ({
   nodeIdentity: { ...PIN, renewerPublicKey: "k", renewerEpoch: 0 }, ...over,
 });
 
-/** An approval for `audience`: a 7-day window, finite or leased with `receipt`. */
-async function result(audience: string, leased?: Receipt, lifetimeMs = 7 * DAY, approved = LEASE_SECONDS): Promise<CheckedApprovalResult> {
+/** An approval for `audience`: a one-hour window, finite or leased with `receipt`. */
+async function result(audience: string, leased?: Receipt, lifetimeMs = HOUR, approved = LEASE_SECONDS): Promise<CheckedApprovalResult> {
   const siwe = createSiweMessage({
     domain: "openkey.so", address: CHECKSUMMED, uri: `${audience}#${audience.slice("did:key:".length)}`, version: "1", chainId: 1,
     nonce: "abcdefgh12345678", issuedAt: new Date(T0), expirationTime: new Date(T0 + lifetimeMs),
@@ -120,8 +120,13 @@ describe("the request offers renewal only when it may", () => {
     const h = harness();
     await h.ask("SCOPED");
     expect(h.requests[0]).not.toHaveProperty("renewal");
-    expect(renewable("SCOPED")).toBe(false);
-    expect(renewable("MY_TOKEN")).toBe(true);
+    expect(renewable("SCOPED", secretPermissions("MY_TOKEN", OWNER))).toBe(false);
+    expect(renewable("MY_TOKEN", secretPermissions("MY_TOKEN", OWNER))).toBe(true);
+    // Judged on what is asked for: a decrypt under another key, or under scoped/, is not renewable.
+    const [read, decrypt] = secretPermissions("MY_TOKEN", OWNER);
+    expect(renewable("MY_TOKEN", [read!, { ...decrypt!, path: decrypt!.path.replace("/secrets/my_token", "/secrets/scoped/my_token") }])).toBe(false);
+    expect(renewable("MY_TOKEN", [read!, { ...decrypt!, path: decrypt!.path.replace("/secrets/my_token", "/secrets/other") }])).toBe(false);
+    expect(renewable("MY_TOKEN", [read!])).toBe(false);
   });
 
   test("the pin comes from BOTS_RENEWAL_NODE_DID and BOTS_RENEWAL_RENEWER_DID, both or none", () => {
@@ -145,7 +150,7 @@ describe("a result that carries a lease", () => {
     await h.ask();
     h.state.signed = await result(h.requests[0]!.targetDid);
     await h.grants.poll();
-    expect(h.grants.drain(BOT)).toEqual([{ id: ID, outcome: "approved", until: T0 + 7 * DAY }]);
+    expect(h.grants.drain(BOT)).toEqual([{ id: ID, outcome: "approved", until: T0 + HOUR }]);
   });
 
   test.each([
@@ -285,6 +290,15 @@ describe("the node reader for a leased grant", () => {
     expect(log).toEqual([]);
   });
 
+  test("never honours an end past one 7-day window, or past the lease", async () => {
+    const far = leaseNode({ get sessionEnd() { return new Date(Date.now() + 20 * DAY); } } as Partial<LeaseNode>);
+    const end = await readerFor(far).leaseEnd!(ID, session());
+    expect(typeof (end as { end: number }).end).toBe("number");
+    expect((end as { end: number }).end <= Date.now() + 7 * DAY + 61_000).toBe(true);
+    const short = { ...session(), lease: { authorization: "a", expiresAt: new Date(Date.now() + 2 * DAY).toISOString() } } as GrantSession;
+    expect(((await readerFor(far).leaseEnd!(ID, short)) as { end: number }).end <= Date.now() + 2 * DAY).toBe(true);
+  });
+
   test("a lease whose end has already passed on the node is ended", async () => {
     const node = leaseNode({ get sessionEnd() { return new Date(Date.now() - 1000); } } as Partial<LeaseNode>);
     expect(await readerFor(node).read(ID, session(), NAME)).toBe("ended");
@@ -309,20 +323,25 @@ describe("the supervisor keeps a leased approval past 7 days, and only that", ()
     return store;
   };
 
-  test("a finite approval over 7 days is refused", () => {
+  test("a finite approval over an hour is refused", () => {
     expect(asks().approved(ID, clock + MAX_GRANT_MS + 1)).toBe(false);
   });
 
   test("a leased one is kept up to 30 days, and not beyond", () => {
     const store = asks();
     expect(store.approved(ID, clock + MAX_LEASED_GRANT_MS, true)).toBe(true);
-    expect(store.approved(OTHER, clock + MAX_LEASED_GRANT_MS + 1, true)).toBe(false);
+    expect(store.approved(OTHER, clock + MAX_LEASED_GRANT_MS + 61_000, true)).toBe(false);
   });
 
-  test("a leased approval the gateway found over ends like one that ran out", () => {
+  test("a leased approval the gateway found over ends like one that ran out, and no longer shows the lease's end", () => {
     const store = asks();
     expect(store.approved(ID, clock + 20 * DAY, true)).toBe(true);
+    clock += 2 * DAY;
     expect(store.endedInGateway(ID)).toBe(true);
+    const kept = JSON.parse(readFileSync(requestsFile(botLayout(BOT, { dataRoot: join(root, "data"), runRoot: join(root, "run"), egressRoot: join(root, "egress") })), "utf8")) as { id: string; state: string; until: number }[] | { asks: { id: string; state: string; until: number }[] };
+    const ask = (Array.isArray(kept) ? kept : kept.asks).find(held => held.id === ID);
+    expect(ask).toMatchObject({ state: "ended" });
+    expect(ask!.until).toBe(clock);
     expect(store.endedInGateway(ID)).toBe(false);
   });
 });

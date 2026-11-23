@@ -109,6 +109,7 @@ function setup() {
     idleMs: 60_000, turnTimeoutMs: 4_000, maxTurnBytes: 64_000,
     history: { signerDid: owner, host: "http://127.0.0.1:9573", policy: "notice-then-expiry-30-days" },
   }, 3);
+  void bots.forOwner(owner).historyPermission(owner, undefined, Date.now() + 3_600_000);
   const admit: BotAdmission = async () => ({ admitted: true });
   const app = createApp({ bots, secret, accounts: "*", manifest, acceptLegacyOwnerHeader: true, admit });
 

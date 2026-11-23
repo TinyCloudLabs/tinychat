@@ -78,7 +78,6 @@ describe("verifiedGrant takes exactly the two entries asked for", () => {
     ["the key spelled in capitals", { [kv(NAME)]: GET, [`${network()}/secrets/OPENAI_API_KEY`]: DECRYPT }],
     ["another secret entirely", { [kv("ANTHROPIC_API_KEY")]: GET, [`${network()}/secrets/anthropic_api_key`]: DECRYPT }],
     ["a third entry", { ...ASKED, [kv("ANTHROPIC_API_KEY")]: GET }],
-    ["the network as well as the key", { ...ASKED, [network()]: DECRYPT }],
     ["an extra ability on the key", { [kv(NAME)]: GET, [`${network()}/secrets/openai_api_key`]: { ...DECRYPT, "tinycloud.encryption/key.create": [{}] } }],
     ["writing the secret too", { [kv(NAME)]: { ...GET, "tinycloud.kv/put": [{}] }, [`${network()}/secrets/openai_api_key`]: DECRYPT }],
     ["the read without the decrypt", { [kv(NAME)]: GET }],
@@ -86,6 +85,10 @@ describe("verifiedGrant takes exactly the two entries asked for", () => {
     ["the same entry twice in two spellings", { [kv(NAME)]: GET, [kv(NAME, LOWER)]: GET }],
   ])("refuses %s", async (_, att) => {
     await expect(verifiedGrant(await grant([att]), expected)).rejects.toThrow("not exactly what was asked for");
+  });
+
+  test("refuses an extra bare-network decrypt entry even with both exact entries", async () => {
+    await expect(verifiedGrant(await grant([{ ...ASKED, [network()]: DECRYPT }]), expected)).rejects.toThrow("not exactly what was asked for");
   });
 
   test("refuses the two entries split across two ReCaps", async () => {
@@ -97,18 +100,18 @@ describe("verifiedGrant takes exactly the two entries asked for", () => {
     await expect(verifiedGrant(await grant([ASKED]), { ...expected, name: "ANTHROPIC_API_KEY" })).rejects.toThrow("not exactly what was asked for");
   });
 
-  test("never keeps a grant over 7 days (plus the 60 s clock skew), even if a longer one was asked for", async () => {
-    const asked = { ...expected, maxSeconds: 30 * 24 * 3600 };
-    await expect(verifiedGrant(await grant([ASKED], 7 * DAY + 60_000), asked)).resolves.toBeDefined();
-    await expect(verifiedGrant(await grant([ASKED], 7 * DAY + 61_000), asked)).rejects.toThrow("longer than asked");
-    await expect(verifiedGrant(await grant([ASKED], 7 * DAY + HOUR), asked)).rejects.toThrow("longer than asked");
+  test("keeps the one-hour cap plus 120 seconds, even if a longer grant was asked for", async () => {
+    const asked = { ...expected, maxSeconds: DAY / 1000 };
+    await expect(verifiedGrant(await grant([ASKED], HOUR + 120_000), asked)).resolves.toBeDefined();
+    await expect(verifiedGrant(await grant([ASKED], HOUR + 121_000), asked)).rejects.toThrow("longer than asked");
+    await expect(verifiedGrant(await grant([ASKED], 2 * HOUR), asked)).rejects.toThrow("longer than asked");
   });
 });
 
 /** A kept record as #913 saved it: asked when the decrypt covered the owner's whole network. */
 function networkWideRecord(state: "pending" | "approved") {
   const request = {
-    targetDid: target, grantLifetimeSeconds: 7 * 24 * 3600,
+    targetDid: target, grantLifetimeSeconds: MAX_GRANT_SECONDS,
     permissions: [
       { service: "tinycloud.kv", space: "secrets", path: `vault/secrets/${NAME}`, actions: ["tinycloud.kv/get"] },
       { service: "tinycloud.encryption", space: "encryption", path: network(), actions: ["tinycloud.encryption/decrypt"] },
@@ -116,7 +119,7 @@ function networkWideRecord(state: "pending" | "approved") {
   };
   return {
     botId: BOT, state, reported: state === "approved", approveUrl: "https://openkey.so/a/x", linkExpiresAt: T0 + DAY,
-    ...(state === "approved" ? { until: T0 + DAY } : {}),
+    ...(state === "approved" ? { until: T0 + HOUR } : {}),
     ask: { name: NAME, sites: ["api.openai.com"], header: "authorization", why: "To transcribe a call.", ownerDid: OWNER },
     methods: ["GET", "HEAD"], calls: { day: "", count: 0, bytes: 0 },
     keys: { jwk, relayPrivateKey: "r", request, requestId: "req0", bodyCid: "bafy-body", record: { header: "h", signature: "s" }, ackId: "ack", ...(state === "approved" ? { session: { delegationCid: "bafy" } } : {}) },
@@ -162,6 +165,13 @@ const net: GuardDeps = { lookup: async () => ["93.184.216.34"], connect: async (
 const CALL = { name: NAME, method: "GET", url: "https://api.openai.com/v1/models", headers: { Authorization: "Bearer {{secret}}" } };
 
 describe("no read with a grant that could open the network-wrapped copy", () => {
+  test("refuses SCOPED before opening an approval request", async () => {
+    const h = harness(storeOf().store);
+    const result = await h.grants.ask(BOT, ID, { name: "SCOPED", sites: ["api.openai.com"], header: "authorization", why: "For a call.", ownerDid: OWNER });
+    expect(result).toEqual({ refused: "invalid" });
+    expect(h.requests).toEqual([]);
+  });
+
   test("an approved grant asked before per-secret keys ends at start: no read, no new request", async () => {
     const { store, saved } = storeOf(networkWideRecord("approved"));
     const h = harness(store);

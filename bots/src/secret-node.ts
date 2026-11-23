@@ -22,6 +22,8 @@ function tinyCloudNode(nodeOrigin: string): GrantNode {
   return new TinyCloudNode({ host: nodeOrigin, tinycloudFallbackHosts: [nodeOrigin], autoDiscoverLocalNode: false, enablePublicSpace: false });
 }
 
+const LEASE_WINDOW_MS = 7 * 24 * 60 * 60_000;
+
 /** Codes of the SDK's errors that mean the lease is over, as opposed to a node that could not be reached. */
 const LEASE_OVER = new Set(["RENEWAL_AUTHORITY_INACTIVE", "RENEWAL_LEASE_EXPIRED", "RENEWAL_RENEWER_CHANGED"]);
 
@@ -30,7 +32,7 @@ const LEASE_OVER = new Set(["RENEWAL_AUTHORITY_INACTIVE", "RENEWAL_LEASE_EXPIRED
  * node's status and its signed stamp chain are checked at every use, not at approval (never the stored expiry), and the
  * identity the node advertises must be the pinned one (the same check OpenKey makes).
  */
-async function openLeased(nodeOrigin: string, newNode: (nodeOrigin: string) => LeaseNode, pin: RenewalPin, session: GrantSession): Promise<{ node: LeaseNode; end: number } | Exclude<LeaseCheck, { end: number }>> {
+async function openLeased(nodeOrigin: string, newNode: (nodeOrigin: string) => LeaseNode, pin: RenewalPin, session: GrantSession, now: () => number): Promise<{ node: LeaseNode; end: number } | Exclude<LeaseCheck, { end: number }>> {
   if (!session.lease) return "ended";
   try {
     const node = newNode(nodeOrigin);
@@ -38,8 +40,11 @@ async function openLeased(nodeOrigin: string, newNode: (nodeOrigin: string) => L
     if (identity.nodeDid !== pin.nodeDid || identity.renewerDid !== pin.renewerDid) return "unavailable";
     const { lease, ...restorable } = session;
     await node.restoreSessionWithRenewal({ ...restorable, tinycloudHosts: [nodeOrigin] }, lease.authorization);
-    const end = node.sessionEnd?.getTime();
-    return end !== undefined && Number.isFinite(end) && end > Date.now() ? { node, end } : "ended";
+    const reported = node.sessionEnd?.getTime();
+    if (reported === undefined || !Number.isFinite(reported)) return "ended";
+    // One renewal window is 7 days at most, and the owner's lease ends when it ends: never honour a longer end than either.
+    const end = Math.min(reported, Date.parse(lease.expiresAt), now() + LEASE_WINDOW_MS + 60_000);
+    return end > now() ? { node, end } : "ended";
   } catch (error) {
     const code = typeof error === "object" && error !== null && "code" in error ? (error as { code: unknown }).code : undefined;
     return typeof code === "string" && LEASE_OVER.has(code) ? "ended" : "unavailable";
@@ -49,7 +54,7 @@ async function openLeased(nodeOrigin: string, newNode: (nodeOrigin: string) => L
 export function nodeSecretReader(
   nodeOrigin: string,
   newNode: (nodeOrigin: string) => GrantNode = tinyCloudNode,
-  leased?: { pin: RenewalPin; newNode?: (nodeOrigin: string) => LeaseNode },
+  leased?: { pin: RenewalPin; newNode?: (nodeOrigin: string) => LeaseNode; now?: () => number },
 ): SecretReader {
   const newLeaseNode = leased?.newNode ?? ((origin: string) => tinyCloudNode(origin) as LeaseNode);
   const sessions = new Map<string, Promise<GrantNode>>();
@@ -71,7 +76,7 @@ export function nodeSecretReader(
     async read(id, session, name): Promise<ReadValue> {
       if (session.lease) {
         if (!leased) return "unavailable";
-        const opened = await openLeased(nodeOrigin, newLeaseNode, leased.pin, session);
+        const opened = await openLeased(nodeOrigin, newLeaseNode, leased.pin, session, leased.now ?? Date.now);
         if (typeof opened === "string") return opened;
         try {
           const read = await opened.node.readSecret({ space: `tinycloud:pkh:eip155:${session.chainId}:${session.address}:secrets`, name });
@@ -92,7 +97,7 @@ export function nodeSecretReader(
     },
     async leaseEnd(id, session): Promise<LeaseCheck> {
       if (!leased) return "unavailable";
-      const opened = await openLeased(nodeOrigin, newLeaseNode, leased.pin, session);
+      const opened = await openLeased(nodeOrigin, newLeaseNode, leased.pin, session, leased.now ?? Date.now);
       return typeof opened === "string" ? opened : { end: opened.end };
     },
     forget(id) {

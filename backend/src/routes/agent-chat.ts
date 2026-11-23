@@ -15,6 +15,7 @@ import type { McpMeetingTools } from "../mcp-meetings/dispatch.js";
 import type { RetrievalContext } from "../mcp-meetings/evidence.js";
 import type { Request, RequestHandler, Response } from "express";
 import { createAgentTaskClient } from "../agent-task-client.js";
+import { clientContextFrom } from "../client-context.js";
 import { validateAgentStreamPolicy, type AgentStreamPolicy } from "../agent-stream-policy.js";
 import { TINYCLOUD_MEETING_TOOLS } from "../transcripts/tool-contract.js";
 import { runMeetingTurn, type BufferedMeetingModelResult, type MeetingModelRequest, type MeetingToolContext } from "../transcripts/meeting-turn.js";
@@ -1388,27 +1389,10 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
       res.status(400).json({ error: "invalid_body", message: "roomId must be a string" });
       return;
     }
-    let turnContext: AgentTurnContext | undefined;
-    if (clientContext !== undefined) {
-      if (!clientContext || typeof clientContext !== "object") {
-        res.status(400).json({ error: "invalid_body", message: "clientContext must contain localDate and timeZone" });
-        return;
-      }
-      const candidate = clientContext as { localDate?: unknown; timeZone?: unknown };
-      if (
-        typeof candidate.localDate !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(candidate.localDate)
-        || typeof candidate.timeZone !== "string" || candidate.timeZone.length === 0 || candidate.timeZone.length > 100
-      ) {
-        res.status(400).json({ error: "invalid_body", message: "clientContext must contain a YYYY-MM-DD localDate and IANA timeZone" });
-        return;
-      }
-      try {
-        new Intl.DateTimeFormat("en", { timeZone: candidate.timeZone }).format(new Date());
-      } catch {
-        res.status(400).json({ error: "invalid_body", message: "clientContext timeZone is invalid" });
-        return;
-      }
-      turnContext = { localDate: candidate.localDate, timeZone: candidate.timeZone };
+    const turnContext: AgentTurnContext | undefined = clientContextFrom(clientContext);
+    if (clientContext !== undefined && !turnContext) {
+      res.status(400).json({ error: "invalid_body", message: "clientContext must contain a YYYY-MM-DD localDate and IANA timeZone" });
+      return;
     }
 
     const resolvedModel = typeof model === "string" && model.trim() ? model : config.defaultModel();
@@ -1557,7 +1541,7 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
         return;
       }
       const minimum = minTurnCredits(rates);
-      recordAgentChatBudgetPreflight({ address, mode: budgetPreflightMode, remaining: budgetRemaining, minimum, tier: gatedTier, source: budgetSource });
+      recordAgentChatBudgetPreflight({ address, mode: budgetPreflightMode, remaining: budgetRemaining, minimum, tier: gatedTier, source: budgetSource, unpriced: rates.fallback });
       if (budgetRemaining !== null && budgetPreflightMode !== "off" && budgetRemaining < minimum) {
         console.info("[agent-chat] turn budget", { event: "preflight", mode: budgetPreflightMode, remaining: budgetRemaining, minimum });
         if (budgetPreflightMode === "enforce") {

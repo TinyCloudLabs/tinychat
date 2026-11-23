@@ -92,6 +92,7 @@ function setup(onLaunch?: (layout: BotLayout) => void) {
   const started: string[] = [];
   const launcher: SandboxLauncher = {
     hasState: () => false, leftover: () => false,
+    readsHeld: async () => false,
     launch: async layout => {
       started.push(layout.botId);
       onLaunch?.(layout);
@@ -108,6 +109,8 @@ function setup(onLaunch?: (layout: BotLayout) => void) {
     idleMs: 60_000, turnTimeoutMs: 4_000, maxTurnBytes: 64_000,
     history: { signerDid: owner, host: "http://127.0.0.1:9573", policy: "notice-then-expiry-30-days" },
   }, 3);
+  void bots.forOwner(owner).historyPermission(owner, undefined, Date.now() + 3_600_000);
+  void bots.forBot(owner, sibling).historyPermission(owner, undefined, Date.now() + 3_600_000);
   const decisions: string[][] = [];
   let registryState: "allowed" | keyof typeof statusRefusals = "allowed";
   const admission: BotAdmission = async (account, from, to) => {

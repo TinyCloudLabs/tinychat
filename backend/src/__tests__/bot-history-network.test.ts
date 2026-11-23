@@ -12,10 +12,14 @@ import type { Frame } from "../../../bots/src/rpc";
 import { expect, spyOn, test } from "bun:test";
 import { TinyCloudNode, serializeDelegation } from "@tinycloud/node-sdk";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
+import { canonicalizeEncryptionJson } from "@tinycloud/sdk-core";
 import { BotHistory, HISTORY_PREFIX, historyBotId, historyOwner } from "../bot-history";
+import { BOT_HISTORY_KEY_MAX_MS, BOT_HISTORY_KEY_PATH, type BotHistoryKeyDescriptorPayload } from "../bot-history-key";
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
+import { backendHistoryFixtureManifest } from "./helpers/transcript-grant";
 
 const host = process.env.BOT_HISTORY_TEST_NODE;
 test.skipIf(!host)("real TinyCloud: encrypted archival, KV-only backend decrypt refusal, owner session and grant rotation", async () => {
@@ -28,10 +32,11 @@ test.skipIf(!host)("real TinyCloud: encrypted archival, KV-only backend decrypt 
   const backendKey = generatePrivateKey();
   const address = privateKeyToAccount(ownerKey).address;
   const network = `urn:tinycloud:encryption:did:pkh:eip155:1:${address}:default`;
+  const keyUrn = `${network}/${BOT_HISTORY_KEY_PATH}`;
   const ownerConfig = { privateKey: ownerKey, host, prefix: "applications", autoCreateSpace: true, autoBootstrapAccount: false, includeAccountRegistryPermissions: false,
     manifest: webSignInManifest(WEB_APP_MANIFEST, [], address) };
   const owner = new TinyCloudNode(ownerConfig);
-  const backend = new TinyCloudNode({ privateKey: backendKey, host, prefix: "bot-history-network-test", includeAccountRegistryPermissions: false });
+  const backend = new TinyCloudNode({ privateKey: backendKey, host, prefix: "bot-history-network-test", includeAccountRegistryPermissions: false, manifest: backendHistoryFixtureManifest });
   const root = mkdtempSync(join(tmpdir(), "history-network-"));
   try {
     await owner.signIn(); await owner.hostOwnedSpace("applications");
@@ -42,8 +47,23 @@ test.skipIf(!host)("real TinyCloud: encrypted archival, KV-only backend decrypt 
       const grants = await client.grantRuntimePermissions(ownerPermissions, { expiry: 3_600_000,
         signMessage: message => privateKeyToAccount(ownerKey).signMessage({ message }) });
       expect(grants.length).toBeGreaterThan(0);
-      expect(client.getEffectiveRuntimePermissionEntries().filter(entry => entry.service === "tinycloud.encryption")).toEqual([{ service: "tinycloud.encryption", path: network, actions: ["tinycloud.encryption/decrypt", "tinycloud.encryption/network.create"] }]);
-      await client.ensureEncryptionNetwork();
+      expect(client.getEffectiveRuntimePermissionEntries().filter(entry => entry.service === "tinycloud.encryption")).toEqual([{ service: "tinycloud.encryption", path: keyUrn, actions: ["tinycloud.encryption/decrypt", "tinycloud.encryption/key.create"] }]);
+      if (!(await client.getEncryptionNetwork(network))) {
+        await client.grantRuntimePermissions([{
+          service: "tinycloud.encryption", path: network, skipPrefix: true, actions: ["network.create"],
+        }], { expiry: 3_600_000, signMessage: message => privateKeyToAccount(ownerKey).signMessage({ message }) });
+        await client.ensureEncryptionNetwork();
+      }
+      const desc = await client.keys.ensureKey(BOT_HISTORY_KEY_PATH, { networkId: network });
+      const nowSec = Math.floor(Date.now() / 1000);
+      const siweExpMs = Date.parse(/^Expiration Time:\s*(\S+)/im.exec(client.session!.siwe)?.[1] ?? "");
+      const payload: BotHistoryKeyDescriptorPayload = {
+        v: 1, type: "tinychat.bot-history.key-descriptor/v1", owner: `did:pkh:eip155:1:${address}`, networkId: network,
+        keyPath: BOT_HISTORY_KEY_PATH, alg: desc.alg, keyVersion: desc.keyVersion, publicEncryptionKey: desc.publicEncryptionKey,
+        kind: "deletable", state: "active", iat: nowSec, exp: Math.floor(Math.min(siweExpMs, Date.now() + BOT_HISTORY_KEY_MAX_MS) / 1000),
+      };
+      const sig = Buffer.from(await client.signSessionBytes(Buffer.from(canonicalizeEncryptionJson({ ...payload }), "utf8"))).toString("base64");
+      return { descriptor: payload, descriptorSignature: sig, signerDid: client.session!.verificationMethod.split("#")[0]!, siwe: client.session!.siwe, signature: client.session!.signature };
     };
     await backend.signIn(); await backend.hostOwnedSpace("bot-history-network-test");
     const writer = new BotHistory(backend, backendKey, host!);
@@ -63,7 +83,7 @@ test.skipIf(!host)("real TinyCloud: encrypted archival, KV-only backend decrypt 
     await expect(writer.archive(address, batch, async staged => { journal.stage(staged); })).rejects.toThrow("history_recipient_unavailable");
     expect(journal.pending()?.challenge).toBe(batch.challenge);
     expect(journal.notice()).toBeUndefined();
-    await approve(owner);
+    await writer.acceptKeyDescriptor(address, await approve(owner));
     const target = `${HISTORY_PREFIX}${historyBotId(address)}/${batch.generation}/${batch.seq}-${batch.challenge}`;
     const nativeFetch = globalThis.fetch.bind(globalThis);
     let networkReads = 0;
@@ -85,14 +105,12 @@ test.skipIf(!host)("real TinyCloud: encrypted archival, KV-only backend decrypt 
     const access = await backend.useDelegation(delegation);
     const read = await access.kv.get(path, { prefix: "" });
     expect(read.ok).toBe(true); if (!read.ok) throw new Error("read failed");
-    const envelope = read.data.data as Parameters<typeof owner.encryption.decryptEnvelope>[0];
+    const envelope = read.data.data as Parameters<typeof owner.keys.decrypt>[0];
     expect(JSON.stringify(envelope)).not.toContain("archive round trip");
-    const denied = await backend.encryption.decryptEnvelope(envelope, { proofs: [] });
-    expect(denied.ok).toBe(false);
-    if (!denied.ok) expect(denied.error.code).toBe("DECRYPT_DENIED");
-    const opened = await owner.encryption.decryptEnvelope(envelope, { proofs: [] });
-    expect(opened.ok).toBe(true);
-    if (opened.ok) expect(JSON.parse(new TextDecoder().decode(opened.data))).toEqual(batch);
+    expect((envelope as { v?: number; keyPath?: string })).toMatchObject({ v: 2, keyPath: BOT_HISTORY_KEY_PATH });
+    await expect(backend.keys.decrypt(envelope)).rejects.toThrow();
+    const opened = await owner.keys.decrypt(envelope);
+    expect(JSON.parse(new TextDecoder().decode(opened))).toEqual(batch);
     // Create-only is a real node precondition, not just random ID uniqueness.
     const overwrite = await access.kv.put(path, { overwritten: true }, { prefix: "", ifNoneMatch: "*" });
     expect(overwrite.ok).toBe(false);
@@ -102,12 +120,11 @@ test.skipIf(!host)("real TinyCloud: encrypted archival, KV-only backend decrypt 
     const rotated = new TinyCloudNode(ownerConfig);
     await rotated.signIn();
     expect(rotated.getVerifiedSessionCapabilities().some(entry => entry.service === "tinycloud.encryption")).toBe(false);
-    await approve(rotated);
+    await writer.acceptKeyDescriptor(address, await approve(rotated));
     expect(rotated.session!.verificationMethod).not.toBe(oldSession);
     await grantFrom(rotated);
-    const reopened = await rotated.encryption.decryptEnvelope(envelope, { proofs: [] });
-    expect(reopened.ok).toBe(true);
-    if (reopened.ok) expect(JSON.parse(new TextDecoder().decode(reopened.data))).toEqual(batch);
+    const reopened = await rotated.keys.decrypt(envelope);
+    expect(JSON.parse(new TextDecoder().decode(reopened))).toEqual(batch);
     // Public backend message route -> supervisor journal -> real owner TinyCloud -> verified retention barrier.
     const listeners = new Set<(frame: Frame) => void>();
     const exited = Promise.withResolvers<void>();
@@ -115,7 +132,9 @@ test.skipIf(!host)("real TinyCloud: encrypted archival, KV-only backend decrypt 
       hasState: () => false, leftover: () => false, mountPoints: () => [],
       provenance: async () => [{ verified: false, fixture: true }],
       launch: async layout => {
-        mkdirSync(layout.stateMount, { recursive: true }); writeFileSync(layout.stateSnapshot, "fixture state");
+        mkdirSync(layout.stateMount, { recursive: true });
+        mkdirSync(layout.dataDir, { recursive: true });
+        writeFileSync(layout.stateSnapshot, "fixture state");
         return { exited: exited.promise, nextId: () => "turn",
           onFrame: listener => { listeners.add(listener); return () => listeners.delete(listener); },
           snapshot: async () => {}, refreshEgress: async () => {}, stop: async () => { exited.resolve(); },
@@ -140,6 +159,7 @@ test.skipIf(!host)("real TinyCloud: encrypted archival, KV-only backend decrypt 
     const server = app.listen(0, "127.0.0.1"); await once(server, "listening");
     const port = (server.address() as { port: number }).port;
     try {
+      await manager.forOwner(historyOwner(address)).historyPermission(historyOwner(address), undefined, Date.now() + 3_600_000);
       const message = await fetch(`http://127.0.0.1:${port}/api/bots/main/messages`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: "Reply pong" }) });
       const stream = await message.text();
       expect(stream).toContain("pong"); expect(stream).toContain("event: done");
@@ -152,7 +172,7 @@ test.skipIf(!host)("real TinyCloud: encrypted archival, KV-only backend decrypt 
       }
       expect(await bot.historyCovered()).toBe(true);
       await manager.deleteWorkingState(historyBotId(address), "unused");
-      const archived = await readBotHistory({ session: () => rotated.session, kvForSpace: () => rotated.kv, encryption: rotated.encryption } as unknown as TinyCloudWeb);
+      const archived = await readBotHistory({ session: () => rotated.session, kvForSpace: () => rotated.kv, encryption: rotated.encryption, keys: rotated.keys } as unknown as TinyCloudWeb);
       expect(archived.map(line => line.text)).toContain("Reply pong");
       expect(archived.map(line => line.text)).toContain("pong");
     } finally {

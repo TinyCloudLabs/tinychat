@@ -1,3 +1,5 @@
+export const BOT_HISTORY_RECORD_PREFIX = "xyz.tinycloud.tinychat/threads/bots/v1/";
+export const BOT_HISTORY_RECORD_SUFFIX = /^[0-9a-f]{32}\/[1-9][0-9]*-[0-9a-f]{64}$/;
 export const SIBLING_BOT_KEY = /^[0-9a-f]{32}$/;
 
 export function isBotKey(value: unknown): value is string {
@@ -11,5 +13,5 @@ export async function botHistoryDirectory(address: string, botKey: string): Prom
   const input = botKey === "main" ? owner : `${owner}\n${botKey}`;
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input));
   const id = Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, "0")).join("");
-  return `xyz.tinycloud.tinychat/threads/bots/v1/${id}/`;
+  return `${BOT_HISTORY_RECORD_PREFIX}${id}/`;
 }

@@ -71,14 +71,14 @@ const type = async (area: HTMLTextAreaElement, value: string) => {
 test("the card has Monica's frame, the question as a quote, a relative age, one footer, Answer and Not now and the stop link", async () => {
   const host = await render(<AskCards asks={asksWith({ pending: [request()] })} />);
   const text = host.textContent!;
-  expect(text).toContain("Main is asking:");
+  expect(text).toContain("TrustBot is asking:");
   expect(host.querySelector("[data-ask-question]")!.textContent).toBe("“Which colour?”");
   expect(text).toContain("Asked 3 hours ago");
   expect(text).toContain(ASK_STRINGS.footer);
   expect(text).toContain(ASK_STRINGS.answerHint);
   expect(button(host, "Answer")).toBeTruthy();
   expect(button(host, "Not now")).toBeTruthy();
-  expect(button(host, "Stop Main from asking")).toBeTruthy();
+  expect(button(host, "Stop TrustBot from asking")).toBeTruthy();
   expect(host.querySelectorAll("[data-ask-card]")).toHaveLength(1);
 });
 
@@ -155,10 +155,10 @@ test("a declined request collapses to 'You said not now.' and an expired one to 
 test("Stop Main from asking turns the setting off through the controller, then the confirmation shows", async () => {
   const asks = asksWith({ pending: [request()] });
   const host = await render(<AskCards asks={asks} />);
-  await act(async () => { button(host, "Stop Main from asking").click(); });
+  await act(async () => { button(host, "Stop TrustBot from asking").click(); });
   expect(asks.stops).toBe(1);
   act(() => mounted!.render(<AskCards asks={{ ...asks, pending: [], enabled: false, stopped: true }} />));
-  expect(host.querySelector("[data-ask-stopped]")!.textContent).toBe("Main won’t ask you questions. You can turn this back on in Settings.");
+  expect(host.querySelector("[data-ask-stopped]")!.textContent).toBe("TrustBot won’t ask you questions. You can turn this back on in Settings.");
 });
 
 test("nothing shows when the service has no questions route", async () => {
@@ -171,7 +171,7 @@ test("the settings toggle is off by default and saves what the owner picks", asy
   const host = await render(<AsksToggle asks={asksWith({ enabled: false, setEnabled: async (value) => { saved.push(value); return "ok"; } })} />);
   const box = host.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
   expect(box.checked).toBe(false);
-  expect(host.textContent).toContain("Let Main ask you questions");
+  expect(host.textContent).toContain("Let TrustBot ask you questions");
   expect(host.textContent).toContain(ASK_STRINGS.toggleHelp);
   await act(async () => { box.click(); });
   expect(saved).toEqual([true]);
