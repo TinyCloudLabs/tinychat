@@ -33,7 +33,7 @@ beforeAll(() => {
       path === "/v1/locations/did:pkh:eip155:1:" + ADDRESS.toLowerCase()
     )) return Response.json({ error: "location record not found" }, { status: 404 });
     return new Response(
-      String(input).endsWith("/info") ? JSON.stringify({ protocol: 1, version: "test", nodeId: "did:key:z6MkvSbonMn1Xgewrb4EsbjTmvMT8T9Y3PTb5PcnQcQUbzjc" }) : "{}",
+      String(input).endsWith("/info") ? JSON.stringify({ protocol: 1, version: "test", features: ["kv", "delegation", "sql", "hooks", "encryption", "encryption-named-keys-v1"], nodeId: "did:key:z6MkvSbonMn1Xgewrb4EsbjTmvMT8T9Y3PTb5PcnQcQUbzjc" }) : "{}",
       { status: 200, headers: { "content-type": "application/json" } },
     );
   }) as typeof fetch;
