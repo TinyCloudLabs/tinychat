@@ -78,7 +78,7 @@ function Composer({ composer, inputRef }: { composer: ReturnType<typeof useDraft
   );
 }
 
-export interface MainChatProps {
+interface MainChatBaseProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   state: MainChatState;
@@ -95,12 +95,23 @@ export interface MainChatProps {
   asks?: Asks;
   /** When given, the sheet offers the owner's "Start a new chat". */
   newChat?: NewChatApi;
-  /** When given, the sheet offers the owner's "Delete chats": the conversation and the saved history. */
-  deleteChats?: DeleteChatsApi;
-  /** The owner's chats are being deleted: nothing is sent. The owner of the chat holds this, so the Home ask box waits too. */
-  deleting?: boolean;
-  onDeleting?: (deleting: boolean) => void;
 }
+
+/**
+ * "Delete chats" comes with the hold on sending: the control needs `deleting` and `onDeleting`, and they mean nothing
+ * without it, so a caller cannot mount the control and leave a composer able to send while it runs.
+ */
+type MainChatDeleteProps =
+  | {
+    /** When given, the sheet offers the owner's "Delete chats": the conversation and the saved history. */
+    deleteChats: DeleteChatsApi;
+    /** The owner's chats are being deleted: nothing is sent. The owner of the chat holds this, so the Home ask box waits too. */
+    deleting: boolean;
+    onDeleting: (deleting: boolean) => void;
+  }
+  | { deleteChats?: undefined; deleting?: undefined; onDeleting?: undefined };
+
+export type MainChatProps = MainChatBaseProps & MainChatDeleteProps;
 
 /** Services that answered 404 for web access, so reopening Main's chat does not show the button again. */
 const WITHOUT_WEB_ACCESS = new WeakSet<WebAccessApi>();
