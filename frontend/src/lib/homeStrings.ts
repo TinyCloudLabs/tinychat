@@ -55,7 +55,7 @@ export const LANDING_LINK_LABEL = `About ${APP_NAME}`;
 /** Connectors on the web asks for its own permission in place, when the owner opens it. */
 export const FEATURE_ACCESS_TITLE = { connectors: "Allow Connectors" } as const;
 export const FEATURE_ACCESS_BODY = {
-  connectors: `To sync your meetings, OpenKey will ask you to let ${APP_NAME} keep them in your TinyCloud space, along with the keys and sign-ins you add for Fireflies, Granola and Google Meet, which are stored encrypted. To read those keys, One also asks to unlock everything encrypted to your account, including data other apps saved. If you turn on renewal in OpenKey, it will ask “Renew sensitive access?” Confirming keeps your secrets readable for up to 7 days at a time.`,
+  connectors: `To sync your meetings, OpenKey will ask you to let ${APP_NAME} keep them in your TinyCloud space, along with the keys and sign-ins you add for Fireflies, Granola and Google Meet, which are stored encrypted. To read those keys, ${APP_NAME} also asks to use your master key, which opens everything encrypted to your account, including data other apps saved. If you turn on renewal in OpenKey, it will ask “Renew sensitive access?” Confirming keeps your secrets readable for up to 7 days at a time.`,
 } as const;
 /** The calm state after "Not now": the feature waits for permission, and Continue asks again. */
 export const FEATURE_ACCESS_NEEDED = { connectors: "Connectors need your permission." } as const;
