@@ -16,6 +16,54 @@
 - TC-2204: Native audience checks accept Home's three exact SQL hook subscriptions only alongside an existing TinyChat data grant.
 - TC-2499: The Home mirror adapter persists close receipts using node-compatible NULL/non-NULL compare-and-set predicates. If the KV mirror is already exactly closed but its receipt is missing, recovery records the original publication ETag without writing the KV copy again, before any gated child handoff. The CLI reports JSON error class, safe message, code, HTTP status when available, and operation step; private SQL bodies and nested causes remain redacted. Exit 2 identifies invalid input, exit 6 known transient failures (including NODE_BUSY and REQUEST_TIMEOUT without HTTP metadata), and exit 1 other runtime failures or OUTCOME_UNKNOWN. Unclassified errors are not labelled bad input; no failure confirms delivery or authorizes an automatic retry.
 
+## 0.20.3
+
+### Patch Changes
+
+- 7f1399f: Accept multi-stamp renewal histories from the node, so a lease renewed more than once verifies.
+
+  Details: TC-4000
+
+- 6fadb67: On the web, connector keys are saved with your account's main key.
+
+  Details: TC-3284
+
+- eae1f49: Choose one thing to try from your TinyCloud setup. Your choice waits in Feed for your agent's next check.
+
+  Details: TC-3302
+
+## 0.20.3-beta.3
+
+### Patch Changes
+
+- 6fadb67: On the web, connector keys are saved with your account's main key.
+
+  Details: TC-3284
+
+## 0.20.3-beta.2
+
+### Patch Changes
+
+- 7f1399f: Accept multi-stamp renewal histories from the node, so a lease renewed more than once verifies.
+
+  Details: TC-4000
+
+## 0.20.3-beta.1
+
+### Patch Changes
+
+- 1844202: Production web saves each connector key under its own encryption key, so a service you approve for one key can read only that key.
+
+  Details: TC-3284
+
+## 0.20.3-beta.0
+
+### Patch Changes
+
+- eae1f49: Choose one thing to try from your TinyCloud setup. Your choice waits in Feed for your agent's next check.
+
+  Details: TC-3302
+
 ## 0.20.2
 
 ### Patch Changes

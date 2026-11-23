@@ -171,3 +171,13 @@ describe("opening a handoff", () => {
     expect(() => verifyHandoff("#tch1SECRET")).toThrow("Invalid handoff link");
   });
 });
+
+test("only a Feed handoff links to the setup card for its verified record", async () => {
+  const handoffId = key.slice(key.lastIndexOf("/") + 1);
+  const cardId = handoffId.replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/, "$1-$2-$3-$4-$5");
+  const fragment = signedLink();
+  const feed = await openHandoff(fragment, async () => bytes({ ...record, abilities: [...record.abilities, "feed"] }));
+  const apps = await openHandoff(fragment, async () => bytes(record));
+  expect(feed?.setupChoicePath).toBe(`/chat/feed/${cardId}?setup=1`);
+  expect(apps?.setupChoicePath).toBeNull();
+});

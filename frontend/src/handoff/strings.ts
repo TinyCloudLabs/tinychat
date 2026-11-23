@@ -19,6 +19,7 @@ export const handoffStrings = {
   apps: "Your app list",
   noApps: "There are no apps in this list yet.",
   moreApps: "Sign in to see the full list.",
+  openSetupChoice: "Open your setup choice",
   tryThese: "Try one of these",
   promptIntro: "Copy a prompt and paste it into your agent chat.",
   prompts: [
