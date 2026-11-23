@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { loadRenewalReceipt, saveRenewalReceipt } from "@tinyboilerplate/client";
 import { NodeUserAuthorization } from "@tinycloud/node-sdk";
 import type { Manifest } from "@tinycloud/web-sdk";
-import { admitSignInRenewal, renewalRestoreFor, verifiedRenewalLease } from "./renewalReceipt";
+import { admitSignInRenewal, reachesWholeNetworkDecrypt, renewalRestoreFor, verifiedRenewalLease } from "./renewalReceipt";
 import { leasedSession, type SignedResources } from "./renewalReceipt.grantFixture";
 import { webSignInManifest } from "./homeFeatures";
 import { WEB_APP_MANIFEST } from "./webSignInPrefetch";
@@ -60,6 +60,22 @@ describe("a lease for a saved session", () => {
     expect(loadRenewalReceipt(owner.address)).toBeNull();
   });
 
+  // Spellings of the whole network the SDK's own sign-in does not produce today, signed here directly.
+  const SPELLINGS: Record<string, (network: string) => SignedResources> = {
+    "an empty key part": (network) => ({ [`${network}/`]: ["tinycloud.encryption/decrypt"] }),
+    "a wildcard key part": (network) => ({ [`${network}/*`]: ["tinycloud.encryption/decrypt"] }),
+    "an upper-case urn prefix": (network) => ({ [network.replace(/^urn:tinycloud:encryption:/, "URN:TINYCLOUD:ENCRYPTION:")]: ["tinycloud.encryption/decrypt"] }),
+    "every encryption ability": (network) => ({ [network]: ["tinycloud.encryption/*"] }),
+  };
+  test.each(Object.keys(SPELLINGS))("that signed decrypt on the whole network with %s is refused and its receipt dropped", async (spelling) => {
+    const network = Object.keys(wholeNetwork()).find((resource) => !resource.includes("/"))!;
+    const { owner, record, receipt } = await leasedSession(SPELLINGS[spelling](network));
+    saveRenewalReceipt(owner.address, receipt);
+    expect(await verifiedRenewalLease(receipt, record)).toBeNull();
+    expect(await renewalRestoreFor(owner.address, storageOf(record, owner.address))).toBeNull();
+    expect(loadRenewalReceipt(owner.address)).toBeNull();
+  });
+
   test("that signed only the exact connector keys is still used and its receipt kept", async () => {
     const signed = exactKeys();
     expect(Object.keys(signed).length).toBeGreaterThan(0);
@@ -85,5 +101,23 @@ describe("a lease for a saved session", () => {
     expect(kept).toBe(false);
     expect(nodeAsked).toBe(0);
     expect(loadRenewalReceipt(owner.address)).toBeNull();
+  });
+});
+
+describe("a request for decrypt on an encryption network path", () => {
+  test("reaches the whole network with no key, an empty key or a wildcard key, and not with a named key", () => {
+    const decrypt = ["tinycloud.encryption/decrypt"];
+    expect(reachesWholeNetworkDecrypt("did:pkh:eip155:1:0xa1:default", decrypt)).toBe(true);
+    expect(reachesWholeNetworkDecrypt("did:pkh:eip155:1:0xa1:default/", decrypt)).toBe(true);
+    expect(reachesWholeNetworkDecrypt("did:pkh:eip155:1:0xa1:default/*", decrypt)).toBe(true);
+    expect(reachesWholeNetworkDecrypt("did:pkh:eip155:1:0xa1:default/secrets/fireflies_api_key", decrypt)).toBe(false);
+    expect(reachesWholeNetworkDecrypt("did:pkh:eip155:1:0xa1:default/secrets/*", decrypt)).toBe(false);
+  });
+
+  test("needs decrypt or every encryption ability, whatever the case", () => {
+    const network = "did:pkh:eip155:1:0xa1:default";
+    expect(reachesWholeNetworkDecrypt(network, ["Tinycloud.Encryption/Decrypt"])).toBe(true);
+    expect(reachesWholeNetworkDecrypt(network, ["tinycloud.encryption/*"])).toBe(true);
+    expect(reachesWholeNetworkDecrypt(network, ["tinycloud.encryption/network.create"])).toBe(false);
   });
 });

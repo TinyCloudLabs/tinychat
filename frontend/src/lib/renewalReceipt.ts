@@ -20,10 +20,22 @@ export const SIGN_IN_RENEWAL_ASK = { version: 1, leaseLifetimeSeconds: 90 * 24 *
 
 const SENSITIVE_RENEWAL_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 
-/** A request for decrypt on a whole encryption network (its path has no key part), not on one named key. */
+/**
+ * Whether decrypt on an encryption network path reaches the whole network rather than one named key: the path has no
+ * key part, an empty one or a wildcard one, and one of the abilities is decrypt or every encryption ability.
+ */
+export function reachesWholeNetworkDecrypt(path: string, abilities: string[]): boolean {
+  const keyStart = path.indexOf("/");
+  const key = keyStart === -1 ? "" : path.slice(keyStart + 1);
+  return (key === "" || key === "*") && abilities.some((ability) => {
+    const name = ability.toLowerCase();
+    return name === "tinycloud.encryption/decrypt" || name === "tinycloud.encryption/*" || name === "*";
+  });
+}
+
+/** A request for decrypt on a whole encryption network, not on one named key. */
 function isWholeNetworkDecrypt({ service, path, actions }: PermissionEntry): boolean {
-  return service === "tinycloud.encryption" && !path.includes("/")
-    && actions.some((action) => action === "tinycloud.encryption/decrypt" || action === "tinycloud.encryption/*");
+  return service === "tinycloud.encryption" && reachesWholeNetworkDecrypt(path, actions);
 }
 
 function composedResources(manifest: Manifest): PermissionEntry[] {
@@ -116,11 +128,11 @@ const RENEW = "tinycloud.delegation/renew";
 
 const ENCRYPTION_NETWORK_PREFIX = "urn:tinycloud:encryption:";
 
-/** Whether a signed grant's resources include decrypt on a whole encryption network (a bare network urn, no key part). */
+/** Whether a signed grant's resources include decrypt on a whole encryption network, in any spelling of its resource. */
 function signedGrantReachesWholeNetwork(attenuation: Record<string, Record<string, unknown>>): boolean {
   return Object.entries(attenuation).some(([resource, abilities]) =>
-    resource.startsWith(ENCRYPTION_NETWORK_PREFIX) && !resource.slice(ENCRYPTION_NETWORK_PREFIX.length).includes("/")
-    && Object.keys(abilities).some((ability) => ability === "tinycloud.encryption/decrypt" || ability === "tinycloud.encryption/*"));
+    resource.toLowerCase().startsWith(ENCRYPTION_NETWORK_PREFIX)
+    && reachesWholeNetworkDecrypt(resource.slice(ENCRYPTION_NETWORK_PREFIX.length), Object.keys(abilities)));
 }
 
 type LeaseCheck = { lease: string } | { refused: "whole_network" } | null;
