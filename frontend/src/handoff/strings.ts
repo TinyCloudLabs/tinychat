@@ -17,6 +17,7 @@ export const handoffStrings = {
   linkExpiry: (date: string) => `Link expires ${date}`,
   privacy: "This page can see only this connection and your list of apps. None of your private data is in the link.",
   apps: "Your app list",
+  unknownApp: "Another app",
   noApps: "There are no apps in this list yet.",
   moreApps: "Sign in to see the full list.",
   tryThese: "Try one of these",

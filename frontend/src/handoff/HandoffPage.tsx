@@ -130,7 +130,7 @@ function PhoneInstall() {
   );
 }
 
-function HandoffContent({ view, now }: { view: HandoffView; now: number }) {
+export function HandoffContent({ view, now }: { view: HandoffView; now: number }) {
   return (
     <main className={`${pageWidth} space-y-6 pb-8 pt-5 sm:space-y-8 sm:pt-6`}>
       <div className={`${desktopColumns} items-center`}>
@@ -158,7 +158,7 @@ function HandoffContent({ view, now }: { view: HandoffView; now: number }) {
               <ul className="mt-2 flex flex-wrap gap-2">
                 {view.appIds.map((id) => (
                   <li key={id} className="min-w-0 break-all rounded-md border px-2.5 py-1 text-sm">
-                    {Object.hasOwn(APP_NAMES, id) ? APP_NAMES[id as keyof typeof APP_NAMES] : id}
+                    {Object.hasOwn(APP_NAMES, id) ? APP_NAMES[id as keyof typeof APP_NAMES] : copy.unknownApp}
                   </li>
                 ))}
               </ul>
