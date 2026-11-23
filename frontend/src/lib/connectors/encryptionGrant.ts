@@ -134,3 +134,6 @@ export function withConnectorDecryptGrants(manifest: Manifest, address: string, 
   );
   return added.length === 0 ? base : ({ ...base, permissions: [...existing, ...added] } as Manifest);
 }
+
+/** The longest the separate approval for older, whole-network secrets lasts: one hour. It is never renewed. */
+export const LEGACY_NETWORK_APPROVAL_MAX_MS = 60 * 60 * 1000;
