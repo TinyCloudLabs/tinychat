@@ -8,6 +8,7 @@ import { BotAvatar } from "./BotAvatar";
 import type { BotActivity } from "./botsApi";
 import { BOT_ACTIVITY_STRINGS, BOT_MANAGE_STRINGS } from "./botsStrings";
 import type { ViewBot } from "./BotView";
+import { CourierThreads } from "./courier/CourierThreads";
 
 /** "Ran 3 commands", "Changed 1 file": the line for one activity record. */
 export function activityText({ verb, count }: Pick<BotActivity, "verb" | "count">): string {
@@ -66,6 +67,7 @@ export function BotPanel({ bot, activity, awake, onClose, onEdit, onDelete }: Bo
         <h3 className="text-meta font-medium text-muted-foreground">{BOT_ACTIVITY_STRINGS.environment}</h3>
         <p className="text-callout" data-bot-environment="">{BOT_ACTIVITY_STRINGS.environmentRow(bot.private ? "private" : "regular", awake)}</p>
       </section>
+      {bot.key === "main" && bot.private ? <CourierThreads /> : null}
       {onEdit || onDelete ? (
         <div className="flex flex-col gap-2">
           {onEdit ? <Button type="button" variant="outline" onClick={onEdit}>{BOT_MANAGE_STRINGS.edit}</Button> : null}

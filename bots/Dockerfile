@@ -40,6 +40,8 @@ COPY --from=bot / /bot-rootfs
 RUN mkdir -p /var/lib/bots-gateway && chown 65532:65532 /var/lib/bots-gateway
 WORKDIR /bots
 COPY package.json bun.lock tsconfig.json ./
+# Prewarm only: the vendored Courier tarball. The flip to the published @tinycloud/courier 0.8.1 removes this line.
+COPY vendor ./vendor
 RUN bun install --frozen-lockfile --production
 COPY src ./src
 ENV BUN_RUNTIME_TRANSPILER_CACHE_PATH=0

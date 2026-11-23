@@ -25,6 +25,7 @@ import { mcpChatFromEnv } from "./mcp-meetings/config.js";
 import { BotHistory } from "./bot-history.js";
 import { createBotHistoryRouter, createSiblingHistoryRouter, startBotHistoryDrain } from "./routes/bot-history.js";
 import { botsFromEnv, createBotsRouter, removeBotFromService } from "./routes/bots.js";
+import { createBotsCourierRouter } from "./routes/bots-courier.js";
 import { createTrustBotReadsInternalRouter, createTrustBotReadsRouter, TRUSTBOT_READS_INTERNAL_PREFIX } from "./routes/trustbot-reads.js";
 import { startTrustBotReads, trustbotReadsFromEnv } from "./trustbot-reads/setup.js";
 import { botAdmissionSecret, mountBotAdmissionRoute } from "./routes/bot-admission.js";
@@ -990,10 +991,11 @@ async function main() {
     backendNode: node, backendDid: did, host: TINYCLOUD_HOST, otherDelegateDids: [process.env.MCP_CHAT_SERVICE_DID, AGENT_DID],
   }) : undefined;
   if (botsConfig && trustbotReadsSettings && trustbotReads) {
-    app.use("/api/bots/main/reads", createTrustBotReadsRouter({ grants: trustbotReads, config: botsConfig, auth: authMiddleware }));
-    app.use(TRUSTBOT_READS_INTERNAL_PREFIX, createTrustBotReadsInternalRouter({ grants: trustbotReads, config: botsConfig, callSecret: trustbotReadsSettings.callSecret }));
+    app.use("/api/bots/main/reads", createTrustBotReadsRouter({ grants: trustbotReads, telegramGrants: trustbotReads.telegram, config: botsConfig, auth: authMiddleware }));
+    app.use(TRUSTBOT_READS_INTERNAL_PREFIX, createTrustBotReadsInternalRouter({ grants: trustbotReads, telegramGrants: trustbotReads.telegram, config: botsConfig, callSecret: trustbotReadsSettings.callSecret }));
     console.log("[startup] TrustBot reads enabled.");
   }
+  app.use("/api/bots/main/courier", createBotsCourierRouter({ config: botsConfig, auth: authMiddleware }));
   app.use("/api/bots", createBotsRouter({
     config: botsConfig, authMiddleware, paidLimiter: paidChatLimiter, registry: botsRegistry,
     // Read only when bots are configured: with bots off no route uses it, and startup calls nothing it does not need.
