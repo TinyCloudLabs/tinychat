@@ -7,6 +7,7 @@ import { NodeWasmBindings, PrivateKeySigner } from "@tinycloud/node-sdk";
 import { courierIdentity } from "../courier/identity";
 import { createCourierGrantStore } from "../courier/grant-store";
 import { createCourierControl } from "../courier/control";
+import { acceptPairing, courierContext, listInbound, renewPeer, sendMessage, type PairedPeer } from "../courier/lib-adapter";
 
 const signingKey = "4f3edf983ac636a65a842ce7c78d9aa706d3b113bce036f4d9c5c1b5605dce6f";
 const dirs: string[] = [];
@@ -14,7 +15,7 @@ let fetchSpy: { mockRestore(): void } | undefined;
 afterEach(() => { fetchSpy?.mockRestore(); for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 
 async function fixture(extra = false, days = 30) {
-  fetchSpy = spyOn(globalThis, "fetch").mockImplementation(async () => Response.json({ key: "42".repeat(32) }));
+  fetchSpy = spyOn(globalThis, "fetch").mockImplementation((async () => Response.json({ key: "42".repeat(32) })) as unknown as typeof fetch);
   const signer = new PrivateKeySigner(signingKey);
   const address = await signer.getAddress();
   const owner = `did:pkh:eip155:1:${address.toLowerCase()}`;
@@ -94,4 +95,50 @@ test("a tampered owner signature is refused before sealing", async () => {
   const f = await fixture();
   await expect(f.store.put(f.owner, { ...f.grant, raw: { ...f.grant.raw, signature: `0x${"11".repeat(65)}` } })).rejects.toThrow();
   expect(await f.store.get(f.owner)).toBeUndefined();
+});
+
+test("legacy pair artifacts without the signed challenge protocol are refused before issuing authority", async () => {
+  const f = await fixture();
+  let saves = 0;
+  const context = await courierContext(f.owner, f.grant, {
+    async transaction(_scope, operation) {
+      return operation({ async get() { return undefined; }, async save() { saves++; } });
+    },
+  });
+  const legacy = JSON.stringify({
+    type: "courier-pair", v: 0, step: "A", from: { owner: f.owner, courier: "did:key:zLegacyPeer" },
+    spaceId: f.grant.raw.spaceId, peer: "trustbot", callMe: "peer", issuedAt: new Date().toISOString(),
+  });
+  await expect(acceptPairing(context, legacy)).rejects.toMatchObject({ code: "courier_update_required" });
+  expect(saves).toBe(0);
+});
+
+test("the context handed to the library holds only the courier-key session restored from the agent grant", async () => {
+  const f = await fixture();
+  const store = { async transaction<T>(_s: unknown, op: (tx: never) => Promise<T>) { return op({} as never); } };
+  const context = await courierContext(f.owner, f.grant, store);
+  // courierContext's kv is passed to every headless call verbatim; no owner-primary session or ambient fetch rides along.
+  const handed = context.kv as Record<string, unknown>;
+  expect(Object.keys(handed).sort()).toEqual(["courierDid", "createReader", "host", "node", "ownerDid", "store"]);
+  expect(handed.courierDid).toBe(context.identity.did);
+  expect(handed.store).toBe(store);
+  type Restored = { restorableSession: { delegationCid: string; jwk?: { x?: string } } };
+  const node = handed.node as Restored;
+  expect(node.restorableSession.delegationCid).toBe(f.grant.raw.delegationCid);
+  expect(node.restorableSession.jwk?.x).toBe(context.identity.publicJwk.x);
+  const reader = (await (handed.createReader as () => Promise<unknown>)()) as Restored;
+  expect(reader).not.toBe(node);
+  expect(reader.restorableSession.delegationCid).toBe(f.grant.raw.delegationCid);
+  const ref = { handle: "peer", peerDid: "did:key:zPeer", pairingId: "p1" };
+  const peer: PairedPeer = { handle: ref.handle, peerDid: ref.peerDid, delegationExpiresAt: Date.now() + 86_400_000, proof: { cid: "bafy" }, delegation: { ref, record: {} } };
+  await expect(listInbound(context, peer)).rejects.toMatchObject({ code: "courier_update_required" });
+});
+
+test("renewal is a typed refusal and replies must carry the bound idempotency key", async () => {
+  const f = await fixture();
+  const context = await courierContext(f.owner, f.grant, { async transaction(_s, op) { return op({ async get() { return undefined; }, async save() {} }); } });
+  const ref = { handle: "peer", peerDid: "did:key:zPeer", pairingId: "p1" };
+  const peer: PairedPeer = { handle: ref.handle, peerDid: ref.peerDid, delegationExpiresAt: Date.now() + 86_400_000, proof: { cid: "bafy" }, delegation: { ref, record: {} } };
+  await expect(renewPeer(context, peer)).rejects.toMatchObject({ code: "renewal_unavailable" });
+  await expect(sendMessage(context, peer, "t1", "hi", { inReplyTo: "m1", idempotencyKey: "0".repeat(64) })).rejects.toThrow("invalid Courier reply binding");
 });

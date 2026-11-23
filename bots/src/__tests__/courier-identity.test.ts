@@ -6,7 +6,7 @@ let fetchSpy: { mockRestore(): void } | undefined;
 afterEach(() => fetchSpy?.mockRestore());
 
 test("Courier identity is deterministic per lowercase owner and accepted by the SDK key manager", async () => {
-  fetchSpy = spyOn(globalThis, "fetch").mockImplementation(async () => Response.json({ key: "42".repeat(32) }));
+  fetchSpy = spyOn(globalThis, "fetch").mockImplementation((async () => Response.json({ key: "42".repeat(32) })) as unknown as typeof fetch);
   const owner = `did:pkh:eip155:1:0x${"ab".repeat(20)}`;
   const a = await courierIdentity(owner);
   const b = await courierIdentity(owner.toUpperCase());
