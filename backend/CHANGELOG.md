@@ -1,5 +1,13 @@
 # @tinychat/backend
 
+## 0.13.2-beta.5
+
+### Patch Changes
+
+- c717e11: Send grant tags to existing Main bots and keep sibling permission revocations across restarts.
+
+  Details: TC-4014
+
 ## 0.13.2-beta.4
 
 ### Patch Changes
