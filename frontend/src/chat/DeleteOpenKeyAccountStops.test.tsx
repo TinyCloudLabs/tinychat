@@ -10,8 +10,8 @@ import { stopServerAccessForAccountDeletion } from "@/lib/connectors/accountServ
 import type { ConnectorWebhooksResult } from "@/lib/connectors/webhooksApi";
 
 // Account deletion stops what our server could still do for the owner (delivery, the import grant, the connector
-// grant, the exo grant), keeps every open tab from writing the transcript grant again, signs this device out and
-// then opens OpenKey. It never clears the record of deleted meetings. Real component and client, faked network.
+// grant, the exo grant), keeps every open tab from writing the transcript grant again and then
+// opens OpenKey. It never clears the record of deleted meetings. Real component and client, faked network.
 
 const SENTINEL = "sentinel-session-token-9c41e7b2";
 const API = "https://api.example";
@@ -23,7 +23,7 @@ const EXO = `DELETE ${API}/api/exo/v1/grant`;
 const DISCONNECT = `POST ${API}/api/connectors/google/autojoin/disconnect`;
 const MEETINGS = `DELETE ${API}/api/transcriber/meetings`;
 const CREDS = `${API}/api/connectors/credentials/fireflies`;
-const TABS_NOT_STOPPED = "We couldn't stop this browser's other open tabs from writing to your space again, so a tab left open may restore access we removed. Try again, or close the other tabs and continue to OpenKey.";
+const TABS_NOT_STOPPED = "We couldn't stop this browser's other open tabs from writing to your space. A tab left open could restore access we removed. Close your other tabs, then try again or continue to OpenKey.";
 const GRANT_STATUS = `GET ${API}/api/delegations/status`;
 const SERVER_INFO = `GET ${API}/api/server-info`;
 const GRANT_POST = `POST ${API}/api/delegations`;
@@ -56,7 +56,7 @@ let calls: string[];
 let disconnectBodies: unknown[];
 /** Answers per route, consumed in order; the last one repeats. */
 let answers: Record<string, Answer[]>;
-/** `open` and `signOut` in the order they happened. */
+/** Each time OpenKey's deletion page was opened. */
 let events: string[];
 /** Runs when the named route is requested, before it is answered. */
 let hooks: Record<string, () => Promise<void>>;
@@ -119,7 +119,6 @@ async function mount(sessionStore: SessionStore = { getToken: () => SENTINEL, is
         backendUrl={API}
         sessionStore={sessionStore}
         openDeletionPage={async () => { events.push("open"); }}
-        onSignOut={() => { events.push("signOut"); }}
       />,
     );
   });
@@ -136,14 +135,14 @@ async function mount(sessionStore: SessionStore = { getToken: () => SENTINEL, is
   };
 }
 
-test("every stop runs in order, then this device signs out, then OpenKey opens; no record is cleared", async () => {
+test("every stop runs in order, then OpenKey opens; no record is cleared", async () => {
   answers[`GET ${CREDS}`] = [{ status: 200, body: { connected: true } }];
   answers[`DELETE ${CREDS}`] = [{ status: 200, body: { deleted: true, upstreamRevoked: true } }];
   const page = await mount();
   await page.click("Delete OpenKey account");
   expect(calls).toEqual([DISCONNECT, MEETINGS, `GET ${CREDS}`, `DELETE ${CREDS}`, DISABLE, GRANT, DELEGATION, EXO]);
   expect(calls.some((call) => call.includes("/webhooks/purged"))).toBe(false);
-  expect(events).toEqual(["signOut", "open"]);
+  expect(events).toEqual(["open"]);
   expect(page.alert()).toBeNull();
   await page.unmount();
 });
@@ -158,12 +157,12 @@ test("if a stop cannot be confirmed OpenKey stays closed with Try again and Cont
   expect(events).toEqual([]);
   await page.click("Try again");
   expect(calls.filter((call) => call === DISABLE)).toHaveLength(2);
-  expect(events).toEqual(["signOut", "open"]);
+  expect(events).toEqual(["open"]);
   expect(page.alert()).toBeNull();
   await page.unmount();
 });
 
-test("each stop's failure is disclosed, and Continue signs out and opens OpenKey without stopping again", async () => {
+test("each stop's failure is disclosed, and Continue opens OpenKey without stopping again", async () => {
   for (const route of [GRANT, DELEGATION, EXO]) {
     events = [];
     calls = [];
@@ -173,7 +172,7 @@ test("each stop's failure is disclosed, and Continue signs out and opens OpenKey
     expect(page.alert()).toBe(`${UNAVAILABLE} ${STOP_FAILED}`);
     expect(events).toEqual([]);
     await page.click("Continue to OpenKey");
-    expect(events).toEqual(["signOut", "open"]);
+    expect(events).toEqual(["open"]);
     expect(calls.filter((call) => call === route)).toHaveLength(1);
     await page.unmount();
     answers[route] = [{ status: 200, body: {} }];
@@ -185,7 +184,7 @@ test("an exo grant route that is not mounted is nothing to do", async () => {
   const page = await mount();
   await page.click("Delete OpenKey account");
   expect(page.alert()).toBeNull();
-  expect(events).toEqual(["signOut", "open"]);
+  expect(events).toEqual(["open"]);
   await page.unmount();
 });
 
@@ -196,7 +195,7 @@ test("Calendar autojoin is disconnected first with an empty body, ahead of the r
   expect(disconnectBodies).toEqual([{}]);
   expect(calls.slice(0, 2)).toEqual([DISCONNECT, MEETINGS]);
   expect(page.alert()).toBeNull();
-  expect(events).toEqual(["signOut", "open"]);
+  expect(events).toEqual(["open"]);
   await page.unmount();
 });
 
@@ -216,7 +215,7 @@ test("Google not confirming the revoke (502) is disclosed without claiming it wa
   await page.click("Continue to OpenKey");
   expect(calls.filter((call) => call === DISCONNECT)).toHaveLength(1);
   expect(calls).toContain(MEETINGS);
-  expect(events).toEqual(["signOut", "open"]);
+  expect(events).toEqual(["open"]);
   await page.unmount();
 });
 
@@ -229,7 +228,7 @@ test("a failed Calendar disconnect shows the alert before anything is deleted; T
   expect(calls).toEqual([DISCONNECT]);
   await page.click("Try again");
   expect(calls.filter((call) => call === DISCONNECT)).toHaveLength(2);
-  expect(events).toEqual(["signOut", "open"]);
+  expect(events).toEqual(["open"]);
   await page.unmount();
 });
 
@@ -239,11 +238,11 @@ test("continuing past a failed Calendar disconnect does not disconnect again", a
   await page.click("Delete OpenKey account");
   await page.click("Continue to OpenKey");
   expect(calls.filter((call) => call === DISCONNECT)).toHaveLength(1);
-  expect(events).toEqual(["signOut", "open"]);
+  expect(events).toEqual(["open"]);
   await page.unmount();
 });
 
-test("a Fireflies sign-in notice does not skip the stops: continuing runs them, then signs out and opens OpenKey", async () => {
+test("a Fireflies sign-in notice does not skip the stops: continuing runs them, then opens OpenKey", async () => {
   answers[`GET ${CREDS}`] = [{ status: 200, body: { connected: true } }];
   answers[`DELETE ${CREDS}`] = [{ status: 502, body: { error: "upstream_revoke_failed", deleted: true } }];
   const page = await mount();
@@ -252,7 +251,7 @@ test("a Fireflies sign-in notice does not skip the stops: continuing runs them, 
   expect(events).toEqual([]);
   await page.click("Continue to OpenKey");
   expect(calls.slice(-4)).toEqual([DISABLE, GRANT, DELEGATION, EXO]);
-  expect(events).toEqual(["signOut", "open"]);
+  expect(events).toEqual(["open"]);
   await page.unmount();
 });
 
@@ -266,12 +265,12 @@ test("a failed sign-in teardown stops before anything is stopped", async () => {
   await page.unmount();
 });
 
-test("routes not mounted: nothing to stop, no alert, then sign out and OpenKey opens", async () => {
+test("routes not mounted: nothing to stop, no alert, then OpenKey opens", async () => {
   for (const route of [DISCONNECT, DISABLE, GRANT, DELEGATION, EXO]) answers[route] = [{ status: 404 }];
   const page = await mount();
   await page.click("Delete OpenKey account");
   expect(page.alert()).toBeNull();
-  expect(events).toEqual(["signOut", "open"]);
+  expect(events).toEqual(["open"]);
   await page.unmount();
 });
 
@@ -384,7 +383,7 @@ test("a second open tab does not write the transcript grant again once account d
     const page = await mount(first);
     await page.click("Delete OpenKey account");
     expect(calls).toContain(DELEGATION);
-    expect(events).toEqual(["signOut", "open"]);
+    expect(events).toEqual(["open"]);
     await page.unmount();
 
     // The server answers "no grant", as it does once the grant is removed. Focus, then focus again.
@@ -422,7 +421,7 @@ test("every other tab is held back before the first stop is sent, so none can wr
     for (const stop of stops) hooks[stop] = async () => { focusDuring.push(`${stop} ${await focus()}`); };
     const page = await mount(first);
     await page.click("Delete OpenKey account");
-    expect(events).toEqual(["signOut", "open"]);
+    expect(events).toEqual(["open"]);
     await page.unmount();
     expect(focusDuring).toEqual(stops.map((stop) => `${stop} disabled`));
     expect(calls).not.toContain(GRANT_POST);
@@ -446,6 +445,6 @@ test("a browser that cannot hash the sign-in token says other tabs are not cover
   }
   await page.click("Try again");
   expect(page.alert()).toBeNull();
-  expect(events).toEqual(["signOut", "open"]);
+  expect(events).toEqual(["open"]);
   await page.unmount();
 });

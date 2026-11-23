@@ -35,7 +35,7 @@ export function accountDeletionStopFailure(failure: WebhookFailure): string {
 }
 
 /** What the owner is told when this browser could not keep its other open tabs from writing to the space again. */
-export const TABS_NOT_STOPPED_MESSAGE = "We couldn't stop this browser's other open tabs from writing to your space again, so a tab left open may restore access we removed. Try again, or close the other tabs and continue to OpenKey.";
+export const TABS_NOT_STOPPED_MESSAGE = "We couldn't stop this browser's other open tabs from writing to your space. A tab left open could restore access we removed. Close your other tabs, then try again or continue to OpenKey.";
 
 /** What the owner is told when Calendar autojoin could not be stopped or its Google sign-in removed from our server. */
 export function accountDeletionCalendarFailure(failure: WebhookFailure): string {
@@ -53,8 +53,8 @@ type State =
  * "Delete OpenKey account". In order: stops Calendar autojoin and removes its Google sign-in from our server
  * (a recorder it sends would otherwise add a recording the next step has passed), requests the existing
  * recordings purge, removes the Fireflies sign-in, then stops what could still deliver or import for the
- * owner (and keeps every open tab from writing the transcript grant again), signs this device out and opens
- * OpenKey. The server steps use the owner's TinyChat sign-in, which is why they run first. Unconfirmed steps
+ * owner (and keeps this browser's tabs that hold the same sign-in from writing the transcript grant again) and
+ * opens OpenKey. The server steps use the owner's TinyChat sign-in, which is why they run first. Unconfirmed steps
  * are disclosed first; the owner can retry a stage or continue without being told the data was deleted.
  * Nothing here erases the record of deleted meetings or the owner's space.
  */
@@ -64,8 +64,6 @@ export function DeleteOpenKeyAccountButton(props: {
   /** Injectable for tests. */
   webhooks?: ConnectorWebhooksClient;
   openDeletionPage?: () => Promise<void>;
-  /** Signs this device out. Called before OpenKey's page opens. */
-  onSignOut?: () => void;
 }) {
   const { backendUrl, sessionStore } = props;
   const webhooks = useMemo(
@@ -81,8 +79,6 @@ export function DeleteOpenKeyAccountButton(props: {
 
   const proceed = async () => {
     setState({ phase: "idle" });
-    // Signed out here before OpenKey opens, so this tab cannot keep acting for the account while it is deleted.
-    props.onSignOut?.();
     await open();
   };
 
