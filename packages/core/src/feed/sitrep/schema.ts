@@ -328,8 +328,10 @@ export const isSecretScope = (scope: string): boolean => scope.length <= SECRET_
 export const WHOLE_SCOPE_ALLOWED: readonly string[] = ["software-factory"];
 /** Longest `permissions` text an approval may carry. */
 export const PERMISSIONS_MAX = 600;
-/** Most secret names one read grant may cover. */
-export const GRANT_NAMES_MAX = 10;
+/** Most secret names one read grant may cover, `--keep` names included (and the add-secret card of the same request). The board's schema (rocinante-sitrep shared/schema.ts) holds the same number. */
+export const READ_GRANT_NAMES_MAX = 20;
+/** Most secret names one write grant may cover. */
+export const WRITE_GRANT_NAMES_MAX = 10;
 
 /**
  * Something only Sam can approve: an OpenKey sign-in or delegation, or a Claude sign-in from
@@ -365,9 +367,9 @@ export const ApprovalSchema = z
     /** What approving grants, in plain words. */
     permissions: z.string().trim().min(1).max(PERMISSIONS_MAX).optional(),
     /** Secret requests: names to add; read grants: every name the grant covers (including --keep). */
-    names: z.array(z.string().regex(SECRET_NAME_RE, "UPPER_SNAKE secret names")).min(1).max(GRANT_NAMES_MAX).optional(),
+    names: z.array(z.string().regex(SECRET_NAME_RE, "UPPER_SNAKE secret names")).min(1).max(READ_GRANT_NAMES_MAX).optional(),
     /** Read grants: the requested names the officer says it already copied into the scope; the card shows them in full. */
-    copiedNames: z.array(z.string().regex(SECRET_NAME_RE, "UPPER_SNAKE secret names")).min(1).max(GRANT_NAMES_MAX).optional(),
+    copiedNames: z.array(z.string().regex(SECRET_NAME_RE, "UPPER_SNAKE secret names")).min(1).max(READ_GRANT_NAMES_MAX).optional(),
     /** Numbered steps Sam follows, shown on the card itself (secret and go/consent cards alike). */
     steps: z.array(z.string().trim().min(1).max(300)).min(1).max(12).optional(),
     /** The tc profile the approval is for, e.g. roci-xo. */
@@ -383,13 +385,13 @@ export const ApprovalSchema = z
     /** Scoped read grants: "all" = one grant on every secret under vault/secrets/scoped/<scope>/ (Sam's 20:56Z answer to sf-scope-grant-shape); absent = one grant per name. Needs scope. */
     scopeGrant: z.literal("all").optional(),
     /** Read grants: the --keep names the grant adds beyond the requested ones (a subset of names). Absent on older cards: every name was requested. */
-    keepNames: z.array(z.string().regex(SECRET_NAME_RE, "UPPER_SNAKE secret names")).min(1).max(GRANT_NAMES_MAX).optional(),
+    keepNames: z.array(z.string().regex(SECRET_NAME_RE, "UPPER_SNAKE secret names")).min(1).max(READ_GRANT_NAMES_MAX).optional(),
     /** Whole-scope read grants: the card or message where Sam approved this profile's whole-scope grant. Set only by `secret request --whole-scope-approved`; `secret redeem` checks it, not the text. */
     wholeScopeApprovedBy: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$/, "an id of the card or message where Sam approved it").optional(),
     /** Grants: "write" = the profile may put exactly `names` (kv put, no decrypt); absent = the usual read grant. Set only by `secret request --write`. */
     grantMode: z.literal("write").optional(),
     /** Write grants: why each name is needed, shown on the card; a write grant covers no name without one. */
-    nameWhy: z.array(z.object({ name: z.string().regex(SECRET_NAME_RE, "UPPER_SNAKE secret names"), why: z.string().trim().min(1).max(300) }).strict()).min(1).max(GRANT_NAMES_MAX).optional(),
+    nameWhy: z.array(z.object({ name: z.string().regex(SECRET_NAME_RE, "UPPER_SNAKE secret names"), why: z.string().trim().min(1).max(300) }).strict()).min(1).max(WRITE_GRANT_NAMES_MAX).optional(),
     /** Write grants: the red line on the card about what approving can break. */
     warning: z.string().trim().min(1).max(300).optional(),
     /** A step of another approval (the read grant of a secret card); shown inside that card. */
@@ -449,6 +451,7 @@ export const ApprovalSchema = z
     if (approval.grantMode === "write") {
       if (!approval.scope) ctx.addIssue({ code: "custom", path: ["scope"], message: "a write grant needs the scope its secrets live in: --scope" });
       if (!approval.names) ctx.addIssue({ code: "custom", path: ["names"], message: "a write grant names the secrets it may put" });
+      if ((approval.names?.length ?? 0) > WRITE_GRANT_NAMES_MAX) ctx.addIssue({ code: "custom", path: ["names"], message: `a write grant covers at most ${WRITE_GRANT_NAMES_MAX} names` });
       for (const name of approval.names ?? []) {
         if (!approval.nameWhy?.some((entry) => entry.name === name)) ctx.addIssue({ code: "custom", path: ["nameWhy"], message: `nameWhy needs a reason for ${name}: a write grant says why each name is needed` });
       }
