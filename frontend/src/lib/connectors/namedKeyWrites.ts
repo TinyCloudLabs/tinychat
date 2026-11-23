@@ -1,8 +1,9 @@
 // Switch for saving a connector key under its own encryption key (a "v2" secret; TC-3284).
 // OFF by default: a v2 secret is refused by readers that cannot open it yet (older CLI profiles, the roci board, OpenKey
 // and the bots), so it is turned on only when every reader is ready. The read grants for these keys are not behind this
-// switch. ON when the build sets `VITE_CONNECTOR_NAMED_KEY_WRITES` to exactly "true", or when this browser has set the
-// runtime flag below to exactly "true" (the way to try it on a live build without shipping a new one).
+// switch. A production build turns it on only when the build sets `VITE_CONNECTOR_NAMED_KEY_WRITES` to exactly "true".
+// The per-browser runtime flag below is read only in a development build (`import.meta.env.DEV`): in production it is
+// ignored, so nothing on the page can turn v2 writes on.
 
 export const NAMED_KEY_WRITES_RUNTIME_FLAG_KEY = "tinychat:connectors:named-key-writes";
 
@@ -11,6 +12,7 @@ export function connectorNamedKeyWritesEnabled(
   storage: Pick<Storage, "getItem"> | null = readStorage(),
 ): boolean {
   if (env.VITE_CONNECTOR_NAMED_KEY_WRITES === "true") return true;
+  if (env.DEV !== true) return false;
   try {
     return storage?.getItem(NAMED_KEY_WRITES_RUNTIME_FLAG_KEY) === "true";
   } catch {
