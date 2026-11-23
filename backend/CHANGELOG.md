@@ -1,5 +1,19 @@
 # @tinychat/backend
 
+## 0.13.3
+
+### Patch Changes
+
+- 7f1399f: Accept multi-stamp renewal histories from the node, so a lease renewed more than once verifies.
+
+  Details: TC-4000
+
+- 6580219: TrustBot derives the key it reads with inside its secure enclave.
+
+  Upgrading: read areas turned on with test grants before this release are off. Turn them on in TrustBot's settings.
+
+  Details: TC-4000
+
 ## 0.13.3-beta.1
 
 ### Patch Changes
