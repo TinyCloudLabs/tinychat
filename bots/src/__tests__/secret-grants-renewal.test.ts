@@ -242,12 +242,13 @@ function leaseNode(over: Partial<LeaseNode> = {}, log: string[] = []): LeaseNode
     restoreSessionWithRenewal: (async () => void log.push("restoreSessionWithRenewal")) as LeaseNode["restoreSessionWithRenewal"],
     restoreSession: (async () => void log.push("restoreSession")) as LeaseNode["restoreSession"],
     readSecret: (async () => (log.push("readSecret"), { status: "ok", value: "sk-test-FAKE" })) as unknown as LeaseNode["readSecret"],
-    get sessionEnd() { return new Date(Date.now() + 3 * DAY); },
+    get sessionEnd() { return new Date(T0 + 3 * DAY); },
     ...over,
   } as LeaseNode;
 }
-const session = (lease = true) => ({ address: CHECKSUMMED, chainId: 1, delegationCid: CID, ...(lease ? { lease: { authorization: "lease-auth", expiresAt: new Date(Date.now() + 30 * DAY).toISOString() } } : {}) }) as GrantSession;
-const readerFor = (node: LeaseNode) => nodeSecretReader("https://node.example", () => ({}) as GrantNode, { pin: PIN, newNode: () => node });
+const session = (lease = true) => ({ address: CHECKSUMMED, chainId: 1, delegationCid: CID, ...(lease ? { lease: { authorization: "lease-auth", expiresAt: new Date(T0 + 30 * DAY).toISOString() } } : {}) }) as GrantSession;
+const CLOCK = T0;
+const readerFor = (node: LeaseNode) => nodeSecretReader("https://node.example", () => ({}) as GrantNode, { pin: PIN, newNode: () => node, now: () => CLOCK });
 
 describe("the node reader for a leased grant", () => {
   test("restores only after the node reports a live renewal, reads, and touches nothing else on the client", async () => {
@@ -290,17 +291,24 @@ describe("the node reader for a leased grant", () => {
     expect(log).toEqual([]);
   });
 
-  test("never honours an end past one 7-day window, or past the lease", async () => {
-    const far = leaseNode({ get sessionEnd() { return new Date(Date.now() + 20 * DAY); } } as Partial<LeaseNode>);
-    const end = await readerFor(far).leaseEnd!(ID, session());
-    expect(typeof (end as { end: number }).end).toBe("number");
-    expect((end as { end: number }).end <= Date.now() + 7 * DAY + 61_000).toBe(true);
-    const short = { ...session(), lease: { authorization: "a", expiresAt: new Date(Date.now() + 2 * DAY).toISOString() } } as GrantSession;
-    expect(((await readerFor(far).leaseEnd!(ID, short)) as { end: number }).end <= Date.now() + 2 * DAY).toBe(true);
+  test("a node reporting a window past 7 days is refused: the approval ends, nothing is read", async () => {
+    const log: string[] = [];
+    const far = leaseNode({ get sessionEnd() { return new Date(CLOCK + 8 * DAY); } } as Partial<LeaseNode>, log);
+    expect(await readerFor(far).read(ID, session(), NAME)).toBe("ended");
+    expect(await readerFor(far).leaseEnd!(ID, session())).toBe("ended");
+    expect(log).not.toContain("readSecret");
+    const edge = leaseNode({ get sessionEnd() { return new Date(CLOCK + 7 * DAY + 60_000); } } as Partial<LeaseNode>);
+    expect(await readerFor(edge).leaseEnd!(ID, session())).toEqual({ end: CLOCK + 7 * DAY + 60_000 });
+  });
+
+  test("the end given is never past the lease's own end", async () => {
+    const node = leaseNode({ get sessionEnd() { return new Date(CLOCK + 3 * DAY); } } as Partial<LeaseNode>);
+    const short = { ...session(), lease: { authorization: "a", expiresAt: new Date(CLOCK + 2 * DAY).toISOString() } } as GrantSession;
+    expect(await readerFor(node).leaseEnd!(ID, short)).toEqual({ end: CLOCK + 2 * DAY });
   });
 
   test("a lease whose end has already passed on the node is ended", async () => {
-    const node = leaseNode({ get sessionEnd() { return new Date(Date.now() - 1000); } } as Partial<LeaseNode>);
+    const node = leaseNode({ get sessionEnd() { return new Date(T0 - 1000); } } as Partial<LeaseNode>);
     expect(await readerFor(node).read(ID, session(), NAME)).toBe("ended");
   });
 

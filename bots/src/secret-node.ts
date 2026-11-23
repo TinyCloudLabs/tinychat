@@ -42,8 +42,9 @@ async function openLeased(nodeOrigin: string, newNode: (nodeOrigin: string) => L
     await node.restoreSessionWithRenewal({ ...restorable, tinycloudHosts: [nodeOrigin] }, lease.authorization);
     const reported = node.sessionEnd?.getTime();
     if (reported === undefined || !Number.isFinite(reported)) return "ended";
-    // One renewal window is 7 days at most, and the owner's lease ends when it ends: never honour a longer end than either.
-    const end = Math.min(reported, Date.parse(lease.expiresAt), now() + LEASE_WINDOW_MS + 60_000);
+    // One renewal window is 7 days at most: a node that reports a longer one is not trusted, and the approval ends (a fresh ask).
+    if (reported > now() + LEASE_WINDOW_MS + 60_000) return "ended";
+    const end = Math.min(reported, Date.parse(lease.expiresAt));
     return end > now() ? { node, end } : "ended";
   } catch (error) {
     const code = typeof error === "object" && error !== null && "code" in error ? (error as { code: unknown }).code : undefined;
