@@ -6,6 +6,7 @@ import { APP_ID } from "@tinyboilerplate/core";
 
 export interface ReadResource {
   service: "sql" | "kv";
+  space?: "messages";
   path: string;
   actions: readonly string[];
 }
@@ -26,6 +27,10 @@ export const READ_AREAS = {
     { service: "sql", path: `${APP_ID}/feed/`, actions: ["tinycloud.sql/read"] },
     { service: "sql", path: `${APP_ID}/threads`, actions: ["tinycloud.sql/read"] },
   ],
+  telegram: [
+    { service: "sql", space: "messages", path: "xyz.tinycloud.inbox/db/", actions: ["tinycloud.sql/read"] },
+    { service: "kv", space: "messages", path: "xyz.tinycloud.inbox/media/", actions: ["tinycloud.kv/get"] },
+  ],
 } as const satisfies Record<string, readonly ReadResource[]>;
 
 export type ReadArea = keyof typeof READ_AREAS;
@@ -37,14 +42,14 @@ export function isReadArea(value: unknown): value is ReadArea {
 
 /** The resources a grant for `areas` must name exactly: each path once, with the union of its areas' actions. */
 export function areaResources(areas: readonly ReadArea[]): ReadResource[] {
-  const merged = new Map<string, { service: ReadResource["service"]; path: string; actions: Set<string> }>();
+  const merged = new Map<string, { service: ReadResource["service"]; space?: "messages"; path: string; actions: Set<string> }>();
   for (const area of new Set(areas)) {
     for (const resource of READ_AREAS[area] as readonly ReadResource[]) {
-      const key = `${resource.service}/${resource.path}`;
-      const entry = merged.get(key) ?? { service: resource.service, path: resource.path, actions: new Set<string>() };
+      const key = `${resource.space ?? "applications"}/${resource.service}/${resource.path}`;
+      const entry = merged.get(key) ?? { service: resource.service, ...(resource.space ? { space: resource.space } : {}), path: resource.path, actions: new Set<string>() };
       for (const action of resource.actions) entry.actions.add(action);
       merged.set(key, entry);
     }
   }
-  return [...merged.values()].map(({ service, path, actions }) => ({ service, path, actions: [...actions].sort() }));
+  return [...merged.values()].map(({ service, space, path, actions }) => ({ service, ...(space ? { space } : {}), path, actions: [...actions].sort() }));
 }

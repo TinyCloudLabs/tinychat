@@ -19,6 +19,7 @@ import { isReadArea, READ_AREA_NAMES } from "../trustbot-reads/areas.js";
 import { ReadGrantInvalid, ReadGrantRefused, type ReadStatus, type TrustBotReadGrants } from "../trustbot-reads/grants.js";
 import { delegatedFeedChatSql, FEED_CHAT_FIRST_DATABASE, FeedChatReadError, isFeedChatTool, runFeedChatTool } from "../trustbot-reads/feed-chat.js";
 import { delegatedMeetingPort } from "../trustbot-reads/meeting-port.js";
+import { delegatedTelegramPort, isTelegramTool, listTelegramChats, runTelegramTool, TelegramReadError } from "../trustbot-reads/telegram.js";
 import { botOwnerDid, botsServiceHeaders, type BotsConfig } from "./bots.js";
 
 /** The meeting tools TrustBot may run, by the names the gateway serves them under. */
@@ -36,6 +37,8 @@ const GRANT_REFUSED = new Set(["delegation_revoked", "delegation_required", "acc
 
 export interface TrustBotReadsOptions {
   grants: TrustBotReadGrants;
+  /** A separate sealed envelope and consent session; never renewed or revoked with the other areas. */
+  telegramGrants?: TrustBotReadGrants;
   config: BotsConfig;
   auth: RequestHandler;
   /** Shared with the bots service's gateway (BOTS_BACKEND_CALL_SECRET). */
@@ -58,7 +61,14 @@ async function pushToService(config: BotsConfig, address: string, status: ReadSt
 
 const view = (grants: TrustBotReadGrants, status: ReadStatus) => ({ serviceDid: grants.serviceDid, ...status });
 
-export function createTrustBotReadsRouter({ grants, config, auth }: Pick<TrustBotReadsOptions, "grants" | "config" | "auth">) {
+async function readStatus(grants: TrustBotReadGrants, telegramGrants: TrustBotReadGrants | undefined, address: string) {
+  const status = await grants.status(address);
+  const telegram = await telegramGrants?.status(address);
+  return { ...status, areas: { ...status.areas, telegram: telegram?.areas.telegram ?? "off" as const },
+    telegramGrantCid: telegram?.grantCid ?? null, telegramExpiresAt: telegram?.expiresAt ?? null };
+}
+
+export function createTrustBotReadsRouter({ grants, telegramGrants, config, auth }: Pick<TrustBotReadsOptions, "grants" | "telegramGrants" | "config" | "auth">) {
   const router = Router();
   router.use(auth);
   router.use((req, res, next) => {
@@ -67,7 +77,7 @@ export function createTrustBotReadsRouter({ grants, config, auth }: Pick<TrustBo
   });
   router.get("/", async (req, res) => {
     try {
-      const status = await grants.status(req.user!.address);
+      const status = await readStatus(grants, telegramGrants, req.user!.address);
       // The service's copy of the setting goes with the bot's working state; it is given again whenever the owner looks.
       if (READ_AREA_NAMES.some(area => status.areas[area] === "on")) void pushToService(config, req.user!.address, status);
       res.json(view(grants, status));
@@ -77,8 +87,20 @@ export function createTrustBotReadsRouter({ grants, config, auth }: Pick<TrustBo
   });
   router.get("/renewal", async (req, res) => {
     try {
-      res.json({ serviceDid: grants.serviceDid, ...await grants.renewalStatus(req.user!.address) });
+      res.json({ serviceDid: grants.serviceDid, ...await grants.renewalStatus(req.user!.address), ...await readStatus(grants, telegramGrants, req.user!.address) });
     } catch {
+      res.status(503).json({ error: "reads_unavailable" });
+    }
+  });
+  // The owner sees denied titles here so they can re-allow a chat. Never served to a bot or Courier peer.
+  router.get("/telegram/chats", async (req, res) => {
+    if (!telegramGrants) { res.json({ chats: [] }); return; }
+    try {
+      await telegramGrants.access(req.user!.address, "telegram");
+      const port = delegatedTelegramPort(() => telegramGrants.access(req.user!.address, "telegram"));
+      res.json(await listTelegramChats(port, {}, new Set()));
+    } catch (error) {
+      if ((error instanceof ReadGrantRefused && ["none", "off", "ended"].includes(error.code)) || (error instanceof TelegramReadError && error.code === "not_ready")) { res.json({ chats: [] }); return; }
       res.status(503).json({ error: "reads_unavailable" });
     }
   });
@@ -106,16 +128,18 @@ export function createTrustBotReadsRouter({ grants, config, auth }: Pick<TrustBo
     const { enabled, grant, replaces } = input as { enabled?: unknown; grant?: unknown; replaces?: unknown };
     const address = req.user!.address;
     try {
-      let status: ReadStatus;
-      if (enabled === false && isReadArea(area)) status = await grants.disable(address, area);
+      if (area === "telegram" && !telegramGrants) { res.status(503).json({ error: "reads_unavailable" }); return; }
+      const selected = area === "telegram" ? telegramGrants! : grants;
+      if (enabled === false && isReadArea(area)) await selected.disable(address, area);
       else if (enabled === true && grant && typeof grant === "object") {
         const { serialized, siwe, signature } = grant as Record<string, unknown>;
         if (typeof serialized !== "string" || typeof siwe !== "string" || typeof signature !== "string") { res.status(400).json({ error: "invalid_reads" }); return; }
         const envelope = { serialized, siwe, signature };
-        if (renewing && typeof replaces === "string") status = await grants.renew(address, replaces, envelope);
-        else if (isReadArea(area)) status = await grants.enable(address, area, envelope);
+        if (renewing && typeof replaces === "string") await grants.renew(address, replaces, envelope);
+        else if (isReadArea(area)) await selected.enable(address, area, envelope);
         else { res.status(400).json({ error: "invalid_reads" }); return; }
       } else { res.status(400).json({ error: "invalid_reads" }); return; }
+      const status = await readStatus(grants, telegramGrants, address);
       if (!await pushToService(config, address, status)) console.warn("[trustbot-reads] service_push=failed");
       res.json(view(grants, status));
     } catch (error) {
@@ -126,7 +150,7 @@ export function createTrustBotReadsRouter({ grants, config, auth }: Pick<TrustBo
   return router;
 }
 
-type ToolAnswer = { ok: true; text: string } | { ok: false; error: "off" | "ended" | "unavailable" | "invalid" | "not_found"; code?: string };
+type ToolAnswer = { ok: true; text: string } | { ok: false; error: "off" | "ended" | "unavailable" | "invalid" | "not_found" | "denied" | "not_ready"; code?: string };
 
 /** A refused grant as the gateway reports it: the owner's setting, an ended grant, or the service being down. */
 function refusal(error: unknown): ToolAnswer {
@@ -145,7 +169,7 @@ function toolText(result: { text?: unknown; data?: unknown }): string {
   return summary && data ? `${summary}\n\nTool data:\n${data}` : summary || data;
 }
 
-export function createTrustBotReadsInternalRouter({ grants, config, callSecret }: Pick<TrustBotReadsOptions, "grants" | "config" | "callSecret">) {
+export function createTrustBotReadsInternalRouter({ grants, telegramGrants, config, callSecret }: Pick<TrustBotReadsOptions, "grants" | "telegramGrants" | "config" | "callSecret">) {
   const router = Router();
   const nonces = new NonceGuard();
   // Every read goes through the owner's grant, checked again by grants.access; nothing about it is kept here.
@@ -162,7 +186,7 @@ export function createTrustBotReadsInternalRouter({ grants, config, callSecret }
     if (!config.accountAllowed(address)) { res.status(404).end(); return; }
     if (req.params.tool === "read_status") {
       try {
-        const [status, denied] = await Promise.all([grants.status(address), grants.deniedChatIds(address)]);
+        const [status, denied] = await Promise.all([readStatus(grants, telegramGrants, address), grants.deniedChatIds(address)]);
         res.json({ enabledReadAreas: READ_AREA_NAMES.filter(area => status.areas[area] === "on"), deniedChatIds: [...denied] });
       } catch {
         res.status(503).json({ error: "reads_unavailable" });
@@ -170,17 +194,35 @@ export function createTrustBotReadsInternalRouter({ grants, config, callSecret }
       return;
     }
     const feedChat = isFeedChatTool(req.params.tool) ? req.params.tool : undefined;
-    const tool = feedChat ?? TRUSTBOT_MEETING_TOOLS.find(name => name === req.params.tool);
+    const telegram = isTelegramTool(req.params.tool) ? req.params.tool : undefined;
+    const tool = telegram ?? feedChat ?? TRUSTBOT_MEETING_TOOLS.find(name => name === req.params.tool);
     if (!tool) { res.status(404).end(); return; }
     let args: unknown;
     try { args = (JSON.parse(bytes.toString("utf8")) as { args?: unknown }).args; } catch { args = undefined; }
     if (!args || typeof args !== "object" || Array.isArray(args)) { answer(400, { ok: false, error: "invalid" }); return; }
     // Checked before the tool runs, so a refusal answers with the owner's setting rather than a failed read.
     try {
-      if (feedChat) await grants.access(address, "feed_chats", FEED_CHAT_FIRST_DATABASE[feedChat]);
+      if (telegram) {
+        if (!telegramGrants) throw new ReadGrantRefused("off");
+        await telegramGrants.access(address, "telegram");
+      } else if (feedChat) await grants.access(address, "feed_chats", FEED_CHAT_FIRST_DATABASE[feedChat]);
       else await grants.access(address, "meetings");
     } catch (error) {
       answer(200, refusal(error));
+      return;
+    }
+    if (telegram) {
+      try {
+        const denied = await grants.deniedChatIds(address);
+        const port = delegatedTelegramPort(() => telegramGrants!.access(address, "telegram"));
+        answer(200, { ok: true, text: await runTelegramTool(telegram, args as Record<string, unknown>, port, denied, () => grants.deniedChatIds(address)) });
+      } catch (error) {
+        if (error instanceof ReadGrantRefused) { answer(200, refusal(error)); return; }
+        if (error instanceof TelegramReadError) {
+          if (error.code === "rejected") telegramGrants!.forgetActivation(address);
+          answer(200, { ok: false, error: error.code === "denied" || error.code === "not_ready" || error.code === "not_found" ? error.code : error.code === "invalid" ? "invalid" : "unavailable" });
+        } else answer(200, { ok: false, error: "unavailable" });
+      }
       return;
     }
     if (feedChat) {

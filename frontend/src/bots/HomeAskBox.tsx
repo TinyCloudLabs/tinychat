@@ -17,6 +17,7 @@ import { isWorking, useMainChat } from "./useMainChat";
 import { AskCards } from "./AskCards";
 import { ensureTrustBotReadGrant, readSettings, revokeReadGrant, setReadArea, signReadGrant } from "./trustbotReadGrant";
 import { readDeniedChatIds, setChatDenied } from "./chatReadAccessApi";
+import { listTelegramChats } from "./telegramChatReadAccess";
 import { newMainChat } from "./mainNewChat";
 import { SecretCards } from "./SecretCard";
 import { useAsks } from "./useAsks";
@@ -90,7 +91,7 @@ function MainAsk({ api, tcw, onReconnect }: { api: BotsApi; tcw?: TinyCloudWeb; 
     signReadGrant: (serviceDid: string, areas: Parameters<typeof signReadGrant>[2]) => signReadGrant(tcw, serviceDid, areas),
     revokeReadGrant: (cid: string) => revokeReadGrant(tcw, cid),
     chatReadAccess: {
-      listChats: () => listThreads(tcw),
+      listChats: async () => (await Promise.all([listThreads(tcw), listTelegramChats(tcw)])).flat(),
       readDeniedChatIds,
       setChatDenied,
     },

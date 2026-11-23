@@ -5,7 +5,7 @@ import { useEffect, useId, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { BotsRouteMissing } from "./botsApi";
-import { FEED_CHATS_ACCESS_STRINGS, MEETINGS_ACCESS_STRINGS } from "./botsStrings";
+import { FEED_CHATS_ACCESS_STRINGS, MEETINGS_ACCESS_STRINGS, TELEGRAM_ACCESS_STRINGS } from "./botsStrings";
 import { ChatReadAccess } from "./ChatReadAccess";
 import type { ReadArea } from "./trustbotReadAreas";
 import { changeReadArea, type ReadAreaApi, type ReadSettings } from "./trustbotReadGrant";
@@ -44,6 +44,10 @@ export function MeetingsAccess({ api }: { api: MeetingsAccessApi }) {
 
 export function FeedChatsAccess({ api }: { api: MeetingsAccessApi }) {
   return <ReadAreaAccess api={api} area="feed_chats" copy={FEED_CHATS_ACCESS_STRINGS} />;
+}
+
+export function TelegramAccess({ api }: { api: MeetingsAccessApi }) {
+  return <ReadAreaAccess api={api} area="telegram" copy={TELEGRAM_ACCESS_STRINGS} />;
 }
 
 /** Renders nothing while loading and when the service answers 404 (the feature is not on for this account). */
@@ -104,8 +108,9 @@ function ReadAreaAccess({ api, area: AREA, copy: COPY }: { api: MeetingsAccessAp
     }
   };
 
+  const expiresAt = AREA === "telegram" ? saved.telegramExpiresAt : saved.expiresAt;
   const line = state === "on"
-    ? (saved.expiresAt === null ? "" : COPY.on(dateOf(saved.expiresAt)))
+    ? (expiresAt == null ? "" : COPY.on(dateOf(expiresAt)))
     : state === "ended" ? COPY.ended : COPY.off;
 
   return (

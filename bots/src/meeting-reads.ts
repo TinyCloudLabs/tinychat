@@ -15,6 +15,7 @@ import { readBody, type UpstreamFetch } from "./gateway";
 import { FEED_CHAT_ERRORS, FEED_CHAT_RECORD_KIND, FEED_CHAT_TOOL_NAMES, FEED_CHAT_TOOLS, type FeedChatTool } from "./feed-chat-tools";
 import { isRecord } from "./guards";
 import { MEETING_TOOL_NAMES, MEETING_TOOLS, type MeetingToolName } from "./meeting-tools";
+import { TELEGRAM_ERRORS, TELEGRAM_TOOL_NAMES, TELEGRAM_TOOLS, type TelegramTool } from "./telegram-tools";
 import { botIdFor, BOT_ID } from "./owner";
 import type { ReadArea, ReadsPush } from "./reads";
 import { signedCallHeader } from "./signed-call";
@@ -32,16 +33,17 @@ export const READ_ERRORS = {
   unavailable: "Meetings can't be read right now.",
   ...READ_LIMIT_ERRORS,
 } as const;
-type ReadError = "off" | "ended" | "unavailable" | "budget" | "busy" | "not_found";
-export type ReadToolName = MeetingToolName | FeedChatTool;
+type ReadError = "off" | "ended" | "unavailable" | "budget" | "busy" | "not_found" | "denied" | "not_ready";
+export type ReadToolName = MeetingToolName | FeedChatTool | TelegramTool;
 
 /** Each area's tools and the fixed sentences its refusals give; an area without `not_found` says `unavailable`. */
-const AREA_TOOLS: Readonly<Record<ReadArea, { tools: ReadonlyArray<{ name: string }>; errors: Record<Exclude<ReadError, "not_found">, string> & { not_found?: string } }>> = {
+const AREA_TOOLS: Readonly<Record<ReadArea, { tools: ReadonlyArray<{ name: string }>; errors: Record<Exclude<ReadError, "not_found" | "denied" | "not_ready">, string> & Partial<Record<"not_found" | "denied" | "not_ready", string>> }>> = {
   meetings: { tools: MEETING_TOOLS, errors: READ_ERRORS },
   feed_chats: { tools: FEED_CHAT_TOOLS, errors: { ...FEED_CHAT_ERRORS, ...READ_LIMIT_ERRORS } },
+  telegram: { tools: TELEGRAM_TOOLS, errors: { ...TELEGRAM_ERRORS, ...READ_LIMIT_ERRORS } },
 };
 const isFeedChatTool = (name: ReadToolName): name is FeedChatTool => FEED_CHAT_TOOL_NAMES.some(tool => tool === name);
-const areaOf = (name: ReadToolName): ReadArea => isFeedChatTool(name) ? "feed_chats" : "meetings";
+const areaOf = (name: ReadToolName): ReadArea => TELEGRAM_TOOL_NAMES.some(tool => tool === name) ? "telegram" : isFeedChatTool(name) ? "feed_chats" : "meetings";
 
 /** Reads per bot per UTC day. */
 export const READS_PER_DAY = 200;
@@ -138,7 +140,7 @@ export class MeetingDesk {
   }
 
   handles(name: unknown): name is ReadToolName {
-    return MEETING_TOOL_NAMES.some(tool => tool === name) || FEED_CHAT_TOOL_NAMES.some(tool => tool === name);
+    return MEETING_TOOL_NAMES.some(tool => tool === name) || FEED_CHAT_TOOL_NAMES.some(tool => tool === name) || TELEGRAM_TOOL_NAMES.some(tool => tool === name);
   }
 
   /**
@@ -160,7 +162,7 @@ export class MeetingDesk {
       : { gateway: "reads", bot: botId.slice(0, 12), tool: name, outcome }));
     const refuse = (error: ReadError, outcome: string = error) => {
       log(outcome);
-      return toolText(error === "not_found" ? errors.not_found ?? errors.unavailable : errors[error], true);
+      return toolText(errors[error] ?? errors.unavailable, true);
     };
     const setting = courier?.setting ?? this.#settings.get(botId);
     if (courier && (!setting?.owner || botIdFor(setting.owner) !== botId || !BOT_ID.test(courier.botId) || !CONVERSATION_ID.test(setting.conversation))) return refuse("off");
@@ -180,7 +182,7 @@ export class MeetingDesk {
       const markedBot = courier?.botId ?? botId;
       if (this.#marks.get(markedBot) !== setting.conversation && !this.#mark(markedBot, setting.conversation)) return refuse("unavailable", "held_store");
       log("ok");
-      return toolText(untrustedRecord(isFeedChatTool(name) ? FEED_CHAT_RECORD_KIND[name] : "meeting", answer.text));
+      return toolText(untrustedRecord(area === "telegram" ? "chat" : isFeedChatTool(name) ? FEED_CHAT_RECORD_KIND[name] : "meeting", answer.text));
     } finally {
       this.#calling.delete(botId);
     }
@@ -219,7 +221,7 @@ export class MeetingDesk {
       const answer: unknown = JSON.parse(new TextDecoder().decode(bytes));
       if (!isRecord(answer)) return { ok: false, error: "unavailable" };
       if (answer.ok === true && typeof answer.text === "string") return { ok: true, text: answer.text };
-      const error = answer.error === "off" || answer.error === "ended" || answer.error === "not_found" ? answer.error : "unavailable";
+      const error = answer.error === "off" || answer.error === "ended" || answer.error === "not_found" || answer.error === "denied" || answer.error === "not_ready" ? answer.error : "unavailable";
       return { ok: false, error };
     } catch {
       return { ok: false, error: "unavailable" };
