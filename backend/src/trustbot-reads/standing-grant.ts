@@ -1,30 +1,30 @@
 import { randomBytes } from "node:crypto";
 import { makePkhSpaceId, parseSignedSiweCacao, pkhDid, principalDidEquals, signCompactUcanAuthorization } from "@tinycloud/sdk-core";
-import { assertRenewalNodeIdentity } from "@tinycloud/sdk-core/delegations/renewal";
+import { assertRenewalNodeIdentity, verifyRenewalHistory, type RenewalStampHistoryEntry } from "@tinycloud/sdk-core/delegations/renewal";
 import { checkApprovalResultBinding, type OpenKeyApprovalRequestV1 } from "@tinycloud/share-envelope/links";
 import { siweToDelegationHeaders } from "@tinycloud/node-sdk-wasm";
-import { fetchDelegationStatus, fetchNodeIdentity, isOnlyCapability, verifiedNodeRenewalEnd, type RenewalVerifyConfig } from "../renewal-verify.js";
-import { areaResources, type ReadArea } from "./areas.js";
+import { fetchDelegationStatus, fetchNodeIdentity, isOnlyCapability, type RenewalVerifyConfig } from "../renewal-verify.js";
+import { areaResources } from "./areas.js";
+import type { OwnerDid, StandingArea } from "./standing-types.js";
 
-export const STANDING_READ_LEASE_SECONDS = 7 * 86_400;
+export const STANDING_READ_WINDOW_SECONDS = 7 * 86_400;
+export const STANDING_READ_LEASE_SECONDS = 90 * 86_400;
 const NODE_WINDOW_SLACK_SECONDS = 60;
 const RENEW = "tinycloud.delegation/renew";
 const STATUS = "tinycloud.delegation/status";
 
 export interface StandingReadGrant {
-  ownerDid: string;
+  ownerDid: OwnerDid;
   holderDid: string;
-  authorization: string;
   originalCid: string;
   originalEnd: number;
   leaseCid: string;
-  leaseAuthorization: string;
   leaseEnd: number;
   spaceId: string;
-  areas: readonly ReadArea[];
+  areas: readonly StandingArea[];
 }
 
-export function standingReadPermissions(areas: readonly ReadArea[]): OpenKeyApprovalRequestV1["permissions"] {
+export function standingReadPermissions(areas: readonly StandingArea[]): OpenKeyApprovalRequestV1["permissions"] {
   return areaResources(areas).map(({ service, path, actions }) => ({
     service: `tinycloud.${service}`, space: "applications", path, actions: [...actions],
   }));
@@ -33,7 +33,7 @@ export function standingReadPermissions(areas: readonly ReadArea[]): OpenKeyAppr
 const seconds = (date: string | undefined): number => Date.parse(date ?? "") / 1000;
 const bare = (header: string): string => header.replace(/^Bearer\s+/i, "");
 
-function onlyReadScope(grant: Awaited<ReturnType<typeof parseSignedSiweCacao>>, spaceId: string, areas: readonly ReadArea[]): boolean {
+function onlyReadScope(grant: Awaited<ReturnType<typeof parseSignedSiweCacao>>, spaceId: string, areas: readonly StandingArea[]): boolean {
   const resources = areaResources(areas);
   return resources.length > 0 && Object.keys(grant.attenuation).length === resources.length && resources.every(resource => {
     const abilities = grant.attenuation[`${spaceId}/${resource.service}/${resource.path}`];
@@ -52,14 +52,14 @@ export async function verifyStandingReadApproval(input: {
   bodyCid: string;
   request: OpenKeyApprovalRequestV1;
   address: string;
-  areas: readonly ReadArea[];
+  areas: readonly StandingArea[];
   config: RenewalVerifyConfig;
   now: number;
 }): Promise<StandingReadGrant> {
   const { opened, requestId, bodyCid, request, address, areas, config, now } = input;
   const result = checkApprovalResultBinding(opened, { requestId, bodyCid, request, now: now * 1000 });
   const invalid = () => new Error("standing_read_approval_invalid");
-  const ownerDid = pkhDid(address, 1);
+  const ownerDid = pkhDid(address, 1).toLowerCase();
   const spaceId = makePkhSpaceId(address, 1, "applications");
   const { delegation, renewal } = result;
   const header = delegation.delegationHeader as { Authorization?: unknown } | undefined;
@@ -88,22 +88,23 @@ export async function verifyStandingReadApproval(input: {
   const originalEnd = seconds(grant.expiresAt);
   const start = seconds(grant.notBefore ?? grant.issuedAt);
   const leaseEnd = seconds(lease.expiresAt);
+  const leaseStart = seconds(lease.notBefore ?? lease.issuedAt);
   const approvedAt = seconds(renewal.approvedAt);
   if (!principalDidEquals(grant.issuer, ownerDid) || !principalDidEquals(grant.audience, request.targetDid) ||
     grant.proofs.length !== 0 || !onlyReadScope(grant, spaceId, areas) ||
     !Number.isSafeInteger(originalEnd) || !Number.isSafeInteger(start) || start > now ||
     originalEnd <= now || originalEnd <= start || originalEnd !== seconds(result.delegationExpiresAt) ||
-    originalEnd - start > request.grantLifetimeSeconds + 300 ||
+    originalEnd - start > Math.min(request.grantLifetimeSeconds + 300, STANDING_READ_WINDOW_SECONDS) ||
     !principalDidEquals(lease.issuer, ownerDid) || lease.audience !== config.renewerDid ||
     lease.proofs.length !== 0 || !isOnlyCapability(lease.attenuation, `urn:cid:${grant.cid}`, RENEW) ||
-    !Number.isSafeInteger(approvedAt) || approvedAt >= originalEnd || approvedAt > now ||
+    !Number.isSafeInteger(approvedAt) || leaseStart !== approvedAt || approvedAt >= originalEnd || approvedAt > now ||
     !Number.isSafeInteger(leaseEnd) || leaseEnd <= now || leaseEnd !== seconds(receipt.leaseExpiresAt) ||
     leaseEnd - approvedAt !== renewal.approvedLeaseLifetimeSeconds ||
     renewal.approvedLeaseLifetimeSeconds > Math.min(request.renewal.leaseLifetimeSeconds, STANDING_READ_LEASE_SECONDS)) throw invalid();
 
   return {
-    ownerDid, holderDid: request.targetDid, authorization: header.Authorization, originalCid: grant.cid, originalEnd,
-    leaseCid: lease.cid, leaseAuthorization: bare(receipt.leaseAuthorization), leaseEnd, spaceId, areas,
+    ownerDid, holderDid: request.targetDid, originalCid: grant.cid, originalEnd,
+    leaseCid: lease.cid, leaseEnd, spaceId, areas,
   };
 }
 
@@ -114,7 +115,12 @@ export interface StandingReadHolder {
   leaseState(grant: StandingReadGrant, hasRenewedTime: boolean): Promise<"active" | "stopped" | "unavailable">;
 }
 
-export type StandingReadAuthority = { state: "active"; validUntil: number } | { state: "ended" | "unavailable" };
+export type StandingReadAuthority =
+  | { state: "active"; validUntil: number }
+  | { state: "ended"; outcome: "expired" | "revoked" | "unavailable" }
+  | { state: "unavailable"; outcome?: "not_owner" };
+
+export type VerifyRenewalChain = typeof verifyRenewalHistory;
 
 type StandingReadStatusDeps = {
   address: string;
@@ -122,12 +128,13 @@ type StandingReadStatusDeps = {
   holder: StandingReadHolder;
   fetch?: typeof fetch;
   now?: () => number;
+  verifyRenewalChain?: VerifyRenewalChain;
 };
 
 const unixNow = () => Math.floor(Date.now() / 1000);
 
 function holderMatches(grant: StandingReadGrant, { address, holder }: StandingReadStatusDeps): boolean {
-  return holder.did === grant.holderDid && principalDidEquals(grant.ownerDid, pkhDid(address, 1));
+  return holder.did === grant.holderDid && grant.ownerDid === pkhDid(address, 1).toLowerCase();
 }
 
 async function signedOriginalStatus(grant: StandingReadGrant, deps: StandingReadStatusDeps, now: number) {
@@ -154,11 +161,11 @@ export async function confirmedStandingReadRevocation(grant: StandingReadGrant, 
 }
 
 export async function standingReadAuthority(grant: StandingReadGrant, deps: StandingReadStatusDeps): Promise<StandingReadAuthority> {
-  const { config, holder } = deps;
+  const { config, holder, verifyRenewalChain = verifyRenewalHistory } = deps;
   const now = deps.now ?? unixNow;
   const started = now();
-  if (!holderMatches(grant, deps)) return { state: "unavailable" };
-  if (grant.leaseEnd <= started) return { state: "ended" };
+  if (!holderMatches(grant, deps)) return { state: "unavailable", outcome: "not_owner" };
+  if (grant.leaseEnd <= started) return { state: "ended", outcome: "expired" };
   try {
     const [identity, status] = await Promise.all([
       fetchNodeIdentity(deps.fetch ?? fetch, config),
@@ -167,27 +174,32 @@ export async function standingReadAuthority(grant: StandingReadGrant, deps: Stan
     if (status.kind === "refused") return { state: "unavailable" };
     const node = status.value;
     if (node.cid !== grant.originalCid || node.exists !== true) return { state: "unavailable" };
-    if (node.expired === true || node.revoked === true) return { state: "ended" };
+    if (node.revoked === true) return { state: "ended", outcome: "revoked" };
+    if (node.expired === true) return { state: "ended", outcome: "expired" };
     if (node.active !== true || typeof node.effective_expiry !== "number" || !Number.isSafeInteger(node.effective_expiry) ||
       !Array.isArray(node.renewal_history)) return { state: "unavailable" };
 
     const nodeEnd = node.effective_expiry;
-    if (nodeEnd > now() + STANDING_READ_LEASE_SECONDS + NODE_WINDOW_SLACK_SECONDS) return { state: "ended" };
+    if (nodeEnd > now() + STANDING_READ_WINDOW_SECONDS + NODE_WINDOW_SLACK_SECONDS) {
+      return { state: "ended", outcome: "unavailable" };
+    }
     const hasRenewedTime = nodeEnd > grant.originalEnd;
     const lease = await holder.leaseState(grant, hasRenewedTime);
-    if (lease !== "active") return { state: lease === "stopped" ? "ended" : "unavailable" };
+    if (lease === "stopped") return { state: "ended", outcome: "revoked" };
+    if (lease !== "active") return { state: "unavailable" };
     const checkedAt = now();
-    if (grant.leaseEnd <= checkedAt) return { state: "ended" };
-    const end = hasRenewedTime ? verifiedNodeRenewalEnd({
+    if (Math.min(grant.leaseEnd, nodeEnd) <= checkedAt) return { state: "ended", outcome: "expired" };
+    const signedEnd = hasRenewedTime ? verifyRenewalChain({
       originalCid: grant.originalCid,
       leaseCid: grant.leaseCid,
       leaseExpiresAt: grant.leaseEnd,
-      nodeEffectiveExpiry: nodeEnd,
       nodeIdentity: identity,
-      history: node.renewal_history,
+      history: node.renewal_history as RenewalStampHistoryEntry[],
       now: checkedAt,
-    }) : Math.min(nodeEnd, grant.originalEnd, grant.leaseEnd);
-    return end > checkedAt ? { state: "active", validUntil: end * 1000 } : { state: "ended" };
+    }).effectiveExpiry : grant.originalEnd;
+    // The live node can shorten the signed end. Clock slack applies only to the raw status check.
+    const end = Math.min(signedEnd, nodeEnd, grant.leaseEnd, checkedAt + STANDING_READ_WINDOW_SECONDS);
+    return end > checkedAt ? { state: "active", validUntil: end * 1000 } : { state: "ended", outcome: "expired" };
   } catch {
     return { state: "unavailable" };
   }
