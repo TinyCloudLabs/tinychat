@@ -1,5 +1,17 @@
 # @tinychat/backend
 
+## 0.13.1
+
+### Patch Changes
+
+- f2dcbaa: If you haven't approved saving a bot's chat history to TinyCloud, the bot keeps its chat and files until you start a new chat or delete the bot, and the 30-day clean-up of unused bots leaves them alone. Messages in that chat aren't saved to TinyCloud until you approve it.
+
+  Details: TC-3933
+
+- 860822f: The copy of your data kept in this browser clears itself when the access behind it is revoked. The app reads the revocation from the TinyCloud node's current refusal message. The server and the bots service use the same TinyCloud SDK release, and sign-ins keep their 30 day length.
+
+  Details: TC-3947
+
 ## 0.13.1-beta.1
 
 ### Patch Changes
