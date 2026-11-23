@@ -6,7 +6,7 @@ import { createCipheriv, createDecipheriv, hkdfSync, randomBytes } from "node:cr
 import type { DelegatedAccess, TinyCloudNode } from "@tinycloud/node-sdk";
 import { verifyTranscriptWriterGrant, type VerifiedTranscriptWriter } from "../delegation-verify.js";
 import { activateVerifiedDelegation, DelegationActivationError } from "../portable-delegation.js";
-import type { StandingReadRuntime } from "./standing.js";
+import type { StandingReadPolicyRefusal, StandingReadRuntime } from "./standing.js";
 import { areaResources, isReadArea, READ_AREA_NAMES, READ_AREAS, type ReadArea, type ReadResource } from "./areas.js";
 
 /** Where each owner's grant is kept, in the backend's own space. */
@@ -30,7 +30,7 @@ export interface GrantEnvelope { serialized: string; siwe: string; signature: st
 /** `none`: nothing stored. `off`: the owner has not turned this area on. `ended`: the grant expired. */
 export type ReadRefusal = "none" | "off" | "ended" | "rejected" | "unavailable";
 export class ReadGrantRefused extends Error {
-  constructor(readonly code: ReadRefusal) { super(`trustbot_read_${code}`); this.name = "ReadGrantRefused"; }
+  constructor(readonly code: ReadRefusal, readonly auditOutcome?: StandingReadPolicyRefusal) { super(`trustbot_read_${code}`); this.name = "ReadGrantRefused"; }
 }
 /** The grant the owner sent does not match what turning the area on needs. */
 export class ReadGrantInvalid extends Error {
@@ -168,14 +168,17 @@ export class TrustBotReadGrants {
       throw new Error("trustbot_read_path_invalid");
     }
     const owner = checkAddress(address);
-    const standing = await this.#standing?.access(owner, area, path);
+    let auditOutcome: StandingReadPolicyRefusal | undefined;
+    const standing = await this.#standing?.access(owner, area, path, outcome => { auditOutcome = outcome; });
     if (standing?.state === "active") return standing.access;
     let stored: StoredReads | undefined;
     try { stored = await this.#load(owner); } catch { throw new ReadGrantRefused("unavailable"); }
-    if (!stored) throw new ReadGrantRefused(standing?.state === "unavailable" || standing?.state === "ended" ? standing.state : "none");
+    if (!stored) throw new ReadGrantRefused(
+      standing?.state === "unavailable" || standing?.state === "ended" ? standing.state : "none", auditOutcome,
+    );
     if (!stored.areas.includes(area)) throw new ReadGrantRefused("off");
     const now = this.#now();
-    if (stored.expiresAt <= now) throw new ReadGrantRefused("ended");
+    if (stored.expiresAt <= now) throw new ReadGrantRefused("ended", auditOutcome === "no_grant" ? undefined : auditOutcome);
     const verified = await this.#check(owner, stored, stored.areas, now);
     if (!verified.ok) throw new ReadGrantRefused(verified.code === "expired" || verified.code === "session_expired" ? "ended" : "rejected");
     const cacheKey = `${owner}\n${verified.verified.cid}\n${area}\n${path ?? ""}`;

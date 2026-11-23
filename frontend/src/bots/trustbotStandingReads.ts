@@ -3,7 +3,7 @@ import type { ReadArea } from "./trustbotReadAreas";
 
 export interface StandingReadsView {
   areas: ReadArea[];
-  active: { originalCid: string; areas: ReadArea[]; validUntil: number } | null;
+  active: { originalCid: string; areas: ReadArea[]; validUntil: number | null } | null;
   pending: { approveUrl: string } | null;
   previousOriginalCid: string | null;
   outcome: "declined" | "expired" | "failed" | null;

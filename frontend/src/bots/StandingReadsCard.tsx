@@ -68,8 +68,10 @@ export default function StandingReadsCard({ settings, revoke }: {
         <h2 id={id} className="text-headline">Keep bot reads on while you’re away</h2>
         <p className="text-callout text-muted-foreground">
           {active
-            ? `Your bot can read your ${covered} through ${dateOf(active.validUntil)}. Access renews while your approval is active.`
-            : `Let your bot keep reading your ${covered} for up to seven days, even with TinyChat closed.`}
+            ? active.validUntil === null
+              ? `Checking renewal for your ${covered}.`
+              : `Your bot can read your ${covered} through ${dateOf(active.validUntil)}. Access renews while your approval is active.`
+            : `Let your bot keep reading your ${covered} for up to 90 days, even with TinyChat closed.`}
         </p>
         {pending ? (
           <>

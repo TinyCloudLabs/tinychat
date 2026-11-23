@@ -130,7 +130,6 @@ test("uses pinned node status, drops the key on stop and refuses a different own
     expect(status.payload.att).toEqual({ [`urn:cid:${grant.originalCid}`]: { "tinycloud.delegation/status": [{}] } });
     return Response.json({ cid: grant.originalCid, exists: true, active: true, effective_expiry: nodeEnd, renewal_history: [] });
   }) as typeof fetch;
-  const rows: unknown[] = [];
   const dropped: string[] = [];
   const access = {} as ReadAccess;
   const runtime = new StandingReadRuntime({
@@ -147,11 +146,9 @@ test("uses pinned node status, drops the key on stop and refuses a different own
         },
       }),
       drop: async (_owner, cid) => { dropped.push(cid); },
-      audit: async row => { rows.push(row); },
     },
   });
   expect(await runtime.access(input.address, "meetings")).toEqual({ state: "active", access });
-  expect(rows).toEqual([{ owner: input.address, area: "meetings", at: input.now * 1000 }]);
   expect(await runtime.access(input.address, "feed_chats")).toEqual({ state: "absent" });
 
   nodeEnd = originalEnd + 3600;
@@ -162,12 +159,10 @@ test("uses pinned node status, drops the key on stop and refuses a different own
   leaseState = "stopped";
   expect(await runtime.access(input.address, "meetings")).toEqual({ state: "ended" });
   expect(dropped).toEqual([grant.originalCid]);
-  expect(rows).toHaveLength(1);
 
   leaseState = "active";
   const other = privateKeyToAccount(generatePrivateKey()).address;
   expect(await runtime.access(other, "meetings")).toEqual({ state: "unavailable" });
-  expect(rows).toHaveLength(1);
   expect(dropped).toHaveLength(1);
 });
 
@@ -246,7 +241,6 @@ test("refuses and drops a holder when node reports a window over seven days plus
         activate: async () => { throw new Error("overlong grant must not activate"); },
       }),
       drop: async (_owner, cid) => { dropped.push(cid); },
-      audit: async () => { throw new Error("overlong grant must not read"); },
     },
   });
   expect(await runtime.access(input.address, "meetings")).toEqual({ state: "ended" });
@@ -277,7 +271,6 @@ test("never uses a cached standing activation and discards an activation that cr
         },
       }),
       drop: async () => {},
-      audit: async () => {},
     },
   });
   expect(await runtime.access(input.address, "meetings")).toEqual({ state: "active", access: reads[0] });

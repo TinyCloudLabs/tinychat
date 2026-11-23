@@ -11,7 +11,7 @@ export interface CollectedStandingRead {
 
 export type StandingReadView = {
   areas: ReadArea[];
-  active: { originalCid: string; areas: readonly ReadArea[]; validUntil: number } | null;
+  active: { originalCid: string; areas: readonly ReadArea[]; validUntil: number | null } | null;
   pending: { approveUrl: string } | null;
   previousOriginalCid: string | null;
   outcome: "declined" | "expired" | "failed" | null;
@@ -30,10 +30,11 @@ export interface StandingReadStore {
   current(owner: string): Promise<CollectedStandingRead | undefined>;
   /** Compare against the original CID so a stale read cannot drop a new approval. */
   drop(owner: string, originalCid: string): Promise<void>;
-  audit(row: { owner: string; area: ReadArea; at: number }): Promise<void>;
 }
 
 type StandingReadResult = { state: "active"; access: ReadAccess } | { state: "absent" | "ended" | "unavailable" };
+export class StandingReadOwnerMismatch extends Error {}
+
 export type StandingReadPolicyRefusal = "no_grant" | "not_owner" | "expired" | "revoked" | "unavailable";
 
 /** Checks standing authority for each read. */
@@ -77,7 +78,6 @@ export class StandingReadRuntime {
         onPolicyRefusal?.("expired");
         return { state: "ended" };
       }
-      await store.audit({ owner, area, at });
       // Standing activations are one-use; an activation crossing the checked end is discarded.
       const access = await record.activate(resources, authority.validUntil);
       if ((now?.() ?? Date.now() / 1000) * 1000 >= authority.validUntil) {
@@ -85,7 +85,8 @@ export class StandingReadRuntime {
         return { state: "ended" };
       }
       return { state: "active", access };
-    } catch {
+    } catch (error) {
+      onPolicyRefusal?.(error instanceof StandingReadOwnerMismatch ? "not_owner" : "unavailable");
       return { state: "unavailable" };
     }
   }

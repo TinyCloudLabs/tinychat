@@ -115,7 +115,7 @@ export function createTrustBotReadsRouter(
   if (standing) {
     const currentAreas = async (owner: string) => {
       const status = await grants.status(owner);
-      return READ_AREA_NAMES.filter(area => status.areas[area] === "on");
+      return READ_AREA_NAMES.filter(area => status.areas[area] !== "off");
     };
     router.get("/standing", async (req, res) => {
       const owner = req.user!.address;

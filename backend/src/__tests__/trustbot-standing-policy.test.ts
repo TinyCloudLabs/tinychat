@@ -122,7 +122,6 @@ async function readFixture() {
     store: {
       current: async () => ({ grant, holder: { did: holder.did, signStatus: holder.sign, leaseState: async () => "active" }, activate }),
       drop,
-      audit: async () => {},
     },
   });
   const stamp = (cid: string, previous: string, end: number, generation = 2) => ({
