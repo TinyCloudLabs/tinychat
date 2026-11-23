@@ -31,8 +31,12 @@ describe("Fireflies import grants client", () => {
     }
   });
 
-  test("a missing route means the server holds nothing; a server error is retryable", async () => {
-    expect((await clientAnswering(() => new Response(null, { status: 404 })).client.listGrantCids()).status).toBe("feature-dark");
+  test("only the backend's own marker on a 404 means the server holds nothing; any other 404 or a server error is retryable", async () => {
+    const marked = new Response(null, { status: 404, headers: { "X-Route-Unavailable": "fireflies-import" } });
+    expect((await clientAnswering(() => marked).client.listGrantCids()).status).toBe("feature-dark");
+    expect((await clientAnswering(() => new Response(null, { status: 404 })).client.listGrantCids())).toEqual({ status: "retryable", httpStatus: 404, code: null });
+    const otherMarker = new Response(null, { status: 404, headers: { "X-Route-Unavailable": "connector-credentials" } });
+    expect((await clientAnswering(() => otherMarker).client.listGrantCids()).status).toBe("retryable");
     expect((await clientAnswering(() => new Response(null, { status: 503 })).client.listGrantCids()).status).toBe("retryable");
   });
 

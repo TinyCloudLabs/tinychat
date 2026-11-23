@@ -14,3 +14,11 @@ export function credentialRouteUnavailable(res: Response): void {
   res.setHeader(ROUTE_UNAVAILABLE_HEADER, CREDENTIALS_ROUTE_UNAVAILABLE);
   res.status(404).json({ error: "not_found" });
 }
+
+/** Marks the 404 for the Fireflies import routes while the server import is off, so a client can tell it from a proxy's 404. */
+export const FIREFLIES_IMPORT_ROUTE_UNAVAILABLE = "fireflies-import";
+
+export function firefliesImportRouteUnavailable(res: Response): void {
+  res.setHeader(ROUTE_UNAVAILABLE_HEADER, FIREFLIES_IMPORT_ROUTE_UNAVAILABLE);
+  res.status(404).json({ error: "not_found" });
+}

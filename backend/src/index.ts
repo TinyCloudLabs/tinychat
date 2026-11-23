@@ -52,6 +52,7 @@ import { createDstackKeyClient } from "./attestation/dstackClient.js";
 import { deriveFirefliesImportKeys, type FirefliesImportKeys } from "./fireflies-import-identity.js";
 import { createFirefliesDelegationRouter } from "./routes/fireflies-delegation.js";
 import { createKvFirefliesGrantPort, FirefliesGrantStore } from "./services/fireflies-grant-store.js";
+import { removeFirefliesGrantsWhileOff } from "./services/fireflies-grant-sweep.js";
 import { FirefliesDirectImporter } from "./services/fireflies-import-executor.js";
 import { createServerInfoRouter } from "./routes/server-info.js";
 import { readBackendBuildInfo } from "./build-info.js";
@@ -67,7 +68,7 @@ import {
   createConnectorWebhookParserErrorHandler,
   connectorDrainAbort,
 } from "./routes/connector-webhooks.js";
-import { credentialRouteUnavailable } from "./routes/route-unavailable.js";
+import { credentialRouteUnavailable, firefliesImportRouteUnavailable } from "./routes/route-unavailable.js";
 import { createGoogleOAuthRouter, normalizeAppOrigin } from "./routes/google-oauth.js";
 import { createPrivateCloudOnlyBulkDeleteRouter, createTranscriberRouter } from "./routes/transcriber.js";
 import { createTranscriberWebhookRouter } from "./routes/transcriber-webhook.js";
@@ -572,6 +573,17 @@ async function main() {
         );
     void reapLapsedGrants();
     setInterval(() => { void reapLapsedGrants(); }, 15 * 60_000).unref();
+  } else if (!firefliesServerImportEnabled(process.env)) {
+    // The import is off, so nothing it stored is kept: every sealed grant and marker is removed at start-up. A failure
+    // leaves the rest for the next start and never stops the server; only a count is logged.
+    void (async () => {
+      try {
+        const removed = await removeFirefliesGrantsWhileOff(node, backendStorageLane);
+        if (removed > 0) console.log(`[fireflies-import] op=flag-off-remove removed=${removed}`);
+      } catch {
+        console.warn("[fireflies-import] op=flag-off-remove result=unavailable");
+      }
+    })();
   }
   const connectorQueue = new ConnectorQueue(node, {
     storageLane: backendStorageLane,
@@ -882,6 +894,9 @@ async function main() {
         authMiddleware,
       }),
     );
+  } else {
+    // Off: the routes answer 404 with the backend's own marker, so the app can tell this from a 404 sent by anything else.
+    app.use("/api/connectors/fireflies/delegation", (_req, res) => firefliesImportRouteUnavailable(res));
   }
 
   let calendarAutojoin: CalendarAutojoinConnection | undefined;
