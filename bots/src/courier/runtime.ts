@@ -23,16 +23,21 @@ export interface CourierGateway {
   control(req: Request): Promise<Response | undefined>;
 }
 
-export async function startCourierGateway(options: { cfg: GatewayConfig; gateway: Gateway; reads: MeetingDesk; env: Record<string, string | undefined> }): Promise<CourierGateway> {
+/** The peer store holds an exclusive lock on its directory: a failed start must release it. */
+function closeOnThrow<T>(peers: { close(): void }, make: () => T): T {
+  try { return make(); } catch (error) { peers.close(); throw error; }
+}
+
+export async function startCourierGateway(options: { cfg: GatewayConfig; gateway: Gateway; reads: MeetingDesk; env: Record<string, string | undefined>; sealKey?: () => Promise<Uint8Array> }): Promise<CourierGateway> {
   const owners = [...new Set((options.env.BOTS_TEST_ACCOUNTS ?? "").split(",").map(address => address.trim().toLowerCase()).filter(address => /^0x[0-9a-f]{40}$/.test(address)).map(address => `did:pkh:eip155:1:${address}`))];
   const allowed = new Set(owners);
-  const key = await sealKeyFromDstack();
+  const key = await (options.sealKey ?? sealKeyFromDstack)();
   const root = dirname(options.cfg.budgetFile);
   const grants = createCourierGrantStore(join(root, "courier-grants"), key);
   const peers = createCourierPeerStore(join(root, "courier-peers"), key);
   const pairing = createCourierPairing({ store: peers, grants });
   const control = createCourierControl(grants);
-  const intake = new CourierIntake({
+  const intake = closeOnThrow(peers, () => new CourierIntake({
     owners, grants, peers, store: courierIntakeStore(join(root, "courier-intake"), key),
     async transport(owner, grant, peer) {
       const runtime = await peers.getRuntime(owner, peer.handle);
@@ -73,7 +78,7 @@ export async function startCourierGateway(options: { cfg: GatewayConfig; gateway
         },
       });
     },
-  });
+  }));
   let ticking = false;
   const tick = async () => {
     if (ticking) return;
@@ -87,7 +92,7 @@ export async function startCourierGateway(options: { cfg: GatewayConfig; gateway
   const timer = setInterval(() => void tick().catch(() => {}), 15_000);
   timer.unref();
   return {
-    stop() { clearInterval(timer); },
+    stop() { clearInterval(timer); peers.close(); },
     async control(req: Request): Promise<Response | undefined> {
       const match = /^\/courier\/([^/]+)(\/.*)$/.exec(new URL(req.url).pathname);
       if (!match) return undefined;
