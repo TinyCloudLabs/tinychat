@@ -23,8 +23,8 @@ export const MAX_PER_DAY = 10;
 export const DECLINE_COOLDOWN_MS = 60 * 60_000;
 export const EXPIRY_MS = 24 * 60 * 60_000;
 export const MAX_WHY_CHARS = 200;
-/** The longest an approval may last: 7 days (Sam's cap on standing secret access, D7). */
-export const MAX_GRANT_MS = 7 * 24 * 60 * 60_000;
+/** The longest an approval may last (Naomi, 22 Nov: bot secret grants are one hour at most; standing access is a separate design). */
+export const MAX_GRANT_MS = 60 * 60_000;
 /** Where the gateway's approval links point: OpenKey's one-tap page. */
 export const OPENKEY_ORIGIN = "https://openkey.so";
 /** How long an answer that Main has not been told yet is kept; well inside the 24 hours the text may live. */
@@ -71,6 +71,7 @@ export const SECRET_ERRORS = {
   pending: (name: string) => `You already asked for ${name}. Wait for the owner; don’t ask in chat.`,
   recent: (name: string) => `The owner declined ${name} recently. Don’t ask again unless they bring it up.`,
   many: () => "Too many open requests for now. Carry on without asking.",
+  held: () => "Using a secret is paused in this chat because it holds the owner’s private data, and a secret call sends data to a site. It stays paused until the owner starts a new chat.",
 } as const;
 
 /** What the supervisor tells Main about a secret request: fixed text around its name, sites and end time. */

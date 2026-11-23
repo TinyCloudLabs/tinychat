@@ -19,8 +19,8 @@ export function historyAccessFor(tcw: TinyCloudWeb): BotHistoryAccess {
       await ensureSiblingHistoryGrant(tcw, key).catch(() => {});
     },
     async read(key, signal) {
-      if (key === "main") return readBotHistory(tcw, signal);
-      return readHistoryForBot(tcw, key, signal).catch(() => []);
+      if (key === "main") return readBotHistory(tcw, signal, { reseal: true });
+      return readHistoryForBot(tcw, key, signal, { reseal: true }).catch(() => []);
     },
   };
 }

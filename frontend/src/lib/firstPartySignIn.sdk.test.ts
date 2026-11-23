@@ -76,7 +76,7 @@ for (const origin of ["https://example.com", "http://localhost:5186", "capacitor
     atOrigin(origin);
     await expect(createTinyCloudWeb(wallet, { ...config, manifest }).signIn()).rejects.toMatchObject({
       code: "ACCOUNT_SETUP_REQUIRED",
-      setupUrl: "https://home.tinycloud.xyz/",
+      setupUrl: "https://tinycloud.one/",
     });
   });
 }

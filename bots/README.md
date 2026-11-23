@@ -4,6 +4,9 @@ Tiny bots, slice 1 (TC-2808): each owner's Main bot is an OMP agent in its own g
 backend calls this service; browsers never do. The interface is piece 1 of
 [`docs/plans/tiny-bots-slice1.md`](../docs/plans/tiny-bots-slice1.md).
 
+The owner sees the Main bot as TrustBot, a default name the owner can change (TC-3790). Its key stays `main` in code,
+addresses, storage and history.
+
 The service runs as its own Phala CVM with three containers (`docker-compose.phala.yml`), all from one image
 except the ingress:
 
@@ -74,7 +77,9 @@ Every event is encoded by the supervisor from checked fields; OMP output never p
    `127.0.0.1:8080` to the egress socket and execs `omp --mode rpc --no-ui --system-prompt <file>`; the sandbox's stdio
    is the RPC channel. The file is Main's or the sibling prompt (`sandbox/prompts/main.md`, `sibling.md`, copied to
    `/opt/tinycloud/prompts`); the sibling prompt is also the image's `/root/.omp/agent/SYSTEM.md`, which OMP reads if
-   the file is missing.
+   the file is missing. Where the prompt says `{{botName}}`, `bot-start.sh` puts the name the owner sees (`BOT_NAME`,
+   from the backend's signed `botName` on the latest turn; default TrustBot) into a copy under `/tmp` and gives OMP
+   that copy. The name only words the prompt: what a bot may do follows from its key, never its name.
 3. The supervisor waits for OMP's `ready`, sets the event filter (assistant deltas only), opens the session in
    `/root/bot/sessions/main`, sends the `prompt`, and maps `message_update` text deltas to `delta` and
    `prompt_result` to `done` / `error`. A prompt the owner did not write (one bot messaging another) starts with the
@@ -169,9 +174,9 @@ OMP also probes `GET /models` and `GET /props` without a token at startup; the g
 Main can use the web only when its owner turns it on: in Main's chat, tap Web access and choose `off` (the default),
 `listed` (only the owner's sites, subdomains included) or `any` public site. Turning it on shows this warning first:
 
-> A web page can hide instructions meant for an AI. Main might follow them and put things you've told it into a search or a web address. Searches go to our search provider, Tavily. Our server fetches pages, so the sites see our server, not you. Don't open or paste links Main gives you unless you trust them.
+> A web page can hide instructions meant for an AI. TrustBot might follow them and put things you've told it into a search or a web address. Searches go to our search provider, Tavily. Our server fetches pages, so the sites see our server, not you. Don't open or paste links TrustBot gives you unless you trust them.
 >
-> This setting lets Main open pages you've never seen, and any of them could try this. "Only sites you list" is safer, but anyone who can post on those sites could still try it.
+> This setting lets TrustBot open pages you've never seen, and any of them could try this. "Only sites you list" is safer, but anyone who can post on those sites could still try it.
 
 The setting is saved by the supervisor in `/data/bots/<bot id>/web.json` and given to the gateway before each message;
 the gateway applies it on every call. A missing or unreadable file reads as `off`.
@@ -281,10 +286,9 @@ call and returns the reply with the value hidden.
   (`src/secret-routes.ts`). The gateway makes a fresh Ed25519 key for that request alone. It signs an OpenKey one-tap
   approval request for `tinycloud.kv/get` on `vault/secrets/<NAME>` plus `tinycloud.encryption/decrypt` on that
   secret's own key, `urn:tinycloud:encryption:<owner>:default/secrets/<name in lowercase>` (per-secret keys,
-  TC-3284), never the whole network. 1 hour is suggested (`SUGGESTED_GRANT_SECONDS`); the longest grant it allows is
-  7 days (`MAX_GRANT_SECONDS`, Sam's cap on standing secret access). It never asks for a renewal, so share-envelope
-  refuses a result that carries one; a longer use needs a new request. The same key is both issuer and audience,
-  because share-envelope 1.6.0 requires it.
+  TC-3284). `SCOPED` is reserved. The suggested and maximum lifetime is 1 hour (`MAX_GRANT_SECONDS`, from
+  `MAX_GRANT_MS` in `asks.ts`). It never asks for a renewal, so share-envelope refuses a result that carries one.
+  The same key is both issuer and audience, because share-envelope 1.6.0 requires it.
   TC-3772 will let a stable TinyCloud One key sign instead (`SecretGrantDeps.requester`). The owner the supervisor
   names must be this bot's owner (409 otherwise). A known service's site and header must match
   `src/secret-catalog.ts`.
@@ -294,7 +298,7 @@ call and returns the reply with the value hidden.
   - the space owner and every resource owner are the owner;
   - it grants exactly the two entries asked for, each with its one ability, compared with the owner's address in
     lowercase: no prefix, no network, nothing else;
-  - the expiry, and that the grant is no longer than asked and never over 7 days.
+  - the expiry and the lifetime asked for, with up to 120 seconds of length tolerance for OpenKey rendering.
 
   A grant kept from before per-secret keys (its request asked for the whole network) is never used: at start a
   waiting one fails and an approved one ends. A secret still wrapped with the network's key can't be opened with its
@@ -336,6 +340,42 @@ call and returns the reply with the value hidden.
   `YYYY-MM-DD HH:MM UTC`. Approved access past its date shows as `ended`.
 - **Logs** hold `{gateway:"secret", tool, outcome}` and result-check failures, never a name, an address, a header,
   a body or a value.
+
+### Proposals from Main
+
+Main can propose an action for the owner to approve with one tap; the service then does it, exactly once. The first
+kind is `message_bots`: one message to 2 to 8 of the owner's other bots. It is the `propose_action` tool of the `app`
+MCP server, listed and served under the same setting as `ask_owner` (off until the owner turns it on). `message_bot` reaches one bot per
+owner message (the same bot again is fine); a message for more bots goes through a proposal.
+
+- `propose_action { kind: "message_bots", targets, text }`: `targets` are 2 to 8 distinct keys of bots Main may
+  message in this turn (never `main`), `text` is 1 to 2000 characters, kept as plain text with its lines (control,
+  direction and format characters removed). A turn relayed from another bot may message no bot, so it cannot propose.
+  It answers `{ id, state: "pending" }` at once. Refusals are fixed sentences (`ACTION_ERRORS` in `actions.ts`).
+- Limits, owner-wide: 3 open proposals and 10 a day (UTC). A proposal the owner declined or that expired is final:
+  the same kind, recipients and text (whitespace-normalized) is refused while its metadata is kept.
+- The gateway issues each proposal a binding, `sha256(["tinycloud-action/1", owner, bot, kind, targets, text])`, and
+  keeps it in `actions.json` beside the budget file. The owner's Send names that binding; the supervisor checks it
+  against the stored proposal and recomputes it from the stored fields, marks the proposal `sending` (so a second Send
+  is 409), then has the gateway spend it (`POST /bots/<id>/actions/spend { id, binding }`: 204 once, 409 for any other
+  binding, bot, a second spend or after expiry plus an hour). Only after a spend does it deliver, by the path
+  `message_bot` takes, to the recipients the backend admits for Main at that moment. A chat message is never an
+  approval: the only way is the signed answer route.
+- The supervisor collects proposals like questions (`POST /bots/<id>/actions/drain`, `PUT /bots/<id>/actions` with the
+  counts, the final hashes and, at a turn's start, the recipients Main may name) into
+  `/data/bots/<bot id>/actions.json`. Turning the setting off closes pending proposals as `stopped`, with nothing sent
+  to Main.
+- Routes, Main only:
+  - `GET /v1/bots/main/requests` lists proposals beside questions: `{ id, kind: "action", action: "message_bots", state,
+    askedAt, expiresAt, outside, resolvedAt?, targets, text?, binding?, outcomes?, undelivered? }`. `state` is
+    `pending`, `sending`, `done`, `declined`, `expired` or `stopped`; `text` and `binding` are there only while pending;
+    `outcomes` (`[{ key, delivered }]`) once done. The backend adds each recipient's current name.
+  - `POST /v1/bots/main/requests/<id>/answer`: `{ "decision": "approve", "binding": "<64 hex>", "messageableBotKeys":
+    [...] }` (the backend fills the keys) or `{ "decision": "decline" }`.
+  - `appReply` tells Main the outcome with a fixed sentence around the recipients' keys (`ACTION_REPLIES`), under its
+    own first line (`ORIGIN_LINES.action`); its history line has `decision: "action_approved" | "action_declined"`.
+    Each recipient gets Main's message under the line for a message from another bot (`ORIGIN_LINES.bot`).
+- Retention: the text goes when the proposal is decided or expires; metadata stays 7 days, at most 200.
 
 ### Saved state
 
@@ -541,8 +581,9 @@ The operator points `BOTS_INGRESS_DOMAIN` at the CVM with a DNS CNAME to its Pha
 in the job summary).
 
 The backend picks up `BOTS_ENABLED`, `BOTS_TEST_ACCOUNTS`, `BOTS_SERVICE_URL=https://<BOTS_INGRESS_DOMAIN>` and
-`BOTS_POST_TIMEOUT_MS` from `production-api` variables and `BOTS_SERVICE_SECRET` from a `production-api` secret,
-through `.github/workflows/deploy-backend-phala.yml`. `BOTS_ENABLED` defaults to `false`.
+`BOTS_POST_TIMEOUT_MS` from `production-api` variables and `BOTS_SERVICE_SECRET` and `BOTS_BACKEND_CALL_SECRET` from
+`production-api` secrets, through `.github/workflows/deploy-backend-phala.yml`. `BOTS_ENABLED` defaults to `false`.
+Sibling admission needs `BOTS_BACKEND_CALL_SECRET` set to the same value in `production-bots` and `production-api`.
 
 ### Deploy order
 

@@ -11,6 +11,7 @@ import type { CreateBotInput } from "./botRosterApi";
 import type { ColourId, ShapeId } from "./botShapes";
 import { BotView, type ViewBot } from "./BotView";
 import type { BotManagement } from "./BotManage";
+import { MAIN_BOT_OLD_NAME } from "./botsStrings";
 import type { HistoryNotice } from "./historyNotice";
 import { useBotChats, type BotChatSource, type BotChats } from "./useBotChat";
 
@@ -152,7 +153,8 @@ export function BotsChat<Bot extends ControllerBot>({
     ? {
       shape: shown.shape,
       colour: shown.colour,
-      takenNames: bots.filter((bot) => bot.key !== shown.key).map((bot) => bot.name),
+      // The main bot's old name is taken for every other bot (TC-3790).
+      takenNames: [...bots.filter((bot) => bot.key !== shown.key).map((bot) => bot.name), ...(shown.key === "main" ? [] : [MAIN_BOT_OLD_NAME])],
       update: (input) => actions.update(shown.key, input),
       remove: shown.key === "main" ? undefined : () => actions.remove(shown.key),
     }

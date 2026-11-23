@@ -1,5 +1,342 @@
 # @tinychat/backend
 
+## 0.13.2-beta.2
+
+### Patch Changes
+
+- 98b74de: Bot chat history in TinyChat is sealed with its own encryption key. Saving new history needs your approval for that one key. When you open earlier messages, TinyChat can move them to that key.
+
+  Details: TC-3823
+
+## 0.13.2-beta.1
+
+### Patch Changes
+
+- c12c58e: The sign-in for Connectors now asks for access to each connector key's own encryption key, next to the access that already covers your whole account. Connector keys you save are still stored the same way for now; saving them under their own key is built behind a switch that stays off. If you already use Connectors, you sign in once more the next time you open them so the new access can be approved.
+
+  Details: TC-3284
+
+## 0.13.2-beta.0
+
+### Patch Changes
+
+- a38f348: When TrustBot asks you to approve a secret for a call, the request now also names that secret's own encryption key. Secrets saved with their own key can then be read once you approve. Secrets saved earlier keep working through the approval that already covers your whole account's encryption.
+
+  Details: TC-3284
+
+## 0.13.1
+
+### Patch Changes
+
+- f2dcbaa: If you haven't approved saving a bot's chat history to TinyCloud, the bot keeps its chat and files until you start a new chat or delete the bot, and the 30-day clean-up of unused bots leaves them alone. Messages in that chat aren't saved to TinyCloud until you approve it.
+
+  Details: TC-3933
+
+- 860822f: The copy of your data kept in this browser clears itself when the access behind it is revoked. The app reads the revocation from the TinyCloud node's current refusal message. The server and the bots service use the same TinyCloud SDK release, and sign-ins keep their 30 day length.
+
+  Details: TC-3947
+
+## 0.13.1-beta.1
+
+### Patch Changes
+
+- 860822f: The copy of your data kept in this browser clears itself when the access behind it is revoked. The app reads the revocation from the TinyCloud node's current refusal message. The server and the bots service use the same TinyCloud SDK release, and sign-ins keep their 30 day length.
+
+  Details: TC-3947
+
+## 0.13.1-beta.0
+
+### Patch Changes
+
+- f2dcbaa: If you haven't approved saving a bot's chat history to TinyCloud, the bot keeps its chat and files until you start a new chat or delete the bot, and the 30-day clean-up of unused bots leaves them alone. Messages in that chat aren't saved to TinyCloud until you approve it.
+
+  Details: TC-3933
+
+## 0.13.0
+
+### Minor Changes
+
+- 4c7529b: TrustBot can read your meetings when you turn on Meetings in its chat. Access is read-only and lasts 7 days. Once TrustBot reads a meeting, it has no web access, cannot use a secret and cannot send or propose messages to other bots in that chat until the chat is cleared after 30 days without use.
+
+  Details: TC-3792
+
+- 9f74c25: TrustBot can read your feed cards and your chats with AI models when you turn on Feed and chats in its chat. Access is read-only and lasts 7 days. Once TrustBot reads a card or a chat, it has no web access, cannot use a secret and cannot send or propose messages to other bots in that chat until you start a new chat.
+
+  Details: TC-3794
+
+- 6b4538d: You can start a new chat with TrustBot from its chat. It clears the conversation and any questions it's waiting on, and keeps your settings and saved history. After TrustBot reads a meeting, it has no web access, cannot use a secret and cannot send or propose messages to other bots in that chat until you start a new chat.
+
+  Details: TC-3808
+
+### Patch Changes
+
+- 7d2eccc: Main can send one message to several of your bots after you tap Send. The card shows the message and who gets it before anything goes, and Don't send is final. Without your Send, Main messages at most one bot for each message you send. This needs the setting that lets Main ask you questions, which is off until you turn it on.
+
+  Details: TC-3793
+
+- 69b85e8: If you haven't approved saving a bot's chat history to TinyCloud, the chat keeps no saved copy: long chats with TrustBot and your other bots work, and New chat clears at once. Saving starts when you approve it, and messages from before your approval aren't saved.
+
+  Details: TC-3933
+
+## 0.13.0-beta.4
+
+### Patch Changes
+
+- 69b85e8: If you haven't approved saving a bot's chat history to TinyCloud, the chat keeps no saved copy: long chats with TrustBot and your other bots work, and New chat clears at once. Saving starts when you approve it, and messages from before your approval aren't saved.
+
+  Details: TC-3933
+
+## 0.13.0-beta.3
+
+### Minor Changes
+
+- 9f74c25: TrustBot can read your feed cards and your chats with AI models when you turn on Feed and chats in its chat. Access is read-only and lasts 7 days. Once TrustBot reads a card or a chat, it has no web access in that chat until you start a new chat.
+
+  Details: TC-3794
+
+## 0.13.0-beta.2
+
+### Minor Changes
+
+- 6b4538d: You can start a new chat with TrustBot from its chat. It clears the conversation and any questions it's waiting on, and keeps your settings and saved history. After TrustBot reads a meeting, it has no web access, cannot use a secret and cannot send or propose messages to other bots in that chat until you start a new chat.
+
+  Details: TC-3808
+
+## 0.13.0-beta.1
+
+### Minor Changes
+
+- 4c7529b: TrustBot can read your meetings when you turn on Meetings in its chat. Access is read-only and lasts 7 days. Once TrustBot reads a meeting, it has no web access, cannot use a secret and cannot send or propose messages to other bots in that chat until the chat is cleared after 30 days without use.
+
+  Details: TC-3792
+
+## 0.12.1-beta.0
+
+### Patch Changes
+
+- 7d2eccc: Main can send one message to several of your bots after you tap Send. The card shows the message and who gets it before anything goes, and Don't send is final. Without your Send, Main messages at most one bot for each message you send. This needs the setting that lets Main ask you questions, which is off until you turn it on.
+
+  Details: TC-3793
+
+## 0.12.0
+
+### Minor Changes
+
+- 03d29de: The bot you've known as Main is called TrustBot. Your chat history stays as it is.
+
+  Details: TC-3790
+
+### Patch Changes
+
+- 99b2305: MCP falls back to Fireflies KV records only when the SQL store is known to be empty. The Library filters and rechecks cached server-imported rows against the flag and the purge ledger, and pages KV with `nextCursor` and `truncated`. MCP's KV truncation text names the size limit.
+
+  Details: TC-3919
+
+- 2965fde: A 1-hour secret approval for the agent is accepted when OpenKey's grant ends a few seconds after the hour. An approval more than 2 minutes over an hour is refused.
+
+  Details: TC-3595
+
+## 0.12.0-beta.2
+
+### Patch Changes
+
+- 99b2305: Restrict MCP Fireflies KV fallback to proven-absent SQL stores, filter and revalidate cached server-imported Library rows against the active flag and purge ledger, align Library KV paging with `nextCursor` and `truncated` and update the MCP KV truncation text.
+
+  Details: TC-3919
+
+## 0.12.0-beta.1
+
+### Patch Changes
+
+- 2965fde: A 1-hour secret approval for the agent is accepted when OpenKey's grant ends a few seconds after the hour. An approval more than 2 minutes over an hour is refused.
+
+  Details: TC-3595
+
+## 0.12.0-beta.0
+
+### Minor Changes
+
+- 03d29de: The bot you've known as Main is called TrustBot. Your chat history stays as it is.
+
+  Details: TC-3790
+
+## 0.11.0
+
+### Minor Changes
+
+- 1d0a5e0: The backend has encrypted Fireflies import grant storage, a KMS-derived delegate identity, a strict grant verifier and delegation routes, behind a flag that is off by default.
+
+  Details: TC-3905
+
+- 897efaf: The backend has a stateless Fireflies meeting fetcher and direct-write webhook executor behind FIREFLIES_SERVER_IMPORT_ENABLED (off by default).
+
+  Details: TC-3905
+
+- 323a384: Library and MCP discover and read KV-only Fireflies server-import meeting records with untrusted-data bounds and purge checks, behind a flag that is off by default.
+
+  Details: TC-3905
+
+### Patch Changes
+
+- 18b4ecd: The agent can use a secret you approved for up to 1 hour, and only with the sites named in the request. It can send data only to OpenAI, Anthropic, Gemini, ElevenLabs or Fireflies, and only when you approved that site. It never sees the secret's value.
+
+  Details: TC-3595
+
+- 2dc7989: Main can ask to use a secret. You add it to TinyCloud Secrets and approve it in OpenKey for up to 1 hour. Main can use it only with the sites named in the request and can't see or show its value.
+
+  Details: TC-3595
+
+- 4309437: The server can save the chat history of bots other than Main and serve their expiry notice, each under that bot's own permission. The app doesn't ask for it until a separate change turns it on.
+
+  Details: TC-3813
+
+- 94681f9: An agent turn on a model with no catalog price must be covered by the fallback minimum of 2,600 credits. Its preflight log event carries `unpriced: true`, so an unpriced model shows in the logs even when every turn on it is refused. Priced models leave the field out.
+
+  Details: TC-3734
+
+- ca86545: Bots on the regular runtime now have the same tools switched off as other bots, skills included.
+
+  Details: TC-3779
+
+- ba1415e: Your bots know your local date and time zone each time you write to them, so "today" and "last week" mean what you mean. Messages one bot sends another don't carry it. Your bots don't describe the machine they run on. If you paste a password or key into a chat, the bot tells you once that it's part of the chat and suggests changing it.
+
+  Details: TC-3791
+
+- 1284bef: The backend serves `POST /api/internal/bots/admit` for the bots gateway's sibling admission. The call is signed `to-backend` with `BOTS_BACKEND_CALL_SECRET`; the owner comes from the signed owner DID and the source from the signed bot, and both bots are looked up in that owner's registry record. Without the secret the route is not mounted.
+
+  Details: TC-3809
+
+- 915a825: One browser can make 600 general API requests per 15 minutes, so a normal page load with polling doesn't hit "Too many requests". Chat sends and signed-out clients have their own limits.
+
+  Details: TC-3916
+
+- 0f26b1a: An operator can read five counts of calendar auto-join connections: all connections, those turned on, those turned on with the Google email permission, those turned on with a verified Google email and those turned on that need a reconnect. A workflow run by hand from main prints the counts without printing the key. No addresses or emails are returned.
+
+  Details: TC-916
+
+## 0.11.0-beta.10
+
+### Minor Changes
+
+- 323a384: Library and MCP discover and read KV-only Fireflies server-import meeting records with untrusted-data bounds and purge checks, behind a flag that is off by default.
+
+  Details: TC-3905
+
+## 0.11.0-beta.9
+
+### Patch Changes
+
+- 915a825: One browser can make 600 general API requests per 15 minutes, so a normal page load with polling doesn't hit "Too many requests". Chat sends and signed-out clients have their own limits.
+
+  Details: TC-3916
+
+## 0.11.0-beta.8
+
+### Patch Changes
+
+- 18b4ecd: The agent can use a secret you approved for up to 1 hour, and only with the sites named in the request. It can send data only to OpenAI, Anthropic, Gemini, ElevenLabs or Fireflies, and only when you approved that site. It never sees the secret's value.
+
+  Details: TC-3595
+
+- 94681f9: An agent turn on a model with no catalog price must be covered by the fallback minimum of 2,600 credits. Its preflight log event carries `unpriced: true`, so an unpriced model shows in the logs even when every turn on it is refused. Priced models leave the field out.
+
+  Details: TC-3734
+
+## 0.11.0-beta.7
+
+### Minor Changes
+
+- 897efaf: The backend has a stateless Fireflies meeting fetcher and direct-write webhook executor behind FIREFLIES_SERVER_IMPORT_ENABLED (off by default).
+
+  Details: TC-3905
+
+## 0.11.0-beta.6
+
+### Patch Changes
+
+- 0f26b1a: An operator can read five counts of calendar auto-join connections: all connections, those turned on, those turned on with the Google email permission, those turned on with a verified Google email and those turned on that need a reconnect. A workflow run by hand from main prints the counts without printing the key. No addresses or emails are returned.
+
+  Details: TC-916
+
+## 0.11.0-beta.5
+
+### Patch Changes
+
+- 2dc7989: Main can ask to use a secret. You add it to TinyCloud Secrets and approve it in OpenKey for as long as you choose. Main can use it only with the sites named in the request and can't see or show its value.
+
+  Details: TC-3595
+
+## 0.11.0-beta.4
+
+### Minor Changes
+
+- 1d0a5e0: The backend has encrypted Fireflies import grant storage, a KMS-derived delegate identity, a strict grant verifier and delegation routes, behind a flag that is off by default.
+
+  Details: TC-3905
+
+## 0.10.1-beta.3
+
+### Patch Changes
+
+- ba1415e: Your bots know your local date and time zone each time you write to them, so "today" and "last week" mean what you mean. Messages one bot sends another don't carry it. Your bots don't describe the machine they run on. If you paste a password or key into a chat, the bot tells you once that it's part of the chat and suggests changing it.
+
+  Details: TC-3791
+
+## 0.10.1-beta.2
+
+### Patch Changes
+
+- 1284bef: The backend serves `POST /api/internal/bots/admit` for the bots gateway's sibling admission. The call is signed `to-backend` with `BOTS_BACKEND_CALL_SECRET`; the owner comes from the signed owner DID and the source from the signed bot, and both bots are looked up in that owner's registry record. Without the secret the route is not mounted.
+
+  Details: TC-3809
+
+## 0.10.1-beta.1
+
+### Patch Changes
+
+- ca86545: Bots on the regular runtime now have the same tools switched off as other bots, skills included.
+
+  Details: TC-3779
+
+## 0.10.1-beta.0
+
+### Patch Changes
+
+- 4309437: The server can save the chat history of bots other than Main and serve their expiry notice, each under that bot's own permission. The app doesn't ask for it until a separate change turns it on.
+
+  Details: TC-3813
+
+## 0.10.0
+
+### Minor Changes
+
+- 11ec789: Before an agent turn starts, the credit check uses that turn's model: the remaining credits must cover one short turn on it (8,000 input and 1,000 output tokens). That is 150 credits on GLM 5.2, 31 on Qwen 3.6 35B and 390 on Kimi K3. A turn the credits can't cover is refused. Each settled turn records its credit cost in the logs, without IDs.
+
+  Details: TC-3734
+
+### Patch Changes
+
+- 0a24337: Main can ask you a question and wait for your answer. It's off until you turn it on in Main's settings.
+- 3cec963: The backend does not fetch or store Fireflies meetings itself. It holds no Fireflies sign-in and keeps no copy of any meeting, and the switch, keys and routes for that path are gone from the code, the deploy files and the example settings. Fireflies meetings sync in the browser, and webhook deliveries wait in the queue for the browser to collect. Production never turned the backend path on, so no stored meeting is affected.
+
+  Details: TC-1964
+
+- ae14910: The Exo wake route takes at most 6000 wakes a minute across all owners, whether or not the owner holds a grant. A wake past that gets the usual answer and is dropped. The backend reuses an owner's opened grant for 30 seconds, so one wake check makes one grant lookup, and a grant that is stored or removed through the backend is forgotten at once.
+
+  Details: TC-3753
+
+- bb8f9ef: Your bots now get instructions written for TinyCloud One instead of a coding assistant's. Main and your other bots each get their own, so only Main points you to its Web access setting. A message one of your bots sends another is marked as not from you, and it can't run a command. Bots also lose tools a chat bot doesn't need.
+
+  Details: TC-3779
+
+- 0b1c2ee: Main can use only the tools and app services on its allow-list. These stay with you in the app: checkout and the billing portal, delegations and agent access, connector sign-in, account deletion, app lock, Main's own Web access setting and secret values.
+
+  Details: TC-3795
+
+- 0849fa2: Calendar auto-join can share a meeting transcript between test accounts listed in `CALENDAR_AUTOJOIN_SHARING_ACCOUNTS`. Sharing is off for every other account. Both accounts must be on the list, and an empty list turns sharing off.
+
+  Details: TC-916
+
 ## 0.10.0-beta.4
 
 ### Minor Changes

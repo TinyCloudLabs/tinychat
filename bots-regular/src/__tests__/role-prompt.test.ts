@@ -15,6 +15,6 @@ test("Main starts with Main's system prompt and a sibling with the sibling's", a
   const main = runtime.bots.forOwner(OWNER);
   const sibling = runtime.bots.forBot(OWNER, SIBLING_KEY);
 
-  expect((await send(main, "probe prompt")).text).toStartWith("system prompt: You are Main, the owner's main bot");
+  expect((await send(main, "probe prompt")).text).toStartWith("system prompt: You are TrustBot, the owner's main bot");
   expect((await send(sibling, "probe prompt")).text).toStartWith("system prompt: You are one of the owner's bots");
 }, 60_000);

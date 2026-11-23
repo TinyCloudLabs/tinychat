@@ -10,7 +10,7 @@ import { createSiweMessage } from "viem/siwe";
 import type { SecretPush } from "../asks";
 import type { Conn, GuardDeps } from "../fetch-guard";
 import { isRecord } from "../guards";
-import { botIdFor } from "../owner";
+import { botIdFor, MAIN_BOT_NAME } from "../owner";
 import { DAILY_CALLS_PER_SECRET } from "../secret-call";
 import { KNOWN_SECRETS, type KnownSecret } from "../secret-catalog";
 import {
@@ -196,7 +196,7 @@ function saved(store: ReturnType<typeof memoryStore>, id: string): Record<string
 }
 
 describe("asking", () => {
-  test("signs one request with a fresh key that is both issuer and audience, for one secret and decrypt, 7 days at most, 1 hour suggested", async () => {
+  test("signs one request with a fresh key that is both issuer and audience, for one secret and decrypt, one hour at most and suggested", async () => {
     const { grants, ok } = setup();
     const result = await grants.ask(BOT, ID, ASK);
     expect(result).toEqual({ approveUrl: "https://openkey.so/a/req1#k", expiresAt: new Date(T0 + LINK_MS).toISOString() });
@@ -204,14 +204,14 @@ describe("asking", () => {
     expect(request.issuer).toBe(request.targetDid);
     expect(request.targetDid).toMatch(/^did:key:z6Mk/);
     expect(request.grantLifetimeSeconds).toBe(MAX_GRANT_SECONDS);
-    expect(MAX_GRANT_SECONDS).toBe(7 * 24 * 3600);
+    expect(MAX_GRANT_SECONDS).toBe(3600);
     expect(request.suggestedLifetimeSeconds).toBe(SUGGESTED_GRANT_SECONDS);
     expect(SUGGESTED_GRANT_SECONDS).toBe(3600);
     expect(request.permissions).toEqual([
       { service: "tinycloud.kv", space: "secrets", path: "vault/secrets/OPENAI_API_KEY", actions: ["tinycloud.kv/get"] },
       { service: "tinycloud.encryption", space: "encryption", path: `urn:tinycloud:encryption:did:pkh:eip155:1:${OWNER_KEY.address}:default/secrets/openai_api_key`, actions: ["tinycloud.encryption/decrypt"] },
     ]);
-    expect(request.reason).toBe("Use OPENAI_API_KEY with OpenAI (api.openai.com). To transcribe a call. Main can also send data to OpenAI with it, which may cost money or change things there.");
+    expect(request.reason).toBe(`Use OPENAI_API_KEY with OpenAI (api.openai.com). To transcribe a call. ${MAIN_BOT_NAME} can also send data to OpenAI with it, which may cost money or change things there.`);
   });
 
   test("names no writes to the owner for a read-only secret", async () => {
@@ -291,6 +291,12 @@ describe("verifiedGrant", () => {
     expect(session).toMatchObject({ address: OWNER_KEY.address, chainId: 1, expiresAt: new Date(T0 + HOUR).toISOString(), jwk });
   });
 
+  // OpenKey signs the issue time when the request is prepared and the expiry when the page renders: a live 1 h grant was 6.9 s over.
+  test("accepts a one-hour grant whose length runs a few seconds over, up to 120 seconds", async () => {
+    await expect(verifiedGrant(await grantFor(request, { lifetimeMs: HOUR + 7_000 }), expected)).resolves.toMatchObject({ address: OWNER_KEY.address });
+    await expect(verifiedGrant(await grantFor(request, { lifetimeMs: HOUR + 120_000 }), expected)).resolves.toMatchObject({ address: OWNER_KEY.address });
+  });
+
   test("refuses a grant that is already over", async () => {
     await expect(verifiedGrant(await grantFor(request), { ...expected, now: T0 + 2 * HOUR })).rejects.toThrow("already over");
   });
@@ -301,7 +307,8 @@ describe("verifiedGrant", () => {
     ["for another account", { address: OTHER_KEY.address, signer: OTHER_KEY }, "names another owner"],
     ["naming another owner", { ownerDid: `did:pkh:eip155:1:${OTHER_KEY.address.toLowerCase()}` }, "names another owner"],
     ["for another key", { audience: "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK" }, "for another key"],
-    ["longer than 7 days", { lifetimeMs: (MAX_GRANT_SECONDS + 3600) * 1000 }, "longer than asked"],
+    ["longer than an hour", { lifetimeMs: (MAX_GRANT_SECONDS + 3600) * 1000 }, "longer than asked"],
+    ["121 seconds over an hour", { lifetimeMs: 3_721_000 }, "longer than asked"],
     ["opening another owner's space", { spaceOwner: OTHER_KEY.address }, "another owner's space"],
     ["naming another owner's resource", { resourceOwner: OTHER_KEY.address }, "another owner's resource"],
   ])("refuses a grant %s", async (_, grant, message) => {

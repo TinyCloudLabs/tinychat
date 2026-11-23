@@ -68,7 +68,7 @@ async function render(api: BotsApi) {
   await act(async () => mounted!.render(<HomeAskBox api={api} />));
   await flush();
 }
-const openChat = () => click(document.querySelector('button[aria-label="Open Main\'s chat"]')!);
+const openChat = () => click(document.querySelector('button[aria-label="Open TrustBot\'s chat"]')!);
 
 test("a card on screen follows Web access: turned on in the chat the same card gets the note, turned off it goes", async () => {
   const { api } = service("off");

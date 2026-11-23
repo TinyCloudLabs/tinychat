@@ -6,6 +6,23 @@ export const BOT_ID = /^[0-9a-f]{64}$/;
 /** How an owner's bots are named: `main`, or the 32 hex characters the backend chose when it created the bot. */
 export const MAIN_KEY = "main";
 export const BOT_KEY = /^[0-9a-f]{32}$/;
+/** The main bot's name as the owner sees it, until the backend sends the name the owner gave it (TC-3790). */
+export const MAIN_BOT_NAME = "TrustBot";
+/** The longest bot name the backend's registry takes. */
+const BOT_NAME_MAX = 24;
+
+/**
+ * The bot's name from a backend message: one line of 1 to 24 characters with no control or line-break character,
+ * trimmed. Anything else is undefined, and the prompt keeps MAIN_BOT_NAME. A name only words the prompt; it is never
+ * a source of trust, which comes from the bot's key.
+ */
+export function botNameFrom(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const name = value.trim();
+  // eslint-disable-next-line no-control-regex
+  if (name.length < 1 || [...name].length > BOT_NAME_MAX || /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/.test(name)) return undefined;
+  return name;
+}
 
 /** A path segment that names a bot: `main` or a sibling key. Checked before any id or path is built from it. */
 export function isBotKey(value: string): boolean {

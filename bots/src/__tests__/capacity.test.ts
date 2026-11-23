@@ -146,7 +146,7 @@ describe("a start past BOTS_MAX_RUNNING", () => {
     expect(body).toContain("event: error");
     expect(JSON.parse(body.split("event: error\ndata: ")[1]!.split("\n")[0]!)).toEqual({
       code: "at_capacity",
-      message: "Main can't start right now because TinyCloud is running as many bots as it can. Your message wasn't sent. Try again shortly.",
+      message: "TrustBot can't start right now because TinyCloud is running as many bots as it can. Your message wasn't sent. Try again shortly.",
     });
 
     await sandboxes[0]!.complete();
@@ -167,6 +167,8 @@ describe("a refused start with history on", () => {
     const manager = new BotManager(launcher, roots, { ...OPTIONS, history }, 1);
     const first = manager.forOwner(OWNER_A);
     const second = manager.forOwner(OWNER_B);
+    void first.historyPermission(OWNER_A, undefined, Date.now() + 3_600_000);
+    void second.historyPermission(OWNER_B, undefined, Date.now() + 3_600_000);
 
     const firstRun = first.send("one", recorder().sink, OWNER_A);
     await sandboxes[0]!.prompted.promise;

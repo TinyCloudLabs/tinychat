@@ -58,6 +58,7 @@ test("activity travels through the stream and survives in the restarted journal 
   const options = { idleMs: 60_000, turnTimeoutMs: 5_000, maxTurnBytes: 1024, history };
   const manager = new BotManager(fakeLauncher(), roots, options, 1);
   const restarted = new BotManager(fakeLauncher(), roots, options, 1);
+  void manager.forOwner(owner).historyPermission(owner, undefined, Date.now() + 3_600_000);
   const url = "http://bots.test/v1/bots/main/messages";
   const headers = { authorization: `Bearer ${secret}`, "x-tinycloud-owner": owner, "content-type": "application/json" };
   try {

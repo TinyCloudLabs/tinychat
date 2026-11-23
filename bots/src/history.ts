@@ -105,6 +105,9 @@ export class HistoryJournal {
   permissionActive(validUntil: number, now = Date.now()) {
     if (!Number.isFinite(validUntil) || validUntil <= now) throw new Error("invalid_permission_expiry");
     if (validUntil < (this.#state.permissionValidUntil ?? 0)) return;
+    // TC-3933: the first grant starts the archive. What the bot held before it was never to be archived, so it must not keep
+    // the journal uncovered for good (and New chat locked): the turns before the first grant are deliberately not saved.
+    if (!this.everGranted) this.#state.legacyPending = false;
     this.#state.permissionValidUntil = validUntil;
     delete this.#state.notice; this.#save();
   }
@@ -123,11 +126,16 @@ export class HistoryJournal {
     return !!notice && notice.deliveredAt !== undefined && notice.deleteAt !== undefined && now >= notice.deleteAt;
   }
   get legacyPending(): boolean { return this.#state.legacyPending; }
+  /**
+   * TC-3933: the owner has granted archiving at least once, so the journal is owed to the archive: a grant is on record,
+   * a receipt was accepted (journals from before permissionValidUntil was kept have none), or one has expired and left its notice. A bot that never had one has no archive to be covered by.
+   */
+  get everGranted(): boolean { return this.#state.permissionValidUntil !== undefined || this.#state.notice !== undefined || this.#state.receipts.length > 0; }
   messages() {
     return this.#state.batches.flatMap(batch => {
       const record = batch.record as { type?: string; text?: string; at?: string; origin?: string; decision?: string; secret?: unknown; outcome?: { messageId?: string } };
       const app = record.type === "user" && record.origin === "app";
-      const decision = app ? APP_DECISIONS.find(known => known === record.decision) : undefined;
+      const decision = app ? ([...APP_DECISIONS, "action_approved", "action_declined"] as const).find(known => known === record.decision) : undefined;
       const secret = decision ? parseSecretLine(record.secret) : undefined;
       return (record.type === "user" || record.type === "assistant") && typeof record.text === "string"
         ? [{ id: record.type === "assistant" && typeof record.outcome?.messageId === "string" ? record.outcome.messageId : `history-${batch.generation}-${batch.seq}`, role: record.type === "user" ? "user" as const : "bot" as const, text: record.text, at: record.at ?? "",
@@ -144,14 +152,29 @@ export class HistoryJournal {
     const batch = this.#state.batches[this.#state.receipts.length];
     if (!batch || staged.seq !== batch.seq || staged.challenge !== batch.challenge || staged.batchHash !== hash(JSON.stringify(batch))) throw new Error("history_stage_mismatch");
     if (Buffer.byteLength(JSON.stringify(this.#state)) + Buffer.byteLength(JSON.stringify(staged)) > MAX_JOURNAL_BYTES) throw new Error("history_full");
-    if (this.#state.staged && JSON.stringify(this.#state.staged) !== JSON.stringify(staged)) throw new Error("history_stage_conflict");
+    const previous = this.#state.staged;
+    // The backend only requests a replacement while the old ciphertext is absent from KV.
+    // Allow the rollout transition or a newer version of the same named key.
+    if (previous && JSON.stringify(previous) !== JSON.stringify(staged)) {
+      const from = previous.envelope;
+      const to = staged.envelope;
+      if (!isRecord(from) || !isRecord(to) || to.v !== 2 || typeof to.keyPath !== "string" ||
+          to.networkId !== from.networkId || to.aad !== from.aad ||
+          typeof to.keyVersion !== "number" || !Number.isSafeInteger(to.keyVersion) || to.keyVersion < 1) {
+        throw new Error("history_stage_conflict");
+      }
+      const legacy = from.v === 1 && from.keyPath === undefined;
+      const rotated = from.v === 2 && from.keyPath === to.keyPath && typeof from.keyVersion === "number" &&
+        Number.isSafeInteger(from.keyVersion) && from.keyVersion > 0 && to.keyVersion > from.keyVersion;
+      if (!legacy && !rotated) throw new Error("history_stage_conflict");
+    }
     this.#state.staged = staged; this.#save();
   }
   pending(): (JournalBatch & { staged?: StagedHistory }) | undefined {
     const batch = this.#state.batches[this.#state.receipts.length];
     return batch ? { ...batch, ...(this.#state.staged?.seq === batch.seq ? { staged: this.#state.staged } : {}) } : undefined;
   }
-  get covered(): boolean { return !this.#state.draft && !this.#state.legacyPending && this.#state.batches.length > 0 && this.#state.receipts.length === this.#state.batches.length; }
+  get covered(): boolean { return !this.#state.draft && !this.#state.legacyPending && this.#state.receipts.length === this.#state.batches.length; }
   async verifyCoverage(): Promise<boolean> {
     if (!this.covered) return false;
     for (let i = 0; i < this.#state.receipts.length; i++) await this.#verify(this.#state.receipts[i], this.#state.batches[i]);
