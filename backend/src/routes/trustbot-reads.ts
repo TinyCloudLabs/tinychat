@@ -17,7 +17,7 @@ import { compactLegacyMeetingResult } from "../transcripts/legacy-meeting-projec
 import { parseMeetingToolData } from "../transcripts/meeting-evidence.js";
 import { isReadArea, READ_AREA_NAMES } from "../trustbot-reads/areas.js";
 import { ReadGrantInvalid, ReadGrantRefused, type ReadStatus, type TrustBotReadGrants } from "../trustbot-reads/grants.js";
-import { delegatedFeedChatSql, FEED_CHAT_FIRST_DATABASE, FeedChatReadError, isFeedChatTool, runFeedChatTool } from "../trustbot-reads/feed-chat.js";
+import { delegatedFeedChatSql, FEED_CHAT_FIRST_DATABASE, FeedChatReadError, isFeedChatTool, listChats, readChat, runFeedChatTool } from "../trustbot-reads/feed-chat.js";
 import { delegatedMeetingPort } from "../trustbot-reads/meeting-port.js";
 import { botOwnerDid, botsServiceHeaders, type BotsConfig } from "./bots.js";
 
@@ -79,6 +79,22 @@ export function createTrustBotReadsRouter({ grants, config, auth }: Pick<TrustBo
     try {
       res.json({ serviceDid: grants.serviceDid, ...await grants.renewalStatus(req.user!.address) });
     } catch {
+      res.status(503).json({ error: "reads_unavailable" });
+    }
+  });
+  router.get("/chats/denied", async (req, res) => {
+    try {
+      res.json({ deniedChatIds: [...await grants.deniedChatIds(req.user!.address)] });
+    } catch {
+      res.status(503).json({ error: "reads_unavailable" });
+    }
+  });
+  router.put("/chats/:chat", express.json({ limit: "1kb" }), async (req, res) => {
+    if (typeof req.body?.denied !== "boolean") { res.status(400).json({ error: "invalid_reads" }); return; }
+    try {
+      res.json({ deniedChatIds: [...await grants.setChatDenied(req.user!.address, req.params.chat, req.body.denied)] });
+    } catch (error) {
+      if (error instanceof ReadGrantInvalid) { res.status(400).json({ error: "invalid_reads" }); return; }
       res.status(503).json({ error: "reads_unavailable" });
     }
   });
@@ -144,6 +160,15 @@ export function createTrustBotReadsInternalRouter({ grants, config, callSecret }
     if (!claims || claims.bot !== "main") { res.status(401).end(); return; }
     const address = claims.owner.slice(claims.owner.lastIndexOf(":") + 1);
     if (!config.accountAllowed(address)) { res.status(404).end(); return; }
+    if (req.params.tool === "read_status") {
+      try {
+        const status = await grants.readStatus(address);
+        res.json({ enabledReadAreas: READ_AREA_NAMES.filter(area => status.areas[area] === "on"), deniedChatIds: [...status.deniedChatIds] });
+      } catch {
+        res.status(503).json({ error: "reads_unavailable" });
+      }
+      return;
+    }
     const feedChat = isFeedChatTool(req.params.tool) ? req.params.tool : undefined;
     const tool = feedChat ?? TRUSTBOT_MEETING_TOOLS.find(name => name === req.params.tool);
     if (!tool) { res.status(404).end(); return; }
@@ -162,7 +187,20 @@ export function createTrustBotReadsInternalRouter({ grants, config, callSecret }
       // Each query activates only the resource its database sits under (feed-chat.ts feedChatResource).
       try {
         const sql = delegatedFeedChatSql(resource => grants.access(address, "feed_chats", resource));
-        answer(200, { ok: true, text: await runFeedChatTool(feedChat, args as Record<string, unknown>, sql) });
+        if (feedChat === "list_chats" || feedChat === "read_chat") {
+          const denied = await grants.deniedChatIds(address);
+          const result = feedChat === "list_chats"
+            ? await listChats(sql, args as Record<string, unknown>, denied)
+            : await readChat(sql, args as Record<string, unknown>, denied);
+          // Reload immediately before serialization: a denial committed during SQL must discard the result.
+          const latest = await grants.deniedChatIds(address);
+          if ("chats" in result ? result.chats.some(chat => latest.has(chat.chat)) : latest.has(result.chat)) {
+            throw new FeedChatReadError("not_found");
+          }
+          answer(200, { ok: true, text: JSON.stringify(result) });
+        } else {
+          answer(200, { ok: true, text: await runFeedChatTool(feedChat, args as Record<string, unknown>, sql) });
+        }
       } catch (error) {
         if (error instanceof ReadGrantRefused) { answer(200, refusal(error)); return; }
         if (!(error instanceof FeedChatReadError)) { answer(200, { ok: false, error: "unavailable" }); return; }

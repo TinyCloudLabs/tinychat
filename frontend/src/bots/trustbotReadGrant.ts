@@ -6,6 +6,7 @@ import { BOT_GRANT_MAX_LIFETIME_MS, botGrantLifetime } from "./botGrantLifetime"
 
 import { BotsError, BotsRouteMissing } from "./botsApi";
 import { READ_AREAS, readAreaPermissions, type ReadArea } from "./trustbotReadAreas";
+import type { ChatReadAccessApi } from "./chatReadAccessApi";
 
 export type ReadAreaState = "off" | "on" | "ended";
 
@@ -25,6 +26,8 @@ export interface ReadAreaApi {
   signReadGrant(serviceDid: string, areas: ReadArea[]): Promise<ReadGrant>;
   /** Revokes a grant the owner signed, at the node; throws when the node does not confirm it. */
   revokeReadGrant(cid: string): Promise<void>;
+  /** Per-chat controls supplied by the owner's settings surface. */
+  chatReadAccess?: ChatReadAccessApi;
 }
 
 export interface ReadGrant {

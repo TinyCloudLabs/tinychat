@@ -197,6 +197,24 @@ the gateway applies it on every call. A missing or unreadable file reads as `off
 - Daily budgets per bot and for all bots, and the call timeout, are set with the `BOTS_WEB_*` variables below.
 - The log and the saved counts hold counts by tool and outcome only.
 
+### Per-chat read settings
+
+The backend keeps `deniedChatIds` in the owner's sealed `trustbot/read-grants/<address>` record, alongside the read
+areas. Denials survive grant replacement and turning every area off. New chats are readable only when their area is on.
+The owner changes individual chats under Feed and chats; switching a chat off adds its exact id to the deny list.
+
+Every backend `list_chats` call excludes denied ids before title matching and limits. `read_chat` returns `not_found`
+before querying a denied chat. This applies to all TrustBot read entry points, not just Courier. A failed settings
+lookup refuses the read rather than treating it as an empty deny list. The route reloads the settings after the chat
+query and before serializing; a chat denied meanwhile is answered `not_found` and its text is dropped. `read_status`
+loads areas and denials from one record read; a missing record means all areas off and an empty deny list.
+
+`bots/src/courier/denied-chats.ts` exports `readStatus(owner)`, `enabledReadAreas(owner)` and `deniedChatIds(owner)`.
+They send signed `POST /api/internal/bots/main/reads/read_status` requests and receive plain HTTPS JSON:
+`{ enabledReadAreas, deniedChatIds }`. The backend returns only areas whose grants are on and unexpired. These helpers
+do not cache; a lookup failure throws so Courier can leave reads off. Feed cards have no chat provenance and can quote
+chat text; per-chat denial covers chat-source reads, while the Feed and chats area switch controls card reads.
+
 ### Questions from Main
 
 Main can ask its owner one short question and carry on; the answer comes back later as a new message. It ships off:
