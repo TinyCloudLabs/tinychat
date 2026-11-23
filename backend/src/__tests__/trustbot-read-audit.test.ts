@@ -211,3 +211,17 @@ test("with standing reads off the finite read path requires no audit writes", as
     expect(events).toEqual(["access", "access", "query", "query"]);
   }, undefined, false);
 });
+
+test("gateway refusal reports share one daily budget per authenticated Main owner", async () => {
+  await withRoute(async ({ post, events }) => {
+    const report = { owner, area: "meetings", tool, outcome: "off" };
+    for (let count = 0; count < 200; count++) {
+      expect((await post("audit/refusal", { ...report, outcome: count % 2 ? "budget" : "off" })).status).toBe(204);
+    }
+    expect((await post("audit/refusal", { ...report, outcome: "busy" })).status).toBe(429);
+    expect(events).toHaveLength(400);
+    expect((await post("audit/refusal", { ...report, owner: other }, { owner: other })).status).toBe(404);
+    expect(events.slice(-2)).toEqual(["pending", "not_owner"]);
+    expect(await (await post(tool, { args: { limit: 3 } })).json()).toMatchObject({ ok: true });
+  });
+}, 15_000);

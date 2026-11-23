@@ -206,7 +206,10 @@ test("collects one owner-approved scope, stores metadata before acknowledging an
   expect(persisted).not.toContain(sent.resultEncryptionPublicJwk.x);
 
   stopped = true;
-  clock += 3_600_000;
+  clock += 5 * 60_000 - 1;
+  await controller.sweep();
+  expect(state.active?.grant.originalCid).toBe(nodeGrantCid);
+  clock++;
   await controller.sweep();
   expect(state.generation).toBe(2);
   expect(await controller.current(ownerAccount.address)).toBeUndefined();

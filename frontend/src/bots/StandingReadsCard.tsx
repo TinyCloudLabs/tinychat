@@ -56,11 +56,10 @@ export default function StandingReadsCard({ settings, revoke }: {
     return () => { current = false; };
   }, [previous, revoke]);
 
-  if (!saved || (!saved.areas.length && !saved.active && !pending && !saved.previousOriginalCid)) return null;
-
-  const active = saved.active;
-  const covered = (active?.areas ?? saved.areas).map(area => labels[area]).join(" and ");
-  const scopeChanged = active && (saved.areas.length !== active.areas.length || saved.areas.some(area => !active.areas.includes(area)));
+  const areas = saved?.areas ?? [];
+  const active = saved?.active;
+  const covered = (active?.areas ?? areas).map(area => labels[area]).join(" and ");
+  const scopeChanged = active && (areas.length !== active.areas.length || areas.some(area => !active.areas.includes(area)));
   const update = async (work: () => Promise<StandingReadsView | null>) => {
     setBusy(true);
     setFailed(false);
@@ -71,45 +70,47 @@ export default function StandingReadsCard({ settings, revoke }: {
 
   return (
     <>
-      <section aria-labelledby={id} className="flex flex-col gap-2">
-        <h2 id={id} className="text-headline">Keep bot reads on while you’re away</h2>
-        <p className="text-callout text-muted-foreground">
-          {active
-            ? active.validUntil === null
-              ? `Checking renewal for your ${covered}.`
-              : `Your bot can read your ${covered} through ${dateOf(active.validUntil)}. Access renews while your approval is active.`
-            : `Let your bot keep reading your ${covered} for up to 90 days, even with TinyChat closed.`}
-        </p>
-        {pending ? (
-          <>
-            <p className="text-callout text-muted-foreground">OpenKey shows what your bot can read. If you use an external wallet, it asks you to sign twice.</p>
-            <a className="text-callout underline" href={pending.approveUrl} target="_blank" rel="noopener noreferrer">Review in OpenKey</a>
-          </>
-        ) : null}
-        {active ? <a className="text-callout underline" href={openKeySettings} target="_blank" rel="noopener noreferrer">Manage renewal in OpenKey Settings</a> : null}
-        <div className="flex flex-wrap gap-2">
-          {!pending && (!active || scopeChanged) && saved.areas.length > 0
-            ? <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => void update(() => standingReadsView("POST"))}>Set up renewal</Button>
-            : null}
-          {failed && previous ? (
-            <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => void update(async () => {
-              await stopStandingReads(previous, revoke);
-              return standingReadsView();
-            })}>Retry removing old permission</Button>
+      {saved && (areas.length > 0 || active || pending || previous) ? (
+        <section aria-labelledby={id} className="flex flex-col gap-2">
+          <h2 id={id} className="text-headline">Keep bot reads on while you’re away</h2>
+          <p className="text-callout text-muted-foreground">
+            {active
+              ? active.validUntil === null
+                ? `Checking renewal for your ${covered}.`
+                : `Your bot can read your ${covered} through ${dateOf(active.validUntil)}. Access renews while your approval is active.`
+              : `Let your bot keep reading your ${covered} for up to 90 days, even with TinyChat closed.`}
+          </p>
+          {pending ? (
+            <>
+              <p className="text-callout text-muted-foreground">OpenKey shows what your bot can read. If you use an external wallet, it asks you to sign twice.</p>
+              <a className="text-callout underline" href={pending.approveUrl} target="_blank" rel="noopener noreferrer">Review in OpenKey</a>
+            </>
           ) : null}
-          {active ? (
-            <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => void update(async () => {
-              if (saved.previousOriginalCid) await stopStandingReads(saved.previousOriginalCid, revoke);
-              await stopStandingReads(active.originalCid, revoke);
-              return standingReadsView();
-            })}>Turn off standing access</Button>
-          ) : null}
-        </div>
-        {failed || saved.outcome === "failed" ? <p role="alert" className="text-callout">Couldn’t update bot reads. Try again.</p> : null}
-        {saved.outcome === "declined" ? <p role="status" className="text-callout">Renewal wasn’t approved.</p> : null}
-        {saved.outcome === "expired" ? <p role="status" className="text-callout">The approval ended.</p> : null}
-      </section>
-      {active ? <ReadSummaryCard key={active.originalCid} /> : null}
+          {active ? <a className="text-callout underline" href={openKeySettings} target="_blank" rel="noopener noreferrer">Manage renewal in OpenKey Settings</a> : null}
+          <div className="flex flex-wrap gap-2">
+            {!pending && (!active || scopeChanged) && areas.length > 0
+              ? <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => void update(() => standingReadsView("POST"))}>Set up renewal</Button>
+              : null}
+            {failed && previous ? (
+              <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => void update(async () => {
+                await stopStandingReads(previous, revoke);
+                return standingReadsView();
+              })}>Retry removing old permission</Button>
+            ) : null}
+            {active ? (
+              <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => void update(async () => {
+                if (saved.previousOriginalCid) await stopStandingReads(saved.previousOriginalCid, revoke);
+                await stopStandingReads(active.originalCid, revoke);
+                return standingReadsView();
+              })}>Turn off standing access</Button>
+            ) : null}
+          </div>
+          {failed || saved.outcome === "failed" ? <p role="alert" className="text-callout">Couldn’t update bot reads. Try again.</p> : null}
+          {saved.outcome === "declined" ? <p role="status" className="text-callout">Renewal wasn’t approved.</p> : null}
+          {saved.outcome === "expired" ? <p role="status" className="text-callout">The approval ended.</p> : null}
+        </section>
+      ) : null}
+      <ReadSummaryCard />
     </>
   );
 }

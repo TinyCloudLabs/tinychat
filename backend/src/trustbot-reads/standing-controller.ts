@@ -12,7 +12,7 @@ import { finishStandingReadStop, StandingReadOwnerMismatch, type CollectedStandi
 import type { HolderScope, StandingApprovalKeys } from "./standing-holder.js";
 import type { OwnerDid, StandingHolder } from "./standing-types.js";
 
-const HOUR_MS = 3_600_000;
+const LEASE_STATUS_TTL_MS = 5 * 60_000;
 
 interface Approval {
   scope: HolderScope;
@@ -166,7 +166,7 @@ export class StandingReadsController implements StandingReadControl {
           if (state.pending) await this.#refresh(owner, await this.deps.enabledAreas(addr(owner)));
           if (state.active) {
             const prior = this.#leaseChecks.get(state.active.grant.originalCid);
-            if (!prior || this.#now() - prior.at >= HOUR_MS) await this.#activeEnd(owner, state.active);
+            if (!prior || this.#now() - prior.at >= LEASE_STATUS_TTL_MS) await this.#activeEnd(owner, state.active);
           }
           if (state.previous && state.previous.grant.leaseEnd <= this.#seconds()) await this.drop(addr(owner), state.previous.grant.originalCid);
         } catch { /* A failed owner is retried independently on the next pass. */ }
@@ -275,7 +275,7 @@ export class StandingReadsController implements StandingReadControl {
   #leaseState(holder: StandingHolder, link: StandingApprovalLink, grant: StandingReadGrant, stamped: boolean): Promise<LeaseState> {
     const prior = this.#leaseChecks.get(grant.originalCid);
     const at = this.#now();
-    if (prior && at - prior.at < HOUR_MS && (prior.stamped || !stamped)) return prior.result;
+    if (prior && at - prior.at < LEASE_STATUS_TTL_MS && (prior.stamped || !stamped)) return prior.result;
     const result = this.#openKey.leaseState(holder, link, grant.originalCid, grant.leaseEnd);
     this.#leaseChecks.set(grant.originalCid, { at, stamped: prior?.stamped === true || stamped, result });
     return result;

@@ -42,6 +42,7 @@ for (const theme of ["light", "dark"]) {
           localStorage.setItem("xyz.tinycloud.tinychat:session", JSON.stringify({ token: "fixture", expiresAt: Date.now() + 3_600_000, address }));
         }, { address });
         let active = true;
+        let expired = false;
         let empty = false;
         let summaryCalls = 0;
         const areas = ["meetings", "feed_chats"];
@@ -57,7 +58,7 @@ for (const theme of ["light", "dark"]) {
           } else if (path === `${readPath}/standing`) {
             await route.fulfill({ json: {
               areas, active: active ? { originalCid: cid, areas, validUntil: Date.now() + 3_600_000 } : null,
-              pending: null, previousOriginalCid: null, outcome: null,
+              pending: null, previousOriginalCid: null, outcome: expired ? "expired" : null,
             } });
           } else if (path === `${readPath}/standing/summary`) {
             expect(request.method()).toBe("GET");
@@ -65,6 +66,7 @@ for (const theme of ["light", "dark"]) {
             await route.fulfill({ json: empty ? { ...summary, days: [], total: 0 } : summary });
           } else if (path === `${readPath}/standing/${cid}` && request.method() === "DELETE") {
             active = false;
+            areas.length = 0;
             await route.fulfill({ status: 204 });
           } else {
             await route.fulfill({ status: 404 });
@@ -104,12 +106,20 @@ for (const theme of ["light", "dark"]) {
         empty = true;
         await page.evaluate(() => window.dispatchEvent(new Event("focus")));
         await card.getByText("No reads in the last 7 days.").waitFor();
-        const callsWhenActive = summaryCalls;
-        await page.getByRole("button", { name: "Turn off standing access" }).click();
-        await card.waitFor({ state: "hidden" });
+        const stop = page.getByRole("button", { name: "Turn off standing access" });
+        if (size === "desktop") {
+          await stop.click();
+        } else {
+          active = false;
+          expired = true;
+          areas.length = 0;
+          await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+        }
+        await stop.waitFor({ state: "hidden" });
+        expect(await card.isVisible()).toBe(true);
+        empty = false;
         await page.evaluate(() => window.dispatchEvent(new Event("focus")));
-        await page.getByRole("button", { name: "Set up renewal" }).waitFor();
-        expect(summaryCalls).toBe(callsWhenActive);
+        await card.getByText("3 allowed · 1 refused").waitFor();
       } finally {
         await page.close();
       }

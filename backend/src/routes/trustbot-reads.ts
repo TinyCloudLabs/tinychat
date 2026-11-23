@@ -28,6 +28,7 @@ export const TRUSTBOT_READS_INTERNAL_PREFIX = "/api/internal/bots/main/reads";
 export const TRUSTBOT_READS_BODY_LIMIT = 16 * 1024;
 /** Selection state for follow-ups ("read it") is kept per owner under this room; it holds a reference, never text. */
 const TRUSTBOT_ROOM = "trustbot-main";
+const MAX_REFUSAL_REPORTS_PER_OWNER_PER_DAY = 200;
 /** Reader failures that mean the node refused the grant. */
 const GRANT_ENDED = new Set(["delegation_expired"]);
 const GRANT_REFUSED = new Set(["delegation_revoked", "delegation_required", "access_denied"]);
@@ -209,6 +210,9 @@ export function createTrustBotReadsInternalRouter(
 ) {
   const router = Router();
   const nonces = new NonceGuard();
+  // Only Main can report refusals, so the signed owner is also the bot's budget key.
+  const refusalReports = new Map<string, number>();
+  let refusalDay = "";
   const bytesOf = (req: Request): Buffer => Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
   const verify = (req: Request) => verifyCall(req.headers.authorization, { method: req.method, path: req.originalUrl, body: bytesOf(req) }, {
     secret: callSecret, direction: "to-backend", environment: config.environment ?? "private", nonces,
@@ -230,7 +234,16 @@ export function createTrustBotReadsInternalRouter(
     const allowed = config.accountAllowed(claims.owner.slice(claims.owner.lastIndexOf(":") + 1));
     try {
       if (audit) {
-        const id = await audit.begin({ at: new Date().toISOString(), owner: claims.owner, area: expectedArea, tool });
+        const at = new Date().toISOString();
+        const day = at.slice(0, 10);
+        if (day !== refusalDay) {
+          refusalReports.clear();
+          refusalDay = day;
+        }
+        const reports = refusalReports.get(claims.owner) ?? 0;
+        if (reports >= MAX_REFUSAL_REPORTS_PER_OWNER_PER_DAY) { res.status(429).end(); return; }
+        refusalReports.set(claims.owner, reports + 1);
+        const id = await audit.begin({ at, owner: claims.owner, area: expectedArea, tool });
         await audit.settle(id, allowed ? outcome : "not_owner");
       }
       res.status(allowed ? 204 : 404).end();
