@@ -91,6 +91,8 @@ export interface MainChatProps {
   webAccess?: WebAccessApi;
   /** When given, the sheet offers Main's read settings: Meetings, and Feed and chats. */
   meetings?: MeetingsAccessApi;
+  /** When true, the sheet offers Courier setup for the signed-in owner; it stays hidden while Courier is off. */
+  courier?: boolean;
   /** When given, the sheet shows Main's questions as cards and offers the setting for them. */
   asks?: Asks;
   /** When given, the sheet offers the owner's "Start a new chat". */
@@ -119,7 +121,7 @@ export function WebAccessToggle({ api }: { api: WebAccessApi }) {
   );
 }
 
-export function MainChat({ open, onOpenChange, state, onSend, onRetry, onRetryHistory, notice, onReconnect, webAccess, meetings, asks, newChat }: MainChatProps) {
+export function MainChat({ open, onOpenChange, state, onSend, onRetry, onRetryHistory, notice, onReconnect, webAccess, meetings, courier, asks, newChat }: MainChatProps) {
   const { lines, history, turn } = state;
   const working = isWorking(turn);
   const sdkPromptOpen = useSdkPromptOpen();
@@ -168,7 +170,7 @@ export function MainChat({ open, onOpenChange, state, onSend, onRetry, onRetryHi
           {open && meetings ? <MeetingsAccess api={meetings} /> : null}
           {open && meetings ? <FeedChatsAccess api={meetings} /> : null}
           {open && meetings ? <TelegramAccess api={meetings} /> : null}
-          {open ? <CourierSetup /> : null}
+          {open && courier ? <CourierSetup /> : null}
           {open && asks ? <AsksToggle asks={asks} /> : null}
           {open && newChat ? <NewChat api={newChat} /> : null}
           {open && notice && onReconnect ? <ExpiryNotice key={`${notice.id}:${notice.deliveredAt ?? notice.renderAttemptAt ?? "initial"}`} notice={notice} onReconnect={onReconnect} /> : null}

@@ -1,5 +1,4 @@
 ---
-"@tinychat/bots": minor
 "@tinychat/backend": minor
 "@tinychat/frontend": minor
 ---

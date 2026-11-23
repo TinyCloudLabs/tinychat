@@ -156,6 +156,7 @@ function MainAsk({ api, tcw, onReconnect }: { api: BotsApi; tcw?: TinyCloudWeb; 
         onReconnect={onReconnect}
         webAccess={webAccess}
         meetings={meetings}
+        courier={Boolean(tcw)}
         asks={asks}
         newChat={newChat}
       />
