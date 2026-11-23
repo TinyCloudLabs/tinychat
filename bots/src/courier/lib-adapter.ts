@@ -50,6 +50,7 @@ interface LibraryApi {
   listInbound(ctx: LibraryContext, peer: CourierPeerReference): Promise<CourierInbound[]>;
   acknowledgeInbound(ctx: LibraryContext, peer: CourierPeerReference, ids: CourierReceipt[]): Promise<void>;
   sendMessage(ctx: LibraryContext, peer: CourierPeerReference, threadId: string, text: string, reply: CourierReply): Promise<{ messageId: string }>;
+  peerReference(record: unknown): CourierPeerReference;
 }
 
 export class CourierUpdateRequired extends Error {
@@ -60,10 +61,23 @@ export class RenewalUnavailable extends Error {
   readonly code = "renewal_unavailable";
   constructor() { super("renewal_unavailable"); }
 }
+/** An earlier attempt's grant was prepared but its activation is unconfirmed: unpair this reference, then accept again. */
+export class CourierPairingPending extends Error {
+  readonly code = "pair_pending";
+  constructor(readonly reference: CourierPeerReference) { super("pair_pending"); }
+}
+/** Revocation or cleanup is incomplete: keep the record and retry unpair with the same reference. */
+export class CourierUnpairPending extends Error {
+  readonly code = "unpair_pending";
+  constructor() { super("unpair_pending"); }
+}
 
-/** The library's own refusal of pre-challenge artifacts uses a hyphenated code; downstream sees one spelling. */
+/** The library's hyphenated codes reach callers as one typed spelling. */
 export function normalizeCourierError(error: unknown): unknown {
-  return isRecord(error) && error.code === "courier-update-required" ? new CourierUpdateRequired() : error;
+  if (!isRecord(error)) return error;
+  if (error.code === "courier-update-required") return new CourierUpdateRequired();
+  if (error.code === "unpair-pending") return new CourierUnpairPending();
+  return error;
 }
 
 /** beta.17 is development-only: missing headless exports refuse, never fall back to unsigned pairing or CLI state. */
@@ -71,13 +85,18 @@ function library<K extends keyof LibraryApi>(name: K): LibraryApi[K] {
   // Pinned beta lacks these exports, so a named import cannot link; detect on the namespace at call time.
   const value: unknown = (courier as Record<string, unknown>)[name];
   if (typeof value !== "function") throw new CourierUpdateRequired();
-  const call = async (...args: unknown[]) => {
-    try { return await value(...args); } catch (error) { throw normalizeCourierError(error); }
+  const call = (...args: unknown[]) => {
+    try {
+      const result: unknown = value(...args);
+      return result instanceof Promise ? result.catch(error => { throw normalizeCourierError(error); }) : result;
+    } catch (error) {
+      throw normalizeCourierError(error);
+    }
   };
   return call as LibraryApi[K];
 }
 
-const HEADLESS: (keyof LibraryApi)[] = ["acceptPairing", "finalizePairing", "unpair", "listInbound", "acknowledgeInbound", "sendMessage"];
+const HEADLESS: (keyof LibraryApi)[] = ["acceptPairing", "finalizePairing", "unpair", "listInbound", "acknowledgeInbound", "sendMessage", "peerReference"];
 
 /** Production entry: refuses on a library without the headless API before restoring any grant session. */
 export async function courierContext(owner: string, grant: CourierGrant, store: CourierLibraryStore): Promise<CourierContext> {
@@ -115,21 +134,43 @@ function reference(peer: Pick<PairedPeer, "handle" | "peerDid" | "delegation">):
   return { handle: peer.handle, peerDid: peer.peerDid, pairingId: ref.pairingId };
 }
 
-async function record(ctx: LibraryContext, ref: CourierPeerReference) {
+/** The library's reference for a stored, opaque peer record. */
+export function peerReference(record: unknown): CourierPeerReference {
+  return library("peerReference")(record);
+}
+
+async function stored(ctx: LibraryContext, handle: string) {
   const scope: Record<string, string> = { ownerDid: ctx.ownerDid, courierDid: ctx.courierDid, host: ctx.host, spaceId: ctx.node.restorableSession!.spaceId };
   return ctx.store.transaction(scope as unknown as CourierLibraryScope, async tx => {
-    const value = await tx.get(ref.handle);
-    const stored = isRecord(value) && isRecord(value.scope) ? value.scope : undefined;
-    if (!isRecord(value) || value.pairingId !== ref.pairingId || !stored
-      || Object.entries(scope).some(([key, field]) => stored[key] !== field)
-      || !isRecord(value.peer) || value.peer.handle !== ref.handle || value.peer.courierDid !== ref.peerDid) throw new Error("Courier stored pairing mismatch");
-    return value;
+    const value = await tx.get(handle);
+    const own = isRecord(value) && isRecord(value.scope) ? value.scope : undefined;
+    if (!isRecord(value) || !own || Object.entries(scope).some(([key, field]) => own[key] !== field)) throw new Error("Courier stored pairing mismatch");
+    const ref = peerReference(value);
+    if (ref.handle !== handle) throw new Error("Courier stored pairing mismatch");
+    return { value, ref };
   });
+}
+
+async function record(ctx: LibraryContext, ref: CourierPeerReference) {
+  const found = await stored(ctx, ref.handle);
+  if (found.ref.peerDid !== ref.peerDid || found.ref.pairingId !== ref.pairingId) throw new Error("Courier stored pairing mismatch");
+  return found;
 }
 
 export async function acceptPairing(ctx: CourierContext, artifactA: string): Promise<PairPending> {
   const accept = library("acceptPairing");
-  const pending = await accept(context(ctx), artifactA);
+  const value = context(ctx);
+  let pending: LibraryPending;
+  try {
+    pending = await accept(value, artifactA);
+  } catch (error) {
+    if (!isRecord(error) || error.code !== "pair-pending") throw error;
+    // The library refuses this only after validating A and finding our own stored attempt at A's callMe handle.
+    const art: unknown = JSON.parse(artifactA);
+    const found = isRecord(art) && typeof art.callMe === "string" ? await stored(value, art.callMe) : undefined;
+    if (!found || !isRecord(art) || !isRecord(art.from) || found.ref.peerDid !== art.from.courier) throw error;
+    throw new CourierPairingPending(found.ref);
+  }
   // The library bounds expiry to 15 minutes from creation and the signed B expiry; never extend it here.
   if (!(pending.expiresAt > Date.now() && pending.expiresAt <= pending.createdAt + 15 * 60_000)) throw new Error("invalid Courier pending pairing");
   return { handle: pending.handle, peerDid: pending.peerDid, pairingId: pending.pairingId, artifactB: pending.artifactB, createdAt: pending.createdAt, expiresAt: pending.expiresAt };
@@ -140,10 +181,12 @@ export async function finalizePairing(ctx: CourierContext, pending: PairPending,
   const finalize = library("finalizePairing");
   const value = context(ctx);
   const ref = { handle: pending.handle, peerDid: pending.peerDid, pairingId: pending.pairingId };
-  const paired = await finalize(value, ref, artifactC);
-  const saved = await record(value, paired);
-  const peer = saved.peer as Record<string, unknown>;
-  if (!isRecord(peer.inbound) || peer.inbound.cid !== paired.delegationCid || typeof peer.inbound.delegation !== "string"
+  const paired = await finalize(value, ref, artifactC).catch(error => {
+    throw isRecord(error) && error.code === "pair-pending" ? new CourierPairingPending(ref) : error;
+  });
+  const { value: saved, ref: savedRef } = await record(value, paired);
+  const peer = saved.peer;
+  if (!isRecord(peer) || !isRecord(peer.inbound) || peer.inbound.cid !== paired.delegationCid || typeof peer.inbound.delegation !== "string"
     || paired.delegationExpiresAt <= Date.now() || paired.delegationExpiresAt - Date.now() > 7 * 86_400_000) throw new Error("invalid verified Courier peer");
   const proof: PairedPeer["proof"] = { cid: paired.delegationCid };
   const parts = deserializeDelegation(peer.inbound.delegation).delegationHeader.Authorization.replace(/^Bearer\s+/i, "").split(".");
@@ -156,7 +199,7 @@ export async function finalizePairing(ctx: CourierContext, pending: PairPending,
   }
   return {
     handle: paired.handle, peerDid: paired.peerDid, delegationExpiresAt: paired.delegationExpiresAt, proof,
-    delegation: { ref: { handle: paired.handle, peerDid: paired.peerDid, pairingId: paired.pairingId }, record: saved },
+    delegation: { ref: savedRef, record: saved },
   };
 }
 
