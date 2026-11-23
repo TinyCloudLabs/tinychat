@@ -14,7 +14,6 @@ export const APP_NAMES: Readonly<Record<OneAppId, string>> = {
   "xyz.tinycloud.courier": "Courier",
   "xyz.tinycloud.rocinante.ledger": "Ship ledger",
   "xyz.tinycloud.share": "Share",
-  "xyz.tinycloud.contacts": "Contacts",
 };
 
 export const APP_DESCRIPTIONS: Readonly<Record<Exclude<OneAppId, LinkAppId>, string>> = {
@@ -152,7 +151,6 @@ export const APP_CAPTIONS: Readonly<Record<GlyphId, string>> = {
   courier: "Messages with agents",
   ledger: "Where every task stands",
   share: "Share files by link",
-  contacts: "People you know",
   connectors: "Bring in your meetings",
 };
 
