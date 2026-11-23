@@ -3,6 +3,7 @@
 // differ from every other identity owners delegate to, so no other grant can be used for TrustBot's reads.
 // Details: TC-3792
 import { assertKvResult, createBackendIdentity, isKvMissingKeyResult, withSessionRefresh } from "@tinyboilerplate/server";
+import { hkdfSync } from "node:crypto";
 import type { TinyCloudNode } from "@tinycloud/node-sdk";
 import { isKvPreconditionFailed } from "../exo/activated-grant.js";
 import { TrustBotReadGrants, type ReadGrantStore } from "./grants.js";
@@ -72,7 +73,7 @@ export async function startTrustBotReads(settings: TrustBotReadsEnv, options: {
   backendDid: string;
   host: string;
   otherDelegateDids: ReadonlyArray<string | undefined>;
-}): Promise<TrustBotReadGrants | undefined> {
+}): Promise<(TrustBotReadGrants & { telegram: TrustBotReadGrants }) | undefined> {
   let reader: TinyCloudNode;
   try {
     ({ node: reader } = await createBackendIdentity({ privateKey: settings.privateKey, host: options.host, prefix: READER_PREFIX, autoCreateSpace: false }));
@@ -86,5 +87,15 @@ export async function startTrustBotReads(settings: TrustBotReadsEnv, options: {
     return undefined;
   }
   const sealSecret = Buffer.from(settings.privateKey.slice(2), "hex");
-  return new TrustBotReadGrants({ reader, store: backendGrantStore(options.backendNode), host: options.host, sealSecret });
+  const store = backendGrantStore(options.backendNode);
+  const telegramStore: ReadGrantStore = {
+    get: key => store.get(key.replace("trustbot/read-grants/", "trustbot/telegram-read-grants/")),
+    put: (key, value, condition) => store.put(key.replace("trustbot/read-grants/", "trustbot/telegram-read-grants/"), value, condition),
+    delete: (key, condition) => store.delete(key.replace("trustbot/read-grants/", "trustbot/telegram-read-grants/"), condition),
+  };
+  const telegram = new TrustBotReadGrants({
+    reader, store: telegramStore, host: options.host, areas: ["telegram"],
+    sealSecret: new Uint8Array(hkdfSync("sha256", sealSecret, Buffer.alloc(0), "tinychat.trustbot-telegram-grant/v1", 32)),
+  });
+  return Object.assign(new TrustBotReadGrants({ reader, store, host: options.host, sealSecret }), { telegram });
 }

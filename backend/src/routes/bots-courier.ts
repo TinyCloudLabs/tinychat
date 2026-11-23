@@ -1,6 +1,7 @@
 import express, { Router, type RequestHandler, type Response } from "express";
 import { botOwnerDid, botsServiceHeaders, type BotsConfig } from "./bots.js";
 import { mountCourierPairing } from "./bots-courier-pairing.js";
+import { mountCourierThreads } from "./bots-courier-threads.js";
 
 export interface CourierRouterDeps {
   config: BotsConfig;
@@ -146,5 +147,6 @@ export function createBotsCourierRouter({ config, auth, enabled = process.env.BO
   // courier: pairing mount
   mountCourierPairing(router, deps);
   // courier: threads mount
+  mountCourierThreads(router, deps);
   return router;
 }
