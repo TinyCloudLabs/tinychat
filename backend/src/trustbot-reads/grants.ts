@@ -125,6 +125,12 @@ export class TrustBotReadGrants {
     return this.#status((await this.#load(checkAddress(address)))?.record);
   }
 
+  /** One sealed-record read keeps the area switches and chat exclusions in the same snapshot. */
+  async readStatus(address: string): Promise<ReadStatus & { deniedChatIds: Set<string> }> {
+    const stored = (await this.#load(checkAddress(address)))?.record;
+    return { ...this.#status(stored), deniedChatIds: new Set(stored?.deniedChatIds ?? []) };
+  }
+
   /** Authoritative per-chat settings, loaded afresh for each read; corrupt records fail closed. */
   async deniedChatIds(address: string): Promise<Set<string>> {
     return new Set((await this.#load(checkAddress(address)))?.record.deniedChatIds ?? []);
