@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createCourierPeerStore } from "../courier/peer-store";
 import { createCourierPairing, courierPeerControl, type PairingAdapter } from "../courier/pairing";
-import type { CourierContext } from "../courier/lib-adapter";
+import { normalizeCourierError, type CourierContext } from "../courier/lib-adapter";
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -185,6 +185,20 @@ test("an unsupported peer's update-required code stays fixed at the control boun
   const response = await courierPeerControl(new Request("http://gateway/courier/owner/peers", { method: "POST", body: JSON.stringify({ artifact: JSON.stringify(start) }) }), owner, "/peers", pairing);
   expect(response!.status).toBe(426);
   expect(await response!.json()).toEqual({ error: "courier_update_required" });
+});
+
+test("a headless agent refusing an older initiator's A leaves nothing pending and revokes nothing", async () => {
+  const { pairing, adapter, store } = setup();
+  let unpaired = 0;
+  adapter.unpair = async () => { unpaired++; };
+  // The SDK's own code, as the adapter delivers it.
+  adapter.acceptPairing = async () => { throw normalizeCourierError(Object.assign(new Error("private text"), { code: "courier-update-required" })); };
+  const response = await courierPeerControl(new Request("http://gateway/courier/owner/peers", { method: "POST", body: JSON.stringify({ artifact: JSON.stringify(start) }) }), owner, "/peers", pairing);
+  expect(response!.status).toBe(426);
+  expect(await response!.json()).toEqual({ error: "courier_update_required" });
+  expect(await store.getPending(owner, "reader")).toBeUndefined();
+  expect(await store.listRetired(owner)).toEqual([]);
+  expect(unpaired).toBe(0);
 });
 
 const stuck = { handle: "reader", peerDid: start.from.courier, pairingId: "01JSTUCK000000000000000000" };
