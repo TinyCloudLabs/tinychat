@@ -91,7 +91,11 @@ function checkedArtifact(input: string): PairArtifact {
   return artifact;
 }
 
-export function createCourierPairing(options: { store: CourierPeerStore; grants: CourierGrantStore; adapter?: PairingAdapter; now?: () => number }): CourierPairing {
+export function createCourierPairing(options: {
+  store: CourierPeerStore; grants: CourierGrantStore; adapter?: PairingAdapter; now?: () => number;
+  /** Throws when the Courier library cannot run headless; the default checks the installed library. */
+  libraryReady?: () => void;
+}): CourierPairing {
   const { store, grants } = options;
   const now = options.now ?? Date.now;
   const queues = new Map<string, Promise<void>>();
@@ -118,7 +122,7 @@ export function createCourierPairing(options: { store: CourierPeerStore; grants:
     // C1's current integration checkpoint declares this boundary; load implementations only for live operations.
     const lib = await import("./lib-adapter");
     // Before any grant lookup: on a library without the headless API, no grant session is ever restored.
-    lib.courierLibraryReady();
+    (options.libraryReady ?? lib.courierLibraryReady)();
     return {
       context: lib.courierContext, acceptPairing: lib.acceptPairing, finalizePairing: lib.finalizePairing, unpair: lib.unpair,
       renewPeer: lib.renewPeer, peerReference: lib.peerReference,

@@ -7,7 +7,7 @@ import { replyText, type CourierReplyText } from "../courier/guard";
 import { botIdFor } from "../owner";
 import { guardedAnswer } from "./courier-fixtures";
 import { CourierIntake, type CourierIntakeOptions, courierIntakeStore } from "../courier/intake";
-import { CourierUpdateRequired } from "../courier/lib-adapter";
+import { courierLibraryReady, CourierUpdateRequired } from "../courier/lib-adapter";
 import { TinyCloudNode } from "@tinycloud/node-sdk";
 
 const dirs: string[] = [];
@@ -267,8 +267,6 @@ test("receipts of acknowledged messages are pruned after 30 days; unacknowledged
   expect(kept.outcomes).toContainEqual({ gateway: "courier", peer: expect.stringMatching(/^[0-9a-f]{12}$/), outcome: "receipt_unavailable" });
 });
 
-const headless = Boolean(process.env.TC_COURIER_HEADLESS_PACKAGE);
-
 function untouchedGrants() {
   const lookups: string[] = [];
   const dir = mkdtempSync(join(tmpdir(), "courier-intake-")); dirs.push(dir);
@@ -289,11 +287,11 @@ test("a library that cannot run headless refuses the poll before any grant looku
   await expect(intake.poll()).rejects.toMatchObject({ code: "courier_update_required" });
 });
 
-test.skipIf(headless)("on the installed beta without the headless API, poll restores no grant session and looks up no grant", async () => {
+test("with a library missing the headless API, poll restores no grant session and looks up no grant", async () => {
   const f = untouchedGrants();
   const restore = spyOn(TinyCloudNode.prototype, "restoreSession");
   try {
-    await expect(f.intake({}).poll()).rejects.toMatchObject({ code: "courier_update_required" });
+    await expect(f.intake({ libraryReady: () => courierLibraryReady({}) }).poll()).rejects.toMatchObject({ code: "courier_update_required" });
     expect(restore).not.toHaveBeenCalled();
     expect(f.lookups).toEqual([]);
   } finally { restore.mockRestore(); }

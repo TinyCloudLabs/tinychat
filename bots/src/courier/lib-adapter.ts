@@ -98,14 +98,17 @@ function library<K extends keyof LibraryApi>(name: K): LibraryApi[K] {
 
 const HEADLESS: (keyof LibraryApi)[] = ["acceptPairing", "finalizePairing", "unpair", "listInbound", "acknowledgeInbound", "sendMessage", "peerReference"];
 
-/** Throws CourierUpdateRequired unless the installed library has the whole headless API; call before any grant lookup. */
-export function courierLibraryReady(): void {
-  for (const name of HEADLESS) library(name);
+/**
+ * Throws CourierUpdateRequired unless the library (the installed one by default) has the whole headless API; call before
+ * any grant lookup.
+ */
+export function courierLibraryReady(lib: object = courier): void {
+  for (const name of HEADLESS) if (typeof (lib as Record<string, unknown>)[name] !== "function") throw new CourierUpdateRequired();
 }
 
 /** Production entry: refuses on a library without the headless API before restoring any grant session. */
-export async function courierContext(owner: string, grant: CourierGrant, store: CourierLibraryStore): Promise<CourierContext> {
-  courierLibraryReady();
+export async function courierContext(owner: string, grant: CourierGrant, store: CourierLibraryStore, libraryReady: () => void = courierLibraryReady): Promise<CourierContext> {
+  libraryReady();
   return verifiedCourierContext(owner, grant, store);
 }
 

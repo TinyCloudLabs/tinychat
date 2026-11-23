@@ -9,7 +9,7 @@ import { createCourierGrantStore } from "../courier/grant-store";
 import { createCourierControl } from "../courier/control";
 import { createCourierPairing } from "../courier/pairing";
 import { createCourierPeerStore } from "../courier/peer-store";
-import { courierContext, CourierUnpairPending, CourierUpdateRequired, listInbound, normalizeCourierError, renewPeer, sendMessage, verifiedCourierContext, type PairedPeer } from "../courier/lib-adapter";
+import { courierContext, courierLibraryReady, CourierUnpairPending, CourierUpdateRequired, normalizeCourierError, renewPeer, sendMessage, verifiedCourierContext, type PairedPeer } from "../courier/lib-adapter";
 
 const signingKey = "4f3edf983ac636a65a842ce7c78d9aa706d3b113bce036f4d9c5c1b5605dce6f";
 const dirs: string[] = [];
@@ -99,12 +99,20 @@ test("a tampered owner signature is refused before sealing", async () => {
   expect(await f.store.get(f.owner)).toBeUndefined();
 });
 
+/** A library without the headless API, checked by the real gate. */
+const notReady = () => courierLibraryReady({});
+
+test("the pinned Courier library carries the headless API, so the library gate passes", () => {
+  expect(() => courierLibraryReady()).not.toThrow();
+  expect(notReady).toThrow(CourierUpdateRequired);
+});
+
 test("a library without the headless API refuses the context before restoring any grant session", async () => {
   const f = await fixture();
   const restore = spyOn(TinyCloudNode.prototype, "restoreSession");
   let opened = 0;
   try {
-    await expect(courierContext(f.owner, f.grant, { async transaction(_s, op) { opened++; return op({ async get() { return undefined; }, async save() {} }); } }))
+    await expect(courierContext(f.owner, f.grant, { async transaction(_s, op) { opened++; return op({ async get() { return undefined; }, async save() {} }); } }, notReady))
       .rejects.toMatchObject({ code: "courier_update_required" });
     expect(restore).not.toHaveBeenCalled();
     expect(opened).toBe(0);
@@ -118,7 +126,7 @@ test("on a library without the headless API, grant reads and writes and pairing 
   await f.store.put(f.owner, f.grant);
   const restore = spyOn(TinyCloudNode.prototype, "restoreSession");
   try {
-    const control = createCourierControl(f.store);
+    const control = createCourierControl(f.store, notReady);
     const url = `http://gateway/courier/${encodeURIComponent(f.owner)}/grant`;
     for (const init of [{}, { method: "PUT", body: JSON.stringify(f.grant) }]) {
       const response = (await control(new Request(url, init)))!;
@@ -128,7 +136,7 @@ test("on a library without the headless API, grant reads and writes and pairing 
     let lookups = 0;
     const grants = { async get() { lookups++; return f.grant; }, async put() {}, async delete() {} };
     const dir = mkdtempSync(join(tmpdir(), "courier-peers-")); dirs.push(dir);
-    const pairing = createCourierPairing({ store: createCourierPeerStore(dir, new Uint8Array(32).fill(9)), grants });
+    const pairing = createCourierPairing({ store: createCourierPeerStore(dir, new Uint8Array(32).fill(9)), grants, libraryReady: notReady });
     const start = {
       type: "courier-pair", v: 0, step: "A", from: { owner: `did:pkh:eip155:1:0x${"2".repeat(40)}`, courier: "did:key:zReader" },
       spaceId: `tinycloud:pkh:eip155:1:0x${"2".repeat(40)}:agents`, peer: "trustbot", callMe: "reader", issuedAt: new Date().toISOString(), challengeVersion: 1,
@@ -157,9 +165,6 @@ test("the context handed to the library holds only the courier-key session resto
   const reader = (await (handed.createReader as () => Promise<unknown>)()) as Restored;
   expect(reader).not.toBe(node);
   expect(reader.restorableSession.delegationCid).toBe(f.grant.raw.delegationCid);
-  const ref = { handle: "peer", peerDid: "did:key:zPeer", pairingId: "p1" };
-  const peer: PairedPeer = { handle: ref.handle, peerDid: ref.peerDid, delegationExpiresAt: Date.now() + 86_400_000, proof: { cid: "bafy" }, delegation: { ref, record: {} } };
-  await expect(listInbound(context, peer)).rejects.toMatchObject({ code: "courier_update_required" });
 });
 
 test("renewal is a typed refusal and replies must carry the bound idempotency key", async () => {
