@@ -303,31 +303,53 @@ describe("when the silent tick replaces the pair", () => {
   const active = (leftMs: number): FirefliesImportStatus => ({ ...STATUS, state: "active", expiresAt: new Date(NOW + leftMs).toISOString(), grantCids: ["a", "b"] });
 
   test("an active pair with under 6 days left, only when the sign-in can extend it", () => {
-    expect(firefliesImportDue(active(5 * DAY), { siwe: siwe(30 * DAY), wanted: false, now: NOW })).toBe(true);
-    expect(firefliesImportDue(active(6.5 * DAY), { siwe: siwe(30 * DAY), wanted: false, now: NOW })).toBe(false);
+    expect(firefliesImportDue(active(5 * DAY), { siwe: siwe(30 * DAY), wanted: true, now: NOW })).toBe(true);
+    expect(firefliesImportDue(active(6.5 * DAY), { siwe: siwe(30 * DAY), wanted: true, now: NOW })).toBe(false);
     // The sign-in ends with the pair: a replacement would end no later.
-    expect(firefliesImportDue(active(5 * DAY), { siwe: siwe(5 * DAY), wanted: false, now: NOW })).toBe(false);
+    expect(firefliesImportDue(active(5 * DAY), { siwe: siwe(5 * DAY), wanted: true, now: NOW })).toBe(false);
     expect(sessionCanExtend(siwe(30_000), null, NOW)).toBe(false);
   });
 
-  test("a lapsed pair only when the owner turned it on here; a revoked one never", () => {
-    const lapsed: FirefliesImportStatus = { ...STATUS, state: "needs_renewal", expiresAt: new Date(NOW - DAY).toISOString() };
+  test("only on the browser where the owner turned the import on, whatever the pair's state", () => {
+    expect(firefliesImportDue(active(5 * DAY), { siwe: siwe(30 * DAY), wanted: false, now: NOW })).toBe(false);
+    const lapsed: FirefliesImportStatus = { ...STATUS, state: "needs_renewal", expiresAt: new Date(NOW - DAY).toISOString(), grantCids: ["a", "b"] };
     expect(firefliesImportDue(lapsed, { siwe: siwe(30 * DAY), wanted: true, now: NOW })).toBe(true);
     expect(firefliesImportDue(lapsed, { siwe: siwe(30 * DAY), wanted: false, now: NOW })).toBe(false);
-    expect(firefliesImportDue({ ...lapsed, state: "revoked" }, { siwe: siwe(30 * DAY), wanted: true, now: NOW })).toBe(false);
-    expect(firefliesImportDue(STATUS, { siwe: siwe(30 * DAY), wanted: true, now: NOW })).toBe(false);
   });
 
-  test("a due pair is replaced once; a pair that is not due is left alone", async () => {
+  test("never a revoked pair, nothing stored, or a status that lists no ids to replace", () => {
+    const lapsed: FirefliesImportStatus = { ...STATUS, state: "needs_renewal", expiresAt: new Date(NOW - DAY).toISOString(), grantCids: ["a", "b"] };
+    expect(firefliesImportDue({ ...lapsed, state: "revoked" }, { siwe: siwe(30 * DAY), wanted: true, now: NOW })).toBe(false);
+    expect(firefliesImportDue(STATUS, { siwe: siwe(30 * DAY), wanted: true, now: NOW })).toBe(false);
+    // Active with no ids is what a status read torn by a removal looks like: it must not be written back.
+    expect(firefliesImportDue({ ...active(5 * DAY), grantCids: [] }, { siwe: siwe(30 * DAY), wanted: true, now: NOW })).toBe(false);
+    expect(firefliesImportDue({ ...lapsed, grantCids: [] }, { siwe: siwe(30 * DAY), wanted: true, now: NOW })).toBe(false);
+  });
+
+  test("a due pair is replaced once; a pair that is not due, or not wanted here, is left alone", async () => {
     const dueStatus = { ...active(5 * DAY), expiresAt: new Date(Date.now() + 5 * DAY).toISOString() };
     const due = fakeDeps({ status: [{ status: "ok", value: dueStatus }] });
     const longSiwe = `Expiration Time: ${new Date(Date.now() + 30 * DAY).toISOString()}`;
-    expect(await renewFirefliesImportIfDue(due.deps, { siwe: longSiwe, wanted: false })).toBe(true);
+    expect(await renewFirefliesImportIfDue(due.deps, { siwe: longSiwe, wanted: true })).toBe(true);
     expect(due.log).toEqual(["status", "submit", "revoke:a", "revoke:b"]);
+    expect(due.sent).toEqual([["a", "b"]]);
 
     const fresh = fakeDeps({ status: [{ status: "ok", value: { ...active(7 * DAY), expiresAt: new Date(Date.now() + 7 * DAY).toISOString() } }] });
-    expect(await renewFirefliesImportIfDue(fresh.deps, { siwe: longSiwe, wanted: false })).toBe(false);
+    expect(await renewFirefliesImportIfDue(fresh.deps, { siwe: longSiwe, wanted: true })).toBe(false);
     expect(fresh.log).toEqual(["status"]);
+
+    const elsewhere = fakeDeps({ status: [{ status: "ok", value: dueStatus }] });
+    expect(await renewFirefliesImportIfDue(elsewhere.deps, { siwe: longSiwe, wanted: false })).toBe(false);
+    expect(elsewhere.log).toEqual(["status"]);
+  });
+
+  test("a renewal that read the status before a turn off or purge is refused and leaves nothing behind", async () => {
+    const dueStatus = { ...active(5 * DAY), expiresAt: new Date(Date.now() + 5 * DAY).toISOString() };
+    const t = fakeDeps({ status: [{ status: "ok", value: dueStatus }], submit: () => ({ status: "rejected", httpStatus: 409, code: null }) });
+    const longSiwe = `Expiration Time: ${new Date(Date.now() + 30 * DAY).toISOString()}`;
+    expect(await renewFirefliesImportIfDue(t.deps, { siwe: longSiwe, wanted: true })).toBe(false);
+    // The new pair is withdrawn; the old one is not touched, the owner's own removal handles it.
+    expect(t.log).toEqual(["status", "submit", "revoke:new-secrets", "revoke:new-meetings"]);
   });
 
   test("the row says on, ending soon, paused or off from what the server holds", () => {

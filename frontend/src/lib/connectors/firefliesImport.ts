@@ -282,20 +282,23 @@ export function sessionCanExtend(siwe: string, savedExpiresAt: string | null, no
 }
 
 /**
- * Whether the silent tick should replace the pair. An active pair is replaced when under 6 days remain; a lapsed
- * one only if the owner turned the import on in this browser. Either way only when the session can extend it.
+ * Whether the silent tick should replace the pair. Only on the browser where the owner turned the import on, and
+ * never off a status that lists no ids: a pair names the ids it replaces, and a renewal has nothing safe to name
+ * then. An active pair is replaced when under 6 days remain, a lapsed one at once. Either way only when the session
+ * can extend it.
  */
 export function firefliesImportDue(
   status: FirefliesImportStatus,
   options: { siwe: string; wanted: boolean; now?: number },
 ): boolean {
   const now = options.now ?? Date.now();
+  if (!options.wanted || status.grantCids.length === 0) return false;
   if (!sessionCanExtend(options.siwe, status.expiresAt, now)) return false;
   if (status.state === "active") {
     const expires = status.expiresAt ? Date.parse(status.expiresAt) : Number.NaN;
     return Number.isFinite(expires) && expires - now < FIREFLIES_RENEW_WITHIN_MS;
   }
-  return status.state === "needs_renewal" && options.wanted;
+  return status.state === "needs_renewal";
 }
 
 export type FirefliesImportPhase = "off" | "on" | "ending-soon" | "paused";
