@@ -342,7 +342,7 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
                 const opId = crypto.randomUUID();
                 await native.beginRemoteOp({ id, did, opId, provider: "assemblyai", mode: "hosted", kind: "hosted_submit",
                   fingerprint: `${source.size}:${source.mimeType}`, startedAt: Date.now() });
-                const submitted = await client.createTranscript(uploadId, { speakerLabels: channels === 2 || recording.options?.identifySpeakers !== false,
+                const submitted = await client.createTranscript(uploadId, { speakerLabels: recording.options?.identifySpeakers !== false,
                   multichannel: channels === 2, sourceId: id,
                   // AssemblyAI is refusing the submission and the server keeps retrying it: a calm in-progress note, not a failure.
                   onDelayed: (delayed) => state(id, delayed ? { kind: "delayed" } : { kind: "queued", position: null }) });
@@ -383,9 +383,9 @@ export function createHostedVoiceNoteTrack(tcw: () => TinyCloudWeb, backendUrl: 
       });
       guard();
       const stereo = channels === 2;
-      const sentences = assemblyAiSentences(transcript, await client.getSentences(handle), { stereo })
-        .map((sentence) => stereo && sentence.channel !== undefined ? { ...sentence,
-          speaker_name: sentence.channel === 0 ? "Me" : "Them" } : sentence);
+      const engineSentences = assemblyAiSentences(transcript, await client.getSentences(handle), { stereo });
+      // The namer loads with a stereo result, not with the entry chunk the web app boots from (TC-2882).
+      const sentences = stereo ? (await import("./channelSpeakers")).nameChannelSpeakers(engineSentences) : engineSentences;
       const local = recording.sizeBytes > 0 ? await native.getTranscript({ id }) : { transcript: null };
       const rev = explicitRerun ? prior!.rev + 1 : Math.max(local.transcript?.rev ?? 0, prior?.rev ?? 0) + 1;
       const at = new Date().toISOString();

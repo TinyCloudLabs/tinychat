@@ -2155,9 +2155,10 @@ paths:
                   description: Exo note ID, required for note-keyed submissions.
                 speaker_labels:
                   type: boolean
+                  description: Tell speakers apart. With multichannel, within each channel.
                 multichannel:
                   type: boolean
-                  description: Separate stereo channels (for Mac Me/Them recordings).
+                  description: Separate stereo channels (Mac recordings; microphone and system audio).
       responses:
         "202":
           description: Submitting (or, on a repeat, already settled)

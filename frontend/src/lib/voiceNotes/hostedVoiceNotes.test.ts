@@ -209,6 +209,32 @@ test("Powerful requests multichannel and labels stereo turns Me and Them", async
   lane.consent();
   await lane.run(h.recording);
   expect(h.submits[0]).toMatchObject({ multichannel: true });
+  expect(h.submits[0]).toMatchObject({ speaker_labels: true });
+  expect(h.getLocal()?.segments[0]?.speaker).toBe("Me");
+});
+
+test("Powerful names each voice it hears on the other side of a stereo note", async () => {
+  const h = harness(undefined, false, false, "audio/mp4", 1000, [{ id: "handle-1", status: "completed", audio_channels: 2, utterances: [
+    { start: 0, end: 20_000, text: "Shall we start?", speaker: "2A", channel: 1 },
+    { start: 20_000, end: 21_000, text: "Go ahead.", speaker: "1A", channel: 0 },
+    { start: 21_000, end: 40_000, text: "First item.", speaker: "2B", channel: 1 },
+  ] }]);
+  h.recording.channels = 2;
+  const lane = h.track();
+  lane.consent();
+  await lane.run(h.recording);
+  expect(h.getLocal()?.segments.map((segment) => [segment.speaker, segment.speakerId, segment.channel]))
+    .toEqual([["Speaker 1", "2A", 1], ["Me", "1A", 0], ["Speaker 2", "2B", 1]]);
+});
+
+test("a stereo note recorded with speakers off asks Powerful for channels only", async () => {
+  const h = harness();
+  h.recording.channels = 2;
+  h.recording.options = { ...h.recording.options!, identifySpeakers: false };
+  const lane = h.track();
+  lane.consent();
+  await lane.run(h.recording);
+  expect(h.submits[0]).toMatchObject({ multichannel: true, speaker_labels: false });
   expect(h.getLocal()?.segments[0]?.speaker).toBe("Me");
 });
 
