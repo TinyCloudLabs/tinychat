@@ -233,7 +233,9 @@ The owner changes individual chats under Feed and chats; switching a chat off ad
 
 Every backend `list_chats` call excludes denied ids before title matching and limits. `read_chat` returns `not_found`
 before querying a denied chat. This applies to all TrustBot read entry points, not just Courier. A failed settings
-lookup refuses the read rather than treating it as an empty deny list.
+lookup refuses the read rather than treating it as an empty deny list. The route reloads the settings after the chat
+query and before serializing; a chat denied meanwhile is answered `not_found` and its text is dropped. `read_status`
+loads areas and denials from one record read; a missing record means all areas off and an empty deny list.
 
 `bots/src/courier/denied-chats.ts` exports `readStatus(owner)`, `enabledReadAreas(owner)` and `deniedChatIds(owner)`.
 They send signed `POST /api/internal/bots/main/reads/read_status` requests and receive plain HTTPS JSON:

@@ -66,6 +66,11 @@ test("persisted denials render off, save both directions and survive remount whi
   expect(host.textContent).toContain("TrustBot can read the chats switched on here when it answers you or your paired agents. Switch a chat off to keep it out.");
   expect(switches(host).map(button => button.getAttribute("aria-checked"))).toEqual(["false", "true"]);
   expect(switches(host).every(button => button.getAttribute("aria-label") === "TrustBot can read this chat")).toBe(true);
+  expect(host.textContent).toContain("Switching a chat off stops TrustBot reading it from then on. It doesn't remove answers TrustBot gave before.");
+  for (const button of switches(host)) {
+    const described = button.getAttribute("aria-describedby")!.split(" ").map(id => document.getElementById(id)?.textContent ?? "");
+    expect(described.join(" ")).toContain("It doesn't remove answers TrustBot gave before.");
+  }
   await click(switches(host)[0]!);
   await click(switches(host)[1]!);
   expect(switches(host).map(button => button.getAttribute("aria-checked"))).toEqual(["true", "false"]);
