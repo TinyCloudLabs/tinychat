@@ -559,6 +559,8 @@ export async function signInNative(
       d.loadManifest(`${config.backendUrl}/api/manifest`),
     ]);
 
+    // The legacy Capacitor SDK omits the ask from PAR. A lease-aware pin must
+    // also support revoking the admitted lease through native sign-out.
     const renewal = env.VITE_OPENKEY_NATIVE_RENEWAL === "false" ? undefined
       : (await import("./renewalReceipt")).SIGN_IN_RENEWAL_ASK;
     const options = { capabilities: nativePermissions(manifest), siweNonce, ttlSeconds: 3_600, ...hints };
@@ -891,7 +893,11 @@ export async function installNativeSession(
   return { address, tcw: restored.tcw as TinyCloudWeb };
 }
 
-/** Sign the native OpenKey session out: revoke the delegation grant and drop the secure-store record. */
+/**
+ * Sign out through the device-bound revoke endpoint and remove the secure record.
+ * OpenKey owns revocation of the consent CID and its lease. The lease-aware SDK
+ * retains the revoke credential for bounded retries beyond OAuth expiry.
+ */
 export async function signOutNative(deps?: {
   createOpenKeyNative?: NativeSignInDeps["createOpenKeyNative"];
   env?: NativeSignInConfig["env"] & { VITE_TINYCLOUD_HOST?: string };
