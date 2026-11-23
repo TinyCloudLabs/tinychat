@@ -36,6 +36,7 @@ describe("the server import row uses the copy owner's words", () => {
     expect(text(render("paused"))).toContain(
       "Paused. Meetings that finish while paused are saved the next time you open TinyCloud One.",
     );
+    expect(render("paused")).toContain(">Turn on<");
     expect(text(render("off-unconfirmed"))).toContain(
       `Importing is off on our server, but OpenKey couldn't confirm the permissions were withdrawn. They end on ${END} at the latest.`,
     );

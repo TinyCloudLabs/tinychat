@@ -243,6 +243,17 @@ describe("turning on and replacing the pair", () => {
     expect(t.log).toEqual(["status", "submit", "status", "revoke:old-1", "revoke:old-2"]);
   });
 
+  test("turning on again from a browser that did not turn it on names the ids the server holds, lapsed or paused", async () => {
+    // No turned-on mark is read anywhere on this path: the ids come from the status alone.
+    for (const state of ["needs_renewal", "revoked"] as const) {
+      const held: FirefliesImportStatus = { ...STATUS, state, expiresAt: "2026-11-20T00:00:00.000Z", grantCids: ["old-1", "old-2"] };
+      const t = fakeDeps({ status: [{ status: "ok", value: held }] });
+      expect(await turnOnFirefliesImport(t.deps)).toEqual({ kind: "on", expiresAt: "2026-11-29T17:00:00.000Z", oldGrantsUnconfirmed: false });
+      expect(t.sent).toEqual([["old-1", "old-2"]]);
+      expect(t.log).toEqual(["status", "submit", "revoke:old-1", "revoke:old-2"]);
+    }
+  });
+
   test("the pair names the ids it replaces, and a refusal for a mismatch withdraws the new pair", async () => {
     const held: FirefliesImportStatus = { ...STATUS, state: "active", expiresAt: "2026-11-23T00:00:00.000Z", grantCids: ["old-1", "old-2"] };
     const t = fakeDeps({ status: [{ status: "ok", value: held }], submit: () => ({ status: "rejected", httpStatus: 409, code: null }) });
