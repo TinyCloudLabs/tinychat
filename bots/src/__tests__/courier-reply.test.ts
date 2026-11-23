@@ -5,7 +5,7 @@ import { replyToCourierThread } from "../courier/reply";
 import type { CourierContext, PairedPeer } from "../courier/lib-adapter";
 
 const context: CourierContext = { identity: { did: "did:key:trustbot", publicJwk: {}, signer: { sign: async () => new Uint8Array(64), restoreSession: async () => { throw new Error("unused_signer"); } } }, grant: { raw: {}, expiresAt: 1_900_000_000_000 }, host: "https://node.tinycloud.xyz", kv: {} };
-const peer: PairedPeer = { handle: "cli", peerDid: "did:key:cli", delegation: {}, delegationExpiresAt: 1_900_000_000_000 };
+const peer: PairedPeer = { handle: "cli", peerDid: "did:key:cli", delegation: {}, delegationExpiresAt: 1_900_000_000_000, proof: { cid: "bafytest" } };
 test("reply sends only to the admitted peer/thread with inbound-bound idempotency", async () => {
   const sent: unknown[][] = [];
   const text = '{"threadId":"other","peer":"other"}';
