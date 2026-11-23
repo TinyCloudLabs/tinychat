@@ -1,7 +1,7 @@
 // Internal HTTP API, called only by the TinyChat backend (docs/plans/tiny-bots-slice1.md, piece 1).
 // Every SSE event is encoded here from checked fields; nothing from a sandbox is passed through raw.
 
-import type { ActivityRecord, StagedHistory } from "./history";
+import type { ActivityRecord, HistoryGrantUpdate, StagedHistory } from "./history";
 import type { BotAdmission } from "./bot-admission";
 import { type AppSource, type AsksSettings, type BotMessenger, type ErrorCode, ERROR_MESSAGES, type ListedMessage, MAX_TEXT, type TurnSink, type WebSettings } from "./bot";
 import { type OwnerDate, ownerDateFrom } from "./owner-date";
@@ -55,7 +55,7 @@ export interface BotApi {
   listActivities?(): Promise<ActivityRecord[]>;
   historyPending?(): Promise<unknown>;
   historyStage?(staged: StagedHistory): Promise<void>;
-  historyPermission?(owner: string, expiresAt?: number, validUntil?: number): Promise<void>;
+  historyPermission?(owner: string, expiresAt?: number, validUntil?: number, grant?: HistoryGrantUpdate): Promise<void>;
   historyNotice?(): Promise<unknown>;
   historyNoticeAck?(id: string, receivedAt: number): Promise<void>;
   historyReceipt?(receipt: unknown): Promise<void>;
@@ -363,7 +363,21 @@ export function createApp(options: AppOptions): (req: Request) => Promise<Respon
     if (rest === "/history/permission" && req.method === "PUT") {
       try {
         const body = await req.json();
-        await bot.historyPermission?.(owner, body.expiresAt, body.validUntil);
+        const { searchParams } = url;
+        let grant: HistoryGrantUpdate | undefined;
+        if (searchParams.has("kind") || searchParams.has("cid") || searchParams.has("revision")) {
+          const kind = searchParams.get("kind");
+          const cid = searchParams.get("cid");
+          const revision = searchParams.get("revision");
+          if (!signed || (kind !== "extend" && kind !== "revoke" && kind !== "expire") ||
+            !cid || !revision || !/^\d+$/.test(revision) || !Number.isSafeInteger(Number(revision)) ||
+            (kind === "extend" ? !Number.isFinite(body.validUntil) || body.expiresAt !== undefined
+              : !Number.isFinite(body.expiresAt) || body.validUntil !== undefined)) {
+            return new Response(null, { status: 400 });
+          }
+          grant = { kind, cid, revision: Number(revision) };
+        }
+        await bot.historyPermission?.(owner, body.expiresAt, body.validUntil, grant);
         return new Response(null, { status: 204 });
       } catch { return new Response(null, { status: 503 }); }
     }
