@@ -3,12 +3,13 @@ import { createHash } from "node:crypto";
 import { parseArtifact, validateArtifactIdentity, type PairArtifact } from "@tinycloud/courier";
 import { isRecord } from "../guards";
 import type { CourierGrant, CourierGrantStore } from "./grant-store";
-import type { CourierContext, PairedPeer, PairPending } from "./lib-adapter";
-import { COURIER_HANDLE, type CourierPeer, type CourierPeerStore, type RetiredCourierPeer } from "./peer-store";
+import type { CourierContext, CourierPeerReference, PairedPeer, PairPending } from "./lib-adapter";
+import { COURIER_HANDLE, type CourierPeer, type CourierPeerStore, type PendingPairing, type RetiredCourierPeer } from "./peer-store";
 
 export const COURIER_PAIRING_TTL_MS = 15 * 60_000;
 export const COURIER_PEER_MAX_MS = 7 * 86_400_000;
 export const COURIER_MAX_ARTIFACT = 64 * 1024;
+export const COURIER_MAX_PENDING = 10;
 export interface PairingAdapter {
   context(owner: string, grant: CourierGrant, store: CourierPeerStore): Promise<CourierContext>;
   acceptPairing(ctx: CourierContext, artifact: string): Promise<PairPending>;
@@ -24,13 +25,20 @@ export interface CourierPairing {
   maintain(owner: string): Promise<void>;
 }
 class PairingError extends Error {
-  constructor(readonly code: "invalid" | "duplicate" | "pending_expired" | "courier_unavailable" | "courier_update_required", readonly status: number) { super(code); }
+  constructor(readonly code: "invalid" | "duplicate" | "pending_expired" | "too_many_pending" | "courier_unavailable" | "courier_update_required", readonly status: number) { super(code); }
 }
 
-// C1's typed refusal (missing headless exports) and the SDK's own legacy-artifact refusal both mean "update Courier".
 function pairingFailure(error: unknown): PairingError {
-  return isRecord(error) && (error.code === "courier_update_required" || error.code === "courier-update-required")
+  return isRecord(error) && error.code === "courier_update_required"
     ? new PairingError("courier_update_required", 426) : new PairingError("invalid", 400);
+}
+
+/** C1's typed refusal when the SDK saved a pending attempt whose node grant never activated. */
+function pendingReference(error: unknown): CourierPeerReference | undefined {
+  if (!isRecord(error) || error.code !== "pair_pending" || !isRecord(error.reference)) return undefined;
+  const ref = error.reference;
+  return typeof ref.handle === "string" && typeof ref.peerDid === "string" && typeof ref.pairingId === "string"
+    ? { handle: ref.handle, peerDid: ref.peerDid, pairingId: ref.pairingId } : undefined;
 }
 
 function checkedArtifact(input: string): PairArtifact {
@@ -45,7 +53,11 @@ function checkedArtifact(input: string): PairArtifact {
     || typeof artifact.issuedAt !== "string" || !Number.isFinite(Date.parse(artifact.issuedAt))
     || (artifact.from.label !== undefined && (typeof artifact.from.label !== "string" || artifact.from.label.length > 256))
     || (artifact.step === "C" && (typeof artifact.delegation !== "string" || !artifact.delegation))) throw new PairingError("invalid", 400);
+  // Signed-challenge pairing only, decided here as well as in the library: an older Courier's A is told to update,
+  // and a C without its signed completion is never sent for verification.
+  if (artifact.step === "A" && !("challengeVersion" in artifact)) throw new PairingError("courier_update_required", 426);
   if ("challengeVersion" in artifact && artifact.challengeVersion !== 1) throw new PairingError("invalid", 400);
+  if (artifact.step === "C" && !("completion" in artifact)) throw new PairingError("invalid", 400);
   if ("completion" in artifact) {
     const completion = artifact.completion;
     if (!isRecord(completion) || Object.keys(completion).length !== 2
@@ -90,12 +102,20 @@ export function createCourierPairing(options: { store: CourierPeerStore; grants:
       }
     } catch { /* A disconnected owner still has no active peers after unpair. */ }
   }
+  /** Revokes a peer the library verified but the gateway refused, by the pending row's exact SDK reference. */
+  async function revokeVerified(owner: string, saved: PendingPairing) {
+    const ref = { handle: saved.pending.handle, peerDid: saved.pending.peerDid, pairingId: saved.pending.pairingId };
+    const local = await store.getPending(owner, ref.handle);
+    if (local?.pending.pairingId === ref.pairingId) await store.retire(owner, ref.handle);
+    else await store.retireReference(owner, { handle: ref.handle, peerDid: ref.peerDid, delegation: { pending: ref } });
+    await cleanRetired(owner);
+  }
   return {
     list: owner => store.list(owner),
     pair(owner, input) {
       return serial(owner, async () => {
         let artifact: PairArtifact;
-        try { artifact = checkedArtifact(input); } catch { throw new PairingError("invalid", 400); }
+        try { artifact = checkedArtifact(input); } catch (error) { throw error instanceof PairingError ? error : new PairingError("invalid", 400); }
         const handle = artifact.callMe;
         if (artifact.step === "A") await cleanRetired(owner);
         const current = await store.getRuntime(owner, handle);
@@ -115,9 +135,23 @@ export function createCourierPairing(options: { store: CourierPeerStore; grants:
             await cleanRetired(owner);
             if ((await store.listRetired(owner)).some(peer => peer.handle === handle)) throw new PairingError("courier_unavailable", 503);
           }
+          // Unsigned A is enough to open a pending row, so live pending rows per owner are capped.
+          if ((await store.listPending(owner)).filter(row => row.pending.expiresAt > now()).length >= COURIER_MAX_PENDING) {
+            throw new PairingError("too_many_pending", 429);
+          }
           const startedAt = now();
           let pending: PairPending;
-          try { pending = await api.acceptPairing(ctx, input); } catch (error) { throw pairingFailure(error); }
+          try { pending = await api.acceptPairing(ctx, input); } catch (error) {
+            const ref = pendingReference(error);
+            if (!ref) throw pairingFailure(error);
+            if (ref.handle !== handle || ref.peerDid !== artifact.from.courier) throw new PairingError("invalid", 400);
+            // Revoke that exact attempt before accepting once more. If revocation stays pending, the sealed reference
+            // is retried unchanged by cleanup and maintenance; the handle stays unavailable until it succeeds.
+            await store.retireReference(owner, { handle, peerDid: ref.peerDid, delegation: { pending: ref } });
+            await cleanRetired(owner);
+            if ((await store.listRetired(owner)).some(peer => peer.handle === handle)) throw new PairingError("courier_unavailable", 503);
+            try { pending = await api.acceptPairing(ctx, input); } catch (retry) { throw pairingFailure(retry); }
+          }
           // createdAt is the SDK's own pending checkpoint time; finalize verifies it unchanged.
           if (pending.handle !== handle || pending.peerDid !== artifact.from.courier || pending.expiresAt <= now()
             || !Number.isSafeInteger(pending.createdAt) || pending.createdAt < startedAt - 60_000 || pending.createdAt > now()
@@ -136,12 +170,21 @@ export function createCourierPairing(options: { store: CourierPeerStore; grants:
         if (artifact.from.owner !== start.from.owner || artifact.from.courier !== start.from.courier
           || artifact.spaceId !== start.spaceId || artifact.peer !== start.peer || artifact.callMe !== start.callMe) throw new PairingError("invalid", 400);
         let peer: PairedPeer;
-        try { peer = await api.finalizePairing(ctx, saved.pending, input); } catch (error) { throw pairingFailure(error); }
+        try { peer = await api.finalizePairing(ctx, saved.pending, input); } catch (error) {
+          // The peer's grant could not be confirmed yet: keep the pending row so the same C can be retried.
+          if (pendingReference(error)) throw new PairingError("courier_unavailable", 503);
+          throw pairingFailure(error);
+        }
+        // From here the library has verified C and activated the peer: every local refusal must also revoke it.
         if (peer.handle !== handle || peer.peerDid !== start.from.courier || !Number.isSafeInteger(peer.delegationExpiresAt)
-          || peer.delegationExpiresAt <= now() || peer.delegationExpiresAt > now() + COURIER_PEER_MAX_MS) throw new PairingError("invalid", 400);
+          || peer.delegationExpiresAt <= now() || peer.delegationExpiresAt > now() + COURIER_PEER_MAX_MS) {
+          await revokeVerified(owner, saved);
+          throw new PairingError("invalid", 400);
+        }
         // Verification can wait on the node; do not let its latency extend the pending window.
-        if (saved.pending.expiresAt <= now()) { await store.retire(owner, handle); throw new PairingError("pending_expired", 410); }
-        if (!await store.finalizePending(owner, saved, peer)) throw new PairingError("invalid", 400);
+        if (saved.pending.expiresAt <= now()) { await revokeVerified(owner, saved); throw new PairingError("pending_expired", 410); }
+        // A used proof CID or a changed pending row refuses the CAS; the activated grant is revoked either way.
+        if (!await store.finalizePending(owner, saved, peer)) { await revokeVerified(owner, saved); throw new PairingError("invalid", 400); }
         const publicPeer = (await store.list(owner)).find(item => item.handle === handle)!;
         return { peer: publicPeer };
       });
