@@ -34,6 +34,9 @@ export function accountDeletionStopFailure(failure: WebhookFailure): string {
   return `${webhookFailureMessage(failure)} We couldn't confirm that our server stopped delivering and importing meetings for your account. Try again, or continue to OpenKey.`;
 }
 
+/** What the owner is told when this browser could not keep its other open tabs from writing to the space again. */
+export const TABS_NOT_STOPPED_MESSAGE = "We couldn't stop this browser's other open tabs from writing to your space again, so a tab left open may restore access we removed. Try again, or close the other tabs and continue to OpenKey.";
+
 /** What the owner is told when Calendar autojoin could not be stopped or its Google sign-in removed from our server. */
 export function accountDeletionCalendarFailure(failure: WebhookFailure): string {
   return `${webhookFailureMessage(failure)} ${CALENDAR_NOT_STOPPED_MESSAGE}`;
@@ -99,11 +102,17 @@ export function DeleteOpenKeyAccountButton(props: {
 
   const stopServer = async () => {
     setState({ phase: "working" });
-    // First, so no open tab writes the transcript grant again once it is removed.
-    await retireTranscriptDelegation(sessionStore);
+    // First, so no open tab writes the transcript grant again once it is removed. Where the browser cannot hash
+    // (a page served over plain http), the stops still run and the owner is told the tabs are not covered.
+    let retired = true;
+    try { await retireTranscriptDelegation(sessionStore); } catch { retired = false; }
     const outcome = await stopServerAccessForAccountDeletion(webhooks);
     if (outcome.status === "failed") {
       setState({ phase: "blocked", message: accountDeletionStopFailure(outcome.failure), retryable: true, stage: "stops" });
+      return;
+    }
+    if (!retired) {
+      setState({ phase: "blocked", message: TABS_NOT_STOPPED_MESSAGE, retryable: true, stage: "stops" });
       return;
     }
     await proceed();

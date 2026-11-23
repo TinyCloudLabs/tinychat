@@ -4,7 +4,8 @@ import { createRoot } from "react-dom/client";
 import { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { installDom } from "@/test/dom";
-import { clearTranscriptDelegationSchedule } from "@/lib/transcriptDelegation";
+import type * as TranscriptDelegationModule from "@/lib/transcriptDelegation";
+import { clearTranscriptDelegationSchedule, retireTranscriptDelegation } from "@/lib/transcriptDelegation";
 import { stopServerAccessForAccountDeletion } from "@/lib/connectors/accountServerStops";
 import type { ConnectorWebhooksResult } from "@/lib/connectors/webhooksApi";
 
@@ -22,6 +23,7 @@ const EXO = `DELETE ${API}/api/exo/v1/grant`;
 const DISCONNECT = `POST ${API}/api/connectors/google/autojoin/disconnect`;
 const MEETINGS = `DELETE ${API}/api/transcriber/meetings`;
 const CREDS = `${API}/api/connectors/credentials/fireflies`;
+const TABS_NOT_STOPPED = "We couldn't stop this browser's other open tabs from writing to your space again, so a tab left open may restore access we removed. Try again, or close the other tabs and continue to OpenKey.";
 const GRANT_STATUS = `GET ${API}/api/delegations/status`;
 const SERVER_INFO = `GET ${API}/api/server-info`;
 const GRANT_POST = `POST ${API}/api/delegations`;
@@ -56,6 +58,8 @@ let disconnectBodies: unknown[];
 let answers: Record<string, Answer[]>;
 /** `open` and `signOut` in the order they happened. */
 let events: string[];
+/** Runs when the named route is requested, before it is answered. */
+let hooks: Record<string, () => Promise<void>>;
 let storage: Storage;
 
 beforeAll(() => {
@@ -68,6 +72,7 @@ beforeEach(() => {
   calls = [];
   disconnectBodies = [];
   events = [];
+  hooks = {};
   answers = {
     // The Fireflies sign-in route is not mounted unless a test says otherwise.
     [`GET ${CREDS}`]: [{ status: 404, headers: { "X-Route-Unavailable": "connector-credentials" } }],
@@ -90,6 +95,7 @@ beforeEach(() => {
       return Response.json({ removed: 0, deleting: 0, listOnly: 0, notDeleted: 0, privateCloudDeleted: null });
     }
     if (key === DISCONNECT) disconnectBodies.push(JSON.parse(String(init?.body)));
+    await hooks[key]?.();
     const queue = answers[key];
     if (!queue) throw new Error(`no answer for ${key}`);
     const next = queue.length > 1 ? queue.shift()! : queue[0]!;
@@ -300,8 +306,16 @@ test("stopServerAccessForAccountDeletion attempts every stop and reports the fir
 
 // A second tab holds the same sign-in and re-checks the transcript grant on focus. Tab B is a second copy of the
 // module (its own memory) over the same `localStorage`, with its own SessionStore, as a real second tab is.
-function tabBFake() {
+interface TabBFake {
+  operations: string[];
+  /** While set, minting the grant waits for it. */
+  control: { gate: Promise<void> | null };
+  tcw: TinyCloudWeb;
+}
+
+function tabBFake(): TabBFake {
   const operations: string[] = [];
+  const control: TabBFake["control"] = { gate: null };
   const db = {
     query: async () => ({ ok: true, data: { rows: [["connector_state"], ["connector_meeting"]] } }),
     execute: async () => { throw new Error("The schema already exists"); },
@@ -312,6 +326,7 @@ function tabBFake() {
     sql: { db: () => db },
     delegateTo: async () => {
       operations.push("delegateTo");
+      await control.gate;
       return { prompted: false, delegation: {
         cid: "bafy-transcript-test", delegationHeader: { Authorization: "Bearer eyJhbGciOiJFZERTQSJ9.eyJhdHQiOnt9fQ.signature" },
         spaceId: `did:pkh:eip155:1:${ADDRESS}:applications`, path: "xyz.tinycloud.tinychat/connectors",
@@ -320,10 +335,20 @@ function tabBFake() {
       } };
     },
   } as unknown as TinyCloudWeb;
-  return { operations, tcw };
+  return { operations, control, tcw };
 }
 
-test("a second open tab does not write the transcript grant again once account deletion removed it", async () => {
+interface SecondTab {
+  /** Tab A's session store. */
+  first: SessionStore;
+  fake: TabBFake;
+  /** What tab B does when it gains focus. */
+  focus: () => Promise<string>;
+  tabB: TranscriptDelegationModule;
+}
+
+/** Runs `run` with tab A's session store and a focus handler for tab B, which holds the same sign-in token. */
+async function withSecondTab(token: string, run: (tabs: SecondTab) => Promise<void>) {
   const lockedNavigator = Object.getOwnPropertyDescriptor(globalThis, "navigator");
   Object.defineProperty(globalThis, "navigator", {
     configurable: true,
@@ -331,14 +356,28 @@ test("a second open tab does not write the transcript grant again once account d
   });
   try {
     const first = new SessionStore();
-    first.setSession("tab-a-sign-in", 3600, ADDRESS);
-    const tabB = await import("../lib/transcriptDelegation.ts?second-tab");
+    first.setSession(token, 3600, ADDRESS);
+    const tabB: TranscriptDelegationModule = await import("../lib/transcriptDelegation.ts?second-tab");
     const second = new SessionStore();
-    expect(second.getToken()).toBe("tab-a-sign-in");
+    expect(second.getToken()).toBe(token);
     const fake = tabBFake();
     const focus = () => tabB.ensureTranscriptWriterDelegation({ tcw: fake.tcw, backendUrl: API, sessionStore: second });
+    await run({ first, fake, focus, tabB });
+  } finally {
+    if (lockedNavigator) Object.defineProperty(globalThis, "navigator", lockedNavigator);
+    // The consent state is module-wide and the suite shares one process: leave it as found.
+    clearTranscriptDelegationSchedule(ADDRESS);
+  }
+}
 
-    // Before deletion the second tab writes the grant on focus: this is what must stop.
+async function until(condition: () => boolean) {
+  for (let turn = 0; turn < 200 && !condition(); turn += 1) await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(condition()).toBe(true);
+}
+
+test("a second open tab does not write the transcript grant again once account deletion removed it", async () => {
+  await withSecondTab("tab-a-sign-in", async ({ first, fake, focus, tabB }) => {
+    // While deletion has not run the second tab writes the grant on focus: this is what must stop.
     expect(await focus()).toBe("active");
     expect(calls.filter((call) => call === GRANT_POST)).toHaveLength(1);
 
@@ -348,20 +387,65 @@ test("a second open tab does not write the transcript grant again once account d
     expect(events).toEqual(["signOut", "open"]);
     await page.unmount();
 
-    // The server answers "no grant" again, as it does once the grant is removed. Focus, then focus again.
+    // The server answers "no grant", as it does once the grant is removed. Focus, then focus again.
     expect(await focus()).toBe("disabled");
     expect(await focus()).toBe("disabled");
     expect(calls.filter((call) => call === GRANT_POST)).toHaveLength(1);
     expect(fake.operations.filter((operation) => operation === "delegateTo")).toHaveLength(1);
 
-    // A later sign-in is a different token and is not held back.
-    const later = new SessionStore();
-    later.setSession("a-later-sign-in", 3600, ADDRESS);
-    expect(await tabB.ensureTranscriptWriterDelegation({ tcw: fake.tcw, backendUrl: API, sessionStore: later })).toBe("active");
+    // A new sign-in is a different token and is not held back.
+    const fresh = new SessionStore();
+    fresh.setSession("a-new-sign-in", 3600, ADDRESS);
+    expect(await tabB.ensureTranscriptWriterDelegation({ tcw: fake.tcw, backendUrl: API, sessionStore: fresh })).toBe("active");
     expect(calls.filter((call) => call === GRANT_POST)).toHaveLength(2);
+  });
+});
+
+test("a grant request already under way in another tab is not sent once the sign-in is retired", async () => {
+  await withSecondTab("in-flight-sign-in", async ({ first, fake, focus }) => {
+    const { promise: gate, resolve: release } = Promise.withResolvers<void>();
+    fake.control.gate = gate;
+    // Tab B passes its first check and waits while the grant is being signed.
+    const pending = focus();
+    await until(() => fake.operations.includes("delegateTo"));
+    await retireTranscriptDelegation(first);
+    release();
+    expect(await pending).toBe("disabled");
+    expect(calls.filter((call) => call === GRANT_POST)).toHaveLength(0);
+  });
+});
+
+test("every other tab is held back before the first stop is sent, so none can write the grant while it is removed", async () => {
+  await withSecondTab("ordering-sign-in", async ({ first, focus }) => {
+    const stops = [DISABLE, GRANT, DELEGATION, EXO];
+    const focusDuring: string[] = [];
+    for (const stop of stops) hooks[stop] = async () => { focusDuring.push(`${stop} ${await focus()}`); };
+    const page = await mount(first);
+    await page.click("Delete OpenKey account");
+    expect(events).toEqual(["signOut", "open"]);
+    await page.unmount();
+    expect(focusDuring).toEqual(stops.map((stop) => `${stop} disabled`));
+    expect(calls).not.toContain(GRANT_POST);
+  });
+});
+
+test("a browser that cannot hash the sign-in token says other tabs are not covered; the stops still run, Try again repeats", async () => {
+  const own = Object.getOwnPropertyDescriptor(globalThis.crypto, "subtle");
+  // Plain http pages have no `crypto.subtle`.
+  Object.defineProperty(globalThis.crypto, "subtle", { configurable: true, value: undefined });
+  const page = await mount();
+  try {
+    await page.click("Delete OpenKey account");
+    expect(page.alert()).toBe(TABS_NOT_STOPPED);
+    expect(page.buttons()).toEqual(expect.arrayContaining(["Try again", "Continue to OpenKey"]));
+    expect(calls.slice(-4)).toEqual([DISABLE, GRANT, DELEGATION, EXO]);
+    expect(events).toEqual([]);
   } finally {
-    if (lockedNavigator) Object.defineProperty(globalThis, "navigator", lockedNavigator);
-    // The consent state is module-wide and the suite shares one process: leave it as found.
-    clearTranscriptDelegationSchedule(ADDRESS);
+    if (own) Object.defineProperty(globalThis.crypto, "subtle", own);
+    else Reflect.deleteProperty(globalThis.crypto, "subtle");
   }
+  await page.click("Try again");
+  expect(page.alert()).toBeNull();
+  expect(events).toEqual(["signOut", "open"]);
+  await page.unmount();
 });
