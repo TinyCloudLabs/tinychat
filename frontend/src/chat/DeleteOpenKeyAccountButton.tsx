@@ -8,7 +8,13 @@ import {
   type WebhookFailure,
 } from "@/lib/connectors/connectorLifecycle";
 import { clearPurgeLedgersForAccountDeletion } from "@/lib/connectors/accountLedgerClear";
-import { GOOGLE_REVOKE_UNCONFIRMED_MESSAGE, disconnectCalendarForAccountDeletion } from "@/lib/connectors/accountCalendarDisconnect";
+import {
+  CALENDAR_NOT_STOPPED_MESSAGE,
+  GOOGLE_CONNECTIONS_LINK_TEXT,
+  GOOGLE_CONNECTIONS_URL,
+  GOOGLE_REVOKE_UNCONFIRMED_MESSAGE,
+  disconnectCalendarForAccountDeletion,
+} from "@/lib/connectors/accountCalendarDisconnect";
 import {
   createConnectorWebhooksClient,
   type ConnectorWebhooksClient,
@@ -28,14 +34,14 @@ export function accountDeletionTeardownFailure(failure: WebhookFailure): string 
  */
 export function accountDeletionLedgerFailure(failure: WebhookFailure, step: "fence" | "clear"): string {
   const lead = step === "fence"
-    ? "We couldn't stop our server from delivering or importing meetings for your account, so we did not erase the record of your deleted meetings. That record may stay on our server."
+    ? "We couldn't stop our server from delivering or importing meetings for your account, so the record of your deleted meetings wasn't erased and may stay on our server."
     : "We couldn't confirm the record of your deleted meetings was erased from our server. It may stay there.";
   return `${webhookFailureMessage(failure)} ${lead} Try again, or continue to OpenKey.`;
 }
 
 /** What the owner is told when Calendar autojoin could not be stopped or its Google sign-in removed from our server. */
 export function accountDeletionCalendarFailure(failure: WebhookFailure): string {
-  return `${webhookFailureMessage(failure)} We couldn't confirm Calendar autojoin was stopped or that your Google sign-in was removed from our server. Try again, or continue and remove TinyChat under connected apps in your Google account.`;
+  return `${webhookFailureMessage(failure)} ${CALENDAR_NOT_STOPPED_MESSAGE}`;
 }
 
 type Stage = "calendar" | "recordings" | "credentials" | "ledger";
@@ -143,7 +149,15 @@ export function DeleteOpenKeyAccountButton(props: {
     <>
       {state.phase === "blocked" ? (
         <div>
-          <p className={`mb-2 text-xs ${state.pending ? "text-muted-foreground" : "text-destructive"}`} role="alert">{state.message}</p>
+          <p className={`mb-2 text-xs ${state.pending ? "text-muted-foreground" : "text-destructive"}`} role="alert">
+            {state.message}
+            {state.stage === "calendar" && (
+              <>
+                {" "}
+                <a href={GOOGLE_CONNECTIONS_URL} target="_blank" rel="noopener noreferrer" className="underline">{GOOGLE_CONNECTIONS_LINK_TEXT}</a>
+              </>
+            )}
+          </p>
           <div className="flex flex-wrap items-center gap-2">
             <Button variant="outline" size="sm" onClick={() => void next[state.stage]()} className="text-destructive">
               Continue to OpenKey

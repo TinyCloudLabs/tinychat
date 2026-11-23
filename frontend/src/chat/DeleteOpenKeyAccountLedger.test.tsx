@@ -20,9 +20,10 @@ const EXO = `DELETE ${API}/api/exo/v1/grant`;
 const DISCONNECT = `POST ${API}/api/connectors/google/autojoin/disconnect`;
 const CREDS = `${API}/api/connectors/credentials/fireflies`;
 const CLEAR_FAILED = "We couldn't confirm the record of your deleted meetings was erased from our server. It may stay there. Try again, or continue to OpenKey.";
-const FENCE_FAILED = "We couldn't stop our server from delivering or importing meetings for your account, so we did not erase the record of your deleted meetings. That record may stay on our server. Try again, or continue to OpenKey.";
-const CALENDAR_FAILED = "We couldn't confirm Calendar autojoin was stopped or that your Google sign-in was removed from our server. Try again, or continue and remove TinyChat under connected apps in your Google account.";
-const GOOGLE_UNCONFIRMED = "Calendar autojoin was stopped and your Google sign-in was removed from our server, but Google didn't confirm it revoked access. To be sure, remove TinyChat under connected apps in your Google account.";
+const FENCE_FAILED = "We couldn't stop our server from delivering or importing meetings for your account, so the record of your deleted meetings wasn't erased and may stay on our server. Try again, or continue to OpenKey.";
+const CALENDAR_FAILED = "We couldn't confirm that Calendar autojoin stopped or that your Google sign-in was removed from our server. Try again, or continue and remove our app's access in your Google account.";
+const GOOGLE_UNCONFIRMED = "Calendar autojoin stopped and your Google sign-in was removed from our server, but Google didn't confirm it revoked access. To be sure, remove our app's access in your Google account.";
+const GOOGLE_LINK = "Open your Google account";
 const UNAVAILABLE = "The server is temporarily unavailable (503).";
 
 type Answer = { status: number; body?: unknown; headers?: Record<string, string> };
@@ -194,7 +195,12 @@ test("Google not confirming the revoke (502) is disclosed without claiming it wa
   answers[DISCONNECT] = [{ status: 502, body: { upstreamRevoked: "failed" } }];
   const page = await mount();
   await page.click("Delete OpenKey account");
-  expect(page.alert()).toBe(GOOGLE_UNCONFIRMED);
+  expect(page.alert()).toBe(`${GOOGLE_UNCONFIRMED} ${GOOGLE_LINK}`);
+  // The link opens Google's page for managing third-party access in a new tab, without handing over the opener.
+  const link = page.host.querySelector("[role=alert] a");
+  expect(link?.getAttribute("href")).toBe("https://myaccount.google.com/connections");
+  expect(link?.getAttribute("target")).toBe("_blank");
+  expect(link?.getAttribute("rel")).toBe("noopener noreferrer");
   expect(page.buttons()).toEqual(["Continue to OpenKey"]);
   expect(calls).not.toContain(`DELETE ${API}/api/transcriber/meetings`);
   expect(opens).toBe(0);
@@ -210,7 +216,7 @@ test("a failed Calendar disconnect shows the alert before anything is deleted; T
   answers[DISCONNECT] = [{ status: 503, body: { error: "unavailable" } }, { status: 200, body: { upstreamRevoked: "ok" } }];
   const page = await mount();
   await page.click("Delete OpenKey account");
-  expect(page.alert()).toBe(`${UNAVAILABLE} ${CALENDAR_FAILED}`);
+  expect(page.alert()).toBe(`${UNAVAILABLE} ${CALENDAR_FAILED} ${GOOGLE_LINK}`);
   expect(page.buttons()).toEqual(expect.arrayContaining(["Try again", "Continue to OpenKey"]));
   expect(calls).toEqual([DISCONNECT]);
   await page.click("Try again");

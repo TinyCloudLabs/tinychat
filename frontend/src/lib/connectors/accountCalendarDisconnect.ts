@@ -11,9 +11,25 @@
 import type { WebhookFailure } from "./connectorLifecycle";
 import type { ConnectorWebhooksClient } from "./webhooksApi";
 
+/**
+ * What the owner is asked to do at Google. Neutral on purpose: the exact name on Google's consent screen is set
+ * in the Google Cloud console, not in this repository. Replace this one constant with the verified name.
+ */
+export const GOOGLE_REMOVE_ACCESS_PHRASE = "remove our app's access in your Google account";
+
+/** Where an owner manages the apps that have access to their Google account. */
+export const GOOGLE_CONNECTIONS_URL = "https://myaccount.google.com/connections";
+
+/** The text of the link to `GOOGLE_CONNECTIONS_URL`, shown after either Calendar message. */
+export const GOOGLE_CONNECTIONS_LINK_TEXT = "Open your Google account";
+
+/** Shown, after the reason line, when Calendar autojoin could not be confirmed stopped or its sign-in removed. */
+export const CALENDAR_NOT_STOPPED_MESSAGE =
+  `We couldn't confirm that Calendar autojoin stopped or that your Google sign-in was removed from our server. Try again, or continue and ${GOOGLE_REMOVE_ACCESS_PHRASE}.`;
+
 /** Shown when our server deleted the Google sign-in but Google did not confirm the revoke. */
 export const GOOGLE_REVOKE_UNCONFIRMED_MESSAGE =
-  "Calendar autojoin was stopped and your Google sign-in was removed from our server, but Google didn't confirm it revoked access. To be sure, remove TinyChat under connected apps in your Google account.";
+  `Calendar autojoin stopped and your Google sign-in was removed from our server, but Google didn't confirm it revoked access. To be sure, ${GOOGLE_REMOVE_ACCESS_PHRASE}.`;
 
 export type CalendarDisconnect =
   | { status: "done" }
