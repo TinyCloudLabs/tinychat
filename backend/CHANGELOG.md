@@ -1,5 +1,17 @@
 # @tinychat/backend
 
+## 0.13.2-beta.6
+
+### Patch Changes
+
+- ed8f146: Keep TrustBot read access active in Home by quietly renewing the read grant for enabled areas while the owner session can extend it.
+
+  Details: TC-4000
+
+- b998a6a: Verify renewed TinyChat phone sign-ins with the existing app and lease checks.
+
+  Details: TC-4000
+
 ## 0.13.2-beta.5
 
 ### Patch Changes
