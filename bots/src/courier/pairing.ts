@@ -52,7 +52,11 @@ function checkedArtifact(input: string): PairArtifact {
     || typeof artifact.issuedAt !== "string" || !Number.isFinite(Date.parse(artifact.issuedAt))
     || (artifact.from.label !== undefined && (typeof artifact.from.label !== "string" || artifact.from.label.length > 256))
     || (artifact.step === "C" && (typeof artifact.delegation !== "string" || !artifact.delegation))) throw new PairingError("invalid", 400);
+  // Signed-challenge pairing only, decided here as well as in the library: an older Courier's A is told to update,
+  // and a C without its signed completion is never sent for verification.
+  if (artifact.step === "A" && !("challengeVersion" in artifact)) throw new PairingError("courier_update_required", 426);
   if ("challengeVersion" in artifact && artifact.challengeVersion !== 1) throw new PairingError("invalid", 400);
+  if (artifact.step === "C" && !("completion" in artifact)) throw new PairingError("invalid", 400);
   if ("completion" in artifact) {
     const completion = artifact.completion;
     if (!isRecord(completion) || Object.keys(completion).length !== 2
@@ -102,7 +106,7 @@ export function createCourierPairing(options: { store: CourierPeerStore; grants:
     pair(owner, input) {
       return serial(owner, async () => {
         let artifact: PairArtifact;
-        try { artifact = checkedArtifact(input); } catch { throw new PairingError("invalid", 400); }
+        try { artifact = checkedArtifact(input); } catch (error) { throw error instanceof PairingError ? error : new PairingError("invalid", 400); }
         const handle = artifact.callMe;
         if (artifact.step === "A") await cleanRetired(owner);
         const current = await store.getRuntime(owner, handle);

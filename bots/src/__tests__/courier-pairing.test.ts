@@ -10,8 +10,9 @@ const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 const owner = `did:pkh:eip155:1:0x${"1".repeat(40)}`;
 const remoteOwner = `did:pkh:eip155:1:0x${"2".repeat(40)}`;
-const start = { type: "courier-pair", v: 0, step: "A", from: { owner: remoteOwner, courier: "did:key:zReader" }, spaceId: `tinycloud:pkh:eip155:1:0x${"2".repeat(40)}:agents`, peer: "trustbot", callMe: "reader", issuedAt: "2026-11-23T12:00:00.000Z" };
-const final = { ...start, step: "C", delegation: "signed-peer-delegation" };
+const start = { type: "courier-pair", v: 0, step: "A", from: { owner: remoteOwner, courier: "did:key:zReader" }, spaceId: `tinycloud:pkh:eip155:1:0x${"2".repeat(40)}:agents`, peer: "trustbot", callMe: "reader", issuedAt: "2026-11-23T12:00:00.000Z", challengeVersion: 1 };
+const { challengeVersion: _version, ...startFields } = start;
+const final = { ...startFields, step: "C", delegation: "signed-peer-delegation", completion: { x: "x".repeat(43), signature: "s".repeat(86) } };
 function setup() {
   const dir = mkdtempSync(join(tmpdir(), "trustbot-pairing-")); dirs.push(dir);
   let now = Date.parse("2026-11-23T12:00:00.000Z");
@@ -229,4 +230,18 @@ test("an unconfirmed peer grant at finalize keeps the pending row for a retry of
   expect((await store.getPending(owner, "reader"))?.pending.handle).toBe("reader");
   adapter.finalizePairing = finalize;
   expect(await pairing.pair(owner, JSON.stringify(final))).toMatchObject({ peer: { handle: "reader", status: "paired" } });
+});
+
+test("signed-challenge pairing is enforced before the library: old A gets 426, C without completion never verifies", async () => {
+  const { pairing, adapter, store, finalized } = setup();
+  let accepted = 0;
+  const accept = adapter.acceptPairing;
+  adapter.acceptPairing = async (ctx, artifact) => { accepted++; return accept(ctx, artifact); };
+  expect(await pairing.pair(owner, JSON.stringify(startFields)).catch(error => error)).toMatchObject({ code: "courier_update_required", status: 426 });
+  expect(accepted).toBe(0);
+  await pairing.pair(owner, JSON.stringify(start));
+  const { completion: _completion, ...unsigned } = final;
+  expect(await pairing.pair(owner, JSON.stringify(unsigned)).catch(error => error)).toMatchObject({ code: "invalid", status: 400 });
+  expect(finalized()).toBe(0);
+  expect((await store.getPending(owner, "reader"))?.pending.handle).toBe("reader");
 });
