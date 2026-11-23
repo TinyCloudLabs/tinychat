@@ -73,7 +73,7 @@ test("the next renewal tick revokes the prior grant when the committed save lost
       throw new DOMException("Timed out", "TimeoutError");
     }
     return Response.json(committed ? {
-      ...saved, grantCid: "replacement", replacedGrantCid: "prior",
+      ...saved, grantCid: "replacement", replacedGrantCid: "baaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       expiresAt: Date.now() + 6 * DAY_MS, renewAfter: Date.now() + 3 * DAY_MS,
     } : saved);
   });
@@ -82,6 +82,6 @@ test("the next renewal tick revokes the prior grant when the committed save lost
   expect(revoked).toEqual([]);
   expect(await ensureTrustBotReadGrant(tcw)).toBe(true);
   expect(await ensureTrustBotReadGrant(tcw)).toBe(false);
-  expect(revoked).toEqual(["prior"]);
+  expect(revoked).toEqual(["baaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]);
   expect(lifetimes).toHaveLength(1);
 });
