@@ -19,7 +19,7 @@ import { resealLegacyBotHistory, type BotHistoryResealReport } from "./historyRe
 
 export const BOT_HISTORY_KEY_APPROVAL_DESCRIPTION = "Set up encryption and read chat history with your bots in your TinyCloud (up to 7 days).";
 
-export const BOT_HISTORY_LEGACY_APPROVAL_DESCRIPTION = "Open your older encrypted chats with your bots, including any secrets in them, for 1 hour, to move them to their own encryption key.";
+export const BOT_HISTORY_LEGACY_APPROVAL_DESCRIPTION = "Open everything encrypted with your account's main key for 1 hour, including older bot chats, saved secrets and keys for connected services, so your bot chats can move to their own encryption key.";
 
 export function botHistoryOwnerPermissions(address: string): PermissionEntry[] {
   return [{
