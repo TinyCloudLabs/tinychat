@@ -70,3 +70,57 @@ test("a stalled or failed audit forward leaves the bot reply unchanged", async (
     log.mockRestore();
   }
 });
+
+test("caps refusal reports per bot per UTC day and logs the cap once", async () => {
+  let now = Date.parse("2026-11-23T23:59:59.000Z");
+  let delivered = 0;
+  const log = spyOn(console, "log").mockImplementation(() => {});
+  try {
+    const desk = new MeetingDesk({
+      backendOrigin, backendCallSecret: secret, forwardRefusals: true, now: () => now,
+      async fetch() {
+        delivered++;
+        return new Response(null, { status: 204 });
+      },
+    });
+    desk.push(botId, { owner, conversation, areas: [] });
+    for (let i = 0; i < READS_PER_DAY + 3; i++) {
+      expect((await desk.call(botId, tool, {})).content[0]?.text).toBe(READ_ERRORS.off);
+    }
+    expect(delivered).toBe(READS_PER_DAY);
+    expect(log.mock.calls.filter(([entry]) => entry === '{"gateway":"reads","outcome":"audit_forward_capped"}')).toHaveLength(1);
+    now += 1000;
+    await desk.call(botId, tool, {});
+    expect(delivered).toBe(READS_PER_DAY + 1);
+  } finally {
+    log.mockRestore();
+  }
+});
+
+test("allows one audit forward in flight per bot", async () => {
+  let delivered = 0;
+  const response = Promise.withResolvers<Response>();
+  const other = `did:pkh:eip155:1:0x${"cd".repeat(20)}`;
+  const otherBot = botIdFor(other);
+  const log = spyOn(console, "log").mockImplementation(() => {});
+  try {
+    const desk = new MeetingDesk({
+      backendOrigin, backendCallSecret: secret, forwardRefusals: true,
+      fetch() { delivered++; return response.promise; },
+    });
+    desk.push(botId, { owner, conversation, areas: [] });
+    desk.push(otherBot, { owner: other, conversation, areas: [] });
+    await desk.call(botId, tool, {});
+    expect((await desk.call(botId, tool, {})).content[0]?.text).toBe(READ_ERRORS.off);
+    expect(delivered).toBe(1);
+    await desk.call(otherBot, tool, {});
+    expect(delivered).toBe(2);
+    response.resolve(new Response(null, { status: 204 }));
+    await response.promise;
+    await Promise.resolve();
+    await desk.call(botId, tool, {});
+    expect(delivered).toBe(3);
+  } finally {
+    log.mockRestore();
+  }
+});
