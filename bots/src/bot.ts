@@ -5,7 +5,7 @@
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, lstatSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { type ActivityRecord, HistoryJournal, type HistoryGrantUpdate, type HistoryOptions, type HistoryPermission, type StagedHistory, updateHistoryPermission } from "./history";
+import { type ActivityRecord, HistoryJournal, type HistoryGrantUpdate, type HistoryOptions, type HistoryPermission, readHistoryRevocation, removeHistoryRevocation, saveHistoryRevocation, type StagedHistory, updateHistoryPermission } from "./history";
 import { isRecord } from "./guards";
 import { type BotLayout, botLayout, type LayoutRoots } from "./layout";
 import { MESSAGING_STRINGS } from "./messaging-strings";
@@ -373,8 +373,7 @@ export class Bot {
   readonly #running: RunningLimit;
   #history: HistoryJournal | undefined;
   /** The newest archive grant seen by a bot that has no journal to record it in (a sibling that has not run yet). */
-  // In memory only (a journal or directory made for it would break the rule that a sibling that never ran leaves none): the
-  // backend drain sends a sibling's grant again every few minutes, so one lost to a restart is picked up again.
+  // The backend resends live grants. A confirmed revoke also has a durable marker outside the working directory.
   #grantSeen: HistoryPermission | undefined;
   #sandbox: Sandbox | undefined;
   #starting: Promise<Sandbox> | undefined;
@@ -816,6 +815,7 @@ export class Bot {
               ? "archive_pending" : await removeWorkingState(this.layout, this.#launcher);
           }
         }
+        if (!cause && this.#retiring && this.layout.botKey !== undefined) removeHistoryRevocation(this.layout);
       } catch {
         cause = "error";
       }
@@ -892,7 +892,16 @@ export class Bot {
       const expiry = grant?.kind === "revoke" && expiresAt !== undefined ? Math.min(expiresAt, now) : expiresAt;
       if (this.layout.botKey !== undefined && !existsSync(join(this.layout.dataDir, "history.json"))) {
         if (expiry === undefined || grant?.kind === "revoke") {
-          this.#grantSeen = updateHistoryPermission(this.#grantSeen, expiry ?? validUntil!, grant, now);
+          const current = this.#grantSeen ?? readHistoryRevocation(this.layout);
+          // A restart can lose the live grant. Record a signed revoke when there is no
+          // active permission to displace and the tag advances any saved revoke.
+          const end = expiry ?? validUntil!;
+          const canRecord = grant?.kind === "revoke" &&
+            (!current || (current.revoked && current.grant && grant.revision > current.grant.revision));
+          const baseline = canRecord ? { validUntil: end, grant } : current;
+          const next = updateHistoryPermission(baseline, end, grant, now);
+          if (next?.revoked && next !== current) saveHistoryRevocation(this.layout, next);
+          this.#grantSeen = next;
         }
       } else {
         if (expiry === undefined) { journal.begin(owner, 0); journal.permissionActive(validUntil!, now, grant); }
@@ -907,6 +916,10 @@ export class Bot {
   historyExpiryDue(now = Date.now()) { return this.#options.history ? this.#journal().expiryDue(now) : false; }
   historyPending() {
     return this.#options.history ? this.#historyOperation(journal => journal.pending()) : Promise.resolve(undefined);
+  }
+  historyNeedsGrantTag(): boolean {
+    const permission = this.#options.history && this.#journal().permission;
+    return !!permission && !permission.grant && permission.validUntil > Date.now();
   }
   historyReceipt(receipt: unknown) { return this.#historyOperation(journal => journal.accept(receipt)); }
   async historyCovered(): Promise<boolean> {

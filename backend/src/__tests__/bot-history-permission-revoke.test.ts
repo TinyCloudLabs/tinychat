@@ -113,3 +113,67 @@ test("a confirmed revoke reaches the bot and takes effect earlier than the pushe
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("the drain tags an existing Main grant once and can then apply a confirmed revoke", async () => {
+  const { HistoryPermissionRevoked } = await import("../bot-history");
+  const root = mkdtempSync(join(tmpdir(), "main-history-grant-tag-"));
+  const address = "0x" + "12".repeat(20);
+  const owner = historyOwner(address);
+  const secret = "b".repeat(64);
+  const options = { signerDid: "did:pkh:eip155:1:0x141f8c2b0fc5d114875f02627deb085e46ddd810", host: "http://127.0.0.1:9137", policy: "notice-then-expiry-30-days" as const };
+  const permission = { cid: "legacy-grant", revision: 0, validUntil: Date.now() + 4 * GRANT_RESEND_MS };
+  let revoked = false;
+  const history = {
+    owners: async () => [address],
+    grantPermission: async () => {
+      if (revoked) throw new HistoryPermissionRevoked(permission);
+      return permission;
+    },
+  } as unknown as BotHistory;
+  const bots = new BotManager({
+    hasState: () => false, leftover: () => false, mountPoints: () => [], launch: async () => { throw new Error("unexpected launch"); },
+  }, { dataRoot: join(root, "data"), runRoot: join(root, "run"), egressRoot: join(root, "egress") },
+  { idleMs: 60_000, turnTimeoutMs: 5000, maxTurnBytes: 512, history: options }, 1);
+  const main = bots.forOwner(owner);
+  const app = createApp({ secret, accounts: "*", bots, acceptLegacyOwnerHeader: false });
+  const applied = Promise.withResolvers<void>();
+  const pushes: string[][] = [];
+  const config: BotsConfig = {
+    serviceUrl: "http://bots.test", serviceSecret: secret, accountAllowed: () => true, postTimeoutMs: 1000,
+    fetchImpl: (async (input, init) => {
+      const request = new Request(input, init);
+      const response = await app(request);
+      if (request.method === "PUT" && response.ok) {
+        const params = new URL(request.url).searchParams;
+        pushes.push([params.get("kind")!, params.get("cid")!, params.get("revision")!]);
+        applied.resolve();
+      }
+      return response;
+    }) as typeof fetch,
+  };
+  let drain: ReturnType<typeof startBotHistoryDrain> | undefined;
+  try {
+    await main.historyPermission(owner, undefined, permission.validUntil);
+    expect(new HistoryJournal(main.layout, options).permission?.grant).toBeUndefined();
+
+    const start = Date.now();
+    drain = startBotHistoryDrain(history, config);
+    await applied.promise;
+    await Bun.sleep(0);
+    expect(new HistoryJournal(main.layout, options).permission?.grant?.cid).toBe(permission.cid);
+    setSystemTime(start + GRANT_RESEND_MS + 1000);
+    await drain.drain();
+    expect(pushes).toEqual([["extend", permission.cid, "0"]]);
+
+    revoked = true;
+    setSystemTime(start + 2 * GRANT_RESEND_MS + 2000);
+    await drain.drain();
+    expect(pushes).toEqual([["extend", permission.cid, "0"], ["revoke", permission.cid, "0"]]);
+    expect(new HistoryJournal(main.layout, options).permission?.revoked).toBe(true);
+  } finally {
+    setSystemTime();
+    drain?.stop();
+    await bots.stopAll();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
