@@ -10,7 +10,7 @@ import {
 } from "../fireflies-import-verify.js";
 import { DelegationActivationError } from "../portable-delegation.js";
 import { TenantCoordinator } from "../services/calendar-autojoin-store.js";
-import type { FirefliesGrantStore } from "../services/fireflies-grant-store.js";
+import { FirefliesGrantReplacesMismatchError, type FirefliesGrantStore } from "../services/fireflies-grant-store.js";
 import {
   MAX_SERIALIZED_DELEGATION_BYTES,
   MAX_SIGNATURE_BYTES,
@@ -161,7 +161,17 @@ export function createFirefliesDelegationRouter(config: FirefliesDelegationRoute
         res.status(400).json({ error: "invalid_body" });
         return;
       }
-      const { secretsGrant, meetingsGrant, siwe, signature } = body as Record<string, unknown>;
+      const { secretsGrant, meetingsGrant, siwe, signature, replaces: replacesRaw } = body as Record<string, unknown>;
+      // The ids of the grants this one replaces: required, and empty when the owner has nothing stored.
+      if (
+        !Array.isArray(replacesRaw) ||
+        replacesRaw.length > 2 ||
+        !replacesRaw.every((id) => typeof id === "string" && id.length > 0 && id.length <= 256)
+      ) {
+        res.status(400).json({ error: "invalid_body" });
+        return;
+      }
+      const replaces: string[] = replacesRaw;
       if (
         typeof secretsGrant !== "string" ||
         !secretsGrant ||
@@ -217,12 +227,18 @@ export function createFirefliesDelegationRouter(config: FirefliesDelegationRoute
             address,
             { secretsGrant, meetingsGrant, siwe, signature },
             incoming.verified.expiresAt,
+            replaces,
           );
           return incoming.verified.expiresAt.toISOString();
         });
         console.log("[fireflies-delegation] op=accept result=stored");
         res.json({ state: "active", expiresAt });
       } catch (error) {
+        if (error instanceof FirefliesGrantReplacesMismatchError) {
+          console.warn("[fireflies-delegation] op=accept result=replaces_mismatch");
+          res.status(409).json({ error: "replaces_mismatch" });
+          return;
+        }
         if (error instanceof DelegationActivationError && (error.status === 401 || error.status === 403)) {
           console.warn("[fireflies-delegation] op=accept result=node_rejected");
           res.status(403).json({ error: "delegation_rejected" });

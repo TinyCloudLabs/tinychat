@@ -34,6 +34,7 @@ beforeEach(() => {
     if (key === "DELETE https://api.example/api/transcriber/meetings") {
       return Response.json({ removed: 0, deleting: 0, listOnly: 0, notDeleted: 0, privateCloudDeleted: null });
     }
+    if (key === `DELETE ${GRANT}`) return Response.json({ state: "none", expiresAt: null });
     const next = responses[key]?.[0];
     if (!next) throw new Error(`no answer for ${key} Bearer ${SENTINEL}`);
     return new Response(JSON.stringify(next.body ?? {}), { status: next.status, headers: next.headers });
