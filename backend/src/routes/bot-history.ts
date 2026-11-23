@@ -32,11 +32,16 @@ function pushPermission(config: BotsConfig, address: string, key: string, kind: 
   return serviceCall(config, address, "PUT", url.href, body);
 }
 
+let replacedGrantRevokeFailures = 0;
+
 async function acceptAndPush(history: BotHistory, config: BotsConfig, address: string,
   envelope: Parameters<BotHistory["accept"]>[1], key: string) {
   const { active, replaced } = await history.accept(address, envelope, key);
   if (replaced) {
-    const revoked = await history.revoke(replaced.cid).then(() => true, () => false);
+    const revoked = await history.revoke(replaced.cid).then(() => true, () => {
+      console.warn(JSON.stringify({ event: "bot_history_replaced_grant_revoke_failed", count: ++replacedGrantRevokeFailures }));
+      return false;
+    });
     if (revoked) await pushPermission(config, address, key, "revoke", { expiresAt: Date.now() }, replaced).catch(() => {});
   }
   const response = await pushPermission(config, address, key, "extend", { validUntil: active.validUntil }, active);
