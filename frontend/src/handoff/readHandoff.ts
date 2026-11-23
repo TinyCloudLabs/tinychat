@@ -15,6 +15,7 @@ import { didKeyFromEd25519PublicKey, fromBase64Url, toBase64Url } from "@tinyclo
 import { BrowserWasmBindings } from "@tinycloud/web-sdk";
 import { CID } from "multiformats/cid";
 
+import { handoffChoicePath } from "../feed/setupChoice";
 import { decodeHandoffFragment } from "./codec";
 
 const KEY_PREFIX = "xyz.tinycloud.one/handoff/v1/";
@@ -33,6 +34,7 @@ export interface HandoffView {
   abilities: readonly (typeof ABILITIES)[number][];
   appIds: string[];
   appsTruncated: boolean;
+  setupChoicePath: string | null;
 }
 
 interface HandoffLink {
@@ -130,6 +132,7 @@ function parseRecord(bytes: Uint8Array, link: HandoffLink): HandoffView | null {
   return {
     agentName: agent_name, machineLabel: machine_label, connectedAt, accessExpiresAt,
     linkExpiresAt: link.linkExpiresAt, abilities, appIds: app_ids, appsTruncated: apps_truncated,
+    setupChoicePath: abilities.includes("feed") ? handoffChoicePath(link.key.slice(KEY_PREFIX.length)) : null,
   };
 }
 

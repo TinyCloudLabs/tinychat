@@ -987,7 +987,7 @@ async function main() {
   // TrustBot's reads (TRUSTBOT_READS_ENABLED): owner routes under /api/bots/main/reads, and the gateway's route for the
   // meeting tools. Off, neither route exists.
   const trustbotReadsSettings = botsConfig && !localValidation ? trustbotReadsFromEnv(process.env) : undefined;
-  const trustbotReads = botsConfig && trustbotReadsSettings ? await startTrustBotReads(trustbotReadsSettings, {
+  const trustbotReads = botsConfig && trustbotReadsSettings ? await startTrustBotReads({
     backendNode: node, backendDid: did, host: TINYCLOUD_HOST, otherDelegateDids: [process.env.MCP_CHAT_SERVICE_DID, AGENT_DID],
   }) : undefined;
   if (botsConfig && trustbotReadsSettings && trustbotReads) {

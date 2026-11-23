@@ -37,6 +37,7 @@ import { clearHeldAnswers, clearUnsentAnswer, heldAnswers, holdAnswer, isHeld, r
 import { observeFeedFailures, recordAnswerFailure } from "./feedFailures";
 import { isReplyOnlyRevision, storedRevisionEntry } from "./replyOnlyRevision";
 import { ownerActionMessage, type OwnerAction } from "./ownerActions";
+import { isSetupChoice, isSetupChoiceIssuance } from "./setupChoice";
 
 function sameIdentity(a: FeedCardIdentity, b: FeedCardIdentity) { return a.cardId === b.cardId && a.revision === b.revision && a.issuanceId === b.issuanceId; }
 
@@ -333,6 +334,15 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
 
   async function saveResponse(entry: HomeFeedEntry, response: NewFeedResponse, payload?: FeedResponsePayload, options?: HomeFeedSaveOptions) {
     assertEntryScope(entry, response);
+    if (isSetupChoice(entry)) {
+      if (!isSetupChoiceIssuance(entry) || response.kind !== "answer" || response.supersedesResponseId !== undefined
+          || response.text !== undefined || payload !== undefined
+          || !entry.state.card.choices?.some((choice) => choice.id === response.choiceId)) {
+        throw new RefusedWrite("Choose one of the options on the original setup card");
+      }
+      // The response table's primary key gives this issuance one slot across tabs and devices.
+      response = { ...response, responseId: `setup-${entry.state.card.cardId}` };
+    }
     let approval = false;
     if (payload?.type.startsWith("sitrep.")) {
       const typed = parseSitrepCardPayload(entry.state.card.payload?.sitrep);

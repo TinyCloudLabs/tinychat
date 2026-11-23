@@ -65,6 +65,8 @@ export interface TrustBotReadGrantsOptions {
   host: string;
   /** Secret the storage key is derived from. */
   sealSecret: Uint8Array;
+  /** Storage namespace for the configured reader. */
+  keyPrefix?: string;
   now?: () => number;
   /** Checks a grant; the default is the signed verifier in delegation-verify.ts. */
   verify?: typeof verifyTranscriptWriterGrant;
@@ -103,6 +105,7 @@ export class TrustBotReadGrants {
   readonly #store: ReadGrantStore;
   readonly #host: string;
   readonly #key: Buffer;
+  readonly #keyPrefix: string;
   readonly #now: () => number;
   readonly #verify: typeof verifyTranscriptWriterGrant;
   readonly #activate: (verified: VerifiedTranscriptWriter) => Promise<ReadAccess>;
@@ -113,7 +116,9 @@ export class TrustBotReadGrants {
     this.#reader = options.reader;
     this.#store = options.store;
     this.#host = options.host;
+    // Derive our own buffer here so the caller can clear sealSecret as soon as construction returns.
     this.#key = Buffer.from(hkdfSync("sha256", options.sealSecret, Buffer.alloc(0), "tinychat.trustbot-reads.grants/v1", 32));
+    this.#keyPrefix = options.keyPrefix ?? TRUSTBOT_READ_GRANT_KEY_PREFIX;
     this.#now = options.now ?? Date.now;
     this.#areas = options.areas ?? READ_AREA_NAMES.filter(area => area !== "telegram");
     this.#verify = options.verify ?? verifyTranscriptWriterGrant;
@@ -300,7 +305,7 @@ export class TrustBotReadGrants {
   }
 
   #keyFor(owner: string): string {
-    return `${TRUSTBOT_READ_GRANT_KEY_PREFIX}${owner}`;
+    return `${this.#keyPrefix}${owner}`;
   }
 
   async #load(owner: string): Promise<ReadGrantRecord | undefined> {
