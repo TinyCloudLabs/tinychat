@@ -21,3 +21,8 @@ test("empty state is only shown after a successful load", () => {
   expect(render("loading")).not.toContain("No tasks yet.");
   expect(render("failed")).not.toContain("No tasks yet.");
 });
+test("labels independent check evidence with the checker identity", () => {
+  const checked = { ...row, stage: "Checked" as const, checkedBy: "Review agent · abcd1234", evidence: "All saved notes reviewed." };
+  const html = renderToStaticMarkup(<LedgerView rows={[checked]} now={Date.parse("2026-11-23T14:00:00Z")} state="ready" onRefresh={() => {}} />);
+  expect(html).toContain("Checked by Review agent · abcd1234: All saved notes reviewed.");
+});

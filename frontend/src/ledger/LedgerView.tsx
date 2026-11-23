@@ -42,7 +42,7 @@ export function LedgerView({ rows, now, state, onRefresh }: LedgerViewProps) {
                       <p className="mt-1.5 text-label text-muted-foreground">{row.agentLabel}</p>
                       {row.condition ? <p className="mt-3 text-body text-foreground">{row.condition}</p> : null}
                       {row.note ? <p className="mt-2 whitespace-pre-wrap text-label leading-relaxed text-muted-foreground">{row.note}</p> : null}
-                      {row.evidence ? <p className="mt-2 text-label text-muted-foreground">{row.evidence}</p> : null}
+                      {row.evidence && row.checkedBy ? <p className="mt-2 text-label text-muted-foreground">Checked by {row.checkedBy}: {row.evidence}</p> : null}
                       {dependencies ? <p className="mt-2 text-label text-muted-foreground">{dependencies}</p> : null}
                     </div>
                     <div className="flex items-baseline gap-2 md:flex-col md:gap-1.5">

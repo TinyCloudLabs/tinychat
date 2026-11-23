@@ -25,7 +25,11 @@ test("a doer-only Checked does not count as independent acceptance", () => {
   expect(foldLedger([event("12", { stage: "Checked" })], now)[0]?.stage).toBe("Done by agent, not checked yet");
 });
 test("another folder's hash-matched check accepts work, including a checker with no tasks", () => {
-  expect(foldLedger([check(), event()], now)[0]).toMatchObject({ stage: "Checked", evidence: "Release reviewed", stageSince: "2026-11-23T13:00:00Z" });
+  expect(foldLedger([check(), event()], now)[0]).toMatchObject({ stage: "Checked", checkedBy: `Agent ${other}`, evidence: "Release reviewed", stageSince: "2026-11-23T13:00:00Z" });
+});
+test("identifies the checker by its cached owner name and hash-verified folder", () => {
+  const row = foldLedger([check(), event()], now, new Map([[checker, "Review agent"]]))[0];
+  expect(row).toMatchObject({ checkedBy: `Review agent · ${other}`, evidence: "Release reviewed" });
 });
 test("self checks and forged checker folders never accept work", () => {
   for (const record of [check("13", { checkedBy: did }, agent), check("13", {}, "0000000000000000")]) {

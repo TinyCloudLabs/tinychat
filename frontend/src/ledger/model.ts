@@ -16,6 +16,7 @@ export interface LedgerRow {
   condition?: string;
   note?: string;
   evidence?: string;
+  checkedBy?: string;
   blockedBy: number;
   blocks: number;
 }
@@ -77,7 +78,7 @@ export function foldLedger(records: readonly LedgerRecord[], now: number, agentN
     return hash === folder ? did : null;
   }
   const tasks = new Map<string, TaskSnapshot>();
-  const checks = new Map<string, { order: string; at: string; evidence: string }>();
+  const checks = new Map<string, { order: string; at: string; evidence: string; checkedBy: string }>();
   for (const record of records) {
     if (!record.key.startsWith(`${LEDGER_PREFIX}task/`) || !OBJECT(record.value)) continue;
     const parts = record.key.slice(`${LEDGER_PREFIX}task/`.length).split("/");
@@ -88,11 +89,14 @@ export function foldLedger(records: readonly LedgerRecord[], now: number, agentN
       const [, , doer, taskId, filename] = parts;
       if (!doer || !AGENT_ID.test(doer) || doer === folder || !taskId || !TASK_ID.test(taskId)) continue;
       const order = eventOrder(filename!);
-      if (!order || !canonicalDid(value.checkedBy, folder) || !utc(value.at) || Date.parse(value.at) > now || typeof value.evidence !== "string") continue;
+      const checker = canonicalDid(value.checkedBy, folder);
+      if (!order || !checker || !utc(value.at) || Date.parse(value.at) > now || typeof value.evidence !== "string") continue;
       const evidence = ledgerText(value.evidence, 200);
       if (!evidence) continue;
       const id = `${doer}/${taskId}`;
-      if (!checks.has(id) || checks.get(id)!.order < order) checks.set(id, { order, at: value.at, evidence });
+      const name = ledgerText(agentNames.get(checker) ?? "", 60);
+      const checkedBy = name ? `${name} · ${folder}` : `Agent ${folder}`;
+      if (!checks.has(id) || checks.get(id)!.order < order) checks.set(id, { order, at: value.at, evidence, checkedBy });
       continue;
     }
     if (parts.length !== 3 || !task || !TASK_ID.test(task) || value.taskId !== task) continue;
@@ -127,6 +131,7 @@ export function foldLedger(records: readonly LedgerRecord[], now: number, agentN
       snapshot.row.stage = "Checked";
       snapshot.row.stageSince = check.at;
       snapshot.row.evidence = check.evidence;
+      snapshot.row.checkedBy = check.checkedBy;
     }
     const done = snapshot.row.stage === "Checked" || snapshot.row.stage === "Done by agent, not checked yet" || snapshot.row.stage === "Dropped";
     if (done && now - Date.parse(snapshot.row.stageSince) > THIRTY_DAYS) continue;
