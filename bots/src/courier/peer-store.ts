@@ -1,6 +1,6 @@
 // Gateway-only sealed peer state. Public records never contain portable delegations or pending authority.
 import { createHash } from "node:crypto";
-import { closeSync, constants, existsSync, mkdirSync, openSync } from "node:fs";
+import { closeSync, constants, existsSync, mkdirSync, openSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { dlopen, FFIType } from "bun:ffi";
 import type { CourierLibraryStore, PairedPeer, PairPending } from "./lib-adapter";
@@ -108,9 +108,14 @@ export function createCourierPeerStore(dir: string, sealKey: Uint8Array, now: ()
     const ownerId = hash(owner.toLowerCase());
     return { ownerId, store: sealedGrantStore(join(dir, ownerId), sealKey) };
   }
-  function entries(owner: string): PeerRecord[] {
-    const { ownerId, store } = records(owner);
-    return store.load().flatMap(entry => {
+  // Every sealed peer file must read back. Skipping one would forget used CIDs or a pending revocation, so any
+  // unreadable, foreign or malformed record fails the whole owner closed instead.
+  function ownerEntries(ownerId: string): PeerRecord[] {
+    const ownerDir = join(dir, ownerId);
+    const loaded = sealedGrantStore(ownerDir, sealKey).load();
+    const files = existsSync(ownerDir) ? readdirSync(ownerDir).filter(name => name.endsWith(".json")) : [];
+    if (files.length !== loaded.length) throw new Error("courier_state_invalid");
+    return loaded.map(entry => {
       const value = entry.record;
       if (entry.botId !== ownerId || !isRecord(value) || value.v !== 1
         || typeof value.handle !== "string" || !COURIER_HANDLE.test(value.handle) || entry.id !== hash(value.handle)
@@ -121,9 +126,20 @@ export function createCourierPeerStore(dir: string, sealKey: Uint8Array, now: ()
         || (value.retired !== undefined && typeof value.retired !== "boolean")
         || (!value.peer && !value.runtime && !value.pending && !value.cleanup && !value.used)
         || (value.used !== undefined && (!Array.isArray(value.used) || !value.used.every(item =>
-          isRecord(item) && typeof item.cid === "string" && item.cid.length > 0 && item.cid.length <= 256 && time(item.expiresAt))))) return [];
-      return [value as unknown as PeerRecord];
+          isRecord(item) && typeof item.cid === "string" && item.cid.length > 0 && item.cid.length <= 256 && time(item.expiresAt))))) {
+        throw new Error("courier_state_invalid");
+      }
+      return value as unknown as PeerRecord;
     });
+  }
+  function entries(owner: string): PeerRecord[] { return ownerEntries(records(owner).ownerId); }
+  try {
+    // Refuse to start on damaged state rather than serve with cleanup duty or used CIDs missing.
+    for (const name of readdirSync(dir)) if (/^[0-9a-f]{64}$/.test(name)) ownerEntries(name);
+  } catch (error) {
+    closeSync(lock);
+    lock = undefined;
+    throw error;
   }
   function writable() { if (lock === undefined) throw new Error("courier_state_closed"); }
   function save(owner: string, record: PeerRecord) {

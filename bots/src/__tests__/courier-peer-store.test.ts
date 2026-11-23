@@ -11,6 +11,7 @@ const other = `did:pkh:eip155:1:0x${"2".repeat(40)}`;
 const key = new Uint8Array(32).fill(7);
 const peer: CourierPeer = { handle: "reader", peerDid: "did:key:zReader", status: "paired", pairedAt: 1_790_000_000_000, delegationExpiresAt: 1_790_001_000_000 };
 function directory() { const dir = mkdtempSync(join(tmpdir(), "trustbot-peers-")); dirs.push(dir); return dir; }
+const ownerDirIn = (dir: string) => join(dir, readdirSync(dir).find(name => /^[0-9a-f]{64}$/.test(name))!);
 
 test("sealed peers survive restart without exposing handles or DIDs and stay owner-scoped", async () => {
   const dir = directory();
@@ -20,12 +21,12 @@ test("sealed peers survive restart without exposing handles or DIDs and stay own
   const store = createCourierPeerStore(dir, key, () => peer.pairedAt);
   expect(await store.list(owner)).toEqual([peer]);
   expect(await store.list(other)).toEqual([]);
-  const ownerDir = join(dir, readdirSync(dir)[0]!);
+  const ownerDir = ownerDirIn(dir);
   const sealed = readFileSync(join(ownerDir, readdirSync(ownerDir)[0]!), "utf8");
   expect(sealed).not.toContain(peer.handle);
   expect(sealed).not.toContain(peer.peerDid);
   store.close();
-  expect(await createCourierPeerStore(dir, new Uint8Array(32).fill(8)).list(owner)).toEqual([]);
+  expect(() => createCourierPeerStore(dir, new Uint8Array(32).fill(8))).toThrow("courier_state_invalid");
 });
 
 test("unpair removes the peer durably", async () => {
@@ -49,15 +50,19 @@ test("pending pairings are sealed but never exposed as paired", async () => {
   expect((await store.getPending(owner, "reader"))?.pending.artifactB).toBe("accept-code");
 });
 
-test("damaged records and invalid peers fail closed", async () => {
+test("damaged records and invalid peers fail closed, and a damaged store refuses to start", async () => {
   const dir = directory();
   const store = createCourierPeerStore(dir, key);
   await expect(store.put(owner, { ...peer, handle: "../escape" })).rejects.toThrow();
   await expect(store.put(owner, { ...peer, delegationExpiresAt: Infinity })).rejects.toThrow();
   await store.put(owner, peer);
-  const ownerDir = join(dir, readdirSync(dir)[0]!);
+  const ownerDir = ownerDirIn(dir);
   writeFileSync(join(ownerDir, readdirSync(ownerDir)[0]!), '{"v":1,"data":"damaged"}');
-  expect(await store.list(owner)).toEqual([]);
+  await expect(store.list(owner)).rejects.toThrow("courier_state_invalid");
+  await expect(store.put(owner, { ...peer, handle: "other" })).rejects.toThrow("courier_state_invalid");
+  store.close();
+  expect(() => createCourierPeerStore(dir, key)).toThrow("courier_state_invalid");
+  expect(() => createCourierPeerStore(dir, key)).toThrow("courier_state_invalid");
 });
 
 test("late renewal cannot resurrect an unpaired peer", async () => {
