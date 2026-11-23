@@ -263,6 +263,8 @@ jobs:
           TAURI_BUNDLE_CONFIG: ${{ steps.bundle.outputs.config }}
           VITE_EXO_BUILD_NUMBER: ${{ steps.bundle.outputs.bundle-version }}
           VITE_EXO_CHANNEL: ${{ steps.bundle.outputs.prerelease == 'true' && 'beta' || 'stable' }}
+          # Connector keys are saved under their own encryption key, as in the web production build (wrangler.toml).
+          VITE_CONNECTOR_NAMED_KEY_WRITES: "true"
           IPC_SELFTEST: ${{ inputs.ipc-selftest }}
           SMOKE: ${{ inputs.smoke }}
           NODE_OPTIONS: --max-old-space-size=4096
