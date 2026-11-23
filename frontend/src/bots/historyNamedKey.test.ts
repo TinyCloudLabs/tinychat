@@ -139,3 +139,52 @@ for (const failure of [undefined, "exact_key_unavailable", "missing_etag", "desc
     if (failure === "readback_failed") expect(events).toEqual(["stage", "readback"]);
   });
 }
+
+test("one unreadable named batch leaves both readable versions visible and the legacy batch resealed", async () => {
+  const prefix = await botHistoryDirectory(address, "main");
+  const spaceId = makePkhSpaceId(address, 1, "applications");
+  const fixture = (seq: number, text: string) => {
+    const key = `${prefix}${generation}/${seq}-${challenge}`;
+    const aad = btoa(JSON.stringify({ owner: `did:pkh:eip155:1:${address}`, spaceId, path: key }));
+    const plaintext = new TextEncoder().encode(JSON.stringify({
+      v: 1, generation, seq, challenge, record: { type: "user", text },
+    }));
+    return { key, aad, plaintext };
+  };
+  const legacy = fixture(1, "readable v1");
+  const unreadable = fixture(2, "unavailable");
+  const named = fixture(3, "readable v2");
+  const namedEnvelope = (aad: string) => ({ v: 2, networkId, keyPath: BOT_HISTORY_KEY_PATH, keyVersion: 1, aad });
+  const rows = new Map<string, object>([
+    [legacy.key, { v: 1, networkId, aad: legacy.aad }],
+    [unreadable.key, namedEnvelope(unreadable.aad)],
+    [named.key, namedEnvelope(named.aad)],
+  ]);
+  const tcw = {
+    session: () => session,
+    hasPermissions: () => true,
+    signSessionBytes: async () => new Uint8Array(64),
+    kvForSpace: () => ({
+      list: async () => ({ ok: true, data: { keys: [...rows.keys()] } }),
+      get: async (key: string) => ({ ok: true, data: { data: rows.get(key), headers: { etag: "etag" } } }),
+      put: async (key: string, envelope: object) => { rows.set(key, envelope); return { ok: true }; },
+      delete: async (key: string) => { rows.delete(key); },
+    }),
+    encryption: { decryptEnvelope: async () => ({ ok: true, data: legacy.plaintext }) },
+    keys: {
+      decrypt: async ({ aad }: { aad: string }) => {
+        if (aad === unreadable.aad) throw Object.assign(new Error("key deleted"), { code: "KEY_UNAVAILABLE" });
+        return aad === named.aad ? named.plaintext : legacy.plaintext;
+      },
+      ensureKey: async () => descriptor,
+      encrypt: async () => namedEnvelope(legacy.aad),
+    },
+  } as unknown as TinyCloudWeb;
+  await publishBotHistoryKeyDescriptor(tcw, descriptor, { post: async () => {} });
+  const lines = await readBotHistory(tcw, undefined, { reseal: true });
+  expect(lines.filter(line => !line.unreadableHistory).map(line => line.text)).toEqual(["readable v1", "readable v2"]);
+  expect(lines.filter(line => line.unreadableHistory).map(line => line.text)).toEqual([
+    "Some earlier messages with TrustBot can't be opened with your current encryption key.",
+  ]);
+  expect(rows.get(legacy.key)).toEqual(namedEnvelope(legacy.aad));
+});

@@ -3,6 +3,6 @@
 "@tinychat/frontend": patch
 ---
 
-TrustBot's chat history uses its own encryption key. New history can be saved with an approval for that one key. When you open earlier messages with their existing encryption approval, TinyChat can move them to the new key.
+Bot chat history in TinyChat is sealed with its own encryption key. Saving new history needs your approval for that one key. When you open earlier messages, TinyChat can move them to that key.
 
 Details: TC-3823

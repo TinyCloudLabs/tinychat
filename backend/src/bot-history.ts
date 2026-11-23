@@ -270,16 +270,22 @@ export class BotHistory {
     const access = await this.#activate(grant);
     const path = `${HISTORY_PREFIX}${historyBotId(address, sibling)}/${batch.generation}/${batch.seq}-${batch.challenge}`;
     const aad = Buffer.from(JSON.stringify({ owner, spaceId: grant.spaceId, path }));
+    const encodedAad = aad.toString("base64");
     // Recipient network and exact key path are derived exclusively from the verified owner, never from the batch.
     const network = botHistoryNetworkId(address);
     const batchJson = JSON.stringify(batch);
     const batchHash = historyHash(batchJson);
     const staged = (input as { staged?: StagedHistory }).staged;
     const saved = staged?.envelope;
+    const bound = (value: unknown): value is Record<string, unknown> =>
+      isObject(value) && value.networkId === network && value.aad === encodedAad;
+    const named = (value: unknown): value is Record<string, unknown> & { keyVersion: number } =>
+      bound(value) && value.v === 2 && value.keyPath === BOT_HISTORY_KEY_PATH &&
+      typeof value.keyVersion === "number" && Number.isSafeInteger(value.keyVersion) && value.keyVersion > 0;
+    const legacy = bound(saved) && saved.v === 1 && saved.keyPath === undefined;
     if (staged && (
       staged.batchHash !== batchHash || staged.seq !== batch.seq || staged.challenge !== batch.challenge ||
-      !isObject(saved) || saved.networkId !== network || saved.aad !== aad.toString("base64") ||
-      !((saved.v === 1 && saved.keyPath === undefined) || (saved.v === 2 && saved.keyPath === BOT_HISTORY_KEY_PATH))
+      !(legacy || named(saved))
     )) throw new Error("history_integrity_failure");
 
     const recipient = staged ? undefined : await this.#keyDescriptor(address);
@@ -291,7 +297,10 @@ export class BotHistory {
     let envelope = saved;
     if (missing) {
       const { descriptor } = recipient ?? await this.#keyDescriptor(address);
-      if (!isObject(saved) || saved.v === 1) {
+      if (named(saved) && saved.keyVersion > descriptor.keyVersion) {
+        throw new Error("history_recipient_mismatch");
+      }
+      if (!named(saved) || saved.keyVersion < descriptor.keyVersion) {
         envelope = await sealBotHistoryBatch(this.node, {
           networkId: network,
           plaintext: Buffer.from(batchJson),
@@ -301,16 +310,19 @@ export class BotHistory {
         // Persist the randomized ciphertext before its first KV write so a crash
         // leaves the same envelope available for retry.
         await stage({ seq: batch.seq, challenge: batch.challenge, batchHash, envelope });
-      } else if (saved.keyVersion !== descriptor.keyVersion) {
-        throw new Error("history_recipient_mismatch");
       }
       await access.kv.put(path, envelope, { ifNoneMatch: "*", prefix: "" });
+    } else {
+      const committed = resultData(before).data;
+      // An owner may have resealed the committed v1 between its put and receipt.
+      // Use the bound named envelope for the receipt without touching that record.
+      if (legacy && named(committed)) envelope = committed;
+      if (!envelope || historyHash(JSON.stringify(committed)) !== historyHash(JSON.stringify(envelope))) {
+        throw new Error("history_integrity_failure");
+      }
     }
     if (!envelope) throw new Error("history_integrity_failure");
     const ciphertextHash = historyHash(JSON.stringify(envelope));
-    if (!missing && historyHash(JSON.stringify(resultData(before).data)) !== ciphertextHash) {
-      throw new Error("history_integrity_failure");
-    }
     const readback = resultData(await access.kv.get(path, { prefix: "" }));
     if (historyHash(JSON.stringify(readback.data)) !== ciphertextHash) throw new Error("history_integrity_failure");
     const body = historyReceiptBody(owner, batch, grant.spaceId, this.host, ciphertextHash, sibling ? { key: sibling, path } : undefined);

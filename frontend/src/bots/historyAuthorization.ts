@@ -14,13 +14,10 @@ import {
   type SignedBotHistoryKeyEnvelope,
 } from "./botHistoryKey";
 import { botsApi } from "./botsApi";
-import { MAIN_BOT_NAME } from "./botsStrings";
 
-/** Placeholder approval description for exact-key bot history access (listed in PR for copy review). */
-export const BOT_HISTORY_KEY_APPROVAL_DESCRIPTION = `Set up encryption and read ${MAIN_BOT_NAME}'s chat history in your TinyCloud (up to 7 days).`;
+export const BOT_HISTORY_KEY_APPROVAL_DESCRIPTION = "Set up encryption and read chat history with your bots in your TinyCloud (up to 7 days).";
 
-/** Placeholder approval description for one-time legacy v1 read + reseal (listed in PR for copy review). */
-export const BOT_HISTORY_LEGACY_APPROVAL_DESCRIPTION = `Read earlier ${MAIN_BOT_NAME} chat history in your TinyCloud so it can move to its own key (up to 7 days).`;
+export const BOT_HISTORY_LEGACY_APPROVAL_DESCRIPTION = "Read earlier chat history with your bots in your TinyCloud to move it to its own key (up to 7 days).";
 
 export function botHistoryOwnerPermissions(address: string): PermissionEntry[] {
   return [{
@@ -121,9 +118,21 @@ export async function refreshBotHistoryKeyDescriptor(tcw: TinyCloudWeb): Promise
 export function useBotHistoryDescriptorRenewal(tcw: TinyCloudWeb | null): void {
   useEffect(() => {
     if (!tcw) return;
-    const refresh = () => { void refreshBotHistoryKeyDescriptor(tcw).catch(() => {}); };
+    let pending = false;
+    const refresh = () => {
+      if (pending) return;
+      pending = true;
+      void refreshBotHistoryKeyDescriptor(tcw).catch(() => {}).finally(() => { pending = false; });
+    };
+    const refreshWhenVisible = () => { if (!document.hidden) refresh(); };
     refresh();
-    const timer = setInterval(refresh, 60_000);
-    return () => clearInterval(timer);
+    const timer = setInterval(refreshWhenVisible, 10 * 60_000);
+    window.addEventListener("focus", refreshWhenVisible);
+    document.addEventListener("visibilitychange", refreshWhenVisible);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener("focus", refreshWhenVisible);
+      document.removeEventListener("visibilitychange", refreshWhenVisible);
+    };
   }, [tcw]);
 }

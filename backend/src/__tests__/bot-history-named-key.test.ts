@@ -86,10 +86,11 @@ const batch = {
 test("the authenticated descriptor route refuses another owner, network, key or session signature", async () => {
   const f = await fixture();
   const another = await makeSignedTranscriptGrant({ privateKey: generatePrivateKey() });
+  let authenticatedOwner = address;
   const app = express();
   app.use("/history", createBotHistoryRouter(f.history, {
     serviceUrl: host, serviceSecret: "fixture", accountAllowed: () => true, postTimeoutMs: 1000,
-  }, (req, _res, next) => { req.user = { address } as typeof req.user; next(); }));
+  }, (req, _res, next) => { req.user = { address: authenticatedOwner } as typeof req.user; next(); }));
   const server = app.listen(0, "127.0.0.1");
   await once(server, "listening");
   const port = (server.address() as { port: number }).port;
@@ -100,6 +101,7 @@ test("the authenticated descriptor route refuses another owner, network, key or 
     const valid = f.grant.signKeyDescriptor();
     for (const rejected of [
       another.signKeyDescriptor(),
+      another.signKeyDescriptor({ owner: valid.descriptor.owner, networkId }),
       f.grant.signKeyDescriptor({ networkId: networkId.replace(":default", ":other") }),
       f.grant.signKeyDescriptor({ keyPath: `${BOT_HISTORY_KEY_PATH}-other` }),
       { ...valid, descriptor: { ...valid.descriptor, keyVersion: 2 } },
@@ -107,6 +109,9 @@ test("the authenticated descriptor route refuses another owner, network, key or 
     ]) {
       expect((await post(rejected)).status).toBe(400);
     }
+    authenticatedOwner = another.address;
+    expect((await post(valid)).status).toBe(400);
+    authenticatedOwner = address;
     expect((await post(valid)).status).toBe(200);
     await f.history.archive(address, batch, async () => {});
     expect(f.encrypted).toEqual([{ path: BOT_HISTORY_KEY_PATH, descriptor: expect.objectContaining({
@@ -127,6 +132,7 @@ test("signed descriptors must be active, deletable, well formed and within the s
   for (const override of [
     { state: "deleted" }, { kind: "deterministic" }, { alg: "unknown" }, { keyVersion: 0 },
     { publicEncryptionKey: "bad==" }, { exp: sec }, { exp: sec + BOT_HISTORY_KEY_MAX_MS / 1000 + 1 },
+    { iat: sec + 301, exp: sec + 3600 },
   ]) {
     const signed = grant.signKeyDescriptor(override as Parameters<typeof grant.signKeyDescriptor>[0]);
     await expect(verifyBotHistoryKeyDescriptor(address, signed, now)).rejects.toThrow();
@@ -149,6 +155,14 @@ test("pinned keys reject a different same-version public key and a version rollb
   await f.history.acceptKeyDescriptor(address, f.grant.signKeyDescriptor({ keyVersion: 3, publicEncryptionKey }));
   await f.history.archive(address, batch, async () => {});
   expect(f.encrypted[0]?.descriptor).toMatchObject({ keyVersion: 3, publicEncryptionKey });
+});
+
+test("an older signed attestation cannot replace a newer pin for the same key", async () => {
+  const f = await fixture();
+  const older = await signedGrant(Date.now() - 2000);
+  await f.history.acceptKeyDescriptor(address, f.grant.signKeyDescriptor());
+  await expect(f.history.acceptKeyDescriptor(address, older.signKeyDescriptor()))
+    .rejects.toThrow("history_key_descriptor_stale");
 });
 
 test("archive checks expiry again and never seals with the network key on any failure", async () => {
@@ -216,3 +230,62 @@ for (const alreadyStored of [false, true]) {
     } finally { rmSync(tmp, { recursive: true, force: true }); }
   });
 }
+
+test("a committed v1 stage receives a receipt for the owner's bound v2 reseal", async () => {
+  const f = await fixture();
+  const path = `${directory}${batch.generation}/${batch.seq}-${batch.challenge}`;
+  const aad = Buffer.from(JSON.stringify({ owner: historyOwner(address), spaceId, path })).toString("base64");
+  const legacy = { v: 1, networkId, aad, ciphertext: "v1 ciphertext" };
+  const input = {
+    ...batch, staged: { seq: batch.seq, challenge: batch.challenge, batchHash: historyHash(JSON.stringify(batch)), envelope: legacy },
+  };
+  const resealed = { v: 2, keyPath: BOT_HISTORY_KEY_PATH, keyVersion: 1, networkId, aad, ciphertext: "resealed ciphertext" };
+  const noStage = async () => { throw new Error("unexpected restage"); };
+  for (const mismatch of [{ aad: "wrong" }, { networkId: "wrong" }, { keyPath: "wrong" }]) {
+    await f.owned.put(path, { ...resealed, ...mismatch });
+    await expect(f.history.archive(address, input, noStage)).rejects.toThrow("history_integrity_failure");
+  }
+  await f.owned.put(path, resealed);
+  const writes = f.owned.writes();
+  const receipt = await f.history.archive(address, input, noStage);
+  expect(receipt.body.ciphertextHash).toBe(historyHash(JSON.stringify(resealed)));
+  expect(await f.history.archive(address, input, noStage)).toEqual(receipt);
+  expect(f.owned.writes()).toBe(writes);
+  expect(f.encrypted).toEqual([]);
+});
+
+test("an uncommitted named stage can advance to a newer pinned key and survives restart", async () => {
+  const f = await fixture();
+  await f.history.acceptKeyDescriptor(address, f.grant.signKeyDescriptor({ keyVersion: 2 }));
+  const tmp = mkdtempSync("/var/tmp/tc3823-rotated-journal-");
+  try {
+    const layout = botLayout(historyBotId(address), { dataRoot: join(tmp, "data"), egressRoot: join(tmp, "egress"), runRoot: join(tmp, "run") });
+    const options = { host, signerDid: backendDid, policy: "notice-then-expiry-30-days" as const };
+    let journal = new HistoryJournal(layout, options);
+    journal.begin(historyOwner(address), 1000);
+    journal.append({ type: "assistant", text: "stage before rotation" });
+    const pending = journal.pending()!;
+    const path = `${directory}${pending.generation}/${pending.seq}-${pending.challenge}`;
+    const aad = Buffer.from(JSON.stringify({ owner: historyOwner(address), spaceId, path })).toString("base64");
+    const previous = {
+      seq: pending.seq, challenge: pending.challenge, batchHash: historyHash(JSON.stringify(pending)),
+      envelope: { v: 2, keyPath: BOT_HISTORY_KEY_PATH, keyVersion: 1, networkId, aad, ciphertext: "old ciphertext" },
+    };
+    journal.stage(previous);
+
+    await expect(f.history.archive(address, journal.pending(), async stage => {
+      journal.stage(stage);
+      throw new Error("simulated crash after rotation restage");
+    })).rejects.toThrow("simulated crash");
+    expect(f.owned.writes()).toBe(0);
+
+    journal = new HistoryJournal(layout, options);
+    expect(journal.pending()?.staged?.envelope).toHaveProperty("keyVersion", 2);
+    expect(() => journal.stage(previous)).toThrow("history_stage_conflict");
+    const receipt = await f.history.archive(address, journal.pending(), async () => { throw new Error("unexpected restage"); });
+    expect(f.owned.entries.get(path)?.body).toHaveProperty("keyVersion", 2);
+    expect(f.encrypted).toHaveLength(1);
+    await journal.accept(receipt);
+    expect(await journal.verifyCoverage()).toBe(true);
+  } finally { rmSync(tmp, { recursive: true, force: true }); }
+});

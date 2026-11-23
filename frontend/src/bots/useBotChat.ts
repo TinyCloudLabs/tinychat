@@ -5,7 +5,6 @@ import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 
 import { BotsError, type BotActivity, type BotMessage, type MainEvent } from "./botsApi";
 import { isHistoryDeclined } from "./historyAuthorization";
-import { isHistoryUnreadable } from "./historyRead";
 import type { ChatLine, MainChatState, MainTurn } from "./useMainChat";
 
 /** How the view reaches one bot. */
@@ -140,7 +139,7 @@ export function createBotChats(sourceFor: (key: string) => BotChatSource): BotCh
         const { messages, activity } = source.listConversation
           ? await source.listConversation(signal)
           : { messages: await source.list(signal), activity: [] };
-        update(key, (state) => ({ ...state, history: "loaded", lines: messages.map(({ id, role, text }): ChatLine => ({ id, role, text })) }));
+        update(key, (state) => ({ ...state, history: "loaded", lines: messages.map(({ id, role, text, unreadableHistory }): ChatLine => ({ id, role, text, ...(unreadableHistory ? { unreadableHistory } : {}) })) }));
         setActivity(key, anchorActivity(messages, activity));
       } catch (cause) {
         if (signal.aborted) return;
@@ -149,7 +148,7 @@ export function createBotChats(sourceFor: (key: string) => BotChatSource): BotCh
           ...errorFields(cause),
           cause: cause instanceof Error && cause.cause !== undefined ? errorFields(cause.cause) : undefined,
         });
-        update(key, (state) => ({ ...state, history: isHistoryDeclined(cause) ? "declined" : isHistoryUnreadable(cause) ? "unreadable" : "failed" }));
+        update(key, (state) => ({ ...state, history: isHistoryDeclined(cause) ? "declined" : "failed" }));
       }
     })();
     target.history = run;

@@ -11,6 +11,7 @@ import {
 import { botHistoryOwnerPermissions } from "./historyAuthorization";
 import { BOT_HISTORY_RECORD_PREFIX, BOT_HISTORY_RECORD_SUFFIX, botHistoryDirectory } from "./botHistoryPath";
 import { isAppDecision, toSecretLine, type BotMessage } from "./botsApi";
+import { BOTS_STRINGS } from "./botsStrings";
 
 /** Records of one page fetched and decrypted at once. Each decrypt is a round trip to the node (TC-3054). */
 export const HISTORY_READ_CONCURRENCY = 4;
@@ -42,17 +43,6 @@ export interface ReadBotHistoryOptions {
   /** Receives counts and failure codes when reseal runs. Never includes plaintext or keys. */
   onResealReport?: (report: BotHistoryResealReport) => void;
 }
-
-/** Raised when a v2 history batch cannot be decrypted because its key was deleted, rotated, or refused. */
-export class HistoryUnreadableError extends Error {
-  constructor(cause?: unknown) {
-    super("history_batch_unreadable", cause === undefined ? undefined : { cause });
-    this.name = "HistoryUnreadableError";
-  }
-}
-
-export const isHistoryUnreadable = (cause: unknown): boolean =>
-  cause instanceof HistoryUnreadableError || (cause instanceof Error && cause.message === "history_batch_unreadable");
 
 /** Owner-authorized reads remain separate from the backend's write-only encryption role. */
 export async function readBotHistory(
@@ -232,7 +222,9 @@ async function readHistory(
       try {
         plaintext = await tcw.keys.decrypt(envelope as NamedKeyEnvelope);
       } catch (error) {
-        if (isUnreadableKeyError(error)) throw new HistoryUnreadableError(error);
+        if (isUnreadableKeyError(error)) {
+          return { id: `unreadable-${key.slice(prefix.length)}`, role: "bot", text: BOTS_STRINGS.historyUnreadable, at: "", unreadableHistory: true };
+        }
         throw new Error("history_decrypt_unavailable", { cause: error });
       }
     } else {
