@@ -7,6 +7,7 @@ import { BOT_HISTORY_KEY_MAX_MS } from "./botHistoryKey";
 import { botHistoryDirectory } from "./botHistoryPath";
 import { authorizeBotHistory, BOT_HISTORY_LEGACY_APPROVAL_DESCRIPTION, botHistoryOwnerPermissions } from "./historyAuthorization";
 import type { BotHistoryResealReport } from "./historyRead";
+import { installDom } from "@/test/dom";
 import { encryptionNetworkId, LEGACY_NETWORK_APPROVAL_MAX_MS } from "../lib/connectors/encryptionGrant";
 
 const address = `0x${"56".repeat(20)}`;
@@ -117,7 +118,7 @@ function fixture(seeds: Seed[], options: { sessionMs?: number; failCommit?: Set<
     return { envelope: entry.envelope, plaintext: plaintexts[entry.envelope.ct as number]! };
   };
   const legacyRequest = () => requests.find((request) => request.permissions[0]!.actions.join() === "decrypt");
-  return { authorize, requests, entries, stored, kvCalls, legacyRequest };
+  return { authorize, requests, granted, entries, stored, kvCalls, legacyRequest };
 }
 
 const isNamed = (envelope: Record<string, unknown>) => envelope.keyPath === BOT_HISTORY_KEY_PATH;
@@ -176,6 +177,22 @@ describe("the older-history decrypt request", () => {
     const f = fixture([await record("main", 1)], { sessionMs: -60_000 });
     await expect(f.authorize({ sessionEndMs: async () => null })).rejects.toThrow("history_session_expired");
     expect(f.requests).toEqual([]);
+  });
+
+  test("without a saved renewal, a session that holds the whole network keeps it and gets the one-hour approval beside it", async () => {
+    const restore = installDom({});
+    try {
+      const f = fixture([await record("main", 1), await record(siblingA, 1)], { held: "whole-network" });
+      const reports: BotHistoryResealReport[] = [];
+      await f.authorize({ onResealReport: (report) => reports.push(report) });
+      // Only the older-history approval is asked for, for the hour; the grants already held are neither asked for nor given up.
+      expect(f.requests).toHaveLength(1);
+      expect(f.legacyRequest()!.expiryMs).toBe(LEGACY_NETWORK_APPROVAL_MAX_MS);
+      expect(f.granted.has(`${networkId}|decrypt`)).toBe(true);
+      expect(reports).toEqual([{ resealed: 2, failed: [] }]);
+    } finally {
+      restore();
+    }
   });
 
   test("never outlasts a session that ends sooner", async () => {
