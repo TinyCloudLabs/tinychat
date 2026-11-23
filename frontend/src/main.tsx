@@ -1,4 +1,4 @@
-import { StrictMode } from "react";
+import { lazy, StrictMode, Suspense } from "react";
 import { createRoot } from "react-dom/client";
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { App as CapacitorApp } from "@capacitor/app";
@@ -31,6 +31,12 @@ import { NATIVE_SESSION_KIND_KEY, NATIVE_SIGN_OUT_PENDING_KEY } from "./lib/open
 import { captureShareLinkFromLocation } from "./lib/nativeShares/link";
 import { ShareAppUrlListener } from "./capture/share/ShareAppUrlListener";
 import { installStatusTapScroll } from "./lib/statusTapScroll";
+
+const HandoffRoute = lazy(() => import("./handoff/HandoffPage").catch(() => {
+  // The route could not mount to consume the fragment captured by index.html.
+  window.takeHandoffFragment?.();
+  return { default: () => <Navigate to="/" replace /> };
+}));
 
 // A share link's key is in its fragment (TC-3195): read it into memory and take it off the address bar before
 // anything else runs, so no log, report or later navigation can carry it.
@@ -119,6 +125,7 @@ void installEd25519Polyfill().catch((error: unknown) => {
         <BrowserRouter>
           <Routes>
             <Route path="/" element={<RootRoute />} />
+            <Route path="/handoff" element={<Suspense><HandoffRoute /></Suspense>} />
             <Route path="/about" element={<AboutRedirect />} />
             <Route path={`${FEED_ALIAS_PATH}/:cardId`} element={<FeedCardAlias />} />
             <Route path="/chat/*" element={<CaptureEngineGate><App /></CaptureEngineGate>} />

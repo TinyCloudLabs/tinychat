@@ -1,5 +1,41 @@
 # @tinychat/backend
 
+## 0.13.2-beta.6
+
+### Patch Changes
+
+- ed8f146: Keep TrustBot read access active in Home by quietly renewing the read grant for enabled areas while the owner session can extend it.
+
+  Details: TC-4000
+
+- b998a6a: Verify renewed TinyChat phone sign-ins with the existing app and lease checks.
+
+  Details: TC-4000
+
+## 0.13.2-beta.5
+
+### Patch Changes
+
+- c717e11: Send grant tags to existing Main bots and keep sibling permission revocations across restarts.
+
+  Details: TC-4014
+
+## 0.13.2-beta.4
+
+### Patch Changes
+
+- 8aae6b9: Count node errors when retiring replaced bot history grants.
+
+  Details: TC-4013
+
+## 0.13.2-beta.3
+
+### Patch Changes
+
+- df28ad2: Send grant-specific bot history permission updates.
+
+  Details: TC-4006
+
 ## 0.13.2-beta.2
 
 ### Patch Changes

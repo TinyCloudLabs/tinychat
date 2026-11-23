@@ -14,7 +14,7 @@ import { BotsError, botsApi, type BotsApi } from "./botsApi";
 import { MainChat } from "./MainChat";
 import { isWorking, useMainChat } from "./useMainChat";
 import { AskCards } from "./AskCards";
-import { readSettings, revokeReadGrant, setReadArea, signReadGrant } from "./trustbotReadGrant";
+import { ensureTrustBotReadGrant, readSettings, revokeReadGrant, setReadArea, signReadGrant } from "./trustbotReadGrant";
 import { newMainChat } from "./mainNewChat";
 import { SecretCards } from "./SecretCard";
 import { useAsks } from "./useAsks";
@@ -81,6 +81,7 @@ function MainAsk({ api, tcw, onReconnect }: { api: BotsApi; tcw?: TinyCloudWeb; 
       return stored;
     },
   }), [client, noteWeb]);
+  const [readRevision, setReadRevision] = useState(0);
   const meetings = useMemo(() => tcw ? {
     readSettings,
     setReadArea,
@@ -90,7 +91,7 @@ function MainAsk({ api, tcw, onReconnect }: { api: BotsApi; tcw?: TinyCloudWeb; 
       const { stopStandingArea } = await import("./trustbotStandingReads");
       await stopStandingArea(area, cid => revokeReadGrant(tcw, cid));
     },
-  } : undefined, [tcw]);
+  } : undefined, [tcw, readRevision]);
   const clearChat = chat.clear;
   const newChat = useMemo(() => ({ start: () => newMainChat(), onStarted: () => { clearChat(); refreshAsks(); } }), [clearChat, refreshAsks]);
   // A turn is when Main asks: read the requests as it ends.
@@ -103,10 +104,16 @@ function MainAsk({ api, tcw, onReconnect }: { api: BotsApi; tcw?: TinyCloudWeb; 
   const [notice, setNotice] = useState<HistoryNotice | null>(null);
   useEffect(() => {
     if (!tcw) return;
-    const renew = () => { void ensureBotHistoryGrant(tcw).then(() => readHistoryNotice()).then(setNotice, () => {}); };
+    let current = true;
+    const renew = () => {
+      void ensureBotHistoryGrant(tcw).then(() => readHistoryNotice()).then(setNotice, () => {});
+      void ensureTrustBotReadGrant(tcw).then(renewed => {
+        if (current && renewed) setReadRevision(revision => revision + 1);
+      });
+    };
     renew();
     const refresh = setInterval(renew, 30_000);
-    return () => clearInterval(refresh);
+    return () => { current = false; clearInterval(refresh); };
   }, [tcw]);
   useEffect(() => {
     if (!open || !tcw) return;
