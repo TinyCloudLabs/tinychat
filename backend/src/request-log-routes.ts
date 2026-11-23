@@ -36,6 +36,7 @@ export const REQUEST_LOG_ROUTE_TEMPLATES: readonly string[] = [
   "/api/bots/main/reads",
   "/api/bots/main/reads/:area",
   "/api/bots/main/reads/renewal",
+  "/api/bots/main/reads/renewal/revoked",
   "/api/bots/main/requests",
   "/api/bots/main/requests/:id/answer",
   "/api/bots/main/web",
