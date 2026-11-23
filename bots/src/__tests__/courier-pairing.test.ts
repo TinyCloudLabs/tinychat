@@ -291,3 +291,17 @@ test("at most ten live pending pairings per owner; the eleventh A is refused bef
   advance(15 * 60_000);
   expect(await pairing.pair(owner, JSON.stringify({ ...start, callMe: "reader10" }))).toMatchObject({ pending: true, handle: "reader10" });
 });
+
+test("a local failure while storing a library-verified C revokes it by its exact reference and leaves no live pending", async () => {
+  const { pairing, adapter, store } = setup();
+  const finalize = adapter.finalizePairing;
+  adapter.finalizePairing = async (ctx, pending, artifact) => ({ ...await finalize(ctx, pending, artifact), proof: { cid: "" } });
+  const revoked: unknown[] = [];
+  adapter.unpair = async (_ctx, peer) => { revoked.push(peer); };
+  await pairing.pair(owner, JSON.stringify(start));
+  await expect(pairing.pair(owner, JSON.stringify(final))).rejects.toThrow("invalid_courier_proof");
+  expect(revoked).toEqual([{ handle: "reader", peerDid: start.from.courier, delegation: { pending: expect.objectContaining({ pairingId: "01J00000000000000000000000" }) } }]);
+  expect(await store.getPending(owner, "reader")).toBeUndefined();
+  expect(await store.listRetired(owner)).toEqual([]);
+  expect(await pairing.list(owner)).toEqual([]);
+});
