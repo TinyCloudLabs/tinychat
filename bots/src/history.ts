@@ -1,5 +1,5 @@
 // TC-2808: supervisor-owned journal and receipt barrier, outside all sandbox binds.
-import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeSync } from "node:fs";
+import { closeSync, constants, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeSync } from "node:fs";
 import { createHash, randomBytes } from "node:crypto";
 import { dirname, join } from "node:path";
 import { recoverMessageAddress } from "viem";
@@ -41,11 +41,26 @@ export function matchesHistoryGrant(permission: HistoryPermission | undefined, g
   return permission?.grant?.cid === grant.cid && permission.grant.revision === grant.revision;
 }
 
+/** Grant generations count up by one per change; a few lost pushes is the most a bot misses. */
+const MAX_REVISION_JUMP = 16;
+/** A bot that holds no tag has no generation to count from, so the bound is absolute. */
+const MAX_UNTAGGED_REVISION = 1024;
+
+export function revokeRevisionInReach(current: HistoryPermission | undefined, grant: HistoryGrantUpdate): boolean {
+  const held = current?.grant?.revision;
+  return held === undefined ? grant.revision <= MAX_UNTAGGED_REVISION : grant.revision <= held + MAX_REVISION_JUMP;
+}
+
 export function updateHistoryPermission(current: HistoryPermission | undefined, validUntil: number,
   grant?: HistoryGrantUpdate, now = Date.now()): HistoryPermission | undefined {
   if (grant?.kind === "revoke") {
     if (!Number.isFinite(validUntil) || validUntil > now) throw new Error("invalid_permission_expiry");
-    if (!matchesHistoryGrant(current, grant) || current?.revoked) return current;
+    // A revoke names the grant it ends. It also ends an untagged permission, which has no grant to match, and one an
+    // older grant holds when the extend for the revoked generation never arrived. How far past the held generation a
+    // revoke may reach is bounded: a revoke is final for its generation, so a huge number would block every later grant.
+    const supersedes = current !== undefined && (!current.grant || grant.revision > current.grant.revision) &&
+      revokeRevisionInReach(current, grant);
+    if (!(matchesHistoryGrant(current, grant) || supersedes) || current?.revoked) return current;
     return { validUntil, grant, revoked: true };
   }
   if (!Number.isFinite(validUntil) || validUntil <= now) throw new Error("invalid_permission_expiry");
@@ -87,7 +102,9 @@ export function removeHistoryRevocation(layout: BotLayout): void {
 function saveHistoryFile(path: string, value: object): void {
   const directory = dirname(path);
   mkdirSync(directory, { recursive: true, mode: 0o700 });
-  const file = openSync(path + ".new", "w", 0o600);
+  // Remove the name first so a planted link, hard link included, is never written through; O_EXCL fails if it reappears.
+  rmSync(path + ".new", { force: true });
+  const file = openSync(path + ".new", constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
   try { writeSync(file, JSON.stringify(value)); fsyncSync(file); } finally { closeSync(file); }
   renameSync(path + ".new", path);
   const dir = openSync(directory, "r");
