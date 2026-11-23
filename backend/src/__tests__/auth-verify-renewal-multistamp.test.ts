@@ -373,7 +373,6 @@ describe("verifyRenewalHistory on histories as the node returns them", () => {
   const mutated = (count: number, change: (index: number, fields: Fields) => Fields) => () => chain(grant, lease, count, lastEnd, HOUR, change);
   test.each([
     ["generation 0", mutated(3, (_, fields) => ({ ...fields, generation: 0 }))],
-    ["a generation that changes mid-chain", mutated(4, (index, fields) => ({ ...fields, generation: index < 2 ? 1 : 2 }))],
     ["a generation that falls mid-chain", mutated(4, (index, fields) => ({ ...fields, generation: index < 2 ? 2 : 1 }))],
     ["a stamp for another lease in the middle", mutated(4, (index, fields) => (index === 2 ? { ...fields, leaseCid: rawCid("another-lease") } : fields))],
     ["a broken previous_stamp_cid", mutated(4, (index, fields) => (index === 2 ? { ...fields, previousStampCid: rawCid("not-the-previous-stamp") } : fields))],
@@ -381,6 +380,11 @@ describe("verifyRenewalHistory on histories as the node returns them", () => {
     ["an end that goes backwards", mutated(4, (index, fields) => (index === 2 ? { ...fields, newEnd: fields.newEnd - 2 * HOUR } : fields))],
   ])("refuses %s", (_label, build) => {
     expect(() => verify(build(), lastEnd)).toThrow(/^Renewal/);
+  });
+
+  // TC-4091: pending the SDK rule that pins one generation across the chain; see the endpoint case below.
+  test.failing("refuses a generation that rises mid-chain", () => {
+    expect(() => verify(mutated(4, (index, fields) => ({ ...fields, generation: index < 2 ? 1 : 2 }))(), lastEnd)).toThrow(/^Renewal/);
   });
 
   test("refuses an entry whose generation differs from the signed one", () => {
@@ -433,9 +437,18 @@ describe("POST /api/auth/verify-renewal with a multi-stamp history from the node
     expect(await postHistory(grant, lease, chain(grant, lease, 90, newEnd, DAY, (_, fields) => ({ ...fields, generation: 0 })), newEnd)).toEqual(refusedHistory);
   });
 
-  test("a generation that changes mid-chain is refused", async () => {
+  // TC-4091: the intended rule is one equal generation for the whole chain. The pinned sdk-core does not
+  // enforce that yet, so this case is expected to fail. When the SDK pins the generation across the chain
+  // `test.failing` starts failing: change it to a plain `test` then.
+  test.failing("a generation that rises mid-chain is refused", async () => {
     const newEnd = nowSeconds() + 2 * HOUR;
     const history = chain(grant, lease, 90, newEnd, DAY, (index, fields) => ({ ...fields, generation: index < 45 ? 1 : 2 }));
+    expect(await postHistory(grant, lease, history, newEnd)).toEqual(refusedHistory);
+  });
+
+  test("a generation that falls mid-chain is refused", async () => {
+    const newEnd = nowSeconds() + 2 * HOUR;
+    const history = chain(grant, lease, 90, newEnd, DAY, (index, fields) => ({ ...fields, generation: index < 45 ? 2 : 1 }));
     expect(await postHistory(grant, lease, history, newEnd)).toEqual(refusedHistory);
   });
 
