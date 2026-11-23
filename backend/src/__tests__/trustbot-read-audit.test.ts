@@ -205,6 +205,8 @@ test("the internal audit endpoint validates the signed owner and accepts only fi
 test("with standing reads off the finite read path requires no audit writes", async () => {
   await withRoute(async ({ post, events, rejectWrites }) => {
     rejectWrites();
+    const report = { owner, area: "meetings", tool, outcome: "off" };
+    expect((await post("audit/refusal", report)).status).toBe(204);
     expect(await (await post(tool, { args: { limit: 3 } })).json()).toMatchObject({ ok: true });
     expect(events).toEqual(["access", "access", "query", "query"]);
   }, undefined, false);

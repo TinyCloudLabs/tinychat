@@ -106,6 +106,7 @@ export interface MeetingDeskOptions {
 }
 
 type Answer = { ok: true; text: string } | { ok: false; error: ReadError };
+type RefusalReport = { owner: string; area: ReadArea; tool: ReadToolName; outcome: "off" | "budget" | "busy" };
 
 export class MeetingDesk {
   readonly #options: MeetingDeskOptions;
@@ -116,6 +117,8 @@ export class MeetingDesk {
   readonly #marks = new Map<string, string>();
   readonly #calling = new Set<string>();
   readonly #today = new Map<string, { day: string; count: number }>();
+  readonly #auditToday = new Map<string, { day: string; count: number; capped: boolean }>();
+  readonly #forwarding = new Set<string>();
 
   constructor(options: MeetingDeskOptions) {
     this.#options = options;
@@ -164,10 +167,10 @@ export class MeetingDesk {
       return toolText(error === "not_found" ? errors.not_found ?? errors.unavailable : errors[error], true);
     };
     const setting = this.#settings.get(botId);
-    const refuseLocally = (outcome: "off" | "budget" | "busy") => {
+    const refuseLocally = (outcome: RefusalReport["outcome"]) => {
       const secret = this.#options.backendCallSecret;
       if (this.#options.forwardRefusals && setting?.owner && secret) {
-        void this.#forwardRefusal(secret, setting.owner, area, name, outcome);
+        void this.#forwardRefusal(botId, secret, { owner: setting.owner, area, tool: name, outcome });
       }
       return refuse(outcome);
     };
@@ -205,12 +208,26 @@ export class MeetingDesk {
     }
   }
 
-  async #forwardRefusal(secret: string, owner: string, area: ReadArea, tool: ReadToolName, outcome: "off" | "budget" | "busy"): Promise<void> {
+  async #forwardRefusal(botId: string, secret: string, report: RefusalReport): Promise<void> {
+    const day = new Date(this.#now()).toISOString().slice(0, 10);
+    const previous = this.#auditToday.get(botId);
+    const today = previous?.day === day ? previous : { day, count: 0, capped: false };
+    if (today.count >= READS_PER_DAY) {
+      if (!today.capped) {
+        today.capped = true;
+        console.log(JSON.stringify({ gateway: "reads", outcome: "audit_forward_capped" }));
+      }
+      return;
+    }
+    if (this.#forwarding.has(botId)) return;
+    this.#forwarding.add(botId);
+    today.count++;
+    this.#auditToday.set(botId, today);
     const path = `${BACKEND_PATH}audit/refusal`;
-    const body = JSON.stringify({ owner, area, tool, outcome });
+    const body = JSON.stringify(report);
     try {
       const authorization = signedCallHeader(secret, {
-        direction: "to-backend", environment: "private", owner, bot: "main", method: "POST", path, body,
+        direction: "to-backend", environment: "private", owner: report.owner, bot: "main", method: "POST", path, body,
       });
       const response = await this.#fetch(`${this.#options.backendOrigin}${path}`, {
         method: "POST", redirect: "error", signal: AbortSignal.timeout(AUDIT_TIMEOUT_MS),
@@ -220,6 +237,8 @@ export class MeetingDesk {
       if (response.status === 204) return;
     } catch {
       // The refusal is already decided. The report cannot affect its reply.
+    } finally {
+      this.#forwarding.delete(botId);
     }
     console.log(JSON.stringify({ gateway: "reads", outcome: "audit_forward_failed" }));
   }
