@@ -1,4 +1,5 @@
 // A is an unsigned invitation, not a peer. Only a verified C can promote it to the intake store.
+import { createHash } from "node:crypto";
 import { parseArtifact, validateArtifactIdentity, type PairArtifact } from "@tinycloud/courier";
 import { isRecord } from "../guards";
 import type { CourierGrant, CourierGrantStore } from "./grant-store";
@@ -9,10 +10,11 @@ export const COURIER_PAIRING_TTL_MS = 15 * 60_000;
 export const COURIER_PEER_MAX_MS = 7 * 86_400_000;
 export const COURIER_MAX_ARTIFACT = 64 * 1024;
 export interface PairingAdapter {
-  context(owner: string, grant: CourierGrant): Promise<CourierContext>;
+  context(owner: string, grant: CourierGrant, store: CourierPeerStore): Promise<CourierContext>;
   acceptPairing(ctx: CourierContext, artifact: string): Promise<PairPending>;
   finalizePairing(ctx: CourierContext, pending: PairPending, artifact: string): Promise<PairedPeer>;
   unpair(ctx: CourierContext, peer: PairedPeer): Promise<void>;
+  renewPeer(ctx: CourierContext, peer: PairedPeer): Promise<PairedPeer>;
 }
 export type CourierPairResult = { pending: true; handle: string; acceptArtifact: string; pendingExpiresAt: number } | { peer: CourierPeer };
 export interface CourierPairing {
@@ -22,7 +24,12 @@ export interface CourierPairing {
   maintain(owner: string): Promise<void>;
 }
 class PairingError extends Error {
-  constructor(readonly code: "invalid" | "duplicate" | "pending_expired" | "courier_unavailable", readonly status: number) { super(code); }
+  constructor(readonly code: "invalid" | "duplicate" | "pending_expired" | "courier_unavailable" | "courier_update_required", readonly status: number) { super(code); }
+}
+
+function pairingFailure(error: unknown): PairingError {
+  return isRecord(error) && error.code === "courier_update_required"
+    ? new PairingError("courier_update_required", 426) : new PairingError("invalid", 400);
 }
 
 function checkedArtifact(input: string): PairArtifact {
@@ -30,13 +37,20 @@ function checkedArtifact(input: string): PairArtifact {
   const artifact = parseArtifact(input);
   validateArtifactIdentity(artifact);
   const common = ["type", "v", "step", "from", "spaceId", "peer", "callMe", "issuedAt"];
-  const allowed = artifact.step === "A" ? common : [...common, "delegation", "delegationExpiresAt"];
+  const allowed = artifact.step === "A" ? [...common, "challengeVersion"] : [...common, "delegation", "delegationExpiresAt", "completion"];
   if ((artifact.step !== "A" && artifact.step !== "C") || Object.keys(artifact).some(key => !allowed.includes(key))
     || Object.keys(artifact.from).some(key => !["owner", "courier", "label"].includes(key))
     || !COURIER_HANDLE.test(artifact.peer) || !COURIER_HANDLE.test(artifact.callMe)
     || typeof artifact.issuedAt !== "string" || !Number.isFinite(Date.parse(artifact.issuedAt))
     || (artifact.from.label !== undefined && (typeof artifact.from.label !== "string" || artifact.from.label.length > 256))
     || (artifact.step === "C" && (typeof artifact.delegation !== "string" || !artifact.delegation))) throw new PairingError("invalid", 400);
+  if ("challengeVersion" in artifact && artifact.challengeVersion !== 1) throw new PairingError("invalid", 400);
+  if ("completion" in artifact) {
+    const completion = artifact.completion;
+    if (!isRecord(completion) || Object.keys(completion).length !== 2
+      || typeof completion.x !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(completion.x)
+      || typeof completion.signature !== "string" || !/^[A-Za-z0-9_-]{86}$/.test(completion.signature)) throw new PairingError("invalid", 400);
+  }
   return artifact;
 }
 
@@ -56,12 +70,12 @@ export function createCourierPairing(options: { store: CourierPeerStore; grants:
     if (options.adapter) return options.adapter;
     // C1's current integration checkpoint declares this boundary; load implementations only for live operations.
     const lib = await import("./lib-adapter");
-    return { context: lib.courierContext, acceptPairing: lib.acceptPairing, finalizePairing: lib.finalizePairing, unpair: lib.unpair };
+    return { context: lib.courierContext, acceptPairing: lib.acceptPairing, finalizePairing: lib.finalizePairing, unpair: lib.unpair, renewPeer: lib.renewPeer };
   }
   async function context(api: PairingAdapter, owner: string) {
     const grant = await grants.get(owner);
     if (!grant || grant.expiresAt <= now()) throw new PairingError("courier_unavailable", 503);
-    return api.context(owner, grant);
+    return api.context(owner, grant, store);
   }
   async function cleanRetired(owner: string) {
     const retired = await store.listRetired(owner);
@@ -83,7 +97,12 @@ export function createCourierPairing(options: { store: CourierPeerStore; grants:
         try { artifact = checkedArtifact(input); } catch { throw new PairingError("invalid", 400); }
         const handle = artifact.callMe;
         if (artifact.step === "A") await cleanRetired(owner);
-        if (await store.getRuntime(owner, handle) || (await store.listRetired(owner)).some(peer => peer.handle === handle)) throw new PairingError("duplicate", 409);
+        const current = await store.getRuntime(owner, handle);
+        if (artifact.step === "A" && current && current.delegationExpiresAt <= now()) {
+          await store.retire(owner, handle);
+          await cleanRetired(owner);
+        } else if (current) throw new PairingError("duplicate", 409);
+        if ((await store.listRetired(owner)).some(peer => peer.handle === handle)) throw new PairingError("duplicate", 409);
         const api = await adapter();
         const ctx = await context(api, owner);
         if (ctx.identity?.did === artifact.from.courier) throw new PairingError("invalid", 400);
@@ -96,11 +115,14 @@ export function createCourierPairing(options: { store: CourierPeerStore; grants:
             if ((await store.listRetired(owner)).some(peer => peer.handle === handle)) throw new PairingError("courier_unavailable", 503);
           }
           const startedAt = now();
-          const pending = await api.acceptPairing(ctx, input);
+          let pending: PairPending;
+          try { pending = await api.acceptPairing(ctx, input); } catch (error) { throw pairingFailure(error); }
+          // createdAt is the SDK's own pending checkpoint time; finalize verifies it unchanged.
           if (pending.handle !== handle || pending.peerDid !== artifact.from.courier || pending.expiresAt <= now()
+            || !Number.isSafeInteger(pending.createdAt) || pending.createdAt < startedAt - 60_000 || pending.createdAt > now()
+            || pending.expiresAt > pending.createdAt + COURIER_PAIRING_TTL_MS
             || !pending.artifactB || pending.artifactB.length > COURIER_MAX_ARTIFACT) throw new PairingError("invalid", 400);
-          pending.expiresAt = Math.min(pending.expiresAt, startedAt + COURIER_PAIRING_TTL_MS);
-          await store.putPending(owner, { pending, artifactA: input, startedAt });
+          await store.putPending(owner, { pending, artifactA: input, startedAt: pending.createdAt });
           return { pending: true, handle, acceptArtifact: pending.artifactB, pendingExpiresAt: pending.expiresAt };
         }
         const saved = await store.getPending(owner, handle);
@@ -113,12 +135,12 @@ export function createCourierPairing(options: { store: CourierPeerStore; grants:
         if (artifact.from.owner !== start.from.owner || artifact.from.courier !== start.from.courier
           || artifact.spaceId !== start.spaceId || artifact.peer !== start.peer || artifact.callMe !== start.callMe) throw new PairingError("invalid", 400);
         let peer: PairedPeer;
-        try { peer = await api.finalizePairing(ctx, saved.pending, input); } catch { throw new PairingError("invalid", 400); }
+        try { peer = await api.finalizePairing(ctx, saved.pending, input); } catch (error) { throw pairingFailure(error); }
         if (peer.handle !== handle || peer.peerDid !== start.from.courier || !Number.isSafeInteger(peer.delegationExpiresAt)
           || peer.delegationExpiresAt <= now() || peer.delegationExpiresAt > now() + COURIER_PEER_MAX_MS) throw new PairingError("invalid", 400);
         // Verification can wait on the node; do not let its latency extend the pending window.
         if (saved.pending.expiresAt <= now()) { await store.retire(owner, handle); throw new PairingError("pending_expired", 410); }
-        await store.putRuntime(owner, peer, saved.startedAt);
+        if (!await store.finalizePending(owner, saved, peer)) throw new PairingError("invalid", 400);
         const publicPeer = (await store.list(owner)).find(item => item.handle === handle)!;
         return { peer: publicPeer };
       });
@@ -136,6 +158,21 @@ export function createCourierPairing(options: { store: CourierPeerStore; grants:
           if (pending.pending.expiresAt <= now()) await store.retire(owner, pending.pending.handle);
         }
         await cleanRetired(owner);
+        const peers = await store.listRuntime(owner);
+        if (!peers.some(peer => peer.delegationExpiresAt > now())) return;
+        let api: PairingAdapter;
+        let ctx: CourierContext;
+        try { api = await adapter(); ctx = await context(api, owner); } catch { return; }
+        for (const peer of peers) {
+          if (peer.delegationExpiresAt <= now()) continue;
+          try {
+            const renewed = await api.renewPeer(ctx, peer);
+            if (renewed.delegationExpiresAt > now() + COURIER_PEER_MAX_MS) throw new Error("invalid_courier_successor");
+            if (renewed.delegationExpiresAt > peer.delegationExpiresAt) await store.renewRuntime(owner, peer, renewed);
+          } catch {
+            console.log(JSON.stringify({ gateway: "courier", peer: createHash("sha256").update(peer.peerDid).digest("hex").slice(0, 12), outcome: "renewal_unavailable" }));
+          }
+        }
       });
     },
   };

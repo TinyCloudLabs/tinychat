@@ -5,7 +5,7 @@ import { BotsError, BotsRouteMissing } from "../botsApi";
 export interface CourierPeer {
   handle: string;
   peerDid: string;
-  status: "paired";
+  status: "paired" | "expired";
   pairedAt: number;
   delegationExpiresAt: number;
 }
@@ -24,13 +24,21 @@ export interface CourierPeersApi {
   unpairPeer(handle: string): Promise<void>;
 }
 
+/** The peer's Courier version cannot complete the signed pairing exchange. */
+export class CourierUpdateRequired extends BotsError {
+  constructor() {
+    super("failed");
+    this.name = "CourierUpdateRequired";
+  }
+}
+
 const base = import.meta.env.VITE_BACKEND_URL || `${globalThis.location?.protocol ?? "http:"}//localhost:3014`;
 
 function isPeer(value: unknown): value is CourierPeer {
   return typeof value === "object" && value !== null
     && "handle" in value && typeof value.handle === "string" && value.handle.length > 0
     && "peerDid" in value && typeof value.peerDid === "string" && value.peerDid.length > 0
-    && "status" in value && value.status === "paired"
+    && "status" in value && (value.status === "paired" || value.status === "expired")
     && "pairedAt" in value && typeof value.pairedAt === "number" && Number.isFinite(value.pairedAt)
     && "delegationExpiresAt" in value && typeof value.delegationExpiresAt === "number" && Number.isFinite(value.delegationExpiresAt);
 }
@@ -56,6 +64,7 @@ async function request(method: "GET" | "POST" | "DELETE", path: string, body?: C
   }
   if (response.status === 401) throw new BotsError("signed_out");
   if (response.status === 400) throw new BotsError("invalid");
+  if (response.status === 426) throw new CourierUpdateRequired();
   if (response.status === 404) throw new BotsRouteMissing();
   if (!response.ok) throw new BotsError("failed");
   if (method === "DELETE") return;

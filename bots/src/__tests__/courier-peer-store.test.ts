@@ -14,8 +14,8 @@ function directory() { const dir = mkdtempSync(join(tmpdir(), "trustbot-peers-")
 
 test("sealed peers survive restart without exposing handles or DIDs and stay owner-scoped", async () => {
   const dir = directory();
-  await createCourierPeerStore(dir, key).put(owner, peer);
-  const store = createCourierPeerStore(dir, key);
+  await createCourierPeerStore(dir, key, () => peer.pairedAt).put(owner, peer);
+  const store = createCourierPeerStore(dir, key, () => peer.pairedAt);
   expect(await store.list(owner)).toEqual([peer]);
   expect(await store.list(other)).toEqual([]);
   const ownerDir = join(dir, readdirSync(dir)[0]!);
@@ -37,7 +37,7 @@ test("unpair removes the peer durably", async () => {
 test("pending pairings are sealed but never exposed as paired", async () => {
   const store = createCourierPeerStore(directory(), key);
   await store.putPending(owner, {
-    pending: { handle: "reader", peerDid: peer.peerDid, artifactB: "accept-code", expiresAt: peer.pairedAt + 900_000 },
+    pending: { handle: "reader", peerDid: peer.peerDid, artifactB: "accept-code", pairingId: "01J00000000000000000000000", createdAt: peer.pairedAt, expiresAt: peer.pairedAt + 900_000 },
     artifactA: "start-code", startedAt: peer.pairedAt,
   });
   expect(await store.list(owner)).toEqual([]);
@@ -69,10 +69,27 @@ test("late renewal cannot resurrect an unpaired peer", async () => {
 
 test("expired pending cleanup retains the signed B as inactive revocation proof", async () => {
   const store = createCourierPeerStore(directory(), key);
-  const pending = { pending: { handle: peer.handle, peerDid: peer.peerDid, artifactB: "signed-B", expiresAt: peer.pairedAt + 900_000 }, artifactA: "A", startedAt: peer.pairedAt };
+  const pending = { pending: { handle: peer.handle, peerDid: peer.peerDid, artifactB: "signed-B", pairingId: "01J00000000000000000000000", createdAt: peer.pairedAt, expiresAt: peer.pairedAt + 900_000 }, artifactA: "A", startedAt: peer.pairedAt };
   await store.putPending(owner, pending);
   await store.retire(owner, peer.handle);
   expect(await store.getPending(owner, peer.handle)).toBeUndefined();
   expect(await store.listRuntime(owner)).toEqual([]);
   expect(await store.listRetired(owner)).toMatchObject([{ handle: peer.handle, delegation: pending }]);
+});
+
+test("finalization consumes one exact pending row and rejects the same C CID after unpair and restart", async () => {
+  const dir = directory();
+  const clock = () => peer.pairedAt;
+  const store = createCourierPeerStore(dir, key, clock);
+  const pending = { pending: { handle: peer.handle, peerDid: peer.peerDid, artifactB: "signed-B", pairingId: "01J00000000000000000000000", createdAt: peer.pairedAt, expiresAt: peer.pairedAt + 900_000 }, artifactA: "A", startedAt: peer.pairedAt };
+  const runtime = { handle: peer.handle, peerDid: peer.peerDid, delegation: { signed: "C" }, proof: { cid: "used-C", issuedAt: peer.pairedAt }, delegationExpiresAt: peer.delegationExpiresAt };
+  await store.putPending(owner, pending);
+  expect(await store.finalizePending(owner, pending, runtime)).toBe(true);
+  expect(await store.finalizePending(owner, pending, runtime)).toBe(false);
+  await store.remove(owner, peer.handle);
+  const restarted = createCourierPeerStore(dir, key, clock);
+  const next = { ...pending, pending: { ...pending.pending, handle: "other" } };
+  await restarted.putPending(owner, next);
+  expect(await restarted.finalizePending(owner, next, { ...runtime, handle: "other" })).toBe(false);
+  expect(await restarted.list(owner)).toEqual([]);
 });
