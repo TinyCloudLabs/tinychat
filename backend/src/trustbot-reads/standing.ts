@@ -1,7 +1,7 @@
 import type { RenewalVerifyConfig } from "../renewal-verify.js";
-import { areaResources, type ReadArea, type ReadResource } from "./areas.js";
+import { areaResources, isReadArea, type ReadArea, type ReadResource } from "./areas.js";
 import type { ReadAccess } from "./grants.js";
-import { confirmedStandingReadRevocation, standingReadAuthority, type StandingReadGrant, type StandingReadHolder } from "./standing-grant.js";
+import { confirmedStandingReadRevocation, standingReadAuthority, type StandingReadGrant, type StandingReadHolder, type VerifyRenewalChain } from "./standing-grant.js";
 
 export interface CollectedStandingRead {
   grant: StandingReadGrant;
@@ -34,33 +34,56 @@ export interface StandingReadStore {
 }
 
 type StandingReadResult = { state: "active"; access: ReadAccess } | { state: "absent" | "ended" | "unavailable" };
+export type StandingReadPolicyRefusal = "no_grant" | "not_owner" | "expired" | "revoked" | "unavailable";
 
-/** The runtime read gate is independent of how a holder is created, sealed and recovered. */
+/** Checks standing authority for each read. */
 export class StandingReadRuntime {
   constructor(private readonly deps: {
     store: StandingReadStore;
     config: RenewalVerifyConfig;
     fetch?: typeof fetch;
     now?: () => number;
+    verifyRenewalChain?: VerifyRenewalChain;
   }) {}
 
-  async access(owner: string, area: ReadArea, path?: string): Promise<StandingReadResult> {
-    const { store, config, fetch, now } = this.deps;
+  /** The caller obtains owner from the verified internal call. A finite fallback has its own outcome. */
+  async access(
+    owner: string,
+    area: ReadArea,
+    path?: string,
+    onPolicyRefusal?: (outcome: StandingReadPolicyRefusal) => void,
+  ): Promise<StandingReadResult> {
+    const { store, config, fetch, now, verifyRenewalChain } = this.deps;
     try {
       const record = await store.current(owner);
-      if (!record || !record.grant.areas.includes(area)) return { state: "absent" };
+      if (!record || !isReadArea(area) || !record.grant.areas.includes(area)) {
+        onPolicyRefusal?.("no_grant");
+        return { state: "absent" };
+      }
       const { grant, holder } = record;
-      const authority = await standingReadAuthority(grant, { address: owner, holder, config, fetch, now });
-      if (authority.state === "ended") await store.drop(owner, grant.originalCid);
-      if (authority.state !== "active") return { state: authority.state };
       const resources = areaResources([area]).filter(resource => path === undefined || path === resource.path);
-      if (resources.length === 0) return { state: "unavailable" };
+      if (resources.length === 0) {
+        onPolicyRefusal?.("no_grant");
+        return { state: "unavailable" };
+      }
+      const authority = await standingReadAuthority(grant, { address: owner, holder, config, fetch, now, verifyRenewalChain });
+      if (authority.state !== "active") {
+        if (authority.state === "ended") await store.drop(owner, grant.originalCid);
+        onPolicyRefusal?.(authority.outcome ?? "unavailable");
+        return { state: authority.state };
+      }
       const at = (now?.() ?? Date.now() / 1000) * 1000;
-      if (at >= authority.validUntil) return { state: "ended" };
+      if (at >= authority.validUntil) {
+        onPolicyRefusal?.("expired");
+        return { state: "ended" };
+      }
       await store.audit({ owner, area, at });
       // Standing activations are one-use; an activation crossing the checked end is discarded.
       const access = await record.activate(resources, authority.validUntil);
-      if ((now?.() ?? Date.now() / 1000) * 1000 >= authority.validUntil) return { state: "ended" };
+      if ((now?.() ?? Date.now() / 1000) * 1000 >= authority.validUntil) {
+        onPolicyRefusal?.("expired");
+        return { state: "ended" };
+      }
       return { state: "active", access };
     } catch {
       return { state: "unavailable" };
