@@ -1,3 +1,4 @@
+import { handoffChoicePath } from "../feed/setupChoice";
 import { ed25519 } from "@noble/curves/ed25519";
 import { sha256 } from "@noble/hashes/sha2";
 import { bytesToHex } from "@noble/hashes/utils";
@@ -33,6 +34,7 @@ export interface HandoffView {
   abilities: readonly (typeof ABILITIES)[number][];
   appIds: string[];
   appsTruncated: boolean;
+  setupChoicePath: string | null;
 }
 
 interface HandoffLink {
@@ -130,6 +132,7 @@ function parseRecord(bytes: Uint8Array, link: HandoffLink): HandoffView | null {
   return {
     agentName: agent_name, machineLabel: machine_label, connectedAt, accessExpiresAt,
     linkExpiresAt: link.linkExpiresAt, abilities, appIds: app_ids, appsTruncated: apps_truncated,
+    setupChoicePath: abilities.includes("feed") ? handoffChoicePath(link.key.slice(KEY_PREFIX.length)) : null,
   };
 }
 
