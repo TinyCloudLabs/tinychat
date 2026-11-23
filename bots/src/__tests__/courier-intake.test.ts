@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -7,6 +7,8 @@ import { replyText, type CourierReplyText } from "../courier/guard";
 import { botIdFor } from "../owner";
 import { guardedAnswer } from "./courier-fixtures";
 import { CourierIntake, type CourierIntakeOptions, courierIntakeStore } from "../courier/intake";
+import { CourierUpdateRequired } from "../courier/lib-adapter";
+import { TinyCloudNode } from "@tinycloud/node-sdk";
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -43,7 +45,7 @@ async function setup(extra: Partial<Omit<CourierIntakeOptions, "store">> = {}) {
       acknowledge: async () => { acks++; if (ackFails) throw new Error("offline"); },
     }),
     turn: async () => { turns++; return guardedAnswer("answer"); },
-    now: () => now, log: (entry: { gateway: "courier"; peer: string; outcome: string }) => outcomes.push(entry),
+    now: () => now, libraryReady: () => {}, log: (entry: { gateway: "courier"; peer: string; outcome: string }) => outcomes.push(entry),
   };
   const store = () => courierIntakeStore(dir, key);
   const start = () => new CourierIntake({ ...options, ...extra, store: store() });
@@ -238,7 +240,7 @@ test("owners are polled two at a time", async () => {
       acknowledge: async () => {},
     }),
     turn: async () => { active++; peak = Math.max(peak, active); if (++started === 2) reached.resolve(); await gate.promise; active--; return guardedAnswer("answer"); },
-    now: () => now, store: courierIntakeStore(dir, new Uint8Array(32).fill(7)),
+    now: () => now, store: courierIntakeStore(dir, new Uint8Array(32).fill(7)), libraryReady: () => {},
   });
   const polling = intake.poll();
   await reached.promise;
@@ -263,4 +265,36 @@ test("receipts of acknowledged messages are pruned after 30 days; unacknowledged
   await kept.start().poll(); expect(kept.sent).toHaveLength(1);
   expect(kept.counts().acks).toBeGreaterThan(acksBefore);
   expect(kept.outcomes).toContainEqual({ gateway: "courier", peer: expect.stringMatching(/^[0-9a-f]{12}$/), outcome: "receipt_unavailable" });
+});
+
+const headless = Boolean(process.env.TC_COURIER_HEADLESS_PACKAGE);
+
+function untouchedGrants() {
+  const lookups: string[] = [];
+  const dir = mkdtempSync(join(tmpdir(), "courier-intake-")); dirs.push(dir);
+  const intake = (extra: Partial<Omit<CourierIntakeOptions, "store">>) => new CourierIntake({
+    owners: [`did:pkh:eip155:1:0x${"ab".repeat(20)}`], grants: { get: async owner => { lookups.push(owner); return undefined; } }, peers: { list: async () => [] },
+    transport: async () => { throw new Error("unused_transport"); }, turn: async () => guardedAnswer("answer"),
+    store: courierIntakeStore(dir, new Uint8Array(32).fill(7)), ...extra,
+  });
+  return { lookups, intake };
+}
+
+test("a library that cannot run headless refuses the poll before any grant lookup", async () => {
+  const f = untouchedGrants();
+  const intake = f.intake({ libraryReady: () => { throw new CourierUpdateRequired(); } });
+  await expect(intake.poll()).rejects.toMatchObject({ code: "courier_update_required" });
+  expect(f.lookups).toEqual([]);
+  // The refusal leaves no poll marked as running.
+  await expect(intake.poll()).rejects.toMatchObject({ code: "courier_update_required" });
+});
+
+test.skipIf(headless)("on the installed beta without the headless API, poll restores no grant session and looks up no grant", async () => {
+  const f = untouchedGrants();
+  const restore = spyOn(TinyCloudNode.prototype, "restoreSession");
+  try {
+    await expect(f.intake({}).poll()).rejects.toMatchObject({ code: "courier_update_required" });
+    expect(restore).not.toHaveBeenCalled();
+    expect(f.lookups).toEqual([]);
+  } finally { restore.mockRestore(); }
 });

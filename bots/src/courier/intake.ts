@@ -6,6 +6,7 @@ import { isRecord } from "../guards";
 import { botIdFor, OWNER_DID } from "../owner";
 import { sealedGrantStore } from "../secret-store";
 import { COURIER_REFUSAL, type CourierReplyText, replyText } from "./guard";
+import { courierLibraryReady } from "./lib-adapter";
 
 const HOUR = 3_600_000;
 /** One window for transcripts and for receipts of acknowledged messages. */
@@ -77,6 +78,8 @@ export interface CourierIntakeOptions {
   turn(owner: string, peer: IntakePeer, message: CourierInbound, signal: AbortSignal): Promise<CourierReplyText>;
   store: IntakeStore;
   now?: () => number;
+  /** Throws when the installed Courier library cannot run headless; the default is C1's `courierLibraryReady`. */
+  libraryReady?: () => void;
   /** A deadline for one turn; the default is AbortSignal.timeout. Owners polled at once; default 2. */
   turnSignal?: (ms: number) => AbortSignal;
   concurrency?: number;
@@ -168,6 +171,8 @@ export class CourierIntake {
     if (this.#polling) return;
     this.#polling = true;
     try {
+      // Before any grant lookup: a library without the headless API refuses here, and a grant lookup restores a session.
+      (this.options.libraryReady ?? courierLibraryReady)();
       for (const [ownerId, state] of this.#states) if (this.#expire(state)) this.options.store.save(ownerId, state);
       // Owners are polled with a small concurrency; one owner's slow peer cannot hold the others for the whole tick.
       const queue = [...this.options.owners];
