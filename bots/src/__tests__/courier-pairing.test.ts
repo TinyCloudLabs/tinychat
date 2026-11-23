@@ -14,8 +14,8 @@ const start = { type: "courier-pair", v: 0, step: "A", from: { owner: remoteOwne
 const final = { ...start, step: "C", delegation: "signed-peer-delegation" };
 function setup() {
   const dir = mkdtempSync(join(tmpdir(), "trustbot-pairing-")); dirs.push(dir);
-  const store = createCourierPeerStore(dir, new Uint8Array(32).fill(7));
   let now = Date.parse("2026-11-23T12:00:00.000Z");
+  const store = createCourierPeerStore(dir, new Uint8Array(32).fill(7), () => now);
   let finalized = 0;
   const adapter: PairingAdapter = {
     async context() { return {} as CourierContext; },
@@ -23,16 +23,17 @@ function setup() {
       return {
         handle: "reader", peerDid: start.from.courier,
         artifactB: JSON.stringify({ ...start, step: "B", delegation: "signed-bot-delegation" }),
-        expiresAt: now + 15 * 60_000,
+        pairingId: "01J00000000000000000000000", createdAt: now, expiresAt: now + 15 * 60_000,
       };
     },
     async finalizePairing(_ctx, pending, artifactC) {
       finalized++;
       const artifact = JSON.parse(artifactC);
       if (artifact.delegation !== "signed-peer-delegation") throw new Error("forged_signature");
-      return { handle: pending.handle, peerDid: pending.peerDid, delegation: { signed: artifact.delegation }, delegationExpiresAt: now + 7 * 86_400_000 };
+      return { handle: pending.handle, peerDid: pending.peerDid, delegation: { signed: artifact.delegation }, proof: { cid: "verified-C", issuedAt: now }, delegationExpiresAt: now + 7 * 86_400_000 };
     },
     async unpair() {},
+    async renewPeer(_ctx, peer) { return peer; },
   };
   const grants = { async get() { return { raw: {}, expiresAt: now + 30 * 86_400_000 }; }, async put() {}, async delete() {} };
   const pairing = createCourierPairing({ store, grants, adapter, now: () => now });
@@ -128,4 +129,53 @@ test("a pending window cannot be extended by slow node verification", async () =
   adapter.finalizePairing = async (...args) => { advance(15 * 60_000); return finalize(...args); };
   await expect(pairing.pair(owner, JSON.stringify(final))).rejects.toThrow("pending_expired");
   expect(await store.listRuntime(owner)).toEqual([]);
+});
+
+test("maintenance persists a renewed peer without resetting its original pairing time", async () => {
+  const { pairing, adapter, store, advance } = setup();
+  await pairing.pair(owner, JSON.stringify(start));
+  await pairing.pair(owner, JSON.stringify(final));
+  const before = (await pairing.list(owner))[0]!;
+  adapter.renewPeer = async (_ctx, peer) => ({ ...peer, delegation: { cid: "successor" }, delegationExpiresAt: peer.delegationExpiresAt + 60_000 });
+  advance(60_000);
+  await pairing.maintain(owner);
+  expect(await pairing.list(owner)).toEqual([{ ...before, delegationExpiresAt: before.delegationExpiresAt + 60_000 }]);
+  expect((await store.getRuntime(owner, "reader"))?.delegation).toEqual({ cid: "successor" });
+});
+
+test("maintenance never renews an unpaired peer", async () => {
+  const { pairing, adapter } = setup();
+  await pairing.pair(owner, JSON.stringify(start));
+  await pairing.pair(owner, JSON.stringify(final));
+  await pairing.unpair(owner, "reader");
+  let renewals = 0;
+  adapter.renewPeer = async (_ctx, peer) => { renewals++; return peer; };
+  await pairing.maintain(owner);
+  expect(renewals).toBe(0);
+  expect(await pairing.list(owner)).toEqual([]);
+});
+
+test("delegation expiry is a public expired state rather than an API error", async () => {
+  const { pairing, advance } = setup();
+  await pairing.pair(owner, JSON.stringify(start));
+  await pairing.pair(owner, JSON.stringify(final));
+  advance(7 * 86_400_000);
+  const response = await courierPeerControl(new Request("http://gateway/courier/owner/peers"), owner, "/peers", pairing);
+  expect(response!.status).toBe(200);
+  expect(await response!.json()).toMatchObject({ peers: [{ handle: "reader", status: "expired" }] });
+});
+
+test("a pending row can be finalized only once even when C is submitted concurrently", async () => {
+  const { pairing } = setup();
+  await pairing.pair(owner, JSON.stringify(start));
+  const results = await Promise.allSettled([pairing.pair(owner, JSON.stringify(final)), pairing.pair(owner, JSON.stringify(final))]);
+  expect(results.map(result => result.status)).toEqual(["fulfilled", "rejected"]);
+});
+
+test("an unsupported peer's update-required code stays fixed at the control boundary", async () => {
+  const { pairing, adapter } = setup();
+  adapter.acceptPairing = async () => { throw Object.assign(new Error("private text"), { code: "courier_update_required" }); };
+  const response = await courierPeerControl(new Request("http://gateway/courier/owner/peers", { method: "POST", body: JSON.stringify({ artifact: JSON.stringify(start) }) }), owner, "/peers", pairing);
+  expect(response!.status).toBe(426);
+  expect(await response!.json()).toEqual({ error: "courier_update_required" });
 });

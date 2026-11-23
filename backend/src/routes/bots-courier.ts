@@ -145,6 +145,7 @@ export function createBotsCourierRouter({ config, auth, enabled = process.env.BO
   });
 
   // courier: pairing mount
+  mountCourierPairing(router, deps);
   // courier: threads mount
   mountCourierThreads(router, deps);
   return router;

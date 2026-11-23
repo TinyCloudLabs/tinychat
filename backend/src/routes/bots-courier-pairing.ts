@@ -9,7 +9,7 @@ const UNAVAILABLE = { error: "courier_unavailable" };
 interface CourierPeerView {
   handle: string;
   peerDid: string;
-  status: "paired";
+  status: "paired" | "expired";
   pairedAt: number;
   delegationExpiresAt: number;
 }
@@ -24,7 +24,7 @@ function toPeer(value: unknown): CourierPeerView | null {
   if (value === null || typeof value !== "object" || Array.isArray(value)
     || !("handle" in value) || !("peerDid" in value) || !("status" in value) || !("pairedAt" in value) || !("delegationExpiresAt" in value)) return null;
   const { handle, peerDid, status, pairedAt, delegationExpiresAt } = value;
-  if (typeof handle !== "string" || !HANDLE.test(handle) || typeof peerDid !== "string" || !PEER_DID.test(peerDid) || status !== "paired") return null;
+  if (typeof handle !== "string" || !HANDLE.test(handle) || typeof peerDid !== "string" || !PEER_DID.test(peerDid) || (status !== "paired" && status !== "expired")) return null;
   if (!isTimestamp(pairedAt) || !isTimestamp(delegationExpiresAt) || delegationExpiresAt <= pairedAt) return null;
   return { handle, peerDid, status, pairedAt, delegationExpiresAt };
 }
@@ -81,6 +81,7 @@ export function mountCourierPairing(router: Router, deps: CourierRouterDeps): vo
         if (upstream.status === 400) res.status(400).json({ error: "invalid" });
         else if (upstream.status === 409) res.status(409).json({ error: "duplicate" });
         else if (upstream.status === 410) res.status(410).json({ error: "pending_expired" });
+        else if (upstream.status === 426) res.status(426).json({ error: "courier_update_required" });
         else res.status(502).json(UNAVAILABLE);
         return;
       }
