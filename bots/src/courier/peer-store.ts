@@ -1,7 +1,7 @@
 // Gateway-only sealed peer state. Public records never contain portable delegations or pending authority.
 import { createHash } from "node:crypto";
 import { closeSync, constants, existsSync, fsyncSync, mkdirSync, openSync, readdirSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { dlopen, FFIType } from "bun:ffi";
 import type { CourierLibraryStore, PairedPeer, PairPending } from "./lib-adapter";
 import { isRecord } from "../guards";
@@ -153,13 +153,16 @@ export function createCourierPeerStore(dir: string, sealKey: Uint8Array, now: ()
   // A save is durable once it resolves: the sealed store fsyncs the file and its directory, and a directory created
   // for the first record is itself made durable in its parents.
   const durableDirs = new Set<string>();
+  const stateRoot = resolve(dir);
   function durableDir(path: string) {
-    if (durableDirs.has(path)) return;
-    if (!existsSync(path)) {
-      mkdirSync(path, { recursive: true, mode: 0o700 });
-      for (let at = path; at !== dir; at = dirname(at)) syncDir(dirname(at));
+    const target = resolve(path);
+    if (durableDirs.has(target)) return;
+    if (!existsSync(target)) {
+      mkdirSync(target, { recursive: true, mode: 0o700 });
+      // Stops at the state dir, or at the filesystem root for a path outside it.
+      for (let at = target; at !== stateRoot && dirname(at) !== at; at = dirname(at)) syncDir(dirname(at));
     }
-    durableDirs.add(path);
+    durableDirs.add(target);
   }
   function save(owner: string, record: PeerRecord) {
     writable();

@@ -406,7 +406,7 @@ test("accepts are rate-limited per owner per hour even when no pending row is cr
   const accept = adapter.acceptPairing;
   adapter.acceptPairing = async () => { calls++; throw Object.assign(new Error("unconfirmed"), { code: "mailbox-unconfirmed" }); };
   for (let attempt = 0; attempt < 20; attempt++) expect(await pairing.pair(owner, JSON.stringify(start)).catch(error => error)).toMatchObject({ status: 503 });
-  expect(await pairing.pair(owner, JSON.stringify(start)).catch(error => error)).toMatchObject({ code: "too_many_pending", status: 429 });
+  expect(await pairing.pair(owner, JSON.stringify(start)).catch(error => error)).toMatchObject({ code: "too_many_attempts", status: 429 });
   expect(calls).toBe(20);
   expect(await pairing.pair(`did:pkh:eip155:1:0x${"3".repeat(40)}`, JSON.stringify(start)).catch(error => error)).toMatchObject({ status: 503 });
   advance(3_600_000);
@@ -442,4 +442,23 @@ test("maintenance revokes SDK records no local row accounts for, and leaves owne
   expect(revoked).toEqual([{ handle: "ghost", peerDid: "did:key:zGhost", delegation: { pending: { handle: "ghost", peerDid: "did:key:zGhost", pairingId: "ghost-attempt" } } }]);
   expect((await store.getPending(owner, "reader"))?.pending.handle).toBe("reader");
   expect(await store.listRetired(owner)).toEqual([]);
+});
+
+test("maintenance restores the grant session every tick only for owners with rows; idle owners at most every 10 minutes", async () => {
+  const { pairing, adapter, advance } = setup();
+  const idle = `did:pkh:eip155:1:0x${"3".repeat(40)}`;
+  const restored: string[] = [];
+  const context = adapter.context;
+  adapter.context = async (who, grant, store) => { restored.push(who); return context(who, grant, store); };
+  await pairing.pair(owner, JSON.stringify(start));
+  restored.length = 0;
+  const tick = async () => { await pairing.maintain(owner); await pairing.maintain(idle); };
+  await tick();
+  expect(restored).toEqual([owner, idle]);
+  for (let elapsed = 15_000; elapsed < 10 * 60_000; elapsed += 15_000) { advance(15_000); await tick(); }
+  expect(restored.filter(who => who === idle)).toHaveLength(1);
+  expect(restored.filter(who => who === owner)).toHaveLength(40);
+  advance(15_000);
+  await tick();
+  expect(restored.filter(who => who === idle)).toHaveLength(2);
 });

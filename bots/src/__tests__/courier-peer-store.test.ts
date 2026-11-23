@@ -152,3 +152,16 @@ test("retire then clearRetired keeps the used C CID, so the same C is refused fo
   expect(await restarted.finalizePending(owner, next, runtime)).toBe(false);
   expect(await restarted.getRuntime(owner, peer.handle)).toBeUndefined();
 });
+
+test("a state dir given with a trailing slash still saves durably and terminates", async () => {
+  const dir = directory();
+  const store = createCourierPeerStore(`${dir}/`, key, () => peer.pairedAt);
+  await store.put(owner, peer);
+  const scope = { ownerDid: owner, courierDid: "did:key:zTrustBot", spaceId: `tinycloud:pkh:eip155:1:0x${"1".repeat(40)}:agents`, host: "https://node.tinycloud.xyz" };
+  await store.transaction(scope, tx => tx.save("reader", { opaque: true }));
+  store.close();
+  const restarted = createCourierPeerStore(dir, key, () => peer.pairedAt);
+  expect(await restarted.list(owner)).toEqual([peer]);
+  expect(await restarted.sdkRecords(owner, "did:key:zTrustBot")).toEqual([{ handle: "reader", record: { opaque: true } }]);
+  restarted.close();
+});

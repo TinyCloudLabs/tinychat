@@ -12,6 +12,8 @@ export const COURIER_MAX_ARTIFACT = 64 * 1024;
 export const COURIER_MAX_PENDING = 10;
 /** Each accepted A signs and activates a peer grant, so accepts are rate-limited per owner as well as capped. */
 export const COURIER_ACCEPTS_PER_HOUR = 20;
+/** How often an owner with no local rows has its grant session restored, only to sweep untracked SDK records. */
+export const COURIER_IDLE_SWEEP_MS = 10 * 60_000;
 const RENEWAL_LOG_INTERVAL_MS = 86_400_000;
 export interface PairingAdapter {
   context(owner: string, grant: CourierGrant, store: CourierPeerStore): Promise<CourierContext>;
@@ -29,7 +31,7 @@ export interface CourierPairing {
   maintain(owner: string): Promise<void>;
 }
 class PairingError extends Error {
-  constructor(readonly code: "invalid" | "duplicate" | "pending_expired" | "too_many_pending" | "courier_unavailable" | "courier_update_required", readonly status: number) { super(code); }
+  constructor(readonly code: "invalid" | "duplicate" | "pending_expired" | "too_many_pending" | "too_many_attempts" | "courier_unavailable" | "courier_update_required", readonly status: number) { super(code); }
 }
 
 function pairingFailure(error: unknown): PairingError {
@@ -102,11 +104,12 @@ export function createCourierPairing(options: {
   // renewal_unavailable is logged at most once per owner and peer per day, not on every gateway tick.
   const renewalLogged = new Map<string, number>();
   const accepts = new Map<string, number[]>();
+  const idleSwept = new Map<string, number>();
   /** Records one accept attempt, or refuses when this owner used up the hour. In memory: one gateway per state dir. */
   function takeAccept(owner: string) {
     const key = owner.toLowerCase();
     const recent = (accepts.get(key) ?? []).filter(at => now() - at < 3_600_000);
-    if (recent.length >= COURIER_ACCEPTS_PER_HOUR) { accepts.set(key, recent); throw new PairingError("too_many_pending", 429); }
+    if (recent.length >= COURIER_ACCEPTS_PER_HOUR) { accepts.set(key, recent); throw new PairingError("too_many_attempts", 429); }
     accepts.set(key, [...recent, now()]);
   }
   async function serial<T>(owner: string, run: () => Promise<T>): Promise<T> {
@@ -272,6 +275,16 @@ export function createCourierPairing(options: {
           if (pending.pending.expiresAt <= now()) await store.retire(owner, pending.pending.handle);
         }
         await cleanRetired(owner);
+        // Owners with no local rows have nothing to renew or clean: restore their grant session only to sweep SDK
+        // records, at most every COURIER_IDLE_SWEEP_MS. Owners with rows keep the gateway's tick cadence.
+        const key = owner.toLowerCase();
+        const rows = (await store.listPending(owner)).length + (await store.listRuntime(owner)).length + (await store.listRetired(owner)).length;
+        if (rows) idleSwept.delete(key);
+        else {
+          const last = idleSwept.get(key);
+          if (last !== undefined && now() - last < COURIER_IDLE_SWEEP_MS) return;
+          idleSwept.set(key, now());
+        }
         let api: PairingAdapter;
         let ctx: CourierContext;
         try { api = await adapter(); ctx = await context(api, owner); } catch { return; }
