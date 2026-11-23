@@ -1005,7 +1005,7 @@ async function main() {
     },
   }) : undefined;
   if (trustbotReadsSettings) {
-    trustbotReads = await startTrustBotReads(trustbotReadsSettings, {
+    trustbotReads = await startTrustBotReads({
       backendNode: node, backendDid: did, host: TINYCLOUD_HOST, otherDelegateDids: [process.env.MCP_CHAT_SERVICE_DID, AGENT_DID],
       standing: standing && standingConfig ? new StandingReadRuntime({ store: standing, config: standingConfig }) : undefined,
     });

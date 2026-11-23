@@ -26,3 +26,5 @@ VITE_BACKEND_URL = "https://api.tinycloud.chat"
 VITE_ONE_APPS = "true"
 VITE_ONE_NAV = "true"
 VITE_GRANOLA_CONNECTOR_ENABLED = "true"
+# Connector keys are saved under their own encryption key; readers are ready (TC-3284 flip 4). Turn off by removing this line.
+VITE_CONNECTOR_NAMED_KEY_WRITES = "true"
