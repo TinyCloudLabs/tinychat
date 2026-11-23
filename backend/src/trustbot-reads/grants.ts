@@ -108,6 +108,7 @@ export class TrustBotReadGrants {
     this.#reader = options.reader;
     this.#store = options.store;
     this.#host = options.host;
+    // Derive our own buffer here so the caller can clear sealSecret as soon as construction returns.
     this.#key = Buffer.from(hkdfSync("sha256", options.sealSecret, Buffer.alloc(0), "tinychat.trustbot-reads.grants/v1", 32));
     this.#keyPrefix = options.keyPrefix ?? TRUSTBOT_READ_GRANT_KEY_PREFIX;
     this.#now = options.now ?? Date.now;
