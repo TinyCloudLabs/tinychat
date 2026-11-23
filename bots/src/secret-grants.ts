@@ -217,9 +217,11 @@ export async function verifiedGrant(checked: CheckedApprovalResult, expected: { 
   const resources = siwe.resources ?? [];
   if (resources.length === 0) throw new Error("the grant names no resource");
   const granted: Record<string, unknown>[] = [];
+  const rawResources: string[] = [];
   for (const resource of resources) {
     if (!resource.startsWith("urn:recap:")) {
       if (!owned(resource)) throw new Error("the grant names another owner's resource");
+      rawResources.push(resource);
       continue;
     }
     let recap: unknown;
@@ -239,13 +241,18 @@ export async function verifiedGrant(checked: CheckedApprovalResult, expected: { 
     return prefix + resource.slice(prefix.length);
   };
   const asked = new Map(secretPermissions(expected.name, expected.ownerDid).map(p => [canonical(p.service === "tinycloud.kv" ? `${space}${p.space}/kv/${p.path}` : p.path), p.actions]));
+  if (!rawResources.every(resource => asked.has(canonical(resource)))) throw new Error("the grant names an unrequested resource");
   const entries = granted.length === 1 ? Object.entries(granted[0]!) : [];
   const matched = new Set<string>();
   for (const [resource, abilities] of entries) {
     const key = canonical(resource);
     const actions = asked.get(key);
-    const given = isRecord(abilities) ? Object.keys(abilities) : [];
-    if (actions && given.length === actions.length && given.every(ability => actions.includes(ability))) matched.add(key);
+    const given = isRecord(abilities) ? Object.entries(abilities) : [];
+    if (actions && given.length === actions.length && given.every(([ability, caveats]) => {
+      // An empty list and a single empty object are the two canonical empty forms.
+      return actions.includes(ability) && Array.isArray(caveats)
+        && (caveats.length === 0 || (caveats.length === 1 && isRecord(caveats[0]) && Object.keys(caveats[0]).length === 0));
+    })) matched.add(key);
   }
   if (entries.length !== asked.size || matched.size !== asked.size) throw new Error("the grant is not exactly what was asked for");
   return {

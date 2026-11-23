@@ -37,10 +37,10 @@ const jwk = generateKeyPairSync("ed25519").privateKey.export({ format: "jwk" }) 
 const target = realLinks.signerFromJwk(jwk).did;
 
 /** A grant the owner's wallet signed for `audience` (this file's key unless named), granting `recaps` (one ReCap each). */
-async function grant(recaps: Record<string, unknown>[], lifetimeMs = HOUR, audience = target): Promise<CheckedApprovalResult> {
+async function grant(recaps: Record<string, unknown>[], lifetimeMs = HOUR, audience = target, rawResources: string[] = []): Promise<CheckedApprovalResult> {
   const siwe = createSiweMessage({
     domain: "openkey.so", address: CHECKSUMMED, uri: `${audience}#${audience.slice("did:key:".length)}`, version: "1", chainId: 1,
-    nonce: "abcdefgh12345678", issuedAt: new Date(T0), expirationTime: new Date(T0 + lifetimeMs), resources: recaps.map(recap),
+    nonce: "abcdefgh12345678", issuedAt: new Date(T0), expirationTime: new Date(T0 + lifetimeMs), resources: [...rawResources, ...recaps.map(recap)],
   });
   return {
     ownerDid: OWNER,
@@ -89,6 +89,34 @@ describe("verifiedGrant takes exactly the two entries asked for", () => {
 
   test("refuses an extra bare-network decrypt entry even with both exact entries", async () => {
     await expect(verifiedGrant(await grant([{ ...ASKED, [network()]: DECRYPT }]), expected)).rejects.toThrow("not exactly what was asked for");
+  });
+
+  test("refuses an unrequested raw SIWE resource alongside the ReCap", async () => {
+    const checked = await grant([ASKED], HOUR, target, [network()]);
+    await expect(verifiedGrant(checked, expected)).rejects.toThrow("unrequested resource");
+  });
+
+  test("accepts the requested exact key as a raw SIWE resource alongside the ReCap", async () => {
+    const checked = await grant([ASKED], HOUR, target, [`${network()}/secrets/openai_api_key`]);
+    await expect(verifiedGrant(checked, expected)).resolves.toMatchObject({ delegationCid: "bafy-delegation" });
+  });
+
+  test.each([
+    ["an empty array", []],
+    ["one empty object", [{}]],
+  ])("accepts ReCap caveats with %s", async (_, caveats) => {
+    const checked = await grant([{ ...ASKED, [kv(NAME)]: { "tinycloud.kv/get": caveats } }]);
+    await expect(verifiedGrant(checked, expected)).resolves.toMatchObject({ delegationCid: "bafy-delegation" });
+  });
+
+  test.each([
+    ["a nonempty object", [{ x: 1 }]],
+    ["an empty and a nonempty object", [{}, { x: 1 }]],
+    ["two empty objects", [{}, {}]],
+    ["a non-array value", {}],
+  ])("refuses ReCap caveats with %s", async (_, caveats) => {
+    const checked = await grant([{ ...ASKED, [kv(NAME)]: { "tinycloud.kv/get": caveats } }]);
+    await expect(verifiedGrant(checked, expected)).rejects.toThrow("not exactly what was asked for");
   });
 
   test("refuses the two entries split across two ReCaps", async () => {
