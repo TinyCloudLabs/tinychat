@@ -124,7 +124,7 @@ export async function runSourceSync(
     if (!deps.secretsAvailable()) return SECRETS_UNAVAILABLE_IN_APP_MESSAGE;
     if (!deps.isSecretsUnlocked(tcw)) {
       const unlock = await deps.unlockSecrets<SecretsErr>(tcw);
-      if (!unlock.ok) return unlock.error?.message ?? "Could not unlock secrets";
+      if (!unlock.ok) return unlock.error?.message ?? "Couldn't open your secrets. Try again.";
       // A successful unlock re-arms the session-start sync, which takes the engine's slot. That run belongs
       // to this press, so wait for its foreground part and queue behind its Notes rather than refuse.
       if (d.id === "google-meet") await deps.awaitSessionSync();

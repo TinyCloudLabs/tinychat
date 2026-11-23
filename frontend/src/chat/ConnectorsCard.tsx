@@ -529,7 +529,7 @@ export function ConnectorsCard({
         if (!unlock.ok) {
           patchRow(d.id, {
             syncing: false,
-            actionError: unlock.error?.message ?? "Could not unlock secrets",
+            actionError: unlock.error?.message ?? "Couldn't open your secrets. Try again.",
           });
           return;
         }
