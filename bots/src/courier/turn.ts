@@ -9,6 +9,7 @@ import { untrustedRecord } from "../web";
 import { COURIER_REFUSAL, courierPeerHash } from "./intake";
 import { createHash } from "node:crypto";
 import type { ReadArea } from "../reads";
+import { TELEGRAM_TOOL_NAMES, TELEGRAM_TOOLS } from "../telegram-tools";
 
 export const COURIER_READ_OFF = "TrustBot can't read that: its owner has turned off access to it.";
 export const COURIER_BUDGET = "TrustBot has used today's reading allowance. Try tomorrow.";
@@ -17,8 +18,9 @@ const REGENERATE = "Answer in your own words. Summarise what you read; don't cop
 export const COURIER_READ_TOOL_NAMES = [
   "tinycloud_find_meetings", "tinycloud_read_meeting", "tinycloud_search_transcripts", "tinycloud_list_meeting_actions",
   "list_feed_cards", "read_card", "list_chats", "read_chat",
+  ...TELEGRAM_TOOL_NAMES,
 ] as const;
-const READ_TOOLS = [...MEETING_TOOLS, ...FEED_CHAT_TOOLS];
+const READ_TOOLS = [...MEETING_TOOLS, ...FEED_CHAT_TOOLS, ...TELEGRAM_TOOLS];
 const normalize = (value: string) => value.normalize("NFKC").toLowerCase().replace(/\s+/gu, " ").trim();
 
 /** Check both thresholds: a short twelve-word phrase, or a long run without word boundaries. */
@@ -96,7 +98,7 @@ export async function courierTurn(options: CourierTurnOptions): Promise<string> 
           if (!options.reads.tools(bot, areas).some(tool => tool.name === name)) result = COURIER_READ_OFF;
           else {
             let denied = false;
-            if (name === "read_chat") {
+            if (name === "read_chat" || name === "read_telegram_chat") {
               try { denied = typeof args.chat !== "string" || (await options.deniedChatIds(options.owner)).has(args.chat); }
               catch { denied = true; }
             }

@@ -69,6 +69,7 @@ test("Courier tool capabilities are an explicit read-only set", () => {
   expect([...COURIER_READ_TOOL_NAMES]).toEqual([
     "tinycloud_find_meetings", "tinycloud_read_meeting", "tinycloud_search_transcripts", "tinycloud_list_meeting_actions",
     "list_feed_cards", "read_card", "list_chats", "read_chat",
+    "list_telegram_chats", "read_telegram_chat",
   ]);
 });
 
