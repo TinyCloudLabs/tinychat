@@ -82,6 +82,16 @@ export function createTrustBotReadsRouter({ grants, config, auth }: Pick<TrustBo
       res.status(503).json({ error: "reads_unavailable" });
     }
   });
+  router.put("/renewal/revoked", express.json({ limit: "1kb" }), async (req, res) => {
+    const cid: unknown = req.body?.cid;
+    if (typeof cid !== "string") { res.status(400).json({ error: "invalid_reads" }); return; }
+    try {
+      await grants.acknowledgeRevokedGrant(req.user!.address, cid);
+      res.status(204).end();
+    } catch {
+      res.status(503).json({ error: "reads_unavailable" });
+    }
+  });
   router.put("/:area", express.json({ limit: "96kb" }), async (req, res) => {
     const area = req.params.area;
     const renewing = area === "renewal";
