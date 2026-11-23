@@ -3,11 +3,11 @@ import { makePkhSpaceId } from "@tinycloud/sdk-core";
 import { BOT_HISTORY_KEY_PATH } from "@tinycloud/sdk-services";
 import type { connectWallet } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
-import { BOT_HISTORY_KEY_MAX_MS, BOT_HISTORY_LEGACY_MAX_MS } from "./botHistoryKey";
+import { BOT_HISTORY_KEY_MAX_MS } from "./botHistoryKey";
 import { botHistoryDirectory } from "./botHistoryPath";
-import { authorizeBotHistory, BOT_HISTORY_LEGACY_APPROVAL_DESCRIPTION } from "./historyAuthorization";
+import { authorizeBotHistory, BOT_HISTORY_LEGACY_APPROVAL_DESCRIPTION, botHistoryOwnerPermissions } from "./historyAuthorization";
 import type { BotHistoryResealReport } from "./historyRead";
-import { encryptionNetworkId } from "../lib/connectors/encryptionGrant";
+import { encryptionNetworkId, LEGACY_NETWORK_APPROVAL_MAX_MS } from "../lib/connectors/encryptionGrant";
 
 const address = `0x${"56".repeat(20)}`;
 const owner = `did:pkh:eip155:1:${address}`;
@@ -40,13 +40,14 @@ async function record(botKey: string, seq: number, inline = true, change: (batch
 let sessions = 0;
 
 /** An owner's session and space: older records need the decrypt grant, a rewrite round-trips through a named key. */
-function fixture(seeds: Seed[], options: { sessionMs?: number; failCommit?: Set<string> } = {}) {
+function fixture(seeds: Seed[], options: { sessionMs?: number; failCommit?: Set<string>; held?: "whole-network"; decline?: boolean } = {}) {
   const session = {
     address, chainId: 1, sessionKey: `fixture-${++sessions}`, signature: "fixture",
     siwe: `URI: did:key:fixture\nExpiration Time: ${new Date(Date.now() + (options.sessionMs ?? 30 * 86_400_000)).toISOString()}`,
   };
-  const granted = new Set<string>();
   const grantKey = (permission: { path: string; actions: string[] }) => `${permission.path}|${permission.actions.join()}`;
+  // A session that already holds the exact key and, from a longer grant, the whole network.
+  const granted = new Set<string>(options.held ? [`${networkId}|decrypt`, ...botHistoryOwnerPermissions(address).map(grantKey)] : []);
   const requests: Array<{ permissions: Array<{ path: string; actions: string[]; description: string }>; expiryMs: number }> = [];
   const plaintexts: string[] = [];
   const entries = new Map<string, { envelope: Record<string, unknown>; etag: number }>();
@@ -69,6 +70,7 @@ function fixture(seeds: Seed[], options: { sessionMs?: number; failCommit?: Set<
     setRuntimePermissionSigner: () => {},
     requestPermissions: async (permissions: Array<{ path: string; actions: string[]; description: string }>, request: { expiryMs: number }) => {
       requests.push({ permissions, expiryMs: request.expiryMs });
+      if (options.decline) return { approved: false };
       for (const permission of permissions) granted.add(grantKey(permission));
       return { approved: true };
     },
@@ -125,8 +127,37 @@ describe("the older-history decrypt request", () => {
     const f = fixture([await record("main", 1)]);
     await f.authorize();
     expect(f.requests[0]!.expiryMs).toBe(BOT_HISTORY_KEY_MAX_MS);
-    expect(f.legacyRequest()!.expiryMs).toBe(BOT_HISTORY_LEGACY_MAX_MS);
-    expect(BOT_HISTORY_LEGACY_MAX_MS).toBe(HOUR);
+    expect(f.legacyRequest()!.expiryMs).toBe(LEGACY_NETWORK_APPROVAL_MAX_MS);
+    expect(LEGACY_NETWORK_APPROVAL_MAX_MS).toBe(HOUR);
+  });
+
+  test("is asked for even when the session already covers the whole network through a longer grant", async () => {
+    const f = fixture([await record("main", 1), await record(siblingA, 1)], { held: "whole-network" });
+    const reports: BotHistoryResealReport[] = [];
+    await f.authorize({ onResealReport: (report) => reports.push(report) });
+    expect(f.legacyRequest()!.expiryMs).toBe(LEGACY_NETWORK_APPROVAL_MAX_MS);
+    expect(reports).toEqual([{ resealed: 2, failed: [] }]);
+  });
+
+  test("is asked once per session, not again while that approval lasts", async () => {
+    const f = fixture([await record("main", 1)], { held: "whole-network" });
+    await f.authorize();
+    await f.authorize();
+    expect(f.requests.filter((request) => request.permissions[0]!.actions.join() === "decrypt")).toHaveLength(1);
+  });
+
+  test("a longer grant already held is not used when the approval is declined, and nothing is opened", async () => {
+    const seed = await record("main", 1);
+    const f = fixture([seed], { held: "whole-network", decline: true });
+    await expect(f.authorize()).rejects.toThrow();
+    expect(f.legacyRequest()).toBeDefined();
+    expect(isNamed(f.stored(seed.path).envelope)).toBe(false);
+  });
+
+  test("a longer grant already held is not asked for again when no record is left sealed to the network key", async () => {
+    const f = fixture([await record("main", 1, false)], { held: "whole-network" });
+    await f.authorize();
+    expect(f.legacyRequest()).toBeUndefined();
   });
 
   test("never outlasts a session that ends sooner", async () => {
