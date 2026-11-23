@@ -1,5 +1,77 @@
 # @tinychat/backend
 
+## 0.13.2
+
+### Patch Changes
+
+- 98b74de: Bot chat history in TinyChat is sealed with its own encryption key. Saving new history needs your approval for that one key. When you open earlier messages, TinyChat can move them to that key.
+
+  Details: TC-3823
+
+- df28ad2: Send grant-specific bot history permission updates.
+
+  Details: TC-4006
+
+- 8aae6b9: Count node errors when retiring replaced bot history grants.
+
+  Details: TC-4013
+
+- c717e11: Send grant tags to existing Main bots and keep sibling permission revocations across restarts.
+
+  Details: TC-4014
+
+- ed8f146: Keep TrustBot read access active in Home by quietly renewing the read grant for enabled areas while the owner session can extend it.
+
+  Details: TC-4000
+
+- a38f348: When TrustBot asks you to approve a secret for a call, the request now also names that secret's own encryption key. Secrets saved with their own key can then be read once you approve. Secrets saved earlier keep working through the approval that already covers your whole account's encryption.
+
+  Details: TC-3284
+
+- c12c58e: The sign-in for Connectors now asks for access to each connector key's own encryption key, next to the access that already covers your whole account. Connector keys you save are still stored the same way for now; saving them under their own key is built behind a switch that stays off. If you already use Connectors, you sign in once more the next time you open them so the new access can be approved.
+
+  Details: TC-3284
+
+- b998a6a: Verify renewed TinyChat phone sign-ins with the existing app and lease checks.
+
+  Details: TC-4000
+
+## 0.13.2-beta.6
+
+### Patch Changes
+
+- ed8f146: Keep TrustBot read access active in Home by quietly renewing the read grant for enabled areas while the owner session can extend it.
+
+  Details: TC-4000
+
+- b998a6a: Verify renewed TinyChat phone sign-ins with the existing app and lease checks.
+
+  Details: TC-4000
+
+## 0.13.2-beta.5
+
+### Patch Changes
+
+- c717e11: Send grant tags to existing Main bots and keep sibling permission revocations across restarts.
+
+  Details: TC-4014
+
+## 0.13.2-beta.4
+
+### Patch Changes
+
+- 8aae6b9: Count node errors when retiring replaced bot history grants.
+
+  Details: TC-4013
+
+## 0.13.2-beta.3
+
+### Patch Changes
+
+- df28ad2: Send grant-specific bot history permission updates.
+
+  Details: TC-4006
+
 ## 0.13.2-beta.2
 
 ### Patch Changes

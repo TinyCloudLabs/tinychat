@@ -1,7 +1,7 @@
 import { TinyCloudNode } from "@tinycloud/node-sdk";
 import type { IKVService } from "@tinycloud/sdk-services";
 import { z } from "zod";
-import { loadProfile } from "../agent-sync/fireflies";
+import { loadProfile, restoreProfileSession } from "../agent-sync/fireflies";
 import { homeMirrorRefusal } from "./bridge";
 import type { HomeMirrorContext } from "./bridge-types";
 
@@ -34,10 +34,24 @@ export interface OwnerSession {
 export async function openOwnerSession(options: OwnerSessionOptions): Promise<OwnerSession> {
   const ownerSpaceId = fullSpace.parse(options.ownerSpace), legacySpaceId = fullSpace.parse(options.legacySpace);
   const profile = loadProfile(options.tcHome, options.profile);
-  if (profile.spaceId !== ownerSpaceId || (profile.expiresAt !== null && (!Number.isFinite(Date.parse(profile.expiresAt)) || Date.parse(profile.expiresAt) <= Date.now()))) throw homeMirrorRefusal("Existing owner session is unavailable");
+  if (profile.spaceId !== ownerSpaceId || (profile.expiresAt !== null && !Number.isFinite(Date.parse(profile.expiresAt)))) {
+    throw homeMirrorRefusal("Existing owner session is unavailable");
+  }
   const host = normalizeHomeMirrorHost(options.host ?? profile.host);
   const node = new TinyCloudNode({ host, includeAccountRegistryPermissions: false });
-  await node.restoreSession({ ...profile.session, tinycloudHosts: [host] });
+  try {
+    // A stored receipt alone is not authority. The shared loader restores the
+    // original while live, otherwise the SDK verifies the node-admitted renewal.
+    await restoreProfileSession(node, {
+      ...profile,
+      session: { ...profile.session, expiresAt: profile.expiresAt ?? undefined, tinycloudHosts: [host] },
+    });
+  } catch (error) {
+    if (error && typeof error === "object" && "result" in error && error.result === "needs_renewal") {
+      throw homeMirrorRefusal("Existing owner session is unavailable");
+    }
+    throw error;
+  }
   const legacyKv = node.kvForSpace(legacySpaceId);
   const ctx: HomeMirrorContext = { ownerSpaceId, sql: node.sqlForSpace(ownerSpaceId), legacySpaceId, legacy: legacyKv, now: () => new Date().toISOString(), signal: options.signal };
   return { ctx, node, legacyKv };

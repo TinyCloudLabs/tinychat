@@ -249,3 +249,90 @@ describe("a bot that has a grant", () => {
     expect(new HistoryJournal(main.layout, HISTORY).messages().map(message => message.text)).toEqual(expect.arrayContaining(["owed", "next"]));
   });
 });
+
+test("a stale extend cannot resume a revoked grant after a restart", async () => {
+  const { manager, roots, managerOn } = setup();
+  const main = manager.forOwner(OWNER);
+  const grant = { cid: "grant-a", revision: 1 };
+  const validUntil = Date.now() + DAY;
+  await main.historyPermission(OWNER, undefined, validUntil, { ...grant, kind: "extend" });
+  expect(await turn(main, "kept")).toBe("done");
+  await main.historyPermission(OWNER, Date.now(), undefined, { ...grant, kind: "revoke" });
+
+  const restarted = managerOn(roots).forOwner(OWNER);
+  await restarted.historyPermission(OWNER, undefined, validUntil, { ...grant, kind: "extend" });
+  expect(await turn(restarted, "outside the grant")).toBe("done");
+  const journal = new HistoryJournal(restarted.layout, HISTORY);
+  expect(journal.notice()).toBeDefined();
+  expect(journal.messages().filter(message => message.role === "user").map(message => message.text)).toEqual(["kept"]);
+});
+
+test("an older generation's extend cannot shorten the current grant", async () => {
+  const { manager } = setup();
+  const main = manager.forOwner(OWNER);
+  const validUntil = Date.now() + DAY;
+  const current = { kind: "extend" as const, cid: "grant-b", revision: 2 };
+  await main.historyPermission(OWNER, undefined, validUntil, current);
+  await main.historyPermission(OWNER, undefined, validUntil - 1000, { kind: "extend", cid: "grant-a", revision: 1 });
+  await main.historyPermission(OWNER, undefined, validUntil - 500, current);
+  expect(new HistoryJournal(main.layout, HISTORY).permission).toEqual({ grant: current, validUntil });
+});
+
+test("a revoke for another CID or generation leaves the current grant active", async () => {
+  const { manager } = setup();
+  const sibling = manager.forBot(OWNER, KEY);
+  const current = { kind: "extend" as const, cid: "grant-b", revision: 2 };
+  const validUntil = Date.now() + DAY;
+  await sibling.historyPermission(OWNER, undefined, validUntil, current);
+  await sibling.historyPermission(OWNER, Date.now(), undefined, { kind: "revoke", cid: "grant-a", revision: 2 });
+  await sibling.historyPermission(OWNER, Date.now(), undefined, { kind: "revoke", cid: current.cid, revision: 1 });
+  expect(existsSync(journalOf(sibling.layout))).toBe(false);
+  expect(await turn(sibling, "current grant")).toBe("done");
+  const journal = new HistoryJournal(sibling.layout, HISTORY);
+  expect(journal.permission).toEqual({ grant: current, validUntil });
+  expect(journal.notice()).toBeUndefined();
+});
+
+test("a never-run sibling rejects its revoked grant across restarts and accepts a newer grant", async () => {
+  const { manager, roots, managerOn } = setup();
+  const sibling = manager.forBot(OWNER, KEY);
+  const grant = { cid: "grant-a", revision: 1 };
+  const validUntil = Date.now() + DAY;
+  await sibling.historyPermission(OWNER, undefined, validUntil, { ...grant, kind: "extend" });
+  await sibling.historyPermission(OWNER, Date.now(), undefined, { ...grant, kind: "revoke" });
+  expect(existsSync(sibling.layout.dataDir)).toBe(false);
+
+  const restarted = managerOn(roots).forBot(OWNER, KEY);
+  await restarted.historyPermission(OWNER, undefined, validUntil, { ...grant, kind: "extend" });
+  await restarted.historyPermission(OWNER, undefined, validUntil);
+  expect(await turn(restarted, "outside the grant")).toBe("done");
+  expect(existsSync(journalOf(restarted.layout))).toBe(false);
+
+  const newer = { cid: "grant-b", revision: 2, kind: "extend" as const };
+  await restarted.historyPermission(OWNER, undefined, validUntil, newer);
+  await restarted.historyPermission(OWNER, Date.now(), undefined, { ...grant, kind: "revoke" });
+  expect(await turn(restarted, "covered by the new grant")).toBe("done");
+  const journal = new HistoryJournal(restarted.layout, HISTORY);
+  expect(journal.permission?.grant).toEqual(newer);
+  expect(journal.messages().filter(message => message.role === "user").map(message => message.text))
+    .toEqual(["covered by the new grant"]);
+});
+
+test.each([false, true])("a revoke after restart blocks a delayed extend (older revoke on disk: %s)", async olderRevoked => {
+  const { manager, roots, managerOn } = setup();
+  const sibling = manager.forBot(OWNER, KEY);
+  const validUntil = Date.now() + DAY;
+  if (olderRevoked) {
+    const older = { cid: "grant-a", revision: 1 };
+    await sibling.historyPermission(OWNER, undefined, validUntil, { ...older, kind: "extend" });
+    await sibling.historyPermission(OWNER, Date.now(), undefined, { ...older, kind: "revoke" });
+  }
+  const grant = { cid: "grant-b", revision: 2 };
+  await sibling.historyPermission(OWNER, undefined, validUntil, { ...grant, kind: "extend" });
+  await managerOn(roots).forBot(OWNER, KEY).historyPermission(OWNER, Date.now(), undefined, { ...grant, kind: "revoke" });
+
+  const restarted = managerOn(roots).forBot(OWNER, KEY);
+  await restarted.historyPermission(OWNER, undefined, validUntil, { ...grant, kind: "extend" });
+  expect(await turn(restarted, "outside the grant")).toBe("done");
+  expect(existsSync(journalOf(restarted.layout))).toBe(false);
+});
