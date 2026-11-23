@@ -1,8 +1,14 @@
 import type { SessionStore } from "@tinyboilerplate/client";
+import { NATIVE_BEARER_RECOVERY_RETRY } from "./openkeyNativeStrings";
 
 type ClearableSession = Pick<SessionStore, "clear">;
 type RenewableSession = Pick<SessionStore, "getToken" | "isExpired">;
-type SessionSignedOutHook = { handoff: () => Promise<boolean>; onCleared?: () => void; renew?: () => Promise<void> };
+type SessionSignedOutHook = {
+  handoff: () => Promise<boolean>;
+  onCleared?: () => void;
+  renew?: () => Promise<void>;
+  recoverLease?: () => Promise<void> | undefined;
+};
 const hooks = new WeakMap<object, SessionSignedOutHook>();
 const pending = new WeakMap<object, Promise<boolean>>();
 const renewals = new WeakMap<object, Promise<void>>();
@@ -16,8 +22,9 @@ export function registerSessionSignedOutHook(
   handoff: () => Promise<boolean>,
   onCleared?: () => void,
   renew?: () => Promise<void>,
+  recoverLease?: SessionSignedOutHook["recoverLease"],
 ): () => void {
-  const hook = { handoff, onCleared, renew };
+  const hook = { handoff, onCleared, renew, recoverLease };
   hooks.set(session, hook);
   return () => { if (hooks.get(session) === hook) hooks.delete(session); };
 }
@@ -46,6 +53,12 @@ export async function renewSessionOnce(session: RenewableSession, rejectedToken:
 export async function clearSessionAfterHandoff(session: ClearableSession): Promise<void> {
   const hook = hooks.get(session);
   if (hook) {
+    // A leased native session has its own terminal node verdict and outage retry.
+    const recovery = hook.recoverLease?.();
+    if (recovery) {
+      await recovery;
+      throw new Error(NATIVE_BEARER_RECOVERY_RETRY);
+    }
     let transition = pending.get(session);
     if (!transition) {
       transition = hook.handoff();

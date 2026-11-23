@@ -10,7 +10,7 @@ import {
 import { useLocation, useNavigate } from "react-router-dom";
 import OpenKey from "@openkey/sdk";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
-import type { NativeSession, OpenKeyNative } from "@openkey/sdk-capacitor";
+import type { OpenKeyNative } from "@openkey/sdk-capacitor";
 import { logSession } from "./lib/debugLog";
 import {
   SessionStore,
@@ -181,10 +181,11 @@ import { clearSessionAfterHandoff, registerSessionSignedOutHook } from "./lib/se
 import {
   describeAuthFailure, isNativeOpenKeySession, isNativeOpenKeySignIn, isNativeStorageError, logNativeOpenKeyError,
   restoreNativeAtBoot, nativeRenewalServices, secretsAvailable, nativeSignOutPending, loadOpenKeySocialProviders,
-  setNativeSessionActive, setNativeSignOutPending, signInNative, signOutNative, type NativeSignInHints, type OpenKeySocialProvider,
+  setNativeSessionActive, setNativeSignOutPending, signInNative, signOutNative, type NativeSignInHints, type NativeSignInSession, type OpenKeySocialProvider,
   type NativeSignInConfig,
   NATIVE_SIGN_OUT_WARNING,
 } from "./lib/openkeyNative";
+import { NATIVE_LEASE_ADMISSION_UNAVAILABLE } from "./lib/openkeyNativeStrings";
 import { NativeRenewal, guardNativeTinyCloudCalls, NATIVE_SESSION_ENDED_MESSAGE, NATIVE_STORAGE_MESSAGE } from "./lib/openkeyNativeRenewal";
 import { isAuthSettledSignedOut } from "./lib/authRouting";
 import { clearSendIntentsForOwner } from "./chat/notetakerSendIntents";
@@ -536,9 +537,13 @@ export function App() {
   const renewExpiredSession = useCallback(async () => {
     await nativeRenewalRef.current?.renewNow();
   }, []);
+  const recoverNativeLease = useCallback(() => {
+    const renewal = nativeRenewalRef.current;
+    return renewal?.leaseSelected ? renewal.renewNow().catch(() => undefined) : undefined;
+  }, []);
   useEffect(() => registerSessionSignedOutHook(sessionStoreRef.current, expiredSessionHandoff,
-    () => completeLocalSignOut(null, false, undefined, undefined, "credentials"), renewExpiredSession),
-  [expiredSessionHandoff, completeLocalSignOut, renewExpiredSession]);
+    () => completeLocalSignOut(null, false, undefined, undefined, "credentials"), renewExpiredSession, recoverNativeLease),
+  [expiredSessionHandoff, completeLocalSignOut, renewExpiredSession, recoverNativeLease]);
   const [models, setModels] = useState<ModelOption[]>(() =>
     OFFERED_CHAT_MODELS.map(({ id, contextTokens }) => ({ id, contextLength: contextTokens })),
   );
@@ -648,9 +653,9 @@ export function App() {
     tinycloudHosts: TINYCLOUD_HOSTS,
   };
 
-  const startNativeRenewal = async (rawTcw: TinyCloudWeb, session: NativeSession, openkey: OpenKeyNative, renewAt?: number): Promise<TinyCloudWeb> => {
+  const startNativeRenewal = async (rawTcw: TinyCloudWeb, session: NativeSignInSession, openkey: OpenKeyNative, renewAt?: number, effectiveEnd?: number): Promise<TinyCloudWeb> => {
     nativeRenewalRef.current?.stop();
-    const services = await nativeRenewalServices(nativeConfig, openkey);
+    const services = await nativeRenewalServices(nativeConfig, openkey, undefined, session);
     const renewal = new NativeRenewal({
       openkey, tcw: rawTcw, session, sessionStore: sessionStoreRef.current,
       ...services,
@@ -659,7 +664,7 @@ export function App() {
       onUnavailable: (message) => { setError(message); setBillingNotice(message); },
     });
     nativeRenewalRef.current = renewal;
-    renewal.start(renewAt);
+    renewal.start(renewAt, effectiveEnd);
     return guardNativeTinyCloudCalls(rawTcw, renewal);
   };
 
@@ -729,7 +734,7 @@ export function App() {
           if (boot.verified) sessionStoreRef.current.setSession(boot.verified.token, boot.verified.expiresIn, boot.verified.address);
           // Restored, not signed in: the app lock applies as on any cold launch.
           setNativeSessionActive(true, true);
-          const nativeTcw = await startNativeRenewal(boot.tcw, boot.session, boot.openkey, boot.renewAt);
+          const nativeTcw = await startNativeRenewal(boot.tcw, boot.session, boot.openkey, boot.renewAt, boot.effectiveEnd);
           if (!mayCommitRestore()) {
             nativeRenewalRef.current?.stop();
             nativeRenewalRef.current = null;
@@ -1209,6 +1214,7 @@ export function App() {
         // keeps the session key in the device secure store; nothing wallet-shaped
         // signs in the WebView. Throws a user-facing message on cancel/deny.
         const native = await signInNative(nativeConfig, hints);
+        if (native.leaseAdmissionUnavailable) setBillingNotice(NATIVE_LEASE_ADMISSION_UNAVAILABLE);
         setAddress(native.verified.address);
         sessionStoreRef.current.setSession(
           native.verified.token,
