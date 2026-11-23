@@ -141,6 +141,7 @@ import { useSizeClass } from "./lib/sizeClass";
 // space whenever a session with an unlocked vault happens to be open. Separate
 // from the view on purpose — the view must keep working with no vault at all.
 import { BackendReconciler } from "./chat/BackendReconciler";
+import { FirefliesImportRenewer } from "./chat/FirefliesImportRenewer";
 import {
   BackgroundDrainer,
   badgePendingCount,
@@ -1868,6 +1869,16 @@ export function App() {
           unlocks — see useBackgroundDrain.ts. */}
       {!LOCAL_VALIDATION && featureAccess.covered("connectors") && state === "ready" && tcw && secretsAvailable() && (
         <BackgroundDrainer
+          tcw={tcw}
+          sessionStore={sessionStoreRef.current}
+          backendUrl={BACKEND_URL}
+        />
+      )}
+
+      {/* Keeps the server's Fireflies import permissions renewed while the app is open. Renders nothing, never asks
+          for anything, and does nothing unless the server import is on. See FirefliesImportRenewer.tsx. */}
+      {!LOCAL_VALIDATION && featureAccess.covered("connectors") && state === "ready" && tcw && secretsAvailable() && (
+        <FirefliesImportRenewer
           tcw={tcw}
           sessionStore={sessionStoreRef.current}
           backendUrl={BACKEND_URL}

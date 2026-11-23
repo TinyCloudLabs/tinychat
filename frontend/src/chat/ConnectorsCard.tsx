@@ -85,6 +85,7 @@ import {
   ConnectorDisconnectDialog,
 } from "./ConnectorDialog";
 import { BackgroundSyncSection } from "./BackgroundSyncSection";
+import { CONNECTORS_CARD_CLASSES, FirefliesServerImportHost } from "@/capture/meetingSources/FirefliesServerImport";
 import { supportsBackgroundNotifications } from "./backgroundSyncState";
 import { GMEET_CONNECTOR_ID, mintGmeetAccessToken } from "./useGmeetSessionSync";
 import { CalendarAutojoinSection } from "./CalendarAutojoinSection";
@@ -741,6 +742,9 @@ export function ConnectorsCard({
                     onIngested={() => void refreshRow(d.id)}
                     onFeatureDark={setFeatureDark}
                     importGrants={importGrants}
+                    serverImport={d.id === "fireflies" ? (
+                      <FirefliesServerImportHost tcw={tcw} backendUrl={backendUrl} sessionStore={sessionStore} classes={CONNECTORS_CARD_CLASSES} />
+                    ) : undefined}
                   />
                 )}
               </ConnectorRow>

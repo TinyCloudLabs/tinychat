@@ -21,7 +21,7 @@
 // transcript-delivery status. The user's enable-button press is consent.
 
 
-import type { FC } from "react";
+import type { FC, ReactNode } from "react";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { CopyIcon, Loader2Icon, RadioIcon } from "lucide-react";
 
@@ -93,6 +93,8 @@ export interface BackgroundSyncSectionProps {
   onFeatureDark?: (dark: boolean) => void;
   /** Fireflies only: withdraws the server's import permissions at the node when Instant updates go off. */
   importGrants?: DisconnectImportGrants;
+  /** Fireflies only: the server import row. It is shown, and so mounted, only while notifications are on. */
+  serverImport?: ReactNode;
 }
 
 export { consentVariantForProbe, type OffStateConsentVariant };
@@ -116,6 +118,7 @@ export function BackgroundSyncSection(props: BackgroundSyncSectionProps) {
       onRequestHistoricalResync={() => emit(requestHistoricalResync)}
       onCancelHistoricalResync={() => emit(cancelHistoricalResync)}
       onConfirmHistoricalResync={() => void confirmHistoricalResync(deps, emit)}
+      serverImport={props.serverImport}
     />
   );
 }
@@ -152,6 +155,8 @@ export interface BackgroundSyncViewProps {
   onRequestHistoricalResync: () => void;
   onCancelHistoricalResync: () => void;
   onConfirmHistoricalResync: () => void;
+  /** Fireflies only: the server import row, shown while notifications are on. */
+  serverImport?: ReactNode;
 }
 
 export function BackgroundSyncView({
@@ -169,6 +174,7 @@ export function BackgroundSyncView({
   onRequestHistoricalResync,
   onCancelHistoricalResync,
   onConfirmHistoricalResync,
+  serverImport,
 }: BackgroundSyncViewProps) {
   // A route-disabled 404 means the feature is not deployed here. Rendering a
   // setup control that cannot work is worse than rendering nothing.
@@ -294,6 +300,7 @@ export function BackgroundSyncView({
               </li>
             ))}
           </ul>
+          {serverImport}
           {state.lastIngest && <LastRunLine state={state} />}
           <p className="text-xs text-muted-foreground">
             Lost the signing secret? Rotating issues a new address and secret — the
