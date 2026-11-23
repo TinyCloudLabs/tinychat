@@ -41,6 +41,11 @@ function pendingReference(error: unknown): CourierPeerReference | undefined {
     ? { handle: ref.handle, peerDid: ref.peerDid, pairingId: ref.pairingId } : undefined;
 }
 
+/** The library's own refusals are coded CourierErrors; C1's adapter failures after the library resolved are plain errors. */
+function libraryRefusal(error: unknown): boolean {
+  return isRecord(error) && typeof error.code === "string" && error.code.length > 0;
+}
+
 /** The only log line Courier pairing writes: a fixed outcome and a 12-hex peer hash. */
 function logOutcome(peerDid: string, outcome: string) {
   console.log(JSON.stringify({ gateway: "courier", peer: createHash("sha256").update(peerDid).digest("hex").slice(0, 12), outcome }));
@@ -189,6 +194,9 @@ export function createCourierPairing(options: { store: CourierPeerStore; grants:
         try { peer = await api.finalizePairing(ctx, saved.pending, input); } catch (error) {
           // The peer's grant could not be confirmed yet: keep the pending row so the same C can be retried.
           if (pendingReference(error)) throw new PairingError("courier_unavailable", 503);
+          // A coded library refusal leaves its record unpaired, so the pending row stays for a corrected C. Any other
+          // failure may follow a verified C (e.g. the adapter rejecting the stored record), so revoke it now.
+          if (!libraryRefusal(error)) await revokeVerified(owner, saved, api, ctx);
           throw pairingFailure(error);
         }
         // From here the library has verified C and activated the peer: every local refusal, and any local failure

@@ -31,7 +31,7 @@ function setup() {
     async finalizePairing(_ctx, pending, artifactC) {
       finalized++;
       const artifact = JSON.parse(artifactC);
-      if (artifact.delegation !== "signed-peer-delegation") throw new Error("forged_signature");
+      if (artifact.delegation !== "signed-peer-delegation") throw Object.assign(new Error("forged_signature"), { code: "bad-artifact" });
       return { handle: pending.handle, peerDid: pending.peerDid, delegation: { signed: artifact.delegation }, proof: { cid: "verified-C", issuedAt: now }, delegationExpiresAt: now + 7 * 86_400_000 };
     },
     async unpair() {},
@@ -323,4 +323,18 @@ test("when the cleanup duty cannot be sealed, a verified C is revoked directly o
       { gateway: "courier", peer: createHash("sha256").update(start.from.courier).digest("hex").slice(0, 12), outcome: "revoked_unsealed" },
     ]);
   } finally { log.mockRestore(); }
+});
+
+test("an adapter failure after the library finalized C answers 400 and revokes the attempt by its exact reference", async () => {
+  const { pairing, adapter, store } = setup();
+  const finalize = adapter.finalizePairing;
+  adapter.finalizePairing = async (ctx, pending, artifact) => { await finalize(ctx, pending, artifact); throw new Error("Courier stored pairing mismatch"); };
+  const revoked: unknown[] = [];
+  adapter.unpair = async (_ctx, peer) => { revoked.push(peer); };
+  await pairing.pair(owner, JSON.stringify(start));
+  expect(await pairing.pair(owner, JSON.stringify(final)).catch(error => error)).toMatchObject({ code: "invalid", status: 400 });
+  expect(revoked).toEqual([{ handle: "reader", peerDid: start.from.courier, delegation: { pending: expect.objectContaining({ pairingId: "01J00000000000000000000000" }) } }]);
+  expect(await store.getPending(owner, "reader")).toBeUndefined();
+  expect(await store.listRetired(owner)).toEqual([]);
+  expect(await pairing.list(owner)).toEqual([]);
 });
