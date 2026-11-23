@@ -32,7 +32,7 @@ import { StandingReadRuntime } from "./trustbot-reads/standing.js";
 import { StandingReadsController } from "./trustbot-reads/standing-controller.js";
 import { DstackStandingHolderDeriver } from "./trustbot-reads/standing-holder.js";
 import { backendStandingMetadataStore } from "./trustbot-reads/standing-store.js";
-import { createReadAudit, purgeReadAudit } from "./trustbot-reads/audit.js";
+import { RetainedReadAudit } from "./trustbot-reads/audit.js";
 import { startTrustBotReads, trustbotReadsFromEnv } from "./trustbot-reads/setup.js";
 import { botAdmissionSecret, mountBotAdmissionRoute } from "./routes/bot-admission.js";
 import { capModeFromEnv, planFor } from "./bot-caps.js";
@@ -1010,22 +1010,11 @@ async function main() {
       standing: standing && standingConfig ? new StandingReadRuntime({ store: standing, config: standingConfig }) : undefined,
     });
   }
-  // Retention also runs after standing reads are turned off.
-  if (!localValidation) {
-    let purging = false;
-    const purge = async () => {
-      if (purging) return;
-      purging = true;
-      try { await purgeReadAudit(node); }
-      finally { purging = false; }
-    };
-    const sweep = () => { void purge().catch(() => {}); };
-    sweep();
-    setInterval(sweep, 60 * 60_000).unref();
-  }
+  // Keep purging retained rows even after standing reads are turned off.
+  const readAudit = localValidation ? undefined : new RetainedReadAudit(node);
   if (botsConfig && trustbotReadsSettings && trustbotReads) {
     const standingEnabled = standing !== undefined;
-    const audit = standingEnabled ? createReadAudit(node) : undefined;
+    const audit = standingEnabled ? readAudit?.store : undefined;
     const readsOptions = {
       grants: trustbotReads, config: botsConfig, auth: authMiddleware,
       callSecret: trustbotReadsSettings.callSecret, standingEnabled, standing, audit,

@@ -164,3 +164,20 @@ export async function purgeReadAudit(node: TinyCloudNode, now = Date.now()): Pro
     }
   }
 }
+
+/** The backend's audit store and its retention sweep, including when standing access is off. */
+export class RetainedReadAudit {
+  readonly store: ReadAudit;
+
+  constructor(node: TinyCloudNode) {
+    this.store = createReadAudit(node);
+    let purging = false;
+    const sweep = () => {
+      if (purging) return;
+      purging = true;
+      void purgeReadAudit(node).catch(() => {}).finally(() => { purging = false; });
+    };
+    sweep();
+    setInterval(sweep, 60 * 60_000).unref();
+  }
+}
