@@ -82,7 +82,12 @@ describe("GET /api/connectors/fireflies/delegation/status", () => {
     expect(JSON.stringify(active.body)).not.toContain("Bearer");
 
     const lapsed = await statusOf(f, mine.address, NOW + 8 * DAY);
-    expect(lapsed.body).toMatchObject({ state: "needs_renewal", grantCids: [], delegateDid: f.keys.delegate.did });
+    // A lapsed grant still lists its ids, so a renewal can replace them at the node.
+    expect(lapsed.body).toMatchObject({
+      state: "needs_renewal",
+      grantCids: [cid(mine.secretsGrant), cid(mine.meetingsGrant)],
+      delegateDid: f.keys.delegate.did,
+    });
   });
 
   it("answers 401 without a signed-in owner", async () => {

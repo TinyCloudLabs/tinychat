@@ -145,7 +145,7 @@ export function createFirefliesDelegationRouter(config: FirefliesDelegationRoute
       const options = { configuredHost: config.configuredHost, deps, now: nowFn() };
       const { status, cids } = await coordinator.run(address, async () => ({
         status: await config.store.status(address, options),
-        cids: await config.store.activeGrantCids(address, options),
+        cids: await config.store.grantCids(address),
       }));
       res.json({
         state: status.state,
