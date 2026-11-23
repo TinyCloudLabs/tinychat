@@ -1,5 +1,5 @@
 import { afterAll, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HistoryJournal, type HistoryGrantUpdate, updateHistoryPermission } from "../history";
@@ -49,14 +49,42 @@ test("a revoke for the same or an older generation still leaves a different gran
   expect(updateHistoryPermission(held, now, revoke("grant-a", 1), now)).toBe(held);
 });
 
-test("a planted link at the temporary file name is refused and its target stays untouched", () => {
+test.each(["symlink", "hardlink"] as const)("a planted %s at the temporary file name is replaced, never written through", kind => {
   const { layout, journal } = setup();
-  const outside = join(tmp, "outside.txt");
+  const outside = join(tmp, `outside-${kind}.txt`);
   writeFileSync(outside, "keep");
   mkdirSync(layout.dataDir, { recursive: true });
-  symlinkSync(outside, join(layout.dataDir, "history.json.new"));
+  const planted = join(layout.dataDir, "history.json.new");
+  if (kind === "symlink") symlinkSync(outside, planted); else linkSync(outside, planted);
 
-  expect(() => journal.begin(owner, 0)).toThrow();
+  journal.begin(owner, 0);
   expect(readFileSync(outside, "utf8")).toBe("keep");
-  expect(existsSync(join(layout.dataDir, "history.json"))).toBe(false);
+  const saved = lstatSync(join(layout.dataDir, "history.json"));
+  expect(saved.isFile()).toBe(true);
+  expect(saved.nlink).toBe(1);
+  expect(JSON.parse(readFileSync(join(layout.dataDir, "history.json"), "utf8")).owner).toBe(owner);
+  expect(existsSync(planted)).toBe(false);
+});
+
+test("a revoke that jumps far past the held generation is ignored, so later grants still apply", () => {
+  const now = Date.now();
+  const held = updateHistoryPermission(undefined, now + DAY, extend("grant-a", 3), now);
+  expect(updateHistoryPermission(held, now, revoke("grant-z", 19), now)?.revoked).toBe(true);
+  expect(updateHistoryPermission(held, now, revoke("grant-z", 20), now)).toBe(held);
+  expect(updateHistoryPermission(held, now, revoke("grant-z", Number.MAX_SAFE_INTEGER), now)).toBe(held);
+
+  const next = updateHistoryPermission(held, now + 2 * DAY, extend("grant-b", 4), now);
+  expect(next).toEqual({ validUntil: now + 2 * DAY, grant: extend("grant-b", 4) });
+});
+
+test("an untagged journal ignores a revoke with a huge revision and still accepts a plausible one", () => {
+  const { journal } = setup();
+  const now = Date.now();
+  journal.begin(owner, 0);
+  journal.permissionActive(now + DAY, now);
+
+  journal.permissionExpired(now, owner, now, revoke("grant-z", Number.MAX_SAFE_INTEGER));
+  expect(journal.permission).toEqual({ validUntil: now + DAY, grant: undefined });
+  journal.permissionExpired(now, owner, now, revoke("grant-a", 5));
+  expect(journal.permission).toMatchObject({ revoked: true, grant: { cid: "grant-a", revision: 5 } });
 });

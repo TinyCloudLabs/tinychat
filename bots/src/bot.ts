@@ -5,7 +5,7 @@
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, lstatSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { type ActivityRecord, HistoryJournal, type HistoryGrantUpdate, type HistoryOptions, type HistoryPermission, readHistoryRevocation, removeHistoryRevocation, saveHistoryRevocation, type StagedHistory, updateHistoryPermission } from "./history";
+import { type ActivityRecord, HistoryJournal, type HistoryGrantUpdate, type HistoryOptions, type HistoryPermission, readHistoryRevocation, removeHistoryRevocation, revokeRevisionInReach, saveHistoryRevocation, type StagedHistory, updateHistoryPermission } from "./history";
 import { isRecord } from "./guards";
 import { type BotLayout, botLayout, type LayoutRoots } from "./layout";
 import { MESSAGING_STRINGS } from "./messaging-strings";
@@ -896,7 +896,7 @@ export class Bot {
           // A restart can lose the live grant. Record a signed revoke when there is no
           // active permission to displace and the tag advances any saved revoke.
           const end = expiry ?? validUntil!;
-          const canRecord = grant?.kind === "revoke" &&
+          const canRecord = grant?.kind === "revoke" && revokeRevisionInReach(current, grant) &&
             (!current || (current.revoked && current.grant && grant.revision > current.grant.revision));
           const baseline = canRecord ? { validUntil: end, grant } : current;
           const next = updateHistoryPermission(baseline, end, grant, now);
