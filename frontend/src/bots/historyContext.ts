@@ -48,3 +48,31 @@ export function checkBotHistoryContext(batch: unknown, expected: BotHistoryScope
   ) throw new Error("history_binding_mismatch");
   return "bound";
 }
+
+/** The bytes of an earlier batch with its full record context added: the batch's own fields as they were, then `ctx`. */
+export function bindBotHistoryContext(batch: Record<string, unknown>, scope: BotHistoryScope): Uint8Array {
+  const ctx = {
+    v: HISTORY_CONTEXT_VERSION,
+    owner: scope.owner,
+    spaceId: scope.spaceId,
+    path: scope.path,
+    bot: scope.bot,
+    generation: batch.generation,
+    seq: batch.seq,
+    challenge: batch.challenge,
+  };
+  return new TextEncoder().encode(JSON.stringify({ ...batch, ctx }));
+}
+
+/** True when `opened` is exactly `original` with a verified context added and nothing else changed. */
+export function isContextBindingOf(opened: Uint8Array, original: Record<string, unknown>, scope: BotHistoryScope): boolean {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(new TextDecoder().decode(opened));
+    if (checkBotHistoryContext(parsed, scope) !== "bound") return false;
+  } catch {
+    return false;
+  }
+  const { ctx: _ctx, ...rest } = parsed as Record<string, unknown>;
+  return JSON.stringify(rest) === JSON.stringify(original);
+}

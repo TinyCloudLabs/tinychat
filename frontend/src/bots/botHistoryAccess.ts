@@ -7,8 +7,7 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import type { BotHistoryAccess } from "./BotsChat";
 import { authorizeBotHistory } from "./historyAuthorization";
 import { botHistoryEnabled, ensureBotHistoryGrant, ensureSiblingHistoryGrant } from "./historyGrant";
-import { noteHistoryContext } from "./historyContextStatus";
-import { readBotHistory, readHistoryForBot, type BotHistoryContextReport } from "./historyRead";
+import { readBotHistory, readHistoryForBot } from "./historyRead";
 
 export function historyAccessFor(tcw: TinyCloudWeb): BotHistoryAccess {
   return {
@@ -20,9 +19,8 @@ export function historyAccessFor(tcw: TinyCloudWeb): BotHistoryAccess {
       await ensureSiblingHistoryGrant(tcw, key).catch(() => {});
     },
     async read(key, signal) {
-      const onContextReport = (report: BotHistoryContextReport) => noteHistoryContext(key, report);
-      if (key === "main") return readBotHistory(tcw, signal, { reseal: true, onContextReport });
-      return readHistoryForBot(tcw, key, signal, { reseal: true, onContextReport }).catch(() => []);
+      if (key === "main") return readBotHistory(tcw, signal, { reseal: true });
+      return readHistoryForBot(tcw, key, signal, { reseal: true }).catch(() => []);
     },
   };
 }

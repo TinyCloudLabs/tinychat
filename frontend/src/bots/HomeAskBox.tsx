@@ -4,7 +4,6 @@
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { ensureBotHistoryGrant, botHistoryEnabled } from "./historyGrant";
 import { authorizeBotHistory } from "./historyAuthorization";
-import { noteHistoryContext } from "./historyContextStatus";
 import { readBotHistory } from "./historyRead";
 import { useEffect, useMemo, useRef, useState } from "react";
 
@@ -63,7 +62,7 @@ function MainAsk({ api, tcw, onReconnect }: { api: BotsApi; tcw?: TinyCloudWeb; 
     if (!(await botHistoryEnabled())) return local;
     await authorizeBotHistory(tcw);
     await ensureBotHistoryGrant(tcw);
-    const archived = await readBotHistory(tcw, signal, { reseal: true, onContextReport: (report) => noteHistoryContext("main", report) });
+    const archived = await readBotHistory(tcw, signal, { reseal: true });
     return [...new Map([...archived, ...local].map(message => [message.id, message])).values()];
   } }, [api, tcw]);
   const refreshRequests = useRef<() => void>(() => {});

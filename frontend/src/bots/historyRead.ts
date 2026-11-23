@@ -12,7 +12,7 @@ import { botHistoryOwnerPermissions } from "./historyAuthorization";
 import { BOT_HISTORY_RECORD_PREFIX, BOT_HISTORY_RECORD_SUFFIX, botHistoryDirectory } from "./botHistoryPath";
 import { isAppDecision, toSecretLine, type BotMessage } from "./botsApi";
 import { BOTS_STRINGS } from "./botsStrings";
-import { checkBotHistoryContext } from "./historyContext";
+import { bindBotHistoryContext, checkBotHistoryContext, isContextBindingOf } from "./historyContext";
 
 /** Records of one page fetched and decrypted at once. Each decrypt is a round trip to the node (TC-3054). */
 export const HISTORY_READ_CONCURRENCY = 4;
@@ -56,6 +56,9 @@ export interface ReadBotHistoryOptions {
    */
   onContextReport?: (report: BotHistoryContextReport) => void;
 }
+
+/** Earlier records one foreground read rewrites with their context added (one decrypt and a few writes each). */
+export const HISTORY_REBIND_PER_READ = 20;
 
 /** Owner-authorized reads remain separate from the backend's write-only encryption role. */
 export async function readBotHistory(
@@ -123,6 +126,7 @@ async function readHistory(
   let sawV1 = false;
   let boundCount = 0;
   const legacyKeys: string[] = [];
+  let rebindsLeft = HISTORY_REBIND_PER_READ;
   let cachedDescriptor: Promise<KeyDescriptor> | null = null;
 
   const ensureActiveDescriptor = async (): Promise<KeyDescriptor> => {
@@ -140,13 +144,14 @@ async function readHistory(
     return cachedDescriptor;
   };
 
-  const resealV1Record = async (
+  const rewriteRecord = async (
     key: string,
     etag: string | undefined,
     plaintext: Uint8Array,
     expectedAad: string,
     expectedAadBytes: Uint8Array,
     recordSignal: AbortSignal,
+    verifyOpened?: (opened: Uint8Array) => boolean,
   ): Promise<void> => {
     const fail = (reason: ResealFailureReason) => { resealReport.failed.push({ reason }); };
     const current = () => {
@@ -195,7 +200,7 @@ async function readHistory(
         stored.keyVersion !== descriptor.keyVersion || stored.networkId !== networkId || stored.aad !== expectedAad
       ) return fail(reason);
       const opened = await tcw.keys.decrypt(stored);
-      if (!bytesEqual(opened, plaintext)) return fail(reason);
+      if (!bytesEqual(opened, plaintext) || (verifyOpened && !verifyOpened(opened))) return fail(reason);
 
       reason = "commit_failed";
       current();
@@ -254,15 +259,13 @@ async function readHistory(
     }
 
     const batch = JSON.parse(new TextDecoder().decode(plaintext));
-    // Main is read with no bot key: its records must still name no other bot.
+    // Every record: exact version and field types before the stored key is compared with them, and the bot it names.
     if (
-      batch?.bot !== (botKey === undefined || botKey === "main" ? undefined : botKey) ||
-      (botKey === undefined ? batch?.v !== undefined && batch.v !== 1 : (
-        batch?.v !== 1 ||
-        typeof batch.generation !== "string" ||
-        typeof batch.challenge !== "string" ||
-        !Number.isSafeInteger(batch.seq)
-      ))
+      batch?.v !== 1 ||
+      typeof batch.generation !== "string" ||
+      typeof batch.challenge !== "string" ||
+      !Number.isSafeInteger(batch.seq) ||
+      batch.bot !== (botKey === undefined || botKey === "main" ? undefined : botKey)
     ) {
       throw new Error("history_binding_mismatch");
     }
@@ -270,19 +273,21 @@ async function readHistory(
       throw new Error("history_binding_mismatch");
     }
     // Before anything is returned or resealed: a ctx that is present must match; no ctx is a legacy record.
-    if (checkBotHistoryContext(batch, { owner, spaceId, path: key, bot: botKey ?? "main" }) === "legacy") legacyKeys.push(key);
+    const scope = { owner, spaceId, path: key, bot: botKey ?? "main" };
+    const legacy = checkBotHistoryContext(batch, scope) === "legacy";
+    if (legacy) legacyKeys.push(key);
     else boundCount++;
 
+    const etag = stored.data.headers?.etag;
+    const aadBytes = new TextEncoder().encode(expectedAadJson);
     if (isV1 && resealEnabled) {
-      const etag = stored.data.headers?.etag;
-      await resealV1Record(
-        key,
-        etag,
-        plaintext,
-        expectedAad,
-        new TextEncoder().encode(expectedAadJson),
-        recordSignal,
-      );
+      await rewriteRecord(key, etag, plaintext, expectedAad, aadBytes, recordSignal);
+    } else if (legacy && resealEnabled && rebindsLeft > 0) {
+      // An owner-side rewrite of an earlier record that is already sealed to the exact key: the same batch with its
+      // context added. Foreground reads only, a few records per read; every failure leaves the stored record as it is.
+      rebindsLeft--;
+      const bound = bindBotHistoryContext(batch, scope);
+      await rewriteRecord(key, etag, bound, expectedAad, aadBytes, recordSignal, (opened) => isContextBindingOf(opened, batch, scope));
     }
 
     const record = batch.record;
