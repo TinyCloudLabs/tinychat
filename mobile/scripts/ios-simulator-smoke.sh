@@ -741,6 +741,15 @@ time_stage main.console-sanitize safe_log_lines "$private_logs/console.log" "$ou
   echo
   printf '%s\n' "${checks[@]}"
   echo
+  if [ -n "$probe" ]; then
+    # Use fixed labels so the public job summary cannot include arbitrary probe text.
+    subframe=$(jq -c '.subframe | {
+      bridge: (if .bridge == "object" or .bridge == "undefined" or .bridge == "no-report" then .bridge else null end),
+      leaked: (if (.leaked | type) == "boolean" then .leaked else null end),
+      error: (if .error != null then "reported" else null end)
+    }' <<<"$probe" 2>/dev/null) || subframe='{"error":"invalid probe"}'
+    printf 'Subframe probe: `%s`\n\n' "$subframe"
+  fi
   echo "Probe: \`$([ -n "$probe" ] && echo 'committed app page, React mounted' || echo none)\`"
   echo
   # Health spike (TC-525), informational: what HealthKit says to this unsigned build.

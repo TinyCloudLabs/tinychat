@@ -1403,3 +1403,78 @@ for (const action of ["an option tap", "Fine, go ahead"] as const) {
     expect(rows[0]!.kind).toBe("answer");
   });
 }
+
+test("a setup choice opens the matching agent's card and queues one listed answer", async () => {
+  const owner = await ownerFixture();
+  const cardId = "01234567-89ab-cdef-0123-456789abcdef";
+  const agent = await owner.agent("setup-0123456789abcdef0123456789abcdef");
+  const other = await owner.agent("another-agent");
+  const setup = plainCard({ cardId, issuanceId: cardId, kind: "decision", title: "What would you like to try?", choices: [
+    { id: "notes", label: "Keep notes and lists" }, { id: "share", label: "Share something with a link" },
+  ] });
+  value(await publishFeedCard(agent.output, setup));
+  value(await publishFeedCard(other.output, { ...setup, title: "Another agent's card" }));
+  const transport = owner.fresh();
+  const host = document.createElement("div");
+  document.body.append(host);
+  const root = createRoot(host);
+  roots.add(root);
+  await act(async () => root.render(<FeedViewEntries realEntries={[]} source={transport.source}
+    linked={{ cardId, setupChoice: true, visit: "handoff", dismiss() {} }} />));
+  await transport.settle();
+
+  const setupCard = card(host, setup.title);
+  expect(setupCard.textContent).not.toContain("Your own answer");
+  await act(async () => option(setupCard, "Keep notes and lists").click());
+  await countdown(transport);
+  expect(host.textContent).toContain("Queued. Your agent will see this next time it checks.");
+  expect(host.textContent).not.toContain("Sent to Test agent");
+  expect(host.textContent).not.toContain("Change answer");
+  const rows = await stored(agent);
+  expect(rows).toHaveLength(1);
+  const response = rows[0]!;
+  expect(response).toMatchObject({ cardId, revision: 1, issuanceId: cardId, choiceId: "notes", kind: "answer" });
+  expect(value(await listFeedResponses(agent.responses, { afterSequence: response.sequence }))).toEqual([]);
+  expect(await stored(other)).toEqual([]);
+});
+
+test("setup replies accept only the original issuance and share a response ID across stores", async () => {
+  const owner = await ownerFixture();
+  const cardId = "01234567-89ab-cdef-0123-456789abcdef";
+  const agent = await owner.agent("setup-0123456789abcdef0123456789abcdef");
+  const setup = plainCard({ cardId, issuanceId: cardId, kind: "decision" });
+  value(await publishFeedCard(agent.output, setup));
+  const first = owner.fresh().source;
+  const second = owner.fresh().source;
+  const [entry] = (await first.load()).entries;
+  const [sameCard] = (await second.load()).entries;
+  const answer = { cardId, revision: 1, issuanceId: cardId, responseId: "first-tab", kind: "answer" as const, choiceId: "go", createdAt: T2 };
+
+  await expect(first.saveResponse(entry!, { ...answer, issuanceId: "unrelated" })).rejects.toThrow();
+  await expect(first.saveResponse(entry!, { ...answer, choiceId: "unlisted" })).rejects.toThrow();
+  await expect(first.saveResponse(entry!, { ...answer, choiceId: undefined, text: "An unlisted idea" })).rejects.toThrow();
+  const competing = await Promise.allSettled([
+    first.saveResponse(entry!, answer),
+    second.saveResponse(sameCard!, { ...answer, responseId: "second-tab", choiceId: "hold" }),
+  ]);
+  expect(competing.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+  const rows = await stored(agent);
+  expect(rows).toHaveLength(1);
+  expect(rows[0]!.responseId).toBe(`setup-${cardId}`);
+  await expect(first.saveResponse(entry!, { ...answer, kind: "followup", supersedesResponseId: rows[0]!.responseId })).rejects.toThrow();
+});
+
+test("a setup reply cannot use another agent's response database", async () => {
+  const owner = await ownerFixture();
+  const cardId = "01234567-89ab-cdef-0123-456789abcdef";
+  const other = await owner.agent("another-connection");
+  const setup = plainCard({ cardId, issuanceId: cardId, kind: "decision" });
+  value(await publishFeedCard(other.output, setup));
+  owner.registry.sqlite.query("UPDATE feed_agents SET agent_id = ? WHERE agent_id = ?")
+    .run("setup-0123456789abcdef0123456789abcdef", other.source.sourceId);
+  const source = owner.fresh().source;
+  const [entry] = (await source.load()).entries;
+  await expect(source.saveResponse(entry!, { cardId, issuanceId: cardId, revision: 1, responseId: "from-feed",
+    kind: "answer", choiceId: "go", createdAt: T2 })).rejects.toThrow();
+  expect(await stored(other)).toEqual([]);
+});
