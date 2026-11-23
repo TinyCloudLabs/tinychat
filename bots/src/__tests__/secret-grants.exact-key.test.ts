@@ -46,6 +46,12 @@ describe("secretPermissions", () => {
     ]);
   });
 
+  test("a secret named SCOPED asks for no key of its own: secrets/scoped is the parent of every scoped key", () => {
+    const paths = secretPermissions("SCOPED", OWNER).map(entry => entry.path);
+    expect(paths).toEqual(["vault/secrets/SCOPED", NETWORK]);
+    expect(paths.some(path => path.endsWith("/secrets/scoped"))).toBe(false);
+  });
+
   test("names the network with the checksummed address even when the owner is given lowercase", () => {
     const keys = secretPermissions("A_B", OWNER).filter(entry => entry.service === "tinycloud.encryption").map(entry => entry.path);
     expect(keys).toHaveLength(2);

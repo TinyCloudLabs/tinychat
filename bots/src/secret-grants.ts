@@ -147,16 +147,20 @@ export interface SecretCallOutcome {
 /**
  * The permissions a request asks for: one secret, decryption with the owner's default network (it opens a secret saved
  * before per-secret keys), and decryption with this secret's own key `secrets/<name lowercased>` (it opens one saved
- * with its own key; TC-3284). The name is checked against SECRET_NAME before it gets here.
+ * with its own key; TC-3284). The name is checked against SECRET_NAME before it gets here. SCOPED has no key of its
+ * own (`secrets/scoped` is the parent of every scoped key, and the SDK refuses that name), so it asks for none.
  */
 export function secretPermissions(name: string, ownerDid: string): OpenKeyApprovalRequestV1["permissions"] {
   // OpenKey and the node name the network with the checksummed address, as Secret Manager does.
   const owner = `did:pkh:eip155:1:${getAddress(ownerDid.slice(ownerDid.lastIndexOf(":") + 1))}`;
-  return [
+  const permissions: OpenKeyApprovalRequestV1["permissions"] = [
     { service: "tinycloud.kv", space: "secrets", path: `vault/secrets/${name}`, actions: ["tinycloud.kv/get"] },
     { service: "tinycloud.encryption", space: "encryption", path: `urn:tinycloud:encryption:${owner}:default`, actions: ["tinycloud.encryption/decrypt"] },
-    { service: "tinycloud.encryption", space: "encryption", path: `urn:tinycloud:encryption:${owner}:default/secrets/${name.toLowerCase()}`, actions: ["tinycloud.encryption/decrypt"] },
   ];
+  if (name !== "SCOPED") {
+    permissions.push({ service: "tinycloud.encryption", space: "encryption", path: `urn:tinycloud:encryption:${owner}:default/secrets/${name.toLowerCase()}`, actions: ["tinycloud.encryption/decrypt"] });
+  }
+  return permissions;
 }
 
 /**
