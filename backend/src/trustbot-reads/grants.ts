@@ -6,6 +6,7 @@ import { createCipheriv, createDecipheriv, hkdfSync, randomBytes } from "node:cr
 import type { DelegatedAccess, TinyCloudNode } from "@tinycloud/node-sdk";
 import { verifyTranscriptWriterGrant, type VerifiedTranscriptWriter } from "../delegation-verify.js";
 import { activateVerifiedDelegation, DelegationActivationError } from "../portable-delegation.js";
+import type { StandingReadRuntime } from "./standing.js";
 import { areaResources, isReadArea, READ_AREA_NAMES, READ_AREAS, type ReadArea, type ReadResource } from "./areas.js";
 
 /** Where each owner's grant is kept, in the backend's own space. */
@@ -54,6 +55,7 @@ export interface TrustBotReadGrantsOptions {
   /** Secret the storage key is derived from. */
   sealSecret: Uint8Array;
   now?: () => number;
+  standing?: StandingReadRuntime;
   /** Checks a grant; the default is the signed verifier in delegation-verify.ts. */
   verify?: typeof verifyTranscriptWriterGrant;
   /** Activates a checked grant at the node; the default is activateVerifiedDelegation. */
@@ -88,6 +90,7 @@ export class TrustBotReadGrants {
   readonly #host: string;
   readonly #key: Buffer;
   readonly #now: () => number;
+  readonly #standing?: StandingReadRuntime;
   readonly #verify: typeof verifyTranscriptWriterGrant;
   readonly #activate: (verified: VerifiedTranscriptWriter) => Promise<ReadAccess>;
   readonly #activations = new Map<string, { access: ReadAccess; until: number }>();
@@ -98,6 +101,7 @@ export class TrustBotReadGrants {
     this.#host = options.host;
     this.#key = Buffer.from(hkdfSync("sha256", options.sealSecret, Buffer.alloc(0), "tinychat.trustbot-reads.grants/v1", 32));
     this.#now = options.now ?? Date.now;
+    this.#standing = options.standing;
     this.#verify = options.verify ?? verifyTranscriptWriterGrant;
     this.#activate = options.activate ?? (verified => activateVerifiedDelegation(this.#reader as TinyCloudNode, verified, { host: this.#host }));
   }
@@ -164,9 +168,11 @@ export class TrustBotReadGrants {
       throw new Error("trustbot_read_path_invalid");
     }
     const owner = checkAddress(address);
+    const standing = await this.#standing?.access(owner, area, path);
+    if (standing?.state === "active") return standing.access;
     let stored: StoredReads | undefined;
     try { stored = await this.#load(owner); } catch { throw new ReadGrantRefused("unavailable"); }
-    if (!stored) throw new ReadGrantRefused("none");
+    if (!stored) throw new ReadGrantRefused(standing?.state === "unavailable" || standing?.state === "ended" ? standing.state : "none");
     if (!stored.areas.includes(area)) throw new ReadGrantRefused("off");
     const now = this.#now();
     if (stored.expiresAt <= now) throw new ReadGrantRefused("ended");

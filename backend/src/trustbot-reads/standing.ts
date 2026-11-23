@@ -1,0 +1,81 @@
+import type { RenewalVerifyConfig } from "../renewal-verify.js";
+import { areaResources, type ReadArea, type ReadResource } from "./areas.js";
+import type { ReadAccess } from "./grants.js";
+import { confirmedStandingReadRevocation, standingReadAuthority, type StandingReadGrant, type StandingReadHolder } from "./standing-grant.js";
+
+export interface CollectedStandingRead {
+  grant: StandingReadGrant;
+  holder: StandingReadHolder;
+  activate(resources: readonly ReadResource[], validUntil: number): Promise<ReadAccess>;
+}
+
+export type StandingReadView = {
+  areas: ReadArea[];
+  active: { originalCid: string; areas: readonly ReadArea[]; validUntil: number } | null;
+  pending: { approveUrl: string } | null;
+  previousOriginalCid: string | null;
+  outcome: "declined" | "expired" | "failed" | null;
+};
+
+export interface StandingReadControl {
+  view(owner: string, areas: ReadArea[]): Promise<StandingReadView>;
+  request(owner: string, areas: ReadArea[]): Promise<StandingReadView>;
+  /** Compare the owner's current/previous CID and confirm its revocation at the node before dropping it. */
+  finishStop(owner: string, originalCid: string): Promise<void>;
+  /** Refuse if the area is still in a standing grant. Cancel pending approval for the old area selection. */
+  beforeAreaOff(owner: string, area: ReadArea): Promise<void>;
+}
+
+export interface StandingReadStore {
+  current(owner: string): Promise<CollectedStandingRead | undefined>;
+  /** Compare against the original CID so a stale read cannot drop a new approval. */
+  drop(owner: string, originalCid: string): Promise<void>;
+  audit(row: { owner: string; area: ReadArea; at: number }): Promise<void>;
+}
+
+type StandingReadResult = { state: "active"; access: ReadAccess } | { state: "absent" | "ended" | "unavailable" };
+
+/** The runtime read gate is independent of how a holder is created, sealed and recovered. */
+export class StandingReadRuntime {
+  constructor(private readonly deps: {
+    store: StandingReadStore;
+    config: RenewalVerifyConfig;
+    fetch?: typeof fetch;
+    now?: () => number;
+  }) {}
+
+  async access(owner: string, area: ReadArea, path?: string): Promise<StandingReadResult> {
+    const { store, config, fetch, now } = this.deps;
+    try {
+      const record = await store.current(owner);
+      if (!record || !record.grant.areas.includes(area)) return { state: "absent" };
+      const { grant, holder } = record;
+      const authority = await standingReadAuthority(grant, { address: owner, holder, config, fetch, now });
+      if (authority.state === "ended") await store.drop(owner, grant.originalCid);
+      if (authority.state !== "active") return { state: authority.state };
+      const resources = areaResources([area]).filter(resource => path === undefined || path === resource.path);
+      if (resources.length === 0) return { state: "unavailable" };
+      await store.audit({ owner, area, at: (now?.() ?? Math.floor(Date.now() / 1000)) * 1000 });
+      return { state: "active", access: await record.activate(resources, authority.validUntil) };
+    } catch {
+      return { state: "unavailable" };
+    }
+  }
+}
+
+/** Complete an owner-revoked grant, including a previous grant kept for replace-then-revoke. */
+export async function finishStandingReadStop(owner: string, originalCid: string, deps: {
+  find(owner: string, originalCid: string): Promise<CollectedStandingRead | undefined>;
+  drop(owner: string, originalCid: string): Promise<void>;
+  config: RenewalVerifyConfig;
+  fetch?: typeof fetch;
+  now?: () => number;
+}): Promise<void> {
+  const record = await deps.find(owner, originalCid);
+  if (!record) return;
+  const { grant, holder } = record;
+  if (grant.originalCid !== originalCid || !await confirmedStandingReadRevocation(grant, { ...deps, address: owner, holder })) {
+    throw new Error("standing_read_stop_not_confirmed");
+  }
+  await deps.drop(owner, originalCid);
+}

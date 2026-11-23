@@ -18,6 +18,7 @@ import { parseMeetingToolData } from "../transcripts/meeting-evidence.js";
 import { isReadArea, READ_AREA_NAMES } from "../trustbot-reads/areas.js";
 import { ReadGrantInvalid, ReadGrantRefused, type ReadStatus, type TrustBotReadGrants } from "../trustbot-reads/grants.js";
 import { delegatedFeedChatSql, FEED_CHAT_FIRST_DATABASE, FeedChatReadError, isFeedChatTool, runFeedChatTool } from "../trustbot-reads/feed-chat.js";
+import type { StandingReadControl } from "../trustbot-reads/standing.js";
 import { delegatedMeetingPort } from "../trustbot-reads/meeting-port.js";
 import { botOwnerDid, botsServiceHeaders, type BotsConfig } from "./bots.js";
 
@@ -40,6 +41,8 @@ export interface TrustBotReadsOptions {
   auth: RequestHandler;
   /** Shared with the bots service's gateway (BOTS_BACKEND_CALL_SECRET). */
   callSecret: string;
+  standing?: StandingReadControl;
+  standingEnabled?: boolean;
 }
 
 /** Tells the bots service which areas are on, so the gateway offers those tools. False when it did not answer. */
@@ -58,23 +61,55 @@ async function pushToService(config: BotsConfig, address: string, status: ReadSt
 
 const view = (grants: TrustBotReadGrants, status: ReadStatus) => ({ serviceDid: grants.serviceDid, ...status });
 
-export function createTrustBotReadsRouter({ grants, config, auth }: Pick<TrustBotReadsOptions, "grants" | "config" | "auth">) {
+export function createTrustBotReadsRouter(
+  { grants, config, auth, standingEnabled, standing: control }: Pick<TrustBotReadsOptions, "grants" | "config" | "auth" | "standingEnabled" | "standing">,
+) {
+  const standing = standingEnabled ? control : undefined;
   const router = Router();
   router.use(auth);
   router.use((req, res, next) => {
     if (!req.user || !config.accountAllowed(req.user.address)) { res.status(404).end(); return; }
     next();
   });
+  const readView = (status: ReadStatus) => ({
+    ...view(grants, status), ...(standing ? { standingAvailable: true } : {}),
+  });
   router.get("/", async (req, res) => {
     try {
       const status = await grants.status(req.user!.address);
       // The service's copy of the setting goes with the bot's working state; it is given again whenever the owner looks.
       if (READ_AREA_NAMES.some(area => status.areas[area] === "on")) void pushToService(config, req.user!.address, status);
-      res.json(view(grants, status));
+      res.json(readView(status));
     } catch {
       res.status(503).json({ error: "reads_unavailable" });
     }
   });
+  if (standing) {
+    const currentAreas = async (owner: string) => {
+      const status = await grants.status(owner);
+      return READ_AREA_NAMES.filter(area => status.areas[area] === "on");
+    };
+    router.get("/standing", async (req, res) => {
+      const owner = req.user!.address;
+      try { res.json(await standing.view(owner, await currentAreas(owner))); }
+      catch { res.status(503).json({ error: "reads_unavailable" }); }
+    });
+    router.post("/standing", async (req, res) => {
+      const owner = req.user!.address;
+      try {
+        const areas = await currentAreas(owner);
+        if (areas.length === 0) { res.status(409).json({ error: "no_read_areas" }); return; }
+        res.json(await standing.request(owner, areas));
+      } catch { res.status(503).json({ error: "reads_unavailable" }); }
+    });
+    router.delete("/standing/:cid", async (req, res) => {
+      if (!/^[a-z0-9]{20,120}$/.test(req.params.cid)) { res.status(400).json({ error: "invalid_grant" }); return; }
+      try {
+        await standing.finishStop(req.user!.address, req.params.cid);
+        res.status(204).end();
+      } catch { res.status(503).json({ error: "reads_unavailable" }); }
+    });
+  }
   router.put("/:area", express.json({ limit: "96kb" }), async (req, res) => {
     const area = req.params.area;
     const input: unknown = req.body;
@@ -83,14 +118,17 @@ export function createTrustBotReadsRouter({ grants, config, auth }: Pick<TrustBo
     const address = req.user!.address;
     try {
       let status: ReadStatus;
-      if (enabled === false) status = await grants.disable(address, area);
+      if (enabled === false) {
+        await standing?.beforeAreaOff(address, area);
+        status = await grants.disable(address, area);
+      }
       else if (enabled === true && grant && typeof grant === "object") {
         const { serialized, siwe, signature } = grant as Record<string, unknown>;
         if (typeof serialized !== "string" || typeof siwe !== "string" || typeof signature !== "string") { res.status(400).json({ error: "invalid_reads" }); return; }
         status = await grants.enable(address, area, { serialized, siwe, signature });
       } else { res.status(400).json({ error: "invalid_reads" }); return; }
       if (!await pushToService(config, address, status)) console.warn("[trustbot-reads] service_push=failed");
-      res.json(view(grants, status));
+      res.json(readView(status));
     } catch (error) {
       if (error instanceof ReadGrantInvalid) { res.status(400).json({ error: "invalid_grant", code: error.code }); return; }
       res.status(503).json({ error: "reads_unavailable" });

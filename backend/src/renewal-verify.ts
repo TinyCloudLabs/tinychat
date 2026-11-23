@@ -115,7 +115,7 @@ const principal = (did: string) => did.split("#", 1)[0];
 type Attenuation = Readonly<Record<string, Readonly<Record<string, readonly unknown[]>>>>;
 
 /** Exactly `{ [resource]: { [ability]: [{}] } }`, the one-capability shape node-sdk checks for a lease. */
-function isOnlyCapability(attenuation: Attenuation, resource: string, ability: string): boolean {
+export function isOnlyCapability(attenuation: Attenuation, resource: string, ability: string): boolean {
   const abilities = attenuation[resource];
   const caveats = abilities?.[ability];
   const caveat = caveats?.[0];
@@ -171,7 +171,7 @@ async function nodeRequest(fetchImpl: typeof fetch, url: string, init: RequestIn
   }
 }
 
-async function fetchNodeIdentity(fetchImpl: typeof fetch, config: RenewalVerifyConfig): Promise<RenewalNodeIdentity> {
+export async function fetchNodeIdentity(fetchImpl: typeof fetch, config: RenewalVerifyConfig): Promise<RenewalNodeIdentity> {
   const response = await nodeRequest(fetchImpl, `${config.nodeOrigin}/.well-known/tinycloud/node-keys`, { method: "GET" });
   if (!response.ok) throw new NodeUnavailable(`node-keys answered ${response.status}`);
   const keys: NodeKeysAnswer = await boundedJsonObject(response, NODE_KEYS_MAX_BYTES);
@@ -191,7 +191,7 @@ async function fetchNodeIdentity(fetchImpl: typeof fetch, config: RenewalVerifyC
 
 type NodeStatus = { kind: "refused" } | { kind: "status"; value: DelegationStatusAnswer };
 
-async function fetchDelegationStatus(fetchImpl: typeof fetch, config: RenewalVerifyConfig, cid: string, authorization: string): Promise<NodeStatus> {
+export async function fetchDelegationStatus(fetchImpl: typeof fetch, config: RenewalVerifyConfig, cid: string, authorization: string): Promise<NodeStatus> {
   const response = await nodeRequest(fetchImpl, `${config.nodeOrigin}/delegation/status`, {
     method: "POST",
     headers: { Authorization: authorization, "Content-Type": "application/json" },

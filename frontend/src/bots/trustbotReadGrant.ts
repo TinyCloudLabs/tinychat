@@ -15,6 +15,7 @@ export interface ReadSettings {
   /** The stored grant, for the owner's own revoke at the node; null when there is none. */
   grantCid: string | null;
   areas: Record<ReadArea, ReadAreaState>;
+  standingAvailable?: true;
 }
 
 /** What turning a read area on or off needs. */
@@ -24,6 +25,7 @@ export interface ReadAreaApi {
   signReadGrant(serviceDid: string, areas: ReadArea[]): Promise<ReadGrant>;
   /** Revokes a grant the owner signed, at the node; throws when the node does not confirm it. */
   revokeReadGrant(cid: string): Promise<void>;
+  stopStandingArea?(area: ReadArea): Promise<void>;
 }
 
 export interface ReadGrant {
@@ -47,14 +49,17 @@ function grantLifetime(siwe: string): number {
 }
 
 function toReadSettings(payload: unknown): ReadSettings {
-  const value = (payload ?? {}) as { serviceDid?: unknown; expiresAt?: unknown; grantCid?: unknown; areas?: Record<string, unknown> };
+  const value = (payload ?? {}) as { serviceDid?: unknown; expiresAt?: unknown; grantCid?: unknown; standingAvailable?: unknown; areas?: Record<string, unknown> };
   if (typeof value.serviceDid !== "string" || (value.expiresAt !== null && typeof value.expiresAt !== "number")) throw new BotsError("failed");
   const areas = {} as Record<ReadArea, ReadAreaState>;
   for (const area of Object.keys(READ_AREAS) as ReadArea[]) {
     const state = value.areas?.[area];
     areas[area] = STATES.includes(state as ReadAreaState) ? state as ReadAreaState : "off";
   }
-  return { serviceDid: value.serviceDid, expiresAt: value.expiresAt, grantCid: typeof value.grantCid === "string" ? value.grantCid : null, areas };
+  return {
+    serviceDid: value.serviceDid, expiresAt: value.expiresAt, grantCid: typeof value.grantCid === "string" ? value.grantCid : null, areas,
+    ...(value.standingAvailable === true ? { standingAvailable: true } : {}),
+  };
 }
 
 async function request(method: "GET" | "PUT", path: string, body?: unknown): Promise<ReadSettings> {
@@ -118,6 +123,7 @@ export async function changeReadArea(api: ReadAreaApi, saved: ReadSettings, area
     if (saved.grantCid && saved.grantCid !== stored.grantCid) await revokeQuietly(api, saved.grantCid);
     return stored;
   }
+  if (saved.standingAvailable) await api.stopStandingArea?.(area);
   if (others.length === 0 && saved.grantCid) await revokeQuietly(api, saved.grantCid);
   return api.setReadArea(area, false);
 }

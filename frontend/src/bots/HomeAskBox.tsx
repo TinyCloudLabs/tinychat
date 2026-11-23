@@ -86,6 +86,10 @@ function MainAsk({ api, tcw, onReconnect }: { api: BotsApi; tcw?: TinyCloudWeb; 
     setReadArea,
     signReadGrant: (serviceDid: string, areas: Parameters<typeof signReadGrant>[2]) => signReadGrant(tcw, serviceDid, areas),
     revokeReadGrant: (cid: string) => revokeReadGrant(tcw, cid),
+    stopStandingArea: async (area: Parameters<typeof setReadArea>[0]) => {
+      const { stopStandingArea } = await import("./trustbotStandingReads");
+      await stopStandingArea(area, cid => revokeReadGrant(tcw, cid));
+    },
   } : undefined, [tcw]);
   const clearChat = chat.clear;
   const newChat = useMemo(() => ({ start: () => newMainChat(), onStarted: () => { clearChat(); refreshAsks(); } }), [clearChat, refreshAsks]);

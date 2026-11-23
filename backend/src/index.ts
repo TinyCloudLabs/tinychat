@@ -990,7 +990,10 @@ async function main() {
     backendNode: node, backendDid: did, host: TINYCLOUD_HOST, otherDelegateDids: [process.env.MCP_CHAT_SERVICE_DID, AGENT_DID],
   }) : undefined;
   if (botsConfig && trustbotReadsSettings && trustbotReads) {
-    app.use("/api/bots/main/reads", createTrustBotReadsRouter({ grants: trustbotReads, config: botsConfig, auth: authMiddleware }));
+    app.use("/api/bots/main/reads", createTrustBotReadsRouter({
+      grants: trustbotReads, config: botsConfig, auth: authMiddleware,
+      standingEnabled: process.env.TRUSTBOT_STANDING_READS_ENABLED === "true",
+    }));
     app.use(TRUSTBOT_READS_INTERNAL_PREFIX, createTrustBotReadsInternalRouter({ grants: trustbotReads, config: botsConfig, callSecret: trustbotReadsSettings.callSecret }));
     console.log("[startup] TrustBot reads enabled.");
   }

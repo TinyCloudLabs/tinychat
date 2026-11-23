@@ -1,6 +1,6 @@
 // Main's chat, over Home: a full-height sheet on a phone, a dialog on a wider screen. Main's reply is
 // shown as plain text, never as HTML.
-import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState, type RefObject } from "react";
 
 import { Button } from "@/components/ui/button";
 import { ResponsiveSheet, ResponsiveSheetBody } from "@/components/ui/responsive-sheet";
@@ -17,6 +17,7 @@ import { AppLine, AskCards, AsksToggle } from "./AskCards";
 import { clearHistoryDecline } from "./historyAuthorization";
 import { SecretCards } from "./SecretCard";
 import type { Asks } from "./useAsks";
+import type { ReadSettings } from "./trustbotReadGrant";
 
 export function Line({ role, text }: Pick<ChatLine, "role" | "text">) {
   return role === "user" ? (
@@ -118,7 +119,10 @@ export function WebAccessToggle({ api }: { api: WebAccessApi }) {
   );
 }
 
+const StandingReadsCard = lazy(() => import("./StandingReadsCard"));
+
 export function MainChat({ open, onOpenChange, state, onSend, onRetry, onRetryHistory, notice, onReconnect, webAccess, meetings, asks, newChat }: MainChatProps) {
+  const [readSettings, setReadSettings] = useState<ReadSettings | null>(null);
   const { lines, history, turn } = state;
   const working = isWorking(turn);
   const sdkPromptOpen = useSdkPromptOpen();
@@ -164,8 +168,9 @@ export function MainChat({ open, onOpenChange, state, onSend, onRetry, onRetryHi
         <div className="mx-auto flex w-full max-w-2xl flex-col gap-5 py-4">
           <p className="text-center text-callout text-muted-foreground">{BOTS_STRINGS.modelLine}</p>
           {open && webAccess ? <WebAccessToggle api={webAccess} /> : null}
-          {open && meetings ? <MeetingsAccess api={meetings} /> : null}
-          {open && meetings ? <FeedChatsAccess api={meetings} /> : null}
+          {open && meetings ? <MeetingsAccess api={meetings} onSettings={setReadSettings} /> : null}
+          {open && meetings ? <FeedChatsAccess api={meetings} onSettings={setReadSettings} /> : null}
+          {open && readSettings?.standingAvailable && meetings?.stopStandingArea ? <Suspense fallback={null}><StandingReadsCard settings={readSettings} revoke={meetings.revokeReadGrant} /></Suspense> : null}
           {open && asks ? <AsksToggle asks={asks} /> : null}
           {open && newChat ? <NewChat api={newChat} /> : null}
           {open && notice && onReconnect ? <ExpiryNotice key={`${notice.id}:${notice.deliveredAt ?? notice.renderAttemptAt ?? "initial"}`} notice={notice} onReconnect={onReconnect} /> : null}

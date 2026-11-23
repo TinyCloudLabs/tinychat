@@ -37,16 +37,18 @@ function Confirm({ copy: COPY, onConfirm, onCancel, busy }: { copy: AccessCopy; 
   );
 }
 
-export function MeetingsAccess({ api }: { api: MeetingsAccessApi }) {
-  return <ReadAreaAccess api={api} area="meetings" copy={MEETINGS_ACCESS_STRINGS} />;
+export function MeetingsAccess({ api, onSettings }: { api: MeetingsAccessApi; onSettings?: (settings: ReadSettings) => void }) {
+  return <ReadAreaAccess api={api} onSettings={onSettings} area="meetings" copy={MEETINGS_ACCESS_STRINGS} />;
 }
 
-export function FeedChatsAccess({ api }: { api: MeetingsAccessApi }) {
-  return <ReadAreaAccess api={api} area="feed_chats" copy={FEED_CHATS_ACCESS_STRINGS} />;
+export function FeedChatsAccess({ api, onSettings }: { api: MeetingsAccessApi; onSettings?: (settings: ReadSettings) => void }) {
+  return <ReadAreaAccess api={api} onSettings={onSettings} area="feed_chats" copy={FEED_CHATS_ACCESS_STRINGS} />;
 }
 
 /** Renders nothing while loading and when the service answers 404 (the feature is not on for this account). */
-function ReadAreaAccess({ api, area: AREA, copy: COPY }: { api: MeetingsAccessApi; area: ReadArea; copy: AccessCopy }) {
+function ReadAreaAccess({ api, area: AREA, copy: COPY, onSettings }: {
+  api: MeetingsAccessApi; area: ReadArea; copy: AccessCopy; onSettings?: (settings: ReadSettings) => void;
+}) {
   const id = useId();
   const [saved, setSaved] = useState<ReadSettings | null>(null);
   const [missing, setMissing] = useState(false);
@@ -62,7 +64,7 @@ function ReadAreaAccess({ api, area: AREA, copy: COPY }: { api: MeetingsAccessAp
   useEffect(() => {
     let current = true;
     api.readSettings().then(
-      (settings) => { if (current) setSaved(settings); },
+      (settings) => { if (current) { setSaved(settings); onSettings?.(settings); } },
       (error: unknown) => {
         if (!current) return;
         if (error instanceof BotsRouteMissing) setMissing(true);
@@ -70,7 +72,7 @@ function ReadAreaAccess({ api, area: AREA, copy: COPY }: { api: MeetingsAccessAp
       },
     );
     return () => { current = false; };
-  }, [api]);
+  }, [api, onSettings]);
 
   if (missing) return null;
   if (!saved) {
@@ -92,6 +94,7 @@ function ReadAreaAccess({ api, area: AREA, copy: COPY }: { api: MeetingsAccessAp
       const stored = await changeReadArea(api, await api.readSettings(), AREA, enabled);
       if (!alive.current) return;
       setSaved(stored);
+      onSettings?.(stored);
       setConfirming(false);
     } catch {
       if (!alive.current) return;
