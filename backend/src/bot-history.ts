@@ -381,9 +381,11 @@ export class BotHistory {
       checkedArchiveResult(await access.kv.put(path, envelope, { ifNoneMatch: "*", prefix: "" }), permission);
     } else {
       const committed = resultData(before).data;
-      // An owner may have resealed the committed v1 between its put and receipt.
-      // Use the bound named envelope for the receipt without touching that record.
-      if (legacy && named(committed)) envelope = committed;
+      // An owner may rewrite the committed record between its put and receipt: a v1 stage to its bound named
+      // envelope, or a named stage to its bound named envelope with the record context. The receipt then covers
+      // owner-rewritten ciphertext the backend did not seal, for this batch's batchHash. A named record never
+      // moves to a lower key version.
+      if (named(committed) && (legacy || (named(saved) && committed.keyVersion >= saved.keyVersion))) envelope = committed;
       if (!envelope || historyHash(JSON.stringify(committed)) !== historyHash(JSON.stringify(envelope))) {
         throw new Error("history_integrity_failure");
       }
