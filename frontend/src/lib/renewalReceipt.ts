@@ -209,3 +209,20 @@ export async function renewalRestoreFor(
   const leaseAuthorization = await verifiedRenewalLease(receipt, candidate.data);
   return leaseAuthorization ? { address, leaseAuthorization } : null;
 }
+
+
+/**
+ * When the signed-in session ends now, in ms: the node's own recomputation from the session's saved lease (a leased
+ * session outlives its first signed end). Null without a saved lease or when the node cannot say, so a caller falls
+ * back to the signed end. The node's answer can only shorten what the lease allows.
+ */
+export async function renewedSessionEndMs(tcw: Pick<TinyCloudWeb, "getRenewalEffectiveExpiry">, address: string): Promise<number | null> {
+  try {
+    const saved = loadRenewalReceipt(address);
+    if (saved === null) return null;
+    const endSeconds = await tcw.getRenewalEffectiveExpiry(parseApprovalRenewal(saved).receipt.leaseAuthorization);
+    return Number.isFinite(endSeconds) ? endSeconds * 1000 : null;
+  } catch {
+    return null;
+  }
+}

@@ -3,7 +3,8 @@ import type { TinyCloudWeb, PermissionEntry } from "@tinycloud/web-sdk";
 import { connectWallet } from "@tinyboilerplate/client";
 import { APP_NAME } from "../lib/homeSite";
 import { openkeyPasskeysSupported } from "../lib/openkeyPasskeys";
-import { encryptionNetworkId } from "../lib/connectors/encryptionGrant";
+import { encryptionNetworkId, LEGACY_NETWORK_APPROVAL_MAX_MS } from "../lib/connectors/encryptionGrant";
+import { renewedSessionEndMs } from "../lib/renewalReceipt";
 import {
   BOT_HISTORY_KEY_MAX_MS,
   BOT_HISTORY_KEY_PATH,
@@ -14,10 +15,11 @@ import {
   type SignedBotHistoryKeyEnvelope,
 } from "./botHistoryKey";
 import { botsApi } from "./botsApi";
+import { resealLegacyBotHistory, type BotHistoryResealReport } from "./historyRead";
 
 export const BOT_HISTORY_KEY_APPROVAL_DESCRIPTION = "Set up encryption and read chat history with your bots in your TinyCloud (up to 7 days).";
 
-export const BOT_HISTORY_LEGACY_APPROVAL_DESCRIPTION = "Read earlier chat history with your bots in your TinyCloud to move it to its own key (up to 7 days).";
+export const BOT_HISTORY_LEGACY_APPROVAL_DESCRIPTION = "Open everything encrypted with your account's main key for 1 hour, including older bot chats, saved secrets and keys for connected services, so your bot chats can move to their own encryption key.";
 
 export function botHistoryOwnerPermissions(address: string): PermissionEntry[] {
   return [{
@@ -38,11 +40,23 @@ let declined: string | undefined;
 /** Forgets the decline, so the next authorization asks again (the "Review request" button). */
 export const clearHistoryDecline = (): void => { declined = undefined; };
 
+// Sessions whose older records have all been moved: the pass is skipped for them.
+const resealPassDone = new Set<string>();
+
+// When the one-hour approval for older records was given in this page, per session. A whole-network row the
+// session holds from anywhere else (a longer grant, an earlier sign-in) is never taken as that approval.
+const legacyApprovals = new Map<string, number>();
+const legacyApprovalLive = (key: string): boolean => (legacyApprovals.get(key) ?? 0) > Date.now();
+
 export interface AuthorizeBotHistoryOptions {
   /** Override v1 detection in tests; defaults to inspecting stored envelopes. */
   includeLegacyNetwork?: boolean;
   /** Override descriptor POST in tests. */
   postDescriptor?: (envelope: SignedBotHistoryKeyEnvelope) => Promise<void>;
+  /** Receives the counts of the pass that moves older records to the exact key. Never includes plaintext or keys. */
+  onResealReport?: (report: BotHistoryResealReport) => void;
+  /** Override how the session's current end is read in tests; defaults to the saved lease's end, else the signed end. */
+  sessionEndMs?: typeof renewedSessionEndMs;
 }
 
 /** Foreground only: first bot use/history read. Background renewal never calls this. */
@@ -52,6 +66,7 @@ export async function authorizeBotHistory(
   status = botsApi.getBotsStatus,
   options: AuthorizeBotHistoryOptions = {},
 ): Promise<void> {
+  const sessionEndMs = options.sessionEndMs ?? renewedSessionEndMs;
   if (!(await status()).enabled) throw new Error("history_disabled");
   const session = tcw.session();
   if (!session) throw new Error("history_session_missing");
@@ -65,8 +80,8 @@ export async function authorizeBotHistory(
     service: "tinycloud.encryption", path: networkId, skipPrefix: true, actions: [action], description,
   }];
   let connected: Awaited<ReturnType<typeof connectWallet>> | undefined;
-  const requirePermissions = async (permissions: PermissionEntry[]) => {
-    if (tcw.hasPermissions(permissions)) return;
+  const requirePermissions = async (permissions: PermissionEntry[], maxMs = BOT_HISTORY_KEY_MAX_MS, alwaysAsk = false): Promise<number> => {
+    if (!alwaysAsk && tcw.hasPermissions(permissions)) return 0;
     if (declined === `${owner}:${session.sessionKey}`) throw new Error(HISTORY_DECLINED);
     assertSession();
     if (!connected) {
@@ -75,16 +90,19 @@ export async function authorizeBotHistory(
       tcw.setRuntimePermissionSigner({ signMessage: async message => (await wallet.openkey.signMessage({ message })).signature });
       connected = wallet;
     }
-    const expires = Date.parse(/^Expiration Time:\s*(\S+)/im.exec(session.siwe)?.[1] ?? "");
-    const remainingMs = expires - Date.now();
+    // A leased session outlives its first signed end, so the lifetime is measured to the session's end now.
+    const signedEnd = Date.parse(/^Expiration Time:\s*(\S+)/im.exec(session.siwe)?.[1] ?? "");
+    const remainingMs = ((await sessionEndMs(tcw, session.address)) ?? signedEnd) - Date.now();
     if (!Number.isFinite(remainingMs) || remainingMs <= 0) throw new Error("history_session_expired");
-    const result = await tcw.requestPermissions(permissions, { expiryMs: Math.min(remainingMs, BOT_HISTORY_KEY_MAX_MS) });
+    const expiryMs = Math.min(remainingMs, maxMs);
+    const result = await tcw.requestPermissions(permissions, { expiryMs });
     assertSession();
     if (!result.approved) {
       declined = `${owner}:${session.sessionKey}`;
       throw new Error(HISTORY_DECLINED);
     }
     if (!tcw.hasPermissions(permissions)) throw new Error("history_authority_missing");
+    return expiryMs;
   };
 
   await requirePermissions(exact);
@@ -95,13 +113,31 @@ export async function authorizeBotHistory(
   await tcw.ensureEncryptionNetwork();
   assertSession();
   const legacy = network("decrypt", BOT_HISTORY_LEGACY_APPROVAL_DESCRIPTION);
-  if (!tcw.hasPermissions(legacy) && (options.includeLegacyNetwork ?? await hasLegacyV1BotHistory(tcw))) {
-    await requirePermissions(legacy);
+  const legacyKey = `${owner}:${session.sessionKey}`;
+  // The whole-network row is asked for here even when the session already covers it (for example through a
+  // longer grant): older records are opened only inside an approval of at most one hour that was asked for them.
+  if (!legacyApprovalLive(legacyKey) && (options.includeLegacyNetwork ?? await hasLegacyV1BotHistory(tcw))) {
+    const asked = await requirePermissions(legacy, LEGACY_NETWORK_APPROVAL_MAX_MS, true);
+    legacyApprovals.set(legacyKey, Date.now() + asked);
   }
   assertSession();
   const descriptor = await tcw.keys.ensureKey(BOT_HISTORY_KEY_PATH, { networkId });
   assertSession();
   await publishBotHistoryKeyDescriptor(tcw, descriptor, { post: options.postDescriptor });
+
+  // While the decrypt grant is held, move every bot's older records to the exact key in one pass. A failure is
+  // counted (and warned about by the pass), never thrown: reads still work for the grant's lifetime, and the
+  // next authorization runs the pass again until it finishes with nothing left undone.
+  const passKey = `${owner}:${session.sessionKey}`;
+  if (options.includeLegacyNetwork !== false && legacyApprovalLive(passKey) && tcw.hasPermissions(legacy) && !resealPassDone.has(passKey)) {
+    try {
+      const report = await resealLegacyBotHistory(tcw);
+      if (report.failed.length === 0) resealPassDone.add(passKey);
+      options.onResealReport?.(report);
+    } catch {
+      // The listing itself was unavailable: nothing was changed and nothing is marked done.
+    }
+  }
 }
 
 /** Renew a descriptor using a grant already held by this session. Called on sign-in and while signed in. */
