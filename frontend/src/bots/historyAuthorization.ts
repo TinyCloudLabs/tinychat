@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import type { TinyCloudWeb, PermissionEntry } from "@tinycloud/web-sdk";
 import { connectWallet } from "@tinyboilerplate/client";
 import { APP_NAME } from "../lib/homeSite";
@@ -66,35 +67,40 @@ export async function authorizeBotHistory(
   const network = (action: string, description: string): PermissionEntry[] => [{
     service: "tinycloud.encryption", path: networkId, skipPrefix: true, actions: [action], description,
   }];
-  const legacy = network("decrypt", BOT_HISTORY_LEGACY_APPROVAL_DESCRIPTION);
-  const includeLegacy = !tcw.hasPermissions(legacy) && (options.includeLegacyNetwork ?? await hasLegacyV1BotHistory(tcw));
-  const needsNetwork = !(await tcw.getEncryptionNetwork(networkId));
-  assertSession();
-
-  const requests = [
-    ...(needsNetwork ? [network("network.create", BOT_HISTORY_KEY_APPROVAL_DESCRIPTION)] : []),
-    exact,
-    ...(includeLegacy ? [legacy] : []),
-  ].filter(permissions => !tcw.hasPermissions(permissions));
-  if (requests.length) {
+  let connected: Awaited<ReturnType<typeof connectWallet>> | undefined;
+  const requirePermissions = async (permissions: PermissionEntry[]) => {
+    if (tcw.hasPermissions(permissions)) return;
     if (declined === `${owner}:${session.sessionKey}`) throw new Error(HISTORY_DECLINED);
-    const connected = await connect({ appName: APP_NAME, host: import.meta.env.VITE_OPENKEY_HOST || "https://openkey.so", passkeysSupported: openkeyPasskeysSupported() });
-    if (connected.address.toLowerCase() !== owner || !isCurrentHistorySession(tcw, session)) throw new Error("history_owner_changed");
-    tcw.setRuntimePermissionSigner({ signMessage: async message => (await connected.openkey.signMessage({ message })).signature });
-    for (const permissions of requests) {
-      const expires = Date.parse(/^Expiration Time:\s*(\S+)/im.exec(session.siwe)?.[1] ?? "");
-      const remainingMs = expires - Date.now();
-      if (!Number.isFinite(remainingMs) || remainingMs <= 0) throw new Error("history_session_expired");
-      const result = await tcw.requestPermissions(permissions, { expiryMs: Math.min(remainingMs, BOT_HISTORY_KEY_MAX_MS) });
-      assertSession();
-      if (!result.approved) {
-        declined = `${owner}:${session.sessionKey}`;
-        throw new Error(HISTORY_DECLINED);
-      }
-      if (!tcw.hasPermissions(permissions)) throw new Error("history_authority_missing");
+    assertSession();
+    if (!connected) {
+      const wallet = await connect({ appName: APP_NAME, host: import.meta.env.VITE_OPENKEY_HOST || "https://openkey.so", passkeysSupported: openkeyPasskeysSupported() });
+      if (wallet.address.toLowerCase() !== owner || !isCurrentHistorySession(tcw, session)) throw new Error("history_owner_changed");
+      tcw.setRuntimePermissionSigner({ signMessage: async message => (await wallet.openkey.signMessage({ message })).signature });
+      connected = wallet;
     }
+    const expires = Date.parse(/^Expiration Time:\s*(\S+)/im.exec(session.siwe)?.[1] ?? "");
+    const remainingMs = expires - Date.now();
+    if (!Number.isFinite(remainingMs) || remainingMs <= 0) throw new Error("history_session_expired");
+    const result = await tcw.requestPermissions(permissions, { expiryMs: Math.min(remainingMs, BOT_HISTORY_KEY_MAX_MS) });
+    assertSession();
+    if (!result.approved) {
+      declined = `${owner}:${session.sessionKey}`;
+      throw new Error(HISTORY_DECLINED);
+    }
+    if (!tcw.hasPermissions(permissions)) throw new Error("history_authority_missing");
+  };
+
+  await requirePermissions(exact);
+  if (!(await tcw.getEncryptionNetwork(networkId))) {
+    await requirePermissions(network("network.create", BOT_HISTORY_KEY_APPROVAL_DESCRIPTION));
   }
+  assertSession();
   await tcw.ensureEncryptionNetwork();
+  assertSession();
+  const legacy = network("decrypt", BOT_HISTORY_LEGACY_APPROVAL_DESCRIPTION);
+  if (!tcw.hasPermissions(legacy) && (options.includeLegacyNetwork ?? await hasLegacyV1BotHistory(tcw))) {
+    await requirePermissions(legacy);
+  }
   assertSession();
   const descriptor = await tcw.keys.ensureKey(BOT_HISTORY_KEY_PATH, { networkId });
   assertSession();
@@ -110,4 +116,14 @@ export async function refreshBotHistoryKeyDescriptor(tcw: TinyCloudWeb): Promise
   });
   if (!descriptor || descriptor.state !== "active" || descriptor.kind !== "deletable" || !isCurrentHistorySession(tcw, session)) return;
   await publishBotHistoryKeyDescriptor(tcw, descriptor);
+}
+
+export function useBotHistoryDescriptorRenewal(tcw: TinyCloudWeb | null): void {
+  useEffect(() => {
+    if (!tcw) return;
+    const refresh = () => { void refreshBotHistoryKeyDescriptor(tcw).catch(() => {}); };
+    refresh();
+    const timer = setInterval(refresh, 60_000);
+    return () => clearInterval(timer);
+  }, [tcw]);
 }

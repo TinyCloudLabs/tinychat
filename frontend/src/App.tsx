@@ -119,7 +119,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { FeedView } from "./feed/FeedView";
 import { ChatSlot } from "./bots/ChatSlot";
-import { refreshBotHistoryKeyDescriptor } from "./bots/historyAuthorization";
+import { useBotHistoryDescriptorRenewal } from "./bots/historyAuthorization";
 import { homeFeedSourceFor, settleHeldAnswersForSignOut, SIGN_OUT_FLUSH_MS } from "./feed/feedStore";
 import { HomeEntryGate } from "./home/HomeEntryGate";
 import { readCachedFirstScreen, readFirstScreen } from "./home/firstScreenStore";
@@ -279,13 +279,7 @@ export function App() {
   const [did, setDid] = useState<string | null>(null);
   const [spaceId, setSpaceId] = useState<string | null>(null);
   const [tcw, setTcw] = useState<TinyCloudWeb | null>(null);
-  useEffect(() => {
-    if (!tcw || state !== "ready" || LOCAL_VALIDATION) return;
-    const refresh = () => { void refreshBotHistoryKeyDescriptor(tcw).catch(() => {}); };
-    refresh();
-    const timer = setInterval(refresh, 60_000);
-    return () => clearInterval(timer);
-  }, [state, tcw]);
+  useBotHistoryDescriptorRenewal(state === "ready" && !LOCAL_VALIDATION ? tcw : null);
   useEffect(() => {
     if (!tinyCloudWebMcpFeedEnabled()) return;
     setTinyCloudWebMcpFeedLoader(

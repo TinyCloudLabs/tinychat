@@ -282,13 +282,15 @@ export class BotHistory {
       !((saved.v === 1 && saved.keyPath === undefined) || (saved.v === 2 && saved.keyPath === BOT_HISTORY_KEY_PATH))
     )) throw new Error("history_integrity_failure");
 
+    const recipient = staged ? undefined : await this.#keyDescriptor(address);
+
     // This delegated KV client reads directly from the node. A previously committed
     // envelope can receive its original receipt without writing ciphertext again.
     const before = await access.kv.get(path, { prefix: "" });
     const missing = isKvMissingKeyResult(before, path);
     let envelope = saved;
     if (missing) {
-      const { descriptor } = await this.#keyDescriptor(address);
+      const { descriptor } = recipient ?? await this.#keyDescriptor(address);
       if (!isObject(saved) || saved.v === 1) {
         envelope = await sealBotHistoryBatch(this.node, {
           networkId: network,
