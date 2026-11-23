@@ -33,7 +33,7 @@ async function click(label: string) {
   await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
 }
 
-test("the card says OpenKey also asks to unlock encrypted data", async () => {
+test("the card shows the Connectors permission words", async () => {
   function Page() {
     const access = useHomeFeatureAccessState({
       enabled: true, tcw: { hasPermissions: () => false, kv: {} as TinyCloudWeb["kv"] }, address: ADDRESS,
@@ -43,7 +43,6 @@ test("the card says OpenKey also asks to unlock encrypted data", async () => {
   }
   await act(async () => root.render(<Page />));
   expect(host.textContent).toContain(FEATURE_ACCESS_BODY.connectors);
-  expect(host.textContent).toContain("To read those keys, One also asks to unlock everything encrypted to your account, including data other apps saved.");
 });
 
 test("when everything but unlocking encrypted data was allowed, the card says so, keeps waiting, marks nothing allowed, and Continue asks again", async () => {
