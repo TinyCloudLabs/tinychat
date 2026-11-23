@@ -14,6 +14,7 @@ import {
   verifyBotHistoryKeyDescriptor,
 } from "./bot-history-key.js";
 import { sealBotHistoryBatch } from "./bot-history-seal.js";
+import { DelegationActivationError, nodeRevocationCode, observeActivation } from "./portable-delegation.js";
 
 function resultData<T>(result: { ok: true; data: T } | { ok: false; error: unknown }): T {
   if (!result.ok) throw new Error("history_storage_unavailable");
@@ -87,10 +88,31 @@ export function historyReceiptBody(owner: string, batch: HistoryBatch, spaceId: 
   return { v: 1, owner, botId: historyHash(sibling ? `${owner}\n${sibling.key}` : owner), generation: batch.generation, seq: batch.seq, challenge: batch.challenge,
     batchHash: historyHash(JSON.stringify(batch)), spaceId, host, ciphertextHash, ...(sibling ?? {}) };
 }
-export class HistoryPermissionExpired extends Error {
-  constructor(readonly expiresAt: number) { super("history_permission_expired"); }
+export interface HistoryPermission {
+  cid: string;
+  revision: number;
+  validUntil: number;
 }
-interface GrantEnvelope { expiresAt?: number; serialized: string; siwe: string; signature: string }
+export class HistoryPermissionExpired extends Error {
+  constructor(readonly expiresAt: number, readonly permission?: HistoryPermission) { super("history_permission_expired"); }
+}
+export class HistoryPermissionRevoked extends Error {
+  constructor(readonly permission: HistoryPermission) { super("history_permission_revoked"); }
+}
+interface GrantEnvelope { expiresAt?: number; revision?: number; serialized: string; siwe: string; signature: string }
+
+function storedCid(envelope: GrantEnvelope): string | undefined {
+  const bundle: unknown = JSON.parse(envelope.serialized);
+  return isObject(bundle) && typeof bundle.cid === "string" && bundle.cid !== "" ? bundle.cid : undefined;
+}
+function checkedArchiveResult<T extends { ok: true } | { ok: false; error: { meta?: Record<string, unknown>; message: string } }>(
+  result: T, permission: HistoryPermission,
+): T {
+  if (!result.ok && result.error.meta?.status === 401 && nodeRevocationCode(result.error.message)) {
+    throw new HistoryPermissionRevoked(permission);
+  }
+  return result;
+}
 /** AES-GCM at rest with a domain-separated key; the grant never leaves this module in plaintext storage. */
 export class BotHistory {
   readonly #key: Buffer;
@@ -120,37 +142,80 @@ export class BotHistory {
   async #verify(address: string, envelope: GrantEnvelope, botKey?: string): Promise<HistoryGrant> {
     return projectBotHistoryGrant(this.node, this.host, address, envelope, botKey);
   }
-  async #activate(grant: HistoryGrant) {
+  async #activate(grant: HistoryGrant, permission: HistoryPermission) {
     const resource = grant.resources[0]!;
-    return this.node.useDelegation({ cid: grant.cid, delegationHeader: { Authorization: grant.authorization }, spaceId: grant.spaceId,
-      path: resource.path, actions: resource.actions, resources: [resource], expiry: grant.expiresAt,
-      delegateDID: grant.backendDid, ownerAddress: grant.ownerAddress, chainId: grant.chainId, host: this.host });
+    try {
+      return await observeActivation(() => this.node.useDelegation({ cid: grant.cid, delegationHeader: { Authorization: grant.authorization }, spaceId: grant.spaceId,
+        path: resource.path, actions: resource.actions, resources: [resource], expiry: grant.expiresAt,
+        delegateDID: grant.backendDid, ownerAddress: grant.ownerAddress, chainId: grant.chainId, host: this.host }));
+    } catch (error) {
+      if (error instanceof DelegationActivationError && error.status === 401 && nodeRevocationCode(error.body)) {
+        throw new HistoryPermissionRevoked(permission);
+      }
+      throw error;
+    }
+  }
+  async #storedGrant(key: string) {
+    return withSessionRefresh(this.node, async () => {
+      const result = await this.node.kv.get<string>(key);
+      if (isKvMissingKeyResult(result, key)) return undefined;
+      return resultData(assertKvResult(result));
+    });
   }
   /** Checks, activates and stores one bot's grant. `botKey` names a bot other than Main. */
-  async accept(address: string, envelope: GrantEnvelope, botKey?: string): Promise<number> {
+  async accept(address: string, envelope: GrantEnvelope, botKey?: string) {
     const grant = await this.#verify(address, envelope, botKey);
-    await this.#activate(grant); // node verifies current authority before storage
     const key = this.#keyFor(address, botKey);
-    await withSessionRefresh(this.node, async () => assertKvResult(await this.node.kv.put(key, this.#seal({ ...envelope, expiresAt: grant.expiresAt.getTime() }, key))));
-    return grant.expiresAt.getTime();
+    const validUntil = grant.expiresAt.getTime();
+    await this.#activate(grant, { cid: grant.cid, revision: 0, validUntil });
+    return withSessionRefresh(this.node, async () => {
+      const initial = { cid: grant.cid, revision: 1, validUntil };
+      const seal = (revision: number) => this.#seal({ ...envelope, expiresAt: validUntil, revision }, key);
+      const inserted = await this.node.kv.put(key, seal(initial.revision), { ifNoneMatch: "*" });
+      if (inserted.ok) return { active: initial };
+      if (inserted.error.code !== "KV_PRECONDITION_FAILED") assertKvResult(inserted);
+
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const stored = await this.#storedGrant(key);
+        if (!stored) continue;
+        const prior = this.#open(stored.data, key) as GrantEnvelope;
+        const priorCid = storedCid(prior);
+        const priorRevision = prior.revision ?? 0;
+        if (priorCid === grant.cid) return { active: { cid: grant.cid, revision: priorRevision, validUntil } };
+        const etag = stored.headers?.etag;
+        if (!etag) throw new Error("history_grant_unavailable");
+        const revision = priorRevision + 1;
+        const written = await this.node.kv.put(key, seal(revision), { ifMatch: etag });
+        if (written.ok) {
+          const replaced = priorCid !== undefined && prior.expiresAt !== undefined
+            ? { cid: priorCid, revision: priorRevision, validUntil: prior.expiresAt } : undefined;
+          return { active: { cid: grant.cid, revision, validUntil }, replaced };
+        }
+        if (written.error.code !== "KV_PRECONDITION_FAILED") assertKvResult(written);
+      }
+      throw new Error("history_grant_conflict");
+    });
   }
   async #grant(address: string, botKey?: string) {
     const key = this.#keyFor(address, botKey);
-    const stored = await withSessionRefresh(this.node, async () => {
-      const result = await this.node.kv.get<string>(key);
-      if (!isKvMissingKeyResult(result, key)) assertKvResult(result);
-      return result;
-    });
-    if (isKvMissingKeyResult(stored, key)) throw new Error("history_grant_missing");
-    const value = resultData(stored).data;
-    const envelope = this.#open(value, key) as GrantEnvelope;
-    if (typeof envelope.expiresAt === "number" && Date.now() >= envelope.expiresAt) throw new HistoryPermissionExpired(envelope.expiresAt);
-    return this.#verify(address, envelope, botKey);
+    const stored = await this.#storedGrant(key);
+    if (!stored) throw new Error("history_grant_missing");
+    const envelope = this.#open(stored.data, key) as GrantEnvelope;
+    const revision = envelope.revision ?? 0;
+    if (typeof envelope.expiresAt === "number" && Date.now() >= envelope.expiresAt) {
+      const cid = storedCid(envelope);
+      throw new HistoryPermissionExpired(envelope.expiresAt, cid === undefined ? undefined : { cid, revision, validUntil: envelope.expiresAt });
+    }
+    const grant = await this.#verify(address, envelope, botKey);
+    return { grant, permission: { cid: grant.cid, revision, validUntil: grant.expiresAt.getTime() } };
   }
-  /** When a bot's stored grant ends, or undefined once it has. Any other failure is thrown. */
-  async grantValidUntil(address: string, botKey?: string): Promise<number | undefined> {
-    try { return (await this.#grant(address, botKey)).expiresAt.getTime(); }
-    catch (error) { if (error instanceof HistoryPermissionExpired) return undefined; throw error; }
+  /** Checks the stored grant at the node, including when there are no pending batches. */
+  async grantPermission(address: string, botKey?: string): Promise<HistoryPermission | undefined> {
+    try {
+      const { grant, permission } = await this.#grant(address, botKey);
+      await this.#activate(grant, permission);
+      return permission;
+    } catch (error) { if (error instanceof HistoryPermissionExpired) return undefined; throw error; }
   }
   /** Every stored grant's key, page by page. A listing that ends without a cursor while truncated is refused. */
   async #grantKeys(): Promise<string[]> {
@@ -189,9 +254,7 @@ export class BotHistory {
     if (isKvMissingKeyResult(stored, key)) return undefined;
     const value = resultData(stored).data;
     try {
-      const bundle: unknown = JSON.parse((this.#open(value, key) as GrantEnvelope).serialized);
-      const cid = typeof bundle === "object" && bundle !== null && "cid" in bundle ? bundle.cid : undefined;
-      return typeof cid === "string" && cid !== "" ? cid : undefined;
+      return storedCid(this.#open(value, key) as GrantEnvelope);
     } catch {
       // What is stored cannot be opened or read, so there is no id to recover from it.
       return undefined;
@@ -266,8 +329,8 @@ export class BotHistory {
     const sibling = siblingKey(botKey);
     if (batch.bot !== sibling) throw new Error("history_bot_mismatch");
     const owner = historyOwner(address);
-    const grant = await this.#grant(address, sibling);
-    const access = await this.#activate(grant);
+    const { grant, permission } = await this.#grant(address, sibling);
+    const access = await this.#activate(grant, permission);
     const path = `${HISTORY_PREFIX}${historyBotId(address, sibling)}/${batch.generation}/${batch.seq}-${batch.challenge}`;
     const aad = Buffer.from(JSON.stringify({ owner, spaceId: grant.spaceId, path }));
     const encodedAad = aad.toString("base64");
@@ -292,7 +355,7 @@ export class BotHistory {
 
     // This delegated KV client reads directly from the node. A previously committed
     // envelope can receive its original receipt without writing ciphertext again.
-    const before = await access.kv.get(path, { prefix: "" });
+    const before = checkedArchiveResult(await access.kv.get(path, { prefix: "" }), permission);
     const missing = isKvMissingKeyResult(before, path);
     let envelope = saved;
     if (missing) {
@@ -311,7 +374,7 @@ export class BotHistory {
         // leaves the same envelope available for retry.
         await stage({ seq: batch.seq, challenge: batch.challenge, batchHash, envelope });
       }
-      await access.kv.put(path, envelope, { ifNoneMatch: "*", prefix: "" });
+      checkedArchiveResult(await access.kv.put(path, envelope, { ifNoneMatch: "*", prefix: "" }), permission);
     } else {
       const committed = resultData(before).data;
       // An owner may have resealed the committed v1 between its put and receipt.
@@ -323,7 +386,7 @@ export class BotHistory {
     }
     if (!envelope) throw new Error("history_integrity_failure");
     const ciphertextHash = historyHash(JSON.stringify(envelope));
-    const readback = resultData(await access.kv.get(path, { prefix: "" }));
+    const readback = resultData(checkedArchiveResult(await access.kv.get(path, { prefix: "" }), permission));
     if (historyHash(JSON.stringify(readback.data)) !== ciphertextHash) throw new Error("history_integrity_failure");
     const body = historyReceiptBody(owner, batch, grant.spaceId, this.host, ciphertextHash, sibling ? { key: sibling, path } : undefined);
     const signature = await this.#account.signMessage({ message: HISTORY_DOMAIN + JSON.stringify(body) });

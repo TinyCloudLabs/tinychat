@@ -168,7 +168,7 @@ function refusedActivationResult(error: unknown): { status: number; body: string
 }
 
 /** Run one activation; if the node answered it non-2xx, rethrow with that status and body. */
-async function observeActivation<T>(activate: () => Promise<T>): Promise<T> {
+export async function observeActivation<T>(activate: () => Promise<T>): Promise<T> {
   try {
     return await activate();
   } catch (error) {

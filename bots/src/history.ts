@@ -34,7 +34,30 @@ export function noticeDeadline(notice: ExpiryNotice, renderedAt: number): number
   return renderedAt > base ? renderedAt + 30 * 86_400_000 : base;
 }
 export interface StagedHistory { seq: number; challenge: string; batchHash: string; envelope: unknown }
-interface Journal { v: 1; generation: string; owner: string; key?: string; legacyPending: boolean; batches: JournalBatch[]; receipts: unknown[]; draft?: { text: string }; notice?: ExpiryNotice; permissionValidUntil?: number; staged?: StagedHistory }
+export interface HistoryGrantUpdate { kind: "extend" | "revoke" | "expire"; cid: string; revision: number }
+export interface HistoryPermission { validUntil: number; grant?: HistoryGrantUpdate; revoked?: true }
+
+export function matchesHistoryGrant(permission: HistoryPermission | undefined, grant: HistoryGrantUpdate): boolean {
+  return permission?.grant?.cid === grant.cid && permission.grant.revision === grant.revision;
+}
+
+export function updateHistoryPermission(current: HistoryPermission | undefined, validUntil: number,
+  grant?: HistoryGrantUpdate, now = Date.now()): HistoryPermission | undefined {
+  if (grant?.kind === "revoke") {
+    if (!Number.isFinite(validUntil) || validUntil > now) throw new Error("invalid_permission_expiry");
+    if (!matchesHistoryGrant(current, grant) || current?.revoked) return current;
+    return { validUntil, grant, revoked: true };
+  }
+  if (!Number.isFinite(validUntil) || validUntil <= now) throw new Error("invalid_permission_expiry");
+  if (current?.grant) {
+    if (!grant || grant.revision < current.grant.revision) return current;
+    if (grant.revision === current.grant.revision &&
+      (!matchesHistoryGrant(current, grant) || current.revoked || validUntil < current.validUntil)) return current;
+  } else if (!grant && validUntil < (current?.validUntil ?? 0)) return current;
+  return { validUntil, grant };
+}
+
+interface Journal { v: 1; generation: string; owner: string; key?: string; legacyPending: boolean; batches: JournalBatch[]; receipts: unknown[]; draft?: { text: string }; notice?: ExpiryNotice; permissionValidUntil?: number; permissionGrant?: HistoryGrantUpdate; staged?: StagedHistory }
 const MAX_JOURNAL_BYTES = 8 * 1024 * 1024;
 export class HistoryJournal {
   readonly #path: string;
@@ -93,22 +116,42 @@ export class HistoryJournal {
     delete this.#state.draft;
     this.append({ type: "assistant", text, outcome, at: new Date().toISOString() });
   }
-  permissionExpired(expiresAt: number, owner: string, now = Date.now()) {
+  get permission(): HistoryPermission | undefined {
+    const { permissionValidUntil, permissionGrant } = this.#state;
+    return permissionValidUntil === undefined ? undefined : {
+      validUntil: permissionValidUntil,
+      grant: permissionGrant,
+      ...(permissionGrant?.kind === "revoke" ? { revoked: true } : {}),
+    };
+  }
+  permissionExpired(expiresAt: number, owner: string, now = Date.now(), grant?: HistoryGrantUpdate) {
     if (!Number.isFinite(expiresAt) || expiresAt > now) throw new Error("invalid_permission_expiry");
+    const current = this.permission;
+    if (grant?.kind === "revoke") {
+      const next = updateHistoryPermission(current, expiresAt, grant, now);
+      if (next === current) return;
+    } else {
+      if (grant && current?.grant && !matchesHistoryGrant(current, grant)) return;
+      if (current?.revoked || (current?.validUntil ?? 0) > expiresAt) return;
+    }
     this.begin(owner, 0);
-    if ((this.#state.permissionValidUntil ?? 0) > expiresAt) return;
+    if (grant?.kind === "revoke") {
+      this.#state.permissionValidUntil = expiresAt;
+      this.#state.permissionGrant = grant;
+    }
     if (!this.#state.notice || this.#state.notice.expiresAt !== expiresAt) {
       this.#state.notice = { id: randomBytes(32).toString("hex"), expiresAt, firstAttemptAt: now };
-      this.#save();
     }
+    this.#save();
   }
-  permissionActive(validUntil: number, now = Date.now()) {
-    if (!Number.isFinite(validUntil) || validUntil <= now) throw new Error("invalid_permission_expiry");
-    if (validUntil < (this.#state.permissionValidUntil ?? 0)) return;
-    // TC-3933: the first grant starts the archive. What the bot held before it was never to be archived, so it must not keep
-    // the journal uncovered for good (and New chat locked): the turns before the first grant are deliberately not saved.
+  permissionActive(validUntil: number, now = Date.now(), grant?: HistoryGrantUpdate) {
+    const current = this.permission;
+    const next = updateHistoryPermission(current, validUntil, grant, now);
+    if (!next || next === current) return;
+    // TC-3933: the first grant starts the archive.
     if (!this.everGranted) this.#state.legacyPending = false;
-    this.#state.permissionValidUntil = validUntil;
+    this.#state.permissionValidUntil = next.validUntil;
+    this.#state.permissionGrant = next.grant;
     delete this.#state.notice; this.#save();
   }
   notice(): ExpiryNotice | undefined { return this.#state.notice ? { ...this.#state.notice } : undefined; }
