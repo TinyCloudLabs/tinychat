@@ -1,8 +1,30 @@
 import { generateKeyPairSync, randomBytes, sign } from "node:crypto";
 import { APP_ID } from "@tinyboilerplate/core";
-import { makePkhSpaceId, SiweMessage } from "@tinycloud/sdk-core";
+import { canonicalizeEncryptionJson, makePkhSpaceId, SiweMessage } from "@tinycloud/sdk-core";
+import type { Manifest } from "@tinycloud/node-sdk";
 import { computeCid, siweToDelegationHeaders } from "@tinycloud/node-sdk-wasm";
+import { getAddress } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
+import {
+  BOT_HISTORY_KEY_MAX_MS,
+  BOT_HISTORY_KEY_PATH,
+  type BotHistoryKeyDescriptorPayload,
+  type SignedBotHistoryKeyEnvelope,
+} from "../../bot-history-key";
+
+export const backendHistoryFixtureManifest: Manifest = {
+  manifest_version: 1,
+  app_id: "xyz.tinycloud.tinychat.history-fixture",
+  name: "Bot history fixture",
+  defaults: false,
+  permissions: [{
+    service: "tinycloud.kv",
+    path: "bot-history/grants/",
+    space: "applications",
+    skipPrefix: true,
+    actions: ["get", "put", "list", "del"],
+  }],
+};
 
 // Keys are generated in memory and never included in a bundle or stored fixture.
 const WALLET_A = generatePrivateKey();
@@ -55,6 +77,8 @@ export interface SignedTranscriptGrant {
   expiresAt: Date;
   envelope: string;
   computeDelegationCid: (authorization: string) => string;
+  /** Sign a bot-history key descriptor using the same session key and SIWE chain (TC-3823). */
+  signKeyDescriptor: (overrides?: Partial<BotHistoryKeyDescriptorPayload>) => SignedBotHistoryKeyEnvelope;
 }
 
 // The compact authorization CID uses the same raw codec (0x55) as TinyCloudNode.
@@ -133,10 +157,36 @@ export async function makeSignedTranscriptGrant(overrides: SignedGrantOverrides 
   if (overrides.host === null) delete bundle.host;
   else if (overrides.host !== undefined) bundle.host = overrides.host;
   const serialized = JSON.stringify(bundle);
+  const checksumAddress = getAddress(address);
+  const signKeyDescriptor = (descriptorOverrides: Partial<BotHistoryKeyDescriptorPayload> = {}): SignedBotHistoryKeyEnvelope => {
+    const iat = Math.floor(now / 1000);
+    const siweExpMs = expirationTime ? Date.parse(expirationTime) : now + 30 * 86_400_000;
+    const exp = Math.floor(Math.min(siweExpMs, now + BOT_HISTORY_KEY_MAX_MS) / 1000);
+    const ownerDid = `did:pkh:eip155:1:${checksumAddress}`;
+    const descriptor: BotHistoryKeyDescriptorPayload = {
+      v: 1,
+      type: "tinychat.bot-history.key-descriptor/v1",
+      owner: ownerDid,
+      networkId: `urn:tinycloud:encryption:${ownerDid}:default`,
+      keyPath: BOT_HISTORY_KEY_PATH,
+      alg: "x25519-aes256gcm/v1",
+      keyVersion: 1,
+      publicEncryptionKey: Buffer.alloc(32, 7).toString("base64"),
+      kind: "deletable",
+      state: "active",
+      iat,
+      exp,
+      ...descriptorOverrides,
+    };
+    const canonical = canonicalizeEncryptionJson({ ...descriptor });
+    const descriptorSignature = sign(null, Buffer.from(canonical, "utf8"), privateKey).toString("base64");
+    return { descriptor, descriptorSignature, signerDid: sessionDid, siwe, signature };
+  };
   return {
     serialized, siwe, signature, address, backendDid: BACKEND_DID, configuredHost: HOST,
     spaceId, sessionDid, cid, authorization, expiresAt: new Date(expiresAt * 1000),
     envelope: JSON.stringify({ format: "tinychat.transcript-writer-grant", v: 1, delegation: serialized, siwe, signature }),
     computeDelegationCid,
+    signKeyDescriptor,
   };
 }

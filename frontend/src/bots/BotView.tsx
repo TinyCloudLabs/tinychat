@@ -204,7 +204,9 @@ export function BotView({ bot, chats, notice, acknowledgeNotice, onReconnect, st
                 {activity.filter((item) => !item.inTurn && item.after === null).map((item) => <ActivityLine key={item.id} item={item} />)}
                 {lines.map((line) => (
                   <Fragment key={line.id}>
-                    <Line role={line.role} text={line.text} />
+                    {line.unreadableHistory
+                      ? <p className="text-callout text-muted-foreground">{BOT_VIEW_STRINGS.historyUnreadable(bot.name)}</p>
+                      : <Line role={line.role} text={line.text} />}
                     {activity.filter((item) => !item.inTurn && item.after === line.id).map((item) => <ActivityLine key={item.id} item={item} />)}
                   </Fragment>
                 ))}

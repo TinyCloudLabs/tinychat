@@ -26,6 +26,7 @@ export const REQUEST_LOG_ROUTE_TEMPLATES: readonly string[] = [
   "/api/bots/:key/history/notice/ack",
   "/api/bots/:key/messages",
   "/api/bots/history/grant",
+  "/api/bots/history/key",
   "/api/bots/history/notice",
   "/api/bots/history/notice/ack",
   "/api/bots/history/status",

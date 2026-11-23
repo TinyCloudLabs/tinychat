@@ -13,7 +13,11 @@ import { readBotHistory } from "../../../frontend/src/bots/historyRead";
 import { webSignInManifest } from "../../../frontend/src/lib/homeFeatures";
 import { WEB_APP_MANIFEST } from "../../../frontend/src/lib/webSignInPrefetch";
 import type { SandboxLauncher } from "../../../bots/src/bot";
+import { canonicalizeEncryptionJson } from "@tinycloud/sdk-core";
 import { BotHistory, HISTORY_PREFIX, historyBotId, historyOwner } from "../bot-history";
+import { BOT_HISTORY_KEY_MAX_MS, BOT_HISTORY_KEY_PATH, type BotHistoryKeyDescriptorPayload } from "../bot-history-key";
+
+import { backendHistoryFixtureManifest } from "./helpers/transcript-grant";
 
 const host = process.env.BOT_HISTORY_TEST_NODE;
 const KEY_A = "ab".repeat(16);
@@ -33,23 +37,40 @@ test.skipIf(!host)("real TinyCloud: a second bot has its own grant, directory an
   const ownerConfig = { privateKey: ownerKey, host, prefix: "applications", autoCreateSpace: true, autoBootstrapAccount: false, includeAccountRegistryPermissions: false,
     manifest: webSignInManifest(WEB_APP_MANIFEST, [], address) };
   const owner = new TinyCloudNode(ownerConfig);
-  const backend = new TinyCloudNode({ privateKey: backendKey, host, prefix: "bot-history-siblings-test", includeAccountRegistryPermissions: false });
+  const backend = new TinyCloudNode({ privateKey: backendKey, host, prefix: "bot-history-siblings-test", includeAccountRegistryPermissions: false, manifest: backendHistoryFixtureManifest });
   const root = mkdtempSync(join(tmpdir(), "history-siblings-"));
   const roots = { dataRoot: join(root, "data"), runRoot: join(root, "run"), egressRoot: join(root, "egress") };
   const directory = (key?: string) => `${HISTORY_PREFIX}${historyBotId(address, key)}/`;
+  const network = `urn:tinycloud:encryption:did:pkh:eip155:1:${address}:default`;
   const approve = async (client: TinyCloudNode) => {
     await client.grantRuntimePermissions(botHistoryOwnerPermissions(address), { expiry: 3_600_000,
       signMessage: message => privateKeyToAccount(ownerKey).signMessage({ message }) });
-    await client.ensureEncryptionNetwork();
+    if (!(await client.getEncryptionNetwork(network))) {
+        await client.grantRuntimePermissions([{
+          service: "tinycloud.encryption", path: network, skipPrefix: true, actions: ["network.create"],
+        }], { expiry: 3_600_000, signMessage: message => privateKeyToAccount(ownerKey).signMessage({ message }) });
+        await client.ensureEncryptionNetwork();
+      }
+    const desc = await client.keys.ensureKey(BOT_HISTORY_KEY_PATH, { networkId: network });
+    const nowSec = Math.floor(Date.now() / 1000);
+    const siweExpMs = Date.parse(/^Expiration Time:\s*(\S+)/im.exec(client.session!.siwe)?.[1] ?? "");
+    const payload: BotHistoryKeyDescriptorPayload = {
+      v: 1, type: "tinychat.bot-history.key-descriptor/v1", owner: `did:pkh:eip155:1:${address}`, networkId: network,
+      keyPath: BOT_HISTORY_KEY_PATH, alg: desc.alg, keyVersion: desc.keyVersion, publicEncryptionKey: desc.publicEncryptionKey,
+      kind: "deletable", state: "active", iat: nowSec, exp: Math.floor(Math.min(siweExpMs, Date.now() + BOT_HISTORY_KEY_MAX_MS) / 1000),
+    };
+    const sig = Buffer.from(await client.signSessionBytes(Buffer.from(canonicalizeEncryptionJson({ ...payload }), "utf8"))).toString("base64");
+    return { descriptor: payload, descriptorSignature: sig, signerDid: client.session!.verificationMethod.split("#")[0]!, siwe: client.session!.siwe, signature: client.session!.signature };
   };
   let rotated: TinyCloudNode | undefined;
   try {
     await owner.signIn(); await owner.hostOwnedSpace("applications");
-    await approve(owner);
+    const signedDesc = await approve(owner);
     await backend.signIn(); await backend.hostOwnedSpace("bot-history-siblings-test");
     // The backend's DID is its account's only once it has signed in.
     const options = { host: host!, signerDid: backend.did, policy: "notice-then-expiry-30-days" as const };
     const writer = new BotHistory(backend, backendKey, host!);
+    await writer.acceptKeyDescriptor(address, signedDesc);
     /** The browser's request for one bot: that bot's directory, get and put, and it must not prompt. */
     const grantFrom = async (client: TinyCloudNode, key?: string) => {
       const grant = await client.delegateTo(backend.did, [{ service: "tinycloud.kv", path: directory(key), actions: ["get", "put"] }], { expiry: 3_600_000 });
@@ -87,11 +108,10 @@ test.skipIf(!host)("real TinyCloud: a second bot has its own grant, directory an
     // The record is in the sibling's own directory, sealed to the owner.
     const stored = await owner.kv.get(path, { prefix: "" });
     expect(stored.ok).toBe(true); if (!stored.ok) throw new Error("read failed");
-    const sealed = stored.data.data as Parameters<typeof owner.encryption.decryptEnvelope>[0];
+    const sealed = stored.data.data as Parameters<typeof owner.keys.decrypt>[0];
     expect(JSON.stringify(sealed)).not.toContain("sibling record");
-    const opened = await owner.encryption.decryptEnvelope(sealed, { proofs: [] });
-    expect(opened.ok).toBe(true);
-    if (opened.ok) expect(JSON.parse(new TextDecoder().decode(opened.data))).toEqual(batch);
+    const opened = await owner.keys.decrypt(sealed);
+    expect(JSON.parse(new TextDecoder().decode(opened))).toEqual(batch);
 
     // The node holds each grant to its own directory: A's cannot write Main's or B's, and Main's cannot write A's.
     const accessA = await backend.useDelegation(forA.delegation);
@@ -106,7 +126,7 @@ test.skipIf(!host)("real TinyCloud: a second bot has its own grant, directory an
     expect((await accessA.kv.get(path, { prefix: "" })).ok).toBe(true);
 
     // Today's reader, unchanged, reads Main's history with the sibling's record in the space, and sees only Main's.
-    const asWeb = (client: TinyCloudNode) => ({ session: () => client.session, kvForSpace: () => client.kv, encryption: client.encryption }) as unknown as TinyCloudWeb;
+    const asWeb = (client: TinyCloudNode) => ({ session: () => client.session, kvForSpace: () => client.kv, encryption: client.encryption, keys: client.keys }) as unknown as TinyCloudWeb;
     expect((await readBotHistory(asWeb(owner))).map(line => line.text)).toEqual(["main record"]);
 
     // A restored session (signed out, signed in again under a new session key) issues the sibling's grant again
@@ -114,7 +134,7 @@ test.skipIf(!host)("real TinyCloud: a second bot has its own grant, directory an
     await owner.signOut();
     rotated = new TinyCloudNode(ownerConfig);
     await rotated.signIn();
-    await approve(rotated);
+    await writer.acceptKeyDescriptor(address, await approve(rotated));
     await writer.accept(address, (await grantFrom(rotated, KEY_A)).envelope, KEY_A);
     siblingJournal.append({ type: "assistant", text: "sibling reply", outcome: { type: "done" }, at: "2026-11-18T00:00:02.000Z" });
     await siblingJournal.accept(await writer.archive(address, siblingJournal.pending()!, async staged => { siblingJournal.stage(staged); }, KEY_A));
