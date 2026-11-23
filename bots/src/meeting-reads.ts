@@ -98,8 +98,8 @@ export interface MeetingDeskOptions {
   /** The backend's origin and the secret its calls are signed with; without a secret every read is refused. */
   backendOrigin: string;
   backendCallSecret: string | undefined;
-  /** Send refusals to the backend that serves the standing-read audit. Reads are always audited by the backend
-   *  before they run; these reports of blocked attempts are bounded and never retried. */
+  /** Send refusals to the backend that serves the standing-read audit. While standing reads are enabled, the backend
+   *  records every read before it happens; these reports of blocked attempts are bounded and never retried. */
   forwardRefusals?: boolean;
   store?: HeldStore;
   fetch?: UpstreamFetch;
