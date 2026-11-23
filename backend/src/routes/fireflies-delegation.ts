@@ -24,7 +24,7 @@ const ACCEPT_WINDOW_MS = 3_600_000;
 export interface FirefliesDelegationRoutesConfig {
   delegate: FirefliesDelegateIdentity;
   configuredHost: string;
-  store: Pick<FirefliesGrantStore, "store" | "status" | "remove" | "grantCids">;
+  store: Pick<FirefliesGrantStore, "store" | "ownerStatus" | "status" | "remove" | "grantCids">;
   authMiddleware: RequestHandler;
   coordinator?: TenantCoordinator;
   now?: () => number;
@@ -143,15 +143,13 @@ export function createFirefliesDelegationRouter(config: FirefliesDelegationRoute
     const address = user.address.toLowerCase();
     try {
       const options = { configuredHost: config.configuredHost, deps, now: nowFn() };
-      const { status, cids } = await coordinator.run(address, async () => ({
-        status: await config.store.status(address, options),
-        cids: await config.store.grantCids(address),
-      }));
+      // One read for the state and the ids: two reads could straddle a removal and show an active pair with no ids.
+      const owned = await coordinator.run(address, () => config.store.ownerStatus(address, options));
       res.json({
-        state: status.state,
-        expiresAt: status.expiresAt,
+        state: owned.state,
+        expiresAt: owned.expiresAt,
         delegateDid: config.delegate.did,
-        grantCids: cids ? [cids.secrets, cids.meetings] : [],
+        grantCids: owned.grantCids,
       });
     } catch {
       console.warn("[fireflies-delegation] op=owner-status result=unavailable");
