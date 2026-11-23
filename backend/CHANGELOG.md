@@ -1,5 +1,15 @@
 # @tinychat/backend
 
+## 0.13.3-beta.0
+
+### Patch Changes
+
+- 6580219: TrustBot derives the key it reads with inside its secure enclave.
+
+  Upgrading: read areas turned on with test grants before this release are off. Turn them on in TrustBot's settings.
+
+  Details: TC-4000
+
 ## 0.13.2
 
 ### Patch Changes
