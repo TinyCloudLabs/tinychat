@@ -6,7 +6,7 @@ import { sealKeyFromDstack } from "../dstack-key";
 import { type Gateway, readBody } from "../gateway";
 import { isRecord } from "../guards";
 import type { MeetingDesk } from "../meeting-reads";
-import { botIdFor, OWNER_DID } from "../owner";
+import { OWNER_DID } from "../owner";
 import { createCourierControl } from "./control";
 import { deniedChatIds, enabledReadAreas } from "./denied-chats";
 import { createCourierGrantStore } from "./grant-store";
@@ -57,10 +57,10 @@ export async function startCourierGateway(options: { cfg: GatewayConfig; gateway
         },
       };
     },
-    async turn(owner, peer, message) {
-      return courierTurn({ owner, handle: peer.handle, peerDid: peer.peerDid, threadId: message.threadId, text: message.text, reads: options.reads, deniedChatIds, enabledReadAreas,
+    async turn(owner, peer, message, signal) {
+      return courierTurn({ owner, handle: peer.handle, peerDid: peer.peerDid, threadId: message.threadId, text: message.text, signal, reads: options.reads, deniedChatIds, enabledReadAreas,
         async model(body) {
-          const response = await options.gateway.courierModel(botIdFor(owner), courierPeerHash(peer.peerDid), { ...body, model: options.cfg.models[0], max_tokens: options.cfg.maxTokens });
+          const response = await options.gateway.courierModel(owner, courierPeerHash(peer.peerDid), { ...body, model: options.cfg.models[0], max_tokens: options.cfg.maxTokens });
           if (!response.ok) {
             await response.body?.cancel();
             // Main's shared allowance or its one slot: the asking agent gets a fixed sentence, not silence.

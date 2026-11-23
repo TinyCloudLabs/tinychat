@@ -45,6 +45,8 @@ const areaOf = (name: ReadToolName): ReadArea => isFeedChatTool(name) ? "feed_ch
 
 /** Reads per bot per UTC day. */
 export const READS_PER_DAY = 200;
+/** What Courier turns may use of an owner's READS_PER_DAY: a peer cannot spend more than this. */
+export const COURIER_READS_PER_DAY = 50;
 const CALL_TIMEOUT_MS = 20_000;
 /** The backend answers at most 16,000 characters of tool text; JSON escaping can roughly double it. */
 const ANSWER_BYTES = 64 * 1024;
@@ -113,6 +115,7 @@ export class MeetingDesk {
   readonly #marks = new Map<string, string>();
   readonly #calling = new Set<string>();
   readonly #today = new Map<string, { day: string; count: number }>();
+  readonly #courierToday = new Map<string, { day: string; count: number }>();
 
   constructor(options: MeetingDeskOptions) {
     this.#options = options;
@@ -152,7 +155,7 @@ export class MeetingDesk {
     return current === undefined || current === mark;
   }
 
-  async call(botId: string, name: ReadToolName, args: Record<string, unknown>, courier?: { peer: string; setting: ReadsPush; botId: string }) {
+  async call(botId: string, name: ReadToolName, args: Record<string, unknown>, courier?: { peer: string; setting: ReadsPush }) {
     const area = areaOf(name);
     const errors = AREA_TOOLS[area].errors;
     const log = (outcome: string) => console.log(JSON.stringify(courier
@@ -163,26 +166,31 @@ export class MeetingDesk {
       return toolText(error === "not_found" ? errors.not_found ?? errors.unavailable : errors[error], true);
     };
     const setting = courier?.setting ?? this.#settings.get(botId);
-    if (courier && (!setting?.owner || botIdFor(setting.owner) !== botId || !BOT_ID.test(courier.botId) || !CONVERSATION_ID.test(setting.conversation))) return refuse("off");
+    if (courier && (!setting?.owner || botIdFor(setting.owner) !== botId || !CONVERSATION_ID.test(setting.conversation))) return refuse("off");
     if (!setting?.areas.includes(area) || !setting.owner) return refuse("off");
     if (!this.#options.backendCallSecret) return refuse("unavailable", "no_secret");
     const day = new Date(this.#now()).toISOString().slice(0, 10);
     const today = this.#today.get(botId);
     const used = today?.day === day ? today.count : 0;
-    if (used >= READS_PER_DAY) return refuse("budget");
-    if (this.#calling.has(botId)) return refuse("busy");
-    this.#calling.add(botId);
+    const courierToday = this.#courierToday.get(botId);
+    const courierUsed = courierToday?.day === day ? courierToday.count : 0;
+    if (used >= READS_PER_DAY || (courier && courierUsed >= COURIER_READS_PER_DAY)) return refuse("budget");
+    // Courier reads have their own one-at-a-time lock, so a peer's read never makes Main's read "busy".
+    const lock = courier ? `courier:${botId}` : botId;
+    if (this.#calling.has(lock)) return refuse("busy");
+    this.#calling.add(lock);
     this.#today.set(botId, { day, count: used + 1 });
+    if (courier) this.#courierToday.set(botId, { day, count: courierUsed + 1 });
     try {
       const answer = await this.#ask(setting.owner, name, args);
       if (!answer.ok) return refuse(answer.error);
-      // The conversation is marked before the result reaches it; a mark that cannot be kept withholds the result.
-      const markedBot = courier?.botId ?? botId;
-      if (this.#marks.get(markedBot) !== setting.conversation && !this.#mark(markedBot, setting.conversation)) return refuse("unavailable", "held_store");
+      // Main's conversation is marked before the result reaches it; a mark that cannot be kept withholds the result.
+      // A Courier turn has no action, ask or secret tool, so nothing consults a mark for it: it adds none.
+      if (!courier && this.#marks.get(botId) !== setting.conversation && !this.#mark(botId, setting.conversation)) return refuse("unavailable", "held_store");
       log("ok");
       return toolText(untrustedRecord(isFeedChatTool(name) ? FEED_CHAT_RECORD_KIND[name] : "meeting", answer.text));
     } finally {
-      this.#calling.delete(botId);
+      this.#calling.delete(lock);
     }
   }
 

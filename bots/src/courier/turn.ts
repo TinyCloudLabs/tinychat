@@ -44,13 +44,15 @@ export interface CourierTurnOptions {
   deniedChatIds(owner: string): Promise<Set<string>>;
   enabledReadAreas(owner: string): Promise<ReadArea[]>;
   threadId: string;
+  /** The turn's deadline: checked between rounds and before each read, so a late turn stops spending reads and tokens. */
+  signal?: AbortSignal;
 }
 
 export async function courierTurn(options: CourierTurnOptions): Promise<CourierReplyText> {
   const bot = botIdFor(options.owner);
   const areas = await options.enabledReadAreas(options.owner).catch(() => []);
   const conversation = createHash("sha256").update(`${options.peerDid}\n${options.threadId}`).digest("hex").slice(0, 32);
-  const courier = { peer: courierPeerHash(options.peerDid), setting: { owner: options.owner, areas, conversation }, botId: botIdFor(options.owner, conversation) };
+  const courier = { peer: courierPeerHash(options.peerDid), setting: { owner: options.owner, areas, conversation } };
   // Pairing validates the handle, but keep display text out of the system instruction's syntax regardless.
   const handle = options.handle.replace(/[^a-zA-Z0-9_.-]/g, "").slice(0, 64);
   const messages: Record<string, unknown>[] = [
@@ -60,10 +62,11 @@ export async function courierTurn(options: CourierTurnOptions): Promise<CourierR
   const log = openTurnReadLog();
   let regenerated = false;
   for (let round = 0; round < 8; round++) {
+    options.signal?.throwIfAborted();
     const permitted = new Set(options.reads.tools(bot, areas).map(tool => tool.name));
     const tools = regenerated ? [] : READ_TOOLS.filter(tool => COURIER_READ_TOOL_NAMES.some(name => name === tool.name) && permitted.has(tool.name)).map(tool => ({ type: "function", function: { name: tool.name, description: tool.description, parameters: tool.inputSchema } }));
     let answer: Record<string, unknown>;
-    try { answer = await options.model({ messages, tools }); }
+    try { answer = await options.model({ messages, tools }); options.signal?.throwIfAborted(); }
     catch (error) { if (error instanceof CourierFixedReply) return error.reply; throw error; }
     const calls = Array.isArray(answer.tool_calls) ? answer.tool_calls : [];
     if (calls.length) {
@@ -90,6 +93,7 @@ export async function courierTurn(options: CourierTurnOptions): Promise<CourierR
             }
             if (denied) result = COURIER_READ_OFF;
             else {
+              options.signal?.throwIfAborted();
               const read = await options.reads.call(bot, name, args, courier);
               result = read.content.map(item => item.text).join("\n");
               if (!read.isError) log.record(guardRecords(result));

@@ -15,7 +15,8 @@ import type { ReadsPush } from "./reads";
 import type { GatewayConfig } from "./config";
 import type { GuardDeps } from "./fetch-guard";
 import { isRecord } from "./guards";
-import { bearerMatches } from "./owner";
+import { courierBotId } from "./courier/bot-id";
+import { bearerMatches, OWNER_DID } from "./owner";
 import { SECRET_TOOLS } from "./secret-call";
 import type { SecretGrants } from "./secret-grants";
 import {
@@ -521,9 +522,13 @@ export class Gateway {
     return this.#deny(botId, "route", 403, route);
   }
 
-  /** Internal Courier turns share Main's token budget but never enter the sandbox's tool routes. */
-  courierModel(botId: string, peer: string, body: Record<string, unknown>): Promise<Response> {
-    return this.#chat(botId, new Request(`http://gateway${CHAT_PATH}`, {
+  /**
+   * Courier turns run as the owner's separate Courier bot: its own request slot and token budget, so what a peer
+   * uses up never reaches the owner's Main chat (and Main's use never blocks a peer for longer than its own limits).
+   */
+  courierModel(owner: string, peer: string, body: Record<string, unknown>): Promise<Response> {
+    if (!OWNER_DID.test(owner)) return Promise.resolve(failure(400, "Request refused by the bots gateway."));
+    return this.#chat(courierBotId(owner), new Request(`http://gateway${CHAT_PATH}`, {
       method: "POST", body: JSON.stringify(body), headers: { "content-type": "application/json" },
     }), () => {}, peer);
   }
