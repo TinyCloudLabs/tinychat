@@ -112,7 +112,8 @@ export async function verifyStandingReadApproval(input: {
 export interface StandingReadHolder {
   did: string;
   signStatus(bytes: Uint8Array): Uint8Array | Promise<Uint8Array>;
-  leaseState(grant: StandingReadGrant, hasStamp: boolean): Promise<"active" | "stopped" | "expired" | "unavailable">;
+  /** Asked on every read; never cached. */
+  leaseState(grant: StandingReadGrant): Promise<"active" | "stopped" | "expired" | "unavailable">;
 }
 
 export type StandingReadAuthority =
@@ -184,12 +185,10 @@ export async function standingReadAuthority(grant: StandingReadGrant, deps: Stan
       return { state: "ended", outcome: "unavailable" };
     }
     const hasRenewedTime = nodeEnd > grant.originalEnd;
-    const hasStamp = node.renewal_history.some(entry =>
-      entry && typeof entry === "object" && entry.lease_cid === grant.leaseCid);
-    const lease = await holder.leaseState(grant, hasStamp);
-    if (lease === "stopped") return { state: "ended", outcome: "revoked" };
+    const lease = await holder.leaseState(grant);
+    // A stopped renewal is not a revocation: the time already granted runs out at the node's own end below.
     if (lease === "expired") return { state: "ended", outcome: "expired" };
-    if (lease !== "active") return { state: "unavailable" };
+    if (lease !== "active" && lease !== "stopped") return { state: "unavailable" };
     const checkedAt = now();
     if (Math.min(grant.leaseEnd, nodeEnd) <= checkedAt) return { state: "ended", outcome: "expired" };
     const signedEnd = hasRenewedTime ? verifyRenewalChain({

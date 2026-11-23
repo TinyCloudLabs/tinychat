@@ -225,3 +225,26 @@ test("gateway refusal reports share one daily budget per authenticated Main owne
     expect(await (await post(tool, { args: { limit: 3 } })).json()).toMatchObject({ ok: true });
   });
 }, 15_000);
+
+test("no owner-data read runs in either area while the audit cannot be written", async () => {
+  await withRoute(async ({ post, events, values, rejectWrites }) => {
+    rejectWrites();
+    for (const name of [tool, "list_feed_cards", "read_chat"]) {
+      expect(await (await post(name, { args: { limit: 3 } })).json()).toEqual({ ok: false, error: "unavailable" });
+    }
+    expect(events).toEqual([]);
+    expect(values.size).toBe(0);
+  });
+});
+
+test("a full refusal-report budget still audits the next read before it runs", async () => {
+  await withRoute(async ({ post, events }) => {
+    const report = { owner, area: "meetings", tool, outcome: "unavailable" };
+    for (let count = 0; count < 200; count++) expect((await post("audit/refusal", report)).status).toBe(204);
+    expect(events.slice(0, 2)).toEqual(["pending", "unavailable"]);
+    expect((await post("audit/refusal", report)).status).toBe(429);
+    events.length = 0;
+    expect(await (await post(tool, { args: { limit: 3 } })).json()).toMatchObject({ ok: true });
+    expect(events).toEqual(["pending", "access", "access", "query", "query", "ok"]);
+  });
+}, 15_000);

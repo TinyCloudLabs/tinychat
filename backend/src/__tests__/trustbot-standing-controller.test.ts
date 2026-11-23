@@ -120,7 +120,7 @@ describe("standing read integration", () => {
 });
 
 
-test("collects one owner-approved scope, stores metadata before acknowledging and retires it after OpenKey Stop", async () => {
+test("collects one owner-approved scope, stores metadata before acknowledging and retires it only once the node reports it revoked", async () => {
   const keys = signerKeys();
   const wasm = new NodeWasmBindings();
   const ownerAccount = privateKeyToAccount(`0x${"a5".repeat(32)}`);
@@ -138,6 +138,8 @@ test("collects one owner-approved scope, stores metadata before acknowledging an
   let approvalRequest: OpenKeyApprovalRequestV1 | undefined;
   let acknowledged = false;
   let stopped = false;
+  let revoked = false;
+  let leaseChecks = 0;
   const validUntil = now + 7 * 86_400_000;
   const leaseUntil = now + 90 * 86_400_000;
   const store: StandingMetadataStore = {
@@ -158,11 +160,11 @@ test("collects one owner-approved scope, stores metadata before acknowledging an
       url: async () => "https://openkey.example.test/approve",
       collect: async () => result ? { state: "ready", resultRef: "ready-ref", opened: result } : { state: "pending" },
       acknowledge: async () => { expect(state.active?.grant.originalCid).toBe(nodeGrantCid); acknowledged = true; },
-      leaseState: async () => stopped ? "stopped" : "active",
+      leaseState: async () => { leaseChecks++; return stopped ? "stopped" : "active"; },
     },
-    fetch: (async (url: string) => url.endsWith("/node-keys") ? Response.json(identity) : Response.json({
-      cid: nodeGrantCid, exists: true, active: true, effective_expiry: validUntil / 1000, renewal_history: [],
-    })) as typeof fetch,
+    fetch: (async (url: string) => url.endsWith("/node-keys") ? Response.json(identity) : Response.json(revoked
+      ? { cid: nodeGrantCid, exists: true, active: false, revoked: true }
+      : { cid: nodeGrantCid, exists: true, active: true, effective_expiry: validUntil / 1000, renewal_history: [] })) as typeof fetch,
   });
   expect((await controller.request(ownerAccount.address, ["meetings"])).pending).toBeTruthy();
   const sent = approvalRequest!;
@@ -204,8 +206,20 @@ test("collects one owner-approved scope, stores metadata before acknowledging an
   expect(persisted).not.toContain(lease.delegationHeader.Authorization);
   expect(persisted).not.toContain(subject.delegationHeader.Authorization);
   expect(persisted).not.toContain(sent.resultEncryptionPublicJwk.x);
+  // Reads never reuse an earlier lease answer.
+  const record = (await controller.current(ownerAccount.address))!;
+  const checked = leaseChecks;
+  await record.holder.leaseState(record.grant);
+  await record.holder.leaseState(record.grant);
+  expect(leaseChecks).toBe(checked + 2);
 
+  // A renewal stopped in OpenKey is not a revocation: the grant stays until the node ends or revokes it.
   stopped = true;
+  clock += 5 * 60_000;
+  await controller.sweep();
+  expect(state.active?.grant.originalCid).toBe(nodeGrantCid);
+  expect((await controller.view(ownerAccount.address, ["meetings"])).active).toMatchObject({ validUntil });
+  revoked = true;
   clock += 5 * 60_000 - 1;
   await controller.sweep();
   expect(state.active?.grant.originalCid).toBe(nodeGrantCid);
@@ -215,15 +229,15 @@ test("collects one owner-approved scope, stores metadata before acknowledging an
   expect(await controller.current(ownerAccount.address)).toBeUndefined();
 });
 
-test("checks OpenKey on the first associated stamp even if the node shortens the grant", async () => {
+test("asks OpenKey for the lease on every check, even when the node shortens the grant", async () => {
   const holder = await signerKeys().derive(owner, scope.approvalId, scope.generation);
   const grant = { ownerDid: owner, holderDid: holder.did, originalCid, originalEnd: now / 1000 + 60,
     leaseCid: "test-lease-cid", leaseEnd, spaceId, areas: ["meetings"] as const };
-  let sawStamp = false;
+  let asked = 0;
   const status = await standingReadAuthority(grant, {
     address, config, now: () => now / 1000,
-    holder: { did: holder.did, signStatus: holder.sign, leaseState: async (_grant, stamped) => {
-      sawStamp = stamped;
+    holder: { did: holder.did, signStatus: holder.sign, leaseState: async () => {
+      asked++;
       return "expired";
     } },
     fetch: (async (url: string) => url.endsWith("/node-keys") ? Response.json({
@@ -234,6 +248,6 @@ test("checks OpenKey on the first associated stamp even if the node shortens the
       renewal_history: [{ lease_cid: grant.leaseCid }],
     })) as typeof fetch,
   });
-  expect(sawStamp).toBe(true);
+  expect(asked).toBe(1);
   expect(status).toEqual({ state: "ended", outcome: "expired" });
 });

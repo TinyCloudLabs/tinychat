@@ -97,11 +97,9 @@ test("caps refusal reports per bot per UTC day and logs the cap once", async () 
   }
 });
 
-test("allows one audit forward in flight per bot", async () => {
+test("sends concurrent refusal reports for one bot without dropping any", async () => {
   let delivered = 0;
   const response = Promise.withResolvers<Response>();
-  const other = `did:pkh:eip155:1:0x${"cd".repeat(20)}`;
-  const otherBot = botIdFor(other);
   const log = spyOn(console, "log").mockImplementation(() => {});
   try {
     const desk = new MeetingDesk({
@@ -109,17 +107,75 @@ test("allows one audit forward in flight per bot", async () => {
       fetch() { delivered++; return response.promise; },
     });
     desk.push(botId, { owner, conversation, areas: [] });
-    desk.push(otherBot, { owner: other, conversation, areas: [] });
     await desk.call(botId, tool, {});
     expect((await desk.call(botId, tool, {})).content[0]?.text).toBe(READ_ERRORS.off);
-    expect(delivered).toBe(1);
-    await desk.call(otherBot, tool, {});
     expect(delivered).toBe(2);
     response.resolve(new Response(null, { status: 204 }));
     await response.promise;
-    await Promise.resolve();
-    await desk.call(botId, tool, {});
-    expect(delivered).toBe(3);
+  } finally {
+    log.mockRestore();
+  }
+});
+
+test("reports a read the backend never answered, with no arguments, and does not retry a refused report", async () => {
+  const reports: unknown[] = [];
+  let reads = 0;
+  let readFails: () => Promise<Response> = async () => new Response(null, { status: 502 });
+  const failed = '{"gateway":"reads","outcome":"audit_forward_failed"}';
+  const bothLogged = Promise.withResolvers<void>();
+  let failures = 0;
+  const log = spyOn(console, "log").mockImplementation(entry => {
+    if (entry === failed && ++failures === 2) bothLogged.resolve();
+  });
+  try {
+    const desk = new MeetingDesk({
+      backendOrigin, backendCallSecret: secret, forwardRefusals: true,
+      async fetch(url, init) {
+        if (new URL(url).pathname !== path) { reads++; return readFails(); }
+        reports.push(JSON.parse(String(init?.body)));
+        return new Response(null, { status: 429 });
+      },
+    });
+    desk.push(botId, { owner, conversation, areas: ["meetings"] });
+    const args = { query: "private query" };
+    expect((await desk.call(botId, tool, args)).content[0]?.text).toBe(READ_ERRORS.unavailable);
+    readFails = async () => { throw new Error("connection reset"); };
+    expect((await desk.call(botId, tool, args)).content[0]?.text).toBe(READ_ERRORS.unavailable);
+    // An answered refusal was already recorded by the backend; an unsigned call never reached a read.
+    readFails = async () => Response.json({ ok: false, error: "unavailable" });
+    await desk.call(botId, tool, args);
+    readFails = async () => new Response(null, { status: 401 });
+    await desk.call(botId, tool, args);
+    await bothLogged.promise;
+    expect(reads).toBe(4);
+    expect(reports).toEqual([
+      { owner, area: "meetings", tool, outcome: "unavailable" },
+      { owner, area: "meetings", tool, outcome: "unavailable" },
+    ]);
+    const lines = log.mock.calls.map(([entry]) => String(entry));
+    expect(lines.filter(line => line === failed)).toHaveLength(2);
+    expect(lines.join("\n")).not.toContain(owner);
+    expect(lines.join("\n")).not.toContain("private query");
+  } finally {
+    log.mockRestore();
+  }
+});
+
+test("a gateway without a call secret reads nothing and reports nothing", async () => {
+  let calls = 0;
+  const log = spyOn(console, "log").mockImplementation(() => {});
+  try {
+    const desk = new MeetingDesk({
+      backendOrigin, backendCallSecret: undefined, forwardRefusals: true,
+      async fetch() { calls++; return new Response(null, { status: 204 }); },
+    });
+    desk.push(botId, { owner, conversation, areas: ["meetings"] });
+    expect((await desk.call(botId, tool, { query: "private query" })).content[0]?.text).toBe(READ_ERRORS.unavailable);
+    expect(calls).toBe(0);
+    const lines = log.mock.calls.map(([entry]) => String(entry)).join("\n");
+    expect(lines).toContain('"outcome":"no_secret"');
+    expect(lines).not.toContain(owner);
+    expect(lines).not.toContain("private query");
   } finally {
     log.mockRestore();
   }

@@ -116,11 +116,12 @@ describe("standing read approval", () => {
   });
 });
 
-test("uses pinned node status, drops the key on stop and refuses a different owner on every read", async () => {
+test("uses pinned node status, reads on after renewal stops, drops the key on revoke and refuses a different owner on every read", async () => {
   const { input, target, nodeIdentity, originalEnd } = await setup();
   const grant = await verifyStandingReadApproval(input);
   let leaseState: Awaited<ReturnType<StandingReadHolder["leaseState"]>> = "active";
   let nodeEnd = originalEnd - 30;
+  let revoked = false;
   const holder: StandingReadHolder = { did: target.did, signStatus: target.sign, leaseState: async () => leaseState };
   const fetchNode = (async (url: string, request?: RequestInit) => {
     if (url.endsWith("/node-keys")) return Response.json(nodeIdentity);
@@ -128,7 +129,9 @@ test("uses pinned node status, drops the key on stop and refuses a different own
     expect(status.payload.iss.split("#")[0]).toBe(target.did);
     expect(status.payload.aud).toBe(nodeIdentity.nodeDid);
     expect(status.payload.att).toEqual({ [`urn:cid:${grant.originalCid}`]: { "tinycloud.delegation/status": [{}] } });
-    return Response.json({ cid: grant.originalCid, exists: true, active: true, effective_expiry: nodeEnd, renewal_history: [] });
+    return Response.json(revoked
+      ? { cid: grant.originalCid, exists: true, active: false, revoked: true }
+      : { cid: grant.originalCid, exists: true, active: true, effective_expiry: nodeEnd, renewal_history: [] });
   }) as typeof fetch;
   const dropped: string[] = [];
   const access = {} as ReadAccess;
@@ -155,10 +158,17 @@ test("uses pinned node status, drops the key on stop and refuses a different own
   expect(await standingReadAuthority(grant, { address: input.address, config: input.config, holder, fetch: fetchNode }))
     .toEqual({ state: "unavailable" });
 
-  nodeEnd = originalEnd;
+  // Stopping renewal is not a revocation: reads go on until the node's own end, and nothing is dropped.
+  nodeEnd = originalEnd - 30;
   leaseState = "stopped";
+  expect(await runtime.access(input.address, "meetings")).toEqual({ state: "active", access });
+  expect(dropped).toEqual([]);
+
+  // An external revocation is seen by the very next read.
+  revoked = true;
   expect(await runtime.access(input.address, "meetings")).toEqual({ state: "ended" });
   expect(dropped).toEqual([grant.originalCid]);
+  revoked = false;
 
   leaseState = "active";
   const other = privateKeyToAccount(generatePrivateKey()).address;
@@ -186,10 +196,7 @@ test("accepts an extended end only with the pinned node's signed history for thi
   };
   const holder: StandingReadHolder = {
     did: target.did, signStatus: target.sign,
-    leaseState: async (_grant, hasRenewedTime) => {
-      expect(hasRenewedTime).toBe(true);
-      return "active";
-    },
+    leaseState: async () => "active",
   };
   const opts = {
     address: input.address, config: input.config, holder,

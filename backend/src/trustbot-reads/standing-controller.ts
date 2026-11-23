@@ -3,7 +3,7 @@ import type { OpenKeyApprovalRequestV1 } from "@tinycloud/share-envelope/links";
 import type { RenewalVerifyConfig } from "../renewal-verify.js";
 import type { ReadArea } from "./areas.js";
 import { standingDelegatedAccess } from "./standing-access.js";
-import { StandingApprovalClient, standingTargetPublicJwk, type LeaseState, type StandingApprovalLink } from "./standing-approval.js";
+import { StandingApprovalClient, standingTargetPublicJwk, type StandingApprovalLink } from "./standing-approval.js";
 import {
   standingReadAuthority, standingReadPermissions, STANDING_READ_LEASE_SECONDS, STANDING_READ_WINDOW_SECONDS,
   verifyStandingReadApproval, type StandingReadGrant,
@@ -12,7 +12,8 @@ import { finishStandingReadStop, StandingReadOwnerMismatch, type CollectedStandi
 import type { HolderScope, StandingApprovalKeys } from "./standing-holder.js";
 import type { OwnerDid, StandingHolder } from "./standing-types.js";
 
-const LEASE_STATUS_TTL_MS = 5 * 60_000;
+/** How often the background sweep re-checks an active grant. Reads never reuse a sweep's answer. */
+const SWEEP_CHECK_MS = 5 * 60_000;
 
 interface Approval {
   scope: HolderScope;
@@ -56,7 +57,7 @@ type StandingApprovalPort = Pick<StandingApprovalClient, "create" | "url" | "col
 
 export class StandingReadsController implements StandingReadControl {
   readonly #openKey: StandingApprovalPort;
-  readonly #leaseChecks = new Map<string, { at: number; stamped: boolean; result: Promise<LeaseState> }>();
+  readonly #swept = new Map<string, number>();
   readonly #collecting = new Map<OwnerDid, Promise<void>>();
   #sweeping = false;
 
@@ -149,7 +150,7 @@ export class StandingReadsController implements StandingReadControl {
         ? { ...state, generation: state.generation + 1, active: undefined, pending: undefined }
         : { ...state, generation: state.generation + 1, previous: undefined };
       if (await this.deps.store.write(owner, next, version)) {
-        this.#leaseChecks.delete(originalCid);
+        this.#swept.delete(originalCid);
         return;
       }
     }
@@ -165,8 +166,12 @@ export class StandingReadsController implements StandingReadControl {
           const { state } = await this.deps.store.read(owner);
           if (state.pending) await this.#refresh(owner, await this.deps.enabledAreas(addr(owner)));
           if (state.active) {
-            const prior = this.#leaseChecks.get(state.active.grant.originalCid);
-            if (!prior || this.#now() - prior.at >= LEASE_STATUS_TTL_MS) await this.#activeEnd(owner, state.active);
+            const cid = state.active.grant.originalCid;
+            const last = this.#swept.get(cid);
+            if (last === undefined || this.#now() - last >= SWEEP_CHECK_MS) {
+              this.#swept.set(cid, this.#now());
+              await this.#activeEnd(owner, state.active);
+            }
           }
           if (state.previous && state.previous.grant.leaseEnd <= this.#seconds()) await this.drop(addr(owner), state.previous.grant.originalCid);
         } catch { /* A failed owner is retried independently on the next pass. */ }
@@ -259,7 +264,7 @@ export class StandingReadsController implements StandingReadControl {
       holder: {
         did: standing.did,
         signStatus: standing.sign,
-        leaseState: (_, stamped) => this.#leaseState(standing, link, grant, stamped),
+        leaseState: () => this.#openKey.leaseState(standing, link, grant.originalCid, grant.leaseEnd),
       },
       activate: async (resources, validUntil) => standingDelegatedAccess({
         config: this.deps.config, grant, holder: standing, resources, validUntil, fetch: this.deps.fetch, now: () => this.#now(),
@@ -270,14 +275,5 @@ export class StandingReadsController implements StandingReadControl {
         },
       }),
     };
-  }
-
-  #leaseState(holder: StandingHolder, link: StandingApprovalLink, grant: StandingReadGrant, stamped: boolean): Promise<LeaseState> {
-    const prior = this.#leaseChecks.get(grant.originalCid);
-    const at = this.#now();
-    if (prior && at - prior.at < LEASE_STATUS_TTL_MS && (prior.stamped || !stamped)) return prior.result;
-    const result = this.#openKey.leaseState(holder, link, grant.originalCid, grant.leaseEnd);
-    this.#leaseChecks.set(grant.originalCid, { at, stamped: prior?.stamped === true || stamped, result });
-    return result;
   }
 }

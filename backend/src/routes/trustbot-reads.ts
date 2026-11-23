@@ -227,7 +227,7 @@ export function createTrustBotReadsInternalRouter(
     const { owner, area, tool, outcome } = report as Record<string, unknown>;
     const expectedArea = typeof tool === "string" ? readAuditArea(tool) : undefined;
     if (!expectedArea || area !== expectedArea || owner !== claims.owner || typeof tool !== "string" ||
-      (outcome !== "off" && outcome !== "budget" && outcome !== "busy")) {
+      (outcome !== "off" && outcome !== "budget" && outcome !== "busy" && outcome !== "unavailable")) {
       res.status(400).end();
       return;
     }

@@ -98,15 +98,17 @@ export interface MeetingDeskOptions {
   /** The backend's origin and the secret its calls are signed with; without a secret every read is refused. */
   backendOrigin: string;
   backendCallSecret: string | undefined;
-  /** Send refusals to the backend that serves the standing-read audit. */
+  /** Send refusals to the backend that serves the standing-read audit. Reads are always audited by the backend
+   *  before they run; these reports of blocked attempts are bounded and never retried. */
   forwardRefusals?: boolean;
   store?: HeldStore;
   fetch?: UpstreamFetch;
   now?: () => number;
 }
 
-type Answer = { ok: true; text: string } | { ok: false; error: ReadError };
-type RefusalReport = { owner: string; area: ReadArea; tool: ReadToolName; outcome: "off" | "budget" | "busy" };
+/** `unanswered`: no response, or a server error, so the backend may not have recorded the attempt. */
+type Answer = { ok: true; text: string } | { ok: false; error: ReadError; unanswered?: true };
+type RefusalReport = { owner: string; area: ReadArea; tool: ReadToolName; outcome: "off" | "budget" | "busy" | "unavailable" };
 
 export class MeetingDesk {
   readonly #options: MeetingDeskOptions;
@@ -118,7 +120,6 @@ export class MeetingDesk {
   readonly #calling = new Set<string>();
   readonly #today = new Map<string, { day: string; count: number }>();
   readonly #auditToday = new Map<string, { day: string; count: number; capped: boolean }>();
-  readonly #forwarding = new Set<string>();
 
   constructor(options: MeetingDeskOptions) {
     this.#options = options;
@@ -185,7 +186,7 @@ export class MeetingDesk {
     this.#today.set(botId, { day, count: used + 1 });
     try {
       const answer = await this.#ask(setting.owner, name, args);
-      if (!answer.ok) return refuse(answer.error);
+      if (!answer.ok) return answer.unanswered ? refuseLocally("unavailable") : refuse(answer.error);
       // The conversation is marked before the result reaches it; a mark that cannot be kept withholds the result.
       if (this.#marks.get(botId) !== setting.conversation && !this.#mark(botId, setting.conversation)) return refuse("unavailable", "held_store");
       log("ok");
@@ -219,8 +220,6 @@ export class MeetingDesk {
       }
       return;
     }
-    if (this.#forwarding.has(botId)) return;
-    this.#forwarding.add(botId);
     today.count++;
     this.#auditToday.set(botId, today);
     const path = `${BACKEND_PATH}audit/refusal`;
@@ -237,8 +236,6 @@ export class MeetingDesk {
       if (response.status === 204) return;
     } catch {
       // The refusal is already decided. The report cannot affect its reply.
-    } finally {
-      this.#forwarding.delete(botId);
     }
     console.log(JSON.stringify({ gateway: "reads", outcome: "audit_forward_failed" }));
   }
@@ -256,7 +253,7 @@ export class MeetingDesk {
       });
       if (response.status !== 200 && response.status !== 400) {
         void response.body?.cancel().catch(() => {});
-        return { ok: false, error: "unavailable" };
+        return { ok: false, error: "unavailable", ...(response.status >= 500 ? { unanswered: true as const } : {}) };
       }
       const bytes = await readBody(response, ANSWER_BYTES, CALL_TIMEOUT_MS);
       if (typeof bytes === "string") return { ok: false, error: "unavailable" };
@@ -266,7 +263,8 @@ export class MeetingDesk {
       const error = answer.error === "off" || answer.error === "ended" || answer.error === "not_found" ? answer.error : "unavailable";
       return { ok: false, error };
     } catch {
-      return { ok: false, error: "unavailable" };
+      // No usable answer arrived; the backend may never have seen the call.
+      return { ok: false, error: "unavailable", unanswered: true };
     }
   }
 }
