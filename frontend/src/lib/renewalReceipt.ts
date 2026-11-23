@@ -114,11 +114,23 @@ export async function desktopSignInWithRenewal<T>(
 
 const RENEW = "tinycloud.delegation/renew";
 
+const ENCRYPTION_NETWORK_PREFIX = "urn:tinycloud:encryption:";
+
+/** Whether a signed grant's resources include decrypt on a whole encryption network (a bare network urn, no key part). */
+function signedGrantReachesWholeNetwork(attenuation: Record<string, Record<string, unknown>>): boolean {
+  return Object.entries(attenuation).some(([resource, abilities]) =>
+    resource.startsWith(ENCRYPTION_NETWORK_PREFIX) && !resource.slice(ENCRYPTION_NETWORK_PREFIX.length).includes("/")
+    && Object.keys(abilities).some((ability) => ability === "tinycloud.encryption/decrypt" || ability === "tinycloud.encryption/*"));
+}
+
+type LeaseCheck = { lease: string } | { refused: "whole_network" } | null;
+
 /**
- * The lease authorization in `value` when it is a well-formed receipt for `record`'s own grant, signed by the
- * grant's owner, for that grant only; otherwise null. Never throws.
+ * The lease in `value` when it is a well-formed receipt for `record`'s own grant, signed by the grant's owner, for that
+ * grant only. A grant whose signed resources include decrypt on a whole encryption network is refused for any lease:
+ * such a grant is never renewed here, whether the lease is being admitted or restored. Never throws.
  */
-export async function verifiedRenewalLease(value: unknown, record: PersistedSessionData): Promise<string | null> {
+async function checkRenewalLease(value: unknown, record: PersistedSessionData): Promise<LeaseCheck> {
   try {
     const renewal: ApprovalRenewal = parseApprovalRenewal(value);
     const { receipt } = renewal;
@@ -143,10 +155,17 @@ export async function verifiedRenewalLease(value: unknown, record: PersistedSess
     ) {
       return null;
     }
-    return receipt.leaseAuthorization;
+    if (signedGrantReachesWholeNetwork(original.attenuation)) return { refused: "whole_network" };
+    return { lease: receipt.leaseAuthorization };
   } catch {
     return null;
   }
+}
+
+/** The lease authorization in `value` when `checkRenewalLease` accepts it for `record`; otherwise null. Never throws. */
+export async function verifiedRenewalLease(value: unknown, record: PersistedSessionData): Promise<string | null> {
+  const checked = await checkRenewalLease(value, record);
+  return checked && "lease" in checked ? checked.lease : null;
 }
 
 /** How long the sign-in waits for the node to admit the lease before going on without renewal. */
@@ -226,6 +245,28 @@ export async function renewalRestoreFor(
   if (receipt === null) return null;
   const candidate = await storage.loadRenewalCandidate(address);
   if (candidate.status !== "renewal-candidate") return null;
-  const leaseAuthorization = await verifiedRenewalLease(receipt, candidate.data);
-  return leaseAuthorization ? { address, leaseAuthorization } : null;
+  const checked = await checkRenewalLease(receipt, candidate.data);
+  if (checked && "refused" in checked) {
+    // A saved session that reaches a whole encryption network is no longer carried by its lease: the receipt goes, so
+    // nothing restores it again and the plain restore (past its signed end) ends it.
+    saveRenewalReceipt(address, null);
+    return null;
+  }
+  return checked ? { address, leaseAuthorization: checked.lease } : null;
+}
+
+/**
+ * When the signed-in session ends now, in ms: the node's own recomputation from the session's saved lease (a leased
+ * session outlives its first signed end). Null without a saved lease or when the node cannot say, so a caller falls
+ * back to the signed end. The node's answer can only shorten what the lease allows.
+ */
+export async function renewedSessionEndMs(tcw: Pick<TinyCloudWeb, "getRenewalEffectiveExpiry">, address: string): Promise<number | null> {
+  try {
+    const saved = loadRenewalReceipt(address);
+    if (saved === null) return null;
+    const endSeconds = await tcw.getRenewalEffectiveExpiry(parseApprovalRenewal(saved).receipt.leaseAuthorization);
+    return Number.isFinite(endSeconds) ? endSeconds * 1000 : null;
+  } catch {
+    return null;
+  }
 }

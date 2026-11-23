@@ -1,6 +1,7 @@
 // User-facing copy for the TinyCloud Home shell (TC-2040), worded by Monica.
 // One module, so copy changes never touch components.
 
+import { connectorOwnKeyGrants } from "./connectors/namedKeyWrites";
 import { APP_NAME } from "./homeSite";
 
 /** The name of the main screen, the one feed everything lands in. One constant, so a rename is one edit. */
@@ -54,9 +55,13 @@ export const LANDING_LINK_LABEL = `About ${APP_NAME}`;
 
 /** Connectors on the web asks for its own permission in place, when the owner opens it. */
 export const FEATURE_ACCESS_TITLE = { connectors: "Allow Connectors" } as const;
+/** What the approval covers: its own keys when Connectors opens its secrets with their own keys, else the whole network. */
+const CONNECTORS_BODY_OWN_KEYS = `To sync your meetings, OpenKey will ask you to let ${APP_NAME} keep them in your TinyCloud space, along with the keys and sign-ins you add for Fireflies, Granola and Google Meet. Each is stored encrypted with its own key, and this approval opens only those keys.`;
+const CONNECTORS_BODY_WHOLE_NETWORK = `To sync your meetings, OpenKey will ask you to let ${APP_NAME} keep them in your TinyCloud space, along with the keys and sign-ins you add for Fireflies, Granola and Google Meet, which are stored encrypted. To read those keys, ${APP_NAME} also asks to unlock everything encrypted to your account, including data other apps saved.`;
 export const FEATURE_ACCESS_BODY = {
-  connectors: `To sync your meetings, OpenKey will ask you to let ${APP_NAME} keep them in your TinyCloud space, along with the keys and sign-ins you add for Fireflies, Granola and Google Meet. Each is stored encrypted with its own key, and this approval opens only those keys.`,
-} as const;
+  // Read when shown, so it follows the same switch as the grant the approval asks for (connectorOwnKeyGrants).
+  get connectors() { return connectorOwnKeyGrants() ? CONNECTORS_BODY_OWN_KEYS : CONNECTORS_BODY_WHOLE_NETWORK; },
+};
 /** The calm state after "Not now": the feature waits for permission, and Continue asks again. */
 export const FEATURE_ACCESS_NEEDED = { connectors: "Connectors need your permission." } as const;
 export const FEATURE_ACCESS_CONTINUE = "Continue";
