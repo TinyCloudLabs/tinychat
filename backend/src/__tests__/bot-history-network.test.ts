@@ -159,6 +159,7 @@ test.skipIf(!host)("real TinyCloud: encrypted archival, KV-only backend decrypt 
     const server = app.listen(0, "127.0.0.1"); await once(server, "listening");
     const port = (server.address() as { port: number }).port;
     try {
+      await manager.forOwner(historyOwner(address)).historyPermission(historyOwner(address), undefined, Date.now() + 3_600_000);
       const message = await fetch(`http://127.0.0.1:${port}/api/bots/main/messages`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: "Reply pong" }) });
       const stream = await message.text();
       expect(stream).toContain("pong"); expect(stream).toContain("event: done");
