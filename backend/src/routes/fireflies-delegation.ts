@@ -141,6 +141,30 @@ export function createFirefliesDelegationRouter(config: FirefliesDelegationRoute
     }
   });
 
+  // Everything the owner's browser needs to turn the import on, renew it or take it off: whom to delegate to,
+  // the state and end date, and the two ids to replace. Public values only; never any grant material.
+  router.get("/status", async (req: Request, res: Response) => {
+    const user = requireUser(req, res);
+    if (!user) return;
+    const address = user.address.toLowerCase();
+    try {
+      const options = { configuredHost: config.configuredHost, deps, now: nowFn() };
+      const { status, cids } = await coordinator.run(address, async () => ({
+        status: await config.store.status(address, options),
+        cids: await config.store.activeGrantCids(address, options),
+      }));
+      res.json({
+        state: status.state,
+        expiresAt: status.expiresAt,
+        delegateDid: config.delegate.did,
+        grantCids: cids ? [cids.secrets, cids.meetings] : [],
+      });
+    } catch {
+      console.warn("[fireflies-delegation] op=owner-status result=unavailable");
+      res.status(503).json({ error: "unavailable" });
+    }
+  });
+
   // Per-address quota precedes the first read of the POST body.
   router.post(
     "/",
