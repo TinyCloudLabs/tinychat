@@ -82,6 +82,17 @@ export function createTrustBotReadsRouter({ grants, config, auth }: Pick<TrustBo
       res.status(503).json({ error: "reads_unavailable" });
     }
   });
+  // The owner's browser calls this after the node confirms the revoke of the grant a renewal replaced.
+  router.delete("/renewal", async (req, res) => {
+    const replaced = req.query.replaced;
+    if (typeof replaced !== "string" || !replaced) { res.status(400).json({ error: "invalid_reads" }); return; }
+    try {
+      await grants.clearReplaced(req.user!.address, replaced);
+      res.status(204).end();
+    } catch {
+      res.status(503).json({ error: "reads_unavailable" });
+    }
+  });
   router.put("/:area", express.json({ limit: "96kb" }), async (req, res) => {
     const area = req.params.area;
     const renewing = area === "renewal";

@@ -37,6 +37,8 @@ const RENEWAL_MAX_LIFETIME_MS = BOT_GRANT_MAX_LIFETIME_MS - 60_000;
 const STATES: readonly ReadAreaState[] = ["off", "on", "ended"];
 
 const base = import.meta.env.VITE_BACKEND_URL || `${globalThis.location?.protocol ?? "http:"}//localhost:3014`;
+/** A grant ID is a short run of letters, digits, hyphens and underscores; anything else is never sent to the node. */
+const REPLACED_GRANT_CID = /^[A-Za-z0-9_-]{1,128}$/;
 const currentSession = () => new SessionStore("xyz.tinycloud.tinychat:session");
 
 function renewalLifetime(siwe: string, now = Date.now()): number {
@@ -54,7 +56,7 @@ function toReadSettings(payload: unknown): ReadSettings {
   return { serviceDid: value.serviceDid, expiresAt: value.expiresAt, grantCid: typeof value.grantCid === "string" ? value.grantCid : null, areas };
 }
 
-async function request(method: "GET" | "PUT", path: string, body?: unknown): Promise<unknown> {
+async function request(method: "GET" | "PUT" | "DELETE", path: string, body?: unknown): Promise<unknown> {
   const token = currentSession().getToken();
   if (!token) throw new BotsError("signed_out");
   let response: Response;
@@ -169,8 +171,14 @@ export async function ensureTrustBotReadGrant(tcw: TinyCloudWeb): Promise<boolea
       signReadGrant: (did: string, areas: ReadArea[]) => signReadGrant(tcw, did, areas, true),
       revokeReadGrant: (cid: string) => revokeReadGrant(tcw, cid),
     };
-    const recovered = typeof replacedGrantCid === "string" && replacedGrantCid !== saved.grantCid &&
-      replacedGrantCid !== revokedReadGrant.get(tcw) && await revokeQuietly(api, replacedGrantCid);
+    const replaced = typeof replacedGrantCid === "string" && REPLACED_GRANT_CID.test(replacedGrantCid) &&
+      replacedGrantCid !== saved.grantCid ? replacedGrantCid : undefined;
+    const alreadyRevoked = replaced !== undefined && replaced === revokedReadGrant.get(tcw);
+    const recovered = replaced !== undefined && !alreadyRevoked && await revokeQuietly(api, replaced);
+    // The backend keeps the replaced grant until told the node confirmed its revoke, or every tick would try again.
+    if (replaced !== undefined && (recovered || alreadyRevoked)) {
+      await request("DELETE", `/api/bots/main/reads/renewal?replaced=${encodeURIComponent(replaced)}`).catch(() => {});
+    }
     const session = tcw.session();
     if (typeof renewAfter !== "number" || !session?.siwe || !session.signature ||
         currentSession().getToken() !== token) return recovered;

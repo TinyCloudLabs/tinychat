@@ -186,6 +186,18 @@ export class TrustBotReadGrants {
     return this.#status(record);
   }
 
+  /** Forgets the superseded grant once the owner's browser has seen the node confirm its revoke. */
+  async clearReplaced(address: string, cid: string): Promise<void> {
+    const owner = checkAddress(address);
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const stored = await this.#load(owner);
+      if (!stored || stored.record.replacedGrantCid !== cid) return;
+      const { replacedGrantCid: _confirmed, ...next } = stored.record;
+      if (await this.#save(owner, next, stored.etag) !== false) return;
+    }
+    throw new ReadGrantInvalid("changed");
+  }
+
   /** Turns `area` off. With no area left on, the stored grant is deleted; the owner's browser revokes it at the node. */
   async disable(address: string, area: ReadArea): Promise<ReadStatus> {
     const owner = checkAddress(address);
