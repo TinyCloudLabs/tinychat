@@ -1,5 +1,5 @@
 // TC-2808: supervisor-owned journal and receipt barrier, outside all sandbox binds.
-import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeSync } from "node:fs";
+import { closeSync, constants, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeSync } from "node:fs";
 import { createHash, randomBytes } from "node:crypto";
 import { dirname, join } from "node:path";
 import { recoverMessageAddress } from "viem";
@@ -45,7 +45,10 @@ export function updateHistoryPermission(current: HistoryPermission | undefined, 
   grant?: HistoryGrantUpdate, now = Date.now()): HistoryPermission | undefined {
   if (grant?.kind === "revoke") {
     if (!Number.isFinite(validUntil) || validUntil > now) throw new Error("invalid_permission_expiry");
-    if (!matchesHistoryGrant(current, grant) || current?.revoked) return current;
+    // A revoke names the grant it ends. It also ends an untagged permission, which has no grant to match, and one an
+    // older grant holds when the extend for the revoked generation never arrived.
+    const supersedes = current !== undefined && (!current.grant || grant.revision > current.grant.revision);
+    if (!(matchesHistoryGrant(current, grant) || supersedes) || current?.revoked) return current;
     return { validUntil, grant, revoked: true };
   }
   if (!Number.isFinite(validUntil) || validUntil <= now) throw new Error("invalid_permission_expiry");
@@ -87,7 +90,7 @@ export function removeHistoryRevocation(layout: BotLayout): void {
 function saveHistoryFile(path: string, value: object): void {
   const directory = dirname(path);
   mkdirSync(directory, { recursive: true, mode: 0o700 });
-  const file = openSync(path + ".new", "w", 0o600);
+  const file = openSync(path + ".new", constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW, 0o600);
   try { writeSync(file, JSON.stringify(value)); fsyncSync(file); } finally { closeSync(file); }
   renameSync(path + ".new", path);
   const dir = openSync(directory, "r");
