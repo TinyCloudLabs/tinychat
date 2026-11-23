@@ -36,10 +36,10 @@ test("missing authority or malformed responses never turn denial lookup failures
   process.env.BACKEND_ORIGIN = "https://backend.test";
   process.env.BOTS_BACKEND_CALL_SECRET = "s".repeat(64);
   for (const body of [{}, { deniedChatIds: [4], enabledReadAreas: [] }, { deniedChatIds: [""], enabledReadAreas: [] }, { deniedChatIds: ["x".repeat(129)], enabledReadAreas: [] }, { deniedChatIds: [], enabledReadAreas: ["unrecognized"] }]) {
-    globalThis.fetch = (async () => Response.json(body)) as typeof fetch;
+    globalThis.fetch = (async () => Response.json(body)) as unknown as typeof fetch;
     await expect(deniedChatIds(owner)).rejects.toThrow();
   }
-  globalThis.fetch = (async () => new Response(null, { status: 503 })) as typeof fetch;
+  globalThis.fetch = (async () => new Response(null, { status: 503 })) as unknown as typeof fetch;
   await expect(deniedChatIds(owner)).rejects.toThrow();
   delete process.env.BOTS_BACKEND_CALL_SECRET;
   await expect(deniedChatIds(owner)).rejects.toThrow();
