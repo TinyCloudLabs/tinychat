@@ -1,4 +1,3 @@
-import { handoffChoicePath } from "../feed/setupChoice";
 import { ed25519 } from "@noble/curves/ed25519";
 import { sha256 } from "@noble/hashes/sha2";
 import { bytesToHex } from "@noble/hashes/utils";
@@ -16,6 +15,7 @@ import { didKeyFromEd25519PublicKey, fromBase64Url, toBase64Url } from "@tinyclo
 import { BrowserWasmBindings } from "@tinycloud/web-sdk";
 import { CID } from "multiformats/cid";
 
+import { handoffChoicePath } from "../feed/setupChoice";
 import { decodeHandoffFragment } from "./codec";
 
 const KEY_PREFIX = "xyz.tinycloud.one/handoff/v1/";
