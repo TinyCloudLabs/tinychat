@@ -206,8 +206,10 @@ export class TrustBotReadGrants {
     }
     const cid = verified.verified.cid;
     const record: StoredReads = { v: 1, areas, cid, expiresAt, mintedAt: now, ...envelope, deniedChatIds: previous?.record.deniedChatIds ?? [] };
-    // Keep the superseded CID with the committed grant so the owner can revoke it if the response was lost.
-    record.replacedGrantCid = previous?.record.cid === cid ? previous.record.replacedGrantCid : previous?.record.cid;
+    // A retained off-only record has no active grant left for the owner to revoke.
+    if (previous?.record.cid && previous.record.areas.length > 0) {
+      record.replacedGrantCid = previous.record.cid === cid ? previous.record.replacedGrantCid : previous.record.cid;
+    }
     if (await this.#save(owner, record, previous?.etag) === false) throw new ReadGrantInvalid("changed");
     this.#activations.clear();
     return this.#status(record);
