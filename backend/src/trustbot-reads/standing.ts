@@ -55,8 +55,13 @@ export class StandingReadRuntime {
       if (authority.state !== "active") return { state: authority.state };
       const resources = areaResources([area]).filter(resource => path === undefined || path === resource.path);
       if (resources.length === 0) return { state: "unavailable" };
-      await store.audit({ owner, area, at: (now?.() ?? Math.floor(Date.now() / 1000)) * 1000 });
-      return { state: "active", access: await record.activate(resources, authority.validUntil) };
+      const at = (now?.() ?? Date.now() / 1000) * 1000;
+      if (at >= authority.validUntil) return { state: "ended" };
+      await store.audit({ owner, area, at });
+      // Standing activations are one-use; an activation crossing the checked end is discarded.
+      const access = await record.activate(resources, authority.validUntil);
+      if ((now?.() ?? Date.now() / 1000) * 1000 >= authority.validUntil) return { state: "ended" };
+      return { state: "active", access };
     } catch {
       return { state: "unavailable" };
     }

@@ -206,6 +206,28 @@ export async function fetchDelegationStatus(fetchImpl: typeof fetch, config: Ren
   return { kind: "status", value: await boundedJsonObject(response, STATUS_MAX_BYTES) };
 }
 
+/** Live expiry can only shorten the node-signed extension of this exact owner lease. */
+export function verifiedNodeRenewalEnd(input: {
+  originalCid: string;
+  leaseCid: string;
+  leaseExpiresAt: number;
+  nodeEffectiveExpiry: number;
+  nodeIdentity: RenewalNodeIdentity;
+  history: unknown;
+  now: number;
+}): number {
+  if (!Array.isArray(input.history)) throw new Error("Invalid renewal history");
+  return verifyRenewalHistory({
+    originalCid: input.originalCid,
+    leaseCid: input.leaseCid,
+    leaseExpiresAt: input.leaseExpiresAt,
+    ancestorEffectiveExpiry: input.nodeEffectiveExpiry,
+    nodeIdentity: input.nodeIdentity,
+    history: input.history as RenewalStampHistoryEntry[],
+    now: input.now,
+  }).effectiveExpiry;
+}
+
 /**
  * D2 checks 2 to 6, in order; the caller has already consumed the nonce (check 1). The node is asked
  * only after the grant, the holder proof, the lease and the status invocation have all passed.
@@ -284,19 +306,17 @@ export async function verifyRenewal(input: RenewalVerifyInput, deps: RenewalVeri
     value.revoked === true || value.expired === true || typeof value.effective_expiry !== "number" || !Number.isSafeInteger(value.effective_expiry)) {
     return refuse("renewal_inactive");
   }
-  if (!Array.isArray(history)) return refuse("renewal_history_invalid");
   let effectiveEnd: number;
   try {
-    effectiveEnd = verifyRenewalHistory({
+    effectiveEnd = verifiedNodeRenewalEnd({
       originalCid: delegationCid,
       leaseCid: lease.cid,
       leaseExpiresAt,
-      ancestorEffectiveExpiry: value.effective_expiry,
+      nodeEffectiveExpiry: value.effective_expiry,
       nodeIdentity: identity,
-      // Untrusted node data: verifyRenewalHistory checks every stamp before using it.
-      history: history as RenewalStampHistoryEntry[],
+      history,
       now,
-    }).effectiveExpiry;
+    });
   } catch {
     return refuse("renewal_history_invalid");
   }

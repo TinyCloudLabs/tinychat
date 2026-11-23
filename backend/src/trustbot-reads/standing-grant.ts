@@ -1,12 +1,13 @@
 import { randomBytes } from "node:crypto";
 import { makePkhSpaceId, parseSignedSiweCacao, pkhDid, principalDidEquals, signCompactUcanAuthorization } from "@tinycloud/sdk-core";
-import { assertRenewalNodeIdentity, verifyRenewalHistory, type RenewalStampHistoryEntry } from "@tinycloud/sdk-core/delegations/renewal";
+import { assertRenewalNodeIdentity } from "@tinycloud/sdk-core/delegations/renewal";
 import { checkApprovalResultBinding, type OpenKeyApprovalRequestV1 } from "@tinycloud/share-envelope/links";
 import { siweToDelegationHeaders } from "@tinycloud/node-sdk-wasm";
-import { fetchDelegationStatus, fetchNodeIdentity, isOnlyCapability, type RenewalVerifyConfig } from "../renewal-verify.js";
+import { fetchDelegationStatus, fetchNodeIdentity, isOnlyCapability, verifiedNodeRenewalEnd, type RenewalVerifyConfig } from "../renewal-verify.js";
 import { areaResources, type ReadArea } from "./areas.js";
 
 export const STANDING_READ_LEASE_SECONDS = 7 * 86_400;
+const NODE_WINDOW_SLACK_SECONDS = 60;
 const RENEW = "tinycloud.delegation/renew";
 const STATUS = "tinycloud.delegation/status";
 
@@ -171,20 +172,21 @@ export async function standingReadAuthority(grant: StandingReadGrant, deps: Stan
       !Array.isArray(node.renewal_history)) return { state: "unavailable" };
 
     const nodeEnd = node.effective_expiry;
+    if (nodeEnd > now() + STANDING_READ_LEASE_SECONDS + NODE_WINDOW_SLACK_SECONDS) return { state: "ended" };
     const hasRenewedTime = nodeEnd > grant.originalEnd;
     const lease = await holder.leaseState(grant, hasRenewedTime);
     if (lease !== "active") return { state: lease === "stopped" ? "ended" : "unavailable" };
     const checkedAt = now();
     if (grant.leaseEnd <= checkedAt) return { state: "ended" };
-    const end = hasRenewedTime ? verifyRenewalHistory({
+    const end = hasRenewedTime ? verifiedNodeRenewalEnd({
       originalCid: grant.originalCid,
       leaseCid: grant.leaseCid,
       leaseExpiresAt: grant.leaseEnd,
-      ancestorEffectiveExpiry: nodeEnd,
+      nodeEffectiveExpiry: nodeEnd,
       nodeIdentity: identity,
-      history: node.renewal_history as RenewalStampHistoryEntry[],
+      history: node.renewal_history,
       now: checkedAt,
-    }).effectiveExpiry : Math.min(nodeEnd, grant.originalEnd, grant.leaseEnd);
+    }) : Math.min(nodeEnd, grant.originalEnd, grant.leaseEnd);
     return end > checkedAt ? { state: "active", validUntil: end * 1000 } : { state: "ended" };
   } catch {
     return { state: "unavailable" };

@@ -7,7 +7,7 @@ import { parseCompactUcanAuthorization, pkhDid } from "@tinycloud/sdk-core";
 import { signerFromJwk, signerFromSeed, type OpenKeyApprovalRequestV1 } from "@tinycloud/share-envelope/links";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { standingReadAuthority, standingReadPermissions, verifyStandingReadApproval, type StandingReadHolder } from "../trustbot-reads/standing-grant.js";
-import { StandingReadRuntime } from "../trustbot-reads/standing.js";
+import { finishStandingReadStop, StandingReadRuntime } from "../trustbot-reads/standing.js";
 import type { ReadAccess } from "../trustbot-reads/grants.js";
 
 const wasm = new NodeWasmBindings();
@@ -211,7 +211,6 @@ test("accepts an extended end only with the pinned node's signed history for thi
 test("drops a stopped or replaced holder only after node confirms revocation", async () => {
   const { input, target } = await setup();
   const grant = await verifyStandingReadApproval(input);
-  const { finishStandingReadStop } = await import("../trustbot-reads/standing.js");
   const dropped: string[] = [];
   let revoked = false;
   const deps = {
@@ -229,4 +228,59 @@ test("drops a stopped or replaced holder only after node confirms revocation", a
   revoked = true;
   await finishStandingReadStop(input.address, grant.originalCid, deps);
   expect(dropped).toEqual([grant.originalCid]);
+});
+
+test("refuses and drops a holder when node reports a window over seven days plus one minute", async () => {
+  const { input, target, nodeIdentity } = await setup();
+  const grant = await verifyStandingReadApproval(input);
+  const dropped: string[] = [];
+  const runtime = new StandingReadRuntime({
+    config: input.config,
+    now: () => input.now,
+    fetch: (async (url: string) => url.endsWith("/node-keys") ? Response.json(nodeIdentity) : Response.json({
+      cid: grant.originalCid, exists: true, active: true, effective_expiry: input.now + 7 * 86_400 + 61, renewal_history: [],
+    })) as typeof fetch,
+    store: {
+      current: async () => ({
+        grant, holder: { did: target.did, signStatus: target.sign, leaseState: async () => "active" },
+        activate: async () => { throw new Error("overlong grant must not activate"); },
+      }),
+      drop: async (_owner, cid) => { dropped.push(cid); },
+      audit: async () => { throw new Error("overlong grant must not read"); },
+    },
+  });
+  expect(await runtime.access(input.address, "meetings")).toEqual({ state: "ended" });
+  expect(dropped).toEqual([grant.originalCid]);
+});
+
+test("never uses a cached standing activation and discards an activation that crosses the checked end", async () => {
+  const { input, target, nodeIdentity } = await setup();
+  const grant = await verifyStandingReadApproval(input);
+  let now = input.now;
+  const end = now + 10;
+  const reads: ReadAccess[] = [];
+  const runtime = new StandingReadRuntime({
+    config: input.config,
+    now: () => now,
+    fetch: (async (url: string) => url.endsWith("/node-keys") ? Response.json(nodeIdentity) : Response.json({
+      cid: grant.originalCid, exists: true, active: true, effective_expiry: end, renewal_history: [],
+    })) as typeof fetch,
+    store: {
+      current: async () => ({
+        grant, holder: { did: target.did, signStatus: target.sign, leaseState: async () => "active" },
+        activate: async (_resources, validUntil) => {
+          expect(validUntil).toBe(end * 1000);
+          const access = {} as ReadAccess;
+          reads.push(access);
+          if (reads.length === 2) now = end;
+          return access;
+        },
+      }),
+      drop: async () => {},
+      audit: async () => {},
+    },
+  });
+  expect(await runtime.access(input.address, "meetings")).toEqual({ state: "active", access: reads[0] });
+  expect(await runtime.access(input.address, "meetings")).toEqual({ state: "ended" });
+  expect(reads).toHaveLength(2);
 });
