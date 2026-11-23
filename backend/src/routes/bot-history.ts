@@ -1,5 +1,6 @@
 import express, { Router, type RequestHandler } from "express";
 import { BotHistory, HISTORY_BOT_KEY, HistoryPermissionExpired, historyOwner } from "../bot-history.js";
+import { HistoryKeyDescriptorExpired, HistoryKeyDescriptorRejected } from "../bot-history-key.js";
 import type { Bot, BotsRegistry } from "../bots-registry.js";
 import { botsServiceHeaders, type BotsConfig } from "./bots.js";
 
@@ -46,6 +47,34 @@ export function createBotHistoryRouter(history: BotHistory, config: BotsConfig, 
     } catch { res.status(503).json({ error: "history_notice_unavailable" }); }
   });
   router.get("/status", (_req, res) => res.json({ enabled: true, backendDid: history.node.did }));
+  router.post("/key", express.json({ limit: "16kb" }), async (req, res) => {
+    const { descriptor, descriptorSignature, signerDid, siwe, signature } = req.body ?? {};
+    if (
+      !descriptor || typeof descriptor !== "object" || Array.isArray(descriptor) ||
+      typeof descriptorSignature !== "string" || typeof signerDid !== "string" ||
+      typeof siwe !== "string" || typeof signature !== "string"
+    ) {
+      res.status(400).json({ error: "invalid_history_key_descriptor" });
+      return;
+    }
+    try {
+      const validUntil = await history.acceptKeyDescriptor(req.user!.address, {
+        descriptor, descriptorSignature, signerDid, siwe, signature,
+      });
+      res.status(200).json({ validUntil });
+    } catch (error) {
+      if (error instanceof HistoryKeyDescriptorRejected) {
+        const conflict = ["history_key_version_downgrade", "history_key_mismatch", "history_key_descriptor_stale", "history_key_descriptor_conflict"].includes(error.reason);
+        res.status(conflict ? 409 : 400).json({ error: error.reason });
+        return;
+      }
+      if (error instanceof HistoryKeyDescriptorExpired) {
+        res.status(400).json({ error: error.message });
+        return;
+      }
+      res.status(503).json({ error: "history_key_descriptor_unavailable" });
+    }
+  });
   router.post("/grant", express.json({ limit: "96kb" }), async (req, res) => {
     const { serialized, siwe, signature } = req.body ?? {};
     if (typeof serialized !== "string" || typeof siwe !== "string" || typeof signature !== "string") { res.status(400).json({ error: "invalid_history_grant" }); return; }

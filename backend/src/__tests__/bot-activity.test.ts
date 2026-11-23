@@ -12,7 +12,7 @@ const backendDid = historyOwner(privateKeyToAccount(backendKey).address);
 const host = "http://127.0.0.1:9137";
 const hidden = "sandbox tool text and file paths";
 const at = "2026-11-18T23:00:00.000Z";
-const networkId = "fixture-network";
+const networkId = `urn:tinycloud:encryption:did:pkh:eip155:1:${address}:default`;
 
 function fakeOwnerStorage() {
   const store = () => {
@@ -39,10 +39,9 @@ function fakeOwnerStorage() {
     kv: store().kv,
     useDelegation: async () => saved,
     getEncryptionNetworkIdForSpace: () => networkId,
-    encryption: {
-      discoverNetwork: async () => ({ ok: true, data: { ownerDid: `did:pkh:eip155:1:${address}`, networkId, state: "active" } }),
-      encryptToNetwork: async (_network: string, payload: Buffer, { aad }: { aad: Buffer }) => ({
-        ok: true, data: { networkId, aad: aad.toString("base64"), payload: payload.toString("base64") },
+    keys: {
+      encrypt: async (keyPath: string, payload: Buffer, { networkId: net, aad, descriptor }: { networkId: string; aad: Buffer; descriptor: { keyVersion: number } }) => ({
+        v: 2, networkId: net, keyPath, keyVersion: descriptor.keyVersion, aad: Buffer.from(aad).toString("base64"), payload: Buffer.from(payload).toString("base64"),
       }),
     },
   } as unknown as TinyCloudNode;
@@ -58,6 +57,7 @@ test("an activity batch is saved and read back byte for byte from its owner's hi
     [`${scope}/kv/${directory}`]: { "tinycloud.kv/get": [{}], "tinycloud.kv/put": [{}] },
   } });
   await writer.accept(address, grant);
+  await writer.acceptKeyDescriptor(address, grant.signKeyDescriptor());
   const batch = {
     v: 1, generation: "a".repeat(32), seq: 3, challenge: "b".repeat(64),
     record: { type: "activity", id: "c".repeat(32), verb: "changed_files", count: 2, at },

@@ -5,6 +5,7 @@ import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 
 import { BotsError, type BotActivity, type BotMessage, type MainEvent } from "./botsApi";
 import { isHistoryDeclined } from "./historyAuthorization";
+import { isHistoryUnreadable } from "./historyRead";
 import type { ChatLine, MainChatState, MainTurn } from "./useMainChat";
 
 /** How the view reaches one bot. */
@@ -148,7 +149,7 @@ export function createBotChats(sourceFor: (key: string) => BotChatSource): BotCh
           ...errorFields(cause),
           cause: cause instanceof Error && cause.cause !== undefined ? errorFields(cause.cause) : undefined,
         });
-        update(key, (state) => ({ ...state, history: isHistoryDeclined(cause) ? "declined" : "failed" }));
+        update(key, (state) => ({ ...state, history: isHistoryDeclined(cause) ? "declined" : isHistoryUnreadable(cause) ? "unreadable" : "failed" }));
       }
     })();
     target.history = run;

@@ -1,10 +1,19 @@
 // TC-2808: owner-scoped encrypted bot history. No storage operation accepts an owner from a bot payload.
 import { createCipheriv, createDecipheriv, createHash, hkdfSync, randomBytes } from "node:crypto";
 import type { TinyCloudNode } from "@tinycloud/node-sdk";
-import { getAddress } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { assertKvResult, isKvMissingKeyResult, withSessionRefresh } from "@tinyboilerplate/server";
 import { projectBotHistoryGrant, type HistoryGrant } from "./bot-history-grant.js";
+import {
+  assertDescriptorPinCompatible,
+  BOT_HISTORY_KEY_PATH,
+  botHistoryNetworkId,
+  HistoryKeyDescriptorRejected,
+  type SignedBotHistoryKeyEnvelope,
+  type VerifiedBotHistoryKeyDescriptor,
+  verifyBotHistoryKeyDescriptor,
+} from "./bot-history-key.js";
+import { sealBotHistoryBatch } from "./bot-history-seal.js";
 
 function resultData<T>(result: { ok: true; data: T } | { ok: false; error: unknown }): T {
   if (!result.ok) throw new Error("history_storage_unavailable");
@@ -206,6 +215,51 @@ export class BotHistory {
     if (typeof botKey !== "string" || botKey === "main") throw new Error("history_main_grant_kept");
     return this.#keyFor(address, botKey);
   }
+  /** Where an owner's signed named-key descriptor is stored, inside the existing grants root. */
+  #descriptorKeyFor(address: string) {
+    checkAddress(address);
+    return `${BOT_HISTORY_GRANT_KEY_PREFIX}${address.toLowerCase()}/key-descriptor`;
+  }
+  /**
+   * Verifies, pin-checks, and stores the owner-signed descriptor for the bot-history named key.
+   * Refuses expired, mismatched, or downgraded descriptors. Returns the descriptor's expiry (ms).
+   */
+  async acceptKeyDescriptor(address: string, envelope: SignedBotHistoryKeyEnvelope): Promise<number> {
+    const verified = await verifyBotHistoryKeyDescriptor(address, envelope);
+    const key = this.#descriptorKeyFor(address);
+    await withSessionRefresh(this.node, async () => {
+      const stored = await this.node.kv.get<string>(key);
+      const missing = isKvMissingKeyResult(stored, key);
+      let etag: string | undefined;
+      if (!missing) {
+        const record = resultData(assertKvResult(stored));
+        const existing = this.#open(record.data, key) as SignedBotHistoryKeyEnvelope;
+        assertDescriptorPinCompatible(existing.descriptor, verified.descriptor);
+        if (verified.descriptor.iat < existing.descriptor.iat) {
+          throw new HistoryKeyDescriptorRejected("history_key_descriptor_stale");
+        }
+        etag = record.headers?.etag;
+        if (!etag) throw new Error("history_key_descriptor_unavailable");
+      }
+      const written = await this.node.kv.put(key, this.#seal(envelope, key), etag ? { ifMatch: etag } : { ifNoneMatch: "*" });
+      if (!written.ok && written.error.code === "KV_PRECONDITION_FAILED") {
+        throw new HistoryKeyDescriptorRejected("history_key_descriptor_conflict");
+      }
+      assertKvResult(written);
+    });
+    return verified.expiresAtMs;
+  }
+  async #keyDescriptor(address: string): Promise<VerifiedBotHistoryKeyDescriptor> {
+    const key = this.#descriptorKeyFor(address);
+    const stored = await withSessionRefresh(this.node, async () => {
+      const result = await this.node.kv.get<string>(key);
+      if (!isKvMissingKeyResult(result, key)) assertKvResult(result);
+      return result;
+    });
+    if (isKvMissingKeyResult(stored, key)) throw new Error("history_recipient_unavailable");
+    const envelope = this.#open(resultData(stored).data, key) as SignedBotHistoryKeyEnvelope;
+    return verifyBotHistoryKeyDescriptor(address, envelope);
+  }
   /** Saves one batch under the bot's own grant. A batch that names a different bot than the one asked for is refused. */
   async archive(address: string, input: unknown, stage: (staged: StagedHistory) => Promise<void>, botKey?: string) {
     const batch = checkedBatch(input);
@@ -216,33 +270,45 @@ export class BotHistory {
     const access = await this.#activate(grant);
     const path = `${HISTORY_PREFIX}${historyBotId(address, sibling)}/${batch.generation}/${batch.seq}-${batch.challenge}`;
     const aad = Buffer.from(JSON.stringify({ owner, spaceId: grant.spaceId, path }));
-    // Recipient is resolved exclusively from the verified owner's space, never from the batch.
-    const network = this.node.getEncryptionNetworkIdForSpace(grant.spaceId);
-    const descriptor = await this.node.encryption.discoverNetwork(network);
-    if (!descriptor.ok || descriptor.data.ownerDid !== `did:pkh:eip155:1:${getAddress(address)}` || descriptor.data.state !== "active") throw new Error("history_recipient_unavailable");
-    // The supervisor persists the randomized envelope beside the journal before first put.
-    // It is removed by the same local retention path; the backend keeps no extra history copy.
-    const batchHash = historyHash(JSON.stringify(batch));
+    // Recipient network and exact key path are derived exclusively from the verified owner, never from the batch.
+    const network = botHistoryNetworkId(address);
+    const batchJson = JSON.stringify(batch);
+    const batchHash = historyHash(batchJson);
     const staged = (input as { staged?: StagedHistory }).staged;
-    let envelope: unknown;
-    if (staged) {
-      if (staged.batchHash !== batchHash || staged.seq !== batch.seq || staged.challenge !== batch.challenge) throw new Error("history_integrity_failure");
-      envelope = staged.envelope;
-    } else {
-      const encrypted = await this.node.encryption.encryptToNetwork(network, Buffer.from(JSON.stringify(batch)), { aad });
-      if (!encrypted.ok) throw new Error("history_encryption_failed");
-      envelope = encrypted.data;
-      await stage({ seq: batch.seq, challenge: batch.challenge, batchHash, envelope });
-    }
-    const saved = envelope as { networkId?: string; aad?: string };
-    if (saved.networkId !== descriptor.data.networkId || saved.aad !== aad.toString("base64")) throw new Error("history_recipient_mismatch");
-    const ciphertextHash = historyHash(JSON.stringify(envelope));
-    // DelegatedAccess.kv is a raw KVService, not the frontend replica. Each get invokes a fresh
-    // network POST /invoke with tinycloud.kv/get (SDK KVService.ts:248-274,726-758).
-    // It never reads the owner replica or a local object cache.
+    const saved = staged?.envelope;
+    if (staged && (
+      staged.batchHash !== batchHash || staged.seq !== batch.seq || staged.challenge !== batch.challenge ||
+      !isObject(saved) || saved.networkId !== network || saved.aad !== aad.toString("base64") ||
+      !((saved.v === 1 && saved.keyPath === undefined) || (saved.v === 2 && saved.keyPath === BOT_HISTORY_KEY_PATH))
+    )) throw new Error("history_integrity_failure");
+
+    // This delegated KV client reads directly from the node. A previously committed
+    // envelope can receive its original receipt without writing ciphertext again.
     const before = await access.kv.get(path, { prefix: "" });
-    if (isKvMissingKeyResult(before, path)) await access.kv.put(path, envelope, { ifNoneMatch: "*", prefix: "" });
-    else if (historyHash(JSON.stringify(resultData(before).data)) !== ciphertextHash) throw new Error("history_integrity_failure");
+    const missing = isKvMissingKeyResult(before, path);
+    let envelope = saved;
+    if (missing) {
+      const { descriptor } = await this.#keyDescriptor(address);
+      if (!isObject(saved) || saved.v === 1) {
+        envelope = await sealBotHistoryBatch(this.node, {
+          networkId: network,
+          plaintext: Buffer.from(batchJson),
+          aad,
+          descriptor,
+        });
+        // Persist the randomized ciphertext before its first KV write so a crash
+        // leaves the same envelope available for retry.
+        await stage({ seq: batch.seq, challenge: batch.challenge, batchHash, envelope });
+      } else if (saved.keyVersion !== descriptor.keyVersion) {
+        throw new Error("history_recipient_mismatch");
+      }
+      await access.kv.put(path, envelope, { ifNoneMatch: "*", prefix: "" });
+    }
+    if (!envelope) throw new Error("history_integrity_failure");
+    const ciphertextHash = historyHash(JSON.stringify(envelope));
+    if (!missing && historyHash(JSON.stringify(resultData(before).data)) !== ciphertextHash) {
+      throw new Error("history_integrity_failure");
+    }
     const readback = resultData(await access.kv.get(path, { prefix: "" }));
     if (historyHash(JSON.stringify(readback.data)) !== ciphertextHash) throw new Error("history_integrity_failure");
     const body = historyReceiptBody(owner, batch, grant.spaceId, this.host, ciphertextHash, sibling ? { key: sibling, path } : undefined);

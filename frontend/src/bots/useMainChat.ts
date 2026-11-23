@@ -7,6 +7,7 @@ import { BotsError, BotsNoReply, type AppDecision, type BotMessage, type BotsApi
 import type { BotsErrorCode } from "./botsStrings";
 import { isDeclinedReply } from "./askText";
 import { isHistoryDeclined } from "./historyAuthorization";
+import { isHistoryUnreadable } from "./historyRead";
 
 /**
  * The app's report of the owner's decision on a request or proposal card. A secret request's report names the secret
@@ -38,7 +39,7 @@ export interface MainTurn {
 
 export interface MainChatState {
   lines: ChatLine[];
-  history: "idle" | "loading" | "loaded" | "failed" | "declined";
+  history: "idle" | "loading" | "loaded" | "failed" | "declined" | "unreadable";
   turn: MainTurn | null;
 }
 
@@ -108,7 +109,10 @@ export function useMainChat(api: BotsApi, prepare?: () => Promise<void>, onNoRep
           ...errorFields(cause),
           cause: cause instanceof Error && cause.cause !== undefined ? errorFields(cause.cause) : undefined,
         });
-        setState((current) => (generation !== cleared.current ? current : { ...current, history: isHistoryDeclined(cause) ? "declined" : "failed" }));
+        setState((current) => (generation !== cleared.current ? current : {
+          ...current,
+          history: isHistoryDeclined(cause) ? "declined" : isHistoryUnreadable(cause) ? "unreadable" : "failed",
+        }));
       }
     })();
     history.current = run;

@@ -152,7 +152,18 @@ export class HistoryJournal {
     const batch = this.#state.batches[this.#state.receipts.length];
     if (!batch || staged.seq !== batch.seq || staged.challenge !== batch.challenge || staged.batchHash !== hash(JSON.stringify(batch))) throw new Error("history_stage_mismatch");
     if (Buffer.byteLength(JSON.stringify(this.#state)) + Buffer.byteLength(JSON.stringify(staged)) > MAX_JOURNAL_BYTES) throw new Error("history_full");
-    if (this.#state.staged && JSON.stringify(this.#state.staged) !== JSON.stringify(staged)) throw new Error("history_stage_conflict");
+    const previous = this.#state.staged;
+    // The backend only requests a replacement while the old ciphertext is absent from KV.
+    // Permit the rollout transition once. Subsequent retries must reuse the named envelope.
+    if (previous && JSON.stringify(previous) !== JSON.stringify(staged)) {
+      const from = previous.envelope;
+      const to = staged.envelope;
+      if (!isRecord(from) || from.v !== 1 || from.keyPath !== undefined ||
+          !isRecord(to) || to.v !== 2 || typeof to.keyPath !== "string" ||
+          to.networkId !== from.networkId || to.aad !== from.aad) {
+        throw new Error("history_stage_conflict");
+      }
+    }
     this.#state.staged = staged; this.#save();
   }
   pending(): (JournalBatch & { staged?: StagedHistory }) | undefined {

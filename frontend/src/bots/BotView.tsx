@@ -200,6 +200,7 @@ export function BotView({ bot, chats, notice, acknowledgeNotice, onReconnect, st
                   />
                 ) : null}
                 {history === "failed" && !working ? <Failure text={BOT_VIEW_STRINGS.historyFailed(bot.name)} onRetry={() => void chats.loadHistory(bot.key)} /> : null}
+                {history === "unreadable" && !working ? <Failure text={BOT_VIEW_STRINGS.historyUnreadable(bot.name)} onRetry={() => void chats.loadHistory(bot.key)} declined /> : null}
                 {history === "declined" && !working ? <Failure text={errors.history_declined(bot.name)} onRetry={() => void chats.loadHistory(bot.key)} declined /> : null}
                 {activity.filter((item) => !item.inTurn && item.after === null).map((item) => <ActivityLine key={item.id} item={item} />)}
                 {lines.map((line) => (
