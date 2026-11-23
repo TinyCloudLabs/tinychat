@@ -133,11 +133,16 @@ export async function createAndSignIn(
     ? { ...config?.siweConfig, nonce: config.nonce }
     : config?.siweConfig;
   const tcw = createTinyCloudWeb(web3Provider, { ...config, siweConfig });
-  if (config?.nonce) {
-    await tcw.clearPersistedSession(config.address);
+  try {
+    if (config?.nonce) {
+      await tcw.clearPersistedSession(config.address);
+    }
+    const session = await tcw.signIn(config?.nonce && !config.openkey ? { nonce: config.nonce } : undefined);
+    return { tcw, session };
+  } catch (error) {
+    tcw.cleanup();
+    throw error;
   }
-  const session = await tcw.signIn(config?.nonce && !config.openkey ? { nonce: config.nonce } : undefined);
-  return { tcw, session };
 }
 
 /** Matched by `code` in frontend/src/lib/sessionRestore.ts. */
