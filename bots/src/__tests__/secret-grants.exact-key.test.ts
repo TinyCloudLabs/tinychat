@@ -38,38 +38,33 @@ async function grantWith(target: string, resources: string[], recapResources: Re
 }
 
 describe("secretPermissions", () => {
-  test("asks for the secret, the whole network, and the secret's own key with the name lowercased", () => {
+  test("asks for the secret and its own key with the name lowercased", () => {
     expect(secretPermissions("OPENAI_API_KEY", OWNER)).toEqual([
       { service: "tinycloud.kv", space: "secrets", path: "vault/secrets/OPENAI_API_KEY", actions: ["tinycloud.kv/get"] },
-      { service: "tinycloud.encryption", space: "encryption", path: NETWORK, actions: ["tinycloud.encryption/decrypt"] },
       { service: "tinycloud.encryption", space: "encryption", path: `${NETWORK}/secrets/openai_api_key`, actions: ["tinycloud.encryption/decrypt"] },
     ]);
   });
 
-  test("a secret named SCOPED asks for no key of its own: secrets/scoped is the parent of every scoped key", () => {
-    const paths = secretPermissions("SCOPED", OWNER).map(entry => entry.path);
-    expect(paths).toEqual(["vault/secrets/SCOPED", NETWORK]);
-    expect(paths.some(path => path.endsWith("/secrets/scoped"))).toBe(false);
+  test("refuses SCOPED because secrets/scoped is reserved", () => {
+    expect(() => secretPermissions("SCOPED", OWNER)).toThrow("SCOPED is reserved");
   });
 
   test("names the network with the checksummed address even when the owner is given lowercase", () => {
     const keys = secretPermissions("A_B", OWNER).filter(entry => entry.service === "tinycloud.encryption").map(entry => entry.path);
-    expect(keys).toHaveLength(2);
-    for (const path of keys) expect(path.startsWith(`urn:tinycloud:encryption:did:pkh:eip155:1:${OWNER_KEY.address}:default`)).toBe(true);
+    expect(keys).toEqual([`${NETWORK}/secrets/a_b`]);
   });
 });
 
 describe("verifiedGrant with the exact key", () => {
   const jwk = generateKeyPairSync("ed25519").privateKey.export({ format: "jwk" }) as Ed25519PrivateJwk;
   const target = realLinks.signerFromJwk(jwk).did;
-  const expected = { ownerDid: OWNER, targetDid: target, jwk, maxSeconds: MAX_GRANT_SECONDS, now: T0 };
+  const expected = { ownerDid: OWNER, name: "OPENAI_API_KEY", targetDid: target, jwk, maxSeconds: MAX_GRANT_SECONDS, now: T0 };
   const kv = `tinycloud:pkh:eip155:1:${OWNER_KEY.address}:secrets/kv/vault/secrets/OPENAI_API_KEY`;
   const exact = `${NETWORK}/secrets/openai_api_key`;
 
-  test("accepts a grant that names the owner's exact key beside the network", async () => {
+  test("accepts a grant for the secret and the owner's exact key", async () => {
     const checked = await grantWith(target, [exact], {
       [kv]: { "tinycloud.kv/get": [{}] },
-      [NETWORK]: { "tinycloud.encryption/decrypt": [{}] },
       [exact]: { "tinycloud.encryption/decrypt": [{}] },
     });
     await expect(verifiedGrant(checked, expected)).resolves.toMatchObject({ address: OWNER_KEY.address });
@@ -79,7 +74,6 @@ describe("verifiedGrant with the exact key", () => {
     const other = `urn:tinycloud:encryption:did:pkh:eip155:1:${OTHER_KEY.address}:default/secrets/openai_api_key`;
     const checked = await grantWith(target, [other], {
       [kv]: { "tinycloud.kv/get": [{}] },
-      [NETWORK]: { "tinycloud.encryption/decrypt": [{}] },
       [other]: { "tinycloud.encryption/decrypt": [{}] },
     });
     await expect(verifiedGrant(checked, expected)).rejects.toThrow("another owner's resource");
@@ -89,7 +83,6 @@ describe("verifiedGrant with the exact key", () => {
     const other = `urn:tinycloud:encryption:did:pkh:eip155:1:${OTHER_KEY.address}:default/secrets/openai_api_key`;
     const checked = await grantWith(target, [], {
       [kv]: { "tinycloud.kv/get": [{}] },
-      [NETWORK]: { "tinycloud.encryption/decrypt": [{}] },
       [other]: { "tinycloud.encryption/decrypt": [{}] },
     });
     await expect(verifiedGrant(checked, expected)).rejects.toThrow("another owner's resource");

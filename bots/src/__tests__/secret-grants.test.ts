@@ -63,7 +63,7 @@ async function grantFor(request: OpenKeyApprovalRequestV1, options: GrantOptions
     nonce: "abcdefgh12345678", issuedAt: new Date(issued), expirationTime: new Date(expires),
     resources: [recap({
       [`tinycloud:pkh:eip155:1:${resourceOwner}:secrets/kv/vault/secrets/${options.secret ?? "OPENAI_API_KEY"}`]: { "tinycloud.kv/get": [{}] },
-      [`urn:tinycloud:encryption:did:pkh:eip155:1:${resourceOwner}:default`]: { "tinycloud.encryption/decrypt": [{}] },
+      [`urn:tinycloud:encryption:did:pkh:eip155:1:${resourceOwner}:default/secrets/${(options.secret ?? "OPENAI_API_KEY").toLowerCase()}`]: { "tinycloud.encryption/decrypt": [{}] },
     })],
   });
   const signature = await (options.signer ?? OWNER_KEY).signMessage({ message: siwe });
@@ -209,7 +209,6 @@ describe("asking", () => {
     expect(SUGGESTED_GRANT_SECONDS).toBe(3600);
     expect(request.permissions).toEqual([
       { service: "tinycloud.kv", space: "secrets", path: "vault/secrets/OPENAI_API_KEY", actions: ["tinycloud.kv/get"] },
-      { service: "tinycloud.encryption", space: "encryption", path: `urn:tinycloud:encryption:did:pkh:eip155:1:${OWNER_KEY.address}:default`, actions: ["tinycloud.encryption/decrypt"] },
       { service: "tinycloud.encryption", space: "encryption", path: `urn:tinycloud:encryption:did:pkh:eip155:1:${OWNER_KEY.address}:default/secrets/openai_api_key`, actions: ["tinycloud.encryption/decrypt"] },
     ]);
     expect(request.reason).toBe(`Use OPENAI_API_KEY with OpenAI (api.openai.com). To transcribe a call. ${MAIN_BOT_NAME} can also send data to OpenAI with it, which may cost money or change things there.`);
@@ -285,7 +284,7 @@ describe("verifiedGrant", () => {
   const jwk = generateKeyPairSync("ed25519").privateKey.export({ format: "jwk" }) as Ed25519PrivateJwk;
   const target = realLinks.signerFromJwk(jwk).did;
   const request = { targetDid: target } as OpenKeyApprovalRequestV1;
-  const expected = { ownerDid: OWNER, targetDid: target, jwk, maxSeconds: MAX_GRANT_SECONDS, now: T0 };
+  const expected = { ownerDid: OWNER, name: "OPENAI_API_KEY", targetDid: target, jwk, maxSeconds: MAX_GRANT_SECONDS, now: T0 };
 
   test("accepts the owner's grant for this key", async () => {
     const session = await verifiedGrant(await grantFor(request), expected);

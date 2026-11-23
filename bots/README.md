@@ -284,16 +284,29 @@ call and returns the reply with the value hidden.
 
 - **Request.** For each request the supervisor sends `PUT /bots/<id>/secrets/<request id>` on the control socket
   (`src/secret-routes.ts`). The gateway makes a fresh Ed25519 key for that request alone. It signs an OpenKey one-tap
-  approval request for `tinycloud.kv/get` on `vault/secrets/<NAME>` plus `tinycloud.encryption/decrypt` on the owner's
-  default network. The longest grant it allows is 1 hour (`MAX_GRANT_SECONDS`, from `MAX_GRANT_MS` in `asks.ts`; standing
-  access is a separate design), and a delegation more than 120 s longer than that is refused (OpenKey signs a real one-hour grant a few seconds over). The same key is both issuer and audience, because share-envelope 1.6.0 requires it. TC-3772
-  will let a stable TinyCloud One key sign instead (`SecretGrantDeps.requester`). The owner the supervisor names must
-  be this bot's owner (409 otherwise). A known service's site and header must match `src/secret-catalog.ts`.
+  approval request for `tinycloud.kv/get` on `vault/secrets/<NAME>` plus `tinycloud.encryption/decrypt` on that
+  secret's own key, `urn:tinycloud:encryption:<owner>:default/secrets/<name in lowercase>` (per-secret keys,
+  TC-3284). `SCOPED` is reserved. The suggested and maximum lifetime is 1 hour (`MAX_GRANT_SECONDS`, from
+  `MAX_GRANT_MS` in `asks.ts`). It never asks for a renewal, so share-envelope refuses a result that carries one.
+  The same key is both issuer and audience, because share-envelope 1.6.0 requires it.
+  TC-3772 will let a stable TinyCloud One key sign instead (`SecretGrantDeps.requester`). The owner the supervisor
+  names must be this bot's owner (409 otherwise). A known service's site and header must match
+  `src/secret-catalog.ts`.
 - **Collection.** The gateway collects the result itself every 5 s. Before keeping a grant it checks:
   - the owner's SIWE signature;
   - the audience is this request's key;
   - the space owner and every resource owner are the owner;
-  - the expiry, and that the grant is no longer than asked.
+  - it grants exactly the two entries asked for, each with its one ability, compared with the owner's address in
+    lowercase: no prefix, no network, nothing else;
+  - the expiry and the lifetime asked for, with up to 120 seconds of length tolerance for OpenKey rendering.
+
+  A grant kept from before per-secret keys (its request asked for the whole network) is never used: at start a
+  waiting one fails and an approved one ends. A secret still wrapped with the network's key can't be opened with its
+  own key, so the read answers unavailable; the gateway never asks for the network instead.
+
+  The gateway never delegates or attenuates a grant: `src/secret-node.ts` holds the node client as `GrantNode`
+  (`restoreSession` and `readSecret` only). The OpenKey grant is a SIWE CACAO, which the node can't mark terminal
+  (TC-3810).
 
   The supervisor collects outcomes with `POST /bots/<id>/secrets/drain`. A decline, expiry or failure drops the
   request's key at once.

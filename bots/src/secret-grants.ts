@@ -1,7 +1,7 @@
 // Secret requests, gateway side. For each request the supervisor sends (PUT /bots/<botId>/secrets/<id>), the gateway:
 //  1. makes a fresh Ed25519 key that will hold the grant, and a P-256 key OpenKey encrypts the result to;
 //  2. signs a one-tap OpenKey approval request: read ONE secret (kv get vault/secrets/NAME in the owner's "secrets"
-//     space) and decrypt with the owner's default network, for at most MAX_GRANT_SECONDS (one hour);
+//     space) and decrypt with that secret's own key (TC-3284), for at most MAX_GRANT_SECONDS (one hour);
 //  3. polls OpenKey for the result itself, checks it (below), seals it with the key and keeps it on its own volume;
 //  4. reports approved / declined / expired / failed to the supervisor when it drains (POST .../secrets/drain);
 //  5. reads the value only to make a call_with_secret call (secret-call.ts), and never returns it.
@@ -9,8 +9,11 @@
 // the in-memory copy and the node session. JS can't zero memory, so that is all it promises.
 //
 // Before a result is kept (Bobbie's review, 22 Nov): it must answer exactly this request (share-envelope's binding
-// check), the SIWE must be signed by the owner the supervisor named, every resource it grants must be the owner's,
-// its audience must be this request's key, and it must end no later than the lifetime asked for.
+// check), the SIWE must be signed by the owner the supervisor named, it must grant exactly the two entries asked for,
+// its audience must be this request's key, and it must end no later than the lifetime asked for (one hour, with 120 seconds of length tolerance).
+//
+// The gateway never delegates or attenuates a grant (secret-node.ts holds only restoreSession and readSecret): the
+// OpenKey grant is a SIWE CACAO, which the node can't mark terminal (TC-3810).
 
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import type { ApprovalRequesterState, CheckedApprovalResult, CreatedLink, Ed25519PrivateJwk, LinkRecord, LinkSigner, OpenKeyApprovalRequestV1 } from "@tinycloud/share-envelope/links";
@@ -28,10 +31,8 @@ import { REQUEST_ID } from "./secret-store";
 import { toolText } from "./web";
 
 /**
- * Longest grant the gateway asks for: one hour (Naomi, 22 Nov, matching the secret card). One delegation can read the
- * secret for this long, and today the decrypt half covers the owner's whole default network, so it stays short; standing
- * access is a separate design. The owner can pick less; never more. The same number the supervisor's store and the
- * secret card use (asks.ts), so it is written once.
+ * Longest grant the gateway asks for: one hour. The owner can pick less. The same number the supervisor's
+ * store and the secret card use (asks.ts), so it is written once.
  */
 export const MAX_GRANT_SECONDS = MAX_GRANT_MS / 1000;
 /** What the approval screen offers first. */
@@ -144,23 +145,20 @@ export interface SecretCallOutcome {
   outcome: string;
 }
 
-/**
- * The permissions a request asks for: one secret, decryption with the owner's default network (it opens a secret saved
- * before per-secret keys), and decryption with this secret's own key `secrets/<name lowercased>` (it opens one saved
- * with its own key; TC-3284). The name is checked against SECRET_NAME before it gets here. SCOPED has no key of its
- * own (`secrets/scoped` is the parent of every scoped key, and the SDK refuses that name), so it asks for none.
- */
+/** The permissions a request asks for: one secret, and decryption with that secret's own key and no other. */
 export function secretPermissions(name: string, ownerDid: string): OpenKeyApprovalRequestV1["permissions"] {
+  if (name === "SCOPED") throw new Error("SCOPED is reserved for scoped secret keys");
   // OpenKey and the node name the network with the checksummed address, as Secret Manager does.
   const owner = `did:pkh:eip155:1:${getAddress(ownerDid.slice(ownerDid.lastIndexOf(":") + 1))}`;
-  const permissions: OpenKeyApprovalRequestV1["permissions"] = [
+  return [
     { service: "tinycloud.kv", space: "secrets", path: `vault/secrets/${name}`, actions: ["tinycloud.kv/get"] },
-    { service: "tinycloud.encryption", space: "encryption", path: `urn:tinycloud:encryption:${owner}:default`, actions: ["tinycloud.encryption/decrypt"] },
+    { service: "tinycloud.encryption", space: "encryption", path: `urn:tinycloud:encryption:${owner}:default/${secretKeyPath(name)}`, actions: ["tinycloud.encryption/decrypt"] },
   ];
-  if (name !== "SCOPED") {
-    permissions.push({ service: "tinycloud.encryption", space: "encryption", path: `urn:tinycloud:encryption:${owner}:default/secrets/${name.toLowerCase()}`, actions: ["tinycloud.encryption/decrypt"] });
-  }
-  return permissions;
+}
+
+/** A global secret's key under the owner's default network: key paths are lowercase, and SECRET_NAME is uppercase. */
+export function secretKeyPath(name: string): string {
+  return `secrets/${name.toLowerCase()}`;
 }
 
 /**
@@ -181,10 +179,10 @@ export function parseAsk(input: unknown): SecretAsk | undefined {
 }
 
 /**
- * Checks an opened, bound result against the owner the supervisor named and the key this request made. Returns the
- * session to keep, or throws a message naming the check that failed (never a value).
+ * Checks an opened, bound result against the owner the supervisor named, the secret it asked for and the key this
+ * request made. Returns the session to keep, or throws a message naming the check that failed (never a value).
  */
-export async function verifiedGrant(checked: CheckedApprovalResult, expected: { ownerDid: string; targetDid: string; jwk: Ed25519PrivateJwk; maxSeconds: number; now: number }): Promise<GrantSession> {
+export async function verifiedGrant(checked: CheckedApprovalResult, expected: { ownerDid: string; name: string; targetDid: string; jwk: Ed25519PrivateJwk; maxSeconds: number; now: number }): Promise<GrantSession> {
   const d = checked.delegation;
   const header = isRecord(d.delegationHeader) ? d.delegationHeader.Authorization : undefined;
   const fields = [d.siwe, d.signature, d.delegationCid, d.spaceId, d.address, d.verificationMethod, header];
@@ -205,9 +203,11 @@ export async function verifiedGrant(checked: CheckedApprovalResult, expected: { 
   const issued = siwe.issuedAt?.getTime();
   const expires = siwe.expirationTime?.getTime();
   if (issued === undefined || expires === undefined || new Date(expires).toISOString() !== checked.delegationExpiresAt) throw new Error("the grant's expiry doesn't match");
-  // The length is one hour plus a little: OpenKey signs the issue time when the request is prepared and the expiry when
-  // the approval page renders, so a real hour-long grant came back 6.9 s over. Only the length gets this slack.
-  if (expires - issued > expected.maxSeconds * 1000 + LENGTH_SLACK_MS || expires <= expected.now) throw new Error("the grant is longer than asked or already over");
+  // OpenKey signs the issue time when the request is prepared and the expiry when the approval page renders.
+  // Only the length gets this slack.
+  if (expires - issued > Math.min(expected.maxSeconds, MAX_GRANT_SECONDS) * 1000 + LENGTH_SLACK_MS || expires <= expected.now) {
+    throw new Error("the grant is longer than asked or already over");
+  }
 
   // Every resource it grants, and the space it opens, must be the owner's own.
   const space = `tinycloud:pkh:eip155:1:${address}:`;
@@ -216,9 +216,12 @@ export async function verifiedGrant(checked: CheckedApprovalResult, expected: { 
   if (!(d.spaceId as string).toLowerCase().startsWith(space)) throw new Error("the grant opens another owner's space");
   const resources = siwe.resources ?? [];
   if (resources.length === 0) throw new Error("the grant names no resource");
+  const granted: Record<string, unknown>[] = [];
+  const rawResources: string[] = [];
   for (const resource of resources) {
     if (!resource.startsWith("urn:recap:")) {
       if (!owned(resource)) throw new Error("the grant names another owner's resource");
+      rawResources.push(resource);
       continue;
     }
     let recap: unknown;
@@ -228,7 +231,30 @@ export async function verifiedGrant(checked: CheckedApprovalResult, expected: { 
       throw new Error("the grant's capabilities don't parse");
     }
     if (!isRecord(recap) || !isRecord(recap.att) || !Object.keys(recap.att).every(owned)) throw new Error("the grant names another owner's resource");
+    granted.push(recap.att);
   }
+  // Exactly the two entries asked for, each with exactly its one ability: no prefix, no network, nothing else. Compared
+  // with the owner's address in lowercase; the rest (the KV path, the lowercase key path) must match byte for byte.
+  const canonical = (resource: string) => {
+    const lower = resource.toLowerCase();
+    const prefix = lower.startsWith(space) ? space : lower.startsWith(network) ? network : "";
+    return prefix + resource.slice(prefix.length);
+  };
+  const asked = new Map(secretPermissions(expected.name, expected.ownerDid).map(p => [canonical(p.service === "tinycloud.kv" ? `${space}${p.space}/kv/${p.path}` : p.path), p.actions]));
+  if (!rawResources.every(resource => asked.has(canonical(resource)))) throw new Error("the grant names an unrequested resource");
+  const entries = granted.length === 1 ? Object.entries(granted[0]!) : [];
+  const matched = new Set<string>();
+  for (const [resource, abilities] of entries) {
+    const key = canonical(resource);
+    const actions = asked.get(key);
+    const given = isRecord(abilities) ? Object.entries(abilities) : [];
+    if (actions && given.length === actions.length && given.every(([ability, caveats]) => {
+      // An empty list and a single empty object are the two canonical empty forms.
+      return actions.includes(ability) && Array.isArray(caveats)
+        && (caveats.length === 0 || (caveats.length === 1 && isRecord(caveats[0]) && Object.keys(caveats[0]).length === 0));
+    })) matched.add(key);
+  }
+  if (entries.length !== asked.size || matched.size !== asked.size) throw new Error("the grant is not exactly what was asked for");
   return {
     delegationHeader: { Authorization: header as string },
     delegationCid: d.delegationCid as string,
@@ -272,12 +298,18 @@ export class SecretGrants {
         continue;
       }
       this.#records.set(entry.id, record);
+      // A grant asked before per-secret keys (TC-3284) decrypts with the whole network, so it is never used: no grant
+      // that can open a secret's old network-wrapped copy reaches a read. Waiting ends as failed, approved as ended.
+      const asked = record.keys?.request?.permissions;
+      if (asked && (record.ask.name === "SCOPED" || JSON.stringify(asked) !== JSON.stringify(secretPermissions(record.ask.name, record.ask.ownerDid)))) {
+        this.#settle(entry.id, record, record.state === "approved" ? "ended" : "failed");
+      }
     }
   }
 
   /** Opens a request, or returns the same link while the same request is still open. */
   async ask(botId: string, id: string, ask: SecretAsk): Promise<AskResult> {
-    if (!REQUEST_ID.test(id)) return { refused: "invalid" };
+    if (!REQUEST_ID.test(id) || ask.name === "SCOPED") return { refused: "invalid" };
     const now = this.#now();
     const open = this.#records.get(id);
     if (open) {
@@ -475,7 +507,7 @@ export class SecretGrants {
       const envelope = await this.#links.fetchApprovalResult(state, found);
       const opened = await this.#links.openRelayResult(envelope, keys.requestId, keys.relayPrivateKey);
       const checked = this.#links.checkApprovalResultBinding(opened, { requestId: keys.requestId, bodyCid: keys.bodyCid, request: keys.request, now });
-      session = await verifiedGrant(checked, { ownerDid: record.ask.ownerDid, targetDid: keys.request.targetDid, jwk: keys.jwk, maxSeconds: keys.request.grantLifetimeSeconds, now });
+      session = await verifiedGrant(checked, { ownerDid: record.ask.ownerDid, name: record.ask.name, targetDid: keys.request.targetDid, jwk: keys.jwk, maxSeconds: keys.request.grantLifetimeSeconds, now });
     } catch (error) {
       if (this.#links.isApprovalClientError(error)) {
         if (error.code === "network" || error.code === "unavailable") return; // asked again next pass
