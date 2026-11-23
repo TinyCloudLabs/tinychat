@@ -16,8 +16,8 @@
   },
   "dependencies": {
     "@phala/aci-verifier": "0.11.0",
-    "@tinycloud/courier": "0.8.0-beta.17",
-    "@tinycloud/node-sdk": "3.14.0-beta.20",
+    "@tinycloud/courier": "file:./vendor/tinycloud-courier-b12d587a.tgz",
+    "@tinycloud/node-sdk": "3.14.0-beta.21",
     "@tinycloud/share-envelope": "1.6.0",
     "viem": "2.52.0"
   },
