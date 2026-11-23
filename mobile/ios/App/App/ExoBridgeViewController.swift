@@ -71,6 +71,8 @@ class ExoBridgeViewController: CAPBridgeViewController {
         }
         // TC-524 location spike: Debug builds only (LocationRecorder.swift). Release has no location code at all.
         bridge?.registerPluginInstance(LocationPlugin())
+        webView?.configuration.userContentController.addUserScript(WKUserScript(
+            source: Self.smokeSubframeScript, injectionTime: .atDocumentEnd, forMainFrameOnly: false))
         startSmokeProbe()
         #endif
         #if EXO_FRAME_PROBE
@@ -81,6 +83,20 @@ class ExoBridgeViewController: CAPBridgeViewController {
 
     #if DEBUG
     // MARK: - Smoke probe (Debug builds only; Release compiles none of this)
+
+    // The fixture inherits the app's CSP. Deliver its script through WebKit instead of an inline script tag.
+    private static let smokeSubframeName = "exo-smoke-subframe"
+    private static let smokeSubframeKey = "exo.smoke.subframe"
+    private static let smokeSubframeScript = """
+        (() => {
+          if (window === window.top || window.parent !== window.top ||
+              location.href !== "about:srcdoc" || window.name !== "\(smokeSubframeName)") return;
+          const h = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.bridge;
+          if (h) h.postMessage({ type: "message", pluginId: "Preferences", methodName: "set", callbackId: "exo-subframe",
+            options: { key: "\(smokeSubframeKey)", value: "reached" } });
+          parent.postMessage({ exoSubframe: typeof h }, "*");
+        })();
+        """
 
     /// Once the committed bundled web app has mounted, log one `EXO_SMOKE {json}`
     /// line with what the WebView sees: its URL, the Capacitor platform, whether React rendered into #root,
@@ -152,36 +168,42 @@ class ExoBridgeViewController: CAPBridgeViewController {
         // TC-3568: a frame inside the app must not reach native plugins through the bridge (MainFrameBridgeMessages).
         // The frame says whether it sees the bridge handler and posts Preferences.set straight to it; the key must stay unset.
         if (probe.mounted && cap.nativePromise) {
-          const key = "exo.smoke.subframe";
+          const key = "\(smokeSubframeKey)";
+          const frame = document.createElement("iframe");
+          frame.name = "\(smokeSubframeName)";
+          frame.hidden = true;
+          frame.srcdoc = "<!doctype html><html><body></body></html>";
           try {
             await cap.nativePromise("Preferences", "remove", { key });
             const seen = new Promise((resolve) => {
-              const onMessage = (event) => {
-                if (event.data && event.data.exoSubframe) { removeEventListener("message", onMessage); resolve(event.data.exoSubframe); }
+              const finish = (value) => {
+                clearTimeout(timeout);
+                removeEventListener("message", onMessage);
+                resolve(value);
+              };
+              const onMessage = ({ source, data }) => {
+                if (source && source === frame.contentWindow &&
+                    (data?.exoSubframe === "object" || data?.exoSubframe === "undefined")) finish(data.exoSubframe);
               };
               addEventListener("message", onMessage);
-              setTimeout(() => resolve("no-report"), 3000);
+              const timeout = setTimeout(() => finish("no-report"), 3000);
             });
-            const frame = document.createElement("iframe");
-            frame.hidden = true;
-            frame.srcdoc = "<script>const h = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.bridge;" +
-              "if (h) h.postMessage({ type: 'message', pluginId: 'Preferences', methodName: 'set', callbackId: 'exo-subframe', " +
-              "options: { key: '" + key + "', value: 'reached' } });" +
-              "parent.postMessage({ exoSubframe: typeof h }, '*');</scr" + "ipt>";
             document.body.appendChild(frame);
             const bridge = await seen;
             await new Promise((resolve) => setTimeout(resolve, 500));
             const stored = await cap.nativePromise("Preferences", "get", { key });
-            frame.remove();
             probe.subframe = { bridge, leaked: stored.value !== null && stored.value !== undefined };
           } catch (error) {
             probe.subframe = { error: String((error && error.message) || error) };
+          } finally {
+            frame.remove();
           }
         }
         return JSON.stringify(probe);
         """
 
     private var smokeProbeTimer: Timer?
+    private var smokeProbeInFlight = false
 
     private func startSmokeProbe() {
         let timer = Timer(timeInterval: 1, target: self, selector: #selector(runSmokeProbe), userInfo: nil, repeats: true)
@@ -190,9 +212,11 @@ class ExoBridgeViewController: CAPBridgeViewController {
     }
 
     @objc private func runSmokeProbe() {
-        guard let webView = webView, smokeProbeTimer != nil else { return }
+        guard let webView = webView, smokeProbeTimer != nil, !smokeProbeInFlight else { return }
+        smokeProbeInFlight = true
         webView.callAsyncJavaScript(Self.smokeProbeScript, arguments: [:], in: nil, in: .page) { [weak self] result in
             guard let self = self, self.smokeProbeTimer != nil else { return }
+            self.smokeProbeInFlight = false
             let line: String
             switch result {
             case .success(let value):
