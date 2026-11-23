@@ -25,6 +25,9 @@ export interface CourierIdentity {
 /**
  * The Courier key shares the dstack seal root with the sealed grant store, separated by the HKDF salt. That coupling is
  * deliberate: if the seal root rotates, the sealed grants no longer open either, so a fresh grant is needed regardless.
+ * The same root is also the existing AES-GCM seal key, which stays unchanged because live sealed records depend on it.
+ * Courier only feeds it to HKDF-SHA256 with its own salt label "tinychat-bots/courier/v1" and the owner DID as info, so
+ * each owner's Ed25519 seed is domain-separated from the AES use and from every other owner.
  */
 let root: Promise<Uint8Array> | undefined;
 const identities = new Map<string, CourierIdentity>();

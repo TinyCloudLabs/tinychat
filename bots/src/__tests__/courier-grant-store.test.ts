@@ -7,6 +7,8 @@ import { NodeWasmBindings, PrivateKeySigner, TinyCloudNode } from "@tinycloud/no
 import { courierIdentity } from "../courier/identity";
 import { createCourierGrantStore } from "../courier/grant-store";
 import { createCourierControl } from "../courier/control";
+import { createCourierPairing } from "../courier/pairing";
+import { createCourierPeerStore } from "../courier/peer-store";
 import { courierContext, CourierUnpairPending, CourierUpdateRequired, listInbound, normalizeCourierError, renewPeer, sendMessage, verifiedCourierContext, type PairedPeer } from "../courier/lib-adapter";
 
 const signingKey = "4f3edf983ac636a65a842ce7c78d9aa706d3b113bce036f4d9c5c1b5605dce6f";
@@ -73,7 +75,7 @@ test("damaged sealed records fail closed", async () => {
 
 test("gateway Courier setup exports only public identity and finite grant metadata", async () => {
   const f = await fixture();
-  const control = createCourierControl(f.store);
+  const control = createCourierControl(f.store, () => {});
   const url = `http://gateway/courier/${encodeURIComponent(f.owner)}`;
   const identity = await (await control(new Request(`${url}/identity`)))!.json();
   expect(identity.did).toBe(f.grant.raw.verificationMethod.split("#")[0]);
@@ -106,6 +108,34 @@ test("a library without the headless API refuses the context before restoring an
       .rejects.toMatchObject({ code: "courier_update_required" });
     expect(restore).not.toHaveBeenCalled();
     expect(opened).toBe(0);
+  } finally {
+    restore.mockRestore();
+  }
+});
+
+test("on a library without the headless API, grant reads and writes and pairing restore no session", async () => {
+  const f = await fixture();
+  await f.store.put(f.owner, f.grant);
+  const restore = spyOn(TinyCloudNode.prototype, "restoreSession");
+  try {
+    const control = createCourierControl(f.store);
+    const url = `http://gateway/courier/${encodeURIComponent(f.owner)}/grant`;
+    for (const init of [{}, { method: "PUT", body: JSON.stringify(f.grant) }]) {
+      const response = (await control(new Request(url, init)))!;
+      expect(response.status).toBe(426);
+      expect(await response.json()).toEqual({ error: "courier_update_required" });
+    }
+    let lookups = 0;
+    const grants = { async get() { lookups++; return f.grant; }, async put() {}, async delete() {} };
+    const dir = mkdtempSync(join(tmpdir(), "courier-peers-")); dirs.push(dir);
+    const pairing = createCourierPairing({ store: createCourierPeerStore(dir, new Uint8Array(32).fill(9)), grants });
+    const start = {
+      type: "courier-pair", v: 0, step: "A", from: { owner: `did:pkh:eip155:1:0x${"2".repeat(40)}`, courier: "did:key:zReader" },
+      spaceId: `tinycloud:pkh:eip155:1:0x${"2".repeat(40)}:agents`, peer: "trustbot", callMe: "reader", issuedAt: new Date().toISOString(), challengeVersion: 1,
+    };
+    await expect(pairing.pair(f.owner, JSON.stringify(start))).rejects.toMatchObject({ code: "courier_update_required" });
+    expect(lookups).toBe(0);
+    expect(restore).not.toHaveBeenCalled();
   } finally {
     restore.mockRestore();
   }
