@@ -15,6 +15,9 @@ export { BOT_HISTORY_KEY_PATH };
 /** Longest lifetime for the bot-history key approval and signed descriptor: 7 days. */
 export const BOT_HISTORY_KEY_MAX_MS = 7 * 86_400_000;
 
+/** Longest lifetime for the whole-network decrypt approval that opens older bot history: 1 hour. */
+export const BOT_HISTORY_LEGACY_MAX_MS = 3_600_000;
+
 export interface BotHistoryKeyDescriptorPayload {
   v: 1;
   type: "tinychat.bot-history.key-descriptor/v1";

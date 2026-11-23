@@ -1,7 +1,7 @@
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import type { InlineEncryptedEnvelope } from "@tinycloud/sdk-services";
 import type { KeyDescriptor, NamedKeyEnvelope } from "@tinycloud/sdk-services/encryption/named-keys";
-import { makePkhSpaceId } from "@tinycloud/sdk-core";
+import { makePkhSpaceId, type ClientSession, type IKVService } from "@tinycloud/sdk-core";
 import { encryptionNetworkId } from "../lib/connectors/encryptionGrant";
 import {
   BOT_HISTORY_KEY_PATH,
@@ -9,7 +9,7 @@ import {
   publishBotHistoryKeyDescriptor,
 } from "./botHistoryKey";
 import { botHistoryOwnerPermissions } from "./historyAuthorization";
-import { BOT_HISTORY_RECORD_PREFIX, BOT_HISTORY_RECORD_SUFFIX, botHistoryDirectory } from "./botHistoryPath";
+import { BOT_HISTORY_RECORD_PREFIX, BOT_HISTORY_RECORD_SUFFIX, SIBLING_BOT_KEY, botHistoryDirectory } from "./botHistoryPath";
 import { isAppDecision, toSecretLine, type BotMessage } from "./botsApi";
 import { BOTS_STRINGS } from "./botsStrings";
 import { bindBotHistoryContext, checkBotHistoryContext, isContextBindingOf } from "./historyContext";
@@ -31,7 +31,8 @@ export type ResealFailureReason =
   | "missing_etag"
   | "write_failed"
   | "readback_failed"
-  | "commit_failed";
+  | "commit_failed"
+  | "record_unreadable";
 
 export interface BotHistoryResealFailure {
   reason: ResealFailureReason;
@@ -105,28 +106,18 @@ function isUnreadableKeyError(error: unknown): boolean {
   );
 }
 
-async function readHistory(
+/**
+ * The one rewrite of a stored record to the exact named key: stage a separate encrypted copy, read it back,
+ * open it, compare it, then commit with `ifMatch` on the version that was read. Every failure leaves the
+ * stored record as it was and is counted in `report`.
+ */
+function createRewriter(
   tcw: TinyCloudWeb,
-  signal?: AbortSignal,
-  botKey?: string,
-  options?: ReadBotHistoryOptions,
-): Promise<BotMessage[]> {
-  const session = tcw.session();
-  if (!session) throw new Error("history_session_missing");
-  const address = session.address.toLowerCase();
-  const chainId = session.chainId ?? 1;
-  const owner = `did:pkh:eip155:1:${address}`;
-  const networkId = encryptionNetworkId(session.address, chainId);
-  const spaceId = makePkhSpaceId(session.address, chainId, "applications");
-  const kv = tcw.kvForSpace(spaceId);
-  const prefix = await botHistoryDirectory(address, botKey ?? "main");
-
-  const resealEnabled = options?.reseal === true;
-  const resealReport: BotHistoryResealReport = { resealed: 0, failed: [] };
-  let sawV1 = false;
-  let boundCount = 0;
-  const legacyKeys: string[] = [];
-  let rebindsLeft = HISTORY_REBIND_PER_READ;
+  session: ClientSession,
+  kv: IKVService,
+  networkId: string,
+  report: BotHistoryResealReport,
+) {
   let cachedDescriptor: Promise<KeyDescriptor> | null = null;
 
   const ensureActiveDescriptor = async (): Promise<KeyDescriptor> => {
@@ -144,7 +135,7 @@ async function readHistory(
     return cachedDescriptor;
   };
 
-  const rewriteRecord = async (
+  return async (
     key: string,
     etag: string | undefined,
     plaintext: Uint8Array,
@@ -153,7 +144,7 @@ async function readHistory(
     recordSignal: AbortSignal,
     verifyOpened?: (opened: Uint8Array) => boolean,
   ): Promise<void> => {
-    const fail = (reason: ResealFailureReason) => { resealReport.failed.push({ reason }); };
+    const fail = (reason: ResealFailureReason) => { report.failed.push({ reason }); };
     const current = () => {
       recordSignal.throwIfAborted();
       if (!isCurrentHistorySession(tcw, session)) throw new Error("history_session_changed");
@@ -206,7 +197,7 @@ async function readHistory(
       current();
       const replaced = await kv.put(key, stored, { ...options, ifMatch: etag });
       if (!replaced.ok) return fail(reason);
-      resealReport.resealed++;
+      report.resealed++;
     } catch {
       fail(reason);
     } finally {
@@ -215,6 +206,97 @@ async function readHistory(
       }
     }
   };
+}
+
+/**
+ * One pass over every bot's history: each record still sealed to the network key is opened with the owner's
+ * decrypt grant and rewritten, byte for byte, to the exact named key. A record that cannot be read or does not
+ * check out is counted and left as it was; it never stops the pass. Nothing is revoked when it finishes.
+ */
+export async function resealLegacyBotHistory(tcw: TinyCloudWeb, signal?: AbortSignal): Promise<BotHistoryResealReport> {
+  const session = tcw.session();
+  if (!session) throw new Error("history_session_missing");
+  const address = session.address.toLowerCase();
+  const owner = `did:pkh:eip155:1:${address}`;
+  const networkId = encryptionNetworkId(session.address, session.chainId ?? 1);
+  const spaceId = makePkhSpaceId(session.address, session.chainId ?? 1, "applications");
+  const kv = tcw.kvForSpace(spaceId);
+  const report: BotHistoryResealReport = { resealed: 0, failed: [] };
+  const rewrite = createRewriter(tcw, session, kv, networkId, report);
+
+  const keys: string[] = [];
+  let cursor: string | undefined;
+  do {
+    signal?.throwIfAborted();
+    const listed = await kv.list({ prefix: BOT_HISTORY_RECORD_PREFIX, cursor, signal });
+    if (!listed.ok) throw new Error("history_read_unavailable");
+    keys.push(...listed.data.keys);
+    cursor = listed.data.nextCursor;
+    if (listed.data.truncated && !cursor) throw new Error("history_pagination_unavailable");
+  } while (cursor);
+
+  await readEach(keys, HISTORY_READ_CONCURRENCY, signal, async (key, recordSignal) => {
+    const unreadable = () => { report.failed.push({ reason: "record_unreadable" }); };
+    try {
+      const stored = await kv.get<StoredHistoryEnvelope>(key, { prefix: "", signal: recordSignal });
+      if (!stored.ok) return unreadable();
+      const envelope = stored.data.data;
+      // Only records still sealed to the network key are this pass's work.
+      if (!envelope || typeof envelope !== "object" || envelope.keyPath !== undefined || (envelope.v !== undefined && envelope.v !== 1)) return;
+      const aadJson = JSON.stringify({ owner, spaceId, path: key });
+      if (envelope.aad !== btoa(aadJson)) return unreadable();
+      const opened = await tcw.encryption.decryptEnvelope(envelope as InlineEncryptedEnvelope, { proofs: [] });
+      if (!opened.ok) return unreadable();
+      const batch = JSON.parse(new TextDecoder().decode(opened.data));
+      const bot = batch?.bot === undefined ? "main" : batch.bot;
+      if (
+        batch?.v !== 1 ||
+        typeof batch.generation !== "string" ||
+        typeof batch.challenge !== "string" ||
+        !Number.isSafeInteger(batch.seq) ||
+        !(bot === "main" ? batch.bot === undefined : typeof bot === "string" && SIBLING_BOT_KEY.test(bot))
+      ) return unreadable();
+      // The directory is a hash of the owner and the bot, so the bot the batch names must lead to this very key.
+      if (key !== `${await botHistoryDirectory(address, bot)}${batch.generation}/${batch.seq}-${batch.challenge}`) return unreadable();
+      checkBotHistoryContext(batch, { owner, spaceId, path: key, bot });
+      await rewrite(key, stored.data.headers?.etag, opened.data, btoa(aadJson), new TextEncoder().encode(aadJson), recordSignal);
+    } catch {
+      unreadable();
+    }
+  });
+  if (report.failed.length > 0) {
+    console.warn("[bots] bot history reseal did not complete", {
+      resealed: report.resealed,
+      failedCount: report.failed.length,
+      reasons: [...new Set(report.failed.map((f) => f.reason))],
+    });
+  }
+  return report;
+}
+
+async function readHistory(
+  tcw: TinyCloudWeb,
+  signal?: AbortSignal,
+  botKey?: string,
+  options?: ReadBotHistoryOptions,
+): Promise<BotMessage[]> {
+  const session = tcw.session();
+  if (!session) throw new Error("history_session_missing");
+  const address = session.address.toLowerCase();
+  const chainId = session.chainId ?? 1;
+  const owner = `did:pkh:eip155:1:${address}`;
+  const networkId = encryptionNetworkId(session.address, chainId);
+  const spaceId = makePkhSpaceId(session.address, chainId, "applications");
+  const kv = tcw.kvForSpace(spaceId);
+  const prefix = await botHistoryDirectory(address, botKey ?? "main");
+
+  const resealEnabled = options?.reseal === true;
+  const resealReport: BotHistoryResealReport = { resealed: 0, failed: [] };
+  let sawV1 = false;
+  let boundCount = 0;
+  const legacyKeys: string[] = [];
+  let rebindsLeft = HISTORY_REBIND_PER_READ;
+  const rewriteRecord = createRewriter(tcw, session, kv, networkId, resealReport);
 
   const readRecord = async (key: string, recordSignal: AbortSignal): Promise<BotMessage | null> => {
     const stored = await kv.get<StoredHistoryEnvelope>(key, { prefix: "", signal: recordSignal });
