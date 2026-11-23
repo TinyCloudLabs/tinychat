@@ -110,7 +110,7 @@ function fixture(seeds: Seed[], options: { sessionMs?: number; failCommit?: Set<
     },
   } as unknown as TinyCloudWeb;
   const connect = (async () => ({ address, openkey: { signMessage: async () => ({ signature: "fixture" }) } })) as unknown as typeof connectWallet;
-  const authorize = (extra: { includeLegacyNetwork?: boolean; onResealReport?: (report: BotHistoryResealReport) => void } = {}) =>
+  const authorize = (extra: { includeLegacyNetwork?: boolean; onResealReport?: (report: BotHistoryResealReport) => void; sessionEndMs?: () => Promise<number | null> } = {}) =>
     authorizeBotHistory(tcw, connect, async () => ({ enabled: true }), { postDescriptor: async () => {}, ...extra });
   const stored = (path: string) => {
     const entry = entries.get(path)!;
@@ -158,6 +158,24 @@ describe("the older-history decrypt request", () => {
     const f = fixture([await record("main", 1, false)], { held: "whole-network" });
     await f.authorize();
     expect(f.legacyRequest()).toBeUndefined();
+  });
+
+  test("is measured to the end of a renewed session, past its first signed end", async () => {
+    const f = fixture([await record("main", 1)], { sessionMs: 5 * 60_000 });
+    await f.authorize({ sessionEndMs: async () => Date.now() + 3 * HOUR });
+    expect(f.requests[0]!.expiryMs).toBeGreaterThan(2.9 * HOUR);
+    expect(f.legacyRequest()!.expiryMs).toBe(LEGACY_NETWORK_APPROVAL_MAX_MS);
+
+    const shorter = fixture([await record("main", 1)], { sessionMs: 5 * 60_000 });
+    await shorter.authorize({ sessionEndMs: async () => Date.now() + 20 * 60_000 });
+    expect(shorter.legacyRequest()!.expiryMs).toBeGreaterThan(19 * 60_000);
+    expect(shorter.legacyRequest()!.expiryMs).toBeLessThanOrEqual(20 * 60_000);
+  });
+
+  test("falls back to the signed end when no renewed end is known, and refuses a session past it", async () => {
+    const f = fixture([await record("main", 1)], { sessionMs: -60_000 });
+    await expect(f.authorize({ sessionEndMs: async () => null })).rejects.toThrow("history_session_expired");
+    expect(f.requests).toEqual([]);
   });
 
   test("never outlasts a session that ends sooner", async () => {
