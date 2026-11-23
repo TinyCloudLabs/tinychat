@@ -25,6 +25,7 @@ import { mcpChatFromEnv } from "./mcp-meetings/config.js";
 import { BotHistory } from "./bot-history.js";
 import { createBotHistoryRouter, createSiblingHistoryRouter, startBotHistoryDrain } from "./routes/bot-history.js";
 import { botsFromEnv, createBotsRouter, removeBotFromService } from "./routes/bots.js";
+import { createBotsCourierRouter } from "./routes/bots-courier.js";
 import { createTrustBotReadsInternalRouter, createTrustBotReadsRouter, TRUSTBOT_READS_INTERNAL_PREFIX } from "./routes/trustbot-reads.js";
 import { startTrustBotReads, trustbotReadsFromEnv } from "./trustbot-reads/setup.js";
 import { botAdmissionSecret, mountBotAdmissionRoute } from "./routes/bot-admission.js";
@@ -994,6 +995,7 @@ async function main() {
     app.use(TRUSTBOT_READS_INTERNAL_PREFIX, createTrustBotReadsInternalRouter({ grants: trustbotReads, config: botsConfig, callSecret: trustbotReadsSettings.callSecret }));
     console.log("[startup] TrustBot reads enabled.");
   }
+  app.use("/api/bots/main/courier", createBotsCourierRouter({ config: botsConfig, auth: authMiddleware }));
   app.use("/api/bots", createBotsRouter({
     config: botsConfig, authMiddleware, paidLimiter: paidChatLimiter, registry: botsRegistry,
     // Read only when bots are configured: with bots off no route uses it, and startup calls nothing it does not need.

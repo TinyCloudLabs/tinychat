@@ -1,0 +1,97 @@
+import { afterEach, expect, spyOn, test } from "bun:test";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { AGENT_GRANT } from "@tinycloud/courier";
+import { NodeWasmBindings, PrivateKeySigner } from "@tinycloud/node-sdk";
+import { courierIdentity } from "../courier/identity";
+import { createCourierGrantStore } from "../courier/grant-store";
+import { createCourierControl } from "../courier/control";
+
+const signingKey = "4f3edf983ac636a65a842ce7c78d9aa706d3b113bce036f4d9c5c1b5605dce6f";
+const dirs: string[] = [];
+let fetchSpy: { mockRestore(): void } | undefined;
+afterEach(() => { fetchSpy?.mockRestore(); for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
+
+async function fixture(extra = false, days = 30) {
+  fetchSpy = spyOn(globalThis, "fetch").mockImplementation(async () => Response.json({ key: "42".repeat(32) }));
+  const signer = new PrivateKeySigner(signingKey);
+  const address = await signer.getAddress();
+  const owner = `did:pkh:eip155:1:${address.toLowerCase()}`;
+  const identity = await courierIdentity(owner);
+  const wasm = new NodeWasmBindings();
+  const spaceId = wasm.makeSpaceId(address, 1, "agents");
+  const abilities: Record<string, Record<string, string[]>> = {};
+  for (const entry of AGENT_GRANT) (abilities[entry.service.replace("tinycloud.", "")] ??= {})[entry.path!] = entry.actions;
+  if (extra) abilities.kv![""] = ["tinycloud.kv/get"];
+  const expiresAt = Date.now() + days * 86_400_000;
+  const prepared = wasm.prepareSession({ abilities, address, chainId: 1, domain: "node.tinycloud.xyz", issuedAt: new Date().toISOString(), expirationTime: new Date(expiresAt).toISOString(), spaceId, jwk: identity.publicJwk });
+  const signature = await signer.signMessage(prepared.siwe);
+  const session = wasm.completeSessionSetup({ ...prepared, signature });
+  const raw = { delegationHeader: session.delegationHeader, delegationCid: session.delegationCid, spaceId, address, chainId: 1, siwe: prepared.siwe, signature, verificationMethod: `${identity.did}#${identity.did.slice(8)}`, jwk: identity.publicJwk };
+  const dir = mkdtempSync(join(tmpdir(), "courier-grant-")); dirs.push(dir);
+  return { owner, grant: { raw, expiresAt }, dir, store: createCourierGrantStore(dir, new Uint8Array(32).fill(8)) };
+}
+
+test("signed exact Courier grant survives sealed restart without plaintext", async () => {
+  const f = await fixture();
+  await f.store.put(f.owner, f.grant);
+  const restarted = createCourierGrantStore(f.dir, new Uint8Array(32).fill(8));
+  expect((await restarted.get(f.owner))?.expiresAt).toBe(f.grant.expiresAt);
+  const bytes = readFileSync(join(f.dir, readdirSync(f.dir)[0]!), "utf8");
+  expect(bytes).not.toContain(f.grant.raw.signature);
+  expect(bytes).not.toContain(f.grant.raw.siwe);
+  await restarted.delete(f.owner);
+  expect(await restarted.get(f.owner)).toBeUndefined();
+});
+
+test("broader signed owner authority is refused", async () => {
+  const f = await fixture(true);
+  await expect(f.store.put(f.owner, f.grant)).rejects.toThrow();
+  expect(await f.store.get(f.owner)).toBeUndefined();
+});
+
+test("longer signed owner authority is refused", async () => {
+  const f = await fixture(false, 31);
+  await expect(f.store.put(f.owner, f.grant)).rejects.toThrow();
+});
+
+test("forged expiry and foreign owner cannot install signed grant", async () => {
+  const f = await fixture();
+  await expect(f.store.put(f.owner, { ...f.grant, expiresAt: f.grant.expiresAt + 1 })).rejects.toThrow();
+  await expect(f.store.put(`did:pkh:eip155:1:0x${"11".repeat(20)}`, f.grant)).rejects.toThrow();
+});
+
+test("damaged sealed records fail closed", async () => {
+  const f = await fixture();
+  await f.store.put(f.owner, f.grant);
+  const file = join(f.dir, readdirSync(f.dir)[0]!);
+  writeFileSync(file, "{broken");
+  expect(await f.store.get(f.owner)).toBeUndefined();
+});
+
+test("gateway Courier setup exports only public identity and finite grant metadata", async () => {
+  const f = await fixture();
+  const control = createCourierControl(f.store);
+  const url = `http://gateway/courier/${encodeURIComponent(f.owner)}`;
+  const identity = await (await control(new Request(`${url}/identity`)))!.json();
+  expect(identity.did).toBe(f.grant.raw.verificationMethod.split("#")[0]);
+  expect(identity.publicJwk).toEqual(f.grant.raw.jwk);
+  expect(identity).not.toHaveProperty("signer");
+  expect(identity.publicJwk).not.toHaveProperty("d");
+  expect(identity.request.permissions).toEqual(AGENT_GRANT);
+  expect(identity.request.expiry).toBe("30d");
+  const put = await control(new Request(`${url}/grant`, { method: "PUT", body: JSON.stringify(f.grant) }));
+  expect(put?.status).toBe(200);
+  expect(await put!.json()).toEqual({ expiresAt: f.grant.expiresAt });
+  const get = await control(new Request(`${url}/grant`));
+  expect(await get!.json()).toEqual({ expiresAt: f.grant.expiresAt });
+  expect((await control(new Request(`${url}/grant`, { method: "DELETE" })))?.status).toBe(204);
+  expect(await (await control(new Request(`${url}/grant`)))!.json()).toEqual({ expiresAt: null });
+});
+
+test("a tampered owner signature is refused before sealing", async () => {
+  const f = await fixture();
+  await expect(f.store.put(f.owner, { ...f.grant, raw: { ...f.grant.raw, signature: `0x${"11".repeat(65)}` } })).rejects.toThrow();
+  expect(await f.store.get(f.owner)).toBeUndefined();
+});
