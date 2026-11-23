@@ -1,7 +1,8 @@
 import { expect, test } from "bun:test";
 import { replyText } from "../courier/guard";
-import { courierTurn, COURIER_READ_OFF } from "../courier/turn";
-import { MeetingDesk } from "../meeting-reads";
+import { courierTurn, COURIER_BUDGET, COURIER_READ_OFF } from "../courier/turn";
+import { COURIER_READS_PER_DAY, MeetingDesk } from "../meeting-reads";
+import { botIdFor } from "../owner";
 
 const owner = `did:pkh:eip155:1:0x${"ab".repeat(20)}`;
 const call = (name: string, args = {}) => ({ id: name, type: "function", function: { name, arguments: JSON.stringify(args) } });
@@ -15,7 +16,7 @@ function setup(areas: Array<"telegram" | "feed_chats">, steps: Array<Record<stri
   } });
   const run = () => courierTurn({ owner, handle: "cli", peerDid: "did:key:cli", threadId: "thread", text: "What's new?", reads: desk, deniedChatIds: async () => new Set(["a:private"]), enabledReadAreas: async () => areas,
     model: async input => { inputs.push(structuredClone(input)); return steps.shift()!; } });
-  return { run, inputs, reads };
+  return { run, inputs, reads, desk };
 }
 
 test("Telegram tools reach a Courier turn only when the owner has Telegram on", async () => {
@@ -37,4 +38,18 @@ test("a denied Telegram chat is refused before any backend read", async () => {
   await s.run();
   expect(s.reads).toEqual([]);
   expect(JSON.stringify(s.inputs[1]!.messages)).toContain(COURIER_READ_OFF);
+});
+
+test("Courier Telegram reads count against the Courier sub-cap and stop at it before the backend", async () => {
+  const s = setup(["telegram"], [{ content: null, tool_calls: [call("read_telegram_chat", { chat: "a:1" })] }, { content: "Out of reads today." }]);
+  const courier = { peer: "p".repeat(12), setting: { owner, areas: ["telegram" as const], conversation: "b".repeat(32) } };
+  for (let i = 0; i < COURIER_READS_PER_DAY; i++) expect((await s.desk.call(botIdFor(owner), "read_telegram_chat", { chat: "a:1" }, courier)).isError).toBeFalsy();
+  expect(s.reads).toHaveLength(COURIER_READS_PER_DAY);
+  await s.run();
+  expect(s.reads).toHaveLength(COURIER_READS_PER_DAY);
+  expect(JSON.stringify(s.inputs[1]!.messages)).toContain(COURIER_BUDGET);
+  // The owner's own Telegram reads continue under the 200 total.
+  s.desk.push(botIdFor(owner), { owner, areas: ["telegram"], conversation: "c".repeat(32) });
+  expect((await s.desk.call(botIdFor(owner), "read_telegram_chat", { chat: "a:1" })).isError).toBeFalsy();
+  expect(s.reads).toHaveLength(COURIER_READS_PER_DAY + 1);
 });
