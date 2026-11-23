@@ -40,6 +40,7 @@ services:
       GRANOLA_PROXY_ENABLED: ${GRANOLA_PROXY_ENABLED:-false}
       # Tiny bots (Home Main bot chat); off unless enabled, configured, and the account is listed.
       BOTS_ENABLED: ${BOTS_ENABLED:-false}
+      BOTS_COURIER_ENABLED: ${BOTS_COURIER_ENABLED:-false}
       BOTS_TEST_ACCOUNTS: ${BOTS_TEST_ACCOUNTS:-}
       BOTS_SERVICE_CONNECT_HOST: ${BOTS_SERVICE_CONNECT_HOST:-}
       BOTS_SERVICE_URL: ${BOTS_SERVICE_URL:-}
