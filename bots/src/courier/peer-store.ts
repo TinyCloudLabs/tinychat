@@ -1,7 +1,8 @@
 // Gateway-only sealed peer state. Public records never contain portable delegations or pending authority.
 import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
+import { closeSync, constants, existsSync, mkdirSync, openSync } from "node:fs";
 import { join } from "node:path";
+import { dlopen, FFIType } from "bun:ffi";
 import type { CourierLibraryStore, PairedPeer, PairPending } from "./lib-adapter";
 import { isRecord } from "../guards";
 import { sealedGrantStore } from "../secret-store";
@@ -31,6 +32,8 @@ export interface CourierPeerStore {
   listRetired(owner: string): Promise<RetiredCourierPeer[]>;
   clearRetired(owner: string, handle: string): Promise<void>;
   transaction: CourierLibraryStore["transaction"];
+  /** Releases the state-dir writer lock. */
+  close(): void;
 }
 export interface PendingPairing { pending: PairPending; artifactA: string; startedAt: number }
 /** Cleanup target: a retired paired peer, or a retired pending row (signed B, no verified C and so no proof). */
@@ -41,6 +44,8 @@ const OWNER = /^did:pkh:eip155:1:0x[a-fA-F0-9]{40}$/;
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 const time = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 const artifact = (value: unknown): value is string => typeof value === "string" && value.length > 0 && value.length <= 64 * 1024;
+const LOCK_EXCLUSIVE = 2;
+const LOCK_NONBLOCKING = 4;
 
 export function isCourierPeer(value: unknown): value is CourierPeer {
   return isRecord(value) && typeof value.handle === "string" && COURIER_HANDLE.test(value.handle)
@@ -73,8 +78,30 @@ function isRetiredReference(value: unknown): value is RetiredCourierPeer {
 
 interface PeerRecord { v: 1; handle: string; peer?: CourierPeer; runtime?: PairedPeer; pending?: PendingPairing; cleanup?: RetiredCourierPeer; retired?: boolean; used?: Array<{ cid: string; expiresAt: number }> }
 
+/**
+ * One gateway per state dir. The check-and-set, used-CID ledger and SDK queues are in-process, so a second writer on the
+ * same directory is refused at start rather than allowed to race them. flock is released by the kernel if the process dies.
+ */
+function lockStateDir(dir: string): number {
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const lock = openSync(join(dir, ".writer.lock"), constants.O_RDWR | constants.O_CREAT | constants.O_NOFOLLOW, 0o600);
+  try {
+    const libc = dlopen(process.platform === "darwin" ? "/usr/lib/libSystem.B.dylib" : "libc.so.6", {
+      flock: { args: [FFIType.i32, FFIType.i32], returns: FFIType.i32 },
+    });
+    try {
+      if (libc.symbols.flock(lock, LOCK_EXCLUSIVE | LOCK_NONBLOCKING) !== 0) throw new Error("courier_state_locked");
+    } finally { libc.close(); }
+    return lock;
+  } catch (error) {
+    closeSync(lock);
+    throw error;
+  }
+}
+
 export function createCourierPeerStore(dir: string, sealKey: Uint8Array, now: () => number = Date.now): CourierPeerStore {
   if (sealKey.length !== 32) throw new Error("invalid_courier_seal_key");
+  let lock: number | undefined = lockStateDir(dir);
   const sdkQueues = new Map<string, Promise<void>>();
   function records(owner: string) {
     if (!OWNER.test(owner)) throw new Error("invalid_courier_owner");
@@ -98,12 +125,19 @@ export function createCourierPeerStore(dir: string, sealKey: Uint8Array, now: ()
       return [value as unknown as PeerRecord];
     });
   }
+  function writable() { if (lock === undefined) throw new Error("courier_state_closed"); }
   function save(owner: string, record: PeerRecord) {
+    writable();
     const { ownerId, store } = records(owner);
     const used = record.used ?? entries(owner).find(entry => entry.handle === record.handle)?.used;
     store.save(hash(record.handle), ownerId, { ...record, ...(used ? { used: used.filter(item => item.expiresAt > now()) } : {}) });
   }
   return {
+    close() {
+      if (lock === undefined) return;
+      closeSync(lock);
+      lock = undefined;
+    },
     async transaction(scope, operation) {
       const owner = scope.ownerDid.toLowerCase();
       if (!OWNER.test(owner) || !DID.test(scope.courierDid) || scope.host !== "https://node.tinycloud.xyz"
@@ -133,6 +167,7 @@ export function createCourierPeerStore(dir: string, sealKey: Uint8Array, now: ()
             },
             async save(handle, record) {
               const id = checkedId(handle);
+              writable();
               if (record === undefined) sdkStore.remove(id);
               else {
                 if (!isRecord(record)) throw new Error("invalid_courier_sdk_record");
@@ -158,7 +193,7 @@ export function createCourierPeerStore(dir: string, sealKey: Uint8Array, now: ()
     async remove(owner, handle) {
       if (!COURIER_HANDLE.test(handle)) throw new Error("invalid_courier_handle");
       const used = entries(owner).find(entry => entry.handle === handle)?.used?.filter(item => item.expiresAt > now());
-      if (used?.length) save(owner, { v: 1, handle, used }); else records(owner).store.remove(hash(handle));
+      if (used?.length) save(owner, { v: 1, handle, used }); else { writable(); records(owner).store.remove(hash(handle)); }
     },
     async getRuntime(owner, handle) {
       return entries(owner).find(entry => entry.handle === handle && !entry.retired)?.runtime;
@@ -223,7 +258,7 @@ export function createCourierPeerStore(dir: string, sealKey: Uint8Array, now: ()
       const current = entries(owner).find(entry => entry.handle === handle && entry.retired);
       if (!current) return;
       const used = current.used?.filter(item => item.expiresAt > now());
-      if (used?.length) save(owner, { v: 1, handle, used }); else records(owner).store.remove(hash(handle));
+      if (used?.length) save(owner, { v: 1, handle, used }); else { writable(); records(owner).store.remove(hash(handle)); }
     },
   };
 }
