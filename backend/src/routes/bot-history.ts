@@ -187,7 +187,14 @@ export function startBotHistoryDrain(history: BotHistory, config: BotsConfig, re
     for (let i = 0; i < 32 && !closing; i++) {
       const response = await serviceCall(config, address, "GET", url);
       if (!response.ok) break;
-      const { batch } = await response.json() as { batch: unknown };
+      const { batch, needsGrantTag } = await response.json() as { batch: unknown; needsGrantTag?: boolean };
+      if (i === 0 && key === undefined && needsGrantTag === true) {
+        // Main's journal asks for its tag until a signed update reaches disk.
+        try {
+          const permission = await history.grantPermission(address);
+          if (permission) await pushPermission(config, address, "main", "extend", { validUntil: permission.validUntil }, permission);
+        } catch { /* read the journal's request again on the next pass */ }
+      }
       if (!batch) break;
       try {
         const receipt = await history.archive(address, batch, async staged => {

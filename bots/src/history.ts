@@ -1,7 +1,7 @@
 // TC-2808: supervisor-owned journal and receipt barrier, outside all sandbox binds.
-import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, writeSync } from "node:fs";
+import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeSync } from "node:fs";
 import { createHash, randomBytes } from "node:crypto";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { recoverMessageAddress } from "viem";
 import { isRecord } from "./guards";
 import type { BotLayout } from "./layout";
@@ -57,6 +57,43 @@ export function updateHistoryPermission(current: HistoryPermission | undefined, 
   return { validUntil, grant };
 }
 
+/** A sibling can receive a revoke while it still has no working directory or history journal. */
+const revocationPath = (layout: BotLayout) => layout.dataDir + ".history-revocation.json";
+
+export function readHistoryRevocation(layout: BotLayout): HistoryPermission | undefined {
+  const path = revocationPath(layout);
+  const entry = lstatSync(path, { throwIfNoEntry: false });
+  if (!entry) return undefined;
+  if (!entry.isFile()) throw new Error("invalid_history_revocation");
+  const saved: unknown = JSON.parse(readFileSync(path, "utf8"));
+  if (!isRecord(saved) || typeof saved.validUntil !== "number" || !Number.isFinite(saved.validUntil) ||
+    !isRecord(saved.grant) || saved.grant.kind !== "revoke" || typeof saved.grant.cid !== "string" ||
+    saved.grant.cid === "" || typeof saved.grant.revision !== "number" ||
+    !Number.isSafeInteger(saved.grant.revision) || saved.grant.revision < 0) {
+    throw new Error("invalid_history_revocation");
+  }
+  const { cid, revision } = saved.grant;
+  return { validUntil: saved.validUntil, grant: { cid, revision, kind: "revoke" }, revoked: true };
+}
+
+export function saveHistoryRevocation(layout: BotLayout, permission: HistoryPermission): void {
+  saveHistoryFile(revocationPath(layout), permission);
+}
+
+export function removeHistoryRevocation(layout: BotLayout): void {
+  rmSync(revocationPath(layout), { force: true });
+}
+
+function saveHistoryFile(path: string, value: object): void {
+  const directory = dirname(path);
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const file = openSync(path + ".new", "w", 0o600);
+  try { writeSync(file, JSON.stringify(value)); fsyncSync(file); } finally { closeSync(file); }
+  renameSync(path + ".new", path);
+  const dir = openSync(directory, "r");
+  try { fsyncSync(dir); } finally { closeSync(dir); }
+}
+
 interface Journal { v: 1; generation: string; owner: string; key?: string; legacyPending: boolean; batches: JournalBatch[]; receipts: unknown[]; draft?: { text: string }; notice?: ExpiryNotice; permissionValidUntil?: number; permissionGrant?: HistoryGrantUpdate; staged?: StagedHistory }
 const MAX_JOURNAL_BYTES = 8 * 1024 * 1024;
 export class HistoryJournal {
@@ -84,12 +121,7 @@ export class HistoryJournal {
     }
   }
   #save() {
-    mkdirSync(this.layout.dataDir, { recursive: true, mode: 0o700 });
-    const file = openSync(this.#path + ".new", "w", 0o600);
-    try { writeSync(file, JSON.stringify(this.#state)); fsyncSync(file); } finally { closeSync(file); }
-    renameSync(this.#path + ".new", this.#path);
-    const dir = openSync(this.layout.dataDir, "r");
-    try { fsyncSync(dir); } finally { closeSync(dir); }
+    saveHistoryFile(this.#path, this.#state);
   }
   begin(owner: string, reserve: number) {
     if (botIdFor(owner, this.#state.key) !== this.layout.botId || (this.#state.owner && this.#state.owner !== owner)) throw new Error("history_owner_mismatch");
