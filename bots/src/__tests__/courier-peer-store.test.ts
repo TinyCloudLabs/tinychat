@@ -129,3 +129,24 @@ test("the finalize check-and-set admits exactly one of two finalizations that bo
   expect((await store.getRuntime(owner, peer.handle))?.proof?.cid).toBe(results[0] ? "C-one" : "C-two");
   expect(await store.getPending(owner, peer.handle)).toBeUndefined();
 });
+
+test("retire then clearRetired keeps the used C CID, so the same C is refused for a new pending row after restart", async () => {
+  const dir = directory();
+  const clock = () => peer.pairedAt;
+  const store = createCourierPeerStore(dir, key, clock);
+  const pending = { pending: { handle: peer.handle, peerDid: peer.peerDid, artifactB: "signed-B", pairingId: "01J00000000000000000000000", createdAt: peer.pairedAt, expiresAt: peer.pairedAt + 900_000 }, artifactA: "A", startedAt: peer.pairedAt };
+  const runtime = { handle: peer.handle, peerDid: peer.peerDid, delegation: { signed: "C" }, proof: { cid: "used-C", issuedAt: peer.pairedAt }, delegationExpiresAt: peer.delegationExpiresAt };
+  await store.putPending(owner, pending);
+  expect(await store.finalizePending(owner, pending, runtime)).toBe(true);
+  await store.retire(owner, peer.handle);
+  expect(await store.listRetired(owner)).toEqual([runtime]);
+  await store.clearRetired(owner, peer.handle);
+  expect(await store.listRetired(owner)).toEqual([]);
+  expect(await store.list(owner)).toEqual([]);
+  store.close();
+  const restarted = createCourierPeerStore(dir, key, clock);
+  const next = { ...pending, pending: { ...pending.pending, pairingId: "01J00000000000000000000001" } };
+  await restarted.putPending(owner, next);
+  expect(await restarted.finalizePending(owner, next, runtime)).toBe(false);
+  expect(await restarted.getRuntime(owner, peer.handle)).toBeUndefined();
+});
