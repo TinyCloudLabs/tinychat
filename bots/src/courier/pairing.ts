@@ -27,9 +27,8 @@ class PairingError extends Error {
   constructor(readonly code: "invalid" | "duplicate" | "pending_expired" | "courier_unavailable" | "courier_update_required", readonly status: number) { super(code); }
 }
 
-// C1's typed refusal (missing headless exports) and the SDK's own legacy-artifact refusal both mean "update Courier".
 function pairingFailure(error: unknown): PairingError {
-  return isRecord(error) && (error.code === "courier_update_required" || error.code === "courier-update-required")
+  return isRecord(error) && error.code === "courier_update_required"
     ? new PairingError("courier_update_required", 426) : new PairingError("invalid", 400);
 }
 
