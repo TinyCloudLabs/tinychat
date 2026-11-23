@@ -89,18 +89,27 @@ describe("stored Fireflies import grants do not outlive their purpose", () => {
     expect((f.memory.rows.get(f.store.keyFor(stale.address)) as { state: string }).state).toBe("active");
   });
 
-  it("returns the two grant ids only while the pair is active", async () => {
+  it("keeps the two grant ids from acceptance until removal, through a lapse and an unreadable grant", async () => {
     const f = await fixture(0xa7);
     const pair = await f.grant();
-    await f.store.store(pair.address, pair, pair.expiresAt);
-
-    const active = await f.store.activeGrantCids(pair.address, f.verifyOptions());
     const parsed = (grant: string) => (JSON.parse(grant) as { cid: string }).cid;
-    expect(active).toEqual({ secrets: parsed(pair.secretsGrant), meetings: parsed(pair.meetingsGrant) });
+    const ids = { secrets: parsed(pair.secretsGrant), meetings: parsed(pair.meetingsGrant) };
+    expect(await f.store.grantCids(pair.address)).toBeNull();
+    await f.store.store(pair.address, pair, pair.expiresAt);
+    expect(await f.store.grantCids(pair.address)).toEqual(ids);
 
-    expect(await f.store.activeGrantCids(pair.address, f.verifyOptions(NOW + 8 * DAY))).toBeNull();
+    // The sweep replaces the sealed grant with a marker; the ids stay, so the owner's browser can still revoke them.
+    const coordinator = new TenantCoordinator();
+    expect(await f.store.reapLapsed({ now: NOW + 8 * DAY, run: run(coordinator) })).toEqual({ scanned: 1, reaped: 1 });
+    expect((f.memory.rows.get(f.store.keyFor(pair.address)) as { state: string }).state).toBe("needs_renewal");
+    expect(await f.store.grantCids(pair.address)).toEqual(ids);
+
+    // A grant the importer later marks revoked keeps them too.
+    await f.store.markState(pair.address, "revoked");
+    expect(await f.store.grantCids(pair.address)).toEqual(ids);
+
     await f.store.remove(pair.address);
-    expect(await f.store.activeGrantCids(pair.address, f.verifyOptions())).toBeNull();
+    expect(await f.store.grantCids(pair.address)).toBeNull();
   });
 });
 
@@ -149,6 +158,21 @@ describe("GET /api/connectors/fireflies/delegation/grants", () => {
       signedIn = undefined;
       expect((await get()).status).toBe(401);
     });
+  });
+});
+
+describe("grant ids survive a grant the server can no longer open", () => {
+  it("lists the ids for a sealed grant that fails to decrypt, where the verified read gives up", async () => {
+    const f = await fixture(0xa5);
+    const pair = await f.grant();
+    await f.store.store(pair.address, pair, pair.expiresAt);
+    const key = f.store.keyFor(pair.address);
+    const row = f.memory.rows.get(key) as Record<string, unknown>;
+    f.memory.rows.set(key, { ...row, ciphertext: Buffer.alloc(8, 1).toString("base64") });
+
+    expect((await f.store.status(pair.address, f.verifyOptions())).state).toBe("needs_renewal");
+    const parsed = (grant: string) => (JSON.parse(grant) as { cid: string }).cid;
+    expect(await f.store.grantCids(pair.address)).toEqual({ secrets: parsed(pair.secretsGrant), meetings: parsed(pair.meetingsGrant) });
   });
 });
 

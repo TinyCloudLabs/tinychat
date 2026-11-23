@@ -397,7 +397,7 @@ export interface FirefliesKvGate {
 }
 
 export interface DiscoverMeetingCorpusOptions {
-  firefliesKv?: FirefliesKvGate;
+  firefliesKv: FirefliesKvGate;
 }
 
 export async function discoverMeetingCorpus(

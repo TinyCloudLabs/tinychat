@@ -472,7 +472,7 @@ async function recordPurge(
   return {
     failure: {
       step: "record-purge",
-      message: `${webhookFailureMessage(result)} Nothing has been deleted — we record the deletion first so a late notification can't bring these meetings back.`,
+      message: `${webhookFailureMessage(result)} ${deps.importGrants === undefined ? "Nothing has been deleted" : "No meetings were deleted, though our server may already have dropped its permission to import more"} — we record the deletion first so a late notification can't bring these meetings back.`,
       retryable: isRetryable(result),
     },
   };

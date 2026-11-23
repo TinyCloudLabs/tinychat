@@ -553,8 +553,11 @@ async function main() {
       })()
     : null;
   // A grant a disconnect or purge could not remove would outlive the owner's choice, so these calls fail (503) rather than skip.
+  // Runs inside the connection-change lane, so it must NOT take the per-owner lock: the importer takes the per-owner lock and
+  // then the connection-change lane, and the reverse order would deadlock. The disabled marker and the purge ledger already stop
+  // an import that is in flight.
   const removeFirefliesGrant = firefliesImport
-    ? (address: string) => firefliesImport.coordinator.run(address, () => firefliesImport.grantStore.remove(address))
+    ? (address: string) => firefliesImport.grantStore.remove(address)
     : undefined;
   if (firefliesImport) {
     // No sealed grant outlives its end date: lapsed records become content-free markers, at boot and every 15 minutes.

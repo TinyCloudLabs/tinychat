@@ -77,6 +77,86 @@ export function createFirefliesImportGrantsClient(
   };
 }
 
+const PENDING_REVOKES_KEY_PREFIX = "tinychat:fireflies-import-pending-revokes:";
+/** A permission ends on its own within 7 days; a day more covers clock drift before an entry is dropped. */
+const PENDING_REVOKE_MAX_AGE_MS = 8 * 24 * 60 * 60 * 1000;
+
+type PendingRevokeStore = Pick<Storage, "getItem" | "setItem" | "removeItem">;
+
+function defaultPendingRevokeStore(): PendingRevokeStore | null {
+  try {
+    return typeof localStorage === "undefined" ? null : localStorage;
+  } catch {
+    return null;
+  }
+}
+
+function readPendingRevokes(store: PendingRevokeStore, key: string, now: number): Array<{ cid: string; at: number }> {
+  try {
+    const parsed: unknown = JSON.parse(store.getItem(key) ?? "[]");
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (entry): entry is { cid: string; at: number } =>
+        typeof entry === "object" &&
+        entry !== null &&
+        typeof (entry as { cid?: unknown }).cid === "string" &&
+        typeof (entry as { at?: unknown }).at === "number" &&
+        now - (entry as { at: number }).at < PENDING_REVOKE_MAX_AGE_MS,
+    );
+  } catch {
+    return [];
+  }
+}
+
+function writePendingRevokes(store: PendingRevokeStore, key: string, entries: Array<{ cid: string; at: number }>): void {
+  try {
+    if (entries.length === 0) store.removeItem(key);
+    else store.setItem(key, JSON.stringify(entries));
+  } catch {
+    // Storage can be full or blocked; the server-side list is still the main source.
+  }
+}
+
+/**
+ * Keeps the ids of the permissions this browser has been told about until each is confirmed withdrawn at the node,
+ * per account. A disconnect that stops after the server dropped its copy still revokes them on the next try.
+ */
+export function withPendingRevokes(
+  inner: DisconnectImportGrants,
+  options: { accountKey: string; store?: PendingRevokeStore | null; now?: () => number },
+): DisconnectImportGrants {
+  const store = options.store === undefined ? defaultPendingRevokeStore() : options.store;
+  if (!store) return inner;
+  const key = `${PENDING_REVOKES_KEY_PREFIX}${options.accountKey}`;
+  const now = options.now ?? Date.now;
+  return {
+    async listGrantCids() {
+      const listed = await inner.listGrantCids();
+      // A server that holds nothing (import off) can still leave an earlier run's permissions to withdraw.
+      if (listed.status !== "ok" && listed.status !== "feature-dark") return listed;
+      const at = now();
+      const entries = readPendingRevokes(store, key, at);
+      const known = new Set(entries.map((entry) => entry.cid));
+      for (const cid of listed.status === "ok" ? listed.value : []) {
+        if (!known.has(cid)) entries.push({ cid, at });
+      }
+      writePendingRevokes(store, key, entries);
+      return { status: "ok", value: entries.map((entry) => entry.cid) };
+    },
+    async revoke(cid) {
+      const revoked = await inner.revoke(cid);
+      if (revoked) {
+        writePendingRevokes(
+          store,
+          key,
+          readPendingRevokes(store, key, now()).filter((entry) => entry.cid !== cid),
+        );
+      }
+      return revoked;
+    },
+  };
+}
+
 /**
  * What a Fireflies teardown needs to withdraw the import permissions: the server lists the two it
  * holds, and each is revoked at the node with the owner's own session.
@@ -87,8 +167,10 @@ export function createFirefliesImportGrantsTeardown(
   sessionStore: SessionStore,
 ): DisconnectImportGrants {
   const client = createFirefliesImportGrantsClient(backendUrl, { sessionStore });
-  return {
+  const inner: DisconnectImportGrants = {
     listGrantCids: () => client.listGrantCids(),
     revoke: async (cid) => (await tcw.revokeDelegation(cid)).ok,
   };
+  const address = sessionStore.getAddress?.()?.toLowerCase();
+  return address ? withPendingRevokes(inner, { accountKey: address }) : inner;
 }

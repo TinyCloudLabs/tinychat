@@ -10,6 +10,7 @@ import { CREDENTIAL_REVOKE_UNCONFIRMED_MESSAGE } from "@/lib/connectors/webhooks
 
 const SENTINEL = "sentinel-session-token-55d1e0aa";
 const CREDS = "https://api.example/api/connectors/credentials/fireflies";
+const GRANT = "https://api.example/api/connectors/fireflies/delegation";
 
 let cleanDom: (() => void) | undefined;
 const realFetch = globalThis.fetch;
@@ -71,7 +72,7 @@ test("a stored sign-in is torn down once, then OpenKey opens", async () => {
   responses = { [`GET ${CREDS}`]: [connected], [`DELETE ${CREDS}`]: [{ status: 200, body: { deleted: true, upstreamRevoked: true } }] };
   const page = await mount();
   await page.click("Delete OpenKey account");
-  expect(calls).toEqual(["DELETE https://api.example/api/transcriber/meetings", `GET ${CREDS}`, `DELETE ${CREDS}`]);
+  expect(calls).toEqual(["DELETE https://api.example/api/transcriber/meetings", `DELETE ${GRANT}`, `GET ${CREDS}`, `DELETE ${CREDS}`]);
   expect(page.opened()).toBe(1);
   expect(page.host.querySelector("[role=alert]")).toBeNull();
   await page.unmount();
@@ -84,7 +85,7 @@ test("not connected: the full DELETE is sent once, no message, OpenKey opens", a
   };
   const page = await mount();
   await page.click("Delete OpenKey account");
-  expect(calls).toEqual(["DELETE https://api.example/api/transcriber/meetings", `GET ${CREDS}`, `DELETE ${CREDS}`]);
+  expect(calls).toEqual(["DELETE https://api.example/api/transcriber/meetings", `DELETE ${GRANT}`, `GET ${CREDS}`, `DELETE ${CREDS}`]);
   expect(page.opened()).toBe(1);
   expect(page.host.querySelector("[role=alert]")).toBeNull();
   await page.unmount();
@@ -94,7 +95,7 @@ test("the route dark: no DELETE, no message, OpenKey opens", async () => {
   responses = { [`GET ${CREDS}`]: [{ status: 404, headers: { "X-Route-Unavailable": "connector-credentials" } }] };
   const page = await mount();
   await page.click("Delete OpenKey account");
-  expect(calls).toEqual(["DELETE https://api.example/api/transcriber/meetings", `GET ${CREDS}`]);
+  expect(calls).toEqual(["DELETE https://api.example/api/transcriber/meetings", `DELETE ${GRANT}`, `GET ${CREDS}`]);
   expect(page.opened()).toBe(1);
   expect(page.host.querySelector("[role=alert]")).toBeNull();
   await page.unmount();

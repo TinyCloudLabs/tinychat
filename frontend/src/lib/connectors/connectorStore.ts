@@ -41,6 +41,7 @@ import type {
   FirefliesTranscript,
 } from "./firefliesClient";
 import { deleteCombinedReferencing } from "./combinedMeetingStore";
+import { announceConnectorPurged } from "./connectorPurgeSignal";
 import type { ConnectorConnection, ConnectorId } from "./types";
 import { keepUserTitle } from "../recordingTitleMeta";
 
@@ -1384,6 +1385,18 @@ const PURGE_VERIFY_RETRIES = 3;
  * that did not hold.
  */
 export async function purgeConnectorVerified(
+  tcw: TinyCloudWeb,
+  source: string,
+): Promise<StoreResult<void>> {
+  try {
+    return await purgeConnectorUntilEmpty(tcw, source);
+  } finally {
+    // Some records may be gone even when the purge did not finish: lists must read again either way.
+    announceConnectorPurged(source);
+  }
+}
+
+async function purgeConnectorUntilEmpty(
   tcw: TinyCloudWeb,
   source: string,
 ): Promise<StoreResult<void>> {

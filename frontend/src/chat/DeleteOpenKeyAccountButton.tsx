@@ -11,6 +11,7 @@ import {
   createConnectorWebhooksClient,
   type ConnectorWebhooksClient,
 } from "@/lib/connectors/webhooksApi";
+import { createFirefliesImportGrantsClient } from "@/lib/connectors/firefliesImportGrantsApi";
 import { openOpenKeyAccountDeletion } from "@/lib/openOpenKeyAccountDeletion";
 import { createTranscriberClient } from "@/lib/transcriberApi";
 import { ACCOUNT_FAILED_CONTINUE, ACCOUNT_PENDING_CONTINUE, DELETE_FAILED, NOT_DELETED, SHARED_REMOVED, pendingText } from "./recordingsDeletedCopy";
@@ -47,6 +48,12 @@ export function DeleteOpenKeyAccountButton(props: {
     () => createTranscriberClient(backendUrl, { sessionStore }),
     [backendUrl, sessionStore],
   );
+  // The server-held import permissions are removed with the saved sign-in. A failure never blocks the deletion:
+  // the permissions end on their own within 7 days.
+  const importGrants = useMemo(
+    () => createFirefliesImportGrantsClient(backendUrl, { sessionStore }),
+    [backendUrl, sessionStore],
+  );
   const [state, setState] = useState<State>({ phase: "idle" });
 
   const proceed = async () => {
@@ -56,6 +63,7 @@ export function DeleteOpenKeyAccountButton(props: {
 
   const teardownCredentials = async () => {
     setState({ phase: "working" });
+    await importGrants.removeGrant();
     const outcome = await runServerCredentialTeardown(webhooks, "fireflies");
     if (outcome.status === "failed") {
       setState({ phase: "blocked", message: accountDeletionTeardownFailure(outcome.failure), retryable: true, stage: "credentials" });
