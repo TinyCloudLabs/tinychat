@@ -1,0 +1,24 @@
+{
+  "versions": {
+    "exo-desktop": "0.20.2",
+    "@tinychat/frontend": "0.20.2",
+    "@tinychat/backend": "0.13.2"
+  },
+  "changesets": [
+    ".changeset/pre/bot-history-named-key.md",
+    ".changeset/pre/bot-history-permission.md",
+    ".changeset/pre/bot-history-revoke-count.md",
+    ".changeset/pre/bot-history-revoke-persistence.md",
+    ".changeset/pre/few-llamas-love.md",
+    ".changeset/pre/mighty-balloons-peel.md",
+    ".changeset/pre/quiet-connectors-renew.md",
+    ".changeset/pre/quiet-desktop-renew.md",
+    ".changeset/pre/remove-contacts-tile.md",
+    ".changeset/pre/steady-trustbot-reads.md",
+    ".changeset/pre/tc-3284-bots-exact-key.md",
+    ".changeset/pre/tc-3284-web-exact-key.md",
+    ".changeset/pre/tc-3976-entry-shrink.md",
+    ".changeset/pre/tinychat-phone-renewal-verify.md",
+    ".changeset/pre/tinycloud-one-handoff.md"
+  ]
+}
