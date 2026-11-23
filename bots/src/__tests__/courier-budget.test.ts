@@ -17,9 +17,26 @@ test("Courier calls share Main's daily model budget and emit only Courier log fi
   try {
     const first = await gateway.courierModel(bot, "a".repeat(12), body); await first.text();
     expect(first.status).toBe(200); expect(gateway.usage(bot).bot).toBeGreaterThan(0);
-    expect((await gateway.courierModel(bot, "a".repeat(12), body)).status).toBe(429); expect(calls).toBe(1);
+    const refused = await gateway.courierModel(bot, "a".repeat(12), body);
+    expect(refused.status).toBe(429); expect(refused.headers.get("x-courier-refusal")).toBe("budget"); expect(calls).toBe(1);
     expect(lines.length).toBeGreaterThan(0);
     for (const line of lines) { const entry = JSON.parse(line); expect(Object.keys(entry).sort()).toEqual(["gateway", "outcome", "peer"]); expect(entry.gateway).toBe("courier"); }
+  } finally { log.mockRestore(); }
+});
+
+test("a Courier turn holds Main's one slot: a second call is refused as concurrency, not budget", async () => {
+  const log = spyOn(console, "log").mockImplementation(() => {});
+  const release = Promise.withResolvers<void>();
+  const started = Promise.withResolvers<void>();
+  const cfg: GatewayConfig = { egressRoot: "/unused", modelKey: "fixture", upstream: "https://model.test", models: ["m"], maxTokens: 100, botDailyTokens: 100_000, globalDailyTokens: 1_000_000, maxBodyBytes: 4096, maxResponseBytes: 4096, connectTimeoutMs: 1000, totalTimeoutMs: 5000, bodyTimeoutMs: 1000, budgetFile: "/unused" };
+  const gateway = new Gateway(cfg, { fetch: async () => { started.resolve(); await release.promise; return Response.json({ choices: [{ message: { content: "answer" } }] }); } });
+  const body = { model: "m", messages: [{ role: "user", content: "question" }] };
+  try {
+    const first = gateway.courierModel(bot, "a".repeat(12), body);
+    await started.promise;
+    const second = await gateway.courierModel(bot, "b".repeat(12), body);
+    expect(second.status).toBe(429); expect(second.headers.get("x-courier-refusal")).toBe("concurrency");
+    release.resolve(); await (await first).text();
   } finally { log.mockRestore(); }
 });
 

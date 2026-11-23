@@ -862,7 +862,8 @@ export class Gateway {
     const deny = (reason: string, status: number) => {
       if (!courierPeer) return this.#deny(botId, reason, status);
       console.log(JSON.stringify({ gateway: "courier", peer: courierPeer, outcome: reason }));
-      return failure(status, "Request refused by the bots gateway.");
+      // The caller learns only the reason class, so it can answer the asking agent with a fixed sentence.
+      return Response.json({ error: { message: "Request refused by the bots gateway." } }, { status, headers: { "x-courier-refusal": reason } });
     };
     // Everything that can refuse without reading the body comes first: size header, budget store, budget, the
     // bot's one slot.

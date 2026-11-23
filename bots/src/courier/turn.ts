@@ -6,33 +6,19 @@ import { MEETING_TOOLS } from "../meeting-tools";
 import { type MeetingDesk, READ_LIMIT_ERRORS } from "../meeting-reads";
 import { botIdFor } from "../owner";
 import { untrustedRecord } from "../web";
-import { COURIER_REFUSAL, courierPeerHash } from "./intake";
+import { COURIER_REFUSAL, COURIER_SUMMARY_REFUSAL, type CourierReplyText, CourierFixedReply, guardReply } from "./guard";
+import { courierPeerHash } from "./intake";
 import { createHash } from "node:crypto";
 import type { ReadArea } from "../reads";
 
 export const COURIER_READ_OFF = "TrustBot can't read that: its owner has turned off access to it.";
 export const COURIER_BUDGET = "TrustBot has used today's reading allowance. Try tomorrow.";
-export const COURIER_SUMMARY_REFUSAL = "TrustBot can share a summary of this but not the original text, and it couldn't write one this time. Ask a narrower question.";
 const REGENERATE = "Answer in your own words. Summarise what you read; don't copy sentences or long phrases from it.";
 export const COURIER_READ_TOOL_NAMES = [
   "tinycloud_find_meetings", "tinycloud_read_meeting", "tinycloud_search_transcripts", "tinycloud_list_meeting_actions",
   "list_feed_cards", "read_card", "list_chats", "read_chat",
 ] as const;
 const READ_TOOLS = [...MEETING_TOOLS, ...FEED_CHAT_TOOLS];
-const normalize = (value: string) => value.normalize("NFKC").toLowerCase().replace(/\s+/gu, " ").trim();
-
-/** Check both thresholds: a short twelve-word phrase, or a long run without word boundaries. */
-export function copiesReadRecord(reply: string, records: readonly string[]): boolean {
-  const answer = normalize(reply);
-  const words = answer.split(" ");
-  for (const record of records) {
-    const source = normalize(record);
-    for (let i = 0; i + 80 <= answer.length; i++) if (source.includes(answer.slice(i, i + 80))) return true;
-    const sourceWords = ` ${source} `;
-    for (let i = 0; i + 12 <= words.length; i++) if (sourceWords.includes(` ${words.slice(i, i + 12).join(" ")} `)) return true;
-  }
-  return false;
-}
 
 /** Read results use the existing untrustedRecord wrapper. Decode strings only for the copy guard, never to filter access. */
 function guardRecords(text: string): string[] {
@@ -60,7 +46,7 @@ export interface CourierTurnOptions {
   threadId: string;
 }
 
-export async function courierTurn(options: CourierTurnOptions): Promise<string> {
+export async function courierTurn(options: CourierTurnOptions): Promise<CourierReplyText> {
   const bot = botIdFor(options.owner);
   const areas = await options.enabledReadAreas(options.owner).catch(() => []);
   const conversation = createHash("sha256").update(`${options.peerDid}\n${options.threadId}`).digest("hex").slice(0, 32);
@@ -76,7 +62,9 @@ export async function courierTurn(options: CourierTurnOptions): Promise<string> 
   for (let round = 0; round < 8; round++) {
     const permitted = new Set(options.reads.tools(bot, areas).map(tool => tool.name));
     const tools = regenerated ? [] : READ_TOOLS.filter(tool => COURIER_READ_TOOL_NAMES.some(name => name === tool.name) && permitted.has(tool.name)).map(tool => ({ type: "function", function: { name: tool.name, description: tool.description, parameters: tool.inputSchema } }));
-    const answer = await options.model({ messages, tools });
+    let answer: Record<string, unknown>;
+    try { answer = await options.model({ messages, tools }); }
+    catch (error) { if (error instanceof CourierFixedReply) return error.reply; throw error; }
     const calls = Array.isArray(answer.tool_calls) ? answer.tool_calls : [];
     if (calls.length) {
       if (regenerated || calls.length > 8) return COURIER_REFUSAL;
@@ -92,7 +80,7 @@ export async function courierTurn(options: CourierTurnOptions): Promise<string> 
         let args: unknown;
         try { args = JSON.parse(call.function.arguments); } catch { args = null; }
         if (COURIER_READ_TOOL_NAMES.some(allowed => allowed === name) && options.reads.handles(name) && isRecord(args)) {
-          // Refresh switches and deny ids at dispatch, not just when tools were advertised.
+          // The areas are fixed for this turn (read once above); neither switch changes mid-turn.
           if (!options.reads.tools(bot, areas).some(tool => tool.name === name)) result = COURIER_READ_OFF;
           else {
             let denied = false;
@@ -114,7 +102,8 @@ export async function courierTurn(options: CourierTurnOptions): Promise<string> 
       continue;
     }
     if (typeof answer.content !== "string" || !answer.content.trim() || answer.content.length > 8000) return COURIER_REFUSAL;
-    if (!copiesReadRecord(answer.content, records)) return answer.content;
+    const guarded = guardReply(answer.content, records);
+    if (guarded) return guarded;
     if (regenerated) return COURIER_SUMMARY_REFUSAL;
     regenerated = true;
     messages.push({ role: "assistant", content: answer.content }, { role: "system", content: REGENERATE });

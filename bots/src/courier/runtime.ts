@@ -11,6 +11,7 @@ import { createCourierControl } from "./control";
 import { deniedChatIds, enabledReadAreas } from "./denied-chats";
 import { createCourierGrantStore } from "./grant-store";
 import { CourierIntake, courierIntakeStore, courierPeerHash } from "./intake";
+import { COURIER_ANSWER_BUDGET, COURIER_BUSY, CourierFixedReply } from "./guard";
 import { acknowledgeInbound, courierContext, listInbound, sendMessage } from "./lib-adapter";
 import { courierPeerControl, createCourierPairing } from "./pairing";
 import { createCourierPeerStore } from "./peer-store";
@@ -36,7 +37,7 @@ export async function startCourierGateway(options: { cfg: GatewayConfig; gateway
     async transport(owner, grant, peer) {
       const runtime = await peers.getRuntime(owner, peer.handle);
       if (!runtime || runtime.peerDid !== peer.peerDid || runtime.delegationExpiresAt <= Date.now()) throw new Error("courier_peer_ended");
-      const context = await courierContext(owner, grant);
+      const context = await courierContext(owner, grant, peers);
       return {
         async inbox() {
           return (await listInbound(context, runtime)).map(message => ({ id: message.messageId, threadId: message.threadId, kind: message.intent, text: message.text }));
@@ -46,7 +47,7 @@ export async function startCourierGateway(options: { cfg: GatewayConfig; gateway
           const current = await peers.getRuntime(owner, peer.handle);
           const currentGrant = await grants.get(owner);
           if (!current || current.peerDid !== runtime.peerDid || current.delegationExpiresAt <= Date.now() || !currentGrant || currentGrant.expiresAt <= Date.now()) throw new Error("courier_peer_ended");
-          const freshContext = await courierContext(owner, currentGrant);
+          const freshContext = await courierContext(owner, currentGrant, peers);
           await replyToCourierThread(freshContext, current, message, text, sendMessage);
         },
       };
@@ -55,7 +56,14 @@ export async function startCourierGateway(options: { cfg: GatewayConfig; gateway
       return courierTurn({ owner, handle: peer.handle, peerDid: peer.peerDid, threadId: message.threadId, text: message.text, reads: options.reads, deniedChatIds, enabledReadAreas,
         async model(body) {
           const response = await options.gateway.courierModel(botIdFor(owner), courierPeerHash(peer.peerDid), { ...body, model: options.cfg.models[0], max_tokens: options.cfg.maxTokens });
-          if (!response.ok) { await response.body?.cancel(); throw new Error("courier_model_unavailable"); }
+          if (!response.ok) {
+            await response.body?.cancel();
+            // Main's shared allowance or its one slot: the asking agent gets a fixed sentence, not silence.
+            const refusal = response.headers.get("x-courier-refusal");
+            if (response.status === 429 && refusal === "budget") throw new CourierFixedReply(COURIER_ANSWER_BUDGET);
+            if (response.status === 429 && refusal === "concurrency") throw new CourierFixedReply(COURIER_BUSY);
+            throw new Error("courier_model_unavailable");
+          }
           const bytes = await readBody(response, options.cfg.maxResponseBytes, options.cfg.totalTimeoutMs);
           if (typeof bytes === "string") throw new Error("courier_model_unavailable");
           const payload: unknown = JSON.parse(new TextDecoder().decode(bytes));
