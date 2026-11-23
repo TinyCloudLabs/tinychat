@@ -5,7 +5,7 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { ensureBotHistoryGrant, botHistoryEnabled } from "./historyGrant";
 import { authorizeBotHistory } from "./historyAuthorization";
 import { readBotHistory } from "./historyRead";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { openKeyFailureOf } from "../lib/authErrors";
 import { readHistoryNotice, type HistoryNotice } from "./historyNotice";
@@ -82,16 +82,20 @@ function MainAsk({ api, tcw, onReconnect }: { api: BotsApi; tcw?: TinyCloudWeb; 
     },
   }), [client, noteWeb]);
   const [readRevision, setReadRevision] = useState(0);
+  const revokeOwnerRead = useCallback((cid: string) => {
+    if (!tcw) return Promise.reject(new Error("read_signed_out"));
+    return revokeReadGrant(tcw, cid);
+  }, [tcw]);
   const meetings = useMemo(() => tcw ? {
     readSettings,
     setReadArea,
     signReadGrant: (serviceDid: string, areas: Parameters<typeof signReadGrant>[2]) => signReadGrant(tcw, serviceDid, areas),
-    revokeReadGrant: (cid: string) => revokeReadGrant(tcw, cid),
+    revokeReadGrant: revokeOwnerRead,
     stopStandingArea: async (area: Parameters<typeof setReadArea>[0]) => {
       const { stopStandingArea } = await import("./trustbotStandingReads");
-      await stopStandingArea(area, cid => revokeReadGrant(tcw, cid));
+      await stopStandingArea(area, revokeOwnerRead);
     },
-  } : undefined, [tcw, readRevision]);
+  } : undefined, [tcw, readRevision, revokeOwnerRead]);
   const clearChat = chat.clear;
   const newChat = useMemo(() => ({ start: () => newMainChat(), onStarted: () => { clearChat(); refreshAsks(); } }), [clearChat, refreshAsks]);
   // A turn is when Main asks: read the requests as it ends.

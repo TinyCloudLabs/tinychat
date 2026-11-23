@@ -9,6 +9,7 @@ import { standingDelegatedAccess } from "../trustbot-reads/standing-access.js";
 import { StandingApprovalClient, type StandingApprovalLink } from "../trustbot-reads/standing-approval.js";
 import { StandingReadsController, type StandingMetadataStore, type StandingReadMetadata } from "../trustbot-reads/standing-controller.js";
 import { DstackStandingHolderDeriver } from "../trustbot-reads/standing-holder.js";
+import { standingReadAuthority } from "../trustbot-reads/standing-grant.js";
 
 const address = `0x${"a".repeat(40)}`;
 const owner = `did:pkh:eip155:1:${address}`;
@@ -209,4 +210,27 @@ test("collects one owner-approved scope, stores metadata before acknowledging an
   await controller.sweep();
   expect(state.generation).toBe(2);
   expect(await controller.current(ownerAccount.address)).toBeUndefined();
+});
+
+test("checks OpenKey on the first associated stamp even if the node shortens the grant", async () => {
+  const holder = await signerKeys().derive(owner, scope.approvalId, scope.generation);
+  const grant = { ownerDid: owner, holderDid: holder.did, originalCid, originalEnd: now / 1000 + 60,
+    leaseCid: "test-lease-cid", leaseEnd, spaceId, areas: ["meetings"] as const };
+  let sawStamp = false;
+  const status = await standingReadAuthority(grant, {
+    address, config, now: () => now / 1000,
+    holder: { did: holder.did, signStatus: holder.sign, leaseState: async (_grant, stamped) => {
+      sawStamp = stamped;
+      return "expired";
+    } },
+    fetch: (async (url: string) => url.endsWith("/node-keys") ? Response.json({
+      nodeDid: config.nodeDid, renewerDid: config.renewerDid, renewerEpoch: 1,
+      renewerPublicKey: Buffer.from(linkIssuerPublicKey(renewer.did)!).toString("base64url"),
+    }) : Response.json({
+      cid: originalCid, exists: true, active: true, effective_expiry: grant.originalEnd - 30,
+      renewal_history: [{ lease_cid: grant.leaseCid }],
+    })) as typeof fetch,
+  });
+  expect(sawStamp).toBe(true);
+  expect(status).toEqual({ state: "ended", outcome: "expired" });
 });

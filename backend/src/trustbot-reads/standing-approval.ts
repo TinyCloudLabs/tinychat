@@ -23,7 +23,7 @@ export type CollectedApproval =
   | { state: "pending" | "declined" | "expired" | "failed" }
   | { state: "ready"; resultRef: string; opened: Record<string, unknown> };
 
-export type LeaseState = "active" | "stopped" | "unavailable";
+export type LeaseState = "active" | "stopped" | "expired" | "unavailable";
 
 interface OpenKeyOrigins {
   links: string;
@@ -116,7 +116,7 @@ export class StandingApprovalClient {
       const result = await response.json();
       if (result.leaseState === "none" && result.originalCid === null) return "stopped";
       if (result.originalCid !== originalCid || Date.parse(result.leaseExpiresAt) !== leaseEnd * 1000) return "unavailable";
-      if (result.leaseState === "stopped" || result.leaseState === "expired") return "stopped";
+      if (result.leaseState === "stopped" || result.leaseState === "expired") return result.leaseState;
       if (result.leaseState !== "active") return "unavailable";
       return "active";
     } catch {

@@ -42,10 +42,17 @@ export default function StandingReadsCard({ settings, revoke }: {
     attemptedRevoke.current = previous;
     let current = true;
     setBusy(true);
-    void stopStandingReads(previous, revoke).then(() => standingReadsView()).then(
-      value => { if (current) setSaved(value); },
-      () => { if (current) setFailed(true); },
-    ).finally(() => { if (current) setBusy(false); });
+    void (async () => {
+      try {
+        await stopStandingReads(previous, revoke);
+        const value = await standingReadsView();
+        if (current) setSaved(value);
+      } catch {
+        if (current) setFailed(true);
+      } finally {
+        if (current) setBusy(false);
+      }
+    })();
     return () => { current = false; };
   }, [previous, revoke]);
 
