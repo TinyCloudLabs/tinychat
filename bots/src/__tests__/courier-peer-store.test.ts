@@ -58,7 +58,7 @@ test("damaged records and invalid peers fail closed", async () => {
 
 test("late renewal cannot resurrect an unpaired peer", async () => {
   const store = createCourierPeerStore(directory(), key);
-  const original = { handle: peer.handle, peerDid: peer.peerDid, delegation: { cid: "original" }, delegationExpiresAt: peer.delegationExpiresAt };
+  const original = { handle: peer.handle, peerDid: peer.peerDid, delegation: { cid: "original" }, delegationExpiresAt: peer.delegationExpiresAt, proof: { cid: "original" } };
   await store.putRuntime(owner, original, peer.pairedAt);
   await store.retire(owner, peer.handle);
   expect(await store.renewRuntime(owner, original, { ...original, delegation: { cid: "successor" }, delegationExpiresAt: original.delegationExpiresAt + 60_000 })).toBe(false);
@@ -74,7 +74,7 @@ test("expired pending cleanup retains the signed B as inactive revocation proof"
   await store.retire(owner, peer.handle);
   expect(await store.getPending(owner, peer.handle)).toBeUndefined();
   expect(await store.listRuntime(owner)).toEqual([]);
-  expect(await store.listRetired(owner)).toMatchObject([{ handle: peer.handle, delegation: pending }]);
+  expect(await store.listRetired(owner)).toMatchObject([{ handle: peer.handle, delegation: { pending: pending.pending } }]);
 });
 
 test("finalization consumes one exact pending row and rejects the same C CID after unpair and restart", async () => {

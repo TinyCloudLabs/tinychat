@@ -4,7 +4,7 @@ import { parseArtifact, validateArtifactIdentity, type PairArtifact } from "@tin
 import { isRecord } from "../guards";
 import type { CourierGrant, CourierGrantStore } from "./grant-store";
 import type { CourierContext, PairedPeer, PairPending } from "./lib-adapter";
-import { COURIER_HANDLE, type CourierPeer, type CourierPeerStore } from "./peer-store";
+import { COURIER_HANDLE, type CourierPeer, type CourierPeerStore, type RetiredCourierPeer } from "./peer-store";
 
 export const COURIER_PAIRING_TTL_MS = 15 * 60_000;
 export const COURIER_PEER_MAX_MS = 7 * 86_400_000;
@@ -13,7 +13,7 @@ export interface PairingAdapter {
   context(owner: string, grant: CourierGrant, store: CourierPeerStore): Promise<CourierContext>;
   acceptPairing(ctx: CourierContext, artifact: string): Promise<PairPending>;
   finalizePairing(ctx: CourierContext, pending: PairPending, artifact: string): Promise<PairedPeer>;
-  unpair(ctx: CourierContext, peer: PairedPeer): Promise<void>;
+  unpair(ctx: CourierContext, peer: RetiredCourierPeer): Promise<void>;
   renewPeer(ctx: CourierContext, peer: PairedPeer): Promise<PairedPeer>;
 }
 export type CourierPairResult = { pending: true; handle: string; acceptArtifact: string; pendingExpiresAt: number } | { peer: CourierPeer };
@@ -27,8 +27,9 @@ class PairingError extends Error {
   constructor(readonly code: "invalid" | "duplicate" | "pending_expired" | "courier_unavailable" | "courier_update_required", readonly status: number) { super(code); }
 }
 
+// C1's typed refusal (missing headless exports) and the SDK's own legacy-artifact refusal both mean "update Courier".
 function pairingFailure(error: unknown): PairingError {
-  return isRecord(error) && error.code === "courier_update_required"
+  return isRecord(error) && (error.code === "courier_update_required" || error.code === "courier-update-required")
     ? new PairingError("courier_update_required", 426) : new PairingError("invalid", 400);
 }
 

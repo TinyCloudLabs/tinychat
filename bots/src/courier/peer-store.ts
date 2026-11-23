@@ -26,11 +26,13 @@ export interface CourierPeerStore {
   putPending(owner: string, pending: PendingPairing): Promise<void>;
   finalizePending(owner: string, expected: PendingPairing, peer: PairedPeer): Promise<boolean>;
   retire(owner: string, handle: string): Promise<void>;
-  listRetired(owner: string): Promise<PairedPeer[]>;
+  listRetired(owner: string): Promise<RetiredCourierPeer[]>;
   clearRetired(owner: string, handle: string): Promise<void>;
   transaction: CourierLibraryStore["transaction"];
 }
 export interface PendingPairing { pending: PairPending; artifactA: string; startedAt: number }
+/** Cleanup target: a retired paired peer, or a retired pending row (signed B, no verified C and so no proof). */
+export type RetiredCourierPeer = Pick<PairedPeer, "handle" | "peerDid" | "delegation" | "delegationExpiresAt">;
 export const COURIER_HANDLE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 const DID = /^did:key:z[1-9A-HJ-NP-Za-km-z]{1,128}$/;
 const OWNER = /^did:pkh:eip155:1:0x[a-fA-F0-9]{40}$/;
@@ -190,14 +192,14 @@ export function createCourierPeerStore(dir: string, sealKey: Uint8Array, now: ()
     },
     async retire(owner, handle) {
       const current = entries(owner).find(entry => entry.handle === handle);
-      if (!current) return;
-      const runtime = current.runtime ?? (current.pending ? {
-        handle, peerDid: current.pending.pending.peerDid, delegation: current.pending,
-        delegationExpiresAt: current.pending.pending.expiresAt,
-      } : undefined);
-      save(owner, { ...current, ...(runtime ? { runtime } : {}), retired: true });
+      if (current) save(owner, { ...current, retired: true });
     },
-    async listRetired(owner) { return entries(owner).flatMap(entry => entry.retired && entry.runtime ? [entry.runtime] : []); },
+    async listRetired(owner) {
+      return entries(owner).flatMap((entry): RetiredCourierPeer[] => !entry.retired ? []
+        : entry.runtime ? [entry.runtime]
+        : entry.pending ? [{ handle: entry.handle, peerDid: entry.pending.pending.peerDid, delegation: { pending: entry.pending.pending }, delegationExpiresAt: entry.pending.pending.expiresAt }]
+        : []);
+    },
     async clearRetired(owner, handle) {
       const current = entries(owner).find(entry => entry.handle === handle && entry.retired);
       if (!current) return;
