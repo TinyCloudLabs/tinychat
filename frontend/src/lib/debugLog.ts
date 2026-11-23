@@ -42,7 +42,8 @@ export function redactDebugText(value: unknown): string | undefined {
   if (/wants you to sign in with|\bSIWE\b|\bSign-In with Ethereum\b/i.test(value)) return "<redacted sign-in message>";
   if (/\bdelegation(?:Body|Payload)?\b|privateJwk|sessionPayload|\bSIWE\b/i.test(value))
     return "<redacted session data>";
-  return value.replace(/https?:\/\/\S+/gi, "<url>")
+  return value.replace(/#tch1[^\s"'<>]*/gi, "<redacted handoff>")
+    .replace(/https?:\/\/\S+/gi, "<url>")
     // Header values may contain spaces and use any auth scheme. Consume the
     // complete quoted value or the rest of the header line.
     .replace(/\b((?:proxy-authorization|authorization|set-cookie|cookie)["']?\s*[:=]\s*)(?:"(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])*'|[^\r\n]*)/gi, "$1<redacted>")

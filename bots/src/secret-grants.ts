@@ -20,7 +20,7 @@ import type { ApprovalRequesterState, CheckedApprovalResult, CreatedLink, Ed2551
 import * as approvalLinks from "@tinycloud/share-envelope/links";
 import { getAddress, verifyMessage } from "viem";
 import { parseSiweMessage } from "viem/siwe";
-import { MAX_GRANT_MS, MAX_WHY_CHARS, type SecretPush } from "./asks";
+import { MAX_GRANT_MS, MAX_LEASED_GRANT_MS, MAX_WHY_CHARS, type SecretPush } from "./asks";
 import type { GuardDeps } from "./fetch-guard";
 import { isRecord } from "./guards";
 import { MAIN_BOT_NAME, OWNER_DID } from "./owner";
@@ -47,7 +47,22 @@ const LENGTH_SLACK_MS = 120_000;
 const HEADER = /^[a-z0-9-]{1,64}$/;
 
 export type GrantState = "pending" | "approved" | "declined" | "expired" | "failed" | "ended";
-export type Outcome = { id: string; outcome: "approved"; until: number } | { id: string; outcome: "declined" | "expired" | "failed" };
+/**
+ * How long a renewing approval may run in all (TC-4000): 30 days. Each window of it is at most 7 days
+ * (OpenKey's limit for sensitive access), renewed by OpenKey's renewer under the owner's signed lease; the owner picks renewal on OpenKey's screen,
+ * where it starts unticked and needs the "Renew sensitive access?" confirm. The 1-hour suggestion is the default.
+ */
+export const LEASE_SECONDS = MAX_LEASED_GRANT_MS / 1000;
+/** How often a renewing approval is checked with the node while nothing is using it. */
+const LEASE_CHECK_MS = 60_000;
+
+/** The node and renewer the lease must be for: the literals of the backend's RENEWAL_NODE_DID and RENEWAL_RENEWER_DID. */
+export interface RenewalPin {
+  nodeDid: string;
+  renewerDid: string;
+}
+
+export type Outcome = { id: string; outcome: "approved"; until: number; leased?: true } | { id: string; outcome: "declined" | "expired" | "failed" | "ended" };
 
 /** What the supervisor asks for: name and sites as the owner approves them, the header the value goes in, `why` from Main. */
 export interface SecretAsk {
@@ -70,6 +85,8 @@ export interface GrantSession {
   siwe: string;
   signature: string;
   expiresAt: string;
+  /** Only a renewing grant: the owner's signed lease. The grant's own `expiresAt` is then only its first window. */
+  lease?: { authorization: string; expiresAt: string };
 }
 
 /** One request's sealed record. Key material is dropped as soon as the request can no longer be used. */
@@ -87,6 +104,9 @@ interface GrantRecord {
   approveUrl: string;
   linkExpiresAt: number;
   until?: number;
+  /** A renewing approval (kept after its keys go): its end is told to the supervisor, which only knew the lease's last day. */
+  leased?: boolean;
+  endReported?: boolean;
   calls: { day: string; count: number; bytes: number };
   keys?: {
     jwk: Ed25519PrivateJwk;
@@ -100,12 +120,16 @@ interface GrantRecord {
   };
 }
 
-export type ReadValue = { value: string } | "missing" | "unavailable";
+export type ReadValue = { value: string } | "missing" | "unavailable" | "ended";
+/** A renewing grant checked with the node now: when access ends, or that it is over, or that the node could not say. */
+export type LeaseCheck = { end: number } | "ended" | "unavailable";
 
 /** Reads one secret with an approved delegation (secret-node.ts). `forget` drops anything cached for a request. */
 export interface SecretReader {
   read(id: string, session: GrantSession, name: string): Promise<ReadValue>;
   forget(id: string): void;
+  /** Absent: a renewing grant cannot be used (fail closed). */
+  leaseEnd?(id: string, session: GrantSession): Promise<LeaseCheck>;
 }
 
 export type ApprovalLinks = Pick<
@@ -135,6 +159,8 @@ export interface SecretGrantDeps {
    * is; TC-3772 lets a stable TinyCloud One key sign instead, and only this changes (Naomi's ruling, 22 Nov).
    */
   requester?: (target: LinkSigner) => LinkSigner;
+  /** Absent: no request offers renewal, and a result that carries one is refused. */
+  renewal?: RenewalPin;
 }
 
 export type AskResult = { approveUrl: string; expiresAt: string } | { refused: "invalid" | "conflict" | "unavailable" };
@@ -269,6 +295,33 @@ export async function verifiedGrant(checked: CheckedApprovalResult, expected: { 
   };
 }
 
+/** Whether a request for this secret may offer renewal: only on its own exact key, never SCOPED and never under a scoped key. */
+export function renewable(name: string, permissions: OpenKeyApprovalRequestV1["permissions"]): boolean {
+  const [read, decrypt, ...rest] = permissions;
+  return (
+    name !== "SCOPED" && rest.length === 0 && read?.path === `vault/secrets/${name}` &&
+    decrypt?.path !== undefined && /:default\/secrets\/[^/]+$/.test(decrypt.path) && decrypt.path.endsWith(`:default/${secretKeyPath(name)}`) && !decrypt.path.includes("/secrets/scoped")
+  );
+}
+
+/**
+ * The renewing part of a result, checked after verifiedGrant has passed (the scope stays there): the receipt must be
+ * for this very grant, issued under the pinned node and renewer, and the owner's lease must not run past what was asked.
+ * Returns the session with its lease and the end the supervisor is first told, which only a use-time check with the node
+ * can shorten or confirm.
+ */
+export function verifiedLease(checked: CheckedApprovalResult, session: GrantSession, pin: RenewalPin, now: number): GrantSession {
+  const renewal = checked.renewal;
+  if (checked.renewalChoice !== "leased" || !renewal) throw new Error("the result carries no renewal");
+  const receipt = renewal.receipt;
+  if (receipt.originalCid !== session.delegationCid) throw new Error("the lease is for another grant");
+  if (receipt.nodeIdentity.nodeDid !== pin.nodeDid || receipt.nodeIdentity.renewerDid !== pin.renewerDid) throw new Error("the lease is for another node or renewer");
+  const end = Date.parse(receipt.leaseExpiresAt);
+  if (!Number.isFinite(end) || end <= now || end > now + LEASE_SECONDS * 1000 + SKEW_MS) throw new Error("the lease is longer than asked or already over");
+  if (renewal.approvedLeaseLifetimeSeconds > LEASE_SECONDS) throw new Error("the lease is longer than asked");
+  return { ...session, lease: { authorization: receipt.leaseAuthorization, expiresAt: new Date(end).toISOString() } };
+}
+
 const utcDay = (ms: number) => new Date(ms).toISOString().slice(0, 10);
 
 export class SecretGrants {
@@ -279,6 +332,9 @@ export class SecretGrants {
   readonly #links: ApprovalLinks;
   readonly #now: () => number;
   readonly #requester: (target: LinkSigner) => LinkSigner;
+  readonly #renewal: RenewalPin | undefined;
+  /** When each renewing approval was last checked with the node (memory only; a restart checks again at once). */
+  readonly #leaseChecked = new Map<string, number>();
   /** Bots with a call_with_secret call running: one at a time each. */
   readonly #calling = new Set<string>();
   #polling = false;
@@ -290,6 +346,7 @@ export class SecretGrants {
     this.#links = deps.links ?? approvalLinks;
     this.#now = deps.now ?? Date.now;
     this.#requester = deps.requester ?? (target => target);
+    this.#renewal = deps.renewal;
     for (const entry of this.#store.load()) {
       const record = entry.record as GrantRecord | undefined;
       // A record that no longer opens (the app id, and so the key, changed) can't be used: it ends as failed.
@@ -327,16 +384,18 @@ export class SecretGrants {
     const methods = [...allowedMethods(ask.name)];
     // Monica's words, the same as the secret card's, so the owner sees writes in both places they decide.
     const writes = service && writeMethods(ask.name).length > 0 ? ` ${MAIN_BOT_NAME} can also send data to ${service} with it, which may cost money or change things there.` : "";
+    const permissions = secretPermissions(ask.name, ask.ownerDid);
     const request: OpenKeyApprovalRequestV1 = {
       issuer: requester.did,
       requestVersion: 1,
       targetDid: target.did,
       targetPublicJwk: { kty: "OKP", crv: "Ed25519", x: jwk.x },
       nodeOrigin: this.#origins.node,
-      permissions: secretPermissions(ask.name, ask.ownerDid),
+      permissions,
       reason: `Use ${ask.name} with ${where}. ${ask.why}${writes}`.trim(),
       grantLifetimeSeconds: MAX_GRANT_SECONDS,
       suggestedLifetimeSeconds: SUGGESTED_GRANT_SECONDS,
+      ...(this.#renewal && renewable(ask.name, permissions) ? { renewal: { version: 1 as const, leaseLifetimeSeconds: LEASE_SECONDS } } : {}),
       resultEncryptionPublicJwk: relay.publicJwk,
     };
     let created: CreatedLink & { record: LinkRecord };
@@ -371,6 +430,7 @@ export class SecretGrants {
       for (const [id, record] of [...this.#records]) {
         if (record.state === "pending") await this.#collect(id, record);
         else if (record.state === "approved" && (record.until ?? 0) <= this.#now()) this.#settle(id, record, "ended");
+        else if (record.state === "approved") await this.#checkLease(id, record);
       }
     } finally {
       this.#polling = false;
@@ -381,8 +441,15 @@ export class SecretGrants {
   drain(botId: string): Outcome[] {
     const outcomes: Outcome[] = [];
     for (const [id, record] of this.#records) {
-      if (record.botId !== botId || record.reported) continue;
-      if (record.state === "approved") outcomes.push({ id, outcome: "approved", until: record.until! });
+      if (record.botId !== botId) continue;
+      if (record.leased && record.state === "ended" && record.reported && !record.endReported) {
+        outcomes.push({ id, outcome: "ended" });
+        record.endReported = true;
+        this.#save(id, record);
+        continue;
+      }
+      if (record.reported) continue;
+      if (record.state === "approved") outcomes.push({ id, outcome: "approved", until: record.until!, ...(record.leased ? { leased: true as const } : {}) });
       else if (record.state === "declined" || record.state === "expired" || record.state === "failed") outcomes.push({ id, outcome: record.state });
       else continue;
       record.reported = true;
@@ -397,6 +464,7 @@ export class SecretGrants {
     if (!record || record.botId !== botId) return false;
     this.#store.remove(id);
     this.#records.delete(id);
+    this.#leaseChecked.delete(id);
     this.#reader.forget(id);
     return true;
   }
@@ -444,6 +512,12 @@ export class SecretGrants {
       const read = await this.#reader.read(id, record.keys.session, name);
       if (read === "missing") return { result: refusal("missing", { name }), outcome: "missing" };
       if (read === "unavailable") return { result: refusal("unavailable", { name }), outcome: "unavailable" };
+      if (read === "ended") {
+        // The node found it over early: the owner reads the day of this check, not the lease's last day.
+        record.until = Math.min(record.until ?? this.#now(), this.#now());
+        this.#settle(id, record, "ended");
+        return { result: refusal("ended", { name, until: record.until }), outcome: "ended" };
+      }
       // Counted before the call: a call that fails or times out was still made with the value.
       record.calls = { ...today, count: today.count + 1 };
       if (!this.#save(id, record)) return { result: refusal("unavailable", { name }), outcome: "store" };
@@ -487,8 +561,23 @@ export class SecretGrants {
   #settle(id: string, record: GrantRecord, state: Exclude<GrantState, "pending" | "approved">): void {
     record.state = state;
     record.keys = undefined;
+    this.#leaseChecked.delete(id);
     this.#reader.forget(id);
     this.#save(id, record);
+  }
+
+  /** A renewing approval, asked of the node every LEASE_CHECK_MS: revoked, ended or unverifiable ends it; an unreachable node changes nothing here (a use is refused meanwhile). */
+  async #checkLease(id: string, record: GrantRecord): Promise<void> {
+    const session = record.keys?.session;
+    if (!session?.lease || !this.#reader.leaseEnd) return;
+    const now = this.#now();
+    if (now - (this.#leaseChecked.get(id) ?? 0) < LEASE_CHECK_MS) return;
+    this.#leaseChecked.set(id, now);
+    const checked = await this.#reader.leaseEnd(id, session);
+    if (checked === "ended") {
+      record.until = Math.min(record.until ?? now, now);
+      this.#settle(id, record, "ended");
+    }
   }
 
   async #collect(id: string, record: GrantRecord): Promise<void> {
@@ -508,6 +597,11 @@ export class SecretGrants {
       const opened = await this.#links.openRelayResult(envelope, keys.requestId, keys.relayPrivateKey);
       const checked = this.#links.checkApprovalResultBinding(opened, { requestId: keys.requestId, bodyCid: keys.bodyCid, request: keys.request, now });
       session = await verifiedGrant(checked, { ownerDid: record.ask.ownerDid, name: record.ask.name, targetDid: keys.request.targetDid, jwk: keys.jwk, maxSeconds: keys.request.grantLifetimeSeconds, now });
+      // A request that offered renewal may come back finite (the owner left it unticked) or leased; one that did not, never leased.
+      if (checked.renewalChoice === "leased") {
+        if (!this.#renewal || !keys.request.renewal) throw new Error("a lease nobody asked for");
+        session = verifiedLease(checked, session, this.#renewal, now);
+      }
     } catch (error) {
       if (this.#links.isApprovalClientError(error)) {
         if (error.code === "network" || error.code === "unavailable") return; // asked again next pass
@@ -519,7 +613,8 @@ export class SecretGrants {
       return this.#settle(id, record, "failed");
     }
     record.state = "approved";
-    record.until = Date.parse(session.expiresAt);
+    record.until = Date.parse(session.lease?.expiresAt ?? session.expiresAt);
+    if (session.lease) record.leased = true;
     keys.session = session;
     if (!this.#save(id, record)) {
       // Not kept, so not acknowledged: OpenKey still holds the result and the next pass collects it again.

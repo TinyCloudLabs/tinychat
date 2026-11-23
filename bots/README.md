@@ -437,6 +437,7 @@ Supervisor (`bots-supervisor`):
 | `BOTS_ADMISSION_CONTROL_KEY` | unset | admission control socket key from the deploy workflow |
 | `BOTS_ACCEPT_LEGACY_OWNER_HEADER` | `0` | see [Deploy order](#deploy-order) |
 | `BOTS_TEST_ACCOUNTS` | empty (nobody) | comma-separated addresses, or `*` |
+| `BOTS_RENEWAL_NODE_DID`, `BOTS_RENEWAL_RENEWER_DID` | unset | the node and renewer a renewing secret approval must be for (the backend's `RENEWAL_NODE_DID` and `RENEWAL_RENEWER_DID`); both or none. Unset: secret requests never offer renewal (TC-4000) |
 | `BOTS_MODEL` | `z-ai/glm-5.2` | the backend's `REDPILL_DEFAULT_MODEL` default |
 | `BOTS_IDLE_MS` | `600000` | idle time after `session_settled` before a sandbox stops |
 | `BOTS_SANDBOX_MEMORY_MB` / `_CPUS` / `_PIDS` | `1536` / `1` / `256` | per-sandbox cgroup limits |

@@ -54,7 +54,7 @@ const SECRET_POLL_MS = 5_000;
 async function startSecrets(): Promise<SecretGrants | undefined> {
   try {
     const key = await sealKeyFromDstack();
-    const grants = new SecretGrants({ store: sealedGrantStore(cfg.secretGrantsDir!, key), reader: nodeSecretReader(SECRET_ORIGINS.node), origins: SECRET_ORIGINS });
+    const grants = new SecretGrants({ store: sealedGrantStore(cfg.secretGrantsDir!, key), reader: nodeSecretReader(SECRET_ORIGINS.node, undefined, cfg.renewal && { pin: cfg.renewal }), origins: SECRET_ORIGINS, renewal: cfg.renewal });
     // The deploy check looks for this line: the gateway's user reached the key service (bots/README.md, Deploying).
     console.log(JSON.stringify({ gateway: "secrets_ready" }));
     return grants;
