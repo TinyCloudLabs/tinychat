@@ -51,6 +51,17 @@ describe("standing read integration", () => {
     expect(await client.leaseState(holder, link, originalCid, leaseEnd)).toBe("unavailable");
   });
 
+  test("treats OpenKey having no lease for a held grant as unavailable, and a stopped renewal as stopped", async () => {
+    const keys = signerKeys();
+    const holder = await keys.derive(owner, scope.approvalId, scope.generation);
+    const origins = { links: "https://links.example.test", api: "https://api.example.test", web: "https://openkey.example.test" };
+    let answer: object = { leaseState: "none", originalCid: null, leaseExpiresAt: null };
+    const client = new StandingApprovalClient({ keys, origins, now: () => now, fetch: (async () => Response.json(answer)) as unknown as typeof fetch });
+    expect(await client.leaseState(holder, link, originalCid, leaseEnd)).toBe("unavailable");
+    answer = { leaseState: "stopped", originalCid, leaseExpiresAt: new Date(leaseEnd * 1000).toISOString(), stoppedAt: new Date(now).toISOString() };
+    expect(await client.leaseState(holder, link, originalCid, leaseEnd)).toBe("stopped");
+  });
+
   test("only signs canonical reads under the selected resources and the original proof", async () => {
     const holder = await signerKeys().derive(owner, scope.approvalId, scope.generation);
     const grant = { ownerDid: owner, holderDid: holder.did, originalCid, originalEnd: now / 1000 + 60,

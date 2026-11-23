@@ -109,7 +109,8 @@ export class StandingApprovalClient {
   /**
    * OpenKey's lease status for this approval. `stopped` means the owner stopped renewal in OpenKey: OpenKey revokes
    * the lease at the node, which then ends the grant at its own signed end. It is not a revocation of the grant.
-   * `none` with no grant means OpenKey holds no admitted lease for this approval.
+   * `none` means OpenKey holds no admitted lease for this approval. A held grant always had one, so `none` is
+   * unexpected and reads stop until OpenKey reports the lease again.
    */
   async leaseState(holder: StandingHolder, link: StandingApprovalLink, originalCid: string, leaseEnd: number): Promise<LeaseState> {
     try {
@@ -119,7 +120,6 @@ export class StandingApprovalClient {
         return "unavailable";
       }
       const result = await response.json();
-      if (result.leaseState === "none" && result.originalCid === null) return "stopped";
       if (result.originalCid !== originalCid || Date.parse(result.leaseExpiresAt) !== leaseEnd * 1000) return "unavailable";
       if (result.leaseState === "stopped" || result.leaseState === "expired") return result.leaseState;
       if (result.leaseState !== "active") return "unavailable";

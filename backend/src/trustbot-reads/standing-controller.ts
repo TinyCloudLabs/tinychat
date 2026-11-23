@@ -192,7 +192,7 @@ export class StandingReadsController implements StandingReadControl {
     return {
       issuer: holder.did, requestVersion: 1, targetDid: holder.did, targetPublicJwk: standingTargetPublicJwk(holder),
       nodeOrigin: this.deps.config.nodeOrigin, permissions: standingReadPermissions(areas), purpose: "standing",
-      reason: "Keep the bot’s selected reads on while you’re away.",
+      reason: "Let your bots read the meetings, feed and chats you chose while you're away. Reads only, 7 days at a time, renewing for up to 90 days. Every read is logged. Turn it off in TinyCloud One at any time.",
       grantLifetimeSeconds: STANDING_READ_WINDOW_SECONDS,
       renewal: { version: 1, leaseLifetimeSeconds: STANDING_READ_LEASE_SECONDS },
       resultEncryptionPublicJwk: await this.deps.keys.relayPublicKey(scope),

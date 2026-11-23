@@ -176,6 +176,29 @@ test("uses pinned node status, reads on after renewal stops, drops the key on re
   expect(dropped).toHaveLength(1);
 });
 
+test("an active grant that OpenKey reports without a lease reads nothing and keeps the record", async () => {
+  const { input, target, nodeIdentity, originalEnd } = await setup();
+  const grant = await verifyStandingReadApproval(input);
+  const holder: StandingReadHolder = { did: target.did, signStatus: target.sign, leaseState: async () => "unavailable" };
+  const fetchNode = (async (url: string) => url.endsWith("/node-keys")
+    ? Response.json(nodeIdentity)
+    : Response.json({ cid: grant.originalCid, exists: true, active: true, effective_expiry: originalEnd - 30, renewal_history: [] })) as typeof fetch;
+  const dropped: string[] = [];
+  const refusals: string[] = [];
+  let activated = 0;
+  const runtime = new StandingReadRuntime({
+    config: input.config, now: () => input.now, fetch: fetchNode,
+    store: {
+      current: async () => ({ grant, holder, activate: async () => { activated++; return {} as ReadAccess; } }),
+      drop: async (_owner, cid) => { dropped.push(cid); },
+    },
+  });
+  expect(await runtime.access(input.address, "meetings", undefined, outcome => refusals.push(outcome))).toEqual({ state: "unavailable" });
+  expect(refusals).toEqual(["unavailable"]);
+  expect(activated).toBe(0);
+  expect(dropped).toEqual([]);
+});
+
 test("accepts an extended end only with the pinned node's signed history for this exact lease", async () => {
   const { input, target, renewer, nodeIdentity, originalEnd } = await setup();
   const grant = await verifyStandingReadApproval(input);
