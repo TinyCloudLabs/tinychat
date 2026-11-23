@@ -60,6 +60,10 @@ test("the owner clears the replaced grant after the node confirms its revoke, an
     expect(await replacedNow()).toBe(first.cid);
 
     expect((await fetch(`${base}/renewal`, { method: "DELETE" })).status).toBe(400);
+    for (const spelling of ["prior", first.cid.toUpperCase(), `B${first.cid.slice(1)}`, `u${first.cid.slice(1)}`, `Qm${"a".repeat(44)}`]) {
+      expect((await fetch(`${base}/renewal?replaced=${spelling}`, { method: "DELETE" })).status).toBe(400);
+    }
+    expect(await replacedNow()).toBe(first.cid);
     expect((await fetch(`${base}/renewal?replaced=${second.cid}`, { method: "DELETE" })).status).toBe(204);
     expect(await replacedNow()).toBe(first.cid);
 

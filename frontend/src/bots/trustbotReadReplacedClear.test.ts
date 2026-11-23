@@ -7,6 +7,7 @@ import { ensureTrustBotReadGrant } from "./trustbotReadGrant";
 
 const DID = "did:pkh:eip155:1:0x" + "11".repeat(20);
 const DAY_MS = 86_400_000;
+const CID = "bafkr4ideg6z2yocgkez77nr3outtvdnvjdcvqrs5phnqh7jvtrwnlpm5qu";
 let restore: (() => void) | undefined;
 let fetchSpy: ReturnType<typeof spyOn> | undefined;
 
@@ -39,7 +40,7 @@ function setup(revokeResult: { ok: boolean }) {
 
 test("a confirmed revoke tells the backend to forget the replaced grant, so the next tick has nothing to retry", async () => {
   const { tcw, revoked, renewal } = setup({ ok: true });
-  let stored: string | null = "prior-grant_1";
+  let stored: string | null = CID;
   const cleared: string[] = [];
   fetchSpy = spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
     if (init?.method === "DELETE") {
@@ -51,12 +52,12 @@ test("a confirmed revoke tells the backend to forget the replaced grant, so the 
   });
 
   expect(await ensureTrustBotReadGrant(tcw)).toBe(true);
-  expect(revoked).toEqual(["prior-grant_1"]);
+  expect(revoked).toEqual([CID]);
   expect(cleared).toHaveLength(1);
-  expect(cleared[0]).toEndWith("/api/bots/main/reads/renewal?replaced=prior-grant_1");
+  expect(cleared[0]).toEndWith(`/api/bots/main/reads/renewal?replaced=${CID}`);
 
   expect(await ensureTrustBotReadGrant(tcw)).toBe(false);
-  expect(revoked).toEqual(["prior-grant_1"]);
+  expect(revoked).toEqual([CID]);
   expect(cleared).toHaveLength(1);
 });
 
@@ -65,15 +66,18 @@ test("a revoke the node did not confirm keeps the replaced grant for the next ti
   const methods: string[] = [];
   fetchSpy = spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
     methods.push(init?.method ?? "GET");
-    return Response.json(renewal("prior"));
+    return Response.json(renewal(CID));
   });
 
   expect(await ensureTrustBotReadGrant(tcw)).toBe(false);
-  expect(revoked).toEqual(["prior"]);
+  expect(revoked).toEqual([CID]);
   expect(methods).toEqual(["GET"]);
 });
 
-test.each(["../other", "prior grant", "prior?x=1", "", "a".repeat(129), 42])(
+test.each([
+  "../other", "prior", "", 42,
+  CID.toUpperCase(), "B" + CID.slice(1), "u" + CID.slice(1), "Qm" + "a".repeat(44), CID.slice(0, -1), CID + "a", CID.replace("a", "1"),
+])(
   "a malformed replaced grant ID %p is dropped without asking the node",
   async malformed => {
     const { tcw, revoked, renewal } = setup({ ok: true });

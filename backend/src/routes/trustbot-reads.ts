@@ -85,11 +85,12 @@ export function createTrustBotReadsRouter({ grants, config, auth }: Pick<TrustBo
   // The owner's browser calls this after the node confirms the revoke of the grant a renewal replaced.
   router.delete("/renewal", async (req, res) => {
     const replaced = req.query.replaced;
-    if (typeof replaced !== "string" || !replaced) { res.status(400).json({ error: "invalid_reads" }); return; }
+    if (typeof replaced !== "string") { res.status(400).json({ error: "invalid_reads" }); return; }
     try {
       await grants.clearReplaced(req.user!.address, replaced);
       res.status(204).end();
-    } catch {
+    } catch (error) {
+      if (error instanceof ReadGrantInvalid) { res.status(400).json({ error: "invalid_grant", code: error.code }); return; }
       res.status(503).json({ error: "reads_unavailable" });
     }
   });

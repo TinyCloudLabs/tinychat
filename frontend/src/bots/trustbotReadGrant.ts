@@ -37,8 +37,8 @@ const RENEWAL_MAX_LIFETIME_MS = BOT_GRANT_MAX_LIFETIME_MS - 60_000;
 const STATES: readonly ReadAreaState[] = ["off", "on", "ended"];
 
 const base = import.meta.env.VITE_BACKEND_URL || `${globalThis.location?.protocol ?? "http:"}//localhost:3014`;
-/** A grant ID is a short run of letters, digits, hyphens and underscores; anything else is never sent to the node. */
-const REPLACED_GRANT_CID = /^[A-Za-z0-9_-]{1,128}$/;
+/** The node names a grant by a lowercase base32 CIDv1 (59 characters); any other spelling is never sent to the node. */
+const REPLACED_GRANT_CID = /^b[a-z2-7]{58}$/;
 const currentSession = () => new SessionStore("xyz.tinycloud.tinychat:session");
 
 function renewalLifetime(siwe: string, now = Date.now()): number {

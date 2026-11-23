@@ -12,6 +12,8 @@ import { areaResources, isReadArea, READ_AREA_NAMES, READ_AREAS, type ReadArea, 
 export const TRUSTBOT_READ_GRANT_KEY_PREFIX = "trustbot/read-grants/";
 /** The longest a read grant may last. */
 export const READ_GRANT_MAX_MS = 7 * 86_400_000;
+/** The node names a grant by a lowercase base32 CIDv1 (59 characters). */
+const GRANT_CID = /^b[a-z2-7]{58}$/;
 /** Clock slack between the owner's browser and the backend. */
 const CLOCK_SLACK_MS = 5 * 60_000;
 /** How long one activation is reused before the node is asked again. The grant itself is checked on every read. */
@@ -188,6 +190,7 @@ export class TrustBotReadGrants {
 
   /** Forgets the superseded grant once the owner's browser has seen the node confirm its revoke. */
   async clearReplaced(address: string, cid: string): Promise<void> {
+    if (!GRANT_CID.test(cid)) throw new ReadGrantInvalid("cid");
     const owner = checkAddress(address);
     for (let attempt = 0; attempt < 3; attempt++) {
       const stored = await this.#load(owner);
