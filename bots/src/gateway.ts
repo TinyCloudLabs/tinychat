@@ -521,6 +521,13 @@ export class Gateway {
     return this.#deny(botId, "route", 403, route);
   }
 
+  /** Internal Courier turns share Main's token budget but never enter the sandbox's tool routes. */
+  courierModel(botId: string, peer: string, body: Record<string, unknown>): Promise<Response> {
+    return this.#chat(botId, new Request(`http://gateway${CHAT_PATH}`, {
+      method: "POST", body: JSON.stringify(body), headers: { "content-type": "application/json" },
+    }), () => {}, peer);
+  }
+
   /** Tokens counted today for one bot, and for all bots. */
   usage(botId: string): { bot: number; total: number } {
     this.#rollDay();
@@ -851,40 +858,45 @@ export class Gateway {
     }
   }
 
-  async #chat(botId: string, req: Request, streaming: () => void): Promise<Response> {
+  async #chat(botId: string, req: Request, streaming: () => void, courierPeer?: string): Promise<Response> {
+    const deny = (reason: string, status: number) => {
+      if (!courierPeer) return this.#deny(botId, reason, status);
+      console.log(JSON.stringify({ gateway: "courier", peer: courierPeer, outcome: reason }));
+      return failure(status, "Request refused by the bots gateway.");
+    };
     // Everything that can refuse without reading the body comes first: size header, budget store, budget, the
     // bot's one slot.
-    if (Number(req.headers.get("content-length") ?? 0) > this.#cfg.maxBodyBytes) return this.#deny(botId, "body_size", 413);
-    if (this.#unsaved && !this.#persist()) return this.#deny(botId, "budget_store", 503);
-    if (this.#ownersUnsaved && !this.#persistOwners()) return this.#deny(botId, "budget_store", 503);
-    if (this.#remaining(botId) <= 0) return this.#deny(botId, "budget", 429);
-    if (this.#inflight.has(botId)) return this.#deny(botId, "concurrency", 429);
+    if (Number(req.headers.get("content-length") ?? 0) > this.#cfg.maxBodyBytes) return deny("body_size", 413);
+    if (this.#unsaved && !this.#persist()) return deny("budget_store", 503);
+    if (this.#ownersUnsaved && !this.#persistOwners()) return deny("budget_store", 503);
+    if (this.#remaining(botId) <= 0) return deny("budget", 429);
+    if (this.#inflight.has(botId)) return deny("concurrency", 429);
     this.#inflight.add(botId);
     let relaying = false;
     try {
       const raw = await readBody(req, this.#cfg.maxBodyBytes, this.#cfg.bodyTimeoutMs);
-      if (raw === "too_large") return this.#deny(botId, "body_size", 413);
-      if (raw === "timeout") return this.#deny(botId, "body_timeout", 408);
+      if (raw === "too_large") return deny("body_size", 413);
+      if (raw === "timeout") return deny("body_timeout", 408);
       let parsed: unknown;
       try {
         parsed = JSON.parse(new TextDecoder().decode(raw));
       } catch {
-        return this.#deny(botId, "body", 400);
+        return deny("body", 400);
       }
       const body = chatBody(parsed, this.#cfg);
-      if (!body) return this.#deny(botId, "body", 400);
+      if (!body) return deny("body", 400);
       // Never let a request overshoot, alone or alongside other bots: the prompt must fit what is left, the output
       // is capped to the rest, and the whole estimate is reserved against this bot's and the global budget before
       // the call (settled to the reported usage afterwards).
       const estimate = Math.ceil(raw.byteLength / BYTES_PER_TOKEN);
       const remaining = this.#remaining(botId);
-      if (estimate >= remaining) return this.#deny(botId, "budget", 429);
+      if (estimate >= remaining) return deny("budget", 429);
       body.max_tokens = Math.min(body.max_tokens as number, remaining - estimate);
       const reservation = estimate + (body.max_tokens as number);
       const day = this.#day;
       if (!this.#charge(botId, reservation, day)) {
         this.#charge(botId, -reservation, day);
-        return this.#deny(botId, "budget_store", 503);
+        return deny("budget_store", 503);
       }
 
       streaming();
@@ -896,7 +908,7 @@ export class Gateway {
         return failure(502, "Model unavailable.");
       }
       relaying = true;
-      return this.#relay(botId, upstream, body.stream === true, reservation, day);
+      return this.#relay(botId, upstream, body.stream === true, reservation, day, courierPeer);
     } finally {
       if (!relaying) this.#inflight.delete(botId);
     }
@@ -906,7 +918,7 @@ export class Gateway {
    * Streams the upstream response back, counting bytes and usage; when it ends, settles the reservation to the
    * reported usage (the whole reservation if none arrived, nothing for an upstream error) and frees the slot.
    */
-  #relay(botId: string, upstream: UpstreamCall, streamed: boolean, reservation: number, day: string): Response {
+  #relay(botId: string, upstream: UpstreamCall, streamed: boolean, reservation: number, day: string, courierPeer?: string): Response {
     const { response, done, abort } = upstream;
     const usage = new UsageReader(streamed);
     let finished = false;
@@ -917,7 +929,9 @@ export class Gateway {
       this.#inflight.delete(botId);
       const tokens = usage.tokens ?? (response.ok ? reservation : 0);
       this.#charge(botId, tokens - reservation, day);
-      console.log(JSON.stringify({ gateway: "allow", bot: botId.slice(0, 12), route: `POST ${CHAT_PATH}`, status: response.status, tokens }));
+      console.log(JSON.stringify(courierPeer
+        ? { gateway: "courier", peer: courierPeer, outcome: response.ok ? "model_ok" : "model_unavailable" }
+        : { gateway: "allow", bot: botId.slice(0, 12), route: `POST ${CHAT_PATH}`, status: response.status, tokens }));
     };
     // A reader that stops pulling must not hold the bot's slot past the deadline.
     upstream.signal.addEventListener("abort", finish, { once: true });

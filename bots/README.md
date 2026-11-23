@@ -18,6 +18,34 @@ except the ingress:
 
 Treat every sandbox as hostile: OMP has a shell, so each owner can run any code as root inside their sandbox.
 
+## Courier gateway (TC-4058)
+
+`BOTS_COURIER_ENABLED` must equal `true`; otherwise the gateway starts no Courier intake and its Courier
+control routes return 404. Only explicit addresses in `BOTS_TEST_ACCOUNTS` are eligible; `*` enables none.
+The gateway polls paired peers in-process every 15 seconds. An expired owner grant or peer delegation
+stops intake. No CLI, wake adapter or sandbox is used.
+
+The gateway seals `courier-intake/` beside its budget file with the dstack sealing key. A receipt is saved
+before the model or send runs. A crash can lose a reply; a claimed receipt restored at startup is logged
+as `reply_lost` and never retried. Malformed or unreadable receipt state disables Courier rather than
+resetting replay protection. Deleting a conversation never deletes its receipts.
+
+Each peer is limited to 100 inbound messages per rolling hour, across restarts. Conversations retain the
+latest 200 messages each, at most 50 conversations per owner, with oldest entries removed first and a
+30-day text TTL. The owner reads and deletes them from **Courier conversations** in TrustBot's panel.
+The backend proxies owner-authenticated thread list, read and delete routes under
+`/api/bots/main/courier/threads`; these routes cannot send a reply.
+
+Every Courier turn pulls the owner's enabled read areas from the signed backend status route; failure
+means no reads. Read tools share Main's daily allowance and model budget. Peer text uses the existing
+untrusted-record wrapper. Web, secret, question, action and bot-message tools are absent and refused at
+dispatch. Requests and tasks get the fixed refusal; informs are stored without a reply.
+
+Replies are bound to the admitted peer, thread and inbound message, including an idempotency key. A
+reply copying 12 consecutive words or 80 consecutive characters from a read result, after whitespace
+and case normalization, is regenerated once without tools; another match produces the fixed summary
+refusal. Courier logs contain only `gateway`, a 12-character SHA-256 peer prefix and `outcome`.
+
 ## Internal API
 
 All requests except `/healthz` are signed by the backend (`src/signed-call.ts`; the backend's copy is

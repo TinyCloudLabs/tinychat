@@ -133,8 +133,8 @@ export class MeetingDesk {
   }
 
   /** The tools of each area the owner's setting has on. */
-  tools(botId: string): ReadonlyArray<{ name: string }> {
-    return (this.#settings.get(botId)?.areas ?? []).flatMap(area => AREA_TOOLS[area].tools);
+  tools(botId: string, courierAreas?: readonly ReadArea[]): ReadonlyArray<{ name: string }> {
+    return (courierAreas ?? this.#settings.get(botId)?.areas ?? []).flatMap(area => AREA_TOOLS[area].tools);
   }
 
   handles(name: unknown): name is ReadToolName {
@@ -152,15 +152,18 @@ export class MeetingDesk {
     return current === undefined || current === mark;
   }
 
-  async call(botId: string, name: ReadToolName, args: Record<string, unknown>) {
+  async call(botId: string, name: ReadToolName, args: Record<string, unknown>, courier?: { peer: string; setting: ReadsPush; botId: string }) {
     const area = areaOf(name);
     const errors = AREA_TOOLS[area].errors;
-    const log = (outcome: string) => console.log(JSON.stringify({ gateway: "reads", bot: botId.slice(0, 12), tool: name, outcome }));
+    const log = (outcome: string) => console.log(JSON.stringify(courier
+      ? { gateway: "courier", peer: courier.peer, outcome }
+      : { gateway: "reads", bot: botId.slice(0, 12), tool: name, outcome }));
     const refuse = (error: ReadError, outcome: string = error) => {
       log(outcome);
       return toolText(error === "not_found" ? errors.not_found ?? errors.unavailable : errors[error], true);
     };
-    const setting = this.#settings.get(botId);
+    const setting = courier?.setting ?? this.#settings.get(botId);
+    if (courier && (!setting?.owner || botIdFor(setting.owner) !== botId || !BOT_ID.test(courier.botId) || !CONVERSATION_ID.test(setting.conversation))) return refuse("off");
     if (!setting?.areas.includes(area) || !setting.owner) return refuse("off");
     if (!this.#options.backendCallSecret) return refuse("unavailable", "no_secret");
     const day = new Date(this.#now()).toISOString().slice(0, 10);
@@ -174,7 +177,8 @@ export class MeetingDesk {
       const answer = await this.#ask(setting.owner, name, args);
       if (!answer.ok) return refuse(answer.error);
       // The conversation is marked before the result reaches it; a mark that cannot be kept withholds the result.
-      if (this.#marks.get(botId) !== setting.conversation && !this.#mark(botId, setting.conversation)) return refuse("unavailable", "held_store");
+      const markedBot = courier?.botId ?? botId;
+      if (this.#marks.get(markedBot) !== setting.conversation && !this.#mark(markedBot, setting.conversation)) return refuse("unavailable", "held_store");
       log("ok");
       return toolText(untrustedRecord(isFeedChatTool(name) ? FEED_CHAT_RECORD_KIND[name] : "meeting", answer.text));
     } finally {
