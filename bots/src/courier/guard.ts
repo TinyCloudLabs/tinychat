@@ -34,9 +34,25 @@ export function copiesReadRecord(reply: string, records: readonly string[]): boo
   return false;
 }
 
-/** The only producer of GuardedReply: undefined when the text copies a read record. */
-export function guardReply(text: string, records: readonly string[]): GuardedReply | undefined {
-  if (copiesReadRecord(text, records)) return undefined;
+/** What one Courier turn read. Only courierTurn opens one (openTurnReadLog), so a reply is always checked against real reads. */
+class TurnReadLog {
+  readonly #records: string[] = [];
+  record(texts: readonly string[]): void { this.#records.push(...texts); }
+  get records(): readonly string[] { return this.#records; }
+}
+export type { TurnReadLog };
+const opened = new WeakSet<TurnReadLog>();
+/** For courierTurn only: one log per turn, filled with every successful read result. */
+export function openTurnReadLog(): TurnReadLog {
+  const log = new TurnReadLog();
+  opened.add(log);
+  return log;
+}
+
+/** The only producer of GuardedReply: undefined when the text copies a read this turn made. Refuses a log courierTurn did not open. */
+export function guardReply(text: string, log: TurnReadLog): GuardedReply | undefined {
+  if (!opened.has(log)) throw new Error("courier_guard_unissued");
+  if (copiesReadRecord(text, log.records)) return undefined;
   const reply: GuardedReply = Object.freeze({ kind: "guarded", text });
   issued.add(reply);
   return reply;

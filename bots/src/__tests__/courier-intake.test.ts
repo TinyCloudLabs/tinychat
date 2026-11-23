@@ -2,7 +2,8 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { guardReply, replyText, type CourierReplyText } from "../courier/guard";
+import { replyText, type CourierReplyText } from "../courier/guard";
+import { guardedAnswer } from "./courier-fixtures";
 import { CourierIntake, courierIntakeStore } from "../courier/intake";
 
 const dirs: string[] = [];
@@ -34,7 +35,7 @@ async function setup() {
       reply: async (message: { threadId: string }, text: CourierReplyText) => { sent.push({ thread: message.threadId, text: replyText(text) }); if (crash) throw new Error("lost ack"); },
       acknowledge: async () => { acks++; if (ackFails) throw new Error("offline"); },
     }),
-    turn: async () => { turns++; return guardReply("answer", [])!; },
+    turn: async () => { turns++; return guardedAnswer("answer"); },
     now: () => now, log: (entry: { gateway: "courier"; peer: string; outcome: string }) => outcomes.push(entry),
   };
   const start = () => new CourierIntake({ ...options, store: courierIntakeStore(dir, key) });
