@@ -1,0 +1,11 @@
+{
+  "versions": {
+    "exo-desktop": "0.20.1",
+    "@tinychat/frontend": "0.20.1",
+    "@tinychat/backend": "0.13.1"
+  },
+  "changesets": [
+    ".changeset/pre/tc-3933-keep-ungranted.md",
+    ".changeset/pre/tc-3947-replica-revoke.md"
+  ]
+}
