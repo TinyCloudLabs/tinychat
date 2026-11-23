@@ -9,6 +9,7 @@ import { COURIER_HANDLE, type CourierPeer, type CourierPeerStore, type PendingPa
 export const COURIER_PAIRING_TTL_MS = 15 * 60_000;
 export const COURIER_PEER_MAX_MS = 7 * 86_400_000;
 export const COURIER_MAX_ARTIFACT = 64 * 1024;
+export const COURIER_MAX_PENDING = 10;
 export interface PairingAdapter {
   context(owner: string, grant: CourierGrant, store: CourierPeerStore): Promise<CourierContext>;
   acceptPairing(ctx: CourierContext, artifact: string): Promise<PairPending>;
@@ -24,7 +25,7 @@ export interface CourierPairing {
   maintain(owner: string): Promise<void>;
 }
 class PairingError extends Error {
-  constructor(readonly code: "invalid" | "duplicate" | "pending_expired" | "courier_unavailable" | "courier_update_required", readonly status: number) { super(code); }
+  constructor(readonly code: "invalid" | "duplicate" | "pending_expired" | "too_many_pending" | "courier_unavailable" | "courier_update_required", readonly status: number) { super(code); }
 }
 
 function pairingFailure(error: unknown): PairingError {
@@ -133,6 +134,10 @@ export function createCourierPairing(options: { store: CourierPeerStore; grants:
             await store.retire(owner, handle);
             await cleanRetired(owner);
             if ((await store.listRetired(owner)).some(peer => peer.handle === handle)) throw new PairingError("courier_unavailable", 503);
+          }
+          // Unsigned A is enough to open a pending row, so live pending rows per owner are capped.
+          if ((await store.listPending(owner)).filter(row => row.pending.expiresAt > now()).length >= COURIER_MAX_PENDING) {
+            throw new PairingError("too_many_pending", 429);
           }
           const startedAt = now();
           let pending: PairPending;

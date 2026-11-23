@@ -279,3 +279,15 @@ test("a C verified after the pending window closed is revoked, and a failed revo
   expect(await store.listRetired(owner)).toEqual([]);
   expect(await pairing.list(owner)).toEqual([]);
 });
+
+test("at most ten live pending pairings per owner; the eleventh A is refused before the library", async () => {
+  const { pairing, adapter, advance } = setup();
+  const accept = adapter.acceptPairing;
+  let accepted = 0;
+  adapter.acceptPairing = async (ctx, artifact) => { accepted++; return { ...await accept(ctx, artifact), handle: JSON.parse(artifact).callMe }; };
+  for (let index = 0; index < 10; index++) await pairing.pair(owner, JSON.stringify({ ...start, callMe: `reader${index}` }));
+  expect(await pairing.pair(owner, JSON.stringify({ ...start, callMe: "reader10" })).catch(error => error)).toMatchObject({ code: "too_many_pending", status: 429 });
+  expect(accepted).toBe(10);
+  advance(15 * 60_000);
+  expect(await pairing.pair(owner, JSON.stringify({ ...start, callMe: "reader10" }))).toMatchObject({ pending: true, handle: "reader10" });
+});
