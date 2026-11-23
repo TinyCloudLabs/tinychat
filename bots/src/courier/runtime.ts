@@ -19,6 +19,8 @@ import { replyToCourierThread } from "./reply";
 import { courierTurn } from "./turn";
 
 export interface CourierGateway {
+  /** One pass over pairing upkeep and intake; joins a pass already running. */
+  tick(): Promise<void>;
   stop(): void;
   control(req: Request): Promise<Response | undefined>;
 }
@@ -79,19 +81,19 @@ export async function startCourierGateway(options: { cfg: GatewayConfig; gateway
       });
     },
   }));
-  let ticking = false;
-  const tick = async () => {
-    if (ticking) return;
-    ticking = true;
+  let running: Promise<void> | undefined;
+  // One pass at a time: a caller during a pass joins it. The 15 s timer and the loopback test share this.
+  const tick = () => running ??= (async () => {
     try {
       for (const owner of owners) await pairing.maintain(owner).catch(() => {});
       await intake.poll();
-    } finally { ticking = false; }
-  };
+    } finally { running = undefined; }
+  })();
   void tick().catch(() => {});
   const timer = setInterval(() => void tick().catch(() => {}), 15_000);
   timer.unref();
   return {
+    tick,
     stop() { clearInterval(timer); peers.close(); },
     async control(req: Request): Promise<Response | undefined> {
       const match = /^\/courier\/([^/]+)(\/.*)$/.exec(new URL(req.url).pathname);
