@@ -127,10 +127,12 @@ describe("status and submit", () => {
       return Response.json({ state: "active", expiresAt: "2026-11-29T17:00:00.000Z" });
     });
     const pair = { secretsGrant: "s", meetingsGrant: "m", siwe: "w", signature: "g" };
-    expect(await client.submit(pair)).toEqual({ status: "ok", value: { state: "active", expiresAt: "2026-11-29T17:00:00.000Z" } });
-    expect(sent).toEqual({ body: pair, type: "application/json" });
+    expect(await client.submit(pair, ["old-1", "old-2"])).toEqual({ status: "ok", value: { state: "active", expiresAt: "2026-11-29T17:00:00.000Z" } });
+    expect(sent).toEqual({ body: { ...pair, replaces: ["old-1", "old-2"] }, type: "application/json" });
 
-    expect((await clientAnswering(() => Response.json({ error: "bad" }, { status: 400 })).client.submit(pair)).status).toBe("rejected");
-    expect((await clientAnswering(() => new Response(null, { status: 503 })).client.submit(pair)).status).toBe("retryable");
+    expect((await clientAnswering(() => Response.json({ error: "bad" }, { status: 400 })).client.submit(pair, [])).status).toBe("rejected");
+    // A refusal because the ids named are not the ids held is a 409: the pair is not saved.
+    expect((await clientAnswering(() => Response.json({ error: "replaces_mismatch" }, { status: 409 })).client.submit(pair, ["a", "b"])).status).toBe("rejected");
+    expect((await clientAnswering(() => new Response(null, { status: 503 })).client.submit(pair, [])).status).toBe("retryable");
   });
 });

@@ -78,7 +78,8 @@ export interface FirefliesImportGrants {
 
 export interface FirefliesImportApi {
   status(): Promise<ConnectorWebhooksResult<FirefliesImportStatus>>;
-  submit(grants: FirefliesImportGrants): Promise<ConnectorWebhooksResult<{ state: "active"; expiresAt: string }>>;
+  /** `replaces` names the ids of the pair the server holds now, or none; the server refuses the pair when they differ. */
+  submit(grants: FirefliesImportGrants, replaces: readonly string[]): Promise<ConnectorWebhooksResult<{ state: "active"; expiresAt: string }>>;
   removeGrant(): Promise<ConnectorWebhooksResult<null>>;
 }
 
@@ -191,9 +192,18 @@ export interface FirefliesImportDeps {
   revoke: (cid: string) => Promise<boolean>;
 }
 
+/** Withdraws the permissions the new pair replaced, each with one more try; true when one could not be confirmed. */
+async function withdrawReplaced(deps: Pick<FirefliesImportDeps, "revoke">, held: readonly string[], fresh: readonly string[]): Promise<boolean> {
+  const stale = held.filter((cid) => !fresh.includes(cid));
+  if (stale.length === 0) return false;
+  return revokeImportGrants({ listGrantCids: async () => ({ status: "ok", value: stale }), revoke: deps.revoke }, stale);
+}
+
 /**
- * Signs a new pair, hands it to the server, then withdraws the pair it replaces. A refused pair is withdrawn again.
- * A lost answer may follow a saved pair, so it is neither withdrawn nor assumed: the server is asked what it holds.
+ * Signs a new pair, hands it to the server with the ids of the pair it replaces, then withdraws that pair. The server
+ * refuses the pair when those ids are not what it holds, so a turn off or another renewal that got there first is
+ * never undone. A refused pair is withdrawn again. A lost answer may follow a saved pair, so it is neither withdrawn
+ * nor assumed: the server is asked what it holds, and the pair is withdrawn only when it does not hold it.
  */
 export async function replaceFirefliesImportGrants(deps: FirefliesImportDeps, current: FirefliesImportStatus): Promise<TurnOnOutcome> {
   let grants: FirefliesImportGrants;
@@ -205,24 +215,30 @@ export async function replaceFirefliesImportGrants(deps: FirefliesImportDeps, cu
     }
     return { kind: "failed" };
   }
-  const submitted = await deps.api.submit(grants);
+  const submitted = await deps.api.submit(grants, current.grantCids);
   if (submitted.status === "ok") {
-    const fresh = firefliesGrantCids(grants);
-    const stale = current.grantCids.filter((cid) => !fresh.includes(cid));
-    const unconfirmed = stale.length > 0 && (await revokeImportGrants({ listGrantCids: async () => ({ status: "ok", value: stale }), revoke: deps.revoke }, stale));
-    return { kind: "on", expiresAt: submitted.value.expiresAt, oldGrantsUnconfirmed: unconfirmed };
+    return {
+      kind: "on",
+      expiresAt: submitted.value.expiresAt,
+      oldGrantsUnconfirmed: await withdrawReplaced(deps, current.grantCids, firefliesGrantCids(grants)),
+    };
   }
   if (submitted.status === "rejected" || submitted.status === "feature-dark") {
     for (const cid of firefliesGrantCids(grants)) await deps.revoke(cid).catch(() => false);
     return { kind: "failed" };
   }
   if (submitted.status === "unauthenticated") return { kind: "needs-sign-in" };
-  // Offline or a server error: the pair may have been saved.
+  // Offline or a server error: the pair may have been saved, so the server is asked what it holds.
   const after = await deps.api.status();
-  if (after.status === "ok" && after.value.state === "active" && after.value.expiresAt) {
+  if (after.status === "ok") {
     const fresh = firefliesGrantCids(grants);
     if (after.value.grantCids.some((cid) => fresh.includes(cid))) {
-      return { kind: "on", expiresAt: after.value.expiresAt, oldGrantsUnconfirmed: false };
+      if (after.value.state === "active" && after.value.expiresAt) {
+        return { kind: "on", expiresAt: after.value.expiresAt, oldGrantsUnconfirmed: await withdrawReplaced(deps, current.grantCids, fresh) };
+      }
+    } else {
+      // The server does not hold the new pair, so nothing records it: withdraw it rather than leave it live for a week.
+      for (const cid of fresh) await deps.revoke(cid).catch(() => false);
     }
   }
   return { kind: "unavailable" };
