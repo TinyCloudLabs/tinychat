@@ -1374,6 +1374,39 @@ export async function purgeConnector(
   return { ok: true, data: undefined };
 }
 
+/** Extra passes after the first purge when listing still finds records (a late server write or another device). */
+const PURGE_VERIFY_RETRIES = 3;
+
+/**
+ * {@link purgeConnector}, then list both prefixes again from the network. Records still there
+ * (written by the server while the purge ran, or by another device) are purged again; if any
+ * remain after the retries the purge fails with a retryable error rather than reporting a delete
+ * that did not hold.
+ */
+export async function purgeConnectorVerified(
+  tcw: TinyCloudWeb,
+  source: string,
+): Promise<StoreResult<void>> {
+  const first = await purgeConnector(tcw, source);
+  if (!first.ok) return first;
+  for (let pass = 0; ; pass += 1) {
+    const meetings = await listKvPrefix(tcw, `${CONNECTORS_KV_PREFIX}/${source}/meeting/`);
+    if (!meetings.ok) return meetings;
+    const transcripts = await listKvPrefix(tcw, `${CONNECTORS_KV_PREFIX}/${source}/transcript/`);
+    if (!transcripts.ok) return transcripts;
+    if (meetings.data.length + transcripts.data.length === 0) return { ok: true, data: undefined };
+    if (pass >= PURGE_VERIFY_RETRIES) {
+      return fail(
+        { code: "KV_PURGE_INCOMPLETE", message: "some meetings were still in your space after the delete; try again" },
+        "purgeConnectorVerified(relist)",
+        storageScopeFor(tcw),
+      );
+    }
+    const again = await purgeConnector(tcw, source);
+    if (!again.ok) return again;
+  }
+}
+
 // ── Normalization (Fireflies raw → NormalizedMeeting) ──────────────────
 
 /** True when |a - b| exceeds max(120, 0.5 * b). Guards against unit drift. */

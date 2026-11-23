@@ -24,7 +24,7 @@ const ACCEPT_WINDOW_MS = 3_600_000;
 export interface FirefliesDelegationRoutesConfig {
   delegate: FirefliesDelegateIdentity;
   configuredHost: string;
-  store: Pick<FirefliesGrantStore, "store" | "status" | "remove">;
+  store: Pick<FirefliesGrantStore, "store" | "status" | "remove" | "activeGrantCids">;
   authMiddleware: RequestHandler;
   coordinator?: TenantCoordinator;
   now?: () => number;
@@ -116,6 +116,27 @@ export function createFirefliesDelegationRouter(config: FirefliesDelegationRoute
       res.json({ state: status.state, expiresAt: status.expiresAt });
     } catch {
       console.warn("[fireflies-delegation] op=status result=unavailable");
+      res.status(503).json({ error: "unavailable" });
+    }
+  });
+
+  // The two grant ids, for the owner's browser to revoke at the node when it turns the import off or purges.
+  // Ids only. `[]` when no pair is active, since a lapsed pair holds nothing left to revoke.
+  router.get("/grants", async (req: Request, res: Response) => {
+    const user = requireUser(req, res);
+    if (!user) return;
+    const address = user.address.toLowerCase();
+    try {
+      const cids = await coordinator.run(address, () =>
+        config.store.activeGrantCids(address, {
+          configuredHost: config.configuredHost,
+          deps,
+          now: nowFn(),
+        }),
+      );
+      res.json({ grantCids: cids ? [cids.secrets, cids.meetings] : [] });
+    } catch {
+      console.warn("[fireflies-delegation] op=grants result=unavailable");
       res.status(503).json({ error: "unavailable" });
     }
   });
