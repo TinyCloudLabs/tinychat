@@ -48,7 +48,7 @@ export function isSecretsUnlocked(tcw: SecretsTcw): boolean {
 
 /** Message we substitute for the cold-cache unlock failure. */
 export const UNLOCK_NEEDS_SIGN_IN_MESSAGE =
-  "Please sign out and sign back in to unlock secrets.";
+  "Sign out, then sign in, to open your secrets.";
 
 /**
  * True if `err` is the vault's "no signer, no cached signature" failure.

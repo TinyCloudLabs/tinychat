@@ -520,7 +520,7 @@ const FirefliesConnectDialog: FC<ConnectorConnectDialogProps> = ({
       if (!unlock.ok) {
         setError({
           kind: "storage",
-          message: unlock.error?.message ?? "Could not unlock secrets",
+          message: unlock.error?.message ?? "Couldn't open your secrets. Try again.",
         });
         setPhase("verified");
         return;
@@ -725,8 +725,8 @@ const VerifiedPanel: FC<{
       </div>
     </div>
     <p className="text-xs text-muted-foreground">
-      TinyCloud will ask for a wallet signature to unlock your encrypted
-      secrets, then save this key and run an initial sync.
+      TinyCloud One may ask you to approve in OpenKey, then saves this key,
+      encrypted, and starts the first sync.
     </p>
     {error && (
       <p role="alert" className="text-xs text-destructive">
@@ -1250,7 +1250,7 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
         if (!unlock.ok) {
           failWith({
             kind: "storage",
-            message: unlock.error?.message ?? "Could not unlock secrets",
+            message: unlock.error?.message ?? "Couldn't open your secrets. Try again.",
           });
           return;
         }
