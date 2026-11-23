@@ -24,10 +24,14 @@ const RETRY_MS = 60_000;
 /** History steps that fail because the session is gone. */
 const SESSION_GONE: Record<string, true> = { history_session_missing: true, history_session_expired: true, history_signed_out: true };
 
-/** A session that is gone reads as signed out, not as a reply or a history that didn't come. Anything else is returned as it is. */
-function signedOutIfGone(cause: unknown): unknown {
-  const gone = (cause instanceof Error && Object.hasOwn(SESSION_GONE, cause.message)) || openKeyFailureOf(cause).kind === "session-ended";
-  return gone ? new BotsError("signed_out") : cause;
+/**
+ * A session that is gone reads as signed out, not as a reply or a history that didn't come. Anything else is returned as it
+ * is. A send also counts an answer from OpenKey that the session ended; loading the history counts only the history steps.
+ * The original failure stays on the error as its cause, for the console.
+ */
+function signedOutIfGone(cause: unknown, { openKey }: { openKey: boolean }): unknown {
+  const gone = (cause instanceof Error && Object.hasOwn(SESSION_GONE, cause.message)) || (openKey && openKeyFailureOf(cause).kind === "session-ended");
+  return gone ? new BotsError("signed_out", { cause }) : cause;
 }
 
 /** Authorizes Main's history for a send. */
@@ -37,7 +41,7 @@ async function prepareHistory(tcw: TinyCloudWeb): Promise<void> {
     await authorizeBotHistory(tcw, undefined, undefined, { includeLegacyNetwork: false });
     await ensureBotHistoryGrant(tcw);
   } catch (cause) {
-    throw signedOutIfGone(cause);
+    throw signedOutIfGone(cause, { openKey: true });
   }
 }
 
@@ -69,7 +73,7 @@ function MainAsk({ api, tcw, onReconnect }: { api: BotsApi; tcw?: TinyCloudWeb; 
       await authorizeBotHistory(tcw);
       await ensureBotHistoryGrant(tcw);
     } catch (cause) {
-      throw signedOutIfGone(cause);
+      throw signedOutIfGone(cause, { openKey: false });
     }
     const archived = await readBotHistory(tcw, signal, { reseal: true });
     return [...new Map([...archived, ...local].map(message => [message.id, message])).values()];

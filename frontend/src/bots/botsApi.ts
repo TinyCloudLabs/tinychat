@@ -38,8 +38,8 @@ export type MainEvent =
   | { type: "error"; code: BotsErrorCode };
 
 export class BotsError extends Error {
-  constructor(readonly code: BotsErrorCode) {
-    super(`Bots request failed: ${code}`);
+  constructor(readonly code: BotsErrorCode, options?: { cause?: unknown }) {
+    super(`Bots request failed: ${code}`, options);
     this.name = "BotsError";
   }
 }

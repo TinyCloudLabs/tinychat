@@ -1,6 +1,6 @@
 // A session that was renewed past the end of its first signed time still works for the app, but Main's history cannot be
 // authorized with the first signed time. The owner is told to sign in, with a Sign in button when the box has an action for it.
-import { afterEach, expect, mock, test } from "bun:test";
+import { afterEach, expect, mock, spyOn, test } from "bun:test";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { SessionStore } from "@tinyboilerplate/client";
@@ -34,11 +34,11 @@ afterEach(() => {
   globalThis.fetch = realFetch;
 });
 
-/** A client whose signed session ended a minute ago while every grant it holds is still live. */
-function pastItsFirstSignedEnd(noSession = false): TinyCloudWeb {
+/** A client whose signed session ended a minute ago while every grant it holds is still live, or, with a `failure`, a live session whose history step fails with it. */
+function pastItsFirstSignedEnd(noSession = false, failure?: unknown): TinyCloudWeb {
   const session = {
     address, chainId: 1, sessionKey: "key-1", signature: "fixture",
-    siwe: `URI: did:key:fixture\nExpiration Time: ${new Date(Date.now() - 60_000).toISOString()}`,
+    siwe: `URI: did:key:fixture\nExpiration Time: ${new Date(Date.now() + (failure === undefined ? -60_000 : 3_600_000)).toISOString()}`,
   };
   const descriptor = {
     networkId: encryptionNetworkId(address), keyPath: BOT_HISTORY_KEY_PATH, alg: "x25519-aes256gcm/v1", keyVersion: 1,
@@ -49,7 +49,7 @@ function pastItsFirstSignedEnd(noSession = false): TinyCloudWeb {
     session: () => (noSession ? undefined : { ...session }),
     hasPermissions: () => true,
     setRuntimePermissionSigner: () => {},
-    ensureEncryptionNetwork: async () => {},
+    ensureEncryptionNetwork: async () => { if (failure !== undefined) throw failure; },
     getEncryptionNetwork: async () => ({}),
     keys: { ensureKey: async () => descriptor },
     kvForSpace: () => ({ list: async () => ({ ok: true, data: { keys: [], truncated: false } }) }),
@@ -57,7 +57,7 @@ function pastItsFirstSignedEnd(noSession = false): TinyCloudWeb {
   } as unknown as TinyCloudWeb;
 }
 
-async function openWithEndedSession(onReconnect?: () => void, noSession = false) {
+async function openWithEndedSession(onReconnect?: () => void, noSession = false, failure?: unknown) {
   restore = installDom({});
   new SessionStore("xyz.tinycloud.tinychat:session").setSession("fixture-token", 3600, address);
   globalThis.fetch = (async (input: RequestInfo | URL) => {
@@ -69,7 +69,7 @@ async function openWithEndedSession(onReconnect?: () => void, noSession = false)
   document.body.append(host);
   const root = createRoot(host);
   mounted = root;
-  await act(async () => root.render(<HomeAskBox api={api} tcw={pastItsFirstSignedEnd(noSession)} onReconnect={onReconnect} />));
+  await act(async () => root.render(<HomeAskBox api={api} tcw={pastItsFirstSignedEnd(noSession, failure)} onReconnect={onReconnect} />));
   await act(async () => { for (let i = 0; i < 6; i++) await Promise.resolve(); });
 
   const chip = document.querySelector('button[aria-label="Open TrustBot\'s chat"]') as HTMLButtonElement;
@@ -124,4 +124,32 @@ test("a send keeps its own line when the sign-in ran out", async () => {
   const text = document.body.textContent ?? "";
   expect(text).toContain("Your session expired. Sign in again to talk to TrustBot.");
   for (const code of RAW_CODES) expect(text).not.toContain(code);
+});
+
+test("a history that fails for a reason that is not the session keeps the failure line and its retry", async () => {
+  await openWithEndedSession(() => {}, false, new Error("network down"));
+  const text = document.body.textContent ?? "";
+  expect(text).toContain("Couldn't load your earlier messages with TrustBot.");
+  expect(text).toContain("Try again");
+  expect(text).not.toContain(SIGN_IN_LINE);
+  expect(signInButton()).toBeUndefined();
+});
+
+test("an answer from OpenKey that its session ended, while the history loads, keeps the failure line and its retry", async () => {
+  await openWithEndedSession(() => {}, false, { code: "UNAUTHORIZED", message: "unauthorized" });
+  const text = document.body.textContent ?? "";
+  expect(text).toContain("Couldn't load your earlier messages with TrustBot.");
+  expect(text).toContain("Try again");
+  expect(text).not.toContain(SIGN_IN_LINE);
+});
+
+test("the console keeps the original failure of a history that reads as signed out", async () => {
+  const warn = spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    await openWithEndedSession(() => {});
+    const logged = warn.mock.calls.map(call => call[1] as { code?: string; cause?: { message?: string } | undefined }).find(fields => fields?.code === "signed_out");
+    expect(logged?.cause?.message).toBe("history_session_expired");
+  } finally {
+    warn.mockRestore();
+  }
 });
