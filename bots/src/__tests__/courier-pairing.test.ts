@@ -338,3 +338,20 @@ test("an adapter failure after the library finalized C answers 400 and revokes t
   expect(await store.listRetired(owner)).toEqual([]);
   expect(await pairing.list(owner)).toEqual([]);
 });
+
+test("renewal_unavailable is logged once per peer per 24 hours, not on every maintenance tick", async () => {
+  const { pairing, adapter, advance } = setup();
+  adapter.renewPeer = async () => { throw new Error("renewal_unavailable"); };
+  await pairing.pair(owner, JSON.stringify(start));
+  await pairing.pair(owner, JSON.stringify(final));
+  const log = spyOn(console, "log").mockImplementation(() => {});
+  try {
+    for (let tick = 0; tick < 5; tick++) { await pairing.maintain(owner); advance(15_000); }
+    expect(log).toHaveBeenCalledTimes(1);
+    advance(86_400_000);
+    await pairing.maintain(owner);
+    await pairing.maintain(owner);
+    expect(log).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(String(log.mock.calls[1]![0]))).toEqual({ gateway: "courier", peer: createHash("sha256").update(start.from.courier).digest("hex").slice(0, 12), outcome: "renewal_unavailable" });
+  } finally { log.mockRestore(); }
+});

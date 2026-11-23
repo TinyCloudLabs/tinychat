@@ -10,6 +10,7 @@ export const COURIER_PAIRING_TTL_MS = 15 * 60_000;
 export const COURIER_PEER_MAX_MS = 7 * 86_400_000;
 export const COURIER_MAX_ARTIFACT = 64 * 1024;
 export const COURIER_MAX_PENDING = 10;
+const RENEWAL_LOG_INTERVAL_MS = 86_400_000;
 export interface PairingAdapter {
   context(owner: string, grant: CourierGrant, store: CourierPeerStore): Promise<CourierContext>;
   acceptPairing(ctx: CourierContext, artifact: string): Promise<PairPending>;
@@ -81,6 +82,8 @@ export function createCourierPairing(options: { store: CourierPeerStore; grants:
   const { store, grants } = options;
   const now = options.now ?? Date.now;
   const queues = new Map<string, Promise<void>>();
+  // renewal_unavailable is logged at most once per owner and peer per day, not on every gateway tick.
+  const renewalLogged = new Map<string, number>();
   async function serial<T>(owner: string, run: () => Promise<T>): Promise<T> {
     const key = owner.toLowerCase();
     const previous = queues.get(key) ?? Promise.resolve();
@@ -238,12 +241,19 @@ export function createCourierPairing(options: { store: CourierPeerStore; grants:
         try { api = await adapter(); ctx = await context(api, owner); } catch { return; }
         for (const peer of peers) {
           if (peer.delegationExpiresAt <= now()) continue;
+          const logKey = `${owner.toLowerCase()} ${peer.peerDid}`;
           try {
             const renewed = await api.renewPeer(ctx, peer);
             if (renewed.delegationExpiresAt > now() + COURIER_PEER_MAX_MS) throw new Error("invalid_courier_successor");
             if (renewed.delegationExpiresAt > peer.delegationExpiresAt) await store.renewRuntime(owner, peer, renewed);
+            renewalLogged.delete(logKey);
           } catch {
-            logOutcome(peer.peerDid, "renewal_unavailable");
+            const last = renewalLogged.get(logKey);
+            if (last === undefined || now() - last >= RENEWAL_LOG_INTERVAL_MS) {
+              for (const [key, at] of renewalLogged) if (now() - at >= RENEWAL_LOG_INTERVAL_MS) renewalLogged.delete(key);
+              renewalLogged.set(logKey, now());
+              logOutcome(peer.peerDid, "renewal_unavailable");
+            }
           }
         }
       });
