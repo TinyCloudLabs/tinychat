@@ -36,7 +36,14 @@ export class ReadGrantInvalid extends Error {
   constructor(readonly code: string) { super(`trustbot_read_grant_${code}`); this.name = "ReadGrantInvalid"; }
 }
 
-interface StoredReads extends GrantEnvelope { v: 1; areas: ReadArea[]; cid: string; expiresAt: number; mintedAt?: number }
+interface StoredReads extends GrantEnvelope {
+  v: 1;
+  areas: ReadArea[];
+  cid: string;
+  expiresAt: number;
+  mintedAt?: number;
+  replacedGrantCid?: string;
+}
 interface ReadGrantRecord { record: StoredReads; etag: string }
 type WriteCondition = { ifMatch: string } | { ifNoneMatch: "*" };
 
@@ -114,12 +121,12 @@ export class TrustBotReadGrants {
     return this.#status((await this.#load(checkAddress(address)))?.record);
   }
 
-  async renewalStatus(address: string): Promise<ReadStatus & { renewAfter: number | null }> {
+  async renewalStatus(address: string): Promise<ReadStatus & { renewAfter: number | null; replacedGrantCid: string | null }> {
     const stored = (await this.#load(checkAddress(address)))?.record;
     // Existing records predate mintedAt. The seven-day cap gives an early bound for those grants.
     const lifetime = stored?.mintedAt === undefined ? READ_GRANT_MAX_MS : stored.expiresAt - stored.mintedAt;
     const renewAfter = stored ? stored.expiresAt - lifetime / 2 : null;
-    return { ...this.#status(stored), renewAfter };
+    return { ...this.#status(stored), renewAfter, replacedGrantCid: stored?.replacedGrantCid ?? null };
   }
 
   #status(stored: StoredReads | undefined): ReadStatus {
@@ -170,7 +177,10 @@ export class TrustBotReadGrants {
     } catch (error) {
       throw new ReadGrantInvalid(error instanceof DelegationActivationError && error.status < 500 ? "rejected" : "unavailable");
     }
-    const record: StoredReads = { v: 1, areas, cid: verified.verified.cid, expiresAt, mintedAt: now, ...envelope };
+    const cid = verified.verified.cid;
+    const record: StoredReads = { v: 1, areas, cid, expiresAt, mintedAt: now, ...envelope };
+    // Keep the superseded CID with the committed grant so the owner can revoke it if the response was lost.
+    record.replacedGrantCid = previous?.record.cid === cid ? previous.record.replacedGrantCid : previous?.record.cid;
     if (await this.#save(owner, record, previous?.etag) === false) throw new ReadGrantInvalid("changed");
     this.#activations.clear();
     return this.#status(record);
