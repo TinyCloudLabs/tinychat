@@ -51,7 +51,15 @@ describe("desktop sign-in renewal", () => {
 
     expect(await desktopSignInWithRenewal(config, signIn)).toEqual(APPROVED);
     expect(signIn).toHaveBeenCalledTimes(2);
-    expect(signIn.mock.calls[1]).toEqual([]);
+    expect(signIn.mock.calls[1]).toEqual([{ sessionExpirationMs: SEVEN_DAYS_MS }]);
+  });
+
+  test("a blocked OpenKey popup still uses the seven-day window for wallet signing", async () => {
+    const { config } = desktopRenewal(async () => { throw { code: "POPUP_BLOCKED" }; });
+    const signIn = mock(exerciseSignIn);
+
+    expect(await desktopSignInWithRenewal(config, signIn)).toEqual(APPROVED);
+    expect(signIn.mock.calls[1]).toEqual([{ sessionExpirationMs: SEVEN_DAYS_MS }]);
   });
 
   test.each(["USER_CANCELLED", "APP_KEY_GRANT_REFUSED", "ACTION_REJECTED", 4001])(

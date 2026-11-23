@@ -1278,13 +1278,13 @@ export function App() {
           })()
         : platform === "tauri" && renewal
           ? await desktopSignInWithRenewal(renewal.config, async (config) => {
-              if (config) return createAndSignIn(signingProvider, { ...signInConfig, ...config });
+              if (config.openkey) return createAndSignIn(signingProvider, { ...signInConfig, ...config });
               prefetch?.cancel();
               prefetch = createWebSignInPrefetch(BACKEND_URL, {
                 requestNonce: (url) => requestNonce(url, connectedAddress),
               });
               const nonce = await prefetch.nonceForSigning(connectedAddress);
-              return createAndSignIn(prefetch.guardSigning(web3Provider), { ...signInConfig, nonce });
+              return createAndSignIn(prefetch.guardSigning(web3Provider), { ...signInConfig, ...config, nonce });
             })
           : await createAndSignIn(signingProvider, { ...signInConfig, ...renewal?.config });
 

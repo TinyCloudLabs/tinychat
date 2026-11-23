@@ -61,7 +61,7 @@ export function webSignInRenewal(openkey: ConnectWalletResult["openkey"], manife
 /** Retry a failed desktop authorization through the finite wallet sign-in. */
 export async function desktopSignInWithRenewal<T>(
   config: ReturnType<typeof webSignInRenewal>["config"],
-  signIn: (config?: TinyCloudWebConfig) => Promise<T>,
+  signIn: (config: { sessionExpirationMs: number; openkey?: TinyCloudWebConfig["openkey"] }) => Promise<T>,
 ): Promise<T> {
   const client = config.openkey.client;
   let authorizationFailure: { error: unknown } | undefined;
@@ -88,7 +88,7 @@ export async function desktopSignInWithRenewal<T>(
     const walletCode = (error as { code?: unknown } | null)?.code;
     if (walletCode === 4001 || walletCode === "ACTION_REJECTED") throw error;
     if (failure.kind !== "failed" && failure.kind !== "popup-blocked") throw error;
-    return signIn();
+    return signIn({ sessionExpirationMs: config.sessionExpirationMs });
   }
 }
 
