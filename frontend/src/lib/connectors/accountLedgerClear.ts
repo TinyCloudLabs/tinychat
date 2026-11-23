@@ -9,6 +9,8 @@
  *    routing token, drops the queue and stops a running drain (`connector-webhooks.ts`, the `/config` DELETE).
  *  - `DELETE /api/connectors/fireflies/delegation` removes the grant the server-side Fireflies importer
  *    writes with. A clear of the Fireflies record also resets that importer (`onLedgerCleared` in `index.ts`).
+ *  - `DELETE /api/delegations` removes the connector grant the backend writes to the owner's space with, and
+ *    clears the owner's exo state; `DELETE /api/exo/v1/grant` removes the exo sync grant.
  * The sign-in teardown (`DELETE /credentials/:source`) is not a fence: that route is not mounted.
  *
  * This is not a disconnect step. `connectorLifecycle` never clears a ledger on purpose (reconnecting must
@@ -27,7 +29,8 @@ export type PurgeLedgerClear =
   /** `fence`: delivery or import could not be stopped, so no record was cleared. `clear`: a record may remain. */
   | { status: "failed"; step: "fence" | "clear"; failure: WebhookFailure };
 
-type LedgerWebhooks = Pick<ConnectorWebhooksClient, "disable" | "clearPurgeLedger" | "removeFirefliesImportGrant">;
+type LedgerWebhooks = Pick<ConnectorWebhooksClient, "disable" | "clearPurgeLedger"> &
+  Partial<Pick<ConnectorWebhooksClient, "removeFirefliesImportGrant" | "removeBackendDelegation" | "removeExoGrant">>;
 
 function failureOf(result: ConnectorWebhooksResult<unknown>): WebhookFailure | undefined {
   // `feature-dark` (the router is not mounted) holds nothing to stop or clear, as in the credential teardown.
@@ -42,9 +45,12 @@ export async function clearPurgeLedgersForAccountDeletion(
   webhooks: LedgerWebhooks,
   sources: readonly string[] = PURGE_LEDGER_SOURCES,
 ): Promise<PurgeLedgerClear> {
+  // In this order, each attempted even if an earlier one failed, so one retry has less left to do.
   const fenced = [
     failureOf(await webhooks.disable()),
     webhooks.removeFirefliesImportGrant === undefined ? undefined : failureOf(await webhooks.removeFirefliesImportGrant()),
+    webhooks.removeBackendDelegation === undefined ? undefined : failureOf(await webhooks.removeBackendDelegation()),
+    webhooks.removeExoGrant === undefined ? undefined : failureOf(await webhooks.removeExoGrant()),
   ];
   const fenceFailure = fenced.find((failure) => failure !== undefined);
   if (fenceFailure !== undefined) return { status: "failed", step: "fence", failure: fenceFailure };

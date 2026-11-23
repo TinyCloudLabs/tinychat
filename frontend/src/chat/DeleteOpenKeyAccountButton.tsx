@@ -8,6 +8,7 @@ import {
   type WebhookFailure,
 } from "@/lib/connectors/connectorLifecycle";
 import { clearPurgeLedgersForAccountDeletion } from "@/lib/connectors/accountLedgerClear";
+import { GOOGLE_REVOKE_UNCONFIRMED_MESSAGE, disconnectCalendarForAccountDeletion } from "@/lib/connectors/accountCalendarDisconnect";
 import {
   createConnectorWebhooksClient,
   type ConnectorWebhooksClient,
@@ -27,22 +28,30 @@ export function accountDeletionTeardownFailure(failure: WebhookFailure): string 
  */
 export function accountDeletionLedgerFailure(failure: WebhookFailure, step: "fence" | "clear"): string {
   const lead = step === "fence"
-    ? "We couldn't stop new meeting notifications for your account, so we did not erase the record of your deleted meetings. That record may stay on our server."
+    ? "We couldn't stop our server from delivering or importing meetings for your account, so we did not erase the record of your deleted meetings. That record may stay on our server."
     : "We couldn't confirm the record of your deleted meetings was erased from our server. It may stay there.";
   return `${webhookFailureMessage(failure)} ${lead} Try again, or continue to OpenKey.`;
 }
 
+/** What the owner is told when Calendar autojoin could not be stopped or its Google sign-in removed from our server. */
+export function accountDeletionCalendarFailure(failure: WebhookFailure): string {
+  return `${webhookFailureMessage(failure)} We couldn't confirm Calendar autojoin was stopped or that your Google sign-in was removed from our server. Try again, or continue and remove TinyChat under connected apps in your Google account.`;
+}
+
+type Stage = "calendar" | "recordings" | "credentials" | "ledger";
+
 type State =
   | { phase: "idle" }
   | { phase: "working" }
-  | { phase: "blocked"; message: string; retryable: boolean; stage: "recordings" | "credentials" | "ledger"; pending?: boolean };
+  | { phase: "blocked"; message: string; retryable: boolean; stage: Stage; pending?: boolean };
 
 /**
- * "Delete OpenKey account". Requests the existing recordings purge before removing the Fireflies
- * sign-in, erasing the deleted-meeting record and opening OpenKey. The last of these needs the owner's
- * session, which OpenKey's page ends, so it runs just before that page opens. Unconfirmed recordings,
- * credential or record cleanup is disclosed first; the owner can retry that stage or continue without
- * being told the data was deleted.
+ * "Delete OpenKey account". In order: stops Calendar autojoin and removes its Google sign-in from our server
+ * (a recorder it sends would otherwise add a recording the next step has passed), requests the existing
+ * recordings purge, removes the Fireflies sign-in, then stops what could still deliver or import for the
+ * owner and erases the deleted-meeting record, and finally opens OpenKey. The server steps need the owner's
+ * session, which OpenKey's page ends, so they all run before it. Unconfirmed steps are disclosed first; the
+ * owner can retry a stage or continue without being told the data was deleted.
  */
 export function DeleteOpenKeyAccountButton(props: {
   backendUrl: string;
@@ -92,6 +101,20 @@ export function DeleteOpenKeyAccountButton(props: {
     await proceed();
   };
 
+  const begin = async () => {
+    setState({ phase: "working" });
+    const outcome = await disconnectCalendarForAccountDeletion(webhooks);
+    if (outcome.status === "failed") {
+      setState({ phase: "blocked", message: accountDeletionCalendarFailure(outcome.failure), retryable: true, stage: "calendar" });
+      return;
+    }
+    if (outcome.status === "notice") {
+      setState({ phase: "blocked", message: GOOGLE_REVOKE_UNCONFIRMED_MESSAGE, retryable: false, stage: "calendar" });
+      return;
+    }
+    await start();
+  };
+
   const start = async () => {
     setState({ phase: "working" });
     const result = await recordings.removeAll();
@@ -112,17 +135,21 @@ export function DeleteOpenKeyAccountButton(props: {
     await teardownCredentials();
   };
 
+  // "Continue to OpenKey" moves to the next stage without retrying the failed one; "Try again" repeats it.
+  const next: Record<Stage, () => Promise<void>> = { calendar: start, recordings: teardownCredentials, credentials: clearLedgers, ledger: proceed };
+  const again: Record<Stage, () => Promise<void>> = { calendar: begin, recordings: start, credentials: teardownCredentials, ledger: clearLedgers };
+
   return (
     <>
       {state.phase === "blocked" ? (
         <div>
           <p className={`mb-2 text-xs ${state.pending ? "text-muted-foreground" : "text-destructive"}`} role="alert">{state.message}</p>
           <div className="flex flex-wrap items-center gap-2">
-            <Button variant="outline" size="sm" onClick={() => void (state.stage === "recordings" ? teardownCredentials() : state.stage === "credentials" ? clearLedgers() : proceed())} className="text-destructive">
+            <Button variant="outline" size="sm" onClick={() => void next[state.stage]()} className="text-destructive">
               Continue to OpenKey
             </Button>
             {state.retryable && (
-              <Button variant="ghost" size="sm" onClick={() => void (state.stage === "recordings" ? start() : state.stage === "credentials" ? teardownCredentials() : clearLedgers())}>
+              <Button variant="ghost" size="sm" onClick={() => void again[state.stage]()}>
                 Try again
               </Button>
             )}
@@ -132,7 +159,7 @@ export function DeleteOpenKeyAccountButton(props: {
         <Button
           variant="outline"
           size="sm"
-          onClick={() => void start()}
+          onClick={() => void begin()}
           disabled={state.phase === "working"}
           className="h-auto min-h-[var(--tc-control-height-sm)] max-w-full gap-1.5 whitespace-normal py-1.5 text-left text-destructive"
         >

@@ -15,9 +15,14 @@ const API = "https://api.example";
 const PURGED = `DELETE ${API}/api/connectors/webhooks/purged`;
 const DISABLE = `DELETE ${API}/api/connectors/webhooks/config`;
 const GRANT = `DELETE ${API}/api/connectors/fireflies/delegation`;
+const DELEGATION = `DELETE ${API}/api/delegations`;
+const EXO = `DELETE ${API}/api/exo/v1/grant`;
+const DISCONNECT = `POST ${API}/api/connectors/google/autojoin/disconnect`;
 const CREDS = `${API}/api/connectors/credentials/fireflies`;
 const CLEAR_FAILED = "We couldn't confirm the record of your deleted meetings was erased from our server. It may stay there. Try again, or continue to OpenKey.";
-const FENCE_FAILED = "We couldn't stop new meeting notifications for your account, so we did not erase the record of your deleted meetings. That record may stay on our server. Try again, or continue to OpenKey.";
+const FENCE_FAILED = "We couldn't stop our server from delivering or importing meetings for your account, so we did not erase the record of your deleted meetings. That record may stay on our server. Try again, or continue to OpenKey.";
+const CALENDAR_FAILED = "We couldn't confirm Calendar autojoin was stopped or that your Google sign-in was removed from our server. Try again, or continue and remove TinyChat under connected apps in your Google account.";
+const GOOGLE_UNCONFIRMED = "Calendar autojoin was stopped and your Google sign-in was removed from our server, but Google didn't confirm it revoked access. To be sure, remove TinyChat under connected apps in your Google account.";
 const UNAVAILABLE = "The server is temporarily unavailable (503).";
 
 type Answer = { status: number; body?: unknown; headers?: Record<string, string> };
@@ -28,6 +33,8 @@ const spies: Array<{ mockRestore: () => void }> = [];
 let calls: string[];
 /** The body of each `DELETE /purged`, parsed, in order. */
 let purgedBodies: unknown[];
+/** The body of each `POST /disconnect`, parsed, in order. */
+let disconnectBodies: unknown[];
 /** Answers per route, consumed in order; the last one repeats. */
 let answers: Record<string, Answer[]>;
 let opens: number;
@@ -39,13 +46,17 @@ afterAll(() => { cleanDom?.(); });
 beforeEach(() => {
   calls = [];
   purgedBodies = [];
+  disconnectBodies = [];
   opens = 0;
   opensAtClear = [];
   answers = {
     // The Fireflies sign-in route is not mounted unless a test says otherwise.
     [`GET ${CREDS}`]: [{ status: 404, headers: { "X-Route-Unavailable": "connector-credentials" } }],
+    [DISCONNECT]: [{ status: 200, body: { upstreamRevoked: "not_applicable" } }],
     [DISABLE]: [{ status: 200, body: { status: "disabled", queueDropped: 0 } }],
     [GRANT]: [{ status: 200, body: { state: "none", expiresAt: null } }],
+    [DELEGATION]: [{ status: 200, body: { status: "none", expiresAt: null } }],
+    [EXO]: [{ status: 200, body: { status: "none", expiresAt: null } }],
     [PURGED]: [{ status: 204 }],
   };
   for (const level of ["log", "info", "warn", "error"] as const) {
@@ -57,6 +68,7 @@ beforeEach(() => {
     if (key === `DELETE ${API}/api/transcriber/meetings`) {
       return Response.json({ removed: 0, deleting: 0, listOnly: 0, notDeleted: 0, privateCloudDeleted: null });
     }
+    if (key === DISCONNECT) disconnectBodies.push(JSON.parse(String(init?.body)));
     if (key === PURGED) {
       purgedBodies.push(JSON.parse(String(init?.body)));
       opensAtClear.push(opens);
@@ -113,7 +125,7 @@ test("delivery and import are stopped before any record is cleared, then OpenKey
   answers[`DELETE ${CREDS}`] = [{ status: 200, body: { deleted: true, upstreamRevoked: true } }];
   const page = await mount();
   await page.click("Delete OpenKey account");
-  expect(calls).toEqual([`DELETE ${API}/api/transcriber/meetings`, `GET ${CREDS}`, `DELETE ${CREDS}`, DISABLE, GRANT, PURGED, PURGED]);
+  expect(calls).toEqual([DISCONNECT, `DELETE ${API}/api/transcriber/meetings`, `GET ${CREDS}`, `DELETE ${CREDS}`, DISABLE, GRANT, DELEGATION, EXO, PURGED, PURGED]);
   expect(opens).toBe(1);
   await page.unmount();
 });
@@ -142,6 +154,78 @@ test("if the server import grant cannot be removed nothing is cleared", async ()
   await page.click("Continue to OpenKey");
   expect(opens).toBe(1);
   expect(purgedBodies).toEqual([]);
+  await page.unmount();
+});
+
+test("the connector grant and the exo grant are removed with the stop, and a failure on either clears nothing", async () => {
+  answers[DELEGATION] = [{ status: 503, body: { error: "unavailable" } }];
+  const page = await mount();
+  await page.click("Delete OpenKey account");
+  expect(page.alert()).toBe(`${UNAVAILABLE} ${FENCE_FAILED}`);
+  // Every stop is still attempted, so one retry has less left to do.
+  expect(calls).toEqual(expect.arrayContaining([DISABLE, GRANT, DELEGATION, EXO]));
+  expect(purgedBodies).toEqual([]);
+  expect(opens).toBe(0);
+  await page.unmount();
+});
+
+test("an exo grant route that is not mounted is nothing to do", async () => {
+  answers[EXO] = [{ status: 404 }];
+  const page = await mount();
+  await page.click("Delete OpenKey account");
+  expect(page.alert()).toBeNull();
+  expect(purgedBodies).toEqual([FIREFLIES, GRANOLA]);
+  expect(opens).toBe(1);
+  await page.unmount();
+});
+
+test("Calendar autojoin is disconnected first with an empty body, ahead of the recordings", async () => {
+  answers[DISCONNECT] = [{ status: 200, body: { upstreamRevoked: "ok" } }];
+  const page = await mount();
+  await page.click("Delete OpenKey account");
+  expect(disconnectBodies).toEqual([{}]);
+  expect(calls.slice(0, 2)).toEqual([DISCONNECT, `DELETE ${API}/api/transcriber/meetings`]);
+  expect(page.alert()).toBeNull();
+  expect(opens).toBe(1);
+  await page.unmount();
+});
+
+test("Google not confirming the revoke (502) is disclosed without claiming it was revoked; Continue carries on to the rest", async () => {
+  answers[DISCONNECT] = [{ status: 502, body: { upstreamRevoked: "failed" } }];
+  const page = await mount();
+  await page.click("Delete OpenKey account");
+  expect(page.alert()).toBe(GOOGLE_UNCONFIRMED);
+  expect(page.buttons()).toEqual(["Continue to OpenKey"]);
+  expect(calls).not.toContain(`DELETE ${API}/api/transcriber/meetings`);
+  expect(opens).toBe(0);
+  await page.click("Continue to OpenKey");
+  expect(calls.filter((c) => c === DISCONNECT)).toHaveLength(1);
+  expect(calls).toContain(`DELETE ${API}/api/transcriber/meetings`);
+  expect(purgedBodies).toEqual([FIREFLIES, GRANOLA]);
+  expect(opens).toBe(1);
+  await page.unmount();
+});
+
+test("a failed Calendar disconnect shows the alert before anything is deleted; Try again repeats it, Continue moves on", async () => {
+  answers[DISCONNECT] = [{ status: 503, body: { error: "unavailable" } }, { status: 200, body: { upstreamRevoked: "ok" } }];
+  const page = await mount();
+  await page.click("Delete OpenKey account");
+  expect(page.alert()).toBe(`${UNAVAILABLE} ${CALENDAR_FAILED}`);
+  expect(page.buttons()).toEqual(expect.arrayContaining(["Try again", "Continue to OpenKey"]));
+  expect(calls).toEqual([DISCONNECT]);
+  await page.click("Try again");
+  expect(calls.filter((c) => c === DISCONNECT)).toHaveLength(2);
+  expect(opens).toBe(1);
+  await page.unmount();
+});
+
+test("continuing past a failed Calendar disconnect does not disconnect again", async () => {
+  answers[DISCONNECT] = [{ status: 503, body: { error: "unavailable" } }];
+  const page = await mount();
+  await page.click("Delete OpenKey account");
+  await page.click("Continue to OpenKey");
+  expect(calls.filter((c) => c === DISCONNECT)).toHaveLength(1);
+  expect(opens).toBe(1);
   await page.unmount();
 });
 
@@ -207,8 +291,11 @@ test("a failed sign-in teardown stops before anything is stopped or cleared", as
 });
 
 test("routes not mounted: nothing to stop or clear, no alert, OpenKey opens", async () => {
+  answers[DISCONNECT] = [{ status: 404 }];
   answers[DISABLE] = [{ status: 404 }];
   answers[GRANT] = [{ status: 404 }];
+  answers[DELEGATION] = [{ status: 404 }];
+  answers[EXO] = [{ status: 404 }];
   answers[PURGED] = [{ status: 404 }];
   const page = await mount();
   await page.click("Delete OpenKey account");
