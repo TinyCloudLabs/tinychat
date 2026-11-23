@@ -19,7 +19,8 @@ export class HistoryDeleteIncomplete extends Error {
 
 /**
  * Deletes every saved record of Main's history. A record that is already gone counts as deleted. Every record is tried
- * even when one fails; HistoryDeleteIncomplete says how many are left, and running it again deletes the rest.
+ * even when one fails, and both directories are listed again at the end: HistoryDeleteIncomplete says how many records
+ * are still there, and running it again deletes the rest.
  * Throws a plain Error (`history_session_missing`, `history_session_changed`, `history_read_unavailable`,
  * `history_path_mismatch`) when nothing could be listed or the session is not the one that started it.
  */
@@ -31,26 +32,32 @@ export async function deleteMainHistory(tcw: TinyCloudWeb): Promise<number> {
   const prefixes = [directory, `${RESEAL_PREFIX}${directory.slice(BOT_HISTORY_RECORD_PREFIX.length)}`];
 
   // Listed completely before the first delete, so deleting never moves a cursor.
-  const keys: string[] = [];
-  for (const prefix of prefixes) {
-    let cursor: string | undefined;
-    do {
-      const listed = await kv.list({ prefix, cursor, source: "network" });
-      if (!listed.ok || (listed.data.truncated && !listed.data.nextCursor)) throw new Error("history_read_unavailable");
-      for (const key of listed.data.keys) {
-        if (!key.startsWith(prefix)) throw new Error("history_path_mismatch");
-        keys.push(key);
-      }
-      cursor = listed.data.nextCursor;
-    } while (cursor);
-  }
+  const listAll = async (): Promise<string[]> => {
+    const keys: string[] = [];
+    for (const prefix of prefixes) {
+      let cursor: string | undefined;
+      do {
+        const listed = await kv.list({ prefix, cursor, source: "network" });
+        if (!listed.ok || (listed.data.truncated && !listed.data.nextCursor)) throw new Error("history_read_unavailable");
+        for (const key of listed.data.keys) {
+          if (!key.startsWith(prefix)) throw new Error("history_path_mismatch");
+          keys.push(key);
+        }
+        cursor = listed.data.nextCursor;
+      } while (cursor);
+    }
+    return keys;
+  };
 
-  let remaining = 0;
+  const keys = await listAll();
   for (const key of keys) {
     if (!isCurrentHistorySession(tcw, session)) throw new Error("history_session_changed");
-    const deleted = await kv.delete(key, { prefix: "" }).catch(() => undefined);
-    if (!deleted || (!deleted.ok && deleted.error.code !== "KV_NOT_FOUND")) remaining += 1;
+    // A failed delete is not counted here: the listing below is what says whether the record is still there.
+    await kv.delete(key, { prefix: "" }).catch(() => undefined);
   }
+  // Listed once more, so "deleted" is never said while a record remains: one that failed to delete, or one saved
+  // between the first listing and its delete. A listing that fails cannot say, so it is not "deleted" either.
+  const remaining = (await listAll()).length;
   if (remaining > 0) throw new HistoryDeleteIncomplete(remaining);
   return keys.length;
 }

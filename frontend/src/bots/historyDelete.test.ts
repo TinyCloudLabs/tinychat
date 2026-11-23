@@ -8,7 +8,7 @@ const SESSION = { address: ADDRESS, chainId: 1, sessionKey: "k", siwe: "s" };
 
 interface Fake { rows: Set<string>; deleted: string[]; listed: { prefix: string; cursor?: string; source?: string }[] }
 
-function fake(rows: string[], options: { pageSize?: number; fail?: (key: string) => unknown; listFails?: boolean; throws?: boolean } = {}) {
+function fake(rows: string[], options: { pageSize?: number; fail?: (key: string) => unknown; listFails?: boolean; throws?: boolean; onDelete?: (rows: Set<string>) => void } = {}) {
   const state: Fake = { rows: new Set(rows), deleted: [], listed: [] };
   const tcw = {
     session: () => SESSION,
@@ -26,7 +26,10 @@ function fake(rows: string[], options: { pageSize?: number; fail?: (key: string)
         expect(o.prefix).toBe("");
         state.deleted.push(key);
         if (options.throws) throw new Error("network");
+        options.onDelete?.(state.rows);
         const failure = options.fail?.(key);
+        // A record the node says is not there is gone.
+        if ((failure as { error?: { code?: string } } | undefined)?.error?.code === "KV_NOT_FOUND") state.rows.delete(key);
         if (failure !== undefined) return failure;
         state.rows.delete(key);
         return { ok: true, data: undefined };
@@ -49,7 +52,12 @@ test("deletes every page of Main's records and its reseal leftovers, and nothing
   expect(await deleteMainHistory(tcw)).toBe(6);
   expect([...state.rows].sort()).toEqual([...others].sort());
   expect(state.listed.every(call => call.source === "network")).toBe(true);
-  expect(state.listed.filter(call => call.prefix === main).length).toBe(3);
+  // Each directory is listed in full before the deletes (main: 3 pages) and once more after them.
+  expect(state.listed.filter(call => call.prefix === main).length).toBe(3 + 1);
+  // Both prefixes end with "/", so a sibling directory that shares the start of the name is never matched.
+  expect(main.endsWith("/")).toBe(true);
+  expect(new Set(state.listed.map(call => call.prefix))).toEqual(new Set([main, `${RESEAL}${id}/`]));
+  expect([...new Set(state.listed.map(call => call.prefix))].every(prefix => prefix.endsWith("/"))).toBe(true);
 });
 
 test("a record that is already gone counts as deleted; one that fails leaves the rest deleted and says so", async () => {
@@ -84,4 +92,38 @@ test("stops when the session changes under it", async () => {
   (tcw as unknown as { session: () => unknown }).session = () => (++calls <= 1 ? SESSION : { ...SESSION, sessionKey: "other" });
   expect((await deleteMainHistory(tcw).catch(cause => cause) as Error).message).toBe("history_session_changed");
   expect(state.deleted).toEqual([]);
+});
+
+test("a record saved between the listing and the deletes is still there, so the owner is not told it is deleted", async () => {
+  const main = await botHistoryDirectory(ADDRESS, "main");
+  const first = `${main}${"a".repeat(32)}/1-${"b".repeat(64)}`;
+  const late = `${main}${"c".repeat(32)}/1-${"d".repeat(64)}`;
+  let added = false;
+  const { tcw, state } = fake([first], { onDelete: rows => { if (!added) { added = true; rows.add(late); } } });
+  const error = await deleteMainHistory(tcw).catch(cause => cause);
+  expect(error).toBeInstanceOf(HistoryDeleteIncomplete);
+  expect((error as HistoryDeleteIncomplete).remaining).toBe(1);
+  expect([...state.rows]).toEqual([late]);
+  // Running it again deletes the rest.
+  expect(await deleteMainHistory(tcw)).toBe(1);
+  expect(state.rows.size).toBe(0);
+});
+
+test("a delete that reports success but leaves the record is not counted as deleted", async () => {
+  const main = await botHistoryDirectory(ADDRESS, "main");
+  const key = `${main}${"a".repeat(32)}/1-${"b".repeat(64)}`;
+  const { tcw } = fake([key], { fail: () => ({ ok: true, data: undefined }) });
+  expect(await deleteMainHistory(tcw).catch(cause => cause)).toBeInstanceOf(HistoryDeleteIncomplete);
+});
+
+test("a listing that fails after the deletes cannot say the history is gone", async () => {
+  const main = await botHistoryDirectory(ADDRESS, "main");
+  const key = `${main}${"a".repeat(32)}/1-${"b".repeat(64)}`;
+  const base = fake([key]);
+  let lists = 0;
+  const kv = (base.tcw as unknown as { kvForSpace: () => { list: (o: object) => Promise<unknown> } }).kvForSpace();
+  const list = kv.list;
+  (base.tcw as unknown as { kvForSpace: () => unknown }).kvForSpace = () => ({ ...kv, list: async (o: object) => (++lists > 2 ? { ok: false } : list(o)) });
+  expect((await deleteMainHistory(base.tcw).catch(cause => cause) as Error).message).toBe("history_read_unavailable");
+  expect(base.state.rows.size).toBe(0);
 });
