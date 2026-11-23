@@ -46,6 +46,9 @@ services:
       BOTS_SERVICE_SECRET: ${BOTS_SERVICE_SECRET:-}
       # Sibling admission (POST /api/internal/bots/admit); unset leaves the route unmounted.
       BOTS_BACKEND_CALL_SECRET: ${BOTS_BACKEND_CALL_SECRET:-}
+      TRUSTBOT_READS_ENABLED: ${TRUSTBOT_READS_ENABLED:-false}
+      TRUSTBOT_READ_PRIVATE_KEY: ${TRUSTBOT_READ_PRIVATE_KEY:-}
+      TRUSTBOT_STANDING_READS_ENABLED: ${TRUSTBOT_STANDING_READS_ENABLED:-false}
       BOTS_POST_TIMEOUT_MS: ${BOTS_POST_TIMEOUT_MS:-}
       # Owner history stays off; enabling requires the receipt signer and node-origin pins.
       BOTS_HISTORY_ENABLED: ${BOTS_HISTORY_ENABLED:-false}

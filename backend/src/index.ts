@@ -26,6 +26,12 @@ import { BotHistory } from "./bot-history.js";
 import { createBotHistoryRouter, createSiblingHistoryRouter, startBotHistoryDrain } from "./routes/bot-history.js";
 import { botsFromEnv, createBotsRouter, removeBotFromService } from "./routes/bots.js";
 import { createTrustBotReadsInternalRouter, createTrustBotReadsRouter, TRUSTBOT_READS_INTERNAL_PREFIX } from "./routes/trustbot-reads.js";
+import { READ_AREA_NAMES } from "./trustbot-reads/areas.js";
+import type { TrustBotReadGrants } from "./trustbot-reads/grants.js";
+import { StandingReadRuntime } from "./trustbot-reads/standing.js";
+import { StandingReadsController } from "./trustbot-reads/standing-controller.js";
+import { DstackStandingHolderDeriver } from "./trustbot-reads/standing-holder.js";
+import { backendStandingMetadataStore } from "./trustbot-reads/standing-store.js";
 import { createReadAudit, purgeReadAudit } from "./trustbot-reads/audit.js";
 import { startTrustBotReads, trustbotReadsFromEnv } from "./trustbot-reads/setup.js";
 import { botAdmissionSecret, mountBotAdmissionRoute } from "./routes/bot-admission.js";
@@ -987,9 +993,23 @@ async function main() {
   // TrustBot's reads (TRUSTBOT_READS_ENABLED): owner routes under /api/bots/main/reads, and the gateway's route for the
   // meeting tools. Off, neither route exists.
   const trustbotReadsSettings = botsConfig && !localValidation ? trustbotReadsFromEnv(process.env) : undefined;
-  const trustbotReads = botsConfig && trustbotReadsSettings ? await startTrustBotReads(trustbotReadsSettings, {
-    backendNode: node, backendDid: did, host: TINYCLOUD_HOST, otherDelegateDids: [process.env.MCP_CHAT_SERVICE_DID, AGENT_DID],
+  const standingConfig = trustbotReadsSettings && process.env.TRUSTBOT_STANDING_READS_ENABLED === "true"
+    ? renewalVerifyConfigFromEnv(process.env, TINYCLOUD_HOST) : undefined;
+  let trustbotReads: TrustBotReadGrants | undefined;
+  const standing = standingConfig ? new StandingReadsController({
+    config: standingConfig, keys: new DstackStandingHolderDeriver(), store: backendStandingMetadataStore(node),
+    enabledAreas: async address => {
+      if (!trustbotReads) throw new Error("trustbot_reads_unavailable");
+      const { areas } = await trustbotReads.status(address);
+      return READ_AREA_NAMES.filter(area => areas[area] !== "off");
+    },
   }) : undefined;
+  if (trustbotReadsSettings) {
+    trustbotReads = await startTrustBotReads(trustbotReadsSettings, {
+      backendNode: node, backendDid: did, host: TINYCLOUD_HOST, otherDelegateDids: [process.env.MCP_CHAT_SERVICE_DID, AGENT_DID],
+      standing: standing && standingConfig ? new StandingReadRuntime({ store: standing, config: standingConfig }) : undefined,
+    });
+  }
   // Retention also runs after standing reads are turned off.
   if (!localValidation) {
     let purging = false;
@@ -1004,14 +1024,19 @@ async function main() {
     setInterval(sweep, 60 * 60_000).unref();
   }
   if (botsConfig && trustbotReadsSettings && trustbotReads) {
-    const standingEnabled = process.env.TRUSTBOT_STANDING_READS_ENABLED === "true";
+    const standingEnabled = standing !== undefined;
     const audit = standingEnabled ? createReadAudit(node) : undefined;
     const readsOptions = {
       grants: trustbotReads, config: botsConfig, auth: authMiddleware,
-      callSecret: trustbotReadsSettings.callSecret, standingEnabled, audit,
+      callSecret: trustbotReadsSettings.callSecret, standingEnabled, standing, audit,
     };
     app.use("/api/bots/main/reads", createTrustBotReadsRouter(readsOptions));
     app.use(TRUSTBOT_READS_INTERNAL_PREFIX, createTrustBotReadsInternalRouter(readsOptions));
+    if (standing) {
+      const sweep = () => { void standing.sweep().catch(() => {}); };
+      sweep();
+      setInterval(sweep, 30_000).unref();
+    }
     console.log("[startup] TrustBot reads enabled.");
   }
   app.use("/api/bots", createBotsRouter({

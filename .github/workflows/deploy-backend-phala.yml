@@ -510,6 +510,9 @@ jobs:
           # Sibling admission (backend/src/routes/bot-admission.ts): the same value the bots CVM holds as
           # BOTS_BACKEND_CALL_SECRET (deploy-bots-phala.yml). Unset, the route is not mounted.
           BOTS_BACKEND_CALL_SECRET: ${{ secrets.BOTS_BACKEND_CALL_SECRET }}
+          TRUSTBOT_READS_ENABLED: ${{ vars.TRUSTBOT_READS_ENABLED || 'false' }}
+          TRUSTBOT_READ_PRIVATE_KEY: ${{ secrets.TRUSTBOT_READ_PRIVATE_KEY }}
+          TRUSTBOT_STANDING_READS_ENABLED: ${{ vars.TRUSTBOT_STANDING_READS_ENABLED || 'false' }}
           # Empty means the backend default (120000).
           BOTS_POST_TIMEOUT_MS: ${{ vars.BOTS_POST_TIMEOUT_MS }}
           # Owner-history variables; off until explicitly enabled in production-api.
@@ -653,6 +656,7 @@ jobs:
             GRANOLA_PROXY_ENABLED \
             FIREFLIES_SERVER_IMPORT_ENABLED \
             BOTS_ENABLED BOTS_TEST_ACCOUNTS BOTS_SERVICE_CONNECT_HOST BOTS_SERVICE_URL BOTS_SERVICE_SECRET BOTS_BACKEND_CALL_SECRET BOTS_POST_TIMEOUT_MS \
+            TRUSTBOT_READS_ENABLED TRUSTBOT_READ_PRIVATE_KEY TRUSTBOT_STANDING_READS_ENABLED \
             BOTS_HISTORY_ENABLED BOTS_HISTORY_SIGNER_DID BOTS_HISTORY_NODE_ORIGIN BOTS_UNARCHIVED_HISTORY_POLICY \
             RENEWAL_BACKEND_ORIGIN RENEWAL_NODE_DID RENEWAL_RENEWER_DID; do
             case "${!item-}" in
@@ -689,6 +693,9 @@ jobs:
             printf '%s\n' "BOTS_SERVICE_URL=${BOTS_SERVICE_URL:-}"
             printf '%s\n' "BOTS_SERVICE_SECRET=${BOTS_SERVICE_SECRET:-}"
             printf '%s\n' "BOTS_BACKEND_CALL_SECRET=${BOTS_BACKEND_CALL_SECRET:-}"
+            printf '%s\n' "TRUSTBOT_READS_ENABLED=${TRUSTBOT_READS_ENABLED:-false}"
+            printf '%s\n' "TRUSTBOT_READ_PRIVATE_KEY=${TRUSTBOT_READ_PRIVATE_KEY:-}"
+            printf '%s\n' "TRUSTBOT_STANDING_READS_ENABLED=${TRUSTBOT_STANDING_READS_ENABLED:-false}"
             printf '%s\n' "BOTS_POST_TIMEOUT_MS=${BOTS_POST_TIMEOUT_MS:-}"
             printf '%s\n' "BOTS_HISTORY_ENABLED=${BOTS_HISTORY_ENABLED:-false}"
             printf '%s\n' "BOTS_HISTORY_SIGNER_DID=${BOTS_HISTORY_SIGNER_DID:-}"

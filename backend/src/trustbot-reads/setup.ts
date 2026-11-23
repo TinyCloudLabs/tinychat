@@ -5,6 +5,7 @@
 import { assertKvResult, createBackendIdentity, isKvMissingKeyResult, withSessionRefresh } from "@tinyboilerplate/server";
 import type { TinyCloudNode } from "@tinycloud/node-sdk";
 import { isKvPreconditionFailed } from "../exo/activated-grant.js";
+import type { StandingReadRuntime } from "./standing.js";
 import { TrustBotReadGrants, type ReadGrantStore } from "./grants.js";
 
 /** The read identity's own space prefix. It keeps nothing there; the prefix only names its session. */
@@ -72,6 +73,7 @@ export async function startTrustBotReads(settings: TrustBotReadsEnv, options: {
   backendDid: string;
   host: string;
   otherDelegateDids: ReadonlyArray<string | undefined>;
+  standing?: StandingReadRuntime;
 }): Promise<TrustBotReadGrants | undefined> {
   let reader: TinyCloudNode;
   try {
@@ -86,5 +88,5 @@ export async function startTrustBotReads(settings: TrustBotReadsEnv, options: {
     return undefined;
   }
   const sealSecret = Buffer.from(settings.privateKey.slice(2), "hex");
-  return new TrustBotReadGrants({ reader, store: backendGrantStore(options.backendNode), host: options.host, sealSecret });
+  return new TrustBotReadGrants({ reader, store: backendGrantStore(options.backendNode), host: options.host, sealSecret, standing: options.standing });
 }

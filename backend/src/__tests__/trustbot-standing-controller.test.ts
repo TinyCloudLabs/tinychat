@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
+import { NodeWasmBindings } from "@tinycloud/node-sdk";
 import { parseCompactUcanAuthorization, verifyDidKeyEd25519Signature } from "@tinycloud/sdk-core";
-import { signerFromSeed } from "@tinycloud/share-envelope/links";
+import { linkIssuerPublicKey, signerFromSeed, type OpenKeyApprovalRequestV1 } from "@tinycloud/share-envelope/links";
+import { privateKeyToAccount } from "viem/accounts";
 import { READ_AREAS } from "../trustbot-reads/areas.js";
 import { standingDelegatedAccess } from "../trustbot-reads/standing-access.js";
 import { StandingApprovalClient, type StandingApprovalLink } from "../trustbot-reads/standing-approval.js";
@@ -114,4 +116,97 @@ describe("standing read integration", () => {
     expect(await controller.current(address)).toBeUndefined();
     await controller.beforeAreaOff(address, "meetings");
   });
+});
+
+
+test("collects one owner-approved scope, stores metadata before acknowledging and retires it after OpenKey Stop", async () => {
+  const keys = signerKeys();
+  const wasm = new NodeWasmBindings();
+  const ownerAccount = privateKeyToAccount(`0x${"a5".repeat(32)}`);
+  const ownerDid = `did:pkh:eip155:1:${ownerAccount.address.toLowerCase()}`;
+  const accountSpace = wasm.makeSpaceId(ownerAccount.address, 1, "applications");
+  const identity = {
+    nodeDid: config.nodeDid, renewerDid: config.renewerDid, renewerEpoch: 1,
+    renewerPublicKey: Buffer.from(linkIssuerPublicKey(renewer.did)!).toString("base64url"),
+  };
+  let state: StandingReadMetadata = { generation: 0 };
+  let version = 0;
+  let clock = now;
+  let result: Record<string, unknown> | undefined;
+  let nodeGrantCid = "";
+  let approvalRequest: OpenKeyApprovalRequestV1 | undefined;
+  let acknowledged = false;
+  let stopped = false;
+  const validUntil = now + 7 * 86_400_000;
+  const leaseUntil = now + 90 * 86_400_000;
+  const store: StandingMetadataStore = {
+    read: async owner => { expect(owner).toBe(ownerDid); return { state, version: String(version) }; },
+    write: async (owner, next, expected) => {
+      expect(owner).toBe(ownerDid);
+      if (expected !== String(version)) return false;
+      state = JSON.parse(JSON.stringify(next));
+      version++;
+      return true;
+    },
+    async *owners() { yield ownerDid; },
+  };
+  const controller = new StandingReadsController({
+    keys, config, store, now: () => clock, enabledAreas: async () => ["meetings"],
+    openKey: {
+      create: async (_scope, _holder, request) => { approvalRequest = request; return link; },
+      url: async () => "https://openkey.example.test/approve",
+      collect: async () => result ? { state: "ready", resultRef: "ready-ref", opened: result } : { state: "pending" },
+      acknowledge: async () => { expect(state.active?.grant.originalCid).toBe(nodeGrantCid); acknowledged = true; },
+      leaseState: async () => stopped ? "stopped" : "active",
+    },
+    fetch: (async (url: string) => url.endsWith("/node-keys") ? Response.json(identity) : Response.json({
+      cid: nodeGrantCid, exists: true, active: true, effective_expiry: validUntil / 1000, renewal_history: [],
+    })) as typeof fetch,
+  });
+  expect((await controller.request(ownerAccount.address, ["meetings"])).pending).toBeTruthy();
+  const sent = approvalRequest!;
+  expect(sent.grantLifetimeSeconds).toBe(7 * 86_400);
+  expect(sent.renewal?.leaseLifetimeSeconds).toBe(90 * 86_400);
+  const sign = async (prepared: { siwe: string }) => {
+    const signature = await ownerAccount.signMessage({ message: prepared.siwe });
+    return { ...wasm.completeSessionSetup({ ...prepared, signature }), siwe: prepared.siwe, signature };
+  };
+  const common = { address: ownerAccount.address, chainId: 1, domain: "openkey.so", issuedAt: new Date(now).toISOString(), spaceId: accountSpace };
+  const subject = await sign(wasm.prepareSession({
+    ...common, expirationTime: new Date(validUntil).toISOString(), jwk: sent.targetPublicJwk,
+    abilities: {
+      sql: { "xyz.tinycloud.tinychat/connectors": ["tinycloud.sql/read"] },
+      kv: { "xyz.tinycloud.tinychat/connectors/": ["tinycloud.kv/get", "tinycloud.kv/list"] },
+    },
+  }));
+  nodeGrantCid = subject.delegationCid;
+  const lease = await sign(wasm.prepareSession({
+    ...common, delegateUri: config.renewerDid, expirationTime: new Date(leaseUntil).toISOString(),
+    abilities: {}, rawAbilities: { [`urn:cid:${nodeGrantCid}`]: ["tinycloud.delegation/renew"] },
+  }));
+  result = {
+    resultVersion: 1, requestId: link.requestId, requestDigest: link.bodyCid, targetDid: sent.targetDid, requesterDid: sent.issuer,
+    ownerDid, delegationExpiresAt: new Date(validUntil).toISOString(), renewalChoice: "leased",
+    delegation: { ...subject, address: ownerAccount.address, chainId: 1, spaceId: accountSpace, jwk: sent.targetPublicJwk, hostActivated: true },
+    renewal: {
+      version: 1, approvedAt: new Date(now).toISOString(), approvedLeaseLifetimeSeconds: 90 * 86_400,
+      receipt: {
+        originalCid: nodeGrantCid, leaseCid: lease.delegationCid, leaseGeneration: 1, nodeIdentity: identity,
+        leaseAuthorization: lease.delegationHeader.Authorization.replace(/^Bearer /i, ""), leaseExpiresAt: new Date(leaseUntil).toISOString(),
+      },
+    },
+  };
+  const view = await controller.view(ownerAccount.address, ["meetings"]);
+  expect(view.active).toMatchObject({ originalCid: nodeGrantCid, validUntil, areas: ["meetings"] });
+  expect(acknowledged).toBe(true);
+  const persisted = JSON.stringify(state);
+  expect(persisted).not.toContain(lease.delegationHeader.Authorization);
+  expect(persisted).not.toContain(subject.delegationHeader.Authorization);
+  expect(persisted).not.toContain(sent.resultEncryptionPublicJwk.x);
+
+  stopped = true;
+  clock += 3_600_000;
+  await controller.sweep();
+  expect(state.generation).toBe(2);
+  expect(await controller.current(ownerAccount.address)).toBeUndefined();
 });
