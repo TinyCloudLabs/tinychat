@@ -1,8 +1,8 @@
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { clearSessionAfterHandoff } from "../sessionSignedOut";
-import type { DisconnectImportGrants } from "./connectorLifecycle";
-import type { FirefliesImportApi } from "./firefliesImport";
+import { revokeImportGrants, type DisconnectImportGrants } from "./connectorLifecycle";
+import { writeFirefliesImportWanted, type FirefliesImportApi } from "./firefliesImport";
 import type { ConnectorWebhooksResult } from "./webhooksApi";
 
 /** The owner-scoped routes for the permissions the server holds to import Fireflies meetings. */
@@ -95,8 +95,8 @@ export function createFirefliesImportGrantsClient(
       }
       return { status: "ok", value: { state, expiresAt: expiresAt as string | null, delegateDid, grantCids: grantCids as string[] } };
     },
-    async submit(grants) {
-      const result = await request<Record<string, unknown>>("", "POST", grants);
+    async submit(grants, replaces) {
+      const result = await request<Record<string, unknown>>("", "POST", { ...grants, replaces });
       if (result.status !== "ok") return result;
       const { state, expiresAt } = result.value ?? {};
       if (state !== "active" || typeof expiresAt !== "string") return { status: "rejected", httpStatus: 200, code: null };
@@ -195,10 +195,41 @@ export function createFirefliesImportGrantsTeardown(
   sessionStore: SessionStore,
 ): DisconnectImportGrants {
   const client = createFirefliesImportGrantsClient(backendUrl, { sessionStore });
+  const address = sessionStore.getAddress?.()?.toLowerCase();
   const inner: DisconnectImportGrants = {
-    listGrantCids: () => client.listGrantCids(),
+    listGrantCids: () => {
+      // Every teardown (disconnect, instant updates off, account deletion) starts here: the owner no longer wants the
+      // import, so a lapsed pair is not replaced on its own from this browser.
+      if (address) writeFirefliesImportWanted(address, false);
+      return client.listGrantCids();
+    },
     revoke: async (cid) => (await tcw.revokeDelegation(cid)).ok,
   };
-  const address = sessionStore.getAddress?.()?.toLowerCase();
   return address ? withPendingRevokes(inner, { accountKey: address }) : inner;
+}
+
+export type AccountImportRemoval =
+  | { status: "done"; unconfirmed: boolean }
+  | { status: "failed"; failure: Exclude<ConnectorWebhooksResult<never>, { status: "ok" | "feature-dark" }> };
+
+/**
+ * Account deletion's part of the Fireflies import: list the two permission ids (the server's and any this browser
+ * still owes a revoke), take the server's copy away, then revoke each at the node. A server that has the import off
+ * holds nothing. A failure before the server's copy is gone stops with nothing changed, so the step can be retried;
+ * `unconfirmed` means the server's copy is gone but a permission could not be confirmed withdrawn.
+ */
+export async function removeFirefliesImportForAccountDeletion(
+  client: Pick<FirefliesImportGrantsClient, "removeGrant">,
+  teardown?: DisconnectImportGrants,
+): Promise<AccountImportRemoval> {
+  let cids: string[] = [];
+  if (teardown) {
+    const listed = await teardown.listGrantCids();
+    if (listed.status === "ok") cids = listed.value;
+    else if (listed.status !== "feature-dark") return { status: "failed", failure: listed };
+  }
+  const removed = await client.removeGrant();
+  if (removed.status !== "ok" && removed.status !== "feature-dark") return { status: "failed", failure: removed };
+  if (!teardown || cids.length === 0) return { status: "done", unconfirmed: false };
+  return { status: "done", unconfirmed: await revokeImportGrants(teardown, cids) };
 }

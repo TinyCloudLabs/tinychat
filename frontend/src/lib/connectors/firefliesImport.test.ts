@@ -163,14 +163,16 @@ function fakeDeps(options: {
   remove?: () => ConnectorWebhooksResult<null>;
 } = {}) {
   const log: string[] = [];
+  const sent: string[][] = [];
   const statuses = [...(options.status ?? [{ status: "ok" as const, value: STATUS }])];
   const api: FirefliesImportApi = {
     status: async () => {
       log.push("status");
       return statuses.length > 1 ? statuses.shift()! : statuses[0]!;
     },
-    submit: async () => {
+    submit: async (_grants, replaces) => {
       log.push("submit");
+      sent.push([...replaces]);
       return options.submit ? options.submit() : { status: "ok", value: { state: "active", expiresAt: "2026-11-29T17:00:00.000Z" } };
     },
     removeGrant: async () => {
@@ -180,6 +182,7 @@ function fakeDeps(options: {
   };
   return {
     log,
+    sent,
     deps: {
       api,
       sign: options.sign ?? (async () => PAIR),
@@ -206,7 +209,7 @@ describe("turning on and replacing the pair", () => {
     expect(t.log).toEqual(["status", "submit", "revoke:new-secrets", "revoke:new-meetings"]);
   });
 
-  test("a lost answer is not withdrawn: the server is asked what it holds", async () => {
+  test("a lost answer is asked about, and the new pair is withdrawn only when the server does not hold it", async () => {
     const saved: FirefliesImportStatus = { ...STATUS, state: "active", expiresAt: "2026-11-29T17:00:00.000Z", grantCids: ["new-secrets", "new-meetings"] };
     const t = fakeDeps({
       status: [{ status: "ok", value: STATUS }, { status: "ok", value: saved }],
@@ -215,9 +218,41 @@ describe("turning on and replacing the pair", () => {
     expect(await turnOnFirefliesImport(t.deps)).toEqual({ kind: "on", expiresAt: "2026-11-29T17:00:00.000Z", oldGrantsUnconfirmed: false });
     expect(t.log).toEqual(["status", "submit", "status"]);
 
-    const unknown = fakeDeps({ submit: () => ({ status: "retryable", httpStatus: 503, code: null }) });
-    expect(await turnOnFirefliesImport(unknown.deps)).toEqual({ kind: "unavailable" });
-    expect(unknown.log.some((entry) => entry.startsWith("revoke:"))).toBe(false);
+    // The server does not list the new pair: nothing records it, so it is withdrawn.
+    const notHeld = fakeDeps({ submit: () => ({ status: "retryable", httpStatus: 503, code: null }) });
+    expect(await turnOnFirefliesImport(notHeld.deps)).toEqual({ kind: "unavailable" });
+    expect(notHeld.log).toEqual(["status", "submit", "status", "revoke:new-secrets", "revoke:new-meetings"]);
+
+    // The server cannot be asked: the pair may be held, so it is left alone.
+    const unreadable = fakeDeps({
+      status: [{ status: "ok", value: STATUS }, { status: "offline" }],
+      submit: () => ({ status: "offline" }),
+    });
+    expect(await turnOnFirefliesImport(unreadable.deps)).toEqual({ kind: "unavailable" });
+    expect(unreadable.log.some((entry) => entry.startsWith("revoke:"))).toBe(false);
+  });
+
+  test("a saved pair behind a lost answer still has the pair it replaced withdrawn", async () => {
+    const held: FirefliesImportStatus = { ...STATUS, state: "active", expiresAt: "2026-11-23T00:00:00.000Z", grantCids: ["old-1", "old-2"] };
+    const saved: FirefliesImportStatus = { ...held, expiresAt: "2026-11-29T17:00:00.000Z", grantCids: ["new-secrets", "new-meetings"] };
+    const t = fakeDeps({
+      status: [{ status: "ok", value: held }, { status: "ok", value: saved }],
+      submit: () => ({ status: "offline" }),
+    });
+    expect(await turnOnFirefliesImport(t.deps)).toEqual({ kind: "on", expiresAt: "2026-11-29T17:00:00.000Z", oldGrantsUnconfirmed: false });
+    expect(t.log).toEqual(["status", "submit", "status", "revoke:old-1", "revoke:old-2"]);
+  });
+
+  test("the pair names the ids it replaces, and a refusal for a mismatch withdraws the new pair", async () => {
+    const held: FirefliesImportStatus = { ...STATUS, state: "active", expiresAt: "2026-11-23T00:00:00.000Z", grantCids: ["old-1", "old-2"] };
+    const t = fakeDeps({ status: [{ status: "ok", value: held }], submit: () => ({ status: "rejected", httpStatus: 409, code: null }) });
+    expect(await turnOnFirefliesImport(t.deps)).toEqual({ kind: "failed" });
+    expect(t.sent).toEqual([["old-1", "old-2"]]);
+    expect(t.log).toEqual(["status", "submit", "revoke:new-secrets", "revoke:new-meetings"]);
+
+    const first = fakeDeps();
+    await turnOnFirefliesImport(first.deps);
+    expect(first.sent).toEqual([[]]);
   });
 
   test("an old pair that cannot be withdrawn is reported, and the new pair still stands", async () => {
