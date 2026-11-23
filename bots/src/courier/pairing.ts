@@ -4,7 +4,7 @@ import { parseArtifact, validateArtifactIdentity, type PairArtifact } from "@tin
 import { isRecord } from "../guards";
 import type { CourierGrant, CourierGrantStore } from "./grant-store";
 import type { CourierContext, CourierPeerReference, PairedPeer, PairPending } from "./lib-adapter";
-import { COURIER_HANDLE, type CourierPeer, type CourierPeerStore, type RetiredCourierPeer } from "./peer-store";
+import { COURIER_HANDLE, type CourierPeer, type CourierPeerStore, type PendingPairing, type RetiredCourierPeer } from "./peer-store";
 
 export const COURIER_PAIRING_TTL_MS = 15 * 60_000;
 export const COURIER_PEER_MAX_MS = 7 * 86_400_000;
@@ -101,6 +101,14 @@ export function createCourierPairing(options: { store: CourierPeerStore; grants:
       }
     } catch { /* A disconnected owner still has no active peers after unpair. */ }
   }
+  /** Revokes a peer the library verified but the gateway refused, by the pending row's exact SDK reference. */
+  async function revokeVerified(owner: string, saved: PendingPairing) {
+    const ref = { handle: saved.pending.handle, peerDid: saved.pending.peerDid, pairingId: saved.pending.pairingId };
+    const local = await store.getPending(owner, ref.handle);
+    if (local?.pending.pairingId === ref.pairingId) await store.retire(owner, ref.handle);
+    else await store.retireReference(owner, { handle: ref.handle, peerDid: ref.peerDid, delegation: { pending: ref } });
+    await cleanRetired(owner);
+  }
   return {
     list: owner => store.list(owner),
     pair(owner, input) {
@@ -162,11 +170,16 @@ export function createCourierPairing(options: { store: CourierPeerStore; grants:
           if (pendingReference(error)) throw new PairingError("courier_unavailable", 503);
           throw pairingFailure(error);
         }
+        // From here the library has verified C and activated the peer: every local refusal must also revoke it.
         if (peer.handle !== handle || peer.peerDid !== start.from.courier || !Number.isSafeInteger(peer.delegationExpiresAt)
-          || peer.delegationExpiresAt <= now() || peer.delegationExpiresAt > now() + COURIER_PEER_MAX_MS) throw new PairingError("invalid", 400);
+          || peer.delegationExpiresAt <= now() || peer.delegationExpiresAt > now() + COURIER_PEER_MAX_MS) {
+          await revokeVerified(owner, saved);
+          throw new PairingError("invalid", 400);
+        }
         // Verification can wait on the node; do not let its latency extend the pending window.
-        if (saved.pending.expiresAt <= now()) { await store.retire(owner, handle); throw new PairingError("pending_expired", 410); }
-        if (!await store.finalizePending(owner, saved, peer)) throw new PairingError("invalid", 400);
+        if (saved.pending.expiresAt <= now()) { await revokeVerified(owner, saved); throw new PairingError("pending_expired", 410); }
+        // A used proof CID or a changed pending row refuses the CAS; the activated grant is revoked either way.
+        if (!await store.finalizePending(owner, saved, peer)) { await revokeVerified(owner, saved); throw new PairingError("invalid", 400); }
         const publicPeer = (await store.list(owner)).find(item => item.handle === handle)!;
         return { peer: publicPeer };
       });

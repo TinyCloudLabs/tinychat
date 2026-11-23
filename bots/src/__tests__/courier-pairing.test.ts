@@ -245,3 +245,37 @@ test("signed-challenge pairing is enforced before the library: old A gets 426, C
   expect(finalized()).toBe(0);
   expect((await store.getPending(owner, "reader"))?.pending.handle).toBe("reader");
 });
+
+test("a C the library verified but the CAS refuses (used proof CID) is revoked by its exact reference", async () => {
+  const { pairing, adapter, store } = setup();
+  const revoked: unknown[] = [];
+  adapter.unpair = async (_ctx, peer) => { revoked.push(peer); };
+  await pairing.pair(owner, JSON.stringify(start));
+  await pairing.pair(owner, JSON.stringify(final));
+  await pairing.unpair(owner, "reader");
+  revoked.length = 0;
+  await pairing.pair(owner, JSON.stringify(start));
+  expect(await pairing.pair(owner, JSON.stringify(final)).catch(error => error)).toMatchObject({ code: "invalid", status: 400 });
+  expect(revoked).toEqual([{ handle: "reader", peerDid: start.from.courier, delegation: { pending: expect.objectContaining({ pairingId: "01J00000000000000000000000" }) } }]);
+  expect(await pairing.list(owner)).toEqual([]);
+  expect(await store.getPending(owner, "reader")).toBeUndefined();
+  expect(await store.listRetired(owner)).toEqual([]);
+});
+
+test("a C verified after the pending window closed is revoked, and a failed revocation is retried by maintenance", async () => {
+  const { pairing, adapter, store, advance } = setup();
+  const finalize = adapter.finalizePairing;
+  adapter.finalizePairing = async (ctx, pending, artifact) => { const peer = await finalize(ctx, pending, artifact); advance(16 * 60_000); return peer; };
+  let failures = 1;
+  const revoked: unknown[] = [];
+  adapter.unpair = async (_ctx, peer) => { revoked.push(peer); if (failures-- > 0) throw new Error("node_unavailable"); };
+  await pairing.pair(owner, JSON.stringify(start));
+  expect(await pairing.pair(owner, JSON.stringify(final)).catch(error => error)).toMatchObject({ code: "pending_expired", status: 410 });
+  expect(await store.getRuntime(owner, "reader")).toBeUndefined();
+  expect(await store.listRetired(owner)).toHaveLength(1);
+  await pairing.maintain(owner);
+  expect(revoked).toHaveLength(2);
+  expect(revoked[1]).toEqual(revoked[0]);
+  expect(await store.listRetired(owner)).toEqual([]);
+  expect(await pairing.list(owner)).toEqual([]);
+});
