@@ -991,8 +991,8 @@ async function main() {
     backendNode: node, backendDid: did, host: TINYCLOUD_HOST, otherDelegateDids: [process.env.MCP_CHAT_SERVICE_DID, AGENT_DID],
   }) : undefined;
   if (botsConfig && trustbotReadsSettings && trustbotReads) {
-    app.use("/api/bots/main/reads", createTrustBotReadsRouter({ grants: trustbotReads, config: botsConfig, auth: authMiddleware }));
-    app.use(TRUSTBOT_READS_INTERNAL_PREFIX, createTrustBotReadsInternalRouter({ grants: trustbotReads, config: botsConfig, callSecret: trustbotReadsSettings.callSecret }));
+    app.use("/api/bots/main/reads", createTrustBotReadsRouter({ grants: trustbotReads, telegramGrants: trustbotReads.telegram, config: botsConfig, auth: authMiddleware }));
+    app.use(TRUSTBOT_READS_INTERNAL_PREFIX, createTrustBotReadsInternalRouter({ grants: trustbotReads, telegramGrants: trustbotReads.telegram, config: botsConfig, callSecret: trustbotReadsSettings.callSecret }));
     console.log("[startup] TrustBot reads enabled.");
   }
   app.use("/api/bots/main/courier", createBotsCourierRouter({ config: botsConfig, auth: authMiddleware }));
