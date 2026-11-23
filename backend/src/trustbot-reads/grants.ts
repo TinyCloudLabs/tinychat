@@ -39,6 +39,8 @@ export class ReadGrantInvalid extends Error {
 interface StoredReads extends GrantEnvelope {
   v: 1;
   areas: ReadArea[];
+  /** Kept even when all read areas are off. Missing in records created before per-chat settings. */
+  deniedChatIds?: string[];
   cid: string;
   expiresAt: number;
   mintedAt?: number;
@@ -77,7 +79,9 @@ function checkAddress(address: string): string {
 function isStored(value: unknown): value is StoredReads {
   if (!value || typeof value !== "object") return false;
   const v = value as Record<string, unknown>;
-  return v.v === 1 && Array.isArray(v.areas) && v.areas.length > 0 && v.areas.every(isReadArea)
+  return v.v === 1 && Array.isArray(v.areas) && v.areas.every(isReadArea)
+    && (v.deniedChatIds === undefined || (Array.isArray(v.deniedChatIds)
+      && v.deniedChatIds.every(id => typeof id === "string" && id.length > 0 && id.length <= 128)))
     && typeof v.cid === "string" && typeof v.expiresAt === "number" && Number.isFinite(v.expiresAt)
     && typeof v.serialized === "string" && typeof v.siwe === "string" && typeof v.signature === "string";
 }
@@ -121,6 +125,28 @@ export class TrustBotReadGrants {
     return this.#status((await this.#load(checkAddress(address)))?.record);
   }
 
+  /** Authoritative per-chat settings, loaded afresh for each read; corrupt records fail closed. */
+  async deniedChatIds(address: string): Promise<Set<string>> {
+    return new Set((await this.#load(checkAddress(address)))?.record.deniedChatIds ?? []);
+  }
+
+  async setChatDenied(address: string, chat: string, denied: boolean): Promise<Set<string>> {
+    const owner = checkAddress(address);
+    if (typeof chat !== "string" || chat.length === 0 || chat.length > 128 || typeof denied !== "boolean") throw new ReadGrantInvalid("invalid_chat");
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const stored = await this.#load(owner);
+      const ids = new Set(stored?.record.deniedChatIds ?? []);
+      if (denied) ids.add(chat); else ids.delete(chat);
+      if (!stored && ids.size === 0) return ids;
+      // With no grant yet, retain only off settings and an empty envelope; access refuses the empty areas.
+      const next: StoredReads = { ...(stored?.record ?? {
+        v: 1, areas: [], cid: "", expiresAt: 0, serialized: "", siwe: "", signature: "",
+      }), deniedChatIds: [...ids] };
+      if (await this.#save(owner, next, stored?.etag) !== false) return ids;
+    }
+    throw new ReadGrantInvalid("changed");
+  }
+
   async renewalStatus(address: string): Promise<ReadStatus & { renewAfter: number | null; replacedGrantCid: string | null }> {
     const stored = (await this.#load(checkAddress(address)))?.record;
     // Existing records predate mintedAt. The seven-day cap gives an early bound for those grants.
@@ -130,6 +156,7 @@ export class TrustBotReadGrants {
   }
 
   #status(stored: StoredReads | undefined): ReadStatus {
+    if (stored?.areas.length === 0) stored = undefined;
     const ended = stored !== undefined && stored.expiresAt <= this.#now();
     const areas = Object.fromEntries(READ_AREA_NAMES.map(area => [
       area, !stored?.areas.includes(area) ? "off" : ended ? "ended" : "on",
@@ -178,7 +205,7 @@ export class TrustBotReadGrants {
       throw new ReadGrantInvalid(error instanceof DelegationActivationError && error.status < 500 ? "rejected" : "unavailable");
     }
     const cid = verified.verified.cid;
-    const record: StoredReads = { v: 1, areas, cid, expiresAt, mintedAt: now, ...envelope };
+    const record: StoredReads = { v: 1, areas, cid, expiresAt, mintedAt: now, ...envelope, deniedChatIds: previous?.record.deniedChatIds ?? [] };
     // Keep the superseded CID with the committed grant so the owner can revoke it if the response was lost.
     record.replacedGrantCid = previous?.record.cid === cid ? previous.record.replacedGrantCid : previous?.record.cid;
     if (await this.#save(owner, record, previous?.etag) === false) throw new ReadGrantInvalid("changed");
@@ -186,7 +213,7 @@ export class TrustBotReadGrants {
     return this.#status(record);
   }
 
-  /** Turns `area` off. With no area left on, the stored grant is deleted; the owner's browser revokes it at the node. */
+  /** Turns `area` off. With no area left on, delete the grant unless per-chat settings must be retained. */
   async disable(address: string, area: ReadArea): Promise<ReadStatus> {
     const owner = checkAddress(address);
     for (let attempt = 0; attempt < 3; attempt++) {
@@ -194,7 +221,8 @@ export class TrustBotReadGrants {
       if (!stored || !stored.record.areas.includes(area)) return this.#status(stored?.record);
       const areas = stored.record.areas.filter(name => name !== area);
       const next = { ...stored.record, areas };
-      const written = areas.length > 0
+      const retained = areas.length > 0 || (next.deniedChatIds?.length ?? 0) > 0;
+      const written = retained
         ? await this.#save(owner, next, stored.etag)
         : await this.#store.delete(this.#keyFor(owner), { ifMatch: stored.etag });
       if (written === false) continue;
