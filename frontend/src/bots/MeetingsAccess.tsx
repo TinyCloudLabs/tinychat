@@ -6,6 +6,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { BotsRouteMissing } from "./botsApi";
 import { FEED_CHATS_ACCESS_STRINGS, MEETINGS_ACCESS_STRINGS } from "./botsStrings";
+import { ChatReadAccess } from "./ChatReadAccess";
 import type { ReadArea } from "./trustbotReadAreas";
 import { changeReadArea, type ReadAreaApi, type ReadSettings } from "./trustbotReadGrant";
 
@@ -49,6 +50,7 @@ export function FeedChatsAccess({ api }: { api: MeetingsAccessApi }) {
 function ReadAreaAccess({ api, area: AREA, copy: COPY }: { api: MeetingsAccessApi; area: ReadArea; copy: AccessCopy }) {
   const id = useId();
   const [saved, setSaved] = useState<ReadSettings | null>(null);
+  const [loadedApi, setLoadedApi] = useState<MeetingsAccessApi | null>(null);
   const [missing, setMissing] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -62,7 +64,7 @@ function ReadAreaAccess({ api, area: AREA, copy: COPY }: { api: MeetingsAccessAp
   useEffect(() => {
     let current = true;
     api.readSettings().then(
-      (settings) => { if (current) setSaved(settings); },
+      (settings) => { if (current) { setSaved(settings); setLoadedApi(api); } },
       (error: unknown) => {
         if (!current) return;
         if (error instanceof BotsRouteMissing) setMissing(true);
@@ -124,6 +126,7 @@ function ReadAreaAccess({ api, area: AREA, copy: COPY }: { api: MeetingsAccessAp
         </div>
       )}
       {failed ? <p role="alert" className="text-callout text-muted-foreground">{COPY.failed}</p> : null}
+      {AREA === "feed_chats" && loadedApi === api && api.chatReadAccess ? <ChatReadAccess api={api.chatReadAccess} /> : null}
     </section>
   );
 }

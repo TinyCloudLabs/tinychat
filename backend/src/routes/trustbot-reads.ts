@@ -82,6 +82,22 @@ export function createTrustBotReadsRouter({ grants, config, auth }: Pick<TrustBo
       res.status(503).json({ error: "reads_unavailable" });
     }
   });
+  router.get("/chats/denied", async (req, res) => {
+    try {
+      res.json({ deniedChatIds: [...await grants.deniedChatIds(req.user!.address)] });
+    } catch {
+      res.status(503).json({ error: "reads_unavailable" });
+    }
+  });
+  router.put("/chats/:chat", express.json({ limit: "1kb" }), async (req, res) => {
+    if (typeof req.body?.denied !== "boolean") { res.status(400).json({ error: "invalid_reads" }); return; }
+    try {
+      res.json({ deniedChatIds: [...await grants.setChatDenied(req.user!.address, req.params.chat, req.body.denied)] });
+    } catch (error) {
+      if (error instanceof ReadGrantInvalid) { res.status(400).json({ error: "invalid_reads" }); return; }
+      res.status(503).json({ error: "reads_unavailable" });
+    }
+  });
   router.put("/:area", express.json({ limit: "96kb" }), async (req, res) => {
     const area = req.params.area;
     const renewing = area === "renewal";
@@ -144,6 +160,15 @@ export function createTrustBotReadsInternalRouter({ grants, config, callSecret }
     if (!claims || claims.bot !== "main") { res.status(401).end(); return; }
     const address = claims.owner.slice(claims.owner.lastIndexOf(":") + 1);
     if (!config.accountAllowed(address)) { res.status(404).end(); return; }
+    if (req.params.tool === "read_status") {
+      try {
+        const [status, denied] = await Promise.all([grants.status(address), grants.deniedChatIds(address)]);
+        res.json({ enabledReadAreas: READ_AREA_NAMES.filter(area => status.areas[area] === "on"), deniedChatIds: [...denied] });
+      } catch {
+        res.status(503).json({ error: "reads_unavailable" });
+      }
+      return;
+    }
     const feedChat = isFeedChatTool(req.params.tool) ? req.params.tool : undefined;
     const tool = feedChat ?? TRUSTBOT_MEETING_TOOLS.find(name => name === req.params.tool);
     if (!tool) { res.status(404).end(); return; }
@@ -162,7 +187,8 @@ export function createTrustBotReadsInternalRouter({ grants, config, callSecret }
       // Each query activates only the resource its database sits under (feed-chat.ts feedChatResource).
       try {
         const sql = delegatedFeedChatSql(resource => grants.access(address, "feed_chats", resource));
-        answer(200, { ok: true, text: await runFeedChatTool(feedChat, args as Record<string, unknown>, sql) });
+        const denied = feedChat === "list_chats" || feedChat === "read_chat" ? await grants.deniedChatIds(address) : new Set<string>();
+        answer(200, { ok: true, text: await runFeedChatTool(feedChat, args as Record<string, unknown>, sql, denied) });
       } catch (error) {
         if (error instanceof ReadGrantRefused) { answer(200, refusal(error)); return; }
         if (!(error instanceof FeedChatReadError)) { answer(200, { ok: false, error: "unavailable" }); return; }

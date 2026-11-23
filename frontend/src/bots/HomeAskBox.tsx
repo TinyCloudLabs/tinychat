@@ -8,6 +8,7 @@ import { readBotHistory } from "./historyRead";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { openKeyFailureOf } from "../lib/authErrors";
+import { listThreads } from "../lib/threadStore";
 import { readHistoryNotice, type HistoryNotice } from "./historyNotice";
 import { AskBox } from "./AskBox";
 import { BotsError, botsApi, type BotsApi } from "./botsApi";
@@ -15,6 +16,7 @@ import { MainChat } from "./MainChat";
 import { isWorking, useMainChat } from "./useMainChat";
 import { AskCards } from "./AskCards";
 import { ensureTrustBotReadGrant, readSettings, revokeReadGrant, setReadArea, signReadGrant } from "./trustbotReadGrant";
+import { readDeniedChatIds, setChatDenied } from "./chatReadAccessApi";
 import { newMainChat } from "./mainNewChat";
 import { SecretCards } from "./SecretCard";
 import { useAsks } from "./useAsks";
@@ -87,6 +89,11 @@ function MainAsk({ api, tcw, onReconnect }: { api: BotsApi; tcw?: TinyCloudWeb; 
     setReadArea,
     signReadGrant: (serviceDid: string, areas: Parameters<typeof signReadGrant>[2]) => signReadGrant(tcw, serviceDid, areas),
     revokeReadGrant: (cid: string) => revokeReadGrant(tcw, cid),
+    chatReadAccess: {
+      listChats: () => listThreads(tcw),
+      readDeniedChatIds,
+      setChatDenied,
+    },
   } : undefined, [tcw, readRevision]);
   const clearChat = chat.clear;
   const newChat = useMemo(() => ({ start: () => newMainChat(), onStarted: () => { clearChat(); refreshAsks(); } }), [clearChat, refreshAsks]);
