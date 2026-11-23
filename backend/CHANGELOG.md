@@ -1,5 +1,13 @@
 # @tinychat/backend
 
+## 0.13.2-beta.2
+
+### Patch Changes
+
+- 98b74de: Bot chat history in TinyChat is sealed with its own encryption key. Saving new history needs your approval for that one key. When you open earlier messages, TinyChat can move them to that key.
+
+  Details: TC-3823
+
 ## 0.13.2-beta.1
 
 ### Patch Changes
