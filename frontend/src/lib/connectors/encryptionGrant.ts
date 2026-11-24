@@ -105,7 +105,7 @@ export const CONNECTOR_SECRET_KEYS: readonly { keyPath: string; description: str
 ];
 
 /** What the approval for a new account's first connector key says (TC-4243). */
-export const CONNECTOR_NETWORK_SETUP_DESCRIPTION = "Set up encryption for your connector keys. This does not allow reading anything.";
+export const CONNECTOR_NETWORK_SETUP_DESCRIPTION = "Set up encryption for your connector keys. It can't read anything.";
 
 /** An approval for a new account's first connector key lasts no longer than this. */
 export const CONNECTOR_NETWORK_SETUP_MAX_MS = 3_600_000;
