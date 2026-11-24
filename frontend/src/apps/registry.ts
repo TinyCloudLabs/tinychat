@@ -25,7 +25,7 @@ export type FramedAppId =
 /** A TinyCloud site One links to but never frames (it refuses frames): its screen in One opens it in a new tab. */
 export type LinkAppId = "xyz.tinycloud.share";
 
-export type OneAppId = FramedAppId | LinkAppId | "capture";
+export type OneAppId = FramedAppId | LinkAppId | "capture" | "xyz.tinycloud.tinyapps.tasks";
 
 /** The signed-in owner the owner-bound ceiling entries are built for. */
 export interface OneAppOwner {
@@ -53,10 +53,12 @@ interface ListedOneApp extends OneAppBase {
 
 /** One's own screen, shown in the launcher but not framed. */
 export interface NativeOneApp extends ListedOneApp {
-  id: "capture";
+  id: "capture" | "xyz.tinycloud.tinyapps.tasks";
   kind: "native";
   /** One's route. */
   route: string;
+  /** Read-only data scope for a native view, when it reads stored app data. */
+  ceiling?(owner: OneAppOwner): readonly CeilingEntry[];
 }
 
 /**
@@ -172,6 +174,15 @@ const LEDGER_CEILING: readonly CeilingEntry[] = LEDGER_PREFIXES.map((prefix) =>
 
 const ALL_APPS: readonly OneApp[] = [
   { id: "capture", kind: "native", ...text("capture"), icon: Mic, glyph: "recording", route: "/chat/capture" },
+  {
+    id: "xyz.tinycloud.tinyapps.tasks",
+    kind: "native",
+    ...text("xyz.tinycloud.tinyapps.tasks"),
+    icon: ClipboardList,
+    glyph: "tasks",
+    route: "/chat/apps/xyz.tinycloud.tinyapps.tasks",
+    ceiling: () => [kv("tasks", "applications", "xyz.tinycloud.tinyapps.tasks/", ["get", "list", "metadata"])],
+  },
   {
     id: "xyz.tinycloud.secrets",
     kind: "framed",

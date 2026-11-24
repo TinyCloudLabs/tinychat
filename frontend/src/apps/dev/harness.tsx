@@ -21,6 +21,7 @@ import { AppShell } from "../../shell/AppShell";
 import { PATHS, screenFor } from "../../shell/routes";
 import { ONE_NAV_ENABLED } from "../../shell/navPins";
 import type { StepUpConnect } from "../stepUp";
+import { LedgerScreen } from "../../ledger/LedgerScreen";
 
 if (!import.meta.env.DEV || import.meta.env.VITE_ONE_APPS !== "true") throw new Error("Run the One Apps dev harness with `bun run dev:apps`.");
 
@@ -85,9 +86,11 @@ function HarnessShell({ tcw }: { tcw: TinyCloudWeb | null }) {
       connectors={notHere}
       settings={ONE_NAV_ENABLED ? notHere : null}
       feed={notHere}
-      apps={ONE_NAV_ENABLED
-        ? screen.id === "addApp" ? <AddAppPage /> : screen.appId ? <OneAppScreen appId={screen.appId} tcw={tcw} accountDid={ACCOUNT_DID} connect={connect} fallback={launcher} /> : launcher
-        : screen.appId ? <FramedAppScreen appId={screen.appId} tcw={tcw} connect={connect} fallback={launcher} /> : launcher}
+      apps={screen.appId === "xyz.tinycloud.tinyapps.tasks"
+        ? <LedgerScreen tcw={tcw} accountDid={ACCOUNT_DID} />
+        : ONE_NAV_ENABLED
+          ? screen.id === "addApp" ? <AddAppPage /> : screen.appId ? <OneAppScreen appId={screen.appId} tcw={tcw} accountDid={ACCOUNT_DID} connect={connect} fallback={launcher} /> : launcher
+          : screen.appId ? <FramedAppScreen appId={screen.appId} tcw={tcw} connect={connect} fallback={launcher} /> : launcher}
     />
   );
 }

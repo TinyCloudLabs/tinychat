@@ -31,7 +31,7 @@ export function launcherTiles(pendingMeetings: number, origin: string, apps: rea
   const tiles: LauncherTile[] = apps.flatMap((app) =>
     app.kind === "link"
       ? []
-      : [{ pin: app.kind === "native" ? "capture" : appPinId(app.id), name: app.name, description: app.description, icon: app.icon, target: appTarget(app, origin) }],
+      : [{ pin: app.id === "capture" ? "capture" : appPinId(app.id), name: app.name, description: app.description, icon: app.icon, target: appTarget(app, origin) }],
   );
   tiles.push({
     pin: "connectors",
@@ -54,7 +54,7 @@ export function gridTiles(pendingMeetings: number, apps: readonly OneApp[] = ONE
     const frame = app.kind === "native" ? undefined : framedApp(app.id);
     const opensOut = origin !== null && app.kind !== "native" && !(frame && framesAppHere(frame, origin));
     return {
-      pin: app.kind === "native" ? "capture" : appPinId(app.id),
+      pin: app.id === "capture" ? "capture" : appPinId(app.id),
       name: app.name,
       caption: APP_CAPTIONS[app.glyph],
       glyph: app.glyph,

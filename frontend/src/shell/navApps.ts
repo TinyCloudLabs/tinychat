@@ -10,8 +10,8 @@ import { ONE_NAV_ENABLED } from "./navPins";
 const ORIGIN = globalThis.location?.origin ?? "";
 
 export const NAV_APPS: readonly NavApp[] = ONE_APPS.flatMap((app): NavApp[] => {
-  if (app.kind === "native") return [];
+  if (app.id === "capture") return [];
   if (ONE_NAV_ENABLED) return [{ id: app.id, name: app.name, icon: GLYPH_ICONS[app.glyph], target: { kind: "route", path: appRoute(app) } }];
-  return app.kind === "framed" ? [{ id: app.id, name: app.name, icon: app.icon, target: appTarget(app, ORIGIN) }] : [];
+  return app.kind !== "link" ? [{ id: app.id, name: app.name, icon: app.icon, target: appTarget(app, ORIGIN) }] : [];
 });
 export const NAV_APP_IDS: readonly string[] = NAV_APPS.map((app) => app.id);

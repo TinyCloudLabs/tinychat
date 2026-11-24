@@ -220,6 +220,7 @@ const AppsPage = lazyTab("Apps", () => import("./home/AppsPage").then((m) => m.A
 const ONE_APPS_ENABLED = import.meta.env.VITE_ONE_APPS === "true";
 const FramedAppScreen = lazyTab("Apps", () => import("./apps/FramedAppScreen").then((m) => m.FramedAppScreen));
 const OneAppScreen = lazyTab("Apps", () => import("./apps/FramedAppScreen").then((m) => m.OneAppScreen));
+const LedgerScreen = lazyTab("Ledger", () => import("./ledger/LedgerScreen").then((m) => m.LedgerScreen));
 const AddAppPage = lazyTab("Apps", () => import("./apps/AddAppPage").then((m) => m.AddAppPage));
 const SettingsPage = lazyTab("Settings", () => import("./chat/SettingsPage").then((m) => m.SettingsPage));
 const AboutPage = lazyTab("How it works", () => import("./chat/AboutPage").then((m) => m.AboutPage));
@@ -1749,6 +1750,8 @@ export function App() {
               feed={LOCAL_VALIDATION ? null : <FeedView tcw={tcw} onReconnect={authAction} />}
               apps={LOCAL_VALIDATION ? null : ONE_ADD_APP_ENABLED && screen.id === "addApp"
                 ? <AddAppPage />
+                : ONE_APPS_ENABLED && screen.appId === "xyz.tinycloud.tinyapps.tasks"
+                ? <LedgerScreen key={did} tcw={tcw} accountDid={did} />
                 : ONE_NAV_ENABLED && screen.appId
                 ? <OneAppScreen appId={screen.appId} tcw={tcw} accountDid={did} fallback={<AppsPage accountDid={did} pendingMeetings={pendingMeetings} tcw={tcw} />} />
                 : ONE_APPS_ENABLED && screen.appId
