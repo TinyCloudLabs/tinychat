@@ -25,8 +25,6 @@ export const SIGN_IN_BUNDLE_ENTRIES: readonly RequiredManifestEntry[] = [
   { service: "tinycloud.space", path: "", actions: ["info"], skipPrefix: true },
   { service: "tinycloud.kv", path: "exo/v1/requests/", actions: ["get", "list", "del"] },
   { service: "tinycloud.kv", path: "exo/v1/jobs/", actions: ["get", "put", "del"] },
-  { service: "tinycloud.sql", space: "applications", path: "xyz.tinycloud.sample.healthlog/healthlog", actions: ["read", "write", "schema"], skipPrefix: true },
-  { service: "tinycloud.sql", space: "applications", path: "xyz.tinycloud.sample.recipes/recipes", actions: ["read", "write", "schema"], skipPrefix: true },
 ];
 
 interface ManifestLike {
