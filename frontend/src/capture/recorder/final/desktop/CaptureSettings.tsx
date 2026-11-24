@@ -25,10 +25,9 @@ import {
   type KeyboardEvent,
   type ReactNode,
 } from "react";
+import { readCallNamesState, readCallPromptState } from "@/lib/voiceNotes/callSettingsState";
 import {
   getDesktopCaptureExtras,
-  readCallNamesState,
-  readCallPromptState,
   type CallNames,
   type CallNamesState,
   type DesktopCaptureExtras,
