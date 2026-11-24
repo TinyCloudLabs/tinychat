@@ -5,7 +5,8 @@ import { useEffect, useId, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { BotsRouteMissing } from "./botsApi";
-import { FEED_CHATS_ACCESS_STRINGS, MEETINGS_ACCESS_STRINGS } from "./botsStrings";
+import { FEED_CHATS_ACCESS_STRINGS, MEETINGS_ACCESS_STRINGS, TELEGRAM_ACCESS_STRINGS } from "./botsStrings";
+import { ChatReadAccess } from "./ChatReadAccess";
 import type { ReadArea } from "./trustbotReadAreas";
 import { changeReadArea, type ReadAreaApi, type ReadSettings } from "./trustbotReadGrant";
 
@@ -45,10 +46,15 @@ export function FeedChatsAccess({ api }: { api: MeetingsAccessApi }) {
   return <ReadAreaAccess api={api} area="feed_chats" copy={FEED_CHATS_ACCESS_STRINGS} />;
 }
 
+export function TelegramAccess({ api }: { api: MeetingsAccessApi }) {
+  return <ReadAreaAccess api={api} area="telegram" copy={TELEGRAM_ACCESS_STRINGS} />;
+}
+
 /** Renders nothing while loading and when the service answers 404 (the feature is not on for this account). */
 function ReadAreaAccess({ api, area: AREA, copy: COPY }: { api: MeetingsAccessApi; area: ReadArea; copy: AccessCopy }) {
   const id = useId();
   const [saved, setSaved] = useState<ReadSettings | null>(null);
+  const [loadedApi, setLoadedApi] = useState<MeetingsAccessApi | null>(null);
   const [missing, setMissing] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -62,7 +68,7 @@ function ReadAreaAccess({ api, area: AREA, copy: COPY }: { api: MeetingsAccessAp
   useEffect(() => {
     let current = true;
     api.readSettings().then(
-      (settings) => { if (current) setSaved(settings); },
+      (settings) => { if (current) { setSaved(settings); setLoadedApi(api); } },
       (error: unknown) => {
         if (!current) return;
         if (error instanceof BotsRouteMissing) setMissing(true);
@@ -83,6 +89,8 @@ function ReadAreaAccess({ api, area: AREA, copy: COPY }: { api: MeetingsAccessAp
   }
 
   const state = saved.areas[AREA];
+  // Only Telegram is optional: a backend without its separate grant does not report it.
+  if (state === undefined) return null;
 
   const change = async (enabled: boolean) => {
     setFailed(false);
@@ -102,8 +110,9 @@ function ReadAreaAccess({ api, area: AREA, copy: COPY }: { api: MeetingsAccessAp
     }
   };
 
+  const expiresAt = AREA === "telegram" ? saved.telegramExpiresAt : saved.expiresAt;
   const line = state === "on"
-    ? (saved.expiresAt === null ? "" : COPY.on(dateOf(saved.expiresAt)))
+    ? (expiresAt == null ? "" : COPY.on(dateOf(expiresAt)))
     : state === "ended" ? COPY.ended : COPY.off;
 
   return (
@@ -124,6 +133,7 @@ function ReadAreaAccess({ api, area: AREA, copy: COPY }: { api: MeetingsAccessAp
         </div>
       )}
       {failed ? <p role="alert" className="text-callout text-muted-foreground">{COPY.failed}</p> : null}
+      {AREA === "feed_chats" && loadedApi === api && api.chatReadAccess ? <ChatReadAccess api={api.chatReadAccess} /> : null}
     </section>
   );
 }
