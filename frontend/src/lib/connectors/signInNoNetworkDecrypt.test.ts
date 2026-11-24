@@ -50,6 +50,24 @@ describe("the Connectors sign-in never asks for decrypt on the whole encryption 
   });
 });
 
+describe("the exact-key grants (restated from the removed whole-network helper's tests)", () => {
+  test("the static manifest alone resolves to NO encryption grant", () => {
+    // Pins why the helper has to exist: if this fails, the manifest started carrying the capability.
+    const resources = composeManifestRequest([WEB_APP_MANIFEST], { includeAccountRegistryPermissions: false }).resources;
+    expect(resources.filter((entry) => entry.service === "tinycloud.encryption")).toHaveLength(0);
+  });
+
+  test("a different signer gets different grants, not shared ones", () => {
+    const other = "0x83cD9777d4128012F878376aCbd6a092DcdDE01c";
+    const mine = connectorKeyDecryptGrants(ADDRESS).map((grant) => grant.path);
+    const theirs = connectorKeyDecryptGrants(other).map((grant) => grant.path);
+    expect(mine).toHaveLength(3);
+    expect(theirs).toHaveLength(3);
+    for (const path of theirs) expect(mine).not.toContain(path);
+    for (const path of theirs) expect(path.toLowerCase()).toContain(other.toLowerCase());
+  });
+});
+
 describe("a session that holds only the exact keys", () => {
   /** A session whose approval is exactly the resources of the Connectors sign-in. */
   function sessionHolding() {
