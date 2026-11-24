@@ -44,6 +44,7 @@ export const REQUEST_LOG_ROUTE_TEMPLATES: readonly string[] = [
   "/api/bots/main/reads/chats/:chat",
   "/api/bots/main/reads/chats/denied",
   "/api/bots/main/reads/renewal",
+  "/api/bots/main/reads/renewal/revoked",
   "/api/bots/main/reads/standing",
   "/api/bots/main/reads/standing/:cid",
   "/api/bots/main/reads/standing/summary",

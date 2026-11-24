@@ -1,6 +1,7 @@
 // Main's read access to the owner's data: the settings API and the delegation the owner's browser signs for it.
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { DEFAULT_REQUEST_HEADER_NAME, DEFAULT_REQUEST_HEADER_VALUE, SessionStore } from "@tinyboilerplate/client";
+import { CID } from "multiformats/cid";
 import { serializePortableDelegation, toPortableDelegation } from "../lib/agentDelegation";
 import { BOT_GRANT_MAX_LIFETIME_MS, botGrantLifetime } from "./botGrantLifetime";
 
@@ -112,10 +113,16 @@ const revokedReadGrant = new WeakMap<TinyCloudWeb, string>();
 
 /** Revokes a read grant at the node, as the owner who signed it: the node takes a revocation only from them. */
 export async function revokeReadGrant(tcw: TinyCloudWeb, cid: string): Promise<void> {
-  if (revokedReadGrant.get(tcw) === cid) return;
-  const revoked = await tcw.revokeDelegation(cid);
-  if (!revoked.ok) throw new Error("read_revoke_failed");
-  revokedReadGrant.set(tcw, cid);
+  if (revokedReadGrant.get(tcw) !== cid) {
+    const revoked = await tcw.revokeDelegation(cid);
+    if (!revoked.ok) throw new Error("read_revoke_failed");
+    revokedReadGrant.set(tcw, cid);
+  }
+  await clearReplacedReadGrant(cid);
+}
+
+async function clearReplacedReadGrant(cid: string): Promise<void> {
+  await request("PUT", "/api/bots/main/reads/renewal/revoked", { cid });
 }
 
 /** A revoke that fails leaves the grant to its end date (7 days at most); the change the owner asked for still happens. */
@@ -189,8 +196,13 @@ export async function ensureTrustBotReadGrant(tcw: TinyCloudWeb): Promise<boolea
       signReadGrant: (did: string, areas: ReadArea[]) => signReadGrant(tcw, did, areas, true),
       revokeReadGrant: (cid: string) => revokeReadGrant(tcw, cid),
     };
-    const recovered = typeof replacedGrantCid === "string" && replacedGrantCid !== saved.grantCid &&
-      replacedGrantCid !== revokedReadGrant.get(tcw) && await revokeQuietly(api, replacedGrantCid);
+    let recovered = false;
+    if (typeof replacedGrantCid === "string") {
+      let valid = true;
+      try { CID.parse(replacedGrantCid); } catch { valid = false; }
+      if (!valid || replacedGrantCid === saved.grantCid) await clearReplacedReadGrant(replacedGrantCid);
+      else recovered = await revokeQuietly(api, replacedGrantCid);
+    }
     const session = tcw.session();
     if (typeof renewAfter !== "number" || !session?.siwe || !session.signature ||
         currentSession().getToken() !== token) return recovered;
