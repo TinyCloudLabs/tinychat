@@ -6,16 +6,16 @@ import {
   mkdtempSync,
   mkdirSync,
   readFileSync,
-  readdirSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // Bump this one SHA to import a reviewed prompts build.
 export const PROMPTS_COMMIT = "0d899a16488ec333193c2914156933c29154f5e8";
+const PROMPTS_REPO = "https://github.com/TinyCloudLabs/prompts.git";
 const SITE_URL = "https://tinycloud.one/agents/abilities";
 const PREFIX = "/agents/abilities";
 const ROOT_DISCOVERY = ["llms-full.txt", "robots.txt", "sitemap.xml", ".well-known"];
@@ -130,15 +130,24 @@ export function installAgentSurface(siteDir, outDir) {
   writeFileSync(headersPath, `${headers}\n\n${prefixHeaders(readFileSync(join(siteDir, "_headers"), "utf8"))}\n`);
 }
 
-async function buildPrompts() {
+/** Checks out exactly `commit` of `repo` into `checkout`; a name that resolves to another commit is refused. */
+export function checkoutPrompts(checkout, repo = PROMPTS_REPO, commit = PROMPTS_COMMIT) {
+  mkdirSync(checkout, { recursive: true });
+  const env = { HOME: process.env.HOME, PATH: process.env.PATH, GIT_TERMINAL_PROMPT: "0" };
+  const git = (...args) =>
+    execFileSync("git", args, { cwd: checkout, env, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] }).trim();
+  git("init", "--quiet");
+  git("fetch", "--quiet", "--depth", "1", repo, commit);
+  git("checkout", "--quiet", "--detach", "FETCH_HEAD");
+  const head = git("rev-parse", "HEAD");
+  if (head !== commit) throw new Error(`prompts checkout is ${head}, not the pinned commit ${commit}`);
+}
+
+function buildPrompts() {
   const temp = mkdtempSync(join(tmpdir(), "tinycloud-prompts-"));
   try {
-    const archive = join(temp, "prompts.tar.gz");
-    const response = await fetch(`https://codeload.github.com/TinyCloudLabs/prompts/tar.gz/${PROMPTS_COMMIT}`);
-    if (!response.ok) throw new Error(`prompts download failed: ${response.status} ${response.statusText}`);
-    writeFileSync(archive, Buffer.from(await response.arrayBuffer()));
-    execFileSync("tar", ["-xzf", archive, "-C", temp]);
-    const checkout = join(temp, readdirSync(temp).find((entry) => entry !== basename(archive)) ?? "");
+    const checkout = join(temp, "prompts");
+    checkoutPrompts(checkout);
     const env = {
       HOME: process.env.HOME,
       PATH: process.env.PATH,
@@ -162,7 +171,7 @@ async function main() {
     if (suppliedSite) {
       siteDir = resolve(suppliedSite);
     } else {
-      const built = await buildPrompts();
+      const built = buildPrompts();
       siteDir = built.siteDir;
       temp = built.temp;
     }
