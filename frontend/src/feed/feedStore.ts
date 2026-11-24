@@ -702,7 +702,9 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
           if (stored.some((response) => response.responseId === held.responseId)) { releaseAnswer(space, held); continue; }
           const revisions = (await cardHistory(output)).filter((card) => card.cardId === held.cardId).sort((a, b) => a.revision - b.revision);
           const latest = unwrap(await listFeedCards(output)).find((card) => card.cardId === held.cardId);
-          const answered = revisions.find((card) => sameIdentity(card, held));
+          // Shown on the page as the card the answer was refused on: redacted as every card the store hands out is.
+          const answeredRevision = revisions.find((card) => sameIdentity(card, held));
+          const answered = answeredRevision && redactedCard(answeredRevision, !!courierMessage(source, answeredRevision.payload));
           const label = held.choiceId && answered ? optionLabel(answered, held.choiceId) : undefined;
           const refusal = (outcome: "closed" | "replaced" | "refused"): HeldAnswerOutcome => ({
             sourceId: held.sourceId, cardId: held.cardId, outcome,

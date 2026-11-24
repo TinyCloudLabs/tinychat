@@ -7,8 +7,10 @@ import { afterEach, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { feedResourceNames, initializeFeedDatabases, publishFeedCard, type FeedCard, type FeedDatabase } from "@tinycloud/sdk-services/feed";
+import { installDom } from "@/test/dom";
 import { useLocalThreadStorage } from "../lib/threadStore";
 import { createHomeFeedSource, HOME_FEED_RESOURCE } from "./feedStore";
+import { heldAnswerKey } from "./answerOutbox";
 import { COURIER_SOURCE_ID } from "./feedData";
 import { shownTitle } from "./cardTitle";
 
@@ -27,13 +29,27 @@ test("a link, a JWT, a bearer token and a long hex string are taken out of a tit
   expect(shownTitle(`Tap ${TAP} or use ${KEY}`)).toBe("Tap [link] or use [link]");
   expect(shownTitle("Use Authorization: Bearer abc.def-123 for the call")).toBe("Use Authorization: [hidden] for the call");
   expect(shownTitle("Header Bearer [k7Qm2xZp9] set")).toBe("Header [hidden] set");
+  expect(shownTitle("Header Bearer: k7Qm2xZp9 and Bearer=k7Qm2xZp9")).toBe("Header [hidden] and [hidden]");
+  // "Bearer" is the header's word, capitalized; a ring bearer keeps hers, and the match never runs onto the next line.
+  expect(shownTitle("Ask the ring bearer about it")).toBe("Ask the ring bearer about it");
+  expect(shownTitle("Bearer\nk7Qm2xZp9")).toBe("Bearer\nk7Qm2xZp9");
   expect(shownTitle(`Key ${HEX} rotated`)).toBe("Key [hidden] rotated");
   expect(shownTitle(`Blob ${"Zm9vYmFy".repeat(4)}1== attached`)).toBe("Blob [hidden] attached");
   expect(shownTitle("Reply to reply+k7Qm2xZp9@courier.example.com")).toBe("Reply to [link]");
-  for (const sentence of ["Can we move Thursday's review to Friday morning?", "Email mira@northwind.example if 3.5/4 slots fill up", "Commit 84f8fe9f0 shipped"]) {
+  for (const sentence of ["Can we move Thursday's review to Friday morning?", "Email mira@northwind.example if 3.5/4 slots fill up", "Commit 84f8fe9f0 shipped", "Use https: for every call"]) {
     expect(shownTitle(sentence)).toBe(sentence);
     expect(shownTitle(sentence, true)).toBe(sentence);
   }
+});
+
+test("a link or token disguised by invisible characters, fullwidth forms or another script is still taken out", () => {
+  expect(shownTitle("Open ｈｔｔｐｓ：／／evil．example／x now")).toBe("Open [link] now");
+  expect(shownTitle(`Key ${HEX.slice(0, 20)}\u200B${HEX.slice(20)} rotated`)).toBe("Key [hidden] rotated");
+  expect(shownTitle(`Key ${HEX.slice(0, 20)}\u2800${HEX.slice(20)} rotated`)).toBe("Key [hidden] rotated");
+  expect(shownTitle("Use Ｂearer k7Qm2xZp9 here")).toBe("Use [hidden] here");
+  expect(shownTitle("Go to https:evil.example/x now")).toBe("Go to [link] now");
+  expect(shownTitle("Docs at пример.рф/путь today")).toBe("Docs at [link] today");
+  expect(shownTitle(`Blob ${"Zm9v.YmFy".repeat(4)}1= attached.`)).toBe("Blob [hidden] attached.");
 });
 
 test("a Courier title is its first line, shortened, and 'New message' when only links and tokens were in it", () => {
@@ -41,6 +57,9 @@ test("a Courier title is its first line, shortened, and 'New message' when only 
   expect(shownTitle(`${EDIT_LINK}\nPlease review the terms`, true)).toBe("New message");
   expect(shownTitle(`  \nBearer ${JWT}  ${HEX}`, true)).toBe("New message");
   expect(shownTitle(`Room is ready: ${EDIT_LINK}\nSecond line`, true)).toBe("Room is ready: [link]");
+  for (const lineBreak of ["\r", "\r\n", "\u0085", "\u2028", "\u2029"]) {
+    expect(shownTitle(`${EDIT_LINK}${lineBreak}Please review`, true)).toBe("New message");
+  }
   const long = shownTitle("word ".repeat(60), true);
   expect([...long].length).toBe(120);
   expect(long.endsWith("…")).toBe(true);
@@ -95,7 +114,7 @@ async function homeCard(token: string, card: FeedCard) {
   const registry = new Database(":memory:");
   databases.push(registry);
   handles.set(HOME_FEED_RESOURCE, sqliteHandle(registry));
-  const client = { spaceId: "isolated-feed-title-test", hooks: {}, sql: { db: handle } };
+  const client = { spaceId: SPACE, hooks: {}, sql: { db: handle } };
   const source = createHomeFeedSource(useLocalThreadStorage(client as unknown as TinyCloudWeb));
   await source.load();
   const resources = value(feedResourceNames("xyz.tinycloud.tinychat/feed", token));
@@ -104,8 +123,10 @@ async function homeCard(token: string, card: FeedCard) {
   registry.query("INSERT INTO feed_agents (agent_id,agent_did,label,output_resource,response_resource,authorization_json) VALUES (?,?,?,?,?,?)")
     .run(token, "did:key:isolated-test-agent", "Relay agent", resources.outputResource, resources.responseResource, "{}");
   value(await publishFeedCard(output, card));
-  return (await source.load()).entries[0]!.state.card;
+  return { source, output, card: (await source.load()).entries[0]!.state.card };
 }
+
+const SPACE = "isolated-feed-title-test";
 
 const MESSAGE: FeedCard = {
   cardId: "isolated-card", revision: 1, issuanceId: "issuance-1", kind: "ask", needsResponse: true,
@@ -114,16 +135,33 @@ const MESSAGE: FeedCard = {
 };
 
 test("Home titles the Courier connection's link-only message 'New message' and keeps its body; another agent's shows [link]", async () => {
-  const courier = await homeCard(COURIER_SOURCE_ID, MESSAGE);
+  const { card: courier } = await homeCard(COURIER_SOURCE_ID, MESSAGE);
   expect(courier.title).toBe("New message");
   expect(courier.body).toBe(MESSAGE.body);
   // The same card from an agent that is not the Courier connection: its link still goes, but no summary is made.
-  const other = await homeCard("isolatedtest", MESSAGE);
+  const { card: other } = await homeCard("isolatedtest", MESSAGE);
   expect(other.title).toBe("[link]");
 });
 
 test("a title shows the guard's removal as [link]; the body keeps the guard's own [link removed]", async () => {
-  const card = await homeCard("isolatedtest", { ...MESSAGE, title: `Tap ${TAP} now`, body: `Use ${KEY} now`, payload: {} });
+  const { card } = await homeCard("isolatedtest", { ...MESSAGE, title: `Tap ${TAP} now`, body: `Use ${KEY} now`, payload: {} });
   expect(card.title).toBe("Tap [link] now");
   expect(card.body).toBe("Use [link removed] now");
+});
+
+test("an answer held for a revision since replaced comes back with that revision redacted: its title and its option's label", async () => {
+  const cleanup = installDom();
+  try {
+    const asked: FeedCard = { ...MESSAGE, title: `Approve ${EDIT_LINK}?`, body: "Approve the room", payload: {}, choices: [{ id: "go", label: `Open ${TAP}` }] };
+    const { source, output } = await homeCard("isolatedtest", asked);
+    const held = { version: 2 as const, sourceId: "isolatedtest", cardId: asked.cardId, revision: 1, issuanceId: asked.issuanceId, responseId: "held-go", choiceId: "go", at: new Date().toISOString() };
+    window.localStorage.setItem(heldAnswerKey(SPACE, held), JSON.stringify(held));
+    // The agent asks something else before the held answer is sent: the owner is shown the card they answered.
+    value(await publishFeedCard(output, { ...asked, revision: 2, title: "A different question", body: "Something else" }));
+    const outcomes = await source.flushHeldAnswers!();
+    expect(outcomes).toEqual([expect.objectContaining({ outcome: "replaced", choiceLabel: "Open [link removed]" })]);
+    const answered = outcomes[0]!.answered!.state.card;
+    expect(answered.title).toBe("Approve [link]?");
+    expect(answered.choices?.[0]?.label).toBe("Open [link removed]");
+  } finally { cleanup(); }
 });
