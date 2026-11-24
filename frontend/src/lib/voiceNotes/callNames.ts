@@ -9,12 +9,12 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { captureEvents } from "@/capture/captureEvents";
 import { callSpeakerLabels, parseCallParticipants, SUGGESTED_SPEAKER, suggestCallSpeakerNames, suggestSpeakerNames, type CallParticipants,
   type CallSpeakerLabels } from "@/capture/library/callParticipants";
+import { readRowCallParticipants, writeCallParticipants, writeCallSpeakerSuggestions } from "./callNamesRows";
 import { rememberCallRoster } from "./callSpeakersOnThisMac";
 import { getDesktopCaptureExtras } from "./desktopCaptureExtras";
 import { readLedgerSuggestionsEnded } from "./ledgerSpeakerNames";
 import { VoiceNotes } from "./nativeVoiceNotes";
 import { withVoiceNoteSaveDeadline } from "./saveDeadline";
-import { readRowCallParticipants, writeCallParticipants, writeCallSpeakerSuggestions } from "./voiceNoteRows";
 
 /**
  * - none: nothing to save (no desktop app here, a build without the feature, or nothing was read)
