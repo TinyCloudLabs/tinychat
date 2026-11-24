@@ -1,5 +1,13 @@
 # @tinychat/backend
 
+## 0.14.0-beta.2
+
+### Patch Changes
+
+- 1dccbf7: When a TrustBot read grant is replaced, TinyChat forgets the old grant once its revoke is confirmed and stops retrying after that. Grant records it can't read are dropped.
+
+  Details: TC-4027
+
 ## 0.14.0-beta.1
 
 ### Minor Changes

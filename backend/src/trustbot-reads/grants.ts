@@ -175,6 +175,18 @@ export class TrustBotReadGrants {
     return { ...this.#status(stored), renewAfter, replacedGrantCid: stored?.replacedGrantCid ?? null };
   }
 
+  /** Clear only the pending revoke the owner acknowledged, without overwriting a concurrent replacement. */
+  async acknowledgeRevokedGrant(address: string, cid: string): Promise<void> {
+    const owner = checkAddress(address);
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const stored = await this.#load(owner);
+      if (!stored || stored.record.replacedGrantCid !== cid) return;
+      delete stored.record.replacedGrantCid;
+      if (await this.#save(owner, stored.record, stored.etag) !== false) return;
+    }
+    throw new ReadGrantInvalid("changed");
+  }
+
   #status(stored: StoredReads | undefined): ReadStatus {
     if (stored?.areas.length === 0) stored = undefined;
     const ended = stored !== undefined && stored.expiresAt <= this.#now();

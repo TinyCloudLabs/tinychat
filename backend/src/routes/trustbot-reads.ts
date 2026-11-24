@@ -113,6 +113,16 @@ export function createTrustBotReadsRouter(
       res.status(503).json({ error: "reads_unavailable" });
     }
   });
+  router.put("/renewal/revoked", express.json({ limit: "1kb" }), async (req, res) => {
+    const cid: unknown = req.body?.cid;
+    if (typeof cid !== "string") { res.status(400).json({ error: "invalid_reads" }); return; }
+    try {
+      await grants.acknowledgeRevokedGrant(req.user!.address, cid);
+      res.status(204).end();
+    } catch {
+      res.status(503).json({ error: "reads_unavailable" });
+    }
+  });
   if (standingEnabled && audit) {
     router.get("/standing/summary", async (req, res) => {
       res.set("Cache-Control", "no-store");
