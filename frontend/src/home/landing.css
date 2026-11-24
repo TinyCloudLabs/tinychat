@@ -692,7 +692,8 @@ main:has(> .tcl) {
 
 /* Ground floor: the door */
 .tcl-ground {
-  padding: clamp(104px, 15vw, 184px) var(--gutter) 0;
+  padding: clamp(136px, 16vw, 184px) var(--gutter) 0;
+  overflow-x: clip;
   text-align: center;
 }
 .tcl-door {
