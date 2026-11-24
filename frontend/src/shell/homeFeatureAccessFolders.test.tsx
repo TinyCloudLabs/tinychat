@@ -3,7 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { installDom } from "@/test/dom";
-import { FEATURE_ACCESS_PARTIAL, FEATURE_ACCESS_PARTIAL_FOLDERS } from "@/lib/homeStrings";
+import { FEATURE_ACCESS_PARTIAL, FEATURE_ACCESS_PARTIAL_BOTH, FEATURE_ACCESS_PARTIAL_FOLDERS } from "@/lib/homeStrings";
 import {
   HomeFeatureAccessContext,
   HomeFeatureGate,
@@ -62,4 +62,8 @@ test("when the folder permissions were left out, the card names the folders, kee
 
 test("when only the unlock permission was left out, the card keeps its own message", async () => {
   expect(await outcomeLine("partial")).toBe(FEATURE_ACCESS_PARTIAL);
+});
+
+test("when the unlock permission and the folder permissions were both left out, the card says so", async () => {
+  expect(await outcomeLine("partial-both")).toBe(FEATURE_ACCESS_PARTIAL_BOTH);
 });

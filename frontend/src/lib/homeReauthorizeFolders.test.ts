@@ -66,9 +66,9 @@ test("the master decrypt grant turned down with the folders allowed stays the un
   expect(records.get(ADDRESS)).toBe(OLD);
 });
 
-test("both turned down names the folders", async () => {
+test("both turned down is its own outcome", async () => {
   const { deps, records } = approvedWithout((entry) => isMaster(entry) || isFolder(entry));
-  expect((await reauthorizeHome(deps, input)).outcome).toBe("partial-folders");
+  expect((await reauthorizeHome(deps, input)).outcome).toBe("partial-both");
   expect(records.get(ADDRESS)).toBe(OLD);
 });
 
