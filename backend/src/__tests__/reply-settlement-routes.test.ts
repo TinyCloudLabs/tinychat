@@ -11,6 +11,7 @@ import { _resetUsage, getUsage, recordUsage } from "../billing/usage.js";
 import type { LedgerFlusher, LedgerUsageRecordInput } from "../billing/ledger-flusher.js";
 import type { LedgerRehydrator } from "../billing/ledger-rehydrate.js";
 import { TIERS } from "../billing/tiers.js";
+import { timeCappedOutputTokens } from "../model-output-speed.js";
 
 const address = "0xreply-settlement";
 const model = "z-ai/glm-5.2";
@@ -346,13 +347,13 @@ describe("ledger-authoritative allowance (agent chat)", () => {
 });
 
 describe("a large paid allowance (agent chat)", () => {
-  test("sends no max_tokens: the cap is bounded by the model's context, not the allowance", async () => {
+  test("caps output at what the model streams in the turn time left, not at the allowance", async () => {
     // About 1e9 output tokens of allowance at 10 credits per 1K: far beyond any context window.
     process.env.CREDIT_BUDGET_FREE = "10000000";
     const local = browser();
     const config = agentConfig(provider(() => sse(frame({ id: "c", choices: [{ delta: { content: "Hi" }, finish_reason: "stop" }] }), usageFrame(10, 5), "data: [DONE]\n\n")));
     await createAgentChatHandler(config)(local.req, local.res, () => {});
     expect(providerRequests).toHaveLength(1);
-    expect(providerRequests[0].max_tokens).toBeUndefined();
+    expect(providerRequests[0].max_tokens).toBeLessThanOrEqual(timeCappedOutputTokens(model, config.streamPolicy!.turnTimeoutMs));
   });
 });

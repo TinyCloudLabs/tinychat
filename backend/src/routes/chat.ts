@@ -343,6 +343,7 @@ export function createChatRouter(options?: ChatRouterOptions) {
     let budgetRemaining: number | null = null;
     // The window and allowance a reply is charged against are those at admission.
     const startedAt = Date.now();
+    let ledgerWindow: { limit: number; committed: number } | null = null;
     if (paywallEnabled()) {
       let resolution;
       try {
@@ -433,10 +434,9 @@ export function createChatRouter(options?: ChatRouterOptions) {
           });
           return;
         }
-        const localUsage = getUsage(address, tierConfig, anchor);
-        budgetRemaining = entitlement && !entitlement.isOutage && entitlement.credit_limit !== null && entitlement.committed_credits !== null
-          ? entitlement.credit_limit - entitlement.committed_credits
-          : localUsage.limit - localUsage.used;
+        if (entitlement && !entitlement.isOutage && entitlement.credit_limit !== null && entitlement.committed_credits !== null) {
+          ledgerWindow = { limit: entitlement.credit_limit, committed: entitlement.committed_credits };
+        }
       } else {
         if (isOverBudget(address, tierConfig, anchor)) {
           const usage = getUsage(address, tierConfig, anchor);
@@ -456,8 +456,6 @@ export function createChatRouter(options?: ChatRouterOptions) {
           });
           return;
         }
-        const localUsage = getUsage(address, tierConfig, anchor);
-        budgetRemaining = localUsage.limit - localUsage.used;
       }
 
       // Resolve the requested model's rates once per request, before any bytes
@@ -470,6 +468,10 @@ export function createChatRouter(options?: ChatRouterOptions) {
         handleRouteError(res, error, "resolve model rates");
         return;
       }
+      // Read after the last await, so a reply that settled meanwhile counts. The ledger's committed total trails the local
+      // counter by up to one flush, so against the ledger's limit the larger of the two is what is used.
+      const localUsage = getUsage(address, tierConfig, anchor);
+      budgetRemaining = ledgerWindow ? ledgerWindow.limit - Math.max(ledgerWindow.committed, localUsage.used) : localUsage.limit - localUsage.used;
       // Credits other replies hold are spoken for. Read here and held below, with no await in between.
       const held = heldCredits(address, tierConfig, anchor, startedAt);
       if (held > 0 && budgetRemaining - held <= 0) {
@@ -496,13 +498,15 @@ export function createChatRouter(options?: ChatRouterOptions) {
         : {}),
     };
     // The reply's spend bound: what its prompt and output can cost within what is left, held until it settles. Its
-    // output is capped to fit. The hold lapses after ten minutes even if nothing releases it.
+    // output is capped to fit. The prompt is priced from its UTF-8 bytes, so scripts with fewer chars per token (CJK) are
+    // not under-held. The finally at the end releases the hold after settlement; it lapses after 30 minutes even if a
+    // hung handler never gets there.
     let outputCap = maxOutputTokens;
     let allowance: number | null = null;
     let releaseHold: () => void = () => {};
     if (budgetRemaining !== null && rates) {
-      const promptChars = JSON.stringify(requestBody).length;
-      const limit = createReplyBudget(Math.max(0, budgetRemaining), rates, contextLengthFor(resolvedModel)).limitFor(promptChars, maxOutputTokens);
+      const promptBytes = Buffer.byteLength(JSON.stringify(requestBody));
+      const limit = createReplyBudget(Math.max(0, budgetRemaining), rates, contextLengthFor(resolvedModel)).limitFor(promptBytes, maxOutputTokens);
       if (!limit) {
         res.status(402).json({
           error: "credit_budget_exceeded",
@@ -512,11 +516,10 @@ export function createChatRouter(options?: ChatRouterOptions) {
         return;
       }
       outputCap = limit.maxTokens;
-      allowance = outputCap === undefined ? budgetRemaining : Math.min(budgetRemaining, callCostBound(rates, promptChars, outputCap));
-      releaseHold = holdCredits(address, TIERS[gatedTier], anchor, startedAt, allowance, 10 * 60_000);
-      res.once("close", releaseHold);
+      allowance = outputCap === undefined ? budgetRemaining : Math.min(budgetRemaining, callCostBound(rates, promptBytes, outputCap));
+      releaseHold = holdCredits(address, TIERS[gatedTier], anchor, startedAt, allowance, 30 * 60_000);
     }
-
+    try {
     // AbortController so we can cancel the upstream fetch if the client disconnects.
     // Abort on the RESPONSE close with writableEnded=false. The REQUEST "close"
     // event fires on Bun as soon as the request body is consumed (not on client
@@ -658,9 +661,9 @@ export function createChatRouter(options?: ChatRouterOptions) {
         usage, rates, deliveredOutput: scanner.completionText.length > 0, executionId: crypto.randomUUID(), flusher,
         outcome: controller.signal.aborted ? "cancelled" : streamFailed ? "failed" : "success", failureCause: "ours",
       });
-      releaseHold();
       noteRequestRecord(res, { credits: settled.charged });
     }
+    } finally { releaseHold(); }
   }));
 
   /**

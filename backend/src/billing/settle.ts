@@ -9,7 +9,8 @@
 //     failures (provider, network, our limits and code) are free, even after
 //     content was delivered. An unknown cause is ours.
 //   - A timed-out reply is free: the turn deadline is ours, like any of our
-//     failures.
+//     failures. A turn the client ran out of time by not reading (TC-4203) is
+//     settled by the caller as "cancelled", not "timed_out".
 //   - A cancelled (Stop) reply is charged for what it used up to the Stop:
 //     callers pass usage metered while the reply streamed, not only the
 //     provider's end-of-call usage frames.
