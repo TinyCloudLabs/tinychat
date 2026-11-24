@@ -25,6 +25,7 @@ import { mcpChatFromEnv } from "./mcp-meetings/config.js";
 import { BotHistory } from "./bot-history.js";
 import { createBotHistoryRouter, createSiblingHistoryRouter, startBotHistoryDrain } from "./routes/bot-history.js";
 import { botsFromEnv, createBotsRouter, removeBotFromService } from "./routes/bots.js";
+import { createBotsCourierRouter } from "./routes/bots-courier.js";
 import { createTrustBotReadsInternalRouter, createTrustBotReadsRouter, TRUSTBOT_READS_INTERNAL_PREFIX } from "./routes/trustbot-reads.js";
 import { READ_AREA_NAMES } from "./trustbot-reads/areas.js";
 import type { TrustBotReadGrants } from "./trustbot-reads/grants.js";
@@ -32,6 +33,7 @@ import { StandingReadRuntime } from "./trustbot-reads/standing.js";
 import { StandingReadsController } from "./trustbot-reads/standing-controller.js";
 import { DstackStandingHolderDeriver } from "./trustbot-reads/standing-holder.js";
 import { backendStandingMetadataStore } from "./trustbot-reads/standing-store.js";
+import { isStandingArea } from "./trustbot-reads/standing-types.js";
 import { RetainedReadAudit } from "./trustbot-reads/audit.js";
 import { startTrustBotReads, trustbotReadsFromEnv } from "./trustbot-reads/setup.js";
 import { botAdmissionSecret, mountBotAdmissionRoute } from "./routes/bot-admission.js";
@@ -559,6 +561,27 @@ async function main() {
         return { delegate: firefliesImportKeys.delegate, grantStore, coordinator, importer };
       })()
     : null;
+  // A grant a disconnect or purge could not remove would outlive the owner's choice, so these calls fail (503) rather than skip.
+  // Runs inside the connection-change lane, so it must NOT take the per-owner lock: the importer takes the per-owner lock and
+  // then the connection-change lane, and the reverse order would deadlock. The grant store orders its own writes per owner, so
+  // this removal is never undone by a marker an import wrote from an earlier read. A purge's ledger entry stops the meetings of
+  // an import in flight; a disconnect that keeps the meetings does not, so an import already past its checks can still write
+  // the one meeting it holds before it ends.
+  const removeFirefliesGrant = firefliesImport
+    ? (address: string) => firefliesImport.grantStore.remove(address)
+    : undefined;
+  if (firefliesImport) {
+    // No sealed grant outlives its end date: lapsed records become content-free markers, at boot and every 15 minutes.
+    const reapLapsedGrants = () =>
+      firefliesImport.grantStore
+        .reapLapsed({ now: Date.now(), run: (address, fn) => firefliesImport.coordinator.run(address, fn) })
+        .then(
+          ({ scanned, reaped }) => { if (reaped > 0) console.log(`[fireflies-import] op=reap scanned=${scanned} reaped=${reaped}`); },
+          () => console.warn("[fireflies-import] op=reap result=unavailable"),
+        );
+    void reapLapsedGrants();
+    setInterval(() => { void reapLapsedGrants(); }, 15 * 60_000).unref();
+  }
   const connectorQueue = new ConnectorQueue(node, {
     storageLane: backendStorageLane,
     retentionKeys: connectorKeyStore,
@@ -809,6 +832,7 @@ async function main() {
       control: connectorControl,
       authMiddleware,
       ...(onFirefliesLedgerCleared ? { onLedgerCleared: onFirefliesLedgerCleared } : {}),
+      ...(removeFirefliesGrant ? { removeFirefliesGrant } : {}),
     }),
   );
   if (connectorWebhooks) {
@@ -839,6 +863,7 @@ async function main() {
         // singleton. Under B/C the route then returns the pending ids; nothing was written.
         drain: ({ source, address }) =>
           connectorWebhooks.drain.kick({ source, address, force: true }),
+        ...(removeFirefliesGrant ? { removeFirefliesGrant } : {}),
         ...(firefliesImport
           ? {
               onLedgerCleared: (source: string, address: string) => {
@@ -995,13 +1020,13 @@ async function main() {
   const trustbotReadsSettings = botsConfig && !localValidation ? trustbotReadsFromEnv(process.env) : undefined;
   const standingConfig = trustbotReadsSettings && process.env.TRUSTBOT_STANDING_READS_ENABLED === "true"
     ? renewalVerifyConfigFromEnv(process.env, TINYCLOUD_HOST) : undefined;
-  let trustbotReads: TrustBotReadGrants | undefined;
+  let trustbotReads: Awaited<ReturnType<typeof startTrustBotReads>>;
   const standing = standingConfig ? new StandingReadsController({
     config: standingConfig, keys: new DstackStandingHolderDeriver(), store: backendStandingMetadataStore(node),
     enabledAreas: async address => {
       if (!trustbotReads) throw new Error("trustbot_reads_unavailable");
       const { areas } = await trustbotReads.status(address);
-      return READ_AREA_NAMES.filter(area => areas[area] !== "off");
+      return READ_AREA_NAMES.filter(isStandingArea).filter(area => areas[area] !== "off");
     },
   }) : undefined;
   if (trustbotReadsSettings) {
@@ -1016,7 +1041,7 @@ async function main() {
     const standingEnabled = standing !== undefined;
     const audit = standingEnabled ? readAudit?.store : undefined;
     const readsOptions = {
-      grants: trustbotReads, config: botsConfig, auth: authMiddleware,
+      grants: trustbotReads, telegramGrants: trustbotReads.telegram, config: botsConfig, auth: authMiddleware,
       callSecret: trustbotReadsSettings.callSecret, standingEnabled, standing, audit,
     };
     app.use("/api/bots/main/reads", createTrustBotReadsRouter(readsOptions));
@@ -1028,6 +1053,7 @@ async function main() {
     }
     console.log("[startup] TrustBot reads enabled.");
   }
+  app.use("/api/bots/main/courier", createBotsCourierRouter({ config: botsConfig, auth: authMiddleware }));
   app.use("/api/bots", createBotsRouter({
     config: botsConfig, authMiddleware, paidLimiter: paidChatLimiter, registry: botsRegistry,
     // Read only when bots are configured: with bots off no route uses it, and startup calls nothing it does not need.

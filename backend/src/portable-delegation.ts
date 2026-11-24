@@ -88,10 +88,10 @@ export async function activateVerifiedDelegation(
     const access = await observeActivation(() => node.useDelegation({
       cid: verified.cid,
       delegationHeader: { Authorization: verified.authorization },
-      spaceId: verified.spaceId,
+      spaceId: resource.space,
       path: resource.path,
       actions,
-      resources: [{ service: resource.service, space: verified.spaceId, path: resource.path, actions }],
+      resources: [{ service: resource.service, space: resource.space, path: resource.path, actions }],
       expiry: verified.expiresAt,
       delegateDID: verified.backendDid,
       ownerAddress: verified.ownerAddress,

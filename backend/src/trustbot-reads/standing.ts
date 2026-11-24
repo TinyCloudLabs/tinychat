@@ -2,6 +2,7 @@ import type { RenewalVerifyConfig } from "../renewal-verify.js";
 import { areaResources, isReadArea, type ReadArea, type ReadResource } from "./areas.js";
 import type { ReadAccess } from "./grants.js";
 import { confirmedStandingReadRevocation, standingReadAuthority, type StandingReadGrant, type StandingReadHolder, type VerifyRenewalChain } from "./standing-grant.js";
+import { isStandingArea, type StandingArea } from "./standing-types.js";
 
 export interface CollectedStandingRead {
   grant: StandingReadGrant;
@@ -10,16 +11,16 @@ export interface CollectedStandingRead {
 }
 
 export type StandingReadView = {
-  areas: ReadArea[];
-  active: { originalCid: string; areas: readonly ReadArea[]; validUntil: number | null } | null;
+  areas: StandingArea[];
+  active: { originalCid: string; areas: readonly StandingArea[]; validUntil: number | null } | null;
   pending: { approveUrl: string } | null;
   previousOriginalCid: string | null;
   outcome: "declined" | "expired" | "failed" | null;
 };
 
 export interface StandingReadControl {
-  view(owner: string, areas: ReadArea[]): Promise<StandingReadView>;
-  request(owner: string, areas: ReadArea[]): Promise<StandingReadView>;
+  view(owner: string, areas: StandingArea[]): Promise<StandingReadView>;
+  request(owner: string, areas: StandingArea[]): Promise<StandingReadView>;
   /** Compare the owner's current/previous CID and confirm its revocation at the node before dropping it. */
   finishStop(owner: string, originalCid: string): Promise<void>;
   /** Refuse if the area is still in a standing grant. Cancel pending approval for the old area selection. */
@@ -57,7 +58,7 @@ export class StandingReadRuntime {
     const { store, config, fetch, now, verifyRenewalChain } = this.deps;
     try {
       const record = await store.current(owner);
-      if (!record || !isReadArea(area) || !record.grant.areas.includes(area)) {
+      if (!record || !isReadArea(area) || !isStandingArea(area) || !record.grant.areas.includes(area)) {
         onPolicyRefusal?.("no_grant");
         return { state: "absent" };
       }

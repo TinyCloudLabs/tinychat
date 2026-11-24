@@ -17,9 +17,11 @@ import { parseMeetingToolData } from "../transcripts/meeting-evidence.js";
 import { readAuditArea, TRUSTBOT_MEETING_TOOLS, type ReadAudit, type ReadOutcome } from "../trustbot-reads/audit.js";
 import { isReadArea, READ_AREA_NAMES } from "../trustbot-reads/areas.js";
 import { ReadGrantInvalid, ReadGrantRefused, type ReadStatus, type TrustBotReadGrants } from "../trustbot-reads/grants.js";
-import { delegatedFeedChatSql, FEED_CHAT_FIRST_DATABASE, FeedChatReadError, isFeedChatTool, runFeedChatTool } from "../trustbot-reads/feed-chat.js";
+import { delegatedFeedChatSql, FEED_CHAT_FIRST_DATABASE, FeedChatReadError, isFeedChatTool, listChats, readChat, runFeedChatTool } from "../trustbot-reads/feed-chat.js";
 import type { StandingReadControl } from "../trustbot-reads/standing.js";
+import { isStandingArea } from "../trustbot-reads/standing-types.js";
 import { delegatedMeetingPort } from "../trustbot-reads/meeting-port.js";
+import { delegatedTelegramPort, isTelegramTool, listTelegramChats, runTelegramTool, TelegramReadError } from "../trustbot-reads/telegram.js";
 import { botOwnerDid, botsServiceHeaders, type BotsConfig } from "./bots.js";
 
 export { TRUSTBOT_MEETING_TOOLS };
@@ -35,6 +37,8 @@ const GRANT_REFUSED = new Set(["delegation_revoked", "delegation_required", "acc
 
 export interface TrustBotReadsOptions {
   grants: TrustBotReadGrants;
+  /** A separate sealed envelope and consent session; never renewed or revoked with the other areas. */
+  telegramGrants?: TrustBotReadGrants;
   config: BotsConfig;
   auth: RequestHandler;
   /** Shared with the bots service's gateway (BOTS_BACKEND_CALL_SECRET). */
@@ -69,9 +73,16 @@ function summaryTime(value: unknown): number {
   return Number.isFinite(ms) && new Date(ms).toISOString().slice(0, 19) === value.slice(0, 19) ? ms : NaN;
 }
 
+async function readStatus(grants: TrustBotReadGrants, telegramGrants: TrustBotReadGrants | undefined, address: string) {
+  const status = await grants.status(address);
+  const telegram = await telegramGrants?.status(address);
+  return { ...status, areas: { ...status.areas, telegram: telegram?.areas.telegram ?? "off" as const },
+    telegramGrantCid: telegram?.grantCid ?? null, telegramExpiresAt: telegram?.expiresAt ?? null };
+}
+
 export function createTrustBotReadsRouter(
-  { grants, config, auth, standingEnabled, standing: control, audit }:
-    Pick<TrustBotReadsOptions, "grants" | "config" | "auth" | "standingEnabled" | "standing" | "audit">,
+  { grants, telegramGrants, config, auth, standingEnabled, standing: control, audit }:
+    Pick<TrustBotReadsOptions, "grants" | "telegramGrants" | "config" | "auth" | "standingEnabled" | "standing" | "audit">,
 ) {
   const standing = standingEnabled ? control : undefined;
   const router = Router();
@@ -85,7 +96,7 @@ export function createTrustBotReadsRouter(
   });
   router.get("/", async (req, res) => {
     try {
-      const status = await grants.status(req.user!.address);
+      const status = await readStatus(grants, telegramGrants, req.user!.address);
       // The service's copy of the setting goes with the bot's working state; it is given again whenever the owner looks.
       if (READ_AREA_NAMES.some(area => status.areas[area] === "on")) void pushToService(config, req.user!.address, status);
       res.json(readView(status));
@@ -95,7 +106,7 @@ export function createTrustBotReadsRouter(
   });
   router.get("/renewal", async (req, res) => {
     try {
-      res.json({ serviceDid: grants.serviceDid, ...await grants.renewalStatus(req.user!.address) });
+      res.json({ serviceDid: grants.serviceDid, ...await grants.renewalStatus(req.user!.address), ...await readStatus(grants, telegramGrants, req.user!.address) });
     } catch {
       res.status(503).json({ error: "reads_unavailable" });
     }
@@ -119,7 +130,7 @@ export function createTrustBotReadsRouter(
   if (standing) {
     const currentAreas = async (owner: string) => {
       const status = await grants.status(owner);
-      return READ_AREA_NAMES.filter(area => status.areas[area] !== "off");
+      return READ_AREA_NAMES.filter(isStandingArea).filter(area => status.areas[area] !== "off");
     };
     router.get("/standing", async (req, res) => {
       const owner = req.user!.address;
@@ -142,6 +153,34 @@ export function createTrustBotReadsRouter(
       } catch { res.status(503).json({ error: "reads_unavailable" }); }
     });
   }
+  // The owner sees denied titles here so they can re-allow a chat. Never served to a bot or Courier peer.
+  router.get("/telegram/chats", async (req, res) => {
+    if (!telegramGrants) { res.json({ chats: [] }); return; }
+    try {
+      await telegramGrants.access(req.user!.address, "telegram");
+      const port = delegatedTelegramPort(() => telegramGrants.access(req.user!.address, "telegram"));
+      res.json(await listTelegramChats(port, {}, new Set()));
+    } catch (error) {
+      if ((error instanceof ReadGrantRefused && ["none", "off", "ended"].includes(error.code)) || (error instanceof TelegramReadError && error.code === "not_ready")) { res.json({ chats: [] }); return; }
+      res.status(503).json({ error: "reads_unavailable" });
+    }
+  });
+  router.get("/chats/denied", async (req, res) => {
+    try {
+      res.json({ deniedChatIds: [...await grants.deniedChatIds(req.user!.address)] });
+    } catch {
+      res.status(503).json({ error: "reads_unavailable" });
+    }
+  });
+  router.put("/chats/:chat", express.json({ limit: "1kb" }), async (req, res) => {
+    if (typeof req.body?.denied !== "boolean") { res.status(400).json({ error: "invalid_reads" }); return; }
+    try {
+      res.json({ deniedChatIds: [...await grants.setChatDenied(req.user!.address, req.params.chat, req.body.denied)] });
+    } catch (error) {
+      if (error instanceof ReadGrantInvalid) { res.status(400).json({ error: "invalid_reads" }); return; }
+      res.status(503).json({ error: "reads_unavailable" });
+    }
+  });
   router.put("/:area", express.json({ limit: "96kb" }), async (req, res) => {
     const area = req.params.area;
     const renewing = area === "renewal";
@@ -150,19 +189,21 @@ export function createTrustBotReadsRouter(
     const { enabled, grant, replaces } = input as { enabled?: unknown; grant?: unknown; replaces?: unknown };
     const address = req.user!.address;
     try {
-      let status: ReadStatus;
+      if (area === "telegram" && !telegramGrants) { res.status(503).json({ error: "reads_unavailable" }); return; }
+      const selected = area === "telegram" ? telegramGrants! : grants;
       if (enabled === false && isReadArea(area)) {
         await standing?.beforeAreaOff(address, area);
-        status = await grants.disable(address, area);
+        await selected.disable(address, area);
       }
       else if (enabled === true && grant && typeof grant === "object") {
         const { serialized, siwe, signature } = grant as Record<string, unknown>;
         if (typeof serialized !== "string" || typeof siwe !== "string" || typeof signature !== "string") { res.status(400).json({ error: "invalid_reads" }); return; }
         const envelope = { serialized, siwe, signature };
-        if (renewing && typeof replaces === "string") status = await grants.renew(address, replaces, envelope);
-        else if (isReadArea(area)) status = await grants.enable(address, area, envelope);
+        if (renewing && typeof replaces === "string") await grants.renew(address, replaces, envelope);
+        else if (isReadArea(area)) await selected.enable(address, area, envelope);
         else { res.status(400).json({ error: "invalid_reads" }); return; }
       } else { res.status(400).json({ error: "invalid_reads" }); return; }
+      const status = await readStatus(grants, telegramGrants, address);
       if (!await pushToService(config, address, status)) console.warn("[trustbot-reads] service_push=failed");
       res.json(readView(status));
     } catch (error) {
@@ -173,7 +214,7 @@ export function createTrustBotReadsRouter(
   return router;
 }
 
-type ToolAnswer = { ok: true; text: string } | { ok: false; error: "off" | "ended" | "unavailable" | "invalid" | "not_found"; code?: string };
+type ToolAnswer = { ok: true; text: string } | { ok: false; error: "off" | "ended" | "unavailable" | "invalid" | "not_found" | "denied" | "not_ready"; code?: string };
 
 /** A refused grant as the gateway reports it: the owner's setting, an ended grant, or the service being down. */
 function refusal(error: unknown): ToolAnswer {
@@ -206,7 +247,7 @@ function toolText(result: { text?: unknown; data?: unknown }): string {
 }
 
 export function createTrustBotReadsInternalRouter(
-  { grants, config, callSecret, audit }: Pick<TrustBotReadsOptions, "grants" | "config" | "callSecret" | "audit">,
+  { grants, telegramGrants, config, callSecret, audit }: Pick<TrustBotReadsOptions, "grants" | "telegramGrants" | "config" | "callSecret" | "audit">,
 ) {
   const router = Router();
   const nonces = new NonceGuard();
@@ -258,12 +299,26 @@ export function createTrustBotReadsInternalRouter(
     const claims = verify(req);
     if (!claims || claims.bot !== "main") { res.status(401).end(); return; }
     const address = claims.owner.slice(claims.owner.lastIndexOf(":") + 1);
+    if (req.params.tool === "read_status") {
+      if (!config.accountAllowed(address)) { res.status(404).end(); return; }
+      try {
+        // One sealed record each: primary areas + denials, and the independent Telegram grant.
+        const [status, telegram] = await Promise.all([grants.readStatus(address), telegramGrants?.status(address)]);
+        const enabled = READ_AREA_NAMES.filter(area => area === "telegram" ? telegram?.areas.telegram === "on" : status.areas[area] === "on");
+        res.json({ enabledReadAreas: enabled, deniedChatIds: [...status.deniedChatIds] });
+      } catch {
+        res.status(503).json({ error: "reads_unavailable" });
+      }
+      return;
+    }
     const tool = req.params.tool;
+    const telegram = isTelegramTool(tool) ? tool : undefined;
+    // The read audit covers the standing-read areas (meetings, feed_chats); Telegram reads use their own grant and are not audited.
     const area = readAuditArea(tool);
-    if (!area) { res.status(404).end(); return; }
+    if (!area && !telegram) { res.status(404).end(); return; }
     let id: string | undefined;
     try {
-      id = await audit?.begin({ at: new Date().toISOString(), owner: claims.owner, area, tool });
+      id = area ? await audit?.begin({ at: new Date().toISOString(), owner: claims.owner, area, tool }) : undefined;
     } catch {
       res.status(200).json({ ok: false, error: "unavailable" });
       return;
@@ -287,17 +342,49 @@ export function createTrustBotReadsInternalRouter(
     if (!args || typeof args !== "object" || Array.isArray(args)) { await answer(400, { ok: false, error: "invalid" }, "error"); return; }
     // Checked before the tool runs, so a refusal answers with the owner's setting rather than a failed read.
     try {
-      if (feedChat) await grants.access(address, "feed_chats", FEED_CHAT_FIRST_DATABASE[feedChat]);
+      if (telegram) {
+        if (!telegramGrants) throw new ReadGrantRefused("off");
+        await telegramGrants.access(address, "telegram");
+      } else if (feedChat) await grants.access(address, "feed_chats", FEED_CHAT_FIRST_DATABASE[feedChat]);
       else await grants.access(address, "meetings");
     } catch (error) {
       await answer(200, refusal(error), grantAuditOutcome(error));
+      return;
+    }
+    if (telegram) {
+      // Not audited, so the reply needs no outcome.
+      const reply = (body: ToolAnswer) => res.status(200).json(body);
+      try {
+        const denied = await grants.deniedChatIds(address);
+        const port = delegatedTelegramPort(() => telegramGrants!.access(address, "telegram"));
+        reply({ ok: true, text: await runTelegramTool(telegram, args as Record<string, unknown>, port, denied, () => grants.deniedChatIds(address)) });
+      } catch (error) {
+        if (error instanceof ReadGrantRefused) { reply(refusal(error)); return; }
+        if (error instanceof TelegramReadError) {
+          if (error.code === "rejected") telegramGrants!.forgetActivation(address);
+          reply({ ok: false, error: error.code === "denied" || error.code === "not_ready" || error.code === "not_found" ? error.code : error.code === "invalid" ? "invalid" : "unavailable" });
+        } else reply({ ok: false, error: "unavailable" });
+      }
       return;
     }
     if (feedChat) {
       // Each query activates only the resource its database sits under (feed-chat.ts feedChatResource).
       try {
         const sql = delegatedFeedChatSql(resource => grants.access(address, "feed_chats", resource));
-        await answer(200, { ok: true, text: await runFeedChatTool(feedChat, args as Record<string, unknown>, sql) }, "ok");
+        if (feedChat === "list_chats" || feedChat === "read_chat") {
+          const denied = await grants.deniedChatIds(address);
+          const result = feedChat === "list_chats"
+            ? await listChats(sql, args as Record<string, unknown>, denied)
+            : await readChat(sql, args as Record<string, unknown>, denied);
+          // Reload immediately before serialization: a denial committed during SQL must discard the result.
+          const latest = await grants.deniedChatIds(address);
+          if ("chats" in result ? result.chats.some(chat => latest.has(chat.chat)) : latest.has(result.chat)) {
+            throw new FeedChatReadError("not_found");
+          }
+          await answer(200, { ok: true, text: JSON.stringify(result) }, "ok");
+        } else {
+          await answer(200, { ok: true, text: await runFeedChatTool(feedChat, args as Record<string, unknown>, sql) }, "ok");
+        }
       } catch (error) {
         if (error instanceof ReadGrantRefused) { await answer(200, refusal(error), grantAuditOutcome(error)); return; }
         if (!(error instanceof FeedChatReadError)) { await answer(200, { ok: false, error: "unavailable" }, "error"); return; }

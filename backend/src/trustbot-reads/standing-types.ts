@@ -1,4 +1,11 @@
+import type { ReadArea } from "./areas.js";
+
 export type StandingArea = "meetings" | "feed_chats";
+
+/** Telegram has its own grant and consent; a standing read never covers it. */
+export function isStandingArea(area: ReadArea): area is StandingArea {
+  return area !== "telegram";
+}
 
 /** Canonical lowercase did:pkh:eip155:1 owner DID. */
 export type OwnerDid = string;

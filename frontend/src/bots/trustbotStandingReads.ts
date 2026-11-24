@@ -1,16 +1,19 @@
 import { DEFAULT_REQUEST_HEADER_NAME, DEFAULT_REQUEST_HEADER_VALUE, SessionStore } from "@tinyboilerplate/client";
 import type { ReadArea } from "./trustbotReadAreas";
 
+/** Telegram has its own grant and consent; a standing read never covers it. */
+type StandingArea = Exclude<ReadArea, "telegram">;
+
 export interface StandingReadsView {
-  areas: ReadArea[];
-  active: { originalCid: string; areas: ReadArea[]; validUntil: number | null } | null;
+  areas: StandingArea[];
+  active: { originalCid: string; areas: StandingArea[]; validUntil: number | null } | null;
   pending: { approveUrl: string } | null;
   previousOriginalCid: string | null;
   outcome: "declined" | "expired" | "failed" | null;
 }
 
 export interface ReadSummary {
-  days: { day: string; area: ReadArea; tool: string; ok: number; refused: number }[];
+  days: { day: string; area: StandingArea; tool: string; ok: number; refused: number }[];
 }
 
 const backend = import.meta.env.VITE_BACKEND_URL || `${globalThis.location?.protocol ?? "http:"}//localhost:3014`;
@@ -51,7 +54,7 @@ export async function stopStandingReads(cid: string, revoke: (originalCid: strin
 
 export async function stopStandingArea(area: ReadArea, revoke: (originalCid: string) => Promise<void>): Promise<void> {
   const saved = await standingReadsView();
-  if (!saved?.active?.areas.includes(area)) return;
+  if (!saved?.active?.areas.some(covered => covered === area)) return;
   if (saved.previousOriginalCid) await stopStandingReads(saved.previousOriginalCid, revoke);
   await stopStandingReads(saved.active.originalCid, revoke);
 }

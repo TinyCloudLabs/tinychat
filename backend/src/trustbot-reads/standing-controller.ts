@@ -10,7 +10,7 @@ import {
 } from "./standing-grant.js";
 import { finishStandingReadStop, StandingReadOwnerMismatch, type CollectedStandingRead, type StandingReadControl, type StandingReadView } from "./standing.js";
 import type { HolderScope, StandingApprovalKeys } from "./standing-holder.js";
-import type { OwnerDid, StandingHolder } from "./standing-types.js";
+import { isStandingArea, type OwnerDid, type StandingArea, type StandingHolder } from "./standing-types.js";
 
 /** How often the background sweep re-checks an active grant. Reads never reuse a sweep's answer. */
 const SWEEP_CHECK_MS = 5 * 60_000;
@@ -21,7 +21,7 @@ interface Approval {
 }
 
 interface PendingApproval extends Approval {
-  areas: ReadArea[];
+  areas: StandingArea[];
 }
 
 interface ActiveApproval extends Approval {
@@ -48,7 +48,7 @@ function ownerDid(address: string): OwnerDid {
   return `did:pkh:eip155:1:${address.toLowerCase()}`;
 }
 
-function sameAreas(left: readonly ReadArea[], right: readonly ReadArea[]) {
+function sameAreas(left: readonly StandingArea[], right: readonly StandingArea[]) {
   return left.length === right.length && left.every(area => right.includes(area));
 }
 
@@ -65,7 +65,7 @@ export class StandingReadsController implements StandingReadControl {
     store: StandingMetadataStore;
     keys: StandingApprovalKeys;
     config: RenewalVerifyConfig;
-    enabledAreas(address: string): Promise<ReadArea[]>;
+    enabledAreas(address: string): Promise<StandingArea[]>;
     openKey?: StandingApprovalPort;
     fetch?: typeof fetch;
     now?: () => number;
@@ -73,7 +73,7 @@ export class StandingReadsController implements StandingReadControl {
     this.#openKey = deps.openKey ?? new StandingApprovalClient({ keys: deps.keys });
   }
 
-  async view(address: string, areas: ReadArea[]): Promise<StandingReadView> {
+  async view(address: string, areas: StandingArea[]): Promise<StandingReadView> {
     const owner = ownerDid(address);
     await this.#refresh(owner, areas);
     let { state } = await this.deps.store.read(owner);
@@ -91,7 +91,7 @@ export class StandingReadsController implements StandingReadControl {
     };
   }
 
-  async request(address: string, areas: ReadArea[]): Promise<StandingReadView> {
+  async request(address: string, areas: StandingArea[]): Promise<StandingReadView> {
     const owner = ownerDid(address);
     if (!areas.length) throw new Error("standing_read_areas_missing");
     await this.#refresh(owner, areas);
@@ -122,6 +122,7 @@ export class StandingReadsController implements StandingReadControl {
   }
 
   async beforeAreaOff(address: string, area: ReadArea): Promise<void> {
+    if (!isStandingArea(area)) return;
     const owner = ownerDid(address);
     const { state, version } = await this.deps.store.read(owner);
     if (state.active?.grant.areas.includes(area) || state.previous?.grant.areas.includes(area)) {
@@ -188,7 +189,7 @@ export class StandingReadsController implements StandingReadControl {
     return this.deps.keys.derive(scope.owner, scope.approvalId, scope.generation);
   }
 
-  async #request(scope: HolderScope, holder: StandingHolder, areas: ReadArea[]): Promise<OpenKeyApprovalRequestV1> {
+  async #request(scope: HolderScope, holder: StandingHolder, areas: StandingArea[]): Promise<OpenKeyApprovalRequestV1> {
     return {
       issuer: holder.did, requestVersion: 1, targetDid: holder.did, targetPublicJwk: standingTargetPublicJwk(holder),
       nodeOrigin: this.deps.config.nodeOrigin, permissions: standingReadPermissions(areas), purpose: "standing",
@@ -199,7 +200,7 @@ export class StandingReadsController implements StandingReadControl {
     };
   }
 
-  #refresh(owner: OwnerDid, areas: ReadArea[]): Promise<void> {
+  #refresh(owner: OwnerDid, areas: StandingArea[]): Promise<void> {
     const running = this.#collecting.get(owner);
     if (running) return running;
     const job = this.#collect(owner, areas).finally(() => this.#collecting.delete(owner));
@@ -207,7 +208,7 @@ export class StandingReadsController implements StandingReadControl {
     return job;
   }
 
-  async #collect(owner: OwnerDid, areas: ReadArea[]): Promise<void> {
+  async #collect(owner: OwnerDid, areas: StandingArea[]): Promise<void> {
     const { state, version } = await this.deps.store.read(owner);
     const { pending } = state;
     if (!pending || state.previous) return;

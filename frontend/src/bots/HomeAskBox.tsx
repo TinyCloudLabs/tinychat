@@ -8,6 +8,7 @@ import { readBotHistory } from "./historyRead";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { openKeyFailureOf } from "../lib/authErrors";
+import { listThreads } from "../lib/threadStore";
 import { readHistoryNotice, type HistoryNotice } from "./historyNotice";
 import { AskBox } from "./AskBox";
 import { BotsError, botsApi, type BotsApi } from "./botsApi";
@@ -15,6 +16,8 @@ import { MainChat } from "./MainChat";
 import { isWorking, useMainChat } from "./useMainChat";
 import { AskCards } from "./AskCards";
 import { ensureTrustBotReadGrant, readSettings, revokeReadGrant, setReadArea, signReadGrant } from "./trustbotReadGrant";
+import { readDeniedChatIds, setChatDenied } from "./chatReadAccessApi";
+import { listTelegramChats } from "./telegramChatReadAccess";
 import { newMainChat } from "./mainNewChat";
 import { SecretCards } from "./SecretCard";
 import { useAsks } from "./useAsks";
@@ -95,6 +98,11 @@ function MainAsk({ api, tcw, onReconnect }: { api: BotsApi; tcw?: TinyCloudWeb; 
       const { stopStandingArea } = await import("./trustbotStandingReads");
       await stopStandingArea(area, revokeOwnerRead);
     },
+    chatReadAccess: {
+      listChats: async () => (await Promise.all([listThreads(tcw), listTelegramChats(tcw)])).flat(),
+      readDeniedChatIds,
+      setChatDenied,
+    },
   } : undefined, [tcw, readRevision, revokeOwnerRead]);
   const clearChat = chat.clear;
   const newChat = useMemo(() => ({ start: () => newMainChat(), onStarted: () => { clearChat(); refreshAsks(); } }), [clearChat, refreshAsks]);
@@ -156,6 +164,7 @@ function MainAsk({ api, tcw, onReconnect }: { api: BotsApi; tcw?: TinyCloudWeb; 
         onReconnect={onReconnect}
         webAccess={webAccess}
         meetings={meetings}
+        courier={Boolean(tcw)}
         asks={asks}
         newChat={newChat}
       />

@@ -34,7 +34,8 @@ import { createConnectorMeetingsClient } from "@/lib/connectors/meetingsApi";
 import { CONNECTORS } from "@/lib/connectors/registry";
 import type { ConnectorConnection, ConnectorDescriptor, ConnectorId } from "@/lib/connectors/types";
 import { createConnectorWebhooksClient } from "@/lib/connectors/webhooksApi";
-import type { DisconnectMode } from "@/lib/connectors/connectorLifecycle";
+import type { DisconnectImportGrants, DisconnectMode } from "@/lib/connectors/connectorLifecycle";
+import { createFirefliesImportGrantsTeardown } from "@/lib/connectors/firefliesImportGrantsApi";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { DISCONNECT_WHILE_SYNCING, DisconnectRow, FirefliesManage } from "./ManagePanel";
 import {
@@ -128,6 +129,10 @@ export function MeetingSourcesDialog({
   const meetings = useMemo(
     () => createConnectorMeetingsClient(backendUrl, { sessionStore }),
     [backendUrl, sessionStore],
+  );
+  const importGrants = useMemo(
+    () => createFirefliesImportGrantsTeardown(tcw, backendUrl, sessionStore),
+    [tcw, backendUrl, sessionStore],
   );
 
   const readConnection = useCallback(
@@ -268,6 +273,7 @@ export function MeetingSourcesDialog({
                     connection={connection ?? null}
                     webhooks={webhooks}
                     meetings={meetings}
+                    importGrants={importGrants}
                     onIngested={() => void refresh(d.id)}
                     onFeatureDark={setFeatureDark}
                     syncing={syncing}
@@ -400,6 +406,7 @@ function FirefliesManagePanel({
   meetings,
   onIngested,
   onFeatureDark,
+  importGrants,
   syncing,
   onDisconnect,
 }: {
@@ -410,10 +417,11 @@ function FirefliesManagePanel({
   meetings: ReturnType<typeof createConnectorMeetingsClient>;
   onIngested: () => void;
   onFeatureDark: (dark: boolean) => void;
+  importGrants: DisconnectImportGrants;
   syncing: boolean;
   onDisconnect: () => void;
 }) {
-  const sync = useBackgroundSync({ tcw, descriptor, webhooks, meetings, onIngested, onFeatureDark });
+  const sync = useBackgroundSync({ tcw, descriptor, webhooks, meetings, onIngested, onFeatureDark, importGrants });
   const { state, deps, emit } = sync;
   const [consentOpen, setConsentOpen] = useState(false);
   const [rotateOpen, setRotateOpen] = useState(false);

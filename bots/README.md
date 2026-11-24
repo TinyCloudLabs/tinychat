@@ -18,6 +18,51 @@ except the ingress:
 
 Treat every sandbox as hostile: OMP has a shell, so each owner can run any code as root inside their sandbox.
 
+## Courier gateway (TC-4058)
+
+`BOTS_COURIER_ENABLED` must equal `true`; otherwise the gateway starts no Courier intake and its Courier
+control routes return 404. Only explicit addresses in `BOTS_TEST_ACCOUNTS` are eligible; `*` enables none.
+The gateway polls paired peers in-process every 15 seconds. An expired owner grant or peer delegation
+stops intake. No CLI, wake adapter or sandbox is used.
+
+The gateway seals `courier-intake/` beside its budget file with the dstack sealing key. A receipt is saved
+before the model or send runs. A crash can lose a reply; a claimed receipt restored at startup is logged
+as `reply_lost` and never retried. Malformed or unreadable receipt state disables Courier rather than
+resetting replay protection. Deleting a conversation never deletes its receipts. A receipt is pruned 30
+days after its claim, and only once the sender's inbox acknowledged the message; an unacknowledged receipt
+is kept and its acknowledgement retried when the message is listed again. The sealed file is rewritten
+whole on each change; this is accepted for v1 under the caps below.
+
+The owner is limited to 100 inbound messages per rolling hour in total across all paired peers, and each
+peer to 20 of them, across restarts. A message or thread id outside `[0-9A-Za-z_-]{1,64}` is skipped before
+any turn. At most 5,000 receipts are kept per owner: over the bound the oldest acknowledged ones go first,
+unacknowledged ones are never dropped, and when all 5,000 are unacknowledged new intake is refused and
+logged as `receipts_full`. Conversations retain the
+latest 200 messages each, at most 50 conversations per owner, with oldest entries removed first and a
+30-day text TTL. The owner reads and deletes them from **Courier conversations** in TrustBot's panel.
+The backend proxies owner-authenticated thread list, read and delete routes under
+`/api/bots/main/courier/threads`; these routes cannot send a reply.
+
+Every Courier turn pulls the owner's enabled read areas from the signed backend status route; failure
+means no reads, and the areas stay fixed for that turn. Courier turns are isolated from Main chat: they
+run as the owner's own Courier bot id (`courier/bot-id.ts`) with their own request slot and their own model
+token budget, so a peer cannot use up Main's chat. A second Courier call while one is in flight, or an
+exhausted Courier model allowance, gets the fixed "busy" or "allowance" sentence; neither is silence. Read
+tools count toward Main's 200 reads a day, and Courier reads also have a sub-cap of 50 a day per owner;
+Courier reads add no held mark, since a Courier turn has no tool that acts on one. A turn that runs
+past 90 seconds is recorded as `reply_lost` and never retried, so one peer cannot hold the tick; owners are
+polled two at a time. Peer text uses the existing
+untrusted-record wrapper. Web, secret, question, action and bot-message tools are absent and refused at
+dispatch. Requests and tasks get the fixed refusal; informs are stored without a reply.
+
+Replies are bound to the admitted peer, thread and inbound message, including an idempotency key. Only a
+fixed sentence or text issued by the copy guard (`guard.ts`) can be sent: `replyToCourierThread` refuses
+anything else. The guard matches literal runs of 12 consecutive words or 80 consecutive characters
+copied from this turn's read results, after whitespace and case normalization; the first hit is
+regenerated once without tools, another produces the fixed summary refusal. It does not catch re-encoded,
+translated or interleaved copies, so it is not leak-proof. Courier logs contain only `gateway`, a
+12-character SHA-256 peer prefix and `outcome`.
+
 ## Internal API
 
 All requests except `/healthz` are signed by the backend (`src/signed-call.ts`; the backend's copy is
@@ -196,6 +241,24 @@ the gateway applies it on every call. A missing or unreadable file reads as `off
 - Page HTML becomes plain text (`src/page-text.ts`) before Main sees it.
 - Daily budgets per bot and for all bots, and the call timeout, are set with the `BOTS_WEB_*` variables below.
 - The log and the saved counts hold counts by tool and outcome only.
+
+### Per-chat read settings
+
+The backend keeps `deniedChatIds` in the owner's sealed `trustbot/read-grants/<address>` record, alongside the read
+areas. Denials survive grant replacement and turning every area off. New chats are readable only when their area is on.
+The owner changes individual chats under Feed and chats; switching a chat off adds its exact id to the deny list.
+
+Every backend `list_chats` call excludes denied ids before title matching and limits. `read_chat` returns `not_found`
+before querying a denied chat. This applies to all TrustBot read entry points, not just Courier. A failed settings
+lookup refuses the read rather than treating it as an empty deny list. The route reloads the settings after the chat
+query and before serializing; a chat denied meanwhile is answered `not_found` and its text is dropped. `read_status`
+loads areas and denials from one record read; a missing record means all areas off and an empty deny list.
+
+`bots/src/courier/denied-chats.ts` exports `readStatus(owner)`, `enabledReadAreas(owner)` and `deniedChatIds(owner)`.
+They send signed `POST /api/internal/bots/main/reads/read_status` requests and receive plain HTTPS JSON:
+`{ enabledReadAreas, deniedChatIds }`. The backend returns only areas whose grants are on and unexpired. These helpers
+do not cache; a lookup failure throws so Courier can leave reads off. Feed cards have no chat provenance and can quote
+chat text; per-chat denial covers chat-source reads, while the Feed and chats area switch controls card reads.
 
 ### Questions from Main
 

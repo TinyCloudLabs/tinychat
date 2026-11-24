@@ -12,8 +12,8 @@ mkdir "${root}/bin"
 printf '#!/usr/bin/env bash\nexit 1\n' >"${root}/bin/curl"
 chmod +x "${root}/bin/curl"
 
-PROD_NAME=dstack-0.5.12
-PROD_HASH=8db40cb23008d6213668b5816702d100b37b859a8a5bfd18d938ae3a1b3715bd
+PROD_NAME=dstack-0.5.15
+PROD_HASH=4597735f1a38ad8ec9f781356b88737fc052062deb7c9aaa4be89bf1b35643ca
 DEV_NAME=dstack-dev-0.5.12
 DEV_HASH=e866e987221db357129ebc3f066b6706ef955889ea95e5510acbdf3d3055186b
 OTHER_HASH="$(printf 'a%.0s' {1..64})"
@@ -27,7 +27,7 @@ os_json() { # <is_dev> <name> <hash>
 }
 os_json_with_nul() { # <is_dev> <name-or-nul> <hash-or-nul>
   jq -nc --argjson dev "$1" --arg name "$2" --arg hash "$3" \
-    '{name: "cvm", os: {is_dev: $dev, name: (if $name == "nul" then (if $dev then "dstack-dev-0.5.12" else "dstack-0.5.12" end) + "\u0000" else $name end), os_image_hash: (if $hash == "nul" then (if $dev then "e866e987221db357129ebc3f066b6706ef955889ea95e5510acbdf3d3055186b" else "8db40cb23008d6213668b5816702d100b37b859a8a5bfd18d938ae3a1b3715bd" end) + "\u0000" else $hash end)}}'
+    '{name: "cvm", os: {is_dev: $dev, name: (if $name == "nul" then (if $dev then "dstack-dev-0.5.12" else "dstack-0.5.15" end) + "\u0000" else $name end), os_image_hash: (if $hash == "nul" then (if $dev then "e866e987221db357129ebc3f066b6706ef955889ea95e5510acbdf3d3055186b" else "4597735f1a38ad8ec9f781356b88737fc052062deb7c9aaa4be89bf1b35643ca" end) + "\u0000" else $hash end)}}'
 }
 
 

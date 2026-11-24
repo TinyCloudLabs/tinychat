@@ -13,6 +13,8 @@ const READER_PREFIX = "xyz.tinycloud.tinychat.trustbot-reads";
 // Keep the path and HKDF purposes stable across releases within the same dstack app.
 const READER_KEY_PATH = "tinychat/trustbot-finite-reads/reader-root/v1";
 const SECP256K1_ORDER = Buffer.from("fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141", "hex");
+/** Telegram read grants live under their own path, apart from the other read areas' grants. */
+const TRUSTBOT_TELEGRAM_READ_GRANT_KEY_PREFIX = "trustbot/telegram-read-grants/";
 /** The same floor the bots service sets for its call secret. */
 const MIN_CALL_SECRET_CHARS = 32;
 
@@ -77,10 +79,11 @@ export async function startTrustBotReads(options: {
   dstack?: DstackKeyClient;
   createIdentity?: typeof createBackendIdentity;
   standing?: StandingReadRuntime;
-}): Promise<TrustBotReadGrants | undefined> {
+}): Promise<(TrustBotReadGrants & { telegram: TrustBotReadGrants }) | undefined> {
   let root: Buffer | undefined;
   let privateKey: Buffer | undefined;
   let sealSecret: Buffer | undefined;
+  let telegramSeal: Uint8Array | undefined;
   try {
     root = await (options.dstack ?? createDstackKeyClient()).getKey(READER_KEY_PATH);
     if (root.length < 32 || !root.some(byte => byte !== 0)) throw new Error("trustbot_reader_key_unavailable");
@@ -104,15 +107,19 @@ export async function startTrustBotReads(options: {
       console.error("[startup] TrustBot's read identity is already used for other grants; TrustBot reads are off.");
       return undefined;
     }
-    return new TrustBotReadGrants({
-      reader,
-      store: backendGrantStore(options.backendNode),
-      host: options.host,
-      sealSecret,
-      // Grants belong to the reader they were issued to and sealed for.
-      keyPrefix: `${TRUSTBOT_READ_GRANT_KEY_PREFIX}v1/${did.slice(did.lastIndexOf(":") + 1)}/`,
-      standing: options.standing,
+    const store = backendGrantStore(options.backendNode);
+    // Grants belong to the reader they were issued to and sealed for.
+    const readerId = did.slice(did.lastIndexOf(":") + 1);
+    telegramSeal = new Uint8Array(hkdfSync("sha256", sealSecret, Buffer.alloc(0), "tinychat.trustbot-telegram-grant/v1", 32));
+    const telegram = new TrustBotReadGrants({
+      reader, store, host: options.host, areas: ["telegram"], sealSecret: telegramSeal,
+      keyPrefix: `${TRUSTBOT_TELEGRAM_READ_GRANT_KEY_PREFIX}v1/${readerId}/`,
     });
+    // Standing reads cover the main grant's areas only; the Telegram instance has none.
+    return Object.assign(new TrustBotReadGrants({
+      reader, store, host: options.host, sealSecret, keyPrefix: `${TRUSTBOT_READ_GRANT_KEY_PREFIX}v1/${readerId}/`,
+      standing: options.standing,
+    }), { telegram });
   } catch {
     console.error("[startup] TrustBot's enclave read identity is unavailable; TrustBot reads are off.");
     return undefined;
@@ -120,5 +127,6 @@ export async function startTrustBotReads(options: {
     root?.fill(0);
     privateKey?.fill(0);
     sealSecret?.fill(0);
+    telegramSeal?.fill(0);
   }
 }
