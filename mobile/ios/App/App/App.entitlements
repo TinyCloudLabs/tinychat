@@ -9,6 +9,8 @@
   - healthkit: read (and, for the spike's sample data, write) HealthKit.
   - healthkit.access: empty = no clinical health records (Health Records / FHIR).
   - healthkit.background-delivery: HKObserverQuery wakes via enableBackgroundDelivery (iOS 15+ requires it).
+  - associated-domains: webcredentials:openkey.so, as in App.Release.entitlements (TC-520). openkey.so's
+    apple-app-site-association lists only R4QVKA785H.xyz.tinycloud.home, so other bundle IDs get no association.
 -->
 <plist version="1.0">
 <dict>
@@ -18,5 +20,9 @@
 	<array/>
 	<key>com.apple.developer.healthkit.background-delivery</key>
 	<true/>
+	<key>com.apple.developer.associated-domains</key>
+	<array>
+		<string>webcredentials:openkey.so</string>
+	</array>
 </dict>
 </plist>

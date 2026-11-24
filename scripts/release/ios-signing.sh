@@ -12,10 +12,12 @@
 #   ios-signing.sh verify-ipa <ipa> require an App Store build signed by APPLE_TEAM_ID: valid deep signature, Apple
 #                                   Distribution authority, the team's App Store profile (no devices, not an
 #                                   in-house ProvisionsAllDevices profile, no get-task-allow) for xyz.tinycloud.home
-#                                   and its ExoWidgets extension
+#                                   and its ExoWidgets extension, and the app's associated domains (ASSOCIATED_DOMAINS)
 set -euo pipefail
 
 BUNDLE_ID=xyz.tinycloud.home
+# mobile/ios/App/App/App.Release.entitlements: share links (TC-3195) and openkey.so passkeys (TC-520).
+ASSOCIATED_DOMAINS=(applinks:tinycloud.one webcredentials:openkey.so)
 SECRETS=(APPLE_TEAM_ID APPLE_API_KEY APPLE_API_ISSUER APPLE_API_PRIVATE_KEY)
 
 fail() { echo "::error::$1"; exit 1; }
@@ -62,7 +64,7 @@ write_key() {
 }
 
 verify_ipa() {
-  local ipa=${1:?usage: ios-signing.sh verify-ipa <ipa>} tmp app appex details authority team profile bundle signed
+  local ipa=${1:?usage: ios-signing.sh verify-ipa <ipa>} tmp app appex details authority team profile bundle signed domain
   [ -f "$ipa" ] || fail "no .ipa at $ipa"
   [ -n "${APPLE_TEAM_ID:-}" ] || fail "APPLE_TEAM_ID is required"
   tmp=$(mktemp -d)
@@ -103,6 +105,13 @@ verify_ipa() {
     fail "the embedded profile is not for $bundle in APPLE_TEAM_ID"
   echo "$bundle: $authority, TeamIdentifier matches, App Store profile '$(/usr/libexec/PlistBuddy -c 'Print :Name' "$profile")'"
   done
+  codesign -d --entitlements - --xml "$app" >"$tmp/app.xcent" 2>/dev/null || fail "App.app's entitlements are unreadable"
+  for domain in "${ASSOCIATED_DOMAINS[@]}"; do
+    plutil -extract com.apple.developer.associated-domains json -o - "$tmp/app.xcent" 2>/dev/null |
+      jq -e --arg domain "$domain" 'index($domain) != null' >/dev/null ||
+      fail "App.app is not signed with the associated domain $domain (mobile/ios/App/App/App.Release.entitlements)"
+  done
+  echo "$BUNDLE_ID: associated domains ${ASSOCIATED_DOMAINS[*]}"
   rm -rf "$tmp"
 }
 
