@@ -15,7 +15,7 @@ import { readOnlyAccountProvider } from "./replication/readOnlyAccountProvider";
 import { AGENT_CONSENT_MANIFEST, MCP_CONSENT_MANIFEST, actionsFromAuthJwt, ephemeralAgentSdkConfig, mintAgentDelegation } from "./agentDelegation";
 import production from "./__fixtures__/session-grants.tc4244.json";
 // The Connectors flows, captured on this build: the exact connector keys and nothing on the whole encryption network.
-import connectors from "./__fixtures__/session-grants.b7ecb653.json";
+import connectors from "./__fixtures__/session-grants.390641ab.json";
 
 // Anvil's second default key: a well-known test key, never a real account. The fixture was captured with it.
 const account = privateKeyToAccount("0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d");
