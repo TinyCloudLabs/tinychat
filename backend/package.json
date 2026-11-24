@@ -1,6 +1,6 @@
 {
   "name": "@tinychat/backend",
-  "version": "0.14.0-beta.0",
+  "version": "0.14.0-beta.2",
   "private": true,
   "type": "module",
   "scripts": {
@@ -18,6 +18,7 @@
     "@tinycloud/node-sdk-wasm": "1.8.0-beta.0",
     "@tinycloud/sdk-core": "3.14.0-beta.20",
     "@tinycloud/sdk-services": "3.14.0-beta.20",
+    "@tinycloud/share-envelope": "1.6.0",
     "cors": "^2.8.5",
     "express": "^4.21.0",
     "express-rate-limit": "^8.3.1",

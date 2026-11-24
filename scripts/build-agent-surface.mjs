@@ -15,7 +15,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // Bump this one SHA to import a reviewed prompts build.
-export const PROMPTS_COMMIT = "6d98c3fb8538ce0ea0e921aa44046e805932f0ca";
+export const PROMPTS_COMMIT = "0d899a16488ec333193c2914156933c29154f5e8";
 const SITE_URL = "https://tinycloud.one/agents/abilities";
 const PREFIX = "/agents/abilities";
 const ROOT_DISCOVERY = ["llms-full.txt", "robots.txt", "sitemap.xml", ".well-known"];

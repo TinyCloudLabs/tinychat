@@ -6,6 +6,7 @@ import { createCipheriv, createDecipheriv, hkdfSync, randomBytes } from "node:cr
 import type { DelegatedAccess, TinyCloudNode } from "@tinycloud/node-sdk";
 import { verifyTranscriptWriterGrant, type VerifiedTranscriptWriter } from "../delegation-verify.js";
 import { activateVerifiedDelegation, DelegationActivationError } from "../portable-delegation.js";
+import type { StandingReadPolicyRefusal, StandingReadRuntime } from "./standing.js";
 import { areaResources, isReadArea, READ_AREA_NAMES, READ_AREAS, type ReadArea, type ReadResource } from "./areas.js";
 
 /** Where each owner's grant is kept, in the backend's own space. */
@@ -30,7 +31,7 @@ export interface GrantEnvelope { serialized: string; siwe: string; signature: st
 /** `none`: nothing stored. `off`: the owner has not turned this area on. `ended`: the grant expired. */
 export type ReadRefusal = "none" | "off" | "ended" | "rejected" | "unavailable";
 export class ReadGrantRefused extends Error {
-  constructor(readonly code: ReadRefusal) { super(`trustbot_read_${code}`); this.name = "ReadGrantRefused"; }
+  constructor(readonly code: ReadRefusal, readonly auditOutcome?: StandingReadPolicyRefusal) { super(`trustbot_read_${code}`); this.name = "ReadGrantRefused"; }
 }
 /** The grant the owner sent does not match what turning the area on needs. */
 export class ReadGrantInvalid extends Error {
@@ -68,6 +69,7 @@ export interface TrustBotReadGrantsOptions {
   /** Storage namespace for the configured reader. */
   keyPrefix?: string;
   now?: () => number;
+  standing?: StandingReadRuntime;
   /** Checks a grant; the default is the signed verifier in delegation-verify.ts. */
   verify?: typeof verifyTranscriptWriterGrant;
   /** Activates a checked grant at the node; the default is activateVerifiedDelegation. */
@@ -107,6 +109,7 @@ export class TrustBotReadGrants {
   readonly #key: Buffer;
   readonly #keyPrefix: string;
   readonly #now: () => number;
+  readonly #standing?: StandingReadRuntime;
   readonly #verify: typeof verifyTranscriptWriterGrant;
   readonly #activate: (verified: VerifiedTranscriptWriter) => Promise<ReadAccess>;
   readonly #activations = new Map<string, { access: ReadAccess; until: number }>();
@@ -120,6 +123,7 @@ export class TrustBotReadGrants {
     this.#key = Buffer.from(hkdfSync("sha256", options.sealSecret, Buffer.alloc(0), "tinychat.trustbot-reads.grants/v1", 32));
     this.#keyPrefix = options.keyPrefix ?? TRUSTBOT_READ_GRANT_KEY_PREFIX;
     this.#now = options.now ?? Date.now;
+    this.#standing = options.standing;
     this.#areas = options.areas ?? READ_AREA_NAMES.filter(area => area !== "telegram");
     this.#verify = options.verify ?? verifyTranscriptWriterGrant;
     this.#activate = options.activate ?? (verified => activateVerifiedDelegation(this.#reader as TinyCloudNode, verified, { host: this.#host }));
@@ -169,6 +173,18 @@ export class TrustBotReadGrants {
     const lifetime = stored?.mintedAt === undefined ? READ_GRANT_MAX_MS : stored.expiresAt - stored.mintedAt;
     const renewAfter = stored ? stored.expiresAt - lifetime / 2 : null;
     return { ...this.#status(stored), renewAfter, replacedGrantCid: stored?.replacedGrantCid ?? null };
+  }
+
+  /** Clear only the pending revoke the owner acknowledged, without overwriting a concurrent replacement. */
+  async acknowledgeRevokedGrant(address: string, cid: string): Promise<void> {
+    const owner = checkAddress(address);
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const stored = await this.#load(owner);
+      if (!stored || stored.record.replacedGrantCid !== cid) return;
+      delete stored.record.replacedGrantCid;
+      if (await this.#save(owner, stored.record, stored.etag) !== false) return;
+    }
+    throw new ReadGrantInvalid("changed");
   }
 
   #status(stored: StoredReads | undefined): ReadStatus {
@@ -261,12 +277,17 @@ export class TrustBotReadGrants {
       throw new Error("trustbot_read_path_invalid");
     }
     const owner = checkAddress(address);
+    let auditOutcome: StandingReadPolicyRefusal | undefined;
+    const standing = await this.#standing?.access(owner, area, path, outcome => { auditOutcome = outcome; });
+    if (standing?.state === "active") return standing.access;
     let stored: StoredReads | undefined;
     try { stored = (await this.#load(owner))?.record; } catch { throw new ReadGrantRefused("unavailable"); }
-    if (!stored) throw new ReadGrantRefused("none");
+    if (!stored) throw new ReadGrantRefused(
+      standing?.state === "unavailable" || standing?.state === "ended" ? standing.state : "none", auditOutcome,
+    );
     if (!stored.areas.includes(area)) throw new ReadGrantRefused("off");
     const now = this.#now();
-    if (stored.expiresAt <= now) throw new ReadGrantRefused("ended");
+    if (stored.expiresAt <= now) throw new ReadGrantRefused("ended", auditOutcome === "no_grant" ? undefined : auditOutcome);
     const verified = await this.#check(owner, stored, stored.areas, now);
     if (!verified.ok) throw new ReadGrantRefused(verified.code === "expired" || verified.code === "session_expired" ? "ended" : "rejected");
     const cacheKey = `${owner}\n${verified.verified.cid}\n${area}\n${path ?? ""}`;

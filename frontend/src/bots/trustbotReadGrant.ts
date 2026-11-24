@@ -1,6 +1,7 @@
 // Main's read access to the owner's data: the settings API and the delegation the owner's browser signs for it.
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { DEFAULT_REQUEST_HEADER_NAME, DEFAULT_REQUEST_HEADER_VALUE, SessionStore } from "@tinyboilerplate/client";
+import { CID } from "multiformats/cid";
 import { serializePortableDelegation, toPortableDelegation } from "../lib/agentDelegation";
 import { BOT_GRANT_MAX_LIFETIME_MS, botGrantLifetime } from "./botGrantLifetime";
 
@@ -20,6 +21,7 @@ export interface ReadSettings {
   telegramGrantCid?: string | null;
   telegramExpiresAt?: number | null;
   areas: Record<Exclude<ReadArea, "telegram">, ReadAreaState> & Partial<Record<"telegram", ReadAreaState>>;
+  standingAvailable?: true;
 }
 
 /** What turning a read area on or off needs. */
@@ -29,6 +31,7 @@ export interface ReadAreaApi {
   signReadGrant(serviceDid: string, areas: ReadArea[]): Promise<ReadGrant>;
   /** Revokes a grant the owner signed, at the node; throws when the node does not confirm it. */
   revokeReadGrant(cid: string): Promise<void>;
+  stopStandingArea?(area: ReadArea): Promise<void>;
   /** Per-chat controls supplied by the owner's settings surface. */
   chatReadAccess?: ChatReadAccessApi;
 }
@@ -50,7 +53,7 @@ function renewalLifetime(siwe: string, now = Date.now()): number {
 }
 
 function toReadSettings(payload: unknown): ReadSettings {
-  const value = (payload ?? {}) as { serviceDid?: unknown; expiresAt?: unknown; grantCid?: unknown; areas?: Record<string, unknown>; telegramGrantCid?: unknown; telegramExpiresAt?: unknown };
+  const value = (payload ?? {}) as { serviceDid?: unknown; expiresAt?: unknown; grantCid?: unknown; standingAvailable?: unknown; areas?: Record<string, unknown>; telegramGrantCid?: unknown; telegramExpiresAt?: unknown };
   if (typeof value.serviceDid !== "string" || (value.expiresAt !== null && typeof value.expiresAt !== "number")) throw new BotsError("failed");
   const areas = {} as ReadSettings["areas"];
   for (const area of Object.keys(READ_AREAS) as ReadArea[]) {
@@ -59,7 +62,10 @@ function toReadSettings(payload: unknown): ReadSettings {
     if (area === "telegram" && state === undefined) continue;
     areas[area] = STATES.includes(state as ReadAreaState) ? state as ReadAreaState : "off";
   }
-  const settings: ReadSettings = { serviceDid: value.serviceDid, expiresAt: value.expiresAt, grantCid: typeof value.grantCid === "string" ? value.grantCid : null, areas };
+  const settings: ReadSettings = {
+    serviceDid: value.serviceDid, expiresAt: value.expiresAt, grantCid: typeof value.grantCid === "string" ? value.grantCid : null, areas,
+    ...(value.standingAvailable === true ? { standingAvailable: true } : {}),
+  };
   if (areas.telegram === undefined) return settings;
   return { ...settings,
     telegramGrantCid: typeof value.telegramGrantCid === "string" ? value.telegramGrantCid : null,
@@ -107,10 +113,16 @@ const revokedReadGrant = new WeakMap<TinyCloudWeb, string>();
 
 /** Revokes a read grant at the node, as the owner who signed it: the node takes a revocation only from them. */
 export async function revokeReadGrant(tcw: TinyCloudWeb, cid: string): Promise<void> {
-  if (revokedReadGrant.get(tcw) === cid) return;
-  const revoked = await tcw.revokeDelegation(cid);
-  if (!revoked.ok) throw new Error("read_revoke_failed");
-  revokedReadGrant.set(tcw, cid);
+  if (revokedReadGrant.get(tcw) !== cid) {
+    const revoked = await tcw.revokeDelegation(cid);
+    if (!revoked.ok) throw new Error("read_revoke_failed");
+    revokedReadGrant.set(tcw, cid);
+  }
+  await clearReplacedReadGrant(cid);
+}
+
+async function clearReplacedReadGrant(cid: string): Promise<void> {
+  await request("PUT", "/api/bots/main/reads/renewal/revoked", { cid });
 }
 
 /** A revoke that fails leaves the grant to its end date (7 days at most); the change the owner asked for still happens. */
@@ -184,8 +196,13 @@ export async function ensureTrustBotReadGrant(tcw: TinyCloudWeb): Promise<boolea
       signReadGrant: (did: string, areas: ReadArea[]) => signReadGrant(tcw, did, areas, true),
       revokeReadGrant: (cid: string) => revokeReadGrant(tcw, cid),
     };
-    const recovered = typeof replacedGrantCid === "string" && replacedGrantCid !== saved.grantCid &&
-      replacedGrantCid !== revokedReadGrant.get(tcw) && await revokeQuietly(api, replacedGrantCid);
+    let recovered = false;
+    if (typeof replacedGrantCid === "string") {
+      let valid = true;
+      try { CID.parse(replacedGrantCid); } catch { valid = false; }
+      if (!valid || replacedGrantCid === saved.grantCid) await clearReplacedReadGrant(replacedGrantCid);
+      else recovered = await revokeQuietly(api, replacedGrantCid);
+    }
     const session = tcw.session();
     if (typeof renewAfter !== "number" || !session?.siwe || !session.signature ||
         currentSession().getToken() !== token) return recovered;
@@ -221,6 +238,7 @@ export async function changeReadArea(api: ReadAreaApi, saved: ReadSettings, area
     const areas = names.filter(name => name === area || others.includes(name));
     return replaceReadGrant(api, saved, areas, grant => api.setReadArea(area, true, grant));
   }
+  if (saved.standingAvailable) await api.stopStandingArea?.(area);
   if (others.length === 0 && saved.grantCid) await revokeQuietly(api, saved.grantCid);
   return api.setReadArea(area, false);
 }

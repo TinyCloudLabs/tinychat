@@ -1,5 +1,35 @@
 # @tinychat/backend
 
+## 0.14.0-beta.2
+
+### Patch Changes
+
+- 1dccbf7: When a TrustBot read grant is replaced, TinyChat forgets the old grant once its revoke is confirmed and stops retrying after that. Grant records it can't read are dropped.
+
+  Details: TC-4027
+
+## 0.14.0-beta.1
+
+### Minor Changes
+
+- 97fad45: Prepare an option to keep bot reads on while you’re away.
+
+  Details: TC-4000
+
+### Patch Changes
+
+- 97fad45: Show the owner a daily summary of bot reads while they were away, with allowed and refused counts by area and kind of read.
+
+  Details: TC-4000
+
+- 97fad45: Limit standing bot reads to the owner's approved areas in windows of up to seven days with a lease of up to 90 days.
+
+  Details: TC-4000
+
+- 97fad45: While standing reads are enabled, the backend records every TrustBot read of the owner's data before it happens, and a read that cannot be recorded does not run. Logging of blocked attempts is bounded. Keep 90 days of counts by day, area and tool.
+
+  Details: TC-4000
+
 ## 0.14.0-beta.0
 
 ### Minor Changes
