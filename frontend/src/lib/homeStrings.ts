@@ -69,8 +69,8 @@ export const FEATURE_ACCESS_WRONG_ACCOUNT = "That was a different OpenKey accoun
 /** Everything but the unlock-encrypted-data permission was allowed: the session was not kept, so nothing changed. */
 export const FEATURE_ACCESS_PARTIAL = "Connectors can't read your saved keys without permission to unlock your encrypted data, so nothing changed. To try again, select Continue and allow that permission.";
 /** Only the per-secret folder permissions were left out: nothing changed. */
-export const FEATURE_ACCESS_PARTIAL_FOLDERS = "Connectors can't keep your Fireflies key, Granola key or Google Meet sign-in without permission to unlock the folders they're kept in, so nothing changed. To try again, select Continue and allow the folder permissions.";
+export const FEATURE_ACCESS_PARTIAL_FOLDERS = "Connectors can't keep your Fireflies key, Granola key or Google Meet sign-in without permission to unlock the folders they're kept in, so nothing changed. To retry, select Continue and allow the folder permissions.";
 /** The unlock-everything permission and the per-secret folder permissions were both left out: nothing changed. */
-export const FEATURE_ACCESS_PARTIAL_BOTH = "Connectors can't keep your Fireflies key, Granola key or Google Meet sign-in without permission to unlock your encrypted data and the folders they're kept in, so nothing changed. To try again, select Continue and allow those permissions.";
+export const FEATURE_ACCESS_PARTIAL_BOTH = "Connectors can't keep your Fireflies key, Granola key or Google Meet sign-in without permission to unlock your encrypted data and the folders they're kept in, so nothing changed. To retry, select Continue and allow those permissions.";
 /** A new recording or upload waits while OpenKey is open for one of these asks. */
 export const FEATURE_ACCESS_WAIT_FOR_OPENKEY = "Finish in OpenKey first, then try again.";
