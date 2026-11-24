@@ -1,5 +1,7 @@
 import { isStorageFullError, reportStorageError, storageSaveMessage, storageScopeFor, trackStorageWrites } from "./storageStatus";
 import type { PermissionEntry, TinyCloudWeb } from "@tinycloud/web-sdk";
+import { bindOpenKeySigner, type StepUpConnect } from "../apps/stepUp";
+import { isNativeOpenKeySession } from "./openkeyNative";
 import { getSettingsByPrefix, getThread, rewriteThreadMessages, setSetting, type StoredMessageItem } from "./threadStore";
 import {
   activePathItems,
@@ -139,13 +141,17 @@ export async function setCanvasPromoted(tcw: TinyCloudWeb, threadId: string): Pr
  * Sessions signed in before the `canvas` manifest entry shipped (up to 30
  * days) lack the grant. requestPermissions returns at once when the session
  * already covers it and otherwise asks the user, adding the grant to this
- * session on approval. Runs before any Canvas storage use; remembered per
- * session.
+ * session on approval. A session without the grant first binds OpenKey's
+ * signer, so OpenKey's sign screen is the only ask; the phone app's session
+ * never signs and keeps the SDK request. Runs before any Canvas storage use;
+ * remembered per session.
  */
-export async function ensureCanvasAccess(tcw: TinyCloudWeb): Promise<void> {
+export async function ensureCanvasAccess(tcw: TinyCloudWeb, connect?: StepUpConnect): Promise<void> {
   if (localStores.has(tcw) || accessGranted.has(tcw as unknown as object)) return;
   let approved: boolean;
   try {
+    const session = tcw.session();
+    if (session && !tcw.hasPermissions(CANVAS_PERMISSIONS) && !isNativeOpenKeySession()) await bindOpenKeySigner(tcw, session, connect);
     approved = (await tcw.requestPermissions(CANVAS_PERMISSIONS)).approved;
   } catch (error) {
     // The screen shows this message as is, so OpenKey's own wording stays in `cause`.
