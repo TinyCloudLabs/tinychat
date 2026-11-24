@@ -16,7 +16,7 @@ export const MAX_REDIRECTS = 3;
 export const MAX_BODY_BYTES = 1024 * 1024;
 export const MAX_HEADER_BYTES = 16 * 1024;
 export const TOTAL_MS = 20_000;
-export const USER_AGENT = "TinyCloudOneBot/1.0 (+https://tinycloud.xyz)";
+export const USER_AGENT = "TinyChatBot/1.0 (+https://tinycloud.xyz)";
 const TEXT_TYPES = ["text/html", "application/xhtml+xml", "text/plain"];
 
 /** One open connection to a checked address. */
