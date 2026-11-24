@@ -294,9 +294,9 @@ never points at a pre-release. Only Apple Silicon (`darwin-aarch64`) is built.
 Installs from before the updater need **one** manual update, from the release's
 DMG or `desktop/scripts/exo-update.sh`; from then on updates are automatic.
 
-**Minting the updater keys (once).** Until this is done, `tauri.conf.json`
-carries `PLACEHOLDER-TC-4275-…` public keys and every signed release fails at
-"Sign the updater archive". Keys are made by
+**Minting the updater keys (once; done on 2026-11-24).** Without minted keys,
+`tauri.conf.json` carries `PLACEHOLDER-…` public keys and every signed release
+fails at "Sign the updater archive". Keys are made by
 `scripts/release/desktop-updater.mjs generate` (Node built-ins only), in
 `tauri signer generate`'s format and scrypt limits: unlike the Tauri CLI, which
 only takes the password as `-p`, it reads the password from a 0600 file or stdin,
@@ -323,7 +323,30 @@ shred -u "$d/key/updater.key" "$d/password" 2>/dev/null || rm -P "$d/key/updater
 rm -rf "$d"
 ```
 
-The backup key never goes into GitHub or onto the agent host. Mint it on a
+**Custody as decided on 2026-11-24 (Sam; review on 1 Dec).** Both keys are
+minted on the agent host. The primary is in `desktop-release`. The backup is in
+its own environment, `desktop-updater-backup`, under the same two secret names,
+deployable from `main` only and referenced by no workflow until a rotation. This
+covers a lost primary, not a GitHub compromise: anything merged to `main` can
+read both. Sam asked for an escrow copy of both keys in TinyCloud Secrets. The
+first pair (key ids `D86514AC959D2F47` and `9C8A2687696A53DA`) has none, so no
+stable desktop release may ship until an escrowed re-mint replaces it in
+`tauri.conf.json` and in both environments. The backup is minted the same way
+as the primary, after restricting the new environment to `main`. A new
+environment has no branch policy, and then a workflow pushed on any branch
+could read it:
+
+```bash
+gh api -X PUT repos/$repo/environments/desktop-updater-backup --input - <<'EOF'
+{"deployment_branch_policy": {"protected_branches": false, "custom_branch_policies": true}}
+EOF
+gh api -X POST repos/$repo/environments/desktop-updater-backup/deployment-branch-policies -f name=main -f type=branch
+gh api repos/$repo/environments/desktop-updater-backup/deployment-branch-policies --jq '[.branch_policies[].name]'   # ["main"]
+# then the block above with d=… for the backup, --env desktop-updater-backup, and backupPubkey
+```
+
+**Offline backup (the stronger custody).** The backup key never goes into GitHub
+or onto the agent host. Mint it on a
 machine you control (a checkout of this repo and Node are enough; nothing is
 installed). `rm -P` and `shred` do not reliably erase anything on APFS or an
 SSD, so on a Mac mint into a RAM disk, which never touches the disk (these macOS
@@ -377,9 +400,15 @@ backup key. Run it end to end once with throwaway keys:
    key this app trusts` and downloads nothing.
 
 **Rotating (primary lost or leaked): promote the backup.**
-1. Set the two `desktop-release` secrets to the backup key and its password.
-2. In a PR, move the backup public key into `plugins.updater.pubkey` and put a
-   newly minted offline key in `plugins.updater.backupPubkey`.
+1. Make the backup key the signing key. If the backup is offline, set the two
+   `desktop-release` secrets to it. If it is in `desktop-updater-backup`, GitHub
+   cannot hand it back: in the rotation PR, move "Sign the updater archive"
+   (which needs only the two `TAURI_SIGNING_*` secrets) into its own job that
+   runs in `desktop-updater-backup` and is gated like the sign job. That
+   environment then holds the primary key for later releases.
+2. In the same PR, move the backup public key into `plugins.updater.pubkey` and
+   put a newly minted key in `plugins.updater.backupPubkey`, stored offline or in
+   a new main-only environment.
 3. Release. Every install already trusts the backup key, so it takes that release
    with no manual step. From then on it trusts the new pair only, no longer the
    old primary.
@@ -433,9 +462,10 @@ gh api repos/$repo/environments/desktop-release/deployment-branch-policies --jq 
 
 Then add the 7 secrets (root README, "Signing", one-time setup) and set
 `EXO_DESKTOP_SIGNING` to `required`. Done for TC-611 on 2026-11-10: the
-environment is `main`-only with Sam as required reviewer (self-review allowed),
-and holds the 7 secrets (Developer ID Application: TinyCloud, Inc. (R4QVKA785H);
-App Store Connect key `KLLY4KJK58`).
+environment is `main`-only and holds the 7 secrets (Developer ID Application:
+TinyCloud, Inc. (R4QVKA785H); App Store Connect key `KLLY4KJK58`), plus the two
+updater secrets since 2026-11-24. It has no required reviewer until the 1 Dec
+review (Sam, 2026-11-24).
 
 ## Known constraints
 

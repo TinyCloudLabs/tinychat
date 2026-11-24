@@ -370,10 +370,10 @@ build code; the job graph is in
 in the `desktop-release` GitHub environment, which must allow deployments from
 **`main` only** (set that up and check it before adding any secret:
 [desktop/README.md](desktop/README.md#before-adding-any-signing-secret-restrict-desktop-release-to-main))
-and has a required reviewer (Sam; self-review allowed), so only `Desktop
-release (TinyCloud One)` dispatched on main reaches it, and each signed release
-waits for approval twice: the preflight right after the plan, the sign job once
-the app is built. Approve from the run page or with
+and has no required reviewer until the 1 Dec review (Sam, 2026-11-24), so only
+`Desktop release (TinyCloud One)` dispatched on main reaches it. With a required
+reviewer, each signed release waits for approval twice: the preflight right after
+the plan, the sign job once the app is built. Approve from the run page or with
 `gh api -X POST repos/TinyCloudLabs/tinychat/actions/runs/<run id>/pending_deployments -F 'environment_ids[]=<id>' -f state=approved -f comment=...`. Only two jobs use it, and both
 check out nothing but `scripts/release` at the workflow commit: a preflight
 re-checks provenance (`github.workflow_ref` is main's `desktop-release.yml`, the
@@ -422,7 +422,7 @@ check it before adding any secret (it had no branch policy on 2026-10-04):
 ```bash
 repo=TinyCloudLabs/tinychat
 # 1. Environment deployable from main only. Check: the last command must print ["main"].
-# Required reviewer (Sam, self-review allowed): Settings > Environments > desktop-release > Required reviewers.
+# Optional required reviewer (none until the 1 Dec review, Sam 2026-11-24): Settings > Environments > desktop-release > Required reviewers.
 gh api -X PUT repos/$repo/environments/desktop-release \
   -F 'deployment_branch_policy[protected_branches]=false' \
   -F 'deployment_branch_policy[custom_branch_policies]=true'
@@ -446,8 +446,8 @@ gh secret set APPLE_API_KEY --env desktop-release --repo $repo --body '<Key ID>'
 gh secret set APPLE_API_ISSUER --env desktop-release --repo $repo --body '<Issuer ID>'
 gh secret set APPLE_API_PRIVATE_KEY --env desktop-release --repo $repo < AuthKey_<id>.p8
 
-# 4. The in-app updater key and its password: desktop/README.md, "In-app updates" (mint once; the public key replaces
-# the placeholder plugins.updater.pubkey in desktop/src-tauri/tauri.conf.json).
+# 4. The in-app updater keys (primary here, backup in desktop-updater-backup): desktop/README.md, "In-app updates"
+# (minted on 2026-11-24; the public keys are plugins.updater.pubkey/backupPubkey in desktop/src-tauri/tauri.conf.json).
 ```
 
 Keep the `.p12`, its password and the `.p8` in the team password manager; the

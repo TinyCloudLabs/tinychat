@@ -96,7 +96,7 @@ jobs:
     name: Signing preflight (desktop-release)
     if: inputs.sign
     runs-on: ubuntu-latest
-    # Signing secrets live only in this environment (deployment branches: main; required reviewer: Sam).
+    # Signing secrets live only in this environment (deployment branches: main; no required reviewer until the 1 Dec review, Sam 2026-11-24).
     environment: desktop-release
     timeout-minutes: 5
     steps:
@@ -406,7 +406,7 @@ jobs:
     # Explicit: a skipped preflight would otherwise skip this job too.
     if: ${{ !inputs.smoke && !cancelled() && needs.build.result == 'success' }}
     runs-on: macos-26
-    # Signing secrets live only in this environment (deployment branches: main; required reviewer: Sam). This job checks
+    # Signing secrets live only in this environment (deployment branches: main; no required reviewer until the 1 Dec review, Sam 2026-11-24). This job checks
     # out nothing but scripts/release and the entitlements at the workflow commit and runs no project code: no bun, no
     # cargo, no tauri, no node_modules binary. Its only Node script, scripts/release/desktop-updater.mjs, uses Node's
     # built-in modules and the runner image's node.
