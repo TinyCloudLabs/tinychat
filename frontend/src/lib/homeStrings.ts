@@ -80,5 +80,9 @@ export const LEGACY_KEYS_NOTHING = "There were no older connector keys to move."
 export const LEGACY_KEYS_DECLINED = "Your older connector keys weren't moved. Connectors asks next time you open it.";
 export const LEGACY_KEYS_FAILED = "Your older connector keys couldn't be moved.";
 export const LEGACY_KEYS_RETRY = "Try again";
+/** A sync that found an older connection it cannot open: it names the one-hour approval instead of asking to connect again. */
+export const OLDER_KEYS_SYNC_DECLINED = "Allow the one-hour approval to open your older connections. Select Sync now to be asked again. Your saved connections were not changed.";
+export const OLDER_KEYS_BLOCKED_TITLE = "Your older connections need approval";
+export const OLDER_KEYS_BLOCKED_DETAIL = "Select Sync now on the connector above and allow the one-hour approval to open your older connections.";
 /** The words OpenKey shows beside the one-hour permission. */
 export const LEGACY_KEYS_APPROVAL_DESCRIPTION = "Open everything encrypted with your account's main key for 1 hour, including older connector keys and saved secrets, so they can move to their own encryption keys.";

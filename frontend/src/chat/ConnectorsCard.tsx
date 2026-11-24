@@ -32,8 +32,6 @@ import { GranolaClient } from "@/lib/connectors/granolaClient";
 import { granolaConnectorEnabled } from "@/lib/connectors/granolaFeature";
 import {
   GRANOLA_LAST_SYNC_FAILED,
-  GRANOLA_MISSING_KEY_CODE,
-  GRANOLA_RECONNECT_REQUIRED,
   GRANOLA_SYNC_FAILED,
   granolaKeyExpired,
   granolaSummariesOnly,
@@ -72,6 +70,7 @@ import {
   unlockSecrets,
   type SecretsErr,
 } from "@/lib/connectors/connectorSecrets";
+import { readWithOlderKeysApproval, syncKeyReadMessage } from "@/lib/connectors/olderKeyRead";
 import {
   createConnectorWebhooksClient,
   type ConnectorWebhooksClient,
@@ -546,16 +545,10 @@ export function ConnectorsCard({
       // The registry row names the secret — API key for Fireflies, refresh
       // token for Google Meet. This file spells neither, which is what lets the
       // flip commit change what is read without touching here.
-      const keyRes = await getConnectorKey<SecretsErr>(tcw, d);
+      // Pressing Sync now is the user's action: an older key asks the older-keys approval once, then reads once more.
+      const keyRes = await readWithOlderKeysApproval(tcw, () => getConnectorKey<SecretsErr>(tcw, d));
       if (!keyRes.ok) {
-        patchRow(d.id, {
-          syncing: false,
-          actionError:
-            engine === "granola" && keyRes.error?.code === GRANOLA_MISSING_KEY_CODE
-              ? GRANOLA_RECONNECT_REQUIRED
-              : keyRes.error?.message ??
-                (engine === "gmeet" ? "Could not read the saved Google connection" : "Could not read API key"),
-        });
+        patchRow(d.id, { syncing: false, actionError: syncKeyReadMessage(keyRes, engine) });
         return;
       }
       if (engine === "gmeet" && gmeetPressRefused(driveMode)) {

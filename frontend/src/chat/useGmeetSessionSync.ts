@@ -67,6 +67,7 @@ import {
   type SecretsResult,
 } from "@/lib/connectors/connectorSecrets";
 import { GmeetClient } from "@/lib/connectors/gmeetClient";
+import { needsOlderKeysApproval } from "@/lib/connectors/olderKeyRead";
 import { googleRefreshGrant } from "@/lib/connectors/googleOAuthDesktop";
 import {
   stopGmeetSyncForAccount,
@@ -105,6 +106,8 @@ export type GmeetSessionSyncOutcome =
   /** Deferred: the vault is locked. Retriable — the latch was not burned. */
   | "vault-locked"
   | "no-refresh-token"
+  /** The saved Google connection is an older key. This lane never prompts: Sync now asks for the older-keys approval. */
+  | "older-keys"
   | "token-unavailable"
   | "aborted"
   | "synced"
@@ -359,6 +362,10 @@ async function runGmeetSessionSync(
     hooks.readRefreshToken ??
     ((t: TinyCloudWeb, d: ConnectorDescriptor) => getConnectorKey<SecretsErr>(t, d));
   const secretRes = await readSecret(tcw, descriptor);
+  if (!secretRes.ok && needsOlderKeysApproval(secretRes.error)) {
+    breadcrumb("saved Google connection needs the older-keys approval");
+    return "older-keys";
+  }
   if (!secretRes.ok || typeof secretRes.data !== "string" || secretRes.data.length === 0) {
     breadcrumb("no usable refresh token in the vault");
     return "no-refresh-token";

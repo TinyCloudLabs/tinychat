@@ -54,6 +54,7 @@ import type {
   TargetedQueueItem,
 } from "@/lib/connectors/targetedSync";
 import type { ConnectorConnection, ConnectorDescriptor } from "@/lib/connectors/types";
+import { OLDER_KEYS_BLOCKED_DETAIL, OLDER_KEYS_BLOCKED_TITLE } from "@/lib/homeStrings";
 
 /**
  * Whether a connectors-card row may offer this surface at all.
@@ -483,7 +484,16 @@ export function queueNotices(state: BackgroundSyncState): QueueNotice[] {
       });
     }
   }
-  if (state.ingestBlocked) {
+  if (state.ingestBlocked === "older-keys") {
+    // Not a reconnect case: connecting again cannot open the older records. Only the Sync now press asks for the approval.
+    notices.push({
+      kind: "ingest-blocked",
+      title: OLDER_KEYS_BLOCKED_TITLE,
+      detail: OLDER_KEYS_BLOCKED_DETAIL,
+      action: null,
+      tone: "warn",
+    });
+  } else if (state.ingestBlocked) {
     notices.push({
       kind: "ingest-blocked",
       title:
