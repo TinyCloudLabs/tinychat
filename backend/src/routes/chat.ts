@@ -9,9 +9,12 @@ import {
 import { paywallEnabled, resolveTier } from "../billing/stripe.js";
 import {
   getUsage,
+  heldCredits,
+  holdCredits,
   isOverBudget,
 } from "../billing/usage.js";
 import { settleReply } from "../billing/settle.js";
+import { callCostBound, createReplyBudget } from "../billing/reply-budget.js";
 import type { LedgerFlusher } from "../billing/ledger-flusher.js";
 import type { LedgerRehydrator } from "../billing/ledger-rehydrate.js";
 import {
@@ -467,6 +470,51 @@ export function createChatRouter(options?: ChatRouterOptions) {
         handleRouteError(res, error, "resolve model rates");
         return;
       }
+      // Credits other replies hold are spoken for. Read here and held below, with no await in between.
+      const held = heldCredits(address, tierConfig, anchor, startedAt);
+      if (held > 0 && budgetRemaining - held <= 0) {
+        logCreditGateDeny({ source: "held", address, committed: null, limit: null, windowKind: tierConfig.budgetWindow });
+        res.status(402).json({
+          error: "credit_budget_exceeded",
+          message: `Credit budget exhausted for the ${tierConfig.name} tier.`,
+          tier,
+          ...exposeGateSource("held"),
+        });
+        return;
+      }
+      budgetRemaining -= held;
+    }
+
+    const requestBody = {
+      model: resolvedModel,
+      provider: { aci_verified: true },
+      messages: upstreamMessages,
+      stream: true,
+      stream_options: { include_usage: true },
+      ...(reasoningControl?.kind === "parameter"
+        ? { reasoning: { effort: reasoningControl.effort } }
+        : {}),
+    };
+    // The reply's spend bound: what its prompt and output can cost within what is left, held until it settles. Its
+    // output is capped to fit. The hold lapses after ten minutes even if nothing releases it.
+    let outputCap = maxOutputTokens;
+    let allowance: number | null = null;
+    let releaseHold: () => void = () => {};
+    if (budgetRemaining !== null && rates) {
+      const promptChars = JSON.stringify(requestBody).length;
+      const limit = createReplyBudget(Math.max(0, budgetRemaining), rates, contextLengthFor(resolvedModel)).limitFor(promptChars, maxOutputTokens);
+      if (!limit) {
+        res.status(402).json({
+          error: "credit_budget_exceeded",
+          message: `Credit budget exhausted for the ${TIERS[gatedTier].name} tier.`,
+          tier: gatedTier,
+        });
+        return;
+      }
+      outputCap = limit.maxTokens;
+      allowance = outputCap === undefined ? budgetRemaining : Math.min(budgetRemaining, callCostBound(rates, promptChars, outputCap));
+      releaseHold = holdCredits(address, TIERS[gatedTier], anchor, startedAt, allowance, 10 * 60_000);
+      res.once("close", releaseHold);
     }
 
     // AbortController so we can cancel the upstream fetch if the client disconnects.
@@ -486,17 +534,7 @@ export function createChatRouter(options?: ChatRouterOptions) {
           "Content-Type": "application/json",
           Authorization: `Bearer ${apiKey}`,
         },
-        body: JSON.stringify({
-          model: resolvedModel,
-          provider: { aci_verified: true },
-          messages: upstreamMessages,
-          stream: true,
-          stream_options: { include_usage: true },
-          ...(maxOutputTokens === undefined ? {} : { max_tokens: maxOutputTokens }),
-          ...(reasoningControl?.kind === "parameter"
-            ? { reasoning: { effort: reasoningControl.effort } }
-            : {}),
-        }),
+        body: JSON.stringify({ ...requestBody, ...(outputCap === undefined ? {} : { max_tokens: outputCap }) }),
         signal: controller.signal,
       });
     } catch (error: unknown) {
@@ -608,18 +646,19 @@ export function createChatRouter(options?: ChatRouterOptions) {
     }
 
     // ── Settle usage (best effort; only when gating is active) ────────────────
-    // Clamped to the allowance the reply started with. A failed stream is free:
+    // Clamped to the credits the reply held. A failed stream is free:
     // every /api/chat failure is the provider's or ours, never the model's
     // output. NEVER throws after bytes were served.
-    if (paywallEnabled() && address && budgetRemaining !== null) {
+    if (paywallEnabled() && address && allowance !== null) {
       const usage = scanner.hasUsage
         ? { promptTokens: scanner.promptTokens ?? 0, completionTokens: scanner.completionTokens ?? 0 }
         : estimateTokens(messages as Array<{ content?: unknown }>, scanner.completionText);
       const settled = settleReply({
-        address, tier: TIERS[gatedTier], anchor, startedAt, allowance: Math.max(0, budgetRemaining), model: resolvedModel,
+        address, tier: TIERS[gatedTier], anchor, startedAt, allowance, model: resolvedModel,
         usage, rates, deliveredOutput: scanner.completionText.length > 0, executionId: crypto.randomUUID(), flusher,
         outcome: controller.signal.aborted ? "cancelled" : streamFailed ? "failed" : "success", failureCause: "ours",
       });
+      releaseHold();
       noteRequestRecord(res, { credits: settled.charged });
     }
   }));

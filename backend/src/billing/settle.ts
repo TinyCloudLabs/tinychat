@@ -8,6 +8,11 @@
 //     (failureCause "model"), whether or not anything was delivered. Our
 //     failures (provider, network, our limits and code) are free, even after
 //     content was delivered. An unknown cause is ours.
+//   - A timed-out reply is free: the turn deadline is ours, like any of our
+//     failures.
+//   - A cancelled (Stop) reply is charged for what it used up to the Stop:
+//     callers pass usage metered while the reply streamed, not only the
+//     provider's end-of-call usage frames.
 //   - The charge goes to the window the reply STARTED in, even if it settles
 //     after the window rolled over.
 // Settlement is synchronous: reading what is left and writing the charge never
@@ -61,7 +66,7 @@ export function settleReply(input: SettleReplyInput): SettledReply {
   // Null when the window rolled over twice: no record says what it used, so only the allowance bounds the charge.
   const windowUsed = usedInWindow(address, tier, anchor, startedAt);
   let charged = 0;
-  if (!(input.outcome === "failed" && input.failureCause !== "model") && rawCredits > 0) {
+  if (input.outcome !== "timed_out" && !(input.outcome === "failed" && input.failureCause !== "model") && rawCredits > 0) {
     const left = windowUsed === null ? Number.POSITIVE_INFINITY : Math.max(0, creditBudgetFor(tier.id) - windowUsed);
     charged = Math.max(0, Math.min(rawCredits, input.allowance, left));
   }

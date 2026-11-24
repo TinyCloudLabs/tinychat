@@ -28,7 +28,9 @@ export type CreditGateSource =
   | "k_degrade"
   | "outage_policy"
   | "config_outage"
-  | "authority_mismatch";
+  | "authority_mismatch"
+  /** What is left is held by the account's other replies in flight. */
+  | "held";
 
 /**
  * The 402 `source` tag is operational diagnostics — it can reveal degraded or

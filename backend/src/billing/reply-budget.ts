@@ -49,6 +49,11 @@ export function lengthStoppedByBudget(limit: CallLimit, completionTokens: number
   return limit.capped && (completionTokens >= (limit.maxTokens ?? Number.POSITIVE_INFINITY) || budget.exhausted());
 }
 
+/** The most one provider call can cost: its prompt, priced as `limitFor` prices it, plus `maxTokens` of output. */
+export function callCostBound(rates: ModelRates, promptChars: number, maxTokens: number): number {
+  return creditsFor(rates, Math.ceil(promptChars / PROMPT_CHARS_PER_TOKEN), maxTokens);
+}
+
 /** `contextTokens` is the model's context window: a budget cap that does not fit the room it leaves is not a cap. A non-finite value means the size is unknown. */
 export function createReplyBudget(allowance: number, rates: ModelRates, contextTokens?: number): ReplyBudget {
   let observed: ReplyUsage = { promptTokens: 0, completionTokens: 0 };

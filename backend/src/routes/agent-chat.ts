@@ -26,6 +26,8 @@ import { TIERS, isModelAllowed, requiredTierForModel, type TierId } from "../bil
 import { paywallEnabled, resolveTier } from "../billing/stripe.js";
 import {
   getUsage,
+  heldCredits,
+  holdCredits,
   isOverBudget,
 } from "../billing/usage.js";
 import { contextLengthFor, getCatalog, type CatalogModel } from "../billing/catalog.js";
@@ -248,6 +250,31 @@ function normalizeToolCallDeltas(deltas: unknown[]): Parameters<typeof accumulat
       } } : {}),
     };
   });
+}
+
+/**
+ * Until a provider call's usage frame arrives (RedPill sends one, at the end), the call is metered from the request it
+ * sent and the output it streamed, at about 4 chars per token, so a reply stopped mid-call is charged for that call.
+ */
+function estimatedTokens(chars: number): number {
+  return Math.ceil(chars / 4);
+}
+
+/** Generated characters in one stream chunk: answer text, reasoning text, and tool-call names and arguments. */
+function streamedOutputChars(obj: Record<string, unknown>): number {
+  const delta = Array.isArray(obj.choices) ? (obj.choices[0] as { delta?: unknown } | null | undefined)?.delta : undefined;
+  if (!delta || typeof delta !== "object") return 0;
+  const fields = delta as Record<string, unknown>;
+  let chars = 0;
+  for (const key of ["content", "reasoning_content", "reasoning"]) if (typeof fields[key] === "string") chars += (fields[key] as string).length;
+  if (Array.isArray(fields.tool_calls)) {
+    for (const call of fields.tool_calls) {
+      const fn = (call as { function?: { name?: unknown; arguments?: unknown } } | null)?.function;
+      if (typeof fn?.name === "string") chars += fn.name.length;
+      if (typeof fn?.arguments === "string") chars += fn.arguments.length;
+    }
+  }
+  return chars;
 }
 
 /**
@@ -605,6 +632,8 @@ export interface OrchestrateParams {
   /** Remaining time on the existing SSE owner's deadline. */
   remainingMs?: () => number;
   onUsage?: (usage: { promptTokens: number; completionTokens: number }) => void;
+  /** Usage so far including the provider call in progress, which is metered from its request and streamed output until its usage frame arrives: what a reply stopped mid-call used. */
+  onMetered?: (usage: { promptTokens: number; completionTokens: number }) => void;
   /** Stops the reply at the allowance it started with: caps each provider call and refuses calls and tools it cannot afford. */
   budget?: ReplyBudget;
   /** A meeting failure whose user-visible terminal text has already been written. */
@@ -641,11 +670,18 @@ export async function orchestrateToolCalling(input: OrchestrateParams): Promise<
   const observed = { promptTokens: 0, completionTokens: 0 };
   const checkpoint = () => {
     let previous = { promptTokens: 0, completionTokens: 0 };
-    return (usage: typeof previous) => {
-      observed.promptTokens += usage.promptTokens - previous.promptTokens;
-      observed.completionTokens += usage.completionTokens - previous.completionTokens;
-      previous = usage;
-      params.onUsage?.({ ...observed });
+    return {
+      onUsage: (usage: typeof previous) => {
+        observed.promptTokens += usage.promptTokens - previous.promptTokens;
+        observed.completionTokens += usage.completionTokens - previous.completionTokens;
+        previous = usage;
+        params.onUsage?.({ ...observed });
+      },
+      // The call in progress replaces this call's last report in the reply's total.
+      onMetered: (usage: typeof previous) => params.onMetered?.({
+        promptTokens: observed.promptTokens - previous.promptTokens + usage.promptTokens,
+        completionTokens: observed.completionTokens - previous.completionTokens + usage.completionTokens,
+      }),
     };
   };
   const result = await runMeetingTurn({
@@ -653,7 +689,7 @@ export async function orchestrateToolCalling(input: OrchestrateParams): Promise<
     contextWindowTokens: contextLengthFor(params.model),
     streamErrorCause: error => error instanceof StreamFailure ? error.failureCause : "ours",
     streamErrorCode: error => error instanceof StreamFailure ? error.code : undefined,
-    modelCall: request => bufferedMeetingModelCall({ ...params, onUsage: checkpoint() }, request),
+    modelCall: request => bufferedMeetingModelCall({ ...params, ...checkpoint() }, request),
     dispatch: (name, args, context, signal, id) => dispatchTool(params.config, fetchImpl, { name, args: JSON.stringify(args), id }, params.entityId, params.roomId, context, signal),
     // MCP turns read through the in-process wrapper, which emits contract v2 by construction; there is no remote reader to probe.
     capability: params.config.mcpOwner ? async () => ({ meetingRetrieval: { contractVersion: 2 }, buildRevision: params.config.backendRevision ?? "unknown" }) : async signal => {
@@ -668,7 +704,7 @@ export async function orchestrateToolCalling(input: OrchestrateParams): Promise<
         return JSON.parse(text + decoder.decode());
       } finally { ignoreCleanup(() => reader.cancel()); try { reader.releaseLock(); } catch { /* Preserve the capability outcome. */ } }
     },
-    runGeneral: maxRounds => orchestrateExistingLoop({ ...params, onUsage: checkpoint(), config: { ...params.config, maxRounds: Math.min(params.config.maxRounds ?? 3, maxRounds) } }, true),
+    runGeneral: maxRounds => orchestrateExistingLoop({ ...params, ...checkpoint(), config: { ...params.config, maxRounds: Math.min(params.config.maxRounds ?? 3, maxRounds) } }, true),
     contentFrame, toolActivityFrame, delegationErrorFrame,
   });
   return { ...result, promptTokens: Math.max(result.promptTokens, observed.promptTokens),
@@ -682,19 +718,27 @@ async function bufferedMeetingModelCall(params: OrchestrateParams, request: Meet
   const limit = params.budget ? params.budget.limitFor(JSON.stringify(base).length, request.maxOutputTokens) : { maxTokens: request.maxOutputTokens, capped: false };
   if (!limit) throw new StreamFailure("budget_exhausted");
   const redpillFetch = params.config.redpillFetch ?? redPillAciFetch(params.config.redpillBaseUrl, RECEIPT_AUDIT_TIMEOUT_MS);
+  const body = JSON.stringify({ ...base, max_tokens: limit.maxTokens });
   const upstream = await fetchForTurn(redpillFetch, `${params.config.redpillBaseUrl}/chat/completions`, {
     method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${params.config.redpillApiKey}` },
-    body: JSON.stringify({ ...base, max_tokens: limit.maxTokens }),
+    body,
   }, request.signal);
   if (!upstream.ok || !upstream.body) { if (upstream.body) ignoreCleanup(() => upstream.body!.cancel()); throw new StreamFailure("upstream_failed"); }
   let content = "", completionId = "", promptTokens = 0, completionTokens = 0, finish: unknown;
+  let usageSeen = false, streamedChars = 0;
+  const promptEstimate = estimatedTokens(body.length);
+  params.onMetered?.({ promptTokens: promptEstimate, completionTokens: 0 });
   const calls = new Map<number, AccumulatedToolCall>();
   for await (const obj of parseSseJson(upstream.body as unknown as AsyncIterable<Uint8Array>, request.signal)) {
     if (typeof obj.id === "string") completionId = obj.id;
     const usage = obj.usage as { prompt_tokens?: number; completion_tokens?: number } | undefined;
     if (typeof usage?.prompt_tokens === "number") promptTokens = usage.prompt_tokens;
     if (typeof usage?.completion_tokens === "number") completionTokens = usage.completion_tokens;
-    if (usage) params.onUsage?.({ promptTokens, completionTokens });
+    if (usage) { usageSeen = true; params.onUsage?.({ promptTokens, completionTokens }); }
+    else if (!usageSeen) {
+      const chars = streamedOutputChars(obj);
+      if (chars > 0) { streamedChars += chars; params.onMetered?.({ promptTokens: promptEstimate, completionTokens: estimatedTokens(streamedChars) }); }
+    }
     if (obj.choices != null && !Array.isArray(obj.choices)) throw new StreamFailure("upstream_incomplete");
     const choice = (obj.choices as Array<{ delta?: { content?: string; tool_calls?: Parameters<typeof accumulateToolCalls>[1] }; finish_reason?: unknown }> | undefined)?.[0];
     if (choice !== undefined && (!choice || typeof choice !== "object" || Array.isArray(choice))) throw new StreamFailure("upstream_incomplete");
@@ -828,13 +872,14 @@ async function orchestrateExistingLoop(params: OrchestrateParams, generalOnly = 
     );
     const limit = params.budget?.limitFor(JSON.stringify(requestBody).length);
     if (limit === null) { errorCode = "budget_exhausted"; break; }
+    const body = JSON.stringify(limit?.maxTokens === undefined ? requestBody : { ...requestBody, max_tokens: limit.maxTokens });
     const upstream = await fetchForTurn(redpillFetch, `${config.redpillBaseUrl}/chat/completions`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${config.redpillApiKey}`,
       },
-      body: JSON.stringify(limit?.maxTokens === undefined ? requestBody : { ...requestBody, max_tokens: limit.maxTokens }),
+      body,
     }, params.signal);
 
     if (!upstream.ok || !upstream.body) {
@@ -848,6 +893,11 @@ async function orchestrateExistingLoop(params: OrchestrateParams, generalOnly = 
     let currentRoundId = "";
     let roundPromptTokens = 0;
     let roundCompletionTokens = 0;
+    // Until the round's usage frame arrives it is metered from its request and streamed output, so a Stop mid-round is charged for the round.
+    let roundUsageSeen = false;
+    let roundStreamedChars = 0;
+    const roundPromptEstimate = estimatedTokens(body.length);
+    params.onMetered?.({ promptTokens: totalPromptTokens + roundPromptEstimate, completionTokens: totalCompletionTokens });
 
     // Prefix-sniffing buffer for the leaked-markup guard. Leaked native tool-call
     // markup LEADS the content with `<tool_call` (possibly after whitespace), so we
@@ -882,9 +932,16 @@ async function orchestrateExistingLoop(params: OrchestrateParams, generalOnly = 
       const usage = obj.usage as { prompt_tokens?: number; completion_tokens?: number } | undefined;
       if (usage) {
         // RedPill sends a single cumulative usage frame at end of each completion; overwrite.
+        roundUsageSeen = true;
         if (typeof usage.prompt_tokens === "number") roundPromptTokens = usage.prompt_tokens;
         if (typeof usage.completion_tokens === "number") roundCompletionTokens = usage.completion_tokens;
         params.onUsage?.({ promptTokens: totalPromptTokens + roundPromptTokens, completionTokens: totalCompletionTokens + roundCompletionTokens });
+      } else if (!roundUsageSeen) {
+        const chars = streamedOutputChars(obj);
+        if (chars > 0) {
+          roundStreamedChars += chars;
+          params.onMetered?.({ promptTokens: totalPromptTokens + roundPromptEstimate, completionTokens: totalCompletionTokens + estimatedTokens(roundStreamedChars) });
+        }
       }
       const choice = (obj.choices as Array<Record<string, unknown>> | undefined)?.[0];
       const delta = choice?.delta as
@@ -1369,6 +1426,7 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
     const entityId = config.entityIdFor(req.user.address);
     const access = accessControl?.capture(entityId);
     let owner: AgentStreamOwner | undefined;
+    let releaseHold: (() => void) | undefined;
     const releaseAccess = access?.onInvalidate(() => owner?.disconnect());
     try {
     const { model, messages, roomId, clientContext } = (req.body ?? {}) as {
@@ -1540,6 +1598,19 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
         res.status(500).json({ error: "internal_error", message: "Failed to resolve model rates" });
         return;
       }
+      // Credits other replies hold are spoken for. Read here and held below, with no await in between.
+      const held = heldCredits(address, tierConfig, anchor, startedAt);
+      if (held > 0 && budgetRemaining - held <= 0) {
+        logCreditGateDeny({ source: "held", address, committed: null, limit: null, windowKind: tierConfig.budgetWindow });
+        res.status(402).json({
+          error: "credit_budget_exceeded",
+          message: `Credit budget exhausted for the ${tierConfig.name} tier.`,
+          tier,
+          ...exposeGateSource("held"),
+        });
+        return;
+      }
+      budgetRemaining -= held;
       const minimum = minTurnCredits(rates);
       recordAgentChatBudgetPreflight({ address, mode: budgetPreflightMode, remaining: budgetRemaining, minimum, tier: gatedTier, source: budgetSource, unpriced: rates.fallback });
       if (budgetRemaining !== null && budgetPreflightMode !== "off" && budgetRemaining < minimum) {
@@ -1559,6 +1630,9 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
       return;
     }
     const allowance = budgetRemaining === null ? null : Math.max(0, budgetRemaining);
+    // The reply's spend bound, held until it settles. The finally below releases it on every other exit; a minute past
+    // the turn deadline, it lapses even if the handler never gets there.
+    if (allowance !== null) releaseHold = holdCredits(address, TIERS[gatedTier], anchor, startedAt, allowance, policy.turnTimeoutMs + policy.drainGraceMs + 60_000);
     const taskSelected = !mcpSelected && config.elizaTasksEnabled === true &&
       (!config.elizaTasksAccountAllowed || config.elizaTasksAccountAllowed(address));
     owner = new AgentStreamOwner(req, res, policy, config.streamRuntime ?? streamRuntime);
@@ -1649,6 +1723,7 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
             : code === "turn_timeout" || final?.outcome === "timed_out" ? "timed_out"
               : result.cancelled ? "cancelled" : "failed";
         const settled = settleReply({ address, tier: TIERS[gatedTier], anchor, startedAt, allowance, model: resolvedModel, usage: result.usage, rates, outcome, failureCause, deliveredOutput: streamedContent, executionId, flusher: config.flusher });
+        releaseHold?.();
         recordAgentTurnSettled({ rawCredits: settled.rawCredits, charged: settled.charged, windowKind: settled.windowKind, outcome, startedAttempts: result.usage.startedAttempts });
         noteRequestRecord(res, { credits: settled.charged });
       }
@@ -1684,13 +1759,16 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
     let meetingTerminalErrorCode: StreamErrorCode | undefined;
     let meetingTerminalErrorCause: FailureCause | undefined;
     let observedUsage = { promptTokens: 0, completionTokens: 0 };
+    // Also counts the provider call in progress: what a Stop is charged.
+    let meteredUsage = observedUsage;
     if (await streamOwner.open()) {
       try {
         if (accessFrame) await streamOwner.write(accessFrame);
         orchestrateResult = await orchestrateToolCalling({
           config: { ...turnConfig, meetingContentRetrievalEnabled: turnConfig.meetingContentRetrievalEnabled === true && (!turnConfig.meetingContentAccountAllowed || turnConfig.meetingContentAccountAllowed(req.user.address)) }, model: resolvedModel, messages: messages as ChatMsg[], entityId,
           roomId: typeof roomId === "string" ? roomId : undefined, turnContext,
-          onUsage: usage => { observedUsage = usage; },
+          onUsage: usage => { observedUsage = usage; meteredUsage = usage; },
+          onMetered: usage => { meteredUsage = usage; },
           onTerminalError: (code, cause) => { meetingTerminalErrorCode = code; meetingTerminalErrorCause = cause; },
           write: writeFrame, signal: streamOwner.signal, onPhase: streamOwner.setPhase, remainingMs: streamOwner.remainingMs,
           ...(replyBudget ? { budget: replyBudget } : {}),
@@ -1717,12 +1795,13 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
       const outcome: ReplyOutcome = failure === "budget_exhausted" ? "limit_stop"
         : failure === "turn_timeout" ? "timed_out"
           : cancelledByClient ? "cancelled" : failure ? "failed" : "success";
-      const settled = settleReply({ address, tier: TIERS[gatedTier], anchor, startedAt, allowance, model: resolvedModel, usage: orchestrateResult, rates, outcome, failureCause, deliveredOutput, executionId, flusher: config.flusher });
+      const settled = settleReply({ address, tier: TIERS[gatedTier], anchor, startedAt, allowance, model: resolvedModel, usage: outcome === "cancelled" ? meteredUsage : orchestrateResult, rates, outcome, failureCause, deliveredOutput, executionId, flusher: config.flusher });
+      releaseHold?.();
       recordAgentTurnSettled({ rawCredits: settled.rawCredits, charged: settled.charged, windowKind: settled.windowKind, outcome });
       noteRequestRecord(res, { credits: settled.charged });
     }
     // Also await an already claimed timeout/cancellation terminal's drain.
     await streamOwner.complete(orchestrateResult, meetingTerminalErrorCode, true, meetingTerminalErrorCause);
-    } finally { releaseAccess?.(); }
+    } finally { releaseAccess?.(); releaseHold?.(); }
   });
 }

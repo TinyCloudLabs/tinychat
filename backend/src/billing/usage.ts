@@ -206,12 +206,65 @@ function currentCredits(
   return record.creditsUsed;
 }
 
+// ── Admission holds ───────────────────────────────────────────────────────────
+// A reply holds the credits it may spend from admission until it settles, so
+// overlapping replies cannot each plan against the same remaining allowance:
+// admission subtracts the other replies' holds, and the held amount is the
+// reply's spend bound. Settlement charges what was used, then the hold is
+// released. A hold that is never released (a handler that never reaches its
+// cleanup) lapses at its expiry. Like the counter, holds are in memory and
+// assume ONE backend instance; a restart drops them together with the replies
+// that placed them.
+
+interface Hold {
+  credits: number;
+  windowKind: BudgetWindow;
+  windowStart: number;
+  expiresAt: number;
+}
+
+const holdsByAddress = new Map<string, Set<Hold>>();
+
+/** Credits other replies hold in the window containing `at`. Drops expired holds. */
+export function heldCredits(address: string, tier: TierConfig, anchor: number | null, at: number): number {
+  const holds = holdsByAddress.get(address);
+  if (!holds) return 0;
+  const now = Date.now();
+  const start = windowStartFor(tier, anchor, at);
+  let total = 0;
+  for (const hold of holds) {
+    if (hold.expiresAt <= now) holds.delete(hold);
+    else if (hold.windowStart === start && hold.windowKind === tier.budgetWindow) total += hold.credits;
+  }
+  if (holds.size === 0) holdsByAddress.delete(address);
+  return total;
+}
+
+/**
+ * Hold `credits` in the window containing `at` until the returned release is
+ * called or `ttlMs` passes; releasing twice is a no-op. Read `heldCredits` and
+ * place the hold with no `await` between them, or two replies can both claim
+ * the same credits.
+ */
+export function holdCredits(address: string, tier: TierConfig, anchor: number | null, at: number, credits: number, ttlMs: number): () => void {
+  if (credits <= 0) return () => {};
+  const hold: Hold = { credits, windowKind: tier.budgetWindow, windowStart: windowStartFor(tier, anchor, at), expiresAt: Date.now() + ttlMs };
+  let holds = holdsByAddress.get(address);
+  if (!holds) holdsByAddress.set(address, holds = new Set());
+  holds.add(hold);
+  return () => {
+    const current = holdsByAddress.get(address);
+    if (current?.delete(hold) && current.size === 0) holdsByAddress.delete(address);
+  };
+}
+
 // ── Test/util helpers ─────────────────────────────────────────────────────────
 
-/** Clear all tracked usage. Exposed for tests. */
+/** Clear all tracked usage and holds. Exposed for tests. */
 export function _resetUsage(): void {
   usageByAddress.clear();
   previousByAddress.clear();
+  holdsByAddress.clear();
 }
 
 /** Reset the one-shot missing-anchor warning. Exposed for tests. */
