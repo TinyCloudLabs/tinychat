@@ -64,4 +64,16 @@ describe("native sign-in and the two sample databases", () => {
   test("an older request carrying only them, with no TinyChat grant, is still refused", () => {
     expect(audienceAccepts({ sql: OLD_ROWS })).toBe(false);
   });
+
+  test("the two old rows beside another application's database are refused, even with a TinyChat grant", () => {
+    const abilities = nativeAbilities();
+    abilities.sql = { ...abilities.sql, ...OLD_ROWS, "xyz.evil/db": SQL_ALL };
+    expect(audienceAccepts(abilities)).toBe(false);
+  });
+
+  test("a sample database that is not Health Log or Recipes is refused, even with a TinyChat grant", () => {
+    const abilities = nativeAbilities();
+    abilities.sql = { ...abilities.sql, "xyz.tinycloud.sample.notes/notes": SQL_ALL };
+    expect(audienceAccepts(abilities)).toBe(false);
+  });
 });
