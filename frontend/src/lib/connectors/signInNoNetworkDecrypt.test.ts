@@ -92,3 +92,15 @@ describe("the older-keys approval", () => {
     expect(asked[0].expiryMs).toBeLessThanOrEqual(LEGACY_NETWORK_APPROVAL_MAX_MS);
   });
 });
+
+describe("the on-demand request for earlier records sealed to the whole network", () => {
+  test("stays buildable from the exported helpers, for any chain, as one decrypt on that network", () => {
+    // A separate action (the move of earlier bot history) builds the same request from `encryptionNetworkId`; the sign-in does not.
+    for (const chainId of [1, 10]) {
+      const [entry, ...rest] = legacyNetworkDecryptRequest(ADDRESS, chainId);
+      expect(rest).toEqual([]);
+      expect(entry).toMatchObject({ service: "tinycloud.encryption", path: encryptionNetworkId(ADDRESS, chainId), actions: ["decrypt"], skipPrefix: true });
+    }
+    expect(encryptionNetworkId(ADDRESS, 1)).toBe(NETWORK);
+  });
+});
