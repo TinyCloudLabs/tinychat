@@ -41,8 +41,8 @@ env:
   INGRESS_IMAGE: ${{ vars.TINYCHAT_INGRESS_IMAGE || 'ghcr.io/tinycloudlabs/tinychat-backend' }}
   PHALA_CVM_ID: ${{ vars.PHALA_CVM_ID }}
   # Reviewed production OS pin; this is deployment policy, not a claim about KMS release policy.
-  PHALA_OS_IMAGE: dstack-0.5.12
-  PHALA_OS_IMAGE_HASH: 8db40cb23008d6213668b5816702d100b37b859a8a5bfd18d938ae3a1b3715bd
+  PHALA_OS_IMAGE: dstack-0.5.15
+  PHALA_OS_IMAGE_HASH: 4597735f1a38ad8ec9f781356b88737fc052062deb7c9aaa4be89bf1b35643ca
   PHALA_INGRESS_DOMAIN: ${{ vars.PHALA_INGRESS_DOMAIN || 'api.tinycloud.chat' }}
   PRODUCTION_API_URL: ${{ vars.TINYCHAT_BACKEND_URL || 'https://api.tinycloud.chat' }}
   PRODUCTION_FRONTEND_URL: ${{ vars.TINYCHAT_FRONTEND_URL || 'https://tinycloud.one' }}

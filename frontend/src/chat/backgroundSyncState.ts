@@ -41,6 +41,12 @@ import {
   type ConnectorWebhookPending,
   type ConnectorWebhooksResult,
 } from "@/lib/connectors/webhooksApi";
+import {
+  collectImportGrantCids,
+  IMPORT_GRANT_REVOKE_UNCONFIRMED_MESSAGE,
+  revokeImportGrants,
+  type DisconnectImportGrants,
+} from "@/lib/connectors/connectorLifecycle";
 import type {
   TargetedIngestBlockedReason,
   TargetedIngestOutcome,
@@ -207,6 +213,8 @@ export interface BackgroundSyncDeps {
   secrets: BackgroundSyncSecrets;
   /** FE2's `ingestQueuedMeetings`, bound to this connector. The only writer. */
   ingest(items: readonly TargetedQueueItem[]): Promise<TargetedIngestResult>;
+  /** Fireflies only. Lets turning Instant updates off also withdraw the server's import permissions at the node. */
+  importGrants?: DisconnectImportGrants;
 }
 
 export type BackgroundSyncEmit = (
@@ -617,6 +625,20 @@ export async function disableBackgroundSync(
   emit: BackgroundSyncEmit,
 ): Promise<void> {
   emit((s) => ({ ...s, busy: "disabling", notice: null }));
+  // The two import permissions the server holds are read first: once it drops them there is nothing to list.
+  let grantCids: readonly string[] = [];
+  if (deps.source === "fireflies" && deps.importGrants !== undefined) {
+    const collected = await collectImportGrantCids(deps.importGrants, "disable-webhooks");
+    if (collected.failure) {
+      emit((s) => ({
+        ...s,
+        busy: null,
+        notice: { tone: "error", message: collected.failure.message, retryable: collected.failure.retryable },
+      }));
+      return;
+    }
+    grantCids = collected.grantCids;
+  }
   // Fireflies: the stored server sign-in goes with the sync, BEFORE the config
   // is disabled (the route closes ingress and writes the purge ledger first).
   // A failed provider revoke still counts as deleted; it is reported below.
@@ -650,6 +672,10 @@ export async function disableBackgroundSync(
     }));
     return;
   }
+  // `DELETE /config` made the server drop its stored import permissions; withdraw them at the node too.
+  const grantRevokeUnconfirmed = deps.importGrants !== undefined && grantCids.length > 0
+    ? await revokeImportGrants(deps.importGrants, grantCids)
+    : false;
   emit((s) => ({
     ...s,
     busy: null,
@@ -663,8 +689,15 @@ export async function disableBackgroundSync(
     lastIngest: null,
     ingestBlocked: null,
     resyncConfirming: false,
-    notice: revokeUnconfirmed
-      ? { tone: "error", message: CREDENTIAL_REVOKE_UNCONFIRMED_MESSAGE, retryable: false }
+    notice: revokeUnconfirmed || grantRevokeUnconfirmed
+      ? {
+          tone: "error",
+          message: [
+            revokeUnconfirmed ? CREDENTIAL_REVOKE_UNCONFIRMED_MESSAGE : null,
+            grantRevokeUnconfirmed ? IMPORT_GRANT_REVOKE_UNCONFIRMED_MESSAGE : null,
+          ].filter(Boolean).join(" "),
+          retryable: false,
+        }
       : {
           tone: "info",
           message:

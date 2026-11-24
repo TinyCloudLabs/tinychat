@@ -1,5 +1,35 @@
 # @tinychat/backend
 
+## 0.13.4-beta.1
+
+### Patch Changes
+
+- 8fc4c7c: Fireflies meeting import permissions are removed when you disconnect, delete your Fireflies meetings, delete your account or turn off instant updates, and expired ones are cleared automatically. Saving a new permission pair names the pair it replaces, so overlapping saves cannot undo a turn off. A Fireflies key saved in an older format now asks you to save it again instead of retrying. The Library drops deleted Fireflies meetings at once.
+
+  Details: TC-3917
+
+## 0.13.4-beta.0
+
+### Patch Changes
+
+- 39182ae: Verify the full record context when opening bot history. Records written from now on carry their owner, space, path and bot, and every read checks them. Earlier records still open and are reported as earlier records.
+
+  Details: TC-4041
+
+## 0.13.3
+
+### Patch Changes
+
+- 7f1399f: Accept multi-stamp renewal histories from the node, so a lease renewed more than once verifies.
+
+  Details: TC-4000
+
+- 6580219: TrustBot derives the key it reads with inside its secure enclave.
+
+  Upgrading: read areas turned on with test grants before this release are off. Turn them on in TrustBot's settings.
+
+  Details: TC-4000
+
 ## 0.13.3-beta.1
 
 ### Patch Changes
