@@ -13,6 +13,7 @@ import { isWorking, type ChatLine, type MainChatState } from "./useMainChat";
 import { WebAccess, type WebAccessApi } from "./WebAccess";
 import { FeedChatsAccess, MeetingsAccess, type MeetingsAccessApi } from "./MeetingsAccess";
 import { NewChat, type NewChatApi } from "./NewChat";
+import { DeleteChats, type DeleteChatsApi } from "./DeleteChats";
 import { AppLine, AskCards, AsksToggle } from "./AskCards";
 import { clearHistoryDecline } from "./historyAuthorization";
 import { SecretCards } from "./SecretCard";
@@ -77,7 +78,7 @@ function Composer({ composer, inputRef }: { composer: ReturnType<typeof useDraft
   );
 }
 
-export interface MainChatProps {
+interface MainChatBaseProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   state: MainChatState;
@@ -95,6 +96,22 @@ export interface MainChatProps {
   /** When given, the sheet offers the owner's "Start a new chat". */
   newChat?: NewChatApi;
 }
+
+/**
+ * "Delete chats" comes with the hold on sending: the control needs `deleting` and `onDeleting`, and they mean nothing
+ * without it, so a caller cannot mount the control and leave a composer able to send while it runs.
+ */
+type MainChatDeleteProps =
+  | {
+    /** When given, the sheet offers the owner's "Delete chats": the conversation and the saved history. */
+    deleteChats: DeleteChatsApi;
+    /** The owner's chats are being deleted: nothing is sent. The owner of the chat holds this, so the Home ask box waits too. */
+    deleting: boolean;
+    onDeleting: (deleting: boolean) => void;
+  }
+  | { deleteChats?: undefined; deleting?: undefined; onDeleting?: undefined };
+
+export type MainChatProps = MainChatBaseProps & MainChatDeleteProps;
 
 /** Services that answered 404 for web access, so reopening Main's chat does not show the button again. */
 const WITHOUT_WEB_ACCESS = new WeakSet<WebAccessApi>();
@@ -118,12 +135,12 @@ export function WebAccessToggle({ api }: { api: WebAccessApi }) {
   );
 }
 
-export function MainChat({ open, onOpenChange, state, onSend, onRetry, onRetryHistory, notice, onReconnect, webAccess, meetings, asks, newChat }: MainChatProps) {
+export function MainChat({ open, onOpenChange, state, onSend, onRetry, onRetryHistory, notice, onReconnect, webAccess, meetings, asks, newChat, deleteChats, deleting = false, onDeleting }: MainChatProps) {
   const { lines, history, turn } = state;
   const working = isWorking(turn);
   const sdkPromptOpen = useSdkPromptOpen();
   // Modal content remounts when yielding to the SDK; keep the draft above that boundary.
-  const composer = useDraft(onSend, working);
+  const composer = useDraft(onSend, working || deleting);
   const composerInput = useRef<HTMLTextAreaElement>(null);
   const promptHadFocus = useRef(false);
   const setDraft = composer.setDraft;
@@ -168,6 +185,7 @@ export function MainChat({ open, onOpenChange, state, onSend, onRetry, onRetryHi
           {open && meetings ? <FeedChatsAccess api={meetings} /> : null}
           {open && asks ? <AsksToggle asks={asks} /> : null}
           {open && newChat ? <NewChat api={newChat} /> : null}
+          {open && deleteChats ? <DeleteChats api={deleteChats} onWorking={onDeleting} /> : null}
           {open && notice && onReconnect ? <ExpiryNotice key={`${notice.id}:${notice.deliveredAt ?? notice.renderAttemptAt ?? "initial"}`} notice={notice} onReconnect={onReconnect} /> : null}
           {history === "loading" ? <p role="status" className="text-callout text-muted-foreground">{BOTS_STRINGS.historyLoading}</p> : null}
           {history === "failed" && !working ? <Failure text={BOTS_STRINGS.historyFailed} onRetry={onRetryHistory} /> : null}

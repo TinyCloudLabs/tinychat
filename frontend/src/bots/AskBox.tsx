@@ -55,12 +55,14 @@ export function useDraft(onSend: (text: string) => void, blocked: boolean) {
 interface AskBoxProps {
   /** Main is answering: the chip's ring turns and sending waits. */
   working: boolean;
+  /** Sending waits without the chip's ring turning: the owner's chats are being deleted. */
+  blocked?: boolean;
   onSend: (text: string) => void;
   onOpenMain: () => void;
 }
 
-export function AskBox({ working, onSend, onOpenMain }: AskBoxProps) {
-  const { draft, setDraft, ready, send, submit } = useDraft(onSend, working);
+export function AskBox({ working, blocked = false, onSend, onOpenMain }: AskBoxProps) {
+  const { draft, setDraft, ready, send, submit } = useDraft(onSend, working || blocked);
   return (
     <form
       onSubmit={submit}

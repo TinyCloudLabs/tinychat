@@ -16,6 +16,7 @@ import { isWorking, useMainChat } from "./useMainChat";
 import { AskCards } from "./AskCards";
 import { ensureTrustBotReadGrant, readSettings, revokeReadGrant, setReadArea, signReadGrant } from "./trustbotReadGrant";
 import { newMainChat } from "./mainNewChat";
+import { deleteMainChats } from "./mainDeleteChats";
 import { SecretCards } from "./SecretCard";
 import { useAsks } from "./useAsks";
 
@@ -90,6 +91,9 @@ function MainAsk({ api, tcw, onReconnect }: { api: BotsApi; tcw?: TinyCloudWeb; 
   } : undefined, [tcw, readRevision]);
   const clearChat = chat.clear;
   const newChat = useMemo(() => ({ start: () => newMainChat(), onStarted: () => { clearChat(); refreshAsks(); } }), [clearChat, refreshAsks]);
+  // While the chats are being deleted nothing is sent from the ask box or the sheet, so a message never lands in the history being emptied.
+  const [deleting, setDeleting] = useState(false);
+  const deleteChats = useMemo(() => ({ run: () => deleteMainChats(tcw), onCleared: () => { clearChat(); refreshAsks(); } }), [tcw, clearChat, refreshAsks]);
   // A turn is when Main asks: read the requests as it ends.
   const working = isWorking(chat.state.turn);
   const wasWorking = useRef(false);
@@ -129,7 +133,7 @@ function MainAsk({ api, tcw, onReconnect }: { api: BotsApi; tcw?: TinyCloudWeb; 
   };
   return (
     <>
-      <AskBox working={isWorking(chat.state.turn)} onSend={send} onOpenMain={openChat} />
+      <AskBox working={isWorking(chat.state.turn)} blocked={deleting} onSend={send} onOpenMain={openChat} />
       {/* The same requests as in Main's chat: they are shown here only while the chat is closed. */}
       {!open && asks.support === "yes" && (asks.pending.length > 0 || asks.stopped || asks.secrets.length > 0) ? (
         <div className="mb-6 flex flex-col gap-3" data-home-asks="">
@@ -150,6 +154,9 @@ function MainAsk({ api, tcw, onReconnect }: { api: BotsApi; tcw?: TinyCloudWeb; 
         meetings={meetings}
         asks={asks}
         newChat={newChat}
+        deleteChats={deleteChats}
+        deleting={deleting}
+        onDeleting={setDeleting}
       />
     </>
   );
