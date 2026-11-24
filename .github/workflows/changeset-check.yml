@@ -55,5 +55,9 @@ jobs:
       - name: Release script tests (also-host check)
         run: node --test scripts/__tests__/release-also-host.test.mjs
 
+      # The desktop in-app updater's signing and latest.json (desktop-updater.mjs), against Tauri's minisign format.
+      - name: Desktop updater release script tests
+        run: node --test scripts/__tests__/desktop-updater.test.mjs
+
       - name: Release security gate tests (require-green, artifact audit)
         run: node --test scripts/__tests__/security-gates.test.mjs

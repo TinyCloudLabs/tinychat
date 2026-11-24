@@ -370,10 +370,10 @@ build code; the job graph is in
 in the `desktop-release` GitHub environment, which must allow deployments from
 **`main` only** (set that up and check it before adding any secret:
 [desktop/README.md](desktop/README.md#before-adding-any-signing-secret-restrict-desktop-release-to-main))
-and has a required reviewer (Sam; self-review allowed), so only `Desktop
-release (TinyCloud One)` dispatched on main reaches it, and each signed release
-waits for approval twice: the preflight right after the plan, the sign job once
-the app is built. Approve from the run page or with
+and has no required reviewer until the 1 Dec review (Sam, 2026-11-24), so only
+`Desktop release (TinyCloud One)` dispatched on main reaches it. With a required
+reviewer, each signed release waits for approval twice: the preflight right after
+the plan, the sign job once the app is built. Approve from the run page or with
 `gh api -X POST repos/TinyCloudLabs/tinychat/actions/runs/<run id>/pending_deployments -F 'environment_ids[]=<id>' -f state=approved -f comment=...`. Only two jobs use it, and both
 check out nothing but `scripts/release` at the workflow commit: a preflight
 re-checks provenance (`github.workflow_ref` is main's `desktop-release.yml`, the
@@ -413,6 +413,8 @@ Environment secrets (`desktop-release`):
 | `APPLE_API_KEY` | App Store Connect API key ID |
 | `APPLE_API_ISSUER` | App Store Connect issuer ID (UUID) |
 | `APPLE_API_PRIVATE_KEY` | full contents of `AuthKey_<key id>.p8` (as is, collapsed onto one line, or base64); the sign job writes it to a temp file after signing the app and deletes it before uploading |
+| `TAURI_SIGNING_PRIVATE_KEY` | the in-app updater's minisign key file from `tauri signer generate`; the sign job signs the updater archive with it after the keychain is deleted |
+| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | that key's random password (never printed; minted with it) |
 
 One-time setup (repo admin). Restrict the environment to `main` **first** and
 check it before adding any secret (it had no branch policy on 2026-10-04):
@@ -420,7 +422,7 @@ check it before adding any secret (it had no branch policy on 2026-10-04):
 ```bash
 repo=TinyCloudLabs/tinychat
 # 1. Environment deployable from main only. Check: the last command must print ["main"].
-# Required reviewer (Sam, self-review allowed): Settings > Environments > desktop-release > Required reviewers.
+# Optional required reviewer (none until the 1 Dec review, Sam 2026-11-24): Settings > Environments > desktop-release > Required reviewers.
 gh api -X PUT repos/$repo/environments/desktop-release \
   -F 'deployment_branch_policy[protected_branches]=false' \
   -F 'deployment_branch_policy[custom_branch_policies]=true'
@@ -443,6 +445,9 @@ gh secret set APPLE_TEAM_ID --env desktop-release --repo $repo --body '<TEAMID>'
 gh secret set APPLE_API_KEY --env desktop-release --repo $repo --body '<Key ID>'
 gh secret set APPLE_API_ISSUER --env desktop-release --repo $repo --body '<Issuer ID>'
 gh secret set APPLE_API_PRIVATE_KEY --env desktop-release --repo $repo < AuthKey_<id>.p8
+
+# 4. The in-app updater keys (primary here, backup in desktop-updater-backup): desktop/README.md, "In-app updates"
+# (minted on 2026-11-24; the public keys are plugins.updater.pubkey/backupPubkey in desktop/src-tauri/tauri.conf.json).
 ```
 
 Keep the `.p12`, its password and the `.p8` in the team password manager; the

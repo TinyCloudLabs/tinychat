@@ -27,6 +27,10 @@
 #       the App Store Connect key, written as ios-signing.sh write-key does; prints its path
 #   desktop-signing.sh notarize <app | .dmg> <AuthKey.p8>
 #       submit to notarytool and wait (an app goes as a ditto zip), print Apple's log unless Accepted, staple the file
+#   desktop-signing.sh updater-archive <app> <out.app.tar.gz> <signed: true|false>
+#       the in-app updater's archive of the (stapled) app: "<name>.app/..." entries only, no AppleDouble files or
+#       extended attributes; extracted again and checked with codesign (and stapler when signed). Signed by
+#       desktop-updater.mjs sign
 set -euo pipefail
 
 # The bundle id stays xyz.tinycloud.exo after the renames to TinyCloud Home and TinyCloud One: macOS keys the app's data, keychain items
@@ -34,7 +38,9 @@ set -euo pipefail
 BUNDLE_ID=xyz.tinycloud.exo
 # tauri.conf.json's productName, as scripts/release/lib.mjs DESKTOP_PRODUCT_NAME allows: words of letters and digits.
 PRODUCT_NAME_RE='^[A-Za-z0-9]+( [A-Za-z0-9]+)*$'
-SECRETS=(APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_TEAM_ID APPLE_API_KEY APPLE_API_ISSUER APPLE_API_PRIVATE_KEY)
+# TAURI_SIGNING_*: the in-app updater's minisign key (`tauri signer generate`; desktop/README.md, "In-app updates").
+SECRETS=(APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_TEAM_ID APPLE_API_KEY APPLE_API_ISSUER APPLE_API_PRIVATE_KEY
+  TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD)
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 fail() { echo "::error::$1"; exit 1; }
@@ -56,6 +62,7 @@ check() {
   [[ $APPLE_API_ISSUER =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]] ||
     fail "APPLE_API_ISSUER must be the App Store Connect issuer ID (a UUID)"
   [[ $APPLE_CERTIFICATE =~ ^[A-Za-z0-9+/=[:space:]]+$ ]] || fail "APPLE_CERTIFICATE must be base64 of the Developer ID Application .p12"
+  [[ $TAURI_SIGNING_PRIVATE_KEY =~ ^[A-Za-z0-9+/=[:space:]]+$ ]] || fail "TAURI_SIGNING_PRIVATE_KEY must be the content of the \`tauri signer generate\` key file (base64)"
   echo "desktop-release secrets present: ${SECRETS[*]}"
 }
 
@@ -269,6 +276,28 @@ notarize() {
   xcrun stapler validate "$file"
 }
 
+updater_archive() {
+  local app=${1:-} out=${2:-} signed=${3:-} name bad check
+  [ -n "$signed" ] || fail "usage: desktop-signing.sh updater-archive <app> <out.app.tar.gz> <signed: true|false>"
+  [ -d "$app" ] && [[ $app == *.app ]] || fail "no app bundle at $app"
+  [[ $out == *.app.tar.gz ]] || fail "the updater archive must be named *.app.tar.gz, got $out"
+  name=$(basename "$app")
+  mkdir -p "$(dirname "$out")"
+  # tauri-plugin-updater drops each entry's first path component and unpacks the rest into the installed bundle, so a
+  # stray AppleDouble (._*) file would land inside it and break the seal.
+  COPYFILE_DISABLE=1 tar --no-mac-metadata --no-xattrs --no-acls -czf "$out" -C "$(dirname "$app")" "$name"
+  bad=$(tar -tzf "$out" | awk -v n="$name" '!($0 == n || $0 == n "/" || index($0, n "/") == 1) || $0 ~ /(^|\/)\._/')
+  [ -z "$bad" ] || fail "$(basename "$out") has entries outside $name or AppleDouble files: $(head -5 <<<"$bad")"
+  check=$(mktemp -d "${RUNNER_TEMP:-/tmp}/exo-updater-check.XXXXXX")
+  tar -xzf "$out" -C "$check"
+  codesign --verify --deep --strict --verbose=2 "$check/$name" || fail "the app in $(basename "$out") fails codesign --verify"
+  if [ "$signed" = true ]; then
+    xcrun stapler validate "$check/$name" || fail "the app in $(basename "$out") has no valid stapled ticket"
+  fi
+  rm -rf "$check"
+  echo "$(basename "$out"): $(du -h "$out" | cut -f1), $(tar -tzf "$out" | wc -l | tr -d ' ') entries, the app verifies after extraction"
+}
+
 case "${1:-}" in
   check) check ;;
   provenance) provenance "${2:-}" ;;
@@ -278,10 +307,11 @@ case "${1:-}" in
   dmg) dmg "${2:-}" "${3:-}" "${4:-}" "${5:-}" ;;
   write-key) exec "$here/ios-signing.sh" write-key "${2:-}" ;;
   notarize) notarize "${2:-}" "${3:-}" ;;
+  updater-archive) updater_archive "${2:-}" "${3:-}" "${4:-}" ;;
   *)
     echo "usage: desktop-signing.sh check | provenance <sha> | unpack <zip> <dir> <name> <version> <short> <build> | keychain <dir>" \
       "| sign <app> <entitlements> <identity> [keychain] | dmg <app> <dmg> <identity> [keychain] | write-key <dir>" \
-      "| notarize <app|dmg> <key>" >&2
+      "| notarize <app|dmg> <key> | updater-archive <app> <out.app.tar.gz> <signed>" >&2
     exit 2
     ;;
 esac

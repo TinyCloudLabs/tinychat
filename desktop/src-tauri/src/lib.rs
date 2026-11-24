@@ -7,6 +7,7 @@ mod ipc_selftest;
 mod ptx_upload;
 #[cfg(feature = "transcription")]
 mod recorder;
+mod desktop_update;
 #[cfg(debug_assertions)]
 mod dev_log;
 mod google_oauth;
@@ -59,6 +60,8 @@ pub fn run() {
     dev_log::install();
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        // In-app updates (src/desktop_update.rs). No capability grants the plugin's commands to the webview.
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(google_oauth::GoogleOAuthListener::default());
 
     #[cfg(not(feature = "transcription"))]
@@ -69,7 +72,13 @@ pub fn run() {
         google_oauth::google_oauth_open_browser,
         manage_storage::open_manage_storage,
         privacy_policy::open_privacy_policy,
-    ]);
+        desktop_update::desktop_update_status,
+        desktop_update::desktop_update_restart,
+    ])
+    .setup(|app| {
+        desktop_update::install(app);
+        Ok(())
+    });
 
     // anarlog (MIT) transcription stack: local capture + on-device Whisper.
     // Ordering is load-bearing:
@@ -115,6 +124,8 @@ pub fn run() {
             google_oauth::google_oauth_open_browser,
             manage_storage::open_manage_storage,
             privacy_policy::open_privacy_policy,
+            desktop_update::desktop_update_status,
+            desktop_update::desktop_update_restart,
             recorder::files::append_audio_chunk,
             ptx_upload::ptx_audio_metadata,
             ptx_upload::ptx_upload_audio,
@@ -166,6 +177,8 @@ pub fn run() {
             google_oauth::google_oauth_open_browser,
             manage_storage::open_manage_storage,
             privacy_policy::open_privacy_policy,
+            desktop_update::desktop_update_status,
+            desktop_update::desktop_update_restart,
             recorder::files::append_audio_chunk,
             ptx_upload::ptx_audio_metadata,
             ptx_upload::ptx_upload_audio,
@@ -213,6 +226,7 @@ pub fn run() {
 
         builder.setup(|app| {
             install_recorder_runtime(app);
+            desktop_update::install(app);
             if let Err(error) = recorder::refresh_finishing_quit(app.handle()) {
                 FINISHING_QUIT.store(false, std::sync::atomic::Ordering::SeqCst);
                 tracing::error!(target: "exo_dev::recorder", kind = "pipeline",

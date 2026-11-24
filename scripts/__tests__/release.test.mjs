@@ -1121,7 +1121,7 @@ test('desktop-bundle-config emits a usable config path for normal and smoke buil
   const root = manifests(t);
   for (const dir of ['desktop', 'frontend']) editJson(root, `${dir}/package.json`, pkg => { pkg.version = '0.3.0-beta.4'; });
   const base = JSON.parse(read(repo, 'desktop/src-tauri/tauri.conf.json'));
-  const expectedOutputs = ['version', 'short-version', 'bundle-version', 'prerelease', 'product-name', 'bundle-identifier', 'config'];
+  const expectedOutputs = ['version', 'short-version', 'bundle-version', 'prerelease', 'product-name', 'bundle-identifier', 'updater-pubkey', 'config'];
 
   for (const { smoke, identifier, productName } of [
     { smoke: false, identifier: 'xyz.tinycloud.exo', productName: base.productName },
@@ -1500,13 +1500,16 @@ test('desktop builds and releases run release tooling from the workflow commit, 
   const code = text => text.split('\n').filter(line => !/^\s*#/.test(line)).join('\n');
   assert.deepEqual(code(build).match(/\S*scripts\/release\/\S+/g) ?? [], ['.release-tooling/scripts/release/desktop-bundle-config.mjs']);
 
-  // The plan job's only checkout is the workflow commit; no other release job runs scripts/release.
+  // Every desktop-release.yml checkout is the workflow commit: the plan's, and publish's tooling-only one for latest.json.
   const release = read(repo, '.github/workflows/desktop-release.yml');
   const plan = release.slice(release.indexOf('  plan:'), release.indexOf('  build:'));
-  assert.equal((release.match(/uses: actions\/checkout@/g) ?? []).length, 1);
+  assert.equal((release.match(/uses: actions\/checkout@/g) ?? []).length, 2);
   assert.match(plan, /uses: actions\/checkout@[0-9a-f]{40} # v\S+\n\s+with:\n\s+ref: \$\{\{ github\.workflow_sha \}\}\n\s+fetch-depth: 0\n\s+persist-credentials: false\n/);
-  assert.deepEqual(code(release).match(/\S*scripts\/release\/\S+/g), ['scripts/release/desktop-release-plan.mjs']);
+  assert.deepEqual(code(release).match(/\S*scripts\/release\/\S+/g), ['scripts/release/desktop-release-plan.mjs', 'scripts/release/desktop-updater.mjs']);
   assert.ok(release.indexOf('scripts/release/desktop-release-plan.mjs') < release.indexOf('  build:'));
+  const publish = release.slice(release.indexOf('  publish:'));
+  assert.match(publish, /- name: Check out the release tooling\n\s+uses: actions\/checkout@[0-9a-f]{40} # v\S+\n\s+with:\n\s+ref: \$\{\{ github\.workflow_sha \}\}\n\s+sparse-checkout: \|\n\s+\/scripts\/release\/\n\s+sparse-checkout-cone-mode: false\n\s+persist-credentials: false\n/);
+  assert.doesNotMatch(withoutComments(publish), /secrets\.|environment:/);
 
   // Run the real "Bundle versions" step in a release tag's tree whose own (older) script would fail: it must use the
   // tooling checkout's script and read the version from the built tree.
@@ -1938,7 +1941,7 @@ test('desktop signing: keys only in tooling-only jobs, the app built with none, 
   // Every secret reference is gated on inputs.sign, so CI and unsigned releases never resolve one.
   const refs = withoutComments(workflow).match(/\$\{\{[^}]*\bsecrets\.[^}]*\}\}/g) ?? [];
   assert.ok(refs.length >= 15, refs.join('\n'));
-  for (const ref of refs) assert.match(ref, /^\$\{\{ inputs\.sign && secrets\.APPLE_[A-Z_]+ \|\| '' \}\}$/, ref);
+  for (const ref of refs) assert.match(ref, /^\$\{\{ inputs\.sign && secrets\.(?:APPLE|TAURI_SIGNING)_[A-Z_]+ \|\| '' \}\}$/, ref);
   const desktopCi = read(repo, '.github/workflows/desktop.yml');
   const artifactExpression = desktopCi.match(/artifact-name: \$\{\{ (.+) \}\}/)?.[1];
   assert.ok(artifactExpression, 'desktop dispatch provides a workflow artifact name');
@@ -1972,7 +1975,7 @@ test('desktop signing: keys only in tooling-only jobs, the app built with none, 
     assert.match(checkout, /\n\s+ref: \$\{\{ github\.workflow_sha \}\}\n/);
     assert.match(checkout, new RegExp(`\\n\\s+sparse-checkout: \\|\\n${paths.map(path => `\\s+${path.replace(/[./]/g, '\\$&')}\\n`).join('')}\\s+sparse-checkout-cone-mode: false\\n\\s+persist-credentials: false`));
     assert.doesNotMatch(checkout, /\n\s+path:/);
-    assert.doesNotMatch(withoutComments(job), DESKTOP_PROJECT_CODE);
+    assert.doesNotMatch(withoutComments(job).replaceAll('node scripts/release/desktop-updater.mjs ', ''), DESKTOP_PROJECT_CODE);
   };
   const scriptsIn = job => [...new Set(withoutComments(job).match(/(?<![\w/.-])scripts\/release\/[\w.-]+/g))].sort();
 
@@ -2013,7 +2016,16 @@ test('desktop signing: keys only in tooling-only jobs, the app built with none, 
   assert.ok(signCondition.includes("needs.build.result == 'success'"), 'signing only follows a successful build');
   assert.match(sign, /\n {4}environment: \$\{\{ inputs\.sign && 'desktop-release' \|\| '' \}\}\n/);
   tooling(sign, ['/scripts/release/', '/desktop/src-tauri/Entitlements.plist']);
-  assert.deepEqual(scriptsIn(sign), ['scripts/release/desktop-signing.sh', 'scripts/release/verify-desktop-signing.sh']);
+  assert.deepEqual(scriptsIn(sign), ['scripts/release/desktop-signing.sh', 'scripts/release/desktop-updater.mjs', 'scripts/release/verify-desktop-signing.sh']);
+  // The updater signer next to the key is Node's built-ins only: no package, no node_modules.
+  const updaterImports = [...read(repo, 'scripts/release/desktop-updater.mjs').matchAll(/^import .* from '([^']+)';$/gm)].map(match => match[1]);
+  assert.ok(updaterImports.length > 0 && updaterImports.every(specifier => specifier.startsWith('node:')), updaterImports.join(', '));
+  assert.doesNotMatch(read(repo, 'scripts/release/desktop-updater.mjs'), /\bimport\(|\brequire\(/);
+  const updaterOrder = ['Package the signed app', 'Package the updater archive', 'Sign the updater archive', 'Upload the signed dmg + app']
+    .map(name => sign.indexOf(`- name: ${name}\n`));
+  assert.ok(updaterOrder.every(index => index !== -1), `updater steps: ${updaterOrder}`);
+  assert.deepEqual([...updaterOrder].sort((a, b) => a - b), updaterOrder, 'the updater archive is signed after verification and cleanup');
+  for (const ref of stepNamed(sign, 'Sign the updater archive').match(/secrets\.\w+/g)) assert.match(ref, /^secrets\.TAURI_SIGNING_PRIVATE_KEY(?:_PASSWORD)?$/);
   const signOrder = ['Check out the release tooling', 'Verify signing provenance', 'Check signing secrets', 'Download the build', 'Unpack the app',
     'Import the Developer ID certificate', 'Sign the app (inside-out)', 'Write the App Store Connect API key', 'Notarize and staple the app',
     'Build the DMG', 'Notarize and staple the DMG', 'Verify signing and notarization', 'Remove the keychain and the API key',
@@ -2086,10 +2098,11 @@ const desktopSigning = (args, env = {}, cwd = repo) => spawnSync('bash', [join(r
 test('desktop-signing.sh check names the missing desktop-release secrets and checks their shapes', () => {
   const none = desktopSigning(['check']);
   assert.equal(none.status, 1);
-  assert.match(none.stdout, /::error::Desktop signing is not set up: the desktop-release environment is missing APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_TEAM_ID APPLE_API_KEY APPLE_API_ISSUER APPLE_API_PRIVATE_KEY\. Nothing was built or signed\./);
+  assert.match(none.stdout, /::error::Desktop signing is not set up: the desktop-release environment is missing APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_TEAM_ID APPLE_API_KEY APPLE_API_ISSUER APPLE_API_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD\. Nothing was built or signed\./);
   const good = {
     APPLE_CERTIFICATE: Buffer.from('p12').toString('base64'), APPLE_CERTIFICATE_PASSWORD: 'x', APPLE_SIGNING_IDENTITY: 'Developer ID Application: TinyCloud Labs (ABCDE12345)',
     APPLE_TEAM_ID: 'ABCDE12345', APPLE_API_KEY: 'XYZ9876543', APPLE_API_ISSUER: '69a6de7e-1234-47e3-e053-5b8c7c11a4d1', APPLE_API_PRIVATE_KEY: 'x',
+    TAURI_SIGNING_PRIVATE_KEY: Buffer.from('key').toString('base64'), TAURI_SIGNING_PRIVATE_KEY_PASSWORD: 'x',
   };
   assert.equal(desktopSigning(['check'], good).status, 0);
   assert.match(desktopSigning(['check'], { ...good, APPLE_API_ISSUER: '' }).stdout, /is missing APPLE_API_ISSUER\./);
@@ -2097,6 +2110,7 @@ test('desktop-signing.sh check names the missing desktop-release secrets and che
   assert.match(desktopSigning(['check'], { ...good, APPLE_SIGNING_IDENTITY: 'Developer ID Application: TinyCloud Labs (ZZZZZ99999)' }).stdout, /APPLE_SIGNING_IDENTITY must be the 'Developer ID Application/);
   assert.match(desktopSigning(['check'], { ...good, APPLE_TEAM_ID: 'abc' }).stdout, /APPLE_TEAM_ID must be the 10-character Team ID/);
   assert.match(desktopSigning(['check'], { ...good, APPLE_CERTIFICATE: 'not base64!' }).stdout, /APPLE_CERTIFICATE must be base64/);
+  assert.match(desktopSigning(['check'], { ...good, TAURI_SIGNING_PRIVATE_KEY: 'not base64!' }).stdout, /TAURI_SIGNING_PRIVATE_KEY must be the content of the `tauri signer generate` key file/);
   assert.equal(desktopSigning(['nope']).status, 2);
 });
 

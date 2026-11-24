@@ -52,5 +52,15 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEQ4NjUxNEFDOTU5RDJGNDcKUldSSEw1MlZyQlJsMktDSGtOL3cwcW9yQk45cDdEYWNLKy9OdGs2Y28zbDZZeEFDd2lHa3k5blEK",
+      "backupPubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDlDOEEyNjg3Njk2QTUzREEKUldUYVUycHBoeWFLbklnRUVLbGpnL084M0RucEllNmVnakRwbXphbjNzSWVKbmw0WXBTV2ZoY0YK",
+      "endpoints": [
+        "https://github.com/TinyCloudLabs/tinychat/releases/latest/download/latest.json"
+      ],
+      "requireSignedVersion": true
+    }
   }
 }

@@ -37,9 +37,12 @@ name: Desktop build (TinyCloud One)
 #   inside-out with codesign (no --deep; hardened runtime; the entitlements from the workflow commit, not the built
 #   tree) and builds the DMG with hdiutil. Signed: provenance and secrets first, the certificate in a temporary
 #   keychain, notarytool notarizes and staples the app and then the DMG, verify-desktop-signing.sh must pass, the
-#   keychain and key are deleted, and only then are the verified DMG and app uploaded. Dry run: the same unpack, an
-#   ad-hoc re-seal with the same codesign path, and the DMG built and mounted, so every desktop PR exercises the
-#   hand-off and the signing commands. Any failed check fails the build; a signed build never falls back to unsigned.
+#   keychain and key are deleted, then the stapled app is archived for the in-app updater and the archive signed with
+#   the updater key (scripts/release/desktop-updater.mjs, against the public key the built app trusts), and only then
+#   are the verified DMG, app and updater archive uploaded. Dry run: the same unpack, an ad-hoc re-seal with the same
+#   codesign path, the DMG built and mounted, and the updater archive signed with a throwaway key and turned into a
+#   latest.json, so every desktop PR exercises the hand-off, the signing commands and the updater release path. Any
+#   failed check fails the build; a signed build never falls back to unsigned.
 #
 # Every secret reference is gated on inputs.sign, so CI and unsigned releases never resolve one.
 
@@ -76,6 +79,9 @@ on:
       signed:
         description: true only when every signing and notarization check passed
         value: ${{ jobs.sign.outputs.signed }}
+      updater-pubkey:
+        description: the in-app updater public key in the built app's tauri.conf.json
+        value: ${{ jobs.build.outputs.updater-pubkey }}
 
 permissions:
   contents: read
@@ -90,7 +96,7 @@ jobs:
     name: Signing preflight (desktop-release)
     if: inputs.sign
     runs-on: ubuntu-latest
-    # Signing secrets live only in this environment (deployment branches: main; required reviewer: Sam).
+    # Signing secrets live only in this environment (deployment branches: main; no required reviewer until the 1 Dec review, Sam 2026-11-24).
     environment: desktop-release
     timeout-minutes: 5
     steps:
@@ -123,6 +129,8 @@ jobs:
           APPLE_API_KEY: ${{ inputs.sign && secrets.APPLE_API_KEY || '' }}
           APPLE_API_ISSUER: ${{ inputs.sign && secrets.APPLE_API_ISSUER || '' }}
           APPLE_API_PRIVATE_KEY: ${{ inputs.sign && secrets.APPLE_API_PRIVATE_KEY || '' }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ inputs.sign && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ inputs.sign && secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
         run: scripts/release/desktop-signing.sh check
 
   build:
@@ -148,6 +156,8 @@ jobs:
       short-version: ${{ steps.bundle.outputs.short-version }}
       bundle-version: ${{ steps.bundle.outputs.bundle-version }}
       product-name: ${{ steps.bundle.outputs.product-name }}
+      updater-pubkey: ${{ steps.bundle.outputs.updater-pubkey }}
+      prerelease: ${{ steps.bundle.outputs.prerelease }}
       app-sha256: ${{ steps.package.outputs.sha256 }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -396,9 +406,10 @@ jobs:
     # Explicit: a skipped preflight would otherwise skip this job too.
     if: ${{ !inputs.smoke && !cancelled() && needs.build.result == 'success' }}
     runs-on: macos-26
-    # Signing secrets live only in this environment (deployment branches: main; required reviewer: Sam). This job checks
+    # Signing secrets live only in this environment (deployment branches: main; no required reviewer until the 1 Dec review, Sam 2026-11-24). This job checks
     # out nothing but scripts/release and the entitlements at the workflow commit and runs no project code: no bun, no
-    # cargo, no tauri, no node_modules binary.
+    # cargo, no tauri, no node_modules binary. Its only Node script, scripts/release/desktop-updater.mjs, uses Node's
+    # built-in modules and the runner image's node.
     environment: ${{ inputs.sign && 'desktop-release' || '' }}
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
@@ -441,6 +452,8 @@ jobs:
           APPLE_API_KEY: ${{ inputs.sign && secrets.APPLE_API_KEY || '' }}
           APPLE_API_ISSUER: ${{ inputs.sign && secrets.APPLE_API_ISSUER || '' }}
           APPLE_API_PRIVATE_KEY: ${{ inputs.sign && secrets.APPLE_API_PRIVATE_KEY || '' }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ inputs.sign && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ inputs.sign && secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
         run: scripts/release/desktop-signing.sh check
 
       - name: Require pinned Xcode
@@ -551,7 +564,52 @@ jobs:
         if: inputs.sign
         run: ditto -c -k --sequesterRsrc --keepParent "$EXO_APP" "$EXO_ZIP"
 
-      # Only files that passed verify-desktop-signing.sh.
+      # The in-app updater's download (TC-4275): a tar.gz of the stapled app (dry run: the ad-hoc one), checked after
+      # extraction, since tauri-plugin-updater unpacks it over the installed bundle. Signed betas get none: only stable
+      # releases publish latest.json, and an updater-signed beta (its artifact is public) could be served to stable
+      # installs by anyone able to write a release's latest.json.
+      - name: Package the updater archive
+        if: ${{ !inputs.sign || needs.build.outputs.prerelease == 'false' }}
+        run: |
+          updater="${EXO_ZIP%.app.zip}.app.tar.gz"
+          scripts/release/desktop-signing.sh updater-archive "$EXO_APP" "$updater" "$SIGN"
+          echo "EXO_UPDATER=$updater" >> "$GITHUB_ENV"
+
+      # Signed: the updater key from the desktop-release environment, which must match the public key the built app
+      # trusts (a placeholder or another key fails the release). Dry run: a throwaway key through the same code.
+      - name: Sign the updater archive
+        if: ${{ !inputs.sign || needs.build.outputs.prerelease == 'false' }}
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+          PUBKEY: ${{ needs.build.outputs.updater-pubkey }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ inputs.sign && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ inputs.sign && secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
+        run: |
+          if [ "$SIGN" != true ]; then
+            key="$RUNNER_TEMP/exo-updater-dry-run"
+            PUBKEY=$(node scripts/release/desktop-updater.mjs keygen --dir "$key")
+            export TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+            TAURI_SIGNING_PRIVATE_KEY=$(cat "$key/updater.key")
+            TAURI_SIGNING_PRIVATE_KEY_PASSWORD=$(cat "$key/password")
+            echo "EXO_UPDATER_PUBKEY=$PUBKEY" >> "$GITHUB_ENV"
+          fi
+          node scripts/release/desktop-updater.mjs sign --archive "$EXO_UPDATER" --version "$VERSION" --pubkey "$PUBKEY"
+
+      # The release's latest.json comes from desktop-release.yml's publish job; this proves the same command accepts
+      # this build's archive and signature.
+      - name: Check latest.json generation (dry run)
+        if: ${{ !inputs.sign }}
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          printf 'Dry run.\n' > "$RUNNER_TEMP/exo-updater-notes.md"
+          node scripts/release/desktop-updater.mjs manifest --archive "$EXO_UPDATER" --signature "$EXO_UPDATER.sig" \
+            --version "$VERSION" --pubkey "$EXO_UPDATER_PUBKEY" \
+            --url "https://github.com/$GITHUB_REPOSITORY/releases/download/dry-run/$(basename "$EXO_UPDATER")" \
+            --notes "$RUNNER_TEMP/exo-updater-notes.md" --out "$RUNNER_TEMP/latest.json"
+          jq . "$RUNNER_TEMP/latest.json"
+
+      # Only files that passed verify-desktop-signing.sh, and the updater archive with its verified signature.
       - name: Upload the signed dmg + app
         if: inputs.sign && steps.verify.outputs.signed == 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -561,3 +619,5 @@ jobs:
           path: |
             ${{ runner.temp }}/exo-signed/*.dmg
             ${{ runner.temp }}/exo-signed/*.app.zip
+            ${{ runner.temp }}/exo-signed/*.app.tar.gz
+            ${{ runner.temp }}/exo-signed/*.app.tar.gz.sig
