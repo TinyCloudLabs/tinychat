@@ -25,7 +25,16 @@ import { mcpChatFromEnv } from "./mcp-meetings/config.js";
 import { BotHistory } from "./bot-history.js";
 import { createBotHistoryRouter, createSiblingHistoryRouter, startBotHistoryDrain } from "./routes/bot-history.js";
 import { botsFromEnv, createBotsRouter, removeBotFromService } from "./routes/bots.js";
+import { createBotsCourierRouter } from "./routes/bots-courier.js";
 import { createTrustBotReadsInternalRouter, createTrustBotReadsRouter, TRUSTBOT_READS_INTERNAL_PREFIX } from "./routes/trustbot-reads.js";
+import { READ_AREA_NAMES } from "./trustbot-reads/areas.js";
+import type { TrustBotReadGrants } from "./trustbot-reads/grants.js";
+import { StandingReadRuntime } from "./trustbot-reads/standing.js";
+import { StandingReadsController } from "./trustbot-reads/standing-controller.js";
+import { DstackStandingHolderDeriver } from "./trustbot-reads/standing-holder.js";
+import { backendStandingMetadataStore } from "./trustbot-reads/standing-store.js";
+import { isStandingArea } from "./trustbot-reads/standing-types.js";
+import { RetainedReadAudit } from "./trustbot-reads/audit.js";
 import { startTrustBotReads, trustbotReadsFromEnv } from "./trustbot-reads/setup.js";
 import { botAdmissionSecret, mountBotAdmissionRoute } from "./routes/bot-admission.js";
 import { capModeFromEnv, planFor } from "./bot-caps.js";
@@ -1009,14 +1018,42 @@ async function main() {
   // TrustBot's reads (TRUSTBOT_READS_ENABLED): owner routes under /api/bots/main/reads, and the gateway's route for the
   // meeting tools. Off, neither route exists.
   const trustbotReadsSettings = botsConfig && !localValidation ? trustbotReadsFromEnv(process.env) : undefined;
-  const trustbotReads = botsConfig && trustbotReadsSettings ? await startTrustBotReads({
-    backendNode: node, backendDid: did, host: TINYCLOUD_HOST, otherDelegateDids: [process.env.MCP_CHAT_SERVICE_DID, AGENT_DID],
+  const standingConfig = trustbotReadsSettings && process.env.TRUSTBOT_STANDING_READS_ENABLED === "true"
+    ? renewalVerifyConfigFromEnv(process.env, TINYCLOUD_HOST) : undefined;
+  let trustbotReads: Awaited<ReturnType<typeof startTrustBotReads>>;
+  const standing = standingConfig ? new StandingReadsController({
+    config: standingConfig, keys: new DstackStandingHolderDeriver(), store: backendStandingMetadataStore(node),
+    enabledAreas: async address => {
+      if (!trustbotReads) throw new Error("trustbot_reads_unavailable");
+      const { areas } = await trustbotReads.status(address);
+      return READ_AREA_NAMES.filter(isStandingArea).filter(area => areas[area] !== "off");
+    },
   }) : undefined;
+  if (trustbotReadsSettings) {
+    trustbotReads = await startTrustBotReads({
+      backendNode: node, backendDid: did, host: TINYCLOUD_HOST, otherDelegateDids: [process.env.MCP_CHAT_SERVICE_DID, AGENT_DID],
+      standing: standing && standingConfig ? new StandingReadRuntime({ store: standing, config: standingConfig }) : undefined,
+    });
+  }
+  // Keep purging retained rows even after standing reads are turned off.
+  const readAudit = localValidation ? undefined : new RetainedReadAudit(node);
   if (botsConfig && trustbotReadsSettings && trustbotReads) {
-    app.use("/api/bots/main/reads", createTrustBotReadsRouter({ grants: trustbotReads, config: botsConfig, auth: authMiddleware }));
-    app.use(TRUSTBOT_READS_INTERNAL_PREFIX, createTrustBotReadsInternalRouter({ grants: trustbotReads, config: botsConfig, callSecret: trustbotReadsSettings.callSecret }));
+    const standingEnabled = standing !== undefined;
+    const audit = standingEnabled ? readAudit?.store : undefined;
+    const readsOptions = {
+      grants: trustbotReads, telegramGrants: trustbotReads.telegram, config: botsConfig, auth: authMiddleware,
+      callSecret: trustbotReadsSettings.callSecret, standingEnabled, standing, audit,
+    };
+    app.use("/api/bots/main/reads", createTrustBotReadsRouter(readsOptions));
+    app.use(TRUSTBOT_READS_INTERNAL_PREFIX, createTrustBotReadsInternalRouter(readsOptions));
+    if (standing) {
+      const sweep = () => { void standing.sweep().catch(() => {}); };
+      sweep();
+      setInterval(sweep, 30_000).unref();
+    }
     console.log("[startup] TrustBot reads enabled.");
   }
+  app.use("/api/bots/main/courier", createBotsCourierRouter({ config: botsConfig, auth: authMiddleware }));
   app.use("/api/bots", createBotsRouter({
     config: botsConfig, authMiddleware, paidLimiter: paidChatLimiter, registry: botsRegistry,
     // Read only when bots are configured: with bots off no route uses it, and startup calls nothing it does not need.

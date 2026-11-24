@@ -11,6 +11,8 @@ import { webSignInManifest } from "../lib/homeFeatures";
 import { WEB_APP_MANIFEST } from "../lib/webSignInPrefetch";
 import type { connectWallet } from "@tinyboilerplate/client";
 import { authorizeBotHistory, botHistoryOwnerPermissions } from "../bots/historyAuthorization";
+import { earlierHistoryPermissions } from "../bots/earlierHistory";
+import { requestEarlierHistoryAccess } from "../bots/earlierHistoryRequest";
 import { stepUpForApp, type StepUpConnect } from "./stepUp";
 
 const account = privateKeyToAccount("0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d");
@@ -92,8 +94,18 @@ test("bot history authorization on the real SDK: no SDK dialog and exactly one O
   const ok = openkey();
   const connect = (async () => ({ address: ADDRESS, openkey: ok.client })) as unknown as typeof connectWallet;
   // The grant is the part under test; the node holds no key network here, so the step after it is expected to fail.
-  await authorizeBotHistory(tcw, connect, async () => ({ enabled: true }), { includeLegacyNetwork: false, postDescriptor: async () => {} }).catch(() => {});
+  await authorizeBotHistory(tcw, connect, async () => ({ enabled: true }), { postDescriptor: async () => {} }).catch(() => {});
   expect(tcw.hasPermissions(ask)).toBe(true);
+  expect(dialogs.shown).toBe(0);
+  expect(ok.requests).toHaveLength(1);
+});
+
+test("moving earlier bot history on the real SDK: no SDK dialog and exactly one OpenKey sign request", async () => {
+  const { tcw, dialogs } = await signedIn();
+  const ok = openkey();
+  const connect = (async () => ({ address: ADDRESS, openkey: ok.client })) as unknown as typeof connectWallet;
+  expect(await requestEarlierHistoryAccess(tcw, connect)).toBe(true);
+  expect(tcw.hasPermissions(earlierHistoryPermissions(ADDRESS, 1))).toBe(true);
   expect(dialogs.shown).toBe(0);
   expect(ok.requests).toHaveLength(1);
 });

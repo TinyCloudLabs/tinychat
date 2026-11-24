@@ -13,6 +13,7 @@ export const BOTS_SERVICE_ROUTES: ReadonlyArray<{ method: string; path: string }
   { method: "POST", path: "/api/internal/bots/main/reads/tinycloud_read_meeting" },
   { method: "POST", path: "/api/internal/bots/main/reads/tinycloud_search_transcripts" },
   { method: "POST", path: "/api/internal/bots/main/reads/tinycloud_list_meeting_actions" },
+  { method: "POST", path: "/api/internal/bots/main/reads/audit/refusal" },
   // TrustBot's feed and chat tools, one route each (routes/trustbot-reads.ts).
   { method: "POST", path: "/api/internal/bots/main/reads/list_feed_cards" },
   { method: "POST", path: "/api/internal/bots/main/reads/read_card" },

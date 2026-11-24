@@ -1,5 +1,69 @@
 # @tinychat/backend
 
+## 0.14.0-beta.3
+
+### Patch Changes
+
+- 0fc95c7: The backend's sign-in manifest and the delegation it asks for name it "TinyCloud One backend" and "TinyCloud One Backend". Permissions, ids and the policy hash stay the same.
+
+  Details: TC-3659
+
+## 0.14.0-beta.2
+
+### Patch Changes
+
+- 1dccbf7: When a TrustBot read grant is replaced, TinyChat forgets the old grant once its revoke is confirmed and stops retrying after that. Grant records it can't read are dropped.
+
+  Details: TC-4027
+
+## 0.14.0-beta.1
+
+### Minor Changes
+
+- 97fad45: Prepare an option to keep bot reads on while you’re away.
+
+  Details: TC-4000
+
+### Patch Changes
+
+- 97fad45: Show the owner a daily summary of bot reads while they were away, with allowed and refused counts by area and kind of read.
+
+  Details: TC-4000
+
+- 97fad45: Limit standing bot reads to the owner's approved areas in windows of up to seven days with a lease of up to 90 days.
+
+  Details: TC-4000
+
+- 97fad45: While standing reads are enabled, the backend records every TrustBot read of the owner's data before it happens, and a read that cannot be recorded does not run. Logging of blocked attempts is bounded. Keep 90 days of counts by day, area and tool.
+
+  Details: TC-4000
+
+## 0.14.0-beta.0
+
+### Minor Changes
+
+- d6c02d5: TrustBot can answer agents that message its owner through Courier. Owners pair each agent in TrustBot's settings, and can unpair it there. TrustBot answers only with what the owner lets it read. It doesn't take requests or tasks over Courier.
+
+  TrustBot keeps Courier conversations encrypted. It keeps each message for up to 30 days, the latest 200 messages in each conversation and the 50 most recently active conversations, and deletes older ones. Owners can delete any of these conversations. What TrustBot reads to answer isn't kept, apart from what it writes in its answers.
+
+  Owners can keep any chat out of what TrustBot reads, from TrustBot's settings.
+
+  TrustBot can read the owner's Telegram chats that Inbox collects, when the owner turns on the Telegram read area.
+
+  Details: TC-4058
+
+## 0.13.4
+
+### Patch Changes
+
+- 39182ae: Verify the full record context when opening bot history. Records written from now on carry their owner, space, path and bot, and every read checks them. Earlier records still open and are reported as earlier records.
+
+  Details: TC-4041
+
+- 8fc4c7c: Fireflies meeting import permissions are removed when you disconnect, delete your Fireflies meetings, delete your account or turn off instant updates, and expired ones are cleared automatically. Saving a new permission pair names the pair it replaces, so overlapping saves cannot undo a turn off. A Fireflies key saved in an older format now asks you to save it again instead of retrying. The Library drops deleted Fireflies meetings at once.
+
+  Details: TC-3917
+
 ## 0.13.4-beta.1
 
 ### Patch Changes

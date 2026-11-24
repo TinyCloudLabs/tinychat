@@ -16,6 +16,7 @@ import {
   GRANOLA_EXPORT_URL,
   GRANOLA_LEDGER_SOURCE,
   granolaCsvErrorMessage,
+  granolaCsvErrorSummaryLines,
   granolaCsvSummaryLines,
 } from "@/lib/connectors/granolaCsvStrings";
 import { GranolaAllowBack } from "@/chat/GranolaAllowBack";
@@ -164,7 +165,7 @@ export const GranolaCsvImport: FC<GranolaCsvImportProps> = ({
             <AlertTriangleIcon className="mt-0.5 size-4 shrink-0" aria-hidden />
             <span>{state.message}</span>
           </p>
-          {state.counts && granolaCsvSummaryLines(state.counts).map((line) => (
+          {state.counts && granolaCsvErrorSummaryLines(state.counts).map((line) => (
             <p key={line} className="text-muted-foreground">{line}</p>
           ))}
         </div>
