@@ -8,7 +8,8 @@
  * before it builds the DMG. --smoke assigns an isolated bundle identifier and product name for recorder-failpoints
  * artifacts ("<identifier>.smoke", "<productName> Smoke"). The product name and identifier are read from the built
  * tree's src-tauri/tauri.conf.json, and so is the in-app updater's public key (updater-pubkey), which the sign job
- * verifies the updater signature against: the key the built app trusts.
+ * verifies the updater signature against: the key the built app trusts. The app also trusts plugins.updater
+ * .backupPubkey (an offline key for rotation, src-tauri/src/desktop_update.rs); it must be set and differ.
  * Writes version, short-version, bundle-version, prerelease, product-name, bundle-identifier, updater-pubkey and config
  * to $GITHUB_OUTPUT.
  */
@@ -26,8 +27,12 @@ const { version } = readJson(root, DESKTOP.packageJson);
 const { shortVersion, bundleVersion, prerelease } = desktopBundleVersions(version);
 const confText = readFileSync(join(root, DESKTOP.tauriConf), 'utf8');
 const app = desktopProduct(confText);
-const updaterPubkey = JSON.parse(confText).plugins?.updater?.pubkey;
+const updater = JSON.parse(confText).plugins?.updater ?? {};
+const updaterPubkey = updater.pubkey;
 if (typeof updaterPubkey !== 'string' || !updaterPubkey) throw new Error(`${DESKTOP.tauriConf} plugins.updater.pubkey is missing`);
+if (typeof updater.backupPubkey !== 'string' || !updater.backupPubkey || updater.backupPubkey === updaterPubkey) {
+  throw new Error(`${DESKTOP.tauriConf} plugins.updater.backupPubkey must be set to a second key, not the primary`);
+}
 const productName = values.smoke ? `${app.productName} Smoke` : app.productName;
 const identifier = values.smoke ? `${app.identifier}.smoke` : app.identifier;
 

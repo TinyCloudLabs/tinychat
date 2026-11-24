@@ -21,6 +21,8 @@ tauri-plugin-opener = "2"
 # In-app updates (src/desktop_update.rs, TC-4275). ~2.12: 2.13 requires tauri 2.12, and this crate's lock pins
 # tauri 2.11.
 tauri-plugin-updater = "~2.12"
+# Reads the key id of the updater's trusted keys and release signatures (src/desktop_update.rs).
+base64 = "0.22"
 url = "2"
 recorder-state = { path = "../recorder-state" }
 wav-snapshot = { path = "../wav-snapshot" }
@@ -215,7 +217,6 @@ tokio = { version = "1", features = ["rt", "macros"] }
 tempfile = "3"
 # The verifier tauri-plugin-updater runs, for the release script's signature fixture (src/desktop_update.rs).
 minisign-verify = "0.2"
-base64 = "0.22"
 
 
 # macOS 27 dyld rejects some stripped proc-macro dylibs with a misaligned

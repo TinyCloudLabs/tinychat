@@ -268,42 +268,47 @@ The app updates itself from signed stable releases (TC-4275;
 `src-tauri/src/desktop_update.rs`, `tauri-plugin-updater`). It checks
 `https://github.com/TinyCloudLabs/tinychat/releases/latest/download/latest.json`
 at launch and every 4 hours, downloads a newer version in the background,
-verifies its minisign signature against `plugins.updater.pubkey` in
-`src-tauri/tauri.conf.json` (and that the signature names the announced version),
-then shows "Restart to update". The offer is never shown while a recording is in
+verifies its minisign signature against a public key it trusts (and that the
+signature names the announced version), then shows "Restart to update". It
+trusts two keys in `src-tauri/tauri.conf.json`: `plugins.updater.pubkey`, the
+key releases are signed with, and `plugins.updater.backupPubkey`, an offline
+key kept only for rotation (the signature's key id picks which one verifies it).
+The offer is never shown while a recording is in
 progress (live, paused, starting, stopping or still finishing): it waits until
 recording is idle, and is withdrawn if one starts. Restart installs and relaunches;
 "Later" hides the offer until a newer version is downloaded or the app restarts.
 Updater errors are only logged. The webview gets no `updater:` permission: only
 `desktop_update_status` and `desktop_update_restart`, which refuse while recording.
 
-Releases: the sign job tars the stapled app (`desktop-signing.sh updater-archive`)
-and signs it (`scripts/release/desktop-updater.mjs sign`, which refuses the
-placeholder public key or a key that is not the built app's). The publish job of a
-**stable** signed release attaches `<prefix>.app.tar.gz` and `latest.json`
-(`desktop-updater.mjs manifest`, which re-verifies the signature). Betas and
-unsigned releases publish neither, so there is no beta update channel: GitHub's
-`latest` never points at a pre-release. Only Apple Silicon (`darwin-aarch64`) is
-built.
+Releases: the sign job of a stable signed release tars the stapled app
+(`desktop-signing.sh updater-archive`) and signs it with the primary key
+(`scripts/release/desktop-updater.mjs sign`, which refuses the placeholder public
+key or a key that is not the built app's `plugins.updater.pubkey`). The publish
+job attaches `<prefix>.app.tar.gz` and `latest.json` (`desktop-updater.mjs
+manifest`, which re-verifies the signature). Signed betas get no updater archive
+at all (a public, updater-signed beta could otherwise be served to stable
+installs by anyone able to write a `latest.json`), and betas and unsigned
+releases publish neither, so there is no beta update channel: GitHub's `latest`
+never points at a pre-release. Only Apple Silicon (`darwin-aarch64`) is built.
 
 Installs from before the updater need **one** manual update, from the release's
 DMG or `desktop/scripts/exo-update.sh`; from then on updates are automatic.
 
-**Minting the updater key (once, repo admin).** Until this is done,
-`tauri.conf.json` carries a `PLACEHOLDER-TC-4275-…` public key and every signed
-release fails at "Sign the updater archive". The key is made by
+**Minting the updater keys (once).** Until this is done, `tauri.conf.json`
+carries `PLACEHOLDER-TC-4275-…` public keys and every signed release fails at
+"Sign the updater archive". Keys are made by
 `scripts/release/desktop-updater.mjs generate` (Node built-ins only), in
 `tauri signer generate`'s format and scrypt limits: unlike the Tauri CLI, which
 only takes the password as `-p`, it reads the password from a 0600 file or stdin,
 so the password never appears in any process's arguments or environment. It
-re-reads the key with the password before printing the public key. The key and
-its random password go straight from files into the two `desktop-release`
-secrets and are never printed (only the public key is). While they exist, the
-0600 files in the `mktemp -d` directory are readable by other processes of the
-same user. That window is accepted: this host has no agent-free user, and
-same-user agents already hold `gh` credentials that could set the secret
-directly. Keep it short: the steps below create, store, `shred` and `rm -r` in
-one go.
+re-reads the key with the password before printing the public key. The primary
+key and its random password go straight from files into the two
+`desktop-release` secrets and are never printed (only the public key is). While
+they exist, the 0600 files in the `mktemp -d` directory are readable by other
+processes of the same user. That window is accepted on the shared agent host:
+it has no agent-free user, and same-user agents already hold `gh` credentials
+that could set the secret directly. Keep it short: the steps below create,
+store, `shred` and `rm -r` in one go.
 
 ```bash
 repo=TinyCloudLabs/tinychat
@@ -318,12 +323,42 @@ shred -u "$d/key/updater.key" "$d/password" 2>/dev/null || rm -P "$d/key/updater
 rm -rf "$d"
 ```
 
-Then replace the placeholder `plugins.updater.pubkey` with that single base64
-line in a PR. Keep no other copy of the private key unless the team decides to
-escrow it offline. Losing or rotating the key works the same way: mint a new key,
-then replace the public key and both secrets together. Installed apps trust only
-the public key they were built with, so each install then needs one more manual
-update (the sign job refuses to sign a build with any key but the one it trusts).
+The backup key never goes into GitHub or onto the agent host. Mint it on a
+machine you control (a checkout of this repo and Node are enough; nothing is
+installed) and keep the key file and its password offline, apart from each other
+(for example the key on an encrypted drive, the password in a password manager):
+
+```bash
+umask 077
+d=$(mktemp -d "${TMPDIR:-/tmp}/tauri-updater-backup.XXXXXX")
+openssl rand -base64 32 | tr -d '\n' > "$d/password"
+node scripts/release/desktop-updater.mjs generate --dir "$d/key" --password-file "$d/password" > /dev/null
+cat "$d/key/updater.key.pub"; echo   # public: the value for plugins.updater.backupPubkey
+# Store "$d/key/updater.key" and "$d/password" offline, separately; then:
+rm -P "$d/key/updater.key" "$d/password" 2>/dev/null || shred -u "$d/key/updater.key" "$d/password"
+rm -rf "$d"
+```
+
+**Optional: mint both on your own Mac.** Run the backup steps above twice
+(directories `primary` and `backup`). For the primary, store it with
+`gh secret set TAURI_SIGNING_PRIVATE_KEY --env desktop-release --repo TinyCloudLabs/tinychat < "$d/key/updater.key"`
+and `gh secret set TAURI_SIGNING_PRIVATE_KEY_PASSWORD --env desktop-release --repo TinyCloudLabs/tinychat < "$d/password"`
+before deleting it, and keep no other copy unless you escrow it offline too.
+Then no agent host ever holds either key.
+
+Put both public keys (one base64 line each) in `plugins.updater.pubkey` and
+`plugins.updater.backupPubkey` in a PR. The build refuses a missing backup key or
+one equal to the primary.
+
+**Rotating (primary lost or leaked): promote the backup.** Set the two
+`desktop-release` secrets to the backup key and its password. In a PR, move the
+backup public key into `plugins.updater.pubkey` and put a newly minted offline
+key in `plugins.updater.backupPubkey`, then release. Every install already trusts
+the backup key, so it takes that release with no manual step, and from then on
+trusts the new pair only (no longer the old primary). Until that release is
+installed, a leaked primary can still sign updates the old installs accept: cut
+the rotation release first. If both keys are lost, installs need one manual
+update to a build carrying new keys.
 
 ### Before adding any signing secret: restrict `desktop-release` to main
 

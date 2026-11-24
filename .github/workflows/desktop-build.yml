@@ -157,6 +157,7 @@ jobs:
       bundle-version: ${{ steps.bundle.outputs.bundle-version }}
       product-name: ${{ steps.bundle.outputs.product-name }}
       updater-pubkey: ${{ steps.bundle.outputs.updater-pubkey }}
+      prerelease: ${{ steps.bundle.outputs.prerelease }}
       app-sha256: ${{ steps.package.outputs.sha256 }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -564,8 +565,11 @@ jobs:
         run: ditto -c -k --sequesterRsrc --keepParent "$EXO_APP" "$EXO_ZIP"
 
       # The in-app updater's download (TC-4275): a tar.gz of the stapled app (dry run: the ad-hoc one), checked after
-      # extraction, since tauri-plugin-updater unpacks it over the installed bundle.
+      # extraction, since tauri-plugin-updater unpacks it over the installed bundle. Signed betas get none: only stable
+      # releases publish latest.json, and an updater-signed beta (its artifact is public) could be served to stable
+      # installs by anyone able to write a release's latest.json.
       - name: Package the updater archive
+        if: ${{ !inputs.sign || needs.build.outputs.prerelease != 'true' }}
         run: |
           updater="${EXO_ZIP%.app.zip}.app.tar.gz"
           scripts/release/desktop-signing.sh updater-archive "$EXO_APP" "$updater" "$SIGN"
@@ -574,6 +578,7 @@ jobs:
       # Signed: the updater key from the desktop-release environment, which must match the public key the built app
       # trusts (a placeholder or another key fails the release). Dry run: a throwaway key through the same code.
       - name: Sign the updater archive
+        if: ${{ !inputs.sign || needs.build.outputs.prerelease != 'true' }}
         env:
           VERSION: ${{ needs.build.outputs.version }}
           PUBKEY: ${{ needs.build.outputs.updater-pubkey }}

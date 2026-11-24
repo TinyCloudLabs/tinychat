@@ -1,9 +1,15 @@
 //! In-app updates (TC-4275). The bundled app checks the stable release's latest.json (tauri.conf.json
 //! plugins.updater) at launch and every 4 hours of wall-clock time, downloads a newer version in the background
-//! (tauri-plugin-updater verifies its signature against the pinned public key), and only then offers
+//! (tauri-plugin-updater verifies its signature against a pinned public key), and only then offers
 //! "Restart to update". The offer is withheld while a recording is in progress or a stopped recording is still
 //! being finished, and the restart command refuses then too: an update never interrupts a recording. Updater
 //! failures are logged and otherwise silent; the next check retries.
+//!
+//! Two keys are trusted: plugins.updater.pubkey, which releases are signed with, and plugins.updater.backupPubkey,
+//! an offline key kept for rotation. If the primary key is lost or leaks, a release signed with the backup key
+//! (carrying a new pair) still updates every install, with no manual step. The plugin verifies with one key, so the
+//! signature's minisign key id picks which trusted key it is verified with; a signature that names a trusted key
+//! it was not made with still fails that verification.
 //!
 //! The webview gets no updater plugin permission: it can only read the offer and ask for the restart.
 use std::sync::Mutex;
@@ -120,7 +126,9 @@ pub fn install(app: &tauri::App) {
     });
 }
 
-async fn check_and_download(app: &tauri::AppHandle) -> Result<(), tauri_plugin_updater::Error> {
+type CheckError = Box<dyn std::error::Error + Send + Sync>;
+
+async fn check_and_download(app: &tauri::AppHandle) -> Result<(), CheckError> {
     let Some(update) = app.updater()?.check().await? else {
         return Ok(());
     };
@@ -131,10 +139,56 @@ async fn check_and_download(app: &tauri::AppHandle) -> Result<(), tauri_plugin_u
     {
         return Ok(());
     }
+    let trusted = trusted_keys(app);
+    let Some(key) = trusted_key_for(&update.signature, &trusted) else {
+        return Err(format!("{} is not signed by a key this app trusts", update.version).into());
+    };
+    // The check above ran with the primary key (tauri.conf.json); the download verifies with the key the signature
+    // names, so a backup-signed release needs an updater built with that key. latest.json must be unchanged.
+    let update = if key == trusted[0] {
+        update
+    } else {
+        let Some(again) = app.updater_builder().pubkey(key).build()?.check().await? else {
+            return Ok(());
+        };
+        if again.signature != update.signature {
+            return Err("latest.json changed between checks".into());
+        }
+        again
+    };
     let bytes = update.download(|_, _| {}, || {}).await?;
     tracing::info!(target: "exo_dev::updater", operation = "download", version = %update.version);
     *lock(&state.downloaded) = Some(Downloaded { update, bytes });
     Ok(())
+}
+
+/// plugins.updater.pubkey, then plugins.updater.backupPubkey.
+fn trusted_keys(app: &tauri::AppHandle) -> Vec<String> {
+    let updater = app.config().plugins.0.get("updater");
+    ["pubkey", "backupPubkey"]
+        .into_iter()
+        .filter_map(|field| Some(updater?.get(field)?.as_str()?.to_owned()))
+        .collect()
+}
+
+/// The minisign key id of a Tauri updater public key or signature: base64 of minisign's text form, whose second
+/// line is base64 of a 2-byte algorithm, the 8-byte key id, then the key or signature. A placeholder has none.
+fn key_id(wrapped: &str) -> Option<[u8; 8]> {
+    use base64::Engine;
+    let base64 = &base64::engine::general_purpose::STANDARD;
+    let text = String::from_utf8(base64.decode(wrapped.trim()).ok()?).ok()?;
+    let raw = base64.decode(text.lines().nth(1)?.trim()).ok()?;
+    raw.get(2..10)?.try_into().ok()
+}
+
+/// The trusted key whose id the signature names, if any. Routing only: the updater then verifies the signature
+/// with that key.
+fn trusted_key_for<'a>(signature: &str, trusted: &'a [String]) -> Option<&'a str> {
+    let id = key_id(signature)?;
+    trusted
+        .iter()
+        .find(|key| key_id(key) == Some(id))
+        .map(String::as_str)
 }
 
 fn refresh_prompt(app: &tauri::AppHandle) {
@@ -191,7 +245,8 @@ pub async fn desktop_update_restart(app: tauri::AppHandle) -> Result<(), String>
 
 #[cfg(test)]
 mod tests {
-    use super::{Gate, Prompt};
+    use super::{key_id, trusted_key_for, Gate, Prompt};
+    use base64::Engine;
 
     fn prompt(version: &str) -> Option<Prompt> {
         Some(Prompt {
@@ -235,7 +290,6 @@ mod tests {
     /// (scripts/__tests__/desktop-updater.test.mjs checks the script still produces exactly this signature).
     #[test]
     fn release_script_signatures_verify_like_the_updater() {
-        use base64::Engine;
         let fixture: serde_json::Value = serde_json::from_str(include_str!(
             "../../../scripts/__tests__/fixtures/desktop-updater-signature.json"
         ))
