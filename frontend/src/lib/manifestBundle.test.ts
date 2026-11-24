@@ -57,15 +57,12 @@ describe("manifest bundle, resolved by the real resolveManifest", () => {
     expect(resolved().filter((resource) => resource.path === `${APP}/migrations/`)).toEqual([]);
   });
 
-  test("Home can use every applications KV folder and the two runnable catalog databases", () => {
+  test("Home can use every applications KV folder", () => {
     expect(resolved().filter((entry) => entry.service === "tinycloud.kv" && entry.path === "")).toEqual([
       { service: "tinycloud.kv", space: "applications", path: "", actions: ["tinycloud.kv/get", "tinycloud.kv/put", "tinycloud.kv/del", "tinycloud.kv/list", "tinycloud.kv/metadata"] },
     ]);
     const catalog = resolved().filter((entry) => entry.service === "tinycloud.sql" && entry.path.startsWith("xyz.tinycloud.sample."));
-    expect(catalog).toEqual([
-      { service: "tinycloud.sql", space: "applications", path: "xyz.tinycloud.sample.healthlog/healthlog", actions: SQL_ALL },
-      { service: "tinycloud.sql", space: "applications", path: "xyz.tinycloud.sample.recipes/recipes", actions: SQL_ALL },
-    ]);
+    expect(catalog).toEqual([]);
   });
 
   test("the storage info entry resolves to the bare path \"\" because skipPrefix is set", () => {
