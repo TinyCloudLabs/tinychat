@@ -22,7 +22,7 @@ The Pages project may also hold its own copy in the Cloudflare dashboard. `wrang
 
 ## What turning it off does
 
-- The Apps tab shows the plain Apps page. `frontend/src/App.tsx` says off is exactly that page. What the page lists is not described here.
+- The Apps tab shows the plain Apps page (`frontend/src/App.tsx`).
 - Nothing is deleted and nothing is revoked. Permissions a person gave to an app stay as they are until they expire or the person revokes them.
 
 ## Turn it off on the web
