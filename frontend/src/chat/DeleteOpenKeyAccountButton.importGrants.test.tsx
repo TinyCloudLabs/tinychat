@@ -119,21 +119,54 @@ test("the two permissions are listed, taken from the server and revoked at the n
   await page.unmount();
 });
 
-test("a server that did not take its copy away stops the deletion with a retry, and nothing is revoked or removed after it", async () => {
+test("a server that did not take its copy away still removes the saved sign-in, then stops the deletion with a retry and both messages", async () => {
   answers = {
     [`GET ${GRANT}/grants`]: { status: 200, body: { grantCids: ["cid-secrets", "cid-meetings"] } },
     [`DELETE ${GRANT}`]: { status: 503, body: { error: "unavailable" } },
+    [`GET ${CREDS}`]: { status: 200, body: { connected: true } },
+    [`DELETE ${CREDS}`]: { status: 503, body: { error: "unavailable" } },
   };
   const page = await mount({});
   await page.click("Delete OpenKey account");
 
-  expect(calls).toEqual([`DELETE ${BASE}/api/transcriber/meetings`, `GET ${GRANT}/grants`, `DELETE ${GRANT}`]);
+  expect(calls).toEqual([
+    `DELETE ${BASE}/api/transcriber/meetings`,
+    `GET ${GRANT}/grants`,
+    `DELETE ${GRANT}`,
+    `GET ${CREDS}`,
+    `DELETE ${CREDS}`,
+  ]);
   expect(page.revoked).toEqual([]);
   expect(page.opened()).toBe(0);
-  expect(page.host.querySelector("[role=alert]")?.textContent).toContain("permission to import your Fireflies meetings");
+  const alert = page.host.querySelector("[role=alert]")?.textContent;
+  expect(alert).toContain("permission to import your Fireflies meetings");
+  expect(alert).toContain("revoke it yourself in your Fireflies account");
   // The ids stay owed, so the retry still revokes them.
   expect(localStorage.getItem(PENDING_KEY)).toContain("cid-secrets");
   expect([...page.host.querySelectorAll("button")].map((b) => b.textContent)).toContain("Try again");
+  await page.unmount();
+});
+
+test("a failed permission removal still removes the saved sign-in, and the retry removes the permission without a second sign-in removal error", async () => {
+  answers = {
+    [`GET ${GRANT}/grants`]: { status: 200, body: { grantCids: ["cid-secrets", "cid-meetings"] } },
+    [`DELETE ${GRANT}`]: { status: 503, body: { error: "unavailable" } },
+    ...credsGone,
+  };
+  const page = await mount({});
+  await page.click("Delete OpenKey account");
+
+  expect(calls.slice(-2)).toEqual([`GET ${CREDS}`, `DELETE ${CREDS}`]);
+  expect(page.opened()).toBe(0);
+  const alert = page.host.querySelector("[role=alert]")?.textContent;
+  expect(alert).toContain("permission to import your Fireflies meetings");
+  expect(alert).not.toContain("revoke it yourself in your Fireflies account");
+
+  answers[`DELETE ${GRANT}`] = { status: 200, body: { state: "none", expiresAt: null } };
+  await page.click("Try again");
+  expect(page.revoked).toEqual(["cid-secrets", "cid-meetings"]);
+  expect(page.opened()).toBe(1);
+  expect(page.host.querySelector("[role=alert]")).toBeNull();
   await page.unmount();
 });
 

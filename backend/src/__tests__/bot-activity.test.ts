@@ -69,7 +69,7 @@ test("an activity batch is saved and read back byte for byte from its owner's hi
   });
   const savedEnvelope = saved.entries.get(path) as { payload: string };
   expect(saved.reads).toEqual([path, path]);
-  expect(Buffer.from(savedEnvelope.payload, "base64").toString()).toBe(JSON.stringify(batch));
+  expect(Buffer.from(savedEnvelope.payload, "base64").toString()).toBe(JSON.stringify({ ...batch, ctx: { v: 1, owner: historyOwner(address), spaceId: scope, path, bot: "main", generation: batch.generation, seq: batch.seq, challenge: batch.challenge } }));
   expect(receipt.body.batchHash).toBe(historyHash(JSON.stringify(batch)));
 });
 
