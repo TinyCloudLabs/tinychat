@@ -23,6 +23,7 @@ import type {
 } from "@openkey/sdk-capacitor";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { authErrorMessage, UserFacingError } from "./authErrors";
+import { ACCOUNT_SETUP_MESSAGE, checkAccountSetup, isAccountSetupRequired } from "./accountSetup";
 import { nativeRenewAt, renewalLeadMs, terminalRenewalError, nativeCode } from "./openkeyNativeRenewal";
 import { withAbortTimeout } from "./abortTimeout";
 import { durableKeyReady, writeDurableKey } from "./durableKeys";
@@ -285,6 +286,7 @@ export function describeAuthFailure(error: unknown): string {
 
 /** Map an OpenKey native failure to a user-facing message. */
 export function nativeSignInErrorMessage(error: unknown): string {
+  if (isAccountSetupRequired(error)) return ACCOUNT_SETUP_MESSAGE;
   const code = nativeErrorCode(error);
   if (code === "USER_CANCELLED") return NATIVE_SIGN_IN_CANCELLED_MESSAGE;
   if (code === "ACCESS_DENIED") return NATIVE_SIGN_IN_DENIED_MESSAGE;
@@ -408,6 +410,8 @@ export interface NativeSignInDeps {
   readSignOutFence?: () => boolean | null;
   /** Optional test seam; production keeps the activation marker in localStorage. */
   activationMarker?: NativeActivationMarker;
+  /** Makes the first request for a new sign-in and throws if the SDK refuses the owner. Production: `checkAccountSetup`. */
+  checkAccount?: (tcw: TinyCloudWeb) => Promise<void>;
 }
 
 export interface NativeActivationMarker {
@@ -509,6 +513,7 @@ async function defaultDeps(): Promise<NativeSignInDeps> {
     loadManifest: client.loadAppManifest,
     activateSession: activateSessionWithHost,
     restoreSession: client.restoreTinyCloudWebSession,
+    checkAccount: checkAccountSetup,
     verifySession: (backendUrl, siwe, signature) => withAbortTimeout(NATIVE_FETCH_TIMEOUT_MS, (signal) => client.verifySession(backendUrl, siwe, signature, { signal })),
   };
 }
@@ -681,6 +686,13 @@ async function handoffNativeSession(
   d: NativeSignInDeps,
 ): Promise<NativeSignInResult> {
   const installed = await installNativeSession(openkey, session, config, d);
+  // The SDK refuses an owner with no TinyCloud account on the first request to the node, not at restore (accountSetup.ts).
+  try {
+    await d.checkAccount?.(installed.tcw);
+  } catch (error) {
+    installed.tcw.cleanup();
+    throw error;
+  }
   const verified = await d.verifySession(config.backendUrl, session.delegation.siwe!, session.delegation.signature!);
   return { ...installed, verified, delegationExpiresAt: delegationExpiryIso(session.delegation.expiresAt), session, openkey };
 }

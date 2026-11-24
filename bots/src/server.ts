@@ -54,6 +54,7 @@ export interface BotApi {
   list(): Promise<ListedMessage[]>;
   listActivities?(): Promise<ActivityRecord[]>;
   historyPending?(): Promise<unknown>;
+  historyNeedsGrantTag?(): boolean;
   historyStage?(staged: StagedHistory): Promise<void>;
   historyPermission?(owner: string, expiresAt?: number, validUntil?: number, grant?: HistoryGrantUpdate): Promise<void>;
   historyNotice?(): Promise<unknown>;
@@ -393,7 +394,11 @@ export function createApp(options: AppOptions): (req: Request) => Promise<Respon
     }
     if (rest === "/history") {
       try {
-        if (req.method === "GET") return Response.json({ batch: await bot.historyPending?.() ?? null });
+        if (req.method === "GET") {
+          const batch = await bot.historyPending?.() ?? null;
+          const needsGrantTag = signed && key === MAIN_KEY && bot.historyNeedsGrantTag?.();
+          return Response.json({ batch, ...(needsGrantTag ? { needsGrantTag: true } : {}) });
+        }
         if (req.method === "POST" && bot.historyReceipt) { await bot.historyReceipt(await req.json()); return new Response(null, { status: 204 }); }
       } catch { return Response.json({ error: "history_unavailable" }, { status: 503 }); }
       return new Response(null, { status: 405 });

@@ -552,6 +552,27 @@ async function main() {
         return { delegate: firefliesImportKeys.delegate, grantStore, coordinator, importer };
       })()
     : null;
+  // A grant a disconnect or purge could not remove would outlive the owner's choice, so these calls fail (503) rather than skip.
+  // Runs inside the connection-change lane, so it must NOT take the per-owner lock: the importer takes the per-owner lock and
+  // then the connection-change lane, and the reverse order would deadlock. The grant store orders its own writes per owner, so
+  // this removal is never undone by a marker an import wrote from an earlier read. A purge's ledger entry stops the meetings of
+  // an import in flight; a disconnect that keeps the meetings does not, so an import already past its checks can still write
+  // the one meeting it holds before it ends.
+  const removeFirefliesGrant = firefliesImport
+    ? (address: string) => firefliesImport.grantStore.remove(address)
+    : undefined;
+  if (firefliesImport) {
+    // No sealed grant outlives its end date: lapsed records become content-free markers, at boot and every 15 minutes.
+    const reapLapsedGrants = () =>
+      firefliesImport.grantStore
+        .reapLapsed({ now: Date.now(), run: (address, fn) => firefliesImport.coordinator.run(address, fn) })
+        .then(
+          ({ scanned, reaped }) => { if (reaped > 0) console.log(`[fireflies-import] op=reap scanned=${scanned} reaped=${reaped}`); },
+          () => console.warn("[fireflies-import] op=reap result=unavailable"),
+        );
+    void reapLapsedGrants();
+    setInterval(() => { void reapLapsedGrants(); }, 15 * 60_000).unref();
+  }
   const connectorQueue = new ConnectorQueue(node, {
     storageLane: backendStorageLane,
     retentionKeys: connectorKeyStore,
@@ -802,6 +823,7 @@ async function main() {
       control: connectorControl,
       authMiddleware,
       ...(onFirefliesLedgerCleared ? { onLedgerCleared: onFirefliesLedgerCleared } : {}),
+      ...(removeFirefliesGrant ? { removeFirefliesGrant } : {}),
     }),
   );
   if (connectorWebhooks) {
@@ -832,6 +854,7 @@ async function main() {
         // singleton. Under B/C the route then returns the pending ids; nothing was written.
         drain: ({ source, address }) =>
           connectorWebhooks.drain.kick({ source, address, force: true }),
+        ...(removeFirefliesGrant ? { removeFirefliesGrant } : {}),
         ...(firefliesImport
           ? {
               onLedgerCleared: (source: string, address: string) => {
@@ -986,7 +1009,7 @@ async function main() {
   // TrustBot's reads (TRUSTBOT_READS_ENABLED): owner routes under /api/bots/main/reads, and the gateway's route for the
   // meeting tools. Off, neither route exists.
   const trustbotReadsSettings = botsConfig && !localValidation ? trustbotReadsFromEnv(process.env) : undefined;
-  const trustbotReads = botsConfig && trustbotReadsSettings ? await startTrustBotReads(trustbotReadsSettings, {
+  const trustbotReads = botsConfig && trustbotReadsSettings ? await startTrustBotReads({
     backendNode: node, backendDid: did, host: TINYCLOUD_HOST, otherDelegateDids: [process.env.MCP_CHAT_SERVICE_DID, AGENT_DID],
   }) : undefined;
   if (botsConfig && trustbotReadsSettings && trustbotReads) {

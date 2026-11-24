@@ -614,6 +614,70 @@ describe("POST /api/auth/verify-renewal", () => {
   });
 });
 
+describe("native POST /api/auth/verify-renewal", () => {
+  async function nativeGrant(appId: string): Promise<Grant> {
+    const account = privateKeyToAccount(generatePrivateKey());
+    const manager = wasm.createSessionManager();
+    const jwk = JSON.parse(manager.jwk("default"));
+    const address = account.address;
+    const spaceId = wasm.makeSpaceId(address, 1, "applications");
+    const now = nowSeconds();
+    const prepared = wasm.prepareSession({
+      abilities: { kv: { [`${appId}/threads/`]: ["tinycloud.kv/get"] } },
+      address,
+      chainId: 1,
+      domain: "openkey.so",
+      issuedAt: iso(now - 24 * HOUR - 60),
+      expirationTime: iso(now - 60),
+      spaceId,
+      jwk,
+    });
+    const signature = await account.signMessage({ message: prepared.siwe });
+    const session = wasm.completeSessionSetup({ ...prepared, signature });
+    return {
+      account, address, spaceId, siwe: prepared.siwe, signature,
+      delegationCid: session.delegationCid,
+      sessionDid: manager.getDID("default"),
+      signSessionBytes: sessionSigner(jwk),
+    };
+  }
+
+  test("a renewed native TinyChat grant gets a bearer", async () => {
+    const native = await nativeGrant("xyz.tinycloud.tinychat");
+    const nativeLease = await signLease(native);
+    const api = backend();
+    try {
+      const newEnd = nowSeconds() + HOUR;
+      nodeRenews(native, nativeLease, newEnd);
+      const result = await api.post(await requestBody(native, nativeLease, api.nonceStore));
+      expect(result.status).toBe(200);
+      expect(result.body.renewal).toEqual({ effectiveEnd: newEnd });
+      expect(await verifySessionToken(result.body.token as string, SESSION_KEY)).toEqual({
+        address: native.address.toLowerCase(),
+      });
+    } finally {
+      api.close();
+    }
+  });
+
+  test("a native grant for another OpenKey app is refused without calling the node", async () => {
+    const foreign = await nativeGrant("xyz.other.application");
+    const foreignLease = await signLease(foreign);
+    const api = backend();
+    try {
+      nodeRenews(foreign, foreignLease, nowSeconds() + HOUR);
+      const calls = nodeCalls();
+      expect(await api.post(await requestBody(foreign, foreignLease, api.nonceStore))).toEqual({
+        status: 401,
+        body: { error: "invalid_origin" },
+      });
+      expect(nodeCalls()).toBe(calls);
+    } finally {
+      api.close();
+    }
+  });
+});
+
 describe("renewalVerifyConfigFromEnv", () => {
   const dids = { RENEWAL_NODE_DID: node.identity.nodeDid, RENEWAL_RENEWER_DID: node.identity.renewerDid };
 

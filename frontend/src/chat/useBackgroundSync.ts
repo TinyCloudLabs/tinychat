@@ -19,6 +19,7 @@ import {
 } from "@/lib/transcriptDeliveryState";
 import type { ConnectorWebhooksClient } from "@/lib/connectors/webhooksApi";
 import type { ConnectorMeetingsClient } from "@/lib/connectors/meetingsApi";
+import type { DisconnectImportGrants } from "@/lib/connectors/connectorLifecycle";
 import type { ConnectorDescriptor } from "@/lib/connectors/types";
 import {
   initialBackgroundSyncState,
@@ -72,6 +73,8 @@ export interface UseBackgroundSyncOptions {
    * has actually answered — `loading` reports nothing.
    */
   onFeatureDark?: (dark: boolean) => void;
+  /** Fireflies only: withdraws the server's import permissions at the node when Instant updates go off. */
+  importGrants?: DisconnectImportGrants;
 }
 
 export interface BackgroundSyncController {
@@ -94,6 +97,7 @@ export function useBackgroundSync({
   meetings,
   onIngested,
   onFeatureDark,
+  importGrants,
 }: UseBackgroundSyncOptions): BackgroundSyncController {
   const [state, setState] = useState<BackgroundSyncState>(initialBackgroundSyncState);
   const [consentVariant, setConsentVariant] = useState<OffStateConsentVariant>("C");
@@ -148,8 +152,9 @@ export function useBackgroundSync({
       },
       ingest: (items) =>
         ingestQueuedMeetings({ tcw, descriptor, items, webhooks }),
+      ...(importGrants === undefined ? {} : { importGrants }),
     }),
-    [tcw, descriptor, webhooks],
+    [tcw, descriptor, webhooks, importGrants],
   );
 
   // On the shared drain lane: the app-shell headless drain may already be
