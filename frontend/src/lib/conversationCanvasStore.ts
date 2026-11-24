@@ -142,7 +142,8 @@ export async function setCanvasPromoted(tcw: TinyCloudWeb, threadId: string): Pr
  * days) lack the grant. requestPermissions returns at once when the session
  * already covers it and otherwise asks the user, adding the grant to this
  * session on approval. A session without the grant first binds OpenKey's
- * signer, so OpenKey's sign screen is the only ask; the phone app's session
+ * signer; for an OpenKey-managed key OpenKey's sign screen is then the only
+ * ask, and any other key keeps the SDK's dialog. The phone app's session
  * never signs and keeps the SDK request. Runs before any Canvas storage use;
  * remembered per session.
  */

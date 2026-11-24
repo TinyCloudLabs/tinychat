@@ -1,6 +1,7 @@
-// Conversation Canvas access on the real SDK: a session without the canvas grant shows no SDK dialog before OpenKey's sign
-// screen. The real SDK signs in and runs requestPermissions; only the node, the dialog (the SDK's showModal test hook) and
-// OpenKey's signMessage are stand-ins. Details: TC-4210
+// Conversation Canvas access on the real SDK: a session without the canvas grant and an OpenKey-managed key shows no SDK
+// dialog before OpenKey's sign screen; any other key keeps the SDK's dialog. The real SDK signs in and runs
+// requestPermissions; only the node, the dialog (the SDK's showModal test hook) and OpenKey's signMessage are stand-ins.
+// Details: TC-4210
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from "bun:test";
 import { privateKeyToAccount } from "viem/accounts";
 import { createTinyCloudWeb, type EIP1193Provider } from "@tinyboilerplate/client";
@@ -18,6 +19,8 @@ const HOST = "http://127.0.0.1:9";
 const config = { autoCreateSpace: false, includeAccountRegistryPermissions: false as const, tinycloudHosts: [HOST], tinycloudRegistryUrl: HOST, newUserHost: HOST };
 const realFetch = globalThis.fetch;
 let restoreDom: () => void;
+/** The asks in the order they reached the owner: "dialog" for the SDK's own, "sign" for OpenKey's. */
+let events: string[] = [];
 
 beforeAll(() => {
   globalThis.fetch = (async (input: RequestInfo | URL) => {
@@ -33,6 +36,7 @@ afterAll(() => { globalThis.fetch = realFetch; });
 beforeEach(() => {
   restoreDom = installDom();
   atOrigin();
+  events = [];
   const data = new Map<string, string>();
   const storage = {
     getItem: (key: string) => data.get(key) ?? null,
@@ -66,26 +70,38 @@ async function signedIn(withCanvas: boolean) {
   const tcw = createTinyCloudWeb(wallet, { ...config, manifest: webSignInManifest(base, [], ADDRESS) });
   await tcw.signIn();
   const dialogs = { shown: 0 };
-  Object.assign(tcw, { _testHooks: { showModal: async () => { dialogs.shown++; return { approved: true }; } } });
+  Object.assign(tcw, { _testHooks: { showModal: async () => { dialogs.shown++; events.push("dialog"); return { approved: true }; } } });
   return { tcw, dialogs };
 }
 
 /** OpenKey, as far as TinyChat can tell: records each sign request and signs it. */
 function openkey() {
   const requests: { message: string }[] = [];
-  const client = { signMessage: async (request: { message: string }) => { requests.push(request); return { signature: await account.signMessage({ message: request.message }) }; } };
+  const client = { signMessage: async (request: { message: string }) => { requests.push(request); events.push("sign"); return { signature: await account.signMessage({ message: request.message }) }; } };
   return { requests, client };
 }
 
 
-/** OpenKey as the connect seam: counts connects. */
-function connector(ok: ReturnType<typeof openkey>) {
+/** OpenKey as the connect seam: counts connects. `keyType` null is a connect that does not report the key type. */
+function connector(ok: ReturnType<typeof openkey>, keyType: string | null = "MANAGED") {
   const connects = { count: 0 };
-  const connect: StepUpConnect = async () => { connects.count++; return { address: ADDRESS, openkey: ok.client }; };
+  const connect: StepUpConnect = async () => { connects.count++; return { address: ADDRESS, openkey: ok.client, ...(keyType === null ? {} : { keyType }) }; };
   return { connect, connects };
 }
 
-test("a session without the canvas grant: no SDK dialog and exactly one OpenKey sign request", async () => {
+for (const { label, keyType } of [{ label: "an external-wallet key", keyType: "EXTERNAL" }, { label: "a key of unknown type", keyType: null }]) {
+  test(`a session without the canvas grant and ${label}: the SDK dialog and then exactly one OpenKey sign request`, async () => {
+    const { tcw, dialogs } = await signedIn(false);
+    const ok = openkey();
+    await ensureCanvasAccess(tcw, connector(ok, keyType).connect);
+    expect(tcw.hasPermissions(CANVAS_PERMISSIONS)).toBe(true);
+    expect(events).toEqual(["dialog", "sign"]);
+    expect(dialogs.shown).toBe(1);
+    expect(ok.requests).toHaveLength(1);
+  });
+}
+
+test("a session without the canvas grant and an OpenKey-managed key: no SDK dialog and exactly one OpenKey sign request", async () => {
   const { tcw, dialogs } = await signedIn(false);
   expect(tcw.hasPermissions(CANVAS_PERMISSIONS)).toBe(false);
   const ok = openkey();

@@ -3,6 +3,7 @@ import type { ClientSession, TinyCloudWeb, PermissionEntry } from "@tinycloud/we
 import { connectWallet } from "@tinyboilerplate/client";
 import { APP_NAME } from "../lib/homeSite";
 import { openkeyPasskeysSupported } from "../lib/openkeyPasskeys";
+import { bindRuntimeSigner, requestPermissionsDeclared } from "../lib/openKeySigner";
 import { encryptionNetworkId } from "../lib/connectors/encryptionGrant";
 import {
   BOT_HISTORY_KEY_MAX_MS,
@@ -47,23 +48,21 @@ export interface AuthorizeBotHistoryOptions {
  */
 export function ownerPermissionRequester(tcw: TinyCloudWeb, session: ClientSession, connect = connectWallet) {
   const owner = session.address.toLowerCase();
-  let connected: Awaited<ReturnType<typeof connectWallet>> | undefined;
+  let declared: boolean | undefined;
   const assertSession = () => {
     if (!isCurrentHistorySession(tcw, session)) throw new Error("history_authority_missing");
   };
   return async (permissions: PermissionEntry[]): Promise<boolean> => {
     assertSession();
-    if (!connected) {
+    if (declared === undefined) {
       const wallet = await connect({ appName: APP_NAME, host: import.meta.env.VITE_OPENKEY_HOST || "https://openkey.so", passkeysSupported: openkeyPasskeysSupported() });
       if (wallet.address.toLowerCase() !== owner || !isCurrentHistorySession(tcw, session)) throw new Error("history_owner_changed");
-      // OpenKey shows its own approval for each signature, so the SDK skips its prompt. The pinned OpenKey client takes no presentation, so none is forwarded.
-      tcw.setRuntimePermissionSigner({ signMessage: async message => (await wallet.openkey.signMessage({ message })).signature }, { openKey: true });
-      connected = wallet;
+      declared = bindRuntimeSigner(tcw, wallet);
     }
     const expires = Date.parse(/^Expiration Time:\s*(\S+)/im.exec(session.siwe)?.[1] ?? "");
     const remainingMs = expires - Date.now();
     if (!Number.isFinite(remainingMs) || remainingMs <= 0) throw new Error("history_session_expired");
-    const result = await tcw.requestPermissions(permissions, { expiryMs: Math.min(remainingMs, BOT_HISTORY_KEY_MAX_MS) });
+    const result = await requestPermissionsDeclared(tcw, permissions, { expiryMs: Math.min(remainingMs, BOT_HISTORY_KEY_MAX_MS) }, declared);
     assertSession();
     return result.approved;
   };
