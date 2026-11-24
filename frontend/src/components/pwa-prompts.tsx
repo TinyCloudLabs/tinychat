@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { APP_NAME } from "@/lib/homeSite";
 import { useSignedIn } from "@/lib/signedIn";
 import { applyUpdate, getPwaState, promptInstall, subscribePwa } from "@/lib/pwa";
+import { getDesktopUpdate, restartToUpdate, subscribeDesktopUpdate } from "@/lib/desktopUpdate";
 
 const INSTALL_DISMISSED_KEY = "xyz.tinycloud.tinychat:pwa-install-dismissed";
 /** "Not now" hides the install offer for this long. */
@@ -25,15 +26,34 @@ export function installOffered(input: { canInstall: boolean; installDismissed: b
 }
 
 /**
- * The PWA's two prompts, one at a time: "New version available — Reload"
- * (always wins) and, on Chromium only, "Install Exo". Renders nothing in the
- * native shells, on iOS and once installed: there the store never flips.
+ * The app's update and install prompts, one at a time: the desktop app's "Restart to update" (lib/desktopUpdate.ts,
+ * offered only while no recording is in progress), the PWA's "New version available — Reload", and, on Chromium only,
+ * "Install Exo". The PWA store never flips in the native shells, on iOS or once installed; the desktop offer exists
+ * only in the desktop app.
  */
 export function PwaPrompts() {
   const { updateReady, canInstall } = useSyncExternalStore(subscribePwa, getPwaState, getPwaState);
+  const desktopUpdate = useSyncExternalStore(subscribeDesktopUpdate, getDesktopUpdate, getDesktopUpdate);
+  const [desktopUpdateDismissed, setDesktopUpdateDismissed] = useState<string | null>(null);
   const [updateDismissed, setUpdateDismissed] = useState(false);
   const [installDismissed, setInstallDismissed] = useState(installSnoozed);
   const signedIn = useSignedIn();
+
+  // "Later" hides this version's offer for this session; a newer download offers again.
+  if (desktopUpdate && desktopUpdate.version !== desktopUpdateDismissed) {
+    return (
+      <PwaToast>
+        <span className="min-w-0 flex-1">
+          {APP_NAME} {desktopUpdate.version} is ready.
+        </span>
+        <Button size="sm" onClick={() => void restartToUpdate()}>
+          <RefreshCwIcon />
+          Restart to update
+        </Button>
+        <DismissButton label="Later" onClick={() => setDesktopUpdateDismissed(desktopUpdate.version)} />
+      </PwaToast>
+    );
+  }
 
   if (updateReady && !updateDismissed) {
     return (

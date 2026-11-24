@@ -413,6 +413,8 @@ Environment secrets (`desktop-release`):
 | `APPLE_API_KEY` | App Store Connect API key ID |
 | `APPLE_API_ISSUER` | App Store Connect issuer ID (UUID) |
 | `APPLE_API_PRIVATE_KEY` | full contents of `AuthKey_<key id>.p8` (as is, collapsed onto one line, or base64); the sign job writes it to a temp file after signing the app and deletes it before uploading |
+| `TAURI_SIGNING_PRIVATE_KEY` | the in-app updater's minisign key file from `tauri signer generate`; the sign job signs the updater archive with it after the keychain is deleted |
+| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | that key's random password (never printed; minted with it) |
 
 One-time setup (repo admin). Restrict the environment to `main` **first** and
 check it before adding any secret (it had no branch policy on 2026-10-04):
@@ -443,6 +445,9 @@ gh secret set APPLE_TEAM_ID --env desktop-release --repo $repo --body '<TEAMID>'
 gh secret set APPLE_API_KEY --env desktop-release --repo $repo --body '<Key ID>'
 gh secret set APPLE_API_ISSUER --env desktop-release --repo $repo --body '<Issuer ID>'
 gh secret set APPLE_API_PRIVATE_KEY --env desktop-release --repo $repo < AuthKey_<id>.p8
+
+# 4. The in-app updater key and its password: desktop/README.md, "In-app updates" (mint once; the public key replaces
+# the placeholder plugins.updater.pubkey in desktop/src-tauri/tauri.conf.json).
 ```
 
 Keep the `.p12`, its password and the `.p8` in the team password manager; the

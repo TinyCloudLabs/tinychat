@@ -229,23 +229,25 @@ runs project or third-party build code:
 ```
 preflight  [desktop-release; sign: true only; ubuntu]   checkout scripts/release @ workflow_sha only
              desktop-signing.sh provenance (main's desktop-release.yml, workflow + release commit on main, exo-desktop tag)
-             desktop-signing.sh check (all 7 secrets present) -> fails in seconds, before any macOS minute
+             desktop-signing.sh check (all 9 secrets present) -> fails in seconds, before any macOS minute
   └─ build  [no environment, no secret, every mode]     bun install, Vite, cargo + every build script, tauri build --no-bundle,
              tauri bundle (ad-hoc sealed, hardened runtime, Entitlements.plist) -> Info.plist + seal checked
              -> artifact: DMG + ditto-zipped <productName>.app
        └─ sign  [desktop-release when sign: true; dry run otherwise]
-             checkout scripts/release + desktop/src-tauri/Entitlements.plist @ workflow_sha only; no bun, cargo, tauri, node
+             checkout scripts/release + desktop/src-tauri/Entitlements.plist @ workflow_sha only; no bun, cargo, tauri,
+             node_modules (node runs only desktop-updater.mjs, Node built-ins only)
              provenance + secrets again -> unpack (archive digest, bundle id, versions, exec bit, no symlink out of the app)
              -> temporary keychain -> codesign inside-out (no --deep) -> notarytool + stapler (app)
              -> hdiutil DMG -> codesign -> notarytool + stapler (DMG) -> verify-desktop-signing.sh
-             -> keychain and key deleted -> upload the verified DMG + app
+             -> keychain and key deleted -> updater .app.tar.gz of the stapled app, signed with the updater key
+             -> upload the verified DMG + app + updater archive and .sig
 ```
 
 | Job | Environment | Secrets | Runs project code? |
 |---|---|---|---|
-| `preflight` | `desktop-release` (signed releases only) | all 7, presence and shape only | no (`scripts/release` at the workflow commit) |
+| `preflight` | `desktop-release` (signed releases only) | all 9, presence and shape only | no (`scripts/release` at the workflow commit) |
 | `build` | none | none | yes |
-| `sign` | `desktop-release` when signing | step-scoped: certificate + password and identity (keychain, codesign), API key (notarytool), team (verify) | no (`scripts/release` and `Entitlements.plist` at the workflow commit; Apple's tools) |
+| `sign` | `desktop-release` when signing | step-scoped: certificate + password and identity (keychain, codesign), API key (notarytool), team (verify), updater key + password (updater signature) | no (`scripts/release` and `Entitlements.plist` at the workflow commit; Apple's tools and Node built-ins) |
 
 Every secret reference is `${{ inputs.sign && secrets.<NAME> || '' }}`, so CI
 and unsigned releases never resolve one. The entitlements the app is signed with
@@ -255,8 +257,69 @@ come from the workflow commit, not from the built tree.
 `scripts/release/desktop-*` or `verify-desktop-signing.sh`) and
 `EXO_DESKTOP_SIGNING=unsigned` releases run the sign job with no environment and
 no secret: it unpacks the build's app, re-seals it ad-hoc through the same
-inside-out `codesign` path, and builds and mounts the DMG with `hdiutil`. It
-uploads nothing; unsigned releases publish the build job's artifact.
+inside-out `codesign` path, builds and mounts the DMG with `hdiutil`, and signs
+the updater archive with a throwaway key and writes a `latest.json` from it. It
+uploads nothing; unsigned releases publish the build job's artifact (no updater
+archive, no `latest.json`).
+
+### In-app updates
+
+The app updates itself from signed stable releases (TC-4275;
+`src-tauri/src/desktop_update.rs`, `tauri-plugin-updater`). It checks
+`https://github.com/TinyCloudLabs/tinychat/releases/latest/download/latest.json`
+at launch and every 4 hours, downloads a newer version in the background,
+verifies its minisign signature against `plugins.updater.pubkey` in
+`src-tauri/tauri.conf.json` (and that the signature names the announced version),
+then shows "Restart to update". The offer is never shown while a recording is in
+progress (live, paused, starting, stopping or still finishing): it waits until
+recording is idle, and is withdrawn if one starts. Restart installs and relaunches;
+"Later" hides the offer until a newer version is downloaded or the app restarts.
+Updater errors are only logged. The webview gets no `updater:` permission: only
+`desktop_update_status` and `desktop_update_restart`, which refuse while recording.
+
+Releases: the sign job tars the stapled app (`desktop-signing.sh updater-archive`)
+and signs it (`scripts/release/desktop-updater.mjs sign`, which refuses the
+placeholder public key or a key that is not the built app's). The publish job of a
+**stable** signed release attaches `<prefix>.app.tar.gz` and `latest.json`
+(`desktop-updater.mjs manifest`, which re-verifies the signature). Betas and
+unsigned releases publish neither, so there is no beta update channel: GitHub's
+`latest` never points at a pre-release. Only Apple Silicon (`darwin-aarch64`) is
+built.
+
+Installs from before the updater need **one** manual update, from the release's
+DMG or `desktop/scripts/exo-update.sh`; from then on updates are automatic.
+
+**Minting the updater key (once, repo admin).** Until this is done,
+`tauri.conf.json` carries a `PLACEHOLDER-TC-4275-…` public key and every signed
+release fails at "Sign the updater archive". The private key and its random
+password go straight from files into the two `desktop-release` secrets; neither is
+ever printed. Run on a single-user machine from a checkout of `main` with
+`bun install` done: `tauri signer generate` only takes the password as `-p`, so it
+is in that process's arguments (visible to `ps`) for about a second.
+
+```bash
+repo=TinyCloudLabs/tinychat
+umask 077
+d=$(mktemp -d /var/tmp/tauri-updater-key.XXXXXX)
+openssl rand -base64 32 | tr -d '\n' > "$d/password"
+bun run --cwd desktop tauri signer generate --ci -w "$d/updater.key" -p "$(cat "$d/password")" > /dev/null
+# Check the pair with the release signer before storing it (prints the public key id only).
+head -c 1024 /dev/urandom > "$d/check.app.tar.gz"
+TAURI_SIGNING_PRIVATE_KEY="$(cat "$d/updater.key")" TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$(cat "$d/password")" \
+  node scripts/release/desktop-updater.mjs sign --archive "$d/check.app.tar.gz" --version 0.0.0 --pubkey "$(cat "$d/updater.key.pub")"
+gh secret set TAURI_SIGNING_PRIVATE_KEY --env desktop-release --repo $repo < "$d/updater.key"
+gh secret set TAURI_SIGNING_PRIVATE_KEY_PASSWORD --env desktop-release --repo $repo < "$d/password"
+cat "$d/updater.key.pub"; echo   # public: the value for plugins.updater.pubkey in tauri.conf.json
+shred -u "$d/updater.key" "$d/password" 2>/dev/null || rm -P "$d/updater.key" "$d/password" 2>/dev/null || rm -f "$d/updater.key" "$d/password"
+rm -rf "$d"
+```
+
+Then replace the placeholder `plugins.updater.pubkey` with that single base64
+line in a PR. Keep no other copy of the private key unless the team decides to
+escrow it offline. Losing or rotating the key works the same way: mint a new key,
+then replace the public key and both secrets together. Installed apps trust only
+the public key they were built with, so each install then needs one more manual
+update (the sign job refuses to sign a build with any key but the one it trusts).
 
 ### Before adding any signing secret: restrict `desktop-release` to main
 

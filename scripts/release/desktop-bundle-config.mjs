@@ -7,8 +7,10 @@
  * builds) also sets bundle.macOS.signingIdentity "-", so tauri bundle ad-hoc signs the app (sealing its resources)
  * before it builds the DMG. --smoke assigns an isolated bundle identifier and product name for recorder-failpoints
  * artifacts ("<identifier>.smoke", "<productName> Smoke"). The product name and identifier are read from the built
- * tree's src-tauri/tauri.conf.json.
- * Writes version, short-version, bundle-version, prerelease, product-name, bundle-identifier and config to $GITHUB_OUTPUT.
+ * tree's src-tauri/tauri.conf.json, and so is the in-app updater's public key (updater-pubkey), which the sign job
+ * verifies the updater signature against: the key the built app trusts.
+ * Writes version, short-version, bundle-version, prerelease, product-name, bundle-identifier, updater-pubkey and config
+ * to $GITHUB_OUTPUT.
  */
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -22,7 +24,10 @@ const out = resolve(values.out);
 
 const { version } = readJson(root, DESKTOP.packageJson);
 const { shortVersion, bundleVersion, prerelease } = desktopBundleVersions(version);
-const app = desktopProduct(readFileSync(join(root, DESKTOP.tauriConf), 'utf8'));
+const confText = readFileSync(join(root, DESKTOP.tauriConf), 'utf8');
+const app = desktopProduct(confText);
+const updaterPubkey = JSON.parse(confText).plugins?.updater?.pubkey;
+if (typeof updaterPubkey !== 'string' || !updaterPubkey) throw new Error(`${DESKTOP.tauriConf} plugins.updater.pubkey is missing`);
 const productName = values.smoke ? `${app.productName} Smoke` : app.productName;
 const identifier = values.smoke ? `${app.identifier}.smoke` : app.identifier;
 
@@ -57,4 +62,5 @@ setOutput('bundle-version', bundleVersion);
 setOutput('prerelease', String(prerelease));
 setOutput('product-name', productName);
 setOutput('bundle-identifier', identifier);
+setOutput('updater-pubkey', updaterPubkey);
 setOutput('config', configPath);

@@ -19,6 +19,7 @@ import { registerTinyCloudWebMcp } from "./lib/webMcp";
 import { appPlatform } from "./lib/platform";
 import { setIOSDynamicTypeScale } from "./lib/dynamicType";
 import { setupPwa } from "./lib/pwa";
+import { setupDesktopUpdate } from "./lib/desktopUpdate";
 import { initSizeClass } from "./lib/sizeClass";
 import { initTheme } from "./lib/theme";
 import { registerDesktopVoiceNotes } from "./lib/voiceNotes/desktop/desktopVoiceNotes";
@@ -92,6 +93,10 @@ setupPwa({
   dev: import.meta.env.DEV,
   devEnabled: import.meta.env.VITE_PWA_DEV === "true",
 });
+// The desktop app's "Restart to update" offer (its updater runs in Rust).
+if ("__TAURI_INTERNALS__" in window) {
+  setupDesktopUpdate().catch(error => console.warn("[desktop-update] unavailable:", error));
+}
 
 registerWebCaptureEngine();
 registerTinyCloudWebMcp();

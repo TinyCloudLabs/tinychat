@@ -642,6 +642,18 @@ impl EngineState {
     }
 }
 
+/// A recording exists (live, paused or blocked), or one is starting or stopping. The in-app updater never restarts
+/// then (src/desktop_update.rs). False until the recorder runtime is first used.
+pub(crate) fn recording_in_progress(app: &tauri::AppHandle) -> bool {
+    app.try_state::<Engine>().is_some_and(|engine| {
+        let state = engine.0.lock();
+        state.id.is_some()
+            || state.busy
+            || state.capture_source_unconfirmed
+            || state.recorder.is_native_open()
+    })
+}
+
 fn emit_status(app: &tauri::AppHandle) {
     let status = app.state::<Engine>().0.lock().status();
     let _ = app.emit(MIC_EVENT, status);

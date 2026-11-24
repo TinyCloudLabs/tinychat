@@ -18,6 +18,8 @@
     "allow-google-oauth-open-browser",
     "allow-open-manage-storage",
     "allow-open-privacy-policy",
+    "allow-desktop-update-status",
+    "allow-desktop-update-restart",
     "core:image:deny-from-path",
     "core:event:deny-emit",
     "core:event:deny-emit-to"

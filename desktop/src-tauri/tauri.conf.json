@@ -52,5 +52,14 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "PLACEHOLDER-TC-4275-replace-with-the-minted-updater-public-key-before-merge",
+      "endpoints": [
+        "https://github.com/TinyCloudLabs/tinychat/releases/latest/download/latest.json"
+      ],
+      "requireSignedVersion": true
+    }
   }
 }

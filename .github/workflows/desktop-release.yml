@@ -24,10 +24,12 @@ name: Desktop release (TinyCloud One)
 # the same job; a draft left by a failed run is reused, a published release is never touched again (cut a new
 # version instead).
 #
-# Releases carry no in-app updater yet (TC-611 follow-up): tauri-plugin-updater with bundle.createUpdaterArtifacts,
-# the .app.tar.gz signed with TAURI_SIGNING_PRIVATE_KEY in the sign job, and latest.json attached to stable releases
-# (endpoint: releases/latest/download/latest.json, which only works because desktop is the only thing that creates
-# GitHub Releases). desktop/scripts/exo-update.sh is the manual updater meanwhile.
+# In-app updates (TC-4275): the app polls releases/latest/download/latest.json (tauri-plugin-updater; endpoint and
+# public key in desktop/src-tauri/tauri.conf.json), which only works because desktop is the only thing that creates
+# GitHub Releases. A signed build's sign job also uploads the stapled app as <prefix>.app.tar.gz with a minisign
+# signature from the TAURI_SIGNING_PRIVATE_KEY in desktop-release; a stable, signed release publishes that archive and
+# a latest.json built from it here. Betas and unsigned releases publish neither, so installed apps only move to signed
+# stable releases. Apps from before the updater need one manual update (DMG or desktop/scripts/exo-update.sh).
 
 on:
   workflow_dispatch:
@@ -150,6 +152,16 @@ jobs:
               ;;
           esac
 
+      # The workflow commit's latest.json generator (like desktop-build.yml, never the tag's).
+      - name: Check out the release tooling
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.workflow_sha }}
+          sparse-checkout: |
+            /scripts/release/
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: exo-${{ needs.plan.outputs.version }}-macos-arm64
@@ -161,6 +173,10 @@ jobs:
           path: notes
 
       - name: Name the release assets
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+          SIGNING: ${{ needs.plan.outputs.signing }}
+          UPDATER_PUBKEY: ${{ needs.build.outputs.updater-pubkey }}
         run: |
           mkdir assets
           mapfile -t dmgs < <(find build -name '*.dmg')
@@ -171,6 +187,24 @@ jobs:
           fi
           cp "${dmgs[0]}" "assets/$PREFIX.dmg"
           cp "${zips[0]}" "assets/$PREFIX.app.zip"
+          # The in-app updater's archive and latest.json: signed stable releases only. The manifest command re-verifies
+          # the sign job's signature against the archive, the version and the public key the built app trusts. The
+          # .sig itself is not an asset: latest.json carries it.
+          mapfile -t updaters < <(find build -name '*.app.tar.gz')
+          if [ "$SIGNING" = required ]; then
+            if [ "${#updaters[@]}" -ne 1 ] || [ ! -f "${updaters[0]}.sig" ]; then
+              echo "::error::Expected one signed .app.tar.gz with its .sig, found: ${updaters[*]}"
+              exit 1
+            fi
+            if [ "$PRERELEASE" != true ]; then
+              cp "${updaters[0]}" "assets/$PREFIX.app.tar.gz"
+              node scripts/release/desktop-updater.mjs manifest --archive "assets/$PREFIX.app.tar.gz" \
+                --signature "${updaters[0]}.sig" --version "$VERSION" --pubkey "$UPDATER_PUBKEY" \
+                --url "https://github.com/$GITHUB_REPOSITORY/releases/download/${TAG//@/%40}/$PREFIX.app.tar.gz" \
+                --notes notes/release-notes.md --out assets/latest.json
+              cat assets/latest.json
+            fi
+          fi
           (cd assets && sha256sum -- * > SHA256SUMS.txt && cat SHA256SUMS.txt)
 
       # Draft only while assets upload, so the release appears complete or not at all.
