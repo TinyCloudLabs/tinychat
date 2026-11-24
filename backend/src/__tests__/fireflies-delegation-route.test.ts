@@ -261,6 +261,7 @@ describe("POST/GET/DELETE /api/connectors/fireflies/delegation", () => {
           meetingsGrant: pair.meetingsGrant,
           siwe: pair.siwe,
           signature: pair.signature,
+          replaces: [],
         }),
       });
       expect(accepted.status).toBe(200);
@@ -322,6 +323,7 @@ describe("POST/GET/DELETE /api/connectors/fireflies/delegation", () => {
           meetingsGrant: barePair.meetingsGrant,
           siwe: barePair.siwe,
           signature: barePair.signature,
+          replaces: [],
         }),
       });
       expect(bareRes.status).toBe(400);
@@ -337,6 +339,7 @@ describe("POST/GET/DELETE /api/connectors/fireflies/delegation", () => {
           meetingsGrant: nonTermPair.meetingsGrant,
           siwe: nonTermPair.siwe,
           signature: nonTermPair.signature,
+          replaces: [],
         }),
       });
       expect(nonTermRes.status).toBe(400);
@@ -374,6 +377,7 @@ describe("POST/GET/DELETE /api/connectors/fireflies/delegation", () => {
           meetingsGrant: validPair.meetingsGrant,
           siwe: validPair.siwe,
           signature: validPair.signature,
+          replaces: [],
         }),
       });
       expect(res.status).toBe(403);
@@ -396,17 +400,24 @@ describe("POST/GET/DELETE /api/connectors/fireflies/delegation", () => {
         "x-requested-with": "XMLHttpRequest",
         "content-type": "application/json",
       };
-      const bodyA = JSON.stringify({
-        secretsGrant: pairA.secretsGrant,
-        meetingsGrant: pairA.meetingsGrant,
-        siwe: pairA.siwe,
-        signature: pairA.signature,
-      });
+      const idsA = [pairA.secretsGrant, pairA.meetingsGrant].map((grant) => (JSON.parse(grant) as { cid: string }).cid);
+      const bodyFor = (replaces: string[]) =>
+        JSON.stringify({
+          secretsGrant: pairA.secretsGrant,
+          meetingsGrant: pairA.meetingsGrant,
+          siwe: pairA.siwe,
+          signature: pairA.signature,
+          replaces,
+        });
       for (let i = 0; i < 6; i++) {
-        const res = await fetch(`${base}/api/connectors/fireflies/delegation`, { method: "POST", headers, body: bodyA });
+        const res = await fetch(`${base}/api/connectors/fireflies/delegation`, {
+          method: "POST",
+          headers,
+          body: bodyFor(i === 0 ? [] : idsA),
+        });
         expect(res.status).toBe(200);
       }
-      const seventh = await fetch(`${base}/api/connectors/fireflies/delegation`, { method: "POST", headers, body: bodyA });
+      const seventh = await fetch(`${base}/api/connectors/fireflies/delegation`, { method: "POST", headers, body: bodyFor(idsA) });
       expect(seventh.status).toBe(429);
       expect(await seventh.json()).toEqual({ error: "delegation_rate_limited" });
 
@@ -419,12 +430,13 @@ describe("POST/GET/DELETE /api/connectors/fireflies/delegation", () => {
         meetingsGrant: pairB.meetingsGrant,
         siwe: pairB.siwe,
         signature: pairB.signature,
+        replaces: [],
       });
       const resB = await fetch(`${base}/api/connectors/fireflies/delegation`, { method: "POST", headers, body: bodyB });
       expect(resB.status).toBe(200);
 
       fixture.setAddress(pairA.address);
-      const resAAfterWindow = await fetch(`${base}/api/connectors/fireflies/delegation`, { method: "POST", headers, body: bodyA });
+      const resAAfterWindow = await fetch(`${base}/api/connectors/fireflies/delegation`, { method: "POST", headers, body: bodyFor(idsA) });
       expect(resAAfterWindow.status).toBe(200);
     });
   });
@@ -450,6 +462,7 @@ describe("POST/GET/DELETE /api/connectors/fireflies/delegation", () => {
           meetingsGrant: pair.meetingsGrant,
           siwe: pair.siwe,
           signature: pair.signature,
+          replaces: [],
         }),
       });
       expect(postRes.status).toBe(200);

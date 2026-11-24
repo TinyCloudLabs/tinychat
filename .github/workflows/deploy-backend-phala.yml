@@ -41,8 +41,8 @@ env:
   INGRESS_IMAGE: ${{ vars.TINYCHAT_INGRESS_IMAGE || 'ghcr.io/tinycloudlabs/tinychat-backend' }}
   PHALA_CVM_ID: ${{ vars.PHALA_CVM_ID }}
   # Reviewed production OS pin; this is deployment policy, not a claim about KMS release policy.
-  PHALA_OS_IMAGE: dstack-0.5.12
-  PHALA_OS_IMAGE_HASH: 8db40cb23008d6213668b5816702d100b37b859a8a5bfd18d938ae3a1b3715bd
+  PHALA_OS_IMAGE: dstack-0.5.15
+  PHALA_OS_IMAGE_HASH: 4597735f1a38ad8ec9f781356b88737fc052062deb7c9aaa4be89bf1b35643ca
   PHALA_INGRESS_DOMAIN: ${{ vars.PHALA_INGRESS_DOMAIN || 'api.tinycloud.chat' }}
   PRODUCTION_API_URL: ${{ vars.TINYCHAT_BACKEND_URL || 'https://api.tinycloud.chat' }}
   PRODUCTION_FRONTEND_URL: ${{ vars.TINYCHAT_FRONTEND_URL || 'https://tinycloud.one' }}
@@ -503,6 +503,7 @@ jobs:
           # the bots CVM's ingress (https://<BOTS_INGRESS_DOMAIN>, deploy-bots-phala.yml); the secret is the same value the
           # bots CVM holds as BOTS_SERVICE_SECRET, and it is a secret, never a variable.
           BOTS_ENABLED: ${{ vars.BOTS_ENABLED || 'false' }}
+          BOTS_COURIER_ENABLED: ${{ vars.BOTS_COURIER_ENABLED || 'false' }}
           BOTS_TEST_ACCOUNTS: ${{ vars.BOTS_TEST_ACCOUNTS }}
           BOTS_SERVICE_CONNECT_HOST: ${{ vars.BOTS_SERVICE_CONNECT_HOST }}
           BOTS_SERVICE_URL: ${{ vars.BOTS_SERVICE_URL }}
@@ -520,6 +521,7 @@ jobs:
           # TrustBot reads (TC-3792): off unless 'true'; the read identity is derived inside the CVM, never from env.
           # Declared in the printf block and docker-compose.phala.yml for the allowed_envs freeze reason above: a var added later is silently dropped at injection.
           TRUSTBOT_READS_ENABLED: ${{ vars.TRUSTBOT_READS_ENABLED || 'false' }}
+          TRUSTBOT_STANDING_READS_ENABLED: ${{ vars.TRUSTBOT_STANDING_READS_ENABLED || 'false' }}
           # D2 lease-renewed sign-in (`POST /api/auth/verify-renewal`); all three or none. Unset = the route answers 503.
           RENEWAL_BACKEND_ORIGIN: ${{ vars.RENEWAL_BACKEND_ORIGIN }}
           RENEWAL_NODE_DID: ${{ vars.RENEWAL_NODE_DID }}
@@ -655,9 +657,9 @@ jobs:
             MCP_CHAT_SERVICE_CREDENTIAL_HEADER MCP_CHAT_OWNER_DID_HEADER MCP_CHAT_GRANT_EXPIRED_ERROR MCP_CHAT_GRANT_REJECTED_ERROR TAVILY_API_KEY \
             GRANOLA_PROXY_ENABLED \
             FIREFLIES_SERVER_IMPORT_ENABLED \
-            BOTS_ENABLED BOTS_TEST_ACCOUNTS BOTS_SERVICE_CONNECT_HOST BOTS_SERVICE_URL BOTS_SERVICE_SECRET BOTS_BACKEND_CALL_SECRET BOTS_POST_TIMEOUT_MS \
+            BOTS_ENABLED BOTS_COURIER_ENABLED BOTS_TEST_ACCOUNTS BOTS_SERVICE_CONNECT_HOST BOTS_SERVICE_URL BOTS_SERVICE_SECRET BOTS_BACKEND_CALL_SECRET BOTS_POST_TIMEOUT_MS \
             BOTS_HISTORY_ENABLED BOTS_HISTORY_SIGNER_DID BOTS_HISTORY_NODE_ORIGIN BOTS_UNARCHIVED_HISTORY_POLICY \
-            TRUSTBOT_READS_ENABLED \
+            TRUSTBOT_READS_ENABLED TRUSTBOT_STANDING_READS_ENABLED \
             RENEWAL_BACKEND_ORIGIN RENEWAL_NODE_DID RENEWAL_RENEWER_DID; do
             case "${!item-}" in
               *$'\n'*|*$'\r'*) echo "::error title=Invalid deployment config::$item must be a single line"; exit 1 ;;
@@ -688,6 +690,7 @@ jobs:
             printf '%s\n' "TAVILY_API_KEY=${TAVILY_API_KEY:-}"
             printf '%s\n' "GRANOLA_PROXY_ENABLED=${GRANOLA_PROXY_ENABLED:-false}"
             printf '%s\n' "BOTS_ENABLED=${BOTS_ENABLED:-false}"
+            printf '%s\n' "BOTS_COURIER_ENABLED=${BOTS_COURIER_ENABLED:-false}"
             printf '%s\n' "BOTS_TEST_ACCOUNTS=${BOTS_TEST_ACCOUNTS:-}"
             printf '%s\n' "BOTS_SERVICE_CONNECT_HOST=${BOTS_SERVICE_CONNECT_HOST:-}"
             printf '%s\n' "BOTS_SERVICE_URL=${BOTS_SERVICE_URL:-}"
@@ -699,6 +702,7 @@ jobs:
             printf '%s\n' "BOTS_HISTORY_NODE_ORIGIN=${BOTS_HISTORY_NODE_ORIGIN:-}"
             printf '%s\n' "BOTS_UNARCHIVED_HISTORY_POLICY=${BOTS_UNARCHIVED_HISTORY_POLICY:-}"
             printf '%s\n' "TRUSTBOT_READS_ENABLED=${TRUSTBOT_READS_ENABLED:-false}"
+            printf '%s\n' "TRUSTBOT_STANDING_READS_ENABLED=${TRUSTBOT_STANDING_READS_ENABLED:-false}"
             printf '%s\n' "RENEWAL_BACKEND_ORIGIN=${RENEWAL_BACKEND_ORIGIN:-}"
             printf '%s\n' "RENEWAL_NODE_DID=${RENEWAL_NODE_DID:-}"
             printf '%s\n' "RENEWAL_RENEWER_DID=${RENEWAL_RENEWER_DID:-}"

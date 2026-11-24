@@ -17,11 +17,12 @@ the Pages SPA fallback in `frontend/public/_redirects`.
 ## 1. Frontend → Cloudflare Pages (`tinycloud.chat`)
 
 The build output is `frontend/dist`. `VITE_*` values are baked at **build
-time**: for manual `deploy:frontend` uploads from `frontend/.env.production`;
-for Pages **Git builds** from the dashboard Production build environment
-variables. (`wrangler.toml` `[vars]` are runtime Pages Functions bindings and do
-**not** feed `vite build` — don't rely on them for `VITE_*`.) Keep the
-`.env.production` values and the dashboard build env vars in sync.
+time**. The production web build reads `wrangler.toml` `[env.production.vars]`
+(every production value is listed there; `[vars]` is for previews), and those
+values win over `frontend/.env.production`. Pages dashboard variables are
+ignored at build time, so do not rely on them for `VITE_*`. Phone and desktop
+builds read `frontend/.env.production` only. Keep the values both files set in
+sync.
 
 ### Option A — Pages Git integration (production = the `production` branch)
 
@@ -318,7 +319,7 @@ backend afterwards: `unchanged` (failed before `phala deploy`),
 later check failed; web is not deployed).
 
 The backend workflow requires the exact production OS name/hash pinned in
-`PHALA_OS_IMAGE` / `PHALA_OS_IMAGE_HASH` (`dstack-0.5.12`) and `is_dev=false`.
+`PHALA_OS_IMAGE` / `PHALA_OS_IMAGE_HASH` (`dstack-0.5.15`) and `is_dev=false`.
 Dev images fail closed by default. Missing/malformed metadata or a different
 name/hash also fails closed.
 
@@ -393,6 +394,7 @@ Repository **variables** (all optional — defaults shown):
 | `ELIZA_TASKS_ENABLED` | `false` (repo variable; only literal `true` routes admitted agent turns through Eliza `/tasks`) |
 | `ELIZA_TASKS_TEST_ACCOUNTS` | _(empty — repo variable; comma-separated account addresses, trimmed and lowercased)_. **When tasks are enabled, an empty list admits all authenticated accounts.** Set an explicit canary list before enabling. |
 | `GRANOLA_PROXY_ENABLED` | `false` (the `production-api` variable enables the Granola API proxy when set to `true`). To disable it, unset the variable and redeploy. The web import is enabled by `VITE_GRANOLA_CONNECTOR_ENABLED = "true"` in `wrangler.toml` under `[env.production.vars]`; remove that line and rebuild to hide it. Preview builds are unchanged. |
+| `VITE_CONNECTOR_NAMED_KEY_WRITES` | `"true"` in `wrangler.toml` under `[env.production.vars]` (web) and in `frontend/.env.production` (phone and desktop builds, which run `vite build`: `desktop/src-tauri/tauri.conf.json` `beforeBuildCommand`, `bun run build:frontend` in the phone workflow). A build variable, not a backend variable. Builds with it save each connector key under its own encryption key; the production node must list `encryption-named-keys-v1` in its features. Preview builds leave it unset. To turn it off, remove both lines and rebuild; keys saved under their own key stay as they are. |
 | `RENEWAL_BACKEND_ORIGIN` / `RENEWAL_NODE_DID` / `RENEWAL_RENEWER_DID` | _(empty — `POST /api/auth/verify-renewal` answers 503)_. Set all three or none (a partial set refuses to boot). The backend's public origin (`https://api.tinycloud.chat`, bound into the holder proof) and the production node's DID and renewer DID exactly as `/.well-known/tinycloud/node-keys` advertises them: the same values as OpenKey's `OPENKEY_RENEWAL_NODE_DID` / `OPENKEY_RENEWAL_RENEWER_DID`. The route relays the session's status invocation to `TINYCLOUD_HOST` and issues a bearer for at most 24 hours, never past the lease or the node-verified renewed end. Each address may renew 5 times a minute, counted only after the request's holder proof passes; nothing is keyed on the IP. The shared `/api/auth` bucket also applies. |
 | `BOTS_ENABLED` | `false` (only literal `true` turns on tiny bots: the Home Main bot chat at `/api/bots`). Off unless `BOTS_SERVICE_URL`, `BOTS_SERVICE_SECRET` and a non-empty `BOTS_TEST_ACCOUNTS` are also set. |
 | `BOTS_TEST_ACCOUNTS` | _(empty — comma-separated account addresses, trimmed and lowercased; the single entry `*` admits every account; an empty list admits nobody)_ |
@@ -638,8 +640,10 @@ nothing below may be reported as done on its behalf.
   manifest before the frontend revision gate. Existing web sessions re-sign
   once per device after the served bundle is available; native (mobile)
   sessions keep their previous grant until their next explicit sign-in. The broad `applications`
-  KV grant covers app folders; SQL covers Home's six databases and the named
-  Health Log and Recipes databases. Notes has no runnable beta bundle.
+  KV grant covers app folders; SQL covers Home's six databases. The Health Log
+  and Recipes databases are no longer requested at sign-in: Home never opens
+  them, and Share signs in on its own. Sessions made before that change still
+  carry them. Notes has no runnable beta bundle.
   Adding a catalog database requires a manifest bump and another one-time
   sign-in. The `secrets` grants and backend delegation policy are unchanged.
 - **SIWE audience (TC-1201):** `/api/auth/verify` checks the signed domain
@@ -662,8 +666,10 @@ nothing below may be reported as done on its behalf.
   requires a strict signed ReCap confined to Home's explicit
   `applications` scope and carrying at least one `xyz.tinycloud.tinychat/`
   app-path grant, which is the proof that the sign-in is for TinyChat. The root
-  KV grant and the two named runnable catalog databases are tolerated next to
-  it but never count as that proof on their own; other grants are rejected.
+  KV grant and the two named catalog databases (Health Log and Recipes) are
+  tolerated next to it but never count as that proof on their own; other grants
+  are rejected. The sign-in manifest no longer asks for the two databases, and
+  the backend still accepts them from older sign-ins and renewals.
   Native sign-in requests every applications-space KV, SQL and hook entry of
   the served manifest except `tinycloud.space`; OpenKey's TinyCloud One native
   client ceiling matches it (TC-2720), and the `Native ceiling` CI job PARs that

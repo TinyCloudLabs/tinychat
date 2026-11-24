@@ -1,11 +1,11 @@
 import { describe, expect, mock, test } from "bun:test";
 import type { ConnectWalletResult } from "@tinyboilerplate/client";
-import { withConnectorDecryptGrants, withConnectorKeyGrants } from "./connectors/encryptionGrant";
+import { connectorKeyDecryptGrants, encryptionDecryptGrant, withConnectorKeyGrants } from "./connectors/encryptionGrant";
 import { desktopSignInWithRenewal, webSignInRenewal } from "./renewalReceipt";
 import { WEB_APP_MANIFEST } from "./webSignInPrefetch";
 
 // The desktop app signs in through desktopSignInWithRenewal with the manifest App.tsx builds: the connector grants of the
-// connectorOwnKeyGrants() switch. Whether OpenKey is asked for the 90-day lease follows the resources in that grant.
+// exact keys. Whether OpenKey is asked for the 90-day lease follows the resources in that grant.
 
 const ADDRESS = "0x0000000000000000000000000000000000000001";
 const REQUEST = { protocolVersion: 1 as const, siwe: "prepared desktop SIWE", expiryChangeable: true };
@@ -25,6 +25,6 @@ describe("desktop sign-in renewal by grant", () => {
   });
 
   test("asks for no lease when the grant includes decrypt on the whole encryption network", async () => {
-    expect(await requestSentFor(withConnectorDecryptGrants(WEB_APP_MANIFEST, ADDRESS))).toEqual(REQUEST);
+    expect(await requestSentFor({ ...WEB_APP_MANIFEST, permissions: [...(WEB_APP_MANIFEST.permissions ?? []), encryptionDecryptGrant(ADDRESS), ...connectorKeyDecryptGrants(ADDRESS)] } as ReturnType<typeof withConnectorKeyGrants>)).toEqual(REQUEST);
   });
 });

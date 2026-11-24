@@ -101,7 +101,7 @@ test("a new web account has no decrypt grant, while a device that used Connector
   expect(base.permissions?.some((entry) => entry.service === "tinycloud.encryption")).toBe(false);
   expect(rememberHomeFeature(localStorage, ADDRESS, "connectors")).toBe(true);
   const manifest = webSignInManifest(base, readHomeFeatures(localStorage, ADDRESS.toLowerCase()), ADDRESS);
-  expect(manifest.permissions?.filter((entry) => entry.service === "tinycloud.encryption")).toHaveLength(4);
+  expect(manifest.permissions?.filter((entry) => entry.service === "tinycloud.encryption")).toHaveLength(3);
   expect(readHomeFeatures(localStorage, "0x00000000000000000000000000000000000000a1")).toEqual([]);
   expect(base.secrets).not.toHaveProperty("ASSEMBLYAI_API_KEY");
 });
@@ -236,7 +236,6 @@ test("web sign-in mirrors Home's secret KV and default-network abilities for unu
     } }).resolveSignInCapabilities(ADDRESS, 1);
     if (!used) expect(Object.keys(capabilities.spaceAbilities).filter((space) => space.endsWith(":secrets"))).toEqual([]);
     expect(capabilities.rawAbilities ?? {}).toEqual(used ? {
-      [encryptionDecryptGrant(ADDRESS).path]: ["tinycloud.encryption/decrypt", "tinycloud.encryption/network.create"],
       [`${encryptionDecryptGrant(ADDRESS).path}/secrets/fireflies_api_key`]: ["tinycloud.encryption/decrypt", "tinycloud.encryption/key.create"],
       [`${encryptionDecryptGrant(ADDRESS).path}/secrets/granola_api_key`]: ["tinycloud.encryption/decrypt", "tinycloud.encryption/key.create"],
       [`${encryptionDecryptGrant(ADDRESS).path}/secrets/scoped/google-meet/refresh_token`]: ["tinycloud.encryption/decrypt", "tinycloud.encryption/key.create"],
@@ -269,10 +268,8 @@ test("a node that does not advertise named keys drops the exact connector keys, 
     const asked = composeManifestRequest([webSignInManifest(base, ["connectors"], ADDRESS)], { includeAccountRegistryPermissions: false }).resources;
     const exactKeys = asked.filter((entry) => entry.service === "tinycloud.encryption" && entry.path.includes("/secrets/"));
     expect(exactKeys).toHaveLength(3);
-    // The whole-account decrypt is still signed; the three exact keys are not, so a Connectors step-up cannot be granted.
-    const network = asked.filter((entry) => entry.service === "tinycloud.encryption" && !entry.path.includes("/secrets/"));
-    expect(network).toHaveLength(1);
-    expect(tcw.hasPermissions(network)).toBe(true);
+    // The sign-in asks for no decrypt on the whole network; the three exact keys are not signed, so a Connectors step-up cannot be granted.
+    expect(asked.filter((entry) => entry.service === "tinycloud.encryption" && !entry.path.includes("/secrets/"))).toEqual([]);
     for (const entry of exactKeys) expect(tcw.hasPermissions([entry])).toBe(false);
     expect(sessionCoversHomeFeature(tcw, "connectors", ADDRESS)).toBe(false);
     expect((await reauthorize(["connectors"])).outcome).toBe("partial");

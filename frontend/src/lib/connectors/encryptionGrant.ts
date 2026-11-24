@@ -1,24 +1,14 @@
-// WORKAROUND for an SDK gap — see docs/connectors-spec.md §7 "KNOWN BLOCKER".
+// Connector secrets are read back through `tinycloud.encryption` grants. The secrets vault is always network-encrypted,
+// and a secret saved with its own key is opened by a grant for that exact key alone (TC-3284), so the sign-in names the
+// exact keys and never asks for decrypt on the whole encryption network. Secrets still sealed to the whole network are
+// opened through the separate one-hour approval, {@link legacyNetworkDecryptRequest}.
 //
-// Reading a secret back is impossible on web-sdk 2.5.1 without this. The secrets
-// vault is always network-encrypted (node-sdk's createVaultService passes an
-// `encryption` config unconditionally, and `usesNetworkEncryption` is just
-// `encryption !== undefined`), and NodeSecretsService.ensurePermission adds, for
-// `get` ALONE, a `tinycloud.encryption` / `decrypt` entry on the vault's network
-// id. Nothing grants it: no manifest `defaults` tier includes encryption, and the
-// SDK's only other route is runtime escalation, which needs a wallet signer a
-// restored session does not have.
+// The manifest cannot declare these entries statically, because the network id embeds the signed-in user's DID and
+// `expandEncryptionPermissionEntry` rejects any path that is not a concrete networkId URN (no wildcards). So the entries
+// are composed once the address is known and appended to the manifest handed to signIn: capabilities are minted from
+// that manifest, so this is the only moment they can be added.
 //
-// The manifest cannot declare it statically either, because the network id embeds
-// the signed-in user's DID and `expandEncryptionPermissionEntry` rejects any path
-// that is not a concrete networkId URN (no wildcards). So the entry has to be
-// composed once the address is known and appended to the manifest we hand to
-// signIn — capabilities are minted from that manifest, so this is the only moment
-// it can be added.
-//
-// This hardcodes an SDK-INTERNAL URN format. It is a one-line removal (drop the
-// withEncryptionDecryptGrant call in App.tsx) the moment the SDK carries the
-// capability itself. The format is mirrored from node-sdk:
+// This hardcodes an SDK-INTERNAL URN format. It is mirrored from node-sdk:
 //
 //   getEncryptionNetworkIdForSpace(spaceId, name = DEFAULT_ENCRYPTION_NETWORK_NAME) {
 //     const ownerDid = this.ownerDidFromSpaceId(spaceId) ?? this.did;
@@ -31,13 +21,12 @@
 //   }
 //
 // with `DEFAULT_ENCRYPTION_NETWORK_NAME = "default"`. Note the owner DID is read
-// out of the SPACE ID, whose address is EIP-55 checksummed — so the address is
+// out of the SPACE ID, whose address is EIP-55 checksummed, so the address is
 // normalized here rather than used as the wallet happened to spell it.
 
 import { getAddress } from "viem";
 import type { Manifest } from "@tinycloud/web-sdk";
 import { LEGACY_KEYS_APPROVAL_DESCRIPTION } from "../homeStrings";
-import { connectorOwnKeyGrants } from "./namedKeyWrites";
 
 /** A permission entry this app asks the SDK for on the owner's encryption network. */
 export interface ConnectorGrantEntry {
@@ -62,7 +51,10 @@ export function encryptionNetworkId(address: string, chainId = 1): string {
   return `urn:tinycloud:encryption:${ownerDid}:${DEFAULT_ENCRYPTION_NETWORK_NAME}`;
 }
 
-/** The permission entry NodeSecretsService demands for a secrets read. */
+/**
+ * Decrypt on the owner's whole network. Only the separate older-keys approval asks for it
+ * ({@link legacyNetworkDecryptRequest}); no sign-in grant or coverage set contains it.
+ */
 export function encryptionDecryptGrant(
   address: string,
   chainId = 1,
@@ -79,34 +71,9 @@ export function encryptionDecryptGrant(
 }
 
 /**
- * `manifest` plus the decrypt grant. Returns a new object — the fetched manifest
- * is left untouched — and is a no-op when an equivalent grant is already present,
- * so it stays safe if the backend ever starts declaring one.
- *
- * Sign-in only. A restored session cannot acquire capabilities, so adding this on
- * the restore path would be misleading noise.
- */
-export function withEncryptionDecryptGrant(
-  manifest: Manifest,
-  address: string,
-  chainId = 1,
-): Manifest {
-  const grant = encryptionDecryptGrant(address, chainId);
-  const existing = manifest.permissions ?? [];
-  const alreadyGranted = existing.some(
-    (entry) => entry.service === grant.service && entry.path === grant.path,
-  );
-  if (alreadyGranted) return manifest;
-  return {
-    ...manifest,
-    permissions: [...existing, grant],
-  } as Manifest;
-}
-
-/**
  * The secrets this app keeps for Connectors, as the named keys they are sealed to (TC-3284): `secrets/<name lowercased>`,
  * or `secrets/scoped/<scope>/<name lowercased>`. A secret saved with its own key is opened only by a grant for that exact
- * key, and saving one creates the key; the whole-network grant above still opens the older ones. Kept in step with the
+ * key, and saving one creates the key. Kept in step with the
  * connector rows by a test.
  */
 export const CONNECTOR_SECRET_KEYS: readonly { keyPath: string; description: string }[] = [
@@ -134,19 +101,6 @@ export function connectorKeyDecryptGrants(
 }
 
 /**
- * `manifest` plus the whole-network decrypt grant (older secrets) and the exact-key grants (secrets saved with their own
- * key). Sign-in only, like {@link withEncryptionDecryptGrant}; entries already present are left as they are.
- */
-export function withConnectorDecryptGrants(manifest: Manifest, address: string, chainId = 1): Manifest {
-  const base = withEncryptionDecryptGrant(manifest, address, chainId);
-  const existing = base.permissions ?? [];
-  const added = connectorKeyDecryptGrants(address, chainId).filter(
-    (grant) => !existing.some((entry) => entry.service === grant.service && entry.path === grant.path),
-  );
-  return added.length === 0 ? base : ({ ...base, permissions: [...existing, ...added] } as Manifest);
-}
-
-/**
  * `manifest` plus the exact-key grants only: nothing here reaches the whole network, so a grant built from it can carry
  * the renewal lease. Older secrets still sealed to the whole network are opened through
  * {@link legacyNetworkDecryptRequest}, in a separate short approval.
@@ -165,17 +119,4 @@ export const LEGACY_NETWORK_APPROVAL_MAX_MS = 60 * 60 * 1000;
 /** The one permission the separate approval asks for: decrypt on the owner's whole network. */
 export function legacyNetworkDecryptRequest(address: string, chainId = 1): ConnectorGrantEntry[] {
   return [{ ...encryptionDecryptGrant(address, chainId), description: LEGACY_KEYS_APPROVAL_DESCRIPTION }];
-}
-
-/**
- * The Connectors grants a sign-in asks for: the exact keys only when Connectors opens its secrets with their own keys,
- * else the whole-network grant beside them, as it has always been ({@link connectorOwnKeyGrants}).
- */
-export function withConnectorGrants(manifest: Manifest, address: string, chainId = 1): Manifest {
-  return connectorOwnKeyGrants() ? withConnectorKeyGrants(manifest, address, chainId) : withConnectorDecryptGrants(manifest, address, chainId);
-}
-
-/** The entries a session must cover for Connectors: the grants {@link withConnectorGrants} would ask for. */
-export function connectorCoverageGrants(address: string, chainId = 1): ConnectorGrantEntry[] {
-  return connectorOwnKeyGrants() ? connectorKeyDecryptGrants(address, chainId) : [encryptionDecryptGrant(address, chainId), ...connectorKeyDecryptGrants(address, chainId)];
 }

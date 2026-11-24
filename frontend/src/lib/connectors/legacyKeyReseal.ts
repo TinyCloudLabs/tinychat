@@ -11,7 +11,7 @@ import { parseSecretKeyPath, resolveSecretPath } from "@tinycloud/sdk-services";
 import type { PermissionEntry, TinyCloudWeb } from "@tinycloud/web-sdk";
 import { stepUpForApp, type StepUpConnect } from "../../apps/stepUp";
 import { CONNECTOR_SECRET_KEYS, LEGACY_NETWORK_APPROVAL_MAX_MS, legacyNetworkDecryptRequest } from "./encryptionGrant";
-import { connectorOwnKeyGrants } from "./namedKeyWrites";
+import { connectorNamedKeyWritesEnabled } from "./namedKeyWrites";
 
 /** "legacy": sealed to the whole network. "current": on its own key. "absent": never saved. "unknown": could not tell. */
 export type ConnectorKeyState = "legacy" | "current" | "absent" | "unknown";
@@ -49,11 +49,12 @@ async function stateOf(tcw: SecretsTcw, ref: ConnectorKeyRef): Promise<Connector
 
 /**
  * Where each connector key stands, by key path. Reads only the stored header of each record: no decrypt, no prompt.
- * Empty when Connectors does not open its secrets with their own keys: nothing is probed, nothing is moved.
+ * Empty while Connectors does not save its secrets under their own keys (connectorNamedKeyWritesEnabled): nothing is probed,
+ * nothing is moved, because readers that cannot open a moved key would lose it.
  */
 export async function probeConnectorKeys(tcw: SecretsTcw): Promise<Record<string, ConnectorKeyState>> {
   const states: Record<string, ConnectorKeyState> = {};
-  if (!connectorOwnKeyGrants()) return states;
+  if (!connectorNamedKeyWritesEnabled()) return states;
   for (const ref of connectorKeyRefs()) states[ref.keyPath] = await stateOf(tcw, ref);
   return states;
 }

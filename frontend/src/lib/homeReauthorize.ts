@@ -31,8 +31,9 @@ export interface HomeReauthorizeDeps {
 }
 
 /**
- * The one permission Connectors needs beyond its storage: unlocking what is encrypted to the account. OpenKey lets the
- * owner leave a permission out, and the SDK then returns a session whose signed approval lacks it.
+ * The one permission Connectors needs beyond its storage: opening its own connector keys (decrypt on each exact key,
+ * never on the whole encryption network). OpenKey lets the owner leave a permission out, and the SDK then returns a
+ * session whose signed approval lacks it.
  */
 const UNLOCK_SERVICE = "tinycloud.encryption";
 

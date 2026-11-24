@@ -2,13 +2,12 @@
 // Keeps every call into the TC-3823 js-sdk surface (`BOT_HISTORY_KEY_PATH` and
 // `NamedKeyClient.encrypt(..., { descriptor })`) behind one boundary.
 import type { ClientSession, TinyCloudWeb } from "@tinycloud/web-sdk";
-import { canonicalizeEncryptionJson, makePkhSpaceId } from "@tinycloud/sdk-core";
+import { canonicalizeEncryptionJson } from "@tinycloud/sdk-core";
 import { BOT_HISTORY_KEY_PATH } from "@tinycloud/sdk-services";
 import type { KeyDescriptor } from "@tinycloud/sdk-services/encryption/named-keys";
 import { DEFAULT_REQUEST_HEADER_NAME, DEFAULT_REQUEST_HEADER_VALUE, SessionStore } from "@tinyboilerplate/client";
 import { getAddress } from "viem";
 import { encryptionNetworkId } from "../lib/connectors/encryptionGrant";
-import { BOT_HISTORY_RECORD_PREFIX, BOT_HISTORY_RECORD_SUFFIX } from "./botHistoryPath";
 
 export { BOT_HISTORY_KEY_PATH };
 
@@ -191,29 +190,4 @@ export function isCurrentHistorySession(tcw: TinyCloudWeb, session: ClientSessio
     && current.chainId === session.chainId
     && current.sessionKey === session.sessionKey
     && current.siwe === session.siwe;
-}
-
-/** Only actual legacy history records justify a network decrypt request. */
-export async function hasLegacyV1BotHistory(tcw: TinyCloudWeb): Promise<boolean> {
-  const session = tcw.session();
-  if (!session) throw new Error("history_session_missing");
-  const kv = tcw.kvForSpace(makePkhSpaceId(session.address, session.chainId ?? 1, "applications"));
-  const prefix = BOT_HISTORY_RECORD_PREFIX;
-  let cursor: string | undefined;
-  do {
-    const listed = await kv.list({ prefix, cursor, source: "network" });
-    if (!listed.ok || (listed.data.truncated && !listed.data.nextCursor)) throw new Error("history_read_unavailable");
-    for (const key of listed.data.keys) {
-      const [bot, ...record] = key.slice(prefix.length).split("/");
-      if (!key.startsWith(prefix) || !/^[0-9a-f]{64}$/.test(bot ?? "") || !BOT_HISTORY_RECORD_SUFFIX.test(record.join("/"))) {
-        throw new Error("history_path_mismatch");
-      }
-      const stored = await kv.get<{ v?: number; keyPath?: unknown }>(key, { prefix: "", source: "network" });
-      if (!stored.ok) throw new Error("history_read_unavailable");
-      const envelope = stored.data.data;
-      if (envelope?.v === 1 && envelope.keyPath === undefined) return true;
-    }
-    cursor = listed.data.nextCursor;
-  } while (cursor);
-  return false;
 }

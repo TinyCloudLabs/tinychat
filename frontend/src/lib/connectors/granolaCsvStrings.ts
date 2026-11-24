@@ -77,6 +77,11 @@ export function granolaCsvSummaryLines(counts: GranolaCsvImportCounts): string[]
   return lines;
 }
 
+/** What to show under an error: the summary only when part of the file was dealt with first. */
+export function granolaCsvErrorSummaryLines(counts: GranolaCsvImportCounts): string[] {
+  return Object.values(counts).some((count) => count > 0) ? granolaCsvSummaryLines(counts) : [];
+}
+
 /** A plain error with a next step. */
 export function granolaCsvErrorMessage(error: GranolaCsvImportFailure): string {
   switch (error.kind) {

@@ -58,6 +58,7 @@ class ExoBridgeViewController: CAPBridgeViewController {
         bridge?.registerPluginInstance(VoiceNotesPlugin())
         bridge?.registerPluginInstance(OnDeviceSttPlugin())
         bridge?.registerPluginInstance(AppLockPlugin())
+        bridge?.registerPluginInstance(ScreenshotReportPlugin())
         bridge?.registerPluginInstance(AudioDiagnosticsPlugin())
         // TC-2862 native replica storage (flagged off in the web app until the SDK adapter lands).
         bridge?.registerPluginInstance(ReplicaStorePlugin())

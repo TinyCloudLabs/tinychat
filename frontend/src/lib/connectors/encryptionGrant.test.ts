@@ -1,12 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-
-import type { Manifest } from "@tinycloud/web-sdk";
 
 import {
   encryptionDecryptGrant,
   encryptionNetworkId,
-  withEncryptionDecryptGrant,
 } from "./encryptionGrant";
 
 // The address the lane signs in as, spelled lowercase on purpose: the SDK reads
@@ -14,12 +10,6 @@ import {
 // helper has to normalize rather than pass the wallet's spelling through.
 const LOWER = "0x4db6e7be716ba504cd103bc16b9329fe6bbe41f2";
 const CHECKSUMMED = "0x4db6e7Be716bA504Cd103BC16B9329FE6BBE41F2";
-
-function baseManifest(): Manifest {
-  return JSON.parse(
-    readFileSync(new URL("../../../../manifest.json", import.meta.url), "utf8"),
-  ) as Manifest;
-}
 
 describe("encryptionNetworkId", () => {
   test("mirrors node-sdk's getEncryptionNetworkIdForSpace, checksumming the address", () => {
@@ -52,90 +42,5 @@ describe("encryptionDecryptGrant", () => {
       skipPrefix: true,
       description: "Decrypt secrets stored in your encrypted vault.",
     });
-  });
-});
-
-describe("withEncryptionDecryptGrant", () => {
-  test("a manifest-scoped request retains the declared decrypt grant without account resources", async () => {
-    const { composeManifestRequest } = await import("@tinycloud/sdk-core");
-    const request = composeManifestRequest([withEncryptionDecryptGrant(baseManifest(), LOWER)], {
-      includeAccountRegistryPermissions: false,
-    });
-    expect(request.resources.filter((resource) => resource.space === "account")).toEqual([]);
-    const encryption = request.resources.filter((resource) => resource.service === "tinycloud.encryption");
-    expect(encryption).toHaveLength(1);
-    expect(encryption[0]).toMatchObject({
-      service: "tinycloud.encryption",
-      space: "encryption",
-      path: encryptionNetworkId(LOWER),
-      actions: ["tinycloud.encryption/decrypt"],
-    });
-  });
-
-  test("appends the grant without mutating the fetched manifest", () => {
-    const manifest = baseManifest();
-    const before = (manifest.permissions ?? []).length;
-    const composed = withEncryptionDecryptGrant(manifest, LOWER);
-
-    expect(composed).not.toBe(manifest);
-    expect((manifest.permissions ?? []).length).toBe(before);
-    expect((composed.permissions ?? []).length).toBe(before + 1);
-
-    const added = (composed.permissions ?? [])[before];
-    expect(added).toEqual(encryptionDecryptGrant(LOWER));
-  });
-
-  test("keeps every permission the static manifest already declared", () => {
-    const manifest = baseManifest();
-    const composed = withEncryptionDecryptGrant(manifest, LOWER);
-    for (const entry of manifest.permissions ?? []) {
-      expect(composed.permissions).toContainEqual(entry);
-    }
-    // The secrets shorthand rides along untouched — it grants the vault/ path
-    // this entry does NOT replace.
-    expect(composed.secrets).toEqual(manifest.secrets);
-  });
-
-  test("is idempotent — a manifest that already grants it is returned as-is", () => {
-    const manifest = withEncryptionDecryptGrant(baseManifest(), LOWER);
-    const again = withEncryptionDecryptGrant(manifest, LOWER);
-    expect(again).toBe(manifest);
-  });
-
-  test("the composed manifest resolves to the exact resource the SDK demands", async () => {
-    // The real resolver is the only authority on whether this entry survives
-    // validation and lands as a usable capability — a hand-checked object shape
-    // would not catch a rejected path.
-    const { resolveManifest } = await import("@tinycloud/sdk-core");
-    const composed = withEncryptionDecryptGrant(baseManifest(), LOWER);
-    const encryption = resolveManifest(composed).resources.filter(
-      (resource) => resource.service === "tinycloud.encryption",
-    );
-    expect(encryption).toHaveLength(1);
-    expect(encryption[0].path).toBe(
-      `urn:tinycloud:encryption:did:pkh:eip155:1:${CHECKSUMMED}:default`,
-    );
-    expect(encryption[0].actions).toEqual(["tinycloud.encryption/decrypt"]);
-  });
-
-  test("the static manifest alone resolves to NO encryption grant", async () => {
-    // Pins why this helper has to exist at all. If this ever fails, the SDK (or
-    // the manifest) started carrying the capability and the workaround in
-    // App.tsx should be deleted.
-    const { resolveManifest } = await import("@tinycloud/sdk-core");
-    const resolved = resolveManifest(baseManifest());
-    expect(
-      resolved.resources.filter((resource) => resource.service === "tinycloud.encryption"),
-    ).toHaveLength(0);
-  });
-
-  test("a different signer gets a different grant, not a shared one", () => {
-    const other = "0x83cD9777d4128012F878376aCbd6a092DcdDE01c";
-    const mine = withEncryptionDecryptGrant(baseManifest(), LOWER);
-    const theirs = withEncryptionDecryptGrant(baseManifest(), other);
-    const path = (m: Manifest) =>
-      (m.permissions ?? []).find((p) => p.service === "tinycloud.encryption")?.path;
-    expect(path(mine)).not.toBe(path(theirs));
-    expect(path(theirs)).toContain(other);
   });
 });

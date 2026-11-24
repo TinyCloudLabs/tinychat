@@ -1,5 +1,5 @@
 // What each TinyChat web flow asks OpenKey to sign, and what the resulting session may do, on the installed web SDK.
-// __fixtures__/session-grants.beta26.json holds both as captured on web-sdk 3.12.0-beta.26 (production before the
+// __fixtures__/session-grants.tc4244.json holds both as captured on web-sdk 3.12.0-beta.26 (production before the
 // 3.12.0-beta.37 repin). Every flow must ask for the same thing in the same words, and the session must hold exactly
 // the same resources and actions: nothing missing, nothing extra. Details: TC-3030
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from "bun:test";
@@ -13,7 +13,9 @@ import { reauthorizeHome } from "./homeReauthorize";
 import { WEB_APP_MANIFEST } from "./webSignInPrefetch";
 import { readOnlyAccountProvider } from "./replication/readOnlyAccountProvider";
 import { AGENT_CONSENT_MANIFEST, MCP_CONSENT_MANIFEST, actionsFromAuthJwt, ephemeralAgentSdkConfig, mintAgentDelegation } from "./agentDelegation";
-import production from "./__fixtures__/session-grants.beta26.json";
+import production from "./__fixtures__/session-grants.tc4244.json";
+// The Connectors flows, captured on this build: the exact connector keys and nothing on the whole encryption network.
+import connectors from "./__fixtures__/session-grants.390641ab.json";
 
 // Anvil's second default key: a well-known test key, never a real account. The fixture was captured with it.
 const account = privateKeyToAccount("0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d");
@@ -99,9 +101,9 @@ test("web sign-in and restore, before Connectors: the same consent and the same 
 
 test("web sign-in and restore, with Connectors: the same consent and the same grant as production", async () => {
   const session = await createTinyCloudWeb(wallet, { ...config, manifest: webSignInManifest(base, ["connectors"], ADDRESS) }).signIn();
-  expect(signed.map(consent)).toEqual([production.signInConnectors.consent]);
-  expect(recaps(session.siwe)).toEqual(production.signInConnectors.recaps);
-  expect(recaps((await restore()).session()!.siwe)).toEqual(production.restoreConnectors.recaps);
+  expect(signed.map(consent)).toEqual([connectors.signInConnectors.consent]);
+  expect(recaps(session.siwe)).toEqual(connectors.signInConnectors.recaps);
+  expect(recaps((await restore()).session()!.siwe)).toEqual(connectors.restoreConnectors.recaps);
 });
 
 test("the step-up to Connectors: granted, with the same consent and the same grant as production", async () => {
@@ -114,8 +116,8 @@ test("the step-up to Connectors: granted, with the same consent and the same gra
     verify: async () => ({ token: "bearer", expiresIn: 3600 }),
   }, { address: ADDRESS, features: ["connectors"], config, canCommit: () => null });
   expect(result.outcome).toBe("granted");
-  expect(signed.map(consent)).toEqual([production.stepUpConnectors.consent]);
-  if (result.outcome === "granted") expect(recaps(result.tcw.session()!.siwe)).toEqual(production.stepUpConnectors.recaps);
+  expect(signed.map(consent)).toEqual([connectors.stepUpConnectors.consent]);
+  if (result.outcome === "granted") expect(recaps(result.tcw.session()!.siwe)).toEqual(connectors.stepUpConnectors.recaps);
 });
 
 function consentSession(manifest: typeof AGENT_CONSENT_MANIFEST) {

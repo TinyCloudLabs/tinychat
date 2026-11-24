@@ -1,6 +1,6 @@
 import { APP_ID, type RequiredManifestEntry } from "@tinyboilerplate/core";
 import { composeManifestRequest, type Manifest, type PermissionEntry, type TinyCloudWeb } from "@tinycloud/web-sdk";
-import { connectorCoverageGrants, withConnectorGrants } from "./connectors/encryptionGrant";
+import { connectorKeyDecryptGrants, withConnectorKeyGrants } from "./connectors/encryptionGrant";
 
 /**
  * The one feature the web sign-in leaves out until it is used: Connectors, which keeps the owner's connector keys and
@@ -63,12 +63,11 @@ const CONNECTORS_ENTRIES: readonly RequiredManifestEntry[] = [
 /**
  * The web sign-in grant: manifest.json's storage for everything, and its connector secrets with their decrypt grants only
  * once this device has used Connectors. Without that, the secrets block is emptied, so neither the secret keys nor the
- * decrypt abilities the SDK derives from them are asked for. The decrypt grants are the exact keys alone when Connectors
- * opens its secrets with their own keys (older secrets are then opened in a separate short approval, see
- * lib/connectors/legacyKeyReseal.ts), else they include the whole network.
+ * decrypt abilities the SDK derives from them are asked for. The decrypt grants are the exact keys alone, never the whole
+ * encryption network (older secrets are opened in a separate short approval, see lib/connectors/legacyKeyReseal.ts).
  */
 export function webSignInManifest(base: Manifest, flags: readonly HomeFeature[], address: string): Manifest {
-  return flags.includes("connectors") ? withConnectorGrants(base, address) : { ...base, secrets: {} };
+  return flags.includes("connectors") ? withConnectorKeyGrants(base, address) : { ...base, secrets: {} };
 }
 
 /**
@@ -81,7 +80,7 @@ export function homeFeatureCoverageEntries(_feature: HomeFeature, address: strin
     app_id: APP_ID,
     name: "TinyCloud One",
     defaults: false,
-    permissions: [...CONNECTORS_ENTRIES, ...connectorCoverageGrants(address)],
+    permissions: [...CONNECTORS_ENTRIES, ...connectorKeyDecryptGrants(address)],
   } as Manifest], { includeAccountRegistryPermissions: false });
   return request.resources as PermissionEntry[];
 }

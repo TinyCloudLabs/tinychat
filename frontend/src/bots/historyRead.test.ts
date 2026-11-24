@@ -17,7 +17,7 @@ async function storedThread(count: number, options: { corrupt?: number } = {}) {
   const prefix = await historyPrefix();
   const records = Array.from({ length: count }, (_, seq) => {
     const key = `${prefix}1/${seq}-c${seq}`;
-    const batch = { generation: 1, seq, challenge: `c${seq}`, record: { type: seq % 2 ? "assistant" : "user", text: `m${seq}`, at: `2026-11-14T00:00:${String(seq).padStart(2, "0")}Z` } };
+    const batch = { v: 1, generation: "1", seq, challenge: `c${seq}`, record: { type: seq % 2 ? "assistant" : "user", text: `m${seq}`, at: `2026-11-14T00:00:${String(seq).padStart(2, "0")}Z` } };
     return { key, aad: btoa(JSON.stringify({ owner: OWNER, spaceId: SPACE, path: key })), batch };
   });
   if (options.corrupt !== undefined) records[options.corrupt]!.batch.seq = 999;
@@ -25,6 +25,7 @@ async function storedThread(count: number, options: { corrupt?: number } = {}) {
   const state = { inFlight: 0, peak: 0, started: 0, aborted: 0 };
   const tcw = {
     session: () => ({ address: ADDRESS, chainId: 1 }),
+    hasPermissions: () => true,
     kvForSpace: () => ({
       list: async () => ({ ok: true, data: { keys: records.map((r) => r.key), truncated: false } }),
       get: async (key: string, { signal }: { signal: AbortSignal }) => {

@@ -6,9 +6,9 @@ import { homeFeatureCoverageEntries, webSignInManifest } from "../homeFeatures";
 import { WEB_APP_MANIFEST } from "../webSignInPrefetch";
 import { LEGACY_KEYS_APPROVAL_DESCRIPTION } from "../homeStrings";
 import { CONNECTORS_KV_PREFIX } from "@tinyboilerplate/core";
-import { connectorKeyDecryptGrants, encryptionNetworkId, LEGACY_NETWORK_APPROVAL_MAX_MS, legacyNetworkDecryptRequest, withConnectorGrants } from "./encryptionGrant";
+import { connectorKeyDecryptGrants, encryptionNetworkId, LEGACY_NETWORK_APPROVAL_MAX_MS, legacyNetworkDecryptRequest, withConnectorKeyGrants } from "./encryptionGrant";
 import { moveLegacyConnectorKeys, probeConnectorKeys, resolveLegacyConnectorKeys } from "./legacyKeyReseal";
-import { connectorOwnKeyGrants } from "./namedKeyWrites";
+import { connectorNamedKeyWritesEnabled } from "./namedKeyWrites";
 
 const ADDRESS = "0x00000000000000000000000000000000000000a1";
 const BUILD_FLAG = "VITE_CONNECTOR_NAMED_KEY_WRITES";
@@ -65,17 +65,17 @@ function fakeTcw(states: Record<string, "pending" | "already" | "not_found" | "b
 }
 const ALL = { "secrets/fireflies_api_key": "pending", "secrets/granola_api_key": "pending", "secrets/scoped/google-meet/refresh_token": "pending" } as const;
 
-describe("one switch decides the grant a sign-in asks for and whether older keys are probed", () => {
-  test.each<Flag>(["off", "build"])("%s: the manifest, the lease, the coverage and the probe agree", async (flag) => {
+describe("the grant a sign-in asks for is the same whichever way the switch is set; the switch decides whether older keys are probed", () => {
+  test.each<Flag>(["off", "build"])("%s: the manifest, the lease, the coverage and the probe", async (flag) => {
     setFlag(flag);
-    const ownKeys = connectorOwnKeyGrants();
+    const ownKeys = connectorNamedKeyWritesEnabled();
     expect(ownKeys).toBe(flag === "build");
     const manifest = webSignInManifest(WEB_APP_MANIFEST, ["connectors"], ADDRESS);
-    // Today's grant when off (with the whole-network row, never leased); the exact keys only, leased, when on.
-    expect(carriesWholeNetworkDecrypt(manifest)).toBe(!ownKeys);
-    expect(await renewalAskFor(manifest)).toEqual(ownKeys ? ASK : undefined);
+    // The exact keys only, leased, whichever way the switch is set.
+    expect(carriesWholeNetworkDecrypt(manifest)).toBe(false);
+    expect(await renewalAskFor(manifest)).toEqual(ASK);
     const coversWholeNetwork = homeFeatureCoverageEntries("connectors", ADDRESS).some((entry) => entry.path === encryptionNetworkId(ADDRESS));
-    expect(coversWholeNetwork).toBe(!ownKeys);
+    expect(coversWholeNetwork).toBe(false);
     const probes = { count: 0 };
     const { tcw } = fakeTcw(ALL, { probes });
     const states = await probeConnectorKeys(tcw);
@@ -84,9 +84,9 @@ describe("one switch decides the grant a sign-in asks for and whether older keys
   });
 
   test("a development build's own setting turns the same switch on, and nothing turns it on in a production build", () => {
-    expect(connectorOwnKeyGrants({ DEV: true }, { getItem: () => "true" })).toBe(true);
-    expect(connectorOwnKeyGrants({ DEV: false }, { getItem: () => "true" })).toBe(false);
-    expect(connectorOwnKeyGrants({}, { getItem: () => "true" })).toBe(false);
+    expect(connectorNamedKeyWritesEnabled({ DEV: true }, { getItem: () => "true" })).toBe(true);
+    expect(connectorNamedKeyWritesEnabled({ DEV: false }, { getItem: () => "true" })).toBe(false);
+    expect(connectorNamedKeyWritesEnabled({}, { getItem: () => "true" })).toBe(false);
   });
 
   test("a grant that carries the whole-network row is never leased, whichever way the switch is set", async () => {
@@ -100,7 +100,7 @@ describe("one switch decides the grant a sign-in asks for and whether older keys
   test("the exact keys are the same three whichever way the switch is set", () => {
     setFlag("build");
     const exact = connectorKeyDecryptGrants(ADDRESS);
-    const manifest = withConnectorGrants(WEB_APP_MANIFEST, ADDRESS);
+    const manifest = withConnectorKeyGrants(WEB_APP_MANIFEST, ADDRESS);
     for (const grant of exact) expect(manifest.permissions).toContainEqual(grant);
     expect(exact).toHaveLength(3);
   });
