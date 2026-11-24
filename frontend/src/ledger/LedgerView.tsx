@@ -24,7 +24,7 @@ export function LedgerView({ rows, now, state, onRefresh }: LedgerViewProps) {
         </div>
         {state === "loading" ? <p role="status" className="py-8 text-body text-muted-foreground">Loading tasks…</p> : null}
         {state === "failed" ? <p role="alert" className="py-8 text-body text-muted-foreground">Couldn't load your tasks. Try refreshing.</p> : null}
-        {state === "ready" && !rows.length ? <p className="max-w-md py-8 text-body leading-relaxed text-muted-foreground">No tasks yet. When an agent you've connected records a task, it shows here.</p> : null}
+        {state === "ready" && !rows.length ? <p className="max-w-md py-8 text-body leading-relaxed text-muted-foreground">No tasks to show. When an agent you've connected records a task, it shows here.</p> : null}
         {rows.length > 0 ? (
           <>
             <div aria-hidden className="hidden grid-cols-[minmax(0,1fr)_13rem] gap-6 border-b border-border pb-3 text-label text-muted-foreground md:grid">
@@ -33,7 +33,7 @@ export function LedgerView({ rows, now, state, onRefresh }: LedgerViewProps) {
             <ul aria-label="Agent tasks" className="divide-y divide-border border-b border-border">
               {rows.map((row) => {
                 const minutes = Math.max(0, Math.floor((now - Date.parse(row.stageSince)) / 60_000));
-                const elapsed = minutes < 1 ? "Just now" : minutes < 60 ? `${minutes}m` : minutes < 1440 ? `${Math.floor(minutes / 60)}h` : `${Math.floor(minutes / 1440)}d`;
+                const elapsed = minutes < 1 ? "Under 1m" : minutes < 60 ? `${minutes}m` : minutes < 1440 ? `${Math.floor(minutes / 60)}h` : `${Math.floor(minutes / 1440)}d`;
                 const dependencies = [row.blockedBy ? `blocked by ${row.blockedBy}` : "", row.blocks ? `blocks ${row.blocks}` : ""].filter(Boolean).join(" · ");
                 return (
                   <li key={row.id} className="grid gap-3 py-5 [overflow-wrap:anywhere] md:grid-cols-[minmax(0,1fr)_13rem] md:gap-6">

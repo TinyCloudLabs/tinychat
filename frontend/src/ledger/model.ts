@@ -10,7 +10,7 @@ export interface LedgerRecord { key: string; value: unknown }
 export interface LedgerRow {
   id: string;
   title: string;
-  stage: Stage | "Done by agent, not checked yet";
+  stage: Stage | "Done by agent, not checked";
   stageSince: string;
   agentLabel: string;
   condition?: string;
@@ -115,7 +115,7 @@ export function foldLedger(records: readonly LedgerRecord[], now: number, agentN
       blockedBy: references(value.blockedBy),
       blocks: references(value.blocks),
       row: {
-        id, title, stage: value.stage === "Checked" ? "Done by agent, not checked yet" : value.stage as Stage,
+        id, title, stage: value.stage === "Checked" ? "Done by agent, not checked" : value.stage as Stage,
         stageSince: value.stageSince,
         agentLabel: safeName ? `${safeName} · ${folder}` : `Agent ${folder}`,
         condition,
@@ -133,7 +133,7 @@ export function foldLedger(records: readonly LedgerRecord[], now: number, agentN
       snapshot.row.evidence = check.evidence;
       snapshot.row.checkedBy = check.checkedBy;
     }
-    const done = snapshot.row.stage === "Checked" || snapshot.row.stage === "Done by agent, not checked yet" || snapshot.row.stage === "Dropped";
+    const done = snapshot.row.stage === "Checked" || snapshot.row.stage === "Done by agent, not checked" || snapshot.row.stage === "Dropped";
     if (done && now - Date.parse(snapshot.row.stageSince) > THIRTY_DAYS) continue;
     visible.set(id, snapshot);
   }

@@ -22,7 +22,7 @@ test("orders append IDs, not stages or input order; condition snapshots keep sta
   expect(rows[0]).toMatchObject({ stage: "Planned", stageSince: "2026-11-23T10:00:00Z", condition: "Waiting on you" });
 });
 test("a doer-only Checked does not count as independent acceptance", () => {
-  expect(foldLedger([event("12", { stage: "Checked" })], now)[0]?.stage).toBe("Done by agent, not checked yet");
+  expect(foldLedger([event("12", { stage: "Checked" })], now)[0]?.stage).toBe("Done by agent, not checked");
 });
 test("another folder's hash-matched check accepts work, including a checker with no tasks", () => {
   expect(foldLedger([check(), event()], now)[0]).toMatchObject({ stage: "Checked", checkedBy: `Agent ${other}`, evidence: "Release reviewed", stageSince: "2026-11-23T13:00:00Z" });

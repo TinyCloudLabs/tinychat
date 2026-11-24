@@ -17,9 +17,9 @@ test("renders task content as text, without links or agent-authored markup", () 
 });
 test("empty state is only shown after a successful load", () => {
   const render = (state: "loading" | "failed" | "ready") => renderToStaticMarkup(<LedgerView rows={[]} now={0} state={state} onRefresh={() => {}} />);
-  expect(render("ready")).toContain("No tasks yet. When an agent you&#x27;ve connected records a task, it shows here.");
-  expect(render("loading")).not.toContain("No tasks yet.");
-  expect(render("failed")).not.toContain("No tasks yet.");
+  expect(render("ready")).toContain("No tasks to show. When an agent you&#x27;ve connected records a task, it shows here.");
+  expect(render("loading")).not.toContain("No tasks to show.");
+  expect(render("failed")).not.toContain("No tasks to show.");
 });
 test("labels independent check evidence with the checker identity", () => {
   const checked = { ...row, stage: "Checked" as const, checkedBy: "Review agent · abcd1234", evidence: "All saved notes reviewed." };
