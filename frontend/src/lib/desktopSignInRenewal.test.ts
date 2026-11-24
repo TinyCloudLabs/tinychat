@@ -1,6 +1,6 @@
 import { describe, expect, mock, test } from "bun:test";
 import type { ConnectWalletResult, TinyCloudWebConfig } from "@tinyboilerplate/client";
-import { withConnectorDecryptGrants } from "./connectors/encryptionGrant";
+import { withConnectorKeyGrants } from "./connectors/encryptionGrant";
 import { desktopSignInWithRenewal, webSignInRenewal } from "./renewalReceipt";
 import { WEB_APP_MANIFEST } from "./webSignInPrefetch";
 
@@ -22,7 +22,7 @@ const APPROVED = {
 
 function desktopRenewal(authorizeTinyCloud: ConnectWalletResult["openkey"]["authorizeTinyCloud"]) {
   const openkey = { authorizeTinyCloud } as ConnectWalletResult["openkey"];
-  return webSignInRenewal(openkey, withConnectorDecryptGrants(WEB_APP_MANIFEST, ADDRESS));
+  return webSignInRenewal(openkey, withConnectorKeyGrants(WEB_APP_MANIFEST, ADDRESS));
 }
 
 function exerciseSignIn(config?: TinyCloudWebConfig) {

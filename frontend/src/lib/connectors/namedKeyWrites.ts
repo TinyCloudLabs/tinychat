@@ -21,6 +21,19 @@ export function connectorNamedKeyWritesEnabled(
   }
 }
 
+/**
+ * The one decision for how Connectors opens its secrets: with their own keys (the sign-in grant names the exact keys and
+ * can renew, older keys are moved in a separate short approval) or the way it always has (the sign-in grant covers the
+ * whole network, nothing is moved). The grant a sign-in asks for and the older-keys step both read it here, so they
+ * cannot disagree.
+ */
+export function connectorOwnKeyGrants(
+  env?: Record<string, unknown>,
+  storage?: Pick<Storage, "getItem"> | null,
+): boolean {
+  return connectorNamedKeyWritesEnabled(env, storage);
+}
+
 function readViteEnv(): Record<string, unknown> {
   try {
     return (import.meta.env ?? {}) as Record<string, unknown>;

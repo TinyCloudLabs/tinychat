@@ -1,4 +1,4 @@
-import { expect, test, spyOn } from "bun:test";
+import { afterAll, beforeAll, expect, test, spyOn } from "bun:test";
 import { createTinyCloudWeb, loadRenewalReceipt, saveRenewalReceipt } from "@tinyboilerplate/client";
 import { extractRecapAttenuations, parseCanonicalRecapResource } from "@tinycloud/sdk-core";
 import { BrowserSessionStorage, type ISessionStorage, type TinyCloudWeb } from "@tinycloud/web-sdk";
@@ -15,6 +15,11 @@ import { WEB_APP_MANIFEST } from "./webSignInPrefetch";
 const DAY_MS = 86_400_000;
 const HOST = "http://127.0.0.1:9";
 const NONCE = "connectorRenewal1";
+
+// Connectors opens its secrets with their own keys here: the grant under test is the exact-key, leased one.
+const buildEnv = import.meta.env as Record<string, unknown>;
+beforeAll(() => { buildEnv.VITE_CONNECTOR_NAMED_KEY_WRITES = "true"; });
+afterAll(() => { delete buildEnv.VITE_CONNECTOR_NAMED_KEY_WRITES; });
 
 function deps(owner: Awaited<ReturnType<typeof fixture>>["owner"], authorizeTinyCloud: (request: { siwe: string }) => Promise<unknown>): HomeReauthorizeDeps {
   return {

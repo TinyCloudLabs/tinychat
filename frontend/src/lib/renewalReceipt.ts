@@ -3,7 +3,7 @@ import { SESSION_EXPIRATION_MS } from "@tinyboilerplate/core";
 import { parseSignedSiweCacao, pkhDid, principalDidEquals } from "@tinycloud/sdk-core";
 import { admitOwnerRenewalLease } from "@tinycloud/sdk-core/delegations/renewal";
 import { parseApprovalRenewal, type ApprovalRenewal } from "@tinycloud/share-envelope/links";
-import { BrowserSessionStorage, composeManifestRequest, type Manifest, type PersistedSessionData, type TinyCloudWeb } from "@tinycloud/web-sdk";
+import { BrowserSessionStorage, composeManifestRequest, type Manifest, type PermissionEntry, type PersistedSessionData, type TinyCloudWeb } from "@tinycloud/web-sdk";
 import { openKeyFailureOf } from "./authErrors";
 
 /**
@@ -20,21 +20,50 @@ export const SIGN_IN_RENEWAL_ASK = { version: 1, leaseLifetimeSeconds: 90 * 24 *
 
 const SENSITIVE_RENEWAL_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 
+/**
+ * Whether decrypt on an encryption network path reaches the whole network rather than one named key: the path has no
+ * key part, an empty one or a wildcard one, and one of the abilities is decrypt or every encryption ability.
+ */
+export function reachesWholeNetworkDecrypt(path: string, abilities: string[]): boolean {
+  const keyStart = path.indexOf("/");
+  const key = keyStart === -1 ? "" : path.slice(keyStart + 1);
+  return (key === "" || key === "*") && abilities.some((ability) => {
+    const name = ability.toLowerCase();
+    return name === "tinycloud.encryption/decrypt" || name === "tinycloud.encryption/*" || name === "*";
+  });
+}
+
+/** A request for decrypt on a whole encryption network, not on one named key. */
+function isWholeNetworkDecrypt({ service, path, actions }: PermissionEntry): boolean {
+  return service === "tinycloud.encryption" && reachesWholeNetworkDecrypt(path, actions);
+}
+
+function composedResources(manifest: Manifest): PermissionEntry[] {
+  return composeManifestRequest([manifest], { includeAccountRegistryPermissions: false }).resources as PermissionEntry[];
+}
+
+/** Whether the grant `manifest` asks for would include decrypt on a whole encryption network. */
+export function carriesWholeNetworkDecrypt(manifest: Manifest): boolean {
+  return composedResources(manifest).some(isWholeNetworkDecrypt);
+}
+
 /** OpenKey limits each renewed window that can reach secrets to seven days. */
 export function webSignInGrantWindow(manifest: Manifest): number {
-  const { resources } = composeManifestRequest([manifest], { includeAccountRegistryPermissions: false });
-  const reachesSecrets = resources.some(({ service, space, path, actions }) => {
+  const reachesSecrets = composedResources(manifest).some((resource) => {
+    const { service, space, path } = resource;
     if (space === "secrets" || space?.endsWith(":secrets")) return true;
     if (service !== "tinycloud.encryption") return false;
     const keyPathStart = path.indexOf("/");
-    return keyPathStart === -1
-      ? actions.some((action) => action === "tinycloud.encryption/decrypt" || action === "tinycloud.encryption/*")
-      : path.slice(keyPathStart + 1).startsWith("secrets/");
+    return keyPathStart === -1 ? isWholeNetworkDecrypt(resource) : path.slice(keyPathStart + 1).startsWith("secrets/");
   });
   return reachesSecrets ? Math.min(SESSION_EXPIRATION_MS, SENSITIVE_RENEWAL_WINDOW_MS) : SESSION_EXPIRATION_MS;
 }
 
-/** Keep the draft and accepted expiry in the same window, and track when OpenKey's receipt arrived. */
+/**
+ * Keep the draft and accepted expiry in the same window, and track when OpenKey's receipt arrived. A grant that
+ * includes decrypt on a whole encryption network is asked without the renewal lease: OpenKey is not asked to offer
+ * one, and nothing it returns about renewal is kept.
+ */
 export function webSignInRenewal(openkey: ConnectWalletResult["openkey"], manifest: Manifest) {
   const sessionExpirationMs = webSignInGrantWindow(manifest);
   let renewal: unknown;
@@ -42,15 +71,18 @@ export function webSignInRenewal(openkey: ConnectWalletResult["openkey"], manife
   const config = {
     sessionExpirationMs,
     openkey: {
-      client: openKeyRenewalClient(openkey, SIGN_IN_RENEWAL_ASK, (outcome) => {
-        renewal = outcome.renewal;
-        arrivedAt = performance.now();
-      }),
+      client: carriesWholeNetworkDecrypt(manifest)
+        ? openkey
+        : openKeyRenewalClient(openkey, SIGN_IN_RENEWAL_ASK, (outcome) => {
+          renewal = outcome.renewal;
+          arrivedAt = performance.now();
+        }),
       mode: "iframe",
       expiryChangeable: true,
       maxExpiresAt: () => Date.now() + sessionExpirationMs,
     },
   } satisfies TinyCloudWebConfig;
+
   return {
     config,
     admit: (tcw: Pick<TinyCloudWeb, "activeNodeIdentity">, address: string, storage?: Pick<BrowserSessionStorage, "load">) =>
@@ -94,11 +126,23 @@ export async function desktopSignInWithRenewal<T>(
 
 const RENEW = "tinycloud.delegation/renew";
 
+const ENCRYPTION_NETWORK_PREFIX = "urn:tinycloud:encryption:";
+
+/** Whether a signed grant's resources include decrypt on a whole encryption network, in any spelling of its resource. */
+function signedGrantReachesWholeNetwork(attenuation: Record<string, Record<string, unknown>>): boolean {
+  return Object.entries(attenuation).some(([resource, abilities]) =>
+    resource.toLowerCase().startsWith(ENCRYPTION_NETWORK_PREFIX)
+    && reachesWholeNetworkDecrypt(resource.slice(ENCRYPTION_NETWORK_PREFIX.length), Object.keys(abilities)));
+}
+
+type LeaseCheck = { lease: string } | { refused: "whole_network" } | null;
+
 /**
- * The lease authorization in `value` when it is a well-formed receipt for `record`'s own grant, signed by the
- * grant's owner, for that grant only; otherwise null. Never throws.
+ * The lease in `value` when it is a well-formed receipt for `record`'s own grant, signed by the grant's owner, for that
+ * grant only. A grant whose signed resources include decrypt on a whole encryption network is refused for any lease:
+ * such a grant is never renewed here, whether the lease is being admitted or restored. Never throws.
  */
-export async function verifiedRenewalLease(value: unknown, record: PersistedSessionData): Promise<string | null> {
+async function checkRenewalLease(value: unknown, record: PersistedSessionData): Promise<LeaseCheck> {
   try {
     const renewal: ApprovalRenewal = parseApprovalRenewal(value);
     const { receipt } = renewal;
@@ -123,10 +167,17 @@ export async function verifiedRenewalLease(value: unknown, record: PersistedSess
     ) {
       return null;
     }
-    return receipt.leaseAuthorization;
+    if (signedGrantReachesWholeNetwork(original.attenuation)) return { refused: "whole_network" };
+    return { lease: receipt.leaseAuthorization };
   } catch {
     return null;
   }
+}
+
+/** The lease authorization in `value` when `checkRenewalLease` accepts it for `record`; otherwise null. Never throws. */
+export async function verifiedRenewalLease(value: unknown, record: PersistedSessionData): Promise<string | null> {
+  const checked = await checkRenewalLease(value, record);
+  return checked && "lease" in checked ? checked.lease : null;
 }
 
 /** How long the sign-in waits for the node to admit the lease before going on without renewal. */
@@ -206,6 +257,28 @@ export async function renewalRestoreFor(
   if (receipt === null) return null;
   const candidate = await storage.loadRenewalCandidate(address);
   if (candidate.status !== "renewal-candidate") return null;
-  const leaseAuthorization = await verifiedRenewalLease(receipt, candidate.data);
-  return leaseAuthorization ? { address, leaseAuthorization } : null;
+  const checked = await checkRenewalLease(receipt, candidate.data);
+  if (checked && "refused" in checked) {
+    // A saved session that reaches a whole encryption network is no longer carried by its lease: the receipt goes, so
+    // nothing restores it again and the plain restore (past its signed end) ends it.
+    saveRenewalReceipt(address, null);
+    return null;
+  }
+  return checked ? { address, leaseAuthorization: checked.lease } : null;
+}
+
+/**
+ * When the signed-in session ends now, in ms: the node's own recomputation from the session's saved lease (a leased
+ * session outlives its first signed end). Null without a saved lease or when the node cannot say, so a caller falls
+ * back to the signed end. The node's answer can only shorten what the lease allows.
+ */
+export async function renewedSessionEndMs(tcw: Pick<TinyCloudWeb, "getRenewalEffectiveExpiry">, address: string): Promise<number | null> {
+  try {
+    const saved = loadRenewalReceipt(address);
+    if (saved === null) return null;
+    const endSeconds = await tcw.getRenewalEffectiveExpiry(parseApprovalRenewal(saved).receipt.leaseAuthorization);
+    return Number.isFinite(endSeconds) ? endSeconds * 1000 : null;
+  } catch {
+    return null;
+  }
 }
