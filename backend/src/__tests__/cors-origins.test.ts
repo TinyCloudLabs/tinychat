@@ -16,8 +16,15 @@ import {
   TINYCHAT_WEB_ORIGIN,
   TINYCLOUD_ONE_WEB_ORIGIN,
 } from "../cors-origins.js";
+import { createSiweMessage } from "viem/siwe";
+import { privateKeyToAccount } from "viem/accounts";
+import { createNonceStore } from "@tinyboilerplate/server";
+import { createAuthRouter } from "../routes/auth.js";
+
 
 const WEB_ORIGIN = "https://tinycloud.chat";
+const SAM_TAILNET_DEV_ORIGIN = "https://lightning-node-1.gecko-snares.ts.net:5240";
+
 
 let server: Server;
 let baseUrl: string;
@@ -70,6 +77,125 @@ describe("frontend origin allowlist", () => {
 
   test.each(["*", "tinycloud.chat", "ftp://tinycloud.chat"])("refuses FRONTEND_URL=%s", (value) => {
     expect(() => frontendOriginsFromEnv(value, {})).toThrow("FRONTEND_URL must be an HTTP(S) URL");
+  });
+});
+
+describe("SIWE domain extraction with URL.host (auth router)", () => {
+  const account = privateKeyToAccount(`0x${"ab".repeat(32)}`);
+  const KEY = "test-siwe-domain-key";
+  const csrfHeader = { "Content-Type": "application/json", "X-Requested-With": "XMLHttpRequest" };
+
+  async function createTestAuthServer(frontendUrl: string, explicitOrigins?: string[]) {
+    const nonceStore = createNonceStore();
+    const app = express();
+    app.use(express.json());
+    const frontendOrigins = explicitOrigins ?? frontendOriginsFromEnv(frontendUrl, {});
+    app.use("/api/auth", createAuthRouter({ nonceStore, privateKey: KEY, frontendOrigins }));
+    const listener = app.listen(0, "127.0.0.1");
+    const { promise, resolve } = Promise.withResolvers<void>();
+    listener.once("listening", resolve);
+    await promise;
+    const port = (listener.address() as AddressInfo).port;
+    return { server: listener, baseUrl: `http://127.0.0.1:${port}`, nonceStore };
+  }
+
+  async function signMessage(nonce: string, domain: string, uri: string) {
+    const message = createSiweMessage({
+      domain,
+      address: account.address,
+      statement: "Sign in",
+      uri,
+      version: "1",
+      chainId: 1,
+      nonce,
+      issuedAt: new Date(),
+    });
+    const signature = await account.signMessage({ message });
+    return { message, signature };
+  }
+
+  async function postVerify(baseUrl: string, message: string, signature: string) {
+    const response = await fetch(`${baseUrl}/api/auth/verify`, {
+      method: "POST",
+      headers: csrfHeader,
+      body: JSON.stringify({ message, signature }),
+    });
+    const body: unknown = await response.json();
+    return { status: response.status, body };
+  }
+
+  test("existing default origins accept their exact hostnames as SIWE domains", async () => {
+    const cases: Array<{ frontendUrl: string; domain: string; uri: string }> = [
+      { frontendUrl: TINYCHAT_WEB_ORIGIN, domain: "tinycloud.chat", uri: "https://tinycloud.chat" },
+      { frontendUrl: HOME_WEB_ORIGIN, domain: "home.tinycloud.xyz", uri: "https://home.tinycloud.xyz" },
+      { frontendUrl: TINYCLOUD_ONE_WEB_ORIGIN, domain: "tinycloud.one", uri: "https://tinycloud.one" },
+    ];
+
+    for (const { frontendUrl, domain, uri } of cases) {
+      const { server: authServer, baseUrl, nonceStore } = await createTestAuthServer(frontendUrl);
+      try {
+        const nonce = nonceStore.generate(account.address);
+        const signed = await signMessage(nonce, domain, uri);
+        const result = await postVerify(baseUrl, signed.message, signed.signature);
+        expect(result.status).toBe(200);
+        expect(result.body).toHaveProperty("token");
+      } finally {
+        const { promise, resolve } = Promise.withResolvers<void>();
+        authServer.close(() => resolve());
+        await promise;
+      }
+    }
+  });
+
+  test("Sam's tailnet dev origin accepts host:port as SIWE domain", async () => {
+    const { server: authServer, baseUrl, nonceStore } = await createTestAuthServer(SAM_TAILNET_DEV_ORIGIN, [SAM_TAILNET_DEV_ORIGIN]);
+    try {
+      const nonce = nonceStore.generate(account.address);
+      const signed = await signMessage(nonce, "lightning-node-1.gecko-snares.ts.net:5240", "https://lightning-node-1.gecko-snares.ts.net:5240");
+      const result = await postVerify(baseUrl, signed.message, signed.signature);
+      expect(result.status).toBe(200);
+      expect(result.body).toHaveProperty("token");
+    } finally {
+      const { promise, resolve } = Promise.withResolvers<void>();
+      authServer.close(() => resolve());
+      await promise;
+    }
+  });
+
+  test("Sam's tailnet dev origin refuses bare hostname without port", async () => {
+    const { server: authServer, baseUrl, nonceStore } = await createTestAuthServer(SAM_TAILNET_DEV_ORIGIN, [SAM_TAILNET_DEV_ORIGIN]);
+    try {
+      const nonce = nonceStore.generate(account.address);
+      const signed = await signMessage(nonce, "lightning-node-1.gecko-snares.ts.net", "https://lightning-node-1.gecko-snares.ts.net");
+      const result = await postVerify(baseUrl, signed.message, signed.signature);
+      expect(result.status).toBe(400);
+      expect(result.body).toEqual({
+        error: "invalid_origin",
+        message: "SIWE domain or URI does not match this application",
+      });
+    } finally {
+      const { promise, resolve } = Promise.withResolvers<void>();
+      authServer.close(() => resolve());
+      await promise;
+    }
+  });
+
+  test("Sam's tailnet dev origin refuses different port", async () => {
+    const { server: authServer, baseUrl, nonceStore } = await createTestAuthServer(SAM_TAILNET_DEV_ORIGIN, [SAM_TAILNET_DEV_ORIGIN]);
+    try {
+      const nonce = nonceStore.generate(account.address);
+      const signed = await signMessage(nonce, "lightning-node-1.gecko-snares.ts.net:5241", "https://lightning-node-1.gecko-snares.ts.net:5241");
+      const result = await postVerify(baseUrl, signed.message, signed.signature);
+      expect(result.status).toBe(400);
+      expect(result.body).toEqual({
+        error: "invalid_origin",
+        message: "SIWE domain or URI does not match this application",
+      });
+    } finally {
+      const { promise, resolve } = Promise.withResolvers<void>();
+      authServer.close(() => resolve());
+      await promise;
+    }
   });
 });
 
@@ -161,6 +287,8 @@ describe("app CORS origins", () => {
     "http://tinycloud.one",
     "https://tinycloud.one:8443",
     "https://tinycloud.one.",
+    "https://lightning-node-1.gecko-snares.ts.net",
+    "https://lightning-node-1.gecko-snares.ts.net:5241",
   ])("does not allow unrelated origin %s", async (origin) => {
     const response = await fetch(`${baseUrl}/health`, {
       headers: { Origin: origin },
