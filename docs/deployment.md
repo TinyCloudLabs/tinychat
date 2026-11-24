@@ -318,7 +318,7 @@ backend afterwards: `unchanged` (failed before `phala deploy`),
 later check failed; web is not deployed).
 
 The backend workflow requires the exact production OS name/hash pinned in
-`PHALA_OS_IMAGE` / `PHALA_OS_IMAGE_HASH` (`dstack-0.5.12`) and `is_dev=false`.
+`PHALA_OS_IMAGE` / `PHALA_OS_IMAGE_HASH` (`dstack-0.5.15`) and `is_dev=false`.
 Dev images fail closed by default. Missing/malformed metadata or a different
 name/hash also fails closed.
 

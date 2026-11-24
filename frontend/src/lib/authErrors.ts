@@ -1,4 +1,5 @@
 import { appPlatform, type AppPlatform } from "./platform";
+import { ACCOUNT_SETUP_BUTTON_LABEL, ACCOUNT_SETUP_MESSAGE, ACCOUNT_SETUP_URL } from "./accountSetup";
 
 /** An Error whose message was written for the user and may be shown as is. */
 export class UserFacingError extends Error {
@@ -16,8 +17,11 @@ export const WEBVIEW_UPDATE_LINK = {
   label: "Update Android System WebView",
 } as const;
 
+const ACCOUNT_SETUP_LINK = { href: ACCOUNT_SETUP_URL, label: ACCOUNT_SETUP_BUTTON_LABEL } as const;
+
 /** The link a user needs to act on `message`, when there is one. */
 export function errorLinkFor(message: string | null): { href: string; label: string } | null {
+  if (message === ACCOUNT_SETUP_MESSAGE) return ACCOUNT_SETUP_LINK;
   return message === WEBVIEW_UPDATE_MESSAGE ? WEBVIEW_UPDATE_LINK : null;
 }
 

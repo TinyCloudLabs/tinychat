@@ -425,8 +425,9 @@ describe("Fireflies KV reader in Library (PR-3)", () => {
     expect(firefliesServerImportEnabled({})).toBe(false);
     expect(firefliesServerImportEnabled({ VITE_FIREFLIES_SERVER_IMPORT_ENABLED: "false" })).toBe(false);
     expect(firefliesServerImportEnabled({ VITE_FIREFLIES_SERVER_IMPORT_ENABLED: "1" })).toBe(false);
-    expect(firefliesServerImportEnabled({ VITE_FIREFLIES_SERVER_IMPORT_ENABLED: "true" })).toBe(true);
-    expect(firefliesServerImportEnabled({}, { firefliesServerImport: true })).toBe(true);
+    expect(firefliesServerImportEnabled({ VITE_FIREFLIES_SERVER_IMPORT_ENABLED: "true" })).toBe(false);
+    expect(firefliesServerImportEnabled({}, { firefliesServerImport: true })).toBe(false);
+    expect(firefliesServerImportEnabled({ VITE_FIREFLIES_SERVER_IMPORT_ENABLED: "true" }, { firefliesServerImport: true })).toBe(true);
 
     expect(
       await fetchFirefliesServerImportCapability(

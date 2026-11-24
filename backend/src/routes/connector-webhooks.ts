@@ -1603,6 +1603,11 @@ export interface ConnectorCompanionOptions {
   /** Optional TC-3344 reset notification fired when `DELETE /purged` clears a source ledger. */
   onLedgerCleared?: (source: string, address: string) => void;
   /**
+   * Removes the owner's stored Fireflies server-import grant. Called on disconnect and on a Fireflies purge, before
+   * anything else is written, so a failure answers 503 and the client's identical retry finishes the job.
+   */
+  removeFirefliesGrant?: (address: string) => Promise<void>;
+  /**
    * `CONNECTOR_WEBHOOK_PUBLIC_ORIGIN` — the public HTTPS origin every minted callback URL must
    * carry. Omitted (local QA, tests) the host stays request-derived; see {@link deliveryUrl}.
    * A malformed value throws HERE, at construction, rather than minting dead webhooks.
@@ -1850,7 +1855,7 @@ function pendingView(item: PendingItem) {
 
 /** Deletion ledgers do not depend on webhook delivery being enabled. */
 export function createConnectorPurgeRouter(
-  options: Pick<ConnectorCompanionOptions, "control" | "now" | "onLedgerCleared"> & {
+  options: Pick<ConnectorCompanionOptions, "control" | "now" | "onLedgerCleared" | "removeFirefliesGrant"> & {
     webhooks?: Pick<ConnectorCompanionOptions, "tokens" | "queue" | "registry">;
     authMiddleware?: RequestHandler;
   },
@@ -1932,6 +1937,7 @@ export function createConnectorPurgeRouter(
     }
 
     try {
+      if (source === "fireflies") await options.removeFirefliesGrant?.(user.address);
       const config = ledgerOnly ? null : await tokens!.config(user.address);
       const marker = ledgerOnly ? null : await control.readDisabled(user.address);
       if (marker?.connectionRemoved === true) {
@@ -2384,6 +2390,7 @@ export function createConnectorWebhookCompanionRouter(
       ];
 
       await control.markDisabled(user.address, configured); // (1)
+      await options.removeFirefliesGrant?.(user.address);
       await tokens.revoke(user.address); // (2) config + token keys, and the token cache
 
       // (3) F010: the count comes from the clear itself. `list()`-then-`clear()` reported a
@@ -2739,6 +2746,7 @@ export function createConnectorWebhookCompanionRouter(
       control,
       now,
       onLedgerCleared: options.onLedgerCleared,
+      removeFirefliesGrant: options.removeFirefliesGrant,
       webhooks: { tokens, queue, registry },
     }),
   );
