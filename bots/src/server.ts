@@ -34,6 +34,7 @@ const ALLOWED: Record<Operation, readonly BotState[]> = {
 };
 
 function operationOf(rest: string, method: string): Operation | undefined {
+  if (rest.startsWith("/courier/")) return "read";
   if (rest === "/web" || rest === "/asks" || rest === "/reads" || rest === "/requests" || ANSWER_PATH.test(rest)) return "read";
   if (rest === "/messages") return method === "POST" ? "turn" : "read";
   if (rest === "/history" || rest === "/history/stage" || rest === "/history/permission" || rest === "/history/notice") return "history";
@@ -87,6 +88,8 @@ export interface AppOptions {
   environment?: Environment;
   /** Unset: from BOTS_ACCEPT_LEGACY_OWNER_HEADER. */
   acceptLegacyOwnerHeader?: boolean;
+  /** Gateway control socket; absent unless BOTS_COURIER_ENABLED is exactly true. */
+  courierControlSocket?: string;
   bots: {
     forOwner(ownerDid: string): BotApi;
     /** A sibling by key. Without it the service has only Main. */
@@ -285,6 +288,20 @@ export function createApp(options: AppOptions): (req: Request) => Promise<Respon
     catch { return new Response(null, { status: 503 }); }
     if (!state || state === "removed") return new Response(null, { status: 404 });
     if (!ALLOWED[operation].includes(state)) return Response.json({ error: "bot_state", state }, { status: 409 });
+    if (rest.startsWith("/courier/")) {
+      // Legacy bearer calls and sibling bots never reach owner Courier credentials.
+      if (!signed) return new Response(null, { status: 401 });
+      if (key !== MAIN_KEY || !options.courierControlSocket) return new Response(null, { status: 404 });
+      const target = `http://gateway/courier/${encodeURIComponent(owner)}${rest.slice("/courier".length)}${url.search}`;
+      try {
+        const body = req.method === "GET" || req.method === "HEAD" ? undefined : await req.arrayBuffer();
+        return await fetch(target, {
+          unix: options.courierControlSocket, method: req.method,
+          ...(body?.byteLength ? { body, headers: { "content-type": "application/json" } } : {}),
+          signal: AbortSignal.timeout(10_000),
+        } as RequestInit & { unix: string });
+      } catch { return new Response(null, { status: 503 }); }
+    }
     const found = key === MAIN_KEY ? options.bots.forOwner(owner) : options.bots.forBot?.(owner, key);
     if (!found) return new Response(null, { status: 404 });
     const bot = found;

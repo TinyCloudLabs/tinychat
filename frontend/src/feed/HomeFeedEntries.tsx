@@ -22,6 +22,7 @@ import { actionClass, CardDetails, footActionClass } from "./CardActions";
 import { isOwnerAction, ownerClosure } from "./ownerActions";
 import { CompactCard, type Replies } from "./CompactCard";
 import { cardLead } from "./cardLead";
+import { shownTitle } from "./cardTitle";
 import { cardStatus } from "./cardStatus";
 import { agentProfile } from "./AgentMark";
 import { HistoryTimeline, historyFromEntry } from "./HistoryTimeline";
@@ -1077,11 +1078,12 @@ export function HomeFeedEntries({ source, ask, linked, finishSetup }: { source: 
     if (record) return record.kind === "ask" ? record.options.length : 0;
     return isTypedPayload(entry) ? 0 : entry.state.card.choices?.length ?? 0;
   }
-  /** The card's post: its record's, else the summary a plain card carries. Absent when the agent wrote none. */
+  /** The card's post: its record's, else the summary a plain card carries. Absent when the agent wrote none. It stands in for the title, so it is shown as one (shownTitle). */
   function postOf(entry: HomeFeedEntry): string | undefined {
     const record = parseSitrepCardPayload(entry.state.card.payload?.sitrep)?.record;
     const summary = entry.state.card.payload?.summary;
-    return record?.post?.trim() || (typeof summary === "string" && summary.trim() ? summary : undefined);
+    const post = record?.post?.trim() || (typeof summary === "string" && summary.trim() ? summary : undefined);
+    return post ? shownTitle(post) : undefined;
   }
   /** A card's own line: what was chosen once it is answered, when it comes back, else its post, else (a ship card) what moved, else its title. */
   function describe(entry: HomeFeedEntry) {
@@ -1096,7 +1098,8 @@ export function HomeFeedEntries({ source, ask, linked, finishSetup }: { source: 
     const post = postOf(entry);
     if (post) return post;
     const record = parseSitrepCardPayload(entry.state.card.payload?.sitrep)?.record;
-    return (record && cardLead(record)) ?? entry.state.card.title;
+    const lead = record && cardLead(record);
+    return lead ? shownTitle(lead) : entry.state.card.title;
   }
   const dueOf = (entry: HomeFeedEntry) => { const deadline = timingOf(entry).deadline; return deadline && attention(entry) ? deadline : undefined; };
   /**

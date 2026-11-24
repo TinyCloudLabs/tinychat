@@ -58,6 +58,7 @@ function tcwFor(rows: Row[]): TinyCloudWeb {
   const open = (envelope: { ct: number }) => rows[envelope.ct]!.plaintext;
   return {
     session: () => ({ address, chainId: 1 }),
+    hasPermissions: () => true,
     kvForSpace: () => ({
       list: async () => ({ ok: true, data: { keys: [...stored.keys()], truncated: false } }),
       get: async (key: string) => ({ ok: true, data: { data: stored.get(key)!.envelope, headers: { etag: "e" } } }),

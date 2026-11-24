@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { APP_ID } from "@tinyboilerplate/core";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import {
   ACCOUNT_SETUP_BUTTON_LABEL, ACCOUNT_SETUP_MESSAGE, ACCOUNT_SETUP_URL, AccountSetupRequiredError, checkAccountSetup,
@@ -76,7 +77,7 @@ describe("checkAccountSetup", () => {
     const calls: Array<[string, { signal?: AbortSignal } | undefined]> = [];
     await checkAccountSetup({ kv: { get: async (key: string, options?: { signal?: AbortSignal }) => { calls.push([key, options]); return { ok: true }; } } } as unknown as Pick<TinyCloudWeb, "kv">);
     expect(calls).toHaveLength(1);
-    expect(calls[0][0].startsWith("threads/")).toBe(true);
+    expect(calls[0][0].startsWith(`${APP_ID}/threads/`)).toBe(true);
     expect(calls[0][1]?.signal).toBeInstanceOf(AbortSignal);
   });
 });

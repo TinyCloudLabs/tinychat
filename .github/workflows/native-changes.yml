@@ -55,6 +55,20 @@ jobs:
           while IFS= read -r -d '' path; do
             # Metal builds the Rust workspaces and their two embedded web inputs, not JS packages or browser tests.
             # WebKit builds the full screen harness (including overflow tests), not just the recorder halo.
+            # Desktop and iOS ship the same frontend and workspace packages, including the generated agent guides.
+            # Limit Apple PR runs to those inputs, native source, toolchain files and build/release tooling.
+            if [[ "$component" == desktop || "$component" == mobile ]]; then
+              case "$path" in
+                frontend/*|packages/*|patches/*|agent-skills/*|agent-setup/*|scripts/build-agent-*.mjs|scripts/apply-vendor-redirects.mjs|scripts/release/*|.github/actions/*|.github/workflows/native-changes.yml|.github/scripts/test-native-changes.py|package.json|manifest.json|bun.lock|bun.lockb|bunfig.toml|.npmrc|package-lock.json|npm-shrinkwrap.json|pnpm-lock.yaml|pnpm-workspace.yaml|yarn.lock|turbo.json|tsconfig*.json|*/package.json|*/bun.lock|*/bun.lockb|*/bunfig.toml|*/package-lock.json|*/npm-shrinkwrap.json|*/pnpm-lock.yaml|*/yarn.lock|*/.npmrc)
+                  native=true; frontend=true ;;
+                desktop/docs/*|desktop/README.md|desktop/CHANGELOG.md|mobile/docs/*|mobile/README.md|mobile/CHANGELOG.md|mobile/android/*) ;;
+                desktop/*|.cargo/*|rust-toolchain*|Cargo.toml|Cargo.lock|.github/workflows/desktop.yml|.github/workflows/desktop-build.yml|.github/workflows/desktop-release.yml)
+                  if [[ "$component" == desktop ]]; then native=true; fi ;;
+                ios/*|mobile/*|.github/workflows/mobile.yml|.github/workflows/ios-build.yml|.github/workflows/ios-testflight.yml)
+                  if [[ "$component" == mobile ]]; then native=true; fi ;;
+              esac
+              continue
+            fi
             case "$component" in
               metal)
                 case "$path" in
@@ -80,10 +94,8 @@ jobs:
                 native=true; frontend=true ;;
               frontend/*)
                 native=true; frontend=true ;;
-              desktop/*|.cargo/*)
-                if [[ "$component" != mobile ]]; then native=true; fi ;;
-              ios/*|android/*|mobile/*)
-                if [[ "$component" == native || "$component" == mobile ]]; then native=true; fi ;;
+              desktop/*|.cargo/*|ios/*|android/*|mobile/*)
+                native=true ;;
             esac
           done < "$RUNNER_TEMP/native-paths"
           printf 'native=%s\nfrontend=%s\n' "$native" "$frontend" >> "$GITHUB_OUTPUT"

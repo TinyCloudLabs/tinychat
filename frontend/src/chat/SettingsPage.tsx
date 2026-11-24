@@ -62,6 +62,7 @@ import type { RegistryChangeClientLike } from "@/lib/registryEditor/adapter";
 import { AppLockSettings } from "./AppLockSettings";
 import { LegacyDataLinks } from "./LegacyDataLinks";
 import { CardMdSettings } from "@/feed/CardMdSettings";
+import { ReportBugSettings } from "./ReportBugSettings";
 
 /** An InfoTip beside a card title: a 44 px target on touch that doesn't push the title row taller. */
 const TITLE_TIP = "-my-3 -ml-2 fine:-my-1 fine:-ml-1";
@@ -220,6 +221,7 @@ export function SettingsPage({
             )}
             <div className="mt-4 border-t border-border pt-3 fine:pt-4">
               <PrivacyPolicyLink />
+              <ReportBugSettings />
             </div>
           </SectionCard>
           <RegistrySection did={did} openkey={openkey} openkeyHost={openkeyHost} />

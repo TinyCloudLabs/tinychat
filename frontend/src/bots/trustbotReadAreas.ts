@@ -14,6 +14,10 @@ export const READ_AREAS = {
     { service: "tinycloud.sql", space: TINYCHAT_DATA_SPACE, path: "xyz.tinycloud.tinychat/feed/", actions: ["read"], skipPrefix: true },
     { service: "tinycloud.sql", space: TINYCHAT_DATA_SPACE, path: "xyz.tinycloud.tinychat/threads", actions: ["read"], skipPrefix: true },
   ],
+  telegram: [
+    { service: "tinycloud.sql", space: "messages", path: "xyz.tinycloud.inbox/db/", actions: ["read"], skipPrefix: true },
+    { service: "tinycloud.kv", space: "messages", path: "xyz.tinycloud.inbox/media/", actions: ["get"], skipPrefix: true },
+  ],
 } satisfies Record<string, PermissionEntry[]>;
 
 export type ReadArea = keyof typeof READ_AREAS;

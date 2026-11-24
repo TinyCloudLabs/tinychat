@@ -192,14 +192,25 @@ FROM feed_cards WHERE card_id = ? AND json_valid(card_json) ORDER BY sequence DE
 export interface ChatSummary { chat: string; title: string; updated_at: string }
 
 /** The owner's chats with AI models, most recently updated first; `query` matches words in the title. */
-export async function listChats(sql: FeedChatSql, args: { limit?: unknown; query?: unknown }): Promise<{ chats: ChatSummary[] }> {
+export async function listChats(sql: FeedChatSql, args: { limit?: unknown; query?: unknown }, denied: ReadonlySet<string> = new Set()): Promise<{ chats: ChatSummary[] }> {
   const limit = count(args.limit, LIST_DEFAULT, LIST_MAX);
   if (args.query !== undefined && (typeof args.query !== "string" || args.query.length > QUERY_CHARS)) throw new FeedChatReadError("invalid");
   const query = typeof args.query === "string" ? args.query.trim() : "";
+  const where: string[] = [];
+  const params: Array<string | number | null> = [];
+  if (denied.size > 0) {
+    where.push("id NOT IN (SELECT value FROM json_each(?))");
+    params.push(JSON.stringify([...denied]));
+  }
+  if (query) {
+    where.push("instr(lower(title), lower(?)) > 0");
+    params.push(query);
+  }
+  params.push(limit);
   const rows = await sql.query(
     THREADS_DATABASE,
-    `SELECT id, substr(title, 1, ${TITLE_CHARS}), substr(updated_at, 1, ${TIME_CHARS}) FROM threads${query ? " WHERE instr(lower(title), lower(?)) > 0" : ""} ORDER BY updated_at DESC LIMIT ?`,
-    query ? [query, limit] : [limit],
+    `SELECT id, substr(title, 1, ${TITLE_CHARS}), substr(updated_at, 1, ${TIME_CHARS}) FROM threads${where.length ? ` WHERE ${where.join(" AND ")}` : ""} ORDER BY updated_at DESC LIMIT ?`,
+    params,
   );
   return {
     chats: rows.flatMap(([chat, title, updated]): ChatSummary[] =>
@@ -212,8 +223,9 @@ export interface ChatMessage { role: "user" | "assistant"; text: string; truncat
 const MESSAGE_TEXT = `(SELECT group_concat(json_extract(part.value, '$.text'), char(10)) FROM json_each(payload, '$.message.content') AS part WHERE json_extract(part.value, '$.type') = 'text')`;
 
 /** One chat's latest messages, oldest first: the text the owner and the model wrote, nothing else. */
-export async function readChat(sql: FeedChatSql, args: { chat?: unknown; limit?: unknown }): Promise<{ chat: string; title: string; updated_at: string; messages: ChatMessage[]; earlier_messages: boolean }> {
+export async function readChat(sql: FeedChatSql, args: { chat?: unknown; limit?: unknown }, denied: ReadonlySet<string> = new Set()): Promise<{ chat: string; title: string; updated_at: string; messages: ChatMessage[]; earlier_messages: boolean }> {
   const chat = id(args.chat);
+  if (denied.has(chat)) throw new FeedChatReadError("not_found");
   const limit = count(args.limit, CHAT_MESSAGES_DEFAULT, CHAT_MESSAGES_MAX);
   const head = await sql.query(THREADS_DATABASE, `SELECT substr(title, 1, ${TITLE_CHARS}), substr(updated_at, 1, ${TIME_CHARS}), (SELECT count(*) FROM messages WHERE thread_id = ?) FROM threads WHERE id = ?`, [chat, chat]);
   const thread = head[0];
@@ -274,11 +286,11 @@ export const FEED_CHAT_FIRST_DATABASE: Readonly<Record<FeedChatTool, string>> = 
 };
 
 /** Runs one tool; the result is the JSON text the gateway wraps as untrusted. */
-export async function runFeedChatTool(tool: FeedChatTool, args: Record<string, unknown>, sql: FeedChatSql): Promise<string> {
+export async function runFeedChatTool(tool: FeedChatTool, args: Record<string, unknown>, sql: FeedChatSql, denied: ReadonlySet<string> = new Set()): Promise<string> {
   switch (tool) {
     case "list_feed_cards": return JSON.stringify(await listFeedCards(sql, args));
     case "read_card": return JSON.stringify(await readCard(sql, args));
-    case "list_chats": return JSON.stringify(await listChats(sql, args));
-    case "read_chat": return JSON.stringify(await readChat(sql, args));
+    case "list_chats": return JSON.stringify(await listChats(sql, args, denied));
+    case "read_chat": return JSON.stringify(await readChat(sql, args, denied));
   }
 }
