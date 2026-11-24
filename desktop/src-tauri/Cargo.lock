@@ -2890,7 +2890,7 @@ dependencies = [
 
 [[package]]
 name = "exo-desktop"
-version = "0.20.2"
+version = "0.20.3"
 dependencies = [
  "audio-actual",
  "cpal",

@@ -57,7 +57,8 @@ test("a decline by one session does not stop another owner's request", async () 
   const first = fixture();
   await expect(authorizeBotHistory(first.client, first.connect, enabled, options)).rejects.toThrow(HISTORY_DECLINED);
   const second = fixture();
-  (second.client as unknown as { session: () => unknown }).session = () => ({ address, chainId: 1, sessionKey: "key-2", siwe: `URI: did:key:fixture\nExpiration Time: ${new Date(Date.now() + 3_600_000).toISOString()}` });
+  const siwe = `URI: did:key:fixture\nExpiration Time: ${new Date(Date.now() + 3_600_000).toISOString()}`;
+  (second.client as unknown as { session: () => unknown }).session = () => ({ address, chainId: 1, sessionKey: "key-2", siwe });
   await expect(authorizeBotHistory(second.client, second.connect, enabled, options)).rejects.toThrow(HISTORY_DECLINED);
   expect(second.requests()).toBe(1);
 });
