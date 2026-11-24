@@ -60,6 +60,10 @@ interface ImportMetaEnv {
   readonly VITE_SHARE_LINK_ORIGIN?: string;
   /** TC-3195: the links service origin that holds each share link's record (default https://api.tinycloud.xyz). */
   readonly VITE_SHARE_LINKS_API_ORIGIN?: string;
+  /** TC-3716: "true" turns on Report a bug (Settings row, screenshot offer, the sheet). Unset = off. */
+  readonly VITE_REPORT_BUG?: string;
+  /** TC-3716: the feedback service origin bug reports go to (default https://feedback.tinycloud.xyz). */
+  readonly VITE_FEEDBACK_ORIGIN?: string;
 }
 
 interface ImportMeta {
