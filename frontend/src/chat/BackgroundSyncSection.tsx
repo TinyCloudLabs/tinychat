@@ -37,6 +37,7 @@ import {
 import type { TranscriptConsentState } from "@/lib/transcriptDeliveryState";
 import type { ConnectorWebhooksClient } from "@/lib/connectors/webhooksApi";
 import type { ConnectorMeetingsClient } from "@/lib/connectors/meetingsApi";
+import type { DisconnectImportGrants } from "@/lib/connectors/connectorLifecycle";
 import type { ConnectorDescriptor } from "@/lib/connectors/types";
 import {
   HISTORICAL_RESYNC_CONFIRM_COPY,
@@ -90,6 +91,8 @@ export interface BackgroundSyncSectionProps {
    * has actually answered — `loading` reports nothing.
    */
   onFeatureDark?: (dark: boolean) => void;
+  /** Fireflies only: withdraws the server's import permissions at the node when Instant updates go off. */
+  importGrants?: DisconnectImportGrants;
 }
 
 export { consentVariantForProbe, type OffStateConsentVariant };

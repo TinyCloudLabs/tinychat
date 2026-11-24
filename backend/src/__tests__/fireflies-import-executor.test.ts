@@ -671,6 +671,7 @@ describe("Fireflies direct-write webhook executor (PR-2)", () => {
             meetingsGrant: owner.meetingsGrant,
             siwe: owner.siwe,
             signature: owner.signature,
+            replaces: [],
           }),
         });
         expect(res.status).toBe(200);

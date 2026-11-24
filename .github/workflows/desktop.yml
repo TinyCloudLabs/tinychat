@@ -21,10 +21,10 @@ on:
     branches: [main, "release/**"]
     tags: ["exo-desktop@*", "@tinychat/frontend@*", "@tinychat/backend@*"]
 
-# Superseded PRs and main pushes cancel; manual, scheduled, tag, release-branch and merge-queue runs stay independent.
+# Superseded PRs cancel; main pushes share a group and do not cancel; manual, scheduled, tag, release-branch and merge-queue runs stay independent.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.event_name == 'push' && github.ref == 'refs/heads/main' && github.ref || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read

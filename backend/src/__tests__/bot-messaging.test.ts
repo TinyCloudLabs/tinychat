@@ -122,5 +122,5 @@ test("messaging activity makes a byte-for-byte owner-space archive round trip", 
   expect(reads).toBe(2);
   expect(receipt.body.batchHash).toBe(historyHash(JSON.stringify(batch)));
   const archived = storage.get(path) as { payload: string };
-  expect(Buffer.from(archived.payload, "base64").toString()).toBe(JSON.stringify(batch));
+  expect(Buffer.from(archived.payload, "base64").toString()).toBe(JSON.stringify({ ...batch, ctx: { v: 1, owner: historyOwner(address), spaceId, path, bot: "main", generation: batch.generation, seq: batch.seq, challenge: batch.challenge } }));
 });

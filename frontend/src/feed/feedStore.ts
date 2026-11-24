@@ -30,6 +30,7 @@ import { OWNER_EVENT_SCHEMA, privateOwnerStateFromRows, savePrivateOwnerState, s
 import { OWNER_IMPORT_SCHEMA, OwnerArchiveCache } from "./sitrepArchiveStore";
 import { enrichTypedEntry } from "./loadTypedFeed";
 import { redactedCard, redactedState } from "./redactedCard";
+import { courierMessage } from "./feedData";
 import { OUTPUT_TALLY, readAgent, readRegistry, readTally, REGISTRY_TALLY, RESPONSES_TALLY, type AgentRead, type RegistryRead } from "./feedRead";
 import { ownerCardKey } from "./feedIdentity";
 import { privateFeedDatabase, parseOwnerJSON } from "./privateFeedDatabase";
@@ -37,6 +38,7 @@ import { clearHeldAnswers, clearUnsentAnswer, heldAnswers, holdAnswer, isHeld, r
 import { observeFeedFailures, recordAnswerFailure } from "./feedFailures";
 import { isReplyOnlyRevision, storedRevisionEntry } from "./replyOnlyRevision";
 import { ownerActionMessage, type OwnerAction } from "./ownerActions";
+import { isSetupChoice, isSetupChoiceIssuance } from "./setupChoice";
 
 function sameIdentity(a: FeedCardIdentity, b: FeedCardIdentity) { return a.cardId === b.cardId && a.revision === b.revision && a.issuanceId === b.issuanceId; }
 
@@ -333,6 +335,15 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
 
   async function saveResponse(entry: HomeFeedEntry, response: NewFeedResponse, payload?: FeedResponsePayload, options?: HomeFeedSaveOptions) {
     assertEntryScope(entry, response);
+    if (isSetupChoice(entry)) {
+      if (!isSetupChoiceIssuance(entry) || response.kind !== "answer" || response.supersedesResponseId !== undefined
+          || response.text !== undefined || payload !== undefined
+          || !entry.state.card.choices?.some((choice) => choice.id === response.choiceId)) {
+        throw new RefusedWrite("Choose one of the options on the original setup card");
+      }
+      // The response table's primary key gives this issuance one slot across tabs and devices.
+      response = { ...response, responseId: `setup-${entry.state.card.cardId}` };
+    }
     let approval = false;
     if (payload?.type.startsWith("sitrep.")) {
       const typed = parseSitrepCardPayload(entry.state.card.payload?.sitrep);
@@ -524,10 +535,10 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
         if (!state) throw new Error("Card issuance not found");
         const key = JSON.stringify([source.sourceId, identity.cardId, identity.revision, identity.issuanceId]);
         const entry: HomeFeedEntry = {
-          source, state: redactedState(state),
+          source, state: redactedState(state, !!courierMessage(source, state.card.payload)),
           currentIssuance: latestKeys.has(key),
           view: views.get(key) ?? { sourceId: source.sourceId, cardId: identity.cardId, revision: identity.revision, issuanceId: identity.issuanceId },
-          earlierRevisions: (revisionsByCard.get(identity.cardId) ?? []).filter((card) => card.revision < identity.revision).map(redactedCard),
+          earlierRevisions: (revisionsByCard.get(identity.cardId) ?? []).filter((card) => card.revision < identity.revision).map((card) => redactedCard(card, !!courierMessage(source, card.payload))),
           responses: histories.get(key) ?? [],
           viewEvents: events.get(key) ?? [],
         };
@@ -691,7 +702,9 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
           if (stored.some((response) => response.responseId === held.responseId)) { releaseAnswer(space, held); continue; }
           const revisions = (await cardHistory(output)).filter((card) => card.cardId === held.cardId).sort((a, b) => a.revision - b.revision);
           const latest = unwrap(await listFeedCards(output)).find((card) => card.cardId === held.cardId);
-          const answered = revisions.find((card) => sameIdentity(card, held));
+          // Shown on the page as the card the answer was refused on: redacted as every card the store hands out is.
+          const answeredRevision = revisions.find((card) => sameIdentity(card, held));
+          const answered = answeredRevision && redactedCard(answeredRevision, !!courierMessage(source, answeredRevision.payload));
           const label = held.choiceId && answered ? optionLabel(answered, held.choiceId) : undefined;
           const refusal = (outcome: "closed" | "replaced" | "refused"): HeldAnswerOutcome => ({
             sourceId: held.sourceId, cardId: held.cardId, outcome,
