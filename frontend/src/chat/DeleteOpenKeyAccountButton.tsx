@@ -80,14 +80,17 @@ export function DeleteOpenKeyAccountButton(props: {
 
   const teardownCredentials = async () => {
     setState({ phase: "working" });
+    // Both removals always run: a failed import-permission removal must not leave the saved Fireflies sign-in on our server.
     const grants = await removeFirefliesImportForAccountDeletion(importGrants, importTeardown);
-    if (grants.status === "failed") {
-      setState({ phase: "blocked", message: accountDeletionGrantFailure(grants.failure), retryable: true, stage: "credentials" });
-      return;
-    }
     const outcome = await runServerCredentialTeardown(webhooks, "fireflies");
-    if (outcome.status === "failed") {
-      setState({ phase: "blocked", message: accountDeletionTeardownFailure(outcome.failure), retryable: true, stage: "credentials" });
+    if (grants.status === "failed" || outcome.status === "failed") {
+      const message = [
+        grants.status === "failed" ? accountDeletionGrantFailure(grants.failure) : undefined,
+        outcome.status === "failed" ? accountDeletionTeardownFailure(outcome.failure) : outcome.notice,
+      ]
+        .filter((part): part is string => part !== undefined)
+        .join(" ");
+      setState({ phase: "blocked", message, retryable: true, stage: "credentials" });
       return;
     }
     const notice = [outcome.notice, grants.unconfirmed ? IMPORT_GRANT_REVOKE_UNCONFIRMED_MESSAGE : undefined]
