@@ -84,7 +84,7 @@ for (const failure of [undefined, "exact_key_unavailable", "missing_etag", "desc
     const reports: unknown[] = [];
     const tcw = {
       session: () => session,
-      hasPermissions: () => failure !== "exact_key_unavailable",
+      hasPermissions: (permissions: Array<{ path: string; actions: string[] }>) => failure !== "exact_key_unavailable" || (permissions[0]?.path === networkId && permissions[0].actions.includes("decrypt")),
       signSessionBytes: async () => new Uint8Array(64),
       kvForSpace: () => ({
         list: async () => ({ ok: true, data: { keys: [key] } }),

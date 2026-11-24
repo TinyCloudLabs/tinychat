@@ -110,6 +110,7 @@ function fakeReader(keys: string[], bot?: string) {
   const batch = { v: 1, seq: 1, generation: GENERATION, challenge: CHALLENGE, bot, record: { type: "assistant", text: "test" } };
   const tcw = {
     session: () => ({ address: ADDRESS, chainId: 1 }),
+    hasPermissions: () => true,
     kvForSpace: () => ({
       list: async ({ prefix }: { prefix: string }) => {
         prefixes.push(prefix);

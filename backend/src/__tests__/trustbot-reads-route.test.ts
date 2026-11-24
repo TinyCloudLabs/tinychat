@@ -22,6 +22,7 @@ let state: "on" | "off" | "ended" = "on";
 const reads: string[] = [];
 const sqlSeen: string[] = [];
 const grants = {
+  deniedChatIds: async () => new Set<string>(),
   async access(who: string, area: string) {
     reads.push(`${who}:${area}`);
     if (state !== "on") throw new ReadGrantRefused(state);

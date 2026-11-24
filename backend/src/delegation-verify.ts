@@ -30,7 +30,7 @@ export interface GrantInput {
   now?: number;
   policy?: GrantPolicy;
   /** For "trustbot-read" only: the exact resources the grant must name (trustbot-reads/areas.ts). */
-  expected?: ReadonlyArray<{ service: string; path: string; actions: readonly string[] }>;
+  expected?: ReadonlyArray<{ service: string; space?: "messages"; path: string; actions: readonly string[] }>;
 }
 export interface GrantDependencies {
   computeDelegationCid: TinyCloudNode["computeDelegationCid"];
@@ -73,7 +73,7 @@ export function evictStoredGrantVerification(address: string, envelope: string, 
 export async function verifyTranscriptWriterGrant(input: GrantInput, deps: GrantDependencies): Promise<GrantResult> {
   const now = input.now ?? Date.now();
   const policy = input.policy ?? "transcript-writer";
-  const policyExpected = policy === "trustbot-read" ? input.expected ?? [] : policies[policy].expected;
+  const policyExpected: NonNullable<GrantInput["expected"]> = policy === "trustbot-read" ? input.expected ?? [] : policies[policy].expected;
   if (policyExpected.length === 0) return failure("insufficient_delegation");
   let bundle: unknown;
   try { bundle = JSON.parse(input.serialized); } catch { return failure("unsupported_bundle_shape"); }
@@ -111,11 +111,11 @@ export async function verifyTranscriptWriterGrant(input: GrantInput, deps: Grant
   if (!isRecord(payload.att)) return failure("insufficient_delegation");
   const entries = Object.entries(payload.att);
   const resources: VerifiedTranscriptWriter["resources"] = [];
+  const ownerSpaces = policyExpected.map(entry => makePkhSpaceId(session.address, session.chainId, entry.space ?? "applications"));
   for (const [uri, abilities] of entries) {
-    // The URI's space is signed and must match the SIWE-derived user space exactly.
-    if (!uri.startsWith(`${spaceId}/`)) return failure("foreign_space_delegation");
-    const suffix = uri.slice(spaceId.length + 1);
-    const target = policyExpected.find((entry) => suffix === `${entry.service}/${entry.path}`);
+    // Resolve each expected space from the signed owner's address, never portable metadata.
+    if (!ownerSpaces.some(space => uri.startsWith(`${space}/`))) return failure("foreign_space_delegation");
+    const target = policyExpected.find((entry, i) => uri === `${ownerSpaces[i]}/${entry.service}/${entry.path}`);
     if (!target) return failure("overbroad_delegation");
     if (!isRecord(abilities)) return failure("overbroad_delegation");
     const granted = Object.keys(abilities);
@@ -128,10 +128,11 @@ export async function verifyTranscriptWriterGrant(input: GrantInput, deps: Grant
       return !Array.isArray(clauses) || (clauses.length !== 0 &&
         (clauses.length !== 1 || !isRecord(clauses[0]) || Object.keys(clauses[0]).length !== 0));
     })) return failure("overbroad_delegation");
-    resources.push({ service: target.service, space: spaceId, path: target.path, actions: [...target.actions] });
+    resources.push({ service: target.service, space: makePkhSpaceId(session.address, session.chainId, target.space ?? "applications"), path: target.path, actions: [...target.actions] });
   }
   if (resources.length !== policyExpected.length) return failure("insufficient_delegation");
   if (typeof payload.exp !== "number" || payload.exp * 1000 <= now + 60_000) return failure("expired");
+  if (policy === "trustbot-read" && policyExpected.some(entry => entry.space === "messages") && payload.exp * 1000 > now + 7 * 86_400_000) return failure("expiry_too_long");
   if (payload.exp * 1000 > Math.min(sessionExpiry, now + 30 * 86_400_000 + 300_000)) return failure("expiry_too_long");
   if (payload.nbf !== undefined && (typeof payload.nbf !== "number" || payload.nbf * 1000 > now + 60_000)) return failure("not_yet_valid");
   return { ok: true, verified: { cid: bundle.cid, authorization, ownerAddress: session.address.toLowerCase(), chainId: session.chainId, spaceId, sessionDid, backendDid: input.backendDid, policy, resources, expiresAt: new Date(payload.exp * 1000) } };

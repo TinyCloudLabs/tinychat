@@ -41,6 +41,7 @@ services:
       BOTS_ACCEPT_LEGACY_OWNER_HEADER: ${BOTS_ACCEPT_LEGACY_OWNER_HEADER:-0}
       # Same list as the backend's BOTS_TEST_ACCOUNTS; the service enforces it too. Empty admits nobody.
       BOTS_TEST_ACCOUNTS: ${BOTS_TEST_ACCOUNTS:-}
+      BOTS_COURIER_ENABLED: ${BOTS_COURIER_ENABLED:-false}
       # Owner history stays off; enabling requires the receipt signer and node-origin pins.
       BOTS_HISTORY_ENABLED: ${BOTS_HISTORY_ENABLED:-false}
       BOTS_HISTORY_SIGNER_DID: ${BOTS_HISTORY_SIGNER_DID:-}
