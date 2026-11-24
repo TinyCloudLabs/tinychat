@@ -80,7 +80,7 @@ test("opening the chat adds network.create only when the network is missing, and
   expect(f.requests.some(isNetworkDecrypt)).toBe(false);
 });
 
-async function thread(): Promise<{ client: TinyCloudWeb; granted: { network: boolean }; v1Opened: string[] }> {
+async function thread(): Promise<{ client: TinyCloudWeb; granted: { network: boolean }; v1Opened: string[]; decryptCalls: { count: number } }> {
   const prefix = await botHistoryDirectory(address, "main");
   const owner = `did:pkh:eip155:1:${address.toLowerCase()}`;
   const spaceId = makePkhSpaceId(address, 1, "applications");
@@ -94,6 +94,7 @@ async function thread(): Promise<{ client: TinyCloudWeb; granted: { network: boo
   const records = [record(1, "earlier", "v1"), record(2, "current", "v2")];
   const granted = { network: false };
   const v1Opened: string[] = [];
+  const decryptCalls = { count: 0 };
   const client = {
     session: () => ({ ...session }),
     hasPermissions: (permissions: PermissionEntry[]) => granted.network && isNetworkDecrypt(permissions),
@@ -104,6 +105,7 @@ async function thread(): Promise<{ client: TinyCloudWeb; granted: { network: boo
     encryption: {
       // Without the network-wide grant the node refuses a v1 record.
       decryptEnvelope: async (envelope: { key: string }) => {
+        decryptCalls.count++;
         if (!granted.network) return { ok: false };
         v1Opened.push(envelope.key);
         return { ok: true, data: new TextEncoder().encode(JSON.stringify(records.find(r => r.key === envelope.key)!.batch)) };
@@ -111,14 +113,15 @@ async function thread(): Promise<{ client: TinyCloudWeb; granted: { network: boo
     },
     keys: { decrypt: async (envelope: { key: string }) => new TextEncoder().encode(JSON.stringify(records.find(r => r.key === envelope.key)!.batch)) },
   } as unknown as TinyCloudWeb;
-  return { client, granted, v1Opened };
+  return { client, granted, v1Opened, decryptCalls };
 }
 
 test("without the network-wide grant a read returns the chat on its own key and holds earlier records back", async () => {
-  const { client, v1Opened } = await thread();
+  const { client, v1Opened, decryptCalls } = await thread();
   const messages = await readBotHistory(client, undefined, { reseal: true });
   expect(messages.map(message => message.text)).toEqual(["current"]);
   expect(v1Opened).toEqual([]);
+  expect(decryptCalls.count).toBe(0);
   expect(isEarlierHistoryHeld("main")).toBe(true);
 });
 
@@ -137,6 +140,16 @@ test("a decrypt that fails with the network grant held still fails the read", as
   granted.network = true;
   (client as unknown as { encryption: { decryptEnvelope: () => Promise<unknown> } }).encryption.decryptEnvelope = async () => ({ ok: false });
   await expect(readBotHistory(client)).rejects.toThrow("history_decrypt_unavailable");
+});
+
+test("with the grant held, a v1 record that fails to open fails the read and is not held back", async () => {
+  const { client, granted } = await thread();
+  granted.network = true;
+  const real = (client as unknown as { encryption: { decryptEnvelope: (e: { key: string }) => Promise<unknown> } }).encryption;
+  const open = real.decryptEnvelope;
+  real.decryptEnvelope = async (envelope) => { if (envelope.key.endsWith("/1-c1")) throw new Error("tampered"); return open(envelope); };
+  await expect(readBotHistory(client)).rejects.toThrow("tampered");
+  expect(isEarlierHistoryHeld("main")).toBe(false);
 });
 
 test("the move action is the one request for decrypt on the whole network, with its own description", async () => {
@@ -203,4 +216,22 @@ test("approving the move reads the chat again, and the action goes away once not
   expect(calls).toEqual(["request", "reload"]);
   expect(move()).toBeUndefined();
   expect(document.body.textContent).toContain("nothing held");
+});
+
+test("a reload that does not bring earlier history in after the approval shows as failed, not as moved", async () => {
+  const calls: string[] = [];
+  // The chat's read swallows its own failure and resolves; the records stay held.
+  await mount(async () => { calls.push("request"); return true; }, async () => { calls.push("reload"); });
+  await act(async () => recordHeldEarlierHistory(address, "main", 1));
+  await act(async () => { move()!.click(); });
+  expect(calls).toEqual(["request", "reload"]);
+  expect(document.body.textContent).toContain(EARLIER_HISTORY_STRINGS.failed);
+  expect(move()).toBeDefined();
+});
+
+test("a reload that rejects shows as failed", async () => {
+  await mount(async () => true, async () => { throw new Error("read failed"); });
+  await act(async () => recordHeldEarlierHistory(address, "main", 1));
+  await act(async () => { move()!.click(); });
+  expect(document.body.textContent).toContain(EARLIER_HISTORY_STRINGS.failed);
 });

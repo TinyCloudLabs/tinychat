@@ -39,7 +39,7 @@ export function recordHeldEarlierHistory(owner: string, bot: string, count: numb
 /** Whether the last read of `bot` held earlier records back. */
 export const isEarlierHistoryHeld = (bot: string): boolean => heldBots.has(bot);
 
-/** Forgets everything held, for tests and sign-out. */
+/** Forgets everything held: at sign-out (App.tsx), so the next account never sees the last one's earlier history. */
 export function resetEarlierHistory(): void {
   heldOwner = undefined;
   if (heldBots.size > 0) { heldBots = new Set(); changed(); }
@@ -89,7 +89,9 @@ export function useEarlierHistory(
       try {
         if (!(await request())) { setStatus("declined"); return; }
         await reload();
-        setStatus("idle");
+        // A chat's read that fails does not reject (the chat shows its own failure row), so what the move achieved is
+        // read from the state: if the read held records back again, or never ran, the move did not happen.
+        setStatus(heldBots.has(bot) ? "failed" : "idle");
       } catch {
         setStatus("failed");
       }

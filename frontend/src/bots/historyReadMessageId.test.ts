@@ -12,7 +12,7 @@ test("archived assistant IDs match live completions and retain a legacy fallback
   const generation = "a".repeat(32), challenge = "b".repeat(64);
   const keys = [1, 2].map(seq => `xyz.tinycloud.tinychat/threads/bots/v1/${botId}/${generation}/${seq}-${challenge}`);
   let seq = 0;
-  const client = { session: () => ({ address, chainId: 1 }), kvForSpace: () => ({
+  const client = { session: () => ({ address, chainId: 1 }), hasPermissions: () => true, kvForSpace: () => ({
     list: async () => ({ ok: true, data: { keys } }),
     get: async (path: string) => ({ ok: true, data: { data: { aad: btoa(JSON.stringify({ owner, spaceId, path })) } } }),
   }), encryption: { decryptEnvelope: async () => ({ ok: true, data: new TextEncoder().encode(JSON.stringify({ v: 1, generation, seq: ++seq, challenge,

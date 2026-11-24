@@ -128,7 +128,6 @@ async function readHistory(
   // v1 records are sealed to the whole encryption network. Without that grant they are held back, not failed: the
   // chat reads on its own key and the owner moves the earlier ones separately (earlierHistory.ts).
   let heldBack = 0;
-  let legacyClosed = false;
   let boundCount = 0;
   const legacyKeys: string[] = [];
   let rebindsLeft = HISTORY_REBIND_PER_READ;
@@ -258,24 +257,11 @@ async function readHistory(
       }
       isV1 = true;
       sawV1 = true;
-      if (legacyClosed) { heldBack++; return null; }
-      let opened: Awaited<ReturnType<typeof tcw.encryption.decryptEnvelope>> | undefined;
-      let failure: unknown;
-      try {
-        opened = await tcw.encryption.decryptEnvelope(envelope as InlineEncryptedEnvelope, { proofs: [] });
-      } catch (error) {
-        failure = error;
-      }
-      if (!opened?.ok) {
-        // A decrypt refused for want of the network-wide grant is the owner's choice not made yet; any other failure still fails the read.
-        if (!tcw.hasPermissions(earlierHistoryPermissions(session.address, chainId))) {
-          legacyClosed = true;
-          heldBack++;
-          return null;
-        }
-        if (failure !== undefined) throw failure;
-        throw new Error("history_decrypt_unavailable");
-      }
+      // v1 records open only with decrypt on the whole encryption network. Without that grant the record is held back
+      // before any node call (the owner has not chosen to move earlier history yet). With it, a failed decrypt fails the read.
+      if (!tcw.hasPermissions(earlierHistoryPermissions(session.address, chainId))) { heldBack++; return null; }
+      const opened = await tcw.encryption.decryptEnvelope(envelope as InlineEncryptedEnvelope, { proofs: [] });
+      if (!opened.ok) throw new Error("history_decrypt_unavailable");
       plaintext = opened.data;
     }
 
