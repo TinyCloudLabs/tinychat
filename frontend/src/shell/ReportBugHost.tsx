@@ -10,7 +10,7 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { useAppUnlocked } from "@/lib/appLock";
 import { resolveBuildInfo } from "@/lib/buildInfo";
 import { appPlatform } from "@/lib/platform";
-import { APP_STARTED_AT, FEEDBACK_ORIGIN, onReportBugRequest, useOfferAfterScreenshot } from "@/lib/reportBug/config";
+import { APP_STARTED_AT, FEEDBACK_ORIGIN, onReportBugRequest, screenSensitiveHeld, useOfferAfterScreenshot } from "@/lib/reportBug/config";
 import { osMajor, reportErrors, type RecentErrorLine, type ReportContext, type ReportTrigger } from "@/lib/reportBug/context";
 import { snapshotBytes, type JpegBytes } from "@/lib/reportBug/image";
 import { nativeScreenshotReport } from "@/lib/reportBug/nativeScreenshot";
@@ -55,7 +55,7 @@ export default function ReportBugHost({ tcw, screenId, sensitive }: ReportBugHos
     hadTcw.current = tcw !== null;
   }, [tcw]);
 
-  const show = useCallback(async (trigger: ReportTrigger, bytes: JpegBytes | null) => {
+  const show = useCallback(async (trigger: ReportTrigger, shot: { bytes: JpegBytes; sensitive: boolean } | null) => {
     const now = Date.now();
     const os = osMajor(platform, navigator.userAgent);
     const context: ReportContext = {
@@ -71,7 +71,7 @@ export default function ReportBugHost({ tcw, screenId, sensitive }: ReportBugHos
     setSheet((previous) => ({
       key: (previous?.key ?? 0) + 1,
       trigger,
-      screenshot: bytes ? { bytes, sensitive: live.current.sensitive } : null,
+      screenshot: shot,
       context,
       recentErrors: reportErrors.recent(now, redactForReport),
     }));
@@ -88,9 +88,12 @@ export default function ReportBugHost({ tcw, screenId, sensitive }: ReportBugHos
     let disposed = false;
     const handle = plugin.addListener("screenshot", ({ id }) => {
       if (!policy.offer(id, Date.now(), { locked: !live.current.unlocked, sheetOpen: live.current.open })) return;
+      // What was on screen when the screenshot was taken decides whether its snapshot starts detached.
+      const sensitive = live.current.sensitive || screenSensitiveHeld();
       void (async () => {
         const shot = live.current.signedIn ? await plugin.takeSnapshot({ id }).catch(() => null) : null;
-        if (!disposed) void show("screenshot", shot ? snapshotBytes(shot.jpegBase64) : null);
+        const bytes = shot ? snapshotBytes(shot.jpegBase64) : null;
+        if (!disposed) void show("screenshot", bytes ? { bytes, sensitive } : null);
       })();
     });
     void plugin.start();

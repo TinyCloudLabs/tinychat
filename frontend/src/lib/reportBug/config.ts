@@ -2,6 +2,7 @@
 // open request. Small on purpose: this file is in the main bundle, the sheet itself is loaded on demand.
 import { useSyncExternalStore } from "react";
 import { firstNonEmpty } from "@/lib/buildEnv";
+import { isShareLinkPath } from "@/lib/nativeShares/link";
 
 /** On only when VITE_REPORT_BUG is exactly "true". Off: no Settings row, no screenshot watching, no sheet. */
 export const REPORT_BUG_ENABLED = import.meta.env.VITE_REPORT_BUG === "true";
@@ -63,4 +64,30 @@ export function requestReportBug(): void {
 export function onReportBugRequest(open: () => void): () => void {
   openRequests.add(open);
   return () => { openRequests.delete(open); };
+}
+
+/**
+ * Screens that can show private details, where a screenshot's snapshot starts detached: account settings, a framed
+ * app, a share link being opened (its token, or the /s/<id> address before the token is read).
+ */
+export function isSensitiveScreen(screen: { id: string; appId?: string }, pathname: string, shareToken: string | null): boolean {
+  return screen.id === "settings" || Boolean(screen.appId) || Boolean(shareToken) || isShareLinkPath(pathname);
+}
+
+// Surfaces open over any screen that show a secret (the share sheet's link with its key) hold the screen sensitive.
+let sensitiveHolds = 0;
+
+/** Marks the screen sensitive until the returned release runs (once). */
+export function holdScreenSensitive(): () => void {
+  sensitiveHolds++;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    sensitiveHolds--;
+  };
+}
+
+export function screenSensitiveHeld(): boolean {
+  return sensitiveHolds > 0;
 }

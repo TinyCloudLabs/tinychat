@@ -204,7 +204,7 @@ import { setSignedIn } from "./lib/signedIn";
 import { NativeSignIn } from "./shell/NativeSignIn";
 import { useNativeSignIn } from "./shell/useNativeSignIn";
 import { lazyTab } from "./shell/lazyTab";
-import { REPORT_BUG_ENABLED } from "./lib/reportBug/config";
+import { isSensitiveScreen, REPORT_BUG_ENABLED } from "./lib/reportBug/config";
 import { setTinyCloudWebMcpFeedLoader, tinyCloudWebMcpFeedEnabled } from "./lib/webMcp";
 import { closeAllEmbeds } from "./apps/liveEmbeds";
 
@@ -1816,7 +1816,7 @@ export function App() {
       <AppLockGate />
       {ReportBugHost && !LOCAL_VALIDATION && (
         <Suspense fallback={null}>
-          <ReportBugHost tcw={isReady ? tcw : null} screenId={screen.id} sensitive={screen.id === "settings" || Boolean(screen.appId) || Boolean(shareToken)} />
+          <ReportBugHost tcw={isReady ? tcw : null} screenId={screen.id} sensitive={isSensitiveScreen(screen, location.pathname, shareToken)} />
         </Suspense>
       )}
       <RegistryConsentDialog />

@@ -130,7 +130,7 @@ test("signed out: no screenshot offered, the account line says so, and the repor
 });
 
 test("signed in shows the account line; See what we send lists the facts and recent errors", async () => {
-  mount();
+  mount({ screenshot: null });
   expect(text()).toContain(S.accountSignedIn);
   expect(text()).toContain(S.whatWeSend);
   expect(text()).toContain(S.whatWeSendLink);
@@ -172,4 +172,30 @@ test("Not now closes; a send reports sent", async () => {
   await type("x");
   await click(button(S.send));
   expect(second.events).toEqual(["sent"]);
+});
+
+test("the account line says the screenshot is the exception only while one is attached", async () => {
+  mount();
+  expect(text()).toContain(S.accountSignedInScreenshot);
+  await click(button(S.remove));
+  expect(text()).not.toContain(S.accountSignedInScreenshot);
+  expect(text()).toContain(S.accountSignedIn);
+});
+
+test("See what we send lists how the sheet opened, the sign-in proof when signed in, and the note as it will be sent", async () => {
+  mount({ trigger: "menu", screenshot: null });
+  await type(`${"x".repeat(1990)} sam@example.com`);
+  const preview = document.querySelector("pre")!.textContent!;
+  expect(preview).toContain(S.previewTriggerMenu);
+  expect(preview).toContain(S.previewProof);
+  // Redaction makes the note longer; the preview shows it cut as the report carries it.
+  expect(preview).toContain(`${"x".repeat(1990)} [REDACTED`);
+  expect(preview.split("\n").at(-1)!.length).toBe(2000);
+});
+
+test("signed out, See what we send has no sign-in proof", async () => {
+  mount({ signer: null, screenshot: null });
+  const preview = document.querySelector("pre")!.textContent!;
+  expect(preview).toContain(S.previewTriggerScreenshot);
+  expect(preview).not.toContain(S.previewProof);
 });

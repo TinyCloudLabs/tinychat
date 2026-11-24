@@ -76,11 +76,22 @@ const RULES: Rule[] = [
   { type: "api_key", re: /(?<![A-Za-z0-9])npm_[A-Za-z0-9]{36}(?![A-Za-z0-9])/g },
   { type: "api_key", re: /(?<![A-Za-z0-9])lin_(?:api|oauth)_[A-Za-z0-9]{20,}/g },
   { type: "api_key", re: /(?<![A-Za-z0-9])whsec_[A-Za-z0-9+/=]{20,}/g },
+  { type: "webhook", re: /(?<![A-Za-z0-9.-])hooks\.slack\.com\/services\/[A-Za-z0-9/_-]+/g },
+  // An OAuth authorization code (`code=…`, also in a query string); an error code like ERR_NETWORK has no digit.
+  {
+    type: "oauth_code",
+    re: /(?<![A-Za-z0-9_])(code[ \t]*[:=][ \t]*)([A-Za-z0-9._~%/+-]{8,})/dgi,
+    secret: firstGroup(2),
+    accept: (m) => /[0-9]/.test(m[2]) && /[A-Za-z]/.test(m[2]),
+  },
+  // A web address keeps its host and path; its query and fragment (tokens, codes, share-link keys) go.
+  { type: "url_query", re: /\bhttps?:\/\/[^\s?#"'<>]+([?#][^\s"'<>]+)/dgi, secret: firstGroup(1) },
   {
     type: "email",
     re: /(?<![\p{L}\p{N}._%+-])(?:"[^"\n]{1,64}"|[\p{L}\p{N}._%+-]{1,64})@[\p{L}\p{N}-]{1,63}(?:\.[\p{L}\p{N}-]{1,63}){0,8}\.\p{L}{2,24}(?![\p{L}\p{N}])/gu,
   },
-  { type: "hex_key", re: /(?<![0-9a-fA-F])(?:0x)?[0-9a-fA-F]{64,}(?![0-9a-fA-F])/g },
+  // 32+ hex characters: bare API keys (AssemblyAI, Deepgram style), private keys, hashes.
+  { type: "hex_key", re: /(?<![0-9a-fA-F])(?:0x)?[0-9a-fA-F]{32,}(?![0-9a-fA-F])/g },
   {
     type: "high_entropy",
     re: /[A-Za-z0-9+/_-]{32,}={0,2}/g,

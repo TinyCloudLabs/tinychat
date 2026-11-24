@@ -146,10 +146,10 @@ export function ReportBugSheet(props: ReportBugSheetProps) {
               <details>
                 <summary className="cursor-pointer font-medium text-foreground">{S.whatWeSendLink}</summary>
                 <pre className="mt-2 whitespace-pre-wrap break-words rounded-md bg-muted p-2 font-mono text-xs">
-                  {whatWeSend(context, recentErrors, note)}
+                  {whatWeSend(context, recentErrors, note, signer !== null)}
                 </pre>
               </details>
-              <p>{signer ? S.accountSignedIn : S.accountSignedOut}</p>
+              <p>{signer ? (shown ? S.accountSignedInScreenshot : S.accountSignedIn) : S.accountSignedOut}</p>
             </div>
           </>
         )}
@@ -158,16 +158,18 @@ export function ReportBugSheet(props: ReportBugSheetProps) {
   );
 }
 
-/** The exact facts the report carries, as read-only lines; the note as it will be sent (redacted). */
-function whatWeSend(context: ReportContext, recentErrors: RecentErrorLine[], note: string): string {
+/** The exact facts the report carries, as read-only lines; the note as it will be sent (redacted, then cut). */
+function whatWeSend(context: ReportContext, recentErrors: RecentErrorLine[], note: string, signed: boolean): string {
   const lines = [
     `App: ${context.app}`,
     `Device: ${context.platform}${context.os ? ` ${context.os}` : ""}`,
     `Screen: ${context.screen}`,
     `Time: ${context.client_time}`,
     `Online: ${context.online ? "yes" : "no"}`,
+    context.trigger === "screenshot" ? S.previewTriggerScreenshot : S.previewTriggerMenu,
   ];
+  if (signed) lines.push(S.previewProof);
   for (const line of recentErrors) lines.push(`Error ${line.age_s}s ago: ${redactForReport(line.msg)}`);
-  if (note.trim()) lines.push("", redactForReport(note));
+  if (note.trim()) lines.push("", redactForReport(note).slice(0, NOTE_MAX_CHARS));
   return lines.join("\n");
 }

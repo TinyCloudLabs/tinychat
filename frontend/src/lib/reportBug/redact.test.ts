@@ -34,6 +34,23 @@ test("secrets: sk_ API keys (C3), JWTs, bearer tokens, assignments, PEM keys and
   }
 });
 
+test("bare hex keys (32 and 40 characters), OAuth codes and Slack webhooks go; error codes stay", () => {
+  const hex32 = "4f9c".repeat(8);
+  const hex40 = "b7e2a".repeat(8);
+  const code = "4/0Ab".repeat(4);
+  const hook = `hooks.slack.com/services/T0${"AB".repeat(4)}/B0${"CD".repeat(4)}/${"xY9z".repeat(6)}`;
+  const input = `transcription failed with ${hex32}\nstt ${hex40}\ncallback code=${code}\nposted to https://${hook}\nfetch failed: code=ERR_NETWORK`;
+  const out = redactForReport(input);
+  for (const leaked of [hex32, hex40, code, "services/T0"]) expect(out).not.toContain(leaked);
+  expect(out).toContain("[REDACTED:webhook]");
+  expect(out).toContain("code=ERR_NETWORK");
+});
+
+test("a web address keeps its host and path; the query string and fragment go", () => {
+  const out = redactForReport("opened https://tinycloud.one/s/abc123#v=4&k=linkfragment and https://example.com/cb?state=x&token=y then stopped");
+  expect(out).toBe("opened https://tinycloud.one/s/abc123[REDACTED:url_query] and https://example.com/cb[REDACTED:url_query] then stopped");
+});
+
 test("ordinary bug text, including the words delegation and SIWE, stays whole (C4: no session-data blanking, no 500-char cut)", () => {
   const text = `The delegation screen froze after the SIWE prompt. I tapped Retry twice. ${"More detail. ".repeat(60)}`;
   expect(text.length).toBeGreaterThan(500);
