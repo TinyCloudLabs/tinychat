@@ -12,6 +12,7 @@ import { useBots } from "@/bots/useBots";
 import { BotsRouteMissing, type BotsApi, type SecretRequest } from "@/bots/botsApi";
 import { HomeAskBox } from "@/bots/HomeAskBox";
 import { MainChat } from "@/bots/MainChat";
+import { readSettings, type ReadAreaApi } from "@/bots/trustbotReadGrant";
 import { SecretCards } from "@/bots/SecretCard";
 import type { Asks } from "@/bots/useAsks";
 import { setSecretsAvailableForTests } from "@/lib/openkeyNative";
@@ -157,6 +158,23 @@ function PendingHistoryNotice() {
   </>} />;
 }
 
+const readOnly: ReadAreaApi = {
+  readSettings,
+  async setReadArea() { throw new Error("harness: read-only settings"); },
+  async signReadGrant() { throw new Error("harness: read-only settings"); },
+  async revokeReadGrant() {},
+  async stopStandingArea() {},
+};
+
+function StandingReadsPreview() {
+  const [open, setOpen] = useState(false);
+  return <Home ask={<>
+    <AskBox working={false} onSend={() => {}} onOpenMain={() => setOpen(true)} />
+    <MainChat open={open} onOpenChange={setOpen} state={{ history: "loaded", lines: [], turn: null }}
+      onSend={() => {}} onRetry={() => {}} onRetryHistory={() => {}} meetings={readOnly} />
+  </>} />;
+}
+
 function CreateBotPreview({ cap = null }: { cap?: "flat3" | "table" | null }) {
   const [open, setOpen] = useState(true);
   const [created, setCreated] = useState<RosterBot | null>(null);
@@ -249,6 +267,7 @@ export const botsScreens: HarnessScreen[] = [
     render: () => <CreateBotPreview cap="flat3" /> },
   { ...BASE, id: "bots-create-main-at-cap", readyWhen: "[data-create-bot-dialog]", viewports: ["phone", "desktop-min", "desktop"],
     render: () => <CreateBotPreview cap="table" /> },
+  { ...BASE, id: "bots-standing-read-summary", interactive: true, readyWhen: "[data-bots-ask]", render: () => <StandingReadsPreview /> },
   { ...BASE, id: "bots-history-expiry-pending", readyWhen: "[data-bots-ask]", render: () => <PendingHistoryNotice /> },
   {
     ...BASE, id: "bots-history-expiry", readyWhen: "[data-history-expiry-notice]",

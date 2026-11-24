@@ -5,13 +5,13 @@ export interface FirefliesServerImportCapabilities {
   firefliesServerImport?: boolean;
 }
 
-/** Exact-match "true" on Vite env or explicit backend server-info capability. */
+/** Exact-match "true" on the Vite env AND an explicit backend server-info capability; either alone is off. */
 export function firefliesServerImportEnabled(
   env: Record<string, unknown> = readViteEnv(),
   capabilities?: FirefliesServerImportCapabilities | null,
 ): boolean {
   return (
-    env.VITE_FIREFLIES_SERVER_IMPORT_ENABLED === "true" ||
+    env.VITE_FIREFLIES_SERVER_IMPORT_ENABLED === "true" &&
     capabilities?.firefliesServerImport === true
   );
 }

@@ -40,6 +40,7 @@ import {
   type FirefliesServerImportCapabilities,
 } from "@/lib/connectors/firefliesServerImportFeature";
 import { createConnectorWebhooksClient } from "@/lib/connectors/webhooksApi";
+import { onConnectorPurged } from "@/lib/connectors/connectorPurgeSignal";
 import {
   hiddenMemberKeys,
   listMeetingsRead,
@@ -364,6 +365,9 @@ export function useLibrary(
     };
     void enqueue(readList);
   }, [accountScope, enqueue, firefliesKvAllowed, firefliesPurgeChecker, space]);
+
+  // A purge from this page (Meeting sources, disconnect) clears Fireflies rows at once, not on the next focus.
+  useEffect(() => onConnectorPurged("fireflies", refresh), [refresh]);
 
   // The device's last copy of the list shows at once; the read below replaces it.
   // Server-imported rows require the active flag and a fresh purge verdict, so they are never restored from cache.

@@ -15,10 +15,11 @@ async function threadOf(records: StoredRecord[]): Promise<TinyCloudWeb> {
   const prefix = `xyz.tinycloud.tinychat/threads/bots/v1/${Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("")}/`;
   const stored = records.map((record, seq) => {
     const key = `${prefix}1/${seq}-c${seq}`;
-    return { key, aad: btoa(JSON.stringify({ owner: OWNER, spaceId: SPACE, path: key })), batch: { generation: 1, seq, challenge: `c${seq}`, record } };
+    return { key, aad: btoa(JSON.stringify({ owner: OWNER, spaceId: SPACE, path: key })), batch: { v: 1, generation: "1", seq, challenge: `c${seq}`, record } };
   });
   return {
     session: () => ({ address: ADDRESS, chainId: 1 }),
+    hasPermissions: () => true,
     kvForSpace: () => ({
       list: async () => ({ ok: true, data: { keys: stored.map((entry) => entry.key), truncated: false } }),
       get: async (key: string) => ({ ok: true, data: { data: { aad: stored.find((entry) => entry.key === key)!.aad, key } } }),

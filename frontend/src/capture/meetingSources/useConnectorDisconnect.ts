@@ -37,6 +37,7 @@ import {
   type DisconnectProgress,
   type DisconnectWebhooks,
 } from "@/lib/connectors/connectorLifecycle";
+import { createFirefliesImportGrantsTeardown } from "@/lib/connectors/firefliesImportGrantsApi";
 import * as connectorStore from "@/lib/connectors/connectorStore";
 import type { ConnectorDescriptor } from "@/lib/connectors/types";
 
@@ -111,6 +112,9 @@ export function useConnectorDisconnect(input: {
       mode: resume?.mode ?? chosen,
       webhooks: oauth ? NO_DELIVERY_LANE : webhooks,
       featureDark,
+      ...(descriptor.id === "fireflies"
+        ? { importGrants: createFirefliesImportGrantsTeardown(tcw, backendUrl, sessionStore) }
+        : {}),
       secrets: {
         isUnlocked: () => isSecretsUnlocked(tcw),
         unlock: () => unlockSecrets<SecretsErr>(tcw),
@@ -118,7 +122,7 @@ export function useConnectorDisconnect(input: {
       },
       store: {
         listKnownSourceIds: () => connectorStore.listKnownSourceIds(tcw, descriptor.source),
-        purgeConnector: () => connectorStore.purgeConnector(tcw, descriptor.source),
+        purgeConnector: () => connectorStore.purgeConnectorVerified(tcw, descriptor.source),
         clearFirefliesAttempt: () =>
           descriptor.id === "fireflies"
             ? connectorStore.clearFirefliesAttempt(tcw)

@@ -42,6 +42,8 @@ import { sealedGrantStore } from "./secret-store";
 import { addressKey, readableAddress } from "./web";
 import { parseWebPolicy } from "./web-policy";
 import { parseAsksPush } from "./asks";
+import { startCourierGateway, type CourierGateway } from "./courier/runtime";
+import { courierPeerHash } from "./courier/intake";
 
 const { backendOrigin, backendCallSecret, ...cfg } = gatewayConfig(process.env);
 const admit = createAdmissionRelay(backendOrigin, backendCallSecret);
@@ -68,18 +70,22 @@ if (secrets) setInterval(() => void secrets.poll().catch(() => undefined), SECRE
 
 // Budgets persist on the gateway's own volume. An unreadable budget file stops the start (fails closed) with one
 // operator line naming the file and the recovery; the non-zero exit keeps Docker restarting it, each time logged.
-function startGateway(): Gateway {
+function startGateway(): { gateway: Gateway; reads: MeetingDesk } {
   try {
-    return new Gateway(cfg, {
+    const reads = new MeetingDesk({
+      backendOrigin, backendCallSecret, forwardRefusals: true,
+      store: fileHeldStore(join(dirname(cfg.budgetFile), "held.json")),
+    });
+    return { gateway: new Gateway(cfg, {
       store: fileBudgetStore(cfg.budgetFile),
       ownerStore: cfg.ownersFile ? fileOwnerStore(cfg.ownersFile) : undefined,
       // Which conversations hold the owner's data, beside the budget file; an unreadable file stops the start.
-      meetings: new MeetingDesk({ backendOrigin, backendCallSecret, store: fileHeldStore(join(dirname(cfg.budgetFile), "held.json")) }),
+      meetings: reads,
       actionStore: fileActionLedgerStore(join(dirname(cfg.budgetFile), "actions.json")),
       verifiedFetch: aci ? (botId, url, init) => aci.fetch(botId, url, init) : undefined,
       secrets,
       secretNet: networkDeps,
-    });
+    }), reads };
   } catch (error) {
     console.error(
       JSON.stringify({
@@ -91,7 +97,12 @@ function startGateway(): Gateway {
     process.exit(78);
   }
 }
-const gateway = startGateway();
+const { gateway, reads } = startGateway();
+let courier: CourierGateway | undefined;
+if (process.env.BOTS_COURIER_ENABLED === "true") {
+  try { courier = await startCourierGateway({ cfg, gateway, reads, env: process.env }); }
+  catch { console.error(JSON.stringify({ gateway: "courier", peer: courierPeerHash(""), outcome: "unavailable" })); }
+}
 const listeners = new Map<string, Server<undefined>>();
 
 // Registrations do not survive a restart; the supervisor registers again before every message. Stale sockets go,
@@ -133,6 +144,10 @@ const control = Bun.serve({
   maxRequestBodySize: MAX_ADMISSION_BYTES,
   async fetch(req) {
     const { pathname } = new URL(req.url);
+    if (pathname.startsWith("/courier/")) {
+      try { return await courier?.control(req) ?? new Response(null, { status: 404 }); }
+      catch { return new Response(null, { status: 503 }); }
+    }
     if (pathname === ADMISSION_CONTROL_PATH) return admit(req);
     const receiptMatch = /^\/bots\/([0-9a-f]{64})\/receipts$/.exec(pathname);
     if (req.method === "GET" && receiptMatch) return Response.json(aci?.take(receiptMatch[1]!) ?? []);
@@ -223,6 +238,7 @@ console.log(JSON.stringify({ gateway: "listening", models: cfg.models }));
 
 for (const signal of ["SIGTERM", "SIGINT"] as const) {
   process.on(signal, () => {
+    courier?.stop();
     for (const botId of [...listeners.keys()]) unlisten(botId);
     void control.stop(true);
     process.exit(0);

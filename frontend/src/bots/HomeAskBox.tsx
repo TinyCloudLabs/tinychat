@@ -5,9 +5,10 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { ensureBotHistoryGrant, botHistoryEnabled } from "./historyGrant";
 import { authorizeBotHistory } from "./historyAuthorization";
 import { readBotHistory } from "./historyRead";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { openKeyFailureOf } from "../lib/authErrors";
+import { listThreads } from "../lib/threadStore";
 import { readHistoryNotice, type HistoryNotice } from "./historyNotice";
 import { AskBox } from "./AskBox";
 import { BotsError, botsApi, type BotsApi } from "./botsApi";
@@ -15,6 +16,8 @@ import { MainChat } from "./MainChat";
 import { isWorking, useMainChat } from "./useMainChat";
 import { AskCards } from "./AskCards";
 import { ensureTrustBotReadGrant, readSettings, revokeReadGrant, setReadArea, signReadGrant } from "./trustbotReadGrant";
+import { readDeniedChatIds, setChatDenied } from "./chatReadAccessApi";
+import { listTelegramChats } from "./telegramChatReadAccess";
 import { newMainChat } from "./mainNewChat";
 import { SecretCards } from "./SecretCard";
 import { useAsks } from "./useAsks";
@@ -28,7 +31,7 @@ const SESSION_GONE: Record<string, true> = { history_session_missing: true, hist
 async function prepareHistory(tcw: TinyCloudWeb): Promise<void> {
   if (!(await botHistoryEnabled())) return;
   try {
-    await authorizeBotHistory(tcw, undefined, undefined, { includeLegacyNetwork: false });
+    await authorizeBotHistory(tcw);
     await ensureBotHistoryGrant(tcw);
   } catch (cause) {
     const gone = (cause instanceof Error && Object.hasOwn(SESSION_GONE, cause.message)) || openKeyFailureOf(cause).kind === "session-ended";
@@ -82,12 +85,25 @@ function MainAsk({ api, tcw, onReconnect }: { api: BotsApi; tcw?: TinyCloudWeb; 
     },
   }), [client, noteWeb]);
   const [readRevision, setReadRevision] = useState(0);
+  const revokeOwnerRead = useCallback((cid: string) => {
+    if (!tcw) return Promise.reject(new Error("read_signed_out"));
+    return revokeReadGrant(tcw, cid);
+  }, [tcw]);
   const meetings = useMemo(() => tcw ? {
     readSettings,
     setReadArea,
     signReadGrant: (serviceDid: string, areas: Parameters<typeof signReadGrant>[2]) => signReadGrant(tcw, serviceDid, areas),
-    revokeReadGrant: (cid: string) => revokeReadGrant(tcw, cid),
-  } : undefined, [tcw, readRevision]);
+    revokeReadGrant: revokeOwnerRead,
+    stopStandingArea: async (area: Parameters<typeof setReadArea>[0]) => {
+      const { stopStandingArea } = await import("./trustbotStandingReads");
+      await stopStandingArea(area, revokeOwnerRead);
+    },
+    chatReadAccess: {
+      listChats: async () => (await Promise.all([listThreads(tcw), listTelegramChats(tcw)])).flat(),
+      readDeniedChatIds,
+      setChatDenied,
+    },
+  } : undefined, [tcw, readRevision, revokeOwnerRead]);
   const clearChat = chat.clear;
   const newChat = useMemo(() => ({ start: () => newMainChat(), onStarted: () => { clearChat(); refreshAsks(); } }), [clearChat, refreshAsks]);
   // A turn is when Main asks: read the requests as it ends.
@@ -97,6 +113,9 @@ function MainAsk({ api, tcw, onReconnect }: { api: BotsApi; tcw?: TinyCloudWeb; 
     if (wasWorking.current && !working) refreshAsks();
     wasWorking.current = working;
   }, [working, refreshAsks]);
+  const loadChatHistory = chat.loadHistory;
+  const requestEarlier = useCallback(async () => (await import("./earlierHistoryRequest")).requestEarlierHistoryAccess(tcw!), [tcw]);
+  const earlierHistory = useMemo(() => tcw ? { bot: "main", request: requestEarlier, reload: loadChatHistory } : undefined, [tcw, requestEarlier, loadChatHistory]);
   const [notice, setNotice] = useState<HistoryNotice | null>(null);
   useEffect(() => {
     if (!tcw) return;
@@ -148,8 +167,10 @@ function MainAsk({ api, tcw, onReconnect }: { api: BotsApi; tcw?: TinyCloudWeb; 
         onReconnect={onReconnect}
         webAccess={webAccess}
         meetings={meetings}
+        courier={Boolean(tcw)}
         asks={asks}
         newChat={newChat}
+        earlierHistory={earlierHistory}
       />
     </>
   );

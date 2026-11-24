@@ -116,7 +116,7 @@ const principal = (did: string) => did.split("#", 1)[0];
 type Attenuation = Readonly<Record<string, Readonly<Record<string, readonly unknown[]>>>>;
 
 /** Exactly `{ [resource]: { [ability]: [{}] } }`, the one-capability shape node-sdk checks for a lease. */
-function isOnlyCapability(attenuation: Attenuation, resource: string, ability: string): boolean {
+export function isOnlyCapability(attenuation: Attenuation, resource: string, ability: string): boolean {
   const abilities = attenuation[resource];
   const caveats = abilities?.[ability];
   const caveat = caveats?.[0];
@@ -172,7 +172,7 @@ async function nodeRequest(fetchImpl: typeof fetch, url: string, init: RequestIn
   }
 }
 
-async function fetchNodeIdentity(fetchImpl: typeof fetch, config: RenewalVerifyConfig): Promise<RenewalNodeIdentity> {
+export async function fetchNodeIdentity(fetchImpl: typeof fetch, config: RenewalVerifyConfig): Promise<RenewalNodeIdentity> {
   const response = await nodeRequest(fetchImpl, `${config.nodeOrigin}/.well-known/tinycloud/node-keys`, { method: "GET" });
   if (!response.ok) throw new NodeUnavailable(`node-keys answered ${response.status}`);
   const keys: NodeKeysAnswer = await boundedJsonObject(response, NODE_KEYS_MAX_BYTES);
@@ -192,7 +192,7 @@ async function fetchNodeIdentity(fetchImpl: typeof fetch, config: RenewalVerifyC
 
 type NodeStatus = { kind: "refused" } | { kind: "status"; value: DelegationStatusAnswer };
 
-async function fetchDelegationStatus(fetchImpl: typeof fetch, config: RenewalVerifyConfig, cid: string, authorization: string): Promise<NodeStatus> {
+export async function fetchDelegationStatus(fetchImpl: typeof fetch, config: RenewalVerifyConfig, cid: string, authorization: string): Promise<NodeStatus> {
   const response = await nodeRequest(fetchImpl, `${config.nodeOrigin}/delegation/status`, {
     method: "POST",
     headers: { Authorization: authorization, "Content-Type": "application/json" },
@@ -205,6 +205,28 @@ async function fetchDelegationStatus(fetchImpl: typeof fetch, config: RenewalVer
   }
   if (!response.ok) throw new NodeUnavailable(`status answered ${response.status}`);
   return { kind: "status", value: await boundedJsonObject(response, STATUS_MAX_BYTES) };
+}
+
+/** Live expiry can only shorten the node-signed extension of this exact owner lease. */
+export function verifiedNodeRenewalEnd(input: {
+  originalCid: string;
+  leaseCid: string;
+  leaseExpiresAt: number;
+  nodeEffectiveExpiry: number;
+  nodeIdentity: RenewalNodeIdentity;
+  history: unknown;
+  now: number;
+}): number {
+  if (!Array.isArray(input.history)) throw new Error("Invalid renewal history");
+  return verifyRenewalHistory({
+    originalCid: input.originalCid,
+    leaseCid: input.leaseCid,
+    leaseExpiresAt: input.leaseExpiresAt,
+    ancestorEffectiveExpiry: input.nodeEffectiveExpiry,
+    nodeIdentity: input.nodeIdentity,
+    history: input.history as RenewalStampHistoryEntry[],
+    now: input.now,
+  }).effectiveExpiry;
 }
 
 /**
@@ -286,19 +308,17 @@ export async function verifyRenewal(input: RenewalVerifyInput, deps: RenewalVeri
     value.revoked === true || value.expired === true || typeof value.effective_expiry !== "number" || !Number.isSafeInteger(value.effective_expiry)) {
     return refuse("renewal_inactive");
   }
-  if (!Array.isArray(history)) return refuse("renewal_history_invalid");
   let effectiveEnd: number;
   try {
-    effectiveEnd = verifyRenewalHistory({
+    effectiveEnd = verifiedNodeRenewalEnd({
       originalCid: delegationCid,
       leaseCid: lease.cid,
       leaseExpiresAt,
-      ancestorEffectiveExpiry: value.effective_expiry,
+      nodeEffectiveExpiry: value.effective_expiry,
       nodeIdentity: identity,
-      // Untrusted node data: verifyRenewalHistory checks every stamp before using it.
-      history: history as RenewalStampHistoryEntry[],
+      history,
       now,
-    }).effectiveExpiry;
+    });
   } catch {
     return refuse("renewal_history_invalid");
   }

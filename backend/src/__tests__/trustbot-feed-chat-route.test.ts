@@ -36,6 +36,7 @@ const db = (name: string) => {
 };
 
 const grants = {
+  deniedChatIds: async () => new Set<string>(),
   async access(who: string, area: string, path?: string) {
     reads.push(`${who} ${area} ${path}`);
     if (state !== "on") throw new ReadGrantRefused(state);

@@ -59,6 +59,7 @@ export type FirefliesImportOutcome =
   | "stopped_needs_renewal"
   | "stopped_revoked"
   | "missing_secret"
+  | "resave_required"
   | "storage_full"
   | "fireflies_error"
   | "node_error";
@@ -80,6 +81,7 @@ export interface FirefliesImportMetrics {
   stoppedNeedsRenewal: number;
   stoppedRevoked: number;
   missingSecret: number;
+  resaveRequired: number;
   storageFull: number;
   firefliesErrors: number;
   nodeErrors: number;
@@ -98,6 +100,7 @@ export type FirefliesSecretReadOutcome =
   | { status: "revoked" }
   | { status: "unauthorized" }
   | { status: "missing" }
+  | { status: "resave_required" }
   | { status: "error" };
 
 export type FirefliesMeetingWriteOutcome =
@@ -364,6 +367,15 @@ export async function defaultReadSecretKey(
       return { status: "ok", value: result.value.trim() };
     }
     if (result.status === "not_found") return { status: "missing" };
+    // The stored key is not one this reader can open (still sealed to the whole network, or unreadable as stored).
+    // Retrying cannot change that, so it is not an error: only the owner saving the key again fixes it.
+    if (
+      result.status === "legacy_envelope" ||
+      result.status === "corrupt_envelope" ||
+      result.status === "invalid_payload"
+    ) {
+      return { status: "resave_required" };
+    }
     if (result.status === "permission_required") return { status: "unauthorized" };
     return { status: "error" };
   } catch (error) {
@@ -502,6 +514,7 @@ export class FirefliesDirectImporter {
     stoppedNeedsRenewal: 0,
     stoppedRevoked: 0,
     missingSecret: 0,
+    resaveRequired: 0,
     storageFull: 0,
     firefliesErrors: 0,
     nodeErrors: 0,
@@ -805,6 +818,16 @@ export class FirefliesDirectImporter {
             httpStatus: 200,
             body: { status: "missing_secret" },
             outcome: "missing_secret",
+          };
+        }
+        if (secret.status === "resave_required") {
+          this.counts.resaveRequired += 1;
+          this.emitLog(address, meetingId, "resave_required");
+          return {
+            handled: true,
+            httpStatus: 200,
+            body: { status: "resave_required" },
+            outcome: "resave_required",
           };
         }
         if (secret.status !== "ok") {
