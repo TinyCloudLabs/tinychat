@@ -103,7 +103,7 @@ describe("syncKeyReadMessage (the Connectors card row)", () => {
 
   test("declined names the approval; failed shows the plain read failure; neither shows the SDK text", () => {
     expect(syncKeyReadMessage(failed("declined"), "fireflies")).toBe(OLDER_KEYS_SYNC_DECLINED);
-    expect(OLDER_KEYS_SYNC_DECLINED).toContain("one-hour approval to open your older connections");
+    expect(OLDER_KEYS_SYNC_DECLINED).toContain("allow the one-hour approval");
     expect(syncKeyReadMessage(failed("failed"), "fireflies")).toBe("Could not read API key");
     expect(syncKeyReadMessage(failed("failed"), "gmeet")).toBe("Could not read the saved Google connection");
   });
