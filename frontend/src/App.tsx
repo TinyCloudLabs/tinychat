@@ -117,6 +117,7 @@ import { Button } from "@/components/ui/button";
 import { FeedView } from "./feed/FeedView";
 import { ChatSlot } from "./bots/ChatSlot";
 import { useBotHistoryDescriptorRenewal } from "./bots/historyAuthorization";
+import { resetEarlierHistory } from "./bots/earlierHistory";
 import { homeFeedSourceFor, settleHeldAnswersForSignOut, SIGN_OUT_FLUSH_MS } from "./feed/feedStore";
 import { HomeEntryGate } from "./home/HomeEntryGate";
 import { readCachedFirstScreen, readFirstScreen } from "./home/firstScreenStore";
@@ -462,6 +463,7 @@ export function App() {
     const accountDid = tcw?.did ?? did ?? (storedAddress ? `did:pkh:eip155:1:${storedAddress}` : null);
     if (tcw && clientHasReplication(tcw)) stopReplicationFill(tcw);
     historyPrefetch.clear();
+    resetEarlierHistory();
     clearBackgroundDrainRecord();
     uploadRunner.reset();
     voiceNotePipeline?.cancelAll();

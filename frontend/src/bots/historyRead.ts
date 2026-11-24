@@ -9,6 +9,7 @@ import {
   publishBotHistoryKeyDescriptor,
 } from "./botHistoryKey";
 import { botHistoryOwnerPermissions } from "./historyAuthorization";
+import { earlierHistoryPermissions, recordHeldEarlierHistory } from "./earlierHistory";
 import { BOT_HISTORY_RECORD_PREFIX, BOT_HISTORY_RECORD_SUFFIX, botHistoryDirectory } from "./botHistoryPath";
 import { isAppDecision, toSecretLine, type BotMessage } from "./botsApi";
 import { BOTS_STRINGS } from "./botsStrings";
@@ -124,6 +125,9 @@ async function readHistory(
   const resealEnabled = options?.reseal === true;
   const resealReport: BotHistoryResealReport = { resealed: 0, failed: [] };
   let sawV1 = false;
+  // v1 records are sealed to the whole encryption network. Without that grant they are held back, not failed: the
+  // chat reads on its own key and the owner moves the earlier ones separately (earlierHistory.ts).
+  let heldBack = 0;
   let boundCount = 0;
   const legacyKeys: string[] = [];
   let rebindsLeft = HISTORY_REBIND_PER_READ;
@@ -253,6 +257,9 @@ async function readHistory(
       }
       isV1 = true;
       sawV1 = true;
+      // v1 records open only with decrypt on the whole encryption network. Without that grant the record is held back
+      // before any node call (the owner has not chosen to move earlier history yet). With it, a failed decrypt fails the read.
+      if (!tcw.hasPermissions(earlierHistoryPermissions(session.address, chainId))) { heldBack++; return null; }
       const opened = await tcw.encryption.decryptEnvelope(envelope as InlineEncryptedEnvelope, { proofs: [] });
       if (!opened.ok) throw new Error("history_decrypt_unavailable");
       plaintext = opened.data;
@@ -334,6 +341,7 @@ async function readHistory(
     options?.onResealReport?.(resealReport);
   }
   options?.onContextReport?.({ bound: boundCount, legacy: legacyKeys });
+  recordHeldEarlierHistory(address, botKey ?? "main", heldBack);
 
   return messages.sort((a, b) => a.at.localeCompare(b.at) || a.id.localeCompare(b.id, undefined, { numeric: true }));
 }
