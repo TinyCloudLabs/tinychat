@@ -222,12 +222,11 @@ pub async fn desktop_update_restart(app: tauri::AppHandle) -> Result<(), String>
         return Err("no_update".into());
     };
     let version = downloaded.update.version.clone();
-    let installed = tauri::async_runtime::spawn_blocking(move || {
-        downloaded.update.install(&downloaded.bytes)
-    })
-    .await
-    .map_err(|error| error.to_string())
-    .and_then(|result| result.map_err(|error| error.to_string()));
+    let installed =
+        tauri::async_runtime::spawn_blocking(move || downloaded.update.install(&downloaded.bytes))
+            .await
+            .map_err(|error| error.to_string())
+            .and_then(|result| result.map_err(|error| error.to_string()));
     refresh_prompt(&app);
     if let Err(error) = installed {
         tracing::warn!(target: "exo_dev::updater", operation = "install", %version, %error);
@@ -247,6 +246,105 @@ pub async fn desktop_update_restart(app: tauri::AppHandle) -> Result<(), String>
 mod tests {
     use super::{key_id, trusted_key_for, Gate, Prompt};
     use base64::Engine;
+
+    const B64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
+    const FIXTURES: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../scripts/__tests__/fixtures"
+    );
+
+    fn fixture(path: &str) -> Vec<u8> {
+        std::fs::read(format!("{FIXTURES}/{path}")).unwrap()
+    }
+
+    fn fixture_text(path: &str) -> String {
+        String::from_utf8(fixture(path)).unwrap()
+    }
+
+    /// What check_and_download does before the plugin's download: pick the trusted key the signature names, then
+    /// verify as tauri-plugin-updater's verify_signature does (minisign-verify, legacy signatures allowed).
+    fn verifies(data: &[u8], signature: &str, trusted: &[String]) -> bool {
+        let Some(key) = trusted_key_for(signature, trusted) else {
+            return false;
+        };
+        let text = |wrapped: &str| String::from_utf8(B64.decode(wrapped.trim()).unwrap()).unwrap();
+        let public_key = minisign_verify::PublicKey::decode(&text(key)).unwrap();
+        let signature = minisign_verify::Signature::decode(&text(signature)).unwrap();
+        public_key.verify(data, &signature, true).is_ok()
+    }
+
+    /// Primary: the release script's key (desktop-updater-signature.json). Backup: the key tauri-cli 2.11.4
+    /// generated (desktop-updater-tauri-cli). Neither: the script-generated release-format key
+    /// (desktop-updater-generated).
+    fn trusted() -> Vec<String> {
+        let script: serde_json::Value =
+            serde_json::from_slice(&fixture("desktop-updater-signature.json")).unwrap();
+        vec![
+            script["pubkey"].as_str().unwrap().to_owned(),
+            fixture_text("desktop-updater-tauri-cli/test-only.key.pub"),
+        ]
+    }
+
+    #[test]
+    fn a_release_signed_with_the_primary_key_verifies() {
+        let script: serde_json::Value =
+            serde_json::from_slice(&fixture("desktop-updater-signature.json")).unwrap();
+        let signature = script["signature"].as_str().unwrap();
+        let trusted = trusted();
+        assert_eq!(
+            trusted_key_for(signature, &trusted),
+            Some(trusted[0].as_str())
+        );
+        assert!(verifies(
+            script["data"].as_str().unwrap().as_bytes(),
+            signature,
+            &trusted
+        ));
+    }
+
+    #[test]
+    fn a_release_signed_with_the_backup_key_verifies() {
+        let signature = fixture_text("desktop-updater-tauri-cli/payload.bin.sig");
+        let trusted = trusted();
+        assert_eq!(
+            trusted_key_for(&signature, &trusted),
+            Some(trusted[1].as_str())
+        );
+        assert!(verifies(
+            &fixture("desktop-updater-tauri-cli/payload.bin"),
+            &signature,
+            &trusted
+        ));
+        assert!(!verifies(b"tampered", &signature, &trusted));
+    }
+
+    #[test]
+    fn a_release_signed_with_neither_key_is_refused() {
+        let data = fixture("desktop-updater-generated/payload.bin");
+        let signature = fixture_text("desktop-updater-generated/payload.bin.sig");
+        let trusted = trusted();
+        // A valid signature by an untrusted key names no trusted key: nothing is downloaded.
+        assert_eq!(trusted_key_for(&signature, &trusted), None);
+        assert!(!verifies(&data, &signature, &trusted));
+        // The same signature relabelled with each trusted key's id is routed to that key, which rejects it.
+        let text = String::from_utf8(B64.decode(signature.trim()).unwrap()).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        for key in &trusted {
+            let mut signature_box = B64.decode(lines[1]).unwrap();
+            signature_box[2..10].copy_from_slice(&key_id(key).unwrap());
+            let mut forged_lines = lines.clone();
+            let forged_box = B64.encode(&signature_box);
+            forged_lines[1] = &forged_box;
+            let forged = B64.encode(format!("{}\n", forged_lines.join("\n")));
+            assert_eq!(trusted_key_for(&forged, &trusted), Some(key.as_str()));
+            assert!(!verifies(&data, &forged, &trusted));
+        }
+        // A placeholder key is trusted by nobody's signature.
+        assert_eq!(
+            key_id("PLACEHOLDER-TC-4275-replace-with-the-minted-updater-public-key-before-merge"),
+            None
+        );
+    }
 
     fn prompt(version: &str) -> Option<Prompt> {
         Some(Prompt {
@@ -295,12 +393,7 @@ mod tests {
         ))
         .unwrap();
         let text = |key: &str| {
-            String::from_utf8(
-                base64::engine::general_purpose::STANDARD
-                    .decode(fixture[key].as_str().unwrap())
-                    .unwrap(),
-            )
-            .unwrap()
+            String::from_utf8(B64.decode(fixture[key].as_str().unwrap()).unwrap()).unwrap()
         };
         let public_key = minisign_verify::PublicKey::decode(&text("pubkey")).unwrap();
         let signature = minisign_verify::Signature::decode(&text("signature")).unwrap();
