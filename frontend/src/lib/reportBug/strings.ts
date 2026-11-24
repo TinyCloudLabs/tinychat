@@ -1,5 +1,4 @@
-// TC-3716: the Report a bug sheet's words, as Monica wrote them (/var/tmp/bug-report-sheet/monica-words.md, §2).
-// Change them with her, not here.
+// TC-3716: the Report a bug sheet's words. Change them only with a words review.
 export const REPORT_BUG_STRINGS = {
   title: "Report a bug",
   subtitleScreenshot: "You took a screenshot. Want to tell us what went wrong?",
@@ -23,7 +22,7 @@ export const REPORT_BUG_STRINGS = {
   success: "Thanks. We got your report.",
   errorNetwork: "Couldn't send. Check your connection and try again.",
   tryAgain: "Try again",
-  errorTooMany: "Too many reports right now. Try again later.",
+  errorTooMany: "Too many reports. Try again later.",
   errorScreenshotRefused: "Your report was sent without the screenshot.",
   errorNoText: "Add a short note about what happened.",
   settingsRow: "Report a bug",

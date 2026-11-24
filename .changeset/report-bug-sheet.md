@@ -2,4 +2,8 @@
 "@tinychat/frontend": minor
 ---
 
-Report a bug (TC-3716), off unless `VITE_REPORT_BUG=true`: a Settings row and, after a screenshot, an offer to open a sheet with the app's own snapshot attached and a note field. The report is redacted on the device, signed with the session key and sent to the feedback service (`VITE_FEEDBACK_ORIGIN`, default https://feedback.tinycloud.xyz). Phones notice screenshots through a new ScreenshotReport plugin (iPhone, Android 14+); the browser and Mac app use keyboard signs.
+TinyCloud One can send bug reports: a Settings row, and an offer after a screenshot that opens a sheet with a note field and the app's own screenshot attached. The report is redacted on the device, signed with the session key and sent to the feedback service. iPhone and Android 14+ notice screenshots; the browser and the Mac app notice screenshot keys.
+
+Ships off because the feedback service has no route for these reports (`/reports/app`); turn it on by setting `VITE_REPORT_BUG=true` once that route is live.
+
+Details: TC-3716
