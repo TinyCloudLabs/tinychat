@@ -34,7 +34,8 @@ export function LedgerView({ rows, now, state, onRefresh }: LedgerViewProps) {
               {rows.map((row) => {
                 const minutes = Math.max(0, Math.floor((now - Date.parse(row.stageSince)) / 60_000));
                 const elapsed = minutes < 1 ? "Under 1m" : minutes < 60 ? `${minutes}m` : minutes < 1440 ? `${Math.floor(minutes / 60)}h` : `${Math.floor(minutes / 1440)}d`;
-                const dependencies = [row.blockedBy ? `blocked by ${row.blockedBy}` : "", row.blocks ? `blocks ${row.blocks}` : ""].filter(Boolean).join(" · ");
+                const tasks = (count: number) => `${count} ${count === 1 ? "task" : "tasks"}`;
+                const dependencies = [row.blockedBy ? `Blocked by ${tasks(row.blockedBy)}` : "", row.blocks ? `Blocks ${tasks(row.blocks)}` : ""].filter(Boolean).join(" · ");
                 return (
                   <li key={row.id} className="grid gap-3 py-5 [overflow-wrap:anywhere] md:grid-cols-[minmax(0,1fr)_13rem] md:gap-6">
                     <div className="min-w-0">

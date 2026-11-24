@@ -13,7 +13,11 @@ test("renders task content as text, without links or agent-authored markup", () 
   expect(html).not.toContain("<img");
   expect(html).not.toContain("<a ");
   expect(html).toContain("2h");
-  expect(html).toContain("blocked by 2 · blocks 3");
+  expect(html).toContain("Blocked by 2 tasks · Blocks 3 tasks");
+});
+test("dependency counts use the singular for one task", () => {
+  const html = renderToStaticMarkup(<LedgerView rows={[{ ...row, blockedBy: 1, blocks: 1 }]} now={Date.parse("2026-11-23T14:00:00Z")} state="ready" onRefresh={() => {}} />);
+  expect(html).toContain("Blocked by 1 task · Blocks 1 task");
 });
 test("empty state is only shown after a successful load", () => {
   const render = (state: "loading" | "failed" | "ready") => renderToStaticMarkup(<LedgerView rows={[]} now={0} state={state} onRefresh={() => {}} />);

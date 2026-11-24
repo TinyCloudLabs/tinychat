@@ -29,30 +29,39 @@ interface TaskSnapshot {
 const OBJECT = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
 const TASK_ID = /^[a-zA-Z0-9][a-zA-Z0-9._~:+@=,-]{0,199}$/;
 const AGENT_ID = /^[a-f0-9]{16}$/;
-const UTC = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,9})?Z$/;
+const UTC = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,9})?(?:Z|\+00:00)$/;
 const THIRTY_DAYS = 30 * 24 * 60 * 60 * 1000;
+/** Allowed gap between a clock an agent wrote and the reader's clock, and between a check's `at` and its own event time. */
+export const SKEW = 5 * 60 * 1000;
 
-/** Display only: never turn agent text into markup, instructions or navigation. Mask before capping. */
+/** Display only: never turn agent text into markup, instructions or navigation. Normalise, then mask, then cap. */
 export function ledgerText(value: string, cap: number): string {
   return value
-    .replace(/https?:\/\/[^\s<>"']+/gi, (url) => url.split(/[?#]/, 1)[0]!.replace(/(https?:\/\/)[^/@]+:[^/@]+@/i, "$1[masked]@"))
+    .replace(/[\u00ad\u061c\u180e\u200b-\u200f\u2060-\u2064\u2066-\u2069\u202a-\u202e\ufeff]/g, "")
+    .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, " ")
+    .replace(/\b[a-z][a-z0-9+.-]*:\/\/[^\s<>"']+/gi, (url) => url.replace(/^([a-z][a-z0-9+.-]*:\/\/).*@/i, "$1[masked]@").split(/[?#]/, 1)[0]!)
     .replace(/-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?(?:-----END [^-]*PRIVATE KEY-----|$)/g, "[masked]")
+    .replace(/\bAuthorization\s*:\s*\S+(?:\s+\S+)?/gi, "Authorization: [masked]")
     .replace(/\bBearer\s+[a-zA-Z0-9._~+/=-]+/gi, "Bearer [masked]")
-    .replace(/\b(?:sk-[a-zA-Z0-9_-]{16,}|(?:gh[pousr]_|github_pat_)[a-zA-Z0-9_]{16,}|xox[baprs]-[a-zA-Z0-9-]+|AKIA[A-Z0-9]{16}|eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+)\b/g, "[masked]")
-    .replace(/\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret|private[_-]?key)\s*[:=]\s*["']?[^\s,"';]+["']?/gi, "[masked]")
-    .replace(/\b(?:0x)?[a-fA-F0-9]{64}\b/g, "[masked]")
-    .replace(/[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069]/g, " ")
+    .replace(/\b(?:sk-[a-zA-Z0-9_-]{16,}|sk_(?:live|test)_[a-zA-Z0-9]{8,}|(?:gh[pousr]_|github_pat_)[a-zA-Z0-9_]{16,}|glpat-[a-zA-Z0-9_-]{16,}|npm_[a-zA-Z0-9]{20,}|AIza[0-9A-Za-z_-]{30,}|xox[baprs]-[a-zA-Z0-9-]+|(?:AKIA|ASIA)[A-Z0-9]{16}|eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+)\b/g, "[masked]")
+    .replace(/\\?"d\\?"\s*:\s*\\?"[A-Za-z0-9_-]{20,}\\?"/g, "[masked]")
+    .replace(/(?<![a-z0-9])[a-z0-9_]*(?:api[\s_-]?key|token|secret|password|passwd|pwd|credential|private[\s_-]?key)[a-z0-9_]*[\\"']*\s*(?:=>|[:=])\s*[\\"']*[^\s,"';\\]+[\\"']*/gi, "[masked]")
+    .replace(/(?<![a-fA-F0-9])(?:0x)?[a-fA-F0-9]{64,}(?![a-fA-F0-9])/g, "[masked]")
     .trim().slice(0, cap);
 }
 function utc(value: unknown): value is string {
   return typeof value === "string" && UTC.test(value) && Number.isFinite(Date.parse(value)) && new Date(value).toISOString().slice(0, 19) === value.slice(0, 19);
 }
-function eventOrder(filename: string): string | null {
+export function eventOrder(filename: string): string | null {
   const match = /^(\d{4})(\d\d)(\d\d)T(\d\d)(\d\d)(\d\d)(\d{3,9})Z-([a-z0-9-]+)\.json$/.exec(filename);
   if (!match) return null;
   const [, year, month, day, hour, minute, second, fraction, suffix] = match;
   if (!utc(`${year}-${month}-${day}T${hour}:${minute}:${second}.${fraction}Z`)) return null;
   return `${year}${month}${day}T${hour}${minute}${second}${fraction!.padEnd(9, "0")}Z-${suffix}`;
+}
+/** The clock time an event id carries, in ms. */
+export function orderTime(order: string): number {
+  return Date.parse(`${order.slice(0, 4)}-${order.slice(4, 6)}-${order.slice(6, 8)}T${order.slice(9, 11)}:${order.slice(11, 13)}:${order.slice(13, 15)}Z`);
 }
 function references(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
@@ -90,7 +99,9 @@ export function foldLedger(records: readonly LedgerRecord[], now: number, agentN
       if (!doer || !AGENT_ID.test(doer) || doer === folder || !taskId || !TASK_ID.test(taskId)) continue;
       const order = eventOrder(filename!);
       const checker = canonicalDid(value.checkedBy, folder);
-      if (!order || !checker || !utc(value.at) || Date.parse(value.at) > now || typeof value.evidence !== "string") continue;
+      if (!order || !checker || !utc(value.at) || typeof value.evidence !== "string") continue;
+      const eventTime = orderTime(order);
+      if (eventTime > now + SKEW || Math.abs(Date.parse(value.at) - eventTime) > SKEW) continue;
       const evidence = ledgerText(value.evidence, 200);
       if (!evidence) continue;
       const id = `${doer}/${taskId}`;
@@ -102,14 +113,15 @@ export function foldLedger(records: readonly LedgerRecord[], now: number, agentN
     if (parts.length !== 3 || !task || !TASK_ID.test(task) || value.taskId !== task) continue;
     const order = eventOrder(parts[2]!);
     const did = canonicalDid(value.agent, folder);
-    if (!order || !did || typeof value.title !== "string" || !utc(value.stageSince) || Date.parse(value.stageSince) > now || !LEDGER_STAGES.includes(value.stage as Stage)) continue;
+    if (!order || !did || typeof value.title !== "string" || !utc(value.stageSince) || orderTime(order) > now + SKEW || Date.parse(value.stageSince) > now + SKEW || !LEDGER_STAGES.includes(value.stage as Stage)) continue;
     const title = ledgerText(value.title, 200);
     if (!title) continue;
     const id = `${folder}/${task}`;
     if (tasks.has(id) && tasks.get(id)!.order >= order) continue;
-    const name = agentNames.get(did) ?? (typeof value.agentName === "string" ? value.agentName : "");
+    const name = agentNames.get(did) ?? "";
     const safeName = ledgerText(name, 60);
-    const condition = typeof value.condition === "string" && /^(Waiting on you|Blocked: .+|Off on purpose: .+)$/.test(value.condition) ? ledgerText(value.condition, 500) : undefined;
+    const conditionText = typeof value.condition === "string" ? ledgerText(value.condition, 500) : "";
+    const condition = /^(?:Waiting on you\.?|Blocked: .+|Off on purpose: .+)$/i.test(conditionText) ? conditionText : undefined;
     tasks.set(id, {
       order,
       blockedBy: references(value.blockedBy),
@@ -133,8 +145,9 @@ export function foldLedger(records: readonly LedgerRecord[], now: number, agentN
       snapshot.row.evidence = check.evidence;
       snapshot.row.checkedBy = check.checkedBy;
     }
-    const done = snapshot.row.stage === "Checked" || snapshot.row.stage === "Done by agent, not checked" || snapshot.row.stage === "Dropped";
-    if (done && now - Date.parse(snapshot.row.stageSince) > THIRTY_DAYS) continue;
+    const hideAfter = orderTime(snapshot.row.stage === "Checked" ? checks.get(id)!.order : snapshot.order);
+    const done = ["Checked", "Done by agent, not checked", "Dropped", "Released", "Turned on"].includes(snapshot.row.stage);
+    if (done && now - hideAfter > THIRTY_DAYS) continue;
     visible.set(id, snapshot);
   }
   for (const snapshot of visible.values()) {
