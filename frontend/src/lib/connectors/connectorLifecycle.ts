@@ -146,6 +146,11 @@ export interface DisconnectProgress {
    * tombstones what existed BEFORE the deletion, never an emptied space.
    */
   ids: string[] | null;
+  /**
+   * The ids of the import permissions the server held when the run began; `[]` once withdrawn.
+   * Carried across a retry because the server has nothing left to list after its first step.
+   */
+  grantCids?: string[];
   /** A message the owner must still read after the run completed, e.g. an unconfirmed revoke. */
   notice?: string;
 }
@@ -243,6 +248,13 @@ export interface DisconnectStore {
   updateSyncState(input: UpdateSyncStateInput): Promise<StoreResult<void>>;
 }
 
+/** What a teardown needs to withdraw the Fireflies import permissions: list them, then revoke each at the node. */
+export interface DisconnectImportGrants {
+  listGrantCids(): Promise<ConnectorWebhooksResult<string[]>>;
+  /** True once the permission is revoked at the node. */
+  revoke(cid: string): Promise<boolean>;
+}
+
 export interface DisconnectDeps {
   connectorId: ConnectorId;
   /** The SQL/source name, sent verbatim to `POST /purged`. */
@@ -278,6 +290,11 @@ export interface DisconnectDeps {
    * is otherwise a hard failure with a retry.
    */
   featureDark?: boolean;
+  /**
+   * Fireflies only, when the server import is wired. The permissions the server holds for this
+   * owner are listed before the first server step and withdrawn at the node after `DELETE /config`.
+   */
+  importGrants?: DisconnectImportGrants;
 }
 
 export type DisconnectEmit = (
@@ -350,17 +367,37 @@ async function runDisconnectSteps(
   for (const step of plan) {
     if (progress.completed.includes(step)) continue;
     push({ ...progress, running: step });
+    // The first step that can make the server drop its stored permissions must find their ids
+    // already read: afterwards the server has nothing left to list.
+    if (deps.importGrants !== undefined && progress.grantCids === undefined && SERVER_GRANT_STEPS.includes(step)) {
+      const collected = await collectImportGrantCids(deps.importGrants, step);
+      if (collected.failure) {
+        push({ ...progress, running: null, failure: collected.failure });
+        return progress;
+      }
+      push({ ...progress, grantCids: collected.grantCids });
+    }
     const outcome = await runStep(step, deps, progress);
     if (outcome.failure) {
       push({ ...progress, running: null, failure: outcome.failure });
       return progress;
+    }
+    // `DELETE /config` is the step after which the server no longer holds the permissions, whatever
+    // the mode, so it is where they are withdrawn at the node as well.
+    let notice = outcome.notice;
+    let grantCids = progress.grantCids;
+    if (step === "disable-webhooks" && deps.importGrants !== undefined && grantCids !== undefined && grantCids.length > 0) {
+      const stillValid = await revokeImportGrants(deps.importGrants, grantCids);
+      if (stillValid) notice = [notice ?? progress.notice, IMPORT_GRANT_REVOKE_UNCONFIRMED_MESSAGE].filter(Boolean).join(" ");
+      grantCids = [];
     }
     push({
       ...progress,
       running: null,
       completed: [...progress.completed, step],
       ...(outcome.ids === undefined ? {} : { ids: outcome.ids }),
-      ...(outcome.notice === undefined ? {} : { notice: outcome.notice }),
+      ...(grantCids === undefined ? {} : { grantCids }),
+      ...(notice === undefined ? {} : { notice }),
     });
   }
 
@@ -435,7 +472,7 @@ async function recordPurge(
   return {
     failure: {
       step: "record-purge",
-      message: `${webhookFailureMessage(result)} Nothing has been deleted — we record the deletion first so a late notification can't bring these meetings back.`,
+      message: `${webhookFailureMessage(result)} ${deps.importGrants === undefined ? "Nothing has been deleted" : "No meetings were deleted, though our server may already have dropped its permission to import more"} — we record the deletion first so a late notification can't bring these meetings back.`,
       retryable: isRetryable(result),
     },
   };
@@ -452,6 +489,46 @@ async function disableWebhooks(deps: DisconnectDeps): Promise<StepOutcome> {
       retryable: isRetryable(result),
     },
   };
+}
+
+/** Steps that can make the server drop the stored import permissions; the first one to run reads their ids. */
+const SERVER_GRANT_STEPS: readonly DisconnectStep[] = ["record-purge", "teardown-server-credential", "disable-webhooks"];
+
+export const IMPORT_GRANT_REVOKE_UNCONFIRMED_MESSAGE =
+  "Our server no longer holds the permission to import your Fireflies meetings, but we couldn't confirm it was withdrawn everywhere. It ends on its own within 7 days.";
+
+export async function collectImportGrantCids(
+  importGrants: DisconnectImportGrants,
+  step: DisconnectStep,
+): Promise<{ failure: DisconnectFailure } | { failure?: undefined; grantCids: string[] }> {
+  const listed = await importGrants.listGrantCids();
+  if (listed.status === "ok") return { grantCids: listed.value };
+  // The server has the import off, so it holds no permission to list.
+  if (listed.status === "feature-dark") return { grantCids: [] };
+  return {
+    failure: {
+      step,
+      message: `${webhookFailureMessage(listed)} We couldn't check which Fireflies import permissions our server holds. Nothing has been changed.`,
+      retryable: isRetryable(listed),
+    },
+  };
+}
+
+/** True when at least one permission could not be confirmed withdrawn. Each gets one more try. */
+export async function revokeImportGrants(importGrants: DisconnectImportGrants, cids: readonly string[]): Promise<boolean> {
+  let unconfirmed = false;
+  for (const cid of cids) {
+    let revoked = false;
+    for (let attempt = 0; attempt < 2 && !revoked; attempt += 1) {
+      try {
+        revoked = await importGrants.revoke(cid);
+      } catch {
+        revoked = false;
+      }
+    }
+    if (!revoked) unconfirmed = true;
+  }
+  return unconfirmed;
 }
 
 export type ServerCredentialTeardown =
