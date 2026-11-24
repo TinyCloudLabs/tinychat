@@ -104,6 +104,29 @@ export const CONNECTOR_SECRET_KEYS: readonly { keyPath: string; description: str
   { keyPath: "secrets/scoped/google-meet/refresh_token", description: "Keep your Google sign-in for Google Meet encrypted." },
 ];
 
+/** What the approval for a new account's first connector key says (TC-4243). */
+export const CONNECTOR_NETWORK_SETUP_DESCRIPTION = "Set up encryption for your connector keys. This does not allow reading anything.";
+
+/** An approval for a new account's first connector key lasts no longer than this. */
+export const CONNECTOR_NETWORK_SETUP_MAX_MS = 3_600_000;
+
+/**
+ * The one permission asked for on demand when a new account saves its first connector key: `network.create` on the owner's
+ * encryption network and nothing else (no decrypt, no key). Never part of a sign-in.
+ */
+export function connectorNetworkSetupPermission(
+  address: string,
+  chainId = 1,
+): { service: string; path: string; actions: string[]; skipPrefix: true; description: string } {
+  return {
+    service: "tinycloud.encryption",
+    path: encryptionNetworkId(address, chainId),
+    skipPrefix: true,
+    actions: ["network.create"],
+    description: CONNECTOR_NETWORK_SETUP_DESCRIPTION,
+  };
+}
+
 /**
  * One entry per connector secret key, on the owner's network: `<network>/<key path>` with decrypt (read it) and
  * key.create (a save makes the key). These are the only actions the SDK accepts on a secret's key.
