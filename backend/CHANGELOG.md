@@ -1,5 +1,13 @@
 # @tinychat/backend
 
+## 0.14.0-beta.3
+
+### Patch Changes
+
+- 0fc95c7: The backend's sign-in manifest and the delegation it asks for name it "TinyCloud One backend" and "TinyCloud One Backend". Permissions, ids and the policy hash stay the same.
+
+  Details: TC-3659
+
 ## 0.14.0-beta.2
 
 ### Patch Changes
