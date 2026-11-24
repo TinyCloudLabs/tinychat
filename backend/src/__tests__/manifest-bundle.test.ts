@@ -30,9 +30,7 @@ describe("TinyChat manifest sign-in bundle", () => {
     ]);
     expect(grant("tinycloud.space", "").map((resource) => resource.actions)).toEqual([["tinycloud.space/info"]]);
     for (const name of ["xyz.tinycloud.sample.healthlog/healthlog", "xyz.tinycloud.sample.recipes/recipes"]) {
-      expect(grant("tinycloud.sql", name).map((resource) => resource.actions)).toEqual([
-        ["tinycloud.sql/read", "tinycloud.sql/write", "tinycloud.sql/schema"],
-      ]);
+      expect(grant("tinycloud.sql", name).map((resource) => resource.actions)).toEqual([]);
     }
   });
 

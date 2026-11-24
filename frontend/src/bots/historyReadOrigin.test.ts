@@ -19,6 +19,7 @@ async function threadOf(records: StoredRecord[]): Promise<TinyCloudWeb> {
   });
   return {
     session: () => ({ address: ADDRESS, chainId: 1 }),
+    hasPermissions: () => true,
     kvForSpace: () => ({
       list: async () => ({ ok: true, data: { keys: stored.map((entry) => entry.key), truncated: false } }),
       get: async (key: string) => ({ ok: true, data: { data: { aad: stored.find((entry) => entry.key === key)!.aad, key } } }),

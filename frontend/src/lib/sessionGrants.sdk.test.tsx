@@ -1,5 +1,5 @@
 // What each TinyChat web flow asks OpenKey to sign, and what the resulting session may do, on the installed web SDK.
-// __fixtures__/session-grants.beta26.json holds both as captured on web-sdk 3.12.0-beta.26 (production before the
+// __fixtures__/session-grants.tc4244.json holds both as captured on web-sdk 3.12.0-beta.26 (production before the
 // 3.12.0-beta.37 repin). Every flow must ask for the same thing in the same words, and the session must hold exactly
 // the same resources and actions: nothing missing, nothing extra. Details: TC-3030
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from "bun:test";
@@ -13,7 +13,7 @@ import { reauthorizeHome } from "./homeReauthorize";
 import { WEB_APP_MANIFEST } from "./webSignInPrefetch";
 import { readOnlyAccountProvider } from "./replication/readOnlyAccountProvider";
 import { AGENT_CONSENT_MANIFEST, MCP_CONSENT_MANIFEST, actionsFromAuthJwt, ephemeralAgentSdkConfig, mintAgentDelegation } from "./agentDelegation";
-import production from "./__fixtures__/session-grants.beta26.json";
+import production from "./__fixtures__/session-grants.tc4244.json";
 // The Connectors flows, captured on this build: the exact connector keys and nothing on the whole encryption network.
 import connectors from "./__fixtures__/session-grants.b7ecb653.json";
 

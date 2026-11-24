@@ -3,6 +3,7 @@
 // It does not throw it at sign-in: the phone's session is restored, not signed in, by the SDK, so the refusal comes
 // back from the first call as a Result error (`code: "NETWORK_ERROR"`, `cause.code: "ACCOUNT_SETUP_REQUIRED"`).
 // `checkAccountSetup` makes that first call at sign-in so the owner reads this screen's copy instead of a generic failure.
+import { APP_ID } from "@tinyboilerplate/core";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { withAbortTimeout } from "./abortTimeout";
 
@@ -40,8 +41,8 @@ export function isAccountSetupRequired(error: unknown): boolean {
   return false;
 }
 
-/** A path inside the sign-in's `threads/` grant. The read only asks the node; it need not exist. */
-const ACCOUNT_CHECK_KEY = "threads/.account-check";
+/** A path inside the sign-in's `threads/` grant. The key is read and never written; the read only asks the node and the key need not exist. */
+const ACCOUNT_CHECK_KEY = `${APP_ID}/threads/.account-check`;
 const ACCOUNT_CHECK_TIMEOUT_MS = 10_000;
 
 /**

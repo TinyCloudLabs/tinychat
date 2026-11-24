@@ -1,4 +1,4 @@
-# TinyChat
+# TinyCloud One
 
 Reusable TinyCloud app substrate with OpenKey browser identity, backend SIWE
 session verification, manifest-backed backend delegation, stale-policy
@@ -7,7 +7,7 @@ invalidation, and one delegated KV probe.
 This app was generated with:
 
 - App id: `xyz.tinycloud.tinychat`
-- App name: `TinyChat`
+- App name: `TinyCloud One`
 - Backend operational prefix: `ops.tinychat.backend`
 - Frontend package: `@tinychat/frontend`
 - Backend package: `@tinychat/backend`
