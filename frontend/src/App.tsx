@@ -32,7 +32,7 @@ import {
   offeredChatModelContextTokens,
 } from "@tinyboilerplate/core";
 import { desktopSignInWithRenewal, renewalRestoreFor, webSignInRenewal } from "./lib/renewalReceipt";
-import { withConnectorGrants } from "./lib/connectors/encryptionGrant";
+import { withConnectorKeyGrants } from "./lib/connectors/encryptionGrant";
 import { homeFeaturesToRequest, webSignInManifest, readHomeFeatures, type HomeFeature } from "./lib/homeFeatures";
 import { rememberExistingWebConnectors } from "./lib/rememberWebConnectors";
 import { reauthorizeHome } from "./lib/homeReauthorize";
@@ -1257,7 +1257,7 @@ export function App() {
         // it asks in place otherwise). The desktop app signs in with them; the phone app signs in above, natively.
         manifest: platform === "web"
           ? webSignInManifest(manifest, readHomeFeatures(browserRevisionStore(), connectedAddress), connectedAddress)
-          : withConnectorGrants(manifest, connectedAddress),
+          : withConnectorKeyGrants(manifest, connectedAddress),
         // The dev WebView runs at localhost:5186, whose port the SDK signs into
         // SIWE's domain. Production accepts the fixed Tauri hostname instead.
         ...(import.meta.env.DEV && "__TAURI_INTERNALS__" in globalThis ? { domain: "localhost" } : {}),
