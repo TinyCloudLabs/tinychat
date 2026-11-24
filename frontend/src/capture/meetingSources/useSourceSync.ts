@@ -24,6 +24,8 @@ import {
 import { readBackgroundDrainGeneration } from "@/chat/useBackgroundDrain";
 import { GRANOLA_MISSING_KEY_CODE, GRANOLA_RECONNECT_REQUIRED } from "@/lib/connectors/granolaStatus";
 import type { ConnectorDescriptor, ConnectorId, SyncProgress } from "@/lib/connectors/types";
+import { readWithOlderKeysApproval } from "@/lib/connectors/olderKeyRead";
+import { OLDER_KEYS_SYNC_DECLINED } from "@/lib/homeStrings";
 import { SECRETS_UNAVAILABLE_IN_APP_MESSAGE, secretsAvailable } from "@/lib/openkeyNative";
 
 export const SOURCE_SYNC_FAILED_MESSAGE = "Sync failed. Try again.";
@@ -61,6 +63,8 @@ export interface SourceSyncDeps {
   isSecretsUnlocked: (tcw: TinyCloudWeb) => boolean;
   unlockSecrets: typeof unlockSecrets;
   getConnectorKey: typeof getConnectorKey;
+  /** The older-keys approval a Sync now press may ask for (a test seam: the default is the real approval). */
+  resolveOlderKeys?: Parameters<typeof readWithOlderKeysApproval>[2];
   isGmeetSyncInFlight: () => boolean;
   isGmeetNotesSyncInFlight: () => boolean;
   /** Resolves once the session-start run's foreground part has finished (at once when none is running). */
@@ -130,8 +134,10 @@ export async function runSourceSync(
       if (d.id === "google-meet") await deps.awaitSessionSync();
     }
     if (input.isCurrent?.() === false) return null;
-    const key = await deps.getConnectorKey<SecretsErr>(tcw, d);
+    // Pressing Sync now is the user's action: an older key asks the older-keys approval once, then reads once more.
+    const key = await readWithOlderKeysApproval(tcw, () => deps.getConnectorKey<SecretsErr>(tcw, d), deps.resolveOlderKeys);
     if (!key.ok) {
+      if ("olderKeys" in key) return key.olderKeys === "declined" ? OLDER_KEYS_SYNC_DECLINED : SOURCE_SYNC_FAILED_MESSAGE;
       if (d.id === "granola" && key.error?.code === GRANOLA_MISSING_KEY_CODE) return GRANOLA_RECONNECT_REQUIRED;
       if (key.error?.code === DECRYPTION_FAILED) return reconnectSourceMessage(d.name);
       return (

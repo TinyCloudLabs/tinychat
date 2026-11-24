@@ -52,6 +52,7 @@ import {
 } from "./connectorStore";
 import { fromFireflies, isTerminal, type SyncError } from "./firefliesSync";
 import { getConnectorKey, isSecretsUnlocked } from "./connectorSecrets";
+import { needsOlderKeysApproval } from "./olderKeyRead";
 import type {
   ConnectorAckItem,
   ConnectorAckRequest,
@@ -108,11 +109,11 @@ export interface TargetedAckClient {
 }
 
 /**
- * Why nothing was processed. Both values are DEFINED product states the card
- * renders as an actionable "Sync queued meetings" affordance — neither is an
- * error, and neither triggers a prompt from here.
+ * Why nothing was processed. Every value is a DEFINED product state the card
+ * renders (an actionable "Sync queued meetings" affordance, or a pointer to the
+ * older-keys approval) — none is an error, and none triggers a prompt from here.
  */
-export type TargetedIngestBlockedReason = "secrets-locked" | "key-missing";
+export type TargetedIngestBlockedReason = "secrets-locked" | "key-missing" | "older-keys";
 
 export interface TargetedIngestFailure {
   meetingId: string;
@@ -195,8 +196,10 @@ function fromStore(err: StoreError, context: string): SyncError {
 /**
  * Classify a `tcw.secrets.get` failure.
  *
- * Only two shapes are a no-op: the vault is locked, or this connector has no
- * stored key (disconnected on another device, or never connected). Anything
+ * Only three shapes are a no-op: the vault is locked, this connector has no
+ * stored key (disconnected on another device, or never connected), or the key
+ * is an older one that needs the older-keys approval (this engine never asks
+ * for it; Sync now on the connector does). Anything
  * else is a real failure and must surface — a secrets-service outage read as
  * "no key" would quietly stop ingesting forever.
  */
@@ -205,6 +208,7 @@ function classifySecretsError(err: unknown): TargetedIngestBlockedReason | null 
   const e = err as { code?: unknown; message?: unknown };
   const code = typeof e.code === "string" ? e.code : "";
   const message = typeof e.message === "string" ? e.message : "";
+  if (needsOlderKeysApproval(err)) return "older-keys";
   if (/VAULT_LOCKED/i.test(code)) return "secrets-locked";
   if (/NOT_FOUND/i.test(code)) return "key-missing";
   if (/not found|404/i.test(message)) return "key-missing";
