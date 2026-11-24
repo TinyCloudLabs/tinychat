@@ -3,7 +3,10 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { clearSessionAfterHandoff } from "../sessionSignedOut";
 import { revokeImportGrants, type DisconnectImportGrants } from "./connectorLifecycle";
 import { writeFirefliesImportWanted, type FirefliesImportApi } from "./firefliesImport";
-import type { ConnectorWebhooksResult } from "./webhooksApi";
+import { ROUTE_UNAVAILABLE_HEADER, type ConnectorWebhooksResult } from "./webhooksApi";
+
+/** The value of the backend's marker on the 404 it sends for these routes while the server import is off. */
+export const FIREFLIES_IMPORT_ROUTE_UNAVAILABLE = "fireflies-import";
 
 /** The owner-scoped routes for the permissions the server holds to import Fireflies meetings. */
 export const FIREFLIES_IMPORT_DELEGATION_PATH = "/api/connectors/fireflies/delegation";
@@ -53,8 +56,12 @@ export function createFirefliesImportGrantsClient(
       await clearSessionAfterHandoff(sessionStore);
       return { status: "unauthenticated" };
     }
-    // The routes are mounted only while the server import is on; a 404 means the server holds nothing.
-    if (response.status === 404) return { status: "feature-dark" };
+    // While the server import is off the backend answers 404 with its own marker: it holds nothing. A 404 without the
+    // marker came from somewhere else, so it says nothing about what the server holds and is a failure to retry.
+    if (response.status === 404) {
+      if (response.headers.get(ROUTE_UNAVAILABLE_HEADER) === FIREFLIES_IMPORT_ROUTE_UNAVAILABLE) return { status: "feature-dark" };
+      return { status: "retryable", httpStatus: 404, code: null };
+    }
     if (!response.ok) {
       const retryable = response.status === 429 || response.status >= 500;
       return { status: retryable ? "retryable" : "rejected", httpStatus: response.status, code: null };

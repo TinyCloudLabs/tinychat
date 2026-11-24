@@ -204,6 +204,22 @@ function toFirefliesGrantStatus(loaded: LoadedFirefliesGrant): FirefliesGrantSta
 }
 
 /**
+ * Deletes every stored Fireflies import record, sealed or marker. Run at start-up while the server import is off, so
+ * nothing the owner granted stays stored once the import cannot be used or turned off. Needs no key: it reads only
+ * the key names. Returns how many it removed; a failure leaves the rest for the next start.
+ */
+export async function removeAllFirefliesGrants(kv: FirefliesGrantKvPort): Promise<number> {
+  if (!kv.keys) throw new Error("fireflies_grant_listing_unavailable");
+  let removed = 0;
+  for (const key of await kv.keys(FIREFLIES_IMPORT_GRANT_KEY_PREFIX)) {
+    if (!ADDRESS_RE.test(key.slice(FIREFLIES_IMPORT_GRANT_KEY_PREFIX.length))) continue;
+    await kv.delete(key);
+    removed += 1;
+  }
+  return removed;
+}
+
+/**
  * Owner-scoped encrypted store for Fireflies server-import grants in backend-own KV
  * (`delegations/fireflies-import/{address}`).
  *
