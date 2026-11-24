@@ -72,7 +72,10 @@ if (secrets) setInterval(() => void secrets.poll().catch(() => undefined), SECRE
 // operator line naming the file and the recovery; the non-zero exit keeps Docker restarting it, each time logged.
 function startGateway(): { gateway: Gateway; reads: MeetingDesk } {
   try {
-    const reads = new MeetingDesk({ backendOrigin, backendCallSecret, store: fileHeldStore(join(dirname(cfg.budgetFile), "held.json")) });
+    const reads = new MeetingDesk({
+      backendOrigin, backendCallSecret, forwardRefusals: true,
+      store: fileHeldStore(join(dirname(cfg.budgetFile), "held.json")),
+    });
     return { gateway: new Gateway(cfg, {
       store: fileBudgetStore(cfg.budgetFile),
       ownerStore: cfg.ownersFile ? fileOwnerStore(cfg.ownersFile) : undefined,

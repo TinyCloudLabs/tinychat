@@ -5,6 +5,7 @@ import { assertKvResult, createBackendIdentity, isKvMissingKeyResult, withSessio
 import type { TinyCloudNode } from "@tinycloud/node-sdk";
 import { createDstackKeyClient, type DstackKeyClient } from "../attestation/dstackClient.js";
 import { isKvPreconditionFailed } from "../exo/activated-grant.js";
+import type { StandingReadRuntime } from "./standing.js";
 import { TRUSTBOT_READ_GRANT_KEY_PREFIX, TrustBotReadGrants, type ReadGrantStore } from "./grants.js";
 
 /** The read identity's own space prefix. It keeps nothing there; the prefix only names its session. */
@@ -77,6 +78,7 @@ export async function startTrustBotReads(options: {
   otherDelegateDids: ReadonlyArray<string | undefined>;
   dstack?: DstackKeyClient;
   createIdentity?: typeof createBackendIdentity;
+  standing?: StandingReadRuntime;
 }): Promise<(TrustBotReadGrants & { telegram: TrustBotReadGrants }) | undefined> {
   let root: Buffer | undefined;
   let privateKey: Buffer | undefined;
@@ -113,8 +115,10 @@ export async function startTrustBotReads(options: {
       reader, store, host: options.host, areas: ["telegram"], sealSecret: telegramSeal,
       keyPrefix: `${TRUSTBOT_TELEGRAM_READ_GRANT_KEY_PREFIX}v1/${readerId}/`,
     });
+    // Standing reads cover the main grant's areas only; the Telegram instance has none.
     return Object.assign(new TrustBotReadGrants({
       reader, store, host: options.host, sealSecret, keyPrefix: `${TRUSTBOT_READ_GRANT_KEY_PREFIX}v1/${readerId}/`,
+      standing: options.standing,
     }), { telegram });
   } catch {
     console.error("[startup] TrustBot's enclave read identity is unavailable; TrustBot reads are off.");
