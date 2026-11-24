@@ -26,7 +26,7 @@ const backendKv = (path: string, actions: string[]): PermissionEntry => ({
 export const TINYCHAT_BACKEND_MANIFEST: Manifest = {
   manifest_version: 1,
   app_id: "xyz.tinycloud.tinychat.backend",
-  name: "TinyChat backend",
+  name: "TinyCloud One backend",
   space: TINYCHAT_BACKEND_KV_PREFIX,
   prefix: "",
   defaults: false,

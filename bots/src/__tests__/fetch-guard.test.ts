@@ -96,7 +96,7 @@ describe("one fetch", () => {
     expect(request.startsWith("GET /a?b=c HTTP/1.1\r\nHost: docs.example.com\r\n")).toBe(true);
     expect(request.toLowerCase()).not.toMatch(/cookie|authorization|referer|x-forwarded|origin:/);
     expect(request).toContain("Accept-Encoding: identity");
-    expect(request).toContain("User-Agent: TinyChatBot/");
+    expect(request).toContain("User-Agent: TinyCloudOneBot/");
     expect(request).not.toContain("#");
   });
 
