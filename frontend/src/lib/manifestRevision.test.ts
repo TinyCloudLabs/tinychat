@@ -255,7 +255,7 @@ describe("users without a stored session", () => {
     }
     const noSkip = full.map((entry) => entry.service === "tinycloud.space" ? { service: entry.service, path: entry.path, actions: entry.actions } : entry);
     expect(manifestCarriesBundle({ permissions: noSkip })).toBe(false);
-    const wrongSpace = full.map((entry) => entry.service === "tinycloud.kv" && entry.path === "" ? { ...entry, space: "default" } : entry);
+    const wrongSpace = full.map((entry) => entry.service === "tinycloud.kv" && entry.path === "xyz.tinycloud.rocinante/" ? { ...entry, space: "default" } : entry);
     expect(manifestCarriesBundle({ permissions: wrongSpace })).toBe(false);
   });
 

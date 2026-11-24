@@ -637,11 +637,27 @@ nothing below may be reported as done on its behalf.
 - **Home manifest (TC-2043):** deploy the backend that serves revision 3's
   manifest before the frontend revision gate. Existing web sessions re-sign
   once per device after the served bundle is available; native (mobile)
-  sessions keep their previous grant until their next explicit sign-in. The broad `applications`
-  KV grant covers app folders; SQL covers Home's six databases and the named
+  sessions keep their previous grant until their next explicit sign-in. Through revision 4 the broad `applications`
+  KV grant covered every app folder (revision 5, below, narrows it); SQL covers Home's six databases and the named
   Health Log and Recipes databases. Notes has no runnable beta bundle.
   Adding a catalog database requires a manifest bump and another one-time
   sign-in. The `secrets` grants and backend delegation policy are unchanged.
+- **Home manifest revision 5 (narrowed KV):** the broad `applications` KV root
+  entry is gone. The manifest and the served bundle carry one read-only
+  folder (`xyz.tinycloud.rocinante/`: get, list, metadata, for the Ledger app
+  and its listing check) and the voice-note job folder
+  (`exo/voiceNotes/hostedJobs/`). Order: first the OpenKey Home native
+  ceiling must list both paths, because the phone request carries every
+  applications KV entry of the manifest and OpenKey refuses a path outside
+  the ceiling (the `native-ceiling` check stays red until it does). Then the
+  backend: it serves the revision 5 manifest and its native sign-in check
+  accepts the named folder while still accepting the old root, so sessions
+  signed under revision 4 keep verifying. Then the web app and the phone app.
+  Each device re-signs once; a phone keeps its previous grant until its next
+  explicit sign-in.
+  Explorer's all-apps KV read is no longer in the sign-in grant: on the web
+  it asks when first needed (step-up), and the phone app, which cannot step
+  up for it, no longer shows that one view.
 - **SIWE audience (TC-1201):** `/api/auth/verify` checks the signed domain
   and URI before consuming the nonce. The web SDK signs the page host,
   including any port, and a canonical `did:key` session verification-method

@@ -21,7 +21,9 @@ describe("TinyChat manifest sign-in bundle", () => {
         ["tinycloud.sql/read", "tinycloud.sql/write", "tinycloud.sql/schema"],
       ]);
     }
-    expect(grant("tinycloud.kv", "").map((resource) => resource.actions)).toEqual([["tinycloud.kv/get", "tinycloud.kv/put", "tinycloud.kv/del", "tinycloud.kv/list", "tinycloud.kv/metadata"]]);
+    expect(grant("tinycloud.kv", "")).toEqual([]);
+    expect(grant("tinycloud.kv", "xyz.tinycloud.rocinante/").map((resource) => resource.actions)).toEqual([["tinycloud.kv/get", "tinycloud.kv/list", "tinycloud.kv/metadata"]]);
+    expect(grant("tinycloud.kv", `${APP_ID}/exo/voiceNotes/hostedJobs/`).map((resource) => resource.actions)).toEqual([["tinycloud.kv/get", "tinycloud.kv/put", "tinycloud.kv/del", "tinycloud.kv/list"]]);
     expect(grant("tinycloud.kv", `${APP_ID}/exo/v1/requests/`).map((resource) => resource.actions)).toEqual([
       ["tinycloud.kv/get", "tinycloud.kv/list", "tinycloud.kv/del"],
     ]);

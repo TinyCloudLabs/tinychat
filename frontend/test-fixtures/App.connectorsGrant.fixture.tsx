@@ -570,15 +570,15 @@ test("a second ask while OpenKey is open joins the first: one sign-in, not two",
 
 test("a session saved under the current revision restores with no re-sign notice", async () => {
   localStorage.setItem(APP_SESSION_KEY, JSON.stringify({ token: "bearer", expiresAt: Date.now() + 3_600_000, address: ADDRESS }));
-  localStorage.setItem(REVISION_KEY, "4");
+  localStorage.setItem(REVISION_KEY, "5");
   await mount();
   expect(host!.textContent).not.toContain(NOTICE);
-  expect(localStorage.getItem(REVISION_KEY)).toBe("4");
+  expect(localStorage.getItem(REVISION_KEY)).toBe("5");
 });
 
 test("web restore checks the reduced base so a non-Connectors session can reload", async () => {
   restoreThroughSdk = true;
-  localStorage.setItem(REVISION_KEY, "4");
+  localStorage.setItem(REVISION_KEY, "5");
   localStorage.setItem(APP_SESSION_KEY, JSON.stringify({ token: "bearer", expiresAt: Date.now() + 60_000, address: ADDRESS }));
   await mount();
   expect(lastRestoreConfig!.manifest).toEqual({ ...readManifest("manifest.json"), secrets: {} });
@@ -592,7 +592,7 @@ test("an old full web session remembers a connected source and keeps its backgro
     queries.push(sql);
     return { ok: true, data: { rows: [["fireflies", "connected", null, null, null, 0]] } };
   } }) } as unknown as TinyCloudWeb["sql"];
-  localStorage.setItem(REVISION_KEY, "4");
+  localStorage.setItem(REVISION_KEY, "5");
   localStorage.setItem(APP_SESSION_KEY, JSON.stringify({ token: "bearer", expiresAt: Date.now() + 60_000, address: ADDRESS }));
   restoreResult = { kind: "restored", tcw: restored, address: ADDRESS };
   await mount();
@@ -606,7 +606,7 @@ test("an old full web session remembers a connected source and keeps its backgro
 test("an old full web session without a connected source leaves the feature record unset", async () => {
   const restored = fakeTcw(true, "restored");
   restored.sql = { db: () => ({ query: async () => ({ ok: true, data: { rows: [] } }) }) } as unknown as TinyCloudWeb["sql"];
-  localStorage.setItem(REVISION_KEY, "4");
+  localStorage.setItem(REVISION_KEY, "5");
   localStorage.setItem(APP_SESSION_KEY, JSON.stringify({ token: "bearer", expiresAt: Date.now() + 60_000, address: ADDRESS }));
   restoreResult = { kind: "restored", tcw: restored, address: ADDRESS };
   await mount();

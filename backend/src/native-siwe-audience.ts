@@ -15,6 +15,10 @@ const CATALOG_SQL_PATHS: Record<string, true> = {
   "xyz.tinycloud.sample.healthlog/healthlog": true,
   "xyz.tinycloud.sample.recipes/recipes": true,
 };
+// Revision 5 narrows the broad applications KV root to this one named folder (the Ledger app and its listing check).
+// Read-only; the root stays accepted so a session signed under an earlier revision still verifies.
+const LEDGER_KV_PATH = "xyz.tinycloud.rocinante/";
+const LEDGER_KV_ACTIONS: readonly string[] = ["tinycloud.kv/get", "tinycloud.kv/list", "tinycloud.kv/metadata"];
 
 /** OpenKey signs a session DID as URI, so its app audience lives in signed ReCap paths.
  * Accept only Home's explicit applications-space scope; the native client ceiling
@@ -45,8 +49,10 @@ export function hasTinyChatNativeAudience(message: string, address: string, chai
     }
     if (entry.service !== "kv" && entry.service !== "sql") return false;
     const homeKvRoot = entry.service === "kv" && entry.path === "";
+    const ledgerKv = entry.service === "kv" && entry.path === LEDGER_KV_PATH &&
+      entry.actions.every((action) => typeof action === "string" && LEDGER_KV_ACTIONS.includes(action));
     const catalogDatabase = entry.service === "sql" && CATALOG_SQL_PATHS[entry.path] === true;
-    if (!homeKvRoot && !catalogDatabase &&
+    if (!homeKvRoot && !ledgerKv && !catalogDatabase &&
       (!entry.path.startsWith(APP_PATH_PREFIX) || !isCanonicalResourcePath(entry.path) ||
         !/^[A-Za-z0-9._~@+=,:/-]+$/.test(entry.path))) return false;
     if (entry.actions.length === 0) return false;
@@ -56,7 +62,7 @@ export function hasTinyChatNativeAudience(message: string, address: string, chai
     }
     // Only a grant under this app's own prefix proves the sign-in was meant for TinyChat. The broad
     // Home entries are tolerated next to it but never count as that proof on their own.
-    if (!homeKvRoot && !catalogDatabase) appGrant = true;
+    if (!homeKvRoot && !ledgerKv && !catalogDatabase) appGrant = true;
   }
   return appGrant;
 }
