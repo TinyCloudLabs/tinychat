@@ -38,7 +38,7 @@ export const SKEW = 5 * 60 * 1000;
 export function ledgerText(value: string, cap: number): string {
   return value
     .replace(/[\u00ad\u061c\u180e\u200b-\u200f\u2060-\u2064\u2066-\u2069\u202a-\u202e\ufeff]/g, "")
-    .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, " ")
+    .replace(/[\p{Cc}\u2028\u2029]/gu, " ")
     .replace(/\b[a-z][a-z0-9+.-]*:\/\/[^\s<>"']+/gi, (url) => url.replace(/^([a-z][a-z0-9+.-]*:\/\/).*@/i, "$1[masked]@").split(/[?#]/, 1)[0]!)
     .replace(/-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?(?:-----END [^-]*PRIVATE KEY-----|$)/g, "[masked]")
     .replace(/\bAuthorization\s*:\s*\S+(?:\s+\S+)?/gi, "Authorization: [masked]")
