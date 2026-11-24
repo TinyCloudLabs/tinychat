@@ -9,6 +9,7 @@ import {
   publishBotHistoryKeyDescriptor,
 } from "./botHistoryKey";
 import { botHistoryOwnerPermissions } from "./historyAuthorization";
+import { earlierHistoryPermissions, recordHeldEarlierHistory } from "./earlierHistory";
 import { BOT_HISTORY_RECORD_PREFIX, BOT_HISTORY_RECORD_SUFFIX, botHistoryDirectory } from "./botHistoryPath";
 import { isAppDecision, toSecretLine, type BotMessage } from "./botsApi";
 import { BOTS_STRINGS } from "./botsStrings";
@@ -124,6 +125,10 @@ async function readHistory(
   const resealEnabled = options?.reseal === true;
   const resealReport: BotHistoryResealReport = { resealed: 0, failed: [] };
   let sawV1 = false;
+  // v1 records are sealed to the whole encryption network. Without that grant they are held back, not failed: the
+  // chat reads on its own key and the owner moves the earlier ones separately (earlierHistory.ts).
+  let heldBack = 0;
+  let legacyClosed = false;
   let boundCount = 0;
   const legacyKeys: string[] = [];
   let rebindsLeft = HISTORY_REBIND_PER_READ;
@@ -253,8 +258,24 @@ async function readHistory(
       }
       isV1 = true;
       sawV1 = true;
-      const opened = await tcw.encryption.decryptEnvelope(envelope as InlineEncryptedEnvelope, { proofs: [] });
-      if (!opened.ok) throw new Error("history_decrypt_unavailable");
+      if (legacyClosed) { heldBack++; return null; }
+      let opened: Awaited<ReturnType<typeof tcw.encryption.decryptEnvelope>> | undefined;
+      let failure: unknown;
+      try {
+        opened = await tcw.encryption.decryptEnvelope(envelope as InlineEncryptedEnvelope, { proofs: [] });
+      } catch (error) {
+        failure = error;
+      }
+      if (!opened?.ok) {
+        // A decrypt refused for want of the network-wide grant is the owner's choice not made yet; any other failure still fails the read.
+        if (!tcw.hasPermissions(earlierHistoryPermissions(session.address, chainId))) {
+          legacyClosed = true;
+          heldBack++;
+          return null;
+        }
+        if (failure !== undefined) throw failure;
+        throw new Error("history_decrypt_unavailable");
+      }
       plaintext = opened.data;
     }
 
@@ -334,6 +355,7 @@ async function readHistory(
     options?.onResealReport?.(resealReport);
   }
   options?.onContextReport?.({ bound: boundCount, legacy: legacyKeys });
+  recordHeldEarlierHistory(address, botKey ?? "main", heldBack);
 
   return messages.sort((a, b) => a.at.localeCompare(b.at) || a.id.localeCompare(b.id, undefined, { numeric: true }));
 }

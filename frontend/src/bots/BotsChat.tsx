@@ -13,6 +13,7 @@ import { BotView, type ViewBot } from "./BotView";
 import type { BotManagement } from "./BotManage";
 import { MAIN_BOT_OLD_NAME } from "./botsStrings";
 import type { HistoryNotice } from "./historyNotice";
+import { useEarlierHistory } from "./earlierHistory";
 import { useBotChats, type BotChatSource, type BotChats } from "./useBotChat";
 
 /** One bot as the roster lists it: the part of it this view reads. */
@@ -48,6 +49,8 @@ export interface BotHistoryAccess {
   /** Whether this bot's history is saved at all; omitted means every bot's is. A bot that saves none is never authorised, granted, read or asked for a notice. */
   saves?(key: string): boolean;
   read(key: string, signal?: AbortSignal): Promise<BotMessage[]>;
+  /** Asks the owner for the network-wide decrypt that opens earlier (v1) history; true when approved. Only the "Move earlier history" action calls it. Omitted: earlier history cannot be moved from here. */
+  requestEarlierHistory?(): Promise<boolean>;
 }
 
 type Face = ComponentProps<typeof BotAvatar>["bot"];
@@ -146,6 +149,10 @@ export function BotsChat<Bot extends ControllerBot>({
     [chatApi, shown.key],
   );
 
+  const requestEarlier = history?.saves?.(shown.key) === false ? undefined : history?.requestEarlierHistory;
+  const reloadShown = useCallback(() => chats?.loadHistory(shown.key), [chats, shown.key]);
+  const earlierHistory = useEarlierHistory(shown.key, requestEarlier, reloadShown);
+
   if (!chats || waiting) return <div className="h-full bg-background" data-bot-view-loading="" />;
   const view: ViewBot = { key: shown.key, name: shown.name, private: shown.environment === "private", face: faceOf(shown) };
   const { manage: actions } = controller;
@@ -168,6 +175,7 @@ export function BotsChat<Bot extends ControllerBot>({
       onReconnect={onReconnect}
       strip={strip}
       manage={manage}
+      earlierHistory={earlierHistory}
     />
   );
 }

@@ -13,6 +13,8 @@ import { MAX_MESSAGE_LENGTH, SendButton, sendOnEnter } from "./AskBox";
 import { BotAvatar } from "./BotAvatar";
 import { BOT_VIEW_STRINGS, BOTS_STRINGS, HISTORY_RECONNECT_LABEL } from "./botsStrings";
 import { clearHistoryDecline } from "./historyAuthorization";
+import { EarlierHistoryAction } from "./EarlierHistoryAction";
+import type { EarlierHistory } from "./earlierHistory";
 import { historyNoticeDeadline, type HistoryNotice } from "./historyNotice";
 import { activityText, BotPanel } from "./BotPanel";
 import { DeleteBotConfirm, EditBotDialog, type BotManagement } from "./BotManage";
@@ -126,9 +128,11 @@ export interface BotViewProps {
   strip?: ReactNode;
   /** Edit and Delete bot in the panel. Absent: the panel offers neither (the roster is not loaded). */
   manage?: BotManagement;
+  /** When given, earlier history is held back and the view offers to move it (TC-4225). */
+  earlierHistory?: EarlierHistory;
 }
 
-export function BotView({ bot, chats, notice, acknowledgeNotice, onReconnect, strip, manage }: BotViewProps) {
+export function BotView({ bot, chats, notice, acknowledgeNotice, onReconnect, strip, manage, earlierHistory }: BotViewProps) {
   const { lines, history, turn } = useBotChat(chats, bot.key);
   const activity = useBotActivity(chats, bot.key);
   const working = isWorking(turn);
@@ -201,6 +205,7 @@ export function BotView({ bot, chats, notice, acknowledgeNotice, onReconnect, st
                 ) : null}
                 {history === "failed" && !working ? <Failure text={BOT_VIEW_STRINGS.historyFailed(bot.name)} onRetry={() => void chats.loadHistory(bot.key)} /> : null}
                 {history === "declined" && !working ? <Failure text={errors.history_declined(bot.name)} onRetry={() => void chats.loadHistory(bot.key)} declined /> : null}
+                {earlierHistory ? <EarlierHistoryAction earlier={earlierHistory} /> : null}
                 {activity.filter((item) => !item.inTurn && item.after === null).map((item) => <ActivityLine key={item.id} item={item} />)}
                 {lines.map((line) => (
                   <Fragment key={line.id}>
