@@ -26,6 +26,7 @@ const windowEvents = new EventTarget();
 
 beforeAll(() => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  (import.meta.env as Record<string, unknown>).VITE_FIREFLIES_SERVER_IMPORT_ENABLED = "true";
   (globalThis as { window?: unknown }).window = {
     setTimeout,
     clearTimeout,
@@ -41,6 +42,7 @@ afterAll(() => {
   (globalThis as { window?: unknown }).window = saved.window;
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = saved.act;
   globalThis.fetch = saved.fetch;
+  delete (import.meta.env as Record<string, unknown>).VITE_FIREFLIES_SERVER_IMPORT_ENABLED;
 });
 
 let spaceSeq = 0;
