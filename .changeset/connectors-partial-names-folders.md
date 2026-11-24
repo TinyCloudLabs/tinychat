@@ -2,6 +2,6 @@
 "@tinychat/frontend": patch
 ---
 
-When you allow Connectors to unlock your encrypted data but turn down the permissions for its three key folders, the message now says the folders were left out instead of blaming the unlock permission.
+When Connectors' permission step is turned down in part, the message names the part: the unlock permission, the three key folders, or both.
 
 Details: TC-4209
