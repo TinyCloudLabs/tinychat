@@ -28,9 +28,9 @@ export const TINYCHAT_WEB_ORIGIN = "https://tinycloud.chat";
 /** The Home app on tinycloud.one: the same web build as the other two sites, served from its own origin. */
 export const TINYCLOUD_ONE_WEB_ORIGIN = "https://tinycloud.one";
 
-
 /** Env var listing the web origins the backend accepts, comma-separated. FRONTEND_URL is always added. */
 export const FRONTEND_ORIGINS_ENV = "FRONTEND_ORIGINS";
+
 /** The web origins accepted when FRONTEND_ORIGINS is unset: every production site. */
 export const DEFAULT_FRONTEND_ORIGINS: readonly string[] = [TINYCHAT_WEB_ORIGIN, HOME_WEB_ORIGIN, TINYCLOUD_ONE_WEB_ORIGIN];
 
