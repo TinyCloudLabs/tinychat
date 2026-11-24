@@ -160,11 +160,12 @@ export default defineConfig(({ command, mode }) => {
       // desktop app's own (desktop/src-tauri/tauri.conf.json). Its webview reaches its own process over ipc: (or
       // http://ipc.localhost on Windows), so only a desktop build's copy of the meta policy names those sources;
       // the web header and the web and phone builds never do. The Tauri CLI sets TAURI_ENV_PLATFORM for
-      // beforeBuildCommand and beforeDevCommand.
+      // beforeBuildCommand and beforeDevCommand. The call prompt tile's page (CALL_PROMPT_PAGE) has no meta policy to
+      // extend: its window has only the desktop app's own.
       name: "tinychat-desktop-ipc-csp",
       apply: "build",
-      transformIndexHtml(html) {
-        if (!process.env.TAURI_ENV_PLATFORM) return html;
+      transformIndexHtml(html, ctx) {
+        if (!process.env.TAURI_ENV_PLATFORM || (ctx && isCallPromptPage(ctx))) return html;
         const marker = "connect-src 'self' ";
         if (html.split(marker).length !== 2) throw new Error("index.html's Content-Security-Policy must carry exactly one connect-src 'self'");
         return html.replace(marker, `${marker}ipc: http://ipc.localhost `);

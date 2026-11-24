@@ -53,3 +53,22 @@ describe("the desktop bridge in the page policy", () => {
     expect(setting.filter((name) => !name.startsWith("desktop"))).toEqual([]);
   });
 });
+
+describe("the call prompt tile's page in a desktop build", () => {
+  test("is left as written: it has no meta policy to extend, only the desktop app's own", async () => {
+    const plugin = await desktopIpcPlugin();
+    const html = read("frontend/call-prompt.html");
+    expect(html).not.toContain("Content-Security-Policy");
+    const saved = process.env.TAURI_ENV_PLATFORM;
+    process.env.TAURI_ENV_PLATFORM = "darwin";
+    try {
+      const hook = plugin.transformIndexHtml as (html: string, ctx: { filename: string }) => string;
+      expect(hook(html, { filename: new URL("frontend/call-prompt.html", repo).pathname })).toBe(html);
+      const page = read("frontend/index.html");
+      expect(hook(page, { filename: new URL("frontend/index.html", repo).pathname })).toContain("connect-src 'self' ipc: http://ipc.localhost https://");
+    } finally {
+      if (saved === undefined) delete process.env.TAURI_ENV_PLATFORM;
+      else process.env.TAURI_ENV_PLATFORM = saved;
+    }
+  });
+});
