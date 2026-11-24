@@ -11,7 +11,7 @@ import { acknowledgeHistoryNotice, historyNoticeDeadline, type HistoryNotice } f
 import { BOTS_STRINGS, botsErrorText, HISTORY_EXPIRY_NOTICE, HISTORY_RECONNECT_LABEL, WEB_ACCESS_STRINGS } from "./botsStrings";
 import { isWorking, type ChatLine, type MainChatState } from "./useMainChat";
 import { WebAccess, type WebAccessApi } from "./WebAccess";
-import { FeedChatsAccess, MeetingsAccess, type MeetingsAccessApi } from "./MeetingsAccess";
+import { FeedChatsAccess, MeetingsAccess, TelegramAccess, type MeetingsAccessApi } from "./MeetingsAccess";
 import { NewChat, type NewChatApi } from "./NewChat";
 import { AppLine, AskCards, AsksToggle } from "./AskCards";
 import { clearHistoryDecline } from "./historyAuthorization";
@@ -19,6 +19,7 @@ import { LazyEarlierHistoryAction } from "./LazyEarlierHistoryAction";
 import type { EarlierHistoryMove } from "./earlierHistory";
 import { SecretCards } from "./SecretCard";
 import type { Asks } from "./useAsks";
+import { CourierSetup } from "./courier/CourierSetup";
 
 export function Line({ role, text }: Pick<ChatLine, "role" | "text">) {
   return role === "user" ? (
@@ -92,6 +93,8 @@ export interface MainChatProps {
   webAccess?: WebAccessApi;
   /** When given, the sheet offers Main's read settings: Meetings, and Feed and chats. */
   meetings?: MeetingsAccessApi;
+  /** When true, the sheet offers Courier setup for the signed-in owner; it stays hidden while Courier is off. */
+  courier?: boolean;
   /** When given, the sheet shows Main's questions as cards and offers the setting for them. */
   asks?: Asks;
   /** When given, the sheet offers the owner's "Start a new chat". */
@@ -122,7 +125,7 @@ export function WebAccessToggle({ api }: { api: WebAccessApi }) {
   );
 }
 
-export function MainChat({ open, onOpenChange, state, onSend, onRetry, onRetryHistory, notice, onReconnect, webAccess, meetings, asks, newChat, earlierHistory }: MainChatProps) {
+export function MainChat({ open, onOpenChange, state, onSend, onRetry, onRetryHistory, notice, onReconnect, webAccess, meetings, courier, asks, newChat, earlierHistory }: MainChatProps) {
   const { lines, history, turn } = state;
   const working = isWorking(turn);
   const sdkPromptOpen = useSdkPromptOpen();
@@ -170,6 +173,8 @@ export function MainChat({ open, onOpenChange, state, onSend, onRetry, onRetryHi
           {open && webAccess ? <WebAccessToggle api={webAccess} /> : null}
           {open && meetings ? <MeetingsAccess api={meetings} /> : null}
           {open && meetings ? <FeedChatsAccess api={meetings} /> : null}
+          {open && meetings ? <TelegramAccess api={meetings} /> : null}
+          {open && courier ? <CourierSetup /> : null}
           {open && asks ? <AsksToggle asks={asks} /> : null}
           {open && newChat ? <NewChat api={newChat} /> : null}
           {open && notice && onReconnect ? <ExpiryNotice key={`${notice.id}:${notice.deliveredAt ?? notice.renderAttemptAt ?? "initial"}`} notice={notice} onReconnect={onReconnect} /> : null}

@@ -16,6 +16,44 @@
 - TC-2204: Native audience checks accept Home's three exact SQL hook subscriptions only alongside an existing TinyChat data grant.
 - TC-2499: The Home mirror adapter persists close receipts using node-compatible NULL/non-NULL compare-and-set predicates. If the KV mirror is already exactly closed but its receipt is missing, recovery records the original publication ETag without writing the KV copy again, before any gated child handoff. The CLI reports JSON error class, safe message, code, HTTP status when available, and operation step; private SQL bodies and nested causes remain redacted. Exit 2 identifies invalid input, exit 6 known transient failures (including NODE_BUSY and REQUEST_TIMEOUT without HTTP metadata), and exit 1 other runtime failures or OUTCOME_UNKNOWN. Unclassified errors are not labelled bad input; no failure confirms delivery or authorizes an automatic retry.
 
+## 0.21.0-beta.1
+
+### Minor Changes
+
+- d6c02d5: TrustBot can answer agents that message its owner through Courier. Owners pair each agent in TrustBot's settings, and can unpair it there. TrustBot answers only with what the owner lets it read. It doesn't take requests or tasks over Courier.
+
+  TrustBot keeps Courier conversations encrypted. It keeps each message for up to 30 days, the latest 200 messages in each conversation and the 50 most recently active conversations, and deletes older ones. Owners can delete any of these conversations. What TrustBot reads to answer isn't kept, apart from what it writes in its answers.
+
+  Owners can keep any chat out of what TrustBot reads, from TrustBot's settings.
+
+  TrustBot can read the owner's Telegram chats that Inbox collects, when the owner turns on the Telegram read area.
+
+  Details: TC-4058
+
+## 0.20.5-beta.0
+
+### Patch Changes
+
+- a275b28: The agent guides are built from a reviewed set of TinyCloud guides.
+
+  Details: TC-3278
+
+## 0.20.4
+
+### Patch Changes
+
+- 39182ae: Verify the full record context when opening bot history. Records written from now on carry their owner, space, path and bot, and every read checks them. Earlier records still open and are reported as earlier records.
+
+  Details: TC-4041
+
+- 8fc4c7c: Fireflies meeting import permissions are removed when you disconnect, delete your Fireflies meetings, delete your account or turn off instant updates, and expired ones are cleared automatically. Saving a new permission pair names the pair it replaces, so overlapping saves cannot undo a turn off. A Fireflies key saved in an older format now asks you to save it again instead of retrying. The Library drops deleted Fireflies meetings at once.
+
+  Details: TC-3917
+
+- 4066d1f: Show a message and a link to tinycloud.one when someone signs in on the phone app with no TinyCloud account yet, instead of a generic failure.
+
+  Details: TC-4109
+
 ## 0.20.4-beta.1
 
 ### Patch Changes
