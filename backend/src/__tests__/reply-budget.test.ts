@@ -96,8 +96,8 @@ describe("ReplyBudget output cap against the context window", () => {
   });
 
   test("the context bound is what the context has left after the prompt", () => {
-    // 3000 chars = 1000 prompt tokens: 10K-token window leaves 9000. 9000 tokens at 25/K is 225 credits.
-    expect(createReplyBudget(226, pro, 10_000).limitFor(3000)?.capped).toBe(true);
-    expect(createReplyBudget(230, pro, 10_000).limitFor(3000)?.capped).toBe(false);
+    // 1000 prompt tokens: 10K-token window leaves 9000. 9000 tokens at 25/K is 225 credits.
+    expect(createReplyBudget(226, pro, 10_000).limitFor(1000)?.capped).toBe(true);
+    expect(createReplyBudget(230, pro, 10_000).limitFor(1000)?.capped).toBe(false);
   });
 });

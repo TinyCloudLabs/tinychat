@@ -66,6 +66,8 @@ export type RequestEvent = {
   outcome: ReplyOutcome;
   /** Provider rounds started; only the Eliza task path knows it. */
   started_attempts?: number;
+  /** Present (true) only for a timeout charged as a Stop because the account had used its free timeouts. */
+  timeout_capped?: true;
 } | {
   event: "tinychat_request_diagnostic";
   request_id: string;
@@ -172,6 +174,7 @@ export function recordAgentTurnSettled(args: {
   windowKind: "day" | "week";
   outcome: ReplyOutcome;
   startedAttempts?: number;
+  timeoutCapped?: boolean;
 }): void {
   const active = context.getStore();
   if (!active) return;
@@ -185,6 +188,7 @@ export function recordAgentTurnSettled(args: {
       window_kind: args.windowKind,
       outcome: args.outcome,
       ...(isCount(startedAttempts) ? { started_attempts: startedAttempts } : {}),
+      ...(args.timeoutCapped ? { timeout_capped: true as const } : {}),
     });
   } catch {
     // Diagnostics only.

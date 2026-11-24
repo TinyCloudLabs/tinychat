@@ -7,7 +7,8 @@ import { createAgentChatHandler, type AgentChatConfig } from "../routes/agent-ch
 import { createChatRouter } from "../routes/chat.js";
 import { _resetCatalogCache } from "../billing/catalog.js";
 import { _resetCache, _setStripeClient } from "../billing/stripe.js";
-import { _resetUsage, getUsage, heldCredits, holdCredits, recordUsage } from "../billing/usage.js";
+import { _resetUsage, getUsage, heldCredits, holdCredits, recordUsage, takeFreeTimeout } from "../billing/usage.js";
+import { estimateTextTokens } from "../billing/credits.js";
 import type { LedgerRehydrator } from "../billing/ledger-rehydrate.js";
 import { timeCappedOutputTokens } from "../model-output-speed.js";
 import type { LedgerFlusher, LedgerUsageRecordInput } from "../billing/ledger-flusher.js";
@@ -63,6 +64,12 @@ function seedRemaining(remaining: number) {
 }
 const used = () => getUsage(address, TIERS.free).used;
 const held = () => heldCredits(address, TIERS.free, null, Date.now());
+/** A ledger, authoritative under LEDGER_AUTHORITATIVE, that has recorded only `committed` of the limit. */
+const ledgerWith = (committed: number) => ({
+  rehydrateIfNeeded: async () => false,
+  getEntitlement: async () => ({ credit_limit: LIMIT, committed_credits: committed, period_anchor: "utc_day", isOutage: false }),
+  get unrehydratedServesCount() { return 0; },
+}) as unknown as LedgerRehydrator;
 
 function browser() {
   const chunks: string[] = [];
@@ -81,7 +88,7 @@ function browser() {
 function agentConfig(fetchImpl: typeof fetch, over: Partial<AgentChatConfig> = {}): AgentChatConfig {
   return {
     agentId: "92361e74-91ed-43a2-9656-5cc37ff3a07a", entityIdFor: () => "8ed637c2-9747-4d8e-a36f-803e1c24bc10",
-    streamPolicy: { heartbeatMs: 1000, turnTimeoutMs: 5000, drainGraceMs: 100 },
+    streamPolicy: { heartbeatMs: 1000, turnTimeoutMs: 300_000, drainGraceMs: 100 },
     elizaServiceUrl: "https://eliza.test", elizaServiceSecret: "local-test", redpillApiKey: "unused", redpillBaseUrl: "https://provider.test/v1",
     defaultModel: () => model, isModelOffered: value => value === model, fetchImpl, redpillFetch: fetchImpl, flusher,
     streamRuntime: { now: () => performance.now(), setTimeout: (fn, ms) => setTimeout(fn, ms), clearTimeout: handle => clearTimeout(handle as ReturnType<typeof setTimeout>), log: () => {} },
@@ -174,7 +181,7 @@ describe("a Stop is charged for what the reply used up to it (TC-3487)", () => {
     seedRemaining(500);
     const local = browser();
     const requests: string[] = [];
-    // 10,000 CJK chars are 30,000 bytes: 7,500 tokens, where chars/4 said 2,500.
+    // 10,000 CJK chars are 30,000 bytes: 7,500 tokens at 4 bytes per token, but at least one per non-ASCII char makes 10,000.
     const cjk = "你".repeat(10_000);
     const config = agentConfig((async (_input: unknown, init?: RequestInit) => {
       requests.push(String(init?.body));
@@ -186,7 +193,7 @@ describe("a Stop is charged for what the reply used up to it (TC-3487)", () => {
     local.req.emit("aborted");
     await reply;
     const prompt = Math.ceil(Buffer.byteLength(requests[0]) / 4);
-    expect(enqueued[0].credits).toBe(Math.ceil(((prompt + 7_500) / 1000) * 10));
+    expect(enqueued[0].credits).toBe(Math.ceil(((prompt + 10_000) / 1000) * 10));
   });
 });
 
@@ -236,6 +243,20 @@ describe("a timeout is free unless the client stopped reading (TC-4203)", () => 
     expect(enqueued.map(record => record.credits)).toEqual([Math.ceil(((prompt + completion) / 1000) * 10)]);
   });
 
+  test("content counts as delivered once the socket took its frame, even when the client never reads it", async () => {
+    seedRemaining(500);
+    const local = browser();
+    // The only content frame is the one the client stops reading at; the turn then runs to the wall cap.
+    stopReadingAt(local, "Only");
+    const requests: string[] = [];
+    const config = agentConfig((async (_input: unknown, init?: RequestInit) => {
+      requests.push(String(init?.body));
+      return stalled(frame({ id: "c", choices: [{ delta: { content: "Only" } }] }));
+    }) as typeof fetch, { streamPolicy: { heartbeatMs: 1000, turnTimeoutMs: 80, drainGraceMs: 50 } });
+    await createAgentChatHandler(config)(local.req, local.res, () => {});
+    expect(enqueued.map(record => record.credits)).toEqual([Math.ceil(((estimateTextTokens(requests[0]) + 1) / 1000) * 10)]);
+  });
+
   test("each provider call's output is capped to what the model streams in the turn time left", async () => {
     seedRemaining(500);
     const local = browser();
@@ -243,11 +264,123 @@ describe("a timeout is free unless the client stopped reading (TC-4203)", () => 
     const config = agentConfig((async (_input: unknown, init?: RequestInit) => {
       requests.push(JSON.parse(String(init?.body)));
       return sse(frame({ id: "c", choices: [{ delta: { content: "Hi" }, finish_reason: "stop" }] }), usageFrame(10, 5), "data: [DONE]\n\n");
-    }) as typeof fetch);
+    }) as typeof fetch, { streamPolicy: { heartbeatMs: 1000, turnTimeoutMs: 5000, drainGraceMs: 100 } });
     await createAgentChatHandler(config)(local.req, local.res, () => {});
     // The 500 credits left would allow about 50,000 output tokens; 5 s of GLM 5.2 at 74 tok/s and the 0.8 share is 296.
     expect(requests[0].max_tokens).toBeLessThanOrEqual(timeCappedOutputTokens(model, 5_000));
     expect(requests[0].max_tokens).toBeGreaterThanOrEqual(timeCappedOutputTokens(model, 4_000));
+  });
+
+  test("a provider that streams past max_tokens is cut at it, and the reply ends normally, charged its estimate", async () => {
+    seedRemaining(500);
+    const local = browser();
+    const requests: string[] = [];
+    // 2,000 chars are 500 tokens, past the ~296-token cap of a 5 s turn; the provider would go on streaming forever.
+    const config = agentConfig((async (_input: unknown, init?: RequestInit) => {
+      requests.push(String(init?.body));
+      return stalled(frame({ id: "c", choices: [{ delta: { content: "x".repeat(2_000) } }] }));
+    }) as typeof fetch, { streamPolicy: { heartbeatMs: 1000, turnTimeoutMs: 5000, drainGraceMs: 100 } });
+    await createAgentChatHandler(config)(local.req, local.res, () => {});
+    expect(requests).toHaveLength(1);
+    expect(local.stream()).not.toContain("stream_error");
+    expect(local.stream()).toContain("data: [DONE]");
+    expect(enqueued.map(record => record.credits)).toEqual([Math.ceil(((estimateTextTokens(requests[0]) + 500) / 1000) * 10)]);
+  });
+});
+
+describe("an account's free timeouts are capped at 10 per rolling 24 h (TC-4203)", () => {
+  const timingOut = (content?: string) => agentConfig((async () => stalled(...(content ? [frame({ id: "c", choices: [{ delta: { content } }] })] : []), usageFrame(10_000, 5_000))) as typeof fetch,
+    { streamPolicy: { heartbeatMs: 1000, turnTimeoutMs: 80, drainGraceMs: 100 } });
+
+  test("the 11th timeout that delivered content is charged as a Stop, for its metered usage", async () => {
+    seedRemaining(500);
+    for (let i = 0; i < 10; i++) {
+      const local = browser();
+      await createAgentChatHandler(timingOut("Partial"))(local.req, local.res, () => {});
+      expect(local.stream()).toContain('"stream_error":{"code":"turn_timeout"}');
+    }
+    expect(enqueued).toEqual([]);
+    const local = browser();
+    await createAgentChatHandler(timingOut("Partial"))(local.req, local.res, () => {});
+    expect(local.stream()).toContain('"stream_error":{"code":"turn_timeout"}');
+    // 10,000 prompt and 5,000 completion tokens at 10 credits per 1K each.
+    expect(enqueued.map(record => record.credits)).toEqual([150]);
+    expect(info.mock.calls.some(([line, fields]) => line === "[billing] reply settled" && (fields as { freeTimeoutCapped?: boolean }).freeTimeoutCapped === true)).toBe(true);
+  });
+
+  test("past the cap, a timeout that delivered nothing stays free", async () => {
+    seedRemaining(500);
+    for (let i = 0; i < 10; i++) takeFreeTimeout(address, Date.now());
+    const local = browser();
+    await createAgentChatHandler(timingOut())(local.req, local.res, () => {});
+    expect(local.stream()).toContain('"stream_error":{"code":"turn_timeout"}');
+    expect(enqueued).toEqual([]);
+    expect(used()).toBe(LIMIT - 500);
+  });
+
+  test("the window rolls: a free timeout returns 24 h after it was used", () => {
+    const day = 24 * 60 * 60 * 1000;
+    for (let i = 0; i < 10; i++) expect(takeFreeTimeout(address, 1_000_000 + i)).toBe(true);
+    expect(takeFreeTimeout(address, 1_000_000 + day - 1)).toBe(false);
+    expect(takeFreeTimeout(address, 1_000_000 + day)).toBe(true);
+    expect(takeFreeTimeout(address, 1_000_000 + day)).toBe(false);
+  });
+});
+
+describe("the stall rule's boundary: stalled for exactly half the turn is not most of it (TC-4203)", () => {
+  function manualClock() {
+    let time = 0, id = 0;
+    const tasks = new Map<number, { at: number; fn: () => void }>();
+    const flush = async () => { for (let i = 0; i < 20; i++) await new Promise(resolve => setImmediate(resolve)); };
+    return {
+      flush,
+      runtime: {
+        now: () => time,
+        setTimeout: (fn: () => void, ms: number) => { const key = ++id; tasks.set(key, { at: time + ms, fn }); return key; },
+        clearTimeout: (key: unknown) => { tasks.delete(key as number); },
+        log: () => {},
+      },
+      async advance(ms: number) {
+        const end = time + ms;
+        for (;;) {
+          const next = [...tasks].filter(([, task]) => task.at <= end).sort((a, b) => a[1].at - b[1].at)[0];
+          if (!next) break;
+          time = next[1].at; tasks.delete(next[0]); next[1].fn(); await flush();
+        }
+        time = end; await flush();
+      },
+    };
+  }
+
+  // Turn timeout 100, wall cap 200. The client stops reading at "Second" from t=0 and reads again at `drainAt`; the
+  // provider then goes quiet, so the turn runs to the wall cap.
+  async function stallUntil(drainAt: number) {
+    seedRemaining(500);
+    const clock = manualClock();
+    const local = browser();
+    stopReadingAt(local, "Second");
+    const config = agentConfig((async () => stalled(frame({ id: "c", choices: [{ delta: { content: "First" } }] }), frame({ id: "c", choices: [{ delta: { content: "Second" } }] }))) as typeof fetch,
+      { streamPolicy: { heartbeatMs: 1000, turnTimeoutMs: 100, drainGraceMs: 20 }, streamRuntime: clock.runtime });
+    const reply = createAgentChatHandler(config)(local.req, local.res, () => {});
+    await clock.flush();
+    expect(local.stream()).toContain("Second");
+    await clock.advance(drainAt);
+    local.res.emit("drain");
+    await clock.flush();
+    await clock.advance(300 - drainAt);
+    await reply;
+    expect(local.stream()).toContain('"stream_error":{"code":"turn_timeout"}');
+  }
+
+  test("stalled for exactly half: a free timeout", async () => {
+    await stallUntil(100);
+    expect(enqueued).toEqual([]);
+  });
+
+  test("stalled for just over half: charged as a Stop", async () => {
+    await stallUntil(101);
+    expect(enqueued).toHaveLength(1);
+    expect(enqueued[0].credits).toBeGreaterThan(0);
   });
 });
 
@@ -301,22 +434,35 @@ describe("credits are held from admission to settlement (TC-3488)", () => {
     expect(used()).toBe(LIMIT - 500);
   });
 
-  test("with the ledger authoritative, a charge the ledger has not flushed yet still counts at admission", async () => {
+  test("with the ledger authoritative, a charge the ledger has not flushed yet still counts at admission: nothing left is a 402", async () => {
     process.env.LEDGER_AUTHORITATIVE = "true";
     // The local counter has the whole limit used; the ledger, a flush behind, says 800.
     seedRemaining(0);
-    const ledger = {
-      rehydrateIfNeeded: async () => false,
-      getEntitlement: async () => ({ credit_limit: LIMIT, committed_credits: 800, period_anchor: "utc_day", isOutage: false }),
-      get unrehydratedServesCount() { return 0; },
-    } as unknown as LedgerRehydrator;
     let providerCalls = 0;
     const config = agentConfig((async () => { providerCalls++; return sse(frame({ id: "c", choices: [{ delta: { content: "Hi" }, finish_reason: "stop" }] }), usageFrame(10_000, 5_000), "data: [DONE]\n\n"); }) as typeof fetch,
-      { rehydrator: ledger });
+      { rehydrator: ledgerWith(800) });
     const local = browser();
     await createAgentChatHandler(config)(local.req, local.res, () => {});
+    expect(local.res.statusCode).toBe(402);
+    expect(local.res.body).toMatchObject({ error: "credit_budget_exceeded" });
     expect(providerCalls).toBe(0);
-    expect(used()).toBe(LIMIT);
+    expect(enqueued).toEqual([]);
+  });
+
+  test("the same on the Eliza /tasks path: no task is started with nothing left", async () => {
+    process.env.LEDGER_AUTHORITATIVE = "true";
+    seedRemaining(0);
+    let tasks = 0;
+    const fetchImpl = (async (input: unknown) => {
+      const url = String(input);
+      if (url.endsWith("/capabilities")) return Response.json({ chatTasks: { version: 1, enabled: true, cancellation: true, providerProfile: "tinychat-redpill", models: [model] } });
+      if (url.endsWith("/tasks")) tasks++;
+      throw new Error(`unexpected ${url}`);
+    }) as typeof fetch;
+    const local = browser();
+    await createAgentChatHandler(agentConfig(fetchImpl, { elizaTasksEnabled: true, rehydrator: ledgerWith(800) }))(local.req, local.res, () => {});
+    expect(local.res.statusCode).toBe(402);
+    expect(tasks).toBe(0);
     expect(enqueued).toEqual([]);
   });
 
@@ -345,14 +491,14 @@ describe("credits are held from admission to settlement (TC-3488)", () => {
 });
 
 describe("/api/chat holds only what its capped request can cost (TC-3488)", () => {
-  async function serve(respond: (signal?: AbortSignal | null) => Response, run: (post: (body: Record<string, unknown>) => Promise<globalThis.Response>) => Promise<void>) {
+  async function serve(respond: (signal?: AbortSignal | null) => Response, run: (post: (body: Record<string, unknown>) => Promise<globalThis.Response>) => Promise<void>, rehydrator?: LedgerRehydrator) {
     globalThis.fetch = (async (input: unknown, init?: RequestInit) => {
       if (String(input).endsWith("/chat/completions")) { upstreamBodies.push(JSON.parse(String(init?.body))); return respond(init?.signal); }
       return Response.json({ data: [{ id: model, context_length: 100_000, pricing: { prompt: "0.000001", completion: "0.000001" } }] });
     }) as typeof fetch;
     const app = express();
     app.use(express.json());
-    app.use("/api/chat", (req, _res, next) => { req.user = { address }; next(); }, createChatRouter({ flusher, redpillFetch: (input, init) => globalThis.fetch(input, init) }));
+    app.use("/api/chat", (req, _res, next) => { req.user = { address }; next(); }, createChatRouter({ flusher, redpillFetch: (input, init) => globalThis.fetch(input, init), ...(rehydrator ? { rehydrator } : {}) }));
     const server = await new Promise<Server>(resolve => { const instance = app.listen(0, "127.0.0.1", () => resolve(instance)); });
     try {
       const { port } = server.address() as { port: number };
@@ -371,9 +517,9 @@ describe("/api/chat holds only what its capped request can cost (TC-3488)", () =
       const response = await post({ max_output_tokens: 1_000 });
       expect(response.status).toBe(200);
       expect(upstreamBodies[0].max_tokens).toBe(1_000);
-      // Prompt at UTF-8 bytes/3, plus 1,000 output tokens, at 10 credits per 1K each way.
+      // Prompt at one token per UTF-8 byte, plus 1,000 output tokens, at 10 credits per 1K each way.
       const { max_tokens: _cap, ...priced } = upstreamBodies[0];
-      const expected = Math.ceil((Math.ceil(Buffer.byteLength(JSON.stringify(priced)) / 3) + 1_000) * 10 / 1000);
+      const expected = Math.ceil((Buffer.byteLength(JSON.stringify(priced)) + 1_000) * 10 / 1000);
       expect(held()).toBe(expected);
 
       const agent = browser();
@@ -410,5 +556,31 @@ describe("/api/chat holds only what its capped request can cost (TC-3488)", () =
       agent.req.emit("aborted");
       await reply;
     });
+  });
+
+  test("with the ledger authoritative and nothing left by the local counter, a request is refused before the provider", async () => {
+    process.env.LEDGER_AUTHORITATIVE = "true";
+    seedRemaining(0);
+    await serve(() => sse(frame({ choices: [{ delta: { content: "Hi" }, finish_reason: "stop" }] }), usageFrame(100, 100), "data: [DONE]\n\n"), async post => {
+      const response = await post({});
+      expect(response.status).toBe(402);
+      expect(upstreamBodies).toEqual([]);
+    }, ledgerWith(800));
+    expect(enqueued).toEqual([]);
+  });
+
+  test("a Stop before the usage frame is charged its estimate, counting CJK by char and text inside content parts", async () => {
+    seedRemaining(500);
+    const cjk = "你".repeat(3_000);
+    await serve(signal => stalledUntilAbort(signal, frame({ choices: [{ delta: { content: "Hi" } }] })), async post => {
+      const response = await post({ messages: [{ role: "user", content: [{ type: "text", text: cjk }] }] });
+      expect(response.status).toBe(200);
+      const reader = response.body!.getReader();
+      await reader.read();
+      await reader.cancel();
+      await until(() => enqueued.length === 1);
+    });
+    // 3,000 prompt tokens (one per CJK char, where chars/4 said 750 and the old count skipped content parts) and 1 for "Hi".
+    expect(enqueued[0].credits).toBe(Math.ceil((3_000 + 1) * 10 / 1000));
   });
 });

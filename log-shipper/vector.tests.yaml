@@ -995,6 +995,32 @@ tests:
               assert_eq!(.window_kind, "week")
               assert_eq!(.outcome, "cancelled")
               assert_eq!(keys(.), ["charged", "event", "level", "outcome", "raw_credits", "svc", "ts", "window_kind"])
+  - name: "TC-4203 a settled timeout charged past the free timeouts ships timeout_capped"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "{\"event\":\"agent_turn_settled\",\"raw_credits\":40,\"charged\":40,\"window_kind\":\"day\",\"outcome\":\"cancelled\",\"timeout_capped\":true}", "level": 6, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+    outputs:
+      - extract_from: allowlist
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.outcome, "cancelled")
+              assert_eq!(.timeout_capped, true)
+              assert_eq!(keys(.), ["charged", "event", "level", "outcome", "raw_credits", "svc", "timeout_capped", "ts", "window_kind"])
+  - name: "TC-4203 a non-boolean timeout_capped is omitted"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "{\"event\":\"agent_turn_settled\",\"raw_credits\":40,\"charged\":40,\"window_kind\":\"day\",\"outcome\":\"cancelled\",\"timeout_capped\":\"yes\"}", "level": 6, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+    outputs:
+      - extract_from: allowlist
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(keys(.), ["charged", "event", "level", "outcome", "raw_credits", "svc", "ts", "window_kind"])
   - name: "TC-3734 settled turn with an out-of-set or out-of-range value is dropped"
     inputs:
       - insert_at: redact

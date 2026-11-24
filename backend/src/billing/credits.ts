@@ -144,20 +144,49 @@ export function creditsFor(
   return Math.max(1, credits);
 }
 
+/** Running size of text that has not been tokenized yet: its UTF-8 bytes and its non-ASCII code points. */
+export interface TextMeasure {
+  bytes: number;
+  nonAscii: number;
+}
+
+export const emptyMeasure = (): TextMeasure => ({ bytes: 0, nonAscii: 0 });
+
+/** Adds `text` to `into` and returns it. */
+export function measureText(text: string, into: TextMeasure = emptyMeasure()): TextMeasure {
+  into.bytes += Buffer.byteLength(text);
+  for (const char of text) if (char.charCodeAt(0) > 0x7f) into.nonAscii++;
+  return into;
+}
+
 /**
- * Chars/4 fallback when the upstream stream omitted the usage chunk. Counts
- * every message's string content as prompt and the streamed text as
- * completion (spec §4.4).
+ * Tokens in measured text before a provider counts them: 4 UTF-8 bytes per token (English and JSON run about 4 chars,
+ * and so bytes, per token), but at least one per non-ASCII char (a CJK char is 3 bytes and about a token).
+ */
+export function measuredTokens(measure: TextMeasure): number {
+  return Math.max(Math.ceil(measure.bytes / 4), measure.nonAscii);
+}
+
+export const estimateTextTokens = (text: string): number => measuredTokens(measureText(text));
+
+/** The text of a chat message's content: a string, or the `text` of its content parts. */
+function contentText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content.map(part => (part && typeof part === "object" && typeof (part as { text?: unknown }).text === "string" ? (part as { text: string }).text : "")).join("");
+}
+
+/**
+ * Fallback when the upstream stream omitted the usage chunk: every message's text (string content or text parts) as
+ * prompt and the streamed text as completion, estimated as `measuredTokens` does (spec §4.4).
  */
 export function estimateTokens(
   messages: Array<{ content?: unknown }>,
   completionText: string,
 ): { promptTokens: number; completionTokens: number } {
-  let promptChars = 0;
-  for (const message of messages) {
-    if (typeof message.content === "string") promptChars += message.content.length;
-  }
-  return { promptTokens: Math.ceil(promptChars / 4), completionTokens: Math.ceil(completionText.length / 4) };
+  const prompt = emptyMeasure();
+  for (const message of messages) measureText(contentText(message.content), prompt);
+  return { promptTokens: measuredTokens(prompt), completionTokens: estimateTextTokens(completionText) };
 }
 
 /** `estimateTokens`, priced through `creditsFor`. Replaces the earlier flat token estimator (spec §4.4). */

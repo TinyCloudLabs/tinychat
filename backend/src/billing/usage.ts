@@ -258,13 +258,33 @@ export function holdCredits(address: string, tier: TierConfig, anchor: number | 
   };
 }
 
+// ── Free timeouts (TC-4203) ───────────────────────────────────────────────────
+// A timed-out reply is free: the turn deadline is ours. So that repeated
+// timeouts cannot be a free channel, an account gets FREE_TIMEOUTS_PER_WINDOW
+// free timeouts that delivered answer content per rolling FREE_TIMEOUT_WINDOW_MS;
+// past that, settlement charges a timeout as a Stop. In memory, like the counter
+// and the holds.
+export const FREE_TIMEOUTS_PER_WINDOW = 10;
+export const FREE_TIMEOUT_WINDOW_MS = 24 * 60 * 60 * 1000;
+const freeTimeoutsByAddress = new Map<string, number[]>();
+
+/** Takes one of the account's free timeouts at `now`; false, taking nothing, once it has used them all in the last 24 h. */
+export function takeFreeTimeout(address: string, now: number): boolean {
+  const recent = (freeTimeoutsByAddress.get(address) ?? []).filter(at => now - at < FREE_TIMEOUT_WINDOW_MS);
+  const free = recent.length < FREE_TIMEOUTS_PER_WINDOW;
+  if (free) recent.push(now);
+  freeTimeoutsByAddress.set(address, recent);
+  return free;
+}
+
 // ── Test/util helpers ─────────────────────────────────────────────────────────
 
-/** Clear all tracked usage and holds. Exposed for tests. */
+/** Clear all tracked usage, holds and free timeouts. Exposed for tests. */
 export function _resetUsage(): void {
   usageByAddress.clear();
   previousByAddress.clear();
   holdsByAddress.clear();
+  freeTimeoutsByAddress.clear();
 }
 
 /** Reset the one-shot missing-anchor warning. Exposed for tests. */

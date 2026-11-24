@@ -240,7 +240,9 @@ provider refusal can be read without public Phala logs. Same pattern as tinyclou
 - **Settled agent chat turns (TC-3734).** Every settled agent chat turn ships one `agent_turn_settled` record:
   `raw_credits` (the unclamped credit cost of the turn, integer 0 to 10000000), `charged` (credits actually charged,
   integer 0 to 1000000), `window_kind` (`day` or `week`), `outcome` (`success`, `limit_stop`, `failed`, `timed_out` or
-  `cancelled`) and, on the Eliza task path only, `started_attempts` (provider rounds started, 0 to 1000), plus `svc`,
+  `cancelled`), on the Eliza task path only `started_attempts` (provider rounds started, 0 to 1000), and
+  `timeout_capped` (`true` only, TC-4203: a timeout charged as a Stop because the account used its 10 free timeouts in
+  24 hours; absent otherwise), plus `svc`,
   `event`, `level` (`info`) and `ts`. It carries no ID, account pseudonym, address, model or text. It goes through the
   typed request sink and has its own Vector `throttle` of 60 per minute, so read it as a sample of per-turn costs.
 - **Storage and calendar diagnostics (TC-2546).** A `[storage-lane]` line projects exactly `svc`, `event`, `component`,

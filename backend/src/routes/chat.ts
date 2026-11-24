@@ -472,15 +472,17 @@ export function createChatRouter(options?: ChatRouterOptions) {
       // counter by up to one flush, so against the ledger's limit the larger of the two is what is used.
       const localUsage = getUsage(address, tierConfig, anchor);
       budgetRemaining = ledgerWindow ? ledgerWindow.limit - Math.max(ledgerWindow.committed, localUsage.used) : localUsage.limit - localUsage.used;
-      // Credits other replies hold are spoken for. Read here and held below, with no await in between.
+      // Credits other replies hold are spoken for. Read here and held below, with no await in between. Nothing left to
+      // spend, held or not (the ledger can say there is while the local counter, a flush ahead, says there is not), is a 402.
       const held = heldCredits(address, tierConfig, anchor, startedAt);
-      if (held > 0 && budgetRemaining - held <= 0) {
-        logCreditGateDeny({ source: "held", address, committed: null, limit: null, windowKind: tierConfig.budgetWindow });
+      if (budgetRemaining - held <= 0) {
+        const denySource = held > 0 ? "held" : ledgerWindow ? "ledger" : "local";
+        logCreditGateDeny({ source: denySource, address, committed: null, limit: null, windowKind: tierConfig.budgetWindow });
         res.status(402).json({
           error: "credit_budget_exceeded",
           message: `Credit budget exhausted for the ${tierConfig.name} tier.`,
           tier,
-          ...exposeGateSource("held"),
+          ...exposeGateSource(denySource),
         });
         return;
       }
@@ -498,15 +500,15 @@ export function createChatRouter(options?: ChatRouterOptions) {
         : {}),
     };
     // The reply's spend bound: what its prompt and output can cost within what is left, held until it settles. Its
-    // output is capped to fit. The prompt is priced from its UTF-8 bytes, so scripts with fewer chars per token (CJK) are
-    // not under-held. The finally at the end releases the hold after settlement; it lapses after 30 minutes even if a
+    // output is capped to fit. The prompt is priced at one token per UTF-8 byte: no script takes more, so no prompt is
+    // under-held. The finally at the end releases the hold after settlement; it lapses after 30 minutes even if a
     // hung handler never gets there.
     let outputCap = maxOutputTokens;
     let allowance: number | null = null;
     let releaseHold: () => void = () => {};
     if (budgetRemaining !== null && rates) {
-      const promptBytes = Buffer.byteLength(JSON.stringify(requestBody));
-      const limit = createReplyBudget(Math.max(0, budgetRemaining), rates, contextLengthFor(resolvedModel)).limitFor(promptBytes, maxOutputTokens);
+      const promptTokens = Buffer.byteLength(JSON.stringify(requestBody));
+      const limit = createReplyBudget(Math.max(0, budgetRemaining), rates, contextLengthFor(resolvedModel)).limitFor(promptTokens, maxOutputTokens);
       if (!limit) {
         res.status(402).json({
           error: "credit_budget_exceeded",
@@ -516,7 +518,7 @@ export function createChatRouter(options?: ChatRouterOptions) {
         return;
       }
       outputCap = limit.maxTokens;
-      allowance = outputCap === undefined ? budgetRemaining : Math.min(budgetRemaining, callCostBound(rates, promptBytes, outputCap));
+      allowance = outputCap === undefined ? budgetRemaining : Math.min(budgetRemaining, callCostBound(rates, promptTokens, outputCap));
       releaseHold = holdCredits(address, TIERS[gatedTier], anchor, startedAt, allowance, 30 * 60_000);
     }
     try {
