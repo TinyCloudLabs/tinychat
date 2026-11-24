@@ -151,8 +151,9 @@ jobs:
       # An unsigned archive carries no entitlements, and the export signs the app with the entitlements of the
       # archived signature, so App Store builds had none of App.Release.entitlements (associated domains: tinycloud.one
       # share links, openkey.so passkeys, TC-520). An ad hoc signature (no team, no secret) carries them to the export,
-      # which replaces it. Nested code is signed first (codesign refuses an app with unsigned frameworks), then the
-      # app alone with the entitlements.
+      # which replaces it. Nested code is signed first with no entitlements (codesign refuses an app with unsigned
+      # frameworks), then the app alone with them. ExoWidgets has no entitlements file; one added later needs its own
+      # codesign line here. The sign job's verify-ipa checks the exported entitlements exactly.
       - name: Sign the archive ad hoc with the Release entitlements
         run: |
           app="$ARCHIVE/Products/Applications/App.app"

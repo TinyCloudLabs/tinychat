@@ -8,8 +8,8 @@
     - applinks:tinycloud.one: recording share links (https://tinycloud.one/s/<id>#…) open in the app when the
       domain's apple-app-site-association file lists it; otherwise they open in the browser.
     - webcredentials:openkey.so (TC-520): ties the app to openkey.so, whose apple-app-site-association lists
-      R4QVKA785H.xyz.tinycloud.home under webcredentials, so the app can use openkey.so passkeys and an https
-      sign-in return. The OpenKey sign-in sheet (ASWebAuthenticationSession) runs openkey.so's passkeys either way.
+      R4QVKA785H.xyz.tinycloud.home under webcredentials, so the app's own code may use openkey.so passkeys. The
+      OpenKey sign-in sheet (ASWebAuthenticationSession) runs openkey.so's passkeys either way.
     The App ID needs the Associated Domains capability for a signed export. The archive is built unsigned, so
     ios-build.yml signs it ad hoc with this file before the export, which keeps the entitlements of that signature.
 -->

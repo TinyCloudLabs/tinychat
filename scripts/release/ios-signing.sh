@@ -12,7 +12,8 @@
 #   ios-signing.sh verify-ipa <ipa> require an App Store build signed by APPLE_TEAM_ID: valid deep signature, Apple
 #                                   Distribution authority, the team's App Store profile (no devices, not an
 #                                   in-house ProvisionsAllDevices profile, no get-task-allow) for xyz.tinycloud.home
-#                                   and its ExoWidgets extension, and the app's associated domains (ASSOCIATED_DOMAINS)
+#                                   and its ExoWidgets extension, each signed with exactly the entitlements the export
+#                                   adds, plus the app's associated domains (ASSOCIATED_DOMAINS)
 set -euo pipefail
 
 BUNDLE_ID=xyz.tinycloud.home
@@ -64,7 +65,7 @@ write_key() {
 }
 
 verify_ipa() {
-  local ipa=${1:?usage: ios-signing.sh verify-ipa <ipa>} tmp app appex details authority team profile bundle signed domain
+  local ipa=${1:?usage: ios-signing.sh verify-ipa <ipa>} tmp app appex details authority team profile bundle signed extra expected actual
   [ -f "$ipa" ] || fail "no .ipa at $ipa"
   [ -n "${APPLE_TEAM_ID:-}" ] || fail "APPLE_TEAM_ID is required"
   tmp=$(mktemp -d)
@@ -104,14 +105,17 @@ verify_ipa() {
   [ "$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:application-identifier' "$profile")" = "$APPLE_TEAM_ID.$bundle" ] ||
     fail "the embedded profile is not for $bundle in APPLE_TEAM_ID"
   echo "$bundle: $authority, TeamIdentifier matches, App Store profile '$(/usr/libexec/PlistBuddy -c 'Print :Name' "$profile")'"
+  # The exact signed entitlements: what the export adds, plus the app's associated domains. The profile's wildcards
+  # (associated-domains *, keychain-access-groups TEAM.*) would let through anything the untrusted archive job added.
+  extra='{}'
+  [ "$signed" = "$app" ] && extra=$(jq -nc '{"com.apple.developer.associated-domains": $ARGS.positional}' --args "${ASSOCIATED_DOMAINS[@]}")
+  expected=$(jq -ncS --arg team "$APPLE_TEAM_ID" --arg id "$APPLE_TEAM_ID.$bundle" --argjson extra "$extra" \
+    '{"application-identifier": $id, "beta-reports-active": true, "com.apple.developer.team-identifier": $team, "get-task-allow": false, "keychain-access-groups": [$id]} + $extra')
+  codesign -d --entitlements - --xml "$signed" >"$tmp/signed.xcent" 2>/dev/null || fail "$bundle's entitlements are unreadable"
+  actual=$(plutil -convert json -o - "$tmp/signed.xcent" | jq -cS .)
+  [ "$actual" = "$expected" ] || fail "$bundle is signed with entitlements $actual, expected exactly $expected"
+  echo "$bundle: entitlements $actual"
   done
-  codesign -d --entitlements - --xml "$app" >"$tmp/app.xcent" 2>/dev/null || fail "App.app's entitlements are unreadable"
-  for domain in "${ASSOCIATED_DOMAINS[@]}"; do
-    plutil -extract com.apple.developer.associated-domains json -o - "$tmp/app.xcent" 2>/dev/null |
-      jq -e --arg domain "$domain" 'index($domain) != null' >/dev/null ||
-      fail "App.app is not signed with the associated domain $domain (mobile/ios/App/App/App.Release.entitlements)"
-  done
-  echo "$BUNDLE_ID: associated domains ${ASSOCIATED_DOMAINS[*]}"
   rm -rf "$tmp"
 }
 
