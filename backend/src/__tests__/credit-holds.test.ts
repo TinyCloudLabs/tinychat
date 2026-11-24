@@ -250,7 +250,7 @@ describe("/api/chat holds only what its capped request can cost (TC-3488)", () =
       await run(body => originalFetch(`http://127.0.0.1:${port}/api/chat`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model, messages: [{ role: "user", content: "Hello" }], ...body }) }));
     } finally {
       server.closeAllConnections();
-      await new Promise<void>((resolve, reject) => server.close(err => err ? reject(err) : resolve()));
+      await new Promise<void>(resolve => server.close(() => resolve()));
     }
   }
   const upstreamBodies: Array<Record<string, unknown>> = [];
