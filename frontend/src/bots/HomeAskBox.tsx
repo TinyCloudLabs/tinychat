@@ -5,7 +5,7 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { ensureBotHistoryGrant, botHistoryEnabled } from "./historyGrant";
 import { authorizeBotHistory } from "./historyAuthorization";
 import { readBotHistory } from "./historyRead";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { openKeyFailureOf } from "../lib/authErrors";
 import { listThreads } from "../lib/threadStore";
@@ -31,7 +31,7 @@ const SESSION_GONE: Record<string, true> = { history_session_missing: true, hist
 async function prepareHistory(tcw: TinyCloudWeb): Promise<void> {
   if (!(await botHistoryEnabled())) return;
   try {
-    await authorizeBotHistory(tcw, undefined, undefined, { includeLegacyNetwork: false });
+    await authorizeBotHistory(tcw);
     await ensureBotHistoryGrant(tcw);
   } catch (cause) {
     const gone = (cause instanceof Error && Object.hasOwn(SESSION_GONE, cause.message)) || openKeyFailureOf(cause).kind === "session-ended";
@@ -105,6 +105,9 @@ function MainAsk({ api, tcw, onReconnect }: { api: BotsApi; tcw?: TinyCloudWeb; 
     if (wasWorking.current && !working) refreshAsks();
     wasWorking.current = working;
   }, [working, refreshAsks]);
+  const loadChatHistory = chat.loadHistory;
+  const requestEarlier = useCallback(async () => (await import("./earlierHistoryRequest")).requestEarlierHistoryAccess(tcw!), [tcw]);
+  const earlierHistory = useMemo(() => tcw ? { bot: "main", request: requestEarlier, reload: loadChatHistory } : undefined, [tcw, requestEarlier, loadChatHistory]);
   const [notice, setNotice] = useState<HistoryNotice | null>(null);
   useEffect(() => {
     if (!tcw) return;
@@ -159,6 +162,7 @@ function MainAsk({ api, tcw, onReconnect }: { api: BotsApi; tcw?: TinyCloudWeb; 
         courier={Boolean(tcw)}
         asks={asks}
         newChat={newChat}
+        earlierHistory={earlierHistory}
       />
     </>
   );

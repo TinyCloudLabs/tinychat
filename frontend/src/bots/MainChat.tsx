@@ -15,6 +15,8 @@ import { FeedChatsAccess, MeetingsAccess, TelegramAccess, type MeetingsAccessApi
 import { NewChat, type NewChatApi } from "./NewChat";
 import { AppLine, AskCards, AsksToggle } from "./AskCards";
 import { clearHistoryDecline } from "./historyAuthorization";
+import { LazyEarlierHistoryAction } from "./LazyEarlierHistoryAction";
+import type { EarlierHistoryMove } from "./earlierHistory";
 import { SecretCards } from "./SecretCard";
 import type { Asks } from "./useAsks";
 import { CourierSetup } from "./courier/CourierSetup";
@@ -97,6 +99,8 @@ export interface MainChatProps {
   asks?: Asks;
   /** When given, the sheet offers the owner's "Start a new chat". */
   newChat?: NewChatApi;
+  /** When given, earlier history is held back and the sheet offers to move it (TC-4225). */
+  earlierHistory?: EarlierHistoryMove;
 }
 
 /** Services that answered 404 for web access, so reopening Main's chat does not show the button again. */
@@ -121,7 +125,7 @@ export function WebAccessToggle({ api }: { api: WebAccessApi }) {
   );
 }
 
-export function MainChat({ open, onOpenChange, state, onSend, onRetry, onRetryHistory, notice, onReconnect, webAccess, meetings, courier, asks, newChat }: MainChatProps) {
+export function MainChat({ open, onOpenChange, state, onSend, onRetry, onRetryHistory, notice, onReconnect, webAccess, meetings, courier, asks, newChat, earlierHistory }: MainChatProps) {
   const { lines, history, turn } = state;
   const working = isWorking(turn);
   const sdkPromptOpen = useSdkPromptOpen();
@@ -177,6 +181,7 @@ export function MainChat({ open, onOpenChange, state, onSend, onRetry, onRetryHi
           {history === "loading" ? <p role="status" className="text-callout text-muted-foreground">{BOTS_STRINGS.historyLoading}</p> : null}
           {history === "failed" && !working ? <Failure text={BOTS_STRINGS.historyFailed} onRetry={onRetryHistory} /> : null}
           {history === "declined" && !working ? <Failure text={botsErrorText("history_declined", MAIN_BOT.name)} onRetry={onRetryHistory} declined /> : null}
+          {open && earlierHistory ? <LazyEarlierHistoryAction move={earlierHistory} /> : null}
           {lines.map((line) => (
             line.unreadableHistory ? <p key={line.id} className="text-callout text-muted-foreground">{line.text}</p>
               : line.app ? <AppLine key={line.id} decision={line.app} names={line.names} live={line.id.startsWith("local-")} secret={line.secret} /> : <Line key={line.id} role={line.role} text={line.text} />
