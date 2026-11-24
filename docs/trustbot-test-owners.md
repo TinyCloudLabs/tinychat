@@ -29,19 +29,23 @@ stays in a private scratch file.
 
 Apply:
 
-1. Read both variables and save them:
+1. In a shell running `set -euo pipefail`, read both variables and save them:
    `gh variable get BOTS_TEST_ACCOUNTS --env production-api --repo TinyCloudLabs/tinychat > "$S/api.old"` and the
-   same for `production-bots` into `"$S/bots.old"` (`S` is a `mktemp -d` directory, mode 700). Stop if the two lists
-   differ as sets.
+   same for `production-bots` into `"$S/bots.old"` (`S` is a `mktemp -d` directory, mode 700). Stop if either read
+   fails, if either file is empty (`test -s "$S/api.old" && test -s "$S/bots.old"`), or if the two lists differ as
+   sets. An empty saved file would make step 2 replace the whole list with the one address.
 2. Set each to its saved value plus the logged address, appended with a comma. Nothing else changes:
    `gh variable set BOTS_TEST_ACCOUNTS --env production-api --repo TinyCloudLabs/tinychat --body "$(cat "$S/api.old"),ADDRESS"`
    and the same for `production-bots` from `"$S/bots.old"`.
-3. Read both back. Each must equal its old set plus the address, with no entry lost.
+3. Read both back. Each must equal its old set plus the address, with no entry lost. If either does not, roll back
+   now, before step 4.
 4. Deploy the backend and bots the normal way at the approved main SHA.
 5. Check: the logged owner gets `enabled: true` from the bots status route; an existing test owner still does.
 
 Roll back: set both variables back to `"$S/api.old"` and `"$S/bots.old"`, read them back, and deploy the backend and
 bots again.
 
-Remove: once QA is done, a PR fills in the Removed column; after it merges, run the apply steps with the address
-taken out instead of appended, then deploy.
+Remove: once QA is done, a PR fills in the Removed column. After it merges, run step 1, then stop if the address is
+not in both saved lists. Set each variable to its saved set minus exactly that address. Read both back: each must
+equal its old set minus that one address, with nothing else lost; if not, roll back now. Then deploy and check that
+an existing test owner still gets `enabled: true`.
