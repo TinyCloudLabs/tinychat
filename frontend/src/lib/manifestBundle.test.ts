@@ -57,9 +57,10 @@ describe("manifest bundle, resolved by the real resolveManifest", () => {
     expect(resolved().filter((resource) => resource.path === `${APP}/migrations/`)).toEqual([]);
   });
 
-  test("Home can use every applications KV folder and the two runnable catalog databases", () => {
-    expect(resolved().filter((entry) => entry.service === "tinycloud.kv" && entry.path === "")).toEqual([
-      { service: "tinycloud.kv", space: "applications", path: "", actions: ["tinycloud.kv/get", "tinycloud.kv/put", "tinycloud.kv/del", "tinycloud.kv/list", "tinycloud.kv/metadata"] },
+  test("Home reads only the Ledger folder outside its own, plus the two runnable catalog databases", () => {
+    expect(resolved().filter((entry) => entry.service === "tinycloud.kv" && entry.path === "")).toEqual([]);
+    expect(resolved().filter((entry) => entry.service === "tinycloud.kv" && entry.path === "xyz.tinycloud.rocinante/")).toEqual([
+      { service: "tinycloud.kv", space: "applications", path: "xyz.tinycloud.rocinante/", actions: ["tinycloud.kv/get", "tinycloud.kv/list", "tinycloud.kv/metadata"] },
     ]);
     const catalog = resolved().filter((entry) => entry.service === "tinycloud.sql" && entry.path.startsWith("xyz.tinycloud.sample."));
     expect(catalog).toEqual([
@@ -84,7 +85,7 @@ describe("manifest bundle, resolved by the real resolveManifest", () => {
   });
 
   test("the TinyCloud One mailbox is exactly requests/ [get, list, del] and jobs/ [get, put, del] on kv", () => {
-    const mailbox = resolved().filter((entry) => entry.path.startsWith(`${APP}/exo/`));
+    const mailbox = resolved().filter((entry) => entry.path.startsWith(`${APP}/exo/v1/`));
     expect(mailbox).toEqual([
       { service: "tinycloud.kv", space: "applications", path: `${APP}/exo/v1/requests/`, actions: ["tinycloud.kv/get", "tinycloud.kv/list", "tinycloud.kv/del"] },
       { service: "tinycloud.kv", space: "applications", path: `${APP}/exo/v1/jobs/`, actions: ["tinycloud.kv/get", "tinycloud.kv/put", "tinycloud.kv/del"] },

@@ -89,9 +89,10 @@
     {
       "service": "tinycloud.kv",
       "space": "applications",
-      "path": "",
-      "actions": ["get", "put", "del", "list", "metadata"],
-      "skipPrefix": true
+      "path": "xyz.tinycloud.rocinante/",
+      "actions": ["get", "list", "metadata"],
+      "skipPrefix": true,
+      "description": "Read the release ledger folder that the Ledger app opens."
     },
     {
       "service": "tinycloud.space",
@@ -108,6 +109,11 @@
       "service": "tinycloud.kv",
       "path": "exo/v1/jobs/",
       "actions": ["get", "put", "del"]
+    },
+    {
+      "service": "tinycloud.kv",
+      "path": "exo/voiceNotes/hostedJobs/",
+      "actions": ["get", "put", "del", "list"]
     },
     {
       "service": "tinycloud.sql",

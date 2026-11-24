@@ -352,7 +352,8 @@ describe("nativePermissions", () => {
     const expected = (APP_MANIFEST.permissions as { service: string; space?: string }[])
       .filter((p) => (p.space ?? "applications") === "applications" && p.service !== "tinycloud.space");
     expect(permissions.slice(1).map((p) => p.service)).toEqual(expected.map((p) => p.service));
-    expect(permissions.some((p) => p.service === "tinycloud.kv" && p.path === "")).toBe(true);
+    expect(permissions.some((p) => p.service === "tinycloud.kv" && p.path === "xyz.tinycloud.rocinante/")).toBe(true);
+    expect(permissions.some((p) => p.service === "tinycloud.kv" && p.path === "")).toBe(false);
     expect(permissions.some((p) => p.path === "xyz.tinycloud.sample.recipes/recipes")).toBe(true);
     expect(permissions.some((p) => p.service === "tinycloud.space")).toBe(false);
   });
