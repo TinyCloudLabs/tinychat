@@ -291,26 +291,27 @@ DMG or `desktop/scripts/exo-update.sh`; from then on updates are automatic.
 
 **Minting the updater key (once, repo admin).** Until this is done,
 `tauri.conf.json` carries a `PLACEHOLDER-TC-4275-…` public key and every signed
-release fails at "Sign the updater archive". The private key and its random
-password go straight from files into the two `desktop-release` secrets; neither is
-ever printed. Run on a single-user machine from a checkout of `main` with
-`bun install` done: `tauri signer generate` only takes the password as `-p`, so it
-is in that process's arguments (visible to `ps`) for about a second.
+release fails at "Sign the updater archive". The key is made by
+`scripts/release/desktop-updater.mjs generate` (Node built-ins only), in
+`tauri signer generate`'s format and scrypt limits: unlike the Tauri CLI, which
+only takes the password as `-p`, it reads the password from a 0600 file or stdin,
+so the password never appears in any process's arguments or environment. It
+re-reads the key with the password before printing the public key. The key and
+its random password go straight from files into the two `desktop-release`
+secrets and are never printed. Files at 0600 still stay readable to other
+processes of the same user while they exist, so run this as a user no agent
+shares, and delete them right away.
 
 ```bash
 repo=TinyCloudLabs/tinychat
 umask 077
 d=$(mktemp -d /var/tmp/tauri-updater-key.XXXXXX)
 openssl rand -base64 32 | tr -d '\n' > "$d/password"
-bun run --cwd desktop tauri signer generate --ci -w "$d/updater.key" -p "$(cat "$d/password")" > /dev/null
-# Check the pair with the release signer before storing it (prints the public key id only).
-head -c 1024 /dev/urandom > "$d/check.app.tar.gz"
-TAURI_SIGNING_PRIVATE_KEY="$(cat "$d/updater.key")" TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$(cat "$d/password")" \
-  node scripts/release/desktop-updater.mjs sign --archive "$d/check.app.tar.gz" --version 0.0.0 --pubkey "$(cat "$d/updater.key.pub")"
-gh secret set TAURI_SIGNING_PRIVATE_KEY --env desktop-release --repo $repo < "$d/updater.key"
+node scripts/release/desktop-updater.mjs generate --dir "$d/key" --password-file "$d/password" > /dev/null
+gh secret set TAURI_SIGNING_PRIVATE_KEY --env desktop-release --repo $repo < "$d/key/updater.key"
 gh secret set TAURI_SIGNING_PRIVATE_KEY_PASSWORD --env desktop-release --repo $repo < "$d/password"
-cat "$d/updater.key.pub"; echo   # public: the value for plugins.updater.pubkey in tauri.conf.json
-shred -u "$d/updater.key" "$d/password" 2>/dev/null || rm -P "$d/updater.key" "$d/password" 2>/dev/null || rm -f "$d/updater.key" "$d/password"
+cat "$d/key/updater.key.pub"; echo   # public: the value for plugins.updater.pubkey in tauri.conf.json
+shred -u "$d/key/updater.key" "$d/password" 2>/dev/null || rm -P "$d/key/updater.key" "$d/password" 2>/dev/null || rm -f "$d/key/updater.key" "$d/password"
 rm -rf "$d"
 ```
 

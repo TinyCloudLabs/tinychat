@@ -15,14 +15,19 @@
  *       --url <https asset url> --notes <file> --out <latest.json> [--pub-date <RFC 3339>]
  *       verify --signature against --archive, --pubkey and --version, then write latest.json for darwin-aarch64 (the
  *       only build)
+ *   desktop-updater.mjs generate --dir <dir> --password-file <0600 file | ->
+ *       the release key, minted once (desktop/README.md, "In-app updates"): `tauri signer generate`'s format and scrypt
+ *       limits, encrypted with the password read from a file only its owner can read, or from stdin ("-"), so it never
+ *       appears in any process's arguments. Writes <dir>/updater.key (0600) and <dir>/updater.key.pub; prints the
+ *       public key
  *   desktop-updater.mjs keygen --dir <dir>
  *       CI dry runs only: a throwaway key in Tauri's format (<dir>/updater.key, mode 0600, random password in
- *       <dir>/password); prints its public key. Release keys come from `tauri signer generate` (desktop/README.md).
+ *       <dir>/password, light scrypt limits); prints its public key
  *
  * No key, password or signature value is ever printed.
  */
 import { createHash, createPrivateKey, createPublicKey, randomBytes, scryptSync, sign as edSign, verify as edVerify } from 'node:crypto';
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { parseArgs } from 'node:util';
 import { fileURLToPath } from 'node:url';
@@ -219,14 +224,18 @@ export function updateManifest({ version, notes, pubDate, url, signature }) {
   return { version, notes, pub_date: pubDate, platforms: { [PLATFORM]: { signature, url } } };
 }
 
-/** A throwaway key in `tauri signer generate`'s format (light scrypt parameters: CI dry runs and tests only). */
-export function generateKey(password, { seed = randomBytes(32), keyId = randomBytes(8), salt = randomBytes(32) } = {}) {
+/** `tauri signer generate`'s scrypt limits (rsign2's): N=2^15, r=8, p=1. */
+export const RELEASE_KDF = { opslimit: 1048576n, memlimit: 33554432n };
+/** Lighter limits for the CI dry run's throwaway key. */
+const DRY_RUN_KDF = { opslimit: 524288n, memlimit: 16777216n };
+
+/** A key in `tauri signer generate`'s format: rsign2's scrypt-encrypted minisign Ed25519 secret key and its public key. */
+export function generateKey(password, { seed = randomBytes(32), keyId = randomBytes(8), salt = randomBytes(32), kdf = DRY_RUN_KDF } = {}) {
   const jwk = edPrivate(seed).export({ format: 'jwk' });
   const publicKey = Buffer.from(jwk.x, 'base64url');
   const secret = Buffer.concat([seed, publicKey]);
   const checksum = blake2b(Buffer.concat([Buffer.from('Ed'), keyId, secret]), 32);
-  const opslimit = 524288n;
-  const memlimit = 16777216n;
+  const { opslimit, memlimit } = kdf;
   const limits = Buffer.alloc(16);
   limits.writeBigUInt64LE(opslimit, 0);
   limits.writeBigUInt64LE(memlimit, 8);
@@ -280,13 +289,34 @@ function keygenCommand(values) {
   console.log(pubkey);
 }
 
+function generateCommand(values) {
+  const { dir } = values;
+  const file = values['password-file'];
+  if (!dir || !file) throw new Error('generate needs --dir and --password-file (a 0600 file, or - for stdin)');
+  if (file !== '-' && (statSync(file).mode & 0o077) !== 0) throw new Error(`${file} is readable by others than its owner: chmod 600 it`);
+  const password = readFileSync(file === '-' ? 0 : file, 'utf8');
+  if (password.length < 16) throw new Error('The key password must be at least 16 characters');
+  if (password !== password.trim()) {
+    throw new Error('The key password starts or ends with whitespace (a trailing newline?): store exactly what the secret will hold');
+  }
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const { privateKey, pubkey } = generateKey(password, { kdf: RELEASE_KDF });
+  // Re-read the key as `sign` will (same decryption and checksum) before anything is written.
+  if (!parseSecretKey(privateKey, password).publicKey.equals(parsePublicKey(pubkey).publicKey)) throw new Error('Generated key does not round-trip');
+  // 'wx': never overwrite an existing key.
+  writeFileSync(join(dir, 'updater.key'), privateKey, { mode: 0o600, flag: 'wx' });
+  chmodSync(join(dir, 'updater.key'), 0o600);
+  writeFileSync(join(dir, 'updater.key.pub'), pubkey, { mode: 0o644, flag: 'wx' });
+  console.log(pubkey);
+}
+
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const [command, ...args] = process.argv.slice(2);
   const { values } = parseArgs({
     args,
-    options: Object.fromEntries(['archive', 'signature', 'version', 'pubkey', 'url', 'notes', 'out', 'pub-date', 'dir'].map(name => [name, { type: 'string' }])),
+    options: Object.fromEntries(['archive', 'signature', 'version', 'pubkey', 'url', 'notes', 'out', 'pub-date', 'dir', 'password-file'].map(name => [name, { type: 'string' }])),
   });
-  const commands = { sign: signCommand, manifest: manifestCommand, keygen: keygenCommand };
+  const commands = { sign: signCommand, manifest: manifestCommand, generate: generateCommand, keygen: keygenCommand };
   if (!commands[command]) throw new Error(`Usage: desktop-updater.mjs <${Object.keys(commands).join('|')}> [options]`);
   commands[command](values);
 }

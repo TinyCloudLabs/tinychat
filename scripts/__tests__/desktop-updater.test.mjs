@@ -2,11 +2,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { blake2b, generateKey, parsePublicKey, parseSecretKey, signUpdate, verifySignature, verifyUpdate } from '../release/desktop-updater.mjs';
+import { RELEASE_KDF, blake2b, generateKey, parsePublicKey, parseSecretKey, signUpdate, verifySignature, verifyUpdate } from '../release/desktop-updater.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const script = join(here, '../release/desktop-updater.mjs');
@@ -87,6 +87,46 @@ test('the script reads tauri signer keys and signatures, and writes signatures i
   assert.equal(ourLines[0], cliLines[0]);
   assert.ok(Buffer.from(ourLines[1], 'base64').subarray(0, 10).equals(Buffer.from(cliLines[1], 'base64').subarray(0, 10)));
   assert.equal(ourLines.length, cliLines.length);
+});
+
+// The other direction: the CLI uses a key the script generated. fixtures/desktop-updater-generated/test-only.key is
+// generateKey('test-only-generated-password', { seed: 32 × 0x03, keyId: 1112131415161718, salt: 32 × 0x04,
+// kdf: RELEASE_KDF }); payload.bin.sig is tauri-cli 2.11.4's
+// `tauri signer sign -f test-only.key -p test-only-generated-password payload.bin` (the CLI refuses a wrong password).
+test('tauri signer sign accepts a key the script generates for release', () => {
+  const dir = join(here, 'fixtures/desktop-updater-generated');
+  const key = generateKey('test-only-generated-password', {
+    seed: Buffer.alloc(32, 3), keyId: Buffer.from('1112131415161718', 'hex'), salt: Buffer.alloc(32, 4), kdf: RELEASE_KDF,
+  });
+  assert.equal(key.privateKey, readFileSync(join(dir, 'test-only.key'), 'utf8'));
+  assert.equal(key.pubkey, readFileSync(join(dir, 'test-only.key.pub'), 'utf8'));
+  assert.match(verifySignature(readFileSync(join(dir, 'payload.bin')), readFileSync(join(dir, 'payload.bin.sig'), 'utf8'), key.pubkey), /^timestamp:\d+\tfile:/);
+});
+
+test('generate reads the password from a private file or stdin, never from arguments, and never overwrites a key', t => {
+  const dir = tempDir(t);
+  const password = 'a-random-test-password-0123456789';
+  const file = join(dir, 'password');
+  writeFileSync(file, password, { mode: 0o600 });
+  const fromFile = run(['generate', '--dir', join(dir, 'a'), '--password-file', file]);
+  assert.equal(fromFile.status, 0, fromFile.stderr);
+  assert.equal(statSync(join(dir, 'a/updater.key')).mode & 0o777, 0o600);
+  assert.equal(fromFile.stdout.trim(), readFileSync(join(dir, 'a/updater.key.pub'), 'utf8'));
+  const fromStdin = spawnSync(process.execPath, [script, 'generate', '--dir', join(dir, 'b'), '--password-file', '-'], { input: password, encoding: 'utf8' });
+  assert.equal(fromStdin.status, 0, fromStdin.stderr);
+  for (const sub of ['a', 'b']) {
+    const secret = parseSecretKey(readFileSync(join(dir, sub, 'updater.key'), 'utf8'), password);
+    assert.ok(secret.publicKey.equals(parsePublicKey(readFileSync(join(dir, sub, 'updater.key.pub'), 'utf8')).publicKey));
+    const raw = Buffer.from(Buffer.from(readFileSync(join(dir, sub, 'updater.key'), 'utf8'), 'base64').toString('utf8').split('\n')[1], 'base64');
+    assert.deepEqual([raw.readBigUInt64LE(38), raw.readBigUInt64LE(46)], [RELEASE_KDF.opslimit, RELEASE_KDF.memlimit]);
+  }
+  assert.match(run(['generate', '--dir', join(dir, 'a'), '--password-file', file]).stderr, /EEXIST/);
+  const shared = join(dir, 'shared');
+  writeFileSync(shared, password);
+  chmodSync(shared, 0o644); // explicit: writeFileSync's mode is masked by the umask
+  assert.match(run(['generate', '--dir', join(dir, 'c'), '--password-file', shared]).stderr, /readable by others/);
+  writeFileSync(file, `${password}\n`);
+  assert.match(run(['generate', '--dir', join(dir, 'd'), '--password-file', file]).stderr, /trailing newline/);
 });
 
 test('sign and manifest write a latest.json the app accepts', t => {
