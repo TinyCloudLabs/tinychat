@@ -298,9 +298,12 @@ only takes the password as `-p`, it reads the password from a 0600 file or stdin
 so the password never appears in any process's arguments or environment. It
 re-reads the key with the password before printing the public key. The key and
 its random password go straight from files into the two `desktop-release`
-secrets and are never printed. Files at 0600 still stay readable to other
-processes of the same user while they exist, so run this as a user no agent
-shares, and delete them right away.
+secrets and are never printed (only the public key is). While they exist, the
+0600 files in the `mktemp -d` directory are readable by other processes of the
+same user. That window is accepted: this host has no agent-free user, and
+same-user agents already hold `gh` credentials that could set the secret
+directly. Keep it short: the steps below create, store, `shred` and `rm -r` in
+one go.
 
 ```bash
 repo=TinyCloudLabs/tinychat
