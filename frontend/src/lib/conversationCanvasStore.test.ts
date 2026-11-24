@@ -82,6 +82,7 @@ function recordingClient(did: string, options: {
   const tcw = {
     did,
     sql: { db },
+    hasPermissions: () => false, session: () => null,
     async requestPermissions(permissions: unknown) {
       permissionRequests.push(permissions);
       return { approved: options.approve ?? true };
@@ -335,6 +336,7 @@ class SharedSpace {
       // write queues (threadStore keys them by spaceId first).
       spaceId: `${this.did}#device-${++this.devices}`,
       sql: { db: handle },
+      hasPermissions: () => false, session: () => null,
       requestPermissions: async () => ({ approved: true }),
     } as unknown as Client;
   }

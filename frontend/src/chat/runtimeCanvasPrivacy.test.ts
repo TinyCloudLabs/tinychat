@@ -76,7 +76,7 @@ test("a Canvas outage on a switched chat fails the send before anything is saved
     },
     async execute(sql: string) { writes.push(sql); return { ok: true, data: { rows: [] } }; },
   };
-  const tcw = { did: "did:test:canvas-failure", sql: { db: () => db }, requestPermissions: async () => ({ approved: true }) } as unknown as TinyCloudWeb;
+  const tcw = { did: "did:test:canvas-failure", sql: { db: () => db }, hasPermissions: () => false, session: () => null, requestPermissions: async () => ({ approved: true }) } as unknown as TinyCloudWeb;
   const origin = { tcw, threadId: "promoted", model: "model", turnId: "u2", activation: 1, space: "test", signal: new AbortController().signal };
   const selection = { beginTurn: async () => origin, assertActive: () => {}, needsFirstInsert: () => false, markFirstAppend: () => {}, isAppendSaved: () => true, confirmAppend: () => {} } as never;
   const history = createHistoryAdapter(tcw, "promoted", selection, () => {}, undefined, createMeetingMessageRegistry());

@@ -1,4 +1,4 @@
-import OpenKey from "@openkey/sdk";
+import OpenKey, { type AuthResult } from "@openkey/sdk";
 import type { Config as TinyCloudWebSdkConfig } from "@tinycloud/web-sdk";
 
 // ── Configuration ────────────────────────────────────────────────────
@@ -15,6 +15,8 @@ export interface ConnectWalletConfig {
 export interface ConnectWalletResult {
   address: string;
   keyId: string;
+  /** OpenKey's key type: a `MANAGED` key signs in OpenKey's own approval screen; an `EXTERNAL` key signs in the linked wallet. */
+  keyType: AuthResult["keyType"];
   openkey: OpenKey;
   web3Provider: EIP1193Provider;
 }
@@ -141,6 +143,7 @@ export async function connectWallet(config?: ConnectWalletConfig): Promise<Conne
   return {
     address: authResult.address,
     keyId: authResult.keyId,
+    keyType: authResult.keyType,
     openkey,
     web3Provider: eip1193,
   };
