@@ -38,6 +38,7 @@ import type { DisconnectImportGrants, DisconnectMode } from "@/lib/connectors/co
 import { createFirefliesImportGrantsTeardown } from "@/lib/connectors/firefliesImportGrantsApi";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { DISCONNECT_WHILE_SYNCING, DisconnectRow, FirefliesManage } from "./ManagePanel";
+import { FirefliesServerImportHost } from "./FirefliesServerImport";
 import {
   CalendarAutojoinRow,
   DisconnectDataChoice,
@@ -274,6 +275,8 @@ export function MeetingSourcesDialog({
                     webhooks={webhooks}
                     meetings={meetings}
                     importGrants={importGrants}
+                    backendUrl={backendUrl}
+                    sessionStore={sessionStore}
                     onIngested={() => void refresh(d.id)}
                     onFeatureDark={setFeatureDark}
                     syncing={syncing}
@@ -407,6 +410,8 @@ function FirefliesManagePanel({
   onIngested,
   onFeatureDark,
   importGrants,
+  backendUrl,
+  sessionStore,
   syncing,
   onDisconnect,
 }: {
@@ -418,6 +423,8 @@ function FirefliesManagePanel({
   onIngested: () => void;
   onFeatureDark: (dark: boolean) => void;
   importGrants: DisconnectImportGrants;
+  backendUrl: string;
+  sessionStore: SessionStore;
   syncing: boolean;
   onDisconnect: () => void;
 }) {
@@ -461,6 +468,7 @@ function FirefliesManagePanel({
         onBringBack={() => emit(requestHistoricalResync)}
         onDisconnect={onDisconnect}
         syncing={syncing}
+        serverImport={<FirefliesServerImportHost tcw={tcw} backendUrl={backendUrl} sessionStore={sessionStore} />}
       />
       <ConfirmDialog
         open={rotateOpen}

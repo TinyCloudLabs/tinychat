@@ -2,6 +2,7 @@ import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { clearSessionAfterHandoff } from "../sessionSignedOut";
 import { revokeImportGrants, type DisconnectImportGrants } from "./connectorLifecycle";
+import { writeFirefliesImportWanted, type FirefliesImportApi } from "./firefliesImport";
 import type { ConnectorWebhooksResult } from "./webhooksApi";
 
 /** The owner-scoped routes for the permissions the server holds to import Fireflies meetings. */
@@ -10,7 +11,7 @@ export const FIREFLIES_IMPORT_DELEGATION_PATH = "/api/connectors/fireflies/deleg
 const REQUEST_HEADER_NAME = "X-Requested-With";
 const REQUEST_HEADER_VALUE = "XMLHttpRequest";
 
-export interface FirefliesImportGrantsClient {
+export interface FirefliesImportGrantsClient extends FirefliesImportApi {
   /**
    * The ids of the two permissions the server currently holds for this owner: `[]` when none are
    * active. `feature-dark` means the server has the import off, so it holds nothing.
@@ -27,7 +28,7 @@ export function createFirefliesImportGrantsClient(
   const { sessionStore } = config;
   const fetchImpl = config.fetchImpl ?? fetch.bind(globalThis);
 
-  async function request<T>(path: string, method: "GET" | "DELETE"): Promise<ConnectorWebhooksResult<T>> {
+  async function request<T>(path: string, method: "GET" | "DELETE" | "POST", body?: unknown): Promise<ConnectorWebhooksResult<T>> {
     const token = sessionStore.getToken();
     if (!token) return { status: "unauthenticated" };
     if (sessionStore.isExpired()) {
@@ -38,7 +39,12 @@ export function createFirefliesImportGrantsClient(
     try {
       response = await fetchImpl(`${backendUrl}${FIREFLIES_IMPORT_DELEGATION_PATH}${path}`, {
         method,
-        headers: { Authorization: `Bearer ${token}`, [REQUEST_HEADER_NAME]: REQUEST_HEADER_VALUE },
+        headers: {
+          Authorization: `Bearer ${token}`,
+          [REQUEST_HEADER_NAME]: REQUEST_HEADER_VALUE,
+          ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+        },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       });
     } catch {
       return { status: "offline" };
@@ -73,6 +79,28 @@ export function createFirefliesImportGrantsClient(
     },
     removeGrant() {
       return request<null>("", "DELETE");
+    },
+    async status() {
+      const result = await request<Record<string, unknown>>("/status", "GET");
+      if (result.status !== "ok") return result;
+      const { state, expiresAt, delegateDid, grantCids } = result.value ?? {};
+      if (
+        (state !== "none" && state !== "active" && state !== "needs_renewal" && state !== "revoked") ||
+        (expiresAt !== null && typeof expiresAt !== "string") ||
+        typeof delegateDid !== "string" ||
+        !Array.isArray(grantCids) ||
+        !grantCids.every((cid) => typeof cid === "string" && cid.length > 0)
+      ) {
+        return { status: "rejected", httpStatus: 200, code: null };
+      }
+      return { status: "ok", value: { state, expiresAt: expiresAt as string | null, delegateDid, grantCids: grantCids as string[] } };
+    },
+    async submit(grants, replaces) {
+      const result = await request<Record<string, unknown>>("", "POST", { ...grants, replaces });
+      if (result.status !== "ok") return result;
+      const { state, expiresAt } = result.value ?? {};
+      if (state !== "active" || typeof expiresAt !== "string") return { status: "rejected", httpStatus: 200, code: null };
+      return { status: "ok", value: { state, expiresAt } };
     },
   };
 }
@@ -167,11 +195,16 @@ export function createFirefliesImportGrantsTeardown(
   sessionStore: SessionStore,
 ): DisconnectImportGrants {
   const client = createFirefliesImportGrantsClient(backendUrl, { sessionStore });
+  const address = sessionStore.getAddress?.()?.toLowerCase();
   const inner: DisconnectImportGrants = {
-    listGrantCids: () => client.listGrantCids(),
+    listGrantCids: () => {
+      // Every teardown (disconnect, instant updates off, account deletion) starts here: the owner no longer wants the
+      // import, so a lapsed pair is not replaced on its own from this browser.
+      if (address) writeFirefliesImportWanted(address, false);
+      return client.listGrantCids();
+    },
     revoke: async (cid) => (await tcw.revokeDelegation(cid)).ok,
   };
-  const address = sessionStore.getAddress?.()?.toLowerCase();
   return address ? withPendingRevokes(inner, { accountKey: address }) : inner;
 }
 

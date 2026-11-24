@@ -198,6 +198,11 @@ export function createKvFirefliesGrantPort(
   };
 }
 
+function toFirefliesGrantStatus(loaded: LoadedFirefliesGrant): FirefliesGrantStatus {
+  if (loaded.state === "active") return { state: "active", expiresAt: loaded.verified.expiresAt.toISOString() };
+  return { state: loaded.state, expiresAt: loaded.expiresAt };
+}
+
 /**
  * Owner-scoped encrypted store for Fireflies server-import grants in backend-own KV
  * (`delegations/fireflies-import/{address}`).
@@ -338,6 +343,9 @@ export class FirefliesGrantStore {
    * Runs the store's own read-then-write steps for one owner one after another. Held only across KV calls and never
    * across the owner lock or any other lock, so it cannot join a lock cycle; it is what keeps a removal from being
    * undone by a marker or a grant that read the record before the removal.
+   *
+   * Constraint: the order is kept inside this one process. A second backend replica would need the check and the
+   * write to be one conditional write at the key-value store, or a lease, before this can be relied on.
    */
   #serialized<T>(normalizedAddress: string, fn: () => Promise<T>): Promise<T> {
     const previous = this.#tails.get(normalizedAddress) ?? Promise.resolve();
@@ -453,21 +461,36 @@ export class FirefliesGrantStore {
     address: string,
     options: FirefliesGrantVerifyOptions,
   ): Promise<FirefliesGrantStatus> {
-    const loaded = await this.#inspect(address, options, { purgeDefinitive: false });
-    if (loaded.state === "active") {
-      return { state: "active", expiresAt: loaded.verified.expiresAt.toISOString() };
-    }
-    return { state: loaded.state, expiresAt: loaded.expiresAt };
+    return toFirefliesGrantStatus(await this.#inspect(address, options, { purgeDefinitive: false }));
   }
 
+  /**
+   * The status and the two permission ids from ONE read of the stored record, for `GET …/delegation/status`. Two
+   * reads could straddle a removal and report an active pair with no ids, which a renewal would take for "nothing to
+   * replace". Strictly read-only.
+   */
+  async ownerStatus(
+    address: string,
+    options: FirefliesGrantVerifyOptions,
+  ): Promise<FirefliesGrantStatus & { grantCids: string[] }> {
+    const record = await this.#kv.get(this.keyFor(normalizeOwnerAddress(address)));
+    const cids = readStoredGrantCids(record);
+    return {
+      ...toFirefliesGrantStatus(await this.#inspect(address, options, { purgeDefinitive: false }, { record })),
+      grantCids: cids ? [cids.secrets, cids.meetings] : [],
+    };
+  }
+
+  /** Verifies the stored record; `read` supplies one already read, so a caller that needs more fields reads once. */
   async #inspect(
     address: string,
     options: FirefliesGrantVerifyOptions,
     mode: { purgeDefinitive: boolean },
+    read?: { record: StoredFirefliesGrantRecord | null },
   ): Promise<LoadedFirefliesGrant> {
     const normalized = normalizeOwnerAddress(address);
     const now = options.now ?? Date.now();
-    const stored = await this.#kv.get(this.keyFor(normalized));
+    const stored = read ? read.record : await this.#kv.get(this.keyFor(normalized));
     if (!stored || !isRecord(stored) || stored.v !== 1) {
       return { state: "none", expiresAt: null };
     }

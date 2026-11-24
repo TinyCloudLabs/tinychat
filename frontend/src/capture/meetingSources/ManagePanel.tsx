@@ -4,6 +4,7 @@
 // in `chat/backgroundSyncState.ts` — this file renders the state it reports and
 // hands intent back, exactly as `BackgroundSyncView` does for the flag-off page.
 import { CircleAlertIcon, CopyIcon } from "lucide-react";
+import type { ReactNode } from "react";
 
 import {
   BACKEND_INGEST_CONSENT_COPY,
@@ -58,6 +59,8 @@ export interface FirefliesManageProps {
   onDisconnect: () => void;
   /** A sync this window started is still running: Disconnect waits for it. */
   syncing?: boolean;
+  /** The server import row. Rendered only while instant updates are on, which is also when it starts reading. */
+  serverImport?: ReactNode;
 }
 
 export function FirefliesManage(props: FirefliesManageProps) {
@@ -185,6 +188,8 @@ export function FirefliesManage(props: FirefliesManageProps) {
           ))}
         </ul>
       )}
+
+      {enabled && !state.reveal && props.serverImport}
 
       {!dark && (
         <OptionRow title="Bring back deleted meetings">

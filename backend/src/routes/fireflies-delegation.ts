@@ -24,7 +24,7 @@ const ACCEPT_WINDOW_MS = 3_600_000;
 export interface FirefliesDelegationRoutesConfig {
   delegate: FirefliesDelegateIdentity;
   configuredHost: string;
-  store: Pick<FirefliesGrantStore, "store" | "status" | "remove" | "grantCids">;
+  store: Pick<FirefliesGrantStore, "store" | "ownerStatus" | "status" | "remove" | "grantCids">;
   authMiddleware: RequestHandler;
   coordinator?: TenantCoordinator;
   now?: () => number;
@@ -131,6 +131,28 @@ export function createFirefliesDelegationRouter(config: FirefliesDelegationRoute
       res.json({ grantCids: cids ? [cids.secrets, cids.meetings] : [] });
     } catch {
       console.warn("[fireflies-delegation] op=grants result=unavailable");
+      res.status(503).json({ error: "unavailable" });
+    }
+  });
+
+  // Everything the owner's browser needs to turn the import on, renew it or take it off: whom to delegate to,
+  // the state and end date, and the two ids to replace. Public values only; never any grant material.
+  router.get("/status", async (req: Request, res: Response) => {
+    const user = requireUser(req, res);
+    if (!user) return;
+    const address = user.address.toLowerCase();
+    try {
+      const options = { configuredHost: config.configuredHost, deps, now: nowFn() };
+      // One read for the state and the ids: two reads could straddle a removal and show an active pair with no ids.
+      const owned = await coordinator.run(address, () => config.store.ownerStatus(address, options));
+      res.json({
+        state: owned.state,
+        expiresAt: owned.expiresAt,
+        delegateDid: config.delegate.did,
+        grantCids: owned.grantCids,
+      });
+    } catch {
+      console.warn("[fireflies-delegation] op=owner-status result=unavailable");
       res.status(503).json({ error: "unavailable" });
     }
   });

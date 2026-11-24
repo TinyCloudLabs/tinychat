@@ -107,3 +107,32 @@ describe("ids kept in this browser until each permission is withdrawn", () => {
     expect(await later.listGrantCids()).toEqual({ status: "ok", value: [] });
   });
 });
+
+describe("status and submit", () => {
+  test("status reads the state, end date, delegate and ids; a malformed answer is a failure", async () => {
+    const good = { state: "active", expiresAt: "2026-11-29T17:00:00.000Z", delegateDid: "did:key:z6Mk", grantCids: ["a", "b"] };
+    const { client, requests } = clientAnswering(() => Response.json(good));
+    expect(await client.status()).toEqual({ status: "ok", value: good });
+    expect(requests).toEqual([{ url: `${BACKEND}/api/connectors/fireflies/delegation/status`, method: "GET" }]);
+
+    for (const body of [{ ...good, state: "weird" }, { ...good, delegateDid: 7 }, { ...good, grantCids: [""] }, { ...good, expiresAt: 5 }]) {
+      expect((await clientAnswering(() => Response.json(body)).client.status()).status).toBe("rejected");
+    }
+  });
+
+  test("submit posts the pair as JSON and reads the end date; a 400 is rejected, a 503 retryable", async () => {
+    let sent: { body?: unknown; type?: string | null } = {};
+    const { client } = clientAnswering((_url, init) => {
+      sent = { body: JSON.parse(String(init.body)), type: new Headers(init.headers).get("content-type") };
+      return Response.json({ state: "active", expiresAt: "2026-11-29T17:00:00.000Z" });
+    });
+    const pair = { secretsGrant: "s", meetingsGrant: "m", siwe: "w", signature: "g" };
+    expect(await client.submit(pair, ["old-1", "old-2"])).toEqual({ status: "ok", value: { state: "active", expiresAt: "2026-11-29T17:00:00.000Z" } });
+    expect(sent).toEqual({ body: { ...pair, replaces: ["old-1", "old-2"] }, type: "application/json" });
+
+    expect((await clientAnswering(() => Response.json({ error: "bad" }, { status: 400 })).client.submit(pair, [])).status).toBe("rejected");
+    // A refusal because the ids named are not the ids held is a 409: the pair is not saved.
+    expect((await clientAnswering(() => Response.json({ error: "replaces_mismatch" }, { status: 409 })).client.submit(pair, ["a", "b"])).status).toBe("rejected");
+    expect((await clientAnswering(() => new Response(null, { status: 503 })).client.submit(pair, [])).status).toBe("retryable");
+  });
+});
