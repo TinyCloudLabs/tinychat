@@ -16,12 +16,15 @@ const EDIT_LINK = "https://dataroom.tinycloud.xyz/rooms/northwind/edit?share=6f1
 // Joined at run time, like the other guard tests' made-up secrets, so the repository's own secret scan has nothing to find.
 const JWT = ["eyJhbGciOiJIUzI1NiJ9", "eyJzdWIiOiJtaXJhIn0", "c2lnbmF0dXJlLXZhbHVlLTEyMw"].join(".");
 const HEX = "9f86d081884c7d65".repeat(4);
+const TAP = `https://openkey.so/a/${"a".repeat(26)}#v=4&k=${"A".repeat(43)}&c=bafkrei${"a".repeat(52)}`;
+const KEY = `sk-ant-${"a1B2".repeat(8)}`;
 
 test("a link, a JWT, a bearer token and a long hex string are taken out of a title; a plain sentence is untouched", () => {
   expect(shownTitle(`Edit the room: ${EDIT_LINK}.`)).toBe("Edit the room: [link].");
   expect(shownTitle("Notes at dataroom.tinycloud.xyz/rooms/northwind")).toBe("Notes at [link]");
-  // A JWT is a secret the guard already refuses: it goes the guard's way.
-  expect(shownTitle(`Session ${JWT} expires today`)).toBe("Session [link removed] expires today");
+  // A JWT is a secret the guard already refuses; in a title the guard's mark is "[link]" too, so a title shows one mark.
+  expect(shownTitle(`Session ${JWT} expires today`)).toBe("Session [link] expires today");
+  expect(shownTitle(`Tap ${TAP} or use ${KEY}`)).toBe("Tap [link] or use [link]");
   expect(shownTitle("Use Authorization: Bearer abc.def-123 for the call")).toBe("Use Authorization: [hidden] for the call");
   expect(shownTitle(`Key ${HEX} rotated`)).toBe("Key [hidden] rotated");
   expect(shownTitle(`Blob ${"Zm9vYmFy".repeat(4)}1== attached`)).toBe("Blob [hidden] attached");
@@ -116,4 +119,10 @@ test("Home titles the Courier connection's link-only message 'New message' and k
   // The same card from an agent that is not the Courier connection: its link still goes, but no summary is made.
   const other = await homeCard("isolatedtest", MESSAGE);
   expect(other.title).toBe("[link]");
+});
+
+test("a title shows the guard's removal as [link]; the body keeps the guard's own [link removed]", async () => {
+  const card = await homeCard("isolatedtest", { ...MESSAGE, title: `Tap ${TAP} now`, body: `Use ${KEY} now`, payload: {} });
+  expect(card.title).toBe("Tap [link] now");
+  expect(card.body).toBe("Use [link removed] now");
 });

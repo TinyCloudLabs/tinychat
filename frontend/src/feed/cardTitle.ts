@@ -11,8 +11,8 @@ const keepTrailing = (marker: string) => (match: string) => marker + (/[.,;:!?)\
 
 // Applied in order: a bearer token before the URL it may sit in, links before the tokens inside them.
 const TITLE_RULES: ReadonlyArray<[pattern: RegExp, replace: (match: string) => string]> = [
-  // The guard may have taken the token already ("Bearer [link removed]"); the word goes with it.
-  [new RegExp(String.raw`\bBearer\s+(?:${REDACTED.replace(/[[\]]/g, "\\$&")}|[^\s[]\S*)`, "gi"), () => TITLE_HIDDEN],
+  // The guard may have taken the token already ("Bearer [link]"); the word goes with it.
+  [/\bBearer\s+(?:\[link\]|[^\s[]\S*)/gi, () => TITLE_HIDDEN],
   [/\b(?:[a-z][a-z0-9+.-]*:\/\/|www\.)[^\s<>"'`]+/gi, keepTrailing(TITLE_LINK)],
   // A link written without its scheme: host.tld/path.
   [/\b(?:[a-z0-9-]+\.)+[a-z]{2,}\/[^\s<>"'`]*/gi, keepTrailing(TITLE_LINK)],
@@ -28,19 +28,21 @@ const TITLE_RULES: ReadonlyArray<[pattern: RegExp, replace: (match: string) => s
 ];
 
 /**
- * A card's title as Home shows it. Whatever the secret guard refuses goes first (redactSecrets). Then any link is
- * replaced with "[link]", and a bearer token, a JWT, a long hex or base64 string with "[hidden]", even where the guard
- * would let them through: a title is read at a glance, in a list, and never needs to show either.
+ * A card's title as Home shows it. Whatever the secret guard refuses goes first (redactSecrets), and its mark becomes
+ * "[link]" so a title shows one link mark. Then any link is replaced with "[link]", and a bearer token, a JWT, a long
+ * hex or base64 string with "[hidden]", even where the guard would let them through: a title is read at a glance, in a
+ * list, and never needs to show either.
  *
  * A message relayed over Courier (`courier`) is titled by its first line, which its sender wrote. Its row already
  * starts with the Courier mark and the sender, so its title is a short summary: that line, shortened, or
  * "New message" when nothing but links and tokens was in it.
  */
 export function shownTitle(title: string, courier = false): string {
-  const redacted = TITLE_RULES.reduce((text, [pattern, replace]) => text.replace(pattern, replace), redactSecrets(title));
+  const guarded = redactSecrets(title).replaceAll(REDACTED, TITLE_LINK);
+  const redacted = TITLE_RULES.reduce((text, [pattern, replace]) => text.replace(pattern, replace), guarded);
   if (!courier) return redacted;
   const line = redacted.split(/\r?\n/).map((part) => part.replace(/\s+/g, " ").trim()).find(Boolean) ?? "";
-  const words = line.replaceAll(REDACTED, "").replaceAll(TITLE_LINK, "").replaceAll(TITLE_HIDDEN, "");
+  const words = line.replaceAll(TITLE_LINK, "").replaceAll(TITLE_HIDDEN, "");
   if (!/[\p{L}\p{N}]/u.test(words)) return COURIER_EMPTY_TITLE;
   const chars = [...line];
   return chars.length > COURIER_TITLE_MAX ? `${chars.slice(0, COURIER_TITLE_MAX - 1).join("").trimEnd()}…` : line;
