@@ -6,13 +6,14 @@ name: iOS build (TinyCloud One)
 # build code:
 #
 # - archive (no environment, no secret, ever): the production frontend (`bun run build:frontend`, .env.production)
-#   bundled by `cap sync ios` with EXO_DEV_SERVER_URL unset, archived unsigned (CODE_SIGNING_ALLOWED=NO, no team). The
-#   archive check refuses a capacitor.config.json with a server URL, a missing public/index.html or privacy manifest,
-#   the wrong bundle id or versions, the Debug-only smoke probe, the CI-only frame probe (TC-3677), the Debug-only
-#   health spike (TC-525: HealthKit or its usage strings) and any trace of the Debug-only location spike (TC-524:
-#   location usage strings, the location background mode, its code or CoreLocation). The checked .xcarchive
-#   (ditto-zipped, so the executable bits survive) is handed to the sign job as a short-lived artifact; archive.log is
-#   uploaded for debugging.
+#   bundled by `cap sync ios` with EXO_DEV_SERVER_URL unset, archived unsigned (CODE_SIGNING_ALLOWED=NO, no team), then
+#   signed ad hoc with App.Release.entitlements so the export keeps them. The archive check refuses a
+#   capacitor.config.json with a server URL, a missing public/index.html or privacy manifest, the wrong bundle id or
+#   versions, entitlements other than App.Release.entitlements, the Debug-only smoke probe, the CI-only frame probe
+#   (TC-3677), the Debug-only health spike (TC-525: HealthKit or its usage strings) and any trace of the Debug-only
+#   location spike (TC-524: location usage strings, the location background mode, its code or CoreLocation). The
+#   checked .xcarchive (ditto-zipped, so the executable bits survive) is handed to the sign job as a short-lived
+#   artifact; archive.log is uploaded for debugging.
 # - sign (sign: true: the `ios-release` environment; otherwise a dry run with no environment): checks out only
 #   scripts/release at the workflow commit and runs no project code. In a dry run it only downloads, unpacks and
 #   re-checks the archive, so CI proves the hand-off. Signed: "Verify signing provenance" first, then the API key is
@@ -147,6 +148,19 @@ jobs:
           fi
           grep -E '^\*\* |warning: ' "$LOGS/archive.log" | sort -u | head -40
 
+      # An unsigned archive carries no entitlements, and the export signs the app with the entitlements of the
+      # archived signature, so App Store builds had none of App.Release.entitlements (associated domains: tinycloud.one
+      # share links, openkey.so passkeys, TC-520). An ad hoc signature (no team, no secret) carries them to the export,
+      # which replaces it. Nested code is signed first with no entitlements (codesign refuses an app with unsigned
+      # frameworks), then the app alone with them. ExoWidgets has no entitlements file; one added later needs its own
+      # codesign line here. The sign job's verify-ipa checks the exported entitlements exactly.
+      - name: Sign the archive ad hoc with the Release entitlements
+        run: |
+          app="$ARCHIVE/Products/Applications/App.app"
+          plutil -convert xml1 -o "$RUNNER_TEMP/App.Release.xcent" mobile/ios/App/App/App.Release.entitlements
+          codesign --force --deep --sign - "$app"
+          codesign --force --sign - --entitlements "$RUNNER_TEMP/App.Release.xcent" "$app"
+
       - name: Check the archive
         env:
           SHORT_VERSION: ${{ steps.versions.outputs.short-version }}
@@ -189,6 +203,12 @@ jobs:
           plutil -extract UIBackgroundModes json -o - "$plist" | jq -e 'index("location") == null' >/dev/null || fail "UIBackgroundModes has location in a Release build"
           if grep -a -q EXO_LOCATION_SPIKE "$app/App"; then fail "the Release binary contains the Debug-only location spike"; fi
           if otool -L "$app/App" | grep -q CoreLocation.framework; then fail "the Release binary links CoreLocation (the location spike is Debug-only)"; fi
+          # The export keeps the archived signature's entitlements: they must be exactly App.Release.entitlements.
+          codesign -d --entitlements - --xml "$app" >"$RUNNER_TEMP/archived.xcent" 2>/dev/null || fail "App.app has no readable signature"
+          entitlements=$(plutil -convert json -o - "$RUNNER_TEMP/archived.xcent" | jq -cS .)
+          [ "$entitlements" = "$(plutil -convert json -o - "$RUNNER_TEMP/App.Release.xcent" | jq -cS .)" ] ||
+            fail "the archived app's entitlements are not App.Release.entitlements: $entitlements"
+          echo "Entitlements: $entitlements"
           echo "Exo $(value CFBundleShortVersionString) ($(value CFBundleVersion)), $(value CFBundleIdentifier), $(du -sh "$app" | cut -f1)"
           ls "$app/Frameworks"
           {
