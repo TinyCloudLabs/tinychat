@@ -199,15 +199,15 @@ function contentText(content: unknown): string {
 
 /**
  * Fallback when the upstream stream omitted the usage chunk: every message's text (string content or text parts) as
- * prompt and the streamed text as completion, estimated as `measuredTokens` does (spec §4.4).
+ * prompt and the streamed text (or its measure) as completion, estimated as `measuredTokens` does (spec §4.4).
  */
 export function estimateTokens(
   messages: Array<{ content?: unknown }>,
-  completionText: string,
+  completion: string | TextMeasure,
 ): { promptTokens: number; completionTokens: number } {
   const prompt = emptyMeasure();
   for (const message of messages) measureText(contentText(message.content), prompt);
-  return { promptTokens: measuredTokens(prompt), completionTokens: estimateTextTokens(completionText) };
+  return { promptTokens: measuredTokens(prompt), completionTokens: typeof completion === "string" ? estimateTextTokens(completion) : measuredTokens(completion) };
 }
 
 /** `estimateTokens`, priced through `creditsFor`. Replaces the earlier flat token estimator (spec §4.4). */

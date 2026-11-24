@@ -36,8 +36,10 @@ import {
   type CatalogModel,
 } from "../billing/catalog.js";
 import {
+  emptyMeasure,
   estimateTextTokens,
   estimateTokens,
+  measureText,
   multiplierFor,
   ratesForModel,
   streamedOutputText,
@@ -110,9 +112,9 @@ const decoder = new TextDecoder();
  * Scan an SSE buffer for the final usage chunk RedPill emits when
  * stream_options.include_usage is set. That chunk carries
  * `usage.prompt_tokens` and `usage.completion_tokens` with an empty `choices`
- * array. We also accumulate the streamed answer text (delivered content) and
- * all generated text (answer, reasoning, tool calls) so a stream without a
- * usage chunk is charged an estimate of everything the model generated.
+ * array. We also note whether answer text was streamed (delivered content)
+ * and measure all generated text (answer, reasoning, tool calls) so a stream
+ * without a usage chunk is charged an estimate of everything the model generated.
  *
  * IMPORTANT: this only reads — the raw bytes are forwarded to the client
  * untouched. We re-decode here purely to extract the token counts.
@@ -121,8 +123,10 @@ class UsageScanner {
   private buffer = "";
   promptTokens: number | null = null;
   completionTokens: number | null = null;
-  completionText = "";
-  generatedText = "";
+  /** Answer text reached the client (reasoning and tool calls are not an answer). */
+  answered = false;
+  /** Everything the model generated (answer, reasoning, tool calls), measured for the no-usage estimate. */
+  generated = emptyMeasure();
 
   get hasUsage(): boolean {
     return this.promptTokens !== null || this.completionTokens !== null;
@@ -160,8 +164,8 @@ class UsageScanner {
       }
     }
     const delta = parsed.choices?.[0]?.delta?.content;
-    if (typeof delta === "string") this.completionText += delta;
-    this.generatedText += streamedOutputText(parsed as Record<string, unknown>);
+    if (typeof delta === "string" && delta) this.answered = true;
+    measureText(streamedOutputText(parsed as Record<string, unknown>), this.generated);
   }
 }
 
@@ -504,11 +508,11 @@ export function createChatRouter(options?: ChatRouterOptions) {
         ? { reasoning: { effort: reasoningControl.effort } }
         : {}),
     };
-    // The reply's spend bound: what its prompt and output can cost within what is left, held until it settles. Its
-    // output is capped to fit. The prompt is priced, and fitted into the context, at the token estimate every path uses
-    // (`estimateTextTokens`); a prompt the provider counts higher only costs the platform, as settlement clamps the
-    // charge. The finally at the end releases the hold after settlement; it lapses after 30 minutes even if a hung
-    // handler never gets there.
+    // The reply's hold: what its prompt and output can cost within what is left, held until it settles. Its output is
+    // capped to fit. The prompt is priced, and fitted into the context, at the token estimate every path uses
+    // (`estimateTextTokens`). The estimate can be low (digits, 4-byte characters), so the reply is charged its full usage
+    // up to what was left at admission (`allowance`), not only up to its hold. The finally at the end releases the hold
+    // after settlement; it lapses after 30 minutes even if a hung handler never gets there.
     let outputCap = maxOutputTokens;
     let allowance: number | null = null;
     let releaseHold: () => void = () => {};
@@ -524,8 +528,9 @@ export function createChatRouter(options?: ChatRouterOptions) {
         return;
       }
       outputCap = limit.maxTokens;
-      allowance = outputCap === undefined ? budgetRemaining : Math.min(budgetRemaining, callCostBound(rates, promptTokens, outputCap));
-      releaseHold = holdCredits(address, TIERS[gatedTier], anchor, startedAt, allowance, 30 * 60_000);
+      allowance = budgetRemaining;
+      const hold = outputCap === undefined ? budgetRemaining : Math.min(budgetRemaining, callCostBound(rates, promptTokens, outputCap));
+      releaseHold = holdCredits(address, TIERS[gatedTier], anchor, startedAt, hold, 30 * 60_000);
     }
     try {
     // AbortController so we can cancel the upstream fetch if the client disconnects.
@@ -657,16 +662,16 @@ export function createChatRouter(options?: ChatRouterOptions) {
     }
 
     // ── Settle usage (best effort; only when gating is active) ────────────────
-    // Clamped to the credits the reply held. A failed stream is free:
+    // Clamped to what was left at admission, not to the hold. A failed stream is free:
     // every /api/chat failure is the provider's or ours, never the model's
     // output. NEVER throws after bytes were served.
     if (paywallEnabled() && address && allowance !== null) {
       const usage = scanner.hasUsage
         ? { promptTokens: scanner.promptTokens ?? 0, completionTokens: scanner.completionTokens ?? 0 }
-        : estimateTokens(messages as Array<{ content?: unknown }>, scanner.generatedText);
+        : estimateTokens(messages as Array<{ content?: unknown }>, scanner.generated);
       const settled = settleReply({
         address, tier: TIERS[gatedTier], anchor, startedAt, allowance, model: resolvedModel,
-        usage, rates, deliveredOutput: scanner.completionText.length > 0, executionId: crypto.randomUUID(), flusher,
+        usage, rates, deliveredOutput: scanner.answered, executionId: crypto.randomUUID(), flusher,
         outcome: controller.signal.aborted ? "cancelled" : streamFailed ? "failed" : "success", failureCause: "ours",
       });
       noteRequestRecord(res, { credits: settled.charged });

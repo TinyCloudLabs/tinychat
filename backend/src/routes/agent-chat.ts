@@ -257,21 +257,26 @@ function normalizeToolCallDeltas(deltas: unknown[]): Parameters<typeof accumulat
 
 /**
  * A provider that does not enforce `max_tokens` is cut locally once a call's estimated output (`measuredTokens` of
- * `streamedOutputText`) passes twice its cap. The margin covers the estimate's error (it overcounts CJK), so a provider
- * that honours `max_tokens` always stops first. The cut stops forwarding the call, then reads on for at most
- * CUT_DRAIN_MS for its usage frame, so it is charged the provider's count; only without one is it charged the estimate.
+ * `streamedOutputText`) passes `cutAbove` (see `callCaps`). The cut stops forwarding the call, then reads on for its
+ * usage frame, so it is charged the provider's count; only without one is it charged the estimate. The read lasts at
+ * most CUT_DRAIN_MS, and ends CUT_DEADLINE_MARGIN_MS before the turn's deadline, so a cut call settles as a completed
+ * reply rather than timing out.
  */
-const CUT_OVER_CAP = 2;
 const CUT_DRAIN_MS = 3_000;
+const CUT_DEADLINE_MARGIN_MS = 500;
 
-function callCut(params: OrchestrateParams, signal: AbortSignal | undefined) {
+function callCut(params: OrchestrateParams, signal: AbortSignal | undefined, cutAbove: number | undefined) {
   const runtime = params.config.streamRuntime ?? streamRuntime;
   const drain = new AbortController();
   let timer: unknown;
   const cut = {
     active: false,
-    over: (estimatedTokens: number, maxTokens: number | undefined): boolean => maxTokens !== undefined && estimatedTokens > CUT_OVER_CAP * maxTokens,
-    start: () => { cut.active = true; timer = runtime.setTimeout(() => drain.abort(), CUT_DRAIN_MS); },
+    over: (estimatedTokens: number): boolean => cutAbove !== undefined && estimatedTokens > cutAbove,
+    start: () => {
+      cut.active = true;
+      const left = params.remainingMs ? params.remainingMs() - CUT_DEADLINE_MARGIN_MS : CUT_DRAIN_MS;
+      timer = runtime.setTimeout(() => drain.abort(), Math.max(0, Math.min(CUT_DRAIN_MS, left)));
+    },
     /** The call's frames. Once cut, a read error (the drain's end, or the provider's) ends them quietly unless the reply itself was aborted. */
     async *frames(body: AsyncIterable<Uint8Array>): AsyncGenerator<Record<string, unknown>, void, unknown> {
       try { yield* parseSseJson(body, signal ? AbortSignal.any([signal, drain.signal]) : drain.signal); }
@@ -716,11 +721,21 @@ export async function orchestrateToolCalling(input: OrchestrateParams): Promise<
     completionTokens: Math.max(result.completionTokens, observed.completionTokens) };
 }
 
-/** A provider call's output cap: the reply budget's, and no more than the model streams in the turn time left. */
-function callMaxTokens(params: OrchestrateParams, budgetCap: number | undefined): number | undefined {
-  if (!params.remainingMs) return budgetCap;
+/**
+ * A provider call's output cap (`maxTokens`): the reply budget's (or the call's own), and no more than the model streams
+ * in the turn time left. `cutAbove` is the estimated output past which the call is cut locally (`callCut`): the time cap
+ * itself, which already keeps 20% of the time in hand, so a call cut at normal speed still ends before the deadline; and
+ * twice the budget cap, since the estimate can run high (it counts CJK at a token per character) and settlement clamps
+ * the charge to the allowance anyway.
+ */
+function callCaps(params: OrchestrateParams, budgetCap: number | undefined): { maxTokens: number | undefined; cutAbove: number | undefined } {
+  const budgetCut = budgetCap === undefined ? undefined : 2 * budgetCap;
+  if (!params.remainingMs) return { maxTokens: budgetCap, cutAbove: budgetCut };
   const timeCap = timeCappedOutputTokens(params.model, params.remainingMs(), params.config.outputTokensPerSecond?.(params.model));
-  return budgetCap === undefined ? timeCap : Math.min(budgetCap, timeCap);
+  return {
+    maxTokens: budgetCap === undefined ? timeCap : Math.min(budgetCap, timeCap),
+    cutAbove: budgetCut === undefined ? timeCap : Math.min(budgetCut, timeCap),
+  };
 }
 
 async function bufferedMeetingModelCall(params: OrchestrateParams, request: MeetingModelRequest): Promise<BufferedMeetingModelResult> {
@@ -730,7 +745,7 @@ async function bufferedMeetingModelCall(params: OrchestrateParams, request: Meet
   const limit = params.budget ? params.budget.limitFor(estimateTextTokens(JSON.stringify(base)), request.maxOutputTokens) : { maxTokens: request.maxOutputTokens, capped: false };
   if (!limit) throw new StreamFailure("budget_exhausted");
   const redpillFetch = params.config.redpillFetch ?? redPillAciFetch(params.config.redpillBaseUrl, RECEIPT_AUDIT_TIMEOUT_MS);
-  const maxTokens = callMaxTokens(params, limit.maxTokens);
+  const { maxTokens, cutAbove } = callCaps(params, limit.maxTokens);
   const body = JSON.stringify({ ...base, max_tokens: maxTokens });
   const upstream = await fetchForTurn(redpillFetch, `${params.config.redpillBaseUrl}/chat/completions`, {
     method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${params.config.redpillApiKey}` },
@@ -743,7 +758,7 @@ async function bufferedMeetingModelCall(params: OrchestrateParams, request: Meet
   const promptEstimate = estimateTextTokens(body);
   params.onMetered?.({ promptTokens: promptEstimate, completionTokens: 0 });
   const calls = new Map<number, AccumulatedToolCall>();
-  const cut = callCut(params, request.signal);
+  const cut = callCut(params, request.signal, cutAbove);
   for await (const obj of cut.frames(upstream.body as unknown as AsyncIterable<Uint8Array>)) {
     if (typeof obj.id === "string") completionId = obj.id;
     const usage = obj.usage as { prompt_tokens?: number; completion_tokens?: number } | undefined;
@@ -769,7 +784,7 @@ async function bufferedMeetingModelCall(params: OrchestrateParams, request: Meet
     if (content.length + [...calls.values()].reduce((n, call) => n + call.args.length + call.name.length, 0) > maxChars || calls.size > 8) throw new StreamFailure("result_size_limit", "model");
     if (choice?.finish_reason != null) finish = choice.finish_reason;
     // A provider that does not enforce max_tokens: the call ends here as a length stop (see callCut).
-    if (!usageSeen && cut.over(measuredTokens(streamed), maxTokens)) { finish = "length"; cut.start(); }
+    if (!usageSeen && cut.over(measuredTokens(streamed))) { finish = "length"; cut.start(); }
   }
   // Cut with no usage frame within the drain: the call is charged its estimate.
   if (cut.active && !usageSeen) { promptTokens = promptEstimate; completionTokens = measuredTokens(streamed); params.onUsage?.({ promptTokens, completionTokens }); }
@@ -893,7 +908,7 @@ async function orchestrateExistingLoop(params: OrchestrateParams, generalOnly = 
     );
     const limit = params.budget?.limitFor(estimateTextTokens(JSON.stringify(requestBody)));
     if (limit === null) { errorCode = "budget_exhausted"; break; }
-    const maxTokens = callMaxTokens(params, limit?.maxTokens);
+    const { maxTokens, cutAbove } = callCaps(params, limit?.maxTokens);
     const body = JSON.stringify(maxTokens === undefined ? requestBody : { ...requestBody, max_tokens: maxTokens });
     const upstream = await fetchForTurn(redpillFetch, `${config.redpillBaseUrl}/chat/completions`, {
       method: "POST",
@@ -917,7 +932,7 @@ async function orchestrateExistingLoop(params: OrchestrateParams, generalOnly = 
     let roundCompletionTokens = 0;
     // Until the round's usage frame arrives it is metered from its request and streamed output, so a Stop mid-round is charged for the round.
     let roundUsageSeen = false;
-    const roundCut = callCut(params, params.signal);
+    const roundCut = callCut(params, params.signal, cutAbove);
     const roundStreamed = emptyMeasure();
     const roundPromptEstimate = estimateTextTokens(body);
     params.onMetered?.({ promptTokens: totalPromptTokens + roundPromptEstimate, completionTokens: totalCompletionTokens });
@@ -1028,7 +1043,7 @@ async function orchestrateExistingLoop(params: OrchestrateParams, generalOnly = 
       const fr = choice?.finish_reason;
       if (typeof fr === "string") finish = fr;
       // A provider that does not enforce max_tokens: the round ends here as a length stop (see callCut).
-      if (!roundUsageSeen && roundCut.over(measuredTokens(roundStreamed), maxTokens)) { finish = "length"; roundCut.start(); }
+      if (!roundUsageSeen && roundCut.over(measuredTokens(roundStreamed))) { finish = "length"; roundCut.start(); }
     }
 
     if (roundCut.active && !roundUsageSeen) {
