@@ -38,7 +38,7 @@ import type { VoiceNotePipeline } from "@/lib/voiceNotes/voiceNotePipeline";
 import { useVoiceNoteRecorder } from "./useVoiceNoteRecorder";
 import { noteAfterReceipt, shouldScheduleReceiptDismissal } from "./receiptBehavior";
 import { useLimitNotifications } from "./limitNotifications";
-import { stopRequestApplies, useRecordShortcut, useStopShortcut } from "./recordShortcut";
+import { useRecordShortcut, watchStopRequestsLater } from "./recordShortcut";
 
 /** How long a saved receipt stays, once its content is actually visible, before the sheet closes
  * and the island lets go. */
@@ -394,8 +394,11 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
   // A discard still finishing is not ready yet: the request waits for it instead of being refused.
   useRecordShortcut(platform === "tauri", { available: recorder.available, ready: state.ready && state.phase !== "discarding",
     active: recorderActive(state), record, openSheet });
-  // The call prompt tile's Stop: the same Stop as the recorder's own button, for a live or paused recording only.
-  useStopShortcut(platform === "tauri", { recording: stopRequestApplies(state), stop: recorder.stop });
+  // The call prompt tile's Stop: the same Stop as the recorder's own button, for a live or paused recording only. Its
+  // listener loads with its own chunk on the Mac (watchStopRequestsLater), so a claim reads the recorder through a ref.
+  const stopTarget = useRef({ state, stop: recorder.stop });
+  stopTarget.current = { state, stop: recorder.stop };
+  useEffect(() => platform === "tauri" ? watchStopRequestsLater(() => stopTarget.current) : undefined, [platform]);
   const minimiseSheet = useCallback(async () => {
     if (state.permissionDenied) await recorder.dismissShortcutRecovery();
     setMomentFieldFocused(false);
