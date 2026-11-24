@@ -3,7 +3,7 @@
 // when it is on. A pinned app carries a small pin mark. Pinning: the open app's bar (apps/AppBar.tsx), a long press on
 // a tile on touch screens, and a Pin button on a tile under the pointer. Presentational; AppsPage feeds it the
 // registry and the account's pins.
-import { useRef, type CSSProperties, type MouseEvent, type PointerEvent } from "react";
+import { useLayoutEffect, useRef, type CSSProperties, type MouseEvent, type PointerEvent } from "react";
 import { Link } from "react-router-dom";
 import { ArrowUpRightIcon, PinIcon, PlusIcon } from "lucide-react";
 
@@ -43,6 +43,8 @@ export const LONG_PRESS_MS = 500;
 const SLOP_PX = 10;
 /** How long after a long press's finger lifts its tap may still arrive (and is swallowed). */
 const TAP_AFTER_PRESS_MS = 1000;
+/** Where the grid was scrolled when it last unmounted (an app opened over it): back from the app lands there again. */
+let gridScrollTop = 0;
 
 export interface AppsGridProps {
   tiles: readonly GridTile[];
@@ -61,6 +63,10 @@ export function AppsGrid({ tiles, pins, canPin, onPin, onUnpin, addApp }: AppsGr
   // the finger is often over another tile by then. Infinity while that finger is still down (its release is heard on the
   // window, even off the grid), then a short deadline.
   const swallowTapUntil = useRef(0);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    if (scrollRef.current) scrollRef.current.scrollTop = gridScrollTop;
+  }, []);
   const toggle = (tile: GridTile) => {
     const pinned = pins.includes(tile.pin);
     if (pinned) onUnpin(tile.pin);
@@ -79,7 +85,7 @@ export function AppsGrid({ tiles, pins, canPin, onPin, onUnpin, addApp }: AppsGr
     toggle(tile);
   };
   return (
-    <div className="relative h-full overflow-y-auto" data-scroll-root>
+    <div ref={scrollRef} onScroll={(event) => { gridScrollTop = event.currentTarget.scrollTop; }} className="relative h-full overflow-y-auto" data-scroll-root>
       <PageHeader title={APPS_LAUNCHER_TITLE} className={PAGE_COLUMN} />
       <div className={`${PAGE_COLUMN} flex flex-col gap-4 pb-[max(1.5rem,env(safe-area-inset-bottom))]`}>
         {canPin && pins.length === 0 ? <p className="text-body text-muted-foreground">{APPS_PIN_HINT}</p> : null}

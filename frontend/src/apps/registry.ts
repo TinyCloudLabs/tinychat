@@ -323,6 +323,12 @@ export function framedApp(id: string): FramedOneApp | undefined {
   return app?.kind === "framed" && app.framed ? app : undefined;
 }
 
+/** Whether `/chat/apps/<id>` shows the app framed on this origin: the screen a phone opens full screen. */
+export function framesAppIdHere(id: string, origin: string): boolean {
+  const app = framedApp(id);
+  return app !== undefined && framesAppHere(app, origin);
+}
+
 export type AppTarget = { kind: "route"; path: string } | { kind: "newTab"; url: string };
 
 /**

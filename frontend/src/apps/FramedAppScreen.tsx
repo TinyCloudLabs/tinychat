@@ -4,7 +4,8 @@
 
 import type { PermissionEntry, TinyCloudWeb } from "@tinycloud/web-sdk";
 import { useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ExternalLinkIcon } from "lucide-react";
+import { useNavigate } from "react-router-dom";
+import { ChevronLeftIcon, ExternalLinkIcon } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -17,10 +18,14 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { openLinkInApp } from "@/feed/inAppLink";
+import { navKindFor } from "@/shell/navItems";
+import { historyIndex } from "@/shell/navigation";
 import { appPinId } from "@/shell/navPins";
+import { PATHS } from "@/shell/routes";
 import { openKeyFailureOf } from "../lib/authErrors";
 import { isNativeOpenKeySession } from "../lib/openkeyNative";
 import { PlatformContext } from "../lib/platform";
+import { useSizeClass } from "../lib/sizeClass";
 import { useResolvedTheme } from "../lib/theme";
 import { AppBar } from "./AppBar";
 import { EmbedHost, type EmbedTheme } from "./embedHost";
@@ -38,6 +43,7 @@ import {
   askTitle,
   COURIER_MISSING,
   courierMissing,
+  FULL_SCREEN_BACK,
   joinScopes,
   missingSpacesLine,
   openSeparately,
@@ -92,9 +98,12 @@ export interface OneAppScreenProps extends FramedAppScreenProps {
  * One's new navigation (ONE_NAV_ENABLED): every web app's screen in One, the open app's bar on top of the framed app,
  * or, where One can't frame it, of a screen that opens it on its own. Only `framedApp` (the frame allowlist and its
  * ceilings) decides what is framed; an app the new navigation lists that it doesn't know opens on its own.
+ * On a phone a framed app is full screen (the shell hides its navigation, `framesAppIdHere`): no bar, only a floating
+ * Back.
  */
 export function OneAppScreen({ appId, tcw, accountDid = null, fallback, connect }: OneAppScreenProps) {
   const platform = useContext(PlatformContext);
+  const phone = navKindFor(useSizeClass()) === "tabbar";
   // Every app the new navigation lists, whatever this build's flag (Share is listed only with it).
   const app = oneAppsFor(platform, true).find((entry) => entry.id === appId);
   if (!app || app.kind === "native") return <>{fallback}</>;
@@ -103,6 +112,15 @@ export function OneAppScreen({ appId, tcw, accountDid = null, fallback, connect 
   const session = tcw?.session();
   if (framed && (!tcw || !session)) return <>{fallback}</>;
   const url = appUrl(app);
+  if (phone && framed && tcw && session) {
+    return (
+      <div className="relative flex h-full min-h-0 flex-col" data-testid="one-app-screen" data-full-screen="">
+        <h1 className="sr-only">{app.name}</h1>
+        <FramedApp key={`${framed.id}:${session.address}:${session.chainId}:${session.sessionKey}`} app={framed} tcw={tcw} address={session.address} chainId={session.chainId} connect={connect} />
+        <FullScreenBack />
+      </div>
+    );
+  }
   return (
     <div className="flex h-full min-h-0 flex-col" data-testid="one-app-screen">
       <AppBar name={app.name} glyph={app.glyph} accountDid={accountDid} pin={appPinId(app.id)} url={url} />
@@ -112,6 +130,28 @@ export function OneAppScreen({ appId, tcw, accountDid = null, fallback, connect 
         <OpensSeparately name={app.name} glyph={app.glyph} url={url} phone={platform === "ios" || platform === "android"} />
       )}
     </div>
+  );
+}
+
+/**
+ * The full-screen app's way out: a small round frosted-glass button floating in the top-left corner, below the status
+ * bar (the screen sits under the safe-area inset). Back to wherever One was (history), or the Apps grid when the app
+ * was the first screen; the browser's and the system's Back do the same through history.
+ */
+function FullScreenBack() {
+  const navigate = useNavigate();
+  return (
+    <button
+      type="button"
+      aria-label={FULL_SCREEN_BACK}
+      onClick={() => {
+        if (historyIndex() > 0) navigate(-1);
+        else navigate(PATHS.apps, { replace: true });
+      }}
+      className="tc-pill tap-transparent absolute left-[max(8px,env(safe-area-inset-left))] top-2 z-30 grid size-10 place-items-center rounded-full text-foreground transition-transform duration-150 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+    >
+      <ChevronLeftIcon aria-hidden className="size-[22px] -translate-x-px [stroke-width:2.25]" />
+    </button>
   );
 }
 
