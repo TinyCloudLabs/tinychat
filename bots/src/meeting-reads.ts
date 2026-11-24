@@ -103,7 +103,9 @@ export interface MeetingDeskOptions {
   backendOrigin: string;
   backendCallSecret: string | undefined;
   /** Send refusals to the backend that serves the standing-read audit. While standing reads are enabled, the backend
-   *  records every read before it happens; these reports of blocked attempts are bounded and never retried. */
+   *  records every read before it happens. These reports of blocked attempts are never retried, and each source has its
+   *  own daily count: Main's own up to READS_PER_DAY, Courier turns' up to COURIER_READS_PER_DAY, so a peer cannot use up
+   *  Main's reports. The backend keeps the same two buckets per owner. */
   forwardRefusals?: boolean;
   store?: HeldStore;
   fetch?: UpstreamFetch;
@@ -112,7 +114,10 @@ export interface MeetingDeskOptions {
 
 /** `unanswered`: no response, or a server error, so the backend may not have recorded the attempt. */
 type Answer = { ok: true; text: string } | { ok: false; error: ReadError; unanswered?: true };
-type RefusalReport = { owner: string; area: ReadArea; tool: ReadToolName; outcome: "off" | "budget" | "busy" | "unavailable" };
+/** `source` marks a Courier turn's refusal, which the gateway and the backend count apart from Main's. */
+type RefusalReport = {
+  owner: string; area: ReadArea; tool: ReadToolName; outcome: "off" | "budget" | "busy" | "unavailable"; source?: "courier";
+};
 
 export class MeetingDesk {
   readonly #options: MeetingDeskOptions;
@@ -180,7 +185,9 @@ export class MeetingDesk {
     const refuseLocally = (outcome: RefusalReport["outcome"]) => {
       const secret = this.#options.backendCallSecret;
       if (this.#options.forwardRefusals && area !== "telegram" && setting?.owner && secret) {
-        void this.#forwardRefusal(botId, secret, { owner: setting.owner, area, tool: name, outcome });
+        void this.#forwardRefusal(botId, secret, {
+          owner: setting.owner, area, tool: name, outcome, ...(courier ? { source: "courier" as const } : {}),
+        });
       }
       return refuse(outcome);
     };
@@ -225,18 +232,20 @@ export class MeetingDesk {
   }
 
   async #forwardRefusal(botId: string, secret: string, report: RefusalReport): Promise<void> {
+    const courier = report.source === "courier";
+    const key = courier ? `courier:${botId}` : botId;
     const day = new Date(this.#now()).toISOString().slice(0, 10);
-    const previous = this.#auditToday.get(botId);
+    const previous = this.#auditToday.get(key);
     const today = previous?.day === day ? previous : { day, count: 0, capped: false };
-    if (today.count >= READS_PER_DAY) {
+    if (today.count >= (courier ? COURIER_READS_PER_DAY : READS_PER_DAY)) {
       if (!today.capped) {
         today.capped = true;
-        console.log(JSON.stringify({ gateway: "reads", outcome: "audit_forward_capped" }));
+        console.log(JSON.stringify({ gateway: courier ? "courier" : "reads", outcome: "audit_forward_capped" }));
       }
       return;
     }
     today.count++;
-    this.#auditToday.set(botId, today);
+    this.#auditToday.set(key, today);
     const path = `${BACKEND_PATH}audit/refusal`;
     const body = JSON.stringify(report);
     try {
@@ -250,9 +259,9 @@ export class MeetingDesk {
       void response.body?.cancel().catch(() => {});
       if (response.status === 204) return;
     } catch {
-      // The refusal is already decided. The report cannot affect its reply.
+      // The refusal is already decided, so a lost report cannot change its reply. It is logged below, never retried.
     }
-    console.log(JSON.stringify({ gateway: "reads", outcome: "audit_forward_failed" }));
+    console.log(JSON.stringify({ gateway: courier ? "courier" : "reads", outcome: "audit_forward_failed" }));
   }
 
   async #ask(owner: string, name: ReadToolName, args: Record<string, unknown>): Promise<Answer> {

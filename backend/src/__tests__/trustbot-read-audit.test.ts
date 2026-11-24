@@ -248,3 +248,17 @@ test("a full refusal-report budget still audits the next read before it runs", a
     expect(events).toEqual(["pending", "access", "access", "query", "query", "ok"]);
   });
 }, 15_000);
+
+test("Courier refusal reports have their own daily bucket, so a full one leaves Main's reports recorded", async () => {
+  await withRoute(async ({ post, events }) => {
+    const report = { owner, area: "meetings", tool, outcome: "off" };
+    for (let count = 0; count < 50; count++) {
+      expect((await post("audit/refusal", { ...report, outcome: "budget", source: "courier" })).status).toBe(204);
+    }
+    expect((await post("audit/refusal", { ...report, outcome: "budget", source: "courier" })).status).toBe(429);
+    expect((await post("audit/refusal", { ...report, source: "main" })).status).toBe(400);
+    expect((await post("audit/refusal", report)).status).toBe(204);
+    expect(events).toHaveLength(102);
+    expect(events.slice(-2)).toEqual(["pending", "off"]);
+  });
+}, 15_000);

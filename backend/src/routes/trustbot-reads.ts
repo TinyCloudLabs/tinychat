@@ -31,6 +31,8 @@ export const TRUSTBOT_READS_BODY_LIMIT = 16 * 1024;
 /** Selection state for follow-ups ("read it") is kept per owner under this room; it holds a reference, never text. */
 const TRUSTBOT_ROOM = "trustbot-main";
 const MAX_REFUSAL_REPORTS_PER_OWNER_PER_DAY = 200;
+/** Courier turns' refusals have their own bucket (the gateway's COURIER_READS_PER_DAY), so a peer cannot use up Main's. */
+const MAX_COURIER_REFUSAL_REPORTS_PER_OWNER_PER_DAY = 50;
 /** Reader failures that mean the node refused the grant. */
 const GRANT_ENDED = new Set(["delegation_expired"]);
 const GRANT_REFUSED = new Set(["delegation_revoked", "delegation_required", "access_denied"]);
@@ -251,7 +253,7 @@ export function createTrustBotReadsInternalRouter(
 ) {
   const router = Router();
   const nonces = new NonceGuard();
-  // Only Main can report refusals, so the signed owner is also the bot's budget key.
+  // Only Main can report refusals, so the signed owner is also the bot's budget key; Courier turns' reports have their own.
   const refusalReports = new Map<string, number>();
   let refusalDay = "";
   const bytesOf = (req: Request): Buffer => Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
@@ -264,8 +266,10 @@ export function createTrustBotReadsInternalRouter(
     if (!claims || claims.bot !== "main") { res.status(401).end(); return; }
     let report: unknown;
     try { report = JSON.parse(bytesOf(req).toString("utf8")); } catch { /* Invalid report. */ }
-    if (!report || typeof report !== "object" || Object.keys(report).length !== 4) { res.status(400).end(); return; }
-    const { owner, area, tool, outcome } = report as Record<string, unknown>;
+    if (!report || typeof report !== "object") { res.status(400).end(); return; }
+    const { owner, area, tool, outcome, source } = report as Record<string, unknown>;
+    const courier = source === "courier";
+    if (Object.keys(report).length !== (courier ? 5 : 4)) { res.status(400).end(); return; }
     const expectedArea = typeof tool === "string" ? readAuditArea(tool) : undefined;
     if (!expectedArea || area !== expectedArea || owner !== claims.owner || typeof tool !== "string" ||
       (outcome !== "off" && outcome !== "budget" && outcome !== "busy" && outcome !== "unavailable")) {
@@ -281,9 +285,13 @@ export function createTrustBotReadsInternalRouter(
           refusalReports.clear();
           refusalDay = day;
         }
-        const reports = refusalReports.get(claims.owner) ?? 0;
-        if (reports >= MAX_REFUSAL_REPORTS_PER_OWNER_PER_DAY) { res.status(429).end(); return; }
-        refusalReports.set(claims.owner, reports + 1);
+        const bucket = courier ? `${claims.owner}\ncourier` : claims.owner;
+        const reports = refusalReports.get(bucket) ?? 0;
+        if (reports >= (courier ? MAX_COURIER_REFUSAL_REPORTS_PER_OWNER_PER_DAY : MAX_REFUSAL_REPORTS_PER_OWNER_PER_DAY)) {
+          res.status(429).end();
+          return;
+        }
+        refusalReports.set(bucket, reports + 1);
         const id = await audit.begin({ at, owner: claims.owner, area: expectedArea, tool });
         await audit.settle(id, allowed ? outcome : "not_owner");
       }
