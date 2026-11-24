@@ -1,8 +1,7 @@
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { CONNECTOR_SCHEMA } from "@tinyboilerplate/core";
-import { parseCallParticipants, SUGGESTED_SPEAKER, type CallParticipants } from "@/capture/library/callParticipants";
+import type { CallParticipants } from "@/capture/library/callParticipants";
 import type { SpeakerSuggestion } from "@/capture/library/speakerNames";
-import { isCallPersonLabel } from "@/capture/library/speakerNamesCopy";
 import { readableError } from "@/lib/readableError";
 import { storageScopeFor, trackStorageWrites } from "@/lib/storageStatus";
 import { deviceName } from "@/lib/platform";
@@ -629,6 +628,12 @@ export async function patchRowSpeakerName(tcw: TinyCloudWeb, rowId: string, orig
   [rowId], checkpoint);
 }
 
+// Names in the call's own modules load with its save steps (callNames.ts, the only caller of the three functions below),
+// not with the entry chunk the web app boots from (TC-2882). A module that does not load fails the step, which the next
+// commit or pass over the saved notes tries again.
+const callParticipantsModule = () => import("@/capture/library/callParticipants");
+const speakerNamesCopyModule = () => import("@/capture/library/speakerNamesCopy");
+
 /**
  * Names in the call: puts the people the desktop app read from the meeting window (`call_participants`) on a Mac
  * recording's row, with the name suggested for "Them" when there is one. One statement, applied by the database to
@@ -639,6 +644,7 @@ export async function patchRowSpeakerName(tcw: TinyCloudWeb, rowId: string, orig
  */
 export async function writeCallParticipants(tcw: TinyCloudWeb, rowId: string, participants: CallParticipants,
   suggestion: SpeakerSuggestion | null, checkpoint: () => void = () => undefined): Promise<"written" | "kept" | "missing"> {
+  const { SUGGESTED_SPEAKER } = await callParticipantsModule();
   const m = "CASE WHEN json_valid(metadata) THEN metadata ELSE '{}' END";
   const withoutName = JSON.stringify({ call_participants: participants });
   const withName = suggestion === null ? withoutName : JSON.stringify({ call_participants: participants,
@@ -665,6 +671,7 @@ export async function writeCallParticipants(tcw: TinyCloudWeb, rowId: string, pa
  */
 export async function writeCallSpeakerSuggestions(tcw: TinyCloudWeb, rowId: string, suggestions: Readonly<Record<string, SpeakerSuggestion>>,
   ended: readonly string[], checkpoint: () => void = () => undefined): Promise<number> {
+  const { isCallPersonLabel } = await speakerNamesCopyModule();
   const m = "CASE WHEN json_valid(metadata) THEN metadata ELSE '{}' END";
   let written = 0;
   for (const [label, suggestion] of Object.entries(suggestions)) {
@@ -687,6 +694,7 @@ export async function writeCallSpeakerSuggestions(tcw: TinyCloudWeb, rowId: stri
 /** The call participants a voice-note row holds, or null (none, not in the agreed shape, or no such row). */
 export async function readRowCallParticipants(tcw: TinyCloudWeb, rowId: string,
   checkpoint: () => void = () => undefined): Promise<CallParticipants | null> {
+  const { parseCallParticipants } = await callParticipantsModule();
   const m = "CASE WHEN json_valid(metadata) THEN metadata ELSE '{}' END";
   const [row] = await query(tcw, `SELECT json_extract(${m}, '$.call_participants') FROM connector_meeting
     WHERE id = ? AND source = 'exo-voice-note'`, [rowId], checkpoint);

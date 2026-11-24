@@ -3,7 +3,6 @@ import type { BatchResponse, TranscriptionEvent } from "@/lib/anarlog/transcript
 import { logPipeline, logPipelineError } from "@/lib/debugLog";
 import { PARAKEET_MODEL_ID, type LocalSttModel, type WhisperModel } from "@/lib/localTranscriber";
 import { leaseWhisperServer, SHARED_WHISPER_SERVER_SCOPE, type WhisperServerLease } from "@/lib/whisperServerLease";
-import { nameCallSpeakersOnThisMac } from "../callSpeakersOnThisMac";
 import type { LocalTranscript, NoteSttState, VoiceNoteRecording } from "../nativeVoiceNotes";
 import type { WebStore } from "../web/webStore";
 import type { DesktopBridge } from "./desktopVoiceNotes";
@@ -146,6 +145,14 @@ function decodedShortfall(recordingMs: number, response: BatchResponse, engineNa
   return `${engineName} transcribed only ${clock(decodedMs)} of this ${clock(recordingMs)} recording. Retry transcription.`;
 }
 
+/**
+ * Who spoke when (`nameCallSpeakersOnThisMac`), loaded with the first transcript: the web app's entry chunk carries
+ * this queue but never runs it (TC-2882). A chunk that does not load rejects, and the job stores the transcript as it
+ * was, as when the naming fails.
+ */
+const nameCallSpeakersLater = (note: VoiceNoteRecording, transcript: LocalTranscript): Promise<LocalTranscript> =>
+  import("../callSpeakersOnThisMac").then((module) => module.nameCallSpeakersOnThisMac(note, transcript));
+
 export function createDesktopWhisperQueue(args: {
   store: WebStore; files: DesktopBridge; whisper: DesktopWhisperBridge;
   captureLive: () => boolean;
@@ -154,7 +161,7 @@ export function createDesktopWhisperQueue(args: {
   nameCallSpeakers?: (note: VoiceNoteRecording, transcript: LocalTranscript) => Promise<LocalTranscript>;
 }): DesktopWhisperQueue {
   const { store, files, whisper, captureLive } = args;
-  const nameCallSpeakers = args.nameCallSpeakers ?? nameCallSpeakersOnThisMac;
+  const nameCallSpeakers = args.nameCallSpeakers ?? nameCallSpeakersLater;
   const jobs = new Map<string, DesktopWhisperJob>();
   const owners = new Map<string, string | null>();
   const currentAccountDid = args.currentAccountDid ?? mountedVoiceNoteDid;

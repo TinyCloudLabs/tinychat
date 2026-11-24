@@ -24,7 +24,7 @@ import {
 import { syncOnDeviceTranscript } from "@/lib/voiceNotes/onDeviceTranscriber";
 import { saveVoiceNote, type NoteSyncErrorCode, type VoiceNoteAudio, type VoiceNoteAudioSource, type StoreAudioOptions } from "@/lib/voiceNotes/voiceNoteStore";
 import { upgradeSavedAudioReceipt } from "./audioReceiptUpgrade";
-import { saveCallNames, saveLocalCallSpeakerNames } from "./callNames";
+import { saveCallNamesLater, saveLocalCallSpeakerNamesLater } from "./callNamesLater";
 import { assertAccountContext, assertCurrent, captureAccountContext, type AccountContext } from "@/lib/voiceNotes/accountContext";
 import { isLegacyNote } from "@/lib/voiceNotes/legacyMigration";
 import { deleteNote } from "@/lib/voiceNotes/recordingNotes";
@@ -52,8 +52,8 @@ function enforceAudioCacheAfterSave(id: string): void {
 function retryCallNames(tcw: TinyCloudWeb, recording: VoiceNoteRecording, checkpoint: () => void): void {
   const rowId = recording.ledger?.audio.rowId;
   if (recording.channels !== 2 || !rowId) return;
-  void saveCallNames(tcw, recording.id, rowId, checkpoint);
-  void saveLocalCallSpeakerNames(tcw, recording.id, rowId, checkpoint);
+  void saveCallNamesLater(tcw, recording.id, rowId, checkpoint);
+  void saveLocalCallSpeakerNamesLater(tcw, recording.id, rowId, checkpoint);
 }
 
 export const TINYCLOUD_NETWORK_FAILURE_MESSAGE =
