@@ -26,6 +26,7 @@ test("a link, a JWT, a bearer token and a long hex string are taken out of a tit
   expect(shownTitle(`Session ${JWT} expires today`)).toBe("Session [link] expires today");
   expect(shownTitle(`Tap ${TAP} or use ${KEY}`)).toBe("Tap [link] or use [link]");
   expect(shownTitle("Use Authorization: Bearer abc.def-123 for the call")).toBe("Use Authorization: [hidden] for the call");
+  expect(shownTitle("Header Bearer [k7Qm2xZp9] set")).toBe("Header [hidden] set");
   expect(shownTitle(`Key ${HEX} rotated`)).toBe("Key [hidden] rotated");
   expect(shownTitle(`Blob ${"Zm9vYmFy".repeat(4)}1== attached`)).toBe("Blob [hidden] attached");
   expect(shownTitle("Reply to reply+k7Qm2xZp9@courier.example.com")).toBe("Reply to [link]");

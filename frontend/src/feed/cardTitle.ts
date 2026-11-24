@@ -11,8 +11,8 @@ const keepTrailing = (marker: string) => (match: string) => marker + (/[.,;:!?)\
 
 // Applied in order: a bearer token before the URL it may sit in, links before the tokens inside them.
 const TITLE_RULES: ReadonlyArray<[pattern: RegExp, replace: (match: string) => string]> = [
-  // The guard may have taken the token already ("Bearer [link]"); the word goes with it.
-  [/\bBearer\s+(?:\[link\]|[^\s[]\S*)/gi, () => TITLE_HIDDEN],
+  // Any word after "Bearer" goes, including one the guard already turned into "[link]".
+  [/\bBearer\s+\S+/gi, () => TITLE_HIDDEN],
   [/\b(?:[a-z][a-z0-9+.-]*:\/\/|www\.)[^\s<>"'`]+/gi, keepTrailing(TITLE_LINK)],
   // A link written without its scheme: host.tld/path.
   [/\b(?:[a-z0-9-]+\.)+[a-z]{2,}\/[^\s<>"'`]*/gi, keepTrailing(TITLE_LINK)],
