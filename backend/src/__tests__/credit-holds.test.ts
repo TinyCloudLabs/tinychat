@@ -683,4 +683,29 @@ describe("/api/chat holds only what its capped request can cost (TC-3488)", () =
     // 5,000 prompt and 10 completion tokens reported, at 10 credits per 1K each way.
     expect(enqueued.map(record => record.credits)).toEqual([51]);
   });
+
+  test("parallel requests charged above their holds share what the window had left, even when the local counter trails the ledger", async () => {
+    process.env.LEDGER_AUTHORITATIVE = "true";
+    // The local counter is at 0 (as after a restart); the ledger has 800 of 1,000 committed, so 200 are left.
+    seedRemaining(LIMIT);
+    let arrived = 0;
+    let release!: () => void;
+    const both = new Promise<void>(resolve => { release = resolve; });
+    await serve(() => {
+      if (++arrived === 2) release();
+      return new Response(new ReadableStream<Uint8Array>({
+        async start(controller) {
+          await both;
+          controller.enqueue(encoder.encode(frame({ choices: [{ delta: { content: "Hi" }, finish_reason: "stop" }] }) + usageFrame(15_000, 10) + "data: [DONE]\n\n"));
+          controller.close();
+        },
+      }), { headers: { "Content-Type": "text/event-stream" } });
+    }, async post => {
+      const responses = await Promise.all([post({ max_output_tokens: 10 }), post({ max_output_tokens: 10 })]);
+      await Promise.all(responses.map(response => response.text()));
+      await until(() => enqueued.length === 2);
+    }, ledgerWith(800));
+    // Each reports 151 credits of usage, far above its hold: together they are charged the 200 left, not 302.
+    expect(enqueued.map(record => record.credits).sort((a, b) => a - b)).toEqual([49, 151]);
+  });
 });

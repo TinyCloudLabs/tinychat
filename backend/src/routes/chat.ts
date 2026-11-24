@@ -12,6 +12,7 @@ import {
   heldCredits,
   holdCredits,
   isOverBudget,
+  usedInWindow,
 } from "../billing/usage.js";
 import { settleReply } from "../billing/settle.js";
 import { callCostBound, createReplyBudget } from "../billing/reply-budget.js";
@@ -350,6 +351,8 @@ export function createChatRouter(options?: ChatRouterOptions) {
     let anchor: number | null = null;
     let rates: ModelRates | null = null;
     let budgetRemaining: number | null = null;
+    // What the window had left at admission before other replies' holds (see the charge bound below).
+    let admissionLeft = 0;
     // The window and allowance a reply is charged against are those at admission.
     const startedAt = Date.now();
     let ledgerWindow: { limit: number; committed: number } | null = null;
@@ -495,6 +498,7 @@ export function createChatRouter(options?: ChatRouterOptions) {
         });
         return;
       }
+      admissionLeft = budgetRemaining;
       budgetRemaining -= held;
     }
 
@@ -510,11 +514,11 @@ export function createChatRouter(options?: ChatRouterOptions) {
     };
     // The reply's hold: what its prompt and output can cost within what is left, held until it settles. Its output is
     // capped to fit. The prompt is priced, and fitted into the context, at the token estimate every path uses
-    // (`estimateTextTokens`). The estimate can be low (digits, 4-byte characters), so the reply is charged its full usage
-    // up to what was left at admission (`allowance`), not only up to its hold. The finally at the end releases the hold
-    // after settlement; it lapses after 30 minutes even if a hung handler never gets there.
+    // (`estimateTextTokens`). The estimate can be low (digits, 4-byte characters), so the reply is charged its full usage,
+    // bounded at settlement by `chargeBound`, not only up to its hold. The finally at the end releases the hold after
+    // settlement; it lapses after 30 minutes even if a hung handler never gets there.
     let outputCap = maxOutputTokens;
-    let allowance: number | null = null;
+    let chargeBound: (() => number) | null = null;
     let releaseHold: () => void = () => {};
     if (budgetRemaining !== null && rates) {
       const promptTokens = estimateTextTokens(JSON.stringify(requestBody));
@@ -528,9 +532,21 @@ export function createChatRouter(options?: ChatRouterOptions) {
         return;
       }
       outputCap = limit.maxTokens;
-      allowance = budgetRemaining;
       const hold = outputCap === undefined ? budgetRemaining : Math.min(budgetRemaining, callCostBound(rates, promptTokens, outputCap));
-      releaseHold = holdCredits(address, TIERS[gatedTier], anchor, startedAt, hold, 30 * 60_000);
+      const tierConfig = TIERS[gatedTier];
+      const usedAtAdmission = usedInWindow(address, tierConfig, anchor, startedAt);
+      const left = admissionLeft;
+      // The most the reply may be charged: what the window had left at admission, less what other replies have settled
+      // since and what they hold now, and never less than its own hold. settleReply's own window clamp reads the local
+      // counter, which can trail the ledger (after a restart), so without this parallel requests could each spend it all.
+      // A window no record describes any more leaves only the hold.
+      chargeBound = () => {
+        const usedNow = usedInWindow(address, tierConfig, anchor, startedAt);
+        if (usedNow === null || usedAtAdmission === null) return hold;
+        const othersHold = Math.max(0, heldCredits(address, tierConfig, anchor, startedAt) - hold);
+        return Math.max(hold, left - (usedNow - usedAtAdmission) - othersHold);
+      };
+      releaseHold = holdCredits(address, tierConfig, anchor, startedAt, hold, 30 * 60_000);
     }
     try {
     // AbortController so we can cancel the upstream fetch if the client disconnects.
@@ -662,15 +678,15 @@ export function createChatRouter(options?: ChatRouterOptions) {
     }
 
     // ── Settle usage (best effort; only when gating is active) ────────────────
-    // Clamped to what was left at admission, not to the hold. A failed stream is free:
+    // Bounded by `chargeBound`, not by the hold. A failed stream is free:
     // every /api/chat failure is the provider's or ours, never the model's
     // output. NEVER throws after bytes were served.
-    if (paywallEnabled() && address && allowance !== null) {
+    if (paywallEnabled() && address && chargeBound) {
       const usage = scanner.hasUsage
         ? { promptTokens: scanner.promptTokens ?? 0, completionTokens: scanner.completionTokens ?? 0 }
         : estimateTokens(messages as Array<{ content?: unknown }>, scanner.generated);
       const settled = settleReply({
-        address, tier: TIERS[gatedTier], anchor, startedAt, allowance, model: resolvedModel,
+        address, tier: TIERS[gatedTier], anchor, startedAt, allowance: chargeBound(), model: resolvedModel,
         usage, rates, deliveredOutput: scanner.answered, executionId: crypto.randomUUID(), flusher,
         outcome: controller.signal.aborted ? "cancelled" : streamFailed ? "failed" : "success", failureCause: "ours",
       });
