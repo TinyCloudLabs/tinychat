@@ -1,0 +1,783 @@
+/* The signed-out front page (home/HomeWelcome.tsx): a house at night with the lights on.
+   Outside is the TinyCloud night (dark ground, periwinkle light, Instrument Serif and Geist, as in the deck);
+   inside each lit window is the app itself, in its own light tokens. Everything is scoped to .tcl. */
+
+@font-face {
+  font-family: "Instrument Serif";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/landing/instrument-serif-5.3.0-latin-400-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Instrument Serif";
+  font-style: italic;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/landing/instrument-serif-5.3.0-latin-400-italic.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Geist";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/landing/geist-5.3.0-latin-400-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Geist";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("/fonts/landing/geist-5.3.0-latin-500-normal.woff2") format("woff2");
+}
+
+/* The page scrolls inside the shell's <main>; its bars and overscroll belong to the night too. */
+main:has(> .tcl) {
+  background: #07070d;
+  scrollbar-color: #2e2e44 #07070d;
+}
+
+.tcl {
+  --sky: #07070d;
+  --wall: #0f0f18;
+  --wall-2: #181826;
+  --line: #2b2b3f;
+  --ink: #edecf6;
+  --ink-2: #b7b6cc;
+  --ink-3: #9291ab;
+  --peri: #8b93ff;
+  --peri-2: #bcc0ff;
+  --lamp: #ffd08f;
+  --lamp-hi: #ffe2b8;
+  --lamp-ink: #2a1a05;
+  --serif: "Instrument Serif", "Iowan Old Style", Georgia, serif;
+  --sans: "Geist", ui-sans-serif, system-ui, sans-serif;
+  --ease: cubic-bezier(0.16, 1, 0.3, 1);
+  --gutter: clamp(20px, 5vw, 48px);
+  position: relative;
+  min-height: 100%;
+  overflow-x: clip;
+  background: var(--wall);
+  color: var(--ink);
+  color-scheme: dark;
+  font-family: var(--sans);
+  font-size: 1rem;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  caret-color: var(--peri-2);
+}
+.tcl ::selection {
+  background: rgb(139 147 255 / 0.4);
+  color: #fff;
+}
+.tcl :focus-visible {
+  outline: 2px solid var(--peri-2);
+  outline-offset: 3px;
+}
+.tcl-wrap {
+  width: 100%;
+  max-width: 1180px;
+  margin-inline: auto;
+  padding-inline: var(--gutter);
+}
+.tcl-hero h1,
+.tcl-h2,
+.tcl-placard h3 {
+  font-family: var(--serif);
+  font-weight: 400;
+  letter-spacing: -0.02em;
+  text-wrap: balance;
+}
+.tcl-hero h1 em,
+.tcl-h2 em {
+  font-style: italic;
+  color: var(--peri-2);
+}
+.tcl-link {
+  color: var(--peri-2);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 4px;
+  transition: color 200ms var(--ease);
+}
+.tcl-link:hover {
+  color: #fff;
+}
+
+/* Controls */
+.tcl-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 52px;
+  padding: 0 28px;
+  border-radius: 999px;
+  font-weight: 500;
+  font-size: 1.0625rem;
+  white-space: nowrap;
+  transition: transform 200ms var(--ease), box-shadow 300ms var(--ease), background-color 200ms var(--ease), border-color 200ms var(--ease);
+}
+.tcl-btn:active:not(:disabled) {
+  transform: scale(0.98);
+}
+.tcl-btn:disabled {
+  cursor: progress;
+  opacity: 0.75;
+}
+.tcl-btn-lamp {
+  background: var(--lamp);
+  color: var(--lamp-ink);
+  box-shadow: 0 16px 44px -14px rgb(255 190 110 / 0.75);
+}
+.tcl-btn-lamp:hover:not(:disabled) {
+  background: var(--lamp-hi);
+  box-shadow: 0 22px 56px -14px rgb(255 190 110 / 0.9);
+}
+.tcl-btn-ghost {
+  min-height: 44px;
+  padding: 0 20px;
+  border: 1px solid rgb(188 192 255 / 0.4);
+  font-size: 0.9375rem;
+  color: var(--ink);
+}
+.tcl-btn-ghost:hover:not(:disabled) {
+  border-color: var(--peri-2);
+  background: rgb(139 147 255 / 0.14);
+}
+@media (pointer: fine) {
+  .tcl-btn-ghost {
+    min-height: 40px;
+  }
+}
+
+/* Top bar */
+.tcl-top {
+  position: absolute;
+  inset: 0 0 auto;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px var(--gutter);
+}
+.tcl-mark {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 500;
+  font-size: 1.0625rem;
+  letter-spacing: -0.01em;
+}
+.tcl-mark img {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+}
+
+/* Hero: the house across the street */
+.tcl-hero {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-content: space-between;
+  min-height: 100svh;
+  padding-top: 92px;
+  overflow: hidden;
+  background:
+    radial-gradient(95% 52% at 70% 100%, rgb(139 147 255 / 0.36), transparent 72%),
+    linear-gradient(var(--sky) 0%, #0a0a16 52%, #14153a 100%);
+}
+.tcl-hero-copy {
+  padding-inline: var(--gutter);
+}
+.tcl-hero h1 {
+  font-size: clamp(3.25rem, 13.5vw, 6rem);
+  line-height: 0.93;
+}
+.tcl-hero h1 em {
+  display: block;
+}
+.tcl-lead {
+  max-width: 33ch;
+  margin-top: 22px;
+  color: var(--ink-2);
+  font-size: 1.0625rem;
+}
+.tcl-cta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px 22px;
+  margin-top: 28px;
+}
+.tcl-peek {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  color: var(--ink-2);
+  font-size: 0.9375rem;
+  transition: color 200ms var(--ease);
+}
+.tcl-peek:hover {
+  color: var(--ink);
+}
+.tcl-peek svg {
+  transition: transform 300ms var(--ease);
+}
+.tcl-peek:hover svg {
+  transform: translateY(3px);
+}
+.tcl-status {
+  margin-top: 14px;
+  font-size: 0.9375rem;
+  color: var(--ink);
+}
+.tcl-avail {
+  margin-top: 16px;
+  color: var(--ink-3);
+  font-size: 0.9375rem;
+}
+
+.tcl-house {
+  position: relative;
+  width: min(100% - 28px, 520px);
+  margin: 30px auto 0;
+  padding: 80px 8% 40px;
+  background: linear-gradient(#1d1d30 0, #131320 38%, #0f0f18 100%);
+  clip-path: polygon(0 56px, 50% 0, 100% 56px, 100% 100%, 0 100%);
+}
+.tcl-windows {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 22px 16px;
+}
+.tcl-win {
+  position: relative;
+  display: block;
+  text-align: left;
+}
+.tcl-win-spill {
+  position: absolute;
+  inset: 60% -6% auto;
+  height: 80%;
+  background: linear-gradient(rgb(139 147 255 / 0.36), transparent 85%);
+  filter: blur(12px);
+  pointer-events: none;
+}
+.tcl-win-glass {
+  position: relative;
+  display: block;
+  aspect-ratio: 4 / 5;
+  overflow: hidden;
+  border-bottom: 4px solid #25253a;
+  border-radius: 3px;
+  background: #08080f;
+}
+.tcl-win-light {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(168deg, #f1f2ff 0%, #c3c7ff 62%, #969dff 100%);
+  transition: filter 400ms var(--ease);
+}
+/* Mullions: one upright and one rail, in the wall's own colour. */
+.tcl-win-glass::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(#1a1a2a, #1a1a2a) 50% 0 / 3px 100% no-repeat,
+    linear-gradient(#1a1a2a, #1a1a2a) 0 40% / 100% 3px no-repeat;
+}
+.tcl-win-name {
+  display: block;
+  margin-top: 9px;
+  color: var(--ink-2);
+  font-size: 0.8125rem;
+  transition: color 200ms var(--ease);
+}
+.tcl-win:hover .tcl-win-name {
+  color: var(--ink);
+}
+.tcl-win:hover .tcl-win-light {
+  filter: brightness(1.08);
+}
+
+/* What you can make out through the glass from across the street: shapes, not content. */
+.tcl-glimpse {
+  position: absolute;
+  inset: 14% 13%;
+  display: block;
+  filter: blur(1.2px);
+  transition: filter 400ms var(--ease);
+}
+.tcl-win:hover .tcl-glimpse {
+  filter: blur(0.3px);
+}
+.tcl-glimpse i {
+  position: absolute;
+  display: block;
+  border-radius: 3px;
+  background: rgb(46 50 138 / 0.5);
+}
+
+/* The lights come on, one room at a time. Lit is the default; this only plays it in. */
+@keyframes tcl-light-on {
+  0% { opacity: 0; }
+  38% { opacity: 0; }
+  42% { opacity: 0.75; }
+  47% { opacity: 0.12; }
+  56% { opacity: 0.9; }
+  62% { opacity: 0.55; }
+  100% { opacity: 1; }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .tcl-win-light,
+  .tcl-win-spill {
+    animation: tcl-light-on 1100ms linear var(--d, 0ms) both;
+  }
+}
+
+@media (min-width: 900px) {
+  .tcl-hero {
+    grid-template-columns: minmax(0, 1.08fr) minmax(0, 0.92fr);
+    align-content: stretch;
+    align-items: stretch;
+    padding-top: 0;
+    max-height: 1100px;
+  }
+  .tcl-hero-copy {
+    align-self: center;
+    padding: 96px 0 72px max(var(--gutter), calc((100vw - 1180px) / 2 + var(--gutter)));
+  }
+  .tcl-lead {
+    font-size: 1.1875rem;
+    max-width: 34ch;
+  }
+  .tcl-house {
+    align-self: end;
+    width: min(100% - 64px, 580px);
+    margin: 120px auto 0;
+    padding: 116px 9% 72px;
+    clip-path: polygon(0 78px, 50% 0, 100% 78px, 100% 100%, 0 100%);
+  }
+  .tcl-windows {
+    gap: 30px 22px;
+  }
+}
+
+/* Closer: the rooms */
+.tcl-inside {
+  padding-top: clamp(80px, 12vw, 148px);
+}
+.tcl-h2 {
+  font-size: clamp(2.5rem, 8vw, 4.25rem);
+  line-height: 0.98;
+}
+.tcl-sub {
+  max-width: 44ch;
+  margin-top: 18px;
+  color: var(--ink-2);
+  font-size: 1.0625rem;
+}
+.tcl-rooms {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 56px 28px;
+  margin-top: clamp(40px, 6vw, 72px);
+}
+.tcl-room {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  scroll-margin-top: 24px;
+}
+.tcl-pane {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  padding: 18px;
+  border-radius: 14px;
+  box-shadow: 0 34px 80px -28px rgb(139 147 255 / 0.6);
+  transition: box-shadow 900ms var(--ease);
+}
+/* Dark glass over a room whose light is not on yet. */
+.tcl-pane::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: #0a0a13;
+  box-shadow: inset 0 0 0 1px var(--line);
+  opacity: 0;
+  pointer-events: none;
+}
+@keyframes tcl-glass-clear {
+  0% { opacity: 1; }
+  14% { opacity: 0.2; }
+  22% { opacity: 0.85; }
+  34% { opacity: 0.1; }
+  46% { opacity: 0.45; }
+  100% { opacity: 0; }
+}
+.tcl[data-dim] .tcl-room:not([data-lit]) .tcl-pane {
+  box-shadow: 0 34px 80px -28px rgb(139 147 255 / 0);
+}
+.tcl[data-dim] .tcl-room:not([data-lit]) .tcl-pane::after {
+  opacity: 1;
+}
+.tcl[data-dim] .tcl-room[data-lit] .tcl-pane::after {
+  animation: tcl-glass-clear 900ms linear both;
+}
+
+/* Inside a window the app's own light theme applies, whatever theme the visitor has chosen. */
+.tcl-interior {
+  --background: 0 0% 100%;
+  --foreground: 240 10% 3.9%;
+  --chrome: 0 0% 98%;
+  --card: 0 0% 100%;
+  --card-foreground: 240 10% 3.9%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 240 10% 3.9%;
+  --surface-2: 240 4.8% 95.9%;
+  --primary: 240 5.9% 10%;
+  --primary-foreground: 0 0% 98%;
+  --secondary: 240 4.8% 95.9%;
+  --secondary-foreground: 240 5.9% 10%;
+  --muted: 240 4.8% 95.9%;
+  --muted-foreground: 240 3.8% 46.1%;
+  --accent: 240 4.8% 95.9%;
+  --accent-foreground: 240 5.9% 10%;
+  --border: 240 5.9% 90%;
+  --input: 240 5.9% 90%;
+  --ring: 240 5.9% 10%;
+  --shadow-float: 0 6px 16px -6px rgb(0 0 0 / 0.16);
+  --selected-alpha: 0.08;
+  --selection-alpha: 0.2;
+  background: #f1f1f8;
+  color: hsl(var(--foreground));
+  color-scheme: light;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  caret-color: hsl(var(--primary));
+}
+.tcl .tcl-interior ::selection {
+  background: hsl(var(--primary) / var(--selection-alpha));
+  color: hsl(var(--foreground));
+}
+.tcl .tcl-interior :focus-visible {
+  outline-color: hsl(var(--ring));
+  outline-offset: 2px;
+}
+.tcl-sample {
+  display: inline-block;
+  margin-bottom: 12px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  background: rgb(9 9 11 / 0.07);
+  color: #52525b;
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+.tcl-placard {
+  padding-top: 20px;
+}
+.tcl-placard h3 {
+  font-size: 1.875rem;
+  line-height: 1.05;
+}
+.tcl-placard p {
+  max-width: 38ch;
+  margin-top: 8px;
+  color: var(--ink-2);
+}
+
+/* Chat */
+.tcl-chat {
+  display: grid;
+  gap: 8px;
+}
+.tcl-bubble {
+  max-width: 84%;
+  padding: 9px 13px;
+  border-radius: 16px;
+  font-size: 0.9375rem;
+  line-height: 1.4;
+}
+.tcl-bubble-me {
+  justify-self: end;
+  border-bottom-right-radius: 5px;
+  background: #18181b;
+  color: #fafafa;
+}
+.tcl-bubble-them {
+  justify-self: start;
+  border-bottom-left-radius: 5px;
+  background: #fff;
+}
+
+/* Recordings */
+.tcl-rec-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  font-weight: 600;
+}
+.tcl-rec-head span:last-child {
+  color: #52525b;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
+.tcl-wave {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  height: 56px;
+  margin: 12px 0 14px;
+}
+.tcl-wave i {
+  flex: 1;
+  min-width: 2px;
+  border-radius: 2px;
+  background: #18181b;
+}
+.tcl-line {
+  display: grid;
+  grid-template-columns: 3.25rem minmax(0, 1fr);
+  font-size: 0.9375rem;
+  line-height: 1.45;
+}
+.tcl-line + .tcl-line {
+  margin-top: 6px;
+}
+.tcl-line b {
+  color: #52525b;
+  font-weight: 500;
+}
+
+/* Notes */
+.tcl-note-title {
+  font-family: "Literata Variable", "Iowan Old Style", Georgia, serif;
+  font-size: 1.25rem;
+  font-weight: 600;
+  line-height: 1.2;
+}
+.tcl-note-meta {
+  margin-top: 4px;
+  color: #52525b;
+  font-size: 0.8125rem;
+  font-variant-numeric: tabular-nums;
+}
+.tcl-note-body {
+  margin-top: 12px;
+  font-size: 0.9375rem;
+  line-height: 1.5;
+}
+
+/* Apps and connections */
+.tcl-tiles {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.tcl-tile {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px;
+  border-radius: 12px;
+  background: #fff;
+  font-size: 0.9375rem;
+  font-weight: 500;
+}
+.tcl-tile svg {
+  flex: none;
+  width: 30px;
+  height: 30px;
+  padding: 6px;
+  border-radius: 9px;
+  background: #18181b;
+  color: #fafafa;
+}
+.tcl-conn {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 13px 14px;
+  border-radius: 12px;
+  background: #fff;
+  font-size: 0.9375rem;
+  font-weight: 500;
+}
+.tcl-conn + .tcl-conn {
+  margin-top: 10px;
+}
+.tcl-conn span {
+  color: #52525b;
+  font-size: 0.8125rem;
+  font-weight: 400;
+}
+
+@media (min-width: 900px) {
+  .tcl-rooms {
+    grid-template-columns: repeat(12, minmax(0, 1fr));
+    gap: 72px 32px;
+  }
+  .tcl-room-feed .tcl-pane {
+    flex: none;
+  }
+  .tcl-room-feed {
+    grid-column: 1 / span 7;
+    grid-row: 1 / span 2;
+  }
+  .tcl-room-chat,
+  .tcl-room-recordings {
+    grid-column: 8 / span 5;
+  }
+  .tcl-room-notes {
+    grid-column: 1 / span 4;
+  }
+  .tcl-room-apps {
+    grid-column: 5 / span 4;
+  }
+  .tcl-room-connections {
+    grid-column: 9 / span 4;
+  }
+  .tcl-pane {
+    padding: 22px;
+  }
+}
+
+/* Your key */
+.tcl-key {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 40px;
+  padding-top: clamp(96px, 14vw, 176px);
+}
+.tcl-truths {
+  margin-top: 28px;
+  border-top: 1px solid var(--line);
+}
+.tcl-truths li {
+  padding: 16px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 1.0625rem;
+}
+.tcl-key .tcl-pane {
+  padding: 4px 14px 14px;
+}
+.tcl-key .tcl-pane > section {
+  margin-top: 10px;
+}
+@media (min-width: 900px) {
+  .tcl-key {
+    grid-template-columns: repeat(12, minmax(0, 1fr));
+    gap: 32px;
+    align-items: start;
+  }
+  .tcl-key-copy {
+    grid-column: 1 / span 5;
+  }
+  .tcl-key-agent {
+    grid-column: 7 / span 6;
+    margin-top: 12px;
+  }
+}
+
+/* Ground floor: the door */
+.tcl-ground {
+  padding: clamp(104px, 15vw, 184px) var(--gutter) 0;
+  text-align: center;
+}
+.tcl-door {
+  position: relative;
+  width: fit-content;
+  margin: 0 auto;
+  cursor: pointer;
+}
+/* Lamplight spilling round the frame: a gradient, which paints smoothly where a wide blurred shadow bands. */
+.tcl-door::before {
+  content: "";
+  position: absolute;
+  inset: -70px -120px 70px;
+  background: radial-gradient(closest-side, rgb(255 186 104 / 0.34), transparent);
+  pointer-events: none;
+}
+.tcl-doorway {
+  position: relative;
+  width: 164px;
+  height: 286px;
+  border-radius: 4px 4px 0 0;
+  background: linear-gradient(#fff6e3 0%, #ffd08f 55%, #f4ad55 100%);
+  perspective: 900px;
+}
+.tcl-door-slab {
+  position: absolute;
+  inset: 0;
+  border-radius: 4px 4px 0 0;
+  background: linear-gradient(90deg, #232336, #14141f);
+  transform: rotateY(-20deg);
+  transform-origin: left center;
+  transition: transform 900ms var(--ease);
+}
+.tcl-door-slab::after {
+  content: "";
+  position: absolute;
+  top: 52%;
+  right: 14px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--lamp);
+}
+.tcl-door:hover .tcl-door-slab {
+  transform: rotateY(-42deg);
+}
+.tcl-door[data-open] .tcl-door-slab {
+  transform: rotateY(-74deg);
+}
+.tcl-pool {
+  width: min(92vw, 520px);
+  height: 132px;
+  margin-inline: calc((164px - min(92vw, 520px)) / 2);
+  background: radial-gradient(50% 100% at 50% 0, rgb(255 208 143 / 0.5), transparent 72%);
+  pointer-events: none;
+}
+.tcl-ground .tcl-h2 {
+  margin-top: 4px;
+}
+.tcl-ground .tcl-btn {
+  margin-top: 30px;
+}
+.tcl-ground .tcl-avail {
+  margin-top: 26px;
+  color: var(--ink-2);
+  font-size: 1rem;
+}
+@media (prefers-reduced-motion: reduce) {
+  .tcl-door-slab,
+  .tcl-btn,
+  .tcl-pane,
+  .tcl-peek svg {
+    transition: none;
+  }
+}
+
+.tcl-foot {
+  /* BuildInfoLine reads the app's muted token; on the night wall it needs the lighter grey. */
+  --muted-foreground: 242 14% 65%;
+  --foreground: 248 33% 95%;
+  --ring: 237 100% 87%;
+  margin-top: clamp(72px, 10vw, 120px);
+  padding: 22px var(--gutter) 8px;
+  border-top: 1px solid var(--line);
+  color: var(--ink-2);
+  font-size: 0.9375rem;
+  text-align: center;
+}

@@ -7,7 +7,7 @@ const count = (markup: string, pattern: RegExp) => markup.match(pattern)?.length
 
 test("a signed-out web visitor sees the front page, not the sign-in screen", () => {
   const markup = renderToStaticMarkup(<SignedOutSurface {...base} />);
-  expect(markup).toContain("Sign in to TinyCloud One");
+  expect(markup).toContain("Open TinyCloud One");
   expect(markup).toContain('aria-label="Demo feed"');
   expect(markup).not.toContain("Sign in to continue.");
   expect(markup).not.toContain('text-title-2">TinyCloud One</h1>');
@@ -20,14 +20,13 @@ test("the signed-out Home page has exactly one main landmark and one h1", () => 
   expect(count(markup, /<h1[\s>]/g)).toBe(1);
 });
 
-test("the front page offers the agent prompt in the hero and moves What is TinyCloud? below the sample cards", () => {
+test("the front page leads with the way in, then the sample cards, the agent prompt and What is TinyCloud?", () => {
   const markup = renderToStaticMarkup(<SignedOutSurface {...base} />);
-  const agent = markup.indexOf("Let your agent share to your TinyCloud");
   const demo = markup.indexOf('aria-label="Demo feed"');
-  const learn = markup.indexOf("What is TinyCloud?");
-  expect(agent).toBeGreaterThan(markup.indexOf("Sign in to TinyCloud One"));
-  expect(agent).toBeLessThan(demo);
-  expect(learn).toBeGreaterThan(demo);
+  const agent = markup.indexOf("Let your agent share to your TinyCloud");
+  expect(demo).toBeGreaterThan(markup.indexOf("Open TinyCloud One"));
+  expect(agent).toBeGreaterThan(demo);
+  expect(markup.indexOf("What is TinyCloud?")).toBeGreaterThan(agent);
 });
 
 test("the desktop app keeps the TinyCloud One sign-in screen, with one main landmark", () => {
