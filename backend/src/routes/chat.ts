@@ -36,9 +36,11 @@ import {
   type CatalogModel,
 } from "../billing/catalog.js";
 import {
+  estimateTextTokens,
   estimateTokens,
   multiplierFor,
   ratesForModel,
+  streamedOutputText,
   type ModelRates,
 } from "../billing/credits.js";
 import { DEFAULT_CHAT_MODEL } from "@tinyboilerplate/core";
@@ -108,8 +110,9 @@ const decoder = new TextDecoder();
  * Scan an SSE buffer for the final usage chunk RedPill emits when
  * stream_options.include_usage is set. That chunk carries
  * `usage.prompt_tokens` and `usage.completion_tokens` with an empty `choices`
- * array. We also accumulate streamed completion text so we can fall back to
- * an estimate if no usage chunk arrives.
+ * array. We also accumulate the streamed answer text (delivered content) and
+ * all generated text (answer, reasoning, tool calls) so a stream without a
+ * usage chunk is charged an estimate of everything the model generated.
  *
  * IMPORTANT: this only reads — the raw bytes are forwarded to the client
  * untouched. We re-decode here purely to extract the token counts.
@@ -119,6 +122,7 @@ class UsageScanner {
   promptTokens: number | null = null;
   completionTokens: number | null = null;
   completionText = "";
+  generatedText = "";
 
   get hasUsage(): boolean {
     return this.promptTokens !== null || this.completionTokens !== null;
@@ -157,6 +161,7 @@ class UsageScanner {
     }
     const delta = parsed.choices?.[0]?.delta?.content;
     if (typeof delta === "string") this.completionText += delta;
+    this.generatedText += streamedOutputText(parsed as Record<string, unknown>);
   }
 }
 
@@ -500,14 +505,15 @@ export function createChatRouter(options?: ChatRouterOptions) {
         : {}),
     };
     // The reply's spend bound: what its prompt and output can cost within what is left, held until it settles. Its
-    // output is capped to fit. The prompt is priced at one token per UTF-8 byte: no script takes more, so no prompt is
-    // under-held. The finally at the end releases the hold after settlement; it lapses after 30 minutes even if a
-    // hung handler never gets there.
+    // output is capped to fit. The prompt is priced, and fitted into the context, at the token estimate every path uses
+    // (`estimateTextTokens`); a prompt the provider counts higher only costs the platform, as settlement clamps the
+    // charge. The finally at the end releases the hold after settlement; it lapses after 30 minutes even if a hung
+    // handler never gets there.
     let outputCap = maxOutputTokens;
     let allowance: number | null = null;
     let releaseHold: () => void = () => {};
     if (budgetRemaining !== null && rates) {
-      const promptTokens = Buffer.byteLength(JSON.stringify(requestBody));
+      const promptTokens = estimateTextTokens(JSON.stringify(requestBody));
       const limit = createReplyBudget(Math.max(0, budgetRemaining), rates, contextLengthFor(resolvedModel)).limitFor(promptTokens, maxOutputTokens);
       if (!limit) {
         res.status(402).json({
@@ -657,7 +663,7 @@ export function createChatRouter(options?: ChatRouterOptions) {
     if (paywallEnabled() && address && allowance !== null) {
       const usage = scanner.hasUsage
         ? { promptTokens: scanner.promptTokens ?? 0, completionTokens: scanner.completionTokens ?? 0 }
-        : estimateTokens(messages as Array<{ content?: unknown }>, scanner.completionText);
+        : estimateTokens(messages as Array<{ content?: unknown }>, scanner.generatedText);
       const settled = settleReply({
         address, tier: TIERS[gatedTier], anchor, startedAt, allowance, model: resolvedModel,
         usage, rates, deliveredOutput: scanner.completionText.length > 0, executionId: crypto.randomUUID(), flusher,

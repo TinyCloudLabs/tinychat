@@ -129,6 +129,30 @@ async function until(condition: () => boolean) {
   expect(condition()).toBe(true);
 }
 
+function manualClock() {
+  let time = 0, id = 0;
+  const tasks = new Map<number, { at: number; fn: () => void }>();
+  const flush = async () => { for (let i = 0; i < 20; i++) await new Promise(resolve => setImmediate(resolve)); };
+  return {
+    flush,
+    runtime: {
+      now: () => time,
+      setTimeout: (fn: () => void, ms: number) => { const key = ++id; tasks.set(key, { at: time + ms, fn }); return key; },
+      clearTimeout: (key: unknown) => { tasks.delete(key as number); },
+      log: () => {},
+    },
+    async advance(ms: number) {
+      const end = time + ms;
+      for (;;) {
+        const next = [...tasks].filter(([, task]) => task.at <= end).sort((a, b) => a[1].at - b[1].at)[0];
+        if (!next) break;
+        time = next[1].at; tasks.delete(next[0]); next[1].fn(); await flush();
+      }
+      time = end; await flush();
+    },
+  };
+}
+
 // 40,000 chars of output are 10,000 tokens by the 4 bytes per token estimate: 100 credits.
 const LONG = "x".repeat(40_000);
 
@@ -271,20 +295,56 @@ describe("a timeout is free unless the client stopped reading (TC-4203)", () => 
     expect(requests[0].max_tokens).toBeGreaterThanOrEqual(timeCappedOutputTokens(model, 4_000));
   });
 
-  test("a provider that streams past max_tokens is cut at it, and the reply ends normally, charged its estimate", async () => {
+  test("a provider that streams past twice its time cap is cut: nothing more is forwarded, and the usage frame read after the cut is charged", async () => {
     seedRemaining(500);
     const local = browser();
     const requests: string[] = [];
-    // 2,000 chars are 500 tokens, past the ~296-token cap of a 5 s turn; the provider would go on streaming forever.
+    // 4,000 chars are 1,000 tokens, past twice the ~296-token cap of a 5 s turn. The provider goes on, then reports usage.
     const config = agentConfig((async (_input: unknown, init?: RequestInit) => {
       requests.push(String(init?.body));
-      return stalled(frame({ id: "c", choices: [{ delta: { content: "x".repeat(2_000) } }] }));
+      return sse(frame({ id: "c", choices: [{ delta: { content: "x".repeat(4_000) } }] }), frame({ id: "c", choices: [{ delta: { content: "AFTER" } }] }), usageFrame(1_000, 1_200), "data: [DONE]\n\n");
     }) as typeof fetch, { streamPolicy: { heartbeatMs: 1000, turnTimeoutMs: 5000, drainGraceMs: 100 } });
     await createAgentChatHandler(config)(local.req, local.res, () => {});
     expect(requests).toHaveLength(1);
+    expect(local.stream()).not.toContain("AFTER");
     expect(local.stream()).not.toContain("stream_error");
     expect(local.stream()).toContain("data: [DONE]");
-    expect(enqueued.map(record => record.credits)).toEqual([Math.ceil(((estimateTextTokens(requests[0]) + 500) / 1000) * 10)]);
+    // The provider's count, 1,000 prompt and 1,200 completion tokens, at 10 credits per 1K each way.
+    expect(enqueued.map(record => record.credits)).toEqual([22]);
+  });
+
+  test("a cut call with no usage frame is read for 3 s more, then charged its estimate", async () => {
+    seedRemaining(500);
+    const clock = manualClock();
+    const local = browser();
+    const requests: string[] = [];
+    const config = agentConfig((async (_input: unknown, init?: RequestInit) => {
+      requests.push(String(init?.body));
+      return stalled(frame({ id: "c", choices: [{ delta: { content: "x".repeat(4_000) } }] }), frame({ id: "c", choices: [{ delta: { content: "AFTER" } }] }));
+    }) as typeof fetch, { streamPolicy: { heartbeatMs: 10_000, turnTimeoutMs: 5000, drainGraceMs: 100 }, streamRuntime: clock.runtime });
+    let done = false;
+    const reply = createAgentChatHandler(config)(local.req, local.res, () => {}).then(() => { done = true; });
+    await clock.flush();
+    await clock.advance(2_999);
+    expect(done).toBe(false);
+    await clock.advance(1);
+    await reply;
+    expect(local.stream()).not.toContain("AFTER");
+    expect(local.stream()).toContain("data: [DONE]");
+    // 4,005 streamed chars, "AFTER" included: 1,002 tokens.
+    expect(enqueued.map(record => record.credits)).toEqual([Math.ceil(((estimateTextTokens(requests[0]) + 1_002) / 1000) * 10)]);
+  });
+
+  test("CJK output within the cap by the provider's count is not cut, though the estimate counts it high", async () => {
+    seedRemaining(500);
+    const local = browser();
+    // 500 CJK chars estimate at 500 tokens, past the ~296-token cap but inside twice it; a CJK tokenizer counts fewer.
+    const cjk = "你".repeat(500);
+    const config = agentConfig((async () => sse(frame({ id: "c", choices: [{ delta: { content: cjk }, finish_reason: "stop" }] }), usageFrame(100, 290), "data: [DONE]\n\n")) as typeof fetch,
+      { streamPolicy: { heartbeatMs: 1000, turnTimeoutMs: 5000, drainGraceMs: 100 } });
+    await createAgentChatHandler(config)(local.req, local.res, () => {});
+    expect(local.stream()).not.toContain("stream_error");
+    expect(enqueued.map(record => record.credits)).toEqual([4]);
   });
 });
 
@@ -328,30 +388,6 @@ describe("an account's free timeouts are capped at 10 per rolling 24 h (TC-4203)
 });
 
 describe("the stall rule's boundary: stalled for exactly half the turn is not most of it (TC-4203)", () => {
-  function manualClock() {
-    let time = 0, id = 0;
-    const tasks = new Map<number, { at: number; fn: () => void }>();
-    const flush = async () => { for (let i = 0; i < 20; i++) await new Promise(resolve => setImmediate(resolve)); };
-    return {
-      flush,
-      runtime: {
-        now: () => time,
-        setTimeout: (fn: () => void, ms: number) => { const key = ++id; tasks.set(key, { at: time + ms, fn }); return key; },
-        clearTimeout: (key: unknown) => { tasks.delete(key as number); },
-        log: () => {},
-      },
-      async advance(ms: number) {
-        const end = time + ms;
-        for (;;) {
-          const next = [...tasks].filter(([, task]) => task.at <= end).sort((a, b) => a[1].at - b[1].at)[0];
-          if (!next) break;
-          time = next[1].at; tasks.delete(next[0]); next[1].fn(); await flush();
-        }
-        time = end; await flush();
-      },
-    };
-  }
-
   // Turn timeout 100, wall cap 200. The client stops reading at "Second" from t=0 and reads again at `drainAt`; the
   // provider then goes quiet, so the turn runs to the wall cap.
   async function stallUntil(drainAt: number) {
@@ -517,9 +553,9 @@ describe("/api/chat holds only what its capped request can cost (TC-3488)", () =
       const response = await post({ max_output_tokens: 1_000 });
       expect(response.status).toBe(200);
       expect(upstreamBodies[0].max_tokens).toBe(1_000);
-      // Prompt at one token per UTF-8 byte, plus 1,000 output tokens, at 10 credits per 1K each way.
+      // The prompt at the token estimate every path uses, plus 1,000 output tokens, at 10 credits per 1K each way.
       const { max_tokens: _cap, ...priced } = upstreamBodies[0];
-      const expected = Math.ceil((Buffer.byteLength(JSON.stringify(priced)) + 1_000) * 10 / 1000);
+      const expected = Math.ceil((estimateTextTokens(JSON.stringify(priced)) + 1_000) * 10 / 1000);
       expect(held()).toBe(expected);
 
       const agent = browser();
@@ -582,5 +618,19 @@ describe("/api/chat holds only what its capped request can cost (TC-3488)", () =
     });
     // 3,000 prompt tokens (one per CJK char, where chars/4 said 750 and the old count skipped content parts) and 1 for "Hi".
     expect(enqueued[0].credits).toBe(Math.ceil((3_000 + 1) * 10 / 1000));
+  });
+
+  test("a Stop after reasoning, before any answer or the usage frame, is charged for the reasoning", async () => {
+    seedRemaining(500);
+    await serve(signal => stalledUntilAbort(signal, frame({ choices: [{ delta: { reasoning_content: "r".repeat(4_000) } }] })), async post => {
+      const response = await post({});
+      expect(response.status).toBe(200);
+      const reader = response.body!.getReader();
+      await reader.read();
+      await reader.cancel();
+      await until(() => enqueued.length === 1);
+    });
+    // 1,000 reasoning tokens (4,000 chars) and a few for "Hello", at 10 credits per 1K each way.
+    expect(enqueued[0].credits).toBe(11);
   });
 });

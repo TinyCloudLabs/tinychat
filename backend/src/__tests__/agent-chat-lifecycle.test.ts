@@ -39,7 +39,9 @@ function response() {
   return { req, res };
 }
 function config(fetchImpl: typeof fetch, runtime = clock()): AgentChatConfig {
-  return { agentId: "sentinel-agent", entityIdFor: () => "sentinel-entity", elizaServiceUrl: "https://eliza.test", elizaServiceSecret: "sentinel-secret", redpillApiKey: "sentinel-key", redpillBaseUrl: "https://provider.test", defaultModel: () => "z-ai/glm-5.3", isModelOffered: () => true, redpillFetch: fetchImpl, fetchImpl, maxRounds: 3,
+  return { agentId: "sentinel-agent", entityIdFor: () => "sentinel-entity", elizaServiceUrl: "https://eliza.test", elizaServiceSecret: "sentinel-secret", redpillApiKey: "sentinel-key", redpillBaseUrl: "https://provider.test", defaultModel: () => "phala/test", isModelOffered: () => true, redpillFetch: fetchImpl, fetchImpl, maxRounds: 3,
+    // Millisecond turns: a speed that keeps the turn-clock output cap above every fixture's output.
+    outputTokensPerSecond: () => 1_000_000,
     streamPolicy: { heartbeatMs: 10, turnTimeoutMs: 100, drainGraceMs: 20 }, streamRuntime: runtime,
   } as AgentChatConfig;
 }

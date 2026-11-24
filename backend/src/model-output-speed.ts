@@ -21,8 +21,7 @@ const UNLISTED_OUTPUT_TOKENS_PER_SECOND = Math.min(...Object.values(OUTPUT_TOKEN
 /** The share of the time left that output may take. The rest covers time to first token, tool calls and delivery. */
 const OUTPUT_TIME_SHARE = 0.8;
 
-/** The most output tokens a call to `model` can stream in `remainingMs` at its normal speed, with the margin above. */
-export function timeCappedOutputTokens(model: string, remainingMs: number): number {
-  const perSecond = OUTPUT_TOKENS_PER_SECOND[model] ?? UNLISTED_OUTPUT_TOKENS_PER_SECOND;
+/** The most output tokens a call can stream in `remainingMs` at `perSecond` (by default its model's), with the margin above. */
+export function timeCappedOutputTokens(model: string, remainingMs: number, perSecond = OUTPUT_TOKENS_PER_SECOND[model] ?? UNLISTED_OUTPUT_TOKENS_PER_SECOND): number {
   return Math.max(1, Math.floor(perSecond * (remainingMs / 1000) * OUTPUT_TIME_SHARE));
 }

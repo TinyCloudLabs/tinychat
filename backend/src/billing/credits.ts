@@ -169,6 +169,27 @@ export function measuredTokens(measure: TextMeasure): number {
 
 export const estimateTextTokens = (text: string): number => measuredTokens(measureText(text));
 
+/**
+ * Generated text in one streamed chat completion chunk: answer text, reasoning text, and tool-call names and arguments.
+ * Until a provider call's usage frame arrives (RedPill sends one, at the end), a call is metered from the request it
+ * sent and this text, so a reply stopped mid-call is charged for everything the model generated, reasoning included.
+ */
+export function streamedOutputText(obj: Record<string, unknown>): string {
+  const delta = Array.isArray(obj.choices) ? (obj.choices[0] as { delta?: unknown } | null | undefined)?.delta : undefined;
+  if (!delta || typeof delta !== "object") return "";
+  const fields = delta as Record<string, unknown>;
+  let text = "";
+  for (const key of ["content", "reasoning_content", "reasoning"]) if (typeof fields[key] === "string") text += fields[key] as string;
+  if (Array.isArray(fields.tool_calls)) {
+    for (const call of fields.tool_calls) {
+      const fn = (call as { function?: { name?: unknown; arguments?: unknown } } | null)?.function;
+      if (typeof fn?.name === "string") text += fn.name;
+      if (typeof fn?.arguments === "string") text += fn.arguments;
+    }
+  }
+  return text;
+}
+
 /** The text of a chat message's content: a string, or the `text` of its content parts. */
 function contentText(content: unknown): string {
   if (typeof content === "string") return content;
