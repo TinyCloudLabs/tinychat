@@ -103,8 +103,6 @@ export async function moveLegacyConnectorKeys(tcw: Pick<TinyCloudWeb, "secrets" 
     } catch {
       fail("step_threw");
       continue;
-    } finally {
-      before = undefined;
     }
     // A hint for other devices; losing it changes nothing, because the stored header decides.
     await tcw.kv.put(markerPath(ref.keyPath), { movedAt: new Date().toISOString() }).catch(() => undefined);
