@@ -325,40 +325,84 @@ rm -rf "$d"
 
 The backup key never goes into GitHub or onto the agent host. Mint it on a
 machine you control (a checkout of this repo and Node are enough; nothing is
-installed) and keep the key file and its password offline, apart from each other
-(for example the key on an encrypted drive, the password in a password manager):
+installed). `rm -P` and `shred` do not reliably erase anything on APFS or an
+SSD, so on a Mac mint into a RAM disk, which never touches the disk (these macOS
+commands are not run by CI):
 
 ```bash
 umask 077
-d=$(mktemp -d "${TMPDIR:-/tmp}/tauri-updater-backup.XXXXXX")
+dev=$(hdiutil attach -nomount ram://65536 | tr -d '[:space:]')
+diskutil erasevolume HFS+ updaterkeys "$dev" > /dev/null
+d=$(mktemp -d /Volumes/updaterkeys/backup.XXXXXX)
 openssl rand -base64 32 | tr -d '\n' > "$d/password"
 node scripts/release/desktop-updater.mjs generate --dir "$d/key" --password-file "$d/password" > /dev/null
 cat "$d/key/updater.key.pub"; echo   # public: the value for plugins.updater.backupPubkey
-# Store "$d/key/updater.key" and "$d/password" offline, separately; then:
-rm -P "$d/key/updater.key" "$d/password" 2>/dev/null || shred -u "$d/key/updater.key" "$d/password"
-rm -rf "$d"
+# Escrow now (below), then:
+hdiutil detach "$dev"
 ```
 
-**Optional: mint both on your own Mac.** Run the backup steps above twice
-(directories `primary` and `backup`). For the primary, store it with
+Escrow: two copies of the key file, on two encrypted drives kept in different
+places, and the password in a password manager, never next to a key copy. At
+least two people should be able to reach a key copy and the password (no single
+point of failure). Drill once a year and before the first stable release: on
+the offline machine, `TAURI_SIGNING_PRIVATE_KEY="$(cat updater.key)"
+TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$(cat password)" node
+scripts/release/desktop-updater.mjs sign --archive <any file> --version 0.0.0
+--pubkey "<backupPubkey>"` must print `Signed …`; that proves the copy and the
+password still decrypt to the trusted key.
+
+**Optional: mint both on your own Mac.** Run the RAM-disk steps for each key
+(`primary.XXXXXX` and `backup.XXXXXX`). Store the primary with
 `gh secret set TAURI_SIGNING_PRIVATE_KEY --env desktop-release --repo TinyCloudLabs/tinychat < "$d/key/updater.key"`
 and `gh secret set TAURI_SIGNING_PRIVATE_KEY_PASSWORD --env desktop-release --repo TinyCloudLabs/tinychat < "$d/password"`
-before deleting it, and keep no other copy unless you escrow it offline too.
+before the detach. Escrow it like the backup if the team wants a second copy.
 Then no agent host ever holds either key.
 
 Put both public keys (one base64 line each) in `plugins.updater.pubkey` and
-`plugins.updater.backupPubkey` in a PR. The build refuses a missing backup key or
-one equal to the primary.
+`plugins.updater.backupPubkey` in a PR. The build (`desktop-bundle-config.mjs`)
+accepts two placeholders, or two minisign keys with different key ids. It
+refuses a minted primary with a placeholder backup, and the same key twice.
 
-**Rotating (primary lost or leaked): promote the backup.** Set the two
-`desktop-release` secrets to the backup key and its password. In a PR, move the
-backup public key into `plugins.updater.pubkey` and put a newly minted offline
-key in `plugins.updater.backupPubkey`, then release. Every install already trusts
-the backup key, so it takes that release with no manual step, and from then on
-trusts the new pair only (no longer the old primary). Until that release is
-installed, a leaked primary can still sign updates the old installs accept: cut
-the rotation release first. If both keys are lost, installs need one manual
-update to a build carrying new keys.
+**Rotation drill, before the first stable release with real keys.** The unit
+tests cover routing and verification, not the app's second check with the
+backup key. Run it end to end once with throwaway keys:
+1. Build the app with a `tauri build --config` overlay that sets
+   `plugins.updater.pubkey` and `backupPubkey` to two throwaway keys and points
+   `endpoints` at a local `latest.json` (`dangerousInsecureTransportProtocol` for
+   `http://localhost`).
+2. Serve an archive of a higher version signed with the throwaway **backup**
+   key (`desktop-updater.mjs sign`, then `manifest`).
+3. Check that the app offers "Restart to update" and installs.
+4. Serve one signed by a third key and check that the app logs `not signed by a
+   key this app trusts` and downloads nothing.
+
+**Rotating (primary lost or leaked): promote the backup.**
+1. Set the two `desktop-release` secrets to the backup key and its password.
+2. In a PR, move the backup public key into `plugins.updater.pubkey` and put a
+   newly minted offline key in `plugins.updater.backupPubkey`.
+3. Release. Every install already trusts the backup key, so it takes that release
+   with no manual step. From then on it trusts the new pair only, no longer the
+   old primary.
+
+Until that release is installed, a leaked primary can still sign updates the old
+installs accept, so cut the rotation release first.
+
+**Backup leaked:** release with the primary unchanged and a newly minted
+`backupPubkey` (signed with the primary as usual), right away. Until installs take
+it, the leaked backup can sign updates they accept.
+
+**If both keys are lost:** installs need one manual update to a build carrying
+new keys.
+
+**On any suspected compromise:**
+1. Stop releases: disable `desktop-release.yml` (`gh workflow disable`) and remove
+   people and apps that no longer need write or `desktop-release` environment
+   access.
+2. Audit every release's assets and `latest.json`
+   (`gh release view <tag> --json assets`, plus the signature's key id and
+   version). Delete any rogue `latest.json` or archive, which stops installs from
+   being offered it.
+3. Rotate as above, and rotate any `gh` tokens on the hosts involved.
 
 ### Before adding any signing secret: restrict `desktop-release` to main
 

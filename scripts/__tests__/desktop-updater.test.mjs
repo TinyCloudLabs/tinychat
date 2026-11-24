@@ -6,7 +6,7 @@ import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync }
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { RELEASE_KDF, blake2b, generateKey, parsePublicKey, parseSecretKey, signUpdate, verifySignature, verifyUpdate } from '../release/desktop-updater.mjs';
+import { RELEASE_KDF, blake2b, checkTrustedKeys, generateKey, parsePublicKey, parseSecretKey, signUpdate, verifySignature, verifyUpdate } from '../release/desktop-updater.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const script = join(here, '../release/desktop-updater.mjs');
@@ -127,6 +127,24 @@ test('generate reads the password from a private file or stdin, never from argum
   assert.match(run(['generate', '--dir', join(dir, 'c'), '--password-file', shared]).stderr, /readable by others/);
   writeFileSync(file, `${password}\n`);
   assert.match(run(['generate', '--dir', join(dir, 'd'), '--password-file', file]).stderr, /trailing newline/);
+});
+
+// The app routes a release signature to one of its two trusted keys by key id (desktop_update.rs), so a shipped
+// build needs two real, distinct keys, or it can never rotate.
+test('the app trusts two distinct minted keys, or both are still placeholders', () => {
+  const primary = readFileSync(join(here, 'fixtures/desktop-updater-tauri-cli/test-only.key.pub'), 'utf8');
+  const backup = readFileSync(join(here, 'fixtures/desktop-updater-generated/test-only.key.pub'), 'utf8');
+  assert.doesNotThrow(() => checkTrustedKeys('PLACEHOLDER-primary', 'PLACEHOLDER-backup'));
+  assert.doesNotThrow(() => checkTrustedKeys(primary, backup));
+  assert.throws(() => checkTrustedKeys(primary, 'PLACEHOLDER-backup'), /backupPubkey is still the placeholder/);
+  assert.throws(() => checkTrustedKeys('PLACEHOLDER-primary', backup), /still the placeholder/);
+  assert.throws(() => checkTrustedKeys(primary, undefined), /backupPubkey is missing/);
+  // The same key under another untrusted comment is a different string but the same key id.
+  const [, keyLine] = Buffer.from(primary, 'base64').toString('utf8').split('\n');
+  const recommented = Buffer.from(`untrusted comment: the same key again\n${keyLine}\n`).toString('base64');
+  assert.notEqual(recommented, primary);
+  assert.throws(() => checkTrustedKeys(primary, recommented), /not the primary key again/);
+  assert.throws(() => checkTrustedKeys(primary, Buffer.from('not a key').toString('base64')));
 });
 
 test('sign and manifest write a latest.json the app accepts', t => {

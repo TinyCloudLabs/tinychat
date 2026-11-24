@@ -114,6 +114,24 @@ export function parsePublicKey(pubkey) {
   return { keyId: raw.subarray(2, 10), publicKey: raw.subarray(10, 42) };
 }
 
+/**
+ * The app's two trusted keys (tauri.conf.json plugins.updater.pubkey and .backupPubkey, src-tauri/src/
+ * desktop_update.rs): both still placeholders (not minted yet; `sign` refuses the placeholder primary, so no signed
+ * release ships that way), or two Ed25519 minisign keys with distinct key ids. The app routes a signature to a key by
+ * its id, so a placeholder backup, or the primary re-encoded with another comment, would ship installs that can never
+ * rotate.
+ */
+export function checkTrustedKeys(primary, backup) {
+  if (typeof backup !== 'string' || !backup) throw new Error('plugins.updater.backupPubkey is missing');
+  const placeholder = key => String(key ?? '').startsWith(PLACEHOLDER_PREFIX);
+  if (placeholder(primary) && placeholder(backup)) return;
+  if (placeholder(backup)) throw new Error('plugins.updater.backupPubkey is still the placeholder while the primary key is minted: mint the backup key too (desktop/README.md, "In-app updates")');
+  const keys = [primary, backup].map(parsePublicKey);
+  if (keys[0].keyId.equals(keys[1].keyId) || keys[0].publicKey.equals(keys[1].publicKey)) {
+    throw new Error('plugins.updater.backupPubkey must be a second key, not the primary key again');
+  }
+}
+
 /** libsodium's crypto_pwhash_scryptsalsa208sha256 parameters for minisign's opslimit/memlimit. */
 export function scryptParams(opslimit, memlimit) {
   const ops = opslimit < 32768n ? 32768n : opslimit;

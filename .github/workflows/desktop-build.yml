@@ -569,7 +569,7 @@ jobs:
       # releases publish latest.json, and an updater-signed beta (its artifact is public) could be served to stable
       # installs by anyone able to write a release's latest.json.
       - name: Package the updater archive
-        if: ${{ !inputs.sign || needs.build.outputs.prerelease != 'true' }}
+        if: ${{ !inputs.sign || needs.build.outputs.prerelease == 'false' }}
         run: |
           updater="${EXO_ZIP%.app.zip}.app.tar.gz"
           scripts/release/desktop-signing.sh updater-archive "$EXO_APP" "$updater" "$SIGN"
@@ -578,7 +578,7 @@ jobs:
       # Signed: the updater key from the desktop-release environment, which must match the public key the built app
       # trusts (a placeholder or another key fails the release). Dry run: a throwaway key through the same code.
       - name: Sign the updater archive
-        if: ${{ !inputs.sign || needs.build.outputs.prerelease != 'true' }}
+        if: ${{ !inputs.sign || needs.build.outputs.prerelease == 'false' }}
         env:
           VERSION: ${{ needs.build.outputs.version }}
           PUBKEY: ${{ needs.build.outputs.updater-pubkey }}
