@@ -256,7 +256,7 @@ describe("/api/chat holds only what its capped request can cost (TC-3488)", () =
   const upstreamBodies: Array<Record<string, unknown>> = [];
   beforeEach(() => { upstreamBodies.length = 0; });
 
-  test("a capped request holds its prompt and capped output, leaving the rest for an agent reply", async () => {
+  test("a capped request (a background meeting summary) holds only its cost, so an agent reply is admitted alongside it", async () => {
     seedRemaining(500);
     await serve(() => stalled(frame({ choices: [{ delta: { content: "Hi" } }] })), async post => {
       const response = await post({ max_output_tokens: 1_000 });
@@ -265,6 +265,17 @@ describe("/api/chat holds only what its capped request can cost (TC-3488)", () =
       // Prompt at chars/3, plus 1,000 output tokens, at 10 credits per 1K each way.
       const { max_tokens: _cap, ...priced } = upstreamBodies[0];
       const expected = Math.ceil((Math.ceil(JSON.stringify(priced).length / 3) + 1_000) * 10 / 1000);
+      expect(held()).toBe(expected);
+
+      const agent = browser();
+      const config = agentConfig((async () => stalled(frame({ id: "c", choices: [{ delta: { content: "Agent" } }] }))) as typeof fetch);
+      const reply = createAgentChatHandler(config)(agent.req, agent.res, () => {});
+      await until(() => agent.stream().includes("Agent"));
+      expect(agent.res.statusCode).toBe(200);
+      // The agent reply holds the rest.
+      expect(held()).toBe(500);
+      agent.req.emit("aborted");
+      await reply;
       expect(held()).toBe(expected);
       await response.body?.cancel();
       await until(() => held() === 0);

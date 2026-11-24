@@ -137,7 +137,7 @@ describe("orchestrate path: stop at the limit, charge fairly", () => {
     expect(enqueued).toEqual([]);
   });
 
-  test("a timed-out reply is charged at most the allowance it started with, even with nothing delivered", async () => {
+  test("a timed-out reply is free, even with usage reported", async () => {
     seedRemaining(500);
     const local = browser();
     const stalled = () => new Response(new ReadableStream<Uint8Array>({
@@ -146,9 +146,8 @@ describe("orchestrate path: stop at the limit, charge fairly", () => {
     const config = agentConfig(provider(stalled), { streamPolicy: { heartbeatMs: 1000, turnTimeoutMs: 80, drainGraceMs: 100 } });
     await createAgentChatHandler(config)(local.req, local.res, () => {});
     expect(local.stream()).toContain('"stream_error":{"code":"turn_timeout"}');
-    expect(used()).toBe(LIMIT);
-    expect(enqueued).toHaveLength(1);
-    expect(enqueued[0].credits).toBe(500);
+    expect(used()).toBe(LIMIT - 500);
+    expect(enqueued).toEqual([]);
   });
 
   // Round 1 streams content, then asks for a tool; round 2 fails at the provider. That failure is ours, so the reply is free (TC-2601).
@@ -239,13 +238,13 @@ describe("Eliza /tasks path: settlement clamp only", () => {
     expect(enqueued).toEqual([]);
   });
 
-  test("a timed-out task is charged at most the allowance even with nothing delivered", async () => {
+  test("a timed-out task is free", async () => {
     seedRemaining(500);
     const run = taskFixture({ prompt: 60_000, completion: 22_000 }, { outcome: "timed_out", code: "turn_timeout" });
     const local = browser();
     await createAgentChatHandler(run.config)(local.req, local.res, () => {});
-    expect(used()).toBe(LIMIT);
-    expect(enqueued[0].credits).toBe(500);
+    expect(used()).toBe(LIMIT - 500);
+    expect(enqueued).toEqual([]);
   });
 });
 

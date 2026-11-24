@@ -98,13 +98,14 @@ describe("rule (b): a reply that fails before any output reached the user is fre
   });
 });
 
-describe("rule (c): a timed-out reply is charged at most the allowance it started with", () => {
-  test.each([[300, 300], [1450, 500]])("observed %i credits -> charged %i", (observed, charged) => {
+describe("rule (c): a timed-out reply is free (TC-4203)", () => {
+  test.each([[300, 0], [1450, 0]])("observed %i credits -> charged %i", (observed, charged) => {
     expect(settle({ allowance: 500, observed, outcome: "timed_out", delivered: false }).charged).toBe(charged);
-    expect(usedAt()).toBe(charged);
+    expect(usedAt()).toBe(0);
+    expect(enqueued).toEqual([]);
   });
 
-  test("a cancelled reply is charged like a finished one, clamped", () => {
+  test("a cancelled reply is charged the usage it reached, clamped", () => {
     expect(settle({ allowance: 500, observed: 1450, outcome: "cancelled" }).charged).toBe(500);
   });
 });
