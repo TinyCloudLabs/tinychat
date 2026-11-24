@@ -188,6 +188,42 @@ test("system audio setting explains the capture scope and timing", () => {
   expect(out).toContain("Turning it off applies when you resume. Turning it on applies to your next recording.");
 });
 
+describe("SettingsPanel, names in the call", () => {
+  const row = (enabled: boolean, permission: "granted" | "missing") =>
+    ({ enabled, permission, pending: false, error: null, onToggle: () => {}, onOpenSettings: () => {} });
+  const callNamesSwitch = (out: string) => out.match(/<button[^>]*data-testid="switch-call-names"[^>]*>/)?.[0] ?? null;
+
+  test("not shown unless the app offers it", () => {
+    expect(html({})).not.toContain("Read names from the call window");
+    expect(html({ callNames: null })).not.toContain("switch-call-names");
+  });
+
+  test("one switch in Meetings, with its label and no description line", () => {
+    const out = html({ callNames: row(false, "missing") });
+    const meetings = out.slice(out.indexOf('aria-labelledby="cs-meet-h"'));
+    expect(meetings).toContain("Read names from the call window");
+    expect(callNamesSwitch(out)).toContain('aria-checked="false"');
+    expect(callNamesSwitch(out)).not.toContain("aria-describedby");
+    // The row's text is the label alone.
+    const rest = out.slice(out.indexOf("Read names from the call window"));
+    expect(rest.slice(0, rest.indexOf("</div></div>"))).toBe("Read names from the call window</b>");
+    expect(out).not.toContain("Open System Settings");
+  });
+
+  test("on while macOS has not allowed it: one Open System Settings button; allowed: none", () => {
+    const missing = html({ callNames: row(true, "missing") });
+    expect(callNamesSwitch(missing)).toContain('aria-checked="true"');
+    expect(missing.match(/Open System Settings/g)).toHaveLength(1);
+    expect(missing).toContain('data-testid="call-names-open-settings"');
+    expect(html({ callNames: row(true, "granted") })).not.toContain("Open System Settings");
+  });
+
+  test("a failed change shows its error", () => {
+    const out = html({ callNames: { ...row(false, "missing"), error: "Could not change this setting: denied" } });
+    expect(out).toContain("Could not change this setting: denied");
+  });
+});
+
 describe("SettingsPanel, web", () => {
   const out = html({ variant: "microphone-only", extrasAvailable: false });
   test("only the microphone, and the line about what needs the app", () => {
@@ -220,4 +256,13 @@ describe("CaptureSettings", () => {
     const open = renderToStaticMarkup(<CaptureSettings variant="app" inputs={null} extras={null} defaultOpen />);
     expect(open).toContain("Capture settings aren’t available in this build.");
   });
+});
+
+test("names in the call: the row sits inside the Mac audio row, right under its text", () => {
+  const out = html({ callNames: { enabled: true, permission: "granted", pending: false, error: null, onToggle: () => {}, onOpenSettings: () => {} } });
+  // The Mac audio switch, its label and description, then the names row before the Mac audio row closes.
+  expect(out).toMatch(/data-testid="switch-system-audio"[^]*?macOS asks for permission once\.<\/span><div class="cs-tgl"><button[^>]*data-testid="switch-call-names"/);
+  // The upload switch is a row of its own, after both.
+  expect(out.indexOf('data-testid="switch-call-names"')).toBeLessThan(out.indexOf('data-testid="switch-upload-audio"'));
+  expect(out).toMatch(/Read names from the call window<\/b><\/div><\/div><\/div><\/div><div class="cs-tgl"><button[^>]*data-testid="switch-upload-audio"/);
 });

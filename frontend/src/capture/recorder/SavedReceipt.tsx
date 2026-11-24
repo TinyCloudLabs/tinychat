@@ -5,7 +5,7 @@
 // Retry) comes from the native STT queue directly, not from the space's
 // transcript, which may still be unsaved or unsynced here.
 import { FINAL_COPY, TRANSCRIBER_NAME } from "@/capture/recorder/final/finalCopy";
-import { useContext, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { PlatformContext, deviceName } from "@/lib/platform";
 import { Capacitor } from "@capacitor/core";
 import { Loader2Icon, RefreshCwIcon } from "lucide-react";
@@ -237,6 +237,11 @@ export function SavedReceipt(props: SavedReceiptProps) {
   const pipelineWaiting = props.outcome !== "failed" && props.pipelineReading === true;
   const [localUrl, setLocalUrl] = useState<string | null>(null);
   const [localError, setLocalError] = useState<string | null>(null);
+  // The Mac keeps a note's audio in a file this page can only read through the bridge, so its receipt reads none of
+  // it: once the Mac has finished the file, Play shows, and the audio is read when Play is pressed. A phone's local
+  // URL names its file and costs nothing to fetch.
+  const audioOnPlay = props.device === "mac";
+  const [finishedId, setFinishedId] = useState<string | null>(null);
   // A ref, not a dependency: onReady must fire exactly once per note's own fetch (keyed on
   // props.saved?.id below), regardless of whether the caller's callback identity happens to change
   // across renders in between.
@@ -251,12 +256,24 @@ export function SavedReceipt(props: SavedReceiptProps) {
       onReadyRef.current?.();
       return;
     }
-    void VoiceNotes.localAudioUrl({ id: props.saved.id }).then(
+    const id = props.saved.id;
+    const failed = (caught: unknown) => { if (active) { console.error("[Receipt] Could not open local audio", caught); setLocalError(audioUnavailableMessage(platform)); onReadyRef.current?.(); } };
+    if (audioOnPlay) {
+      void Promise.resolve().then(() => VoiceNotes.awaitAudioReady?.(id)).then(
+        () => { if (active) { setFinishedId(id); onReadyRef.current?.(); } }, failed);
+      return () => { active = false; };
+    }
+    void VoiceNotes.localAudioUrl({ id }).then(
       ({ url }) => { if (active) { setLocalUrl(Capacitor.convertFileSrc(url)); onReadyRef.current?.(); } },
-      (caught: unknown) => { if (active) { console.error("[Receipt] Could not open local audio", caught); setLocalError(audioUnavailableMessage(platform)); onReadyRef.current?.(); } },
+      failed,
     );
     return () => { active = false; };
-  }, [props.saved?.id, props.localAudioState, platform]);
+  }, [props.saved?.id, props.localAudioState, platform, audioOnPlay]);
+  const savedId = props.saved?.id;
+  const resolveOnPlay = useMemo(() => savedId === undefined ? undefined
+    : async () => Capacitor.convertFileSrc((await VoiceNotes.localAudioUrl({ id: savedId })).url), [savedId]);
+  const playOnDemand = audioOnPlay && savedId !== undefined && finishedId === savedId && !localError
+    && props.localAudioState !== "preparing" && props.localAudioState !== "failed";
   const onDevice = useOnDeviceReceipt(props.saved?.id, props.transcriber === "on-device", props.sttHint);
   const sttStatus = useSyncExternalStore(onDeviceSttStore.subscribe, onDeviceSttStore.snapshot, onDeviceSttStore.snapshot);
   const downloadError = useSyncExternalStore(onDeviceSttStore.subscribe, onDeviceSttStore.downloadError, onDeviceSttStore.downloadError);
@@ -300,15 +317,17 @@ export function SavedReceipt(props: SavedReceiptProps) {
           </p>
         )}
       </div>
-      {localUrl && <MeetingAudioPlayer url={localUrl} durationSecs={props.saved ? props.saved.durationMs / 1000 : null}
-        channels={props.saved?.channels} onPlayingChange={props.onPlayingChange} />}
+      {playOnDemand ? <MeetingAudioPlayer key={savedId} resolveUrl={resolveOnPlay} durationSecs={props.saved ? props.saved.durationMs / 1000 : null}
+        channels={props.saved?.channels} onPlayingChange={props.onPlayingChange} />
+        : localUrl && <MeetingAudioPlayer url={localUrl} durationSecs={props.saved ? props.saved.durationMs / 1000 : null}
+          channels={props.saved?.channels} onPlayingChange={props.onPlayingChange} />}
       {localError && <p role="alert" className="text-callout text-destructive">{localError}</p>}
       {props.localAudioState === "preparing" && <p role="status" className="text-meta text-muted-foreground">Preparing audio · View activity</p>}
       {props.localAudioState === "failed" && <div role="alert" className="flex items-center gap-3 text-callout text-destructive">
         <span>Recording saved. Couldn&apos;t prepare audio.</span>
         {props.onRetryPreparation && <Button type="button" variant="outline" onClick={props.onRetryPreparation}>Retry preparation</Button>}
       </div>}
-      {!localUrl && !localError && props.saved && props.localAudioState !== "preparing" && props.localAudioState !== "failed" && <p role="status" className="text-meta text-muted-foreground">Getting {localDevice}&apos;s audio…</p>}
+      {!playOnDemand && !localUrl && !localError && props.saved && props.localAudioState !== "preparing" && props.localAudioState !== "failed" && <p role="status" className="text-meta text-muted-foreground">Getting {localDevice}&apos;s audio…</p>}
       {stepperShown ? <ReceiptStepper view={pipelineView} /> : pipelineWaiting ? null : (
         <>
           {!pipelineView && <RouteLine nodes={route} landed={saved} />}

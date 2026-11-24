@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-call-names-speaking-read"
+description = "Enables the call_names_speaking_read command without any pre-configured scope."
+commands.allow = ["call_names_speaking_read"]
+
+[[permission]]
+identifier = "deny-call-names-speaking-read"
+description = "Denies the call_names_speaking_read command without any pre-configured scope."
+commands.deny = ["call_names_speaking_read"]

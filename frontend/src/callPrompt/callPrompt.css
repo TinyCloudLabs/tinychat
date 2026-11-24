@@ -1,0 +1,230 @@
+/* The "Record this call" tile (tile.ts). Always the app's dark look: the tokens below are index.css's `.dark`
+   values, scoped to the tile (callPromptCss.test.ts keeps them equal). Nothing else of the app's stylesheet: no
+   Tailwind layers, no display font. Its text is the system sans the app uses. */
+.cp-root {
+  --card: 240 10% 5.9%;
+  --card-foreground: 0 0% 98%;
+  --accent: 240 3.7% 15.9%;
+  --primary: 0 0% 98%;
+  --primary-foreground: 240 5.9% 10%;
+  --border: 240 3.7% 15.9%;
+  --live: 0 84.2% 60.2%;
+  --live-foreground: 240 10% 3.9%;
+  --ring: 240 4.9% 83.9%;
+  --radius: 0.75rem;
+  --dur-press: 100ms;
+  color-scheme: dark;
+  width: 100%;
+  height: 100%;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.cp-tile {
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 10px;
+  background: hsl(var(--card));
+  color: hsl(var(--card-foreground));
+  border: 1px solid hsl(var(--border));
+  border-radius: calc(var(--radius) + 4px);
+  overflow: hidden;
+  cursor: default;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.cp-mark {
+  display: block;
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
+  flex: none;
+}
+
+.cp-label {
+  margin: 0 0 2px;
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.cp-actions,
+.cp-dot {
+  width: 100%;
+  height: 64px;
+  flex: none;
+}
+
+.cp-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.cp-button {
+  box-sizing: border-box;
+  height: 30px;
+  width: 100%;
+  margin: 0;
+  padding: 0 12px;
+  border: 0;
+  border-radius: calc(var(--radius) - 2px);
+  font: inherit;
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+  font-weight: 500;
+  cursor: default;
+  -webkit-tap-highlight-color: transparent;
+  transition: background-color var(--dur-press), opacity var(--dur-press), transform var(--dur-press);
+}
+
+.cp-button:focus-visible {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: 2px;
+}
+
+.cp-button:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.cp-button:disabled {
+  opacity: 0.5;
+}
+
+.cp-start {
+  background: hsl(var(--primary));
+  color: hsl(var(--primary-foreground));
+}
+
+.cp-start:hover:not(:disabled) {
+  background: hsl(var(--primary) / 0.9);
+}
+
+.cp-start:active:not(:disabled) {
+  background: hsl(var(--primary) / 0.8);
+}
+
+.cp-dismiss {
+  background: transparent;
+  color: hsl(var(--card-foreground));
+}
+
+.cp-dismiss:hover:not(:disabled),
+.cp-dismiss:active:not(:disabled) {
+  background: hsl(var(--accent));
+}
+
+/* Recording: the live red, in the buttons' place, so nothing above it moves. */
+.cp-dot {
+  display: grid;
+  place-items: center;
+}
+
+.cp-dot::before {
+  content: "";
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: hsl(var(--live));
+}
+
+/* The recording bar: it fills its window (about 180 by 52), as the tile fills its own. */
+.cp-bar {
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 10px 0 16px;
+  background: hsl(var(--card));
+  color: hsl(var(--card-foreground));
+  border: 1px solid hsl(var(--border));
+  border-radius: calc(var(--radius) + 4px);
+  overflow: hidden;
+  cursor: default;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* Recording: a slow, small pulse says the recording goes on. Paused: still and dimmed. */
+.cp-rec {
+  width: 10px;
+  height: 10px;
+  flex: none;
+  border-radius: 50%;
+  background: hsl(var(--live));
+  animation: cp-pulse 1.8s ease-in-out infinite;
+}
+
+.cp-bar[data-paused="true"] .cp-rec {
+  animation: none;
+  opacity: 0.4;
+}
+
+@keyframes cp-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.55;
+    transform: scale(0.85);
+  }
+}
+
+.cp-time {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.9375rem;
+  line-height: 1.25rem;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums lining-nums;
+  white-space: nowrap;
+}
+
+.cp-stop {
+  width: auto;
+  flex: none;
+  height: 32px;
+  padding: 0 14px;
+  background: hsl(var(--live));
+  color: hsl(var(--live-foreground));
+}
+
+.cp-stop:hover:not(:disabled) {
+  background: hsl(var(--live) / 0.9);
+}
+
+.cp-stop:active:not(:disabled) {
+  background: hsl(var(--live) / 0.8);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cp-rec {
+    animation: none;
+  }
+  .cp-button {
+    transition: none;
+  }
+  .cp-button:active:not(:disabled) {
+    transform: none;
+  }
+}
+
+@media (forced-colors: active) {
+  .cp-dot::before,
+  .cp-rec {
+    background: CanvasText;
+  }
+}

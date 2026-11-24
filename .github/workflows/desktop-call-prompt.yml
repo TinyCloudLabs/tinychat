@@ -1,0 +1,67 @@
+name: Desktop call prompt
+
+# Tests of desktop/call-prompt, the standalone crate behind "Record this call": the call-app
+# table, the prompt's state machine, the watcher and the CoreAudio process reader. It belongs to
+# neither desktop Cargo workspace, so no other job runs its tests. desktop.yml also runs on these
+# changes (desktop/**) and builds the macOS app.
+#
+# Linux type-checks the macOS reader (src/mic.rs) with --target aarch64-apple-darwin, but cannot
+# link it: only a macOS linker resolves its hand-declared CoreAudio functions. The macOS job
+# links and runs it: one real scan (no call app runs there, so only that it answers) and the
+# mic_apps example for two seconds.
+
+on:
+  pull_request:
+    paths:
+      - "desktop/call-prompt/**"
+      - ".github/workflows/desktop-call-prompt.yml"
+  push:
+    branches: [main]
+    paths:
+      - "desktop/call-prompt/**"
+      - ".github/workflows/desktop-call-prompt.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-call-prompt-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  linux:
+    name: State machine and table (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: desktop/call-prompt
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          targets: aarch64-apple-darwin
+      - name: Test
+        run: cargo test --locked
+      - name: Type-check the macOS reader
+        run: cargo check --locked --all-targets --target aarch64-apple-darwin
+
+  macos:
+    name: CoreAudio reader links and runs (macOS)
+    runs-on: macos-26
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: desktop/call-prompt
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      - name: Test (builds and links src/mic.rs, runs one real scan)
+        run: cargo test --locked
+      - name: Run the mic_apps example
+        run: cargo run --locked --example mic_apps -- --seconds 2

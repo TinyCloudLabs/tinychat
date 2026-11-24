@@ -23,13 +23,13 @@ import type { FirefliesSentence } from "@/lib/connectors/firefliesClient";
 import type { MeetingMetadataRead, TranscriptRead } from "@/lib/connectors/meetingExplorer";
 import { UPLOAD_MEETING_SOURCE } from "@/lib/audioUpload";
 import { captureCapabilities } from "@/lib/voiceNotes/captureEngine";
-import type { NotePipeline } from "@/lib/voiceNotes/notePipeline";
+import type { NotePipeline, PipelineRoute } from "@/lib/voiceNotes/notePipeline";
 import type { NotePipelineView } from "@/lib/voiceNotes/useNotePipeline";
 import type { AppPlatform } from "@/lib/platform";
 import { activityForNote, deviceName, noteStatus } from "../activity/activitySelector";
 import type { LocalTranscript } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { transcriptionStatusText } from "@/lib/voiceNotes/voiceNoteTranscription";
-import { HOSTED_DELAYED_ROW } from "@/lib/voiceNotes/notePipelineCopy";
+import { HOSTED_DELAYED_ROW, LOCAL_COPY } from "@/lib/voiceNotes/notePipelineCopy";
 import { storageFullPrecedesChoiceFailure, storageFullTranscriptCopy, TRANSCRIPT_STORAGE_FULL_CODE, transcriptionErrorCopy, voiceNoteTranscriptionFailureForCode } from "@/lib/voiceNotes/transcriptionErrors";
 import { localTranscriptToSave, voiceNoteTitle, voiceNoteTranscriptState, VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
 import { PAGE_COLUMN, PageHeader } from "@/shell/PageHeader";
@@ -50,7 +50,7 @@ import { librarySourceLabel } from "./libraryKinds";
 import { useWordFixApplier, useWordFixedSentences } from "@/lib/wordFixes/wordFixesStore";
 import { TimestampedTranscript, type TranscriptGap } from "./TimestampedTranscript";
 import { SpeakerLabel, SpeakerNamesContext, SpeakerNamesStatus } from "./SpeakerLabel";
-import { applySpeakerNames, NO_SPEAKER_NAMES } from "./speakerNames";
+import { applySpeakerNames, NO_SPEAKER_NAMES, speakerDisplayName, type SpeakerNames } from "./speakerNames";
 import type { SpeakerNamesController } from "./useSpeakerNames";
 import { TranscriptProvenanceNote } from "./TranscriptProvenanceNote";
 import { hasPrivateCloudTimingProvenance, hasSegmentTimes, transcriptMarkdown } from "./transcriptSegments";
@@ -112,13 +112,17 @@ export interface NoteDetailViewProps {
   shared?: boolean;
 }
 
-/** Consecutive sentences of one speaker as one block. */
-export function transcriptBlocks(sentences: readonly FirefliesSentence[]): { speaker: string | null; text: string }[] {
+/**
+ * Consecutive sentences of one speaker as one block. Speakers are told apart by the name shown for them (`names`), so
+ * two labels given the same name ("Them 1" and "Them 2", both "Alex Example") read as one speaker. A block keeps the
+ * label of its first sentence.
+ */
+export function transcriptBlocks(sentences: readonly FirefliesSentence[], names: SpeakerNames = NO_SPEAKER_NAMES): { speaker: string | null; text: string }[] {
   const blocks: { speaker: string | null; text: string }[] = [];
   for (const sentence of sentences) {
     const speaker = sentence.speaker_name ?? null;
     const last = blocks[blocks.length - 1];
-    if (last && last.speaker === speaker) last.text = `${last.text} ${sentence.text}`;
+    if (last && speakerDisplayName(names, last.speaker) === speakerDisplayName(names, speaker)) last.text = `${last.text} ${sentence.text}`;
     else blocks.push({ speaker, text: sentence.text });
   }
   return blocks;
@@ -308,12 +312,13 @@ function ReferenceDetails({ reference }: { reference: string }) {
  * own words, or where it will appear. The current step's caption and cause are already in the stepper, so then it
  * only says where the transcript will show. Null when the step is done or skipped, and the plain states stand.
  */
-export function transcriptStepLine(pipeline: NotePipeline): string | null {
+export function transcriptStepLine(pipeline: NotePipeline, route?: PipelineRoute): string | null {
   const step = pipeline.steps.find((candidate) => candidate.key === "transcript");
   if (step === undefined || step.state === "done" || step.state === "skipped") return null;
   if (step.state === "waiting" && (step.caption?.startsWith("Queued for ") || step.caption?.startsWith("In the queue"))) return step.caption;
   if (pipeline.current === "transcript") return SAVED_NOTE_COPY.transcriptHere;
-  return step.blocker?.cause ?? step.caption ?? SAVED_NOTE_COPY.transcriptAfterSpace;
+  // An on-device transcript is made on this device: it never waits for the space.
+  return step.blocker?.cause ?? step.caption ?? (route === "on-device" ? LOCAL_COPY.notStarted : SAVED_NOTE_COPY.transcriptAfterSpace);
 }
 
 /** A voice note with no transcript yet: where its pipeline stands, else what the phone says about its on-device transcription, else where private cloud stands, else "No transcript.". */
@@ -328,7 +333,7 @@ function NoTranscript(props: { item: LibraryItem; metadata: MeetingMetadataRead;
   const options = capture && typeof capture === "object" ? (capture as { options?: { transcriber?: string } }).options : null;
   const provider = view?.provider === "powerful" || options?.transcriber === "assemblyai" ? "powerful" : view?.provider === "private" || options?.transcriber === "private-cloud" ? "private" : "unknown";
   const stepperShown = view !== null && !view.pipeline.done;
-  const line = !stepperShown || outcome === "no_speech" ? null : transcriptStepLine(view.pipeline);
+  const line = !stepperShown || outcome === "no_speech" ? null : transcriptStepLine(view.pipeline, view.route);
   // The phone is making this note's transcript and the stepper says where that stands. The private route's "Not transcribed"
   // and Transcribe would contradict it, so they are not offered; only the pipeline's own actions are.
   const onPhoneRoute = stepperShown && view.route === "on-device" && outcome !== "no_speech";
@@ -466,7 +471,7 @@ export function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
           </div>}
           <SpeakerNamesStatus />
           <TranscriptProvenanceNote sentences={sentences} />
-          {timed || gaps.length > 0 ? <TimestampedTranscript gaps={namedGaps} sentences={sentences} hasAudio={props.audio !== null} isPrivateCloud={isPrivateCloud} /> : transcriptBlocks(sentences).map((block, index) => (
+          {timed || gaps.length > 0 ? <TimestampedTranscript gaps={namedGaps} sentences={sentences} hasAudio={props.audio !== null} isPrivateCloud={isPrivateCloud} /> : transcriptBlocks(sentences, speakerNames).map((block, index) => (
             <div key={index}>
               {block.speaker && <SpeakerLabel original={block.speaker} />}
               <p className="whitespace-pre-wrap break-words text-body">{block.text}</p>

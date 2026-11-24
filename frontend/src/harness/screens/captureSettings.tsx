@@ -1,7 +1,8 @@
 // The desktop ⚙︎ Capture settings popover (D4) over a scripted DesktopCaptureExtras, in the Capture header's
-// place: the app variant (nothing downloaded, one downloading, Large Turbo selected, a failed download,
-// nothing registered) and the web variant. The interactive screen exposes `window.exoCaptureSettings` for
-// test/capture-settings.e2e.test.ts to drive the downloads and make calls fail.
+// place: the app variant (nothing downloaded, one downloading, Large Turbo selected, Parakeet, a failed download,
+// nothing registered, names in the call inside the Mac audio row it needs, the offer to record a call) and the web
+// variant. The interactive screen exposes `window.exoCaptureSettings` for test/capture-settings.e2e.test.ts to drive
+// the downloads and make calls fail.
 import { useEffect, useState, type ReactNode } from "react";
 import {
   CaptureSettings,
@@ -145,7 +146,7 @@ const LARGE_TURBO: FakeDesktopCaptureExtrasOptions = {
 function screen(
   name: string,
   render: () => ReactNode,
-  options: { interactive?: boolean; readyWhen?: string } = {},
+  options: { interactive?: boolean; readyWhen?: string; scrollTo?: string } = {},
 ): HarnessScreen {
   return {
     id: `capture-settings-${name}`,
@@ -186,9 +187,30 @@ export const captureSettingsScreens: HarnessScreen[] = [
       }}
     />
   )),
+  // Parakeet next to the Whisper models: selected and on disk; and on offer, downloading, beside a Whisper model.
+  screen("app-parakeet", () => (
+    <Settings variant="app" fake={{ parakeet: true, downloaded: ["QuantizedTinyEn", "soniqo-parakeet-batch"],
+      selected: "soniqo-parakeet-batch", systemAudio: true }} />
+  )),
+  screen("app-parakeet-downloading", () => (
+    <Settings variant="app" fake={{ parakeet: true, downloaded: ["QuantizedTinyEn"], selected: "QuantizedTinyEn",
+      downloading: { "soniqo-parakeet-batch": 0.63 } }} />
+  ), { readyWhen: ".cs-progress" }),
   screen("app-unavailable", () => <Settings variant="app" noExtras />, {
     readyWhen: "[data-testid=settings-unavailable]",
   }),
+  // Names in the call needs the Mac's audio: the names row is nested in that row, here on and waiting for macOS.
+  screen("app-call-names", () => (
+    <Settings variant="app" fake={{ ...LARGE_TURBO, callNames: { enabled: true, permission: "missing" } }} />
+  ), { readyWhen: "[data-testid=switch-system-audio] ~ div [data-testid=call-names-open-settings]" }),
+  // Both off: the nested row with nothing else on it.
+  screen("app-call-names-off", () => (
+    <Settings variant="app" fake={{ ...LARGE_TURBO, systemAudio: false, callNames: {} }} />
+  ), { readyWhen: "[data-testid=switch-system-audio] ~ div [data-testid=switch-call-names]" }),
+  // Offer to record when a call starts: the first row of Meetings, on (its default), beside the other switches.
+  screen("app-call-prompt", () => (
+    <Settings variant="app" fake={{ ...LARGE_TURBO, callNames: {}, callPrompt: {} }} />
+  ), { readyWhen: "[data-testid=switch-call-prompt][aria-checked=true]", scrollTo: "#cs-meet-h" }),
   screen("web", () => <Settings variant="microphone-only" />),
   screen(
     "interactive",

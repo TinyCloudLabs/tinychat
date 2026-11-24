@@ -19,6 +19,15 @@ export type WhisperModel =
   | "QuantizedSmall"
   | "QuantizedLargeTurbo";
 
+/** Parakeet TDT v3, run on this Mac by the desktop app's Soniqo runtime: an option next to the Whisper models. */
+export const PARAKEET_MODEL_ID = "soniqo-parakeet-batch";
+
+/** A model the desktop recorder can transcribe with after a recording stops. */
+export type LocalSttModel = WhisperModel | typeof PARAKEET_MODEL_ID;
+
+/** The Parakeet row as the app lists it (desktop/src-tauri/src/recorder/extras.rs): its label and download bytes. */
+export const LOCAL_PARAKEET_MODEL = { id: PARAKEET_MODEL_ID, label: "Parakeet TDT 0.6B v3", sizeBytes: 674_356_069 } as const;
+
 export interface LocalWhisperModel {
   id: WhisperModel;
   label: string;
@@ -42,7 +51,7 @@ export const LOCAL_WHISPER_MODELS: readonly LocalWhisperModel[] = [
 
 /** Catalog models the model picker does not offer, unless the user has the model selected, downloading, or on disk.
  *  They stay in the catalog: evals, CI, and existing selections still resolve them. */
-export const HIDDEN_FROM_PICKER: Partial<Record<WhisperModel, true>> = { QuantizedLargeTurbo: true };
+export const HIDDEN_FROM_PICKER: Partial<Record<LocalSttModel, true>> = { QuantizedLargeTurbo: true };
 
 /** A transcript made on this Mac by whisper.cpp. */
 export interface OnDeviceTranscriptResult {

@@ -13,7 +13,8 @@ import { privateRefusalCopy } from "@/capture/recorder/privateInstead";
 import { PlatformContext, type AppPlatform } from "@/lib/platform";
 import { deviceName } from "./notePipelineCopy";
 import { localTranscriptionUnavailable } from "./captureEngine";
-import { getDesktopWhisperQueue, type DesktopWhisperJob } from "./desktop/desktopWhisper";
+import { getDesktopWhisperQueue, whisperJobNeedsModel, type DesktopWhisperJob } from "./desktop/desktopWhisper";
+import { GET_WHISPER_NO_SETTINGS, openCaptureSettings } from "@/capture/recorder/final/desktop/openCaptureSettings";
 import { resolveVoiceNoteRows, SpaceLaneQueueWaitTimeout, spaceLaneSnapshot, subscribeSpaceLane } from "./voiceNoteRows";
 import { legacyTranscriptMetadata, readTranscriptCommits } from "./voiceNoteCommits";
 import {
@@ -45,6 +46,7 @@ import {
   recordOnDeviceTranscript,
   subscribeOnDeviceTranscriptSync,
   syncOnDeviceTranscript,
+  transcriptSyncForPipeline,
   type OnDeviceTranscriptSyncState,
 } from "./onDeviceTranscriber";
 import { useQuarantinedRecordings } from "./quarantine";
@@ -120,7 +122,8 @@ export interface NotePipelineFacts {
   /** Null when this build has no on-device speech. */
   onDeviceStatus: OnDeviceSttStatus | null;
   desktopJob?: DesktopWhisperJob | null;
-  transcriptSync: OnDeviceTranscriptSyncState | null;
+  /** With the time of the next automatic attempt of a failed write, when one is scheduled (`transcriptSyncForPipeline`). */
+  transcriptSync: (OnDeviceTranscriptSyncState & { retryAt?: number }) | null;
   /** The space row (read by the hook, behind the write lane) has not answered yet: `rowMetadata` is null for want of an answer, not for want of a row. */
   spaceReading?: boolean;
   /** With `spaceReading`: uploads are ahead of the read in the write lane. */
@@ -252,11 +255,19 @@ const CAPTURE_ISSUE: Record<HomeIssue["kind"], PipelineCaptureIssue> = {
 
 function onDeviceInput(facts: NotePipelineFacts): PipelineOnDevice | null {
   const status = facts.onDeviceStatus;
-  if (status === null) return facts.desktopJob ? {
-    stt: { state: facts.desktopJob.state === "transcribing" ? "running" : facts.desktopJob.state, error: facts.desktopJob.error },
-    queue: { position: facts.desktopJob.position ?? (facts.desktopJob.state === "queued" ? 1 : null), inLine: facts.desktopJob.inLine ?? 1, percent: facts.desktopJob.progress },
-    model: null, download: "idle", sync: facts.transcriptSync,
-  } : null;
+  const job = facts.desktopJob;
+  if (status === null) {
+    if (!job) return null;
+    // A Mac job stopped for want of a Whisper model waits for one: the model step and its Get model, never "couldn't transcribe".
+    if (whisperJobNeedsModel(job)) return { stt: { state: "waiting_for_model", error: job.error }, queue: null,
+      model: { state: "absent", bytes: 0, totalBytes: 0, error: null }, download: "idle", sync: facts.transcriptSync };
+    return {
+      stt: { state: job.state === "transcribing" ? "running" : job.state, error: job.error },
+      // While its audio is still being finished the job has no place in line yet.
+      queue: { position: job.audio === "preparing" ? null : job.position ?? (job.state === "queued" ? 1 : null), inLine: job.inLine ?? 1, percent: job.progress },
+      model: null, download: "idle", sync: facts.transcriptSync,
+    };
+  }
   const place = onDeviceQueuePlace(status, facts.id);
   // The live queue entry is the newest word on the job; the ledger read is what is left after a restart.
   const stt = place !== null ? { state: place.entry.state, error: place.entry.error } : facts.native?.stt != null ? { state: facts.native.stt.state, error: facts.native.stt.error } : null;
@@ -312,7 +323,8 @@ export function buildNotePipelineInput(facts: NotePipelineFacts): NotePipelineIn
     online: facts.online,
     audioUploadIntent: (facts.native?.recording?.options as { uploadAudio?: boolean } | undefined)?.uploadAudio ?? true,
     capture: {
-      finalizing: facts.capture.finalizing,
+      // A Mac note whose audio is still being finished on the Mac is finishing too: nothing waits for the space yet.
+      finalizing: facts.capture.finalizing || (facts.device === "mac" && facts.desktopJob?.audio === "preparing"),
       issue: facts.capture.issue === null ? null : CAPTURE_ISSUE[facts.capture.issue.kind],
       readError: facts.capture.readError ?? null,
     },
@@ -354,7 +366,8 @@ export function transcriptRetryTarget(input: NotePipelineInput): "reread" | "pri
   if (input.route === "private-cloud") return "private-cloud";
   const od = input.transcript.onDevice;
   if (od?.sync?.state === "unrecorded") return "record";
-  if (od?.sync?.state === "failed" || (od?.sync === null && od.stt?.state === "done")) return "sync";
+  // A finished local transcript is written again, never made again, whatever its last write did.
+  if (od?.sync?.state === "failed" || (od != null && od.stt?.state === "done")) return "sync";
   if (od !== null && (od.stt === null || od.stt.state === "waiting_for_model")) return "model";
   return "note";
 }
@@ -405,6 +418,8 @@ export async function runPipelineAction(kind: PipelineActionKind, env: PipelineA
         env.reviewConsent();
         return null;
       case "get-model":
+        // The Mac's Whisper models are chosen and downloaded in ⚙︎ Capture settings.
+        if (env.input.device === "mac") return openCaptureSettings() ? null : GET_WHISPER_NO_SETTINGS;
         return await downloadOnDeviceModel();
       case "check-again": {
         if (!env.transcription) return "Private transcription isn't available here.";
@@ -465,6 +480,7 @@ export async function runPipelineAction(kind: PipelineActionKind, env: PipelineA
                     : env.native?.audio == null ? undefined : { audio: env.native.audio }, stt: { state: "done" } });
                 return null;
               case "model":
+                if (env.input.device === "mac") return openCaptureSettings() ? null : GET_WHISPER_NO_SETTINGS;
                 return await downloadOnDeviceModel();
               case "note":
                 if (env.input.device === "mac") {
@@ -918,7 +934,8 @@ function usePipelineStates(entries: readonly { id: string; source: NotePipelineS
         lane: { busy: textLaneBusy, depth: textLaneDepth },
         onDeviceStatus: device !== "mac" && hasOnDevice ? onDeviceStatus : null,
         desktopJob: device === "mac" && hasOnDevice ? getDesktopWhisperQueue()?.snapshot().get(id) ?? null : null,
-        transcriptSync: tcw === null ? null : onDeviceTranscriptSyncState(tcw, id),
+        // A failed write carries the time of its next automatic attempt, so the note shows it retrying, not stuck.
+        transcriptSync: tcw === null ? null : transcriptSyncForPipeline(tcw, id),
         spaceReading,
         spaceAfterUploads: spaceReading && textLaneDepth > 0,
         cloudJob: recorder.transcription?.jobs.get(id) ?? null,

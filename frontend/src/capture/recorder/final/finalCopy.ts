@@ -139,6 +139,9 @@ export const FINAL_COPY = {
     get localPhoneExplanation() { return `${captureDeviceName().replace(/^t/, "T")} transcribes it after you stop. Nothing leaves it.`; },
     localDesktopExplanation: (model: string) =>
       `Whisper ${model} transcribes on this Mac after you stop, and nothing leaves the machine. Change the model in ⚙︎ Settings.`,
+    /** The same, for a model whose label names its engine ("Parakeet TDT 0.6B v3"). */
+    localDesktopNamedExplanation: (label: string) =>
+      `${label} transcribes on this Mac after you stop, and nothing leaves the machine. Change the model in ⚙︎ Settings.`,
     localWebExplanation:
       "Runs on your phone or Mac in the TinyCloud One app. Not available in the browser.",
     privateCaption: "Fast, accurate, and sealed from TinyCloud One.",
