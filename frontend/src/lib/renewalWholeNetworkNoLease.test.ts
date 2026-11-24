@@ -22,6 +22,7 @@ const manifests = {
   exactKeysOnly,
   wholeNetworkOnly,
   connectors: webSignInManifest(WEB_APP_MANIFEST, ["connectors"], ADDRESS),
+  wholeNetworkAndKeys: { ...WEB_APP_MANIFEST, permissions: [...(WEB_APP_MANIFEST.permissions ?? []), encryptionDecryptGrant(ADDRESS), ...connectorKeyDecryptGrants(ADDRESS)] } as Manifest,
 };
 
 async function requestFor(manifest: Manifest, result: unknown = {}) {
@@ -36,15 +37,17 @@ test("a grant with decrypt on a whole encryption network is asked without the re
   expect(carriesWholeNetworkDecrypt(manifests.base)).toBe(false);
   expect(carriesWholeNetworkDecrypt(manifests.exactKeysOnly)).toBe(false);
   expect(carriesWholeNetworkDecrypt(manifests.wholeNetworkOnly)).toBe(true);
-  expect(carriesWholeNetworkDecrypt(manifests.connectors)).toBe(true);
+  expect(carriesWholeNetworkDecrypt(manifests.connectors)).toBe(false);
+  expect(carriesWholeNetworkDecrypt(manifests.wholeNetworkAndKeys)).toBe(true);
   expect((await requestFor(manifests.base)).request.renewal).toEqual(ASK);
   expect((await requestFor(manifests.exactKeysOnly)).request.renewal).toEqual(ASK);
   expect(await requestFor(manifests.wholeNetworkOnly).then(({ request }) => request)).not.toHaveProperty("renewal");
-  expect(await requestFor(manifests.connectors).then(({ request }) => request)).not.toHaveProperty("renewal");
+  expect((await requestFor(manifests.connectors)).request.renewal).toEqual(ASK);
+  expect(await requestFor(manifests.wholeNetworkAndKeys).then(({ request }) => request)).not.toHaveProperty("renewal");
 });
 
 test("the signed window does not depend on whether the lease is asked", async () => {
-  expect((await requestFor(manifests.connectors)).renewal.config.sessionExpirationMs).toBe(7 * DAY_MS);
+  expect((await requestFor(manifests.wholeNetworkAndKeys)).renewal.config.sessionExpirationMs).toBe(7 * DAY_MS);
   expect((await requestFor(manifests.exactKeysOnly)).renewal.config.sessionExpirationMs).toBe(7 * DAY_MS);
   expect((await requestFor(manifests.base)).renewal.config.sessionExpirationMs).toBe(webSignInGrantWindow(manifests.base));
 });
@@ -54,7 +57,7 @@ test("a receipt that arrives for a whole-network grant anyway is not admitted or
   const restoreDom = installDom({ localStorage: new Window().localStorage });
   const node = spyOn(globalThis, "fetch");
   try {
-    const { renewal } = await requestFor(manifests.connectors, { renewal: receipt });
+    const { renewal } = await requestFor(manifests.wholeNetworkAndKeys, { renewal: receipt });
     expect(await renewal.admit({ activeNodeIdentity: async () => ({ origin: HOST }) } as never, owner.address)).toBe(false);
     expect(node).not.toHaveBeenCalled();
     expect(loadRenewalReceipt(owner.address)).toBeNull();
@@ -86,7 +89,7 @@ test("the in-place Connectors ask for a grant with whole-network decrypt asks fo
         web3Provider: { request: async () => { throw new Error("no wallet request expected"); } },
       }),
       prefetch: {
-        manifest: async () => WEB_APP_MANIFEST,
+        manifest: async () => ({ ...WEB_APP_MANIFEST, permissions: [...(WEB_APP_MANIFEST.permissions ?? []), encryptionDecryptGrant(owner.address)] }) as Manifest,
         nonceForSigning: async () => "noLeaseNonce1",
         guardSigning: (provider) => provider,
         complete: () => {},

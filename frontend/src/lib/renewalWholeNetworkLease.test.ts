@@ -5,6 +5,7 @@ import type { Manifest } from "@tinycloud/web-sdk";
 import { admitSignInRenewal, reachesWholeNetworkDecrypt, renewalRestoreFor, verifiedRenewalLease } from "./renewalReceipt";
 import { leasedSession, type SignedResources } from "./renewalReceipt.grantFixture";
 import { webSignInManifest } from "./homeFeatures";
+import { connectorKeyDecryptGrants, encryptionDecryptGrant } from "./connectors/encryptionGrant";
 import { WEB_APP_MANIFEST } from "./webSignInPrefetch";
 
 // A session saved by an earlier sign-in that signed decrypt on a whole encryption network is never carried by a lease,
@@ -46,7 +47,7 @@ afterEach(() => {
   Reflect.deleteProperty(globalThis, "localStorage");
 });
 
-const wholeNetwork = () => { delete buildEnv[BUILD_FLAG]; return signedEncryption(webSignInManifest(WEB_APP_MANIFEST, ["connectors"], ADDRESS)); };
+const wholeNetwork = () => signedEncryption({ ...WEB_APP_MANIFEST, permissions: [...(WEB_APP_MANIFEST.permissions ?? []), encryptionDecryptGrant(ADDRESS), ...connectorKeyDecryptGrants(ADDRESS)] } as Manifest);
 const exactKeys = () => { buildEnv[BUILD_FLAG] = "true"; return signedEncryption(webSignInManifest(WEB_APP_MANIFEST, ["connectors"], ADDRESS)); };
 
 describe("a lease for a saved session", () => {

@@ -47,10 +47,10 @@ test("with the named-key switch on, the card says the approval opens only the co
   expect(text).toContain("opens only those keys");
 });
 
-test("with the named-key switch off, the card does not say the approval opens only those keys", async () => {
+test("with the named-key switch off, the card still says the approval opens only those keys and does not offer to unlock everything", async () => {
   delete buildEnv[BUILD_FLAG];
   const text = await cardText();
   expect(text).toContain(FEATURE_ACCESS_BODY.connectors);
-  expect(text).not.toContain("only those keys");
-  expect(text).toContain("unlock everything encrypted to your account");
+  expect(text).toContain("opens only those keys");
+  expect(text).not.toContain("unlock everything encrypted to your account");
 });

@@ -8,7 +8,7 @@ import {
   CONNECTOR_SECRET_KEYS,
   connectorKeyDecryptGrants,
   encryptionNetworkId,
-  withConnectorDecryptGrants,
+  withConnectorKeyGrants,
 } from "./encryptionGrant";
 import { CONNECTORS } from "./registry";
 
@@ -44,16 +44,16 @@ describe("connector secret keys", () => {
   });
 });
 
-describe("withConnectorDecryptGrants", () => {
-  test("keeps the whole-network grant for older secrets and adds the exact keys", () => {
-    const paths = (withConnectorDecryptGrants(baseManifest(), LOWER).permissions ?? [])
+describe("withConnectorKeyGrants", () => {
+  test("adds the exact keys and no grant on the whole network", () => {
+    const paths = (withConnectorKeyGrants(baseManifest(), LOWER).permissions ?? [])
       .filter((entry) => entry.service === "tinycloud.encryption").map((entry) => entry.path);
-    expect(paths).toEqual([NETWORK, ...connectorKeyDecryptGrants(LOWER).map((grant) => grant.path)]);
+    expect(paths).toEqual([...connectorKeyDecryptGrants(LOWER).map((grant) => grant.path)]);
   });
 
   test("is idempotent", () => {
-    const once = withConnectorDecryptGrants(baseManifest(), LOWER);
-    expect(withConnectorDecryptGrants(once, LOWER)).toEqual(once);
+    const once = withConnectorKeyGrants(baseManifest(), LOWER);
+    expect(withConnectorKeyGrants(once, LOWER)).toEqual(once);
   });
 });
 

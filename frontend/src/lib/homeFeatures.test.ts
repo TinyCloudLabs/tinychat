@@ -45,11 +45,10 @@ describe("webSignInManifest", () => {
     expect(signInRawAbilities(manifest)).toEqual({});
   });
 
-  test("Connectors flagged: the base and the decrypt grant, and the SDK asks exactly decrypt and network.create on the owner's default network", () => {
+  test("Connectors flagged: the base and the exact connector keys, and the SDK asks exactly decrypt and key.create on each key, nothing on the whole network", () => {
     const manifest = webSignInManifest(base, ["connectors"], ADDRESS);
-    expect(manifest.permissions).toEqual([...base.permissions!, decrypt, ...connectorKeyDecryptGrants(ADDRESS)]);
+    expect(manifest.permissions).toEqual([...base.permissions!, ...connectorKeyDecryptGrants(ADDRESS)]);
     expect(signInRawAbilities(manifest)).toEqual({
-      [decrypt.path]: ["tinycloud.encryption/decrypt", "tinycloud.encryption/network.create"],
       [`${decrypt.path}/secrets/fireflies_api_key`]: ["tinycloud.encryption/decrypt", "tinycloud.encryption/key.create"],
       [`${decrypt.path}/secrets/granola_api_key`]: ["tinycloud.encryption/decrypt", "tinycloud.encryption/key.create"],
       [`${decrypt.path}/secrets/scoped/google-meet/refresh_token`]: ["tinycloud.encryption/decrypt", "tinycloud.encryption/key.create"],
@@ -111,7 +110,8 @@ describe("whether the session covers Connectors", () => {
     expect(missing.filter((resource) => resource.space === "secrets" && resource.service === "tinycloud.kv").map((resource) => resource.path).sort()).toEqual([
       "vault/secrets/FIREFLIES_API_KEY", "vault/secrets/GRANOLA_API_KEY", "vault/secrets/scoped/google-meet/REFRESH_TOKEN",
     ]);
-    expect(asked).toContainEqual(expect.objectContaining({ service: "tinycloud.encryption", path: decrypt.path, actions: ["tinycloud.encryption/decrypt"] }));
+    expect(asked.filter((resource) => resource.path === decrypt.path)).toEqual([]);
+    expect(asked).toContainEqual(expect.objectContaining({ service: "tinycloud.encryption", path: `${decrypt.path}/secrets/fireflies_api_key`, actions: ["tinycloud.encryption/decrypt", "tinycloud.encryption/key.create"] }));
     expect(asked).toContainEqual(expect.objectContaining({ space: "applications", path: "xyz.tinycloud.tinychat/connectors" }));
   });
 
