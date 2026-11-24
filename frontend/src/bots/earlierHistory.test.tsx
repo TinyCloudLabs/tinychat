@@ -11,12 +11,13 @@ import { makePkhSpaceId } from "@tinycloud/sdk-core";
 
 import { installDom } from "@/test/dom";
 import { encryptionNetworkId } from "../lib/connectors/encryptionGrant";
-import { EARLIER_HISTORY_STRINGS } from "./botsStrings";
+import { EARLIER_HISTORY_STRINGS } from "./earlierHistoryStrings";
 import { botHistoryDirectory } from "./botHistoryPath";
-import { EarlierHistoryAction } from "./EarlierHistoryAction";
+import { LazyEarlierHistoryAction } from "./LazyEarlierHistoryAction";
 import {
-  isEarlierHistoryHeld, recordHeldEarlierHistory, requestEarlierHistoryAccess, resetEarlierHistory, useEarlierHistory,
+  isEarlierHistoryHeld, recordHeldEarlierHistory, resetEarlierHistory,
 } from "./earlierHistory";
+import { requestEarlierHistoryAccess } from "./earlierHistoryRequest";
 import { authorizeBotHistory, clearHistoryDecline } from "./historyAuthorization";
 import { readBotHistory } from "./historyRead";
 
@@ -183,8 +184,12 @@ afterEach(() => {
 });
 
 function Harness({ request, reload }: { request: () => Promise<boolean>; reload: () => Promise<void> }) {
-  const earlier = useEarlierHistory("main", request, reload);
-  return earlier ? <EarlierHistoryAction earlier={earlier} /> : <p>nothing held</p>;
+  return <><p>chat</p><LazyEarlierHistoryAction move={{ bot: "main", request, reload }} /></>;
+}
+/** A read holds records back; the action's view loads on demand, so wait for it. */
+async function hold(count: number) {
+  await act(async () => recordHeldEarlierHistory(address, "main", count));
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 25)); });
 }
 const move = () => [...document.querySelectorAll("button")].find(node => node.textContent === EARLIER_HISTORY_STRINGS.move);
 
@@ -199,8 +204,8 @@ async function mount(request: () => Promise<boolean>, reload: () => Promise<void
 test("nothing is offered until a read held earlier history back; declining keeps it hidden and the action available", async () => {
   const calls: string[] = [];
   await mount(async () => { calls.push("request"); return false; }, async () => { calls.push("reload"); });
-  expect(document.body.textContent).toContain("nothing held");
-  await act(async () => recordHeldEarlierHistory(address, "main", 2));
+  expect(move()).toBeUndefined();
+  await hold(2);
   expect(move()).toBeDefined();
   await act(async () => { move()!.click(); });
   expect(calls).toEqual(["request"]);
@@ -211,18 +216,18 @@ test("nothing is offered until a read held earlier history back; declining keeps
 test("approving the move reads the chat again, and the action goes away once nothing is held", async () => {
   const calls: string[] = [];
   await mount(async () => { calls.push("request"); return true; }, async () => { calls.push("reload"); recordHeldEarlierHistory(address, "main", 0); });
-  await act(async () => recordHeldEarlierHistory(address, "main", 1));
+  await hold(1);
   await act(async () => { move()!.click(); });
   expect(calls).toEqual(["request", "reload"]);
   expect(move()).toBeUndefined();
-  expect(document.body.textContent).toContain("nothing held");
+  expect(move()).toBeUndefined();
 });
 
 test("a reload that does not bring earlier history in after the approval shows as failed, not as moved", async () => {
   const calls: string[] = [];
   // The chat's read swallows its own failure and resolves; the records stay held.
   await mount(async () => { calls.push("request"); return true; }, async () => { calls.push("reload"); });
-  await act(async () => recordHeldEarlierHistory(address, "main", 1));
+  await hold(1);
   await act(async () => { move()!.click(); });
   expect(calls).toEqual(["request", "reload"]);
   expect(document.body.textContent).toContain(EARLIER_HISTORY_STRINGS.failed);
@@ -231,7 +236,7 @@ test("a reload that does not bring earlier history in after the approval shows a
 
 test("a reload that rejects shows as failed", async () => {
   await mount(async () => true, async () => { throw new Error("read failed"); });
-  await act(async () => recordHeldEarlierHistory(address, "main", 1));
+  await hold(1);
   await act(async () => { move()!.click(); });
   expect(document.body.textContent).toContain(EARLIER_HISTORY_STRINGS.failed);
 });

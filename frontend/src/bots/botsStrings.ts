@@ -45,21 +45,6 @@ export function botsErrorText(code: BotsErrorCode, name: string = MAIN_BOT_NAME)
 export const HISTORY_EXPIRY_NOTICE = `Your TinyCloud permission expired on {expiryDate}. ${MAIN_BOT_NAME}'s chat history on our server will be deleted on {deletionDate}. Reconnect TinyCloud before then to save it to your space.`;
 export const HISTORY_RECONNECT_LABEL = "Reconnect TinyCloud";
 
-// Earlier (v1) chat history, moved onto the chat's own key only when the owner asks (TC-4225). Every string of this
-// feature is here.
-export const EARLIER_HISTORY_STRINGS = {
-  /** The separate action that asks for network-wide decrypt and moves earlier history. */
-  move: "Move earlier history",
-  moving: "Moving earlier history…",
-  /** Shown beside the action while earlier history is held back (before the owner chooses to move it). */
-  held: "Some earlier messages are hidden until you move them.",
-  /** After the owner declined the request: the chat is unaffected, earlier history stays hidden. */
-  declined: "Earlier messages stay hidden. Your chat works.",
-  failed: "Couldn't move your earlier messages.",
-  /** The OpenKey modal's description for the network-wide decrypt request. */
-  approval: "Read your earlier chat history with bots so it can move to the chat's own key.",
-};
-
 // Web access panel strings.
 const plural = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
 

@@ -15,8 +15,8 @@ import { FeedChatsAccess, MeetingsAccess, type MeetingsAccessApi } from "./Meeti
 import { NewChat, type NewChatApi } from "./NewChat";
 import { AppLine, AskCards, AsksToggle } from "./AskCards";
 import { clearHistoryDecline } from "./historyAuthorization";
-import { EarlierHistoryAction } from "./EarlierHistoryAction";
-import type { EarlierHistory } from "./earlierHistory";
+import { LazyEarlierHistoryAction } from "./LazyEarlierHistoryAction";
+import type { EarlierHistoryMove } from "./earlierHistory";
 import { SecretCards } from "./SecretCard";
 import type { Asks } from "./useAsks";
 
@@ -97,7 +97,7 @@ export interface MainChatProps {
   /** When given, the sheet offers the owner's "Start a new chat". */
   newChat?: NewChatApi;
   /** When given, earlier history is held back and the sheet offers to move it (TC-4225). */
-  earlierHistory?: EarlierHistory;
+  earlierHistory?: EarlierHistoryMove;
 }
 
 /** Services that answered 404 for web access, so reopening Main's chat does not show the button again. */
@@ -176,7 +176,7 @@ export function MainChat({ open, onOpenChange, state, onSend, onRetry, onRetryHi
           {history === "loading" ? <p role="status" className="text-callout text-muted-foreground">{BOTS_STRINGS.historyLoading}</p> : null}
           {history === "failed" && !working ? <Failure text={BOTS_STRINGS.historyFailed} onRetry={onRetryHistory} /> : null}
           {history === "declined" && !working ? <Failure text={botsErrorText("history_declined", MAIN_BOT.name)} onRetry={onRetryHistory} declined /> : null}
-          {open && earlierHistory ? <EarlierHistoryAction earlier={earlierHistory} /> : null}
+          {open && earlierHistory ? <LazyEarlierHistoryAction move={earlierHistory} /> : null}
           {lines.map((line) => (
             line.unreadableHistory ? <p key={line.id} className="text-callout text-muted-foreground">{line.text}</p>
               : line.app ? <AppLine key={line.id} decision={line.app} names={line.names} live={line.id.startsWith("local-")} secret={line.secret} /> : <Line key={line.id} role={line.role} text={line.text} />

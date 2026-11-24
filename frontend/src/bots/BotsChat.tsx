@@ -2,7 +2,7 @@
 // while another is on screen. Main is always there, so an account whose list of bots has not loaded (or a backend
 // without that list) still has Main's chat. Saving history into the owner's space and the expiry notice work per bot,
 // as they do for Main's chat over Home.
-import { useCallback, useEffect, useRef, useState, type ComponentProps, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ComponentProps, type ReactNode } from "react";
 
 import { BotAvatar, MAIN_BOT } from "./BotAvatar";
 import { botChatApi as defaultChatApi, type BotChatApi } from "./botChatApi";
@@ -13,7 +13,7 @@ import { BotView, type ViewBot } from "./BotView";
 import type { BotManagement } from "./BotManage";
 import { MAIN_BOT_OLD_NAME } from "./botsStrings";
 import type { HistoryNotice } from "./historyNotice";
-import { useEarlierHistory } from "./earlierHistory";
+import type { EarlierHistoryMove } from "./earlierHistory";
 import { useBotChats, type BotChatSource, type BotChats } from "./useBotChat";
 
 /** One bot as the roster lists it: the part of it this view reads. */
@@ -151,7 +151,10 @@ export function BotsChat<Bot extends ControllerBot>({
 
   const requestEarlier = history?.saves?.(shown.key) === false ? undefined : history?.requestEarlierHistory;
   const reloadShown = useCallback(() => chats?.loadHistory(shown.key), [chats, shown.key]);
-  const earlierHistory = useEarlierHistory(shown.key, requestEarlier, reloadShown);
+  const earlierHistory = useMemo<EarlierHistoryMove | undefined>(
+    () => requestEarlier ? { bot: shown.key, request: requestEarlier, reload: reloadShown } : undefined,
+    [requestEarlier, shown.key, reloadShown],
+  );
 
   if (!chats || waiting) return <div className="h-full bg-background" data-bot-view-loading="" />;
   const view: ViewBot = { key: shown.key, name: shown.name, private: shown.environment === "private", face: faceOf(shown) };

@@ -1,11 +1,29 @@
 // The separate action for earlier (v1) chat history (TC-4225): shown only while a read held earlier messages back.
 // It is the only thing that asks for the network-wide decrypt; the chat itself never waits on it.
+import { useState } from "react";
 import { Button } from "@/components/ui/button";
-import { EARLIER_HISTORY_STRINGS } from "./botsStrings";
-import type { EarlierHistory } from "./earlierHistory";
+import { EARLIER_HISTORY_STRINGS } from "./earlierHistoryStrings";
+import { isEarlierHistoryHeld, type EarlierHistoryMove } from "./earlierHistory";
 
-export function EarlierHistoryAction({ earlier }: { earlier: EarlierHistory }) {
-  const { status, onMove } = earlier;
+type Status = "idle" | "moving" | "declined" | "failed";
+
+export function EarlierHistoryAction({ move }: { move: EarlierHistoryMove }) {
+  const { bot, request, reload } = move;
+  const [status, setStatus] = useState<Status>("idle");
+  const onMove = () => {
+    setStatus("moving");
+    void (async () => {
+      try {
+        if (!(await request())) { setStatus("declined"); return; }
+        await reload();
+        // A chat's read that fails does not reject (the chat shows its own failure row), so what the move achieved is
+        // read from the state: if the read held records back again, or never ran, the move did not happen.
+        setStatus(isEarlierHistoryHeld(bot) ? "failed" : "idle");
+      } catch {
+        setStatus("failed");
+      }
+    })();
+  };
   const note = status === "declined" ? EARLIER_HISTORY_STRINGS.declined
     : status === "failed" ? EARLIER_HISTORY_STRINGS.failed
     : EARLIER_HISTORY_STRINGS.held;

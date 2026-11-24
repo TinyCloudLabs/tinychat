@@ -5,7 +5,6 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { ensureBotHistoryGrant, botHistoryEnabled } from "./historyGrant";
 import { authorizeBotHistory } from "./historyAuthorization";
 import { readBotHistory } from "./historyRead";
-import { requestEarlierHistoryAccess, useEarlierHistory } from "./earlierHistory";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { openKeyFailureOf } from "../lib/authErrors";
@@ -99,8 +98,8 @@ function MainAsk({ api, tcw, onReconnect }: { api: BotsApi; tcw?: TinyCloudWeb; 
     wasWorking.current = working;
   }, [working, refreshAsks]);
   const loadChatHistory = chat.loadHistory;
-  const requestEarlier = useCallback(() => requestEarlierHistoryAccess(tcw!), [tcw]);
-  const earlierHistory = useEarlierHistory("main", tcw ? requestEarlier : undefined, loadChatHistory);
+  const requestEarlier = useCallback(async () => (await import("./earlierHistoryRequest")).requestEarlierHistoryAccess(tcw!), [tcw]);
+  const earlierHistory = useMemo(() => tcw ? { bot: "main", request: requestEarlier, reload: loadChatHistory } : undefined, [tcw, requestEarlier, loadChatHistory]);
   const [notice, setNotice] = useState<HistoryNotice | null>(null);
   useEffect(() => {
     if (!tcw) return;
