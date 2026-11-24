@@ -17,11 +17,12 @@ the Pages SPA fallback in `frontend/public/_redirects`.
 ## 1. Frontend → Cloudflare Pages (`tinycloud.chat`)
 
 The build output is `frontend/dist`. `VITE_*` values are baked at **build
-time**: for manual `deploy:frontend` uploads from `frontend/.env.production`;
-for Pages **Git builds** from the dashboard Production build environment
-variables. (`wrangler.toml` `[vars]` are runtime Pages Functions bindings and do
-**not** feed `vite build` — don't rely on them for `VITE_*`.) Keep the
-`.env.production` values and the dashboard build env vars in sync.
+time**. The production web build reads `wrangler.toml` `[env.production.vars]`
+(every production value is listed there; `[vars]` is for previews), and those
+values win over `frontend/.env.production`. Pages dashboard variables are
+ignored at build time, so do not rely on them for `VITE_*`. Phone and desktop
+builds read `frontend/.env.production` only. Keep the values both files set in
+sync.
 
 ### Option A — Pages Git integration (production = the `production` branch)
 
