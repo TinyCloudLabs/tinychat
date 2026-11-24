@@ -108,15 +108,18 @@ final class FrameProbe: NSObject {
           if (id.startsWith("exo-frame-")) state.answers.push(id);
           return fromNative.apply(this, arguments);
         };
-        const timeout = () => new Promise((_, reject) => setTimeout(() => reject(new Error("timed out")), 5000));
+        const timeout = (ms = 5000) => new Promise((_, reject) => setTimeout(() => reject(new Error("timed out")), ms));
         const out = { href: location.href };
+        // A slow simulator launch can answer One's own ping after 5 s (TC-4259), so this one call gets 30 s.
+        const started = Date.now();
         try {
-          const answer = await Promise.race([cap.nativePromise("ExoFrameProbe", "ping", { from: "main" }), timeout()]);
+          const answer = await Promise.race([cap.nativePromise("ExoFrameProbe", "ping", { from: "main" }), timeout(30000)]);
           out.answered = !!answer && answer.pong === true;
         } catch (error) {
           out.answered = false;
           out.error = String((error && error.message) || error);
         }
+        out.ms = Date.now() - started;
         for (const frame of frames) {
           try { await Promise.race([cap.nativePromise("Preferences", "remove", { key: "exo.frameprobe." + frame.id }), timeout()]); } catch {}
         }
@@ -268,7 +271,7 @@ final class FrameProbe: NSObject {
             "configuration": configuration,
             "main": [
                 "href": mainHref, "answered": setup["answered"] ?? false, "unchanged": unchanged,
-                "marker": verify["marker"] ?? false,
+                "error": setup["error"] ?? NSNull(), "ms": setup["ms"] ?? NSNull(), "marker": verify["marker"] ?? false,
             ] as [String: Any],
             "pings": ["main": pings.filter { $0 == "main" }.count, "framed": pings.filter { $0 != "main" }.count],
             "answers": verify["answers"] ?? -1,
