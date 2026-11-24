@@ -27,11 +27,11 @@ An unsigned release (0.13.0 or earlier):
 3. Open **System Settings → Privacy & Security** and scroll down to **Security**.
 4. Next to *"TinyCloud One.app" was blocked to protect your Mac*, click **Open Anyway**.
 
-   ![Privacy & Security showing "TinyCloud Home.app was blocked to protect your Mac" with an Open Anyway button](images/install-exo/privacy-security-open-anyway.png)
+   ![Privacy & Security showing "TinyCloud One.app was blocked to protect your Mac" with an Open Anyway button](images/install-exo/privacy-security-open-anyway.png)
 
 5. In the dialog that appears, click **Open Anyway**. Then enter your Mac password or use Touch ID.
 
-   ![Open "TinyCloud Home.app"? dialog with Move to Trash, Open Anyway and Done buttons](images/install-exo/open-anyway-confirm.png)
+   ![Open "TinyCloud One.app"? dialog with Move to Trash, Open Anyway and Done buttons](images/install-exo/open-anyway-confirm.png)
 
 TinyCloud One now opens, and from then on it opens like any other app.
 
