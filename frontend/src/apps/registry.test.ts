@@ -60,6 +60,7 @@ describe("registry", () => {
 
   test("iOS leaves Account out; web and Android keep it", () => {
     expect(oneAppsFor("ios").some((app) => app.id === "xyz.tinycloud.account")).toBe(false);
+    expect(oneAppsFor("ios").map((app) => app.id)).toEqual(["capture", "xyz.tinycloud.tinyapps.tasks", "xyz.tinycloud.secrets", "xyz.tinycloud.opencredentials", "xyz.tinycloud.explorer", "xyz.tinycloud.courier", "xyz.tinycloud.rocinante.ledger"]);
     expect(oneAppsFor("web").some((app) => app.id === "xyz.tinycloud.account")).toBe(true);
     expect(oneAppsFor("android").some((app) => app.id === "xyz.tinycloud.account")).toBe(true);
   });

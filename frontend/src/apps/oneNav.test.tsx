@@ -54,6 +54,7 @@ function memoryStorage(): Storage {
 
 const ACCOUNT = "did:pkh:eip155:1:0x00000000000000000000000000000000000000a1";
 const UPRIGHT: SizeClassState = { size: "compact", land: false };
+const WEB_ORDER = ["capture", "xyz.tinycloud.tinyapps.tasks", "xyz.tinycloud.secrets", "xyz.tinycloud.opencredentials", "xyz.tinycloud.explorer", "xyz.tinycloud.account", "xyz.tinycloud.courier", "xyz.tinycloud.rocinante.ledger", "xyz.tinycloud.share"] as const;
 
 const ssr = (node: ReactNode, path: string, platform: AppPlatform = "web") =>
   renderToStaticMarkup(
@@ -94,6 +95,7 @@ const attr = (tag: string, name: string) => new RegExp(`${name}="([^"]*)"`).exec
 describe("the Apps grid", () => {
   test("lists the apps in order, then Connectors, each at its screen in One; iOS leaves Account out", () => {
     const web = gridTiles(0, oneAppsFor("web", true));
+    expect(web.map((tile) => tile.name)).toEqual([...WEB_ORDER.map((id) => APP_NAMES[id]), CONNECTORS_NAME]);
     expect(web.map((tile) => tile.path)).toEqual([...oneAppsFor("web", true).map(appRoute), PATHS.connectors]);
     expect(web[0]!.path).toBe(PATHS.capture);
     const ios = gridTiles(0, oneAppsFor("ios", true)).map((tile) => tile.name);
