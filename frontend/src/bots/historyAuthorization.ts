@@ -72,7 +72,8 @@ export async function authorizeBotHistory(
     if (!connected) {
       const wallet = await connect({ appName: APP_NAME, host: import.meta.env.VITE_OPENKEY_HOST || "https://openkey.so", passkeysSupported: openkeyPasskeysSupported() });
       if (wallet.address.toLowerCase() !== owner || !isCurrentHistorySession(tcw, session)) throw new Error("history_owner_changed");
-      tcw.setRuntimePermissionSigner({ signMessage: async message => (await wallet.openkey.signMessage({ message })).signature });
+      // OpenKey shows its own approval for each signature, so the SDK skips its prompt. The pinned OpenKey client takes no presentation, so none is forwarded.
+      tcw.setRuntimePermissionSigner({ signMessage: async message => (await wallet.openkey.signMessage({ message })).signature }, { openKey: true });
       connected = wallet;
     }
     const expires = Date.parse(/^Expiration Time:\s*(\S+)/im.exec(session.siwe)?.[1] ?? "");

@@ -26,7 +26,8 @@ export async function stepUpForApp(tcw: TinyCloudWeb, permissions: PermissionEnt
   };
   const connected = await connect({ appName: APP_NAME, host: import.meta.env.VITE_OPENKEY_HOST || "https://openkey.so", passkeysSupported: openkeyPasskeysSupported() });
   if (connected.address.toLowerCase() !== owner || !sameSession()) throw new Error("one_apps_owner_changed");
-  tcw.setRuntimePermissionSigner({ signMessage: async (message) => (await connected.openkey.signMessage({ message })).signature });
+  // OpenKey shows its own approval for each signature, so the SDK skips its prompt. The pinned OpenKey client takes no presentation, so none is forwarded.
+  tcw.setRuntimePermissionSigner({ signMessage: async (message) => (await connected.openkey.signMessage({ message })).signature }, { openKey: true });
   const expires = Date.parse(/^Expiration Time:\s*(\S+)/im.exec(session.siwe)?.[1] ?? "");
   const expiryMs = expires - Date.now();
   if (!Number.isFinite(expiryMs) || expiryMs <= 0) return false;
