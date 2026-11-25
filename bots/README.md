@@ -265,7 +265,8 @@ chat text; per-chat denial covers chat-source reads, while the Feed and chats ar
 Main can ask its owner one short question and carry on; the answer comes back later as a new message. It ships on:
 the owner can turn it off in Main's settings, and while it is off Main has no tool for it and every call is refused.
 Each question, secret request and proposal goes to the owner as a card to decide. This is the `ask_owner` tool of the
-`app` MCP server.
+`app` MCP server. Only Main asks: a sibling has no owner screen for the setting, so the supervisor gives the gateway
+off for it whatever its file says.
 
 - The `app` server is the gateway's `POST /v1/mcp/app` on the egress socket (bot token required), beside `web`. A
   sandbox's `mcp.json` is written once and always lists both, so the setting is not in it: the gateway lists

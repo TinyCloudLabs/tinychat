@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ACTION_ERRORS, ActionStore, syncActions } from "../actions";
+import * as fs from "node:fs";
 import { ASK_ERRORS, AskStore, type AsksGateway, MAX_PENDING, SECRET_ERRORS, asksFile, readAsksEnabled, syncAsks, writeAsksEnabled } from "../asks";
 import { BotManager, type SandboxLauncher } from "../bot";
 import { type GatewayConfig, PINNED_FETCH_URL, PINNED_UPSTREAM, PINNED_WEB_API } from "../config";
@@ -14,7 +15,10 @@ import { SecretGrants } from "../secret-grants";
 
 const owner = `did:pkh:eip155:1:0x${"22".repeat(20)}`;
 const BOT = botIdFor(owner);
+const SIBLING_KEY = "e".repeat(32);
+const SIBLING = botIdFor(owner, SIBLING_KEY);
 const TOKEN = "3".repeat(64);
+const SIBLING_TOKEN = "4".repeat(64);
 const NOW = Date.parse("2026-11-25T12:00:00Z");
 const HELPERS = ["c".repeat(32), "d".repeat(32)];
 const ALL_TOOLS = ["ask_owner", "request_secret", "propose_action", "call_with_secret", "list_secrets"];
@@ -72,14 +76,14 @@ const syncProposals = (keys?: string[]) => syncActions(layout, {
 }, keys, () => NOW);
 
 let rpcId = 0;
-async function mcp(method: string, params?: unknown) {
-  const response = await gateway.handle(BOT, new Request("http://localhost/v1/mcp/app", {
-    method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+async function mcp(method: string, params?: unknown, bot = BOT, token = TOKEN) {
+  const response = await gateway.handle(bot, new Request("http://localhost/v1/mcp/app", {
+    method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
     body: JSON.stringify({ jsonrpc: "2.0", id: ++rpcId, method, params }),
   }));
   return (await response.json()) as { result: { tools?: Array<{ name: string }>; content?: Array<{ text: string }>; isError?: boolean } };
 }
-const tools = async () => (await mcp("tools/list")).result.tools!.map(tool => tool.name);
+const tools = async (bot = BOT, token = TOKEN) => (await mcp("tools/list", undefined, bot, token)).result.tools!.map(tool => tool.name);
 async function call(name: string, args: Record<string, unknown>) {
   const { result } = await mcp("tools/call", { name, arguments: args });
   return { text: result.content![0]!.text, isError: result.isError === true };
@@ -142,6 +146,30 @@ describe("the main bot's requests setting when the owner has never saved it", ()
   });
 });
 
+describe("a sibling bot's requests setting", () => {
+  const syncSibling = async (saved?: boolean) => {
+    const sibling = botLayout(SIBLING, { dataRoot: join(root, "data"), runRoot: join(root, "run"), egressRoot: join(root, "egress") }, { botKey: SIBLING_KEY, ownerId: BOT });
+    gateway.setToken(SIBLING, SIBLING_TOKEN, BOT);
+    if (saved !== undefined) writeAsksEnabled(sibling, saved);
+    await syncAsks(sibling, {
+      drain: async () => ({ asks: gateway.drainAsks(SIBLING), outside: gateway.asksOutside(SIBLING) }),
+      push: async body => gateway.setAsks(SIBLING, body),
+    }, undefined, () => NOW);
+  };
+
+  test("a never-saved sibling lists no request tool, while Main lists them", async () => {
+    await syncSibling();
+    await sync();
+    expect(await tools(SIBLING, SIBLING_TOKEN)).toEqual([]);
+    expect(await tools()).toEqual(ALL_TOOLS);
+  });
+
+  test("a sibling whose file says on lists no request tool either", async () => {
+    await syncSibling(true);
+    expect(await tools(SIBLING, SIBLING_TOKEN)).toEqual([]);
+  });
+});
+
 describe("the main bot's requests setting when the owner saved off, or the file is damaged", () => {
   test("a saved off lists no request tool and refuses each one", async () => {
     writeAsksEnabled(layout, false);
@@ -195,5 +223,36 @@ describe("deleting the bot's working state", () => {
     writeAsksEnabled(layout, false);
     expect(await manager().deleteWorkingState(BOT, "deleted", true)).toBeUndefined();
     expect(existsSync(layout.dataDir)).toBe(false);
+  });
+
+  test("keeps a saved off when the deletion stops part-way after the data directory is gone", async () => {
+    writeAsksEnabled(layout, false);
+    mkdirSync(layout.bundleDir, { recursive: true });
+    // The run directory can't be removed from its root, so the deletion fails after the data directory went.
+    chmodSync(join(root, "run"), 0o500);
+    try {
+      expect(await manager().deleteWorkingState(BOT, "unused")).toBe("error");
+    } finally {
+      chmodSync(join(root, "run"), 0o700);
+    }
+    expect(existsSync(layout.bundleDir)).toBe(true);
+    expect(existsSync(asksFile(layout))).toBe(true);
+    expect(readAsksEnabled(layout)).toBe(false);
+  });
+
+  test("logs asks_setting_keep_failed when the off can't be written back", async () => {
+    writeAsksEnabled(layout, false);
+    const realOpen = fs.openSync;
+    const open = spyOn(fs, "openSync").mockImplementation((...args: Parameters<typeof fs.openSync>) => {
+      if (String(args[0]).endsWith("asks.json.new")) throw new Error("disk full");
+      return realOpen(...args);
+    });
+    try {
+      expect(await manager().deleteWorkingState(BOT, "unused")).toBeUndefined();
+    } finally {
+      open.mockRestore();
+    }
+    expect(lines.some(line => line.includes(`"bots":"asks_setting_keep_failed"`))).toBe(true);
+    expect(existsSync(asksFile(layout))).toBe(false);
   });
 });

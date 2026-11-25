@@ -15,7 +15,7 @@ import { type OwnerDate, ownerDateLine } from "./owner-date";
 import { type Frame, type HostToolHandler, type HostToolReply, RpcError } from "./rpc";
 import { addressesIn } from "./web";
 import { readWebPolicy, type WebPolicy, writeWebPolicy } from "./web-policy";
-import { type AnswerInput, type AnswerResult, type AppOrigin, AskStore, type AskReply, type AskRequest, cancelAsks, readAsksEnabled, type SecretLine, sweepAsks as sweepAskStores, writeAsksEnabled } from "./asks";
+import { type AnswerInput, type AnswerResult, type AppOrigin, AskStore, type AskReply, type AskRequest, asksFile, cancelAsks, readAsksEnabled, type SecretLine, sweepAsks as sweepAskStores, writeAsksEnabled } from "./asks";
 import { type ReadArea, type ReadsSetting, readReads, writeReads } from "./reads";
 import { type ActionOutcome, type ActionReply, type ActionRequest, type ActionResult, ActionStore, type ApproveResult, actionBinding } from "./actions";
 
@@ -796,6 +796,7 @@ export class Bot {
     if (retire) this.#retiring = true;
     this.#deleting ??= (async () => {
       let cause: DeleteSkip | undefined;
+      let asksOff = false;
       try {
         const stopFailure = await this.#stopSandbox();
         if (this.#launcher.leftover(this.layout)) cause = "teardown_failed";
@@ -814,10 +815,9 @@ export class Bot {
             if (this.#options.history && !this.#hasGrant() && reason !== "new_chat" && reason !== "deleted") cause = "ungranted_retained";
             else {
               // Read before the directory goes: a missing setting reads as on, so an owner's off is written back below.
-              const asksOff = !readAsksEnabled(this.layout);
+              asksOff = !readAsksEnabled(this.layout);
               cause = this.#options.history && this.#hasGrant() && (!covered || !this.#history?.covered) && !this.#history?.expiryDue()
                 ? "archive_pending" : await removeWorkingState(this.layout, this.#launcher);
-              if (!cause && asksOff && !this.#retiring) this.#keepAsksOff();
             }
           }
         }
@@ -825,6 +825,8 @@ export class Bot {
       } catch {
         cause = "error";
       }
+      // Also after a deletion that stopped part-way: the setting file may be gone while the rest is left.
+      if (asksOff && !this.#retiring) this.#keepAsksOff();
       if (cause) log("state_delete_skipped", this.layout.botId, { reason, cause });
       else {
         this.#history = undefined;
@@ -839,10 +841,10 @@ export class Bot {
     return this.#deleting;
   }
 
-  /** Saves the owner's off for questions and requests in a fresh data directory. Logged when it cannot be written. */
+  /** Writes the owner's off for questions and requests back when the setting file is gone. Logged when it cannot be. */
   #keepAsksOff(): void {
     try {
-      writeAsksEnabled(this.layout, false);
+      if (!lstatSync(asksFile(this.layout), { throwIfNoEntry: false })) writeAsksEnabled(this.layout, false);
     } catch {
       log("asks_setting_keep_failed", this.layout.botId);
     }
