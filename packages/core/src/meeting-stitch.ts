@@ -309,7 +309,8 @@ interface Member {
   titleRank: number;
 }
 
-const SPEAKER_N = /^speaker[ _-]?(\d+)$/i;
+/** A label for one speaker nobody has named: "Speaker 2" ("speaker_2"), or one person of the other side of a recorded call, "Them 2". */
+const SPEAKER_N = /^(speaker|them)[ _-]?(\d+)$/i;
 const NOT_A_NAME = /^(unknown|me|them|unidentified|guest[ _-]?\d+|)$/i;
 
 function isRealName(label: string | null): boolean {
@@ -883,7 +884,8 @@ function speakerFor(track: Track, which: 0 | 1, s: Seg, naming: Naming): string 
   const label = s.speaker.trim();
   const generic = SPEAKER_N.exec(label);
   if (generic === null) return s.speaker;
-  return naming.segName[which]!.get(s.index) ?? naming.labelMap[which]!.get(label) ?? `Speaker ${generic[1]} (${track.m.label})`;
+  const kind = generic[1]!.toLowerCase() === "them" ? "Them" : "Speaker";
+  return naming.segName[which]!.get(s.index) ?? naming.labelMap[which]!.get(label) ?? `${kind} ${generic[2]} (${track.m.label})`;
 }
 
 // ═══ 5. PROVENANCE ═══════════════════════════════════════════════════════════════════════════

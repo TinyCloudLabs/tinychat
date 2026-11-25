@@ -638,6 +638,16 @@ describe("hosted flow", () => {
     expect(started.status).toBe(202);
     await h.store!.idle();
     const create = h.calls.find((call) => call.url.endsWith("/v2/transcript"));
+    expect(JSON.parse(new TextDecoder().decode(create!.body!))).toMatchObject({ multichannel: true, speaker_labels: true });
+  });
+
+  test("a stereo note sent without speaker labels asks AssemblyAI for channels only", async () => {
+    const h = await setup();
+    const id = await h.upload(audio(50));
+    const started = await h.req("POST", "/hosted/transcripts", { body: { upload_id: id, speaker_labels: false, multichannel: true } });
+    expect(started.status).toBe(202);
+    await h.store!.idle();
+    const create = h.calls.find((call) => call.url.endsWith("/v2/transcript"));
     expect(JSON.parse(new TextDecoder().decode(create!.body!))).toMatchObject({ multichannel: true, speaker_labels: false });
   });
 

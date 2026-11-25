@@ -515,7 +515,8 @@ export function createAssemblyAiHostedRouter(options: AssemblyAiHostedRouterOpti
           uploadUrl = uploaded.upload_url;
         }
         const created = await call("POST", "/v2/transcript", SMALL_BODY, {
-          body: JSON.stringify({ audio_url: uploadUrl, speaker_labels: speakerLabels && !multichannel,
+          // With both set, AssemblyAI also tells voices apart within each channel (labels like "2A", "2B").
+          body: JSON.stringify({ audio_url: uploadUrl, speaker_labels: speakerLabels,
             multichannel, language_detection: true, speech_models: SPEECH_MODELS }),
           contentType: "application/json",
           signal,

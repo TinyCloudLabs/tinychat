@@ -13,6 +13,7 @@ import { legacyTranscriptWinner, readTranscriptCommit, voiceNoteTranscriptLocato
 import { whisperLocalTranscript } from "./desktop/whisperTranscript";
 import { commitVoiceNoteTranscript, createVoiceNoteRow, ensureVoiceNoteIdentity, patchVoiceNoteAudio,
   patchVoiceNoteTranscriptionFailure, reconcileDuplicates, resolveVoiceNoteRow, sweepArchived, transcriptHash, transcriptRevKvKey } from "./voiceNoteRows";
+import { patchRowSpeakerName } from "./voiceNoteRows";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 import { NoteDetailView } from "@/capture/library/NoteDetailView";
@@ -566,6 +567,86 @@ describe("voice-note identity and transcript authority", () => {
     await commitVoiceNoteTranscript(tcw, "recover", { rev: 1, outcome: "transcribed",
       text: "Recovered words", sentences: sentence("Recovered words") });
     expect((await resolveVoiceNoteRow(tcw, "recover"))?.metadata).not.toHaveProperty("transcription_error_code");
+  });
+
+  test("a transcript by another engine or with other speakers takes the names off the speakers it numbered and keeps them", async () => {
+    const { tcw } = space();
+    await ensureSchema(tcw);
+    await createVoiceNoteRow(tcw, { id: "call", startedAt: 0, durationMs: 1000,
+      mimeType: "audio/mp4", sizeBytes: 1, silencedMs: 0, silencedEvents: 0, noSignalMs: 0 }, "Call");
+    const commit = (rev: number, engine: string, labels: string[]) => commitVoiceNoteTranscript(tcw, "call", { rev, outcome: "transcribed",
+      text: "words", engine, participants: labels,
+      sentences: labels.map((speaker_name, index) => ({ index, speaker_name, text: `${engine} ${rev}`, start_time: index, end_time: index + 1 })) });
+    const metadata = async () => (await resolveVoiceNoteRow(tcw, "call"))!.metadata;
+    const name = async (label: string, shown: string | null) => patchRowSpeakerName(tcw, (await resolveVoiceNoteRow(tcw, "call"))!.id, label, shown);
+
+    await commit(1, "assemblyai", ["Me", "Speaker 1", "Speaker 2"]);
+    await name("Me", "Roman");
+    await name("Speaker 1", "Alice");
+    await name("Speaker 2", "Bob");
+    // The same engine heard the same speakers again: every name stays.
+    await commit(2, "assemblyai", ["Me", "Speaker 1", "Speaker 2"]);
+    expect((await metadata()).speaker_names).toEqual({ Me: "Roman", "Speaker 1": "Alice", "Speaker 2": "Bob" });
+    expect(await metadata()).not.toHaveProperty("earlier_speaker_names");
+
+    // Another engine: its Speaker 1 may be someone else. The user's own side keeps its name.
+    await commit(3, "private-cloud", ["Me", "Speaker 1", "Speaker 2"]);
+    expect((await metadata()).speaker_names).toEqual({ Me: "Roman" });
+    expect((await metadata()).earlier_speaker_names).toEqual(["Alice", "Bob"]);
+
+    // The same engine, another set of speakers. A name set aside before is listed once, and a map left empty goes.
+    await name("Me", null);
+    await name("Speaker 1", "alice");
+    await name("Speaker 2", "Carol");
+    await commit(4, "private-cloud", ["Me", "Them"]);
+    expect(await metadata()).not.toHaveProperty("speaker_names");
+    expect((await metadata()).earlier_speaker_names).toEqual(["Alice", "Bob", "Carol"]);
+  });
+
+  test("a Them N the engine numbered by voice loses its name to another engine; one the call window numbered keeps it", async () => {
+    const { tcw } = space();
+    await ensureSchema(tcw);
+    await createVoiceNoteRow(tcw, { id: "call", startedAt: 0, durationMs: 1000,
+      mimeType: "audio/mp4", sizeBytes: 1, silencedMs: 0, silencedEvents: 0, noSignalMs: 0 }, "Call");
+    // `ids`: the speaker_id each label's line carries. "call:p2" is a person of the call; anything else is a voice.
+    const commit = (rev: number, engine: string, ids: Record<string, string | undefined>) => commitVoiceNoteTranscript(tcw, "call", {
+      rev, outcome: "transcribed", text: "words", engine, participants: Object.keys(ids),
+      sentences: Object.entries(ids).map(([speaker_name, speaker_id], index) => ({ index, speaker_name, text: `${engine} ${rev}`,
+        start_time: index, end_time: index + 1, ...(speaker_id ? { speaker_id } : {}) })) });
+    const metadata = async () => (await resolveVoiceNoteRow(tcw, "call"))!.metadata;
+    const name = async (label: string, shown: string | null) => patchRowSpeakerName(tcw, (await resolveVoiceNoteRow(tcw, "call"))!.id, label, shown);
+
+    // On this Mac the call window says who speaks: "Them 1" is the first person of the call in every transcript.
+    await commit(1, "whispercpp", { Me: undefined, "Them 1": "call:p2" });
+    await name("Them 1", "Alice");
+    await commit(2, "whispercpp", { Me: undefined, "Them 1": "call:p2", "Them 2": "call:p3" });
+    expect((await metadata()).speaker_names).toEqual({ "Them 1": "Alice" });
+
+    // Powerful numbers the voices it hears: its "Them 1" is whoever spoke first.
+    await commit(3, "assemblyai", { Me: undefined, "Them 1": "2A", "Them 2": "2B" });
+    expect(await metadata()).not.toHaveProperty("speaker_names");
+    expect((await metadata()).earlier_speaker_names).toEqual(["Alice"]);
+
+    // The same engine with another number of voices: "Them 1" may be someone else. The whole other side keeps its name.
+    await name("Them 1", "Bob");
+    await commit(4, "assemblyai", { Me: undefined, "Them 1": "2A", "Them 2": "2B", "Them 3": "2C" });
+    await name("Them 2", "Carol");
+    await commit(5, "assemblyai", { Me: undefined, Them: "2A" });
+    await name("Them", "Alice, Bob");
+    await commit(6, "private-cloud", { Me: undefined, Them: "speaker_0" });
+    expect((await metadata()).speaker_names).toEqual({ Them: "Alice, Bob" });
+    expect((await metadata()).earlier_speaker_names).toEqual(["Alice", "Bob", "Carol"]);
+  });
+
+  test("a name given before the note's first transcript stays when that transcript lands", async () => {
+    const { tcw } = space();
+    await ensureSchema(tcw);
+    await createVoiceNoteRow(tcw, { id: "phone", startedAt: 0, durationMs: 1000,
+      mimeType: "audio/mp4", sizeBytes: 1, silencedMs: 0, silencedEvents: 0, noSignalMs: 0,
+      ledger: { speakerNames: { "Speaker 1": "Sam" } } }, "Phone note");
+    await commitVoiceNoteTranscript(tcw, "phone", { rev: 1, outcome: "transcribed", text: "Hello", engine: "on-device",
+      participants: ["Speaker 1"], sentences: [{ index: 0, speaker_name: "Speaker 1", text: "Hello", start_time: 0, end_time: 1 }] });
+    expect((await resolveVoiceNoteRow(tcw, "phone"))!.metadata.speaker_names).toEqual({ "Speaker 1": "Sam" });
   });
 
   test("deferral codes do not persist failed outcomes", async () => {

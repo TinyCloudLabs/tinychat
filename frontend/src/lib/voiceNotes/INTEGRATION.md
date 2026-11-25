@@ -63,7 +63,7 @@ This documents the merge of main (including #379), #375, and #368 for the 0.8.0 
 ### hostedVoiceNotes.ts
 - `recording.channels` for stereo detection (replaces `layout === "stereo"`)
 - `assemblyAiSentences` call with `{ stereo }` option
-- Channel-based speaker naming: `channel === 0 ? "Me" : "Them"`
+- Speaker naming by `nameChannelSpeakers` (`channelSpeakers.ts`): channel 0 is "Me"; channel 1 is "Them" when the engine heard one voice there, and "Them 1", "Them 2", … when it heard several
 - `LocalTranscript` version: `2` (was `1`)
 - Segment fields: `speakerId`, `channel`, `timing`
 - Metadata `speaker_labels`: `"channels"` for stereo
