@@ -1,0 +1,35 @@
+{
+  "versions": {
+    "exo-desktop": "0.22.0",
+    "@tinychat/frontend": "0.22.0",
+    "@tinychat/backend": "0.14.1"
+  },
+  "changesets": [
+    ".changeset/pre/activity-retry-after-outage.md",
+    ".changeset/pre/call-names-ax.md",
+    ".changeset/pre/call-names-choices.md",
+    ".changeset/pre/call-names-engine.md",
+    ".changeset/pre/call-names-setting.md",
+    ".changeset/pre/call-names-speaking.md",
+    ".changeset/pre/call-names-suggestion.md",
+    ".changeset/pre/call-names-wiring.md",
+    ".changeset/pre/call-prompt-desktop-only.md",
+    ".changeset/pre/call-prompt-native.md",
+    ".changeset/pre/call-prompt-recording-bar.md",
+    ".changeset/pre/call-prompt-tile.md",
+    ".changeset/pre/call-speakers-frontend.md",
+    ".changeset/pre/chat-request-log-cap.md",
+    ".changeset/pre/connector-key-first-save.md",
+    ".changeset/pre/mac-note-audio-on-this-mac.md",
+    ".changeset/pre/mac-note-states-told.md",
+    ".changeset/pre/mac-stop-long-recording.md",
+    ".changeset/pre/names-permission-prompt.md",
+    ".changeset/pre/out-of-credits-message-backend.md",
+    ".changeset/pre/out-of-credits-message-frontend.md",
+    ".changeset/pre/parakeet-local-model.md",
+    ".changeset/pre/reader-video-tiles.md",
+    ".changeset/pre/sam-tailnet-dev-origin.md",
+    ".changeset/pre/space-unreachable-saves-later.md",
+    ".changeset/pre/speaker-lines-video-tiles.md"
+  ]
+}
