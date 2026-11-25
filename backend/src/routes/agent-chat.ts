@@ -1465,7 +1465,7 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
             });
             res.status(402).json({
               error: "credit_budget_exceeded",
-              message: `You're out of credits on the ${tierConfig.name} plan, so this message got no reply and nothing was charged.`,
+              message: `Credit budget exhausted for the ${tierConfig.name} tier.`,
               tier,
               usage,
               ...exposeGateSource(kDegrade.source),
@@ -1496,7 +1496,7 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
           });
           res.status(402).json({
             error: "credit_budget_exceeded",
-            message: `You're out of credits on the ${tierConfig.name} plan, so this message got no reply and nothing was charged.`,
+            message: `Credit budget exhausted for the ${tierConfig.name} tier.`,
             tier,
             ...(usage ? { usage } : {}),
             ...exposeGateSource(gate.source),

@@ -55,14 +55,14 @@ describe("agent turn stopped by the credit limit", () => {
     const updates = await runTurn(LIMIT, makeDeps({ getCreditLimitContext: () => ({ tierName: "Free", resetsAt }) }));
     expect(updates).toHaveLength(1);
     const error = (updates[0] as { status: { error: string } }).status.error;
-    expect(error).toStartWith("You're out of credits on the Free plan, so this message got no reply and nothing was charged. Credits reset ");
+    expect(error).toStartWith("You're out of credits on the Free plan, so this message got no reply. Credits reset ");
     expect(error).toEndWith(" UTC.");
   });
 
   test("an empty reply names your plan when no billing data is available", async () => {
     const updates = await runTurn(LIMIT, makeDeps());
     expect(updates).toEqual([{ status: { type: "incomplete", reason: "error", error:
-      "You're out of credits on your plan, so this message got no reply and nothing was charged." } }]);
+      "You're out of credits on your plan, so this message got no reply." } }]);
   });
 
   test("a partial reply keeps the existing text", async () => {

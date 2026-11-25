@@ -2,6 +2,6 @@
 "@tinychat/backend": patch
 ---
 
-The 402 answers for a chat message with no credits left say "You're out of credits on the Free plan, so this message got no reply and nothing was charged." with the name of the account's plan.
+When a chat message is refused before any model call because the account has no credits left, the answer says "You're out of credits on the {plan} plan, so this message got no reply and nothing was charged.", using the account's plan name.
 
 Details: TC-4312

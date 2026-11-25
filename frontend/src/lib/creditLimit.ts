@@ -33,21 +33,26 @@ export function formatResetTime(resetsAt: string | null | undefined, now: number
   return days >= 7 ? `next ${weekday} at ${clock}` : `${weekday} at ${clock}`;
 }
 
-/** The text for a message that got no reply because the account is out of credits. */
+/**
+ * The text for a message that got no reply because the account is out of
+ * credits. It does not say whether anything was charged: a turn that stopped
+ * after a tool round is charged for the usage it observed.
+ */
 export function outOfCreditsMessage(context: CreditLimitContext, now: number): string {
   const plan = context.tierName ? `the ${context.tierName} plan` : "your plan";
-  const base = `You're out of credits on ${plan}, so this message got no reply and nothing was charged.`;
+  const base = `You're out of credits on ${plan}, so this message got no reply.`;
   const when = formatResetTime(context.resetsAt, now);
   return when ? `${base} Credits reset ${when}.` : base;
 }
 
 /**
  * True when a higher tier exists, judged by credit allowance in the public
- * billing config. An unknown tier or a missing config counts as upgradable, so
- * the pricing dialog is only withheld when the top tier is positively known.
+ * billing config. The free plan always has an upgrade. An unknown tier or a
+ * missing config counts as upgradable, so the pricing dialog is only withheld
+ * when a paid top tier is positively known.
  */
 export function hasUpgradeTier(config: BillingConfig | null, tierId: string): boolean {
-  if (!config) return true;
+  if (tierId === "free" || !config) return true;
   const current = config.tiers.find((tier) => tier.id === tierId);
   if (!current) return true;
   return config.tiers.some((tier) => tier.creditBudget > current.creditBudget);

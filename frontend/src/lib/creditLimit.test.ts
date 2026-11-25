@@ -6,32 +6,32 @@ import { formatResetTime, hasUpgradeTier, outOfCreditsMessage } from "./creditLi
 const NOW = Date.parse("2026-11-25T10:30:00.000Z");
 
 describe("outOfCreditsMessage", () => {
-  test("names the plan and says nothing was charged when no reset time is known", () => {
+  test("names the plan when no reset time is known", () => {
     expect(outOfCreditsMessage({ tierName: "Free", resetsAt: null }, NOW)).toBe(
-      "You're out of credits on the Free plan, so this message got no reply and nothing was charged.",
+      "You're out of credits on the Free plan, so this message got no reply.",
     );
   });
 
   test("appends the reset sentence for the daily free window", () => {
     expect(outOfCreditsMessage({ tierName: "Free", resetsAt: "2026-11-26T00:00:00.000Z" }, NOW)).toBe(
-      "You're out of credits on the Free plan, so this message got no reply and nothing was charged. Credits reset tomorrow at 00:00 UTC.",
+      "You're out of credits on the Free plan, so this message got no reply. Credits reset tomorrow at 00:00 UTC.",
     );
   });
 
   test("appends the weekday for the weekly paid window", () => {
     expect(outOfCreditsMessage({ tierName: "Early Access Demo", resetsAt: "2026-11-29T14:05:00.000Z" }, NOW)).toBe(
-      "You're out of credits on the Early Access Demo plan, so this message got no reply and nothing was charged. Credits reset Sunday at 14:05 UTC.",
+      "You're out of credits on the Early Access Demo plan, so this message got no reply. Credits reset Sunday at 14:05 UTC.",
     );
   });
 
   test("says your plan when the tier name is not available", () => {
     expect(outOfCreditsMessage({ tierName: null, resetsAt: null }, NOW)).toBe(
-      "You're out of credits on your plan, so this message got no reply and nothing was charged.",
+      "You're out of credits on your plan, so this message got no reply.",
     );
   });
 
   test("leaves the reset sentence out when the reset time is already past or malformed", () => {
-    const base = "You're out of credits on the Free plan, so this message got no reply and nothing was charged.";
+    const base = "You're out of credits on the Free plan, so this message got no reply.";
     expect(outOfCreditsMessage({ tierName: "Free", resetsAt: "2026-11-25T00:00:00.000Z" }, NOW)).toBe(base);
     expect(outOfCreditsMessage({ tierName: "Free", resetsAt: "not a time" }, NOW)).toBe(base);
   });
@@ -56,6 +56,12 @@ describe("hasUpgradeTier", () => {
   test("is true below the top tier and false on it", () => {
     expect(hasUpgradeTier(config, "free")).toBe(true);
     expect(hasUpgradeTier(config, "pro")).toBe(false);
+    expect(hasUpgradeTier({ ...config, tiers: [tier("free", 500)] } as BillingConfig, "free")).toBe(true);
+    expect(hasUpgradeTier({ ...config, tiers: [tier("free", 500), tier("pro", 500)] } as BillingConfig, "free")).toBe(true);
+  });
+
+  test("is false on a paid plan with no larger budget in the config", () => {
+    expect(hasUpgradeTier({ ...config, tiers: [tier("free", 500), tier("pro", 500)] } as BillingConfig, "pro")).toBe(false);
   });
 
   test("is true when the config or the tier is unknown", () => {
