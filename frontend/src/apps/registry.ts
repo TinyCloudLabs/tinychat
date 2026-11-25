@@ -158,12 +158,18 @@ const ACCOUNT_CEILING: readonly CeilingEntry[] = [
   kv("spaces", "account", "spaces/", ["get", "list"]),
 ];
 /**
- * Drive (TinyDrive) lists and reads three whole spaces and nothing else: no write, no delete, no SQL, no secrets, and
- * not the list of the owner's grants. It asks for one space at a time, when the owner opens that drive.
+ * Drive (TinyDrive) lists and reads three whole spaces, and can add records to one of them: the owner's own space
+ * (`default`), where the owner drops files. No delete anywhere, no write to `applications` or `agents`, no SQL, no
+ * secrets, and not the list of the owner's grants. It asks for one space at a time, when the owner opens that drive.
+ *
+ * Reading and adding in `default` are one entry on purpose. One hands a frame one delegation for each space, made
+ * from what One's session holds. Two entries approved in two step-ups are two separate grants on One's session, and
+ * `delegateTo` cannot make one delegation from both without asking the wallet, so EmbedHost would drop the grant
+ * (`prompted`). One entry is one step-up and one grant: the owner is asked once for the own space, to read and add.
  */
 const DRIVE_CEILING: readonly CeilingEntry[] = [
   kv("appsData", "applications", "", ["get", "list", "metadata"]),
-  kv("ownFiles", "default", "", ["get", "list", "metadata"]),
+  kv("ownFiles", "default", "", ["get", "list", "metadata", "put"]),
   kv("agentsData", "agents", "", ["get", "list", "metadata"]),
 ];
 const COURIER_CEILING: readonly CeilingEntry[] = [kv("courier", "agents", "xyz.tinycloud.courier/", ["get", "list"])];
@@ -230,8 +236,9 @@ const ALL_APPS: readonly OneApp[] = [
     ],
   },
   {
-    // Drive: the owner's TinyCloud as drives, folders and files (TinyDrive). Read only in the frame. Its "Who has
-    // access" needs the owner's own sign-in, so that part opens Drive in its own tab.
+    // Drive: the owner's TinyCloud as drives, folders and files (TinyDrive). In the frame it reads, and it adds files
+    // and folders to the owner's own space. Its "Who has access" needs the owner's own sign-in, so that part opens
+    // Drive in its own tab.
     id: "xyz.tinycloud.tinydrive",
     kind: "framed",
     framed: true,
