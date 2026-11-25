@@ -10,7 +10,7 @@ const key = "test-only-calendar-log-hmac-key-with-enough-entropy-0123456789";
 
 function lines(write: { mock: { calls: unknown[][] } }) {
   return write.mock.calls.map(call => JSON.parse(String(call[0]).trim()) as Record<string, unknown>)
-    .filter(event => String(event.event).startsWith("calendar_autojoin_"));
+    .filter(event => String(event.event).startsWith("calendar_autojoin_") && event.event !== "calendar_autojoin_scan");
 }
 
 describe("calendar autojoin shipped events", () => {
@@ -23,6 +23,8 @@ describe("calendar autojoin shipped events", () => {
         start: "2026-11-25T12:00:00.000Z", tenant_hash: expect.stringMatching(/^[0-9a-f]{12}$/) });
       expect(JSON.stringify(event)).not.toContain(tenant.toLowerCase());
       expect(calendarDecisionEvent(row, "GOOGLE_CANARY_free_text" as "missed_window").reason).toBe("unknown");
+      expect(calendarDecisionEvent(row, "not_accepted")).toEqual({ event: "calendar_autojoin_decision", reason: "not_accepted" });
+      expect(calendarDecisionEvent(row, "event_ineligible")).toEqual({ event: "calendar_autojoin_decision", reason: "event_ineligible" });
       // @ts-expect-error Only a declared decision can reach the builder.
       const invalidReason: CalendarDecisionReason = "GOOGLE_CANARY_free_text";
       void invalidReason;
@@ -34,6 +36,7 @@ describe("calendar autojoin shipped events", () => {
   test("connection codes are closed and omit unconfigured tenant hashes", () => {
     const row = { tenant, state: "needs_reconnect", errorCode: "GOOGLE_CANARY_free_text" } as CalendarConnection;
     expect(calendarConnectionEvent(row)).toEqual({ event: "calendar_autojoin_connection", state: "needs_reconnect", code: "unknown" });
+    expect(calendarConnectionEvent({ ...row, state: "GOOGLE_CANARY_free_text" as CalendarConnection["state"] }).state).toBe("unknown");
     expect(calendarTickEvent({ tenants: 2, rows: 3, scans: 1, timers_due: 1, scan_complete: false, duration_ms: 40 }))
       .toMatchObject({ event: "calendar_autojoin_tick", scan_complete: false });
   });
@@ -111,7 +114,7 @@ describe("calendar autojoin shipped events", () => {
     try {
       await worker.tick();
       expect(lines(write).filter(item => item.event === "calendar_autojoin_decision"))
-        .toEqual([expect.objectContaining({ reason: "not_accepted", start: new Date(start).toISOString() })]);
+        .toEqual([{ event: "calendar_autojoin_decision", reason: "not_accepted" }]);
       expect(JSON.stringify(lines(write))).not.toContain(privateTitle);
       expect(JSON.stringify(lines(write))).not.toContain(tenant.toLowerCase());
       write.mockClear();
