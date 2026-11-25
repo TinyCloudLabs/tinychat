@@ -7,7 +7,7 @@ import { type AppSource, type AsksSettings, type BotMessenger, type ErrorCode, E
 import { type OwnerDate, ownerDateFrom } from "./owner-date";
 import { INVALID_HOSTS, parseWebPolicy, type WebPolicy } from "./web-policy";
 import { type AnswerInput, type AnswerResult, type AppOrigin, type AskReply, type AskRequest, parseAnswerInput } from "./asks";
-import { type ActionReply, type ActionRequest, type ActionResult, type ApproveResult, parseApproveInput } from "./actions";
+import { type ActionKind, type ActionReply, type ActionRequest, type ActionResult, type ApproveResult, parseApproveInput } from "./actions";
 import { parseAreas, type ReadArea, type ReadsSetting } from "./reads";
 import { isRecord } from "./guards";
 import { ANNOUNCED_STATES, type AnnouncedState, type BotState, OwnerBotLimit } from "./manifest";
@@ -73,7 +73,9 @@ export interface BotApi {
   requests?(): Promise<(AskRequest | ActionRequest)[]>;
   answerRequest?(id: string, input: AnswerInput): Promise<AnswerResult | ActionResult>;
   /** The owner's Send on a proposal card. The send runs after it returns; Main is told the outcome by an app message. */
-  approveRequest?(id: string, binding: string, messenger: BotMessenger): Promise<ApproveResult>;
+  approveRequest?(id: string, binding: string, messenger?: BotMessenger): Promise<ApproveResult>;
+  /** The kind of a proposal from Main, or undefined when `id` is not one. */
+  requestKind?(id: string): ActionKind | undefined;
   /** The message for Main that tells it what the owner decided; undefined unless decided and not yet delivered. */
   appReply?(requestId: string): AskReply | ActionReply | undefined;
   appReplyDelivered?(requestId: string): void;
@@ -353,9 +355,11 @@ export function createApp(options: AppOptions): (req: Request) => Promise<Respon
           const requestId = ANSWER_PATH.exec(rest)![1]!;
           const approve = parseApproveInput(input);
           if (approve) {
-            // Sending reaches only the bots the backend admits for Main now, by the path message_bot takes.
-            const messenger = signed ? turnMessenger(options, owner, key, approve.keys) : undefined;
-            if (!messenger || !bot.approveRequest) return Response.json({ error: "invalid" }, { status: 400 });
+            if (!signed || !bot.approveRequest) return Response.json({ error: "invalid" }, { status: 400 });
+            // Sending reaches only the bots the backend admits for Main now, by the path message_bot takes. A feedback
+            // report goes to no bot, so only that kind may be sent without them.
+            const messenger = turnMessenger(options, owner, key, approve.keys);
+            if (!messenger && bot.requestKind?.(requestId) !== "send_feedback") return Response.json({ error: "invalid" }, { status: 400 });
             const result = await bot.approveRequest(requestId, approve.binding, messenger);
             if (result.ok) return Response.json(result.request);
             if (result.error === "held") return Response.json({ error: "held" }, { status: 409 });

@@ -425,6 +425,27 @@ owner message (the same bot again is fine); a message for more bots goes through
   - `appReply` tells Main the outcome with a fixed sentence around the recipients' keys (`ACTION_REPLIES`), under its
     own first line (`ORIGIN_LINES.action`); its history line has `decision: "action_approved" | "action_declined"`.
     Each recipient gets Main's message under the line for a message from another bot (`ORIGIN_LINES.bot`).
+- `propose_action { kind: "send_feedback", report: { type, title, tried, happened, expected } }`: one feedback report
+  to the TinyCloud team at `https://feedback.tinycloud.xyz` (`FEEDBACK_ORIGIN` in `config.ts`; `BOTS_TEST_FEEDBACK_URL`
+  may point the gateway at a loopback mock in tests and nowhere else). `feedback.ts` holds the rules:
+  - Only in a turn the owner wrote: the supervisor's push at the turn's start says so (`ownerTurn`), and any other
+    turn (relayed from a bot, an app reply) is refused. Never from a chat that holds the owner's private data.
+  - `type` is `bug`, `friction` or `improvement` (`security` is refused with a fixed sentence); `title` is one line of
+    1 to 120 characters; `tried`, `happened` and `expected` are 1 to 800 characters each; the body is at most 8 KB.
+    Text that looks like a secret, an email, a wallet or a home path is refused, and the model is told to rewrite it.
+  - The gateway builds the body: `{ area: "other", kind, title, tried, happened, expected, agent }` with `agent` fixed
+    to `TinyCloud One bot (TrustBot)` and nothing about the owner. It is stored as the proposal's text.
+  - Limits, per owner and inside the ones above: 1 open report, 1 proposal per 10 minutes, 3 a day (UTC); across all
+    bots, 5 posts a minute.
+  - The owner's Send (signed; it needs no `messageableBotKeys`) marks the proposal `sending`, then the supervisor calls
+    `POST /bots/<id>/actions/send { id, binding, body }` on the gateway (30 s). The gateway refuses a held chat, a
+    stored body that fails the checks above or a binding it does not recompute and did not issue; then it spends the
+    approval and makes one POST to `<origin>/reports` (`redirect: "error"`, 15 s, a fixed user agent, at most 4 KB of
+    the answer read, only its `id` kept). The outcome is `filed`, `rate_limited`, `busy`, `rejected`, `unknown` or
+    `refused`; Main is told it (`FEEDBACK_REPLIES`) with `decision: "feedback_sent" | "feedback_declined"`.
+  - The backend lists feedback proposals only for `GET /main/requests?include=feedback`, with the parsed `report`
+    and, once sent, `feedback: { outcome, reportId? }`. Log lines hold the outcome and status, never a field or the
+    report id.
 - Retention: the text goes when the proposal is decided or expires; metadata stays 7 days, at most 200.
 
 ### Saved state

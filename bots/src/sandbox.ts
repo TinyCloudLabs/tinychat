@@ -20,6 +20,7 @@ import { readWebPolicy } from "./web-policy";
 import { syncAsks } from "./asks";
 import { readsPush } from "./reads";
 import { syncActions } from "./actions";
+import { type FeedbackSent, parseFeedbackSent } from "./feedback";
 
 const CGROUP_ROOT = "/sys/fs/cgroup";
 const CGROUP_CONTROLLERS = ["cpu", "memory", "pids"];
@@ -591,13 +592,13 @@ export class RunscHost implements SandboxLauncher {
   }
 
   /** One request on the gateway's control socket; the body is JSON. Throws unless the answer is 2xx. */
-  async #gateway(method: "GET" | "PUT" | "POST" | "DELETE", path: string, body?: unknown): Promise<Response> {
+  async #gateway(method: "GET" | "PUT" | "POST" | "DELETE", path: string, body?: unknown, timeoutMs = 5000): Promise<Response> {
     const response = await fetch(`http://gateway${path}`, {
       unix: join(this.#cfg.egressRoot, "control.sock"),
       method,
       headers: { "content-type": "application/json" },
       body: body === undefined ? undefined : JSON.stringify(body),
-      signal: AbortSignal.timeout(5000),
+      signal: AbortSignal.timeout(timeoutMs),
     });
     if (!response.ok) throw new Error(`gateway ${method} failed: ${response.status}`);
     return response;
@@ -663,13 +664,16 @@ export class RunscHost implements SandboxLauncher {
     }, turn);
   }
 
-  /** Collects the proposals the box made and gives the gateway the counts, the final proposals and `keys` when given (see syncActions). */
-  syncActions(layout: BotLayout, keys?: readonly string[]): Promise<void> {
+  /**
+   * Collects the proposals the box made and gives the gateway the counts, the final proposals and `keys` when given,
+   * with whether the owner started the turn (see syncActions).
+   */
+  syncActions(layout: BotLayout, keys?: readonly string[], ownerTurn = false): Promise<void> {
     const path = `/bots/${layout.botId}/actions`;
     return syncActions(layout, {
       drain: async () => (await this.#gateway("POST", `${path}/drain`)).json(),
       push: async body => void (await this.#gateway("PUT", path, body)),
-    }, keys);
+    }, keys, undefined, ownerTurn);
   }
 
   /** Has the gateway spend an approval it issued: true once for that id and binding (204), false when it refuses (409). */
@@ -679,6 +683,19 @@ export class RunscHost implements SandboxLauncher {
       return true;
     } catch {
       return false;
+    }
+  }
+
+  /**
+   * Has the gateway post an approved feedback report (actions-desk.ts `send`). The gateway's POST may take 15 s, so
+   * this call waits 30 s. A failed call may have posted it: its outcome is unknown.
+   */
+  async sendFeedback(layout: BotLayout, id: string, binding: string, body: string): Promise<FeedbackSent> {
+    try {
+      const response = await this.#gateway("POST", `/bots/${layout.botId}/actions/send`, { id, binding, body }, 30_000);
+      return parseFeedbackSent(await response.json()) ?? { outcome: "unknown" };
+    } catch {
+      return { outcome: "unknown" };
     }
   }
 

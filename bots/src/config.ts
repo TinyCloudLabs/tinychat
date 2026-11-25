@@ -176,6 +176,8 @@ export interface GatewayConfig {
   web?: WebConfig;
   /** Sealed secret-request records (secret-store.ts), beside the budget file. */
   secretGrantsDir?: string;
+  /** Where `send_feedback` reports go: FEEDBACK_ORIGIN, or a loopback mock in tests. Unset: FEEDBACK_ORIGIN. */
+  feedbackUrl?: string;
 }
 
 /** Where secret requests go: TinyCloud's own node, links API and OpenKey. Pinned like the model's upstream. */
@@ -185,6 +187,9 @@ export const SECRET_ORIGINS = {
   openkey: "https://openkey.so",
   openkeyApi: "https://api.openkey.so",
 } as const;
+
+/** Where Main's feedback reports go (`send_feedback`, feedback.ts). Pinned like the secret origins. */
+export const FEEDBACK_ORIGIN = "https://feedback.tinycloud.xyz";
 
 /** The search provider behind Main's web tools and what one bot, and all bots, may use of it per UTC day. */
 export interface WebConfig {
@@ -245,6 +250,18 @@ function upstream(env: Env): string {
   return url.origin;
 }
 
+/** The feedback origin is pinned; BOTS_TEST_FEEDBACK_URL exists only for loopback mocks, like BOTS_TEST_UPSTREAM_URL. */
+function feedbackService(env: Env): string {
+  const raw = env.BOTS_TEST_FEEDBACK_URL?.trim();
+  if (!raw) return FEEDBACK_ORIGIN;
+  const url = new URL(raw);
+  if (url.protocol !== "http:" || !["127.0.0.1", "localhost"].includes(url.hostname)) {
+    throw new Error("BOTS_TEST_FEEDBACK_URL may only point at a loopback mock");
+  }
+  console.warn(JSON.stringify({ gateway: "test_feedback_service", upstream: url.origin }));
+  return url.origin;
+}
+
 function backendOrigin(env: Env): string {
   const raw = env.BACKEND_ORIGIN?.trim() || DEFAULT_BACKEND_ORIGIN;
   const url = URL.parse(raw);
@@ -278,6 +295,7 @@ export function gatewayConfig(env: Env): GatewayConfig & { backendOrigin: string
     budgetFile,
     ownersFile: env.BOTS_OWNERS_FILE ?? join(dirname(budgetFile), "owners.json"),
     secretGrantsDir: join(dirname(budgetFile), "secret-grants"),
+    feedbackUrl: feedbackService(env),
     web: {
       key: env.TAVILY_API_KEY?.trim() || undefined,
       apiUrl: webApi(env),

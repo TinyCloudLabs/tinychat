@@ -82,7 +82,7 @@ export interface MainWebSettings {
 export type AskState = "pending" | "answered" | "declined" | "stopped" | "expired";
 
 /** What the owner decided, as the service marks the app's message about it. */
-export type AppDecision = "answered" | "declined" | "stopped" | "approved" | "revoked" | "action_approved" | "action_declined";
+export type AppDecision = "answered" | "declined" | "stopped" | "approved" | "revoked" | "action_approved" | "action_declined" | "feedback_sent" | "feedback_declined";
 
 /** A secret request names a secret, never carries its value. */
 export const SECRET_NAME = /^[A-Z][A-Z0-9_]{0,63}$/;
@@ -135,26 +135,43 @@ export interface AskRequest {
   resolvedAt?: string;
 }
 
-/** One message Main proposed sending to two or more of the owner's other bots. The card is made from these fields. */
+/** One action Main proposed: a message to two or more of the owner's other bots, or a feedback report to the TinyCloud team. The card is made from these fields. */
 export interface ActionRequest {
   id: string;
   kind: "action";
-  action: "message_bots";
+  action: "message_bots" | "send_feedback";
   state: "pending" | "sending" | "done" | "declined" | "expired" | "stopped";
   askedAt: string;
   expiresAt: string;
   outside: boolean;
   undelivered: boolean;
   resolvedAt?: string;
-  /** Each recipient with its current name; null when the bot is gone. */
+  /** Each recipient with its current name; null when the bot is gone. None for a report. */
   targets: { key: string; name: string | null }[];
   /** Main's message, while pending. */
   text?: string;
+  /** A report, while pending: exactly what the TinyCloud team gets. */
+  report?: FeedbackReport;
   /** While pending: what Send must name, so only the message on the card is sent. */
   binding?: string;
   /** Once done: which recipients got it. */
   outcomes?: { key: string; delivered: boolean }[];
+  /** A report, once done: what the feedback service said, with its report id when it filed one. */
+  feedback?: { outcome: FeedbackOutcome; reportId?: string };
 }
+
+/** A feedback report as the feedback service gets it. */
+export interface FeedbackReport {
+  area: string;
+  kind: string;
+  title: string;
+  tried: string;
+  happened: string;
+  expected: string;
+  agent: string;
+}
+
+export type FeedbackOutcome = "filed" | "rate_limited" | "busy" | "rejected" | "unknown" | "refused";
 
 export type AskDecision = { decision: "decline" } | { decision: "answer"; answer: string } | { decision: "answer"; choice: number } | { decision: "approve"; binding: string };
 
@@ -310,10 +327,13 @@ const ACTION_STATES: readonly ActionRequest["state"][] = ["pending", "sending", 
 function toActionRequest(value: Record<string, unknown>): ActionRequest {
   const { id, state, askedAt, expiresAt, outside, resolvedAt, targets, text, binding, outcomes } = value;
   const known = ACTION_STATES.find((candidate) => candidate === state);
-  if (typeof id !== "string" || id.length === 0 || id.length > 64 || value.action !== "message_bots" || !known
+  const action = value.action === "message_bots" || value.action === "send_feedback" ? value.action : undefined;
+  if (typeof id !== "string" || id.length === 0 || id.length > 64 || !action || !known
     || !isoTime(askedAt) || !isoTime(expiresAt) || !Array.isArray(targets)) throw new BotsError("failed");
+  const report = action === "send_feedback" ? toFeedbackReport(value.report) : undefined;
+  const feedback = action === "send_feedback" ? toFeedbackSent(value.feedback) : undefined;
   return {
-    id, kind: "action", action: "message_bots", state: known, askedAt, expiresAt,
+    id, kind: "action", action, state: known, askedAt, expiresAt,
     outside: outside === true,
     undelivered: value.undelivered === true,
     ...(isoTime(resolvedAt) ? { resolvedAt } : {}),
@@ -322,6 +342,7 @@ function toActionRequest(value: Record<string, unknown>): ActionRequest {
       return typeof key === "string" ? [{ key, name: typeof name === "string" ? name : null }] : [];
     }),
     ...(typeof text === "string" ? { text } : {}),
+    ...(report ? { report } : {}),
     ...(typeof binding === "string" ? { binding } : {}),
     ...(Array.isArray(outcomes) ? {
       outcomes: outcomes.flatMap((outcome: unknown) => {
@@ -329,10 +350,33 @@ function toActionRequest(value: Record<string, unknown>): ActionRequest {
         return typeof key === "string" && typeof delivered === "boolean" ? [{ key, delivered }] : [];
       }),
     } : {}),
+    ...(feedback ? { feedback } : {}),
   };
 }
 
-const APP_DECISIONS: readonly unknown[] = ["answered", "declined", "stopped", "approved", "revoked", "action_approved", "action_declined"] satisfies AppDecision[];
+const REPORT_FIELDS = ["area", "kind", "title", "tried", "happened", "expected", "agent"] as const;
+
+/** A report with every field as text, or nothing. */
+function toFeedbackReport(payload: unknown): FeedbackReport | undefined {
+  if (typeof payload !== "object" || payload === null) return undefined;
+  const value = fields(payload);
+  if (!REPORT_FIELDS.every((field) => typeof value[field] === "string")) return undefined;
+  const { area, kind, title, tried, happened, expected, agent } = value as Record<(typeof REPORT_FIELDS)[number], string>;
+  return { area, kind, title, tried, happened, expected, agent };
+}
+
+const FEEDBACK_OUTCOMES: readonly unknown[] = ["filed", "rate_limited", "busy", "rejected", "unknown", "refused"] satisfies FeedbackOutcome[];
+
+function toFeedbackSent(payload: unknown): ActionRequest["feedback"] {
+  if (typeof payload !== "object" || payload === null) return undefined;
+  const { outcome, reportId } = fields(payload);
+  if (!FEEDBACK_OUTCOMES.includes(outcome)) return undefined;
+  return { outcome: outcome as FeedbackOutcome, ...(typeof reportId === "string" ? { reportId } : {}) };
+}
+
+const APP_DECISIONS: readonly unknown[] = [
+  "answered", "declined", "stopped", "approved", "revoked", "action_approved", "action_declined", "feedback_sent", "feedback_declined",
+] satisfies AppDecision[];
 export const isAppDecision = (value: unknown): value is AppDecision => APP_DECISIONS.includes(value);
 
 const SECRET_STATES: readonly unknown[] = ["pending", "approved", "declined", "stopped", "revoked", "expired", "ended", "failed"] satisfies SecretState[];
@@ -476,7 +520,8 @@ export function createBotsApi({ baseUrl, getToken, fetch: fetchImpl = (input, in
     },
 
     async listRequests(signal) {
-      return toRequests(await readJson(await request("GET", "/api/bots/main/requests", signal)));
+      // Feedback proposals come only on request, so an app without their card never lists them.
+      return toRequests(await readJson(await request("GET", "/api/bots/main/requests?include=feedback", signal)));
     },
 
     async answerRequest(id, decision, signal) {

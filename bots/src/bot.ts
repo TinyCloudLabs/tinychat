@@ -17,7 +17,10 @@ import { addressesIn } from "./web";
 import { readWebPolicy, type WebPolicy, writeWebPolicy } from "./web-policy";
 import { type AnswerInput, type AnswerResult, type AppOrigin, AskStore, type AskReply, type AskRequest, cancelAsks, readAsksEnabled, type SecretLine, sweepAsks as sweepAskStores, writeAsksEnabled } from "./asks";
 import { type ReadArea, type ReadsSetting, readReads, writeReads } from "./reads";
-import { type ActionOutcome, type ActionReply, type ActionRequest, type ActionResult, ActionStore, type ApproveResult, actionBinding } from "./actions";
+import {
+  type ActionKind, type ActionOutcome, type ActionPayload, type ActionReply, type ActionRequest, type ActionResult, ActionStore, type ApproveResult, actionBinding,
+} from "./actions";
+import type { FeedbackSent } from "./feedback";
 
 /** Where a message the app sends Main comes from: a decided question or secret request, or a decided proposal. */
 export type AppSource = { app: AppOrigin["app"] | ActionReply["decision"]; secret?: SecretLine };
@@ -113,11 +116,13 @@ export interface SandboxLauncher {
   readsHeld?(layout: BotLayout): Promise<boolean>;
   /**
    * Collects the proposals the box made, then gives the gateway the counts, the final proposals and, when given, the
-   * recipients Main may name from now (an empty list: none).
+   * recipients Main may name from now (an empty list: none) and whether the owner started the turn.
    */
-  syncActions?(layout: BotLayout, keys?: readonly string[]): Promise<void>;
+  syncActions?(layout: BotLayout, keys?: readonly string[], ownerTurn?: boolean): Promise<void>;
   /** Has the gateway spend an approval it issued: true once for that id and binding, else false. */
   spendAction?(layout: BotLayout, id: string, binding: string): Promise<boolean>;
+  /** Has the gateway post an approved feedback report once (actions-desk.ts `send`); unknown when the call fails. */
+  sendFeedback?(layout: BotLayout, id: string, binding: string, body: string): Promise<FeedbackSent>;
   /** Removes what the bot keeps off this host (a remote sandbox and its snapshot) before its directories go. */
   removeState?(layout: BotLayout): Promise<void>;
 }
@@ -214,7 +219,8 @@ export function promptText(text: string, from: TurnOrigin, date?: OwnerDate): st
   const written = text.replace(TINYCLOUD_MARK, "[\u2060");
   if (from === "owner") return date && !written.startsWith("/") ? `${ownerDateLine(date)}\n${written}` : written;
   const line = from === "bot" ? ORIGIN_LINES.bot
-    : from.app === "action_approved" || from.app === "action_declined" ? ORIGIN_LINES.action : ORIGIN_LINES.app;
+    : from.app === "action_approved" || from.app === "action_declined" || from.app === "feedback_sent" || from.app === "feedback_declined" ? ORIGIN_LINES.action
+    : ORIGIN_LINES.app;
   return `${line}\n${written.replace(FILE_MENTION, "$1@\u2060")}`;
 }
 
@@ -487,7 +493,8 @@ export class Bot {
         await sandbox.refreshEgress();
         await this.#syncAsks({ outside: from === "bot" });
         // Main may propose sending to the bots it may message in this turn; a turn another bot started names none.
-        await this.#launcher.syncActions?.(this.layout, from === "bot" ? [] : messenger?.keys ?? []);
+        // Only a turn the owner wrote may propose a feedback report; this push is the one thing that says so.
+        await this.#launcher.syncActions?.(this.layout, from === "bot" ? [] : messenger?.keys ?? [], from === "owner");
         // Only what the owner typed counts as an address they chose; a message from another bot may carry text a web page put there, and an app reply is composed here.
         const typed = from === "owner" ? addressesIn(text, 50) : [];
         if (typed.length > 0) await this.#launcher.learnAddresses?.(this.layout, typed);
@@ -695,25 +702,54 @@ export class Bot {
     return result;
   }
 
+  /** The kind of a proposal from Main, or undefined when `id` is not one. */
+  requestKind(id: string): ActionKind | undefined {
+    return new ActionStore(this.layout).kind(id);
+  }
+
   /**
    * The owner's Send on a proposal card, naming the binding the card showed. Checked and marked sending here, so a
-   * second Send is refused; the send itself runs after this returns: the gateway spends the approval (once, for
-   * that binding), then each recipient gets the message by the path `message_bot` takes, admitted for this owner.
-   * Recipients outside `messenger.keys` are not sent to. Main is told the outcome by an app message.
+   * second Send is refused; the send itself runs after this returns. A message to bots: the gateway spends the
+   * approval (once, for that binding), then each recipient gets the message by the path `message_bot` takes, admitted
+   * for this owner; recipients outside `messenger.keys` are not sent to, and without a messenger it is refused. A
+   * feedback report: the gateway checks it again, spends the approval and posts it once. Main is told the outcome by
+   * an app message.
    */
-  async approveRequest(id: string, binding: string, messenger: BotMessenger): Promise<ApproveResult> {
+  async approveRequest(id: string, binding: string, messenger?: BotMessenger): Promise<ApproveResult> {
     await this.#deleting;
-    // A chat that read the owner's meetings sends nothing to other bots: the proposal stays as it is and the card says why.
+    // A chat that read the owner's meetings sends nothing out: the proposal stays as it is and the card says why.
     if (await this.holdsOwnerData()) return { ok: false, error: "held" };
     const store = new ActionStore(this.layout);
+    if (store.kind(id) === "message_bots" && !messenger) return { ok: false, error: "invalid" };
     const approved = store.approve(id, binding, this.layout.ownerId);
     if (!approved.ok) return approved;
     log("action_resolved", this.layout.botId, { outcome: "approved", recipients: approved.payload.targets.length });
-    void this.#sendApproved(id, binding, approved.payload, messenger).catch(() => log("action_send_failed", this.layout.botId));
+    const sent = approved.payload.kind === "send_feedback"
+      ? this.#sendFeedback(id, binding, approved.payload.text)
+      : this.#sendApproved(id, binding, approved.payload, messenger!);
+    void sent.catch(() => log("action_send_failed", this.layout.botId));
     return { ok: true, request: approved.request };
   }
 
-  async #sendApproved(id: string, binding: string, payload: { kind: "message_bots"; targets: readonly string[]; text: string }, messenger: BotMessenger): Promise<void> {
+  async #sendFeedback(id: string, binding: string, body: string): Promise<void> {
+    const store = new ActionStore(this.layout);
+    // What is about to go out must be exactly what the owner approved and the gateway issued.
+    if (actionBinding(this.layout.ownerId, this.layout.botId, { kind: "send_feedback", targets: [], text: body }) !== binding || !this.#launcher.sendFeedback) {
+      store.finish(id, [], { outcome: "refused" });
+      log("action_sent", this.layout.botId, { kind: "send_feedback", outcome: "refused" });
+      return;
+    }
+    let sent: FeedbackSent;
+    try {
+      sent = await this.#launcher.sendFeedback(this.layout, id, binding, body);
+    } catch {
+      sent = { outcome: "unknown" };
+    }
+    store.finish(id, [], sent);
+    log("action_sent", this.layout.botId, { kind: "send_feedback", outcome: sent.outcome });
+  }
+
+  async #sendApproved(id: string, binding: string, payload: ActionPayload, messenger: BotMessenger): Promise<void> {
     const store = new ActionStore(this.layout);
     const failed = payload.targets.map(key => ({ key, delivered: false }));
     // What is about to go out must be exactly what the owner approved and the gateway issued.

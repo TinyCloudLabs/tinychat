@@ -174,7 +174,9 @@ export function useAsks(api: AsksApi, { open, onDecided, owner }: { open: boolea
       if (request.kind === "action") {
         if ((request.state === "done" || request.state === "declined") && request.undelivered && !told.current.has(request.id)) {
           told.current.add(request.id);
-          onDecidedRef.current({ requestId: request.id, decision: request.state === "done" ? "action_approved" : "action_declined", names: actionNames(request) });
+          const report = request.action === "send_feedback";
+          const decision = request.state === "done" ? (report ? "feedback_sent" : "action_approved") : (report ? "feedback_declined" : "action_declined");
+          onDecidedRef.current({ requestId: request.id, decision, names: actionNames(request) });
         }
         continue;
       }
@@ -301,7 +303,9 @@ export function useAsks(api: AsksApi, { open, onDecided, owner }: { open: boolea
         setRequests((current) => current.filter((candidate) => candidate.id !== request.id));
         setOutcomes((current) => [...current.filter((outcome) => outcome.id !== request.id), { id: request.id, kind: "action", request: action }]);
       }
-      if (action.state === "declined") onDecidedRef.current({ requestId: request.id, decision: "action_declined", names: actionNames(action) });
+      if (action.state === "declined") {
+        onDecidedRef.current({ requestId: request.id, decision: action.action === "send_feedback" ? "feedback_declined" : "action_declined", names: actionNames(action) });
+      }
       return "ok";
     }
     if (alive.current) {
