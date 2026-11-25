@@ -8,6 +8,14 @@
 //     (failureCause "model"), whether or not anything was delivered. Our
 //     failures (provider, network, our limits and code) are free, even after
 //     content was delivered. An unknown cause is ours.
+//   - A timed-out reply is free: the turn deadline is ours, like any of our
+//     failures. A turn the client ran out of time by not reading (TC-4203) is
+//     settled by the caller as "cancelled", not "timed_out". Past the account's
+//     free timeouts that delivered content (FREE_TIMEOUTS_PER_WINDOW per rolling
+//     24 h, usage.ts), a timeout that delivered content is charged as a Stop.
+//   - A cancelled (Stop) reply is charged for what it used up to the Stop:
+//     callers pass usage metered while the reply streamed, not only the
+//     provider's end-of-call usage frames.
 //   - The charge goes to the window the reply STARTED in, even if it settles
 //     after the window rolled over.
 // Settlement is synchronous: reading what is left and writing the charge never
@@ -17,7 +25,7 @@
 import { creditsFor, FALLBACK_MODEL_RATES, type ModelRates } from "./credits.js";
 import type { LedgerFlusher } from "./ledger-flusher.js";
 import { creditBudgetFor, type BudgetWindow, type TierConfig } from "./tiers.js";
-import { recordUsageInWindow, usedInWindow, windowStartFor } from "./usage.js";
+import { recordUsageInWindow, takeFreeTimeout, usedInWindow, windowStartFor } from "./usage.js";
 
 export type ReplyOutcome = "success" | "limit_stop" | "failed" | "timed_out" | "cancelled";
 export type FailureCause = "model" | "ours";
@@ -31,13 +39,14 @@ export interface SettleReplyInput {
   /** Credits the account had left in that window at admission. */
   allowance: number;
   model: string;
+  /** Metered usage for a Stop or a timeout (which past the free timeouts is charged as one); observed usage otherwise. */
   usage: { promptTokens: number; completionTokens: number };
   /** Null prices the usage at the conservative fallback rates. */
   rates: ModelRates | null;
   outcome: ReplyOutcome;
   /** Who broke a "failed" reply. Missing means ours: an unclassified failure is never charged. */
   failureCause?: FailureCause;
-  /** True once answer content (not an error notice) reached the user. Logged only. */
+  /** True once answer content (not an error notice) reached the user. A timeout without it stays free. */
   deliveredOutput: boolean;
   /** Becomes the ledger record id, so a replayed enqueue is a no-op. */
   executionId: string;
@@ -51,17 +60,23 @@ export interface SettledReply {
   /** The window actually charged, for wording the limit ("today's" vs "this week's"). */
   windowKind: BudgetWindow;
   windowStart: number;
+  /** The outcome settled: "cancelled" for a timeout past the account's free timeouts. */
+  outcome: ReplyOutcome;
+  /** True when a timeout was charged as a Stop because the account had used its free timeouts. */
+  freeTimeoutCapped: boolean;
 }
 
 /** Never throws: the reply's bytes are already on the wire. */
 export function settleReply(input: SettleReplyInput): SettledReply {
   const { address, tier, anchor, startedAt, usage } = input;
+  const freeTimeoutCapped = input.outcome === "timed_out" && input.deliveredOutput && !takeFreeTimeout(address, Date.now());
+  const outcome: ReplyOutcome = freeTimeoutCapped ? "cancelled" : input.outcome;
   const rawCredits = creditsFor(input.rates ?? FALLBACK_MODEL_RATES, usage.promptTokens, usage.completionTokens);
   const windowStart = windowStartFor(tier, anchor, startedAt);
   // Null when the window rolled over twice: no record says what it used, so only the allowance bounds the charge.
   const windowUsed = usedInWindow(address, tier, anchor, startedAt);
   let charged = 0;
-  if (!(input.outcome === "failed" && input.failureCause !== "model") && rawCredits > 0) {
+  if (outcome !== "timed_out" && !(outcome === "failed" && input.failureCause !== "model") && rawCredits > 0) {
     const left = windowUsed === null ? Number.POSITIVE_INFINITY : Math.max(0, creditBudgetFor(tier.id) - windowUsed);
     charged = Math.max(0, Math.min(rawCredits, input.allowance, left));
   }
@@ -82,8 +97,8 @@ export function settleReply(input: SettleReplyInput): SettledReply {
     }
   }
   console.info("[billing] reply settled", {
-    executionId: input.executionId, outcome: input.outcome, ...(input.outcome === "failed" ? { failureCause: input.failureCause ?? "ours" } : {}), deliveredOutput: input.deliveredOutput,
+    executionId: input.executionId, outcome, ...(outcome === "failed" ? { failureCause: input.failureCause ?? "ours" } : {}), ...(freeTimeoutCapped ? { freeTimeoutCapped } : {}), deliveredOutput: input.deliveredOutput,
     allowance: input.allowance, rawCredits, charged, windowKind: tier.budgetWindow, windowStart, windowRecordLost: windowUsed === null,
   });
-  return { charged, rawCredits, windowKind: tier.budgetWindow, windowStart };
+  return { charged, rawCredits, windowKind: tier.budgetWindow, windowStart, outcome, freeTimeoutCapped };
 }

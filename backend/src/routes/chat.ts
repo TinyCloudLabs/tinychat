@@ -9,9 +9,13 @@ import {
 import { paywallEnabled, resolveTier } from "../billing/stripe.js";
 import {
   getUsage,
+  heldCredits,
+  holdCredits,
   isOverBudget,
+  usedInWindow,
 } from "../billing/usage.js";
 import { settleReply } from "../billing/settle.js";
+import { callCostBound, createReplyBudget } from "../billing/reply-budget.js";
 import type { LedgerFlusher } from "../billing/ledger-flusher.js";
 import type { LedgerRehydrator } from "../billing/ledger-rehydrate.js";
 import {
@@ -33,9 +37,13 @@ import {
   type CatalogModel,
 } from "../billing/catalog.js";
 import {
+  emptyMeasure,
+  estimateTextTokens,
   estimateTokens,
+  measureText,
   multiplierFor,
   ratesForModel,
+  streamedOutputText,
   type ModelRates,
 } from "../billing/credits.js";
 import { DEFAULT_CHAT_MODEL } from "@tinyboilerplate/core";
@@ -105,8 +113,9 @@ const decoder = new TextDecoder();
  * Scan an SSE buffer for the final usage chunk RedPill emits when
  * stream_options.include_usage is set. That chunk carries
  * `usage.prompt_tokens` and `usage.completion_tokens` with an empty `choices`
- * array. We also accumulate streamed completion text so we can fall back to
- * an estimate if no usage chunk arrives.
+ * array. We also note whether answer text was streamed (delivered content)
+ * and measure all generated text (answer, reasoning, tool calls) so a stream
+ * without a usage chunk is charged an estimate of everything the model generated.
  *
  * IMPORTANT: this only reads — the raw bytes are forwarded to the client
  * untouched. We re-decode here purely to extract the token counts.
@@ -115,7 +124,10 @@ class UsageScanner {
   private buffer = "";
   promptTokens: number | null = null;
   completionTokens: number | null = null;
-  completionText = "";
+  /** Answer text reached the client (reasoning and tool calls are not an answer). */
+  answered = false;
+  /** Everything the model generated (answer, reasoning, tool calls), measured for the no-usage estimate. */
+  generated = emptyMeasure();
 
   get hasUsage(): boolean {
     return this.promptTokens !== null || this.completionTokens !== null;
@@ -153,7 +165,8 @@ class UsageScanner {
       }
     }
     const delta = parsed.choices?.[0]?.delta?.content;
-    if (typeof delta === "string") this.completionText += delta;
+    if (typeof delta === "string" && delta) this.answered = true;
+    measureText(streamedOutputText(parsed as Record<string, unknown>), this.generated);
   }
 }
 
@@ -338,8 +351,11 @@ export function createChatRouter(options?: ChatRouterOptions) {
     let anchor: number | null = null;
     let rates: ModelRates | null = null;
     let budgetRemaining: number | null = null;
+    // What the window had left at admission before other replies' holds (see the charge bound below).
+    let admissionLeft = 0;
     // The window and allowance a reply is charged against are those at admission.
     const startedAt = Date.now();
+    let ledgerWindow: { limit: number; committed: number } | null = null;
     if (paywallEnabled()) {
       let resolution;
       try {
@@ -430,10 +446,9 @@ export function createChatRouter(options?: ChatRouterOptions) {
           });
           return;
         }
-        const localUsage = getUsage(address, tierConfig, anchor);
-        budgetRemaining = entitlement && !entitlement.isOutage && entitlement.credit_limit !== null && entitlement.committed_credits !== null
-          ? entitlement.credit_limit - entitlement.committed_credits
-          : localUsage.limit - localUsage.used;
+        if (entitlement && !entitlement.isOutage && entitlement.credit_limit !== null && entitlement.committed_credits !== null) {
+          ledgerWindow = { limit: entitlement.credit_limit, committed: entitlement.committed_credits };
+        }
       } else {
         if (isOverBudget(address, tierConfig, anchor)) {
           const usage = getUsage(address, tierConfig, anchor);
@@ -453,8 +468,6 @@ export function createChatRouter(options?: ChatRouterOptions) {
           });
           return;
         }
-        const localUsage = getUsage(address, tierConfig, anchor);
-        budgetRemaining = localUsage.limit - localUsage.used;
       }
 
       // Resolve the requested model's rates once per request, before any bytes
@@ -467,8 +480,75 @@ export function createChatRouter(options?: ChatRouterOptions) {
         handleRouteError(res, error, "resolve model rates");
         return;
       }
+      // Read after the last await, so a reply that settled meanwhile counts. The ledger's committed total trails the local
+      // counter by up to one flush, so against the ledger's limit the larger of the two is what is used.
+      const localUsage = getUsage(address, tierConfig, anchor);
+      budgetRemaining = ledgerWindow ? ledgerWindow.limit - Math.max(ledgerWindow.committed, localUsage.used) : localUsage.limit - localUsage.used;
+      // Credits other replies hold are spoken for. Read here and held below, with no await in between. Nothing left to
+      // spend, held or not (the ledger can say there is while the local counter, a flush ahead, says there is not), is a 402.
+      const held = heldCredits(address, tierConfig, anchor, startedAt);
+      if (budgetRemaining - held <= 0) {
+        const denySource = held > 0 ? "held" : ledgerWindow ? "ledger" : "local";
+        logCreditGateDeny({ source: denySource, address, committed: null, limit: null, windowKind: tierConfig.budgetWindow });
+        res.status(402).json({
+          error: "credit_budget_exceeded",
+          message: `Credit budget exhausted for the ${tierConfig.name} tier.`,
+          tier,
+          ...exposeGateSource(denySource),
+        });
+        return;
+      }
+      admissionLeft = budgetRemaining;
+      budgetRemaining -= held;
     }
 
+    const requestBody = {
+      model: resolvedModel,
+      provider: { aci_verified: true },
+      messages: upstreamMessages,
+      stream: true,
+      stream_options: { include_usage: true },
+      ...(reasoningControl?.kind === "parameter"
+        ? { reasoning: { effort: reasoningControl.effort } }
+        : {}),
+    };
+    // The reply's hold: what its prompt and output can cost within what is left, held until it settles. Its output is
+    // capped to fit. The prompt is priced, and fitted into the context, at the token estimate every path uses
+    // (`estimateTextTokens`). The estimate can be low (digits, 4-byte characters), so the reply is charged its full usage,
+    // bounded at settlement by `chargeBound`, not only up to its hold. The finally at the end releases the hold after
+    // settlement; it lapses after 30 minutes even if a hung handler never gets there.
+    let outputCap = maxOutputTokens;
+    let chargeBound: (() => number) | null = null;
+    let releaseHold: () => void = () => {};
+    if (budgetRemaining !== null && rates) {
+      const promptTokens = estimateTextTokens(JSON.stringify(requestBody));
+      const limit = createReplyBudget(Math.max(0, budgetRemaining), rates, contextLengthFor(resolvedModel)).limitFor(promptTokens, maxOutputTokens);
+      if (!limit) {
+        res.status(402).json({
+          error: "credit_budget_exceeded",
+          message: `Credit budget exhausted for the ${TIERS[gatedTier].name} tier.`,
+          tier: gatedTier,
+        });
+        return;
+      }
+      outputCap = limit.maxTokens;
+      const hold = outputCap === undefined ? budgetRemaining : Math.min(budgetRemaining, callCostBound(rates, promptTokens, outputCap));
+      const tierConfig = TIERS[gatedTier];
+      const usedAtAdmission = usedInWindow(address, tierConfig, anchor, startedAt);
+      const left = admissionLeft;
+      // The most the reply may be charged: what the window had left at admission, less what other replies have settled
+      // since and what they hold now, and never less than its own hold. settleReply's own window clamp reads the local
+      // counter, which can trail the ledger (after a restart), so without this parallel requests could each spend it all.
+      // A window no record describes any more leaves only the hold.
+      chargeBound = () => {
+        const usedNow = usedInWindow(address, tierConfig, anchor, startedAt);
+        if (usedNow === null || usedAtAdmission === null) return hold;
+        const othersHold = Math.max(0, heldCredits(address, tierConfig, anchor, startedAt) - hold);
+        return Math.max(hold, left - (usedNow - usedAtAdmission) - othersHold);
+      };
+      releaseHold = holdCredits(address, tierConfig, anchor, startedAt, hold, 30 * 60_000);
+    }
+    try {
     // AbortController so we can cancel the upstream fetch if the client disconnects.
     // Abort on the RESPONSE close with writableEnded=false. The REQUEST "close"
     // event fires on Bun as soon as the request body is consumed (not on client
@@ -486,17 +566,7 @@ export function createChatRouter(options?: ChatRouterOptions) {
           "Content-Type": "application/json",
           Authorization: `Bearer ${apiKey}`,
         },
-        body: JSON.stringify({
-          model: resolvedModel,
-          provider: { aci_verified: true },
-          messages: upstreamMessages,
-          stream: true,
-          stream_options: { include_usage: true },
-          ...(maxOutputTokens === undefined ? {} : { max_tokens: maxOutputTokens }),
-          ...(reasoningControl?.kind === "parameter"
-            ? { reasoning: { effort: reasoningControl.effort } }
-            : {}),
-        }),
+        body: JSON.stringify({ ...requestBody, ...(outputCap === undefined ? {} : { max_tokens: outputCap }) }),
         signal: controller.signal,
       });
     } catch (error: unknown) {
@@ -608,20 +678,21 @@ export function createChatRouter(options?: ChatRouterOptions) {
     }
 
     // ── Settle usage (best effort; only when gating is active) ────────────────
-    // Clamped to the allowance the reply started with. A failed stream is free:
+    // Bounded by `chargeBound`, not by the hold. A failed stream is free:
     // every /api/chat failure is the provider's or ours, never the model's
     // output. NEVER throws after bytes were served.
-    if (paywallEnabled() && address && budgetRemaining !== null) {
+    if (paywallEnabled() && address && chargeBound) {
       const usage = scanner.hasUsage
         ? { promptTokens: scanner.promptTokens ?? 0, completionTokens: scanner.completionTokens ?? 0 }
-        : estimateTokens(messages as Array<{ content?: unknown }>, scanner.completionText);
+        : estimateTokens(messages as Array<{ content?: unknown }>, scanner.generated);
       const settled = settleReply({
-        address, tier: TIERS[gatedTier], anchor, startedAt, allowance: Math.max(0, budgetRemaining), model: resolvedModel,
-        usage, rates, deliveredOutput: scanner.completionText.length > 0, executionId: crypto.randomUUID(), flusher,
+        address, tier: TIERS[gatedTier], anchor, startedAt, allowance: chargeBound(), model: resolvedModel,
+        usage, rates, deliveredOutput: scanner.answered, executionId: crypto.randomUUID(), flusher,
         outcome: controller.signal.aborted ? "cancelled" : streamFailed ? "failed" : "success", failureCause: "ours",
       });
       noteRequestRecord(res, { credits: settled.charged });
     }
+    } finally { releaseHold(); }
   }));
 
   /**

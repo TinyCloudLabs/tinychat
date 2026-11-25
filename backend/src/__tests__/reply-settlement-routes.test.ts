@@ -11,6 +11,7 @@ import { _resetUsage, getUsage, recordUsage } from "../billing/usage.js";
 import type { LedgerFlusher, LedgerUsageRecordInput } from "../billing/ledger-flusher.js";
 import type { LedgerRehydrator } from "../billing/ledger-rehydrate.js";
 import { TIERS } from "../billing/tiers.js";
+import { timeCappedOutputTokens } from "../model-output-speed.js";
 
 const address = "0xreply-settlement";
 const model = "z-ai/glm-5.2";
@@ -137,7 +138,7 @@ describe("orchestrate path: stop at the limit, charge fairly", () => {
     expect(enqueued).toEqual([]);
   });
 
-  test("a timed-out reply is charged at most the allowance it started with, even with nothing delivered", async () => {
+  test("a timed-out reply is free, even with usage reported", async () => {
     seedRemaining(500);
     const local = browser();
     const stalled = () => new Response(new ReadableStream<Uint8Array>({
@@ -146,9 +147,8 @@ describe("orchestrate path: stop at the limit, charge fairly", () => {
     const config = agentConfig(provider(stalled), { streamPolicy: { heartbeatMs: 1000, turnTimeoutMs: 80, drainGraceMs: 100 } });
     await createAgentChatHandler(config)(local.req, local.res, () => {});
     expect(local.stream()).toContain('"stream_error":{"code":"turn_timeout"}');
-    expect(used()).toBe(LIMIT);
-    expect(enqueued).toHaveLength(1);
-    expect(enqueued[0].credits).toBe(500);
+    expect(used()).toBe(LIMIT - 500);
+    expect(enqueued).toEqual([]);
   });
 
   // Round 1 streams content, then asks for a tool; round 2 fails at the provider. That failure is ours, so the reply is free (TC-2601).
@@ -239,13 +239,13 @@ describe("Eliza /tasks path: settlement clamp only", () => {
     expect(enqueued).toEqual([]);
   });
 
-  test("a timed-out task is charged at most the allowance even with nothing delivered", async () => {
+  test("a timed-out task is free", async () => {
     seedRemaining(500);
     const run = taskFixture({ prompt: 60_000, completion: 22_000 }, { outcome: "timed_out", code: "turn_timeout" });
     const local = browser();
     await createAgentChatHandler(run.config)(local.req, local.res, () => {});
-    expect(used()).toBe(LIMIT);
-    expect(enqueued[0].credits).toBe(500);
+    expect(used()).toBe(LIMIT - 500);
+    expect(enqueued).toEqual([]);
   });
 });
 
@@ -347,13 +347,13 @@ describe("ledger-authoritative allowance (agent chat)", () => {
 });
 
 describe("a large paid allowance (agent chat)", () => {
-  test("sends no max_tokens: the cap is bounded by the model's context, not the allowance", async () => {
+  test("caps output at what the model streams in the turn time left, not at the allowance", async () => {
     // About 1e9 output tokens of allowance at 10 credits per 1K: far beyond any context window.
     process.env.CREDIT_BUDGET_FREE = "10000000";
     const local = browser();
     const config = agentConfig(provider(() => sse(frame({ id: "c", choices: [{ delta: { content: "Hi" }, finish_reason: "stop" }] }), usageFrame(10, 5), "data: [DONE]\n\n")));
     await createAgentChatHandler(config)(local.req, local.res, () => {});
     expect(providerRequests).toHaveLength(1);
-    expect(providerRequests[0].max_tokens).toBeUndefined();
+    expect(providerRequests[0].max_tokens).toBeLessThanOrEqual(timeCappedOutputTokens(model, config.streamPolicy!.turnTimeoutMs));
   });
 });

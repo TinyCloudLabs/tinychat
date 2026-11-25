@@ -26,11 +26,13 @@ import { TIERS, isModelAllowed, requiredTierForModel, type TierId } from "../bil
 import { paywallEnabled, resolveTier } from "../billing/stripe.js";
 import {
   getUsage,
+  heldCredits,
+  holdCredits,
   isOverBudget,
 } from "../billing/usage.js";
 import { contextLengthFor, getCatalog, type CatalogModel } from "../billing/catalog.js";
 import { TRUNCATION_MARKER, truncateToolResults, trimConvoToBudget } from "../lib/contextGuard.js";
-import { FALLBACK_MODEL_RATES, ratesForModel, type ModelRates } from "../billing/credits.js";
+import { emptyMeasure, estimateTextTokens, FALLBACK_MODEL_RATES, measuredTokens, measureText, ratesForModel, streamedOutputText, type ModelRates } from "../billing/credits.js";
 import { createReplyBudget, lengthStoppedByBudget, type ReplyBudget } from "../billing/reply-budget.js";
 import { settleReply, type FailureCause, type ReplyOutcome } from "../billing/settle.js";
 import type { LedgerFlusher } from "../billing/ledger-flusher.js";
@@ -44,6 +46,7 @@ import {
 } from "../billing/ledger-gate.js";
 import { createTurnBudgetMonitor, minTurnCredits, parseBudgetPreflightMode, parseBudgetStopMode } from "../billing/turn-budget.js";
 import { noteRequestRecord, recordAfterHandler, recordAgentChatBudgetPreflight, recordAgentTurnSettled, type AgentChatBudgetSource, type StreamOutcome } from "../request-context.js";
+import { timeCappedOutputTokens } from "../model-output-speed.js";
 
 import { RECEIPT_AUDIT_TIMEOUT_MS, RedPillAciError, RedPillAttestationError, RedPillResponseLimitError, STREAMED_RESPONSE_UNVERIFIED_MESSAGE, redPillAciFetch } from "../redpill-aci.js";
 // Look up a model in the catalog and resolve its rates. Missing entries get the fallback.
@@ -108,6 +111,8 @@ export interface AgentChatConfig {
   agentId: string;
   streamPolicy: AgentStreamPolicy;
   streamRuntime?: AgentStreamRuntime;
+  /** Output speed for the turn-clock output cap; `model-output-speed.ts` by default. Tests with millisecond turns set their own. */
+  outputTokensPerSecond?: (model: string) => number;
   entityIdFor: (address: string) => string;
   elizaServiceUrl: string;
   elizaServiceSecret: string;
@@ -248,6 +253,38 @@ function normalizeToolCallDeltas(deltas: unknown[]): Parameters<typeof accumulat
       } } : {}),
     };
   });
+}
+
+/**
+ * A provider that does not enforce `max_tokens` is cut locally once a call's estimated output (`measuredTokens` of
+ * `streamedOutputText`) passes `cutAbove` (see `callCaps`). The cut stops forwarding the call, then reads on for its
+ * usage frame, so it is charged the provider's count; only without one is it charged the estimate. The read lasts at
+ * most CUT_DRAIN_MS, and ends CUT_DEADLINE_MARGIN_MS before the turn's deadline, so a cut call settles as a completed
+ * reply rather than timing out.
+ */
+const CUT_DRAIN_MS = 3_000;
+const CUT_DEADLINE_MARGIN_MS = 500;
+
+function callCut(params: OrchestrateParams, signal: AbortSignal | undefined, cutAbove: number | undefined) {
+  const runtime = params.config.streamRuntime ?? streamRuntime;
+  const drain = new AbortController();
+  let timer: unknown;
+  const cut = {
+    active: false,
+    over: (estimatedTokens: number): boolean => cutAbove !== undefined && estimatedTokens > cutAbove,
+    start: () => {
+      cut.active = true;
+      const left = params.remainingMs ? params.remainingMs() - CUT_DEADLINE_MARGIN_MS : CUT_DRAIN_MS;
+      timer = runtime.setTimeout(() => drain.abort(), Math.max(0, Math.min(CUT_DRAIN_MS, left)));
+    },
+    /** The call's frames. Once cut, a read error (the drain's end, or the provider's) ends them quietly unless the reply itself was aborted. */
+    async *frames(body: AsyncIterable<Uint8Array>): AsyncGenerator<Record<string, unknown>, void, unknown> {
+      try { yield* parseSseJson(body, signal ? AbortSignal.any([signal, drain.signal]) : drain.signal); }
+      catch (error) { if (!cut.active || signal?.aborted) throw error; }
+      finally { if (timer !== undefined) runtime.clearTimeout(timer); }
+    },
+  };
+  return cut;
 }
 
 /**
@@ -605,6 +642,8 @@ export interface OrchestrateParams {
   /** Remaining time on the existing SSE owner's deadline. */
   remainingMs?: () => number;
   onUsage?: (usage: { promptTokens: number; completionTokens: number }) => void;
+  /** Usage so far including the provider call in progress, which is metered from its request and streamed output until its usage frame arrives: what a reply stopped mid-call used. */
+  onMetered?: (usage: { promptTokens: number; completionTokens: number }) => void;
   /** Stops the reply at the allowance it started with: caps each provider call and refuses calls and tools it cannot afford. */
   budget?: ReplyBudget;
   /** A meeting failure whose user-visible terminal text has already been written. */
@@ -641,11 +680,18 @@ export async function orchestrateToolCalling(input: OrchestrateParams): Promise<
   const observed = { promptTokens: 0, completionTokens: 0 };
   const checkpoint = () => {
     let previous = { promptTokens: 0, completionTokens: 0 };
-    return (usage: typeof previous) => {
-      observed.promptTokens += usage.promptTokens - previous.promptTokens;
-      observed.completionTokens += usage.completionTokens - previous.completionTokens;
-      previous = usage;
-      params.onUsage?.({ ...observed });
+    return {
+      onUsage: (usage: typeof previous) => {
+        observed.promptTokens += usage.promptTokens - previous.promptTokens;
+        observed.completionTokens += usage.completionTokens - previous.completionTokens;
+        previous = usage;
+        params.onUsage?.({ ...observed });
+      },
+      // The call in progress replaces this call's last report in the reply's total.
+      onMetered: (usage: typeof previous) => params.onMetered?.({
+        promptTokens: observed.promptTokens - previous.promptTokens + usage.promptTokens,
+        completionTokens: observed.completionTokens - previous.completionTokens + usage.completionTokens,
+      }),
     };
   };
   const result = await runMeetingTurn({
@@ -653,7 +699,7 @@ export async function orchestrateToolCalling(input: OrchestrateParams): Promise<
     contextWindowTokens: contextLengthFor(params.model),
     streamErrorCause: error => error instanceof StreamFailure ? error.failureCause : "ours",
     streamErrorCode: error => error instanceof StreamFailure ? error.code : undefined,
-    modelCall: request => bufferedMeetingModelCall({ ...params, onUsage: checkpoint() }, request),
+    modelCall: request => bufferedMeetingModelCall({ ...params, ...checkpoint() }, request),
     dispatch: (name, args, context, signal, id) => dispatchTool(params.config, fetchImpl, { name, args: JSON.stringify(args), id }, params.entityId, params.roomId, context, signal),
     // MCP turns read through the in-process wrapper, which emits contract v2 by construction; there is no remote reader to probe.
     capability: params.config.mcpOwner ? async () => ({ meetingRetrieval: { contractVersion: 2 }, buildRevision: params.config.backendRevision ?? "unknown" }) : async signal => {
@@ -668,33 +714,63 @@ export async function orchestrateToolCalling(input: OrchestrateParams): Promise<
         return JSON.parse(text + decoder.decode());
       } finally { ignoreCleanup(() => reader.cancel()); try { reader.releaseLock(); } catch { /* Preserve the capability outcome. */ } }
     },
-    runGeneral: maxRounds => orchestrateExistingLoop({ ...params, onUsage: checkpoint(), config: { ...params.config, maxRounds: Math.min(params.config.maxRounds ?? 3, maxRounds) } }, true),
+    runGeneral: maxRounds => orchestrateExistingLoop({ ...params, ...checkpoint(), config: { ...params.config, maxRounds: Math.min(params.config.maxRounds ?? 3, maxRounds) } }, true),
     contentFrame, toolActivityFrame, delegationErrorFrame,
   });
   return { ...result, promptTokens: Math.max(result.promptTokens, observed.promptTokens),
     completionTokens: Math.max(result.completionTokens, observed.completionTokens) };
 }
 
+/**
+ * A provider call's output cap (`maxTokens`): the reply budget's (or the call's own), and no more than the model streams
+ * in the turn time left. `cutAbove` is the estimated output past which the call is cut locally (`callCut`): the time cap
+ * itself, which already keeps 20% of the time in hand, so a call cut at normal speed still ends before the deadline; and
+ * twice the budget cap, since the estimate can run high (it counts CJK at a token per character) and settlement clamps
+ * the charge to the allowance anyway.
+ */
+function callCaps(params: OrchestrateParams, budgetCap: number | undefined): { maxTokens: number | undefined; cutAbove: number | undefined } {
+  const budgetCut = budgetCap === undefined ? undefined : 2 * budgetCap;
+  if (!params.remainingMs) return { maxTokens: budgetCap, cutAbove: budgetCut };
+  const timeCap = timeCappedOutputTokens(params.model, params.remainingMs(), params.config.outputTokensPerSecond?.(params.model));
+  return {
+    maxTokens: budgetCap === undefined ? timeCap : Math.min(budgetCap, timeCap),
+    cutAbove: budgetCut === undefined ? timeCap : Math.min(budgetCut, timeCap),
+  };
+}
+
 async function bufferedMeetingModelCall(params: OrchestrateParams, request: MeetingModelRequest): Promise<BufferedMeetingModelResult> {
   const maxChars = request.maxOutputTokens === 1024 ? 12288 : 24576;
   params.onPhase?.(request.phase);
   const base = { model: params.model, provider: { aci_verified: true }, messages: request.messages, ...(request.tool ? { tools: [request.tool], tool_choice: { type: "function", function: { name: "prepare_meeting_turn" } }, reasoning: { enabled: false } } : { reasoning_effort: "low" }), stream: true, stream_options: { include_usage: true } };
-  const limit = params.budget ? params.budget.limitFor(JSON.stringify(base).length, request.maxOutputTokens) : { maxTokens: request.maxOutputTokens, capped: false };
+  const limit = params.budget ? params.budget.limitFor(estimateTextTokens(JSON.stringify(base)), request.maxOutputTokens) : { maxTokens: request.maxOutputTokens, capped: false };
   if (!limit) throw new StreamFailure("budget_exhausted");
   const redpillFetch = params.config.redpillFetch ?? redPillAciFetch(params.config.redpillBaseUrl, RECEIPT_AUDIT_TIMEOUT_MS);
+  const { maxTokens, cutAbove } = callCaps(params, limit.maxTokens);
+  const body = JSON.stringify({ ...base, max_tokens: maxTokens });
   const upstream = await fetchForTurn(redpillFetch, `${params.config.redpillBaseUrl}/chat/completions`, {
     method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${params.config.redpillApiKey}` },
-    body: JSON.stringify({ ...base, max_tokens: limit.maxTokens }),
+    body,
   }, request.signal);
   if (!upstream.ok || !upstream.body) { if (upstream.body) ignoreCleanup(() => upstream.body!.cancel()); throw new StreamFailure("upstream_failed"); }
   let content = "", completionId = "", promptTokens = 0, completionTokens = 0, finish: unknown;
+  let usageSeen = false;
+  const streamed = emptyMeasure();
+  const promptEstimate = estimateTextTokens(body);
+  params.onMetered?.({ promptTokens: promptEstimate, completionTokens: 0 });
   const calls = new Map<number, AccumulatedToolCall>();
-  for await (const obj of parseSseJson(upstream.body as unknown as AsyncIterable<Uint8Array>, request.signal)) {
+  const cut = callCut(params, request.signal, cutAbove);
+  for await (const obj of cut.frames(upstream.body as unknown as AsyncIterable<Uint8Array>)) {
     if (typeof obj.id === "string") completionId = obj.id;
     const usage = obj.usage as { prompt_tokens?: number; completion_tokens?: number } | undefined;
     if (typeof usage?.prompt_tokens === "number") promptTokens = usage.prompt_tokens;
     if (typeof usage?.completion_tokens === "number") completionTokens = usage.completion_tokens;
-    if (usage) params.onUsage?.({ promptTokens, completionTokens });
+    if (usage) { usageSeen = true; params.onUsage?.({ promptTokens, completionTokens }); }
+    else if (!usageSeen) {
+      const text = streamedOutputText(obj);
+      if (text) { measureText(text, streamed); params.onMetered?.({ promptTokens: promptEstimate, completionTokens: measuredTokens(streamed) }); }
+    }
+    // A cut call is only read for its usage frame.
+    if (cut.active) { if (usageSeen) break; continue; }
     if (obj.choices != null && !Array.isArray(obj.choices)) throw new StreamFailure("upstream_incomplete");
     const choice = (obj.choices as Array<{ delta?: { content?: string; tool_calls?: Parameters<typeof accumulateToolCalls>[1] }; finish_reason?: unknown }> | undefined)?.[0];
     if (choice !== undefined && (!choice || typeof choice !== "object" || Array.isArray(choice))) throw new StreamFailure("upstream_incomplete");
@@ -707,7 +783,11 @@ async function bufferedMeetingModelCall(params: OrchestrateParams, request: Meet
     }
     if (content.length + [...calls.values()].reduce((n, call) => n + call.args.length + call.name.length, 0) > maxChars || calls.size > 8) throw new StreamFailure("result_size_limit", "model");
     if (choice?.finish_reason != null) finish = choice.finish_reason;
+    // A provider that does not enforce max_tokens: the call ends here as a length stop (see callCut).
+    if (!usageSeen && cut.over(measuredTokens(streamed))) { finish = "length"; cut.start(); }
   }
+  // Cut with no usage frame within the drain: the call is charged its estimate.
+  if (cut.active && !usageSeen) { promptTokens = promptEstimate; completionTokens = measuredTokens(streamed); params.onUsage?.({ promptTokens, completionTokens }); }
   // Output cut at the budget's cap is the limit, not an incomplete provider reply; a model's own length stop is not.
   if (params.budget && finish === "length" && lengthStoppedByBudget(limit, completionTokens, params.budget)) throw new StreamFailure("budget_exhausted");
   let inline = false;
@@ -826,15 +906,17 @@ async function orchestrateExistingLoop(params: OrchestrateParams, generalOnly = 
               stream_options: { include_usage: true },
             }
     );
-    const limit = params.budget?.limitFor(JSON.stringify(requestBody).length);
+    const limit = params.budget?.limitFor(estimateTextTokens(JSON.stringify(requestBody)));
     if (limit === null) { errorCode = "budget_exhausted"; break; }
+    const { maxTokens, cutAbove } = callCaps(params, limit?.maxTokens);
+    const body = JSON.stringify(maxTokens === undefined ? requestBody : { ...requestBody, max_tokens: maxTokens });
     const upstream = await fetchForTurn(redpillFetch, `${config.redpillBaseUrl}/chat/completions`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${config.redpillApiKey}`,
       },
-      body: JSON.stringify(limit?.maxTokens === undefined ? requestBody : { ...requestBody, max_tokens: limit.maxTokens }),
+      body,
     }, params.signal);
 
     if (!upstream.ok || !upstream.body) {
@@ -848,6 +930,12 @@ async function orchestrateExistingLoop(params: OrchestrateParams, generalOnly = 
     let currentRoundId = "";
     let roundPromptTokens = 0;
     let roundCompletionTokens = 0;
+    // Until the round's usage frame arrives it is metered from its request and streamed output, so a Stop mid-round is charged for the round.
+    let roundUsageSeen = false;
+    const roundCut = callCut(params, params.signal, cutAbove);
+    const roundStreamed = emptyMeasure();
+    const roundPromptEstimate = estimateTextTokens(body);
+    params.onMetered?.({ promptTokens: totalPromptTokens + roundPromptEstimate, completionTokens: totalCompletionTokens });
 
     // Prefix-sniffing buffer for the leaked-markup guard. Leaked native tool-call
     // markup LEADS the content with `<tool_call` (possibly after whitespace), so we
@@ -877,15 +965,24 @@ async function orchestrateExistingLoop(params: OrchestrateParams, generalOnly = 
       }
     };
 
-    for await (const obj of parseSseJson(upstream.body as unknown as AsyncIterable<Uint8Array>, params.signal)) {
+    for await (const obj of roundCut.frames(upstream.body as unknown as AsyncIterable<Uint8Array>)) {
       if (typeof obj.id === "string" && obj.id) currentRoundId = obj.id;
       const usage = obj.usage as { prompt_tokens?: number; completion_tokens?: number } | undefined;
       if (usage) {
         // RedPill sends a single cumulative usage frame at end of each completion; overwrite.
+        roundUsageSeen = true;
         if (typeof usage.prompt_tokens === "number") roundPromptTokens = usage.prompt_tokens;
         if (typeof usage.completion_tokens === "number") roundCompletionTokens = usage.completion_tokens;
         params.onUsage?.({ promptTokens: totalPromptTokens + roundPromptTokens, completionTokens: totalCompletionTokens + roundCompletionTokens });
+      } else if (!roundUsageSeen) {
+        const text = streamedOutputText(obj);
+        if (text) {
+          measureText(text, roundStreamed);
+          params.onMetered?.({ promptTokens: totalPromptTokens + roundPromptEstimate, completionTokens: totalCompletionTokens + measuredTokens(roundStreamed) });
+        }
       }
+      // A cut round is only read for its usage frame.
+      if (roundCut.active) { if (roundUsageSeen) break; continue; }
       const choice = (obj.choices as Array<Record<string, unknown>> | undefined)?.[0];
       const delta = choice?.delta as
         | { content?: string; tool_calls?: Array<Record<string, unknown>> }
@@ -945,8 +1042,16 @@ async function orchestrateExistingLoop(params: OrchestrateParams, generalOnly = 
       }
       const fr = choice?.finish_reason;
       if (typeof fr === "string") finish = fr;
+      // A provider that does not enforce max_tokens: the round ends here as a length stop (see callCut).
+      if (!roundUsageSeen && roundCut.over(measuredTokens(roundStreamed))) { finish = "length"; roundCut.start(); }
     }
 
+    if (roundCut.active && !roundUsageSeen) {
+      // Cut with no usage frame within the drain: the round is charged its estimate, like any completed round.
+      roundPromptTokens = roundPromptEstimate;
+      roundCompletionTokens = measuredTokens(roundStreamed);
+      params.onUsage?.({ promptTokens: totalPromptTokens + roundPromptTokens, completionTokens: totalCompletionTokens + roundCompletionTokens });
+    }
     totalPromptTokens += roundPromptTokens;
     totalCompletionTokens += roundCompletionTokens;
     if (generalOnly && !leakMode && generalPending) await write(contentFrame(generalPending));
@@ -1181,6 +1286,9 @@ class AgentStreamOwner {
   private readonly started: number;
   private lastWrite: number;
   private maxWriteGap = 0;
+  /** Time the producer waited on a client that was not reading (write backpressure), finished stalls only. */
+  private stalledMs = 0;
+  private stallStarted: number | undefined;
   private resolveClosed!: () => void;
   private readonly closed = new Promise<void>((resolve) => { this.resolveClosed = resolve; });
   deliveryException = false;
@@ -1191,7 +1299,18 @@ class AgentStreamOwner {
 
   disconnect = () => this.close("cancelled", true);
   isOpen = () => this.state === "open";
-  remainingMs = () => Math.max(0, this.policy.turnTimeoutMs - (this.runtime.now() - this.started));
+  private stalledAt = (now: number) => this.stalledMs + (this.stallStarted === undefined ? 0 : now - this.stallStarted);
+  /**
+   * The turn clock stops while the client is not reading, so a slow reader cannot run a turn out of time (TC-4203). The
+   * wall cap, twice the turn timeout, still ends every turn.
+   */
+  remainingMs = () => {
+    const now = this.runtime.now();
+    const elapsed = now - this.started;
+    return Math.max(0, Math.min(this.policy.turnTimeoutMs - (elapsed - this.stalledAt(now)), 2 * this.policy.turnTimeoutMs - elapsed));
+  };
+  /** True when the client was not reading for more than half the turn so far; at the wall cap, exactly half is not. */
+  clientStalled = () => { const now = this.runtime.now(); return 2 * this.stalledAt(now) > now - this.started; };
   setPhase = (phase: StreamPhase) => { if (this.isOpen()) this.phase = phase; };
   private viable = () => !this.res.destroyed && !this.res.writableEnded && this.state !== "closed";
   private onAborted = () => this.close("cancelled", true);
@@ -1215,7 +1334,7 @@ class AgentStreamOwner {
       this.headersFlushed = true;
       if (!this.viable()) { this.close("transport_failed", true); return false; }
       this.state = "open";
-      this.deadline = this.runtime.setTimeout(() => { void this.fail(new StreamFailure("turn_timeout")); }, this.policy.turnTimeoutMs);
+      this.armDeadline();
       await this.write(": keepalive\n\n");
       this.scheduleHeartbeat();
       return this.isOpen();
@@ -1224,6 +1343,14 @@ class AgentStreamOwner {
       return false;
     }
   }
+
+  /** Fires when the turn clock runs out, re-arming for the time the client's stalls added. */
+  private armDeadline = (): void => {
+    if (!this.isOpen()) return;
+    const left = this.remainingMs();
+    if (left > 0) this.deadline = this.runtime.setTimeout(this.armDeadline, left);
+    else void this.fail(new StreamFailure("turn_timeout"));
+  };
 
   private scheduleHeartbeat(): void {
     if (!this.isOpen()) return;
@@ -1234,18 +1361,18 @@ class AgentStreamOwner {
     }, this.policy.heartbeatMs);
   }
 
-  /** No frame queue: the producer awaits this writer; heartbeat ticks skip it. */
-  write = async (frame: string): Promise<void> => {
+  /** No frame queue: the producer awaits this writer; heartbeat ticks skip it. `onHanded` runs once the socket has accepted the frame's first bytes. */
+  write = async (frame: string, onHanded?: () => void): Promise<void> => {
     if (!this.isOpen()) throw this.signal.reason ?? new Error("stream closed");
     // Only a heartbeat can precede the serialized producer here.
     if (this.busy) await withAbort(this.busy, this.signal);
     if (!this.isOpen()) throw this.signal.reason ?? new Error("stream closed");
     this.busy = new Promise<void>((resolve) => { this.releaseBusy = resolve; });
-    try { await this.writeBytes(frame, false); }
+    try { await this.writeBytes(frame, false, onHanded); }
     finally { this.releaseBusy?.(); this.busy = undefined; this.releaseBusy = undefined; }
   };
 
-  private async writeBytes(frame: string, terminal: boolean): Promise<void> {
+  private async writeBytes(frame: string, terminal: boolean, onHanded?: () => void): Promise<void> {
     const bytes = new TextEncoder().encode(frame);
     for (let offset = 0; offset < bytes.length; offset += 16_384) {
       if (!this.viable() || (terminal ? this.state !== "terminating" : !this.isOpen())) throw this.signal.reason ?? new Error("stream closed");
@@ -1260,6 +1387,7 @@ class AgentStreamOwner {
       const now = this.runtime.now();
       this.maxWriteGap = Math.max(this.maxWriteGap, now - this.lastWrite);
       this.lastWrite = now;
+      if (offset === 0) onHanded?.();
       if (!terminal) this.partialFrame = end < bytes.length;
       if (terminal && frame === "data: [DONE]\n\n" && end === bytes.length) this.doneWritten = true;
       // write(false) accepted these bytes. Only its unsent suffix may be abandoned.
@@ -1267,7 +1395,11 @@ class AgentStreamOwner {
         this.backpressured = true;
         this.drain ??= new Promise<void>((resolve) => { this.releaseDrain = resolve; });
         if (terminal) await this.drain;
-        else await withAbort(this.drain, this.signal);
+        else {
+          const stallStarted = this.stallStarted = this.runtime.now();
+          try { await withAbort(this.drain, this.signal); }
+          finally { this.stalledMs += this.runtime.now() - stallStarted; this.stallStarted = undefined; }
+        }
       }
       if (!this.viable() || (!terminal && !this.isOpen())) throw this.signal.reason ?? new Error("stream closed");
     }
@@ -1369,6 +1501,7 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
     const entityId = config.entityIdFor(req.user.address);
     const access = accessControl?.capture(entityId);
     let owner: AgentStreamOwner | undefined;
+    let releaseHold: (() => void) | undefined;
     const releaseAccess = access?.onInvalidate(() => owner?.disconnect());
     try {
     const { model, messages, roomId, clientContext } = (req.body ?? {}) as {
@@ -1411,6 +1544,7 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
     let rates: ModelRates | null = null;
     let budgetRemaining: number | null = null;
     let budgetSource: AgentChatBudgetSource = "local";
+    let ledgerWindow: { limit: number; committed: number } | null = null;
     // The window and allowance a reply is charged against are those at admission.
     const startedAt = Date.now();
     if (paywallEnabled()) {
@@ -1503,12 +1637,11 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
           });
           return;
         }
-        const ledgerRemaining = entitlement && !entitlement.isOutage && entitlement.credit_limit !== null && entitlement.committed_credits !== null
-          ? entitlement.credit_limit - entitlement.committed_credits
-          : null;
         // A ledger-authoritative turn that cannot read the ledger falls back to the local counter: that is the outage path.
-        budgetSource = ledgerRemaining !== null ? "ledger" : "outage";
-        budgetRemaining = ledgerRemaining ?? (() => { const localUsage = getUsage(address, tierConfig, anchor); return localUsage.limit - localUsage.used; })();
+        if (entitlement && !entitlement.isOutage && entitlement.credit_limit !== null && entitlement.committed_credits !== null) {
+          ledgerWindow = { limit: entitlement.credit_limit, committed: entitlement.committed_credits };
+        }
+        budgetSource = ledgerWindow ? "ledger" : "outage";
       } else {
         if (isOverBudget(address, tierConfig, anchor)) {
           const usage = getUsage(address, tierConfig, anchor);
@@ -1528,8 +1661,6 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
           });
           return;
         }
-        const localUsage = getUsage(address, tierConfig, anchor);
-        budgetRemaining = localUsage.limit - localUsage.used;
       }
 
       try {
@@ -1540,6 +1671,25 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
         res.status(500).json({ error: "internal_error", message: "Failed to resolve model rates" });
         return;
       }
+      // Read after the last await, so a reply that settled meanwhile counts. The ledger's committed total trails the local
+      // counter by up to one flush, so against the ledger's limit the larger of the two is what is used.
+      const localUsage = getUsage(address, tierConfig, anchor);
+      budgetRemaining = ledgerWindow ? ledgerWindow.limit - Math.max(ledgerWindow.committed, localUsage.used) : localUsage.limit - localUsage.used;
+      // Credits other replies hold are spoken for. Read here and held below, with no await in between. Nothing left to
+      // spend, held or not (the ledger can say there is while the local counter, a flush ahead, says there is not), is a 402.
+      const held = heldCredits(address, tierConfig, anchor, startedAt);
+      if (budgetRemaining - held <= 0) {
+        const denySource = held > 0 ? "held" : ledgerWindow ? "ledger" : "local";
+        logCreditGateDeny({ source: denySource, address, committed: null, limit: null, windowKind: tierConfig.budgetWindow });
+        res.status(402).json({
+          error: "credit_budget_exceeded",
+          message: `Credit budget exhausted for the ${tierConfig.name} tier.`,
+          tier,
+          ...exposeGateSource(denySource),
+        });
+        return;
+      }
+      budgetRemaining -= held;
       const minimum = minTurnCredits(rates);
       recordAgentChatBudgetPreflight({ address, mode: budgetPreflightMode, remaining: budgetRemaining, minimum, tier: gatedTier, source: budgetSource, unpriced: rates.fallback });
       if (budgetRemaining !== null && budgetPreflightMode !== "off" && budgetRemaining < minimum) {
@@ -1559,6 +1709,9 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
       return;
     }
     const allowance = budgetRemaining === null ? null : Math.max(0, budgetRemaining);
+    // The reply's spend bound, held until it settles. The finally below releases it on every other exit; a minute past
+    // the turn's wall cap (twice the turn timeout), it lapses even if the handler never gets there.
+    if (allowance !== null) releaseHold = holdCredits(address, TIERS[gatedTier], anchor, startedAt, allowance, 2 * policy.turnTimeoutMs + policy.drainGraceMs + 60_000);
     const taskSelected = !mcpSelected && config.elizaTasksEnabled === true &&
       (!config.elizaTasksAccountAllowed || config.elizaTasksAccountAllowed(address));
     owner = new AgentStreamOwner(req, res, policy, config.streamRuntime ?? streamRuntime);
@@ -1644,12 +1797,16 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
       // Accounting has settled even if the browser failed or cancelled. Never
       // erase it because a subsequent content/write/end/enqueue operation fails.
       if (paywallEnabled() && address && allowance !== null) {
+        // A timeout is ours and free, unless the client stopped reading for most of the turn after content reached it:
+        // then it is charged as a Stop.
+        const timedOut = code === "turn_timeout" || final?.outcome === "timed_out";
         const outcome: ReplyOutcome = completed ? "success"
           : code === "budget_exhausted" ? "limit_stop"
-            : code === "turn_timeout" || final?.outcome === "timed_out" ? "timed_out"
-              : result.cancelled ? "cancelled" : "failed";
+            : timedOut && !(streamedContent && streamOwner.clientStalled()) ? "timed_out"
+              : result.cancelled || timedOut ? "cancelled" : "failed";
         const settled = settleReply({ address, tier: TIERS[gatedTier], anchor, startedAt, allowance, model: resolvedModel, usage: result.usage, rates, outcome, failureCause, deliveredOutput: streamedContent, executionId, flusher: config.flusher });
-        recordAgentTurnSettled({ rawCredits: settled.rawCredits, charged: settled.charged, windowKind: settled.windowKind, outcome, startedAttempts: result.usage.startedAttempts });
+        releaseHold?.();
+        recordAgentTurnSettled({ rawCredits: settled.rawCredits, charged: settled.charged, windowKind: settled.windowKind, outcome: settled.outcome, startedAttempts: result.usage.startedAttempts, timeoutCapped: settled.freeTimeoutCapped });
         noteRequestRecord(res, { credits: settled.charged });
       }
       console.info("[agent-chat] task accounting", {
@@ -1674,23 +1831,25 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
     }
     const executionId = crypto.randomUUID();
     const replyBudget = allowance === null ? undefined : createReplyBudget(allowance, rates ?? FALLBACK_MODEL_RATES, contextLengthFor(resolvedModel));
-    // Logged with the settlement: whether answer content (not an error notice or tool activity) reached the user.
+    // Logged with the settlement: whether answer content (not an error notice or tool activity) reached the user. It
+    // has once the socket accepted a content frame's bytes, even if that write still waits on drain.
     let deliveredOutput = false;
-    const writeFrame = async (frame: string, notice?: boolean) => {
-      await streamOwner.write(frame);
-      if (!notice && isContentFrame(frame)) deliveredOutput = true;
-    };
+    const markDelivered = () => { deliveredOutput = true; };
+    const writeFrame = (frame: string, notice?: boolean) => streamOwner.write(frame, !notice && isContentFrame(frame) ? markDelivered : undefined);
     let orchestrateResult: OrchestrateResult | null = null;
     let meetingTerminalErrorCode: StreamErrorCode | undefined;
     let meetingTerminalErrorCause: FailureCause | undefined;
     let observedUsage = { promptTokens: 0, completionTokens: 0 };
+    // Also counts the provider call in progress: what a Stop is charged.
+    let meteredUsage = observedUsage;
     if (await streamOwner.open()) {
       try {
         if (accessFrame) await streamOwner.write(accessFrame);
         orchestrateResult = await orchestrateToolCalling({
           config: { ...turnConfig, meetingContentRetrievalEnabled: turnConfig.meetingContentRetrievalEnabled === true && (!turnConfig.meetingContentAccountAllowed || turnConfig.meetingContentAccountAllowed(req.user.address)) }, model: resolvedModel, messages: messages as ChatMsg[], entityId,
           roomId: typeof roomId === "string" ? roomId : undefined, turnContext,
-          onUsage: usage => { observedUsage = usage; },
+          onUsage: usage => { observedUsage = usage; meteredUsage = usage; },
+          onMetered: usage => { meteredUsage = usage; },
           onTerminalError: (code, cause) => { meetingTerminalErrorCode = code; meetingTerminalErrorCause = cause; },
           write: writeFrame, signal: streamOwner.signal, onPhase: streamOwner.setPhase, remainingMs: streamOwner.remainingMs,
           ...(replyBudget ? { budget: replyBudget } : {}),
@@ -1714,15 +1873,18 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
       const failure = orchestrateResult.errorCode ?? meetingTerminalErrorCode;
       const failureCause = orchestrateResult.errorCode ? orchestrateResult.errorCause : meetingTerminalErrorCause;
       const cancelledByClient = streamOwner.signal.aborted && !(streamOwner.signal.reason instanceof StreamFailure);
+      // A timeout is ours and free, unless the client stopped reading for most of the turn after content reached it:
+      // then it is charged as a Stop, for its metered usage.
       const outcome: ReplyOutcome = failure === "budget_exhausted" ? "limit_stop"
-        : failure === "turn_timeout" ? "timed_out"
+        : failure === "turn_timeout" ? (deliveredOutput && streamOwner.clientStalled() ? "cancelled" : "timed_out")
           : cancelledByClient ? "cancelled" : failure ? "failed" : "success";
-      const settled = settleReply({ address, tier: TIERS[gatedTier], anchor, startedAt, allowance, model: resolvedModel, usage: orchestrateResult, rates, outcome, failureCause, deliveredOutput, executionId, flusher: config.flusher });
-      recordAgentTurnSettled({ rawCredits: settled.rawCredits, charged: settled.charged, windowKind: settled.windowKind, outcome });
+      const settled = settleReply({ address, tier: TIERS[gatedTier], anchor, startedAt, allowance, model: resolvedModel, usage: outcome === "cancelled" || outcome === "timed_out" ? meteredUsage : orchestrateResult, rates, outcome, failureCause, deliveredOutput, executionId, flusher: config.flusher });
+      releaseHold?.();
+      recordAgentTurnSettled({ rawCredits: settled.rawCredits, charged: settled.charged, windowKind: settled.windowKind, outcome: settled.outcome, timeoutCapped: settled.freeTimeoutCapped });
       noteRequestRecord(res, { credits: settled.charged });
     }
     // Also await an already claimed timeout/cancellation terminal's drain.
     await streamOwner.complete(orchestrateResult, meetingTerminalErrorCode, true, meetingTerminalErrorCause);
-    } finally { releaseAccess?.(); }
+    } finally { releaseAccess?.(); releaseHold?.(); }
   });
 }

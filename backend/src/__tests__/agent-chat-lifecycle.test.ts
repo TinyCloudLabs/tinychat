@@ -40,6 +40,8 @@ function response() {
 }
 function config(fetchImpl: typeof fetch, runtime = clock()): AgentChatConfig {
   return { agentId: "sentinel-agent", entityIdFor: () => "sentinel-entity", elizaServiceUrl: "https://eliza.test", elizaServiceSecret: "sentinel-secret", redpillApiKey: "sentinel-key", redpillBaseUrl: "https://provider.test", defaultModel: () => "phala/test", isModelOffered: () => true, redpillFetch: fetchImpl, fetchImpl, maxRounds: 3,
+    // Millisecond turns: a speed that keeps the turn-clock output cap above every fixture's output.
+    outputTokensPerSecond: () => 1_000_000,
     streamPolicy: { heartbeatMs: 10, turnTimeoutMs: 100, drainGraceMs: 20 }, streamRuntime: runtime,
   } as AgentChatConfig;
 }
@@ -120,14 +122,14 @@ describe("agent stream lifecycle", () => {
     pair.res.write = function (bytes) { original.call(this, bytes); return this.chunks.length !== 2; };
     const turn = run(config((async () => provider(answer("😀".repeat(15000)) + done)) as typeof fetch, runtime), pair);
     await flush(); expect(pair.res.chunks.length).toBe(2); expect(pair.res.chunks[1].byteLength).toBeLessThanOrEqual(16384);
-    await runtime.advance(100); expect(pair.res.chunks.length).toBe(2);
+    await runtime.advance(200); expect(pair.res.chunks.length).toBe(2);
     pair.res.emit("drain"); await turn.finished;
     expect(pair.res.text()).toContain('\n\ndata: {"stream_error":{"code":"turn_timeout"}'); expect(pair.res.text().match(/data: \[DONE\]/g)).toHaveLength(1); expect(runtime.tasks.size).toBe(0);
   });
   it("destroys a permanently backpressured response within the terminal grace", async () => {
     const runtime = clock(); const pair = response(); const original = pair.res.write; pair.res.write = function (bytes) { original.call(this, bytes); return false; };
     let calls = 0; const turn = run(config((async () => { calls++; return provider(answer() + done); }) as typeof fetch, runtime), pair);
-    await flush(); await runtime.advance(120); expect(pair.res.destroyed).toBe(true); expect(calls).toBe(0); expect(pair.res.text()).not.toContain(done); await turn.finished; expect(runtime.tasks.size).toBe(0);
+    await flush(); await runtime.advance(220); expect(pair.res.destroyed).toBe(true); expect(calls).toBe(0); expect(pair.res.text()).not.toContain(done); await turn.finished; expect(runtime.tasks.size).toBe(0);
   });
   it("logs one allowlisted summary without input or raw exception sentinels", async () => {
     const runtime = clock(); const turn = run(config((async () => { throw new Error("sentinel-exception"); }) as typeof fetch, runtime)); await turn.finished;
@@ -209,14 +211,14 @@ describe("terminal and transport races", () => {
     const runtime = clock(); const pair = response(); const original = pair.res.write;
     pair.res.write = function (bytes) { original.call(this, bytes); return this.chunks.length !== 2 && this.chunks.length !== 4; };
     const turn = run(config((async () => provider(answer("😀".repeat(15000)) + done)) as typeof fetch, runtime), pair);
-    await flush(); await runtime.advance(115); pair.res.emit("drain"); await flush(); expect(pair.res.chunks).toHaveLength(4);
-    await runtime.advance(5); await turn.finished; expect(pair.res.destroyed).toBe(true); expect(pair.res.text()).not.toContain(done); expect(runtime.now()).toBe(120); expect(runtime.tasks.size).toBe(0);
+    await flush(); await runtime.advance(215); pair.res.emit("drain"); await flush(); expect(pair.res.chunks).toHaveLength(4);
+    await runtime.advance(5); await turn.finished; expect(pair.res.destroyed).toBe(true); expect(pair.res.text()).not.toContain(done); expect(runtime.now()).toBe(220); expect(runtime.tasks.size).toBe(0);
   });
   it("does not replay an accepted complete frame when its final slice awaits drain at timeout", async () => {
     const runtime = clock(); const pair = response(); const original = pair.res.write;
     pair.res.write = function (bytes) { original.call(this, bytes); return this.chunks.length !== 2; };
     const turn = run(config((async () => provider(answer("already accepted") + done)) as typeof fetch, runtime), pair);
-    await flush(); await runtime.advance(100); pair.res.emit("drain"); await turn.finished;
+    await flush(); await runtime.advance(200); pair.res.emit("drain"); await turn.finished;
     expect(pair.res.text().match(/already accepted/g)).toHaveLength(1); expect(pair.res.text().match(/data: \[DONE\]/g)).toHaveLength(1); expect(pair.res.chunks).toHaveLength(4);
   });
   it("retains a success claim if a previously queued deadline fires during terminal drain", async () => {

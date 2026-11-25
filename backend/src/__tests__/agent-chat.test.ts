@@ -1726,8 +1726,7 @@ describe("createAgentChatHandler — A4 paywall + A5 recording", () => {
         }) as typeof res.write;
         if (failure === "end") res.end = (() => { throw new Error("synthetic end exception"); }) as typeof res.end;
         await createAgentChatHandler(baseConfig(makeCompletionFetch()))(req, res);
-        if (failure === "content") expect(getUsage(ADDR, TIERS.free, null).used).toBe(0);
-        else expect(getUsage(ADDR, TIERS.free, null).used).toBeGreaterThan(0);
+        expect(getUsage(ADDR, TIERS.free, null).used).toBeGreaterThan(0);
         expect(res.destroyed).toBe(true);
       } finally { restore(); }
     });

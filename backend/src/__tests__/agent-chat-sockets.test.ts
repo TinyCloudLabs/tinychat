@@ -373,7 +373,7 @@ describe("agent stream over real loopback sockets", () => {
     const run = await fixture(fetchImpl, "none", 90, (chunk, res) => {
       if (!stalled && Buffer.byteLength(chunk) === 16_384) {
         stalled = true;
-        setTimeout(() => res.emit("drain"), 120);
+        setTimeout(() => res.emit("drain"), 200);
         return false;
       }
       return undefined;

@@ -379,6 +379,8 @@ services:
                     started_attempts = int(j.started_attempts) ?? -1
                     if started_attempts >= 0 && started_attempts <= 1000 { out.started_attempts = started_attempts }
                   }
+                  # TC-4203: a timeout charged as a Stop because the account used its free timeouts. Only `true` ships.
+                  if j.timeout_capped == true { out.timeout_capped = true }
                 } else if name == "backend_log_error" && j.component == "calendar-autojoin" {
                   phase = string(j.phase) ?? ""
                   if !includes(["tick", "tenant_reconcile", "due_timer", "dispatch_lag_status"], phase) { abort }

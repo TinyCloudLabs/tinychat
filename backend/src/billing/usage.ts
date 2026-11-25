@@ -206,12 +206,85 @@ function currentCredits(
   return record.creditsUsed;
 }
 
+// ── Admission holds ───────────────────────────────────────────────────────────
+// A reply holds the credits it may spend from admission until it settles, so
+// overlapping replies cannot each plan against the same remaining allowance:
+// admission subtracts the other replies' holds, and the held amount is the
+// reply's spend bound. Settlement charges what was used, then the hold is
+// released. A hold that is never released (a handler that never reaches its
+// cleanup) lapses at its expiry. Like the counter, holds are in memory and
+// assume ONE backend instance; a restart drops them together with the replies
+// that placed them.
+
+interface Hold {
+  credits: number;
+  windowKind: BudgetWindow;
+  windowStart: number;
+  expiresAt: number;
+}
+
+const holdsByAddress = new Map<string, Set<Hold>>();
+
+/** Credits other replies hold in the window containing `at`. Drops expired holds. */
+export function heldCredits(address: string, tier: TierConfig, anchor: number | null, at: number): number {
+  const holds = holdsByAddress.get(address);
+  if (!holds) return 0;
+  const now = Date.now();
+  const start = windowStartFor(tier, anchor, at);
+  let total = 0;
+  for (const hold of holds) {
+    if (hold.expiresAt <= now) holds.delete(hold);
+    else if (hold.windowStart === start && hold.windowKind === tier.budgetWindow) total += hold.credits;
+  }
+  if (holds.size === 0) holdsByAddress.delete(address);
+  return total;
+}
+
+/**
+ * Hold `credits` in the window containing `at` until the returned release is
+ * called or `ttlMs` passes; releasing twice is a no-op. Read `heldCredits` and
+ * place the hold with no `await` between them, or two replies can both claim
+ * the same credits.
+ */
+export function holdCredits(address: string, tier: TierConfig, anchor: number | null, at: number, credits: number, ttlMs: number): () => void {
+  if (credits <= 0) return () => {};
+  const hold: Hold = { credits, windowKind: tier.budgetWindow, windowStart: windowStartFor(tier, anchor, at), expiresAt: Date.now() + ttlMs };
+  let holds = holdsByAddress.get(address);
+  if (!holds) holdsByAddress.set(address, holds = new Set());
+  holds.add(hold);
+  return () => {
+    const current = holdsByAddress.get(address);
+    if (current?.delete(hold) && current.size === 0) holdsByAddress.delete(address);
+  };
+}
+
+// ── Free timeouts (TC-4203) ───────────────────────────────────────────────────
+// A timed-out reply is free: the turn deadline is ours. So that repeated
+// timeouts cannot be a free channel, an account gets FREE_TIMEOUTS_PER_WINDOW
+// free timeouts that delivered answer content per rolling FREE_TIMEOUT_WINDOW_MS;
+// past that, settlement charges a timeout as a Stop. In memory, like the counter
+// and the holds.
+export const FREE_TIMEOUTS_PER_WINDOW = 10;
+export const FREE_TIMEOUT_WINDOW_MS = 24 * 60 * 60 * 1000;
+const freeTimeoutsByAddress = new Map<string, number[]>();
+
+/** Takes one of the account's free timeouts at `now`; false, taking nothing, once it has used them all in the last 24 h. */
+export function takeFreeTimeout(address: string, now: number): boolean {
+  const recent = (freeTimeoutsByAddress.get(address) ?? []).filter(at => now - at < FREE_TIMEOUT_WINDOW_MS);
+  const free = recent.length < FREE_TIMEOUTS_PER_WINDOW;
+  if (free) recent.push(now);
+  freeTimeoutsByAddress.set(address, recent);
+  return free;
+}
+
 // ── Test/util helpers ─────────────────────────────────────────────────────────
 
-/** Clear all tracked usage. Exposed for tests. */
+/** Clear all tracked usage, holds and free timeouts. Exposed for tests. */
 export function _resetUsage(): void {
   usageByAddress.clear();
   previousByAddress.clear();
+  holdsByAddress.clear();
+  freeTimeoutsByAddress.clear();
 }
 
 /** Reset the one-shot missing-anchor warning. Exposed for tests. */
