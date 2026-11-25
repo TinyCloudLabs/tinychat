@@ -81,7 +81,7 @@ describe("TinyChat manifest and backend policy", () => {
     const config = backendManifestConfig(backendDid);
     const resolved = backendDelegationResolvedPermissions(backendDid);
 
-    expect(config.name).toBe("TinyChat Backend");
+    expect(config.name).toBe("TinyCloud One Backend");
     expect(config.expiry).toBe("30d");
     expect(config.permissions.map(({ service, path, actions }) => ({ service, path, actions }))).toEqual([
       { service: "tinycloud.sql", path: "connectors", actions: ["read", "write"] },

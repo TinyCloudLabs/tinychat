@@ -14,6 +14,7 @@ export function historyAccessFor(tcw: TinyCloudWeb): BotHistoryAccess {
     enabled: botHistoryEnabled,
     authorize: () => authorizeBotHistory(tcw),
     saves: (key) => key === "main",
+    requestEarlierHistory: async () => (await import("./earlierHistoryRequest")).requestEarlierHistoryAccess(tcw),
     async grant(key) {
       if (key === "main") return ensureBotHistoryGrant(tcw);
       await ensureSiblingHistoryGrant(tcw, key).catch(() => {});

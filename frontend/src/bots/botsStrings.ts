@@ -209,6 +209,20 @@ export const FEED_CHATS_ACCESS_STRINGS = {
   failed: "Couldn't change this. Try again.",
 } as const;
 
+export const TELEGRAM_ACCESS_STRINGS = {
+  title: "Telegram",
+  off: `${MAIN} can't read your Telegram chats.`,
+  allow: `Let ${MAIN} read them`,
+  confirmTitle: `Let ${MAIN} read your Telegram chats?`,
+  confirmBody: `${MAIN} can read the Telegram chats Inbox collects into your TinyCloud for 7 days, then it stops. It can't send, delete or change messages. What it reads goes to the AI model service to write its answer. Once ${MAIN} reads a Telegram chat, it can't use the web or your secrets, or send messages to other bots, in this chat until you start a new chat.`,
+  confirm: MEETINGS_ACCESS_STRINGS.confirm,
+  cancel: MEETINGS_ACCESS_STRINGS.cancel,
+  on: (date: string) => `${MAIN} can read your Telegram chats until ${date}.`,
+  turnOff: MEETINGS_ACCESS_STRINGS.turnOff,
+  ended: `${MAIN}'s access to your Telegram chats has ended.`,
+  failed: MEETINGS_ACCESS_STRINGS.failed,
+} as const;
+
 // The owner's "Start a new chat" with Main (TC-3808).
 export const NEW_CHAT_STRINGS = {
   start: "Start a new chat",

@@ -10,12 +10,12 @@ import { Button } from "@/components/ui/button";
 import { readHomeFeatures, rememberHomeFeature, sessionCoversHomeFeature, type HomeFeature } from "@/lib/homeFeatures";
 import {
   FEATURE_ACCESS_BODY, FEATURE_ACCESS_BUSY, FEATURE_ACCESS_CONTINUE, FEATURE_ACCESS_DECLINED, FEATURE_ACCESS_FAILED,
-  FEATURE_ACCESS_NEEDED, FEATURE_ACCESS_NOT_NOW, FEATURE_ACCESS_PARTIAL, FEATURE_ACCESS_TITLE, FEATURE_ACCESS_WRONG_ACCOUNT,
+  FEATURE_ACCESS_NEEDED, FEATURE_ACCESS_NOT_NOW, FEATURE_ACCESS_PARTIAL, FEATURE_ACCESS_PARTIAL_BOTH, FEATURE_ACCESS_PARTIAL_FOLDERS, FEATURE_ACCESS_TITLE, FEATURE_ACCESS_WRONG_ACCOUNT,
 } from "@/lib/homeStrings";
 import type { InFlightWork } from "@/lib/inFlightWork";
 
-/** What asking for a feature's set came to. Only "granted" replaces the session. "partial": all but the unlock permission was allowed. */
-export type FeatureAccessOutcome = "granted" | "declined" | "failed" | "wrong-account" | "partial" | "busy" | "signed-out";
+/** What asking for a feature's set came to. Only "granted" replaces the session. "partial": all but the unlock permission was allowed. "partial-folders": only the permission to unlock a connector's folder was left out. "partial-both": that and the unlock permission were both left out. */
+export type FeatureAccessOutcome = "granted" | "declined" | "failed" | "wrong-account" | "partial" | "partial-folders" | "partial-both" | "busy" | "signed-out";
 export type RequestFeatureAccess = (feature: HomeFeature) => Promise<FeatureAccessOutcome>;
 
 export interface HomeFeatureAccess {
@@ -100,13 +100,15 @@ export function HomeFeatureGate({ feature, children }: { feature: HomeFeature; c
   return covered ? <>{children}</> : <HomeFeaturePrompt feature={feature} />;
 }
 
-type PromptPhase = "ask" | "asking" | "later" | "declined" | "failed" | "wrong-account" | "partial" | "busy";
+type PromptPhase = "ask" | "asking" | "later" | "declined" | "failed" | "wrong-account" | "partial" | "partial-folders" | "partial-both" | "busy";
 
 const OUTCOME_LINE: Partial<Record<PromptPhase, string>> = {
   declined: FEATURE_ACCESS_DECLINED,
   failed: FEATURE_ACCESS_FAILED,
   "wrong-account": FEATURE_ACCESS_WRONG_ACCOUNT,
   partial: FEATURE_ACCESS_PARTIAL,
+  "partial-folders": FEATURE_ACCESS_PARTIAL_FOLDERS,
+  "partial-both": FEATURE_ACCESS_PARTIAL_BOTH,
   busy: FEATURE_ACCESS_BUSY,
 };
 

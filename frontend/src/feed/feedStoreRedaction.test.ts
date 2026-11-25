@@ -86,7 +86,7 @@ test("a connected agent's title, body and plain payload reach the feed without a
   expect(shown).not.toContain("openkey.so/a/");
   expect(shown).not.toContain("A".repeat(43));
   expect(shown).not.toContain("sk-ant-");
-  expect(state.card.title).toBe("Tap [link removed] now");
+  expect(state.card.title).toBe("Tap [link] now");
   expect(state.card.payload).toMatchObject({ note: "plain" });
 });
 

@@ -1,6 +1,6 @@
 // Main's chat, over Home: a full-height sheet on a phone, a dialog on a wider screen. Main's reply is
 // shown as plain text, never as HTML.
-import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState, type RefObject } from "react";
 
 import { Button } from "@/components/ui/button";
 import { ResponsiveSheet, ResponsiveSheetBody } from "@/components/ui/responsive-sheet";
@@ -11,12 +11,16 @@ import { acknowledgeHistoryNotice, historyNoticeDeadline, type HistoryNotice } f
 import { BOTS_STRINGS, botsErrorText, HISTORY_EXPIRY_NOTICE, HISTORY_RECONNECT_LABEL, WEB_ACCESS_STRINGS } from "./botsStrings";
 import { isWorking, type ChatLine, type MainChatState } from "./useMainChat";
 import { WebAccess, type WebAccessApi } from "./WebAccess";
-import { FeedChatsAccess, MeetingsAccess, type MeetingsAccessApi } from "./MeetingsAccess";
+import { FeedChatsAccess, MeetingsAccess, TelegramAccess, type MeetingsAccessApi } from "./MeetingsAccess";
 import { NewChat, type NewChatApi } from "./NewChat";
 import { AppLine, AskCards, AsksToggle } from "./AskCards";
 import { clearHistoryDecline } from "./historyAuthorization";
+import { LazyEarlierHistoryAction } from "./LazyEarlierHistoryAction";
+import type { EarlierHistoryMove } from "./earlierHistory";
 import { SecretCards } from "./SecretCard";
 import type { Asks } from "./useAsks";
+import type { ReadSettings } from "./trustbotReadGrant";
+import { CourierSetup } from "./courier/CourierSetup";
 
 export function Line({ role, text }: Pick<ChatLine, "role" | "text">) {
   return role === "user" ? (
@@ -90,10 +94,14 @@ export interface MainChatProps {
   webAccess?: WebAccessApi;
   /** When given, the sheet offers Main's read settings: Meetings, and Feed and chats. */
   meetings?: MeetingsAccessApi;
+  /** When true, the sheet offers Courier setup for the signed-in owner; it stays hidden while Courier is off. */
+  courier?: boolean;
   /** When given, the sheet shows Main's questions as cards and offers the setting for them. */
   asks?: Asks;
   /** When given, the sheet offers the owner's "Start a new chat". */
   newChat?: NewChatApi;
+  /** When given, earlier history is held back and the sheet offers to move it (TC-4225). */
+  earlierHistory?: EarlierHistoryMove;
 }
 
 /** Services that answered 404 for web access, so reopening Main's chat does not show the button again. */
@@ -118,7 +126,10 @@ export function WebAccessToggle({ api }: { api: WebAccessApi }) {
   );
 }
 
-export function MainChat({ open, onOpenChange, state, onSend, onRetry, onRetryHistory, notice, onReconnect, webAccess, meetings, asks, newChat }: MainChatProps) {
+const StandingReadsCard = lazy(() => import("./StandingReadsCard"));
+
+export function MainChat({ open, onOpenChange, state, onSend, onRetry, onRetryHistory, notice, onReconnect, webAccess, meetings, courier, asks, newChat, earlierHistory }: MainChatProps) {
+  const [readSettings, setReadSettings] = useState<ReadSettings | null>(null);
   const { lines, history, turn } = state;
   const working = isWorking(turn);
   const sdkPromptOpen = useSdkPromptOpen();
@@ -164,14 +175,18 @@ export function MainChat({ open, onOpenChange, state, onSend, onRetry, onRetryHi
         <div className="mx-auto flex w-full max-w-2xl flex-col gap-5 py-4">
           <p className="text-center text-callout text-muted-foreground">{BOTS_STRINGS.modelLine}</p>
           {open && webAccess ? <WebAccessToggle api={webAccess} /> : null}
-          {open && meetings ? <MeetingsAccess api={meetings} /> : null}
-          {open && meetings ? <FeedChatsAccess api={meetings} /> : null}
+          {open && meetings ? <MeetingsAccess api={meetings} onSettings={setReadSettings} /> : null}
+          {open && meetings ? <FeedChatsAccess api={meetings} onSettings={setReadSettings} /> : null}
+          {open && meetings ? <TelegramAccess api={meetings} /> : null}
+          {open && readSettings?.standingAvailable && meetings?.stopStandingArea ? <Suspense fallback={null}><StandingReadsCard settings={readSettings} revoke={meetings.revokeReadGrant} /></Suspense> : null}
+          {open && courier ? <CourierSetup /> : null}
           {open && asks ? <AsksToggle asks={asks} /> : null}
           {open && newChat ? <NewChat api={newChat} /> : null}
           {open && notice && onReconnect ? <ExpiryNotice key={`${notice.id}:${notice.deliveredAt ?? notice.renderAttemptAt ?? "initial"}`} notice={notice} onReconnect={onReconnect} /> : null}
           {history === "loading" ? <p role="status" className="text-callout text-muted-foreground">{BOTS_STRINGS.historyLoading}</p> : null}
           {history === "failed" && !working ? <Failure text={BOTS_STRINGS.historyFailed} onRetry={onRetryHistory} /> : null}
           {history === "declined" && !working ? <Failure text={botsErrorText("history_declined", MAIN_BOT.name)} onRetry={onRetryHistory} declined /> : null}
+          {open && earlierHistory ? <LazyEarlierHistoryAction move={earlierHistory} /> : null}
           {lines.map((line) => (
             line.unreadableHistory ? <p key={line.id} className="text-callout text-muted-foreground">{line.text}</p>
               : line.app ? <AppLine key={line.id} decision={line.app} names={line.names} live={line.id.startsWith("local-")} secret={line.secret} /> : <Line key={line.id} role={line.role} text={line.text} />

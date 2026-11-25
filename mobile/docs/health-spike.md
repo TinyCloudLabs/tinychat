@@ -197,7 +197,8 @@ Background and history permissions each need their own justification in the Play
   condition (`SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG EXO_HEALTH"`) and
   `CODE_SIGN_ENTITLEMENTS = App/App.entitlements`. A Release build (the TestFlight archive) has no
   HealthKit code, no `import HealthKit` and no HealthKit entitlements: its entitlements file is
-  `App/App.Release.entitlements`, which holds only the share links' associated domain (TC-3195).
+  `App/App.Release.entitlements`, which holds only associated domains (share links, TC-3195; openkey.so
+  passkeys, TC-520).
   `ios-build.yml` now fails the Release archive check if the binary links HealthKit.
 - Why Debug only: the TestFlight export signs with an App Store profile for `xyz.tinycloud.exo`, and
   that App ID has no HealthKit capability. An entitlement the profile lacks fails the export. App

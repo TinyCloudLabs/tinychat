@@ -14,6 +14,7 @@ import { transcriptKvKey } from "@/lib/connectors/connectorStore";
 import { includesLabel, type RecordingShareDisplay, type SharedPart } from "@/lib/nativeShares/display";
 import { countShareClaims, createShare, publishShareLink } from "@/lib/nativeShares/sdk";
 import { sentShareRecord, sentShares, sharesOf, stopSharingRecording, type SentRecordingShare } from "@/lib/nativeShares/sentShares";
+import { holdScreenSensitive } from "@/lib/reportBug/config";
 import { cn } from "@/lib/utils";
 import { voiceNoteTranscriptLocator } from "@/lib/voiceNotes/voiceNoteCommits";
 import { voiceNoteAudioKvKey, VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
@@ -111,6 +112,8 @@ export function ShareRecordingSheet(props: { tcw: TinyCloudWeb; recording: Share
     setParts({ transcript: recording.hasTranscript, audio: audioBase !== null });
     // Only on opening: the live shares change under the sheet when a link is made.
   }, [props.open]);
+  // The link's key shows here: a screenshot meanwhile doesn't attach the app's snapshot to a bug report (TC-3716).
+  useEffect(() => (props.open ? holdScreenSensitive() : undefined), [props.open]);
 
   const shown = phase === "ready" || phase === "stopping";
   const liveCids = live.map((share) => share.id).join("\n");

@@ -66,14 +66,22 @@ test.each(["renewal", "enable"] as const)("%s revokes the proposed grant when th
 
 test("the next renewal tick revokes the prior grant when the committed save lost its response", async () => {
   const { tcw, saved, revoked, lifetimes } = setup();
+  const prior = "bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku";
+  const replacement = "bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi";
+  saved.grantCid = prior;
   let committed = false;
+  let cleared = false;
   fetchSpy = spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+    if (String(_url).endsWith("/renewal/revoked")) {
+      cleared = true;
+      return new Response(null, { status: 204 });
+    }
     if (init?.method === "PUT") {
       committed = true;
       throw new DOMException("Timed out", "TimeoutError");
     }
     return Response.json(committed ? {
-      ...saved, grantCid: "replacement", replacedGrantCid: "prior",
+      ...saved, grantCid: replacement, replacedGrantCid: cleared ? null : prior,
       expiresAt: Date.now() + 6 * DAY_MS, renewAfter: Date.now() + 3 * DAY_MS,
     } : saved);
   });
@@ -82,6 +90,6 @@ test("the next renewal tick revokes the prior grant when the committed save lost
   expect(revoked).toEqual([]);
   expect(await ensureTrustBotReadGrant(tcw)).toBe(true);
   expect(await ensureTrustBotReadGrant(tcw)).toBe(false);
-  expect(revoked).toEqual(["prior"]);
+  expect(revoked).toEqual([prior]);
   expect(lifetimes).toHaveLength(1);
 });

@@ -689,12 +689,11 @@ scheme is unchanged on both phones.
      `xyz.tinycloud.home.widgets` (the embedded `ExoWidgets` WidgetKit
      extension; the App Store export needs a profile for it too).
 
-   Enable no capabilities for now:
-   - microphone and background audio come from Info.plist (`UIBackgroundModes:
-     audio`), not from capabilities;
-   - **Associated Domains** comes later with the passkey work
-     (`webcredentials:openkey.so`, plus an `apple-app-site-association` on
-     openkey.so).
+   Enable one capability on `xyz.tinycloud.home`: **Associated Domains**
+   (`App/App.Release.entitlements`: `applinks:tinycloud.one` for share links,
+   `webcredentials:openkey.so` for OpenKey passkeys, TC-520). Microphone and
+   background audio come from Info.plist (`UIBackgroundModes: audio`), not
+   from capabilities.
 
    Leave certificates and profiles alone: the export creates them.
 3. **App record**: App Store Connect → Apps → **+** → New App. Platform iOS,

@@ -102,4 +102,6 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <!-- Report a bug after a screenshot (TC-3716): Activity.registerScreenCaptureCallback, Android 14+. Normal permission. -->
+    <uses-permission android:name="android.permission.DETECT_SCREEN_CAPTURE" />
 </manifest>
