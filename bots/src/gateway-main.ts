@@ -48,7 +48,11 @@ import { parseAsksPush } from "./asks";
 import { startCourierGateway, type CourierGateway } from "./courier/runtime";
 import { courierPeerHash } from "./courier/intake";
 
-/** The control socket's largest request body. */
+/**
+ * The control socket's largest request body, for every route on it: a feedback report's body (up to 8 KB, JSON-escaped)
+ * on /actions/send, actions pushes with their final hashes and Courier bodies. The admission relay keeps its own
+ * 512-byte cap (bot-admission.ts). Only the supervisor reaches this socket.
+ */
 const CONTROL_MAX_BODY_BYTES = 32 * 1024;
 
 const { backendOrigin, backendCallSecret, ...cfg } = gatewayConfig(process.env);
@@ -147,8 +151,6 @@ function unlisten(botId: string): void {
 
 const control = Bun.serve({
   unix: join(cfg.egressRoot, "control.sock"),
-  // Room for a feedback report's body (up to 8 KB, JSON-escaped) on /actions/send; the admission relay keeps its own
-  // 512-byte cap (bot-admission.ts). Only the supervisor reaches this socket.
   maxRequestBodySize: CONTROL_MAX_BODY_BYTES,
   async fetch(req, server) {
     const { pathname } = new URL(req.url);

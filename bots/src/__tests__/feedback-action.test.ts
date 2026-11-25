@@ -163,13 +163,14 @@ function setup() {
   const admit: BotAdmission = async () => ({ admitted: true });
   const app = createApp({ bots, secret, accounts: "*", manifest, acceptLegacyOwnerHeader: true, admit });
 
-  const request = (method: string, key: string, rest: string, payload: unknown, signed: boolean) => {
+  /** `signed`: a signed call, `"legacy"`: the shared secret and owner header (accepted in this app), `false`: neither. */
+  const request = (method: string, key: string, rest: string, payload: unknown, signed: boolean | "legacy") => {
     const path = `/v1/bots/${key}${rest}`;
     const body = payload === undefined ? undefined : JSON.stringify(payload);
     const authorization = signedCallHeader(secret, { direction: "to-service", environment: "private", owner, bot: key, method, path, body });
     return app(new Request(`http://fixture.test${path}`, {
       method,
-      headers: { ...(signed ? { authorization } : {}), "x-tinycloud-owner": owner, ...(body === undefined ? {} : { "content-type": "application/json" }) },
+      headers: { ...(signed === true ? { authorization } : signed === "legacy" ? { authorization: `Bearer ${secret}` } : {}), "x-tinycloud-owner": owner, ...(body === undefined ? {} : { "content-type": "application/json" }) },
       ...(body === undefined ? {} : { body }),
     }));
   };
@@ -348,8 +349,10 @@ describe("send_feedback, end to end", () => {
 
   test("Send for a report needs no bot keys but must be signed", async () => {
     const pending = await proposed();
-    const unsigned = await run.request("POST", "main", `/requests/${pending.id}/answer`, { decision: "approve", binding: pending.binding }, false);
-    expect(unsigned.status).toBe(401);
+    const answer = { decision: "approve", binding: pending.binding };
+    expect((await run.request("POST", "main", `/requests/${pending.id}/answer`, answer, false)).status).toBe(401);
+    // This app accepts the legacy owner header, but a Send needs a signed call.
+    expect((await run.request("POST", "main", `/requests/${pending.id}/answer`, answer, "legacy")).status).toBe(400);
     expect((await run.requests()).find(listed => listed.id === pending.id)?.state).toBe("pending");
     expect((await send(pending.id, pending.binding!)).status).toBe(200);
     expect((await run.settled(pending.id)).state).toBe("done");

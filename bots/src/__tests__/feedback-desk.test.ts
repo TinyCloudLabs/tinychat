@@ -130,6 +130,17 @@ describe("feedback proposals at the gateway", () => {
     expect(mock.posted).toEqual([]);
   });
 
+  test("a clean body other than the one proposed is refused under the proposal's binding and leaves it unspent", async () => {
+    const { state, proposed } = desk();
+    const action = proposed(bot(1));
+    const other = feedbackBody({ kind: "friction", title: "Settings page is fast", tried: REPORT.tried, happened: REPORT.happened, expected: REPORT.expected });
+    expect(await state.desk.send(bot(1), action.id, action.binding, other)).toEqual({ outcome: "refused" });
+    expect(mock.posted).toEqual([]);
+    // The proposed body under its binding goes once.
+    expect(await state.desk.send(bot(1), action.id, action.binding, action.text)).toEqual({ outcome: "filed", reportId: REPORT_ID });
+    expect(mock.posted).toEqual([action.text]);
+  });
+
   test("a message to bots approval cannot be sent as a report", async () => {
     const { state, ownerTurn } = desk();
     ownerTurn(bot(1), { keys: ["c".repeat(32), "d".repeat(32)] });
