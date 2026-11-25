@@ -1,8 +1,8 @@
 // An owner with no TinyCloud account record who signs in on the phone. The phone's WebView origin is not on the web
-// SDK's first-party list, so the SDK refuses the owner's first request to the node with AccountSetupRequiredError.
-// It does not throw it at sign-in: the phone's session is restored, not signed in, by the SDK, so the refusal comes
-// back from the first call as a Result error (`code: "NETWORK_ERROR"`, `cause.code: "ACCOUNT_SETUP_REQUIRED"`).
-// `checkAccountSetup` makes that first call at sign-in so the owner reads this screen's copy instead of a generic failure.
+// SDK's first-party list, so the SDK refuses the owner at sign-in with AccountSetupRequiredError. A session restored at
+// that origin is not refused on its first request to the node, so the refusal is not read from a Result error there.
+// `checkAccountSetup` still makes that first call at sign-in and turns a refusal, thrown or carried by a Result error
+// (`code: "NETWORK_ERROR"`, `cause.code: "ACCOUNT_SETUP_REQUIRED"`), into this screen's copy instead of a generic failure.
 import { APP_ID } from "@tinyboilerplate/core";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { withAbortTimeout } from "./abortTimeout";

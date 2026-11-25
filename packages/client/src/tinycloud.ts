@@ -15,17 +15,10 @@ import { withSpaceCapabilitiesRead } from "./manifest.js";
 // ── Configuration ────────────────────────────────────────────────────
 
 /**
- * TC-3547: the host's two callbacks for publishing the owner's registry record. They are handed to the SDK as `Config`
- * fields of the same names. The pinned SDK predates them and ignores them (nothing reads them until a release that
- * carries them); the host feature-checks `ensureOwnerRegistryRecord` before it relies on them.
+ * TC-3547: the host's callback for errors while the SDK publishes the owner's registry record. It is handed to the SDK as
+ * the `Config` field of the same name.
  */
 export interface RegistryPublishHooks {
-  onRegistryPublishConsent?: (preview: {
-    readonly subject: string;
-    readonly nodeDid: string;
-    readonly nodeOrigin: string;
-    readonly space: string;
-  }) => Promise<boolean>;
   onRegistryPublishError?: (error: unknown) => void;
 }
 

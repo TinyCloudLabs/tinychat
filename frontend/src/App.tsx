@@ -178,9 +178,8 @@ import { clearVaultSecretCache } from "./lib/connectors/connectorSecrets";
 import { isSignInCancelled, UserFacingError } from "./lib/authErrors";
 import { signOutOpenKeySession } from "./lib/openkeySignOut";
 import { registryPublishConfig } from "./lib/registryConsent/config";
-import { startSignOutClosingRegistryConsent, cancelPendingRegistryConsent } from "./lib/registryConsent/broker";
-import { runFinishSetupIntent, runSignInRegistryPublish } from "./lib/registryConsent/intent";
-import { RegistryConsentDialog } from "./shell/RegistryConsentDialog";
+import { registryDismissedStore } from "./lib/registryConsent/dismissed";
+import { runFinishSetupIntent } from "./lib/registryConsent/intent";
 import { clearSessionAfterHandoff, registerSessionSignedOutHook } from "./lib/sessionSignedOut";
 import {
   describeAuthFailure, isNativeOpenKeySession, isNativeOpenKeySignIn, isNativeStorageError, logNativeOpenKeyError,
@@ -475,6 +474,7 @@ export function App() {
     voiceNotePipeline?.cancelAll();
     endStorageAccountSession();
     clearSignedOutAccountStorage(scope, { space: tcw?.spaceId ?? spaceId, did: accountDid, address: storedAddress });
+    if (accountDid) registryDismissedStore.clear(accountDid);
     // TC-2862: the phone app's native local copy goes with the account, whether or not this build uses it.
     void wipeNativeReplicaOnSignOut(accountDid).then((result) => {
       if (!result.ok) console.warn("[Replica] Could not delete the native local copy at sign-out", result.code);
@@ -491,8 +491,7 @@ export function App() {
     // The Home features flag stays: it holds no secrets and lets the next sign-in ask for those sets.
     if (tcw) {
       const cleanup = () => { try { tcw.cleanup(); } catch { /* Continue local cleanup. */ } };
-      // The SDK's sign-out starts first, then the registry consent closes (answered false): see broker.ts.
-      const localSignOut = startSignOutClosingRegistryConsent(() => signOutReplicaAware(tcw));
+      const localSignOut = signOutReplicaAware(tcw);
       // Binding paused: this client never bound the saved copy, so its signOut cannot erase it. Erase it
       // now instead of at the next page load (replicationOffPurge.ts); a failure warns like a bound
       // sign-out's and leaves the retry markers for the next load.
@@ -512,8 +511,6 @@ export function App() {
           setError(WEB_SIGN_OUT_RECOVERY_WARNING);
         })
         .finally(cleanup);
-    } else {
-      cancelPendingRegistryConsent();
     }
     selectionControllerRef.current = null;
     memoryRef.current = null;
@@ -1345,8 +1342,6 @@ export function App() {
       setSpaceId(signedTcw.spaceId ?? null);
       void ensureTranscriptWriterDelegation({ tcw: signedTcw, backendUrl: BACKEND_URL, sessionStore: sessionStoreRef.current });
       setState("ready");
-      // TinyChat signs in with autoBootstrapAccount off, so the SDK does not publish at sign-in on its own: ask it here.
-      void runSignInRegistryPublish(signedTcw, { location: window.location, history: window.history });
     } catch (caught) {
       if (isSignInCancelled(caught)) {
         setError(null);
@@ -1536,8 +1531,8 @@ export function App() {
 
   const navigate = useNavigate();
   const location = useLocation();
-  // A signed-in page opened (or navigated, by the Home card) to ?finish-setup=registry removes the query, then asks to
-  // publish. Inert while the consent is off.
+  // A signed-in page opened (or navigated, by the Home card) to ?finish-setup=registry removes the query, then asks the
+  // SDK to publish. TinyChat signs in with autoBootstrapAccount off, so nothing else asks.
   useEffect(() => {
     if (state !== "ready" || !tcw) return;
     void runFinishSetupIntent(tcw, { location: window.location, history: window.history });
@@ -1848,7 +1843,6 @@ export function App() {
           <ReportBugHost tcw={isReady ? tcw : null} screenId={screen.id} sensitive={isSensitiveScreen(screen, location.pathname, shareToken)} />
         </Suspense>
       )}
-      <RegistryConsentDialog />
       {captureFailClosed && <div role="alert" className="fixed inset-x-4 bottom-4 z-[60] rounded-xl border bg-card p-4 shadow-lg">
         Recordings are being kept unassigned until TinyCloud One can update this phone.
         <button type="button" className="ml-3 underline" onClick={() => void signOut()}>Retry</button>

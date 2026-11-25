@@ -1,7 +1,7 @@
-// The real web SDK (its WASM, SIWE and session storage) as the phone uses it: the session is restored, never signed in,
-// and the SDK decides third-party from `window.location.origin`. For an owner with no TinyCloud account record the
-// refusal comes back from the first request to the node, and `checkAccountSetup` turns it into AccountSetupRequiredError.
-// A local key stands in for OpenKey at the first sign-in; the node is a stub.
+// The real web SDK (its WASM, SIWE and session storage) as the phone uses it, and the SDK decides third-party from
+// `window.location.origin`. For an owner with no TinyCloud account record the refusal comes at sign-in, as
+// AccountSetupRequiredError; a session restored at the phone's origin is not refused on its first request to the node, so
+// `checkAccountSetup` returns. A local key stands in for OpenKey at the first sign-in; the node is a stub.
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from "bun:test";
 import { privateKeyToAccount } from "viem/accounts";
 import { createTinyCloudWeb, restoreTinyCloudWebSession, type EIP1193Provider } from "@tinyboilerplate/client";
@@ -10,7 +10,7 @@ import { atOrigin } from "@/test/productOrigin";
 import { webSignInManifest } from "./homeFeatures";
 import { readOnlyAccountProvider } from "./replication/readOnlyAccountProvider";
 import { WEB_APP_MANIFEST } from "./webSignInPrefetch";
-import { AccountSetupRequiredError, checkAccountSetup } from "./accountSetup";
+import { checkAccountSetup, isAccountSetupRequired } from "./accountSetup";
 
 // Anvil's fourth default key: a well-known test key, never a real account. The registry has no record for it.
 const account = privateKeyToAccount("0x7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6");
@@ -71,8 +71,14 @@ async function restoredAt(origin: string) {
 }
 
 for (const origin of ["https://localhost", "capacitor://localhost"]) {
-  test(`an owner with no account record is sent to set one up on the phone origin ${origin}`, async () => {
-    await expect(checkAccountSetup(await restoredAt(origin))).rejects.toBeInstanceOf(AccountSetupRequiredError);
+  test(`a restored session's first node request is not refused on the phone origin ${origin}`, async () => {
+    await expect(checkAccountSetup(await restoredAt(origin))).resolves.toBeUndefined();
+  });
+
+  test(`an owner with no account record is refused at sign-in on the phone origin ${origin}`, async () => {
+    atOrigin(origin);
+    const refusal = await createTinyCloudWeb(wallet, { ...config, manifest }).signIn().then(() => null, (caught: unknown) => caught);
+    expect(isAccountSetupRequired(refusal)).toBe(true);
   });
 }
 
