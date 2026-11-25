@@ -317,10 +317,12 @@ export default defineConfig(({ command, mode }) => {
   },
   build: {
     rollupOptions: {
-      // The app, and the desktop app's tile page (CALL_PROMPT_PAGE above), which shares only the Tauri core chunk.
+      // The app. The desktop app's tile page (CALL_PROMPT_PAGE above, which shares only the Tauri core chunk) is an
+      // input only for a desktop build: the Tauri CLI sets TAURI_ENV_PLATFORM for beforeBuildCommand, and the web
+      // and phone builds never do, so their dist has no tile page and the web Pages deploy never serves it.
       input: {
         index: path.resolve(rootDir, "index.html"),
-        "call-prompt": path.resolve(rootDir, CALL_PROMPT_PAGE),
+        ...(process.env.TAURI_ENV_PLATFORM ? { "call-prompt": path.resolve(rootDir, CALL_PROMPT_PAGE) } : {}),
       },
       output: {
         // The Tauri window API is reached only from the desktop app's recording title (a lazy import).
