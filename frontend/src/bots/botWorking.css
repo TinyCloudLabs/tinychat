@@ -29,8 +29,22 @@
   stroke-opacity: 0.55;
 }
 
+/* The text's lightest tone sits between the muted and the full ink, so no word of the step fades out at any point of
+   the glare. */
 .tc-bot-working-text {
-  color: hsl(var(--muted-foreground));
+  --tc-working-text-floor: color-mix(in srgb, hsl(var(--muted-foreground)) 50%, hsl(var(--foreground)));
+  color: var(--tc-working-text-floor);
+}
+/* A reply that comes back at once never flashes the row: it is shown after a short wait, holding its place meanwhile.
+   A step in opacity, not motion, so the status text stays in the accessibility tree and is announced from the start.
+   A browser without @starting-style shows the row at once. */
+.tc-bot-working-row {
+  transition: opacity 0s 300ms;
+}
+@starting-style {
+  .tc-bot-working-row {
+    opacity: 0;
+  }
 }
 
 @keyframes tc-bot-working-run {
@@ -73,9 +87,9 @@
   .tc-bot-working-text[data-motion] {
     background-image: linear-gradient(
       100deg,
-      hsl(var(--muted-foreground)) 38%,
+      var(--tc-working-text-floor) 38%,
       hsl(var(--foreground)) 50%,
-      hsl(var(--muted-foreground)) 62%
+      var(--tc-working-text-floor) 62%
     );
     background-size: 300% 100%;
     -webkit-background-clip: text;
