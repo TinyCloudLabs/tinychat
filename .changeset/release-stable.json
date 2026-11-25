@@ -1,0 +1,8 @@
+{
+  "versions": {
+    "@tinychat/backend": "0.14.3"
+  },
+  "changesets": [
+    ".changeset/pre/backend-libzstd-fix.md"
+  ]
+}
