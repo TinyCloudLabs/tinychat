@@ -105,7 +105,7 @@ test("on a bot's page the line stays under the reply text for the whole turn and
   await act(async () => emit({ type: "step", step: "read_page", host: "www.tides.example" }));
   expect(line(host)).toBe("Reading tides.example…");
   await act(async () => emit({ type: "step", step: "commands" }));
-  expect(line(host)).toBe("Using its computer…");
+  expect(line(host)).toBe("Running a command…");
   // One status element through every change, so a screen reader hears each line once.
   expect(row(host)!.querySelector('[role="status"]')).toBe(status);
   expect(host.querySelectorAll("[data-bot-working-row]")).toHaveLength(1);

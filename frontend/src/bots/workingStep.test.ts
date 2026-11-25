@@ -12,14 +12,14 @@ const LINES: Record<BotStep | "writing", string> = {
   search: "Searching the web…",
   read_page: "Reading a page…",
   writing: "Writing the reply…",
-  commands: "Using its computer…",
-  files: "Using its files…",
+  commands: "Running a command…",
+  files: "Working with files…",
   secret: "Using a saved secret…",
   meetings: "Using your meetings…",
   feed: "Using your feed…",
   chats: "Using your chats…",
   telegram: "Using your Telegram chats…",
-  bot_message: "Using another bot…",
+  bot_message: "Asking another bot…",
   tool: "Using a tool…",
 };
 
