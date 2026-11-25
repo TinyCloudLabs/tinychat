@@ -16,6 +16,7 @@ import { TRANSCRIBER_NAME } from "@/capture/recorder/final/finalCopy";
 import { createHostedVoiceNoteTrack } from "./hostedVoiceNotes";
 import type { FirefliesSentence } from "../connectors/firefliesClient";
 import { splitLongTimedSegment } from "./timedSegments";
+import { UNKNOWN_SPEAKER_NAME } from "./anonymousSpeakers";
 import {
   buildPtxUploadOrigin,
   cloudStatusIntervalMs,
@@ -31,6 +32,7 @@ import {
   privateCloudMessage,
   VOICE_NOTE_CHANNEL_LABELS,
   ME_THEM_CHANNEL_LABELS,
+  privateCloudDiarizes,
   type CloudPolling,
   type PrivateCloudApi,
   type PrivateCloudCapabilities,
@@ -502,18 +504,28 @@ export function localStorageVoiceNoteHoldStore(
 
 // ── Transcript → note ──────────────────────────────────────────────────
 
-/** Keep PTX's speech regions and speaker/channel identity in the saved body. */
+/**
+ * Keep PTX's speech regions and speaker/channel identity in the saved body. In a two-channel note the microphone side
+ * is "Me" and the other side "Them". When PTX told the voices on the other side apart, each channel-1 sentence also
+ * keeps the voice's `speaker_id` and PTX's own names for them are not used: `nameChannelSpeakers` names them, as for
+ * a Powerful note, and the save applies it (`prepareVoiceNoteTranscript`). Audio PTX could not place stays
+ * "Unknown speaker" and carries no `speaker_id`, so it is never a voice.
+ */
 export function voiceNoteSentences(transcript: Pick<PrivateCloudTranscript, "segments" | "diarized" | "speakers" | "channels">): FirefliesSentence[] {
   const speakerNames = new Map(transcript.speakers?.map((speaker) => [speaker.id, speaker.name]));
+  const stereo = transcript.channels === 2;
   const segments = transcript.segments
-    .map((seg) => ({ start: seg.start, end: seg.end, text: typeof seg.text === "string" ? seg.text.trim() : "",
-      channel: seg.channel === 0 || seg.channel === 1 ? seg.channel as 0 | 1 : undefined,
-      speakerId: transcript.diarized ? seg.speaker_id ?? null : null,
-      speaker: transcript.channels === 2 ? (seg.channel === 0 ? "Me" : "Them")
-        : transcript.diarized && seg.speaker_id
-        ? speakerNames.get(seg.speaker_id) ?? (seg.speaker_id.match(/^speaker_(\d+)$/)
-          ? `Speaker ${Number(seg.speaker_id.slice(8)) + 1}` : seg.speaker_id)
-        : null }))
+    .map((seg) => {
+      const unplaced = stereo && seg.channel === 1 && !!seg.speaker_id && speakerNames.get(seg.speaker_id) === UNKNOWN_SPEAKER_NAME;
+      return { start: seg.start, end: seg.end, text: typeof seg.text === "string" ? seg.text.trim() : "",
+        channel: seg.channel === 0 || seg.channel === 1 ? seg.channel as 0 | 1 : undefined,
+        speakerId: transcript.diarized && !(stereo && (seg.channel !== 1 || unplaced)) ? seg.speaker_id ?? null : null,
+        speaker: stereo ? (unplaced ? UNKNOWN_SPEAKER_NAME : seg.channel === 0 ? "Me" : "Them")
+          : transcript.diarized && seg.speaker_id
+          ? speakerNames.get(seg.speaker_id) ?? (seg.speaker_id.match(/^speaker_(\d+)$/)
+            ? `Speaker ${Number(seg.speaker_id.slice(8)) + 1}` : seg.speaker_id)
+          : null };
+    })
     .filter((seg) => seg.text.length > 0 && Number.isFinite(seg.start) && Number.isFinite(seg.end))
     .flatMap((seg) => splitLongTimedSegment({ ...seg, timing: "engine" as const }, 30))
     .sort((a, b) => a.start - b.start || (a.channel ?? -1) - (b.channel ?? -1) || a.end - b.end);
@@ -594,10 +606,21 @@ function engineMetadata(transcribedAt: string) {
   };
 }
 
-/** The transcript as it is saved onto the note. No sentences = the no-speech outcome. */
+/**
+ * The transcript as it is saved onto the note. No sentences = the no-speech outcome.
+ *
+ * A two-channel result in which PTX told voices apart needs `nameSpeakers` (`nameChannelSpeakers`), which the caller
+ * loads when such a result arrives: it is not in the chunk the web app boots from (TC-2882). Without it this throws,
+ * so such a note is never saved with its remote voices unnamed.
+ */
 export function prepareVoiceNoteTranscript(transcript: PrivateCloudTranscript, transcribedAt: string, rev: number,
-  statsMetadata: VoiceNoteTranscriptionStatsMetadata = transcriptStatsMetadata(transcript)): VoiceNoteTranscriptSave {
-  const sentences = voiceNoteSentences(transcript);
+  statsMetadata: VoiceNoteTranscriptionStatsMetadata = transcriptStatsMetadata(transcript),
+  nameSpeakers?: (sentences: readonly FirefliesSentence[]) => FirefliesSentence[]): VoiceNoteTranscriptSave {
+  let sentences = voiceNoteSentences(transcript);
+  if (transcript.channels === 2 && transcript.diarized === true) {
+    if (!nameSpeakers) throw new Error("This transcript's speakers could not be named");
+    sentences = nameSpeakers(sentences);
+  }
   if (sentences.length === 0) return noSpeechTranscript(transcribedAt, rev, statsMetadata);
   return {
     rev,
@@ -1364,7 +1387,7 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
       language,
       channel_mode: channelCount === 2 ? "separate" : "mixed",
       channel_labels: [...(channelCount === 2 ? ME_THEM_CHANNEL_LABELS : VOICE_NOTE_CHANNEL_LABELS)],
-      ...(identifySpeakers && channelCount === 1 && capabilities.diarization === true ? { diarize: true } : {}),
+      ...(identifySpeakers && privateCloudDiarizes(capabilities, channelCount) ? { diarize: true } : {}),
     };
     const revalidate = () => {
       const latest = privateCloudLimits(currentCapabilities());
@@ -1898,8 +1921,13 @@ export async function transcribeVoiceNote(args: {
     ...statsMetadata,
     transcription_stats_missing: statsMissing ? true : null,
   };
-  const prepared = prepareVoiceNoteTranscript(transcript, transcribedAt(), rev, commitStatsMetadata);
+  let prepared: VoiceNoteTranscriptSave;
   try {
+    // The namer loads with a two-channel result that has speakers, not with the entry chunk (TC-2882). Inside the
+    // try: if it cannot be loaded, the failure is recorded like a failed save and the PTX result is kept.
+    const nameSpeakers = transcript.channels === 2 && transcript.diarized === true
+      ? (await import("./channelSpeakers")).nameChannelSpeakers : undefined;
+    prepared = prepareVoiceNoteTranscript(transcript, transcribedAt(), rev, commitStatsMetadata, nameSpeakers);
     await commitPrepared(prepared, transcriptionId);
   } catch (err) {
     await persistFailure(err, statsMetadata);

@@ -57,4 +57,14 @@ describe("transcriptionProps", () => {
     })).toMatchObject({ maxSeconds: null });
   });
 
+  test("speakers in a two-channel recording are offered only when PTX diarizes separate channels", () => {
+    const fake = { transcribe() {}, consent() {}, turnOff: async () => {}, check: async () => {} } as never;
+    const props = (capabilities: Record<string, unknown>) =>
+      transcriptionProps(fake, { availability: "available", capabilities: { max_bytes: 1, ...capabilities }, consented: true, jobs: new Map() });
+    expect(props({ diarization: true })).toMatchObject({ diarization: true, stereoDiarization: false });
+    expect(props({ diarization: true, diarization_channel_modes: ["mixed"] })).toMatchObject({ diarization: true, stereoDiarization: false });
+    expect(props({ diarization: true, diarization_channel_modes: ["mixed", "separate"] })).toMatchObject({ diarization: true, stereoDiarization: true });
+    expect(props({ diarization: false, diarization_channel_modes: ["separate"] })).toMatchObject({ diarization: false, stereoDiarization: false });
+  });
+
 });

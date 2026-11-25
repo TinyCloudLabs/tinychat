@@ -41,3 +41,12 @@ test("a sentence without a channel is left as the engine named it", () => {
   const unplaced: FirefliesSentence = { index: 0, speaker_name: "Speaker A", speaker_id: "A", text: "words", start_time: 0, end_time: 1 };
   expect(nameChannelSpeakers([unplaced])).toEqual([unplaced]);
 });
+
+test("audio the engine could not place keeps its Unknown speaker label and is never a voice", () => {
+  const unknown = (start: number, end: number): FirefliesSentence =>
+    ({ index: index++, speaker_name: "Unknown speaker", text: "words", start_time: start, end_time: end, channel: 1 });
+  // Long enough to be a voice by its seconds, and nearest in time to the stray voice: it is neither counted nor folded into.
+  expect(names([sentence(1, "2A", 0, 300), unknown(300, 400), sentence(1, "2C", 350, 351), sentence(1, "2B", 500, 800)]))
+    .toEqual(["Them 1", "Unknown speaker", "Them 1", "Them 2"]);
+  expect(names([sentence(0, "1A", 0, 5), sentence(1, "2A", 5, 60), unknown(60, 120)])).toEqual(["Me", "Them", "Unknown speaker"]);
+});

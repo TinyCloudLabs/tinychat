@@ -10,6 +10,7 @@ import {
   type VoiceNoteTranscriber,
   type VoiceNoteTranscriberSnapshot,
 } from "@/lib/voiceNotes/voiceNoteTranscription";
+import { privateCloudDiarizes } from "@/lib/privateCloud";
 import { bareMimeType, expectedTranscriptionWavBytes } from "@/lib/voiceNotes/voiceNoteAudio";
 
 
@@ -32,6 +33,8 @@ export interface VoiceNoteTranscriptionProps {
   maxBytes?: number;
   /** Whether this deployment can identify speaker turns in Private notes. */
   diarization?: boolean;
+  /** Whether it also tells apart the voices on the other side of a two-channel (Mac) recording. */
+  stereoDiarization?: boolean;
   /** Notes being transcribed, waiting their turn, or whose last attempt failed. */
   jobs: ReadonlyMap<string, NoteTranscriptionState>;
   onTranscribe: (sourceId: string) => void;
@@ -70,7 +73,8 @@ export function transcriptionProps(
     onPowerfulConsent: () => transcriber.consentPowerful?.(),
     maxSeconds: limits?.maxSeconds ?? null,
     ...(limits === null || limits.maxBytes === null ? {} : { maxBytes: limits.maxBytes }),
-    diarization: snapshot.capabilities?.diarization === true,
+    diarization: privateCloudDiarizes(snapshot.capabilities, 1),
+    stereoDiarization: privateCloudDiarizes(snapshot.capabilities, 2),
     jobs: snapshot.jobs,
     onTranscribe: (sourceId) => transcriber.transcribe(sourceId),
     onTranscribePrivately: (sourceId, durationSecs, sizeBytes) => transcriber.transcribePrivately(sourceId, durationSecs, sizeBytes),

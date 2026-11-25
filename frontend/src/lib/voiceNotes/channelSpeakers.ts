@@ -1,4 +1,5 @@
 import type { FirefliesSentence } from "../connectors/firefliesClient";
+import { UNKNOWN_SPEAKER_NAME } from "./anonymousSpeakers";
 
 /**
  * A voice on the other side that spoke for less than this share of that side's talk, and for
@@ -27,10 +28,10 @@ function gap(a: FirefliesSentence, b: FirefliesSentence): number {
  * the call window says who is speaking). Here the number comes from the audio: it is the order the voices were first
  * heard in, and it says nothing about the call's list of people. `speaker_id` keeps the engine's own label, so the
  * two are never confused: only a `call:` id names a person of the call. A sentence without a channel is returned as
- * it came.
+ * it came, and so is one named "Unknown speaker": it is not counted as a voice and takes no other voice's name.
  */
 export function nameChannelSpeakers(sentences: readonly FirefliesSentence[]): FirefliesSentence[] {
-  const others = sentences.filter((sentence) => sentence.channel === 1);
+  const others = sentences.filter((sentence) => sentence.channel === 1 && sentence.speaker_name !== UNKNOWN_SPEAKER_NAME);
   const seconds = new Map<string, number>();
   for (const sentence of others) {
     if (!sentence.speaker_id) continue;
@@ -45,7 +46,7 @@ export function nameChannelSpeakers(sentences: readonly FirefliesSentence[]): Fi
 
   return sentences.map((sentence) => {
     if (sentence.channel === 0) return { ...sentence, speaker_name: "Me" };
-    if (sentence.channel !== 1) return sentence;
+    if (sentence.channel !== 1 || sentence.speaker_name === UNKNOWN_SPEAKER_NAME) return sentence;
     if (voices.length < 2) return { ...sentence, speaker_name: "Them" };
     const own = sentence.speaker_id ? names.get(sentence.speaker_id) : undefined;
     if (own) return { ...sentence, speaker_name: own };

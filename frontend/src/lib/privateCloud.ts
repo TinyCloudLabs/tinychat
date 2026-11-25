@@ -239,7 +239,22 @@ export interface PrivateCloudCapabilities {
   content_types?: string[];
   /** True only when PTX can diarize (speaker turns) this deployment's jobs. */
   diarization?: boolean;
+  /** The channel modes PTX diarizes for this account: `"mixed"` (one channel) and, where offered, `"separate"` (the two channels of a Mac recording). Absent from a backend that does not relay it. */
+  diarization_channel_modes?: string[];
   [key: string]: unknown;
+}
+
+/**
+ * Whether PTX tells speakers apart in a recording with this many channels. One channel needs `diarization`; two also
+ * need `"separate"` among `diarization_channel_modes`, which an older backend never relays.
+ */
+export function privateCloudDiarizes(
+  capabilities: Pick<PrivateCloudCapabilities, "diarization" | "diarization_channel_modes"> | null | undefined,
+  channels: 1 | 2,
+): boolean {
+  if (capabilities?.diarization !== true) return false;
+  const modes = capabilities.diarization_channel_modes;
+  return channels === 1 || (Array.isArray(modes) && modes.includes("separate"));
 }
 
 export interface PrivateCloudApi {
@@ -475,7 +490,7 @@ export interface PrivateCloudCreateBody {
   language?: string;
   channel_mode?: "separate" | "mixed";
   channel_labels?: string[];
-  /** Speaker turns (contract C2); only when capabilities report `diarization: true`. */
+  /** Speaker turns (contract C2); only when `privateCloudDiarizes` says so for the recording's channels. */
   diarize?: boolean;
 }
 

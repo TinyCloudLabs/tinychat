@@ -37,6 +37,8 @@ import { setVoiceNoteSaveDeadlineForTests } from "@/lib/voiceNotes/saveDeadline"
 import { createFakeOnDeviceStt } from "@/lib/voiceNotes/fakeOnDeviceStt";
 import { __setOnDeviceSttForTests, isOnDeviceReady, type OnDeviceSttPlugin } from "@/lib/voiceNotes/onDeviceStt";
 import { __resetOnDeviceSttStoreForTests, onDeviceSttStore } from "@/lib/voiceNotes/onDeviceSttStore";
+import { registerDesktopCaptureExtras } from "@/lib/voiceNotes/desktopCaptureExtras";
+import { createFakeDesktopCaptureExtras } from "@/lib/voiceNotes/fakeDesktopCaptureExtras";
 
 const realStore = { ...(await import("@/lib/voiceNotes/voiceNoteStore")) };
 mock.module("@/lib/voiceNotes/voiceNoteStore", () => ({
@@ -657,6 +659,58 @@ describe("voice-note recorder controller", () => {
     await recorder.record();
     expect((await fake.plugin.status()).options).toMatchObject({ transcriber: "assemblyai", identifySpeakers: true });
     detach();
+  });
+
+  describe("a Mac recording on Private", () => {
+    afterEach(() => registerDesktopCaptureExtras(null));
+    const start = async (systemAudio: boolean, diarizationChannelModes?: string[], diarization = true) => {
+      registerDesktopCaptureExtras(createFakeDesktopCaptureExtras({ systemAudio }).extras);
+      await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1,
+        transcriber: "private-cloud", identifySpeakers: true });
+      const recorder = controller({ transcriber: { check: async () => {}, noteSaved: () => {},
+        snapshot: () => ({ availability: "available", consented: true, jobs: new Map(),
+          capabilities: { max_bytes: 120_960_000, diarization,
+            ...(diarizationChannelModes ? { diarization_channel_modes: diarizationChannelModes } : {}) } }) } });
+      const detach = recorder.attach();
+      await tick();
+      await recorder.record();
+      return { recorder, detach };
+    };
+
+    test("with the Mac's audio, speaker detection can be changed where PTX tells the other side's voices apart", async () => {
+      const offered = await start(true, ["mixed", "separate"]);
+      expect(offered.recorder.getTranscriber()).toEqual({ id: "private-cloud", identifySpeakers: true, source: "recording", twoChannel: true });
+      expect(await offered.recorder.setIdentifySpeakers(false, "recording")).toBe("ok");
+      offered.detach();
+    });
+
+    // The preference stays on the recording, so a later Powerful transcript of it still tells the remote speakers apart.
+    for (const modes of [undefined, ["mixed"]]) {
+      test(`with the Mac's audio and ${modes ? "only mixed diarization" : "no modes relayed"}, the recording keeps the preference and the switch is not supported`, async () => {
+        const { recorder, detach } = await start(true, modes);
+        expect((await fake.plugin.status()).options).toMatchObject({ transcriber: "private-cloud", identifySpeakers: true });
+        expect(recorder.getTranscriber()).toEqual({ id: "private-cloud", identifySpeakers: true, source: "recording", twoChannel: true });
+        expect(await recorder.setIdentifySpeakers(false, "recording")).toBe("unavailable");
+        // Leaving Private and coming back does not take the preference off the recording either.
+        expect(await recorder.setTranscriber("on-device", { scope: "recording" })).toBe("ok");
+        expect(await recorder.setTranscriber("private-cloud", { scope: "recording" })).toBe("ok");
+        expect((await fake.plugin.status()).options).toMatchObject({ transcriber: "private-cloud", identifySpeakers: true });
+        detach();
+      });
+    }
+
+    test("with the Mac's audio and no diarizer at all, speaker detection is forced off", async () => {
+      const { recorder, detach } = await start(true, undefined, false);
+      expect((await fake.plugin.status()).options).toMatchObject({ transcriber: "private-cloud", identifySpeakers: false });
+      expect(await recorder.setIdentifySpeakers(true, "recording")).toBe("unavailable");
+      detach();
+    });
+
+    test("without the Mac's audio it has one channel and needs only PTX's diarizer", async () => {
+      const { recorder, detach } = await start(false);
+      expect(recorder.getTranscriber()).toEqual({ id: "private-cloud", identifySpeakers: true, source: "recording" });
+      detach();
+    });
   });
 
   test("signed-out capture locks other modes and Off does not revoke private-cloud consent", async () => {
