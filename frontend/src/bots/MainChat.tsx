@@ -88,6 +88,7 @@ export interface MainChatProps {
   onSend: (text: string) => void;
   onRetry: () => void;
   onRetryHistory: () => void;
+  onShowHistory?: () => void;
   notice?: HistoryNotice | null;
   onReconnect?: () => void;
   /** When given, the sheet offers Main's web access setting. */
@@ -128,7 +129,7 @@ export function WebAccessToggle({ api }: { api: WebAccessApi }) {
 
 const StandingReadsCard = lazy(() => import("./StandingReadsCard"));
 
-export function MainChat({ open, onOpenChange, state, onSend, onRetry, onRetryHistory, notice, onReconnect, webAccess, meetings, courier, asks, newChat, earlierHistory }: MainChatProps) {
+export function MainChat({ open, onOpenChange, state, onSend, onRetry, onRetryHistory, onShowHistory, notice, onReconnect, webAccess, meetings, courier, asks, newChat, earlierHistory }: MainChatProps) {
   const [readSettings, setReadSettings] = useState<ReadSettings | null>(null);
   const { lines, history, turn } = state;
   const working = isWorking(turn);
@@ -183,9 +184,13 @@ export function MainChat({ open, onOpenChange, state, onSend, onRetry, onRetryHi
           {open && asks ? <AsksToggle asks={asks} /> : null}
           {open && newChat ? <NewChat api={newChat} /> : null}
           {open && notice && onReconnect ? <ExpiryNotice key={`${notice.id}:${notice.deliveredAt ?? notice.renderAttemptAt ?? "initial"}`} notice={notice} onReconnect={onReconnect} /> : null}
+          {onShowHistory && (history === "idle" || history === "declined") ? <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-callout text-muted-foreground">
+            {history === "declined" ? <p>Older messages need your OK</p> : null}
+            <Button type="button" variant="outline" size="sm" onClick={onShowHistory}>Show older messages</Button>
+          </div> : null}
           {history === "loading" ? <p role="status" className="text-callout text-muted-foreground">{BOTS_STRINGS.historyLoading}</p> : null}
-          {history === "failed" && !working ? <Failure text={BOTS_STRINGS.historyFailed} onRetry={onRetryHistory} /> : null}
-          {history === "declined" && !working ? <Failure text={botsErrorText("history_declined", MAIN_BOT.name)} onRetry={onRetryHistory} declined /> : null}
+          {history === "failed" && !working ? <Failure text={BOTS_STRINGS.historyFailed} onRetry={onShowHistory ?? onRetryHistory} /> : null}
+          {history === "declined" && !onShowHistory && !working ? <Failure text={botsErrorText("history_declined", MAIN_BOT.name)} onRetry={onRetryHistory} declined /> : null}
           {open && earlierHistory ? <LazyEarlierHistoryAction move={earlierHistory} /> : null}
           {lines.map((line) => (
             line.unreadableHistory ? <p key={line.id} className="text-callout text-muted-foreground">{line.text}</p>

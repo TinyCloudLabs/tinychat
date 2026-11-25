@@ -5,10 +5,10 @@ export const EARLIER_HISTORY_STRINGS = {
   move: "Move earlier history",
   moving: "Moving earlier history…",
   /** Shown beside the action while earlier history is held back (before the owner chooses to move it). */
-  held: "Some earlier messages are hidden until you move them.",
+  held: "Some earlier messages are hidden until you move them. This also unlocks your Connectors secrets.",
   /** After the owner declined the request: the chat is unaffected, earlier history stays hidden. */
   declined: "Earlier messages stay hidden. Your chat works.",
   failed: "Couldn't move your earlier messages.",
   /** The OpenKey modal's description for the network-wide decrypt request. */
-  approval: "Read your earlier chat history with bots so it can move to the chat's own key.",
+  approval: "Read your earlier chat history with bots so it can move to the chat's own key. This also unlocks your Connectors secrets.",
 };

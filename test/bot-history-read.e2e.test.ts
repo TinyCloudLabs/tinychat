@@ -22,6 +22,7 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 1280, height: 900 
         await page.getByRole("button", { name: "Send", exact: true }).click();
         const sheet = page.locator("[data-bots-main-chat]");
         await sheet.waitFor();
+        await page.getByRole("button", { name: "Show older messages", exact: true }).click();
         await page.getByRole("status").filter({ hasText: "Loading earlier messages…" }).waitFor();
         // No history response is resolved: the POST must nevertheless have started.
         await page.waitForFunction(() => (window as unknown as { tc2909: { sends: number } }).tc2909.sends === 1);
