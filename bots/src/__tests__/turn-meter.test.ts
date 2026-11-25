@@ -1,4 +1,4 @@
-import { afterEach, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, expect, spyOn, test, type Mock } from "bun:test";
 import { Bot, RunningLimit, type Sandbox } from "../bot";
 import { type GatewayConfig, PINNED_UPSTREAM } from "../config";
 import { Gateway } from "../gateway";
@@ -22,8 +22,10 @@ const response = (tokens: number) => new Response(`data: ${JSON.stringify({ choi
   headers: { "content-type": "text/event-stream" },
 });
 const logs: unknown[] = [];
-const consoleSpy = spyOn(console, "log").mockImplementation(line => { logs.push(JSON.parse(line)); });
-afterEach(() => { logs.length = 0; consoleSpy.mockClear(); });
+// Scoped to each test: a spy left on console.log would collect other test files' lines.
+let consoleSpy: Mock<typeof console.log>;
+beforeEach(() => { consoleSpy = spyOn(console, "log").mockImplementation(line => { logs.push(JSON.parse(line)); }); });
+afterEach(() => { logs.length = 0; consoleSpy.mockRestore(); });
 
 function setup(limit = 0, fetch: () => Promise<Response> = async () => response(10)) {
   let now = Date.parse("2026-11-11T23:59:00Z");
