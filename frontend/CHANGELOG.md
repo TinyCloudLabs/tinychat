@@ -16,6 +16,18 @@
 - TC-2204: Native audience checks accept Home's three exact SQL hook subscriptions only alongside an existing TinyChat data grant.
 - TC-2499: The Home mirror adapter persists close receipts using node-compatible NULL/non-NULL compare-and-set predicates. If the KV mirror is already exactly closed but its receipt is missing, recovery records the original publication ETag without writing the KV copy again, before any gated child handoff. The CLI reports JSON error class, safe message, code, HTTP status when available, and operation step; private SQL bodies and nested causes remain redacted. Exit 2 identifies invalid input, exit 6 known transient failures (including NODE_BUSY and REQUEST_TIMEOUT without HTTP metadata), and exit 1 other runtime failures or OUTCOME_UNKNOWN. Unclassified errors are not labelled bad input; no failure confirms delivery or authorizes an automatic retry.
 
+## 0.22.0-beta.1
+
+### Patch Changes
+
+- 8173d4d: A new account can save its first connector key under its own key. The first save finds no encryption network, so it asks once for the single permission that creates it (no read access, one hour at most), creates the network, then saves the key. If the approval is declined or fails, nothing is stored and the usual save error is shown.
+
+  Details: TC-4243
+
+- 40c7751: When a message gets no reply because the account is out of credits, the chat says so: "You're out of credits on the Free plan, so this message got no reply." When the billing status has the reset time, the message also says when credits reset. Without the plan name it says "your plan". A reply that was partly written keeps the existing limit text. The pricing dialog opens for the Free plan and for plans that have an upgrade, and stays closed on the top plan.
+
+  Details: TC-4312
+
 ## 0.22.0-beta.0
 
 ### Minor Changes
