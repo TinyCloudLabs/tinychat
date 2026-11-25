@@ -71,7 +71,10 @@ Anything else gets an empty 401.
 
 - `POST /v1/bots/main/messages` `{ "text": "..." }` (1 to 8000 characters) streams `text/event-stream`:
   `status` (`starting` on a cold start, then `working`, repeated every 15 s while waiting), `delta` (assistant
-  text), then exactly one `done` `{ messageId }` or `error` `{ code, message }`. One message at a time per bot; a
+  text), `step` (what the bot is doing, for the app's working line: `{ step }` from the fixed set in
+  `src/turn-step.ts`, one per tool the agent starts and `thinking` between them; a page read adds `host`, the
+  page's host name and nothing else of its address; no tool argument or output is sent),
+  then exactly one `done` `{ messageId }` or `error` `{ code, message }`. One message at a time per bot; a
   second send gets `busy`. If the caller disconnects, the turn still finishes and lands in the history. A reply
   longer than `BOTS_MAX_TURN_BYTES` is cut off (the agent's turn is aborted, the stream ends with
   `bot_unavailable`); a turn with no result within `BOTS_TURN_TIMEOUT_MS` ends the same way and its sandbox is
