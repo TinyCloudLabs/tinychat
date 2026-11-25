@@ -327,4 +327,20 @@ describe("stitchMeetings: input shapes", () => {
     expect(r.verdict).toBe("same-meeting");
     expect(r.evidence.time_window).toBe("untrusted");
   });
+
+  test("\"Them 2\", one person of the other side of a recorded call, is an unnamed speaker like \"Speaker 2\"", () => {
+    const relabelled = JSON.stringify((JSON.parse(NT) as { speaker_name: string }[])
+      .map((s) => ({ ...s, speaker_name: s.speaker_name.replace(/^speaker_/, "Them ") })));
+    const asSpeakers = stitchMeetings(fireflies(), notetaker());
+    const asThem = stitchMeetings(fireflies(), { ...notetaker(), body: relabelled });
+    // The same people get the same Fireflies names, and no "Them N" is taken for anyone's name.
+    expect(body(asThem).map((s) => s.speaker_name)).toEqual(body(asSpeakers).map((s) => s.speaker_name));
+    expect(asThem.speaker_map.map((e) => [e.label, e.name]))
+      .toEqual(asSpeakers.speaker_map.map((e) => [e.label.replace(/^speaker_/, "Them "), e.name]));
+    expect(asThem.combined!.row.participants).toEqual(asSpeakers.combined!.row.participants);
+    // With nobody to take a name from, the label says which recording it is from.
+    const alone = stitchMeetings({ ...fireflies(), body: JSON.stringify((JSON.parse(FF) as { speaker_name: string | null }[])
+      .map((s) => ({ ...s, speaker_name: null }))) }, { ...notetaker(), body: relabelled });
+    expect(new Set(body(alone).map((s) => s.speaker_name).filter((name) => name?.startsWith("Them")))).toContain("Them 1 (Notetaker)");
+  });
 });

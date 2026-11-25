@@ -224,7 +224,7 @@ test("Powerful names each voice it hears on the other side of a stereo note", as
   lane.consent();
   await lane.run(h.recording);
   expect(h.getLocal()?.segments.map((segment) => [segment.speaker, segment.speakerId, segment.channel]))
-    .toEqual([["Speaker 1", "2A", 1], ["Me", "1A", 0], ["Speaker 2", "2B", 1]]);
+    .toEqual([["Them 1", "2A", 1], ["Me", "1A", 0], ["Them 2", "2B", 1]]);
 });
 
 test("a stereo note recorded with speakers off asks Powerful for channels only", async () => {

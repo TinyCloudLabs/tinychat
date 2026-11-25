@@ -51,4 +51,9 @@ describe("autoMeetingTitle", () => {
   test("drops email addresses and phone numbers, keeping the other names", () => {
     expect(title(["dana@example.com", "+1 (555) 123-4567", "555-1234", "Carol"])).toBe("Oct 9 · Carol");
   });
+
+  test("a person of the other side of a call who has no name yet is not in the title", () => {
+    expect(title(["Me", "Them 1", "Them 2"])).toBeNull();
+    expect(title(["Me", "Them 1", "Dana"])).toBe("Oct 9 · Dana");
+  });
 });

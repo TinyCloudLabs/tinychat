@@ -1,5 +1,4 @@
 import type { FirefliesSentence } from "../connectors/firefliesClient";
-import { anonymousSpeakerName } from "./anonymousSpeakers";
 
 /**
  * A voice on the other side that spoke for less than this share of that side's talk, and for
@@ -21,10 +20,14 @@ function gap(a: FirefliesSentence, b: FirefliesSentence): number {
  *
  * - the microphone side is always "Me", whatever voices the engine heard on it;
  * - the other side is "Them" when the engine told no voices apart there, or heard one;
- * - with several voices on the other side, each is "Speaker 1", "Speaker 2", … in order of first
- *   appearance, and a stray voice's sentences take the name of the voice that spoke nearest in time.
+ * - with several voices on the other side, each is "Them 1", "Them 2", … in order of first appearance, and a stray
+ *   voice's sentences take the name of the voice that spoke nearest in time.
  *
- * `speaker_id` keeps the engine's own label. A sentence without a channel is returned as it came.
+ * "Them N" is the label a Mac call recording already uses for one person of the other side (callSpeakers.ts, where
+ * the call window says who is speaking). Here the number comes from the audio: it is the order the voices were first
+ * heard in, and it says nothing about the call's list of people. `speaker_id` keeps the engine's own label, so the
+ * two are never confused: only a `call:` id names a person of the call. A sentence without a channel is returned as
+ * it came.
  */
 export function nameChannelSpeakers(sentences: readonly FirefliesSentence[]): FirefliesSentence[] {
   const others = sentences.filter((sentence) => sentence.channel === 1);
@@ -37,7 +40,7 @@ export function nameChannelSpeakers(sentences: readonly FirefliesSentence[]): Fi
   // In order of first appearance: a Map keeps insertion order.
   const voices = [...seconds].filter(([, spoke]) => spoke >= STRAY_VOICE_MAX_SECONDS || spoke >= total * STRAY_VOICE_MAX_SHARE)
     .map(([id]) => id);
-  const names = new Map(voices.map((id, index) => [id, anonymousSpeakerName(index + 1)]));
+  const names = new Map(voices.map((id, index) => [id, `Them ${index + 1}`]));
   const named = others.filter((sentence) => sentence.speaker_id && names.has(sentence.speaker_id));
 
   return sentences.map((sentence) => {

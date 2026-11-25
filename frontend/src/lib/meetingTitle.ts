@@ -6,7 +6,8 @@ const MAX_NAMES = 3;
 const MAX_NAME_LENGTH = 40;
 /** Generic speaker and placeholder labels from recorded notes and diarization; they are not names. */
 const GENERIC_NAMES = new Set(["me", "them", "unknown", "unknown speaker", "speaker", "guest", "host"]);
-const SPEAKER_LABEL = /^speaker(\s*\d+|\s*[a-z])?$/i;
+// "Them 2" is one person of the other side of a recorded call, as unnamed as "Speaker 2".
+const SPEAKER_LABEL = /^(speaker(\s*\d+|\s*[a-z])?|them\s*\d+)$/i;
 const PARTICIPANT_LABEL = /^participant\s*\d*$/i;
 
 export interface AutoMeetingTitleInput {

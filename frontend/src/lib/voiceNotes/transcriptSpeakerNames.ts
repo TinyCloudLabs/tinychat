@@ -2,6 +2,7 @@
 // commitVoiceNoteTranscript only for a row that has shown a transcript and has names, so the entry chunk the web app
 // boots from carries neither this nor speakerNames.ts (TC-2882). The read runs on the space lane through voiceNoteRows.ts.
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
+import { callSpeakerLabels } from "@/capture/library/callParticipants";
 import { speakerNamesAfterNewTranscript } from "@/capture/library/speakerNames";
 import { query, type TranscriptToCommit, type VoiceNoteRow } from "./voiceNoteRows";
 
@@ -23,5 +24,5 @@ export async function speakerNamesPatch(tcw: TinyCloudWeb, row: VoiceNoteRow, in
   }
   const engine = row.metadata.transcription_engine;
   return speakerNamesAfterNewTranscript(row.metadata, { engine: typeof engine === "string" ? engine : null, labels },
-    { engine: input.engine ?? null, labels: input.participants ?? [] });
+    { engine: input.engine ?? null, labels: input.participants ?? [], callPeople: Object.keys(callSpeakerLabels(input.sentences)) });
 }

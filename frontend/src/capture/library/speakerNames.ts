@@ -1,7 +1,7 @@
 // A note's speaker names (TC-2189): a display override kept beside the note, keyed by the label the
 // transcript was stored with. The stored sentences are never rewritten. A new transcript of the same
-// recording keeps the names of the two sides of a call; a numbered speaker's name stays only while the
-// engine and the set of labels stay the same (speakerNamesAfterNewTranscript).
+// recording keeps the names of the two sides of a call; a name for one person ("Them 2", "Speaker 2") stays
+// only while it is known to be the same person (speakerNamesAfterNewTranscript).
 //
 // Stored in the note row's metadata (`connector_meeting.metadata`):
 //   "speaker_names": { "Me": "Sam", "Them": "Alice, Bob" }
@@ -13,13 +13,13 @@
 // "Them N" label (reason "speaking_marker"), and `speaker_suggestions_made` records each label the app has made (or
 // skipped) its suggestion for, so an ended suggestion is never made again.
 
-import { OTHER_SIDE_LABELS, OWN_SIDE_LABELS } from "./speakerNamesCopy";
+import { isCallPersonLabel, OTHER_SIDE_LABELS, OWN_SIDE_LABELS } from "./speakerNamesCopy";
 
 export const SPEAKER_NAMES_KEY = "speaker_names";
 export const SPEAKER_SUGGESTIONS_KEY = "speaker_suggestions";
 export const SPEAKER_SUGGESTIONS_MADE_KEY = "speaker_suggestions_made";
 export const MAX_SPEAKER_NAME_LENGTH = 80;
-/** Names a new transcript took off numbered speakers, oldest first: a list of strings beside `speaker_names`. */
+/** Names a new transcript took off speakers it could not know to be the same people, oldest first: a list of strings beside `speaker_names`. */
 export const EARLIER_SPEAKER_NAMES_KEY = "earlier_speaker_names";
 
 /** Original label -> name shown. Only differing, non-empty names are kept. */
@@ -109,22 +109,30 @@ export function applySpeakerNames<T extends { speaker_name: string | null }>(ite
     ? { ...item, speaker_name: names[item.speaker_name]! } : item);
 }
 
-/** What made a transcript and the speaker labels it uses. */
-export interface TranscriptLabels { engine: string | null; labels: readonly string[] }
+/**
+ * What made a transcript and the speaker labels it uses. `callPeople`: the "Them N" labels whose lines carry a person
+ * of the call (`callSpeakerLabels`), which the call window numbers the same way in every transcript of the recording.
+ */
+export interface TranscriptLabels { engine: string | null; labels: readonly string[]; callPeople?: readonly string[] }
 
 /**
  * What a new transcript does to a note's names: a JSON merge patch for the row's metadata, or null when they all
  * stay. The two sides of a call ("Me", "Them") are the same people whatever engine listened, so their names stay.
- * A numbered speaker is not: "Speaker 2" from another engine, or among a different set of speakers, can be someone
- * else. When the engine or the set of labels changed, every other label's name comes off and is kept under
- * `earlier_speaker_names`, so that it is not lost and can be offered again.
+ * A label for one person is not: "Them 2" or "Speaker 2" from another engine, or among a different set of speakers,
+ * can be someone else, because an engine numbers the voices it hears. When the engine or the set of labels changed,
+ * every such label's name comes off and is kept under `earlier_speaker_names`, so that it is not lost and can be
+ * offered again. The exception is a "Them N" the same engine gives to a person of the call (`after.callPeople`):
+ * that number is the person's place in the call's list, not a voice's.
  */
 export function speakerNamesAfterNewTranscript(metadata: unknown, before: TranscriptLabels, after: TranscriptLabels): Record<string, unknown> | null {
   const was = new Set(before.labels);
   const now = new Set(after.labels);
-  if (before.engine === after.engine && was.size === now.size && [...was].every((label) => now.has(label))) return null;
+  const sameEngine = before.engine === after.engine;
+  if (sameEngine && was.size === now.size && [...was].every((label) => now.has(label))) return null;
   const names = readSpeakerNames(metadata);
-  const removed = Object.keys(names).filter((label) => !OWN_SIDE_LABELS.has(label) && !OTHER_SIDE_LABELS.has(label));
+  const side = (label: string) => OWN_SIDE_LABELS.has(label) || (OTHER_SIDE_LABELS.has(label) && !isCallPersonLabel(label));
+  const samePerson = (label: string) => sameEngine && after.callPeople?.includes(label) === true;
+  const removed = Object.keys(names).filter((label) => !side(label) && !samePerson(label));
   if (removed.length === 0) return null;
   const stored = (metadata as Record<string, unknown>)[EARLIER_SPEAKER_NAMES_KEY];
   const earlier = Array.isArray(stored) ? stored.filter((name): name is string => typeof name === "string") : [];
