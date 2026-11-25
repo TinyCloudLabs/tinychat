@@ -16,6 +16,7 @@ import {
   type UsageInfo,
 } from "../lib/chatApi";
 import { AgentStreamError, streamAgentChat, type AgentDelegationErrorCode } from "../lib/agentChatApi";
+import { outOfCreditsMessage, type CreditLimitContext } from "../lib/creditLimit";
 import { clearGatewayReceipt, setGatewayReceiptVerified } from "../lib/gatewayReceiptStore";
 import {
   clearToolActivity,
@@ -128,6 +129,8 @@ export interface AdapterDeps {
   waitForInitialProbe?: (signal: AbortSignal) => Promise<void>;
   /** Surfaces a streamed private-tool delegation failure to reconnect UI. */
   onAgentDelegationError?: (code: AgentDelegationErrorCode) => void;
+  /** Plan name and reset time for the "out of credits" message; absent in harnesses. */
+  getCreditLimitContext?: () => CreditLimitContext;
   /**
    * Live ref to the currently-offered model ids (from the loaded /models list).
    * Read at request time so the outgoing model is sanitized against the offered
@@ -483,6 +486,9 @@ export function createChatModelAdapter(deps: AdapterDeps): ChatModelAdapter {
       // a browser grounding block and therefore use the delegated agent route.
       // ContextOverflowError is thrown BEFORE any yield (pre-stream), so a
       // reactive retry never double-emits text.
+      // True once any reply text was yielded, so a limit stop can tell an empty
+      // reply from a partial one.
+      let producedText = false;
       const sendOnce = async function* (
         sendPayload: ChatMessage[],
       ): AsyncGenerator<{ content: { type: "text"; text: string }[] }, void, unknown> {
@@ -519,6 +525,7 @@ export function createChatModelAdapter(deps: AdapterDeps): ChatModelAdapter {
                 : undefined,
             })) {
               assertTurn();
+              if (text) producedText = true;
               yield { content: [{ type: "text", text }] };
             }
           } finally {
@@ -560,7 +567,10 @@ export function createChatModelAdapter(deps: AdapterDeps): ChatModelAdapter {
           if (err instanceof AgentStreamError && !abortSignal.aborted) {
             // A status-only update preserves already yielded text in the local
             // runtime and resolves the composer's otherwise unobserved promise.
-            yield { status: { type: "incomplete", reason: "error", error: err.message } };
+            const error = err.code === "budget_exhausted" && !producedText
+              ? outOfCreditsMessage(deps.getCreditLimitContext?.() ?? { tierName: null, resetsAt: null }, Date.now())
+              : err.message;
+            yield { status: { type: "incomplete", reason: "error", error } };
             return;
           }
           if (err instanceof ContextOverflowError && canCompact && !reactiveRetried) {

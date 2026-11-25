@@ -27,12 +27,15 @@ export const TINYCHAT_WEB_ORIGIN = "https://tinycloud.chat";
 
 /** The Home app on tinycloud.one: the same web build as the other two sites, served from its own origin. */
 export const TINYCLOUD_ONE_WEB_ORIGIN = "https://tinycloud.one";
+/** The development frontend on the Tailnet, used for testing backend changes. */
+export const SAM_TAILNET_DEV_ORIGIN = "https://lightning-node-1.gecko-snares.ts.net:5240";
+
 
 /** Env var listing the web origins the backend accepts, comma-separated. FRONTEND_URL is always added. */
 export const FRONTEND_ORIGINS_ENV = "FRONTEND_ORIGINS";
 
 /** The web origins accepted when FRONTEND_ORIGINS is unset: every production site. */
-export const DEFAULT_FRONTEND_ORIGINS: readonly string[] = [TINYCHAT_WEB_ORIGIN, HOME_WEB_ORIGIN, TINYCLOUD_ONE_WEB_ORIGIN];
+export const DEFAULT_FRONTEND_ORIGINS: readonly string[] = [TINYCHAT_WEB_ORIGIN, HOME_WEB_ORIGIN, TINYCLOUD_ONE_WEB_ORIGIN, SAM_TAILNET_DEV_ORIGIN];
 
 /**
  * The web origins the backend accepts for CORS, the SIWE domain check and Google OAuth returns:

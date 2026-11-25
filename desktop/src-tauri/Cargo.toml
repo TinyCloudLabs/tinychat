@@ -1,6 +1,6 @@
 [package]
 name = "exo-desktop"
-version = "0.21.0"
+version = "0.22.1"
 description = "Exo — TinyCloud chat desktop app (exo.tinycloud.xyz)"
 edition = "2021"
 publish = false
@@ -21,6 +21,11 @@ tauri-plugin-opener = "2"
 url = "2"
 recorder-state = { path = "../recorder-state" }
 wav-snapshot = { path = "../wav-snapshot" }
+# Names in the call: the reader, its per-recording files and its setting (src/call_names.rs).
+call-names = { path = "../call-names" }
+# Offer to record when a call starts: the call-app table, the prompt's state machine and its
+# watcher (src/call_prompt.rs).
+call-prompt = { path = "../call-prompt" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tracing = "0.1"
@@ -137,6 +142,16 @@ optional = true
 version = "0.3"
 optional = true
 
+# Names in the call finds the meeting apps' processes through NSRunningApplication
+# (src/call_names.rs). All three crates are already in the graph through tauri.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["NSRunningApplication", "libc"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["NSArray", "NSString"] }
+# The call prompt's tile is an NSPanel (src/call_prompt/panel.rs). Already in the graph through
+# anarlog's tauri-plugin-windows: same source and branch, so the lock keeps one copy.
+tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", branch = "v2.1" }
+
 # anarlog's `storage` crate hardcodes `~/Library/Application Support/anarlog`
 # for release builds, which would share (or be redirected by) a real anarlog
 # install's vault and models. The vendored copy keeps every build under the
@@ -202,6 +217,9 @@ transcription = [
     "dep:tauri-plugin-global-shortcut",
     "tauri/tray-icon",
     "tauri/image-png",
+    # The call prompt's transparent tile window (src/call_prompt/panel.rs). tauri-nspanel turns
+    # it on as well; named here like the tray features above.
+    "tauri/macos-private-api",
 ]
 ipc-selftest = ["transcription"]
 recorder-failpoints = []

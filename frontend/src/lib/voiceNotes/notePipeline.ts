@@ -63,8 +63,11 @@ export type PipelineModelState = "absent" | "queued" | "downloading" | "verifyin
 /** `OnDeviceSttStatus["download"]["state"]`. */
 export type PipelineDownloadState = "idle" | "running" | "waiting_for_network" | "low_data_mode" | "failed";
 
-/** `OnDeviceTranscriptSyncState` (P2): the local transcript's write onto the space row. */
-export type PipelineTranscriptSync = { state: "syncing" } | { state: "synced" } | { state: "failed"; message: string } | { state: "unrecorded"; message: string } | { state: "held"; message: string };
+/**
+ * `OnDeviceTranscriptSyncState` (P2): the local transcript's write onto the space row. A failed write may carry the time of
+ * its next automatic attempt (`retryAt`).
+ */
+export type PipelineTranscriptSync = { state: "syncing" } | { state: "synced" } | { state: "failed"; message: string; retryAt?: number } | { state: "unrecorded"; message: string } | { state: "held"; message: string };
 
 export interface PipelineOnDevice {
   /** This note's native queue job; null when native has no job for it. */
@@ -324,7 +327,9 @@ function onDeviceStep(input: NotePipelineInput, od: PipelineOnDevice): Result {
   const saved = input.space.saved;
   const { sync, stt, queue } = od;
   if (sync?.state === "held") return blocked(LOCAL_COPY.transcriptStorageFull(input.device), "manage-storage");
-  if (sync?.state === "failed") return failed(LOCAL_COPY.syncFailed(), "retry");
+  // A write that will be tried again by itself waits for that attempt, as a save does (`spaceStep`).
+  if (sync?.state === "failed") return sync.retryAt !== undefined && sync.retryAt > Date.now()
+    ? { state: "waiting", caption: SPACE_COPY.retryIn(sync.retryAt - Date.now()) } : failed(LOCAL_COPY.syncFailed(), "retry");
   if (sync?.state === "syncing") return { state: "active", caption: LOCAL_COPY.adding };
   if (sync?.state === "synced" || sync?.state === "unrecorded") return { state: "done" };
   if (stt === null) {

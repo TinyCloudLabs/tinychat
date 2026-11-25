@@ -643,6 +643,8 @@ pub async fn delete_audio_file(app: tauri::AppHandle, id: String) -> Result<(), 
     tauri::async_runtime::spawn_blocking(move || {
         super::ensure(&app);
         super::with_import_lock(|| {
+            // The names read from the call window during this recording go with it.
+            crate::call_names::forget(&app, &id);
             let root = root(&app)?;
             let sessions = sessions_root(&app)?;
             let note_cleanup = delete_note_at(&root, &sessions, &id);

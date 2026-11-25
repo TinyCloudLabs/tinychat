@@ -1,6 +1,7 @@
 // The Mac app's Start recording: its global shortcut (⌘⇧⌥R) and menu-bar item. The native side
 // (desktop/src-tauri/src/record_launch.rs) brings the window forward, holds the request and sends
 // this event; the recorder claims the request and answers it the way its own Record control would.
+// The call prompt tile's Stop works the same way, with its own event and claim (stopShortcut.ts).
 import { useEffect, useState } from "react";
 
 export const START_REQUESTED_EVENT = "exo://recorder-start-requested";
@@ -46,6 +47,29 @@ export const tauriStartRequests: StartRequests = {
     return invoke<boolean>("recorder_take_start_request");
   },
 };
+
+// The call prompt tile's Stop is in stopShortcut.ts, which the Mac loads with its own chunk (watchStopRequestsLater):
+// the entry chunk the web app boots from does not carry it (TC-2882). It is named here too, as before.
+export { STOP_REQUESTED_EVENT, stopRequestApplies, tauriStopRequests, useStopShortcut, watchStopRequests, type StopRequests,
+  type StopShortcutTarget } from "./stopShortcut";
+
+/**
+ * The call prompt tile's Stop on the Mac: loads stopShortcut.ts and listens until the returned function is called. Each
+ * claimed request asks `current` for the recorder as it is then, and stops a live or paused recording through its own
+ * Stop. A chunk that does not load is logged and leaves the tile's Stop unanswered; the recorder's own Stop is unchanged.
+ */
+export function watchStopRequestsLater(current: () => { state: { phase: string }; stop(): void },
+  load: () => Promise<typeof import("./stopShortcut")> = () => import("./stopShortcut")): () => void {
+  let live = true;
+  let unwatch: (() => void) | undefined;
+  load().then(({ stopRequestApplies, tauriStopRequests, watchStopRequests }) => {
+    if (live) unwatch = watchStopRequests(tauriStopRequests, () => ({ recording: stopRequestApplies(current().state), stop: () => current().stop() }));
+  }, (error: unknown) => console.warn("[recordShortcut] Could not listen for Stop recording", error));
+  return () => {
+    live = false;
+    unwatch?.();
+  };
+}
 
 export function useRecordShortcut(enabled: boolean, target: RecordShortcutTarget,
   requests: StartRequests = tauriStartRequests, waitMs = START_REQUEST_WAIT_MS): void {

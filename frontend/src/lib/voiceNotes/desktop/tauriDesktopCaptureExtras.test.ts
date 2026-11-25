@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { spyOn } from "bun:test";
 import { getDesktopCaptureExtras, registerDesktopCaptureExtras, type DownloadProgress } from "../desktopCaptureExtras";
 import { newIdbEnv } from "../web/testing/idb";
 import { memoryLocks } from "../web/webStore";
@@ -77,6 +78,61 @@ describe("Tauri DesktopCaptureExtras", () => {
     bridge.replies.set("recorder_models_select", () => { throw new Error("model_not_downloaded"); });
     const { models } = createTauriDesktopCaptureExtras(bridge);
     await expect(models.select("QuantizedSmall")).rejects.toThrow("model_not_downloaded");
+  });
+
+  test("binds names in the call to its five commands", async () => {
+    const bridge = new Bridge();
+    const people = { v: 1, source: "call_window", app: "zoom", truncated: false, people: [{ id: "p1", name: "Alex" }] };
+    bridge.replies.set("call_names_get", () => ({ enabled: true, permission: "missing" }));
+    bridge.replies.set("call_names_set", () => null);
+    bridge.replies.set("call_names_open_settings", () => null);
+    bridge.replies.set("call_names_read", ({ id }) => (id === "rec-1" ? people : null));
+    bridge.replies.set("call_names_clear", () => null);
+    const callNames = createTauriDesktopCaptureExtras(bridge).callNames!;
+
+    expect(await callNames.get()).toEqual({ enabled: true, permission: "missing" });
+    await callNames.set(true);
+    await callNames.openSettings();
+    expect(await callNames.read("rec-1")).toEqual(people);
+    expect(await callNames.read("rec-2")).toBeNull();
+    await callNames.clear("rec-1");
+    expect(bridge.log).toEqual([
+      "call_names_get",
+      'call_names_set:{"enabled":true}',
+      "call_names_open_settings",
+      'call_names_read:{"id":"rec-1"}',
+      'call_names_read:{"id":"rec-2"}',
+      'call_names_clear:{"id":"rec-1"}',
+    ]);
+  });
+
+  test("a native side without names in the call refuses once; from then on the feature is absent for the session", async () => {
+    // Tauri's own wordings for a command the native side does not have, or does not let this window call.
+    for (const refusal of ["Command call_names_get not found", "call_names_get not allowed. Command not found",
+      "Command call_names_get not allowed by ACL", "call_names_get not allowed. Permissions associated with this command: none"]) {
+      const bridge = new Bridge();
+      bridge.replies.set("call_names_get", () => { throw refusal; });
+      const extras = createTauriDesktopCaptureExtras(bridge);
+      const info = spyOn(console, "info").mockImplementation(() => {});
+      try {
+        await expect(extras.callNames!.get()).rejects.toBe(refusal);
+        expect(info).toHaveBeenCalledTimes(1);
+      } finally { info.mockRestore(); }
+      expect(extras.callNames).toBeUndefined();
+      // The rest of the extras are as they were.
+      bridge.replies.set("recorder_system_audio_get", () => true);
+      expect(await extras.systemAudio.get()).toBe(true);
+    }
+  });
+
+  test("a failure the command itself reports keeps the feature", async () => {
+    const bridge = new Bridge();
+    bridge.replies.set("call_names_read", () => { throw new Error("names file not found"); });
+    bridge.replies.set("call_names_get", () => { throw "reader busy"; });
+    const extras = createTauriDesktopCaptureExtras(bridge);
+    await expect(extras.callNames!.read("rec-1")).rejects.toThrow("names file not found");
+    await expect(extras.callNames!.get()).rejects.toBe("reader busy");
+    expect(extras.callNames).toBeDefined();
   });
 
   test("a failed read rejects instead of answering with a default", async () => {

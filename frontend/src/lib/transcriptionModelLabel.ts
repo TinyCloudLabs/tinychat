@@ -10,6 +10,7 @@ const LABELS: Record<string, string> = {
   QuantizedSmall: "Whisper Small (Multilingual)",
   QuantizedLargeTurbo: "Whisper Large Turbo (Multilingual)",
   "parakeet-tdt-0.6b-v3": "Parakeet TDT 0.6B v3",
+  "soniqo-parakeet-batch": "Parakeet TDT 0.6B v3",
   "parakeet-tdt-0.6b-v3-int8": "Parakeet TDT 0.6B v3",
   "parakeet-tdt-110m-en": "Parakeet TDT 110M (English)",
   "parakeet-tdt-110m-en-int8": "Parakeet TDT 110M (English)",

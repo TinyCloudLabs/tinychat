@@ -20,7 +20,7 @@ interface AuthRoutesConfig {
 
 export function createAuthRouter(config: AuthRoutesConfig) {
   const router = Router();
-  const webDomains = config.frontendOrigins.map((origin) => new URL(origin).hostname);
+  const webDomains = config.frontendOrigins.map((origin) => new URL(origin).host);
   const nativeDomain = config.nativeSiweDomain ?? "openkey.so";
   const spendRenewalBudget = createVerifyRenewalBudget();
 

@@ -8,6 +8,10 @@
 //! `recorder_take_start_request`. The event only prompts the claim, so a press
 //! made while the webview is still loading (or reloading) is not lost, and a
 //! press is acted on at most once.
+//!
+//! The call prompt's tile stops a recording the same way, through the web app's
+//! own Stop: a stop request held here (`StopRequest`), the event
+//! `exo://recorder-stop-requested`, and the claim `recorder_take_stop_request`.
 
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -24,6 +28,9 @@ use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 pub const RECORD_SHORTCUT: &str = "CommandOrControl+Shift+Alt+R";
 /// Prompts the web app to claim the request (`recorder_take_start_request`).
 pub const START_REQUESTED_EVENT: &str = "exo://recorder-start-requested";
+/// Prompts the web app to claim a stop request (`recorder_take_stop_request`) and to
+/// stop the recording with its own Stop, so the note is finalized and saved as usual.
+pub const STOP_REQUESTED_EVENT: &str = "exo://recorder-stop-requested";
 
 /// Long enough for a webview still loading at launch to subscribe and claim a
 /// request; short enough that a reload minutes later never starts a recording
@@ -48,10 +55,29 @@ impl StartRequest {
     }
 }
 
-/// True once per request: the web app then starts (or shows) the recorder.
+/// The latest unclaimed Stop recording request (from the call prompt's tile). It
+/// expires as a start request does.
+#[derive(Default)]
+pub struct StopRequest(StartRequest);
+
+/// True once per request: the web app then stops the recording with its own Stop.
 #[tauri::command]
-pub fn recorder_take_start_request(request: tauri::State<'_, StartRequest>) -> bool {
-    request.take(Instant::now())
+pub fn recorder_take_stop_request(request: tauri::State<'_, StopRequest>) -> bool {
+    request.0.take(Instant::now())
+}
+
+/// True once per request: the web app then starts (or shows) the recorder. The call prompt is
+/// told of each claim, so its status file can say how long one took after its "Start".
+#[tauri::command]
+pub fn recorder_take_start_request(
+    app: tauri::AppHandle,
+    request: tauri::State<'_, StartRequest>,
+) -> bool {
+    let claimed = request.take(Instant::now());
+    if claimed {
+        crate::call_prompt::start_claimed(&app);
+    }
+    claimed
 }
 
 const MENU_RECORD: &str = "record";
@@ -77,6 +103,14 @@ fn shortcut_launch(state: ShortcutState) -> Option<Launch> {
 }
 
 fn launch<R: Runtime>(app: &AppHandle<R>, launch: Launch) {
+    show_main(app);
+    if launch == Launch::Record {
+        request_start(app);
+    }
+}
+
+/// Brings the main window forward. Also used by the call prompt when a start needs the user.
+pub(crate) fn show_main<R: Runtime>(app: &AppHandle<R>) {
     if let Some(window) = app.get_webview_window("main") {
         for (operation, result) in [
             ("show", window.show()),
@@ -88,11 +122,26 @@ fn launch<R: Runtime>(app: &AppHandle<R>, launch: Launch) {
             }
         }
     }
-    if launch == Launch::Record {
-        app.state::<StartRequest>().request(Instant::now());
-        if let Err(error) = app.emit(START_REQUESTED_EVENT, ()) {
-            tracing::warn!(target: "exo_dev::record_launch", operation = "emit", error = %error);
-        }
+}
+
+/// Asks the web app to start a recording, as the shortcut and the menu-bar item do. Also used
+/// by the call prompt's "Start", which brings no window forward when nothing needs the user.
+pub(crate) fn request_start<R: Runtime>(app: &AppHandle<R>) {
+    app.state::<StartRequest>().request(Instant::now());
+    if let Err(error) = app.emit(START_REQUESTED_EVENT, ()) {
+        tracing::warn!(target: "exo_dev::record_launch", operation = "emit", error = %error);
+    }
+}
+
+/// Asks the web app to stop the recording through its own Stop, without bringing a
+/// window forward. Used by the call prompt's "Stop".
+pub(crate) fn request_stop<R: Runtime>(app: &AppHandle<R>) {
+    let Some(request) = app.try_state::<StopRequest>() else {
+        return;
+    };
+    request.0.request(Instant::now());
+    if let Err(error) = app.emit(STOP_REQUESTED_EVENT, ()) {
+        tracing::warn!(target: "exo_dev::record_launch", operation = "emit_stop", error = %error);
     }
 }
 
@@ -199,5 +248,20 @@ mod tests {
         let listener = include_str!("../../../frontend/src/capture/recorder/recordShortcut.ts");
         assert!(listener.contains(&format!("\"{START_REQUESTED_EVENT}\"")));
         assert!(listener.contains("\"recorder_take_start_request\""));
+    }
+
+    #[test]
+    fn a_stop_request_is_claimed_once_and_only_while_fresh() {
+        let request = StopRequest::default();
+        let at = Instant::now();
+        assert!(!request.0.take(at));
+        request.0.request(at);
+        assert!(request.0.take(at + START_REQUEST_TTL));
+        assert!(!request.0.take(at + START_REQUEST_TTL));
+        request.0.request(at);
+        assert!(!request
+            .0
+            .take(at + START_REQUEST_TTL + Duration::from_millis(1)));
+        assert_ne!(STOP_REQUESTED_EVENT, START_REQUESTED_EVENT);
     }
 }

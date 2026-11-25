@@ -39,13 +39,15 @@ function failureOf(tcw: TinyCloudWeb, result: { ok: boolean; error?: { code?: st
   if (/no such table/i.test(result.error?.message ?? "")) forgetVoiceNoteIdentity(tcw);
   return errorOf(result);
 }
-async function query(tcw: TinyCloudWeb, sql: string, params: unknown[] = [], checkpoint: () => void = () => undefined): Promise<unknown[][]> {
+/** One SQL read on the space lane (also for callNamesRows.ts). */
+export async function query(tcw: TinyCloudWeb, sql: string, params: unknown[] = [], checkpoint: () => void = () => undefined): Promise<unknown[][]> {
   const result = await runOnSpaceLane((signal) => { checkpoint(); return db(tcw).query(sql, params as never[], { signal }); },
     { operation: `SQL query: ${sql.slice(0, 80)}`, sql: true });
   if (!result.ok) throw failureOf(tcw, result);
   return result.data.rows as unknown[][];
 }
-async function execute(tcw: TinyCloudWeb, sql: string, params: unknown[] = [], checkpoint: () => void = () => undefined,
+/** One SQL write on the space lane (also for callNamesRows.ts); the number of rows it changed. */
+export async function execute(tcw: TinyCloudWeb, sql: string, params: unknown[] = [], checkpoint: () => void = () => undefined,
   reportSuccessfulWrites = true): Promise<number> {
   const result = await runOnSpaceLane((signal) => {
     checkpoint(); return db(tcw, reportSuccessfulWrites).execute(sql, params as never[], { signal });
@@ -324,7 +326,10 @@ export async function createVoiceNoteRow(tcw: TinyCloudWeb, recording: VoiceNote
   if (identity.status !== "established") throw Object.assign(new Error(identity.reason ?? identity.status), { code: identity.status, cause: identity.cause });
   const now = new Date().toISOString();
   const outcome = recording.options?.transcriber === "off" ? "skipped" : "pending";
-  const speakerNames = recording.ledger?.speakerNames;
+  // An empty map (every local rename undone) is no names: the row gets none, as a row renamed and put back has none.
+  const ledgerNames = recording.ledger?.speakerNames;
+  const speakerNames = ledgerNames !== null && typeof ledgerNames === "object" && Object.keys(ledgerNames).length > 0
+    ? ledgerNames : null;
   const changes = await execute(tcw, `INSERT INTO connector_meeting
     (id, source, source_id, title, started_at, duration_secs, organizer_email, participants, summary_overview,
      summary_action_items, keywords, meeting_type, metadata, created_at, updated_at)
@@ -600,18 +605,32 @@ export async function verifyVoiceNoteTranscript(tcw: TinyCloudWeb, sourceId: str
  * One speaker's name on a note (TC-2189): `metadata.speaker_names[original]`, on any connector_meeting row (voice note,
  * upload, meeting, combined). Only that one label changes, applied by the database to the metadata as it is when the
  * write runs, so a name another writer saved meanwhile stays. A null `shown` clears the label, and the map when it
- * was the last.
+ * was the last. The same write ends that label's suggestion (`speaker_suggestions`, names in the call): a name
+ * written here is the user's, a suggestion they kept included; a row without suggestions gets the names-only patch.
  */
 export async function patchRowSpeakerName(tcw: TinyCloudWeb, rowId: string, original: string, shown: string | null,
   checkpoint: () => void = () => undefined): Promise<void> {
   const base = "CASE WHEN json_valid(metadata) THEN metadata ELSE '{}' END";
+  const names = { speaker_names: { [original]: shown } };
   const changes = await execute(tcw,
-    `UPDATE connector_meeting SET metadata = json_patch(${base}, json_object('speaker_names', json_object(?, ?))), updated_at = ? WHERE id = ?`,
-    [original, shown, new Date().toISOString(), rowId], checkpoint);
+    `UPDATE connector_meeting SET metadata = json_patch(${base},
+      CASE WHEN json_type(${base}, '$.speaker_suggestions') = 'object' THEN ? ELSE ? END), updated_at = ? WHERE id = ?`,
+    [JSON.stringify({ ...names, speaker_suggestions: { [original]: null } }), JSON.stringify(names), new Date().toISOString(), rowId],
+    checkpoint);
   if (changes === 0) throw new Error("The note's row is missing");
-  await execute(tcw, `UPDATE connector_meeting SET metadata = json_remove(metadata, '$.speaker_names')
-    WHERE id = ? AND json_valid(metadata) AND json_extract(metadata, '$.speaker_names') = '{}'`, [rowId], checkpoint);
+  await execute(tcw, `UPDATE connector_meeting SET metadata = CASE
+      WHEN json_extract(metadata, '$.speaker_names') = '{}' AND json_extract(metadata, '$.speaker_suggestions') = '{}'
+        THEN json_remove(metadata, '$.speaker_names', '$.speaker_suggestions')
+      WHEN json_extract(metadata, '$.speaker_names') = '{}' THEN json_remove(metadata, '$.speaker_names')
+      ELSE json_remove(metadata, '$.speaker_suggestions') END
+    WHERE id = ? AND json_valid(metadata)
+      AND (json_extract(metadata, '$.speaker_names') = '{}' OR json_extract(metadata, '$.speaker_suggestions') = '{}')`,
+  [rowId], checkpoint);
 }
+
+// Names in the call and who spoke when read and write their rows in callNamesRows.ts, which loads with their save steps
+// (callNames.ts), not with the entry chunk the web app boots from (TC-2882). They are named here too, as before.
+export { readRowCallParticipants, writeCallParticipants, writeCallSpeakerSuggestions } from "./callNamesRows";
 
 /**
  * Names a recording's row, or (an empty `name`) returns it to its automatic title. The read and the write each run

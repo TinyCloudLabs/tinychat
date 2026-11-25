@@ -4,8 +4,17 @@
 //
 // Stored in the note row's metadata (`connector_meeting.metadata`):
 //   "speaker_names": { "Me": "Sam", "Them": "Alice, Bob" }
+//
+// A name the app suggested (names in the call, see callParticipants.ts) is written to `speaker_names`
+// like any other, and `speaker_suggestions` records that it was a suggestion:
+//   "speaker_suggestions": { "Them": { "name": "Alice", "source": "call_window", ... } }
+// The label shows as suggested exactly while its suggested name is the name shown. Who spoke when adds one per
+// "Them N" label (reason "speaking_marker"), and `speaker_suggestions_made` records each label the app has made (or
+// skipped) its suggestion for, so an ended suggestion is never made again.
 
 export const SPEAKER_NAMES_KEY = "speaker_names";
+export const SPEAKER_SUGGESTIONS_KEY = "speaker_suggestions";
+export const SPEAKER_SUGGESTIONS_MADE_KEY = "speaker_suggestions_made";
 export const MAX_SPEAKER_NAME_LENGTH = 80;
 
 /** Original label -> name shown. Only differing, non-empty names are kept. */
@@ -13,8 +22,27 @@ export type SpeakerNames = Readonly<Record<string, string>>;
 
 export const NO_SPEAKER_NAMES: SpeakerNames = Object.freeze({});
 
+/** One `speaker_suggestions` entry: the name suggested for a label, and how it was found. */
+export interface SpeakerSuggestion {
+  name: string;
+  source: "call_window";
+  confidence: "high";
+  /** One other person in the call (for "Them"), or their speaking marker was on while each line was said ("Them N"). */
+  reason: "one_other_participant" | "speaking_marker";
+  /** The `call_participants` person the name is from. */
+  person: string;
+  /** When it was suggested (ISO time). */
+  at: string;
+}
+
+/** Original label -> the name suggested for it. */
+export type SuggestedSpeakerNames = Readonly<Record<string, string>>;
+
+export const NO_SUGGESTED_SPEAKER_NAMES: SuggestedSpeakerNames = Object.freeze({});
+
+/** Spaces collapsed, and at most `MAX_SPEAKER_NAME_LENGTH` characters: cut by code point, so no character is split in half. */
 export function cleanSpeakerName(value: string): string {
-  return value.replaceAll(/\s+/g, " ").trim().slice(0, MAX_SPEAKER_NAME_LENGTH).trim();
+  return [...value.replaceAll(/\s+/g, " ").trim()].slice(0, MAX_SPEAKER_NAME_LENGTH).join("").trim();
 }
 
 /** The row metadata's overrides; anything not a string-to-string object is ignored. */
@@ -27,6 +55,31 @@ export function readSpeakerNames(metadata: unknown): SpeakerNames {
     return shown === "" || shown === original ? [] : [[original, shown] as const];
   });
   return entries.length === 0 ? NO_SPEAKER_NAMES : Object.freeze(Object.fromEntries(entries));
+}
+
+/** The suggested names in the row metadata; an entry without a usable name is ignored. */
+export function readSuggestedSpeakerNames(metadata: unknown): SuggestedSpeakerNames {
+  if (metadata === null || typeof metadata !== "object" || Array.isArray(metadata)) return NO_SUGGESTED_SPEAKER_NAMES;
+  const raw = (metadata as Record<string, unknown>)[SPEAKER_SUGGESTIONS_KEY];
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return NO_SUGGESTED_SPEAKER_NAMES;
+  const entries = Object.entries(raw).flatMap(([original, entry]) => {
+    const name = entry !== null && typeof entry === "object" && typeof (entry as { name?: unknown }).name === "string"
+      ? cleanSpeakerName((entry as { name: string }).name) : "";
+    return name === "" ? [] : [[original, name] as const];
+  });
+  return entries.length === 0 ? NO_SUGGESTED_SPEAKER_NAMES : Object.freeze(Object.fromEntries(entries));
+}
+
+/** `suggestions` without the one for `original`: what any name written for that label leaves (patchRowSpeakerName). */
+export function withoutSuggestedSpeakerName(suggestions: SuggestedSpeakerNames, original: string): SuggestedSpeakerNames {
+  if (!Object.hasOwn(suggestions, original)) return suggestions;
+  const rest = Object.entries(suggestions).filter(([key]) => key !== original);
+  return rest.length === 0 ? NO_SUGGESTED_SPEAKER_NAMES : Object.freeze(Object.fromEntries(rest));
+}
+
+/** The labels shown as suggested: those whose suggested name is the name they show. A rename to anything else ends it. */
+export function suggestedSpeakers(names: SpeakerNames, suggestions: SuggestedSpeakerNames): ReadonlySet<string> {
+  return new Set(Object.keys(suggestions).filter((original) => Object.hasOwn(names, original) && names[original] === suggestions[original]));
 }
 
 /** `names` with `original` shown as `shown`; an empty name, or the original label itself, clears the override. */
