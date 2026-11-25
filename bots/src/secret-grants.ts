@@ -102,6 +102,8 @@ interface GrantRecord {
     bodyCid: string;
     record: ApprovalRequesterState["record"];
     ackId: string;
+    /** OpenKey refused the stable requester's proof for this request, so it is loaded: its polls use the grant key. */
+    grantKeyProof?: boolean;
     session?: GrantSession;
   };
 }
@@ -142,6 +144,12 @@ export interface SecretGrantDeps {
    * key either way, so stopping a request deletes only that key.
    */
   requester?: (target: LinkSigner) => LinkSigner;
+  /**
+   * The private key of the stable requester, for the polls made up to the moment the owner opens the link: OpenKey checks those
+   * against the link's issuer, which is the stable key. Once the request is loaded it checks them against the grant's
+   * key, and every later call (fetch, acknowledge) is signed with that key too. Without it every call uses the grant's key.
+   */
+  requesterJwk?: Ed25519PrivateJwk;
 }
 
 export type AskResult = { approveUrl: string; expiresAt: string } | { refused: "invalid" | "conflict" | "unavailable" };
@@ -261,6 +269,8 @@ export class SecretGrants {
   readonly #links: ApprovalLinks;
   readonly #now: () => number;
   readonly #requester: (target: LinkSigner) => LinkSigner;
+  readonly #requesterJwk: Ed25519PrivateJwk | undefined;
+  readonly #requesterDid: string | undefined;
   /** Bots with a call_with_secret call running: one at a time each. */
   readonly #calling = new Set<string>();
   #polling = false;
@@ -272,6 +282,8 @@ export class SecretGrants {
     this.#links = deps.links ?? approvalLinks;
     this.#now = deps.now ?? Date.now;
     this.#requester = deps.requester ?? (target => target);
+    this.#requesterJwk = deps.requesterJwk;
+    this.#requesterDid = deps.requesterJwk ? this.#links.signerFromJwk(deps.requesterJwk).did : undefined;
     for (const entry of this.#store.load()) {
       const record = entry.record as GrantRecord | undefined;
       // A record that no longer opens (the app id, and so the key, changed) can't be used: it ends as failed.
@@ -468,6 +480,26 @@ export class SecretGrants {
     this.#save(id, record);
   }
 
+  /**
+   * One poll. Until the owner opens the link OpenKey checks the proof against the link's issuer (the stable
+   * requester); after, against the grant's key. The gateway can't see which it is, so it signs with the stable key
+   * first, and when OpenKey refuses that proof it asks once more with the grant's key and keeps using that key for the
+   * request. A refusal of both ends the request as any refused poll does. Only this call uses the stable key.
+   */
+  async #discover(id: string, record: GrantRecord, keys: NonNullable<GrantRecord["keys"]>, state: ApprovalRequesterState): ReturnType<typeof approvalLinks.discoverApprovalResult> {
+    const stable = this.#requesterJwk && keys.request.requesterDid === this.#requesterDid && !keys.grantKeyProof ? this.#requesterJwk : undefined;
+    if (!stable) return this.#links.discoverApprovalResult(state);
+    try {
+      return await this.#links.discoverApprovalResult({ ...state, signingKey: stable });
+    } catch (error) {
+      if (!this.#links.isApprovalClientError(error) || error.code !== "request_binding") throw error;
+    }
+    const found = await this.#links.discoverApprovalResult(state);
+    keys.grantKeyProof = true;
+    this.#save(id, record); // lost only costs one more refused poll after a restart
+    return found;
+  }
+
   async #collect(id: string, record: GrantRecord): Promise<void> {
     const keys = record.keys;
     const now = this.#now();
@@ -478,7 +510,7 @@ export class SecretGrants {
     let resultRef: string;
     let session: GrantSession;
     try {
-      const found = await this.#links.discoverApprovalResult(state);
+      const found = await this.#discover(id, record, keys, state);
       if (found.status === "pending") return;
       resultRef = found.resultRef;
       const envelope = await this.#links.fetchApprovalResult(state, found);

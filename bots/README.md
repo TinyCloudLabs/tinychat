@@ -361,9 +361,9 @@ call and returns the reply with the value hidden.
   default network. The longest grant it allows is 1 hour (`MAX_GRANT_SECONDS`, from `MAX_GRANT_MS` in `asks.ts`; standing
   access is a separate design), and a delegation more than 120 s over that is refused (OpenKey signs a real one-hour grant a few seconds over).
   The grant's audience is a fresh key per request, so Stop deletes only that key. The link is
-  signed by one stable TinyCloud One requester key (below), which is the body's `issuer` and `requesterDid`
-  (share-envelope 1.7.0; `SecretGrantDeps.requester`). A gateway without that injection signs with the grant's own key and
-  leaves `requesterDid` out. The owner the supervisor names must
+  signed by one stable TinyCloud One requester key (below), whose DID is the body's `issuer` and its
+  `requesterDid` field (share-envelope 1.7.0; `SecretGrantDeps.requester`). That DID is filled in after the first deploy
+  that carries this. A gateway without that injection signs with the grant's own key and leaves `requesterDid` out. The owner the supervisor names must
   be this bot's owner (409 otherwise). A known service's site and header must match `src/secret-catalog.ts`.
 - **Collection.** The gateway collects the result itself every 5 s. Before keeping a grant it checks:
   - the owner's SIWE signature;
@@ -386,9 +386,33 @@ call and returns the reply with the value hidden.
   that key with an empty salt, info `tinychat-bots approval-requester v1`, 32 bytes (`src/dstack-key.ts`). The sealing
   key uses another path and another info string, so neither can be derived from the other. The seed is never logged or
   returned; the gateway prints the requester's DID once at start-up, as `{"gateway":"approval_requester","did":"did:key:..."}`.
-  The DID is the same after a restart and changes only with the app id. DID: filled in after the first deploy that
-  carries this. If either key can't be had, the gateway starts without secrets (the 503 above); it never signs under
+  The DID is the same after a restart and changes only with the app id. The real DID is added here after the first
+  deploy that carries this: `TBD (printed at start-up, not yet deployed)`. If either key can't be had, the gateway starts without secrets (the 503 above); it never signs under
   the stable name with a per-request key.
+- **Which key signs which call.** The link, and every poll up to the owner opening it, are signed by the stable
+  requester: OpenKey checks those against the link's issuer. Once the link is loaded OpenKey checks polls against the
+  request's own grant key, and fetch and acknowledge always use that key. The gateway can't see the phase, so a poll
+  is signed by the stable key until OpenKey refuses that proof (`request_binding`); the same poll is then sent once
+  with the grant key, and that key is kept for the request (saved with it, so a restart does not go back). A request
+  is failed only when both are refused. The stable key's private JWK is held in memory only, built from the seed at
+  start-up, and is used for that one poll (`SecretGrantDeps.requesterJwk`, `#discover`).
+- **Rotating the requester key.** Rotate on a schedule the owner sets, and at once if the gateway may have been
+  compromised: anything running in the gateway can read the seed, so rotation is the response, and it also stops
+  the old DID from vouching for anything. Steps:
+  1. Add a new path constant beside `APPROVAL_REQUESTER_PATH` in `src/dstack-key.ts` (for example
+     `tinychat-bots/approval-requester-2`) with its own info string (`... approval-requester-2 v1`), switch
+     `approvalRequesterSeedFromDstack` to it, and add the path to the TC-3773 allowlist. dstack derives a different
+     key for the new path, so the DID is new.
+  2. Deploy bots. The gateway prints the new DID once at start-up (`approval_requester`).
+  3. Publish the new DID in this section and send it to OpenKey, so its table of known requesters lists "TinyCloud
+     One" under the new DID. Until OpenKey has it, links from the new DID show as not verified.
+  4. Once the old DID has no open request (a link lives about an hour, so one day is plenty), remove the old DID
+     from OpenKey's table and the old path from the allowlist.
+
+  Requests open at the switch keep their old DID in the body (`requesterDid`). The new gateway doesn't have that
+  key, so it polls them with their grant key only; OpenKey accepts that once the owner has opened the link and
+  refuses it until then, which ends such a request as failed and the owner asks anew. A deploy that rotates the key
+  is best done when no request is waiting.
 - **Stop now.** `DELETE /bots/<id>/secrets/<request id>` unlinks the sealed file and drops the gateway's in-memory
   copy (the grant and any cached TinyCloud session). Memory isn't zeroed. The volume has no backups. Until the
   DELETE lands, a request the supervisor lists as stopped, revoked, declined, expired or failed is refused anyway.
