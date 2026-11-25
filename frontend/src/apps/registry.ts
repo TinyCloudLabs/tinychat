@@ -10,7 +10,7 @@
 import { Capacitor } from "@capacitor/core";
 import type { PermissionEntry } from "@tinycloud/web-sdk";
 import type { LucideIcon } from "lucide-react";
-import { BadgeCheck, CircleUserRound, ClipboardList, Compass, FolderOpen, KeyRound, MessagesSquare, Mic } from "lucide-react";
+import { BadgeCheck, CircleUserRound, ClipboardList, Compass, Folder, KeyRound, MessagesSquare, Mic } from "lucide-react";
 import { ONE_NAV_ENABLED } from "../shell/navPins";
 import type { GlyphId } from "./icons";
 import { APP_DESCRIPTIONS, APP_NAMES, type ScopeId } from "./strings";
@@ -239,7 +239,7 @@ const ALL_APPS: readonly OneApp[] = [
     // doesn't hold and has no step-up ceiling for. Its tile there offers Drive's own page.
     inNativeApp: false,
     ...text("xyz.tinycloud.tinydrive"),
-    icon: FolderOpen,
+    icon: Folder,
     glyph: "drive",
     origin: KIND === "dev" ? "https://localhost:5197" : "https://drive.tinycloud.xyz",
     path: "/",
