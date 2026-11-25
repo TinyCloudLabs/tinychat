@@ -6,12 +6,15 @@ import { clampRequest, resolveCeiling } from "./scope";
 import { joinScopes, SCOPE_PHRASES } from "./strings";
 
 const READ_ONLY = ["get", "list", "metadata"];
+const READ_AND_ADD = ["get", "list", "metadata", "put"];
 const OWNER = { address: "0x0000000000000000000000000000000000000001", chainId: 1 };
 const ORIGIN = "https://drive.tinycloud.xyz";
 const SESSION = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
 const space = (name: string) => `tinycloud:pkh:eip155:1:${OWNER.address}:${name}`;
 // What TinyDrive sends when the owner opens a drive (tinydrive web/src/drive.js embedPermissions).
 const ask = (name: string) => [{ service: "tinycloud.kv", space: name, path: "", actions: ["tinycloud.kv/get", "tinycloud.kv/list", "tinycloud.kv/metadata"] }];
+// What TinyDrive sends when the owner first adds a file or a folder (embedWritePermissions).
+const add = (name: string) => [{ service: "tinycloud.kv", space: name, path: "", actions: ["tinycloud.kv/put"] }];
 
 function driveOn(platform: string): FramedOneApp | undefined {
   const app = oneAppsFor(platform).find((entry) => entry.id === "xyz.tinycloud.tinydrive");
@@ -28,27 +31,31 @@ describe("Drive inside One", () => {
   });
 
   for (const platform of ["web", "android", "ios"]) {
-    test(`${platform}: the ceiling is three whole spaces, to list and read only`, () => {
+    test(`${platform}: the ceiling is three whole spaces to list and read, with put on the owner's own space only`, () => {
       const entries = driveOn(platform)!.ceiling(OWNER);
-      expect(entries.map(({ permission }) => [permission.service, permission.space, permission.path])).toEqual([
-        ["tinycloud.kv", "applications", ""],
-        ["tinycloud.kv", "default", ""],
-        ["tinycloud.kv", "agents", ""],
+      expect(entries.map(({ permission }) => [permission.service, permission.space, permission.path, permission.actions.join()])).toEqual([
+        ["tinycloud.kv", "applications", "", READ_ONLY.join()],
+        ["tinycloud.kv", "default", "", READ_AND_ADD.join()],
+        ["tinycloud.kv", "agents", "", READ_ONLY.join()],
       ]);
-      for (const { permission } of entries) expect(permission.actions).toEqual(READ_ONLY);
     });
   }
 
-  test("no secrets, no SQL, no account space, no list of grants, and nothing that writes or deletes", () => {
+  test("no secrets, no SQL, no account space, no list of grants, no delete anywhere, and put only on the owner's own space", () => {
     const entries = drive.ceiling(OWNER).map(({ permission }) => permission);
     expect(entries.filter((entry) => entry.service !== "tinycloud.kv")).toEqual([]);
     expect(entries.filter((entry) => ["secrets", "account", "public", "credentials", "messages"].includes(entry.space ?? ""))).toEqual([]);
     const ceiling = resolveCeiling(OWNER, drive.ceiling(OWNER));
     for (const name of ["applications", "default", "agents"]) {
       expect(clampRequest(OWNER, ceiling, ask(name))).toHaveLength(1);
-      for (const action of ["put", "del", "delete"]) {
+      for (const action of ["del", "delete"]) {
         expect(clampRequest(OWNER, ceiling, [{ service: "tinycloud.kv", space: name, path: "", actions: [action] }])).toBeUndefined();
       }
+      // a write that also deletes is outside the ceiling as a whole
+      expect(clampRequest(OWNER, ceiling, [{ service: "tinycloud.kv", space: name, path: "", actions: ["put", "del"] }])).toBeUndefined();
+      const put = clampRequest(OWNER, ceiling, add(name));
+      if (name === "default") expect(put?.map(({ scope }) => scope)).toEqual(["ownFiles"]);
+      else expect(put).toBeUndefined();
       expect(clampRequest(OWNER, ceiling, [{ service: "tinycloud.sql", space: name, path: "default", actions: ["read"] }])).toBeUndefined();
       expect(clampRequest(OWNER, ceiling, [{ service: "tinycloud.delegation", space: name, path: "", actions: ["list"] }])).toBeUndefined();
     }
@@ -59,7 +66,8 @@ describe("Drive inside One", () => {
   test("the ask card names each drive in plain words", () => {
     expect(drive.ceiling(OWNER).map(({ scope }) => scope)).toEqual(["appsData", "ownFiles", "agentsData"]);
     expect(joinScopes(["ownFiles"])).toBe(SCOPE_PHRASES.ownFiles);
-    expect(SCOPE_PHRASES.ownFiles).toContain("read only");
+    expect(SCOPE_PHRASES.ownFiles).toContain("read them and add new ones");
+    expect(SCOPE_PHRASES.ownFiles).not.toContain("read only");
     expect(SCOPE_PHRASES.agentsData).toContain("read only");
   });
 
@@ -97,6 +105,33 @@ describe("Drive inside One", () => {
     const send = (data: unknown, origin = ORIGIN) => embed.handle({ origin, source: frame, data });
     return { send, posted, asked, delegated };
   }
+  /** The same, with what One holds kept per space and action, for the tests that add. */
+  function hostByAction(held: Map<string, Set<string>>, approve: boolean) {
+    const frame = {};
+    const posted: HostMessage[] = [];
+    const asked: Array<{ scopes: string[]; spaces: Array<string | undefined>; actions: string[][] }> = [];
+    const delegated: Array<{ audience: string; spaces: Array<string | undefined>; actions: string[][] }> = [];
+    const embed = new EmbedHost({
+      app: drive,
+      owner: OWNER,
+      frameWindow: () => frame,
+      post: (message) => { posted.push(message); },
+      holds: (entries) => entries.every((entry) => entry.actions.every((action) => held.get(entry.space ?? "")?.has(action))),
+      delegate: async (audience, entries) => {
+        delegated.push({ audience, spaces: entries.map((entry) => entry.space), actions: entries.map((entry) => entry.actions) });
+        return { spaceId: entries[0]!.space!, cid: "bafy-test", delegation: "serialized", expiresAt: Date.now() + 3_600_000, prompted: false };
+      },
+      stepUp: async (scopes, entries) => {
+        asked.push({ scopes, spaces: entries.map((entry) => entry.space), actions: entries.map((entry) => entry.actions) });
+        if (approve) for (const entry of entries) for (const action of entry.actions) held.set(entry.space ?? "", (held.get(entry.space ?? "") ?? new Set()).add(action));
+        return approve;
+      },
+      missing: () => {},
+      theme: () => "light",
+    });
+    const send = (data: unknown, origin = ORIGIN) => embed.handle({ origin, source: frame, data });
+    return { send, posted, asked, delegated };
+  }
   const hello = { v: 1, type: "tc-embed/hello", appId: "xyz.tinycloud.tinydrive", sessionDid: SESSION, nonce: "AAAAAAAAAAAAAAAAAAAAAA" };
   const request = (name: string, nonce: string) => ({ v: 1, type: "tc-embed/request", nonce, permissions: ask(name) });
 
@@ -109,14 +144,20 @@ describe("Drive inside One", () => {
     expect(run.posted[0]).toMatchObject({ type: "tc-embed/grant", grants: [] });
   });
 
-  test("opening My files asks the owner for that one space, read only, then grants it to the frame's key", async () => {
-    const run = host(new Set([space("applications")]), true);
+  test("opening My files asks the owner once for that one space, to read and add, then grants it to the frame's key", async () => {
+    const run = hostByAction(new Map([[space("applications"), new Set(READ_ONLY)]]), true);
     await run.send(hello);
+    // TinyDrive asks to read; the ceiling entry that covers it is the whole one, so the owner is asked once for both
     await run.send(request("default", "BBBBBBBBBBBBBBBBBBBBBB"));
-    expect(run.asked).toEqual([{ scopes: ["ownFiles"], spaces: [space("default")], actions: [READ_ONLY] }]);
+    expect(run.asked).toEqual([{ scopes: ["ownFiles"], spaces: [space("default")], actions: [READ_AND_ADD] }]);
     const last = run.delegated.filter((grant) => grant.spaces.includes(space("default")));
-    expect(last).toEqual([{ audience: SESSION, spaces: [space("default")], actions: [READ_ONLY] }]);
+    expect(last).toEqual([{ audience: SESSION, spaces: [space("default")], actions: [READ_AND_ADD] }]);
     expect(run.posted.at(-1)).toMatchObject({ type: "tc-embed/grant", nonce: "BBBBBBBBBBBBBBBBBBBBBB" });
+    // when the owner then adds a file, TinyDrive's ask for put is already held: no second question, one delegation for the space
+    await run.send({ v: 1, type: "tc-embed/request", nonce: "EEEEEEEEEEEEEEEEEEEEEE", permissions: add("default") });
+    expect(run.asked).toHaveLength(1);
+    expect(run.delegated.filter((grant) => grant.spaces.includes(space("default"))).every((grant) => grant.actions.length === 1)).toBe(true);
+    expect(run.posted.at(-1)).toMatchObject({ type: "tc-embed/grant", nonce: "EEEEEEEEEEEEEEEEEEEEEE" });
   });
 
   test("Not now: the frame is told denied and gets no grant for that space", async () => {
@@ -130,9 +171,14 @@ describe("Drive inside One", () => {
   test("a request outside the ceiling is denied without asking the owner", async () => {
     const run = host(new Set([space("applications")]), true);
     await run.send(hello);
-    await run.send({ v: 1, type: "tc-embed/request", nonce: "DDDDDDDDDDDDDDDDDDDDDD", permissions: [{ service: "tinycloud.kv", space: "default", path: "", actions: ["tinycloud.kv/put"] }] });
+    for (const [nonce, permissions] of [
+      ["DDDDDDDDDDDDDDDDDDDDDD", [{ service: "tinycloud.kv", space: "applications", path: "", actions: ["tinycloud.kv/put"] }]],
+      ["FFFFFFFFFFFFFFFFFFFFFF", [{ service: "tinycloud.kv", space: "default", path: "", actions: ["tinycloud.kv/del"] }]],
+    ] as const) {
+      await run.send({ v: 1, type: "tc-embed/request", nonce, permissions });
+      expect(run.posted.at(-1)).toEqual({ v: 1, type: "tc-embed/denied", nonce });
+    }
     expect(run.asked).toEqual([]);
-    expect(run.posted.at(-1)).toEqual({ v: 1, type: "tc-embed/denied", nonce: "DDDDDDDDDDDDDDDDDDDDDD" });
   });
 
   test("messages from any other origin are ignored", async () => {
