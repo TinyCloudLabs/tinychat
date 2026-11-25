@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { createHmac, randomUUID } from "node:crypto";
 import type { Express, NextFunction, Request, RequestHandler, Response } from "express";
 import type { FailureCause, ReplyOutcome } from "./billing/settle.js";
+import type { CalendarAutojoinLogEvent } from "./services/calendar-autojoin-log-events.js";
 
 // Legacy Private/hosted correlation headers intentionally keep their existing broader UUID syntax.
 const LEGACY_CORRELATION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -309,7 +310,7 @@ export function parseRequestIdFirstPartyOrigins(value: string | undefined): Read
   return origins;
 }
 
-function emitToStdout(event: RequestEvent): void {
+export function emitToStdout(event: RequestEvent | CalendarAutojoinLogEvent): void {
   // Only this typed projection bypasses the request output boundary.
   context.exit(() => process.stdout.write(JSON.stringify(event) + "\n"));
 }

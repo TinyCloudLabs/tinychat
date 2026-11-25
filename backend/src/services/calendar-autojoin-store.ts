@@ -5,6 +5,7 @@ import {
   BackendStorageLane, BackendStorageLaneTimeout, REQUEST_LANE_WAIT_MS, type BackendStorageLaneRunOptions,
 } from "./backend-storage-lane.js";
 import { normalizeGoogleMeetUrl } from "./google-calendar.js";
+import { calendarConnectionEvent, emitCalendarAutojoinEvent } from "./calendar-autojoin-log-events.js";
 import type { CreateMeetingInput } from "./transcription-api.js";
 import { CalendarAutojoinStatusCache, STATUS_CACHE_MAX_TENANTS, type CalendarAutojoinOffReason } from "./calendar-autojoin-status-cache.js";
 import { calendarAutojoinOutcomes, type CalendarAutojoinStatusSummary } from "./calendar-autojoin-status-summary.js";
@@ -443,6 +444,9 @@ class JsonCalendarAutojoinStore implements CalendarAutojoinStore {
           if (previous === null) {
             try { await this.writeSummary(tenant, { version: 1, outcomes: [] }); }
             catch { this.forgetStatusSummaryDigest(tenant); }
+          }
+          if (previous?.state !== next.state || previous?.errorCode !== next.errorCode) {
+            emitCalendarAutojoinEvent(calendarConnectionEvent(next));
           }
         };
         if (connectionPolicyChanged(previous, next)) await this.statusCache.mutate(tenant, write);

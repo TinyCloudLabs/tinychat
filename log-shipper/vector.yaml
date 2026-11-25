@@ -147,6 +147,32 @@ transforms:
             status = int(j.status) ?? 0
             if status >= 100 && status <= 599 { out.status = status }
           }
+        } else if name == "calendar_autojoin_tick" {
+          if !is_integer(j.tenants) || !is_integer(j.rows) || !is_integer(j.scans) || !is_integer(j.timers_due) || !is_integer(j.duration_ms) || !is_boolean(j.scan_complete) { abort }
+          tenants = int(j.tenants) ?? -1
+          rows = int(j.rows) ?? -1
+          scans = int(j.scans) ?? -1
+          timers_due = int(j.timers_due) ?? -1
+          duration_ms = int(j.duration_ms) ?? -1
+          if tenants < 0 || tenants > 1000000 || rows < 0 || rows > 1000000 || scans < 0 || scans > 1000000 || timers_due < 0 || timers_due > 1000000 || duration_ms < 0 || duration_ms > 86400000 { abort }
+          out = {"svc": "backend", "event": name, "component": "calendar-autojoin", "level": "info", "ts": ts, "tenants": tenants, "rows": rows, "scans": scans, "timers_due": timers_due, "scan_complete": j.scan_complete == true, "duration_ms": duration_ms}
+        } else if name == "calendar_autojoin_decision" {
+          reason = string(j.reason) ?? ""
+          if !includes(["sent", "completed", "failed", "cancelled", "missed", "missed_window", "not_accepted", "event_ineligible", "event_changed", "already_recorded", "unverified_capture", "capacity_exhausted", "shared", "recording_deleted", "autojoin_disabled", "create_rejected", "google_needs_reconnect", "lookup_identity_mismatch", "unknown"], reason) { abort }
+          start = string(j.start) ?? ""
+          if !match(start, r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$') { abort }
+          out = {"svc": "backend", "event": name, "component": "calendar-autojoin", "level": "info", "ts": ts, "reason": reason, "start": start}
+          tenant_hash = string(j.tenant_hash) ?? ""
+          if match(tenant_hash, r'^[0-9a-f]{12}$') { out.tenant_hash = tenant_hash }
+        } else if name == "calendar_autojoin_connection" {
+          state = string(j.state) ?? ""
+          if !includes(["disabled", "enabling", "enabled", "needs_reconnect"], state) { abort }
+          code = string(j.code) ?? ""
+          if code != "" && !includes(["needs_reconnect", "calendar_scan_failed", "scan_incomplete", "calendar_transport", "calendar_rate_limited", "calendar_unauthorized", "calendar_access_denied", "calendar_unavailable", "calendar_invalid_response", "unknown"], code) { abort }
+          out = {"svc": "backend", "event": name, "component": "calendar-autojoin", "level": "info", "ts": ts, "state": state}
+          if code != "" { out.code = code }
+          tenant_hash = string(j.tenant_hash) ?? ""
+          if match(tenant_hash, r'^[0-9a-f]{12}$') { out.tenant_hash = tenant_hash }
         } else if name == "assemblyai_provider_blocked" {
           reason = string(j.reason) ?? ""
           if !includes(["billing_blocked", "key_rejected", "rate_limited"], reason) { abort }
@@ -317,7 +343,9 @@ transforms:
     inputs: [request_split._unmatched]
     route:
       lane: '.event == "backend_storage_lane_wait"'
-      calendar: '.component == "calendar-autojoin"'
+      calendar: '.component == "calendar-autojoin" && .event == "backend_log_error"'
+      calendar_decision: '.event == "calendar_autojoin_decision"'
+      calendar_state: '.event == "calendar_autojoin_connection" || .event == "calendar_autojoin_tick"'
   lane_cap:
     type: throttle
     inputs: [diagnostic_split.lane]
@@ -327,6 +355,16 @@ transforms:
     type: throttle
     inputs: [diagnostic_split.calendar]
     threshold: 10
+    window_secs: 60
+  calendar_decision_cap:
+    type: throttle
+    inputs: [diagnostic_split.calendar_decision]
+    threshold: 120
+    window_secs: 60
+  calendar_state_cap:
+    type: throttle
+    inputs: [diagnostic_split.calendar_state]
+    threshold: 30
     window_secs: 60
   other_cap:
     type: throttle
@@ -397,7 +435,7 @@ transforms:
 sinks:
   betterstack:
     type: http
-    inputs: [request_problem_cap, request_routine_cap, request_chat_cap, budget_preflight_cap, turn_settled_cap, lane_cap, calendar_cap, other_cap, diagnostic_summary_cap]
+    inputs: [request_problem_cap, request_routine_cap, request_chat_cap, budget_preflight_cap, turn_settled_cap, lane_cap, calendar_cap, calendar_decision_cap, calendar_state_cap, other_cap, diagnostic_summary_cap]
     method: post
     uri: "https://s2795438.us-west-2a.betterstackdata.com/"
     encoding: { codec: json }

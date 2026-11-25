@@ -1,6 +1,7 @@
 import { onInvite, shareDecision, windowsOverlap, type ShareDecision } from "./calendar-autojoin-share.js";
 import { calendarAutojoinOutcomes } from "./calendar-autojoin-status-summary.js";
 import { logCalendarAutojoinFailure } from "./calendar-autojoin-diagnostics.js";
+import { calendarDecisionEvent, calendarTickEvent, emitCalendarAutojoinEvent, type CalendarDecisionReason, type CalendarTickCounts } from "./calendar-autojoin-log-events.js";
 import {
   CalendarRowChanged, decidedRev, type CalendarAutojoinStore, type CalendarConnection, type CalendarOccurrence, type SharedCapture, stableJson, TenantCoordinator,
 } from "./calendar-autojoin-store.js";
@@ -109,6 +110,7 @@ export class CalendarAutojoinWorker {
   private readonly armable = new Set<string>();
   private tickStartedAt?: number;
   private tickPeriodMs = TICK_MS;
+  private lastTick?: { signature: string; at: number };
   private readonly ownerKey: CalendarAutojoinStore;
   constructor(options: CalendarAutojoinWorkerOptions) {
     this.ownerKey = options.store;
@@ -168,17 +170,27 @@ export class CalendarAutojoinWorker {
     catch (error) { this.options.connection.invalidateGrantReferences?.(); throw error; }
     // A cold/invalidated index must not wait behind every tenant's occurrence reconciliation.
     await this.options.connection.backfillGrantReferences?.(tenants, this.options.store, () => this.stopping, grantSnapshot);
-    const counts = { rows: 0, scans: 0 };
+    const counts = { rows: 0, scans: 0, scanComplete: true };
     let cursor = 0;
     await Promise.all(Array.from({ length: Math.min(4, tenants.length) }, async () => {
       while (cursor < tenants.length && !this.stopping) {
         const connection = tenants[cursor++]!;
         try { await this.reconcileTenant(connection, counts); }
-        catch (error) { logCalendarAutojoinFailure("tenant_reconcile", error); }
+        catch (error) { counts.scanComplete = false; logCalendarAutojoinFailure("tenant_reconcile", error); }
       }
     }));
     // Counts only: never ids, titles or addresses.
     console.log(`[calendar-autojoin] code=tick_done ms=${this.now() - startedAt} tenants=${tenants.length} rows=${counts.rows} scans=${counts.scans} timers=${this.dueTimers.size}`);
+    this.logTick({ tenants: tenants.length, rows: counts.rows, scans: counts.scans, timers_due: this.dueTimers.size,
+      scan_complete: counts.scanComplete, duration_ms: this.now() - startedAt }, startedAt);
+  }
+  /** First tick, changed counts or health, every five minutes and every failed scan. */
+  private logTick(counts: CalendarTickCounts, at: number): void {
+    const signature = `${counts.tenants}/${counts.rows}/${counts.scans}/${counts.timers_due}/${counts.scan_complete}`;
+    if (!counts.scan_complete || this.lastTick?.signature !== signature || at - this.lastTick.at >= 300_000) {
+      emitCalendarAutojoinEvent(calendarTickEvent(counts));
+      this.lastTick = { signature, at };
+    }
   }
   /** `fresh`: from the node, even through the worker's cached store. Every consent check that
    *  gates a Google read or a running recording reads fresh. */
@@ -190,7 +202,7 @@ export class CalendarAutojoinWorker {
     }
     catch (error) { this.options.connection.invalidateGrantReferences?.(); throw error; }
   }
-  private async reconcileTenant(listed: CalendarConnection, counts: { rows: number; scans: number }): Promise<void> {
+  private async reconcileTenant(listed: CalendarConnection, counts: { rows: number; scans: number; scanComplete: boolean }): Promise<void> {
     const { store, connection: credentials } = this.options;
     const tenant = listed.tenant;
     await credentials.cleanupEnabling(tenant);
@@ -208,6 +220,7 @@ export class CalendarAutojoinWorker {
         const events = await this.google(connection, token => this.options.calendar.listEvents(token, this.now()));
         await this.remember(connection, events);
       } catch (error) {
+        counts.scanComplete = false;
         const delay = this.retryDelay(error, 3);
         await store.updateConnection(tenant, current => current?.generation === connection!.generation ? {
           ...current, scanComplete: false, errorCode: error instanceof GoogleCalendarError ? error.code : "calendar_scan_failed", nextScanAt: this.now() + Math.max(60_000, delay),
@@ -316,8 +329,20 @@ export class CalendarAutojoinWorker {
     return Object.assign(Object.create(store) as CalendarAutojoinStore, {
       putOccurrence: async (row: CalendarOccurrence) => { await store.putOccurrence(row); this.recordSummaryChange(row.tenant, row.id, row); this.arm(row); },
       updateOccurrence: async (tenant: string, id: string, update: Parameters<CalendarAutojoinStore["updateOccurrence"]>[2]) => {
-        const row = await store.updateOccurrence(tenant, id, update);
-        if (row) { this.recordSummaryChange(tenant, id, row); this.arm(row); }
+        let previousPhase: CalendarOccurrence["phase"] | undefined;
+        let previousDisposition: string | undefined;
+        const row = await store.updateOccurrence(tenant, id, current => {
+          previousPhase = current?.phase;
+          previousDisposition = current?.disposition;
+          return update(current);
+        });
+        if (row) {
+          this.recordSummaryChange(tenant, id, row); this.arm(row);
+          if ((row.phase === "terminal" && (previousPhase !== "terminal" || previousDisposition !== row.disposition))
+            || (row.phase === "sent" && previousPhase !== "sent")) {
+            emitCalendarAutojoinEvent(calendarDecisionEvent(row, (row.phase === "sent" ? "sent" : row.disposition ?? "unknown") as CalendarDecisionReason));
+          }
+        }
         return row;
       },
       deleteOccurrence: async (tenant: string, id: string, when?: (stored: CalendarOccurrence) => boolean) => {
@@ -397,7 +422,12 @@ export class CalendarAutojoinWorker {
         }
         // Refused when another write (a due-time timer's, outside the tenant lock) moved the row on
         // since it was listed: that write stands, and the next scan decides on it.
-        try { await store.putOccurrence(next); }
+        try {
+          await store.putOccurrence(next);
+          if (next.phase === "terminal" && (old?.phase !== "terminal" || old.disposition !== next.disposition)) {
+            emitCalendarAutojoinEvent(calendarDecisionEvent(next, next.disposition as CalendarDecisionReason));
+          }
+        }
         catch (error) { if (!(error instanceof CalendarRowChanged)) throw error; }
       }
       // TC-1047: a timer's dispatch records lastDispatchLag outside this lock; keep the latest one.

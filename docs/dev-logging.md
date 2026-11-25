@@ -209,6 +209,19 @@ provider refusal can be read without public Phala logs. Same pattern as tinyclou
   A redaction transform (DIDs, `0x` addresses, JWTs, bearer tokens, URLs, emails, long base64) runs first as a second
   barrier, except on `tinychat_request` lines, whose 64-hex `account_hash` it would erase; the allowlist checks each
   of their fields against a strict pattern instead.
+- **Calendar auto-join events (TC-4406).** `calendar_autojoin_tick` carries `tenants`, `rows`, `scans`,
+  `timers_due` (armed due-time timers), `scan_complete` and `duration_ms`. The worker emits on the first
+  tick, when counts or scan health change, every five minutes and on every incomplete scan. A failed
+  tenant reconciliation also marks its tick incomplete. `calendar_autojoin_decision` carries a closed
+  `reason`, ISO `start` and optional 12-hex `tenant_hash` when `REQUEST_LOG_HMAC_KEY` is configured;
+  the hash is the prefix of the existing keyed monthly request pseudonym. It is emitted for the first
+  `sent` transition and for each terminal decision, including an RSVP classification during discovery.
+  `calendar_autojoin_connection` carries the closed `state`, an optional closed `code` and the same
+  optional hash; it records committed state or error-code transitions. Unknown stored codes and
+  dispositions map to `unknown`. No calendar title, email, URL, token or provider text ships.
+  Vector caps decision events at 120/minute and tick/connection events at 30/minute, separately from
+  the 10/minute calendar failure diagnostics. The source and allowlist are in
+  `backend/src/services/calendar-autojoin-log-events.ts` and `log-shipper/vector.yaml`.
 - **Request records (TC-2537).** The allowlist rebuilds each `tinychat_request` from these fields only:
   `request_id`, `method`, `route_template` (the record's `route`), `status`, `duration_ms` (0.1 ms), `stream`, `code`,
   `failure_cause` (`model` or `ours`), `credits`, `account_hash`, plus `svc`, `event`, `level` (`error` for a 5xx, else `info`) and `ts`.
