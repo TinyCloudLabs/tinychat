@@ -90,7 +90,7 @@ jobs:
     name: Signing preflight (desktop-release)
     if: inputs.sign
     runs-on: ubuntu-latest
-    # Signing secrets live only in this environment (deployment branches: main; required reviewer: Sam).
+    # Signing secrets live only in this environment (deployment branches: main only; no required reviewer).
     environment: desktop-release
     timeout-minutes: 5
     steps:
@@ -396,9 +396,10 @@ jobs:
     # Explicit: a skipped preflight would otherwise skip this job too.
     if: ${{ !inputs.smoke && !cancelled() && needs.build.result == 'success' }}
     runs-on: macos-26
-    # Signing secrets live only in this environment (deployment branches: main; required reviewer: Sam). This job checks
-    # out nothing but scripts/release and the entitlements at the workflow commit and runs no project code: no bun, no
-    # cargo, no tauri, no node_modules binary.
+    # Signing secrets live only in this environment (deployment branches: main only; no required reviewer). The workflow
+    # runs only from main and the provenance step below checks the release tag before any secret is read. This job
+    # checks out nothing but scripts/release and the entitlements at the workflow commit and runs no project code: no
+    # bun, no cargo, no tauri, no node_modules binary.
     environment: ${{ inputs.sign && 'desktop-release' || '' }}
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
