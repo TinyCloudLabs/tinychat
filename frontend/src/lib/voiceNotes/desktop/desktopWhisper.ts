@@ -1,15 +1,15 @@
 import { mountedVoiceNoteDid } from "../accountContext";
 import type { BatchResponse, TranscriptionEvent } from "@/lib/anarlog/transcription.gen";
 import { logPipeline, logPipelineError } from "@/lib/debugLog";
-import type { WhisperModel } from "@/lib/localTranscriber";
+import { PARAKEET_MODEL_ID, type LocalSttModel, type WhisperModel } from "@/lib/localTranscriber";
 import { leaseWhisperServer, SHARED_WHISPER_SERVER_SCOPE, type WhisperServerLease } from "@/lib/whisperServerLease";
-import type { NoteSttState, VoiceNoteRecording } from "../nativeVoiceNotes";
+import type { LocalTranscript, NoteSttState, VoiceNoteRecording } from "../nativeVoiceNotes";
 import type { WebStore } from "../web/webStore";
 import type { DesktopBridge } from "./desktopVoiceNotes";
 import { whisperLocalTranscript } from "./whisperTranscript";
 
-const MODEL_IDS = new Set<WhisperModel>(["QuantizedTinyEn", "QuantizedTiny", "QuantizedBaseEn", "QuantizedBase",
-  "QuantizedSmallEn", "QuantizedSmall", "QuantizedLargeTurbo"]);
+const MODEL_IDS = new Set<LocalSttModel>(["QuantizedTinyEn", "QuantizedTiny", "QuantizedBaseEn", "QuantizedBase",
+  "QuantizedSmallEn", "QuantizedSmall", "QuantizedLargeTurbo", PARAKEET_MODEL_ID]);
 type WhisperEvent = TranscriptionEvent;
 
 /** Local STT commands and Exo's session-id-only recorder transcription command. */
@@ -18,6 +18,8 @@ export interface DesktopWhisperBridge {
   startServer(model: WhisperModel): Promise<string>;
   stopServer(): Promise<void>;
   startTranscription(params: { id: string; stageId: string; model: WhisperModel }): Promise<void>;
+  /** Parakeet on the same staged recording: no Whisper server. Absent where the app cannot do it. */
+  startLocalStt?(params: { id: string; stageId: string; model: typeof PARAKEET_MODEL_ID }): Promise<void>;
   stopTranscription(id: string): Promise<void>;
   onTranscription(cb: (event: WhisperEvent) => void): Promise<() => void>;
 }
@@ -36,6 +38,7 @@ export async function loadDesktopWhisperBridge(): Promise<DesktopWhisperBridge> 
     startServer: async (model) => unwrap(await localStt.commands.startServer(model)),
     stopServer: async () => { unwrap(await localStt.commands.stopServer("internal")); },
     startTranscription: async (params) => { await invoke("recorder_whisper_start", params); },
+    startLocalStt: async (params) => { await invoke("recorder_local_stt_start", params); },
     stopTranscription: async (id) => { unwrap(await transcription.commands.stopTranscription(id)); },
     onTranscription: async (cb) => {
       const stop = await transcription.events.transcriptionEvent.listen(({ payload }) => cb(payload));
@@ -45,7 +48,20 @@ export async function loadDesktopWhisperBridge(): Promise<DesktopWhisperBridge> 
 }
 
 export type DesktopWhisperJob = { id: string; state: "queued" | "transcribing" | "done" | "failed";
-  error: string | null; progress: number | null; explicitRerun?: boolean; position?: number | null; inLine?: number };
+  error: string | null; progress: number | null; explicitRerun?: boolean; position?: number | null; inLine?: number;
+  /** Queued while the recording's audio is still being finished on this Mac: the job starts once it is ready. */
+  audio?: "preparing";
+  /** Stopped because no Whisper model is selected or downloaded: it waits for a model (`modelAvailable` requeues it). */
+  model?: "missing" };
+
+/** A job that waits for a Whisper model: it did not fail, and Get model is its action. */
+export function whisperJobNeedsModel(job: Pick<DesktopWhisperJob, "state" | "model"> | null | undefined): boolean {
+  return job?.state === "failed" && job.model === "missing";
+}
+
+/** The queue's own refusal when no downloaded Whisper model is selected (`selectedModel`), as stored in the note's stt error. */
+const modelMissing = (error: string | null | undefined): boolean =>
+  error?.startsWith("unavailable:") === true && /\bmodel\b/i.test(error);
 
 export interface DesktopWhisperRerun { id: string; rev: number; baseRev: number; baseHash: string }
 
@@ -56,9 +72,13 @@ export interface DesktopWhisperQueue {
   onDone(listener: (id: string) => void): () => void;
   onFailed(listener: (id: string) => void): () => void;
   noteCommitted(recording: VoiceNoteRecording): Promise<void>;
+  /** A stopped note whose audio is still being finished: shown as waiting for it; finishing calls noteCommitted. */
+  notePreparing(recording: VoiceNoteRecording): void;
   rerun(request: DesktopWhisperRerun): Promise<void>;
   retry(id: string): Promise<void>;
   modelAvailable(): Promise<void>;
+  /** Shows each pending note's stored state at once, before `resume` restarts any work (a reload's first paint). */
+  restore(): Promise<void>;
   resume(): Promise<void>;
   beforeCapture(): Promise<void>;
   captureEnded(): void;
@@ -73,8 +93,8 @@ export const __desktopWhisperQueueReadsForTests = () => queueReads;
 export function registerDesktopWhisperQueue(queue: DesktopWhisperQueue | null): void { registered = queue; }
 
 const stt = (state: NoteSttState["state"], error: string | null = null,
-  rerun: DesktopWhisperRerun | null = null): NoteSttState => ({
-  state, pack: null, engine: "whisper", segmentsDone: 0, windowsDone: 0, error,
+  rerun: DesktopWhisperRerun | null = null, engine: NoteSttState["engine"] = "whisper"): NoteSttState => ({
+  state, pack: null, engine, segmentsDone: 0, windowsDone: 0, error,
   rerunRev: rerun?.rev ?? null, rerunBaseRev: rerun?.baseRev ?? null, rerunBaseHash: rerun?.baseHash ?? null,
 });
 
@@ -86,7 +106,7 @@ const WHISPER_REJECTION_HELP: Record<string, string> = {
   server_unavailable: "The Whisper server is unavailable. Restart local transcription and retry.",
 };
 
-function whisperFailure(error: unknown): string {
+function whisperFailure(error: unknown, engineName = "Whisper"): string {
   if (typeof error === "string") return error;
   if (error && typeof error === "object") {
     const { code, message } = error as { code?: unknown; message?: unknown };
@@ -94,11 +114,11 @@ function whisperFailure(error: unknown): string {
     if (typeof code === "string" && code) {
       const help = Object.hasOwn(WHISPER_REJECTION_HELP, code) ? WHISPER_REJECTION_HELP[code] : undefined;
       return help ? `${code}: ${help}${detail ? ` Details: ${detail}` : ""}`
-        : `${code}: ${detail || "Whisper transcription failed"}`;
+        : `${code}: ${detail || `${engineName} transcription failed`}`;
     }
     if (detail) return detail;
   }
-  return "Whisper transcription failed";
+  return `${engineName} transcription failed`;
 }
 
 async function stageId(id: string): Promise<string> {
@@ -116,21 +136,32 @@ const clock = (ms: number): string => {
  * less than the saved recording is incomplete, whatever its text says, so it is reported instead of saved.
  * Encoder padding and rounding get max(3 s, 3%); a response without a duration is not judged.
  */
-function decodedShortfall(recordingMs: number, response: BatchResponse): string | null {
+function decodedShortfall(recordingMs: number, response: BatchResponse, engineName = "Whisper"): string | null {
   const metadata = response.metadata;
   const seconds = metadata && typeof metadata === "object" && !Array.isArray(metadata) ? metadata.duration : null;
   if (typeof seconds !== "number" || !Number.isFinite(seconds) || !(recordingMs > 0)) return null;
   const decodedMs = seconds * 1000;
   if (recordingMs - decodedMs <= Math.max(3_000, recordingMs * 0.03)) return null;
-  return `Whisper transcribed only ${clock(decodedMs)} of this ${clock(recordingMs)} recording. Retry transcription.`;
+  return `${engineName} transcribed only ${clock(decodedMs)} of this ${clock(recordingMs)} recording. Retry transcription.`;
 }
+
+/**
+ * Who spoke when (`nameCallSpeakersOnThisMac`), loaded with the first transcript: the web app's entry chunk carries
+ * this queue but never runs it (TC-2882). A chunk that does not load rejects, and the job stores the transcript as it
+ * was, as when the naming fails.
+ */
+const nameCallSpeakersLater = (note: VoiceNoteRecording, transcript: LocalTranscript): Promise<LocalTranscript> =>
+  import("../callSpeakersOnThisMac").then((module) => module.nameCallSpeakersOnThisMac(note, transcript));
 
 export function createDesktopWhisperQueue(args: {
   store: WebStore; files: DesktopBridge; whisper: DesktopWhisperBridge;
   captureLive: () => boolean;
   currentAccountDid?: () => string | null;
+  /** Who spoke when: names the remote lines of a call recording before the transcript is stored. Never throws. */
+  nameCallSpeakers?: (note: VoiceNoteRecording, transcript: LocalTranscript) => Promise<LocalTranscript>;
 }): DesktopWhisperQueue {
   const { store, files, whisper, captureLive } = args;
+  const nameCallSpeakers = args.nameCallSpeakers ?? nameCallSpeakersLater;
   const jobs = new Map<string, DesktopWhisperJob>();
   const owners = new Map<string, string | null>();
   const currentAccountDid = args.currentAccountDid ?? mountedVoiceNoteDid;
@@ -152,12 +183,15 @@ export function createDesktopWhisperQueue(args: {
   let activeRun: Promise<void> | null = null;
   let transcribing = false;
   let serverLease: WhisperServerLease | null = null;
+  /** Notes whose current job runs on Parakeet; every other job is Whisper. */
+  const parakeetJobs = new Set<string>();
   let disposed = false;
   let stopping = false;
 
   const publish = (id: string, state: DesktopWhisperJob["state"], error: string | null = null,
-    progress: number | null = null) => {
-    jobs.set(id, { id, state, error, progress, explicitRerun: reruns.has(id) || failedReruns.has(id) });
+    progress: number | null = null, audio?: "preparing") => {
+    jobs.set(id, { id, state, error, progress, explicitRerun: reruns.has(id) || failedReruns.has(id), ...(audio ? { audio } : {}),
+      ...(state === "failed" && !reruns.has(id) && !failedReruns.has(id) && modelMissing(error) ? { model: "missing" as const } : {}) });
     derivedSnapshot = null;
     for (const listener of listeners) {
       try { listener(); } catch (error) { console.error("[desktopWhisper] Status listener failed", error); }
@@ -171,18 +205,18 @@ export function createDesktopWhisperQueue(args: {
   };
   const mark = async (id: string, state: NoteSttState["state"], error: string | null = null, progress = 0,
     rerun: DesktopWhisperRerun | null = reruns.get(id) ?? failedReruns.get(id) ?? null) => {
-    await store.updateStt(id, stt(state, error, rerun));
+    await store.updateStt(id, stt(state, error, rerun, parakeetJobs.has(id) ? "parakeet" : "whisper"));
     publish(id, state === "running" ? "transcribing" : state === "waiting_for_model" ? "failed"
       : state === "cancelled" ? "queued" : state, error,
       state === "running" ? progress : null);
   };
-  const selectedModel = async (): Promise<WhisperModel> => {
+  const selectedModel = async (): Promise<LocalSttModel> => {
     const id = await files.invoke<string | null>("recorder_models_get");
-    if (!id || !MODEL_IDS.has(id as WhisperModel)) throw new Error("unavailable: select a downloaded Whisper model in Capture settings");
+    if (!id || !MODEL_IDS.has(id as LocalSttModel)) throw new Error("unavailable: select a downloaded Whisper model in Capture settings");
     const models = await files.invoke<{ id: string; downloaded: boolean }[]>("recorder_models_list");
     if (!models.some((row) => row.id === id && row.downloaded))
-      throw new Error("unavailable: the selected Whisper model is not downloaded");
-    return id as WhisperModel;
+      throw new Error(`unavailable: the selected ${id === PARAKEET_MODEL_ID ? "Parakeet" : "Whisper"} model is not downloaded`);
+    return id as LocalSttModel;
   };
   const stageAudio = async (id: string, stagedId: string): Promise<void> => {
     await files.invoke<void>("recorder_whisper_stage_audio", { id, stageId: stagedId });
@@ -193,6 +227,7 @@ export function createDesktopWhisperQueue(args: {
     const rerun = reruns.get(id) ?? null;
     let stagedId: string | null = null;
     let yieldedForCapture = false;
+    let engineName = "Whisper";
     try {
       const existing = (await store.getTranscript({ id })).transcript;
       if (!rerun && existing?.noteId === id && (existing.outcome === "no_speech" || existing.segments.some((segment) => segment.text.trim()))) {
@@ -201,16 +236,25 @@ export function createDesktopWhisperQueue(args: {
         return;
       }
       const model = await selectedModel();
-      logPipeline("transcription", id, "start", { engine: "whisper" });
+      // Parakeet runs in the app's process: no Whisper server is leased or started for it.
+      const engine = model === PARAKEET_MODEL_ID ? "parakeet" : "whisper";
+      if (model === PARAKEET_MODEL_ID) {
+        if (!whisper.startLocalStt) throw new Error("unavailable: this app cannot run Parakeet; select a Whisper model in Capture settings");
+        parakeetJobs.add(id);
+        engineName = "Parakeet";
+      }
+      logPipeline("transcription", id, "start", { engine });
       await mark(id, "running");
       stagedId = await stageId(id);
       await stageAudio(id, stagedId);
       if (disposed || stopping || captureLive()) throw new Error("capture_has_priority");
-      const lease = leaseWhisperServer(model, () => whisper.startServer(model), () => whisper.stopServer(),
-        whisper.serverScope ?? whisper);
-      serverLease = lease;
-      await lease.ready;
-      if (disposed || stopping || captureLive()) throw new Error("capture_has_priority");
+      if (model !== PARAKEET_MODEL_ID) {
+        const lease = leaseWhisperServer(model, () => whisper.startServer(model), () => whisper.stopServer(),
+          whisper.serverScope ?? whisper);
+        serverLease = lease;
+        await lease.ready;
+        if (disposed || stopping || captureLive()) throw new Error("capture_has_priority");
+      }
       const chunks: Extract<import("@/lib/anarlog/transcription.gen").StreamResponse, { type: "Results" }>[] = [];
       const response = await new Promise<BatchResponse>((resolve, reject) => {
         let settled = false;
@@ -230,7 +274,7 @@ export function createDesktopWhisperQueue(args: {
               }
               catch { /* The task may have already stopped. */ }
               finally { if (stopDeadline !== undefined) clearTimeout(stopDeadline); }
-              reject(new Error("Whisper transcription timed out"));
+              reject(new Error(`${engineName} transcription timed out`));
             })();
           }
         }, timeoutMs);
@@ -241,7 +285,7 @@ export function createDesktopWhisperQueue(args: {
               chunks.push(event.event.response);
             if (event.event.type === "progress") {
               const progress = Math.round(event.event.percentage * 100);
-              logPipeline("transcription", id, "progress", { engine: "whisper" });
+              logPipeline("transcription", id, "progress", { engine });
               progressUpdates = progressUpdates.then(() => mark(id, "running", null, progress));
             }
             return;
@@ -258,30 +302,34 @@ export function createDesktopWhisperQueue(args: {
             stop = await whisper.onTranscription(finish);
             if (settled) { stop(); return; }
             transcribing = true;
-            await whisper.startTranscription({ id, stageId: stagedId!, model });
+            if (model === PARAKEET_MODEL_ID) await whisper.startLocalStt!({ id, stageId: stagedId!, model });
+            else await whisper.startTranscription({ id, stageId: stagedId!, model });
           } catch (error) { if (!settled) { settled = true; clearTimeout(timer); stop(); reject(error); } }
         })();
       });
       if (disposed || stopping || captureLive()) throw new Error("capture_has_priority");
-      const shortfall = decodedShortfall(note.durationMs, response);
+      const shortfall = decodedShortfall(note.durationMs, response, engineName);
       if (shortfall) throw new Error(shortfall);
-      const transcript = whisperLocalTranscript(note, model, response, {
+      // Who spoke when: in a call recording, each remote line gets the person the call window showed speaking. Read
+      // on this Mac with a bounded wait; whatever fails or is late leaves "Them" and never fails the transcript.
+      const built = whisperLocalTranscript(note, model, response, {
         rev: rerun?.rev ?? 1,
         ...(rerun ? { rerunBase: { rev: rerun.baseRev, hash: rerun.baseHash } } : {}),
         chunks,
       });
+      const transcript = await nameCallSpeakers(note, built).catch(() => built);
       const persisted = (await store.putTranscriptForOwner({ id, owner: note.owner ?? null, transcript })).transcript;
       if (!persisted || persisted.noteId !== id || persisted.outcome !== transcript.outcome
         || persisted.rev !== transcript.rev || (persisted.outcome === "transcribed" && !persisted.segments.some((segment) => segment.text.trim()))) {
         throw new Error("The local transcript could not be verified after saving");
       }
-      logPipeline("transcription", id, "done", { engine: "whisper" });
+      logPipeline("transcription", id, "done", { engine });
       await mark(id, "done", null, 0, null);
       emitDone(id);
     } catch (error) {
       logPipelineError("transcription", error, id);
       if (disposed) return;
-      const message = whisperFailure(error);
+      const message = whisperFailure(error, engineName);
       if (stopping || captureLive() || message.includes("capture_has_priority")) {
         yieldedForCapture = rerun !== null;
         await mark(id, "queued");
@@ -292,6 +340,7 @@ export function createDesktopWhisperQueue(args: {
       }
     } finally {
       transcribing = false;
+      parakeetJobs.delete(id);
       serverLease?.release();
       serverLease = null;
       if (stagedId) {
@@ -304,6 +353,8 @@ export function createDesktopWhisperQueue(args: {
   const drain = async () => {
     if (disposed || activeRun || captureLive() || stopping) return;
     const notes = (await store.listPending()).recordings;
+    // Two drains can overlap (a resume and a model change): only one may start a job.
+    if (disposed || activeRun || captureLive() || stopping) return;
     const next = notes.find((note) => (!note.ledger?.localAudio || note.ledger.localAudio.state === "ready")
       && (reruns.has(note.id) || note.options?.transcriber === "on-device"
         && !["done", "failed", "cancelled"].includes(note.stt?.state ?? "queued")));
@@ -389,7 +440,12 @@ export function createDesktopWhisperQueue(args: {
           continue;
         }
         if (note.options?.transcriber !== "on-device") continue;
-        if (note.ledger?.localAudio && note.ledger.localAudio.state !== "ready") continue;
+        if (note.ledger?.localAudio && note.ledger.localAudio.state !== "ready") {
+          // Still being finished on this Mac: it waits for its audio, and starts when finishing calls noteCommitted.
+          if (note.ledger.localAudio.state === "preparing" && !["done", "failed", "cancelled"].includes(note.stt?.state ?? "queued"))
+            publish(note.id, "queued", null, null, "preparing");
+          continue;
+        }
         if (note.stt?.state === "running") {
           // The Rust task can outlive a WebView reload. Stop that instance before
           // replacing its staged path and starting the durable queued attempt.
@@ -421,7 +477,27 @@ export function createDesktopWhisperQueue(args: {
       owners.set(note.id, note.owner ?? null);
       if (note.options?.transcriber !== "on-device") return;
       await mark(note.id, "queued");
+      if (note.ledger?.localAudio?.state === "preparing") publish(note.id, "queued", null, null, "preparing");
       await drain();
+    },
+    notePreparing(note) {
+      owners.set(note.id, note.owner ?? null);
+      if (note.options?.transcriber !== "on-device" || note.ledger?.localAudio?.state !== "preparing" || jobs.has(note.id)) return;
+      publish(note.id, "queued", null, null, "preparing");
+    },
+    async restore() {
+      const notes = (await store.listPending()).recordings;
+      for (const note of notes) {
+        // Work this queue already reported is newer than the store; reruns are settled by resume.
+        if (jobs.has(note.id) || note.options?.transcriber !== "on-device" || note.stt?.rerunRev != null) continue;
+        owners.set(note.id, note.owner ?? null);
+        const audio = note.ledger?.localAudio?.state;
+        if (audio === "failed") continue;
+        const state = note.stt?.state ?? "queued";
+        if (state === "done") publish(note.id, "done");
+        else if (state === "failed") publish(note.id, "failed", note.stt?.error ?? null);
+        else publish(note.id, "queued", null, null, audio === "preparing" ? "preparing" : undefined);
+      }
     },
     rerun,
     async retry(id) {

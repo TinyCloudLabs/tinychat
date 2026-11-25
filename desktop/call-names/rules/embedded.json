@@ -1,0 +1,121 @@
+{
+  "format": 1,
+  "version": 4,
+  "apps": [
+    {
+      "app": "google-meet",
+      "note": "Measured in Chrome 158 on macOS 26.3: solo calls on 2026-11-18, one two-person call on 2026-11-19. The live captions region is never entered: it is pruned here, it lies outside the main landmark, and the tile rule skips every landmark below main.",
+      "prune": [
+        { "role": "AXGroup", "subrole": "AXLandmarkRegion", "label": ["Captions"] }
+      ],
+      "in_call": [
+        { "find": "descendant", "role": "AXGroup", "subrole": "AXLandmarkRegion", "label": ["Call controls"] },
+        { "find": "descendant", "role": "AXButton", "label": ["Leave call"] }
+      ],
+      "sources": [
+        {
+          "id": "meet-people-panel",
+          "note": "Fixtures meet-people-panel (solo), meet-two-people-panel and meet-three-connections-panel: each participant row's title is the name, and only the local user's row has a child text \"(You)\". The list also holds headings such as \"Merged audio\" (above devices that share a room). A participant row has its actions menu, a pop-up button three levels below it; a heading has none. That is a role, so it does not depend on the language. One account on two devices is two rows with one name. Long or virtualised lists and other languages are provisional until such snapshots exist.",
+          "one_per_person": true,
+          "path": [
+            { "find": "descendant", "role": "AXGroup", "subrole": "AXLandmarkRegion", "label": ["In call"] },
+            { "find": "descendant", "role": "AXList" },
+            { "find": "child", "role": "AXGroup", "has": { "role": "AXPopUpButton", "within": 4 } }
+          ],
+          "name": { "from": ["title", "description"] },
+          "self": { "find": "child", "role": "AXStaticText", "value": ["(You)"] }
+        },
+        {
+          "id": "meet-tiles",
+          "note": "Fixtures meet-layout-tiled, meet-layout-auto, meet-captions-on (solo) and meet-two-people-tiles: every name is a static text under the main landmark, the same in every layout; one person can show in two tiles; the local tile shows the user's own name, so tiles never mark self. Headings and controls are skipped (the picture-in-picture placeholder, fixture meet-pip-placeholder, has heading text under main). Three or more people, overflow and presenting labels are provisional until such snapshots exist.",
+          "path": [
+            { "find": "descendant", "role": "AXGroup", "subrole": "AXLandmarkMain" },
+            {
+              "find": "descendant",
+              "role": "AXStaticText",
+              "skip": [
+                { "subrole": ["AXLandmarkRegion", "AXLandmarkComplementary", "AXLandmarkNavigation", "AXLandmarkBanner", "AXLandmarkContentInfo", "AXLandmarkSearch", "AXLandmarkForm", "AXLandmarkMain", "AXApplicationDialog", "AXApplicationAlert", "AXApplicationAlertDialog", "AXApplicationStatus", "AXApplicationLog", "AXApplicationMarquee", "AXApplicationTimer"] },
+                { "role": ["AXHeading", "AXButton", "AXPopUpButton", "AXMenuButton", "AXCheckBox", "AXRadioButton", "AXLink", "AXTextField", "AXTextArea", "AXComboBox", "AXMenu", "AXSlider"] }
+              ]
+            }
+          ],
+          "name": { "from": ["value"], "ignore": ["You"] }
+        }
+      ],
+      "speaking": [
+        {
+          "id": "meet-tile-speaking",
+          "note": "Camera-off fixture meet-speaking-s56: the meter followed all eight turns within 0.64–0.88 s in Chrome 158 on macOS 26.3. Prefer its base classes even during transient states without an on/off token. Camera-on fixture meet-video-r79: the tile root carries last-active-speaker state, exists before the optional border child, and matches it except up to two samples of handoff lag. Muted hover did not activate it. Activity stays on through silence until another speaker; it produces active intervals, never speaking. Covered, background or minimised Meet windows can freeze these signals. Other browser and Meet versions need validation.",
+          "min_tiles": 3,
+          "tile": [
+            { "find": "descendant", "role": "AXGroup", "subrole": "AXLandmarkMain" },
+            { "find": "child", "role": "AXGroup", "has": { "role": "AXStaticText", "within": 8 } }
+          ],
+          "name": {
+            "path": [
+              {
+                "find": "descendant",
+                "role": "AXStaticText",
+                "skip": [
+                  { "subrole": ["AXLandmarkRegion", "AXLandmarkComplementary", "AXLandmarkNavigation", "AXLandmarkBanner", "AXLandmarkContentInfo", "AXLandmarkSearch", "AXLandmarkForm", "AXLandmarkMain", "AXApplicationDialog", "AXApplicationAlert", "AXApplicationAlertDialog", "AXApplicationStatus", "AXApplicationLog", "AXApplicationMarquee", "AXApplicationTimer"] },
+                  { "role": ["AXHeading", "AXButton", "AXPopUpButton", "AXMenuButton", "AXCheckBox", "AXRadioButton", "AXLink", "AXTextField", "AXTextArea", "AXComboBox", "AXMenu", "AXSlider"] }
+                ]
+              }
+            ],
+            "from": ["value"],
+            "ignore": ["You"]
+          },
+          "marker": [
+            { "find": "first_child", "role": "AXGroup" },
+            { "find": "first_child", "role": "AXGroup" },
+            { "find": "first_child", "role": "AXGroup" },
+            { "find": "child", "role": "AXGroup", "has": { "role": "AXGroup", "within": 1 } },
+            { "find": "first_child", "role": "AXGroup", "subrole": "AXEmptyGroup" }
+          ],
+          "classes": {
+            "all": ["DYfzY", "cYKTje"],
+            "quiet": ["gjg47c"],
+            "speaking": ["Oaajhc", "HX2H7", "wEsLMd", "OgVli"]
+          },
+          "active": {
+            "marker": [{ "find": "self", "role": "AXGroup" }],
+            "classes": { "all": ["dkjMxf"], "on": ["kssMZb"] }
+          }
+        }
+      ]
+    },
+    {
+      "app": "zoom",
+      "note": "Measured in Zoom 7.1.9 (88375) on macOS 26.3, 2026-11-18, with only the local participant in the call.",
+      "in_call": [
+        { "find": "self", "role": "AXWindow", "identifier": { "exact": "zm.meeting.window.main" } }
+      ],
+      "sources": [
+        {
+          "id": "zoom-participants-panel",
+          "note": "Fixture zoom-participants-panel: the row's cell has the identifier ZMHCTableItemType_PANELIST and its first text is \"Name (Host, me)\". Rows of other people, attendee cell identifiers, other tags and the popped-out panel are provisional until multi-person snapshots exist.",
+          "one_per_person": true,
+          "path": [
+            { "find": "descendant", "role": "AXOutline" },
+            { "find": "descendant", "role": "AXRow" },
+            { "find": "child", "role": "AXCell", "identifier": { "exact": "ZMHCTableItemType_PANELIST" } },
+            { "find": "first_child", "role": "AXStaticText" }
+          ],
+          "name": {
+            "from": ["value"],
+            "suffix_tags": { "tags": ["Host", "Co-host", "Guest", "me"], "self_tags": ["me"] }
+          }
+        },
+        {
+          "id": "zoom-tiles",
+          "note": "Fixtures zoom-tiles and zoom-participants-panel: the tab group's description is \"Name, Computer audio muted\" and its button's description is the name. Tiles of other people and gallery view are provisional until multi-person snapshots exist.",
+          "path": [
+            { "find": "descendant", "role": "AXTabGroup" },
+            { "find": "child", "role": "AXButton" }
+          ],
+          "name": { "from": ["description"], "prefix_of_previous": "description" }
+        }
+      ]
+    }
+  ]
+}

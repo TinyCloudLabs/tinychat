@@ -1332,6 +1332,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "call-names"
+version = "0.1.0"
+dependencies = [
+ "core-foundation 0.10.1",
+ "libc",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "call-prompt"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "camino"
 version = "1.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2893,6 +2911,8 @@ name = "exo-desktop"
 version = "0.21.0"
 dependencies = [
  "audio-actual",
+ "call-names",
+ "call-prompt",
  "cpal",
  "exo-local-transcription",
  "futures-util",
@@ -2900,6 +2920,9 @@ dependencies = [
  "hound",
  "language",
  "mp3",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
  "parking_lot",
  "ractor",
  "recorder-state",
@@ -2910,6 +2933,7 @@ dependencies = [
  "sha2 0.10.9",
  "tauri",
  "tauri-build",
+ "tauri-nspanel",
  "tauri-plugin-global-shortcut",
  "tauri-plugin-local-stt",
  "tauri-plugin-opener",

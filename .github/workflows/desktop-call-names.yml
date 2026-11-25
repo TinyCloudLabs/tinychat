@@ -1,0 +1,64 @@
+name: Desktop call names
+
+# Tests of desktop/call-names, the standalone crate that reads the names of the people in a call
+# from the meeting window. It belongs to neither desktop Cargo workspace, so no other job runs its
+# tests. desktop.yml also runs on these changes (desktop/**) and builds the macOS app.
+#
+# Linux type-checks the macOS reader (src/ax.rs) with --target aarch64-apple-darwin, but cannot
+# link it: only a macOS linker resolves its hand-declared Accessibility functions. The macOS job
+# links and runs it (no Accessibility permission there, so its tests cover the missing-permission
+# path only).
+
+on:
+  pull_request:
+    paths:
+      - "desktop/call-names/**"
+      - ".github/workflows/desktop-call-names.yml"
+  push:
+    branches: [main]
+    paths:
+      - "desktop/call-names/**"
+      - ".github/workflows/desktop-call-names.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-call-names-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  linux:
+    name: Rules engine and fixtures (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: desktop/call-names
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          targets: aarch64-apple-darwin
+      - name: Test
+        run: cargo test --locked
+      - name: Type-check the macOS reader
+        run: cargo check --locked --all-targets --target aarch64-apple-darwin
+
+  macos:
+    name: macOS reader links and runs (macOS)
+    runs-on: macos-26
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: desktop/call-names
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      - name: Test (builds and links src/ax.rs and examples/snapshot.rs)
+        run: cargo test --locked

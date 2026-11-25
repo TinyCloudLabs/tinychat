@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite";
 import { afterEach, expect, test } from "bun:test";
 import { act } from "react";
+import { useContext } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { installDom } from "@/test/dom";
@@ -33,12 +34,19 @@ let root: Root | null = null;
 let cleanup: (() => void) | null = null;
 afterEach(async () => { await act(async () => root?.unmount()); cleanup?.(); root = null; cleanup = null; });
 
+/** The labels the controller reports as suggested, for the assertions below. */
+function Suggested() {
+  const speakers = useContext(SpeakerNamesContext);
+  return <output data-testid="suggested">{[...speakers?.suggested ?? []].join(",")}</output>;
+}
+
 function Probe(props: { tcw: TinyCloudWeb; metadata: Record<string, unknown>;
   row?: { id: string; source: string; sourceId: string } | null; localId?: string | null }) {
   const speakers = useSpeakerNames({ tcw: props.tcw, row: props.row === undefined ? ROW : props.row,
     metadata: props.metadata, localId: props.localId ?? null });
   return <SpeakerNamesContext.Provider value={speakers}>
     <SpeakerNamesStatus />
+    <Suggested />
     <TimestampedTranscript sentences={sentences} hasAudio={false} />
   </SpeakerNamesContext.Provider>;
 }
@@ -263,4 +271,164 @@ test("a timed transcript with one speaker still offers the rename control, on th
   }
   await act(async () => root!.render(<Lone />));
   expect(labels()).toEqual(["Me"]);
+});
+
+// Names in the call: the people the desktop app read from the meeting window, on the row's metadata.
+const PEOPLE = { v: 1, source: "call_window", app: "google-meet", truncated: false, people: [
+  { id: "p1", name: "Robin Sample", self: true }, { id: "p2", name: "Alex Example" }, { id: "p3", name: "Dana Lee" }] };
+const openLabel = async (label: string) => {
+  const target = [...document.querySelectorAll<HTMLElement>('[data-testid="speaker-label"]')].find((el) => el.textContent === label);
+  expect(target).toBeDefined();
+  await act(async () => target!.click());
+};
+const choices = () => [...document.querySelectorAll<HTMLElement>('[data-testid="speaker-choices"] button')].map((el) => el.textContent);
+const choose = async (name: string) => {
+  const button = [...document.querySelectorAll<HTMLElement>('[data-testid="speaker-choices"] button')].find((el) => el.textContent === name);
+  expect(button).toBeDefined();
+  await act(async () => button!.click());
+};
+const submit = () => act(async () => document.querySelector('[data-testid="speaker-rename-form"]')!
+  .dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true })));
+const field = () => document.querySelector<HTMLInputElement>('[data-testid="speaker-rename-form"] input')!;
+
+test("a row with names from the call offers them when Them is renamed; a tap fills the field and Save commits", async () => {
+  const { tcw, stored } = space({ call_participants: PEOPLE });
+  await mount(tcw, { call_participants: PEOPLE });
+  await openLabel("Them");
+  expect(document.querySelector('[data-testid="speaker-choices"]')?.getAttribute("aria-label")).toBe("Names in the call");
+  expect(choices()).toEqual(["Alex Example", "Dana Lee"]);
+  await choose("Alex Example");
+  expect(field().value).toBe("Alex Example");
+  // Nothing is saved until Save.
+  expect(stored().speaker_names).toBeUndefined();
+  await choose("Dana Lee");
+  expect(field().value).toBe("Alex Example, Dana Lee");
+  await submit();
+  await settle();
+  expect(labels()).toEqual(["Me", "Alex Example, Dana Lee", "Me"]);
+  expect(stored().speaker_names).toEqual({ Them: "Alex Example, Dana Lee" });
+  expect(stored().call_participants).toEqual(PEOPLE);
+});
+
+test("Me is offered the name the meeting app marked as the user", async () => {
+  const { tcw, stored } = space({ call_participants: PEOPLE });
+  await mount(tcw, { call_participants: PEOPLE });
+  await openLabel("Me");
+  expect(choices()).toEqual(["Robin Sample"]);
+  await choose("Robin Sample");
+  await submit();
+  await settle();
+  expect(labels()).toEqual(["Robin Sample", "Them", "Robin Sample"]);
+  expect(stored().speaker_names).toEqual({ Me: "Robin Sample" });
+});
+
+test("a name the label already shows is not offered again", async () => {
+  const { tcw } = space({});
+  await mount(tcw, { call_participants: PEOPLE, speaker_names: { Them: "Alex Example" } });
+  await openLabel("Alex Example");
+  expect(field().value).toBe("Alex Example");
+  expect(choices()).toEqual(["Dana Lee"]);
+});
+
+test("a row without names from the call renames as before: no choices in the form", async () => {
+  const { tcw } = space({});
+  await mount(tcw, {});
+  await openLabel("Them");
+  expect(document.querySelector('[data-testid="speaker-choices"]')).toBeNull();
+  expect([...document.querySelectorAll('[data-testid="speaker-rename-form"] button')].map((el) => el.textContent)).toEqual(["Save", "Cancel"]);
+  // Stored names that are not in the agreed shape offer nothing either.
+  await act(async () => root?.unmount());
+  cleanup?.();
+  await mount(tcw, { call_participants: { v: 2, people: [{ id: "p1", name: "Alex" }] } });
+  await openLabel("Them");
+  expect(document.querySelector('[data-testid="speaker-choices"]')).toBeNull();
+});
+
+test("the controller reports a label as suggested while its suggested name is the one shown", async () => {
+  const suggestion = { name: "Alex Example", source: "call_window", confidence: "high", reason: "one_other_participant", person: "p2", at: "2026-11-18T18:20:00.000Z" };
+  const metadata = { call_participants: PEOPLE, speaker_names: { Them: "Alex Example" }, speaker_suggestions: { Them: suggestion } };
+  const { tcw } = space(metadata);
+  await mount(tcw, metadata);
+  expect(labels()).toEqual(["Me", "Alex Example", "Me"]);
+  expect(document.querySelector('[data-testid="suggested"]')!.textContent).toBe("Them");
+  await rename("Alex Example", "Alexander");
+  await settle();
+  expect(labels()).toEqual(["Me", "Alexander", "Me"]);
+  expect(document.querySelector('[data-testid="suggested"]')!.textContent).toBe("");
+});
+
+// A 1:1 call: the other person's name was suggested for Them (written through to speaker_names, marked in speaker_suggestions).
+const SUGGESTION = { name: "Alex Example", source: "call_window", confidence: "high", reason: "one_other_participant", person: "p2", at: "2026-11-18T18:20:00.000Z" };
+const ONE_ON_ONE = { v: 1, source: "call_window", app: "google-meet", truncated: false, people: [
+  { id: "p1", name: "Robin Sample", self: true }, { id: "p2", name: "Alex Example" }] };
+const SUGGESTED = { call_participants: ONE_ON_ONE, speaker_names: { Them: "Alex Example" }, speaker_suggestions: { Them: SUGGESTION } };
+const marks = () => document.querySelectorAll('[data-testid="speaker-suggested"]').length;
+
+test("a suggested name carries the Suggested mark; Save with the name unchanged keeps it and ends the mark", async () => {
+  const { tcw, stored } = space(SUGGESTED);
+  await mount(tcw, SUGGESTED);
+  expect(labels()).toEqual(["Me", "Alex Example", "Me"]);
+  expect(marks()).toBe(1);
+  expect(document.querySelector('[data-testid="speaker-suggested"]')!.textContent).toBe("Suggested");
+  await openLabel("Alex Example");
+  expect(field().value).toBe("Alex Example");
+  // The one other person is already in the field: nothing else to offer.
+  expect(document.querySelector('[data-testid="speaker-choices"]')).toBeNull();
+  await submit();
+  await settle();
+  expect(labels()).toEqual(["Me", "Alex Example", "Me"]);
+  expect(marks()).toBe(0);
+  // Only the mark changed: no status line and no Undo.
+  expect(document.querySelector('[data-testid="speaker-rename-status"]')).toBeNull();
+  expect(stored()).toEqual({ call_participants: ONE_ON_ONE, speaker_names: { Them: "Alex Example" } });
+});
+
+test("renaming a suggested name ends the mark, in storage too", async () => {
+  const { tcw, stored } = space(SUGGESTED);
+  await mount(tcw, SUGGESTED);
+  await rename("Alex Example", "Alex");
+  await settle();
+  expect(labels()).toEqual(["Me", "Alex", "Me"]);
+  expect(marks()).toBe(0);
+  expect(document.body.textContent).toContain("Alex Example is now Alex.");
+  expect(stored()).toEqual({ call_participants: ONE_ON_ONE, speaker_names: { Them: "Alex" } });
+  // Undo puts the name back as the user's own: still no mark.
+  await act(async () => (document.querySelector('[data-testid="speaker-rename-undo"]') as HTMLElement).click());
+  await settle();
+  expect(labels()).toEqual(["Me", "Alex Example", "Me"]);
+  expect(marks()).toBe(0);
+  expect(stored()).toEqual({ call_participants: ONE_ON_ONE, speaker_names: { Them: "Alex Example" } });
+});
+
+test("Go back to Them removes the suggested name and its mark", async () => {
+  const { tcw, stored } = space(SUGGESTED);
+  await mount(tcw, SUGGESTED);
+  await openLabel("Alex Example");
+  const reset = [...document.querySelectorAll<HTMLElement>('[data-testid="speaker-rename-form"] button')].find((el) => el.textContent === "Go back to Them");
+  await act(async () => reset!.click());
+  await settle();
+  expect(labels()).toEqual(["Me", "Them", "Me"]);
+  expect(marks()).toBe(0);
+  expect(document.body.textContent).toContain("Back to Them.");
+  expect(stored()).toEqual({ call_participants: ONE_ON_ONE });
+});
+
+test("a failed save of a kept suggestion brings the mark back", async () => {
+  const tcw = { sql: { db: () => ({ execute: async () => ({ ok: false, error: { code: "X", message: "down" } }) }) } } as unknown as TinyCloudWeb;
+  await mount(tcw, SUGGESTED);
+  await openLabel("Alex Example");
+  await submit();
+  await settle();
+  expect(labels()).toEqual(["Me", "Alex Example", "Me"]);
+  expect(marks()).toBe(1);
+  expect(document.querySelector('[data-testid="speaker-rename-failed"]')).not.toBeNull();
+});
+
+test("names from the call with two other people suggest nothing: no mark, the names are choices", async () => {
+  const { tcw } = space({ call_participants: PEOPLE });
+  await mount(tcw, { call_participants: PEOPLE });
+  expect(labels()).toEqual(["Me", "Them", "Me"]);
+  expect(marks()).toBe(0);
+  await openLabel("Them");
+  expect(choices()).toEqual(["Alex Example", "Dana Lee"]);
 });

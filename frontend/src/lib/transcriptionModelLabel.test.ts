@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { transcriptionModelLabel } from "./transcriptionModelLabel";
 import { LOCAL_WHISPER_MODELS } from "@/lib/localTranscriber";
+import { LOCAL_PARAKEET_MODEL } from "@/lib/localTranscriber";
 
 describe("transcriptionModelLabel", () => {
   test("names each Whisper model the desktop records, with the casing the desktop shows", () => {
@@ -74,5 +75,10 @@ describe("transcriptionModelLabel", () => {
     for (const model of LOCAL_WHISPER_MODELS) {
       expect(model.label).toBe(PICKER_WORDING_DRIFT[model.id] ?? transcriptionModelLabel(model.id));
     }
+  });
+
+  test("names Parakeet on the Mac (the Soniqo model id the desktop records) as its settings row does", () => {
+    expect(transcriptionModelLabel("soniqo-parakeet-batch")).toBe("Parakeet TDT 0.6B v3");
+    expect(transcriptionModelLabel(LOCAL_PARAKEET_MODEL.id)).toBe(LOCAL_PARAKEET_MODEL.label);
   });
 });

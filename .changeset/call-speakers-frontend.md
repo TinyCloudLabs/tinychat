@@ -1,0 +1,5 @@
+---
+"@tinychat/frontend": patch
+---
+
+Who spoke when, the app side. In a Mac recording of a Google Meet call with three or more people, transcribed on the Mac with Whisper, each remote line now gets the person who said it: the app reads the speaking timeline the Mac app records from the meeting window, and labels each line "Them 1", "Them 2", and so on, by the person's place in the call. The note shows each label with that person's name, marked Suggested, also while the note is only on this Mac and your TinyCloud space cannot be reached; when the note is saved to your space, the names go onto it once. A name you give always wins, a suggestion you ended is not made again, and Undo and Go back work per label. Lines the rules cannot attribute for sure stay "Them". Two labels you give the same name read as one speaker. Nothing changes for Parakeet, for calls with one other person, or for recordings without a timeline. This needs the native timeline command; without it, transcripts keep "Them".

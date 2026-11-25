@@ -1,12 +1,16 @@
 import type { BatchResponse, StreamResponse } from "@/lib/anarlog/transcription.gen";
-import type { WhisperModel } from "@/lib/localTranscriber";
+import { PARAKEET_MODEL_ID, type LocalSttModel } from "@/lib/localTranscriber";
 import { localTranscriptSentences } from "@/lib/localTranscriptTurns";
 import type { LocalTranscript } from "../nativeVoiceNotes";
 import { splitLongTimedSegment } from "../timedSegments";
 
-/** Stream result ranges are the VAD chunk bounds; Whisper word offsets are interpolated. */
+/**
+ * Stream result ranges are the VAD chunk bounds; Whisper word offsets are interpolated.
+ * Parakeet (Soniqo) sends no stream results, and its word times are made up: 0.4 s a word from the start of each
+ * 29.5 s window of each channel. Its stereo turns are the coarse fallback, so Me and Them are ordered only to the window.
+ */
 export function whisperLocalTranscript(
-  note: { id: string; durationMs: number; channels?: 1 | 2 }, model: WhisperModel, response: BatchResponse,
+  note: { id: string; durationMs: number; channels?: 1 | 2 }, model: LocalSttModel, response: BatchResponse,
   { detail = false, rev = 1, rerunBase, chunks = [] }: {
     detail?: boolean; rev?: number; rerunBase?: { rev: number; hash: string }; chunks?: StreamResponse[];
   } = {},
@@ -44,7 +48,8 @@ export function whisperLocalTranscript(
       text: part, start: 0, end: note.durationMs / 1000, channel: 0, timing: "none" as const,
     }));
   }
-  return { version: 2, noteId: note.id, transcriber: "on-device", rev, engine: "whispercpp", model, language: "en",
+  const engine = model === PARAKEET_MODEL_ID ? "parakeet-tdt-0.6b-v3" as const : "whispercpp" as const;
+  return { version: 2, noteId: note.id, transcriber: "on-device", rev, engine, model, language: "en",
     outcome: segments.length ? "transcribed" : "no_speech", diarized: note.channels === 2, segments, createdAt: new Date().toISOString(),
     ...(rerunBase ? { rerunBase } : {}) };
 }

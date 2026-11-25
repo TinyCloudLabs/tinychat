@@ -1,6 +1,7 @@
-import type { WhisperModel } from "@/lib/localTranscriber";
+import type { LocalSttModel } from "@/lib/localTranscriber";
 
-export type WhisperModelId = WhisperModel;
+/** A Whisper model, or Parakeet. */
+export type WhisperModelId = LocalSttModel;
 
 export interface WhisperModelInfo {
   id: WhisperModelId;
@@ -53,6 +54,64 @@ export interface DesktopCaptureExtras {
   };
   systemAudio: { get(): Promise<boolean>; set(on: boolean): Promise<void> };
   systemAudioConsent: { get(): Promise<boolean>; set(consented: boolean): Promise<void> };
+  /**
+   * Names in the call: reading the names of the people in a call from the meeting app's own window while a recording
+   * of both sides runs. A setting of this Mac, off until the user turns it on. Absent where the app cannot do it,
+   * and from the moment a build without it has refused a call: read the member each time, do not keep it.
+   */
+  callNames?: CallNames;
+  /**
+   * "Offer to record when a call starts": the tile that offers to record when a call app starts using the microphone.
+   * A setting of this Mac, on by default. Absent where the app has no such commands, and from the moment a build
+   * without them has refused a call: read the member each time, do not keep it.
+   */
+  callPrompt?: CallPrompt;
+}
+
+// The two settings' answers are read in callSettingsState.ts, with Capture settings' own chunk (TC-2882). Named here too.
+export { readCallNamesState, readCallPromptState } from "./callSettingsState";
+
+export interface CallPromptState {
+  enabled: boolean;
+  /** False where the app cannot see which app uses the microphone (anything but macOS). */
+  supported: boolean;
+}
+
+export interface CallPrompt {
+  /** The setting as the app answers it: a `CallPromptState`, to be checked with `readCallPromptState` before use. */
+  get(): Promise<unknown>;
+  set(enabled: boolean): Promise<void>;
+}
+
+/** Whether macOS lets the app read other apps' windows (Accessibility); "unsupported" off macOS. */
+export type CallNamesPermission = "granted" | "missing" | "unsupported";
+
+export interface CallNamesState {
+  enabled: boolean;
+  permission: CallNamesPermission;
+}
+
+export interface CallNames {
+  /** The setting as the app answers it: a `CallNamesState`, to be checked with `readCallNamesState` before use. */
+  get(): Promise<unknown>;
+  /** Turning it on also has macOS ask for the permission when it is missing. */
+  set(enabled: boolean): Promise<void>;
+  /** Opens Privacy & Security > Accessibility in System Settings. */
+  openSettings(): Promise<void>;
+  /**
+   * The people read during the recording `id` (the recording's id, not its row's), as the app stored them: the
+   * `call_participants` object, or null when there are none. Validate it before use.
+   */
+  read(id: string): Promise<unknown>;
+  /** Forgets what was read during the recording `id`, once its row holds it. */
+  clear(id: string): Promise<void>;
+  /**
+   * Who spoke when: the speaking timeline the app recorded from the meeting window during the recording `id` (ids and
+   * times only, `call_names_speaking_read`), or null when there is none. `clear` leaves it in place. Validate it before
+   * use (`parseSpeakingTimeline`). Absent where the app cannot do it; a build whose native side lacks the command
+   * answers null.
+   */
+  readSpeaking?(id: string): Promise<unknown>;
 }
 
 let registered: DesktopCaptureExtras | null = null;

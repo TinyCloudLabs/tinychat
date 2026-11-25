@@ -17,9 +17,13 @@ export function whisperModelName(label: string): string {
   return label.replace(/^Whisper\s+/, "");
 }
 
+/** Parakeet's label names its engine, so the copy does not put "Whisper" in front of it. */
+const parakeetLabel = (label: string): boolean => /^Parakeet\b/.test(label);
+
 export const localDesktopCaption = (modelLabel: string | null): string =>
   modelLabel
-    ? `Whisper ${whisperModelName(modelLabel)} on this Mac, after you stop.`
+    ? parakeetLabel(modelLabel) ? `${modelLabel} on this Mac, after you stop.`
+      : `Whisper ${whisperModelName(modelLabel)} on this Mac, after you stop.`
     : FINAL_COPY.modes.localDesktopCaption;
 
 export const LOCAL_DESKTOP_NO_MODEL_EXPLANATION =
@@ -27,7 +31,8 @@ export const LOCAL_DESKTOP_NO_MODEL_EXPLANATION =
 
 export const localDesktopExplanation = (modelLabel: string | null): string =>
   modelLabel
-    ? FINAL_COPY.modes.localDesktopExplanation(whisperModelName(modelLabel))
+    ? parakeetLabel(modelLabel) ? FINAL_COPY.modes.localDesktopNamedExplanation(modelLabel)
+      : FINAL_COPY.modes.localDesktopExplanation(whisperModelName(modelLabel))
     : LOCAL_DESKTOP_NO_MODEL_EXPLANATION;
 
 async function readSelectedLabel(): Promise<string | null> {

@@ -138,6 +138,7 @@ export function pendingNote(
   issues: Issues,
   lastError: string | null,
   place: HomePlace,
+  saving = false,
 ): string {
   if (lastError && lastError !== FINALIZATION_PENDING) return lastError;
   const kinds = Object.values(issues).map((issue) => issue.kind);
@@ -149,5 +150,5 @@ export function pendingNote(
     return `${COPY.notInSpace} · ${COPY.writeFailed}`;
   if (lastError || kinds.includes("finalization_timed_out"))
     return COPY.willFinish(placeWhere(place));
-  return COPY.notInSpace;
+  return saving ? HOME_COPY.savingToSpace : COPY.notInSpace;
 }

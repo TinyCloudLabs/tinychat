@@ -10,6 +10,17 @@ import { findMeetingId } from "@/lib/connectors/meetingExplorer";
 import { scheduledSpace } from "@/lib/spaceQueue";
 import { VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
 import { notePath, PATHS } from "@/shell/routes";
+import { onPhoneId } from "./onPhone";
+
+/**
+ * A recording's own page, by its recording id, with no read of the space: the Library opens the note on this device,
+ * or its row once there is one (useLibrary resolves a stand-in id by recording id). Where the Mac's receipt leaves the
+ * user when it closes by itself, whether or not the space can be reached.
+ */
+export function useShowRecordingNote(): (recordingId: string) => void {
+  const navigate = useNavigate();
+  return useCallback((recordingId: string) => navigate(notePath(onPhoneId(recordingId))), [navigate]);
+}
 
 export function useOpenSavedNote(tcw: TinyCloudWeb | null): (recordingId: string) => void {
   const navigate = useNavigate();

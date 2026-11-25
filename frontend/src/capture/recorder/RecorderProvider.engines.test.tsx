@@ -688,3 +688,13 @@ describe("web engine: no OnDeviceStt calls", () => {
     expect(homeWorkRunning("recording")).toBe(true);
   });
 });
+
+test("the signed-in saver runs the automatic retries of transcript writes, and stops them when it unmounts", async () => {
+  const { __transcriptSyncRetriesRunningForTests } = await import("@/lib/voiceNotes/onDeviceTranscriber");
+  expect(__transcriptSyncRetriesRunningForTests()).toBe(false);
+  const pipeline = { resume() {}, cancelAll() {}, reconcileAll: async () => {} };
+  await mountWith("native", ALL, undefined, "ready", { listeners: new Map(), pipeline });
+  expect(__transcriptSyncRetriesRunningForTests()).toBe(true);
+  await act(async () => { root!.unmount(); root = null; });
+  expect(__transcriptSyncRetriesRunningForTests()).toBe(false);
+});

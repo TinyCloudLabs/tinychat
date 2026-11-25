@@ -257,3 +257,10 @@ test("the native payload deep-links to the encoded note and identifies its track
   const [failure] = failureNotifications([item], new Map([[item.sourceId, view(true)]]), "tauri");
   expect(nativeFailurePayload(failure!)).toEqual({ path: "/chat/capture/library/library%2Fnote%201", noteId: item.id, track: "sync" });
 });
+
+test("no notification for a transcript write that is retrying by itself; one once no retry is scheduled", () => {
+  const now = Date.now();
+  const write = (retryAt?: number) => localTranscriptSync({ state: "failed", message: "Couldn't add the transcript to this note.", ...(retryAt === undefined ? {} : { retryAt }) });
+  expect(failureNotifications([item], new Map([[item.sourceId, write(now + 60_000)]]), "tauri")).toEqual([]);
+  expect(failureNotifications([item], new Map([[item.sourceId, write()]]), "tauri").map((failure) => failure.message)).toEqual(["Couldn't sync to your TinyCloud space."]);
+});
