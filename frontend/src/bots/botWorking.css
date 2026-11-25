@@ -36,13 +36,14 @@
   color: var(--tc-working-text-floor);
 }
 /* A reply that comes back at once never flashes the row: it is shown after a short wait, holding its place meanwhile.
-   A step in visibility, not motion; a browser without @starting-style shows the row at once. */
+   A step in opacity, not motion, so the status text stays in the accessibility tree and is announced from the start.
+   A browser without @starting-style shows the row at once. */
 .tc-bot-working-row {
-  transition: visibility 0s 300ms;
+  transition: opacity 0s 300ms;
 }
 @starting-style {
   .tc-bot-working-row {
-    visibility: hidden;
+    opacity: 0;
   }
 }
 
