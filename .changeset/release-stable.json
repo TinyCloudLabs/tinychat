@@ -1,0 +1,11 @@
+{
+  "versions": {
+    "exo-desktop": "0.22.3",
+    "@tinychat/frontend": "0.22.3"
+  },
+  "changesets": [
+    ".changeset/pre/bot-working-contrast.md",
+    ".changeset/pre/bot-working-indicator.md",
+    ".changeset/pre/soft-ads-itch.md"
+  ]
+}
