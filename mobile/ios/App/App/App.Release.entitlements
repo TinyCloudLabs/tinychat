@@ -4,15 +4,21 @@
   Release entitlements (TC-3195), wired to the App target's Release configuration only (CODE_SIGN_ENTITLEMENTS).
   Debug keeps App.entitlements (the Health spike, TC-525).
 
-  - associated-domains: recording share links (https://tinycloud.one/s/<id>#…) open in the app when the domain's
-    apple-app-site-association file lists it; otherwise they open in the browser. The App ID needs the Associated
-    Domains capability for a signed export.
+  - associated-domains:
+    - applinks:tinycloud.one: recording share links (https://tinycloud.one/s/<id>#…) open in the app when the
+      domain's apple-app-site-association file lists it; otherwise they open in the browser.
+    - webcredentials:openkey.so (TC-520): ties the app to openkey.so, whose apple-app-site-association lists
+      R4QVKA785H.xyz.tinycloud.home under webcredentials, so the app's own code may use openkey.so passkeys. The
+      OpenKey sign-in sheet (ASWebAuthenticationSession) runs openkey.so's passkeys either way.
+    The App ID needs the Associated Domains capability for a signed export. The archive is built unsigned, so
+    ios-build.yml signs it ad hoc with this file before the export, which keeps the entitlements of that signature.
 -->
 <plist version="1.0">
 <dict>
 	<key>com.apple.developer.associated-domains</key>
 	<array>
 		<string>applinks:tinycloud.one</string>
+		<string>webcredentials:openkey.so</string>
 	</array>
 </dict>
 </plist>

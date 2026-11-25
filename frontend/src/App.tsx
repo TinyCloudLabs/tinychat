@@ -1,4 +1,6 @@
 import {
+  lazy,
+  Suspense,
   useCallback,
   useContext,
   useEffect,
@@ -203,6 +205,7 @@ import { setSignedIn } from "./lib/signedIn";
 import { NativeSignIn } from "./shell/NativeSignIn";
 import { useNativeSignIn } from "./shell/useNativeSignIn";
 import { lazyTab } from "./shell/lazyTab";
+import { isSensitiveScreen, REPORT_BUG_ENABLED } from "./lib/reportBug/config";
 import { setTinyCloudWebMcpFeedLoader, tinyCloudWebMcpFeedEnabled } from "./lib/webMcp";
 import { closeAllEmbeds } from "./apps/liveEmbeds";
 
@@ -224,6 +227,8 @@ const OneAppScreen = lazyTab("Apps", () => import("./apps/FramedAppScreen").then
 const AddAppPage = lazyTab("Apps", () => import("./apps/AddAppPage").then((m) => m.AddAppPage));
 const SettingsPage = lazyTab("Settings", () => import("./chat/SettingsPage").then((m) => m.SettingsPage));
 const AboutPage = lazyTab("How it works", () => import("./chat/AboutPage").then((m) => m.AboutPage));
+// TC-3716 Report a bug: off unless VITE_REPORT_BUG is "true"; its chunk loads only then.
+const ReportBugHost = REPORT_BUG_ENABLED ? lazy(() => import("./shell/ReportBugHost")) : null;
 const LAZY_SCREENS = [ChatWorkspace, CaptureSurface, MeetingsSection, ConnectorsPage, AppsPage, SettingsPage, AboutPage];
 // The signed-out recorder's screens: only the phone and desktop apps show them, so the web never fetches them.
 const DeviceCaptureSurface = lazyTab("Recording", () => import("./capture/DeviceCaptureSurface").then((m) => m.DeviceCaptureSurface));
@@ -1813,6 +1818,11 @@ export function App() {
         nativeSignInScreenShown: nativeSignInFlow.screenShown, shareTokenPresent: !!shareToken }) && <RecordingOverlay />}
       {/* Face ID / passcode over everything in the phone app (TC-2738); the app keeps loading underneath. */}
       <AppLockGate />
+      {ReportBugHost && !LOCAL_VALIDATION && (
+        <Suspense fallback={null}>
+          <ReportBugHost tcw={isReady ? tcw : null} screenId={screen.id} sensitive={isSensitiveScreen(screen, location.pathname, shareToken)} />
+        </Suspense>
+      )}
       <RegistryConsentDialog />
       {captureFailClosed && <div role="alert" className="fixed inset-x-4 bottom-4 z-[60] rounded-xl border bg-card p-4 shadow-lg">
         Recordings are being kept unassigned until TinyCloud One can update this phone.

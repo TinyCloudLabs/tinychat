@@ -14,6 +14,7 @@ import {
 } from "@tinycloud/web-sdk";
 import { loadRenewalReceipt, saveRenewalReceipt, type ConnectWalletResult, type EIP1193Provider, type TinyCloudWebConfig } from "@tinyboilerplate/client";
 import { isSignInCancelled } from "./authErrors";
+import { connectorKeyDecryptGrants } from "./connectors/encryptionGrant";
 import { webSignInManifest, type HomeFeature } from "./homeFeatures";
 import { setHomeReauthorizing } from "./homeReauthorizing";
 import type { webSignInRenewal } from "./renewalReceipt";
@@ -51,7 +52,7 @@ export type HomeReauthorizeResult =
      */
     rollback(): Promise<boolean>;
   }
-  | { outcome: "declined" | "failed" | "wrong-account" | "partial" | CommitBlocked };
+  | { outcome: "declined" | "failed" | "wrong-account" | "partial" | "partial-folders" | "partial-both" | CommitBlocked };
 
 // Which attempt saved the persisted session last: a rollback by any other attempt is a no-op.
 let commitAttempts = 0;
@@ -148,9 +149,16 @@ export async function reauthorizeHome(
     // An approval of less than was asked (the base, or some of the sets) is not kept.
     const asked = composeManifestRequest([manifest], { includeAccountRegistryPermissions: false }).resources as PermissionEntry[];
     if (!created.hasPermissions(asked)) {
-      // Everything else covered and only the unlock permission left out is its own answer, so the owner is told which one.
+      // Everything else covered and only unlock permissions left out is its own answer, so the owner is told which:
+      // the master grant alone, the per-secret folders alone, or both.
+      const folderPaths = new Set(connectorKeyDecryptGrants(address).map((grant) => grant.path));
+      const folderEntries = asked.filter((entry) => entry.service === UNLOCK_SERVICE && folderPaths.has(entry.path));
+      const masterEntries = asked.filter((entry) => entry.service === UNLOCK_SERVICE && !folderPaths.has(entry.path));
       const leftOutUnlock = created.hasPermissions(asked.filter((entry) => entry.service !== UNLOCK_SERVICE));
+      const leftOutFolders = leftOutUnlock && folderEntries.length > 0 && !created.hasPermissions(folderEntries);
+      const leftOutMaster = leftOutUnlock && masterEntries.length > 0 && !created.hasPermissions(masterEntries);
       created.cleanup();
+      if (leftOutFolders) return { outcome: leftOutMaster ? "partial-both" : "partial-folders" };
       return { outcome: leftOutUnlock ? "partial" : "failed" };
     }
     const verified = await deps.verify(session.siwe, session.signature);

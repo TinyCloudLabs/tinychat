@@ -31,7 +31,7 @@ export interface BackendDelegationConfig {
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const MANIFEST_PATH = resolve(__dirname, "../../manifest.json");
-const BACKEND_DELEGATION_NAME = "TinyChat Backend";
+const BACKEND_DELEGATION_NAME = "TinyCloud One Backend";
 const BACKEND_DELEGATION_EXPIRY = "30d";
 /**
  * The same 30 days as a number (§3.3; raised from 7 days with SESSION_EXPIRATION_MS). The delegation accept path clamps the stored `expiresAt`

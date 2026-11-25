@@ -275,7 +275,7 @@ test("a node that does not advertise named keys drops the exact connector keys, 
     expect(tcw.hasPermissions(network)).toBe(true);
     for (const entry of exactKeys) expect(tcw.hasPermissions([entry])).toBe(false);
     expect(sessionCoversHomeFeature(tcw, "connectors", ADDRESS)).toBe(false);
-    expect((await reauthorize(["connectors"])).outcome).toBe("partial");
+    expect((await reauthorize(["connectors"])).outcome).toBe("partial-folders");
     tcw.cleanup();
   } finally {
     globalThis.fetch = withNamedKeys;

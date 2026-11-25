@@ -12,10 +12,13 @@
 #   ios-signing.sh verify-ipa <ipa> require an App Store build signed by APPLE_TEAM_ID: valid deep signature, Apple
 #                                   Distribution authority, the team's App Store profile (no devices, not an
 #                                   in-house ProvisionsAllDevices profile, no get-task-allow) for xyz.tinycloud.home
-#                                   and its ExoWidgets extension
+#                                   and its ExoWidgets extension, each signed with exactly the entitlements the export
+#                                   adds, plus the app's associated domains (ASSOCIATED_DOMAINS)
 set -euo pipefail
 
 BUNDLE_ID=xyz.tinycloud.home
+# mobile/ios/App/App/App.Release.entitlements: share links (TC-3195) and openkey.so passkeys (TC-520).
+ASSOCIATED_DOMAINS=(applinks:tinycloud.one webcredentials:openkey.so)
 SECRETS=(APPLE_TEAM_ID APPLE_API_KEY APPLE_API_ISSUER APPLE_API_PRIVATE_KEY)
 
 fail() { echo "::error::$1"; exit 1; }
@@ -62,7 +65,7 @@ write_key() {
 }
 
 verify_ipa() {
-  local ipa=${1:?usage: ios-signing.sh verify-ipa <ipa>} tmp app appex details authority team profile bundle signed
+  local ipa=${1:?usage: ios-signing.sh verify-ipa <ipa>} tmp app appex details authority team profile bundle signed extra expected actual
   [ -f "$ipa" ] || fail "no .ipa at $ipa"
   [ -n "${APPLE_TEAM_ID:-}" ] || fail "APPLE_TEAM_ID is required"
   tmp=$(mktemp -d)
@@ -102,6 +105,16 @@ verify_ipa() {
   [ "$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:application-identifier' "$profile")" = "$APPLE_TEAM_ID.$bundle" ] ||
     fail "the embedded profile is not for $bundle in APPLE_TEAM_ID"
   echo "$bundle: $authority, TeamIdentifier matches, App Store profile '$(/usr/libexec/PlistBuddy -c 'Print :Name' "$profile")'"
+  # The exact signed entitlements: what the export adds, plus the app's associated domains. The profile's wildcards
+  # (associated-domains *, keychain-access-groups TEAM.*) would let through anything the untrusted archive job added.
+  extra='{}'
+  [ "$signed" = "$app" ] && extra=$(jq -nc '{"com.apple.developer.associated-domains": $ARGS.positional}' --args "${ASSOCIATED_DOMAINS[@]}")
+  expected=$(jq -ncS --arg team "$APPLE_TEAM_ID" --arg id "$APPLE_TEAM_ID.$bundle" --argjson extra "$extra" \
+    '{"application-identifier": $id, "beta-reports-active": true, "com.apple.developer.team-identifier": $team, "get-task-allow": false, "keychain-access-groups": [$id]} + $extra')
+  codesign -d --entitlements - --xml "$signed" >"$tmp/signed.xcent" 2>/dev/null || fail "$bundle's entitlements are unreadable"
+  actual=$(plutil -convert json -o - "$tmp/signed.xcent" | jq -cS .)
+  [ "$actual" = "$expected" ] || fail "$bundle is signed with entitlements $actual, expected exactly $expected"
+  echo "$bundle: entitlements $actual"
   done
   rm -rf "$tmp"
 }

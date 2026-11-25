@@ -23,6 +23,8 @@ import { initSizeClass } from "./lib/sizeClass";
 import { initTheme } from "./lib/theme";
 import { registerDesktopVoiceNotes } from "./lib/voiceNotes/desktop/desktopVoiceNotes";
 import { installDebugLog } from "./lib/debugLog";
+import { REPORT_BUG_ENABLED } from "./lib/reportBug/config";
+import { installErrorCapture } from "./lib/reportBug/context";
 import { billingLinksAllowed } from "./lib/openManageStorage";
 import { hideSdkPurchaseLinks } from "./lib/sdkPanelPurchaseLinks";
 import { hydrateDurableKeys } from "./lib/durableKeys";
@@ -100,6 +102,9 @@ registerTinyCloudWebMcp();
 const originMove: Promise<OriginMoveDecision> = isLegacyOrigin(window.location)
   ? decideOriginMove({ location: window.location, opener: window.opener != null })
   : Promise.resolve({ kind: "stay" });
+
+// TC-3716: the Report a bug sheet's recent errors (memory only; flag off, nothing is collected).
+if (REPORT_BUG_ENABLED) installErrorCapture(window);
 
 // Android WebView before 137 has no WebCrypto Ed25519, which sign-in needs. If the probe itself
 // fails, WebCrypto is left exactly as the engine provides it and the app still starts.
