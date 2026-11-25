@@ -10,8 +10,10 @@ import {
   botHistoryKeyUrn,
   isCurrentHistorySession,
   publishBotHistoryKeyDescriptor,
+  readBackendSession,
   type SignedBotHistoryKeyEnvelope,
 } from "./botHistoryKey";
+import { sessionAuthorityEnd } from "./botGrantLifetime";
 import { botsApi } from "./botsApi";
 
 export const BOT_HISTORY_KEY_APPROVAL_DESCRIPTION = "Set up encryption and read chat history with your bots in your TinyCloud (up to 7 days).";
@@ -59,8 +61,7 @@ export function ownerPermissionRequester(tcw: TinyCloudWeb, session: ClientSessi
       tcw.setRuntimePermissionSigner({ signMessage: async message => (await wallet.openkey.signMessage({ message })).signature });
       connected = wallet;
     }
-    const expires = Date.parse(/^Expiration Time:\s*(\S+)/im.exec(session.siwe)?.[1] ?? "");
-    const remainingMs = expires - Date.now();
+    const remainingMs = sessionAuthorityEnd(session.siwe, readBackendSession()?.token ?? null) - Date.now();
     if (!Number.isFinite(remainingMs) || remainingMs <= 0) throw new Error("history_session_expired");
     const result = await tcw.requestPermissions(permissions, { expiryMs: Math.min(remainingMs, BOT_HISTORY_KEY_MAX_MS) });
     assertSession();

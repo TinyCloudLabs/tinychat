@@ -86,8 +86,9 @@ export interface RenewalVerifyInput {
   statusInvocation: string;
 }
 
+/** `renewedEnd` is the session's renewed end, capped at the owner-signed lease end; `sessionDid` the grant's session key. */
 export type RenewalVerifyResult =
-  | { ok: true; effectiveEnd: number; notAfter: number }
+  | { ok: true; effectiveEnd: number; notAfter: number; sessionDid: string; renewedEnd: number }
   | { ok: false; status: 401 | 429 | 503; code: string };
 
 export interface RenewalVerifyDependencies {
@@ -325,5 +326,6 @@ export async function verifyRenewal(input: RenewalVerifyInput, deps: RenewalVeri
   if (effectiveEnd <= now) return refuse("renewal_inactive");
 
   // 6. Token bound: the renewed end, the lease end, and one day.
-  return { ok: true, effectiveEnd, notAfter: Math.min(effectiveEnd, leaseExpiresAt, now + TOKEN_MAX_SECONDS) };
+  const renewedEnd = Math.min(effectiveEnd, leaseExpiresAt);
+  return { ok: true, effectiveEnd, notAfter: Math.min(renewedEnd, now + TOKEN_MAX_SECONDS), sessionDid: holderDid, renewedEnd };
 }

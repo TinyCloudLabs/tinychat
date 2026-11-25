@@ -1,4 +1,5 @@
 import express, { Router, type RequestHandler } from "express";
+import type { SessionRenewal } from "@tinyboilerplate/server";
 import { BotHistory, HISTORY_BOT_KEY, HistoryPermissionExpired, HistoryPermissionRevoked, historyOwner, type HistoryPermission } from "../bot-history.js";
 import { HistoryKeyDescriptorExpired, HistoryKeyDescriptorRejected } from "../bot-history-key.js";
 import type { Bot, BotsRegistry } from "../bots-registry.js";
@@ -34,9 +35,10 @@ function pushPermission(config: BotsConfig, address: string, key: string, kind: 
 
 let replacedGrantRevokeFailures = 0;
 
+/** `renewal` is the request's verify-renewal bearer's (`req.user.renewal`), never the body's. */
 async function acceptAndPush(history: BotHistory, config: BotsConfig, address: string,
-  envelope: Parameters<BotHistory["accept"]>[1], key: string) {
-  const { active, replaced } = await history.accept(address, envelope, key);
+  envelope: Parameters<BotHistory["accept"]>[1], key: string, renewal: SessionRenewal | undefined) {
+  const { active, replaced } = await history.accept(address, envelope, key, renewal);
   if (replaced) {
     const revoked = await history.revoke(replaced.cid).then(() => true, () => {
       console.warn(JSON.stringify({ event: "bot_history_replaced_grant_revoke_failed", count: ++replacedGrantRevokeFailures }));
@@ -86,7 +88,7 @@ export function createBotHistoryRouter(history: BotHistory, config: BotsConfig, 
     try {
       const validUntil = await history.acceptKeyDescriptor(req.user!.address, {
         descriptor, descriptorSignature, signerDid, siwe, signature,
-      });
+      }, req.user!.renewal);
       res.status(200).json({ validUntil });
     } catch (error) {
       if (error instanceof HistoryKeyDescriptorRejected) {
@@ -105,7 +107,7 @@ export function createBotHistoryRouter(history: BotHistory, config: BotsConfig, 
     const { serialized, siwe, signature } = req.body ?? {};
     if (typeof serialized !== "string" || typeof siwe !== "string" || typeof signature !== "string") { res.status(400).json({ error: "invalid_history_grant" }); return; }
     try {
-      await acceptAndPush(history, config, req.user!.address, { serialized, siwe, signature }, "main");
+      await acceptAndPush(history, config, req.user!.address, { serialized, siwe, signature }, "main", req.user!.renewal);
       res.status(204).end();
     }
     catch { res.status(503).json({ error: "history_grant_unavailable" }); }
@@ -158,7 +160,7 @@ export function createSiblingHistoryRouter(history: BotHistory, config: BotsConf
     if (typeof serialized !== "string" || typeof siwe !== "string" || typeof signature !== "string") { res.status(400).json({ error: "invalid_history_grant" }); return; }
     try {
       // The delegation must name this bot's own directory, so a grant made for one bot cannot be stored for another.
-      await acceptAndPush(history, config, req.user!.address, { serialized, siwe, signature }, bot.key);
+      await acceptAndPush(history, config, req.user!.address, { serialized, siwe, signature }, bot.key, req.user!.renewal);
       res.status(204).end();
     }
     catch { res.status(503).json({ error: "history_grant_unavailable" }); }

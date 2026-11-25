@@ -5,7 +5,7 @@
 import { canonicalizeEncryptionJson, verifyDidKeyEd25519Signature } from "@tinycloud/sdk-core";
 import { BOT_HISTORY_KEY_PATH } from "@tinycloud/sdk-services";
 import { DEFAULT_ENCRYPTION_ALG } from "@tinycloud/sdk-services/encryption";
-import { verifySiweSession } from "@tinyboilerplate/server";
+import { verifySiweSession, type SessionRenewal, type VerifiedSiweSession } from "@tinyboilerplate/server";
 import { getAddress } from "viem";
 
 export { BOT_HISTORY_KEY_PATH };
@@ -67,6 +67,17 @@ export function botHistoryNetworkId(address: string): string {
   return `urn:tinycloud:encryption:${canonicalHistoryOwnerDid(address)}:default`;
 }
 
+/**
+ * When a verified owner SIWE session's authority ends, in Unix ms: its signed end, or the later end of `renewal` when
+ * that renewal is for this session's own key. `renewal` must come from verify-renewal, through the bearer that route
+ * issued, never from a request body. NaN when the SIWE has no signed end and no renewal applies.
+ */
+export function sessionAuthorityEnd(session: Pick<VerifiedSiweSession, "uri" | "expirationTime">, renewal?: SessionRenewal): number {
+  const signed = Date.parse(session.expirationTime ?? "");
+  const renewed = renewal?.sessionDid === session.uri.split("#")[0] ? renewal.end * 1000 : NaN;
+  return Number.isFinite(renewed) && !(renewed <= signed) ? renewed : signed;
+}
+
 function decodeCanonicalBase64(value: string, expectedBytes: number): Buffer | null {
   if (typeof value !== "string" || value.length === 0) return null;
   if (!/^[A-Za-z0-9+/]+={0,2}$/.test(value) || value.length % 4 !== 0) return null;
@@ -103,11 +114,13 @@ const EXPECTED_FIELDS = [
 /**
  * Verifies an owner-signed bot-history key descriptor against derivations from the
  * authenticated owner `address`. Never trusts owner, networkId, or keyPath from input.
+ * `renewal` (from the verify-renewal bearer) carries a session past its SIWE's signed end.
  */
 export async function verifyBotHistoryKeyDescriptor(
   address: string,
   input: unknown,
   nowMs = Date.now(),
+  renewal?: SessionRenewal,
 ): Promise<VerifiedBotHistoryKeyDescriptor> {
   const reject = (reason = "history_key_descriptor_rejected"): never => {
     throw new HistoryKeyDescriptorRejected(reason);
@@ -173,17 +186,17 @@ export async function verifyBotHistoryKeyDescriptor(
   } catch {
     return reject();
   }
-  const siweExpMs = Date.parse(session.expirationTime ?? "");
+  const sessionEndMs = sessionAuthorityEnd(session, renewal);
   if (
     session.address.toLowerCase() !== address.toLowerCase() ||
     session.chainId !== 1 ||
-    !Number.isFinite(siweExpMs) ||
-    siweExpMs <= nowMs
+    !Number.isFinite(sessionEndMs) ||
+    sessionEndMs <= nowMs
   ) {
     return reject();
   }
-  // Cap at min(session, 7 d): descriptor exp must not outlive the SIWE session.
-  if (expMs > siweExpMs) return reject("history_key_descriptor_lifetime_exceeded");
+  // Cap at min(session, 7 d): descriptor exp must not outlive the session's signed or renewed end.
+  if (expMs > sessionEndMs) return reject("history_key_descriptor_lifetime_exceeded");
   const boundDid = session.uri.split("#")[0];
   if (boundDid !== signerDid) return reject();
 

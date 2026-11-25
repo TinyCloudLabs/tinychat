@@ -2,7 +2,7 @@
 import { createCipheriv, createDecipheriv, createHash, hkdfSync, randomBytes } from "node:crypto";
 import type { TinyCloudNode } from "@tinycloud/node-sdk";
 import { privateKeyToAccount } from "viem/accounts";
-import { assertKvResult, isKvMissingKeyResult, withSessionRefresh } from "@tinyboilerplate/server";
+import { assertKvResult, isKvMissingKeyResult, withSessionRefresh, type SessionRenewal } from "@tinyboilerplate/server";
 import { projectBotHistoryGrant, type HistoryGrant } from "./bot-history-grant.js";
 import {
   assertDescriptorPinCompatible,
@@ -100,7 +100,8 @@ export class HistoryPermissionExpired extends Error {
 export class HistoryPermissionRevoked extends Error {
   constructor(readonly permission: HistoryPermission) { super("history_permission_revoked"); }
 }
-interface GrantEnvelope { expiresAt?: number; revision?: number; serialized: string; siwe: string; signature: string }
+/** `renewal` is stored with the grant from the verify-renewal bearer it was accepted under, never from a request body. */
+interface GrantEnvelope { expiresAt?: number; revision?: number; serialized: string; siwe: string; signature: string; renewal?: SessionRenewal }
 
 function storedCid(envelope: GrantEnvelope): string | undefined {
   const bundle: unknown = JSON.parse(envelope.serialized);
@@ -141,7 +142,7 @@ export class BotHistory {
     return JSON.parse(Buffer.concat([cipher.update(bytes.subarray(12, -16)), cipher.final()]).toString());
   }
   async #verify(address: string, envelope: GrantEnvelope, botKey?: string): Promise<HistoryGrant> {
-    return projectBotHistoryGrant(this.node, this.host, address, envelope, botKey);
+    return projectBotHistoryGrant(this.node, this.host, address, envelope, botKey, envelope.renewal);
   }
   async #activate(grant: HistoryGrant, permission: HistoryPermission) {
     const resource = grant.resources[0]!;
@@ -163,15 +164,19 @@ export class BotHistory {
       return resultData(assertKvResult(result));
     });
   }
-  /** Checks, activates and stores one bot's grant. `botKey` names a bot other than Main. */
-  async accept(address: string, envelope: GrantEnvelope, botKey?: string) {
-    const grant = await this.#verify(address, envelope, botKey);
+  /**
+   * Checks, activates and stores one bot's grant. `botKey` names a bot other than Main. `renewal` is the request's
+   * verify-renewal bearer's, for a session past its SIWE's signed end.
+   */
+  async accept(address: string, envelope: GrantEnvelope, botKey?: string, renewal?: SessionRenewal) {
+    const record: GrantEnvelope = { ...envelope, renewal };
+    const grant = await this.#verify(address, record, botKey);
     const key = this.#keyFor(address, botKey);
     const validUntil = grant.expiresAt.getTime();
     await this.#activate(grant, { cid: grant.cid, revision: 0, validUntil });
     return withSessionRefresh(this.node, async () => {
       const initial = { cid: grant.cid, revision: 1, validUntil };
-      const seal = (revision: number) => this.#seal({ ...envelope, expiresAt: validUntil, revision }, key);
+      const seal = (revision: number) => this.#seal({ ...record, expiresAt: validUntil, revision }, key);
       const inserted = await this.node.kv.put(key, seal(initial.revision), { ifNoneMatch: "*" });
       if (inserted.ok) return { active: initial };
       if (inserted.error.code !== "KV_PRECONDITION_FAILED") assertKvResult(inserted);
@@ -287,9 +292,10 @@ export class BotHistory {
   /**
    * Verifies, pin-checks, and stores the owner-signed descriptor for the bot-history named key.
    * Refuses expired, mismatched, or downgraded descriptors. Returns the descriptor's expiry (ms).
+   * `renewal` is the request's verify-renewal bearer's; it is stored with the descriptor for later checks.
    */
-  async acceptKeyDescriptor(address: string, envelope: SignedBotHistoryKeyEnvelope): Promise<number> {
-    const verified = await verifyBotHistoryKeyDescriptor(address, envelope);
+  async acceptKeyDescriptor(address: string, envelope: SignedBotHistoryKeyEnvelope, renewal?: SessionRenewal): Promise<number> {
+    const verified = await verifyBotHistoryKeyDescriptor(address, envelope, undefined, renewal);
     const key = this.#descriptorKeyFor(address);
     await withSessionRefresh(this.node, async () => {
       const stored = await this.node.kv.get<string>(key);
@@ -305,7 +311,7 @@ export class BotHistory {
         etag = record.headers?.etag;
         if (!etag) throw new Error("history_key_descriptor_unavailable");
       }
-      const written = await this.node.kv.put(key, this.#seal(envelope, key), etag ? { ifMatch: etag } : { ifNoneMatch: "*" });
+      const written = await this.node.kv.put(key, this.#seal({ ...envelope, renewal }, key), etag ? { ifMatch: etag } : { ifNoneMatch: "*" });
       if (!written.ok && written.error.code === "KV_PRECONDITION_FAILED") {
         throw new HistoryKeyDescriptorRejected("history_key_descriptor_conflict");
       }
@@ -321,8 +327,8 @@ export class BotHistory {
       return result;
     });
     if (isKvMissingKeyResult(stored, key)) throw new Error("history_recipient_unavailable");
-    const envelope = this.#open(resultData(stored).data, key) as SignedBotHistoryKeyEnvelope;
-    return verifyBotHistoryKeyDescriptor(address, envelope);
+    const envelope = this.#open(resultData(stored).data, key) as SignedBotHistoryKeyEnvelope & { renewal?: SessionRenewal };
+    return verifyBotHistoryKeyDescriptor(address, envelope, undefined, envelope.renewal);
   }
   /** Saves one batch under the bot's own grant. A batch that names a different bot than the one asked for is refused. */
   async archive(address: string, input: unknown, stage: (staged: StagedHistory) => Promise<void>, botKey?: string) {
