@@ -7,3 +7,9 @@
 export function anonymousSpeakerName(ordinal: number): string {
   return `Speaker ${ordinal}`;
 }
+
+/**
+ * The Private service's name for audio its diarizer could not place with any voice. Sentences under it keep that
+ * label and are never a voice of their own.
+ */
+export const UNKNOWN_SPEAKER_NAME = "Unknown speaker";

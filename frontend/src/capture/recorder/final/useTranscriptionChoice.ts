@@ -340,7 +340,8 @@ export function useTranscriptionChoice({
       : undefined,
     stops,
     modelNote,
-    privateDiarization: transcription?.diarization === true,
+    // A two-channel recording needs the service to tell voices apart on the other side; one channel needs only its diarizer.
+    privateDiarization: api.transcriber.twoChannel ? transcription?.stereoDiarization === true : transcription?.diarization === true,
     select,
     step,
     identifySpeakers: api.transcriber.identifySpeakers,

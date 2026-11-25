@@ -34,6 +34,8 @@ import {
   type TranscriberId,
 } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { captureCapabilities, captureEngineKind, onDeviceTranscriptionAvailable } from "@/lib/voiceNotes/captureEngine";
+import { getDesktopCaptureExtras } from "@/lib/voiceNotes/desktopCaptureExtras";
+import { privateCloudDiarizes } from "@/lib/privateCloud";
 import { levelFromAmplitude } from "@/lib/voiceNotes/web/webLevels";
 import { isOnDeviceReady } from "@/lib/voiceNotes/onDeviceStt";
 import { isLegacyNote } from "@/lib/voiceNotes/legacyMigration";
@@ -114,6 +116,8 @@ export interface RecorderTranscriberChoice {
   id: TranscriberId;
   identifySpeakers: boolean;
   source: TranscriberChoiceScope;
+  /** Set when the recording (or, with none running, the next one) has two channels: a Mac recording that also takes the Mac's audio. */
+  twoChannel?: true;
 }
 export type SetTranscriberResult = TranscriberChoiceResult;
 export type TranscriberScope = TranscriberChoiceScope;
@@ -204,10 +208,23 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
   let preference = readTranscriberPreference();
   let nativeOptions: CaptureOptions | null = null;
   const signedIn = tcw?.did != null;
-  const privateDiarization = () => transcriber?.snapshot?.().capabilities?.diarization === true;
+  // A Mac recording has two channels when it also takes the Mac's audio; a phone or browser recording has one. Private
+  // tells speakers apart in a two-channel recording only where the service offers it. With no recording running this
+  // is the setting's answer for the next one; once one runs, the engine's status says how many channels it has.
+  let twoChannel = false;
+  // Only the desktop app registers these. A setting that cannot be read counts as one channel: that is the rule every
+  // recording had before, and the transcription request checks the note's real channels again.
+  const readTwoChannel = async () => await getDesktopCaptureExtras()?.systemAudio.get().catch(() => false) ?? false;
+  const privateDiarizes = (channels: 1 | 2) => privateCloudDiarizes(transcriber?.snapshot?.().capabilities, channels);
+  // What the switch shows and lets the user change: whether Private tells speakers apart in this recording's channels.
+  const privateSpeakersOffered = () => privateDiarizes(twoChannel ? 2 : 1);
+  // What is stored on a recording: the user's preference is forced off only when Private has no diarizer at all,
+  // whatever the channels. A two-channel note keeps it even where Private cannot use it, because the note may later
+  // be transcribed on Powerful, which reads it; the Private request checks the note's channels itself.
+  const privateHasDiarizer = () => privateDiarizes(1);
   const defaultChoice = (): RecorderTranscriberChoice => {
     const options = effectiveCaptureOptions(preference, signedIn);
-    return { id: options.transcriber, identifySpeakers: options.identifySpeakers, source: "default" };
+    return { id: options.transcriber, identifySpeakers: options.identifySpeakers, source: "default", ...(twoChannel ? { twoChannel } : {}) };
   };
   let choice = defaultChoice();
   // Local needs the on-device model: this starts its download once the user has chosen Local or recorded on it, and
@@ -369,9 +386,10 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     const live = state.recordingId !== null && nativeOptions !== null;
     const next: RecorderTranscriberChoice = live
       ? { id: nativeOptions!.transcriber,
-        identifySpeakers: nativeOptions!.identifySpeakers, source: "recording" }
+        identifySpeakers: nativeOptions!.identifySpeakers, source: "recording", ...(twoChannel ? { twoChannel } : {}) }
       : defaultChoice();
-    if (choice.id === next.id && choice.identifySpeakers === next.identifySpeakers && choice.source === next.source) return false;
+    if (choice.id === next.id && choice.identifySpeakers === next.identifySpeakers && choice.source === next.source
+      && choice.twoChannel === next.twoChannel) return false;
     choice = next;
     return true;
   };
@@ -379,7 +397,18 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     if (status.id && "owner" in status) liveNoteOwner = status.owner ?? null;
     if (closed || !status.options || (status.id && state.recordingId && status.id !== state.recordingId)) return;
     nativeOptions = status.options;
+    // The engine's word on a running recording is final; an engine that reports no channels leaves the setting's answer.
+    if (status.id && "channels" in status && status.channels !== undefined) twoChannel = status.channels === 2;
     if (refreshChoice()) notify();
+  };
+  // With no recording running the switch shows what the next one would get, so the setting is read again each time
+  // the recorder comes to rest.
+  const refreshIdleChannels = () => {
+    void readTwoChannel().then((next) => {
+      if (closed || state.recordingId !== null || pendingStart !== null || twoChannel === next) return;
+      twoChannel = next;
+      if (refreshChoice()) notify();
+    });
   };
 
   // A recording holds its place at the Home work boundary (lib/homeReauthorizing.ts) from the moment it starts
@@ -392,6 +421,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
   // The start in progress (waiting on the defaults or the microphone). Detach cancels it and hands it the place.
   interface PendingStart { cancelled: boolean; release: (() => void) | null }
   let pendingStart: PendingStart | null = null;
+  refreshIdleChannels();
 
   // The reducer runs synchronously, so a second tap sees the phase the first one
   // set (Stop must never call stop() twice).
@@ -408,6 +438,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       (next.phase === "recording" && (next.controlPending === "resume" ||
         (next.mic.state !== "paused" && next.mic.state !== "interrupted" && next.mic.state !== "needs_user"))));
     refreshChoice();
+    if (next.phase === "idle" && before.phase !== "idle") refreshIdleChannels();
     followNote(next.outcome === "saved" && before.outcome !== "saved" && note === null && noteStatus === "ready");
     notify();
   };
@@ -874,7 +905,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       }
       if (scope === "recording") {
         if (state.phase !== "recording" || !state.recordingId) return "unavailable";
-        const identifySpeakers = (id === "assemblyai" || (id === "private-cloud" && privateDiarization())) && preference.identifySpeakers;
+        const identifySpeakers = (id === "assemblyai" || (id === "private-cloud" && privateHasDiarizer())) && preference.identifySpeakers;
         await VoiceNotes.setRecordingOptions({ transcriber: id, identifySpeakers });
         acceptNativeOptions(await VoiceNotes.status());
       } else {
@@ -892,7 +923,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       const id = scope === "recording" ? choice.id : effectiveCaptureOptions(preference, signedIn).transcriber;
       if (scope === "recording" && (state.phase !== "recording" || choice.source !== "recording")) return "unavailable";
       if (id !== "private-cloud" && id !== "assemblyai") return "unavailable";
-      if (id === "private-cloud" && !privateDiarization()) return "unavailable";
+      if (id === "private-cloud" && !privateSpeakersOffered()) return "unavailable";
       if (scope === "recording") {
         await VoiceNotes.setRecordingOptions({ identifySpeakers: on });
         acceptNativeOptions(await VoiceNotes.status());
@@ -1161,7 +1192,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         // Private without a diarizer cannot tell speakers apart; any other engine keeps its default. The engine is
         // asked which transcriber the recording starts on: this controller's choice is the stored preference, and
         // the engine's default is what counts. If it cannot say, speaker detection stays off, as for Private.
-        const noPrivateSpeakers = !privateDiarization()
+        const noPrivateSpeakers = !privateHasDiarizer()
           && await VoiceNotes.getCaptureDefaults().then((defaults) => defaults.transcriber === "private-cloud", () => true);
         if (attempt.cancelled) return;
         const started = await VoiceNotes.start({ maxDurationMs: requested,

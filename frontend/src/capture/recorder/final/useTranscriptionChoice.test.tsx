@@ -7,6 +7,7 @@ import type { VoiceNoteTranscriptionProps } from "../transcriptionProps";
 import type { TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
 import type { SetTranscriberResult } from "../voiceNoteRecorderController";
 import type { ModeShell } from "./transcriptionModes";
+import { identifySpeakersControl } from "./transcriptionModes";
 import { CHECK_AGAIN, FINAL_COPY, privateNotOffered } from "./finalCopy";
 import { localDesktopCaption, LOCAL_DESKTOP_NO_MODEL_EXPLANATION, type DesktopWhisperState } from "./desktop/useDesktopWhisper";
 import {
@@ -124,6 +125,21 @@ describe("useTranscriptionChoice", () => {
   test("Private speaker detection follows the reported PTX capability", () => {
     expect(choice(transcription({ diarization: true }), fakeApi("private-cloud").api).result.privateDiarization).toBe(true);
     expect(choice(transcription({ diarization: false }), fakeApi("private-cloud").api).result.privateDiarization).toBe(false);
+  });
+
+  test("on a two-channel Mac recording, Private speaker detection needs PTX to tell the other side's voices apart", () => {
+    const mac = (): TranscriberApi => {
+      const { api } = fakeApi("private-cloud");
+      return { ...api, transcriber: { ...api.transcriber, twoChannel: true } };
+    };
+    const speakers = (props: VoiceNoteTranscriptionProps) => {
+      const { result } = choice(props, mac(), MODEL, true, "desktop");
+      return identifySpeakersControl(result.mode, true, result.privateDiarization);
+    };
+    expect(speakers(transcription({ diarization: true, stereoDiarization: true }))).toMatchObject({ checked: true, disabled: false });
+    expect(speakers(transcription({ diarization: true, stereoDiarization: false }))).toMatchObject({
+      checked: false, disabled: true, subLabel: "Not supported" });
+    expect(speakers(transcription({ diarization: true }))).toMatchObject({ checked: false, disabled: true });
   });
 
   test("the displayed mode is always the provider's transcriber, whatever else is stored or consented", () => {

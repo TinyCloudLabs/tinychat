@@ -57,6 +57,7 @@ import { preserveVoiceNoteTranscriptHistory, transcriptHistoryKvKey } from "./vo
 import { resolveVoiceNoteRow, transcriptHash } from "./voiceNoteRows";
 import { pendingStore } from "./recorderSaves";
 import { preciseDurationSeconds } from "./noteDuration";
+import { nameChannelSpeakers } from "./channelSpeakers";
 import { privateRefusalCopy } from "@/capture/recorder/privateInstead";
 import {
   readVoiceNoteForTranscription,
@@ -409,6 +410,26 @@ test("Private asks PTX to identify speakers only when enabled, mono, and support
     await h.cloud.transcribe({ sourceId: `rec-${identifySpeakers}-${channelCount}-${diarization}`, capabilities: { ...CAPS, diarization },
       loadAudio: async () => AUDIO, identifySpeakers, channelCount }, () => {});
     expect(h.creates[0]?.body.diarize).toBe(identifySpeakers && channelCount === 1 && diarization ? true : undefined);
+    expect(h.creates[0]?.body).toMatchObject(channelCount === 2
+      ? { channel_mode: "separate", channel_labels: ["Me", "Them"] }
+      : { channel_mode: "mixed", channel_labels: ["Exo voice note"] });
+  }
+});
+
+test("Private asks PTX to identify speakers in a stereo note only where PTX diarizes separate channels", async () => {
+  const cases: Array<{ identifySpeakers: boolean; channelCount: 1 | 2; diarization: boolean; modes: string[]; diarize: true | undefined }> = [
+    { identifySpeakers: true, channelCount: 1, diarization: true, modes: ["mixed"], diarize: true },
+    // A service that offers only mixed: a stereo note is sent as it is by a backend that does not relay the modes.
+    { identifySpeakers: true, channelCount: 2, diarization: true, modes: ["mixed"], diarize: undefined },
+    { identifySpeakers: true, channelCount: 2, diarization: true, modes: ["mixed", "separate"], diarize: true },
+    { identifySpeakers: false, channelCount: 2, diarization: true, modes: ["mixed", "separate"], diarize: undefined },
+    { identifySpeakers: true, channelCount: 2, diarization: false, modes: ["mixed", "separate"], diarize: undefined },
+  ];
+  for (const [index, { identifySpeakers, channelCount, diarization, modes, diarize }] of cases.entries()) {
+    const h = harness({});
+    await h.cloud.transcribe({ sourceId: `rec-${index}`, capabilities: { ...CAPS, diarization, diarization_channel_modes: modes },
+      loadAudio: async () => AUDIO, identifySpeakers, channelCount }, () => {});
+    expect(h.creates[0]?.body.diarize).toBe(diarize);
     expect(h.creates[0]?.body).toMatchObject(channelCount === 2
       ? { channel_mode: "separate", channel_labels: ["Me", "Them"] }
       : { channel_mode: "mixed", channel_labels: ["Exo voice note"] });
@@ -1189,6 +1210,81 @@ describe("transcript normalization", () => {
     expect(saved.sentences.map((sentence) => [sentence.speaker_name, sentence.text])).toEqual([["Me", "Question"], ["Them", "Reply"]]);
     expect(saved.metadata.speaker_labels).toBe("channels");
   });
+  test("a stereo Private note in which PTX did not look for voices carries no speaker_id on either side", () => {
+    const transcript: PrivateCloudTranscript = { ...TRANSCRIPT, channels: 2, diarized: false,
+      speakers: [{ id: "channel_0", name: "Me", channel: 0 }, { id: "channel_1", name: "Them", channel: 1 }],
+      segments: [{ channel: 1, start: 2, end: 3, text: "Reply", speaker_id: "channel_1" },
+        { channel: 0, start: 0, end: 1, text: "Question", speaker_id: "channel_0" }] };
+    expect(voiceNoteSentences(transcript)).toEqual([
+      { index: 0, speaker_name: "Me", text: "Question", start_time: 0, end_time: 1, channel: 0, timing: "engine" },
+      { index: 1, speaker_name: "Them", text: "Reply", start_time: 2, end_time: 3, channel: 1, timing: "engine" },
+    ]);
+  });
+  test("a stereo Private note with several voices on the other side numbers them as a Powerful note does", () => {
+    const transcript: PrivateCloudTranscript = { ...TRANSCRIPT, channels: 2, diarized: true,
+      speakers: [{ id: "channel_0", name: "Me", channel: 0 }, { id: "speaker_0", name: "Speaker 2", channel: 1 },
+        { id: "speaker_1", name: "Speaker 3", channel: 1 }],
+      segments: [
+        { channel: 1, start: 0, end: 10, text: "Welcome", speaker_id: "speaker_0" },
+        { channel: 0, start: 10, end: 12, text: "Thanks", speaker_id: "channel_0" },
+        { channel: 1, start: 12, end: 20, text: "Shall we start", speaker_id: "speaker_1" },
+        { channel: 1, start: 20, end: 25, text: "Yes", speaker_id: "speaker_0" },
+      ] };
+    // The converter keeps each voice's id and leaves the other side "Them"; the namer numbers the voices.
+    expect(voiceNoteSentences(transcript).map((sentence) => [sentence.speaker_name, sentence.speaker_id]))
+      .toEqual([["Them", "speaker_0"], ["Me", undefined], ["Them", "speaker_1"], ["Them", "speaker_0"]]);
+    const saved = prepareVoiceNoteTranscript(transcript, "2026-11-25T00:00:00Z", 1, undefined, nameChannelSpeakers);
+    expect(saved.sentences).toEqual([
+      { index: 0, speaker_name: "Them 1", text: "Welcome", start_time: 0, end_time: 10, channel: 1, speaker_id: "speaker_0", timing: "engine" },
+      { index: 1, speaker_name: "Me", text: "Thanks", start_time: 10, end_time: 12, channel: 0, timing: "engine" },
+      { index: 2, speaker_name: "Them 2", text: "Shall we start", start_time: 12, end_time: 20, channel: 1, speaker_id: "speaker_1", timing: "engine" },
+      { index: 3, speaker_name: "Them 1", text: "Yes", start_time: 20, end_time: 25, channel: 1, speaker_id: "speaker_0", timing: "engine" },
+    ]);
+    expect(saved).toMatchObject({ speakers: ["Them 1", "Me", "Them 2"], metadata: { speaker_labels: "channels" } });
+    // Never saved with the remote voices unnamed.
+    expect(() => prepareVoiceNoteTranscript(transcript, "2026-11-25T00:00:00Z", 1)).toThrow();
+  });
+  test("one voice on the other side of a stereo Private note is Them and keeps the voice PTX found", () => {
+    const transcript: PrivateCloudTranscript = { ...TRANSCRIPT, channels: 2, diarized: true,
+      speakers: [{ id: "channel_0", name: "Me", channel: 0 }, { id: "speaker_0", name: "Speaker 2", channel: 1 }],
+      segments: [
+        { channel: 0, start: 0, end: 1, text: "Question", speaker_id: "channel_0" },
+        { channel: 1, start: 2, end: 3, text: "Reply", speaker_id: "speaker_0" },
+      ] };
+    expect(nameChannelSpeakers(voiceNoteSentences(transcript)).map((sentence) => [sentence.speaker_name, sentence.channel, sentence.speaker_id]))
+      .toEqual([["Me", 0, undefined], ["Them", 1, "speaker_0"]]);
+  });
+  test("a stereo Private note in which the other side said nothing is Me alone", () => {
+    const transcript: PrivateCloudTranscript = { ...TRANSCRIPT, channels: 2, diarized: true,
+      speakers: [{ id: "channel_0", name: "Me", channel: 0 }],
+      segments: [
+        { channel: 0, start: 0, end: 1, text: "Note to self", speaker_id: "channel_0" },
+        { channel: 0, start: 2, end: 3, text: "buy milk", speaker_id: "channel_0" },
+      ] };
+    expect(prepareVoiceNoteTranscript(transcript, "2026-11-25T00:00:00Z", 1, undefined, nameChannelSpeakers)).toMatchObject({
+      speakers: ["Me"], metadata: { speaker_labels: "channels", transcription_outcome: "transcribed" },
+      sentences: [{ speaker_name: "Me", text: "Note to self" }, { speaker_name: "Me", text: "buy milk" }],
+    });
+  });
+  test("audio PTX could not place stays Unknown speaker and is not counted among the voices", () => {
+    const transcript: PrivateCloudTranscript = { ...TRANSCRIPT, channels: 2, diarized: true,
+      speakers: [{ id: "channel_0", name: "Me", channel: 0 }, { id: "speaker_0", name: "Speaker 2", channel: 1 },
+        { id: "speaker_1", name: "Speaker 3", channel: 1 }, { id: "speaker_2", name: "Unknown speaker", channel: 1 }],
+      segments: [
+        { channel: 1, start: 0, end: 3, text: "Crosstalk", speaker_id: "speaker_2" },
+        { channel: 1, start: 3, end: 10, text: "Welcome", speaker_id: "speaker_0" },
+        { channel: 0, start: 10, end: 12, text: "Thanks", speaker_id: "channel_0" },
+        { channel: 1, start: 12, end: 20, text: "Shall we start", speaker_id: "speaker_1" },
+      ] };
+    expect(voiceNoteSentences(transcript).map((sentence) => [sentence.speaker_name, sentence.speaker_id]))
+      .toEqual([["Unknown speaker", undefined], ["Them", "speaker_0"], ["Me", undefined], ["Them", "speaker_1"]]);
+    expect(nameChannelSpeakers(voiceNoteSentences(transcript)).map((sentence) => [sentence.speaker_name, sentence.speaker_id]))
+      .toEqual([["Unknown speaker", undefined], ["Them 1", "speaker_0"], ["Me", undefined], ["Them 2", "speaker_1"]]);
+    // With one placed voice the unplaced audio does not make a second: the voice is Them.
+    const oneVoice: PrivateCloudTranscript = { ...transcript,
+      segments: transcript.segments.filter((segment) => segment.speaker_id !== "speaker_1") };
+    expect(nameChannelSpeakers(voiceNoteSentences(oneVoice)).map((sentence) => sentence.speaker_name)).toEqual(["Unknown speaker", "Them", "Me"]);
+  });
   test("diarized Private turns retain their speaker labels", () => {
     const transcript: PrivateCloudTranscript = {
       ...TRANSCRIPT, diarized: true,
@@ -1327,6 +1423,30 @@ describe("transcribeVoiceNote (one note end to end)", () => {
     expect(await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS,
       overrideCommitted: true, explicit: true, sourceId: "rec-1", report: () => {} })).toBe("transcribed");
     expect(h.creates[0]?.body).toMatchObject({ channel_mode: "separate", channel_labels: ["Me", "Them"] });
+  });
+
+  test("a stereo note whose remote voices PTX told apart is saved with them numbered", async () => {
+    const space = sqliteSpace();
+    expect((await saveVoiceNote(space.tcw, { ...RECORDING, channels: 2 }, AUDIO, "tauri")).ok).toBe(true);
+    const fake = createFakeVoiceNotes();
+    fake.plugin.listPending = async () => ({ recordings: [] });
+    __setVoiceNotesForTests(fake.plugin, { available: true });
+    const h = harness({ decode: silentDecoder(), result: { ...TRANSCRIPT, channels: 2, diarized: true,
+      speakers: [{ id: "channel_0", name: "Me", channel: 0 }, { id: "speaker_0", name: "Speaker 2", channel: 1 },
+        { id: "speaker_1", name: "Speaker 3", channel: 1 }],
+      segments: [
+        { channel: 1, start: 0, end: 3, text: "Welcome", speaker_id: "speaker_0" },
+        { channel: 0, start: 3, end: 5, text: "Thanks", speaker_id: "channel_0" },
+        { channel: 1, start: 5, end: 9, text: "Shall we start", speaker_id: "speaker_1" },
+      ] } });
+    expect(await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud,
+      capabilities: { ...CAPS, diarization_channel_modes: ["mixed", "separate"] },
+      overrideCommitted: true, explicit: true, sourceId: "rec-1", report: () => {} })).toBe("transcribed");
+    const saved = JSON.parse(space.kv.get(transcriptKvKey(VOICE_NOTE_SOURCE, "rec-1")) as string) as
+      Array<{ speaker_name: string; speaker_id?: string }>;
+    expect(saved.map((sentence) => [sentence.speaker_name, sentence.speaker_id]))
+      .toEqual([["Them 1", "speaker_0"], ["Me", undefined], ["Them 2", "speaker_1"]]);
+    expect((await resolveVoiceNoteRow(space.tcw, "rec-1"))?.metadata).toMatchObject({ speaker_labels: "channels" });
   });
 
   for (const platform of ["ios", "android", "tauri"] as const) {
