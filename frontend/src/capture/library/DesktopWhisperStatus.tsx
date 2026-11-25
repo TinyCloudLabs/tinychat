@@ -4,8 +4,10 @@ import { useEffect, useState, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { TranscriptionStatus } from "../TranscriptionStatus";
 import { appPlatform } from "@/lib/platform";
-import { getDesktopWhisperQueue, type DesktopWhisperJob } from "@/lib/voiceNotes/desktop/desktopWhisper";
+import { getDesktopWhisperQueue, whisperJobNeedsModel, type DesktopWhisperJob } from "@/lib/voiceNotes/desktop/desktopWhisper";
 import { useDesktopWhisperJob } from "@/lib/voiceNotes/desktop/useDesktopWhisperJob";
+import { ACTION_LABEL, LOCAL_COPY, PHONE_COPY } from "@/lib/voiceNotes/notePipelineCopy";
+import { GET_WHISPER_NO_SETTINGS, openCaptureSettings } from "@/capture/recorder/final/desktop/openCaptureSettings";
 
 export const WHISPER_JOB_COPY = {
   queued: "Waiting to transcribe on this Mac…",
@@ -22,8 +24,9 @@ export const WHISPER_JOB_COPY = {
 
 /** The Recent row's state line for a job that is still going or failed; null once it is done. */
 export function whisperJobMeta(job: DesktopWhisperJob): string | null {
+  if (whisperJobNeedsModel(job)) return LOCAL_COPY.waitingForModel(null);
   switch (job.state) {
-    case "queued": return "Waiting to transcribe on this Mac";
+    case "queued": return job.audio === "preparing" ? PHONE_COPY.finishing : "Waiting to transcribe on this Mac";
     case "transcribing": return WHISPER_JOB_COPY.transcribing(job.progress);
     case "failed": return WHISPER_JOB_COPY.recentFailed;
     case "done": return null;
@@ -37,6 +40,8 @@ export function DesktopWhisperStatusView(props: {
   localRead: "loading" | "missing" | "timeout" | "failed";
   onReadRetry?: () => void;
   durationSecs?: number | null;
+  /** Get model for a job that waits for one; ⚙︎ Capture settings by default. */
+  onGetModel?: () => void;
 }) {
   const { job } = props;
   if (job.state === "done") {
@@ -48,6 +53,12 @@ export function DesktopWhisperStatusView(props: {
         </div>;
   }
   const retry = props.onRetry;
+  if (whisperJobNeedsModel(job)) {
+    return <TranscriptionStatus testId="whisper-job-needs-model" actionTestId="whisper-job-get-model" durationSecs={props.durationSecs} job={{
+      kind: "transcribe", state: "waiting", label: "Transcribe", destination: "this Mac",
+      detail: props.retryError ? GET_WHISPER_NO_SETTINGS : LOCAL_COPY.needsModel("mac"),
+      action: { label: ACTION_LABEL["get-model"], run: props.onGetModel ?? getWhisperModel } }} />;
+  }
   if (job.state === "failed") {
     return <TranscriptionStatus testId="whisper-job-failed" actionTestId="whisper-job-retry" durationSecs={props.durationSecs} job={{
       kind: "transcribe", state: "needs-attention", label: "Transcribe", destination: "this Mac",
@@ -57,6 +68,13 @@ export function DesktopWhisperStatusView(props: {
     kind: "transcribe", state: job.state === "queued" ? "waiting" : "running", label: "Transcribe", destination: "this Mac",
     detail: job.state === "queued" ? WHISPER_JOB_COPY.queued : "Transcribing on this Mac…",
     ...(job.state === "transcribing" && job.progress !== null ? { progress: job.progress / 100 } : {}) }} />;
+}
+
+/** Get model on the Mac: ⚙︎ Capture settings, where Whisper models are chosen and downloaded. False when it is not mounted. */
+export function getWhisperModel(): boolean {
+  if (openCaptureSettings()) return true;
+  console.error("[desktopWhisper] Capture settings is not mounted, so Get model cannot open it");
+  return false;
 }
 
 /** Logs a failed job's raw error once; the UI shows generic copy only. */
@@ -96,7 +114,8 @@ function DesktopWhisperJobStatus(props: { noteId: string; fallback: ReactNode; l
     setRetryError(false);
     retryWhisperJob(props.noteId, () => setRetryError(true));
   };
-  return <DesktopWhisperStatusView job={job} retryError={retryError} onRetry={onRetry} localRead={props.localRead} onReadRetry={props.onReadRetry} durationSecs={props.durationSecs} />;
+  const onGetModel = () => setRetryError(!getWhisperModel());
+  return <DesktopWhisperStatusView job={job} retryError={retryError} onRetry={onRetry} onGetModel={onGetModel} localRead={props.localRead} onReadRetry={props.onReadRetry} durationSecs={props.durationSecs} />;
 }
 
 

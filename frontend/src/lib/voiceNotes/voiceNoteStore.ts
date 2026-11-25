@@ -62,6 +62,7 @@ import {
 import type { VoiceNoteRecording } from "./nativeVoiceNotes";
 import type { LocalTranscript } from "./nativeVoiceNotes";
 import { anonymousSpeakerName } from "./anonymousSpeakers";
+import { saveCallNamesLater, saveTranscriptCallSpeakerNamesLater } from "./callNamesLater";
 import { readLegacyTranscriptWinner, readTranscriptCommit, legacyTranscriptMetadata, type TranscriptCommit } from "./voiceNoteCommits";
 import { commitVoiceNoteTranscript, createVoiceNoteRow, ensureVoiceNoteIdentity, patchVoiceNoteAudio, patchVoiceNoteLocalOnly,
   patchVoiceNoteMarkdown, patchVoiceNoteTranscriptionFailure as patchTranscriptionFailureRow, resolveVoiceNoteRow } from "./voiceNoteRows";
@@ -440,6 +441,9 @@ export async function saveVoiceNote(
     opts.checkpoint?.();
     const row = await createVoiceNoteRow(tcw, recording, voiceNoteTitle(recording.startedAt), opts.checkpoint, platform);
     logPipeline("space_write", recording.id, "done", { destination: "connector_meeting" });
+    // Names in the call, for a recording of both sides (only it has a Them). Not awaited and never throws: the save
+    // neither waits on it nor fails with it. Stop, auto-stop and recovery all save through here.
+    if (recording.channels === 2) void saveCallNamesLater(tcw, recording.id, row.id, opts.checkpoint);
     opts.checkpoint?.();
     await opts.onRowCreated?.(row.id);
     opts.checkpoint?.();
@@ -702,6 +706,11 @@ export async function saveVoiceNoteTranscript(
       destination: "voice_note_transcript SQL + immutable KV",
       bodyBytes: new TextEncoder().encode(JSON.stringify(transcript.sentences)).byteLength,
     });
+    // Names in the call, again: the retry for names the save could not put on the row. A no-op where nothing is
+    // left to save (and off the desktop app). Not awaited and never throws.
+    void saveCallNamesLater(tcw, sourceId, String(existing.data.rows[0]?.[0]), checkpoint);
+    // Who spoke when: the suggested name of each "Them N" label the transcript carries. Not awaited, never throws.
+    void saveTranscriptCallSpeakerNamesLater(tcw, sourceId, String(existing.data.rows[0]?.[0]), transcript.sentences, checkpoint);
     checkpoint();
     if (accountGeneration === currentAccountGeneration() && (!account?.did || isVoiceNoteAccountMounted(account.did))) {
       captureEvents.emit("library-changed", { source: VOICE_NOTE_SOURCE, sourceId });

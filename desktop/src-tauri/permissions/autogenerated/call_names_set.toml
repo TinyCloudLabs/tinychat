@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-call-names-set"
+description = "Enables the call_names_set command without any pre-configured scope."
+commands.allow = ["call_names_set"]
+
+[[permission]]
+identifier = "deny-call-names-set"
+description = "Denies the call_names_set command without any pre-configured scope."
+commands.deny = ["call_names_set"]

@@ -1,6 +1,6 @@
 import { memo, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
-import { PlatformContext } from "@/lib/platform";
+import { PlatformContext, type AppPlatform } from "@/lib/platform";
 import { voiceNoteTitle } from "@/lib/voiceNotes/voiceNoteStore";
 import { uploadLocalVoiceNote } from "@/lib/voiceNotes/recorderSaves";
 import { readableError } from "@/lib/readableError";
@@ -38,6 +38,11 @@ export interface SavedNoteProps {
   transcript: ReactNode;
   footer?: ReactNode;
   activityControl?: ReactNode;
+}
+
+/** The note's header line: where the note stands. The Transcript section says where the transcript stands. */
+export function savedNoteStatusLine(pipeline: NotePipelineView | null, platform: AppPlatform): string | null {
+  return noteStatus(activityForNote(pipeline ?? undefined, platform).filter((job) => job.kind !== "transcribe"), pipeline?.pipeline, false);
 }
 
 /** A saved voice note's note and its audio, as a page or a sheet. */
@@ -79,7 +84,7 @@ function SavedNoteContent({
   // The Transcript fallback owns the durable failure's explanation and retry action.
   // The Transcript section, where the transcript will appear, carries the transcription status.
   const statusJobs = jobs.filter((job) => job.kind !== "transcribe");
-  const status = noteStatus(statusJobs, pipeline?.pipeline, false);
+  const status = savedNoteStatusLine(pipeline, platform);
   const actions = statusJobs.flatMap((job) => job.action ? [job.action] : job.retry ? [{ label: "Try again", run: job.retry }] : []);
   const cloudFailedWithoutRetry = pipeline?.input?.route === "private-cloud" && pipeline.pipeline.steps.some((step) => step.key === "transcript" && step.state === "failed" && !step.blocker?.action);
   const titleEdit = useRecordingTitleEdit(item, item.title ?? voiceNoteTitle(Date.parse(item.startedAt ?? "") || Date.now()));

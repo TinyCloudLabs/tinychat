@@ -19,6 +19,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefO
 import { useLocation } from "react-router-dom";
 
 import { AppBar } from "@/apps/AppBar";
+import { framesAppIdHere } from "@/apps/registry";
 import { APP_NAMES, CONNECTORS_NAME } from "@/apps/strings";
 import { cn } from "@/lib/utils";
 import type { AppPlatform } from "../lib/platform";
@@ -101,6 +102,14 @@ export function showsPill(nav: NavKind | "none", shown: Shown, oneNav: boolean):
   return oneNav && nav === "tabbar" && shown !== "about";
 }
 
+/**
+ * One's new navigation on a phone: an app One frames here (`/chat/apps/<id>`) is full screen, with no navigation; the app
+ * screen draws its own floating Back (FramedAppScreen). Its new-tab page and One's own apps keep the navigation.
+ */
+export function fullScreenApp(nav: NavKind | "none", shown: Shown, screen: Screen, oneNav: boolean, origin: string): boolean {
+  return oneNav && nav === "tabbar" && shown === "apps" && screen.id === "apps" && screen.appId !== undefined && framesAppIdHere(screen.appId, origin);
+}
+
 const GRID: Record<NavKind | "none", string> = {
   tabbar: "grid-cols-1 grid-rows-[minmax(0,1fr)_auto_auto]",
   rail: "grid-cols-[auto_minmax(0,1fr)] grid-rows-[minmax(0,1fr)_auto]",
@@ -116,6 +125,8 @@ export interface AppShellViewProps extends AppShellProps {
   onReselect?: (destination: Destination) => void;
   /** One Apps: the account's pins. Absent with the flag off, which leaves the navigation as it was. */
   pinOptions?: NavPinOptions;
+  /** A phone showing a framed app (One's new navigation): no navigation, the app fills the screen (fullScreenApp). */
+  fullScreen?: boolean;
 }
 
 /** The frame as a pure function of its props (server-rendered in the tests). */
@@ -140,6 +151,7 @@ export function AppShellView({
   mainRef,
   onReselect = () => {},
   pinOptions,
+  fullScreen = false,
 }: AppShellViewProps) {
   const nav = shellNavKind(sizeClass, { capture, connectors });
   const shown = shownSurface(screen, { capture, connectors, settings, feed, apps, about });
@@ -157,7 +169,7 @@ export function AppShellView({
   const beside = nav === "rail" || nav === "sidebar";
   const surface = (name: Shown) => (shown === name ? "h-full" : "hidden");
   const oneNav = pinOptions?.oneNav === true;
-  const pill = showsPill(nav, shown, oneNav);
+  const pill = showsPill(nav, shown, oneNav) && !fullScreen;
   const pillNav = pill
     ? pillItems(
         pendingMeetings,
@@ -186,6 +198,8 @@ export function AppShellView({
           beside ? "col-start-2" : "col-start-1 pl-[env(safe-area-inset-left)]",
           // Under the pill, <main> runs to the bottom edge: the island and the pill float over it.
           pill && "row-end-4",
+          // A full-screen app runs to the bottom edge too, its content above the home indicator.
+          fullScreen && "row-end-4 pb-[env(safe-area-inset-bottom)]",
         )}
       >
         <div data-surface="chat" className={surface("chat")}>
@@ -226,9 +240,9 @@ export function AppShellView({
         {recorderHost ? <div ref={recorderHost} data-recorder-host="" className="absolute inset-0 z-20 empty:hidden" /> : null}
       </main>
       {island ? (
-        <div className={cn("row-start-2 [html[data-keyboard=open]_&]:hidden", beside ? "col-start-2" : "col-start-1", pill && "relative z-30")}>{island}</div>
+        <div className={cn("row-start-2 [html[data-keyboard=open]_&]:hidden", beside ? "col-start-2" : "col-start-1", (pill || fullScreen) && "relative z-30")}>{island}</div>
       ) : null}
-      {nav === "tabbar" && !globalScreen ? (
+      {nav === "tabbar" && !globalScreen && !fullScreen ? (
         pill ? null : (
           <div className="row-start-3">
             <TabBar {...navProps} items={tabBarItems(items)} />
@@ -259,7 +273,9 @@ export function AppShell(props: AppShellProps) {
   const shown = shownSurface(props.screen, props);
   const nav = shellNavKind(sizeClass, props);
   const hasIsland = props.island !== undefined && props.island !== null && props.island !== false;
-  const pill = showsPill(nav, shown, ONE_NAV_ENABLED);
+  // No location when server-rendered (the tests): no app is framed there.
+  const fullScreen = fullScreenApp(nav, shown, props.screen, ONE_NAV_ENABLED, globalThis.location?.origin ?? "");
+  const pill = showsPill(nav, shown, ONE_NAV_ENABLED) && !fullScreen;
 
   // Mac Capture reads background activity at launch; other platforms mount it on first visit.
   // Mac background jobs need their Capture reader even when the app opens on Chat.
@@ -320,6 +336,7 @@ export function AppShell(props: AppShellProps) {
       mainRef={mainRef}
       onReselect={scrollSurfaceToTop}
       pinOptions={pinOptions}
+      fullScreen={fullScreen}
     />
   );
 }

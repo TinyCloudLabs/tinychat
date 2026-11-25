@@ -28,6 +28,7 @@ import { activityScreens } from "./screens/activity";
 import { transcriptionStatusScreens } from "./screens/transcriptionStatus";
 import { captureHomeDesktopScreens } from "./screens/captureHomeDesktop";
 import { captureSettingsScreens } from "./screens/captureSettings";
+import { callPromptScreens } from "./screens/callPrompt";
 import { legacyScreens } from "./screens/legacy";
 import { libraryScreens } from "./screens/library";
 import { speakerNameScreens } from "./screens/speakerNames";
@@ -92,6 +93,7 @@ const SCREENS: HarnessScreen[] = [
   ...transcriptionStatusScreens,
   ...captureHomeDesktopScreens,
   ...captureSettingsScreens,
+  ...callPromptScreens,
   ...libraryScreens,
   ...speakerNameScreens,
   ...wordFixesScreens,

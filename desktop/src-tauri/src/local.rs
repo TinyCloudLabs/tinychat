@@ -5,12 +5,16 @@ use exo_local_transcription::request::RequestSpec;
 use serde::Serialize;
 
 use tauri::AppHandle;
-use tauri_plugin_local_stt::{LocalModel, LocalSttPluginExt, WhisperModel};
+use tauri_plugin_local_stt::{LocalModel, LocalSttPluginExt, SoniqoModel, WhisperModel};
 use tauri_plugin_transcription::{
     Listener2PluginExt, ListenerPluginExt, TranscriptionParams, TranscriptionProvider,
 };
 
 use crate::session_audio;
+
+/// Soniqo runs in this process. The transcription request takes this in place of a server URL
+/// (`anlg_transcribe_soniqo::LOCAL_BASE_URL`); the Soniqo batch runner does not read it.
+const SONIQO_LOCAL_URL: &str = "soniqo://local";
 
 #[derive(Debug, Serialize)]
 pub struct LocalError {
@@ -142,6 +146,93 @@ fn params_from_request(
     })
 }
 
+/// Parakeet (Soniqo) on the staged recording, after the recording stopped. The same admission as
+/// `recorder_whisper_start`; no server is started or stopped, so a Whisper server that another
+/// job holds keeps running.
+#[tauri::command]
+pub async fn recorder_local_stt_start(
+    app: AppHandle,
+    id: String,
+    stage_id: String,
+    model: SoniqoModel,
+) -> Result<(), LocalError> {
+    if model != SoniqoModel::ParakeetBatch {
+        return Err(LocalError::new(
+            "unsupported_model",
+            format!("{model} is not offered for recordings"),
+        ));
+    }
+    if crate::recorder::files::valid_recording_id(&id) {
+        tracing::info!(target: "exo_dev::whisper", kind = "pipeline", source_id = %id, operation = "local_stt", phase = "start");
+    }
+    let sessions = crate::recorder::files::sessions_root(&app)
+        .map_err(|e| LocalError::new("recording_unavailable", e))?;
+    let staged = crate::recorder::files::staged_session(&sessions, &id, &stage_id)
+        .map_err(|e| LocalError::new("recording_unavailable", e))?;
+    let (_recording, file_path) =
+        session_audio::admit_transcription(&sessions, &staged, || async {
+            let snapshot = app
+                .listener()
+                .get_capture_snapshot()
+                .await
+                .map_err(|_| ())?;
+            Ok(
+                snapshot.active_session_id.as_deref() == Some(staged.as_str())
+                    || snapshot
+                        .finalizing_session_ids
+                        .iter()
+                        .any(|active| active == &staged),
+            )
+        })
+        .await
+        .map_err(|e| LocalError::new(e.code, e.message))?;
+    let result = start_local_stt_transcription(&app, id.clone(), file_path, model).await;
+    tracing::info!(target: "exo_dev::whisper", kind = "pipeline", source_id = %id, operation = "local_stt",
+        phase = if result.is_ok() { "submitted" } else { "failed" });
+    result
+}
+
+async fn start_local_stt_transcription(
+    app: &AppHandle,
+    session_id: String,
+    file_path: String,
+    model: SoniqoModel,
+) -> Result<(), LocalError> {
+    // Without the model on disk the bridge would start downloading it inside the transcription.
+    let downloaded = app
+        .local_stt()
+        .is_model_downloaded(&LocalModel::Soniqo(model))
+        .await
+        .map_err(|e| LocalError::new("model_unavailable", e.to_string()))?;
+    if !downloaded {
+        return Err(LocalError::new(
+            "model_unavailable",
+            "The Parakeet model is not downloaded",
+        ));
+    }
+    let params = local_stt_transcription_params(model, session_id, file_path)?;
+    app.listener2()
+        .start_transcription(params)
+        .await
+        .map_err(|e| LocalError::new("start_failed", e.to_string()))
+}
+
+/// The same production request as Whisper (English, no keywords), for the Soniqo provider.
+fn local_stt_transcription_params(
+    model: SoniqoModel,
+    session_id: String,
+    file_path: String,
+) -> Result<TranscriptionParams, LocalError> {
+    let mut params = params_from_request(
+        RequestSpec::production(model.as_str()),
+        session_id,
+        file_path,
+        SONIQO_LOCAL_URL.to_string(),
+    )?;
+    params.provider = TranscriptionProvider::Soniqo;
+    Ok(params)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -198,5 +289,36 @@ mod tests {
             params.provider,
             TranscriptionProvider::WhisperLocal
         ));
+    }
+
+    #[test]
+    fn local_stt_transcription_params_map_parakeet_to_soniqo_in_process() {
+        let params = local_stt_transcription_params(
+            SoniqoModel::ParakeetBatch,
+            "note".into(),
+            "/staged/audio.mp3".into(),
+        )
+        .unwrap();
+        assert!(matches!(params.provider, TranscriptionProvider::Soniqo));
+        assert_eq!(params.model, Some("soniqo-parakeet-batch".into()));
+        assert_eq!(params.languages, vec!["en".parse::<Language>().unwrap()]);
+        assert_eq!(params.keywords, Vec::<String>::new());
+        assert_eq!(params.base_url, "soniqo://local");
+        assert_eq!(params.session_id, "note");
+        assert_eq!(params.file_path, "/staged/audio.mp3");
+        assert!(params.api_key.is_empty());
+        assert!(params.num_speakers.is_none());
+        assert!(params.min_speakers.is_none());
+        assert!(params.max_speakers.is_none());
+    }
+
+    #[test]
+    fn the_parakeet_command_takes_the_plugins_model_id() {
+        let model: SoniqoModel =
+            serde_json::from_value(serde_json::json!("soniqo-parakeet-batch")).unwrap();
+        assert_eq!(model, SoniqoModel::ParakeetBatch);
+        assert!(
+            serde_json::from_value::<SoniqoModel>(serde_json::json!("QuantizedTinyEn")).is_err()
+        );
     }
 }

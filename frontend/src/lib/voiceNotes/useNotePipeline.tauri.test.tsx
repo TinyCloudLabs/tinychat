@@ -165,3 +165,39 @@ test("real Tauri hook retries transcript sync from committed space audio without
     expect(list).toHaveBeenCalledTimes(1);
   } finally { list.mockRestore(); installVoiceNotesEngine(previous); engine.dispose(); }
 });
+
+test("a Mac note whose transcript the space already has: a failed write keeps Try again on its Activity Sync line, and it writes, never transcribes", async () => {
+  // A relaunch while the space is down checks every finished Mac transcript against the space; the check fails.
+  job = { id: ID, state: "done", progress: null, error: null };
+  const bridge = {
+    invoke: async (command: string) => {
+      if (command === "recorder_models_get") return null;
+      if (command === "recorder_status") return { state: "idle", reason: null, id: null, startedAt: null,
+        elapsedMs: 0, audioMs: 0, pausedMs: 0, maxDurationMs: 10_000, intent: "stopped", availability: "available", at: 0, elapsedAt: 0, spans: [] };
+      throw new Error(`Unexpected desktop command ${command}`);
+    },
+    listen: async () => () => undefined,
+  } as unknown as DesktopBridge;
+  const engine = await openDesktopVoiceNotes({ bridge, storeOptions: { env: newIdbEnv(), dbName: crypto.randomUUID(),
+    locks: memoryLocks(), decodeCheck: null } });
+  const previous = VoiceNotes;
+  installVoiceNotesEngine(engine.plugin);
+  const list = spyOn(engine.plugin, "listPending");
+  try {
+    await syncOnDeviceTranscript(SPACE, { id: ID, owner: SPACE.did, ledger: { audio: { state: "saved" } }, stt: { state: "done" } });
+    expect(onDeviceTranscriptSyncState(SPACE, ID)?.state).toBe("failed");
+    list.mockClear();
+    const mounted = await mount({ ...syncSource, metadata: { ...saved.metadata, transcript_text: "Already in the space" } });
+    expect(mounted.view?.input?.transcript.inSpace).toBe("transcribed");
+    expect(mounted.view?.pipeline.steps.find((step) => step.key === "transcript")?.state).toBe("done");
+    const sync = activityForNote(mounted.view!, "tauri").find((entry) => entry.kind === "sync");
+    expect(sync?.state).toBe("needs-attention");
+    const again = sync?.action?.run ?? sync?.retry;
+    expect(again).toBeDefined();
+    await act(async () => again!());
+    for (let i = 0; i < 10 && list.mock.calls.length === 0; i++) await act(async () => { await Bun.sleep(1); });
+    // The write path reads this Mac's notes; a new transcription would have gone to the Whisper queue.
+    expect(list).toHaveBeenCalledTimes(1);
+    expect(retryCalls).toEqual([]);
+  } finally { list.mockRestore(); installVoiceNotesEngine(previous); engine.dispose(); }
+});

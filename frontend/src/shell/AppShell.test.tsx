@@ -9,7 +9,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 
 import type { SizeClassState } from "../lib/sizeClass";
-import { AppShell, AppShellView, shownSurface } from "./AppShell";
+import { AppShell, AppShellView, fullScreenApp, shownSurface } from "./AppShell";
 import { PATHS, screenFor } from "./routes";
 import { sidebarActivityStore } from "@/capture/activity/sidebarActivityStore";
 import { notePipeline, type NotePipelineInput } from "@/lib/voiceNotes/notePipeline";
@@ -116,7 +116,7 @@ describe("the fixed tree", () => {
       '<div data-surface="settings"',
       '<div data-surface="about"',
       "{island ? (",
-      '{nav === "tabbar" && !globalScreen ? (',
+      '{nav === "tabbar" && !globalScreen && !fullScreen ? (',
     ];
     const positions = slots.map((slot) => render.indexOf(slot));
     for (const position of positions) expect(position).toBeGreaterThan(-1);
@@ -125,6 +125,20 @@ describe("the fixed tree", () => {
     const main = render.slice(render.indexOf("<main"), render.indexOf("</main>"));
     expect(main).not.toContain("nav ===");
     expect(main).not.toContain("sizeClass");
+  });
+});
+
+describe("full-screen apps", () => {
+  const ONE = "https://tinycloud.one";
+  const explorer = screenFor(`${PATHS.apps}/xyz.tinycloud.explorer`);
+  test("a phone opens an app One frames full screen; the grid, a tablet, and an app opened elsewhere keep the navigation", () => {
+    expect(fullScreenApp("tabbar", "apps", explorer, true, ONE)).toBe(true);
+    expect(fullScreenApp("rail", "apps", explorer, true, ONE)).toBe(false);
+    expect(fullScreenApp("tabbar", "apps", explorer, false, ONE)).toBe(false);
+    expect(fullScreenApp("tabbar", "apps", screenFor(PATHS.apps), true, ONE)).toBe(false);
+    // Not framed on this origin, and never framed (Secrets): their screens offer a new tab, under the navigation.
+    expect(fullScreenApp("tabbar", "apps", explorer, true, "https://example.com")).toBe(false);
+    expect(fullScreenApp("tabbar", "apps", screenFor(`${PATHS.apps}/xyz.tinycloud.secrets`), true, ONE)).toBe(false);
   });
 });
 

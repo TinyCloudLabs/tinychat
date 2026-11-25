@@ -82,6 +82,8 @@ export function stepUpFailedLine(app: string, failure: StepUpFailure): string {
 }
 
 export const ASK_CLOSE = "Close";
+/** The phone's full-screen app: the floating button back to where One was (its accessible name). */
+export const FULL_SCREEN_BACK = "Back to TinyCloud One";
 
 /**
  * What One says when an app asks for a space that isn't set up, keyed by space name:

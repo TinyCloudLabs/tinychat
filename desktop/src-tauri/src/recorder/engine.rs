@@ -642,6 +642,46 @@ impl EngineState {
     }
 }
 
+/// The capture the call-names reader may read beside: the note id, the channel count and the
+/// recorded time. Only while the native source is capturing; `None` before the recorder is first
+/// used and while it is idle, paused, stopping or stopped. A pause or a stop holds `busy` from
+/// the request until its segment is closed, and the segment counts as live for all that time,
+/// so `busy` ends the capture here, as it does for the auto-stop check.
+pub(crate) fn live_capture(app: &tauri::AppHandle) -> Option<(String, u8, u64)> {
+    let engine = app.try_state::<Engine>()?;
+    let state = engine.0.lock();
+    if state.busy || !state.recorder.is_live() {
+        return None;
+    }
+    Some((
+        state.id.clone()?,
+        state.layout.channels(),
+        state.recorder.status(mono_ms()).elapsed_ms,
+    ))
+}
+
+/// The recording that exists, with its own clock, for the call prompt's tile: its id, the
+/// recorded time (which stands still while paused) and whether it is paused. `None` before the
+/// recorder is first used and when there is no recording. One brief lock.
+pub(crate) fn recording_clock(app: &tauri::AppHandle) -> Option<(String, u64, bool)> {
+    let engine = app.try_state::<Engine>()?;
+    let state = engine.0.lock();
+    let id = state.id.clone()?;
+    let status = state.recorder.status(mono_ms());
+    Some((id, status.elapsed_ms, status.state == State::Paused))
+}
+
+/// Whether a recording exists, from its start until it is stopped or discarded: capturing,
+/// paused or stopping. The call prompt never offers to record while one does, however it began.
+/// `false` before the recorder is first used.
+pub(crate) fn recording_in_progress(app: &tauri::AppHandle) -> bool {
+    let Some(engine) = app.try_state::<Engine>() else {
+        return false;
+    };
+    let recording = engine.0.lock().id.is_some();
+    recording
+}
+
 fn emit_status(app: &tauri::AppHandle) {
     let status = app.state::<Engine>().0.lock().status();
     let _ = app.emit(MIC_EVENT, status);

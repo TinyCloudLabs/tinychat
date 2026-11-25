@@ -73,11 +73,15 @@ import {
   type HomePlace,
 } from "./desktopCopy";
 import {
+  getWhisperModel,
   retryWhisperJob,
   whisperJobMeta,
   WHISPER_JOB_COPY,
 } from "@/capture/library/DesktopWhisperStatus";
+import { whisperJobNeedsModel } from "@/lib/voiceNotes/desktop/desktopWhisper";
 import { useDesktopWhisperJob } from "@/lib/voiceNotes/desktop/useDesktopWhisperJob";
+import { ACTION_LABEL } from "@/lib/voiceNotes/notePipelineCopy";
+import { GET_WHISPER_NO_SETTINGS } from "@/capture/recorder/final/desktop/openCaptureSettings";
 import {
   desktopIssueMeta,
   desktopRecent,
@@ -267,7 +271,7 @@ function InProgress(props: {
           place={props.place}
           count={count}
           saving={voice.saving}
-          note={pendingNote(props.issues, voice.lastError, props.place)}
+          note={pendingNote(props.issues, voice.lastError, props.place, voice.saving)}
           onSaveNow={voice.onSaveNow}
           storageFull={voice.storageFull}
         />
@@ -304,11 +308,14 @@ function rowLabel(parts: {
   return label.filter(Boolean).join(". ");
 }
 
-/** Retry for a failed Whisper job, beside its row. A retry that could not start says so beside the row, with generic copy. */
+/** Retry for a failed Whisper job, beside its row (Get model for one that waits for a model). A retry that could not start says so beside the row, with generic copy. */
 export function WhisperRetryControl(props: {
   label: string;
   error: boolean;
   onRetry: () => void;
+  text?: string;
+  errorText?: string;
+  testId?: string;
 }) {
   const errorId = useId();
   return (
@@ -319,9 +326,9 @@ export function WhisperRetryControl(props: {
         aria-label={props.label}
         aria-describedby={props.error ? errorId : undefined}
         onClick={props.onRetry}
-        data-testid="recent-whisper-retry"
+        data-testid={props.testId ?? "recent-whisper-retry"}
       >
-        {COPY.retry}
+        {props.text ?? COPY.retry}
       </button>
       {props.error && (
         <p
@@ -330,7 +337,7 @@ export function WhisperRetryControl(props: {
           className="soft-sheet-error dch-dismiss-error"
           data-testid="recent-whisper-retry-error"
         >
-          {WHISPER_JOB_COPY.retryFailed}
+          {props.errorText ?? WHISPER_JOB_COPY.retryFailed}
         </p>
       )}
     </>
@@ -400,6 +407,7 @@ export function RecentRow(props: {
   let attention = false;
   let dismissId: string | undefined;
   let retryId: string | undefined;
+  let needsModel = false;
   let sourceId: string | undefined;
   let issueKind: HomeIssue["kind"] | undefined;
   let sheetId: string | undefined;
@@ -429,7 +437,9 @@ export function RecentRow(props: {
       badge = null;
       durationSecs = item.durationSecs;
       meta = whisperJobMeta(whisperJob)!;
-      attention = whisperJob.state === "failed";
+      // A note that waits for a Whisper model has not failed: it offers Get model, not Retry.
+      needsModel = whisperJobNeedsModel(whisperJob);
+      attention = whisperJob.state === "failed" && !needsModel;
       if (whisperJob.state === "failed") retryId = item.sourceId;
     }
     if (entry.partialId === undefined && !entry.issue && props.pipeline) {
@@ -535,7 +545,16 @@ export function RecentRow(props: {
           }
         />
       )}
-      {retryId !== undefined && (
+      {retryId !== undefined && (needsModel ? (
+        <WhisperRetryControl
+          label={ACTION_LABEL["get-model"]}
+          text={ACTION_LABEL["get-model"]}
+          testId="recent-whisper-get-model"
+          error={retryError}
+          errorText={GET_WHISPER_NO_SETTINGS}
+          onRetry={() => setRetryError(!getWhisperModel())}
+        />
+      ) : (
         <WhisperRetryControl
           label={COPY.retryLabel(title)}
           error={retryError}
@@ -544,7 +563,7 @@ export function RecentRow(props: {
             retryWhisperJob(retryId, () => setRetryError(true));
           }}
         />
-      )}
+      ))}
     </li>
   );
 }

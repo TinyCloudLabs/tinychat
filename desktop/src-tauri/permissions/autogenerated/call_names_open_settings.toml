@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-call-names-open-settings"
+description = "Enables the call_names_open_settings command without any pre-configured scope."
+commands.allow = ["call_names_open_settings"]
+
+[[permission]]
+identifier = "deny-call-names-open-settings"
+description = "Denies the call_names_open_settings command without any pre-configured scope."
+commands.deny = ["call_names_open_settings"]

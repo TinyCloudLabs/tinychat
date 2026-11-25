@@ -9,7 +9,10 @@ import { readFileSync, statSync } from "node:fs";
 import path from "node:path";
 
 /** Minified bytes. Raise it only with a reason in the PR: what the entry chunk now needs at boot that it can't load later. */
-const ENTRY_CHUNK_BUDGET = 7_630_000;
+// 7,641,000 since the speaker-names branch: voice-note saves and transcript writes now try again by themselves after
+// an outage, and the Mac's local transcription job can run Parakeet. That logic lives in the save, sync and
+// transcription modules the app starts with (about 8 KB after everything that could load later was moved out).
+const ENTRY_CHUNK_BUDGET = 7_641_000;
 
 const dist = path.resolve(process.argv[2] ?? path.join(import.meta.dir, "../dist"));
 const html = readFileSync(path.join(dist, "index.html"), "utf8");

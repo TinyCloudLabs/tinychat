@@ -11,6 +11,21 @@ export async function needsSystemAudioDisclosure(extras: DesktopCaptureExtras): 
 }
 
 export async function chooseSystemAudio(extras: DesktopCaptureExtras, choice: "record" | "mic-only"): Promise<void> {
-  if (choice === "mic-only") await extras.systemAudio.set(false);
+  if (choice === "mic-only") {
+    await extras.systemAudio.set(false);
+    turnCallNamesOff(extras);
+  }
   await extras.systemAudioConsent.set(true);
+}
+
+/**
+ * Names in the call are read only while this Mac's audio is recorded too, so that setting goes off with it. Not
+ * waited for: a build without the setting, or a failure, changes nothing about the choice.
+ */
+function turnCallNamesOff(extras: DesktopCaptureExtras): void {
+  try {
+    extras.callNames?.set(false).catch(() => {});
+  } catch {
+    // The choice stands.
+  }
 }

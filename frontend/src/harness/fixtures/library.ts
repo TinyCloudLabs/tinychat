@@ -156,6 +156,58 @@ export const SPEAKER_ROWS: FixtureRow[] = [
   },
 ];
 
+/** A Mac recording of both sides of a call, with the people the desktop app read from the call window (names in the call). */
+const callRecording = (id: string, title: string, people: { id: string; name: string; self?: true }[], extra: Record<string, unknown> = {}): FixtureRow => ({
+  id,
+  source: "exo-voice-note",
+  sourceId: `rec-${id}`,
+  title,
+  startedAt: at(10, 6, 9, 0),
+  durationSecs: 1500,
+  metadata: {
+    ...stored("exo-voice-note", `rec-${id}`),
+    capture: { platform: "tauri", duration_ms: 1_500_000, channels: 2 },
+    transcription_engine: "private-cloud",
+    transcript_provider: "tinycloud-private-transcription",
+    inference_provider: "tinfoil",
+    transcription_outcome: "transcribed",
+    transcript_text: "Thanks for joining. The press kit is ready.",
+    call_participants: { v: 1, source: "call_window", app: "google-meet", people, truncated: false },
+    ...extra,
+  },
+  sentences: [
+    { index: 0, speaker_name: "Me", text: "Thanks for joining. Let's go through the launch checklist.", start_time: 0, end_time: 6 },
+    { index: 1, speaker_name: "Them", text: "Sounds good. The press kit is ready and the pricing page is nearly done.", start_time: 7, end_time: 14 },
+    { index: 2, speaker_name: "Me", text: "Great. Then we only need the date for the announcement.", start_time: 15, end_time: 21 },
+    { index: 3, speaker_name: "Them", text: "I'll send it over this afternoon.", start_time: 22, end_time: 25 },
+  ],
+});
+
+/** The speaker-name rows and two call recordings: a group call (names offered as choices) and a 1:1 call. */
+export const CALL_NAME_ROWS: FixtureRow[] = [
+  ...SPEAKER_ROWS,
+  callRecording("call-group", "Launch checklist", [
+    { id: "p1", name: "Robin Sample", self: true }, { id: "p2", name: "Alex Example" }, { id: "p3", name: "Dana Lee" }]),
+  // One other person in the call: their name was suggested for Them, and shows as suggested until kept or changed.
+  callRecording("call-one", "Pricing review", [{ id: "p1", name: "Robin Sample", self: true }, { id: "p2", name: "Alex Example" }], {
+    speaker_names: { Them: "Alex Example" },
+    speaker_suggestions: { Them: { name: "Alex Example", source: "call_window", confidence: "high",
+      reason: "one_other_participant", person: "p2", at: at(10, 6, 9, 25) } },
+  }),
+];
+
+/** RFC 7396 merge patch, as SQLite's json_patch applies it: a null member removes that key. */
+function mergePatch(target: unknown, patch: unknown): unknown {
+  if (patch === null || typeof patch !== "object" || Array.isArray(patch)) return patch;
+  const merged: Record<string, unknown> = target !== null && typeof target === "object" && !Array.isArray(target)
+    ? { ...(target as Record<string, unknown>) } : {};
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === null) delete merged[key];
+    else merged[key] = mergePatch(merged[key], value);
+  }
+  return merged;
+}
+
 /**
  * The harness space with `rows` stored. `hang` leaves the list read pending
  * (the Library's loading state).
@@ -187,7 +239,20 @@ export function libraryTcw(options: { rows?: readonly FixtureRow[]; hang?: boole
   };
   // The speaker-name writes (TC-2189), as the SQL applies them: one label merged into the row's `speaker_names`
   // (a null name clears it), then the map dropped once it is empty.
+  // Names in the call: that write is now one merge patch, which also drops the label's suggestion on a row that has
+  // suggestions, and `speaker_suggestions` is dropped once it is empty too. Those statements are handled first; the
+  // write of the older form stays below.
   const execute = async (sql: string, params: unknown[] = []) => {
+    if (sql.includes("call_participants")) return { ok: true, data: { changes: 0 } };
+    if (sql.includes("json_patch") && sql.includes("speaker_suggestions")) {
+      const [withSuggestions, namesOnly, , rowId] = params as [string, string, string, string];
+      const row = rows.find((r) => r.id === rowId);
+      if (!row) return { ok: true, data: { changes: 0 } };
+      const suggestions = row.metadata.speaker_suggestions;
+      const hasSuggestions = suggestions !== null && typeof suggestions === "object" && !Array.isArray(suggestions);
+      row.metadata = mergePatch(row.metadata, JSON.parse(hasSuggestions ? withSuggestions : namesOnly)) as Record<string, unknown>;
+      return { ok: true, data: { changes: 1 } };
+    }
     if (!sql.includes("speaker_names")) return { ok: true, data: { changes: 0 } };
     if (sql.includes("json_patch")) {
       const [label, shown, , rowId] = params as [string, string | null, string, string];
@@ -202,6 +267,8 @@ export function libraryTcw(options: { rows?: readonly FixtureRow[]; hang?: boole
     const row = rows.find((r) => r.id === params[0]);
     const names = row?.metadata.speaker_names as Record<string, string> | undefined;
     if (row && names && Object.keys(names).length === 0) delete row.metadata.speaker_names;
+    const suggested = row?.metadata.speaker_suggestions;
+    if (row && suggested !== null && typeof suggested === "object" && Object.keys(suggested).length === 0) delete row.metadata.speaker_suggestions;
     return { ok: true, data: { changes: row ? 1 : 0 } };
   };
   const get = async (key: string) => {
@@ -216,3 +283,38 @@ export function libraryTcw(options: { rows?: readonly FixtureRow[]; hang?: boole
     get: (target, key) => (key === "sql" ? sql : key === "kv" ? kv : key === "spaceId" ? "harness-library" : Reflect.get(target, key)),
   }) as TinyCloudWeb;
 }
+
+/** The lines of the three-person call: Them 1 is Alex Example (p2), Them 2 is Dana Lee (p3). */
+const CALL_SPEAKER_LINES: FirefliesSentence[] = [
+  { index: 0, speaker_name: "Me", channel: 0, text: "Thanks, both. Where are we with the launch?", start_time: 0, end_time: 4 },
+  { index: 1, speaker_name: "Them 1", speaker_id: "call:p2", channel: 1, text: "The press kit is ready and the pricing page is nearly done.", start_time: 4.6, end_time: 10 },
+  { index: 2, speaker_name: "Them 2", speaker_id: "call:p3", channel: 1, text: "Support has the new help articles. We need the date to schedule the emails.", start_time: 10.7, end_time: 17 },
+  { index: 3, speaker_name: "Me", channel: 0, text: "Let's say the fourteenth.", start_time: 17.5, end_time: 19.5 },
+  { index: 4, speaker_name: "Them 1", speaker_id: "call:p2", channel: 1, text: "That works for the press side.", start_time: 20, end_time: 22.5 },
+  { index: 5, speaker_name: "Them 2", speaker_id: "call:p3", channel: 1, text: "Then I'll book the emails for that morning.", start_time: 23, end_time: 26 },
+];
+
+/**
+ * Who spoke when: a Mac recording of a three-person call, transcribed on the Mac, whose remote lines carry "Them 1" and
+ * "Them 2" with the person each was; the row holds each label's suggested name.
+ */
+export const CALL_SPEAKER_ROWS: FixtureRow[] = [
+  ...CALL_NAME_ROWS,
+  {
+    ...callRecording("call-three", "Launch review", [
+      { id: "p1", name: "Robin Sample", self: true }, { id: "p2", name: "Alex Example" }, { id: "p3", name: "Dana Lee" }], {
+      transcription_engine: "whispercpp",
+      transcript_provider: "whispercpp",
+      inference_provider: undefined,
+      // The body is shown only when its text is the row's.
+      transcript_text: CALL_SPEAKER_LINES.map((line) => line.text).join(" "),
+      speaker_names: { "Them 1": "Alex Example", "Them 2": "Dana Lee" },
+      speaker_suggestions: {
+        "Them 1": { name: "Alex Example", source: "call_window", confidence: "high", reason: "speaking_marker", person: "p2", at: at(10, 6, 9, 40) },
+        "Them 2": { name: "Dana Lee", source: "call_window", confidence: "high", reason: "speaking_marker", person: "p3", at: at(10, 6, 9, 40) },
+      },
+      speaker_suggestions_made: { "Them 1": at(10, 6, 9, 40), "Them 2": at(10, 6, 9, 40) },
+    }),
+    sentences: CALL_SPEAKER_LINES,
+  },
+];
