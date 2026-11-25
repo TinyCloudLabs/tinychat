@@ -13,9 +13,15 @@ export type StepUpConnect = (options: Parameters<typeof connectWallet>[0]) => Pr
 
 /**
  * Asks OpenKey for `permissions` (one `requestPermissions` call; the SDK signs once per space) and resolves true only
- * when this same session now holds all of them. Throws when the owner or session changed underneath.
+ * when this same session now holds all of them. Throws when the owner or session changed underneath. `maxExpiryMs`
+ * shortens the lifetime of the grant below what is left of the session.
  */
-export async function stepUpForApp(tcw: TinyCloudWeb, permissions: PermissionEntry[], connect: StepUpConnect = connectWallet): Promise<boolean> {
+export async function stepUpForApp(
+  tcw: TinyCloudWeb,
+  permissions: PermissionEntry[],
+  connect: StepUpConnect = connectWallet,
+  options: { maxExpiryMs?: number } = {},
+): Promise<boolean> {
   const session = tcw.session();
   if (!session) return false;
   const owner = session.address.toLowerCase();
@@ -28,7 +34,7 @@ export async function stepUpForApp(tcw: TinyCloudWeb, permissions: PermissionEnt
   if (connected.address.toLowerCase() !== owner || !sameSession()) throw new Error("one_apps_owner_changed");
   tcw.setRuntimePermissionSigner({ signMessage: async (message) => (await connected.openkey.signMessage({ message })).signature });
   const expires = Date.parse(/^Expiration Time:\s*(\S+)/im.exec(session.siwe)?.[1] ?? "");
-  const expiryMs = expires - Date.now();
+  const expiryMs = Math.min(expires - Date.now(), options.maxExpiryMs ?? Infinity);
   if (!Number.isFinite(expiryMs) || expiryMs <= 0) return false;
   const result = await tcw.requestPermissions(permissions, { expiryMs });
   return result.approved && sameSession() && tcw.hasPermissions(permissions);

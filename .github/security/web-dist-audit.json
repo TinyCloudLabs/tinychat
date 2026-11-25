@@ -28,6 +28,7 @@
     "chat",
     "cli",
     "courier",
+    "delegate",
     "feed",
     "oauth-protected-resource",
     "openkey",

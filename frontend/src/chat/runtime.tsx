@@ -22,6 +22,7 @@ import {
 } from "../lib/chatApi";
 import { completeExtractionChat } from "../lib/extractionChat";
 import { createChatModelAdapter } from "./chatModelAdapter";
+import type { CreditLimitContext } from "../lib/creditLimit";
 import type { CompactionCheckpoint } from "./compaction";
 import {
   appendMessage,
@@ -126,6 +127,8 @@ export interface ChatRuntimeDeps {
   waitForInitialProbe?: (signal: AbortSignal) => Promise<void>;
   /** Surfaces a streamed private-tool delegation failure to reconnect UI. */
   onAgentDelegationError?: (code: AgentDelegationErrorCode) => void;
+  /** Plan name and reset time for the "out of credits" message; absent in harnesses. */
+  getCreditLimitContext?: () => CreditLimitContext;
   /** One mounted, browser-only meeting retriever with ephemeral thread state. */
   meetingRetriever?: MeetingTurnRetriever;
   meetingMessageRegistry: MeetingMessageRegistry;

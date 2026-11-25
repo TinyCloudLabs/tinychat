@@ -1,5 +1,89 @@
 # @tinychat/backend
 
+## 0.14.4-beta.1
+
+### Patch Changes
+
+- 2566862: The backend grants its own session the three TrustBot key roots it uses (Telegram read grants, read audit and standing read approvals), which clears the 503 on the reads status routes. The reads and history grant routes log the error class and a short code when they answer 503.
+
+  Details: TC-4354
+
+## 0.14.4-beta.0
+
+### Patch Changes
+
+- 258098a: A session restored through its renewal lease keeps reading bot history past the end its sign-in message names. The backend binds the renewed end it verified at sign-in renewal into the session bearer, for that session key only and never past the owner-signed lease, and accepts the session's history key descriptor and history grants up to that end. One reads the same end from the bearer, so it stops showing the session as signed out while the renewal holds. A session without a renewal keeps its signed end.
+
+  Details: TC-4322
+
+## 0.14.3
+
+### Patch Changes
+
+- 4caf0da: The backend image installs the fixed libzstd1 package from the base distribution, which clears the image scan finding CVE-2026-124851.
+
+  Details: TC-4339
+
+## 0.14.3-beta.0
+
+### Patch Changes
+
+- 4caf0da: The backend image installs the fixed libzstd1 package from the base distribution, which clears the image scan finding CVE-2026-124851.
+
+  Details: TC-4339
+
+## 0.14.2
+
+### Patch Changes
+
+- 6f1a86a: The entry chunk size budget is 7,645,000 bytes, so the release 5 changes fit it. The backend version moves with the frontend so one release tag carries both.
+
+  Details: TC-4328
+
+## 0.14.2-beta.0
+
+### Patch Changes
+
+- 6f1a86a: The entry chunk size budget is 7,645,000 bytes, so the release 5 changes fit it. The backend version moves with the frontend so one release tag carries both.
+
+  Details: TC-4328
+
+## 0.14.1
+
+### Patch Changes
+
+- 65770c7: Chat request records have their own log shipper cap, so polling routes cannot drop them.
+
+  Details: TC-4310
+
+- 40c7751: When a chat message is refused before any model call because the account has no credits left, the answer says "You're out of credits on the {plan} plan, so this message got no reply and nothing was charged.", using the account's plan name.
+
+  Details: TC-4312
+
+- 70b0be0: The backend accepts the development frontend origin https://lightning-node-1.gecko-snares.ts.net:5240 for testing backend changes. The sign-in domain is read from the origin's host, port included, so sessions signed for a host:port domain are accepted.
+
+  Details: TC-4272
+
+## 0.14.1-beta.1
+
+### Patch Changes
+
+- 65770c7: Chat request records have their own log shipper cap, so polling routes cannot drop them.
+
+  Details: TC-4310
+
+- 40c7751: When a chat message is refused before any model call because the account has no credits left, the answer says "You're out of credits on the {plan} plan, so this message got no reply and nothing was charged.", using the account's plan name.
+
+  Details: TC-4312
+
+## 0.14.1-beta.0
+
+### Patch Changes
+
+- 70b0be0: The backend accepts the development frontend origin https://lightning-node-1.gecko-snares.ts.net:5240 for testing backend changes. The sign-in domain is read from the origin's host, port included, so sessions signed for a host:port domain are accepted.
+
+  Details: TC-4272
+
 ## 0.14.0
 
 ### Minor Changes

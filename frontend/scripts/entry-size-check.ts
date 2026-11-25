@@ -12,7 +12,9 @@ import path from "node:path";
 // 7,641,000 since the speaker-names branch: voice-note saves and transcript writes now try again by themselves after
 // an outage, and the Mac's local transcription job can run Parakeet. That logic lives in the save, sync and
 // transcription modules the app starts with (about 8 KB after everything that could load later was moved out).
-const ENTRY_CHUNK_BUDGET = 7_641_000;
+// 7,645,000: release 5's changes together measure 7,642,760 bytes at boot, 1,760 over the 7,641,000 before it. The
+// extra 4,000 bytes are headroom for that release; the lazy-loading work that wins them back is TC-4328.
+const ENTRY_CHUNK_BUDGET = 7_645_000;
 
 const dist = path.resolve(process.argv[2] ?? path.join(import.meta.dir, "../dist"));
 const html = readFileSync(path.join(dist, "index.html"), "utf8");

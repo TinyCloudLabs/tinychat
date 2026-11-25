@@ -32,6 +32,7 @@ import { ChatHeader } from "./ChatHeader";
 import { ChatsPaneHeader, ChatsSheet } from "./ChatsSheet";
 import { ModelVerificationIndicator } from "./ModelVerificationIndicator";
 import { promotedCanvasForTurn } from "../lib/conversationCanvasStore";
+import type { CreditLimitContext } from "../lib/creditLimit";
 
 export function ChatWorkspace(props: {
   tcw: TinyCloudWeb;
@@ -52,6 +53,8 @@ export function ChatWorkspace(props: {
   /** Settings is reachable from the Chats sheet (it is not in local validation). */
   settings: boolean;
   billingStatus: BillingStatus | null;
+  /** Plan name and reset time for the message shown when a turn gets no reply for lack of credits. */
+  getCreditLimitContext?: () => CreditLimitContext;
 }) {
   const {
     agentEnabledRef, activeThreadIdRef, privateAccessRef, waitForInitialProbe, onDelegationError,
@@ -105,6 +108,7 @@ export function ChatWorkspace(props: {
       privateAccessRef,
       waitForInitialProbe,
       onAgentDelegationError: onDelegationError,
+      getCreditLimitContext: props.getCreditLimitContext,
       meetingRetriever,
       meetingMessageRegistry,
       // ── Compaction deps (§D.3) ─────────────────────────────────────
@@ -166,6 +170,7 @@ export function ChatWorkspace(props: {
       props.onMemoryUpdated,
       props.onBackgroundUsageSettled,
       props.contextTokensFor,
+      props.getCreditLimitContext,
       onDelegationError,
       waitForInitialProbe,
       meetingRetriever,

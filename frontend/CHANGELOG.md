@@ -16,6 +16,75 @@
 - TC-2204: Native audience checks accept Home's three exact SQL hook subscriptions only alongside an existing TinyChat data grant.
 - TC-2499: The Home mirror adapter persists close receipts using node-compatible NULL/non-NULL compare-and-set predicates. If the KV mirror is already exactly closed but its receipt is missing, recovery records the original publication ETag without writing the KV copy again, before any gated child handoff. The CLI reports JSON error class, safe message, code, HTTP status when available, and operation step; private SQL bodies and nested causes remain redacted. Exit 2 identifies invalid input, exit 6 known transient failures (including NODE_BUSY and REQUEST_TIMEOUT without HTTP metadata), and exit 1 other runtime failures or OUTCOME_UNKNOWN. Unclassified errors are not labelled bad input; no failure confirms delivery or authorizes an automatic retry.
 
+## 0.22.2-beta.0
+
+### Patch Changes
+
+- 258098a: A session restored through its renewal lease keeps reading bot history past the end its sign-in message names. The backend binds the renewed end it verified at sign-in renewal into the session bearer, for that session key only and never past the owner-signed lease, and accepts the session's history key descriptor and history grants up to that end. One reads the same end from the bearer, so it stops showing the session as signed out while the renewal holds. A session without a renewal keeps its signed end.
+
+  Details: TC-4322
+
+## 0.22.1
+
+### Patch Changes
+
+- 6f1a86a: The entry chunk size budget is 7,645,000 bytes, so the release 5 changes fit it. The backend version moves with the frontend so one release tag carries both.
+
+  Details: TC-4328
+
+## 0.22.1-beta.0
+
+### Patch Changes
+
+- 6f1a86a: The entry chunk size budget is 7,645,000 bytes, so the release 5 changes fit it. The backend version moves with the frontend so one release tag carries both.
+
+  Details: TC-4328
+
+## 0.22.0
+
+### Minor Changes
+
+- c3ea5f1: New setting on the Mac: Read names from the call window, in Capture settings under Meetings. It is off until you turn it on. While a recording of both sides of a call runs, TinyCloud One reads the names of the people in the call from the Google Meet or Zoom window and saves them with the note: they are offered when you rename a speaker, and with one other person in the call that name is suggested for Them. It needs Also record this Mac's audio, so it sits under that switch: turning it on turns that on too, and turning that off (or choosing Mic only for your first recording) turns it off. macOS asks for Accessibility permission; until it is allowed the setting shows Open System Settings. Saving a note never waits for the names. Nothing changes on the web or on phones.
+- c3ea5f1: The Mac's Record this call tile now stays while the recording it started runs, as a small bar: a red dot that pulses gently (still and dimmed while paused), the elapsed time, and Stop, which stops and saves the note as Stop in the app does. A newly shown tile ignores clicks for half a second, so a click meant for the call does not start a recording. The app answers the tile's Stop only while a recording is live or paused, through the recorder's own Stop.
+- c3ea5f1: New setting on the Mac: Offer to record when a call starts, the first row of Meetings in Capture settings. It is on by default. When a call starts, a small tile offers to record it: Start begins a recording, Not now closes the tile for that call. The tile is its own small page (call-prompt.html), so it does not load the app. The setting stays hidden until the desktop app supports it. Nothing changes on the web or on phones.
+- c3ea5f1: The Mac app can transcribe a stopped recording with Parakeet TDT 0.6B v3, on the Mac, as an option next to the Whisper models. It is never selected by default. Capture settings lists it after the Whisper models, with Get, progress and select like them. It runs inside the app on Core ML, and no Whisper server starts for it. The download is about 674 MB from Hugging Face: the model and a speaker-diarization bundle that the runtime needs. The files go to ~/Library/Caches/qwen3-speech. A stereo recording keeps Me and Them apart, but their order inside each 30-second stretch is approximate. With a Whisper model selected, nothing changes. Nothing changes on the web or on phones.
+
+### Patch Changes
+
+- c3ea5f1: After your TinyCloud space has been unreachable, no Activity line says "Needs attention" without a way to act on it. A transcript that is already saved in your space shows nothing when the app cannot check it there; the app checks again by itself. A transcript the app could not write to your space has Try again, which writes the transcript already on your device and never transcribes the note again. Such a write is also tried again by itself while you are signed in, and shows as Retrying with Try now until your space takes it. While a save is waiting for its next try, its audio upload line no longer says "Needs attention".
+- c3ea5f1: Renaming a speaker in a Mac recording of a call offers the names of the people in the call, when the desktop app read them from the call window: the other people for Them, and your own name for Me. Tap a name to put it in the field, then Save. Recordings without those names rename as before.
+- c3ea5f1: In a Mac recording of a call with one other person, Them shows that person's name, marked Suggested, when the desktop app read the names from the call window. Save the name unchanged to keep it, rename it, or choose Go back to Them. A name you already gave is never replaced, and a call with more people suggests nothing. This also works while your TinyCloud space cannot be reached: a note that is so far only on this Mac shows the suggestion and offers the names, and what you choose is saved with the note when it reaches your space.
+- c3ea5f1: The web build leaves out the Record this call tile page, which only the Mac app uses. The Mac build keeps it.
+
+  Details: TC-4318
+
+- c3ea5f1: Who spoke when, the app side. In a Mac recording of a Google Meet call with three or more people, transcribed on the Mac with Whisper, each remote line now gets the person who said it: the app reads the speaking timeline the Mac app records from the meeting window, and labels each line "Them 1", "Them 2", and so on, by the person's place in the call. The note shows each label with that person's name, marked Suggested, also while the note is only on this Mac and your TinyCloud space cannot be reached; when the note is saved to your space, the names go onto it once. A name you give always wins, a suggestion you ended is not made again, and Undo and Go back work per label. Lines the rules cannot attribute for sure stay "Them". Two labels you give the same name read as one speaker. Nothing changes for Parakeet, for calls with one other person, or for recordings without a timeline. This needs the native timeline command; without it, transcripts keep "Them".
+- 8173d4d: A new account can save its first connector key under its own key. The first save finds no encryption network, so it asks once for the single permission that creates it (no read access, one hour at most), creates the network, then saves the key. If the approval is declined or fails, nothing is stored and the usual save error is shown.
+
+  Details: TC-4243
+
+- c3ea5f1: On the Mac app, a saved voice note whose audio stays on this Mac plays that audio on its page again, and its row says "Audio stays on this Mac". Before, the page said "The audio for this note isn't on this device." for any such note without a transcript (for example a recording the app stopped at its limit whose transcription failed), although the audio was on the Mac.
+- c3ea5f1: A Mac voice note says what it is doing from Stop to its transcript. While its audio is finished on the Mac it shows "Finishing the recording…", never "Waiting to upload" or a transcript that waits for your space. Capture shows "Saving to your TinyCloud space…" while the note saves. A note with no Whisper model shows that it waits for a model and offers Get model, never "Couldn't transcribe". A reload shows the same state again, and the note's transcription starts only once.
+- c3ea5f1: Stopping a long recording on the Mac no longer loads the whole recording into the app. The saved receipt reads none of the audio: Play shows once the Mac has finished the file, and the audio is read when you press Play, one part at a time, so the app's memory stays the same however long the recording is. When the receipt closes by itself, the recording's own page shows in its place, never the screen the recording began on, even while your TinyCloud space cannot be reached.
+- 40c7751: When a message gets no reply because the account is out of credits, the chat says so: "You're out of credits on the Free plan, so this message got no reply." When the billing status has the reset time, the message also says when credits reset. Without the plan name it says "your plan". A reply that was partly written keeps the existing limit text. The pricing dialog opens for the Free plan and for plans that have an upgrade, and stays closed on the top plan.
+
+  Details: TC-4312
+
+- c3ea5f1: A voice note recorded on the Mac while your TinyCloud space can't be reached stays on the Mac, marked as not in your space yet, and saves by itself once the space answers again. Capture no longer shows the storage service's raw error code for it.
+- c3ea5f1: On the Mac, transcript lines of a call recorded with "Read names from the call window" get the speaker's name when the other people's cameras are on too. A line said right at a change of speaker stays "Them" when the app cannot tell whose it is.
+
+## 0.22.0-beta.1
+
+### Patch Changes
+
+- 8173d4d: A new account can save its first connector key under its own key. The first save finds no encryption network, so it asks once for the single permission that creates it (no read access, one hour at most), creates the network, then saves the key. If the approval is declined or fails, nothing is stored and the usual save error is shown.
+
+  Details: TC-4243
+
+- 40c7751: When a message gets no reply because the account is out of credits, the chat says so: "You're out of credits on the Free plan, so this message got no reply." When the billing status has the reset time, the message also says when credits reset. Without the plan name it says "your plan". A reply that was partly written keeps the existing limit text. The pricing dialog opens for the Free plan and for plans that have an upgrade, and stays closed on the top plan.
+
+  Details: TC-4312
+
 ## 0.22.0-beta.0
 
 ### Minor Changes

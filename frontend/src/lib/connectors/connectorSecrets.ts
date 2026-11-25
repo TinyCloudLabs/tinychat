@@ -4,10 +4,18 @@
 // because the owned `secrets` space was never registered with the node. In that one case
 // we call `tcw.ensureOwnedSpaceHosted?.("secrets")` (if the SDK exposes it) and retry
 // ONCE. If the method doesn't exist we surface the original error — no silent fallback.
+// A brand-new account has no encryption network, so the first save under its own key answers
+// `network_not_found`. Only then, and once per save, the owner is asked for `network.create` on
+// that network (nothing else), the network is made and the put is retried once (TC-4243).
 
-import type { TinyCloudWeb } from "@tinycloud/web-sdk";
+import type { PermissionEntry, TinyCloudWeb } from "@tinycloud/web-sdk";
 
+import { stepUpForApp } from "../../apps/stepUp";
 import { secretsAvailable, SECRETS_UNAVAILABLE_IN_APP_MESSAGE } from "../openkeyNative";
+import {
+  CONNECTOR_NETWORK_SETUP_MAX_MS,
+  connectorNetworkSetupPermission,
+} from "./encryptionGrant";
 import { connectorNamedKeyWritesEnabled } from "./namedKeyWrites";
 import type { ConnectorDescriptor } from "./types";
 
@@ -24,7 +32,15 @@ export type SecretsErr = { code?: string; message?: string };
 /** Minimum surface we invoke on tcw. Kept structural so tests can supply a fake. */
 type SecretsTcw = Pick<TinyCloudWeb, "secrets"> & {
   ensureOwnedSpaceHosted?: TinyCloudWeb["ensureOwnedSpaceHosted"];
+  session?: TinyCloudWeb["session"];
+  ensureEncryptionNetwork?: TinyCloudWeb["ensureEncryptionNetwork"];
 };
+
+/** The node's answer when the account's encryption network does not exist yet. */
+function isNetworkNotFound(err: unknown): boolean {
+  if (err === null || typeof err !== "object" || !("message" in err)) return false;
+  return typeof err.message === "string" && err.message.includes("network_not_found");
+}
 
 /**
  * True if `err` looks like a "space/resource not found" from the node — the
@@ -224,32 +240,64 @@ function evict(key: string | null): void {
   inflightReads.delete(key);
 }
 
+/** How a save asks the owner for an approval; tests pass their own. Resolves true only when it was granted. */
+export interface SaveConnectorKeyOptions {
+  requestApproval?: (permissions: PermissionEntry[], maxExpiryMs: number) => Promise<boolean>;
+}
+
+/**
+ * The first save of a new account: make its encryption network. Asks once (`network.create` on that network, nothing
+ * else, short lived), then makes it. True when the network now exists; a decline or any failure is false.
+ */
+async function createNetworkOnDemand(tcw: SecretsTcw, saveOptions: SaveConnectorKeyOptions): Promise<boolean> {
+  try {
+    const session = tcw.session?.();
+    if (!session || typeof tcw.ensureEncryptionNetwork !== "function") return false;
+    const requestApproval = saveOptions.requestApproval
+      ?? ((permissions, maxExpiryMs) => stepUpForApp(tcw as TinyCloudWeb, permissions, undefined, { maxExpiryMs }));
+    const approved = await requestApproval(
+      [connectorNetworkSetupPermission(session.address, session.chainId ?? 1)],
+      CONNECTOR_NETWORK_SETUP_MAX_MS,
+    );
+    if (!approved) return false;
+    await tcw.ensureEncryptionNetwork();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function saveConnectorKey<E>(
   tcw: SecretsTcw,
   descriptor: SecretLocation,
   key: string,
+  saveOptions: SaveConnectorKeyOptions = {},
 ): Promise<SecretsResult<void, E>> {
   const cacheKey = cacheKeyFor(tcw, descriptor);
   // With the switch on, a new secret is written under its own key, so reading it needs only that key's grant.
   // Off (the default), the put is the plain one that readers of every age can open.
-  const options = connectorNamedKeyWritesEnabled()
+  const namedKey = connectorNamedKeyWritesEnabled();
+  const options = namedKey
     ? { ...(descriptor.secretScope ? { scope: descriptor.secretScope } : {}), namedKey: true as const }
     : descriptor.secretScope
       ? { scope: descriptor.secretScope }
       : undefined;
-  const first = (await tcw.secrets.put(
+  const put = async () => (await tcw.secrets.put(
     descriptor.secretName,
     key,
     options,
   )) as SecretsResult<void, E>;
+  const first = await put();
   let result = first;
-  if (!first.ok && isNotFoundShaped(first.error) && typeof tcw.ensureOwnedSpaceHosted === "function") {
+  if (!first.ok && namedKey && isNetworkNotFound(first.error)) {
+    // One ask, one retry. A decline or a failure of the ask, the network or the retry leaves the first error as the answer.
+    if (await createNetworkOnDemand(tcw, saveOptions)) {
+      const retried = await put();
+      if (retried.ok) result = retried;
+    }
+  } else if (!first.ok && isNotFoundShaped(first.error) && typeof tcw.ensureOwnedSpaceHosted === "function") {
     await tcw.ensureOwnedSpaceHosted("secrets");
-    result = (await tcw.secrets.put(
-      descriptor.secretName,
-      key,
-      options,
-    )) as SecretsResult<void, E>;
+    result = await put();
   }
   evict(cacheKey);
   if (result.ok && cacheKey !== null) secretCache.set(cacheKey, key);

@@ -110,6 +110,7 @@ import {
   onPaywallError,
 } from "./lib/chatApi";
 import { isPaywallActionable } from "./lib/paywall";
+import type { CreditLimitContext } from "./lib/creditLimit";
 import {
   fetchConfigWithRetry,
   shouldRefetch,
@@ -1013,6 +1014,17 @@ export function App() {
     billingConfigRef.current = billingConfig;
   }, [billingConfig]);
 
+  // What a turn that got no reply for lack of credits says about the plan and
+  // the reset time. Read at turn end, so it holds the latest billing status.
+  const creditLimitContextRef = useRef<CreditLimitContext>({ tierName: null, resetsAt: null });
+  useEffect(() => {
+    creditLimitContextRef.current = {
+      tierName: billingTierName,
+      resetsAt: billingStatus?.usage.resetsAt ?? null,
+    };
+  }, [billingTierName, billingStatus]);
+  const getCreditLimitContext = useCallback(() => creditLimitContextRef.current, []);
+
   // Re-request the config for a trigger, but ONLY while it is still null
   // (shouldRefetch). A held config is never re-fetched — no polling, no focus
   // storms. Each trigger refetch is a single attempt (the trigger IS the
@@ -1119,10 +1131,16 @@ export function App() {
       // ST3 — branch on the error so we only open the pricing dialog when an
       // upgrade can actually resolve the 402. `credit_budget_exceeded` and a
       // `model_not_allowed` carrying a higher `requiredTier` are upgrade-fixable.
-      const actionable = isPaywallActionable(payload);
+      const actionable = isPaywallActionable(payload, billingConfigRef.current);
       if (actionable) {
         void refreshBillingStatus();
         setPricingOpen(true);
+        return;
+      }
+      // Out of credits on the top tier: no upgrade exists, so the in-chat
+      // message stands alone and the dialog stays closed.
+      if (payload.error === "credit_budget_exceeded") {
+        void refreshBillingStatus();
         return;
       }
       // A `model_not_allowed` with no actionable requiredTier cannot be fixed by
@@ -1144,10 +1162,16 @@ export function App() {
     return onAgentPaywallError((payload) => {
       // A1 trigger (b): recover a config-null session on a 402 (see above).
       refetchConfigOnTrigger("paywall-402");
-      const actionable = isPaywallActionable(payload);
+      const actionable = isPaywallActionable(payload, billingConfigRef.current);
       if (actionable) {
         void refreshBillingStatus();
         setPricingOpen(true);
+        return;
+      }
+      // Out of credits on the top tier: no upgrade exists, so the in-chat
+      // message stands alone and the dialog stays closed.
+      if (payload.error === "credit_budget_exceeded") {
+        void refreshBillingStatus();
         return;
       }
       remediateUnavailableModel();
@@ -1733,6 +1757,7 @@ export function App() {
                   headerRecorder={<HeaderLiveChip />}
                   settings={!LOCAL_VALIDATION}
                   billingStatus={billingStatus}
+                  getCreditLimitContext={getCreditLimitContext}
                 />
                 } />
               }
