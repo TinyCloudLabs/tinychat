@@ -1,5 +1,5 @@
 import type { NextFunction, Request, Response } from "express";
-import { verifySessionToken } from "@tinyboilerplate/server";
+import { verifySession } from "@tinyboilerplate/server";
 
 export function createAuthMiddleware(privateKey: string) {
   return async (req: Request, res: Response, next: NextFunction) => {
@@ -13,8 +13,8 @@ export function createAuthMiddleware(privateKey: string) {
     }
 
     try {
-      const { address } = await verifySessionToken(token, privateKey);
-      req.user = { address };
+      const { address, renewal } = await verifySession(token, privateKey);
+      req.user = renewal ? { address, renewal } : { address };
       next();
     } catch {
       res.set("X-TinyCloud-Session-Rejected", "1");
