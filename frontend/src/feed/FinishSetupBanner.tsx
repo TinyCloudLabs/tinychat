@@ -34,7 +34,8 @@ export function FinishSetupBanner({ tcw, visible = finishSetupBannerVisible, dis
     <div role="status" data-testid="finish-setup-banner" className="mb-4 flex items-start gap-3 rounded-2xl bg-card px-4 py-3 text-sm leading-[1.45] shadow-[inset_0_0_0_1px_hsl(var(--border))]">
       <InfoIcon aria-hidden className="mt-px size-5 shrink-0 text-muted-foreground" />
       <div className="min-w-0">
-        <p><b className="font-semibold">{copy.lead}</b> {copy.support}</p>
+        <p className="font-semibold">{copy.lead}</p>
+        <p>{copy.support}</p>
         <button type="button" onClick={() => { if (tcw?.did) dismissed.write(tcw.did); setShow(false); navigate({ search: FINISH_SETUP_INTENT_SEARCH }); }} className="mt-2 min-h-11 underline">{copy.action}</button>
       </div>
     </div>
