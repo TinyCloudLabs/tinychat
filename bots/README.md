@@ -71,7 +71,10 @@ Anything else gets an empty 401.
 
 - `POST /v1/bots/main/messages` `{ "text": "..." }` (1 to 8000 characters) streams `text/event-stream`:
   `status` (`starting` on a cold start, then `working`, repeated every 15 s while waiting), `delta` (assistant
-  text), then exactly one `done` `{ messageId }` or `error` `{ code, message }`. One message at a time per bot; a
+  text), `step` (what the bot is doing, for the app's working line: `{ step }` from the fixed set in
+  `src/turn-step.ts`, one per tool the agent starts and `thinking` between them; a page read adds `host`, the
+  page's host name and nothing else of its address; no tool argument or output is sent),
+  then exactly one `done` `{ messageId }` or `error` `{ code, message }`. One message at a time per bot; a
   second send gets `busy`. If the caller disconnects, the turn still finishes and lands in the history. A reply
   longer than `BOTS_MAX_TURN_BYTES` is cut off (the agent's turn is aborted, the stream ends with
   `bot_unavailable`); a turn with no result within `BOTS_TURN_TIMEOUT_MS` ends the same way and its sandbox is
@@ -205,6 +208,9 @@ The gateway, per bot socket:
   plus `max_tokens`) is reserved against both budgets before the call. When the call ends the reservation is settled
   to the reported usage and the unused part released (a stream cut short without usage keeps the whole
   reservation; an upstream error releases it);
+- meters each supervisor bot turn from settled model calls, independently of the daily budget counter. One
+  counts-only `turn_tokens` JSON line records tokens, calls and elapsed milliseconds after the turn; if a call is
+  still in flight, its settlement is included before logging. Courier turns are not metered.
 - keeps the budget counters on its own volume (`bot-budget`, `/var/lib/bots-gateway/budget.json`), so a restart,
   including one a bot provokes, does not reset them. Each save is a temporary file, fsynced, renamed into place,
   then the directory fsynced. If a save fails (disk full, read-only volume, any error) the gateway stops serving
@@ -516,6 +522,7 @@ Gateway (`bots-gateway`):
 | `BOTS_MAX_TOKENS` | `8192` | |
 | `BOTS_BOT_DAILY_TOKENS` / `BOTS_GLOBAL_DAILY_TOKENS` | `2000000` / `20000000` | UTC day |
 | `BOTS_OWNER_DAILY_TOKENS` | `BOTS_BOT_DAILY_TOKENS` | all of one owner's bots together, UTC day |
+| `BOTS_TURN_SOFT_LIMIT` | `0` (off) | when positive, log `turn_soft_limit` once as a turn first exceeds this settled token count; never pauses or changes the reply |
 | `BOTS_MAX_BODY_BYTES` / `BOTS_MAX_RESPONSE_BYTES` | 4 MiB / 8 MiB | |
 | `BOTS_UPSTREAM_CONNECT_TIMEOUT_MS` / `BOTS_UPSTREAM_TOTAL_TIMEOUT_MS` | `30000` / `600000` | |
 | `BOTS_BODY_TIMEOUT_MS` | `30000` | request body deadline |
