@@ -95,6 +95,22 @@ export function privateCloudTranscriptionConfigFromEnv(
   return { enabled: true, baseUrl, apiKey, tenantKey };
 }
 
+/**
+ * Speakers on channel 1 of a two-channel job are off unless PRIVATE_STEREO_SPEAKERS_ENABLED is exactly "true" AND
+ * PRIVATE_STEREO_SPEAKERS_TEST_ACCOUNTS names at least one account. The single entry `*` admits every account; an
+ * empty list admits nobody. PTX runs one job at a time for all users and diarization lengthens each, so accounts
+ * are admitted by list first.
+ */
+export function privateStereoSpeakersFromEnv(env: Record<string, string | undefined>): ((address: string) => boolean) | undefined {
+  if (env.PRIVATE_STEREO_SPEAKERS_ENABLED !== "true") return undefined;
+  const accounts = new Set((env.PRIVATE_STEREO_SPEAKERS_TEST_ACCOUNTS ?? "").split(",").map(value => value.trim().toLowerCase()).filter(Boolean));
+  if (accounts.size === 0) {
+    console.warn("[startup] PRIVATE_STEREO_SPEAKERS_ENABLED is set but PRIVATE_STEREO_SPEAKERS_TEST_ACCOUNTS names no account; private stereo speakers are disabled.");
+    return undefined;
+  }
+  return address => accounts.has("*") || accounts.has(address.toLowerCase());
+}
+
 /** HMAC-SHA256(tenant key, lower(address)), hex. What PTX sees instead of the address. */
 export function tenantRefFor(tenantKey: string, address: string): string {
   return createHmac("sha256", tenantKey).update(address.toLowerCase()).digest("hex");
