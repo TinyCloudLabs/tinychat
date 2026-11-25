@@ -7,6 +7,7 @@ import { ResponsiveSheet, ResponsiveSheetBody } from "@/components/ui/responsive
 import { MAX_MESSAGE_LENGTH, SendButton, sendOnEnter, useDraft } from "./AskBox";
 import { focusSdkPrompt, useSdkPromptOpen } from "./useSdkPromptOpen";
 import { BotAvatar, MAIN_BOT } from "./BotAvatar";
+import { BotWorkingMark, BotWorkingStatus } from "./BotWorking";
 import { acknowledgeHistoryNotice, historyNoticeDeadline, type HistoryNotice } from "./historyNotice";
 import { BOTS_STRINGS, botsErrorText, HISTORY_EXPIRY_NOTICE, HISTORY_RECONNECT_LABEL, WEB_ACCESS_STRINGS } from "./botsStrings";
 import { isWorking, type ChatLine, type MainChatState } from "./useMainChat";
@@ -165,7 +166,7 @@ export function MainChat({ open, onOpenChange, state, onSend, onRetry, onRetryHi
       contentProps={{ "data-bots-main-chat": "" }}
       title={
         <span className="flex items-center gap-3">
-          <BotAvatar bot={MAIN_BOT} working={working} size={32} decorative />
+          {working ? <BotWorkingMark bot={MAIN_BOT} size={32} /> : <BotAvatar bot={MAIN_BOT} size={32} decorative />}
           {MAIN_BOT.name}
         </span>
       }
@@ -195,7 +196,7 @@ export function MainChat({ open, onOpenChange, state, onSend, onRetry, onRetryHi
             <>
               {turn.appReply ? <AppLine decision={turn.appReply.decision} names={turn.appReply.names} live secret={turn.appReply.secret} /> : <Line role="user" text={turn.text} />}
               {turn.reply ? <Line role="bot" text={turn.reply} /> : null}
-              {working && !turn.reply ? <BotAvatar bot={MAIN_BOT} working size={28} /> : null}
+              {working && !turn.reply ? <BotWorkingStatus bot={MAIN_BOT} /> : null}
               {turn.state === "error" ? <Failure text={botsErrorText(turn.error ?? "failed", MAIN_BOT.name)} onRetry={onRetry} declined={turn.error === "history_declined"} /> : null}
             </>
           ) : null}

@@ -115,6 +115,8 @@ const MID_REPLY: MainChatState = {
   },
 };
 
+const WAITING: MainChatState = { ...MID_REPLY, turn: { ...MID_REPLY.turn!, reply: "" } };
+
 const GRID = {
   tabbar: "grid-cols-1 grid-rows-[minmax(0,1fr)_auto]",
   rail: "grid-cols-[auto_minmax(0,1fr)] grid-rows-[minmax(0,1fr)]",
@@ -299,6 +301,21 @@ export const botsScreens: HarnessScreen[] = [
           <>
             <AskBox working onSend={() => {}} onOpenMain={() => {}} />
             <MainChat open onOpenChange={() => {}} state={MID_REPLY} onSend={() => {}} onRetry={() => {}} onRetryHistory={() => {}} />
+          </>
+        }
+      />
+    ),
+  },
+  {
+    ...BASE,
+    id: "bots-main-waiting",
+    readyWhen: "[data-bot-working-row]",
+    render: () => (
+      <Home
+        ask={
+          <>
+            <AskBox working onSend={() => {}} onOpenMain={() => {}} />
+            <MainChat open onOpenChange={() => {}} state={WAITING} onSend={() => {}} onRetry={() => {}} onRetryHistory={() => {}} />
           </>
         }
       />

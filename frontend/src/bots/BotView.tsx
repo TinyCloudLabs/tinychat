@@ -11,6 +11,7 @@ import { BriefMarkdown } from "@/feed/BriefMarkdown";
 import { useOriginMoveDeferral } from "@/shell/OriginMoveNotice";
 import { MAX_MESSAGE_LENGTH, SendButton, sendOnEnter } from "./AskBox";
 import { BotAvatar } from "./BotAvatar";
+import { BotWorkingMark, BotWorkingStatus } from "./BotWorking";
 import { BOT_VIEW_STRINGS, BOTS_STRINGS, HISTORY_RECONNECT_LABEL } from "./botsStrings";
 import { clearHistoryDecline } from "./historyAuthorization";
 import { LazyEarlierHistoryAction } from "./LazyEarlierHistoryAction";
@@ -186,7 +187,7 @@ export function BotView({ bot, chats, notice, acknowledgeNotice, onReconnect, st
                   onClick={() => setPanelOpen((open) => !open)}
                   className="flex min-h-11 max-w-full items-center gap-2 rounded-full border border-border bg-card/90 py-1 pl-1 pr-4 text-callout font-medium shadow-sm backdrop-blur hover:bg-card focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring fine:min-h-9"
                 >
-                  <BotAvatar bot={bot.face} working={working} size={28} decorative />
+                  {working ? <BotWorkingMark bot={bot.face} size={28} /> : <BotAvatar bot={bot.face} size={28} decorative />}
                   <span className="truncate">{bot.name}</span>
                 </button>
               </h1>
@@ -220,7 +221,7 @@ export function BotView({ bot, chats, notice, acknowledgeNotice, onReconnect, st
                     <Line role="user" text={turn.text} />
                     {activity.filter((item) => item.inTurn).map((item) => <ActivityLine key={item.id} item={item} />)}
                     {turn.reply ? <Line role="bot" text={turn.reply} /> : null}
-                    {working && !turn.reply ? <BotAvatar bot={bot.face} working size={28} /> : null}
+                    {working && !turn.reply ? <BotWorkingStatus bot={bot.face} /> : null}
                     {turn.state === "error" ? <Failure text={errors[turn.error ?? "failed"](bot.name)} onRetry={() => chats.retry(bot.key)} declined={turn.error === "history_declined"} /> : null}
                   </>
                 ) : null}
