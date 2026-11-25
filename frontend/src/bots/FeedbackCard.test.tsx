@@ -82,13 +82,17 @@ async function render(node: React.ReactElement) {
 const button = (host: Element, label: string) => [...host.querySelectorAll("button")].find((node) => node.textContent === label);
 const field = (host: Element, name: string) => host.querySelector(`[data-feedback-field="${name}"]`)?.textContent;
 
-test("the card shows where the report goes, every field as written and what the team sees of the sender", async () => {
+test("the card shows where the report goes, its type, every field as written and what the team sees of the sender", async () => {
   const host = await render(<AskCards asks={asksWith({ pending: [report()] })} />);
   const card = host.querySelector("[data-feedback-card]")!;
   expect(card.textContent).toContain("TrustBot wants to send feedback to the TinyCloud team");
   expect(host.querySelector("[data-feedback-destination]")!.textContent).toBe("Goes to feedback.tinycloud.xyz. Only the TinyCloud team can read it.");
-  for (const label of ["Title", "What I tried", "What happened", "What I expected"]) expect(card.textContent).toContain(label);
-  for (const name of ["title", "tried", "happened", "expected", "area", "kind"] as const) expect(field(host, name)).toBe(REPORT[name]);
+  expect([...card.querySelectorAll("dt")].map((node) => node.textContent)).toEqual(["Type", "Title", "What I tried", "What happened", "What I expected"]);
+  for (const name of ["title", "tried", "happened", "expected"] as const) expect(field(host, name)).toBe(REPORT[name]);
+  expect(field(host, "kind")).toBe("Something broke");
+  // The area is always "other": the card leaves it out.
+  expect(field(host, "area")).toBeUndefined();
+  expect(card.textContent).not.toContain("other");
   expect(host.querySelector("[data-feedback-sender]")!.textContent).toBe("Sent without your name or account, so the team can't reply to you.");
   expect(host.querySelector("[data-feedback-agent]")!.textContent).toBe("Sent as: TinyCloud One bot (TrustBot)");
   expect(host.querySelector("[data-action-outside]")).toBeNull();
@@ -159,10 +163,24 @@ test("after the tap the card collapses to one line for each outcome", async () =
   ]);
 });
 
-test("a report's decision has no chat line", async () => {
+test("each report type shows in the owner's words", async () => {
+  for (const [kind, shown] of [["bug", "Something broke"], ["friction", "Hard to use"], ["improvement", "Idea"]] as const) {
+    const host = await render(<AskCards asks={asksWith({ pending: [report({ report: { ...REPORT, kind } })] })} />);
+    expect(field(host, "kind")).toBe(shown);
+    act(() => mounted!.unmount());
+    mounted = undefined;
+    restore?.();
+    restore = undefined;
+  }
+});
+
+test("the chat line for a decision on a report", async () => {
   const host = await render(<>
     <AppLine decision="feedback_sent" live />
     <AppLine decision="feedback_declined" live={false} />
   </>);
-  expect(host.querySelectorAll("[data-app-line]")).toHaveLength(0);
+  expect([...host.querySelectorAll("[data-app-line]")].map((node) => node.textContent)).toEqual([
+    "You sent a feedback report to the TinyCloud team.",
+    "You chose not to send a feedback report.",
+  ]);
 });

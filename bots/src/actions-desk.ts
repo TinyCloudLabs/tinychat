@@ -28,10 +28,10 @@ export const PROPOSE_TOOL = {
     "Propose sending one message to two or more of the owner's other bots. The owner sees a card with the recipients and your message exactly as written, " +
     "and taps Send or Don't send; TinyCloud sends it once. It returns an id and the state \"pending\" at once; do not wait. " +
     "The outcome arrives later as a message from the app. To message one bot, use message_bot. " +
-    // DRAFT-FOR-MONICA
-    "With kind \"send_feedback\" and a report, propose sending one feedback report about TinyCloud to the TinyCloud team, only when the owner asked for it in this turn. " +
-    "The owner sees the report exactly as written and taps Send report or Don't send. It goes without the owner's name or account. " +
-    "Put no secret, email, key, token, address or home path in it; write a placeholder such as <token> in its place. Security issues can't be reported this way.",
+    "With kind \"send_feedback\" and a report, propose sending one report about TinyCloud (a bug, something hard to use or an idea) to the TinyCloud team. " +
+    "Propose it only when the owner asked for it in this turn. The owner sees the report exactly as written and taps Send report or Don't send. " +
+    "It goes without the owner's name or account. Put no secret, email, key, token, address or home path in it; write a placeholder such as <token> in its place. " +
+    "Security issues can't be reported this way; tell the owner to raise them with the TinyCloud team directly.",
   inputSchema: {
     type: "object",
     properties: {
@@ -359,7 +359,7 @@ export class ActionDesk {
     const built = proposedFeedback(args.report);
     if ("error" in built) return refuse(FEEDBACK_ERRORS[built.error], built.error);
     const payload: ActionPayload = { kind: "send_feedback", targets: [], text: built.body };
-    if (ledger.final.has(actionHash(payload))) return refuse(ACTION_ERRORS.final, "final");
+    if (ledger.final.has(actionHash(payload))) return refuse(FEEDBACK_ERRORS.final, "final");
     const limit = this.#ownerLimit(botId);
     if (limit) return refuse(ACTION_ERRORS[limit], limit === "pending" ? "too_many_pending" : "daily_limit");
 

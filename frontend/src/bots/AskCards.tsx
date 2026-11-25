@@ -166,10 +166,15 @@ const FEEDBACK_FIELDS = [
   ["expected", FEEDBACK_STRINGS.labels.expected, MAX_FEEDBACK_FIELD],
 ] as const satisfies readonly (readonly [keyof FeedbackReport, string, number])[];
 
+/** A report's type in the owner's words; a value outside the three shows as the team would get it. */
+function feedbackKindText(kind: string): string {
+  return Object.hasOwn(FEEDBACK_STRINGS.kinds, kind) ? FEEDBACK_STRINGS.kinds[kind] : plainText(kind, 40);
+}
+
 /**
- * One feedback report Main proposed: where it goes, every field as the TinyCloud team gets it, what the team sees of
- * the sender, and Send report or Don't send. Send names the binding the service gave with this card, so only this
- * report can go.
+ * One feedback report Main proposed: where it goes, its type and every field the TinyCloud team reads, what the team
+ * sees of the sender, and Send report or Don't send. The area is always "other", so the card leaves it out. Send names
+ * the binding the service gave with this card, so only this report can go.
  */
 function FeedbackCard({ request, asks }: { request: ActionRequest; asks: Asks }) {
   const id = useId();
@@ -206,17 +211,14 @@ function FeedbackCard({ request, asks }: { request: ActionRequest; asks: Asks })
       <p className="text-callout text-muted-foreground" data-feedback-destination="">{FEEDBACK_STRINGS.destination}</p>
       {report ? (
         <dl className="flex flex-col gap-2 rounded-xl border border-border px-3 py-2">
+          <div className="flex flex-col gap-0.5">
+            <dt className="text-callout text-muted-foreground">{FEEDBACK_STRINGS.labels.kind}</dt>
+            <dd className="text-body" data-feedback-field="kind">{feedbackKindText(report.kind)}</dd>
+          </div>
           {FEEDBACK_FIELDS.map(([field, label, max]) => (
             <div key={field} className="flex flex-col gap-0.5">
               <dt className="text-callout text-muted-foreground">{label}</dt>
               <dd className="whitespace-pre-wrap break-words text-body" data-feedback-field={field}>{plainLines(report[field], max)}</dd>
-            </div>
-          ))}
-          {/* The service's own field names: there is no card label for these two. */}
-          {(["area", "kind"] as const).map((field) => (
-            <div key={field} className="flex gap-1 font-mono text-callout text-muted-foreground">
-              <dt>{`${field}:`}</dt>
-              <dd data-feedback-field={field}>{plainText(report[field], 40)}</dd>
             </div>
           ))}
         </dl>
@@ -276,8 +278,10 @@ function secretLineText(decision: AppLineDecision, secret: SecretLine): string |
 export function AppLine({ decision, live, secret, names }: {
   decision: AppLineDecision | "action_approved" | "action_declined" | "feedback_sent" | "feedback_declined"; live: boolean; secret?: SecretLine; names?: readonly string[];
 }) {
-  // A report's card says what became of it; the chat has no line for it.
-  if (decision === "feedback_sent" || decision === "feedback_declined") return null;
+  if (decision === "feedback_sent" || decision === "feedback_declined") {
+    const text = decision === "feedback_sent" ? FEEDBACK_STRINGS.lineSent : FEEDBACK_STRINGS.lineDeclined;
+    return <p className="self-end text-callout text-muted-foreground" data-app-line={decision}>{text}</p>;
+  }
   if (decision === "action_approved" || decision === "action_declined") {
     const recipients = names?.length ? joinNames(names.map((name) => plainText(name, 120) || ACTION_STRINGS.missing)) : ACTION_STRINGS.otherBots;
     const text = decision === "action_approved" ? ACTION_STRINGS.lineSent(recipients) : ACTION_STRINGS.lineDeclined(recipients);

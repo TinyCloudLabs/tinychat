@@ -14,13 +14,18 @@ const REPORT_ID = /^[0-9A-HJKMNP-TV-Z]{26}$/;
 export const FEEDBACK_STRINGS = {
   title: `${BOT} wants to send feedback to the TinyCloud team`,
   destination: `Goes to ${FEEDBACK_HOST}. Only the TinyCloud team can read it.`,
-  labels: { title: "Title", tried: "What I tried", happened: "What happened", expected: "What I expected" },
+  labels: { kind: "Type", title: "Title", tried: "What I tried", happened: "What happened", expected: "What I expected" },
+  /** The report's `kind`, in the owner's words. */
+  kinds: { bug: "Something broke", friction: "Hard to use", improvement: "Idea" } as Record<string, string>,
   sender: "Sent without your name or account, so the team can't reply to you.",
   agent: (agent: string) => `Sent as: ${agent}`,
   send: "Send report",
   decline: "Don't send",
   /** A Send tapped after the chat read the owner's private data, or after the request ended. */
   refused: "Not sent. This chat holds your private data, or the request ended.",
+  /** The chat's lines for the owner's decision on a report. */
+  lineSent: "You sent a feedback report to the TinyCloud team.",
+  lineDeclined: "You chose not to send a feedback report.",
 } as const;
 
 /** The line a sent report's card collapses to, by the service's outcome. */

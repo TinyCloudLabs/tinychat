@@ -51,8 +51,8 @@ export const FEEDBACK_ERRORS = {
   daily: "Refused: three feedback reports a day is the limit. Try tomorrow.",
   held: "Refused: this chat holds the owner's private data, so feedback can't be sent from it.",
   ownerTurn: "Refused: feedback can be proposed only when the owner asked in this turn.",
-  // DRAFT-FOR-MONICA
-  invalid: `A report has a type (bug, friction or improvement), a title of 1 to ${MAX_FEEDBACK_TITLE} characters on one line, and what you tried, what happened and what you expected, each 1 to ${MAX_FEEDBACK_FIELD} characters.`,
+  invalid: `Refused: the report isn't in the right shape. It needs a type (bug, friction or improvement), a title of 1 to ${MAX_FEEDBACK_TITLE} characters on one line, and what you tried, what happened and what you expected, each 1 to ${MAX_FEEDBACK_FIELD} characters. Nothing else goes in it.`,
+  final: "Refused: the owner has decided on this report. Don't propose it a second time.",
 } as const;
 
 /** What Main is told once the owner's tap has been acted on. Never a field of the report. */

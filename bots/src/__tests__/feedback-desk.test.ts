@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ACTION_ERRORS, actionBinding, type ActionsPush } from "../actions";
+import { ACTION_ERRORS, actionBinding, actionHash, type ActionsPush } from "../actions";
 import { ActionDesk, fileActionLedgerStore } from "../actions-desk";
 import { utcDay } from "../asks";
 import { FEEDBACK_ORIGIN, gatewayConfig } from "../config";
@@ -101,6 +101,12 @@ describe("feedback proposals at the gateway", () => {
     const { ownerTurn, propose } = desk();
     ownerTurn(bot(1));
     expect(propose(bot(1), { ...REPORT, type: "security" })).toEqual({ text: FEEDBACK_ERRORS.security, isError: true });
+  });
+
+  test("a report the owner has decided on cannot be proposed a second time", () => {
+    const { ownerTurn, propose } = desk();
+    ownerTurn(bot(1), { final: [actionHash({ kind: "send_feedback", targets: [], text: BODY })] });
+    expect(propose(bot(1))).toEqual({ text: FEEDBACK_ERRORS.final, isError: true });
   });
 
   test("an edited ledger or body is refused at send and nothing is posted", async () => {
