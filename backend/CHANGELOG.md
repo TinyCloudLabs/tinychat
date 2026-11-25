@@ -1,5 +1,21 @@
 # @tinychat/backend
 
+## 0.14.4
+
+### Patch Changes
+
+- 2566862: The backend grants its own session the three TrustBot key roots it uses (Telegram read grants, read audit and standing read approvals), which clears the 503 on the reads status routes. The reads and history grant routes log the error class and a short code when they answer 503.
+
+  Details: TC-4354
+
+- 4c57f71: The main bot's questions and requests are on by default, so it can ask the owner a question, request a secret and propose actions. Each one reaches the owner as a card to approve or decline. An owner who turns them off keeps them off, even after the bot's working state is deleted, and a damaged setting file reads as off.
+
+  Details: TC-4330
+
+- 258098a: A session restored through its renewal lease keeps reading bot history past the end its sign-in message names. The backend binds the renewed end it verified at sign-in renewal into the session bearer, for that session key only and never past the owner-signed lease, and accepts the session's history key descriptor and history grants up to that end. One reads the same end from the bearer, so it stops showing the session as signed out while the renewal holds. A session without a renewal keeps its signed end.
+
+  Details: TC-4322
+
 ## 0.14.4-beta.2
 
 ### Patch Changes
