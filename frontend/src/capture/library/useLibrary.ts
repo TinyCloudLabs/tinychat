@@ -60,6 +60,7 @@ import { loadVoiceNoteAudioBlob, voiceNoteAudioKvKey, VOICE_NOTE_SOURCE } from "
 import { cachedSpaceAudio, cachedSpaceAudioOffline, hasVerifiedSpaceCopy, isMissingLocalAudio, isVerifiedSpaceReceipt, latestSpaceAudioIdentity, localPlaybackUrl,
   observeSpaceAudioIdentity } from "@/lib/voiceNotes/audioPlaybackCache";
 import { readTranscriptPreviews, voiceNoteTranscriptLocator, type TranscriptProvenance } from "@/lib/voiceNotes/voiceNoteCommits";
+import { TRANSCRIPT_HASH_KEY } from "@/lib/speakerNaming/nameSuggestions";
 import { accountCacheKey, readLocal, writeLocal } from "@/lib/localFirst/localCache";
 import { captureEvents } from "../captureEvents";
 import type { LibraryFilter } from "./libraryKinds";
@@ -650,6 +651,8 @@ export function useLibrary(
                 transcript_provider: locator.provenance?.provider ?? null,
                 transcription_model: locator.provenance?.model ?? null,
               } : {}),
+              // Which revision of the transcript the note shows: a suggested name is of one revision only.
+              [TRANSCRIPT_HASH_KEY]: locator.hash,
               transcription_outcome: locator.outcome === "none"
                 ? metadata.metadata.transcription_outcome ?? "none" : locator.outcome,
               // The preview is bounded; only the body read may supply full transcript text.

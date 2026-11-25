@@ -44,6 +44,8 @@ import { useConversationCanvasFeature } from "./useExperimentalFeatures";
 import { TranscriptionSettings } from "./TranscriptionSettings";
 import { VoiceNotesTranscriberSettings } from "./VoiceNotesTranscriberSettings";
 import { AutomaticSummariesSettings } from "./AutomaticSummariesSettings";
+import { SuggestSpeakerNamesSettings } from "./SuggestSpeakerNamesSettings";
+import { speakerNameSuggestionsEnabled } from "../lib/speakerNaming/namingFeature";
 import { WordFixesSettings } from "./WordFixesSettings";
 import { DebugLogRow } from "./DebugLogRow";
 import { AudioCacheSettings } from "@/capture/AudioCacheSettings";
@@ -260,6 +262,7 @@ export function SettingsPage({
           {(nativeVoiceNotesAvailable() || appPlatform() === "web" || appPlatform() === "tauri") && (
             <SectionCard icon={MicIcon} title="Voice notes">
               <VoiceNotesTranscriberSettings />
+              {speakerNameSuggestionsEnabled() && <SuggestSpeakerNamesSettings tcw={tcw} />}
             </SectionCard>
           )}
           <SectionCard icon={ShieldCheckIcon} title="Infrastructure">

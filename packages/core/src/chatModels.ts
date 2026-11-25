@@ -27,3 +27,21 @@ export function isOfferedChatModel(model: string): model is OfferedModelId {
 export function offeredChatModelContextTokens(model: string): number | undefined {
   return OFFERED_CHAT_MODELS.find(({ id }) => id === model)?.contextTokens;
 }
+
+/**
+ * Models the app calls for background work but never offers for conversations.
+ *
+ * They stay out of the picker and out of GET /api/chat/models. The backend
+ * admits them on POST /api/chat only, and only for a request that sets both an
+ * output cap and a reasoning preference.
+ */
+export const BACKGROUND_CHAT_MODELS = [
+  { id: "moonshotai/kimi-k3.1-pro", contextTokens: 1_048_576 },
+] as const;
+
+export type BackgroundModelId = (typeof BACKGROUND_CHAT_MODELS)[number]["id"];
+
+// No module-level Set here: a bundler cannot drop one it cannot prove unused, and the frontend never calls this.
+export function isBackgroundChatModel(model: string): model is BackgroundModelId {
+  return BACKGROUND_CHAT_MODELS.some(({ id }) => id === model);
+}

@@ -26,6 +26,7 @@ import {
   CatalogFetchError,
   contextLengthFor,
   getCatalog,
+  isBackgroundModel,
   isBlocklistedModel,
   isOfferedModel,
   PICKER_MODELS,
@@ -314,7 +315,17 @@ export function createChatRouter(options?: ChatRouterOptions) {
     // upstream fetch or billing, so a non-offered model can never be proxied even
     // when the paywall is off (the default deployment). Tier/credit gating stays
     // inside the paywall block below (ST2).
-    if (!isOfferedModel(resolvedModel)) {
+    //
+    // A background model (BACKGROUND_CHAT_MODELS) is admitted too, but only for a
+    // request that sets both an output cap and a reasoning preference. Those two
+    // fields are what make a call a bounded background call; without them any
+    // signed-in client could hold an uncapped conversation with a model that is
+    // not offered.
+    const admittedAsBackground =
+      isBackgroundModel(resolvedModel) &&
+      maxOutputTokens !== undefined &&
+      reasoningPreference !== undefined;
+    if (!isOfferedModel(resolvedModel) && !admittedAsBackground) {
       res.status(403).json({
         error: "model_not_offered",
         message: `Model ${resolvedModel} is not offered. Only the curated confidential model is available.`,

@@ -27,7 +27,9 @@ import { useCombineFlow } from "./combine/useCombineFlow";
 import { useCombinedMeeting } from "./combine/useCombinedMeeting";
 import { useCombinedSummary } from "./combine/useCombinedSummary";
 import type { SummaryRunner } from "@/lib/meetingSummary/summaryRunner";
+import type { NamingRunner } from "@/lib/speakerNaming/namingRunner";
 import { applySpeakerNames } from "./speakerNames";
+import { useNameSuggestions } from "./useNameSuggestions";
 import { useSpeakerNames } from "./useSpeakerNames";
 import { callSpeakerLabels } from "./callParticipants";
 import { useWordFixApplier, useWordFixedSentences } from "@/lib/wordFixes/wordFixesStore";
@@ -67,6 +69,8 @@ export function NoteDetail(props: {
   activityControl?: ReactNode;
   /** Makes a combined meeting's summary (CaptureSurface owns it); without one no summary is shown. */
   summaries?: SummaryRunner;
+  /** Suggests names for a voice note's speakers (CaptureSurface owns it); without one no suggestion is made or shown. */
+  naming?: NamingRunner;
 }) {
   const { library } = props;
   const { item, reads, audio } = library.note;
@@ -156,6 +160,13 @@ export function NoteDetail(props: {
       && reads.metadata?.status === "failed" ? item : null,
   });
   const names = speakerNames?.names;
+  const nameSuggestions = useNameSuggestions({
+    tcw: props.tcw,
+    naming: props.naming,
+    row: item !== null && !item.onPhone && item.source === VOICE_NOTE_SOURCE && reads.metadata?.status === "ok" ? item : null,
+    metadata: reads.metadata?.status === "ok" ? reads.metadata.metadata : null,
+    overrides: names,
+  });
   const onCopy = useCallback(async (withTimestamps = false) => {
     const pasted = item?.metadata?.capture === "pasted" && reads.metadata?.status === "ok"
       ? reads.metadata.metadata.transcript_text : null;
@@ -206,6 +217,7 @@ export function NoteDetail(props: {
         shared={shared}
         combine={combine}
         speakerNames={speakerNames}
+        nameSuggestions={nameSuggestions}
       />
       {/* The visible list: a capture already inside a combined meeting is never offered for a new combine. */}
       <CombineSheet flow={flow} items={library.items} now={new Date()} />

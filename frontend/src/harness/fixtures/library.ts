@@ -18,6 +18,8 @@ interface FixtureRow {
   durationSecs: number | null;
   metadata: Record<string, unknown>;
   sentences: FirefliesSentence[];
+  /** The hash of the note's committed transcript (`voice_note_transcript`); without it the note has no commit. */
+  commitHash?: string;
 }
 
 const at = (month: number, day: number, hour: number, minute: number) => new Date(2026, month - 1, day, hour, minute).toISOString();
@@ -208,6 +210,54 @@ function mergePatch(target: unknown, patch: unknown): unknown {
   return merged;
 }
 
+const CALL_REVISION = "harness-call-rev-1";
+
+/**
+ * A Mac recording of a call with two remote people, transcribed by Private, with a name suggested for each of them,
+ * and the Library rows: for the suggested-name screens.
+ */
+export const SUGGESTED_ROWS: FixtureRow[] = [
+  ...LIBRARY_ROWS,
+  {
+    id: "note-call-suggested",
+    source: "exo-voice-note",
+    sourceId: "rec-call",
+    title: "Offsite planning call",
+    startedAt: at(10, 6, 9, 5),
+    durationSecs: 96,
+    commitHash: CALL_REVISION,
+    metadata: {
+      ...stored("exo-voice-note", "rec-call"),
+      capture: { platform: "macos", channels: 2, duration_ms: 96_000 },
+      transcription_engine: "private-cloud",
+      transcript_provider: "tinycloud-private-transcription",
+      inference_provider: "tinfoil",
+      transcription_outcome: "transcribed",
+      speaker_labels: "channels",
+      speaker_name_suggestions: {
+        hash: CALL_REVISION,
+        model: "moonshotai/kimi-k3.1-pro",
+        at: at(10, 6, 9, 8),
+        names: {
+          "Speaker 1": { name: "Alice Chen", basis: "self-introduction", quote: "I'm Alice Chen, I run the offsite planning" },
+          "Speaker 2": { name: "Bob Stone", basis: "thanked", quote: "Thanks, Bob" },
+        },
+        dismissed: [],
+      },
+    },
+    sentences: [
+      { index: 0, speaker_name: "Me", channel: 0, text: "Thanks for making time. Could you each say who you are before we start?", start_time: 0, end_time: 9 },
+      { index: 1, speaker_name: "Speaker 1", channel: 1, speaker_id: "A", text: "Sure. I'm Alice Chen, I run the offsite planning. The venue is booked and the agenda goes out Friday.", start_time: 10, end_time: 31 },
+      { index: 2, speaker_name: "Speaker 2", channel: 1, speaker_id: "B", text: "I have the catering quote. It came in under budget, and I can share the numbers after this call.", start_time: 32, end_time: 55 },
+      { index: 3, speaker_name: "Me", channel: 0, text: "Thanks, Bob. Then we only need the room list.", start_time: 56, end_time: 63 },
+      { index: 4, speaker_name: "Speaker 1", channel: 1, speaker_id: "A", text: "I'll send it tomorrow morning.", start_time: 64, end_time: 70 },
+      { index: 5, speaker_name: "Speaker 2", channel: 1, speaker_id: "B", text: "And I'll confirm the head count with the caterer once the list is in.", start_time: 71, end_time: 80 },
+      { index: 6, speaker_name: "Me", channel: 0, text: "Good. Anything else before we close?", start_time: 81, end_time: 86 },
+      { index: 7, speaker_name: "Speaker 1", channel: 1, speaker_id: "A", text: "Only that the agenda needs your sign-off by Thursday.", start_time: 87, end_time: 95 },
+    ],
+  },
+];
+
 /**
  * The harness space with `rows` stored. `hang` leaves the list read pending
  * (the Library's loading state).
@@ -235,6 +285,16 @@ export function libraryTcw(options: { rows?: readonly FixtureRow[]; hang?: boole
       const row = rows.find((r) => r.id === params[0]);
       return { ok: true, data: { rows: row ? [[JSON.stringify(row.metadata)]] : [] } };
     }
+    // A note's committed transcript (`readTranscriptCommit`): the table is there once a fixture row has a commit.
+    if (sql.includes("FROM sqlite_schema WHERE type = 'table' AND name = 'voice_note_transcript'")) {
+      return { ok: true, data: { rows: rows.some((r) => r.commitHash !== undefined) ? [[1]] : [] } };
+    }
+    if (sql.includes("FROM voice_note_transcript WHERE source_id = ?")) {
+      const row = rows.find((r) => r.sourceId === params[0] && r.commitHash !== undefined);
+      return { ok: true, data: { rows: row ? [[row.sourceId, 1, row.commitHash, transcriptKvKey(row.source, row.sourceId), "transcribed",
+        row.sentences.map((sentence) => sentence.text).join(" ").slice(0, 280), row.metadata.transcription_engine ?? null,
+        row.metadata.transcript_provider ?? null, null, null, 1, "[]", row.startedAt, row.startedAt]] : [] } };
+    }
     return { ok: true, data: { rows: [] } };
   };
   // The speaker-name writes (TC-2189), as the SQL applies them: one label merged into the row's `speaker_names`
@@ -243,6 +303,15 @@ export function libraryTcw(options: { rows?: readonly FixtureRow[]; hang?: boole
   // suggestions, and `speaker_suggestions` is dropped once it is empty too. Those statements are handled first; the
   // write of the older form stays below.
   const execute = async (sql: string, params: unknown[] = []) => {
+    // A dismissed name suggestion (`speaker_name_suggestions`), kept only where the stored suggestions are still
+    // those the note showed.
+    if (sql.includes("speaker_name_suggestions.dismissed")) {
+      const [dismissed, , rowId, hash] = params as [string, string, string, string];
+      const suggestions = rows.find((r) => r.id === rowId)?.metadata.speaker_name_suggestions as { hash?: string; dismissed?: unknown } | undefined;
+      if (suggestions?.hash !== hash) return { ok: true, data: { changes: 0 } };
+      suggestions.dismissed = JSON.parse(dismissed);
+      return { ok: true, data: { changes: 1 } };
+    }
     if (sql.includes("call_participants")) return { ok: true, data: { changes: 0 } };
     if (sql.includes("json_patch") && sql.includes("speaker_suggestions")) {
       const [withSuggestions, namesOnly, , rowId] = params as [string, string, string, string];
@@ -316,5 +385,25 @@ export const CALL_SPEAKER_ROWS: FixtureRow[] = [
       speaker_suggestions_made: { "Them 1": at(10, 6, 9, 40), "Them 2": at(10, 6, 9, 40) },
     }),
     sentences: CALL_SPEAKER_LINES,
+  },
+];
+
+const NAMED_CALL_REVISION = "harness-call-one-rev-1";
+
+/**
+ * The 1:1 call whose "Them" already carries the name taken from the call window (marked Suggested), on a row that
+ * also holds a model's suggestion for that label: the label shows the mark and no second suggestion.
+ */
+export const NAMED_AND_SUGGESTED_ROWS: FixtureRow[] = [
+  ...LIBRARY_ROWS,
+  {
+    ...callRecording("call-one-named", "Pricing review", [{ id: "p1", name: "Robin Sample", self: true }, { id: "p2", name: "Alex Example" }], {
+      speaker_names: { Them: "Alex Example" },
+      speaker_suggestions: { Them: { name: "Alex Example", source: "call_window", confidence: "high",
+        reason: "one_other_participant", person: "p2", at: at(10, 6, 9, 25) } },
+      speaker_name_suggestions: { hash: NAMED_CALL_REVISION, model: "moonshotai/kimi-k3.1-pro", at: at(10, 6, 9, 27),
+        names: { Them: { name: "Alex", basis: "thanked", quote: "Thanks, Alex" } }, dismissed: [] },
+    }),
+    commitHash: NAMED_CALL_REVISION,
   },
 ];

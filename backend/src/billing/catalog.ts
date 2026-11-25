@@ -10,6 +10,7 @@
 
 import {
   OFFERED_CHAT_MODELS,
+  isBackgroundChatModel,
   isOfferedChatModel,
   offeredChatModelContextTokens,
 } from "@tinyboilerplate/core";
@@ -87,9 +88,13 @@ export type BackgroundReasoningControl =
   | { kind: "qwen_no_think" };
 
 /**
- * RedPill's catalog advertises the standard reasoning parameter for Kimi K3
- * and GLM 5.x. Qwen 3.6's current NEAR entry does not, so it uses Qwen's
- * prompt-level hybrid-mode control instead.
+ * RedPill's catalog advertises the standard reasoning parameter for Kimi K3,
+ * Kimi K3.1 Pro and GLM 5.x. Qwen 3.6's current NEAR entry does not, so it
+ * uses Qwen's prompt-level hybrid-mode control instead.
+ *
+ * Kimi K3.1 Pro always reasons; "low" is the least it accepts. Without it a
+ * capped background call can spend its whole output cap on reasoning and
+ * return no answer.
  */
 export function backgroundReasoningControlFor(
   modelId: string,
@@ -99,7 +104,9 @@ export function backgroundReasoningControlFor(
     return { kind: "parameter", effort: "none" };
   }
   if (
-    (modelId === "z-ai/glm-5.3" || modelId === "moonshotai/kimi-k3") &&
+    (modelId === "z-ai/glm-5.3" ||
+      modelId === "moonshotai/kimi-k3" ||
+      modelId === "moonshotai/kimi-k3.1-pro") &&
     preference === "minimal"
   ) {
     return { kind: "parameter", effort: "low" };
@@ -146,6 +153,15 @@ export function contextLengthFor(modelId: string): number {
  */
 export function isOfferedModel(id: string): boolean {
   return isOfferedChatModel(id);
+}
+
+/**
+ * True when the model id is one the app may call for background work without
+ * it being offered for conversations (see BACKGROUND_CHAT_MODELS). POST
+ * /api/chat admits these under its own conditions; no other route does.
+ */
+export function isBackgroundModel(id: string): boolean {
+  return isBackgroundChatModel(id);
 }
 
 /** Clear the in-memory catalog cache. Exposed for tests. */

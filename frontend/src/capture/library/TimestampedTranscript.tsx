@@ -65,8 +65,8 @@ function activeRowsAt(index: ReturnType<typeof timedIndex>, elapsed: number) {
   return { active, followRow };
 }
 
-const TranscriptRow = memo(function TranscriptRow({ sentence, index, speaker, start, hasAudio, store, onSeek, registerRow, onRowRender }: {
-  sentence: FirefliesSentence; index: number; speaker: string | null; start: number | null; hasAudio: boolean;
+const TranscriptRow = memo(function TranscriptRow({ sentence, index, speaker, firstOfSpeaker, start, hasAudio, store, onSeek, registerRow, onRowRender }: {
+  sentence: FirefliesSentence; index: number; speaker: string | null; firstOfSpeaker: boolean; start: number | null; hasAudio: boolean;
   store: ActiveRowStore; onSeek: (seconds: number) => void; registerRow: (index: number, element: HTMLDivElement | null) => void;
   onRowRender?: (index: number) => void;
 }) {
@@ -76,7 +76,7 @@ const TranscriptRow = memo(function TranscriptRow({ sentence, index, speaker, st
   return <div ref={(element) => registerRow(index, element)}
     data-testid="transcript-segment" data-active={selected || undefined} aria-current={selected ? "true" : undefined}
     className={`rounded-md px-2 py-1 ${selected ? "bg-accent/40" : ""}`}>
-    {speaker && <SpeakerLabel original={speaker} className="mb-1 text-meta font-semibold text-muted-foreground" />}
+    {speaker && <SpeakerLabel original={speaker} firstOfSpeaker={firstOfSpeaker} className="mb-1 text-meta font-semibold text-muted-foreground" />}
     <div className="flex items-start gap-3">
       <div className="tnum w-[7ch] shrink-0 text-meta text-muted-foreground">
         {start !== null && (hasAudio ? (
@@ -111,13 +111,25 @@ export function TimestampedTranscript({ sentences, gaps = NO_GAPS, hasAudio, isP
     // Speakers are told apart by the name shown for them: two labels given the same name read as one speaker.
     const shown = (sentence: FirefliesSentence | undefined) => sentence === undefined ? undefined : speakerDisplayName(names, sentence.speaker_name ?? null);
     const speakers = new Set(sentences.map(shown).filter(Boolean));
-    const sentenceRows = sentences.map((sentence, rowIndex) => {
+    const labels = sentences.map((sentence, rowIndex) => {
       // A lone speaker is labelled only where the label can be tapped to rename them, on their first line.
       const onlySpeaker = renamable && speakers.size === 1 && sentence.speaker_name !== null && sentences.findIndex((other) => other.speaker_name !== null) === rowIndex;
-      const speaker = onlySpeaker || (speakers.size > 1 && shown(sentence) !== shown(sentences[rowIndex - 1])) ? sentence.speaker_name : null;
-      return <TranscriptRow key={`${sentence.index}-${rowIndex}`} sentence={sentence} index={rowIndex} speaker={speaker}
-        start={sentenceTime(sentence, isPrivateCloud)} hasAudio={hasAudio} store={store} onSeek={onSeek} registerRow={registerRow} onRowRender={onRowRender} />;
+      return onlySpeaker || (speakers.size > 1 && shown(sentence) !== shown(sentences[rowIndex - 1])) ? sentence.speaker_name : null;
     });
+    // Each speaker's first label as the page is read: the rows are in start order once gaps are woven in (below).
+    const reading = sentences.map((_, rowIndex) => rowIndex);
+    if (gaps.length > 0) reading.sort((a, b) => sentences[a]!.start_time - sentences[b]!.start_time);
+    const firstLabels = new Set<number>();
+    const labelled = new Set<string>();
+    for (const rowIndex of reading) {
+      const label = labels[rowIndex];
+      if (!label || labelled.has(label)) continue;
+      labelled.add(label);
+      firstLabels.add(rowIndex);
+    }
+    const sentenceRows = sentences.map((sentence, rowIndex) =>
+      <TranscriptRow key={`${sentence.index}-${rowIndex}`} sentence={sentence} index={rowIndex} speaker={labels[rowIndex] ?? null} firstOfSpeaker={firstLabels.has(rowIndex)}
+        start={sentenceTime(sentence, isPrivateCloud)} hasAudio={hasAudio} store={store} onSeek={onSeek} registerRow={registerRow} onRowRender={onRowRender} />);
     if (gaps.length === 0) return sentenceRows;
     return [
       ...sentenceRows.map((element, rowIndex) => ({ start: sentences[rowIndex]!.start_time, element })),

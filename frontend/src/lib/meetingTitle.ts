@@ -10,6 +10,16 @@ const GENERIC_NAMES = new Set(["me", "them", "unknown", "unknown speaker", "spea
 const SPEAKER_LABEL = /^(speaker(\s*\d+|\s*[a-z])?|them\s*\d+)$/i;
 const PARTICIPANT_LABEL = /^participant\s*\d*$/i;
 
+/**
+ * Whether a participant or speaker value can be a person's name. Not names: an empty value, a generic label
+ * ("Speaker 2", "Them"), and contact details (an email address, or a phone number: 7+ digits and no letters).
+ */
+export function isPersonName(name: string): boolean {
+  if (!name || GENERIC_NAMES.has(name.toLowerCase()) || SPEAKER_LABEL.test(name) || PARTICIPANT_LABEL.test(name)) return false;
+  const digits = name.replace(/\D/g, "").length;
+  return !name.includes("@") && !(digits >= 7 && !/\p{L}/u.test(name));
+}
+
 export interface AutoMeetingTitleInput {
   startedAt: unknown;
   participantNames: unknown;
@@ -46,10 +56,7 @@ function participantSummary(value: unknown): string | null {
   for (const raw of value) {
     const name = cleanText(raw);
     const key = name.toLowerCase();
-    if (!name || GENERIC_NAMES.has(key) || SPEAKER_LABEL.test(name) || PARTICIPANT_LABEL.test(name) || seen.has(key)) continue;
-    // Contact details are not names: an email address, or a phone number (7+ digits and no letters).
-    const digits = name.replace(/\D/g, "").length;
-    if (name.includes("@") || (digits >= 7 && !/\p{L}/u.test(name))) continue;
+    if (seen.has(key) || !isPersonName(name)) continue;
     seen.add(key);
     names.push(truncate(name, MAX_NAME_LENGTH));
   }

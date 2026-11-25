@@ -17,6 +17,30 @@ export const SPEAKER_NAMES_COPY = {
   undo: "Undo",
   undone: "Rename undone.",
   failed: "Couldn't save the speaker name. Try again.",
+  // A name a model suggested, beside the label it is for, until the user takes or dismisses it. (`suggested` above
+  // is the mark on a name already applied from the call window.)
+  suggestedName: "Suggested name:",
+  suggestion: (name: string) => `${name}?`,
+  use: "Use",
+  useFor: (name: string, original: string) => `Use ${name} for ${original}`,
+  dismiss: "Dismiss",
+  dismissFor: (name: string, original: string) => `Dismiss ${name} for ${original}`,
+  /** How the transcript supports the name; the quoted words follow. */
+  basis: {
+    "self-introduction": "They say their own name:",
+    introduced: "Someone introduces them or speaks to them by name:",
+    thanked: "Someone thanks them by name:",
+    inferred: "Worked out from what is said:",
+  },
+  quote: (words: string) => `“${words}”`,
+  suggestionsFound: (count: number) => `Names suggested for ${count} speakers.`,
+  useAll: "Use all",
+  suggestNames: "Suggest names",
+  // Settings → Voice notes.
+  setting: "Suggest speaker names",
+  settingHelp: "A name is suggested from the note's transcript and the names in your meetings, and nothing is renamed until you choose Use. A suggestion uses credits like a chat message. Off: names are suggested only when you choose Suggest names in a note's transcript menu.",
+  settingUnread: "Could not read this setting.",
+  settingUnsaved: "Could not save this setting. Try again.",
 } as const;
 
 /** Labels the recorders give the user's own side of a two-sided note. */

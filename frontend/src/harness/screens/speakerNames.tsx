@@ -1,10 +1,13 @@
 // Renaming a note's speakers (TC-2189) in the real shell over the fixture space: the Transcript before a rename,
 // after it, and after Undo, for a Me/Them note, a diarized note and a meeting. Names in the call: the rename
 // form of a Mac call recording offering the names the desktop app read from the call window. Who spoke when: a
-// three-person call whose remote lines are named per person, each name suggested.
-import { useEffect } from "react";
+// three-person call whose remote lines are named per person, each name suggested. And, in a build with suggested
+// speaker names (VITE_SPEAKER_NAME_SUGGESTIONS), a voice note that has a name suggested for two of its speakers.
+import { useEffect, useMemo } from "react";
 
-import { CALL_NAME_ROWS, CALL_SPEAKER_ROWS, SPEAKER_ROWS } from "../fixtures/library";
+import { __setSavedNoteStoreForTests } from "@/capture/library/savedNote/savedNoteStore";
+import { speakerNameSuggestionsEnabled } from "@/lib/speakerNaming/namingFeature";
+import { CALL_NAME_ROWS, CALL_SPEAKER_ROWS, NAMED_AND_SUGGESTED_ROWS, SPEAKER_ROWS, SUGGESTED_ROWS } from "../fixtures/library";
 import { CaptureShell } from "./capture";
 import type { HarnessScreen } from "../screen";
 
@@ -60,6 +63,61 @@ const ME_THEM: Step[] = [{ rename: "Me", to: "Sam" }, { rename: "Them", to: "Ali
 const DIARIZED: Step[] = [{ rename: "Speaker A", to: "Dana (interviewer)" }];
 const MEETING: Step[] = [{ rename: "Ana", to: "Ana Ruiz" }];
 
+/** Presses the first element matching `selector` once it is there. */
+function Press(props: { selector: string }) {
+  useEffect(() => {
+    let timer = 0;
+    const attempt = (left: number) => {
+      const target = document.querySelector<HTMLElement>(props.selector);
+      if (target) target.click();
+      else if (left > 0) timer = window.setTimeout(() => attempt(left - 1), 100);
+    };
+    attempt(60);
+    return () => window.clearTimeout(timer);
+  }, [props.selector]);
+  return null;
+}
+
+/** The call with suggested names, as the saved voice note it opens as (its own notes are empty). */
+function Suggested(props: { press?: string }) {
+  useMemo(() => {
+    __setSavedNoteStoreForTests({ load: async () => null, save: async (_id, md) => ({ record: { md, savedEditAt: null }, synced: Promise.resolve() }) });
+  }, []);
+  return <CaptureShell library rows={SUGGESTED_ROWS}>{props.press && <Press selector={props.press} />}</CaptureShell>;
+}
+
+const SUGGESTION = '[data-testid="speaker-suggestion"]';
+const EVIDENCE = '[data-testid="speaker-suggestion-evidence"]';
+/** The saved note as a desktop page, or as the phone's sheet; `scrollTo` brings a later part of the transcript into view. */
+const suggested = (id: string, as: "page" | "sheet", readyWhen: string, options: { press?: string; scrollTo?: string } = {}): HarnessScreen => ({
+  ...NOTE,
+  id: `speakerNames-suggested-${as}${id}`,
+  path: note("note-call-suggested"),
+  platform: as === "page" ? "tauri" : "ios",
+  viewports: as === "page" ? ["desktop-min", "desktop"] : ["phone"],
+  readyWhen,
+  scrollTo: options.scrollTo,
+  render: () => <Suggested press={options.press} />,
+});
+/** A speaker's later turns: their labels are plain, the suggestion is at the first one only. */
+const LATER_TURNS = '[data-testid="transcript-segment"]:last-of-type';
+/** Registered only in a build that suggests names: without the flag the note shows nothing of them. */
+const suggestedScreens: HarnessScreen[] = speakerNameSuggestionsEnabled() ? [
+  suggested("", "page", SUGGESTION),
+  suggested("-later", "page", SUGGESTION, { scrollTo: LATER_TURNS }),
+  suggested("-evidence", "page", EVIDENCE, { press: '[data-testid="speaker-suggestion-name"]' }),
+  suggested("-used", "page", RENAMED, { press: '[data-testid="speaker-suggestion-use"]' }),
+  suggested("-menu", "page", 'details[open] [data-testid="note-suggest-names"]', { press: '[data-testid="note-transcript"] details > summary' }),
+  suggested("", "sheet", SUGGESTION),
+  suggested("-later", "sheet", SUGGESTION, { scrollTo: LATER_TURNS }),
+  suggested("-evidence", "sheet", EVIDENCE, { press: '[data-testid="speaker-suggestion-name"]' }),
+  // A name already taken from the call window keeps its Suggested mark, and the model's suggestion for that
+  // label stays away: the two never show on one label.
+  { ...NOTE, id: "speakerNames-suggested-call-named", path: note("call-one-named"),
+    readyWhen: '[data-testid="note-transcript"]:not(:has([data-testid="speaker-suggestion"])) [data-testid="speaker-suggested"]',
+    render: () => <CaptureShell library rows={NAMED_AND_SUGGESTED_ROWS} /> },
+] : [];
+
 export const speakerNameScreens: HarnessScreen[] = [
   { ...NOTE, id: "speakerNames-me-them-before", path: note("note-me-them"), readyWhen: READ, render: shell() },
   { ...NOTE, id: "speakerNames-me-them-after", path: note("note-me-them"), readyWhen: RENAMED, render: shell(ME_THEM) },
@@ -78,4 +136,5 @@ export const speakerNameScreens: HarnessScreen[] = [
   { ...NOTE, id: "speakerNames-call-speakers", path: note("call-three"), readyWhen: BOTH_SUGGESTED, render: callSpeakersShell() },
   { ...NOTE, id: "speakerNames-call-speakers-choices", path: note("call-three"), readyWhen: '[data-testid="speaker-choices"]',
     render: callSpeakersShell([{ open: "Alex Example" }]) },
+  ...suggestedScreens,
 ];
