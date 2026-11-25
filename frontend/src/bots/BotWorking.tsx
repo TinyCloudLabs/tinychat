@@ -76,7 +76,7 @@ interface BotWorkingStatusProps extends BotWorkingMarkProps {
 export function BotWorkingStatus({ bot, size = 28, step, className }: BotWorkingStatusProps) {
   const motion = useWorkingMotion();
   return (
-    <div data-bot-working-row="" className={cn("flex min-w-0 items-center gap-3", className)}>
+    <div data-bot-working-row="" className={cn("tc-bot-working-row flex min-w-0 items-center gap-3", className)}>
       <BotWorkingMark bot={bot} size={size} />
       <span
         role="status"
