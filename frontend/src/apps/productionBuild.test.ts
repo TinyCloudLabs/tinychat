@@ -25,6 +25,7 @@ describe("One Apps production build", () => {
       const bundle = shipped.map((file) => readFileSync(file, "utf8")).join("\n");
       // The registry is in the bundle, so the absence below is not vacuous.
       expect(bundle).toContain("https://explorer.tinycloud.xyz");
+      expect(bundle).toContain("https://drive.tinycloud.xyz");
       expect(bundle).toContain("https://share.tinycloud.xyz");
       expect(bundle).toContain("https://rocinante-ledger.pages.dev");
       for (const pattern of FORBIDDEN) {

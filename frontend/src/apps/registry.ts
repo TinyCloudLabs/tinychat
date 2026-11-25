@@ -2,14 +2,15 @@
 //
 // `ceiling(owner)` is the most One will ever delegate to the app: the abilities of the app's own manifest, copied from
 // its repo (secret-manager src/lib/tinycloud-manifest.ts, OpenCredentials apps/open-credentials/src/lib/tinycloud-manifest.ts,
-// tinycloud-explorer src/data/realExplorerDataSource.ts createExplorerManifest, billing app/src/lib/manifest.ts).
+// tinycloud-explorer src/data/realExplorerDataSource.ts createExplorerManifest, billing app/src/lib/manifest.ts,
+// tinydrive web/src/drive.js manifests).
 // It is a function because two apps name owner-bound resources (an encryption network, a per-address path). Each
 // entry carries the `<scope>` phrase the ask card shows for it (strings.ts).
 
 import { Capacitor } from "@capacitor/core";
 import type { PermissionEntry } from "@tinycloud/web-sdk";
 import type { LucideIcon } from "lucide-react";
-import { BadgeCheck, CircleUserRound, ClipboardList, Compass, KeyRound, MessagesSquare, Mic } from "lucide-react";
+import { BadgeCheck, CircleUserRound, ClipboardList, Compass, FolderOpen, KeyRound, MessagesSquare, Mic } from "lucide-react";
 import { ONE_NAV_ENABLED } from "../shell/navPins";
 import type { GlyphId } from "./icons";
 import { APP_DESCRIPTIONS, APP_NAMES, type ScopeId } from "./strings";
@@ -17,6 +18,7 @@ import { APP_DESCRIPTIONS, APP_NAMES, type ScopeId } from "./strings";
 export type FramedAppId =
   | "xyz.tinycloud.secrets"
   | "xyz.tinycloud.opencredentials"
+  | "xyz.tinycloud.tinydrive"
   | "xyz.tinycloud.explorer"
   | "xyz.tinycloud.account"
   | "xyz.tinycloud.courier"
@@ -155,6 +157,15 @@ const ACCOUNT_CEILING: readonly CeilingEntry[] = [
   kv("installedApps", "account", "applications/", ["get", "list"]),
   kv("spaces", "account", "spaces/", ["get", "list"]),
 ];
+/**
+ * Drive (TinyDrive) lists and reads three whole spaces and nothing else: no write, no delete, no SQL, no secrets, and
+ * not the list of the owner's grants. It asks for one space at a time, when the owner opens that drive.
+ */
+const DRIVE_CEILING: readonly CeilingEntry[] = [
+  kv("appsData", "applications", "", ["get", "list", "metadata"]),
+  kv("ownFiles", "default", "", ["get", "list", "metadata"]),
+  kv("agentsData", "agents", "", ["get", "list", "metadata"]),
+];
 const COURIER_CEILING: readonly CeilingEntry[] = [kv("courier", "agents", "xyz.tinycloud.courier/", ["get", "list"])];
 /**
  * The Rocinante sitrep's prefixes the Ledger reads (TC-3768), read only. Not `board/approval/` (approval links are bearer
@@ -217,6 +228,22 @@ const ALL_APPS: readonly OneApp[] = [
       capabilities("credentials"),
       kv("credentials", "credentials", `v1/held/${owner.address.toLowerCase()}/`, ["get", "list", "put", "del"]),
     ],
+  },
+  {
+    // Drive: the owner's TinyCloud as drives, folders and files (TinyDrive). Read only in the frame. Its "Who has
+    // access" needs the owner's own sign-in, so that part opens Drive in its own tab.
+    id: "xyz.tinycloud.tinydrive",
+    kind: "framed",
+    framed: true,
+    // Not in the phone app yet: it reads whole spaces (`default` and `agents` too), which the phone app's session
+    // doesn't hold and has no step-up ceiling for. Its tile there offers Drive's own page.
+    inNativeApp: false,
+    ...text("xyz.tinycloud.tinydrive"),
+    icon: FolderOpen,
+    glyph: "drive",
+    origin: KIND === "dev" ? "https://localhost:5197" : "https://drive.tinycloud.xyz",
+    path: "/",
+    ceiling: () => DRIVE_CEILING,
   },
   {
     id: "xyz.tinycloud.explorer",

@@ -14,6 +14,7 @@ describe("registry", () => {
     expect(framed(ONE_APPS).map((app) => app.origin)).toEqual([
       "https://secrets.tinycloud.xyz",
       "https://credentials.org",
+      "https://drive.tinycloud.xyz",
       "https://explorer.tinycloud.xyz",
       "https://account.tinycloud.xyz",
       "https://share.tinycloud.xyz",
@@ -60,7 +61,7 @@ describe("registry", () => {
 
   test("iOS leaves Account out; web and Android keep it", () => {
     expect(oneAppsFor("ios").some((app) => app.id === "xyz.tinycloud.account")).toBe(false);
-    expect(oneAppsFor("ios").map((app) => app.id)).toEqual(["capture", "xyz.tinycloud.secrets", "xyz.tinycloud.opencredentials", "xyz.tinycloud.explorer", "xyz.tinycloud.courier", "xyz.tinycloud.rocinante.ledger"]);
+    expect(oneAppsFor("ios").map((app) => app.id)).toEqual(["capture", "xyz.tinycloud.secrets", "xyz.tinycloud.opencredentials", "xyz.tinycloud.tinydrive", "xyz.tinycloud.explorer", "xyz.tinycloud.courier", "xyz.tinycloud.rocinante.ledger"]);
     expect(oneAppsFor("web").some((app) => app.id === "xyz.tinycloud.account")).toBe(true);
     expect(oneAppsFor("android").some((app) => app.id === "xyz.tinycloud.account")).toBe(true);
   });
