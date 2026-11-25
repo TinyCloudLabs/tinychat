@@ -1158,9 +1158,15 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         if (attempt.cancelled) return;
         if (captureEngineKind() === "web" && typeof navigator !== "undefined")
           void navigator.storage?.persist?.().catch(() => undefined);
+        // Private without a diarizer cannot tell speakers apart; any other engine keeps its default. The engine is
+        // asked which transcriber the recording starts on: this controller's choice is the stored preference, and
+        // the engine's default is what counts. If it cannot say, speaker detection stays off, as for Private.
+        const noPrivateSpeakers = !privateDiarization()
+          && await VoiceNotes.getCaptureDefaults().then((defaults) => defaults.transcriber === "private-cloud", () => true);
+        if (attempt.cancelled) return;
         const started = await VoiceNotes.start({ maxDurationMs: requested,
           uploadAudio: readUploadAudioPreference(),
-          ...(!privateDiarization() ? { identifySpeakers: false } : {}) });
+          ...(noPrivateSpeakers ? { identifySpeakers: false } : {}) });
         // Closed while the microphone was being asked: the recording is left running, never acted on; its place is
         // kept until the engine reads idle (below).
         if (attempt.cancelled) return;

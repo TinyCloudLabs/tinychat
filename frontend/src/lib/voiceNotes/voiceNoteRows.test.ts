@@ -13,6 +13,7 @@ import { legacyTranscriptWinner, readTranscriptCommit, voiceNoteTranscriptLocato
 import { whisperLocalTranscript } from "./desktop/whisperTranscript";
 import { commitVoiceNoteTranscript, createVoiceNoteRow, ensureVoiceNoteIdentity, patchVoiceNoteAudio,
   patchVoiceNoteTranscriptionFailure, reconcileDuplicates, resolveVoiceNoteRow, sweepArchived, transcriptHash, transcriptRevKvKey } from "./voiceNoteRows";
+import { patchRowSpeakerName } from "./voiceNoteRows";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 import { NoteDetailView } from "@/capture/library/NoteDetailView";
@@ -566,6 +567,51 @@ describe("voice-note identity and transcript authority", () => {
     await commitVoiceNoteTranscript(tcw, "recover", { rev: 1, outcome: "transcribed",
       text: "Recovered words", sentences: sentence("Recovered words") });
     expect((await resolveVoiceNoteRow(tcw, "recover"))?.metadata).not.toHaveProperty("transcription_error_code");
+  });
+
+  test("a transcript by another engine or with other speakers takes the names off numbered speakers and keeps them", async () => {
+    const { tcw } = space();
+    await ensureSchema(tcw);
+    await createVoiceNoteRow(tcw, { id: "call", startedAt: 0, durationMs: 1000,
+      mimeType: "audio/mp4", sizeBytes: 1, silencedMs: 0, silencedEvents: 0, noSignalMs: 0 }, "Call");
+    const commit = (rev: number, engine: string, labels: string[]) => commitVoiceNoteTranscript(tcw, "call", { rev, outcome: "transcribed",
+      text: "words", engine, participants: labels,
+      sentences: labels.map((speaker_name, index) => ({ index, speaker_name, text: `${engine} ${rev}`, start_time: index, end_time: index + 1 })) });
+    const metadata = async () => (await resolveVoiceNoteRow(tcw, "call"))!.metadata;
+    const name = async (label: string, shown: string | null) => patchRowSpeakerName(tcw, (await resolveVoiceNoteRow(tcw, "call"))!.id, label, shown);
+
+    await commit(1, "assemblyai", ["Me", "Speaker 1", "Speaker 2"]);
+    await name("Me", "Roman");
+    await name("Speaker 1", "Alice");
+    await name("Speaker 2", "Bob");
+    // The same engine heard the same speakers again: every name stays.
+    await commit(2, "assemblyai", ["Me", "Speaker 1", "Speaker 2"]);
+    expect((await metadata()).speaker_names).toEqual({ Me: "Roman", "Speaker 1": "Alice", "Speaker 2": "Bob" });
+    expect(await metadata()).not.toHaveProperty("earlier_speaker_names");
+
+    // Another engine: its Speaker 1 may be someone else. The user's own side keeps its name.
+    await commit(3, "private-cloud", ["Me", "Speaker 1", "Speaker 2"]);
+    expect((await metadata()).speaker_names).toEqual({ Me: "Roman" });
+    expect((await metadata()).earlier_speaker_names).toEqual(["Alice", "Bob"]);
+
+    // The same engine, another set of speakers. A name set aside before is listed once, and a map left empty goes.
+    await name("Me", null);
+    await name("Speaker 1", "alice");
+    await name("Speaker 2", "Carol");
+    await commit(4, "private-cloud", ["Me", "Them"]);
+    expect(await metadata()).not.toHaveProperty("speaker_names");
+    expect((await metadata()).earlier_speaker_names).toEqual(["Alice", "Bob", "Carol"]);
+  });
+
+  test("a name given before the note's first transcript stays when that transcript lands", async () => {
+    const { tcw } = space();
+    await ensureSchema(tcw);
+    await createVoiceNoteRow(tcw, { id: "phone", startedAt: 0, durationMs: 1000,
+      mimeType: "audio/mp4", sizeBytes: 1, silencedMs: 0, silencedEvents: 0, noSignalMs: 0,
+      ledger: { speakerNames: { "Speaker 1": "Sam" } } }, "Phone note");
+    await commitVoiceNoteTranscript(tcw, "phone", { rev: 1, outcome: "transcribed", text: "Hello", engine: "on-device",
+      participants: ["Speaker 1"], sentences: [{ index: 0, speaker_name: "Speaker 1", text: "Hello", start_time: 0, end_time: 1 }] });
+    expect((await resolveVoiceNoteRow(tcw, "phone"))!.metadata.speaker_names).toEqual({ "Speaker 1": "Sam" });
   });
 
   test("deferral codes do not persist failed outcomes", async () => {

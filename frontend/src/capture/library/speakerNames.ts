@@ -1,6 +1,7 @@
 // A note's speaker names (TC-2189): a display override kept beside the note, keyed by the label the
-// transcript was stored with. The stored sentences are never rewritten, so a new transcript of the
-// same recording still carries the original labels and the same override applies to it.
+// transcript was stored with. The stored sentences are never rewritten. A new transcript of the same
+// recording keeps the names of the two sides of a call; a numbered speaker's name stays only while the
+// engine and the set of labels stay the same (speakerNamesAfterNewTranscript).
 //
 // Stored in the note row's metadata (`connector_meeting.metadata`):
 //   "speaker_names": { "Me": "Sam", "Them": "Alice, Bob" }
@@ -12,10 +13,14 @@
 // "Them N" label (reason "speaking_marker"), and `speaker_suggestions_made` records each label the app has made (or
 // skipped) its suggestion for, so an ended suggestion is never made again.
 
+import { OTHER_SIDE_LABELS, OWN_SIDE_LABELS } from "./speakerNamesCopy";
+
 export const SPEAKER_NAMES_KEY = "speaker_names";
 export const SPEAKER_SUGGESTIONS_KEY = "speaker_suggestions";
 export const SPEAKER_SUGGESTIONS_MADE_KEY = "speaker_suggestions_made";
 export const MAX_SPEAKER_NAME_LENGTH = 80;
+/** Names a new transcript took off numbered speakers, oldest first: a list of strings beside `speaker_names`. */
+export const EARLIER_SPEAKER_NAMES_KEY = "earlier_speaker_names";
 
 /** Original label -> name shown. Only differing, non-empty names are kept. */
 export type SpeakerNames = Readonly<Record<string, string>>;
@@ -102,4 +107,33 @@ export function applySpeakerNames<T extends { speaker_name: string | null }>(ite
   if (Object.keys(names).length === 0) return [...items];
   return items.map((item) => item.speaker_name !== null && Object.hasOwn(names, item.speaker_name)
     ? { ...item, speaker_name: names[item.speaker_name]! } : item);
+}
+
+/** What made a transcript and the speaker labels it uses. */
+export interface TranscriptLabels { engine: string | null; labels: readonly string[] }
+
+/**
+ * What a new transcript does to a note's names: a JSON merge patch for the row's metadata, or null when they all
+ * stay. The two sides of a call ("Me", "Them") are the same people whatever engine listened, so their names stay.
+ * A numbered speaker is not: "Speaker 2" from another engine, or among a different set of speakers, can be someone
+ * else. When the engine or the set of labels changed, every other label's name comes off and is kept under
+ * `earlier_speaker_names`, so that it is not lost and can be offered again.
+ */
+export function speakerNamesAfterNewTranscript(metadata: unknown, before: TranscriptLabels, after: TranscriptLabels): Record<string, unknown> | null {
+  const was = new Set(before.labels);
+  const now = new Set(after.labels);
+  if (before.engine === after.engine && was.size === now.size && [...was].every((label) => now.has(label))) return null;
+  const names = readSpeakerNames(metadata);
+  const removed = Object.keys(names).filter((label) => !OWN_SIDE_LABELS.has(label) && !OTHER_SIDE_LABELS.has(label));
+  if (removed.length === 0) return null;
+  const stored = (metadata as Record<string, unknown>)[EARLIER_SPEAKER_NAMES_KEY];
+  const earlier = Array.isArray(stored) ? stored.filter((name): name is string => typeof name === "string") : [];
+  const seen = new Set<string>();
+  const kept = [...earlier, ...removed.map((label) => names[label]!)].filter((name) => {
+    const key = name.toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  return { [SPEAKER_NAMES_KEY]: Object.fromEntries(removed.map((label) => [label, null])), [EARLIER_SPEAKER_NAMES_KEY]: kept };
 }

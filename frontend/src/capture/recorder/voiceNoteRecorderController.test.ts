@@ -648,6 +648,17 @@ describe("voice-note recorder controller", () => {
     detach();
   });
 
+  test("Powerful keeps speaker detection on when PTX reports no diarization", async () => {
+    await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1,
+      transcriber: "assemblyai", identifySpeakers: true });
+    const recorder = controller({ consented: true, diarization: false });
+    const detach = recorder.attach();
+    await tick();
+    await recorder.record();
+    expect((await fake.plugin.status()).options).toMatchObject({ transcriber: "assemblyai", identifySpeakers: true });
+    detach();
+  });
+
   test("signed-out capture locks other modes and Off does not revoke private-cloud consent", async () => {
     const signedOut = controller({ tcw: {} as TinyCloudWeb, consented: true });
     const detach = signedOut.attach();

@@ -571,9 +571,15 @@ export async function commitVoiceNoteTranscript(
   if (committed.rev === input.rev && committed.hash === hash) {
     checkpoint();
     const live = await resolveVoiceNoteRow(tcw, sourceId, checkpoint);
+    // Names given to the numbered speakers of another transcript come off in the same write as the mirror, so a
+    // retried save finds the row either as it was or already changed. Only a row that has shown a transcript and has
+    // names can lose any, and the rule loads for those alone: the entry chunk does not carry it (TC-2882).
+    const names = live && live.metadata.transcription_outcome === "transcribed" && live.metadata.speaker_names !== undefined
+      ? await (await import("./transcriptSpeakerNames")).speakerNamesPatch(tcw, live, input, checkpoint) : null;
     if (live) await execute(tcw, "UPDATE connector_meeting SET metadata = json_patch(COALESCE(metadata,'{}'), ?), participants = ?, updated_at = ? WHERE id = ? AND source = 'exo-voice-note'",
-      [JSON.stringify(mirror), JSON.stringify((input.participants ?? []).map((name) => ({ name, email: null }))),
+      [JSON.stringify({ ...mirror, ...names }), JSON.stringify((input.participants ?? []).map((name) => ({ name, email: null }))),
         new Date().toISOString(), live.id], checkpoint);
+    if (live && names) await execute(tcw, DROP_EMPTY_SPEAKER_NAMES, [live.id], checkpoint);
     if (live) {
       const [startedRow] = await query(tcw, "SELECT started_at FROM connector_meeting WHERE id = ?", [live.id], checkpoint);
       const title = autoMeetingTitle({ startedAt: startedRow?.[0], participantNames: input.participants });
@@ -602,6 +608,18 @@ export async function verifyVoiceNoteTranscript(tcw: TinyCloudWeb, sourceId: str
 }
 
 /**
+ * Run with a row id: a `speaker_names` or `speaker_suggestions` map that a merge patch left empty is removed, so a
+ * note without names has no such key.
+ */
+const DROP_EMPTY_SPEAKER_NAMES = `UPDATE connector_meeting SET metadata = CASE
+      WHEN json_extract(metadata, '$.speaker_names') = '{}' AND json_extract(metadata, '$.speaker_suggestions') = '{}'
+        THEN json_remove(metadata, '$.speaker_names', '$.speaker_suggestions')
+      WHEN json_extract(metadata, '$.speaker_names') = '{}' THEN json_remove(metadata, '$.speaker_names')
+      ELSE json_remove(metadata, '$.speaker_suggestions') END
+    WHERE id = ? AND json_valid(metadata)
+      AND (json_extract(metadata, '$.speaker_names') = '{}' OR json_extract(metadata, '$.speaker_suggestions') = '{}')`;
+
+/**
  * One speaker's name on a note (TC-2189): `metadata.speaker_names[original]`, on any connector_meeting row (voice note,
  * upload, meeting, combined). Only that one label changes, applied by the database to the metadata as it is when the
  * write runs, so a name another writer saved meanwhile stays. A null `shown` clears the label, and the map when it
@@ -618,14 +636,7 @@ export async function patchRowSpeakerName(tcw: TinyCloudWeb, rowId: string, orig
     [JSON.stringify({ ...names, speaker_suggestions: { [original]: null } }), JSON.stringify(names), new Date().toISOString(), rowId],
     checkpoint);
   if (changes === 0) throw new Error("The note's row is missing");
-  await execute(tcw, `UPDATE connector_meeting SET metadata = CASE
-      WHEN json_extract(metadata, '$.speaker_names') = '{}' AND json_extract(metadata, '$.speaker_suggestions') = '{}'
-        THEN json_remove(metadata, '$.speaker_names', '$.speaker_suggestions')
-      WHEN json_extract(metadata, '$.speaker_names') = '{}' THEN json_remove(metadata, '$.speaker_names')
-      ELSE json_remove(metadata, '$.speaker_suggestions') END
-    WHERE id = ? AND json_valid(metadata)
-      AND (json_extract(metadata, '$.speaker_names') = '{}' OR json_extract(metadata, '$.speaker_suggestions') = '{}')`,
-  [rowId], checkpoint);
+  await execute(tcw, DROP_EMPTY_SPEAKER_NAMES, [rowId], checkpoint);
 }
 
 // Names in the call and who spoke when read and write their rows in callNamesRows.ts, which loads with their save steps
