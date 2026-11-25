@@ -1,5 +1,21 @@
 # @tinychat/backend
 
+## 0.14.1
+
+### Patch Changes
+
+- 65770c7: Chat request records have their own log shipper cap, so polling routes cannot drop them.
+
+  Details: TC-4310
+
+- 40c7751: When a chat message is refused before any model call because the account has no credits left, the answer says "You're out of credits on the {plan} plan, so this message got no reply and nothing was charged.", using the account's plan name.
+
+  Details: TC-4312
+
+- 70b0be0: The backend accepts the development frontend origin https://lightning-node-1.gecko-snares.ts.net:5240 for testing backend changes. The sign-in domain is read from the origin's host, port included, so sessions signed for a host:port domain are accepted.
+
+  Details: TC-4272
+
 ## 0.14.1-beta.1
 
 ### Patch Changes
