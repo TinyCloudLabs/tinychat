@@ -20,6 +20,7 @@
 //   POST   /bots/<botId>/actions/spend {"id", "binding"}  204 once for an approval the gateway issued with that binding, else 409
 //   POST   /bots/<botId>/actions/send {"id", "binding", "body"}  {"outcome", "reportId"?, "code"?}: posts an approved feedback
 //                         report once (feedback.ts), after checking and spending its approval
+//   POST|DELETE /bots/<botId>/turn              meter one supervisor turn, settling its model calls before logging
 //   PUT|DELETE /bots/<botId>/secrets/<id>, POST /bots/<botId>/secrets/drain   secret requests (secret-routes.ts)
 
 import { chmodSync, mkdirSync, readdirSync, rmSync } from "node:fs";
@@ -159,6 +160,14 @@ const control = Bun.serve({
       catch { return new Response(null, { status: 503 }); }
     }
     if (pathname === ADMISSION_CONTROL_PATH) return admit(req);
+    const turnMatch = /^\/bots\/([0-9a-f]{64})\/turn$/.exec(pathname);
+    if (turnMatch) {
+      const botId = turnMatch[1]!;
+      if (req.method === "POST") gateway.beginTurn(botId);
+      else if (req.method === "DELETE") void gateway.endTurn(botId);
+      else return new Response(null, { status: 405 });
+      return new Response(null, { status: 204 });
+    }
     const receiptMatch = /^\/bots\/([0-9a-f]{64})\/receipts$/.exec(pathname);
     if (req.method === "GET" && receiptMatch) return Response.json(aci?.take(receiptMatch[1]!) ?? []);
     const readsMatch = /^\/bots\/([0-9a-f]{64})\/reads$/.exec(pathname);

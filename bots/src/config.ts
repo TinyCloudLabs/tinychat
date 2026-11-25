@@ -162,6 +162,8 @@ export interface GatewayConfig {
   /** All of one owner's bots together, per UTC day. Unset: the same as one bot's limit. */
   ownerDailyTokens?: number;
   globalDailyTokens: number;
+  /** Settled tokens per turn above this value get an operator log; zero disables it. */
+  turnSoftLimit?: number;
   maxBodyBytes: number;
   maxResponseBytes: number;
   connectTimeoutMs: number;
@@ -287,6 +289,7 @@ export function gatewayConfig(env: Env): GatewayConfig & { backendOrigin: string
     botDailyTokens,
     ownerDailyTokens: int(env, "BOTS_OWNER_DAILY_TOKENS", botDailyTokens),
     globalDailyTokens: int(env, "BOTS_GLOBAL_DAILY_TOKENS", 20_000_000),
+    turnSoftLimit: int(env, "BOTS_TURN_SOFT_LIMIT", 0, 0),
     maxBodyBytes: int(env, "BOTS_MAX_BODY_BYTES", 4 * 1024 * 1024, 1024),
     maxResponseBytes: int(env, "BOTS_MAX_RESPONSE_BYTES", 8 * 1024 * 1024, 1024),
     connectTimeoutMs: int(env, "BOTS_UPSTREAM_CONNECT_TIMEOUT_MS", 30_000, 100),

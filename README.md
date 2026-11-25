@@ -370,10 +370,10 @@ build code; the job graph is in
 in the `desktop-release` GitHub environment, which must allow deployments from
 **`main` only** (set that up and check it before adding any secret:
 [desktop/README.md](desktop/README.md#before-adding-any-signing-secret-restrict-desktop-release-to-main))
-and has a required reviewer (Sam; self-review allowed), so only `Desktop
-release (TinyCloud One)` dispatched on main reaches it, and each signed release
-waits for approval twice: the preflight right after the plan, the sign job once
-the app is built. Approve from the run page or with
+and has no required reviewer, so only `Desktop
+release (TinyCloud One)` dispatched on main reaches it, and a signed release
+runs unattended: the preflight right after the plan, the sign job once
+the app is built. If a reviewer is added, approve from the run page or with
 `gh api -X POST repos/TinyCloudLabs/tinychat/actions/runs/<run id>/pending_deployments -F 'environment_ids[]=<id>' -f state=approved -f comment=...`. Only two jobs use it, and both
 check out nothing but `scripts/release` at the workflow commit: a preflight
 re-checks provenance (`github.workflow_ref` is main's `desktop-release.yml`, the

@@ -191,6 +191,7 @@ function eventStream(run: (sink: TurnSink) => Promise<void>): Response {
             const { type, id, verb, count, at } = record;
             send("activity", { type, id, verb, count, at, ...(verb === "messaged_bot" ? { targetKey: record.targetKey } : {}) });
           },
+          step: ({ step, host }) => send("step", host ? { step, host } : { step }),
           done: messageId => send("done", { messageId }),
           error: (code: ErrorCode) => send("error", { code, message: ERROR_MESSAGES[code] }),
         };

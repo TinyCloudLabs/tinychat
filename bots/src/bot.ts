@@ -13,9 +13,10 @@ import { BOT_ID, botIdFor, MAIN_BOT_NAME, MAIN_KEY } from "./owner";
 import { type DeleteSkip, lastUsed, markUsed, removeWorkingState } from "./retention";
 import { type OwnerDate, ownerDateLine } from "./owner-date";
 import { type Frame, type HostToolHandler, type HostToolReply, RpcError } from "./rpc";
+import { type TurnStep, TurnSteps } from "./turn-step";
 import { addressesIn } from "./web";
 import { readWebPolicy, type WebPolicy, writeWebPolicy } from "./web-policy";
-import { type AnswerInput, type AnswerResult, type AppOrigin, AskStore, type AskReply, type AskRequest, cancelAsks, readAsksEnabled, type SecretLine, sweepAsks as sweepAskStores, writeAsksEnabled } from "./asks";
+import { type AnswerInput, type AnswerResult, type AppOrigin, AskStore, type AskReply, type AskRequest, asksFile, cancelAsks, readAsksEnabled, type SecretLine, sweepAsks as sweepAskStores, writeAsksEnabled } from "./asks";
 import { type ReadArea, type ReadsSetting, readReads, writeReads } from "./reads";
 import {
   type ActionKind, type ActionOutcome, type ActionPayload, type ActionReply, type ActionRequest, type ActionResult, ActionStore, type ApproveResult, actionBinding,
@@ -42,6 +43,8 @@ export interface TurnSink {
   status(state: "starting" | "working"): void;
   delta(text: string): void;
   activity?(record: ActivityRecord): void;
+  /** What the bot is doing (turn-step.ts): a fixed id, and a page read's host. Not kept in the history. */
+  step?(step: TurnStep): void;
   done(messageId: string): void;
   error(code: ErrorCode): void;
 }
@@ -93,6 +96,10 @@ export interface SandboxLauncher {
   leftover(layout: BotLayout, sandboxOnly?: boolean): boolean;
   /** `botName` is the name the owner sees, for the bot's prompt only; absent, the prompt uses MAIN_BOT_NAME. */
   launch(layout: BotLayout, botName?: string): Promise<Sandbox>;
+  /** Opens a gateway meter before the bot's model calls. Telemetry failures do not affect the turn. */
+  beginTurn?(layout: BotLayout): Promise<void>;
+  /** Closes the meter after the prompt. The gateway logs once in-flight model calls settle; the supervisor does not wait. */
+  endTurn?(layout: BotLayout): Promise<void>;
   /** Retries cleanup for a stopped bot, including after the supervisor has restarted. */
   cleanupEgress?(layout: BotLayout): Promise<boolean>;
   /** Every mount point the supervisor sees (decoded from /proc/self/mountinfo). */
@@ -477,6 +484,7 @@ export class Bot {
       status: state => output.status(state),
       delta: text => { turnJournal?.delta(text); output.delta(text); },
       activity: record => { turnJournal?.append(record); output.activity?.(record); },
+      step: step => output.step?.(step),
       done: messageId => { turnJournal?.finishDraft({ type: "done", messageId }); output.done(messageId); },
       error: code => { turnJournal?.finishDraft({ type: "error", code }); output.error(code); },
     };
@@ -485,6 +493,7 @@ export class Bot {
     let state: "starting" | "working" = this.#sandbox ? "working" : "starting";
     sink.status(state);
     const heartbeat = setInterval(() => sink.status(state), HEARTBEAT_MS);
+    let metered = false;
     try {
       let sandbox: Sandbox;
       try {
@@ -512,6 +521,8 @@ export class Bot {
         state = "working";
         sink.status(state);
       }
+      metered = true;
+      await this.#launcher.beginTurn?.(this.layout).catch(() => {});
       if (!messenger || !sandbox.onHostToolCall) {
         await this.#turn(sandbox, promptText(text, from, date), sink);
         return;
@@ -538,6 +549,7 @@ export class Bot {
         try { turnJournal.append({ type: "provenance", receipts: await this.#launcher.provenance?.(this.layout) ?? [] }); }
         catch { turnJournal.append({ type: "provenance", verified: false }); }
       }
+      if (metered) await this.#launcher.endTurn?.(this.layout).catch(() => {});
       this.#busy = false;
       this.#armIdle();
     }
@@ -615,7 +627,7 @@ export class Bot {
     return saved.then(() => this.webSettings());
   }
 
-  /** Whether the owner lets Main ask questions. Off until turned on. */
+  /** Whether the owner lets Main ask questions. On until the owner turns it off. */
   async asksSettings(): Promise<AsksSettings> {
     await this.#deleting;
     return { enabled: readAsksEnabled(this.layout) };
@@ -822,7 +834,8 @@ export class Bot {
    * The one way a bot's working state is deleted: stops its sandbox, then removes its data directory (state snapshot
    * and last-use marker) and its run directory. A failed teardown, a path that is not the bot's own directory, a
    * mount at or under either directory keeps everything and logs
-   * state_delete_skipped instead. A request that arrives meanwhile waits for this, then starts a fresh bot; with
+   * state_delete_skipped instead. An owner's off for questions and requests is written back once the directory is gone,
+   * since a missing setting reads as on. A request that arrives meanwhile waits for this, then starts a fresh bot; with
    * `retire` (the backend is deleting the bot) it is refused instead, and nothing is written for the bot again.
    * Resolves to why the state was kept, or to undefined once it is gone.
    */
@@ -831,6 +844,7 @@ export class Bot {
     if (retire) this.#retiring = true;
     this.#deleting ??= (async () => {
       let cause: DeleteSkip | undefined;
+      let asksOff = false;
       try {
         const stopFailure = await this.#stopSandbox();
         if (this.#launcher.leftover(this.layout)) cause = "teardown_failed";
@@ -847,14 +861,20 @@ export class Bot {
             // state of a bot that never had a grant, as before the journal stopped being kept for it. Only the owner's own
             // New chat or deletion does.
             if (this.#options.history && !this.#hasGrant() && reason !== "new_chat" && reason !== "deleted") cause = "ungranted_retained";
-            else cause = this.#options.history && this.#hasGrant() && (!covered || !this.#history?.covered) && !this.#history?.expiryDue()
-              ? "archive_pending" : await removeWorkingState(this.layout, this.#launcher);
+            else {
+              // Read before the directory goes: a missing setting reads as on, so an owner's off is written back below.
+              asksOff = !readAsksEnabled(this.layout);
+              cause = this.#options.history && this.#hasGrant() && (!covered || !this.#history?.covered) && !this.#history?.expiryDue()
+                ? "archive_pending" : await removeWorkingState(this.layout, this.#launcher);
+            }
           }
         }
         if (!cause && this.#retiring && this.layout.botKey !== undefined) removeHistoryRevocation(this.layout);
       } catch {
         cause = "error";
       }
+      // Also after a deletion that stopped part-way: the setting file may be gone while the rest is left.
+      if (asksOff && !this.#retiring) this.#keepAsksOff();
       if (cause) log("state_delete_skipped", this.layout.botId, { reason, cause });
       else {
         this.#history = undefined;
@@ -869,17 +889,26 @@ export class Bot {
     return this.#deleting;
   }
 
+  /** Writes the owner's off for questions and requests back when the setting file is gone. Logged when it cannot be. */
+  #keepAsksOff(): void {
+    try {
+      if (!lstatSync(asksFile(this.layout), { throwIfNoEntry: false })) writeAsksEnabled(this.layout, false);
+    } catch {
+      log("asks_setting_keep_failed", this.layout.botId);
+    }
+  }
+
   /**
    * The owner's "Start a new chat": deletes the working state (deleteWorkingState), so the conversation, its pending
-   * questions and the mark of owner data it read are gone, then saves the owner's settings again: web access, the
-   * questions setting and the read areas. Only their on/off fields come back; nothing about the old conversation does.
+   * questions and the mark of owner data it read are gone, then writes the owner's settings back: web access and the
+   * read areas (deleteWorkingState keeps the questions setting). Only their on/off fields come back; nothing about the
+   * old conversation does.
    * Refused while a request is in flight or a deletion is under way. The settings are saved again by a callback on the
    * deletion itself, registered before any request can wait on it, so a fresh sandbox always starts with them.
    */
   newChat(closing: () => boolean): Promise<DeleteSkip | "busy" | undefined> {
     if (this.inUse || this.#deleting) return Promise.resolve("busy");
     const web = readWebPolicy(this.layout);
-    const asks = readAsksEnabled(this.layout);
     const reads = readReads(this.layout);
     return this.deleteWorkingState("new_chat", closing).then(cause => {
       if (cause) return cause;
@@ -888,7 +917,6 @@ export class Bot {
           mkdirSync(this.layout.dataDir, { recursive: true, mode: 0o700 });
           writeWebPolicy(this.layout, web);
         }
-        if (asks) writeAsksEnabled(this.layout, true);
         if (reads.areas.length > 0) writeReads(this.layout, reads);
       } catch {
         // A setting that is not saved reads as off.
@@ -987,6 +1015,7 @@ export class Bot {
     const id = sandbox.nextId();
     const { promise, resolve, reject } = Promise.withResolvers<void>();
     const activity = new TurnActivity();
+    const steps = new TurnSteps(step => sink.step?.(step));
     const reaching = new Set<string>();
     // One recipient per turn: the first bot `message_bot` sends to. Sending to more takes the owner's tap (propose_action).
     let recipient: string | undefined;
@@ -1059,13 +1088,16 @@ export class Bot {
         if (separate) sink.delta("\n\n");
         separate = false;
         wroteText = true;
+        steps.wrote();
         sink.delta(event.delta);
       } else if (frame.type === "message_end") {
         if (!isRecord(frame.message) || frame.message.role !== "assistant") return;
         firstReplyAt ??= timestamp(frame.message.timestamp);
         separate = wroteText;
+        steps.messageEnded();
       } else if (frame.type === "tool_execution_start" || frame.type === "tool_execution_end") {
         activity.frame(frame);
+        steps.tool(frame);
       } else if (frame.type === "prompt_result" && frame.id === id) {
         this.#settled = frame.sessionSettled === true;
         if (frame.status === "completed") finish({ messageId: `b-${firstReplyAt ?? Date.now()}` });

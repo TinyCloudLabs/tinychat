@@ -7,9 +7,11 @@ import { ResponsiveSheet, ResponsiveSheetBody } from "@/components/ui/responsive
 import { MAX_MESSAGE_LENGTH, SendButton, sendOnEnter, useDraft } from "./AskBox";
 import { focusSdkPrompt, useSdkPromptOpen } from "./useSdkPromptOpen";
 import { BotAvatar, MAIN_BOT } from "./BotAvatar";
+import { BotWorkingMark, BotWorkingStatus, type WorkingBot } from "./BotWorking";
 import { acknowledgeHistoryNotice, historyNoticeDeadline, type HistoryNotice } from "./historyNotice";
 import { BOTS_STRINGS, botsErrorText, HISTORY_EXPIRY_NOTICE, HISTORY_RECONNECT_LABEL, WEB_ACCESS_STRINGS } from "./botsStrings";
 import { isWorking, type ChatLine, type MainChatState } from "./useMainChat";
+import { workingStepText } from "./workingStep";
 import { WebAccess, type WebAccessApi } from "./WebAccess";
 import { FeedChatsAccess, MeetingsAccess, TelegramAccess, type MeetingsAccessApi } from "./MeetingsAccess";
 import { NewChat, type NewChatApi } from "./NewChat";
@@ -88,6 +90,7 @@ export interface MainChatProps {
   onSend: (text: string) => void;
   onRetry: () => void;
   onRetryHistory: () => void;
+  onShowHistory?: () => void;
   notice?: HistoryNotice | null;
   onReconnect?: () => void;
   /** When given, the sheet offers Main's web access setting. */
@@ -102,6 +105,8 @@ export interface MainChatProps {
   newChat?: NewChatApi;
   /** When given, earlier history is held back and the sheet offers to move it (TC-4225). */
   earlierHistory?: EarlierHistoryMove;
+  /** The main bot's icon as its owner picked it. Absent: the first icon. */
+  face?: WorkingBot;
 }
 
 /** Services that answered 404 for web access, so reopening Main's chat does not show the button again. */
@@ -128,10 +133,12 @@ export function WebAccessToggle({ api }: { api: WebAccessApi }) {
 
 const StandingReadsCard = lazy(() => import("./StandingReadsCard"));
 
-export function MainChat({ open, onOpenChange, state, onSend, onRetry, onRetryHistory, notice, onReconnect, webAccess, meetings, courier, asks, newChat, earlierHistory }: MainChatProps) {
+export function MainChat({ open, onOpenChange, state, onSend, onRetry, onRetryHistory, onShowHistory, notice, onReconnect, webAccess, meetings, courier, asks, newChat, earlierHistory, face = MAIN_BOT }: MainChatProps) {
   const [readSettings, setReadSettings] = useState<ReadSettings | null>(null);
   const { lines, history, turn } = state;
   const working = isWorking(turn);
+  // A question, a proposal or a secret request the owner has not decided: the bot waits on them.
+  const awaitingOwner = !!asks && (asks.pending.some((request) => request.state === "pending") || asks.secrets.some((secret) => secret.state === "pending"));
   const sdkPromptOpen = useSdkPromptOpen();
   // Modal content remounts when yielding to the SDK; keep the draft above that boundary.
   const composer = useDraft(onSend, working);
@@ -165,7 +172,7 @@ export function MainChat({ open, onOpenChange, state, onSend, onRetry, onRetryHi
       contentProps={{ "data-bots-main-chat": "" }}
       title={
         <span className="flex items-center gap-3">
-          <BotAvatar bot={MAIN_BOT} working={working} size={32} decorative />
+          {working ? <BotWorkingMark bot={face} size={32} /> : <BotAvatar bot={face} size={32} decorative />}
           {MAIN_BOT.name}
         </span>
       }
@@ -183,9 +190,13 @@ export function MainChat({ open, onOpenChange, state, onSend, onRetry, onRetryHi
           {open && asks ? <AsksToggle asks={asks} /> : null}
           {open && newChat ? <NewChat api={newChat} /> : null}
           {open && notice && onReconnect ? <ExpiryNotice key={`${notice.id}:${notice.deliveredAt ?? notice.renderAttemptAt ?? "initial"}`} notice={notice} onReconnect={onReconnect} /> : null}
+          {onShowHistory && (history === "idle" || history === "declined") ? <div className="flex flex-col items-start gap-3 text-callout text-muted-foreground">
+            {history === "declined" ? <p>Older messages stay hidden until you approve access.</p> : null}
+            <Button type="button" variant="outline" size="sm" onClick={onShowHistory}>Show older messages</Button>
+          </div> : null}
           {history === "loading" ? <p role="status" className="text-callout text-muted-foreground">{BOTS_STRINGS.historyLoading}</p> : null}
-          {history === "failed" && !working ? <Failure text={BOTS_STRINGS.historyFailed} onRetry={onRetryHistory} /> : null}
-          {history === "declined" && !working ? <Failure text={botsErrorText("history_declined", MAIN_BOT.name)} onRetry={onRetryHistory} declined /> : null}
+          {history === "failed" && !working ? <Failure text={BOTS_STRINGS.historyFailed} onRetry={onShowHistory ?? onRetryHistory} /> : null}
+          {history === "declined" && !onShowHistory && !working ? <Failure text={botsErrorText("history_declined", MAIN_BOT.name)} onRetry={onRetryHistory} declined /> : null}
           {open && earlierHistory ? <LazyEarlierHistoryAction move={earlierHistory} /> : null}
           {lines.map((line) => (
             line.unreadableHistory ? <p key={line.id} className="text-callout text-muted-foreground">{line.text}</p>
@@ -195,7 +206,7 @@ export function MainChat({ open, onOpenChange, state, onSend, onRetry, onRetryHi
             <>
               {turn.appReply ? <AppLine decision={turn.appReply.decision} names={turn.appReply.names} live secret={turn.appReply.secret} /> : <Line role="user" text={turn.text} />}
               {turn.reply ? <Line role="bot" text={turn.reply} /> : null}
-              {working && !turn.reply ? <BotAvatar bot={MAIN_BOT} working size={28} /> : null}
+              {working ? <BotWorkingStatus bot={face} step={workingStepText(turn.step, awaitingOwner)} /> : null}
               {turn.state === "error" ? <Failure text={botsErrorText(turn.error ?? "failed", MAIN_BOT.name)} onRetry={onRetry} declined={turn.error === "history_declined"} /> : null}
             </>
           ) : null}

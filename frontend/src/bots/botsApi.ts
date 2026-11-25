@@ -29,11 +29,18 @@ export interface BotActivity {
   at: string;
 }
 
+/** What a bot is doing, as the service names it: one of a fixed set, never a tool's arguments or what it returned. */
+export const BOT_STEPS = [
+  "thinking", "search", "read_page", "commands", "files", "request", "secret", "meetings", "feed", "chats", "telegram", "bot_message", "tool",
+] as const;
+export type BotStep = (typeof BOT_STEPS)[number];
+
 /** One event of Main's reply stream. Error codes are the service's; anything else arrives as `failed`. */
 export type MainEvent =
   | { type: "status"; state: "starting" | "working" }
   | { type: "delta"; text: string }
   | { type: "activity"; activity: BotActivity }
+  | { type: "step"; step: BotStep; host?: string }
   | { type: "done"; messageId: string }
   | { type: "error"; code: BotsErrorCode };
 
@@ -231,7 +238,7 @@ export function toActivity(value: unknown): BotActivity | null {
 }
 
 function toEvent(name: string, data: string): MainEvent | null {
-  if (name !== "status" && name !== "delta" && name !== "activity" && name !== "done" && name !== "error") return null;
+  if (name !== "status" && name !== "delta" && name !== "activity" && name !== "step" && name !== "done" && name !== "error") return null;
   let parsed: unknown;
   try {
     parsed = JSON.parse(data);
@@ -243,6 +250,13 @@ function toEvent(name: string, data: string): MainEvent | null {
   if (name === "activity") {
     const activity = toActivity(value);
     return activity ? { type: "activity", activity } : null;
+  }
+  // A step is a note beside the reply too: one this app does not know is left out. A host comes only with a page read.
+  if (name === "step") {
+    const step = BOT_STEPS.find((id) => id === value.step);
+    if (!step) return null;
+    const host = step === "read_page" && typeof value.host === "string" && SITE_NAME.test(value.host) ? value.host : undefined;
+    return { type: "step", step, ...(host ? { host } : {}) };
   }
   if (name === "status" && (value.state === "starting" || value.state === "working")) return { type: "status", state: value.state };
   if (name === "delta" && typeof value.text === "string") return { type: "delta", text: value.text };

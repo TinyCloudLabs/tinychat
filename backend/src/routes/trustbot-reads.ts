@@ -23,6 +23,7 @@ import { isStandingArea } from "../trustbot-reads/standing-types.js";
 import { delegatedMeetingPort } from "../trustbot-reads/meeting-port.js";
 import { delegatedTelegramPort, isTelegramTool, listTelegramChats, runTelegramTool, TelegramReadError } from "../trustbot-reads/telegram.js";
 import { botOwnerDid, botsServiceHeaders, type BotsConfig } from "./bots.js";
+import { logSafeError } from "../log-safe-error.js";
 
 export { TRUSTBOT_MEETING_TOOLS };
 export const TRUSTBOT_READS_INTERNAL_PREFIX = "/api/internal/bots/main/reads";
@@ -102,14 +103,16 @@ export function createTrustBotReadsRouter(
       // The service's copy of the setting goes with the bot's working state; it is given again whenever the owner looks.
       if (READ_AREA_NAMES.some(area => status.areas[area] === "on")) void pushToService(config, req.user!.address, status);
       res.json(readView(status));
-    } catch {
+    } catch (error) {
+      console.warn(JSON.stringify({ event: "trustbot_reads_unavailable", route: "status", ...logSafeError(error) }));
       res.status(503).json({ error: "reads_unavailable" });
     }
   });
   router.get("/renewal", async (req, res) => {
     try {
       res.json({ serviceDid: grants.serviceDid, ...await grants.renewalStatus(req.user!.address), ...await readStatus(grants, telegramGrants, req.user!.address) });
-    } catch {
+    } catch (error) {
+      console.warn(JSON.stringify({ event: "trustbot_reads_unavailable", route: "renewal", ...logSafeError(error) }));
       res.status(503).json({ error: "reads_unavailable" });
     }
   });
