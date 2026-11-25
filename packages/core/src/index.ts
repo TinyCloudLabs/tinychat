@@ -199,10 +199,13 @@ export interface ApiError {
 export type StoreType = "kv" | "sql" | "duckdb";
 
 export {
+  BACKGROUND_CHAT_MODELS,
   DEFAULT_CHAT_MODEL,
   OFFERED_CHAT_MODELS,
+  isBackgroundChatModel,
   isOfferedChatModel,
   offeredChatModelContextTokens,
+  type BackgroundModelId,
   type OfferedModelId,
 } from "./chatModels.js";
 
