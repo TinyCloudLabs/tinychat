@@ -19,7 +19,8 @@ afterEach(async () => {
 });
 
 let search = "";
-function Probe() { search = useLocation().search; return null; }
+let routerState: unknown = null;
+function Probe() { const location = useLocation(); search = location.search; routerState = location.state; return null; }
 
 async function mount(visible: Parameters<typeof FinishSetupBanner>[0]["visible"], client = fakeSdk().client, dismissed = memoryDismissedStore()) {
   restore = installDom();
@@ -74,7 +75,7 @@ test("the button records the tap for this account, goes to the finish-setup addr
   const replaced: string[] = [];
   const outcome = await runFinishSetupIntent(sdk.client, {
     location: { origin: "https://tinycloud.one", pathname: "/chat/feed", search, hash: "" },
-    history: { state: null, replaceState: (_state, _title, url) => { replaced.push(String(url)); } },
+    history: { state: { usr: routerState }, replaceState: (_state, _title, url) => { replaced.push(String(url)); } },
   });
   expect(outcome).toBe("published");
   expect(replaced).toEqual(["/chat/feed"]);

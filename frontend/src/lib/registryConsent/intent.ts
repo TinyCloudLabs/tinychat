@@ -26,12 +26,38 @@ export function withoutFinishSetupIntent(location: Pick<Location, "pathname" | "
   return location.pathname + (query ? `?${query}` : "") + location.hash;
 }
 
-export type FinishSetupOutcome = RegistryPublishOutcome | "no-intent";
+/** "notice": the link was opened without the card (a pasted or shared link), so the SDK was not asked: show the notice. */
+export type FinishSetupOutcome = RegistryPublishOutcome | "no-intent" | "notice";
+
+/**
+ * The router state the Home card navigates with: the owner just read the card's words. It lives in the history entry
+ * (react-router keeps it at `history.state.usr`), never in the address, so a pasted or shared link cannot carry it.
+ */
+export const FINISH_SETUP_CARD_STATE = { finishSetupFromCard: true } as const;
+
+/** Whether a history entry's state (`window.history.state`) is the card's marker. */
+export function arrivedFromFinishSetupCard(historyState: unknown): boolean {
+  if (typeof historyState !== "object" || historyState === null || !("usr" in historyState)) return false;
+  const usr = historyState.usr;
+  return typeof usr === "object" && usr !== null && "finishSetupFromCard" in usr && usr.finishSetupFromCard === true;
+}
+
+/** Ask the SDK to publish; on "needs-one" the owner is sent to TinyCloud One to finish there (setupLink.ts). */
+export async function publishRegistryRecord(
+  tcw: RegistryPublishClient,
+  currentOrigin: string,
+  openSetupLink: (currentOrigin: string) => Promise<void> = openRegistrySetupLink,
+): Promise<RegistryPublishOutcome> {
+  const outcome = await ensureRegistryRecord(tcw);
+  if (outcome === "needs-one") await openSetupLink(currentOrigin);
+  return outcome;
+}
 
 /**
  * A signed-in page opened with `?finish-setup=registry`: remove the query FIRST (so a reload or a shared link cannot
- * reopen the signature prompt), then ask the SDK to publish. On "needs-one" the owner is sent to TinyCloud One to finish
- * there (setupLink.ts). The caller passes only a signed-in client.
+ * reopen the signature prompt or the notice). When the owner just tapped the card the SDK is asked at once. Otherwise the
+ * SDK is not asked and "notice" comes back, so the page can show the public-record notice first. The caller passes only
+ * a signed-in client.
  */
 export async function runFinishSetupIntent(
   tcw: RegistryPublishClient,
@@ -40,7 +66,6 @@ export async function runFinishSetupIntent(
 ): Promise<FinishSetupOutcome> {
   if (!hasFinishSetupRegistryIntent(env.location.search)) return "no-intent";
   env.history.replaceState(env.history.state, "", withoutFinishSetupIntent(env.location));
-  const outcome = await ensureRegistryRecord(tcw);
-  if (outcome === "needs-one") await openSetupLink(env.location.origin);
-  return outcome;
+  if (!arrivedFromFinishSetupCard(env.history.state)) return "notice";
+  return publishRegistryRecord(tcw, env.location.origin, openSetupLink);
 }

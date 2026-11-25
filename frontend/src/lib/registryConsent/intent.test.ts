@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { fakeSdk } from "./testClient.fixture";
 import {
+  FINISH_SETUP_CARD_STATE,
   hasFinishSetupRegistryIntent,
   runFinishSetupIntent,
   withoutFinishSetupIntent,
@@ -12,7 +13,7 @@ function envAt(url: string, log: string[] = []): RegistryPublishEnv & { urls: st
   const urls: string[] = [];
   return {
     location: { origin: u.origin, pathname: u.pathname, search: u.search, hash: u.hash },
-    history: { state: { key: "s" }, replaceState: (_state, _title, next) => { urls.push(String(next)); log.push("replaceState"); } },
+    history: { state: { key: "s", usr: FINISH_SETUP_CARD_STATE }, replaceState: (_state, _title, next) => { urls.push(String(next)); log.push("replaceState"); } },
     urls,
   };
 }

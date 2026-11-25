@@ -24,7 +24,7 @@ describe("the registry publish config", () => {
   test("the banner words are Monica's", () => {
     expect(FINISH_SETUP_BANNER_COPY).toEqual({
       lead: "Let your apps find your space",
-      support: "Apps outside TinyCloud One can't find your space until you publish where it lives. This is a public record that links your account to the server that holds your space.",
+      support: "Apps outside TinyCloud One can't find your space until you publish where it lives. This is a public record: anyone can see your account address, the names of your spaces and which servers hold them. It doesn't include anything stored in your spaces.",
       action: "Publish",
     });
   });

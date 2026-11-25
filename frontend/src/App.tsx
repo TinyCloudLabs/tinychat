@@ -179,7 +179,7 @@ import { isSignInCancelled, UserFacingError } from "./lib/authErrors";
 import { signOutOpenKeySession } from "./lib/openkeySignOut";
 import { registryPublishConfig } from "./lib/registryConsent/config";
 import { registryDismissedStore } from "./lib/registryConsent/dismissed";
-import { runFinishSetupIntent } from "./lib/registryConsent/intent";
+import { FinishSetupLinkHost } from "./shell/FinishSetupNotice";
 import { clearSessionAfterHandoff, registerSessionSignedOutHook } from "./lib/sessionSignedOut";
 import {
   describeAuthFailure, isNativeOpenKeySession, isNativeOpenKeySignIn, isNativeStorageError, logNativeOpenKeyError,
@@ -1531,12 +1531,8 @@ export function App() {
 
   const navigate = useNavigate();
   const location = useLocation();
-  // A signed-in page opened (or navigated, by the Home card) to ?finish-setup=registry removes the query, then asks the
-  // SDK to publish. TinyChat signs in with autoBootstrapAccount off, so nothing else asks.
-  useEffect(() => {
-    if (state !== "ready" || !tcw) return;
-    void runFinishSetupIntent(tcw, { location: window.location, history: window.history });
-  }, [state, tcw, location.search]);
+  // A signed-in page opened (or navigated, by the Home card) to ?finish-setup=registry is handled by FinishSetupLinkHost,
+  // mounted below. TinyChat signs in with autoBootstrapAccount off, so nothing else asks.
   // The recorder's Open: the Library, then the note just saved.
   const openSavedNote = useOpenSavedNote(tcw);
   const showRecordingNote = useShowRecordingNote();
@@ -1877,6 +1873,7 @@ export function App() {
         />
       )}
       <StorageFullDialog open={storageDialogOpen} onOpenChange={setStorageDialogOpen} paywallEnabled={paywallEnabled} />
+      <FinishSetupLinkHost tcw={tcw} ready={state === "ready"} searchKey={location.search} />
       <PendingVoiceNoteSignOutDialog
         open={pendingVoiceNoteSignOut !== null}
         count={pendingVoiceNoteSignOut?.count ?? 0}
