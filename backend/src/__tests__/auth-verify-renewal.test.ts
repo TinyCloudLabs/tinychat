@@ -11,6 +11,7 @@ import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import express from "express";
 import { createNonceStore, verifySessionToken, type NonceStore } from "@tinyboilerplate/server";
+import { verifySession } from "@tinyboilerplate/server";
 import { NodeWasmBindings } from "@tinycloud/node-sdk";
 import { parseCompactUcanAuthorization, signCompactUcanAuthorization, signCompactUcanRootAuthorization } from "@tinycloud/sdk-core";
 import { generatePrivateKey, privateKeyToAccount, type PrivateKeyAccount } from "viem/accounts";
@@ -698,5 +699,43 @@ describe("renewalVerifyConfigFromEnv", () => {
     expect(() => renewalVerifyConfigFromEnv({ ...env, NODE_ENV: "production" }, "http://127.0.0.1:8000")).toThrow("https origin");
     expect(() => renewalVerifyConfigFromEnv({ ...env, NODE_ENV: "development" }, "http://node.example")).toThrow("https origin");
     expect(() => renewalVerifyConfigFromEnv({ ...env, RENEWAL_BACKEND_ORIGIN: "https://api.tinycloud.chat/api" }, "https://node.tinycloud.xyz")).toThrow("https origin");
+  });
+});
+
+describe("the renewed end in the verify-renewal bearer", () => {
+  test("binds the node-verified renewed end to the grant's session key, and a revoked lease gets none at the next check", async () => {
+    const api = backend();
+    try {
+      const newEnd = nowSeconds() + 3 * 24 * HOUR;
+      nodeRenews(grant, lease, newEnd);
+      const renewed = await api.post(await requestBody(grant, lease, api.nonceStore));
+      expect(renewed.status).toBe(200);
+      expect(await verifySession(renewed.body.token as string, SESSION_KEY)).toEqual({
+        address: grant.address.toLowerCase(),
+        renewal: { sessionDid: grant.sessionDid.split("#")[0], end: newEnd },
+      });
+
+      node.state.active = false;
+      node.state.revoked = true;
+      expect(await api.post(await requestBody(grant, lease, api.nonceStore))).toEqual({ status: 401, body: { error: "renewal_inactive" } });
+    } finally {
+      api.close();
+    }
+  });
+
+  test("never ends after the owner-signed lease: a renewal past it gets no bearer", async () => {
+    const api = backend();
+    try {
+      const short = await signLease(grant, { expiresAt: nowSeconds() + 2 * HOUR });
+      nodeRenews(grant, short, short.expiresAt);
+      const renewed = await api.post(await requestBody(grant, short, api.nonceStore));
+      expect(renewed.status).toBe(200);
+      expect((await verifySession(renewed.body.token as string, SESSION_KEY)).renewal?.end).toBe(short.expiresAt);
+
+      nodeRenews(grant, short, short.expiresAt + HOUR);
+      expect(await api.post(await requestBody(grant, short, api.nonceStore))).toEqual({ status: 401, body: { error: "renewal_history_invalid" } });
+    } finally {
+      api.close();
+    }
   });
 });

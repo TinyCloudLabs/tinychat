@@ -8,6 +8,7 @@ import type { KeyDescriptor } from "@tinycloud/sdk-services/encryption/named-key
 import { DEFAULT_REQUEST_HEADER_NAME, DEFAULT_REQUEST_HEADER_VALUE, SessionStore } from "@tinyboilerplate/client";
 import { getAddress } from "viem";
 import { encryptionNetworkId } from "../lib/connectors/encryptionGrant";
+import { sessionAuthorityEnd } from "./botGrantLifetime";
 
 export { BOT_HISTORY_KEY_PATH };
 
@@ -52,17 +53,19 @@ function bytesToBase64(bytes: Uint8Array): string {
 
 /**
  * Signs an owner-attested key descriptor with the active session key (no extra wallet prompt).
- * `exp` is capped at `min(sessionExpiry, now + 7 d)`.
+ * `exp` is capped at `min(sessionEnd, now + 7 d)`, where the session end is the signed one or the renewed one the
+ * backend bearer carries for this session key.
  */
 export async function signBotHistoryKeyDescriptor(
   tcw: TinyCloudWeb,
   descriptor: KeyDescriptor,
   session: ClientSession,
   nowMs = Date.now(),
+  bearer = readBackendSession()?.token ?? null,
 ): Promise<SignedBotHistoryKeyEnvelope> {
   if (!session.siwe || !session.signature) throw new Error("history_session_missing");
-  const siweExpiresMs = Date.parse(/^Expiration Time:\s*(\S+)/im.exec(session.siwe)?.[1] ?? "");
-  if (!Number.isFinite(siweExpiresMs) || siweExpiresMs <= nowMs) throw new Error("history_session_expired");
+  const sessionEndMs = sessionAuthorityEnd(session.siwe, bearer);
+  if (!Number.isFinite(sessionEndMs) || sessionEndMs <= nowMs) throw new Error("history_session_expired");
   if (descriptor.state !== "active" || descriptor.kind !== "deletable") {
     throw new Error("history_key_descriptor_invalid");
   }
@@ -73,7 +76,7 @@ export async function signBotHistoryKeyDescriptor(
     throw new Error("history_key_descriptor_invalid");
   }
   const iat = Math.floor(nowMs / 1000);
-  const exp = Math.floor(Math.min(siweExpiresMs, nowMs + BOT_HISTORY_KEY_MAX_MS) / 1000);
+  const exp = Math.floor(Math.min(sessionEndMs, nowMs + BOT_HISTORY_KEY_MAX_MS) / 1000);
   if (exp <= iat) throw new Error("history_session_expired");
   const payload: BotHistoryKeyDescriptorPayload = {
     v: 1,
@@ -102,7 +105,8 @@ export async function signBotHistoryKeyDescriptor(
   };
 }
 
-function readBackendSession(): { token: string; address: string } | null {
+/** The backend bearer and its account in this browser, or null when signed out. */
+export function readBackendSession(): { token: string; address: string } | null {
   if (typeof globalThis.localStorage === "undefined") return null;
   try {
     const store = new SessionStore("xyz.tinycloud.tinychat:session");

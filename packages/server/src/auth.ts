@@ -21,6 +21,15 @@ export interface SessionTokenPayload {
   address: string;
 }
 
+/**
+ * A lease renewal `/api/auth/verify-renewal` verified: the session key `sessionDid` holds an owner grant whose
+ * authority the node renewed until `end` (Unix seconds, never after the owner-signed lease).
+ */
+export interface SessionRenewal {
+  sessionDid: string;
+  end: number;
+}
+
 // ── Nonce Store ─────────────────────────────────────────────────────
 
 const NONCE_TTL_MS = 5 * 60 * 1000; // 5 minutes
@@ -148,11 +157,12 @@ export async function verifySIWE(
 /**
  * Issue a session JWT signed with HS256. Subject is the wallet address.
  * A new token lasts at most 30 days, and never beyond the signed SIWE expiry.
+ * A bearer for a lease-renewed session also carries the `renewal` it was issued for.
  */
 export async function issueSessionToken(
   address: string,
   privateKey: string,
-  options?: { notAfter?: Date },
+  options?: { notAfter?: Date; renewal?: SessionRenewal },
 ): Promise<{ token: string; expiresIn: number }> {
   const now = Math.floor(Date.now() / 1000);
   let exp = now + SESSION_EXPIRATION_MS / 1000;
@@ -165,7 +175,11 @@ export async function issueSessionToken(
   if (expiresIn <= 0) throw new Error("Session expiration must be in the future");
 
   const secret = new TextEncoder().encode(privateKey);
-  const token = await new SignJWT({ address: address.toLowerCase() })
+  const renewal = options?.renewal;
+  const token = await new SignJWT({
+    address: address.toLowerCase(),
+    ...(renewal ? { renewal: { sessionDid: renewal.sessionDid, end: renewal.end } } : {}),
+  })
     .setProtectedHeader({ alg: "HS256" })
     .setSubject(address.toLowerCase())
     .setIssuedAt(now)
@@ -183,6 +197,18 @@ export async function verifySessionToken(
   token: string,
   privateKey: string,
 ): Promise<{ address: string }> {
+  const { address } = await verifySession(token, privateKey);
+  return { address };
+}
+
+/**
+ * Verify a session JWT issued by this backend. Returns the wallet address and, for a bearer issued to a lease-renewed
+ * session, the renewal it was issued for. A malformed renewal claim is left out, so it renews nothing.
+ */
+export async function verifySession(
+  token: string,
+  privateKey: string,
+): Promise<{ address: string; renewal?: SessionRenewal }> {
   const secret = new TextEncoder().encode(privateKey);
 
   const { payload } = await jwtVerify(token, secret, {
@@ -193,5 +219,13 @@ export async function verifySessionToken(
     throw new Error("Session token missing 'sub' claim");
   }
 
+  const claim = payload.renewal;
+  if (
+    typeof claim === "object" && claim !== null && "sessionDid" in claim && "end" in claim &&
+    typeof claim.sessionDid === "string" && claim.sessionDid.startsWith("did:key:") && !claim.sessionDid.includes("#") &&
+    typeof claim.end === "number" && Number.isSafeInteger(claim.end)
+  ) {
+    return { address: payload.sub, renewal: { sessionDid: claim.sessionDid, end: claim.end } };
+  }
   return { address: payload.sub };
 }

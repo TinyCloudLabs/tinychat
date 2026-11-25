@@ -6,15 +6,13 @@ import type { TinyCloudNode } from "@tinycloud/node-sdk";
 import { createDstackKeyClient, type DstackKeyClient } from "../attestation/dstackClient.js";
 import { isKvPreconditionFailed } from "../exo/activated-grant.js";
 import type { StandingReadRuntime } from "./standing.js";
-import { TRUSTBOT_READ_GRANT_KEY_PREFIX, TrustBotReadGrants, type ReadGrantStore } from "./grants.js";
+import { TRUSTBOT_READ_GRANT_KEY_PREFIX, TRUSTBOT_TELEGRAM_READ_GRANT_KEY_PREFIX, TrustBotReadGrants, type ReadGrantStore } from "./grants.js";
 
 /** The read identity's own space prefix. It keeps nothing there; the prefix only names its session. */
 const READER_PREFIX = "xyz.tinycloud.tinychat.trustbot-reads";
 // Keep the path and HKDF purposes stable across releases within the same dstack app.
 const READER_KEY_PATH = "tinychat/trustbot-finite-reads/reader-root/v1";
 const SECP256K1_ORDER = Buffer.from("fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141", "hex");
-/** Telegram read grants live under their own path, apart from the other read areas' grants. */
-const TRUSTBOT_TELEGRAM_READ_GRANT_KEY_PREFIX = "trustbot/telegram-read-grants/";
 /** The same floor the bots service sets for its call secret. */
 const MIN_CALL_SECRET_CHARS = 32;
 

@@ -10,7 +10,7 @@ import { createHash } from "node:crypto";
 import { closeSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { isRecord } from "./guards";
-import { type BotLayout, botLayout, type LayoutRoots } from "./layout";
+import { type BotLayout, botLayout, botRole, type LayoutRoots } from "./layout";
 import { BOT_ID } from "./owner";
 import { joinSites, knownSecret, MAX_SITES, SECRET_NAME, secretSites, writeMethods } from "./secret-catalog";
 
@@ -325,13 +325,14 @@ function readAsksFile(layout: BotLayout): Record<string, unknown> | "missing" | 
 }
 
 /**
- * The owner's setting. Off until the owner turns it on: nothing saved, or a saved file without `enabled`, reads as off.
- * A file that is unreadable or malformed also reads as off, and is logged. Never an error.
+ * The owner's setting. On until the owner turns it off: nothing saved, or a saved file without `enabled`, reads as on.
+ * Every request it allows goes to the owner as a card, so on never grants anything by itself. A file that is
+ * unreadable or malformed reads as off, and is logged. Never an error.
  */
 export function readAsksEnabled(layout: BotLayout): boolean {
   const saved = readAsksFile(layout);
-  if (saved === "missing") return false;
-  if (saved !== "unreadable" && !Object.hasOwn(saved, "enabled")) return false;
+  if (saved === "missing") return true;
+  if (saved !== "unreadable" && !Object.hasOwn(saved, "enabled")) return true;
   if (saved !== "unreadable" && typeof saved.enabled === "boolean") return saved.enabled;
   console.log(JSON.stringify({ bots: "asks_setting_unreadable", bot: layout.botId.slice(0, 12) }));
   return false;
@@ -881,13 +882,13 @@ async function syncSecrets(store: AskStore, gateway: SecretsGateway): Promise<vo
  * conversation only ever turns on: by a web call the gateway saw, or by `turn.outside` (the turn began with
  * another bot's message, or a bot's reply came back during it). It is kept in asks.json and given to the gateway
  * with every push, so a restart of either side does not lose it; only a reset of the bot's working state (its data
- * directory goes) clears it.
+ * directory goes) clears it. Only Main asks: a sibling has no owner screen for the setting, so its push is always off.
  */
 export function syncAsks(layout: BotLayout, gateway: AsksGateway, turn?: { outside: boolean }, now: () => number = Date.now): Promise<void> {
   return inOrder(layout.botId, async () => {
     const store = new AskStore(layout, now);
     const drained = await gateway.drain();
-    const enabled = readAsksEnabled(layout);
+    const enabled = botRole(layout) === "main" && readAsksEnabled(layout);
     const collected = parseNewAsks(drained);
     if (enabled && collected?.length) store.ingest(collected);
     // A gateway that cannot settle secret requests now still gets the setting and the counts.

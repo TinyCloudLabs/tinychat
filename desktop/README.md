@@ -287,9 +287,9 @@ gh api repos/$repo/environments/desktop-release/deployment-branch-policies --jq 
 
 Then add the 7 secrets (root README, "Signing", one-time setup) and set
 `EXO_DESKTOP_SIGNING` to `required`. Done for TC-611 on 2026-11-10: the
-environment is `main`-only with Sam as required reviewer (self-review allowed),
-and holds the 7 secrets (Developer ID Application: TinyCloud, Inc. (R4QVKA785H);
-App Store Connect key `KLLY4KJK58`).
+environment is `main`-only, has no required reviewer, and holds the 7 secrets
+(Developer ID Application: TinyCloud, Inc. (R4QVKA785H); App Store Connect key
+`KLLY4KJK58`).
 
 ## Known constraints
 
