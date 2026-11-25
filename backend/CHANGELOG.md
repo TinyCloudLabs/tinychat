@@ -1,5 +1,13 @@
 # @tinychat/backend
 
+## 0.14.4-beta.2
+
+### Patch Changes
+
+- 4c57f71: The main bot's questions and requests are on by default, so it can ask the owner a question, request a secret and propose actions. Each one reaches the owner as a card to approve or decline. An owner who turns them off keeps them off, even after the bot's working state is deleted, and a damaged setting file reads as off.
+
+  Details: TC-4330
+
 ## 0.14.4-beta.1
 
 ### Patch Changes
