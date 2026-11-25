@@ -1143,16 +1143,16 @@ tests:
               assert_eq!(.route_template, "/health")
               assert_eq!(.status, 200)
     no_outputs_from: [request_chat_cap, request_problem_cap, other_cap]
-  - name: "TC-4310 a route that only looks like chat does not reach the chat cap"
+  - name: "TC-4310 an allowlisted route under /api/chat does not reach the chat cap"
     inputs:
       - insert_at: redact
         type: vrl
         source: |
-          . = {"message": "{\"event\":\"tinychat_request\",\"request_id\":\"0b6f2c1e-9d4a-4e7b-8c3f-2a1d5e6f7a8b\",\"method\":\"GET\",\"route\":\"/api/chat/x\",\"status\":200,\"duration_ms\":1.2}", "level": 6, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+          . = {"message": "{\"event\":\"tinychat_request\",\"request_id\":\"0b6f2c1e-9d4a-4e7b-8c3f-2a1d5e6f7a8b\",\"method\":\"GET\",\"route\":\"/api/chat/models\",\"status\":200,\"duration_ms\":1.2}", "level": 6, "timestamp": now(), "_tc.logship": "tinychat-backend"}
     outputs:
       - extract_from: request_routine_cap
         conditions:
           - type: vrl
             source: |
-              assert_eq!(.route_template, "unmatched")
+              assert_eq!(.route_template, "/api/chat/models")
     no_outputs_from: [request_chat_cap, request_problem_cap, other_cap]
