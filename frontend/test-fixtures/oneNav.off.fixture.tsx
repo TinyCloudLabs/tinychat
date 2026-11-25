@@ -63,7 +63,7 @@ describe("production today: One Apps on, One's new navigation off", () => {
 
   test("the Apps page is today's launcher: every tile with its line and a Pin row, and no Add an app", () => {
     const markup = render(<AppsPage accountDid={ACCOUNT} />, PATHS.apps);
-    const today = ["capture", "xyz.tinycloud.secrets", "xyz.tinycloud.opencredentials", "xyz.tinycloud.explorer", "xyz.tinycloud.account", "xyz.tinycloud.courier"] as const;
+    const today = ["capture", "xyz.tinycloud.secrets", "xyz.tinycloud.opencredentials", "xyz.tinycloud.tinydrive", "xyz.tinycloud.explorer", "xyz.tinycloud.account", "xyz.tinycloud.courier"] as const;
     const at = (text: string) => markup.indexOf(text);
     const positions = today.map((id) => at(`>${APP_NAMES[id]}<`));
     for (const position of positions) expect(position).toBeGreaterThan(-1);
