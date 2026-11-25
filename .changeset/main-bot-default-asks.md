@@ -3,4 +3,6 @@
 "@tinychat/frontend": patch
 ---
 
-Main's questions and requests are on until the owner turns them off, so the main bot is offered ask_owner, request_secret, propose_action and the secret tools by default. Each use goes to the owner as a card to decide. A saved off stays off, also after the bot's working state is deleted, and a damaged setting file reads as off.
+The main bot's questions and requests are on by default, so it can ask the owner a question, request a secret and propose actions. Each one reaches the owner as a card to approve or decline. An owner who turns them off keeps them off, even after the bot's working state is deleted, and a damaged setting file reads as off.
+
+Details: TC-4330
