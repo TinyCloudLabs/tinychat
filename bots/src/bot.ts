@@ -95,7 +95,7 @@ export interface SandboxLauncher {
   launch(layout: BotLayout, botName?: string): Promise<Sandbox>;
   /** Opens a gateway meter before the bot's model calls. Telemetry failures do not affect the turn. */
   beginTurn?(layout: BotLayout): Promise<void>;
-  /** Closes the meter after the prompt and waits for in-flight model calls to settle. */
+  /** Closes the meter after the prompt. The gateway logs once in-flight model calls settle; the supervisor does not wait. */
   endTurn?(layout: BotLayout): Promise<void>;
   /** Retries cleanup for a stopped bot, including after the supervisor has restarted. */
   cleanupEgress?(layout: BotLayout): Promise<boolean>;
