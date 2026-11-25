@@ -608,7 +608,7 @@ export class Bot {
     return saved.then(() => this.webSettings());
   }
 
-  /** Whether the owner lets Main ask questions. Off until turned on. */
+  /** Whether the owner lets Main ask questions. On until the owner turns it off. */
   async asksSettings(): Promise<AsksSettings> {
     await this.#deleting;
     return { enabled: readAsksEnabled(this.layout) };
@@ -786,7 +786,8 @@ export class Bot {
    * The one way a bot's working state is deleted: stops its sandbox, then removes its data directory (state snapshot
    * and last-use marker) and its run directory. A failed teardown, a path that is not the bot's own directory, a
    * mount at or under either directory keeps everything and logs
-   * state_delete_skipped instead. A request that arrives meanwhile waits for this, then starts a fresh bot; with
+   * state_delete_skipped instead. An owner's off for questions and requests is written back once the directory is gone,
+   * since a missing setting reads as on. A request that arrives meanwhile waits for this, then starts a fresh bot; with
    * `retire` (the backend is deleting the bot) it is refused instead, and nothing is written for the bot again.
    * Resolves to why the state was kept, or to undefined once it is gone.
    */
@@ -811,8 +812,13 @@ export class Bot {
             // state of a bot that never had a grant, as before the journal stopped being kept for it. Only the owner's own
             // New chat or deletion does.
             if (this.#options.history && !this.#hasGrant() && reason !== "new_chat" && reason !== "deleted") cause = "ungranted_retained";
-            else cause = this.#options.history && this.#hasGrant() && (!covered || !this.#history?.covered) && !this.#history?.expiryDue()
-              ? "archive_pending" : await removeWorkingState(this.layout, this.#launcher);
+            else {
+              // Read before the directory goes: a missing setting reads as on, so an owner's off is written back below.
+              const asksOff = !readAsksEnabled(this.layout);
+              cause = this.#options.history && this.#hasGrant() && (!covered || !this.#history?.covered) && !this.#history?.expiryDue()
+                ? "archive_pending" : await removeWorkingState(this.layout, this.#launcher);
+              if (!cause && asksOff && !this.#retiring) this.#keepAsksOff();
+            }
           }
         }
         if (!cause && this.#retiring && this.layout.botKey !== undefined) removeHistoryRevocation(this.layout);
@@ -833,17 +839,26 @@ export class Bot {
     return this.#deleting;
   }
 
+  /** Saves the owner's off for questions and requests in a fresh data directory. Logged when it cannot be written. */
+  #keepAsksOff(): void {
+    try {
+      writeAsksEnabled(this.layout, false);
+    } catch {
+      log("asks_setting_keep_failed", this.layout.botId);
+    }
+  }
+
   /**
    * The owner's "Start a new chat": deletes the working state (deleteWorkingState), so the conversation, its pending
-   * questions and the mark of owner data it read are gone, then saves the owner's settings again: web access, the
-   * questions setting and the read areas. Only their on/off fields come back; nothing about the old conversation does.
+   * questions and the mark of owner data it read are gone, then writes the owner's settings back: web access and the
+   * read areas (deleteWorkingState keeps the questions setting). Only their on/off fields come back; nothing about the
+   * old conversation does.
    * Refused while a request is in flight or a deletion is under way. The settings are saved again by a callback on the
    * deletion itself, registered before any request can wait on it, so a fresh sandbox always starts with them.
    */
   newChat(closing: () => boolean): Promise<DeleteSkip | "busy" | undefined> {
     if (this.inUse || this.#deleting) return Promise.resolve("busy");
     const web = readWebPolicy(this.layout);
-    const asks = readAsksEnabled(this.layout);
     const reads = readReads(this.layout);
     return this.deleteWorkingState("new_chat", closing).then(cause => {
       if (cause) return cause;
@@ -852,7 +867,6 @@ export class Bot {
           mkdirSync(this.layout.dataDir, { recursive: true, mode: 0o700 });
           writeWebPolicy(this.layout, web);
         }
-        if (asks) writeAsksEnabled(this.layout, true);
         if (reads.areas.length > 0) writeReads(this.layout, reads);
       } catch {
         // A setting that is not saved reads as off.

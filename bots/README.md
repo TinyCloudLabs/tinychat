@@ -262,9 +262,10 @@ chat text; per-chat denial covers chat-source reads, while the Feed and chats ar
 
 ### Questions from Main
 
-Main can ask its owner one short question and carry on; the answer comes back later as a new message. It ships off:
-the owner turns it on in Main's settings, and until then Main has no tool for it and every call is refused. This is
-the `ask_owner` tool of the `app` MCP server.
+Main can ask its owner one short question and carry on; the answer comes back later as a new message. It ships on:
+the owner can turn it off in Main's settings, and while it is off Main has no tool for it and every call is refused.
+Each question, secret request and proposal goes to the owner as a card to decide. This is the `ask_owner` tool of the
+`app` MCP server.
 
 - The `app` server is the gateway's `POST /v1/mcp/app` on the egress socket (bot token required), beside `web`. A
   sandbox's `mcp.json` is written once and always lists both, so the setting is not in it: the gateway lists
@@ -282,8 +283,10 @@ the `ask_owner` tool of the `app` MCP server.
 - The owner's setting is `/data/bots/<bot id>/asks.json` and the requests are `/data/bots/<bot id>/requests.json`, in
   the data directory beside `web.json`. Neither is under `state/`, which is what gets copied into a sandbox, and no
   sandbox mount is the data directory or inside it. Their only link to the box is the gateway. A missing setting, or
-  one saved without `enabled`, reads as off (the default); only a saved `true` is on. An unreadable or malformed one
-  also reads as off and is logged (`asks_setting_unreadable`).
+  one saved without `enabled`, reads as on (the default); a saved `false` is off. An unreadable or malformed one reads
+  as off and is logged (`asks_setting_unreadable`). Deleting the bot's working state removes the data directory, so a
+  saved off is written back afterwards (`asks_setting_keep_failed` is logged if it cannot be); a bot the backend
+  deleted gets nothing written.
 - The gateway cannot call the supervisor (separate containers), so it holds a validated new question in memory until
   the supervisor collects it over the control socket: `POST /bots/<id>/asks/drain` answers `{ asks, outside }`, and
   `PUT /bots/<id>/asks` gives the setting, the counts and the declined hashes. The supervisor does this at sandbox
@@ -395,7 +398,7 @@ call and returns the reply with the value hidden.
 
 Main can propose an action for the owner to approve with one tap; the service then does it, exactly once. The first
 kind is `message_bots`: one message to 2 to 8 of the owner's other bots. It is the `propose_action` tool of the `app`
-MCP server, listed and served under the same setting as `ask_owner` (off until the owner turns it on). `message_bot` reaches one bot per
+MCP server, listed and served under the same setting as `ask_owner` (on until the owner turns it off). `message_bot` reaches one bot per
 owner message (the same bot again is fine); a message for more bots goes through a proposal.
 
 - `propose_action { kind: "message_bots", targets, text }`: `targets` are 2 to 8 distinct keys of bots Main may
