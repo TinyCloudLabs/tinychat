@@ -93,6 +93,10 @@ export interface SandboxLauncher {
   leftover(layout: BotLayout, sandboxOnly?: boolean): boolean;
   /** `botName` is the name the owner sees, for the bot's prompt only; absent, the prompt uses MAIN_BOT_NAME. */
   launch(layout: BotLayout, botName?: string): Promise<Sandbox>;
+  /** Opens a gateway meter before the bot's model calls. Telemetry failures do not affect the turn. */
+  beginTurn?(layout: BotLayout): Promise<void>;
+  /** Closes the meter after the prompt. The gateway logs once in-flight model calls settle; the supervisor does not wait. */
+  endTurn?(layout: BotLayout): Promise<void>;
   /** Retries cleanup for a stopped bot, including after the supervisor has restarted. */
   cleanupEgress?(layout: BotLayout): Promise<boolean>;
   /** Every mount point the supervisor sees (decoded from /proc/self/mountinfo). */
@@ -483,6 +487,7 @@ export class Bot {
     let state: "starting" | "working" = this.#sandbox ? "working" : "starting";
     sink.status(state);
     const heartbeat = setInterval(() => sink.status(state), HEARTBEAT_MS);
+    let metered = false;
     try {
       let sandbox: Sandbox;
       try {
@@ -509,6 +514,8 @@ export class Bot {
         state = "working";
         sink.status(state);
       }
+      metered = true;
+      await this.#launcher.beginTurn?.(this.layout).catch(() => {});
       if (!messenger || !sandbox.onHostToolCall) {
         await this.#turn(sandbox, promptText(text, from, date), sink);
         return;
@@ -535,6 +542,7 @@ export class Bot {
         try { turnJournal.append({ type: "provenance", receipts: await this.#launcher.provenance?.(this.layout) ?? [] }); }
         catch { turnJournal.append({ type: "provenance", verified: false }); }
       }
+      if (metered) await this.#launcher.endTurn?.(this.layout).catch(() => {});
       this.#busy = false;
       this.#armIdle();
     }
