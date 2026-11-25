@@ -27,7 +27,7 @@ export const TINYCHAT_WEB_ORIGIN = "https://tinycloud.chat";
 
 /** The Home app on tinycloud.one: the same web build as the other two sites, served from its own origin. */
 export const TINYCLOUD_ONE_WEB_ORIGIN = "https://tinycloud.one";
-/** Sam's Tailnet dev frontend for testing backend changes. */
+/** The development frontend on the Tailnet, used for testing backend changes. */
 export const SAM_TAILNET_DEV_ORIGIN = "https://lightning-node-1.gecko-snares.ts.net:5240";
 
 

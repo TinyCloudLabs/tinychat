@@ -145,7 +145,7 @@ describe("SIWE domain extraction with URL.host (auth router)", () => {
     }
   });
 
-  test("Sam's tailnet dev origin accepts host:port as SIWE domain", async () => {
+  test("the tailnet dev origin accepts host:port as SIWE domain", async () => {
     const { server: authServer, baseUrl, nonceStore } = await createTestAuthServer(SAM_TAILNET_DEV_ORIGIN);
     try {
       const nonce = nonceStore.generate(account.address);
@@ -160,7 +160,7 @@ describe("SIWE domain extraction with URL.host (auth router)", () => {
     }
   });
 
-  test("Sam's tailnet dev origin refuses bare hostname without port", async () => {
+  test("the tailnet dev origin refuses bare hostname without port", async () => {
     const { server: authServer, baseUrl, nonceStore } = await createTestAuthServer(SAM_TAILNET_DEV_ORIGIN);
     try {
       const nonce = nonceStore.generate(account.address);
@@ -178,7 +178,7 @@ describe("SIWE domain extraction with URL.host (auth router)", () => {
     }
   });
 
-  test("Sam's tailnet dev origin refuses different port", async () => {
+  test("the tailnet dev origin refuses different port", async () => {
     const { server: authServer, baseUrl, nonceStore } = await createTestAuthServer(SAM_TAILNET_DEV_ORIGIN);
     try {
       const nonce = nonceStore.generate(account.address);
