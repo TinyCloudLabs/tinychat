@@ -12,8 +12,8 @@ import type { RegistryPublishClient } from "@/lib/registryConsent/adapter";
  * tapped this button on this device, and this app can open TinyCloud One. The button records that tap per account
  * (dismissed.ts, whatever the outcome), then goes to the `?finish-setup=registry` address a pasted link uses, with a router
  * state marker that says the owner just read the card. The page removes the query, and with the marker asks the SDK to
- * publish at once (a link without it shows the notice first); on "needs-one" the owner is sent to TinyCloud One. Sign-out
- * clears the record.
+ * publish at once (a link without it shows the notice first); on "needs-one" the owner is sent to TinyCloud One. The record
+ * stays for that account on this device, through sign-out too.
  */
 export function FinishSetupBanner({ tcw, visible = finishSetupBannerVisible, dismissed = registryDismissedStore }: {
   tcw: RegistryPublishClient | null;

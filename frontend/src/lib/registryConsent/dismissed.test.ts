@@ -24,13 +24,13 @@ describe("the finish-setup card's flag on this device", () => {
   });
 
   test("storage that cannot be read shows the card, instead of hiding it for good", () => {
-    const denied = () => ({ getItem: () => { throw new Error("denied"); }, setItem: () => {}, removeItem: () => {} });
+    const denied = () => ({ getItem: () => { throw new Error("denied"); }, setItem: () => {} });
     expect(createDismissedStore(denied).read(ALICE)).toBe(false);
     expect(createDismissedStore(() => undefined).read(ALICE)).toBe(false);
   });
 
   test("storage that cannot be written still holds for this page load, and shows the card again next load", () => {
-    const refusing = { getItem: () => null, setItem: () => { throw new Error("quota"); }, removeItem: () => {} };
+    const refusing = { getItem: () => null, setItem: () => { throw new Error("quota"); } };
     const store = createDismissedStore(() => refusing);
     store.write(ALICE);
     expect(store.read(ALICE)).toBe(true);
@@ -48,24 +48,5 @@ describe("the finish-setup card's flag on this device", () => {
     expect(written.dismissed).toBe(true);
     expect(Number.isNaN(Date.parse(written.at))).toBe(false);
     expect(createDismissedStore(() => storage).read(mixed.toLowerCase())).toBe(true);
-  });
-
-  test("clear (sign-out) removes that owner's flag, in storage and for this page load, and no other owner's", () => {
-    const storage = memoryStorage();
-    const store = createDismissedStore(() => storage);
-    store.write(ALICE);
-    store.write(BOB);
-    store.clear(ALICE);
-    expect(store.read(ALICE)).toBe(false);
-    expect(createDismissedStore(() => storage).read(ALICE)).toBe(false);
-    expect(createDismissedStore(() => storage).read(BOB)).toBe(true);
-  });
-
-  test("clear with storage that refuses still empties this page load's memory", () => {
-    const refusing = { getItem: () => null, setItem: () => { throw new Error("quota"); }, removeItem: () => { throw new Error("denied"); } };
-    const store = createDismissedStore(() => refusing);
-    store.write(ALICE);
-    store.clear(ALICE);
-    expect(store.read(ALICE)).toBe(false);
   });
 });

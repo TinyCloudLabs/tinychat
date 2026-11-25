@@ -10,7 +10,6 @@ export function memoryStorage(initial: Record<string, string> = {}) {
     map,
     getItem: (key: string) => map.get(key) ?? null,
     setItem: (key: string, value: string) => { map.set(key, value); },
-    removeItem: (key: string) => { map.delete(key); },
   };
 }
 export function memoryDismissedStore(): DismissedStore {

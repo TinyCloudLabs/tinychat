@@ -178,7 +178,6 @@ import { clearVaultSecretCache } from "./lib/connectors/connectorSecrets";
 import { isSignInCancelled, UserFacingError } from "./lib/authErrors";
 import { signOutOpenKeySession } from "./lib/openkeySignOut";
 import { registryPublishConfig } from "./lib/registryConsent/config";
-import { registryDismissedStore } from "./lib/registryConsent/dismissed";
 import { FinishSetupLinkHost } from "./shell/FinishSetupNotice";
 import { clearSessionAfterHandoff, registerSessionSignedOutHook } from "./lib/sessionSignedOut";
 import {
@@ -474,7 +473,6 @@ export function App() {
     voiceNotePipeline?.cancelAll();
     endStorageAccountSession();
     clearSignedOutAccountStorage(scope, { space: tcw?.spaceId ?? spaceId, did: accountDid, address: storedAddress });
-    if (accountDid) registryDismissedStore.clear(accountDid);
     // TC-2862: the phone app's native local copy goes with the account, whether or not this build uses it.
     void wipeNativeReplicaOnSignOut(accountDid).then((result) => {
       if (!result.ok) console.warn("[Replica] Could not delete the native local copy at sign-out", result.code);

@@ -65,17 +65,9 @@ describe("the finish-setup banner gate", () => {
     expect(await finishSetupBannerVisible({ ...sdk.client, did: "did:pkh:eip155:1:0xother" }, unregistered, canOpen, store)).toBe(true);
   });
 
-  test("shows again after sign-out clears the flag", async () => {
-    const sdk = fakeSdk();
-    const store = memoryDismissedStore();
-    store.write(sdk.client.did);
-    store.clear(sdk.client.did);
-    expect(await finishSetupBannerVisible(sdk.client, unregistered, canOpen, store)).toBe(true);
-  });
-
   test("storage that cannot be read shows the card rather than hiding it for good", async () => {
     const sdk = fakeSdk();
-    const broken = createDismissedStore(() => ({ getItem: () => { throw new Error("denied"); }, setItem: () => { throw new Error("denied"); }, removeItem: () => {} }));
+    const broken = createDismissedStore(() => ({ getItem: () => { throw new Error("denied"); }, setItem: () => { throw new Error("denied"); } }));
     expect(await finishSetupBannerVisible(sdk.client, unregistered, canOpen, broken)).toBe(true);
   });
 
