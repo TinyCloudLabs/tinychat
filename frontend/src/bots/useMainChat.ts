@@ -6,7 +6,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { BotsError, BotsNoReply, type AppDecision, type BotMessage, type BotsApi, type SecretLine } from "./botsApi";
 import type { BotsErrorCode } from "./botsStrings";
 import { isDeclinedReply } from "./askText";
-import { isHistoryDeclined } from "./historyAuthorization";
+import { clearHistoryDecline, isHistoryDeclined } from "./historyAuthorization";
 
 /**
  * The app's report of the owner's decision on a request or proposal card. A secret request's report names the secret
@@ -51,13 +51,14 @@ function errorFields(value: unknown): Record<string, unknown> {
   return { name: value.name, message: value.message, code, stack: value.stack };
 }
 
-export function useMainChat(api: BotsApi, prepare?: () => Promise<void>, onNoReply?: () => void) {
+export function useMainChat(api: BotsApi, prepare?: () => Promise<void>, onNoReply?: () => void, manualHistory = false) {
   const noReply = useRef(onNoReply);
   noReply.current = onNoReply;
   const [state, setState] = useState<MainChatState>({ lines: [], history: "idle", turn: null });
   const lifetime = useRef<AbortController | null>(null);
   const turnController = useRef<AbortController | null>(null);
   const history = useRef<Promise<void> | null>(null);
+  const historyPending = useRef(false);
   const localId = useRef(0);
   const queued = useRef<(() => void)[]>([]);
   // Counts the owner's new chats, so a history read that started before one never brings the earlier lines back.
@@ -76,6 +77,8 @@ export function useMainChat(api: BotsApi, prepare?: () => Promise<void>, onNoRep
 
   /** A slow history read must not erase turns completed while it was in flight. */
   const loadHistory = useCallback((): Promise<void> => {
+    if (historyPending.current) return history.current ?? Promise.resolve();
+    historyPending.current = true;
     const signal = lifetime.current?.signal;
     const generation = cleared.current;
     const run = (async () => {
@@ -113,13 +116,20 @@ export function useMainChat(api: BotsApi, prepare?: () => Promise<void>, onNoRep
           ...current,
           history: isHistoryDeclined(cause) ? "declined" : "failed",
         }));
+      } finally {
+        historyPending.current = false;
       }
     })();
     history.current = run;
     return run;
   }, [api]);
 
-  const ensureHistory = useCallback(() => history.current ?? loadHistory(), [loadHistory]);
+  const ensureHistory = useCallback(() => manualHistory ? Promise.resolve() : history.current ?? loadHistory(), [loadHistory, manualHistory]);
+  const requestHistory = useCallback(() => {
+    if (historyPending.current) return history.current ?? Promise.resolve();
+    clearHistoryDecline();
+    return loadHistory();
+  }, [loadHistory]);
 
   /** After the owner starts a new chat: the earlier lines leave the view. Saved history is read again on the next visit. */
   const clear = useCallback(() => {
@@ -141,8 +151,7 @@ export function useMainChat(api: BotsApi, prepare?: () => Promise<void>, onNoRep
       return { ...current, lines: [...current.lines, ...failed], turn: { text, reply: "", state: "starting", ...(appReply ? { appReply } : {}) } };
     });
     try {
-      // Authorization still gates sending; a slow or failed history read does not.
-      await prepare?.();
+      await (manualHistory ? undefined : prepare?.());
       void ensureHistory();
       if (controller.signal.aborted) return;
       let reply = "";
@@ -172,7 +181,7 @@ export function useMainChat(api: BotsApi, prepare?: () => Promise<void>, onNoRep
       // A decision the owner made while a turn was running goes out as soon as that turn ends.
       if (!controller.signal.aborted) queued.current.shift()?.();
     }
-  }, [api, ensureHistory, prepare]);
+  }, [api, ensureHistory, prepare, manualHistory]);
 
   const send = useCallback((text: string) => run(text, true), [run]);
   const retry = useCallback(() => {
@@ -184,5 +193,5 @@ export function useMainChat(api: BotsApi, prepare?: () => Promise<void>, onNoRep
     else void run("", true, reply);
   }, [run]);
 
-  return { state, send, retry, sendAppReply, ensureHistory, loadHistory, clear };
+  return { state, send, retry, sendAppReply, ensureHistory, loadHistory, requestHistory, clear };
 }

@@ -16,8 +16,8 @@ export const BOTS_STRINGS = {
   sendToMain: `Send to ${MAIN_BOT_NAME}`,
   modelLine: "Runs on a confidential model.",
   tryAgain: "Try again",
-  historyLoading: "Loading earlier messages…",
-  historyFailed: `Couldn't load your earlier messages with ${MAIN_BOT_NAME}.`,
+  historyLoading: "Loading older messages…",
+  historyFailed: `Couldn't load your older messages with ${MAIN_BOT_NAME}.`,
   // Monica, TC-3823, 2026-11-23.
   historyUnreadable: `Some earlier messages with ${MAIN_BOT_NAME} can't be opened with your current encryption key.`,
   // Monica, TC-3887, 2026-11-22. The button reopens the encryption request the owner declined.
