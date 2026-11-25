@@ -12,6 +12,10 @@ import { listThreads } from "../lib/threadStore";
 import { readHistoryNotice, type HistoryNotice } from "./historyNotice";
 import { AskBox } from "./AskBox";
 import { BotsError, botsApi, type BotsApi } from "./botsApi";
+import { botRosterApi } from "./botChatApi";
+import type { BotRosterApi } from "./botRosterApi";
+import { useBotsNav } from "./botsNav";
+import type { WorkingBot } from "./BotWorking";
 import { MainChat } from "./MainChat";
 import { isWorking, useMainChat } from "./useMainChat";
 import { AskCards } from "./AskCards";
@@ -39,7 +43,29 @@ async function prepareHistory(tcw: TinyCloudWeb): Promise<void> {
   }
 }
 
-export function HomeAskBox({ api = botsApi, tcw, onReconnect }: { api?: BotsApi; tcw?: TinyCloudWeb; onReconnect?: () => void }) {
+type RosterRead = Pick<BotRosterApi, "list">;
+
+/**
+ * The main bot's icon as its owner picked it: the Chat slot's list when that is loaded, else one read of the roster.
+ * Until either answers, and where neither does, there is none and the chat shows the first icon.
+ */
+function useMainFace(roster: RosterRead | null): WorkingBot | undefined {
+  const listed = useBotsNav()?.bots.find((bot) => bot.key === "main")?.face;
+  const [read, setRead] = useState<WorkingBot>();
+  useEffect(() => {
+    if (!roster) return;
+    const controller = new AbortController();
+    void roster.list(controller.signal).then(({ bots }) => {
+      const main = bots.find((bot) => bot.key === "main");
+      if (main && !controller.signal.aborted) setRead({ key: main.key, name: main.name, shape: main.shape, colour: main.colour });
+    }, () => {});
+    return () => controller.abort();
+  }, [roster]);
+  return listed ?? read;
+}
+
+/** `roster` reads the main bot's icon. Without it only the real client reads one, so a stand-in `api` makes no other call. */
+export function HomeAskBox({ api = botsApi, roster = api === botsApi ? botRosterApi : null, tcw, onReconnect }: { api?: BotsApi; roster?: RosterRead | null; tcw?: TinyCloudWeb; onReconnect?: () => void }) {
   const [working, setWorking] = useState(false);
   useEffect(() => {
     const controller = new AbortController();
@@ -56,10 +82,11 @@ export function HomeAskBox({ api = botsApi, tcw, onReconnect }: { api?: BotsApi;
     void check();
     return () => { controller.abort(); clearTimeout(timer); };
   }, [api]);
-  return working ? <MainAsk api={api} tcw={tcw} onReconnect={onReconnect} /> : null;
+  return working ? <MainAsk api={api} roster={roster} tcw={tcw} onReconnect={onReconnect} /> : null;
 }
 
-function MainAsk({ api, tcw, onReconnect }: { api: BotsApi; tcw?: TinyCloudWeb; onReconnect?: () => void }) {
+function MainAsk({ api, roster, tcw, onReconnect }: { api: BotsApi; roster: RosterRead | null; tcw?: TinyCloudWeb; onReconnect?: () => void }) {
+  const face = useMainFace(roster);
   const client = useMemo(() => !tcw ? api : { ...api, listMainMessages: async (signal?: AbortSignal) => {
     const local = await api.listMainMessages(signal);
     if (!(await botHistoryEnabled())) return local;
@@ -171,6 +198,7 @@ function MainAsk({ api, tcw, onReconnect }: { api: BotsApi; tcw?: TinyCloudWeb; 
         asks={asks}
         newChat={newChat}
         earlierHistory={earlierHistory}
+        face={face}
       />
     </>
   );

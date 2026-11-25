@@ -321,6 +321,23 @@ export const botsScreens: HarnessScreen[] = [
       />
     ),
   },
+  {
+    ...BASE,
+    id: "bots-main-approval",
+    readyWhen: "[data-bot-working-row]",
+    viewports: ["phone", "desktop"],
+    render: () => (
+      <Home
+        ask={
+          <>
+            <AskBox working onSend={() => {}} onOpenMain={() => {}} />
+            <MainChat open onOpenChange={() => {}} state={WAITING} onSend={() => {}} onRetry={() => {}} onRetryHistory={() => {}}
+              face={{ key: "main", name: BOTS_STRINGS.mainName, shape: "comet", colour: "purple" }} asks={fixtureAsks([SECRETS_ASKED[0]!])} />
+          </>
+        }
+      />
+    ),
+  },
   { ...BASE, id: "bots-secret-asked", readyWhen: "[data-secret-card]", viewports: ["phone", "desktop"],
     render: () => <SecretChat secrets={SECRETS_ASKED} saved={["fx-saved"]} /> },
   { ...BASE, id: "bots-secret-states", readyWhen: "[data-secret-card]", viewports: ["phone", "desktop"],

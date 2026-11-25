@@ -66,6 +66,10 @@
   .tc-bot-working[data-motion] .tc-bot-working-glow {
     animation: tc-bot-working-breathe 1.2s ease-in-out infinite alternate;
   }
+}
+/* The glare needs two tones. With more contrast asked for, the text is one tone (full ink), so it gets no glare and
+   the light on the icon is what moves. */
+@media (prefers-reduced-motion: no-preference) and (not (prefers-contrast: more)) and (not (forced-colors: active)) {
   .tc-bot-working-text[data-motion] {
     background-image: linear-gradient(
       100deg,

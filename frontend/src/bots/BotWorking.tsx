@@ -6,10 +6,10 @@ import { useSyncExternalStore } from "react";
 import { cn } from "@/lib/utils";
 import { MAIN_BOT, type BotFace, type ShapedBotFace } from "./BotAvatar";
 import { BOT_COLOURS, BotShape } from "./botShapes";
-import { WORKING_STRINGS } from "./workingStrings";
 import "./botWorking.css";
 
-type WorkingBot = BotFace | (ShapedBotFace & { key?: string });
+/** A bot's icon as the avatar takes it: the main bot's first icon or a shape and colour its owner picked. */
+export type WorkingBot = BotFace | (ShapedBotFace & { key?: string });
 
 const REDUCED_MOTION = "(prefers-reduced-motion: reduce)";
 const watchMotion = (onChange: () => void) => {
@@ -36,7 +36,7 @@ interface BotWorkingMarkProps {
   className?: string;
 }
 
-/** The icon with the running light. Decorative: the step text beside it, or the bot's name, says the rest. */
+/** The icon with the running light. Decorative: the step text beside it or the bot's name says the rest. */
 export function BotWorkingMark({ bot, size = 28, className }: BotWorkingMarkProps) {
   const motion = useWorkingMotion();
   // The avatar's rule for the main bot before its owner picks a shape.
@@ -68,8 +68,8 @@ export function BotWorkingMark({ bot, size = 28, className }: BotWorkingMarkProp
 }
 
 interface BotWorkingStatusProps extends BotWorkingMarkProps {
-  /** The step in progress, in the owner's words. Absent: the generic line. */
-  step?: string;
+  /** The step in progress, in the owner's words (workingStep.ts). */
+  step: string;
 }
 
 /** The waiting row: the mark, then the step text. A screen reader hears the text once each time it changes. */
@@ -84,7 +84,7 @@ export function BotWorkingStatus({ bot, size = 28, step, className }: BotWorking
         {...(motion ? { "data-motion": "" } : {})}
         className="tc-bot-working-text min-w-0 text-callout"
       >
-        {step ?? WORKING_STRINGS.generic}
+        {step}
       </span>
     </div>
   );

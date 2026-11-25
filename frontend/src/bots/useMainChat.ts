@@ -7,6 +7,7 @@ import { BotsError, BotsNoReply, type AppDecision, type BotMessage, type BotsApi
 import type { BotsErrorCode } from "./botsStrings";
 import { isDeclinedReply } from "./askText";
 import { isHistoryDeclined } from "./historyAuthorization";
+import type { WorkingStep } from "./workingStep";
 
 /**
  * The app's report of the owner's decision on a request or proposal card. A secret request's report names the secret
@@ -32,6 +33,8 @@ export interface MainTurn {
   reply: string;
   state: "starting" | "working" | "error";
   error?: BotsErrorCode;
+  /** What the bot is doing, for the working line. Absent until the service or the reply text says. */
+  step?: WorkingStep;
   /** Set when the turn reports a decision on a question card; `text` is then empty. */
   appReply?: AppReply;
 }
@@ -150,7 +153,9 @@ export function useMainChat(api: BotsApi, prepare?: () => Promise<void>, onNoRep
         if (event.type === "status") setTurn((turn) => ({ ...turn, state: event.state }));
         else if (event.type === "delta") {
           reply += event.text;
-          setTurn((turn) => ({ ...turn, state: "working", reply }));
+          setTurn((turn) => ({ ...turn, state: "working", reply, step: { step: "writing" } }));
+        } else if (event.type === "step") {
+          setTurn((turn) => ({ ...turn, step: { step: event.step, ...(event.host ? { host: event.host } : {}) } }));
         } else if (event.type === "done") {
           setState((current) => ({
             ...current,

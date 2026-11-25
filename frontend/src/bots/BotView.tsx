@@ -21,6 +21,7 @@ import { activityText, BotPanel } from "./BotPanel";
 import { DeleteBotConfirm, EditBotDialog, type BotManagement } from "./BotManage";
 import { useBotActivity, useBotChat, type ActivityItem, type BotChats } from "./useBotChat";
 import { isWorking, type ChatLine } from "./useMainChat";
+import { workingStepText } from "./workingStep";
 
 /** The bot on screen, as the view needs it. */
 export interface ViewBot {
@@ -221,7 +222,7 @@ export function BotView({ bot, chats, notice, acknowledgeNotice, onReconnect, st
                     <Line role="user" text={turn.text} />
                     {activity.filter((item) => item.inTurn).map((item) => <ActivityLine key={item.id} item={item} />)}
                     {turn.reply ? <Line role="bot" text={turn.reply} /> : null}
-                    {working && !turn.reply ? <BotWorkingStatus bot={bot.face} /> : null}
+                    {working ? <BotWorkingStatus bot={bot.face} step={workingStepText(turn.step)} /> : null}
                     {turn.state === "error" ? <Failure text={errors[turn.error ?? "failed"](bot.name)} onRetry={() => chats.retry(bot.key)} declined={turn.error === "history_declined"} /> : null}
                   </>
                 ) : null}
