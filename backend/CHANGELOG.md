@@ -1,5 +1,13 @@
 # @tinychat/backend
 
+## 0.14.3
+
+### Patch Changes
+
+- 4caf0da: The backend image installs the fixed libzstd1 package from the base distribution, which clears the image scan finding CVE-2026-124851.
+
+  Details: TC-4339
+
 ## 0.14.3-beta.0
 
 ### Patch Changes
