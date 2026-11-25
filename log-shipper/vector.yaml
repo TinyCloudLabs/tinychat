@@ -271,12 +271,14 @@ transforms:
       . = out
   # TC-2537: per-request records are capped so traffic (or a request flood) cannot exhaust the shared Better Stack
   # allowance: at most 10 problem records (5xx, stream error or aborted) and 20 routine records per minute.
+  # TC-4310: chat requests go to their own lane only, so the problem and routine tests leave them out.
   request_split:
     type: route
     inputs: [allowlist]
     route:
-      problem: '.event == "tinychat_request" && ((int(.status) ?? 0) >= 500 || .stream == "error" || .stream == "aborted")'
-      routine: '.event == "tinychat_request" && !((int(.status) ?? 0) >= 500 || .stream == "error" || .stream == "aborted")'
+      problem: '.event == "tinychat_request" && !(.route_template == "/api/agent/chat" || .route_template == "/api/chat") && ((int(.status) ?? 0) >= 500 || .stream == "error" || .stream == "aborted")'
+      routine: '.event == "tinychat_request" && !(.route_template == "/api/agent/chat" || .route_template == "/api/chat") && !((int(.status) ?? 0) >= 500 || .stream == "error" || .stream == "aborted")'
+      chat: '.event == "tinychat_request" && (.route_template == "/api/agent/chat" || .route_template == "/api/chat")'
       budget: '.event == "agent_chat_budget_preflight"'
       settled: '.event == "agent_turn_settled"'
   request_problem_cap:
@@ -288,6 +290,13 @@ transforms:
     type: throttle
     inputs: [request_split.routine]
     threshold: 20
+    window_secs: 60
+  # TC-4310: chat request records (one per turn) have their own cap of 60 per minute, like the per-turn caps below,
+  # so polling routes cannot fill the lanes above.
+  request_chat_cap:
+    type: throttle
+    inputs: [request_split.chat]
+    threshold: 60
     window_secs: 60
   # TC-3734: agent chat credit checks (one per turn) have their own cap, so a busy hour of them neither starves the
   # request records above nor lands in the generic `other` bucket. The cap keeps the first 60 per minute.
@@ -388,7 +397,7 @@ transforms:
 sinks:
   betterstack:
     type: http
-    inputs: [request_problem_cap, request_routine_cap, budget_preflight_cap, turn_settled_cap, lane_cap, calendar_cap, other_cap, diagnostic_summary_cap]
+    inputs: [request_problem_cap, request_routine_cap, request_chat_cap, budget_preflight_cap, turn_settled_cap, lane_cap, calendar_cap, other_cap, diagnostic_summary_cap]
     method: post
     uri: "https://s2795438.us-west-2a.betterstackdata.com/"
     encoding: { codec: json }
