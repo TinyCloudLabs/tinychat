@@ -36,7 +36,7 @@ test("a history press makes one request", async () => {
 });
 test("a decline keeps reopening and focus free of requests", async () => {
   const chat = await mount(); await act(async () => { button("Show older messages")!.click(); });
-  expect(document.body.textContent).toContain("Older messages need your OK");
+  expect(document.body.textContent).toContain("Older messages stay hidden until you approve access.");
   await chat.open(); await act(async () => window.dispatchEvent(new Event("focus"))); expect(asks).toBe(1);
 });
 test("each deliberate history press permits one request", async () => {

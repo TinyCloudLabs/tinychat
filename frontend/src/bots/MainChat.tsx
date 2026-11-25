@@ -184,8 +184,8 @@ export function MainChat({ open, onOpenChange, state, onSend, onRetry, onRetryHi
           {open && asks ? <AsksToggle asks={asks} /> : null}
           {open && newChat ? <NewChat api={newChat} /> : null}
           {open && notice && onReconnect ? <ExpiryNotice key={`${notice.id}:${notice.deliveredAt ?? notice.renderAttemptAt ?? "initial"}`} notice={notice} onReconnect={onReconnect} /> : null}
-          {onShowHistory && (history === "idle" || history === "declined") ? <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-callout text-muted-foreground">
-            {history === "declined" ? <p>Older messages need your OK</p> : null}
+          {onShowHistory && (history === "idle" || history === "declined") ? <div className="flex flex-col items-start gap-3 text-callout text-muted-foreground">
+            {history === "declined" ? <p>Older messages stay hidden until you approve access.</p> : null}
             <Button type="button" variant="outline" size="sm" onClick={onShowHistory}>Show older messages</Button>
           </div> : null}
           {history === "loading" ? <p role="status" className="text-callout text-muted-foreground">{BOTS_STRINGS.historyLoading}</p> : null}

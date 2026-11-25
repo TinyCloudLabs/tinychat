@@ -25,7 +25,7 @@ for (const width of [390, 1280]) {
       await prompt.waitFor(); expect((await counts()).asks).toBe(1); await capture("asked");
       await prompt.getByRole("button", { name: "Decline", exact: true }).click();
       await page.locator("tinycloud-permission-request-modal").waitFor({ state: "detached" });
-      await sheet.getByText("Older messages need your OK", { exact: true }).waitFor(); await capture("cancelled");
+      await sheet.getByText("Older messages stay hidden until you approve access.", { exact: true }).waitFor(); await capture("cancelled");
       await page.getByRole("textbox", { name: "Message TrustBot" }).fill("hello");
       await page.getByRole("button", { name: "Send to TrustBot", exact: true }).click();
       await sheet.getByText("Current answer", { exact: true }).waitFor();
