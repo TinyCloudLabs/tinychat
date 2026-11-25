@@ -1043,3 +1043,116 @@ tests:
             source: |
               assert_eq!(.event, "agent_turn_settled")
     no_outputs_from: [other_cap, request_routine_cap, request_problem_cap, budget_preflight_cap]
+  - name: "TC-4310 agent chat request record reaches the chat cap only"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "{\"event\":\"tinychat_request\",\"request_id\":\"0b6f2c1e-9d4a-4e7b-8c3f-2a1d5e6f7a8b\",\"method\":\"POST\",\"route\":\"/api/agent/chat\",\"status\":200,\"duration_ms\":1834.5,\"stream\":\"done\"}", "level": 6, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+    outputs:
+      - extract_from: request_chat_cap
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.event, "tinychat_request")
+              assert_eq!(.route_template, "/api/agent/chat")
+              assert_eq!(.stream, "done")
+    no_outputs_from: [request_routine_cap, request_problem_cap, other_cap]
+  - name: "TC-4310 agent chat request record with a stream error reaches the chat cap and not the problem cap"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "{\"event\":\"tinychat_request\",\"request_id\":\"0b6f2c1e-9d4a-4e7b-8c3f-2a1d5e6f7a8b\",\"method\":\"POST\",\"route\":\"/api/agent/chat\",\"status\":200,\"duration_ms\":912.3,\"stream\":\"error\",\"code\":\"transport_failed\"}", "level": 6, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+    outputs:
+      - extract_from: request_chat_cap
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.event, "tinychat_request")
+              assert_eq!(.route_template, "/api/agent/chat")
+              assert_eq!(.stream, "error")
+    no_outputs_from: [request_problem_cap, request_routine_cap, other_cap]
+  - name: "TC-4310 agent chat request record with a 5xx status reaches the chat cap and not the problem cap"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "{\"event\":\"tinychat_request\",\"request_id\":\"0b6f2c1e-9d4a-4e7b-8c3f-2a1d5e6f7a8b\",\"method\":\"POST\",\"route\":\"/api/agent/chat\",\"status\":502,\"duration_ms\":40.2}", "level": 6, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+    outputs:
+      - extract_from: request_chat_cap
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.status, 502)
+              assert_eq!(.level, "error")
+    no_outputs_from: [request_problem_cap, request_routine_cap, other_cap]
+  - name: "TC-4310 chat request record on /api/chat reaches the chat cap only"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "{\"event\":\"tinychat_request\",\"request_id\":\"0b6f2c1e-9d4a-4e7b-8c3f-2a1d5e6f7a8b\",\"method\":\"POST\",\"route\":\"/api/chat\",\"status\":200,\"duration_ms\":2210.7,\"stream\":\"done\"}", "level": 6, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+    outputs:
+      - extract_from: request_chat_cap
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.event, "tinychat_request")
+              assert_eq!(.route_template, "/api/chat")
+    no_outputs_from: [request_routine_cap, request_problem_cap, other_cap]
+  - name: "TC-4310 chat request record on /api/chat with a stream error reaches the chat cap and not the problem cap"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "{\"event\":\"tinychat_request\",\"request_id\":\"0b6f2c1e-9d4a-4e7b-8c3f-2a1d5e6f7a8b\",\"method\":\"POST\",\"route\":\"/api/chat\",\"status\":200,\"duration_ms\":88.1,\"stream\":\"aborted\"}", "level": 6, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+    outputs:
+      - extract_from: request_chat_cap
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.route_template, "/api/chat")
+              assert_eq!(.stream, "aborted")
+    no_outputs_from: [request_problem_cap, request_routine_cap, other_cap]
+  - name: "TC-4310 a non-chat 5xx request record still reaches the problem cap and not the chat cap"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "{\"event\":\"tinychat_request\",\"request_id\":\"0b6f2c1e-9d4a-4e7b-8c3f-2a1d5e6f7a8b\",\"method\":\"GET\",\"route\":\"/api/bots/history/notice\",\"status\":503,\"duration_ms\":12.4}", "level": 6, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+    outputs:
+      - extract_from: request_problem_cap
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.route_template, "/api/bots/history/notice")
+              assert_eq!(.status, 503)
+    no_outputs_from: [request_chat_cap, request_routine_cap, other_cap]
+  - name: "TC-4310 a non-chat 200 request record still reaches the routine cap and not the chat cap"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "{\"event\":\"tinychat_request\",\"request_id\":\"0b6f2c1e-9d4a-4e7b-8c3f-2a1d5e6f7a8b\",\"method\":\"GET\",\"route\":\"/health\",\"status\":200,\"duration_ms\":1.2}", "level": 6, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+    outputs:
+      - extract_from: request_routine_cap
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.route_template, "/health")
+              assert_eq!(.status, 200)
+    no_outputs_from: [request_chat_cap, request_problem_cap, other_cap]
+  - name: "TC-4310 an allowlisted route under /api/chat does not reach the chat cap"
+    inputs:
+      - insert_at: redact
+        type: vrl
+        source: |
+          . = {"message": "{\"event\":\"tinychat_request\",\"request_id\":\"0b6f2c1e-9d4a-4e7b-8c3f-2a1d5e6f7a8b\",\"method\":\"GET\",\"route\":\"/api/chat/models\",\"status\":200,\"duration_ms\":1.2}", "level": 6, "timestamp": now(), "_tc.logship": "tinychat-backend"}
+    outputs:
+      - extract_from: request_routine_cap
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.route_template, "/api/chat/models")
+    no_outputs_from: [request_chat_cap, request_problem_cap, other_cap]
