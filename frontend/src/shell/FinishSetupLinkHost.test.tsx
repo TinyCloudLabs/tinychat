@@ -7,7 +7,9 @@ import { installDom } from "@/test/dom";
 import type { RegistryPublishClient } from "@/lib/registryConsent/adapter";
 import { FINISH_SETUP_NOTICE_COPY } from "@/lib/registryConsent/copy";
 import { FINISH_SETUP_CARD_STATE, type RegistryPublishEnv } from "@/lib/registryConsent/intent";
+import { createDismissedStore } from "@/lib/registryConsent/dismissed";
 import { fakeSdk } from "@/lib/registryConsent/testClient.fixture";
+import { clearAccountSignOutStorage } from "@/lib/accountSignOutStorage";
 
 // Radix portals do not attach in happy-dom: the dialog's chrome is an inline stand-in; the notice's own content is real.
 // bun's mock.module is process-wide: the stand-in keeps every other export, and the real module is put back after.
@@ -133,5 +135,78 @@ describe("a finish-setup link", () => {
     expect(dialog()).not.toBeNull();
     expect(link.search()).toBe("");
     expect(sdk.calls).toEqual([]);
+  });
+});
+
+/** A localStorage stand-in with the key listing the sign-out wipe walks. */
+function listedStorage() {
+  const map = new Map<string, string>();
+  return {
+    get length() { return map.size; },
+    key: (index: number) => [...map.keys()][index] ?? null,
+    getItem: (key: string) => map.get(key) ?? null,
+    setItem: (key: string, value: string) => { map.set(key, value); },
+    removeItem: (key: string) => { map.delete(key); },
+  };
+}
+
+/** One page that sees the signed-in client change: `signIn(client)` renders it, `signOut()` renders no client. */
+async function mountAccounts(env: RegistryPublishEnv) {
+  restore ??= installDom();
+  const container = document.createElement("div");
+  document.body.append(container);
+  root = createRoot(container);
+  const show = (client: RegistryPublishClient | null, ready: boolean) =>
+    act(async () => root!.render(<FinishSetupLinkHost tcw={client} ready={ready} searchKey={env.location.search} env={env} />));
+  return { signIn: (client: RegistryPublishClient) => show(client, true), signOut: () => show(null, false), show };
+}
+
+describe("a finish-setup notice and the next account", () => {
+  const accountA = fakeSdk("published");
+  const accountB = fakeSdk("published");
+  const clientB = { ...accountB.client, did: "did:pkh:eip155:1:0x00000000000000000000000000000000000b0b01" };
+  const link = () => page("https://tinycloud.one/chat/feed?finish-setup=registry", false);
+
+  test("A opens a link, signs out, B signs in: the notice does not show for B, nothing is asked, and A's flag stays on the device", async () => {
+    const storage = listedStorage();
+    const flags = createDismissedStore(() => storage);
+    flags.write(accountA.client.did);
+    const env = link().env;
+    const view = await mountAccounts(env);
+    await view.signIn(accountA.client);
+    expect(dialog()).not.toBeNull();
+    expect(accountA.calls).toEqual([]);
+
+    await view.signOut();
+    clearAccountSignOutStorage(accountA.client.did, "0x00000000000000000000000000000000000a11ce", storage);
+    expect(dialog()).toBeNull();
+
+    await view.signIn(clientB);
+    expect(dialog()).toBeNull();
+    expect(accountB.calls).toEqual([]);
+    expect(accountA.calls).toEqual([]);
+    expect(createDismissedStore(() => storage).read(accountA.client.did)).toBe(true);
+    expect(createDismissedStore(() => storage).read(clientB.did)).toBe(false);
+  });
+
+  test("a direct swap of the signed-in client closes A's notice and does not show it for B", async () => {
+    const view = await mountAccounts(link().env);
+    await view.signIn(accountA.client);
+    expect(dialog()).not.toBeNull();
+    await view.signIn(clientB);
+    expect(dialog()).toBeNull();
+    expect(accountB.calls).toEqual([]);
+    expect(accountA.calls).toEqual([]);
+  });
+
+  test("a sign-in that ends and returns for the same client does not bring the closed notice back", async () => {
+    const view = await mountAccounts(link().env);
+    await view.signIn(accountA.client);
+    expect(dialog()).not.toBeNull();
+    await view.show(accountA.client, false);
+    expect(dialog()).toBeNull();
+    await view.show(accountA.client, true);
+    expect(dialog()).toBeNull();
+    expect(accountA.calls).toEqual([]);
   });
 });

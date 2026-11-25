@@ -1,9 +1,13 @@
-// TC-3547: has this owner tapped the finish-setup card's button on this device? Kept in localStorage per owner, so the
-// card stays hidden for that account on this device across page loads, sign-ins and sign-outs, a different owner is never
-// affected, and another device shows the card once more. The SDK has no such flag; this one is the host's.
+// TC-3547: was this owner's registry record published from this device? Written only when the SDK answers "published" or
+// "already-current" (intent.ts), kept in localStorage per owner, so the finish-setup card stays hidden for that account on
+// this device across page loads, sign-ins and sign-outs. A refused signature, "unavailable", "needs-one" or a thrown
+// error writes nothing. A different owner is never affected, and another device shows the card once more. The SDK has no
+// such flag; this one is the host's.
 export interface DismissedStore {
   read(subject: string): boolean;
   write(subject: string): void;
+  /** Calls `listener` after every write, so a mounted card can hide at once. Returns the way to stop listening. */
+  subscribe(listener: () => void): () => void;
 }
 
 /** `tcw.tc3547.dismissed.<did:pkh, lowercased>`, so case variants of one owner share a key. The value is `{ "dismissed": true, "at": ISO time }`; any value whose `dismissed` is `true` counts. */
@@ -18,6 +22,7 @@ type StorageLike = Pick<Storage, "getItem" | "setItem">;
  */
 export function createDismissedStore(storage: () => StorageLike | undefined = defaultStorage): DismissedStore {
   const answeredHere = new Set<string>();
+  const listeners = new Set<() => void>();
   return {
     read(subject) {
       if (answeredHere.has(subject)) return true;
@@ -34,6 +39,11 @@ export function createDismissedStore(storage: () => StorageLike | undefined = de
       try {
         storage()?.setItem(dismissedKey(subject), JSON.stringify({ dismissed: true, at: new Date().toISOString() }));
       } catch { /* Kept in memory for this load. */ }
+      for (const listener of [...listeners]) listener();
+    },
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => { listeners.delete(listener); };
     },
   };
 }

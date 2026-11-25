@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import type { RegistryPublishClient } from "@/lib/registryConsent/adapter";
 import { FINISH_SETUP_NOTICE_COPY } from "@/lib/registryConsent/copy";
+import { registryDismissedStore, type DismissedStore } from "@/lib/registryConsent/dismissed";
 import { publishRegistryRecord, runFinishSetupIntent, type RegistryPublishEnv } from "@/lib/registryConsent/intent";
 
 /**
@@ -33,28 +34,37 @@ export function FinishSetupNotice({ open, onPublish, onCancel }: { open: boolean
  * first. From the card the SDK is asked to publish at once; from a pasted or shared link the notice shows and the SDK is
  * not asked until Publish. `ready` is true only for a signed-in client, so a link opened signed out waits for sign-in.
  * `searchKey` is the router's search string: a card tap changes it and runs this again.
+ *
+ * The notice belongs to the client it was opened for. It closes, and nothing is kept, when the client changes or sign-in
+ * ends, so the next account never sees it and Publish never signs for a different account. The query is gone from the
+ * address by then, so the next account's run finds no link.
  */
-export function FinishSetupLinkHost({ tcw, ready, searchKey, env = { location: window.location, history: window.history } }: {
+export function FinishSetupLinkHost({ tcw, ready, searchKey, env = { location: window.location, history: window.history }, dismissed = registryDismissedStore }: {
   tcw: RegistryPublishClient | null;
   ready: boolean;
   searchKey: string;
   env?: RegistryPublishEnv;
+  dismissed?: DismissedStore;
 }) {
-  const [noticeOpen, setNoticeOpen] = useState(false);
+  const [noticeFor, setNoticeFor] = useState<RegistryPublishClient | null>(null);
+  // A new client, no client, or an ended sign-in drops the notice.
+  useEffect(() => () => setNoticeFor(null), [ready, tcw]);
   useEffect(() => {
     if (!ready || !tcw) return;
-    void runFinishSetupIntent(tcw, env).then((outcome) => {
-      if (outcome === "notice") setNoticeOpen(true);
+    void runFinishSetupIntent(tcw, env, undefined, dismissed).then((outcome) => {
+      if (outcome === "notice") setNoticeFor(tcw);
     });
     // `env` is the page's own location and history; only the client, sign-in state and address decide a run.
   }, [ready, tcw, searchKey]);
+  // An answer that arrives after the client changed names the old client, so it never shows for the new one.
+  const open = ready && tcw !== null && noticeFor === tcw;
   return (
     <FinishSetupNotice
-      open={noticeOpen && ready && tcw !== null}
-      onCancel={() => setNoticeOpen(false)}
+      open={open}
+      onCancel={() => setNoticeFor(null)}
       onPublish={() => {
-        setNoticeOpen(false);
-        if (tcw) void publishRegistryRecord(tcw, env.location.origin);
+        setNoticeFor(null);
+        if (open && tcw) void publishRegistryRecord(tcw, env.location.origin, undefined, dismissed);
       }}
     />
   );

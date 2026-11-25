@@ -62,22 +62,23 @@ test("hidden for an account that already has its record", async () => {
   expect(view.text()).toBe("");
 });
 
-test("the button records the tap for this account, goes to the finish-setup address, and the page's intent path then publishes", async () => {
+test("the button writes nothing, goes to the finish-setup address, and the page's intent path then publishes and hides the card", async () => {
   const sdk = fakeSdk("published");
   const store = memoryDismissedStore();
   const view = await mount(async () => true, sdk.client, store);
   expect(store.read(sdk.client.did)).toBe(false);
   await view.click(FINISH_SETUP_BANNER_COPY.action);
-  expect(store.read(sdk.client.did)).toBe(true);
+  expect(store.read(sdk.client.did)).toBe(false);
   expect(search).toBe(FINISH_SETUP_INTENT_SEARCH);
   expect(hasFinishSetupRegistryIntent(search)).toBe(true);
-  expect(view.text()).toBe("");
+  expect(view.text()).toContain(FINISH_SETUP_BANNER_COPY.action);
   const replaced: string[] = [];
   const outcome = await runFinishSetupIntent(sdk.client, {
     location: { origin: "https://tinycloud.one", pathname: "/chat/feed", search, hash: "" },
     history: { state: { usr: routerState }, replaceState: (_state, _title, url) => { replaced.push(String(url)); } },
-  });
+  }, undefined, store);
   expect(outcome).toBe("published");
+  expect(store.read(sdk.client.did)).toBe(true);
   expect(replaced).toEqual(["/chat/feed"]);
   expect(sdk.calls).toEqual([[]]);
 });

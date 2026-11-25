@@ -1,6 +1,7 @@
 // TC-3547: the `finish-setup=registry` link, and the Home card that navigates to it. The SDK publishes only from TinyCloud
 // One and Home (an exact origin match) and signs nothing elsewhere, so the host asks every time and acts on the verdict.
 import { ensureRegistryRecord, type RegistryPublishClient, type RegistryPublishOutcome } from "./adapter";
+import { registryDismissedStore, type DismissedStore } from "./dismissed";
 import { openRegistrySetupLink } from "./setupLink";
 
 /** The SDK's `FINISH_SETUP_REGISTRY_INTENT` ("finish-setup=registry"), matched as a name and a fixed value. */
@@ -42,13 +43,19 @@ export function arrivedFromFinishSetupCard(historyState: unknown): boolean {
   return typeof usr === "object" && usr !== null && "finishSetupFromCard" in usr && usr.finishSetupFromCard === true;
 }
 
-/** Ask the SDK to publish; on "needs-one" the owner is sent to TinyCloud One to finish there (setupLink.ts). */
+/**
+ * Ask the SDK to publish. On "published" or "already-current" the account's flag is written (dismissed.ts), so the card
+ * stays hidden for it on this device. On "needs-one" the owner is sent to TinyCloud One to finish there (setupLink.ts).
+ * A refused signature, "unavailable" or a thrown error writes nothing, so the card keeps showing.
+ */
 export async function publishRegistryRecord(
   tcw: RegistryPublishClient,
   currentOrigin: string,
   openSetupLink: (currentOrigin: string) => Promise<void> = openRegistrySetupLink,
+  dismissed: DismissedStore = registryDismissedStore,
 ): Promise<RegistryPublishOutcome> {
   const outcome = await ensureRegistryRecord(tcw);
+  if ((outcome === "published" || outcome === "already-current") && tcw.did) dismissed.write(tcw.did);
   if (outcome === "needs-one") await openSetupLink(currentOrigin);
   return outcome;
 }
@@ -63,9 +70,10 @@ export async function runFinishSetupIntent(
   tcw: RegistryPublishClient,
   env: RegistryPublishEnv,
   openSetupLink: (currentOrigin: string) => Promise<void> = openRegistrySetupLink,
+  dismissed: DismissedStore = registryDismissedStore,
 ): Promise<FinishSetupOutcome> {
   if (!hasFinishSetupRegistryIntent(env.location.search)) return "no-intent";
   env.history.replaceState(env.history.state, "", withoutFinishSetupIntent(env.location));
   if (!arrivedFromFinishSetupCard(env.history.state)) return "notice";
-  return publishRegistryRecord(tcw, env.location.origin, openSetupLink);
+  return publishRegistryRecord(tcw, env.location.origin, openSetupLink, dismissed);
 }
