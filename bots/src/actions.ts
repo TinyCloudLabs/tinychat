@@ -1,11 +1,13 @@
-// Main proposing an action (`propose_action`) for its owner to approve on a card. The first kind is one message to
-// two or more of the owner's other bots. The gateway takes the box's call, checks it, gives it an id and binds it to
-// the owner, the bot, the kind, the recipients and the text; the supervisor collects it into `actions.json`, beside
-// the requests of `ask_owner` and outside anything a sandbox mounts. Only the owner's tap on the card approves it, and
-// the owner's tap names the binding of what the card showed. The supervisor then has the gateway spend the approval
-// (once, and only for that binding) and delivers the message to each recipient by the path `message_bot` takes. Main
-// learns the outcome only from a message this service composes. A declined or expired proposal is final: the gateway
-// refuses the same proposal from then on.
+// Main proposing an action (`propose_action`) for its owner to approve on a card. Two kinds: one message to two or
+// more of the owner's other bots (`message_bots`), and one feedback report to the TinyCloud team (`send_feedback`,
+// feedback.ts), whose text is the exact report body and which has no recipients. The gateway takes the box's call,
+// checks it, gives it an id and binds it to the owner, the bot, the kind, the recipients and the text; the supervisor
+// collects it into `actions.json`, beside the requests of `ask_owner` and outside anything a sandbox mounts. Only the
+// owner's tap on the card approves it, and the owner's tap names the binding of what the card showed. The supervisor
+// then has the gateway spend the approval (once, and only for that binding) and delivers the message to each
+// recipient by the path `message_bot` takes, or has the gateway post the report. Main learns the outcome only from a
+// message this service composes. A declined or expired proposal is final: the gateway refuses the same proposal from
+// then on.
 
 import { createHash } from "node:crypto";
 import { closeSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, writeSync } from "node:fs";
@@ -14,8 +16,9 @@ import { normalizedQuestion, readAsksEnabled, utcDay } from "./asks";
 import { isRecord } from "./guards";
 import type { BotLayout } from "./layout";
 import { isBotKey, MAIN_KEY } from "./owner";
+import { type FeedbackSent, feedbackReply, parseFeedbackSent, storedFeedback } from "./feedback";
 
-export const ACTION_KINDS = ["message_bots"] as const;
+export const ACTION_KINDS = ["message_bots", "send_feedback"] as const;
 export type ActionKind = (typeof ACTION_KINDS)[number];
 export const MIN_TARGETS = 2;
 export const MAX_TARGETS = 8;
@@ -119,18 +122,26 @@ export function parseNewActions(input: unknown): NewAction[] | undefined {
     if (!isRecord(action) || typeof action.id !== "string" || !ACTION_ID.test(action.id) || typeof action.outside !== "boolean") return undefined;
     if (!ACTION_KINDS.some(kind => kind === action.kind) || typeof action.binding !== "string" || !HASH.test(action.binding)) return undefined;
     if (!Number.isSafeInteger(action.askedAt) || (action.askedAt as number) <= 0) return undefined;
-    const targets = checkedTargets(action.targets);
-    const text = plainMessage(action.text, MAX_ACTION_TEXT);
+    const kind = action.kind as ActionKind;
+    // A report has no recipients, and its text is exactly the body the gateway built (feedback.ts).
+    const targets = kind === "send_feedback" ? (Array.isArray(action.targets) && action.targets.length === 0 ? [] : undefined) : checkedTargets(action.targets);
+    const text = kind === "send_feedback" ? (storedFeedback(action.text) ? action.text as string : undefined) : plainMessage(action.text, MAX_ACTION_TEXT);
     if (!targets || text === undefined || text !== action.text) return undefined;
-    actions.push({ id: action.id, kind: action.kind as ActionKind, targets, text, binding: action.binding, askedAt: action.askedAt as number, outside: action.outside });
+    actions.push({ id: action.id, kind, targets, text, binding: action.binding, askedAt: action.askedAt as number, outside: action.outside });
   }
   return actions;
 }
 
-/** The supervisor's push: the recipients Main may name this turn (absent: unchanged), counts, and final proposals. */
+/**
+ * The supervisor's push: the recipients Main may name this turn (absent: unchanged), counts, and final proposals.
+ * `ownerTurn` goes with `keys` at a turn's start: true only when the owner wrote the message that started it.
+ * `feedback`: the open feedback proposals.
+ */
 export interface ActionsPush {
   keys?: string[];
+  ownerTurn?: boolean;
   pending: number;
+  feedback?: number;
   day: string;
   today: number;
   final: string[];
@@ -140,18 +151,23 @@ export function parseActionsPush(input: unknown): ActionsPush | undefined {
   if (!isRecord(input)) return undefined;
   const count = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= 100_000;
   if (!count(input.pending) || !count(input.today) || typeof input.day !== "string" || !/^\d{4}-\d\d-\d\d$/.test(input.day)) return undefined;
+  if (input.feedback !== undefined && !count(input.feedback)) return undefined;
   if (!Array.isArray(input.final) || input.final.length > META_KEEP_COUNT || !input.final.every(hash => typeof hash === "string" && HASH.test(hash))) return undefined;
   let keys: string[] | undefined;
   if (input.keys !== undefined) {
     if (!Array.isArray(input.keys) || input.keys.length > 64 || !input.keys.every(key => typeof key === "string" && isBotKey(key))) return undefined;
     keys = [...input.keys as string[]];
   }
-  return { ...(keys ? { keys } : {}), pending: input.pending, day: input.day, today: input.today, final: [...input.final as string[]] };
+  if (input.ownerTurn !== undefined && (typeof input.ownerTurn !== "boolean" || keys === undefined)) return undefined;
+  return {
+    ...(keys ? { keys } : {}), ...(input.ownerTurn === true ? { ownerTurn: true } : {}), pending: input.pending,
+    ...(input.feedback !== undefined ? { feedback: input.feedback } : {}), day: input.day, today: input.today, final: [...input.final as string[]],
+  };
 }
 
 /**
  * `sending`: approved, the approval spent or being spent, delivery under way. `done`: over, with one outcome per
- * recipient. `stopped`: closed while pending because the owner turned requests off.
+ * recipient (a report: its send outcome). `stopped`: closed while pending because the owner turned requests off.
  */
 export type ActionState = "pending" | "sending" | "done" | "declined" | "expired" | "stopped";
 const ACTION_STATES: readonly ActionState[] = ["pending", "sending", "done", "declined", "expired", "stopped"];
@@ -176,6 +192,8 @@ interface StoredAction {
   /** Kept only until the proposal is over. */
   text?: string;
   outcomes?: ActionOutcome[];
+  /** A report, once done: what became of its send. */
+  feedback?: FeedbackSent;
   /** Done or declined, and Main has not been told yet. */
   undelivered?: true;
 }
@@ -191,18 +209,20 @@ export interface ActionRequest {
   outside: boolean;
   resolvedAt?: string;
   targets: string[];
-  /** The message, while pending: shown as written and labelled as Main's. */
+  /** The message, while pending: shown as written and labelled as Main's. For a report, the exact body. */
   text?: string;
   /** While pending: what the owner's tap must name. */
   binding?: string;
   outcomes?: ActionOutcome[];
+  /** A report, once done: its send outcome and, when filed, the service's report id. */
+  feedback?: FeedbackSent;
   undelivered?: true;
 }
 
 /** What a decided proposal says to Main: the composed message and which decision it carries. */
 export interface ActionReply {
   text: string;
-  decision: "action_approved" | "action_declined";
+  decision: "action_approved" | "action_declined" | "feedback_sent" | "feedback_declined";
 }
 
 export type ActionResult = { ok: true; request: ActionRequest } | { ok: false; error: "not_pending" | "invalid" };
@@ -223,7 +243,8 @@ function validStored(value: unknown): value is StoredAction {
   return isRecord(value) && typeof value.id === "string" && ACTION_ID.test(value.id) && ACTION_KINDS.some(kind => kind === value.kind)
     && ACTION_STATES.some(state => state === value.state) && Number.isSafeInteger(value.askedAt) && Number.isSafeInteger(value.expiresAt)
     && typeof value.outside === "boolean" && typeof value.binding === "string" && typeof value.hash === "string"
-    && Array.isArray(value.targets) && value.targets.every(key => typeof key === "string");
+    && Array.isArray(value.targets) && value.targets.every(key => typeof key === "string")
+    && (value.feedback === undefined || parseFeedbackSent(value.feedback) !== undefined);
 }
 
 /**
@@ -282,10 +303,14 @@ export class ActionStore {
     return changed;
   }
 
-  /** Over: every recipient without a recorded delivery counts as not delivered. */
-  #finish(action: StoredAction, outcomes: ActionOutcome[]): void {
+  /**
+   * Over: every recipient without a recorded delivery counts as not delivered. A report without a recorded outcome
+   * (a stop cut its send short) is `unknown`: it may have gone out.
+   */
+  #finish(action: StoredAction, outcomes: ActionOutcome[], feedback?: FeedbackSent): void {
     action.state = "done";
     action.outcomes = action.targets.map(key => ({ key, delivered: outcomes.some(outcome => outcome.key === key && outcome.delivered) }));
+    if (action.kind === "send_feedback") action.feedback = feedback ?? action.feedback ?? { outcome: "unknown" };
     action.undelivered = true;
     delete action.text;
   }
@@ -312,6 +337,11 @@ export class ActionStore {
 
   has(id: string): boolean {
     return this.#load().some(action => action.id === id);
+  }
+
+  /** The kind of a stored proposal, or undefined. */
+  kind(id: string): ActionKind | undefined {
+    return this.#load().find(action => action.id === id)?.kind;
   }
 
   /** Records proposals the gateway collected; one already held (same id) is not added twice. */
@@ -341,6 +371,7 @@ export class ActionStore {
       targets: [...action.targets],
       ...(pending ? { text: action.text, binding: action.binding } : {}),
       ...(action.outcomes ? { outcomes: action.outcomes.map(outcome => ({ ...outcome })) } : {}),
+      ...(action.feedback ? { feedback: { ...action.feedback } } : {}),
       ...(action.undelivered ? { undelivered: true as const } : {}),
     };
   }
@@ -378,18 +409,19 @@ export class ActionStore {
     if (!action || action.state !== "pending" || action.text === undefined) return { ok: false, error: "not_pending" };
     const payload: ActionPayload = { kind: action.kind, targets: [...action.targets], text: action.text };
     if (binding !== action.binding || actionBinding(ownerId, this.#layout.botId, payload) !== action.binding) return { ok: false, error: "invalid" };
+    if (action.kind === "send_feedback" && (payload.targets.length > 0 || !storedFeedback(payload.text))) return { ok: false, error: "invalid" };
     action.state = "sending";
     action.resolvedAt = this.#now();
     this.#save(actions);
     return { ok: true, request: this.#view(action), payload };
   }
 
-  /** The send is over with these outcomes. Only a proposal that is sending can finish, once. */
-  finish(id: string, outcomes: ActionOutcome[]): void {
+  /** The send is over with these outcomes (a report: its send outcome). Only a proposal that is sending can finish, once. */
+  finish(id: string, outcomes: ActionOutcome[], feedback?: FeedbackSent): void {
     const actions = this.#load();
     const action = actions.find(held => held.id === id);
     if (action?.state !== "sending") return;
-    this.#finish(action, outcomes);
+    this.#finish(action, outcomes, feedback);
     this.#save(actions);
   }
 
@@ -412,8 +444,10 @@ export class ActionStore {
   reply(id: string): ActionReply | undefined {
     const action = this.#load().find(held => held.id === id);
     if (!action?.undelivered) return undefined;
-    if (action.state === "declined") return { text: ACTION_REPLIES.declined, decision: "action_declined" };
+    const feedback = action.kind === "send_feedback";
+    if (action.state === "declined") return { text: ACTION_REPLIES.declined, decision: feedback ? "feedback_declined" : "action_declined" };
     if (action.state !== "done") return undefined;
+    if (feedback) return { text: feedbackReply(action.feedback ?? { outcome: "unknown" }), decision: "feedback_sent" };
     const delivered = (action.outcomes ?? []).filter(outcome => outcome.delivered).map(outcome => outcome.key);
     const failed = (action.outcomes ?? []).filter(outcome => !outcome.delivered).map(outcome => outcome.key);
     const text = delivered.length === 0 ? ACTION_REPLIES.notSent : failed.length === 0 ? ACTION_REPLIES.sent(delivered) : ACTION_REPLIES.partly(delivered, failed);
@@ -434,6 +468,7 @@ export class ActionStore {
     const day = utcDay(this.#now());
     return {
       pending: actions.filter(action => action.state === "pending").length,
+      feedback: actions.filter(action => action.state === "pending" && action.kind === "send_feedback").length,
       day,
       today: actions.filter(action => utcDay(action.askedAt) === day).length,
       final: [...new Set(actions.filter(action => action.state === "declined" || action.state === "expired").map(action => action.hash))],
@@ -458,14 +493,14 @@ function inOrder<T>(botId: string, task: () => Promise<T>): Promise<T> {
 
 /**
  * Collects new proposals, stores them while the owner's setting for requests is on (dropped while it is off), then
- * gives the gateway the counts, the final proposals and, at the start of a turn, the recipients Main may name. One at
- * a time per bot.
+ * gives the gateway the counts, the final proposals and, at the start of a turn, the recipients Main may name and
+ * whether the owner started the turn (`ownerTurn`, only with `keys`). One at a time per bot.
  */
-export function syncActions(layout: BotLayout, gateway: ActionsGateway, keys?: readonly string[], now: () => number = Date.now): Promise<void> {
+export function syncActions(layout: BotLayout, gateway: ActionsGateway, keys?: readonly string[], now: () => number = Date.now, ownerTurn = false): Promise<void> {
   return inOrder(layout.botId, async () => {
     const store = new ActionStore(layout, now);
     const collected = parseNewActions(await gateway.drain());
     if (readAsksEnabled(layout) && collected?.length) store.ingest(collected);
-    await gateway.push({ ...store.push(), ...(keys ? { keys: [...keys] } : {}) });
+    await gateway.push({ ...store.push(), ...(keys ? { keys: [...keys], ...(ownerTurn ? { ownerTurn: true } : {}) } : {}) });
   });
 }

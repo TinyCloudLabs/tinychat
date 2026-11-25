@@ -8,6 +8,7 @@ import { closeSync, existsSync, fsyncSync, openSync, readFileSync, renameSync, w
 import { dirname } from "node:path";
 import { ActionDesk, type ActionLedgerStore, PROPOSE_TOOL } from "./actions-desk";
 import { ACTION_ERRORS, type ActionsPush, type NewAction } from "./actions";
+import type { FeedbackSent } from "./feedback";
 import { AskDesk, APP_TOOLS } from "./asks-desk";
 import { type AsksPush, type NewRequest, SECRET_ERRORS, utcMinute } from "./asks";
 import { MeetingDesk } from "./meeting-reads";
@@ -414,7 +415,9 @@ export class Gateway {
     this.#ownerStore = deps.ownerStore;
     this.#meetings = deps.meetings ?? new MeetingDesk({ backendOrigin: "", backendCallSecret: undefined });
     for (const [botId, ownerId] of Object.entries(this.#ownerStore?.load() ?? {})) this.#owners.set(botId, ownerId);
-    this.#actions = new ActionDesk(() => this.#now(), botId => this.#owners.get(botId) ?? botId, botId => this.#asks.outside(botId), deps.actionStore, botId => this.#meetings.held(botId));
+    this.#actions = new ActionDesk(
+      () => this.#now(), botId => this.#owners.get(botId) ?? botId, botId => this.#asks.outside(botId), deps.actionStore, botId => this.#meetings.held(botId), cfg.feedbackUrl,
+    );
     this.#secrets = deps.secretNet ? deps.secrets : undefined;
     this.#secretNet = deps.secretNet;
   }
@@ -491,6 +494,14 @@ export class Gateway {
   /** Spends an approval after the owner's tap: once, for that bot and binding. The supervisor alone reaches this. */
   spendAction(botId: string, id: string, binding: string): boolean {
     return this.#actions.spend(botId, id, binding);
+  }
+
+  /**
+   * Posts an approved feedback report after the owner's tap (actions-desk.ts `send`): checked again, spent once, then
+   * one POST to the pinned feedback origin. The supervisor alone reaches this.
+   */
+  sendFeedback(botId: string, id: string, binding: string, body: string): Promise<FeedbackSent> {
+    return this.#actions.send(botId, id, binding, body);
   }
 
   /** Whether a search provider key is configured at all. */

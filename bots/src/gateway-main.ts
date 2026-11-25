@@ -13,10 +13,13 @@
 //   PUT    /bots/<botId>/reads  {"areas", "owner"?, "conversation"}  the owner's read setting for Main (TrustBot) and the
 //                         id of its conversation (applies from the bot's next call)
 //   GET    /bots/<botId>/reads                   {"held"}: whether its current conversation holds owner data it read
-//   PUT    /bots/<botId>/actions  {"keys"?, "pending", "day", "today", "final"}  for `propose_action`: the recipients Main may
-//                         name this turn, the supervisor's counts and the proposals that are final
+//   PUT    /bots/<botId>/actions  {"keys"?, "ownerTurn"?, "pending", "feedback"?, "day", "today", "final"}  for `propose_action`:
+//                         the recipients Main may name this turn and whether the owner started it, the supervisor's counts
+//                         and the proposals that are final
 //   POST   /bots/<botId>/actions/drain           {"actions"}: the proposals the bot has made since the last drain
 //   POST   /bots/<botId>/actions/spend {"id", "binding"}  204 once for an approval the gateway issued with that binding, else 409
+//   POST   /bots/<botId>/actions/send {"id", "binding", "body"}  {"outcome", "reportId"?, "code"?}: posts an approved feedback
+//                         report once (feedback.ts), after checking and spending its approval
 //   POST|DELETE /bots/<botId>/turn              meter one supervisor turn, settling its model calls before logging
 //   PUT|DELETE /bots/<botId>/secrets/<id>, POST /bots/<botId>/secrets/drain   secret requests (secret-routes.ts)
 
@@ -24,7 +27,7 @@ import { chmodSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { Server } from "bun";
 import { BotAci } from "./aci";
-import { ADMISSION_CONTROL_PATH, createAdmissionRelay, MAX_ADMISSION_BYTES } from "./bot-admission";
+import { ADMISSION_CONTROL_PATH, createAdmissionRelay } from "./bot-admission";
 import { fileActionLedgerStore } from "./actions-desk";
 import { parseActionsPush } from "./actions";
 import { gatewayConfig, SECRET_ORIGINS } from "./config";
@@ -45,6 +48,13 @@ import { parseWebPolicy } from "./web-policy";
 import { parseAsksPush } from "./asks";
 import { startCourierGateway, type CourierGateway } from "./courier/runtime";
 import { courierPeerHash } from "./courier/intake";
+
+/**
+ * The control socket's largest request body, for every route on it: a feedback report's body (up to 8 KB, JSON-escaped)
+ * on /actions/send, actions pushes with their final hashes and Courier bodies. The admission relay keeps its own
+ * 512-byte cap (bot-admission.ts). Only the supervisor reaches this socket.
+ */
+const CONTROL_MAX_BODY_BYTES = 32 * 1024;
 
 const { backendOrigin, backendCallSecret, ...cfg } = gatewayConfig(process.env);
 const admit = createAdmissionRelay(backendOrigin, backendCallSecret);
@@ -142,8 +152,8 @@ function unlisten(botId: string): void {
 
 const control = Bun.serve({
   unix: join(cfg.egressRoot, "control.sock"),
-  maxRequestBodySize: MAX_ADMISSION_BYTES,
-  async fetch(req) {
+  maxRequestBodySize: CONTROL_MAX_BODY_BYTES,
+  async fetch(req, server) {
     const { pathname } = new URL(req.url);
     if (pathname.startsWith("/courier/")) {
       try { return await courier?.control(req) ?? new Response(null, { status: 404 }); }
@@ -183,7 +193,7 @@ const control = Bun.serve({
       }
       return new Response(null, { status: 405 });
     }
-    const actionsMatch = /^\/bots\/([0-9a-f]{64})\/actions(\/drain|\/spend)?$/.exec(pathname);
+    const actionsMatch = /^\/bots\/([0-9a-f]{64})\/actions(\/drain|\/spend|\/send)?$/.exec(pathname);
     if (actionsMatch) {
       const actionsBot = actionsMatch[1]!;
       if (actionsMatch[2] === "/drain" && req.method === "POST") return Response.json({ actions: gateway.drainActions(actionsBot) });
@@ -191,6 +201,13 @@ const control = Bun.serve({
         const input: unknown = await req.json().catch(() => null);
         if (!isRecord(input) || typeof input.id !== "string" || typeof input.binding !== "string") return new Response(null, { status: 400 });
         return new Response(null, { status: gateway.spendAction(actionsBot, input.id, input.binding) ? 204 : 409 });
+      }
+      if (actionsMatch[2] === "/send" && req.method === "POST") {
+        // One POST of up to 15 s to the feedback service; Bun's 10 s idle timeout would cut the supervisor's call first.
+        server.timeout(req, 30);
+        const input: unknown = await req.json().catch(() => null);
+        if (!isRecord(input) || typeof input.id !== "string" || typeof input.binding !== "string" || typeof input.body !== "string") return new Response(null, { status: 400 });
+        return Response.json(await gateway.sendFeedback(actionsBot, input.id, input.binding, input.body));
       }
       if (!actionsMatch[2] && req.method === "PUT") {
         const push = parseActionsPush(await req.json().catch(() => null));

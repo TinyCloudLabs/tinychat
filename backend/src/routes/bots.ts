@@ -251,16 +251,106 @@ function toActionRequest(value: Record<string, unknown>, names: ReadonlyMap<stri
   };
 }
 
+const FEEDBACK_TYPES = ["bug", "friction", "improvement"] as const;
+const FEEDBACK_OUTCOMES = ["filed", "rate_limited", "busy", "rejected", "unknown", "refused"] as const;
+const FEEDBACK_AGENT = `TinyCloud One bot (${MAIN_BOT_NAME})`;
+const FEEDBACK_REPORT_KEYS = ["area", "kind", "title", "tried", "happened", "expected", "agent"] as const;
+const MAX_FEEDBACK_TITLE = 120;
+const MAX_FEEDBACK_FIELD = 800;
+const MAX_FEEDBACK_BYTES = 8 * 1024;
+/** The feedback service's report id: a ULID. */
+const FEEDBACK_REPORT_ID = /^[0-9A-HJKMNP-TV-Z]{26}$/;
+
+/** A feedback report from Main, exactly as the service gets it. */
+interface FeedbackReportView {
+  area: "other";
+  kind: (typeof FEEDBACK_TYPES)[number];
+  title: string;
+  tried: string;
+  happened: string;
+  expected: string;
+  agent: string;
+}
+
+/** A feedback proposal from Main for the owner's card: the report while pending, the send outcome once done. */
+interface FeedbackRequestView {
+  id: string;
+  kind: "action";
+  action: "send_feedback";
+  state: (typeof ACTION_STATES)[number];
+  askedAt: string;
+  expiresAt: string;
+  outside: boolean;
+  resolvedAt?: string;
+  report?: FeedbackReportView;
+  binding?: string;
+  feedback?: { outcome: (typeof FEEDBACK_OUTCOMES)[number]; reportId?: string };
+  undelivered?: true;
+}
+
+/** The stored body read back as a report; null unless it has exactly the report's fields and limits. */
+function toFeedbackReport(text: string): FeedbackReportView | null {
+  if (Buffer.byteLength(text) > MAX_FEEDBACK_BYTES) return null;
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (!isPlainObject(value) || Object.keys(value).join() !== FEEDBACK_REPORT_KEYS.join()) return null;
+  const { area, kind, title, tried, happened, expected, agent } = value;
+  if (area !== "other" || !FEEDBACK_TYPES.some(known => known === kind) || agent !== FEEDBACK_AGENT) return null;
+  const field = (value: unknown, max: number): value is string => typeof value === "string" && value.length >= 1 && [...value].length <= max;
+  if (!field(title, MAX_FEEDBACK_TITLE) || /[\r\n]/.test(title)) return null;
+  if (!field(tried, MAX_FEEDBACK_FIELD) || !field(happened, MAX_FEEDBACK_FIELD) || !field(expected, MAX_FEEDBACK_FIELD)) return null;
+  return { area, kind: kind as FeedbackReportView["kind"], title, tried, happened, expected, agent };
+}
+
+/** Rebuilds one feedback proposal from the contract fields; null when the shape is wrong. */
+function toFeedbackRequest(value: Record<string, unknown>): FeedbackRequestView | null {
+  const { id, state, askedAt, expiresAt, outside, resolvedAt, targets, text, binding, outcomes, feedback, undelivered } = value;
+  if (typeof id !== "string" || !ASK_REQUEST_ID.test(id) || !ACTION_STATES.some(known => known === state)) return null;
+  if (!shortText(askedAt, 40) || !shortText(expiresAt, 40) || typeof outside !== "boolean") return null;
+  if (resolvedAt !== undefined && !shortText(resolvedAt, 40)) return null;
+  if (!Array.isArray(targets) || targets.length > 0 || (outcomes !== undefined && (!Array.isArray(outcomes) || outcomes.length > 0))) return null;
+  const report = typeof text === "string" ? toFeedbackReport(text) : undefined;
+  if (report === null || (text !== undefined && typeof text !== "string")) return null;
+  if (binding !== undefined && (typeof binding !== "string" || !ACTION_BINDING.test(binding))) return null;
+  if (undelivered !== undefined && undelivered !== true) return null;
+  let sent: FeedbackRequestView["feedback"];
+  if (feedback !== undefined) {
+    if (!isPlainObject(feedback)) return null;
+    const outcome = FEEDBACK_OUTCOMES.find(known => known === feedback.outcome);
+    if (!outcome) return null;
+    const reportId = outcome === "filed" && typeof feedback.reportId === "string" && FEEDBACK_REPORT_ID.test(feedback.reportId) ? feedback.reportId : undefined;
+    sent = { outcome, ...(reportId ? { reportId } : {}) };
+  }
+  return {
+    id, kind: "action", action: "send_feedback", state: state as FeedbackRequestView["state"], askedAt, expiresAt, outside,
+    ...(resolvedAt !== undefined ? { resolvedAt } : {}),
+    ...(report ? { report } : {}),
+    ...(binding !== undefined ? { binding } : {}),
+    ...(sent ? { feedback: sent } : {}),
+    ...(undelivered ? { undelivered: true as const } : {}),
+  };
+}
+
+type RequestView = AskRequestView | ActionRequestView | FeedbackRequestView;
+
+const isFeedbackRequest = (value: unknown): value is Record<string, unknown> => isPlainObject(value) && value.kind === "action" && value.action === "send_feedback";
+
 /** One question or proposal, by its kind. */
-function toRequest(value: unknown, names: ReadonlyMap<string, string>): AskRequestView | ActionRequestView | null {
+function toRequest(value: unknown, names: ReadonlyMap<string, string>): RequestView | null {
+  if (isFeedbackRequest(value)) return toFeedbackRequest(value);
   if (isPlainObject(value) && value.kind === "action") return toActionRequest(value, names);
   return toAskRequest(value);
 }
 
-function toAskRequests(payload: unknown, names: ReadonlyMap<string, string>): { requests: (AskRequestView | ActionRequestView)[] } | null {
+/** The owner's requests; feedback proposals only when the app asked for them (`include=feedback`), else left out. */
+function toAskRequests(payload: unknown, names: ReadonlyMap<string, string>, includeFeedback: boolean): { requests: RequestView[] } | null {
   if (!isPlainObject(payload) || !Array.isArray(payload.requests) || payload.requests.length > MAX_LISTED_REQUESTS) return null;
-  const requests = payload.requests.map(request => toRequest(request, names));
-  return requests.every(request => request !== null) ? { requests: requests as (AskRequestView | ActionRequestView)[] } : null;
+  const requests = payload.requests.filter(request => includeFeedback || !isFeedbackRequest(request)).map(request => toRequest(request, names));
+  return requests.every(request => request !== null) ? { requests: requests as RequestView[] } : null;
 }
 
 /**
@@ -507,7 +597,9 @@ export function createBotsRouter(opts: {
   router.get("/main/requests", async (req, res) => {
     const address = gate(req, res);
     if (!address) return;
-    await sendAsks(res, callAsks(address, { method: "GET", path: "/requests" }), async payload => toAskRequests(payload, await botNames(address)));
+    // Feedback proposals go only to an app that shows their card; the service is asked for the same list either way.
+    const includeFeedback = req.query.include === "feedback";
+    await sendAsks(res, callAsks(address, { method: "GET", path: "/requests" }), async payload => toAskRequests(payload, await botNames(address), includeFeedback));
   });
 
   router.post("/main/requests/:id/answer", async (req, res) => {

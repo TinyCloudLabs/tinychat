@@ -4,14 +4,18 @@
 import { Fragment, useEffect, useId, useState } from "react";
 
 import { Button } from "@/components/ui/button";
-import type { ActionRequest, AskRequest, SecretLine } from "./botsApi";
+import type { ActionRequest, AskRequest, FeedbackReport, SecretLine } from "./botsApi";
 import { ACTION_STRINGS, joinNames } from "./actionStrings";
+import { FEEDBACK_STRINGS, feedbackOutcomeText } from "./feedbackStrings";
 import { ASK_STRINGS as COPY, SECRET_STRINGS, askedAgo, secretDate, secretWith } from "./askStrings";
 import { MAX_ANSWER, MAX_CHOICE, MAX_CHOICES, MAX_QUESTION, plainLines, plainText } from "./askText";
 import { actionNames, type Asks } from "./useAsks";
 
 /** The longest proposed message the service keeps; anything longer is cut where the card shows it. */
 const MAX_ACTION_TEXT = 2000;
+/** The longest report title and field the service keeps. */
+const MAX_FEEDBACK_TITLE = 120;
+const MAX_FEEDBACK_FIELD = 800;
 
 const MINUTE_MS = 60_000;
 
@@ -155,6 +159,84 @@ function ActionCard({ request, asks }: { request: ActionRequest; asks: Asks }) {
   );
 }
 
+const FEEDBACK_FIELDS = [
+  ["title", FEEDBACK_STRINGS.labels.title, MAX_FEEDBACK_TITLE],
+  ["tried", FEEDBACK_STRINGS.labels.tried, MAX_FEEDBACK_FIELD],
+  ["happened", FEEDBACK_STRINGS.labels.happened, MAX_FEEDBACK_FIELD],
+  ["expected", FEEDBACK_STRINGS.labels.expected, MAX_FEEDBACK_FIELD],
+] as const satisfies readonly (readonly [keyof FeedbackReport, string, number])[];
+
+/** A report's type in the owner's words; a value outside the three shows as the team would get it. */
+function feedbackKindText(kind: string): string {
+  return Object.hasOwn(FEEDBACK_STRINGS.kinds, kind) ? FEEDBACK_STRINGS.kinds[kind] : plainText(kind, 40);
+}
+
+/**
+ * One feedback report Main proposed: where it goes, its type and every field the TinyCloud team reads, what the team
+ * sees of the sender, and Send report or Don't send. The area is always "other", so the card leaves it out. Send names
+ * the binding the service gave with this card, so only this report can go.
+ */
+function FeedbackCard({ request, asks }: { request: ActionRequest; asks: Asks }) {
+  const id = useId();
+  const [now, setNow] = useState(Date.now);
+  const [busy, setBusy] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const [held, setHeld] = useState(false);
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), MINUTE_MS);
+    return () => clearInterval(timer);
+  }, []);
+
+  const { report, binding } = request;
+
+  const submit = async (decision: Parameters<Asks["decide"]>[1]) => {
+    if (busy) return;
+    setBusy(true);
+    setFailed(false);
+    const result = await asks.decide(request, decision);
+    setBusy(false);
+    if (result === "failed") setFailed(true);
+    if (result === "held") setHeld(true);
+  };
+
+  return (
+    <section
+      aria-labelledby={`${id}-title`}
+      data-action-card=""
+      data-feedback-card=""
+      data-ask-id={request.id}
+      className="flex flex-col gap-3 rounded-2xl border border-border bg-card p-4"
+    >
+      <p id={`${id}-title`} className="text-headline">{FEEDBACK_STRINGS.title}</p>
+      <p className="text-callout text-muted-foreground" data-feedback-destination="">{FEEDBACK_STRINGS.destination}</p>
+      {report ? (
+        <dl className="flex flex-col gap-2 rounded-xl border border-border px-3 py-2">
+          <div className="flex flex-col gap-0.5">
+            <dt className="text-callout text-muted-foreground">{FEEDBACK_STRINGS.labels.kind}</dt>
+            <dd className="text-body" data-feedback-field="kind">{feedbackKindText(report.kind)}</dd>
+          </div>
+          {FEEDBACK_FIELDS.map(([field, label, max]) => (
+            <div key={field} className="flex flex-col gap-0.5">
+              <dt className="text-callout text-muted-foreground">{label}</dt>
+              <dd className="whitespace-pre-wrap break-words text-body" data-feedback-field={field}>{plainLines(report[field], max)}</dd>
+            </div>
+          ))}
+        </dl>
+      ) : null}
+      <p className="text-callout text-muted-foreground" data-feedback-sender="">{FEEDBACK_STRINGS.sender}</p>
+      {report ? <p className="text-callout text-muted-foreground" data-feedback-agent="">{FEEDBACK_STRINGS.agent(plainText(report.agent, 100))}</p> : null}
+      <p className="text-callout text-muted-foreground">{askedAgo(now - Date.parse(request.askedAt))}</p>
+      {request.outside ? <p className="text-callout" data-action-outside="">{ACTION_STRINGS.outside}</p> : null}
+      <div className="flex flex-wrap gap-2">
+        <Button type="button" disabled={busy || held || !binding || !report} onClick={() => { if (binding) void submit({ decision: "approve", binding }); }}>{FEEDBACK_STRINGS.send}</Button>
+        <Button type="button" variant="outline" disabled={busy} onClick={() => void submit({ decision: "decline" })}>{FEEDBACK_STRINGS.decline}</Button>
+      </div>
+      {failed ? <p role="alert" className="text-callout text-muted-foreground">{ACTION_STRINGS.sendFailed}</p> : null}
+      {held ? <p role="alert" className="text-callout" data-action-held="">{FEEDBACK_STRINGS.refused}</p> : null}
+    </section>
+  );
+}
+
 /** What a proposal card collapses to, from the latest read of its request. */
 function actionOutcomeText(request: ActionRequest): string | null {
   const nameOf = new Map(request.targets.map((target) => [target.key, plainText(target.name ?? "", 120) || ACTION_STRINGS.missing]));
@@ -162,6 +244,7 @@ function actionOutcomeText(request: ActionRequest): string | null {
   if (request.state === "declined") return ACTION_STRINGS.declined;
   if (request.state === "expired") return ACTION_STRINGS.expired;
   if (request.state !== "done") return null;
+  if (request.action === "send_feedback") return feedbackOutcomeText(request.feedback?.outcome ?? "unknown", request.feedback?.reportId);
   const outcomes = request.outcomes ?? [];
   const sent = outcomes.filter((outcome) => outcome.delivered).map((outcome) => nameOf.get(outcome.key) ?? ACTION_STRINGS.missing);
   const failed = outcomes.filter((outcome) => !outcome.delivered).map((outcome) => nameOf.get(outcome.key) ?? ACTION_STRINGS.missing);
@@ -192,7 +275,13 @@ function secretLineText(decision: AppLineDecision, secret: SecretLine): string |
  * ended, has no message to Main: its line is only for the owner, and only for a request the owner saw in this chat. A
  * proposal's line names its recipients when this page knows them.
  */
-export function AppLine({ decision, live, secret, names }: { decision: AppLineDecision | "action_approved" | "action_declined"; live: boolean; secret?: SecretLine; names?: readonly string[] }) {
+export function AppLine({ decision, live, secret, names }: {
+  decision: AppLineDecision | "action_approved" | "action_declined" | "feedback_sent" | "feedback_declined"; live: boolean; secret?: SecretLine; names?: readonly string[];
+}) {
+  if (decision === "feedback_sent" || decision === "feedback_declined") {
+    const text = decision === "feedback_sent" ? FEEDBACK_STRINGS.lineSent : FEEDBACK_STRINGS.lineDeclined;
+    return <p className="self-end text-callout text-muted-foreground" data-app-line={decision}>{text}</p>;
+  }
   if (decision === "action_approved" || decision === "action_declined") {
     const recipients = names?.length ? joinNames(names.map((name) => plainText(name, 120) || ACTION_STRINGS.missing)) : ACTION_STRINGS.otherBots;
     const text = decision === "action_approved" ? ACTION_STRINGS.lineSent(recipients) : ACTION_STRINGS.lineDeclined(recipients);
@@ -213,9 +302,11 @@ export function AskCards({ asks, outcomes = false }: { asks: Asks; outcomes?: bo
   return (
     <>
       {asks.stopped ? <p className="text-callout text-muted-foreground" data-ask-stopped="">{COPY.stopped}</p> : null}
-      {asks.pending.map((request) => request.kind === "action"
-        ? <ActionCard key={request.id} request={request} asks={asks} />
-        : <AskCard key={request.id} request={request} asks={asks} />)}
+      {asks.pending.map((request) => request.kind !== "action"
+        ? <AskCard key={request.id} request={request} asks={asks} />
+        : request.action === "send_feedback"
+          ? <FeedbackCard key={request.id} request={request} asks={asks} />
+          : <ActionCard key={request.id} request={request} asks={asks} />)}
       {outcomes
         ? asks.outcomes.map((outcome) => {
           if (outcome.kind === "action") {
