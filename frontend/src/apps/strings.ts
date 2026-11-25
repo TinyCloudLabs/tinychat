@@ -21,7 +21,7 @@ export const APP_DESCRIPTIONS: Readonly<Record<Exclude<OneAppId, LinkAppId>, str
   capture: "Record or upload a meeting and get its transcript.",
   "xyz.tinycloud.secrets": "Keep API keys, passwords and environment variables encrypted.",
   "xyz.tinycloud.opencredentials": "Store and share verifiable credentials with OpenCredentials.",
-  "xyz.tinycloud.tinydrive": "Your TinyCloud as folders and files. Read only.",
+  "xyz.tinycloud.tinydrive": "Your TinyCloud as folders and files.",
   "xyz.tinycloud.explorer": "Browse what's in your TinyCloud: spaces, tables and stored items.",
   // Web. iOS leaves Account out of ONE_APPS (registry.ts), so its iOS wording is unused.
   "xyz.tinycloud.account": "See your account, billing, spaces, installed apps and the access you've given.",
@@ -37,7 +37,7 @@ export const SCOPE_PHRASES = {
   capabilityList: "the list of access it already has",
   credentials: "your credentials",
   appsData: "the data your apps keep in TinyCloud",
-  ownFiles: "the files in your own space, read only",
+  ownFiles: "the files in your own space, to read them and add new ones",
   agentsData: "what your agents keep in TinyCloud, read only",
   publicSpace: "your public space",
   secretNames: "the names of your secrets and variables, not their values",
