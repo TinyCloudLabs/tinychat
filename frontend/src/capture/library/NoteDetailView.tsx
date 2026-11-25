@@ -49,8 +49,10 @@ import type { CombineDetail } from "./combine/combinedView";
 import { librarySourceLabel } from "./libraryKinds";
 import { useWordFixApplier, useWordFixedSentences } from "@/lib/wordFixes/wordFixesStore";
 import { TimestampedTranscript, type TranscriptGap } from "./TimestampedTranscript";
-import { SpeakerLabel, SpeakerNamesContext, SpeakerNamesStatus } from "./SpeakerLabel";
+import { NameSuggestionsContext, SpeakerLabel, SpeakerNamesContext, SpeakerNamesStatus } from "./SpeakerLabel";
 import { applySpeakerNames, NO_SPEAKER_NAMES, speakerDisplayName, type SpeakerNames } from "./speakerNames";
+import { SPEAKER_NAMES_COPY } from "./speakerNamesCopy";
+import type { NameSuggestionsController } from "./useNameSuggestions";
 import type { SpeakerNamesController } from "./useSpeakerNames";
 import { TranscriptProvenanceNote } from "./TranscriptProvenanceNote";
 import { hasPrivateCloudTimingProvenance, hasSegmentTimes, transcriptMarkdown } from "./transcriptSegments";
@@ -108,6 +110,8 @@ export interface NoteDetailViewProps {
   combine?: CombineDetail;
   /** The note's speaker names (TC-2189); without them the labels stay as stored. */
   speakerNames?: SpeakerNamesController;
+  /** The note's suggested speaker names; without them none is shown and the menu has no "Suggest names". */
+  nameSuggestions?: NameSuggestionsController;
   /** The owner is sharing it (TC-3195): a "Shared" badge before the meta line. */
   shared?: boolean;
 }
@@ -428,8 +432,14 @@ export function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
   const rerunJob = props.transcription?.jobs.get(item.sourceId);
   const speakerNames = props.speakerNames?.names ?? NO_SPEAKER_NAMES;
   const namedGaps = applySpeakerNames(gaps, speakerNames);
+  const suggestNames = props.nameSuggestions?.suggest ?? null;
+  // The page without times: its blocks, and each speaker's first one (where a suggested name shows).
+  const blocks = timed || gaps.length > 0 ? [] : transcriptBlocks(sentences, speakerNames);
+  const firstBlockOf = new Map<string, number>();
+  blocks.forEach((block, index) => { if (block.speaker !== null && !firstBlockOf.has(block.speaker)) firstBlockOf.set(block.speaker, index); });
   return (
     <SpeakerNamesContext.Provider value={props.speakerNames}>
+    <NameSuggestionsContext.Provider value={props.nameSuggestions}>
     <section aria-labelledby="note-transcript" data-testid="note-transcript" className="flex flex-col gap-3">
       <div className="flex min-h-11 flex-wrap items-center gap-x-3">
         <h2 id="note-transcript" className="flex-1 text-headline">
@@ -441,12 +451,15 @@ export function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
               {props.copyState === "copied" ? <CheckIcon aria-hidden /> : <CopyIcon aria-hidden />}
               {props.copyState === "copied" ? "Copied" : "Copy"}
             </Button>
-            {timed && <details className="relative">
+            {(timed || suggestNames !== null) && <details className="relative">
               <summary className="flex min-h-11 cursor-pointer items-center rounded-md px-2 text-meta hover:bg-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring" aria-label="Transcript copy and export options">▾</summary>
               <div className="absolute right-0 z-10 min-w-48 rounded-md border bg-popover p-1 shadow-sm">
                 <button type="button" className="block min-h-11 w-full rounded-sm px-3 py-2 text-left text-meta hover:bg-accent" onClick={props.onCopy}>Copy text</button>
-                {props.onCopyWithTimestamps && <button type="button" className="block min-h-11 w-full rounded-sm px-3 py-2 text-left text-meta hover:bg-accent" onClick={props.onCopyWithTimestamps}>Copy with timestamps</button>}
-                <button type="button" className="block min-h-11 w-full rounded-sm px-3 py-2 text-left text-meta hover:bg-accent" onClick={() => void exportMarkdown()}>Export as Markdown</button>
+                {timed && props.onCopyWithTimestamps && <button type="button" className="block min-h-11 w-full rounded-sm px-3 py-2 text-left text-meta hover:bg-accent" onClick={props.onCopyWithTimestamps}>Copy with timestamps</button>}
+                {timed && <button type="button" className="block min-h-11 w-full rounded-sm px-3 py-2 text-left text-meta hover:bg-accent" onClick={() => void exportMarkdown()}>Export as Markdown</button>}
+                {suggestNames !== null && <button type="button" data-testid="note-suggest-names" className="block min-h-11 w-full rounded-sm px-3 py-2 text-left text-meta hover:bg-accent"
+                  // The run shows nothing while it goes, so the menu closes to answer the tap.
+                  onClick={(event) => { suggestNames(); event.currentTarget.closest("details")?.removeAttribute("open"); }}>{SPEAKER_NAMES_COPY.suggestNames}</button>}
               </div>
             </details>}
           </div>
@@ -471,9 +484,9 @@ export function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
           </div>}
           <SpeakerNamesStatus />
           <TranscriptProvenanceNote sentences={sentences} />
-          {timed || gaps.length > 0 ? <TimestampedTranscript gaps={namedGaps} sentences={sentences} hasAudio={props.audio !== null} isPrivateCloud={isPrivateCloud} /> : transcriptBlocks(sentences, speakerNames).map((block, index) => (
+          {timed || gaps.length > 0 ? <TimestampedTranscript gaps={namedGaps} sentences={sentences} hasAudio={props.audio !== null} isPrivateCloud={isPrivateCloud} /> : blocks.map((block, index) => (
             <div key={index}>
-              {block.speaker && <SpeakerLabel original={block.speaker} />}
+              {block.speaker && <SpeakerLabel original={block.speaker} firstOfSpeaker={firstBlockOf.get(block.speaker) === index} />}
               <p className="whitespace-pre-wrap break-words text-body">{block.text}</p>
             </div>
           ))}
@@ -562,6 +575,7 @@ export function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
         </div>
       )}
     </section>
+    </NameSuggestionsContext.Provider>
     </SpeakerNamesContext.Provider>
   );
 }

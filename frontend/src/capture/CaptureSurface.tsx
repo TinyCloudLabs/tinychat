@@ -32,6 +32,7 @@ import { useNavKind } from "@/shell/navItems";
 import { goUp } from "@/shell/navigation";
 import { PAGE_COLUMN, PageHeader } from "@/shell/PageHeader";
 import { PATHS, type Screen } from "@/shell/routes";
+import { captureEvents } from "./captureEvents";
 import { FirstUse } from "./FirstUse";
 import { HOME_COPY } from "./home/homeCopy";
 import { SoftActions } from "./home/SoftActions";
@@ -52,6 +53,10 @@ import { useLibrary } from "./library/useLibrary";
 import { chatComplete } from "@/lib/meetingSummary/summaryChat";
 import { createSummaryRunner } from "@/lib/meetingSummary/summaryRunner";
 import type { GenerateDeps } from "@/lib/meetingSummary/generateSummary";
+import { chatReadings } from "@/lib/speakerNaming/namingChat";
+import { speakerNameSuggestionsEnabled } from "@/lib/speakerNaming/namingFeature";
+import { createNamingRunner } from "@/lib/speakerNaming/namingRunner";
+import { readSuggestSpeakerNames } from "@/lib/speakerNaming/suggestSpeakerNames";
 import { scheduledSpace } from "@/lib/spaceQueue";
 import { combinedModel, useNotePipelines, type NotePipelineView } from "@/lib/voiceNotes/useNotePipeline";
 import { listPipelineEntries } from "./listPipelineEntries";
@@ -80,7 +85,7 @@ export interface CaptureSurfaceProps {
   meetingsSlot?: React.ReactNode;
   /** The model call a combined meeting's summary uses; the chat route unless a harness or test replaces it. */
   summaryComplete?: GenerateDeps["complete"];
-  /** Runs after a summary run ends, so the parent can re-read billing (a run spends credits). */
+  /** Runs after a summary run ends, or a naming run's model calls return, so the parent can re-read billing (both spend credits). */
   onSummarySettled?: () => void;
 }
 
@@ -127,6 +132,22 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
     [tcw, backendUrl, sessionStore, summaryComplete],
   );
   useEffect(() => () => summaries.cancelAll(), [summaries]);
+  // One naming runner per signed-in space, beside the summary runner and stopped with it; none in a build without
+  // suggested speaker names. It is asked about a voice note whenever one changes (a transcript landed) and, by the
+  // note's page, when one is opened.
+  const naming = useMemo(
+    () => speakerNameSuggestionsEnabled()
+      ? createNamingRunner({ tcw, read: chatReadings(backendUrl, sessionStore), automatic: () => readSuggestSpeakerNames(tcw), onSpent: () => settledRef.current?.() })
+      : undefined,
+    [tcw, backendUrl, sessionStore],
+  );
+  useEffect(() => {
+    if (naming === undefined) return;
+    const stop = captureEvents.on("library-changed", (detail) => {
+      if (detail?.source === VOICE_NOTE_SOURCE) naming.consider(detail.sourceId);
+    });
+    return () => { stop(); naming.cancelAll(); };
+  }, [naming]);
   const openActivityNote = useCallback((id: string) => navigate(PATHS.library + "/" + id), [navigate]);
   const location = useLocation();
   const nav = useNavKind();
@@ -392,6 +413,7 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
             activityControl={!sidebarActivity && noteScreen ? activityControl : undefined}
             savedNote={notePage || noteSheet ? { tcw, layout: notePage ? "page" : "sheet" } : undefined}
             summaries={summaries}
+            naming={naming}
           />
         ) : wide ? (
           empty ? (

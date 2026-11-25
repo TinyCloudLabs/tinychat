@@ -64,6 +64,11 @@ interface ImportMetaEnv {
   readonly VITE_REPORT_BUG?: string;
   /** TC-3716: the feedback service origin bug reports go to (default https://feedback.tinycloud.xyz). */
   readonly VITE_FEEDBACK_ORIGIN?: string;
+  /**
+   * "true" turns on suggested speaker names in voice notes (the runs, the note menu's Suggest names, the setting, and
+   * showing a stored suggestion). Unset = off, in production too, until the held-out gate passes.
+   */
+  readonly VITE_SPEAKER_NAME_SUGGESTIONS?: string;
 }
 
 interface ImportMeta {

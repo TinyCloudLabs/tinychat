@@ -12,6 +12,7 @@ import { PrivacyPolicyLink } from "@/components/ui/privacy-policy-link";
 import { FINAL_COPY, POWERFUL_PROVIDER_NAME } from "@/capture/recorder/final/finalCopy";
 import { ABOUT_SECTIONS, type AboutSectionId } from "@/lib/about";
 import { VOICE_NOTE_MAX_DURATION_MS } from "@/lib/voiceNotes/nativeVoiceNotes";
+import { speakerNameSuggestionsEnabled } from "@/lib/speakerNaming/namingFeature";
 import { PAGE_COLUMN, PageHeader } from "@/shell/PageHeader";
 
 /** A link to another section of this page, on its own line (a 44 px target on touch). */
@@ -33,6 +34,20 @@ function List(props: { children: ReactNode }) {
 }
 
 const VOICE_NOTE_MAX_HOURS = VOICE_NOTE_MAX_DURATION_MS / (60 * 60 * 1000);
+
+/** Where a voice note's speaker names come from; said only in a build that suggests them. */
+function SuggestedSpeakerNames() {
+  if (!speakerNameSuggestionsEnabled()) return null;
+  return (
+    <>
+      <Sub>Speaker names</Sub>
+      <p>
+        When Private or Powerful transcribes a voice note, names for its speakers are suggested by a model that runs in
+        an enclave, from the note’s transcript and the names in your own meetings.
+      </p>
+    </>
+  );
+}
 
 /** Each section's text, keyed by its id, so a section in lib/about.ts cannot ship without words. */
 export const ABOUT_BODY: Readonly<Record<AboutSectionId, ReactNode>> = {
@@ -95,6 +110,7 @@ export const ABOUT_BODY: Readonly<Record<AboutSectionId, ReactNode>> = {
           copy once the transcript is saved.
         </li>
       </List>
+      <SuggestedSpeakerNames />
       <Sub>The original audio</Sub>
       <p>
         A voice note’s audio stays in your TinyCloud space, with its transcript saved next to it. An upload keeps a copy

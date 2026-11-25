@@ -155,6 +155,8 @@ export interface VoiceNoteTranscriptLocator {
   expectedText: string | null;
   preview: string | null;
   committed: boolean;
+  /** The committed revision's hash; null for a note that has no commit. */
+  hash: string | null;
   /** Non-null only when provenance is bound to the selected committed body. */
   provenance: TranscriptProvenance | null;
 }
@@ -162,7 +164,7 @@ export async function voiceNoteTranscriptLocator(tcw: Pick<TinyCloudWeb, "sql">,
   sourceId: string): Promise<VoiceNoteTranscriptLocator> {
   const commit = await readTranscriptCommit(tcw, sourceId);
   if (commit) return { bodyKey: commit.outcome === "transcribed" ? commit.bodyKey : null,
-    outcome: commit.outcome, expectedText: null, preview: commit.preview, committed: true,
+    outcome: commit.outcome, expectedText: null, preview: commit.preview, committed: true, hash: commit.hash,
     provenance: { engine: commit.engine, provider: commit.provider, model: commit.model } };
   const winner = legacyTranscriptMetadata(await readLegacyTranscriptWinner(tcw, sourceId));
   const outcome = winner.transcription_outcome === "transcribed" ? "transcribed"
@@ -170,7 +172,7 @@ export async function voiceNoteTranscriptLocator(tcw: Pick<TinyCloudWeb, "sql">,
   return { bodyKey: outcome === "transcribed" ? transcriptKvKey("exo-voice-note", sourceId) : null,
     outcome, expectedText: typeof winner.transcript_text === "string" ? winner.transcript_text : null,
     preview: typeof winner.transcript_text === "string" ? winner.transcript_text.slice(0, 280) : null,
-    committed: false, provenance: null };
+    committed: false, hash: null, provenance: null };
 }
 
 export function normalizeTranscriptText(text: string): string { return text.replace(/\s+/g, " ").trim(); }
