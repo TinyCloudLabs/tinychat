@@ -35,7 +35,8 @@ import {
  * behind `authMiddleware`. Global CSRF (`X-Requested-With`) and the
  * `/api/transcriber` rate-limit bucket apply.
  *
- *   GET    /capabilities                 PTX limits, content types, diarization + admission mode
+ *   GET    /capabilities                 PTX limits, content types, diarization (and, for an admitted
+ *                                         account, its channel modes) + admission mode
  *   POST   /transcriptions               { content_type, byte_size, sha256, language?, channel_mode?,
  *                                          channel_labels?, diarize? } + Idempotency-Key (UUID)
  *                                         → { id, status, byte_size, upload?: { path, capability, expires_at } }
@@ -62,6 +63,11 @@ import {
 export interface PrivateCloudTranscriptionRouterOptions {
   client: PtxClient | null;
   tenantKey: string | null;
+  /**
+   * Who may have the voices on channel 1 of a two-channel job told apart (PRIVATE_STEREO_SPEAKERS_ENABLED).
+   * Absent: nobody, and capabilities do not mention the option.
+   */
+  stereoSpeakersAllowed?: (address: string) => boolean;
   /** Injectable for tests. `alert` = operator fault. */
   log?: (line: string, alert: boolean) => void;
 }
@@ -126,8 +132,8 @@ function parseCreateBody(raw: unknown): CreateBody | PublicError["code"] {
     body.channel_labels = channel_labels as string[];
   }
   if (diarize !== undefined) {
-    // Diarization runs on a mono downmix, so it cannot honour per-channel speakers.
-    if (typeof diarize !== "boolean" || (diarize && channel_mode === "separate")) return "invalid_request";
+    // With `channel_mode: "separate"` this asks for the voices on channel 1 only; the route decides who may.
+    if (typeof diarize !== "boolean") return "invalid_request";
     // `false` is PTX's default: forwarding only `true` keeps a plain create valid on a PTX that
     // predates the option (it rejects unknown fields).
     if (diarize) body.diarize = true;
@@ -136,7 +142,7 @@ function parseCreateBody(raw: unknown): CreateBody | PublicError["code"] {
 }
 
 export function createPrivateCloudTranscriptionRouter(options: PrivateCloudTranscriptionRouterOptions): Router {
-  const { client, tenantKey } = options;
+  const { client, tenantKey, stereoSpeakersAllowed } = options;
   const log = options.log ?? ((line: string, alert: boolean) => (alert ? console.error(line) : console.log(line)));
   const router = Router();
 
@@ -234,10 +240,10 @@ export function createPrivateCloudTranscriptionRouter(options: PrivateCloudTrans
 
   router.get(
     "/capabilities",
-    handle("capabilities", async (_req, call) => {
+    handle("capabilities", async (req, call) => {
       const response = await call({ method: "GET", path: "/v1/transcriptions/capabilities" }, false);
       if (response.status !== 200) return upstreamError("capabilities", response);
-      return rebuilt(200, parseCapabilities(response.body), response);
+      return rebuilt(200, parseCapabilities(response.body, stereoSpeakersAllowed?.(req.user!.address)), response);
     }),
   );
 
@@ -249,6 +255,8 @@ export function createPrivateCloudTranscriptionRouter(options: PrivateCloudTrans
       if (idempotencyKey === undefined || !UUID_RE.test(idempotencyKey)) return fail("invalid_idempotency_key");
       const parsed = parseCreateBody(req.body);
       if (typeof parsed === "string") return fail(parsed);
+      // Diarizing a two-channel job keeps PTX's single worker busy for longer, so only admitted accounts may ask.
+      if (parsed.diarize && parsed.channel_mode === "separate" && !stereoSpeakersAllowed?.(req.user!.address)) return fail("invalid_request");
       const response = await call({
         method: "POST",
         path: "/v1/transcriptions",

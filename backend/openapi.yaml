@@ -2367,7 +2367,11 @@ paths:
         `awaiting_upload`. A retry with the same Idempotency-Key and body returns
         the same job (200); replaying the key of a deleted job is
         `transcription_not_found` (404). `diarize: true` asks for speaker
-        diarization of a mono mixdown (not with `channel_mode: separate`). While
+        diarization: of a mono mixdown with `channel_mode: mixed` (the default
+        with `diarize`), or of channel 1 alone with `channel_mode: separate`.
+        The second is accepted only when capabilities list `separate` in
+        `diarization_channel_modes` for the caller; otherwise it is
+        `invalid_request`. While
         capabilities report `diarization: false` it is rejected with
         `diarization_unavailable` (a PTX with diarization support) or
         `invalid_request` (a PTX that predates the option).
@@ -2907,6 +2911,17 @@ components:
         diarization:
           type: boolean
           description: "Whether create accepts `diarize: true` (false when the service reports nothing)."
+        diarization_channel_modes:
+          type: array
+          uniqueItems: true
+          items:
+            type: string
+            enum: [separate, mixed]
+          description: >-
+            Optional. The `channel_mode` values create accepts together with `diarize: true`.
+            `separate` is listed only for an account admitted to it. Absent when the server
+            does not offer the choice or the service does not report it: then `diarize: true`
+            with `channel_mode: separate` is `invalid_request`.
     PrivateCloudJob:
       type: object
       required: [id, status, byte_size, channel_mode, channel_labels, duration_seconds, channels, progress, retention, error, created_at, updated_at]
@@ -3004,9 +3019,11 @@ components:
         diarized:
           type: boolean
           description: >-
-            True when the transcript was diarized: speakers are `speaker_<n>` (n 0-31)
-            voices of a mono mixdown, all on channel 0. Otherwise one speaker per
-            channel, `channel_<n>`.
+            True when the transcript was diarized. With `channels: 1` the speakers are
+            `speaker_<n>` (n 0-31) voices of a mono mixdown, all on channel 0. With
+            `channels: 2` channel 0 is the one speaker `channel_0` and the voices on
+            channel 1 are `speaker_<n>` (n 0-31), none when that channel said nothing.
+            When false: one speaker per channel, `channel_<n>`.
         speakers:
           type: array
           items:
@@ -3129,8 +3146,10 @@ components:
           type: boolean
           default: false
           description: >-
-            Speaker diarization of a mono mixdown; `channel_labels` is ignored.
-            Invalid with `channel_mode: separate`.
+            Speaker diarization. Of a mono mixdown by default (`channel_labels` is
+            ignored). With `channel_mode: separate`, of channel 1 only: channel 0
+            stays one speaker named by its label. That needs `separate` in the
+            caller's `diarization_channel_modes`; without it the request is invalid.
     PrivateCloudCreated:
       type: object
       required: [id, status, byte_size]

@@ -114,6 +114,7 @@ import {
   PRIVATE_CLOUD_TRANSCRIPTION_MOUNT,
   createPtxClient,
   privateCloudTranscriptionConfigFromEnv,
+  privateStereoSpeakersFromEnv,
   type PrivateCloudTranscriptionConfig,
 } from "./services/private-cloud-transcription.js";
 import { createPrivateCloudPurger } from "./services/private-cloud-purge.js";
@@ -1212,6 +1213,7 @@ async function main() {
     createPrivateCloudTranscriptionRouter({
       client: privateCloudPtxClient,
       tenantKey: privateCloudTranscription.enabled ? privateCloudTranscription.tenantKey : null,
+      stereoSpeakersAllowed: privateStereoSpeakersFromEnv(process.env),
     }),
   );
 

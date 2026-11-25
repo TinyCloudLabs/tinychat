@@ -22,10 +22,12 @@ import {
   RESPONSE_LIMITS,
   createPtxClient,
   privateCloudTranscriptionConfigFromEnv,
+  privateStereoSpeakersFromEnv,
   tenantRefFor,
   type PrivateCloudTranscriptionConfig,
 } from "../services/private-cloud-transcription.js";
 import { JOB_ERRORS, parseCapabilities, parseResult } from "../services/private-cloud-transcription-dto.js";
+import { CHANNEL_MODES } from "../services/private-cloud-transcription-dto.js";
 import { runPrivateCloudE2E } from "../../scripts/e2e-private-cloud-transcription.js";
 
 const SESSION_KEY = "synthetic-session-signing-key";
@@ -110,6 +112,32 @@ function completedResult(id: string, options: {
     segments,
     text: segments.map((s) => `${speakers.find((p) => p.id === s.speaker_id)!.name}: ${s.text}`).join("\n"),
     stats: { tinfoil_calls: 2, tinfoil_audio_seconds: 5.5, ...options.stats },
+  };
+}
+
+/**
+ * PTX's stored result for a job created with `diarize: true` and `channel_mode: "separate"`: channel 0 stays one
+ * speaker, and `remoteSpeakers` voices were told apart on channel 1, here with one segment each.
+ */
+function stereoSpeakersResult(id: string, remoteSpeakers: number) {
+  const speakers = [
+    { id: "channel_0", name: "Me", channel: 0 },
+    ...Array.from({ length: remoteSpeakers }, (_, n) => ({ id: `speaker_${n}`, name: `Speaker ${n + 2}`, channel: 1 })),
+  ];
+  const segments = speakers.map((speaker, index) => ({
+    id: `seg_${String(index + 1).padStart(4, "0")}`,
+    speaker_id: speaker.id,
+    channel: speaker.channel,
+    start: index * 13,
+    end: index * 13 + 2.5,
+    text: index === 0 ? TRANSCRIPT_TEXT : "bob: good morning",
+  }));
+  return {
+    ...completedResult(id, { diarized: true }),
+    channels: 2,
+    speakers,
+    segments,
+    text: segments.map((s) => `${speakers.find((p) => p.id === s.speaker_id)!.name}: ${s.text}`).join("\n"),
   };
 }
 
@@ -383,6 +411,32 @@ async function setup(env: Record<string, string> = {}, clientOptions: { timeoutM
   return { ptx, backend };
 }
 
+/**
+ * `setup`, with a backend that reads from `env` who may have the voices on channel 1 told apart, as index.ts does.
+ * The mock PTX refuses that request, as a PTX without the option does; tests give the answers of a PTX with it
+ * through `ptx.state.override`.
+ */
+async function setupStereoSpeakers(env: Record<string, string>) {
+  const ptx = await startMockPtx();
+  const config = privateCloudTranscriptionConfigFromEnv(enabledEnv(ptx.url, env));
+  const stereoSpeakersAllowed = privateStereoSpeakersFromEnv(env);
+  const app = express();
+  app.use(express.json({ limit: "1mb" }));
+  app.use(createCsrfMiddleware());
+  applyRateLimiters(app, { sessionKey: SESSION_KEY });
+  app.use(
+    PRIVATE_CLOUD_TRANSCRIPTION_MOUNT,
+    createAuthMiddleware(SESSION_KEY),
+    createPrivateCloudTranscriptionRouter({
+      client: config.enabled ? createPtxClient(config) : null,
+      tenantKey: config.enabled ? config.tenantKey : null,
+      ...(stereoSpeakersAllowed ? { stereoSpeakersAllowed } : {}),
+      log: () => {},
+    }),
+  );
+  return { ptx, backend: { url: await listen(app) } };
+}
+
 const tokens = new Map<string, string>();
 async function tokenFor(address: string): Promise<string> {
   if (!tokens.has(address)) tokens.set(address, (await issueSessionToken(address, SESSION_KEY)).token);
@@ -585,6 +639,7 @@ describe("create", () => {
       [null, { ...valid, channel_labels: ["a", "b", "c"] }, 400, "invalid_request"],
       [null, { ...valid, diarize: "yes" }, 400, "invalid_request"],
       // Diarization runs on a mono downmix: it cannot keep the two channels apart.
+      // Since then PTX can tell the voices on channel 1 apart where it offers `separate`; this backend admits nobody, so it is still refused.
       [null, { ...valid, channel_mode: "separate", diarize: true }, 400, "invalid_request"],
       [null, [valid], 400, "invalid_request"],
       [{}, valid, 400, "invalid_idempotency_key"],
@@ -930,6 +985,7 @@ describe("error mapping", () => {
       Object.keys(PUBLIC_ERRORS).sort(),
     );
     expect(spec.components.schemas.PrivateCloudJobError.properties.code.enum.sort()).toEqual(Object.keys(JOB_ERRORS).sort());
+    expect(spec.components.schemas.PrivateCloudCapabilities.properties.diarization_channel_modes.items.enum.sort()).toEqual([...CHANNEL_MODES].sort());
     for (const [path, methods] of [
       ["/capabilities", ["get"]],
       ["/transcriptions", ["get", "post"]],
@@ -1004,6 +1060,8 @@ describe("Phala deploy environment", () => {
     "PRIVATE_CLOUD_TRANSCRIPTION_API_URL",
     "PRIVATE_CLOUD_TRANSCRIPTION_API_KEY",
     "PRIVATE_CLOUD_TRANSCRIPTION_TENANT_KEY",
+    "PRIVATE_STEREO_SPEAKERS_ENABLED",
+    "PRIVATE_STEREO_SPEAKERS_TEST_ACCOUNTS",
   ] as const;
   type Step = { name?: string; env?: Record<string, string>; run?: string };
   const workflow = loadYaml(readFileSync(resolve(root, ".github/workflows/deploy-backend-phala.yml"), "utf8")) as {
@@ -1391,6 +1449,175 @@ describe("response DTOs", () => {
       expect([r.status, r.json.error.code]).toEqual([502, "upstream_bad_response"]);
     }
     expect(backend.logs.every((l) => !l.line.includes("reason=") || l.line.includes("reason=off_contract"))).toBe(true);
+  });
+
+  test("a diarized two-channel result is one channel_0 plus the voices told apart on channel 1, whoever asks", async () => {
+    // This backend admits nobody: a job of this kind exists only if its create was admitted, so reading it is not gated.
+    const { ptx, backend } = await setup();
+    const result = async (body: unknown) => {
+      ptx.state.override = () => ({ status: 200, body });
+      return call(backend.url, "GET", `/transcriptions/${ID}/result`);
+    };
+    const two = stereoSpeakersResult(ID, 2);
+    const relayed = await result({ ...two, speakers: two.speakers.map((s) => ({ ...s, embedding: "UPSTREAM-DETAIL" })) });
+    expect([relayed.status, relayed.json]).toEqual([200, two]);
+    expect(relayed.json.speakers.map((s: { id: string; channel: number }) => [s.id, s.channel])).toEqual([["channel_0", 0], ["speaker_0", 1], ["speaker_1", 1]]);
+    // Audio the diarizer could not place is one more voice with PTX's own name for it.
+    const unknown = { ...two, speakers: [two.speakers[0], two.speakers[1], { ...two.speakers[2], name: "Unknown speaker" }] };
+    expect((await result(unknown)).json.speakers[2]).toEqual({ id: "speaker_1", name: "Unknown speaker", channel: 1 });
+    // The other side said nothing: the microphone side alone is a complete answer.
+    const alone = stereoSpeakersResult(ID, 0);
+    expect(alone.speakers).toHaveLength(1);
+    expect((await result(alone)).json).toEqual(alone);
+    expect((await result(stereoSpeakersResult(ID, 32))).json.speakers).toHaveLength(33);
+
+    const [me, first, second] = two.speakers as [typeof two.speakers[0], typeof two.speakers[0], typeof two.speakers[0]];
+    const rejected: [string, unknown][] = [
+      ["two channel_0", { ...two, speakers: [me, me, first, second] }],
+      ["no channel_0", { ...two, speakers: [first, second], segments: two.segments.slice(1) }],
+      ["a speaker_N on channel 0", { ...two, speakers: [me, { ...first, channel: 0 }, second] }],
+      ["channel_0 on channel 1", { ...two, speakers: [{ ...me, channel: 1 }, first, second] }],
+      ["a channel_1 beside the voices", { ...two, speakers: [me, { ...first, id: "channel_1" }, second] }],
+      ["the same voice twice", { ...two, speakers: [me, first, first] }],
+      ["33 voices", stereoSpeakersResult(ID, 33)],
+      ["a segment on another channel than its speaker", { ...two, segments: [two.segments[0], { ...two.segments[1], channel: 0 }, two.segments[2]] }],
+      ["a segment of a voice that is not listed", { ...alone, segments: [...alone.segments, two.segments[1]] }],
+      ["the shape without `diarized`", { ...two, diarized: false }],
+    ];
+    for (const [what, body] of rejected) {
+      const r = await result(body);
+      expect([what, r.status, r.json.error.code]).toEqual([what, 502, "upstream_bad_response"]);
+    }
+  });
+});
+
+// ── Speakers on channel 1 of a two-channel job (PRIVATE_STEREO_SPEAKERS_ENABLED) ──
+
+describe("speakers on channel 1 of a two-channel job", () => {
+  const separate = { ...createBody(), diarize: true };
+  const mixed = { ...createBody(), channel_mode: "mixed", channel_labels: undefined, diarize: true };
+  const posts = (ptx: { requests: { method: string }[] }) => ptx.requests.filter((q) => q.method === "POST").length;
+  /**
+   * Answers of a PTX that also tells the voices on channel 1 apart, in place of the mock's own: its capabilities list
+   * `modes` as `diarization_channel_modes`, and it takes a create that asks for `separate` as the job whose id is
+   * returned here; that job's result has two voices on channel 1. The mock answers every other request itself.
+   */
+  function ptxOffers(ptx: Awaited<ReturnType<typeof startMockPtx>>, modes: unknown, diarization = true): string {
+    const id = newId();
+    ptx.state.override = (path) => {
+      if (path === "/v1/transcriptions/capabilities") {
+        return {
+          status: 200,
+          body: {
+            max_bytes: MOCK_PTX_MAX_BYTES,
+            max_duration_seconds: MOCK_PTX_MAX_DURATION_SECONDS,
+            max_channels: 2,
+            content_types: AUDIO_CONTENT_TYPES,
+            transcript_ttl_seconds: 86400,
+            admission: "open",
+            diarization,
+            diarization_channel_modes: modes,
+            ready: true,
+          },
+        };
+      }
+      if (path === `/v1/transcriptions/${id}/result`) return { status: 200, body: stereoSpeakersResult(id, 2) };
+      // The mock has already recorded the request this answers.
+      const request = ptx.requests.at(-1)!;
+      if (path !== "/v1/transcriptions" || request.method !== "POST") return null;
+      const body = JSON.parse(request.body) as { diarize?: boolean; channel_mode?: string; byte_size: number };
+      if (body.diarize !== true || body.channel_mode !== "separate") return null;
+      const upload = { path: `/uploads/${id}`, capability: `tcu_${randomUUID().replaceAll("-", "")}`, expires_at: "2026-09-29T11:00:00.000Z" };
+      return { status: 201, body: { id, status: "awaiting_upload", byte_size: body.byte_size, upload } };
+    };
+    return id;
+  }
+  /** A PTX that diarizes and offers it for both channel modes. */
+  async function setupWith(env: Record<string, string>) {
+    const started = await setupStereoSpeakers(env);
+    started.ptx.state.diarization = true;
+    return { ...started, id: ptxOffers(started.ptx, ["mixed", "separate"]) };
+  }
+
+  test.each([
+    ["neither variable set", {}],
+    ["the list alone", { PRIVATE_STEREO_SPEAKERS_TEST_ACCOUNTS: "*" }],
+    ["a flag that is not exactly true", { PRIVATE_STEREO_SPEAKERS_ENABLED: "1", PRIVATE_STEREO_SPEAKERS_TEST_ACCOUNTS: "*" }],
+    ["the flag with an empty list", { PRIVATE_STEREO_SPEAKERS_ENABLED: "true", PRIVATE_STEREO_SPEAKERS_TEST_ACCOUNTS: " , " }],
+  ] as [string, Record<string, string>][])("off with %s: capabilities and create answer as before, whatever PTX offers", async (_name, env) => {
+    const { ptx, backend } = await setupWith(env);
+    const caps = await call(backend.url, "GET", "/capabilities");
+    expect(caps.json).toEqual({
+      max_bytes: MOCK_PTX_MAX_BYTES,
+      max_duration_seconds: MOCK_PTX_MAX_DURATION_SECONDS,
+      max_channels: 2,
+      content_types: AUDIO_CONTENT_TYPES,
+      transcript_ttl_seconds: 86400,
+      admission: "open",
+      diarization: true,
+    });
+    const refused = await create(backend.url, ADDRESS_A, randomUUID(), separate);
+    expect([refused.status, refused.json.error.code]).toEqual([400, "invalid_request"]);
+    expect(posts(ptx)).toBe(0);
+    // The mono mixdown is not part of the flag.
+    expect((await create(backend.url, ADDRESS_A, randomUUID(), mixed)).status).toBe(201);
+    // A list PTX sends in a form the relay does not know is not read while the option is off.
+    ptxOffers(ptx, "separate");
+    expect((await call(backend.url, "GET", "/capabilities")).json).toEqual(caps.json);
+  });
+
+  test("a listed account is offered and may ask for it; any other account is offered the mono mixdown only", async () => {
+    const { ptx, backend, id } = await setupWith({
+      PRIVATE_STEREO_SPEAKERS_ENABLED: "true",
+      PRIVATE_STEREO_SPEAKERS_TEST_ACCOUNTS: ` ${ADDRESS_C.toLowerCase()}, ${ADDRESS_A.toUpperCase().replace("0X", "0x")} `,
+    });
+    const modes = async (as: string) => (await call(backend.url, "GET", "/capabilities", { as })).json.diarization_channel_modes;
+    expect(await modes(ADDRESS_A)).toEqual(["mixed", "separate"]);
+    expect(await modes(ADDRESS_B)).toEqual(["mixed"]);
+
+    const unlisted = await create(backend.url, ADDRESS_B, randomUUID(), separate);
+    expect([unlisted.status, unlisted.json.error.code]).toEqual([400, "invalid_request"]);
+    expect(posts(ptx)).toBe(0);
+    expect((await create(backend.url, ADDRESS_B, randomUUID(), mixed)).status).toBe(201);
+
+    const created = await create(backend.url, ADDRESS_A, randomUUID(), separate);
+    expect(created.status).toBe(201);
+    expect(JSON.parse(ptx.requests.at(-1)!.body)).toEqual(separate);
+    expect(created.json).toMatchObject({ id, status: "awaiting_upload", upload: { path: `/uploads/${id}` } });
+    const result = await call(backend.url, "GET", `/transcriptions/${id}/result`);
+    expect([result.status, result.json]).toEqual([200, stereoSpeakersResult(id, 2)]);
+    expect(result.json.segments.map((s: { speaker_id: string; channel: number }) => [s.speaker_id, s.channel]))
+      .toEqual([["channel_0", 0], ["speaker_0", 1], ["speaker_1", 1]]);
+  });
+
+  test("the single entry * admits every account", async () => {
+    const { ptx, backend } = await setupWith({ PRIVATE_STEREO_SPEAKERS_ENABLED: "true", PRIVATE_STEREO_SPEAKERS_TEST_ACCOUNTS: "*" });
+    for (const as of [ADDRESS_A, ADDRESS_B]) {
+      expect((await call(backend.url, "GET", "/capabilities", { as })).json.diarization_channel_modes).toEqual(["mixed", "separate"]);
+      expect((await create(backend.url, as, randomUUID(), separate)).status).toBe(201);
+    }
+    expect(posts(ptx)).toBe(2);
+  });
+
+  test("an admitted account is offered only what PTX offers, and nothing by a PTX that predates the option", async () => {
+    const { ptx, backend } = await setupWith({ PRIVATE_STEREO_SPEAKERS_ENABLED: "true", PRIVATE_STEREO_SPEAKERS_TEST_ACCOUNTS: ADDRESS_A });
+    // The diarizer is not installed: PTX offers no mode.
+    ptxOffers(ptx, [], false);
+    expect((await call(backend.url, "GET", "/capabilities")).json).toMatchObject({ diarization: false, diarization_channel_modes: [] });
+    // A PTX without the field refuses the request itself, so the relay offers nothing and passes its refusal on.
+    ptx.state.override = null;
+    const caps = await call(backend.url, "GET", "/capabilities");
+    expect(caps.json.diarization).toBe(true);
+    expect(caps.json).not.toHaveProperty("diarization_channel_modes");
+    const refused = await create(backend.url, ADDRESS_A, randomUUID(), separate);
+    expect([refused.status, refused.json.error.code]).toEqual([400, "invalid_request"]);
+
+    // Once the option is on, a list outside the contract is an off-contract answer like any other field.
+    for (const bad of ["separate", ["mixed", "stereo"], ["mixed", "mixed"], [1]]) {
+      ptxOffers(ptx, bad);
+      const r = await call(backend.url, "GET", "/capabilities");
+      expect([JSON.stringify(bad), r.status, r.json.error.code]).toEqual([JSON.stringify(bad), 502, "upstream_bad_response"]);
+    }
   });
 });
 

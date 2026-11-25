@@ -161,6 +161,9 @@ services:
       PRIVATE_CLOUD_TRANSCRIPTION_API_URL: ${PRIVATE_CLOUD_TRANSCRIPTION_API_URL:-}
       PRIVATE_CLOUD_TRANSCRIPTION_API_KEY: ${PRIVATE_CLOUD_TRANSCRIPTION_API_KEY:-}
       PRIVATE_CLOUD_TRANSCRIPTION_TENANT_KEY: ${PRIVATE_CLOUD_TRANSCRIPTION_TENANT_KEY:-}
+      # Speakers on channel 1 of a two-channel private cloud job; off unless enabled and the account is listed.
+      PRIVATE_STEREO_SPEAKERS_ENABLED: ${PRIVATE_STEREO_SPEAKERS_ENABLED:-false}
+      PRIVATE_STEREO_SPEAKERS_TEST_ACCOUNTS: ${PRIVATE_STEREO_SPEAKERS_TEST_ACCOUNTS:-}
       # Hosted AssemblyAI (TinyCloud's key) is ON: API key and handle key both set = on; either
       # empty = off. Never leaves this process.
       ASSEMBLYAI_API_KEY: ${ASSEMBLYAI_API_KEY:-}

@@ -635,6 +635,10 @@ jobs:
           PRIVATE_CLOUD_TRANSCRIPTION_API_URL: ${{ vars.PRIVATE_CLOUD_TRANSCRIPTION_API_URL }}
           PRIVATE_CLOUD_TRANSCRIPTION_API_KEY: ${{ secrets.PRIVATE_CLOUD_TRANSCRIPTION_API_KEY }}
           PRIVATE_CLOUD_TRANSCRIPTION_TENANT_KEY: ${{ secrets.PRIVATE_CLOUD_TRANSCRIPTION_TENANT_KEY }}
+          # Speakers on channel 1 of a two-channel private cloud job. Off by default; it applies only to the accounts
+          # named in PRIVATE_STEREO_SPEAKERS_TEST_ACCOUNTS (an empty list admits nobody; * admits everyone).
+          PRIVATE_STEREO_SPEAKERS_ENABLED: ${{ vars.PRIVATE_STEREO_SPEAKERS_ENABLED || 'false' }}
+          PRIVATE_STEREO_SPEAKERS_TEST_ACCOUNTS: ${{ vars.PRIVATE_STEREO_SPEAKERS_TEST_ACCOUNTS }}
           # Hosted AssemblyAI for Exo uploads (backend/src/routes/assemblyai-hosted.ts) is ON:
           # TinyCloud's AssemblyAI key and the handle HMAC key (>=32 random bytes,
           # `openssl rand -base64 32`, distinct from every other secret). Both set = hosted mode on;
@@ -660,6 +664,7 @@ jobs:
             BOTS_ENABLED BOTS_COURIER_ENABLED BOTS_TEST_ACCOUNTS BOTS_SERVICE_CONNECT_HOST BOTS_SERVICE_URL BOTS_SERVICE_SECRET BOTS_BACKEND_CALL_SECRET BOTS_POST_TIMEOUT_MS \
             BOTS_HISTORY_ENABLED BOTS_HISTORY_SIGNER_DID BOTS_HISTORY_NODE_ORIGIN BOTS_UNARCHIVED_HISTORY_POLICY \
             TRUSTBOT_READS_ENABLED TRUSTBOT_STANDING_READS_ENABLED \
+            PRIVATE_STEREO_SPEAKERS_ENABLED PRIVATE_STEREO_SPEAKERS_TEST_ACCOUNTS \
             RENEWAL_BACKEND_ORIGIN RENEWAL_NODE_DID RENEWAL_RENEWER_DID; do
             case "${!item-}" in
               *$'\n'*|*$'\r'*) echo "::error title=Invalid deployment config::$item must be a single line"; exit 1 ;;
@@ -771,6 +776,8 @@ jobs:
             printf '%s\n' "PRIVATE_CLOUD_TRANSCRIPTION_API_URL=$PRIVATE_CLOUD_TRANSCRIPTION_API_URL"
             printf '%s\n' "PRIVATE_CLOUD_TRANSCRIPTION_API_KEY=$PRIVATE_CLOUD_TRANSCRIPTION_API_KEY"
             printf '%s\n' "PRIVATE_CLOUD_TRANSCRIPTION_TENANT_KEY=$PRIVATE_CLOUD_TRANSCRIPTION_TENANT_KEY"
+            printf '%s\n' "PRIVATE_STEREO_SPEAKERS_ENABLED=${PRIVATE_STEREO_SPEAKERS_ENABLED:-false}"
+            printf '%s\n' "PRIVATE_STEREO_SPEAKERS_TEST_ACCOUNTS=${PRIVATE_STEREO_SPEAKERS_TEST_ACCOUNTS:-}"
             printf '%s\n' "ASSEMBLYAI_API_KEY=$ASSEMBLYAI_API_KEY"
             printf '%s\n' "ASSEMBLYAI_HOSTED_HANDLE_KEY=$ASSEMBLYAI_HOSTED_HANDLE_KEY"
             printf '%s\n' "ASSEMBLYAI_HOSTED_ADMIN_KEY=$ASSEMBLYAI_HOSTED_ADMIN_KEY"

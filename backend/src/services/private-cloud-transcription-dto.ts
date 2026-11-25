@@ -246,9 +246,23 @@ function job(value: unknown, expectedId?: string) {
 
 export type PublicJob = ReturnType<typeof job>;
 
-export function parseCapabilities(body: unknown) {
+/**
+ * `separateSpeakers` is the caller's admission to diarization of a two-channel job (create `diarize: true`
+ * with `channel_mode: "separate"`). Undefined means the relay does not offer it at all: PTX's
+ * `diarization_channel_modes` is then not read and not relayed, so the answer is what it was before the field
+ * existed. Otherwise the list is relayed, with `"separate"` only for an admitted caller. A PTX that sends no such
+ * list predates the option and refuses it, so nothing is relayed and a client never asks.
+ */
+export function parseCapabilities(body: unknown, separateSpeakers?: boolean) {
   return parseOrNull(() => {
     const o = obj(body);
+    let diarizationChannelModes: (typeof CHANNEL_MODES)[number][] | undefined;
+    if (separateSpeakers !== undefined && o.diarization_channel_modes !== undefined) {
+      check(Array.isArray(o.diarization_channel_modes));
+      const modes = (o.diarization_channel_modes as unknown[]).map((v) => oneOf(v, CHANNEL_MODES));
+      check(new Set(modes).size === modes.length);
+      diarizationChannelModes = modes.filter((mode) => mode !== "separate" || separateSpeakers);
+    }
     check(Array.isArray(o.content_types) && o.content_types.length > 0);
     const contentTypes = (o.content_types as unknown[]).map((v) => oneOf(v, CONTENT_TYPES));
     check(new Set(contentTypes).size === contentTypes.length);
@@ -266,6 +280,7 @@ export function parseCapabilities(body: unknown) {
       admission: oneOf(o.admission, ADMISSION_MODES),
       // Absent on a PTX without the diarization stage: it cannot diarize.
       diarization: o.diarization === undefined ? false : bool(o.diarization),
+      ...(diarizationChannelModes === undefined ? {} : { diarization_channel_modes: diarizationChannelModes }),
     };
   });
 }
@@ -323,21 +338,27 @@ export function parseResultPending(body: unknown, expectedId: string) {
 }
 
 /**
- * The speakers of a completed result. Diarized: `speaker_<n>` (n 0-31) voices of the mono downmix,
- * all on channel 0. Otherwise one speaker per transcribed channel, `channel_<n>` on channel n.
+ * The speakers of a completed result. Without diarization: one speaker per transcribed channel, `channel_<n>` on
+ * channel n. Diarized: the voices of the last channel are told apart as `speaker_<n>` (n 0-31). That is the only
+ * channel of a mono downmix; of a two-channel job it is channel 1, and channel 0 stays the one speaker `channel_0`.
+ * A two-channel job whose channel 1 said nothing lists `channel_0` alone.
  */
 function resultSpeakers(raw: unknown, channels: number, diarized: boolean) {
-  check(Array.isArray(raw) && raw.length >= 1 && raw.length <= (diarized ? MAX_DIARIZED_SPEAKERS : channels));
+  const max = diarized ? MAX_DIARIZED_SPEAKERS + channels - 1 : channels;
+  check(Array.isArray(raw) && raw.length >= 1 && raw.length <= max);
   const speakers = (raw as unknown[]).map((value) => {
     const s = obj(value);
     const channel = int(s.channel, 0, channels - 1);
-    const id = str(s.id, diarized ? DIARIZED_SPEAKER_ID_RE : CHANNEL_SPEAKER_ID_RE);
-    check(diarized ? channel === 0 : id === `channel_${channel}`);
+    const voice = diarized && channel === channels - 1;
+    const id = str(s.id, voice ? DIARIZED_SPEAKER_ID_RE : CHANNEL_SPEAKER_ID_RE);
+    check(voice || id === `channel_${channel}`);
     const name = text(s.name, MAX_LABEL_LENGTH);
     check(name.trim().length > 0);
     return { id, name, channel };
   });
   check(new Set(speakers.map((s) => s.id)).size === speakers.length);
+  // PTX always lists the undiarized channel of a two-channel job, even when it has no text.
+  check(!diarized || channels === 1 || speakers.some((s) => s.channel === 0));
   return speakers;
 }
 
