@@ -603,6 +603,14 @@ export class RunscHost implements SandboxLauncher {
     return response;
   }
 
+  async beginTurn(layout: BotLayout): Promise<void> {
+    await this.#gateway("POST", `/bots/${layout.botId}/turn`);
+  }
+
+  async endTurn(layout: BotLayout): Promise<void> {
+    await this.#gateway("DELETE", `/bots/${layout.botId}/turn`);
+  }
+
   /** Gives the gateway the owner's saved web setting, before the bot's token is registered and on every message. */
   pushWeb(layout: BotLayout): Promise<void> {
     return this.#pushWeb(layout);

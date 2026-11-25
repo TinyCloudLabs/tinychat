@@ -350,6 +350,17 @@ export function fileOwnerStore(path: string): OwnerStore {
   };
 }
 
+interface TurnMeter {
+  started: number;
+  tokens: number;
+  calls: number;
+  pending: number;
+  ended: boolean;
+  done: () => void;
+  finished: Promise<void>;
+  warned: boolean;
+}
+
 export class Gateway {
   readonly #cfg: GatewayConfig;
   readonly #fetch: UpstreamFetch;
@@ -360,6 +371,8 @@ export class Gateway {
   readonly #inflight = new Set<string>();
   readonly #used = new Map<string, number>();
   #usedTotal = 0;
+  /** A turn records settled model calls, independently of the daily reservation counter. */
+  readonly #turns = new Map<string, TurnMeter>();
   /** What each owner allowed for Main's web access; pushed by the supervisor, and "off" until it is. */
   readonly #policy = new Map<string, WebPolicy>();
   /** Page addresses each bot may read: typed by its owner (pushed by the supervisor) or returned by our own tools. */
@@ -537,6 +550,34 @@ export class Gateway {
   usage(botId: string): { bot: number; total: number } {
     this.#rollDay();
     return { bot: this.#used.get(botId) ?? 0, total: this.#usedTotal };
+  }
+  beginTurn(botId: string): void {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    this.#turns.set(botId, { started: this.#now(), tokens: 0, calls: 0, pending: 0, ended: false, done: resolve, finished: promise, warned: false });
+  }
+
+  async endTurn(botId: string): Promise<void> {
+    const turn = this.#turns.get(botId);
+    if (!turn) return;
+    turn.ended = true;
+    if (turn.pending === 0) turn.done();
+    await turn.finished;
+    if (this.#turns.get(botId) === turn) this.#turns.delete(botId);
+    console.log(JSON.stringify({ bots: "turn_tokens", bot: botId.slice(0, 12), tokens: turn.tokens, calls: turn.calls, ms: this.#now() - turn.started }));
+  }
+
+  #settleTurn(botId: string, turn: TurnMeter | undefined, tokens?: number): void {
+    if (!turn) return;
+    if (tokens !== undefined) {
+      turn.tokens += tokens;
+      turn.calls++;
+      const limit = this.#cfg.turnSoftLimit ?? 0;
+      if (limit > 0 && !turn.warned && turn.tokens > limit) {
+        turn.warned = true;
+        console.log(JSON.stringify({ bots: "turn_soft_limit", bot: botId.slice(0, 12), tokens: turn.tokens, limit }));
+      }
+    }
+    if (--turn.pending === 0 && turn.ended) turn.done();
   }
 
   /** Tokens counted today for every bot of this bot's owner. */
@@ -878,7 +919,10 @@ export class Gateway {
     if (this.#remaining(botId) <= 0) return deny("budget", 429);
     if (this.#inflight.has(botId)) return deny("concurrency", 429);
     this.#inflight.add(botId);
+    const turn = courierPeer ? undefined : this.#turns.get(botId);
+    if (turn) turn.pending++;
     let relaying = false;
+    let attempted = false;
     try {
       const raw = await readBody(req, this.#cfg.maxBodyBytes, this.#cfg.bodyTimeoutMs);
       if (raw === "too_large") return deny("body_size", 413);
@@ -908,15 +952,19 @@ export class Gateway {
       streaming();
       let upstream: UpstreamCall;
       try {
+        attempted = true;
         upstream = await this.#upstream(CHAT_PATH, { method: "POST", body: JSON.stringify(body) }, botId);
       } catch {
         this.#charge(botId, -reservation, day);
         return failure(502, "Model unavailable.");
       }
       relaying = true;
-      return this.#relay(botId, upstream, body.stream === true, reservation, day, courierPeer);
+      return this.#relay(botId, upstream, body.stream === true, reservation, day, courierPeer, turn);
     } finally {
-      if (!relaying) this.#inflight.delete(botId);
+      if (!relaying) {
+        this.#inflight.delete(botId);
+        this.#settleTurn(botId, turn, attempted ? 0 : undefined);
+      }
     }
   }
 
@@ -924,7 +972,7 @@ export class Gateway {
    * Streams the upstream response back, counting bytes and usage; when it ends, settles the reservation to the
    * reported usage (the whole reservation if none arrived, nothing for an upstream error) and frees the slot.
    */
-  #relay(botId: string, upstream: UpstreamCall, streamed: boolean, reservation: number, day: string, courierPeer?: string): Response {
+  #relay(botId: string, upstream: UpstreamCall, streamed: boolean, reservation: number, day: string, courierPeer?: string, turn?: TurnMeter): Response {
     const { response, done, abort } = upstream;
     const usage = new UsageReader(streamed);
     let finished = false;
@@ -935,6 +983,7 @@ export class Gateway {
       this.#inflight.delete(botId);
       const tokens = usage.tokens ?? (response.ok ? reservation : 0);
       this.#charge(botId, tokens - reservation, day);
+      this.#settleTurn(botId, turn, tokens);
       console.log(JSON.stringify(courierPeer
         ? { gateway: "courier", peer: courierPeer, outcome: response.ok ? "model_ok" : "model_unavailable" }
         : { gateway: "allow", bot: botId.slice(0, 12), route: `POST ${CHAT_PATH}`, status: response.status, tokens }));
