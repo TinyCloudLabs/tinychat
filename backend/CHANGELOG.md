@@ -1,5 +1,13 @@
 # @tinychat/backend
 
+## 0.14.1-beta.0
+
+### Patch Changes
+
+- 70b0be0: The backend accepts the development frontend origin https://lightning-node-1.gecko-snares.ts.net:5240 for testing backend changes. The sign-in domain is read from the origin's host, port included, so sessions signed for a host:port domain are accepted.
+
+  Details: TC-4272
+
 ## 0.14.0
 
 ### Minor Changes
