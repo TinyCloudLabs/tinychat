@@ -11,6 +11,8 @@ import { areaResources, isReadArea, READ_AREA_NAMES, READ_AREAS, type ReadArea, 
 
 /** Where each owner's grant is kept, in the backend's own space. */
 export const TRUSTBOT_READ_GRANT_KEY_PREFIX = "trustbot/read-grants/";
+/** Where each owner's Telegram read grant is kept, apart from the other areas' grants, in the backend's own space. */
+export const TRUSTBOT_TELEGRAM_READ_GRANT_KEY_PREFIX = "trustbot/telegram-read-grants/";
 /** The longest a read grant may last. */
 export const READ_GRANT_MAX_MS = 7 * 86_400_000;
 /** Clock slack between the owner's browser and the backend. */

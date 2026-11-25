@@ -4,6 +4,7 @@ import { BotHistory, HISTORY_BOT_KEY, HistoryPermissionExpired, HistoryPermissio
 import { HistoryKeyDescriptorExpired, HistoryKeyDescriptorRejected } from "../bot-history-key.js";
 import type { Bot, BotsRegistry } from "../bots-registry.js";
 import { botsServiceHeaders, type BotsConfig } from "./bots.js";
+import { logSafeError } from "../log-safe-error.js";
 
 /** What the history routes and the drain read from the registry: the owner's own record, never a key from a body. */
 type OwnerRecords = Pick<BotsRegistry, "read">;
@@ -110,7 +111,10 @@ export function createBotHistoryRouter(history: BotHistory, config: BotsConfig, 
       await acceptAndPush(history, config, req.user!.address, { serialized, siwe, signature }, "main", req.user!.renewal);
       res.status(204).end();
     }
-    catch { res.status(503).json({ error: "history_grant_unavailable" }); }
+    catch (error) {
+      console.warn(JSON.stringify({ event: "bot_history_grant_unavailable", bot: "main", ...logSafeError(error) }));
+      res.status(503).json({ error: "history_grant_unavailable" });
+    }
   });
   return router;
 }
@@ -163,7 +167,10 @@ export function createSiblingHistoryRouter(history: BotHistory, config: BotsConf
       await acceptAndPush(history, config, req.user!.address, { serialized, siwe, signature }, bot.key, req.user!.renewal);
       res.status(204).end();
     }
-    catch { res.status(503).json({ error: "history_grant_unavailable" }); }
+    catch (error) {
+      console.warn(JSON.stringify({ event: "bot_history_grant_unavailable", bot: "sibling", ...logSafeError(error) }));
+      res.status(503).json({ error: "history_grant_unavailable" });
+    }
   });
   return router;
 }
