@@ -29,7 +29,8 @@ export interface ReadSummary {
   total: number;
 }
 
-const PREFIX = "trustbot/read-audit/";
+/** Read-attempt rows, in the backend's own space. A key root: listed in BACKEND_KV_ROOTS. */
+export const TRUSTBOT_READ_AUDIT_KEY_PREFIX = "trustbot/read-audit/";
 const OWNER_DID = /^did:pkh:eip155:1:0x[0-9a-f]{40}$/;
 const KEY = /^trustbot\/read-audit\/(did:pkh:eip155:1:0x[0-9a-f]{40})\/(\d{4}-\d{2}-\d{2})\/(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z)\/[0-9a-f-]{36}$/;
 const RETENTION_MS = 90 * 86_400_000;
@@ -88,7 +89,7 @@ export function createReadAudit(node: TinyCloudNode, now = Date.now): ReadAudit 
     async begin({ owner, at, area, tool }) {
       if (!OWNER_DID.test(owner) || readAuditArea(tool) !== area) throw new Error("read_audit_invalid_attempt");
       const time = timestamp(at);
-      const id = `${PREFIX}${owner}/${time.slice(0, 10)}/${time}/${randomUUID()}`;
+      const id = `${TRUSTBOT_READ_AUDIT_KEY_PREFIX}${owner}/${time.slice(0, 10)}/${time}/${randomUUID()}`;
       const value: AuditRow = { area, tool, outcome: "pending" };
       const stored = await withSessionRefresh(node, async () =>
         assertKvResult(await node.kv.put(id, JSON.stringify(value), { ifNoneMatch: "*" })));
@@ -117,7 +118,7 @@ export function createReadAudit(node: TinyCloudNode, now = Date.now): ReadAudit 
       if (start >= to) return { owner, from: fromIso, to: toIso, days: [], total: 0 };
       const byDay = new Map<string, ReadSummary["days"][number]>();
       let total = 0;
-      for await (const page of auditPages(node, `${PREFIX}${owner}/`)) {
+      for await (const page of auditPages(node, `${TRUSTBOT_READ_AUDIT_KEY_PREFIX}${owner}/`)) {
         const keys = page.filter(key => {
           const parts = keyParts(key);
           return parts?.owner === owner && parts.at >= start && parts.at < to;
@@ -153,7 +154,7 @@ export function createReadAudit(node: TinyCloudNode, now = Date.now): ReadAudit 
 /** Remove attempts older than 90 days, including interrupted attempts. */
 export async function purgeReadAudit(node: TinyCloudNode, now = Date.now()): Promise<void> {
   const cutoff = new Date(now - RETENTION_MS).toISOString();
-  for await (const page of auditPages(node, PREFIX)) {
+  for await (const page of auditPages(node, TRUSTBOT_READ_AUDIT_KEY_PREFIX)) {
     for (const key of page) {
       const parts = keyParts(key);
       if (!parts || parts.at >= cutoff) continue;
