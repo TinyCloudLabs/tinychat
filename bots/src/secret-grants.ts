@@ -71,6 +71,13 @@ export interface GrantSession {
   expiresAt: string;
 }
 
+/**
+ * The approval request body. `requesterDid` is share-envelope 1.7.0's field for a link signed by a key other than the
+ * grant's own: present, it equals `issuer` (the signer of the link) and `targetDid` stays the grant's fresh key. It is
+ * left out when the signer is the grant's own key, which keeps those requests as they were.
+ */
+export type ApprovalRequest = OpenKeyApprovalRequestV1 & { requesterDid?: string };
+
 /** One request's sealed record. Key material is dropped as soon as the request can no longer be used. */
 interface GrantRecord {
   botId: string;
@@ -90,7 +97,7 @@ interface GrantRecord {
   keys?: {
     jwk: Ed25519PrivateJwk;
     relayPrivateKey: string;
-    request: OpenKeyApprovalRequestV1;
+    request: ApprovalRequest;
     requestId: string;
     bodyCid: string;
     record: ApprovalRequesterState["record"];
@@ -130,8 +137,9 @@ export interface SecretGrantDeps {
   links?: ApprovalLinks;
   now?: () => number;
   /**
-   * Who signs the approval request. share-envelope 1.6.0 requires the signer to be the grant's own key, so today it
-   * is; TC-3772 lets a stable TinyCloud One key sign instead, and only this changes (Naomi's ruling, 22 Nov).
+   * Who signs the approval request. The default is the grant's own fresh key. The gateway injects one stable
+   * TinyCloud One key (secret-start.ts, TC-3772), so OpenKey can say who asks. The grant's audience stays the fresh
+   * key either way, so stopping a request deletes only that key.
    */
   requester?: (target: LinkSigner) => LinkSigner;
 }
@@ -295,8 +303,9 @@ export class SecretGrants {
     const methods = [...allowedMethods(ask.name)];
     // Monica's words, the same as the secret card's, so the owner sees writes in both places they decide.
     const writes = service && writeMethods(ask.name).length > 0 ? ` ${MAIN_BOT_NAME} can also send data to ${service} with it, which may cost money or change things there.` : "";
-    const request: OpenKeyApprovalRequestV1 = {
+    const request: ApprovalRequest = {
       issuer: requester.did,
+      ...(requester.did === target.did ? {} : { requesterDid: requester.did }),
       requestVersion: 1,
       targetDid: target.did,
       targetPublicJwk: { kty: "OKP", crv: "Ed25519", x: jwk.x },

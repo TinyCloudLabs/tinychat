@@ -13,7 +13,7 @@ except the ingress:
 | Container | Privileges | Holds | Does |
 | --- | --- | --- | --- |
 | `bots-supervisor` | capability set below, no published port, no outbound network | `BOTS_SERVICE_SECRET` | internal API, starts and stops the sandboxes, talks to OMP over each sandbox's stdio |
-| `bots-gateway` | unprivileged user, read-only, no capabilities | `REDPILL_API_KEY`; the dstack socket, for the secret-request sealing key only | one Unix socket per bot for allowed model calls and a control socket for bot admission |
+| `bots-gateway` | unprivileged user, read-only, no capabilities | `REDPILL_API_KEY`; the dstack socket, for the secret-request sealing key and the approval requester key only | one Unix socket per bot for allowed model calls and a control socket for bot admission |
 | `dstack-ingress` | the backend's ingress image | `CLOUDFLARE_API_TOKEN` (DNS for the certificate) | ends TLS inside the CVM, forwards to the supervisor |
 
 Treat every sandbox as hostile: OMP has a shell, so each owner can run any code as root inside their sandbox.
@@ -359,8 +359,11 @@ call and returns the reply with the value hidden.
   (`src/secret-routes.ts`). The gateway makes a fresh Ed25519 key for that request alone. It signs an OpenKey one-tap
   approval request for `tinycloud.kv/get` on `vault/secrets/<NAME>` plus `tinycloud.encryption/decrypt` on the owner's
   default network. The longest grant it allows is 1 hour (`MAX_GRANT_SECONDS`, from `MAX_GRANT_MS` in `asks.ts`; standing
-  access is a separate design), and a delegation more than 120 s longer than that is refused (OpenKey signs a real one-hour grant a few seconds over). The same key is both issuer and audience, because share-envelope 1.6.0 requires it. TC-3772
-  will let a stable TinyCloud One key sign instead (`SecretGrantDeps.requester`). The owner the supervisor names must
+  access is a separate design), and a delegation more than 120 s over that is refused (OpenKey signs a real one-hour grant a few seconds over).
+  The grant's audience is a fresh key per request, so Stop deletes only that key. The link is
+  signed by one stable TinyCloud One requester key (below), which is the body's `issuer` and `requesterDid`
+  (share-envelope 1.7.0; `SecretGrantDeps.requester`). A gateway without that injection signs with the grant's own key and
+  leaves `requesterDid` out. The owner the supervisor names must
   be this bot's owner (409 otherwise). A known service's site and header must match `src/secret-catalog.ts`.
 - **Collection.** The gateway collects the result itself every 5 s. Before keeping a grant it checks:
   - the owner's SIWE signature;
@@ -371,12 +374,21 @@ call and returns the reply with the value hidden.
   The supervisor collects outcomes with `POST /bots/<id>/secrets/drain`. A decline, expiry or failure drops the
   request's key at once.
 - **Storage.** Each record is sealed with AES-256-GCM in `secret-grants/` on the gateway volume. The sealing key comes
-  from the CVM's key service (dstack `GetKey`, path `tinychat-bots/secret-seal` only, `src/dstack-key.ts`) and is
+  from the CVM's key service (dstack `GetKey`, path `tinychat-bots/secret-seal`, `src/dstack-key.ts`) and is
   never on a disk. `/var/run/dstack.sock` is mounted into `bots-gateway` only (and the ingress, as before), never the
-  supervisor, the sandboxes or `bots-fetch`. The gateway restricts itself to that one path in code, which is not a
-  boundary: TC-3773 adds a proxy that enforces it before access opens beyond Sam. Without the key service, every
-  secret route answers 503 and the secret tools aren't offered. The gateway runs as uid 65532, so the socket must be
+  supervisor, the sandboxes or `bots-fetch`. The gateway restricts itself to two paths in code (the sealing key and
+  the requester key), which is not a boundary: TC-3773 adds a proxy that enforces both ahead of access beyond Sam.
+  Without either key, every secret route answers 503 and the secret tools aren't offered. The gateway runs as uid 65532, so the socket must be
   readable by it; check this at deploy.
+- **Stable requester.** OpenKey shows who asks from the key that signs the link, so every secret request is signed by
+  one stable TinyCloud One key. The gateway asks the key service for `GetKey` on path
+  `tinychat-bots/approval-requester` (purpose `approval-requester`) and derives the Ed25519 seed as HKDF-SHA256 of
+  that key with an empty salt, info `tinychat-bots approval-requester v1`, 32 bytes (`src/dstack-key.ts`). The sealing
+  key uses another path and another info string, so neither can be derived from the other. The seed is never logged or
+  returned; the gateway prints the requester's DID once at start-up, as `{"gateway":"approval_requester","did":"did:key:..."}`.
+  The DID is the same after a restart and changes only with the app id. DID: filled in after the first deploy that
+  carries this. If either key can't be had, the gateway starts without secrets (the 503 above); it never signs under
+  the stable name with a per-request key.
 - **Stop now.** `DELETE /bots/<id>/secrets/<request id>` unlinks the sealed file and drops the gateway's in-memory
   copy (the grant and any cached TinyCloud session). Memory isn't zeroed. The volume has no backups. Until the
   DELETE lands, a request the supervisor lists as stopped, revoked, declined, expired or failed is refused anyway.
