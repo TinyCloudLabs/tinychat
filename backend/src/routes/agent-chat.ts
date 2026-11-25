@@ -1545,7 +1545,7 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
       if (budgetRemaining !== null && budgetPreflightMode !== "off" && budgetRemaining < minimum) {
         console.info("[agent-chat] turn budget", { event: "preflight", mode: budgetPreflightMode, remaining: budgetRemaining, minimum });
         if (budgetPreflightMode === "enforce") {
-          res.status(402).json({ error: "credit_budget_exceeded", message: `Credit budget for the ${TIERS[gatedTier].name} tier is below the minimum for a turn.`, tier: gatedTier });
+          res.status(402).json({ error: "credit_budget_exceeded", message: `You're out of credits on the ${TIERS[gatedTier].name} plan, so this message got no reply and nothing was charged.`, tier: gatedTier });
           return;
         }
       }
