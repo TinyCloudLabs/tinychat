@@ -260,6 +260,7 @@ test("earlier app-originated messages show as muted lines, never as words the ow
   ];
   await render(api);
   await openChat();
+  await act(async () => { [...document.querySelectorAll("button")].find(node => node.textContent === "Show older messages")!.click(); });
   const chat = document.querySelector("[data-bots-main-chat]")!;
   expect([...chat.querySelectorAll("[data-app-line]")].map((node) => node.textContent)).toEqual([ASK_STRINGS.lineAnswered, ASK_STRINGS.lineDeclined, ASK_STRINGS.lineDeclined]);
   expect(chat.textContent).not.toContain("hunter2");
