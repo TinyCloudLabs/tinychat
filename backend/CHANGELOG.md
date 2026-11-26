@@ -1,5 +1,13 @@
 # @tinychat/backend
 
+## 0.14.5
+
+### Patch Changes
+
+- 2b52dd6: Ship closed calendar auto-join tick, occurrence decision and connection state events to backend logs.
+
+  Details: TC-4406
+
 ## 0.14.5-beta.0
 
 ### Patch Changes
