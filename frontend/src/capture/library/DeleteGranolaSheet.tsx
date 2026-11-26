@@ -30,9 +30,9 @@ export function DeleteGranolaSheet(props: { open: boolean; title: string; busy: 
         <p className="text-callout">This deletes the meeting and its transcript from your space. It can’t be undone.</p>
         {combined && <p className="text-callout" data-testid="delete-granola-combined">{combined}</p>}
         <p className="text-callout">{props.source === "fireflies"
-          ? "Syncing Fireflies won’t bring it back unless you choose “Allow deleted meetings back”."
+          ? "Syncing Fireflies won’t bring it back unless you choose “Allow deleted Fireflies meetings back”."
           : props.source === "google-meet"
-            ? "Syncing Google Meet won’t bring it back unless you choose “Allow deleted meetings back”."
+            ? "Syncing Google Meet won’t bring it back unless you choose “Allow deleted Google Meet meetings back”."
             : "Importing the same CSV or syncing Granola won’t bring it back unless you choose “Allow deleted meetings back”."}</p>
         {props.error && <p role="alert" className="text-callout text-destructive" data-testid="delete-granola-error">{props.error}</p>}
       </div>
