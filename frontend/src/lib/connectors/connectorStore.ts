@@ -759,6 +759,70 @@ function datetimeConfidence(metadata: Record<string, unknown>, hasStartedAt: boo
   }
 }
 
+export function granolaDeletedKvKey(sourceId: string): string {
+  return `${CONNECTORS_KV_PREFIX}/granola/deleted/${sourceId}`;
+}
+
+function validGranolaSourceId(sourceId: string): boolean {
+  return sourceId.length > 0 && sourceId !== "." && sourceId !== ".."
+    && !sourceId.includes("/") && !sourceId.includes("\\") && !sourceId.includes("\0");
+}
+
+export async function isGranolaMeetingDeleted(tcw: TinyCloudWeb, sourceId: string): Promise<StoreResult<boolean>> {
+  if (!validGranolaSourceId(sourceId)) {
+    return fail({ code: "INVALID_SOURCE_ID", message: "invalid Granola source id" }, "isGranolaMeetingDeleted", storageScopeFor(tcw));
+  }
+  try {
+    const result = await tcw.kv.get(granolaDeletedKvKey(sourceId), { source: "network" });
+    if (result.ok) return { ok: true, data: true };
+    if (result.error.code === "KV_NOT_FOUND") return { ok: true, data: false };
+    return fail(result.error, "isGranolaMeetingDeleted", storageScopeFor(tcw));
+  } catch {
+    return fail({ code: "KV_GET_TRANSPORT", message: "marker read rejected" }, "isGranolaMeetingDeleted", storageScopeFor(tcw));
+  }
+}
+
+export async function deleteGranolaMeeting(tcw: TinyCloudWeb, source: string, sourceId: string): Promise<StoreResult<void>> {
+  if (source !== "granola") {
+    return { ok: false, error: { code: "INVALID_SOURCE", message: "only Granola meetings can be deleted here" } };
+  }
+  const marker = await isGranolaMeetingDeleted(tcw, sourceId);
+  if (!marker.ok) return marker;
+  const schema = await ensureSchema(tcw);
+  if (!schema.ok) return schema;
+  const cascade = await deleteCombinedReferencing(tcw, "granola", sourceId);
+  if (!cascade.ok) return fail(cascade.error, "deleteGranolaMeeting(combined)", storageScopeFor(tcw));
+  if (cascade.data.unverifiedIds.length) {
+    return fail({ code: "COMBINED_MEMBERS_UNKNOWN", message: "combined meeting membership cannot be determined" }, "deleteGranolaMeeting(combined)", storageScopeFor(tcw));
+  }
+  if (!marker.data) {
+    const put = await tcw.kv.put(granolaDeletedKvKey(sourceId), JSON.stringify({ v: 1, deleted_at: new Date().toISOString() }));
+    if (!put.ok) return fail(put.error, "deleteGranolaMeeting(marker)", storageScopeFor(tcw));
+  }
+  for (const key of [meetingKvKey("granola", sourceId), transcriptKvKey("granola", sourceId)]) {
+    const removed = await tcw.kv.delete(key);
+    if (!removed.ok && removed.error.code !== "KV_NOT_FOUND") return fail(removed.error, "deleteGranolaMeeting(kv)", storageScopeFor(tcw));
+  }
+  const removed = await store(tcw).execute("DELETE FROM connector_meeting WHERE source = ? AND source_id = ?", ["granola", sourceId]);
+  if (!removed.ok) return fail(removed.error, "deleteGranolaMeeting(sql)", storageScopeFor(tcw));
+  const late = await deleteCombinedReferencing(tcw, "granola", sourceId);
+  if (!late.ok) return fail(late.error, "deleteGranolaMeeting(combined-late)", storageScopeFor(tcw));
+  if (late.data.unverifiedIds.length) {
+    return fail({ code: "COMBINED_MEMBERS_UNKNOWN", message: "combined meeting membership cannot be determined" }, "deleteGranolaMeeting(combined-late)", storageScopeFor(tcw));
+  }
+  return { ok: true, data: undefined };
+}
+
+export async function clearGranolaDeletedMeetings(tcw: TinyCloudWeb): Promise<StoreResult<void>> {
+  const keys = await listKvPrefix(tcw, `${CONNECTORS_KV_PREFIX}/granola/deleted/`);
+  if (!keys.ok) return keys;
+  for (const key of keys.data) {
+    const removed = await tcw.kv.delete(key);
+    if (!removed.ok && removed.error.code !== "KV_NOT_FOUND") return fail(removed.error, "clearGranolaDeletedMeetings", storageScopeFor(tcw));
+  }
+  return { ok: true, data: undefined };
+}
+
 /**
  * Insert-or-update a meeting keyed on (source, source_id), then write/refresh
  * the transcript KV body.
@@ -792,6 +856,11 @@ export async function upsertMeeting(
   sentences: FirefliesSentence[],
   options: { preserveExistingTitle?: boolean; preserveTranscriptBody?: boolean } = {},
 ): Promise<StoreResult<UpsertMeetingOutcome>> {
+  if (meeting.source === "granola") {
+    const deleted = await isGranolaMeetingDeleted(tcw, meeting.sourceId);
+    if (!deleted.ok) return deleted;
+    if (deleted.data) return { ok: false, error: { code: "GRANOLA_MEETING_DELETED", message: "Granola meeting is deleted" } };
+  }
   const schema = await ensureSchema(tcw);
   if (!schema.ok) return schema;
 

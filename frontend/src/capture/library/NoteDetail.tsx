@@ -19,6 +19,7 @@ import { VoiceNoteSaveTimeout, withVoiceNoteSaveDeadline } from "@/lib/voiceNote
 import { localTranscriptToSave, VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
 import { gateCombinedSummary, readAutomaticSummaries } from "@/lib/meetingSummary/automaticSummaries";
 import { NoteDetailView, type NoteDetailViewProps } from "./NoteDetailView";
+import { DeleteGranolaSheet } from "./DeleteGranolaSheet";
 import { CombineSheet } from "./combine/CombineSheet";
 import { canCombine } from "./combine/candidates";
 import { displayMembers, isCombined, memberLines, type CombineDetail } from "./combine/combinedView";
@@ -39,6 +40,8 @@ import { captureEvents } from "../captureEvents";
 import { ShareRecordingButton } from "../share/ShareRecordingSheet";
 import { useRecordingShared } from "@/lib/nativeShares/sentShares";
 import { libraryRowTitle } from "./LibraryRow";
+import { deleteGranolaMeeting } from "@/lib/connectors/connectorStore";
+import { runGranolaSpaceWrite } from "@/lib/connectors/granolaSync";
 
 /** Matches markdown-text's copy button: the tick reverts on its own. */
 const COPIED_DURATION = 1500;
@@ -72,6 +75,42 @@ export function NoteDetail(props: {
   const { item, reads, audio } = library.note;
   const navigate = useNavigate();
   const combined = useCombinedMeeting({ tcw: props.tcw, item, onChanged: library.refresh, onDeleted: props.onBack });
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const deleteContext = useRef({ tcw: props.tcw, sourceId: item?.source === "granola" ? item.sourceId : null });
+  deleteContext.current = { tcw: props.tcw, sourceId: item?.source === "granola" ? item.sourceId : null };
+  const deleteSourceId = item?.source === "granola" ? item.sourceId : null;
+  useEffect(() => {
+    setDeleteOpen(false);
+    setDeleteBusy(false);
+    setDeleteError(null);
+  }, [props.tcw, deleteSourceId]);
+  const confirmGranolaDelete = () => {
+    if (!deleteSourceId || deleteBusy) return;
+    const tcw = props.tcw;
+    const sourceId = deleteSourceId;
+    setDeleteBusy(true);
+    setDeleteError(null);
+    void (async () => {
+      try {
+        const result = await runGranolaSpaceWrite(() => deleteGranolaMeeting(tcw, "granola", sourceId));
+        if (deleteContext.current.tcw !== tcw || deleteContext.current.sourceId !== sourceId) return;
+        if (!result.ok) {
+          setDeleteError("Couldn’t delete the meeting. Please retry.");
+          return;
+        }
+        setDeleteOpen(false);
+        library.refresh();
+        props.onBack();
+      } catch {
+        if (deleteContext.current.tcw === tcw && deleteContext.current.sourceId === sourceId)
+          setDeleteError("Couldn’t delete the meeting. Please retry.");
+      } finally {
+        if (deleteContext.current.tcw === tcw && deleteContext.current.sourceId === sourceId) setDeleteBusy(false);
+      }
+    })();
+  };
   const summary = useCombinedSummary({ tcw: props.tcw, runner: props.summaries, item });
   const flow = useCombineFlow({ tcw: props.tcw, onCombined: ({ id, sourceId, created }) => {
     // The combined text is new: the summary gate decides (setting on or unreadable: a run; off: none).
@@ -205,11 +244,14 @@ export function NoteDetail(props: {
         activityControl={shareButton ? <>{props.activityControl}{shareButton}</> : props.activityControl}
         shared={shared}
         combine={combine}
+        onDeleteGranola={deleteSourceId ? () => { setDeleteError(null); setDeleteOpen(true); } : undefined}
         speakerNames={speakerNames}
       />
       {/* The visible list: a capture already inside a combined meeting is never offered for a new combine. */}
       <CombineSheet flow={flow} items={library.items} now={new Date()} />
       {combined.remove.open && <DeleteCombinedSheet remove={combined.remove} title={item?.title ?? "Combined meeting"} />}
+      {deleteSourceId && <DeleteGranolaSheet open={deleteOpen} title={item?.title ?? "Meeting"} busy={deleteBusy} error={deleteError}
+        onKeep={() => { if (!deleteBusy) setDeleteOpen(false); }} onConfirm={confirmGranolaDelete} />}
     </>
   );
 }

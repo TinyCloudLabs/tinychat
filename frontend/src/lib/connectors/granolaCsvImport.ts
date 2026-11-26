@@ -109,8 +109,11 @@ export async function importGranolaCsv(opts: GranolaCsvImportOptions): Promise<G
 
     const write = await runGranolaSpaceWrite(() => opts.store.upsertMeeting(opts.tcw, meeting, sentences));
     if (!write.ok) {
+      if (write.error.code === "GRANOLA_MEETING_DELETED") { counts.skippedDeleted++; continue; }
       counts.failed++;
-      if (isStorageFullError(write.error)) return { ok: false, error: storageFailure(write.error), partial: counts };
+      if (isStorageFullError(write.error) || write.error.code.startsWith("KV_")) {
+        return { ok: false, error: storageFailure(write.error), partial: counts };
+      }
       continue;
     }
     if (write.data.inserted) counts.added++;

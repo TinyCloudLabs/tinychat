@@ -7,7 +7,7 @@
 // Pushed (a phone): the page header with Back. Beside the list (wide): the
 // title as the pane's heading.
 import { useContext, useState, type ReactNode } from "react";
-import { CheckIcon, CopyIcon, Loader2Icon, RefreshCwIcon } from "lucide-react";
+import { CheckIcon, CopyIcon, Loader2Icon, RefreshCwIcon, Trash2Icon } from "lucide-react";
 
 import { MeetingAudioPlayer } from "@/chat/MeetingAudioPlayer";
 import { NotePlaybackContext } from "@/lib/audio/notePlayback";
@@ -106,6 +106,7 @@ export interface NoteDetailViewProps {
   activityControl?: ReactNode;
   /** Combine two captures of one meeting (TC-1152): the entry on a meeting, the actions on a combined one. */
   combine?: CombineDetail;
+  onDeleteGranola?: () => void;
   /** The note's speaker names (TC-2189); without them the labels stay as stored. */
   speakerNames?: SpeakerNamesController;
   /** The owner is sharing it (TC-3195): a "Shared" badge before the meta line. */
@@ -645,6 +646,7 @@ function NoteDetailViewContent(props: NoteDetailViewProps) {
         <NoteHeaderTitle item={item} title={title} pushed={props.pushed} meta={props.shared ? <><RowBadge>Shared</RowBadge> {noteMeta(item)}</> : noteMeta(item)} />
         {activityStatus && <div className="flex flex-wrap items-center gap-3" data-testid="note-detail-status"><p className={activityStatus.startsWith("Needs attention") ? "text-callout text-amber-700 dark:text-amber-300" : "text-callout text-muted-foreground"}>{activityStatus}</p>{statusJobs.flatMap((job) => job.action ? [job.action] : []).map((action, index) => <button key={`${action.label}:${index}`} type="button" className="min-h-11 text-callout text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={action.run}>{action.label}</button>)}{!statusJobs.some((job) => job.action) && activityRetry && <button type="button" className="min-h-11 text-callout text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={activityRetry}>Try again</button>}</div>}
         <CombineActions combine={props.combine} />
+        {item.source === "granola" && props.onDeleteGranola && <div className="pt-2"><Button type="button" variant="outline" className="text-destructive" onClick={props.onDeleteGranola} data-testid="granola-delete"><Trash2Icon aria-hidden /> Delete meeting</Button></div>}
       </header>
       {props.audio ? (
         <MeetingAudioPlayer key={`${item.source}:${item.sourceId}`} {...noteAudioPlayerProps(props.audio)} durationSecs={item.durationSecs}
