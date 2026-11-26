@@ -304,6 +304,13 @@ export function MeetingSourcesDialog({
                         </div>
                       </div>
                     )}
+                    {d.id === "google-meet" && (
+                      <div className="ms-opt">
+                        <div className="ms-opt-copy">
+                          <GranolaAllowBack source="google-meet" buttonClassName="ms-btn2 ms-btn-wrap" note="After this, Google Meet syncs can bring back meetings you deleted." noteClassName="ms-opt-text mt-2" tcw={tcw} backendUrl={backendUrl} sessionStore={sessionStore} />
+                        </div>
+                      </div>
+                    )}
                     <DisconnectRow name={d.name} syncing={syncing} onDisconnect={() => requestDisconnect(d.id)} />
                   </>
                 )
@@ -490,7 +497,20 @@ function FirefliesManagePanel({
         busy={state.busy === "clearing-ledger"}
         error={state.notice?.tone === "error" ? state.notice.message : null}
         onKeep={() => emit(cancelHistoricalResync)}
-        onDrop={() => void confirmHistoricalResync(deps, emit)}
+        onDrop={() => void confirmHistoricalResync({
+          ...deps,
+          webhooks: {
+            ...deps.webhooks,
+            clearPurgeLedger: async (source) => {
+              const recorded = await webhooks.clearDeleted(source);
+              if (recorded.status !== "ok") return recorded;
+              const ledger = await deps.webhooks.clearPurgeLedger(source);
+              if (ledger.status !== "ok") return ledger;
+              const cleared = await connectorStore.clearDeletedMeetings(tcw, "fireflies").catch(() => null);
+              return cleared?.ok ? ledger : { status: "retryable" as const, httpStatus: 503, code: "deleted_meetings_clear_failed" };
+            },
+          },
+        }, emit)}
         testId="confirm-bring-back"
       />
     </>

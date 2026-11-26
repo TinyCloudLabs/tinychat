@@ -731,7 +731,7 @@ export function cancelHistoricalResync(
 
 /** The copy the confirmation shows. Kept beside the action it describes. */
 export const HISTORICAL_RESYNC_CONFIRM_COPY = {
-  heading: "Allow deleted meetings to be collected again?",
+  heading: "Allow deleted Fireflies meetings back?",
   body:
     "We keep a record of the meetings you deleted so a late Fireflies notification cannot bring them back. Clearing that record means any of those meetings Fireflies tells us about again WILL be collected and saved to your space. Nothing else changes, and this cannot be undone.",
   confirmLabel: "Clear the record and allow re-sync",

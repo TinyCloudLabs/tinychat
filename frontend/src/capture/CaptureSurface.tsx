@@ -384,6 +384,8 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
             key={screen.noteId ?? recentNoteId}
             library={library}
             tcw={tcw}
+            backendUrl={backendUrl}
+            sessionStore={sessionStore}
             pushed={!wide}
             onBack={() => {
               if (recentNoteId !== null) closeRecentNote();

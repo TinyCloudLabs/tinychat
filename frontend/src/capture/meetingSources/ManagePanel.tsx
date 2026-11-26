@@ -188,13 +188,13 @@ export function FirefliesManage(props: FirefliesManageProps) {
 
       {!dark && (
         <OptionRow title="Bring back deleted meetings">
-          <p className="ms-opt-text">
+          <LinkButton chevron disabled={busy} onClick={props.onBringBack}>
+            Allow deleted Fireflies meetings back
+          </LinkButton>
+          {!state.resyncConfirming && <p className="ms-opt-text">
             Meetings you deleted here are collected again if {connectorName} reports them. You are
             asked first.
-          </p>
-          <LinkButton chevron disabled={busy} onClick={props.onBringBack}>
-            Allow deleted meetings back
-          </LinkButton>
+          </p>}
         </OptionRow>
       )}
 

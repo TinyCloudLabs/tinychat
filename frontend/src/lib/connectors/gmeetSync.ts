@@ -74,6 +74,14 @@ import type { ConnectorConnection, ConnectorId } from "./types";
 /** SQL `source` column value and connector id — one string, one meaning. */
 const SOURCE = GMEET_MEETING_SOURCE;
 
+function sourceDeleted(store: GmeetSyncStore, tcw: TinyCloudWeb, sourceId: string): Promise<StoreResult<boolean>> {
+  return store.isMeetingDeleted(tcw, SOURCE, sourceId);
+}
+
+function removeDeletedSource(store: GmeetSyncStore, tcw: TinyCloudWeb, sourceId: string): Promise<StoreResult<void>> {
+  return store.deleteSourceMeeting(tcw, SOURCE, sourceId);
+}
+
 /**
  * Re-sweep overlap subtracted from the watermark (G1-ratified 72h).
  *
@@ -136,6 +144,8 @@ export interface GmeetSyncClient {
  *  returns a StoreResult — the engine branches on `.ok` and never expects a throw
  *  across the boundary. */
 export interface GmeetSyncStore {
+  isMeetingDeleted(tcw: TinyCloudWeb, source: "google-meet", sourceId: string): Promise<StoreResult<boolean>>;
+  deleteSourceMeeting(tcw: TinyCloudWeb, source: "google-meet", sourceId: string): Promise<StoreResult<void>>;
   getConnection(
     tcw: TinyCloudWeb,
     connectorId: ConnectorId,
@@ -1825,6 +1835,9 @@ async function syncDriveFile(file: GoogleDriveFile, rawOpts: FinishingOptions, r
     : await opts.step(() => opts.store.findGmeetNotesAssociation!(opts.tcw, SOURCE, fileId, null, null), true);
   if (!association.ok) { terminalDriveItem(diagnostics, "drive_storage_failed"); record(fileId, "error", fromStore(association.error, "findGmeetNotesAssociation").message); return { failed: true }; }
   if (!likelyNotes && association.data === null) { terminalDriveItem(diagnostics, "drive_metadata_non_candidate"); return {}; }
+  const before = await opts.step(() => sourceDeleted(opts.store, opts.tcw, fileId), true);
+  if (!before.ok) { terminalDriveItem(diagnostics, "drive_storage_failed"); record(fileId, "error", fromStore(before.error, "isMeetingDeleted(notes)").message); return { failed: true }; }
+  if (before.data) { terminalDriveItem(diagnostics, "drive_unchanged_associated"); record(fileId, "skipped", "meeting deleted"); return {}; }
   if (!likelyNotes) diagnostics.drive_association_bypass++;
   let migrationTarget: { id: string; sourceId: string; title: string | null; startedAt: string | null; metadata: Record<string, unknown> } | null = null;
   if (association.data?.sourceId === fileId && association.data.title !== null && association.data.startedAt !== null
@@ -1894,8 +1907,37 @@ async function syncDriveFile(file: GoogleDriveFile, rawOpts: FinishingOptions, r
       : association;
   if (!target.ok) { terminalDriveItem(diagnostics, "drive_storage_failed"); diagnostics.drive_post_parse_storage_failed++; record(fileId, "error", fromStore(target.error, "findGmeetNotesAssociation").message); return { failed: true }; }
   if (target.data && target.data.sourceId !== fileId) {
+    const targetMarker = await opts.step(() => sourceDeleted(opts.store, opts.tcw, target.data!.sourceId), true);
+    if (!targetMarker.ok) { terminalDriveItem(diagnostics, "drive_storage_failed"); record(fileId, "error", fromStore(targetMarker.error, "isMeetingDeleted(association)").message); return { failed: true }; }
+    if (targetMarker.data) { terminalDriveItem(diagnostics, "drive_unchanged_associated"); record(fileId, "skipped", "meeting deleted"); return {}; }
+  }
+  if (target.data && target.data.sourceId !== fileId) {
+    const fileMarker = await opts.step(() => sourceDeleted(opts.store, opts.tcw, fileId), true);
+    if (!fileMarker.ok) { terminalDriveItem(diagnostics, "drive_storage_failed"); record(fileId, "error", fromStore(fileMarker.error, "isMeetingDeleted(notes-before-attach)").message); return { failed: true }; }
+    if (fileMarker.data) { terminalDriveItem(diagnostics, "drive_unchanged_associated"); record(fileId, "skipped", "meeting deleted"); return {}; }
+  }
+  if (target.data && target.data.sourceId !== fileId) {
+    // The target's marker was checked before touching its SQL fields.
     const attached = await opts.step(() => opts.store.attachGmeetNotes!(opts.tcw, target.data!, parsed.meeting), true);
     if (!attached.ok) { terminalDriveItem(diagnostics, "drive_storage_failed"); diagnostics.drive_post_parse_storage_failed++; record(fileId, "error", fromStore(attached.error, "attachGmeetNotes").message); return { failed: true }; }
+    const attachedMarker = await opts.step(() => sourceDeleted(opts.store, opts.tcw, target.data!.sourceId), true);
+    if (!attachedMarker.ok) { terminalDriveItem(diagnostics, "drive_storage_failed"); record(fileId, "error", fromStore(attachedMarker.error, "isMeetingDeleted(association-late)").message); return { failed: true }; }
+    if (attachedMarker.data) {
+      const removed = await opts.step(() => removeDeletedSource(opts.store, opts.tcw, target.data!.sourceId), true);
+      if (!removed.ok) { terminalDriveItem(diagnostics, "drive_storage_failed"); record(fileId, "error", fromStore(removed.error, "deleteSourceMeeting(association-late)").message); return { failed: true }; }
+      terminalDriveItem(diagnostics, "drive_unchanged_associated"); record(fileId, "skipped", "meeting deleted"); return {};
+    }
+    const fileMarker = await opts.step(() => sourceDeleted(opts.store, opts.tcw, fileId), true);
+    if (!fileMarker.ok) { terminalDriveItem(diagnostics, "drive_storage_failed"); record(fileId, "error", fromStore(fileMarker.error, "isMeetingDeleted(notes-after-attach)").message); return { failed: true }; }
+    if (fileMarker.data) {
+      const detached = await opts.step(() => opts.store.removeGmeetNotes!(opts.tcw, SOURCE, fileId), true);
+      if (!detached.ok) { terminalDriveItem(diagnostics, "drive_storage_failed"); record(fileId, "error", fromStore(detached.error, "removeGmeetNotes(notes-after-attach)").message); return { failed: true }; }
+      if (detached.data === "deleted") {
+        const targetDetached = await opts.step(() => opts.store.removeGmeetNotes!(opts.tcw, SOURCE, fileId), true);
+        if (!targetDetached.ok) { terminalDriveItem(diagnostics, "drive_storage_failed"); record(fileId, "error", fromStore(targetDetached.error, "removeGmeetNotes(target-after-attach)").message); return { failed: true }; }
+      }
+      terminalDriveItem(diagnostics, "drive_unchanged_associated"); record(fileId, "skipped", "meeting deleted"); return {};
+    }
     if (target.data.startedAt === null && parsed.meeting.startedAt !== null) diagnostics.datetime_rows_backfilled++;
     if (association.data?.sourceId === fileId) {
       const removed = await opts.step(() => opts.store.removeGmeetNotes!(opts.tcw, SOURCE, fileId), true);
@@ -1909,10 +1951,25 @@ async function syncDriveFile(file: GoogleDriveFile, rawOpts: FinishingOptions, r
   }
   const standalone = { ...parsed.meeting, metadata: { ...parsed.meeting.metadata, notes_association: "standalone" } };
   // As with Meet transcripts, the body reaches KV before its visible row.
+  const beforeBody = await opts.step(() => sourceDeleted(opts.store, opts.tcw, fileId), true);
+  if (!beforeBody.ok) { terminalDriveItem(diagnostics, "drive_storage_failed"); record(fileId, "error", fromStore(beforeBody.error, "isMeetingDeleted(notes-before-body)").message); return { failed: true }; }
+  if (beforeBody.data) { terminalDriveItem(diagnostics, "drive_unchanged_associated"); record(fileId, "skipped", "meeting deleted"); return {}; }
   const body = await opts.step(() => opts.store.putTranscriptBody(opts.tcw, SOURCE, fileId, parsed.sentences), true);
   if (!body.ok) { terminalDriveItem(diagnostics, "drive_storage_failed"); diagnostics.drive_post_parse_storage_failed++; record(fileId, "error", fromStore(body.error, "putTranscriptBody(notes)").message); return { failed: true }; }
   const write = await opts.step(() => opts.store.upsertMeeting(opts.tcw, standalone, parsed.sentences), true);
+  if (!write.ok && write.error.code === "SOURCE_MEETING_DELETED") {
+    const removed = await opts.step(() => removeDeletedSource(opts.store, opts.tcw, fileId), true);
+    if (!removed.ok) { terminalDriveItem(diagnostics, "drive_storage_failed"); record(fileId, "error", fromStore(removed.error, "deleteSourceMeeting(notes)").message); return { failed: true }; }
+    terminalDriveItem(diagnostics, "drive_unchanged_associated"); record(fileId, "skipped", "meeting deleted"); return {};
+  }
   if (!write.ok) { terminalDriveItem(diagnostics, "drive_storage_failed"); diagnostics.drive_post_parse_storage_failed++; record(fileId, "error", fromStore(write.error, "upsertMeeting(notes)").message); return { failed: true }; }
+  const after = await opts.step(() => sourceDeleted(opts.store, opts.tcw, fileId), true);
+  if (!after.ok) { terminalDriveItem(diagnostics, "drive_storage_failed"); record(fileId, "error", fromStore(after.error, "isMeetingDeleted(notes-late)").message); return { failed: true }; }
+  if (after.data) {
+    const removed = await opts.step(() => removeDeletedSource(opts.store, opts.tcw, fileId), true);
+    if (!removed.ok) { terminalDriveItem(diagnostics, "drive_storage_failed"); record(fileId, "error", fromStore(removed.error, "deleteSourceMeeting(notes-late)").message); return { failed: true }; }
+    terminalDriveItem(diagnostics, "drive_unchanged_associated"); record(fileId, "skipped", "meeting deleted"); return {};
+  }
   terminalDriveItem(diagnostics, write.data.inserted ? "drive_accepted_standalone_created" : "drive_accepted_standalone_updated");
   if (!write.data.inserted && association.data?.startedAt === null && parsed.meeting.startedAt !== null) {
     diagnostics.datetime_rows_backfilled++;
@@ -1947,6 +2004,9 @@ async function syncOneRecord(
   const { client, store, tcw, signal } = opts;
   const recordName = conferenceRecord.name;
   const sourceId = recordName.replace(/^\/*conferenceRecords\//, "");
+  const before = await sourceDeleted(store, tcw, sourceId);
+  if (!before.ok) return { sourceId, outcome: "error", reason: fromStore(before.error, "isMeetingDeleted").message };
+  if (before.data) return { sourceId, outcome: "skipped", reason: "meeting deleted" };
 
   const participantsRes = await client.listParticipants(recordName, { signal });
   if (!participantsRes.ok) {
@@ -2004,6 +2064,9 @@ async function syncOneRecord(
     // Entries existed but none carried text — same treatment as no entries.
     return { sourceId, outcome: "skipped", reason: "transcript entries carried no text" };
   }
+  const beforeBody = await sourceDeleted(store, tcw, sourceId);
+  if (!beforeBody.ok) return { sourceId, outcome: "error", reason: fromStore(beforeBody.error, "isMeetingDeleted(before-body)").message };
+  if (beforeBody.data) return { sourceId, outcome: "skipped", reason: "meeting deleted" };
 
   // ORDER MATTERS — blob first, row last. Storage calls are sequential:
   // TinyCloud drops concurrent responses on one space.
@@ -2019,13 +2082,29 @@ async function syncOneRecord(
   // writes the identical body again on the insert path, and handing it an empty
   // array would clobber the blob we just wrote.
   const upsertRes = await store.upsertMeeting(tcw, meeting, sentences);
+  if (!upsertRes.ok && upsertRes.error.code === "SOURCE_MEETING_DELETED") {
+    const removed = await removeDeletedSource(store, tcw, sourceId);
+    return removed.ok
+      ? { sourceId, outcome: "skipped", reason: "meeting deleted" }
+      : { sourceId, outcome: "error", reason: fromStore(removed.error, "deleteSourceMeeting").message };
+  }
   if (!upsertRes.ok) {
     return { sourceId, outcome: "error", reason: fromStore(upsertRes.error, "upsertMeeting").message };
+  }
+  const after = await sourceDeleted(store, tcw, sourceId);
+  if (!after.ok) return { sourceId, outcome: "error", reason: fromStore(after.error, "isMeetingDeleted(late)").message };
+  if (after.data) {
+    const removed = await removeDeletedSource(store, tcw, sourceId);
+    return removed.ok
+      ? { sourceId, outcome: "skipped", reason: "meeting deleted" }
+      : { sourceId, outcome: "error", reason: fromStore(removed.error, "deleteSourceMeeting(late)").message };
   }
 
   const reconciled = await reconcileNotesFirstConference(opts, meeting, upsertRes.data.id);
   if (!reconciled.ok) {
-    return { sourceId, outcome: "error", reason: reconciled.reason };
+    return reconciled.deleted
+      ? { sourceId, outcome: "skipped", reason: "meeting deleted" }
+      : { sourceId, outcome: "error", reason: reconciled.reason };
   }
 
   return {
@@ -2045,7 +2124,7 @@ async function reconcileNotesFirstConference(
   opts: GmeetSyncOptions,
   conference: NormalizedMeeting,
   conferenceRowId: string,
-): Promise<{ ok: true; driveRowDeleted: boolean } | { ok: false; reason: string }> {
+): Promise<{ ok: true; driveRowDeleted: boolean } | { ok: false; reason: string; deleted?: boolean }> {
   const { store, tcw } = opts;
   if (!store.findGmeetNotesAssociation || !store.attachGmeetNotes || !store.removeGmeetNotes
     || conference.title === null || conference.startedAt === null) return { ok: true, driveRowDeleted: false };
@@ -2059,6 +2138,15 @@ async function reconcileNotesFirstConference(
   if (!standalone || standalone.metadata.notes_association !== "standalone" || standalone.metadata.notes_kind !== "gemini"
     || !Array.isArray(owned) || !owned.includes("summary_overview") || !owned.includes("summary_action_items")) {
     return { ok: true, driveRowDeleted: false };
+  }
+  const standaloneMarker = await sourceDeleted(store, tcw, standalone.sourceId);
+  if (!standaloneMarker.ok) return { ok: false, reason: fromStore(standaloneMarker.error, "isMeetingDeleted(notes-standalone)").message };
+  if (standaloneMarker.data) return { ok: true, driveRowDeleted: false };
+  const marker = await sourceDeleted(store, tcw, conference.sourceId);
+  if (!marker.ok) return { ok: false, reason: fromStore(marker.error, "isMeetingDeleted(attach)").message };
+  if (marker.data) {
+    const removed = await removeDeletedSource(store, tcw, conference.sourceId);
+    return { ok: false, reason: removed.ok ? "meeting deleted" : fromStore(removed.error, "deleteSourceMeeting(attach)").message, deleted: removed.ok };
   }
 
   const attached = await store.attachGmeetNotes(tcw, {
@@ -2074,8 +2162,20 @@ async function reconcileNotesFirstConference(
     metadata: standalone.metadata,
   });
   if (!attached.ok) return { ok: false, reason: fromStore(attached.error, "attachGmeetNotes").message };
+  const attachedMarker = await sourceDeleted(store, tcw, conference.sourceId);
+  if (!attachedMarker.ok) return { ok: false, reason: fromStore(attachedMarker.error, "isMeetingDeleted(attach-late)").message };
+  if (attachedMarker.data) {
+    const removed = await removeDeletedSource(store, tcw, conference.sourceId);
+    return { ok: false, reason: removed.ok ? "meeting deleted" : fromStore(removed.error, "deleteSourceMeeting(attach-late)").message, deleted: removed.ok };
+  }
   const removed = await store.removeGmeetNotes(tcw, SOURCE, standalone.sourceId);
   if (!removed.ok) return { ok: false, reason: fromStore(removed.error, "removeGmeetNotes").message };
+  const fileMarker = await sourceDeleted(store, tcw, standalone.sourceId);
+  if (!fileMarker.ok) return { ok: false, reason: fromStore(fileMarker.error, "isMeetingDeleted(notes-first-late)").message };
+  if (fileMarker.data) {
+    const detached = await store.removeGmeetNotes(tcw, SOURCE, standalone.sourceId);
+    if (!detached.ok) return { ok: false, reason: fromStore(detached.error, "removeGmeetNotes(notes-first-late)").message };
+  }
   return { ok: true, driveRowDeleted: removed.data === "deleted" };
 }
 

@@ -12,15 +12,17 @@ import {
   GRANOLA_RESYNC_CONFIRM,
 } from "@/lib/connectors/granolaCsvStrings";
 import { createConnectorWebhooksClient } from "@/lib/connectors/webhooksApi";
-import { clearGranolaDeletedMeetings } from "@/lib/connectors/connectorStore";
+import { clearDeletedMeetings, clearGranolaDeletedMeetings } from "@/lib/connectors/connectorStore";
 import { runGranolaSpaceWrite } from "@/lib/connectors/granolaSync";
 
 type Step = "idle" | "confirming" | "working" | "done" | "failed";
+export const allowBackNeedsBackendLedger = (source: "granola" | "google-meet"): boolean => source === "granola";
 
 interface GranolaAllowBackProps {
   backendUrl: string;
   tcw: TinyCloudWeb;
   sessionStore: SessionStore;
+  source?: "granola" | "google-meet";
   disabled?: boolean;
   /** Renders the opening control; defaults to a link-style button. */
   className?: string;
@@ -33,15 +35,20 @@ interface GranolaAllowBackProps {
   noteClassName?: string;
 }
 
-export const GranolaAllowBack: FC<GranolaAllowBackProps> = ({ tcw, backendUrl, sessionStore, disabled = false, className, buttonClassName, outline = false, note, noteClassName }) => {
+export const GranolaAllowBack: FC<GranolaAllowBackProps> = ({ tcw, backendUrl, sessionStore, source = "granola", disabled = false, className, buttonClassName, outline = false, note, noteClassName }) => {
+  const label = source === "granola" ? S.allowBack : "Allow deleted Google Meet meetings back";
   const [step, setStep] = useState<Step>("idle");
 
   const confirm = async () => {
     setStep("working");
-    const webhooks = createConnectorWebhooksClient(backendUrl, { sessionStore });
-    const result = await webhooks.clearPurgeLedger(GRANOLA_LEDGER_SOURCE).catch(() => null);
-    if (result?.status !== "ok") { setStep("failed"); return; }
-    const cleared = await runGranolaSpaceWrite(() => clearGranolaDeletedMeetings(tcw)).catch(() => null);
+    if (allowBackNeedsBackendLedger(source)) {
+      const webhooks = createConnectorWebhooksClient(backendUrl, { sessionStore });
+      const result = await webhooks.clearPurgeLedger(GRANOLA_LEDGER_SOURCE).catch(() => null);
+      if (result?.status !== "ok") { setStep("failed"); return; }
+    }
+    const cleared = source === "granola"
+      ? await runGranolaSpaceWrite(() => clearGranolaDeletedMeetings(tcw)).catch(() => null)
+      : await clearDeletedMeetings(tcw, source).catch(() => null);
     setStep(cleared?.ok ? "done" : "failed");
   };
 
@@ -50,17 +57,17 @@ export const GranolaAllowBack: FC<GranolaAllowBackProps> = ({ tcw, backendUrl, s
       {(step === "idle" || step === "failed") && (
         <>
           {buttonClassName
-            ? <button type="button" className={buttonClassName} disabled={disabled} onClick={() => setStep("confirming")}>{S.allowBack}</button>
+            ? <button type="button" className={buttonClassName} disabled={disabled} onClick={() => setStep("confirming")}>{label}</button>
             : <Button type="button" variant={outline ? "outline" : "link"} size="sm" className={outline ? undefined : "h-auto px-0"} disabled={disabled} onClick={() => setStep("confirming")}>
-              {S.allowBack}
+              {label}
             </Button>}
           {note && <p className={noteClassName}>{note}</p>}
         </>
       )}
       {(step === "confirming" || step === "working") && (
-        <div role="group" aria-label={GRANOLA_RESYNC_CONFIRM.heading} className="flex flex-col gap-2 rounded-md border border-border bg-background p-3 text-sm">
-          <p className="font-semibold">{GRANOLA_RESYNC_CONFIRM.heading}</p>
-          <p className="text-muted-foreground">{GRANOLA_RESYNC_CONFIRM.body}</p>
+        <div role="group" aria-label={source === "granola" ? GRANOLA_RESYNC_CONFIRM.heading : "Allow deleted Google Meet meetings back?"} className="flex flex-col gap-2 rounded-md border border-border bg-background p-3 text-sm">
+          <p className="font-semibold">{source === "granola" ? GRANOLA_RESYNC_CONFIRM.heading : "Allow deleted Google Meet meetings back?"}</p>
+          <p className="text-muted-foreground">{source === "granola" ? GRANOLA_RESYNC_CONFIRM.body : "We keep a list of meetings you deleted so a sync cannot bring them back. Clearing that list lets Google Meet sync those meetings again. This can’t be undone."}</p>
           <div className="flex flex-wrap gap-2">
             <Button type="button" size="sm" disabled={step === "working"} onClick={() => void confirm()}>
               {step === "working" ? S.allowingBack : GRANOLA_RESYNC_CONFIRM.confirmLabel}
@@ -71,7 +78,7 @@ export const GranolaAllowBack: FC<GranolaAllowBackProps> = ({ tcw, backendUrl, s
           </div>
         </div>
       )}
-      {step === "done" && <p role="status" className="text-sm text-muted-foreground">{S.allowBackDone}</p>}
+      {step === "done" && <p role="status" className="text-sm text-muted-foreground">{source === "granola" ? S.allowBackDone : "Deleted meetings can come back from your next Google Meet sync."}</p>}
       {step === "failed" && <p role="alert" className="text-sm text-destructive">{S.allowBackFailed}</p>}
     </div>
   );
