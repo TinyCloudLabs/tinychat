@@ -84,7 +84,7 @@ describe("Granola meeting deletion", () => {
 
   test("marked meetings reject upsert without writing their body", async () => {
     const f = fixture();
-    f.entries.set(granolaDeletedKvKey("m1"), JSON.stringify({ v: 1, deleted_at: new Date().toISOString() }));
+    f.entries.set(await granolaDeletedKvKey("m1"), JSON.stringify({ v: 1, deleted_at: new Date().toISOString() }));
     const result = await upsertMeeting(f.tcw, meeting, []);
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.code).toBe("GRANOLA_MEETING_DELETED");
@@ -93,10 +93,10 @@ describe("Granola meeting deletion", () => {
 
   test("purge retains markers and clear removes paginated markers", async () => {
     const f = fixture();
-    f.entries.set(granolaDeletedKvKey("m1"), "{}");
-    f.entries.set(granolaDeletedKvKey("m2"), "{}");
+    f.entries.set(await granolaDeletedKvKey("m1"), "{}");
+    f.entries.set(await granolaDeletedKvKey("m2"), "{}");
     expect((await purgeConnector(f.tcw, "granola")).ok).toBe(true);
-    expect(f.entries.has(granolaDeletedKvKey("m1"))).toBe(true);
+    expect(f.entries.has(await granolaDeletedKvKey("m1"))).toBe(true);
     expect((await clearGranolaDeletedMeetings(f.tcw)).ok).toBe(true);
     expect([...f.entries.keys()].filter((key) => key.startsWith(`${CONNECTORS_KV_PREFIX}/granola/deleted/`))).toEqual([]);
   });

@@ -759,8 +759,18 @@ function datetimeConfidence(metadata: Record<string, unknown>, hasStartedAt: boo
   }
 }
 
-export function granolaDeletedKvKey(sourceId: string): string {
-  return `${CONNECTORS_KV_PREFIX}/granola/deleted/${sourceId}`;
+async function sha256Hex(text: string): Promise<string> {
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text)));
+  return Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+/**
+ * The marker for a deleted Granola meeting is keyed by the SHA-256 of its source id, so the space keeps
+ * no raw meeting id after a delete. A source id is a Granola note id or a content-derived CSV id; the
+ * marker value holds only a version and the deleted-at time.
+ */
+export async function granolaDeletedKvKey(sourceId: string): Promise<string> {
+  return `${CONNECTORS_KV_PREFIX}/granola/deleted/${await sha256Hex(sourceId)}`;
 }
 
 function validGranolaSourceId(sourceId: string): boolean {
@@ -773,7 +783,7 @@ export async function isGranolaMeetingDeleted(tcw: TinyCloudWeb, sourceId: strin
     return fail({ code: "INVALID_SOURCE_ID", message: "invalid Granola source id" }, "isGranolaMeetingDeleted", storageScopeFor(tcw));
   }
   try {
-    const result = await tcw.kv.get(granolaDeletedKvKey(sourceId), { source: "network" });
+    const result = await tcw.kv.get(await granolaDeletedKvKey(sourceId), { source: "network" });
     if (result.ok) return { ok: true, data: true };
     if (result.error.code === "KV_NOT_FOUND") return { ok: true, data: false };
     return fail(result.error, "isGranolaMeetingDeleted", storageScopeFor(tcw));
@@ -796,7 +806,13 @@ export async function deleteGranolaMeeting(tcw: TinyCloudWeb, source: string, so
     return fail({ code: "COMBINED_MEMBERS_UNKNOWN", message: "combined meeting membership cannot be determined" }, "deleteGranolaMeeting(combined)", storageScopeFor(tcw));
   }
   if (!marker.data) {
-    const put = await tcw.kv.put(granolaDeletedKvKey(sourceId), JSON.stringify({ v: 1, deleted_at: new Date().toISOString() }));
+    let key: string;
+    try {
+      key = await granolaDeletedKvKey(sourceId);
+    } catch {
+      return fail({ code: "MARKER_KEY_FAILED", message: "marker key could not be derived" }, "deleteGranolaMeeting(marker)", storageScopeFor(tcw));
+    }
+    const put = await tcw.kv.put(key, JSON.stringify({ v: 1, deleted_at: new Date().toISOString() }));
     if (!put.ok) return fail(put.error, "deleteGranolaMeeting(marker)", storageScopeFor(tcw));
   }
   for (const key of [meetingKvKey("granola", sourceId), transcriptKvKey("granola", sourceId)]) {

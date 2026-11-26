@@ -91,7 +91,7 @@ test("confirm removes the Granola row and transcript; a failed write keeps the s
   await act(async () => node.querySelector<HTMLButtonElement>('[data-testid="delete-granola-confirm"]')!.click());
   expect(space.rows.has("row")).toBe(false);
   expect(space.kv.has(transcriptKvKey("granola", "source"))).toBe(false);
-  expect(space.kv.has(granolaDeletedKvKey("source"))).toBe(true);
+  expect(space.kv.has(await granolaDeletedKvKey("source"))).toBe(true);
   expect(refreshed).toBe(1);
   expect(backed).toBe(1);
 });
