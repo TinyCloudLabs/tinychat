@@ -209,6 +209,32 @@ provider refusal can be read without public Phala logs. Same pattern as tinyclou
   A redaction transform (DIDs, `0x` addresses, JWTs, bearer tokens, URLs, emails, long base64) runs first as a second
   barrier, except on `tinychat_request` lines, whose 64-hex `account_hash` it would erase; the allowlist checks each
   of their fields against a strict pattern instead.
+- **Calendar auto-join events (TC-4406).** `calendar_autojoin_tick` carries `tenants`, `rows`, `scans`,
+  `timers_due` (armed due-time timers), `scan_complete` and `duration_ms`. The worker emits on the first
+  tick, when counts or scan health change, every five minutes and on every incomplete scan. A failed
+  tenant reconciliation also marks its tick incomplete. `calendar_autojoin_decision` carries a closed
+  `reason`; for all but `not_accepted` and `event_ineligible` it also carries ISO `start` and optional
+  12-hex `tenant_hash` when `REQUEST_LOG_HMAC_KEY` is configured. Those two outsider-influenced
+  classifications omit both start and hash, so a distinctive invitation cannot link a tenant.
+  The hash is the prefix of the existing keyed monthly request pseudonym. A `sent` decision includes
+  an ownership transition that goes straight to `stop_pending`; terminal outcomes are separate events.
+  A changed occurrence identity is a new decision even if an older row has the same disposition.
+  `calendar_autojoin_connection` carries closed `state`, optional closed `code` and optional hash;
+  it records committed state or error-code transitions. Unknown stored states, codes and dispositions
+  map to `unknown`. No calendar title, email, URL, token or provider text ships.
+  Vector caps sent/terminal decisions at 120/minute, outsider-influenced classifications at
+  20/minute and each of the scan and tick/connection lanes at 30/minute. Calendar failures keep
+  their 10/minute lane. These typed calendar events do not inflate `backend_diagnostic_summary.other_count`.
+  The source and allowlist are in `backend/src/services/calendar-autojoin-log-events.ts` and
+  `log-shipper/vector.yaml`.
+  `calendar_autojoin_scan` adds tick-wide totals for `listed`, `eligible`, `skipped_not_confirmed`,
+  `skipped_not_timed`, `skipped_no_meet_link`, `skipped_not_accepted`, `skipped_other`
+  and `scan_complete` across tenants scanned. It includes events with no occurrence row,
+  such as an untimed or non-Meet invitation. The classifier uses the worker's eligibility
+  and Meet results; an unknown event shape falls into `skipped_other`. Aggregate counts
+  ship on change, after five minutes or on every incomplete scan. The scan lane is
+  capped at 30/minute separately from tick/connection. Scan records have no tenant
+  identity or individual event title, ID, link, attendee or start time.
 - **Request records (TC-2537).** The allowlist rebuilds each `tinychat_request` from these fields only:
   `request_id`, `method`, `route_template` (the record's `route`), `status`, `duration_ms` (0.1 ms), `stream`, `code`,
   `failure_cause` (`model` or `ours`), `credits`, `account_hash`, plus `svc`, `event`, `level` (`error` for a 5xx, else `info`) and `ts`.

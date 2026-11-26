@@ -1,6 +1,8 @@
 import { onInvite, shareDecision, windowsOverlap, type ShareDecision } from "./calendar-autojoin-share.js";
 import { calendarAutojoinOutcomes } from "./calendar-autojoin-status-summary.js";
 import { logCalendarAutojoinFailure } from "./calendar-autojoin-diagnostics.js";
+import { calendarDecisionEvent, calendarScanEvent, calendarTickEvent, emitCalendarAutojoinEvent, type CalendarDecisionReason, type CalendarScanCounts, type CalendarTickCounts } from "./calendar-autojoin-log-events.js";
+import { classifyCalendarScanEvent } from "./calendar-autojoin-scan.js";
 import {
   CalendarRowChanged, decidedRev, type CalendarAutojoinStore, type CalendarConnection, type CalendarOccurrence, type SharedCapture, stableJson, TenantCoordinator,
 } from "./calendar-autojoin-store.js";
@@ -109,6 +111,8 @@ export class CalendarAutojoinWorker {
   private readonly armable = new Set<string>();
   private tickStartedAt?: number;
   private tickPeriodMs = TICK_MS;
+  private lastTick?: { signature: string; at: number };
+  private lastScan?: { signature: string; at: number };
   private readonly ownerKey: CalendarAutojoinStore;
   constructor(options: CalendarAutojoinWorkerOptions) {
     this.ownerKey = options.store;
@@ -168,17 +172,38 @@ export class CalendarAutojoinWorker {
     catch (error) { this.options.connection.invalidateGrantReferences?.(); throw error; }
     // A cold/invalidated index must not wait behind every tenant's occurrence reconciliation.
     await this.options.connection.backfillGrantReferences?.(tenants, this.options.store, () => this.stopping, grantSnapshot);
-    const counts = { rows: 0, scans: 0 };
+    const scan: CalendarScanCounts = { listed: 0, eligible: 0, skipped_not_confirmed: 0, skipped_not_timed: 0,
+      skipped_no_meet_link: 0, skipped_not_accepted: 0, skipped_other: 0, scan_complete: true };
+    const counts = { rows: 0, scans: 0, scanComplete: true, scan };
     let cursor = 0;
     await Promise.all(Array.from({ length: Math.min(4, tenants.length) }, async () => {
       while (cursor < tenants.length && !this.stopping) {
         const connection = tenants[cursor++]!;
         try { await this.reconcileTenant(connection, counts); }
-        catch (error) { logCalendarAutojoinFailure("tenant_reconcile", error); }
+        catch (error) { counts.scanComplete = false; logCalendarAutojoinFailure("tenant_reconcile", error); }
       }
     }));
     // Counts only: never ids, titles or addresses.
     console.log(`[calendar-autojoin] code=tick_done ms=${this.now() - startedAt} tenants=${tenants.length} rows=${counts.rows} scans=${counts.scans} timers=${this.dueTimers.size}`);
+    this.logTick({ tenants: tenants.length, rows: counts.rows, scans: counts.scans, timers_due: this.dueTimers.size,
+      scan_complete: counts.scanComplete, duration_ms: this.now() - startedAt }, startedAt);
+    scan.scan_complete = counts.scanComplete;
+    this.logScan(scan, startedAt);
+  }
+  /** First tick, changed counts or health, every five minutes and every failed scan. */
+  private logTick(counts: CalendarTickCounts, at: number): void {
+    const signature = `${counts.tenants}/${counts.rows}/${counts.scans}/${counts.timers_due}/${counts.scan_complete}`;
+    if (!counts.scan_complete || this.lastTick?.signature !== signature || at - this.lastTick.at >= 300_000) {
+      emitCalendarAutojoinEvent(calendarTickEvent(counts));
+      this.lastTick = { signature, at };
+    }
+  }
+  private logScan(scan: CalendarScanCounts, at: number): void {
+    const signature = `${scan.listed}/${scan.eligible}/${scan.skipped_not_confirmed}/${scan.skipped_not_timed}/${scan.skipped_no_meet_link}/${scan.skipped_not_accepted}/${scan.skipped_other}/${scan.scan_complete}`;
+    if (!scan.scan_complete || this.lastScan?.signature !== signature || at - this.lastScan.at >= 300_000) {
+      emitCalendarAutojoinEvent(calendarScanEvent(scan));
+      this.lastScan = { signature, at };
+    }
   }
   /** `fresh`: from the node, even through the worker's cached store. Every consent check that
    *  gates a Google read or a running recording reads fresh. */
@@ -190,7 +215,7 @@ export class CalendarAutojoinWorker {
     }
     catch (error) { this.options.connection.invalidateGrantReferences?.(); throw error; }
   }
-  private async reconcileTenant(listed: CalendarConnection, counts: { rows: number; scans: number }): Promise<void> {
+  private async reconcileTenant(listed: CalendarConnection, counts: { rows: number; scans: number; scanComplete: boolean; scan: CalendarScanCounts }): Promise<void> {
     const { store, connection: credentials } = this.options;
     const tenant = listed.tenant;
     await credentials.cleanupEnabling(tenant);
@@ -204,14 +229,27 @@ export class CalendarAutojoinWorker {
     this.trackTenant(connection);
     if (scanDue(connection)) {
       counts.scans++;
+      const scan: CalendarScanCounts = { listed: 0, eligible: 0, skipped_not_confirmed: 0, skipped_not_timed: 0,
+        skipped_no_meet_link: 0, skipped_not_accepted: 0, skipped_other: 0, scan_complete: false };
       try {
         const events = await this.google(connection, token => this.options.calendar.listEvents(token, this.now()));
-        await this.remember(connection, events);
+        scan.listed = events.length;
+        await this.remember(connection, events, scan);
+        if (!scan.scan_complete) counts.scanComplete = false;
       } catch (error) {
+        counts.scanComplete = false;
         const delay = this.retryDelay(error, 3);
         await store.updateConnection(tenant, current => current?.generation === connection!.generation ? {
           ...current, scanComplete: false, errorCode: error instanceof GoogleCalendarError ? error.code : "calendar_scan_failed", nextScanAt: this.now() + Math.max(60_000, delay),
         } : null);
+      } finally {
+        counts.scan.listed += scan.listed;
+        counts.scan.eligible += scan.eligible;
+        counts.scan.skipped_not_confirmed += scan.skipped_not_confirmed;
+        counts.scan.skipped_not_timed += scan.skipped_not_timed;
+        counts.scan.skipped_no_meet_link += scan.skipped_no_meet_link;
+        counts.scan.skipped_not_accepted += scan.skipped_not_accepted;
+        counts.scan.skipped_other += scan.skipped_other;
       }
     }
     connection = await this.readConnection(tenant);
@@ -316,8 +354,21 @@ export class CalendarAutojoinWorker {
     return Object.assign(Object.create(store) as CalendarAutojoinStore, {
       putOccurrence: async (row: CalendarOccurrence) => { await store.putOccurrence(row); this.recordSummaryChange(row.tenant, row.id, row); this.arm(row); },
       updateOccurrence: async (tenant: string, id: string, update: Parameters<CalendarAutojoinStore["updateOccurrence"]>[2]) => {
-        const row = await store.updateOccurrence(tenant, id, update);
-        if (row) { this.recordSummaryChange(tenant, id, row); this.arm(row); }
+        let previousPhase: CalendarOccurrence["phase"] | undefined;
+        let previousDisposition: string | undefined;
+        const row = await store.updateOccurrence(tenant, id, current => {
+          previousPhase = current?.phase;
+          previousDisposition = current?.disposition;
+          return update(current);
+        });
+        if (row) {
+          this.recordSummaryChange(tenant, id, row); this.arm(row);
+          if ((row.phase === "terminal" && (previousPhase !== "terminal" || previousDisposition !== row.disposition))
+            || (row.phase === "sent" && previousPhase !== "sent")
+            || (row.phase === "stop_pending" && previousPhase === "ownership_pending")) {
+            emitCalendarAutojoinEvent(calendarDecisionEvent(row, (row.phase === "terminal" ? row.disposition ?? "unknown" : "sent") as CalendarDecisionReason));
+          }
+        }
         return row;
       },
       deleteOccurrence: async (tenant: string, id: string, when?: (stored: CalendarOccurrence) => boolean) => {
@@ -342,7 +393,7 @@ export class CalendarAutojoinWorker {
       }
     }
   }
-  private async remember(connection: CalendarConnection, events: GoogleCalendarEvent[]): Promise<void> {
+  private async remember(connection: CalendarConnection, events: GoogleCalendarEvent[], scan: CalendarScanCounts): Promise<void> {
     const { store, coordinator } = this.options;
     // Discovery precedes the storage lane: its latency belongs to dispatch lag, not discovery lag.
     const firstSeenAt = this.now();
@@ -353,9 +404,10 @@ export class CalendarAutojoinWorker {
       for (const event of events) {
         const id = calendarOccurrenceIdentity(connection.tenant, connection.subject!, event);
         const old = known.find(row => row.subject === connection.subject && (row.id === id || row.eventId === event.id));
-        if (old?.idempotencyKey || old?.meetingId || old?.sharedCapture) continue; // Frozen attempts are checked individually.
         const eligible = eligibleCalendarEvent(event);
         const candidate = eligible ?? (!event.organizer?.self ? calendarMeetEvent(event) : null);
+        scan[classifyCalendarScanEvent(event, eligible, candidate)]++;
+        if (old?.idempotencyKey || old?.meetingId || old?.sharedCapture) continue; // Frozen attempts are checked individually.
         if (!candidate || !id) {
           if (old && old.phase !== "terminal") await this.finish(old, "event_ineligible");
           continue;
@@ -397,7 +449,12 @@ export class CalendarAutojoinWorker {
         }
         // Refused when another write (a due-time timer's, outside the tenant lock) moved the row on
         // since it was listed: that write stands, and the next scan decides on it.
-        try { await store.putOccurrence(next); }
+        try {
+          await store.putOccurrence(next);
+          if (next.phase === "terminal" && (old?.id !== next.id || old.phase !== "terminal" || old.disposition !== next.disposition)) {
+            emitCalendarAutojoinEvent(calendarDecisionEvent(next, next.disposition as CalendarDecisionReason));
+          }
+        }
         catch (error) { if (!(error instanceof CalendarRowChanged)) throw error; }
       }
       // TC-1047: a timer's dispatch records lastDispatchLag outside this lock; keep the latest one.
@@ -406,6 +463,7 @@ export class CalendarAutojoinWorker {
       await store.updateConnection(connection.tenant, latest => latest?.state === "enabled" && latest.generation === current.generation
         && latest.subject === current.subject ? { ...latest, scanComplete: true, errorCode: undefined, lastScanAt: this.now(),
           nextScanAt: this.now() + 55_000 + Math.floor(this.random() * 10_000) } : null);
+      scan.scan_complete = true;
     });
   }
   private async reconcileOccurrence(original: CalendarOccurrence): Promise<void> {
