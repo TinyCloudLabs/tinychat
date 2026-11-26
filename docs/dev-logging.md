@@ -216,8 +216,8 @@ provider refusal can be read without public Phala logs. Same pattern as tinyclou
   `reason`, ISO `start` and optional 12-hex `tenant_hash` when `REQUEST_LOG_HMAC_KEY` is configured. The two
   outsider-influenced reasons, `not_accepted` and `event_ineligible`, carry neither: an outsider picks an
   invitation's start time, and the account pseudonym would tie that time to the tenant's other lines. They carry
-  `invite_hash` instead, the 12-hex prefix of HMAC-SHA256 over the same key with the label `calendar-invite`, the
-  UTC month and the lowercase address. It never equals `tenant_hash` and links only to other invitation decisions
+  `invite_hash`: the 12-hex prefix of HMAC-SHA256 over the same key with the label `calendar-invite`, the
+  UTC month and the lowercase address. It differs from `tenant_hash` and links only to other invitation decisions
   of the same month. They keep their own 20/minute lane.
   `tenant_hash` is the prefix of the existing keyed monthly request pseudonym. A `sent` decision includes
   an ownership transition that goes straight to `stop_pending`; terminal outcomes are separate events.

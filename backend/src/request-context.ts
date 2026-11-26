@@ -112,7 +112,7 @@ export function requestLogAccountHash(address: string, at: Date = new Date()): s
 }
 
 /** hex(HMAC-SHA256(key, "calendar-invite\0" || UTC "YYYY-MM" of `at` || "\0" || lowercase address)): the same key under a
- * separate label, so it never equals the account pseudonym and links only to other invite decisions of the same month.
+ * separate label, so it differs from the account pseudonym and links only to other invite decisions of the same month.
  */
 export function requestLogInviteHash(address: string, at: Date = new Date()): string | undefined {
   if (!accountHashKey) return undefined;
