@@ -80,7 +80,8 @@ function MainAsk({ api, roster, tcw, onReconnect }: { api: BotsApi; roster: Rost
     return [...new Map([...archived, ...local].map(message => [message.id, message])).values()];
   } }, [api, tcw]);
   const refreshRequests = useRef<() => void>(() => {});
-  const chat = useMainChat(client, undefined, () => refreshRequests.current(), true);
+  // The chat is the signed-in account's for this page session, so leaving the Feed keeps its lines and its running turn.
+  const chat = useMainChat(client, undefined, () => refreshRequests.current(), true, { owner: api, account: tcw ? `${tcw.did}:${tcw.spaceId}` : "" });
   const [open, setOpen] = useState(false);
   const asks = useAsks(client, { open, onDecided: chat.sendAppReply, owner: tcw?.did });
   const refreshAsks = asks.refresh;

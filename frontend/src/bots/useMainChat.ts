@@ -1,12 +1,14 @@
 // Main's chat as Home holds it: the earlier messages, then the turn in flight (the owner's message and
 // Main's reply as it streams). One turn at a time, as the bots service allows. Closing the chat keeps
-// the turn going; leaving Home stops it.
+// the turn going. With a scope, leaving Home keeps it too: the chat is the account's (mainChatStore.ts),
+// not the view's; without one it is the view's own and stops when the view goes.
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { BotsError, BotsNoReply, type AppDecision, type BotMessage, type BotsApi, type SecretLine } from "./botsApi";
 import type { BotsErrorCode } from "./botsStrings";
 import { isDeclinedReply } from "./askText";
 import { clearHistoryDecline, isHistoryDeclined } from "./historyAuthorization";
+import { createMainChatStore, endVisitIfLeft, mainChatFor, mountedView, setMainChat, stopMainChat, type MainChatCallbacks } from "./mainChatStore";
 import type { WorkingStep } from "./workingStep";
 
 /**
@@ -54,42 +56,54 @@ function errorFields(value: unknown): Record<string, unknown> {
   return { name: value.name, message: value.message, code, stack: value.stack };
 }
 
-export function useMainChat(api: BotsApi, prepare?: () => Promise<void>, onNoReply?: () => void, manualHistory = false) {
-  const noReply = useRef(onNoReply);
-  noReply.current = onNoReply;
-  const [state, setState] = useState<MainChatState>({ lines: [], history: "idle", turn: null });
-  const lifetime = useRef<AbortController | null>(null);
-  const turnController = useRef<AbortController | null>(null);
-  const history = useRef<Promise<void> | null>(null);
-  const historyPending = useRef(false);
-  const localId = useRef(0);
-  const queued = useRef<(() => void)[]>([]);
-  // Counts the owner's new chats, so a history read that started before one never brings the earlier lines back.
-  const cleared = useRef(0);
+/** Which kept chat a view joins: the bots client it talks through, and the signed-in account and space. */
+export interface MainChatScope {
+  owner: object;
+  account: string;
+}
+
+export function useMainChat(api: BotsApi, prepare?: () => Promise<void>, onNoReply?: () => void, manualHistory = false, scope?: MainChatScope) {
+  const view = useRef<MainChatCallbacks>({});
+  view.current = { prepare, onNoReply };
+  const [own] = useState(createMainChatStore);
+  const store = scope ? mainChatFor(scope.owner, scope.account) : own;
+  const kept = !!scope;
+  // Plain state, not useSyncExternalStore: the store's changes render batched, as the chat's own state did before.
+  // Another store (another account) shows its own state at once, never the last one's.
+  const [seen, setSeen] = useState(() => ({ store, state: store.state }));
+  const state = seen.store === store ? seen.state : store.state;
+  const setState = useCallback((update: (current: MainChatState) => MainChatState) => setMainChat(store, update), [store]);
 
   useEffect(() => {
-    const controller = new AbortController();
-    lifetime.current = controller;
+    // Changes made between this view's render and now (a turn that ran on while it mounted) show at once.
+    const sync = () => setSeen((current) => current.store === store && current.state === store.state ? current : { store, state: store.state });
+    sync();
+    return store.subscribe(sync);
+  }, [store]);
+
+  useEffect(() => {
+    store.consumers.add(view);
+    // A view's own chat starts with each mount (StrictMode's second one too) and stops with it, stream and all.
+    if (!kept) store.lifetime = new AbortController();
     return () => {
-      controller.abort();
-      turnController.current?.abort();
-      history.current = null;
-      queued.current = [];
+      store.consumers.delete(view);
+      if (!kept) stopMainChat(store);
+      else endVisitIfLeft(store);
     };
-  }, []);
+  }, [store, kept]);
 
   /** A slow history read must not erase turns completed while it was in flight. */
   const loadHistory = useCallback((): Promise<void> => {
-    if (historyPending.current) return history.current ?? Promise.resolve();
-    historyPending.current = true;
-    const signal = lifetime.current?.signal;
-    const generation = cleared.current;
+    if (store.historyPending) return store.history ?? Promise.resolve();
+    store.historyPending = true;
+    const signal = store.lifetime.signal;
+    const generation = store.cleared;
     const run = (async () => {
       setState((current) => ({ ...current, history: "loading" }));
       try {
         const messages = await api.listMainMessages(signal);
         setState((current) => {
-          if (generation !== cleared.current) return current;
+          if (generation !== store.cleared) return current;
           const listed = messages.map(({ id, role, text, origin, decision, secret, unreadableHistory }): ChatLine => ({
             id, role, text,
             ...(unreadableHistory ? { unreadableHistory } : {}),
@@ -109,52 +123,55 @@ export function useMainChat(api: BotsApi, prepare?: () => Promise<void>, onNoRep
           return { ...current, history: "loaded", lines: [...listed, ...pending] };
         });
       } catch (cause) {
-        if (signal?.aborted) return;
+        if (signal.aborted) return;
         // The failure view says only that it failed; the console keeps why, for support. Details: TC-3019
         console.warn("[bots] Main's earlier messages did not load", {
           ...errorFields(cause),
           cause: cause instanceof Error && cause.cause !== undefined ? errorFields(cause.cause) : undefined,
         });
-        setState((current) => (generation !== cleared.current ? current : {
+        setState((current) => (generation !== store.cleared ? current : {
           ...current,
           history: isHistoryDeclined(cause) ? "declined" : "failed",
         }));
       } finally {
-        historyPending.current = false;
+        store.historyPending = false;
       }
     })();
-    history.current = run;
+    store.history = run;
     return run;
-  }, [api]);
+  }, [api, store, setState]);
 
-  const ensureHistory = useCallback(() => manualHistory ? Promise.resolve() : history.current ?? loadHistory(), [loadHistory, manualHistory]);
+  const ensureHistory = useCallback(() => manualHistory ? Promise.resolve() : store.history ?? loadHistory(), [loadHistory, manualHistory, store]);
   const requestHistory = useCallback(() => {
-    if (historyPending.current) return history.current ?? Promise.resolve();
+    if (store.historyPending) return store.history ?? Promise.resolve();
     clearHistoryDecline();
     return loadHistory();
-  }, [loadHistory]);
+  }, [loadHistory, store]);
 
   /** After the owner starts a new chat: the earlier lines leave the view. Saved history is read again on the next visit. */
   const clear = useCallback(() => {
-    cleared.current += 1;
-    history.current = Promise.resolve();
+    store.cleared += 1;
+    store.history = Promise.resolve();
+    store.newChat = true;
     setState((current) => ({ ...current, lines: [], history: "loaded" }));
-  }, []);
+    // A new chat whose request outlived every view already belongs to the next visit.
+    if (kept) endVisitIfLeft(store);
+  }, [store, setState, kept]);
 
   const run = useCallback(async (text: string, keepFailed: boolean, appReply?: AppReply) => {
-    if (turnController.current) return;
+    if (store.turnController) return;
     const controller = new AbortController();
-    turnController.current = controller;
+    store.turnController = controller;
     const setTurn = (update: (turn: MainTurn) => MainTurn) =>
       setState((current) => (current.turn ? { ...current, turn: update(current.turn) } : current));
     setState((current) => {
       const failed = keepFailed && current.turn?.state === "error"
-        ? [{ id: `local-${++localId.current}`, role: "user" as const, text: current.turn.text, ...appMark(current.turn.appReply) }]
+        ? [{ id: `local-${++store.localId}`, role: "user" as const, text: current.turn.text, ...appMark(current.turn.appReply) }]
         : [];
       return { ...current, lines: [...current.lines, ...failed], turn: { text, reply: "", state: "starting", ...(appReply ? { appReply } : {}) } };
     });
     try {
-      await (manualHistory ? undefined : prepare?.());
+      await (manualHistory ? undefined : mountedView(store)?.prepare?.());
       void ensureHistory();
       if (controller.signal.aborted) return;
       let reply = "";
@@ -169,7 +186,7 @@ export function useMainChat(api: BotsApi, prepare?: () => Promise<void>, onNoRep
           setState((current) => ({
             ...current,
             lines: current.lines.some(line => line.id === event.messageId) ? current.lines
-              : [...current.lines, { id: `local-${++localId.current}`, role: "user", text, ...appMark(appReply) }, { id: event.messageId, role: "bot", text: reply }],
+              : [...current.lines, { id: `local-${++store.localId}`, role: "user", text, ...appMark(appReply) }, { id: event.messageId, role: "bot", text: reply }],
             turn: null,
           }));
         } else if (event.type === "error") setTurn((turn) => ({ ...turn, state: "error", error: event.code }));
@@ -179,14 +196,14 @@ export function useMainChat(api: BotsApi, prepare?: () => Promise<void>, onNoRep
       if (cause instanceof BotsNoReply) {
         // Nothing was left to send for that request (another tab sent it): no error to show, only a fresh read of the requests.
         setState((current) => ({ ...current, turn: null }));
-        noReply.current?.();
+        mountedView(store)?.onNoReply?.();
       } else setTurn((turn) => ({ ...turn, state: "error", error: cause instanceof BotsError ? cause.code : isHistoryDeclined(cause) ? "history_declined" : "failed" }));
     } finally {
-      if (turnController.current === controller) turnController.current = null;
+      if (store.turnController === controller) store.turnController = null;
       // A decision the owner made while a turn was running goes out as soon as that turn ends.
-      if (!controller.signal.aborted) queued.current.shift()?.();
+      if (!controller.signal.aborted) store.queued.shift()?.();
     }
-  }, [api, ensureHistory, prepare, manualHistory]);
+  }, [api, ensureHistory, manualHistory, store, setState]);
 
   const send = useCallback((text: string) => run(text, true), [run]);
   const retry = useCallback(() => {
@@ -194,9 +211,9 @@ export function useMainChat(api: BotsApi, prepare?: () => Promise<void>, onNoRep
   }, [run, state.turn]);
   /** Tells Main what the owner decided on a question card; the service composes the words, none go from here. */
   const sendAppReply = useCallback((reply: AppReply) => {
-    if (turnController.current) queued.current.push(() => void run("", true, reply));
+    if (store.turnController) store.queued.push(() => void run("", true, reply));
     else void run("", true, reply);
-  }, [run]);
+  }, [run, store]);
 
   return { state, send, retry, sendAppReply, ensureHistory, loadHistory, requestHistory, clear };
 }
