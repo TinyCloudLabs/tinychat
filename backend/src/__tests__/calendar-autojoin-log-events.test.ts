@@ -23,8 +23,13 @@ describe("calendar autojoin shipped events", () => {
         start: "2026-11-25T12:00:00.000Z", tenant_hash: expect.stringMatching(/^[0-9a-f]{12}$/) });
       expect(JSON.stringify(event)).not.toContain(tenant.toLowerCase());
       expect(calendarDecisionEvent(row, "GOOGLE_CANARY_free_text" as "missed_window").reason).toBe("unknown");
-      expect(calendarDecisionEvent(row, "not_accepted")).toEqual({ event: "calendar_autojoin_decision", reason: "not_accepted" });
-      expect(calendarDecisionEvent(row, "event_ineligible")).toEqual({ event: "calendar_autojoin_decision", reason: "event_ineligible" });
+      for (const reason of ["not_accepted", "event_ineligible"] as const) {
+        const invite = calendarDecisionEvent(row, reason);
+        expect(invite).toEqual({ event: "calendar_autojoin_decision", reason, start: "2026-11-25T12:00:00.000Z",
+          tenant_hash: expect.stringMatching(/^[0-9a-f]{12}$/) });
+        expect(invite).toHaveProperty("tenant_hash", (event as { tenant_hash: string }).tenant_hash);
+        expect(JSON.stringify(invite)).not.toContain(tenant.toLowerCase());
+      }
       // @ts-expect-error Only a declared decision can reach the builder.
       const invalidReason: CalendarDecisionReason = "GOOGLE_CANARY_free_text";
       void invalidReason;
@@ -114,7 +119,8 @@ describe("calendar autojoin shipped events", () => {
     try {
       await worker.tick();
       expect(lines(write).filter(item => item.event === "calendar_autojoin_decision"))
-        .toEqual([{ event: "calendar_autojoin_decision", reason: "not_accepted" }]);
+        .toEqual([{ event: "calendar_autojoin_decision", reason: "not_accepted", start: new Date(start).toISOString(),
+          tenant_hash: calendarDecisionEvent({ tenant, start }, "sent").tenant_hash }]);
       expect(JSON.stringify(lines(write))).not.toContain(privateTitle);
       expect(JSON.stringify(lines(write))).not.toContain(tenant.toLowerCase());
       write.mockClear();

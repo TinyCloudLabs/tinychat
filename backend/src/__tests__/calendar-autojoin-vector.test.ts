@@ -45,8 +45,8 @@ test.skipIf(!process.env.VECTOR_BIN)("Vector ships closed calendar events and di
       ]));
     expect(rows.filter(row => row.reason === "not_accepted")).toHaveLength(20);
     for (const row of rows.filter(row => row.reason === "not_accepted")) {
-      expect(row).not.toHaveProperty("start");
-      expect(row).not.toHaveProperty("tenant_hash");
+      expect(row).toHaveProperty("start", outsider.start);
+      expect(row).toHaveProperty("tenant_hash", outsider.tenant_hash);
     }
     for (const row of rows) {
       expect(row).not.toHaveProperty("title");

@@ -213,9 +213,9 @@ provider refusal can be read without public Phala logs. Same pattern as tinyclou
   `timers_due` (armed due-time timers), `scan_complete` and `duration_ms`. The worker emits on the first
   tick, when counts or scan health change, every five minutes and on every incomplete scan. A failed
   tenant reconciliation also marks its tick incomplete. `calendar_autojoin_decision` carries a closed
-  `reason`; for all but `not_accepted` and `event_ineligible` it also carries ISO `start` and optional
-  12-hex `tenant_hash` when `REQUEST_LOG_HMAC_KEY` is configured. Those two outsider-influenced
-  classifications omit both start and hash, so a distinctive invitation cannot link a tenant.
+  `reason`, ISO `start` and optional 12-hex `tenant_hash` when `REQUEST_LOG_HMAC_KEY` is configured.
+  `not_accepted` and `event_ineligible` carry both as well, so a missed meeting is traceable to a tenant
+  pseudonym and a start time; they keep their own 20/minute lane.
   The hash is the prefix of the existing keyed monthly request pseudonym. A `sent` decision includes
   an ownership transition that goes straight to `stop_pending`; terminal outcomes are separate events.
   A changed occurrence identity is a new decision even if an older row has the same disposition.

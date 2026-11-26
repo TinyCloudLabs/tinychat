@@ -46,10 +46,9 @@ function tenantHash(tenant: string): { tenant_hash: string } | object {
   return hash ? { tenant_hash: hash.slice(0, 12) } : {};
 }
 
-/** Outsider-controlled invitations cannot associate a start time with the keyed tenant identity. */
+/** Every decision carries the occurrence start and, when the key is configured, the keyed tenant pseudonym. */
 export function calendarDecisionEvent(row: Pick<CalendarOccurrence, "tenant" | "start">, reason: CalendarDecisionReason): CalendarAutojoinLogEvent & { event: "calendar_autojoin_decision" } {
   const closed = DECISIONS.includes(reason) ? reason : "unknown";
-  if (closed === "not_accepted" || closed === "event_ineligible") return { event: "calendar_autojoin_decision", reason: closed };
   return { event: "calendar_autojoin_decision", reason: closed, start: new Date(row.start).toISOString(), ...tenantHash(row.tenant) };
 }
 
