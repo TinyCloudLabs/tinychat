@@ -9,7 +9,7 @@ import { cn } from "@/lib/utils";
 /** A navigation or launcher icon: a lucide icon or a One Apps glyph. Both take a class and aria-hidden. */
 export type AppIcon = LucideIcon | ComponentType<{ className?: string; "aria-hidden"?: boolean | "true" | "false" }>;
 
-export type GlyphId = "recording" | "secrets" | "credentials" | "explorer" | "account" | "courier" | "ledger" | "share" | "connectors";
+export type GlyphId = "recording" | "secrets" | "credentials" | "drive" | "explorer" | "account" | "courier" | "ledger" | "share" | "connectors";
 
 const n = (value: number) => Math.round(value * 100) / 100;
 
@@ -77,6 +77,11 @@ const GLYPHS: Readonly<Record<GlyphId, GlyphParts>> = {
     ),
     cloud: cloudAt(24, 5, 0.9),
     overInkLine: line("M17.3 18.6l4.6 4.5 8.6-9", 3.3),
+  },
+  // A folder that holds the cloud.
+  drive: {
+    tool: <path d="M6.5 16.5a3 3 0 0 1 3-3h8.8l4.2 4.5H38.5a3 3 0 0 1 3 3V39a3 3 0 0 1-3 3h-29a3 3 0 0 1-3-3z" />,
+    cloud: cloudAt(24, 21.5, 0.68),
   },
   // A magnifier looking at the cloud.
   explorer: {
@@ -221,6 +226,7 @@ export const GLYPH_ICONS: Readonly<Record<GlyphId, AppIcon>> = {
   recording: monoGlyph("recording"),
   secrets: monoGlyph("secrets"),
   credentials: monoGlyph("credentials"),
+  drive: monoGlyph("drive"),
   explorer: monoGlyph("explorer"),
   account: monoGlyph("account"),
   courier: monoGlyph("courier"),

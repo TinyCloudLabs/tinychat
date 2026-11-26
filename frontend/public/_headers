@@ -18,7 +18,7 @@
 #   font-src data:              data: for inlined font files; the fonts themselves are served from this origin.
 #   worker-src 'self'           same-origin module workers (stitch, audio hash, SDK storage); no blob workers.
 #   frame-src https:            the OpenKey sign-in frame (openkey.so), the TinyCloud apps One frames (src/apps/registry.ts:
-#                               secrets.tinycloud.xyz, credentials.org, explorer.tinycloud.xyz, account.tinycloud.xyz and
+#                               secrets.tinycloud.xyz, credentials.org, drive.tinycloud.xyz, explorer.tinycloud.xyz, account.tinycloud.xyz and
 #                               the Ledger app's host) and the Feed's page sheet (feed/LinkSheet.tsx), which shows any
 #                               https page in a sandboxed frame. A frame runs on its own origin, not on this one.
 #   form-action 'self'          no form posts anywhere else.

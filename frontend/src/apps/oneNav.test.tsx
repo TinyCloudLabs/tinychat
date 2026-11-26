@@ -53,7 +53,7 @@ function memoryStorage(): Storage {
 
 const ACCOUNT = "did:pkh:eip155:1:0x00000000000000000000000000000000000000a1";
 const UPRIGHT: SizeClassState = { size: "compact", land: false };
-const WEB_ORDER = ["capture", "xyz.tinycloud.secrets", "xyz.tinycloud.opencredentials", "xyz.tinycloud.explorer", "xyz.tinycloud.account", "xyz.tinycloud.courier", "xyz.tinycloud.rocinante.ledger", "xyz.tinycloud.share"] as const;
+const WEB_ORDER = ["capture", "xyz.tinycloud.secrets", "xyz.tinycloud.opencredentials", "xyz.tinycloud.tinydrive", "xyz.tinycloud.explorer", "xyz.tinycloud.account", "xyz.tinycloud.courier", "xyz.tinycloud.rocinante.ledger", "xyz.tinycloud.share"] as const;
 
 const ssr = (node: ReactNode, path: string, platform: AppPlatform = "web") =>
   renderToStaticMarkup(
@@ -127,7 +127,7 @@ describe("the Apps grid", () => {
     const apps = oneAppsFor("web", true);
     const tiles = gridTiles(0, apps, "https://tinycloud.one");
     const anchors = links(ssr(<AppsGrid tiles={tiles} pins={[]} canPin onPin={noop} onUnpin={noop} addApp={false} />, PATHS.apps), "<ul", "</ul>");
-    const framedHere: readonly string[] = ["xyz.tinycloud.explorer", "xyz.tinycloud.account", "xyz.tinycloud.courier", "xyz.tinycloud.rocinante.ledger"];
+    const framedHere: readonly string[] = ["xyz.tinycloud.tinydrive", "xyz.tinycloud.explorer", "xyz.tinycloud.account", "xyz.tinycloud.courier", "xyz.tinycloud.rocinante.ledger"];
     apps.forEach((app, index) => {
       const tag = anchors[index]!;
       if (app.kind === "native" || framedHere.includes(app.id)) {
