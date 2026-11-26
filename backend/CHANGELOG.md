@@ -1,5 +1,13 @@
 # @tinychat/backend
 
+## 0.14.6
+
+### Patch Changes
+
+- 3ae7f59: Calendar auto-join decisions for invitations that were not accepted or were ineligible carry an invite-only keyed pseudonym, with no start time and no account pseudonym.
+
+  Details: TC-4406
+
 ## 0.14.6-beta.0
 
 ### Patch Changes

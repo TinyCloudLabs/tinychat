@@ -1,8 +1,0 @@
-{
-  "versions": {
-    "@tinychat/backend": "0.14.6"
-  },
-  "changesets": [
-    ".changeset/pre/invite-decision-fields.md"
-  ]
-}
