@@ -41,6 +41,7 @@ import { ShareRecordingButton } from "../share/ShareRecordingSheet";
 import { useRecordingShared } from "@/lib/nativeShares/sentShares";
 import { libraryRowTitle } from "./LibraryRow";
 import { deleteGranolaMeeting } from "@/lib/connectors/connectorStore";
+import { countCombinedReferencing } from "@/lib/connectors/combinedMeetingStore";
 import { runGranolaSpaceWrite } from "@/lib/connectors/granolaSync";
 
 /** Matches markdown-text's copy button: the tick reverts on its own. */
@@ -70,6 +71,8 @@ export function NoteDetail(props: {
   activityControl?: ReactNode;
   /** Makes a combined meeting's summary (CaptureSurface owns it); without one no summary is shown. */
   summaries?: SummaryRunner;
+  /** A Granola meeting was deleted from this page: the page shows the "Meeting deleted" notice. */
+  onGranolaDeleted?: () => void;
 }) {
   const { library } = props;
   const { item, reads, audio } = library.note;
@@ -86,6 +89,19 @@ export function NoteDetail(props: {
     setDeleteBusy(false);
     setDeleteError(null);
   }, [props.tcw, deleteSourceId]);
+  // The count the sheet names: read when it opens, so the user sees what goes with the meeting.
+  const [combinedCount, setCombinedCount] = useState<number | null>(null);
+  useEffect(() => {
+    setCombinedCount(null);
+    if (!deleteOpen || !deleteSourceId) return;
+    let live = true;
+    const tcw = props.tcw;
+    const sourceId = deleteSourceId;
+    void runGranolaSpaceWrite(() => countCombinedReferencing(tcw, "granola", sourceId)).then((res) => {
+      if (live && res.ok && res.data.unverified === 0) setCombinedCount(res.data.count);
+    }).catch(() => undefined);
+    return () => { live = false; };
+  }, [deleteOpen, props.tcw, deleteSourceId]);
   const confirmGranolaDelete = () => {
     if (!deleteSourceId || deleteBusy) return;
     const tcw = props.tcw;
@@ -97,15 +113,16 @@ export function NoteDetail(props: {
         const result = await runGranolaSpaceWrite(() => deleteGranolaMeeting(tcw, "granola", sourceId));
         if (deleteContext.current.tcw !== tcw || deleteContext.current.sourceId !== sourceId) return;
         if (!result.ok) {
-          setDeleteError("Couldn’t delete the meeting. Please retry.");
+          setDeleteError("Couldn’t delete the meeting. Try again.");
           return;
         }
         setDeleteOpen(false);
         library.refresh();
+        props.onGranolaDeleted?.();
         props.onBack();
       } catch {
         if (deleteContext.current.tcw === tcw && deleteContext.current.sourceId === sourceId)
-          setDeleteError("Couldn’t delete the meeting. Please retry.");
+          setDeleteError("Couldn’t delete the meeting. Try again.");
       } finally {
         if (deleteContext.current.tcw === tcw && deleteContext.current.sourceId === sourceId) setDeleteBusy(false);
       }
@@ -250,7 +267,7 @@ export function NoteDetail(props: {
       {/* The visible list: a capture already inside a combined meeting is never offered for a new combine. */}
       <CombineSheet flow={flow} items={library.items} now={new Date()} />
       {combined.remove.open && <DeleteCombinedSheet remove={combined.remove} title={item?.title ?? "Combined meeting"} />}
-      {deleteSourceId && <DeleteGranolaSheet open={deleteOpen} title={item?.title ?? "Meeting"} busy={deleteBusy} error={deleteError}
+      {deleteSourceId && deleteOpen && <DeleteGranolaSheet open title={item?.title ?? "Meeting"} busy={deleteBusy} error={deleteError} combinedCount={combinedCount}
         onKeep={() => { if (!deleteBusy) setDeleteOpen(false); }} onConfirm={confirmGranolaDelete} />}
     </>
   );

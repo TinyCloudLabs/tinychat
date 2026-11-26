@@ -1,8 +1,22 @@
+// TC-4413: "Delete meeting?" confirmation for a Granola meeting. Says exactly what goes (the meeting, its
+// transcript and the combined meetings that include it), that it cannot be undone, and how imports can be
+// allowed back; the safe choice is first.
 import { Loader2Icon } from "lucide-react";
+
 import { Button } from "@/components/ui/button";
 import { ResponsiveSheet, ResponsiveSheetBody } from "@/components/ui/responsive-sheet";
 
-export function DeleteGranolaSheet(props: { open: boolean; title: string; busy: boolean; error: string | null; onKeep: () => void; onConfirm: () => void }) {
+/** What goes with the meeting: the count when it is known, the plain rule while it is not. */
+export function combinedLine(count: number | null): string | null {
+  if (count === null) return "Any combined meeting that includes it will be deleted too.";
+  if (count === 0) return null;
+  return count === 1
+    ? "1 combined meeting that includes it will be deleted too."
+    : `${count} combined meetings that include it will be deleted too.`;
+}
+
+export function DeleteGranolaSheet(props: { open: boolean; title: string; busy: boolean; error: string | null; combinedCount: number | null; onKeep: () => void; onConfirm: () => void }) {
+  const combined = combinedLine(props.combinedCount);
   return <ResponsiveSheet open={props.open} onOpenChange={(next) => { if (!next) props.onKeep(); }} dismissible={!props.busy}
     title="Delete meeting?" description={props.title} contentProps={{ "data-testid": "delete-granola-sheet" }}
     footer={<>
@@ -13,7 +27,9 @@ export function DeleteGranolaSheet(props: { open: boolean; title: string; busy: 
     </>}>
     <ResponsiveSheetBody>
       <div className="flex flex-col gap-3">
-        <p className="text-callout">This deletes the meeting and its transcript from your space. Importing the same CSV or syncing Granola won’t bring it back until you choose “Allow deleted meetings back”. Any combined meeting that includes it is deleted too.</p>
+        <p className="text-callout">This deletes the meeting and its transcript from your space. It can’t be undone.</p>
+        {combined && <p className="text-callout" data-testid="delete-granola-combined">{combined}</p>}
+        <p className="text-callout">Importing the same CSV or syncing Granola won’t bring it back unless you choose “Allow deleted meetings back”.</p>
         {props.error && <p role="alert" className="text-callout text-destructive" data-testid="delete-granola-error">{props.error}</p>}
       </div>
     </ResponsiveSheetBody>

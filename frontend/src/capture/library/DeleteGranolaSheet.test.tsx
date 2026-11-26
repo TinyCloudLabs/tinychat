@@ -40,7 +40,7 @@ test("delete action is offered only on a Granola row", async () => {
 test("confirmation keeps the safe action first and shows a write error", async () => {
   const node = host();
   const calls: string[] = [];
-  await act(async () => root.render(<DeleteGranolaSheet open title="Planning" busy={false} error="Couldn’t delete the meeting." onKeep={() => calls.push("keep")} onConfirm={() => calls.push("delete")} />));
+  await act(async () => root.render(<DeleteGranolaSheet open title="Planning" busy={false} error="Couldn’t delete the meeting." combinedCount={null} onKeep={() => calls.push("keep")} onConfirm={() => calls.push("delete")} />));
   const buttons = [...node.querySelectorAll("button")];
   expect(buttons[0]?.textContent).toContain("Keep it");
   expect(node.textContent).toContain("Couldn’t delete the meeting.");

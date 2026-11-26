@@ -64,6 +64,7 @@ import { UploadSheet } from "./upload/UploadSheet";
 import { useUploadDeps } from "./upload/useUploadDeps";
 import { ActivityPanel } from "./activity/ActivityPanel";
 import { FailureNotificationHost } from "./activity/FailureNotificationHost";
+import { PinToast, usePinToast } from "@/apps/PinToast";
 import { sidebarActivityStore } from "./activity/sidebarActivityStore";
 import type { NotePipelineSource } from "@/lib/voiceNotes/useNotePipeline";
 import { RecordingRenameProvider } from "./library/rename/RecordingRename";
@@ -148,6 +149,7 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
   const storageFull = useSyncExternalStore(subscribeStorageReadOnly, isStorageReadOnly, () => false);
   const { deps: uploadDeps } = useUploadDeps(tcw, backendUrl, sessionStore);
   const [sheet, setSheet] = useState<Sheet | null>(null);
+  const [notice, showNotice] = usePinToast();
   const [recentNoteId, setRecentNoteId] = useState<string | null>(null);
   useEffect(() => {
     const fromHistory = (location.state as { recentNoteSheet?: unknown } | null)?.recentNoteSheet;
@@ -273,6 +275,7 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
       data-layout={wide ? "panes" : "stack"}
     >
       <PipelineBridge entries={pipelineEntries} onViews={setActivityViews} />
+      <PinToast message={notice} />
       <FailureNotificationHost accountDid={tcw.did} items={library.items} views={activityViews} platform={platform}
         visibleNoteId={visibleNoteId} onOpenPath={openNotificationPath} />
       <div
@@ -392,6 +395,7 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
             activityControl={!sidebarActivity && noteScreen ? activityControl : undefined}
             savedNote={notePage || noteSheet ? { tcw, layout: notePage ? "page" : "sheet" } : undefined}
             summaries={summaries}
+            onGranolaDeleted={() => showNotice("Meeting deleted")}
           />
         ) : wide ? (
           empty ? (

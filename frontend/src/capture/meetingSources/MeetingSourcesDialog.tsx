@@ -300,8 +300,8 @@ export function MeetingSourcesDialog({
                     {d.id === "granola" && (
                       <div className="ms-opt">
                         <div className="ms-opt-copy">
+                          <GranolaAllowBack className="mb-2" buttonClassName="ms-btn2" tcw={tcw} backendUrl={backendUrl} sessionStore={sessionStore} />
                           <p className="ms-opt-text">{GRANOLA_CSV_STRINGS.allowBackNote}</p>
-                          <GranolaAllowBack tcw={tcw} backendUrl={backendUrl} sessionStore={sessionStore} />
                         </div>
                       </div>
                     )}

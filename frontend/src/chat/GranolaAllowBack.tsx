@@ -24,9 +24,11 @@ interface GranolaAllowBackProps {
   disabled?: boolean;
   /** Renders the opening control; defaults to a link-style button. */
   className?: string;
+  /** Styles the opening control as a host-skin button instead of the default link button. */
+  buttonClassName?: string;
 }
 
-export const GranolaAllowBack: FC<GranolaAllowBackProps> = ({ tcw, backendUrl, sessionStore, disabled = false, className }) => {
+export const GranolaAllowBack: FC<GranolaAllowBackProps> = ({ tcw, backendUrl, sessionStore, disabled = false, className, buttonClassName }) => {
   const [step, setStep] = useState<Step>("idle");
 
   const confirm = async () => {
@@ -40,8 +42,9 @@ export const GranolaAllowBack: FC<GranolaAllowBackProps> = ({ tcw, backendUrl, s
 
   return (
     <div className={className}>
-      {(step === "idle" || step === "failed") && (
-        <Button type="button" variant="link" size="sm" className="h-auto px-0" disabled={disabled} onClick={() => setStep("confirming")}>
+      {(step === "idle" || step === "failed") && (buttonClassName
+        ? <button type="button" className={buttonClassName} disabled={disabled} onClick={() => setStep("confirming")}>{S.allowBack}</button>
+        : <Button type="button" variant="link" size="sm" className="h-auto px-0" disabled={disabled} onClick={() => setStep("confirming")}>
           {S.allowBack}
         </Button>
       )}
