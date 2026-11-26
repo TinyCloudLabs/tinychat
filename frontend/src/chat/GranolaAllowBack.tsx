@@ -26,9 +26,14 @@ interface GranolaAllowBackProps {
   className?: string;
   /** Styles the opening control as a host-skin button instead of the default link button. */
   buttonClassName?: string;
+  /** Draws the default opening control as an outline button instead of a link. */
+  outline?: boolean;
+  /** A line under the opening control; hidden while the confirmation is open. */
+  note?: string;
+  noteClassName?: string;
 }
 
-export const GranolaAllowBack: FC<GranolaAllowBackProps> = ({ tcw, backendUrl, sessionStore, disabled = false, className, buttonClassName }) => {
+export const GranolaAllowBack: FC<GranolaAllowBackProps> = ({ tcw, backendUrl, sessionStore, disabled = false, className, buttonClassName, outline = false, note, noteClassName }) => {
   const [step, setStep] = useState<Step>("idle");
 
   const confirm = async () => {
@@ -42,11 +47,15 @@ export const GranolaAllowBack: FC<GranolaAllowBackProps> = ({ tcw, backendUrl, s
 
   return (
     <div className={className}>
-      {(step === "idle" || step === "failed") && (buttonClassName
-        ? <button type="button" className={buttonClassName} disabled={disabled} onClick={() => setStep("confirming")}>{S.allowBack}</button>
-        : <Button type="button" variant="link" size="sm" className="h-auto px-0" disabled={disabled} onClick={() => setStep("confirming")}>
-          {S.allowBack}
-        </Button>
+      {(step === "idle" || step === "failed") && (
+        <>
+          {buttonClassName
+            ? <button type="button" className={buttonClassName} disabled={disabled} onClick={() => setStep("confirming")}>{S.allowBack}</button>
+            : <Button type="button" variant={outline ? "outline" : "link"} size="sm" className={outline ? undefined : "h-auto px-0"} disabled={disabled} onClick={() => setStep("confirming")}>
+              {S.allowBack}
+            </Button>}
+          {note && <p className={noteClassName}>{note}</p>}
+        </>
       )}
       {(step === "confirming" || step === "working") && (
         <div role="group" aria-label={GRANOLA_RESYNC_CONFIRM.heading} className="flex flex-col gap-2 rounded-md border border-border bg-background p-3 text-sm">
