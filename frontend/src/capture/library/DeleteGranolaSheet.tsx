@@ -13,7 +13,7 @@ export function DeleteGranolaSheet(props: { open: boolean; title: string; busy: 
     </>}>
     <ResponsiveSheetBody>
       <div className="flex flex-col gap-3">
-        <p className="text-callout">This removes the meeting and transcript from your space. Importing the same CSV or syncing Granola won’t bring it back until you choose Allow deleted meetings back. Combined meetings quoting it are removed.</p>
+        <p className="text-callout">This deletes the meeting and its transcript from your space. Importing the same CSV or syncing Granola won’t bring it back until you choose “Allow deleted meetings back”. Any combined meeting that includes it is deleted too.</p>
         {props.error && <p role="alert" className="text-callout text-destructive" data-testid="delete-granola-error">{props.error}</p>}
       </div>
     </ResponsiveSheetBody>
