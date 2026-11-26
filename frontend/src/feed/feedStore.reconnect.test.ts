@@ -218,12 +218,55 @@ test("streams that keep failing back off: one new stream per retry, never one pe
   }
   expect(delays).toEqual([2_000, 5_000, 15_000, 30_000, 60_000, 60_000, 60_000]);
 
-  // A ready stream starts the backoff over.
+  // A stream that drops right after its ready keeps the longest step.
   fixture.live.ready();
   await settle();
   fixture.live.drop();
   await settle();
+  expect(waiting()).toEqual([60_000, 300_000]);
+});
+
+test("only a stream that stayed ready 30 s starts the backoff over; a flapping one keeps climbing", async () => {
+  let now = 1_800_000_000_000;
+  const clock = spyOn(Date, "now").mockImplementation(() => now);
+  cleanups.push(() => clock.mockRestore());
+  const fixture = await account();
+  await openFeed(fixture);
+  fixture.live.drop();
+  await settle();
+  fire(2_000);
+
+  fixture.live.ready();
+  await settle();
+  now += 29_999;
+  fixture.live.drop();
+  await settle();
+  expect(waiting()).toEqual([5_000, 300_000]);
+  fire(5_000);
+
+  fixture.live.ready();
+  await settle();
+  now += 30_000;
+  fixture.live.drop();
+  await settle();
   expect(waiting()).toEqual([2_000, 300_000]);
+});
+
+test("a retry that fires while the device copy is being read waits the next step, then opens a stream", async () => {
+  const fixture = await account();
+  const { feed } = await openFeed(fixture);
+  fixture.live.drop();
+  await settle();
+  const local = feed.cached?.();
+  fire(2_000);
+  expect(fixture.live.opened).toHaveLength(1);
+  expect(waiting()).toEqual([5_000, 300_000]);
+  await local;
+  await settle();
+  // The read's own connect keeps the failed stream: the rescheduled retry replaces it.
+  expect(fixture.live.opened).toHaveLength(1);
+  fire(5_000);
+  expect(fixture.live.opened).toHaveLength(2);
 });
 
 test("the browser coming back online reconnects at once; after unsubscribe nothing is left to retry", async () => {
