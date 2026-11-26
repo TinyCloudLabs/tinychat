@@ -18,7 +18,7 @@ test.skipIf(!process.env.VECTOR_BIN)("Vector ships closed calendar events and di
       sinks: { out: { type: "console", inputs: shipped.sinks.betterstack.inputs, encoding: { codec: "json" } } } };
     const path = join(scratch, "vector.json");
     writeFileSync(path, JSON.stringify(config));
-    const outsider = { event: "calendar_autojoin_decision", reason: "not_accepted",
+    const outsider = { event: "calendar_autojoin_decision", reason: "not_accepted", invite_hash: "112233445566",
       start: "2026-11-25T12:00:00.000Z", tenant_hash: "aabbccddeeff" };
     const events = [
       { event: "calendar_autojoin_tick", tenants: 2, rows: 4, scans: 1, timers_due: 3, scan_complete: false, duration_ms: 12 },
@@ -45,8 +45,9 @@ test.skipIf(!process.env.VECTOR_BIN)("Vector ships closed calendar events and di
       ]));
     expect(rows.filter(row => row.reason === "not_accepted")).toHaveLength(20);
     for (const row of rows.filter(row => row.reason === "not_accepted")) {
-      expect(row).toHaveProperty("start", outsider.start);
-      expect(row).toHaveProperty("tenant_hash", outsider.tenant_hash);
+      expect(row).toHaveProperty("invite_hash", outsider.invite_hash);
+      expect(row).not.toHaveProperty("start");
+      expect(row).not.toHaveProperty("tenant_hash");
     }
     for (const row of rows) {
       expect(row).not.toHaveProperty("title");

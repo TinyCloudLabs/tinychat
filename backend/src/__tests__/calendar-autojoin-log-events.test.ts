@@ -1,5 +1,5 @@
 import { describe, expect, spyOn, test } from "bun:test";
-import { configureRequestLogAccountHash } from "../request-context.js";
+import { configureRequestLogAccountHash, requestLogAccountHash, requestLogInviteHash } from "../request-context.js";
 import { calendarConnectionEvent, calendarDecisionEvent, calendarTickEvent, type CalendarDecisionReason } from "../services/calendar-autojoin-log-events.js";
 import { MemoryCalendarAutojoinStore, TenantCoordinator, type CalendarConnection } from "../services/calendar-autojoin-store.js";
 import { CalendarAutojoinWorker } from "../services/calendar-autojoin-worker.js";
@@ -25,9 +25,12 @@ describe("calendar autojoin shipped events", () => {
       expect(calendarDecisionEvent(row, "GOOGLE_CANARY_free_text" as "missed_window").reason).toBe("unknown");
       for (const reason of ["not_accepted", "event_ineligible"] as const) {
         const invite = calendarDecisionEvent(row, reason);
-        expect(invite).toEqual({ event: "calendar_autojoin_decision", reason, start: "2026-11-25T12:00:00.000Z",
-          tenant_hash: expect.stringMatching(/^[0-9a-f]{12}$/) });
-        expect(invite).toHaveProperty("tenant_hash", (event as { tenant_hash: string }).tenant_hash);
+        expect(invite).toEqual({ event: "calendar_autojoin_decision", reason,
+          invite_hash: requestLogInviteHash(tenant)!.slice(0, 12) });
+        expect(invite).not.toHaveProperty("start");
+        expect(invite).not.toHaveProperty("tenant_hash");
+        expect((invite as { invite_hash: string }).invite_hash).toMatch(/^[0-9a-f]{12}$/);
+        expect(requestLogInviteHash(tenant)!.slice(0, 12)).not.toBe(requestLogAccountHash(tenant)!.slice(0, 12));
         expect(JSON.stringify(invite)).not.toContain(tenant.toLowerCase());
       }
       // @ts-expect-error Only a declared decision can reach the builder.
@@ -35,6 +38,7 @@ describe("calendar autojoin shipped events", () => {
       void invalidReason;
       configureRequestLogAccountHash(undefined);
       expect(calendarDecisionEvent(row, "sent")).not.toHaveProperty("tenant_hash");
+      expect(calendarDecisionEvent(row, "not_accepted")).not.toHaveProperty("invite_hash");
     } finally { configureRequestLogAccountHash(undefined); }
   });
 
@@ -119,8 +123,8 @@ describe("calendar autojoin shipped events", () => {
     try {
       await worker.tick();
       expect(lines(write).filter(item => item.event === "calendar_autojoin_decision"))
-        .toEqual([{ event: "calendar_autojoin_decision", reason: "not_accepted", start: new Date(start).toISOString(),
-          tenant_hash: calendarDecisionEvent({ tenant, start }, "sent").tenant_hash }]);
+        .toEqual([{ event: "calendar_autojoin_decision", reason: "not_accepted",
+          invite_hash: requestLogInviteHash(tenant)!.slice(0, 12) }]);
       expect(JSON.stringify(lines(write))).not.toContain(privateTitle);
       expect(JSON.stringify(lines(write))).not.toContain(tenant.toLowerCase());
       write.mockClear();

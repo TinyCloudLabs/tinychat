@@ -416,7 +416,10 @@ services:
                   reason = string(j.reason) ?? ""
                   if !includes(["sent", "completed", "failed", "cancelled", "missed", "missed_window", "not_accepted", "event_ineligible", "event_changed", "already_recorded", "unverified_capture", "capacity_exhausted", "shared", "recording_deleted", "autojoin_disabled", "create_rejected", "google_needs_reconnect", "lookup_identity_mismatch", "unknown"], reason) { abort }
                   out = {"svc": "backend", "event": name, "component": "calendar-autojoin", "level": "info", "ts": ts, "reason": reason}
-                  if reason != "not_accepted" && reason != "event_ineligible" {
+                  if reason == "not_accepted" || reason == "event_ineligible" {
+                    invite_hash = string(j.invite_hash) ?? ""
+                    if match(invite_hash, r'^[0-9a-f]{12}$$') { out.invite_hash = invite_hash }
+                  } else {
                     start = string(j.start) ?? ""
                     if !match(start, r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$$') { abort }
                     out.start = start

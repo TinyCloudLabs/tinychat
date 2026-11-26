@@ -1,8 +1,7 @@
 import { expect, spyOn, test } from "bun:test";
 import { MemoryCalendarAutojoinStore, TenantCoordinator, type CalendarOccurrence } from "../services/calendar-autojoin-store.js";
 import { CalendarAutojoinWorker } from "../services/calendar-autojoin-worker.js";
-import { calendarDecisionEvent } from "../services/calendar-autojoin-log-events.js";
-import { configureRequestLogAccountHash } from "../request-context.js";
+import { requestLogInviteHash, configureRequestLogAccountHash } from "../request-context.js";
 import { calendarOccurrenceIdentity, type GoogleCalendarEvent } from "../services/google-calendar.js";
 import { MemoryTranscriberIndexStore } from "../services/transcriber-index.js";
 
@@ -63,8 +62,8 @@ test("a changed identity is a new RSVP decision even if the old row had the same
   configureRequestLogAccountHash("test-only-calendar-log-hmac-key-with-enough-entropy-0123456789");
   try {
     await worker.tick();
-    expect(decisions(write)).toEqual([{ event: "calendar_autojoin_decision", reason: "not_accepted", start: new Date(start).toISOString(),
-      tenant_hash: calendarDecisionEvent({ tenant, start }, "sent").tenant_hash }]);
+    expect(decisions(write)).toEqual([{ event: "calendar_autojoin_decision", reason: "not_accepted",
+      invite_hash: requestLogInviteHash(tenant)!.slice(0, 12) }]);
     expect((await store.getOccurrence(tenant, calendarOccurrenceIdentity(tenant, subject, event)!))?.disposition).toBe("not_accepted");
   } finally { write.mockRestore(); log.mockRestore(); configureRequestLogAccountHash(undefined); await worker.stop(); }
 });
