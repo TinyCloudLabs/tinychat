@@ -28,7 +28,6 @@ import { ADMISSION_CONTROL_PATH, createAdmissionRelay, MAX_ADMISSION_BYTES } fro
 import { fileActionLedgerStore } from "./actions-desk";
 import { parseActionsPush } from "./actions";
 import { gatewayConfig, SECRET_ORIGINS } from "./config";
-import { sealKeyFromDstack } from "./dstack-key";
 import { networkDeps } from "./fetch-net";
 import { fileBudgetStore, fileOwnerStore, Gateway } from "./gateway";
 import { fileHeldStore, MeetingDesk } from "./meeting-reads";
@@ -36,10 +35,9 @@ import { parseReadsPush } from "./reads";
 import { isRecord } from "./guards";
 import { egressPaths } from "./layout";
 import { BOT_ID } from "./owner";
-import { SecretGrants } from "./secret-grants";
 import { nodeSecretReader } from "./secret-node";
 import { secretRoute, SECRETS_ROUTE } from "./secret-routes";
-import { sealedGrantStore } from "./secret-store";
+import { startSecretGrants } from "./secret-start";
 import { addressKey, readableAddress } from "./web";
 import { parseWebPolicy } from "./web-policy";
 import { parseAsksPush } from "./asks";
@@ -52,21 +50,7 @@ const aci = process.env.BOTS_HISTORY_ENABLED === "true" ? new BotAci(cfg.upstrea
 
 /** How often open secret requests are checked with OpenKey; it keeps an approval for 10 minutes. */
 const SECRET_POLL_MS = 5_000;
-// Secret requests need the sealing key from the CVM's key service. Without it they are refused (503) and the secret
-// tools are not offered, never kept unsealed; everything else runs as before.
-async function startSecrets(): Promise<SecretGrants | undefined> {
-  try {
-    const key = await sealKeyFromDstack();
-    const grants = new SecretGrants({ store: sealedGrantStore(cfg.secretGrantsDir!, key), reader: nodeSecretReader(SECRET_ORIGINS.node), origins: SECRET_ORIGINS });
-    // The deploy check looks for this line: the gateway's user reached the key service (bots/README.md, Deploying).
-    console.log(JSON.stringify({ gateway: "secrets_ready" }));
-    return grants;
-  } catch (error) {
-    console.error(JSON.stringify({ gateway: "secrets_unavailable", reason: error instanceof Error ? error.message.slice(0, 200) : "unknown" }));
-    return undefined;
-  }
-}
-const secrets = await startSecrets();
+const secrets = await startSecretGrants({ grantsDir: cfg.secretGrantsDir!, origins: SECRET_ORIGINS, reader: nodeSecretReader(SECRET_ORIGINS.node) });
 if (secrets) setInterval(() => void secrets.poll().catch(() => undefined), SECRET_POLL_MS);
 
 // Budgets persist on the gateway's own volume. An unreadable budget file stops the start (fails closed) with one
