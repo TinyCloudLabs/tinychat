@@ -5,8 +5,8 @@
 import { subscribeStorageScopeRetired } from "@/lib/storageStatus";
 import type { MainChatState } from "./useMainChat";
 
-/** The most lines kept: the oldest go first. */
-export const MAX_MAIN_CHAT_LINES = 200;
+/** The most lines kept, the oldest going first. It only guards a very long page session. */
+export const MAX_MAIN_CHAT_LINES = 1000;
 
 /** What a mounted view lends the chat. A turn calls the one mounted now, or no one once every view is gone. */
 export interface MainChatCallbacks {
@@ -27,6 +27,8 @@ export interface MainChatStore {
   queued: (() => void)[];
   /** Counts the owner's new chats, so a history read that started before one never brings the earlier lines back. */
   cleared: number;
+  /** The owner started a new chat in this visit: the next visit offers saved history again. */
+  newChat: boolean;
   disposed: boolean;
 }
 
@@ -38,7 +40,7 @@ export function createMainChatStore(): MainChatStore {
     state: EMPTY,
     subscribe: (listener) => { listeners.add(listener); return () => { listeners.delete(listener); }; },
     listeners, consumers: new Set(), lifetime: new AbortController(), turnController: null,
-    history: null, historyPending: false, localId: 0, queued: [], cleared: 0, disposed: false,
+    history: null, historyPending: false, localId: 0, queued: [], cleared: 0, newChat: false, disposed: false,
   };
 }
 
@@ -53,6 +55,18 @@ export function setMainChat(store: MainChatStore, update: (current: MainChatStat
 
 /** The mounted view a turn reports to: the latest one, or none. */
 export const mountedView = (store: MainChatStore): MainChatCallbacks | undefined => [...store.consumers].at(-1)?.current;
+
+/**
+ * A visit to a kept chat ends with its last view. After a new chat in that visit, the next one offers saved history
+ * again, as a remounted chat did before it was kept. The new chat's lines stay, and `cleared` still shuts out a read
+ * that started before the new chat.
+ */
+export function endVisitIfLeft(store: MainChatStore): void {
+  if (store.consumers.size || !store.newChat) return;
+  store.newChat = false;
+  store.history = null;
+  setMainChat(store, (current) => ({ ...current, history: "idle" }));
+}
 
 /** Stops the stream, the history read and the decisions waiting to go. */
 export function stopMainChat(store: MainChatStore): void {

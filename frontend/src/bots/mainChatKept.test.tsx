@@ -120,7 +120,7 @@ test("a turn that fails while the view is gone shows the same failure on return,
 
 test("a new chat clears the lines for good: a history read in flight does not bring them back, on return either", async () => {
   const pending = Promise.withResolvers<BotMessage[]>();
-  const { api, turns } = streamingApi(() => pending.promise);
+  const { api, turns, lists } = streamingApi(() => pending.promise);
   const first = await mount(api, { owner: api, account: ACCOUNT_A });
   await act(async () => { void first.chat().send("question"); });
   await answer(turns[0]!, "the answer", "m-1");
@@ -132,7 +132,80 @@ test("a new chat clears the lines for good: a history read in flight does not br
   await act(async () => { pending.resolve([message("old", "bot", "earlier answer")]); await reading; });
   const back = await mount(api, { owner: api, account: ACCOUNT_A });
   expect(back.chat().state.lines).toEqual([]);
+  expect(back.chat().state.history).toBe("idle");
+  // Only the owner's press on this visit brings the saved lines back.
+  await act(async () => { await back.chat().requestHistory(); });
+  expect(lists()).toBe(2);
+  expect(texts(back.chat())).toEqual(["earlier answer"]);
+});
+
+test("after a new chat, the next visit offers saved history again: the new chat's lines stay and nothing is read by itself", async () => {
+  const { api, turns, lists } = streamingApi(async () => [message("old", "bot", "earlier answer")]);
+  const first = await mount(api, { owner: api, account: ACCOUNT_A });
+  await act(async () => { void first.chat().send("before"); });
+  await answer(turns[0]!, "re: before", "m-1");
+  act(() => first.chat().clear());
+  await act(async () => { void first.chat().send("fresh"); });
+  await answer(turns[1]!, "re: fresh", "m-2");
+  expect(first.chat().state.history).toBe("loaded");
+  first.leave();
+  const back = await mount(api, { owner: api, account: ACCOUNT_A });
+  expect(back.chat().state.history).toBe("idle");
+  expect(texts(back.chat())).toEqual(["fresh", "re: fresh"]);
+  await act(async () => { await back.chat().ensureHistory(); });
+  expect(lists()).toBe(0);
+  await act(async () => { await back.chat().requestHistory(); });
+  expect(lists()).toBe(1);
   expect(back.chat().state.history).toBe("loaded");
+  expect(texts(back.chat())).toEqual(["earlier answer", "fresh", "re: fresh"]);
+});
+
+test("a new chat that starts after its view went (its request outlived it) is offered saved history on return", async () => {
+  const { api, lists } = streamingApi();
+  const first = await mount(api, { owner: api, account: ACCOUNT_A });
+  const late = first.chat().clear;
+  first.leave();
+  act(() => late());
+  const back = await mount(api, { owner: api, account: ACCOUNT_A });
+  expect(back.chat().state).toMatchObject({ lines: [], history: "idle" });
+  expect(lists()).toBe(0);
+});
+
+test("saved history the owner loaded stays loaded across visits, and is not read again", async () => {
+  const { api, lists } = streamingApi(async () => [message("old", "bot", "earlier answer")]);
+  const first = await mount(api, { owner: api, account: ACCOUNT_A });
+  await act(async () => { await first.chat().requestHistory(); });
+  expect(lists()).toBe(1);
+  first.leave();
+  const back = await mount(api, { owner: api, account: ACCOUNT_A });
+  expect(back.chat().state.history).toBe("loaded");
+  expect(texts(back.chat())).toEqual(["earlier answer"]);
+  await act(async () => { await back.chat().ensureHistory(); });
+  expect(lists()).toBe(1);
+});
+
+test("under StrictMode a view's own remount is not the end of a visit; leaving after a new chat still is", async () => {
+  const { api, turns, lists } = streamingApi(async () => [message("old", "bot", "earlier answer")]);
+  // Loaded saved history survives StrictMode's remount of the returning view.
+  const loaded = await mount(api, { owner: api, account: ACCOUNT_A }, { strict: true });
+  await act(async () => { await loaded.chat().requestHistory(); });
+  loaded.leave();
+  const again = await mount(api, { owner: api, account: ACCOUNT_A }, { strict: true });
+  expect(again.chat().state.history).toBe("loaded");
+  expect(texts(again.chat())).toEqual(["earlier answer"]);
+  // A new chat in a StrictMode visit stays "loaded" while the view is there, and the next StrictMode visit offers history.
+  act(() => again.chat().clear());
+  await act(async () => { void again.chat().send("fresh"); });
+  await answer(turns[0]!, "re: fresh", "m-1");
+  expect(again.chat().state.history).toBe("loaded");
+  again.leave();
+  const back = await mount(api, { owner: api, account: ACCOUNT_A }, { strict: true });
+  expect(back.chat().state.history).toBe("idle");
+  expect(texts(back.chat())).toEqual(["fresh", "re: fresh"]);
+  expect(lists()).toBe(1);
+  await act(async () => { await back.chat().requestHistory(); });
+  expect(lists()).toBe(2);
+  expect(texts(back.chat())).toEqual(["earlier answer", "fresh", "re: fresh"]);
 });
 
 test("another account on the same client never sees the first one's lines, and the first one's stream stops", async () => {

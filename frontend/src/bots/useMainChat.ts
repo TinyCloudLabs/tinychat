@@ -8,7 +8,7 @@ import { BotsError, BotsNoReply, type AppDecision, type BotMessage, type BotsApi
 import type { BotsErrorCode } from "./botsStrings";
 import { isDeclinedReply } from "./askText";
 import { clearHistoryDecline, isHistoryDeclined } from "./historyAuthorization";
-import { createMainChatStore, mainChatFor, mountedView, setMainChat, stopMainChat, type MainChatCallbacks } from "./mainChatStore";
+import { createMainChatStore, endVisitIfLeft, mainChatFor, mountedView, setMainChat, stopMainChat, type MainChatCallbacks } from "./mainChatStore";
 import type { WorkingStep } from "./workingStep";
 
 /**
@@ -88,6 +88,7 @@ export function useMainChat(api: BotsApi, prepare?: () => Promise<void>, onNoRep
     return () => {
       store.consumers.delete(view);
       if (!kept) stopMainChat(store);
+      else endVisitIfLeft(store);
     };
   }, [store, kept]);
 
@@ -147,12 +148,15 @@ export function useMainChat(api: BotsApi, prepare?: () => Promise<void>, onNoRep
     return loadHistory();
   }, [loadHistory, store]);
 
-  /** After the owner starts a new chat: the earlier lines leave the view. Saved history is read again on the next visit (for a kept chat: the next page load or sign-in). */
+  /** After the owner starts a new chat: the earlier lines leave the view. Saved history is read again on the next visit. */
   const clear = useCallback(() => {
     store.cleared += 1;
     store.history = Promise.resolve();
+    store.newChat = true;
     setState((current) => ({ ...current, lines: [], history: "loaded" }));
-  }, [store, setState]);
+    // A new chat whose request outlived every view already belongs to the next visit.
+    if (kept) endVisitIfLeft(store);
+  }, [store, setState, kept]);
 
   const run = useCallback(async (text: string, keepFailed: boolean, appReply?: AppReply) => {
     if (store.turnController) return;
