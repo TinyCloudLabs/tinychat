@@ -111,6 +111,15 @@ export function requestLogAccountHash(address: string, at: Date = new Date()): s
   return createHmac("sha256", accountHashKey).update(`account\0${month}\0${address.toLowerCase()}`).digest("hex");
 }
 
+/** hex(HMAC-SHA256(key, "calendar-invite\0" || UTC "YYYY-MM" of `at` || "\0" || lowercase address)): the same key under a
+ * separate label, so it differs from the account pseudonym and links only to other invite decisions of the same month.
+ */
+export function requestLogInviteHash(address: string, at: Date = new Date()): string | undefined {
+  if (!accountHashKey) return undefined;
+  const month = at.toISOString().slice(0, 7);
+  return createHmac("sha256", accountHashKey).update(`calendar-invite\0${month}\0${address.toLowerCase()}`).digest("hex");
+}
+
 /** The shipped record carries only the order of magnitude of a request's credits. */
 export function requestLogCreditsBucket(credits: number): CreditsBucket {
   // Anything that is not a finite count (NaN, ±Infinity) and any negative lands in "0", never in "1000+".
