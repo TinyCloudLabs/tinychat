@@ -54,6 +54,12 @@ const AUDIT_TIMEOUT_MS = 2_000;
 /** The backend answers at most 16,000 characters of tool text; JSON escaping can roughly double it. */
 const ANSWER_BYTES = 64 * 1024;
 const BACKEND_PATH = "/api/internal/bots/main/reads/";
+/**
+ * The backend answers a POST without this header with 403 `csrf_rejected`: its global CSRF gate
+ * (packages/server/src/csrf.ts, mounted app-wide in backend/src/index.ts) runs before the read routes. Without it every
+ * read and refusal report was refused, and each read tool said only that it could not read right now.
+ */
+const BACKEND_CSRF_HEADER = { "x-requested-with": "XMLHttpRequest" } as const;
 const CONVERSATION_ID = /^[0-9a-f]{32}$/;
 
 /** Where the marks live: bot id to the id of the conversation that holds owner data. */
@@ -254,7 +260,7 @@ export class MeetingDesk {
       });
       const response = await this.#fetch(`${this.#options.backendOrigin}${path}`, {
         method: "POST", redirect: "error", signal: AbortSignal.timeout(AUDIT_TIMEOUT_MS),
-        headers: { authorization, "content-type": "application/json" }, body,
+        headers: { authorization, "content-type": "application/json", ...BACKEND_CSRF_HEADER }, body,
       });
       void response.body?.cancel().catch(() => {});
       if (response.status === 204) return;
@@ -273,7 +279,7 @@ export class MeetingDesk {
     try {
       const response = await this.#fetch(`${this.#options.backendOrigin}${path}`, {
         method: "POST", redirect: "error", signal: AbortSignal.timeout(CALL_TIMEOUT_MS),
-        headers: { authorization, "content-type": "application/json" }, body,
+        headers: { authorization, "content-type": "application/json", ...BACKEND_CSRF_HEADER }, body,
       });
       if (response.status !== 200 && response.status !== 400) {
         void response.body?.cancel().catch(() => {});
