@@ -14,7 +14,7 @@
   "overrides": {
     "@tinycloud/sdk-core": "3.15.0",
     "@tinycloud/sdk-services": "3.15.0",
-    "@tinycloud/web-sdk": "3.16.0",
+    "@tinycloud/web-sdk": "3.17.0",
     "@tinycloud/node-sdk": "3.16.0",
     "@tinycloud/node-sdk-wasm": "1.8.0",
     "@tinycloud/replica": "0.4.8",
