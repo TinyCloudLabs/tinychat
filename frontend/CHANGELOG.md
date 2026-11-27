@@ -16,6 +16,12 @@
 - TC-2204: Native audience checks accept Home's three exact SQL hook subscriptions only alongside an existing TinyChat data grant.
 - TC-2499: The Home mirror adapter persists close receipts using node-compatible NULL/non-NULL compare-and-set predicates. If the KV mirror is already exactly closed but its receipt is missing, recovery records the original publication ETag without writing the KV copy again, before any gated child handoff. The CLI reports JSON error class, safe message, code, HTTP status when available, and operation step; private SQL bodies and nested causes remain redacted. Exit 2 identifies invalid input, exit 6 known transient failures (including NODE_BUSY and REQUEST_TIMEOUT without HTTP metadata), and exit 1 other runtime failures or OUTCOME_UNKNOWN. Unclassified errors are not labelled bad input; no failure confirms delivery or authorizes an automatic retry.
 
+## 0.22.7
+
+### Patch Changes
+
+- cf12c92: TinyChat uses the published TinyCloud SDK release 3.16.0 (web-sdk 3.16.0, node-sdk 3.16.0, web-sdk-wasm 1.8.0). Publishing an account's registry record follows the SDK: the wallet or OpenKey signature prompt is the consent, and the SDK publishes only from TinyCloud One and Home. Anywhere else the owner is sent to TinyCloud One to finish setup. The Home card for this step reads "Let your apps find your space" and has a Publish button. It stays hidden for that account on that device once the record is published, and a refused signature or an unavailable service leaves it showing. The desktop app does not show it. Sign-in does not publish the record on its own.
+
 ## 0.22.7-beta.0
 
 ### Patch Changes
