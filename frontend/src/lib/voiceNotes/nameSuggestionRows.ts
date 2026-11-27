@@ -1,8 +1,11 @@
 // A voice note's suggested speaker names on its row (`metadata.speaker_name_suggestions`): the writes a naming run
-// and a Dismiss make. A module of their own, loaded with the naming runner and the note page, so the entry chunk
-// the web app boots from carries neither them nor the naming modules they name (TC-2882). Each statement runs on
-// the space lane through voiceNoteRows.ts.
+// and a Dismiss make, and the Dismiss of a name suggested from the note's calendar link, which has a key of its
+// own. A module of their own, loaded with the naming runner and the note page, so the entry chunk the web app boots
+// from carries neither them nor the naming modules they name (TC-2882). Each statement runs on the space lane
+// through voiceNoteRows.ts.
+import { CALENDAR_LINK_KEY } from "@tinyboilerplate/core";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
+import { INVITEE_SUGGESTION_DISMISSED_KEY } from "@/lib/speakerNaming/inviteeSuggestion";
 import { NAME_SUGGESTIONS_KEY, type NameSuggestions } from "@/lib/speakerNaming/nameSuggestions";
 import { execute } from "./voiceNoteRows";
 
@@ -35,5 +38,20 @@ export async function dismissRowNameSuggestions(tcw: TinyCloudWeb, rowId: string
     `UPDATE connector_meeting SET metadata = json_set(metadata, '$.${NAME_SUGGESTIONS_KEY}.dismissed', json(?)), updated_at = ?
       WHERE id = ? AND json_valid(metadata) AND json_extract(metadata, '$.${NAME_SUGGESTIONS_KEY}.hash') = ?`,
     [JSON.stringify(dismissed), new Date().toISOString(), rowId, hash], checkpoint);
+  return changes > 0;
+}
+
+/**
+ * The labels whose "Invited to this meeting" suggestion the user dismissed, with the event they were dismissed for
+ * (`metadata.invitee_suggestion_dismissed`, written whole), set only where the note is still linked to that event:
+ * linked to another one, a late Dismiss does nothing. Neither `calendar_link` nor `speaker_name_suggestions` nor
+ * `speaker_names` is touched. `updated_at` moves, as for the writes above. False when nothing was written.
+ */
+export async function dismissRowInviteeSuggestion(tcw: TinyCloudWeb, rowId: string, eventId: string, labels: readonly string[],
+  checkpoint: () => void = () => undefined): Promise<boolean> {
+  const changes = await execute(tcw,
+    `UPDATE connector_meeting SET metadata = json_set(metadata, '$.${INVITEE_SUGGESTION_DISMISSED_KEY}', json(?)), updated_at = ?
+      WHERE id = ? AND json_valid(metadata) AND json_extract(metadata, '$.${CALENDAR_LINK_KEY}.event_id') = ?`,
+    [JSON.stringify({ event_id: eventId, labels }), new Date().toISOString(), rowId, eventId], checkpoint);
   return changes > 0;
 }

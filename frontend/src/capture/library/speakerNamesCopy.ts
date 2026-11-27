@@ -17,20 +17,22 @@ export const SPEAKER_NAMES_COPY = {
   undo: "Undo",
   undone: "Rename undone.",
   failed: "Couldn't save the speaker name. Try again.",
-  // A name a model suggested, beside the label it is for, until the user takes or dismisses it. (`suggested` above
-  // is the mark on a name already applied from the call window.)
+  // A suggested name (a model's, or the one person invited to the linked calendar event), beside the label it is
+  // for, until the user takes or dismisses it. (`suggested` above is the mark on a name already applied from the
+  // call window.)
   suggestedName: "Suggested name:",
   suggestion: (name: string) => `${name}?`,
   use: "Use",
   useFor: (name: string, original: string) => `Use ${name} for ${original}`,
   dismiss: "Dismiss",
   dismissFor: (name: string, original: string) => `Dismiss ${name} for ${original}`,
-  /** How the transcript supports the name; the quoted words follow. */
+  /** What the name rests on. For a name from the transcript the quoted words follow; an invited name has none. */
   basis: {
     "self-introduction": "They say their own name:",
     introduced: "Someone introduces them or speaks to them by name:",
     thanked: "Someone thanks them by name:",
     inferred: "Worked out from what is said:",
+    invited: "Invited to this meeting",
   },
   quote: (words: string) => `“${words}”`,
   suggestionsFound: (count: number) => `Names suggested for ${count} speakers.`,

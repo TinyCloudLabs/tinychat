@@ -1,67 +1,14 @@
 import { createHash } from "node:crypto";
+import { calendarMeetEvent, calendarOccurrenceKey, type EligibleCalendarEvent, type GoogleCalendarEvent } from "@tinyboilerplate/core";
 
-export interface GoogleCalendarEvent {
-  id: string;
-  status?: string;
-  summary?: string;
-  start?: { dateTime?: string; date?: string; timeZone?: string };
-  end?: { dateTime?: string; date?: string; timeZone?: string };
-  recurringEventId?: string;
-  originalStartTime?: { dateTime?: string; date?: string; timeZone?: string };
-  organizer?: { self?: boolean; email?: string };
-  attendees?: { self?: boolean; responseStatus?: string; email?: string }[];
-  /** Google truncated the guest list (maxAttendees); a share check must not trust a partial list. */
-  attendeesOmitted?: boolean;
-  hangoutLink?: string;
-  conferenceData?: { entryPoints?: { entryPointType?: string; uri?: string }[] };
-}
-
-export interface EligibleCalendarEvent {
-  eventId: string;
-  title: string;
-  start: number;
-  end: number;
-  meetingUrl: string;
-}
-
-export function normalizeGoogleMeetUrl(raw: unknown): string | null {
-  if (typeof raw !== "string") return null;
-  try {
-    const url = new URL(raw);
-    if (url.protocol !== "https:" || url.hostname !== "meet.google.com" || url.port || url.username || url.password) return null;
-    if (!/^\/[a-z]{3}-[a-z]{4}-[a-z]{3}\/?$/i.test(url.pathname)) return null;
-    return `https://meet.google.com${url.pathname.replace(/\/$/, "").toLowerCase()}`;
-  } catch { return null; }
-}
+// These two moved to @tinyboilerplate/core with calendar linking. The tests written before the move import them
+// from here, and a pull request may not change an existing test's lines.
+export { normalizeGoogleMeetUrl, type GoogleCalendarEvent } from "@tinyboilerplate/core";
 
 export function calendarOccurrenceIdentity(tenant: string, subject: string, event: GoogleCalendarEvent): string | null {
-  let identity: unknown = event.id;
-  if (event.recurringEventId) {
-    const original = event.originalStartTime?.dateTime;
-    const instant = original ? parseInstant(original) : NaN;
-    if (!Number.isFinite(instant)) return null;
-    identity = [event.recurringEventId, new Date(instant).toISOString()];
-  }
-  if (!event.id) return null;
+  const identity = calendarOccurrenceKey(event);
+  if (identity === null) return null;
   return createHash("sha256").update(JSON.stringify([1, tenant.toLowerCase(), subject, "primary", identity])).digest("hex");
-}
-
-function parseInstant(value: string): number {
-  // Calendar timed events include an offset; never interpret an offset-less time in host TZ.
-  return /T.*(?:Z|[+-]\d{2}:\d{2})$/i.test(value) ? Date.parse(value) : NaN;
-}
-
-/** Timed, confirmed Meet occurrence, before applying the RSVP consent rule. */
-export function calendarMeetEvent(event: GoogleCalendarEvent): EligibleCalendarEvent | null {
-  if (event.status !== "confirmed" || !event.start?.dateTime || !event.end?.dateTime) return null;
-  const start = parseInstant(event.start.dateTime);
-  const end = parseInstant(event.end.dateTime);
-  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return null;
-  const meetingUrl = event.conferenceData?.entryPoints
-    ?.filter(entry => entry.entryPointType === "video")
-    .map(entry => normalizeGoogleMeetUrl(entry.uri)).find(Boolean) ?? normalizeGoogleMeetUrl(event.hangoutLink);
-  if (!meetingUrl) return null;
-  return { eventId: event.id, start, end, meetingUrl, title: event.summary?.slice(0, 512) || "Calendar meeting" };
 }
 
 export function eligibleCalendarEvent(event: GoogleCalendarEvent): EligibleCalendarEvent | null {

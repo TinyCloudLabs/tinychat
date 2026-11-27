@@ -15,6 +15,7 @@ import {
   VoiceNotes,
 } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { LIBRARY_ROWS, libraryTcw } from "../fixtures/library";
+import { libraryTcwWithSettings } from "../fixtures/librarySettings";
 import { createRuntimeShim } from "../runtimeShim";
 import type { HarnessScreen } from "../screen";
 import { ShellApp } from "../ShellApp";
@@ -25,14 +26,18 @@ export function CaptureShell(props: {
   /** The fixture rows to store (default: all of them). */
   rows?: typeof LIBRARY_ROWS;
   hang?: boolean;
+  /** Cross-device settings the fixture space holds (default: none). */
+  settings?: Readonly<Record<string, string>>;
   recorder?: Partial<RecorderValue>;
   children?: ReactNode;
 }) {
   const platform = useContext(PlatformContext);
   const shim = useMemo(() => createRuntimeShim(), []);
   const tcw = useMemo(
-    () => (props.library ? libraryTcw({ rows: props.rows, hang: props.hang }) : undefined),
-    [props.library, props.rows, props.hang],
+    () => (!props.library ? undefined
+      : props.settings ? libraryTcwWithSettings({ rows: props.rows, hang: props.hang }, props.settings)
+      : libraryTcw({ rows: props.rows, hang: props.hang })),
+    [props.library, props.rows, props.hang, props.settings],
   );
   // As App: establish the authenticated storage account before Library children read local notes.
   useMemo(() => {

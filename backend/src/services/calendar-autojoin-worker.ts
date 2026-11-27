@@ -4,9 +4,10 @@ import { logCalendarAutojoinFailure } from "./calendar-autojoin-diagnostics.js";
 import {
   CalendarRowChanged, decidedRev, type CalendarAutojoinStore, type CalendarConnection, type CalendarOccurrence, type SharedCapture, stableJson, TenantCoordinator,
 } from "./calendar-autojoin-store.js";
+import { calendarMeetEvent, type GoogleCalendarEvent } from "@tinyboilerplate/core";
 import {
-  calendarMeetEvent, calendarOccurrenceIdentity, dispatchCutoff, eligibleCalendarEvent, ExternalOperationLimiter,
-  GoogleCalendarError, inDispatchWindow, type GoogleCalendarEvent, type GoogleCalendarPort,
+  calendarOccurrenceIdentity, dispatchCutoff, eligibleCalendarEvent, ExternalOperationLimiter,
+  GoogleCalendarError, inDispatchWindow, type GoogleCalendarPort,
 } from "./google-calendar.js";
 import {
   computeCreateRequestHash, TERMINAL_MEETING_STATUSES, TranscriptionApiError,

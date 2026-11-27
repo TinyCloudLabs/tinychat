@@ -30,6 +30,12 @@ export const GOOGLE_CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.e
  * Calendar events; the Meet connector is a separate consent with its own scopes.
  */
 export const GOOGLE_AUTOJOIN_SCOPES = `${GOOGLE_CALENDAR_SCOPE} openid email`;
+/**
+ * Calendar linking reads events only, with a token the browser keeps. `openid` is asked for so the
+ * exchange can verify the Google subject for the grant guard; no `email`.
+ */
+export const GOOGLE_CALENDAR_LINK_SCOPES = `${GOOGLE_CALENDAR_SCOPE} openid`;
+export type GoogleOAuthPurpose = "autojoin" | "calendar-link";
 
 /** The arming flag. Mirrors `connectorWebhooksEnabled()` (index.ts :140-142) exactly. */
 export const GOOGLE_MEET_OAUTH_ENABLED_ENV = "GOOGLE_MEET_OAUTH_ENABLED";
@@ -233,7 +239,7 @@ class IdentityVerificationTimeout extends Error {}
 
 /** The port the router talks to — the seam tests substitute. */
 export interface GoogleOAuthPort {
-  authorizeUrl(input: { state: string; challenge: string; purpose?: "autojoin"; nonce?: string }): string;
+  authorizeUrl(input: { state: string; challenge: string; purpose?: GoogleOAuthPurpose; nonce?: string }): string;
   exchangeCode(input: {
     code: string;
     verifier: string;
@@ -273,12 +279,14 @@ export class GoogleOAuthClient implements GoogleOAuthPort {
    * later session into a silent re-consent. `prompt=consent` also means a re-connect always
    * re-issues the refresh token rather than returning an access token the SPA cannot renew.
    */
-  authorizeUrl(input: { state: string; challenge: string; purpose?: "autojoin"; nonce?: string }): string {
+  authorizeUrl(input: { state: string; challenge: string; purpose?: GoogleOAuthPurpose; nonce?: string }): string {
     const url = new URL(this.config.authorizeEndpoint);
     url.searchParams.set("response_type", "code");
     url.searchParams.set("client_id", this.config.clientId);
     url.searchParams.set("redirect_uri", this.config.redirectUri);
+    // Neither purpose sets include_granted_scopes: its token must carry its own scopes only.
     url.searchParams.set("scope", input.purpose === "autojoin" ? GOOGLE_AUTOJOIN_SCOPES
+      : input.purpose === "calendar-link" ? GOOGLE_CALENDAR_LINK_SCOPES
       : [...new Set(`${this.config.scope} openid`.split(/\s+/).filter(Boolean))].join(" "));
     if (input.purpose === "autojoin") {
       if (!input.nonce) throw new Error("autojoin requires an OIDC nonce");

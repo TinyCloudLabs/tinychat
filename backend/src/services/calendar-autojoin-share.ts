@@ -5,7 +5,8 @@
  * link into your own calendar gets you nothing. Every uncertain case denies.
  */
 import type { CalendarOccurrence } from "./calendar-autojoin-store.js";
-import { calendarOccurrenceIdentity, eligibleCalendarEvent, type GoogleCalendarEvent } from "./google-calendar.js";
+import type { GoogleCalendarEvent } from "@tinyboilerplate/core";
+import { calendarOccurrenceIdentity, eligibleCalendarEvent } from "./google-calendar.js";
 
 export type ShareDecision = { ok: true } | { ok: false; reason: string };
 

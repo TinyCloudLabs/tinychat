@@ -32,6 +32,7 @@ import { callPromptScreens } from "./screens/callPrompt";
 import { legacyScreens } from "./screens/legacy";
 import { libraryScreens } from "./screens/library";
 import { speakerNameScreens } from "./screens/speakerNames";
+import { calendarLinkScreens } from "./screens/calendarLink";
 import { wordFixesScreens } from "./screens/wordFixes";
 import { localScreens, accountDataScreens } from "./screens/local";
 import { meetingSourcesScreens } from "./screens/meetingSources";
@@ -96,6 +97,7 @@ const SCREENS: HarnessScreen[] = [
   ...callPromptScreens,
   ...libraryScreens,
   ...speakerNameScreens,
+  ...calendarLinkScreens,
   ...wordFixesScreens,
   ...combineScreens,
   ...savedNoteScreens,

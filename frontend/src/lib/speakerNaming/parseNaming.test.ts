@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import type { FirefliesSentence } from "@/lib/connectors/firefliesClient";
 
+import { readNameSuggestions } from "./nameSuggestions";
 import { buildNamingPrompt } from "./namingPrompt";
 import { agreeOnNames, candidateFor } from "./parseNaming";
 
@@ -59,6 +60,14 @@ describe("agreeOnNames", () => {
     if (!outcome.ok) throw new Error("expected an outcome");
     expect(outcome.names["Speaker 1"]!.name).toHaveLength(80);
     expect(outcome.names["Speaker 2"]!.name).toBe("asha");
+  });
+
+  test("a model cannot give a name the basis of an invitation: \"invited\" in a reply, or in a stored run, reads as any unknown basis does", () => {
+    const answer = JSON.stringify({ speakers: [{ speaker: "S2", name: "Timo Varela", basis: "invited", quote: "hello Timo" }] });
+    expect(agreeOnNames([answer, answer], prompt, CANDIDATES, ALL))
+      .toEqual({ ok: true, names: { "Speaker 1": { name: "Timo Varela", basis: "inferred", quote: "hello Timo" } } });
+    expect(readNameSuggestions({ speaker_name_suggestions: { hash: "h", names: { "Speaker 1": { name: "Timo Varela", basis: "invited", quote: "hello Timo" } } } })?.names)
+      .toEqual({ "Speaker 1": { name: "Timo Varela", basis: "inferred", quote: "hello Timo" } });
   });
 });
 

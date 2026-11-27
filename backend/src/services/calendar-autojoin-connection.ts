@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { CredentialCustodyChanged, CUSTODY_STEPS_PER_CHANGE, type CredentialStore, type CredentialAccessPurpose, type CredentialSecret, type OAuthCredentialSecret, type VersionedCredential } from "./credential-store.js";
-import { CalendarRowChanged, TenantCoordinator, type CalendarAutojoinStore, type CalendarAutojoinReadMetrics, type CalendarConnection } from "./calendar-autojoin-store.js";
-import { CalendarAutojoinGrantIndex, liveGoogleConnection, type GoogleGrantRevokeDecision, type GrantBackfillSnapshot } from "./calendar-autojoin-grants.js";
+import { CalendarRowChanged, TenantCoordinator, type CalendarAutojoinStore, type CalendarAutojoinReadMetrics, type CalendarConnection, type CalendarGoogleBrowserBinding } from "./calendar-autojoin-store.js";
+import { CalendarAutojoinGrantIndex, liveGoogleConnection, type GoogleGrantRevokeDecision, type GoogleGrantRevokeReason, type GrantBackfillSnapshot } from "./calendar-autojoin-grants.js";
 import type { CalendarAutojoinStatus, CalendarAutojoinOffReason } from "./calendar-autojoin-status-cache.js";
 import { calendarAutojoinOutcomes } from "./calendar-autojoin-status-summary.js";
 import { REQUEST_LANE_WAIT_MS } from "./backend-storage-lane.js";
@@ -12,6 +12,13 @@ const SETUP_TTL_MS = 10 * 60_000;
 
 export class CalendarAutojoinError extends Error {
   constructor(readonly code: string, readonly status = 409) { super(code); }
+}
+
+/** What a calendar-link disconnect did upstream: `kept` when another holder exists or cannot be ruled out. */
+export interface CalendarLinkRelease {
+  status: "disconnected";
+  upstreamRevoked: "ok" | "kept" | "failed";
+  reason: GoogleGrantRevokeReason;
 }
 
 interface Transaction {
@@ -344,7 +351,44 @@ export class CalendarAutojoinConnection {
     });
   }
 
-  async disconnect(tenant: string, browserToken?: string) {
+  /**
+   * The binding a calendar-link exchange hands the browser, which returns it on revoke. Digests
+   * only; nothing is stored here. Undefined when hashing fails: that never fails the exchange.
+   */
+  calendarLinkGrant(subject: string, tokens: string[]): CalendarGoogleBrowserBinding | undefined {
+    try { return this.grantIndex.browserBinding(subject, tokens); }
+    catch { return undefined; }
+  }
+
+  /**
+   * Calendar linking gives up its token. Autojoin's connection, custody, references and status are
+   * neither read nor changed; Google is asked to revoke only when no other feature is known to
+   * hold the same grant, and anything unknown keeps it.
+   */
+  async releaseCalendarLink(token: string, grant: unknown, connectorConnected: boolean): Promise<CalendarLinkRelease> {
+    const decision: GoogleGrantRevokeDecision = connectorConnected ? { revoke: false, reason: "connector_holder" }
+      : await this.grantWriter.run("grants", async () => {
+        try { return this.grantIndex.decideCalendarLink(token, grant); }
+        catch { return { revoke: false, reason: "identity_unknown" } as const; }
+      });
+    console.log(`[calendar-autojoin] code=grant_revoke feature=calendar_link outcome=${decision.revoke ? "revoke" : "skip"} reason=${decision.reason}`);
+    let upstreamRevoked: CalendarLinkRelease["upstreamRevoked"] = "kept";
+    if (decision.revoke) {
+      // Outside the grant lock, as disconnect does.
+      upstreamRevoked = "ok";
+      try { await this.options.oauth.revoke(token); } catch (error) {
+        if (!(error instanceof GoogleOAuthError && error.error === "invalid_token")) upstreamRevoked = "failed";
+      }
+    }
+    return { status: "disconnected", upstreamRevoked, reason: decision.reason };
+  }
+
+  /**
+   * `calendarLinkConnected`: calendar linking still holds this Google grant, so local teardown runs
+   * as always and no token is revoked upstream.
+   */
+  async disconnect(tenant: string, browserToken?: string, options: { calendarLinkConnected?: boolean } = {}) {
+    const kept = (): GoogleGrantRevokeDecision => ({ revoke: false, reason: "calendar_link_holder" });
     let serverToken: string | undefined;
     let failed = false;
     let invoked = false;
@@ -361,20 +405,21 @@ export class CalendarAutojoinConnection {
           if (secret?.kind === "oauth") serverToken = secret.refreshToken ?? secret.accessToken;
         } catch { failed = true; }
         const tokens = distinctTokens(serverToken, browserToken);
-        decisions = await this.grantWriter.run("grants", async () => {
+        const released = await this.grantWriter.run("grants", async () => {
           try { return this.grantIndex.release(tenant, tokens); }
           catch {
             this.grantIndex.invalidate();
             return tokens.map(() => ({ revoke: true, reason: "reference_check_failed" } as const));
           }
         });
+        decisions = options.calendarLinkConnected ? tokens.map(kept) : released;
         await this.disableLocked(tenant, "disconnected", undefined, readAt);
       });
     } finally {
       // Revoke outside tenant coordination, including when local teardown fails after commit.
       const tokens = distinctTokens(serverToken, browserToken);
       for (const [i, token] of tokens.entries()) {
-        const decision = decisions?.[i] ?? { revoke: true, reason: "reference_check_failed" };
+        const decision = options.calendarLinkConnected ? kept() : decisions?.[i] ?? { revoke: true, reason: "reference_check_failed" };
         console.log(`[calendar-autojoin] code=grant_revoke outcome=${decision.revoke ? "revoke" : "skip"} reason=${decision.reason}`);
         if (!decision.revoke) continue;
         invoked = true;

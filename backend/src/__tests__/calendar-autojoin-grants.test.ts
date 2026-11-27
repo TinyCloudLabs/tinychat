@@ -870,3 +870,175 @@ describe("TC-1101 restart persistence and reconciliation", () => {
     });
   }
 });
+
+describe("calendar linking shares the Google grant without holding server state", () => {
+  const LINK = { access: "synthetic-link-access", refresh: "synthetic-link-refresh" };
+
+  /** Both routers as index.ts mounts them, signed in as A; a calendar-link exchange verifies `subject` (null: none). */
+  async function serve(f: ReturnType<typeof fixture>, subject: string | null = SUBJECT) {
+    const oauth: GoogleOAuthPort = { authorizeUrl: input => f.oauth.authorizeUrl(input), refresh: token => f.oauth.refresh(token),
+      revoke: token => f.oauth.revoke(token),
+      async exchangeCode() { return { access_token: LINK.access, refresh_token: LINK.refresh, expires_in: 3_600,
+        scope: "https://www.googleapis.com/auth/calendar.events.owned.readonly openid", ...(subject ? { subject } : {}) }; } };
+    const app = express(); app.use(express.json());
+    app.use((req, _res, next) => { req.user = { address: A } as typeof req.user; next(); });
+    app.use("/api/connectors/google/autojoin", createCalendarAutojoinRouter({ connection: f.connection, nativeReturn: false }));
+    app.use("/api/connectors/google/oauth", createGoogleOAuthRouter({ oauth, autojoin: f.connection, appOrigin: "https://app.example.test", desktopClientId: "synthetic-desktop", nativeReturn: false,
+      config: { enabled: true, clientId: "synthetic-client", clientSecret: "synthetic-secret", redirectUri: "https://example.test/callback",
+        scope: GOOGLE_AUTOJOIN_SCOPES, authorizeEndpoint: "https://accounts.google.com/o/oauth2/v2/auth",
+        tokenEndpoint: "https://oauth2.googleapis.com/token", revokeEndpoint: "https://oauth2.googleapis.com/revoke" } }));
+    const server = app.listen(0); await new Promise<void>(done => server.once("listening", done));
+    const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api/connectors/google`;
+    return {
+      async post(path: string, body: unknown) {
+        const response = await fetch(`${base}/${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+        return { status: response.status, body: await response.json() as Record<string, unknown> };
+      },
+      async close() { await f.worker.stop(); server.closeAllConnections(); await new Promise<void>(done => server.close(() => done())); },
+    };
+  }
+  const exchange = (http: Awaited<ReturnType<typeof serve>>) =>
+    http.post("oauth/exchange", { code: "synthetic-code", verifier: VERIFIER, purpose: "calendar-link" });
+  const revokeLink = (http: Awaited<ReturnType<typeof serve>>, extra: Record<string, unknown>) =>
+    http.post("oauth/revoke", { token: LINK.refresh, purpose: "calendar-link", ...extra });
+
+  test("a calendar-link exchange for another Google account leaves autojoin and the Meet binding untouched", async () => {
+    const f = fixture(); await f.seed(); await f.backfill();
+    const meet = f.mint(A, SUBJECT);
+    await f.connection.browserReconnect(A, SUBJECT, [meet.accessToken, meet.refreshToken]);
+    const before = await f.stores.request.getConnection(A);
+    const http = await serve(f, OTHER_SUBJECT);
+    try {
+      const linked = await exchange(http);
+      expect(linked.status).toBe(200);
+      expect(linked.body).toMatchObject({ access_token: LINK.access, refresh_token: LINK.refresh });
+      const grant = linked.body.grant as { version: number; subjectHash: string; tokenHashes: string[] };
+      expect(grant.version).toBe(1);
+      expect([grant.subjectHash, ...grant.tokenHashes].every(value => /^[a-f0-9]{64}$/.test(value))).toBe(true);
+      expect(grant.tokenHashes).toHaveLength(2);
+      expect(JSON.stringify(linked.body.grant)).not.toContain("synthetic");
+      // An ordinary exchange for another account would have disabled autojoin and rebound the browser.
+      expect(await f.stores.request.getConnection(A)).toEqual(before);
+      expect(before?.state).toBe("enabled");
+      expect(await f.credentials.status(SOURCE, A)).not.toBeNull();
+      // The Meet token is still the one this tenant's Disconnect knows.
+      await f.connection.disconnect(A, meet.refreshToken);
+      expect(lines.some(line => line.includes("reason=token_unindexed"))).toBe(false);
+    } finally { await http.close(); }
+  });
+
+  test("an exchange whose Google subject was not verified returns no grant", async () => {
+    const f = fixture(); const http = await serve(f, null);
+    try {
+      const linked = await exchange(http);
+      expect(linked.status).toBe(200);
+      expect(linked.body).not.toHaveProperty("grant");
+      expect(linked.body.refresh_token).toBe(LINK.refresh);
+    } finally { await http.close(); }
+  });
+
+  test("a live autojoin holder of the same Google account keeps the grant, on any tenant", async () => {
+    const f = fixture(); await f.seed(B); await f.backfill();
+    const http = await serve(f);
+    try {
+      const { grant } = (await exchange(http)).body;
+      const released = await revokeLink(http, { grant });
+      expect(released).toEqual({ status: 200, body: { status: "disconnected", upstreamRevoked: "kept", reason: "shared_holder" } });
+      expect(f.calls).toHaveLength(0);
+      expect((await f.stores.request.getConnection(B))?.state).toBe("enabled");
+      expect(await f.credentials.status(SOURCE, B)).not.toBeNull();
+      await f.worker.tick();
+      expect((await f.connection.getStatus(B)).enabled).toBe(true);
+      // Once autojoin lets go, the same request revokes: the earlier decision recorded nothing.
+      await f.connection.disable(B);
+      expect((await revokeLink(http, { grant })).body).toMatchObject({ upstreamRevoked: "ok", reason: "last_holder" });
+      expect(f.calls).toEqual([LINK.refresh]);
+    } finally { await http.close(); }
+  });
+
+  test("a connected Meet connector keeps the grant without consulting the index", async () => {
+    const f = fixture(); await f.backfill();
+    const http = await serve(f);
+    try {
+      const { grant } = (await exchange(http)).body;
+      expect(await revokeLink(http, { grant, connectorConnected: true }))
+        .toEqual({ status: 200, body: { status: "disconnected", upstreamRevoked: "kept", reason: "connector_holder" } });
+      expect(f.calls).toHaveLength(0);
+    } finally { await http.close(); }
+  });
+
+  test("with a trusted index and no other holder the token is revoked upstream exactly once", async () => {
+    const f = fixture(); await f.seed(B, OTHER_SUBJECT); await f.backfill();
+    const http = await serve(f);
+    try {
+      const { grant } = (await exchange(http)).body;
+      expect(await revokeLink(http, { grant }))
+        .toEqual({ status: 200, body: { status: "disconnected", upstreamRevoked: "ok", reason: "last_holder" } });
+      expect(f.calls).toEqual([LINK.refresh]);
+      // Another account's autojoin is not this grant, and is left exactly as it was.
+      expect((await f.stores.request.getConnection(B))?.state).toBe("enabled");
+      expect(await f.credentials.status(SOURCE, B)).not.toBeNull();
+      const logged = lines.filter(line => line.includes("feature=calendar_link"));
+      expect(logged).toEqual(["[calendar-autojoin] code=grant_revoke feature=calendar_link outcome=revoke reason=last_holder"]);
+    } finally { await http.close(); }
+  });
+
+  test("an index that cannot rule out another holder keeps the grant", async () => {
+    const f = fixture(); await f.seed(B); // No backfill: a holder exists but this process has not confirmed it.
+    const http = await serve(f);
+    try {
+      const { grant } = (await exchange(http)).body;
+      expect(await revokeLink(http, { grant }))
+        .toEqual({ status: 200, body: { status: "disconnected", upstreamRevoked: "kept", reason: "index_unavailable" } });
+      expect(f.calls).toHaveLength(0);
+      expect(f.connection.grantIndex.needsBackfill).toBe(true);
+    } finally { await http.close(); }
+  });
+
+  test("a missing, malformed or borrowed grant binding never revokes", async () => {
+    const f = fixture(); await f.backfill();
+    const http = await serve(f);
+    try {
+      const grant = (await exchange(http)).body.grant as { version: 1; subjectHash: string; tokenHashes: string[] };
+      const borrowed = f.connection.calendarLinkGrant(SUBJECT, ["synthetic-some-other-token"]);
+      for (const forged of [undefined, null, "grant", {}, { ...grant, version: 2 }, { ...grant, subjectHash: "not-a-digest" },
+        { ...grant, tokenHashes: "x" }, { ...grant, tokenHashes: [...grant.tokenHashes, grant.subjectHash] }, { ...grant, tokenHashes: [] }, borrowed]) {
+        expect(await revokeLink(http, { grant: forged }))
+          .toEqual({ status: 200, body: { status: "disconnected", upstreamRevoked: "kept", reason: "identity_unknown" } });
+      }
+      expect(f.calls).toHaveLength(0);
+    } finally { await http.close(); }
+  });
+
+  test("an upstream revoke failure is a 502; a token Google no longer knows counts as revoked", async () => {
+    const f = fixture(); await f.backfill();
+    const http = await serve(f);
+    const upstream = spyOn(f.oauth, "revoke").mockRejectedValue(new GoogleOAuthError({ status: 503, error: "server_error", operation: "revoke" }));
+    try {
+      const { grant } = (await exchange(http)).body;
+      expect(await revokeLink(http, { grant }))
+        .toEqual({ status: 502, body: { status: "disconnected", upstreamRevoked: "failed", reason: "last_holder" } });
+      upstream.mockRejectedValue(new GoogleOAuthError({ status: 400, error: "invalid_token", operation: "revoke" }));
+      expect(await revokeLink(http, { grant }))
+        .toEqual({ status: 200, body: { status: "disconnected", upstreamRevoked: "ok", reason: "last_holder" } });
+      expect(upstream).toHaveBeenCalledTimes(2);
+      expect(lines.join("\n")).not.toContain(LINK.refresh);
+    } finally { upstream.mockRestore(); await http.close(); }
+  });
+
+  for (const [path, withToken] of [["autojoin/disconnect", false], ["oauth/revoke", true]] as const) {
+    test(`${path} while calendar linking is connected tears down locally and revokes nothing upstream`, async () => {
+      const f = fixture(); const a = await f.seed(); await f.backfill();
+      const http = await serve(f);
+      try {
+        // A is the last autojoin holder: without the flag this revokes (see "the last holder retains one revoke").
+        expect(await http.post(path, { ...(withToken ? { token: a.accessToken } : {}), calendarLinkConnected: true }))
+          .toEqual({ status: 200, body: { status: "disconnected", upstreamRevoked: "not_applicable" } });
+        expect(f.calls).toHaveLength(0);
+        expect((await f.stores.request.getConnection(A))?.state).toBe("disabled");
+        expect(await f.credentials.status(SOURCE, A)).toBeNull();
+        expect(lines.filter(line => line.includes("code=grant_revoke")).every(line => line.endsWith("outcome=skip reason=calendar_link_holder"))).toBe(true);
+      } finally { await http.close(); }
+    });
+  }
+});

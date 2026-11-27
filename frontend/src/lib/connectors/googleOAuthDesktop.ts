@@ -19,11 +19,14 @@ export async function startDesktopGoogleOAuth(input: {
   state: string;
   challenge: string;
   onRedirectUri: (uri: string) => void;
+  /** Calendar linking's own consent; absent for the Google Meet connection. */
+  purpose?: "calendar-link";
 }): Promise<string> {
   const redirectUri = await invoke<string>("google_oauth_listen", { state: input.state });
   input.onRedirectUri(redirectUri);
   try {
-    const query = new URLSearchParams({ state: input.state, challenge: input.challenge, redirectUri });
+    const query = new URLSearchParams({ state: input.state, challenge: input.challenge, redirectUri,
+      ...(input.purpose ? { purpose: input.purpose } : {}) });
     const response = await fetch(`${input.backendUrl}/api/connectors/google/oauth/desktop/start?${query}`, {
       headers: { Authorization: `Bearer ${input.bearer}` },
     });

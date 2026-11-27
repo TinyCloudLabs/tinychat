@@ -9,12 +9,15 @@ import { ConfirmDialog } from "@/capture/meetingSources/ConfirmDialog";
 import { DisconnectRow, FirefliesManage } from "@/capture/meetingSources/ManagePanel";
 import {
   CalendarAutojoinRow,
+  CalendarLinkRow,
   MeetingSourcesEntry,
   MeetingSourcesWindow,
   SourceRow,
 } from "@/capture/meetingSources/MeetingSourcesView";
 import { meetingSourceStatus } from "@/capture/meetingSources/meetingSourceState";
 import { CONNECTORS } from "@/lib/connectors/registry";
+import type { CalendarLinkDisplay } from "@/chat/CalendarLinkSection";
+import { calendarLinkingEnabled } from "@/lib/calendarLink/calendarLinkFeature";
 import type { HarnessScreen } from "../screen";
 
 const noop = () => {};
@@ -43,12 +46,15 @@ function MeetingSourcesFixture({
   manage: initiallyManage = false,
   confirm: initialConfirm = null,
   lookup: initialLookup = "ready",
+  calendarLink,
 }: {
   connected?: boolean;
   open?: boolean;
   manage?: boolean;
   confirm?: Confirm;
   lookup?: Lookup;
+  /** The "Link Google Calendar" row's state; without it the row is not shown (a build without calendar linking). */
+  calendarLink?: CalendarLinkDisplay;
 }) {
   const [open, setOpen] = useState(initiallyOpen);
   const [connected, setConnected] = useState(initiallyConnected);
@@ -148,6 +154,7 @@ function MeetingSourcesFixture({
           onSync={noop}
           onToggleManage={noop}
         />
+        {calendarLink && <CalendarLinkRow display={calendarLink} onLink={noop} onUnlink={noop} onLinkExisting={noop} />}
       </MeetingSourcesWindow>
       <ConfirmDialog
         open={confirm === "rotate"}
@@ -198,6 +205,10 @@ function screen(
   };
 }
 
+const CALENDAR_ROW = `${WINDOW} [data-source="calendar-link"]`;
+const CALENDAR_OFF: CalendarLinkDisplay = { label: "Off", connect: "Link", canUnlink: false, canLinkExisting: false, unavailable: false,
+  busy: null, notice: null, error: null };
+
 export const meetingSourcesScreens: HarnessScreen[] = [
   screen("connected", WINDOW, {}),
   screen("not-connected", WINDOW, { connected: false }),
@@ -207,4 +218,12 @@ export const meetingSourcesScreens: HarnessScreen[] = [
   screen("lookup-loading", `${WINDOW} [data-testid="ms-lookup-loading"]`, { lookup: "loading" }),
   screen("lookup-failed", `${WINDOW} [role="alert"]`, { lookup: "failed" }),
   screen("interactive", ".ms-entry", { open: false }, true),
+  // Link Google Calendar, in a build with calendar linking (VITE_CALENDAR_LINKING): off, linked after its notes
+  // were linked, and on a server without the Google sign-in routes.
+  ...(calendarLinkingEnabled() ? [
+    screen("calendar-link-off", CALENDAR_ROW, { calendarLink: { ...CALENDAR_OFF } }),
+    screen("calendar-link-linked", CALENDAR_ROW, { calendarLink: { ...CALENDAR_OFF, label: "Linked", connect: null, canUnlink: true,
+      canLinkExisting: true, notice: "Linked 12. 2 need your pick." } }),
+    screen("calendar-link-unavailable", CALENDAR_ROW, { calendarLink: { ...CALENDAR_OFF, connect: null, unavailable: true } }),
+  ] : []),
 ];

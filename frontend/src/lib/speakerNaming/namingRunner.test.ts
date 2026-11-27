@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { linkedCalendarLink } from "@tinyboilerplate/core";
 
 import { captureEvents } from "@/capture/captureEvents";
 import type { ChatMessage } from "@/lib/chatApi";
@@ -51,6 +52,7 @@ beforeEach(() => {
   stopListening = captureEvents.on("library-changed", (detail) => { if (detail?.source === VOICE_NOTE) runner.consider(detail.sourceId); });
 });
 afterEach(() => { stopListening(); runner.cancelAll(); });
+afterEach(() => { delete import.meta.env.VITE_CALENDAR_LINKING; });
 
 describe("naming a note's speakers", () => {
   test("a transcribed note gets names suggested for its remote speakers, and nobody is renamed", async () => {
@@ -87,6 +89,33 @@ describe("naming a note's speakers", () => {
     expect(people).toEqual(["- Robin Sample", "- Alice Chen", "- Bob Stone", "- Dana Ruiz", "- Roman"]);
     // The call's names are evidence for the model only: nobody is named by them here.
     expect(space.metadata("call").speaker_names).toEqual({ Me: "Roman" });
+  });
+
+  test("with calendar linking on, the people invited to the note's linked event follow the people of the call; without it they are not read", async () => {
+    await space.note("call", CALL);
+    space.setMetadata("call", { earlier_speaker_names: ["Dana Ruiz"],
+      call_participants: { v: 1, source: "call_window", app: "google-meet", truncated: false, people: [{ id: "p1", name: "Robin Sample", self: true }, { id: "p2", name: "Alice Chen" }] },
+      calendar_link: linkedCalendarLink({ id: "evt-1", status: "confirmed", summary: "Quarterly pricing review",
+        start: { dateTime: "2026-11-20T10:00:00+01:00" }, end: { dateTime: "2026-11-20T10:30:00+01:00" },
+        attendees: [{ self: true, displayName: "Robin S.", responseStatus: "accepted" }, { displayName: "Kim Lee", responseStatus: "tentative" },
+          { displayName: "alice chen", responseStatus: "accepted" }, { displayName: "kim@example.com", responseStatus: "declined" }],
+      }, { method: "time_overlap", confidence: "medium", overlap: 0.9 }, "2026-11-20T11:00:00.000Z") });
+    const people = (call: number) => calls[call]![1]!.content.split("\n").filter((line) => line.startsWith("- ") && !/^- S\d/.test(line));
+
+    import.meta.env.VITE_CALENDAR_LINKING = "true";
+    runner.suggest("call");
+    await runner.idle();
+    expect(people(0)).toEqual(["- Robin Sample", "- Alice Chen", "- Kim Lee", "- Dana Ruiz"]);
+    const request = JSON.stringify(calls[0]);
+    for (const kept of ["@", "Robin S.", "Quarterly pricing review", "2026-11-20", "tentative", "accepted", "declined", "evt-1"]) expect(request).not.toContain(kept);
+    // The invitees are evidence for the model only: nobody is named by them, and the link is as it was.
+    expect(space.metadata("call").speaker_names).toBeUndefined();
+    expect(space.metadata("call").calendar_link).toMatchObject({ event_id: "evt-1", title: "Quarterly pricing review" });
+
+    delete import.meta.env.VITE_CALENDAR_LINKING;
+    runner.suggest("call");
+    await runner.idle();
+    expect(people(1)).toEqual(["- Robin Sample", "- Alice Chen", "- Dana Ruiz"]);
   });
 
   test("the run's own write, a rename and another session do not run it again for the same transcript", async () => {

@@ -29,3 +29,5 @@ VITE_GRANOLA_CONNECTOR_ENABLED = "true"
 # Suggested speaker names in voice notes (VITE_SPEAKER_NAME_SUGGESTIONS) stay unset, on previews too, until the
 # suggestions pass their accuracy gate on recordings the prompt was not tuned on.
 # VITE_SPEAKER_NAME_SUGGESTIONS = "true"
+# Calendar linking (VITE_CALENDAR_LINKING) stays unset until its read-only Google consent is confirmed on a live account.
+# VITE_CALENDAR_LINKING = "true"

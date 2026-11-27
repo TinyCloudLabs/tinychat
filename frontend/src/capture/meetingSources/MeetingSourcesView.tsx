@@ -2,11 +2,17 @@
 // harness fixtures render the same markup. Nothing here fetches or decides:
 // state comes in through props, intent goes out through callbacks.
 import * as Dialog from "@radix-ui/react-dialog";
-import { ChevronDownIcon, ChevronRightIcon, CircleAlertIcon, PlugIcon, XIcon } from "lucide-react";
+import { CalendarIcon, ChevronDownIcon, ChevronRightIcon, CircleAlertIcon, PlugIcon, XIcon } from "lucide-react";
 import { useRef, useState, type ComponentType, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 
 import { aboutHref } from "@/lib/about";
+import type { CalendarLinkDisplay } from "@/chat/CalendarLinkSection";
+import {
+  CALENDAR_LINK_DESCRIPTION,
+  CALENDAR_LINK_UNAVAILABLE_COPY,
+  GOOGLE_CALENDAR_LINK_CONSENT_COPY,
+} from "@/lib/connectors/consentCopy";
 import { useSoftTheme } from "../home/softTheme";
 import type { MeetingSourceStatus } from "./meetingSourceState";
 import "../recorder/final/soft.css";
@@ -445,6 +451,73 @@ export function CalendarAutojoinRow({
         <Switch checked={on} label="Calendar autojoin" disabled={disabled} onToggle={onToggle} />
       </div>
     </div>
+  );
+}
+
+/**
+ * Link Google Calendar: a row of its own, not part of Google Meet's. Where this server cannot start the
+ * Google sign-in there is no Link button, and the row says so.
+ */
+export function CalendarLinkRow({
+  display,
+  onLink,
+  onUnlink,
+  onLinkExisting,
+}: {
+  display: CalendarLinkDisplay;
+  onLink: () => void;
+  onUnlink: () => void;
+  onLinkExisting: () => void;
+}) {
+  const busy = display.busy !== null;
+  const press = (action: () => void) => () => {
+    if (!busy) action();
+  };
+  return (
+    <section className="ms-row" aria-labelledby="ms-calendar-link" data-source="calendar-link">
+      <span className="ms-tile" aria-hidden="true">
+        <CalendarIcon />
+      </span>
+      <div className="ms-row-copy">
+        <h4 className="ms-name" id="ms-calendar-link">
+          {GOOGLE_CALENDAR_LINK_CONSENT_COPY.heading}
+        </h4>
+        <p className="ms-desc">{CALENDAR_LINK_DESCRIPTION}</p>
+        <p className="ms-status" data-tone={display.label === "Loading…" ? "busy" : display.label === "Linked" ? "on" : "off"}>
+          <i aria-hidden="true" />
+          <span>{display.label}</span>
+        </p>
+        {display.unavailable && <p className="ms-desc">{CALENDAR_LINK_UNAVAILABLE_COPY}</p>}
+        {display.notice && (
+          <p className="ms-desc" role="status">
+            {display.notice}
+          </p>
+        )}
+        {display.error && <InlineError>{display.error}</InlineError>}
+      </div>
+      <div className="ms-actions">
+        {display.canLinkExisting && (
+          <button type="button" className="ms-btn2" aria-disabled={busy} onClick={press(onLinkExisting)}>
+            {display.busy === "backfill" ? "Linking notes…" : "Link existing notes"}
+          </button>
+        )}
+        {display.connect && (
+          <button
+            type="button"
+            className={display.connect === "Link" ? "ms-btn1" : "ms-btn2"}
+            aria-disabled={busy}
+            onClick={press(onLink)}
+          >
+            {display.connect}
+          </button>
+        )}
+        {display.canUnlink && (
+          <button type="button" className="ms-btn2" aria-disabled={busy} onClick={press(onUnlink)}>
+            {display.busy === "unlink" ? "Unlinking…" : "Unlink"}
+          </button>
+        )}
+      </div>
+    </section>
   );
 }
 

@@ -2,12 +2,15 @@
 // naming model, which uses it only for spelling ("Varella" in the transcript is Varela on the list); with an empty
 // list naming still runs and gives the names as the recording says them.
 //
-// Four sources, in this order:
+// Five sources, in this order:
 //   1. the people the desktop app read from the meeting window while this note was recorded
 //      (`metadata.call_participants`): they were in this call. All of them, the user's own entry included;
-//   2. names a new transcript took off this note's numbered speakers (`metadata.earlier_speaker_names`);
-//   3. names the user typed for speakers of any note (`metadata.speaker_names`), newest note first;
-//   4. participants of the meetings the connectors brought in during the 180 days before the note: first those of
+//   2. the people invited to the calendar event the note is linked to (`metadata.calendar_link.invitees`), by
+//      display name only and without the user's own entry: they were invited, which is not the same as being there.
+//      Nothing else of the event goes to the model: no address, title, time or response;
+//   3. names a new transcript took off this note's numbered speakers (`metadata.earlier_speaker_names`);
+//   4. names the user typed for speakers of any note (`metadata.speaker_names`), newest note first;
+//   5. participants of the meetings the connectors brought in during the 180 days before the note: first those of
 //      a meeting that ran while the note was recorded, then by how many meetings a name is in.
 // Generic labels, email addresses and phone numbers are not names. Compared without case; the first 60 are kept.
 import { CONNECTORS_SQL_DB_NAME, FIREFLIES_MEETING_SOURCE } from "@tinyboilerplate/core";
@@ -27,6 +30,8 @@ const MEETING_SOURCES = [FIREFLIES_MEETING_SOURCE, GMEET_MEETING_SOURCE, GRANOLA
 export interface CandidateSources {
   /** The names in this note's `call_participants`, in stored order. */
   call: readonly string[];
+  /** The display names of the people invited to the note's linked calendar event (`calendarLinkInviteeNames`); none when absent. */
+  invited?: readonly string[];
   /** This note's `earlier_speaker_names`, oldest first. */
   earlier: readonly string[];
   /** Every value of `speaker_names` across the user's rows, newest row first. A value can hold several names ("Alice, Bob"). */
@@ -48,7 +53,7 @@ export function candidateNames(sources: CandidateSources): string[] {
     .sort((a, b) => b.count - a.count).map(({ name }) => name);
   const seen = new Set<string>();
   const names: string[] = [];
-  for (const raw of [...sources.call, ...sources.earlier, ...sources.named.flatMap((value) => value.split(",")), ...fromMeetings(true), ...byFrequency]) {
+  for (const raw of [...sources.call, ...sources.invited ?? [], ...sources.earlier, ...sources.named.flatMap((value) => value.split(",")), ...fromMeetings(true), ...byFrequency]) {
     const name = cleanSpeakerName(raw);
     const key = name.toLowerCase();
     if (seen.has(key) || !isPersonName(name)) continue;
@@ -80,7 +85,7 @@ function participantNames(cell: unknown): string[] {
  * transcript per row. Throws when the space cannot be read.
  */
 export async function readCandidateNames(space: Pick<TinyCloudWeb, "sql">,
-  note: { call: readonly string[]; earlier: readonly string[]; startedAt: string | null; durationSecs: number | null }): Promise<string[]> {
+  note: { call: readonly string[]; invited?: readonly string[]; earlier: readonly string[]; startedAt: string | null; durationSecs: number | null }): Promise<string[]> {
   const db = space.sql.db(CONNECTORS_SQL_DB_NAME);
   const named = await db.query(
     `SELECT json_extract(metadata, '$.${SPEAKER_NAMES_KEY}') FROM connector_meeting
@@ -109,5 +114,5 @@ export async function readCandidateNames(space: Pick<TinyCloudWeb, "sql">,
       return [{ participants: participantNames(row[0]), overlaps: ended >= start }];
     });
   }
-  return candidateNames({ call: note.call, earlier: note.earlier, named: typed, meetings });
+  return candidateNames({ call: note.call, invited: note.invited, earlier: note.earlier, named: typed, meetings });
 }

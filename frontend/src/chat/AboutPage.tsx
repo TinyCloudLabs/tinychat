@@ -13,6 +13,8 @@ import { FINAL_COPY, POWERFUL_PROVIDER_NAME } from "@/capture/recorder/final/fin
 import { ABOUT_SECTIONS, type AboutSectionId } from "@/lib/about";
 import { VOICE_NOTE_MAX_DURATION_MS } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { speakerNameSuggestionsEnabled } from "@/lib/speakerNaming/namingFeature";
+import { calendarLinkingEnabled } from "@/lib/calendarLink/calendarLinkFeature";
+import { GOOGLE_CALENDAR_LINK_CONSENT_COPY } from "@/lib/connectors/consentCopy";
 import { PAGE_COLUMN, PageHeader } from "@/shell/PageHeader";
 
 /** A link to another section of this page, on its own line (a 44 px target on touch). */
@@ -45,6 +47,24 @@ function SuggestedSpeakerNames() {
         When Private or Powerful transcribes a voice note, names for its speakers are suggested by a model that runs in
         an enclave, from the note’s transcript and the names in your own meetings.
       </p>
+    </>
+  );
+}
+
+/** What linking a calendar reads and what unlinking does; said only in a build that offers it. */
+function CalendarLinking() {
+  if (!calendarLinkingEnabled()) return null;
+  return (
+    <>
+      <Sub>{GOOGLE_CALENDAR_LINK_CONSENT_COPY.heading}</Sub>
+      <p>
+        Optional, and separate from Calendar autojoin: TinyCloud One reads the events on your main Google calendar
+        (titles, times, guests, meeting links) to show which meeting a recording belongs to. Your browser reads them
+        with a token kept in your encrypted secrets; our server never keeps it. It never joins meetings, sends a
+        notetaker or changes your calendar. Guests are stored on the note by name, never by email address, and a
+        guest&apos;s name is only ever offered as a suggestion for a speaker.
+      </p>
+      <p>{GOOGLE_CALENDAR_LINK_CONSENT_COPY.disconnectNote}</p>
     </>
   );
 }
@@ -176,6 +196,7 @@ export const ABOUT_BODY: Readonly<Record<AboutSectionId, ReactNode>> = {
       <p>
         A notetaker joins Google Meet events on your main calendar that you organize or have accepted, even while TinyCloud One is closed; the host still admits it. Recordings reach your space the next time you open TinyCloud One. Turning it off deletes our server&apos;s copy of your Google sign-in.
       </p>
+      <CalendarLinking />
     </>
   ),
   "agent-access": (

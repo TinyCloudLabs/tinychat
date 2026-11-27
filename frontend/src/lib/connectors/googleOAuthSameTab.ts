@@ -9,11 +9,14 @@ export function sameTabState(path: string, nonce: string, tag: OAuthReturnTag | 
   return `${tag ?? ""}tab.${encoded}.${nonce}`;
 }
 
-export function saveSameTabVerifier(state: string, verifier: string, purpose: "connect" | "autojoin"): void {
+/** Which consent a same-tab round trip belongs to, so the page that returns reopens the right dialog. */
+export type SameTabPurpose = "connect" | "autojoin" | "calendar-link";
+
+export function saveSameTabVerifier(state: string, verifier: string, purpose: SameTabPurpose): void {
   sessionStorage.setItem(`${KEY_PREFIX}${state}`, JSON.stringify({ verifier, purpose }));
 }
 
-export function pendingSameTabReturn(): { state: string; code: string | null; error: boolean; verifier: string; purpose: "connect" | "autojoin" } | null {
+export function pendingSameTabReturn(): { state: string; code: string | null; error: boolean; verifier: string; purpose: SameTabPurpose } | null {
   const state = sameTabReturnState(window.location.search);
   if (!state) return null;
   const params = new URLSearchParams(window.location.search);
@@ -22,7 +25,7 @@ export function pendingSameTabReturn(): { state: string; code: string | null; er
   let transaction: { verifier?: unknown; purpose?: unknown };
   try { transaction = JSON.parse(saved) as typeof transaction; } catch { return null; }
   if (typeof transaction.verifier !== "string" ||
-    (transaction.purpose !== "connect" && transaction.purpose !== "autojoin")) return null;
+    (transaction.purpose !== "connect" && transaction.purpose !== "autojoin" && transaction.purpose !== "calendar-link")) return null;
   const code = params.get(SAME_TAB_CODE_PARAM);
   const error = params.get(SAME_TAB_ERROR_PARAM) === "not_completed";
   return code || error ? { state, code, error, verifier: transaction.verifier, purpose: transaction.purpose } : null;

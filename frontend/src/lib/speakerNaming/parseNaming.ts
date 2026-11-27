@@ -14,12 +14,18 @@ export const NAMING_AGREE = 2;
 
 /** How the transcript supports a name. Anything else the model writes counts as "inferred". */
 export const NAMING_BASES = ["self-introduction", "introduced", "thanked", "inferred"] as const;
-export type NamingBasis = (typeof NAMING_BASES)[number];
+/**
+ * The basis of a name the app took from the note's calendar link (inviteeSuggestion.ts): the person was invited,
+ * which says nothing of what the transcript holds. Not one of NAMING_BASES: a model's reply, or a stored run, that
+ * writes it is read as "inferred".
+ */
+export const INVITED_BASIS = "invited";
+export type NamingBasis = (typeof NAMING_BASES)[number] | typeof INVITED_BASIS;
 
 export interface SuggestedName {
   name: string;
   basis: NamingBasis;
-  /** The words of the transcript that show it, as the model copied them. */
+  /** The words of the transcript that show it, as the model copied them. Empty for an invited name. */
   quote: string;
 }
 
