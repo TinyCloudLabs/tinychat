@@ -1,4 +1,5 @@
 // Defence in depth for Courier turns; the backend independently filters every chat tool result.
+import { backendCallHeaders } from "../backend-call";
 import { DEFAULT_BACKEND_ORIGIN } from "../config";
 import { readBody } from "../gateway";
 import { OWNER_DID } from "../owner";
@@ -22,7 +23,7 @@ export async function readStatus(owner: string): Promise<CourierReadStatus> {
     direction: "to-backend", environment: "private", owner, bot: "main", method: "POST", path: PATH, body,
   });
   const response = await fetch(`${origin.origin}${PATH}`, {
-    method: "POST", headers: { authorization, "content-type": "application/json" }, body,
+    method: "POST", headers: backendCallHeaders(authorization), body,
     redirect: "error", cache: "no-store", signal: AbortSignal.timeout(TIMEOUT_MS),
   });
   if (!response.ok) {

@@ -11,6 +11,7 @@
 
 import { closeSync, existsSync, fsyncSync, openSync, readFileSync, renameSync, writeSync } from "node:fs";
 import { dirname } from "node:path";
+import { backendCallHeaders } from "./backend-call";
 import { readBody, type UpstreamFetch } from "./gateway";
 import { FEED_CHAT_ERRORS, FEED_CHAT_RECORD_KIND, FEED_CHAT_TOOL_NAMES, FEED_CHAT_TOOLS, type FeedChatTool } from "./feed-chat-tools";
 import { isRecord } from "./guards";
@@ -254,7 +255,7 @@ export class MeetingDesk {
       });
       const response = await this.#fetch(`${this.#options.backendOrigin}${path}`, {
         method: "POST", redirect: "error", signal: AbortSignal.timeout(AUDIT_TIMEOUT_MS),
-        headers: { authorization, "content-type": "application/json" }, body,
+        headers: backendCallHeaders(authorization), body,
       });
       void response.body?.cancel().catch(() => {});
       if (response.status === 204) return;
@@ -273,7 +274,7 @@ export class MeetingDesk {
     try {
       const response = await this.#fetch(`${this.#options.backendOrigin}${path}`, {
         method: "POST", redirect: "error", signal: AbortSignal.timeout(CALL_TIMEOUT_MS),
-        headers: { authorization, "content-type": "application/json" }, body,
+        headers: backendCallHeaders(authorization), body,
       });
       if (response.status !== 200 && response.status !== 400) {
         void response.body?.cancel().catch(() => {});
