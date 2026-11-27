@@ -183,6 +183,9 @@ export const unpinApp = (app: string) => `Unpin ${app}`;
  */
 export const opensSeparatelyTitle = (app: string, phone: boolean) => (phone ? `${app} opens in a browser window` : `${app} opens in its own tab`);
 export const openSeparately = (app: string, phone: boolean) => (phone ? `Open ${app}` : "Open in new tab");
+/** An app kept in the owner's space has no page of its own: where One can't frame it, it offers One on the web. */
+export const opensInOneTitle = (app: string) => `${app} opens in TinyCloud One on the web`;
+export const OPEN_IN_ONE = "Open TinyCloud One";
 
 /** The first navigation item's name with One Apps on: the pill's spoken label and the sidebar and rail row. Tests import it, never the word. */
 export const MAIN_TAB_LABEL = "Home";

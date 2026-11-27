@@ -30,10 +30,16 @@ export async function presentKeys(reader: ListedAppsReader, apps: readonly OneAp
   return new Set(keys.filter((_, index) => found[index]));
 }
 
-// One check per session: a new sign-in is a new session object.
+// The last answer for each session (a new sign-in is a new session object), shown at once on the next visit.
 const checked = new WeakMap<ListedAppsReader, ReadonlySet<string>>();
 
-/** `apps` without the `listedIf` apps this account doesn't hold the key for; those stay hidden until the check finds it. */
+const sameKeys = (a: ReadonlySet<string>, b: ReadonlySet<string>) => a.size === b.size && [...a].every((key) => b.has(key));
+
+/**
+ * `apps` without the `listedIf` apps this account doesn't hold the key for; those stay hidden until the check finds it.
+ * Each visit checks again and shows the last answer meanwhile: an app the owner installs while One is open (Drive's
+ * "Install in my TinyCloud", in another tab) shows on the next visit to Apps, with no new sign-in.
+ */
 export function useListedApps(reader: ListedAppsReader | null, apps: readonly OneApp[] = ONE_APPS): readonly OneApp[] {
   const [present, setPresent] = useState<ReadonlySet<string>>(() => (reader && checked.get(reader)) || NONE);
   useEffect(() => {
@@ -42,14 +48,11 @@ export function useListedApps(reader: ListedAppsReader | null, apps: readonly On
       return;
     }
     const known = checked.get(reader);
-    if (known) {
-      setPresent(known);
-      return;
-    }
+    if (known) setPresent(known);
     let live = true;
     void presentKeys(reader, apps).then((keys) => {
       checked.set(reader, keys);
-      if (live) setPresent(keys);
+      if (live) setPresent((shown) => (sameKeys(shown, keys) ? shown : keys));
     });
     return () => {
       live = false;

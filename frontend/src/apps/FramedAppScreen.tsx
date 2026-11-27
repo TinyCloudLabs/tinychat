@@ -42,7 +42,9 @@ import {
   courierMissing,
   joinScopes,
   missingSpacesLine,
+  OPEN_IN_ONE,
   openSeparately,
+  opensInOneTitle,
   opensSeparatelyTitle,
   stepUpFailedLine,
   type ScopeId,
@@ -106,28 +108,34 @@ export function OneAppScreen({ appId, tcw, accountDid = null, fallback, connect 
   const session = tcw?.session();
   if (framed && (!tcw || !session)) return <>{fallback}</>;
   const url = appUrl(app);
+  // An app kept in the owner's space, framed here: its page is this screen, so the bar offers no new tab.
+  const barUrl = framed?.fromSpace ? undefined : url;
+  const inOne = app.kind === "framed" && app.fromSpace === true;
   return (
     <div className="flex h-full min-h-0 flex-col" data-testid="one-app-screen">
-      <AppBar name={app.name} glyph={app.glyph} accountDid={accountDid} pin={appPinId(app.id)} url={url} />
+      <AppBar name={app.name} glyph={app.glyph} accountDid={accountDid} pin={appPinId(app.id)} url={barUrl} />
       {framed && tcw && session ? (
         <FramedApp key={`${framed.id}:${session.address}:${session.chainId}:${session.sessionKey}`} app={framed} tcw={tcw} address={session.address} chainId={session.chainId} connect={connect} />
       ) : (
-        <OpensSeparately name={app.name} glyph={app.glyph} url={url} phone={platform === "ios" || platform === "android"} />
+        <OpensSeparately name={app.name} glyph={app.glyph} url={url} phone={platform === "ios" || platform === "android"} inOne={inOne} />
       )}
     </div>
   );
 }
 
-/** An app One can't frame here (it is never framed, or not on this origin or platform): it opens on its own. */
-function OpensSeparately({ name, glyph, url, phone }: { name: string; glyph: GlyphId; url: string; phone: boolean }) {
+/**
+ * An app One can't frame here (it is never framed, or not on this origin or platform): it opens on its own. An app kept
+ * in the owner's space (`inOne`) has no page of its own: it offers its screen in One on the web.
+ */
+function OpensSeparately({ name, glyph, url, phone, inOne }: { name: string; glyph: GlyphId; url: string; phone: boolean; inOne: boolean }) {
   return (
     <div className="min-h-0 flex-1 overflow-y-auto" data-scroll-root>
       <div className="mx-auto flex min-h-full max-w-sm flex-col items-center justify-center gap-3 px-6 py-10 text-center">
         <AppTileIcon id={glyph} className="mb-2 size-16" />
-        <h2 className="text-title-2 text-foreground">{opensSeparatelyTitle(name, phone)}</h2>
+        <h2 className="text-title-2 text-foreground">{inOne ? opensInOneTitle(name) : opensSeparatelyTitle(name, phone)}</h2>
         <Button asChild className="mt-2">
           <a href={url} target="_blank" rel="noopener noreferrer" onClick={(event) => openLinkInApp(url, event.nativeEvent, { sheet: false })}>
-            {openSeparately(name, phone)}
+            {inOne ? OPEN_IN_ONE : openSeparately(name, phone)}
             <ExternalLinkIcon aria-hidden />
           </a>
         </Button>

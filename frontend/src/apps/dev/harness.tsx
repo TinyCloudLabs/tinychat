@@ -64,7 +64,17 @@ const connect: StepUpConnect = async () => ({
   openkey: { signMessage: async ({ message }) => ({ signature: await account.signMessage({ message }) }) },
 });
 
-const MANIFEST = { manifest_version: 1, app_id: "xyz.tinycloud.one-apps-dev", name: "One Apps dev harness", defaults: true, permissions: [] } as unknown as Manifest;
+// `?holds=apps-metadata`: the session also holds metadata reads on the owner's Apps space, as One's real sign-in does
+// (it holds all of Apps), so the launcher's check for apps listed only for some accounts (listedApps.ts) can see them.
+// Without it the session holds nothing, and every app's first open asks.
+const HOLDS_APPS_METADATA = params.get("holds") === "apps-metadata";
+const MANIFEST = {
+  manifest_version: 1,
+  app_id: "xyz.tinycloud.one-apps-dev",
+  name: "One Apps dev harness",
+  defaults: true,
+  permissions: HOLDS_APPS_METADATA ? [{ service: "tinycloud.kv", space: "applications", path: "", actions: ["metadata"], skipPrefix: true }] : [],
+} as unknown as Manifest;
 
 const ACCOUNT_DID = `did:pkh:eip155:1:${account.address}`;
 
@@ -72,7 +82,7 @@ const ACCOUNT_DID = `did:pkh:eip155:1:${account.address}`;
 function HarnessShell({ tcw }: { tcw: TinyCloudWeb | null }) {
   const { pathname } = useLocation();
   const screen = useMemo(() => screenFor(pathname), [pathname]);
-  const launcher = <AppsPage accountDid={ACCOUNT_DID} pendingMeetings={0} />;
+  const launcher = <AppsPage accountDid={ACCOUNT_DID} pendingMeetings={0} tcw={tcw} />;
   const notHere = <p className="p-4 text-sm text-muted-foreground">Not part of this harness.</p>;
   return (
     <AppShell

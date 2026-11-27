@@ -255,6 +255,9 @@ const ALL_APPS: readonly OneApp[] = [
     icon: Folder,
     glyph: "drive",
     fromSpace: true,
+    // Listed only for an owner who installed it: "Install in my TinyCloud" writes this key last, when the install is
+    // complete. Without it the tile would open a screen that can only say Drive isn't installed.
+    listedIf: "xyz.tinycloud.tinydrive/app/install.json",
     // Its runner sub-address: runnerSlug("xyz.tinycloud.tinydrive") (runnerSlug.test.ts). The runner's production
     // address is not set up yet (a one-time choice); apps.tinycloud.one stands in for it.
     origin: KIND === "dev" ? "https://guqda7cucxregwu3pgrwcq6syc.apps.localhost:5198" : "https://guqda7cucxregwu3pgrwcq6syc.apps.tinycloud.one",
@@ -378,9 +381,14 @@ export function appTarget(app: OneApp, origin: string): AppTarget {
   return { kind: "newTab", url: appUrl(app) };
 }
 
-/** The app's own page, outside One (a new tab, no delegation). */
+/**
+ * The app's own page, outside One (a new tab, no delegation). An app kept in the owner's space has no page of its own
+ * (its runner sub-address shows nothing by itself): its page is its screen in One on the web.
+ */
 export function appUrl(app: FramedOneApp | LinkOneApp): string {
-  return app.kind === "link" ? app.url : new URL(app.path, app.origin).toString();
+  if (app.kind === "link") return app.url;
+  if (app.fromSpace) return new URL(appRoute(app), ONE_HOST_ORIGINS[0]).toString();
+  return new URL(app.path, app.origin).toString();
 }
 
 /** One's route for an app: its own screen for a native app, else `/chat/apps/<id>` (framed there, or its new-tab page). */

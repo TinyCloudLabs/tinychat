@@ -32,6 +32,8 @@ import {
   PILL_LABELS,
   opensSeparatelyTitle,
   openSeparately,
+  opensInOneTitle,
+  OPEN_IN_ONE,
   pinApp,
   unpinApp,
 } from "./strings";
@@ -244,10 +246,14 @@ describe("the open app's bar", () => {
     for (const app of oneAppsFor("web", true)) {
       if (app.kind === "native") continue;
       const markup = ssr(<OneAppScreen appId={app.id} tcw={null} accountDid={ACCOUNT} fallback={<p>fallback</p>} />, appRoute(app));
-      expect(markup).toContain(opensSeparatelyTitle(app.name, false).replaceAll("'", "&#x27;"));
+      // An app kept in the owner's space has no page of its own: it offers its screen in One on the web.
+      const inOne = app.kind === "framed" && app.fromSpace === true;
+      const title = inOne ? opensInOneTitle(app.name) : opensSeparatelyTitle(app.name, false);
+      const button = inOne ? OPEN_IN_ONE : openSeparately(app.name, false);
+      expect(markup).toContain(title.replaceAll("'", "&#x27;"));
       const screen = markup.slice(markup.indexOf("</header>"));
       expect(screen).not.toMatch(/<p[ >]/);
-      expect(screen.replace(/<[^>]*>/g, "")).toBe(`${opensSeparatelyTitle(app.name, false)}${openSeparately(app.name, false)}`.replaceAll("'", "&#x27;"));
+      expect(screen.replace(/<[^>]*>/g, "")).toBe(`${title}${button}`.replaceAll("'", "&#x27;"));
       const anchors = [...markup.matchAll(/<a [^>]*>/g)].map((match) => match[0]);
       expect(anchors).toHaveLength(2);
       for (const tag of anchors) {
@@ -256,6 +262,15 @@ describe("the open app's bar", () => {
         expect(tag).toContain('rel="noopener noreferrer"');
       }
     }
+  });
+
+  test("Drive has no page of its own: out of One, the bar and the screen lead to its screen in One on the web", () => {
+    const drive = oneAppsFor("ios", true).find((app) => app.id === "xyz.tinycloud.tinydrive")!;
+    expect(appUrl(drive as Parameters<typeof appUrl>[0])).toBe("https://tinycloud.one/chat/apps/xyz.tinycloud.tinydrive");
+    const markup = ssr(<OneAppScreen appId={drive.id} tcw={null} accountDid={ACCOUNT} fallback={null} />, appRoute(drive), "ios");
+    expect(markup).toContain(opensInOneTitle(drive.name));
+    expect(markup).toContain(OPEN_IN_ONE);
+    expect(markup).not.toContain("apps.tinycloud.one");
   });
 
   test("on a phone it opens on its own, not in a new tab", () => {
