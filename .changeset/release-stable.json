@@ -1,0 +1,10 @@
+{
+  "versions": {
+    "exo-desktop": "0.22.10",
+    "@tinychat/frontend": "0.22.10"
+  },
+  "changesets": [
+    ".changeset/pre/handoff-test-clock.md",
+    ".changeset/pre/openkey-sdk-0-13-0-beta-5.md"
+  ]
+}
