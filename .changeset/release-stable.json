@@ -1,0 +1,9 @@
+{
+  "versions": {
+    "exo-desktop": "0.22.9",
+    "@tinychat/frontend": "0.22.9"
+  },
+  "changesets": [
+    ".changeset/pre/web-sdk-3-17-0.md"
+  ]
+}
