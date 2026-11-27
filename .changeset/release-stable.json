@@ -1,0 +1,19 @@
+{
+  "versions": {
+    "exo-desktop": "0.22.6",
+    "@tinychat/frontend": "0.22.6",
+    "@tinychat/backend": "0.14.8"
+  },
+  "changesets": [
+    ".changeset/pre/approved-private-followups.md",
+    ".changeset/pre/calm-caches-save.md",
+    ".changeset/pre/feed-live-reconnect.md",
+    ".changeset/pre/main-chat-kept.md",
+    ".changeset/pre/measure-build-size.md",
+    ".changeset/pre/quiet-spools-wait.md",
+    ".changeset/pre/steady-reads-header.md",
+    ".changeset/pre/trustbot-ask-access.md",
+    ".changeset/pre/trustbot-read-tools-listed.md",
+    ".changeset/pre/trustbot-settings-view.md"
+  ]
+}
