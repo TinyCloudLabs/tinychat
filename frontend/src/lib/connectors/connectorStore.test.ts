@@ -25,6 +25,8 @@ import {
   listTranscriptBodyIds,
   insertMeeting,
   meetingKvKey,
+  isMeetingDeleted,
+  deleteSourceMeeting,
   listKnownSourceIds,
   listMeetingMetadataValues,
   normalizeFirefliesTranscript,
@@ -885,6 +887,8 @@ describe("connectorStore.purgeConnector", () => {
 
 function realGmeetStore(): GmeetSyncStore {
   return {
+    isMeetingDeleted,
+    deleteSourceMeeting,
     getConnection,
     putTranscriptBody,
     upsertMeeting,
@@ -1251,6 +1255,8 @@ describe("connectorStore Drive Notes lifecycle", () => {
       },
     };
     const store: GmeetSyncStore = {
+      isMeetingDeleted,
+      deleteSourceMeeting,
       getConnection,
       putTranscriptBody,
       upsertMeeting,

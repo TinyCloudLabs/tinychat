@@ -93,6 +93,12 @@ class FakeKv {
   /** Keys whose put fails, every time — the user-space write failure the invariant is about. */
   failKeys = new Set<string>();
   constructor(readonly tracker: OpTracker) {}
+  async get(key: string) {
+    return this.tracker.run(`kv.get:${key}`, () => this.entries.has(key)
+      ? { ok: true as const, data: { data: this.entries.get(key), headers: {} } }
+      : { ok: false as const, error: { code: "KV_NOT_FOUND", message: "missing key" } });
+  }
+
 
   async put(key: string, value: unknown) {
     return this.tracker.run(`kv.put:${key}`, () => {

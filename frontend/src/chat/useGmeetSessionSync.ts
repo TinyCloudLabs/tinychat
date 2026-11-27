@@ -57,6 +57,8 @@ import {
   putTranscriptBody,
   updateSyncState,
   upsertMeeting,
+  isMeetingDeleted,
+  deleteSourceMeeting,
   type StoreResult,
 } from "@/lib/connectors/connectorStore";
 import {
@@ -151,6 +153,8 @@ const DEFAULT_STORE: GmeetSyncStore = {
   getConnection: storeGetConnection,
   putTranscriptBody,
   upsertMeeting,
+  isMeetingDeleted,
+  deleteSourceMeeting,
   updateSyncState,
   countMeetings,
   getDriveCursor,

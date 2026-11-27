@@ -15,7 +15,7 @@ export function combinedLine(count: number | null): string | null {
     : `${count} combined meetings that include it will be deleted too.`;
 }
 
-export function DeleteGranolaSheet(props: { open: boolean; title: string; busy: boolean; error: string | null; combinedCount: number | null; onKeep: () => void; onConfirm: () => void }) {
+export function DeleteGranolaSheet(props: { open: boolean; title: string; busy: boolean; error: string | null; combinedCount: number | null; source?: "granola" | "fireflies" | "google-meet"; onKeep: () => void; onConfirm: () => void }) {
   const combined = combinedLine(props.combinedCount);
   return <ResponsiveSheet open={props.open} onOpenChange={(next) => { if (!next) props.onKeep(); }} dismissible={!props.busy}
     title="Delete meeting?" description={props.title} contentProps={{ "data-testid": "delete-granola-sheet" }}
@@ -29,7 +29,11 @@ export function DeleteGranolaSheet(props: { open: boolean; title: string; busy: 
       <div className="flex flex-col gap-3">
         <p className="text-callout">This deletes the meeting and its transcript from your space. It can’t be undone.</p>
         {combined && <p className="text-callout" data-testid="delete-granola-combined">{combined}</p>}
-        <p className="text-callout">Importing the same CSV or syncing Granola won’t bring it back unless you choose “Allow deleted meetings back”.</p>
+        <p className="text-callout">{props.source === "fireflies"
+          ? "Syncing Fireflies won’t bring it back unless you choose “Allow deleted Fireflies meetings back”."
+          : props.source === "google-meet"
+            ? "Syncing Google Meet won’t bring it back unless you choose “Allow deleted Google Meet meetings back”."
+            : "Importing the same CSV or syncing Granola won’t bring it back unless you choose “Allow deleted Granola meetings back”."}</p>
         {props.error && <p role="alert" className="text-callout text-destructive" data-testid="delete-granola-error">{props.error}</p>}
       </div>
     </ResponsiveSheetBody>
