@@ -32,6 +32,8 @@ export interface BottomSheetProps {
   bare?: boolean;
   /** More classes for the sheet itself, e.g. a width cap on wide screens. */
   className?: string;
+  /** Icon buttons in the header, before the close button. */
+  headerActions?: React.ReactNode;
 }
 
 export function BottomSheet({
@@ -48,6 +50,7 @@ export function BottomSheet({
   contentProps,
   bare = false,
   className,
+  headerActions,
 }: BottomSheetProps) {
   const content = (
     <Drawer.Portal>
@@ -72,6 +75,7 @@ export function BottomSheet({
         ) : (
           <div className="flex min-h-13 shrink-0 items-center gap-2 pl-4 pr-2">
             <Drawer.Title className="min-w-0 flex-1 font-display text-title-2 [overflow-wrap:anywhere]">{title}</Drawer.Title>
+            {headerActions}
             {dismissible && (
               <Drawer.Close
                 aria-label="Close"

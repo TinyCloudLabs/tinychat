@@ -795,6 +795,8 @@ describe("Fireflies catch-up reconciles holes after webhook drain", () => {
         sentences: FirefliesSentence[],
       ): Promise<StoreResult<UpsertMeetingOutcome>>;
     } = {
+      async isMeetingDeleted() { return { ok: true, data: false }; },
+      async deleteSourceMeeting() { return { ok: true, data: undefined }; },
       async ensureSchema() { return { ok: true, data: undefined }; },
       async listKnownSourceIds() { return { ok: true, data: meetings.map((m) => m.sourceId) }; },
       async listTranscriptBodyIds() { return { ok: true, data: new Set(bodies) }; },
@@ -929,6 +931,8 @@ function realCatchUpHarness(
   }) as typeof fetch;
   const client = new FirefliesClient({ apiKey: "test-key", fetchImpl, delayMs: 0 });
   const store: SyncStore = {
+    async isMeetingDeleted() { return { ok: true, data: false }; },
+    async deleteSourceMeeting() { return { ok: true, data: undefined }; },
     async ensureSchema() { return { ok: true, data: undefined }; },
     async listKnownSourceIds() { return { ok: true, data: meetings.map((m) => m.sourceId) }; },
     async listTranscriptBodyIds() { return { ok: true, data: new Set(bodies) }; },

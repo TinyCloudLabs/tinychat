@@ -43,7 +43,7 @@ const ACTIVITY: BotActivity[] = [
   { id: "d".repeat(32), verb: "changed_files", count: 2, at: "2026-11-18T09:05:30.000Z" },
 ];
 
-type Reply = "stream" | "fail" | "none";
+type Reply = "stream" | "wait" | "step" | "fail" | "none";
 
 function fakeChats(reply: Reply, timed = false): BotChats {
   return createBotChats(() => ({
@@ -55,7 +55,12 @@ function fakeChats(reply: Reply, timed = false): BotChats {
         return Promise.resolve();
       }
       onEvent({ type: "status", state: "working" });
-      onEvent({ type: "delta", text: "Sent. I'll let you know when Dana replies, and I've moved the" });
+      if (reply === "stream") onEvent({ type: "delta", text: "Sent. I'll let you know when Dana replies, and I've moved the" });
+      // One short line, then a search: the row under the line says what the bot is doing.
+      if (reply === "step") {
+        onEvent({ type: "delta", text: "Checking the tide tables." });
+        onEvent({ type: "step", step: "search" });
+      }
       // The reply never finishes, so the capture shows it mid-stream.
       return new Promise<void>(() => {});
     },
@@ -70,21 +75,23 @@ const GRID = {
 
 const MAIN: ViewBot = { key: "main", name: MAIN_BOT.name, private: true, face: MAIN_BOT };
 const RESEARCH: ViewBot = { key: "0123456789abcdef0123456789abcdef", name: "Research", private: true, face: { name: "Research", shape: "sprout", colour: "green" } };
+/** The main bot with a shape and colour its owner picked. */
+const MAIN_PICKED: ViewBot = { key: "main", name: MAIN_BOT.name, private: true, face: { key: "main", name: MAIN_BOT.name, shape: "comet", colour: "purple" } };
 /** Edit and Delete bot do nothing here: the harness has no roster. */
 const MANAGE: BotManagement = { shape: "sprout", colour: "green", takenNames: ["Main"], update: async () => {}, remove: async () => {} };
 
-function Screen({ reply, send, notice, timed, panel, manage }: { reply: Reply; send?: string; notice?: HistoryNotice; timed?: boolean; panel?: boolean; manage?: boolean }) {
+function Screen({ reply, send, notice, timed, panel, manage, bot = manage ? RESEARCH : MAIN }: { reply: Reply; send?: string; notice?: HistoryNotice; timed?: boolean; panel?: boolean; manage?: boolean; bot?: ViewBot }) {
   const [chats] = useState(() => fakeChats(reply, timed));
   useEffect(() => {
-    if (send) void chats.ensureHistory("main").then(() => chats.send("main", send));
-  }, [chats, send]);
+    if (send) void chats.ensureHistory(bot.key).then(() => chats.send(bot.key, send));
+  }, [chats, send, bot.key]);
   // The panel opens from the pill, as an owner opens it.
   useEffect(() => {
     if (panel) document.querySelector<HTMLButtonElement>("[data-bot-view] h1 button")?.click();
   }, [panel]);
   return (
     <Frame>
-      <BotView bot={manage ? RESEARCH : MAIN} chats={chats} notice={notice} acknowledgeNotice={async (value) => value} onReconnect={() => {}} manage={manage ? MANAGE : undefined} />
+      <BotView bot={bot} chats={chats} notice={notice} acknowledgeNotice={async (value) => value} onReconnect={() => {}} manage={manage ? MANAGE : undefined} />
     </Frame>
   );
 }
@@ -123,6 +130,10 @@ const EXPIRED = Date.UTC(2026, 10, 12);
 export const botViewScreens: HarnessScreen[] = [
   { ...BASE, id: "bot-view-main", readyWhen: "[data-bot-reply]", render: () => <Screen reply="none" /> },
   { ...BASE, id: "bot-view-working", readyWhen: "[data-bot-working]", render: () => <Screen reply="stream" send="Send it, and move Thursday's review to 3pm." /> },
+  // The waiting row before any reply text, with a shape the main bot's owner picked and with another bot's; then the row under a first short line.
+  { ...BASE, id: "bot-view-waiting-picked", readyWhen: "[data-bot-working-row]", render: () => <Screen reply="wait" bot={MAIN_PICKED} send="Send it, and move Thursday's review to 3pm." /> },
+  { ...BASE, id: "bot-view-waiting-research", readyWhen: "[data-bot-working-row]", render: () => <Screen reply="wait" bot={RESEARCH} send="Find three sources on tidal power." /> },
+  { ...BASE, id: "bot-view-step", readyWhen: "[data-bot-working-row]", render: () => <Screen reply="step" bot={MAIN_PICKED} send="When is high tide at Whitby on Saturday?" /> },
   { ...BASE, id: "bot-view-failed", readyWhen: '[role="alert"]', render: () => <Screen reply="fail" send="Send it." /> },
   {
     ...BASE,
@@ -133,6 +144,7 @@ export const botViewScreens: HarnessScreen[] = [
   { ...BASE, id: "bot-view-activity", readyWhen: "[data-bot-activity]", render: () => <Screen reply="none" timed /> },
   { ...BASE, id: "bot-view-panel", readyWhen: "[data-bot-panel]", render: () => <Screen reply="none" timed panel /> },
   { ...BASE, id: "bot-view-panel-manage", readyWhen: "[data-bot-panel]", render: () => <Screen reply="none" timed panel manage /> },
-  // Driven by hand against a stand-in service (the screenshot run has none): the Chat slot over real HTTP, on Research's address.
+  // Driven by hand against a stand-in service (the screenshot run has none): the Chat slot over real HTTP, on Research's address and on the main bot's.
   { ...BASE, id: "bot-view-wire", path: botPath("0123456789abcdef0123456789abcdef"), interactive: true, render: () => <WireScreen /> },
+  { ...BASE, id: "bot-view-wire-main", interactive: true, render: () => <WireScreen /> },
 ];

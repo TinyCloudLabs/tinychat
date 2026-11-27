@@ -41,7 +41,7 @@
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { isSecretsUnlocked } from "./connectorSecrets";
-import { meetingKvKey, transcriptKvKey } from "./connectorStore";
+import { isMeetingDeleted, meetingKvKey, transcriptKvKey } from "./connectorStore";
 import type {
   ConnectorMeetingContent,
   ConnectorMeetingList,
@@ -84,6 +84,8 @@ export interface BackendReconcileOutcome {
   scanned: number;
   /** Meetings written into the user's own space. */
   written: number;
+  /** Owner-space copies omitted because the owner deleted the source meeting. */
+  skipped: number;
   /** Written AND stamped — the only meetings the server will stop offering. */
   reconciled: number;
   /**
@@ -238,6 +240,7 @@ export async function reconcileBackendMeetings(
 
   const outcome: BackendReconcileOutcome = {
     scanned: 0,
+    skipped: 0,
     written: 0,
     reconciled: 0,
     unacknowledged: [],
@@ -372,6 +375,17 @@ async function copyOne(
     outcome.failures.push({ sourceId, stage: "read", detail: "unavailable" });
     return "done";
   }
+  if (source === DEFAULT_MEETINGS_SOURCE) {
+    const marker = await isMeetingDeleted(tcw, "fireflies", sourceId);
+    if (!marker.ok) {
+      outcome.failures.push({ sourceId, stage: "storage", detail: errorDetail(marker.error) });
+      return "done";
+    }
+    if (marker.data) {
+      outcome.skipped += 1;
+      return "done";
+    }
+  }
 
   // Body first, record second: the record is what a reader discovers, so it must
   // never point at a transcript key that is not there yet.
@@ -420,6 +434,28 @@ async function copyOne(
       detail: errorDetail((written as { error?: unknown }).error),
     });
     return "done";
+  }
+  if (source === DEFAULT_MEETINGS_SOURCE) {
+    const marker = await isMeetingDeleted(tcw, "fireflies", sourceId);
+    if (!marker.ok || marker.data) {
+      // A second device may have deleted the source while the two KV writes ran.
+      // Remove both keys even when the second read is unavailable: no copy is acknowledged.
+      try {
+        for (const key of [meetingKvKey(source, sourceId), transcriptKvKey(source, sourceId)]) {
+          const removed = await tcw.kv.delete(key);
+          if (!removed.ok && removed.error.code !== "KV_NOT_FOUND") {
+            outcome.failures.push({ sourceId, stage: "storage", detail: errorDetail(removed.error) });
+            return "done";
+          }
+        }
+      } catch {
+        outcome.failures.push({ sourceId, stage: "storage", detail: "owner-space cleanup unavailable" });
+        return "done";
+      }
+      if (!marker.ok) outcome.failures.push({ sourceId, stage: "storage", detail: errorDetail(marker.error) });
+      else outcome.skipped += 1;
+      return "done";
+    }
   }
   outcome.written += 1;
   outcome.local.push(localRef(source, serverMeta));

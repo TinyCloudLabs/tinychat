@@ -6,7 +6,7 @@ import type { BotAdmission } from "./bot-admission";
 import { type AppSource, type AsksSettings, type BotMessenger, type ErrorCode, ERROR_MESSAGES, type ListedMessage, MAX_TEXT, type TurnSink, type WebSettings } from "./bot";
 import { type OwnerDate, ownerDateFrom } from "./owner-date";
 import { INVALID_HOSTS, parseWebPolicy, type WebPolicy } from "./web-policy";
-import { type AnswerInput, type AnswerResult, type AppOrigin, type AskReply, type AskRequest, parseAnswerInput } from "./asks";
+import { type AnswerInput, type AnswerResult, type AskReply, type AskRequest, parseAnswerInput } from "./asks";
 import { type ActionReply, type ActionRequest, type ActionResult, type ApproveResult, parseApproveInput } from "./actions";
 import { parseAreas, type ReadArea, type ReadsSetting } from "./reads";
 import { isRecord } from "./guards";
@@ -189,6 +189,7 @@ function eventStream(run: (sink: TurnSink) => Promise<void>): Response {
             const { type, id, verb, count, at } = record;
             send("activity", { type, id, verb, count, at, ...(verb === "messaged_bot" ? { targetKey: record.targetKey } : {}) });
           },
+          step: ({ step, host }) => send("step", host ? { step, host } : { step }),
           done: messageId => send("done", { messageId }),
           error: (code: ErrorCode) => send("error", { code, message: ERROR_MESSAGES[code] }),
         };
@@ -358,7 +359,6 @@ export function createApp(options: AppOptions): (req: Request) => Promise<Respon
             if (!messenger || !bot.approveRequest) return Response.json({ error: "invalid" }, { status: 400 });
             const result = await bot.approveRequest(requestId, approve.binding, messenger);
             if (result.ok) return Response.json(result.request);
-            if (result.error === "held") return Response.json({ error: "held" }, { status: 409 });
             return result.error === "invalid" ? Response.json({ error: "invalid" }, { status: 400 }) : Response.json({ error: "not_pending" }, { status: 409 });
           }
           const decision = parseAnswerInput(input);

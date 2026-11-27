@@ -1,7 +1,6 @@
 // TC-3794: a conversation that read the owner's feed cards or chats holds the owner's private data like one that read a
 // meeting: call_with_secret, propose_action and a spend of an earlier proposal are refused. The mark is the one MeetingDesk keeps.
 import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
-import { ACTION_ERRORS } from "../actions";
 import { SECRET_ERRORS, type SecretPush, utcDay } from "../asks";
 import { type GatewayConfig, PINNED_UPSTREAM } from "../config";
 import type { Conn, GuardDeps } from "../fetch-guard";
@@ -110,16 +109,18 @@ for (const [tool, args] of READS) {
     expect(sent.length).toBe(before);
   });
 
-  test(`propose_action is refused after ${tool}, and an earlier proposal cannot be spent`, async () => {
+  test(`owner-reviewed proposals remain available after ${tool} without lifting the data hold`, async () => {
     const { gateway } = setup();
     expect((await call(gateway, "propose_action", PROPOSAL)).isError).toBe(false);
     const [earlier] = gateway.drainActions(BOT);
     expect(earlier).toBeDefined();
 
     expect((await call(gateway, tool, args)).isError).toBe(false);
-    expect(await call(gateway, "propose_action", PROPOSAL)).toEqual({ text: ACTION_ERRORS.held, isError: true });
-    expect(gateway.drainActions(BOT)).toEqual([]);
+    expect((await call(gateway, "propose_action", PROPOSAL)).isError).toBe(false);
+    expect(gateway.drainActions(BOT)).toHaveLength(1);
+    expect(gateway.spendAction(BOT, earlier!.id, earlier!.binding)).toBe(true);
     expect(gateway.spendAction(BOT, earlier!.id, earlier!.binding)).toBe(false);
+    expect(gateway.readsHeld(BOT)).toBe(true);
   });
 }
 

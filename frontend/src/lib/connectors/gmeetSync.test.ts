@@ -87,6 +87,9 @@ class FakeStore implements GmeetSyncStore {
   afterUpsert: ((sourceId: string) => void) | null = null;
   /** Source ids whose KV write must fail (per-item storage error). */
   failBodyFor = new Set<string>();
+  async isMeetingDeleted(): Promise<StoreResult<boolean>> { return ok(false); }
+  async deleteSourceMeeting(): Promise<StoreResult<void>> { return ok(undefined); }
+
 
   async getConnection(
     _: TinyCloudWeb,

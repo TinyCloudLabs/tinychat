@@ -16,6 +16,87 @@
 - TC-2204: Native audience checks accept Home's three exact SQL hook subscriptions only alongside an existing TinyChat data grant.
 - TC-2499: The Home mirror adapter persists close receipts using node-compatible NULL/non-NULL compare-and-set predicates. If the KV mirror is already exactly closed but its receipt is missing, recovery records the original publication ETag without writing the KV copy again, before any gated child handoff. The CLI reports JSON error class, safe message, code, HTTP status when available, and operation step; private SQL bodies and nested causes remain redacted. Exit 2 identifies invalid input, exit 6 known transient failures (including NODE_BUSY and REQUEST_TIMEOUT without HTTP metadata), and exit 1 other runtime failures or OUTCOME_UNKNOWN. Unclassified errors are not labelled bad input; no failure confirms delivery or authorizes an automatic retry.
 
+## 0.22.6
+
+### Patch Changes
+
+- 5355ad3: Allow TrustBot to propose and deliver an exact owner-approved message to one or more admitted bots after reading private data. Approval remains bound to the owner, recipients and message and can be used only once; unapproved exports remain held.
+
+  Keep the backend's reply deadline longer than the bot's configured turn budget. Distinguish an interrupted connection from an execution timeout so an already-running task is not described as unable to start.
+
+- 5355ad3: The Feed reconnects its live updates on its own after the connection drops, at once when the browser is back online, and when you choose Try again. The note says "You're offline." only when the browser is offline.
+- 5355ad3: TrustBot's chat on the Feed keeps its messages, and a reply still on its way, when the owner goes to another tab and comes back. Sign-out or another account clears it.
+- 5355ad3: TrustBot asks for access to meetings, Feed and chats, or Telegram in the conversation, under the reply that needed it, only when it needed it. Allowing it there asks the question again; "Not now" hides the card.
+- 5355ad3: TrustBot's sheet opens on the conversation alone. Web access, the read settings, questions and Start a new chat move to a settings view behind a header button, with Back to return to the chat.
+
+## 0.22.6-beta.0
+
+### Patch Changes
+
+- 5355ad3: Allow TrustBot to propose and deliver an exact owner-approved message to one or more admitted bots after reading private data. Approval remains bound to the owner, recipients and message and can be used only once; unapproved exports remain held.
+
+  Keep the backend's reply deadline longer than the bot's configured turn budget. Distinguish an interrupted connection from an execution timeout so an already-running task is not described as unable to start.
+
+- 5355ad3: The Feed reconnects its live updates on its own after the connection drops, at once when the browser is back online, and when you choose Try again. The note says "You're offline." only when the browser is offline.
+- 5355ad3: TrustBot's chat on the Feed keeps its messages, and a reply still on its way, when the owner goes to another tab and comes back. Sign-out or another account clears it.
+- 5355ad3: TrustBot asks for access to meetings, Feed and chats, or Telegram in the conversation, under the reply that needed it, only when it needed it. Allowing it there asks the question again; "Not now" hides the card.
+- 5355ad3: TrustBot's sheet opens on the conversation alone. Web access, the read settings, questions and Start a new chat move to a settings view behind a header button, with Back to return to the chat.
+
+## 0.22.5
+
+### Patch Changes
+
+- ed7ff22: Delete individual Fireflies and Google Meet meetings and their transcripts from the Library. Sync skips deleted meetings until the user allows them back. Each source has its own allow-back control, and account deletion clears the Fireflies server markers.
+
+  Details: TC-4414
+
+## 0.22.5-beta.0
+
+### Patch Changes
+
+- ed7ff22: Delete individual Fireflies and Google Meet meetings and their transcripts from the Library. Sync skips deleted meetings until the user allows them back. Each source has its own allow-back control, and account deletion clears the Fireflies server markers.
+
+  Details: TC-4414
+
+## 0.22.4
+
+### Patch Changes
+
+- 666483e: Delete one Granola meeting and its transcript from the Library. Deleted meetings stay out of CSV imports and Granola sync until the user allows them back.
+
+  Details: TC-4413
+
+## 0.22.4-beta.0
+
+### Patch Changes
+
+- 666483e: Delete one Granola meeting and its transcript from the Library. Deleted meetings stay out of CSV imports and Granola sync until the user allows them back.
+
+  Details: TC-4413
+
+## 0.22.3
+
+### Patch Changes
+
+- d917860: The bot working line keeps every word readable while its glare moves, and a reply that comes back at once no longer flashes the working row.
+- 3812337: While a bot works on your message, the chat shows what it is doing: searching the web, reading a page, waiting for your approval, using a tool or writing the reply.
+
+  Details: TC-4382
+
+## 0.22.3-beta.1
+
+### Patch Changes
+
+- d917860: The bot working line keeps every word readable while its glare moves, and a reply that comes back at once no longer flashes the working row.
+
+## 0.22.3-beta.0
+
+### Patch Changes
+
+- 3812337: While a bot works on your message, the chat shows what it is doing: searching the web, reading a page, waiting for your approval, using a tool or writing the reply.
+
+  Details: TC-4382
+
 ## 0.22.2
 
 ### Patch Changes

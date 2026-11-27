@@ -97,7 +97,7 @@ describe("bots routes", () => {
     }
   });
 
-  it("aborts a stalled upstream at the overall timeout and reports bot_unavailable once", async () => {
+  it("aborts a stalled upstream at the overall timeout and reports an interrupted reply once", async () => {
     const { promise: upstreamAborted, resolve: aborted } = Promise.withResolvers<void>();
     const run = await setup(init => {
       init.signal?.addEventListener("abort", () => aborted());
@@ -109,7 +109,7 @@ describe("bots routes", () => {
       await upstreamAborted;
       expect(body.startsWith("event: status")).toBe(true);
       expect(body.match(/event: error/g)).toHaveLength(1);
-      expect(body).toContain('"code":"bot_unavailable"');
+      expect(body).toContain('"code":"reply_interrupted"');
     } finally { await run.close(); }
   });
 
