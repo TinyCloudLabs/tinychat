@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { type GatewayConfig, PINNED_FETCH_URL, PINNED_UPSTREAM, PINNED_WEB_API } from "../config";
+import { FEED_CHAT_TOOL_NAMES } from "../feed-chat-tools";
 import { type BudgetSnapshot, type BudgetStore, Gateway, type UpstreamFetch } from "../gateway";
 import { type HeldStore, MeetingDesk, READ_ERRORS } from "../meeting-reads";
 import { MEETING_TOOL_NAMES } from "../meeting-tools";
@@ -93,22 +94,22 @@ beforeEach(() => {
 afterEach(() => spy.mockRestore());
 
 describe("meeting reads while the owner's setting is off", () => {
-  test("lists no meeting tool and refuses every call without reaching the backend", async () => {
+  test("lists the meeting tools and refuses every call without reaching the backend", async () => {
     const { gateway, api } = setup();
-    expect(await tools(gateway)).toEqual([]);
+    expect(await tools(gateway)).toEqual([...MEETING_TOOL_NAMES, ...FEED_CHAT_TOOL_NAMES]);
     for (const name of MEETING_TOOL_NAMES) expect(await call(gateway, "/v1/mcp/app", name, {})).toEqual({ text: READ_ERRORS.off, isError: true });
     gateway.setReads(BOT, { areas: [], conversation: CONVERSATION });
-    expect(await tools(gateway)).toEqual([]);
+    expect(await tools(gateway)).toEqual([...MEETING_TOOL_NAMES, ...FEED_CHAT_TOOL_NAMES]);
     expect(await read(gateway)).toEqual({ text: READ_ERRORS.off, isError: true });
     expect(api.calls).toEqual([]);
   });
 
-  test("turned off after being on, the tools go and calls are refused", async () => {
+  test("turned off after being on, the tools stay listed and calls are refused", async () => {
     const { gateway, api } = setup();
     on(gateway);
-    expect(await tools(gateway)).toEqual([...MEETING_TOOL_NAMES]);
+    expect(await tools(gateway)).toEqual([...MEETING_TOOL_NAMES, ...FEED_CHAT_TOOL_NAMES]);
     gateway.setReads(BOT, { areas: [], conversation: CONVERSATION });
-    expect(await tools(gateway)).toEqual([]);
+    expect(await tools(gateway)).toEqual([...MEETING_TOOL_NAMES, ...FEED_CHAT_TOOL_NAMES]);
     expect(await read(gateway)).toEqual({ text: READ_ERRORS.off, isError: true });
     expect(api.calls).toEqual([]);
   });

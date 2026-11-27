@@ -109,23 +109,23 @@ describe("the four feed and chat tools under tool-policy", () => {
     }
   });
 
-  test("each is served only while the feed_chats area is on", async () => {
+  test("each is served to Main whether the feed_chats area is on or off", async () => {
     const { gateway } = setup();
     const served = async () => (await tools(gateway)).filter(name => FEED_CHAT_TOOL_NAMES.includes(name as never));
-    expect(await served()).toEqual([]);
+    expect(await served()).toEqual([...FEED_CHAT_TOOL_NAMES]);
     set(gateway, ["meetings"]);
-    expect(await served()).toEqual([]);
+    expect(await served()).toEqual([...FEED_CHAT_TOOL_NAMES]);
     set(gateway, ["meetings", "feed_chats"]);
     expect(await served()).toEqual([...FEED_CHAT_TOOL_NAMES]);
     set(gateway, ["meetings"]);
-    expect(await served()).toEqual([]);
+    expect(await served()).toEqual([...FEED_CHAT_TOOL_NAMES]);
   });
 });
 
 describe("feed and chat reads while the owner's setting is off", () => {
-  test("lists no feed or chat tool and refuses every call without reaching the backend", async () => {
+  test("lists the feed and chat tools and refuses every call without reaching the backend", async () => {
     const { gateway, api } = setup();
-    expect(await tools(gateway)).toEqual([]);
+    expect(await tools(gateway)).toEqual([...MEETING_TOOL_NAMES, ...FEED_CHAT_TOOL_NAMES]);
     for (const name of FEED_CHAT_TOOL_NAMES) expect(await call(gateway, "/v1/mcp/app", name, {})).toEqual({ text: FEED_CHAT_ERRORS.off, isError: true });
     expect(api.calls).toEqual([]);
   });
@@ -133,17 +133,17 @@ describe("feed and chat reads while the owner's setting is off", () => {
   test("meetings on does not turn feed and chats on", async () => {
     const { gateway, api } = setup();
     set(gateway, ["meetings"]);
-    expect(await tools(gateway)).toEqual([...MEETING_TOOL_NAMES]);
+    expect(await tools(gateway)).toEqual([...MEETING_TOOL_NAMES, ...FEED_CHAT_TOOL_NAMES]);
     expect(await call(gateway, "/v1/mcp/app", "list_chats", {})).toEqual({ text: FEED_CHAT_ERRORS.off, isError: true });
     expect(api.calls).toEqual([]);
   });
 
-  test("turned off after being on, the tools go and calls are refused", async () => {
+  test("turned off after being on, the tools stay listed and calls are refused", async () => {
     const { gateway, api } = setup();
     set(gateway, ["feed_chats"]);
-    expect(await tools(gateway)).toEqual([...FEED_CHAT_TOOL_NAMES]);
+    expect(await tools(gateway)).toEqual([...MEETING_TOOL_NAMES, ...FEED_CHAT_TOOL_NAMES]);
     set(gateway, []);
-    expect(await tools(gateway)).toEqual([]);
+    expect(await tools(gateway)).toEqual([...MEETING_TOOL_NAMES, ...FEED_CHAT_TOOL_NAMES]);
     expect(await call(gateway, "/v1/mcp/app", "read_chat", { chat: "t1" })).toEqual({ text: FEED_CHAT_ERRORS.off, isError: true });
     expect(api.calls).toEqual([]);
   });

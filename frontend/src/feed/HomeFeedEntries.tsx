@@ -54,7 +54,7 @@ import { cardGroup, cardPriority, compareWaiting, DUE_WINDOW_MS, findSecrets, gr
 import { HOME_EMPTY_BODY, HOME_EMPTY_CHAT, HOME_EMPTY_HOW, HOME_EMPTY_TITLE, NAV_LABEL_HOME } from "@/lib/homeStrings";
 import { markFeedFresh } from "@/lib/localFirst/requestLanes";
 import { AgentPrompt } from "@/home/AgentPromptCard";
-import { FEED_CARD_LINK_COPY, FEED_SKILL_URL } from "./strings";
+import { FEED_CARD_LINK_COPY, FEED_SKILL_URL, liveUpdatesOff } from "./strings";
 
 /** How long "Sent to <agent>" stays once an answer's held write has landed. */
 const SENT_NOTE_MS = 1400;
@@ -555,7 +555,7 @@ export function HomeFeedEntries({ source, ask, linked, finishSetup }: { source: 
           if (next.relatedEntries) next.relatedEntries = next.relatedEntries.map(reconcile);
           if (next.historicalEntries) next.historicalEntries = next.historicalEntries.map(reconcile);
           loaded = true;
-          setSnapshot(next); setNetworkLoaded(true); setClock(Date.now()); setError(next.connectionError ? { lead: "You're offline.", text: "Live updates are off, so these cards may be out of date." } : null);
+          setSnapshot(next); setNetworkLoaded(true); setClock(Date.now()); setError(next.connectionError ? liveUpdatesOff(navigator.onLine !== false) : null);
           markFeedFresh();
           // The first load registered the agents: answers held when the page last closed go now.
           if (!flushed && source.flushHeldAnswers) {
@@ -1361,7 +1361,7 @@ export function HomeFeedEntries({ source, ask, linked, finishSetup }: { source: 
       {finishSetup}
       {error && <div role="alert" className="mb-4 flex items-start gap-3 rounded-2xl bg-card px-4 py-3 text-sm leading-[1.45] shadow-[inset_0_0_0_1px_hsl(var(--border))]">
         <TriangleAlertIcon aria-hidden className="mt-px size-5 shrink-0 text-warning" />
-        <div className="min-w-0"><p><b className="font-semibold">{error.lead}</b> {error.text}</p><button type="button" onClick={() => refreshRef.current()} className="mt-2 min-h-11 underline">Try again</button></div>
+        <div className="min-w-0"><p><b className="font-semibold">{error.lead}</b> {error.text}</p><button type="button" onClick={() => { if (snapshot?.connectionError) source.reconnect?.(); refreshRef.current(); }} className="mt-2 min-h-11 underline">Try again</button></div>
       </div>}
       {linked && missedVisit === linked.visit && <div role="status" className="mb-4 flex items-start gap-3 rounded-2xl bg-card px-4 py-3 text-sm leading-[1.45] shadow-[inset_0_0_0_1px_hsl(var(--border))]">
         <InfoIcon aria-hidden className="mt-px size-5 shrink-0 text-muted-foreground" />

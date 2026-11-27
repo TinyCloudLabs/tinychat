@@ -622,7 +622,7 @@ export class RunscHost implements SandboxLauncher {
 
   /**
    * Gives the gateway the owner's read setting and the bot's conversation id, before the bot's token is registered
-   * and on every message, so the meeting tools are offered as the setting says and a fresh conversation is known.
+   * and on every message, so each read is checked against the current setting and a fresh conversation is known.
    */
   async pushReads(layout: BotLayout): Promise<void> {
     await this.#gateway("PUT", `/bots/${layout.botId}/reads`, readsPush(layout));
