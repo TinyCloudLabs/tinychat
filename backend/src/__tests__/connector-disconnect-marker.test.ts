@@ -81,6 +81,9 @@ class FakeControl {
     if (ledger) this.ledgersAtRemoval.set(this.key(source, address), ledger);
     this.ledgers.delete(this.key(source, address));
   }
+  async markDeleted() {}
+  async readDeleted() { return false; }
+  async clearDeleted() {}
   ledgerAtRemoval(source: string, address: string) { return this.ledgersAtRemoval.get(this.key(source, address)); }
   readonly quarantined: Array<{ key: string; raw: unknown }> = [];
   failWrite = false;

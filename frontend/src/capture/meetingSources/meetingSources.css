@@ -275,6 +275,16 @@
   cursor: default;
   transform: none;
 }
+/* A long label wraps inside the panel instead of running past its padding. */
+.ms-btn2.ms-btn-wrap {
+  box-sizing: border-box;
+  max-width: 100%;
+  height: auto;
+  min-height: 34px;
+  padding: 7px 15px;
+  white-space: normal;
+  text-align: left;
+}
 .ms-btn2 svg {
   width: 14px;
   height: 14px;

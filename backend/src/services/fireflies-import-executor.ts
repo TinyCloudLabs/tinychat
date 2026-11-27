@@ -122,6 +122,7 @@ export interface FirefliesDirectImporterOptions {
   configuredHost: string;
   control?: {
     readLedger(source: string, address: string): Promise<FirefliesPurgeLedgerRead>;
+    readDeleted(source: string, address: string, meetingId: string): Promise<boolean>;
   };
   /**
    * TC-3344 per-tenant reset timestamp reader. Replay markers written strictly before this ISO
@@ -627,9 +628,12 @@ export class FirefliesDirectImporter {
     address: string,
     item: { meetingId: string; receivedAt: string; sourceTimestamp?: string },
   ): Promise<{ ok: true } | { ok: false; status: "tombstoned"; reason: string } | { ok: false; status: "error" }> {
-    if (!this.control) return { ok: true };
+    if (!this.control) return { ok: false, status: "error" };
     let ledgerRead: FirefliesPurgeLedgerRead;
     try {
+      if (await this.control.readDeleted(FIREFLIES_SOURCE, address, item.meetingId)) {
+        return { ok: false, status: "tombstoned", reason: "deleted_item" };
+      }
       ledgerRead = await this.control.readLedger(FIREFLIES_SOURCE, address);
     } catch {
       return { ok: false, status: "error" };
@@ -869,10 +873,8 @@ export class FirefliesDirectImporter {
           };
         }
 
-        // Step 3 (G2): Write straight to owner KV with ifNoneMatch: "*" (no SQL, no overwrite).
-        // Each write re-checks the purge ledger inside `withConnectorConnectionChange` (the same
-        // per-owner lane POST /purged uses) so a purge landing during fetch or between writes
-        // prevents deleted meetings from coming back.
+        // Check per-ID deletion and the purge ledger inside the connection-change lane before
+        // each write, so a marker recorded during fetch or between writes prevents re-import.
         let lastTombstoneReason = "tombstoned";
         const guardWrite: FirefliesWriteGuard = async (writeOp) =>
           withConnectorConnectionChange(address, async () => {

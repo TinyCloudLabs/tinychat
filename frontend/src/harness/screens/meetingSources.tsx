@@ -108,7 +108,6 @@ function MeetingSourcesFixture({
               onCopy={noop}
               onSync={noop}
               onRetry={noop}
-              onBringBack={noop}
               onDisconnect={() => setConfirm("disconnect")}
             />
           }

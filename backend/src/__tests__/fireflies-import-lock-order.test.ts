@@ -48,6 +48,9 @@ async function setup(seed: number, removalTakesOwnerLock: boolean) {
     markDisabled: async () => {},
     readDisabled: async () => null,
     readLedger: async () => ledger,
+    readDeleted: async () => false,
+    markDeleted: async () => {},
+    clearDeleted: async () => {},
     writeLedger: async (_source: string, _address: string, next: unknown) => {
       ledger = { status: "ok", ledger: next } as FirefliesPurgeLedgerRead;
     },
