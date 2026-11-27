@@ -67,6 +67,7 @@ test("Fireflies allow-back clears backend markers, ledger and owner markers in t
       `owner:list:${CONNECTORS_KV_PREFIX}/fireflies/deleted/`,
       `owner:delete:${marker}`,
     ]);
+    expect(view.node.querySelector('[role="status"]')?.textContent).toBe("Deleted meetings can come back from your next Fireflies sync.");
   } finally { await view.unmount(); }
 });
 

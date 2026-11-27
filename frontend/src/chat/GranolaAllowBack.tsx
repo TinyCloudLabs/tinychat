@@ -88,7 +88,7 @@ export const GranolaAllowBack: FC<GranolaAllowBackProps> = ({ tcw, backendUrl, s
           </div>
         </div>
       )}
-      {step === "done" && <p role="status" className="text-sm text-muted-foreground">{source === "granola" ? S.allowBackDone : source === "fireflies" ? "Cleared. Meetings you deleted can come back if Fireflies reports them." : "Deleted meetings can come back from your next Google Meet sync."}</p>}
+      {step === "done" && <p role="status" className="text-sm text-muted-foreground">{source === "granola" ? S.allowBackDone : source === "fireflies" ? "Deleted meetings can come back from your next Fireflies sync." : "Deleted meetings can come back from your next Google Meet sync."}</p>}
       {step === "failed" && <p role="alert" className="text-sm text-destructive">{source === "fireflies" ? "Couldn’t allow deleted Fireflies meetings back. Try again." : S.allowBackFailed}</p>}
     </div>
   );
