@@ -4,11 +4,12 @@
 // not the view's; without one it is the view's own and stops when the view goes.
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { BotsError, BotsNoReply, type AppDecision, type BotMessage, type BotsApi, type SecretLine } from "./botsApi";
+import { BotsError, BotsNoReply, type AppDecision, type BotMessage, type BotStep, type BotsApi, type SecretLine } from "./botsApi";
 import type { BotsErrorCode } from "./botsStrings";
 import { isDeclinedReply } from "./askText";
 import { clearHistoryDecline, isHistoryDeclined } from "./historyAuthorization";
 import { createMainChatStore, endVisitIfLeft, mainChatFor, mountedView, setMainChat, stopMainChat, type MainChatCallbacks } from "./mainChatStore";
+import type { ReadArea } from "./trustbotReadAreas";
 import type { WorkingStep } from "./workingStep";
 
 /**
@@ -22,8 +23,21 @@ export interface AppReply {
   names?: string[];
 }
 
-/** `app` marks a line the app sent for the owner (a decision on a request or proposal card), which the owner did not type. */
-export type ChatLine = Pick<BotMessage, "id" | "role" | "text" | "unreadableHistory"> & { app?: AppDecision; secret?: SecretLine; names?: string[] };
+/**
+ * `app` marks a line the app sent for the owner (a decision on a request or proposal card), which the owner did not type.
+ * `areas`, on a reply a turn in this page ended with, are the read areas that turn tried; in memory only, never on a
+ * line read from history.
+ */
+export type ChatLine = Pick<BotMessage, "id" | "role" | "text" | "unreadableHistory"> & { app?: AppDecision; secret?: SecretLine; names?: string[]; areas?: ReadArea[] };
+
+/** The read area behind each step that reads the owner's data. */
+const STEP_AREAS: Partial<Record<BotStep, ReadArea>> = { meetings: "meetings", feed: "feed_chats", chats: "feed_chats", telegram: "telegram" };
+
+const withoutAreas = (line: ChatLine, keep: (area: ReadArea) => boolean = () => false): ChatLine => {
+  const areas = line.areas?.filter(keep) ?? [];
+  const { areas: _, ...rest } = line;
+  return areas.length ? { ...rest, areas } : rest;
+};
 
 /** What a line the app sent for this decision carries. */
 const appMark = (reply: AppReply | undefined) => reply
@@ -175,18 +189,21 @@ export function useMainChat(api: BotsApi, prepare?: () => Promise<void>, onNoRep
       void ensureHistory();
       if (controller.signal.aborted) return;
       let reply = "";
+      const areas: ReadArea[] = [];
       await api.sendToMain(text, (event) => {
         if (event.type === "status") setTurn((turn) => ({ ...turn, state: event.state }));
         else if (event.type === "delta") {
           reply += event.text;
           setTurn((turn) => ({ ...turn, state: "working", reply, step: { step: "writing" } }));
         } else if (event.type === "step") {
+          const area = STEP_AREAS[event.step];
+          if (area && !areas.includes(area)) areas.push(area);
           setTurn((turn) => ({ ...turn, step: { step: event.step, ...(event.host ? { host: event.host } : {}) } }));
         } else if (event.type === "done") {
           setState((current) => ({
             ...current,
             lines: current.lines.some(line => line.id === event.messageId) ? current.lines
-              : [...current.lines, { id: `local-${++store.localId}`, role: "user", text, ...appMark(appReply) }, { id: event.messageId, role: "bot", text: reply }],
+              : [...current.lines, { id: `local-${++store.localId}`, role: "user", text, ...appMark(appReply) }, { id: event.messageId, role: "bot", text: reply, ...(areas.length ? { areas: [...areas] } : {}) }],
             turn: null,
           }));
         } else if (event.type === "error") setTurn((turn) => ({ ...turn, state: "error", error: event.code }));
@@ -215,5 +232,25 @@ export function useMainChat(api: BotsApi, prepare?: () => Promise<void>, onNoRep
     else void run("", true, reply);
   }, [run, store]);
 
-  return { state, send, retry, sendAppReply, ensureHistory, loadHistory, requestHistory, clear };
+  /** "Not now" on the access card for `area` under a reply: that card goes, for this page session. */
+  const notNow = useCallback((lineId: string, area: ReadArea) => {
+    setState((current) => current.lines.some((line) => line.id === lineId && line.areas?.includes(area))
+      ? { ...current, lines: current.lines.map((line) => line.id === lineId ? withoutAreas(line, (other) => other !== area) : line) }
+      : current);
+  }, [setState]);
+
+  /**
+   * The owner gave access from a card under the reply `lineId`: the question before it goes again as a new turn, once.
+   * Only while that reply is still the newest line and no turn runs; its cards go first, so it never goes twice.
+   */
+  const askAgain = useCallback((lineId: string) => {
+    const { lines, turn } = store.state;
+    const line = lines.at(-1);
+    if (store.disposed || store.turnController || turn || line?.id !== lineId || line.role !== "bot" || !line.areas?.length) return;
+    setState((current) => ({ ...current, lines: current.lines.map((other) => other.id === lineId ? withoutAreas(other) : other) }));
+    const question = lines.at(-2);
+    if (question?.role === "user" && !question.app && !question.unreadableHistory && question.text) void run(question.text, true);
+  }, [store, setState, run]);
+
+  return { state, send, retry, sendAppReply, ensureHistory, loadHistory, requestHistory, clear, notNow, askAgain };
 }

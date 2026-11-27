@@ -185,6 +185,8 @@ function MainAsk({ api, roster, tcw, onReconnect }: { api: BotsApi; roster: Rost
         newChat={newChat}
         earlierHistory={earlierHistory}
         face={face}
+        onNotNow={chat.notNow}
+        onAskAgain={chat.askAgain}
       />
     </>
   );
